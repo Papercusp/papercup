@@ -17,8 +17,9 @@
  * cluster forks its fleet. On a broken/partial install it emits ONE loud, named
  * diagnostic (which packages are missing) and exits with a DISTINCT code in <1s,
  * instead of a 160-respawn flap storm. (The generic net for boot failures this
- * manifest doesn't enumerate is the cluster-fork boot-failure backstop — see
- * `cluster-fork.ts` `onUnbootable`. This file is the early, actionable signal.)
+ * manifest doesn't enumerate is the cluster-fork `onBootFailure` backstop. It
+ * stops local respawns but does not infer a cause from exit timing/code; the
+ * host adds structured EADDRINUSE evidence when a worker reports it.)
  *
  * DEPENDENCY-FREE ON PURPOSE: it imports only Node built-ins (`node:module`,
  * `node:fs`, `node:path`, `node:url`), so it can never be a victim of the very

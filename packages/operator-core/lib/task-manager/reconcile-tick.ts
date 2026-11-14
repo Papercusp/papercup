@@ -426,8 +426,6 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
         await cleanupEndedBrowserDirectory(row);
       }
     }
-    deps.stage?.('reconcile-mark-stranded');
-    strandedCount = await markStranded(strandedToPersist, undefined, effectsForTask);
     const endedWithTerminal = endedToPersist.map((verdict) => {
       const scopeUnit = byTaskId.get(verdict.taskId)?.scopeUnit;
       const terminalProvenance = scopeUnit ? (terminalByUnit.get(scopeUnit) ?? null) : null;
@@ -486,16 +484,22 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
         terminalProvenance,
       });
     }
+    // These terminal classes are independent. Settling an unrelated stranded or
+    // unobserved row first used to put every runner-authenticated JOB END behind
+    // that row's complete close + event path. One slow ledger read could therefore
+    // hold the exact task:terminal wake past its waiter's timeout. Start each class
+    // together; the store still applies its terminal-state and event-revision fences.
+    deps.stage?.('reconcile-mark-stranded');
     deps.stage?.('reconcile-mark-unobserved');
-    endedUnobservedCount = await markEndedUnobserved(unobserved, undefined, effectsForTask);
     deps.stage?.('reconcile-recover-release-cut');
-    recoveredFromReleaseCutCount = await markRecoveredFromJobLog(
-      recoveredFromReleaseCut,
-      undefined,
-      effectsForTask,
-    );
     deps.stage?.('reconcile-recover-log');
-    recoveredFromJobLogCount = await markRecoveredFromJobLog(recovered, undefined, effectsForTask);
+    [strandedCount, endedUnobservedCount, recoveredFromReleaseCutCount, recoveredFromJobLogCount] =
+      await Promise.all([
+        markStranded(strandedToPersist, undefined, effectsForTask),
+        markEndedUnobserved(unobserved, undefined, effectsForTask),
+        markRecoveredFromJobLog(recoveredFromReleaseCut, undefined, effectsForTask),
+        markRecoveredFromJobLog(recovered, undefined, effectsForTask),
+      ]);
     // The failed unit was deliberately retained at spawn so its Result/exit
     // status/MemoryPeak could reach the ledger. A batch count cannot identify
     // refused closes: release only units with their own accepted-write receipt.

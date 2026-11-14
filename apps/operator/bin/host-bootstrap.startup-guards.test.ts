@@ -25,6 +25,7 @@ import ts from 'typescript';
 import { withBoundedTimeout } from '@papercusp/operator-core/lib/bounded-timeout';
 import { dedupeInFlight } from '@papercusp/operator-core/lib/dedupe-in-flight';
 import { awaitBootMigrationGate } from '@papercusp/operator-core/lib/boot-migration-gate';
+import { CLUSTER_BOOT_FAILURE_MESSAGE_TYPE } from '@papercusp/operator-core/lib/cluster-fork';
 
 const bootSrc = readFileSync(join(__dirname, 'host-bootstrap.ts'), 'utf8');
 const mcpProxySrc = readFileSync(join(__dirname, 'mcp-proxy.ts'), 'utf8');
@@ -81,11 +82,70 @@ describe('cluster boot-failure diagnosis', () => {
     expect(end).toBeGreaterThan(start);
 
     const callback = honoHostSrc.slice(start, end);
-    expect(callback).toContain('root cause is unknown');
-    expect(callback).toContain('Inspect the first worker error above');
+    expect(callback).toMatch(/root cause is unknown/i);
+    expect(callback).toMatch(/inspect the first worker error above/i);
     expect(callback).toContain('process.exit(1)');
     expect(callback).not.toContain('BOOT_INTEGRITY_EXIT_CODE');
     expect(callback).not.toMatch(/MODULE_NOT_FOUND|npm ci|cluster UNBOOTABLE/);
+  });
+
+  it('sends typed EADDRINUSE evidence from a worker before exiting, but not generic errors', () => {
+    const file = ts.createSourceFile('hono-host.ts', honoHostSrc, ts.ScriptTarget.Latest, true);
+    let initializer: ts.Expression | undefined;
+    const findHandler = (node: ts.Node): void => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === 'onListenFatal') {
+        initializer = node.initializer;
+      }
+      ts.forEachChild(node, findHandler);
+    };
+    findHandler(file);
+    expect(initializer).toBeDefined();
+    if (!initializer) throw new Error('hono-host.ts is missing its onListenFatal handler');
+
+    const send = vi.fn((_message: unknown, callback?: (error: Error | null) => void) => callback?.(null));
+    const exit = vi.fn();
+    const timer = {};
+    const setTimeout = vi.fn((_callback: () => void, _delayMs: number) => timer);
+    const clearTimeout = vi.fn();
+    const sandbox: Record<string, unknown> = {
+      cluster: { isWorker: true },
+      CLUSTER_BOOT_FAILURE_MESSAGE_TYPE,
+      process: { send, exit },
+      console: { error: vi.fn() },
+      hostname: '0.0.0.0',
+      port: 3170,
+      setTimeout,
+      clearTimeout,
+    };
+    const compiled = ts.transpileModule(
+      `globalThis.__onListenFatal = ${initializer.getText(file)};`,
+      { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } },
+    ).outputText;
+    runInNewContext(compiled, sandbox, { timeout: 1_000 });
+    const onListenFatal = sandbox.__onListenFatal as (error: NodeJS.ErrnoException) => void;
+
+    onListenFatal(Object.assign(new Error('listen EADDRINUSE'), {
+      code: 'EADDRINUSE', address: '0.0.0.0', port: 3070,
+    }));
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith({
+      type: CLUSTER_BOOT_FAILURE_MESSAGE_TYPE,
+      schemaVersion: 1,
+      code: 'EADDRINUSE',
+      address: '0.0.0.0',
+      port: 3070,
+    }, expect.any(Function));
+    expect(setTimeout).toHaveBeenCalledWith(expect.any(Function), 250);
+    expect(clearTimeout).toHaveBeenCalledWith(timer);
+    expect(exit).toHaveBeenCalledWith(1);
+
+    send.mockClear();
+    exit.mockClear();
+    setTimeout.mockClear();
+    onListenFatal(Object.assign(new Error('missing module'), { code: 'MODULE_NOT_FOUND' }));
+    expect(send).not.toHaveBeenCalled();
+    expect(setTimeout).not.toHaveBeenCalled();
+    expect(exit).toHaveBeenCalledWith(1);
   });
 });
 

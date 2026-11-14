@@ -43,7 +43,9 @@ export function hasBrowserInstall(cacheDir, browser, revision) {
   const cacheName = browser.replaceAll('-', '_');
   const prefix = revision ? `${cacheName}-${revision}` : `${cacheName}-`;
   return entries.some((entry) =>
-    entry.isDirectory() && (revision ? entry.name === prefix : entry.name.startsWith(prefix)) &&
+    // Storage offloading leaves directory symlinks in the normal cache. The
+    // sentinel lookup follows them; dangling links and links to files fail it.
+    (entry.isDirectory() || entry.isSymbolicLink()) && (revision ? entry.name === prefix : entry.name.startsWith(prefix)) &&
     existsSync(join(cacheDir, entry.name, 'INSTALLATION_COMPLETE')),
   );
 }

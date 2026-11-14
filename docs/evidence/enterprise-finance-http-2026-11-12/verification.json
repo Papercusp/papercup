@@ -1,0 +1,51 @@
+{
+  "workItem": "WI-6554700010047673",
+  "parent": "WI-10007917",
+  "enterpriseRoot": "WI-10007833",
+  "scope": "Chromium finance component through real loopback Hono HTTP and production allocation stores on private PostgreSQL",
+  "framework": "playwright",
+  "commands": [
+    {
+      "command": "ENTERPRISE_FINANCE_HTTP_OUTPUT_DIR=/tmp/enterprise-finance-http-evidence-20261112 OPERATOR_E2E_SKIP_WARMUP=1 PAPERCUSP_TEST_RUN_GROUP=enterprise-finance-http-pg-20261112 PAPERCUSP_WORK_ITEM_ID=WI-6554700010047673 node scripts/e2e-fixture-affected.mjs --files=apps/operator/e2e/__fixtures__/enterprise-finance-http.tsx",
+      "result": "3 passed, 0 failed, 0 skipped; exit 0",
+      "ledgerId": 23832098,
+      "runGroup": "enterprise-finance-http-pg-20261112",
+      "log": "browser.log"
+    },
+    {
+      "command": "node scripts/lint-tsc-operator.mjs --files=apps/operator/e2e/_desktop-grid-fixture-server.ts,apps/operator/e2e/__fixtures__/enterprise-finance-http.tsx,apps/operator/e2e/enterprise-finance-http.spec.ts",
+      "result": "0 type errors; named 3 files plus 6 importers; exit 0",
+      "log": "typecheck.log"
+    },
+    {
+      "command": "git diff --check -- apps/operator/e2e/_desktop-grid-fixture-server.ts apps/operator/e2e/__fixtures__/enterprise-finance-http.tsx apps/operator/e2e/enterprise-finance-http.spec.ts",
+      "result": "exit 0"
+    }
+  ],
+  "assertions": [
+    "UI renders independently seeded model 123456, hosting 234567, subscription 345678 micro-USD commitments separately",
+    "Browser 1.000001 USD save persists exactly 1000001 micro-USD revision 2 with server-bound actor; organization B remains at revision 1",
+    "Browser cap 123455 below real commitment 123456 is refused and an independent administrator database read remains unchanged",
+    "Accounting download contains three real rows, separate cost classes and explicit unknown provider-final costs",
+    "Organization B reads its own doubled values; September returns its own empty ledger",
+    "Revoked server authority rejects stale-browser reads and POST, hides export, and performs no service transaction or database write",
+    "Source hashes match before and after the run; private database org_49fb4ce2d232 cleanup returns dropped"
+  ],
+  "reuse": "Existing EnterpriseAllocationPanel, startDesktopGridFixtureServer with Vite proxy option, createHostedBillingRuntime, createOrgTestDb, allocation-store and shared egress/reporter fixtures",
+  "sourceIdentity": "source-manifest.json",
+  "ledgerReadback": "ledger.json",
+  "screenshots": [
+    "finance-real-http-persisted-refusal.png",
+    "finance-real-http-other-org-month.png",
+    "finance-real-http-revoked.png"
+  ],
+  "limitations": {
+    "synthetic": ["principal resolver", "seeded amounts"],
+    "portalIntegrationProven": false,
+    "sessionResolverProven": false,
+    "providerBillingProven": false,
+    "nativeAcceptanceProven": false,
+    "shipmentProven": false,
+    "worktreeDirty": true
+  }
+}

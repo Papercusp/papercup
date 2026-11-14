@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { OrchestrationCallRecord, ProjectedTool } from '@papercusp/tooldef';
-import { captureManagedOperation, fingerprintShellOperation, normalizeExecutionTrace, readableOperationEvidence, type NormalizeExecutionTraceInput, type OperationAdapterEvidence } from './orchestration-trace';
+import { captureManagedOperation, fingerprintShellOperation, normalizeExecutionTrace, readableOperationEvidence, sourceShellOperations, sourceShellOperationEvidence, type NormalizeExecutionTraceInput, type OperationAdapterEvidence } from './orchestration-trace';
 import { fingerprintSqlIntent, type SqlIntentScope } from './bash-substitution/sql-intent-fingerprint';
 
 function tool(name: string, capabilities: string[], effect: 'read' | 'write' = 'read'): ProjectedTool {
@@ -22,6 +22,65 @@ const TOOLS = [
 ];
 
 const SCOPE: SqlIntentScope = { workspaceId: 'workspace-a', sourceBoundary: 'source-private', epoch: 'epoch-1', key: new Uint8Array(32).fill(31) };
+
+describe('bounded historical source operations', () => {
+  const sha = 'a'.repeat(40);
+  const archive = `git -C /canonical archive --format=tar ${sha} | tar -x -C /scratch/source`;
+
+  it('resolves static assignments and exact archive and hardlink operands without claiming a receipt', () => {
+    const cmd = `set -euo pipefail\nrepo=/canonical\ndest=/scratch/source\nsha=${sha}\nmkdir -p "$dest"\ngit -C "$repo" archive --format=tar "$sha" | tar -x -C "$dest"\ncp -al "$repo/node_modules" "$dest/node_modules"`;
+    expect(sourceShellOperations(cmd)).toMatchObject({ status: 'supported', operations: [
+      { kind: 'git-archive', repository: '/canonical', commit: sha, destination: '/scratch/source' },
+      { kind: 'hardlink-copy', source: '/canonical/node_modules', destination: '/scratch/source/node_modules' },
+    ] });
+    const source = { ref: 'archive:call:1', authorityRef: 'source:acl:1', observedAt: '2026-11-10T00:00:00Z', expiresAt: null };
+    const evidence = sourceShellOperationEvidence(cmd, SCOPE, source, { status: 'success', final: true });
+    expect(evidence).toHaveLength(2);
+    expect(evidence.every(row => !Object.hasOwn(row.outcome, 'receiptRef'))).toBe(true);
+    expect(evidence[0].semanticIdentity.fingerprint).not.toBe(evidence[1].semanticIdentity.fingerprint);
+    expect(sourceShellOperationEvidence(cmd, { ...SCOPE, epoch: 'different' }, source,
+      { status: 'success', final: true })[0].semanticIdentity.fingerprint).not.toBe(evidence[0].semanticIdentity.fingerprint);
+    expect(sourceShellOperationEvidence(cmd, { ...SCOPE, knownSecrets: ['/canonical'] }, source,
+      { status: 'success', final: true })).toEqual([]);
+    expect(fingerprintShellOperation({ command: cmd, cwd: '/canonical', environment: {}, effect: 'write' }, SCOPE).status).toBe('unknown');
+  });
+
+  it('expands only finite literal loop lists and preserves each destination', () => {
+    expect(sourceShellOperations('for name in one two; do\ncp -al /canonical/$name /scratch/$name; done'))
+      .toMatchObject({ status: 'supported', operations: [
+        { kind: 'hardlink-copy', source: '/canonical/one', destination: '/scratch/one' },
+        { kind: 'hardlink-copy', source: '/canonical/two', destination: '/scratch/two' },
+      ] });
+    expect(sourceShellOperations('names="one two"; for name in $names; do\ncp -al /canonical/$name /scratch/$name; done').status).toBe('unknown');
+  });
+
+  it('takes proven literal conditions and accepts unknown conditions only when both branches converge', () => {
+    expect(sourceShellOperations(`if [ one = one ]; then\n${archive}; else\ncp -al /other /scratch; fi`))
+      .toMatchObject({ status: 'supported', operations: [{ kind: 'git-archive' }] });
+    expect(sourceShellOperations(`if [ -d /unmeasured ]; then\n${archive}; else\n${archive}; fi`).status).toBe('supported');
+    expect(sourceShellOperations(`if [ -d /unmeasured ]; then\n${archive}; else\ncp -al /other /scratch; fi`))
+      .toMatchObject({ status: 'unknown', reason: 'divergent-branch' });
+  });
+
+  it.each([
+    'repo=/canonical; repo=/other; cp -al "$repo" /scratch',
+    'for repo in /one; do\nrepo=/other; cp -al "$repo" /scratch; done',
+    'cp -al "$UNRESOLVED" /scratch',
+    'repo="/split path"; cp -al $repo /scratch',
+    'PATH=/other; cp -al /canonical /scratch',
+    'eval "repo=/other"; cp -al /canonical /scratch',
+    'cp() { false; }; cp -al /canonical /scratch',
+    'cp -al /canonical /scratch || true',
+    'cp -al /canonical/* /scratch',
+    'cp -al /canonical /scratch/../escape',
+    'cp -al /canonical /scratch; rm -rf /scratch',
+    `git -C /canonical archive --format=tar HEAD | tar -x -C /scratch`,
+    `git -C /canonical archive --format=tar ${sha} | tar -x -C /scratch --strip-components=1`,
+    `git -C /canonical archive --format=tar ${sha} | tar -x -C /scratch; echo $(touch /scratch/changed)`,
+  ])('leaves unsupported or ambiguous source unknown: %s', cmd => {
+    expect(sourceShellOperations(cmd).status).toBe('unknown');
+  });
+});
 
 describe('P005 managed dispatch settlement', () => {
   const capture = (toolName: string, status: string, body?: unknown, handlerEntered = true) => captureManagedOperation({

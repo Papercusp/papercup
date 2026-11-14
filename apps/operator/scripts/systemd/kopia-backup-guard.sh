@@ -238,9 +238,10 @@ age_of() {
 # either half of the cycle.
 staleness_override_reason=
 pressure_escalated=0
-# Epoch at which THIS label's staleness floor armed (deadline-base + max_defer).
-# Set only when the override arms; has_live_priority_waiter compares it against a
-# waiter's published .due to decide which overdue producer goes first.
+# Epoch at which THIS label became overdue (deadline-base + max_defer).
+# Deadline priority is independent of the pressure-override retry cooldown:
+# a previous attempt may have spent its override without completing the backup.
+# has_live_priority_waiter compares this deadline against the waiter's .due.
 holder_due=
 arm_staleness_override() {
   local age escalated_age
@@ -254,6 +255,7 @@ arm_staleness_override() {
   fi
   staleness_override_reason="staleness_sec=$age max_defer_sec=$max_defer"
   [ "$age" -ge "$max_defer" ] || return 1
+  holder_due=$(( $(date +%s) - age + max_defer ))
   # Once armed, do not arm again on the very next tick.  A backup failing for a
   # NON-pressure reason would otherwise ignore pressure on every tick forever.
   if escalated_age=$(age_of "$escalation_path") && [ "$escalated_age" -lt "$escalation_retry" ]; then
@@ -262,7 +264,6 @@ arm_staleness_override() {
   fi
   write_stamp "$escalation_path"
   pressure_escalated=1
-  holder_due=$(( $(date +%s) - age + max_defer ))
   guard_log "result=staleness-override-armed $staleness_override_reason"
   return 0
 }
@@ -391,8 +392,8 @@ register_priority_request() {
 # Validate the marker's owner before honoring it. A SIGKILL can bypass the EXIT
 # trap, and a stale PID must never make every scheduled snapshot self-cancel.
 #
-# A holder whose own staleness floor armed this cycle (pressure_escalated) is
-# itself overdue, so it honors a waiter only once that waiter is due as well:
+# A holder whose own deadline has passed is overdue even during the pressure
+# override cooldown, so it honors a waiter only once that waiter is due as well:
 # its .due deadline has passed, or it published none (see
 # register_priority_request). A holder that is not overdue honors every live
 # waiter at once, exactly as before. Declining is logged once per waiter and reason.
@@ -409,7 +410,9 @@ register_priority_request() {
 # finished sweep's fresh deadline sends the next dump first: the two alternate
 # instead of one starving. The extension bounds the dump's wait if a sweep never
 # finishes.
-not_due_waiter_logged=
+# Remember the last hold reason independently for each live waiter. One scalar
+# makes A and B overwrite each other and repeat both logs on every monitor tick.
+declare -A not_due_waiter_logged=()
 # The earliest-deadline hold is bounded from the LATER of the waiter's deadline and
 # the moment it started waiting (its .wait marker's mtime), EI-25211496463956189.
 # Anchoring at the deadline alone gave an earlier-deadline holder no protection at
@@ -490,6 +493,11 @@ waiter_mode_of() {
 yield_waiter_logged=
 has_live_priority_waiter() {
   local request pid cmd due_path due hold_reason now window_base stalled yield_reason
+  # Bound the cache to current marker paths, and let a later request at a removed
+  # path announce its hold even when its reason matches the previous request.
+  for request in "${!not_due_waiter_logged[@]}"; do
+    [ -f "$request" ] || unset 'not_due_waiter_logged[$request]'
+  done
   for request in "${lock_path}".*.wait; do
     [ -f "$request" ] || continue
     due_path="${request%.wait}.due"
@@ -504,15 +512,15 @@ has_live_priority_waiter() {
     # the lock while the recovery-point-critical DB dump is already waiting.
     if [[ "$cmd" == *kopia-backup-guard.sh*--mode\ wait* ||
           "$cmd" == *kopia-backup-guard.sh*--mode\ scheduled* ]]; then
-      if [ "$pressure_escalated" = 1 ] && due=$(read_stamp "$due_path"); then
+      if [ -n "$holder_due" ] && due=$(read_stamp "$due_path"); then
         window_base=$(hold_window_base "$due" "$request")
         if hold_reason=$(overdue_holder_hold_reason "$due" "$window_base"); then
           if stalled=$(holder_stalled_sec); then
             guard_log "result=yielding-to-priority-waiter reason=holder-stalled waiter=${request##*/} would_hold=$hold_reason stalled_sec=$stalled stall_limit_sec=$progress_stall_sec progress_path=$progress_path"
             return 0
           fi
-          if [ "$not_due_waiter_logged" != "$request:$hold_reason" ]; then
-            not_due_waiter_logged="$request:$hold_reason"
+          if [ "${not_due_waiter_logged[$request]:-}" != "$hold_reason" ]; then
+            not_due_waiter_logged["$request"]=$hold_reason
             now=$(date +%s)
             if [ "$hold_reason" = holder-overdue ]; then
               guard_log "result=holding-against-priority-waiter reason=holder-overdue waiter=${request##*/} waiter_due_in_sec=$(( ${due%.*} - now )) $staleness_override_reason"
@@ -523,6 +531,7 @@ has_live_priority_waiter() {
           continue
         fi
       fi
+      unset 'not_due_waiter_logged[$request]'
       # Name the waiter this holder honors, once per waiter and reason; the caller's
       # next line says what it did about it (stopping-during-run, or holding for a
       # child that is not restart-safe). Before this line the holder's journal said
@@ -530,7 +539,7 @@ has_live_priority_waiter() {
       # waiter that logs nowhere the host can read (2026-10-06 15:19:44 EDT: an
       # overdue sweep stopped while the only logged waiter was 33 min from due)
       # could not be attributed afterwards.
-      if [ "$pressure_escalated" != 1 ]; then
+      if [ -z "$holder_due" ]; then
         yield_reason=holder-not-overdue
       elif ! due=$(read_stamp "$due_path"); then
         yield_reason=waiter-due-now

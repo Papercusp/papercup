@@ -2,10 +2,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { sql } = vi.hoisted(() => ({ sql: vi.fn() }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'this-workspace' }));
-import { dispatchNativeWindowIntent, dispatchUiIntent } from './dispatch-intent';
+import { dispatchNativeWindowIntent, dispatchUiIntent, uniqueNativeDesktopClient } from './dispatch-intent';
 beforeEach(() => sql.mockReset());
 
 describe('existing UI transport for native desktop focus', () => {
+  it('requires exactly one fresh native client in the current workspace for terminal handoffs', async () => {
+    sql.mockResolvedValueOnce([{ client_id: 'desktop' }]);
+    expect(await uniqueNativeDesktopClient()).toBe('desktop');
+    const [query, workspace] = sql.mock.calls[0];
+    expect(workspace).toBe('this-workspace');
+    expect(query.join(' ')).toContain("viewport->>'nativeDesktop' = 'true'");
+    expect(query.join(' ')).toContain('LIMIT 2');
+    sql.mockResolvedValueOnce([]);
+    await expect(uniqueNativeDesktopClient()).rejects.toThrow(/desktop_unavailable/);
+    sql.mockResolvedValueOnce([{ client_id: 'one' }, { client_id: 'two' }]);
+    await expect(uniqueNativeDesktopClient()).rejects.toThrow(/desktop_ambiguous/);
+  });
   it('selects only a fresh native client in this workspace and waits for its result', async () => {
     sql.mockResolvedValueOnce([{ client_id: 'native-client' }]).mockResolvedValueOnce([{ id: 1 }]).mockResolvedValueOnce([]).mockResolvedValueOnce([{ status: 'done', result: { focused: true }, error_message: null }]);
     expect(await dispatchNativeWindowIntent({ action: 'focus', title: 'Papercup — exact' })).toEqual({ focused: true });

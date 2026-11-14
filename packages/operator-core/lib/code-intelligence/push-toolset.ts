@@ -60,7 +60,12 @@ export async function readRecipientToolset(input: { workspace: string; owner: st
 /** Last recorded listing per (workspace, owner) in this process, so an unchanged re-list does not write. */
 const recorded = pinModuleState('@papercusp/operator-core.code-intel.push-toolset.recorded',
   () => ({ byKey: new Map<string, { digest: string; at: number }>() }));
-const RECORD_REFRESH_MS = 10 * 60_000;
+/** An unchanged re-list within this window skips the write. Kept short and EXPORTED because
+ * listed_at is also liveness evidence (WI-6554700010048116): a skipped write proves a prior
+ * write at most this long before the listing, so the MCP-dark watchdog tolerates exactly this
+ * much when asking whether a freshly started CLI child was listed its tools. */
+export const EXPOSED_TOOLS_REFRESH_MS = 60_000;
+const RECORD_REFRESH_MS = EXPOSED_TOOLS_REFRESH_MS;
 const RECORD_KEYS_MAX = 4_096;
 
 /** Record the names tools/list just returned to this owner's session. Never throws: a failed

@@ -7,6 +7,7 @@ import { closeSync, createReadStream, createWriteStream } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
+import { openDeliveryLedger } from '../../../apps/operator/scripts/hooks/inject/delivery-ledger.mjs';
 import {
   connectAgentMcp, type NativeOmpConfig, type SuNativeToolCall,
 } from '../../operator-core/lib/agent-mcp-client';
@@ -22,6 +23,8 @@ export interface NativeExtensionApi {
     execute(id: string, params: Record<string, unknown>, signal?: AbortSignal,
       onUpdate?: unknown, context?: { sessionManager: { getSessionId(): string } }): Promise<unknown>;
   }): void;
+  on(name: 'before_agent_start', handler: (event: { systemPrompt: string[] }) =>
+    Promise<{ systemPrompt: string[] }>): void;
   on(name: 'session_shutdown', handler: () => Promise<void>): void;
   on(name: 'tool_call' | 'tool_result', handler: NativeToolCallHandler): void;
 }
@@ -31,9 +34,19 @@ export async function registerNativeMcp(pi: NativeExtensionApi, config: NativeOm
   const native = config.papercuspNativeMcp;
   if (!native || native.version !== 1) return;
   const connections: Array<Awaited<ReturnType<typeof connectAgentMcp>>> = [];
+  const serverInstructions = new Map<string, string>();
   const originals = new Map<string, SuNativeToolCall>();
   const callKey = (call: SuNativeToolCall) => JSON.stringify([call.nativeSessionId, call.callId]);
+  // Moving a server out of OMP's built-in MCPManager also moves responsibility
+  // for mounting initialize.instructions here. Reapply on every turn so a
+  // prompt rebuild or compaction cannot silently drop the initialized context.
+  // This is preparation only: later extensions can still rewrite the prompt.
+  pi.on('before_agent_start', async event => ({ systemPrompt: [
+    ...event.systemPrompt,
+    ...[...serverInstructions.values()].filter(block => !event.systemPrompt.includes(block)),
+  ] }));
   pi.on('session_shutdown', async () => {
+    serverInstructions.clear();
     originals.clear();
     nativeHook?.close();
     await Promise.allSettled(connections.map(x => x.client.close()));
@@ -73,6 +86,11 @@ export async function registerNativeMcp(pi: NativeExtensionApi, config: NativeOm
     for (const [name, server] of Object.entries(native.servers)) {
       if (!server.url) throw new Error('native_mcp_url_missing');
       const headers = { ...server.headers };
+      // Only the owned Papercusp connection negotiates prepared memory. The
+      // native host records its final RPC output; returning here is not proof.
+      const owner = process.env.PAPERCUSP_SID;
+      const receiptOwner = name === 'papercusp-su' && owner && headers['x-papercusp-client'] === owner
+        ? owner : undefined;
       for (const value of Object.values(headers)) {
         // Never run shell-derived headers inside this adapter. The launcher
         // resolves its known credential fields before handing us the config.
@@ -81,9 +99,21 @@ export async function registerNativeMcp(pi: NativeExtensionApi, config: NativeOm
       const connection = await connectAgentMcp({
         url: server.url, headers, mode: native.mode, home: native.home,
         name: 'papercusp-omp-native', timeoutMs: 15_000,
+        ...(receiptOwner ? { prepareClient(client) {
+          const request = client.request.bind(client);
+          client.request = (params, schema, options) => request(params.method === 'initialize'
+            ? { ...params, params: { ...params.params, _meta: { ...params.params?._meta,
+              'papercusp/memoryReceipt': { version: 1,
+                confirmations: openDeliveryLedger(receiptOwner, process.env, 'mcp')?.confirmedMemoryDeliveries() ?? [],
+              },
+            } } } : params, schema, options);
+        } } : {}),
       });
       connections.push(connection);
       const { client } = connection;
+      const instructions = client.getInstructions();
+      if (typeof instructions === 'string' && instructions.trim())
+        serverInstructions.set(name, `MCP server (${name}):\n${instructions}`);
       let catalog = new Set<string>();
       const refresh = async () => {
         const next = new Set<string>();
@@ -110,7 +140,11 @@ export async function registerNativeMcp(pi: NativeExtensionApi, config: NativeOm
                   && typeof id === 'string' && /^[A-Za-z0-9._:-]{1,256}$/.test(id)
                   ? { threadId: sessionId, callId: id } : undefined;
                 const result = await client.callTool({ name: tool.name, arguments: params,
-                  ...(nativeCall ? { _meta: nativeCall } : {}) }, undefined, { signal });
+                  ...((nativeCall || receiptOwner) ? { _meta: { ...nativeCall,
+                    ...(receiptOwner ? { 'papercusp/memoryReceipt': { version: 1,
+                      confirmations: openDeliveryLedger(receiptOwner, process.env, 'mcp')?.confirmedMemoryDeliveries() ?? [],
+                    } } : {}),
+                  } } : {}) }, undefined, { signal });
                 return {
                   content: result.content,
                   details: {

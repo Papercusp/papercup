@@ -81,6 +81,36 @@ describe('real selective-assist -> consumer evidence -> existing acceptance outc
     expect(g.rating).toBe('unknown — no verdict');
   });
 
+  it('NEGATIVE: comment and literal text cannot produce passing consumer evidence', async () => {
+    for (const source of [
+      '// getNextWorkItem(args)',
+      'const message = "getNextWorkItem";',
+      'const message = `getNextWorkItem ${other()}`;',
+    ]) {
+      const result = await runSelectiveAssist(intent, {
+        dispatch: dispatchWith([[CONSUMER, 547]]),
+        currentRevision: () => INDEX_COMMIT,
+        readSource: (path) => path === CONSUMER ? source : null,
+      });
+      const record = buildConsumerEvidence(intent, result, evidenceBase);
+      expect(record.consumers, source).toEqual([]);
+      expect(evaluateConsumerEvidence(record).verdict, source).toBe('unverified');
+      expect(gate(record), source).toMatchObject({ rating: 'unknown — no verdict', downgraded: true });
+    }
+  });
+
+  it('NEGATIVE: supplying a revision after an unknown-freshness read cannot create verified consumers', async () => {
+    const result = await runSelectiveAssist(intent, {
+      dispatch: dispatchWith([[CONSUMER, 547]]),
+      currentRevision: () => null,
+      readSource,
+    });
+    const record = buildConsumerEvidence(intent, result, evidenceBase);
+    expect(record.identity).toEqual({ indexRevision: INDEX_COMMIT, sourceRevision: INDEX_COMMIT });
+    expect(record.consumers).toEqual([]);
+    expect(gate(record)).toMatchObject({ rating: 'unknown — no verdict', downgraded: true });
+  });
+
   it('NEGATIVE: the graph returned ZERO callers -> not evidence of absence -> nonpassing', async () => {
     const result = await runSelectiveAssist(intent, { dispatch: dispatchWith([]), currentRevision: () => INDEX_COMMIT, readSource });
     expect(result.outcome).toBe('graph-empty');

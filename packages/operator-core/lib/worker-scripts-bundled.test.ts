@@ -101,6 +101,10 @@ const ESBUILD_WORKERS: { source: string; output: string }[] = [
     source: 'packages/operator-core/lib/code-intelligence/warm-cochange-index.worker.ts',
     output: 'warm-cochange-index.worker.mjs',
   },
+  {
+    source: 'packages/operator-core/lib/agent-tools/testing/testing-core.worker.ts',
+    output: 'testing-core.worker.mjs',
+  },
 ];
 
 /**
@@ -224,7 +228,7 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
   let buildOutput: string;
   const recipe = join(REPO_ROOT, 'apps/operator/bin/bundle-host-common.sh');
   const build = (extraEnv: NodeJS.ProcessEnv = {}, subject = recipe, destination = output) => spawnSync('bash', [
-    '-c', 'set -euo pipefail; source "$1"; bundle_host_workers "$2" "$3" "${PAPERCUSP_EMBED_WORKER_SCRIPT:-}"', 'worker-recipe-test', subject, REPO_ROOT, destination,
+    '-c', 'set -euo pipefail; source "$1"; bundle_host_workers "$2" "$3" "${PAPERCUSP_EMBED_WORKER_SCRIPT:-}"; printf "\\nTESTING_CORE_BINDING %s\\n" "$BUNDLE_HOST_TESTING_CORE_BINDING"', 'worker-recipe-test', subject, REPO_ROOT, destination,
   ], {
     cwd: REPO_ROOT,
     // The pinned fixture resolves once before this build. Exercise the recipe's
@@ -260,6 +264,68 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     .matchAll(/if \[ "\$output" = "([^"]+\.script\.mjs)" \]; then\n(?:.*\n){0,6}?.*bundle_host_esbuild "\$repo_root" "\$source"/g)]
     .map(match => match[1]!);
 
+  function compiledTestingCoreParent() {
+    const retained = buildOutput.split('\n').find(line => line.startsWith('TESTING_CORE_BINDING '));
+    expect(retained, buildOutput).toBeTruthy();
+    // The producing shell retained this expectation before the parent build;
+    // it is not reconstructed from the sibling the parent will execute.
+    const binding = JSON.parse(retained!.slice('TESTING_CORE_BINDING '.length));
+    const parent = join(output, 'testing-parent.mjs');
+    if (existsSync(parent)) return { parent, binding };
+    const command = [
+      'set -euo pipefail; source "$1";',
+      'BUNDLE_HOST_TESTING_CORE_RECEIPT="$3/testing-core.worker.witness.json";',
+      'BUNDLE_HOST_TESTING_CORE_BINDING="$4"; bundle_host_verify_testing_core "$2";',
+      'boundary=("${HOST_COMMON_EXTERNALS[@]}"); for name in "${NATIVE_PKGS[@]}"; do boundary+=("--external:$name"); done;',
+      'bundle_host_esbuild "$2" "$2/packages/operator-core/lib/agent-tools/testing/run.ts" --bundle --platform=node --format=esm --target=node22',
+      '--define:__PAPERCUSP_BUNDLED_SIDECAR__=true --banner:js="$HOST_BANNER" "${HOST_BANNER_DEFINES[@]}" "${boundary[@]}" "$5" --outfile="$3/testing-parent.mjs";',
+      'node "$2/apps/operator/bin/ascii-escape-bundle.mjs" "$3/testing-parent.mjs" --check;',
+      'bundle_host_verify_testing_core "$2";',
+    ].join(' ');
+    const built = spawnSync('bash', ['-c', command, 'testing-core-parent', recipe, REPO_ROOT, output,
+      JSON.stringify(binding), '--define:__PAPERCUSP_TESTING_CORE_WITNESS__=' + JSON.stringify(binding.witness)], {
+      cwd: REPO_ROOT, env: { ...process.env, PATH: compilerPath,
+        PAPERCUSP_FS_MUTEX_LOCK_DIR: join(output, 'package-cache-locks') }, encoding: 'utf8', timeout: 30_000,
+    });
+    expect(built.status, built.stdout + built.stderr).toBe(0);
+    return { parent, binding };
+  }
+
+  it('automatically selects the actual witnessed sibling and refuses its absence before child start or report allocation', () => {
+    const { parent } = compiledTestingCoreParent();
+    const script = [
+      'import * as modules from "node:module"; import fs from "node:fs"; import cp from "node:child_process"; import {dirname} from "node:path";',
+      'const parent=await import(process.argv[1]);',
+      'const opts={root:process.argv[3],files:["packages/operator-core/lib/worker-scripts-bundled.test.ts"],privatePg:false,',
+      'deadline:{startedAtMs:Date.now(),taskDeadlineAtMs:Date.now()+60000,childCutoffAtMs:Date.now()+50000,cleanupReserveMs:10000}};',
+      'const request=parent.buildDetachedTestRunRequest(opts);',
+      'for(const row of request.detachedReportArtifacts) fs.rmSync(dirname(row.reportPath),{recursive:true,force:true});',
+      'let allocations=0,starts=0,missing; const make=fs.mkdtempSync;',
+      'const launchMethods=["spawn","spawnSync","exec","execSync","execFile","execFileSync","fork"];',
+      'const originals=Object.fromEntries(launchMethods.map(name=>[name,cp[name]])); const nativeSpawn=cp.ChildProcess.prototype.spawn;',
+      'for(const name of launchMethods)cp[name]=function(...args){starts++;return Reflect.apply(originals[name],this,args)};',
+      'cp.ChildProcess.prototype.spawn=function(...args){starts++;return Reflect.apply(nativeSpawn,this,args)};modules.syncBuiltinESMExports();',
+      'const control=cp.spawnSync(process.execPath,["-e","process.exit(0)"],{encoding:"utf8"});',
+      'const counterWorks=control.status===0&&starts>0;starts=0;',
+      'fs.mkdtempSync=(...args)=>{allocations++;return make(...args)}; modules.syncBuiltinESMExports();',
+      'fs.renameSync(process.argv[2],process.argv[2]+".held");',
+      'try{parent.buildDetachedTestRunRequest(opts)}catch(error){missing=error.code}',
+      'finally{fs.renameSync(process.argv[2]+".held",process.argv[2]);fs.mkdtempSync=make;',
+      'for(const name of launchMethods)cp[name]=originals[name];cp.ChildProcess.prototype.spawn=nativeSpawn;modules.syncBuiltinESMExports()}',
+      'console.log("AUTOMATIC_TESTING_CORE "+JSON.stringify({args:request.args.slice(0,2),sourceLoader:request.args.includes("tsx"),',
+      'retainedGuard:request.env.NODE_OPTIONS.startsWith("--import="),missing,allocations,starts,counterWorks}));process.exit(0);',
+    ].join('\n');
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script,
+      parent, join(output, 'testing-core.worker.mjs'), REPO_ROOT], { encoding: 'utf8', timeout: 20_000 });
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    const line = result.stdout.split('\n').find(value => value.startsWith('AUTOMATIC_TESTING_CORE '));
+    expect(line, result.stdout + result.stderr).toBeTruthy();
+    expect(JSON.parse(line!.slice('AUTOMATIC_TESTING_CORE '.length))).toMatchObject({
+      args: ['--input-type=module', '-e'], sourceLoader: false, retainedGuard: true,
+      missing: 'testing_core_missing_artifact', allocations: 0, starts: 0, counterWorks: true,
+    });
+  });
+
   it('holds the shared package-cache reader for every actual worker compiler invocation', () => {
     expect(esbuiltScriptWorkers()).toEqual(['cpu-task-worker.script.mjs']);
     expect((buildOutput.match(/NPM_INSTALL_SAFE guarding package-cache reader:/g) ?? []).length)
@@ -284,10 +350,96 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     const result = build({}, subject, join(output, 'cache-lease-control'));
     expect(result.error, `worker control signal=${result.signal}; ${result.stdout + result.stderr}`).toBeUndefined();
     expect(result.status, result.stdout + result.stderr).toBe(0);
-    // A build result alone used to hide the unprotected cache read. The same
-    // receipt assertion as the positive case distinguishes the regression.
+    // The separately prepared core still owns its resolution + API leases;
+    // the mutated remaining worker invocations have lost theirs.
     expect((result.stdout + result.stderr).match(/NPM_INSTALL_SAFE guarding package-cache reader:/g) ?? [])
-      .toHaveLength(0);
+      .toHaveLength(2);
+  });
+
+  it('loads the actual produced testing core and refuses its expired cutoff before a child or packet exists', () => {
+    const artifactBaseDir = join(output, 'expired-core-artifacts');
+    const script = [
+      'import * as modules from "node:module";',
+      'import {createRequire} from "node:module";',
+      'import {existsSync} from "node:fs";',
+      'const core = await import(process.argv[1]);',
+      'const cp=createRequire(import.meta.url)("node:child_process");',
+      'const calls=[];',
+      'for(const name of ["spawn","spawnSync","fork","exec","execFile","execSync","execFileSync"])',
+      '  cp[name]=()=>{calls.push(name);throw new Error("expired core started a child");};',
+      'modules.syncBuiltinESMExports();',
+      `const result=await core.runTestFilesCore({files:["packages/operator-core/lib/agent-tools/testing/run-loop-gate.test.ts"],root:${JSON.stringify(REPO_ROOT)},privatePg:false,`,
+      '  deadline:{startedAtMs:1,taskDeadlineAtMs:2,cleanupReserveMs:0,childCutoffAtMs:2}},',
+      `  {artifactBaseDir:${JSON.stringify(artifactBaseDir)}});`,
+      `console.log("EXPIRED_COMPILED_CORE "+JSON.stringify({result,calls,packetExists:existsSync(${JSON.stringify(artifactBaseDir)}),source:core.testingCoreSourceSha256,api:typeof core.runTestFilesCore}));`,
+      'process.exit(result.error === "deadline_exhausted" && calls.length===0 ? 0 : 1);',
+    ].join('\n');
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script,
+      join(output, 'testing-core.worker.mjs')], { encoding: 'utf8', timeout: 20_000 });
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    const line = result.stdout.split('\n').find(value => value.startsWith('EXPIRED_COMPILED_CORE '));
+    expect(line, result.stdout + result.stderr).toBeTruthy();
+    const observed = JSON.parse(line!.slice('EXPIRED_COMPILED_CORE '.length));
+    const receipt = JSON.parse(readFileSync(join(output, 'testing-core.worker.witness.json'), 'utf8'));
+    expect(observed).toMatchObject({ api: 'function', source: receipt.witness.sourceSha256,
+      calls: [], packetExists: false, result: { ok: false, error: 'deadline_exhausted' } });
+  });
+
+  it('executes the actual compiled sibling without rebinding an occupied host port', () => {
+    const { parent, binding } = compiledTestingCoreParent();
+    const host = join(output, 'occupied-testing-host.mjs');
+    writeFileSync(host, [
+      'export {buildDetachedTestRunRequest} from ' + JSON.stringify(parent) + ';',
+      'import {createServer} from "node:net";',
+      'const host=createServer(); await new Promise((resolve,reject)=>{host.once("error",reject);',
+      'host.listen(Number(process.env.TEST_RECOVERY_HOST_PORT||0),"127.0.0.1",resolve)});',
+      'process.env.TEST_RECOVERY_HOST_PORT=String(host.address().port); globalThis.recoveryTestHost=host;',
+    ].join('\n'));
+    const script = [
+      'import {spawnSync} from "node:child_process"; import {rmSync} from "node:fs"; import {dirname} from "node:path";',
+      'const parent=await import(process.argv[1]); let request;',
+      'try { const now=Date.now(); request=parent.buildDetachedTestRunRequest({root:process.argv[2],',
+      'files:["unused-compiled-core-fixture.test.ts"],privatePg:false,',
+      'deadline:{startedAtMs:now,taskDeadlineAtMs:now+60000,childCutoffAtMs:now+50000,cleanupReserveMs:10000}});',
+      'const control=spawnSync(process.execPath,["--input-type=module","-e","await import("+JSON.stringify(process.argv[1])+");"],',
+      '{env:process.env,encoding:"utf8",timeout:10000});',
+      'const child=spawnSync(request.command,request.args,{cwd:request.cwd,env:{...process.env,...request.env},encoding:"utf8",timeout:40000});',
+      'console.log("COMPILED_OCCUPIED "+JSON.stringify({args:request.args,status:child.status,stdout:child.stdout,stderr:child.stderr,',
+      'error:child.error?.message,controlStatus:control.status,controlStderr:control.stderr,controlError:control.error?.message,',
+      'hostStillListening:globalThis.recoveryTestHost.listening}));',
+      '} finally {for(const row of request?.detachedReportArtifacts??[])rmSync(dirname(row.reportPath),{recursive:true,force:true});',
+      'globalThis.recoveryTestHost.close()}',
+    ].join('\n');
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', script, host, REPO_ROOT], {
+      cwd: REPO_ROOT, env: process.env, encoding: 'utf8', timeout: 55_000,
+    });
+    expect(child.status, child.stdout + child.stderr).toBe(0);
+    const line = child.stdout.split('\n').find(row => row.startsWith('COMPILED_OCCUPIED '));
+    expect(line, child.stdout + child.stderr).toBeTruthy();
+    const observed = JSON.parse(line!.slice('COMPILED_OCCUPIED '.length));
+    expect(observed).toMatchObject({ controlStatus: 1, hostStillListening: true, status: 1 });
+    expect(observed.error).toBeUndefined();
+    expect(observed.controlError).toBeUndefined();
+    expect(observed.controlStderr).toContain('EADDRINUSE');
+    expect(observed.stderr).not.toContain('EADDRINUSE');
+    expect(observed.args.slice(0, 2)).toEqual(['--input-type=module', '-e']);
+    const phases = observed.stderr.split('\n').map((row: string) => {
+      try { return JSON.parse(row); } catch { return null; }
+    }).filter((row: any) => row?.schemaVersion === 'testing-run-bootstrap-v1');
+    let previous = -1;
+    for (const phase of ['core-import-start', 'core-import-complete', 'core-witness-verified',
+      'core-execution-start', 'core-execution-complete']) {
+      const matches = phases.filter((row: any) => row.phase === phase);
+      expect(matches, 'missing/duplicate actual compiled bootstrap phase: ' + phase).toHaveLength(1);
+      const index = phases.indexOf(matches[0]);
+      expect(index, 'compiled bootstrap phase order changed').toBeGreaterThan(previous);
+      previous = index;
+    }
+    expect(phases.find((row: any) => row.phase === 'core-witness-verified')).toMatchObject({
+      coreMode: 'compiled', witnessSchemaVersion: 1, sourceSha256: binding.witness.sourceSha256,
+      artifactSha256: binding.witness.artifactSha256,
+    });
+    expect(phases.at(-1)).toMatchObject({ phase: 'core-execution-complete', ok: false });
   });
 
   it('creates missing gate metadata and records every copied and bundled worker input', () => {

@@ -26,6 +26,32 @@ describe('planItemProvenanceFromRow precedence', () => {
     ).toEqual({ planSlug: 'some-plan-2026-08-03', itemIds: ['P-007', 'P-008'], source: 'column' });
   });
 
+  it('resolves a coherent scheduled execution to its instance while retaining template grouping', () => {
+    expect(planItemProvenanceFromRow({
+      source_plan_slug: 'bug-triage', source_plan_item_ids: ['P-001'],
+      stamped_plan_slug: 'bug-triage@run-123', stamped_item_id: 'P-001',
+      run_instance_plan_slug: 'bug-triage@run-123', run_template_slug: 'bug-triage',
+    })).toEqual({ planSlug: 'bug-triage@run-123', itemIds: ['P-001'], source: 'stamp' });
+  });
+
+  it('does not override conflicting item columns even when the run names agree', () => {
+    expect(planItemProvenanceFromRow({
+      source_plan_slug: 'bug-triage', source_plan_item_ids: ['P-002'],
+      stamped_plan_slug: 'bug-triage@run-123', stamped_item_id: 'P-001',
+      run_instance_plan_slug: 'bug-triage@run-123', run_template_slug: 'bug-triage',
+    })).toEqual({ planSlug: 'bug-triage', itemIds: ['P-002'], source: 'column' });
+  });
+
+  it.each([
+    { run_instance_plan_slug: 'different-instance', run_template_slug: 'some-plan-2026-08-03' },
+    { run_instance_plan_slug: 'run-instance', run_template_slug: 'different-template' },
+    { run_instance_plan_slug: 'run-instance', run_template_slug: null },
+  ])('preserves ordinary column precedence for an incomplete or contradictory execution tuple (%j)', (run) => {
+    expect(planItemProvenanceFromRow({
+      ...STAMPED_ROW, source_plan_item_ids: ['P-007'], stamped_plan_slug: 'run-instance', ...run,
+    })).toEqual({ planSlug: STAMPED_ROW.source_plan_slug, itemIds: ['P-007'], source: 'column' });
+  });
+
   it('falls back to the payload.plan_item stamp — the case the live mint path produces', () => {
     expect(planItemProvenanceFromRow(STAMPED_ROW)).toEqual({
       planSlug: 'some-plan-2026-08-03',

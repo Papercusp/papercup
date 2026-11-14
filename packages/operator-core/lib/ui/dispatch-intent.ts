@@ -9,6 +9,21 @@ export interface UiIntentOutcome {
   error: string | null;
 }
 
+/** A terminal has no tab id. Select only an unambiguous native client in the
+ * active workspace; recency must never silently choose another desktop. */
+export async function uniqueNativeDesktopClient(): Promise<string> {
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ client_id: string }>>`
+    SELECT client_id FROM harness_shared.ui_clients
+    WHERE workspace_id = ${activeWorkspaceId()} AND viewport->>'nativeDesktop' = 'true'
+      AND last_seen_at > now() - interval '45 seconds'
+    ORDER BY last_seen_at DESC LIMIT 2
+  `;
+  if (rows.length === 0) throw new Error('desktop_unavailable: open this workspace in the Papercusp desktop app');
+  if (rows.length !== 1) throw new Error('desktop_ambiguous: choose an exact desktop client_id');
+  return rows[0]!.client_id;
+}
+
 export async function dispatchUiIntent(input: {
   clientId: string; intent: string; args: Record<string, unknown>;
   requestedBy: string; timeoutMs: number;

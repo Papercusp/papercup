@@ -26,8 +26,9 @@
  * (and why it was graduated from the dark-flag set as "verified live with zero blast
  * radius").
  *
- * PRECEDENCE: the legacy column first (so the 1 row that has it, and any future
- * back-fill, still wins), then the stamp.
+ * PRECEDENCE: a coherent execution tuple selects the run instance's stamp;
+ * otherwise the legacy column first, then the stamp. Run source columns group
+ * executions under their stable template and do not name their implementing plan.
  *
  * NOT read here, deliberately: the `coord_links` work→plan_item edge. It is the more
  * normalized representation, but every row carrying item-level provenance today also
@@ -44,6 +45,8 @@ interface ProvenanceRow {
   source_plan_item_ids: string[] | null;
   stamped_plan_slug: string | null;
   stamped_item_id: string | null;
+  run_instance_plan_slug?: string | null;
+  run_template_slug?: string | null;
 }
 
 export interface PlanItemProvenance {
@@ -75,7 +78,9 @@ export async function resolvePlanItemProvenance(
     SELECT source_plan_slug,
            source_plan_item_ids,
            payload -> 'plan_item' ->> 'plan_slug' AS stamped_plan_slug,
-           payload -> 'plan_item' ->> 'item_id'   AS stamped_item_id
+           payload -> 'plan_item' ->> 'item_id'   AS stamped_item_id,
+           payload -> 'plan_run' ->> 'instancePlanSlug' AS run_instance_plan_slug,
+           payload -> 'plan_run' ->> 'templateSlug' AS run_template_slug
       FROM harness_shared.harness_features_consolidated
      WHERE workspace_id = ${activeWorkspaceId()}
        AND harness_slug = ${harnessSlug}
@@ -95,12 +100,24 @@ export function planItemProvenanceFromRow(
     source_plan_item_ids?: string[] | null;
     stamped_plan_slug?: string | null;
     stamped_item_id?: string | null;
+    run_instance_plan_slug?: string | null;
+    run_template_slug?: string | null;
   } | null,
 ): PlanItemProvenance {
   if (!row) return NO_PLAN_ITEM_PROVENANCE;
 
-  const planSlug = row.source_plan_slug ?? row.stamped_plan_slug ?? null;
   const columnIds = (row.source_plan_item_ids ?? []).filter((id) => typeof id === 'string' && id.length > 0);
+  // A run's stable source column deliberately differs from its exact execution
+  // stamp. Require both sides of that declared tuple before preferring the stamp;
+  // a missing or contradictory run field cannot redirect ordinary provenance.
+  if (row.stamped_plan_slug && row.stamped_item_id && row.source_plan_slug &&
+      row.run_instance_plan_slug === row.stamped_plan_slug &&
+      row.run_template_slug === row.source_plan_slug &&
+      (columnIds.length === 0 || (columnIds.length === 1 && columnIds[0] === row.stamped_item_id))) {
+    return { planSlug: row.stamped_plan_slug, itemIds: [row.stamped_item_id], source: 'stamp' };
+  }
+
+  const planSlug = row.source_plan_slug ?? row.stamped_plan_slug ?? null;
   if (columnIds.length > 0) return { planSlug, itemIds: columnIds, source: 'column' };
 
   const stamped = row.stamped_item_id;

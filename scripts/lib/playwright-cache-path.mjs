@@ -10,3 +10,8 @@ export function browserCachePath(env = process.env) {
   if (configured === '0') return join(repoRoot, 'node_modules', 'playwright-core', '.local-browsers');
   return resolve(configured || join(env.HOME || process.cwd(), '.cache', 'ms-playwright'));
 }
+
+export function withPlaywrightBrowserCache(env = process.env) {
+  if (typeof env.PLAYWRIGHT_BROWSERS_PATH === 'string' && env.PLAYWRIGHT_BROWSERS_PATH.trim()) return env;
+  return { ...env, PLAYWRIGHT_BROWSERS_PATH: browserCachePath({ ...env, PLAYWRIGHT_BROWSERS_PATH: undefined }) };
+}

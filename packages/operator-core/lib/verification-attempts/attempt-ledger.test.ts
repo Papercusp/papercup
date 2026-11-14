@@ -7,6 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
+import { WORK_ITEM_VERIFICATION_PURPOSE } from '../task-manager/types';
 import {
   ATTEMPT_EVIDENCE_MAX_CHARS,
   SLOW_ATTEMPT_MIN_MS,
@@ -38,6 +39,7 @@ function closed(over: Partial<ClosedTaskForAttempt> = {}): ClosedTaskForAttempt 
   return {
     taskId: 'task-1',
     workItemId: 'WI-1',
+    detail: { verificationPurpose: WORK_ITEM_VERIFICATION_PURPOSE },
     state: 'exited',
     exitCode: 0,
     exitReason: null,
@@ -89,6 +91,12 @@ describe('recordAttemptOnClose', () => {
   it('records nothing for a row with no work item', async () => {
     const { sql, calls } = fakeSql();
     expect(await recordAttemptOnClose(closed({ workItemId: null }), { sql, now: () => NOW })).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('does not stamp a slow task without explicit verification purpose', async () => {
+    const { sql, calls } = fakeSql();
+    expect(await recordAttemptOnClose(closed({ detail: {} }), { sql, now: () => NOW })).toBeNull();
     expect(calls).toHaveLength(0);
   });
 

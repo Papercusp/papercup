@@ -39,6 +39,10 @@ function repository(): string {
 }
 
 describe('capability:git-evidence', () => {
+  it('allows a bounded historical read enough time to finish its Git subprocess chain', () => {
+    expect(gitEvidence.timeoutSec).toBe(120);
+  });
+
   it('is judge-only and its strict schema refuses argv, cwd, and scratchClone', () => {
     const schema = gitEvidence.args as { safeParse(value: unknown): { success: boolean } };
     const sha = 'a'.repeat(40);

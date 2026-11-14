@@ -6,18 +6,14 @@
  *  - eventKeyFamily: id-bearing segments collapse to `*`, static words survive.
  *  - summarizeTimeoutFires: groups by family, sorts desc by count then family,
  *    dedupes + caps raw keys.
- *  - recordTimeoutFires: edge-triggers exactly once at the crossing of the warn
- *    threshold (with __resetTimeoutFireTotals between cases).
  *  - the guidance strings say "re-orient" + "re-arm" (the whole point of P-004).
+ * Never-fires detection across sweeps moved to the durable waiting check; its
+ * tests live in ../../stuck-work/waiting-check.test.ts.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   eventKeyFamily,
   summarizeTimeoutFires,
-  recordTimeoutFires,
-  timeoutFireTotals,
-  __resetTimeoutFireTotals,
-  TIMEOUT_FIRE_WARN_THRESHOLD,
   TIMEOUT_WAKE_SUMMARY,
   TIMEOUT_WAKE_GUIDANCE,
   buildPredicateTimeoutFallback,
@@ -96,47 +92,6 @@ describe('summarizeTimeoutFires — group + rank per-sweep fires', () => {
 
   it('returns [] for an empty sweep', () => {
     expect(summarizeTimeoutFires([])).toEqual([]);
-  });
-});
-
-describe('recordTimeoutFires — edge-triggered dead-drop warning', () => {
-  beforeEach(() => __resetTimeoutFireTotals());
-
-  it('does NOT warn below the threshold, then fires exactly ONCE at the crossing', () => {
-    // 9 accumulated → no crossing yet
-    expect(recordTimeoutFires([{ family: 'lock:grant:*', count: 9, keys: [] }])).toEqual([]);
-    expect(timeoutFireTotals()['lock:grant:*']).toBe(9);
-
-    // +1 → total 10 == threshold → crosses NOW, reported once
-    const crossed = recordTimeoutFires([{ family: 'lock:grant:*', count: 1, keys: [] }]);
-    expect(crossed).toEqual([{ family: 'lock:grant:*', total: 10 }]);
-
-    // subsequent sweeps keep accumulating but never re-report the same family
-    expect(recordTimeoutFires([{ family: 'lock:grant:*', count: 5, keys: [] }])).toEqual([]);
-    expect(timeoutFireTotals()['lock:grant:*']).toBe(15);
-  });
-
-  it('crosses on a single sweep that jumps past the threshold', () => {
-    const crossed = recordTimeoutFires([{ family: 'x:y:*', count: TIMEOUT_FIRE_WARN_THRESHOLD + 3, keys: [] }]);
-    expect(crossed).toEqual([{ family: 'x:y:*', total: TIMEOUT_FIRE_WARN_THRESHOLD + 3 }]);
-  });
-
-  it('tracks families independently — only the one that crosses is reported', () => {
-    const crossed = recordTimeoutFires([
-      { family: 'hot:*', count: 10, keys: [] },
-      { family: 'cold:*', count: 2, keys: [] },
-    ]);
-    expect(crossed).toEqual([{ family: 'hot:*', total: 10 }]);
-    expect(timeoutFireTotals()['cold:*']).toBe(2);
-  });
-
-  it('__resetTimeoutFireTotals clears the lifetime counter', () => {
-    recordTimeoutFires([{ family: 'a:*', count: 20, keys: [] }]);
-    expect(timeoutFireTotals()['a:*']).toBe(20);
-    __resetTimeoutFireTotals();
-    expect(timeoutFireTotals()).toEqual({});
-    // after reset the family can cross again
-    expect(recordTimeoutFires([{ family: 'a:*', count: 10, keys: [] }])).toEqual([{ family: 'a:*', total: 10 }]);
   });
 });
 

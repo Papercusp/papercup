@@ -283,3 +283,150 @@ export async function measureWorkOverheadWindow(window: WorkOverheadWindow, sql?
     [window.workspaceId, window.harnessSlug, window.windowStart, window.windowEnd, WORK_OVERHEAD_MAX_ROWS + 1]);
   return summarizeWorkOverhead(window, rows);
 }
+
+/** D019 supplementary outcomes. These inputs are resolved from existing native
+ * delivery/trace receipts and independently asserted fixture results, never from
+ * rendered preparation or a candidate-generated oracle. This is a pure reader,
+ * not a collector, a population census, or a replacement for R15/R16. */
+export interface RecoveryOutcomeEpoch {
+  workspaceId: string;
+  fixtureId: string;
+  client: 'codex' | 'claude' | 'omp';
+  sourceDataFingerprint: string;
+  inputFingerprint: string;
+  oracleFingerprint: string;
+  windowTokens: number;
+  runtimeFingerprint: string;
+  nativeSessionId: string;
+  receiptRef: string;
+  phase: 'native-emitted' | 'rendered';
+  /** Complete injected packet, not just its fact section. */
+  packet: string;
+  tokens: { count: number; method: string } | null;
+  triggerAtMs: number;
+  firstCorrectActionAtMs: number | null;
+  traceComplete: boolean;
+  requiredReadRefs: readonly string[];
+  reads: readonly {
+    physicalOperationId: string;
+    layer: 'leaf' | 'wrapper';
+    disposition: 'required' | 'avoidable' | 'unknown';
+    /** Original adjudication or required-read oracle reference. */
+    evidenceRef: string;
+  }[];
+  /** Original independent checks apply the frozen body/action oracle and the
+   * existing carryDocBudgetChars limit. No new budget or pass bar is set here. */
+  checks: {
+    evidenceRef: string;
+    staleContextFailures: number | null;
+    missingContextFailures: number | null;
+    falseCompleteSections: number | null;
+    existingBudgetPreserved: boolean | null;
+  };
+}
+
+// canonicalJson rejects non-finite numbers. Preserve their identity in the input
+// digest so malformed telemetry can return UNKNOWN without crashing or collapsing
+// NaN/Infinity into JSON null. Tag every node to avoid sentinel/value collisions.
+function recoveryFingerprintValue(value: unknown): unknown {
+  if (typeof value === 'number') return ['number', Object.is(value, -0) ? '-0' : String(value)];
+  if (Array.isArray(value)) return ['array', value.map(recoveryFingerprintValue)];
+  if (value !== null && typeof value === 'object') {
+    return ['object', Object.fromEntries(Object.entries(value).map(([key, item]) => [key, recoveryFingerprintValue(item)]))];
+  }
+  return ['scalar', value];
+}
+
+export function summarizeRecoveryOutcomePair(baseline: RecoveryOutcomeEpoch, candidate: RecoveryOutcomeEpoch) {
+  const unknown = new Set<string>();
+  const failures = new Set<string>();
+  const nonblank = (v: string) => v.trim().length > 0;
+  const count = (n: number | null): n is number => n !== null && Number.isSafeInteger(n) && n >= 0;
+  const commonKeys = ['workspaceId', 'fixtureId', 'client', 'sourceDataFingerprint',
+    'inputFingerprint', 'oracleFingerprint', 'windowTokens'] as const;
+  for (const key of commonKeys) {
+    if (baseline[key] !== candidate[key]) unknown.add(`unpaired-${key}`);
+  }
+  const read = (epoch: RecoveryOutcomeEpoch, label: string) => {
+    for (const key of ['workspaceId', 'fixtureId', 'sourceDataFingerprint', 'inputFingerprint',
+      'oracleFingerprint', 'runtimeFingerprint', 'nativeSessionId', 'receiptRef'] as const) {
+      if (!nonblank(epoch[key])) unknown.add(`${label}:missing-${key}`);
+    }
+    if (!['codex', 'claude', 'omp'].includes(epoch.client) || !Number.isFinite(epoch.windowTokens)
+      || epoch.windowTokens <= 0) unknown.add(`${label}:invalid-client-or-window`);
+    if (epoch.phase !== 'native-emitted') unknown.add(`${label}:no-native-emission`);
+    if (!epoch.packet.length) unknown.add(`${label}:missing-injected-packet`);
+    if (!epoch.traceComplete) unknown.add(`${label}:incomplete-trace`);
+    const leaves = new Map<string, RecoveryOutcomeEpoch['reads'][number]>();
+    let readsQualified = true;
+    for (const operation of epoch.reads) {
+      if (operation.layer === 'wrapper') continue;
+      if (!nonblank(operation.physicalOperationId) || !nonblank(operation.evidenceRef)
+        || !['required', 'avoidable'].includes(operation.disposition)) {
+        unknown.add(`${label}:unqualified-leaf-read`);
+        readsQualified = false;
+        continue;
+      }
+      const prior = leaves.get(operation.physicalOperationId);
+      if (prior && (prior.disposition !== operation.disposition || prior.evidenceRef !== operation.evidenceRef)) {
+        unknown.add(`${label}:conflicting-leaf-read`);
+        readsQualified = false;
+        continue;
+      }
+      leaves.set(operation.physicalOperationId, operation);
+    }
+    for (const ref of epoch.requiredReadRefs) {
+      if (!nonblank(ref)) unknown.add(`${label}:invalid-required-read-oracle`);
+      else if (![...leaves.values()].some(op => op.disposition === 'required' && op.evidenceRef === ref)) {
+        (epoch.traceComplete && readsQualified ? failures : unknown).add(`${label}:missing-required-read:${ref}`);
+      }
+    }
+    if (!nonblank(epoch.checks.evidenceRef)) unknown.add(`${label}:missing-correctness-receipt`);
+    for (const key of ['staleContextFailures', 'missingContextFailures', 'falseCompleteSections'] as const) {
+      if (!count(epoch.checks[key])) unknown.add(`${label}:unknown-${key}`);
+      else if (epoch.checks[key]! > 0) failures.add(`${label}:${key}`);
+    }
+    if (epoch.checks.existingBudgetPreserved === null) unknown.add(`${label}:unknown-budget`);
+    else if (!epoch.checks.existingBudgetPreserved) failures.add(`${label}:budget-regression`);
+    const validTokens = epoch.tokens !== null && count(epoch.tokens.count) && nonblank(epoch.tokens.method);
+    if (!validTokens) unknown.add(`${label}:unknown-token-measurement`);
+    const validLatency = Number.isFinite(epoch.triggerAtMs) && epoch.firstCorrectActionAtMs !== null
+      && Number.isFinite(epoch.firstCorrectActionAtMs) && epoch.firstCorrectActionAtMs >= epoch.triggerAtMs;
+    if (!validLatency) unknown.add(`${label}:unknown-correct-action-boundary`);
+    return {
+      receiptRef: epoch.receiptRef, runtimeFingerprint: epoch.runtimeFingerprint,
+      nativeSessionId: epoch.nativeSessionId,
+      injectedChars: epoch.packet.length, injectedBytes: Buffer.byteLength(epoch.packet, 'utf8'),
+      tokens: validTokens ? epoch.tokens : null,
+      recoveryLeafReads: leaves.size,
+      avoidableRecoveryReads: [...leaves.values()].filter(op => op.disposition === 'avoidable').length,
+      requiredRecoveryReads: [...leaves.values()].filter(op => op.disposition === 'required').length,
+      firstCorrectActionMs: validLatency ? epoch.firstCorrectActionAtMs! - epoch.triggerAtMs : null,
+      checks: epoch.checks,
+    };
+  };
+  const before = read(baseline, 'baseline'), after = read(candidate, 'candidate');
+  if (baseline.receiptRef === candidate.receiptRef || baseline.nativeSessionId === candidate.nativeSessionId) {
+    unknown.add('reused-native-epoch');
+  }
+  if (canonicalJson([...new Set(baseline.requiredReadRefs)].sort())
+    !== canonicalJson([...new Set(candidate.requiredReadRefs)].sort())) unknown.add('unpaired-required-read-oracle');
+  if (before.tokens?.method !== after.tokens?.method) unknown.add('unpaired-token-method');
+  // An unpaired or incompletely attributed trace cannot establish a regression.
+  if (!unknown.size && after.avoidableRecoveryReads > before.avoidableRecoveryReads) failures.add('avoidable-read-regression');
+  return {
+    version: 1,
+    inputFingerprint: createHash('sha256').update(canonicalJson(recoveryFingerprintValue({ baseline, candidate }))).digest('hex'),
+    verdict: failures.size ? 'fail' as const : unknown.size ? 'unknown' as const : 'pass' as const,
+    baseline: before, candidate: after,
+    // Deltas are descriptive; never present unpaired/unknown observations as savings.
+    delta: unknown.size ? null : {
+      recoveryLeafReads: after.recoveryLeafReads - before.recoveryLeafReads,
+      avoidableRecoveryReads: after.avoidableRecoveryReads - before.avoidableRecoveryReads,
+      injectedBytes: after.injectedBytes - before.injectedBytes,
+      tokens: after.tokens!.count - before.tokens!.count,
+      firstCorrectActionMs: after.firstCorrectActionMs! - before.firstCorrectActionMs!,
+    },
+    unknownReasons: [...unknown], failures: [...failures],
+  };
+}

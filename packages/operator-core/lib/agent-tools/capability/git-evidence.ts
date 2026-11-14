@@ -618,7 +618,10 @@ export default defineTool({
   requirePrincipal: false,
   skipWorkspaceTx: true,
   agentRoles: ['judge'],
-  timeoutSec: 30,
+  // Historical reads run several sequential local Git commands and may decode a
+  // large pinned blob. Match capability:git's 120s budget so a valid read is not
+  // killed by the endpoint watchdog halfway through one of those commands.
+  timeoutSec: 120,
   args: gitEvidenceArgs,
   async handler(args, ctx) {
     const sandboxPolicy = await capabilityExecSandboxPolicy(ctx);

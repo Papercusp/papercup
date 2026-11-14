@@ -42,6 +42,7 @@ export async function startDesktopGridFixtureServer(
   fixture: string,
   aliases: Record<string, string> = {},
   optimizedDependencies: string[] = [],
+  proxy: Record<string, string> = {},
 ): Promise<DesktopGridFixtureServer> {
   const { createServer } = await import('vite');
   const server = await createServer({
@@ -79,7 +80,7 @@ export async function startDesktopGridFixtureServer(
     // continuously: a watched change sent a full-reload mid-test (trace 2026-10-06:
     // the page re-navigated to / 20s after load, detaching the tile under a click),
     // and chokidar crawling the monorepo spends this job's CPU on a loaded box.
-    server: { host: '127.0.0.1', port: 0, strictPort: false, hmr: false, watch: null },
+    server: { host: '127.0.0.1', port: 0, strictPort: false, hmr: false, watch: null, proxy },
   });
   await server.listen();
   return { server, origin: server.resolvedUrls!.local[0]!.replace(/\/$/, '') };

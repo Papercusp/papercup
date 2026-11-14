@@ -16,6 +16,7 @@ import {
   ISSUE_Q_SEARCH_INDEXES,
   TEST_RUNS_SEARCH_INDEXES,
   CODE_FAMILIARITY_INDEXES,
+  RECIPE_OUTCOME_REPORT_INDEXES,
   NATIVE_DISPATCH_FINGERPRINT_INDEXES,
   SESSION_TURN_PARTS_TABLE,
   SESSION_TURN_TRGM_EXPR,
@@ -236,6 +237,11 @@ describe('migration 1273 — replay safety + the index/EXPLAIN probe (SPEC-P002-
       "CREATE INDEX CONCURRENTLY IF NOT EXISTS session_turn_parts_owner_workspace_tool_result_idx " +
       "ON harness_shared.session_turn_parts (owner, workspace_id) WHERE part_kind = 'tool_result'",
     );
+    expect(createIndexConcurrentlySql(RECIPE_OUTCOME_REPORT_INDEXES[0])).toBe(
+      "CREATE INDEX CONCURRENTLY IF NOT EXISTS tool_invocations_recipe_receipt_window_idx " +
+      "ON harness_shared.tool_invocations (workspace_id, invoked_at, ((metadata_json->'otel'->>'callId'))) " +
+      "WHERE lower(replace(replace(tool_name, ':', ''), '_', '')) IN ('coderun', 'recipesrun')",
+    );
   });
 });
 
@@ -387,6 +393,7 @@ describe('runSessionSearchIndexBuildOnce', () => {
       ...ISSUE_Q_SEARCH_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
       ...TEST_RUNS_SEARCH_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
       ...CODE_FAMILIARITY_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
+      ...RECIPE_OUTCOME_REPORT_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
       ...NATIVE_DISPATCH_FINGERPRINT_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
       [VOCAB_TRGM, 'built'],
     ]);
@@ -401,6 +408,7 @@ describe('runSessionSearchIndexBuildOnce', () => {
       ...ISSUE_Q_SEARCH_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
       ...TEST_RUNS_SEARCH_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
       ...CODE_FAMILIARITY_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
+      ...RECIPE_OUTCOME_REPORT_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
       ...NATIVE_DISPATCH_FINGERPRINT_INDEXES.map((i) => [i.name, 'deferred-table-missing']),
       [VOCAB_TRGM, 'present'],
     ]);
@@ -429,16 +437,33 @@ describe('runSessionSearchIndexBuildOnce', () => {
       tool_name text NOT NULL,
       coord_owner_id text,
       status text NOT NULL,
+      invoked_at timestamptz NOT NULL DEFAULT now(),
       metadata_json jsonb
     )`);
     const { name } = CODE_FAMILIARITY_INDEXES[0];
+    const receiptIndexName = RECIPE_OUTCOME_REPORT_INDEXES[0].name;
     try {
       const first = await runSessionSearchIndexBuildOnce(sql, OPTS);
       expect(first.indexes.find((i) => i.name === name)?.action).toBe('built');
+      expect(first.indexes.find((i) => i.name === receiptIndexName)?.action).toBe('built');
       expect(await indexValid(name)).toBe(true);
+      expect(await indexValid(receiptIndexName)).toBe(true);
+
+      const [receiptDefinition] = await sql<Array<{ definition: string; predicate: string }>>`
+        SELECT pg_get_indexdef(i.indexrelid) AS definition,
+               pg_get_expr(i.indpred, i.indrelid) AS predicate
+          FROM pg_index i
+          JOIN pg_class c ON c.oid = i.indexrelid
+         WHERE c.relname = ${receiptIndexName}`;
+      expect(receiptDefinition.definition).toContain('(workspace_id, invoked_at, ');
+      expect(receiptDefinition.definition).toContain("->> 'callId'::text");
+      expect(receiptDefinition.predicate).toContain('lower(replace(replace(tool_name');
+      expect(receiptDefinition.predicate).toContain("'coderun'");
+      expect(receiptDefinition.predicate).toContain("'recipesrun'");
 
       const second = await runSessionSearchIndexBuildOnce(sql, OPTS);
       expect(second.indexes.find((i) => i.name === name)?.action).toBe('present');
+      expect(second.indexes.find((i) => i.name === receiptIndexName)?.action).toBe('present');
 
       await sql.unsafe(
         `UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'harness_shared.${name}'::regclass`,
@@ -460,6 +485,7 @@ describe('runSessionSearchIndexBuildOnce', () => {
       tool_name text NOT NULL,
       coord_owner_id text,
       status text NOT NULL,
+      invoked_at timestamptz NOT NULL DEFAULT now(),
       metadata_json jsonb
     )`);
     try {

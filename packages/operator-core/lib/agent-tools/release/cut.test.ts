@@ -751,6 +751,23 @@ describe('release:cut — constrained root selector', () => {
     });
     expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/root_not_isolated/) });
   });
+
+  it('rejects generated staging candidate checkouts as implicit cut roots', async () => {
+    const generatedRoot = '/workspace/papercusp-staging.generations/.candidate-a5240523111a.JfZ9lh/checkout';
+    expect(isAutoManagedCutWorktree(generatedRoot)).toBe(true);
+
+    const priorRoot = process.env.PAPERCUSP_DESKTOP_ROOT;
+    process.env.PAPERCUSP_DESKTOP_ROOT = `${generatedRoot}/papercusp-desktop`;
+    try {
+      await expect(resolveCutRoot(undefined)).resolves.toMatchObject({
+        ok: false,
+        reason: expect.stringMatching(/root_not_isolated/),
+      });
+    } finally {
+      if (priorRoot === undefined) delete process.env.PAPERCUSP_DESKTOP_ROOT;
+      else process.env.PAPERCUSP_DESKTOP_ROOT = priorRoot;
+    }
+  });
 });
 
 describe('release:cut — explicit registered root routing', () => {

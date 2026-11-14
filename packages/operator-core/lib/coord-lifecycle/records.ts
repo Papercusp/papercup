@@ -768,6 +768,8 @@ export const CompletionVerificationEvidenceSchema = z.object({
   }),
   /** P-021 / D-014: requirement-by-requirement disposition against the originating ask. */
   requirementDisposition: RequirementDispositionSchema.optional(),
+  /** Exact canonical assessment proof; a report or caller coverage cannot replace it. */
+  assessmentScorecardId: z.string().trim().min(1).max(200).optional(),
   /**
    * EI-19319623239777505: the caller's free-text `completion.summary`, carried alongside
    * the structured fields it sits next to. Before this field existed, `summary` was NEVER

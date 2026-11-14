@@ -77,10 +77,12 @@ describe('stalled-feature collector (SQL half)', () => {
     // test created it — create the minimal table the carve-out reads).
     await db.adminSql.unsafe(`
       CREATE SCHEMA IF NOT EXISTS dbos;
-      CREATE TABLE IF NOT EXISTS dbos.workflow_status (workflow_uuid text PRIMARY KEY, status text NOT NULL)`);
+      CREATE TABLE IF NOT EXISTS dbos.workflow_status (
+        workflow_uuid text PRIMARY KEY, name text NOT NULL, status text NOT NULL, inputs text
+      )`);
     await db.adminSql`
-      INSERT INTO dbos.workflow_status (workflow_uuid, status)
-      VALUES ('pipeline:inv-a:F-OWNED:e0', 'PENDING')`;
+      INSERT INTO dbos.workflow_status (workflow_uuid, name, status)
+      VALUES ('pipeline:inv-a:F-OWNED:e0', 'pipeline', 'PENDING')`;
 
     const signals = await collectStalledFeatureSignals(db.adminSql as never, WS, { stalledFeatureHours: 12 });
     expect(signals).toHaveLength(1);

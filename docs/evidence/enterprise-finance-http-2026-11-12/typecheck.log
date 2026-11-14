@@ -1,0 +1,31 @@
+LINT_TSC_RUN_STAMP label=operator at=2026-11-12T20:54:12.820Z head=794e082c83 scope=files files=3
+  checked files : apps/operator/e2e/_desktop-grid-fixture-server.ts
+                 apps/operator/e2e/__fixtures__/enterprise-finance-http.tsx
+                 apps/operator/e2e/enterprise-finance-http.spec.ts
+LINT_TSC_CROSS_LEG checked=0 clean=- red=- undetermined=- uncheckable=lint:tsc:papercusp-libs,lint:tsc:workspaces notMember=lint:tsc,lint:tsc:operator-vite,lint:tsc:orchestrator,lint:tsc:scripts
+ⓘ cross-leg: lint:tsc compiles none of the named files; nothing was checked there (it cannot red on them).
+ⓘ cross-leg: lint:tsc:operator-vite compiles none of the named files; nothing was checked there (it cannot red on them).
+ⓘ cross-leg: lint:tsc:orchestrator compiles none of the named files; nothing was checked there (it cannot red on them).
+ⓘ cross-leg: lint:tsc:scripts compiles none of the named files; nothing was checked there (it cannot red on them).
+gen:declarations: no enrolled modules explicitly selected; no declarations published
+TSC_SERVICE state=accepted requestId=5d0e923d-ea33-4355-98e0-902bf538a9da resultOrigin=pending
+TSC_SERVICE state=accepted requestId=5d0e923d-ea33-4355-98e0-902bf538a9da serverPhase=queued elapsedMs=0 resultOrigin=pending
+TSC_SERVICE state=accepted requestId=5d0e923d-ea33-4355-98e0-902bf538a9da serverPhase=refresh elapsedMs=0 resultOrigin=pending
+TSC_SERVICE state=accepted requestId=5d0e923d-ea33-4355-98e0-902bf538a9da serverPhase=compiler-initialize elapsedMs=1438 resultOrigin=pending
+TSC_SERVICE state=accepted requestId=5d0e923d-ea33-4355-98e0-902bf538a9da serverPhase=compiler-initialized elapsedMs=1464 resultOrigin=pending
+TSC_SERVICE state=accepted requestId=5d0e923d-ea33-4355-98e0-902bf538a9da serverPhase=snapshot-update elapsedMs=1464 resultOrigin=pending
+TSC_SERVICE state=accepted requestId=5d0e923d-ea33-4355-98e0-902bf538a9da serverPhase=snapshot-rpc-completed elapsedMs=4199 resultOrigin=pending
+TSC_SERVICE state=accepted requestId=5d0e923d-ea33-4355-98e0-902bf538a9da serverPhase=snapshot-updated elapsedMs=4265 resultOrigin=pending
+TSC_SERVICE state=accepted requestId=5d0e923d-ea33-4355-98e0-902bf538a9da serverPhase=project-roots-refresh elapsedMs=4265 resultOrigin=pending
+TSC_SERVICE state=accepted requestId=5d0e923d-ea33-4355-98e0-902bf538a9da serverPhase=project-roots-refreshed elapsedMs=4370 resultOrigin=pending
+TSC_SERVICE state=accepted requestId=5d0e923d-ea33-4355-98e0-902bf538a9da serverPhase=refreshed elapsedMs=4370 resultOrigin=pending
+TSC_SERVICE state=accepted requestId=5d0e923d-ea33-4355-98e0-902bf538a9da serverPhase=program-files elapsedMs=4370 resultOrigin=pending
+TSC_SERVICE state=accepted requestId=5d0e923d-ea33-4355-98e0-902bf538a9da serverPhase=scope elapsedMs=4424 resultOrigin=pending
+TSC_SERVICE state=accepted requestId=5d0e923d-ea33-4355-98e0-902bf538a9da resultOrigin=pending
+TSC_SERVICE state=accepted requestId=5d0e923d-ea33-4355-98e0-902bf538a9da resultOrigin=pending
+TSC_SERVICE state=accepted requestId=5d0e923d-ea33-4355-98e0-902bf538a9da resultOrigin=pending
+TSC_SERVICE used=1 checked=9 named=3 typeReferencing=0 importers=6 errors=0 queuedMs=0 refreshMs=4370 checkMs=3956 snapshotAgeMs=3956
+   (shared typecheck service: judged your files and resolved importers, including barrels — not the whole project. Unrelated files are judged by the bare run; PAPERCUSP_TSC_SERVICE=0 forces the full compile.)
+TSC operator: 0 type errors across 0 file(s) (baseline total 0) [--files]
+✓ Every operator file is at or under its type-error baseline.
+LINT_TSC_RESULT label=operator scope=files exit=0 status=clean at=2026-11-12T20:54:12.820Z head=794e082c83

@@ -1,0 +1,8 @@
+---
+rel_path: "portability/census/session-87-p053-session-tests-39b5c3bbe5e30c29.json"
+updated_at: 1794214804092
+_body: "content"
+---
+
+{"ok":true,"runId":"7e1d92b4-2b08-4fad-80f7-b0b8c9a8d009","root":"/home/marsh-office/papercupai-workspace/papercusp","passed":87,"failed":0,"skipped":0,"files":2,"failures":[],"failuresTruncated":false,"durationMs":20160.83,"byFile":{"packages/operator-core/lib/backup/state-census-cli.test.ts":{"passed":12,"failed":0,"skipped":0,"collectionFailed":false,"runId":23715481,"ledgerDurationMs":7687},"packages/operator-core/lib/backup/state-census-producers.test.ts":{"passed":75,"failed":0,"skipped":0,"collectionFailed":false,"runId":23715480,"ledgerDurationMs":3013}},"artifacts":{"directory":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-HCAdyE","manifest":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-HCAdyE/manifest.json","phases":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-HCAdyE/phases.jsonl","reports":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-HCAdyE/reports","ownedDatabases":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-HCAdyE/owned-databases","runtimeInputs":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-HCAdyE/executed-inputs","nativeProof":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-HCAdyE/native-proof"},"cleanup":{"complete":true,"databases":[],"errors":[]},"testRunIds":[23715480,23715481],"rootSource":"requested","runnerDurationMs":8049,"phaseTimingsMs":{"preflightMs":124.26,"provenanceMs":34.97,"preparationMs":42.92,"admissionWaitMs":254.98,"routerExecutionMs":18800.12,"ledgerIdReadbackMs":7.08,"finalizationMs":0.28,"totalHandlerMs":20160.83}}
+

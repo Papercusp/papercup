@@ -127,20 +127,38 @@ export interface RecipeRunEvidence {
  * Callers supply a scoped recipe_run_source CTE. Identity is dispatcher-issued;
  * legacy rows remain separate, exact copies count once, conflicts stay unknown. */
 export const RECIPE_RUN_RECEIPTS_CTE = `observed AS (
-  SELECT *, execution_trace->'usage' AS usage, execution_trace->'runEvidence' AS evidence,
+  SELECT id, recipe_id, workspace_id,
     CASE WHEN execution_trace->'runEvidence'->>'version' = '1'
       AND execution_trace->'runEvidence'->>'invocationId' ~ '^[A-Za-z0-9_.:-]{1,200}$'
       AND execution_trace->'runEvidence'->>'attempt' ~ '^[0-9]{1,15}$'
       THEN 'dispatch:' || (execution_trace->'runEvidence'->>'invocationId') || ':' || (execution_trace->'runEvidence'->>'attempt')
       ELSE 'row:' || id::text END AS receipt_key
     FROM recipe_run_source
-), copies AS (
-  SELECT MIN(id) AS first_id, COUNT(*) AS source_rows,
-    COUNT(DISTINCT jsonb_build_array(execution_trace, success, reused, agent_owner, agent_role)) AS variants
-    FROM observed GROUP BY recipe_id, workspace_id, receipt_key
+), copies AS MATERIALIZED (
+  SELECT recipe_id, workspace_id, receipt_key, MIN(id) AS first_id, COUNT(*) AS source_rows
+  FROM observed GROUP BY recipe_id, workspace_id, receipt_key
+), duplicate_variants AS MATERIALIZED (
+  SELECT g.recipe_id, g.workspace_id, g.receipt_key,
+    COUNT(DISTINCT jsonb_build_array(
+      source.execution_trace, source.success, source.reused, source.agent_owner, source.agent_role
+    )) AS variants
+  FROM copies g
+  JOIN observed o ON o.recipe_id IS NOT DISTINCT FROM g.recipe_id
+    AND o.workspace_id IS NOT DISTINCT FROM g.workspace_id AND o.receipt_key = g.receipt_key
+  JOIN recipe_run_source source ON source.id = o.id
+  WHERE g.source_rows > 1
+  GROUP BY g.recipe_id, g.workspace_id, g.receipt_key
 ), receipts AS (
-  SELECT observed.*, copies.source_rows, copies.variants FROM observed
-    JOIN copies ON observed.id = copies.first_id
+  SELECT source.*, copies.receipt_key,
+    source.execution_trace->'usage' AS usage,
+    source.execution_trace->'runEvidence' AS evidence,
+    copies.source_rows,
+    COALESCE(duplicate_variants.variants, CASE WHEN copies.source_rows = 1 THEN 1 ELSE 0 END) AS variants
+  FROM copies
+  JOIN recipe_run_source source ON source.id = copies.first_id
+  LEFT JOIN duplicate_variants ON duplicate_variants.recipe_id IS NOT DISTINCT FROM copies.recipe_id
+    AND duplicate_variants.workspace_id IS NOT DISTINCT FROM copies.workspace_id
+    AND duplicate_variants.receipt_key = copies.receipt_key
 ), classified AS (
   SELECT *, COALESCE(
     variants = 1 AND usage->>'version' = '1'

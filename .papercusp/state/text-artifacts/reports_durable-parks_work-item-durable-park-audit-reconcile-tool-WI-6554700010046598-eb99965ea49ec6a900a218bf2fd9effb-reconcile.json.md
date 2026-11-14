@@ -1,0 +1,31 @@
+---
+rel_path: "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010046598-eb99965ea49ec6a900a218bf2fd9effb-reconcile.json"
+updated_at: 1794174692401
+_body: "content"
+---
+
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010046598:eb99965ea49ec6a900a218bf2fd9effb",
+  "inputSha256": "eb99965ea49ec6a900a218bf2fd9effba9bab0f2b2e0e6a40d3da369a36643fa",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-08T21:51:32.400Z",
+  "actor": "su-7aba266e-c036-4a0a-bcc3-d0f03be40b5f",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010046598",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "f0418185c81956f20359f572924b84042e7bba17a4855b22028356ebe8be6761",
+      "observedParkFingerprint": "f0418185c81956f20359f572924b84042e7bba17a4855b22028356ebe8be6761",
+      "reasonCode": "operator-directed",
+      "evidence": "Owner directive2766, verified owner-typed session_turn:codex:01a1bd06-e165-7781-88d6-d9bd0fd49bf5:15 and orders:get2766: 'can you unblock them?' referring to the two recorded source-publication/drill-verification tasks. Supported by coord-send-4b0902cebb64a7b634005a1bdfce6a3fe48ff3fb97b5864a6832959c2938f838 and coord-send-5448110078423e3b627dd6bb30a232dfbe014fae292e725ed3233adfbabde319 pickup. Scope: existing proposal rpt_4e28d3ac-9b91-4f1c-a626-55fe20ce3f34 exactly five nodes6598/6599/6610/6611/6612 only, to resume existing metadata repair plan32 (8f1f9e83c9d804dc3bcbb842d3c777ac8043aa45eaf386960bb51bf874722371). Audited early exception; does NOT assert general P008 completion. Preserve unrelated migration holds, task dependencies, producer6592 verification, child publication boundaries, sole live gate ownership and original native/deployed/independent shipment acceptance. Same SELF/AUTO session; no replacement nodes or new implementer.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010046598-eb99965ea49ec6a900a218bf2fd9effb-reconcile.json"
+}

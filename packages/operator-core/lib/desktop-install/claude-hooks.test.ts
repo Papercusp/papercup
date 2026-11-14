@@ -271,10 +271,14 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/stop-turn-journal.sh`,
       `${DEST}/artifact-url-delivery-guard.mjs`,
       `${DEST}/stop-owner-directive-check.mjs`,
+      `${DEST}/stop-toolless-mcp-hint.mjs`,
       `${DEST}/ask-gate-mirror.sh`,
     ]);
     // Matcher-less: the check is about the turn ending, not about any tool.
     expect(hookMatcherOf(cfg, 'Stop', 'stop-owner-directive-check.mjs')).toBeUndefined();
+    // WI-6554700010048155: matcher-less too — the toolless miss it reads never fires a
+    // per-tool event (Claude refuses an unknown tool before dispatch).
+    expect(hookMatcherOf(cfg, 'Stop', 'stop-toolless-mcp-hint.mjs')).toBeUndefined();
     // StopFailure (client-native-features-adoption-2026-10-21 P-002, R-2): a turn that
     // dies on an API error fires StopFailure INSTEAD of Stop, so it needs its own entry.
     // Matcher-less: Claude matches StopFailure on the error kind, and every kind counts.

@@ -35,6 +35,8 @@ interface FeatureProvenanceRow {
   /** The live item-level link — see plan-item-provenance (EI-19435123521651527). */
   stamped_plan_slug: string | null;
   stamped_item_id: string | null;
+  run_instance_plan_slug?: string | null;
+  run_template_slug?: string | null;
   title: string;
 }
 
@@ -49,6 +51,8 @@ async function queryProvenance(
              source_plan_item_ids,
              payload -> 'plan_item' ->> 'plan_slug' AS stamped_plan_slug,
              payload -> 'plan_item' ->> 'item_id'   AS stamped_item_id,
+             payload -> 'plan_run' ->> 'instancePlanSlug' AS run_instance_plan_slug,
+             payload -> 'plan_run' ->> 'templateSlug' AS run_template_slug,
              title
         FROM harness_shared.harness_features_consolidated
        WHERE workspace_id = ${activeWorkspaceId()}

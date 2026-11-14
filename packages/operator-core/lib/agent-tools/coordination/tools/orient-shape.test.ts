@@ -1034,6 +1034,7 @@ describe('EI-20213176698128052: `recovery` is ladder-aware (the last uncapped pa
     expect(t.keptChars).toBe(kept);
     expect(t.withheldChars).toBe(20_000 - kept);
     expect(t.more).toContain('work_items:get');
+    expect(t.more).toContain('resume: true');
 
     // FALSIFIABLE CONTROL — the naive re-derivation this test exists to forbid. If
     // recapDisclosed ever recomputes the total from the excerpt it receives,

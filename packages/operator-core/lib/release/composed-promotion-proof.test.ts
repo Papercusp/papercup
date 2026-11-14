@@ -10,6 +10,9 @@
  * R-16 cases run the real TypeScript compiler (`emitIdentity`), not a stub.
  */
 import { describe, it, expect } from 'vitest';
+import { createHash } from 'node:crypto';
+import { PROOF_CONTEXT_COMPONENTS, captureConfigurationSnapshot, createProofContextIdentity,
+  type ProofContextIdentity, type ProofContextReach } from '@papercusp/test-config/configuration-snapshot';
 import {
   composeVerdict,
   emitIdentity,
@@ -32,8 +35,12 @@ const RUNTIME_AFTER = 'export function sum(a: number, b: number): number {\n  re
 const tsLeg = { id: 'lint:tsc', passed: false, covers: (p: string) => p.endsWith('.ts') };
 const eslintLeg = { id: 'lint:eslint', passed: true, covers: (p: string) => p.startsWith('packages/ui/') };
 const mdLeg = { id: 'lint:docs', passed: true, covers: (p: string) => p.endsWith('.md') };
+const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+const context = () => createProofContextIdentity(Object.fromEntries(PROOF_CONTEXT_COMPONENTS.map(key => [key, hash(key)])) as
+  ProofContextIdentity['components'])!;
 
 const base = (changedFiles: ChangedFile[], over: Partial<ComposedProofInput> = {}): ComposedProofInput => ({
+  proofContext: { before: context(), after: context() },
   round1Tests: { [SRC_TEST]: 'pass', [OTHER_TEST]: 'pass', [FAR_TEST]: 'fail' },
   lintLegs: [tsLeg, eslintLeg, mdLeg],
   admissions: [{ id: 'adm-1', changedFiles }],
@@ -65,6 +72,38 @@ describe('emitIdentity (real TypeScript transpile)', () => {
 });
 
 describe('planComposedProof', () => {
+  it('requires complete context even with zero source changes and a computable radius', () => {
+    for (const proofContext of [undefined, null, { before: context(), after: null },
+      { before: context(), after: createProofContextIdentity({ ...context().components, fixtures: null }) }]) {
+      expect(planComposedProof(base([], { proofContext }))).toMatchObject({ mode: 'full-gate' });
+    }
+  });
+
+  it.each(PROOF_CONTEXT_COMPONENTS)('requalifies only complete measured reach for changed %s at fixed source', component => {
+    const before = context(), after = createProofContextIdentity({ ...before.components, [component]: hash('changed input') })!;
+    const row: ProofContextReach = { schemaVersion: 'reach-v1', component,
+      before: before.components[component]!, after: after.components[component]!,
+      provenance: { version: 'selected-consumers-v1', before: hash('old graph'), after: hash('new graph'), complete: true },
+      tests: [SRC_TEST], legs: ['lint:eslint'] };
+    const plan = composed(planComposedProof(base([], { proofContext: { before, after, reach: [row] } })));
+    expect(plan.rerunTests).toEqual([SRC_TEST]);
+    expect(plan.carriedTests).toEqual([FAR_TEST, OTHER_TEST]);
+    expect(plan.rerunLegs).toEqual(['lint:eslint', 'lint:tsc']);
+    expect(plan.carriedLegs).toEqual(['lint:docs']);
+    for (const reach of [undefined, [], [{ ...row, provenance: { ...row.provenance, complete: false } }]]) {
+      expect(planComposedProof(base([], { proofContext: { before, after, reach } }))).toMatchObject({ mode: 'full-gate' });
+    }
+  });
+
+  it('observes actual configuration snapshots changing at a fixed source and preserves equivalent captures', () => {
+    const config = (value: string) => captureConfigurationSnapshot({ PAPERCUSP_FLAG_CONTEXT_TEST: value });
+    const before = createProofContextIdentity({ ...context().components, testConfiguration: hash(config('1').fingerprint) })!;
+    const equivalent = createProofContextIdentity({ ...context().components, testConfiguration: hash(config('1').fingerprint) })!;
+    expect(composed(planComposedProof(base([], { proofContext: { before, after: equivalent } }))).rerunTests).toEqual([]);
+    const changed = createProofContextIdentity({ ...context().components, testConfiguration: hash(config('0').fingerprint) })!;
+    expect(planComposedProof(base([], { proofContext: { before, after: changed } }))).toMatchObject({ mode: 'full-gate' });
+  });
+
   it('R-16 f1: a type-only lint fix selects zero runtime tests', () => {
     const plan = composed(planComposedProof(base([{ path: SRC, before: BEFORE, after: TYPE_ONLY_AFTER }])));
     expect(plan.rerunTests).toEqual([]);

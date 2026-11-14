@@ -544,6 +544,7 @@ export async function closeTask(
       {
         taskId: closed.task_id,
         workItemId,
+        detail: existing?.detail ?? {},
         state: classified.state,
         exitCode: classified.exitCode ?? null,
         exitReason: classified.exitReason ?? null,

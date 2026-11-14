@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010047637:00f7e0260787c1983bfb5fc2e35204e0",
+  "inputSha256": "00f7e0260787c1983bfb5fc2e35204e055103371208506a309b267ae3110a6c0",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-13T00:24:34.534Z",
+  "actor": "su-e7ab4b54-2e4c-4c67-8a3f-b8769f93a041",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010047637",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "108a5fd16be42b61eda4370402e3e2ac8e23d3283c8d12e69e2c03ad3ee77fe5",
+      "observedParkFingerprint": "108a5fd16be42b61eda4370402e3e2ac8e23d3283c8d12e69e2c03ad3ee77fe5",
+      "reasonCode": "operator-directed",
+      "evidence": "Canonical graph one-work-graph-structured-holds-2026-10-26#D-011/#D-066/#D-067 (D067 full readback v131 includes exact3390 authored chars). Own temporary P008/WI30915 no-code custody. ONLY original Workbench quick-access-search-launcher-2026-10-26 P007/WI-6554700010047637 macOS: current v96/hash76db148020a202ffd9bbd40134cb7dfea63514a89c300075885419f5a7281521/specSet4008dc17421fd0af05d6e04e9bc34b723edae10f686d48b0eba5880972b8adcf; full PREP-MACOS@2 accepted164251ad4804825984d8681d9b4c718cb5da6f96e44bd35aebf7655ecb28d78e, complete A1225033/B1225045/closure1225048 and both closed_answered. Stages contract/audit/critique/admission pass; taskTODO/deps[]/unresolved[]/needsHumanfalse; fresh exact original OPEN/unassigned/migration-only park/heldOpenBynull independently read. Operator-directed bounded administrative adoption only. Originalc860 D066 refused attempt stays stopped; c860 retains canonical start/actualREADY/scopedfleet/source/acceptance. GeneralSOURCEBENCH/D025off and all unrelated holds preserved.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010047637-00f7e0260787c1983bfb5fc2e35204e0-reconcile.json"
+}

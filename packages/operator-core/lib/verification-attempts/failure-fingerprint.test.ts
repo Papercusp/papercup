@@ -197,6 +197,21 @@ describe('failureFingerprint never fingerprints passing test lines', () => {
     expect(result.label).toContain('upload refused');
   });
 
+  it('keeps the actual failure when skipped-test notices follow it', () => {
+    const actualFailure = "TypeError: Cannot read properties of undefined (reading 'map')";
+    const skipped = [
+      'TEST_FILE_SKIPPED name="unrun assertion sibling" file="spec.test.ts" — COLLECTED, NOT RUN: this assertion produced no evidence in this run',
+      'TEST_FILE_SKIPPED name="another unrun assertion" file="spec.test.ts" — COLLECTED, NOT RUN: this assertion produced no evidence in this run',
+    ].join('\n');
+    const result = failureFingerprint({ exitCode: 1, exitReason: 'exited', logTail: `${actualFailure}\n${skipped}` });
+    expect(result.source).toBe('log');
+    expect(result.label).toContain(actualFailure);
+    expect(result.label).not.toContain('TEST_FILE_SKIPPED');
+
+    const skippedOnly = failureFingerprint({ exitCode: 1, exitReason: 'exited', logTail: skipped });
+    expect(skippedOnly.source).toBe('exit');
+  });
+
   it('distinguishes test failures followed by the same successful typecheck footer', () => {
     const footer = '✓ Every operator-core file is at or under its type-error baseline.\n' +
       'LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean';

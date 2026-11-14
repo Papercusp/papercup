@@ -305,10 +305,12 @@ describe('events:catalog — live_awaiters', () => {
   });
 
   it('finds the scorecard grading-audit family through a free-text query', async () => {
-    const out = await call({ q: 'scorecard', announced: false, installed: false, liveAwaiters: false });
+    for (const q of ['scorecard', 'grading']) {
+      const out = await call({ q, announced: false, installed: false, liveAwaiters: false });
 
-    expect(out.families.map((family: { family: string }) => family.family)).toContain('scorecard-grading-audit');
-    expect(out.query_miss).toBeUndefined();
+      expect(out.families.map((family: { family: string }) => family.family)).toContain('scorecard-grading-audit');
+      expect(out.query_miss).toBeUndefined();
+    }
   });
 
   it('accepts pattern as a compatibility alias for q', async () => {

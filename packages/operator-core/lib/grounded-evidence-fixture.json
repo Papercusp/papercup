@@ -1,0 +1,1101 @@
+{
+  "applicabilityRule": "Required cases are the union for all changed symbol families in the existing automatic edit/consumer attribution. A change outside these listed families maps conservatively to N1-N8 until an independently reviewed edition assigns it; neither passing results nor author discretion may subtract a case. Existing active BAR tests remain additional requirements.",
+  "budgets": {
+    "CcaseRunsPerArm": 18,
+    "Ccases": 6,
+    "JiterationsPerArm": 3,
+    "Jjourneys": 3,
+    "member": {
+      "maxChars": 50000,
+      "maxRecords": 48,
+      "maxTextChars": 700
+    },
+    "newMandatoryAgentFields": 0,
+    "newMandatoryNarrativeSurfaces": 0,
+    "orphan": {
+      "maxChars": 12000,
+      "maxRecords": 24,
+      "maxTextChars": 700
+    },
+    "pairedMedianRatioMaximum": 1.1,
+    "planGoal": {
+      "maxChars": 6000,
+      "maxDescendants": 24,
+      "maxRecords": 16,
+      "maxTextChars": 400,
+      "timeoutMs": 2500
+    },
+    "readOrResumeDeadlineMs": 30000,
+    "resumesPerCase": 3
+  },
+  "cases": [
+    {
+      "expected": {
+        "authority": "current",
+        "visibleTarget": "item"
+      },
+      "id": "A1",
+      "input": {
+        "harness": "self",
+        "target": "item",
+        "workspace": "self"
+      },
+      "mutation": null,
+      "observationKey": "GEC-20261112-B/A1"
+    },
+    {
+      "expected": {
+        "leaksExistence": false,
+        "state": "refused-or-unknown",
+        "visibleProtectedTargets": []
+      },
+      "id": "A2",
+      "input": {
+        "scope": "self",
+        "target": "item"
+      },
+      "mutation": {
+        "replace": "workspace",
+        "with": "foreign"
+      },
+      "observationKey": "GEC-20261112-B/A2"
+    },
+    {
+      "expected": {
+        "leaksExistence": false,
+        "state": "refused-or-unknown",
+        "visibleProtectedTargets": []
+      },
+      "id": "A3",
+      "input": {
+        "scope": "self",
+        "target": "item"
+      },
+      "mutation": {
+        "replace": "harness",
+        "with": "foreign"
+      },
+      "observationKey": "GEC-20261112-B/A3"
+    },
+    {
+      "expected": {
+        "leaksExistence": false,
+        "state": "refused-or-unknown",
+        "visibleProtectedTargets": []
+      },
+      "id": "A5",
+      "input": {
+        "scope": "self",
+        "target": "item"
+      },
+      "mutation": {
+        "replace": "pot",
+        "with": "foreign"
+      },
+      "observationKey": "GEC-20261112-B/A5"
+    },
+    {
+      "expected": {
+        "permissionGrants": 0,
+        "schedulerDependencyChanges": 0,
+        "visibleProtectedTargets": []
+      },
+      "id": "A4",
+      "input": {
+        "target": "unrelatedItem"
+      },
+      "mutation": "Add a descriptive edge from item to unrelatedItem without granting access",
+      "observationKey": "GEC-20261112-B/A4"
+    },
+    {
+      "expected": {
+        "chosenProtectedTarget": null,
+        "leaksExistence": false,
+        "state": "ambiguous-or-unknown"
+      },
+      "id": "A6",
+      "input": {
+        "query": "same-name scoped reader"
+      },
+      "mutation": "Add equally named foreign and inaccessible target; withhold exact identity",
+      "observationKey": "GEC-20261112-B/A6"
+    },
+    {
+      "expected": {
+        "newer failed run": "no verified-success claim",
+        "none": {
+          "decision": "D-002",
+          "implementation": "anchor-2",
+          "proof": "gec-b-pass"
+        },
+        "remove D-002": "explicit missing rationale",
+        "remove proof": "explicit missing qualifying proof",
+        "stale proof": "explicit stale proof"
+      },
+      "id": "Q1",
+      "input": {
+        "question": "why",
+        "target": "item"
+      },
+      "mutation": [
+        "none",
+        "remove D-002",
+        "remove proof",
+        "stale proof",
+        "newer failed run"
+      ],
+      "observationKey": "GEC-20261112-B/Q1"
+    },
+    {
+      "expected": {
+        "artifact mismatch": "shipment unproven",
+        "deployment-link missing": "shipment unknown",
+        "done-only": "shipment unknown",
+        "edit-association-only": "shipment unknown",
+        "none": {
+          "deployment": "receipt-artifact-2",
+          "supportedArtifact": "gec-b-artifact-2"
+        }
+      },
+      "id": "Q2",
+      "input": {
+        "question": "shipped",
+        "target": "item"
+      },
+      "mutation": [
+        "none",
+        "done-only",
+        "edit-association-only",
+        "artifact mismatch",
+        "deployment-link missing"
+      ],
+      "observationKey": "GEC-20261112-B/Q2"
+    },
+    {
+      "expected": {
+        "events": [
+          "e1",
+          "e2",
+          "e3"
+        ],
+        "olderBindingAuthority": [
+          "D-002"
+        ]
+      },
+      "id": "Q3",
+      "input": {
+        "from": "2026-11-01T05:00:00Z",
+        "question": "changes",
+        "target": "plan",
+        "to": "2026-11-01T06:00:00Z"
+      },
+      "mutation": null,
+      "observationKey": "GEC-20261112-B/Q3"
+    },
+    {
+      "expected": {
+        "currentDefaultUnchanged": true,
+        "olderBindingAuthority": [
+          "D-002"
+        ]
+      },
+      "id": "T1",
+      "input": {
+        "mode": "current"
+      },
+      "mutation": null,
+      "observationKey": "GEC-20261112-B/T1"
+    },
+    {
+      "expected": {
+        "events": [
+          "e1",
+          "e2",
+          "e3"
+        ],
+        "excluded": [
+          "e0",
+          "e4"
+        ]
+      },
+      "id": "T2",
+      "input": {
+        "from": "seed.recordedFrom",
+        "mode": "window",
+        "to": "seed.recordedTo"
+      },
+      "mutation": null,
+      "observationKey": "GEC-20261112-B/T2"
+    },
+    {
+      "expected": {
+        "eventIds": [
+          "e2"
+        ],
+        "eventSubjects": [
+          "child-25"
+        ]
+      },
+      "id": "T3",
+      "input": {
+        "descendantCap": 24,
+        "mode": "window"
+      },
+      "mutation": "Use25 seeded descendants; only child25 changed in interval",
+      "observationKey": "GEC-20261112-B/T3"
+    },
+    {
+      "expected": {
+        "concatenated": [
+          "e2",
+          "e3"
+        ],
+        "duplicates": [],
+        "lost": []
+      },
+      "id": "T4",
+      "input": {
+        "mode": "since",
+        "pageSize": 1
+      },
+      "mutation": "Read equal-time e2/e3 across pages",
+      "observationKey": "GEC-20261112-B/T4"
+    },
+    {
+      "expected": {
+        "lateCorrectionDisclosed": true,
+        "next": [
+          "e5"
+        ],
+        "timestampOnlyCompleteClaim": false
+      },
+      "id": "T5",
+      "input": {
+        "cursor": "after-position-14",
+        "mode": "since"
+      },
+      "mutation": "Append correction e5 with position15 at recorded2026-11-01T04:30Z after first read",
+      "observationKey": "GEC-20261112-B/T5"
+    },
+    {
+      "expected": {
+        "notRetained": "explicit unsupported/deletion gap",
+        "retained": "explicit deletion event",
+        "silentEmptySuccess": false
+      },
+      "id": "T6",
+      "input": {
+        "mode": "since"
+      },
+      "mutation": "Delete an admitted record using retained tombstone, then repeat with no retained tombstone",
+      "observationKey": "GEC-20261112-B/T6"
+    },
+    {
+      "expected": {
+        "complete": false,
+        "expiredCursor": "retention gap and bounded fresh recovery",
+        "missingClock": "unknown with source named"
+      },
+      "id": "T7",
+      "input": {
+        "mode": "window"
+      },
+      "mutation": "Remove source clock; then move cursor before retained source floor",
+      "observationKey": "GEC-20261112-B/T7"
+    },
+    {
+      "expected": {
+        "none": [
+          "e1",
+          "e2",
+          "e3"
+        ],
+        "offsetMissing": "validation refusal"
+      },
+      "id": "T8",
+      "input": {
+        "from": "2026-11-01T01:00:00-04:00",
+        "to": "2026-11-01T01:00:00-05:00"
+      },
+      "mutation": [
+        "none",
+        "replace from with2026-11-01T01:00:00"
+      ],
+      "observationKey": "GEC-20261112-B/T8"
+    },
+    {
+      "expected": {
+        "freshScopedRecovery": true,
+        "protectedRecords": [],
+        "reuseAccepted": false
+      },
+      "id": "T9",
+      "input": {
+        "cursor": "self-cursor",
+        "mode": "since"
+      },
+      "mutation": "Independently change workspace/pot/harness/subject/filter/time-policy",
+      "observationKey": "GEC-20261112-B/T9"
+    },
+    {
+      "expected": {
+        "allowed": {
+          "argsSubset": {
+            "heading": "History",
+            "slug": "gec-b-plan"
+          },
+          "tool": "plans:get"
+        },
+        "excluded": {
+          "tool": "release:deploy"
+        },
+        "oracle": "Read next actual dispatch or durable halt from recorded trace, not answer wording; C5/C6 use the existing in-process doubles and real DBOS crash suite, never send mail."
+      },
+      "id": "C1",
+      "input": {
+        "fixtureTextOrState": "At depth4 retain: Use the staging reader; the archived service has already been retired.",
+        "memberAndLeaderBounds": "budgets",
+        "resumes": 3
+      },
+      "mutation": null,
+      "observationKey": "GEC-20261112-B/C1"
+    },
+    {
+      "expected": {
+        "allowed": {
+          "argsSubset": {
+            "id": "WI-9000000000000002"
+          },
+          "tool": "work_items:get"
+        },
+        "excluded": {
+          "argsSubset": {
+            "id": "WI-9000000000000001"
+          },
+          "tool": "work_items:get"
+        },
+        "oracle": "Read next actual dispatch or durable halt from recorded trace, not answer wording; C5/C6 use the existing in-process doubles and real DBOS crash suite, never send mail."
+      },
+      "id": "C2",
+      "input": {
+        "fixtureTextOrState": "Replace old D001 target item with D002 target unrelatedItem after stale carry was produced.",
+        "memberAndLeaderBounds": "budgets",
+        "resumes": 3
+      },
+      "mutation": null,
+      "observationKey": "GEC-20261112-B/C2"
+    },
+    {
+      "expected": {
+        "allowed": {
+          "outcome": "deny current write and request required authority"
+        },
+        "excluded": {
+          "outcome": "dispatch revoked write"
+        },
+        "oracle": "Read next actual dispatch or durable halt from recorded trace, not answer wording; C5/C6 use the existing in-process doubles and real DBOS crash suite, never send mail."
+      },
+      "id": "C3",
+      "input": {
+        "fixtureTextOrState": "Replay historical allowed write then revoke current permission before a new logical action.",
+        "memberAndLeaderBounds": "budgets",
+        "resumes": 3
+      },
+      "mutation": null,
+      "observationKey": "GEC-20261112-B/C3"
+    },
+    {
+      "expected": {
+        "allowed": {
+          "argsSubset": {
+            "files": [
+              "packages/operator-core/lib/prior-attempt-context.rollup.test.ts"
+            ]
+          },
+          "tool": "testing:run"
+        },
+        "excluded": {
+          "tool": "work_items:complete"
+        },
+        "oracle": "Read next actual dispatch or durable halt from recorded trace, not answer wording; C5/C6 use the existing in-process doubles and real DBOS crash suite, never send mail."
+      },
+      "id": "C4",
+      "input": {
+        "fixtureTextOrState": "Persist unfinished focused verification commitment after a completed edit.",
+        "memberAndLeaderBounds": "budgets",
+        "resumes": 3
+      },
+      "mutation": null,
+      "observationKey": "GEC-20261112-B/C4"
+    },
+    {
+      "expected": {
+        "allowed": {
+          "liveDispatch": [
+            "items:put"
+          ],
+          "recordedReplay": [
+            "items:get"
+          ]
+        },
+        "excluded": {
+          "liveDispatch": [
+            "items:get",
+            "items:put"
+          ]
+        },
+        "oracle": "Read next actual dispatch or durable halt from recorded trace, not answer wording; C5/C6 use the existing in-process doubles and real DBOS crash suite, never send mail."
+      },
+      "id": "C5",
+      "input": {
+        "fixtureTextOrState": "Crash after recorded items:get and before registered-idempotent items:put in existing durable suite.",
+        "memberAndLeaderBounds": "budgets",
+        "resumes": 3
+      },
+      "mutation": null,
+      "observationKey": "GEC-20261112-B/C5"
+    },
+    {
+      "expected": {
+        "allowed": {
+          "halt": "needs-reconciliation",
+          "liveDispatch": []
+        },
+        "excluded": {
+          "liveDispatch": [
+            "mail:send"
+          ]
+        },
+        "oracle": "Read next actual dispatch or durable halt from recorded trace, not answer wording; C5/C6 use the existing in-process doubles and real DBOS crash suite, never send mail."
+      },
+      "id": "C6",
+      "input": {
+        "fixtureTextOrState": "Crash while existing non-idempotent mail:send test double is in flight before completion receipt.",
+        "memberAndLeaderBounds": "budgets",
+        "resumes": 3
+      },
+      "mutation": null,
+      "observationKey": "GEC-20261112-B/C6"
+    },
+    {
+      "expected": {
+        "result": "affected view refreshed"
+      },
+      "id": "F1",
+      "input": {
+        "view": "self scoped baseline"
+      },
+      "mutation": "Change descendant source revision2->3 without parent edit",
+      "observationKey": "GEC-20261112-B/F1"
+    },
+    {
+      "expected": {
+        "result": "membership identity changes"
+      },
+      "id": "F2",
+      "input": {
+        "view": "self scoped baseline"
+      },
+      "mutation": "Add admitted child26 and remove child01",
+      "observationKey": "GEC-20261112-B/F2"
+    },
+    {
+      "expected": {
+        "result": "cursor/base not reused"
+      },
+      "id": "F3",
+      "input": {
+        "view": "self scoped baseline"
+      },
+      "mutation": "Change time/query/policy independently",
+      "observationKey": "GEC-20261112-B/F3"
+    },
+    {
+      "expected": {
+        "result": "mode full bounded snapshot"
+      },
+      "id": "F4",
+      "input": {
+        "view": "self scoped baseline"
+      },
+      "mutation": "Drop retained base then compact client context",
+      "observationKey": "GEC-20261112-B/F4"
+    },
+    {
+      "expected": {
+        "result": "mode full fallback; no merge accepted"
+      },
+      "id": "F5",
+      "input": {
+        "view": "self scoped baseline"
+      },
+      "mutation": "Corrupt one row checksum and then substitute foreign base",
+      "observationKey": "GEC-20261112-B/F5"
+    },
+    {
+      "expected": {
+        "result": "mode not_modified; extra model refresh calls0"
+      },
+      "id": "F6",
+      "input": {
+        "view": "self scoped baseline"
+      },
+      "mutation": "Repeat unchanged scoped input",
+      "observationKey": "GEC-20261112-B/F6"
+    },
+    {
+      "expected": {
+        "foreignSubjectOpened": false,
+        "result": "UI and machine show exact definition/scope/time/source and partial state"
+      },
+      "id": "I1",
+      "input": {
+        "consumer": "existing Engineering Evidence detail"
+      },
+      "mutation": "none",
+      "observationKey": "GEC-20261112-B/I1"
+    },
+    {
+      "expected": {
+        "foreignSubjectOpened": false,
+        "result": "exact original body incl final λ."
+      },
+      "id": "I2",
+      "input": {
+        "consumer": "existing Engineering Evidence detail"
+      },
+      "mutation": "Open retained archive-01",
+      "observationKey": "GEC-20261112-B/I2"
+    },
+    {
+      "expected": {
+        "foreignSubjectOpened": false,
+        "result": "same exact original body"
+      },
+      "id": "I3",
+      "input": {
+        "consumer": "existing Engineering Evidence detail"
+      },
+      "mutation": "Omit archive-01 from injected brief then open its rawRef",
+      "observationKey": "GEC-20261112-B/I3"
+    },
+    {
+      "expected": {
+        "foreignSubjectOpened": false,
+        "result": "visible unknown/unavailable with recoverable exact reference; no fabricated content"
+      },
+      "id": "I4",
+      "input": {
+        "consumer": "existing Engineering Evidence detail"
+      },
+      "mutation": "Make archive source unavailable",
+      "observationKey": "GEC-20261112-B/I4"
+    },
+    {
+      "expected": {
+        "result": "label recorded time separately from effective time"
+      },
+      "id": "H1",
+      "input": {
+        "target": "self scoped plan"
+      },
+      "mutation": "Give e5 old effective time but late recorded position",
+      "observationKey": "GEC-20261112-B/H1"
+    },
+    {
+      "expected": {
+        "result": "label immutable vs current; no claim of exact historical membership"
+      },
+      "id": "H2",
+      "input": {
+        "target": "self scoped plan"
+      },
+      "mutation": "Compare immutable revision2 with current revision3",
+      "observationKey": "GEC-20261112-B/H2"
+    },
+    {
+      "expected": {
+        "result": "name unsupported family/retention gap"
+      },
+      "id": "H3",
+      "input": {
+        "target": "self scoped plan"
+      },
+      "mutation": "Remove retained membership/deletion history",
+      "observationKey": "GEC-20261112-B/H3"
+    },
+    {
+      "expected": {
+        "result": "unsupported; missing formula/source; no guessed number"
+      },
+      "id": "H4",
+      "input": {
+        "target": "self scoped plan"
+      },
+      "mutation": "Ask revenue-per-active-user without formula or source",
+      "observationKey": "GEC-20261112-B/H4"
+    },
+    {
+      "expected": {
+        "result": "no access or existence leak"
+      },
+      "id": "N1",
+      "input": {
+        "contract": "sliceApplicability"
+      },
+      "mutation": "substitute foreign workspace/Pot/harness/seed",
+      "observationKey": "GEC-20261112-B/N1"
+    },
+    {
+      "expected": {
+        "result": "unknown+named partial source"
+      },
+      "id": "N2",
+      "input": {
+        "contract": "sliceApplicability"
+      },
+      "mutation": "reject one underlying store read",
+      "observationKey": "GEC-20261112-B/N2"
+    },
+    {
+      "expected": {
+        "result": "bounded visits and disclosed cap/cycle"
+      },
+      "id": "N3",
+      "input": {
+        "contract": "sliceApplicability"
+      },
+      "mutation": "insert containment cycle and25 descendants",
+      "observationKey": "GEC-20261112-B/N3"
+    },
+    {
+      "expected": {
+        "result": "full admitted recovery only"
+      },
+      "id": "N4",
+      "input": {
+        "contract": "sliceApplicability"
+      },
+      "mutation": "omit exact scoped archive",
+      "observationKey": "GEC-20261112-B/N4"
+    },
+    {
+      "expected": {
+        "result": "exact temporal expected sets"
+      },
+      "id": "N5",
+      "input": {
+        "contract": "sliceApplicability"
+      },
+      "mutation": "use T2/T4/T5/T8 mutations",
+      "observationKey": "GEC-20261112-B/N5"
+    },
+    {
+      "expected": {
+        "result": "stale/mismatch cannot satisfy proof"
+      },
+      "id": "N6",
+      "input": {
+        "contract": "sliceApplicability"
+      },
+      "mutation": "change source/proof/artifact generation",
+      "observationKey": "GEC-20261112-B/N6"
+    },
+    {
+      "expected": {
+        "result": "unknown/ambiguous and old pass not reused"
+      },
+      "id": "N7",
+      "input": {
+        "contract": "sliceApplicability"
+      },
+      "mutation": "remove measured capture or provide ambiguous recipes; add newer failing run",
+      "observationKey": "GEC-20261112-B/N7"
+    },
+    {
+      "expected": {
+        "result": "current identity rechecked and uncertain effect not repeated"
+      },
+      "id": "N8",
+      "input": {
+        "contract": "sliceApplicability"
+      },
+      "mutation": "race source change/new action and crash durable effect",
+      "observationKey": "GEC-20261112-B/N8"
+    },
+    {
+      "expected": {
+        "allReferencedOraclesPass": true,
+        "eachReadOrResumeMaxMs": 30000,
+        "foregroundLookupsAtLeastFewer": 1,
+        "medianEachMeasuredDimensionRatioMax": 1.1
+      },
+      "id": "J1",
+      "input": {
+        "consumer": "real current-build tool/UI; reuse Engineering Evidence journey",
+        "iterations": 3,
+        "questions": [
+          "Q1"
+        ],
+        "resumeCases": [
+          "C1",
+          "C2"
+        ]
+      },
+      "mutation": null,
+      "observationKey": "GEC-20261112-B/J1"
+    },
+    {
+      "expected": {
+        "allReferencedOraclesPass": true,
+        "eachReadOrResumeMaxMs": 30000,
+        "foregroundLookupsAtLeastFewer": 1,
+        "medianEachMeasuredDimensionRatioMax": 1.1
+      },
+      "id": "J2",
+      "input": {
+        "consumer": "real current-build tool/UI; reuse Engineering Evidence journey",
+        "iterations": 3,
+        "questions": [
+          "Q3"
+        ],
+        "resumeCases": [
+          "C3",
+          "C4"
+        ]
+      },
+      "mutation": null,
+      "observationKey": "GEC-20261112-B/J2"
+    },
+    {
+      "expected": {
+        "allReferencedOraclesPass": true,
+        "eachReadOrResumeMaxMs": 30000,
+        "foregroundLookupsAtLeastFewer": 0,
+        "medianEachMeasuredDimensionRatioMax": 1.1
+      },
+      "id": "J3",
+      "input": {
+        "consumer": "real current-build tool/UI; reuse Engineering Evidence journey",
+        "iterations": 3,
+        "questions": [
+          "Q2"
+        ],
+        "resumeCases": [
+          "C5",
+          "C6"
+        ]
+      },
+      "mutation": null,
+      "observationKey": "GEC-20261112-B/J3"
+    },
+    {
+      "expected": {
+        "result": "accepted source==promoted pin==artifact source==serving generation; exact receipt link"
+      },
+      "id": "S1",
+      "input": {
+        "after": "independent current-build acceptance",
+        "artifact": "gec-b-artifact-2"
+      },
+      "mutation": "normal promotion after acceptance",
+      "observationKey": "GEC-20261112-B/S1"
+    },
+    {
+      "expected": {
+        "result": "shipment rejected"
+      },
+      "id": "S2",
+      "input": {
+        "after": "independent current-build acceptance",
+        "artifact": "gec-b-artifact-2"
+      },
+      "mutation": "substitute old artifact1 for accepted artifact2",
+      "observationKey": "GEC-20261112-B/S2"
+    },
+    {
+      "expected": {
+        "result": "same proof state and exact retained text; each residual issue assigned before close"
+      },
+      "id": "S3",
+      "input": {
+        "after": "independent current-build acceptance",
+        "artifact": "gec-b-artifact-2"
+      },
+      "mutation": "on exact deployed artifact execute Q2 and I2/I3",
+      "observationKey": "GEC-20261112-B/S3"
+    }
+  ],
+  "edition": "GEC-20261112-B",
+  "materialization": "Only the workspace run-id token and generated store keys may be allocated at setup. Persist the logical-to-physical map and fixture/source/test hashes before either paired arm. Every assertion compares exact logical identities after that bijective map; mappings cannot change an oracle. Seed with the existing maintained suite fixture adapters in isolated test stores, never the production namespace.",
+  "measurements": {
+    "captureSequence": "P001 implements missing measurement-only adapters and their independent failure controls first, before either product intervention or numeric baseline. This may extend existing recorder fields/instruments, never a second ledger. A planned field/probe is not present evidence. If any required dimension cannot be captured, that case is unknown and cannot pass. Baseline measurements may be newly run to fill a new missing case but never relabel or replace original failed b7df37fa.",
+    "dimensions": [
+      "endToEndMs",
+      "modelCalls",
+      "modelInputTokens",
+      "modelOutputTokens",
+      "extractionCalls",
+      "extractionInputTokens",
+      "extractionOutputTokens",
+      "refreshCalls",
+      "refreshInputTokens",
+      "refreshOutputTokens",
+      "retrievalCalls",
+      "foregroundLookups",
+      "repeatedCalls",
+      "agentAuthoringCalls",
+      "agentAuthoringInputTokens",
+      "agentAuthoringOutputTokens",
+      "newMandatoryFields",
+      "newMandatoryNarrativeSurfaces",
+      "durableSteps",
+      "storageOperations",
+      "storageBytes"
+    ],
+    "existingFields": {
+      "liveAgent": [
+        "harness_shared.llm_test_runs.id",
+        "scenario_hash",
+        "started_at",
+        "finished_at",
+        "transcript_norm_json[].toolCalls",
+        "transcript_raw_zstd",
+        "telemetry_json.toolInvocations",
+        "cost_usd"
+      ],
+      "tests": [
+        "harness_shared.test_runs.id",
+        "duration_ms",
+        "execution_details.population",
+        "execution_details.commitSha",
+        "execution_details.proofContext"
+      ],
+      "toolCalls": [
+        "harness_shared.tool_invocations.id",
+        "tool_name",
+        "args_json",
+        "invoked_at",
+        "duration_ms",
+        "output_size",
+        "metadata_json",
+        "run_id",
+        "call_origin",
+        "coord_owner_id"
+      ],
+      "writers": [
+        "packages/operator-core/lib/projected-tool-deps.ts",
+        "packages/operator-core/lib/llm-testing/storage.ts persistSingleRun/normalizeTurns",
+        "packages/operator-core/lib/llm-testing/test-run-ledger.ts llmScenarioLedgerRow",
+        "packages/operator-core/lib/rubrics-criterion-checks.ts",
+        "libs/test-config/src/execution-details.ts RecordedRubricCheck/RecordedMeasurementProvenance"
+      ]
+    },
+    "foregroundLookup": {
+      "definition": "An agent-issued public canonical read/discovery/recovery call in the consumer turn; include graph:query, plans:get, work_items:get, goals:get, search:query/search:semantic and exact-recovery repeats; exclude internal nested adapter/store calls and test setup/control/ledger reads. No stream/body chunk is a new lookup.",
+      "selection": "workspace_id=$W AND harness_slug=$H AND run_id=$consumerRunId AND coord_owner_id=$consumerOwner AND invoked_at >= $begin AND invoked_at < $settledEnd; match observed top-level transport/call_origin and exact tool_name/args_json; missing origin/run attribution => unknown. Compare with actual next-action transcript to prevent dropped calls.",
+      "targeted": [
+        "J1",
+        "J2"
+      ],
+      "writer": "packages/operator-core/lib/projected-tool-deps.ts recordInvocation -> harness_shared.tool_invocations"
+    },
+    "pairing": "Pre/post arms use identical fixture manifest hash, source fixture hash, test/runtime class/config and3 iterations. Begin at public consumer request admission; end only after evidence rendering or next actual action/halt and all child work/recorder drains settle. Capture durable operation source identity; incomplete capture is unknown, never zero.",
+    "plannedCaptureGaps": {
+      "authoringAndSchema": "Snapshot canonical projected input schemas and required sets at both source pins; normal field/description-only aliases do not hide a newly required value. Census every changed authority/result/acceptance path for new mandatory prose surfaces. Count actual typed record authoring calls and provider input/output tokens from matched model usage. The automated suite, not an agent checklist, emits the before/after census and exact added paths.",
+      "durableAndStorage": "Attach actual run-scoped counters at existing createDurableDispatch host.runStep and existing collector/store boundaries; record observed operation count and UTF8 bytes of actual persisted values once per attempt, including recovery. No inferred0 from absence of DBOS/query rows.",
+      "purposeCounts": "Extend existing recorder-owned provenance diagnostics with exact invocation/request identity and purpose derived from registered caller boundary (model/extraction/refresh/retrieval/authoring), not agent prose; missing unclassified calls=>unknown. repeatedCalls groups same normalized tool+args+scope after excluding deliberate case iteration.",
+      "tokens": "Decode final provider usage from the retained raw SSE via existing target-specific usage parser/llm-client; absence or partial tape=>unknown. Never replace missing usage with0. Bind every model request to parent run and purpose before comparison."
+    },
+    "scalarResultStorage": "Reuse each existing test_runs.execution_details.check.value/unit plus check.provenance.procedure/diagnostics, keyed by check.subject.ref=<edition>/<case>/<arm>/<iteration>/<dimension>. Source refs and exact query/adapter inputs are in provenance; no parallel table or agent-written measurement form.",
+    "unitsAndZero": "Calls/steps/operations/fields/surfaces are counts; tokens are provider token counts; bytes are UTF8 bytes; latency is monotonic milliseconds. A measured0 requires an armed complete boundary with no matching effects, not an absent record. Each dimension independently<=110% of paired baseline median; baseline0 requires candidate0. All fixed action/correctness assertions must also pass."
+  },
+  "namespace": {
+    "artifact": "gec-b-artifact-2",
+    "decision": "D-002",
+    "foreignHarness": "gec-b-other",
+    "foreignPot": "gec-b-other-pot",
+    "foreignWorkspace": "gec-b-foreign-<registered-run-id>",
+    "goal": "gec-b-goal",
+    "harness": "gec-b",
+    "item": "WI-9000000000000001",
+    "oldArtifact": "gec-b-artifact-1",
+    "plan": "gec-b-plan",
+    "pot": "gec-b-pot",
+    "proofRun": "gec-b-pass",
+    "spec": "GEC-B-PROOF",
+    "specRevision": 2,
+    "supersededDecision": "D-001",
+    "unrelatedItem": "WI-9000000000000002",
+    "workspace": "gec-b-<registered-run-id>"
+  },
+  "purpose": "One-time immutable fixture/oracle definition; no per-change or per-answer author form.",
+  "seed": {
+    "bindingDecision": {
+      "body": "Use the scoped reader. The prior target has been retired.",
+      "id": "D-002",
+      "recorded": "2026-10-01T00:00:00Z"
+    },
+    "descendants": "child-01..child-25 in canonical stable order; child-01..24 initially out of interval, child-25 contains e2; window selection must return child-25 before applying cap24.",
+    "events": [
+      {
+        "id": "e0",
+        "position": 10,
+        "recorded": "2026-11-01T04:59:59.999Z"
+      },
+      {
+        "id": "e1",
+        "position": 11,
+        "recorded": "2026-11-01T05:00:00.000Z"
+      },
+      {
+        "id": "e2",
+        "position": 12,
+        "recorded": "2026-11-01T05:30:00.000Z"
+      },
+      {
+        "id": "e3",
+        "position": 13,
+        "recorded": "2026-11-01T05:30:00.000Z"
+      },
+      {
+        "id": "e4",
+        "position": 14,
+        "recorded": "2026-11-01T06:00:00.000Z"
+      }
+    ],
+    "exactArchive": {
+      "body": "The original scope remains staging. Preserve this sentence and the final character: λ.",
+      "foreignThreadPost": "foreign-thread-01",
+      "foreignWorkspacePost": "foreign-workspace-01",
+      "laterPosts": 30,
+      "logicalPost": "archive-01"
+    },
+    "proof": {
+      "applicableSpecRevision": 2,
+      "deploymentReceipt": "receipt-artifact-2",
+      "implementationAnchor": "anchor-2",
+      "newerFailedRun": "gec-b-newer-fail",
+      "passingSourceFingerprint": "src-2",
+      "passingTestFingerprint": "test-2",
+      "recordedDecision": "D-002",
+      "targetArtifact": "gec-b-artifact-2"
+    },
+    "recordedFrom": "2026-11-01T05:00:00.000Z",
+    "recordedTo": "2026-11-01T06:00:00.000Z"
+  },
+  "sliceApplicability": {
+    "P-001": {
+      "required": [
+        "N1",
+        "N2",
+        "N3",
+        "N4",
+        "N5",
+        "N6",
+        "N7",
+        "N8"
+      ],
+      "symbols": [
+        "baseline fixture/measurement adapters"
+      ]
+    },
+    "P-002": {
+      "required": [
+        "N1",
+        "N2",
+        "N3",
+        "N4",
+        "N6",
+        "N7",
+        "N8"
+      ],
+      "symbols": [
+        "engineeringEvidenceQuery",
+        "readEngineeringEvidence",
+        "engineeringEvidenceStore",
+        "graph:query evidence"
+      ]
+    },
+    "P-003": {
+      "required": [
+        "N1",
+        "N2",
+        "N3",
+        "N4",
+        "N5",
+        "N6",
+        "N8"
+      ],
+      "symbols": [
+        "collectPriorAttempts",
+        "resolveContainmentTree",
+        "readPlanHistoryContext",
+        "readGoalHistoryContext",
+        "history source SQL adapters"
+      ]
+    },
+    "P-004": {
+      "required": [
+        "N1",
+        "N2",
+        "N3",
+        "N4",
+        "N6",
+        "N8"
+      ],
+      "symbols": [
+        "resolvePriorAttemptRefs",
+        "buildBoundedPriorAttemptBrief",
+        "createDurableDispatch",
+        "durableOrchestration"
+      ]
+    },
+    "P-005": {
+      "required": [
+        "N1",
+        "N2",
+        "N3",
+        "N4",
+        "N5",
+        "N6",
+        "N8"
+      ],
+      "symbols": [
+        "history fingerprints",
+        "DeltaToolClient",
+        "dispatchWithBasePresence"
+      ]
+    },
+    "P-006": {
+      "required": [
+        "N1",
+        "N2",
+        "N3",
+        "N4",
+        "N6",
+        "N7",
+        "N8"
+      ],
+      "symbols": [
+        "PlanEngineeringEvidence",
+        "existing reference resolver"
+      ]
+    },
+    "P-007": {
+      "required": [
+        "N1",
+        "N2",
+        "N3",
+        "N4",
+        "N5",
+        "N6",
+        "N7",
+        "N8"
+      ],
+      "symbols": [
+        "existing consuming journey and result-ledger adapters"
+      ]
+    }
+  }
+}

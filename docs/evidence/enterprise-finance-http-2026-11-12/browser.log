@@ -1,0 +1,20 @@
+E2E_FIXTURE_SELECTION selected=1 of=9 mode=changed-paths specs=apps/operator/e2e/enterprise-finance-http.spec.ts
+  apps/operator/e2e/enterprise-finance-http.spec.ts <- apps/operator/e2e/__fixtures__/enterprise-finance-http.tsx
+VH_RETENTION_DEFERRED stage=before reason=retention-mutex-busy evidence=/mnt/data/offload/verification-harness/e2e-fixture-affected
+Playwright temporary directory ready: /tmp (2122734219264 bytes available)
+Playwright browsers ready in <browser-cache> [machine-local path redacted]
+
+Running 3 tests using 1 worker
+
+(node:3525957) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:3525957) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[getOrBuildTemplate] stage=template-build key=fdeb62ea1b1b32e2 migrations=1393 elapsedMs=9494
+  ✓  1 [chromium] › e2e/enterprise-finance-http.spec.ts:147:1 › browser persists exact limits, refuses real commitments, and exports recorded accounting (2.1s)
+  ✓  2 [chromium] › e2e/enterprise-finance-http.spec.ts:184:1 › browser organization and month changes read isolated persisted data (1.1s)
+  ✓  3 [chromium] › e2e/enterprise-finance-http.spec.ts:198:1 › revoked server authority denies a stale browser and cannot persist changes (874ms)
+
+  3 passed (26.4s)
+[flags] No override store installed in this process: runtime overrides (flags:set / POST /api/flags/set) are INVISIBLE here and getFlag() is serving FLAG_DEFAULTS. If this process is expected to observe runtime flag flips, call initFlagOverrideStore() during boot BEFORE any flag is resolved (operator-core: installFlagOverrideStore()). Silence with PAPERCUSP_SILENCE_FLAG_OVERRIDE_WARN=1 if defaults-only is intentional.
+[db] target source=env endpoint=localhost:5432

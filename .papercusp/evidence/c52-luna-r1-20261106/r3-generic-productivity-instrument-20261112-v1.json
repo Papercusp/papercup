@@ -1,0 +1,93 @@
+{
+  "schemaVersion": "c52-generic-fleet-productivity-v1",
+  "workItem": "WI-6554700010045855",
+  "plan": "restore-bug-throughput-and-complete-luna-assessment-2026-11-06",
+  "createdAt": "2026-11-12T13:11:13.985Z",
+  "sources": [
+    {
+      "path": "packages/operator-core/lib/fleet/execution-productivity.ts",
+      "sha256": "368452e7ecbbed7fdff21cb15a6d43d0f49406277b632c032f2d2d8dc2017c7e"
+    },
+    {
+      "path": "packages/operator-core/lib/fleet/execution-productivity.test.ts",
+      "sha256": "50cfda3a2775c4a9be1d5f0030fc386cbd9c69fea5850a378eac2107c12763b3"
+    },
+    {
+      "path": "packages/operator-core/lib/fleet/execution-productivity.integration.test.ts",
+      "sha256": "c414b530e08eaa2003d442aebab093173c89537022d80146f74b0907e028f693"
+    },
+    {
+      "path": "packages/operator-core/lib/rubric-instrument-registry.ts",
+      "sha256": "805664becb2d5602a63db62006d22285a1ef0b80e38fc08dd54bcc631a7089cb"
+    }
+  ],
+  "implementation": {
+    "key": "fleet:member-productivity",
+    "registry": "existing PlatformInstrument.rescore subject seam",
+    "population": "ever-member through window end, excluding any recorded leader; no live roster",
+    "seatHours": "distinct epoch15-minute tool_invocations.invoked_at buckets times0.25, scoped workspace; all owner tool harnesses as literal method",
+    "closes": "same workspace/harness, done/resolved/closed, excluding dropped/observation; literal revision57 inclusive BETWEEN boundaries",
+    "outputs": "fleet rate, median active-owner rate, zero-close share among >=2hour owners; named members; current-held overlap hours",
+    "lineage": "explicit per-owner fallback; no cross-owner lineage attestation",
+    "fullMethod": "UNKNOWN: historical claimed-but-unclosed item-hours are not reconstructed. No quantity asserted by the resolver for an unknown full result. No rubric amendment/check binding made."
+  },
+  "tests": {
+    "runId": "a0222cf6-fd9a-4d37-a47b-998d64e9a7e4",
+    "foreground": "d295f3fd-c70e-43c0-a438-4f8ce4536ca5",
+    "passed": 19,
+    "failed": 0,
+    "skipped": 0,
+    "reports": [
+      {
+        "path": "/home/marsh-office/.papercusp/test-artifacts/testing-run/run-nLk12t/reports/report.json",
+        "success": true,
+        "total": 16,
+        "passed": 16,
+        "failed": 0
+      },
+      {
+        "path": "/home/marsh-office/.papercusp/test-artifacts/testing-run/run-nLk12t/reports/report.1.json",
+        "success": true,
+        "total": 3,
+        "passed": 3,
+        "failed": 0
+      }
+    ],
+    "cleanup": "disposable database org_8ea8a68ccc9f dropped; cleanup complete",
+    "statusDefect": "snapshot status:error with exitCode0, successful core and both passing reports; same known EI-28586199704062850, no duplicate filing"
+  },
+  "typecheck": {
+    "taskId": "0mwdkaos11ey1ua7121",
+    "bashId": "5cc9b95c-16c",
+    "state": "completed",
+    "exitCode": 0,
+    "scope": [
+      "packages/operator-core/lib/fleet/execution-productivity.ts",
+      "packages/operator-core/lib/fleet/execution-productivity.test.ts",
+      "packages/operator-core/lib/fleet/execution-productivity.integration.test.ts",
+      "packages/operator-core/lib/rubric-instrument-registry.ts"
+    ],
+    "log": ".papercusp/scratch/bash-5cc9b95c-16c.log",
+    "result": "LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean; cross-leg4clean"
+  },
+  "ownerSteering": {
+    "directive2861": "answered and closed: causal queue blockage, original frozen6221 and538ordinaryclaimable, revision adoption1036, stale settlement flags defect; no full recovery claim",
+    "directive2864": "answered and closed: report revisions/reproduction validation, not new defects. All reports real/unique NOT established. Prioritize underlying report validity/origins/duplicate-no-action assessment ahead of grading plumbing.",
+    "next": "Recover exact original6221 report source and review/admission verdict evidence; quantify proven valid/duplicates/invalid/already-fixed/unresolved only when backed. Preserve ambiguous candidates and do not bulk unblock."
+  },
+  "state": {
+    "allR1R8": "OPEN",
+    "all26": "OPEN",
+    "D025": "OFF",
+    "standard58": "unchanged, no new check binding",
+    "oldTenPartialRows": "unchanged",
+    "route": "self",
+    "modes": [
+      "auto",
+      "grade"
+    ],
+    "loops": "none newly armed",
+    "locks": "all released",
+    "jobs": "all launched jobs terminal"
+  }
+}

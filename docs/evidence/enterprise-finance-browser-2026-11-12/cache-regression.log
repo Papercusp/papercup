@@ -1,0 +1,19 @@
+✔ detects an installed browser by its completion sentinel (1.556164ms)
+✔ offloaded exact-revision cache symlinks are ready without reinstalling (6.606471ms)
+✔ offloaded cache still rejects stale revisions, incomplete targets and dangling links (1.548629ms)
+✔ isolated missing cache runs injected installer without network (42.167977ms)
+✔ ready cache is idempotent and does not invoke installer (1.651097ms)
+✔ chromium without its headless shell is not a healthy Playwright install (1.61646ms)
+✔ stale browser revision fails the installed-registry health check (1.200226ms)
+✔ low temporary disk headroom selects the healthy cache volume for parent and browser (0.59045ms)
+✔ healthy explicit TMPDIR is preserved without creating a fallback directory (0.26407ms)
+✔ inode exhaustion and unwritable preferred paths also select measured fallback (0.392207ms)
+✔ no healthy volume fails before browser launch and preserves the caller environment (0.616119ms)
+ℹ tests 11
+ℹ suites 0
+ℹ pass 11
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 222.422803

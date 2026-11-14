@@ -1,0 +1,25 @@
+{
+  "kind": "browser-real-http-private-pg",
+  "sourceHashes": {
+    "apps/operator/e2e/enterprise-finance-http.spec.ts": "2e83d395de9e9a38c2df93da96bea2d93a3a27471e3d0b8bd71dc25f4d5cbcba",
+    "apps/operator/e2e/__fixtures__/enterprise-finance-http.tsx": "96233fc86ec40bc5df9de8cf2ffc9fab9f838258c739dfbff3fdeff78bd78c0d",
+    "apps/operator/e2e/_desktop-grid-fixture-server.ts": "ffe43628d797e3342405926dac8db54e9c7e77146e7949a9df937e1044220f00",
+    "packages/operator-ui/src/billing/enterprise-allocations.tsx": "5c07f8d9d84d785c4ab2a11c582df7afc84d6fe4cf9f48e7c338e338a199a75e",
+    "packages/operator-core/lib/endpoint-route/hosted-billing-runtime.ts": "2be0b0ba59d41104d415b7a573aab80a0797061785a94d1d95b8b8bf39dec8e7",
+    "packages/operator-core/lib/endpoint-route/routes/hosted-billing/index.ts": "d7b828678708b155f4aba47ba6901ab33cc3d44f1f39a9977977a483dc5d6ecc",
+    "packages/operator-core/lib/auth/hosted/billing/allocation-store.ts": "37499002050c77bbc4f7f1bce2d65f877d8bf741ffb65dfa84016e8048cb4cbd"
+  },
+  "privateDatabase": "org_49fb4ce2d232",
+  "cleanup": "dropped",
+  "realComponent": true,
+  "realBillingHttp": true,
+  "realAllocationStore": true,
+  "substituted": [
+    "principal resolver",
+    "seeded amounts"
+  ],
+  "portalIntegrationProven": false,
+  "providerBillingProven": false,
+  "nativeAcceptanceProven": false,
+  "shipmentProven": false
+}

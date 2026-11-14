@@ -68,12 +68,15 @@ beforeEach(async () => {
 
 async function insertParked(id: string, payload: Record<string, unknown>, takenBy: string | null = null): Promise<void> {
   const now = Date.parse('2026-10-08T10:00:00.000Z');
+  // A durable claim park is independent of lifecycle status. These fixtures
+  // carry no external/dependency blocker, so keep their ordinary open status
+  // rather than violating the migrated named-blocker invariant at INSERT.
   await sql`
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, title, summary, status, item_kind, taken_by, workspace_id,
        created_ts, updated_ts, payload)
     VALUES
-      (${HARNESS}, ${id}, ${`parked ${id}`}, 'parked', 'blocked', 'bug', ${takenBy}, 'default',
+      (${HARNESS}, ${id}, ${`parked ${id}`}, 'parked', 'open', 'bug', ${takenBy}, 'default',
        ${now}, ${now}, ${sql.json(payload as never)})`;
 }
 

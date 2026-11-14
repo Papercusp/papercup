@@ -12,6 +12,7 @@ import {
   resolveClusterWorkers,
   describeClusterWorkersSource,
   resolveExpectedOperatorProcs,
+  CLUSTER_BOOT_FAILURE_MESSAGE_TYPE,
   type ClusterLike,
   type ClusterWorkerLike,
 } from './cluster-fork';
@@ -36,6 +37,7 @@ class MockCluster implements ClusterLike {
   readonly workers: MockWorker[] = [];
   readonly forkEnvs: Array<Record<string, string>> = [];
   private exitCbs: Array<(w: ClusterWorkerLike, code: number, signal: string | null) => void> = [];
+  private messageCbs: Array<(w: ClusterWorkerLike, message: unknown) => void> = [];
   constructor(readonly isPrimary: boolean) {}
   fork(env: Record<string, string> = {}): ClusterWorkerLike {
     this.forkEnvs.push({ ...env });
@@ -53,7 +55,12 @@ class MockCluster implements ClusterLike {
   ): void {
     if (event === 'exit') {
       this.exitCbs.push(cb as (w: ClusterWorkerLike, code: number, signal: string | null) => void);
+    } else {
+      this.messageCbs.push(cb as (w: ClusterWorkerLike, message: unknown) => void);
     }
+  }
+  emitMessage(w: ClusterWorkerLike, message: unknown): void {
+    for (const cb of this.messageCbs) cb(w, message);
   }
   emitExit(w: ClusterWorkerLike, code = 1, signal: string | null = null): void {
     for (const cb of this.exitCbs) cb(w, code, signal);
@@ -238,6 +245,7 @@ describe('startCluster boot-failure backstop', () => {
       consecutiveBootFailures: 3,
       lastCode: 1,
       lastSignal: null,
+      startupFailures: [],
     });
     expect(logLines.join('\n')).toContain('worker startup failed; root cause is unknown');
     expect(logLines.join('\n')).toContain('last exit code=1 signal=null');
@@ -246,6 +254,42 @@ describe('startCluster boot-failure backstop', () => {
     cl.emitExit(cl.workers[3]); // already reported → ignored, no further forking
     expect(cl.forks).toBe(forksAtGiveUp);
     expect(cl.forks).toBeLessThan(15); // nowhere near the full respawn-budget storm
+  });
+
+  it('forwards worker-reported EADDRINUSE details with the terminal boot-failure callback', () => {
+    const cl = new MockCluster(true);
+    const onBootFailure = vi.fn();
+    startCluster({
+      workers: 2,
+      onWorker: () => {},
+      cluster: cl,
+      bootGraceMs: 10_000,
+      now: () => 0,
+      onBootFailure,
+      log: () => {},
+    });
+    const firstFailure = {
+      type: CLUSTER_BOOT_FAILURE_MESSAGE_TYPE,
+      schemaVersion: 1,
+      code: 'EADDRINUSE',
+      address: '0.0.0.0',
+      port: 3070,
+    } as const;
+    const secondFailure = { ...firstFailure, address: '127.0.0.1' };
+    cl.emitMessage(cl.workers[0], firstFailure);
+    cl.emitMessage(cl.workers[1], secondFailure);
+    cl.emitExit(cl.workers[0]);
+    cl.emitExit(cl.workers[1]);
+
+    expect(onBootFailure).toHaveBeenCalledWith({
+      consecutiveBootFailures: 2,
+      lastCode: 1,
+      lastSignal: null,
+      startupFailures: [
+        { ...firstFailure, workerId: 1 },
+        { ...secondFailure, workerId: 2 },
+      ],
+    });
   });
 
   it('a worker that booted healthy then crashed is respawned — boot failure never fires after a healthy boot', () => {

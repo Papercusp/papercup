@@ -46,6 +46,7 @@ import register, {
   shouldSkip,
 } from '../inject-hook';
 import { stashAdvisory } from '../non-preempting-delivery';
+import { contextPackingCarrier, packContextCandidates } from '../../../../../../packages/operator-core/lib/context-doors';
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 
@@ -186,6 +187,7 @@ describe('adapters/omp.mjs — parse (turn-start)', () => {
 
   it('clamps the prompt to 4000 chars (D-001 invariant 5 — contract, not tuning)', () => {
     const req = withSid(() => parse('turn-start', { prompt: 'x'.repeat(9000) }));
+    if (!req || !('prompt' in req)) throw new Error('Expected a turn-start prompt request');
     expect(req?.prompt).toHaveLength(4000);
   });
 
@@ -238,6 +240,7 @@ describe('adapters/omp.mjs — parse (mid-turn)', () => {
         ),
       ),
     );
+    if (!req || !('toolCalls' in req)) throw new Error('Expected a mid-turn tool-call request');
     expect(req?.toolCalls).toMatchObject([
       { tool: 'bash', toolInput: JSON.stringify({ command: 'ls -la' }), toolResponse: 'total 12' },
     ]);
@@ -271,6 +274,7 @@ describe('adapters/omp.mjs — parse (mid-turn)', () => {
       ),
     );
 
+    if (!req || !('toolCalls' in req)) throw new Error('Expected a mid-turn tool-call request');
     expect(req?.toolCalls).toMatchObject([
       {
         tool: 'write',
@@ -290,6 +294,7 @@ describe('adapters/omp.mjs — parse (mid-turn)', () => {
     const req = withSid(() =>
       parse('mid-turn', turnEnd([{ toolCallId: 'orphan', toolName: 'grep', content: [{ type: 'text', text: 'hit' }] }])),
     );
+    if (!req || !('toolCalls' in req)) throw new Error('Expected a mid-turn tool-call request');
     expect(req?.toolCalls).toMatchObject([{ tool: 'grep', toolInput: '', toolResponse: 'hit' }]);
   });
   it('keeps edited paths from full OMP arguments before clamping recall input', () => {
@@ -297,6 +302,7 @@ describe('adapters/omp.mjs — parse (mid-turn)', () => {
       [{ toolCallId: 'edit-1', toolName: 'edit', content: [{ type: 'text', text: 'ok' }] }],
       [{ type: 'toolCall', id: 'edit-1', name: 'edit', arguments: { oldText: 'x'.repeat(900), path: '/repo/lib/target.ts' } }],
     )));
+    if (!req || !('toolCalls' in req)) throw new Error('Expected a mid-turn tool-call request');
     expect(req?.toolCalls?.[0]).toMatchObject({ editedPaths: ['/repo/lib/target.ts'] });
     expect(req?.toolCalls?.[0].toolInput).toHaveLength(400);
   });
@@ -308,6 +314,7 @@ describe('adapters/omp.mjs — parse (mid-turn)', () => {
         command: 'node -e "' + 'x'.repeat(2000) + '"', description: 'repair WI-6512 delivery',
       } }],
     )));
+    if (!req || !('toolCalls' in req)) throw new Error('Expected a mid-turn tool-call request');
     expect(req?.toolCalls?.[0]?.toolInput).toHaveLength(400);
     expect(req?.toolCalls?.[0]?.querySignals).toMatchObject({
       ids: ['WI-6512'], task: ['repair delivery'], errors: ['TypeError'],
@@ -329,6 +336,7 @@ describe('adapters/omp.mjs — parse (mid-turn)', () => {
       arguments: { blob: 'z'.repeat(5000) },
     }));
     const req = withSid(() => parse('mid-turn', turnEnd(results, calls)));
+    if (!req || !('toolCalls' in req)) throw new Error('Expected a mid-turn tool-call request');
     expect(req?.toolCalls).toHaveLength(12);
     for (const c of req!.toolCalls!) {
       expect(c.toolResponse).toHaveLength(400);
@@ -349,6 +357,7 @@ describe('adapters/omp.mjs — parse (mid-turn)', () => {
         ]),
       ),
     );
+    if (!req || !('toolCalls' in req)) throw new Error('Expected a mid-turn tool-call request');
     expect(req?.toolCalls?.[0].toolResponse).toBe('real');
   });
 
@@ -369,6 +378,7 @@ describe('adapters/omp.mjs — parse (mid-turn)', () => {
         ),
       ),
     );
+    if (!req || !('toolCalls' in req)) throw new Error('Expected a mid-turn tool-call request');
     expect(req?.toolCalls?.[0]).toMatchObject({ tool: 'x', toolInput: '', toolResponse: 'ok',
       querySignals: { semantic: '', lexical: '' },
     });
@@ -616,12 +626,14 @@ describe('inject-hook — runDispatcher', () => {
 // returned content the runtime merges), never in a message.
 
 describe('inject-hook — mid-turn delivery rides in a tool result, never a message', () => {
-  const withEcho = async (fn: (handlers: Map<string, (event: unknown) => Promise<unknown> | unknown>, sent: unknown[]) => Promise<void>) => {
+  type Handler = (event: unknown, ctx?: unknown) => Promise<unknown> | unknown;
+  const withEcho = async (fn: (handlers: Map<string, Handler>, sent: unknown[]) => Promise<void>,
+    dispatcher = echoDispatcher) => {
     const previousEnv = { ...process.env };
-    Object.assign(process.env, envWith(echoDispatcher));
+    Object.assign(process.env, envWith(dispatcher));
     clearMidTurnStash();
     try {
-      const handlers = new Map<string, (event: unknown) => Promise<unknown> | unknown>();
+      const handlers = new Map<string, Handler>();
       const sent: unknown[] = [];
       register({
         on: (event, handler) => handlers.set(event, handler),
@@ -683,6 +695,41 @@ describe('inject-hook — mid-turn delivery rides in a tool result, never a mess
       expect(await handlers.get('tool_result')!({ content: 'ORIGINAL' })).toBeUndefined();
     });
   });
+
+  it.each(['before_agent_start', 'turn_end'] as const)(
+    'context reliability R-10: %s uses the current native session on every callback', async name => {
+      await withEcho(async handlers => {
+        let nativeId = 'native-before';
+        const ctx = { sessionManager: { getSessionId: () => nativeId } };
+        const event = { prompt: 'receipt identity', session_id: 'event-cannot-supply-identity', toolResults: [] };
+        for (const current of ['native-before', 'native-after']) {
+          nativeId = current;
+          const result = await handlers.get(name)!(event, ctx);
+          const recorded = JSON.parse(readFileSync(recordedStdinFile, 'utf8'));
+          expect(JSON.parse(recorded.stdin)).toEqual({ ...event, session_id: current });
+          if (name === 'before_agent_start') expect(result).toMatchObject({ message: { content: 'RECORDED' } });
+          else expect(takeMidTurn()).toBe('RECORDED');
+        }
+        expect(event.session_id).toBe('event-cannot-supply-identity');
+      }, stdinRecorder);
+    });
+
+  it.each(['before_agent_start', 'turn_end'] as const)(
+    'context reliability R-10: %s leaves unavailable native identity absent without dropping context', async name => {
+      await withEcho(async handlers => {
+        const contexts = [undefined, { sessionManager: { getSessionId: () => '' } },
+          { sessionManager: { getSessionId: () => 'invalid/session' } },
+          { sessionManager: { getSessionId: () => 'x'.repeat(129) } },
+          { sessionManager: { getSessionId: () => { throw new Error('unavailable'); } } }];
+        for (const ctx of contexts) {
+          const result = await handlers.get(name)!({ prompt: 'keep context', session_id: 'untrusted-event-id' }, ctx);
+          const recorded = JSON.parse(readFileSync(recordedStdinFile, 'utf8'));
+          expect(JSON.parse(recorded.stdin)).toEqual({ prompt: 'keep context' });
+          if (name === 'before_agent_start') expect(result).toMatchObject({ message: { content: 'RECORDED' } });
+          else expect(takeMidTurn()).toBe('RECORDED');
+        }
+      }, stdinRecorder);
+    });
 });
 
 describe('inject-hook — mid-turn stash', () => {
@@ -725,6 +772,25 @@ describe('inject-hook — mid-turn stash', () => {
 });
 
 describe('inject-hook — appendBlock', () => {
+  it('preserves exact carrier bytes and stays within the reserved allocation for string and array results', async () => {
+    const text = 'Complete duty 字\ncondition';
+    const packed = packContextCandidates({ attemptId: 'omp-final-carrier', budgetBytes: Buffer.byteLength(text) + 3,
+      carrier: contextPackingCarrier('omp', 'mid-turn'),
+      candidates: [{ sourceRef: 'owner:14', revision: 'r1', class: 'owner', required: true, text }] });
+    const dispatcher = join(dir, 'carrier-newline.mjs');
+    writeFileSync(dispatcher, `process.stdout.write(${JSON.stringify(text + '\n')});\n`);
+    const stdout = await runDispatcher('mid-turn', 'turn_end', {}, { env: envWith(dispatcher) });
+    expect(stdout).toBe(text + '\n');
+    expect(packed.text).toBe(text);
+    expect(appendBlock('ORIGINAL', stdout!)).toBe('ORIGINAL\n\n' + text + '\n');
+    expect(Buffer.byteLength(appendBlock('ORIGINAL', stdout!) as string) - Buffer.byteLength('ORIGINAL'))
+      .toBe(packed.receipt.contextBytes);
+    const array = appendBlock([{ type: 'image', data: 'unchanged' }], stdout!) as Array<{ type: string; text?: string }>;
+    expect(array).toEqual([{ type: 'image', data: 'unchanged' }, { type: 'text', text: text + '\n' }]);
+    expect(Buffer.byteLength(array[1]!.text!)).toBeLessThanOrEqual(packed.receipt.contextBytes);
+    expect(packed.receipt.carrier!.emittedContextBytes).toBe('UNKNOWN'); // Preparation never becomes delivery proof.
+  });
+
   it('preserves string content', () => {
     expect(appendBlock('tool said this', 'BLOCK')).toBe('tool said this\n\nBLOCK');
   });

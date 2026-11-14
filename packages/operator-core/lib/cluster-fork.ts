@@ -26,6 +26,36 @@ import nodeCluster from 'node:cluster';
 
 export type ClusterRole = 'primary' | 'worker' | 'single';
 
+/** Worker IPC marker for a listen failure that the cluster primary cannot infer
+ * from exit code/signal alone. Keep this payload narrow and versioned. */
+export const CLUSTER_BOOT_FAILURE_MESSAGE_TYPE = 'papercusp:cluster-boot-failure';
+
+export interface ClusterBootFailureMessage {
+  type: typeof CLUSTER_BOOT_FAILURE_MESSAGE_TYPE;
+  schemaVersion: 1;
+  code: 'EADDRINUSE';
+  address: string;
+  port: number;
+}
+
+export interface ClusterBootFailureEvidence extends ClusterBootFailureMessage {
+  workerId: number;
+}
+
+function isClusterBootFailureMessage(message: unknown): message is ClusterBootFailureMessage {
+  if (!message || typeof message !== 'object') return false;
+  const candidate = message as Partial<ClusterBootFailureMessage>;
+  return candidate.type === CLUSTER_BOOT_FAILURE_MESSAGE_TYPE &&
+    candidate.schemaVersion === 1 &&
+    candidate.code === 'EADDRINUSE' &&
+    typeof candidate.address === 'string' &&
+    candidate.address.length <= 255 &&
+    typeof candidate.port === 'number' &&
+    Number.isInteger(candidate.port) &&
+    candidate.port > 0 &&
+    candidate.port <= 65535;
+}
+
 /** The slice of `node:cluster` this engine needs (injected; the real module
  *  satisfies it structurally). */
 export interface ClusterLike {
@@ -86,7 +116,12 @@ export interface StartClusterOpts {
    * is treated as a normal runtime crash and respawned within budget — `onBootFailure`
    * never fires once any worker has been healthy.
    */
-  onBootFailure?: (info: { consecutiveBootFailures: number; lastCode: number; lastSignal: string | null }) => void;
+  onBootFailure?: (info: {
+    consecutiveBootFailures: number;
+    lastCode: number;
+    lastSignal: string | null;
+    startupFailures: ClusterBootFailureEvidence[];
+  }) => void;
   /** Worker uptime (ms) past which a worker counts as "booted healthy". Default 10_000. */
   bootGraceMs?: number;
   /** Injected clock for the boot-grace measurement; defaults to `Date.now`. */
@@ -272,6 +307,13 @@ export function startCluster(opts: StartClusterOpts): ClusterHandle {
   let sawHealthy = false; // any worker has surpassed bootGraceMs (the process served)
   let consecutiveBootFailures = 0; // workers that exited inside the grace window, no healthy yet
   let bootFailureReported = false; // gave up — stop respawning in this primary
+  const startupFailureMessages = new Map<number, ClusterBootFailureMessage>();
+
+  // Retain only typed startup evidence from workers. Other cluster IPC belongs
+  // to its own listeners; exit code and signal remain insufficient to infer a cause.
+  cluster.on('message', (worker, message) => {
+    if (isClusterBootFailureMessage(message)) startupFailureMessages.set(worker.id, message);
+  });
 
   for (let i = 0; i < workers; i++) track(cluster.fork(workerEnv));
 
@@ -289,6 +331,7 @@ export function startCluster(opts: StartClusterOpts): ClusterHandle {
       if (uptime >= bootGraceMs) {
         sawHealthy = true;
         consecutiveBootFailures = 0;
+        startupFailureMessages.clear();
       } else if (!sawHealthy) {
         consecutiveBootFailures += 1;
         if (consecutiveBootFailures >= workers) {
@@ -298,7 +341,11 @@ export function startCluster(opts: StartClusterOpts): ClusterHandle {
               `and none ever stayed up — worker startup failed; root cause is unknown from exit code/signal alone. ` +
               `Halting local respawns (would have used ${maxRespawns} respawns). last exit code=${code} signal=${signal}`,
           );
-          opts.onBootFailure({ consecutiveBootFailures, lastCode: code, lastSignal: signal });
+          const startupFailures = [...startupFailureMessages.entries()].map(([workerId, failure]) => ({
+            ...failure,
+            workerId,
+          }));
+          opts.onBootFailure({ consecutiveBootFailures, lastCode: code, lastSignal: signal, startupFailures });
           return; // do NOT respawn — the caller decides what to do (exit/alert)
         }
       }

@@ -527,7 +527,8 @@ export function formatCellHoist(h: CellHoist): string | null {
   if (h.drifted) {
     return `⚠ this cell declares the result-level unknown channel "${h.key}", but its resolver did not emit it. The reason a null value carries is MISSING, not empty — treat a null here as unexplained, and read this as a registration defect in the resolver rather than a clean measurement.`;
   }
-  if (h.value === null || h.value === undefined) return null;
+  // Boolean unknown channels, such as gate.run.unmeasured, are clear when false.
+  if (h.value === null || h.value === undefined || h.value === false) return null;
   if (Array.isArray(h.value) && h.value.length === 0) return null;
   /**
    * ⚠ "QUALIFIES", NOT "IS UNKNOWN". A loud hoist carries the REASON the headline is

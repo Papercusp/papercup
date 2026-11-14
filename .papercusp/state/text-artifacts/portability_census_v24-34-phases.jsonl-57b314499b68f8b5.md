@@ -1,0 +1,46 @@
+---
+rel_path: "portability/census/v24-34-phases.jsonl-57b314499b68f8b5"
+updated_at: 1794230641786
+_body: "content"
+---
+
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"start","atMs":1794229409507}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"router-start","atMs":1794229411465,"deadline":{"startedAtMs":1794229397553,"taskDeadlineAtMs":1794229577553,"cleanupReserveMs":30000,"childCutoffAtMs":1794229547553}}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-launch-start","atMs":1794229411485}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-spawn-read-flag","atMs":1794229411486}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-spawn-scope-probe","atMs":1794229411486}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-spawn-register-task","atMs":1794229411486}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-task-ledger-client-init","atMs":1794229411486}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-task-ledger-prepare","atMs":1794229411486}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-task-ledger-insert","atMs":1794229411487}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-spawn-environment-transport","atMs":1794229411494}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-spawn-fork","atMs":1794229411495}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-spawn-process-identity","atMs":1794229411509}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-child-spawned","atMs":1794229411510,"taskId":"0mw99v6aml374usgocp","pid":2757537}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-spawn-mark-running","atMs":1794229411510}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-launch-handoff","atMs":1794229411512,"taskId":"0mw99v6aml374usgocp","settled":false}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-completion-child-exit","atMs":1794229435799}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-completion-handoff","atMs":1794229435799}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-child-close","atMs":1794229435799,"taskId":"0mw99v6aml374usgocp","code":0,"signal":null}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"router-result","atMs":1794229435803,"childState":"closed","outputLogPaths":["/home/marsh-office/.papercusp/test-artifacts/testing-run/run-e3MACR/router-50d7e24d-f60a-4967-925e-14310837217d-b9fdf757-ddd3-4895-af4c-d1698a07465f.stdout.log","/home/marsh-office/.papercusp/test-artifacts/testing-run/run-e3MACR/router-50d7e24d-f60a-4967-925e-14310837217d-b9fdf757-ddd3-4895-af4c-d1698a07465f.stdout.log.stderr.log"]}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"cleanup-complete","atMs":1794229435804,"cleanup":{"complete":true,"databases":[],"errors":[]}}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"report-finalized","atMs":1794229435808,"outputLogPaths":["/home/marsh-office/.papercusp/test-artifacts/testing-run/run-e3MACR/router-50d7e24d-f60a-4967-925e-14310837217d-b9fdf757-ddd3-4895-af4c-d1698a07465f.stdout.log","/home/marsh-office/.papercusp/test-artifacts/testing-run/run-e3MACR/router-50d7e24d-f60a-4967-925e-14310837217d-b9fdf757-ddd3-4895-af4c-d1698a07465f.stdout.log.stderr.log"]}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"cleanup-start","atMs":1794229435808}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"cleanup-complete","atMs":1794229435808,"cleanup":{"complete":true,"databases":[],"errors":[]}}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"reports-retained","atMs":1794229435815,"source":"/tmp/pcv/testing-run-replay-2i1G2e","destination":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-e3MACR/reports"}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"retained","atMs":1794229435815,"childState":"closed"}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-completion-handoff-complete","atMs":1794229436049}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-completion-inspect-terminal","atMs":1794229436050}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-completion-registration","atMs":1794229436050}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-completion-close","atMs":1794229436050}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-task-close-client-init","atMs":1794229436050}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-task-close-read","atMs":1794229436050}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-task-close-read-complete","atMs":1794229436052}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-task-close-cleanup","atMs":1794229436052}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-task-close-cleanup-complete","atMs":1794229436262}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-task-close-update","atMs":1794229436262}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-task-close-update-complete","atMs":1794229436265}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-task-close-event","atMs":1794229436265}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-task-close-event-complete","atMs":1794229436284}
+{"kind":"testing-run-phase","runId":"50d7e24d-f60a-4967-925e-14310837217d","stage":"process-completion-finished","atMs":1794229436284}
+

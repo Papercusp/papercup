@@ -620,6 +620,11 @@ import './supervision-reconcile-action';
 // timeout. A bespoke ephemeral (tier:'ephemeral', 300s) operator-HOME cadence (one sweep
 // serves every workspace's rows). Seeded ACTIVE by seed-consult-expiry-routine.ts.
 import './consult-expiry-action';
+// stuck-work-detection-and-honest-waits-2026-11-13 P-002: `system:stuck-work-waiting-check`
+// — the durable, loud never-fires check (4h / 3 missed alarms / no result, one notice per
+// blocked item, one 24h repeat). Bespoke ephemeral 600s cadence, seeded ACTIVE by
+// seed-stuck-work-waiting-check-routine.ts.
+import './stuck-work-waiting-check-action';
 // external-app-access-to-workspaces-2026-09-29 P-328 (D-030): `system:connected-app-alert-sweep`
 // — every 15 minutes, owner alerts for a connected app's usage spike, repeated auth failures, a
 // key about to expire, and a key whose creator left the organization. Seeded by migration 1267.

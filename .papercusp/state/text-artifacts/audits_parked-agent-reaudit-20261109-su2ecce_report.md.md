@@ -1,0 +1,148 @@
+---
+rel_path: "audits/parked-agent-reaudit-20261109-su2ecce/report.md"
+updated_at: 1794191178767
+_body: "content"
+---
+
+# Fresh parked-agent audit
+
+Avi requested another complete audit of parked agents and resumption of any continuation lacking a good reason to remain parked.
+
+**97 distinct parked sessions were assessed: 91 in the complete 02:05:15 UTC census and six newly parked sessions in the bounded 02:17:46 UTC closing census. All four selected continuations have confirmed actual resumption.** This is a cohort over the audit window, not a claim that 97 sessions were simultaneously parked at the end.
+
+Two other candidates were already active when checked. The remaining sessions had completed work, explicit owner/leader holds, qualified source/dependency waits, prior handoffs, missing credentials, or a documented historical-evidence limit. Existing claims, source/spending gates and independent acceptance were preserved.
+
+## Confirmed resume outcomes
+
+| Original agent | Existing task | Fresh wake | Recovery | Actual reply |
+|---|---|---|---|---|
+| `su-24790d3e-5b5a-41fa-a8b0-4faf7584ec9f` | `WI-6554700010046192` | `coord-send-fed64078cdfc675d3a4a8a2878f0d7e1d7750d8db0ab2e2a1704f7bdd38418a9` | One supported Escape-before-wake: `coord-send-0df2b749e9904e3296aa8320bf8fd14c2bbd6197aa5cf7445bea92ea7ad941e3` | `coord-send-1689f177fe0bdfc6b75da204cb805d062f568662d4f191c40030f172e9bab90b`: Resumed existing latency continuation; stale wake reconciled |
+| `su-3e081d90-443a-4c42-885c-3a26fd5070d7` | `WI-6554700010046325` | `coord-send-4dd40ee057cf7a85934aa4c8d9965eb520bd5ba6ac7acbe74ae95b3220cdbe3a` | One supported Escape-before-wake: `coord-send-b133c67b0bfab32be9069a178845648bce173159b3dce5573ee35530e03a9efe` | `coord-send-728f242f9d6277608ba8de051d0aacd26bb365c7ea2afcf77eb8b456e4d010e3`: Native turn resumed: reconciling WI6325 ownership, 140-test proof and committed/current-build qualification |
+| `su-e8682264-ac17-4824-a076-c59d4778ef0c` | `WI-6554700010046461` | `coord-send-304dc14e8918f1121a2701dee13039b8d5608e1e63193de56bd84d73bea6466b` | Ordinary required wake; native activity and concrete preflight reply confirmed | `coord-send-06b2e7c5ef48dd4b6afd5c0f84c08052fdc9e61075523b3827b6bfe87cef0998`: Resumed fresh preflight/source reconciliation; exact remaining prerequisites for four repairs saved in WI6461#1221092. |
+| `su-f700c7ca-fa01-413b-ae1d-68ff08c1ec5d` | `WI-6554700010046322` | `coord-send-8036809dfe866286e6f0611cd4a703a4bf511c823ff63d94f3a2e28060616dab` | One supported Escape-before-wake: `coord-send-23ddca5acab2020129ce00804c811c89053ccb24455371b34a1ff98de635d1b4` | `coord-send-714a05f9ec8ed3f764690e416c61c8a1ec4df1cc023612ab5989671baa20c5bc`: Original continuation resumed after interruption |
+
+The latency continuation recovered retained seed/runtime outcomes and resumed claim/control reconciliation. The retention-pin continuation recovered its existing test/source proof and continued current-build qualification. The Docker continuation resumed its original D017 route and reconciled current custody before further execution. The backup/timeout repair executor performed a fresh prerequisite check and recorded exact remaining backup, index, rendezvous and restart-barrier dependencies in WI6461 comment1221092. Its resulting evidence-based pause is legitimate; waking a task does not waive its prerequisites.
+
+## Recovery evidence and limits
+
+The three older native sessions accepted a plain wake but recorded native-submission-unconfirmed / native-turn-start-unverified. Their host records showed no pending tools or owner input/stop. A workspace-global locks:queue owner read showed no active file locks for each. Current coord:send source documents endTurn:true with wake:'required' as the supported Escape-before-wake operation for a confirmed stuck turn.
+
+One such recovery was sent per affected original session. Each receipt reports the turn ended and a new wake queued. Actual pickup was then proved separately by direct replies from those same original identities; the latency session additionally read live with fresh activity at02:20:58UTC. No new CLI, worker, fork, source-profile change or session shutdown was used. No completed product test suite was repeated merely to reconstruct evidence.
+
+This is a verified operational recovery, not a durable fix for the underlying native-submission failure. The root mechanism is still not fully attributed. Existing owned EI-28237004353870564 retains the follow-up: preserve live-writer/human-stop safeguards, reuse the existing Escape-before-wake path for a bounded verified recovery where appropriate, and add regression/diagnostic coverage so plain wake acceptance cannot masquerade as turn-start. The audit outcome does not claim product acceptance or shipment.
+
+## Every initial parked-agent disposition
+
+| Agent | Disposition | Reason | Current indexed evidence |
+|---|---|---|---|
+| `su-03790006-32f2-4702-adb6-354b99d1bd84` | Approval | Original proposal is delivered; feature execution awaits Avi’s approval. | `session_turn:codex:01a19a77-0b3c-7721-bef5-3c4c35f76984:13` |
+| `su-07e4aca6-d95c-4e50-972a-be582ae8b56e` | Dependency | P004 acceptance awaits adopted admission-review repair, independent critique and coherent source; latest handoff was acknowledged. | `session_turn:codex:01a1bc58-3f4b-7263-a4b7-bd5ef59a523b:12` |
+| `su-0ba158d3-e58d-4633-baab-c3334f1d632c` | Completed review | D014 frozen-input protocol review is delivered; implementation and later qualification remain with the existing implementer. | `session_turn:codex:01a1bdac-c471-7cb2-926c-3392fd6b12d5:22`; items `WI-6554700010045713` |
+| `su-0cbd6655-ce61-46ec-9c3a-451f915f5b67` | Approval | Explicit scope decision remains pending; recurring no-change checks were stopped. | `session_turn:codex:01a1b6c1-7831-7981-a8e6-9d475c78ecc9:10` |
+| `su-0ce13062-58f8-4e2a-be62-ded40b7a9974` | Completed | Desktop/session recovery and P010 are complete; no assigned work remains. | `session_turn:codex:01a19370-288f-7553-af37-9f5ea9e9cb6c:37` |
+| `su-126cedd3-6292-4a64-9bb8-b95f804379e4` | Approval | Personal Vault preparation remains at the existing unanswered Avi gate; historical incident evidence was already answered. | `session_turn:codex:01a1b1fa-055e-7612-a12e-3f58af19a363:16` |
+| `su-13b1b857-9c38-44d3-b384-f2ab2d3fcc0a` | Handoff | WI6131 evidence is handed to its current holder; unexpected-loop incident was filed. No duplicate feature continuation or review replay. | `session_turn:codex:01a1bd9c-283e-7e53-88d0-30d9e53c5951:8`; items `EI-28271419327080171` |
+| `su-1670b754-7c24-4813-a86f-b90698cd4495` | Completed | Requested reliability-draft revision and explanation were delivered; no implementation authorization followed. | `session_turn:codex:01a1b698-5a0e-78b0-84ad-aa2851d4be45:24` |
+| `su-1aa24601-64da-4f84-888f-3a7e78f75779` | Completed | Simulator/compiler setup task is done; latest request was answered with the measured readiness limitation. | `session_turn:codex:01a1b2e2-c09c-7852-8d00-5936c18b8cc7:33` |
+| `su-1b1c4d3e-d960-4de6-935e-95e776b84f58` | Dependency | Luna P001 awaits the sole source publisher’s minimal coherent committed-input handoff; existing exact waits retained. | `session_turn:codex:01a1bdd6-e130-7e01-ba27-82cffa739e37:11`; items `WI-6554700010028547` |
+| `su-24790d3e-5b5a-41fa-a8b0-4faf7584ec9f` | Resumed | Original latency baseline continuation responded after one Escape-before-wake recovery; recovered retained seed/runtime outcomes and resumed claim/control reconciliation. | `session_turn:codex:01a1b992-b124-7732-ba54-f3253d1c6a11:7` |
+| `su-2789b945-4170-408c-b928-b7d17066836c` | Handoff | Native-cutover custody and evidence were returned to current custodian 30a52; this session has no conflicting claim or implementation. | `session_turn:codex:01a1bbd2-9465-7ef0-9ff0-3b8590d492a0:11` |
+| `su-2820b0f5-d100-4a2a-a4e3-3506dd399c5f` | Stopped | Avi discarded the proposal; drafts retired and implementation canceled. | `session_turn:codex:01a1ace6-88b7-7321-a10e-157c611b4891:31` |
+| `su-284b909f-5825-43b2-a29f-bafc6022f5cc` | Already active | The coordinator’s promised resume/verification continuation was already live at the pre-wake check; no duplicate wake sent. | `session_turn:codex:01a1bdc5-9e4d-7a22-b0a7-f6316af15372:7` |
+| `su-348f23ab-d99e-40c1-8ff1-f01142b709be` | Completed | Original defect closed after maintained custody verification; no scoped residue. | `session_turn:codex:01a19cba-eefd-7873-af3a-7d648db2c5c4:23` |
+| `su-35e0fe86-abb2-4c78-8b6b-7883438fcb02` | Credential | Latest native response is 'Not logged in · Please run /login'; no owned nonterminal work. A wake cannot supply login credentials. | `session_turn:claude:e607630d-b380-4d26-9c90-bdda292b9728:0` |
+| `su-39f94f0c-8262-4858-8ec2-0d4acb631e37` | Approval | R-1 owner question is open; answer wake retained and periodic checks stopped. | `session_turn:codex:01a1b906-d7ea-7d13-9f2d-0fc6c1b630d3:12` |
+| `su-3bbb2941-1db4-4d6f-b117-446c03a9ce35` | Completed | Bounded coordinator check finished; original benchmark agent had already resumed. | `session_turn:codex:01a1ae73-d81a-70b0-9913-53746d33e753:20` |
+| `su-3df405f5-3230-44f5-866d-8f96b0717e90` | Completed | Requested transfer/Dream/compaction audit and corrected recommendation delivered. | `session_turn:codex:01a1ace2-8860-7cc1-b82b-e025bcd7bbb7:18` |
+| `su-3e081d90-443a-4c42-885c-3a26fd5070d7` | Resumed | Original retention-pin/native recovery continuation responded after Escape-before-wake; recovering existing test/source receipts and current-build qualification. | `session_turn:codex:01a1b55d-8ef3-7fc3-b5f9-aa84c93062ef:7` |
+| `su-3ffe6b01-882b-4094-aae3-607cb8c8ef76` | Stopped | Requester withdrew pre-start review; final acceptance is assigned elsewhere. | `session_turn:codex:01a19bb9-0c30-7472-b827-70a3628dfa78:18` |
+| `su-45e55f4b-3b99-466a-85fb-973108f644c9` | Dependency | Collector work is admission-blocked; checks and unblock registration retained. | `session_turn:codex:01a19ce7-172f-7401-9d30-716bdcc63f7c:4` |
+| `su-4a84c93a-e530-450c-b01e-8beb7bdc670f` | Approval | Identity permissions work awaits source confirmation and plan activation. | `session_turn:codex:01a19a85-3838-7bb3-ab3f-474234ea5abd:36`; items `WI-6554700010017386`, `WI-6554700010020777`, `WI-6554700010043453` |
+| `su-54684de6-5ad0-4c94-9657-8dccf5253809` | Completed | Question identifying injection-system rubrics was answered. | `session_turn:codex:01a1b2e4-769d-7a61-86eb-a97c3bdc0475:4` |
+| `su-55aafca6-fd39-475f-acce-bb12ead307ac` | Dependency | Own P012 custody remains blocked on the leader’s qualified repair/readiness handoff; exact bounded repair wake is retained. | `session_turn:codex:01a1bdc9-4859-7791-be0d-82cb9d96efbc:34`; items `WI-6554700010021946` |
+| `su-598a1fb5-569f-4322-bda8-20888ead8e48` | Already active | Original executor resumed governed one-item migration-hold clearance during this audit; standing holds on other work remain intact. | `session_turn:codex:01a1b984-49c5-7d12-8d9e-de0228138b62:19`; items `WI-6554700010042457` |
+| `su-59ccf895-21f4-4cfd-b94c-7b6e3fcb7464` | Dependency | Activation verification awaits the committed source SHA and passing guard handoff. | `session_turn:codex:01a1bb80-eae8-7d03-86df-fc4df3fd192d:26` |
+| `su-5c484d0e-b964-4b92-a2f8-7331e9ef3f8f` | Dependency | Timeout investigation needs the retained historical runtime record; detector fix already done. | `session_turn:codex:01a19d9e-566f-7d01-b93b-a73bc663529b:26`; items `EI-27084923799528370` |
+| `su-60a9de95-dd40-4807-8e4b-107dcd49c416` | Dependency | Existing grading acceptance promotions await exact-source metadata and generation-lifetime qualification; performance grading remains off. | `session_turn:codex:01a1bc12-77da-7861-9c5e-bf88cdfdaa78:14` |
+| `su-611a8457-81ff-4cf5-9629-090ba0c0b0b0` | Dependency | Desktop-links source/acceptance items now have explicit typed source blockers and a bounded completion wake; no repeated native testing. | `session_turn:codex:01a1bbf0-1d9b-70b3-8175-3267d0c571d6:17`; items `EI-28177605734227333`, `WI-6554700010045655`, `WI-6554700010045693`, `EI-28148430963743935`, `EI-28186823152263750`, `WI-6554700010046500`, `WI-6554700010046454`, `EI-28145855968320077`, `EI-28145607523315552`, `EI-28058982505867885`, `EI-25425553121938143`, `EI-28086383094622321`, `EI-28085283628909780`, `EI-28034388790530781`, `EI-28081076348629535`, `EI-28074228483200149`, `EI-28069882778060460`, `EI-28068077657422499`, `EI-28005674607809609`, `EI-28009323696582479`, `EI-28047533425737103`, `EI-28045752598707350`, `EI-28005652031335423`, `EI-27997068192333209` |
+| `su-6163d9e0-7dd9-49a1-a9f6-6fba9f1b6f93` | Completed | WI6594 is complete; newer quality/audit evidence remains current, so the stale intent is not unfinished work. | `session_turn:codex:01a1b98c-f3da-74b1-9461-f9952bff51be:41` |
+| `su-626bfd3e-22b0-4d58-bbe4-c306b1231761` | Completed | Recovery complete; remaining checks retain their explicit deployment holds. | `session_turn:codex:01a19393-cda6-7800-8969-e706bab0fa1f:50` |
+| `su-65973ed5-e081-46ff-aa9c-59f1b0b1bd4d` | Dependency | Installation proof and preflight/recorder repair remain with their existing actors. | `session_turn:codex:01a1b83a-55ae-72d3-8a94-32b8cd507df1:8` |
+| `su-6aaf9b6a-27e9-42af-95c6-e7e571bdc311` | Stopped | Explicit safe-install/reader hold remains; duplicate update authorizes no new action. | `session_turn:codex:01a19e64-ca29-7320-9f22-bbcf7c072b3c:21` |
+| `su-6b7775ab-b767-4fa5-996f-4b412bd2b87c` | Evidence limit | Scoped lifecycle replay repair and maintained proof are complete. Original Oct31 causal attribution requires missing keyed historical evidence; no polling or duplicate-current-owner mission. | `session_turn:codex:01a1944b-793b-7e73-90a5-92d9fe0f1d6c:37` |
+| `su-6d6ef51d-8e08-43e3-82a7-f10b58cf2549` | Handoff | Recovery duplicate parked to preserve the original worker’s continuation. | `session_turn:codex:01a19484-5f5a-7760-85c6-c1f27957a794:13` |
+| `su-71521299-2a45-4b93-a286-e69667cf443a` | Completed | Existing draft consolidated and full detailed summary delivered; plan remains draft. | `session_turn:codex:01a1ad97-5e72-7a62-a1fe-69f87d2b653d:34` |
+| `su-716b0da2-850e-409e-8016-18efdd3390a5` | Dependency | Custodian explicitly confirmed intentional gate hold pending qualified-source handback; no gate action or parallel monitor. | `session_turn:codex:01a1b8ea-d334-71b3-807e-f43f7af3555a:15` |
+| `su-718e942f-d5e7-4e74-84e3-5e4e3c6e9d87` | Completed | Gateway-hardening task is done and report delivered; live inference limitation is recorded. | `session_turn:codex:01a1b6ea-d0c9-7663-b1eb-d2bfc3533a66:10` |
+| `su-73431f5e-6782-4b1c-85ed-47d2d5adc637` | Stopped | Original mission was stopped; same-session recovery complete. | `session_turn:codex:01a193ce-475c-7010-a770-38331149c6d2:14` |
+| `su-73f461ed-898b-4d1b-b2de-37def3cb1215` | Completed | Interrupted-session recovery task completed; no further recovery action requested. | `session_turn:codex:01a1bb77-0da2-7333-8610-380d99a29f94:17` |
+| `su-74266de5-19c1-48c2-acd3-930c5329eb7a` | Completed | Requested status answer was delivered; it did not create ongoing monitoring work. | `session_turn:codex:01a1b6b0-8e59-71e1-a7e2-e2804ce24165:4` |
+| `su-742b496d-615f-4f08-9f9d-148bafd7f11a` | Dependency | Pinned/installed dependency mismatch still refuses admission; obsolete scope wall already removed. | `session_turn:codex:01a1b807-47bc-7940-bd85-9d4154513509:23` |
+| `su-75d8d400-3398-46fb-afc0-4e0be98aadc3` | Handoff | Desktop-freeze evidence was handed to the current investigator; no parallel investigation is assigned. | `session_turn:codex:01a1ac28-fdb2-7e82-9385-e92362407cd2:20` |
+| `su-7806a23c-aec4-4014-bc2b-f743cb0cda18` | Completed | Historical readiness defect is done; latest message requests no new action. | `session_turn:codex:01a1adf9-7912-7663-b354-4f2e5c334920:35` |
+| `su-7b7ec71f-03e0-4acd-b001-3dc206efdcc5` | Completed review | Round-two independent acceptance-contract critique is complete and approved; implementation/test execution remain with the author. | `session_turn:codex:01a1bc16-a8bc-7fb2-875b-99b9fa260146:11` |
+| `su-80731b1a-5a63-4d58-8a23-08b7314c14b8` | Completed consult | Reviewer declined an out-of-expertise consult and the canonical cascade advanced to another reviewer; no assigned work remains. | `session_turn:codex:01a1be01-cafe-7f21-a9ef-c47428e5c878:4` |
+| `su-85a8db3e-35ed-4ed3-ab25-13deffefd75a` | Completed | Independent relation/review work completed and returned to its owning author. | `session_turn:codex:01a1ae4d-168d-7cf1-845e-031b250f7d9f:32` |
+| `su-88381578-774d-4697-86d2-0b5aca2faa0b` | Stopped | Original mission stopped; desktop recovery complete and no remaining assignment. | `session_turn:codex:01a193b4-66e7-7aa2-a47a-69f2350c8dea:14` |
+| `su-8838423e-5f2b-4aa3-a9cc-15e6c4cb8916` | Stopped | P012 worker explicitly remains paused pending qualified completion and leader recall. | `session_turn:codex:01a1b786-d717-7453-8e1c-c9222375e26e:33` |
+| `su-89f4c459-af3d-4a13-81e0-80ce7d0c157d` | Owner decision | Recovery is awaiting the original investigator answer and an existing owner scope decision; relay repair is complete and no requests should be resent. | `session_turn:codex:01a1b6c7-442f-7f53-a534-074984210ba3:28` |
+| `su-8a19a37a-a8b8-4a05-86cc-4e5f7a101f23` | Dependency | Guard and source-publication blockers remain recorded; latest wake was a duplicate. | `session_turn:codex:01a1b104-7f92-7201-8d43-635e56d0f66f:29` |
+| `su-8ae71e0a-18f6-4c7f-9ec1-f327f74f560b` | Dependency | P001 parked behind canonical authority repair; existing passing proof retained. | `session_turn:codex:01a1b734-1b2c-7f53-99b3-4e03e8c210ba:26` |
+| `su-8d90595d-7e07-4601-aebf-e504929f414c` | Completed | Requested six-proposal audit was delivered; no paid generation or implementation authorized. | `session_turn:codex:01a19ccf-5aa0-7870-80de-18276f9afb42:21` |
+| `su-8e582458-5f13-475d-8950-77e479c89a18` | Approval | Manual-evidence producer/reader scope decision remains pending. | `session_turn:codex:01a1b4bd-f91c-7923-bf62-ebedb95ec1b1:22` |
+| `su-8fe91556-0a21-4f52-970b-50e387e4f2e9` | Dependency | Relevance-router acceptance still lacks a qualified source/metadata handoff; retained bounded wait and proof are preserved. | `session_turn:codex:01a1bd89-3255-79e2-9b96-af63d839226b:21`; items `WI-6554700010044910` |
+| `su-93304b14-95ce-41d1-a189-f65d51e2acdf` | No assigned work | No declared intent or owned nonterminal item; latest indexed entries are automated generic claimable wakes rather than a new owner-assigned task. | `session_turn:codex:01a10080-4435-7822-8b4f-d82fc7e81227:4071` |
+| `su-9aa0bac1-57ab-408e-a009-fd2b58012aa0` | Dependency | Security prerequisite repair is done; final acceptance awaits the existing publisher’s coherent committed dependency generation and response. | `session_turn:codex:01a1bc59-c1d7-7020-8d83-301c502a3e8c:10` |
+| `su-9ab8c7bf-12d5-412a-aefd-0ec60b3aa6bd` | Dependency | P023 source item is released/blocked with checkpoint intact; staging still reports plan_not_started and leader holds readiness resolution. | `session_turn:codex:01a1bdcf-1864-7c72-8cb0-87db8c9159f0:19` |
+| `su-a387ec94-1295-407c-9ffa-9b7fdec3282a` | Stopped | Prior mission stopped and P010 done; recovered original session is parked. | `session_turn:codex:01a19352-fb06-70a0-a245-f36d6bcee6a5:13` |
+| `su-a6ceed25-c0a5-47e2-b2e4-128468118deb` | Dependency | Own acceptance/recovery qualification remains unverified; the exact recovery-directed wait is active until 02:46 UTC with acceptance holds intact. | `session_turn:codex:01a1bbff-9529-7f61-8c34-dcbff243ef20:49`; items `EI-28246197502770683`, `EI-28019593823641196`, `WI-6554700010045659` |
+| `su-a846e98c-ceaa-4541-9e9d-dccae042d762` | Completed review | Frozen source/input construction critique WI6823 is complete and the report verified; delayed wake already satisfied. | `session_turn:codex:01a1bd5c-8b2f-7ad0-8350-81889f9960f3:10` |
+| `su-a9dd6838-d7d1-4551-bda8-0c0973f44ae7` | Handoff | Current native-cutover custodian explicitly acknowledged custody; original session remains stood down. | `session_turn:codex:01a1bc3a-efcc-7550-9848-86909e73b56c:19` |
+| `su-af1b7858-074d-467c-963e-09e1b1569594` | Approval | Exact migration-hold override approval remains pending; older incident claims released. | `session_turn:codex:01a1b814-2717-7ab0-90ba-b4aefbc6fe8c:21` |
+| `su-b0e4b489-d1bf-4ef8-bfbf-b00468dc485a` | Approval | D049 execution hold and existing Claude funding/acceptance-scope question remain open. | `session_turn:codex:01a1b746-c0d8-7070-8dc3-d8ef4a53b8fd:7` |
+| `su-b5e319b1-640b-4eae-8925-d49f0ae3f4c1` | Completed | Requested comparison of task-drift proposal with existing controls was delivered. | `session_turn:codex:01a1bbb3-b2cd-7323-9921-89475b0a66f9:6` |
+| `su-b6e19e13-3503-4668-b166-9149f58800f9` | Dependency | Source item remains blocked by canonical native execution-guard refusal; existing guard-fix custodian was notified. | `session_turn:codex:01a19cad-d563-74f0-92b7-d812708f9fe6:8` |
+| `su-bbfd627f-1859-4ffe-aa04-8c96b24955ea` | Dependency | Remaining migration/source tasks explicitly blocked on graph/P008 clearance; claims released. | `session_turn:codex:01a1bbae-7ded-7bd1-8676-7cc6b712472e:8` |
+| `su-bd7bb60b-f269-4533-95f8-a01a37d59f27` | Dependency | Discovery P007 still lacks coherent source publication or the existing owner delivery-reference answer. | `session_turn:codex:01a1b8be-ee1c-71c3-8f95-d1ab452afd53:14` |
+| `su-c5362af4-6cef-415f-a035-e3c9721db073` | Completed | Independent review results returned; canonical closure/carry belong to the primary author. | `session_turn:codex:01a1ae56-ef62-7e42-b711-1680f34fddbf:33` |
+| `su-c5b20036-1420-45e1-a14b-60fd21571af8` | Handoff | Saved Bun launcher/acceptance step belongs to the existing original continuation; no duplicate work. | `session_turn:codex:01a18502-257a-73e1-a76b-d82e4b834e10:49` |
+| `su-c8f00255-3179-4638-b737-2d8b7f4e9bae` | Completed | Requested print-mode plan status answer delivered; no ongoing supervisor assigned. | `session_turn:codex:01a1ae0f-ec85-7ab2-a646-490bbe2d8dd7:19` |
+| `su-cb07773a-062a-4438-98cd-3536f249d4cd` | Handoff | Historical native-runtime investigation evidence was sent to the existing investigator. | `session_turn:codex:01a1ac5d-0774-7622-94a0-d516768cc98b:29` |
+| `su-cdb0b3cd-99ae-4a6c-b0bd-b0eeeb342c0f` | Stopped | Prior mission stopped; original desktop session recovered with no remaining assignment. | `session_turn:codex:01a1940c-22f7-7da1-9b9a-3f9d6ca976cd:14` |
+| `su-d243560f-b1c1-4edb-a274-48af04b04486` | Completed review | Independent acceptance-rubric critique WI6720 is complete with committed review evidence; latest wake was a duplicate. | `session_turn:codex:01a1bbde-146a-74a3-9ce1-091ba4a92ab9:10` |
+| `su-d4621aba-f71c-4c5e-83a4-bed0e849ec2c` | Stopped | Prior mission stopped; original identity/fleet/modes recovered with no remaining assignment. | `session_turn:codex:01a193e8-92ed-7181-b824-1d3c1b105192:15` |
+| `su-d715b7b4-8b68-4026-bf09-a537e396f3ed` | Handoff | Exact original payload and evidence were delivered to the requester, who coordinates shared-scorer runtime activation; no new probe or retry assigned here. | `session_turn:codex:01a1b71a-883a-7930-be00-2f10b1dc91ce:13` |
+| `su-dc472ee3-8b14-41cb-94b7-0ce0bef0343b` | Completed | Token-efficiency analysis and explanation were delivered. | `session_turn:codex:01a1b2eb-0d2f-7ad2-add7-ac847b86d843:11` |
+| `su-e1c777ca-8a17-4a4a-83ba-f78ce9d70f45` | Completed review | Review is complete. Owned scorer defect WI6839 is an explicitly future scoped repair, not authorization to expand this review continuation. | `session_turn:codex:01a1bda2-77c7-7c72-a5b3-37c194624838:7`; items `WI-6554700010046839` |
+| `su-e23028fa-5a67-4ebf-8601-7bc05f682bf2` | Stopped | Prior mission stopped; recovered original session has no remaining assignment. | `session_turn:codex:01a19438-2a64-7f11-8061-95df23e58d55:14` |
+| `su-e470543c-3921-4829-84eb-16fe2276cbe7` | Approval | Both CRM items need human credentials/service grant/authorized ingestion contract. | `session_turn:codex:01a19a90-da36-7c20-8d8a-d220fa14e24a:13` |
+| `su-e7fc4eec-64ec-41b0-9183-c200cff046f3` | Stopped | Prior continuation stopped; recovery confirmed and no assignment remains. | `session_turn:codex:01a1945d-fda7-7763-bacf-13b19251c7b8:15` |
+| `su-e8682264-ac17-4824-a076-c59d4778ef0c` | Resumed | Original backup/timeout repair executor replied after the wake, reconciled current preflight/source evidence and recorded exact remaining prerequisites on WI6461#1221092. | `session_turn:codex:01a1bd57-25c6-7681-a00b-b5cb8adf0ef0:22`; items `EI-27672009448091168`, `EI-28233179526314606`, `WI-6554700010046540`, `WI-6554700010046461` |
+| `su-e9c71ba8-ea62-4586-a076-a1a5be80e1e7` | Stopped | Explicit leader scope-stop; resume only on qualified recall. | `session_turn:codex:01a1b732-95e2-7e33-b876-eda713c93099:50` |
+| `su-efd52424-577a-49c0-b739-d8dfd8634a29` | Stopped | BYOC loop intentionally inactive; queued stale wake did not reauthorize old work. | `session_turn:codex:01a19cd1-f804-7382-a552-260a97243c3c:9` |
+| `su-f35ea5bd-64bd-458f-9b27-50a27c1ef7c1` | Handoff | Lead retains P002 and this session’s preparation is complete; no new acceptance handoff. | `session_turn:codex:01a1b690-8726-70f2-881a-29dc048559e2:18` |
+| `su-f3a8f258-3634-464b-965e-0bc281c46b5e` | Completed | Scoped recovery fixes and checkpoint settlement already complete; loop intentionally stopped. | `session_turn:codex:01a1b694-e1d9-7612-a4ba-4a074d19a4a4:7` |
+| `su-f411abea-6a82-499a-b98e-26a249227089` | Runtime dependency | Independent audit stopped because its exact pinned evaluator route timed out; dispatcher must restore that route before lease/currentness/evidence verification. | `session_turn:codex:01a1bdca-9a85-7252-ae84-a9095510d114:4` |
+| `su-f48af9af-e45b-41f6-81f2-548c5a483625` | Completed | Nautilo/DSPy research and requested explanation were delivered; referenced research work-item is terminal. | `session_turn:codex:01a1bc6b-5cb3-7a21-810b-aacdcb22b7be:11` |
+| `su-f700c7ca-fa01-413b-ae1d-68ff08c1ec5d` | Resumed | Original Docker/P012 continuation replied after Escape-before-wake and is reconciling custody before further qualified execution. | `session_turn:codex:01a1b552-3b96-7bf2-a7b7-513af578b0dc:10` |
+| `su-respawn-940e15e8295ae9c36b5eff70110316ec` | Stopped | Fleet is winding down; incomplete source verification preserved for its governing owner. | `session_turn:codex:01a19497-41fe-7612-9d1a-bff529004370:10` |
+
+## Sessions newly parked during the audit
+
+| Agent | Disposition | Reason | Evidence |
+|---|---|---|---|
+| `su-32ef73d7-119c-4839-97cf-351eb9891cf1` | Dependency | Original acceptance awaits metadata repair and a usable qualified dependency artifact from the existing implementers. | `session_turn:codex:01a1bdb3-e057-7f72-a7bb-68950a73a5bd:23` |
+| `su-4055ed75-e29e-4167-bcc0-1373d32f8c8c` | Handoff | Preserve existing shared-chat handoff. The SAME original f700 worker has now resumed; factual recovery notice0163e2ce was delivered without another wake or takeover. | `session_turn:codex:01a1bdbf-8514-75e2-8fce-b372e66b657b:9` |
+| `su-5c46e76e-e3d6-448c-8959-58dcdfb533f9` | Dependency | Own migration/source and writer-adoption work retains qualified-source/runtime blockers; delayed acknowledgement adds no release. | `session_turn:codex:01a1bdff-e670-7f72-8477-21d83367e4c6:9` |
+| `su-6e679303-6697-4c8a-a80b-a74e1c27dfba` | Dependency | Original P008 and detached testing fix await immutable metadata/source qualification; newer dependency wait is active until02:31UTC. | `session_turn:codex:01a1bdf5-f212-7ee3-887b-64466a57491b:17` |
+| `su-78833f4a-47bb-4cc8-a1df-68bb3388ac4a` | Dependency | Source-publication repair remains blocked on the existing publication custodian’s committed-source/schema handback; latest wake repeated already-handled progress. | `session_turn:codex:01a1bdee-2155-7012-8134-75c688d6e468:27` |
+| `su-eddd6b3a-80d1-4989-a66d-294203048308` | Credential | Native response is Not logged in / Please run login; no assigned nonterminal item. No credentials were supplied or changed. | `session_turn:claude:980d7597-6a4e-4081-9060-38195066d47e:1` |
+
+## Coverage and retained source
+
+Coverage verification found91 initial owners,91 unique owner records,zero missing owners,zero evidence-read errors,80 successfully read referenced work-items, and six separately inspected closing-census owners. Each initial owner received a fresh current nonterminal-assignment read and a bounded latest indexed-session read. Selected next-action, blocker and claim reads were used to distinguish actionable work from valid holds.
+
+The complete PG-canonical evidence lives under harness papercusp at `audits/parked-agent-reaudit-20261109-su2ecce/`: `census.json`, all16 `batch-N.json` records, `referenced-work.json`, `classifications.json`, `closing-census.json`, `closing-extra-evidence.json`, `wake-action-receipts.json`, and `pickup-replies.json`. The complete report source is `report.md` in that same artifact namespace. These are durable artifact keys, not temporary terminal spill files.
+
+Verification was operational: canonical rosters, assignments/checkpoints, indexed transcripts, exact owner lock reads, native host-event classifications and direct pickup replies. No repository files were edited; no product tests were run by this audit. Tests mentioned in agent replies remain their own reported proof. This one-time audit ends after confirmed pickup and disposition; no recurring peer monitor was armed.
+

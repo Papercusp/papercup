@@ -2,6 +2,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { astGrepIdentity } from './ast-grep-process.mjs';
+import { sharedSystemShapes, SHARED_SYSTEM_SHAPE_RULES, type SharedSystemShapeId } from './shared-system-shapes.ts';
 
 type Rule = Record<string, unknown>;
 const patterns = (...values: string[]): Rule => ({ any: values.map(pattern => ({ pattern })) });
@@ -20,7 +21,8 @@ export const AGENT_ANTIPATTERN_RULES = [
   { id: 'full-table-read-filter', rule: { pattern: '(await $DB.selectFrom($TABLE).selectAll().execute()).filter($$$A)' }, hint: 'push filtering into the database query' },
 ] as const;
 export type AgentAntipatternId = typeof AGENT_ANTIPATTERN_RULES[number]['id'];
-export interface AgentAntipatternHit { ruleId: AgentAntipatternId; line1: number; text: string; numeric?: number }
+export const AGENT_ADVISORY_RULES = [...AGENT_ANTIPATTERN_RULES, ...SHARED_SYSTEM_SHAPE_RULES];
+export interface AgentAntipatternHit { ruleId: AgentAntipatternId | SharedSystemShapeId; line1: number; text: string; numeric?: number }
 export interface AgentAntipatternResult {
   status: 'measured' | 'unknown'; hits: AgentAntipatternHit[]; beforeSha256: string | null; sha256: string;
   error?: string; truncated: boolean;
@@ -65,13 +67,20 @@ export function introducedAntipatterns(before: AgentAntipatternHit[] | null, aft
   });
 }
 /** Runs in asynchronous preparation/the explicit structural query, never in a PushLeg. */
-export async function agentAntipatterns(before: string | null, after: string, language: 'ts' | 'tsx' = 'ts'): Promise<AgentAntipatternResult> {
+export async function agentAntipatterns(before: string | null, after: string, language: 'ts' | 'tsx' = 'ts',
+  file = language === 'tsx' ? 'edit.tsx' : 'edit.ts',
+  scanAntipatterns?: (source: string, language: 'ts' | 'tsx') => Promise<AgentAntipatternHit[]>): Promise<AgentAntipatternResult> {
   const base = { beforeSha256: before === null ? null : antipatternHash(before), sha256: antipatternHash(after), truncated: false };
   try {
     if (Buffer.byteLength(after) > 100_000 || (before !== null && Buffer.byteLength(before) > 100_000)) throw new Error('source exceeds 100000-byte analysis bound');
-    const parser = await astGrepIdentity();
-    if (!parser.ok) throw new Error(parser.reason);
-    const [old, current] = await Promise.all([before === null ? null : scan(before, language, parser.identity.bin), scan(after, language, parser.identity.bin)]);
+    if (!scanAntipatterns) {
+      const parser = await astGrepIdentity();
+      if (!parser.ok) throw new Error(parser.reason);
+      scanAntipatterns = (source, mode) => scan(source, mode, parser.identity.bin);
+    }
+    const runScan = scanAntipatterns;
+    const scanSource = async (source: string) => [...await runScan(source, language), ...sharedSystemShapes(source, file)];
+    const [old, current] = await Promise.all([before === null ? null : scanSource(before), scanSource(after)]);
     const hits = introducedAntipatterns(old, current);
     return { ...base, status: 'measured', hits: hits.slice(0, 100), truncated: hits.length > 100 };
   } catch (error) { return { ...base, status: 'unknown', hits: [], error: String(error).slice(0, 300) }; }

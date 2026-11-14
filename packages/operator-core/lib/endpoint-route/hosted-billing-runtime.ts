@@ -39,6 +39,7 @@ import { PostgresHostedUsageStore } from '../auth/hosted/billing/usage-store';
 import { defineHostedAllocation, readHostedAllocationReport, readHostedAllocationAccountingExport } from '../auth/hosted/billing/allocation-store';
 import { createOpenRouterHostedUsageCollector } from '../auth/hosted/billing/openrouter-usage';
 import { createHostedUsageSource, type HostedBillingUsageSource, type HostedUsageCollector } from '../auth/hosted/billing/usage-service';
+import type { HostedPoolUsageSource } from '../auth/hosted/billing/pool-usage';
 import { createConfiguredHostedSubscriptionEntitlementProvider, parseHostedPaidEntitlementBundle,
   type HostedSubscriptionEntitlementProvider } from '../auth/hosted/billing/entitlement-seam';
 import { createStripeBillingClient, STRIPE_API_BASE } from '../auth/hosted/billing/stripe-billing-client';
@@ -226,6 +227,8 @@ export interface HostedBillingRuntimeDependencies {
     readonly now: () => number;
   };
   readonly usageCollectors?: readonly HostedUsageCollector[];
+  /** Authenticated pool invoices and achieved usage, for accounting only. */
+  readonly poolUsage?: HostedPoolUsageSource;
   /** Workspace-scoped transaction runner for the default receipts source. */
   readonly runWorkspace?: HostedBillingWorkspaceRunner;
   readonly clock?: () => Date;
@@ -431,6 +434,7 @@ export async function createHostedBillingRuntime(
         : undefined),
     usage: dependencies.usage ?? createHostedUsageSource({
       store: usageStore,
+      poolUsage: dependencies.poolUsage,
       collectors: dependencies.usageCollectors ?? [createOpenRouterHostedUsageCollector({
         store: usageStore, readCredential: dependencies.resolveSecret ?? resolveSecretRef,
         fetch: dependencies.fetchImpl,

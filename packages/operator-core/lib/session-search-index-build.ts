@@ -189,6 +189,22 @@ export const CODE_FAMILIARITY_INDEXES = [
 ] as const satisfies readonly SessionSearchIndexSpec[];
 
 /**
+ * The exact-window recipe outcome report filters the normalized tool door and
+ * bounds workspace/time before grouping receipt call ids. Keep the existing
+ * migration index intact; this alternate order is a measured online candidate.
+ */
+export const RECIPE_OUTCOME_REPORT_INDEXES = [
+  {
+    name: 'tool_invocations_recipe_receipt_window_idx',
+    table: 'harness_shared.tool_invocations',
+    definition:
+      "(workspace_id, invoked_at, ((metadata_json->'otel'->>'callId'))) " +
+      "WHERE lower(replace(replace(tool_name, ':', ''), '_', '')) IN ('coderun', 'recipesrun')",
+    stage: 'corpus',
+  },
+] as const satisfies readonly SessionSearchIndexSpec[];
+
+/**
  * Native dispatch authority rereads the complete exact-call population across
  * scopes. Keep its fingerprint predicates unchanged and build their index online
  * before applying migration 1626 on a populated invocation ledger.
@@ -211,6 +227,7 @@ const ONLINE_SEARCH_INDEXES: readonly SessionSearchIndexSpec[] = [
   ...ISSUE_Q_SEARCH_INDEXES,
   ...TEST_RUNS_SEARCH_INDEXES,
   ...CODE_FAMILIARITY_INDEXES,
+  ...RECIPE_OUTCOME_REPORT_INDEXES,
   ...NATIVE_DISPATCH_FINGERPRINT_INDEXES,
 ];
 

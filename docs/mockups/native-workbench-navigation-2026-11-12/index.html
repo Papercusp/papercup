@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Papercup · Workbench navigation studies</title><link rel="stylesheet" href="style.css"></head>
+<body>
+  <header class="gallery-header"><a class="brand" href="#"><span class="brand-mark">p.</span> papercup <span class="muted">/ workbench</span></a><span class="study-label">INTERACTION STUDIES · 12 NOV 2026</span><span class="sample-badge">Sample workspace</span></header>
+  <main>
+    <section class="intro"><div><p class="eyebrow">LESS FINDING. MORE FLOW.</p><h1>Pick up the thread.</h1><p class="intro-copy">Every conversation, right where you left it. Three ways to move through your work.</p></div><p class="intro-note">Same sessions. Same search.<br>Different ways to stay in context.</p></section>
+    <nav class="directions" aria-label="UI direction"><button data-view="a" aria-pressed="true"><span>A</span><div><b>Quick Switch</b><small>Find, preview, return to work</small></div><i>↗</i></button><button data-view="b" aria-pressed="false"><span>B</span><div><b>Conversation Rail</b><small>Keep your conversations in view</small></div><i>↗</i></button><button data-view="c" aria-pressed="false"><span>C</span><div><b>Task Spaces</b><small>Move with the whole task</small></div><i>↗</i></button></nav>
+    <div class="preview-toolbar"><span id="direction-caption">A compact switcher that gets out of your way.</span><label>Desktop <select id="platform" aria-label="Desktop platform"><option value="linux">Linux</option><option value="mac">macOS</option><option value="windows">Windows</option></select></label></div>
+    <section id="desktop" aria-label="Interactive desktop preview"></section>
+    <footer class="gallery-footer"><p><b>Try it:</b> search “keyboard focus”, preview with ↑ ↓, press Enter to switch or Escape to cancel. Try History and the report link.</p><span>Offline prototype · no live agents or OS actions</span></footer>
+  </main>
+  <div id="announce" class="sr-only" role="status" aria-live="polite"></div>
+  <script src="navigation-model.cjs"></script><script src="app.js"></script>
+</body></html>

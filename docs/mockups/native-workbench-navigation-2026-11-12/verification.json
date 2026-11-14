@@ -1,0 +1,13 @@
+{
+  "captures": [
+    "quick-switch.png",
+    "conversation-rail.png",
+    "task-spaces.png",
+    "transcript-search.png",
+    "report-handoff.png"
+  ],
+  "browserErrors": [],
+  "externalRequests": [],
+  "narrowOverflow": false,
+  "purpose": "Sample-data interaction studies; not native acceptance."
+}

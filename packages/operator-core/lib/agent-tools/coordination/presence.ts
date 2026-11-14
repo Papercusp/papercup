@@ -243,6 +243,19 @@ export async function writePresence(
     },
     undefined,
   );
+  // EI-28597676601457969: the execution guard reads BOTH the durable brief
+  // and its control-state projection. Refresh after the brief write so a
+  // truthful scope change cannot leave the previous plan blocking new work.
+  // Derive from canonical claims too: declaring ad-hoc prose never releases a
+  // held lane. The existing bounded refresh leaves the old anchor intact on
+  // an unreadable authority leg, preserving the guard's fail-closed refusal.
+  await refreshControlAnchorAfterMutation({
+    ownerId: identity.ownerId,
+    workspaceId: identity.workspaceId ?? 'default',
+    origin: 'agent',
+    actorId: identity.ownerId,
+    source: 'control-anchor:reconcile',
+  });
   return previousIntent;
 }
 

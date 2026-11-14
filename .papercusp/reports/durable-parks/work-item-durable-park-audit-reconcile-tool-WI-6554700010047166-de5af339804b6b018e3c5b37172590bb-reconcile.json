@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010047166:de5af339804b6b018e3c5b37172590bb",
+  "inputSha256": "de5af339804b6b018e3c5b37172590bbec3696df6445a88a0e8a313eca8465a7",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-10T10:17:48.152Z",
+  "actor": "su-fb2cefd9-1621-458e-8bea-d3bf7a6dfd33",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010047166",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "c0079170f44d53d57ff0a76e6329163c85ff21d52dc633af2406dbb45cff84d7",
+      "observedParkFingerprint": "c0079170f44d53d57ff0a76e6329163c85ff21d52dc633af2406dbb45cff84d7",
+      "reasonCode": "operator-directed",
+      "evidence": "Apply OWN NEW P002-only preview c0079170f44d53d57ff0a76e6329163c85ff21d52dc633af2406dbb45cff84d7/wouldClear:true/no lease/takenBy:null under full one-work-graph-structured-holds-2026-10-26#D-047 v109/hashc85326da4b34b1983a3d01482d41a5ff74798da9108c7ca2ca6f0af88562fdee. Originalfb2ce identity/custody WI-6554700010047140 verified; unchanged exact migration:D011/P008 park03:15:12.368Z, P002/WI-6554700010047166 unassigned. P001 DONE inventoryhandoff/manifest-v2 SHA005f406105a4f56a1714b0c298a8fe664e3e7b10f93b5d8d1425633f44fd8baf only. Current plan52/hashdd8b700a418b3f23a6e47ec958eb4ad41f79c59754716040ea5db5824a9b0bf5 actualexecutionREADYtrue/blockers[], P002TODO/unresolvedBlockers[]. Full source-reviewed contract50/hashb28fd104a783aab8bf8ad712ff3756abd2f0009751cfdc91eef29cb0e8d8b2cc and exact reviews1223288/1223285/meta1223277/specSet99ac478ff02d707a3f956f7dc00d96dd9bee1be0a6612997081b2eb25ab22b68 retained. Preserve separate plan-lane external blocker/currentstatus; ordinary canonicalstart/claim/READY/manual locks remain required. Eight later parks/globalP008SOURCEBENCH/all runtimeacceptanceshipment proof unchanged. No force/takeover/rawmetadata/statuserasure/stampbypass.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010047166-de5af339804b6b018e3c5b37172590bb-reconcile.json"
+}

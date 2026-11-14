@@ -52,8 +52,11 @@ const source: ConnectorSourceRow = {
 
 class FakeSocket implements IngressSocketLike {
   readonly sent: string[] = [];
+  readonly pings: string[] = [];
   readonly order: string[];
   closed = false;
+  terminated = false;
+  autoPong = true;
   private readonly listeners = new Map<string, Array<(...args: any[]) => void>>();
   constructor(readonly url: string, order: string[]) { this.order = order; }
   on(event: string, listener: (...args: any[]) => void): void {
@@ -65,6 +68,14 @@ class FakeSocket implements IngressSocketLike {
   send(payload: string): void {
     this.sent.push(payload);
     this.order.push(`ack:${payload}`);
+  }
+  ping(payload: string): void {
+    this.pings.push(payload);
+    if (this.autoPong) this.emit('pong', Buffer.from(payload));
+  }
+  terminate(): void {
+    this.terminated = true;
+    this.close();
   }
   close(): void {
     if (this.closed) return;
@@ -274,6 +285,92 @@ describe('provider socket ingress (P-003, D-009)', () => {
     await h.manager.reconcile();
     expect(h.sockets).toHaveLength(1);
     now += 1_500;
+    await h.manager.reconcile();
+    expect(h.sockets).toHaveLength(2);
+  });
+
+  it('retires a silently dead socket, backs off once, and admits records on its replacement', async () => {
+    let now = 0;
+    const h = harness({ now: () => now, records: () => [record('after-half-open')] });
+    await h.manager.reconcile();
+    const old = h.sockets[0]!;
+    old.autoPong = false;
+    old.emit('open');
+
+    now = 30_000;
+    await h.manager.reconcile();
+    expect(old.pings).toHaveLength(1);
+    expect(old.closed).toBe(false);
+    now = 60_000;
+    await h.manager.reconcile();
+    expect(old.terminated).toBe(true);
+    expect(h.manager.size).toBe(0);
+    expect(h.health.at(-1)).toEqual({ status: 'degraded', lastError: 'socket_pong_timeout' });
+    expect(h.sockets).toHaveLength(1);
+
+    now += 1_000;
+    await h.manager.reconcile();
+    expect(h.sockets).toHaveLength(2);
+    const fresh = h.sockets[1]!;
+    fresh.emit('open');
+    fresh.emit('message', JSON.stringify({ type: 'events_api', envelope_id: 'after-half-open' }));
+    await vi.waitFor(() => expect(h.admitted.map(r => r.nativeId)).toEqual(['after-half-open']));
+    expect(h.health.at(-1)).toEqual({ status: 'connected', lastError: null, connected: true });
+    expect(h.invokes).toHaveLength(1);
+  });
+
+  it('keeps an idle socket alive on matching native pongs without normalizing control frames', async () => {
+    let now = 0;
+    const h = harness({ now: () => now });
+    await h.manager.reconcile();
+    const socket = h.sockets[0]!;
+    socket.emit('open');
+    for (let i = 0; i < 4; i += 1) {
+      now += 30_000;
+      await h.manager.reconcile();
+    }
+    expect(socket.pings).toHaveLength(4);
+    expect(new Set(socket.pings).size).toBe(4);
+    expect(socket.closed).toBe(false);
+    expect(h.sockets).toHaveLength(1);
+    expect(h.invokes).toEqual([]);
+    expect(h.admitted).toEqual([]);
+    expect(socket.sent).toEqual([]);
+  });
+
+  it('does not let an unrelated or old pong discharge the current probe', async () => {
+    let now = 0;
+    const h = harness({ now: () => now });
+    await h.manager.reconcile();
+    const socket = h.sockets[0]!;
+    socket.autoPong = false;
+    socket.emit('open');
+    now = 30_000;
+    await h.manager.reconcile();
+    socket.emit('pong', Buffer.from(socket.pings[0]!));
+    now = 60_000;
+    await h.manager.reconcile();
+    socket.emit('pong', Buffer.from(socket.pings[0]!));
+    socket.emit('pong', Buffer.from('unrelated'));
+    now = 90_000;
+    await h.manager.reconcile();
+    expect(socket.terminated).toBe(true);
+    expect(h.health.at(-1)?.lastError).toBe('socket_pong_timeout');
+  });
+
+  it('retires a transport whose native ping throws through the same retry path', async () => {
+    let now = 0;
+    const h = harness({ now: () => now });
+    await h.manager.reconcile();
+    const socket = h.sockets[0]!;
+    socket.emit('open');
+    vi.spyOn(socket, 'ping').mockImplementation(() => { throw new Error('control_frame_send_failed'); });
+    now = 30_000;
+    await h.manager.reconcile();
+    expect(socket.terminated).toBe(true);
+    expect(h.health.at(-1)).toEqual({ status: 'degraded', lastError: 'control_frame_send_failed' });
+    expect(h.sockets).toHaveLength(1);
+    now += 1_000;
     await h.manager.reconcile();
     expect(h.sockets).toHaveLength(2);
   });

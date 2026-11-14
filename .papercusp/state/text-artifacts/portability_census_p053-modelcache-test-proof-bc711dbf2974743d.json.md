@@ -1,0 +1,7 @@
+---
+rel_path: "portability/census/p053-modelcache-test-proof-bc711dbf2974743d.json"
+updated_at: 1794200335654
+_body: "content"
+---
+
+{"scope": "Focused census producer/CLI regression only", "originRunId": "ec45ac79-c600-42d0-b70d-73a2b8c7fba1", "runId": "1b04c3ed-e12a-48f5-8836-68d27088e3af", "status": "pass", "exitCode": 0, "manifestPath": "/home/marsh-office/.papercusp/test-artifacts/testing-run/run-CzwMst/manifest.json", "manifestSha256": "88533a30d6ad3751bec01356b4fc2c7f38f5cc70f678b50d927b57c1ea220ccc", "result": {"ok": true, "runId": "1b04c3ed-e12a-48f5-8836-68d27088e3af", "root": "/home/marsh-office/papercupai-workspace/papercusp", "passed": 83, "failed": 0, "skipped": 0, "files": 2, "failures": [], "failuresTruncated": false, "durationMs": 20963, "byFile": {"packages/operator-core/lib/backup/state-census-cli.test.ts": {"passed": 9, "failed": 0, "skipped": 0, "collectionFailed": false}, "packages/operator-core/lib/backup/state-census-producers.test.ts": {"passed": 74, "failed": 0, "skipped": 0, "collectionFailed": false}}}, "childState": "closed", "cleanup": {"complete": true, "databases": [], "errors": []}, "sourceSha256": {"packages/operator-core/lib/backup/state-census-producers.ts": "9a825439ed1062b75cc378934d928b63e7ccd43c498571cff094edc3232fdd01", "packages/operator-core/lib/backup/state-census-producers.test.ts": "e68db3b3f85be394e15dd2c2ea6e8a87a63fdd5a3cc6692409dbcd53c336dd76"}, "wholeInstallVerified": false}

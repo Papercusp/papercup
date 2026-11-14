@@ -731,7 +731,7 @@ function projectRecovery(rec: unknown, c: Caps): unknown {
     // canonical harness may differ from the reading session's scope.
     const more =
       typeof h.id === 'string'
-        ? workItemFetchHint(h.id, typeof h.harness === 'string' ? h.harness : null)
+        ? workItemFetchHint(h.id, typeof h.harness === 'string' ? h.harness : null, 'continuation')
         : undefined;
     const ckpt = recapDisclosed(h.checkpoint, h.checkpointTruncated, c.recoveryCheckpoint, more);
     const body = recapDisclosed(h.body, h.bodyTruncated, c.recoveryBody, more);

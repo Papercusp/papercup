@@ -72,10 +72,10 @@ export interface FleetLivenessComposition {
   byState: Partial<Record<SessionState, number>>;
   /** Counted rows whose `sessionState` did not resolve. */
   unknown: number;
-  /** Rows with `sessionState: 'live'` — the only ones that are taking turns. */
-  live: number;
-  /** `live / counted`, 0 when nothing was counted. */
-  liveShare: number;
+  /** Total live rows; null when any verdict is unresolved. Known rows remain in byState. */
+  live: number | null;
+  /** `live / counted`, 0 for an empty population, null when liveness is incomplete. */
+  liveShare: number | null;
   /**
    * True when the `live` rows are not a MAJORITY of the counted ones — i.e.
    * exactly when reading this count as a measure of activity would overstate it.
@@ -83,14 +83,13 @@ export interface FleetLivenessComposition {
    * number without the caveat being in reach.
    *
    * The boundary is `live * 2 <= counted`, not `<`: at exactly half, the total
-   * still overstates activity twofold, which is material. `unknown` rows count
-   * against liveness for the same reason they get their own bucket — an
-   * unresolved verdict is not evidence of work, and crediting it to `live` would
-   * silence the caveat on precisely the reads that are least certain.
+   * still overstates activity twofold, which is material. An unresolved verdict
+   * is evidence of neither activity nor inactivity, so this judgment is null
+   * while any remain.
    */
-  overstatesActivity: boolean;
+  overstatesActivity: boolean | null;
   /**
-   * The caveat AS TEXT, present only when `overstatesActivity`.
+   * The caveat AS TEXT, present when activity is overstated or unmeasured.
    *
    * This is not decoration. `renderPopulationCensus` has no callers — the census
    * reaches agents as a JSON OBJECT on `summary.population`, so a caveat that
@@ -123,15 +122,21 @@ export function composeLiveness<T>(
     if (state == null) unknown += 1;
     else byState[state] = (byState[state] ?? 0) + 1;
   }
-  const live = byState.live ?? 0;
-  const overstatesActivity = rows.length > 0 && live * 2 <= rows.length;
+  const live = unknown > 0 ? null : byState.live ?? 0;
+  const overstatesActivity = live === null ? null : rows.length > 0 && live * 2 <= rows.length;
   return {
     byState,
     unknown,
     live,
-    liveShare: rows.length > 0 ? live / rows.length : 0,
+    liveShare: live === null ? null : rows.length > 0 ? live / rows.length : 0,
     overstatesActivity,
-    ...(overstatesActivity
+    ...(unknown > 0
+      ? {
+          note:
+            `Liveness is unmeasured for ${unknown} of ${rows.length} counted sessions; ` +
+            `the total live count and share are unknown. This population size is not an activity measure.`,
+        }
+      : overstatesActivity
       ? {
           note:
             `only ${live} of ${rows.length} are live (sessionState) — this count is a POPULATION ` +
@@ -571,6 +576,7 @@ function renderLiveness(counted: number, liveness: FleetLivenessComposition): st
     ...(liveness.unknown > 0 ? [`${liveness.unknown} unknown`] : []),
   ];
   const head = `of the ${counted} counted: ${split.join(', ')}`;
+  if (liveness.live === null || liveness.liveShare === null) return `${head} — ${liveness.note}`;
   if (!liveness.overstatesActivity) return head;
   const pct = Math.round(liveness.liveShare * 100);
   return (

@@ -23,6 +23,15 @@ export function registerBuiltInIntents(): void {
     if (!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) throw new Error('native desktop client required');
     const { commands } = await import('../tauri-bindings');
     if (args.action === 'list') return commands.listWindowsByTitle('Papercup — ');
+    if (args.action === 'open_route') {
+      if (typeof args.expiresAt !== 'number' || !Number.isFinite(args.expiresAt) || args.expiresAt <= Date.now()) throw new Error('desktop route request expired');
+      const route = desktopHandoffRoute(args.route, window.location.href);
+      // Reuse the native palette→main-window route, including restoration and
+      // the existing GUI/Server cross-process handoff. This is a request receipt,
+      // not a claim that the report finished rendering.
+      await commands.openRouteInApp(route);
+      return { protocol: 'desktop-route-v1', requested: true, route };
+    }
     if (args.action !== 'focus' || typeof args.title !== 'string' || !args.title || args.title.length > 1024) throw new Error('exact native window title required');
     if (typeof args.expiresAt !== 'number' || !Number.isFinite(args.expiresAt) || args.expiresAt <= Date.now()) throw new Error('native focus request expired');
     const workspace = args.workspace ?? 'window';
@@ -141,4 +150,21 @@ export function registerBuiltInIntents(): void {
     },
     { builtIn: true },
   );
+}
+
+/** Root-relative workspace routes only. A link can navigate; it cannot select
+ * an external origin, scheme or another workspace implicitly. */
+export function desktopHandoffRoute(input: unknown, currentHref: string): string {
+  if (typeof input !== 'string' || input.length > 4096 || !input.startsWith('/') || input.startsWith('//') || /[\\\u0000-\u0020\u007f]/.test(input)) throw new Error('desktop route must be an app-relative path');
+  const current = new URL(currentHref);
+  const next = new URL(input, current);
+  if (next.origin !== current.origin) throw new Error('desktop route must remain in this app');
+  const workspace = current.searchParams.get('ws');
+  const requestedWorkspace = next.searchParams.get('ws');
+  if (requestedWorkspace && requestedWorkspace !== workspace) throw new Error('desktop route belongs to another workspace');
+  if (workspace && !requestedWorkspace) next.searchParams.set('ws', workspace);
+  // Historical report links must reach the canonical Reports reader.
+  const legacy = /^\/reports\/(rpt_[A-Za-z0-9-]+)$/.exec(next.pathname);
+  if (legacy) { next.pathname = '/reports'; next.searchParams.set('sel', legacy[1]!); }
+  return `${next.pathname}${next.search}${next.hash}`;
 }

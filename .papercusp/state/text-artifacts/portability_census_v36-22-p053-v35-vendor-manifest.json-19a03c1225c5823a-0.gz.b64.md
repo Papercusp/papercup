@@ -1,0 +1,7 @@
+---
+rel_path: "portability/census/v36-22-p053-v35-vendor-manifest.json-19a03c1225c5823a-0.gz.b64"
+updated_at: 1794238365150
+_body: "content"
+---
+
+H4sIAAAAAAAC/7WS3W6DMAxGXwVxXUgYf1pfZZpQCFmJBElmG9pp6ruPpqJdtd1QKbeWjn386Xv7jtFOIFW8j+KeyOGeMRDH9KCpn9oJFUhrSBlKpR2ZdcoIzaTt1InBhJTMPM2qOuXXWQLIkAQphiCZE9RjChjvovhDD/4Go9Exx8s8mfMymZXpLCQr23i2WdjmN9t+kcIFfnktz7sopDF+DprUk8oP8M2ZZzwPYi0tXKW1WRyGQZC2ptHdJvvLEi///5L1i6LMw0Qv4MD9E4NuN4lfQC9+B1fZnJdFEbgoMBnS47NNeaRvVanrKnTBt8Z8d/6bc51l1fn9B/fhHsVCBAAA

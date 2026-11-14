@@ -5,6 +5,7 @@ import { installedRootCensusProducers, postgresStorageDeclaration, gitStorageDec
 import { readdir, lstat, readFile, open } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { homedir } from 'node:os';
+import { papercuspHome } from '@papercusp/host-platform/home';
 import { join, relative, dirname, basename, sep, isAbsolute } from 'node:path';
 import { workspacesRoot, readRegistry, DEFAULT_WORKSPACE_ID } from '../packages/operator-core/lib/workspace-registry';
 import { defaultClonesDir } from '../packages/operator-core/lib/harness/clone-github';
@@ -20,12 +21,23 @@ import { historicalGitBlobIdentityResolver, workspaceTemplateStoreCensusProducer
 import { fileURLToPath } from 'node:url';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { reapArchiveCensusProducer, maintenanceDatabaseCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
-import { historicalHostedProfileCensusProducer, historicalPlaywrightStateCensusProducer, historicalStripeConfigCensusProducer, readHistoricalCensusWriterCandidates, recoverHistoricalCensusWriterEvidence, type HostedProfileWriterEvidence, type PlaywrightStateWriterEvidence } from '../packages/operator-core/lib/backup/state-census-producers';
+import { historicalHostedProfileCensusProducer, historicalPlaywrightStateCensusProducer, historicalStripeConfigCensusProducer, historicalVerifierArtifactCensusProducer, readHistoricalCensusWriterCandidates, recoverHistoricalCensusWriterEvidence, type HostedProfileWriterEvidence, type PlaywrightStateWriterEvidence } from '../packages/operator-core/lib/backup/state-census-producers';
 import { papercuspRoot, papercuspRootForWorkspace } from '../packages/operator-core/lib/papercusp-root';
 import { checkpointLogDirFromEnv } from '../packages/operator-core/lib/release/checkpoint-log-dir';
 import { taskTerminalEventKey } from '../packages/operator-core/lib/task-manager/task-terminal-events';
 import { TERMINAL_TASK_STATES } from '../packages/operator-core/lib/task-manager/types';
+import type { ReapKind } from '../packages/operator-core/lib/task-manager/reaper';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+
+// Match the canonical writer's outcome kinds exhaustively. A new writer kind
+// must be reconciled here rather than silently leaving its archived tails unknown.
+const reaperOutcomeKinds: Record<ReapKind, true> = {
+  'terminal-residue': true,
+  'orphaned-sidecar': true,
+  'managed-residue': true,
+  'consult-settled': true,
+  'quiet-zombie': true,
+};
 
 /** Recover exact reaper identities even after terminal task-ledger retention.
  * A terminal latch proves writer identity, not tail contents or a successful task.
@@ -99,7 +111,7 @@ export async function readRetainedReapTaskIds(
   // preserve exact task identities after ledger GC, independently of filenames.
   // A failed stop can also have an archived tail; this proves identity only.
   const outcomePattern = '[✓✗] (' + unproven.map(id => id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
-    + ') \\((terminal-residue|managed-residue|consult-settled|quiet-zombie)\\)';
+    + ') \\((' + Object.keys(reaperOutcomeKinds).join('|') + ')\\)';
   const readReaperMessages = readers.readReaperMessages ?? (async scopes => {
     const sql = readers.terminalSql ?? postgres(getHarnessAdminUrl(), { max: 1, connect_timeout: 5 });
     try {
@@ -288,6 +300,9 @@ stage('affected-test-cache');
 const affectedCache = await affectedTestCacheCensusProducer();
 stage('workspace-setup-homes');
 const setupHomes = await readWorkspaceSetupHomes(readRegistry().workspaces);
+stage('historical-verifier-artifacts');
+const historicalVerifier = await historicalVerifierArtifactCensusProducer(playwrightEvidence,
+  [...new Set([papercuspHome(), join(homedir(), '.papercusp'), ...setupHomes.roots.map(root => root.path)])]);
 stage('runtime-sidefiles');
 const sidefiles = await runtimeSidefileCensusProducer(undefined, undefined,
   setupHomes.roots.map(root => root.path), setupHomes.roots.map(root => root.path));
@@ -302,8 +317,8 @@ stage('plan-template-store');
 const planTemplateStore = await planTemplateStoreCensusProducer();
 const hostCatalogs = args.includes('--host-catalogs');
 const checkpointLogDir = options.checkpointLogDir ?? checkpointLogDirFromEnv();
-const completedProducers = mergeNestedCensusRoots({ roots: [...installed.roots, ...affectedCache.roots, ...sidefiles.roots, ...setupHomes.roots, ...templateStore.roots, ...workspaceTemplateStores.roots, ...planTemplateStore.roots,
-  { id: 'checkpoint-logs-parent', path: dirname(checkpointLogDir) }], declarations: [...installed.declarations, ...affectedCache.declarations, ...sidefiles.declarations, ...setupHomes.declarations, ...templateStore.declarations, ...workspaceTemplateStores.declarations, ...planTemplateStore.declarations, {
+const completedProducers = mergeNestedCensusRoots({ roots: [...installed.roots, ...historicalVerifier.roots, ...affectedCache.roots, ...sidefiles.roots, ...setupHomes.roots, ...templateStore.roots, ...workspaceTemplateStores.roots, ...planTemplateStore.roots,
+  { id: 'checkpoint-logs-parent', path: dirname(checkpointLogDir) }], declarations: [...installed.declarations, ...historicalVerifier.declarations, ...affectedCache.declarations, ...sidefiles.declarations, ...setupHomes.declarations, ...templateStore.declarations, ...workspaceTemplateStores.declarations, ...planTemplateStore.declarations, {
   kind: 'path', root: 'checkpoint-logs-parent', name: basename(checkpointLogDir), classification: 'state',
   producer: 'green-checkpoint-log-writer', descendants: true,
   retainedSubtree: { evidenceRef: 'release-config:checkpointLogDir' },
@@ -313,8 +328,10 @@ const completedProducers = mergeNestedCensusRoots({ roots: [...installed.roots, 
 const unitDeclarations: CensusDeclaration[] = [];
 if (hostCatalogs) {
   stage('installed-unit-environment');
-  for (const scope of ['user', 'system'] as const) unitDeclarations.push(...await installedUnitCensusDeclarations(scope));
-  completedProducers.declarations.push(...await unitEnvironmentFileCensusDeclarations(unitDeclarations, completedProducers.roots));
+  for (const scope of ['user', 'system'] as const) {
+    for (const declaration of await installedUnitCensusDeclarations(scope)) unitDeclarations.push(declaration);
+  }
+  for (const declaration of await unitEnvironmentFileCensusDeclarations(unitDeclarations, completedProducers.roots)) completedProducers.declarations.push(declaration);
 }
 await options.onDiscoverySnapshot?.({ phase: 'before-account-credentials',
   ...structuredClone({ ...completedProducers, catalogEntries: [] }) });
@@ -333,10 +350,10 @@ const migrationSources: MigrationCensusSource[] = [];
 if (hostCatalogs) {
   stage('migration-sources');
   const { loadHarnessRegistry } = await import('../packages/operator-core/lib/harness-registry');
-  migrationSources.push(...await canonicalSqlMigrationCensusSources());
+  for (const source of await canonicalSqlMigrationCensusSources()) migrationSources.push(source);
   for (const workspace of readRegistry().workspaces) {
     const registry = await loadHarnessRegistry(workspace.id, { fresh: true });
-    migrationSources.push(...await registeredProjectMigrationSources(registry.projects));
+    for (const source of await registeredProjectMigrationSources(registry.projects)) migrationSources.push(source);
   }
 }
 if (args.includes('--restore-events') || hostCatalogs) {
@@ -344,20 +361,23 @@ if (args.includes('--restore-events') || hostCatalogs) {
   const sql = postgres(getHarnessAdminUrl(), { max: 1, connect_timeout: 5 });
   try {
     for (const workspace of readRegistry().workspaces) {
-      declarations.push(...await restoredCloneCensusDeclarations(sql, workspace.id, join(workspacesRoot(), workspace.id), producers.roots));
+      for (const declaration of await restoredCloneCensusDeclarations(sql, workspace.id, join(workspacesRoot(), workspace.id), producers.roots)) declarations.push(declaration);
     }
     if (hostCatalogs) {
       const databases = await physicalDatabaseCensusEntries(sql);
-      catalogEntries.push(...databases);
-      declarations.push(...integrationBaselineCensusDeclarations(databases));
-      if (databases.length) declarations.push(...await maintenanceDatabaseCensusDeclarations(sql, databases[0].root));
-      if (databases.length) declarations.push(...await templateDatabaseCensusDeclarations(sql, databases[0].root));
-      if (databases.length) declarations.push(...configuredOperatorDatabaseCensusDeclarations(databases[0].root, getHarnessAdminUrl()));
-      for (const scope of ['user', 'system'] as const) {
-        catalogEntries.push(...await unitCensusEntries(scope));
+      for (const database of databases) catalogEntries.push(database);
+      for (const declaration of integrationBaselineCensusDeclarations(databases)) declarations.push(declaration);
+      if (databases.length) {
+        for (const declaration of await maintenanceDatabaseCensusDeclarations(sql, databases[0].root)) declarations.push(declaration);
+        for (const declaration of await templateDatabaseCensusDeclarations(sql, databases[0].root)) declarations.push(declaration);
+        for (const declaration of configuredOperatorDatabaseCensusDeclarations(databases[0].root, getHarnessAdminUrl())) declarations.push(declaration);
       }
-      migrationSources.push(...await registeredProjectMigrationSources([], unitDeclarations));
-      declarations.push(...unitDeclarations, ...await unitDatabaseCensusDeclarations(unitDeclarations, databases, getHarnessAdminUrl(), producers.roots.map(root => root.path)));
+      for (const scope of ['user', 'system'] as const) {
+        for (const entry of await unitCensusEntries(scope)) catalogEntries.push(entry);
+      }
+      for (const source of await registeredProjectMigrationSources([], unitDeclarations)) migrationSources.push(source);
+      for (const declaration of unitDeclarations) declarations.push(declaration);
+      for (const declaration of await unitDatabaseCensusDeclarations(unitDeclarations, databases, getHarnessAdminUrl(), producers.roots.map(root => root.path))) declarations.push(declaration);
       // Catalog only declared secret paths that exist; never read their values.
       // Unknown secret locations still appear as filesystem residue.
       const secretPaths = producers.declarations.filter(entry => entry.classification === 'secret');
@@ -581,9 +601,9 @@ if (hostCatalogs && migrationSources.length) {
     const sql = postgres(url.toString(), { max: 1, connect_timeout: 5 });
     try {
       const rows = await readMigrationCensusColumns(sql, migrationSources);
-      declarations.push(...migrationDatabaseCensusDeclarations(database,
+      for (const declaration of migrationDatabaseCensusDeclarations(database,
         [...new Set(rows.map(row => `${row.table_schema}.${row.table_name}`))], migrationSources,
-        rows.map(row => ({ table: `${row.table_schema}.${row.table_name}`, name: row.column_name, type: row.data_type, udtSchema: row.udt_schema, udtName: row.udt_name }))));
+        rows.map(row => ({ table: `${row.table_schema}.${row.table_name}`, name: row.column_name, type: row.data_type, udtSchema: row.udt_schema, udtName: row.udt_name })))) declarations.push(declaration);
     } finally { await sql.end(); }
   }
 }

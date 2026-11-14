@@ -44,6 +44,32 @@ describe('lint:no-hand-rolled-cli-entry — predicate controls', () => {
     expect(findGuards(source)).toEqual([]);
   });
 
+  it('finds a raw comparison hidden behind a two-argument helper', () => {
+    const source = `
+      function isInvokedDirectly(argv1, moduleUrl) {
+        if (!argv1) return false;
+        try { return realpathSync(argv1) === realpathSync(fileURLToPath(moduleUrl)); }
+        catch { return false; }
+      }
+      if (isInvokedDirectly(process.argv[1], import.meta.url)) main();
+    `;
+    expect(findGuards(source).map((hit: { kind: string; line: number }) => [hit.kind, hit.line]))
+      .toEqual([['file-url-to-path', 7]]);
+  });
+
+  it('follows reversed helper arguments and ignores unrelated calls and quoted helpers', () => {
+    const source = `
+      function direct(url, entry) { return resolve(fileURLToPath(url)) === resolve(entry); }
+      const prose = 'direct(import.meta.url, process.argv[1])';
+      direct(otherUrl, process.argv[1]);
+      if (direct(import.meta.url, process.argv[1])) main();
+    `;
+    expect(findGuards(source).map((hit: { kind: string; line: number }) => [hit.kind, hit.line]))
+      .toEqual([['file-url-to-path', 5]]);
+    expect(findGuards(`function unrelated(a, b) { return a === b; }
+      unrelated(process.argv[1], import.meta.url);`)).toEqual([]);
+  });
+
   it('does not flag the sanctioned helper call', () => {
     expect(findGuards("if (isCliEntry(import.meta.url)) main();")).toEqual([]);
   });

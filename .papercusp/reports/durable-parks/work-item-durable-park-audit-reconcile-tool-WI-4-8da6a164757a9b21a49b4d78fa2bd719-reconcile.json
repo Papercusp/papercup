@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-4:8da6a164757a9b21a49b4d78fa2bd719",
+  "inputSha256": "8da6a164757a9b21a49b4d78fa2bd7197f7d8220b5bb32a4a597ad7b72c2cacd",
+  "workspaceId": "default",
+  "harnessSlug": "blocker-boundaries",
+  "generatedAt": "2026-11-13T19:33:49.203Z",
+  "actor": "su-blocker-boundaries",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-4",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "4fd6b253b2d9831ff1c5971728cb3bdcae78c2eb87ea8fc5d92e563684dcce25",
+      "observedParkFingerprint": "4fd6b253b2d9831ff1c5971728cb3bdcae78c2eb87ea8fc5d92e563684dcce25",
+      "reasonCode": "operator-directed",
+      "evidence": "Isolated fixture: exact migration-only adoption after prerequisite completion",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-4-8da6a164757a9b21a49b4d78fa2bd719-reconcile.json"
+}

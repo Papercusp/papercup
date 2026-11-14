@@ -76,6 +76,8 @@ let wsPort: number;
 let opens: Array<{ requestedUrl: string; method: string; authorization: string | null }>;
 let serverSockets: ServerSocket[];
 let acks: string[];
+let pings: string[];
+let respondToPings: boolean;
 
 // What provider code saw, and what the host did.
 let invocations: ProviderInvokeRequest[];
@@ -126,9 +128,10 @@ function chatRecord(channel: string, ts: string, text: string): ProviderRecord {
   };
 }
 
-function startManager(): ProviderSocketIngressManager {
+function startManager(now?: () => number): ProviderSocketIngressManager {
   manager = new ProviderSocketIngressManager({
     sql,
+    ...(now ? { now } : {}),
     workspaceId: () => WS,
     registry: async () => registry,
     // The descriptor's https open URL is answered by the local stand-in.
@@ -215,12 +218,16 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve));
   httpPort = (http.address() as AddressInfo).port;
 
-  wss = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  wss = new WebSocketServer({ host: '127.0.0.1', port: 0, autoPong: false });
   await new Promise<void>((resolve) => wss.once('listening', () => resolve()));
   wsPort = (wss.address() as AddressInfo).port;
   wss.on('connection', (socket) => {
     serverSockets.push(socket);
     socket.on('message', (data) => acks.push(data.toString()));
+    socket.on('ping', (data) => {
+      pings.push(data.toString());
+      if (respondToPings) socket.pong(data);
+    });
     socket.send(JSON.stringify({ type: 'hello', num_connections: 1 }));
   });
 });
@@ -238,6 +245,8 @@ beforeEach(async () => {
   opens = [];
   serverSockets = [];
   acks = [];
+  pings = [];
+  respondToPings = true;
   invocations = [];
   admissions = [];
   logs = [];
@@ -304,6 +313,38 @@ describe('provider socket ingress (P-003, D-009)', () => {
     // A disconnect notice is control traffic: it is neither acked nor normalized.
     expect(acks).toEqual([JSON.stringify({ envelope_id: 'env-3' })]);
     expect(invocations.some((call) => (call.args.envelope as { type: string }).type === 'disconnect')).toBe(false);
+  });
+
+  it('detects a silent peer, replaces the real socket, and resumes durable admission', async () => {
+    let now = 0;
+    const sourceId = await pasteCredential(await newOwner(), GOOD_TOKEN);
+    const driver = startManager(() => now);
+    await driver.reconcile();
+    await waitFor('the first socket to connect', () => serverSockets[0]);
+    await waitFor('the source to report connected', async () => (await source(sourceId)).status === 'connected');
+    respondToPings = false;
+    now = 30_000;
+    await driver.reconcile();
+    await waitFor('the native transport probe to reach the peer', () => pings.length === 1);
+    now = 60_000;
+    await driver.reconcile();
+    expect(driver.size).toBe(0);
+    await waitFor('the silent transport failure to become visible', async () =>
+      (await source(sourceId)).last_error === 'socket_pong_timeout');
+    expect((await source(sourceId)).status).toBe('degraded');
+    expect(opens).toHaveLength(1);
+
+    respondToPings = true;
+    now += 1_000;
+    await driver.reconcile();
+    const vendor = await waitFor('the replacement socket to connect', () => serverSockets[1]);
+    await waitFor('the recovered source to report connected', async () => (await source(sourceId)).status === 'connected');
+    vendor.send(JSON.stringify(messageEnvelope('env-recovered', '1700000002.000300', 'after silent peer recovery')));
+    await waitFor('the recovered event to be admitted', () => admissions.length === 1);
+    expect(admissions).toEqual(['admitted']);
+    expect(await deliveredKeys(sourceId)).toHaveLength(1);
+    expect(opens).toHaveLength(2);
+    expect((await source(sourceId)).last_error).toBeNull();
   });
 
   it('marks the source reconnect-required when the vendor refuses the credential, without leaking it', async () => {

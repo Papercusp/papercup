@@ -1,0 +1,2 @@
+ptool: --json (stdin) is not valid JSON: Unexpected token 'l', "locks:list
+" is not valid JSON

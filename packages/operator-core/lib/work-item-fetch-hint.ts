@@ -20,13 +20,22 @@
  * it must depend on nothing and stay real under wholesale `vi.mock`s of the
  * bigger modules.
  */
-export function workItemFetchHint(id: string, harness?: string | null): string {
+export function workItemFetchHint(
+  id: string,
+  harness?: string | null,
+  mode: 'source' | 'continuation' | 'checks' | 'checkpoint' = 'source',
+): string {
   // `getWorkItem`'s issue-family branch resolves EI ids workspace-wide and the
   // MCP transport may reject a canonical cross-hive harness before that branch
   // runs. A carry hint must be executable by its recipient, so never attach a
   // harness to an EI-prefixed id. Feature-family WI-/F- ids still need the
   // canonical harness because WI ids are only unique within a harness.
-  return harness && !id.startsWith('EI-')
-    ? `work_items:get { id: '${id}', harness: '${harness}' }`
-    : `work_items:get { id: '${id}' }`;
+  const fields = [`id: '${id}'`];
+  if (harness && !id.startsWith('EI-')) fields.push(`harness: '${harness}'`);
+  // Automatic recovery must select the bounded reader before thread/archive
+  // enrichment. Exact-source callers retain their independent expansion doors.
+  if (mode === 'continuation') fields.push('resume: true');
+  if (mode === 'checks') fields.push('checksOnly: true');
+  if (mode === 'checkpoint') fields.push('checkpointOnly: true');
+  return `work_items:get { ${fields.join(', ')} }`;
 }

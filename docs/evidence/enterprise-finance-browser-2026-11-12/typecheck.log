@@ -1,0 +1,42 @@
+
+> @papercupai/papercusp-monorepo@0.0.1 lint:tsc:workspaces
+> bash scripts/pc-heavy.sh node scripts/lint-tsc-workspaces.mjs --files=packages/operator-ui/src/billing/enterprise-allocations.tsx,apps/operator/e2e/enterprise-finance.spec.ts,apps/operator/e2e/__fixtures__/enterprise-finance.tsx
+
+[pc-heavy] fingerprinting untracked Git source files
+[pc-heavy] coalescing disabled — untracked source fingerprint timed out after 30s
+[pc-heavy] slot acquired — starting real work
+focused file scope: 3 file(s) → 2 owning workspace(s)
+
+  ⓘ 9 directories under libs/papercusp skipped — a sibling gate (lint:tsc:papercusp-libs) compiles them; covering them here would report one regression as two.
+workspace typecheck fan-out over apps, packages, libs — 2 package(s) gated (0 via tsconfig alone), 3 exempt, 0 held back:
+  · apps/operator
+  · packages/operator-ui
+
+  exempt from this leg (3):
+  ⊘ apps/operator-vite [deliberately-not-gated] — its `typecheck` delegates to scripts/lint-tsc-operator-vite.mjs, which green-checkpoint deliberately declined to make a leg (green-checkpoint.ts:3944): ~151 baseline entries plus cross-package inheritance make it capable of red-pinning promotion on drift that is not a regression. It stays CI-only until that is settled — this leg must not smuggle it in. (see green-checkpoint.ts:3944)
+  ⊘ apps/papercusp-publish [committed-errors] — 14 committed `error TS` lines, all in *.test.ts, from strict + noUncheckedIndexedAccess over untyped vitest mock helpers (measured 2026-08-02). Gating it today would red the shared gate on day one. Clear them and DELETE this entry — that is the whole exit path. (see WI-7166)
+  ⊘ packages/operator-core [already-a-leg] — its `typecheck` delegates to scripts/lint-tsc.mjs, which green-checkpoint already runs as the `lint:tsc` post-suite leg. Running it here would repeat a ~150s compile and report one regression twice. (see green-checkpoint.ts runPostSuiteLegs (lint:tsc leg))
+
+  ⓘ REPORT-ONLY — 7 directories have a
+    tsconfig.json under a root that has not been measured, so NO routine gate reaches them.
+    This is not a pass and not a failure. Not blocking: promoting a root unmeasured would
+    red-pin the fleet gate on pre-existing errors no commit caused. To fix a root for good,
+    run `npx tsc --noEmit -p tsconfig.json` in each of its packages, list the failures in
+    UNTYPECHECKABLE, and add the root to PROMOTE_ROOTS.
+      apps/operator-docs: 1
+      apps/papercusp-docs: 1
+      apps/slack-asana-bug-drill: 1
+      apps/the-swarm-site: 1
+      packages/coordination: 1
+      packages/operator-core: 1
+      packages/tooldef-mcp: 1
+      (re-run with --list-invisible to name them)
+
+  ⓘ dependency-ordered: 1 internal @papercusp edge(s) among the gated set — dependencies compile first,
+    and a package whose dependency fails is reported BLOCKED rather than compiled into a cascade.
+    ⓘ 57 @papercusp dep(s) resolve outside this sweep (own fan-out) — not ordering constraints.
+✓ packages/operator-ui (7.9s)
+✓ apps/operator (30.1s)
+
+workspaces typecheck: 2 passed, 0 failed.
+PC_HEAVY_ADMISSION status=completed reason=cleanup priority=50 psiFullAvg10=unavailable admittedCgroupMiB=0 admissionId=pc-heavy-751207-1794492855925508856 retryHandle=psi-recovery:pc-heavy-751207-1794492855925508856 freezeMeasurement=measured frozenTotalMs=0 frozenEpisodes=0 frozenOngoingMs=0

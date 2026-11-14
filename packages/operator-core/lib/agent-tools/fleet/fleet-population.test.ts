@@ -356,7 +356,7 @@ describe('liveness composition', () => {
     expect(line).toContain('liveness composition not resolved');
   });
 
-  it('counts an unresolved verdict as unknown rather than assuming it is live', () => {
+  it('keeps total liveness unknown when only some verdicts resolved', () => {
     const { census } = selectFleetPopulation(
       [
         { id: 'a', alive: true, state: 'live' as const },
@@ -367,10 +367,44 @@ describe('liveness composition', () => {
       (r) => r.state,
     );
     expect(census.liveness?.unknown).toBe(1);
-    expect(census.liveness?.live).toBe(1);
-    // 1 of 2 live is not a majority-live population, so the caveat stands: an
-    // unknown row must never be silently credited to the live column.
-    expect(census.liveness?.overstatesActivity).toBe(true);
+    expect(census.liveness?.byState).toEqual({ live: 1 });
+    expect(census.liveness?.live).toBeNull();
+    expect(census.liveness?.liveShare).toBeNull();
+    expect(census.liveness?.overstatesActivity).toBeNull();
+    expect(census.liveness?.note).toContain('unmeasured');
+    expect(renderPopulationCensus(census)).not.toContain('only 1 of 2');
+  });
+
+  it('does not turn an entirely unmeasured population into zero live agents', () => {
+    const { census } = selectFleetPopulation(
+      [{ state: null }, { state: undefined }],
+      () => true,
+      META,
+      (row) => row.state,
+    );
+    const serialized = JSON.parse(JSON.stringify(census));
+    expect(serialized.liveness).toMatchObject({
+      byState: {}, unknown: 2, live: null, liveShare: null, overstatesActivity: null,
+    });
+    expect(serialized.liveness.note).toContain('unmeasured');
+    const line = renderPopulationCensus(census);
+    expect(line).toContain('unmeasured');
+    expect(line).not.toContain('only 0');
+    expect(line).not.toContain('0%');
+  });
+
+  it('reports a measured zero when every verdict resolved to a non-live state', () => {
+    const { census } = selectFleetPopulation(
+      [{ state: 'parked' as const }, { state: 'ended' as const }],
+      () => true,
+      META,
+      (row) => row.state,
+    );
+    expect(census.liveness).toMatchObject({
+      unknown: 0, live: 0, liveShare: 0, overstatesActivity: true,
+    });
+    expect(census.liveness?.note).toContain('only 0 of 2 are live');
+    expect(renderPopulationCensus(census)).toContain('0%');
   });
 
   /**

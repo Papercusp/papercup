@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010047556:b936ca3484bdf8b908c8f6e5031cdb10",
+  "inputSha256": "b936ca3484bdf8b908c8f6e5031cdb10aca70320a77d887a1b9e26157bb1044c",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-12T18:00:32.821Z",
+  "actor": "su-79af3176-cacc-4128-b479-bb1120352210",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010047556",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "ab614874916e8adfbaad2c97174538df63f3159b1f9e9ad0dea9f2086e4ac351",
+      "observedParkFingerprint": "ab614874916e8adfbaad2c97174538df63f3159b1f9e9ad0dea9f2086e4ac351",
+      "reasonCode": "operator-directed",
+      "evidence": "Exact conditional authority one-work-graph-structured-holds-2026-10-26#D-061, original su-79af3176-cacc-4128-b479-bb1120352210 ONLY, same under20-shipment-sol61-20261107 fleet. Avi owner31/D095 with D092/D093 and registered AUTO; parent agent-capacity-and-cost-gcp-2026-09-30 v271/hash1f0f360ee39d699a45a66ff1babcbe00b85304508a097763236af44eba952640/D096; specSet200b729aede68fb1d8ea3d4ce95e8f7d6249d8a3784b3d136fcded35c5f140f1. Fresh current3170 activationReadiness: source-discovery/declarations/conformance/inputs/anchors/dependencies/bar-contract/spec-quality/quality-audit/admission pass; critique_report_only canonical exemption; sole lane floor-gated, promotion awaits canonical start, execution plan_not_started. Current Discovery30/activation31, P545 clause@3/eb4a2a2e4ae563adcfcd03d8e0e1e8d4ece6c65eaca8f68c82607b1be6385c1e; quality EI-28604433896010981 independent audit EI-28604913048911818 PASSED. Actual distinct full63-clause whole-contract review thread-post:1224646 no blocking findings closed_answered via1224652, independent readback verified; no replay required. Current exact original row OPEN/unassigned/source same parent/P545, D011 migration park claim_hold_by migration:plan-line-work-item-nodes at2026-11-12T17:25:32.708Z; lifecycle heldOpenBy null, no independent hold observed. Preview only: require exact original identity/workspace/harness/native version, no competing claimant/lease/predecessor and wouldClear true. Preserve all other parks/P008 SOURCE BENCH/D025-off, D090 and unchanged P544 BAR. No forced claim/raw SQL/helper/provider/runtime action. Apply only fresh preview fingerprint after complete artifact/readback, then new actual canonical start/own claim/changeKinds/READY before scoped research.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010047556-b936ca3484bdf8b908c8f6e5031cdb10-reconcile.json"
+}

@@ -57,7 +57,8 @@ beforeAll(async () => {
   await db.adminSql.unsafe(`
     CREATE SCHEMA IF NOT EXISTS dbos;
     CREATE TABLE IF NOT EXISTS dbos.workflow_status (
-      workflow_uuid text PRIMARY KEY, status text NOT NULL, created_at bigint)`);
+      workflow_uuid text PRIMARY KEY, name text NOT NULL, status text NOT NULL,
+      inputs text, created_at bigint)`);
 }, 180_000);
 
 afterAll(async () => {
@@ -128,8 +129,8 @@ describe('hive-canary action (P-009)', () => {
     await mk('F-CANARY-DONE', 'passed', old); // terminal — never reports
     // Forensics surfaces for the overdue one:
     await db.adminSql`
-      INSERT INTO dbos.workflow_status (workflow_uuid, status, created_at)
-      VALUES (${'pipeline:' + SLUG + ':F-CANARY-OVERDUE:e0'}, 'ERROR', ${old})`;
+      INSERT INTO dbos.workflow_status (workflow_uuid, name, status, created_at)
+      VALUES (${'pipeline:' + SLUG + ':F-CANARY-OVERDUE:e0'}, 'pipeline', 'ERROR', ${old})`;
     await db.adminSql`
       INSERT INTO harness_shared.spawned_agents
         (spawn_id, workspace_id, harness_slug, child_role, parent_role, run_id,

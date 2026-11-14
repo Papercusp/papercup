@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { composeSuStackSource, suSessionBinding } from '@papercusp/orchestrator/blueprint';
+import { composeSuStackSource, stackBindingFromRefs, suSessionBinding } from '@papercusp/orchestrator/blueprint';
 import { renderSuPlaybook } from './desktop-install/papercusp-files';
 import { deferSuPromptReferences, SU_KERNEL_END } from './prompt-reference-sections';
 
@@ -59,6 +59,35 @@ describe('on-demand su reference sections', () => {
       overlay: path.join(overlayDir, 'papercusp-su.codex.md'), repoRoot });
     expect(result.references.length).toBeGreaterThan(5);
     for (const ref of result.references) expect(await fs.readFile(ref.source, 'utf8')).toContain(ref.heading);
+  });
+
+  it.each(['Heredocs: quoted delimiter', 'Delivery discipline — source'])('preserves an H1 identity after deferred %s', async heading => {
+    const domain = await fs.readFile(path.join(repoRoot,
+      'libs/papercusp/packages/harness/blueprints/research-steward/prompts/domain.md'), 'utf8');
+    const result = deferSuPromptReferences(`## ${heading}\n\nDEFER THIS EXAMPLE\n\n${domain}\n## Other policy\n\nKEEP OTHER POLICY\n`, {
+      base: baseSource, overlay: path.join(overlayDir, 'papercusp-su.codex.md'), repoRoot,
+    });
+    expect(result.text).toContain(domain.trim());
+    expect(result.text).toContain('KEEP OTHER POLICY');
+    expect(result.text).not.toContain('DEFER THIS EXAMPLE');
+    expect(result.references.map(ref => ref.heading)).toEqual([heading]);
+  });
+
+  it('preserves the selected research domain in the composed Codex render', async () => {
+    const sourcePath = path.join(repoRoot,
+      'libs/papercusp/packages/harness/blueprints/research-steward/prompts/domain.md');
+    const domain = await fs.readFile(sourcePath, 'utf8');
+    const composed = composeSuStackSource({
+      harnessDir: path.join(repoRoot, 'libs/papercusp/packages/harness'),
+      binding: stackBindingFromRefs(['domain:research-steward']),
+      resolveLayer: layer => layer.slot === 'domain' && layer.id === 'research-steward'
+        ? { id: layer.id, layer: 'domain', slot: 'domain', text: domain, sourcePath } : null,
+    });
+    const compact = await renderSuPlaybook({ agent: 'codex', baseSource, baseText: composed.text,
+      overlayDir, operatorAppRoot: path.join(repoRoot, 'apps/operator'), projectGuideSource: '',
+      renderWireSchemas: () => '' });
+    expect(compact.text).toContain(domain.trim());
+    expect(compact.text).toContain('domain/domain:research-steward');
   });
 
   it('keeps emitted source pointers readable after the generation checkout is pruned', async () => {

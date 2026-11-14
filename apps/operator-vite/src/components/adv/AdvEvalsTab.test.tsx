@@ -40,13 +40,13 @@ vi.mock('nuqs', () => ({
 const H = vi.hoisted(() => ({
   results: {} as Record<string, { data: unknown[]; loading: boolean; fetching: boolean; error: unknown; invalidate: ReturnType<typeof vi.fn> }>,
   mutatePaths: [] as string[],
-  queryCalls: [] as Array<{ queryName: string; args: unknown }>,
+  queryCalls: [] as Array<{ queryName: string; args: unknown; enabled?: boolean }>,
 }));
 const blank = () => ({ data: [] as unknown[], loading: false, fetching: false, error: null as unknown, invalidate: vi.fn() });
 vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
-  useSyncQuery: ({ queryName, args }: { queryName: string; args: unknown }) => {
-    H.queryCalls.push({ queryName, args });
+  useSyncQuery: ({ queryName, args, enabled }: { queryName: string; args: unknown; enabled?: boolean }) => {
+    H.queryCalls.push({ queryName, args, enabled });
     return H.results[queryName] ?? blank();
   },
   useSyncMutate: (path: string, restFallback: (args: unknown) => Promise<unknown>) => {
@@ -113,6 +113,8 @@ beforeEach(() => {
   nuqsState.evalSuite = null;
   nuqsState.evalRun = null;
   nuqsState.evalWorkspace = null;
+  nuqsState.runArmFilter = null;
+  nuqsState.runTaskSetFilter = null;
   nuqsState.compareA = null;
   nuqsState.compareB = null;
   H.results = {};
@@ -380,6 +382,69 @@ describe('<AdvEvalsTab> runs subtab (evals.benchRuns / evals.benchRun)', () => {
     render(<AdvEvalsTab />);
     expect(screen.getByLabelText('Benchmark evidence class').textContent).toContain('Synthetic fixture evidence');
     expect(screen.getByLabelText('Benchmark evidence class').textContent).toContain('do not measure current product performance');
+  });
+
+  const FILTER_RUNS = [
+    RUN_LIST[0],
+    { ...RUN_LIST[0], id: 'v2-native', arm: 'baseline', taskSetId: 'frontier-swe-v2' },
+    { ...RUN_LIST[0], id: 'v2-treatment', arm: 'papercusp', taskSetId: 'frontier-swe-v2' },
+    { ...RUN_LIST[0], id: 'v2-cpu', arm: 'papercusp', taskSetId: 'frontier-swe-v2-cpu' },
+  ];
+
+  it('combines task-set and arm filters while preserving a matching selected run', () => {
+    nuqsState.evalView = 'preserved';
+    nuqsState.evalRun = 'v2-treatment';
+    nuqsState.runArmFilter = 'papercusp';
+    nuqsState.runTaskSetFilter = 'frontier-swe-v2';
+    H.results['evals.benchRuns'] = { ...blank(), data: FILTER_RUNS };
+    render(<AdvEvalsTab />);
+    const picker = screen.getByLabelText('Preserved run') as HTMLSelectElement;
+    expect(Array.from(picker.options, option => option.value)).toEqual(['v2-treatment']);
+    expect(picker.value).toBe('v2-treatment');
+    expect(nuqsState.evalRun).toBe('v2-treatment');
+    const taskSets = screen.getByLabelText('Filter runs by task set') as HTMLSelectElement;
+    expect(Array.from(taskSets.options, option => option.value)).toEqual([
+      '', '11-task-pilot', 'frontier-swe-v2', 'frontier-swe-v2-cpu',
+    ]);
+    expect(taskSets.options[2].textContent).toBe('FrontierSWE v2 · frontier-swe-v2');
+    expect(taskSets.options[3].textContent).toBe('FrontierSWE v2 · frontier-swe-v2-cpu');
+  });
+
+  it('selects the newest matching run after a task-set change and hides stale detail', () => {
+    nuqsState.evalView = 'preserved';
+    nuqsState.evalRun = RUN_DETAIL.id;
+    H.results['evals.benchRuns'] = { ...blank(), data: FILTER_RUNS };
+    H.results['evals.benchRun'] = { ...blank(), data: [RUN_DETAIL] };
+    const view = render(<AdvEvalsTab />);
+    expect(screen.getByLabelText(/hive-realqueen — preserved run summary/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Filter runs by task set'), { target: { value: 'frontier-swe-v2' } });
+    expect(nuqsState.runTaskSetFilter).toBe('frontier-swe-v2');
+    view.rerender(<AdvEvalsTab />);
+    expect(nuqsState.evalRun).toBe('v2-native');
+    expect((screen.getByLabelText('Preserved run') as HTMLSelectElement).value).toBe('v2-native');
+    expect(H.queryCalls.filter(call => call.queryName === 'evals.benchRun').at(-1)?.args).toMatchObject({ runId: 'v2-native' });
+    expect(screen.queryByLabelText(/hive-realqueen — preserved run summary/)).toBeNull();
+  });
+
+  it('clears a filtered-out selection on zero matches and recovers when the filter is cleared', () => {
+    nuqsState.evalView = 'preserved';
+    nuqsState.evalRun = RUN_DETAIL.id;
+    nuqsState.runArmFilter = 'baseline';
+    nuqsState.runTaskSetFilter = 'frontier-swe-v2-cpu';
+    H.results['evals.benchRuns'] = { ...blank(), data: FILTER_RUNS };
+    H.results['evals.benchRun'] = { ...blank(), data: [RUN_DETAIL] };
+    const view = render(<AdvEvalsTab />);
+    expect(screen.getByText('No runs match these filters.')).toBeTruthy();
+    expect(nuqsState.evalRun).toBeNull();
+    for (const queryName of ['evals.benchRun', 'evals.benchRunLive']) {
+      expect(H.queryCalls.filter(call => call.queryName === queryName).at(-1)).toMatchObject({ args: { runId: '' }, enabled: false });
+    }
+    expect(screen.queryByLabelText('Export this run for third-party reproduction')).toBeNull();
+    fireEvent.change(screen.getByLabelText('Filter runs by task set'), { target: { value: '' } });
+    expect(nuqsState.runTaskSetFilter).toBeNull();
+    view.rerender(<AdvEvalsTab />);
+    expect(nuqsState.evalRun).toBe('v2-native');
+    expect((screen.getByLabelText('Preserved run') as HTMLSelectElement).value).toBe('v2-native');
   });
 
   it.each([null, 'bench-private'])('downloads the selected run export in workspace %s', async workspaceId => {

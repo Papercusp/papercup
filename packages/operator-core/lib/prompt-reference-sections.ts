@@ -21,9 +21,10 @@ export function deferSuPromptReferences(text: string, sources: {
   const kernelStart = text.indexOf('<!-- PAPERCUSP-KERNEL:SEAL -->');
   const kernelEnd = text.indexOf(SU_KERNEL_END);
   const policy = path.join(sources.repoRoot, 'libs/papercusp/packages/orchestrator/src/prompt-build.ts');
-  // The mechanism-routing table is a nested heading in composed personas. It
-  // must be its own boundary even when the preceding engineering prose defers.
-  const headings = [...text.matchAll(/^## (.+)$|^### (The papercusp-way routing gate .+)$/gm)];
+  // Authored identity documents may start at H1. Keep that boundary so a
+  // preceding deferred section cannot consume the selected identity's text.
+  // The mechanism-routing table also needs its own nested heading boundary.
+  const headings = [...text.matchAll(/^## (.+)$|^# (.+)$|^### (The papercusp-way routing gate .+)$/gm)];
   let out = '';
   let cursor = 0;
   for (let i = 0; i < headings.length; i++) {
@@ -34,7 +35,9 @@ export function deferSuPromptReferences(text: string, sources: {
     // consume it while replacing that section's body.
     const end = kernelStart > start && kernelStart < next ? kernelStart : next;
     if (kernelStart >= 0 && start >= kernelStart && (kernelEnd < 0 || start < kernelEnd)) continue;
-    const heading = (match[1] ?? match[2])!;
+    // H1 marks an identity boundary; it is never a reference section itself.
+    const heading = match[1] ?? match[3];
+    if (!heading) continue;
     const section = text.slice(start, end);
     let source = sources.base;
     let summary: string | null = null;
@@ -73,7 +76,7 @@ export function deferSuPromptReferences(text: string, sources: {
       summary = 'Development and ordinary acceptance use staging/current-build; final shipment uses the shipped artifact. Read pipeline_position before functional testing. LIVE_GATE_OPS has exactly one owner: read ownership first, and stop that lane when another live agent holds it. Never force past red without explicit owner sign-off. Fetch the deployment runbook before any release action.';
     } else if (heading.startsWith('Waiting on something?')) {
       source = policy;
-      summary = 'Remove waits you can resolve, finish independent steps, and use an exact event with a bounded timeout. Monitor only an explicitly authorized operation you own; stop when another live owner is progressing. Fetch the wait/recovery runbook before arming ongoing monitoring.';
+      summary = 'Keep ONE exact push continuation and finish independent steps. Recheck current ownership, admission, dependencies and locks before any remedy: a timeout, missing heartbeat or exhausted budget never grants takeover authority over a live peer or provider. Keep the SAME blocked-wait episode across work/monitor labels, await renewals, equivalent generations and authenticated warm/cold/successor carry. Preserve its remaining noDeltaBudget (default 1); prose, heartbeats, new identifiers and archive reloads cannot reset it. Only a declared evidence-bound forward substage may reset once within a finite stage list; final predicate acceptance remains separate. At exhaustion retain custody and the push continuation and park repeated inspection. Unknown evidence stays UNKNOWN: preserve uncertainty and budget and stop automatic polling/rearm for that observation. Independently ready work remains runnable. Fetch the wait/recovery runbook before an authorized bounded recheck.';
     } else if (heading.startsWith('You can WAKE a peer')) {
       source = policy;
       summary = 'Use coord:dispatch for a work handoff or coord:send with wake:required for a contextual wake. Verify pickup; queued delivery alone does not prove a turn started. Fetch the wake-result field guide when pickup fails.';

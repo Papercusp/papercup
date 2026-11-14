@@ -2094,6 +2094,10 @@ dependency_generation_refresh_retention_state_locked() {
   parent="$(dirname "$integration_root")"
   for sibling in "$parent"/*; do
     [ -d "$sibling" ] || continue
+    # Disposable clones can share a parent with tens of thousands of scratch
+    # directories. Reject markerless entries before spawning a realpath shell
+    # for each one; a symlinked checkout's marker remains visible through it.
+    [ -f "$sibling/node_modules/.papercusp-dependency-generation" ] || continue
     sibling="$(cd "$sibling" 2>/dev/null && pwd -P)" || continue
     [ "$sibling" != "$integration_root" ] || continue
     marker="$sibling/node_modules/.papercusp-dependency-generation"

@@ -95,6 +95,58 @@ describe('papercusp-db-backup scheduled catch-up', () => {
   });
 });
 
+describe('papercusp-db-backup server-side priority', () => {
+  const helper = between('prioritize_backup_backends() {', '# ── mid-flight headroom watchdog');
+
+  it('keeps caller options while bounding backup read-ahead independently of the host setting', () => {
+    const policy = between('readonly HOST_BACKUP_APPLICATION_NAME=pcbackup', '# Throwaway schemas');
+    expect(runBash(policy + '\nprintf "%s" "$BACKUP_PGOPTIONS"', {
+      PGOPTIONS: '-c work_mem=4MB -c effective_io_concurrency=200',
+    })).toBe('-c work_mem=4MB -c effective_io_concurrency=200 -c effective_io_concurrency=1 -c maintenance_io_concurrency=1');
+    expect(runBash(policy + '\nprintf "%s" "$BACKUP_PGOPTIONS"', { PGOPTIONS: '' }))
+      .toBe('-c effective_io_concurrency=1 -c maintenance_io_concurrency=1');
+  });
+
+  function prioritize(pids: string, queryStatus = 0): string[] {
+    const output = runBash([
+      'HOST_BACKUP_APPLICATION_NAME=pcbackup',
+      'PSQL=fake_psql',
+      'fake_psql() {',
+      '  [[ "$1" == *"statement_timeout"* ]] || return 91',
+      "  [[ \"$1\" == *\"application_name = 'pcbackup'\"* ]] || return 92",
+      '  [[ "$1" == *"pid <> pg_backend_pid()"* ]] || return 93',
+      '  [[ "$1" == *"leader_pid IN"* ]] || return 94',
+      '  printf "%s\\n" "$TEST_PIDS"',
+      '  return "$TEST_QUERY_STATUS"',
+      '}',
+      'sudo() { printf "priority:%s\\n" "$*" >&3; }',
+      'log() { printf "log:%s\\n" "$*" >&3; }',
+      helper,
+      'prioritize_backup_backends 3>&1',
+    ].join('\n'), { TEST_PIDS: pids, TEST_QUERY_STATUS: String(queryStatus) });
+    return output ? output.split('\n') : [];
+  }
+
+  it('uses lowest best-effort I/O for only valid, exactly selected backup backend PIDs', () => {
+    expect(prioritize('SET\n123\n456\n0\n-1\n123; touch /tmp/unsafe\n')).toEqual([
+      'priority:-n -u postgres renice -n 19 -p 123',
+      'priority:-n -u postgres ionice -c 2 -n 7 -p 123',
+      'priority:-n -u postgres renice -n 19 -p 456',
+      'priority:-n -u postgres ionice -c 2 -n 7 -p 456',
+    ]);
+  });
+
+  it('does nothing when no backup backend exists', () => {
+    expect(prioritize('')).toEqual([]);
+  });
+
+  it('does not act on partial output from a failed query and preserves the archive run', () => {
+    expect(prioritize('123', 1)).toEqual([
+      'log:WARN: could not inspect backup backend priority; retrying at the next watchdog sample',
+    ]);
+  });
+});
+
 describe('papercusp-db-backup artifact receipt serialization', () => {
   it('serializes a receipt for every completed artifact with its own start and cluster identity', () => {
     const json = runBash([

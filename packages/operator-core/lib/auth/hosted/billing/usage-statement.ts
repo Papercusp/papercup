@@ -8,6 +8,7 @@
 import { MICROS_PER_CENT, addMicrosDecimals, parseMicrosDecimal, splitMicrosDecimal, formatMicrosDecimal } from '../../../cupboard/money-journal';
 import { shadowMonthBounds } from '../../../cupboard/shadow-metering';
 import { PILOT_COST_CATEGORIES, type CostPayer, type PilotCostCategory } from './unit-economics';
+import type { HostedPoolCostSummary } from './pool-usage';
 
 export type HostedCostSource = 'unpriced' | 'estimate' | 'provider-reported' | 'provider-billed';
 
@@ -79,6 +80,8 @@ export interface HostedUsageSourceCensus {
 }
 
 export interface HostedUsageStatement {
+  /** Infrastructure accounting is separate from payable consumption receipts. */
+  readonly infrastructure?: HostedPoolCostSummary;
   readonly scope: HostedUsageScope;
   readonly month: string;
   readonly currency: 'USD';

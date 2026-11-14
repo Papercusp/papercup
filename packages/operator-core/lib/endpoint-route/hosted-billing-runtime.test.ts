@@ -13,6 +13,8 @@
  * stripe-subscription-signup-2026-10-01 P-005.
  */
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
+import { serve } from '@hono/node-server';
 import { describe, expect, it, vi } from 'vitest';
 import type { HostedUsageRecord } from '../auth/hosted/billing/usage-statement';
 import type { HostedOpenRouterRequestCaptureOptions } from '../auth/hosted/billing/usage-store';
@@ -868,6 +870,58 @@ describe('route authority', () => {
 // ── subscription read ───────────────────────────────────────────────────────
 
 describe('GET /hosted/billing/subscription', () => {
+  it('serves fresh principal-bound organization metadata over HTTP, independent of customer selection and request hints', async () => {
+    const resolve: HostedPrincipalResolver = async headers => {
+      const session = headers.get('cookie')?.replace('session=', '');
+      if (!session) return { ok: false, reason: 'session_cookie_missing' };
+      if (session === 'revoked') return { ok: false, reason: 'membership_not_active' };
+      const second = session === 'second';
+      return { ok: true, principal: createHostedPrincipal({
+        workspaceId: second ? 'control-b' : 'control-a',
+        activeOrganizationId: second ? 'org-b' : 'org-a',
+        userId: 'user-1', sessionId: session, sessionVersion: 1,
+        ...(session === 'selected' ? { selectedWorkspaceId: 'customer-a' } : {}),
+        permissions: session === 'member' ? ['workspace:view'] : ['workspace:view', 'billing:manage'],
+      }), session: {} as never, membership: {} as never };
+    };
+    const { app, stripe } = await runtime({
+      config: { stripeSecretKeyRef: null, stripeWebhookSecretRef: null },
+      deps: { resolvePrincipal: resolve },
+    });
+    const server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 0 });
+    try {
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('billing_test_listener_missing');
+      const base = `http://127.0.0.1:${address.port}`;
+      for (const [session, controlWorkspaceId, organizationId, canManage] of [
+        ['selected', 'control-a', 'org-a', true],
+        ['unselected', 'control-a', 'org-a', true],
+        ['second', 'control-b', 'org-b', true],
+        ['member', 'control-a', 'org-a', false],
+      ] as const) {
+        const response = await fetch(`${base}/api/hosted/billing/subscription?workspaceId=forged&organizationId=forged`, {
+          headers: { cookie: `session=${session}`, 'x-papercusp-workspace': 'forged' },
+        });
+        expect(response.status).toBe(200);
+        expect(response.headers.get('cache-control')).toBe('no-store');
+        expect(await response.json()).toMatchObject({
+          ok: true, configured: false, organization: { controlWorkspaceId, organizationId }, canManage,
+        });
+      }
+      for (const [session, expected] of [[undefined, 401], ['revoked', 403]] as const) {
+        const response = await fetch(`${base}/api/hosted/billing/subscription`, get(session));
+        expect(response.status).toBe(expected);
+        expect(await response.json()).not.toHaveProperty('organization');
+      }
+      const memberUsage = await fetch(`${base}/api/hosted/billing/usage?view=allocations`, get('member'));
+      expect(memberUsage.status).toBe(403);
+      expect(stripe.calls).toEqual([]);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
   it('a member with no subscription sees not_subscribed and cannot manage', async () => {
     const { app } = await runtime();
     const body = await (await app.request('/api/hosted/billing/subscription', get('member'))).json();

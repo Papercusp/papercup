@@ -612,7 +612,8 @@ function defaultCanonicalPath(candidate: string): string {
  * green-checkpoint, or release deploy. Artifact cuts must use a dedicated exact-SHA
  * worktree prepared through setup-release-checkout.sh instead. */
 export function isAutoManagedCutWorktree(worktreePath: string): boolean {
-  return new Set([
+  const resolved = path.resolve(worktreePath);
+  if (new Set([
     'papercup',
     'papercusp',
     'papercup-release',
@@ -621,7 +622,16 @@ export function isAutoManagedCutWorktree(worktreePath: string): boolean {
     'papercusp-checkpoint',
     'papercup-staging',
     'papercusp-staging',
-  ]).has(path.basename(path.resolve(worktreePath)));
+  ]).has(path.basename(resolved))) return true;
+
+  // Staging sync rotates generated checkouts under
+  // <repo>.generations/.candidate-*/checkout. Their basename is only
+  // "checkout", but the generation manager can replace them under a cut.
+  const candidateName = path.basename(path.dirname(resolved));
+  const generationName = path.basename(path.dirname(path.dirname(resolved)));
+  return path.basename(resolved) === 'checkout' &&
+    candidateName.startsWith('.candidate-') &&
+    generationName.endsWith('.generations');
 }
 
 function validateCutRootSeedMode(

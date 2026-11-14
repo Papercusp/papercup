@@ -136,6 +136,10 @@ describe('native dependency-copy bootstrap before node_modules', () => {
     const result = probe(memory);
     expectProbeStatus(result, 2);
     expect(result.stderr).toContain('VERIFY_TAURI_COPY_MEMORY_UNBOUNDED');
+    // EI-28688962230158667: a serving build that predates the verifier
+    // classification hands out no ceiling, so the refusal must name the
+    // self-service fallback rather than only the classifier route.
+    expect(result.stderr).toContain('systemd-run --user --scope -p MemoryMax=');
     expect(result.stdout).not.toContain('COPY_FIXTURE_ALLOCATED');
   });
 });

@@ -1,0 +1,30 @@
+{
+  "workItem": "WI-6554700010047482",
+  "rootWorkItem": "WI-10007833",
+  "date": "2026-11-12",
+  "scope": "Shared finance component source and controlled Chromium browser proof",
+  "sourceIdentity": "source-manifest.json",
+  "sourceHashCheckedBeforeAndAfterBrowserRun": true,
+  "checks": [
+    { "command": "node scripts/e2e-fixture-affected.mjs --files=packages/operator-ui/src/billing/enterprise-allocations.tsx", "result": "4 passed, 0 failed, 0 skipped; exit 0", "ledgerId": 23826345, "runGroup": "enterprise-finance-browser-responsive-20261112", "log": "browser.log" },
+    { "command": "npm test --workspace @papercusp/operator-ui -- src/billing/enterprise-allocations.test.tsx", "result": "18 passed, 0 failed; exit 0", "log": "unit.log" },
+    { "command": "npm run lint:tsc:workspaces -- --files=packages/operator-ui/src/billing/enterprise-allocations.tsx,apps/operator/e2e/enterprise-finance.spec.ts,apps/operator/e2e/__fixtures__/enterprise-finance.tsx", "result": "2 workspaces passed, 0 failed; exit 0", "log": "typecheck.log" },
+    { "command": "node --test scripts/ensure-playwright-browsers.test.mjs", "result": "11 passed, 0 failed, 0 skipped; exit 0", "workItem": "EI-28591067871876002", "log": "cache-regression.log" }
+  ],
+  "browserAssertions": [
+    "Model, hosting and subscription remain separate with independently specified amounts",
+    "Unknown forecast, outcome effort and provider-final costs remain explicit",
+    "Downloaded JSON equals the active scoped accounting snapshot",
+    "Refused writes and saved writes remain distinct; HTTP payload uses exact integer micros",
+    "Month changes update URL state and clear drafts; organization and permission changes clear prior finance data",
+    "Loading, unavailable, retry and forbidden states withhold export",
+    "At 390px the table scrolls by keyboard, six-decimal amounts fit their cells, and document width stays within viewport"
+  ],
+  "artifacts": ["finance-ready-desktop.png", "finance-ready-narrow.png", "finance-refused.png", "finance-permission-removed.png", "finance-loading.png", "finance-unavailable.png", "finance-forbidden.png"],
+  "substituted": ["billing HTTP responses", "account identity"],
+  "portalIntegrationProven": false,
+  "liveBillingProven": false,
+  "nativeAcceptanceProven": false,
+  "shipmentProven": false,
+  "portalBoundary": "Portal repository remains untouched; existing repository-exception question has no recovered answer."
+}

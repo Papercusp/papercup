@@ -5,8 +5,10 @@
  * registration + the set_url / snapshot / click / focus handlers.
  * Run with: cd packages/operator-core && npx vitest run lib/ui/built-in-intents.test.tsx
  */
-import { beforeAll, describe, expect, it } from 'vitest';
-import { registerBuiltInIntents } from './built-in-intents';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+const { openRouteInApp } = vi.hoisted(() => ({ openRouteInApp: vi.fn(async () => {}) }));
+vi.mock('../tauri-bindings', () => ({ commands: { openRouteInApp } }));
+import { desktopHandoffRoute, registerBuiltInIntents } from './built-in-intents';
 import { lookupIntent } from './intent-registry';
 
 beforeAll(() => {
@@ -18,6 +20,35 @@ beforeAll(() => {
 });
 
 const call = (name: string, args: Record<string, unknown>) => lookupIntent(name)!.handler(args);
+
+describe('terminal-to-desktop route identity', () => {
+  it('preserves the exact report and workspace and accepts other object routes', () => {
+    const current = 'http://localhost:3170/adv?ws=workspace-a';
+    expect(desktopHandoffRoute('/reports?sel=rpt_abc-123', current)).toBe('/reports?sel=rpt_abc-123&ws=workspace-a');
+    expect(desktopHandoffRoute('/reports/rpt_abc-123', current)).toBe('/reports?ws=workspace-a&sel=rpt_abc-123');
+    expect(desktopHandoffRoute('/plans?sel=workbench#D-024', current)).toBe('/plans?sel=workbench&ws=workspace-a#D-024');
+  });
+  it('rejects external, protocol-relative, control-bearing and cross-workspace targets', () => {
+    for (const route of ['https://example.com/reports', '//example.com', '/\\example.com', '/reports\n?sel=x', '/reports?ws=other']) {
+      expect(() => desktopHandoffRoute(route, 'http://localhost:3170/adv?ws=workspace-a')).toThrow();
+    }
+  });
+  it('requires a native client before requesting a handoff', async () => {
+    await expect(call('native_window', { action: 'open_route', route: '/reports?sel=rpt_abc', expiresAt: Date.now() + 1000 })).rejects.toThrow(/native desktop/);
+  });
+  it('hands the exact route to the existing native command and rejects late requests', async () => {
+    window.history.replaceState({}, '', '/adv?ws=workspace-a');
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    try {
+      await expect(call('native_window', { action: 'open_route', route: '/reports?sel=rpt_exact', expiresAt: Date.now() + 5000 }))
+        .resolves.toEqual({ protocol: 'desktop-route-v1', requested: true, route: '/reports?sel=rpt_exact&ws=workspace-a' });
+      expect(openRouteInApp).toHaveBeenLastCalledWith('/reports?sel=rpt_exact&ws=workspace-a');
+      const count = openRouteInApp.mock.calls.length;
+      await expect(call('native_window', { action: 'open_route', route: '/reports?sel=rpt_other', expiresAt: Date.now() - 1 })).rejects.toThrow(/expired/);
+      expect(openRouteInApp).toHaveBeenCalledTimes(count);
+    } finally { delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__; }
+  });
+});
 
 describe('registerBuiltInIntents', () => {
   it('registers all six built-ins as builtIn:true', () => {

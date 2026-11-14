@@ -1,0 +1,19 @@
+{
+  "kind": "component-browser-fixture",
+  "sourceHashes": {
+    "packages/operator-ui/src/billing/enterprise-allocations.tsx": "5c07f8d9d84d785c4ab2a11c582df7afc84d6fe4cf9f48e7c338e338a199a75e",
+    "packages/operator-ui/src/index.ts": "73845cce7a743f0f75a27485ae0787ee706e406be81262ecd4e16b16671d87c0",
+    "apps/operator/e2e/__fixtures__/enterprise-finance.tsx": "d34525839ae3dfdc3ba9f62ac081d553f5b7329b1f347d26fef49c218a3b875d",
+    "apps/operator/e2e/enterprise-finance.spec.ts": "feb98023c5cfc032f93a73b90680de3fa9d40cc7fb21c75f31b1ad82d66612bb",
+    "apps/operator/e2e/_desktop-grid-fixture-server.ts": "0b6245a0e274f141c88d7398520502e4af8f4db3cf7cfa91c9c0a2eaaa8cc4b5"
+  },
+  "origin": "http://127.0.0.1:5174",
+  "realComponent": true,
+  "substituted": [
+    "billing HTTP responses",
+    "account identity"
+  ],
+  "portalIntegrationProven": false,
+  "liveBillingProven": false,
+  "shipmentProven": false
+}

@@ -25,7 +25,79 @@ const home = () => ({ PAPERCUSP_HOME: mkdtempSync(path.join(tmpdir(), 'ledger-un
 type CodeIntelState = { turn: string; chars: number; subjects: string[] };
 
 describe('delivery ledger', () => {
-  it('shares exact compact SessionStart receipts with later ports without replacing their tokens', () => {
+  it('retains only the exact packing attempt and artifact identity after stdout commit', () => {
+    const env = home(), owner = 'su-packing-join', ledger = openDeliveryLedger(owner, env, 'mid-turn');
+    const packingReceipt = { attemptId: 'packing-attempt', sha256: 'a'.repeat(64), privateText: 'do not persist' };
+    ledger.offer('packing-token', { payload: 'exact stdout\n', client: 'omp', packingReceipt });
+    const dir = path.join(ledgerDir(env), `${owner}.mid-turn.emissions`);
+    expect(existsSync(dir)).toBe(false);
+    expect(ledger.commit()).toBe(true);
+    const receipt = JSON.parse(readFileSync(path.join(dir, readdirSync(dir)[0]!), 'utf8'));
+    expect(receipt.packingReceipt).toEqual({ attemptId: packingReceipt.attemptId, sha256: packingReceipt.sha256 });
+    expect(JSON.stringify(receipt)).not.toContain('do not persist');
+    for (const invalid of [undefined, { ...packingReceipt, attemptId: '../foreign' },
+      { ...packingReceipt, sha256: 'bad' }, { ...packingReceipt, attemptId: '' }]) {
+      const token = `invalid-${String(invalid?.attemptId)}`;
+      ledger.offer(token, { packingReceipt: invalid });
+      expect(ledger.commit()).toBe(true);
+      const stored = JSON.parse(readFileSync(path.join(dir, `${createHash('sha256').update(token).digest('hex')}.json`), 'utf8'));
+      expect(stored.packingReceipt).toBeNull();
+    }
+  });
+
+  it.each(['codex', 'claude', 'omp'])('proves %s notice fragments only after exact final emission', client => {
+    const env = home(), owner = 'su-notice-proof';
+    const ledger = openDeliveryLedger(owner, env, 'mid-turn');
+    const rendered = '- syste unchanged condition';
+    const offer = { kind: 'notice', id: 'a'.repeat(64), epoch: 3, port: 'coord-inbox', rendered,
+      sourceFingerprint: 'b'.repeat(64), bodySha256: createHash('sha256').update(rendered).digest('hex'),
+      bodyBytes: Buffer.byteLength(rendered) };
+    const payload = (text: string) => client === 'omp' ? text : JSON.stringify({ hookSpecificOutput: {
+      hookEventName: client === 'codex' ? 'PostToolUse' : 'PostToolBatch', additionalContext: text,
+    } });
+    ledger.offer('not-printed', { payload: payload(rendered), client, memoryFragmentOffers: [offer] });
+    expect(ledger.confirmedMemoryDeliveries()).toEqual([]);
+    ledger.offer('truncated', { payload: payload(rendered.slice(0, -1)), client, memoryFragmentOffers: [offer] });
+    expect(ledger.commit()).toBe(true);
+    expect(ledger.confirmedMemoryDeliveries()).toEqual([]);
+    const before = Date.now();
+    ledger.offer('printed', { payload: payload(rendered), client, memoryFragmentOffers: [offer] });
+    expect(ledger.commit()).toBe(true);
+    const { rendered: _text, ...fragment } = offer;
+    const proofs = ledger.confirmedMemoryDeliveries() as Array<{ token: string; fragments: object[]; emittedAt: number }>;
+    expect(proofs).toEqual([{ token: 'printed', fragments: [fragment], emittedAt: expect.any(Number) }]);
+    expect(proofs[0]!.emittedAt).toBeGreaterThanOrEqual(before);
+    expect(proofs[0]!.emittedAt).toBeLessThanOrEqual(Date.now());
+  });
+
+  it.each(['codex', 'claude', 'omp'])('preserves the %s canonical source fingerprint without persisting host source metadata', client => {
+    const env = home(), owner = 'su-source-version';
+    const rendered = '- memory: complete visible passage ☃';
+    const base = { kind: 'memory', id: 'versioned-memory', epoch: 5, port: 'mid-turn', rendered,
+      bodySha256: createHash('sha256').update(rendered).digest('hex'), bodyBytes: Buffer.byteLength(rendered) };
+    const offer = { ...base, sourceFingerprint: 'a'.repeat(64), sourceVersion: { privateHostMetadata: true } };
+    const payload = client === 'omp' ? rendered : JSON.stringify({ hookSpecificOutput: {
+      hookEventName: client === 'codex' ? 'PostToolUse' : 'PostToolBatch', additionalContext: rendered,
+    } });
+    const ledger = openDeliveryLedger(owner, env, 'mid-turn');
+    ledger.offer('source-token', { payload, client, memoryFragmentOffers: [offer] });
+    expect(ledger.commit()).toBe(true);
+    const { rendered: _text, sourceVersion: _source, ...manifest } = offer;
+    expect(ledger.confirmedMemoryDeliveries()).toEqual([{ token: 'source-token', fragments: [manifest] }]);
+    ledger.offer('changed-source-token', { payload, client,
+      memoryFragmentOffers: [{ ...offer, sourceFingerprint: 'b'.repeat(64) }] });
+    expect(ledger.commit()).toBe(true);
+    expect(ledger.confirmedMemoryDeliveries()).toContainEqual({ token: 'changed-source-token',
+      fragments: [{ ...manifest, sourceFingerprint: 'b'.repeat(64) }] });
+    for (const sourceFingerprint of ['', 'invalid', null, 42]) {
+      ledger.offer('invalid-source-token', { payload, client, memoryFragmentOffers: [{ ...offer, sourceFingerprint }] });
+      ledger.commit();
+    }
+    expect(ledger.confirmedMemoryDeliveries().some((proof: { token: string }) => proof.token === 'invalid-source-token')).toBe(false);
+    expect(JSON.stringify(ledger.confirmedMemoryDeliveries())).not.toContain('privateHostMetadata');
+  });
+
+  it.each(['claude', 'codex'])('shares exact %s compact SessionStart receipts with later ports without replacing their tokens', client => {
     const env = home(), owner = 'su-compact';
     const start = openDeliveryLedger(owner, env);
     start.offer('orientation-token');
@@ -38,14 +110,14 @@ describe('delivery ledger', () => {
     const payload = (text: string, event = 'SessionStart') => JSON.stringify({ hookSpecificOutput: {
       hookEventName: event, additionalContext: text,
     } });
-    compact.offer('compact-token', { payload: payload(rendered), client: 'claude', memoryFragmentOffers: [offer] });
+    compact.offer('compact-token', { payload: payload(rendered), client, memoryFragmentOffers: [offer] });
     expect(start.confirmedMemoryDeliveries()).toEqual([]);
     expect(compact.commit()).toBe(true);
     const { rendered: _text, ...manifest } = offer;
     expect(start.confirmedMemoryDeliveries()).toEqual([{ token: 'compact-token', fragments: [manifest] }]);
     for (const [token, text, event] of [['partial', rendered.slice(0, -3), 'SessionStart'],
       ['wrong-event', rendered, 'PreToolUse']]) {
-      compact.offer(token, { payload: payload(text, event), client: 'claude', memoryFragmentOffers: [offer] });
+      compact.offer(token, { payload: payload(text, event), client, memoryFragmentOffers: [offer] });
       expect(compact.commit()).toBe(true);
     }
     expect(start.confirmedMemoryDeliveries()).toEqual([{ token: 'compact-token', fragments: [manifest] }]);
@@ -500,6 +572,38 @@ describe('delivery ledger', () => {
     });
     expect(receiptBytes).not.toContain('must not persist');
     expect(receiptBytes).not.toContain('privateResponse');
+  });
+
+  it.each([
+    { trace: '34c48802-6a1d-4f6f-8a76-112233445566', origin: 'http://127.0.0.1:48112', valid: true },
+    { trace: 'private response text', origin: 'http://name:secret@127.0.0.1:48112/private?q=secret', valid: false },
+    { trace: null, origin: null, valid: false },
+  ])('retains bounded proxy evidence without inventing a handler outcome: $valid/$trace', async ({ trace, origin, valid }) => {
+    const env = { ...home(), PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071' };
+    const requestId = 'proxy-evidence-request';
+    const owner = 'su-proxy-evidence';
+    const ledger = openDeliveryLedger(owner, env);
+    const headers = new Headers({ 'Content-Type': 'application/json' });
+    if (trace) headers.set('x-papercusp-mcp-trace-id', trace);
+    if (origin) headers.set('x-papercusp-mcp-upstream-origin', origin);
+    await postInjection('turn-start', { owner, client: 'codex', turnStartRequestId: requestId }, {
+      env,
+      fetchImpl: async () => new Response('{"text":""}', { headers }),
+      onTurnStartOutcome: (outcome: object) => ledger.recordOutcome(outcome),
+    });
+    const bytes = readFileSync(path.join(ledgerDir(env), `${owner}.outcomes`,
+      `${createHash('sha256').update(requestId).digest('hex')}.json`), 'utf8');
+    expect(JSON.parse(bytes)).toMatchObject({
+      requestId, serverOutcome: 'missing', loopFire: null, loopMarkerAppend: 'unknown',
+      transport: {
+        operatorOrigin: 'http://127.0.0.1:9071',
+        proxyTraceId: valid ? trace : null,
+        upstreamOrigin: valid ? origin : null,
+      },
+    });
+    expect(bytes).not.toContain('secret');
+    expect(bytes).not.toContain('private response text');
+    expect(bytes).not.toContain('runtimeSha');
   });
 
   it('records an unreceived response without retaining transport error text', async () => {

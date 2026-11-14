@@ -2119,6 +2119,9 @@ function fail(reason, record = null) {
   } : null;
   console.error('MUTATION_PROBE_CHILD_SOURCE_NOTICES verdict=unclassified reason=' + reason
     + (child ? ' child=' + JSON.stringify(child) : ''));
+  if (reason === 'launcher-subject-substituted' && record?.entry === 'scripts/test-files.mjs') {
+    console.error('mutation-probe: keep the committed-source loader strict. For a contained managed test, run the pinned bootstrap as `NODE_OPTIONS="--import=./scripts/lib/committed-source-loader.mjs" node scripts/lib/mutation-probe-inner-runner.mjs scripts/test-files.mjs <test path>`; it starts a fresh router child without inheriting the loader.');
+  }
   process.exit(1);
 }
 function canonical(path) {
@@ -2224,11 +2227,13 @@ function acceptLauncherRecord(record) {
   const testFilesRunner = record.entry === 'scripts/test-files.mjs' && record.pid === launcherPid;
   const installSafeParent = record.entry === 'scripts/npm-install-safe.mjs'
     && record.pid === launcherParentPid;
+  const mutationProbeBootstrap = record.entry === 'scripts/lib/mutation-probe-inner-runner.mjs'
+    && record.pid === launcherParentPid;
   if (record.kind !== 'substituted' || record.via !== 'esm'
     || !isAbsolute(record.top) || !within(repoRoot, canonical(record.top))
     || typeof record.rel !== 'string' || isAbsolute(record.rel) || record.rel.includes('\\')
     || !Number.isSafeInteger(record.pid) || record.pid < 1
-    || (!testFilesRunner && !installSafeParent)) return false;
+    || (!testFilesRunner && !installSafeParent && !mutationProbeBootstrap)) return false;
   // Lazy launcher support imports can belong to a nested repository. Resolve
   // their paths from the notice's actual Git root while keeping both process
   // identity and that root's containment boundary intact.

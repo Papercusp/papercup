@@ -1682,6 +1682,7 @@ describe('Kopia managed entrypoint contract', () => {
     progressStallSec?: number;
     hotWritesProgress?: boolean;
     hotSleep?: string;
+    holderRecentlyEscalated?: boolean;
   }) {
     const fx = fixture();
     const { dir } = fx;
@@ -1700,6 +1701,9 @@ describe('Kopia managed entrypoint contract', () => {
       if (opts.hotWritesProgress) env.HOT_PROGRESS = progressPath;
     }
     seedDeadlineBase(dir, 'hot', 25_200);
+    if (opts.holderRecentlyEscalated) {
+      writeFileSync(join(dir, 'state', 'hot.last-escalation'), String(Math.floor(Date.now() / 1000)));
+    }
     const dumpBase = Number(readFileSync(seedDeadlineBase(dir, 'db-dump', opts.dumpAgeSec), 'utf8').trim());
     const hotLog = join(dir, 'hot.log');
     const dbLog = join(dir, 'db.log');
@@ -1768,6 +1772,106 @@ describe('Kopia managed entrypoint contract', () => {
       readdirSync(r.dir).filter((name) => /\.(wait|due)$/.test(name)),
       r.evidence,
     ).toEqual([]);
+  });
+
+  it('deduplicates hold logs for multiple waiters while preserving reason and request transitions', async () => {
+    const fx = fixture();
+    const { dir } = fx;
+    const env = {
+      ...fx.env,
+      KOPIA_BACKUP_MAX_DEFER_SEC: '600',
+      KOPIA_BACKUP_PRIORITY_HOLD_EXTENSION_SEC: '600',
+      READY: join(dir, 'ready'),
+      RELEASE: join(dir, 'release'),
+    };
+    seedDeadlineBase(dir, 'hot', 25_200);
+    seedDeadlineBase(dir, 'db-a', 0);
+    seedDeadlineBase(dir, 'db-b', 0);
+    const children: Array<{ child: ReturnType<typeof spawn>; closed: Promise<number | null> }> = [];
+    function launch(args: string[]) {
+      const child = spawn('bash', [guard, ...args], {
+        env, stdio: ['ignore', 'pipe', 'pipe'], detached: true,
+      });
+      const closed = new Promise<number | null>((resolve) => child.once('close', resolve));
+      let output = '';
+      child.stdout!.setEncoding('utf8').on('data', (chunk: string) => { output += chunk; });
+      child.stderr!.setEncoding('utf8').on('data', (chunk: string) => { output += chunk; });
+      children.push({ child, closed });
+      return { child, closed, read: () => output };
+    }
+    const hot = launch(['--mode', 'scheduled', '--label', 'hot', '--', 'bash', '-c',
+      'touch "$READY"; while [ ! -e "$RELEASE" ]; do sleep 0.01; done']);
+    try {
+      await waitForPath(env.READY);
+      const a = launch(['--mode', 'scheduled', '--label', 'db-a', '--priority-on-contention',
+        '--', 'touch', join(dir, 'a-ran')]);
+      const b = launch(['--mode', 'scheduled', '--label', 'db-b', '--priority-on-contention',
+        '--', 'touch', join(dir, 'b-ran')]);
+      const requestA = `${env.KOPIA_BACKUP_LOCK_PATH}.db-a.${a.child.pid}.wait`;
+      const requestB = `${env.KOPIA_BACKUP_LOCK_PATH}.db-b.${b.child.pid}.wait`;
+      const line = (request: string, reason: string) =>
+        `result=holding-against-priority-waiter reason=${reason} waiter=${basename(request)} `;
+      await waitForOutput(hot.read, line(requestA, 'holder-overdue'));
+      await waitForOutput(hot.read, line(requestB, 'holder-overdue'));
+
+      // Each observed transition proves another monitor scan visited the other
+      // stable waiter too; no sleep-based assumption about scan counts is needed.
+      const due = (request: string) => request.replace(/\.wait$/, '.due');
+      const past = String(Math.floor(Date.now() / 1000) - 1);
+      writeFileSync(due(requestA), past);
+      await waitForOutput(hot.read, line(requestA, 'holder-earlier-deadline'));
+      writeFileSync(due(requestB), past);
+      await waitForOutput(hot.read, line(requestB, 'holder-earlier-deadline'));
+
+      // Observe a scan with A absent before recreating its marker. A new request
+      // at the same path must be logged even if its reason matches the old one.
+      rmSync(requestA);
+      rmSync(due(requestA));
+      let offset = hot.read().length;
+      writeFileSync(due(requestB), String(Math.floor(Date.now() / 1000) + 600));
+      await waitForOutput(() => hot.read().slice(offset), line(requestB, 'holder-overdue'));
+      offset = hot.read().length;
+      writeFileSync(due(requestA), past);
+      writeFileSync(requestA, String(a.child.pid));
+      await waitForOutput(() => hot.read().slice(offset), line(requestA, 'holder-earlier-deadline'));
+
+      writeFileSync(env.RELEASE, 'done');
+      expect(await hot.closed, hot.read()).toBe(0);
+      expect(await a.closed, a.read()).toBe(0);
+      expect(await b.closed, b.read()).toBe(0);
+      for (const [request, reason, count] of [
+        [requestA, 'holder-overdue', 1],
+        [requestB, 'holder-overdue', 2],
+        [requestA, 'holder-earlier-deadline', 2],
+        [requestB, 'holder-earlier-deadline', 1],
+      ] as const) {
+        expect(hot.read().split('\n').filter((entry) => entry.includes(line(request, reason))), hot.read())
+          .toHaveLength(count);
+      }
+      expect(hot.read()).not.toContain('result=stopping-during-run');
+      expect(existsSync(join(dir, 'a-ran'))).toBe(true);
+      expect(existsSync(join(dir, 'b-ran'))).toBe(true);
+      expect(readdirSync(dir).filter((name) => /\.(wait|due)$/.test(name))).toEqual([]);
+    } finally {
+      writeFileSync(env.RELEASE, 'cleanup');
+      await Promise.all(children.map(({ child, closed }) => stopFixtureGroup(child, closed)));
+    }
+  }, 60_000);
+
+  it('preserves an overdue holder deadline during pressure escalation cooldown', () => {
+    const r = edfScenario({
+      extensionSec: 60,
+      dumpAgeSec: 12,
+      hotLoops: 40,
+      holderRecentlyEscalated: true,
+    });
+
+    expect(r.scenario.stdout, r.evidence).toContain('db_rc=0 hot_rc=0');
+    expect(r.hotOut, r.evidence).not.toContain('result=staleness-override-armed');
+    expect(r.hotOut, r.evidence).toContain('reason=holder-earlier-deadline');
+    expect(r.hotOut, r.evidence).not.toContain('reason=holder-not-overdue');
+    expect(r.hotOut, r.evidence).not.toContain('result=stopping-during-run');
+    expect(r.dbRanAt, r.evidence).toBeGreaterThanOrEqual(r.hotDoneAt);
   });
 
   it('bounds the earliest-deadline hold: the sweep still yields once the dump is overdue by the extension', () => {

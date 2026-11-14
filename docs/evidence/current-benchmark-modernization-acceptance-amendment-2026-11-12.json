@@ -1,0 +1,828 @@
+{
+  "rubricRef": "acceptance-current-benchmark-modernization-2026-10-09",
+  "criteria": [
+    {
+      "key": "r-1",
+      "title": "Honest archive provenance",
+      "intent": {
+        "request": "Archived benchmark imports retain original execution timestamps and exact known model/arm identity; repeated imports do not change execution freshness. Archive validity/classification is owned by R-10.",
+        "constraints": [
+          "Avi selected this session itself; no delegated implementation fleet.",
+          "Reuse maintained graders, stores, launch seams and component benchmarks."
+        ],
+        "sourceRefs": [
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:1",
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:8"
+        ]
+      },
+      "model": "A valid archived benchmark import preserves its original execution provenance across repeated imports.",
+      "bar": "A valid archived benchmark import preserves its original execution provenance across repeated imports.",
+      "barKey": "R-1",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-10-09T18:46:31.048Z",
+        "declaredBy": "su-0f38adbc-c692-4dfe-8ed2-4b5404762ff7"
+      },
+      "method": "D-002/D-007. Read archive timestamp/model/arm assertions and repeated-PG-import assertions; unknown identity remains unknown and import time never replaces execution time. R-10 owns grading classification.",
+      "driftMarkers": "Reimport changes an execution timestamp, substitutes a fabricated model default for an unknown model, or changes recorded arm identity.",
+      "replication": "Call testing:run {\"harness\":\"papercusp\",\"files\":[\"packages/operator-core/lib/external-bench/preserved-runs.test.ts\",\"packages/operator-core/lib/external-bench/run-store.integration.test.ts\"],\"timeoutMs\":300000,\"maxFailures\":10}. Read the stored per-file/per-case verdicts and the assertion bodies named in METHOD; a skip or zero-tests result is not proof. Preserve exact test ledger IDs and source/test/fixture/protocol hashes. Apply the criterion's own falsifier and require any separately named live artifacts; tests for another BAR cannot substitute. Read docs:get {\"harness\":\"engineering\",\"slugs\":[\"agent-insights/fair-benchmark-reporting-tooling\"],\"heading\":\"Current benchmark acceptance procedure\"} and benchmarks/README.md for launch/grading/export prerequisites.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/external-bench/preserved-runs.test.ts",
+          "packages/operator-core/lib/external-bench/run-store.integration.test.ts"
+        ]
+      }
+    },
+    {
+      "key": "r-2",
+      "title": "One primary task denominator",
+      "intent": {
+        "request": "Every preserved, operational, comparison and exported primary outcome uses the frozen assigned-task universe; missing attempts and agent timeouts remain in that denominator. R-11 owns denominator labels, conditional quality and missing-grader display.",
+        "constraints": [
+          "Avi selected this session itself; no delegated implementation fleet.",
+          "Reuse maintained graders, stores, launch seams and component benchmarks."
+        ],
+        "sourceRefs": [
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:1",
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:8"
+        ]
+      },
+      "model": "Each benchmark product headline divides resolved assigned tasks by the same frozen assigned-task count.",
+      "bar": "Each benchmark product headline divides resolved assigned tasks by the same frozen assigned-task count.",
+      "barKey": "R-2",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-10-09T18:46:31.048Z",
+        "declaredBy": "su-0f38adbc-c692-4dfe-8ed2-4b5404762ff7"
+      },
+      "method": "D-003/D-007. Read frozen-roster report, whole-arm absence, partial task/seed collection, SQL detail/list and export assertions; compare the same task × seed × arm assignment across readers. R-11 owns display and missing-grade labels.",
+      "driftMarkers": "An arm gains apparent success by dropping failed or unattempted assigned task/seed cells, or primary denominators differ between product readers.",
+      "replication": "Call testing:run {\"harness\":\"papercusp\",\"files\":[\"packages/operator-core/lib/external-bench/preserved-runs.test.ts\",\"packages/operator-core/lib/external-bench/run-store.integration.test.ts\",\"packages/operator-core/lib/external-bench/reproducibility/reproducibility.integration.test.ts\",\"packages/operator-core/lib/external-bench/reproducibility/report.test.ts\",\"packages/operator-core/lib/external-bench/export-bundle.test.ts\",\"libs/generic/bench-metrics/src/aggregate.test.ts\"],\"timeoutMs\":300000,\"maxFailures\":10}. Read the stored per-file/per-case verdicts and the assertion bodies named in METHOD; a skip or zero-tests result is not proof. Preserve exact test ledger IDs and source/test/fixture/protocol hashes. Apply the criterion's own falsifier and require any separately named live artifacts; tests for another BAR cannot substitute. Read docs:get {\"harness\":\"engineering\",\"slugs\":[\"agent-insights/fair-benchmark-reporting-tooling\"],\"heading\":\"Current benchmark acceptance procedure\"} and benchmarks/README.md for launch/grading/export prerequisites.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/external-bench/preserved-runs.test.ts",
+          "packages/operator-core/lib/external-bench/run-store.integration.test.ts",
+          "packages/operator-core/lib/external-bench/reproducibility/reproducibility.integration.test.ts",
+          "packages/operator-core/lib/external-bench/reproducibility/report.test.ts",
+          "packages/operator-core/lib/external-bench/export-bundle.test.ts",
+          "libs/generic/bench-metrics/src/aggregate.test.ts"
+        ]
+      }
+    },
+    {
+      "key": "r-3",
+      "title": "Current execution and isolation",
+      "intent": {
+        "request": "Current treatment executes through maintained su/native-fleet launch in isolated benchmark scope, with terminal artifacts and cancellation/restart cleanup. R-12 owns measured execution identity.",
+        "constraints": [
+          "Avi selected this session itself; no delegated implementation fleet.",
+          "Reuse maintained graders, stores, launch seams and component benchmarks."
+        ],
+        "sourceRefs": [
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:1",
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:8"
+        ]
+      },
+      "model": "The current benchmark treatment executes through the maintained su/native fleet launch mechanism in its isolated benchmark workspace.",
+      "bar": "The current benchmark treatment executes through the maintained su/native fleet launch mechanism in its isolated benchmark workspace.",
+      "barKey": "R-3",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree",
+        "live"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-10-09T18:46:31.048Z",
+        "declaredBy": "su-0f38adbc-c692-4dfe-8ed2-4b5404762ff7"
+      },
+      "method": "D-002/D-007. Read maintained current launch, retired-arm refusal, isolated production-scope refusal, native stock/current-su process lifecycle and cancellation/lost-launch-reply cleanup assertions. Exercise real child-process integration fixtures. R-12 owns measured identity; process exit alone is not complete lifecycle evidence.\n\nFor R-3, the actual R-8 pilot must also retain authenticated launch requests/responses, isolated workspace and run/task/session bindings, native entrypoint and child-process lineage, terminal cleanup inventory, and cancellation/restart disposition. Compare those records with the committed arm and roster; a passing lifecycle fixture or configuration alone cannot establish actual execution or scope confinement.\n\nEvidence contract: retain the existing tree tests and declared layers as mandatory recurrence guards AND bind separate observed live evidence from the source-containing staging-operator run to this criterion. Both tree and live planes are independently required. Use plans:bind-spec-evidence with the criterion's current clause revision, actual source/test/runtime/protocol fingerprints and canonical artifact references. When a program measured manual/operational evidence, details.instrument must cite its committed repository path and the conventional committed test that imports/drives it; do not claim no instrument for captured program output. The exact artifact population and any missing observations must be enumerated. Missing live artifacts rate unknown; contradictory observations rate broken. Supporting fixtures alone cannot rate healthy.",
+      "driftMarkers": "A retired coding-factory/Mug/cup path is launched, benchmark scope leaks into production, or cancellation/restart leaves run-owned work executing.",
+      "replication": "Call testing:run {\"harness\":\"papercusp\",\"files\":[\"packages/operator-core/lib/external-bench/run-launcher.test.ts\",\"packages/operator-core/lib/external-bench/current-su.test.ts\",\"packages/operator-core/lib/external-bench/current-su.integration.test.ts\",\"packages/operator-core/lib/external-bench/native-stock-harness.integration.test.ts\",\"packages/operator-core/lib/external-bench/bench-workspace.test.ts\"],\"timeoutMs\":300000,\"maxFailures\":10}. Read the stored per-file/per-case verdicts and the assertion bodies named in METHOD; a skip or zero-tests result is not proof. Preserve exact test ledger IDs and source/test/fixture/protocol hashes. Apply the criterion's own falsifier and require any separately named live artifacts; tests for another BAR cannot substitute. Read docs:get {\"harness\":\"engineering\",\"slugs\":[\"agent-insights/fair-benchmark-reporting-tooling\"],\"heading\":\"Current benchmark acceptance procedure\"} and benchmarks/README.md for launch/grading/export prerequisites.\n\nRe-run the declared conventional tests, then independently inspect and bind the actual corresponding R-8 pilot receipts described in METHOD. Use the same frozen protocol and actual artifact population. Do not execute additional inference or declare a missing trial healthy merely to discharge this check.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/external-bench/run-launcher.test.ts",
+          "packages/operator-core/lib/external-bench/current-su.test.ts",
+          "packages/operator-core/lib/external-bench/current-su.integration.test.ts",
+          "packages/operator-core/lib/external-bench/native-stock-harness.integration.test.ts",
+          "packages/operator-core/lib/external-bench/bench-workspace.test.ts"
+        ]
+      },
+      "requiredEvidencePlanes": [
+        "live"
+      ],
+      "evidenceRuntime": "staging-operator"
+    },
+    {
+      "key": "r-4",
+      "title": "Causal controls and exercised capabilities",
+      "intent": {
+        "request": "Product comparison supports a maintained stock-agent reference; same-solver comparisons support solo, independent parallel, coordinated fleet and independently solved best-of-N with a charged selector. Treatment evidence records delivered capability input and actual actions, and permits memory/planning/review ablations without changing unrelated solver settings.",
+        "constraints": [
+          "Avi selected this session itself; no delegated implementation fleet.",
+          "Reuse maintained graders, stores, launch seams and component benchmarks."
+        ],
+        "sourceRefs": [
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:1",
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:8"
+        ]
+      },
+      "model": "Each compared arm uses its preregistered solver and causal control configuration.",
+      "bar": "Each compared arm uses its preregistered solver and causal control configuration.",
+      "barKey": "R-4",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree",
+        "live"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-10-09T18:46:31.048Z",
+        "declaredBy": "su-0f38adbc-c692-4dfe-8ed2-4b5404762ff7"
+      },
+      "method": "D-004. Read identical declared assignment/equal cap and topology control assertions, capability-exercise traces and independently solved best-of-N selector accounting. Product-versus-reference differences are descriptive; causal memory/planning/review claims require the same solver/settings outside the isolated toggle and positive delivered/exercised capability evidence. Fixture coverage alone does not establish that causal controls were exercised in an actual trial.\n\nFor R-4, retain the pilot's actual per-arm topology, delivered capability inputs and corresponding exercise actions, plus participant and charged-selector identities. Check that unrelated solver/model/effort and payer settings match. If a capability was not exercised, do not attribute lift to it; fixtures remain recurrence guards.\n\nEvidence contract: retain the existing tree tests and declared layers as mandatory recurrence guards AND bind separate observed live evidence from the source-containing staging-operator run to this criterion. Both tree and live planes are independently required. Use plans:bind-spec-evidence with the criterion's current clause revision, actual source/test/runtime/protocol fingerprints and canonical artifact references. When a program measured manual/operational evidence, details.instrument must cite its committed repository path and the conventional committed test that imports/drives it; do not claim no instrument for captured program output. The exact artifact population and any missing observations must be enumerated. Missing live artifacts rate unknown; contradictory observations rate broken. Supporting fixtures alone cannot rate healthy.",
+      "driftMarkers": "Coordination is claimed from parallel unrelated task runs alone, a treatment capability is never delivered/exercised, or controls silently use a weaker per-task solver.",
+      "replication": "Call testing:run {\"harness\":\"papercusp\",\"files\":[\"packages/operator-core/lib/external-bench/coordination-runtime.test.ts\",\"packages/operator-core/lib/external-bench/run-topology.test.ts\",\"packages/operator-core/lib/external-bench/baseline-best-of-n-pilot.test.ts\",\"packages/operator-core/lib/external-bench/reproducibility/reproducibility.test.ts\",\"libs/generic/bench-metrics/src/fairness-audit.test.ts\"],\"timeoutMs\":300000,\"maxFailures\":10}. Read the stored per-file/per-case verdicts and the assertion bodies named in METHOD; a skip or zero-tests result is not proof. Preserve exact test ledger IDs and source/test/fixture/protocol hashes. Apply the criterion's own falsifier and require any separately named live artifacts; tests for another BAR cannot substitute. Read docs:get {\"harness\":\"engineering\",\"slugs\":[\"agent-insights/fair-benchmark-reporting-tooling\"],\"heading\":\"Current benchmark acceptance procedure\"} and benchmarks/README.md for launch/grading/export prerequisites.\n\nRe-run the declared conventional tests, then independently inspect and bind the actual corresponding R-8 pilot receipts described in METHOD. Use the same frozen protocol and actual artifact population. Do not execute additional inference or declare a missing trial healthy merely to discharge this check.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/external-bench/coordination-runtime.test.ts",
+          "packages/operator-core/lib/external-bench/run-topology.test.ts",
+          "packages/operator-core/lib/external-bench/baseline-best-of-n-pilot.test.ts",
+          "packages/operator-core/lib/external-bench/reproducibility/reproducibility.test.ts",
+          "libs/generic/bench-metrics/src/fairness-audit.test.ts"
+        ]
+      },
+      "requiredEvidencePlanes": [
+        "live"
+      ],
+      "evidenceRuntime": "staging-operator"
+    },
+    {
+      "key": "r-5",
+      "title": "Matched total budgets and complete accounting",
+      "intent": {
+        "request": "Runs enforce hard aggregate dollar/time/token limits across all members, leaders, reviewers, retries, selectors and failed attempts, expose measured and normalized-price cost plus wall/concurrency curves, and fail efficiency claims closed on missing usage.",
+        "constraints": [
+          "Avi selected this session itself; no delegated implementation fleet.",
+          "Reuse maintained graders, stores, launch seams and component benchmarks."
+        ],
+        "sourceRefs": [
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:1",
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:8"
+        ]
+      },
+      "model": "A benchmark run enforces its aggregate budget across all attributable participants and attempts.",
+      "bar": "A benchmark run enforces its aggregate budget across all attributable participants and attempts.",
+      "barKey": "R-5",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree",
+        "live"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-10-09T18:46:31.048Z",
+        "declaredBy": "su-0f38adbc-c692-4dfe-8ed2-4b5404762ff7"
+      },
+      "method": "D-003/D-004. Read concurrent aggregate admission, overshoot, durable receipt, recovery/retry charge, complete participant/attempt census, unknown native billing and cost-price parity assertions. Reconcile all roles and retries to the aggregate $60 cap and equal $3 assignment caps. Unknown telemetry cannot pass efficiency or become free work; call count alone cannot establish compute parity.\n\nFor R-5, reconcile the pilot's complete participant/request/retry/recovery/selector reservation and settlement population to run totals, equal generation and aggregate/in-flight caps, and the abort-both-arms rule. Missing usage or settlement evidence keeps efficiency unknown. Apply the subscription accounting rule below.\n\nEvidence contract: retain the existing tree tests and declared layers as mandatory recurrence guards AND bind separate observed live evidence from the source-containing staging-operator run to this criterion. Both tree and live planes are independently required. Use plans:bind-spec-evidence with the criterion's current clause revision, actual source/test/runtime/protocol fingerprints and canonical artifact references. When a program measured manual/operational evidence, details.instrument must cite its committed repository path and the conventional committed test that imports/drives it; do not claim no instrument for captured program output. The exact artifact population and any missing observations must be enumerated. Missing live artifacts rate unknown; contradictory observations rate broken. Supporting fixtures alone cannot rate healthy.\n\nPayment authority is companion benchmark-coverage-frontierswe-v2-2026-10-10#D-023: this pilot uses matching Codex ChatGPT-subscription arms, with identical frozen model/effort and payer basis. Dollar ceilings are frozen-list-price-equivalent usage, not cash spend: retain the frozen price schedule, provider-intrinsic input/output ceiling contract, worst-case per-request reservations, provider-reported usage and terminal settlements. Do not call unpriced/unknown usage free or report subscription equivalent usage as provider bills. Preserve equal $3 generation caps, the $60 aggregate ceiling including calibration/controls/retries/selectors, the aggregate/in-flight structure and the abort-both-arms rule; no confirmation spend is authorized.",
+      "driftMarkers": "Any participant bypasses the aggregate cap, retries/recovered work disappear from totals, zero/unknown telemetry is treated as free work, or equal call count is the sole compute-parity proof. Subscription payer/model/effort mismatch, missing frozen list prices or provider-intrinsic reservation/settlement evidence, unlabeled equivalent cost, or subscription usage described as cash provider bills is a falsifier.",
+      "replication": "Call testing:run {\"harness\":\"papercusp\",\"files\":[\"packages/operator-core/lib/external-bench/aggregate-budget.integration.test.ts\",\"packages/operator-core/lib/external-bench/current-su.test.ts\",\"packages/operator-core/lib/external-bench/current-su.integration.test.ts\",\"packages/operator-core/lib/external-bench/run-topology.test.ts\",\"packages/operator-core/lib/external-bench/native-harness-runner.test.ts\",\"libs/generic/bench-metrics/src/aggregate.test.ts\",\"libs/generic/bench-metrics/src/fairness-audit.test.ts\"],\"timeoutMs\":300000,\"maxFailures\":10}. Read the stored per-file/per-case verdicts and the assertion bodies named in METHOD; a skip or zero-tests result is not proof. Preserve exact test ledger IDs and source/test/fixture/protocol hashes. Apply the criterion's own falsifier and require any separately named live artifacts; tests for another BAR cannot substitute. Read docs:get {\"harness\":\"engineering\",\"slugs\":[\"agent-insights/fair-benchmark-reporting-tooling\"],\"heading\":\"Current benchmark acceptance procedure\"} and benchmarks/README.md for launch/grading/export prerequisites.\n\nRe-run the declared conventional tests, then independently inspect and bind the actual corresponding R-8 pilot receipts described in METHOD. Use the same frozen protocol and actual artifact population. Do not execute additional inference or declare a missing trial healthy merely to discharge this check.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/external-bench/aggregate-budget.integration.test.ts",
+          "packages/operator-core/lib/external-bench/current-su.test.ts",
+          "packages/operator-core/lib/external-bench/current-su.integration.test.ts",
+          "packages/operator-core/lib/external-bench/run-topology.test.ts",
+          "packages/operator-core/lib/external-bench/native-harness-runner.test.ts",
+          "libs/generic/bench-metrics/src/aggregate.test.ts",
+          "libs/generic/bench-metrics/src/fairness-audit.test.ts"
+        ]
+      },
+      "requiredEvidencePlanes": [
+        "live"
+      ],
+      "evidenceRuntime": "staging-operator"
+    },
+    {
+      "key": "r-6",
+      "title": "Frozen protocol and equivalent memory",
+      "intent": {
+        "request": "Generation begins only against a committed immutable preregistration of task/seed/arm/solver/budget/grader/protocol settings; protocol changes create a distinct preregistration. R-13 owns equivalent initial corpus/memory and leak prevention.",
+        "constraints": [
+          "Avi selected this session itself; no delegated implementation fleet.",
+          "Reuse maintained graders, stores, launch seams and component benchmarks."
+        ],
+        "sourceRefs": [
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:1",
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:8"
+        ]
+      },
+      "model": "Benchmark generation begins only against a committed immutable preregistration of its matched protocol.",
+      "bar": "Benchmark generation begins only against a committed immutable preregistration of its matched protocol.",
+      "barKey": "R-6",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-10-09T18:46:31.048Z",
+        "declaredBy": "su-0f38adbc-c692-4dfe-8ed2-4b5404762ff7"
+      },
+      "method": "D-004/D-007. Read immutable/retargeted/concurrent preregistration, introducing-commit blob, before-outcomes, hash-drift, required frozen field and host assignment-drift assertions. Generation is refused unless the exact complete protocol was committed before study outcomes. Retain a disjoint withheld confirmation roster with power-design assumptions and planned paired-task count; preparation remains required, execution receives no additional spend grant. R-13 owns physical context isolation.",
+      "driftMarkers": "Configuration changes after observing outcomes without a new preregistration, generation starts before the protocol is committed, or a changed model/prompt/grader is passed off as the same matched protocol.",
+      "replication": "Call testing:run {\"harness\":\"papercusp\",\"files\":[\"packages/operator-core/lib/external-bench/reproducibility/prereg.integration.test.ts\",\"packages/operator-core/lib/external-bench/reproducibility/reproducibility.test.ts\",\"packages/operator-core/lib/external-bench/reproducibility/reproducibility.integration.test.ts\",\"packages/operator-core/lib/external-bench/current-su.test.ts\"],\"timeoutMs\":300000,\"maxFailures\":10}. Read the stored per-file/per-case verdicts and the assertion bodies named in METHOD; a skip or zero-tests result is not proof. Preserve exact test ledger IDs and source/test/fixture/protocol hashes. Apply the criterion's own falsifier and require any separately named live artifacts; tests for another BAR cannot substitute. Read docs:get {\"harness\":\"engineering\",\"slugs\":[\"agent-insights/fair-benchmark-reporting-tooling\"],\"heading\":\"Current benchmark acceptance procedure\"} and benchmarks/README.md for launch/grading/export prerequisites.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/external-bench/reproducibility/prereg.integration.test.ts",
+          "packages/operator-core/lib/external-bench/reproducibility/reproducibility.test.ts",
+          "packages/operator-core/lib/external-bench/reproducibility/reproducibility.integration.test.ts",
+          "packages/operator-core/lib/external-bench/current-su.test.ts"
+        ]
+      }
+    },
+    {
+      "key": "r-7",
+      "title": "Uncertainty and current workload coverage",
+      "intent": {
+        "request": "Comparison uses paired task-level outcome intervals under preregistered repository clustering, with complete sampling denominators. R-14 owns workload completion artifacts and R-16 evidence-class labels.",
+        "constraints": [
+          "Avi selected this session itself; no delegated implementation fleet.",
+          "Reuse maintained graders, stores, launch seams and component benchmarks."
+        ],
+        "sourceRefs": [
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:1",
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:8"
+        ]
+      },
+      "model": "A benchmark comparison reports paired task-level intervals under its preregistered repository-clustering policy.",
+      "bar": "A benchmark comparison reports paired task-level intervals under its preregistered repository-clustering policy.",
+      "barKey": "R-7",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-10-09T18:46:31.048Z",
+        "declaredBy": "su-0f38adbc-c692-4dfe-8ed2-4b5404762ff7"
+      },
+      "method": "D-004/D-007. Read paired-bootstrap negative controls showing a shift hidden by independent CI overlap, seed determinism, alignment refusal, frozen assignment reports and seed-collapse behavior. Acceptance additionally requires repository-cluster resampling and report binding under the preregistered policy; the existing item-pair primitive alone does not discharge that requirement. Rate unresolved until the cluster implementation and falsifying tests exist; do not weaken the clustering promise. R-14/R-16 own workload completion and evidence labels.",
+      "driftMarkers": "Independent confidence-interval overlap is used as the significance test, seed rows are treated as independent tasks, repository clustering is omitted, or sampling denominators hide assigned cells.",
+      "replication": "Call testing:run {\"harness\":\"papercusp\",\"files\":[\"libs/generic/bench-metrics/src/intervals.test.ts\",\"libs/generic/bench-metrics/src/aggregate.test.ts\",\"packages/operator-core/lib/external-bench/reproducibility/report.test.ts\"],\"timeoutMs\":300000,\"maxFailures\":10}. Read the stored per-file/per-case verdicts and the assertion bodies named in METHOD; a skip or zero-tests result is not proof. Preserve exact test ledger IDs and source/test/fixture/protocol hashes. Apply the criterion's own falsifier and require any separately named live artifacts; tests for another BAR cannot substitute. Read docs:get {\"harness\":\"engineering\",\"slugs\":[\"agent-insights/fair-benchmark-reporting-tooling\"],\"heading\":\"Current benchmark acceptance procedure\"} and benchmarks/README.md for launch/grading/export prerequisites.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "libs/generic/bench-metrics/src/intervals.test.ts",
+          "libs/generic/bench-metrics/src/aggregate.test.ts",
+          "packages/operator-core/lib/external-bench/reproducibility/report.test.ts"
+        ]
+      }
+    },
+    {
+      "key": "r-8",
+      "title": "Bounded reproducible matched pilot",
+      "intent": {
+        "request": "A preregistered current coding pilot executes both current product and maintained stock baseline on identical task IDs with three independent seeds and identical official grader; preserves generated submissions, exact usage, grades, failure classification, traces and a reproducible export. Pilot is a measurement validation, not automatic proof of superiority.",
+        "constraints": [
+          "Avi selected this session itself; no delegated implementation fleet.",
+          "Reuse maintained graders, stores, launch seams and component benchmarks."
+        ],
+        "sourceRefs": [
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:1",
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:8"
+        ]
+      },
+      "model": "The matched pilot produces a reproducible officially graded outcome record for every preregistered task-arm-seed attempt.",
+      "bar": "The matched pilot produces a reproducible officially graded outcome record for every preregistered task-arm-seed attempt.",
+      "barKey": "R-8",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "live"
+      ],
+      "evidencePlane": "live",
+      "evidenceRuntime": "staging-operator",
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-10-09T18:46:31.048Z",
+        "declaredBy": "su-0f38adbc-c692-4dfe-8ed2-4b5404762ff7"
+      },
+      "method": "D-004/D-005. Explicit manual live outcome check: inspect the real isolated 3-task × 3-seed × 2-arm pilot against its immutable preregistration and all eighteen assignment cells. Require matched tasks/seeds/official grader, exact native identity, generated submissions or explicit cap/failure outcomes, retries/recovery, provider-reported usage and frozen-list-price-equivalent accounting, grades or repaired/inconclusive grader status, traces and a reproducible export. Equal generation caps are $3 and total authorized inference, including calibration, is at most $60. Require the prepared disjoint power-planned withheld confirmation design. Until those live artifacts exist, R-8 is unknown; passing grader/export fixtures cannot satisfy it. The pilot validates measurement and never establishes general superiority or authorizes confirmation spend.\n\nPayment authority is companion benchmark-coverage-frontierswe-v2-2026-10-10#D-023: this pilot uses matching Codex ChatGPT-subscription arms, with identical frozen model/effort and payer basis. Dollar ceilings are frozen-list-price-equivalent usage, not cash spend: retain the frozen price schedule, provider-intrinsic input/output ceiling contract, worst-case per-request reservations, provider-reported usage and terminal settlements. Do not call unpriced/unknown usage free or report subscription equivalent usage as provider bills. Preserve equal $3 generation caps, the $60 aggregate ceiling including calibration/controls/retries/selectors, the aggregate/in-flight structure and the abort-both-arms rule; no confirmation spend is authorized.\n\nThe existing registered instrument key 'none' is an explicit manual criterion, not an unregistered/null instrument. A human verifier must inspect the actual canonical records required by this method. Any program-measured manual or operational binding must separately cite details.instrument={path,testPath} with committed bytes (and an explicit sibling commit when applicable), as enforced by instrument-provenance; the manual criterion key never waives that provenance. Do not invent a new benchmark execution framework or substitute a fixture for an observed result.\n\nThe actual manual-provenance dossier must enumerate all eighteen frozen task-arm-seed assignments, each generated submission or explicit cap/failure classification, every participant/retry/selector request, source/build/runtime/provider identities, official grader source/CSV/image identities, per-task grader outputs, grade receipt and export content hash. Validate completeness against the frozen roster, not the subset with results. Require the named committed execution/grader/export instruments and their conventional guards. An artifact missing from this population leaves R-8 unknown.",
+      "driftMarkers": "One arm lacks matching tasks/seeds/grades, official grader is replaced by a local heuristic, a failure vanishes, or a small pilot is used to claim general superiority. Subscription payer/model/effort mismatch, missing frozen list prices or provider-intrinsic reservation/settlement evidence, unlabeled equivalent cost, or subscription usage described as cash provider bills is a falsifier.",
+      "replication": "Read docs:get {\"harness\":\"engineering\",\"slugs\":[\"agent-insights/fair-benchmark-reporting-tooling\"],\"heading\":\"Current benchmark acceptance procedure\"}. Read plans:get {\"harness\":\"papercusp\",\"slug\":\"current-benchmark-modernization-2026-10-09\",\"decisionIds\":[\"D-004\",\"D-005\",\"D-006\",\"D-007\"]}. Resolve the criterion's actual pilot/export, canonical independent-grade or exact deployed-artifact receipts from the relevant P-009/P-010/P-011 work-item checkpoint via work_items:get; follow METHOD and every original falsifier. Missing receipts mean unknown, never a healthy rating from supporting fixture tests. Record the measured runtime/source/spec/protocol/task/grader/billing fingerprint population; no additional inference or publication is implied.",
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      }
+    },
+    {
+      "key": "r-9",
+      "title": "Verified shipment and maintained procedure",
+      "intent": {
+        "request": "Observe the exact accepted source/build artifact on green deployed release before transitioning the plan to shipped. Current-build independent verification is separately owned by R-18.",
+        "constraints": [
+          "Avi selected this session itself; no delegated implementation fleet.",
+          "Reuse maintained graders, stores, launch seams and component benchmarks."
+        ],
+        "sourceRefs": [
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:1",
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:8"
+        ]
+      },
+      "model": "The exact accepted artifact is observed on the deployed green release before the plan transitions to shipped.",
+      "bar": "The exact accepted artifact is observed on the deployed green release before the plan transitions to shipped.",
+      "barKey": "R-9",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "deployed"
+      ],
+      "evidencePlane": "deployed",
+      "evidenceRuntime": "release-operator",
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-10-09T18:46:31.048Z",
+        "declaredBy": "su-0f38adbc-c692-4dfe-8ed2-4b5404762ff7"
+      },
+      "method": "D-005/D-006/D-007. Explicit manual final-artifact check: resolve R-18's accepted source/build/spec fingerprints to the green release-operator artifact, inspect exact deployed identity and the successful shipped-transition receipt. Deployment requests or current-build tests alone do not satisfy shipment; R-18 independently owns implementation grading.\n\nThe existing registered instrument key 'none' is an explicit manual criterion, not an unregistered/null instrument. A human verifier must inspect the actual canonical records required by this method. Any program-measured manual or operational binding must separately cite details.instrument={path,testPath} with committed bytes (and an explicit sibling commit when applicable), as enforced by instrument-provenance; the manual criterion key never waives that provenance. Do not invent a new benchmark execution framework or substitute a fixture for an observed result.\n\nRetain the accepted source/build/spec identity, canonical green promotion receipt, exact deployed release runtime identity and successful shipped-transition receipt. Check identity equality and ordering against the accepted artifact through the maintained release pipeline and runtime-vintage readers. Missing or mismatched deployment proof cannot be replaced by a successful request, source test or staging journey.",
+      "driftMarkers": "The deployed source/build differs from the accepted artifact, the deployment lacks green promotion proof, or the plan transitions to shipped before that exact artifact is observed on the deployed release.",
+      "replication": "Read docs:get {\"harness\":\"engineering\",\"slugs\":[\"agent-insights/fair-benchmark-reporting-tooling\"],\"heading\":\"Current benchmark acceptance procedure\"}. Read plans:get {\"harness\":\"papercusp\",\"slug\":\"current-benchmark-modernization-2026-10-09\",\"decisionIds\":[\"D-004\",\"D-005\",\"D-006\",\"D-007\"]}. Resolve the criterion's actual pilot/export, canonical independent-grade or exact deployed-artifact receipts from the relevant P-009/P-010/P-011 work-item checkpoint via work_items:get; follow METHOD and every original falsifier. Missing receipts mean unknown, never a healthy rating from supporting fixture tests. Record the measured runtime/source/spec/protocol/task/grader/billing fingerprint population; no additional inference or publication is implied.",
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      }
+    },
+    {
+      "key": "r-10",
+      "title": "Archive result validity",
+      "intent": {
+        "request": "An imported archive is classified as a completed graded run only when its validated task submission record has actual grading evidence.",
+        "sourceRefs": [
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:8"
+        ]
+      },
+      "model": "An imported archive is classified as a completed graded run only when its validated task submission record has actual grading evidence.",
+      "bar": "An imported archive is classified as a completed graded run only when its validated task submission record has actual grading evidence.",
+      "barKey": "R-10",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-10-09T18:46:31.048Z",
+        "declaredBy": "su-0f38adbc-c692-4dfe-8ed2-4b5404762ff7"
+      },
+      "method": "D-002/D-007. Read dataset-only, malformed grading record, generated-ungraded, valid officially graded archive and repeated-import classification assertions. Actual validated grading evidence is necessary for completed-graded classification; provenance itself belongs to R-1.",
+      "driftMarkers": "A dataset-only, malformed or ungraded archive becomes a completed graded run.",
+      "replication": "Call testing:run {\"harness\":\"papercusp\",\"files\":[\"packages/operator-core/lib/external-bench/preserved-runs.test.ts\",\"packages/operator-core/lib/external-bench/run-store.integration.test.ts\"],\"timeoutMs\":300000,\"maxFailures\":10}. Read the stored per-file/per-case verdicts and the assertion bodies named in METHOD; a skip or zero-tests result is not proof. Preserve exact test ledger IDs and source/test/fixture/protocol hashes. Apply the criterion's own falsifier and require any separately named live artifacts; tests for another BAR cannot substitute. Read docs:get {\"harness\":\"engineering\",\"slugs\":[\"agent-insights/fair-benchmark-reporting-tooling\"],\"heading\":\"Current benchmark acceptance procedure\"} and benchmarks/README.md for launch/grading/export prerequisites.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/external-bench/preserved-runs.test.ts",
+          "packages/operator-core/lib/external-bench/run-store.integration.test.ts"
+        ]
+      }
+    },
+    {
+      "key": "r-11",
+      "title": "Explicit secondary measurement",
+      "intent": {
+        "request": "Every conditional-score display identifies its graded denominator and distinguishes agent failure from missing grader measurement.",
+        "sourceRefs": [
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:8"
+        ]
+      },
+      "model": "Every conditional-score display identifies its graded denominator and distinguishes agent failure from missing grader measurement.",
+      "bar": "Every conditional-score display identifies its graded denominator and distinguishes agent failure from missing grader measurement.",
+      "barKey": "R-11",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-10-09T18:46:31.048Z",
+        "declaredBy": "su-0f38adbc-c692-4dfe-8ed2-4b5404762ff7"
+      },
+      "method": "D-003/D-007. Read rendered primary-versus-secondary outcomes and denominator labels plus timeout/non-attempt and generated-but-missing-grade cases. Agent failure remains an assigned outcome; missing grader measurement remains inconclusive. Reader parity belongs to R-2.",
+      "driftMarkers": "Conditional score appears as the product headline, its denominator is absent, or a grader outage is represented as a measured false verdict.",
+      "replication": "Call testing:run {\"harness\":\"papercusp\",\"files\":[\"packages/operator-core/lib/external-bench/preserved-runs.test.ts\",\"apps/operator-vite/src/components/__tests__/adv-evals-outcome-render.test.tsx\",\"packages/operator-core/lib/external-bench/reproducibility/report.test.ts\"],\"timeoutMs\":300000,\"maxFailures\":10}. Read the stored per-file/per-case verdicts and the assertion bodies named in METHOD; a skip or zero-tests result is not proof. Preserve exact test ledger IDs and source/test/fixture/protocol hashes. Apply the criterion's own falsifier and require any separately named live artifacts; tests for another BAR cannot substitute. Read docs:get {\"harness\":\"engineering\",\"slugs\":[\"agent-insights/fair-benchmark-reporting-tooling\"],\"heading\":\"Current benchmark acceptance procedure\"} and benchmarks/README.md for launch/grading/export prerequisites.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/external-bench/preserved-runs.test.ts",
+          "apps/operator-vite/src/components/__tests__/adv-evals-outcome-render.test.tsx",
+          "packages/operator-core/lib/external-bench/reproducibility/report.test.ts"
+        ]
+      }
+    },
+    {
+      "key": "r-12",
+      "title": "Loaded execution identity",
+      "intent": {
+        "request": "Each current result records the measured runtime/model/client/prompt/tool identity used for its generation.",
+        "sourceRefs": [
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:8"
+        ]
+      },
+      "model": "Each current result records the measured runtime/model/client/prompt/tool identity used for its generation.",
+      "bar": "Each current result records the measured runtime/model/client/prompt/tool identity used for its generation.",
+      "barKey": "R-12",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree",
+        "live"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-10-09T18:46:31.048Z",
+        "declaredBy": "su-0f38adbc-c692-4dfe-8ed2-4b5404762ff7"
+      },
+      "method": "D-002/D-007. Read 'joins native version and turn with a provider response and complete exposure hashes', host-owned native-home/template binding, all drift/incomplete evidence cases, production scoped observation and final observed-identity mismatch assertions. Source identity comes from provider response joined to native turn, exact process/runtime vintage and complete prompt/tool hashes; configured aliases never stand in for served identity. Retain exact request hashes alongside explicitly pinned native template hashes and re-check at terminal completion.\n\nFor R-12, use the actual pilot's native transcript, loaded-source/build/runtime observations and provider response/request correlation to verify served model/version, effort, native client, payer/account identity, prompt/instruction/tool hashes and source drift. Requested aliases and source-only tests cannot substitute for these runtime identities.\n\nEvidence contract: retain the existing tree tests and declared layers as mandatory recurrence guards AND bind separate observed live evidence from the source-containing staging-operator run to this criterion. Both tree and live planes are independently required. Use plans:bind-spec-evidence with the criterion's current clause revision, actual source/test/runtime/protocol fingerprints and canonical artifact references. When a program measured manual/operational evidence, details.instrument must cite its committed repository path and the conventional committed test that imports/drives it; do not claim no instrument for captured program output. The exact artifact population and any missing observations must be enumerated. Missing live artifacts rate unknown; contradictory observations rate broken. Supporting fixtures alone cannot rate healthy.",
+      "driftMarkers": "A configured alias is presented as actual served model, identity fields are fabricated from defaults, or serving-source drift is not reported.",
+      "replication": "Call testing:run {\"harness\":\"papercusp\",\"files\":[\"packages/operator-core/lib/external-bench/current-su.test.ts\",\"packages/operator-core/lib/external-bench/current-su.integration.test.ts\",\"packages/operator-core/lib/external-bench/native-stock-harness.integration.test.ts\"],\"timeoutMs\":300000,\"maxFailures\":10}. Read the stored per-file/per-case verdicts and the assertion bodies named in METHOD; a skip or zero-tests result is not proof. Preserve exact test ledger IDs and source/test/fixture/protocol hashes. Apply the criterion's own falsifier and require any separately named live artifacts; tests for another BAR cannot substitute. Read docs:get {\"harness\":\"engineering\",\"slugs\":[\"agent-insights/fair-benchmark-reporting-tooling\"],\"heading\":\"Current benchmark acceptance procedure\"} and benchmarks/README.md for launch/grading/export prerequisites.\n\nRe-run the declared conventional tests, then independently inspect and bind the actual corresponding R-8 pilot receipts described in METHOD. Use the same frozen protocol and actual artifact population. Do not execute additional inference or declare a missing trial healthy merely to discharge this check.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/external-bench/current-su.test.ts",
+          "packages/operator-core/lib/external-bench/current-su.integration.test.ts",
+          "packages/operator-core/lib/external-bench/native-stock-harness.integration.test.ts"
+        ]
+      },
+      "requiredEvidencePlanes": [
+        "live"
+      ],
+      "evidenceRuntime": "staging-operator"
+    },
+    {
+      "key": "r-13",
+      "title": "Equivalent initial context",
+      "intent": {
+        "request": "Each matched arm begins from the same permitted corpus and memory snapshot without receiving other-arm solutions or hidden grader content.",
+        "sourceRefs": [
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:8"
+        ]
+      },
+      "model": "Each matched arm begins from the same permitted corpus and memory snapshot without receiving other-arm solutions or hidden grader content.",
+      "bar": "Each matched arm begins from the same permitted corpus and memory snapshot without receiving other-arm solutions or hidden grader content.",
+      "barKey": "R-13",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree",
+        "live"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-10-09T18:46:31.048Z",
+        "declaredBy": "su-0f38adbc-c692-4dfe-8ed2-4b5404762ff7"
+      },
+      "method": "D-004/D-007. Read byte-identical restored snapshots for both arms, mutation of first-arm memory with unchanged independently read second-arm receipt, pre-generation contamination, receipt reuse/symlink/escaping-reference refusal and forbidden-source matching-hash assertions. The runner re-reads restoration before admission and launch. Production retrieval scope isolation and actual absence of cross-arm/hidden-grader access remain required; copying a fixture snapshot alone cannot prove those live access boundaries.\n\nFor R-13, retain the actual per-assignment context restore manifests, equal permitted corpus/memory hashes, consuming actor/request correlation, fresh isolated workspace identity and forbidden-access/cross-arm-output disposition. Compare the actual matched arms and seeds; context fixture success alone does not prove the study's isolation.\n\nEvidence contract: retain the existing tree tests and declared layers as mandatory recurrence guards AND bind separate observed live evidence from the source-containing staging-operator run to this criterion. Both tree and live planes are independently required. Use plans:bind-spec-evidence with the criterion's current clause revision, actual source/test/runtime/protocol fingerprints and canonical artifact references. When a program measured manual/operational evidence, details.instrument must cite its committed repository path and the conventional committed test that imports/drives it; do not claim no instrument for captured program output. The exact artifact population and any missing observations must be enumerated. Missing live artifacts rate unknown; contradictory observations rate broken. Supporting fixtures alone cannot rate healthy.",
+      "driftMarkers": "Matched arms differ in initial context, previous-arm outputs survive in memory, or grading answers enter generation context.",
+      "replication": "Call testing:run {\"harness\":\"papercusp\",\"files\":[\"packages/operator-core/lib/external-bench/reproducibility/context.test.ts\",\"packages/operator-core/lib/external-bench/current-su.test.ts\",\"packages/operator-core/lib/external-bench/native-harness-runner.test.ts\",\"packages/operator-core/lib/external-bench/baseline-best-of-n.test.ts\"],\"timeoutMs\":300000,\"maxFailures\":10}. Read the stored per-file/per-case verdicts and the assertion bodies named in METHOD; a skip or zero-tests result is not proof. Preserve exact test ledger IDs and source/test/fixture/protocol hashes. Apply the criterion's own falsifier and require any separately named live artifacts; tests for another BAR cannot substitute. Read docs:get {\"harness\":\"engineering\",\"slugs\":[\"agent-insights/fair-benchmark-reporting-tooling\"],\"heading\":\"Current benchmark acceptance procedure\"} and benchmarks/README.md for launch/grading/export prerequisites.\n\nRe-run the declared conventional tests, then independently inspect and bind the actual corresponding R-8 pilot receipts described in METHOD. Use the same frozen protocol and actual artifact population. Do not execute additional inference or declare a missing trial healthy merely to discharge this check.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/external-bench/reproducibility/context.test.ts",
+          "packages/operator-core/lib/external-bench/current-su.test.ts",
+          "packages/operator-core/lib/external-bench/native-harness-runner.test.ts",
+          "packages/operator-core/lib/external-bench/baseline-best-of-n.test.ts"
+        ]
+      },
+      "requiredEvidencePlanes": [
+        "live"
+      ],
+      "evidenceRuntime": "staging-operator"
+    },
+    {
+      "key": "r-14",
+      "title": "Real workload outcome validation",
+      "intent": {
+        "request": "Each current-workload trial is scored against its declared completion artifacts and durable transitions.",
+        "sourceRefs": [
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:8"
+        ]
+      },
+      "model": "Each current-workload trial is scored against its declared completion artifacts and durable transitions.",
+      "bar": "Each current-workload trial is scored against its declared completion artifacts and durable transitions.",
+      "barKey": "R-14",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree",
+        "live"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-10-09T18:46:31.048Z",
+        "declaredBy": "su-0f38adbc-c692-4dfe-8ed2-4b5404762ff7"
+      },
+      "method": "D-004/D-007. Read backlog enrollment/drain/collect/teardown and current-su durable budget, termination and lost-launch-reply recovery assertions. For each declared backlog/recovery/handoff/contention/retrieval trial, compare the specified completion artifacts, delivered context and durable transitions with the observed result. Synthetic corpus/ABBA fixtures are supporting mechanics, not measured workload completion. A process-exit-only record cannot pass; remaining trial-class validators/measurements are unresolved until their actual artifacts are checked.\n\nFor R-14, bind each declared backlog/recovery/handoff/contention/retrieval workload to its actual artifact IDs/content hashes, consuming context records, authoritative durable transition receipts and downstream graded outcome. Inspect the existing completion-requirement validator and its maintained regression tests. A class with no actual trial remains unknown and cannot be inferred complete from synthetic examples or process exit.\n\nEvidence contract: retain the existing tree tests and declared layers as mandatory recurrence guards AND bind separate observed live evidence from the source-containing staging-operator run to this criterion. Both tree and live planes are independently required. Use plans:bind-spec-evidence with the criterion's current clause revision, actual source/test/runtime/protocol fingerprints and canonical artifact references. When a program measured manual/operational evidence, details.instrument must cite its committed repository path and the conventional committed test that imports/drives it; do not claim no instrument for captured program output. The exact artifact population and any missing observations must be enumerated. Missing live artifacts rate unknown; contradictory observations rate broken. Supporting fixtures alone cannot rate healthy.",
+      "driftMarkers": "A backlog/recovery/handoff/contention/retrieval trial passes from process exit alone despite missing required artifacts, context-delivery fidelity or durable state.",
+      "replication": "Call testing:run {\"harness\":\"papercusp\",\"files\":[\"packages/operator-core/lib/external-bench/hive-backlog-live.test.ts\",\"packages/operator-core/lib/external-bench/current-su.test.ts\",\"packages/operator-core/test/paired-operation-benchmark.test.ts\",\"packages/operator-core/lib/orchestration-benchmark-corpus.test.ts\"],\"timeoutMs\":300000,\"maxFailures\":10}. Read the stored per-file/per-case verdicts and the assertion bodies named in METHOD; a skip or zero-tests result is not proof. Preserve exact test ledger IDs and source/test/fixture/protocol hashes. Apply the criterion's own falsifier and require any separately named live artifacts; tests for another BAR cannot substitute. Read docs:get {\"harness\":\"engineering\",\"slugs\":[\"agent-insights/fair-benchmark-reporting-tooling\"],\"heading\":\"Current benchmark acceptance procedure\"} and benchmarks/README.md for launch/grading/export prerequisites.\n\nRe-run the declared conventional tests, then independently inspect and bind the actual corresponding R-8 pilot receipts described in METHOD. Use the same frozen protocol and actual artifact population. Do not execute additional inference or declare a missing trial healthy merely to discharge this check.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/external-bench/hive-backlog-live.test.ts",
+          "packages/operator-core/lib/external-bench/current-su.test.ts",
+          "packages/operator-core/test/paired-operation-benchmark.test.ts",
+          "packages/operator-core/lib/orchestration-benchmark-corpus.test.ts"
+        ]
+      },
+      "requiredEvidencePlanes": [
+        "live"
+      ],
+      "evidenceRuntime": "staging-operator"
+    },
+    {
+      "key": "r-15",
+      "title": "Current runnable UI arms",
+      "intent": {
+        "request": "Evaluation offers an arm as currently runnable only after its maintained runtime adapter has passed readiness validation.",
+        "sourceRefs": [
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:8"
+        ]
+      },
+      "model": "Evaluation offers an arm as currently runnable only after its maintained runtime adapter has passed readiness validation.",
+      "bar": "Evaluation offers an arm as currently runnable only after its maintained runtime adapter has passed readiness validation.",
+      "barKey": "R-15",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree",
+        "live"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-10-09T18:46:31.048Z",
+        "declaredBy": "su-0f38adbc-c692-4dfe-8ed2-4b5404762ff7"
+      },
+      "method": "D-002/D-005. Read current preflight checks for committed protocol, isolated scope, registered seed/arm, source-bound native input contract, payer-matching Codex subscription account for this pilot under companion D-023, enabled current path and loaded host identity; read launch-form assertions for preflight refusal, frozen controls and stale request protection. The real-PG run-launcher integration guard must also reject missing or drifted frozen allocation and changed content/size/prompt/oracle before provider allocation or a native gateway, with no private-read checkpoint persisted. The UI offers current execution only after those checks; a successful refusal fixture is regression evidence, not an actual readiness receipt.\n\nFor R-15, inspect an actual current-build readiness/estimate receipt for every offered arm: maintained adapter and native client availability, matching isolated benchmark workspace and frozen payer account, loaded host/source identity, official grader prerequisites and precise disabled/refusal behavior. A menu fixture or configured adapter alone cannot make a runtime runnable.\n\nEvidence contract: retain the existing tree tests and declared layers as mandatory recurrence guards AND bind separate observed live evidence from the source-containing staging-operator run to this criterion. Both tree and live planes are independently required. Use plans:bind-spec-evidence with the criterion's current clause revision, actual source/test/runtime/protocol fingerprints and canonical artifact references. When a program measured manual/operational evidence, details.instrument must cite its committed repository path and the conventional committed test that imports/drives it; do not claim no instrument for captured program output. The exact artifact population and any missing observations must be enumerated. Missing live artifacts rate unknown; contradictory observations rate broken. Supporting fixtures alone cannot rate healthy.\n\nPayment authority is companion benchmark-coverage-frontierswe-v2-2026-10-10#D-023: this pilot uses matching Codex ChatGPT-subscription arms, with identical frozen model/effort and payer basis. Dollar ceilings are frozen-list-price-equivalent usage, not cash spend: retain the frozen price schedule, provider-intrinsic input/output ceiling contract, worst-case per-request reservations, provider-reported usage and terminal settlements. Do not call unpriced/unknown usage free or report subscription equivalent usage as provider bills. Preserve equal $3 generation caps, the $60 aggregate ceiling including calibration/controls/retries/selectors, the aggregate/in-flight structure and the abort-both-arms rule; no confirmation spend is authorized.",
+      "driftMarkers": "The launch menu offers retired or adapter-only scaffold support as executable current product behavior. Subscription payer/model/effort mismatch, missing frozen list prices or provider-intrinsic reservation/settlement evidence, unlabeled equivalent cost, or subscription usage described as cash provider bills is a falsifier.",
+      "replication": "Call testing:run {\"harness\":\"papercusp\",\"files\":[\"packages/operator-core/lib/external-bench/estimate.test.ts\",\"apps/operator-vite/src/components/adv/AdvEvalsTab.test.tsx\",\"packages/operator-core/lib/external-bench/run-launcher.test.ts\",\"packages/operator-core/lib/external-bench/run-launcher.integration.test.ts\"],\"timeoutMs\":300000,\"maxFailures\":10}. Read the stored per-file/per-case verdicts and the assertion bodies named in METHOD; a skip or zero-tests result is not proof. Preserve exact test ledger IDs and source/test/fixture/protocol hashes. Apply the criterion's own falsifier and require any separately named live artifacts; tests for another BAR cannot substitute. Read docs:get {\"harness\":\"engineering\",\"slugs\":[\"agent-insights/fair-benchmark-reporting-tooling\"],\"heading\":\"Current benchmark acceptance procedure\"} and benchmarks/README.md for launch/grading/export prerequisites.\n\nRe-run the declared conventional tests, then independently inspect and bind the actual corresponding R-8 pilot receipts described in METHOD. Use the same frozen protocol and actual artifact population. Do not execute additional inference or declare a missing trial healthy merely to discharge this check.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/external-bench/estimate.test.ts",
+          "apps/operator-vite/src/components/adv/AdvEvalsTab.test.tsx",
+          "packages/operator-core/lib/external-bench/run-launcher.test.ts",
+          "packages/operator-core/lib/external-bench/run-launcher.integration.test.ts"
+        ]
+      },
+      "requiredEvidencePlanes": [
+        "live"
+      ],
+      "evidenceRuntime": "staging-operator"
+    },
+    {
+      "key": "r-16",
+      "title": "Evidence classification",
+      "intent": {
+        "request": "A benchmark result view identifies its historical, synthetic, partial or current measured evidence class.",
+        "sourceRefs": [
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:8"
+        ]
+      },
+      "model": "A benchmark result view identifies its historical, synthetic, partial or current measured evidence class.",
+      "bar": "A benchmark result view identifies its historical, synthetic, partial or current measured evidence class.",
+      "barKey": "R-16",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree"
+      ],
+      "evidencePlane": "tree",
+      "requiredTestLayers": [
+        "unit"
+      ],
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-10-09T18:46:31.048Z",
+        "declaredBy": "su-0f38adbc-c692-4dfe-8ed2-4b5404762ff7"
+      },
+      "method": "D-002/D-007. Read observed-only historical report labeling, synthetic latency-unmeasured labeling and outcome/export evidence fields. Compare historical/synthetic/partial/current measured classes across the visible run/detail/report/export paths; missing identity or billing stays unknown. A new import timestamp cannot upgrade a historical result to current performance.",
+      "driftMarkers": "A viewer cannot distinguish old or fixture evidence from current measured performance.",
+      "replication": "Call testing:run {\"harness\":\"papercusp\",\"files\":[\"packages/operator-core/lib/external-bench/reproducibility/report.test.ts\",\"packages/operator-core/lib/external-bench/export-bundle.test.ts\",\"apps/operator-vite/src/components/__tests__/adv-evals-outcome-render.test.tsx\"],\"timeoutMs\":300000,\"maxFailures\":10}. Read the stored per-file/per-case verdicts and the assertion bodies named in METHOD; a skip or zero-tests result is not proof. Preserve exact test ledger IDs and source/test/fixture/protocol hashes. Apply the criterion's own falsifier and require any separately named live artifacts; tests for another BAR cannot substitute. Read docs:get {\"harness\":\"engineering\",\"slugs\":[\"agent-insights/fair-benchmark-reporting-tooling\"],\"heading\":\"Current benchmark acceptance procedure\"} and benchmarks/README.md for launch/grading/export prerequisites.",
+      "check": {
+        "kind": "tests",
+        "files": [
+          "packages/operator-core/lib/external-bench/reproducibility/report.test.ts",
+          "packages/operator-core/lib/external-bench/export-bundle.test.ts",
+          "apps/operator-vite/src/components/__tests__/adv-evals-outcome-render.test.tsx"
+        ]
+      }
+    },
+    {
+      "key": "r-17",
+      "title": "Maintained reproduction procedure",
+      "intent": {
+        "request": "The maintained benchmark procedure reproduces the implemented launch, grading and export workflow under its documented prerequisites.",
+        "sourceRefs": [
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:8"
+        ]
+      },
+      "model": "The maintained benchmark procedure reproduces the implemented launch, grading and export workflow under its documented prerequisites.",
+      "bar": "The maintained benchmark procedure reproduces the implemented launch, grading and export workflow under its documented prerequisites.",
+      "barKey": "R-17",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "live"
+      ],
+      "evidencePlane": "live",
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-10-09T18:46:31.048Z",
+        "declaredBy": "su-0f38adbc-c692-4dfe-8ed2-4b5404762ff7"
+      },
+      "method": "D-002/D-005. Explicit manual procedure check: read benchmarks/README.md current launch prerequisites and the maintained launch, preregistration, current official grader and export seams. On the source-containing current build, follow the documented authenticated protocol launch → terminal artifacts → official grade → export workflow under all named prerequisites; retain the actual request/response and artifact evidence. Export helper tests alone cannot satisfy reproduction. Historical commands retain historical labels; unsupported suites cannot be implied runnable.\n\nThe existing registered instrument key 'none' is an explicit manual criterion, not an unregistered/null instrument. A human verifier must inspect the actual canonical records required by this method. Any program-measured manual or operational binding must separately cite details.instrument={path,testPath} with committed bytes (and an explicit sibling commit when applicable), as enforced by instrument-provenance; the manual criterion key never waives that provenance. Do not invent a new benchmark execution framework or substitute a fixture for an observed result.\n\nRecord a clean stated starting condition and the complete named prerequisite census, the exact documented authenticated launch request/response, preregistration hash and introducing commit, loaded source/build/runtime identity, terminal run/task/session/artifact IDs, official grader version and scorer receipt, and exported artifact ID/SHA256. Execute the maintained documented procedure on the source-containing current build; documentation inspection or export-helper tests alone do not pass. Missing prerequisites rate unknown; retired or contradictory prerequisites/steps rate broken. Reuse the authorized pilot results for reproduction where they already exercise the exact documented steps; this grants no new study/confirmation spend.",
+      "driftMarkers": "A documented command invokes retired paths, omits a required runtime dependency, or implies unsupported suites can run.",
+      "replication": "Read docs:get {\"harness\":\"engineering\",\"slugs\":[\"agent-insights/fair-benchmark-reporting-tooling\"],\"heading\":\"Current benchmark acceptance procedure\"}. Read plans:get {\"harness\":\"papercusp\",\"slug\":\"current-benchmark-modernization-2026-10-09\",\"decisionIds\":[\"D-004\",\"D-005\",\"D-006\",\"D-007\"]}. Resolve the criterion's actual pilot/export, canonical independent-grade or exact deployed-artifact receipts from the relevant P-009/P-010/P-011 work-item checkpoint via work_items:get; follow METHOD and every original falsifier. Missing receipts mean unknown, never a healthy rating from supporting fixture tests. Record the measured runtime/source/spec/protocol/task/grader/billing fingerprint population; no additional inference or publication is implied.",
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "evidenceRuntime": "staging-operator"
+    },
+    {
+      "key": "r-18",
+      "title": "Independent current-build verification",
+      "intent": {
+        "request": "Independently validate current-build implementation before final shipment.",
+        "sourceRefs": [
+          "session_turn:codex:01a121dc-ba50-73b3-b0c6-66efe60beab0:8"
+        ]
+      },
+      "model": "A lineage-independent current-build implementation verification grade is recorded against the tested source and clause revisions.",
+      "bar": "A lineage-independent current-build implementation verification grade is recorded against the tested source and clause revisions.",
+      "barKey": "R-18",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "tree",
+        "live"
+      ],
+      "evidencePlane": "tree",
+      "passRatings": [
+        "healthy"
+      ],
+      "barProvenance": {
+        "lifecycle": "pre-implementation",
+        "declaredAt": "2026-10-09T18:46:31.048Z",
+        "declaredBy": "su-0f38adbc-c692-4dfe-8ed2-4b5404762ff7"
+      },
+      "method": "Read canonical spec-test-adequacy and acceptance verification receipts with source/spec/test fingerprints; independent review of current-build implementation precedes final deployed-only R-9 acceptance. This is the D-006 process bar: read the lineage-independent canonical verification receipts, not a code diff or an implementer self-grade; retain exact source/spec/test revisions and the tested current-build runtime identity.\n\nThe existing registered instrument key 'none' is an explicit manual criterion, not an unregistered/null instrument. A human verifier must inspect the actual canonical records required by this method. Any program-measured manual or operational binding must separately cite details.instrument={path,testPath} with committed bytes (and an explicit sibling commit when applicable), as enforced by instrument-provenance; the manual criterion key never waives that provenance. Do not invent a new benchmark execution framework or substitute a fixture for an observed result.\n\nRequire both current conventional source/spec/test proof and the canonical lineage-independent current-build verification/acceptance receipts. Retain reviewer eligibility/lineage, exact current clause revisions, source/test/fixture fingerprints, loaded runtime/build identity, and the reviewed proof population. A routing request or author assertion is not a completed independent grade. R-9 separately requires deployment.",
+      "driftMarkers": "Required conventional proof is stale, unbound or ungraded, or the implementer supplies the independent verification grade.",
+      "replication": "Read docs:get {\"harness\":\"engineering\",\"slugs\":[\"agent-insights/fair-benchmark-reporting-tooling\"],\"heading\":\"Current benchmark acceptance procedure\"}. Read plans:get {\"harness\":\"papercusp\",\"slug\":\"current-benchmark-modernization-2026-10-09\",\"decisionIds\":[\"D-004\",\"D-005\",\"D-006\",\"D-007\"]}. Resolve the criterion's actual pilot/export, canonical independent-grade or exact deployed-artifact receipts from the relevant P-009/P-010/P-011 work-item checkpoint via work_items:get; follow METHOD and every original falsifier. Missing receipts mean unknown, never a healthy rating from supporting fixture tests. Record the measured runtime/source/spec/protocol/task/grader/billing fingerprint population; no additional inference or publication is implied.",
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      },
+      "requiredEvidencePlanes": [
+        "live"
+      ],
+      "evidenceRuntime": "staging-operator"
+    }
+  ],
+  "dryRun": true,
+  "expectedRubricRevision": 4,
+  "expectedSubjectPlanRevision": 40,
+  "idempotencyKey": "wi7467-modernization-live-evidence-reconciliation-20261112-v4",
+  "reason": "Address independent critique thread-post:1224221 without adding/removing outcomes or changing budgets/SELF route. Preserve all18 BARs and existing tree recurrence tests; require additional live evidence for actual treatment/topology/accounting/identity/context/workload/readiness and independent current-build verification. Move actual procedure R17 to the live staging plane, strengthen explicit manual receipt/provenance checklists for R8/R9/R17/R18, incorporate existing subscription D023 with identical dollar caps, and re-render changed Requirements/map rows canonically. 'none' remains the registered explicit-manual key; program-measured evidence must additionally cite existing committed instrument+test provenance. This proposal certifies no execution, pilot, grade, deployment or shipment."
+}

@@ -40,6 +40,9 @@ import { createTextCollector } from './child-output';
  */
 const SCRIPT = process.env.MUTATION_PROBE_SCRIPT ?? resolve(__dirname, '../../../scripts/mutation-probe.sh');
 const OVERLAY = resolve(__dirname, '../../../scripts/testing-run-probe-overlay.sh');
+const INNER_RUNNER = resolve(__dirname, '../../../scripts/lib/mutation-probe-inner-runner.mjs');
+const COMMITTED_SOURCE_LOADER = resolve(__dirname, '../../../scripts/lib/committed-source-loader.mjs');
+const FS_MUTEX = resolve(__dirname, '../../../scripts/lib/fs-mutex.mjs');
 const ORIGINAL = 'alpha\nbeta\ngamma\n';
 
 let dir: string;
@@ -390,6 +393,79 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(inherited.NODE_OPTIONS).toBe(`--import=${loader}`);
     expect(process.env.NODE_OPTIONS).toBe(parentOptions);
   });
+
+  it('runs a committed test-files router in a fresh loader-free child over the contained mutant', () => {
+    const repo = join(dir, 'mutation-inner-runner');
+    mkdirSync(join(repo, 'scripts', 'lib'), { recursive: true });
+    git(repo, ['init', '-q']);
+    git(repo, ['config', 'user.email', 'mutation-probe-test@example.invalid']);
+    git(repo, ['config', 'user.name', 'mutation-probe-test']);
+
+    const probe = join(repo, 'scripts/mutation-probe.sh');
+    const bootstrap = join(repo, 'scripts/lib/mutation-probe-inner-runner.mjs');
+    const loader = join(repo, 'scripts/lib/committed-source-loader.mjs');
+    const mutex = join(repo, 'scripts/lib/fs-mutex.mjs');
+    const subjectPath = join(repo, 'scripts/mutated-subject.mjs');
+    const testFiles = join(repo, 'scripts/test-files.mjs');
+    const seen = join(dir, 'mutation-inner-runner-seen.jsonl');
+    writeFileSync(probe, readFileSync(SCRIPT));
+    writeFileSync(bootstrap, readFileSync(INNER_RUNNER));
+    writeFileSync(loader, readFileSync(COMMITTED_SOURCE_LOADER));
+    writeFileSync(mutex, readFileSync(FS_MUTEX));
+    writeFileSync(subjectPath, 'export const VALUE = 1;\n');
+    writeFileSync(testFiles, [
+      "import { readFileSync, statSync, writeFileSync } from 'node:fs';",
+      "import { VALUE } from './mutated-subject.mjs';",
+      'const phase = process.env.PAPERCUSP_MUTATION_PHASE;',
+      'const descriptor = process.env.PAPERCUSP_MUTATION_DESCRIPTOR ?? "";',
+      'const receiptFile = process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE ?? "";',
+      'const noticeFile = process.env.PAPERCUSP_COMMITTED_SOURCE_NOTICES ?? "";',
+      'const noticeOffset = statSync(noticeFile).size;',
+      `writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ phase, value: VALUE, descriptor, receiptFile, noticeOffset, nodeOptions: process.env.NODE_OPTIONS ?? "", parentPid: process.ppid }) + "\\n", { flag: "a" });`,
+      'console.log("TEST_FILE_FINALIZATION " + JSON.stringify({ pid: process.pid, phase: "provenance-complete", status: "measured" }));',
+      'const passed = VALUE === 1;',
+      'console.log(`TEST_FILE_RESULT requested=1 status=${passed ? "passed" : "failed"} childSubstituted=0 childNoticeOffsetBytes=${noticeOffset} launcherParentPid=${process.ppid} skippedTests=0`);',
+      'if (!passed) { console.log("TEST_FILE_ASSERTION_FAILURE file=\\"fixture.test.ts\\" name=\\"mutant\\" message=\\"AssertionError\\""); process.exitCode = 1; }',
+    ].join('\n'));
+    git(repo, ['add', 'scripts/mutation-probe.sh', 'scripts/lib/mutation-probe-inner-runner.mjs',
+      'scripts/lib/committed-source-loader.mjs', 'scripts/lib/fs-mutex.mjs', 'scripts/mutated-subject.mjs', 'scripts/test-files.mjs']);
+    git(repo, ['commit', '-qm', 'committed mutation probe inner-runner fixture']);
+
+    // Exercise the loader's committed substitution for the bootstrap itself.
+    // Pin only that process through execArgv; the test-files child starts with
+    // no inherited NODE_OPTIONS loader and still imports the overlaid mutant.
+    writeFileSync(bootstrap, '\n// uncommitted bootstrap bytes must be replaced from HEAD\n', { flag: 'a' });
+    const env = {
+      ...process.env,
+      PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://ledger.example:5444/papercusp',
+      PAPERCUSP_FS_MUTEX_LOCK_DIR: join(dir, 'mutation-inner-runner-fs-mutex'),
+      // This isolated repository has no descriptor reader; explicitly exercise
+      // the runner with the probe's synthetic immutable descriptor.
+      PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'always',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: '0',
+    };
+    const { code, out } = runProbeIO([
+      '--file', subjectPath,
+      '--mutate', 's/VALUE = 1/VALUE = 2/',
+      '--relocation', 'overlay',
+      '--test', 'node --import=./scripts/lib/committed-source-loader.mjs scripts/lib/mutation-probe-inner-runner.mjs scripts/test-files.mjs fixture.test.ts',
+    ], fixtureChildEnv(env), repo, probe);
+
+    expect(code, out).toBe(0);
+    expect(out).toContain('MUTATION_PROBE_INNER_RUNNER ');
+    expect(out).toContain('bootstrapSource":"committed-source-loader"');
+    expect(out).toContain('committedLoaderRemovedFromNodeOptions":true');
+    expect(out).toContain('subjectStable":true');
+    expect(out).toContain('launcherNotices=1 childRecords=0');
+    expect(out).toContain('verdict=caught');
+    const rows = readFileSync(seen, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(rows.map(row => row.phase)).toEqual(['baseline', 'copy-baseline', 'mutant']);
+    expect(rows.map(row => row.value)).toEqual([1, 1, 2]);
+    expect(rows.every(row => row.descriptor && row.receiptFile && row.noticeOffset >= 0)).toBe(true);
+    expect(rows.every(row => !row.nodeOptions.includes('committed-source-loader'))).toBe(true);
+    expect(new Set(rows.map(row => row.descriptor)).size).toBe(1);
+    expect(readFileSync(subjectPath, 'utf8')).toBe('export const VALUE = 1;\n');
+  }, 60_000);
 
   it.each([
     ['invalid syntax', 's/beta/'],

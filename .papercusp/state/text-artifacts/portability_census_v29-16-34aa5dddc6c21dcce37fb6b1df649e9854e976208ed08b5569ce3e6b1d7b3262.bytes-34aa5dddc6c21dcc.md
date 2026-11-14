@@ -1,0 +1,38 @@
+---
+rel_path: "portability/census/v29-16-34aa5dddc6c21dcce37fb6b1df649e9854e976208ed08b5569ce3e6b1d7b3262.bytes-34aa5dddc6c21dcc"
+updated_at: 1794233098083
+_body: "content"
+---
+
+{
+  "root": "/home/marsh-office/papercupai-workspace/papercusp",
+  "worktree": {
+    "commit": "2308f56db20978885b086a66b5c6e7a79296245e",
+    "porcelain": "M apps/operator/bin/hono-host.ts\n M apps/operator/bin/release/dependency-generation.sh\n M apps/operator/lib/no-hand-rolled-cli-entry-guard.test.ts\n M apps/operator/scripts/__tests__/kopia-healthcheck-source-age.test.ts\n M apps/operator/scripts/hooks/inject/__tests__/delivery-ledger.test.ts\n M apps/operator/scripts/hooks/inject/__tests__/dispatcher.test.ts\n M apps/operator/scripts/hooks/inject/core.d.mts\n M apps/operator/scripts/hooks/inject/core.mjs\n M apps/operator/scripts/hooks/inject/delivery-ledger.d.mts\n M apps/operator/scripts/hooks/inject/delivery-ledger.mjs\n M apps/operator/scripts/hooks/omp/__tests__/coord-hook.test.ts\n M apps/operator/scripts/hooks/omp/coord-hook.ts\n M apps/operator/scripts/psu-launcher-import-safety.test.ts\n M apps/operator/scripts/psu-launcher.d.mts\n M apps/operator/scripts/ptool.d.mts\n M apps/operator/scripts/systemd/kopia-healthcheck.sh\n M apps/slack-asana-bug-drill\n M apps/tui/src/app.rs\n M apps/tui/src/client.rs\n M apps/tui/src/main.rs\n M apps/tui/src/workbench.rs\n M libs/generic/resumable-download\n M libs/generic/tooldef\n M libs/papercusp\n M libs/test-config\n M package-lock.json\n M packages/omp-plugin/__tests__/native-extension.integration.test.ts\n M packages/omp-plugin/__tests__/native-extension.test.ts\n M packages/omp-plugin/src/native-extension.ts\n M packages/operator-core/lib/agent-tools/benchmark/read-private-fixture.integration.test.ts\n M packages/operator-core/lib/agent-tools/capability/launch-agent.test.ts\n M packages/operator-core/lib/agent-tools/capability/launch-agent.ts\n M packages/operator-core/lib/backup/state-census-producers.test.ts\n M packages/operator-core/lib/backup/state-census-producers.ts\n M packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.test.ts\n M packages/operator-core/lib/external-bench/current-su.test.ts\n M packages/operator-core/lib/external-bench/current-su.ts\n M packages/operator-core/lib/external-bench/latency-attention-replay.integration.test.ts\n M packages/operator-core/lib/external-bench/private-fixture-reads.test.ts\n M packages/operator-core/lib/external-bench/run-launcher.ts\n M packages/operator-core/lib/measurement-provenance.test.ts\n M packages/operator-core/lib/memory/fixtures/native-mcp-export.ts\n M packages/operator-core/lib/memory/native-mcp-export.integration.test.ts\n M packages/operator-core/lib/memory/session-epoch-cross-port.integration.test.ts\n M packages/operator-core/lib/omp-managed-tools.native.integration.test.ts\n M packages/operator-core/lib/omp-managed-tools.native.test.ts\n M packages/operator-core/lib/su-session-rpc-engine.test.ts\n M packages/operator-core/lib/su-session-rpc-engine.ts\n M packages/operator-core/lib/su-session-stdio-peer.integration.test.ts\n M packages/operator-core/lib/su-session-stdio-peer.ts\n M packages/operator-core/test/committed-reader-source-preflight.test.ts\n M packages/operator-core/test/omp-managed-native-lifecycle.ts\n M packages/operator-core/test/staging-first-http-fixture.ts\n M packages/plugin-loader/package.json\n M papercusp-desktop\n M scripts/lib/budgeted-task-scheduler.d.mts\n M scripts/npm-install-safe.mjs\n M scripts/npm-install-safe.test.mjs\n?? .papercusp/evidence/luna-bg-preparation-20261107-measure-v3/binding.json\n?? apps/operator-docs/src/content/docs/agent-insights/blocker-resolution-evidenced-deferral.mdx"
+  },
+  "inputs": [
+    {
+      "path": "packages/operator-core/lib/backup/state-census-producers.test.ts",
+      "sha256": "0125b75a1341be02b870850e1ff155933869d51001a37ae7cb43b602d9bb318b"
+    },
+    {
+      "path": "packages/operator-core/lib/backup/state-census-cli.test.ts",
+      "sha256": "ead32441c09a8cd82e1f344b49f3b03529876f1f682b6e15b63aef7e02f748c2"
+    },
+    {
+      "path": "package.json",
+      "sha256": "f6c19daf03ff3ae8a8468ca91ceb3365f707e0a66032b0d5b74af0959a8086d7"
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "09f19fbc305254d5e21b44f46a3f48fbed3a909197a6046f41f98a52102cf233"
+    },
+    {
+      "path": "scripts/test-files.mjs",
+      "sha256": "00b38eaf36a0774ad348245ee62a3e0ccc393fb980ed3d987d8c38b39d5774bb"
+    }
+  ],
+  "coverage": "selected files and dependency lock; loaded import closure is reporter-owned",
+  "runtimeInputs": "/home/marsh-office/.papercusp/test-artifacts/testing-run/run-bncDj7/executed-inputs"
+}
+

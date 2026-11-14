@@ -9,8 +9,9 @@
  * form, an agent about to launch a plan, a human staring at a refused start — and
  * making them re-derive it from `required` minus the keys of `templateData` would
  * be three call sites re-implementing the gate's own rule slightly differently.
- * The value comes from the SAME helper the start gate uses, so the answer here and
- * the refusal there cannot disagree.
+ * `required` and schema `missing` come from the same input helper the start gate
+ * uses. Full startability also includes current Discovery, initial scope, the BAR
+ * contract, and governance admission, so the handler asks the complete gate below.
  *
  * Also reports `source` so a caller can tell the two schema sources apart without
  * inferring it: 'input-schema' (plan-authored JSON Schema), 'template' (a
@@ -21,6 +22,8 @@
  * code/issues/hint). The alternative was a UI chaining get-input-schema +
  * get-template-data and then re-deriving readiness client-side — a third
  * implementation of the gate's rule, in TypeScript the gate does not own.
+ * The complete start verdict is read in read-only mode against the same loaded row;
+ * this keeps legacy plans with missing Discovery from appearing ready here.
  *
  * That widening also FIXED a disagreement this file's own header promised could not
  * happen. `required`/`missing` were computed with the JSON-Schema-only helpers, which
@@ -37,6 +40,7 @@ import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { evaluatePlanStartReadiness, planRequiredKeys } from './plan-input-validation';
+import { checkPlanStartable } from './plan-start-gate';
 
 const argsSchema = z
   .object({
@@ -91,7 +95,14 @@ export default defineTool({
         // readable array, and planRequiredKeys introspects that shape — which is why
         // `required` is now populated for both sources instead of only the JSON one.
         const ref = { template: row.template, inputSchema: row.inputSchema };
-        const readiness = evaluatePlanStartReadiness(ref, row.templateData);
+        const inputReadiness = evaluatePlanStartReadiness(ref, row.templateData);
+        const startability = await checkPlanStartable(slug, opts, undefined, 'start', {
+          readOnly: true,
+          row,
+        });
+        const refusal = inputReadiness.ready
+          ? startability.ok ? null : startability.refusal
+          : inputReadiness;
         return {
           ok: true as const,
           slug: row.planSlug,
@@ -99,16 +110,16 @@ export default defineTool({
           inputSchema: schema,
           template: row.template,
           required: planRequiredKeys(ref),
-          missing: readiness.ready ? [] : readiness.missing,
+          missing: inputReadiness.ready ? [] : inputReadiness.missing,
           // The values the schema constrains — returned so a form can render its
           // current state without a second round-trip to plans:get-template-data.
           values: row.templateData ?? null,
           // The verdict a start door would give, verbatim. `ready: true` means every
           // start door would admit this plan as it stands.
-          ready: readiness.ready,
-          ...(readiness.ready
-            ? {}
-            : { code: readiness.code, issues: readiness.issues, hint: readiness.hint }),
+          ready: inputReadiness.ready && startability.ok,
+          ...(refusal
+            ? { code: refusal.code, issues: 'issues' in refusal ? refusal.issues : [refusal.detail], hint: refusal.hint }
+            : {}),
           version: row.version,
         };
       },

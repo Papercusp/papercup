@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010047562:63d63cd26d0935092586e2cacd3b4bd2",
+  "inputSha256": "63d63cd26d0935092586e2cacd3b4bd2dac58682eb35857b8159223bf5a63e1f",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-12T19:07:42.466Z",
+  "actor": "su-78560746-d1a0-423b-a26e-c1e9c6486454",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010047562",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "9678014cf00c4c62743226f6df332983ce8122220baf8b104a958d9eba91cb1e",
+      "observedParkFingerprint": "9678014cf00c4c62743226f6df332983ce8122220baf8b104a958d9eba91cb1e",
+      "reasonCode": "operator-directed",
+      "evidence": "Bounded source-plan administration under one-work-graph-structured-holds-2026-10-26#D-064, full verified read graph129/hash2d0647b64ef39db2fa4ef38525fb93207b7110154a7765405bfc41a14dcd8429. SAME original785 route retained. Own current activation read of legacy-original-fleet-member-evidence-recovery-2026-11-12 v7/body7f250045cc7f575a7628eca5ce16c74e26793230a3d655eccb9b186a694ea824/spec5bf7f78ae7de1ce6606fa8240e084d45c49ed8c74bf4138ad8088744b9d37310 shows discovery/declarations/conformance/inputs/anchors/dependencies/BAR/spec-quality/independent quality-audit/current contract critique/admission PASS; lane floor-gated, promotion waiting. Current9clauses read in full. Exact original P001/WI47562 OPEN/unassigned; migration:plan-line-work-item-nodes D011 park is the remaining floor. Quality card EI-28606807650434650 and independent audit EI-28607142492508817; settled current independent critique post1224697/closure1224699. Preview only this row; preserve P002 dependency and every other park. No force, source edit, live restore, native qualification or shipment authorization is asserted. After audit+row readback require ordinary custody/changeKinds, canonical start and actual READY.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010047562-63d63cd26d0935092586e2cacd3b4bd2-reconcile.json"
+}

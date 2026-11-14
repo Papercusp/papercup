@@ -488,6 +488,20 @@ interface OmpHookApi {
   ): void;
 }
 
+/** Reuse the native session API used by OMP's MCP callback and the dispatcher's
+ * existing session_id carrier. Read it on every callback so session rotation
+ * cannot reuse an inherited ID. An event field is not a runtime binding. */
+function eventWithNativeSession(event: unknown, ctx: unknown): unknown {
+  if (!event || typeof event !== 'object' || Array.isArray(event)) return event;
+  let sessionId: string | undefined;
+  try {
+    const current = (ctx as { sessionManager?: { getSessionId?: () => unknown } } | undefined)
+      ?.sessionManager?.getSessionId?.();
+    if (typeof current === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(current)) sessionId = current;
+  } catch { /* Preserve context delivery with an explicitly unavailable binding. */ }
+  return { ...event, session_id: sessionId };
+}
+
 let selfDir: string | undefined;
 try {
   selfDir = dirname(fileURLToPath(import.meta.url));
@@ -500,9 +514,9 @@ export default function register(pi: OmpHookApi): void {
   // before the agent loop begins, and returning `{ message }` gets the text
   // persisted into the session and shown in the TUI — the omp analogue of
   // claude's UserPromptSubmit additionalContext.
-  pi.on('before_agent_start', async (event: unknown) => {
+  pi.on('before_agent_start', async (event: unknown, ctx: unknown) => {
     try {
-      const text = await runDispatcher('turn-start', 'before_agent_start', event, { selfDir });
+      const text = await runDispatcher('turn-start', 'before_agent_start', eventWithNativeSession(event, ctx), { selfDir });
       if (!text) return;
       return { message: { customType: CUSTOM_TYPE, content: text, display: false } };
     } catch {
@@ -516,9 +530,9 @@ export default function register(pi: OmpHookApi): void {
   // per individual call and carries no tool INPUT, so it would mis-shape the
   // digest — adapter D-002). So turn_end still BUILDS the request; it just no
   // longer DELIVERS it. See PENDING_MID_TURN for the delivery half.
-  pi.on('turn_end', async (event: unknown) => {
+  pi.on('turn_end', async (event: unknown, ctx: unknown) => {
     try {
-      const text = await runDispatcher('mid-turn', 'turn_end', event, { selfDir });
+      const text = await runDispatcher('mid-turn', 'turn_end', eventWithNativeSession(event, ctx), { selfDir });
       if (!text) return;
       stashMidTurn(text);
     } catch {

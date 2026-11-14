@@ -14,10 +14,24 @@ import {
   monitorDeltaObservedForFire,
   readMonitorStanddownRecord,
   readPersistedMonitorConfig,
+  readIdentifiedWaitForRoutine,
   type MonitorAuthorityRecheck,
 } from './monitor-standdown';
 
 const HELD: MonitorAuthorityRecheck = { ok: true };
+
+describe('identified work and monitor waits', () => {
+  it.each(['work', 'monitor'])('identifies the same dependency under the %s label', mode => {
+    expect(readIdentifiedWaitForRoutine({ mode, workItem: 'WI-driver', blockedOn: { event: 'source:qualified' } }))
+      .toEqual({ drivingWorkItemId: 'WI-driver', eventKey: 'source:qualified' });
+  });
+  it('keeps productive work, ambient inbox waits and prose out of the budget', () => {
+    for (const payload of [{ workItem: 'WI-driver' }, { blockedOn: { event: 'source:qualified' } },
+      { workItem: 'WI-driver', blockedOn: { reason: 'waiting for someone' } }]) {
+      expect(readIdentifiedWaitForRoutine(payload)).toBeNull();
+    }
+  });
+});
 
 function config(overrides: Partial<PersistedMonitorConfig> = {}): PersistedMonitorConfig {
   return {

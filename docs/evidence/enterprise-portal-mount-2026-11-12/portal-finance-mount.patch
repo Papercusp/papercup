@@ -1,0 +1,286 @@
+--- a/packages/ui/src/auth.tsx
++++ b/packages/ui/src/auth.tsx
+@@ -137,6 +137,8 @@
+    * signal below carries the same news without discarding their work.
+    */
+   readonly initial: PortalSessionView;
++  /** Latest validated identity; sensitive account surfaces must not use the frozen routing view. */
++  readonly latest: PortalSessionView;
+   /** What the most recent re-check said. */
+   readonly signal: PortalSessionSignal;
+   /**
+@@ -165,20 +167,24 @@
+  */
+ export function usePortalSession(localMode: boolean): PortalSessionFeed {
+   const [initial, setInitial] = useState<PortalSessionView>(localMode ? { kind: "local" } : { kind: "loading" });
++  const [latest, setLatest] = useState<PortalSessionView>(localMode ? { kind: "local" } : { kind: "loading" });
+   const [signal, setSignal] = useState<PortalSessionSignal>("unknown");
+   const [checkedAtMs, setCheckedAtMs] = useState<number | null>(null);
+ 
+   useEffect(() => {
+     if (localMode) {
+       setInitial({ kind: "local" });
++      setLatest({ kind: "local" });
+       setSignal("unknown");
+       setCheckedAtMs(null);
+       return;
+     }
+     let cancelled = false;
++    let sequence = 0;
+     const controller = new AbortController();
+ 
+     const check = async () => {
++      const request = ++sequence;
+       let view: PortalSessionView;
+       try {
+         const response = await fetch("/api/hosted/auth/session", {
+@@ -192,7 +198,8 @@
+         if ((error as Error).name === "AbortError") return;
+         view = { kind: "unavailable" };
+       }
+-      if (cancelled) return;
++      if (cancelled || request !== sequence) return;
++      setLatest(view);
+       setInitial((current) => (current.kind === "loading" ? view : current));
+       setSignal(signalForSessionView(view));
+       setCheckedAtMs(Date.now());
+@@ -215,7 +222,7 @@
+     };
+   }, [localMode]);
+ 
+-  return { initial, signal, checkedAtMs };
++  return { initial, latest, signal, checkedAtMs };
+ }
+ 
+ const RETURN_TO = encodeURIComponent("/");
+--- a/packages/ui/src/billing.tsx
++++ b/packages/ui/src/billing.tsx
+@@ -19,11 +19,11 @@
+  *
+  * stripe-subscription-signup-2026-10-01 P-006.
+  */
+-import { useCallback, useEffect, useRef, useState } from "react";
++import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+ import { parseAsStringEnum, useQueryState } from "nuqs";
+-import { AuthUnavailablePortal, SignedOutPortal, usePortalSession } from "./auth";
++import { AuthUnavailablePortal, SignedOutPortal, usePortalSession, type PortalHostedSession } from "./auth";
+ import { AccountProductTutorial } from "@papercusp/operator-ui/onboarding";
+-import { OperatorWorkspaceLocationProvider } from "@papercusp/operator-ui";
++import { EnterpriseAllocationPanel, OperatorWorkspaceLocationProvider, type EnterpriseFinanceAccount } from "@papercusp/operator-ui";
+ import { useCloudFeatureAdoption } from "@papercusp/operator-ui/browser-telemetry";
+ 
+ export interface BillingPlan {
+@@ -51,6 +51,8 @@
+ }
+ 
+ export interface BillingSubscriptionResponse {
++  /** Absent on older runtimes: allocation finance then remains unavailable. */
++  readonly organization?: { readonly controlWorkspaceId: string; readonly organizationId: string } | null;
+   readonly configured: boolean;
+   readonly canManage: boolean;
+   readonly subscription: BillingSubscription | null;
+@@ -258,6 +260,7 @@
+   /** Absent for viewers who cannot manage billing (the route refuses them anyway). */
+   readonly receipts?: BillingReceiptsState;
+   readonly onDownloadReceipt?: (balanceTransactionId: string) => void;
++  readonly finance?: ReactNode;
+ }
+ 
+ export function BillingReceiptsView(props: {
+@@ -352,6 +355,7 @@
+         {props.receipts && (
+           <BillingReceiptsView state={props.receipts} onDownload={props.onDownloadReceipt ?? (() => undefined)} />
+         )}
++        {props.finance}
+       </section>
+     </main>
+   );
+@@ -410,7 +414,21 @@
+   URL.revokeObjectURL(url);
+ }
+ 
+-function BillingPanel() {
++/** Scope comes from hosted billing's principal, never the nullable customer workspace. */
++export function financeAccountForSession(
++  session: PortalHostedSession["session"], current: BillingSubscriptionResponse | null,
++): EnterpriseFinanceAccount | null {
++  const organization = current?.organization;
++  if (!organization || organization.organizationId !== session.organizationId
++    || typeof organization.controlWorkspaceId !== "string" || !organization.controlWorkspaceId.trim()) return null;
++  return { controlWorkspaceId: organization.controlWorkspaceId, organizationId: organization.organizationId,
++    userId: session.userId, sessionId: session.sessionId };
++}
++
++function BillingPanel({ session, checkedAtMs }: {
++  readonly session: PortalHostedSession["session"];
++  readonly checkedAtMs: number | null;
++}) {
+   const [checkout, setCheckout] = useQueryState("checkout", parseAsStringEnum(["success", "canceled"]));
+   const [plans, setPlans] = useState<BillingPlansResponse | null>(null);
+   const [current, setCurrent] = useState<BillingSubscriptionResponse | null>(null);
+@@ -418,21 +436,29 @@
+   const [error, setError] = useState<string | null>(null);
+   const [busy, setBusy] = useState<string | null>(null);
+   const rechecks = useRef(0);
++  const loadRequest = useRef<AbortController | null>(null);
+   // Disclosed feature choice (cloud-monitoring P-007). This panel renders only
+   // for a signed-in hosted session (BillingPortalPage), and this page sits
+   // outside the shell's location provider, so the location is stated here.
+   useCloudFeatureAdoption("billing", { location: "cloud" });
+ 
+   const load = useCallback(async () => {
++    loadRequest.current?.abort();
++    const controller = new AbortController();
++    loadRequest.current = controller;
++    // A fresh authority check clears finance and drafts before accepting another scope.
++    setCurrent(null);
++    setReceipts(null);
+     try {
+       const [plansResponse, subscriptionResponse] = await Promise.all([
+-        fetch("/api/hosted/billing/plans", { credentials: "same-origin", cache: "no-store" }),
+-        fetch("/api/hosted/billing/subscription", { credentials: "same-origin", cache: "no-store" }),
++        fetch("/api/hosted/billing/plans", { credentials: "same-origin", cache: "no-store", signal: controller.signal }),
++        fetch("/api/hosted/billing/subscription", { credentials: "same-origin", cache: "no-store", signal: controller.signal }),
+       ]);
+       const [plansBody, subscriptionBody] = await Promise.all([
+         plansResponse.json().catch(() => null),
+         subscriptionResponse.json().catch(() => null),
+       ]);
++      if (controller.signal.aborted) return;
+       if (!plansResponse.ok || !subscriptionResponse.ok) {
+         setError(errorText(subscriptionResponse.ok ? plansBody : subscriptionBody, "Billing details could not be loaded."));
+         return;
+@@ -441,16 +467,20 @@
+       setCurrent(subscriptionBody as BillingSubscriptionResponse);
+       setError(null);
+     } catch {
++      if (controller.signal.aborted) return;
+       setError("Billing details could not be loaded. Check your connection and refresh.");
+     }
+   }, []);
+ 
+-  useEffect(() => { void load(); }, [load]);
++  useEffect(() => {
++    void load();
++    return () => loadRequest.current?.abort();
++  }, [load, checkedAtMs]);
+ 
+   // Receipts are a billing-manager surface; only ask once we know the viewer is one.
+   const canManage = current?.canManage === true;
+   useEffect(() => {
+-    if (!canManage) return;
++    if (!canManage) { setReceipts(null); return; }
+     let live = true;
+     setReceipts({ kind: "loading" });
+     void loadReceipts().then((state) => { if (live) setReceipts(state); });
+@@ -458,6 +488,7 @@
+   }, [canManage]);
+ 
+   const view = plans && current ? billingView(plans, current, checkout) : null;
++  const financeAccount = financeAccountForSession(session, current);
+ 
+   // Bounded re-check while Stripe's webhook is in flight; it stops on its own.
+   useEffect(() => {
+@@ -501,6 +532,9 @@
+       onManage={() => void go("portal", "/api/hosted/billing/portal", {})}
+       onDismissNotice={() => void setCheckout(null)}
+       receipts={canManage ? receipts ?? { kind: "loading" } : undefined}
++      finance={!canManage ? <p>A billing administrator account is required.</p> : !financeAccount
++        ? <p role="alert">Finance data is unavailable. No cost or balance is assumed.</p>
++        : <EnterpriseAllocationPanel account={financeAccount} canManage={canManage} />}
+       onDownloadReceipt={(id) => {
+         const entry = receipts?.kind === "list" ? receipts.receipts.find((r) => r.balanceTransactionId === id) : undefined;
+         if (entry?.receipt) downloadReceipt(entry);
+@@ -523,12 +557,13 @@
+ }
+ 
+ export function BillingPortalPage({ localMode = false }: { localMode?: boolean }) {
+-  const { initial: view, signal } = usePortalSession(localMode);
++  const { initial: view, latest, signal, checkedAtMs } = usePortalSession(localMode);
+   if (view.kind === "local") return <BillingLocalModeNotice />;
+   if (view.kind === "loading") return <div className="welcome-state">Checking your portal session…</div>;
+   if (view.kind === "signed-out") return <SignedOutPortal />;
+   if (view.kind === "unavailable") return <AuthUnavailablePortal />;
+   const session = view.value.session;
++  const latestSession = latest.kind === "authenticated" || latest.kind === "first-run" ? latest.value.session : null;
+   // Billing is a real guide destination outside the app-rail shell. Preserve
+   // its account-scoped Help/resume controls and defer Billing reads while the
+   // guide is active, just as PortalEntry does for its destinations.
+@@ -539,5 +574,9 @@
+     key={`${session.organizationId}:${session.userId}:${session.sessionId}`}
+     account={{ tenantId: session.organizationId, userId: session.userId,
+       sessionId: session.sessionId, workspaceId: session.workspaceId }}
+-  >{guideControls => <>{guideControls}<BillingPanel /></>}</AccountProductTutorial></OperatorWorkspaceLocationProvider>;
+-}
++  >{guideControls => <>{guideControls}{latestSession
++    ? <BillingPanel key={JSON.stringify([latestSession.organizationId, latestSession.userId,
++      latestSession.sessionId, latestSession.permissionVersion])} session={latestSession} checkedAtMs={checkedAtMs} />
++    : latest.kind === "signed-out" ? <SignedOutPortal /> : <AuthUnavailablePortal />}</>}
++  </AccountProductTutorial></OperatorWorkspaceLocationProvider>;
++}
+--- /dev/null
++++ b/tests/enterprise-finance-mount.test.tsx
+@@ -0,0 +1,63 @@
++// @vitest-environment jsdom
++import { act, cleanup, renderHook } from "@testing-library/react";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { usePortalSession, type PortalHostedSession } from "../packages/ui/src/auth";
++import { financeAccountForSession } from "../packages/ui/src/billing";
++
++const session: PortalHostedSession = {
++  identity: { externalUserId: "external-1", primaryEmail: "finance@example.test", emailVerified: true },
++  session: { sessionId: "session-1", userId: "user-1", organizationId: "org-1", workspaceId: null,
++    permissionVersion: 7, upstreamProvider: "workos", issuedAtMs: 1, authenticatedAtMs: 1,
++    expiresAtMs: 2, authenticationMethods: ["password"], mfaVerified: false },
++};
++const response = (status: number, value: unknown) => ({ status, json: async () => value });
++afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
++
++describe("allocation finance scope", () => {
++  it("uses the billing control workspace for an organization without a customer workspace", () => {
++    expect(financeAccountForSession(session.session, { configured: true, canManage: true, subscription: null,
++      organization: { organizationId: "org-1", controlWorkspaceId: "control-1" } })).toEqual({
++      controlWorkspaceId: "control-1", organizationId: "org-1", userId: "user-1", sessionId: "session-1",
++    });
++  });
++  it("refuses missing, blank and foreign billing scope", () => {
++    for (const organization of [undefined, null, { organizationId: "org-2", controlWorkspaceId: "control-1" },
++      { organizationId: "org-1", controlWorkspaceId: " " }]) {
++      expect(financeAccountForSession(session.session, {
++        configured: true, canManage: true, subscription: null, organization,
++      })).toBeNull();
++    }
++  });
++});
++
++describe("current identity alongside frozen page routing", () => {
++  it("keeps routing stable while rejecting late checks and clearing a signed-out identity", async () => {
++    const pending: Array<{ resolve: (value: unknown) => void; signal: AbortSignal }> = [];
++    vi.stubGlobal("fetch", vi.fn((_url: string, options: RequestInit) => new Promise(resolve => {
++      pending.push({ resolve, signal: options.signal as AbortSignal });
++    })));
++    const hook = renderHook(() => usePortalSession(false));
++    await act(async () => { pending[0]!.resolve(response(200, { ok: true, ...session })); });
++    expect(hook.result.current.initial).toEqual({ kind: "first-run", value: session });
++    const recheck = () => document.dispatchEvent(new Event("visibilitychange"));
++    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
++    act(() => { recheck(); recheck(); });
++    const next = { ...session, session: { ...session.session, organizationId: "org-2", permissionVersion: 8 } };
++    await act(async () => { pending[2]!.resolve(response(200, { ok: true, ...next })); });
++    await act(async () => { pending[1]!.resolve(response(200, { ok: true, ...session })); });
++    expect(hook.result.current.latest).toEqual({ kind: "first-run", value: next });
++    expect(hook.result.current.initial).toEqual({ kind: "first-run", value: session });
++    act(recheck);
++    await act(async () => { pending[3]!.resolve(response(401, {})); });
++    expect(hook.result.current.latest).toEqual({ kind: "signed-out" });
++    expect(hook.result.current.initial).toEqual({ kind: "first-run", value: session });
++    hook.unmount();
++    expect(pending[3]!.signal.aborted).toBe(true);
++  });
++  it("does not fetch hosted identities in local mode", () => {
++    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
++    const hook = renderHook(() => usePortalSession(true));
++    expect(hook.result.current.latest).toEqual({ kind: "local" });
++    expect(fetch).not.toHaveBeenCalled();
++  });
++});

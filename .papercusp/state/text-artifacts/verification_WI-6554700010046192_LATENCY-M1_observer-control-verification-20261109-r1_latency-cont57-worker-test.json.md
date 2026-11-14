@@ -1,0 +1,8 @@
+---
+rel_path: "verification/WI-6554700010046192/LATENCY-M1/observer-control-verification-20261109-r1/latency-cont57-worker-test.json"
+updated_at: 1794251091900
+_body: "content"
+---
+
+{"ok":true,"runId":"69084a96-3b93-4802-9d09-01b961e22853","root":"/home/marsh-office/papercupai-workspace/papercusp","passed":1,"failed":0,"skipped":71,"files":1,"failures":[],"failuresTruncated":false,"durationMs":26114.1,"byFile":{"packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts":{"passed":1,"failed":0,"skipped":71,"collectionFailed":false,"runId":23775970,"ledgerDurationMs":379}},"artifacts":{"directory":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-stRaZi","manifest":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-stRaZi/manifest.json","phases":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-stRaZi/phases.jsonl","reports":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-stRaZi/reports","ownedDatabases":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-stRaZi/owned-databases","runtimeInputs":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-stRaZi/executed-inputs","nativeProof":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-stRaZi/native-proof"},"cleanup":{"complete":true,"databases":[],"errors":[]},"testRunIds":[23775970],"rootSource":"requested","runnerDurationMs":374,"phaseTimingsMs":{"preflightMs":9.28,"provenanceMs":11.14,"preparationMs":0.01,"admissionGateMs":0.01,"handoffMs":null,"admissionWaitMs":57.59,"routerExecutionMs":18039.95,"ledgerIdReadbackMs":119.42,"finalizationMs":0.26,"totalHandlerMs":26114.1}}
+

@@ -778,15 +778,28 @@ function classifyMechanismClaim(
 // resource release events (for example resource:released:git-sync) use that
 // wording too. Keep concrete release-plane markers so deployment waits remain
 // detectable.
+// Bare "main" is ambiguous in carry notes (for example, the APFS "main P2"
+// volume). Require a Git or branch/build marker before treating it as the
+// release branch.
+const RELEASE_MAIN_TARGET_SOURCE =
+  "\\b(?:green[- ]main|git\\s+main(?:\\s+branch)?|main\\s+(?:branch|build|commit|sha|ref))\\b(?!\\.[a-z0-9]+\\b)";
 const DEPLOY_DEPENDENCY_RE =
-  /\b(?:wait(?:ing|s)?\s+(?:on|for)|blocked\s+(?:on|by)|needs?|requires?|depends?\s+on|until|pending|gated\s+on|can'?t\s+\w+\s+(?:until|before|without))\b[^.;\n]{0,50}?(?:\b(?:green[- ]main|main)\b(?!\.[a-z0-9]+\b)|:3070\b|\brelease:deployed\b|\bdeploy(?:ment|ments|s)?\b|\b(?:to\s+be|be|been|being|is|are|was|were|get|got)\s+deployed\b|\bdeployed\b(?=\s*(?:[.,;:!?]|$|\b(?:before|until|to|on|at|now|first)\b)))/i;
+  new RegExp(
+    "\\b(?:wait(?:ing|s)?\\s+(?:on|for)|blocked\\s+(?:on|by)|needs?|requires?|depends?\\s+on|until|pending|gated\\s+on|can'?t\\s+\\w+\\s+(?:until|before|without))\\b[^.;\\n]{0,50}?(?:" +
+      RELEASE_MAIN_TARGET_SOURCE +
+      "|:3070\\b|\\brelease:deployed\\b|\\bdeploy(?:ment|ments|s)?\\b|\\b(?:to\\s+be|be|been|being|is|are|was|were|get|got)\\s+deployed\\b|\\bdeployed\\b(?=\\s*(?:[.,;:!?]|$|\\b(?:before|until|to|on|at|now|first)\\b)))",
+    "i",
+  );
 
 /** A probe of the release plane, on the line itself or on a checks row. */
 const RELEASE_PLANE_PROBE_RE =
   /\bre-?check(?:ed)?\b|pipeline_position|servingRuntimes|state:read|\bprobe[ds]?\b|\/api\/health|\bmeasured\b|\bverified\b|\bconfirmed\b/i;
 
 // A source path such as `src/main.rs` names an entrypoint, not the release branch.
-const RELEASE_PLANE_TARGET_RE = /\b(?:green[- ]main|main)\b(?!\.[a-z0-9]+\b)|:3070\b|\brelease:deployed\b|\bdeploy(?:ed|ment|s)?\b/i;
+const RELEASE_PLANE_TARGET_RE = new RegExp(
+  RELEASE_MAIN_TARGET_SOURCE + "|:3070\\b|\\brelease:deployed\\b|\\bdeploy(?:ed|ment|s)?\\b",
+  "i",
+);
 
 function classifyDeployDependency(line: string): 'unprobed-deploy-dependency' | null {
   if (!DEPLOY_DEPENDENCY_RE.test(line)) return null;

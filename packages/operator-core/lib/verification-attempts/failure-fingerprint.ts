@@ -72,7 +72,7 @@ const ZERO_FAILURE_RE = /\b(fail(?:ed|ures?|ing)?|errors?)\s*[=:]\s*0\b|\b0\s+(f
  */
 const PASSING_TEST_LINE_RE = /^(?:[✔✓]|ok\s+\d+\b)/i;
 /** Router recaps and informational annotations describe a run, not its cause. */
-const NON_FAILURE_SUMMARY_RE = /^(?:ⓘ\s|TEST_FILE_(?:GROUP_)?RESULT\b)/;
+const NON_FAILURE_SUMMARY_RE = /^(?:ⓘ\s|TEST_FILE_(?:GROUP_)?RESULT\b|TEST_FILE_SKIPPED\b)/;
 
 /** scripts/with-test-pg.mjs emits an errors array even on success. Match its
  * receipt contract, rather than hiding arbitrary JSON that mentions errors. */

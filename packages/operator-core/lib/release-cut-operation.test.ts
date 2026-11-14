@@ -131,6 +131,7 @@ describe('beginCutOperation', () => {
     expect(calls[0].spec.cwd).toBe('/tmp/desktop');
     expect(calls[0].opts).toMatchObject({ taskId: 'task1', reserveScope: true, unitKind: 'service' });
     expect(detail).toMatchObject({
+      verificationPurpose: 'work-item-verification',
       channel: 'alpha',
       version: '0.0.22-alpha',
       platform: 'linux',

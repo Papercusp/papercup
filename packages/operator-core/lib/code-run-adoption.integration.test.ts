@@ -14,6 +14,7 @@ import {
   type CallRow,
   type SpawnAdoptionRow,
 } from './code-run-adoption';
+import { RECIPE_RUN_RECEIPTS_CTE } from './code-recipes-store';
 import { TURN_GAP_MS } from './code-run-batch-nudge';
 
 const receiptIndexMigration = new URL('../../../libs/papercusp/libs/db/sql/1624-recipe-receipt-invocation-index.sql', import.meta.url);
@@ -160,6 +161,39 @@ describe('R13 exact-window recipe outcome report (real PG)', () => {
     // Two plausible host rows do not authorize choosing the convenient one.
     await host('authored', 20);
     expect((await read()).measurement).toMatchObject({ authored: 0, unknown: 3, unscopedWorkspaceReceipts: 2 });
+  });
+
+  it('does not compare JSONB variants for singleton receipt identities', async () => {
+    const singletonWorkspace = 'singleton-report-ws';
+    for (let i = 0; i < 20; i++) {
+      const invocationId = `singleton-${i}`;
+      await sql`INSERT INTO harness_shared.code_recipe_runs
+        (recipe_id,workspace_id,agent_owner,agent_role,success,reused,execution_trace,ts)
+        VALUES ('recipe',${singletonWorkspace},'agent-one','operator',true,true,
+          ${sql.json({
+            usage: { version: 1, choice: 'agent', selection: 'saved-replay', outcome: 'success', mode: 'commit', settled: true },
+            runEvidence: { version: 1, invocationId, attempt: 0, executed: true,
+              sourceBytes: 10, intermediateBytes: 5, elapsedBeforeRecordMs: 1 },
+          })},'2026-10-01T12:00:00Z')`;
+    }
+    const rows = await sql.unsafe(`EXPLAIN (ANALYZE, FORMAT JSON)
+      WITH recipe_run_source AS (
+        SELECT * FROM harness_shared.code_recipe_runs
+        WHERE workspace_id = $1 AND ts >= $2::timestamptz AND ts < $3::timestamptz
+      ), ${RECIPE_RUN_RECEIPTS_CTE}
+      SELECT COUNT(*) FROM duplicate_variants`,
+    [singletonWorkspace, scope.windowStart, scope.windowEnd]);
+    type Plan = { 'CTE Name'?: string; 'Actual Rows'?: number; Plans?: Plan[]; Plan?: Plan };
+    const duplicateNodes: Plan[] = [];
+    const visit = (node: Plan | undefined) => {
+      if (!node) return;
+      if (node['CTE Name'] === 'duplicate_variants') duplicateNodes.push(node);
+      if (node.Plan) visit(node.Plan);
+      for (const child of node.Plans ?? []) visit(child);
+    };
+    visit(rows[0]!['QUERY PLAN'][0].Plan as Plan);
+    expect(duplicateNodes).toHaveLength(1);
+    expect(duplicateNodes[0]!['Actual Rows']).toBe(0);
   });
 
   it('looks up receipt identities through the partial index instead of rescanning unrelated history', async () => {

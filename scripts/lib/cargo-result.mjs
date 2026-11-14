@@ -799,10 +799,12 @@ export function pruneStaleBuildScriptOutputs(targetDir, options = {}) {
  *
  * @param {{ tmpDir?: string, cargoRoots?: string[], configuredTargetDir?: string,
  *   now?: number, policy?: object, dryRun?: boolean,
+ *   stopWhen?: (result: { scanned: number, reclaimed: number, bytesReclaimed: number,
+ *     skipped: Array<{ path: string, reason: string }>, dryRun: boolean, stoppedEarly: boolean }) => boolean,
  *   pathIsLive?: (path: string, ignoredSubtrees?: string[]) => boolean,
  *   slotLockIsHeld?: (path: string, homeDir: string) => boolean }} options
  * @returns {{ scanned: number, reclaimed: number, bytesReclaimed: number,
- *   skipped: Array<{ path: string, reason: string }>, dryRun: boolean }}
+ *   skipped: Array<{ path: string, reason: string }>, dryRun: boolean, stoppedEarly: boolean }}
  */
 export function reclaimInactiveCargoArtifacts(options = {}) {
   const policy = { ...DEFAULT_CARGO_RECLAIM_POLICY, ...(options.policy ?? {}) };

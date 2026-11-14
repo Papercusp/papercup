@@ -21,7 +21,7 @@ async function main() {
   catch { /* An unavailable base is unknown, never an empty historical file. */ }
   const after = await readFile(file, 'utf8');
   if (before === after) return;
-  const result = await agentAntipatterns(before, after, path.endsWith('.tsx') ? 'tsx' : 'ts');
+  const result = await agentAntipatterns(before, after, path.endsWith('.tsx') ? 'tsx' : 'ts', path);
   if (result.status === 'measured' && result.hits.length) process.stdout.write(JSON.stringify({ path, base: base.trim(), ...result }));
 }
 main().catch(() => {});

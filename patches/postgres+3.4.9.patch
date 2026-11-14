@@ -220,7 +220,7 @@ index 8e79170aeb..5337b2b4e0 100644
        }
      } else if (errorResponse) {
 diff --git a/node_modules/postgres/cf/src/index.js b/node_modules/postgres/cf/src/index.js
-index ffbe7ae..b373647 100644
+index ffbe7ae..19f9c8d168d92efd6524aa84743c0d07d46e0b41 100644
 --- a/node_modules/postgres/cf/src/index.js
 +++ b/node_modules/postgres/cf/src/index.js
 @@ -108,13 +108,23 @@ function Postgres(a, b) {
@@ -231,7 +231,7 @@ index ffbe7ae..b373647 100644
 +      // Capture before pool queuing: connection callbacks can run in another
 +      // caller's async context. Keep the SAME lazy Query, not a Promise wrapper.
 +      if (query instanceof Query && typeof options.onquerycontext === 'function') {
-+        try { query.diagnosticContext = options.onquerycontext() }
++        try { query.diagnosticContext = options.onquerycontext(query) }
 +        catch (_) { query.diagnosticContext = null }
 +      }
 +      return query
@@ -646,7 +646,7 @@ index 07f6716702..97a0c8a5b0 100644
        }
      } else if (errorResponse) {
 diff --git a/node_modules/postgres/cjs/src/index.js b/node_modules/postgres/cjs/src/index.js
-index f09c61c..c3f6643 100644
+index f09c61c..bced586d4ea58cef8e7e162596e726fe02251b7c 100644
 --- a/node_modules/postgres/cjs/src/index.js
 +++ b/node_modules/postgres/cjs/src/index.js
 @@ -107,13 +107,23 @@ function Postgres(a, b) {
@@ -657,7 +657,7 @@ index f09c61c..c3f6643 100644
 +      // Capture before pool queuing: connection callbacks can run in another
 +      // caller's async context. Keep the SAME lazy Query, not a Promise wrapper.
 +      if (query instanceof Query && typeof options.onquerycontext === 'function') {
-+        try { query.diagnosticContext = options.onquerycontext() }
++        try { query.diagnosticContext = options.onquerycontext(query) }
 +        catch (_) { query.diagnosticContext = null }
 +      }
 +      return query
@@ -1072,7 +1072,7 @@ index 1b1cccde43..00ca599f00 100644
        }
      } else if (errorResponse) {
 diff --git a/node_modules/postgres/src/index.js b/node_modules/postgres/src/index.js
-index c7fba3d..a83d9fa 100644
+index c7fba3d..8f4d846d5f6f43a370b0687093a28bc8826cfdf9 100644
 --- a/node_modules/postgres/src/index.js
 +++ b/node_modules/postgres/src/index.js
 @@ -107,13 +107,23 @@ function Postgres(a, b) {
@@ -1083,7 +1083,7 @@ index c7fba3d..a83d9fa 100644
 +      // Capture before pool queuing: connection callbacks can run in another
 +      // caller's async context. Keep the SAME lazy Query, not a Promise wrapper.
 +      if (query instanceof Query && typeof options.onquerycontext === 'function') {
-+        try { query.diagnosticContext = options.onquerycontext() }
++        try { query.diagnosticContext = options.onquerycontext(query) }
 +        catch (_) { query.diagnosticContext = null }
 +      }
 +      return query
@@ -1277,7 +1277,7 @@ index 0d44a15..6929fbe 100644
  
    execute() {
 diff --git a/node_modules/postgres/types/index.d.ts b/node_modules/postgres/types/index.d.ts
-index 13c3432..be2afbd 100644
+index 13c3432..a72be8ca960a54c76f27724f4bf4792d7a13ad60 100644
 --- a/node_modules/postgres/types/index.d.ts
 +++ b/node_modules/postgres/types/index.d.ts
 @@ -74,8 +74,23 @@ interface BaseOptions<T extends Record<string, postgres.PostgresType>> {
@@ -1287,7 +1287,7 @@ index 13c3432..be2afbd 100644
 -  /** Is called with (connection; query; parameters) */
 -  debug: boolean | ((connection: number, query: string, parameters: any[], paramTypes: any[]) => void);
 +  /** Papercusp patch: capture local diagnostic context at query construction. */
-+  onquerycontext: (() => unknown) | undefined;
++  onquerycontext: ((query?: { readonly executed: boolean }) => unknown) | undefined;
 +  /**
 +   * Papercusp patch: custom socket factory. Supported at RUNTIME — `src/index.js` passes
 +   * `socket: o.socket` straight through to the connection — but absent from upstream's

@@ -46,7 +46,8 @@ function currentRuntime() {
   const executable = realpathSync(process.execPath);
   return { name: process.versions.bun ? 'bun' : 'node',
     version: process.versions.bun || process.versions.node, executable,
-    binarySha256: digest(readFileSync(executable)), platform: process.platform, arch: process.arch };
+    binarySha256: digest(readFileSync(executable)), platform: process.platform, arch: process.arch,
+    invocationArguments: [...process.execArgv] };
 }
 
 // A standalone expression so the probed interpreter measures itself without importing
@@ -58,8 +59,13 @@ const RUNTIME_PROBE = `
   process.stdout.write(JSON.stringify({ name: process.versions.bun ? 'bun' : 'node',
     version: process.versions.bun || process.versions.node, executable,
     binarySha256: createHash('sha256').update(readFileSync(executable)).digest('hex'),
-    platform: process.platform, arch: process.arch }));
+    platform: process.platform, arch: process.arch, invocationArguments: [...process.execArgv] }));
 `;
+
+function validInvocationArguments(value) {
+  return Array.isArray(value) && value.length <= 256 && value.every((argument) =>
+    typeof argument === 'string' && argument.length <= 8192 && !argument.includes('\0'));
+}
 
 /**
  * Bind setup-release-checkout.sh's materialized pin (identity/source). The full
@@ -77,29 +83,37 @@ function proofIdentity(root, environment, readRuntime) {
   const fields = Object.fromEntries(records);
   if (records.length !== 2 || !HASH.test(fields.source)
       || fields.identity !== `v1-${fields.source}`) return null;
-  const identity = { ...readRuntime(),
+  const { invocationArguments, ...runtime } = readRuntime();
+  if (!validInvocationArguments(invocationArguments)) return null;
+  const identity = { ...runtime,
     nativeDependencyGeneration: digest(marker),
     lockfileSha256: digest(readFileSync(join(root, 'package-lock.json'))),
-    configurationSha256: digest(JSON.stringify(['BUN_OPTIONS', 'NODE_OPTIONS', 'NODE_PATH']
-      .map((key) => [key, environment?.[key] ?? null]))),
+    configurationSha256: digest(JSON.stringify(['runtime-invocation-v2',
+      ['BUN_OPTIONS', 'NODE_OPTIONS', 'NODE_PATH'].map((key) => [key, environment?.[key] ?? null]),
+      invocationArguments])),
   };
   return validRuntimeProofIdentity(identity) ? identity : null;
 }
 
-/** Measure the selected child, including a Bun executable named `node` on PATH. */
-export function captureRuntimeProofIdentity({ root, cwd = root, environment = process.env, executable = 'node' }) {
+/** Measure the selected child's interpreter arguments, never the probing parent's.
+ * The probe's own evaluation arguments are checked and excluded from proof identity.
+ * This is invocation identity, not the contents of loader/runtime input closures. */
+export function captureRuntimeProofIdentity({ root, cwd = root, environment = process.env, executable = 'node', execArgv = [] }) {
   try {
+    if (!validInvocationArguments(execArgv)) return null;
     return proofIdentity(root, environment, () => {
-      const runtime = JSON.parse(execFileSync(executable, ['--input-type=module', '-e', RUNTIME_PROBE], {
+      const probeArguments = [...execArgv, '--input-type=module', '-e', RUNTIME_PROBE];
+      const runtime = JSON.parse(execFileSync(executable, probeArguments, {
         cwd, env: environment, encoding: 'utf8', timeout: 30_000, maxBuffer: 16_384,
         stdio: ['ignore', 'pipe', 'ignore'],
       }));
       validateRuntime(runtime);
-      if (realpathSync(runtime.executable) !== runtime.executable
+      if (!isDeepStrictEqual(runtime.invocationArguments, probeArguments)
+          || realpathSync(runtime.executable) !== runtime.executable
           || digest(readFileSync(runtime.executable)) !== runtime.binarySha256) {
         throw new Error('Runtime binary changed during identity measurement');
       }
-      return runtime;
+      return { ...runtime, invocationArguments: [...execArgv] };
     });
   } catch { return null; }
 }

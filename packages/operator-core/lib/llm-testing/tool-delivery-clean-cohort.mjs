@@ -22,6 +22,119 @@ const fixtures = {
 };
 const planSlug = 'deterministic-tool-definition-delivery-2026-09-21';
 
+/** A complete, digest-bound delta; changed values are retained, not hand summarized. */
+export function cleanCohortCaptureDelta(before, after) {
+  return Object.fromEntries([...new Set([...Object.keys(before), ...Object.keys(after)])].sort().map(key => {
+    const oldValue = before[key] ?? null, newValue = after[key] ?? null;
+    return [key, { beforeSha256: digest(oldValue), afterSha256: digest(newValue),
+      ...(digest(oldValue) === digest(newValue) ? { unchanged: true } : { before: oldValue, after: newValue }) }];
+  }));
+}
+
+/** Capture is preparation only: it cannot select a registration or carry execution authority. */
+export function validateCleanCohortCaptureRequest(request, baseline) {
+  assert.deepEqual(Object.keys(request).sort(), ['arms', 'baselineExperimentId', 'decisionRef', 'experimentId',
+    'portableFile', 'privateCaptureFile', 'receiptDirectory'].sort(), 'Unknown or missing capture request field.');
+  assert.equal(request.baselineExperimentId, baseline.experiment.id);
+  assert.match(request.experimentId, /^session-tool-delivery-clean-source-v4-\d{8}$/);
+  const date = request.experimentId.slice(-8);
+  assert.deepEqual(request.arms, { compactArm: `session-tool-delivery-clean-source-v4-compact-${date}`,
+    fullArm: `session-tool-delivery-clean-source-v4-full-${date}` });
+  assert.equal(request.privateCaptureFile, `tool-delivery-clean-source-v4-original-${date}.json`);
+  assert.equal(request.portableFile, `tool-delivery-clean-source-v4-${date}.json`);
+  assert.equal(request.receiptDirectory, `clean-source-v4-once-${date}`);
+  assert.match(request.decisionRef, /^deterministic-tool-definition-delivery-2026-09-21#D-\d+$/);
+  assert.ok(!Object.hasOwn(fixtures, request.experimentId), 'A registered capture cannot be replaced.');
+  assert.equal(baseline.configuration.replicationsPerArm, 3);
+  assert.equal(baseline.configuration.neverRetryMeasuredReplication, true);
+}
+
+/** Exercise the real provider seam with an injected response and no network fallback. */
+export async function captureCleanCohortRequest({ SuTarget, prompt, variant, model }) {
+  const requests = [];
+  const session = await new SuTarget({ loadSystemPrompt: () => prompt, codexFetch: async (_url, init) => {
+    requests.push(JSON.parse(init.body));
+    assert.equal(requests.length, 1, 'Capture unexpectedly made another provider request.');
+    return new Response(`data: ${JSON.stringify({ type: 'response.completed', response: {
+      output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'request captured' }] }],
+      usage: { input_tokens: 0, output_tokens: 0 } } })}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+  } }).open({ runId: `request-only-${variant.id}`, sutModel: model,
+    workspaceMode: 'isolated', transport: 'in-process', variant });
+  try {
+    const result = await session.send({ messages: [{ role: 'user', content: 'Capture request only; no model invocation.' }],
+      trigger: 'user_message' });
+    assert.notEqual(result.finishReason, 'error', result.error);
+    assert.equal(requests.length, 1, 'Actual provider request was not captured.');
+    assert.equal(requests[0].instructions, prompt, 'Captured provider prompt changed.');
+    return requests[0];
+  } finally { await session.close(); }
+}
+
+/** Produce private and portable custody together; prompt text never enters portable evidence. */
+export function buildCleanCohortCapture({ request, baseline, baselinePrivateCapture, catalogs, requests, expectedModel, boundary, controllerBoundary, sourcePins, createdAt }) {
+  validateCleanCohortCaptureRequest(request, baseline);
+  assert.equal(sha(baselinePrivateCapture), baseline.capture.privateCapture.originalSha256,
+    'Use the exact immutable baseline capture.');
+  const frozen = JSON.parse(baselinePrivateCapture);
+  const prompt = frozen.variants.compact.configDelta.systemPromptText;
+  assert.equal(typeof prompt, 'string');
+  assert.equal(frozen.variants.full.configDelta.systemPromptText, prompt);
+  assert.equal(digest(prompt), baseline.experiment.manifestContract.systemSha256);
+  assert.deepEqual(sourcePins.scenarioPaths, baseline.sourcePins.scenarioPaths);
+  const variants = {}, manifestContract = { ...baseline.experiment.manifestContract };
+  for (const arm of ['compact', 'full']) {
+    const variantId = request.arms[`${arm}Arm`];
+    assertCleanCohortCatalogDefinitions(requests[arm].tools, catalogs[arm].definitions);
+    assert.equal(requests[arm].instructions, prompt);
+    assert.equal(requests[arm].model, expectedModel.id, 'Captured provider model changed.');
+    assert.deepEqual(requests[arm].reasoning, { effort: expectedModel.effort }, 'Captured provider effort changed.');
+    assert.deepEqual(catalogs[arm].canonicalBySanitized, catalogs.compact.canonicalBySanitized);
+    variants[arm] = { id: variantId, configDelta: structuredClone(baseline.variants[arm].configDelta),
+      systemPromptTextSha256: sha(prompt) };
+    manifestContract[`${arm}Definitions`] = catalogs[arm].definitions;
+  }
+  manifestContract.canonicalBySanitized = catalogs.compact.canonicalBySanitized;
+  assert.equal(new Set(manifestContract.canonicalBySanitized.map(([name]) => name)).size,
+    manifestContract.canonicalBySanitized.length, 'Captured catalog names collide.');
+  assert.deepEqual(manifestContract.canonicalBySanitized.map(([name]) => name),
+    manifestContract.compactDefinitions.map(tool => tool.name), 'Captured name mapping differs from provider definitions.');
+  assert.equal(new Set(manifestContract.canonicalBySanitized.map(([, name]) => name)).size,
+    manifestContract.canonicalBySanitized.length, 'Captured canonical names collide.');
+  assert.deepEqual(manifestContract.compactDefinitions.map(tool => tool.name),
+    manifestContract.fullDefinitions.map(tool => tool.name));
+  const experiment = { ...baseline.experiment, id: request.experimentId, arms: request.arms, manifestContract };
+  const treatmentDelta = { basisExperimentId: baseline.experiment.id,
+    previousPrivateSha256: baseline.capture.privateCapture.originalSha256,
+    components: cleanCohortCaptureDelta({ ...baseline.experiment.manifestContract, configuration: baseline.configuration,
+      variants: Object.fromEntries(Object.entries(baseline.variants).map(([arm, v]) => [arm, v.configDelta])),
+      sourcePins: baseline.sourcePins, boundary: frozen.capture.cleanBoundary },
+    { ...manifestContract, configuration: baseline.configuration,
+      variants: Object.fromEntries(Object.entries(variants).map(([arm, v]) => [arm, v.configDelta])), sourcePins, boundary }) };
+  const privateCapture = { schemaVersion: 'tool-delivery-candidate-capture-v1', createdAt,
+    status: 'CAPTURED_NOT_REGISTERED_OR_SELECTED', experiment,
+    variants: Object.fromEntries(Object.entries(variants).map(([arm, v]) => [arm, { id: v.id,
+      configDelta: { ...v.configDelta, systemPromptText: prompt } }])),
+    configuration: structuredClone(baseline.configuration), sourcePins,
+    historicalOutcomes: structuredClone(baseline.historicalOutcomes),
+    executionPolicy: { ...baseline.executionPolicy, decisionRef: request.decisionRef, measurementController: 'separate-root' },
+    custodyPaths: { privateCaptureFile: request.privateCaptureFile, receiptDirectory: request.receiptDirectory, catalogSource: 'current-build' },
+    treatmentDelta, capture: { realModelCalls: 0, cleanBoundary: boundary, controllerBoundary,
+      injectedRequests: Object.entries(requests).map(([arm, value]) => ({ arm, definitionsSha256: digest(value.tools),
+        systemSha256: digest(value.instructions), model: value.model, reasoning: value.reasoning,
+        requestSha256: digest(value) })) } };
+  const bytes = Buffer.from(JSON.stringify(privateCapture));
+  const portable = { ...privateCapture, variants, capture: { realModelCalls: 0,
+    injectedRequests: privateCapture.capture.injectedRequests, globalCleanRecorderVerified: true,
+    cleanBoundarySha256: digest(boundary), controllerBoundarySha256: digest(controllerBoundary), installSha256: boundary.installSha256,
+    privateCapture: { originalSha256: sha(bytes), custody: 'Private immutable original; portable prompts are digest-only.' } } };
+  // Full boundary values contain private paths; their complete delta is retained
+  // in the immutable original, addressed by the portable private-capture digest.
+  portable.treatmentDelta = { ...treatmentDelta, components: { ...treatmentDelta.components,
+    boundary: { beforeSha256: treatmentDelta.components.boundary.beforeSha256,
+      afterSha256: treatmentDelta.components.boundary.afterSha256, custody: 'private-original' } } };
+  return { privateCapture: bytes, portable };
+}
+
 /** Compare the definitions sent over JSON, including meaningful schema/guidance drift. */
 export function assertCleanCohortCatalogDefinitions(actual, expected) {
   // Optional schema properties can be enumerable with value undefined. They are
@@ -52,16 +165,21 @@ export function assertCleanCohortCapturedInputs({ captured, actual, amendment, f
 /** Only registered prospective identities are selectable; no arbitrary fixture path. */
 export function parseCleanCohortArgs(argv) {
   assert.ok(argv.length >= 2 && argv.length <= 6 && argv.length % 2 === 0,
-    'Pass retained-checkout private-directory [--registration experiment-id] [--execute exact-readiness.json].');
-  let experimentId = defaultExperiment, readinessPath;
+    'Pass retained-checkout private-directory [--capture request.json | --registration experiment-id [--execute exact-readiness.json]].');
+  let experimentId = defaultExperiment, readinessPath, capturePath;
   const seen = new Set();
   for (let i = 2; i < argv.length; i += 2) {
     const option = argv[i], value = argv[i + 1];
-    assert.ok(['--registration', '--execute'].includes(option) && !seen.has(option) && value,
+    assert.ok(['--registration', '--execute', '--capture'].includes(option) && !seen.has(option) && value,
       'Unknown, duplicate or incomplete cohort option.');
     seen.add(option);
     if (option === '--registration') experimentId = value;
+    else if (option === '--capture') capturePath = value;
     else readinessPath = value;
+  }
+  if (capturePath) {
+    assert.equal(seen.size, 1, 'Capture cannot select or execute an experiment.');
+    return { capturePath };
   }
   assert.ok(Object.hasOwn(fixtures, experimentId), 'Unregistered prospective cohort.');
   return { experimentId, fixture: fixtures[experimentId], readinessPath };
@@ -139,7 +257,7 @@ function canonicalAuthority(expected) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
-  const { experimentId, fixture, readinessPath } = parseCleanCohortArgs(argv);
+  const { experimentId, fixture, readinessPath, capturePath } = parseCleanCohortArgs(argv);
   const root = realpathSync(argv[0]), privateRoot = realpathSync(argv[1]);
   const controllerRoot = realpathSync(fileURLToPath(new URL('../../../../', import.meta.url)));
   assert.equal(realpathSync(process.cwd()), root);
@@ -155,6 +273,8 @@ export async function main(argv = process.argv.slice(2)) {
   const git = (args, directory) => gitAt(controllerRoot, args, directory);
   const head = git(['rev-parse', 'HEAD']).toString().trim();
   const sourceHead = gitAt(root, ['rev-parse', 'HEAD']).toString().trim();
+  if (capturePath) return prepareCapture({ root, controllerRoot, privateRoot, loader,
+    request: JSON.parse(readFileSync(realpathSync(capturePath), 'utf8')), gitAt, sourceHead });
   const bytes = readFileSync(resolve(controllerRoot, fixture)), registration = JSON.parse(bytes);
   const separateController = registration.executionPolicy.measurementController === 'separate-root';
   assert.ok(separateController ? controllerRoot !== root : controllerRoot === root,
@@ -288,6 +408,80 @@ export async function main(argv = process.argv.slice(2)) {
     check(await capture());
     return { status: 'EXECUTION_COMPLETE_NOT_ACCEPTANCE', blocks: blocks.length, attempts: receipt.flatMap(row => row.ids).length };
   } finally { imports.deregister(); }
+}
+
+async function prepareCapture({ root, controllerRoot, privateRoot, loader, request, gitAt, sourceHead }) {
+  assert.notEqual(root, controllerRoot, 'Capture requires a separately retained measurement controller.');
+  assert.ok(Object.hasOwn(fixtures, request.baselineExperimentId), 'Capture baseline is not registered.');
+  const baseline = JSON.parse(readFileSync(resolve(controllerRoot, fixtures[request.baselineExperimentId]), 'utf8'));
+  validateCleanCohortCaptureRequest(request, baseline);
+  const raw = readFileSync(resolve(privateRoot, baseline.custodyPaths.privateCaptureFile));
+  assert.equal(sha(raw), baseline.capture.privateCapture.originalSha256);
+  const frozen = JSON.parse(raw);
+  for (const name of [request.privateCaptureFile, request.portableFile, request.receiptDirectory])
+    assert.ok(!existsSync(resolve(privateRoot, name)), 'Capture output or execution identity already exists.');
+  for (const base of [root, controllerRoot]) {
+    const rel = relative(base, privateRoot);
+    assert.ok(isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`), 'Capture output must be outside both retained roots.');
+    assert.equal(gitAt(base, ['status', '--porcelain=v1', '--untracked-files=all']).toString(), '', 'Capture requires committed clean roots.');
+  }
+  const guard = await import(pathToFileURL(resolve(controllerRoot, 'packages/operator-core/lib/tool-delivery-clean-runtime.ts')));
+  const imports = guard.installToolDeliveryModuleGuard(root, controllerRoot);
+  imports.controllerUrls.add(import.meta.url); imports.urls.add(pathToFileURL(loader).href);
+  for (const path of ['packages/operator-core/lib/tool-delivery-clean-runtime.ts', 'packages/operator-core/lib/dependency-generation-proof.ts'])
+    imports.controllerUrls.add(pathToFileURL(resolve(controllerRoot, path)).href);
+  const networkFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('Network is forbidden during request-only capture.'); };
+  try {
+    const load = path => import(pathToFileURL(resolve(root, path)));
+    const { SuTarget } = await load('packages/operator-core/lib/llm-testing/targets/su.ts');
+    const { parseBridgeModel } = await load('packages/operator-core/lib/inference-gateway/codex-cli-bridge.ts');
+    const { buildShippingSeedCatalog } = await load('packages/operator-core/lib/llm-testing/targets/su-compact-catalog.ts');
+    const { catalogToResponsesTools } = await load('packages/operator-core/lib/llm-testing/targets/codex-responses-tool-loop.ts');
+    const { getScenario } = await load('packages/operator-core/lib/llm-testing/scenarios/index.ts');
+    const ledger = await load('packages/operator-core/lib/llm-testing/test-run-ledger.ts');
+    for (const path of ['libs/testing-shell/src/llm/runner.ts', 'packages/operator-core/lib/llm-testing/deps.ts',
+      'packages/operator-core/lib/runtime-vintage.ts', 'packages/operator-core/lib/long-lived-admin-pool.ts',
+      baseline.executionPolicy.launcherPath]) await load(path);
+    for (const [scenario, path] of Object.entries(baseline.sourcePins.scenarioPaths)) {
+      assert.equal(getScenario(scenario).transport, 'in-process');
+      assert.equal(sha(readFileSync(resolve(root, path))), baseline.experiment.manifestContract.scenarioHashes[scenario],
+        'The original scenario source must be preserved.');
+    }
+    await ledger.prepareLlmScenarioRuntimeReader(resolve(root, Object.values(baseline.sourcePins.scenarioPaths)[0]), 'in-process');
+    const catalogs = {}, requests = {};
+    for (const arm of ['compact', 'full']) {
+      const built = await buildShippingSeedCatalog(arm);
+      catalogs[arm] = { definitions: JSON.parse(JSON.stringify(catalogToResponsesTools(built.catalog))),
+        canonicalBySanitized: [...built.catalog.canonicalBySanitized.entries()] };
+      requests[arm] = await captureCleanCohortRequest({ SuTarget,
+        prompt: frozen.variants[arm].configDelta.systemPromptText, model: baseline.configuration.sutModel,
+        variant: { id: request.arms[`${arm}Arm`], configDelta: baseline.variants[arm].configDelta } });
+    }
+    const sourcePins = { ...baseline.sourcePins, head: sourceHead,
+      files: Object.fromEntries(Object.keys(baseline.sourcePins.files).map(path => [path, sha(readFileSync(resolve(root, path)))])),
+      submodules: Object.fromEntries(Object.keys(baseline.sourcePins.submodules).map(path =>
+        [path, gitAt(root, ['rev-parse', `HEAD:${path}`]).toString().trim()])),
+      compactDefinitionSha256: digest(catalogs.compact.definitions), fullDefinitionSha256: digest(catalogs.full.definitions) };
+    const registration = { ...baseline, sourcePins };
+    const boundary = await guard.captureToolDeliveryCleanBoundary({ sourceRoot: root, registration, moduleUrls: [...imports.urls] });
+    const { pid, processStartTicks, sut, monotonicNs, ...pin } = boundary;
+    assert.equal(guard.validateToolDeliveryCleanBoundary(boundary, pin), undefined);
+    assert.equal(guard.validateToolDeliveryCleanCensus(boundary, registration), undefined);
+    const controller = await guard.captureToolDeliveryCleanBoundary({ sourceRoot: controllerRoot, registration,
+      moduleUrls: [...imports.controllerUrls] });
+    const { pid: cp, processStartTicks: cs, sut: ct, monotonicNs: cm, ...controllerPin } = controller;
+    assert.equal(guard.validateToolDeliveryCleanBoundary(controller, controllerPin), undefined);
+    const result = buildCleanCohortCapture({ request, baseline, baselinePrivateCapture: raw, catalogs, requests,
+      expectedModel: parseBridgeModel(baseline.configuration.sutModel), boundary,
+      controllerBoundary: controller, sourcePins,
+      createdAt: new Date().toISOString() });
+    writeFileSync(resolve(privateRoot, request.privateCaptureFile), result.privateCapture, { flag: 'wx', mode: 0o600 });
+    writeFileSync(resolve(privateRoot, request.portableFile), JSON.stringify(result.portable), { flag: 'wx', mode: 0o600 });
+    return { status: 'CAPTURE_ONLY_NOT_REGISTERED_OR_SELECTED', realModelCalls: 0, sourceHead,
+      privateSha256: sha(result.privateCapture), portableSha256: digest(result.portable),
+      controllerBoundarySha256: digest(controller), installSha256: boundary.installSha256 };
+  } finally { globalThis.fetch = networkFetch; imports.deregister(); }
 }
 
 if (isCliEntry(import.meta.url)) {

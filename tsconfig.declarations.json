@@ -193,6 +193,9 @@
     // and its read-only share tool. The source-preview-*.test.ts and
     // share-source-cli.test.ts suites import both directly.
     "scripts/source-preview.mjs",
+    // Shared exact-buffer and producing-witness APIs are imported by native controls.
+    "scripts/lib/compiler-input-custody.mjs",
+    "scripts/lib/testing-core-witness.mjs",
     "scripts/share-source.mjs",
     "scripts/lib/tsc-baseline-gate.mjs",
     "scripts/lib/tsc-service.mjs",
@@ -394,6 +397,9 @@
     // Imported by stop-owner-directive-check.test.ts for `evaluateStop`
     // (owner-directive-delivery-redesign-2026-09-22 P-007).
     "apps/operator/scripts/hooks/cc/stop-owner-directive-check.mjs",
+    // Imported by stop-toolless-mcp-hint.test.ts for `evaluateStop` / `scanTranscript`
+    // (WI-6554700010048155, layer C of WI-6554700010048116).
+    "apps/operator/scripts/hooks/cc/stop-toolless-mcp-hint.mjs",
     // Imported by stop-failure-record.test.ts for buildStopFailureReport /
     // postStopFailureReport (client-native-features-adoption-2026-10-21 P-002).
     "apps/operator/scripts/hooks/cc/stop-failure-record.mjs",

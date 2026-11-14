@@ -1,0 +1,21 @@
+E2E_FIXTURE_SELECTION selected=1 of=8 mode=changed-paths specs=apps/operator/e2e/enterprise-finance.spec.ts
+  apps/operator/e2e/enterprise-finance.spec.ts <- packages/operator-ui/src/billing/enterprise-allocations.tsx
+VH_RETENTION_DEFERRED stage=before reason=retention-mutex-busy evidence=/mnt/data/offload/verification-harness/e2e-fixture-affected
+Playwright temporary directory ready: /tmp (2125923323904 bytes available)
+Playwright browsers ready in <browser-cache> [machine-local path redacted]
+
+Running 4 tests using 1 worker
+
+(node:753904) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:753904) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 [chromium] › e2e/enterprise-finance.spec.ts:96:1 › separate cost classes, unknowns and real accounting download render in Chromium (1.6s)
+  ✓  2 [chromium] › e2e/enterprise-finance.spec.ts:130:1 › server refusal and success stay distinct while limits cross HTTP as exact integer micros (1.2s)
+  ✓  3 [chromium] › e2e/enterprise-finance.spec.ts:155:1 › URL month and tenant changes clear finance drafts, exports and previous authority (1.0s)
+  ✓  4 [chromium] › e2e/enterprise-finance.spec.ts:184:1 › loading, unavailable with retry, and forbidden states never expose a finance export (1.0s)
+
+  4 passed (7.5s)
+[flags] No override store installed in this process: runtime overrides (flags:set / POST /api/flags/set) are INVISIBLE here and getFlag() is serving FLAG_DEFAULTS. If this process is expected to observe runtime flag flips, call initFlagOverrideStore() during boot BEFORE any flag is resolved (operator-core: installFlagOverrideStore()). Silence with PAPERCUSP_SILENCE_FLAG_OVERRIDE_WARN=1 if defaults-only is intentional.
+[db] target source=env endpoint=localhost:5432
+VH_RETENTION_DEFERRED stage=after reason=retention-mutex-busy evidence=/mnt/data/offload/verification-harness/e2e-fixture-affected

@@ -188,6 +188,20 @@ describe('runSelectiveAssist — revision-aware, bounded, fail-open', () => {
     expect(r.outcome).toBe('graph-uncorroborated');
   });
 
+  it('unknown source revision cannot turn a graph lead into a verified current site', async () => {
+    const r = await runSelectiveAssist(intent, {
+      dispatch: found().dispatch,
+      currentRevision: () => null,
+      readSource: sourceWith(2779, 'export async function getNextWorkItem('),
+    });
+    expect(r.freshness?.state).toBe('unknown');
+    expect(r.outcome).toBe('graph-uncorroborated');
+    expect(r.route).toBe('rg');
+    expect(r.verifiedSites).toEqual([]);
+    expect(r.unverifiedSites).toHaveLength(1);
+    expect(r.note).toContain('freshness is unknown');
+  });
+
   it('not-found is graph-empty and never read as absence', async () => {
     const spy = spyDispatch((tool) => (tool === 'list_repos' ? listRepos() : envelope({ status: 'not_found' })));
     const r = await runSelectiveAssist(intent, { dispatch: spy.dispatch, currentRevision: () => INDEX_COMMIT, readSource: () => null });
@@ -275,5 +289,28 @@ describe('assessFreshness / verifySitesAgainstSource', () => {
     }
     // Substring is not a token match.
     expect(verifySitesAgainstSource('symbol', 'target', [site], () => 'a\nb\nexport function targetExtra() {}').verified).toHaveLength(0);
+  });
+
+  it('context reliability: helper impact facts require current source corroboration', () => {
+    const site = { path: FILE, line1: 3, kind: 'function' } as const;
+    const textOnly = [
+      '// target()',
+      '/* target() */',
+      'const message = "target";',
+      'const pattern = /target/;',
+      'const message = `target ${other()}`;',
+      'const object = { "target": true };',
+      'export function targetExtra() {}',
+    ];
+    for (const text of textOnly) {
+      const read = () => `a\nb\n${text}`;
+      expect(verifySitesAgainstSource('symbol', 'target', [site], read).verified, text).toEqual([]);
+      expect(verifySitesAgainstSource('callers', 'target', [site], read).verified, text).toEqual([]);
+    }
+    for (const text of ['export function target() {}', 'target()', 'const message = `${target()}`;']) {
+      expect(verifySitesAgainstSource('callers', 'target', [site], () => text).verified, text).toEqual([site]);
+    }
+    expect(verifySitesAgainstSource('callers', 'target', [site], () => null).verified).toEqual([]);
+    expect(verifySitesAgainstSource('callers', 'target', [{ ...site, path: 'consumer.py' }], () => 'target()').verified).toEqual([]);
   });
 });

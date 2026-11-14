@@ -819,7 +819,11 @@ describe('predecessor custody on expiry', () => {
         .toEqual([expect.objectContaining({ owner: 'predecessor', lock_id: held.lock_id })]);
       expect((await readWaiterStatus(getTxPool(), waiter.ticket_id)).status).toBe('waiting');
       await inWorkspaceTxn(ws, 'poke', tx => pokeWorkspace(tx, ws));
-      expect(preserve.mock.calls[1][0]).toEqual(preserve.mock.calls[0][0]);
+      expect(preserve.mock.calls[1][0]).toEqual({
+        ...preserve.mock.calls[0][0], protectRepositoryPaths: expect.any(Function),
+      });
+      expect(preserve.mock.calls[1][0].protectRepositoryPaths)
+        .not.toBe(preserve.mock.calls[0][0].protectRepositoryPaths);
       expect((await readWaiterStatus(getTxPool(), waiter.ticket_id)).status).toBe('granted');
     } finally { configureLocks(saved); }
   });
@@ -913,9 +917,118 @@ describe('coordinator predecessor custody', () => {
         .toEqual([expect.objectContaining({ owner: 'predecessor' })]);
       const done = await release();
       if (method === 'reap') expect(done).toBe(1);
-      expect(preserve.mock.calls[1][0]).toEqual(preserve.mock.calls[0][0]);
+      expect(preserve.mock.calls[1][0]).toEqual({
+        ...preserve.mock.calls[0][0], protectRepositoryPaths: expect.any(Function),
+      });
+      expect(preserve.mock.calls[1][0].protectRepositoryPaths)
+        .not.toBe(preserve.mock.calls[0][0].protectRepositoryPaths);
       expect(preserve.mock.calls[1][0].rows).toEqual([expect.objectContaining({ owner: 'predecessor', path: 'a.ts' })]);
       expect(await getTxPool()`SELECT owner FROM agent_file_locks WHERE coordination_domain = ${ws}`).toEqual([]);
+    } finally { configureLocks(saved); }
+  });
+});
+
+describe('legacy repository alias release protection', () => {
+  async function hold(domain: string, owner: string, paths: string[]) {
+    const result = await inWorkspaceTxn(domain, owner, tx => tryAcquire(tx, {
+      coordinationDomain: domain, owner, ownerLabel: owner, paths,
+      intent: 'original alias edit', goalRef: 'WI-original-alias', ttlSec: 60,
+    }), { paths });
+    if (!result.ok) throw new Error('fixture acquire failed');
+    return result;
+  }
+
+  it.each(['predecessor', 'different-owner'])('refuses an overlapping canonical child lease owned by %s without releasing the original', async childOwner => {
+    const parent = nextWs();
+    const child = nextWs();
+    const original = await hold(parent, 'predecessor', ['child/src/a.ts']);
+    await hold(child, childOwner, ['src']);
+    const captured = vi.fn();
+    await expect(inWorkspaceTxn(parent, 'predecessor', tx => tryRelease(tx, {
+      coordinationDomain: parent, owner: 'predecessor', lockId: original.lock_id,
+      beforeRelease: async (rows, protect) => {
+        expect(rows).toEqual([expect.objectContaining({ path: 'child/src/a.ts', lock_id: original.lock_id,
+          goal_ref: 'WI-original-alias', acquired_identity: expect.any(String) })]);
+        if (!protect) throw new Error('canonical protection missing');
+        await protect(child, ['src/a.ts']);
+        captured();
+      },
+    }), { paths: ['child/src/a.ts'] })).rejects.toThrow('canonical-path-held');
+    expect(captured).not.toHaveBeenCalled();
+    expect((await readQueue(getTxPool(), { coordinationDomain: parent })).active_locks)
+      .toEqual([expect.objectContaining({ lock_id: original.lock_id, owner: 'predecessor' })]);
+    expect((await readQueue(getTxPool(), { coordinationDomain: child })).active_locks)
+      .toEqual([expect.objectContaining({ path: 'src', owner: childOwner })]);
+  });
+
+  it.each([false, true])('fences child acquire until the original release transaction settles (rollback=%s)', async rollback => {
+    const parent = nextWs();
+    const child = nextWs();
+    const original = await hold(parent, 'predecessor', ['child/src/a.ts']);
+    const saved = locksHost();
+    configureLocks({ ...saved, getTxnTimeouts: () => ({ lockTimeoutMs: 100, statementTimeoutMs: 100 }) });
+    let entered!: () => void;
+    let settle!: () => void;
+    const protectedChild = new Promise<void>(resolve => { entered = resolve; });
+    const settlement = new Promise<void>(resolve => { settle = resolve; });
+    const releasing = inWorkspaceTxn(parent, 'predecessor', tx => tryRelease(tx, {
+      coordinationDomain: parent, owner: 'predecessor', lockId: original.lock_id,
+      beforeRelease: async (_rows, protect) => {
+        if (!protect) throw new Error('canonical protection missing');
+        await protect(child, ['src/a.ts']);
+        entered();
+        await settlement;
+        if (rollback) throw new Error('capture failed after canonical fence');
+      },
+    }), { paths: ['child/src/a.ts'] });
+    const outcome = releasing.then(value => ({ value, error: null }), error => ({ value: null, error }));
+    try {
+      await protectedChild;
+      // PostgreSQL's lock timeout is the observation, not an assumed delay.
+      await expect(hold(child, 'successor', ['src/a.ts']))
+        .rejects.toMatchObject({ name: 'WorkspaceContendedError' });
+    } finally {
+      settle();
+      configureLocks(saved);
+    }
+    const result = await outcome;
+    if (rollback) expect(result.error).toMatchObject({ message: 'capture failed after canonical fence' });
+    else expect(result.value?.released).toEqual(['child/src/a.ts']);
+    expect((await readQueue(getTxPool(), { coordinationDomain: parent })).active_locks.map(row => row.lock_id))
+      .toEqual(rollback ? [original.lock_id] : []);
+    expect((await hold(child, 'successor', ['src/a.ts'])).ok).toBe(true);
+  });
+
+  it('uses the same canonical protection on expiry and retains the original lease on conflict', async () => {
+    const parent = nextWs();
+    const child = nextWs();
+    const original = await hold(parent, 'predecessor', ['child/src/a.ts']);
+    const conflict = await hold(child, 'successor', ['src/a.ts']);
+    await getTxPool()`UPDATE agent_file_locks SET expires_ts = clock_timestamp() - interval '1 second'
+      WHERE coordination_domain = ${parent}`;
+    const saved = locksHost();
+    const captured = vi.fn();
+    configureLocks({ ...saved, beforeFileLocksRelease: async input => {
+      if (input.coordinationDomain !== parent) return;
+      expect(input.rows).toEqual([expect.objectContaining({ owner: 'predecessor', lock_id: original.lock_id,
+        path: 'child/src/a.ts', acquired_identity: expect.any(String) })]);
+      if (!input.protectRepositoryPaths) throw new Error('expiry protection missing');
+      await input.protectRepositoryPaths(child, ['src/a.ts']);
+      captured();
+    } });
+    try {
+      await expect(inWorkspaceTxn(parent, 'janitor', tx => sweepWorkspaceExpired(tx, parent)))
+        .rejects.toMatchObject({ reason: 'file_lock_preservation_failed',
+          cause: expect.objectContaining({ message: 'edit-capture-refused:canonical-path-held' }) });
+      expect(captured).not.toHaveBeenCalled();
+      expect(await getTxPool()`SELECT lock_id::text FROM agent_file_locks WHERE coordination_domain = ${parent}`)
+        .toEqual([{ lock_id: original.lock_id }]);
+      await inWorkspaceTxn(child, 'successor', tx => tryRelease(tx, {
+        coordinationDomain: child, owner: 'successor', lockId: conflict.lock_id,
+      }), { paths: ['src/a.ts'] });
+      await inWorkspaceTxn(parent, 'janitor', tx => sweepWorkspaceExpired(tx, parent));
+      expect(captured).toHaveBeenCalledOnce();
+      expect(await getTxPool()`SELECT lock_id FROM agent_file_locks WHERE coordination_domain = ${parent}`).toEqual([]);
     } finally { configureLocks(saved); }
   });
 });

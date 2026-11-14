@@ -28,11 +28,12 @@ vi.mock('./events/await/predicate-watch', async (importOriginal) => {
   };
 });
 
-import { CELL_READ_TIMEOUT_MS, __resolverInflightCountForTests, formatCellPointers, readCell, unknownForDispatchError } from './cell-read';
+import { CELL_READ_TIMEOUT_MS, __resolverInflightCountForTests, formatCellHoist, formatCellPointers, readCell, unknownForDispatchError } from './cell-read';
 import {
   BUILTIN_CELLS,
   GATE_CANDIDATE_FAILURES_CELL,
   GATE_OWNERSHIP_CELL,
+  GATE_RUN_CELL,
   MEMORY_CGROUP_ATTRIBUTION_CELL,
 } from './cell-registrations';
 import { ReadOnlyDispatchError } from './events/await/predicate-watch';
@@ -773,6 +774,27 @@ describe('D-039 — the unknown hoist rides the SAME dispatch to the reader', ()
     if (r.status === 'value') {
       expect(r.unknownHoist).toEqual({ key: 'verdictUnknown', value: [] });
       expect(r.unknownHoist?.drifted).toBeUndefined();
+    }
+  });
+
+  it.each([false, true])('formats the run cell Boolean unknown flag without a false alarm: %s', async (unmeasured) => {
+    registerCell(GATE_RUN_CELL);
+    dispatchReadOnlyTool.mockResolvedValue({ gate: { run: {
+      active: unmeasured ? null : false,
+      code: unmeasured ? 'no-run-reading' : 'no-run',
+      unmeasured,
+    } } });
+
+    const r = await readCell(GATE_RUN_CELL.cell, READER, ENV);
+    expect(r.status).toBe('value');
+    if (r.status !== 'value' || !r.unknownHoist) throw new Error('run cell unknown channel missing');
+    expect(r.unknownHoist).toEqual({ key: 'gate.run.unmeasured', value: unmeasured });
+    if (unmeasured) {
+      expect(formatCellHoist(r.unknownHoist)).toContain('true');
+    } else {
+      expect(formatCellHoist(r.unknownHoist)).toBeNull();
+      expect(formatCellHoist({ ...r.unknownHoist, drifted: true })).toContain('registration defect');
+      expect(formatCellHoist({ ...r.unknownHoist, truncatedByDoor: true })).toContain('ITSELF truncated');
     }
   });
 

@@ -2520,6 +2520,22 @@ export interface AdvSessionLaunchRecord {
   agent: SuAgent | null;
   launchSpec: unknown;
   launchArgv: unknown;
+  /** Read-only historical evidence, never backfilled into launch_spec. The
+   * resolver must validate the complete recipe and replay the pinned artifact. */
+  originalMemberHistoricalSource?: {
+    workspaceId: string;
+    fleetSlug: string;
+    advSessionId: number;
+    ownerId: string;
+    originalSessionId: string;
+    currentSessionId: string;
+    transaction: unknown;
+    invocation: { id: string; actor: string; harnessSlug: string; args: unknown };
+    originalApplied: { id: string; specificationRevision: string; stateRevision: string;
+      actorId: string; principalId: string; sessionId: string; stack: unknown };
+    currentApplied: { id: string; specificationRevision: string; stateRevision: string;
+      actorId: string; principalId: string; sessionId: string; stack: unknown };
+  };
   /** Derived from the append-only lifecycle ledger, never launch_spec input. */
   originalMemberNativeCustody?: {
     workspaceId: string;
@@ -2536,7 +2552,7 @@ export interface AdvSessionLaunchRecord {
 export async function readAdvSessionLaunchRecordByOwner(
   coordOwnerId: string,
   workspaceId?: string | null,
-  exact?: { advSessionId: number; sessionId: string },
+  exact?: { advSessionId: number; sessionId: string; fleetSlug?: string },
 ): Promise<AdvSessionLaunchRecord | null> {
   if (!coordOwnerId) return null;
   const scope = workspaceId?.trim() || null;
@@ -2568,6 +2584,95 @@ export async function readAdvSessionLaunchRecordByOwner(
     if (!row) return null;
     const spec = row.launch_spec as Record<string, unknown> | null;
     const original = spec?.originalMemberLaunch as Record<string, unknown> | undefined;
+    let originalMemberHistoricalSource: AdvSessionLaunchRecord['originalMemberHistoricalSource'];
+    if (exact?.fleetSlug && original === undefined) {
+      // One statement gives the transaction, invocation, first native and
+      // current native a common MVCC snapshot. Do not select a latest matching
+      // invocation or bless the mutable current argv as initial launch evidence.
+      const candidates = await sql<Array<{
+        fleet_slug: string; transaction: unknown; invocation_id: string;
+        actor: string; invocation_harness: string; args: unknown; original_native: string;
+        original_id: string; original_spec: string; original_state: string;
+        original_actor: string; original_principal: string; original_session: string; original_stack: unknown;
+        current_id: string; current_spec: string; current_state: string;
+        current_actor: string; current_principal: string; current_session: string; current_stack: unknown;
+        launch_spec: unknown; launch_argv: unknown;
+      }>>`
+        SELECT f.fleet_slug, tx.body AS transaction, i.id::text AS invocation_id,
+               i.coord_owner_id AS actor, i.harness_slug AS invocation_harness, i.args_json AS args,
+               first.native_session_id AS original_native,
+               first.id::text AS original_id, first.specification_revision AS original_spec,
+               first.state_revision AS original_state,
+               first.actor_id AS original_actor, first.principal_id AS original_principal,
+               first.session_id AS original_session, first.stack_refs AS original_stack,
+               current.id::text AS current_id, current.specification_revision AS current_spec,
+               current.state_revision AS current_state,
+               current.actor_id AS current_actor, current.principal_id AS current_principal,
+               current.session_id AS current_session, current.stack_refs AS current_stack,
+               a.launch_spec, a.launch_argv
+          FROM harness_shared.adv_sessions a
+          JOIN harness_shared.agent_fleets f ON f.workspace_id = a.workspace_id
+           AND f.fleet_slug = ${exact.fleetSlug}
+          CROSS JOIN LATERAL (
+            SELECT CASE jsonb_typeof(f.last_launch_transaction)
+                     WHEN 'string' THEN (f.last_launch_transaction #>> '{}')::jsonb
+                     ELSE f.last_launch_transaction END AS body
+          ) tx
+          CROSS JOIN LATERAL (
+            SELECT e.* FROM harness_shared.session_identity_activation_events e
+             WHERE e.workspace_id = a.workspace_id AND e.owner_id = a.coord_owner_id
+               AND e.adv_session_id = a.id AND e.phase = 'applied'
+             ORDER BY e.recorded_at, e.id LIMIT 1
+          ) first
+          CROSS JOIN LATERAL (
+            SELECT e.* FROM harness_shared.session_identity_activation_events e
+             WHERE e.workspace_id = a.workspace_id AND e.owner_id = a.coord_owner_id
+               AND e.adv_session_id = a.id AND e.phase = 'applied'
+             ORDER BY e.recorded_at DESC, e.id DESC LIMIT 1
+          ) current
+          JOIN harness_shared.tool_invocations i ON i.workspace_id = a.workspace_id
+           AND i.tool_name = 'fleet:launch-on-plan' AND i.status = 'ok'
+           AND i.call_origin = 'agent' AND i.coord_owner_id = tx.body->>'launcherOwnerId'
+           AND i.metadata_json #>> '{launchOutcome,fleet}' = f.fleet_slug
+           AND i.metadata_json #>> '{launchOutcome,transactionId}' = tx.body->>'transactionId'
+         WHERE a.workspace_id = ${row.workspace_id} AND a.id = ${exact.advSessionId}
+           AND a.coord_owner_id = ${coordOwnerId} AND a.session_id = ${exact.sessionId}
+           AND a.launch_spec->'originalMemberLaunch' IS NULL
+           AND tx.body->'requestedMemberIds' ? ${coordOwnerId}
+           AND first.source = 'launch' AND first.native_session_id IS NOT NULL
+           AND current.native_session_id = a.session_id
+           -- invoked_at is the ledger's completion timestamp; duration_ms
+           -- recovers its start. A later launch cannot certify this first span.
+           AND i.duration_ms >= 0
+           AND first.recorded_at BETWEEN i.invoked_at - i.duration_ms * interval '1 millisecond'
+                                     AND i.invoked_at
+           AND a.first_seen_at BETWEEN i.invoked_at - i.duration_ms * interval '1 millisecond'
+                                   AND first.recorded_at
+         LIMIT 2
+      `;
+      const candidate = candidates.length === 1 ? candidates[0] : undefined;
+      // The outer row read precedes the common-snapshot query. Drift between
+      // them refuses recovery; it must never manufacture a mixed source tuple.
+      if (candidate && JSON.stringify(candidate.launch_spec) === JSON.stringify(row.launch_spec) &&
+          JSON.stringify(candidate.launch_argv) === JSON.stringify(row.launch_argv)) {
+        originalMemberHistoricalSource = {
+          workspaceId: row.workspace_id, fleetSlug: candidate.fleet_slug,
+          advSessionId: exact.advSessionId, ownerId: coordOwnerId,
+          originalSessionId: candidate.original_native, currentSessionId: exact.sessionId,
+          transaction: candidate.transaction,
+          invocation: { id: candidate.invocation_id, actor: candidate.actor,
+            harnessSlug: candidate.invocation_harness, args: candidate.args },
+          originalApplied: { id: candidate.original_id, specificationRevision: candidate.original_spec,
+            stateRevision: candidate.original_state, actorId: candidate.original_actor,
+            principalId: candidate.original_principal, sessionId: candidate.original_session,
+            stack: candidate.original_stack },
+          currentApplied: { id: candidate.current_id, specificationRevision: candidate.current_spec,
+            stateRevision: candidate.current_state, actorId: candidate.current_actor,
+            principalId: candidate.current_principal, sessionId: candidate.current_session,
+            stack: candidate.current_stack },
+        };
+      }
+    }
     let originalMemberNativeCustody: AdvSessionLaunchRecord['originalMemberNativeCustody'];
     if (exact && original?.v === 1 && original.advSessionId === exact.advSessionId &&
         original.ownerId === coordOwnerId && original.workspaceId === row.workspace_id &&
@@ -2605,6 +2710,7 @@ export async function readAdvSessionLaunchRecordByOwner(
           agent: (row.agent as SuAgent | null) ?? null,
           launchSpec: row.launch_spec,
           launchArgv: row.launch_argv,
+          ...(originalMemberHistoricalSource ? { originalMemberHistoricalSource } : {}),
           ...(originalMemberNativeCustody ? { originalMemberNativeCustody } : {}),
         }
       : null;

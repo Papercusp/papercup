@@ -47,5 +47,44 @@
     {"id":"installer-preservation","passed":true,"evidence":"Separate production installer test passed preservation of enabled extensions, disabled choice, custom PUI path and Goals shortcut through upgrade and repair."},
     {"id":"current-notice","passed":true,"evidence":"Focused Cargo rerun passed two tests, with numeric ledger receipts 23478698 through 23478700 including aggregate."}
   ],
-  "limitations": ["Fixture PUI; canonical operator/ACL journeys remain pending.","No claim of final installer identity, installed three-OS acceptance, independent acceptance or shipment.","No observed desktop notification delivery; Cargo verifies selection of the notice text."]
+  "limitations": ["Fixture PUI; canonical operator/ACL journeys remain pending.","No claim of final installer identity, installed three-OS acceptance, independent acceptance or shipment.","No observed desktop notification delivery; Cargo verifies selection of the notice text."],
+  "recoveryRegression20261112": {
+    "kind": "current-source-regression",
+    "workItem": "WI-6554700010029572",
+    "startedAt": "2026-11-12T04:40:08.788Z",
+    "finishedAt": "2026-11-12T04:40:18.106Z",
+    "command": "npm run test:file -- papercusp-desktop/test/native-workbench-gnome-live.test.mjs -- -t 'production GNOME installation reports real reload state and survives private Shell login restarts'",
+    "runGroup": "workbench-p001-private-login-recovery-20261112-v1",
+    "testRunIds": [23818968],
+    "taskId": "0mwd26j021545dmnaib",
+    "log": ".papercusp/scratch/bash-6d13e6ec-ac9.log",
+    "result": {"exitCode": 0, "passed": 1, "failed": 0, "skipped": 0, "assertions": 8},
+    "plane": "Private production GNOME extension and real Shell lifecycle; refreshes the existing November 6 proof rather than closing a new installed-login acceptance case.",
+    "sourceSha256AtRecording": {
+      "papercusp-desktop/test/native-workbench-gnome-live.test.mjs": "c583a314e89988d612f1b4291291d6a30611b431044f849dffb2f401a284396a",
+      "papercusp-desktop/native/linux/install-workbench.js": "119fb9c7f89637b6e197af8b0ebfac7280fce2c316c577b035e0d54dfcf9d17a",
+      "papercusp-desktop/native/gnome/extension.js": "3783403e56b8c04160c8b17dbe2754d96d4dbf3b8d79b407cbe50dc9a1b909fe",
+      "papercusp-desktop/bin/package-native-workbench.mjs": "37dfe4e3778e4357414ea42aa033022a31037d542c0f2a1c8e1a004952437571"
+    },
+    "custody": {
+      "rootHead": "794e082c832727e1d05f59367f956aedaa73b645",
+      "childHeadPrefix": "2873fc642b",
+      "parentGitlink": "a43257ce29cd9fa7dfa6b59ef7aa566cceeaeac2",
+      "worktreeDirty": true,
+      "childSubstituted": 0,
+      "scope": "Named current-source test with the runner's root/submodule mismatch stamp; source hashes at recording do not establish a complete immutable input graph."
+    },
+    "rawResult": {
+      "path": "/tmp/wb-private-login-recovery-20261112-v1/gnome-login-lifecycle.json",
+      "sha256": "8c118d8be5540f8902febec4d34dd135fc1f0efce8c68f601f3b652d1f24e81c"
+    },
+    "shellExitCodes": [0, 0, 0],
+    "upgradeResult": {"loginRequired": true, "reloadError": "ReloadExtension is deprecated and does not work"},
+    "installedObservation": {
+      "enabled": false,
+      "state": "INITIALIZED",
+      "puiSha256": "76d278fa5a80c6f0211cb88f665ff284ad8b3ecad59ae1403d3997e02a83f1d6",
+      "scope": "Read-only observation of the existing installed preview; no enable, restart, preference change or installed-login acceptance was performed."
+    }
+  }
 }

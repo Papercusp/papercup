@@ -3,6 +3,7 @@ import type { Sql } from 'postgres';
 import {
   classifyAcceptanceTime, measureWorkOverheadWindow, rateWorkOverhead, summarizeWorkOverhead,
   WORK_OVERHEAD_MAX_ROWS, WORK_OVERHEAD_SQL, type WorkOverheadEvent, type WorkOverheadWindow,
+  summarizeRecoveryOutcomePair, type RecoveryOutcomeEpoch,
 } from './agent-work-overhead-metrics';
 
 const window: WorkOverheadWindow = { workspaceId: 'ws', harnessSlug: 'papercusp',
@@ -16,6 +17,119 @@ const event = (over: Partial<WorkOverheadEvent> = {}): WorkOverheadEvent => ({
 const session = (id: string, minutes: number, closed = true, source = 'codex') => [event({
   session_id: id, last_at: stamp(minutes * 60), closed, source_kind: source,
 })];
+
+describe('D019 shared paired recovery outcome reader', () => {
+  // Synthetic reader controls, not a claim that the F01–F10 native population ran.
+  const epoch = (over: Partial<RecoveryOutcomeEpoch> = {}): RecoveryOutcomeEpoch => ({
+    workspaceId: 'fixture-ws', fixtureId: 'F09', client: 'codex',
+    sourceDataFingerprint: 'source-data-1', inputFingerprint: 'input-1', oracleFingerprint: 'oracle-v5',
+    windowTokens: 80000, runtimeFingerprint: 'runtime-before', nativeSessionId: 'native-before',
+    receiptRef: 'receipt:before', phase: 'native-emitted', packet: 'Use exact scoped recovery. é',
+    tokens: { count: 8, method: 'existing-estimator-v1' }, triggerAtMs: 1000, firstCorrectActionAtMs: 1200,
+    traceComplete: true, requiredReadRefs: ['oracle:live-custody'],
+    reads: [{ physicalOperationId: 'read-1', layer: 'leaf', disposition: 'required', evidenceRef: 'oracle:live-custody' }],
+    checks: { evidenceRef: 'test:independent-oracle', staleContextFailures: 0, missingContextFailures: 0,
+      falseCompleteSections: 0, existingBudgetPreserved: true }, ...over,
+  });
+  const candidate = (over: Partial<RecoveryOutcomeEpoch> = {}) => epoch({
+    runtimeFingerprint: 'runtime-after', nativeSessionId: 'native-after', receiptRef: 'receipt:after', ...over,
+  });
+  it.each(['codex', 'claude', 'omp'] as const)('reads %s paired receipts, preserving required reads and UTF-8 units', client => {
+    const result = summarizeRecoveryOutcomePair(epoch({ client }), candidate({ client }));
+    expect(result.verdict).toBe('pass');
+    expect(result.candidate.injectedBytes).toBe(result.candidate.injectedChars + 1);
+    expect(result.candidate).toMatchObject({ requiredRecoveryReads: 1, avoidableRecoveryReads: 0, firstCorrectActionMs: 200 });
+    expect(result.delta).toEqual({ recoveryLeafReads: 0, avoidableRecoveryReads: 0, injectedBytes: 0, tokens: 0, firstCorrectActionMs: 0 });
+    expect(summarizeRecoveryOutcomePair(epoch({ client }), candidate({ client })).inputFingerprint).toBe(result.inputFingerprint);
+  });
+  it('deduplicates physical leaves and excludes wrappers without losing required live checks', () => {
+    const required = epoch().reads[0]!;
+    const avoidable = { physicalOperationId: 'read-2', layer: 'leaf' as const, disposition: 'avoidable' as const, evidenceRef: 'oracle:delivered-G' };
+    const result = summarizeRecoveryOutcomePair(epoch({ reads: [required, required, { ...required, layer: 'wrapper' }, avoidable] }), candidate());
+    expect(result.baseline.recoveryLeafReads).toBe(2);
+    expect(result.delta).toMatchObject({ recoveryLeafReads: -1, avoidableRecoveryReads: -1 });
+    expect(result.verdict).toBe('pass');
+  });
+  it.each(['workspaceId', 'fixtureId', 'client', 'sourceDataFingerprint', 'inputFingerprint', 'oracleFingerprint', 'windowTokens'] as const)(
+    'refuses deltas for mismatched %s', key => {
+      const changed = key === 'windowTokens' ? { windowTokens: 200000 } : { [key]: 'different' };
+      const result = summarizeRecoveryOutcomePair(epoch(), candidate(changed as Partial<RecoveryOutcomeEpoch>));
+      expect(result.verdict).toBe('unknown');
+      expect(result.delta).toBeNull();
+      expect(result.unknownReasons).toContain(`unpaired-${key}`);
+    });
+  it.each([
+    { phase: 'rendered' as const }, { receiptRef: '' }, { packet: '' }, { traceComplete: false },
+    { tokens: null }, { tokens: { count: 9, method: 'different-estimator' } },
+    { firstCorrectActionAtMs: null }, { firstCorrectActionAtMs: 999 }, { nativeSessionId: 'native-before' },
+    { requiredReadRefs: [] },
+  ])('keeps absent or incompatible native evidence unknown: %j', over => {
+    const result = summarizeRecoveryOutcomePair(epoch(), candidate(over));
+    expect(result.verdict).toBe('unknown');
+    expect(result.delta).toBeNull();
+  });
+  it('never treats unread correctness or unknown tokens as zero failures', () => {
+    const result = summarizeRecoveryOutcomePair(epoch(), candidate({
+      checks: { ...epoch().checks, evidenceRef: '', missingContextFailures: null, existingBudgetPreserved: null },
+      tokens: { count: NaN, method: '' },
+    }));
+    expect(result.verdict).toBe('unknown');
+    expect(result.candidate.tokens).toBeNull();
+  });
+  it.each([NaN, Infinity, -Infinity])('keeps non-finite telemetry %s unknown with a stable, distinct fingerprint', value => {
+    const inputs: Partial<RecoveryOutcomeEpoch>[] = [
+      { tokens: { count: value, method: 'existing-estimator-v1' } },
+      { triggerAtMs: value }, { firstCorrectActionAtMs: value }, { windowTokens: value },
+      { checks: { ...epoch().checks, staleContextFailures: value } },
+    ];
+    for (const over of inputs) {
+      const result = summarizeRecoveryOutcomePair(epoch(), candidate(over));
+      expect(result.verdict).toBe('unknown');
+      expect(result.delta).toBeNull();
+      expect(result.inputFingerprint).toMatch(/^[a-f0-9]{64}$/);
+      expect(summarizeRecoveryOutcomePair(epoch(), candidate(over)).inputFingerprint).toBe(result.inputFingerprint);
+    }
+    const fingerprints = [null, NaN, Infinity, -Infinity].map(count => summarizeRecoveryOutcomePair(epoch(),
+      candidate({ tokens: count === null ? null : { count, method: 'existing-estimator-v1' } })).inputFingerprint);
+    expect(new Set(fingerprints).size).toBe(fingerprints.length);
+  });
+  it.each(['staleContextFailures', 'missingContextFailures', 'falseCompleteSections'] as const)('fails an observed %s even with incomplete telemetry', key => {
+    expect(summarizeRecoveryOutcomePair(epoch(), candidate({ traceComplete: false,
+      checks: { ...epoch().checks, [key]: 1 } })).verdict).toBe('fail');
+  });
+  it('fails lost required reads, budget regression and added avoidable recovery', () => {
+    expect(summarizeRecoveryOutcomePair(epoch(), candidate({ reads: [] })).verdict).toBe('fail');
+    expect(summarizeRecoveryOutcomePair(epoch(), candidate({ checks: { ...epoch().checks, existingBudgetPreserved: false } })).verdict).toBe('fail');
+    expect(summarizeRecoveryOutcomePair(epoch(), candidate({ reads: [...epoch().reads,
+      { physicalOperationId: 'extra', layer: 'leaf', disposition: 'avoidable', evidenceRef: 'oracle:delivered-G' }] })).verdict).toBe('fail');
+  });
+  it('keeps conflicting and unqualified leaf attribution unknown', () => {
+    for (const operation of [
+      { ...epoch().reads[0]!, disposition: 'avoidable' as const },
+      { ...epoch().reads[0]!, physicalOperationId: '' },
+      { ...epoch().reads[0]!, disposition: 'unknown' as const },
+    ]) expect(summarizeRecoveryOutcomePair(epoch(), candidate({ reads: [...epoch().reads, operation] })).verdict).toBe('unknown');
+  });
+  it('does not infer a regression or a lost required read from unpaired or unqualified traces', () => {
+    const avoidable = { physicalOperationId: 'extra', layer: 'leaf' as const,
+      disposition: 'avoidable' as const, evidenceRef: 'oracle:delivered-G' };
+    const unpaired = summarizeRecoveryOutcomePair(epoch(), candidate({ inputFingerprint: 'another-input',
+      reads: [...epoch().reads, avoidable] }));
+    expect(unpaired.verdict).toBe('unknown');
+    expect(unpaired.failures).toEqual([]);
+    expect(unpaired.delta).toBeNull();
+    const unattributed = summarizeRecoveryOutcomePair(epoch(), candidate({
+      reads: [{ ...epoch().reads[0]!, disposition: 'unknown' }] }));
+    expect(unattributed.verdict).toBe('unknown');
+    expect(unattributed.failures).toEqual([]);
+    expect(unattributed.delta).toBeNull();
+  });
+  it('fingerprints original packet/trace changes while preserving the original instruments', () => {
+    const initial = summarizeRecoveryOutcomePair(epoch(), candidate());
+    expect(summarizeRecoveryOutcomePair(epoch(), candidate({ packet: 'changed packet' })).inputFingerprint).not.toBe(initial.inputFingerprint);
+    expect(rateWorkOverhead(summarizeWorkOverhead(window, session('open', 45, false))).sessionMinutes.verdict).toBe('unknown');
+  });
+});
 
 describe('acceptance-time attribution in native transcript parts', () => {
   it.each([

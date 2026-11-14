@@ -433,7 +433,7 @@ describe('checkUnreachableTerminalGuard (WI-1399 — IO wrapper)', () => {
     expect(autoPause).toHaveBeenCalledWith(input.sql, 'rt-1', expect.stringContaining('circuit-open'));
   });
 
-  it.each(['active-inference', 'native-operation'] as const)(
+  it.each(['active-inference', 'native-operation', 'native-turn-settled'] as const)(
     'COMATOSE-HOST: a fresh %s lease protects the live carry successor from auto-pause',
     async reason => {
       const autoPause = vi.fn(async () => {});

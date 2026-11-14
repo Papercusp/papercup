@@ -56,7 +56,10 @@ describe('isolated runtime protocol semantics', () => {
       const selected = captureRuntimeProofIdentity({ root, environment, executable });
       expect(selected).toMatchObject(await measureRuntime(executable));
       if (executable === process.execPath) {
-        expect(selected).toEqual(captureCurrentRuntimeProofIdentity({ root, environment }));
+        const current = captureCurrentRuntimeProofIdentity({ root, environment });
+        expect(current).toMatchObject(await measureRuntime(executable));
+        if (process.execArgv.length === 0) expect(selected).toEqual(current);
+        else expect(selected?.configurationSha256).not.toBe(current?.configurationSha256);
       }
       const initial = runtimeProofFingerprint(selected);
       expect(initial).toMatch(/^runtime-v1 [a-f0-9]{64}$/);
@@ -67,6 +70,50 @@ describe('isolated runtime protocol semantics', () => {
       expect(captureRuntimeProofIdentity({ root, environment, executable })).toBeNull();
     } finally { rmSync(root, { recursive: true, force: true }); }
   }, 15_000);
+  it('binds interpreter conditions to actual behavior and keeps prospective invocation separate from its parent', () => {
+    const root = mkdtempSync(join(tmpdir(), 'runtime-invocation-'));
+    try {
+      const packageRoot = join(root, 'node_modules/runtime-conditional');
+      mkdirSync(packageRoot, { recursive: true });
+      writeFileSync(join(root, 'node_modules/.papercusp-dependency-generation'),
+        `identity=v1-${'a'.repeat(64)}\nsource=${'a'.repeat(64)}\n`);
+      writeFileSync(join(root, 'package-lock.json'), '{"lockfileVersion":3}');
+      writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ type: 'module',
+        exports: { alpha: './alpha.mjs', beta: './beta.mjs', default: './default.mjs' } }));
+      for (const condition of ['alpha', 'beta', 'default'])
+        writeFileSync(join(packageRoot, `${condition}.mjs`), `export default ${JSON.stringify(condition)};`);
+      const moduleUrl = new URL('./lib/runtime-compatibility.mjs', import.meta.url).href;
+      const script = join(root, 'observe.mjs');
+      writeFileSync(script, `import value from 'runtime-conditional';
+        import { captureCurrentRuntimeProofIdentity, captureRuntimeProofIdentity } from ${JSON.stringify(moduleUrl)};
+        const root = ${JSON.stringify(root)};
+        process.stdout.write(JSON.stringify({ value,
+          current: captureCurrentRuntimeProofIdentity({ root }),
+          prospective: captureRuntimeProofIdentity({ root, executable: process.execPath }),
+          matching: captureRuntimeProofIdentity({ root, executable: process.execPath, execArgv: process.execArgv }) }));`);
+      const observe = (execArgv: string[]) => JSON.parse(execFileSync(process.execPath, [...execArgv, script], {
+        encoding: 'utf8', timeout: 15_000, maxBuffer: 16_384,
+      }));
+      const baseline = observe([]);
+      const alpha = observe(['--conditions=alpha']);
+      const beta = observe(['--conditions=beta']);
+      expect([baseline.value, alpha.value, beta.value]).toEqual(['default', 'alpha', 'beta']);
+      for (const result of [baseline, alpha, beta]) {
+        expect(result.current).not.toBeNull();
+        expect(result.matching).toEqual(result.current);
+        expect(result.prospective).toEqual(baseline.current);
+      }
+      expect(alpha.current.configurationSha256).not.toBe(baseline.current.configurationSha256);
+      expect(beta.current.configurationSha256).not.toBe(alpha.current.configurationSha256);
+      expect(observe(['--conditions=alpha']).current).toEqual(alpha.current);
+      const alphaFirst = observe(['--conditions=alpha', '--conditions=beta']);
+      const betaFirst = observe(['--conditions=beta', '--conditions=alpha']);
+      expect(alphaFirst.value).toBe(betaFirst.value);
+      expect(alphaFirst.current.configurationSha256).not.toBe(betaFirst.current.configurationSha256);
+      for (const execArgv of [['--conditions=alpha\0'], Array(257).fill('--no-warnings')])
+        expect(captureRuntimeProofIdentity({ root, executable: process.execPath, execArgv })).toBeNull();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 30_000);
   it.each(interpreters.flatMap(executable => capabilities.map(id => ({ executable, id }))))
     ('$id completes with $executable', async ({ executable, id }) => {
     const runtime = await measureRuntime(executable);

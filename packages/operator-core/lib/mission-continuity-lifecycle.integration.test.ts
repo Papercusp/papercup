@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import type { Sql } from 'postgres';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { applyMissionEvent, applyMissionEventInTransaction, readCurrentMissionContinuity, readSessionMission, updateMissionOutboxInTransaction } from './session-brief-mission';
+import { acceptMissionActivityInTransaction, applyMissionEvent, applyMissionEventInTransaction, readCurrentMissionContinuity, readSessionMission, updateMissionOutboxInTransaction } from './session-brief-mission';
 import type { MissionParent, MissionEvent } from './mission-continuity';
 import { applySessionTaskOp, type SessionTaskOpArgs } from './session-tasks';
 import { commitMissionTaskTransition } from './mission-continuity-task-acceptance';
@@ -204,6 +205,42 @@ describe('retained mission state and atomic consequence intent on Postgres', () 
     expect(recovered.consequences).toEqual([]);
   });
 
+  it('rejects a ninth displacement atomically and retains the pending obligation and eight returns', async () => {
+    const owner = 'su-depth-capacity';
+    const p = parent(owner);
+    await applyMissionEvent(scope(owner), {
+      id: 'depth-bind', kind: 'assignment-accepted', binding: p, currentWorkRef: 'WI-step',
+    }, async () => p, { sql: db.sql, nowMs: 1_000 });
+    await db.sql`CREATE TABLE harness_shared.mission_capacity_fixture (current_ref text, pending_ref text)`;
+    await db.sql`INSERT INTO harness_shared.mission_capacity_fixture VALUES ('WI-step', 'WI-depth-9')`;
+    const accept = (depth: number) => db.sql.begin(async transaction => {
+      const tx = transaction as unknown as Sql;
+      await tx`UPDATE harness_shared.mission_capacity_fixture SET current_ref=${'WI-depth-' + depth},
+        pending_ref=CASE WHEN ${depth}=9 THEN NULL ELSE pending_ref END`;
+      return acceptMissionActivityInTransaction(tx, scope(owner), {
+        selectedRef: 'WI-depth-' + depth, accepted: true, changesFocus: true,
+        displacedContinuationRef: depth === 1 ? 'WI-step' : 'WI-depth-' + (depth - 1),
+        relationship: 'directed-obligation',
+      }, async () => p, 1_000 + depth);
+    });
+    for (let depth = 1; depth <= 8; depth += 1) await accept(depth);
+    const before = await mission(owner);
+    expect(before.state.frames).toHaveLength(8);
+    expect(new Set(before.state.frames.map(frame => frame.absoluteDeadline)).size).toBe(1);
+    await expect(accept(9)).rejects.toMatchObject({
+      name: 'MissionInterruptionCapacityError', code: 'mission-interruption-capacity-exhausted',
+    });
+    expect(await mission(owner)).toEqual(before);
+    expect((await db.sql`SELECT * FROM harness_shared.mission_capacity_fixture`)[0]).toEqual({
+      current_ref: 'WI-depth-8', pending_ref: 'WI-depth-9',
+    });
+    const recovered = await applyMissionEvent(scope(owner), { id: 'depth-recovery', kind: 'recovered' },
+      async () => p, { sql: db.sql, nowMs: 2_000 });
+    expect(recovered.state.frames).toEqual(before.state.frames);
+    expect(recovered.state.currentWorkRef).toBe('WI-depth-8');
+    expect(recovered.consequences).toEqual([]);
+  });
+
   it('commits child mutation, frame closure and pending intent together before enqueue', async () => {
     const p = await seed('su-commit');
     await db.sql`CREATE TABLE harness_shared.mission_child_fixture (id text PRIMARY KEY, state text)`;
@@ -238,6 +275,49 @@ describe('retained mission state and atomic consequence intent on Postgres', () 
     expect((await db.sql`SELECT state FROM harness_shared.mission_rollback_fixture`)[0].state).toBe('open');
   });
 
+  it.each(['commit', 'before-commit', 'after-commit'] as const)(
+    'reopens committed state and pending intent in a fresh process after %s', async phase => {
+      const owner = 'su-process-' + phase;
+      const p = await seed(owner);
+      const before = await mission(owner);
+      await db.sql`CREATE TABLE IF NOT EXISTS harness_shared.mission_process_fixture
+        (owner_id text PRIMARY KEY, state text NOT NULL)`;
+      await db.sql`INSERT INTO harness_shared.mission_process_fixture VALUES (${owner}, 'open')`;
+      const worker = resolve(here, '../test/fixtures/mission-continuity-crash-worker.ts');
+      const run = (action: string) => spawnSync(process.execPath, ['--import', 'tsx', worker, action, owner], {
+        env: { ...process.env, MISSION_CRASH_DB_URL: db.url, MISSION_CRASH_PARENT: JSON.stringify(p) },
+        encoding: 'utf8', timeout: 30_000, maxBuffer: 1_000_000,
+      });
+      const writer = run(phase);
+      expect(writer.error, writer.stderr).toBeUndefined();
+      if (phase === 'commit') expect(writer.status, writer.stderr).toBe(0);
+      else expect(writer.signal, writer.stdout + writer.stderr).toBe('SIGKILL');
+      const reader = run('read-and-replay');
+      expect(reader.error, reader.stderr).toBeUndefined();
+      expect(reader.status, reader.stderr).toBe(0);
+      const line = reader.stdout.split('\n').find(value => value.startsWith('MISSION-CRASH-READ:'));
+      expect(line, reader.stdout + reader.stderr).toBeDefined();
+      const recovered = JSON.parse(line!.slice('MISSION-CRASH-READ:'.length));
+      expect(recovered.pid).not.toBe(process.pid);
+      expect(recovered.before.availability).toBe('available');
+      const stored = recovered.before.envelope;
+      if (phase === 'before-commit') {
+        expect(recovered.businessState).toBe('open');
+        expect(stored).toEqual(before);
+        expect(recovered.after).toBeNull();
+      } else {
+        expect(recovered.businessState).toBe('done');
+        expect(stored.state.frames).toEqual([]);
+        expect(stored.state.binding).toEqual(before.state.binding);
+        expect(stored.outbox).toMatchObject([{ status: 'pending', workflowId: null,
+          consequence: { continuationRef: 'P-002' } }]);
+        expect(stored.outbox).toHaveLength(1);
+        expect(recovered.after.envelope.outbox).toEqual(stored.outbox);
+        expect(recovered.after.envelope.state.frames).toEqual([]);
+      }
+    }, 90_000,
+  );
+
   it('serializes concurrent completions and preserves terminal receipts on late acknowledgement', async () => {
     const p = await seed('su-concurrent');
     const receipts = await Promise.all([1, 2].map(() => applyMissionEvent(scope('su-concurrent'), done, async () => p,
@@ -267,6 +347,95 @@ describe('retained mission state and atomic consequence intent on Postgres', () 
     await expect(applyMissionEvent(scope('su-malformed'), { id: 'recover', kind: 'recovered' }, async () => p,
       { sql: db.sql, nowMs: 4_000 })).rejects.toThrow('mission-state-invalid');
     expect((await db.sql`SELECT mission_continuity FROM harness_shared.session_briefs WHERE owner_id='su-malformed'`)[0].mission_continuity).toEqual({ schemaVersion: 99 });
+  });
+
+  it('retains unresolved intent and settled identities after the 33rd receipt and older-than-cache replay', async () => {
+    const owner = 'su-receipt-rollover';
+    const p = await seed(owner);
+    await applyMissionEvent(scope(owner), done, async () => p, { sql: db.sql, nowMs: 3_000 });
+    const unresolved = (await mission(owner)).outbox[0];
+    for (let index = 1; index <= 33; index += 1) {
+      await db.sql.begin(tx => acceptMissionActivityInTransaction(tx as unknown as Sql, scope(owner), {
+        selectedRef: 'WI-rollover-' + index, accepted: true, changesFocus: true,
+        displacedContinuationRef: 'WI-step', relationship: 'blocking-repair',
+      }, async () => p, 4_000 + index));
+      await applyMissionEvent(scope(owner), {
+        id: 'rollover-done-' + index, kind: 'child-ended', childRef: 'WI-rollover-' + index, terminal: true,
+      }, async () => p, { sql: db.sql, nowMs: 5_000 + index });
+      const intent = (await mission(owner)).outbox.at(-1)!;
+      await db.sql.begin(tx => updateMissionOutboxInTransaction(tx as unknown as Sql, scope(owner), intent.consequence.id,
+        { status: 'settled', workflowId: intent.consequence.id, admissionError: null, resolution: 'delivered' }));
+    }
+    const before = await mission(owner);
+    expect(before.state.processedEvents).toHaveLength(32);
+    expect(before.state.processedEvents).not.toContain(done.id);
+    expect(before.state.processedEvents).not.toContain('rollover-done-1');
+    expect(before.outbox).toHaveLength(34);
+    expect(before.outbox[0]).toEqual(unresolved);
+    expect(before.outbox.filter(entry => entry.status === 'settled')).toHaveLength(33);
+    for (const event of [select, done, {
+      id: 'rollover-done-1', kind: 'child-ended', childRef: 'WI-rollover-1', terminal: true,
+    } satisfies MissionEvent]) {
+      const replay = await applyMissionEvent(scope(owner), event, async () => p, { sql: db.sql, nowMs: 9_000 });
+      expect(replay.consequences).toEqual([]);
+      expect(replay.envelope.outbox).toEqual(before.outbox);
+      expect(replay.state.frames).toEqual([]);
+      expect(replay.state.currentWorkRef).toBe('WI-step');
+    }
+  });
+
+  it('backpressures displacement before accepting more unresolved consequences than can be retained', async () => {
+    const owner = 'su-intent-capacity';
+    const p = await seed(owner);
+    await applyMissionEvent(scope(owner), done, async () => p, { sql: db.sql, nowMs: 3_000 });
+    for (let index = 1; index < 64; index += 1) {
+      await db.sql.begin(tx => acceptMissionActivityInTransaction(tx as unknown as Sql, scope(owner), {
+        selectedRef: 'WI-capacity-' + index, accepted: true, changesFocus: true,
+        displacedContinuationRef: 'WI-step', relationship: 'blocking-repair',
+      }, async () => p, 4_000 + index));
+      await applyMissionEvent(scope(owner), {
+        id: 'capacity-done-' + index, kind: 'child-ended', childRef: 'WI-capacity-' + index, terminal: true,
+      }, async () => p, { sql: db.sql, nowMs: 5_000 + index });
+    }
+    const before = await mission(owner);
+    expect(before.outbox).toHaveLength(64);
+    expect(before.outbox.every(entry => entry.status === 'pending')).toBe(true);
+    await db.sql`CREATE TABLE harness_shared.mission_intent_capacity_fixture (current_ref text, pending_ref text)`;
+    await db.sql`INSERT INTO harness_shared.mission_intent_capacity_fixture VALUES ('WI-step', 'WI-overflow')`;
+    await expect(db.sql.begin(async transaction => {
+      const tx = transaction as unknown as Sql;
+      await tx`UPDATE harness_shared.mission_intent_capacity_fixture SET current_ref='WI-overflow', pending_ref=NULL`;
+      await acceptMissionActivityInTransaction(tx, scope(owner), {
+        selectedRef: 'WI-overflow', accepted: true, changesFocus: true,
+        displacedContinuationRef: 'WI-step', relationship: 'blocking-repair',
+      }, async () => p, 9_000);
+    })).rejects.toThrow('mission-outbox-capacity-exhausted');
+    expect(await mission(owner)).toEqual(before);
+    expect((await db.sql`SELECT * FROM harness_shared.mission_intent_capacity_fixture`)[0]).toEqual({
+      current_ref: 'WI-step', pending_ref: 'WI-overflow',
+    });
+    // Settling one intent makes exactly one return slot available again.
+    const first = before.outbox[0].consequence.id;
+    await db.sql.begin(tx => updateMissionOutboxInTransaction(tx as unknown as Sql, scope(owner), first,
+      { status: 'settled', workflowId: first, admissionError: null, resolution: 'delivered' }));
+    await db.sql.begin(tx => acceptMissionActivityInTransaction(tx as unknown as Sql, scope(owner), {
+      selectedRef: 'WI-overflow', accepted: true, changesFocus: true,
+      displacedContinuationRef: 'WI-step', relationship: 'blocking-repair',
+    }, async () => p, 10_000));
+    const reserved = await mission(owner);
+    await expect(db.sql.begin(tx => acceptMissionActivityInTransaction(tx as unknown as Sql, scope(owner), {
+      selectedRef: 'WI-overflow-nested', accepted: true, changesFocus: true,
+      displacedContinuationRef: 'WI-overflow', relationship: 'blocking-repair',
+    }, async () => p, 10_001))).rejects.toThrow('mission-outbox-capacity-exhausted');
+    expect(await mission(owner)).toEqual(reserved);
+    await applyMissionEvent(scope(owner), {
+      id: 'overflow-done', kind: 'child-ended', childRef: 'WI-overflow', terminal: true,
+    }, async () => p, { sql: db.sql, nowMs: 11_000 });
+    const after = await mission(owner);
+    expect(after.outbox).toHaveLength(64);
+    expect(after.outbox.some(entry => entry.consequence.id === first)).toBe(false);
+    expect(after.outbox.slice(0, 63)).toEqual(before.outbox.slice(1));
+    expect(after.outbox.at(-1)).toMatchObject({ status: 'pending', consequence: { triggerEvent: 'overflow-done' } });
   });
 
   it('fences workspace and owner mismatches', async () => {

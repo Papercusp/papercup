@@ -1,0 +1,8 @@
+---
+rel_path: "portability/census/kopia-v7-p053-kopia-tests-91bf82d69a777026.json"
+updated_at: 1794218431886
+_body: "content"
+---
+
+{"ok":true,"runId":"5ff20223-4198-48b5-ad09-2b92d53d46c6","root":"/home/marsh-office/papercupai-workspace/papercusp","passed":89,"failed":0,"skipped":0,"files":2,"failures":[],"failuresTruncated":false,"durationMs":20677.32,"byFile":{"packages/operator-core/lib/backup/state-census-cli.test.ts":{"passed":12,"failed":0,"skipped":0,"collectionFailed":false,"runId":23720164,"ledgerDurationMs":7143},"packages/operator-core/lib/backup/state-census-producers.test.ts":{"passed":77,"failed":0,"skipped":0,"collectionFailed":false,"runId":23720163,"ledgerDurationMs":2304}},"artifacts":{"directory":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-scwBlg","manifest":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-scwBlg/manifest.json","phases":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-scwBlg/phases.jsonl","reports":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-scwBlg/reports","ownedDatabases":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-scwBlg/owned-databases","runtimeInputs":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-scwBlg/executed-inputs","nativeProof":"/home/marsh-office/.papercusp/test-artifacts/testing-run/run-scwBlg/native-proof"},"cleanup":{"complete":true,"databases":[],"errors":[]},"testRunIds":[23720163,23720164],"rootSource":"requested","runnerDurationMs":7525,"phaseTimingsMs":{"preflightMs":31.34,"provenanceMs":23.59,"preparationMs":9.1,"admissionGateMs":9.09,"handoffMs":null,"admissionWaitMs":30.54,"routerExecutionMs":18654.54,"ledgerIdReadbackMs":10.29,"finalizationMs":0.24,"totalHandlerMs":20677.32}}
+

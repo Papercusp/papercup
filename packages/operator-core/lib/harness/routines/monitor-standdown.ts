@@ -40,6 +40,17 @@ import {
   type PersistedMonitorConfig,
 } from './monitor-policy';
 
+/** Identified dependency settlement is independent of the work/monitor label.
+ * Prose-only blockers, productive work and ambient inbox waits do not enroll. */
+export function readIdentifiedWaitForRoutine(payloadTemplate: unknown): { drivingWorkItemId: string; eventKey: string } | null {
+  if (!payloadTemplate || typeof payloadTemplate !== 'object' || Array.isArray(payloadTemplate)) return null;
+  const pt = payloadTemplate as Record<string, any>;
+  const event = pt.blockedOn?.event ?? (pt.blockedOn?.kind === 'event' ? pt.blockedOn.ref : undefined)
+    ?? (pt.mode === 'monitor' ? pt.monitor?.predicateKey : undefined);
+  return typeof pt.workItem === 'string' && pt.workItem.trim() && typeof event === 'string' && event.trim() && !event.includes('*')
+    ? { drivingWorkItemId: pt.workItem.trim(), eventKey: event.trim() } : null;
+}
+
 /** Why a monitor loop was stood down, as recorded in routine metadata + transition history. */
 export type MonitorStanddownCode =
   | 'no_delta_budget_exhausted'

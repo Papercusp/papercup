@@ -306,7 +306,9 @@ export async function openWriterPidsMany(
         } catch (err) {
           if ((err as NodeJS.ErrnoException)?.code === 'ESRCH') {
             // Linux get_proc_task_mm returns ESRCH once there is no userspace
-            // address space, including kernel threads and zombies. Require
+            // address space, including kernel threads and tasks in exit_mm
+            // before their stat state becomes Z. PF_EXITING (0x4) confirms
+            // that irreversible exit transition. Require
             // positive stat evidence, rather than treating an unreadable live
             // userspace process as proof of absence. Still scan its FDs.
             try {
@@ -314,8 +316,17 @@ export async function openWriterPidsMany(
               const raw = typeof pending === 'string' ? pending : await pending;
               const fields = raw.slice(raw.lastIndexOf(')') + 2).trim().split(/\s+/);
               if (raw.startsWith(`${pid} (`) && fields.length >= 7 && /^\d+$/.test(fields[6]) &&
-                  (fields[0] === 'Z' || (BigInt(fields[6]) & 0x200000n) !== 0n)) continue;
-            } catch { /* Missing identity cannot authorize ignoring ESRCH. */ }
+                  (fields[0] === 'Z' || (BigInt(fields[6]) & 0x200004n) !== 0n)) continue;
+            } catch (identityError) {
+              // The process may exit between environ/maps and stat. A missing
+              // stat alone is inconclusive; confirm the entire PID is gone.
+              if ((identityError as NodeJS.ErrnoException)?.code === 'ENOENT') {
+                try { await readProcDirectory(pidDir); }
+                catch (gone) {
+                  if ((gone as NodeJS.ErrnoException)?.code === 'ENOENT') continue;
+                }
+              }
+            }
           }
           if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
             // Unlike a missing cwd (kernel threads), a missing maps/environ is

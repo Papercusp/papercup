@@ -27,6 +27,11 @@ function isolatedLauncherImport() {
         };
         syncBuiltinESMExports();
         const launcher = await import(${JSON.stringify(new URL('./psu-launcher.mjs', import.meta.url).href)});
+        const { resolveServingHostIdentity } = await import('@papercusp/operator-core/lib/serving-host-identity');
+        const identity = resolveServingHostIdentity({
+          env: { PAPERCUSP_HONO_PORT: '4567' }, pid: 42,
+          processId: () => 'fixture:boot:42', buildSha: () => null,
+        });
         launcher.sanitizeInheritedEnv({ PAPERCUSP_HARNESS_SLUG: 'isolated' });
         const afterImport = probes.length;
         const explicit = { url: 'http://127.0.0.1:4567', source: 'env' };
@@ -44,7 +49,7 @@ function isolatedLauncherImport() {
         launcher.applyLauncherOperatorUrlEnv(adopted);
         console.log(JSON.stringify({ afterImport, afterExplicit, afterFirstUse,
           afterSecondUse, afterAdoption: probes.length, adopted,
-          explicitEnv, first, second, probes }));
+          explicitEnv, first, second, probes, identity }));
       `,
     });
     return JSON.parse(output);
@@ -60,6 +65,9 @@ describe('launcher import does not discover a live operator', () => {
     expect(result.afterExplicit).toBe(0);
     expect(result.explicitEnv.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:4567');
     expect(result.explicitEnv.PAPERCUSP_OPERATOR_URL_PROVENANCE).toBeUndefined();
+    expect(result.identity).toEqual({
+      host: 'port-4567', processId: 'fixture:boot:42', buildSha: null,
+    });
   });
 
   it('uses the existing proxy discovery on first target use and caches that target', () => {

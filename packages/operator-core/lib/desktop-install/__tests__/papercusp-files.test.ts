@@ -703,14 +703,16 @@ describe('installPapercuspFiles', () => {
     const playbook = await fs.readFile(result.playbookPath, 'utf8');
 
     // the canonical WAIT_LOOP_NOTE is projected in...
-    expect(playbook).toContain('## Waiting on something? Arm a self-wake LOOP');
-    expect(playbook).toContain('loop:arm');
+    expect(playbook).toContain('## Waiting on something? Keep one bounded continuation');
+    expect(playbook).toContain('stop automatic polling/rearm');
+    expect(playbook).toContain('never grants takeover authority');
+    expect(playbook).toContain('SAME blocked-wait episode across work/monitor labels');
     // ...including the keep-working-while-you-wait bullet (owner directive 2026-09-26, WI-10003276)...
     expect(playbook).toContain('SECOND, keep working while you wait');
     // ...exactly once (one source, one projection)...
-    expect(playbook.split('## Waiting on something? Arm a self-wake LOOP').length - 1).toBe(1);
+    expect(playbook.split('## Waiting on something? Keep one bounded continuation').length - 1).toBe(1);
     // ...sitting in the body BEFORE the project-guide slot, not appended at the very end.
-    expect(playbook.indexOf('Arm a self-wake LOOP')).toBeLessThan(playbook.indexOf('## Tail'));
+    expect(playbook.indexOf('Keep one bounded continuation')).toBeLessThan(playbook.indexOf('## Tail'));
   });
 
   it('projects the canonical peer-wake note into the ENGINEER playbook at the project-guide anchor', async () => {
@@ -932,6 +934,19 @@ describe('installPapercuspFiles', () => {
 });
 
 describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
+  it('renders the bounded wait policy through the actual blueprint source and Codex overlay', async () => {
+    const operatorAppRoot = fileURLToPath(new URL('../../../../../apps/operator/', import.meta.url));
+    const baseSource = path.resolve(operatorAppRoot, '../../libs/papercusp/packages/harness/blueprints/base/prompts/su.md');
+    const rendered = await renderSuPlaybook({ agent: 'codex', operatorAppRoot, baseSource,
+      overlayDir: path.join(operatorAppRoot, 'prompts') });
+    expect(rendered.baseSource).toBe(baseSource);
+    expect(rendered.text).toContain('## Waiting on something? Keep one bounded continuation');
+    expect(rendered.text).toContain('stop automatic polling/rearm');
+    expect(rendered.text).toContain('never grants takeover authority');
+    expect(rendered.text).toContain('SAME blocked-wait episode across work/monitor labels');
+    expect(rendered.text).not.toContain('schedule a RECURRING self-wake');
+    expect(rendered.text).not.toContain('TAKE THE WORK OVER yourself');
+  });
   it.each(['engineer', 'power', 'generic'])('renders native topology guidance from the real %s source', async (profile) => {
     const operatorAppRoot = fileURLToPath(new URL('../../../../../apps/operator/', import.meta.url));
     const rendered = await renderSuPlaybook({ agent: 'claude', profile, operatorAppRoot });

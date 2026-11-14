@@ -1,0 +1,18 @@
+
+> @papercusp/operator-ui@0.1.0 test
+> vitest run src/billing/enterprise-allocations.test.tsx
+
+(node:751321) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+ RUN  v4.1.8 <repository>/packages/operator-ui [machine-local path redacted]
+
+(node:754573) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ src/billing/enterprise-allocations.test.tsx (18 tests) 984ms
+
+ Test Files  1 passed (1)
+      Tests  18 passed (18)
+   Start at  09:13:43
+   Duration  6.28s (transform 591ms, setup 596ms, import 423ms, tests 984ms, environment 1.50s)
+

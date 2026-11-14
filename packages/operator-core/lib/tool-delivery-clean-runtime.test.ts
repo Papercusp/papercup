@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
@@ -15,10 +15,11 @@ import cleanRegistration from './llm-testing/fixtures/tool-delivery-clean-runtim
 import fidelityRegistration from './llm-testing/fixtures/tool-delivery-fidelity-candidate-20261023.json';
 import sourceV2Registration from './llm-testing/fixtures/tool-delivery-clean-source-v2-20261023.json';
 import sourceV3Registration from './llm-testing/fixtures/tool-delivery-clean-source-v3-20261024.json';
-import { toolDeliveryPreregistration } from './tool-delivery-acceptance';
+import { toolDeliveryPreregistration, TOOL_DELIVERY_PREREGISTRATION_FIXTURES } from './tool-delivery-acceptance';
 import { findBoxIdentityPaths, findOwnerNameLeaks } from '../../../scripts/lib/identity-leak-patterns.mjs';
 import { assertCleanCohortAuthority, assertCleanCohortCatalogDefinitions, assertCleanCohortCapturedInputs,
-  claimCleanCohort, parseCleanCohortArgs } from './llm-testing/tool-delivery-clean-cohort.mjs';
+  claimCleanCohort, parseCleanCohortArgs, validateCleanCohortCaptureRequest, buildCleanCohortCapture,
+  cleanCohortCaptureDelta, captureCleanCohortRequest, type CleanCohortCaptureRequest } from './llm-testing/tool-delivery-clean-cohort.mjs';
 
 const cleanup: string[] = [];
 afterEach(() => {
@@ -35,6 +36,7 @@ describe('tool-delivery module guard runtime boundary', () => {
     const root = mkdtempSync(join(tmpdir(), 'tool-delivery-interpreter-')); cleanup.push(root);
     const runner = join(root, 'runtime.mjs');
     const subject = fileURLToPath(new URL('./tool-delivery-clean-runtime.ts', import.meta.url));
+    // Bundle validator dependencies; this probe never invokes the deferred recorder.
     buildSync({ stdin: { resolveDir: root, loader: 'ts', contents: `
 import { installToolDeliveryModuleGuard, toolDeliveryModuleFile } from ${JSON.stringify(subject)};
 const result = { name: process.versions.bun ? 'bun' : 'node', executable: process.execPath,
@@ -45,7 +47,7 @@ try {
   result.guard = 'installed';
 } catch (error) { result.guard = 'refused'; result.reason = error.message; }
 process.stdout.write(JSON.stringify(result));
-` }, outfile: runner, bundle: true, packages: 'external', platform: 'node', format: 'esm', logLevel: 'silent' });
+` }, outfile: runner, bundle: true, external: ['./testing-worktree'], platform: 'node', format: 'esm', logLevel: 'silent' });
     const observed = JSON.parse(execFileSync(executable, [runner, root], {
       env: {}, encoding: 'utf8', timeout: 15_000,
     }));
@@ -173,6 +175,101 @@ describe('prospective clean tool-delivery execution admission', () => {
     for (const options of [['--registration', '../../private.json'], ['--registration', 'toString'],
       ['--execute'], ['--execute', 'a', '--execute', 'b'], ['--override', 'b']])
       expect(() => parseCleanCohortArgs([...args, ...options])).toThrow();
+  });
+  it('joins each launcher registration to the exact maintained reader fixture', () => {
+    const launchSource = readFileSync(fileURLToPath(new URL('./llm-testing/tool-delivery-clean-cohort.mjs', import.meta.url)), 'utf8');
+    const registrations = [...launchSource.matchAll(/'packages\/operator-core\/lib\/llm-testing\/fixtures\/([^']+\.json)'/g)];
+    expect(registrations.length).toBeGreaterThanOrEqual(3);
+    for (const [, file] of registrations) {
+      expect(TOOL_DELIVERY_PREREGISTRATION_FIXTURES).toContain(file);
+      const registration = JSON.parse(readFileSync(fileURLToPath(new URL(`./llm-testing/fixtures/${file}`, import.meta.url)), 'utf8'));
+      expect(toolDeliveryPreregistration(registration.experiment.id)).toEqual(registration);
+      expect(parseCleanCohortArgs(['/retained', '/private', '--registration', registration.experiment.id]).fixture)
+        .toBe(`packages/operator-core/lib/llm-testing/fixtures/${file}`);
+    }
+    for (const file of TOOL_DELIVERY_PREREGISTRATION_FIXTURES.filter(file => file.startsWith('tool-delivery-clean-')))
+      expect(registrations.map(match => match[1])).toContain(file);
+  });
+  function captureFixture() {
+    const request: CleanCohortCaptureRequest = { baselineExperimentId: sourceV3Registration.experiment.id,
+      experimentId: 'session-tool-delivery-clean-source-v4-20990101',
+      arms: { compactArm: 'session-tool-delivery-clean-source-v4-compact-20990101',
+        fullArm: 'session-tool-delivery-clean-source-v4-full-20990101' },
+      decisionRef: 'deterministic-tool-definition-delivery-2026-09-21#D-106',
+      privateCaptureFile: 'tool-delivery-clean-source-v4-original-20990101.json',
+      portableFile: 'tool-delivery-clean-source-v4-20990101.json', receiptDirectory: 'clean-source-v4-once-20990101' };
+    const prompt = 'Synthetic private capture prompt', baseline = structuredClone(sourceV3Registration);
+    baseline.experiment.manifestContract.systemSha256 = createHash('sha256').update(JSON.stringify(prompt)).digest('hex');
+    const frozen = { ...baseline, variants: Object.fromEntries(Object.entries(baseline.variants).map(([arm, value]) =>
+      [arm, { ...value, configDelta: { ...value.configDelta, systemPromptText: prompt } }])),
+    capture: { cleanBoundary: { sourceRoot: '/private/old', moduleHashes: { 'sut.ts': 'old' } } } };
+    const baselinePrivateCapture = Buffer.from(JSON.stringify(frozen, null, 2));
+    baseline.capture.privateCapture.originalSha256 = createHash('sha256').update(baselinePrivateCapture).digest('hex');
+    const definition = { type: 'function', name: 'new__tool', description: 'Actual current request definition', parameters: { type: 'object' } };
+    const catalogs = Object.fromEntries(['compact', 'full'].map(arm => [arm,
+      { definitions: [definition], canonicalBySanitized: [['new__tool', 'new:tool']] }]));
+    const requests = Object.fromEntries(['compact', 'full'].map(arm => [arm, { tools: [definition], instructions: prompt,
+      model: 'gpt-6.1-sol', reasoning: { effort: 'xhigh' } }]));
+    return { request, baseline, baselinePrivateCapture, catalogs, requests, expectedModel: { id: 'gpt-6.1-sol', effort: 'xhigh' },
+      boundary: { sourceRoot: '/private/new', installSha256: 'install', moduleHashes: { 'sut.ts': 'new' } },
+      controllerBoundary: { sourceRoot: '/private/controller', installSha256: 'controller-install' },
+      sourcePins: { ...baseline.sourcePins, head: 'f'.repeat(40) }, createdAt: '2026-11-12T17:00:00.000Z' };
+  }
+  it('requires a new capture identity and refuses execution, registration overrides, paths and unknown settings', () => {
+    expect(parseCleanCohortArgs(['/retained', '/private', '--capture', 'request.json'])).toEqual({ capturePath: 'request.json' });
+    for (const extra of [['--execute', 'approval.json'], ['--registration', sourceV3Registration.experiment.id], ['--capture', 'again.json']])
+      expect(() => parseCleanCohortArgs(['/retained', '/private', '--capture', 'request.json', ...extra])).toThrow();
+    const f = captureFixture();
+    expect(() => validateCleanCohortCaptureRequest(f.request, f.baseline)).not.toThrow();
+    for (const request of [{ ...f.request, privateCaptureFile: '../original.json' }, { ...f.request, extraSetting: true },
+      { ...f.request, arms: { ...f.request.arms, fullArm: f.baseline.experiment.arms.fullArm } }])
+      expect(() => validateCleanCohortCaptureRequest(request, f.baseline)).toThrow();
+  });
+  it('keeps complete current treatment deltas and immutable private prompts without leaking paths to portable custody', () => {
+    const f = captureFixture(), before = Buffer.from(f.baselinePrivateCapture);
+    const result = buildCleanCohortCapture(f), privateResult = JSON.parse(result.privateCapture.toString());
+    expect(f.baselinePrivateCapture).toEqual(before);
+    expect(result.portable.capture.privateCapture.originalSha256).toBe(createHash('sha256').update(result.privateCapture).digest('hex'));
+    expect(privateResult.configuration).toEqual(f.baseline.configuration);
+    expect(privateResult.variants.compact.configDelta.systemPromptText).toBe('Synthetic private capture prompt');
+    expect(privateResult.capture.controllerBoundary).toEqual(f.controllerBoundary);
+    expect(result.portable.treatmentDelta.components.compactDefinitions!.after).toEqual(f.catalogs.compact!.definitions);
+    expect(result.portable.treatmentDelta.components.configuration!.unchanged).toBe(true);
+    expect(JSON.stringify(result.portable)).not.toContain('Synthetic private capture prompt');
+    expect(JSON.stringify(result.portable)).not.toContain('/private/');
+    expect(findBoxIdentityPaths(JSON.stringify(result.portable))).toEqual([]);
+    expect(findOwnerNameLeaks(JSON.stringify(result.portable))).toEqual([]);
+    expect(cleanCohortCaptureDelta({ removed: 1 }, { added: 2 })).toMatchObject({
+      removed: { before: 1, after: null }, added: { before: null, after: 2 } });
+  });
+  it.each(['private-bytes', 'prompt', 'catalog', 'mapping', 'mapping-population', 'scenario', 'model', 'effort'])('refuses %s capture drift before writing outputs', mode => {
+    const f = captureFixture();
+    if (mode === 'private-bytes') f.baselinePrivateCapture = Buffer.from('{}');
+    if (mode === 'prompt') f.requests.full!.instructions = 'changed';
+    if (mode === 'catalog') f.requests.full!.tools = [];
+    if (mode === 'mapping') f.catalogs.full!.canonicalBySanitized = [['other', 'other']];
+    if (mode === 'mapping-population') f.catalogs.compact!.canonicalBySanitized = f.catalogs.full!.canonicalBySanitized = [['other', 'other']];
+    if (mode === 'scenario') f.sourcePins.scenarioPaths = {} as typeof f.sourcePins.scenarioPaths;
+    if (mode === 'model') f.requests.compact!.model = f.requests.full!.model = 'different-model';
+    if (mode === 'effort') f.requests.compact!.reasoning.effort = f.requests.full!.reasoning.effort = 'low';
+    expect(() => buildCleanCohortCapture(f)).toThrow();
+  });
+  it('captures the provider request through the injected transport and closes a failed target', async () => {
+    const close = vi.fn(), request = { instructions: 'private fixture prompt', tools: [], model: 'gpt-fixture' };
+    class Target {
+      constructor(private opts: { codexFetch: typeof fetch }) {}
+      async open() { return { close, send: async () => {
+        await this.opts.codexFetch('https://must-not-be-contacted.invalid', { body: JSON.stringify(request) });
+        return { finishReason: 'done' };
+      } }; }
+    }
+    await expect(captureCleanCohortRequest({ SuTarget: Target, prompt: request.instructions,
+      variant: { id: 'fixture' }, model: 'gpt-fixture' })).resolves.toEqual(request);
+    expect(close).toHaveBeenCalledOnce();
+    request.instructions = 'unexpected prompt';
+    await expect(captureCleanCohortRequest({ SuTarget: Target, prompt: 'private fixture prompt',
+      variant: { id: 'fixture' }, model: 'gpt-fixture' })).rejects.toThrow(/prompt changed/);
+    expect(close).toHaveBeenCalledTimes(2);
   });
   it('retains the exact machine-readable D079 catalog delta under a distinct current-source identity', () => {
     expect(toolDeliveryPreregistration(sourceV2Registration.experiment.id)).toEqual(sourceV2Registration);

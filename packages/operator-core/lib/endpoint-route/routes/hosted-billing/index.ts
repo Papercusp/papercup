@@ -156,6 +156,16 @@ function jsonError(code: string, safeMessage: string, status: number): Response 
 /** Project only the public usage contract; provider payloads and extra fields never pass through. */
 function usageView(statement: HostedUsageStatement): HostedUsageStatement {
   return {
+    ...(statement.infrastructure === undefined ? {} : { infrastructure: {
+      currency: statement.infrastructure.currency, sourceRef: statement.infrastructure.sourceRef,
+      observedAtMs: statement.infrastructure.observedAtMs, complete: statement.infrastructure.complete,
+      knownTenantMicros: statement.infrastructure.knownTenantMicros, tenantTotalMicros: statement.infrastructure.tenantTotalMicros,
+      creditsExcludedTenantMicros: statement.infrastructure.creditsExcludedTenantMicros,
+      poolTotalMicros: statement.infrastructure.poolTotalMicros, sharedOverheadMicros: statement.infrastructure.sharedOverheadMicros,
+      unallocatedMicros: statement.infrastructure.unallocatedMicros, gaps: [...statement.infrastructure.gaps],
+      tenants: statement.infrastructure.tenants.map(row => ({ customerWorkspaceId: row.customerWorkspaceId,
+        knownMicros: row.knownMicros, totalMicros: row.totalMicros })),
+    } }),
     scope: { controlWorkspaceId: statement.scope.controlWorkspaceId, organizationId: statement.scope.organizationId,
       customerWorkspaceId: statement.scope.customerWorkspaceId },
     month: statement.month, currency: statement.currency, asOfMs: statement.asOfMs, sourceRef: statement.sourceRef,
@@ -276,7 +286,7 @@ export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies):
     auth: { capabilities: ['workspace:view'] },
     async handler(_req, ctx) {
       const organizationId = organizationOf(ctx);
-      if (!organizationId) return jsonError('organization_required', 'An active organization is required.', 403);
+      if (!organizationId || !ctx.principal) return jsonError('organization_required', 'An active organization is required.', 403);
       let snapshot;
       try {
         snapshot = await deps.store.currentSubscription(organizationId, planKeyForPrice);
@@ -290,6 +300,9 @@ export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies):
       return Response.json({
         ok: true,
         configured: deps.stripe !== null,
+        // Use the same authenticated control-plane binding as allocation usage.
+        // The session's selected customer workspace is a separate, nullable id.
+        organization: { controlWorkspaceId: ctx.principal.workspaceId, organizationId },
         canManage: ctx.principal?.capabilities.has('billing:manage') === true,
         subscription: snapshot && {
           status: snapshot.status,
@@ -302,7 +315,7 @@ export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies):
           latestInvoiceStatus: snapshot.latestInvoiceStatus,
         },
         entitlement,
-      });
+      }, { headers: { 'cache-control': 'no-store' } });
     },
   };
 
@@ -512,7 +525,8 @@ export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies):
         const statement = await deps.usage(Object.freeze({ scope, month, asOfMs: now }));
         if (statement.scope.controlWorkspaceId !== scope.controlWorkspaceId || statement.scope.organizationId !== organizationId
             || statement.scope.customerWorkspaceId !== customerWorkspaceId || statement.month !== month || statement.asOfMs !== now
-            || (customerWorkspaceId !== null && [...statement.lines, ...statement.history].some(line => line.customerWorkspaceId !== customerWorkspaceId))) {
+            || (customerWorkspaceId !== null && [...statement.lines, ...statement.history,
+              ...(statement.infrastructure?.tenants ?? [])].some(line => line.customerWorkspaceId !== customerWorkspaceId))) {
           return jsonError('usage_unavailable', 'Usage could not be read.', 503);
         }
         return Response.json({ ok: true, statement: usageView(statement) }, { headers: { 'cache-control': 'no-store' } });

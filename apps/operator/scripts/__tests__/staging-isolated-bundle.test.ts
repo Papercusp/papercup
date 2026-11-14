@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { createServer, type AddressInfo, type Server } from "node:net";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resolvePromptFiles } from '@papercusp/orchestrator/role-prompt';
 import {
   getHarnessAdminUrlWithSource,
   _resetHarnessAdminUrlCacheForTests,
@@ -135,6 +136,45 @@ describe("staging systemd drop-ins keep the serving alias and runtime generation
     expect(served).toBe("%h/papercupai-workspace/papercusp-staging.current");
     expect(edited).toBe("%h/papercupai-workspace/papercusp");
     expect(edited).not.toBe(served);
+  });
+
+  it("loads current role prompts while keeping executable code on its frozen generation", () => {
+    const home = mkdtempSync(join(tmpdir(), 'staging-role-prompt-'));
+    try {
+      const workspace = join(home, 'papercupai-workspace');
+      const sourceHarness = join(workspace, 'papercusp/libs/papercusp/packages/harness');
+      const generation = join(workspace, 'papercusp-staging.generations/fixture/checkout');
+      const frozenHarness = join(generation, 'libs/papercusp/packages/harness');
+      const operator = join(generation, 'apps/operator');
+      for (const root of [sourceHarness, frozenHarness]) {
+        mkdirSync(join(root, 'blueprints/base/prompts'), { recursive: true });
+      }
+      mkdirSync(operator, { recursive: true });
+      writeFileSync(join(sourceHarness, 'blueprints/base/prompts/release-manager.md'), 'current persona');
+      writeFileSync(join(frozenHarness, 'blueprints/base/prompts/release-manager.md'), 'stale persona');
+      // A sourced generation-local value must not undo the managed prompt route.
+      writeFileSync(join(operator, '.env.local'), `PAPERCUSP_PROMPT_ROOT=${frozenHarness}\n`);
+      const start = bundle.match(/^ExecStart=\/usr\/bin\/bash -c '(.*)'$/m)?.[1];
+      expect(start).toBeTruthy();
+      const command = start!.replaceAll('%h', home).replace(
+        'exec node dist-host/hono-host.mjs',
+        `exec "${process.execPath}" -e 'console.log(JSON.stringify({integration:process.env.PAPERCUSP_INTEGRATION_ROOT,prompt:process.env.PAPERCUSP_PROMPT_ROOT}))'`,
+      );
+      const child = spawnSync('/usr/bin/bash', ['-c', command], { cwd: operator, encoding: 'utf8' });
+      expect(child.status, child.stderr).toBe(0);
+      const selected = JSON.parse(child.stdout);
+      expect(selected.integration).toBe(generation);
+      expect(selected.prompt).toBe(sourceHarness);
+      expect(checkout).toContain('Environment=PAPERCUSP_PROMPT_ROOT=%h/papercupai-workspace/papercusp/libs/papercusp/packages/harness');
+      vi.stubEnv('PAPERCUSP_INTEGRATION_ROOT', selected.integration);
+      vi.stubEnv('PAPERCUSP_PROMPT_ROOT', selected.prompt);
+      const files = resolvePromptFiles({ harnessDir: frozenHarness, phase: '', dept: '' }, 'release-manager');
+      expect(files).toEqual([join(sourceHarness, 'blueprints/base/prompts/release-manager.md')]);
+      expect(readFileSync(files[0], 'utf8')).toBe('current persona');
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("builds from that same tree and enables proof-bound reuse before plain-node start", () => {

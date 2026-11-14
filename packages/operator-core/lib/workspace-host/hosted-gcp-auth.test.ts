@@ -111,7 +111,11 @@ describe('hosted GCP auth resolver', () => {
     await expect(resolveHostedGcpAuth({
       credentialRef: delegation.credentialRef,
       provider: { hostedDelegation: delegation },
-    }, { fetch: fetchImpl, identityProject: IDENTITY_PROJECT })).resolves.toEqual({
+    }, {
+      fetch: fetchImpl,
+      identityProject: IDENTITY_PROJECT,
+      source: hostedGcpDelegationSource({}, fetchImpl),
+    })).resolves.toEqual({
       accessToken: MINTED_TOKEN,
       identity: 'workspace-host@papercusp-hosted-123.iam.gserviceaccount.com',
       projectId: 'papercusp-hosted-123',

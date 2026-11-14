@@ -149,6 +149,15 @@ bundle_host_esbuild() { # <repo root> [compiler args...]
       --context "$BUNDLE_HOST_BG_BUILD_CONTEXT" -- "$@" "$replay_identity_define" || compiler_rc=$?
   else
     bundle_host_prepare_esbuild "$repo_root" || return 1
+    if [[ -n "${BUNDLE_HOST_TESTING_CORE_PREPARE_RECEIPT:-}" ]]; then
+      # The same pinned compiler/cache door, using its API so the first plugin
+      # can hand esbuild exact retained buffers and fence native resolution.
+      local -a witness_node=("${COMMITTED_NODE[@]:-node}")
+      bundle_host_run_step compiler-cache-call bundle_host_cached_package "$repo_root" \
+        "${witness_node[@]}" "$repo_root/scripts/lib/testing-core-witness.mjs" prepare \
+        "$repo_root" "$BUNDLE_HOST_ESBUILD_PATH" "$BUNDLE_HOST_TESTING_CORE_PREPARE_RECEIPT" -- \
+        "$@" "$replay_identity_define" || compiler_rc=$?
+    else
     # Each use holds the maintained cache lease through version validation AND
     # compilation. Cache cleanup between uses can remove the memoized path; that
     # fails closed instead of substituting the installed (possibly newer) tool.
@@ -161,6 +170,7 @@ bundle_host_esbuild() { # <repo root> [compiler args...]
       fi
       exec "$compiler" "$@"
     ' bundle-host-esbuild "$BUNDLE_HOST_ESBUILD_PATH" "$@" "$replay_identity_define" || compiler_rc=$?
+    fi
   fi
   (( compiler_rc == 0 )) || return "$compiler_rc"
   replay_identity_after="$(bundle_host_run_step replay-identity-after bundle_host_replay_identity_define "$repo_root")" || return 78
@@ -208,6 +218,65 @@ for (const subpath of ['utils', 'accounts', 'chains']) {
   console.log('--alias:viem/' + subpath + '=' + resolve(dirname(manifest), target));
 }
 NODE
+}
+
+# Prepare the worker BEFORE a parent embeds its independent expectation. Keep
+# that binding in this build's shell; a running host never learns its expected
+# digest from the sibling it is being asked to execute.
+BUNDLE_HOST_TESTING_CORE_UNWITNESSED='unwitnessed:helper-not-committed'
+bundle_host_prepare_testing_core() { # <repo root> <out dir> [parent boundary args...]
+  local repo_root="$1" out_dir="$2" argument native_pkg
+  shift 2
+  local receipt="$out_dir/testing-core.worker.witness.json"
+  if [[ "${BUNDLE_HOST_TESTING_CORE_RECEIPT:-}" == "$receipt" && -n "${BUNDLE_HOST_TESTING_CORE_BINDING:-}" ]]; then
+    bundle_host_verify_testing_core "$repo_root"
+    return $?
+  fi
+  local -a boundary=("${HOST_COMMON_EXTERNALS[@]}")
+  for native_pkg in "${NATIVE_PKGS[@]}"; do boundary+=("--external:$native_pkg"); done
+  if declare -p HOST_EXTERNALS >/dev/null 2>&1; then boundary=("${HOST_EXTERNALS[@]}"); fi
+  for argument in "$@"; do
+    case "$argument" in --external:*|--alias:*|--minify-whitespace|--minify-syntax|--keep-names) boundary+=("$argument");; esac
+  done
+  local -a worker_args=(
+    "$repo_root/packages/operator-core/lib/agent-tools/testing/testing-core.worker.ts"
+    --bundle --platform=node --format=esm --target=node22
+    --define:__PAPERCUSP_BUNDLED_SIDECAR__=true
+    --banner:js="$HOST_BANNER" "${HOST_BANNER_DEFINES[@]}" "${boundary[@]}"
+    --outfile="$out_dir/testing-core.worker.mjs" --metafile="$out_dir/testing-core.worker.mjs.meta.json"
+  )
+  # WI-6554700010048115: COMMITTED_NODE refuses a helper with no committed
+  # version, while this script itself runs from the working tree. Until the
+  # witness helper is committed, compile the worker WITHOUT a producing witness
+  # (HEAD semantics: the bundled testing core refuses testing_core_missing_witness)
+  # instead of failing every host rebuild back to a stale last-known-good bundle.
+  if ! git -C "$repo_root" cat-file -e "HEAD:scripts/lib/testing-core-witness.mjs" 2>/dev/null; then
+    echo "WARN(WI-6554700010048115): scripts/lib/testing-core-witness.mjs has no committed version; building testing-core.worker.mjs UNWITNESSED until it is committed." >&2
+    bundle_host_esbuild "$repo_root" "${worker_args[@]}" >&2 || return 1
+    BUNDLE_HOST_TESTING_CORE_WITNESS_DEFINE='--define:__PAPERCUSP_TESTING_CORE_WITNESS__=undefined'
+    BUNDLE_HOST_TESTING_CORE_RECEIPT="$receipt"
+    BUNDLE_HOST_TESTING_CORE_BINDING="$BUNDLE_HOST_TESTING_CORE_UNWITNESSED"
+    return 0
+  fi
+  local binding
+  binding="$(BUNDLE_HOST_TESTING_CORE_PREPARE_RECEIPT="$receipt" bundle_host_esbuild "$repo_root" \
+    "${worker_args[@]}")" || return 1
+  local -a witness_node=("${COMMITTED_NODE[@]:-node}")
+  BUNDLE_HOST_TESTING_CORE_WITNESS_DEFINE="$("${witness_node[@]}" \
+    "$repo_root/scripts/lib/testing-core-witness.mjs" define "$receipt" "$binding")" || return 1
+  BUNDLE_HOST_TESTING_CORE_RECEIPT="$receipt"
+  BUNDLE_HOST_TESTING_CORE_BINDING="$binding"
+}
+
+bundle_host_verify_testing_core() { # <repo root>
+  [[ -n "${BUNDLE_HOST_TESTING_CORE_RECEIPT:-}" && -n "${BUNDLE_HOST_TESTING_CORE_BINDING:-}" ]] || return 78
+  if [[ "$BUNDLE_HOST_TESTING_CORE_BINDING" == "$BUNDLE_HOST_TESTING_CORE_UNWITNESSED" ]]; then
+    echo 'WARN(WI-6554700010048115): testing-core witness verification skipped (helper not committed).' >&2
+    return 0
+  fi
+  local -a witness_node=("${COMMITTED_NODE[@]:-node}")
+  "${witness_node[@]}" "$1/scripts/lib/testing-core-witness.mjs" verify \
+    "$BUNDLE_HOST_TESTING_CORE_RECEIPT" "$BUNDLE_HOST_TESTING_CORE_BINDING"
 }
 
 bundle_host_select_profile() {
@@ -281,6 +350,7 @@ HOST_WORKER_OUTPUTS=(
   first-party-callers.worker.mjs
   role-codex-home.worker.mjs
   warm-cochange-index.worker.mjs
+  testing-core.worker.mjs
 )
 
 # Dependency-free on-disk scripts that the bundled host resolves as SIBLINGS of
@@ -359,12 +429,14 @@ bundle_host_primary() { # <repo root> <out dir> [esbuild boundary args...]
   shift 2
   local output="$out_dir/serve.mjs" tmp="$out_dir/serve.new.mjs"
   mkdir -p "$out_dir" || return 1
+  bundle_host_run_step primary-testing-core bundle_host_prepare_testing_core "$repo_root" "$out_dir" "$@" || return 1
   bundle_host_run_step primary-compile bundle_host_esbuild "$repo_root" "$repo_root/apps/operator/bin/serve.ts" \
     --bundle --platform=node --format=esm --target=node22 \
     --outfile="$tmp" --metafile="$output.meta.json" --banner:js="$HOST_BANNER" \
-    "${HOST_BANNER_DEFINES[@]}" "$@" || return 1
+    "${HOST_BANNER_DEFINES[@]}" "$BUNDLE_HOST_TESTING_CORE_WITNESS_DEFINE" "$@" || return 1
   local -a run_node=("${COMMITTED_NODE[@]:-node}")
   bundle_host_run_step primary-ascii-and-syntax "${run_node[@]}" "$repo_root/apps/operator/bin/ascii-escape-bundle.mjs" "$tmp" --check || return 1
+  bundle_host_run_step primary-testing-core-verify bundle_host_verify_testing_core "$repo_root" || return 1
   mv -f "$tmp" "$output"
 }
 
@@ -396,6 +468,9 @@ bundle_host_handler_bootstrap() { # <repo root> <out dir>
 
 bundle_host_workers() {
   local repo_root="$1" out_dir="$2" source output tmp
+  # Reuse the generation prepared before the parent, rather than compiling a
+  # different worker after its independent expectation has already been baked.
+  bundle_host_prepare_testing_core "$repo_root" "$out_dir" || return 1
   bundle_host_handler_bootstrap "$repo_root" "$out_dir" || return 1
   # A private dependency snapshot still shares npx's package cache with every
   # checkout. The repo install lease cannot protect it from cache maintenance.
@@ -414,6 +489,9 @@ bundle_host_workers() {
   if [ -n "${BUNDLE_HOST_GATE_META_DIR:-}" ] && ! mkdir -p "$BUNDLE_HOST_GATE_META_DIR"; then
     echo "FATAL: cannot create the restricted-hold gate meta dir $BUNDLE_HOST_GATE_META_DIR" >&2
     return 1
+  fi
+  if [ -n "${BUNDLE_HOST_GATE_META_DIR:-}" ]; then
+    cp "$out_dir/testing-core.worker.mjs.meta.json" "$BUNDLE_HOST_GATE_META_DIR/testing-core.worker.mjs.meta.json" || return 1
   fi
   for source in "${sources[@]}"; do
     output="${HOST_WORKER_OUTPUTS[$index]}"

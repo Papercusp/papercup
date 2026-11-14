@@ -62,6 +62,34 @@ describe('canonical public manual retrieval', () => {
     expect(expansion).toEqual({ refs: ['src/direct.ts'], unresolvedDocuments: ['faq.mdx'] });
   });
 
+  it('retains engineering guides and supplied anchors as direct evidence without reading private content', async () => {
+    const source = createPublicManualSource(root);
+    const refs = [
+      'apps/operator-docs/src/content/docs/agent-insights/gate-test-reuse-yield-grading.mdx',
+      'packages/operator-core/lib/agent-tools/plans/spec-quality.ts',
+      'engineering/guides/guide.md',
+      'packages/example/README.md',
+      'apps\\operator-docs\\src\\content\\docs\\agent-insights\\guide.mdx',
+    ];
+    expect(await source.expandSubjectRefs(refs)).toEqual({ refs, unresolvedDocuments: [] });
+    const privatePath = join(root, 'private', 'secret.mdx');
+    expect(await source.expandSubjectRefs([privatePath])).toEqual({ refs: [], unresolvedDocuments: [privatePath] });
+    expect(await source.getPage('private/secret')).toBeNull();
+    expect(JSON.stringify(await getPublicManual({ slugs: ['private/secret'] }, source))).not.toContain('PRIVATE_CANARY');
+  });
+
+  it('keeps missing public aliases and public namespace paths unresolved', async () => {
+    const source = createPublicManualSource(root);
+    const refs = [
+      'missing.mdx', 'missing.md', '/docs/missing',
+      'public/manual-source/missing.mdx',
+      'apps/operator/public/manual-source/missing.mdx',
+      'apps/papercusp-docs/src/content/docs/missing.mdx',
+      join(root, 'missing.mdx'),
+    ];
+    expect(await source.expandSubjectRefs(refs)).toEqual({ refs: [], unresolvedDocuments: refs });
+  });
+
   it('invalidates rendered answers and search metadata when canonical bytes change', async () => {
     const source = createPublicManualSource(root);
     const before = await getPublicManual({ slugs: ['faq'] }, source);

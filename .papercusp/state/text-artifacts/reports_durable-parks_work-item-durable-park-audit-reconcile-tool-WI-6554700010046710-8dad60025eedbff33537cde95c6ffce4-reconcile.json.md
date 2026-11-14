@@ -1,0 +1,31 @@
+---
+rel_path: "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010046710-8dad60025eedbff33537cde95c6ffce4-reconcile.json"
+updated_at: 1794192787773
+_body: "content"
+---
+
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010046710:8dad60025eedbff33537cde95c6ffce4",
+  "inputSha256": "8dad60025eedbff33537cde95c6ffce4acf1c18c86d12da4bfdcc713ac0b2f6e",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-09T02:53:07.772Z",
+  "actor": "su-14b48d10-a137-41fa-a696-14d9b21d3078",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010046710",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "9a1955468841c71dc462ee80df2d577f4d3f5b57f63045e21a7dd890d663ba00",
+      "observedParkFingerprint": "9a1955468841c71dc462ee80df2d577f4d3f5b57f63045e21a7dd890d663ba00",
+      "reasonCode": "operator-directed",
+      "evidence": "Bounded administrative P008 adoption of ONLY provider-independent integration P003/WI-6554700010046710. Owner source session_turn:codex:01a1bb99-d5ae-7d62-a77d-760a40c5e293:19 independently read with18/20: Put yourself on auto mode and carry the plan to shipped status yourself now. Existing requester su-d7e6aa17-2cbb-4abc-856a-290b32e48b93 retains SELF/AUTO implementation/shipment route; exact request coord-send-e9b4157f89d1083d81f56e6cdce870c834102a56ffcd049f206d837413aeb00c. Governing graph D011 and scoped precedents D028-D032 read; SAME14b holds WI-6554700010030915/P008 custody. Current integration plan28/hash12f3ce769dc73c10e0a9192b19cd82d8a13b379460b5c1f6ffcb1a9706b1c8e4 independently read: P003 is provider-independent existing preparation API seam. Current work-item open/unclaimed with only migration:plan-line-work-item-nodes park naming D011/P008. Canonical start receipt /tmp/greening-start28.json refuses migration parks; clearing this admin park is not canonical start or acceptance. P001/WI-6554700010046708 and P002/WI-6554700010046709 remain parked because required canonical provider-success edges are absent and providers WI-6554700010046678/6680 and WI-6554700010028549 have no successful completion. Preserve their provider barriers, every other park, custody/admission floor, component ownership, global P008 source bench, all native/frozen/full-suite/whole-manifest/shadow/EXACTSHIP/performance acceptance and live-gate exclusivity. No force/raw writes, implementation fan-out, provider-edge mutation or LIVE_GATE_OPS.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010046710-8dad60025eedbff33537cde95c6ffce4-reconcile.json"
+}

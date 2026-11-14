@@ -62,6 +62,14 @@ export async function createPublicParkTestDb(label: string) {
     workspace_id text NOT NULL DEFAULT 'default', surface text NOT NULL,
     writer_key text, msg_id text NOT NULL, body jsonb NOT NULL,
     ts timestamptz NOT NULL DEFAULT now())`);
+  // Mirror migration 150's writer columns without its federation capture
+  // triggers: this claim/lifecycle fixture intentionally has no peer outbox
+  // (the same boundary documented by COORD_SUBSCRIPTION_SUBSTRATE).
+  await db.sql.unsafe(`ALTER TABLE harness_shared.coord_event_log
+    ADD COLUMN IF NOT EXISTS harness_slug text,
+    ADD COLUMN IF NOT EXISTS origin text NOT NULL DEFAULT 'local',
+    ADD COLUMN IF NOT EXISTS author_pubkey text`);
+  await db.sql`SELECT harness_slug, origin, author_pubkey FROM harness_shared.coord_event_log LIMIT 0`;
   await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.carry_notes (
     workspace_id text NOT NULL, scope text NOT NULL, note text, journal jsonb NOT NULL DEFAULT '[]',
     updated_ts bigint NOT NULL, deps jsonb, body_ts bigint, attested_count integer NOT NULL DEFAULT 0,

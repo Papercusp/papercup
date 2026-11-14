@@ -1,0 +1,74 @@
+{
+  "irVersion": "0.1",
+  "surface": "native-workbench-session-navigation",
+  "ecosystem": "native-desktop",
+  "a11y": {
+    "landmark": "main",
+    "headingLevel": 1
+  },
+  "layout": {
+    "kind": "stack",
+    "direction": "vertical",
+    "children": [
+      {
+        "kind": "header",
+        "children": [
+          {
+            "kind": "heading",
+            "copy": {
+              "key": "navigation.title",
+              "default": "Pick up the thread."
+            }
+          }
+        ]
+      },
+      {
+        "kind": "raw",
+        "ecosystem": "native-desktop",
+        "ref": "navigation-artboard",
+        "spec": {
+          "why-raw": "Offline browser artboard extends the existing native-desktop gallery convention. Registry controls inform interaction grammar; production uses platform-native presentation.",
+          "source": "index.html",
+          "directions": [
+            "Quick Switch",
+            "Conversation Rail",
+            "Task Spaces"
+          ],
+          "constraints": [
+            "sample-data-only",
+            "preview-does-not-activate",
+            "explicit-history-resume",
+            "preserve-per-session-draft",
+            "exact-object-link-handoff-preview"
+          ]
+        },
+        "interactions": [
+          "search-transcript",
+          "preview-with-arrows",
+          "activate-exact-session",
+          "cancel-with-escape",
+          "explicit-history-resume",
+          "retain-draft",
+          "toggle-context",
+          "open-report-preview"
+        ],
+        "children": [
+          {
+            "kind": "component",
+            "ref": "conversation-search"
+          }
+        ]
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "conversation-search",
+      "registry": "control.text",
+      "props": {
+        "placeholder": "Search a conversation, or something said…",
+        "leading": "search"
+      }
+    }
+  ]
+}

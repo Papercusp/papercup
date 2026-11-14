@@ -24,7 +24,8 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { ROLE_MODEL_DEFAULTS, roleModelDefault } from '@papercusp/orchestrator/role-models';
-import { applyRoleModel } from '@papercusp/operator-core/lib/harness-invoke-once';
+import { applyRoleModel, resolveSpawnBackendModel } from '@papercusp/operator-core/lib/harness-invoke-once';
+import { resolvePromptFiles } from '@papercusp/orchestrator/role-prompt';
 
 const REPO = resolve(__dirname, '../../../../');
 const PERSONA = resolve(REPO, 'libs/papercusp/packages/harness/blueprints/base/prompts/release-manager.md');
@@ -61,5 +62,39 @@ describe('EI-7 — release-manager has an in-tree instructions playbook', () => 
     // it must teach the actual gate decision + the deploy entrypoint it drives
     expect(md).toMatch(/go\s*\/\s*no-go|go\/no-go|no-go/);
     expect(md).toContain('deploy-cli.ts');
+  });
+
+  it('defers to the configured launch model when the role uses Codex', () => {
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ 'release-manager': 'gpt-6.1-sol:xhigh' }));
+    vi.stubEnv('AGENT_ROLE_BACKENDS', undefined as unknown as string);
+    expect(resolveSpawnBackendModel('release-manager').backend).toBe('codex');
+
+    const md = readFileSync(PERSONA, 'utf8');
+    expect(md).toContain('config:role-launch');
+    expect(md).not.toMatch(/Claude Opus \d|actually got \d|opus.*alias.*resolve/i);
+  });
+
+  it('uses the configured promotion refs and the current release levers', () => {
+    const md = readFileSync(PERSONA, 'utf8');
+    expect(md).toContain('releaseConfig()');
+    expect(md).toContain('`integrationBranch`');
+    expect(md).toContain('`releaseRef`');
+    expect(md).toContain('release:checkpoint-run');
+    expect(md).toContain('release:deploy');
+    expect(md).not.toContain('`ready`');
+    expect(md).not.toContain('PAPERCUSP_ALLOW_DEV_RESTART=1');
+  });
+
+  it('resolves the corrected instructions through the ordinary role prompt path', () => {
+    const files = resolvePromptFiles({
+      harnessDir: resolve(REPO, 'libs/papercusp/packages/harness'),
+      phase: '',
+      dept: '',
+    }, 'release-manager');
+    expect(files).toContain(PERSONA);
+    const prompt = files.map((file) => readFileSync(file, 'utf8')).join('\n');
+    expect(prompt).toContain('gate.greenCheckpoint.ownership');
+    expect(prompt).toContain('config:role-launch');
+    expect(prompt).not.toContain('integration branch (main)');
   });
 });

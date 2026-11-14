@@ -29,6 +29,7 @@
  *     index may simply not contain the symbol (contracts.ts: isTrustworthyEmpty
  *     is a state report, not proof of absence).
  */
+import ts from 'typescript';
 import type { CodeIntelAnswer, SymbolSite } from './contracts';
 import { GRAPH_FAILURE_FALLBACK_GUIDANCE } from './graph-fallback-guidance';
 import {
@@ -265,16 +266,28 @@ export interface SourceVerification {
   readonly unverified: readonly SymbolSite[];
 }
 
-function hasToken(text: string, name: string): boolean {
-  const esc = name.replace(/[$]/g, '\\$');
-  return new RegExp(`(?<![A-Za-z0-9_$])${esc}(?![A-Za-z0-9_$])`).test(text);
+function sourceIdentifierLines(path: string, text: string, name: string): Set<number> | null {
+  // The compiler can corroborate JS/TS syntax only. Other languages still use
+  // their existing rg/LSP route, without treating text as parsed code.
+  if (!/\.[cm]?[jt]sx?$/i.test(path)) return null;
+  const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, false);
+  const lines = new Set<number>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node) && node.text === name) {
+      lines.add(source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return lines;
 }
 
 /**
  * Re-check every graph site against CURRENT source. For a definition lookup the
- * reported (one-indexed) line must name the symbol; for impact the dependent's
- * file must reference it. A site we cannot read, or whose line does not hold
- * up, is unverified — the caller must not act on it without a fresh look.
+ * reported (one-indexed) line must contain its identifier in parsed code; for
+ * impact the dependent's file must contain that identifier. Comments, literal
+ * text and unsupported languages cannot corroborate a site. This is syntax
+ * corroboration, not a binding-resolved or complete consumer census.
  */
 export function verifySitesAgainstSource(
   op: GitnexusFacadeOp,
@@ -284,22 +297,20 @@ export function verifySitesAgainstSource(
 ): SourceVerification {
   const verified: SymbolSite[] = [];
   const unverified: SymbolSite[] = [];
+  const identifiers = new Map<string, Set<number> | null>();
   for (const site of sites) {
-    let text: string | null = null;
-    try {
-      text = readSource(site.path);
-    } catch {
-      text = null;
-    }
-    let ok = false;
-    if (text !== null) {
-      if (op === 'symbol') {
-        const line = site.line1 !== null ? text.split('\n')[site.line1 - 1] : undefined;
-        ok = line !== undefined && hasToken(line, name);
-      } else {
-        ok = hasToken(text, name);
+    if (!identifiers.has(site.path)) {
+      try {
+        const text = readSource(site.path);
+        identifiers.set(site.path, text === null ? null : sourceIdentifierLines(site.path, text, name));
+      } catch {
+        identifiers.set(site.path, null);
       }
     }
+    const lines = identifiers.get(site.path);
+    const ok = lines !== null && lines !== undefined && (op === 'symbol'
+      ? site.line1 !== null && lines.has(site.line1)
+      : lines.size > 0);
     (ok ? verified : unverified).push(site);
   }
   return { verified, unverified };
@@ -428,6 +439,15 @@ export async function runSelectiveAssist(
     });
   }
 
+  if (freshness.state === 'unknown') {
+    return settle(decision, 'graph-uncorroborated', startedAt, {
+      answer,
+      freshness,
+      unverifiedSites: answer.sites,
+      note: `Graph freshness is unknown: ${freshness.why}. Sites remain unverified. ${GRAPH_FAILURE_FALLBACK_GUIDANCE} Continue with ${decision.fallback}.`,
+    });
+  }
+
   const { verified, unverified } = verifySitesAgainstSource(op, name, answer.sites, deps.readSource);
   if (verified.length === 0) {
     return settle(decision, 'graph-uncorroborated', startedAt, {
@@ -445,6 +465,6 @@ export async function runSelectiveAssist(
     freshness,
     verifiedSites: verified,
     unverifiedSites: unverified,
-    note: `${verified.length} graph site(s) for \`${name}\` verified against current source (${freshness.why}).${partial}${truncated} The graph never proves absence; ${decision.fallback} remains the fallback.`,
+    note: `${verified.length} graph site(s) for \`${name}\` verified against current source (${freshness.why}).${partial}${truncated} Identifier syntax corroborated; binding resolution and a complete consumer census remain unknown. The graph never proves absence; ${decision.fallback} remains the fallback.`,
   });
 }

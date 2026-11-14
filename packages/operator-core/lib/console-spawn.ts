@@ -30,11 +30,14 @@
  * Server-only.
  */
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   closeSync,
   chmodSync,
+  constants,
   existsSync,
+  fstatSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -63,7 +66,7 @@ import { requestDesktopConsoleLaunch } from './console-launch-bridge';
 import { agentInheritedOperatorEnv, scrubTerminalContextEnv } from './terminal-spawn';
 import { CLIENT_SERVER_TERMINALS, PROCESS_PER_WINDOW_TERMINALS } from './linux-terminals';
 import { prepareGnomeTerminal } from './gnome-terminal-profile.mjs';
-import { beginSyncEnrolment, completeSyncEnrolment } from './task-manager/enroll-sync';
+import { beginSyncEnrolment, completeSyncEnrolment, finishSyncEnrolment, syncEnrolmentScopePath } from './task-manager/enroll-sync';
 import { killTask } from './task-manager/control';
 import { scopeUnitForTask, sliceForClass } from './task-manager/types';
 import { warmScopeProbe } from './task-manager/managed-spawn';
@@ -1409,6 +1412,8 @@ export interface KickoffProofResult {
   persisted: boolean;
   nativeRef: string | null;
   reason: string | null;
+  /** Public correlation only; the secret token never leaves the private receipt. */
+  recovery?: { path: string; tokenHash: string };
 }
 
 /** Environment keys for the opt-in detached kickoff proof handshake.
@@ -1491,6 +1496,41 @@ function parseKickoffProofReceipt(raw: string, token: string): KickoffProofResul
     };
   } catch {
     return null;
+  }
+}
+
+/** Re-read only the original parent's private rendezvous. A timeout is not a
+ * negative receipt. Hashing its random token lets the durable launch receipt
+ * authenticate a later host write across operator restarts without publishing
+ * the token or inferring delivery from a log or a process being alive. */
+export function reconcileKickoffProof(proof: KickoffProofResult, options: { consume?: boolean } = {}): KickoffProofResult {
+  const request = proof.recovery;
+  if (proof.persisted || proof.reason !== 'kickoff-proof-timeout' || !request ||
+      typeof request.path !== 'string' || !isAbsolute(request.path) ||
+      !/^[a-f0-9]{64}$/.test(request.tokenHash)) return proof;
+  let fd: number | undefined;
+  try {
+    fd = openSync(request.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | constants.O_NONBLOCK);
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 ||
+        stat.uid !== process.getuid?.() || stat.size <= 0 || stat.size > 16_384) return proof;
+    const raw = readFileSync(fd, 'utf8');
+    if (Buffer.byteLength(raw) > 16_384) return proof;
+    const receipt = JSON.parse(raw);
+    if (typeof receipt?.token !== 'string' || !/^[a-f0-9]{48}$/i.test(receipt.token) ||
+        createHash('sha256').update(receipt.token).digest('hex') !== request.tokenHash) return proof;
+    const settled = parseKickoffProofReceipt(raw, receipt.token);
+    // A positive receipt also needs an actual native transcript address.
+    if (!settled || (settled.persisted && !settled.nativeRef?.trim())) return proof;
+    if (options.consume) {
+      const current = lstatSync(request.path);
+      if (current.isFile() && current.dev === stat.dev && current.ino === stat.ino) unlinkSync(request.path);
+    }
+    return settled;
+  } catch {
+    return proof;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
@@ -2842,12 +2882,13 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
     // the first point where the OS child exists, before any asynchronous boot
     // wait or kickoff receipt can keep a terminal close waiting.
     await releaseSpawnGuard();
+    const registeredEnrolment = { ...enrolment, scopeUnit };
     completeSyncEnrolment(
       // EI-19366263067183489: record the unit the spawn ACTUALLY used, not just the enrolled
       // one. This was `taskScope?.unit ?? null`, so every unconfined-but-ledgered spawn wrote
       // a row with no scope to join on even though its process was sitting in a named scope.
       // `scopeUnit` is null only when there is genuinely no scope (no systemd-run).
-      { ...enrolment, scopeUnit },
+      registeredEnrolment,
       {
         class: 'agent-session',
         title: `headless member: ${label}`,
@@ -2868,6 +2909,16 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
       child.pid ?? null,
       { workspaceId: envelope.workspaceId },
     );
+    // Keep the lifetime observer after the boot/kickoff windows, using the SAME
+    // object that owns registrationReady. The shared finalizer waits for INSERT
+    // and preserves a live scope when its systemd-run client exits first.
+    void childExit.then(({ code, signal, error }) => {
+      finishSyncEnrolment(registeredEnrolment, {
+        state: signal ? 'killed' : 'exited',
+        exitCode: code,
+        exitReason: signal ?? error?.message ?? null,
+      }, { scopeCgroupPath: syncEnrolmentScopePath(registeredEnrolment, 'agent-session') });
+    });
     if (logFd != null) {
       closeSync(logFd); // the child holds its own dup of the fd
       logFd = null;
@@ -2969,7 +3020,7 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
     // install proceed instead of holding it for the kickoff-proof wait.
     installLease?.release();
 
-    const kickoffProof = kickoffProofRequest
+    let kickoffProof = kickoffProofRequest
       ? await waitForKickoffProof(kickoffProofRequest, opts.kickoffProofProbes, childExit)
       : undefined;
     if (kickoffProof?.reason === 'kickoff-proof-timeout' && kickoffProofRequest) {
@@ -2978,7 +3029,18 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
       // host's proof/refusal fail with ENOENT and killed that otherwise retained
       // process. Reuse the existing exit observer as the cleanup boundary.
       const retainedRequest = kickoffProofRequest;
-      void childExit.then(() => cleanupKickoffProofRequest(retainedRequest));
+      kickoffProof = { ...kickoffProof, recovery: {
+        path: retainedRequest.path,
+        tokenHash: createHash('sha256').update(retainedRequest.token).digest('hex'),
+      } };
+      void childExit.then(() => {
+        // Keep an authenticated late receipt for restart-safe replay. Empty or
+        // malformed placeholders have no proof to recover and can be removed.
+        let settled = false;
+        try { settled = parseKickoffProofReceipt(readFileSync(retainedRequest.path, 'utf8'), retainedRequest.token) !== null; }
+        catch { /* absent */ }
+        if (!settled) cleanupKickoffProofRequest(retainedRequest);
+      });
       kickoffProofRequest = null;
     } else {
       cleanupKickoffProofRequest(kickoffProofRequest);

@@ -135,6 +135,21 @@ describe('tsconfig.declarations.json — imports in an input graph', () => {
     expect(extensionImportDiagnostics).toEqual([]);
   });
 
+  it('keeps the native population consumer loadable by bare Node and free of TS5097', () => {
+    const input = 'scripts/lib/partial-task-resume.mjs';
+    const moduleUrl = pathToFileURL(join(ROOT, input)).href;
+    const output = execFileSync(process.execPath, ['--input-type=module', '--eval',
+      `const { readPartialNativeCompletion } = await import(${JSON.stringify(moduleUrl)});` +
+      'process.stdout.write(JSON.stringify(readPartialNativeCompletion("/missing-native-out", {})));',
+    ], { cwd: ROOT, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' }, timeout: 30_000 });
+    expect(JSON.parse(output)).toMatchObject({ status: 'refused', reason: 'snapshot-unreadable' });
+    const program = programForInput(input);
+    expect(program.getSourceFile(resolve(ROOT, 'libs/test-config/src/execution-details.ts'))).toBeDefined();
+    expect(program.getSourceFile(resolve(ROOT, 'libs/test-config/src/applied-compiler-inputs.ts'))).toBeDefined();
+    expect(ts.getPreEmitDiagnostics(program).filter(diagnostic => diagnostic.code === TS_EXTENSION_IMPORT))
+      .toEqual([]);
+  }, 120_000);
+
   it('keeps process-group-lifetime in the declaration graph free of TS5097', () => {
     const input = 'packages/operator-core/lib/fleet/process-group-lifetime.ts';
     const program = programForInput(input);

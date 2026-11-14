@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010047082:f88849747ce5fa7e0c2a85abcfb7058f",
+  "inputSha256": "f88849747ce5fa7e0c2a85abcfb7058f169f97a143c35b5be01d414079942925",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-10T08:39:08.612Z",
+  "actor": "su-4378ece1-6b2d-48a3-99aa-4ae2bf3ea475",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010047082",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "6e5f32e64f51e070508f96d651b41728c830c066d72ed3acb8bcf3bb2303ed55",
+      "observedParkFingerprint": "6e5f32e64f51e070508f96d651b41728c830c066d72ed3acb8bcf3bb2303ed55",
+      "reasonCode": "operator-directed",
+      "evidence": "Apply exact own fresh post-release wouldClear:true preview under one-work-graph-structured-holds-2026-10-26#D-042+#D-043. Full decisions and both current full reviews thread-post:1223212/1223210 read. Source46/hasha8d7756b3655ba55a2575c9aa86ad3096ceb6f4baf44bbd1e565e4fd83722c77, spec05f20e0bf4af157da89d30162cd570cceb4517604059dadf0416265699924e51, rubric4/barbfab77c365d761601b9df832d02005198e49f91784c5a621acd38a5277452a17; all substantive pre-start stages PASS. Original owner source refs codex:01a1c1dc-c140-77a2-ae00-be8c3f70a817:35 and codex:01a1c292-e1b7-78b3-9d86-86fd4a9b6ded:15,:21 preserved. Checkpoint7db4d88dcde6; ordinary own release receipt released:true/previousAssignee SAME4378/assignee:null; exact migration park and provenance read back unchanged, no lease/peer. Preview measured correct id/park, takenBy:null,preservedLease:false,wouldClear:true. Only P001/WI7082 authorized. SAME4378 logical application/source/acceptance custody remains. No forced fallback, unrelated unpark, implementation/acceptance/runtime/LIVE_GATE_OPS/monitor authority. Ordinary reclaim/start/actual READY/changeKinds/locks still required.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010047082-f88849747ce5fa7e0c2a85abcfb7058f-reconcile.json"
+}

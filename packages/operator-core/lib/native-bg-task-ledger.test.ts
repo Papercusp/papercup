@@ -353,32 +353,68 @@ describe.each([
     } finally { rmSync(proc, { recursive: true, force: true }); }
   });
 
-  it.each(['kernel', 'zombie', 'userspace', 'missing-stat', 'malformed-stat', 'wrong-pid', 'permission-denied', 'zombie-permission-denied'])
-    ('accepts address-space ESRCH only for verified kernel threads or zombies (%s)', async (variant) => {
+  it.each(['kernel', 'zombie', 'exiting', 'exiting-permission-denied', 'exiting-wrong-pid', 'userspace', 'missing-stat', 'malformed-stat', 'wrong-pid', 'permission-denied', 'zombie-permission-denied']
+    .flatMap(variant => ['maps', 'environ'].map(name => [variant, name])))
+    ('accepts address-space ESRCH only for verified kernel, zombie or exiting tasks (%s, %s)', async (variant, name) => {
     const proc = fakeProc({ '10': ['/tmp/work'] });
     try {
       const read = (path: string): string => {
-        if (path === join(proc, '10', 'environ')) {
+        if (path === join(proc, '10', name)) {
           throw Object.assign(new Error('no environment'), { code: variant.endsWith('permission-denied') ? 'EACCES' : 'ESRCH' });
         }
         if (path === join(proc, '10', 'stat')) {
           if (variant === 'missing-stat') throw Object.assign(new Error('gone'), { code: 'ENOENT' });
           if (variant === 'malformed-stat') return 'unreadable identity';
-          // Linux stat field 9 is flags. PF_KTHREAD is 0x00200000.
-          const state = variant.startsWith('zombie') ? 'Z' : 'I';
-          const flags = variant === 'userspace' || state === 'Z' ? '0' : '2097152';
-          return `${variant === 'wrong-pid' ? '99' : '10'} (worker with ) paren) ${state} 1 2 3 4 5 ${flags} 0 0\n`;
+          // Observed live exit transition: R with PF_EXITING, before Z.
+          const state = variant.startsWith('zombie') ? 'Z' : variant.startsWith('exiting') ? 'R' : 'I';
+          const flags = variant.startsWith('exiting') ? '4194316' : variant === 'userspace' || state === 'Z' ? '0' : '2097152';
+          return `${variant.endsWith('wrong-pid') ? '99' : '10'} (worker with ) paren) ${state} 1 2 3 4 5 ${flags} 0 0\n`;
         }
         return readFileSync(path, 'utf8');
       };
       const scan = await scanOpenWriters(['/tmp/work'], {
-        procRoot: proc, failClosed: true, environmentByPath: { '/tmp/work': 'RUN=exact' },
+        procRoot: proc, failClosed: true, includeMappedFiles: name === 'maps',
+        ...(name === 'environ' ? { environmentByPath: { '/tmp/work': 'RUN=exact' } } : {}),
         procIo: { readdir: procIo?.readdir ?? readdir, readlink: procIo?.readlink ?? readlink,
           readFile: direct ? read : async (path) => read(path) },
       });
-      expect(scan.complete).toBe(variant === 'kernel' || variant === 'zombie');
+      expect(scan.complete).toBe(['kernel', 'zombie', 'exiting'].includes(variant));
       expect(scan.byPath.get('/tmp/work')).toEqual(['10']);
     } finally { rmSync(proc, { recursive: true, force: true }); }
+  });
+
+  it.each(['maps', 'environ'])('accepts %s ESRCH only after confirming a vanished process', async (name) => {
+    for (const variant of ['gone', 'present', 'directory-EACCES', 'directory-EIO', 'directory-ESRCH', 'stat-EACCES', 'stat-EIO']) {
+      const proc = fakeProc({ '10': ['/tmp/work'] });
+      const pidDir = join(proc, '10');
+      const read = (path: string): string => {
+        if (path === join(pidDir, name)) {
+          if (variant === 'gone') rmSync(pidDir, { recursive: true });
+          throw Object.assign(new Error('address space disappeared'), { code: 'ESRCH' });
+        }
+        if (path === join(pidDir, 'stat') && variant.startsWith('stat-')) {
+          throw Object.assign(new Error('identity unreadable'), { code: variant.slice(5) });
+        }
+        return readFileSync(path, 'utf8');
+      };
+      const directory = (path: string): string[] | Promise<string[]> => {
+        if (path === pidDir && variant.startsWith('directory-')) {
+          throw Object.assign(new Error('directory unreadable'), { code: variant.slice(10) });
+        }
+        return (procIo?.readdir ?? readdir)(path);
+      };
+      try {
+        const scan = await scanOpenWriters(['/tmp/work'], {
+          procRoot: proc, failClosed: true, includeProcessLinks: true, includeMappedFiles: name === 'maps',
+          ...(name === 'environ' ? { environmentByPath: { '/tmp/work': 'RUN=exact' } } : {}),
+          procIo: { readdir: directory, readlink: procIo?.readlink ?? readlink,
+            readFile: direct ? read : async (path) => read(path) },
+        });
+        expect(scan.complete, variant).toBe(variant === 'gone');
+        expect(scan.diagnostics?.readFailures, variant).toBe(variant === 'gone' ? 0 : 1);
+        expect(scan.byPath.get('/tmp/work'), variant).toEqual(variant === 'gone' ? undefined : ['10']);
+      } finally { rmSync(proc, { recursive: true, force: true }); }
+    }
   });
 
   it.runIf(process.platform === 'linux')('detects path-only descriptors that Linux write leases do not exclude', async () => {

@@ -21,6 +21,7 @@
  * into green-checkpoint: see green-main-ratchet-convergence-2026-10-17#D-021 (follow-up item).
  */
 import ts from 'typescript';
+import { proofContextImpact, type ProofContextComparison } from '@papercusp/test-config/configuration-snapshot';
 
 export type EmitIdentity = 'identical' | 'changed' | 'uncomputable';
 
@@ -81,6 +82,8 @@ export interface ProofLintLeg {
 export type TestVerdict = 'pass' | 'fail';
 
 export interface ComposedProofInput {
+  /** Both measured contexts are required; legacy/unknown input forces full fallback. */
+  proofContext?: ProofContextComparison | null;
   /** Round-1 results on the candidate, keyed by repo-relative test file. */
   round1Tests: Readonly<Record<string, TestVerdict>>;
   lintLegs: readonly ProofLintLeg[];
@@ -104,8 +107,10 @@ export type ComposedProofPlan =
     };
 
 export function planComposedProof(input: ComposedProofInput): ComposedProofPlan {
+  const impact = proofContextImpact(input.proofContext);
+  if (impact.status !== 'known') return { mode: 'full-gate', reason: impact.reason, uncomputableRadius: [] };
   const emitOf = input.emitOf ?? ((f: ChangedFile) => emitIdentity(f.path, f.before, f.after));
-  const rerun = new Set<string>();
+  const rerun = new Set<string>(impact.tests);
   const typeOnly = new Set<string>();
   const runtime = new Set<string>();
   const uncomputable = new Set<string>();
@@ -139,9 +144,10 @@ export function planComposedProof(input: ComposedProofInput): ComposedProofPlan 
   const rerunLegs: string[] = [];
   const carriedLegs: string[] = [];
   for (const leg of input.lintLegs) {
-    const inputsChanged = [...changedPaths].some((p) => leg.covers(p));
+    const inputsChanged = impact.legs.includes(leg.id) || [...changedPaths].some((p) => leg.covers(p));
     (leg.passed && !inputsChanged ? carriedLegs : rerunLegs).push(leg.id);
   }
+  for (const leg of impact.legs) if (!rerunLegs.includes(leg)) rerunLegs.push(leg);
 
   return {
     mode: 'composed',

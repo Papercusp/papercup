@@ -6,7 +6,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
 import {
-  projectMissionContinuity, reduceMissionContinuity, type MissionBinding, type MissionConsequence,
+  MISSION_POLICY, projectMissionContinuity, reduceMissionContinuity, type MissionBinding, type MissionConsequence,
   type MissionEvent, type MissionParent, type MissionState, type MissionTransition,
 } from './mission-continuity';
 
@@ -57,6 +57,15 @@ export interface SessionMissionEnvelope {
 }
 export interface MissionSessionIdentity { ownerId: string; workspaceId: string }
 export type ReadMissionParent = (tx: Sql, binding: MissionBinding) => Promise<MissionParent | null>;
+
+export class MissionInterruptionCapacityError extends Error {
+  readonly code = 'mission-interruption-capacity-exhausted';
+
+  constructor() {
+    super(`Mission interruption capacity (${MISSION_POLICY.maxFrames}) is exhausted; keep the obligation pending.`);
+    this.name = 'MissionInterruptionCapacityError';
+  }
+}
 
 export function parseSessionMission(value: unknown): SessionMissionEnvelope | null {
   if (value == null) return null;
@@ -131,7 +140,18 @@ export async function applyMissionEventInTransaction(
   const binding = event.kind === 'assignment-accepted' ? event.binding : before?.state.binding;
   const parent = binding ? await readParent(tx, binding) : null;
   const transition = reduceMissionContinuity(before?.state ?? null, event, parent, nowMs);
+  // Unknown projections are safe for reads, but accepting an unrecordable
+  // displacement must abort the same transaction as the business focus change.
+  if (event.kind === 'activity-accepted' && transition.state.unknownReason === 'interruption-depth-exhausted') {
+    throw new MissionInterruptionCapacityError();
+  }
   const outbox = [...(before?.outbox ?? [])];
+  // Each accepted open frame may produce a return. Reserve its durable slot
+  // before committing displacement, rather than failing the child's completion.
+  if (event.kind === 'activity-accepted' && transition.classification === 'detour') {
+    const unresolved = outbox.filter(entry => entry.status === 'pending' || entry.status === 'enqueued').length;
+    if (unresolved + transition.state.frames.length > 64) throw new Error('mission-outbox-capacity-exhausted');
+  }
   for (const consequence of transition.consequences) {
     if (!outbox.some(entry => entry.consequence.id === consequence.id)) outbox.push({
       consequence, status: 'pending', workflowId: null, admissionError: null, resolution: null,

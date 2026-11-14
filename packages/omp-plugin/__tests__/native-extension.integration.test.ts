@@ -2,8 +2,9 @@
  * server. Inference is deterministic and local; no provider credential or
  * workspace service participates. This proves a carrier, not authorization. */
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,11 +16,16 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { expect, it } from 'vitest';
 import { nativeBuilds } from '../build-native.mjs';
+import { ledgerDir, openDeliveryLedger, recordOmpMcpEmission } from '../../../apps/operator/scripts/hooks/inject/delivery-ledger.mjs';
 
 type Frame = Record<string, unknown>;
 
 it('carries the actual installed OMP session and each native call ID over MCP', async () => {
   const root = await mkdtemp(join(tmpdir(), 'omp-native-carrier-'));
+  const owner = 'su-installed-omp-memory', receiptEnv = { PAPERCUSP_HOME: root, PAPERCUSP_SID: owner };
+  const memoryId = randomUUID();
+  let nativeSessionId: string | undefined;
+  const emitted: string[] = [];
   const calls: Frame[] = [];
   const frames: Frame[] = [];
   const observedAtCall: Frame[][] = [];
@@ -38,7 +44,13 @@ it('carries the actual installed OMP session and each native call ID over MCP', 
       observedAtCall.push([...frames]);
       if (message.params._meta?.['papercusp/servingGeneration'] !== servingGeneration)
         return { isError: true, content: [{ type: 'text', text: 'stale_tool_contract' }] };
-      return { content: [{ type: 'text', text: String(message.params.arguments?.value) }] };
+      const text = String(message.params.arguments?.value);
+      return { content: [{ type: 'text', text }], _meta: { 'papercusp/memoryEmission': {
+        owner, token: `native-${message.params._meta?.callId}`, fragments: [{
+          kind: 'memory', id: memoryId, epoch: 3, port: 'orient', rendered: text,
+          bodySha256: createHash('sha256').update(text).digest('hex'), bodyBytes: Buffer.byteLength(text),
+        }],
+      } } };
     });
     const transport = new StreamableHTTPServerTransport({ enableJsonResponse: true });
     response.on('close', () => { void server.close(); servers.delete(server); });
@@ -61,7 +73,8 @@ it('carries the actual installed OMP session and each native call ID over MCP', 
     if (!recipe) throw new Error('owned extension build recipe missing');
     await build(recipe);
     await writeFile(join(agentDir, 'mcp.json'), JSON.stringify({ papercuspNativeMcp: {
-      version: 1, mode: 'http', servers: { 'papercusp-su': { url: `http://127.0.0.1:${address.port}/mcp` } },
+      version: 1, mode: 'http', servers: { 'papercusp-su': { url: `http://127.0.0.1:${address.port}/mcp`,
+        headers: { 'x-papercusp-client': owner } } },
     } }));
     const provider = join(root, 'local-provider.ts');
     await writeFile(provider, `export default function(pi) {
@@ -71,17 +84,18 @@ it('carries the actual installed OMP session and each native call ID over MCP', 
         models: [{ id: 'proof', name: 'Local proof', reasoning: false, input: ['text'],
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1024 }],
         streamSimple(model) {
-          if (++turn > 3) throw new Error('Unexpected inference turn');
-          const content = turn <= 2
-            ? [{ type: 'toolCall', id: 'native-call-' + turn, name: 'mcp__papercusp_su_echo', arguments: { value: 'proof-' + turn } }]
+          if (++turn > 5) throw new Error('Unexpected inference turn');
+          const callIndex = turn <= 2 ? turn : turn === 4 ? 3 : null;
+          const content = callIndex
+            ? [{ type: 'toolCall', id: 'native-call-' + callIndex, name: 'mcp__papercusp_su_echo', arguments: { value: 'proof-' + callIndex } }]
             : [{ type: 'text', text: 'Complete' }];
           const message = { role: 'assistant', content, api: model.api, provider: model.provider, model: model.id,
             usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-            stopReason: turn <= 2 ? 'toolUse' : 'stop', timestamp: Date.now() };
+            stopReason: callIndex ? 'toolUse' : 'stop', timestamp: Date.now() };
           return { async *[Symbol.asyncIterator]() {
             yield { type: 'start', partial: message };
-            if (turn <= 2) yield { type: 'toolcall_end', contentIndex: 0, toolCall: content[0], partial: message };
+            if (callIndex) yield { type: 'toolcall_end', contentIndex: 0, toolCall: content[0], partial: message };
             yield { type: 'done', reason: message.stopReason, message };
           }, result: async () => message };
         },
@@ -92,6 +106,7 @@ it('carries the actual installed OMP session and each native call ID over MCP', 
       '--model', 'native-carrier-fixture/proof'], {
       cwd: root, stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
       env: { PATH: process.env.PATH, LANG: process.env.LANG ?? 'C.UTF-8',
+        ...receiptEnv,
         PI_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_SESSION_DIR: join(root, 'sessions'),
         // A stale parent identity must never replace the live callback context.
         PAPERCUSP_NATIVE_SESSION_ID: 'inherited-parent', CODEX_SESSION_ID: 'unrelated-codex',
@@ -111,16 +126,23 @@ it('carries the actual installed OMP session and each native call ID over MCP', 
         hook.write(JSON.stringify({ id, ok: true }) + '\n');
       }
     });
-    let stdout = '';
+    let stdout = Buffer.alloc(0);
     let launchError: Error | undefined;
     child.on('error', error => { launchError = error; });
-    child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (part: string) => {
-      stdout += part;
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (part: Buffer) => {
+      stdout = Buffer.concat([stdout, part]);
       let newline: number;
-      while ((newline = stdout.indexOf('\n')) >= 0) {
-        const line = stdout.slice(0, newline).trim(); stdout = stdout.slice(newline + 1);
-        if (line) frames.push(JSON.parse(line));
+      while ((newline = stdout.indexOf(10)) >= 0) {
+        const bytes = stdout.subarray(0, newline + 1); stdout = stdout.subarray(newline + 1);
+        const line = bytes.toString('utf8');
+        if (!line.trim()) continue;
+        expect(Buffer.from(line)).toEqual(bytes);
+        const frame = JSON.parse(line); frames.push(frame);
+        if (nativeSessionId && frame.type === 'tool_execution_end') {
+          expect(recordOmpMcpEmission(line, owner, nativeSessionId, receiptEnv)).toBe(true);
+          emitted.push(line);
+        }
       }
     });
     child.stderr.on('data', (part: string) => { stderr = (stderr + part).slice(-4000); });
@@ -138,7 +160,7 @@ it('carries the actual installed OMP session and each native call ID over MCP', 
     child.stdin.write(`${JSON.stringify({ id: 'state', type: 'get_state' })}\n`);
     const state = await waitFor(() => frames.find(frame => frame.type === 'response' && frame.id === 'state'));
     expect(state.success).toBe(true);
-    const nativeSessionId = (state.data as Frame).sessionId;
+    nativeSessionId = (state.data as Frame).sessionId as string;
     expect(nativeSessionId).toEqual(expect.any(String));
     expect(nativeSessionId).not.toBe('inherited-parent');
     // OMP mounts extension MCP tools as xd devices. dumpTools is the separate
@@ -183,6 +205,27 @@ it('carries the actual installed OMP session and each native call ID over MCP', 
       expect(observed.some(frame => frame.type === 'agent_start')).toBe(true);
       expect(observed.some(frame => frame.type === 'agent_end')).toBe(false);
     }
+    // A later owner turn avoids assuming that the native process waits for
+    // its stdout reader before executing another call on the same turn.
+    const ledger = openDeliveryLedger(owner, receiptEnv, 'mcp')!;
+    const confirmations = ledger.confirmedMemoryDeliveries();
+    expect(confirmations).toHaveLength(2);
+    expect(emitted).toHaveLength(2);
+    for (const payload of emitted) {
+      const frame = JSON.parse(payload), token = `native-${frame.toolCallId}`;
+      const receipt = JSON.parse(await readFile(join(ledgerDir(receiptEnv), `${owner}.mcp.emissions`,
+        `${createHash('sha256').update(token).digest('hex')}.json`), 'utf8'));
+      expect(receipt).toMatchObject({ client: 'omp', nativeSessionId,
+        payloadSha256: createHash('sha256').update(payload).digest('hex'), payloadBytes: Buffer.byteLength(payload),
+        memoryFragments: [{ kind: 'memory', id: memoryId, epoch: 3, port: 'orient' }] });
+      expect(receipt.memoryFragments[0].bodySha256).toBe(createHash('sha256')
+        .update(frame.result.content[0].text).digest('hex'));
+    }
+    child.stdin.write(`${JSON.stringify({ id: 'proof-next', type: 'prompt', message: 'Run the later local call.' })}\n`);
+    await waitFor(() => frames.filter(frame => frame.type === 'agent_end')[1]);
+    expect(calls).toHaveLength(3);
+    expect(calls[2]!._meta).toMatchObject({ threadId: nativeSessionId, callId: 'native-call-3',
+      'papercusp/memoryReceipt': { version: 1, confirmations } });
   } finally {
     if (child && child.exitCode === null && child.signalCode === null && child.pid) {
       const exited = once(child, 'exit');

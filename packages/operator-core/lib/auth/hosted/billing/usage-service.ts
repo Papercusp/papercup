@@ -7,6 +7,7 @@ import {
 } from './usage-statement';
 import type { PostgresHostedUsageStore } from './usage-store';
 import { shadowMonthBounds } from '../../../cupboard/shadow-metering';
+import { readHostedPoolCosts, type HostedPoolUsageSource } from './pool-usage';
 
 export interface HostedUsageRead {
   readonly scope: HostedUsageScope;
@@ -48,6 +49,7 @@ export function createHostedUsageSource(options: {
   readonly store: Pick<PostgresHostedUsageStore, 'append' | 'readRecords'>;
   readonly collectors?: readonly HostedUsageCollector[];
   readonly maximumAgeMs: number;
+  readonly poolUsage?: HostedPoolUsageSource;
 }): HostedBillingUsageSource {
   const collectors = (options.collectors ?? []).map(collector => Object.freeze({
     id: collector.id, provider: collector.provider, categories: Object.freeze([...collector.categories]),
@@ -69,6 +71,7 @@ export function createHostedUsageSource(options: {
     input = Object.freeze({ scope: Object.freeze({ ...input.scope }), month: input.month, asOfMs: input.asOfMs });
     const emptySource = { complete: false, observedAtMs: input.asOfMs, maximumAgeMs: options.maximumAgeMs, evidenceRef: 'hosted-usage:unmeasured-census' };
     buildHostedUsageStatement({ ...input, source: emptySource, records: [] });
+    const infrastructure = await readHostedPoolCosts(input, options.poolUsage);
     const { startMs, endMs } = shadowMonthBounds(input.month);
     const snapshots = await Promise.all(collectors.map(async collector => {
       const received = await collector.read(input);
@@ -128,8 +131,8 @@ export function createHostedUsageSource(options: {
     const observedAtMs = snapshots.reduce((oldest, { snapshot }) => Math.min(oldest, snapshot.observedAtMs), input.asOfMs);
     const evidenceRef = manifest.length === 0 ? emptySource.evidenceRef
       : 'hosted-usage:census:' + createHash('sha256').update(JSON.stringify({ scope: input.scope, month: input.month, manifest })).digest('hex');
-    return buildHostedUsageStatement({ ...input, records, source: {
+    return { ...buildHostedUsageStatement({ ...input, records, source: {
       complete, observedAtMs, maximumAgeMs: options.maximumAgeMs, evidenceRef,
-    } });
+    } }), infrastructure };
   };
 }

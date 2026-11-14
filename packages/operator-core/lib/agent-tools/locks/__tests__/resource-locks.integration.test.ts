@@ -11,7 +11,14 @@
  * resource names so fixtures do not contend with live host-global resources.
  */
 
-import { afterEach, describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+
+// Exercise the real lock database and expiry callback while keeping its event
+// transport out of the protected live organization database.
+const expiryEvents = vi.hoisted(() => ({ released: vi.fn() }));
+vi.mock('../../../harness/git-sync/git-sync-events', () => ({
+  emitResourceReleasedEvent: expiryEvents.released,
+}));
 import {
   ensureBootstrap,
   getTxPool,
@@ -97,6 +104,10 @@ const status = (lockId: string) => readResourceLockStatus(getTxPool(), lockId);
 
 describe('resource-locks (named, shared/exclusive, drain)', async () => {
   const live = await dbLive();
+
+  beforeEach(() => {
+    expiryEvents.released.mockClear();
+  });
 
   afterEach(async () => {
     if (!live || activeTestDomains.size === 0) {
@@ -454,6 +465,92 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     expect(h.expires_ts).not.toBeNull();
   });
 
+  it.skipIf(!live)('reports exact-row renewal refusal evidence without changing or resurrecting the lease', async () => {
+    const ws = uniqueWs();
+    const acquired = await acq(ws, 'diagnostic-owner', TEST_RESOURCE, 'exclusive', 60);
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) throw new Error('diagnostic fixture failed to acquire its lease');
+    const renew = (domain: string, owner: string) => inWorkspaceTxn(domain, owner,
+      tx => tryHeartbeatResource(tx, domain, owner, acquired.lock_id, 120), { leaseRenewal: true });
+
+    const foreign = await renew(ws, 'another-owner');
+    expect(foreign).toMatchObject({ extended: false, expires_ts: null, refusal: {
+      reason: 'owner-mismatch', domain_matches: true, owner_matches: false,
+      lease_expires_ts: acquired.expires_ts,
+    } });
+    const wrongDomain = await renew(uniqueWs(), 'diagnostic-owner');
+    expect(wrongDomain).toMatchObject({ extended: false, expires_ts: null, refusal: {
+      reason: 'domain-mismatch', domain_matches: false, owner_matches: true,
+      lease_expires_ts: acquired.expires_ts,
+    } });
+    expect((await status(acquired.lock_id)).expires_ts).toEqual(acquired.expires_ts);
+
+    const expiredAt = new Date('2001-01-01T00:00:00Z');
+    await inWorkspaceTxn(ws, 'diagnostic-owner', async tx => {
+      // Keep the fixture's expired row locked until its observation, so a
+      // concurrent janitor cannot turn this case into the separate missing case.
+      await tx`UPDATE agent_resource_locks SET expires_ts = ${expiredAt}
+        WHERE coordination_domain = ${ws} AND lock_id = ${acquired.lock_id}::uuid`;
+      const expired = await tryHeartbeatResource(tx, ws, 'diagnostic-owner', acquired.lock_id, 120);
+      expect(expired).toMatchObject({ extended: false, expires_ts: null, refusal: {
+        reason: 'expired', domain_matches: true, owner_matches: true, lease_expires_ts: expiredAt,
+      } });
+      expect(expired.refusal!.observed_ts.getTime()).toBeGreaterThan(expiredAt.getTime());
+      const rows = await tx`SELECT expires_ts FROM agent_resource_locks WHERE lock_id = ${acquired.lock_id}::uuid`;
+      expect(rows[0].expires_ts).toEqual(expiredAt);
+      await tx`DELETE FROM agent_resource_locks WHERE lock_id = ${acquired.lock_id}::uuid`;
+      expect(await tryHeartbeatResource(tx, ws, 'diagnostic-owner', acquired.lock_id, 120))
+        .toMatchObject({ extended: false, expires_ts: null, refusal: {
+          reason: 'missing', acquired_ts: null, lease_expires_ts: null, domain_matches: null, owner_matches: null,
+        } });
+    }, { leaseRenewal: true });
+  });
+
+  it.skipIf(!live)('renews a live lease during unrelated global work without renewing foreign or expired leases', async () => {
+    const ws = uniqueWs();
+    const acquired = await acq(ws, 'lease-owner', TEST_RESOURCE, 'exclusive', 60);
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) return;
+
+    let entered!: () => void;
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => { entered = resolve; });
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    // This callback owns the workspace advisory gate, but never touches the
+    // resource row. A TTL-only UPDATE must not wait behind unrelated work.
+    const maintenance = inWorkspaceTxn(ws, 'unrelated-maintenance', async () => {
+      entered();
+      await released;
+    });
+    // Propagate an acquisition failure instead of waiting forever for ready.
+    const maintenanceFailed = maintenance.then(() => {
+      throw new Error('maintenance settled before its release');
+    });
+    try {
+      await Promise.race([ready, maintenanceFailed]);
+      const renewed = await inWorkspaceTxn(ws, 'lease-owner', (tx) =>
+        tryHeartbeatResource(tx, ws, 'lease-owner', acquired.lock_id, 120),
+      { leaseRenewal: true });
+      expect(renewed.extended).toBe(true);
+      expect(renewed.expires_ts!.getTime()).toBeGreaterThan(acquired.expires_ts.getTime());
+      const foreign = await inWorkspaceTxn(ws, 'other-owner', (tx) =>
+        tryHeartbeatResource(tx, ws, 'other-owner', acquired.lock_id, 120),
+      { leaseRenewal: true });
+      expect(foreign.extended).toBe(false);
+    } finally {
+      release();
+      await maintenance;
+    }
+
+    await getTxPool()`UPDATE agent_resource_locks
+      SET expires_ts = clock_timestamp() - interval '1 second'
+      WHERE coordination_domain = ${ws} AND lock_id = ${acquired.lock_id}::uuid`;
+    const expired = await inWorkspaceTxn(ws, 'lease-owner', (tx) =>
+      tryHeartbeatResource(tx, ws, 'lease-owner', acquired.lock_id, 120),
+    { leaseRenewal: true });
+    expect(expired).toMatchObject({ extended: false, expires_ts: null });
+  });
+
   it.skipIf(!live)(
     'WI-10004326: a lease acquired in another install domain is located by lock_id + owner and extended THERE',
     async () => {
@@ -553,6 +650,9 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     expect(r.exclusiveResources).toContain(TEST_RESOURCE);
     expect(r.waiters[TEST_RESOURCE]).toContain('C');
     expect((await readResourceQueue(getTxPool(), { coordinationDomain: ws })).holders).toEqual([]);
+    // These fixtures are tree-scoped, so the host must not label their event
+    // with a workspace (only git-sync and git-sync:* use that routing).
+    expect(expiryEvents.released).toHaveBeenCalledWith(TEST_RESOURCE, undefined);
   });
 
   it.skipIf(!live)('does not report back up when an expired exclusive is immediately re-granted', async () => {

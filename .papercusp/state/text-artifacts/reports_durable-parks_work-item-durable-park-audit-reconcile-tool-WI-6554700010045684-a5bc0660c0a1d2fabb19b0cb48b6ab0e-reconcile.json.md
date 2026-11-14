@@ -1,0 +1,31 @@
+---
+rel_path: "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010045684-a5bc0660c0a1d2fabb19b0cb48b6ab0e-reconcile.json"
+updated_at: 1794190207213
+_body: "content"
+---
+
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010045684:a5bc0660c0a1d2fabb19b0cb48b6ab0e",
+  "inputSha256": "a5bc0660c0a1d2fabb19b0cb48b6ab0e31e425863cc4dd7a60b51eddc47c0bcf",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-09T02:10:07.211Z",
+  "actor": "su-598a1fb5-569f-4322-bda8-20888ead8e48",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010045684",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "ef7a9a25b67c37174def319a84bc4972a6bc77f7d3c9864a3eb53796d627a43f",
+      "observedParkFingerprint": "ef7a9a25b67c37174def319a84bc4972a6bc77f7d3c9864a3eb53796d627a43f",
+      "reasonCode": "operator-directed",
+      "evidence": "Avi current interactive request: why is implementation blocked, can you unblock it? Scoped ruling one-work-graph-structured-holds-2026-10-26#D-031 follows D028/D029/D030 and authorizes ONLY main-greening-progress-safe-lifetime-2026-11-05 P001/WI-6554700010045684 early administrative adoption under parent WI2457. Actual3170 preview returned takenBy:null, preservedLease:false and wouldClear:true at fingerprint ef7a9a25b67c37174def319a84bc4972a6bc77f7d3c9864a3eb53796d627a43f. No global migration, force/raw metadata write, claim takeover or admission/acceptance-floor waiver.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010045684-a5bc0660c0a1d2fabb19b0cb48b6ab0e-reconcile.json"
+}

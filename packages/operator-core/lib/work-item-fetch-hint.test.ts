@@ -11,6 +11,17 @@ import { describe, expect, it } from 'vitest';
 import { workItemFetchHint } from './work-item-fetch-hint';
 
 describe('workItemFetchHint', () => {
+  it.each([
+    ['continuation', 'resume'], ['checks', 'checksOnly'], ['checkpoint', 'checkpointOnly'],
+  ] as const)('selects the %s reader without mixing incompatible read modes', (mode, key) => {
+    expect(workItemFetchHint('WI-3496', 'papercusp', mode)).toBe(
+      `work_items:get { id: 'WI-3496', harness: 'papercusp', ${key}: true }`,
+    );
+    expect(workItemFetchHint('EI-1', 'foreign-hive', mode)).toBe(
+      `work_items:get { id: 'EI-1', ${key}: true }`,
+    );
+  });
+
   it('qualifies with the canonical harness when known', () => {
     expect(workItemFetchHint('WI-3496', 'papercusp')).toBe(
       "work_items:get { id: 'WI-3496', harness: 'papercusp' }",

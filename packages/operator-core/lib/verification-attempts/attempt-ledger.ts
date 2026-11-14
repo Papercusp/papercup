@@ -20,6 +20,7 @@ import { createHash } from 'node:crypto';
 import { open } from 'node:fs/promises';
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
+import { WORK_ITEM_VERIFICATION_PURPOSE } from '../task-manager/types';
 import { redactSensitiveText } from '../sensitive-text';
 import { readSuperuserToken } from '../superuser-token';
 import { failureFingerprint, type StructuredFailure } from './failure-fingerprint';
@@ -51,6 +52,7 @@ export interface VerificationAttemptStamp {
 export interface ClosedTaskForAttempt {
   taskId: string;
   workItemId: string | null;
+  detail?: Record<string, unknown> | null;
   state: string;
   exitCode: number | null;
   exitReason: string | null;
@@ -137,6 +139,7 @@ export async function recordAttemptOnClose(
   deps: RecordAttemptDeps = {},
 ): Promise<VerificationAttemptStamp | null> {
   try {
+    if (closed.detail?.verificationPurpose !== WORK_ITEM_VERIFICATION_PURPOSE) return null;
     if (!closed.workItemId) return null;
     const durationMs = ms(closed.endedAt) - ms(closed.startedAt);
     if (!Number.isFinite(durationMs) || durationMs < (deps.minDurationMs ?? SLOW_ATTEMPT_MIN_MS)) return null;
@@ -204,6 +207,7 @@ export async function recordStructuredAttemptResult(
            ),
            updated_at = now()
      WHERE task_id = ${taskId}
+       AND detail->>'verificationPurpose' = ${WORK_ITEM_VERIFICATION_PURPOSE}
     RETURNING task_id
   `;
   return rows.length > 0;
@@ -289,8 +293,8 @@ function collapseLogicalRun(rows: readonly AttemptRow[]): WorkItemAttempt {
 }
 
 /**
- * A work item's slow attempts, oldest first: every stamped row, plus any still-running
- * row already past the slow threshold (so a hung attempt counts toward a time budget).
+ * A work item's slow verification attempts, oldest first: every historically stamped
+ * row, plus marked verification rows still running past the slow threshold.
  */
 export async function listWorkItemAttempts(
   input: { workspaceId: string; workItemId: string; limit?: number },
@@ -308,7 +312,11 @@ export async function listWorkItemAttempts(
        AND work_item_id = ${input.workItemId}
        AND (
          detail ? 'verificationAttempt'
-         OR (ended_at IS NULL AND started_at < now() - make_interval(secs => ${SLOW_ATTEMPT_MIN_MS / 1000}))
+         OR (
+           detail->>'verificationPurpose' = ${WORK_ITEM_VERIFICATION_PURPOSE}
+           AND ended_at IS NULL
+           AND started_at < now() - make_interval(secs => ${SLOW_ATTEMPT_MIN_MS / 1000})
+         )
        )
      ORDER BY started_at ASC
      LIMIT ${limit}

@@ -1625,7 +1625,7 @@ function PreservedRunsView() {
   const [workspaceId] = useQueryState('evalWorkspace', parseAsString);
   const scope = workspaceId ? { workspaceId } : {};
   // ?evalRun= is the selected run id (shared with the sync views).
-  const [selId, setSelId] = useQueryState('evalRun', parseAsString);
+  const [requestedRunId, setSelId] = useQueryState('evalRun', parseAsString);
 
   // Live run list (SSE-primary on desktop). Newest-first from the resolver.
   const runsSync = useSyncQuery<BenchRunListEntry>({ queryName: 'evals.benchRuns', args: scope });
@@ -1633,11 +1633,19 @@ function PreservedRunsView() {
   const loading = runsSync.loading && runs.length === 0;
   const listErr = runsSync.error ? String(runsSync.error) : null;
 
-  // Default-select the newest run once the list arrives.
+  const [armFilter, setArmFilter] = useQueryState('runArmFilter', parseAsString);
+  const [taskSetFilter, setTaskSetFilter] = useQueryState('runTaskSetFilter', parseAsString);
+  const armOptions = useMemo(() => [...new Set(runs.map((r) => r.arm))].sort(), [runs]);
+  const taskSetOptions = useMemo(() => [...new Set(runs.map((r) => r.taskSetId).filter(Boolean))].sort(), [runs]);
+  const filteredRuns = useMemo(() => runs.filter((r) =>
+    (!armFilter || r.arm === armFilter) && (!taskSetFilter || r.taskSetId === taskSetFilter)),
+  [runs, armFilter, taskSetFilter]);
+  const selId = filteredRuns.find((r) => r.id === requestedRunId)?.id ?? filteredRuns[0]?.id ?? null;
+
+  // Keep detail queries and actions on a visible run, including filter changes.
   useEffect(() => {
-    if (!selId && runs[0]) void setSelId(runs[0].id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runs.length]);
+    if (!loading && !listErr && requestedRunId !== selId) void setSelId(selId);
+  }, [loading, listErr, requestedRunId, selId, setSelId]);
 
   // Live detail for the selected run (updates incrementally during a run).
   const detailSync = useSyncQuery<PreservedRunDetail>({
@@ -1645,7 +1653,7 @@ function PreservedRunsView() {
     args: { runId: selId ?? '', ...scope },
     enabled: Boolean(selId),
   });
-  const detail = detailSync.data?.[0] ?? null;
+  const detail = selId ? detailSync.data?.find((r) => r.id === selId) ?? null : null;
   const detailErr = detailSync.error ? String(detailSync.error) : null;
 
   // Live fleet state. Spawn/sample writes are bridged onto the sync bus, so
@@ -1668,11 +1676,6 @@ function PreservedRunsView() {
   const [, setLaunchCap] = useQueryState('launchCap', parseAsString);
   const gradeRunMutate = useSyncMutate<{ runId: string; workspaceId?: string }, { ok: boolean; error?: string }>('externalBench.gradeRun', gradeRunRest);
   const deleteRunMutate = useSyncMutate<{ runId: string; workspaceId?: string }, { ok: boolean; deleted?: boolean; error?: string }>('externalBench.deleteRun', deleteRunRest);
-  // Filter the run list by arm (P-014 browse/filter).
-  const [armFilter, setArmFilter] = useQueryState('runArmFilter', parseAsString);
-  const armOptions = useMemo(() => [...new Set(runs.map((r) => r.arm))].sort(), [runs]);
-  const filteredRuns = armFilter ? runs.filter((r) => r.arm === armFilter) : runs;
-
   async function gradeRun() {
     if (!selId) return;
     setGrading(true);
@@ -1797,7 +1800,7 @@ function PreservedRunsView() {
   return (
     <section className="pc-evals__section">
       <div className="pc-preserved__toolbar">
-        {armOptions.length > 1 ? (
+        {armOptions.length > 1 || armFilter ? (
           <label className="pc-evals__suitepick">
             <span className="pc-evals__suitelabel">arm</span>
             <Select
@@ -1805,6 +1808,20 @@ function PreservedRunsView() {
               value={armFilter || ''}
               onChange={(v: string) => void setArmFilter(v || null)}
               options={[{ value: '', label: 'All arms' }, ...armOptions.map((a) => ({ value: a, label: armLabel(a) }))]}
+            />
+          </label>
+        ) : null}
+        {taskSetOptions.length > 1 || taskSetFilter ? (
+          <label className="pc-evals__suitepick">
+            <span className="pc-evals__suitelabel">task set</span>
+            <Select
+              ariaLabel="Filter runs by task set"
+              value={taskSetFilter || ''}
+              onChange={(v: string) => void setTaskSetFilter(v || null)}
+              options={[{ value: '', label: 'All task sets' }, ...taskSetOptions.map((id) => ({
+                value: id,
+                label: [frontierSweVersionLabel(id), id].filter(Boolean).join(' · '),
+              }))]}
             />
           </label>
         ) : null}
@@ -1825,7 +1842,9 @@ function PreservedRunsView() {
       </div>
       {actionErr ? <div className="pc-evals__caveat" role="alert">{actionErr}</div> : null}
 
-      {detailErr ? (
+      {filteredRuns.length === 0 ? (
+        <p className="pc-evals__empty">No runs match these filters.</p>
+      ) : detailErr ? (
         <EmptyCard icon={<Archive size={20} aria-hidden />} title="Couldn’t load this run" body={detailErr} />
       ) : !s ? (
         <p className="pc-evals__empty">Loading the run…</p>

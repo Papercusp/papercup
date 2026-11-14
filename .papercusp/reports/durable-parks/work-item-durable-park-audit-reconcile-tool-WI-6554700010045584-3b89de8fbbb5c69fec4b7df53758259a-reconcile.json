@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010045584:3b89de8fbbb5c69fec4b7df53758259a",
+  "inputSha256": "3b89de8fbbb5c69fec4b7df53758259a368aabca4271e51a23af1ef87bacf187",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-12T18:08:03.046Z",
+  "actor": "su-dabbef36-7a38-41b6-87d4-a329c6b29a5a",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010045584",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "19ce921042fbe2d61a237ba50c570e926ee57f2e19f939cec1f8665b5f4fb598",
+      "observedParkFingerprint": "19ce921042fbe2d61a237ba50c570e926ee57f2e19f939cec1f8665b5f4fb598",
+      "reasonCode": "operator-directed",
+      "evidence": "Conditional administrative authority one-work-graph-structured-holds-2026-10-26#D-059, read complete this continuation, applies ONLY original custodian su-dabbef36 and original Grounded P001/WI-6554700010045584. Avi's standing owner-directed AUTO self scope is mode-instructions:auto; source authorization session_turn:codex:01a1d01a-0e5a-7223-aaba-4a772eb7b5c3:11 / Grounded D014. Current plan35/hashb3a0cc733b5e92a12f1f7d28c95a58e1aa4f88b7a8dc7f61dd9600da1891ace4 and rubric4/criteriaHashb666974d318aae71a251085a7b3744c174098f0d5d141287079e65b61e909638. Discovery11 READY, activation12 current35; specSet1827e80edf2d1f7f1a30e2903c5aae06a77838d7afa3891cd3eb70152ea42541 PASS, cardEI-28604519584984904 independent auditEI-28605339140459144 passed/current. Actual complete independent wholecontract approvals: A1224653/correction1224655, closed_answered1224656 conv-request-a6fc7009e874100fbe17fb466f86cb5d0fbf1b76123414ab8d5d2513b7d9af6e; B1224661, closed_answered1224662 conv-request-f3952aed22c5395dd53b27792783062331531542d71dbbe8593def33a80f5697; both structured complete/findings empty and current. Current3170 activationReadiness read reports source-discovery/declarations/conformance/inputs/anchors/dependencies/bar-contract/spec-quality/quality-audit/contract-critique/admission PASS, lane only floor-gated; canonical plans:start after closing B refused admission_refused solely actionable P001 migration-parked coverage. Exact current work_items:get original row open/unassigned, source same plan/P001, _claimHold:true by migration:plan-line-work-item-nodes, no held_open lease and no predecessor. Request scoped preview of ONLY this D011 migration durable park, preserving all other holds/items, ordinary post-reconcile start/claim/changeKinds/explicitREADY/locks and all implementation/acceptance/shipment obligations. No product-source or LIVE_GATE_OPS authorization inferred.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010045584-3b89de8fbbb5c69fec4b7df53758259a-reconcile.json"
+}

@@ -1224,13 +1224,13 @@ load immediately (`PAPERCUSP_RELOAD_PROMPTS=1`). The SU playbooks themselves
 per-launch, but live psu serves the **release checkout's** copy — an edit goes
 live only after the staging→green deploy carries it.
 
-**Measure an edit to THIS playbook — run the behavioral suite:** the `su`
-llm-testing target loads this file as the system prompt and asserts the
-load-bearing hard rules (harness-scope, Tauri-only, push-not-poll,
-design-first, no-invent-write, shared-tree-git):
-`npm --prefix apps/operator run llm-test -- --target su` (single scenario:
-`-- --scenario su-S01-harness-scope --no-matrix`). In-process; needs an
-Anthropic credential. Add a scenario when a new SU failure mode shows up
+**Measure SU edits:** `packages/operator-core/lib/llm-testing/targets/su.ts`
+resolves `libs/papercusp/packages/harness/blueprints/base/prompts/su.md`, composes
+active layers and renders the client overlay; it omits the mutable project guide.
+This legacy fallback file is not its default source. Run
+`npm --prefix apps/operator run llm-test -- --target su`; replace `--target su`
+with `--scenario su-S01-harness-scope --no-matrix` for one scenario.
+Add scenarios for new SU failures
 (`packages/operator-core/lib/llm-testing/{targets,scenarios,rubrics}`).
 
 <!-- PAPERCUSP-SU:FULL-ONLY:END -->

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { cp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
 
@@ -73,6 +73,32 @@ export async function measureTestingBackgroundScenario(o: Options) {
   assert.equal(terminal?.status, 'pass', JSON.stringify(terminal));
   assert.deepEqual((await readFile(marker, 'utf8')).trim().split('\n'), ['once'], 'one request must execute exactly once');
   assert.equal(result?.ok, true, terminal.output);
+  const corePath = join(dirname(o.evidenceDir), 'prepare', 'testing-core.worker.mjs');
+  const producing = JSON.parse(await readFile(join(dirname(corePath), 'testing-core.worker.witness.json'), 'utf8'));
+  const artifactSha256 = createHash('sha256').update(await readFile(corePath)).digest('hex');
+  assert.equal(artifactSha256, producing.witness.artifactSha256, 'actual compiled core differs from producing receipt');
+  const bootstrap = terminal.output.split('\n').map((line: string) => {
+    try { return JSON.parse(line); } catch { return null; }
+  }).filter((row: any) => row?.schemaVersion === 'testing-run-bootstrap-v1');
+  const phases = ['core-import-start', 'core-import-complete', 'core-witness-verified',
+    'core-execution-start', 'core-execution-complete'];
+  let previous = -1;
+  for (const phase of phases) {
+    const matches = bootstrap.filter((row: any) => row.phase === phase);
+    assert.equal(matches.length, 1, 'missing/duplicate actual compiled bootstrap phase: ' + phase);
+    const index = bootstrap.indexOf(matches[0]);
+    assert.ok(index > previous, 'compiled bootstrap phase order changed');
+    previous = index;
+    for (const key of ['taskDeadlineAtMs', 'childCutoffAtMs', 'cleanupReserveMs'])
+      assert.equal(matches[0][key], accepted.deadline[key], 'compiled bootstrap changed original ' + key);
+    assert.equal(matches[0].runId, terminal.runId, 'compiled bootstrap lost detached run identity');
+  }
+  const verified = bootstrap.find((row: any) => row.phase === 'core-witness-verified');
+  assert.equal(verified.coreMode, 'compiled');
+  assert.equal(verified.witnessSchemaVersion, 1);
+  assert.equal(verified.sourceSha256, producing.witness.sourceSha256);
+  assert.equal(verified.artifactSha256, artifactSha256);
+  assert.deepEqual(terminal.command.slice(1, 3), ['--input-type=module', '-e'], 'compiled child installed a source loader');
   const sourcePacket = JSON.parse(await readFile(join(result.artifacts.directory, 'source.json'), 'utf8'));
   const sourceSha256 = createHash('sha256').update(source).digest('hex');
   assert.ok(sourcePacket.inputs.some((input: any) => input.path === file && input.sha256 === sourceSha256));
@@ -81,7 +107,8 @@ export async function measureTestingBackgroundScenario(o: Options) {
   assert.equal(manifest.cleanup.complete, true);
   assert.equal(manifest.deadline.taskDeadlineAtMs, accepted.deadline.taskDeadlineAtMs);
   const receipt = { accepted, terminal: { runId: terminal.runId, status: terminal.status, taskId: terminal.taskId },
-    executions: 1, sourceSha256, artifactDirectory: result.artifacts.directory, cleanupComplete: true };
+    executions: 1, sourceSha256, artifactDirectory: result.artifacts.directory, cleanupComplete: true,
+    compiledCore: { path: corePath, ...producing.witness }, bootstrapPhases: phases };
   await writeFile(join(o.evidenceDir, 'background-http-receipt.json'), JSON.stringify(receipt));
   return receipt;
 }

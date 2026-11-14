@@ -38,7 +38,7 @@ import { join } from 'node:path';
  * @property {() => string | null} confirmed  the token this session last proved it emitted
  * @property {() => object[]} confirmedFactBodies private manifests from that token's immutable stdout receipt
  * @property {() => object[]} confirmedMemoryDeliveries exact fragments from recent immutable stdout receipts
- * @property {(token: unknown, emission?: { payload?: string, client?: string, format?: string, nativeSessionId?: string | null, control?: object | null, factBodyOffers?: object[], memoryFragmentOffers?: object[] }) => void} offer
+ * @property {(token: unknown, emission?: { payload?: string, client?: string, format?: string, nativeSessionId?: string | null, packingReceipt?: { attemptId: string, sha256: string }, control?: object | null, factBodyOffers?: object[], memoryFragmentOffers?: object[] }) => void} offer
  *   remember the returned token and the exact payload that the caller will emit
  * @property {() => boolean} commit           record the offered token; call ONLY after emitting
  */
@@ -59,10 +59,13 @@ function factManifest(row) {
 }
 
 function memoryManifest(row) {
-  if (!row || !['memory', 'corpus'].includes(row.kind) || typeof row.id !== 'string' || !row.id || row.id.length > 1000 ||
+  if (!row || !['memory', 'corpus', 'notice'].includes(row.kind) || typeof row.id !== 'string' || !row.id || row.id.length > 1000 ||
       !Number.isSafeInteger(row.epoch) || row.epoch < 0 || typeof row.port !== 'string' || !row.port || row.port.length > 100 ||
-      !isHash(row.bodySha256) || !Number.isSafeInteger(row.bodyBytes) || row.bodyBytes <= 0) return null;
+      !isHash(row.bodySha256) || !Number.isSafeInteger(row.bodyBytes) || row.bodyBytes <= 0 ||
+      (row.sourceFingerprint !== undefined && !isHash(row.sourceFingerprint)) ||
+      (row.kind === 'notice' && (!isHash(row.id) || !isHash(row.sourceFingerprint)))) return null;
   return { kind: row.kind, id: row.id, epoch: row.epoch, port: row.port,
+    ...(row.sourceFingerprint !== undefined ? { sourceFingerprint: row.sourceFingerprint } : {}),
     bodySha256: row.bodySha256, bodyBytes: row.bodyBytes };
 }
 
@@ -70,12 +73,18 @@ function emittedMemoryFragments(payload, client, offers, format, token, owner) {
   if (typeof payload !== 'string' || !Array.isArray(offers) || offers.length > 128) return [];
   let context;
   try {
-    if (format === 'mcp') {
+    if (format === 'mcp' || format === 'omp-rpc') {
       const message = JSON.parse(payload);
-      const receipt = message?.result?._meta?.['papercusp/memoryEmission'];
-      if (!['codex', 'claude', 'omp'].includes(client) || message?.jsonrpc !== '2.0' ||
-          !['string', 'number'].includes(typeof message.id) || message.error ||
-          receipt?.owner !== owner || receipt?.token !== token) return [];
+      const result = message?.result;
+      const receipt = (format === 'omp-rpc' ? result?.details : result)?._meta?.['papercusp/memoryEmission'];
+      if (format === 'omp-rpc') {
+        if (client !== 'omp' || !payload.endsWith('\n') || message.type !== 'tool_execution_end' ||
+            message.isError === true || result?.isError === true ||
+            typeof message.toolCallId !== 'string' || !/^[A-Za-z0-9._:-]{1,256}$/.test(message.toolCallId) ||
+            typeof message.toolName !== 'string' || !/^mcp__papercusp_su_/.test(message.toolName)) return [];
+      } else if (!['codex', 'claude', 'omp'].includes(client) || message?.jsonrpc !== '2.0' ||
+          !['string', 'number'].includes(typeof message.id) || message.error) return [];
+      if (receipt?.owner !== owner || receipt?.token !== token) return [];
       // Inspect only model-visible response fields, never the offer metadata.
       // Tool text may itself contain a JSON result; inspect its string values
       // so escaped newlines cannot turn complete output into a false miss.
@@ -88,14 +97,14 @@ function emittedMemoryFragments(payload, client, offers, format, token, owner) {
           .filter(([key]) => key !== '_meta').flatMap(([, child]) => strings(child));
         return [];
       };
-      context = [message.result.instructions, ...(message.result.content ?? [])
+      context = [format === 'mcp' ? result.instructions : undefined, ...(result.content ?? [])
         .filter(block => block?.type === 'text').map(block => block.text)]
         .flatMap(strings).join('\n');
     } else if (client === 'omp') context = payload;
     else if (client === 'claude' || client === 'codex') {
       const output = JSON.parse(payload);
       const expected = client === 'codex' ? 'PostToolUse' : 'PostToolBatch';
-      if (!['UserPromptSubmit', expected, ...(client === 'claude' ? ['SessionStart'] : [])]
+      if (!['UserPromptSubmit', expected, 'SessionStart']
         .includes(output?.hookSpecificOutput?.hookEventName)) return [];
       context = output.hookSpecificOutput.additionalContext;
     }
@@ -138,6 +147,12 @@ const revision = value => value && isHash(value.specificationRevision) && isHash
 /** Whitelist metadata before writing: context text never enters the receipt. */
 function emissionMetadata(owner, emission, token) {
   const payload = typeof emission?.payload === 'string' ? emission.payload : null;
+  const packing = emission?.packingReceipt;
+  // Bind the exact immutable preparation, never infer an attempt from equal
+  // output text or retain the endpoint's arbitrary diagnostic/path fields.
+  const packingReceipt = typeof packing?.attemptId === 'string' &&
+    /^[A-Za-z0-9._:-]{1,200}$/.test(packing.attemptId) && isHash(packing.sha256)
+    ? { attemptId: packing.attemptId, sha256: packing.sha256 } : null;
   const c = emission?.control;
   const control = c?.targetOwnerId === owner && Number.isSafeInteger(c.generation) && c.generation >= 0
     ? {
@@ -156,6 +171,7 @@ function emissionMetadata(owner, emission, token) {
     client: ['claude', 'codex', 'omp'].includes(emission?.client) ? emission.client : null,
     nativeSessionId: typeof emission?.nativeSessionId === 'string' && emission.nativeSessionId.length <= 200
       ? emission.nativeSessionId : null,
+    packingReceipt,
     control,
     factBodies: emittedFactBodies(payload, emission?.client, emission?.factBodyOffers),
     memoryFragments: emittedMemoryFragments(payload, emission?.client, emission?.memoryFragmentOffers,
@@ -203,10 +219,23 @@ function turnStartOutcomeMetadata(outcome) {
       const url = new URL(rawTransport.operatorOrigin);
       if (url.protocol === 'http:' || url.protocol === 'https:') operatorOrigin = url.origin;
     } catch { /* absent or malformed origin remains explicitly unknown */ }
+    const proxyTraceId = typeof rawTransport.proxyTraceId === 'string'
+      && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(rawTransport.proxyTraceId)
+      ? rawTransport.proxyTraceId : null;
+    let upstreamOrigin = null;
+    try {
+      const url = new URL(rawTransport.upstreamOrigin);
+      // Accept only a canonical origin, never credentials, paths or arbitrary text.
+      if (proxyTraceId && rawTransport.upstreamOrigin.length <= 256
+        && (url.protocol === 'http:' || url.protocol === 'https:')
+        && url.origin === rawTransport.upstreamOrigin) upstreamOrigin = url.origin;
+    } catch { /* absent or malformed hop evidence remains explicitly unknown */ }
     transport = {
       phase: oneOf(rawTransport.phase,
         ['not-started', 'waiting-for-headers', 'headers-received', 'reading-body', 'body-received'], 'unknown'),
       operatorOrigin,
+      proxyTraceId,
+      upstreamOrigin,
       timeoutMs: milliseconds(rawTransport.timeoutMs),
       elapsedMs: milliseconds(rawTransport.elapsedMs),
       preFetchMs: milliseconds(rawTransport.preFetchMs),
@@ -305,7 +334,10 @@ export function openDeliveryLedger(owner, env = process.env, port = 'turn-start'
                 hash(receipt.token) + '.json' !== name || !Array.isArray(receipt.memoryFragments) ||
                 receipt.memoryFragments.length > 128) return [];
             const fragments = receipt.memoryFragments.map(memoryManifest).filter(Boolean);
-            return fragments.length ? [{ token: receipt.token, fragments }] : [];
+            const emittedAt = Date.parse(receipt.recordedAt);
+            if (fragments.some(row => row.kind === 'notice') && !Number.isSafeInteger(emittedAt)) return [];
+            return fragments.length ? [{ token: receipt.token, fragments,
+              ...(fragments.some(row => row.kind === 'notice') ? { emittedAt } : {}) }] : [];
           } catch { return []; }
         });
       } catch { return []; }
@@ -375,6 +407,26 @@ export function openDeliveryLedger(owner, env = process.env, port = 'turn-start'
       }
     },
   };
+}
+
+/** Called only by the managed native host after reading a complete OMP stdout
+ * frame. The extension's execute/tool_result callbacks are earlier boundaries:
+ * later hooks may still remove or change their model-visible content. */
+export function recordOmpMcpEmission(payload, owner, nativeSessionId, env = process.env) {
+  if (typeof payload !== 'string' || !payload.endsWith('\n') || Buffer.byteLength(payload) > 16 * 1024 * 1024 ||
+      typeof owner !== 'string' || !owner || typeof nativeSessionId !== 'string' ||
+      !/^[A-Za-z0-9._:-]{1,128}$/.test(nativeSessionId)) return false;
+  try {
+    const frame = JSON.parse(payload);
+    const offer = frame?.result?.details?._meta?.['papercusp/memoryEmission'];
+    if (offer?.owner !== owner || typeof offer.token !== 'string' || !/^[A-Za-z0-9:_-]{1,200}$/.test(offer.token) ||
+        !emittedMemoryFragments(payload, 'omp', offer.fragments, 'omp-rpc', offer.token, owner).length) return false;
+    const ledger = openDeliveryLedger(owner, env, 'mcp');
+    if (!ledger) return false;
+    ledger.offer(offer.token, { payload, client: 'omp', format: 'omp-rpc', nativeSessionId,
+      memoryFragmentOffers: offer.fragments });
+    return ledger.commit();
+  } catch { return false; } // A missed receipt permits replay, never suppression.
 }
 
 /** Extend the existing delivery ledger for optional code-intelligence emission.

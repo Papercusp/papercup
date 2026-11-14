@@ -41,7 +41,7 @@ import {
   taskReleaseJournalFromDetail,
   TASK_RELEASE_JOURNAL_SCHEMA_VERSION,
 } from './task-manager/store';
-import { newTaskId } from './task-manager/types';
+import { newTaskId, WORK_ITEM_VERIFICATION_PURPOSE } from './task-manager/types';
 import type { TaskRow } from './task-manager/types';
 import type { TaskReleaseJournal } from './task-manager/store';
 import { readCutStatus, cutUnitForTask, PLATFORMS } from './release-cut-launch';
@@ -206,6 +206,7 @@ export async function beginCutOperation(
       harnessSlug: input.harnessSlug ?? null,
       workItemId: input.workItemId ?? null,
       detail: {
+        verificationPurpose: WORK_ITEM_VERIFICATION_PURPOSE,
         channel: identity.channel,
         version: identity.version,
         platform: identity.platform,

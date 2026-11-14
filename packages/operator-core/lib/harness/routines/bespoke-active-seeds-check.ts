@@ -112,6 +112,9 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   { name: 'operator-e2e-red-filer', seedScript: 'seed-operator-e2e-isolated-routine.ts' },
   { name: 'claim-discipline-watch', seedScript: 'seed-claim-discipline-routine.ts' },
   { name: 'consult-expiry-sweep', seedScript: 'seed-consult-expiry-routine.ts' },
+  // stuck-work-detection-and-honest-waits-2026-11-13 P-002: registered in the SAME change as
+  // the action and its seed script.
+  { name: 'stuck-work-waiting-check', seedScript: 'seed-stuck-work-waiting-check-routine.ts' },
   { name: 'corpus-term-df', seedScript: 'seed-corpus-term-df-routine.ts' },
   // WI-2142447. Registered in the SAME change as the action and its seed script, for the
   // reason the dead-citation-sweep entry below records: an always-on sweep that nobody ever

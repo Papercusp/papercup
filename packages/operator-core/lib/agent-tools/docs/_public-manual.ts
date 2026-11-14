@@ -92,8 +92,11 @@ export function createPublicManualSource(contentRoot: string): DocSource & {
         }
       }
       if (!matched) {
-        const mightBePublicDoc = /\.mdx?$/i.test(normalized) || /^\/?docs\//i.test(normalized) ||
+        // Repository documents remain direct evidence subjects. Only bare
+        // aliases and known public namespaces belong to this public reader.
+        const mightBePublicDoc = /^[^/]+\.mdx?$/i.test(normalized) || /^\/?docs\//i.test(normalized) ||
           normalized.startsWith('public/manual-source/') || normalized.startsWith('apps/operator/public/manual-source/') ||
+          normalized.startsWith('apps/papercusp-docs/src/content/docs/') ||
           (path.isAbsolute(input) && path.resolve(input).startsWith(`${root}${path.sep}`));
         if (mightBePublicDoc) unresolvedDocuments.add(input);
         else expanded.add(input);

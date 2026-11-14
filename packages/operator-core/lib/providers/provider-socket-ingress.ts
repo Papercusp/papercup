@@ -60,10 +60,16 @@ export type IngressSourceHealth = Omit<ExternalTriggerSourceSyncState, 'cursor'>
 
 const RECONCILE_MS = 15_000;
 const MAX_BACKOFF_MS = 60_000;
+const TRANSPORT_PING_INTERVAL_MS = 30_000;
+const TRANSPORT_PONG_TIMEOUT_MS = 30_000;
 
 export interface IngressSocketLike {
   send(payload: string): void;
   close(): void;
+  /** Native WebSocket control frames; supplied by the production ws transport. */
+  ping?(payload: string): void;
+  /** A dead transport cannot finish a graceful close handshake. */
+  terminate?(): void;
   on(event: string, listener: (...args: any[]) => void): void;
 }
 
@@ -118,6 +124,11 @@ interface Connection {
   registry: ProviderRegistry;
   /** Present when the descriptor declares a `session`. */
   session: SessionState | null;
+  transport: {
+    lastPingAt: number | null;
+    sequence: number;
+    pending: { payload: string; sentAt: number } | null;
+  };
 }
 
 /** Per-socket state of a declared session protocol. */
@@ -351,6 +362,46 @@ export class ProviderSocketIngressManager {
     for (const connection of this.connections.values()) this.beat(connection);
   }
 
+  /**
+   * OPEN is only local state: a silently lost TCP peer may never emit close/error.
+   * Native control pings also protect providers without a declared session heartbeat.
+   */
+  private checkTransportLiveness(): void {
+    const now = this.now();
+    for (const connection of this.connections.values()) {
+      const heartbeat = connection.transport;
+      if (heartbeat.lastPingAt === null || !connection.socket.ping) continue;
+      if (heartbeat.pending) {
+        if (now - heartbeat.pending.sentAt >= TRANSPORT_PONG_TIMEOUT_MS) {
+          this.failTransport(connection, new Error('socket_pong_timeout'));
+        }
+        continue;
+      }
+      if (now - heartbeat.lastPingAt < TRANSPORT_PING_INTERVAL_MS) continue;
+      const payload = `papercusp-ingress:${++heartbeat.sequence}`;
+      heartbeat.lastPingAt = now;
+      heartbeat.pending = { payload, sentAt: now };
+      try {
+        connection.socket.ping(payload);
+      } catch (error) {
+        this.failTransport(connection, error);
+      }
+    }
+  }
+
+  private failTransport(connection: Connection, cause: unknown): void {
+    const id = key(connection.source);
+    if (this.connections.get(id) !== connection) return;
+    // Remove first: the close callback must not replace this diagnosis/backoff.
+    this.connections.delete(id);
+    this.log(`source ${connection.source.id} transport failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.scheduleRetry(connection.source, cause);
+    try {
+      if (connection.socket.terminate) connection.socket.terminate();
+      else connection.socket.close();
+    } catch { /* the failed transport is already retired */ }
+  }
+
   private attach(
     source: ConnectorSourceRow,
     ingress: SocketIngressProvider,
@@ -363,13 +414,18 @@ export class ProviderSocketIngressManager {
     const connection: Connection = {
       source, ingress, socket, processing: Promise.resolve(), immediate: Promise.resolve(), reconnectRequested: false, registry,
       session: session ? { intervalMs: null, lastBeat: 0, sequence: null, identified: false } : null,
+      transport: { lastPingAt: null, sequence: 0, pending: null },
     };
     this.connections.set(id, connection);
     const { ackField, reconnect, immediate } = ingress.socket;
     socket.on('open', () => {
       this.attempts.delete(id);
       this.retryAt.delete(id);
+      connection.transport.lastPingAt = this.now();
       this.updateSource(connection.source, { status: 'connected', lastError: null, connected: true });
+    });
+    socket.on('pong', (raw: unknown) => {
+      if (connection.transport.pending?.payload === frameText(raw)) connection.transport.pending = null;
     });
     socket.on('message', (raw: unknown) => {
       const envelope = parseEnvelope(raw);
@@ -449,7 +505,8 @@ export class ProviderSocketIngressManager {
 
   async reconcile(): Promise<void> {
     if (this.stopped) return;
-    // Before any await: a slow registry or source read must not delay a due heartbeat.
+    // Before any await: slow registry/source reads must not delay liveness checks.
+    this.checkTransportLiveness();
     this.beatDue();
     const sql = this.sql();
     const registry = await (this.deps.registry ?? readyProviderRegistry)();

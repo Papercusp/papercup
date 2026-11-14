@@ -7,11 +7,14 @@
  */
 
 import type { Sql } from 'postgres';
+import { createHash } from 'node:crypto';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import type { SessionState } from '../coordination/presence-wakeability';
 import type { LivenessTimingCallback } from '../coordination/liveness-oracle';
+import { withholdRestrictedTurns } from '../../personal-vault/transcript-exclusion';
+import { classifyHitTurnOrigin, type HitTurnOrigin } from './turn-origin';
 
 export const SESSION_SOURCE_KINDS = ['claude', 'omp', 'codex', 'agent_chat'] as const;
 export const SESSION_TURN_REF_PREFIX = 'session_turn:';
@@ -650,16 +653,21 @@ export interface SessionTurnRefResolution {
   ok: boolean;
   source?: 'index' | 'archive';
   reason?: 'invalid_ref' | 'not_found';
+  /** Measured source evidence, never an owner-authorization receipt. No text is returned. */
+  evidence?: { fingerprint: string; speaker: string | null; origin: HitTurnOrigin };
 }
 
 interface ResolveTurnRefsDeps {
   refresh?: typeof refreshTargetSessionBeforeRead;
+  /** Opt in to text fingerprints with the same disclosure boundary as sessions:read. */
+  evidenceForOwner?: string;
   readArchive?: (
     sessionId: string,
     sourceKind?: 'claude' | 'codex' | 'omp',
   ) => Promise<{
     sourceKind: 'claude' | 'codex' | 'omp';
-    turns: Array<{ turn_idx: number }>;
+    turns: Array<{ turn_idx: number; text?: string; speaker?: string; owner?: string | null; ts?: string | null }>;
+    errors?: readonly unknown[];
   } | null>;
 }
 
@@ -704,32 +712,68 @@ export async function resolveSessionTurnRefs(
     sessionId: turn.sessionId,
     turnIdx: turn.turnIdx,
   }));
+  type EvidenceTurn = { ref: string; text?: string | null; speaker?: string | null; owner?: string | null;
+    at?: string | null; turn_origin?: string | null; turn_origin_verdict?: string | null };
+  const measured = Boolean(deps.evidenceForOwner);
   const indexed = wanted.length === 0
     ? []
-    : await sql<Array<{ ref: string }>>`
+    : !measured ? await sql<EvidenceTurn[]>`
+        WITH wanted AS (
+          SELECT * FROM jsonb_to_recordset(${JSON.stringify(wanted)}::text::jsonb) AS w(
+            ref text, "sourceKind" text, "sessionId" text, "turnIdx" integer
+          )
+        )
+        SELECT w.ref FROM wanted w WHERE EXISTS (
+          SELECT 1 FROM harness_shared.session_turns t
+           WHERE (t.workspace_id = ${workspaceId} OR t.workspace_id = 'default')
+             AND t.source_kind = w."sourceKind" AND t.session_id = w."sessionId" AND t.turn_idx = w."turnIdx"
+        )`
+    : await sql<EvidenceTurn[]>`
         WITH wanted AS (
           SELECT *
             FROM jsonb_to_recordset(${JSON.stringify(wanted)}::text::jsonb) AS w(
               ref text, "sourceKind" text, "sessionId" text, "turnIdx" integer
             )
         )
-        SELECT w.ref
+        SELECT w.ref,
+               CASE WHEN ${measured} THEN t.text END AS text,
+               CASE WHEN ${measured} THEN t.speaker END AS speaker,
+               t.owner, COALESCE(t.ts, t.ingested_at)::text AS at,
+               t.turn_origin, t.turn_origin_verdict
           FROM wanted w
-         WHERE EXISTS (
-           SELECT 1
+          JOIN LATERAL (
+           SELECT t.*
              FROM harness_shared.session_turns t
             WHERE (t.workspace_id = ${workspaceId} OR t.workspace_id = 'default')
               AND t.source_kind = w."sourceKind"
               AND t.session_id = w."sessionId"
               AND t.turn_idx = w."turnIdx"
-         )`;
+            ORDER BY (t.workspace_id = ${workspaceId}) DESC
+            LIMIT 1
+         ) t ON true`;
+  const visible = measured ? (await withholdRestrictedTurns(sql,
+    { selfOwnerIds: [deps.evidenceForOwner] }, indexed, row => ({ owner: row.owner, at: row.at }))).kept : indexed;
+  const withheld = new Set(indexed.filter(row => !visible.includes(row)).map(row => row.ref));
   const found = new Map<string, 'index' | 'archive'>(
-    indexed.map((row) => [row.ref, 'index' as const]),
+    visible.map((row) => [row.ref, 'index' as const]),
   );
+  const evidence = new Map<string, NonNullable<SessionTurnRefResolution['evidence']>>();
+  const measure = (row: EvidenceTurn) => {
+    if (typeof row.text !== 'string' || !row.text.trim()) return;
+    const origin = classifyHitTurnOrigin(row.speaker, row.text, undefined, {
+      // Archive text has no authenticated ingest receipt. Preserve that uncertainty.
+      verdict: row.turn_origin_verdict ?? 'unenrolled-origin', origin: row.turn_origin,
+    });
+    evidence.set(row.ref, { speaker: row.speaker ?? null, origin,
+      fingerprint: createHash('sha256').update(JSON.stringify([
+        row.ref, row.speaker ?? null, row.text, origin.verdict, origin.origin,
+      ])).digest('hex') });
+  };
+  if (measured) visible.forEach(measure);
 
   const missingBySession = new Map<string, typeof wanted>();
   for (const entry of wanted) {
-    if (found.has(entry.ref)) continue;
+    if (found.has(entry.ref) || withheld.has(entry.ref)) continue;
     const key = `${entry.sourceKind}\u0000${entry.sessionId}`;
     const group = missingBySession.get(key) ?? [];
     group.push(entry);
@@ -747,6 +791,18 @@ export async function resolveSessionTurnRefs(
           first.sourceKind as 'claude' | 'codex' | 'omp',
         );
         if (!archive || archive.sourceKind !== first.sourceKind) return;
+        // A partial scan cannot certify positional identity or current source bytes.
+        if (measured && archive.errors?.length) return;
+        const rows = archive.turns.flatMap(turn => {
+          const entry = group.find(candidate => candidate.turnIdx === turn.turn_idx);
+          return entry ? [{ ref: entry.ref, text: turn.text, speaker: turn.speaker, owner: turn.owner, at: turn.ts }] : [];
+        });
+        if (measured) {
+          const admitted = await withholdRestrictedTurns(sql, { selfOwnerIds: [deps.evidenceForOwner] }, rows,
+            row => ({ owner: row.owner, at: row.at }));
+          for (const row of admitted.kept) { found.set(row.ref, 'archive'); measure(row); }
+          return;
+        }
         const turns = new Set(archive.turns.map((turn) => turn.turn_idx));
         for (const entry of group) {
           if (turns.has(entry.turnIdx)) found.set(entry.ref, 'archive');
@@ -761,7 +817,7 @@ export async function resolveSessionTurnRefs(
     if (!turn) return { ref, ok: false, reason: 'invalid_ref' };
     const source = found.get(ref);
     return source
-      ? { ref, ok: true, source }
+      ? { ref, ok: true, source, ...(measured && evidence.has(ref) ? { evidence: evidence.get(ref) } : {}) }
       : { ref, ok: false, reason: 'not_found' };
   });
 }

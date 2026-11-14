@@ -1,0 +1,7 @@
+---
+rel_path: "portability/census/v48/14-p053-v48-focused-ledger.json.part-000"
+updated_at: 1794246584570
+_body: "content"
+---
+
+H4sIAAAAAAAC/82QMW/DIBCFd/8KxBzsGNPa7lyp6tahW9UB4yNFsQDBoUaK8t+L4ybx0DFDlxP63j3e6R0LQmhINtIn8pHfhBzPM1MzZsabtt0K0W0uVJsJ3iR+ZY16qfZyB7FyHoJEF5hyAarJDNWQpeSriBKBKbAxRfYdDEJgxo5wKI1F2GWTcbZEiFhipNeQ2ZbiEhFXHA6g0mx5BpRmmjcu55JlF+ajxeYGdd47w+0Kxr3xfqG/8HTNyGW8BJf86yzTXnDNte7Ygx44E/2jYrKTwJqmUbwRdd1rebvPJfQJ33Nk9to0TcXq7z+Lbe9RrA9uTApCvHuTNe//WZd5fhan4gdkIMPtuAIAAA==

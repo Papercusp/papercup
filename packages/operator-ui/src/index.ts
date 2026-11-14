@@ -36,3 +36,5 @@ export * from './papercup-chat';
 export { default as AccountsTab } from './accounts/AccountsTab';
 export { useAccountOverride, type AccountOverride } from './accounts/use-account-override';
 export { ACCOUNTS_TAB_CSS, ACCOUNTS_TAB_BASE_CSS } from './accounts/accounts-tab.styles';
+
+export { EnterpriseAllocationPanel, type EnterpriseFinanceAccount } from './billing/enterprise-allocations';

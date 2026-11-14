@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../test/_pg-helpers';
+import { WORK_ITEM_VERIFICATION_PURPOSE } from '../task-manager/types';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -53,7 +54,7 @@ async function insertJob(taskId: string, opts: {
       ${JSON.stringify(['bash', '-c', `scripts/drill.sh --run-id ${taskId}`])}::jsonb, 'su-test',
       ${opts.workItemId === undefined ? WI : opts.workItemId}, true, 'running',
       now() - make_interval(mins => ${opts.minutesAgo}), ${logPath},
-      ${db.sql.json((opts.detail ?? {}) as postgres.JSONValue)}
+      ${db.sql.json((opts.detail ?? { verificationPurpose: WORK_ITEM_VERIFICATION_PURPOSE }) as postgres.JSONValue)}
     )
   `;
 }
@@ -141,7 +142,7 @@ describe('verification attempt ledger (R-1)', () => {
       minutesAgo: 30,
       logBody: 'Error: wrapper exited 17',
       taskClass: 'bash-job',
-      detail: { runId: 'logical-run-1' },
+      detail: { runId: 'logical-run-1', verificationPurpose: WORK_ITEM_VERIFICATION_PURPOSE },
     });
     await insertJob('t-run-child', {
       minutesAgo: 28,
@@ -149,7 +150,7 @@ describe('verification attempt ledger (R-1)', () => {
       taskClass: 'test-run',
       parentTaskId: 't-run-root',
       rootTaskId: 't-run-root',
-      detail: { runGroup: 'logical-run-1' },
+      detail: { runGroup: 'logical-run-1', verificationPurpose: WORK_ITEM_VERIFICATION_PURPOSE },
     });
     expect(
       await ledger.recordStructuredAttemptResult(
@@ -164,7 +165,7 @@ describe('verification attempt ledger (R-1)', () => {
     await insertJob('t-independent', {
       minutesAgo: 25,
       logBody: 'Error: independent failure',
-      detail: { runId: 'logical-run-2' },
+      detail: { runId: 'logical-run-2', verificationPurpose: WORK_ITEM_VERIFICATION_PURPOSE },
     });
     await close('t-independent', 1);
 
@@ -185,6 +186,40 @@ describe('verification attempt ledger (R-1)', () => {
     await close('t-pass', 0);
     const [a] = await ledger.listWorkItemAttempts({ workspaceId: WS, workItemId: WI });
     expect(a).toMatchObject({ taskId: 't-pass', outcome: 'pass', fingerprint: null });
+  });
+
+  it('excludes successful cleanup while retaining marked running and historically stamped rows', async () => {
+    await insertJob('t-legacy', {
+      minutesAgo: 40,
+      detail: { verificationAttempt: {
+        schemaVersion: 1,
+        outcome: 'fail',
+        fingerprint: 'log:legacy',
+        label: 'legacy failure',
+        source: 'log',
+        structured: null,
+        evidenceExcerpt: null,
+        evidenceExcerptTruncated: false,
+        commandFingerprint: 'legacy',
+        durationMs: 120_000,
+        recordedAt: '2026-11-12T00:00:00.000Z',
+      } },
+    });
+    await db.sql`
+      UPDATE harness_shared.task_ledger
+         SET state = 'exited', exit_code = 1, ended_at = started_at + interval '2 seconds'
+       WHERE task_id = 't-legacy'
+    `;
+    await insertJob('t-marked-running', {
+      minutesAgo: 20,
+      detail: { verificationPurpose: WORK_ITEM_VERIFICATION_PURPOSE },
+    });
+    await insertJob('t-cleanup', { minutesAgo: 20, detail: {} });
+    await close('t-cleanup', 0);
+
+    const attempts = await ledger.listWorkItemAttempts({ workspaceId: WS, workItemId: WI });
+    expect(attempts.map((a) => a.taskId)).toEqual(expect.arrayContaining(['t-legacy', 't-marked-running']));
+    expect(attempts.map((a) => a.taskId)).not.toContain('t-cleanup');
   });
 
   it('does not record a short job or a job with no work item', async () => {

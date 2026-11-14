@@ -396,14 +396,28 @@ async function tryGetPg() {
 async function insertRows(sql, rows, worktree, testRunReporter) {
   const appendReceipts = (receipts) =>
     testRunReporter?.appendTestRunReceipts?.(process.env, receipts);
+  const receipts = [];
+  const recordReceipt = (receipt) => {
+    receipts.push(receipt);
+    appendReceipts([receipt]);
+  };
+  const reportIncompleteReceipts = () => {
+    for (const receipt of receipts) {
+      if (receipt.outcome === 'inserted') continue;
+      // D-007 keeps Cargo's verdict independent of ledger availability, but an
+      // ordinary run still needs the exact row outcome in its retained log.
+      console.warn(`[report-cargo-tests] ledger row receipt: ${JSON.stringify(receipt)}`);
+    }
+  };
   if (!sql) {
     for (const row of rows) {
-      appendReceipts([cargoTestRunReceipt({
+      recordReceipt(cargoTestRunReceipt({
         filePath: row.filePath,
         status: row.status,
         error: 'pg_unavailable',
-      })]);
+      }));
     }
+    reportIncompleteReceipts();
     return 0;
   }
   let inserted = 0;
@@ -438,17 +452,18 @@ async function insertRows(sql, rows, worktree, testRunReporter) {
         status: row.status,
         returnedId: returned?.[0]?.id,
       });
-      appendReceipts([receipt]);
+      recordReceipt(receipt);
       if (receipt.outcome === 'inserted') inserted++;
     } catch (error) {
       /* swallow — D-007: a broken ledger must never fail the test run */
-      appendReceipts([cargoTestRunReceipt({
+      recordReceipt(cargoTestRunReceipt({
         filePath: row.filePath,
         status: row.status,
         error,
-      })]);
+      }));
     }
   }
+  reportIncompleteReceipts();
   return inserted;
 }
 

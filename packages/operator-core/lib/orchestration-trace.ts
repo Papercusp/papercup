@@ -200,6 +200,183 @@ export function fingerprintShellOperation(
   return { status: 'supported', version, fingerprint };
 }
 
+export type SourceShellOperation =
+  | { kind: 'git-archive'; repository: string; commit: string; destination: string }
+  | { kind: 'hardlink-copy'; source: string; destination: string };
+
+/** A deliberately small shell language for recovering source operations. This
+ * does not execute a command, inspect today's filesystem to choose a historical
+ * branch, or turn successful execution into proof of the destination bytes.
+ * Keep operation-v1's contract unchanged: this is a separate adapter version.
+ */
+export function sourceShellOperations(command: string):
+  | { status: 'supported'; version: string; operations: SourceShellOperation[] }
+  | { status: 'unknown'; version: string; reason: string } {
+  const version = 'shell-quote:source-operations-v1';
+  const unknown = (reason: string) => ({ status: 'unknown' as const, version, reason });
+  if (!command.trim() || command.length > 64_000) return unknown('incomplete-source');
+  // shell-quote is a tokenizer, not a Bash parser. Reject substitution, globbing,
+  // escapes outside quotes, heredocs, grouping and unmodelled control operators.
+  if (/[`\r\u0000*?]/.test(command) || /\$[({]|[(){}]|<<|\\|\|\||&&/.test(command))
+    return unknown('unsupported-syntax');
+  const units: string[] = [];
+  let word = ''; let quote = ''; let comment = false;
+  for (const char of command) {
+    if (comment) { if (char !== '\n') continue; comment = false; }
+    if (!quote && char === '#' && (!word || /\s$/.test(word))) { comment = true; continue; }
+    if (char === quote) quote = '';
+    else if (!quote && (char === '"' || char === "'")) quote = char;
+    if (!quote && [';', '\n'].includes(char)) {
+      if (char === ';' && ['do', 'then', 'else'].includes(word.trim())) return unknown('invalid-separator');
+      if (word.trim()) units.push(word.trim()); word = '';
+    }
+    else word += char;
+  }
+  if (quote) return unknown('unclosed-quote');
+  if (word.trim()) units.push(word.trim());
+  if (units.length > 512) return unknown('statement-bound');
+  type Statement = { kind: 'simple'; text: string }
+    | { kind: 'for'; name: string; values: string[]; body: Statement[] }
+    | { kind: 'if'; condition: string; yes: Statement[]; no: Statement[] };
+  const tokenize = (text: string, env: Map<string, string>) => {
+    const tokens = parseShellArguments(text, name => {
+      const value = env.get(name);
+      // Unquoted expansion must have the same single-word result as quoted
+      // expansion; unknown, empty or split/glob-bearing bindings are refused.
+      if (!value || !/^[A-Za-z0-9_./:@+-]+$/.test(value)) throw new Error('dynamic-binding');
+      return value;
+    });
+    if (tokens.length > 256 || tokens.some(token => typeof token !== 'string')) throw new Error('unsupported-token');
+    return tokens as string[];
+  };
+  let cursor = 0;
+  const parse = (stops: string[] = [], depth = 0): Statement[] => {
+    if (depth > 8) throw new Error('nesting-bound');
+    const body: Statement[] = [];
+    while (cursor < units.length && !stops.includes(units[cursor])) {
+      const text = units[cursor++];
+      const loop = /^for ([A-Za-z_][A-Za-z0-9_]*) in (.+)$/.exec(text);
+      if (loop) {
+        if (loop[2].includes('$')) throw new Error('nonliteral-loop');
+        const values = tokenize(loop[2], new Map());
+        if (!values.length || values.length > 32 || units[cursor++] !== 'do') throw new Error('invalid-loop');
+        const inner = parse(['done'], depth + 1);
+        if (units[cursor++] !== 'done') throw new Error('invalid-loop');
+        body.push({ kind: 'for', name: loop[1], values, body: inner });
+      } else if (text.startsWith('if ')) {
+        if (units[cursor++] !== 'then') throw new Error('invalid-branch');
+        const yes = parse(['else', 'fi'], depth + 1);
+        const no = units[cursor] === 'else' ? (cursor++, parse(['fi'], depth + 1)) : [];
+        if (units[cursor++] !== 'fi') throw new Error('invalid-branch');
+        body.push({ kind: 'if', condition: text.slice(3), yes, no });
+      } else {
+        if (/^(?:for|if|then|else|fi|do|done|while|until|case|function|select)\b/.test(text))
+          throw new Error('unsupported-control');
+        body.push({ kind: 'simple', text });
+      }
+    }
+    return body;
+  };
+  type State = { env: Map<string, string>; operations: SourceShellOperation[] };
+  const fork = (state: State): State => ({ env: new Map(state.env), operations: [...state.operations] });
+  const canonical = (state: State) => JSON.stringify([[...state.env].sort(([a], [b]) => a.localeCompare(b)), state.operations]);
+  const path = (value: string) => {
+    if (!/^\/(?:[A-Za-z0-9_@+.-]+\/)*[A-Za-z0-9_@+.-]+$/.test(value)
+      || value.split('/').some(part => part === '.' || part === '..')) throw new Error('noncanonical-path');
+    return value;
+  };
+  let steps = 0;
+  const evaluate = (body: Statement[], state: State): State => {
+    for (const statement of body) {
+      if (++steps > 1024) throw new Error('evaluation-bound');
+      if (statement.kind === 'for') {
+        if (state.env.has(statement.name)) throw new Error('shadowed-binding');
+        for (const value of statement.values) {
+          state.env.set(statement.name, value);
+          state = evaluate(statement.body, state);
+        }
+        // Shell loops leave their final binding in place.
+      } else if (statement.kind === 'if') {
+        const condition = tokenize(statement.condition, state.env);
+        let deciding: boolean | undefined;
+        if (condition.length === 5 && condition[0] === '[' && condition[4] === ']'
+          && ['=', '!='].includes(condition[2]))
+          deciding = (condition[1] === condition[3]) === (condition[2] === '=');
+        else if (!(condition.length === 4 && condition[0] === '[' && condition[3] === ']'
+          && ['-e', '-d', '-L'].includes(condition[1]))) throw new Error('unsupported-condition');
+        if (deciding !== undefined) state = evaluate(deciding ? statement.yes : statement.no, state);
+        else {
+          const yes = evaluate(statement.yes, fork(state)); const no = evaluate(statement.no, fork(state));
+          if (canonical(yes) !== canonical(no)) throw new Error('divergent-branch');
+          state = yes;
+        }
+      } else {
+        const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(statement.text);
+        if (assignment) {
+          if (state.env.has(assignment[1]) || ['PATH', 'IFS', 'ENV', 'BASH_ENV', 'SHELLOPTS', 'GIT_DIR', 'GIT_WORK_TREE'].includes(assignment[1]))
+            throw new Error('shadowed-binding');
+          const values = tokenize(assignment[2], state.env);
+          if (values.length !== 1) throw new Error('invalid-assignment');
+          state.env.set(assignment[1], values[0]);
+          continue;
+        }
+        // Only the exact archive pipeline has operator semantics in this dialect.
+        const tokens = parseShellArguments(statement.text, name => {
+          const value = state.env.get(name);
+          if (!value || !/^[A-Za-z0-9_./:@+-]+$/.test(value)) throw new Error('dynamic-binding');
+          return value;
+        });
+        const pipes = tokens.flatMap((token, index) => typeof token === 'object' && 'op' in token && token.op === '|' ? [index] : []);
+        if (pipes.length) {
+          if (pipes.length !== 1) throw new Error('unsupported-pipeline');
+          const left = tokens.slice(0, pipes[0]); const right = tokens.slice(pipes[0] + 1);
+          if (left.some(token => typeof token !== 'string') || right.some(token => typeof token !== 'string')) throw new Error('unsupported-token');
+          if (left.length !== 6 || left[0] !== 'git' || left[1] !== '-C' || left[3] !== 'archive' || left[4] !== '--format=tar'
+            || !/^[0-9a-f]{40}$/.test(left[5] as string) || right.length !== 4 || right[0] !== 'tar' || right[1] !== '-x' || right[2] !== '-C')
+            throw new Error('unsupported-archive');
+          state.operations.push({ kind: 'git-archive', repository: path(left[2] as string), commit: left[5] as string,
+            destination: path(right[3] as string) });
+        } else {
+          const args = tokenize(statement.text, state.env);
+          if (args.length === 4 && args[0] === 'cp' && args[1] === '-al')
+            state.operations.push({ kind: 'hardlink-copy', source: path(args[2]), destination: path(args[3]) });
+          else if (args.length >= 3 && args[0] === 'mkdir' && args[1] === '-p') args.slice(2).forEach(path);
+          else if (JSON.stringify(args) !== JSON.stringify(['set', '-euo', 'pipefail'])) throw new Error('unsupported-command');
+        }
+        if (state.operations.length > 128) throw new Error('operation-bound');
+      }
+    }
+    return state;
+  };
+  try {
+    const body = parse();
+    const operations = evaluate(body, { env: new Map(), operations: [] }).operations;
+    return operations.length ? { status: 'supported', version, operations } : unknown('no-source-operation');
+  } catch (error) { return unknown(error instanceof Error ? error.message : 'parse-failed'); }
+}
+
+/** The adapter's identity is scoped and secret-free like existing shell evidence.
+ * A terminal status describes execution only. A receipt must be separately supplied
+ * from the archived output; an input hash is never manufactured as receiptRef.
+ */
+export function sourceShellOperationEvidence(command: string, scope: SqlIntentScope,
+  source: OperationAdapterEvidence['source'], outcome: OperationAdapterEvidence['outcome']): OperationAdapterEvidence[] {
+  const parsed = sourceShellOperations(command);
+  if (parsed.status !== 'supported' || !scope.workspaceId || !scope.sourceBoundary || !scope.epoch
+    || !(scope.key instanceof Uint8Array) || scope.key.byteLength < 32
+    || redactSensitiveText(command, scope.knownSecrets) !== command
+    || scope.knownSecrets?.some(secret => secret.length > 0 && command.includes(secret))) return [];
+  return parsed.operations.map((operation, index) => {
+    const fingerprint = createHmac('sha256', scope.key).update(JSON.stringify([
+      parsed.version, scope.workspaceId, scope.sourceBoundary, scope.epoch, operation,
+    ])).digest('hex');
+    return { operationId: `${source.ref}:source-operation:${index}`, family: 'shell', adapterVersion: parsed.version,
+      semanticIdentity: { version: parsed.version, fingerprint, workspaceId: scope.workspaceId,
+        sourceBoundary: scope.sourceBoundary, epoch: scope.epoch }, source: { ...source }, outcome: { ...outcome },
+      replayClass: 'non-replayable', decisionRefs: [] };
+  });
+}
+
 function copyOperationEvidence(operations: readonly OperationAdapterEvidence[]): OperationAdapterEvidence[] {
   const ids = new Set<string>();
   return operations.map(operation => {

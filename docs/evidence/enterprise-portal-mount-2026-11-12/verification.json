@@ -1,0 +1,54 @@
+{
+  "workItem": "WI-6554700010047544",
+  "parent": "WI-10007909",
+  "status": "proposal-only",
+  "portalRoot": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+  "patchPath": "docs/evidence/enterprise-portal-mount-2026-11-12/portal-finance-mount.patch",
+  "patchSha256": "3bc636386623f8f22d93d2322adc138b67ebd16e1e7661a1243ca1a3536590de",
+  "files": [
+    {
+      "path": "packages/ui/src/auth.tsx",
+      "beforeSha256": "7aef72afb0a431396db5f004bb55f10a19f664e0f948434fc7a61c05cbeefaa4",
+      "proposedSha256": "364fde344f3df11459effc66c6038129060a2f5a50a5952a46916ca4656a60c9",
+      "syntaxErrors": 0
+    },
+    {
+      "path": "packages/ui/src/billing.tsx",
+      "beforeSha256": "a1ca0943f1234c8a9f751de329a96e8c69a246b5f6aaec7d04d3d9801e8a242e",
+      "proposedSha256": "e371d11e978ff90300553a8dacc5eec9dcdf852d2b9a6139b4b2fd5a76fd8e54",
+      "syntaxErrors": 0
+    },
+    {
+      "path": "tests/enterprise-finance-mount.test.tsx",
+      "beforeSha256": null,
+      "proposedSha256": "8cc1b038360949280cc98215a78b6241927257b3ba97006e8c075bbc94bc165f",
+      "syntaxErrors": 0
+    }
+  ],
+  "checks": {
+    "applicability": {
+      "command": "git apply --check",
+      "exitCode": 0
+    },
+    "syntax": {
+      "method": "TypeScript createSourceFile and transpileModule on an in-memory unified-diff overlay",
+      "exitCode": 0
+    },
+    "patchWhitespace": {
+      "command": "git diff --check",
+      "exitCode": 0
+    },
+    "existingSharedExport": true
+  },
+  "portalEdited": false,
+  "proposalTestsExecuted": false,
+  "notVerified": [
+    "Portal semantic typecheck",
+    "proposed Vitest regressions",
+    "authenticated Portal browser journey",
+    "runtime uptake",
+    "P014 parent acceptance",
+    "Enterprise shipment"
+  ],
+  "approval": "Original Portal repository-exception question remains pending; this artifact grants no application authority."
+}

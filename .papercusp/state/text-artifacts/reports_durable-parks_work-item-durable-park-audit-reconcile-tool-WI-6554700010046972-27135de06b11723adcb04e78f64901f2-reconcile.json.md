@@ -1,0 +1,31 @@
+---
+rel_path: "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010046972-27135de06b11723adcb04e78f64901f2-reconcile.json"
+updated_at: 1794246848383
+_body: "content"
+---
+
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010046972:27135de06b11723adcb04e78f64901f2",
+  "inputSha256": "27135de06b11723adcb04e78f64901f23bede1f619072d2f575a373b2fc1cb14",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-09T17:54:08.382Z",
+  "actor": "su-1670b754-7c24-4813-a86f-b90698cd4495",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010046972",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "5718eeb59e9ac8a7162b84369510a701fc7d05f804bc5b7c71da412999c658d4",
+      "observedParkFingerprint": "5718eeb59e9ac8a7162b84369510a701fc7d05f804bc5b7c71da412999c658d4",
+      "reasonCode": "operator-directed",
+      "evidence": "Authorized exact administrative adoption under one-work-graph-structured-holds-2026-10-26#D-036 (v96), read full with direct leader directive coord-send-63c31bbed63df59ee59d28a24be260384b26460794d9617d60bf76c0a05c409e. SAME su-1670b754-7c24-4813-a86f-b90698cd4495 may reconcile ONLY P001/WI-6554700010046972 for existing owner-directed SELF/AUTO EI-28320479727430924 / automatic-parked-delivery-recovery-2026-11-09. Original source session_turn:codex:01a1c0a9-7701-73d2-92af-797a4de63555:4,10-13 specifies bounded automatic recovery and no extra paperwork; complete4..16 read. Current reviewed planv13/hashd262720a36582e5cc09d3a4e02c9d108d8911f313562dd5bd1347cceea201f33 has Discovery9/activation10, settled exact quality audit and current closed BAR critiques1222246/1222281. Current canonicalstart refused only D011/P008 migrationhold on this open unassigned row. D036 explicitly preserves every other park, global P008 sourcebench, all task/claim/lock/auth/safety/acceptance and current source execution boundaries. This preview writes nothing; stop changed row/contract/concurrent claim/fingerprint/refusal. Exact fresh CAS apply will retain audit/run/artifact and row readbacks, then ordinary canonical start/byIDclaim/explicitREADY before source edits. No general migration release or implementation proof inferred.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010046972-27135de06b11723adcb04e78f64901f2-reconcile.json"
+}

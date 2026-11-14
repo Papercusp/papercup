@@ -254,6 +254,13 @@ export interface TaskRow extends TaskProvenance, TaskBudget, TaskMetrics {
   detail: Record<string, unknown>;
 }
 
+/** Fixed purpose tag set only by launchers that perform work-item verification. */
+export const WORK_ITEM_VERIFICATION_PURPOSE = 'work-item-verification' as const;
+export type WorkItemVerificationPurpose = typeof WORK_ITEM_VERIFICATION_PURPOSE;
+export type TaskDetail = Record<string, unknown> & {
+  verificationPurpose?: WorkItemVerificationPurpose;
+};
+
 /** What a caller hands `managedSpawn` / `registerTask`. */
 export interface TaskSpec extends TaskProvenance, TaskBudget {
   class: TaskClass;
@@ -263,7 +270,7 @@ export interface TaskSpec extends TaskProvenance, TaskBudget {
   parentTaskId?: string | null;
   harnessSlug?: string | null;
   logPath?: string | null;
-  detail?: Record<string, unknown>;
+  detail?: TaskDetail;
 }
 
 // ── naming algebra ──────────────────────────────────────────────────────────

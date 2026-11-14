@@ -2,8 +2,8 @@
 import childProcess from 'node:child_process';
 import { registerHooks, syncBuiltinESMExports } from 'node:module';
 import { createRequire } from 'node:module';
-import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { createHash, hash as cryptoHash, randomUUID } from 'node:crypto';
+import { Stats, closeSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import workerThreads, { threadId, isMainThread, getEnvironmentData, setEnvironmentData } from 'node:worker_threads';
@@ -22,6 +22,94 @@ const loaderCensusEnv = 'PC_NATIVE_LOADER_CENSUS';
 const workerThreadIdGetter = Object.getOwnPropertyDescriptor(workerThreads.Worker.prototype, 'threadId')?.get;
 const urlHrefGetter = Object.getOwnPropertyDescriptor(URL.prototype, 'href')?.get;
 const observerUrl = import.meta.url;
+// The cooperative terminal suffix runs after the last precise snapshot. Its
+// shared-cell operations and default clock must not look up application-
+// replaceable properties while publishing ACK or holding through kernel K.
+const { load: atomicLoad, store: atomicStore, add: atomicAdd, sub: atomicSub,
+  notify: atomicNotify, wait: atomicWait, waitAsync: atomicWaitAsync,
+  compareExchange: atomicCompareExchange } = Atomics;
+const censusMin = Math.min;
+const censusApply = Reflect.apply, censusDefine = Object.defineProperty;
+const censusClock = performance, censusClockNow = censusClock.now;
+const traceStringify = JSON.stringify, traceByteLength = Buffer.byteLength;
+const traceDateNow = Date.now, traceStartsWith = String.prototype.startsWith;
+const traceOwnKeys = Reflect.ownKeys, traceDescriptor = Object.getOwnPropertyDescriptor;
+const traceCreate = Object.create, traceSetPrototype = Object.setPrototypeOf;
+const traceGetPrototype = Object.getPrototypeOf;
+const traceObjectPrototype = Object.prototype, traceArrayPrototype = Array.prototype;
+const TraceError = Error;
+const traceIsArray = Array.isArray, traceIsProxy = utilTypes.isProxy;
+const TraceWeakSet = WeakSet, traceHas = WeakSet.prototype.has;
+const traceAdd = WeakSet.prototype.add, traceDelete = WeakSet.prototype.delete;
+const traceHashPrototype = Object.getPrototypeOf(createHash('sha256'));
+const traceHashUpdate = traceHashPrototype.update, traceHashDigest = traceHashPrototype.digest;
+const traceHashCopy = traceHashPrototype.copy, traceOneShotHash = cryptoHash;
+const traceWriteFile = writeFileSync, traceReadFile = readFileSync;
+const traceLink = linkSync, traceUnlink = unlinkSync, traceLstat = lstatSync;
+const traceRandomUUID = randomUUID, traceJoin = join;
+// Hash/copy allocate through Hash.prototype; retaining their methods does not
+// exclude inherited symbol setters. The public one-shot digest avoids that
+// JavaScript constructor and accepts only our primitive algorithm/encoding.
+const traceHash = text => traceOneShotHash('sha256', text, 'hex');
+// lstatSync's native result is converted by StatsBase/Stats assignments. Keep
+// its regular-file/symlink check, but reject any inherited-field or prototype
+// drift before the precise take so those assignments cannot enter application
+// setters in the terminal suffix. This is a narrow construction guard, not a
+// complete native/runtime source-eligibility verdict.
+const traceStatsConstructor = Stats;
+const traceStatsConstructionFields = ['dev', 'mode', 'nlink', 'uid', 'gid', 'rdev',
+  'blksize', 'ino', 'size', 'blocks', 'atimeMs', 'mtimeMs', 'ctimeMs', 'birthtimeMs'];
+const traceStatsPrototypeChain = [];
+for (let prototype = Stats.prototype; prototype !== null; prototype = traceGetPrototype(prototype))
+  traceStatsPrototypeChain.push(prototype);
+const terminalStatsConstructionSafe = () => {
+  const descriptor = traceDescriptor(traceStatsConstructor, 'prototype');
+  if (!descriptor || descriptor.value !== traceStatsPrototypeChain[0]) return false;
+  for (let index = 0; index < traceStatsPrototypeChain.length; index++) {
+    const prototype = traceStatsPrototypeChain[index];
+    const nextPrototype = index + 1 < traceStatsPrototypeChain.length ? traceStatsPrototypeChain[index + 1] : null;
+    if (traceGetPrototype(prototype) !== nextPrototype) return false;
+    for (let field = 0; field < traceStatsConstructionFields.length; field++)
+      if (traceDescriptor(prototype, traceStatsConstructionFields[field])) return false;
+  }
+  return true;
+};
+// Retaining JSON.stringify alone still calls inherited/own toJSON and getters.
+// Terminal rows contain observer-owned data. Reject opaque data without reading
+// it, and copy only enumerable data descriptors into prototype-free containers.
+// This keeps the existing wire JSON while preventing application serialization
+// hooks after the last precise take. It is not a loaded-source eligibility proof.
+const terminalTraceJSON = value => {
+  const active = new TraceWeakSet();
+  const copy = input => {
+    if (input === null || typeof input !== 'object') {
+      if (typeof input === 'function' || typeof input === 'bigint') throw new TraceError('opaque-terminal-data');
+      return input;
+    }
+    if (traceIsProxy(input) || censusApply(traceHas, active, [input])) throw new TraceError('opaque-terminal-data');
+    censusApply(traceAdd, active, [input]);
+    const array = traceIsArray(input), prototype = traceGetPrototype(input);
+    if (prototype !== null && prototype !== (array ? traceArrayPrototype : traceObjectPrototype))
+      throw new TraceError('opaque-terminal-data');
+    const output = array ? [] : traceCreate(null);
+    if (array) traceSetPrototype(output, null);
+    const keys = traceOwnKeys(input);
+    for (let index = 0; index < keys.length; index++) {
+      const key = keys[index];
+      if (typeof key !== 'string') continue;
+      const descriptor = traceDescriptor(input, key);
+      if (!descriptor || !descriptor.enumerable && key !== 'length') continue;
+      // Do not inspect descriptor.value before establishing it is an own field.
+      if (!traceDescriptor(descriptor, 'value')) throw new TraceError('opaque-terminal-data');
+      const field = copy(descriptor.value);
+      censusDefine(output, key, { __proto__: null, value: field,
+        enumerable: descriptor.enumerable, writable: true, configurable: key !== 'length' || !array });
+    }
+    censusApply(traceDelete, active, [input]);
+    return output;
+  };
+  return traceStringify(copy(value));
+};
 
 // Retain a bounded fingerprint, never argument values (which may include env
 // secrets). Inspect data descriptors only: proxies/accessors/opaque native
@@ -91,7 +179,7 @@ function constructionSource(args) {
 }
 // An explicitly enrolled census uses the same OUT artifacts and authenticated
 // reader. Its count/byte budget fits within that reader's existing bounds.
-/** @typedef {{ epoch: string, maxIsolates: number, closeTimeoutMs: number }} CooperativeEnrollment */
+/** @typedef {{ epoch: string, maxIsolates: number, closeTimeoutMs: number, preciseCoverage?: true }} CooperativeEnrollment */
 /** @typedef {({ events: number, bytes: number } | { batches: number, bytes: number }) & { cooperative?: CooperativeEnrollment }} NativeLoaderCensus */
 /** @param {unknown} value @returns {NativeLoaderCensus} */
 export function validateNativeLoaderCensus(value) {
@@ -104,7 +192,9 @@ export function validateNativeLoaderCensus(value) {
     throw new Error('Invalid bounded native loader census');
   if (value.cooperative !== undefined) {
     const c = value.cooperative;
-    if (!batched || !c || Object.keys(c).sort().join() !== 'closeTimeoutMs,epoch,maxIsolates' ||
+    if (!batched || !c || Object.keys(c).some(key =>
+        !['closeTimeoutMs', 'epoch', 'maxIsolates', 'preciseCoverage'].includes(key)) ||
+        c.preciseCoverage !== undefined && c.preciseCoverage !== true ||
         typeof c.epoch !== 'string' || !/^[a-f0-9-]{36}$/.test(c.epoch) ||
         !Number.isSafeInteger(c.maxIsolates) || c.maxIsolates < 1 || c.maxIsolates > 256 ||
         !Number.isSafeInteger(c.closeTimeoutMs) || c.closeTimeoutMs < 1 || c.closeTimeoutMs > 30_000)
@@ -137,61 +227,73 @@ export function createCooperativeWorkerCensus(options, io) {
     throw new Error('Invalid cooperative worker admission');
   const epochBytes = createHash('sha256').update(JSON.stringify({ epoch, maxIsolates, closeTimeoutMs })).digest();
   if (!options.buffer) {
-    Atomics.store(cells, 2, 1); Atomics.store(cells, 16, 2);
-    for (let index = 0; index < 8; index++) Atomics.store(cells, 8 + index, epochBytes.readInt32LE(index * 4));
+    atomicStore(cells, 2, 1); atomicStore(cells, 16, 2);
+    for (let index = 0; index < 8; index++) atomicStore(cells, 8 + index, epochBytes.readInt32LE(index * 4));
   }
-  const now = io.now ?? (() => performance.now());
+  const now = io.now ?? (() => censusApply(censusClockNow, censusClock, []));
+  const publishToIO = io.publish;
   const slot = id => 16 + 4 * id;
-  const wake = () => { Atomics.add(cells, 7, 1); Atomics.notify(cells, 7); };
+  const wake = () => { atomicAdd(cells, 7, 1); atomicNotify(cells, 7); };
   const fault = reason => {
-    Atomics.add(cells, 3, 1); wake();
-    try { io.publish('cooperative-unknown', { epoch, admission, reason }); } catch {}
+    atomicAdd(cells, 3, 1); wake();
+    try { censusApply(publishToIO, io, ['cooperative-unknown', { epoch, admission, reason }]); } catch {}
     return false;
   };
   const publish = (event, fields) => {
-    try { if (io.publish(event, { epoch, admission, ...fields }) === true) return true; } catch {}
+    try { if (censusApply(publishToIO, io, [event, { epoch, admission, ...fields }]) === true) return true; } catch {}
     return fault('failed-publication');
   };
-  if (Array.from({ length: 8 }, (_, index) => Atomics.load(cells, 8 + index))
-      .some((value, index) => value !== epochBytes.readInt32LE(index * 4))) fault('epoch-or-budget-mismatch');
+  for (let index = 0; index < 8; index++) {
+    if (atomicLoad(cells, 8 + index) !== epochBytes.readInt32LE(index * 4)) {
+      fault('epoch-or-budget-mismatch'); break;
+    }
+  }
   const snapshot = () => {
-    const count = Atomics.load(cells, 2);
-    return { epoch, phase: ['OPEN', 'CLOSING', 'CLOSED'][Atomics.load(cells, 0)] ?? 'UNKNOWN',
-      constructing: Atomics.load(cells, 1), activeHooks: Atomics.load(cells, 4),
-      faults: Atomics.load(cells, 3), fixedCount: Atomics.load(cells, 5), released: Atomics.load(cells, 6) !== 0,
-      slots: Array.from({ length: Math.min(count, maxIsolates) }, (_, id) => ({ admission: id,
-        status: ['missing', 'reserved', 'joined', 'aborted', 'ack'][Atomics.load(cells, slot(id))] ?? 'unknown',
-        activeHooks: Atomics.load(cells, slot(id) + 1), threadId: Atomics.load(cells, slot(id) + 2),
-        parent: Atomics.load(cells, slot(id) + 3) })) };
+    const count = atomicLoad(cells, 2), phase = atomicLoad(cells, 0);
+    /** @type {Array<{ admission: number, status: string, activeHooks: number, threadId: number, parent: number }>} */
+    const slots = [];
+    for (let id = 0; id < censusMin(count, maxIsolates); id++) {
+      const status = atomicLoad(cells, slot(id));
+      const value = { admission: id,
+        status: status === 0 ? 'missing' : status === 1 ? 'reserved' : status === 2 ? 'joined' :
+          status === 3 ? 'aborted' : status === 4 ? 'ack' : 'unknown',
+        activeHooks: atomicLoad(cells, slot(id) + 1), threadId: atomicLoad(cells, slot(id) + 2),
+        parent: atomicLoad(cells, slot(id) + 3) };
+      censusDefine(slots, id, { __proto__: null, value, enumerable: true, configurable: true, writable: true });
+    }
+    return { epoch, phase: phase === 0 ? 'OPEN' : phase === 1 ? 'CLOSING' : phase === 2 ? 'CLOSED' : 'UNKNOWN',
+      constructing: atomicLoad(cells, 1), activeHooks: atomicLoad(cells, 4),
+      faults: atomicLoad(cells, 3), fixedCount: atomicLoad(cells, 5), released: atomicLoad(cells, 6) !== 0,
+      slots };
   };
   const join = id => {
-    if (Atomics.compareExchange(cells, slot(admission), 1, 2) !== 1)
+    if (atomicCompareExchange(cells, slot(admission), 1, 2) !== 1)
       return fault('missing-or-duplicate-admission');
-    Atomics.store(cells, slot(admission) + 2, id); wake();
+    atomicStore(cells, slot(admission) + 2, id); wake();
     return publish('cooperative-join', { threadId: id });
   };
   const enterHook = () => {
-    Atomics.add(cells, 4, 1); Atomics.add(cells, slot(admission) + 1, 1);
-    if (Atomics.load(cells, 0) !== 0 || Atomics.load(cells, slot(admission)) !== 2)
+    atomicAdd(cells, 4, 1); atomicAdd(cells, slot(admission) + 1, 1);
+    if (atomicLoad(cells, 0) !== 0 || atomicLoad(cells, slot(admission)) !== 2)
       fault('hook-after-close');
     let ended = false;
     return () => {
       if (ended) { fault('duplicate-hook-return'); return; }
       ended = true;
-      Atomics.sub(cells, slot(admission) + 1, 1); Atomics.sub(cells, 4, 1); wake();
+      atomicSub(cells, slot(admission) + 1, 1); atomicSub(cells, 4, 1); wake();
     };
   };
   // Increment BEFORE reading admission state, and reserve BEFORE native
   // construction. Even late and throwing constructors consume an identity.
   const wrap = (target, withAdmission) => new Proxy(target, {
     construct(target, args, newTarget) {
-      Atomics.add(cells, 1, 1);
-      const id = Atomics.add(cells, 2, 1), bounded = id < maxIsolates;
+      atomicAdd(cells, 1, 1);
+      const id = atomicAdd(cells, 2, 1), bounded = id < maxIsolates;
       const constructionId = `${epoch}:${admission}:${id}`;
-      if (Atomics.load(cells, 0) !== 0) fault('late-construction');
+      if (atomicLoad(cells, 0) !== 0) fault('late-construction');
       if (!bounded) fault('admission-bound');
       if (bounded) {
-        Atomics.store(cells, slot(id), 1); Atomics.store(cells, slot(id) + 3, admission);
+        atomicStore(cells, slot(id), 1); atomicStore(cells, slot(id) + 3, admission);
         publish('cooperative-reserve', { childAdmission: id, constructionId, construction: constructionSource(args) });
       }
       try {
@@ -202,72 +304,79 @@ export function createCooperativeWorkerCensus(options, io) {
         publish('cooperative-constructed', { childAdmission: id, constructionId, childThreadId });
         return worker;
       } catch (error) {
-        if (bounded && Atomics.compareExchange(cells, slot(id), 1, 3) !== 1)
+        if (bounded && atomicCompareExchange(cells, slot(id), 1, 3) !== 1)
           fault('constructor-threw-after-admission');
         publish('cooperative-abort', { childAdmission: id, constructionId });
         throw error; // Never inspect or replace the native thrown value.
-      } finally { Atomics.sub(cells, 1, 1); wake(); }
+      } finally { atomicSub(cells, 1, 1); wake(); }
     },
   });
   let closeDeadline = null;
   const close = () => {
-    if (admission !== 0 || Atomics.compareExchange(cells, 0, 0, 1) !== 0)
+    if (admission !== 0 || atomicCompareExchange(cells, 0, 0, 1) !== 0)
       return fault('duplicate-or-non-main-close');
     const started = now();
     closeDeadline = started + closeTimeoutMs;
     publish('cooperative-closing', { monotonicMs: started }); wake();
     for (;;) {
-      const seen = Atomics.load(cells, 7), count = Atomics.load(cells, 2);
-      const pending = count > maxIsolates || Atomics.load(cells, 1) !== 0 ||
-        Array.from({ length: Math.min(count, maxIsolates) }, (_, id) => Atomics.load(cells, slot(id)))
-          .some(status => status !== 2 && status !== 3);
+      const seen = atomicLoad(cells, 7), count = atomicLoad(cells, 2);
+      let pending = count > maxIsolates || atomicLoad(cells, 1) !== 0;
+      for (let id = 0; !pending && id < censusMin(count, maxIsolates); id++) {
+        const status = atomicLoad(cells, slot(id));
+        pending = status !== 2 && status !== 3;
+      }
       if (!pending) {
-        Atomics.store(cells, 5, count); Atomics.store(cells, 0, 2); wake();
+        atomicStore(cells, 5, count); atomicStore(cells, 0, 2); wake();
         return publish('cooperative-closed', { monotonicMs: now(), population: snapshot() });
       }
       const left = closeDeadline - now();
       if (left <= 0) return fault('close-timeout');
-      Atomics.wait(cells, 7, seen, Math.min(left, 10));
+      atomicWait(cells, 7, seen, censusMin(left, 10));
     }
   };
   let acknowledged = false;
   const acknowledge = finish => {
-    if (acknowledged || Atomics.load(cells, 0) !== 2 || Atomics.load(cells, slot(admission)) !== 2 ||
-        Atomics.load(cells, slot(admission) + 1) !== 0)
+    if (acknowledged || atomicLoad(cells, 0) !== 2 || atomicLoad(cells, slot(admission)) !== 2 ||
+        atomicLoad(cells, slot(admission) + 1) !== 0)
       return fault('duplicate-missing-or-pending-end-ack');
     acknowledged = true;
     let end;
     try { end = finish(); } catch { return fault('failed-publication'); }
     if (!end || !publish('cooperative-end-ack', { threadId, end, monotonicMs: now() })) return false;
-    Atomics.store(cells, slot(admission), 4); wake();
+    atomicStore(cells, slot(admission), 4); wake();
     return true;
   };
   const awaitAcknowledgements = () => {
     for (;;) {
-      const seen = Atomics.load(cells, 7), state = snapshot();
+      const seen = atomicLoad(cells, 7), state = snapshot();
+      let allEnded = true;
+      for (let id = 0; id < state.slots.length; id++) {
+        const status = state.slots[id].status;
+        if (status !== 'ack' && status !== 'aborted') { allEnded = false; break; }
+      }
       if (state.phase === 'CLOSED' && state.constructing === 0 && state.activeHooks === 0 &&
-          state.slots.length === state.fixedCount && state.slots.every(row => ['ack', 'aborted'].includes(row.status)))
+          state.slots.length === state.fixedCount && allEnded)
         return state.faults === 0 && publish('cooperative-held', { population: state, monotonicMs: now() });
       const left = (closeDeadline ?? now()) - now();
       if (left <= 0) return fault('close-timeout');
-      Atomics.wait(cells, 7, seen, Math.min(left, 10));
+      atomicWait(cells, 7, seen, censusMin(left, 10));
     }
   };
   const hold = () => {
-    while (Atomics.load(cells, 6) === 0) Atomics.wait(cells, 6, 0);
+    while (atomicLoad(cells, 6) === 0) atomicWait(cells, 6, 0);
     // Only a failed native kill releases a live isolate. A release can NEVER
     // produce qualification; successful holds end at independent kernel K.
     return fault('observer-released-before-kernel-death');
   };
   const release = () => {
-    fault('native-kill-failed'); Atomics.store(cells, 6, 1); Atomics.notify(cells, 6); wake();
+    fault('native-kill-failed'); atomicStore(cells, 6, 1); atomicNotify(cells, 6); wake();
   };
   const waitForClose = async () => {
     for (;;) {
-      const seen = Atomics.load(cells, 7);
-      if (Atomics.load(cells, 6) !== 0) return false;
-      if (Atomics.load(cells, 0) === 2) return true;
-      await Atomics.waitAsync(cells, 7, seen).value;
+      const seen = atomicLoad(cells, 7);
+      if (atomicLoad(cells, 6) !== 0) return false;
+      if (atomicLoad(cells, 0) === 2) return true;
+      await atomicWaitAsync(cells, 7, seen).value;
     }
   };
   return { buffer, admission, epoch, snapshot, fault, join, enterHook, wrap, close,
@@ -298,6 +407,7 @@ export function nativeProcessTraceEnv(env = process.env, options = {}) {
 function installNativeProcessTrace(out) {
   const identity = randomUUID();
   const runGroupId = process.env.PAPERCUSP_TEST_RUN_GROUP ?? null;
+  const tracePid = process.pid, tracePpid = process.ppid;
   // A trace channel has its own UUID (including worker threads). The kernel
   // identity independently pins the OS process; neither can stand in for the other.
   const kernelProcessIdentity = readProcessIdentity(process.pid);
@@ -314,14 +424,23 @@ function installNativeProcessTrace(out) {
   // Publish completed bytes by a no-replace hard link; interrupted staging files
   // stay outside the trusted event directory and are removed with the run root.
   const publish = (path, bytes) => {
-    const temporary = `${root}.pending-${identity}-${randomUUID()}`;
+    const temporary = `${root}.pending-${identity}-${traceRandomUUID()}`;
     try {
-      writeFileSync(temporary, bytes, { flag: 'wx', mode: 0o600 });
-      try { linkSync(temporary, path); }
+      // UTF-8 strings take Node's direct native path. Its Buffer path calls
+      // replaceable fs.openSync/writeSync/closeSync even with writeFileSync held.
+      traceWriteFile(temporary, bytes, { __proto__: null, flag: 'wx', mode: 0o600, encoding: 'utf8' });
+      try { traceLink(temporary, path); }
       catch (error) { if (error?.code !== 'EEXIST') throw error; }
     } finally {
-      try { unlinkSync(temporary); } catch { /* A killed writer may leave only staging evidence. */ }
+      try { traceUnlink(temporary); } catch { /* A killed writer may leave only staging evidence. */ }
     }
+  };
+  const publishedTextMatches = (path, text) => {
+    // Stats methods live on mutable public prototypes. Inspect the numeric mode
+    // and use readFileSync's native UTF-8 path rather than Buffer.equals/read IO.
+    const stats = traceLstat(path, { __proto__: null, bigint: false, throwIfNoEntry: true });
+    return (stats.mode & 0o170000) === 0o100000 && traceReadFile(path,
+      { __proto__: null, encoding: 'utf8', flag: 'r' }) === text;
   };
   // Keep the 512 ordinary-event allowance, reserving process evidence so
   // loader traffic cannot hide a later spawn/close. Each exhausted portion
@@ -353,64 +472,65 @@ function installNativeProcessTrace(out) {
   };
   let cooperativeSequence = 0;
   const emit = (event, fields = {}, terminal = false) => {
-    const observationScope = event.startsWith('module-') ? 'module' : 'general';
+    const observationScope = censusApply(traceStartsWith, event, ['module-']) ? 'module' : 'general';
     const censusEvent = !terminal && observationScope === 'module' && loaderCensus;
     if (censusEvent ? censusUsage.stopped : !terminal && remaining[observationScope]-- < 0) return;
     try {
       let row = { schemaVersion: 1, kind: 'native-node-process-event', event,
         processIdentity: identity, kernelProcessIdentity,
-        pid: process.pid, ppid: process.ppid, atMs: Date.now(), ...fields, threadId, runGroupId,
+        pid: tracePid, ppid: tracePpid, atMs: traceDateNow(), ...fields, threadId, runGroupId,
         ...(loaderCensus?.cooperative ? { cooperativeSequence: ++cooperativeSequence } : {}) };
       if (!censusEvent && !terminal && remaining[observationScope] === -1)
         row = { ...row, event: 'trace-limit', observationScope };
-      let bytes = Buffer.from(JSON.stringify(row));
+      const serialize = terminal ? terminalTraceJSON : traceStringify;
+      let text = serialize(row), byteLength = traceByteLength(text);
       if (censusEvent) {
         const batched = Object.hasOwn(loaderCensus, 'batches');
         if (batched && censusRows.length &&
-            (censusRows.length === 128 || censusPacketBytes + bytes.length + 1 > 120 * 1024)) flushCensus();
+            (censusRows.length === 128 || censusPacketBytes + byteLength + 1 > 120 * 1024)) flushCensus();
         const eventLimit = !batched && censusUsage.events >= loaderCensus.events;
         const batchLimit = batched && !censusRows.length && censusUsage.batches >= loaderCensus.batches;
-        if (censusUsage.stopped || eventLimit || batchLimit || bytes.length > 120 * 1024 ||
-            bytes.length > loaderCensus.bytes - censusUsage.bytes) {
+        if (censusUsage.stopped || eventLimit || batchLimit || byteLength > 120 * 1024 ||
+            byteLength > loaderCensus.bytes - censusUsage.bytes) {
           censusUsage.stopped = true;
           row = { ...row, event: 'trace-limit', observationScope,
             reason: eventLimit ? 'loader-census-events' : batchLimit ? 'loader-census-batches' : 'loader-census-bytes',
             limits: loaderCensus, retained: { events: censusUsage.events, bytes: censusUsage.bytes } };
-          bytes = Buffer.from(JSON.stringify(row));
+          text = serialize(row); byteLength = traceByteLength(text);
         } else {
           censusUsage.events++;
-          censusUsage.bytes += bytes.length;
+          censusUsage.bytes += byteLength;
           if (batched) {
-            censusHash.update(bytes).update('\n');
-            censusRows.push(row); censusPacketBytes += bytes.length + 1;
+            censusApply(traceHashUpdate, censusHash, [text]);
+            censusApply(traceHashUpdate, censusHash, ['\n']);
+            censusRows.push(row); censusPacketBytes += byteLength + 1;
             return true;
           }
         }
       }
-      if (event === 'engine-script-execution' && bytes.length > 128 * 1024 &&
-          row.observation && bytes.length <= nativeSourceRetentionLimits.processBytes) {
-        const observationBytes = Buffer.from(JSON.stringify(row.observation));
-        const sha256 = createHash('sha256').update(observationBytes).digest('hex');
+      if (event === 'engine-script-execution' && byteLength > 128 * 1024 &&
+          row.observation && byteLength <= nativeSourceRetentionLimits.processBytes) {
+        const observationText = serialize(row.observation);
+        const sha256 = traceHash(observationText);
         const ref = `${sha256}.engine`;
-        publish(join(root, ref), observationBytes);
+        const path = traceJoin(root, ref);
+        publish(path, observationText);
         // Attachments use the same no-replace custody as event files.
-        if (!lstatSync(join(root, ref)).isFile() || lstatSync(join(root, ref)).isSymbolicLink() ||
-            !readFileSync(join(root, ref)).equals(observationBytes)) throw new Error('engine observation changed');
+        if (!publishedTextMatches(path, observationText)) return;
         const { observation, ...envelope } = row;
-        row = { ...envelope, observationArtifact: { ref, sha256, byteLength: observationBytes.length } };
-        bytes = Buffer.from(JSON.stringify(row));
+        row = { ...envelope, observationArtifact: { ref, sha256, byteLength: traceByteLength(observationText) } };
+        text = serialize(row); byteLength = traceByteLength(text);
       }
-      if (bytes.length > 128 * 1024) {
-        bytes = Buffer.from(JSON.stringify({ schemaVersion: 1, kind: row.kind,
-          event: 'trace-event-too-large', processIdentity: identity, kernelProcessIdentity, pid: process.pid,
-          ppid: process.ppid, atMs: row.atMs, omittedEvent: event, threadId, runGroupId }));
+      if (byteLength > 128 * 1024) {
+        text = serialize({ schemaVersion: 1, kind: row.kind,
+          event: 'trace-event-too-large', processIdentity: identity, kernelProcessIdentity, pid: tracePid,
+          ppid: tracePpid, atMs: row.atMs, omittedEvent: event, threadId, runGroupId });
       }
-      const sha256 = createHash('sha256').update(bytes).digest('hex');
-      const path = join(root, `${sha256}.json`);
-      publish(path, bytes);
+      const sha256 = traceHash(text);
+      const path = traceJoin(root, `${sha256}.json`);
+      publish(path, text);
       // Do not replace redirected or changed evidence on a repeated write.
-      if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink() ||
-          !readFileSync(path).equals(bytes)) return;
+      if (!publishedTextMatches(path, text)) return;
       return true;
     } catch { /* Observation failures never change the native command. */ }
   };
@@ -583,7 +703,8 @@ function installNativeProcessTrace(out) {
       });
       syncBuiltinESMExports();
       emit('cooperative-installed', { epoch: cooperative.epoch, admission: cooperative.admission,
-        threadId, supportedViews: 6, installationScope: 'pre-application-public-worker-views' }, true);
+        threadId, supportedViews: 6, installationScope: 'pre-application-public-worker-views',
+        ...(loaderCensus.cooperative.preciseCoverage ? { preciseCoverage: true } : {}) }, true);
     } catch { emit('cooperative-unknown', { reason: 'installation-failed' }, true); }
   }
   // A preload's exit listener would run before the program's later listeners
@@ -749,17 +870,38 @@ function installNativeProcessTrace(out) {
   if (sourcePins.length) {
     try { engine = observeEngineScriptExecution(process.cwd(), {
       pinnedSources: sourcePins, repositorySources: false,
+      ...(cooperative && loaderCensus?.cooperative?.preciseCoverage ? {
+        preciseCoverage: { epoch: cooperative.epoch, admission: cooperative.admission },
+      } : {}),
     }); } catch { emit('engine-script-execution-unavailable'); }
   }
   const finishCooperativeCensus = termination => {
     try {
-      if (engine && emit('engine-script-execution', { observation: engine.snapshot(), termination }, true) !== true)
+      const terminationEnvironment = process.env;
+      const precise = loaderCensus?.cooperative?.preciseCoverage === true;
+      // Finish allocations through the incremental Hash constructor before
+      // the last take. No application/module work may follow that response.
+      flushCensus();
+      const copy = censusApply(traceHashCopy, censusHash, []);
+      const censusSha256 = censusApply(traceHashDigest, copy, ['hex']);
+      if (precise && !terminalStatsConstructionSafe()) {
+        cooperative.fault('terminal-stat-constructor-drift');
+        return null;
+      }
+      const observation = precise ? engine?.terminalPreciseSnapshot() : engine?.snapshot();
+      // A request flag, quiet isolate or best-effort snapshot cannot stand in
+      // for a complete terminal response. This returns BEFORE END publication.
+      if (precise) {
+        if (!observation || observation.phase !== 'taken') return null;
+        for (let index = 0; index < observation.commands.length; index++)
+          if (observation.commands[index].status !== 'complete') return null;
+      }
+      if (observation && emit('engine-script-execution', { observation, termination }, true) !== true)
         return null;
       if (!configurationReads || emit('configuration-reads', {
-        runGroupId, observation: configurationReads.finish(process.env), termination,
+        runGroupId, observation: configurationReads.finish(terminationEnvironment), termination,
       }, true) !== true) return null;
-      flushCensus();
-      const end = { ...censusUsage, sha256: censusHash.copy().digest('hex'), termination };
+      const end = { ...censusUsage, sha256: censusSha256, termination };
       return !end.stopped && emit('module-census-end', end, true) === true ? end : null;
     } catch { return null; }
   };
@@ -809,7 +951,7 @@ function installNativeProcessTrace(out) {
           emit('module-census-end', { ...censusUsage, sha256: censusHash.copy().digest('hex'), termination }, true);
         } catch { emit('module-census-unavailable', { termination }, true); }
       }
-    }, selfKillFailed() { cooperative?.release(); } });
+    }, selfKillBoundary: Boolean(cooperative), selfKillFailed() { cooperative?.release(); } });
   }
   // Retain loader-returned bytes in bounded chunks. In particular, do not make
   // another full UTF-8 copy of the product bundle already owned by the loader.

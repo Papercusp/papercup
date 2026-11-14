@@ -41,6 +41,8 @@ import {
   LLM_TEST_EXIT_NOTHING_RAN,
   llmTestExitCode,
   runSummaryLine,
+  scenarioExecutionVerdict,
+  scenarioReportHeadline,
   type ScenarioOutcome,
 } from '@papercusp/operator-core/lib/llm-testing/run-exit-code';
 import {
@@ -416,6 +418,7 @@ async function main(): Promise<void> {
     console.log(`[llm-test] --variant '${variant.id}' (${[variant.promptOverlay && 'promptOverlay', variant.configDelta && 'configDelta'].filter(Boolean).join(' + ') || 'empty'})`);
   }
 
+  const diagnosticsByScenario = new Map<string, () => LlmCallDiagnosticSummary>();
   const runOne = async (scenario: typeof scenarios[number], evidenceDir: string): Promise<ScenarioOutcome> => {
     const scenarioFilePath = resolveScenarioFilePath(scenario);
     process.stdout.write(`\n▶ ${scenario.id}  [${scenario.target}]\n`);
@@ -425,6 +428,7 @@ async function main(): Promise<void> {
       : await prepareLlmScenarioRuntimeReader(scenarioFilePath, scenario.transport ?? 'http-sse');
     const ledgerBefore = args.noPersist ? null : await beginLlmScenarioLedger(scenarioFilePath, runtimeReader);
     const diagnosticCapture = createLlmCallDiagnosticCapture();
+    diagnosticsByScenario.set(scenario.id, () => diagnosticCapture.snapshot());
     const runnerStartedAt = new Date();
     try {
       report = await runScenario(scenario, {
@@ -482,19 +486,19 @@ async function main(): Promise<void> {
         ? `  ⚠ test_runs ledger row not recorded [${scenario.id}]\n`
         : `  ledger test_runs.id=${testRunId} layer=llm\n`);
     }
-    // Verdict for the UI/PG ('preview' for single-run per plan §2.4);
-    // exit-code from the per-run status so CI still flags single-run
-    // failures.
-    if (report.verdict === 'fail' || report.verdict === 'errored') return 'failed';
-    return report.runs.some((r) => r.status === 'failed' || r.status === 'errored')
-      ? 'failed'
-      : 'executed';
+    // Use the same strict classification as the console headline. The stored
+    // aggregate verdict keeps its rubric/preview meaning.
+    const verdict = scenarioExecutionVerdict(report);
+    return verdict === 'fail' || verdict === 'errored' ? 'failed' : 'executed';
   };
 
   // The battery runs through the verification-harness contract (EVL P-006): one phase per
   // scenario, one retained evidence dir per run, and a HARNESS_RESULT line naming the first
   // failing scenario. The exit code keeps its own semantics (nothing-ran is not a pass).
-  const { outcomes, summaryLine } = await runScenarioBattery({ scenarios, concurrency, runScenario: runOne });
+  const { outcomes, summaryLine } = await runScenarioBattery({
+    scenarios, concurrency, runScenario: runOne,
+    transportDiagnostics: scenario => diagnosticsByScenario.get(scenario.id)?.().events ?? [],
+  });
   console.log(`\n${summaryLine}`);
 
   const exitCode = llmTestExitCode(outcomes);
@@ -561,9 +565,7 @@ function createLlmCallDiagnosticCapture() {
 }
 
 function printReport(report: ReturnType<typeof runScenario> extends Promise<infer R> ? R : never): void {
-  const verdict = report.verdict;
-  const icon = verdict === 'pass' ? '✓' : verdict === 'preview' ? '○' : verdict === 'errored' ? '!' : '✗';
-  console.log(`  ${icon} verdict=${verdict} (${report.runs.length} run${report.runs.length === 1 ? '' : 's'})`);
+  console.log(scenarioReportHeadline(report));
   for (let i = 0; i < report.runs.length; i++) {
     const r = report.runs[i];
     console.log(`     run #${i + 1} status=${r.status} cost=$${r.summary.totalCostUsd.toFixed(4)} turns=${r.summary.turns.length}`);

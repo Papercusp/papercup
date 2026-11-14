@@ -1,0 +1,31 @@
+---
+rel_path: "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010046126-fe6c5a6d2503d47e1bdfb9aee76df68e-reconcile.json"
+updated_at: 1794190841978
+_body: "content"
+---
+
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010046126:fe6c5a6d2503d47e1bdfb9aee76df68e",
+  "inputSha256": "fe6c5a6d2503d47e1bdfb9aee76df68eb66f0927671b6b2c69d7bb890bd36eef",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-09T02:20:41.978Z",
+  "actor": "su-14b48d10-a137-41fa-a696-14d9b21d3078",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010046126",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "40fae89eb8c6f7a437e46caf98ba72f68be8fe012c81d110363473161f71fab8",
+      "observedParkFingerprint": "40fae89eb8c6f7a437e46caf98ba72f68be8fe012c81d110363473161f71fab8",
+      "reasonCode": "operator-directed",
+      "evidence": "Exact one-item D-011/P-008 early-adoption exception. Independently read Avi's original owner-typed session_turn:codex:01a1bdc5-9e4d-7a22-b0a7-f6316af15372:6 with surrounding turn5: tell them to resume; they do not need my approval; proceed as they think best. Accepted requester-recorded authorization receipt: conv-mw78c399-0000-48017d83cd7f410c96275bcd618024cf (resolved 2026-11-09T02:09:39.297Z), explicitly covers ONLY WI-6554700010046126 release then P-008 custodian fresh-fingerprint/CAS audited reconciliation. Requester checkpoint4603942753fb records authorization and voluntary release; fresh work_items:get verifies open, assignee:null, _claimHold:true, claim_hold_by:migration:plan-line-work-item-nodes, D-011/P-008 reason intact. SAME14b recovered and reclaimed WI-6554700010030915/P-008 custody. Governing D-011 independently read from one-work-graph-structured-holds-2026-10-26. Prior conditional agreement coord-send-096565c441fa34932d430e8f1f2a26c1824395a5c7326ed6a2834341e38ba4cc and coord-send-2154e1aadd5d3435a3686032e6573fe3ec909eaed38b619a01e8c058a7c037e1 independently read. Clear only this migration park; preserve all other parks, custody, admission floors, provenance and acceptance gates. WI-6554700010046443 stays done. No broad P-008 source-start or completion authority asserted.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010046126-fe6c5a6d2503d47e1bdfb9aee76df68e-reconcile.json"
+}
