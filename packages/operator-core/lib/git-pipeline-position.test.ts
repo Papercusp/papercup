@@ -7472,6 +7472,35 @@ describe('sweep exposure (P-006)', () => {
       expect(committed?.detail).toContain('does not establish a current hold');
       expect(committed?.lever).toBe(deferral?.lever);
     });
+
+    it('names the child-sync and final pointer-bump condition for an attributed root deferral', () => {
+      const path = 'packages/operator-core/lib/plan-audits.ts';
+      const skippedPaths = [{
+        scope: 'superproject',
+        path,
+        reason: 'attribution-child-sync' as const,
+        detail: 'The early root commit held the attributed source until child sync and final pointer-bump checks.',
+      }];
+      const gitSync = { ...HEALTHY_GIT_SYNC, skippedPaths, syncAgeMs: 60_000 };
+      const deferral = gitSyncDeferralFor(path, gitSync);
+
+      expect(deferral?.reason).toBe('attribution-child-sync');
+      expect(deferral?.detail).toContain('child synchronization');
+      expect(deferral?.lever).toContain('final pointer-bump');
+      expect(deferral?.lever).not.toContain('git-sync:run');
+
+      const input = stageInput(evaluateSweepExposure({
+        dirtyUncommitted: true,
+        dirtyPaths: [path],
+        nextSweepAtMs: NOW + 60_000,
+        nowMs: NOW,
+      }));
+      input.input = { path };
+      input.gitSync = gitSync;
+      const committed = computeStages(input).find((stage) => stage.name === 'committed');
+      expect(committed?.detail).toContain('child synchronization');
+      expect(committed?.lever).toBe(deferral?.lever);
+    });
   });
 
   it('distinguishes an unattributed disclosure-window hold from an edit lock', () => {

@@ -102,4 +102,32 @@ describe('git-sync signal-bearing sidecar routing', () => {
     expect(result).toMatchObject({ code: -1, stderr: 'git aborted after sidecar transport loss' });
     expect(sidecar.fallback).toHaveBeenCalledOnce();
   });
+
+  // EI-28741165248989781: these resolved faults made `submodule status --recursive` read as a
+  // Git failure, so discovery fell back to top-level .gitmodules and nested submodules went unseen.
+  it.each([
+    'spawner sidecar admission failed (sidecar pid 1): DbCallDeadlineError: [db-call-deadline]',
+    'forkserver execution failed; outcome unknown; not re-run: Error: spawn acknowledgement deadline',
+    'Error: spawner sidecar forkserver lost mid-exec (spawn acknowledgement deadline); not re-run',
+  ])('re-runs a read-only submodule status locally after a resolved sidecar fault: %s', async (stderr) => {
+    const repo = mkdtempSync(join(tmpdir(), 'git-sync-sidecar-route-'));
+    try {
+      execFileSync('git', ['init', '-q', repo]);
+      sidecar.run.mockResolvedValue({ code: -1, stdout: '', stderr });
+      const result = await runGitBounded(['submodule', 'status', '--recursive'], repo, 5000);
+      expect(result).toMatchObject({ code: 0, stderr: '' });
+      expect(sidecar.run).toHaveBeenCalledOnce();
+      expect(sidecar.fallback).toHaveBeenCalledOnce();
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a resolved sidecar fault for a writing submodule verb', async () => {
+    const stderr = 'spawner sidecar admission failed (sidecar pid 1): DbCallDeadlineError';
+    sidecar.run.mockResolvedValue({ code: -1, stdout: '', stderr });
+    const result = await runGitBounded(['submodule', 'update', '--init'], '/tmp', 5000);
+    expect(result).toMatchObject({ code: -1, stderr });
+    expect(sidecar.fallback).not.toHaveBeenCalled();
+  });
 });

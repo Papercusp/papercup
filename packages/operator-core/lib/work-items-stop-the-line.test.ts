@@ -17,6 +17,7 @@ import {
   LIVE_GATE_OPS_GREEN_MAIN_SLO_METRICS,
   liveGateOpsReservedPatterns,
   liveGateOpsSelfSelectExplanation,
+  STOP_THE_LINE_EXEMPT_CONDITION_LIKE_PATTERNS,
   STOP_THE_LINE_EXEMPT_CONDITION_PREFIXES,
   STOP_THE_LINE_RED_HOURS,
   stopTheLineExplanation,
@@ -57,10 +58,28 @@ describe('stop-the-line pure contracts (P-013/D-012)', () => {
     // The trigger prefix itself is exempt (the gate item must stay claimable while
     // the line it opened is stopped — otherwise the throttle would starve its own fix).
     expect(STOP_THE_LINE_EXEMPT_CONDITION_PREFIXES).toContain(GATE_RED_STREAK_CONDITION_PREFIX);
-    // Every prefix ends in ':' — a bare word would prefix-match unrelated keys via LIKE.
+    // Every prefix ends in ':' — a bare word would prefix-match unrelated keys via LIKE —
+    // unless its catalog entry is declared `exact` (one fixed key, matched by equality).
+    const exactKeys = new Set(leaf.ACTIONABLE_CONDITIONS.filter((c) => c.exact).map((c) => c.prefix));
     for (const p of STOP_THE_LINE_EXEMPT_CONDITION_PREFIXES) {
-      expect(p.endsWith(':')).toBe(true);
+      expect(exactKeys.has(p) || p.endsWith(':')).toBe(true);
     }
+  });
+
+  it('LIKE patterns: a namespaced prefix gets %, an exact key stays an equality match (EI-28368247087883955)', () => {
+    expect(STOP_THE_LINE_EXEMPT_CONDITION_LIKE_PATTERNS).toHaveLength(STOP_THE_LINE_EXEMPT_CONDITION_PREFIXES.length);
+    const exact = leaf.ACTIONABLE_CONDITIONS.filter((c) => c.exact);
+    expect(exact.map((c) => c.prefix)).toContain('alarm:disk-space');
+    for (const c of exact) {
+      expect(STOP_THE_LINE_EXEMPT_CONDITION_LIKE_PATTERNS).toContain(c.prefix);
+      expect(STOP_THE_LINE_EXEMPT_CONDITION_LIKE_PATTERNS).not.toContain(`${c.prefix}%`);
+      // No LIKE metacharacter, or the wildcard-free pattern would not be an equality match.
+      expect(c.prefix).not.toMatch(/[%_\\]/);
+    }
+    for (const c of leaf.ACTIONABLE_CONDITIONS.filter((e) => !e.exact)) {
+      expect(STOP_THE_LINE_EXEMPT_CONDITION_LIKE_PATTERNS).toContain(`${c.prefix}%`);
+    }
+    expect(STOP_THE_LINE_EXEMPT_CONDITION_LIKE_PATTERNS).toContain('deploy-parity:%');
   });
 
   it('the trigger prefix matches the trackGateStall producer key shape', () => {

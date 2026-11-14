@@ -3839,6 +3839,7 @@ export function gitSyncDeferralFor(
     | 'turn-hold'
     | 'restricted-disclosure'
     | 'restricted-window-unattributed'
+    | 'attribution-child-sync'
     | 'migration-reservation'
     | 'migration-dependency-fence';
   detail: string;
@@ -3888,6 +3889,16 @@ export function gitSyncDeferralFor(
         `${when} deferred this path because a live edit lock covers it (held by ${entry.owner}: "${entry.intent}"). ` +
         'git-sync excludes locked paths from every commit, so forcing git-sync:run skips it again until the lock is released or expires.',
       lever: `release the edit lock on this path (held by ${entry.owner}) — check locks:queue first: if it is already released, the next sweep commits the path`,
+    };
+  }
+  if (entry.reason === 'attribution-child-sync') {
+    return {
+      reason: 'attribution-child-sync',
+      detail:
+        `${when} deferred this attributed root edit during the early commit until child synchronization and the final pointer-bump could verify cross-repo ordering and migration reservations. ` +
+        entry.detail,
+      lever:
+        'Let child synchronization and the final pointer-bump complete, then inspect a fresh completed git-sync result for this path; forcing the same pass does not bypass this ordering guard.',
     };
   }
   if (entry.reason === 'migration-reservation') {

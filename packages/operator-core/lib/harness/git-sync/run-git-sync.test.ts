@@ -5343,6 +5343,61 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
     expect(await resolveAttributionRepo(sub, runGitLocal)).toBe('libs/sub');
   });
 
+  it.each(['complete', 'blocked'] as const)(
+    'reports early attributed-root deferrals and keeps only unresolved evidence after the final census (%s)',
+    async (finalCensus) => {
+      const source = 'super-attributed.ts';
+      writeFileSync(join(repo, source), 'export const value = "root-v2";\n');
+      const phases = new Map<string, unknown>();
+      const step: GitSyncStepRunner = async <T>(name: string, operation: () => Promise<T>): Promise<T> => {
+        if (finalCensus === 'blocked' && name === 'git-sync:pointer-bump') {
+          return {
+            committedLocal: false,
+            dirtyPathCount: 1,
+            committedCount: 0,
+            oversized: [],
+            contentErrors: [],
+            skippedPaths: [],
+            error: 'fixture: final pointer-bump unavailable',
+          } as T;
+        }
+        const result = await operation();
+        phases.set(name, structuredClone(result));
+        return result;
+      };
+
+      const out = await runGitSync('test', {
+        repoPath: repo,
+        step,
+        loadRoster: async () => [{
+          agent: 'su-root-author',
+          intent: 'add the root consumer',
+          files: [join(repo, source)],
+        }],
+      });
+
+      const early = phases.get('git-sync:submodules') as {
+        earlyRootCommit?: { skippedPaths?: Array<{ scope: string; path: string; reason?: string; detail?: string }> };
+      };
+      const earlyDeferral = expect.objectContaining({
+        scope: 'superproject',
+        path: source,
+        reason: 'attribution-child-sync',
+        detail: expect.stringContaining('final pointer-bump'),
+      });
+      expect(early.earlyRootCommit?.skippedPaths).toContainEqual(earlyDeferral);
+
+      if (finalCensus === 'blocked') {
+        expect(out.skippedPaths).toContainEqual(earlyDeferral);
+        expect(git(repo, 'status', '--porcelain', '--', source)).toContain(source);
+      } else {
+        expect(out.skippedPaths).not.toContainEqual(earlyDeferral);
+        expect(git(superOrigin, 'show', `main:${source}`)).toContain('root-v2');
+        expect(git(repo, 'status', '--porcelain', '--', source)).toBe('');
+      }
+    },
+  );
+
   it("labels a submodule install's tally with its submodule path, not 'superproject'", async () => {
     const sub = join(repo, 'libs/sub');
     git(sub, 'checkout', 'main');

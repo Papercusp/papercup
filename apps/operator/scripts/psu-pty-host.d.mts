@@ -2733,7 +2733,7 @@ export function controlSocketSelfHealAction({ metaMine, sockOnDisk, serverListen
     metaMine: any;
     sockOnDisk: any;
     serverListening: any;
-}): "rebind" | "healthy" | "reassert";
+}): "healthy" | "rebind" | "reassert";
 export function closeControlServerForRebind(server: any, afterClose: any): void;
 export function decodeControl(payload: any): {
     ownerId: any;
@@ -5109,7 +5109,7 @@ export function shouldReapDetachedPtyScopeResidue({ bridgeTty, headless, launche
  *  note \bconnected\b does NOT match inside "disconnected" (no word boundary
  *  after "dis"), but explicit negatives keep this robust to copy drift. Pure —
  *  exported for tests. */
-export function mcpServerRowStatus(line: any, name: any): "unknown" | "connected" | "not-connected" | null;
+export function mcpServerRowStatus(line: any, name: any): "unknown" | "not-connected" | "connected" | null;
 /** Is the /mcp dialog showing the single-server DETAIL view for `name`? Claude
  *  can open /mcp straight into it (header `Papercusp MCP Server`, then action
  *  rows such as `1. Authenticate  2. Reconnect  3. Disable`), so there is no
@@ -5364,7 +5364,7 @@ export function rearmWakeTurnOutcome(outcome: any, { submittedToCurrentChild }?:
  * A busy-gate deferral remains pending only when the re-arm controller still
  * owns that exact delivery; folded IDs that the re-arm does not own stay
  * retryable. */
-export function deliveryDedupSettlement(deliveryOutcome: any, rearmOwnsDelivery?: boolean): "cancelled" | "completed" | "pending" | "clear";
+export function deliveryDedupSettlement(deliveryOutcome: any, rearmOwnsDelivery?: boolean): "pending" | "completed" | "cancelled" | "clear";
 /** Persist the re-arm controller's retry window with a failed Codex-home attempt. */
 export function codexHomeEnsureFailureMetadata(failure: any, capMs: any): {
     retryable: boolean;
@@ -5495,6 +5495,49 @@ export function isCarryRespawnStale(receivedAtMs: any, { maxAgeMs, now }?: {
  *  knob) and orthogonal to isCarryRespawnStale — a caller applies BOTH. Pure;
  *  exported for unit tests. */
 export function isCarryRespawnSuperseded(receivedAtMs: any, lastRespawnAtMs: any): boolean;
+/** EI-28096374226247305: distinguish an expected superseded carry from an
+ *  unverified replacement. A newer child timestamp alone does not prove its
+ *  continuation turn started. Keep both delivery identities in the durable
+ *  event, and emit a terminal warning only while that proof is absent.
+ * @param {{
+ *   ownerId: string;
+ *   deliveryId?: string | null;
+ *   supersededByDeliveryId?: string | null;
+ *   turnStartVerified?: boolean;
+ *   receivedAtMs?: number | null;
+ *   lastRespawnAtMs?: number | null;
+ *   ageMs?: number | null;
+ * }} input
+ * @returns {{
+ *   event: {
+ *     deliveryId: string | null;
+ *     supersededByDeliveryId: string | null;
+ *     supersedingTurnStartVerified: boolean;
+ *     receivedAtMs: number | null;
+ *     lastRespawnAtMs: number | null;
+ *     ageMs: number | null;
+ *   };
+ *   terminalDiagnostic: string | null;
+ * }} */
+export function buildSupersededCarryRespawnDiagnostic({ ownerId, deliveryId, supersededByDeliveryId, turnStartVerified, receivedAtMs, lastRespawnAtMs, ageMs, }: {
+    ownerId: string;
+    deliveryId?: string | null;
+    supersededByDeliveryId?: string | null;
+    turnStartVerified?: boolean;
+    receivedAtMs?: number | null;
+    lastRespawnAtMs?: number | null;
+    ageMs?: number | null;
+}): {
+    event: {
+        deliveryId: string | null;
+        supersededByDeliveryId: string | null;
+        supersedingTurnStartVerified: boolean;
+        receivedAtMs: number | null;
+        lastRespawnAtMs: number | null;
+        ageMs: number | null;
+    };
+    terminalDiagnostic: string | null;
+};
 /** EI-18679681961154136 / EI-18681914950138372: should an incoming control
  *  message be DEFERRED because a carry-respawn is currently in flight for this
  *  host — either awaiting its FIRST delivery attempt's outcome, or a re-armed

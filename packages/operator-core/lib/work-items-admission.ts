@@ -23,7 +23,11 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
-import { ACTIONABLE_CONDITION_PREFIXES, FROZEN_REPAIR_LEG_CONDITION_PREFIX } from './coord/actionable-conditions';
+import {
+  ACTIONABLE_CONDITION_PREFIXES,
+  ACTIONABLE_CONDITIONS,
+  FROZEN_REPAIR_LEG_CONDITION_PREFIX,
+} from './coord/actionable-conditions';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 import { readRoutinePause } from './harness/routines/release-pause-ttl';
@@ -1612,6 +1616,17 @@ export const STOP_THE_LINE_EXEMPT_CONDITION_PREFIXES: readonly string[] = [
 ];
 
 /**
+ * The SQL `LIKE` patterns for {@link STOP_THE_LINE_EXEMPT_CONDITION_PREFIXES}: a namespaced
+ * prefix becomes `<prefix>%`, while a catalog entry declared `exact` (one fixed key such as
+ * `alarm:disk-space`) stays wildcard-free, so `LIKE` compares it by equality — the same rule
+ * {@link actionableConditionFor} applies in memory (EI-28368247087883955).
+ */
+export const STOP_THE_LINE_EXEMPT_CONDITION_LIKE_PATTERNS: readonly string[] = [
+  ...ACTIONABLE_CONDITIONS.map((c) => (c.exact ? c.prefix : `${c.prefix}%`)),
+  'deploy-parity:%',
+];
+
+/**
  * Which relation shape the floor is being composed into. A closed internal union —
  * never caller input — same safety argument as {@link admittedWhereSql}'s qualifier.
  *   'issue-wi'             — the issue claim/diagnose queries aliasing work_items as `wi`.
@@ -1641,10 +1656,9 @@ export function stopTheLineExclusionSql(sql: OrgSql, rowContext: StopTheLineRowC
   if (rowContext === 'feature-consolidated') {
     return sql`(NOT ${activeRedStreak})`;
   }
-  const exemptPrefixPatterns = STOP_THE_LINE_EXEMPT_CONDITION_PREFIXES.map((p) => `${p}%`);
   return sql`(
     wi.item_kind = 'bug'
-    OR (wi.condition_key IS NOT NULL AND wi.condition_key LIKE ANY(${exemptPrefixPatterns as string[]}::text[]))
+    OR (wi.condition_key IS NOT NULL AND wi.condition_key LIKE ANY(${STOP_THE_LINE_EXEMPT_CONDITION_LIKE_PATTERNS as string[]}::text[]))
     OR NOT ${activeRedStreak}
   )`;
 }
