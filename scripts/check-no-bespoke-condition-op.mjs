@@ -10,9 +10,10 @@ import { fileURLToPath } from 'node:url';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { listFilesIncludingUntracked } from './lib/tracked-files.mjs';
 import { judgeSites } from './lib/shrink-only-guard.mjs';
+import { CONDITION_OPERATORS, operatorDispatches, parseShapeSource } from '../packages/operator-core/lib/code-intelligence/condition-op-dispatch.ts';
 
 export const SEED_HASH = '3049a568af43f41a528230c6b53622c2eed54bbdb2fbefc5aeb234f102151091';
-export const OPERATORS = new Set(['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'in', 'notIn', 'contains', 'containsItem', 'containsText', 'exists', 'after', 'before', 'matches', 'startsWith', 'endsWith']);
+export const OPERATORS = CONDITION_OPERATORS;
 export const inScope = (file) => /\.[cm]?[jt]sx?$/.test(file) &&
   !file.startsWith('libs/generic/rules/') &&
   !/(?:^|\/)(?:node_modules|dist[^/]*|build|_retired|env-sidecars|spa|\.next|\.papercusp)\//.test(file) &&
@@ -20,50 +21,7 @@ export const inScope = (file) => /\.[cm]?[jt]sx?$/.test(file) &&
 
 export function findDispatches(source, file, threshold = 3) {
   if (!inScope(file)) return [];
-  const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  const hits = [];
-  const record = (node, subject, ops, shape) => {
-    const literals = [...new Set(ops)].filter((op) => OPERATORS.has(op)).sort();
-    if (literals.length >= threshold) hits.push({ file, key: file, line: ast.getLineAndCharacterOfPosition(node.getStart(ast)).line + 1, subject, literals, shape });
-  };
-  const comparisons = (node, out = new Map()) => {
-    if (ts.isBinaryExpression(node) && [ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.EqualsEqualsToken].includes(node.operatorToken.kind)) {
-      for (const [literal, subject] of [[node.left, node.right], [node.right, node.left]]) {
-        if (ts.isStringLiteral(literal) && OPERATORS.has(literal.text)) {
-          const key = subject.getText(ast);
-          if (!out.has(key)) out.set(key, []);
-          out.get(key).push(literal.text);
-        }
-      }
-    }
-    ts.forEachChild(node, (child) => { comparisons(child, out); });
-    return out;
-  };
-  const collectChain = (node, groups) => {
-    if (!ts.isIfStatement(node)) return;
-    for (const [subject, ops] of comparisons(node.expression)) {
-      if (!groups.has(subject)) groups.set(subject, []);
-      groups.get(subject).push(...ops);
-    }
-    if (node.elseStatement && ts.isIfStatement(node.elseStatement)) collectChain(node.elseStatement, groups);
-  };
-  const walk = (node) => {
-    if (ts.isSwitchStatement(node)) record(node, node.expression.getText(ast), node.caseBlock.clauses.flatMap((clause) =>
-      ts.isCaseClause(clause) && ts.isStringLiteral(clause.expression) ? [clause.expression.text] : []), 'switch');
-    if (ts.isBlock(node) || ts.isSourceFile(node)) {
-      let groups = new Map();
-      let start;
-      const flush = () => { for (const [subject, ops] of groups) record(start, subject, ops, 'if-chain'); groups = new Map(); start = null; };
-      for (const statement of node.statements) {
-        if (ts.isIfStatement(statement)) { start ??= statement; collectChain(statement, groups); }
-        else flush();
-      }
-      flush();
-    }
-    ts.forEachChild(node, walk);
-  };
-  walk(ast);
-  return hits;
+  return operatorDispatches(parseShapeSource(source, file), source, file, OPERATORS, threshold).map(({ text: _text, ...hit }) => hit);
 }
 
 /** R-74 post-migration assertion: NO local comparison dispatch, even one/two
