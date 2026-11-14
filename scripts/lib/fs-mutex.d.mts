@@ -76,7 +76,7 @@ export function ensureFsMutexLockRoot(env?: NodeJS.ProcessEnv, options?: {
     io?: FsMutexIo;
 }): Promise<any>;
 /**
- * Reconcile interrupted pre-publication readers without acquiring a dependency
+ * Reconcile interrupted reader publication/retirement without acquiring a dependency
  * lease. Reuse the same owner/age policy as published leases; a fresh publisher,
  * matching live owner, remote owner, or unproven process identity stays intact.
  * Each pass is bounded so a large abandoned container cannot monopolize admission.
@@ -107,12 +107,13 @@ export function reconcileFsMutexStagingReaders(name: string, opts?: {
  * open while that cohort drains. The writer then reserves admission and drains all
  * remaining/racing readers, so newcomers cannot indefinitely extend the open phase.
  *
- * @param {(context?: { hasWaiters: () => Promise<boolean> }) => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader' | 'write', waitForReadersBeforeReserve?: boolean, lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, deferAfterHolderAgeMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, io?: FsMutexIo }} [opts]
+ * @param {(context?: { hasWaiters: () => Promise<boolean>, reserveContinuationTicket: () => Promise<FsMutexContinuationTicket> }) => Promise<T>} fn
+ * @param {{ mode?: 'read' | 'reader' | 'write', waitForReadersBeforeReserve?: boolean, lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, deferAfterHolderAgeMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, continuationTicket?: FsMutexContinuationTicket, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export function withFsMutex<T>(name: string, fn: (context?: {
     hasWaiters: () => Promise<boolean>;
+    reserveContinuationTicket: () => Promise<FsMutexContinuationTicket>;
 }) => Promise<T>, opts?: {
     mode?: "read" | "reader" | "write";
     waitForReadersBeforeReserve?: boolean;
@@ -136,6 +137,7 @@ export function withFsMutex<T>(name: string, fn: (context?: {
         admissionSubphaseTimingsMs?: Record<string, number>;
     }) => void;
     intent?: Record<string, string | number | boolean>;
+    continuationTicket?: FsMutexContinuationTicket;
     io?: FsMutexIo;
 }): Promise<T>;
 /**
@@ -160,7 +162,7 @@ export function withFsMutex<T>(name: string, fn: (context?: {
  * @template T
  * @param {string} name
  * @param {(workers: number) => Promise<T>} fn
- * @param {{ workers: number, workerMemoryMb: number, workerBudget: number, memoryBudgetMb: number, memoryBudgetScope?: string, sharedMemoryBudgetMb?: number, maxConcurrentTasks: number, resource: string, intent?: Record<string, string | number | boolean>, timeoutMs?: number, retryMs?: number, lockRootDir?: string, remainingMs?: () => number, onWaiting?: (info: {owner: string, elapsedMs: number}) => void, onAcquired?: (info: {waitedMs: number}) => void }} opts
+ * @param {{ workers: number, workerMemoryMb: number, workerBudget: number, memoryBudgetMb: number, memoryBudgetScope?: string, sharedMemoryBudgetMb?: number, maxConcurrentTasks: number, resource: string, intent?: Record<string, string | number | boolean>, timeoutMs?: number, retryMs?: number, lockRootDir?: string, remainingMs?: () => number, onWaiting?: (info: {owner: string, elapsedMs: number}) => void, onAcquired?: (info: {waitedMs: number}) => void, io?: FsMutexIo }} opts
  * @returns {Promise<T>}
  */
 export function withFsMutexBudget<T>(name: string, fn: (workers: number) => Promise<T>, opts: {
@@ -184,6 +186,7 @@ export function withFsMutexBudget<T>(name: string, fn: (workers: number) => Prom
     onAcquired?: (info: {
         waitedMs: number;
     }) => void;
+    io?: FsMutexIo;
 }): Promise<T>;
 /**
  * Existing unweighted reader lease; writers drain these readers as before.
@@ -263,6 +266,7 @@ export type FsMutexIo = {
     symlink?: typeof symlink;
     readFile?: (path: string, encoding: "utf8") => Promise<string>;
     writeFile?: typeof writeFile;
+    rm?: typeof rm;
     processIdentity?: (pid: number) => ({
         tgid?: number;
         startTicks?: string;
@@ -270,6 +274,10 @@ export type FsMutexIo = {
         kthread?: boolean;
     } | null);
 };
+export type FsMutexContinuationTicket = {
+    cancel: () => Promise<void>;
+};
 import { opendir } from "node:fs/promises";
 import { symlink } from "node:fs/promises";
 import { writeFile } from "node:fs/promises";
+import { rm } from "node:fs/promises";

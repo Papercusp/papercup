@@ -246,7 +246,7 @@ export function resolveContextTier({ contextTier, env }?: {
  *   'inline' — a normal `--json '<...>'` / `--args '<...>'` value.
  *   null     — no JSON source given; caller should prompt interactively.
  */
-export function jsonSourceKind(args: any): "file" | "stdin" | "inline" | null;
+export function jsonSourceKind(args: any): "file" | "inline" | "stdin" | null;
 /**
  * Escape literal JSON control characters that occur inside quoted strings.
  * JSON requires those characters to be represented as escapes, but a heredoc
@@ -273,7 +273,7 @@ export function formatJsonInputError(jsonKind: any, error: any): string;
  *   'inline' — a normal `--script '<source>'` value.
  *   null     — no direct script source was given.
  */
-export function scriptSourceKind(args: any): "file" | "stdin" | "inline" | null;
+export function scriptSourceKind(args: any): "file" | "inline" | "stdin" | null;
 /**
  * Decide whether the human-readable invocation line belongs on stderr.
  * Scripted JSON mode must leave stdout/stderr suitable for machine capture;
@@ -678,7 +678,7 @@ export function canDispatchWithoutCatalog(toolName: any, inputKind: any, error: 
 /** Explain the catalog-independent fallback on stderr without contaminating
  * scripted JSON output. The target tool still validates its own arguments. */
 export function formatToolCatalogBypass(requestedToolName: any, error: any): string;
-export function callToolWithPressureRetry(client: any, params: any, { maxAttempts, retryDelayMs, timeoutMs, totalTimeoutMs, sleep, schemaNeutral, now, }?: {
+export function callToolWithPressureRetry(client: any, params: any, { maxAttempts, retryDelayMs, timeoutMs, totalTimeoutMs, sleep, schemaNeutral, callToolResultSchema, now, }?: {
     maxAttempts?: number | undefined;
     retryDelayMs?: number | undefined;
     timeoutMs?: number | undefined;
@@ -729,14 +729,15 @@ export function formatOperatorConnectFailure(operatorUrl: any, error: any): stri
  * session. A failed replay client is closed before the error is surfaced.
  * @param {any} client
  * @param {any} params
- * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number, replayProof?: unknown, schemaNeutral?: boolean, onStaleToolContract?: (context: {client: any, params: any, error: unknown}) => Promise<any>}} [options]
+ * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number, replayProof?: unknown, schemaNeutral?: boolean, callToolResultSchema?: unknown, onStaleToolContract?: (context: {client: any, params: any, error: unknown}) => Promise<any>}} [options]
  */
-export function callToolWithReplayRecovery(client: any, params: any, { reconnect, maxAttempts, timeoutMs, replayProof, schemaNeutral, onStaleToolContract, }?: {
+export function callToolWithReplayRecovery(client: any, params: any, { reconnect, maxAttempts, timeoutMs, replayProof, schemaNeutral, callToolResultSchema, onStaleToolContract, }?: {
     reconnect?: () => Promise<any>;
     maxAttempts?: number;
     timeoutMs?: number;
     replayProof?: unknown;
     schemaNeutral?: boolean;
+    callToolResultSchema?: unknown;
     onStaleToolContract?: (context: {
         client: any;
         params: any;
@@ -897,7 +898,6 @@ export function buildMcpUrl(operatorUrl: string, { workspace, harness, client, c
     nativeSessionOverride?: string | null;
     env?: EnvironmentMap;
 }): URL;
-/** A foreign native-session refusal is emitted before the tool dispatcher runs. */
 export function isForeignNativeSessionRejection(result: any): any;
 /** Retry only an inherited Codex claim; an explicit launcher binding stays authoritative.
  * @param {any} result
@@ -949,7 +949,7 @@ export function importPtoolSdkModule(specifier: any): any;
  * The finite 10-minute wait covers the observed rewrite duration while still
  * surfacing a stuck installer as an error.
  */
-export function importSdkModuleWithInstallAwareness(specifier: any, { doImport, recoverOnInstallWait, loadInstallMutex, }?: {
+export function importSdkModulesWithInstallAwareness(specifiers: any, { doImport, recoverOnInstallWait, loadInstallMutex, }?: {
     doImport?: typeof importPtoolSdkModule | undefined;
     recoverOnInstallWait?: boolean | undefined;
     loadInstallMutex?: (() => Promise<(typeof import("../../../scripts/lib/fs-mutex.mjs") | {
@@ -958,29 +958,39 @@ export function importSdkModuleWithInstallAwareness(specifier: any, { doImport, 
     })[] | null>) | undefined;
 }): Promise<any>;
 /**
+ * Import one SDK module under the same install-aware grouped lease used by
+ * connection setup.
+ */
+export function importSdkModuleWithInstallAwareness(specifier: any, options?: {}): Promise<any>;
+/**
  * Load the transport implementation before starting the network handshake
  * retry budget. SDK imports can wait for install:safe's repo reader lease for
  * up to ten minutes; that wait is bootstrap time, not operator network time.
  *
  * @param {{transport?: string}} [scope]
- * @param {{importSdkModule?: (specifier: string, options?: {recoverOnInstallWait?: boolean}) => Promise<object>, statfsImpl?: typeof statfs, recoverOnInstallWait?: boolean}} [options]
+ * @param {{importSdkModule?: (specifier: string, options?: {recoverOnInstallWait?: boolean}) => Promise<object>, importSdkModules?: (specifiers: string[], options?: {recoverOnInstallWait?: boolean}) => Promise<object[]>, statfsImpl?: typeof statfs, recoverOnInstallWait?: boolean}} [options]
  */
 export function preparePtoolConnectionModules({ transport: requestedTransport }?: {
     transport?: string;
-}, { importSdkModule, statfsImpl, recoverOnInstallWait }?: {
+}, { importSdkModule, importSdkModules, statfsImpl, recoverOnInstallWait }?: {
     importSdkModule?: (specifier: string, options?: {
         recoverOnInstallWait?: boolean;
     }) => Promise<object>;
+    importSdkModules?: (specifiers: string[], options?: {
+        recoverOnInstallWait?: boolean;
+    }) => Promise<object[]>;
     statfsImpl?: typeof statfs;
     recoverOnInstallWait?: boolean;
 }): Promise<{
     mode: string;
+    CallToolResultSchema: any;
     Client?: undefined;
     StreamableHTTPClientTransport?: undefined;
 } | {
     mode: string;
     Client: any;
     StreamableHTTPClientTransport: any;
+    CallToolResultSchema: any;
 }>;
 /**
  * List every tool, following pagination if the server returns a cursor.

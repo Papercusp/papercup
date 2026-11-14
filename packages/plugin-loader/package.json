@@ -38,6 +38,7 @@
   },
   "dependencies": {
     "@papercusp/agent-mcp": "*",
+    "@papercusp/module-singleton": "*",
     "@papercusp/plugin-loader-core": "*",
     "@papercusp/plugin-sdk": "*",
     "@papercusp/scheduled-registry": "*",

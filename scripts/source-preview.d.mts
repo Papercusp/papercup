@@ -107,8 +107,11 @@ export function validateVerifierInputs({ repo, ref, inputs, inputsFile, tauriInp
     tauriInputs?: boolean;
     receiptSha256?: string;
 }): Promise<{
+    sha: string;
+    paths: any;
+} | {
     sha: any;
-    paths: string[];
+    paths: any[];
 }>;
 /** Prepare a source snapshot only after all declared inputs match their pin.
  * `runtimeOutputs: 'preserve'` retains committed outputs in an independent Git
@@ -143,7 +146,7 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, git
     };
 }): Promise<{
     testedInputs: {
-        path: string;
+        path: any;
         sha256: string;
     }[];
     files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
@@ -237,25 +240,18 @@ export function createBgVerifierCompilerCustody({ prepared, dependencies }: {
     prepared: BgVerifierPreparation;
     dependencies: ReturnType<typeof captureVerifierDependencies>;
 }): {
-    plugin: import("esbuild").Plugin;
-    readToolchainInput: (path: string) => {
-        contents: Buffer<ArrayBufferLike>;
-        identity: {
-            path: string;
-            realpath: string;
-            sha256: string;
-        };
+    plugin: {
+        name: string;
+        setup(build: any): void;
     };
-    consumed: () => {
-        path: string;
-        realpath: string;
-        sha256: string;
-    }[];
-    verifyBeforePublication(): {
-        path: string;
-        realpath: string;
-        sha256: string;
-    }[];
+    readToolchainInput: (path: any) => any;
+    consumed: () => any;
+    verifyInputs: () => void;
+    readPaths: () => any[];
+    fileCount: number;
+    directoryCount: number;
+    beginPass(): void;
+    verifyBeforePublication(): any;
 };
 /** Bind original generation provenance before runtime effects, keeping its async
  * verifier in this host alongside the existing input interval witness.
@@ -948,6 +944,10 @@ export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invo
     };
 }): {
     publicationLeaf?: string | undefined;
+    testingCore: {
+        producerIndex: number;
+        consumerIndex: number;
+    } | null;
     recipe?: {
         entry: string;
         outfile: string;
@@ -1109,6 +1109,10 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
     schemaVersion: string;
     transaction: {
         publicationLeaf?: string | undefined;
+        testingCore: {
+            producerIndex: number;
+            consumerIndex: number;
+        } | null;
         recipe?: {
             entry: string;
             outfile: string;
@@ -1542,6 +1546,10 @@ export function publishBgVerifierLogicalOutputSet(args: {
         schemaVersion: string;
         transaction: {
             publicationLeaf?: string | undefined;
+            testingCore: {
+                producerIndex: number;
+                consumerIndex: number;
+            } | null;
             recipe?: {
                 entry: string;
                 outfile: string;
@@ -1840,16 +1848,7 @@ export function publishBgVerifierLogicalOutputSet(args: {
             mtimeNs: string;
             ctimeNs: string;
         } | undefined;
-        schemaVersion: string;
-        argv: string[];
-        buildRecordSha256: string;
-        originalSourceReceiptSha256: string;
-        compilerVersion: string;
-        compilerApi: {
-            path: string;
-            realpath: string;
-            sha256: string;
-        };
+        compilerApi: any;
         binary: {
             path: string;
             realpath: string;
@@ -1863,16 +1862,47 @@ export function publishBgVerifierLogicalOutputSet(args: {
             ino: string;
             launches: number;
         };
-        consumed: {
+        consumed: any;
+        generatedInputs: {
             path: string;
-            realpath: string;
-            sha256: string;
+            define: string;
+            value: string;
         }[];
         consumption: {
-            consumed: {
+            testingCoreDependency?: any;
+            testingCore?: {
+                schemaVersion: string;
+                root: string;
+                output: any;
+                input: any;
+                outputIdentity: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                    dev: string;
+                    ino: string;
+                    size: string;
+                    mtimeNs: string;
+                    ctimeNs: string;
+                };
+                witness: {
+                    schemaVersion: number;
+                    sourceSha256: any;
+                    artifactSha256: string;
+                };
+                interval: {
+                    rows: any;
+                    ancestors: any;
+                    toolchain: never[];
+                    resolverMetadata: any;
+                };
+            } | undefined;
+            effectiveArgv?: string[] | undefined;
+            consumed: any;
+            generatedInputs: {
                 path: string;
-                realpath: string;
-                sha256: string;
+                define: string;
+                value: string;
             }[];
             compilerExecution: {
                 node: {
@@ -1880,11 +1910,7 @@ export function publishBgVerifierLogicalOutputSet(args: {
                     realpath: string;
                     sha256: string;
                 };
-                api: {
-                    path: string;
-                    realpath: string;
-                    sha256: string;
-                };
+                api: any;
                 binary: {
                     path: string;
                     realpath: string;
@@ -1937,6 +1963,40 @@ export function publishBgVerifierLogicalOutputSet(args: {
             mtimeNs: string;
             ctimeNs: string;
         };
+        testingCoreDependency?: any;
+        testingCore?: {
+            schemaVersion: string;
+            root: string;
+            output: any;
+            input: any;
+            outputIdentity: {
+                path: string;
+                realpath: string;
+                sha256: string;
+                dev: string;
+                ino: string;
+                size: string;
+                mtimeNs: string;
+                ctimeNs: string;
+            };
+            witness: {
+                schemaVersion: number;
+                sourceSha256: any;
+                artifactSha256: string;
+            };
+            interval: {
+                rows: any;
+                ancestors: any;
+                toolchain: never[];
+                resolverMetadata: any;
+            };
+        } | undefined;
+        effectiveArgv?: string[] | undefined;
+        schemaVersion: string;
+        argv: string[];
+        buildRecordSha256: string;
+        originalSourceReceiptSha256: string;
+        compilerVersion: string;
     }[];
     output: {
         schemaVersion: string;
@@ -1981,6 +2041,10 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
         schemaVersion: string;
         transaction: {
             publicationLeaf?: string | undefined;
+            testingCore: {
+                producerIndex: number;
+                consumerIndex: number;
+            } | null;
             recipe?: {
                 entry: string;
                 outfile: string;
@@ -2279,16 +2343,7 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
             mtimeNs: string;
             ctimeNs: string;
         } | undefined;
-        schemaVersion: string;
-        argv: string[];
-        buildRecordSha256: string;
-        originalSourceReceiptSha256: string;
-        compilerVersion: string;
-        compilerApi: {
-            path: string;
-            realpath: string;
-            sha256: string;
-        };
+        compilerApi: any;
         binary: {
             path: string;
             realpath: string;
@@ -2302,16 +2357,47 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
             ino: string;
             launches: number;
         };
-        consumed: {
+        consumed: any;
+        generatedInputs: {
             path: string;
-            realpath: string;
-            sha256: string;
+            define: string;
+            value: string;
         }[];
         consumption: {
-            consumed: {
+            testingCoreDependency?: any;
+            testingCore?: {
+                schemaVersion: string;
+                root: string;
+                output: any;
+                input: any;
+                outputIdentity: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                    dev: string;
+                    ino: string;
+                    size: string;
+                    mtimeNs: string;
+                    ctimeNs: string;
+                };
+                witness: {
+                    schemaVersion: number;
+                    sourceSha256: any;
+                    artifactSha256: string;
+                };
+                interval: {
+                    rows: any;
+                    ancestors: any;
+                    toolchain: never[];
+                    resolverMetadata: any;
+                };
+            } | undefined;
+            effectiveArgv?: string[] | undefined;
+            consumed: any;
+            generatedInputs: {
                 path: string;
-                realpath: string;
-                sha256: string;
+                define: string;
+                value: string;
             }[];
             compilerExecution: {
                 node: {
@@ -2319,11 +2405,7 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
                     realpath: string;
                     sha256: string;
                 };
-                api: {
-                    path: string;
-                    realpath: string;
-                    sha256: string;
-                };
+                api: any;
                 binary: {
                     path: string;
                     realpath: string;
@@ -2376,6 +2458,40 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
             mtimeNs: string;
             ctimeNs: string;
         };
+        testingCoreDependency?: any;
+        testingCore?: {
+            schemaVersion: string;
+            root: string;
+            output: any;
+            input: any;
+            outputIdentity: {
+                path: string;
+                realpath: string;
+                sha256: string;
+                dev: string;
+                ino: string;
+                size: string;
+                mtimeNs: string;
+                ctimeNs: string;
+            };
+            witness: {
+                schemaVersion: number;
+                sourceSha256: any;
+                artifactSha256: string;
+            };
+            interval: {
+                rows: any;
+                ancestors: any;
+                toolchain: never[];
+                resolverMetadata: any;
+            };
+        } | undefined;
+        effectiveArgv?: string[] | undefined;
+        schemaVersion: string;
+        argv: string[];
+        buildRecordSha256: string;
+        originalSourceReceiptSha256: string;
+        compilerVersion: string;
     }[];
     output: {
         schemaVersion: string;
@@ -2432,6 +2548,10 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
         schemaVersion: string;
         transaction: {
             publicationLeaf?: string | undefined;
+            testingCore: {
+                producerIndex: number;
+                consumerIndex: number;
+            } | null;
             recipe?: {
                 entry: string;
                 outfile: string;
@@ -2730,16 +2850,7 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
             mtimeNs: string;
             ctimeNs: string;
         } | undefined;
-        schemaVersion: string;
-        argv: string[];
-        buildRecordSha256: string;
-        originalSourceReceiptSha256: string;
-        compilerVersion: string;
-        compilerApi: {
-            path: string;
-            realpath: string;
-            sha256: string;
-        };
+        compilerApi: any;
         binary: {
             path: string;
             realpath: string;
@@ -2753,16 +2864,47 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
             ino: string;
             launches: number;
         };
-        consumed: {
+        consumed: any;
+        generatedInputs: {
             path: string;
-            realpath: string;
-            sha256: string;
+            define: string;
+            value: string;
         }[];
         consumption: {
-            consumed: {
+            testingCoreDependency?: any;
+            testingCore?: {
+                schemaVersion: string;
+                root: string;
+                output: any;
+                input: any;
+                outputIdentity: {
+                    path: string;
+                    realpath: string;
+                    sha256: string;
+                    dev: string;
+                    ino: string;
+                    size: string;
+                    mtimeNs: string;
+                    ctimeNs: string;
+                };
+                witness: {
+                    schemaVersion: number;
+                    sourceSha256: any;
+                    artifactSha256: string;
+                };
+                interval: {
+                    rows: any;
+                    ancestors: any;
+                    toolchain: never[];
+                    resolverMetadata: any;
+                };
+            } | undefined;
+            effectiveArgv?: string[] | undefined;
+            consumed: any;
+            generatedInputs: {
                 path: string;
-                realpath: string;
-                sha256: string;
+                define: string;
+                value: string;
             }[];
             compilerExecution: {
                 node: {
@@ -2770,11 +2912,7 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
                     realpath: string;
                     sha256: string;
                 };
-                api: {
-                    path: string;
-                    realpath: string;
-                    sha256: string;
-                };
+                api: any;
                 binary: {
                     path: string;
                     realpath: string;
@@ -2827,6 +2965,40 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
             mtimeNs: string;
             ctimeNs: string;
         };
+        testingCoreDependency?: any;
+        testingCore?: {
+            schemaVersion: string;
+            root: string;
+            output: any;
+            input: any;
+            outputIdentity: {
+                path: string;
+                realpath: string;
+                sha256: string;
+                dev: string;
+                ino: string;
+                size: string;
+                mtimeNs: string;
+                ctimeNs: string;
+            };
+            witness: {
+                schemaVersion: number;
+                sourceSha256: any;
+                artifactSha256: string;
+            };
+            interval: {
+                rows: any;
+                ancestors: any;
+                toolchain: never[];
+                resolverMetadata: any;
+            };
+        } | undefined;
+        effectiveArgv?: string[] | undefined;
+        schemaVersion: string;
+        argv: string[];
+        buildRecordSha256: string;
+        originalSourceReceiptSha256: string;
+        compilerVersion: string;
     }[];
     output: {
         schemaVersion: string;
@@ -2848,14 +3020,19 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
  * imports and no module cache. Its native service consumes a retained sealed
  * descriptor. Runtime imports, full host closure and service readiness remain separate.
  * @param {{ record: ReturnType<typeof prepareBgVerifierBuildRecord>,
- *   invocation: BgBuildInvocation, argv: string[], expectedVersion: string, runPhase?: VerifierPhaseRunner }} args
+ *   invocation: BgBuildInvocation, argv: string[], expectedVersion: string, runPhase?: VerifierPhaseRunner,
+ *   testingCore?: { binding: ReturnType<typeof beginBgVerifierBuildTransaction>, producer?: BgTestingCoreProducer } }} args
  */
-export function compileBgVerifierInvocation({ record, invocation, argv, expectedVersion, runPhase }: {
+export function compileBgVerifierInvocation({ record, invocation, argv, expectedVersion, testingCore, runPhase }: {
     record: ReturnType<typeof prepareBgVerifierBuildRecord>;
     invocation: BgBuildInvocation;
     argv: string[];
     expectedVersion: string;
     runPhase?: VerifierPhaseRunner;
+    testingCore?: {
+        binding: ReturnType<typeof beginBgVerifierBuildTransaction>;
+        producer?: BgTestingCoreProducer;
+    };
 }): Promise<{
     metafile?: {
         path: string;
@@ -2867,16 +3044,7 @@ export function compileBgVerifierInvocation({ record, invocation, argv, expected
         mtimeNs: string;
         ctimeNs: string;
     } | undefined;
-    schemaVersion: string;
-    argv: string[];
-    buildRecordSha256: string;
-    originalSourceReceiptSha256: string;
-    compilerVersion: string;
-    compilerApi: {
-        path: string;
-        realpath: string;
-        sha256: string;
-    };
+    compilerApi: any;
     binary: {
         path: string;
         realpath: string;
@@ -2890,16 +3058,47 @@ export function compileBgVerifierInvocation({ record, invocation, argv, expected
         ino: string;
         launches: number;
     };
-    consumed: {
+    consumed: any;
+    generatedInputs: {
         path: string;
-        realpath: string;
-        sha256: string;
+        define: string;
+        value: string;
     }[];
     consumption: {
-        consumed: {
+        testingCoreDependency?: any;
+        testingCore?: {
+            schemaVersion: string;
+            root: string;
+            output: any;
+            input: any;
+            outputIdentity: {
+                path: string;
+                realpath: string;
+                sha256: string;
+                dev: string;
+                ino: string;
+                size: string;
+                mtimeNs: string;
+                ctimeNs: string;
+            };
+            witness: {
+                schemaVersion: number;
+                sourceSha256: any;
+                artifactSha256: string;
+            };
+            interval: {
+                rows: any;
+                ancestors: any;
+                toolchain: never[];
+                resolverMetadata: any;
+            };
+        } | undefined;
+        effectiveArgv?: string[] | undefined;
+        consumed: any;
+        generatedInputs: {
             path: string;
-            realpath: string;
-            sha256: string;
+            define: string;
+            value: string;
         }[];
         compilerExecution: {
             node: {
@@ -2907,11 +3106,7 @@ export function compileBgVerifierInvocation({ record, invocation, argv, expected
                 realpath: string;
                 sha256: string;
             };
-            api: {
-                path: string;
-                realpath: string;
-                sha256: string;
-            };
+            api: any;
             binary: {
                 path: string;
                 realpath: string;
@@ -2964,6 +3159,40 @@ export function compileBgVerifierInvocation({ record, invocation, argv, expected
         mtimeNs: string;
         ctimeNs: string;
     };
+    testingCoreDependency?: any;
+    testingCore?: {
+        schemaVersion: string;
+        root: string;
+        output: any;
+        input: any;
+        outputIdentity: {
+            path: string;
+            realpath: string;
+            sha256: string;
+            dev: string;
+            ino: string;
+            size: string;
+            mtimeNs: string;
+            ctimeNs: string;
+        };
+        witness: {
+            schemaVersion: number;
+            sourceSha256: any;
+            artifactSha256: string;
+        };
+        interval: {
+            rows: any;
+            ancestors: any;
+            toolchain: never[];
+            resolverMetadata: any;
+        };
+    } | undefined;
+    effectiveArgv?: string[] | undefined;
+    schemaVersion: string;
+    argv: string[];
+    buildRecordSha256: string;
+    originalSourceReceiptSha256: string;
+    compilerVersion: string;
 }>;
 /** Bind the maintained artifact writer's measured output to the ORIGINAL build
  * record. Builder exit status alone is never artifact qualification. This is a
@@ -2971,18 +3200,23 @@ export function compileBgVerifierInvocation({ record, invocation, argv, expected
  * @typedef {{ schemaVersion: 'bg-build-output-v1', buildRecordSha256: string,
  *   originalSourceReceiptSha256: string, entry: ReturnType<typeof readBgFileIdentity>,
  *   manifest: ReturnType<typeof readBgFileIdentity>,
+ *   logicalCompilerOutput?: { binding: ReturnType<typeof beginBgVerifierBuildTransaction>,
+ *     entry: ReturnType<typeof readBgIndependentOutputIdentity>,
+ *     metafile: ReturnType<typeof readBgIndependentOutputIdentity> },
  *   compilerReceipt?: Awaited<ReturnType<typeof compileBgVerifierInvocation>>,
  *   artifact: Extract<import('@papercusp/operator-core/lib/release/operator-artifact').OperatorArtifactIdentity,
  *     { status: 'measured' }> }} BgVerifierOutputRecord
  * @param {{ record: ReturnType<typeof prepareBgVerifierBuildRecord>,
  *   invocation: BgBuildInvocation, entry: string,
+ *   logicalBinding?: ReturnType<typeof beginBgVerifierBuildTransaction>,
  *   compilerReceipt?: Awaited<ReturnType<typeof compileBgVerifierInvocation>> }} options
  * @returns {Promise<BgVerifierOutputRecord>}
  */
-export function qualifyBgVerifierOutput({ record, invocation, entry, compilerReceipt }: {
+export function qualifyBgVerifierOutput({ record, invocation, entry, compilerReceipt, logicalBinding }: {
     record: ReturnType<typeof prepareBgVerifierBuildRecord>;
     invocation: BgBuildInvocation;
     entry: string;
+    logicalBinding?: ReturnType<typeof beginBgVerifierBuildTransaction>;
     compilerReceipt?: Awaited<ReturnType<typeof compileBgVerifierInvocation>>;
 }): Promise<BgVerifierOutputRecord>;
 /** Recheck the same detached output immediately before publication; never
@@ -3427,11 +3661,13 @@ export function verifierCommandAdmissionEnv({ repo, env, preflight }: {
 }): NodeJS.ProcessEnv;
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
- * @param {{ repo: string, runtimeAssetDonor?: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, sourceArchive?: { root: string, receiptSha256: string }, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number, prepareChildEnv?: (context: { sourceRoot: string }) => Promise<NodeJS.ProcessEnv | void> | NodeJS.ProcessEnv | void, releaseParentPrivatePg?: boolean, requestParentPgReleaseImpl?: (token: string) => Promise<unknown>,
+ * Preserve mode is for read-only consumers whose rebuilt output is external to
+ * the source tree; the post-command census rejects any mutation of retained files.
+ * @param {{ repo: string, runtimeAssetDonor?: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, sourceArchive?: { root: string, receiptSha256: string }, runtimeOutputs?: 'rebuild' | 'preserve', command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number, prepareChildEnv?: (context: { sourceRoot: string }) => Promise<NodeJS.ProcessEnv | void> | NodeJS.ProcessEnv | void, releaseParentPrivatePg?: boolean, requestParentPgReleaseImpl?: (token: string) => Promise<unknown>,
  *   signal?: AbortSignal, clock?: { now: () => number, setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>, clearTimeout: (timer: ReturnType<typeof setTimeout>) => void } }} options
  * @returns {Promise<number>}
  */
-export function runVerifierCommand({ repo, runtimeAssetDonor, ref, receiptPath, inputs, inputsFile, tauriInputs, sourceArchive, command, env, budgetFrom, childEstimateMs, preparationMaxMs, prepareChildEnv, releaseParentPrivatePg, requestParentPgReleaseImpl, signal, clock }: {
+export function runVerifierCommand({ repo, runtimeAssetDonor, ref, receiptPath, inputs, inputsFile, tauriInputs, sourceArchive, runtimeOutputs, command, env, budgetFrom, childEstimateMs, preparationMaxMs, prepareChildEnv, releaseParentPrivatePg, requestParentPgReleaseImpl, signal, clock }: {
     repo: string;
     runtimeAssetDonor?: string;
     ref: string;
@@ -3443,6 +3679,7 @@ export function runVerifierCommand({ repo, runtimeAssetDonor, ref, receiptPath, 
         root: string;
         receiptSha256: string;
     };
+    runtimeOutputs?: "rebuild" | "preserve";
     command: string[];
     env?: NodeJS.ProcessEnv;
     budgetFrom?: string;
@@ -3472,7 +3709,7 @@ export function verifyVerifierSource(dest: string, expected: Awaited<ReturnType<
     dependencyStaging?: boolean;
 }): Promise<{
     testedInputs: {
-        path: string;
+        path: any;
         sha256: string;
     }[];
     files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
@@ -3501,7 +3738,7 @@ export function verifyVerifierSourceSync(dest: string, expected: Awaited<ReturnT
     dependencyStaging?: boolean;
 }): {
     testedInputs: {
-        path: string;
+        path: any;
         sha256: string;
     }[];
     files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
@@ -4068,6 +4305,10 @@ export type BgExpectedHostManifest = {
     sha256: string;
     evidenceRef: string;
 };
+export type BgTestingCoreProducer = {
+    producing: any;
+    compilerReceiptSha256: string;
+};
 /**
  * Bind the maintained artifact writer's measured output to the ORIGINAL build
  * record. Builder exit status alone is never artifact qualification. This is a
@@ -4079,6 +4320,11 @@ export type BgVerifierOutputRecord = {
     originalSourceReceiptSha256: string;
     entry: ReturnType<typeof readBgFileIdentity>;
     manifest: ReturnType<typeof readBgFileIdentity>;
+    logicalCompilerOutput?: {
+        binding: ReturnType<typeof beginBgVerifierBuildTransaction>;
+        entry: ReturnType<typeof readBgIndependentOutputIdentity>;
+        metafile: ReturnType<typeof readBgIndependentOutputIdentity>;
+    };
     compilerReceipt?: Awaited<ReturnType<typeof compileBgVerifierInvocation>>;
     artifact: Extract<import("@papercusp/operator-core/lib/release/operator-artifact").OperatorArtifactIdentity, {
         status: "measured";

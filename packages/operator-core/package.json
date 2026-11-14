@@ -147,6 +147,7 @@
     "@aws-sdk/client-ssm": "^3.1145.0",
     "@aws-sdk/client-sts": "^3.1145.0",
     "@aws-sdk/credential-providers": "^3.1145.0",
+    "@babel/parser": "7.29.9",
     "@googleapis/calendar": "^20.0.0",
     "@googleapis/gmail": "^22.0.0",
     "@googleapis/pubsub": "^15.0.0",

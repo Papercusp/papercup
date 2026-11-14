@@ -23,6 +23,10 @@ export function toolResultNotOkReason(result: unknown): string | null;
 export function projectedResultReason(result: unknown): string | null;
 /** ECONNREFUSED is raised before an HTTP request can reach the operator. */
 export function isConnectionRefusedError(error: any): boolean;
+/** Undici raises UND_ERR_CONNECT_TIMEOUT before a TCP connection or HTTP request exists. */
+export function isConnectionTimeoutError(error: any): boolean;
+/** These failures prove the HTTP handler could not have received the request. */
+export function isPreConnectTransportError(error: any): boolean;
 export function buildFallbackWarning({ configuredPort, port, proxyPort, configuredPortError, authorityFallback, }: {
     configuredPort: any;
     port: any;
@@ -46,20 +50,25 @@ export function buildFallbackWarning({ configuredPort, port, proxyPort, configur
  */
 export function stampRequestSent(env?: NodeJS.ProcessEnv, write?: typeof writeFileSync, now?: () => number): void;
 /**
+ * Retry only failures that prove no TCP connection was established:
+ * ECONNREFUSED and UND_ERR_CONNECT_TIMEOUT. Resets, response timeouts, HTTP
+ * errors, and other fetch failures may follow a dispatched POST and are not replayed.
  * @param {string | URL | Request} url
  * @param {RequestInit} init
- * @param {{fetchImpl?: typeof fetch, retryWindowMs?: number, retryDelayMs?: number, sleepImpl?: (ms: number) => Promise<unknown>, now?: () => number, onRetry?: (event: {attempt: number, delayMs: number, remainingMs: number}) => void}} [options]
+ * @param {{fetchImpl?: typeof fetch, retryWindowMs?: number, retryDelayMs?: number, sleepImpl?: (ms: number) => Promise<unknown>, now?: () => number, retryIf?: (error: unknown) => boolean, onRetry?: (event: {attempt: number, delayMs: number, remainingMs: number, error: unknown}) => void}} [options]
  */
-export function fetchWithConnectionRecovery(url: string | URL | Request, init: RequestInit, { fetchImpl, retryWindowMs, retryDelayMs, sleepImpl, now, onRetry, }?: {
+export function fetchWithConnectionRecovery(url: string | URL | Request, init: RequestInit, { fetchImpl, retryWindowMs, retryDelayMs, sleepImpl, now, retryIf, onRetry, }?: {
     fetchImpl?: typeof fetch;
     retryWindowMs?: number;
     retryDelayMs?: number;
     sleepImpl?: (ms: number) => Promise<unknown>;
     now?: () => number;
+    retryIf?: (error: unknown) => boolean;
     onRetry?: (event: {
         attempt: number;
         delayMs: number;
         remainingMs: number;
+        error: unknown;
     }) => void;
 }): Promise<Response>;
 /**
@@ -97,7 +106,7 @@ export function parseArgs(argv: string[]): {
 export function jsonSourceKind({ jsonArgs, flags }?: {
     jsonArgs?: string;
     flags?: McpCallFlags;
-}): "file" | "inline" | "stdin" | null;
+}): "file" | "stdin" | "inline" | null;
 /**
  * Read and parse the selected JSON args source. `readFile` is injectable for
  * tests; descriptor 0 is used for the `--json -` stdin sentinel.
@@ -144,13 +153,71 @@ export function superuserTokenPath(env?: NodeJS.ProcessEnv, home?: string): stri
 export function resolveOperatorUrlPort(env?: NodeJS.ProcessEnv): string | null;
 /** Resolve the local resilient MCP proxy port using the same default as ptool. */
 export function resolveMcpProxyPort(env?: NodeJS.ProcessEnv): string;
+/**
+ * The normalized current-build-default tool a tools/call targets, unwrapping
+ * `tools:invoke { name, args }` and matching a `code:run` script, or `null`.
+ * Behaviour matches `currentBuildDefaultTool` in build-routing.ts.
+ * @param {{name?: unknown, arguments?: unknown}} params
+ * @returns {string | null}
+ */
+export function currentBuildDefaultToolForCall(params: {
+    name?: unknown;
+    arguments?: unknown;
+}): string | null;
+/**
+ * Whether a call must reach the current build: it names `build: 'staging'`, or it names no
+ * build and its tool defaults to the current build. `build: 'main'` is the deliberate opt-out.
+ * @param {{name?: unknown, arguments?: unknown}} params
+ * @returns {boolean}
+ */
+export function callNeedsCurrentBuild(params: {
+    name?: unknown;
+    arguments?: unknown;
+}): boolean;
+/** The proxy's current-build target: PAPERCUSP_MCP_PROXY_DEV_FALLBACK_PORT, default 3170. */
+export function resolveCurrentBuildPort(env?: NodeJS.ProcessEnv): string;
 /** Resolve the operator ports to try. An explicit CLI port is a fail-closed pin;
- * the inherited environment hint retains its recovery fallback to canonical and proxy. */
-export function resolveCandidatePorts(flags?: {}, env?: NodeJS.ProcessEnv): {
+ * the inherited environment hint retains its recovery fallback to canonical and proxy.
+ * A call that must reach the current build tries the proxy, then the current build
+ * itself, and reaches the configured or canonical operator only after both refused a
+ * connection (a host with no current-build route, such as a VM rig).
+ * @param {{port?: unknown}} [flags]
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {{currentBuild?: boolean}} [options]
+ * @returns {{configuredPort: string, candidatePorts: string[], pinned: boolean}}
+ */
+export function resolveCandidatePorts(flags?: {
+    port?: unknown;
+}, env?: NodeJS.ProcessEnv, { currentBuild }?: {
+    currentBuild?: boolean;
+}): {
     configuredPort: string;
     candidatePorts: string[];
     pinned: boolean;
 };
+/**
+ * Warning for a current-build call that an endpoint other than the proxy or the current
+ * build answered; `null` when the answer came from one of those two.
+ * @param {{tool: string, port: string, proxyPort: string, currentBuildPort: string}} input
+ * @returns {string | null}
+ */
+export function buildCurrentBuildFallbackWarning({ tool, port, proxyPort, currentBuildPort }: {
+    tool: string;
+    port: string;
+    proxyPort: string;
+    currentBuildPort: string;
+}): string | null;
+export function probeMcpBuildIdentity(port: any, expectedSha: any, { pinned, fetchImpl, retryWindowMs, retryDelayMs, sleepImpl, }?: {
+    pinned?: boolean | undefined;
+    fetchImpl?: typeof fetch | undefined;
+    retryWindowMs?: number | undefined;
+    retryDelayMs?: number | undefined;
+    sleepImpl?: ((ms: any) => Promise<any>) | undefined;
+}): Promise<{
+    matches: boolean;
+    actual: any;
+    reason: string;
+}>;
 /**
  * Resolve the scoped repair-queue target selected by the caller.
  */
@@ -179,9 +246,9 @@ export function isInvalidSuperuserBearerResult(result: any): any;
 export function isRecoverableAuthorityDenial(raw: any): boolean;
 /**
  * Describe an exhausted endpoint search without turning every transport error
- * into a claim that the port had no listener. Only ECONNREFUSED proves the
- * request could not have reached the MCP handler; resets such as UND_ERR_SOCKET
- * leave the tool outcome unknown.
+ * into a claim that the port had no listener. ECONNREFUSED and
+ * UND_ERR_CONNECT_TIMEOUT both happen before the MCP handler can receive the
+ * request; resets and response timeouts leave the tool outcome unknown.
  */
 export function buildUnreachableDiagnostic({ attempts, configuredPort, pinned }: {
     attempts: any;
@@ -189,14 +256,15 @@ export function buildUnreachableDiagnostic({ attempts, configuredPort, pinned }:
     pinned: any;
 }): string;
 /**
- * Explain a retry after ECONNREFUSED without attributing the refusal to an
+ * Explain a retry after a pre-connect failure without attributing it to an
  * operator restart. The result is scoped to this helper's caller and endpoint.
  */
-export function buildConnectionRetryDiagnostic({ port, attempt, delayMs, remainingMs }: {
+export function buildConnectionRetryDiagnostic({ port, attempt, delayMs, remainingMs, error }: {
     port: any;
     attempt: any;
     delayMs: any;
     remainingMs: any;
+    error: any;
 }): string;
 /**
  * Build the scoped-superuser query for the recovery transport.
@@ -220,7 +288,6 @@ export function buildMcpSessionQuery({ client, workspace, harness, role, origin,
     nativeSessionOverride?: string | null;
     env?: NodeJS.ProcessEnv;
 }): URLSearchParams;
-/** A foreign native-session refusal is emitted before the tool dispatcher runs. */
 export function isForeignNativeSessionRejection(result: any): any;
 /** Retry only an inherited Codex claim; an explicit launcher binding stays authoritative.
  * @param {unknown} result
@@ -443,6 +510,18 @@ export const MCP_CALL_ADMISSION_RETRY_MAX_DELAY_MS: 10000;
  */
 export const BOOLEAN_FLAGS: Set<string>;
 export const VALUE_FLAGS: Set<string>;
+/**
+ * Tools the resilient MCP proxy sends to the CURRENT build when the caller names no build
+ * (`CURRENT_BUILD_DEFAULT_TOOLS` in apps/operator/lib/mcp-proxy/build-routing.ts). The :3070
+ * release operator runs the last green `main`, which trails staging for as long as the gate
+ * is red. This CLI is the sanctioned fallback for a dropped MCP client, and it used to try
+ * :3070 first, so it silently undid the proxy's routing: consult calls made through it ran
+ * routing code about six weeks old and refused every Codex-backed expert
+ * (WI-6554700010048041). The VM-rig deploy copies this script alone, so it cannot import
+ * the TypeScript module; the list and its matching are duplicated here and held equal to
+ * the proxy's by a parity test in apps/operator/scripts/mcp-call.test.ts.
+ */
+export const CURRENT_BUILD_DEFAULT_TOOLS: readonly string[];
 /**
  * `--transport` values. `auto` (the default) uses the operator's HTTP
  * endpoints and falls back to its agent-MCP unix socket only when EVERY HTTP
