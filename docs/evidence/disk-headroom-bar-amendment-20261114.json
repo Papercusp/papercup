@@ -1,0 +1,11 @@
+{
+  "kind": "governed-review-reference",
+  "subjectPlan": "disk-durable-headroom-2026-10-15",
+  "rubricRef": "acceptance-disk-durable-headroom-2026-10-15",
+  "workItem": "WI-6554700010014942",
+  "criteriaCount": 10,
+  "status": "candidate-only",
+  "reviewReceipt": "review-1014b3bac1be5d5e9ef16f0fd6fe208c009773c7447ca089c92bae6f46009b6c",
+  "payloadCustody": "The canonical rubrics:amend review retains the complete measured candidate on the work-item thread; host-specific inputs are workspace evidence and are not shipped application source.",
+  "acceptance": "No approval, native qualification, readiness, elapsed soak or shipment is asserted by this reference."
+}
