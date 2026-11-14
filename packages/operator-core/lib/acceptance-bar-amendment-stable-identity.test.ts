@@ -545,6 +545,42 @@ describe('unchanged historical legacy projections (EI-28270326327739435)', () =>
     expect(revisions.get(row.spec_id)).toBe(row.current_revision + 1);
   });
 
+  // WI-6554700010048686: the clause's OWN bar changes without changing its behavior text.
+  const ownPlaneAmendment = () => {
+    const criteria = template.criteria.map((criterion) => {
+      if (criterion.barKey !== 'R-1') return criterion;
+      const next = { ...criterion, evidencePlane: 'live' as const };
+      return { ...next, barHash: computeAcceptanceBarHash(next as never) };
+    });
+    return { ...template, criteria, barSetHash: computeAcceptanceBarSetHash(criteria) };
+  };
+
+  it('previews and applies an own-bar plane repair that keeps the proven legacy behavior text', async () => {
+    const row = legacy();
+    const rows = [row, sibling()];
+    const next = ownPlaneAmendment();
+    await expect(preview(rows, next)).resolves.toMatchObject({ generatedSpecCount: 2 });
+    await synchronizeAcceptanceBarRevision(sqlStub(rows) as never, {
+      workspaceId: 'workspace', harnessSlug: 'papercusp', rubricSlug: RUBRIC, rubricRevision: 4,
+      templateData: next, previousTemplateData: template, actorId: 'amender',
+    });
+    const write = h.setSpecClause.mock.calls.map(([call]) => call as SpecClauseWrite)
+      .find((call) => call.specId === row.spec_id);
+    expect(write).toMatchObject({ behavior, falsifier, sourceBar: { evidencePlane: 'live', rubricRevision: 4 } });
+  });
+
+  const misPinned = formatRubricRevisionSnapshot('', { ...template, barSetHash: OLD_SET_HASH,
+    criteria: template.criteria.map((criterion) =>
+      criterion.barKey === 'R-1' ? { ...criterion, evidencePlane: 'live' as const } : criterion) }, null, 3);
+  it.each([
+    ['mis-pinned history', [misPinned], {}],
+    ['missing history', [], {}],
+    ['a stale content hash', [snapshot], { content_hash: 'c'.repeat(64) }],
+  ])('still lints the unchanged legacy behavior on an own-bar repair with %s', async (_name, snapshots, patch) => {
+    await expect(preview([{ ...legacy(), ...patch }, sibling()], ownPlaneAmendment(), snapshots as string[]))
+      .rejects.toThrow(/behavior.atomicity/);
+  });
+
   it.each([
     ['missing content hash', { content_hash: null }],
     ['changed meaning', { behavior: `${behavior} The observer records a verdict.` }],

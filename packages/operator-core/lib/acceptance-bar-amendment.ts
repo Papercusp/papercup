@@ -993,7 +993,9 @@ function historicalAcceptanceBarPinResolver(
   args: { workspaceId: string; harnessSlug: string; rubricSlug: string },
 ) {
   const pinnedSnapshots = new Map<number, Promise<unknown[]>>();
-  return async (clause: ProjectedAcceptanceClause, next: Pick<SpecClauseWrite, 'sourceBar'>): Promise<boolean> => {
+  // The pinned historical BAR itself, or null when history is missing, ambiguous or
+  // does not carry this clause's exact set hash, bar key and bar hash.
+  const historicalBar = async (clause: ProjectedAcceptanceClause): Promise<ProjectionCriterion | null> => {
     const revision = Number(clause.source_rubric_revision);
     let pending = pinnedSnapshots.get(revision);
     if (!pending) {
@@ -1011,14 +1013,18 @@ function historicalAcceptanceBarPinResolver(
       pinnedSnapshots.set(revision, pending);
     }
     const snapshots = await pending;
-    if (snapshots.length !== 1) return false;
+    if (snapshots.length !== 1) return null;
     const historical = rubricTemplateDataAuthoringSchema.safeParse(snapshots[0]);
     if (!historical.success || historical.data.kind !== 'acceptance'
-      || historical.data.barSetHash !== clause.source_bar_set_hash) return false;
+      || historical.data.barSetHash !== clause.source_bar_set_hash) return null;
     const bars = historical.data.criteria.filter((bar) => bar.barKey === clause.source_bar_key);
-    return bars.length === 1 && bars[0]!.barHash === clause.source_bar_hash
-      && bars[0]!.evidencePlane === next.sourceBar?.evidencePlane;
+    return bars.length === 1 && bars[0]!.barHash === clause.source_bar_hash ? bars[0]! : null;
   };
+  const resolves = async (clause: ProjectedAcceptanceClause, next: Pick<SpecClauseWrite, 'sourceBar'>): Promise<boolean> => {
+    const bar = await historicalBar(clause);
+    return bar !== null && bar.evidencePlane === next.sourceBar?.evidencePlane;
+  };
+  return Object.assign(resolves, { historicalBar });
 }
 
 /** Preview and apply derive the same payload, including retained atomic refinements. */
@@ -1560,6 +1566,8 @@ export async function validateAcceptanceBarRevisionProjectionPreview(
   });
   const candidateWrites: SpecClauseWrite[] = [];
   const retainedSpecIds = new Set<string>();
+  // Re-revisioned clauses whose accepted behavior text is unchanged (WI-6554700010048686).
+  const unchangedBehaviorSpecIds = new Set<string>();
   const historicalPinResolves = historicalAcceptanceBarPinResolver(sql, args);
   for (const { criterion, barKey, planItemId } of missingMappings) {
     if (!criterion.barHash || !criterion.evidencePlane || !data.barSetHash) {
@@ -1609,6 +1617,9 @@ export async function validateAcceptanceBarRevisionProjectionPreview(
     // for accepted legacy clauses. Identity or matching text alone is not proof.
     if (isProvenanceOnlyReprojection(clause, next) && await historicalPinResolves(clause, next)) {
       retainedSpecIds.add(clause.spec_id);
+    } else if (hasUnchangedPinnedBehaviorShape(clause, next) && isUnchangedPinnedBehavior(
+      clause, next, (await historicalPinResolves.historicalBar(clause))?.evidencePlane)) {
+      unchangedBehaviorSpecIds.add(clause.spec_id);
     }
     candidateWrites.push(next);
   }
@@ -1622,7 +1633,7 @@ export async function validateAcceptanceBarRevisionProjectionPreview(
     return [
       ...(!shape.success ? shape.error.issues.map((issue) => `${write.specId}.${issue.path.join('.')}: ${issue.message}`) : []),
       ...specClauseWriteIssues(write).map((issue) => JSON.stringify(issue)),
-      ...(retainedSpecIds.has(write.specId) ? [] : [
+      ...(retainedSpecIds.has(write.specId) || unchangedBehaviorSpecIds.has(write.specId) ? [] : [
         ['behavior.atomicity', specBehaviorNonAtomicReason(write.behavior)],
         ['behavior.falsifiability', specBehaviorNonFalsifiableReason(write.behavior)],
       ].flatMap(([field, reason]) => reason ? [`${write.specId}.${field}: ${reason}`] : [])),
@@ -1649,6 +1660,68 @@ export async function validateAcceptanceBarRevisionProjectionPreview(
  *     should have died;
  *   - a revision that did not move needs no carry (its proof is already current).
  */
+/**
+ * WI-6554700010048686: may a re-revisioned clause skip the behavior-text lints?
+ *
+ * An amendment that changes a bar's intent, evidence or plane re-revisions every
+ * AUTO-BAR clause of that bar even when its behavior text is byte-identical. Linting
+ * that unchanged accepted text as new refused every non-behavior repair of a bar whose
+ * legacy promise predates the atomicity lint; acceptanceBarAtomicityIssues already
+ * exempts unchanged projected behavior at bar level. Matching text alone is not
+ * proof: the stored revision, rebuilt from its own row and the evidence plane of its
+ * pinned historical BAR, must reproduce its stored content hash. A hand-edited,
+ * orphaned or mis-pinned row therefore still gets the full lint.
+ */
+export function isUnchangedPinnedBehavior(
+  stored: ProjectedAcceptanceClause,
+  next: SpecClauseWrite,
+  historicalEvidencePlane: NonNullable<SpecClauseWrite['sourceBar']>['evidencePlane'] | null | undefined,
+): boolean {
+  if (!hasUnchangedPinnedBehaviorShape(stored, next) || !next.sourceBar || !historicalEvidencePlane) return false;
+  const rubricRevision = Number(stored.source_rubric_revision);
+  const asStored: SpecClauseWrite = {
+    ...next,
+    planItemId: stored.plan_item_id,
+    behavior: stored.behavior,
+    behaviorClass: stored.behavior_class,
+    requiredEvidence: stored.required_evidence,
+    requiredTestLayers: stored.required_test_layers,
+    mutationRequired: stored.mutation_required,
+    lifecycleStatus: stored.lifecycle_status,
+    exemption: stored.exemption,
+    supersedes: stored.supersedes_spec_id && stored.supersedes_revision
+      ? { specId: stored.supersedes_spec_id, revision: stored.supersedes_revision } : null,
+    falsifier: stored.falsifier,
+    acceptanceRef: stored.acceptance_ref ?? null,
+    sourceBar: {
+      ...next.sourceBar,
+      barKey: stored.source_bar_key, barHash: stored.source_bar_hash,
+      barSetHash: stored.source_bar_set_hash, rubricRevision, evidencePlane: historicalEvidencePlane,
+    },
+  };
+  return specClauseContentHash(asStored) === stored.content_hash;
+}
+
+/**
+ * The cheap, row-local preconditions of isUnchangedPinnedBehavior. Callers check this
+ * BEFORE resolving the pinned historical BAR, so a row without complete stored
+ * provenance never triggers a history lookup (the same order isProvenanceOnlyReprojection
+ * imposes on the retained-revision path).
+ */
+export function hasUnchangedPinnedBehaviorShape(
+  stored: ProjectedAcceptanceClause,
+  next: SpecClauseWrite,
+): stored is ProjectedAcceptanceClause & {
+  content_hash: string; source_bar_key: string; source_bar_hash: string; source_bar_set_hash: string;
+} {
+  if (next.behavior !== stored.behavior || !next.sourceBar) return false;
+  if (!stored.content_hash || !stored.source_bar_key || !stored.source_bar_hash || !stored.source_bar_set_hash) {
+    return false;
+  }
+  const rubricRevision = Number(stored.source_rubric_revision);
+  return stored.source_rubric_revision != null && Number.isInteger(rubricRevision) && rubricRevision > 0;
+}
+
 /**
  * P-001: is this re-projection a no-op for the clause's MEANING?
  *
