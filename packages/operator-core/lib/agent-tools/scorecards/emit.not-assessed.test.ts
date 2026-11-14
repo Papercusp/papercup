@@ -11,7 +11,7 @@
  *      per criterion and rubric-wide, and never as rubric staleness.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { OBSERVATION_UNKNOWN_REASONS } from '../../harness/improvements/observation-types';
+import { OBSERVATION_UNKNOWN_REASONS, type ScorecardGradingAudit } from '../../harness/improvements/observation-types';
 import { listScorecards, scorecardTrend } from '../../scorecards';
 import { scorecardRatingEntrySchema } from './evaluate';
 
@@ -20,11 +20,20 @@ import { scorecardRatingEntrySchema } from './evaluate';
 // keep the real registry/schema exports without bootstrapping unrelated tools.
 vi.mock('../../../../agent-mcp/src/bootstrap', () => ({}));
 
+const RUBRIC_IDENTITY = { revision: 1, criteriaHash: 'a'.repeat(64) };
+const AUDIT_IDENTITY = { revision: 1, criteriaHash: 'b'.repeat(64) };
+
 type Row = {
   issue_id: string;
   created_by: string;
   created_at: string;
-  payload: { observation: { rubricRef: string; ratings: Record<string, Record<string, unknown>> } };
+  payload: { observation: {
+    rubricRef: string;
+    rubricRevision: number;
+    criteriaHash: string;
+    gradingAudit?: ScorecardGradingAudit;
+    ratings: Record<string, Record<string, unknown>>;
+  } };
 };
 
 function card(id: string, at: string, ratings: Record<string, Record<string, unknown>>): Row {
@@ -32,7 +41,16 @@ function card(id: string, at: string, ratings: Record<string, Record<string, unk
     issue_id: id,
     created_by: 'grader-a',
     created_at: at,
-    payload: { observation: { rubricRef: 'goal-test-rubric', ratings } },
+    payload: { observation: {
+      rubricRef: 'goal-test-rubric',
+      rubricRevision: RUBRIC_IDENTITY.revision,
+      criteriaHash: RUBRIC_IDENTITY.criteriaHash,
+      gradingAudit: {
+        state: 'passed', metaRubricRef: 'grading-integrity', stampedAt: at,
+        rubricRevision: AUDIT_IDENTITY.revision, criteriaHash: AUDIT_IDENTITY.criteriaHash,
+      },
+      ratings,
+    } },
   };
 }
 
@@ -60,6 +78,7 @@ beforeEach(() => {
 
 const RUBRIC = {
   rubricId: 'goal-test-rubric',
+  ...RUBRIC_IDENTITY,
   workspaceId: 'test-workspace',
   kind: 'standard',
   characteristic: 'goal-quality',
@@ -108,8 +127,10 @@ vi.mock('../../issues-engineer', async (importOriginal) => ({
 
 vi.mock('../../rubrics', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../rubrics')>()),
-  getRubric: async () => RUBRIC,
-  getRubricWithoutSeeding: async () => RUBRIC,
+  getRubric: async (ref: string) => ref === 'grading-integrity'
+    ? { ...RUBRIC, rubricId: ref, ...AUDIT_IDENTITY } : RUBRIC,
+  getRubricWithoutSeeding: async (ref: string) => ref === 'grading-integrity'
+    ? { ...RUBRIC, rubricId: ref, ...AUDIT_IDENTITY } : RUBRIC,
   rubricInstrumentContract: () => null,
 }));
 
@@ -147,6 +168,7 @@ describe('rubrics:trend separates unfinished grading from instrument failures', 
   it('splits unknowns per criterion and rubric-wide', async () => {
     const trend = await scorecardTrend({ rubricRef: 'goal-test-rubric' });
 
+    expect(trend.scorecardCount).toBe(3);
     expect(trend.unknownBreakdown).toEqual({
       total: 6,
       graderIncomplete: 3,
@@ -161,6 +183,26 @@ describe('rubrics:trend separates unfinished grading from instrument failures', 
     expect(beta.notAssessedCount).toBe(0);
     expect(beta.unknownReasons).toEqual({ 'instrument-unavailable': 3 });
     expect(gamma.unknownReasons).toEqual({});
+  });
+
+  it.each([
+    ['missing-audit', 'grading-audit-missing'],
+    ['stale-audit', 'grading-audit-stale'],
+    ['stale-rubric', 'incompatible-rubric'],
+  ])('does not aggregate unknown labels from a %s card', async (kind, exclusion) => {
+    const row = card('EI-incompatible', '2026-10-01T00:00:00.000Z', {
+      alpha: unknown('not-assessed'), beta: healthy, gamma: healthy,
+    });
+    const observation = row.payload.observation;
+    if (kind === 'missing-audit') delete observation.gradingAudit;
+    else if (kind === 'stale-audit') observation.gradingAudit!.criteriaHash = 'c'.repeat(64);
+    else observation.rubricRevision += 1;
+    rowsForQuery = [row];
+
+    const trend = await scorecardTrend({ rubricRef: 'goal-test-rubric' });
+    expect(trend.scorecardCount).toBe(0);
+    expect(trend.unknownBreakdown.total).toBe(0);
+    expect(trend.sample.excludedCounts).toEqual({ [exclusion]: 1 });
   });
 
   it('unfinished grading is not rubric staleness; a real instrument failure still is', async () => {
