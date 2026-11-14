@@ -1281,13 +1281,17 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
       postgres: [{ pool: 'fixture-admin', client: admin }, { pool: 'org-admin', client: defaultFallbackSql }],
       serializedSqlParameters: observationWrites.filter(row => row.pool === 'fixture-admin') });
     try {
+      const admittedAt = new Date().toISOString(), monotonicStartMs = performance.now();
       await wrongPoolTap.run(() => emitFallbackBatches('wrong-pool'));
       const census = wrongPoolTap.seal();
       expect(census.complete).toBe(true);
       expect(census.rows).toHaveLength(2);
       expect(census.rows.every(row => row.sql?.pool === 'org-admin'
         && row.kind === 'unknown' && row.persistedBytes === null)).toBe(true);
-      expect(measureGroundedEvidence({ scope: sqlScope, storage: census }).values.storageBytes).toBeNull();
+      expect(measureGroundedEvidence({ scope: sqlScope, storage: census,
+        boundary: { scope: sqlScope, sourceRef: 'isolated-pg:fallback-wrong-pool-control', admittedAt,
+          settledAt: new Date().toISOString(), monotonicStartMs, monotonicEndMs: performance.now(), drained: true },
+      }).values.storageBytes).toBeNull();
       if (artifactDirectory) await writeFile(join(artifactDirectory, 'gec-b-fallback-serializer-control.json'),
         canonicalJson({ controls: fallbackControls, wrongPool: census, observationWrites,
           containment: { fixtureDatabase: fixtureDatabase[0].database, defaultDatabase: defaultDatabase[0].database } }));

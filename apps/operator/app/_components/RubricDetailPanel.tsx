@@ -22,6 +22,7 @@ import type { RubricCriterionCheck } from "@papercusp/operator-core/lib/agent-to
 import * as Collapsible from "@radix-ui/react-collapsible";
 import { ChevronDown, Minus, TrendingDown, TrendingUp, X } from "lucide-react";
 import { Table, type TableColumn } from "../harness/Table";
+import { Select } from "../harness/Select";
 import { filterCountLabel } from "../harness/filters/filter-count-label";
 import type { CountEvidence } from "../harness/filters/count-evidence";
 import ScorecardDetail, {
@@ -928,13 +929,19 @@ function RubricDetailPanelBody({ rubricId, onBack }: RubricDetailPanelProps) {
       )}
 
       <label>History view{' '}
-        <select aria-label="History view" value={historyMode} onChange={event => {
-          setHistoryRows([]); setHistoryCursor(null); setNextHistoryCursor(null);
-          setHistoryMode(event.target.value as 'accepted' | 'review-history');
-        }}>
-          <option value="review-history">Review history, including excluded results</option>
-          <option value="accepted">Accepted results</option>
-        </select>
+        <Select
+          ariaLabel="History view"
+          testId="rubric-history-mode"
+          value={historyMode}
+          onChange={value => {
+            setHistoryRows([]); setHistoryCursor(null); setNextHistoryCursor(null);
+            setHistoryMode(value as 'accepted' | 'review-history');
+          }}
+          options={[
+            { value: 'review-history', label: 'Review history, including excluded results' },
+            { value: 'accepted', label: 'Accepted results' },
+          ]}
+        />
       </label>
       <div aria-label="Last accepted result">
         {acceptedScorecards.error ? 'Last accepted result unavailable.'

@@ -438,14 +438,14 @@ async function exercisePgAndPushRecovery(input: {
 
   let injectedPeerAdvance = false;
   const pushAttempts: PushAttempt[] = [];
-  const wrappedRunGit: RunGit = async (args, cwd) => {
+  const wrappedRunGit: RunGit = async (args, cwd, options) => {
     const isLocalPush = cwd === local && args.includes('push');
     if (isLocalPush && !injectedPeerAdvance) {
       injectedPeerAdvance = true;
       await writeCommit(input.runGit, peer, 'peer.txt', `${input.runId}:peer\n`, 'physical Phase G peer race');
       await git(input.runGit, peer, ['push', 'origin', 'HEAD:main']);
     }
-    const result = await input.runGit(args, cwd);
+    const result = await input.runGit(args, cwd, options);
     if (isLocalPush) pushAttempts.push({ args: [...args], ...result });
     return result;
   };
