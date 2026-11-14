@@ -224,6 +224,46 @@ describe('dev:pipeline_position current-build test route selection', () => {
     }
   });
 
+  // WI-6554700010048236: a failing staging sync is WHY :3170 cannot pick the change
+  // up; the route names it instead of leaving the reader to wait on :3170.
+  it('names a failing staging-sync streak as a prerequisite of a staging-backed route', async () => {
+    const stagingSync = {
+      consecutiveFailures: 4,
+      failingSince: '2026-11-14T00:00:00Z',
+      lastFailedAt: '2026-11-14T00:20:00Z',
+      lastFailedTarget: 'c'.repeat(40),
+      lastFailedPhase: 'prepare',
+      lastOkSha: 'a'.repeat(40),
+      lastOkAt: '2026-11-13T23:55:00Z',
+    };
+    vi.mocked(gitPipelinePosition).mockResolvedValue({
+      ...running,
+      servingRuntimes: [{ runtime: 'staging-operator', buildSha: 'a'.repeat(40), containsChange: false, stagingSync }],
+    } as unknown as PipelinePosition);
+    const out = await tool.handler({ path: PATH, testClass: 'operator-api' } as never, {} as never) as {
+      data: { currentBuildTestRoute?: { readiness: string; prerequisites: string[] } };
+    };
+    expect(out.data.currentBuildTestRoute?.readiness).toBe('requires-prerequisites');
+    const streakLine = out.data.currentBuildTestRoute?.prerequisites.find((p) => p.startsWith('Staging sync recovers'));
+    expect(streakLine).toBe(
+      'Staging sync recovers: 4 consecutive failed run(s) since 2026-11-14T00:00:00Z ' +
+        '(last: prepare phase on cccccccccc); :3170 last verified serving aaaaaaaaaa at 2026-11-13T23:55:00Z',
+    );
+
+    // Calibration: a healthy sync (no streak) adds no such line.
+    vi.mocked(gitPipelinePosition).mockResolvedValue({
+      ...running,
+      servingRuntimes: [{
+        runtime: 'staging-operator', buildSha: 'a'.repeat(40), containsChange: false,
+        stagingSync: { ...stagingSync, consecutiveFailures: 0 },
+      }],
+    } as unknown as PipelinePosition);
+    const healthy = await tool.handler({ path: PATH, testClass: 'operator-api' } as never, {} as never) as {
+      data: { currentBuildTestRoute?: { prerequisites: string[] } };
+    };
+    expect(healthy.data.currentBuildTestRoute?.prerequisites.some((p) => p.startsWith('Staging sync recovers'))).toBe(false);
+  });
+
   it('requires private background runtime prerequisites before claiming a runnable route', async () => {
     vi.mocked(gitPipelinePosition).mockResolvedValue(running);
     const out = await tool.handler({ path: PATH, testClass: 'background-federation' } as never, {} as never) as {

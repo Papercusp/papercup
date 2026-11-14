@@ -5,11 +5,18 @@
  * read as an answer for all of them. Each case below pins one runtime's own rule, and
  * the three-valued contract (null-with-a-reason is never collapsed into false).
  */
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   CURRENT_BUILD_TEST_CLASSES,
   currentBuildRoutesForRuntime,
   currentBuildTestRoute,
+  defaultStagingSyncStateDir,
+  parseStagingSyncState,
+  realReadStagingSyncState,
+  stagingSyncStreakPrerequisite,
   SERVING_RUNTIME_IDS,
   SERVING_RUNTIMES,
   describeServingRuntimes,
@@ -547,6 +554,98 @@ describe('probes', () => {
       },
     );
     expect(p.instances).toEqual({ total: 2, current: 1 });
+  });
+
+  it('reads the staging-sync record only for the staging checkout runtime, and only when injected', async () => {
+    const stagingSync = parseStagingSyncState('count=2\nfirst_failed_at=t0\n', null);
+    const deps = {
+      probeUnitStart: async () => null,
+      vintageRows: [],
+      localHost: 'box',
+      fileMtimeMs: null,
+      probeHealthSha: async () => null,
+      probeHealthBundle: async () => null,
+      blobContainsAt: async () => ({ contains: null, unknown: null }),
+    };
+    let reads = 0;
+    const readStagingSyncState = async () => {
+      reads += 1;
+      return stagingSync;
+    };
+    const staging = await probeServingRuntime({ runtime: 'staging-operator', role: 'owner' }, { ...deps, readStagingSyncState });
+    expect(staging.stagingSync).toEqual(stagingSync);
+    const release = await probeServingRuntime({ runtime: 'release-operator', role: 'owner' }, { ...deps, readStagingSyncState });
+    expect(release.stagingSync).toBeUndefined();
+    expect(reads).toBe(1);
+    // Not injected = not measured: the field stays absent rather than reading as healthy.
+    const unmeasured = await probeServingRuntime({ runtime: 'staging-operator', role: 'owner' }, deps);
+    expect(unmeasured.stagingSync).toBeUndefined();
+    // A failing reader degrades to null (not measured), never to a thrown probe.
+    const failing = await probeServingRuntime(
+      { runtime: 'staging-operator', role: 'owner' },
+      { ...deps, readStagingSyncState: async () => { throw new Error('EACCES'); } },
+    );
+    expect(failing.stagingSync).toBeNull();
+    // The evaluated entry carries the field through to dev:pipeline_position.
+    expect(evaluateServingRuntime(staging).stagingSync).toEqual(stagingSync);
+  });
+});
+
+describe('staging-sync freshness (WI-6554700010048236)', () => {
+  // The exact shape sync-staging-checkout.sh's record_staging_sync_failure writes.
+  const STREAK =
+    'count=3\nfirst_failed_at=2026-11-14T00:00:00Z\nfirst_target=' + 'b'.repeat(40) +
+    '\nlast_target=' + 'c'.repeat(40) + '\nlast_failed_at=2026-11-14T00:10:00Z\nlast_phase=restart\nlast_exit=1\nalarm=1\n';
+  const LAST_OK = 'sha=' + 'a'.repeat(40) + '\nat=2026-11-13T23:55:00Z\ntip=' + 'a'.repeat(40) + '\n';
+
+  it('parses the streak and last-ok records the script writes', () => {
+    expect(parseStagingSyncState(STREAK, LAST_OK)).toEqual({
+      consecutiveFailures: 3,
+      failingSince: '2026-11-14T00:00:00Z',
+      lastFailedAt: '2026-11-14T00:10:00Z',
+      lastFailedTarget: 'c'.repeat(40),
+      lastFailedPhase: 'restart',
+      lastOkSha: 'a'.repeat(40),
+      lastOkAt: '2026-11-13T23:55:00Z',
+    });
+  });
+
+  it('is null (not measured) when neither file exists, and zero-streak when only last-ok exists', () => {
+    expect(parseStagingSyncState(null, null)).toBeNull();
+    expect(parseStagingSyncState(null, LAST_OK)).toMatchObject({ consecutiveFailures: 0, lastOkSha: 'a'.repeat(40) });
+    // A malformed count never invents a streak.
+    expect(parseStagingSyncState('count=abc\n', null)?.consecutiveFailures).toBe(0);
+  });
+
+  it('names a streak as a prerequisite, and nothing when there is none', () => {
+    expect(stagingSyncStreakPrerequisite(parseStagingSyncState(STREAK, LAST_OK))).toBe(
+      'Staging sync recovers: 3 consecutive failed run(s) since 2026-11-14T00:00:00Z ' +
+        '(last: restart phase on cccccccccc); :3170 last verified serving aaaaaaaaaa at 2026-11-13T23:55:00Z',
+    );
+    expect(stagingSyncStreakPrerequisite(parseStagingSyncState(null, LAST_OK))).toBeNull();
+    expect(stagingSyncStreakPrerequisite(null)).toBeNull();
+    expect(stagingSyncStreakPrerequisite(undefined)).toBeNull();
+  });
+
+  it('resolves the same state directory as the script', () => {
+    expect(defaultStagingSyncStateDir({ XDG_STATE_HOME: '/x/state' })).toBe('/x/state/papercusp');
+    expect(defaultStagingSyncStateDir({})).toMatch(/\/\.local\/state\/papercusp$/);
+  });
+
+  it('reads the real files from a state directory', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'staging-sync-state-'));
+    try {
+      expect(await realReadStagingSyncState(dir)).toBeNull();
+      writeFileSync(join(dir, 'staging-sync-failure-streak'), STREAK);
+      writeFileSync(join(dir, 'staging-sync-last-ok'), LAST_OK);
+      expect(await realReadStagingSyncState(dir)).toMatchObject({ consecutiveFailures: 3, lastOkSha: 'a'.repeat(40) });
+      // Unreadable for a reason other than absence (a directory in the file's place) = not measured.
+      rmSync(join(dir, 'staging-sync-last-ok'));
+      mkdirSync(join(dir, 'staging-sync-last-ok'));
+      expect(await realReadStagingSyncState(dir)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

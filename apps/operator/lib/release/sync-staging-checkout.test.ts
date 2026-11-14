@@ -361,6 +361,8 @@ describe('recent restart coalescing verifies the published generation', () => {
       'ps() { printf "%s\\n" "$TEST_AGE_SEC"; }',
       'staging_health_source_sha() { printf "%s\\n" "$TEST_HEALTH_SHA"; }',
       'log() { printf "%s\\n" "$*"; }',
+      // WI-6554700010048236: a verified peer restart counts as serving the target.
+      'staging_sync_mark_serving() { printf "MARK_SERVING %s\\n" "$1"; }',
       'UNIT=fixture-staging.service',
       'target="$TEST_TARGET_SHA"',
       script.slice(start, end),
@@ -378,6 +380,7 @@ describe('recent restart coalescing verifies the published generation', () => {
     const result = runRecentGuard(36, 'a'.repeat(10));
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain('peer restart verified');
+    expect(result.stdout).toContain('MARK_SERVING ' + 'a'.repeat(40));
     expect(result.stdout).not.toContain('RESTART_REQUIRED');
   });
 
@@ -386,6 +389,7 @@ describe('recent restart coalescing verifies the published generation', () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain('RESTART_REQUIRED');
     expect(result.stdout).not.toContain('peer restart verified');
+    expect(result.stdout).not.toContain('MARK_SERVING');
   });
 
   it('preserves the grace boundary even for a matching generation', () => {
@@ -706,6 +710,162 @@ describe('sync-staging-checkout.sh forward-compat review-date alarm (WI-10003599
     // Tick 1 tries both routes; tick 2 (same UTC day, same warning set) is suppressed.
     expect(calls.map((c) => c.tool)).toEqual(['work_items:create', 'coord:send']);
     expect(r.stdout).toContain('ALARM DELIVERY FAILED: neither work_items:create nor coord:send');
+  });
+});
+
+describe('sync-staging-checkout.sh failure streak, alarm and buildable-ancestor fallback (WI-6554700010048236)', () => {
+  const STREAK_FNS = ['staging_sync_state_dir', 'staging_sync_state_get', 'staging_sync_alarm_threshold',
+    'staging_sync_mark_serving', 'record_staging_sync_outcome', 'record_staging_sync_failure',
+    'send_staging_sync_streak_alarm', 'select_staging_fallback_target'];
+  const GLOBALS = 'log() { printf "%s\\n" "$*"; }\nserved_sha=' + 'e'.repeat(40) + '\n';
+  let root: string;
+  let bin: string;
+  let integration: string;
+  let alarmTrace: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'staging-streak-'));
+    bin = join(root, 'bin');
+    integration = join(root, 'integration');
+    alarmTrace = join(root, 'alarm-trace');
+    mkdirSync(bin);
+    mkdirSync(join(integration, 'scripts'), { recursive: true });
+    writeFileSync(join(integration, 'scripts/mcp-call.mjs'), 'fixture');
+    writeFileSync(join(bin, 'node'), [
+      '#!/bin/sh',
+      'if [ "$1" = "scripts/mcp-call.mjs" ]; then',
+      '  printf "%s\\t%s\\n" "$2" "$3" >> "$ALARM_TRACE"',
+      '  case " $FAIL_TOOL " in *" $2 "*) exit 5 ;; esac',
+      '  exit 0',
+      'fi',
+      'exec "$REAL_NODE" "$@"',
+      '',
+    ].join('\n'), { mode: 0o700 });
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  /** One sync run's EXIT-trap bookkeeping: `attempt` failed with `status`, or `serving` was verified. */
+  function tick(o: { tip: string; attempt?: string; phase?: string; status?: number; serving?: string; failTool?: string }) {
+    const call = GLOBALS + [
+      `STAGING_SYNC_TIP_TARGET=${o.tip}`,
+      `STAGING_SYNC_ATTEMPT_TARGET=${o.attempt ?? ''}`,
+      `STAGING_SYNC_PHASE=${o.phase ?? 'prepare'}`,
+      `STAGING_SYNC_SERVING_SHA=${o.serving ?? ''}`,
+      'STAGING_SYNC_ALARM_RESULT=',
+      `record_staging_sync_outcome ${o.status ?? 1}`,
+    ].join('\n');
+    return runFn(STREAK_FNS, call, { env: env(o.failTool) });
+  }
+  function env(failTool = ''): NodeJS.ProcessEnv {
+    return {
+      INTEGRATION_ROOT: integration, XDG_STATE_HOME: join(root, 'state'), ALARM_TRACE: alarmTrace,
+      FAIL_TOOL: failTool, REAL_NODE: process.execPath, PATH: `${bin}:${process.env.PATH}`,
+    };
+  }
+  const stateFile = (name: string) => join(root, 'state/papercusp', name);
+  const calls = () => (existsSync(alarmTrace) ? readFileSync(alarmTrace, 'utf8').trim().split('\n') : [])
+    .map((line) => ({ tool: line.slice(0, line.indexOf('\t')), payload: JSON.parse(line.slice(line.indexOf('\t') + 1)) }));
+  const sha = (c: string) => c.repeat(40);
+
+  it('counts consecutive failed attempts and files exactly ONE work-item per streak at the threshold', () => {
+    for (const c of ['1', '2']) expect(tick({ tip: sha(c), attempt: sha(c) }).status).toBe(0);
+    expect(calls()).toHaveLength(0);
+    const third = tick({ tip: sha('3'), attempt: sha('3') });
+    expect(third.stdout).toContain('3 consecutive failed run(s)');
+    tick({ tip: sha('4'), attempt: sha('4') });
+    expect(calls().map((c) => c.tool)).toEqual(['work_items:create']);
+    const filed = calls()[0].payload;
+    expect(filed.kind).toBe('bug');
+    expect(filed.title).toMatch(/staging-sync failing since .*: 3 consecutive runs, :3170 stuck on eeeeeeeeee/);
+    expect(filed.body).toContain(sha('1'));
+    expect(readFileSync(stateFile('staging-sync-failure-streak'), 'utf8')).toMatch(/count=4[\s\S]*alarm=sent/);
+  });
+
+  it('records nothing for a deferral or a run that never attempted a target', () => {
+    tick({ tip: sha('1'), status: 0 });
+    tick({ tip: sha('1'), status: 1 });
+    expect(existsSync(stateFile('staging-sync-failure-streak'))).toBe(false);
+  });
+
+  it('marks a sha as failed only for pre-restart failures, never for a refused restart', () => {
+    tick({ tip: sha('1'), attempt: sha('1'), phase: 'restart' });
+    expect(existsSync(stateFile('staging-sync-failed-targets'))).toBe(false);
+    tick({ tip: sha('2'), attempt: sha('2'), phase: 'prepare' });
+    expect(readFileSync(stateFile('staging-sync-failed-targets'), 'utf8').trim()).toBe(sha('2'));
+  });
+
+  it('keeps the streak when a fallback ancestor serves, and clears it only when the tip serves', () => {
+    for (const c of ['1', '2', '3']) tick({ tip: sha(c), attempt: sha(c) });
+    tick({ tip: sha('4'), serving: sha('a'), status: 0 });
+    expect(readFileSync(stateFile('staging-sync-last-ok'), 'utf8')).toContain(`sha=${sha('a')}\n`);
+    expect(existsSync(stateFile('staging-sync-failure-streak'))).toBe(true);
+    const cleared = tick({ tip: sha('5'), serving: sha('5'), status: 0 });
+    expect(cleared.stdout).toContain('failure streak cleared');
+    expect(existsSync(stateFile('staging-sync-failure-streak'))).toBe(false);
+    expect(existsSync(stateFile('staging-sync-failed-targets'))).toBe(false);
+  });
+
+  it('falls back to a workspace broadcast when the work-item cannot be filed', () => {
+    for (const c of ['1', '2', '3']) tick({ tip: sha(c), attempt: sha(c), failTool: 'work_items:create' });
+    expect(calls().map((c) => c.tool)).toEqual(['work_items:create', 'coord:send']);
+    expect(calls()[1].payload.to).toEqual(['*']);
+    expect(readFileSync(stateFile('staging-sync-failure-streak'), 'utf8')).toContain('alarm=sent');
+  });
+
+  describe('select_staging_fallback_target bisection', () => {
+    let commits: string[];
+    beforeEach(() => {
+      execFileSync('git', ['init', '-q', '-b', 'staging', integration]);
+      commits = [];
+      for (let i = 0; i < 9; i++) {
+        execFileSync('git', ['-C', integration, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q',
+          '--allow-empty', '-m', `c${i}`]);
+        commits.push(execFileSync('git', ['-C', integration, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim());
+      }
+    });
+    function select(count: number, failed: string[], served = commits[0]): string {
+      mkdirSync(join(root, 'state/papercusp'), { recursive: true });
+      writeFileSync(stateFile('staging-sync-failure-streak'), `count=${count}\n`);
+      writeFileSync(stateFile('staging-sync-failed-targets'), failed.map((s) => `${s}\n`).join(''));
+      const r = runFn(STREAK_FNS, `select_staging_fallback_target ${commits[8]} ${served}`, { env: env() });
+      expect(r.status).toBe(0);
+      return r.stdout;
+    }
+
+    it('picks the midpoint between the serving build and the OLDEST known-failed commit', () => {
+      // c1..c7 are untried below the failed tip c8: newest-first index 7/2 = 3 → c4.
+      expect(select(3, [commits[8]])).toBe(commits[4]);
+      // A failed midpoint narrows the range below it: c1..c3 → c2.
+      expect(select(5, [commits[8], commits[4]])).toBe(commits[2]);
+      // A successful fallback moves the served build up: c5..c7 untried below c8 → c6.
+      expect(select(5, [commits[8]], commits[4])).toBe(commits[6]);
+    });
+
+    it('retries the tip on alternate runs, below the threshold, and when nothing is left to try', () => {
+      expect(select(4, [commits[8]])).toBe('');
+      expect(select(2, [commits[8]])).toBe('');
+      expect(select(3, [commits[1]])).toBe('');
+      expect(select(3, [])).toBe('');
+    });
+
+    it('never falls back from a served build that is not an ancestor of the tip', () => {
+      expect(select(3, [commits[8]], 'f'.repeat(40))).toBe('');
+    });
+  });
+
+  it('is wired into the run: tip recorded before the fallback swap, attempt marked after the live-client gate', () => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const tipIdx = script.indexOf('STAGING_SYNC_TIP_TARGET="$target"');
+    const swapIdx = script.indexOf('target="$fallback_target"');
+    const gateIdx = script.indexOf('WI-5710 gate 2');
+    const attemptIdx = script.indexOf('STAGING_SYNC_ATTEMPT_TARGET="$target"');
+    const restartPhaseIdx = script.indexOf('STAGING_SYNC_PHASE=restart');
+    expect(tipIdx).toBeGreaterThan(-1);
+    expect(swapIdx).toBeGreaterThan(tipIdx);
+    expect(attemptIdx).toBeGreaterThan(gateIdx);
+    expect(restartPhaseIdx).toBeGreaterThan(script.indexOf('prebuild_staging_host_bundle "$SYNC_ROOT"'));
+    expect(script).toMatch(/staging_sync_lock_release \|\| true\n\s*record_staging_sync_outcome "\$status" \|\| true/);
+    expect(script.match(/staging_sync_mark_serving "\$target"/g)).toHaveLength(4);
   });
 });
 
@@ -2110,13 +2270,18 @@ describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)',
     const result = spawnSync('bash', ['-c', [
       'set -euo pipefail',
       'last_health_sha=0123456789abcdef',
+      'target=0123456789abcdef',
       'log() { printf "%s\\n" "$*"; }',
       'prune_staging_generations() { echo UNEXPECTED_POST_HEALTH_GC >&2; exit 91; }',
+      // WI-6554700010048236: the success branch records the serving sha so the
+      // EXIT trap can clear a failure streak. Stub it to observe the call.
+      'staging_sync_mark_serving() { echo "MARK_SERVING $1"; }',
       script.slice(healthy, exitAfterHealthy + 'exit 0'.length),
     ].join('\n')], { encoding: 'utf8', timeout: 2_000 });
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('healthy on exact staging source 0123456789abcdef');
+    expect(result.stdout).toContain('MARK_SERVING 0123456789abcdef');
     expect(result.stderr).not.toContain('UNEXPECTED_POST_HEALTH_GC');
   });
 });

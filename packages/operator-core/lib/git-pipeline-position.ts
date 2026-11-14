@@ -112,11 +112,13 @@ import { isAuthoritativeJudgingShaSource, type JudgingShaSource } from './judgin
 import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from './fleet/git-via-sidecar';
 import {
   realListPtyHostInstances,
+  realReadStagingSyncState,
   resolveServingRuntimes,
   selectServingRuntimes,
   servingRuntimesLead,
   type ServingRuntimeBundleState,
   type ServingRuntimeEntry,
+  type StagingSyncFreshness,
 } from './serving-runtimes';
 
 import { createCache } from '@papercusp/cache';
@@ -4811,6 +4813,8 @@ export interface PipelinePositionDeps {
   readCgroup?: (pid: number) => Promise<string | null>;
   /** P-001: live psu sessions (each loaded psu-pty-host.mjs at its own launch). */
   listPtyHostInstances?: () => Promise<Array<{ pid: number; startedAtMs: number }> | null>;
+  /** WI-6554700010048236: the staging sync's failure streak / last verified serving sha. */
+  readStagingSyncState?: () => Promise<StagingSyncFreshness | null>;
   /** EI-19447523039740352: is a deploy running right now (so the serving restart lever is moot). */
   readDeployInFlight?: () => Promise<DeployInFlight>;
   /** P-003: mtime (ms) of a repo-relative file — what a working-tree tsx host would load. */
@@ -7237,6 +7241,7 @@ export async function gitPipelinePosition(
       readCgroup: deps.readCgroup,
       fileMtimeMs: workingTreeMtimeMs,
       listPtyHostInstances: deps.listPtyHostInstances ?? realListPtyHostInstances,
+      readStagingSyncState: deps.readStagingSyncState ?? realReadStagingSyncState,
       blobContainsAt,
     }).catch(() => []);
     if (marker) {

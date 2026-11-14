@@ -24,6 +24,7 @@
  * translates owner hosts into runtimes and measures each one.
  */
 import { readFile, readdir, stat } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { cellUnknown, formatCellUnknown, type CellUnknown } from './cell-contract';
 import type { ResolvedServiceStart } from './agent-tools/dev/systemd-service-probe';
@@ -305,8 +306,14 @@ const CURRENT_BUILD_TEST_CLASS_TABLE = [
  * TS2367 error (WI-10007552) — and would erase any other value the same way.
  */
 export type CurrentBuildRouteReadiness = 'ready' | 'requires-prerequisites' | 'gap' | 'release-only';
+// `prerequisites` is declared too: a consumer extends the list with measured
+// prerequisites (dev:pipeline_position appends the runtime-identity and the
+// staging-sync streak lines), so a per-route literal tuple type is wrong.
 type WithDeclaredReadiness<T> = T extends unknown
-  ? Omit<T, 'readiness'> & { readonly readiness: CurrentBuildRouteReadiness }
+  ? Omit<T, 'readiness' | 'prerequisites'> & {
+      readonly readiness: CurrentBuildRouteReadiness;
+      readonly prerequisites: readonly string[];
+    }
   : never;
 export type CurrentBuildTestRoute = WithDeclaredReadiness<(typeof CURRENT_BUILD_TEST_CLASS_TABLE)[number]>;
 export type CurrentBuildTestClassId = CurrentBuildTestRoute['id'];
@@ -407,6 +414,27 @@ export interface ServingRuntimeProbe {
   instances: ServingRuntimeInstances | null;
   /** The process's own report of the bundle it booted (from /api/health); null = not measured. */
   bundle?: ServingRuntimeBundleState | null;
+  /** Staging checkout only: the sync's own record of its recent runs; null = not measured. */
+  stagingSync?: StagingSyncFreshness | null;
+}
+
+/**
+ * WI-6554700010048236: what `sync-staging-checkout.sh` recorded about its own recent
+ * runs, read from its state files under `$XDG_STATE_HOME/papercusp/`. A failing
+ * streak means :3170 will not advance to newer commits until the sync recovers,
+ * whatever the change. Absence of the field means not measured, never healthy.
+ */
+export interface StagingSyncFreshness {
+  /** Consecutive failed sync runs; 0 when no streak is recorded. */
+  consecutiveFailures: number;
+  failingSince: string | null;
+  lastFailedAt: string | null;
+  lastFailedTarget: string | null;
+  /** `prepare` (the commit itself failed to build) or `restart` (the runtime did). */
+  lastFailedPhase: string | null;
+  /** The last sha the sync verified :3170 serving, and when. */
+  lastOkSha: string | null;
+  lastOkAt: string | null;
 }
 
 /** What a bundling host says about the bundle it is actually executing. */
@@ -436,6 +464,8 @@ export interface ServingRuntimeEntry {
   instances: ServingRuntimeInstances | null;
   unknownReason: CellUnknown | null;
   activation: string;
+  /** Staging checkout only (WI-6554700010048236); absent when not measured. */
+  stagingSync?: StagingSyncFreshness | null;
 }
 
 function entryBase(probe: ServingRuntimeProbe): Omit<ServingRuntimeEntry, 'containsChange' | 'method' | 'unknownReason'> {
@@ -454,6 +484,7 @@ function entryBase(probe: ServingRuntimeProbe): Omit<ServingRuntimeEntry, 'conta
     buildShaSource: probe.buildShaSource,
     instances: probe.instances,
     activation: spec.activation,
+    ...(probe.stagingSync === undefined ? {} : { stagingSync: probe.stagingSync }),
   };
 }
 
@@ -763,6 +794,8 @@ export interface ServingRuntimeProbeDeps {
   blobContainsAt: (sha: string) => Promise<{ contains: boolean | null; unknown: CellUnknown | null }>;
   fileMtimeMs: number | null;
   listPtyHostInstances?: () => Promise<Array<{ pid: number; startedAtMs: number }> | null>;
+  /** Staging sync streak reader (WI-6554700010048236); omitted = not measured. */
+  readStagingSyncState?: () => Promise<StagingSyncFreshness | null>;
 }
 
 const HEALTH_TIMEOUT_MS = 1_000;
@@ -874,6 +907,9 @@ export async function probeServingRuntime(
     }
     return probe;
   }
+  if (spec.codeSource === 'staging-checkout' && deps.readStagingSyncState) {
+    probe.stagingSync = await deps.readStagingSyncState().catch(() => null);
+  }
   if (spec.unit) {
     const started = await deps.probeUnitStart(spec.unit).catch(() => null);
     probe.pid = started?.pid ?? null;
@@ -976,6 +1012,84 @@ export async function realListPtyHostInstances(): Promise<Array<{ pid: number; s
       }),
   );
   return out;
+}
+
+/* ------------------------------------------------------------------------- *
+ * Staging sync freshness (WI-6554700010048236). The writer is
+ * apps/operator/bin/release/sync-staging-checkout.sh (record_staging_sync_outcome):
+ * `staging-sync-failure-streak` exists only while a streak lasts, and
+ * `staging-sync-last-ok` names the last sha it verified :3170 serving.
+ * ------------------------------------------------------------------------- */
+
+/** First value per key, like the script's own `staging_sync_state_get`. */
+function parseKeyValueState(text: string | null): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const line of (text ?? '').split('\n')) {
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    const value = line.slice(eq + 1).trim();
+    if (value && !out.has(key)) out.set(key, value);
+  }
+  return out;
+}
+
+/** PURE. Null when neither file exists: a sync that never recorded anything is not measured. */
+export function parseStagingSyncState(streakText: string | null, lastOkText: string | null): StagingSyncFreshness | null {
+  if (streakText === null && lastOkText === null) return null;
+  const streak = parseKeyValueState(streakText);
+  const lastOk = parseKeyValueState(lastOkText);
+  const count = Number(streak.get('count'));
+  return {
+    consecutiveFailures: Number.isInteger(count) && count > 0 ? count : 0,
+    failingSince: streak.get('first_failed_at') ?? null,
+    lastFailedAt: streak.get('last_failed_at') ?? null,
+    lastFailedTarget: streak.get('last_target') ?? null,
+    lastFailedPhase: streak.get('last_phase') ?? null,
+    lastOkSha: lastOk.get('sha') ?? null,
+    lastOkAt: lastOk.get('at') ?? null,
+  };
+}
+
+/** Same directory the script resolves: `${XDG_STATE_HOME:-$HOME/.local/state}/papercusp`. */
+export function defaultStagingSyncStateDir(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(env.XDG_STATE_HOME || path.join(homedir(), '.local', 'state'), 'papercusp');
+}
+
+/** null = absent; undefined = unreadable for another reason. */
+async function readOptionalText(file: string): Promise<string | null | undefined> {
+  try {
+    return await readFile(file, 'utf8');
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === 'ENOENT' ? null : undefined;
+  }
+}
+
+export async function realReadStagingSyncState(dir = defaultStagingSyncStateDir()): Promise<StagingSyncFreshness | null> {
+  const [streak, lastOk] = await Promise.all([
+    readOptionalText(path.join(dir, 'staging-sync-failure-streak')),
+    readOptionalText(path.join(dir, 'staging-sync-last-ok')),
+  ]);
+  if (streak === undefined || lastOk === undefined) return null;
+  return parseStagingSyncState(streak, lastOk);
+}
+
+/**
+ * The prerequisite a staging-backed test route gains while the sync is failing: the
+ * change cannot reach :3170 until the streak ends. Null when no streak is measured.
+ */
+export function stagingSyncStreakPrerequisite(sync: StagingSyncFreshness | null | undefined): string | null {
+  if (!sync || sync.consecutiveFailures <= 0) return null;
+  const last = sync.lastFailedTarget
+    ? ` (last: ${sync.lastFailedPhase ?? 'unknown'} phase on ${sync.lastFailedTarget.slice(0, 10)})`
+    : '';
+  const serving = sync.lastOkSha
+    ? `; :3170 last verified serving ${sync.lastOkSha.slice(0, 10)}${sync.lastOkAt ? ` at ${sync.lastOkAt}` : ''}`
+    : '';
+  return (
+    `Staging sync recovers: ${sync.consecutiveFailures} consecutive failed run(s) since ` +
+    `${sync.failingSince ?? 'an unrecorded time'}${last}${serving}`
+  );
 }
 
 export async function realFileMtimeMs(absPath: string): Promise<number | null> {

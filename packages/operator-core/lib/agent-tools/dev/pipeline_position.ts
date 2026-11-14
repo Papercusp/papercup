@@ -20,6 +20,7 @@ import { statePlaneForDoor } from '../state-plane-door';
 import {
   CURRENT_BUILD_TEST_CLASSES,
   currentBuildTestRoute,
+  stagingSyncStreakPrerequisite,
   type CurrentBuildTestRoute,
 } from '../../serving-runtimes';
 import { getServingHostIdentity } from '../../serving-host-identity';
@@ -43,12 +44,16 @@ function routeWithMeasuredRuntimeReadiness(
   }
 
   const measuredIdentity = 'Measured runtime identity contains this change';
+  const prerequisites = route.prerequisites.includes(measuredIdentity)
+    ? route.prerequisites
+    : [...route.prerequisites, measuredIdentity];
+  // WI-6554700010048236: name a failing staging sync, which is WHY the change
+  // cannot arrive, instead of leaving the reader to wait on :3170.
+  const streak = stagingSyncStreakPrerequisite(runtime?.stagingSync);
   return {
     ...route,
     readiness: 'requires-prerequisites',
-    prerequisites: route.prerequisites.includes(measuredIdentity)
-      ? route.prerequisites
-      : [...route.prerequisites, measuredIdentity],
+    prerequisites: streak && !prerequisites.includes(streak) ? [...prerequisites, streak] : prerequisites,
   };
 }
 
@@ -308,7 +313,7 @@ function compactServingRuntimes(
     (entry) =>
       pickPipelineFields(
         entry,
-        ['runtime', 'role', 'buildSha', 'buildShaSource', 'containsChange', 'method', 'instances', 'unknownReason'],
+        ['runtime', 'role', 'buildSha', 'buildShaSource', 'containsChange', 'method', 'instances', 'unknownReason', 'stagingSync'],
         opts,
       ) ?? {},
   );
