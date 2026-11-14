@@ -330,7 +330,8 @@ describe('scratch retention pins', () => {
     let writer: Promise<void> | undefined;
     try {
       await withFsMutex('papercusp-disk-retention', async () => {
-        sweep = runScratchGc({ workspaceRegistry: [workspaceId] });
+        // pinAdmissionWaitMs:0 pins the defer-only contract; queued waiting is covered below.
+        sweep = runScratchGc({ workspaceRegistry: [workspaceId], pinAdmissionWaitMs: 0 });
         // Observe the actual final pin check, not candidate sizing. Recursive rm
         // has not begun, so only pin admission can hold up the writer here.
         await vi.waitFor(() => expect(vi.mocked(withUnpinnedPath).mock.calls.some(([path]) => path === staleRun)).toBe(true));
@@ -354,6 +355,65 @@ describe('scratch retention pins', () => {
     expect(readFileSync(writerPath, 'utf8')).toBe('x');
     await refreshScratchUsage(workspaceId);
     expect(scratchUsageBytes(workspaceId)).toBe((pinBeforeRelease ? 32 : 0) + markerBytes(workspaceId) + 1);
+  });
+
+  // EI-28795073039530858: disk-reclaim yields the pin mutex only to a QUEUED waiter, so a
+  // sweep that abandons its ticket on first contention livelocked on its first candidate.
+  it('waits in the pin FIFO with no scratch lease held, then evicts once the holder hands over', async () => {
+    const workspaceId = 'ws-pin-queued';
+    const staleRun = makeRunDir(workspaceId, 'tool', UUID(42), 32, RETENTION_MS + 1000);
+    const writerRun = makeRunDir(workspaceId, 'result-door', UUID(43), 0);
+    await refreshScratchUsage(workspaceId);
+    const writerPath = join(writerRun, 'spill');
+    vi.mocked(withUnpinnedPath).mockClear();
+    let sweep: ReturnType<typeof runScratchGc> | undefined;
+    try {
+      await withFsMutex('papercusp-disk-retention', async () => {
+        sweep = runScratchGc({ workspaceRegistry: [workspaceId] });
+        await vi.waitFor(() => expect(vi.mocked(withUnpinnedPath).mock.calls.some(([path]) => path === staleRun)).toBe(true));
+        // The waiting sweep holds no scratch lease, so a result write is not blocked.
+        await writeWithScratchQuota({ workspaceId, filePath: writerPath, bytes: 1, mutexTimeoutMs: 500 },
+          () => writeFile(writerPath, Buffer.from('x')));
+        expect(existsSync(staleRun)).toBe(true);
+      });
+      const summary = await sweep!;
+      expect(summary.retentionEvictions).toBe(1);
+      expect(summary.pinQueuedAdmissions).toBe(1);
+      expect(summary.pinAdmissionDeferred).toBeUndefined();
+      expect(existsSync(staleRun)).toBe(false);
+      expect(readFileSync(writerPath, 'utf8')).toBe('x');
+    } finally {
+      await Promise.allSettled(sweep ? [sweep] : []);
+    }
+  });
+
+  it('defers with its cursor once the queued pin wait budget is spent', async () => {
+    const workspaceId = 'ws-pin-budget';
+    const staleRun = makeRunDir(workspaceId, 'tool', UUID(44), 32, RETENTION_MS + 1000);
+    let sweep: ReturnType<typeof runScratchGc> | undefined;
+    let deferred: Awaited<ReturnType<typeof runScratchGc>> | undefined;
+    try {
+      await withFsMutex('papercusp-disk-retention', async () => {
+        sweep = runScratchGc({ workspaceRegistry: [workspaceId], pinAdmissionWaitMs: 150, maxDurationMs: 60_000 });
+        deferred = await sweep;
+        expect(deferred.retentionEvictions).toBe(0);
+        expect(deferred.pinQueuedAdmissions).toBeUndefined();
+        expect(deferred.pinAdmissionDeferred).toContainEqual({ workspaceId, path: staleRun, reason: 'retention-mutex-busy' });
+        expect(existsSync(staleRun)).toBe(true);
+      });
+    } finally {
+      await Promise.allSettled(sweep ? [sweep] : []);
+    }
+    // The early return hands back its cursor field (not a silent finished scan), and resuming
+    // from it after the holder hands over reaches the deferred run.
+    expect(deferred).toHaveProperty('continuationCursor');
+    const resumed = await runScratchGc({
+      workspaceRegistry: [workspaceId], pinAdmissionWaitMs: 150, maxDurationMs: 60_000, cursor: deferred!.continuationCursor,
+    });
+    expect(resumed.continuationError).toBeUndefined();
+    expect(resumed.pinAdmissionDeferred).toBeUndefined();
+    expect(resumed.retentionEvictions).toBe(1);
+    expect(existsSync(staleRun)).toBe(false);
   });
 });
 

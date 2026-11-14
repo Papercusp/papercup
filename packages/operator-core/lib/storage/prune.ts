@@ -71,6 +71,8 @@ export interface PruneResult {
   vacuumed: boolean;
   reason?: string;
   note?: string;
+  /** Scratch: eligible paths kept because the retention-pin writer stayed busy; the result is partial. */
+  pinAdmissionDeferred?: number;
   /** PG: a per-call row/time ceiling was hit and eligible rows still remain;
    *  replay to continue (see {@link continuation}). */
   partial?: boolean;
@@ -464,15 +466,23 @@ async function pruneScratch(cat: DiskStorageCategory, req: PruneRequest): Promis
   if (gc.truncated) {
     notes.push(`scratch scan budget of ${scanBudgetMs}ms exhausted; this result is partial — pass continuation.cursor with the same prune arguments to resume`);
   }
+  // EI-28795073039530858: a busy retention-pin writer ends the sweep early. Report it as a
+  // partial result with a resume cursor; an unexplained `removed: 0` read as "nothing to prune".
+  const pinDeferred = gc.pinAdmissionDeferred?.length ?? 0;
+  if (pinDeferred > 0) {
+    notes.push(`retention-pin writer stayed busy past the admission wait; ${pinDeferred} eligible scratch path${pinDeferred === 1 ? ' was' : 's were'} kept and the sweep stopped early — this result is partial, pass continuation.cursor with the same prune arguments to resume`);
+  }
+  const partial = Boolean(gc.truncated) || pinDeferred > 0;
   return {
     ok: true,
     categoryId: cat.id,
     dryRun: req.dryRun,
     removed,
     reclaimedBytes: gc.retentionEvictedBytes + gc.deadWorkspaceBytes,
-    reclaimEstimated: Boolean(gc.truncated && req.dryRun),
+    reclaimEstimated: Boolean(partial && req.dryRun),
     vacuumed: false,
-    ...(gc.truncated
+    ...(pinDeferred > 0 ? { pinAdmissionDeferred: pinDeferred } : {}),
+    ...(partial
       ? {
           partial: true,
           complete: false,

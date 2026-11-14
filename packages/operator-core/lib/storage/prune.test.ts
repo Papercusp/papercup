@@ -17,6 +17,8 @@ const h = vi.hoisted(() => ({
   sessionCandidates: [] as Array<{ path: string; keyKind: 'owner'; key: string; mtimeMs: number }>,
   unarchivedPaths: new Set<string>(),
   registryRead: vi.fn(async () => ({ workspaces: [{ id: 'ws-test' }] })),
+  /** When set, replaces runScratchGc for one test; null passes through to the real sweep. */
+  scratchGcOverride: null as null | ((opts: unknown) => Promise<unknown>),
 }));
 
 function makeSql() {
@@ -63,6 +65,14 @@ vi.mock('../session-dir-gc', async (original) => ({
 vi.mock('../workspace-registry', () => ({
   readRegistryAsync: () => h.registryRead(),
 }));
+vi.mock('../scratch-gc', async (original) => {
+  const actual = await original<typeof import('../scratch-gc')>();
+  return {
+    ...actual,
+    runScratchGc: (opts: Parameters<typeof actual.runScratchGc>[0]) =>
+      (h.scratchGcOverride ? h.scratchGcOverride(opts) : actual.runScratchGc(opts)) as ReturnType<typeof actual.runScratchGc>,
+  };
+});
 
 import { pruneStorageCategory } from './prune';
 import { getStorageCategory, isTrimmable } from './categories';
@@ -97,6 +107,7 @@ beforeEach(() => {
   h.sessionCandidates = [];
   h.unarchivedPaths = new Set();
   h.registryRead.mockReset().mockResolvedValue({ workspaces: [{ id: 'ws-test' }] });
+  h.scratchGcOverride = null;
 });
 
 afterEach(() => {
@@ -493,6 +504,53 @@ describe('pruneStorageCategory — disk (plain store)', () => {
     expect(resumed.partial).toBeUndefined();
     expect(resumed.removed).toBe(1);
     expect(existsSync(fixture.staleRun)).toBe(true);
+  });
+
+  // EI-28795073039530858: a busy retention-pin writer stops the sweep early. That must read as a
+  // partial result with a resume cursor, never as a complete `removed: N` (or an unexplained 0).
+  const pinSweep = (deferredPaths: number, evicted: number) => ({
+    retentionEvictions: evicted,
+    retentionEvictedBytes: evicted * 10,
+    deadWorkspaces: 0,
+    deadWorkspaceBytes: 0,
+    quotaEvictions: 0,
+    quotaEvictedBytes: 0,
+    markersWritten: 0,
+    unprovenEntries: 0,
+    deadWorkspacesDeferred: [],
+    unreclaimablePaths: [],
+    ...(deferredPaths > 0
+      ? {
+          pinAdmissionDeferred: Array.from({ length: deferredPaths }, (_, i) => ({
+            workspaceId: 'ws-test', path: `/scratch/ws-test/tool/run-${i}`, reason: 'retention-mutex-busy' as const,
+          })),
+          continuationCursor: { schemaVersion: 1, scopeHash: 'scope', scanNow: 1, phase: 'retention', workspaceId: 'ws-test', toolDir: 'tool', runDir: 'run-0' },
+        }
+      : {}),
+  });
+
+  it.each([1, 2])('reports %i busy-pin deferral(s) as partial with the sweep cursor and keeps the evictions it made', async (deferred) => {
+    h.scratchGcOverride = async () => pinSweep(deferred, 2);
+    const r = await pruneStorageCategory(REQ({ categoryId: 'scratch', olderThanDays: 3 }));
+    expect(r).toMatchObject({
+      ok: true,
+      removed: 2,
+      reclaimedBytes: 20,
+      partial: true,
+      complete: false,
+      pinAdmissionDeferred: deferred,
+      continuation: { categoryId: 'scratch', olderThanDays: 3, cursor: { phase: 'retention', runDir: 'run-0' } },
+    });
+    expect(r.note).toMatch(new RegExp(`${deferred} eligible scratch path${deferred === 1 ? ' was' : 's were'} kept`));
+  });
+
+  it('reports a sweep with no deferral as complete, with no continuation', async () => {
+    h.scratchGcOverride = async () => pinSweep(0, 2);
+    const r = await pruneStorageCategory(REQ({ categoryId: 'scratch', olderThanDays: 3 }));
+    expect(r).toMatchObject({ ok: true, removed: 2 });
+    expect(r.partial).toBeUndefined();
+    expect(r.continuation).toBeUndefined();
+    expect(r.pinAdmissionDeferred).toBeUndefined();
   });
 });
 

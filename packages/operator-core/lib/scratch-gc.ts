@@ -52,7 +52,7 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import { openWriterPidsMany, NATIVE_BG_SCAN_DEADLINE_MS, type OpenWriterScan } from './native-bg-task-ledger';
 import { scratchRoot, scratchRootForWorkspace } from './scratch-uri';
 import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
-import { withUnpinnedPath } from './storage/retention-pins';
+import { withRetentionPinProtection, withUnpinnedPath } from './storage/retention-pins';
 
 /** Serialize the final protection read and delete with storage:pin mutations. */
 async function removeUnpinnedScratchPath(
@@ -63,24 +63,93 @@ async function removeUnpinnedScratchPath(
   onPinWaiting?: (info: { owner: string; elapsedMs: number }) => void,
 ): Promise<boolean> {
   return withUnpinnedPath(path, async () => {
-    if (!dryRun) {
-      const startedAt = performance.now();
-      try {
-        await rmAsync(path, { recursive: true, force: true });
-      } catch (error) {
-        const code = scratchFsErrorCode(error);
-        if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') {
-          if (!onUnreclaimable) throw error;
-          onUnreclaimable(code);
-          return false;
-        }
-        throw error;
-      } finally {
-        onRmAsync?.(Math.max(0, performance.now() - startedAt));
-      }
-    }
+    if (!dryRun) return rmScratchPath(path, onRmAsync, onUnreclaimable);
     return true;
   }, { onWaiting: onPinWaiting });
+}
+
+/** Recursive removal; permission-denied paths are reported, never silently kept. */
+async function rmScratchPath(
+  path: string,
+  onRmAsync?: (elapsedMs: number) => void,
+  onUnreclaimable?: (code: string) => void,
+): Promise<boolean> {
+  const startedAt = performance.now();
+  try {
+    await rmAsync(path, { recursive: true, force: true });
+  } catch (error) {
+    const code = scratchFsErrorCode(error);
+    if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') {
+      if (!onUnreclaimable) throw error;
+      onUnreclaimable(code);
+      return false;
+    }
+    throw error;
+  } finally {
+    onRmAsync?.(Math.max(0, performance.now() - startedAt));
+  }
+  return true;
+}
+
+/**
+ * Cumulative per-sweep budget for waiting as a QUEUED retention-pin waiter.
+ *
+ * disk-reclaim holds `papercusp-disk-retention` for minutes and yields it only to a
+ * queued waiter (`hasWaiters()` in storage/disk-reclaim.ts). A GC that abandons its
+ * ticket on the first contention is never queued, so it is never yielded to and the
+ * sweep livelocks on its first candidate (EI-28795073039530858). Waiting happens with
+ * NO scratch lease held, so result spills are never blocked behind the pin writer.
+ */
+export const SCRATCH_GC_PIN_ADMISSION_WAIT_MS = 120_000;
+
+/** Longest a queued pin admission is kept before the mutex is handed back. */
+export const SCRATCH_GC_PIN_HOLD_QUANTUM_MS = 5_000;
+
+/** Retries of one candidate through a queued admission before the sweep defers it. */
+const SCRATCH_GC_PIN_RETRIES_PER_CANDIDATE = 3;
+
+interface ScratchGcPinHold {
+  /** Pin snapshot read under the held mutex; no pin can be created while it is held. */
+  isPinned: (path: string) => boolean;
+  acquiredAtMs: number;
+  release: () => Promise<void>;
+}
+
+interface ScratchGcPinAdmission {
+  hold: ScratchGcPinHold | null;
+  waitBudgetMs: number;
+  waitedMs: number;
+  admissions: number;
+}
+
+function isFsMutexTimeout(error: unknown): boolean {
+  return error instanceof Error && /^Timed out after \d+ms waiting for fs-mutex/.test(error.message);
+}
+
+/** Wait in the retention-pin FIFO (callers hold no scratch lease), then keep the admission. */
+async function acquireQueuedPinHold(timeoutMs: number): Promise<ScratchGcPinHold | null> {
+  let releaseHold!: () => void;
+  const released = new Promise<void>((resolve) => { releaseHold = resolve; });
+  let admit!: (hold: Omit<ScratchGcPinHold, 'release'>) => void;
+  const admitted = new Promise<Omit<ScratchGcPinHold, 'release'>>((resolve) => { admit = resolve; });
+  // scripts/lib/retention-pins.mjs forwards timeoutMs to withFsMutex; its .d.mts omits it.
+  const pinOptions: Parameters<typeof withRetentionPinProtection>[1] & { timeoutMs?: number } = {
+    timeoutMs: Math.max(1, Math.floor(timeoutMs)),
+  };
+  const holding = withRetentionPinProtection(async (isPinned) => {
+    admit({ isPinned, acquiredAtMs: Date.now() });
+    await released;
+  }, pinOptions);
+  const outcome = await Promise.race([
+    admitted.then((hold) => ({ hold })),
+    holding.then(() => ({ hold: null }), (error: unknown) => ({ error })),
+  ]);
+  if ('error' in outcome) {
+    if (isFsMutexTimeout(outcome.error)) return null;
+    throw outcome.error;
+  }
+  if (!outcome.hold) return null;
+  return { ...outcome.hold, release: async () => { releaseHold(); await holding; } };
 }
 
 /** Retention window for run-dirs since last mtime. 24h default. */
@@ -759,6 +828,8 @@ export interface ScratchGcSummary {
   deadWorkspacesDeferred: Array<{ workspaceId: string; reason: DeadWorkspaceDeferral }>;
   /** A busy global pin writer deferred this sweep; retained bytes stay charged until a later sweep. */
   pinAdmissionDeferred?: Array<{ workspaceId: string; path: string; reason: 'retention-mutex-busy' }>;
+  /** Busy-pin deferrals this sweep resolved by waiting as a queued retention-pin waiter. */
+  pinQueuedAdmissions?: number;
   /** Protected filesystem paths retained after permission-denied removal attempts. */
   unreclaimablePaths: Array<{
     workspaceId: string;
@@ -836,8 +907,31 @@ function isValidScratchGcCursor(
   return safeScratchCursorName(cursor.toolDirName) && safeScratchCursorName(cursor.runDirName);
 }
 
-export async function runScratchGc(opts: {
+export type RunScratchGcOptions = Parameters<typeof runScratchGcWithPinAdmission>[1];
+
+export async function runScratchGc(opts: RunScratchGcOptions): Promise<ScratchGcSummary> {
+  const pinAdmission: ScratchGcPinAdmission = {
+    hold: null,
+    waitBudgetMs: Math.max(0, opts.pinAdmissionWaitMs ?? SCRATCH_GC_PIN_ADMISSION_WAIT_MS),
+    waitedMs: 0,
+    admissions: 0,
+  };
+  try {
+    return await runScratchGcWithPinAdmission(pinAdmission, opts);
+  } finally {
+    const hold = pinAdmission.hold;
+    pinAdmission.hold = null;
+    if (hold) await hold.release();
+  }
+}
+
+async function runScratchGcWithPinAdmission(pinAdmission: ScratchGcPinAdmission, opts: {
   workspaceRegistry: ReadonlyArray<string>;
+  /**
+   * Cumulative wait as a queued retention-pin waiter after a busy-pin deferral;
+   * 0 keeps the defer-only behaviour. Defaults to SCRATCH_GC_PIN_ADMISSION_WAIT_MS.
+   */
+  pinAdmissionWaitMs?: number;
   now?: number;
   /** Test seam for the /proc open-writer scan. Missing or partial evidence always keeps a tree. */
   scanOpenPaths?: (paths: readonly string[]) => Promise<OpenWriterScan>;
@@ -886,6 +980,12 @@ export async function runScratchGc(opts: {
     return summary;
   }
   let continuationCursor = opts.cursor;
+  // A busy-pin deferral ends the sweep early; hand back the last completed position so the
+  // caller resumes there instead of reading a cursor-less early return as a finished scan.
+  const pinDeferredSummary = (): ScratchGcSummary => {
+    summary.continuationCursor = continuationCursor;
+    return summary;
+  };
   const budget = opts.maxDurationMs == null
     ? undefined
     : { deadlineMs: Date.now() + Math.max(0, opts.maxDurationMs), truncated: false };
@@ -895,8 +995,47 @@ export async function runScratchGc(opts: {
   // spills. Reuse the pin mutex's contention callback to release our leases instead;
   // the standing GC retries, and a fresh pin snapshot still covers the entire rm.
   const pinBusy = new Error('retention-mutex-busy');
+  const releasePinHold = async () => {
+    const hold = pinAdmission.hold;
+    pinAdmission.hold = null;
+    if (hold) await hold.release();
+  };
+  // Under a queued admission the data -> quota -> pin order is inverted, so scratch
+  // leases are only TRIED: an fs-level lease wait aborts and the candidate is retried
+  // on the ordinary leases-first path after the admission is handed back.
+  const leaseBusy = new Error('scratch-lease-busy-under-pin-admission');
+  const leaseWaitPolicy = () => (pinAdmission.hold ? () => { throw leaseBusy; } : undefined);
+  /**
+   * After a busy-pin deferral, wait in the pin FIFO with no scratch lease held so the
+   * cooperative holder yields, and keep that admission for the next candidates.
+   */
+  const admitQueuedPin = async (): Promise<boolean> => {
+    if (pinAdmission.hold || !summary.pinAdmissionDeferred?.length) return false;
+    const remainingMs = Math.min(
+      pinAdmission.waitBudgetMs - pinAdmission.waitedMs,
+      budget ? budget.deadlineMs - Date.now() : Number.POSITIVE_INFINITY,
+    );
+    if (!(remainingMs >= 1)) return false;
+    const startedAt = Date.now();
+    const hold = await acquireQueuedPinHold(remainingMs);
+    pinAdmission.waitedMs += Math.max(0, Date.now() - startedAt);
+    if (!hold) return false;
+    pinAdmission.hold = hold;
+    pinAdmission.admissions += 1;
+    summary.pinAdmissionDeferred.pop();
+    if (summary.pinAdmissionDeferred.length === 0) delete summary.pinAdmissionDeferred;
+    summary.pinQueuedAdmissions = pinAdmission.admissions;
+    return true;
+  };
   const removeForGc = async (workspaceId: string, path: string, preview: boolean,
     onUnreclaimable?: (code: string) => void): Promise<boolean> => {
+    const hold = pinAdmission.hold;
+    if (hold && Date.now() - hold.acquiredAtMs >= SCRATCH_GC_PIN_HOLD_QUANTUM_MS) await releasePinHold();
+    if (pinAdmission.hold) {
+      // No pin can be created while the admission is held, so its snapshot stays exact.
+      if (pinAdmission.hold.isPinned(path)) return false;
+      return preview ? true : rmScratchPath(path, undefined, onUnreclaimable);
+    }
     try {
       return await removeUnpinnedScratchPath(path, preview, undefined, onUnreclaimable, () => { throw pinBusy; });
     } catch (error) {
@@ -946,7 +1085,18 @@ export async function runScratchGc(opts: {
     const candidates = await runDirsOf(workspaceRoot, undefined, budget, resumeAfter);
     let removed = false;
     let lastCompletedCursor = continuationCursor;
-    for (const candidate of candidates) {
+    let retryCandidateIndex = -1;
+    let retriesForCandidate = 0;
+    /** Re-run this candidate once a queued pin admission (or a lease retry) is in hand. */
+    const retryCandidate = async (candidateIndex: number, admit: boolean): Promise<boolean> => {
+      if (retryCandidateIndex !== candidateIndex) { retryCandidateIndex = candidateIndex; retriesForCandidate = 0; }
+      if (retriesForCandidate >= SCRATCH_GC_PIN_RETRIES_PER_CANDIDATE) return false;
+      if (admit && !(await admitQueuedPin())) return false;
+      retriesForCandidate += 1;
+      return true;
+    };
+    for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
+      const candidate = candidates[candidateIndex];
       if (scratchGcBudgetExpired(budget)) {
         retentionComplete = false;
         break;
@@ -978,6 +1128,10 @@ export async function runScratchGc(opts: {
       }
       if (dryRun) {
         if (!(await removeForGc(workspaceId, candidate.dir, true))) {
+          if (summary.pinAdmissionDeferred?.length && await retryCandidate(candidateIndex, true)) {
+            candidateIndex -= 1;
+            continue;
+          }
           if (summary.pinAdmissionDeferred?.length) {
             summary.continuationCursor = lastCompletedCursor;
             return summary;
@@ -993,25 +1147,44 @@ export async function runScratchGc(opts: {
         continue;
       }
 
-      const evicted = await withScratchWorkspaceDataMutex(workspaceId, 'retention-gc', () =>
-        withScratchWorkspaceMutex(workspaceId, 'retention-gc', async () => {
-        let current;
-        try {
-          current = await statAsync(candidate.dir);
-        } catch {
-          return false;
-        }
-        if (!current.isDirectory() || now - current.mtimeMs <= retentionMs) return false;
-        return removeForGc(workspaceId, candidate.dir, false, (errorCode) => {
-          summary.unreclaimablePaths.push({
-            workspaceId,
-            path: candidate.dir,
-            phase: 'retention',
-            errorCode,
+      let evicted: boolean;
+      try {
+        evicted = await withScratchWorkspaceDataMutex(workspaceId, 'retention-gc', () =>
+          withScratchWorkspaceMutex(workspaceId, 'retention-gc', async () => {
+          let current;
+          try {
+            current = await statAsync(candidate.dir);
+          } catch {
+            return false;
+          }
+          if (!current.isDirectory() || now - current.mtimeMs <= retentionMs) return false;
+          return removeForGc(workspaceId, candidate.dir, false, (errorCode) => {
+            summary.unreclaimablePaths.push({
+              workspaceId,
+              path: candidate.dir,
+              phase: 'retention',
+              errorCode,
+            });
           });
-        });
-      }));
+        }, leaseWaitPolicy()), leaseWaitPolicy());
+      } catch (error) {
+        if (error !== leaseBusy) throw error;
+        // A lease is busy while the admission is held: hand the pin back, retry leases-first.
+        await releasePinHold();
+        if (await retryCandidate(candidateIndex, false)) {
+          candidateIndex -= 1;
+          continue;
+        }
+        // Retries spent: keep this run for the next sweep and make progress on the rest.
+        continuationCursor = candidateCursor;
+        lastCompletedCursor = candidateCursor;
+        continue;
+      }
       if (!evicted) {
+        if (summary.pinAdmissionDeferred?.length && await retryCandidate(candidateIndex, true)) {
+          candidateIndex -= 1;
+          continue;
+        }
         if (summary.pinAdmissionDeferred?.length) {
           continuationCursor = lastCompletedCursor;
           retentionComplete = false;
@@ -1034,7 +1207,7 @@ export async function runScratchGc(opts: {
           invalidateLocalScratchUsage(workspaceId);
         }));
     }
-    if (summary.pinAdmissionDeferred?.length) return summary;
+    if (summary.pinAdmissionDeferred?.length) return pinDeferredSummary();
     if (budget?.truncated) {
       retentionComplete = false;
       break;
@@ -1109,7 +1282,22 @@ export async function runScratchGc(opts: {
     } catch {
       /* no process evidence is not permission to delete */
     }
-    for (const c of candidates) {
+    let retryDeadIndex = -1;
+    let retriesForDead = 0;
+    /** As the retention phase: a busy-pin deferral waits once in the pin FIFO, then retries. */
+    const retryDeadCandidate = async (candidateIndex: number, admit: boolean): Promise<boolean> => {
+      if (retryDeadIndex !== candidateIndex) { retryDeadIndex = candidateIndex; retriesForDead = 0; }
+      if (retriesForDead >= SCRATCH_GC_PIN_RETRIES_PER_CANDIDATE) return false;
+      if (admit && !(await admitQueuedPin())) return false;
+      retriesForDead += 1;
+      return true;
+    };
+    const dropBusyDeadDeferral = (workspaceId: string) => {
+      const last = summary.deadWorkspacesDeferred.at(-1);
+      if (last?.workspaceId === workspaceId && last.reason === 'retention-mutex-busy') summary.deadWorkspacesDeferred.pop();
+    };
+    for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
+      const c = candidates[candidateIndex];
       if (scratchGcBudgetExpired(budget)) break;
       if (scan.byPath.get(c.realDir)?.length) {
         summary.deadWorkspacesDeferred.push({ workspaceId: c.workspaceId, reason: 'open-writer' });
@@ -1121,7 +1309,11 @@ export async function runScratchGc(opts: {
       }
       if (dryRun) {
         if (!(await removeForGc(c.workspaceId, c.dir, true))) {
-          if (summary.pinAdmissionDeferred?.length) return summary;
+          if (summary.pinAdmissionDeferred?.length && await retryDeadCandidate(candidateIndex, true)) {
+            candidateIndex -= 1;
+            continue;
+          }
+          if (summary.pinAdmissionDeferred?.length) return pinDeferredSummary();
           summary.deadWorkspacesDeferred.push({ workspaceId: c.workspaceId, reason: 'retention-pin' });
           continue;
         }
@@ -1129,6 +1321,7 @@ export async function runScratchGc(opts: {
         summary.deadWorkspaceBytes += c.bytes;
         continue;
       }
+      try {
       await withScratchWorkspaceDataMutex(c.workspaceId, 'dead-workspace-gc', () =>
         withScratchWorkspaceMutex(c.workspaceId, 'dead-workspace-gc', async () => {
         if (!(await isProvenWorkspaceScratchRoot(c.dir, c.workspaceId))) return;
@@ -1160,8 +1353,24 @@ export async function runScratchGc(opts: {
         invalidateLocalScratchUsage(c.workspaceId);
         summary.deadWorkspaces += 1;
         summary.deadWorkspaceBytes += currentTree.bytes;
-      }));
-      if (summary.pinAdmissionDeferred?.length) return summary;
+      }, leaseWaitPolicy()), leaseWaitPolicy());
+      } catch (error) {
+        if (error !== leaseBusy) throw error;
+        await releasePinHold();
+        if (await retryDeadCandidate(candidateIndex, false)) {
+          candidateIndex -= 1;
+          continue;
+        }
+        // Retries spent: keep this root for the next sweep and make progress on the rest.
+        summary.deadWorkspacesDeferred.push({ workspaceId: c.workspaceId, reason: 'retention-mutex-busy' });
+        continue;
+      }
+      if (summary.pinAdmissionDeferred?.length && await retryDeadCandidate(candidateIndex, true)) {
+        dropBusyDeadDeferral(c.workspaceId);
+        candidateIndex -= 1;
+        continue;
+      }
+      if (summary.pinAdmissionDeferred?.length) return pinDeferredSummary();
     }
   }
 
