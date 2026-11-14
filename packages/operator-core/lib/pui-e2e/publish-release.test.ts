@@ -17,7 +17,7 @@ const roots: string[] = [];
 // the suite then asserted production keys against fixture expectations (4 reds, run 5e50b3df,
 // 2026-09-27). Every spawn therefore starts from an env with the release-host, storage and
 // Portal-link variables removed; each test supplies exactly the ones it means to.
-const INHERITED_RELEASE_ENV = /^(PAPERCUSP_UPDATE_BASE_URL|PAPERCUSP_RELEASE_HOST|PUI_.*|R2_.*|AWS_.*|NEXT_PUBLIC_PORTAL_.*)$/;
+const INHERITED_RELEASE_ENV = /^(PAPERCUSP_UPDATE_BASE_URL|PAPERCUSP_RELEASE_.*|PUI_.*|R2_.*|AWS_.*|GOOGLE_.*|GCLOUD_.*|CLOUDSDK_.*|NEXT_PUBLIC_PORTAL_.*)$/;
 function hermeticEnv(overrides: Record<string, string>): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -89,8 +89,8 @@ function run(files: ReturnType<typeof candidate>, previous?: unknown) {
   return { result, work };
 }
 
-// Exercise the real publisher's write path with a local object store. Neither
-// adapter can reach the network or inherit production storage credentials.
+// Exercise the real publisher and shared release-storage.sh GCS contract with a
+// local object store. The gcloud/curl adapters never contact a provider.
 function publication(files: ReturnType<typeof candidate>, options: {
   headFailure?: boolean;
   corruptPublicArchive?: boolean;
@@ -120,7 +120,9 @@ const path = require('node:path');
 const args = process.argv.slice(2);
 const store = JSON.parse(fs.readFileSync(process.env.MOCK_STORE, 'utf8'));
 const arg = (name) => args[args.indexOf(name) + 1];
+const flag = (name) => args.find(value => value.startsWith(name + '='))?.slice(name.length + 1);
 const log = (op, key) => fs.appendFileSync(process.env.MOCK_EVENTS, JSON.stringify({op,key}) + '\\n');
+const fail = (message) => { console.error(message); process.exit(1); };
 if (path.basename(process.argv[1]) === 'curl') {
   const url = new URL(args.find((value) => value.startsWith('https://')));
   const key = url.pathname.slice(1);
@@ -129,45 +131,50 @@ if (path.basename(process.argv[1]) === 'curl') {
   const body = process.env.MOCK_CORRUPT === '1' && key.endsWith('.tar.gz')
     ? Buffer.from('corrupt download') : Buffer.from(store[key].body, 'base64');
   fs.writeFileSync(arg('-o'), body);
-} else if (args.includes('head-object')) {
-  const key = arg('--key');
-  log('head', key);
-  if (process.env.MOCK_HEAD_FAILURE === '1') {
-    console.error('An error occurred (AccessDenied) when calling HeadObject'); process.exit(1);
+} else if (args[0] === 'storage') {
+  const uri = new URL(args[1] === 'objects' ? args[3] : args[1] === 'cp' ? args[3] : args[2]);
+  if (uri.protocol !== 'gs:' || uri.hostname !== 'fixture-release-bucket') fail('unexpected storage destination');
+  const key = uri.pathname.slice(1);
+  const object = store[key];
+  const generation = String(object?.generation ?? (object ? 1 : 0));
+  if (args[1] === 'objects' && args[2] === 'describe') {
+    log('head', key);
+    if ((process.env.MOCK_HEAD_FAILURE === '1' && key.endsWith('.tar.gz'))
+      || (process.env.MOCK_PREVIOUS_FAILURE === '1' && key.endsWith('/latest.json'))) {
+      fail('HTTPError 403: permission denied');
+    }
+    if (!object) fail('HTTPError 404: object absent');
+    console.log(JSON.stringify({ generation, size: String(Buffer.from(object.body, 'base64').length),
+      metadata: object.sha ? { sha256: object.sha } : {} }));
+  } else if (args[1] === 'cat') {
+    log('authenticated-get', key);
+    if (!object || uri.hash !== '#' + generation) fail('HTTPError 404: generation absent');
+    process.stdout.write(Buffer.from(object.body, 'base64'));
+  } else if (args[1] === 'cp') {
+    if (flag('--if-generation-match') !== generation) fail('HTTPError 412: generation changed');
+    const body = fs.readFileSync(args[2]);
+    const sha = flag('--custom-metadata')?.slice('sha256='.length);
+    if (sha !== require('node:crypto').createHash('sha256').update(body).digest('hex')) fail('wrong digest metadata');
+    log('put', key);
+    store[key] = { body: body.toString('base64'), sha, generation: String(Number(generation) + 1) };
+    fs.writeFileSync(process.env.MOCK_STORE, JSON.stringify(store));
+  } else {
+    fail('unexpected storage invocation');
   }
-  if (!store[key]) {
-    console.error('An error occurred (404) when calling HeadObject'); process.exit(1);
-  }
-  console.log(store[key].sha || 'None');
-} else if (args.includes('get-object')) {
-  const key = arg('--key');
-  log('authenticated-get', key);
-  if (process.env.MOCK_PREVIOUS_FAILURE === '1' && key.endsWith('/latest.json')) {
-    console.error('An error occurred (AccessDenied) when calling GetObject'); process.exit(1);
-  }
-  if (!store[key]) {
-    console.error('An error occurred (NoSuchKey) when calling GetObject'); process.exit(1);
-  }
-  fs.writeFileSync(args.at(-1), Buffer.from(store[key].body, 'base64'));
-} else if (args.includes('cp')) {
-  const index = args.indexOf('cp');
-  const key = new URL(args[index + 2]).pathname.slice(1);
-  log('put', key);
-  store[key] = { body: fs.readFileSync(args[index + 1]).toString('base64'),
-    ...(args.includes('--metadata') ? {sha: arg('--metadata').slice('sha256='.length)} : {}) };
-  fs.writeFileSync(process.env.MOCK_STORE, JSON.stringify(store));
 } else { console.error('unexpected mock invocation'); process.exit(2); }
 `;
-  for (const name of ['aws', 'curl']) writeFileSync(join(bin, name), adapter, { mode: 0o755 });
-  const r2Env = join(files.root, 'r2.env');
-  writeFileSync(r2Env, 'R2_ACCOUNT_ID=fixture\nR2_BUCKET=fixture\nAWS_ACCESS_KEY_ID=fixture\nAWS_SECRET_ACCESS_KEY=fixture\n');
+  for (const name of ['gcloud', 'curl']) writeFileSync(join(bin, name), adapter, { mode: 0o755 });
+  // A regression to the retired provider must fail locally too.
+  writeFileSync(join(bin, 'aws'), '#!/bin/sh\necho "retired provider invoked" >&2\nexit 91\n', { mode: 0o755 });
+  const storageEnv = join(files.root, 'release-storage.env');
+  writeFileSync(storageEnv, 'PAPERCUSP_RELEASE_GCS_BUCKET=fixture-release-bucket\n');
   const portalEnv = join(files.root, 'portal-public-links.env');
   const work = join(files.root, 'published');
   const result = spawnSync('bash', [PUBLISH, '--archive', files.archive, '--work', work], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
-    env: hermeticEnv({ PATH: `${bin}:${process.env.PATH}`, DRY_RUN: '0',
-      PUI_RELEASE_HOST_ENV: files.hostEnv, PUI_R2_ENV: r2Env,
+    env: hermeticEnv({ PATH: `${bin}:${process.env.PATH}`, HOME: files.root, DRY_RUN: '0',
+      PUI_RELEASE_HOST_ENV: files.hostEnv, PAPERCUSP_RELEASE_STORAGE_ENV: storageEnv,
       PUI_PORTAL_LINKS_ENV: portalEnv, PUI_SKIP_PORTAL_CONFIG: '0',
       MOCK_STORE: state, MOCK_EVENTS: events,
       MOCK_HEAD_FAILURE: options.headFailure ? '1' : '0',
@@ -393,22 +400,23 @@ describe('PUI public release publisher', () => {
   it('fails closed on storage lookup errors without writing or configuring Portal', () => {
     const published = publication(candidate(), { headFailure: true });
     expect(published.result.status).not.toBe(0);
-    expect(published.result.stderr).toContain('absence was not established');
+    expect(published.result.stderr).toContain('immutable object differs or could not be verified');
     expect(published.events.some((row) => row.op === 'put')).toBe(false);
     expect(existsSync(published.portalEnv)).toBe(false);
   });
 
-  it('compares existing bytes without metadata and repairs metadata only for identical content', () => {
+  it('compares and preserves identical existing bytes without metadata', () => {
     const published = publication(candidate(), { existingArchive: 'identical-without-metadata' });
     expect(published.result.status, published.result.stderr).toBe(0);
     expect(published.events).toContainEqual({ op: 'authenticated-get', key: published.archiveKey });
     expect(published.events).toContainEqual({ op: 'public-get', key: published.archiveKey });
+    expect(published.events).not.toContainEqual({ op: 'put', key: published.archiveKey });
   });
 
   it('refuses different immutable bytes before any upload', () => {
     const published = publication(candidate(), { existingArchive: 'different' });
     expect(published.result.status).not.toBe(0);
-    expect(published.result.stderr).toContain('refusing to replace different bytes');
+    expect(published.result.stderr).toContain('immutable object differs or could not be verified');
     expect(published.events.some((row) => row.op === 'put')).toBe(false);
   });
 

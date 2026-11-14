@@ -1,6 +1,7 @@
 // Portable runtime for the existing release-retention TSV store. Standalone
 // desktop/VH cleaners and the server share this parser and filesystem mutex.
-import { readdirSync, readFileSync, realpathSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, normalize } from 'node:path';
@@ -96,6 +97,63 @@ function pinsFromLeases(read, options) {
 
 export function readRetentionPins(options = {}) {
   return pinsFromLeases(readRetentionLeases(options.dir ?? defaultRetentionDir()), options);
+}
+
+/**
+ * Publish in the existing lease store. Callers serialize with deleters using
+ * papercusp-disk-retention; the target must still exist at publication.
+ * @param {{ path: string, owner: string, reason: string, expiresAt: string }} input
+ * @param {{ dir?: string, nowMs?: number, id?: string, dryRun?: boolean }} [options]
+ */
+export function createRetentionPin(input, options = {}) {
+  const nowMs = options.nowMs ?? Date.now();
+  const expiry = Date.parse(input.expiresAt);
+  if (!input.owner.trim() || !input.reason.trim()) throw new Error('pin requires an owner and reason');
+  if (!Number.isFinite(expiry) || expiry <= nowMs) throw new Error('pin requires a finite future expiry');
+  if (!isAbsolute(input.path) || /[\r\n\0]/.test(input.path)) throw new Error('pin requires an absolute path without line breaks');
+  const logical = normalize(input.path);
+  const paths = [...new Set([logical, realpathSync(logical)])];
+  const dir = options.dir ?? defaultRetentionDir();
+  if (options.id !== undefined && !UUID.test(options.id)) throw new Error('invalid pin id');
+  const pin = { id: options.id ?? randomUUID(), owner: input.owner.trim(), reason: input.reason.trim(),
+    createdAt: new Date(nowMs).toISOString(), expiresAt: new Date(expiry).toISOString(), paths };
+  if (options.dryRun) return pin;
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const tag = TAG_PREFIX + Buffer.from(JSON.stringify({ version: 1, id: pin.id, owner: pin.owner,
+    reason: pin.reason, createdAt: pin.createdAt })).toString('base64url');
+  const body = [`schema=${RETENTION_SCHEMA}`, `tag=${tag}`, `created_ns=${BigInt(Math.floor(nowMs)) * 1_000_000n}`,
+    `expires_ns=${BigInt(expiry) * 1_000_000n}`, ...paths.map((p) => `path=${p}`), ''].join('\n');
+  const file = join(dir, `lease-agent-pin-${pin.id}.tsv`);
+  const temp = `${file}.${randomUUID()}.tmp`;
+  let fd;
+  try {
+    fd = openSync(temp, 'wx', 0o600);
+    writeFileSync(fd, body);
+    fsyncSync(fd);
+    closeSync(fd); fd = undefined;
+    renameSync(temp, file);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+    try { unlinkSync(temp); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  return pin;
+}
+
+/**
+ * Only the pin's authenticated owner can release it through the agent tool.
+ * @param {string} id
+ * @param {string} owner
+ * @param {{ dir?: string }} [options]
+ */
+export function removeRetentionPin(id, owner, options = {}) {
+  if (!UUID.test(id)) throw new Error('invalid pin id');
+  const read = readRetentionPins({ ...options, includeExpired: true });
+  if (read.errors.length) throw new Error(`retention pins unreadable: ${read.errors.join('; ')}`);
+  const pin = read.pins.find((p) => p.id === id);
+  if (!pin) return false;
+  if (pin.owner !== owner) throw new Error('only the pin owner may release it');
+  unlinkSync(join(options.dir ?? defaultRetentionDir(), `lease-agent-pin-${id}.tsv`));
+  return true;
 }
 
 export async function readRetentionPinsAsync(options = {}) {

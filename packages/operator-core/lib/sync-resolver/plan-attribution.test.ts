@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { enrichPlanListRows, enrichPlanItemsRows, enrichPlanDetail } from './plan-attribution';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
@@ -128,6 +128,22 @@ describe('enrichPlanListRows', () => {
   it('returns the input untouched for an empty list', async () => {
     const sql = fakeSql({});
     expect(await enrichPlanListRows([], { sql })).toEqual([]);
+  });
+
+  it('requests only distinct, fully scoped plan pairs for revision attribution', async () => {
+    const unsafe = vi.fn().mockResolvedValue([]);
+    await enrichPlanListRows([
+      { slug: 'same', harness: 'first' },
+      { slug: 'same', harness: 'second' },
+      { slug: 'same', harness: 'first' },
+      { slug: 'missing-harness' },
+      { harness: 'first' },
+    ], { sql: { unsafe } as unknown as Sql, workspaceId: 'workspace-a' });
+
+    expect(unsafe).toHaveBeenCalledTimes(1);
+    expect(unsafe.mock.calls[0][1]).toEqual([
+      'workspace-a', ['first', 'second'], ['same', 'same'],
+    ]);
   });
 });
 

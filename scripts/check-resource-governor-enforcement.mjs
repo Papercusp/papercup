@@ -3520,6 +3520,22 @@ export const BYPASS_REGISTRY = new Map([
         "Every detected start is execFileSync('git', ...) plumbing (ls-tree, cat-file --batch-check, hash-object --stdin-paths, check-ignore, rev-parse) with an explicit 60s timeout, comparing a test-only bundle's compiler inputs with its snapshot commit; each call is synchronous and awaited and creates no worker or resident queue (WI-6554700010048234).",
     },
   ],
+  [
+    "apps/operator/bin/bundle-host-snapshot-esbuild.mjs::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "A builder step of the test-only working-tree bundle, already inside bundle_host_esbuild's pinned-compiler cache lease: bounded execFileSync('git', ...) plumbing (ls-tree, rev-parse; 120s timeout), the pinned esbuild --version probe (10s timeout), and one `git cat-file --batch` reader per repository that lives only for that single compile and is closed when esbuild.build settles (WI-6554700010048234).",
+    },
+  ],
+  [
+    "apps/operator/bin/bundle-host-snapshot-esbuild.mjs::unbounded-resident-queue",
+    {
+      disposition: "bypass",
+      reason:
+        "BlobReader.pending holds the in-flight onLoad blob requests of ONE compile, bounded by that bundle's input count and drained in order as git answers; it is per-call, never persisted, and released with the process when the build ends (WI-6554700010048234).",
+    },
+  ],
   // ── cheap metadata reads: a git plumbing call that prints and exits ──────────
   // These are D-004's "cheap metadata operations that cannot materially increase
   // residency": single short-lived plumbing processes, awaited, no worker, no queue.

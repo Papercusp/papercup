@@ -91,6 +91,11 @@ vi.mock("../../rubrics", async (importOriginal) => ({
 vi.mock("../../plan-audits", () => ({
   getLatestPlanAudit: M.getLatestPlanAudit,
 }));
+// Anchor reads are unconditional; keep this alias/cache fixture independent of PG.
+vi.mock("../../plan-items/anchor-store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../plan-items/anchor-store")>()),
+  readPlanItemAnchors: vi.fn(async () => ({})),
+}));
 
 import tool from "./get";
 import { dispatchProjectedTool, lookupByMcpName } from "@papercusp/agent-mcp";

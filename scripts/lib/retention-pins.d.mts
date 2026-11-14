@@ -20,6 +20,9 @@ export function parseRetentionLease(file: string, text: string): LeaseParse;
 export function isLeaseLive(lease: RetentionLease, nowMs: number): boolean;
 export function readRetentionLeases(dir: string): { leases: RetentionLease[]; errors: string[] };
 export function readRetentionPins(options?: PinReadOptions): { pins: RetentionPin[]; errors: string[] };
+export function createRetentionPin(input: { path: string; owner: string; reason: string; expiresAt: string },
+  options?: { dir?: string; nowMs?: number; id?: string; dryRun?: boolean }): RetentionPin;
+export function removeRetentionPin(id: string, owner: string, options?: { dir?: string }): boolean;
 export function readRetentionPinsAsync(options?: PinReadOptions): Promise<{ pins: RetentionPin[]; errors: string[] }>;
 export function retentionPinProtectsPath(path: string, pins: readonly RetentionPinProtection[], nowMs?: number): boolean;
 export function pinProtection(pins: readonly RetentionPinProtection[], nowMs?: number, resolvePath?: (path: string) => string): RetentionPinPredicate;

@@ -52,6 +52,8 @@ import {
   clearStaleConfigLock,
   clearStaleHolderlessEmptyGitLock,
   clearStaleMaintenanceLock,
+  sweepStaleGitMetadataLocks,
+  SWEPT_GIT_METADATA_LOCKS,
   scavengeStaleTempPacks,
   STALE_INDEX_LOCK_MS,
   STALE_MAINTENANCE_LOCK_MS,
@@ -3710,7 +3712,7 @@ describe('runGitSync (real git, no submodule)', () => {
     ).toBe(false);
   });
 
-  describe.each(['HEAD.lock', 'refs/heads/topic/nested.lock'] as const)(
+  describe.each(['HEAD.lock', 'refs/heads/topic/nested.lock', 'refs/remotes/origin/staging.lock', 'packed-refs.lock', 'gc.log.lock'] as const)(
     'protects %s during metadata orphan recovery', (lockName) => {
   it.each(['fresh', 'nonempty', 'live', 'unknown', 'replaced'] as const)(
     'preserves a %s lock during metadata orphan recovery', async (condition) => {
@@ -3736,7 +3738,7 @@ describe('runGitSync (real git, no submodule)', () => {
   );
   });
 
-  it.each(['refs/heads/../../HEAD.lock', 'refs/heads/topic\\nested.lock'] as const)(
+  it.each(['refs/heads/../../HEAD.lock', 'refs/heads/topic\\nested.lock', 'refs/remotes/origin/../../../x.lock'] as const)(
     'refuses an unsafe branch lock path %s before filesystem inspection', async (lockName) => {
       let inspected = false;
       expect(await clearStaleHolderlessEmptyGitLock(
@@ -3869,6 +3871,103 @@ describe('runGitSync (real git, no submodule)', () => {
       }),
     ).toBe(false);
     expect(unlinkFile).not.toHaveBeenCalled();
+  });
+
+  it('refuses a ref lock outside refs/heads and refs/remotes before filesystem inspection', async () => {
+    let inspected = false;
+    const tagLock = 'refs/tags/v1.lock' as unknown as Parameters<typeof clearStaleHolderlessEmptyGitLock>[2];
+    expect(await clearStaleHolderlessEmptyGitLock(
+      async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' }), '/fake', tagLock, () => {}, {
+        inspectLock: async () => { inspected = true; return null; },
+      },
+    )).toBe(false);
+    expect(inspected).toBe(false);
+  });
+
+  describe('sweepStaleGitMetadataLocks (WI-6554700010048970)', () => {
+    let sweepRoot: string;
+    let sweepRepo: string;
+    const realRunGit: RunGit = async (args, cwd) => {
+      const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
+      return { code: r.status ?? 1, stdout: String(r.stdout ?? ''), stderr: String(r.stderr ?? '') };
+    };
+    const lockAt = (rel: string, ageMs: number, body = '') => {
+      const p = join(sweepRepo, '.git', rel);
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, body);
+      const seconds = (Date.now() - ageMs) / 1000;
+      utimesSync(p, seconds, seconds);
+      return p;
+    };
+    const OLD = STALE_MAINTENANCE_LOCK_MS + 60_000;
+    beforeEach(() => {
+      sweepRoot = mkdtempSync(join(tmpdir(), 'git-sync-lock-sweep-'));
+      sweepRepo = join(sweepRoot, 'repo');
+      mkdirSync(sweepRepo);
+      execFileSync('git', ['init', '-q', sweepRepo]);
+    });
+    afterEach(() => rmSync(sweepRoot, { recursive: true, force: true }));
+
+    it('clears every old empty holderless gitdir and ref lock, and keeps fresh, nonempty, held and index locks', async () => {
+      const clearedPaths = [
+        lockAt('packed-refs.lock', OLD),
+        lockAt('gc.pid.lock', OLD),
+        lockAt('gc.log.lock', OLD),
+        lockAt('refs/heads/topic/nested.lock', OLD),
+        lockAt('refs/remotes/origin/staging.lock', OLD),
+      ];
+      const keptPaths = [
+        lockAt('shallow.lock', OLD, 'nonempty'),
+        // 10 min is past the 90s REACTIVE floor but inside the proactive 1h floor.
+        lockAt('HEAD.lock', 10 * 60_000),
+        lockAt('refs/heads/held.lock', OLD),
+        // index.lock keeps its own age + live-holder path; the sweep never touches it.
+        lockAt('index.lock', OLD),
+      ];
+      const logs: string[] = [];
+      const out = await sweepStaleGitMetadataLocks(realRunGit, sweepRepo, (m) => logs.push(m), {
+        isOpen: async (p) => p.endsWith('/held.lock'),
+      });
+      expect(out).toEqual({
+        cleared: ['packed-refs.lock', 'gc.pid.lock', 'gc.log.lock', 'refs/heads/topic/nested.lock', 'refs/remotes/origin/staging.lock'],
+        kept: ['shallow.lock', 'HEAD.lock', 'refs/heads/held.lock'],
+        unlistedDirs: [],
+      });
+      for (const p of clearedPaths) expect(existsSync(p)).toBe(false);
+      for (const p of keptPaths) expect(existsSync(p)).toBe(true);
+      expect(logs.some((m) => m.includes('tick-start sweep cleared 5 stranded Git lock(s)'))).toBe(true);
+    });
+
+    it('fails closed when the holder state is UNKNOWN', async () => {
+      const lock = lockAt('packed-refs.lock', OLD);
+      const out = await sweepStaleGitMetadataLocks(realRunGit, sweepRepo, () => {}, { isOpen: async () => null });
+      expect(out.cleared).toEqual([]);
+      expect(out.kept).toEqual(['packed-refs.lock']);
+      expect(existsSync(lock)).toBe(true);
+    });
+
+    it('is a no-op on a repo with no locks, and covers every fixed name it advertises', async () => {
+      expect(await sweepStaleGitMetadataLocks(realRunGit, sweepRepo, () => {}, { isOpen: async () => false }))
+        .toEqual({ cleared: [], kept: [], unlistedDirs: [] });
+      for (const name of SWEPT_GIT_METADATA_LOCKS) lockAt(name, OLD);
+      const out = await sweepStaleGitMetadataLocks(realRunGit, sweepRepo, () => {}, { isOpen: async () => false });
+      expect(out.cleared).toEqual([...SWEPT_GIT_METADATA_LOCKS]);
+    });
+
+    it('reports an unlistable ref directory instead of silently skipping it', async () => {
+      const logs: string[] = [];
+      const out = await sweepStaleGitMetadataLocks(
+        async () => ({ code: 0, stdout: '/fake/.git\n/fake/.git\n', stderr: '' }), '/fake', (m) => logs.push(m), {
+          inspectLock: async () => null,
+          readDirents: async (dir) => {
+            if (dir.includes('/refs/remotes')) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+            throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+          },
+        },
+      );
+      expect(out.unlistedDirs).toEqual(['refs/remotes']);
+      expect(logs.some((m) => m.includes('could NOT list refs/remotes'))).toBe(true);
+    });
   });
 
   it('clearStaleConfigLock removes only an old empty holderless lock', async () => {
@@ -4955,6 +5054,43 @@ describe('runGitSync (real git, no submodule)', () => {
 
     expect(out.status).toBe('synced');
     if (out.status === 'synced') expect(out.pushed).toEqual([]);
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  it('a sync reclaims a stranded remote-tracking ref lock and packed-refs.lock before fetching (WI-6554700010048970)', async () => {
+    // Without the sweep, the stranded tracking-ref lock froze origin/staging for ~8 days.
+    const oldSeconds = (Date.now() - STALE_MAINTENANCE_LOCK_MS - 60_000) / 1000;
+    const locks = [
+      join(repo, '.git', 'refs', 'remotes', 'origin', 'main.lock'),
+      join(repo, '.git', 'packed-refs.lock'),
+    ];
+    for (const lock of locks) {
+      mkdirSync(dirname(lock), { recursive: true });
+      writeFileSync(lock, '');
+      utimesSync(lock, oldSeconds, oldSeconds);
+    }
+    writeFileSync(join(repo, 'ref-lock-sweep.txt'), 'edit\n');
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg, isGitLockOpen: async () => false });
+
+    expect(out.status).not.toBe('error');
+    for (const lock of locks) expect(existsSync(lock)).toBe(false);
+  });
+
+  it('a bridged commit-only sync also runs the Git metadata lock sweep (WI-6554700010048970)', async () => {
+    const lock = join(repo, '.git', 'gc.log.lock');
+    writeFileSync(lock, '');
+    const oldSeconds = (Date.now() - STALE_MAINTENANCE_LOCK_MS - 60_000) / 1000;
+    utimesSync(lock, oldSeconds, oldSeconds);
+    writeFileSync(join(repo, 'gc-lock-bridged.txt'), 'edit\n');
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: { ...cfg, push: false, reconcileSuperprojectOrigin: false },
+      isGitLockOpen: async () => false,
+    });
+
+    expect(out.status).toBe('synced');
     expect(existsSync(lock)).toBe(false);
   });
 

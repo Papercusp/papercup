@@ -8,8 +8,10 @@ import { createHash } from 'node:crypto';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { readInstalledPluginProvenance } from '../cupboard/install-plugin-core';
-import { bindInstalledPerUseOffer, readHostedPerUseOffers, readHostedToolEntitlements,
-  type HostedPerUseOffer, type MeteredTransportDeps } from '../cupboard/metered-invocation-door-io';
+// Commerce modules are type-only here and loaded lazily on the paid path, so the
+// tool dispatch graph never statically reaches a commerce root (P2P v1, R-7).
+import type { HostedPerUseOffer, MeteredTransportDeps } from '../cupboard/metered-invocation-door-io';
+import { isV1ScopeRefusal, V1_SCOPE_REFUSAL_CODE } from '../p2p/v1-core/v1-scope-contract';
 import { readInstalledPluginCommerceProvenance } from '../cupboard/install-io';
 import type { FundedToolTurnHost } from '../cupboard/funded-turn-host';
 import type { FundedToolTurnBinding, FundedToolTurnResult } from '../cupboard/funded-tool-turn-store';
@@ -18,7 +20,7 @@ import type { SuCodexTurnAdmission, SuCodexTurnLifecycle } from '../su-session-u
 import { nativeToolArguments } from '../su-session-usage';
 import type { HostRequestPrincipalResolver } from '../auth/require-principal';
 import { appendAuthorizedNativeDispatch, type NativeDispatchAppend } from '../agent-opportunities/native-capture';
-import { declareMeter, LocalMeteredTurnRefusedError, type LocalMeteredTurn } from '../p2p/metered-invocation';
+import type { LocalMeteredTurn } from '../p2p/metered-invocation';
 import { resolveConcreteHarnessSlug } from './_harness-scope';
 
 type Request = Parameters<NonNullable<DispatchProjectedDeps['aroundInvoke']>>[0];
@@ -87,11 +89,18 @@ export async function admitInstalledPerUseToolTurn(input: {
   const loaded = await (input.readProvenance ?? readInstalledPluginCommerceProvenance)(installation);
   if (!loaded) return { ok: false, code: 'installation-binding-required', detail: 'exact installed commerce provenance is required' };
   const provenance = structuredClone(loaded), requestedPayer = await input.resolvePayer?.();
-  const catalog = await readHostedPerUseOffers(input.payerTransport);
+  let door: typeof import('../cupboard/metered-invocation-door-io');
+  try {
+    door = await import('../cupboard/metered-invocation-door-io');
+  } catch (error) {
+    if (isV1ScopeRefusal(error)) return { ok: false, code: V1_SCOPE_REFUSAL_CODE, detail: error instanceof Error ? error.message : String(error) };
+    throw error;
+  }
+  const catalog = await door.readHostedPerUseOffers(input.payerTransport);
   if (!catalog.ok) return catalog;
-  const bound = bindInstalledPerUseOffer(provenance, catalog.offers);
+  const bound = door.bindInstalledPerUseOffer(provenance, catalog.offers);
   if (!bound.ok) return bound;
-  const entitlement = await readHostedToolEntitlements(requestedPayer, input.payerTransport);
+  const entitlement = await door.readHostedToolEntitlements(requestedPayer, input.payerTransport);
   if (!entitlement.ok) return entitlement;
   if (!entitlement.productIds.includes(bound.offer.productId)) return { ok: false, code: 'tool-entitlement-required', detail: 'authenticated buyer has no active entitlement' };
   const payer = entitlement.payer;
@@ -811,9 +820,17 @@ export function createInstalledPerUseChokepoint(deps: {
         : refuse('tool_turn_binding_mismatch', 'Free admission differs from the installed pricing');
     }
     if (!admitted.entitled) return refuse('tool_entitlement_required', 'The admitted buyer has no active entitlement');
-    const bound = bindInstalledPerUseOffer(provenance, [admitted.offer]);
+    let door: typeof import('../cupboard/metered-invocation-door-io');
+    let meter: typeof import('../p2p/metered-invocation');
+    try {
+      [door, meter] = await Promise.all([import('../cupboard/metered-invocation-door-io'), import('../p2p/metered-invocation')]);
+    } catch (error) {
+      if (isV1ScopeRefusal(error)) return refuse(V1_SCOPE_REFUSAL_CODE, error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+    const bound = door.bindInstalledPerUseOffer(provenance, [admitted.offer]);
     if (!bound.ok) return refuse(bound.code, bound.detail);
-    const declared = declareMeter(bound.offer.terms);
+    const declared = meter.declareMeter(bound.offer.terms);
     if (!declared.ok) return refuse(declared.code, declared.detail);
     if (declared.meter.meterUnit !== 'tool-call') {
       return refuse('unsupported_tool_meter', 'An invocation charge requires a published tool-call meter');
@@ -835,7 +852,7 @@ export function createInstalledPerUseChokepoint(deps: {
       return await admitted.turn.invoke({ payer: state.payer, releaseRef: state.releaseRef,
         usageNonce: request.callId, quantity: 1n }, request.invoke);
     } catch (error) {
-      if (error instanceof LocalMeteredTurnRefusedError) return refuse(error.code, error.message);
+      if (error instanceof meter.LocalMeteredTurnRefusedError) return refuse(error.code, error.message);
       throw error;
     }
   };

@@ -2771,7 +2771,7 @@ describe('sync-staging-checkout.sh coordinated restart result', () => {
         encoding: 'utf8',
         env: { ...process.env, INTEGRATION_ROOT: dir, PTOOL_CLIENT_SID: 'test-client', PTOOL_BIN: cli,
           STAGING_PORT: '3170', RESTART_CONTROL_URL: 'http://127.0.0.1:3170',
-          GIT_SYNC_DRAIN_SEC: '45', current: '12345678', target: 'abcdef12' },
+          GIT_SYNC_DRAIN_SEC: '45', RESTART_MAX_DRAIN_SEC: '300', current: '12345678', target: 'abcdef12' },
       });
       expect(r.status, r.stderr).toBe(0);
       expect(JSON.parse(r.stdout)).toEqual({ ok: true, restarted: true });
@@ -2805,31 +2805,66 @@ describe('sync-staging-checkout.sh coordinated restart result', () => {
     expect(verify('101', 'abcdef1234', JSON.stringify({ ok: false, reason: 'restart_withheld' })).status).toBe(1);
   });
 
-  it('reports a delivered stderr drain refusal without waiting for target health', () => {
+  it('defers a delivered stderr drain timeout to a bounded next tick without waiting for target health', () => {
+    // EI-28801676705351990: long shared holders (rubrics:amend runs) outlast the
+    // drain; the generation is already published, so the next tick retries only
+    // the restart. Past the staleness ceiling the refusal must still fail loudly.
     const script = readFileSync(SCRIPT_PATH, 'utf8');
     const tail = script.slice(script.indexOf('# ptool exits successfully for a business-level refusal'));
     const connectionTrace = 'operator-connect-trace '.repeat(180);
-    const result = runFn(
+    const run = (age: string) => runFn(
       ['restart_result_is_accepted', 'restart_result_is_pending', 'restart_result_is_pre_dispatch_refusal',
         'restart_refusal_is_transient_git_sync', 'health_sha_matches_target', 'staging_restart_is_observed'],
       [
         'log() { printf "%s\\n" "$*"; }',
         'staging_health_source_sha() { echo UNEXPECTED_HEALTH_PROBE; }',
+        'current_commit_age_sec() { printf "%s" "$TEST_AGE"; }',
         tail,
       ].join('\n'),
       { env: { restart_verified: '0', restart_tool_status: '1', restart_pending: '0', restart_result: '',
         restart_diagnostics: 'ptool launcher\n✗ tool returned an error:\n' + JSON.stringify({
           ok: false, reason: 'resource_drain_timeout', resource: 'staging-server',
           holders: [{ owner: 'fixture-holder', mode: 'shared' }],
-        }, null, 2) + '\n' + connectionTrace } },
+        }, null, 2) + '\n' + connectionTrace,
+        served_sha: 'fedcba98', TEST_AGE: age, MAX_STALE_SEC: '120', RESTART_MAX_DRAIN_SEC: '300' } },
     );
-    expect(result.status, result.stderr).toBe(1);
-    expect(result.stdout).toContain('resource drain was refused; no restart scheduled');
-    expect(result.stdout).toContain('"reason": "resource_drain_timeout"');
-    expect(result.stdout).toContain('fixture-holder');
-    expect(result.stdout).toContain('operator-connect-trace');
-    expect(result.stdout).not.toContain('UNEXPECTED_HEALTH_PROBE');
-    expect(result.stdout).not.toContain('no terminal receipt');
+
+    const recent = run('30');
+    expect(recent.status, recent.stderr).toBe(0);
+    expect(recent.stdout).toContain('deferring restart');
+    expect(recent.stdout).toContain('resource drain timed out after 300s');
+    expect(recent.stdout).toContain('"reason": "resource_drain_timeout"');
+    expect(recent.stdout).toContain('fixture-holder');
+    expect(recent.stdout).toContain('next scheduled sync tick retries the restart');
+    expect(recent.stdout).not.toContain('UNEXPECTED_HEALTH_PROBE');
+    expect(recent.stdout).not.toContain('no terminal receipt');
+
+    const stale = run('120');
+    expect(stale.status, stale.stderr).toBe(1);
+    expect(stale.stdout).toContain('resource drain was refused; no restart scheduled');
+    expect(stale.stdout).toContain('≥ 120s ceiling');
+    expect(stale.stdout).toContain('fixture-holder');
+    expect(stale.stdout).toContain('operator-connect-trace');
+    expect(stale.stdout).not.toContain('UNEXPECTED_HEALTH_PROBE');
+    expect(stale.stdout).not.toContain('no terminal receipt');
+  });
+
+  it('passes a clamped max_drain_sec to dev:restart so long shared holders can drain', () => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    expect(script).toContain('"max_drain_sec":${RESTART_MAX_DRAIN_SEC}');
+    const normalize = (value: string) => runFn(
+      ['normalize_restart_max_drain_sec'],
+      `normalize_restart_max_drain_sec "${value}"`,
+      {},
+    );
+    expect(normalize('').stdout.trim()).toBe('300');
+    expect(normalize('90').stdout.trim()).toBe('90');
+    expect(normalize('301').stdout.trim()).toBe('300');
+    expect(normalize('9000').stdout.trim()).toBe('300');
+    expect(normalize('abc').status).toBe(1);
+    // The clamp must stay inside the ptool client deadline that waits on the drain.
+    const deadline = Number(/restart_tool_timeout_sec=(\d+)/.exec(script)?.[1]);
+    expect(deadline).toBeGreaterThan(300);
   });
 
   it('defers a delivered stderr resource_draining refusal to a bounded next tick without waiting for health', () => {

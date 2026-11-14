@@ -1,5 +1,9 @@
 /** Network-neutral batch settlement adapter over cumulative vouchers (P-021). */
 import { paymentVoucherDigest, unsignedVoucher, type CumulativePaymentVoucher } from './microcharge';
+import { refuseCommerceLoadInV1ReleaseBuild } from './v1-core/v1-scope-contract';
+
+// p2p-v1-core-release-2026-11-13 R-7: a commerce root refuses to load in the v1 release build.
+refuseCommerceLoadInV1ReleaseBuild('p2p/payment-channel.ts');
 
 export type PaymentRail = 'evm-x402' | 'lightning' | 'custom';
 

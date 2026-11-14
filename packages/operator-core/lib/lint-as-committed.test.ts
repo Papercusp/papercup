@@ -1681,13 +1681,21 @@ console.log('CLONE_PREREQUISITES_OK');
     });
   }
 
-  it.each(['compatible', 'mismatched'] as const)('uses an explicit %s dependency donor without changing source authority', state => {
+  it.each((['compatible', 'mismatched'] as const).flatMap(state =>
+    (['explicit', 'recorded'] as const).map(route => ({ state, route }))))(
+    'uses a $state dependency donor with the $route generation route without changing source authority', ({ state, route }) => {
     const f = fixture('node build.cjs');
     const env = commandEnvironment();
-    env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = join(env.TMPDIR!, 'generations');
+    const store = join(env.TMPDIR!, 'generations');
+    if (route === 'explicit') env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = store;
+    else delete env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT;
     const donor = mkdtempSync(join(env.TMPDIR!, mod.WORK_ROOT_PREFIX + 'explicit-donor-'));
     try {
       cpSync(f.root, donor, { recursive: true, verbatimSymlinks: true });
+      // Only the canonical source records this route. A retained donor is a
+      // disposable reader and cannot resolve a persistent store of its own.
+      mkdirSync(join(f.root, '.papercusp'), { recursive: true });
+      writeFileSync(join(f.root, '.papercusp/dependency-generation-root'), store + '\n');
       // The selected retained donor is the oldest idle kept tree, beyond the
       // runner's cap. Its own sweep must protect this input until copying ends.
       const now = Date.now();

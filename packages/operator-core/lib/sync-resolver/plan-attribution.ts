@@ -73,20 +73,38 @@ interface LatestRevisionRow {
   author_kind: string;
 }
 
-/** Latest (max-seq) revision author per plan, batched (one query, no N+1). */
+interface RevisionPlanRef {
+  harnessSlug: string;
+  planSlug: string;
+}
+
+/** One indexed latest-revision lookup per requested plan, in one round trip. */
 async function latestRevisionAuthors(
   workspaceId: string,
-  planSlugs: string[],
+  planRefs: RevisionPlanRef[],
   sql: Sql,
 ): Promise<Map<string, { authorId: string; authorKind: 'human' | 'agent' }>> {
   const out = new Map<string, { authorId: string; authorKind: 'human' | 'agent' }>();
-  if (planSlugs.length === 0) return out;
+  const refs = [...new Map(planRefs
+    .filter(ref => ref.harnessSlug && ref.planSlug)
+    .map(ref => [JSON.stringify([ref.harnessSlug, ref.planSlug]), ref])).values()];
+  if (refs.length === 0) return out;
+  // DISTINCT ON over every matching revision scanned and sorted the whole
+  // history on each UI poll. The existing (workspace, harness, plan, seq)
+  // unique index can instead stop at the first revision for each exact pair.
   const rows = (await sql.unsafe(
-    `SELECT DISTINCT ON (harness_slug, plan_slug) harness_slug, plan_slug, author_id, author_kind
-       FROM harness_shared.plan_revisions
-      WHERE workspace_id = $1 AND plan_slug = ANY($2)
-      ORDER BY harness_slug, plan_slug, seq DESC`,
-    [workspaceId, planSlugs],
+    `SELECT revision.harness_slug, revision.plan_slug, revision.author_id, revision.author_kind
+       FROM unnest($2::text[], $3::text[]) AS requested(harness_slug, plan_slug)
+       CROSS JOIN LATERAL (
+         SELECT harness_slug, plan_slug, author_id, author_kind
+           FROM harness_shared.plan_revisions
+          WHERE workspace_id = $1
+            AND harness_slug = requested.harness_slug
+            AND plan_slug = requested.plan_slug
+          ORDER BY seq DESC
+          LIMIT 1
+       ) AS revision`,
+    [workspaceId, refs.map(ref => ref.harnessSlug), refs.map(ref => ref.planSlug)],
   )) as unknown as LatestRevisionRow[];
   for (const r of rows) {
     out.set(`${r.harness_slug}:${r.plan_slug}`, {
@@ -171,10 +189,13 @@ export async function enrichPlanListRows(
   // it for the attribution reads rather than a silent 'default' (P-005 / D-003).
   const workspaceId = opts?.workspaceId ?? activeWorkspaceId();
 
-  const slugs = list.map((r) => (typeof r.slug === 'string' ? r.slug : null)).filter((s): s is string => !!s);
+  const planRefs = list.map(r => ({
+    harnessSlug: planHarnessSlug(r.harness),
+    planSlug: typeof r.slug === 'string' ? r.slug : '',
+  }));
   let latest: Map<string, { authorId: string; authorKind: 'human' | 'agent' }>;
   try {
-    latest = await latestRevisionAuthors(workspaceId, slugs, sql);
+    latest = await latestRevisionAuthors(workspaceId, planRefs, sql);
   } catch {
     latest = new Map();
   }
@@ -362,7 +383,7 @@ export async function enrichPlanDetail(
   let itemAuthors = new Map<string, string>();
   try {
     [latest, itemAuthors] = await Promise.all([
-      withinBudget(latestRevisionAuthors(workspaceId, [slug], sql), 'plan-detail revision-authors'),
+      withinBudget(latestRevisionAuthors(workspaceId, [{ harnessSlug, planSlug: slug }], sql), 'plan-detail revision-authors'),
       withinBudget(planItemAuthors(workspaceId, harnessSlug, slug, sql), 'plan-detail item-authors'),
     ]);
   } catch {

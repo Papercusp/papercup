@@ -42,9 +42,14 @@ bundle_host_snapshot_commit() { # <repo dir>
   (( rc == 0 )) && { tree="$(GIT_INDEX_FILE="$index_dir/index" git -C "$repo" write-tree)" || rc=1; }
   rm -rf -- "$index_dir"
   (( rc == 0 )) || return 1
+  # The parent's committer date keeps the sha content-addressed (same tree + parent → same sha).
+  # A fixed @0 did too, but host-code-staleness-from-ledger ages a serving sha by its commit
+  # time, so @0 read as ~56 years stale (peer su-respawn-fd123e64, WI-6554700010048963).
+  local parent_date
+  parent_date="$(git -C "$repo" show -s --format=%ct "$head")" || return 1
   GIT_AUTHOR_NAME='bundle-host snapshot' GIT_AUTHOR_EMAIL='bundle-host-snapshot@invalid' \
     GIT_COMMITTER_NAME='bundle-host snapshot' GIT_COMMITTER_EMAIL='bundle-host-snapshot@invalid' \
-    GIT_AUTHOR_DATE='@0 +0000' GIT_COMMITTER_DATE='@0 +0000' \
+    GIT_AUTHOR_DATE="@${parent_date} +0000" GIT_COMMITTER_DATE="@${parent_date} +0000" \
     git -C "$repo" commit-tree --no-gpg-sign "$tree" -p "$head" -m 'bundle-host working-tree snapshot'
 }
 
@@ -169,16 +174,33 @@ bundle_host_prepare_esbuild() { # <repo root>
 bundle_host_replay_identity_define() { # <repo root>
   local -a identity_node=("${COMMITTED_NODE[@]:-node}")
   "${identity_node[@]}" --input-type=module - "$1" <<'NODE'
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 const root = process.argv[2];
+const manifest = resolve(root, 'packages/operator-core/lib/retained-replay-sources.json');
+const implementation = resolve(root, 'packages/operator-core/lib/retained-replay-identity.ts');
+// Historical exact-source targets can predate replay identity entirely. They
+// have no implementation to attest; never import current product bytes there.
+// A partial feature (only one file missing) still fails closed below.
+if (!existsSync(manifest) && !existsSync(implementation)) {
+  process.stdout.write('--define:__PAPERCUSP_RETAINED_REPLAY_SOURCE_SHA256__=undefined');
+  process.exit(0);
+}
+// EI-28801967408009808: one file without the other is a partial feature, never a digest.
+if (!existsSync(manifest) || !existsSync(implementation)) {
+  throw new Error(`retained replay identity is partial: need both ${manifest} and ${implementation}`);
+}
 // Data only: the builder must not execute working-tree TypeScript under its
 // committed-source loader. The regression compares this with the runtime reader.
-const files = JSON.parse(readFileSync(resolve(root,
-  'packages/operator-core/lib/retained-replay-sources.json'), 'utf8'));
-const sources = files.map(path => [path,
-  createHash('sha256').update(readFileSync(resolve(root, path))).digest('hex')]);
+const files = JSON.parse(readFileSync(manifest, 'utf8'));
+// A snapshot-labelled compile reads the label's blobs (WI-6554700010048234): attest those bytes.
+const snapshot = process.env.BUNDLE_HOST_SNAPSHOT_SOURCE_SHA;
+const bytes = path => snapshot
+  ? execFileSync('git', ['-C', root, 'show', `${snapshot}:${path}`], { maxBuffer: 64 * 1024 * 1024 })
+  : readFileSync(resolve(root, path));
+const sources = files.map(path => [path, createHash('sha256').update(bytes(path)).digest('hex')]);
 const identity = createHash('sha256').update(JSON.stringify({ version: 1, sources })).digest('hex');
 process.stdout.write('--define:__PAPERCUSP_RETAINED_REPLAY_SOURCE_SHA256__=' +
   JSON.stringify(identity));
@@ -198,7 +220,15 @@ bundle_host_esbuild() { # <repo root> [compiler args...]
       --context "$BUNDLE_HOST_BG_BUILD_CONTEXT" -- "$@" "$replay_identity_define" || compiler_rc=$?
   else
     bundle_host_prepare_esbuild "$repo_root" || return 1
-    if [[ -n "${BUNDLE_HOST_TESTING_CORE_PREPARE_RECEIPT:-}" ]]; then
+    if [[ -n "${BUNDLE_HOST_SNAPSHOT_SOURCE_SHA:-}" ]]; then
+      # WI-6554700010048234: a snapshot-labelled compile reads the label's git blobs, never the
+      # live shared tree, through the same pinned compiler and lease. Plain node, like the fence:
+      # this route exists to build uncommitted bytes. The helper refuses an off-recipe switch.
+      bundle_host_run_step compiler-cache-call bundle_host_cached_package "$repo_root" \
+        node "$repo_root/apps/operator/bin/bundle-host-snapshot-esbuild.mjs" "$repo_root" \
+        "$BUNDLE_HOST_ESBUILD_PATH" 0.25.0 "$BUNDLE_HOST_SNAPSHOT_SOURCE_SHA" \
+        "${BUNDLE_HOST_SNAPSHOT_SERVED_RECEIPT:--}" -- "$@" "$replay_identity_define" || compiler_rc=$?
+    elif [[ -n "${BUNDLE_HOST_TESTING_CORE_PREPARE_RECEIPT:-}" ]]; then
       # The same pinned compiler/cache door, using its API so the first plugin
       # can hand esbuild exact retained buffers and fence native resolution.
       local -a witness_node=("${COMMITTED_NODE[@]:-node}")

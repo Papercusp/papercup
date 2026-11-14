@@ -22,7 +22,10 @@ import type { SpawnConsoleResult } from '../../console-spawn';
 import type { GoalPortfolioBrief } from '../../goal-launch-settings';
 import type { GoalHistoryContext } from '../../prior-attempt-context';
 
-const orgSql = vi.hoisted(() => vi.fn());
+const orgSql = vi.hoisted(() => Object.assign(vi.fn(), {
+  // Portfolio queries compose raw fragments without issuing another query.
+  unsafe: (fragment: string) => fragment,
+}));
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   getOrgPg: () => ({ sql: orgSql as never }),

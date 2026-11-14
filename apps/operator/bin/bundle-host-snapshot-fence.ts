@@ -19,7 +19,10 @@ export interface SnapshotInputFence { checked: number; skipped: number; mismatch
 const git = (cwd: string, args: string[], input?: string) =>
   execFileSync('git', args, { cwd, encoding: 'utf8', input, maxBuffer: 256 * 1024 * 1024, timeout: 60_000 });
 
-export function snapshotInputFence(root: string, commit: string, inputs: readonly string[]): SnapshotInputFence {
+/** `served` (path → blob) is bundle-host-snapshot-esbuild.mjs's receipt: inputs the compiler read
+ * from the label's blobs, so the live tree may have moved since without affecting the bundle. */
+export function snapshotInputFence(root: string, commit: string, inputs: readonly string[],
+  served: ReadonlyMap<string, string> = new Map()): SnapshotInputFence {
   const result: SnapshotInputFence = { checked: 0, skipped: 0, mismatches: [] };
   const candidates = inputs.filter(path => {
     const keep = path && !isAbsolute(path) && !path.startsWith('..') && !path.includes(':')
@@ -48,7 +51,8 @@ export function snapshotInputFence(root: string, commit: string, inputs: readonl
         const [sha, type] = expected[i].split(' ');
         if (type === 'blob') {
           result.checked++;
-          if (actual.get(path) !== sha) result.mismatches.push(prefix + path);
+          const compiled = served.get(prefix + path) ?? actual.get(path);
+          if (compiled !== sha) result.mismatches.push(prefix + path);
           return;
         }
         let ignored = false;
@@ -72,11 +76,19 @@ export function snapshotInputFence(root: string, commit: string, inputs: readonl
 // 2 = fence error. "Moved" is not 1, so a node crash (exit 1) can never read as a retryable race.
 export const FENCE_EXIT_MOVED = 75;
 if (isCliEntry(import.meta.url)) {
-  const [root, commit, metafile, out] = process.argv.slice(2);
+  const [root, commit, metafile, out, servedReceipt] = process.argv.slice(2);
   try {
-    if (!root || !commit || !metafile || !out) throw new Error('usage: <repo root> <snapshot sha> <metafile> <receipt out>');
+    if (!root || !commit || !metafile || !out) {
+      throw new Error('usage: <repo root> <snapshot sha> <metafile> <receipt out> [served receipt]');
+    }
     const graph = JSON.parse(readFileSync(metafile, 'utf8')) as { inputs?: Record<string, unknown> };
-    const fence = snapshotInputFence(root, commit, Object.keys(graph.inputs ?? {}));
+    // Absent receipt = the live-tree CLI compiled (BG custody path): compare live bytes as before.
+    const served = servedReceipt && existsSync(servedReceipt)
+      ? JSON.parse(readFileSync(servedReceipt, 'utf8')) as { sha?: string; served?: Record<string, string> }
+      : undefined;
+    if (served && served.sha !== commit) throw new Error(`served receipt names ${served.sha}, not ${commit}`);
+    const fence = snapshotInputFence(root, commit, Object.keys(graph.inputs ?? {}),
+      new Map(Object.entries(served?.served ?? {})));
     writeFileSync(out, `${JSON.stringify({ sha: commit, ...fence })}\n`);
     if (fence.checked === 0) throw new Error('snapshot fence compared no compiler inputs');
     if (fence.mismatches.length > 0) {

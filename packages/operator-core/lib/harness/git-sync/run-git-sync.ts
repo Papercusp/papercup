@@ -3459,8 +3459,18 @@ async function recoverIndexLockContention(
   return result;
 }
 
+type GitRefLockName = `refs/heads/${string}.lock` | `refs/remotes/${string}.lock`;
+
 type GitMetadataLockName = 'config.lock' | 'shallow.lock' | 'objects/maintenance.lock' | 'HEAD.lock'
-  | `refs/heads/${string}.lock`;
+  | 'packed-refs.lock' | 'gc.pid.lock' | 'gc.log.lock'
+  | GitRefLockName;
+
+/** Repository-wide locks: they live in the COMMON directory, which differs from
+ * the git dir inside a linked worktree (refs, packed-refs, gc bookkeeping). */
+function metadataLockUsesCommonDir(lockName: string): boolean {
+  return lockName.startsWith('refs/') || lockName === 'packed-refs.lock'
+    || lockName === 'gc.pid.lock' || lockName === 'gc.log.lock';
+}
 
 interface ClearStaleConfigLockDeps {
   inspectLock?: (p: string) => Promise<GitLockSnapshot | null>;
@@ -3493,12 +3503,15 @@ export async function clearStaleHolderlessEmptyGitLock(
     const ref = lockName.slice(0, -'.lock'.length);
     // This helper is also called outside publication. Refuse traversal before
     // inspecting any filesystem path, even if an untyped caller supplies it.
-    if (!lockName.startsWith('refs/heads/') || !lockName.endsWith('.lock')
+    // Local branches and remote-tracking refs only (WI-6554700010048970: a
+    // stranded refs/remotes/origin/staging.lock froze the tracking ref ~8 days).
+    if (!(lockName.startsWith('refs/heads/') || lockName.startsWith('refs/remotes/')) || !lockName.endsWith('.lock')
       || /[\\\0]/.test(lockName) || ref.split('/').some((part) => !part || part === '.' || part === '..')) return false;
     if ((await runGit(['check-ref-format', ref], repoPath)).code !== 0) return false;
   }
-  // Branch refs live in the common directory, including in a Git worktree.
-  const gd = await runGit(branchLock
+  // Refs, packed-refs and gc bookkeeping live in the common directory,
+  // including in a Git worktree.
+  const gd = await runGit(metadataLockUsesCommonDir(lockName)
     ? ['rev-parse', '--path-format=absolute', '--git-common-dir']
     : ['rev-parse', '--absolute-git-dir'], repoPath);
   if (gd.code !== 0) return false;
@@ -3584,6 +3597,125 @@ export async function clearStaleMaintenanceLock(
     staleMs: STALE_MAINTENANCE_LOCK_MS,
     ...deps,
   });
+}
+
+/** Fixed-name Git-directory locks the tick-start sweep reclaims. git-sync never
+ * runs `gc` or `pack-refs` itself, so no git-sync command ever FAILS on these and
+ * the reactive recovery never meets them (WI-6554700010048970). A SIGKILLed
+ * `git gc --auto` / `pack-refs` strands them. Observed: gc.log.lock, gc.pid.lock
+ * and packed-refs.lock 7-8 days old in the canonical repo — auto-gc was silently
+ * off (60k loose objects) and every ref deletion failed. `index.lock` is NOT here:
+ * it keeps its own age + live-holder path (clearStaleIndexLock). */
+export const SWEPT_GIT_METADATA_LOCKS = [
+  'packed-refs.lock', 'gc.pid.lock', 'gc.log.lock', 'shallow.lock', 'HEAD.lock', 'config.lock',
+] as const satisfies readonly GitMetadataLockName[];
+
+interface GitLockDirent {
+  name: string;
+  isDirectory(): boolean;
+  isFile(): boolean;
+}
+
+export interface SweepStaleGitMetadataLocksResult {
+  /** Locks this sweep actually unlinked. */
+  cleared: GitMetadataLockName[];
+  /** Locks that exist but were left in place (fresh, nonempty, open, unknown holder, or changed). */
+  kept: GitMetadataLockName[];
+  /** Ref directories that could not be listed — their locks were NOT inspected this tick. */
+  unlistedDirs: string[];
+}
+
+/** Every `*.lock` file under `refs/heads` and `refs/remotes` of `commonDir`.
+ * The walk is complete, not capped (the population is the repo's own loose refs);
+ * an unreadable directory is reported in `unlistedDirs`, never silently skipped.
+ * Symlinked directories are not followed. `.lock` is an illegal ref-component
+ * suffix, so every match is a lock file, never a ref. */
+async function listRefLockNames(
+  commonDir: string,
+  readDirents: (dir: string) => Promise<GitLockDirent[]>,
+): Promise<{ names: GitRefLockName[]; unlistedDirs: string[] }> {
+  const names: GitRefLockName[] = [];
+  const unlistedDirs: string[] = [];
+  for (const top of ['heads', 'remotes'] as const) {
+    const pending = [''];
+    while (pending.length > 0) {
+      const rel = pending.pop() as string;
+      const display = rel ? `refs/${top}/${rel}` : `refs/${top}`;
+      let entries: GitLockDirent[];
+      try {
+        entries = await readDirents(join(commonDir, 'refs', top, rel));
+      } catch (e) {
+        const code = (e as NodeJS.ErrnoException | undefined)?.code;
+        if (code !== 'ENOENT' && code !== 'ENOTDIR') unlistedDirs.push(display);
+        continue;
+      }
+      for (const entry of entries) {
+        const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) pending.push(childRel);
+        else if (entry.isFile() && entry.name.endsWith('.lock') && entry.name !== '.lock') {
+          names.push(`refs/${top}/${childRel}` as GitRefLockName);
+        }
+      }
+    }
+  }
+  return { names: names.sort(), unlistedDirs };
+}
+
+/** Tick-start sweep of stranded Git-directory locks (WI-6554700010048970).
+ *
+ * Applies the SAME proof as every metadata-lock reclaim — zero bytes, older than
+ * the floor, no open descriptor (an UNKNOWN holder fails closed), unchanged during
+ * inspection — to the fixed names above plus every ref lock under refs/heads and
+ * refs/remotes. Because this is proactive (nothing is failing yet), the floor is
+ * the long maintenance floor, not the 90s reactive one. Best-effort by contract:
+ * callers wrap it so a failed sweep never fails the sync. */
+export async function sweepStaleGitMetadataLocks(
+  runGit: RunGit,
+  repoPath: string,
+  log: (m: string) => void,
+  deps: ClearStaleConfigLockDeps & { readDirents?: (dir: string) => Promise<GitLockDirent[]> } = {},
+): Promise<SweepStaleGitMetadataLocksResult> {
+  const inspectLock = deps.inspectLock ?? inspectGitLockFile;
+  const unlinkFile = deps.unlinkFile ?? unlink;
+  const readDirents = deps.readDirents ?? ((dir: string) => readdir(dir, { withFileTypes: true }));
+  const result: SweepStaleGitMetadataLocksResult = { cleared: [], kept: [], unlistedDirs: [] };
+
+  const dirs = await runGit(['rev-parse', '--absolute-git-dir', '--path-format=absolute', '--git-common-dir'], repoPath);
+  if (dirs.code !== 0) return result;
+  const [gitDir, commonDirLine] = dirs.stdout.trim().split('\n').map((line) => line.trim());
+  if (!gitDir) return result;
+  const commonDir = commonDirLine || gitDir;
+
+  const refLocks = await listRefLockNames(commonDir, readDirents);
+  result.unlistedDirs = refLocks.unlistedDirs;
+  const candidates: GitMetadataLockName[] = [...SWEPT_GIT_METADATA_LOCKS, ...refLocks.names];
+  for (const lockName of candidates) {
+    const lockPath = join(metadataLockUsesCommonDir(lockName) ? commonDir : gitDir, lockName);
+    // Cheap existence check first: the reclaim helper spends a git call per lock.
+    if ((await inspectLock(lockPath)) === null) continue;
+    let unlinked = false;
+    await clearStaleHolderlessEmptyGitLock(runGit, repoPath, lockName, log, {
+      ...deps,
+      staleMs: deps.staleMs ?? STALE_MAINTENANCE_LOCK_MS,
+      unlinkFile: async (p) => {
+        await unlinkFile(p);
+        unlinked = true;
+      },
+    });
+    (unlinked ? result.cleared : result.kept).push(lockName);
+  }
+
+  if (result.cleared.length > 0) {
+    log(
+      `[git-sync] ${repoPath}: tick-start sweep cleared ${result.cleared.length} stranded Git lock(s): ${result.cleared.join(', ')} (WI-6554700010048970)`,
+    );
+  }
+  if (result.unlistedDirs.length > 0) {
+    log(
+      `[git-sync] ${repoPath}: tick-start lock sweep could NOT list ${result.unlistedDirs.join(', ')} — ref locks there were not inspected this tick`,
+    );
+  }
+  return result;
 }
 
 /** A crash-left `index-pack` file is safe to consider only after this age floor. */
@@ -9681,6 +9813,13 @@ async function reconcileAndPushOneRepo(
       `[git-sync] ${repoPath}: objects/maintenance.lock check failed: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
+  // WI-6554700010048970: packed-refs / gc / ref locks that git-sync never writes
+  // itself, so its reactive recovery never meets them. Same best-effort contract.
+  try {
+    await sweepStaleGitMetadataLocks(runGit, repoPath, o.log, o.isGitLockOpen ? { isOpen: o.isGitLockOpen } : {});
+  } catch (e) {
+    o.log(`[git-sync] ${repoPath}: Git metadata lock sweep failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
   const zeroByteLooseObjects = await findZeroByteLooseObjects(runGit, repoPath);
   if (zeroByteLooseObjects.length > 0) {
     return {
@@ -11483,6 +11622,11 @@ async function runGitSyncPass(
       await clearStaleMaintenanceLock(runGit, repo, log, opts.isGitLockOpen ? { isOpen: opts.isGitLockOpen } : {});
     } catch (e) {
       log(`[git-sync] ${repo}: objects/maintenance.lock check failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    try {
+      await sweepStaleGitMetadataLocks(runGit, repo, log, opts.isGitLockOpen ? { isOpen: opts.isGitLockOpen } : {});
+    } catch (e) {
+      log(`[git-sync] ${repo}: Git metadata lock sweep failed: ${e instanceof Error ? e.message : String(e)}`);
     }
     // EI-20232774599730947: a bridged/p2p-only member is truly commit-only at
     // this layer. GitHub ingress + admission and the P2P worktree bridge own

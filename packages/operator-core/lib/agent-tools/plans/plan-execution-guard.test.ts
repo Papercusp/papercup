@@ -42,33 +42,56 @@ describe('implementation authority before direct writes (EI-27540173897381380)',
     expect(resolveGoal).not.toHaveBeenCalled();
     expect(checkPlan).toHaveBeenCalledWith(binding, 'ws', undefined);
   });
-  it('bounds multi-plan goal selection and cancels its pending read before the native hook wall', async () => {
+  // WI-6554700010049036: a timed-out goal selection used to refuse every
+  // multi-plan census outright (plan_goal_resolution_timeout), even when every
+  // bound plan was executable. It now keeps the full census, which is at least
+  // as strict as any selected subset.
+  const abortableGoalRead = (state: { signal?: AbortSignal; aborted: boolean }) =>
+    async (_owner: string, _workspace: string, _observe: unknown, signal?: AbortSignal) => {
+      state.signal = signal;
+      return new Promise<never>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => {
+          state.aborted = true;
+          reject(new Error('goal selector aborted'));
+        }, { once: true });
+      });
+    };
+  it('cancels a timed-out multi-plan goal read and permits a census whose plans all pass', async () => {
     const other = { planSlug: 'other-plan', harnessSlug: 'other-project' };
-    let resolverSignal: AbortSignal | undefined;
-    let aborted = false;
-    const checkPlan = vi.fn();
+    const state: { signal?: AbortSignal; aborted: boolean } = { aborted: false };
+    const checkPlan = vi.fn(async (_b: ExecutionPlanBinding) => [] as string[]);
     const result = await checkPlanExecutionGuard(call(), {
       readBindings: async () => [binding, other],
-      resolveGoal: async (_owner, _workspace, _observe, signal) => {
-        resolverSignal = signal;
-        return new Promise((_resolve, reject) => {
-          signal?.addEventListener('abort', () => {
-            aborted = true;
-            reject(new Error('goal selector aborted'));
-          }, { once: true });
-        });
-      },
+      resolveGoal: abortableGoalRead(state),
+      checkPlan,
+      goalResolutionBudgetMs: 5,
+    });
+
+    expect(result).toBeNull();
+    expect(state.signal?.aborted).toBe(true);
+    expect(state.aborted).toBe(true);
+    expect(checkPlan.mock.calls.map(([b]) => b.planSlug).sort())
+      .toEqual(['bound-plan', 'other-plan']);
+  });
+  it('still refuses with the unselected plan\'s own blockers when the goal read times out', async () => {
+    const custody = { planSlug: 'predecessor-plan', harnessSlug: 'project', source: 'plan-item-claim', sourceRef: 'predecessor-plan#P-002' };
+    const state: { signal?: AbortSignal; aborted: boolean } = { aborted: false };
+    const checkPlan = vi.fn(async (b: { planSlug: string }) =>
+      b.planSlug === 'predecessor-plan' ? ['activation_audit_stale'] : []);
+    const result = await checkPlanExecutionGuard(call(), {
+      readBindings: async () => [binding, custody],
+      resolveGoal: abortableGoalRead(state),
       checkPlan,
       goalResolutionBudgetMs: 5,
     });
 
     expect(result).toMatchObject({
       code: 'plan_execution_not_ready',
-      blockers: ['plan_goal_resolution_timeout'],
+      planSlug: 'predecessor-plan',
+      blockers: ['activation_audit_stale'],
     });
-    expect(resolverSignal?.aborted).toBe(true);
-    expect(aborted).toBe(true);
-    expect(checkPlan).not.toHaveBeenCalled();
+    expect(result?.blockers).not.toContain('plan_goal_resolution_timeout');
+    expect(state.aborted).toBe(true);
   });
   it.each(['activation_audit_stale', 'conversation_audit_required', 'acceptance_bar_contract_not_ready'])('retains %s as an actionable blocker', async blocker => {
     expect(await checkPlanExecutionGuard(call(), { readBindings: async () => [binding], checkPlan: async () => [blocker] }))
@@ -179,12 +202,16 @@ describe('implementation authority before direct writes (EI-27540173897381380)',
   });
   it('still selects when one slug is bound in two harnesses (WI-6554700010048224)', async () => {
     const resolveGoal = vi.fn((): Promise<never> => new Promise(() => {}));
+    const checkPlan = vi.fn(async (b: ExecutionPlanBinding) =>
+      b.harnessSlug === 'other-project' ? ['plan_status:draft'] : []);
     const result = await checkPlanExecutionGuard(call(), {
       readBindings: async () => [binding, { planSlug: binding.planSlug, harnessSlug: 'other-project' }],
-      resolveGoal, checkPlan: vi.fn(), goalResolutionBudgetMs: 5,
+      resolveGoal, checkPlan, goalResolutionBudgetMs: 5,
     });
     expect(resolveGoal).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({ blockers: ['plan_goal_resolution_timeout'] });
+    // The timeout keeps both harness bindings in the census (WI-6554700010049036).
+    expect(checkPlan).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ planSlug: binding.planSlug, blockers: ['plan_status:draft'] });
   });
   it('keeps the full binding census when current goal resolution is incomplete', async () => {
     const checkPlan = vi.fn(async (binding: { planSlug: string }) =>

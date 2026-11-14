@@ -159,7 +159,18 @@ export async function measureLifecycle(url: string, token: string, policy: Capab
           expectRestricted, error: String(outcome.error), startup: startup() }, sources);
       }, async result => {
       expect(result.stderr).not.toMatch(/Invalid tool names/);
-      const measured = JSON.parse(readFileSync(resultPath, 'utf8'));
+      let measured: ReturnType<typeof JSON.parse>;
+      try {
+        measured = JSON.parse(readFileSync(resultPath, 'utf8'));
+      } catch (error) {
+        const sources = { stdout: join(home, 'stdout.log'), stderr: join(home, 'stderr.log'), boot: phasesPath };
+        writeFileSync(sources.stdout, result.stdout, { mode: 0o600 });
+        writeFileSync(sources.stderr, result.stderr, { mode: 0o600 });
+        retainIsolatedNativeTaskDiagnostics(evidenceDir!, { client: 'omp', surface, version,
+          state: 'failed', exitCode: 0, signal: null, expectRestricted,
+          error: 'OMP child exited without its proof result: ' + String(error), startup: startup() }, sources);
+        throw new Error('OMP child exited without its proof result: ' + String(error), { cause: error });
+      }
       if (privateMcpUrl && process.env.STAGING_FIRST_HTTP_EVIDENCE_DIR) {
         appendFileSync(join(process.env.STAGING_FIRST_HTTP_EVIDENCE_DIR, 'managed-tool-replies.ndjson'),
           JSON.stringify({ surface, version, replies: measured.replies }) + '\n', { mode: 0o600 });

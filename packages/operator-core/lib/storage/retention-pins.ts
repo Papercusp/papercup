@@ -2,11 +2,10 @@
  * The unchanged TSV schema protects pins in both shell and TypeScript deleters;
  * owner/reason metadata lives in the opaque tag, not a parallel pin database.
  */
-import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, fsyncSync, mkdirSync, openSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { isAbsolute, join, normalize, relative, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { Sql } from 'postgres';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
@@ -14,9 +13,9 @@ import type { listPresence } from '../agent-tools/coordination/presence';
 import type { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
 import { AGENT_MAX_AGE_HOURS } from './retention-policy';
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
-import { defaultRetentionDir, readRetentionPins, RETENTION_SCHEMA, withRetentionPinProtection,
+import { createRetentionPin, withRetentionPinProtection,
   type RetentionPin } from '../../../../scripts/lib/retention-pins.mjs';
-export { readRetentionPins, readRetentionPinsAsync, withRetentionPinProtection,
+export { createRetentionPin, removeRetentionPin, readRetentionPins, readRetentionPinsAsync, withRetentionPinProtection,
   retentionPinProtectsPath as pinProtectsPath } from '../../../../scripts/lib/retention-pins.mjs';
 export type { RetentionPin } from '../../../../scripts/lib/retention-pins.mjs';
 
@@ -24,45 +23,6 @@ export type { RetentionPin } from '../../../../scripts/lib/retention-pins.mjs';
 export async function withUnpinnedPath(path: string, remove: () => boolean | Promise<boolean>,
   options: Parameters<typeof withRetentionPinProtection>[1] = {}): Promise<boolean> {
   return withRetentionPinProtection((isPinned) => isPinned(path) ? false : remove(), options);
-}
-
-const TAG_PREFIX = 'agent-pin-';
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-
-export function createRetentionPin(input: { path: string; owner: string; reason: string; expiresAt: string },
-  options: { dir?: string; nowMs?: number; id?: string; dryRun?: boolean } = {}): RetentionPin {
-  const nowMs = options.nowMs ?? Date.now();
-  const expiry = Date.parse(input.expiresAt);
-  if (!input.owner.trim() || !input.reason.trim()) throw new Error('pin requires an owner and reason');
-  if (!Number.isFinite(expiry) || expiry <= nowMs) throw new Error('pin requires a finite future expiry');
-  if (!isAbsolute(input.path) || /[\r\n\0]/.test(input.path)) throw new Error('pin requires an absolute path without line breaks');
-  const logical = normalize(input.path);
-  // A missing target is an error, never a silently ineffective pin.
-  const paths = [...new Set([logical, realpathSync(logical)])];
-  const dir = options.dir ?? defaultRetentionDir();
-  if (options.id !== undefined && !UUID.test(options.id)) throw new Error('invalid pin id');
-  const pin: RetentionPin = { id: options.id ?? randomUUID(), owner: input.owner.trim(), reason: input.reason.trim(),
-    createdAt: new Date(nowMs).toISOString(), expiresAt: new Date(expiry).toISOString(), paths };
-  if (options.dryRun) return pin;
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const tag = TAG_PREFIX + Buffer.from(JSON.stringify({ version: 1, id: pin.id, owner: pin.owner,
-    reason: pin.reason, createdAt: pin.createdAt })).toString('base64url');
-  const body = [`schema=${RETENTION_SCHEMA}`, `tag=${tag}`, `created_ns=${BigInt(Math.floor(nowMs)) * 1_000_000n}`,
-    `expires_ns=${BigInt(expiry) * 1_000_000n}`, ...paths.map((p) => `path=${p}`), ''].join('\n');
-  const file = join(dir, `lease-agent-pin-${pin.id}.tsv`);
-  const temp = `${file}.${randomUUID()}.tmp`;
-  let fd: number | undefined;
-  try {
-    fd = openSync(temp, 'wx', 0o600);
-    writeFileSync(fd, body);
-    fsyncSync(fd);
-    closeSync(fd); fd = undefined;
-    renameSync(temp, file);
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-    try { unlinkSync(temp); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  }
-  return pin;
 }
 
 export interface WorkItemEvidenceReference {
@@ -176,16 +136,4 @@ export async function withWorkItemEvidenceRetention<T>(reference: WorkItemEviden
     if (protection.missing.length) throw new Error(`evidence retention: missing declared evidence ${protection.missing[0]!.path}`);
     return accept();
   });
-}
-
-/** Only the pin's authenticated owner can release it through the agent tool. */
-export function removeRetentionPin(id: string, owner: string, options: { dir?: string } = {}): boolean {
-  if (!UUID.test(id)) throw new Error('invalid pin id');
-  const read = readRetentionPins({ ...options, includeExpired: true });
-  if (read.errors.length) throw new Error(`retention pins unreadable: ${read.errors.join('; ')}`);
-  const pin = read.pins.find((p) => p.id === id);
-  if (!pin) return false;
-  if (pin.owner !== owner) throw new Error('only the pin owner may release it');
-  unlinkSync(join(options.dir ?? defaultRetentionDir(), `lease-agent-pin-${id}.tsv`));
-  return true;
 }

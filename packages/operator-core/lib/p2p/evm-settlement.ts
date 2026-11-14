@@ -32,6 +32,10 @@ import {
   type SettlementReceipt,
   type SettlementRefusalCode,
 } from './revenue-settlement';
+import { refuseCommerceLoadInV1ReleaseBuild } from './v1-core/v1-scope-contract';
+
+// p2p-v1-core-release-2026-11-13 R-7: a commerce root refuses to load in the v1 release build.
+refuseCommerceLoadInV1ReleaseBuild('p2p/evm-settlement.ts');
 
 export interface EvmSettlementConfig {
   readonly chainId: number;

@@ -36,7 +36,7 @@ import { admitNativeIdentityInference } from './cupboard/identity-activation-gat
 import { resolveAgentBinarySync } from './agent-bin-detect';
 import { attachedInstalledToolLifecycle, nativeInstalledPerUseTurns, type AttachedInstalledToolFunding } from './agent-tools/per-use-chokepoint';
 import { listAllProjectedTools } from '@papercusp/tooldef';
-import { productionInstalledToolFunding } from './cupboard/installed-tool-funding';
+import { isV1ReleaseBuild } from './p2p/v1-core/v1-scope-contract';
 import { synthesizeTransportPrincipal } from './endpoint-route/routes/transport/role-principal-caps';
 import { canonicalJson } from './authority/authority-rpc-envelope';
 import { recordOmpMcpEmission } from '../../../apps/operator/scripts/hooks/inject/delivery-ledger.mjs';
@@ -300,8 +300,15 @@ export function startSuRpcEngine(
       principalId: synthesizeTransportPrincipal({ workspaceId: binding.workspaceId ?? '', role: 'operator', isSuperuser: true })?.slug ?? '' },
     funding: options.installedToolFunding,
     resolveRequestPrincipal: options.resolveRequestPrincipal,
-    resolveFunding: () => productionInstalledToolFunding({ workspaceId: binding.workspaceId ?? '', ownerId: binding.ownerId ?? '',
-      principalId: synthesizeTransportPrincipal({ workspaceId: binding.workspaceId ?? '', role: 'operator', isSuperuser: true })?.slug ?? '' }),
+    // Installed-tool funding is commerce: the P2P v1 release build has none, and
+    // elsewhere it loads lazily so the session engine never statically reaches a
+    // commerce root (R-7).
+    resolveFunding: async () => {
+      if (isV1ReleaseBuild()) return undefined;
+      const { productionInstalledToolFunding } = await import('./cupboard/installed-tool-funding');
+      return productionInstalledToolFunding({ workspaceId: binding.workspaceId ?? '', ownerId: binding.ownerId ?? '',
+        principalId: synthesizeTransportPrincipal({ workspaceId: binding.workspaceId ?? '', role: 'operator', isSuperuser: true })?.slug ?? '' });
+    },
     identityLifecycle: { admit: async context => {
       const verdict = await admitNativeIdentityInference({ workspaceId: context.workspaceId, ownerId: context.ownerId, backend });
       return verdict.ok ? { ok: true, bindNativeTurn: async () => {}, complete: async () => {}, reconcile: async () => {} } : verdict;

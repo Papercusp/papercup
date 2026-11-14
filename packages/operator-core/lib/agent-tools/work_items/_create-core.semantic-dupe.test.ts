@@ -30,7 +30,8 @@ const sqlMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
-vi.mock('../../work-items', () => ({
+vi.mock('../../work-items', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../work-items')>()),
   createWorkItem: vi.fn(async (input: { kind: string; title: string }) => ({
     id: 'WI-NEW',
     kind: input.kind,

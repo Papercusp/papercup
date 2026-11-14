@@ -204,7 +204,9 @@ describe('public desktop interface hold at real release entrypoints', () => {
   it.each(['build-desktop-sidecar.sh', 'build-mac-cross.sh', 'build-windows-cross.sh', 'publish-release-history.sh'])('%s refuses candidate requests before output or public I/O', (entry) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pc-interface-entry-'));
     scratch.push(root);
-    const result = spawnSync('bash', [path.join(bin, entry), '999.0.0'], {
+    // The sidecar builder accepts optional --build-inputs, not a version argument.
+    const args = entry === 'build-desktop-sidecar.sh' ? [] : ['999.0.0'];
+    const result = spawnSync('bash', [path.join(bin, entry), ...args], {
       env: { ...process.env, HOME: root, PAPERCUSP_DESKTOP_INTERFACE: 'portal-candidate', DRY_RUN: '1' },
       encoding: 'utf8', timeout: 30_000,
     });

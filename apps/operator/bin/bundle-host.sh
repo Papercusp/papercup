@@ -430,6 +430,7 @@ PROBE_STAMP="$TMPFILE.probe-window.json"
 # fence receipt publishes beside the bundle it describes ($OUTFILE.snapshot-fence.json).
 SOURCE_SHA_FILE="$TMPFILE.source-sha"
 FENCE_RECEIPT_TMP="$TMPFILE.snapshot-fence.json"
+SERVED_RECEIPT_TMP="$TMPFILE.snapshot-served.json"
 # EI-18119538868734274: the blueprints/ and sql/ asset directories below are
 # published with the SAME tmp-then-atomic-swap discipline as $TMPFILE here —
 # see the two "publish" comments further down for why (a live process's
@@ -498,7 +499,7 @@ restricted_hold_fallback() { # <log> — sets FALLBACK_RC; the caller exits with
 }
 bundle_host_on_exit() {
   local rc=$?
-  rm -f "$TMPFILE" "$METAFILE" "$PROBE_STAMP" "$SOURCE_SHA_FILE" "$FENCE_RECEIPT_TMP"
+  rm -f "$TMPFILE" "$METAFILE" "$PROBE_STAMP" "$SOURCE_SHA_FILE" "$FENCE_RECEIPT_TMP" "$SERVED_RECEIPT_TMP"
   [[ -n "$NEW_BLUEPRINTS_DIR" ]] && rm -rf "$NEW_BLUEPRINTS_DIR"
   [[ -n "$NEW_SQL_DIR" ]] && rm -rf "$NEW_SQL_DIR"
   [[ -n "$SYSTEMD_ENV_RUNNER_TMP" ]] && rm -f "$SYSTEMD_ENV_RUNNER_TMP"
@@ -619,13 +620,19 @@ if bundle_host_run_step compiler-resolve bundle_host_prepare_esbuild "$REPO_ROOT
   while :; do
     bundle_host_run_step host-probe-wait "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/mutation-probe-window-gate.mjs" wait --root "$REPO_ROOT" \
       --stamp-file "$PROBE_STAMP" || exit 1
+    snapshot_compile_sha=""
+    rm -f "$SERVED_RECEIPT_TMP"
     if (( SNAPSHOT_FENCE == 1 )); then
-      # WI-6554700010048234: mint the label as late as possible, then fence what esbuild read.
+      # WI-6554700010048234: mint the label, then compile FROM it: bundle_host_esbuild serves every
+      # tracked input from the label's blobs (bundle-host-snapshot-esbuild.mjs), so peers' edits
+      # during the build cannot reach the bundle. The fence below confirms it over the receipt.
       SOURCE_SHA="$(bundle_host_source_sha "$REPO_ROOT" "${COMMITTED_NODE[@]}")" || exit $?
       bundle_host_set_source_sha "$SOURCE_SHA"
       printf '%s\n' "$SOURCE_SHA" >"$SOURCE_SHA_FILE" || exit 1
+      [[ -z "$SOURCE_SHA" || "$SOURCE_SHA" == *+dirty ]] || snapshot_compile_sha="$SOURCE_SHA"
     fi
     compiler_rc=0
+    BUNDLE_HOST_SNAPSHOT_SOURCE_SHA="$snapshot_compile_sha" BUNDLE_HOST_SNAPSHOT_SERVED_RECEIPT="$SERVED_RECEIPT_TMP" \
     bundle_host_run_step host-compile bundle_host_esbuild "$REPO_ROOT" "$ENTRY" \
       --bundle --platform=node --format=esm --target=node22 \
       "${HOST_MINIFY_ARGS[@]}" \
@@ -658,7 +665,7 @@ if bundle_host_run_step compiler-resolve bundle_host_prepare_esbuild "$REPO_ROOT
     if (( SNAPSHOT_FENCE == 1 )) && [[ -n "$SOURCE_SHA" && "$SOURCE_SHA" != *+dirty ]]; then
       fence_rc=0
       bundle_host_run_step host-snapshot-fence node "$HELPER_DIR/bundle-host-snapshot-fence.ts" \
-        "$REPO_ROOT" "$SOURCE_SHA" "$METAFILE" "$FENCE_RECEIPT_TMP" || fence_rc=$?
+        "$REPO_ROOT" "$SOURCE_SHA" "$METAFILE" "$FENCE_RECEIPT_TMP" "$SERVED_RECEIPT_TMP" || fence_rc=$?
       if (( fence_rc == 75 && fence_attempt < 3 )); then
         fence_attempt=$((fence_attempt + 1))
         echo "→ compiler inputs moved after source snapshot $SOURCE_SHA; re-snapshotting and rebuilding (attempt $fence_attempt/3, WI-6554700010048234)"

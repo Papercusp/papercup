@@ -8,6 +8,10 @@
 import { createHash } from 'node:crypto';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { verifyEd25519 } from '../identity/ed25519';
+import { refuseCommerceLoadInV1ReleaseBuild } from './v1-core/v1-scope-contract';
+
+// p2p-v1-core-release-2026-11-13 R-7: a commerce root refuses to load in the v1 release build.
+refuseCommerceLoadInV1ReleaseBuild('p2p/microcharge.ts');
 
 export interface CumulativePaymentVoucher {
   readonly channelId: string;

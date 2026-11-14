@@ -118,7 +118,7 @@ import { fileURLToPath } from 'node:url';
 import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } from '@papercusp/test-config/tmpdir-guard';
 import { applyEnvLocal, parseEnvFile, PG_URL_ENV_VARS } from './lib/pg-url.mjs';
 import { withFsMutex, withFsMutexRead } from './lib/fs-mutex.mjs';
-import { withRetentionPinProtection } from './lib/retention-pins.mjs';
+import { createRetentionPin, removeRetentionPin, withRetentionPinProtection } from './lib/retention-pins.mjs';
 import { installLockNameForRoot } from './lib/install-lock-name.mjs';
 import { assertRootLockManifestMatches, inspectWorkspaceLockSnapshot, assertWorkspaceLockInspection } from './npm-install-safe.mjs';
 import { expandWorkspaces } from './assert-workspace-links.mjs';
@@ -1742,26 +1742,50 @@ async function main() {
     console.error(`lint-as-committed: no temporary directory has critical disk headroom (${tmpdir()}); refusing to materialise the committed tree.`);
     process.exit(2);
   }
-  const swept = await sweepStaleWorkRootsWithRetentionPins();
-  if (swept.removed.length > 0) {
-    console.log(`  swept ${swept.removed.length} stale extracted tree(s): ${swept.removed.map((r) => `${r.name} (${r.reason})`).join(', ')}`);
-  }
-
-  const workRoot = mkdtempSync(join(tmpdir(), `${WORK_ROOT_PREFIX}${short}-`));
+  let workRoot;
+  let dependencyDonorPin;
+  const releaseDependencyDonor = async () => {
+    if (!dependencyDonorPin) return;
+    await withFsMutex('papercusp-disk-retention', () => {
+      if (!dependencyDonorPin) return;
+      removeRetentionPin(dependencyDonorPin.id, dependencyDonorPin.owner);
+      dependencyDonorPin = null;
+    });
+  };
   let results = [];
   // Exit and sweep share the dependent-artifact rule: retention may be added by
   // a consumer while the command is running, after args.keep was established.
   // SIGKILL is left to the next run's sweep.
-  const cleanupWorkRoot = () => cleanupCommittedWorkRoot(workRoot, args.keep);
+  const cleanupWorkRoot = () => workRoot ? cleanupCommittedWorkRoot(workRoot, args.keep) : false;
   const bail = async (code) => {
-    await cleanupWorkRoot();
-    process.exit(code);
+    try { await cleanupWorkRoot(); }
+    finally {
+      await releaseDependencyDonor();
+      process.exit(code);
+    }
   };
   for (const [signal, number] of [['SIGINT', 2], ['SIGTERM', 15], ['SIGHUP', 1]]) {
     process.once(signal, () => { void bail(128 + number); });
   }
 
   try {
+    if (args.dependencyDonor !== undefined) {
+      // An explicit retained tree is an input even when its original owner is
+      // gone and it exceeds the idle cap. Publish under the deleter's mutex,
+      // then protect it across the self-sweep AND the independent byte copy.
+      // A killed runner leaves only a finite lease, using the existing TTL.
+      dependencyDonorPin = await withFsMutex('papercusp-disk-retention', () => createRetentionPin({
+        path: dependencyDonorRoot,
+        owner: process.env.PAPERCUSP_SID || `lint-as-committed:${process.pid}`,
+        reason: 'lint-as-committed dependency donor materialization',
+        expiresAt: new Date(Date.now() + KEEP_TTL_MS).toISOString(),
+      }));
+    }
+    const swept = await sweepStaleWorkRootsWithRetentionPins();
+    if (swept.removed.length > 0) {
+      console.log(`  swept ${swept.removed.length} stale extracted tree(s): ${swept.removed.map((r) => `${r.name} (${r.reason})`).join(', ')}`);
+    }
+    workRoot = mkdtempSync(join(tmpdir(), `${WORK_ROOT_PREFIX}${short}-`));
     // ── materialise the committed content as a REAL git repo ──
     // It must be a real repo, not just the right bytes: these lints enumerate their
     // inputs with `git ls-files`. See the header for the archive/tar attempt that died
@@ -1923,6 +1947,10 @@ async function main() {
       console.error(`lint-as-committed: workspace runtime prerequisites failed: ${err.message}`);
       process.exitCode = 2;
       return;
+    } finally {
+      // Commands run only against their private dependency bytes. The donor
+      // becomes reclaimable as soon as preparation succeeds or fails.
+      await releaseDependencyDonor();
     }
     const { paths: linkedPaths, workspacePaths } = snapshot;
     console.log(
@@ -2056,7 +2084,8 @@ async function main() {
       }
     }
   } finally {
-    if (args.keep) console.log(`\n  --keep: extracted tree left at ${workRoot} (swept after ${KEEP_TTL_MS / 3600_000}h or earlier above ${MAX_IDLE_KEPT_TREES} idle kept trees; in-use trees and dependent artifacts are retained)`);
+    await releaseDependencyDonor();
+    if (workRoot && args.keep) console.log(`\n  --keep: extracted tree left at ${workRoot} (swept after ${KEEP_TTL_MS / 3600_000}h or earlier above ${MAX_IDLE_KEPT_TREES} idle kept trees; in-use trees and dependent artifacts are retained)`);
     else await cleanupWorkRoot();
   }
 
