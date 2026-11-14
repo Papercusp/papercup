@@ -2597,6 +2597,41 @@ preflight_verifier_runtime_assets() {
     "$REPO_DIR/apps/operator/public/porcupine/porcupine_params.pv"
 }
 
+preflight_verifier_dependencies() {
+  local source_repo="$1" prediction prediction_rc=0 line verdict="" headers=0
+  local header_pattern='^DEPENDENCY_GENERATION_PREDICTION schema=1 ref=([a-f0-9]{40,64}) input=([a-f0-9]{64}) live=([a-f0-9]{64}) verdict=([a-z-]+) links=([0-9]+)$'
+  # Prediction is read-only and exits zero even for a refused verdict. Reuse
+  # its exact-ref admission before measuring, allocating or exporting source.
+  # The later ensure-ref remains the race guard and immutable publication step.
+  prediction="$(bash "$source_repo/apps/operator/bin/release/dependency-generation.sh" \
+    --integration "$REPO_DIR" --predict-ref "$VERIFY_TAURI_SOURCE_REF")" || prediction_rc=$?
+  printf '%s\n' "$prediction"
+  [ "$prediction_rc" -eq 0 ] || return "$prediction_rc"
+  while IFS= read -r line; do
+    case "$line" in
+      DEPENDENCY_GENERATION_PREDICTION\ *)
+        headers=$((headers + 1))
+        if [[ ! "$line" =~ $header_pattern ]] || [ "${BASH_REMATCH[1]:-}" != "$VERIFY_TAURI_SOURCE_REF" ]; then
+          echo 'VERIFY_TAURI_DEPENDENCY_PREDICTION_INVALID: expected a schema=1 receipt for the selected commit' >&2
+          return 74
+        fi
+        verdict="${BASH_REMATCH[4]}"
+        ;;
+    esac
+  done <<< "$prediction"
+  if [ "$headers" -ne 1 ]; then
+    echo 'VERIFY_TAURI_DEPENDENCY_PREDICTION_INVALID: expected exactly one prediction receipt' >&2
+    return 74
+  fi
+  case "$verdict" in
+    prewarmed|live-match|buildable) return 0 ;;
+    *)
+      echo "VERIFY_TAURI_DEPENDENCY_PREDICTION_REFUSED: verdict=$verdict; source export skipped" >&2
+      return 74
+      ;;
+  esac
+}
+
 snapshot_committed_operator_source() {
   # REPO_DIR remains the canonical coordination/fence/dependency donor domain.
   # Only runtime source and desktop execution move to the verified archive.
@@ -2637,6 +2672,7 @@ snapshot_committed_operator_source() {
   node "$source_repo/scripts/verifier-source-preflight.mjs" verifier-inputs-check \
     --repo "$source_repo" --ref "$VERIFY_TAURI_SOURCE_REF" "${input_args[@]}" || return $?
   preflight_verifier_runtime_assets "$source_repo" || return $?
+  preflight_verifier_dependencies "$source_repo" || return $?
   source_bytes="$(node "$source_repo/scripts/verifier-source-preflight.mjs" verifier-measure \
     --repo "$source_repo" --ref "$VERIFY_TAURI_SOURCE_REF")" || return 1
   case "$source_bytes" in

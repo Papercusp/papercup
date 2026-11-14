@@ -51,7 +51,7 @@ const operatorSnapshotIdx = src.indexOf("snapshot_operator_source() {");
 const dependencySnapshotSource = src.slice(src.indexOf("snapshot_verifier_pinned_deps() {"), operatorSnapshotIdx);
 const spaCleanupSource = src.match(/^cleanup_verifier_spa_snapshot\(\) \{[\s\S]*?^\}/m)?.[0] ?? '';
 const operatorSnapshotCallIdx = src.indexOf("verifier_run_step operator-source-snapshot");
-const normalizeOperatorSourceTestStub = 'normalize_operator_source_root() { OPERATOR_SOURCE_ROOT="$1"; }; preflight_verifier_runtime_assets() { :; }';
+const normalizeOperatorSourceTestStub = 'normalize_operator_source_root() { OPERATOR_SOURCE_ROOT="$1"; }; preflight_verifier_runtime_assets() { :; }; preflight_verifier_dependencies() { :; }';
 const sourceRefNormalizationTestStub = 'git() { [ -z "${TEST_GIT_LOG:-}" ] || printf "%s\\n" "$*" >> "$TEST_GIT_LOG"; printf "%s\\n" "${TEST_RESOLVED_SOURCE_REF:-commit}"; }; ' + normalizeOperatorSourceTestStub;
 const lockCensusStartIdx = src.indexOf("verify_operator_source_lock_census() {");
 const lockCensusSource = src.slice(lockCensusStartIdx, operatorSnapshotIdx);
@@ -60,6 +60,88 @@ const operatorSnapshotSource = `${src.slice(operatorSnapshotIdx, operatorSnapsho
 function committedSnapshotSource(end = operatorSnapshotCallIdx, testStub = normalizeOperatorSourceTestStub) {
   return `${src.slice(src.indexOf('snapshot_committed_operator_source() {'), end)}\n${testStub}`;
 }
+
+describe('EI-28749412177316997 — exact-ref dependencies are admitted before source export', () => {
+  const commit = '0123456789abcdef0123456789abcdef01234567';
+  const header = (verdict: string) => `DEPENDENCY_GENERATION_PREDICTION schema=1 ref=${commit} input=${'a'.repeat(64)} live=${'b'.repeat(64)} verdict=${verdict} links=0`;
+  const preflight = src.match(/^preflight_verifier_dependencies\(\) \{[\s\S]*?^\}/m)?.[0] ?? '';
+
+  function run(prediction: string, helperStatus = 0) {
+    const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-dependency-preflight-'));
+    const sourceRepo = resolve(fixture, 'selected source');
+    const generator = resolve(sourceRepo, 'apps/operator/bin/release/dependency-generation.sh');
+    try {
+      mkdirSync(resolve(generator, '..'), { recursive: true });
+      writeFileSync(generator, [
+        'printf "%s\\n" "$*" > "$TEST_ROOT/predict-args"',
+        'echo predict >> "$TEST_ROOT/order"',
+        'printf "%s\\n" "$TEST_PREDICTION"',
+        'exit "$TEST_HELPER_STATUS"',
+      ].join('\n'));
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail',
+        'REPO_DIR="/canonical donor"; WORK="$TEST_ROOT"; OPERATOR_SNAPSHOT_PARENT="$TEST_ROOT"',
+        'VERIFY_TAURI_SOURCE_REF=HEAD; VERIFY_TAURI_SOURCE_INPUTS=apps/operator/ui.ts',
+        'reserve_verifier_disk() { echo reserve >> "$WORK/order"; }',
+        'write_run_marker() { echo allocated >> "$WORK/order"; }; log() { :; }',
+        'node() { echo "$2" >> "$WORK/order"; if [ "$2" = verifier-measure ]; then echo 4096; fi; }',
+        'snapshot_verifier_pinned_deps() { echo deps >> "$WORK/order"; }',
+        committedSnapshotSource(operatorSnapshotCallIdx, sourceRefNormalizationTestStub),
+        preflight,
+        'snapshot_committed_operator_source || exit $?',
+      ].join('\n')], { encoding: 'utf8', timeout: 5_000, env: {
+        ...hermeticSpawnEnv(), TEST_ROOT: fixture, TEST_PREDICTION: prediction,
+        TEST_HELPER_STATUS: String(helperStatus), TEST_RESOLVED_SOURCE_REF: commit,
+        VERIFY_TAURI_SOURCE_REPO_DIR: sourceRepo, VERIFY_TAURI_SOURCE_INPUTS_FILE: '', VH_PHASE_DIR: '',
+      } });
+      return { ...result,
+        order: readFileSync(resolve(fixture, 'order'), 'utf8').trim().split('\n'),
+        args: readFileSync(resolve(fixture, 'predict-args'), 'utf8').trim(),
+        allocated: readdirSync(fixture).some(name => name.startsWith('verify-tauri-headless.')),
+      };
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  }
+
+  it.each(['prewarmed', 'live-match', 'buildable'])('admits %s using selected source tooling and the canonical donor', verdict => {
+    expect(preflight).not.toBe('');
+    const result = run(header(verdict));
+    expect(result.status, spawnDiagnostic(result)).toBe(0);
+    expect(result.args).toBe(`--integration /canonical donor --predict-ref ${commit}`);
+    expect(result.order).toEqual(['verifier-inputs-check', 'predict', 'verifier-measure', 'reserve', 'allocated', 'verifier-prepare', 'verifier-verify', 'deps']);
+    expect(result.allocated).toBe(true);
+  });
+
+  it('rejects an exit-zero refusal and preserves reasons before any source preparation', () => {
+    const reason = 'DEPENDENCY_GENERATION_PREDICTION_REASON Next16.4.0(ref)vs16.4.1(live)';
+    const result = run(`${header('refused')}\n${reason}`);
+    expect(result.status, spawnDiagnostic(result)).toBe(74);
+    expect(result.stdout).toContain(reason);
+    expect(result.stderr).toContain('source export skipped');
+    expect(result.order).toEqual(['verifier-inputs-check', 'predict']);
+    expect(result.allocated).toBe(false);
+  });
+
+  it.each([
+    '', header('unknown'), header('prewarmed').replace('schema=1', 'schema=2'),
+    header('prewarmed').replace(commit, 'f'.repeat(40)),
+    header('prewarmed').replace('a'.repeat(64), 'invalid'),
+    header('prewarmed').replace('links=0', 'links=unknown'),
+    `${header('prewarmed')}\n${header('prewarmed')}`,
+  ])('fails closed on an unusable prediction receipt: %s', prediction => {
+    const result = run(prediction);
+    expect(result.status, spawnDiagnostic(result)).toBe(74);
+    expect(result.order).toEqual(['verifier-inputs-check', 'predict']);
+    expect(result.allocated).toBe(false);
+  });
+
+  it('preserves a predictor error even when stdout contains an admitting receipt', () => {
+    const result = run(header('prewarmed'), 63);
+    expect(result.status, spawnDiagnostic(result)).toBe(63);
+    expect(result.stdout).toContain(header('prewarmed'));
+    expect(result.order).toEqual(['verifier-inputs-check', 'predict']);
+    expect(result.allocated).toBe(false);
+  });
+});
 
 describe('EI-26928176238125992 — one admission for frozen SPA preparation', () => {
   const prepare = src.match(/prepare_verifier_spa\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
@@ -812,10 +894,11 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
     expect(operatorSnapshotSource).toContain('verify_operator_source_lock_census "before copy"');
     const beforeCopy = operatorSnapshotSource.indexOf('verify_operator_source_lock_census "before copy"');
     const rsyncCopy = operatorSnapshotSource.indexOf('rsync -a --delete "${source_filters[@]}"');
-    const afterCopy = operatorSnapshotSource.indexOf('verify_operator_source_lock_census "after copy"');
+    const afterCopy = operatorSnapshotSource.indexOf('settle_operator_source_snapshot "$snapshot_root"');
     expect(beforeCopy).toBeGreaterThan(-1);
     expect(rsyncCopy).toBeGreaterThan(beforeCopy);
     expect(afterCopy).toBeGreaterThan(rsyncCopy);
+    expect(lockCensusSource).toContain('verify_operator_source_lock_census "after copy" settle');
   });
 });
 
@@ -1135,7 +1218,7 @@ describe("EI-22616267024724225 — frozen verifier hosts exclude the tsx runtime
     expect(src.slice(bundleFunctionIdx, bundleCallIdx)).toContain(
       '[ -s "$bundle" ]',
     );
-    expect(readFileSync(resolve(__dirname, '../../../scripts/source-preview.mjs'), 'utf8'))
+    expect(readFileSync(resolve(__dirname, '../../../scripts/verifier-source-preflight.mjs'), 'utf8'))
       .toContain("'apps/operator/e2e/_fake-llm-fixture-child.ts'");
   });
 
@@ -1720,6 +1803,8 @@ describe('dependency-free committed verifier source preflight', () => {
     const helper = resolve(scripts, 'verifier-source-preflight.mjs');
     const sourceFile = resolve(sourceDir, 'main.js');
     const helperSource = readFileSync(resolve(__dirname, '../../../scripts/verifier-source-preflight.mjs'), 'utf8');
+    const cliGuardPath = 'packages/operator-core/lib/util/cli-entry.ts';
+    const cliGuardSource = readFileSync(resolve(__dirname, '../../../', cliGuardPath), 'utf8');
     const sourceText = 'export const verifierFixture = true;\n';
     const env = {
       ...hermeticSpawnEnv(),
@@ -1739,8 +1824,10 @@ describe('dependency-free committed verifier source preflight', () => {
       mkdirSync(sourceDir, { recursive: true });
       writeFileSync(helper, helperSource);
       writeFileSync(sourceFile, sourceText);
+      mkdirSync(resolve(root, cliGuardPath, '..'), { recursive: true });
+      writeFileSync(resolve(root, cliGuardPath), cliGuardSource);
       git(['init', '--quiet']);
-      git(['add', 'scripts/verifier-source-preflight.mjs', 'src/main.js']);
+      git(['add', 'scripts/verifier-source-preflight.mjs', 'src/main.js', cliGuardPath]);
       git(['commit', '--quiet', '-m', 'source-only verifier fixture']);
       const commit = git(['rev-parse', 'HEAD']);
 
@@ -1765,7 +1852,8 @@ describe('dependency-free committed verifier source preflight', () => {
         '--ref', commit], { encoding: 'utf8', env });
       expect(measured.status, spawnDiagnostic(measured)).toBe(0);
       const expectedBytes = Math.ceil(Buffer.byteLength(helperSource) / 4096) * 4096
-        + Math.ceil(Buffer.byteLength(sourceText) / 4096) * 4096;
+        + Math.ceil(Buffer.byteLength(sourceText) / 4096) * 4096
+        + Math.ceil(Buffer.byteLength(cliGuardSource) / 4096) * 4096;
       expect(Number(measured.stdout.trim())).toBe(expectedBytes);
       expect(existsSync(resolve(root, 'node_modules'))).toBe(false);
     } finally {
@@ -1934,19 +2022,18 @@ describe("native copy callers preserve frozen helpers and bounded admission", ()
     // The committed route asks source-preview for its owned tooling profile.
     expect(committed).toContain("--tauri-inputs");
     const previewSrc = readFileSync(resolve(__dirname, "../../../scripts/source-preview.mjs"), "utf8");
-    const profile = previewSrc.slice(
-      previewSrc.indexOf("export const TAURI_VERIFIER_INPUTS"),
-      previewSrc.indexOf("]);", previewSrc.indexOf("export const TAURI_VERIFIER_INPUTS")),
-    );
+    expect(previewSrc).toContain('TAURI_VERIFIER_INPUTS as NATIVE_VERIFIER_INPUTS');
+    expect(previewSrc).toContain("from './verifier-source-preflight.mjs'");
+    expect(previewSrc).toContain('export const TAURI_VERIFIER_INPUTS = NATIVE_VERIFIER_INPUTS;');
     const preflightSrc = readFileSync(resolve(__dirname, "../../../scripts/verifier-source-preflight.mjs"), "utf8");
     const preflightProfile = preflightSrc.slice(
       preflightSrc.indexOf("export const TAURI_VERIFIER_INPUTS"),
       preflightSrc.indexOf("]);", preflightSrc.indexOf("export const TAURI_VERIFIER_INPUTS")),
     );
     const entries = (source: string) => [...source.matchAll(/'([^']+)'/g)].map(match => match[1]);
-    expect(entries(preflightProfile)).toEqual(entries(profile));
+    expect(entries(preflightProfile).length).toBeGreaterThan(0);
     for (const path of ["scripts/verifier-source-preflight.mjs", "scripts/pc-heavy.sh", "scripts/lib/budgeted-task-scheduler.mjs", "apps/operator/bin/release/dependency-generation.sh"]) {
-      expect(profile).toContain(`'${path}'`);
+      expect(entries(preflightProfile)).toContain(path);
     }
   });
 });
