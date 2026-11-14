@@ -65,6 +65,8 @@
  * @property {number} [maxCalls]          mid-turn: max tool calls shipped.
  * @property {number} [fieldClamp]        mid-turn: max chars per call field.
  * @property {number} [guardInputMaxBytes] pre-tool: tool input shipped whole up to this, else not at all.
+ * @property {number} [unavailableAttempts] pre-tool: lookups (each with its own timeoutMs wall) before a
+ *   fail-closed deny, counted only when no HTTP answer arrived at all.
  */
 
 /** @type {Record<InjectionPort, PortSpec>} */
@@ -98,6 +100,10 @@ export const PORTS = {
     // Must equal SYNC_HOOK_GUARD_INPUT_MAX_BYTES (sync-hook-rules.ts). Never a
     // lossy prefix: a cut input could hide exactly the tail a deny would match.
     guardInputMaxBytes: 64 * 1024,
+    // EI-28788424262267205: one stalled lookup (both origins past the wall)
+    // denied a read-only shell call that passed 30s later. A deny costs the
+    // agent a whole turn, so spend at most one more wall before refusing.
+    unavailableAttempts: 2,
   },
   stop: {
     endpoint: '/api/agent-mcp/stop-context',
