@@ -689,7 +689,10 @@ export interface CaptureDeps {
   /** EI-15448 observation-coalescing seams. OPTIONAL — default to the real
    *  issues-engineer.ts implementations; injectable so tests drive the coalesce
    *  path without PG. */
-  findIssuesByWatchdogKeys?: (keys: string[]) => Promise<EngineerIssue[]>;
+  findIssuesByWatchdogKeys?: (
+    keys: string[],
+    opts?: { includeConditionKeyHolders?: boolean },
+  ) => Promise<EngineerIssue[]>;
   /** Stable tool-failure class lookup; unlike watchdog keys this spans message shapes. */
   findIssuesByToolFailureClassKeys?: (keys: string[]) => Promise<EngineerIssue[]>;
   updateIssuePatch?: (
@@ -1008,6 +1011,17 @@ function sameWatchdogIdentity(
   origin: string,
 ): boolean {
   const payload = (issue.payload as Record<string, unknown> | null) ?? {};
+  // WI-6554700010048655: a condition-bridge incident holds the key in work_items.condition_key
+  // (unique per workspace/harness/key) with no payload.watchdogKey and none of the
+  // migration-865 origin/lane/scope dimensions a capture writes. The key is the exact
+  // identity, so an improvement-lane capture of it coalesces onto that incident.
+  if (
+    typeof input.watchdogKey === 'string' &&
+    issue.heldConditionKey === input.watchdogKey &&
+    payload.watchdogKey == null
+  ) {
+    return issueWatchdogLane(issue) === 'improvement' && effectiveWatchdogLane(input) === 'improvement';
+  }
   return (
     typeof input.watchdogKey === 'string' &&
     payload.watchdogKey === input.watchdogKey &&
@@ -2695,7 +2709,7 @@ export async function captureImprovement(
     }
   }
   if (!isObservation && input.watchdogKey) {
-    exactKeyIssues = await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)([input.watchdogKey]).catch(
+    exactKeyIssues = await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)([input.watchdogKey], { includeConditionKeyHolders: true }).catch(
       () => {
         // UNKNOWN must never read as "no duplicate exists" — surfaced via
         // dedupCoverage.degraded below, exactly like an unavailable lexical leg.
@@ -3511,7 +3525,7 @@ export async function captureImprovement(
   // omits the key keeps the original always-re-file behavior — correct for a genuinely
   // novel/one-off reading.
   if (isObservation && input.watchdogKey) {
-    const priorHits = await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)([input.watchdogKey]).catch(
+    const priorHits = await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)([input.watchdogKey], { includeConditionKeyHolders: true }).catch(
       () => [] as EngineerIssue[],
     );
     const prior = priorHits.find(
@@ -3943,7 +3957,7 @@ export async function captureImprovement(
       let raced: EngineerIssue[] = [];
       let lookupError: unknown;
       try {
-        raced = await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)([input.watchdogKey]);
+        raced = await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)([input.watchdogKey], { includeConditionKeyHolders: true });
       } catch (readError) {
         lookupError = readError;
       }

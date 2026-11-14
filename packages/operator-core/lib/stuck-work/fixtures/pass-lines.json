@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "plan": "stuck-work-detection-and-honest-waits-2026-11-13",
+  "registeredBy": ["D-008", "D-013 rule 3"],
+  "registeredOn": "2026-11-14",
+  "note": "Pre-registered pass lines. Committed before P-010 starts and before any holdout or post-ship outcome data was read (D-013 rule 3(a)). holdout-replay.test.ts and delivery-mode.test.ts read lines only from this file. Editing a line after its data is seen voids it (D-008).",
+  "flagsPerDay": {
+    "definition": "mean over the window's UTC days of newly flagged distinct items; an item flagged on several days counts once, on its first day"
+  },
+  "holdout": {
+    "waiting": {
+      "fromUtcDay": "2026-09-30",
+      "toUtcDay": "2026-10-13",
+      "singleUse": true,
+      "registeredCell": { "minWaitHours": 4, "minMissedAlarms": 3 },
+      "informationalSensitivity": { "hours": [3, 4, 6], "missedAlarms": [2, 3, 4] },
+      "comparability": {
+        "referenceWindow": { "fromUtcDay": "2026-10-14", "toUtcDay": "2026-11-12" },
+        "sameTimeoutBehaviors": true,
+        "medianTimeoutSecondsRatio": { "min": 0.5, "max": 2 },
+        "expiryShareRatio": { "min": 0.5, "max": 2 },
+        "onFailure": "historical line counts as no data; the check stays list-only"
+      }
+    }
+  },
+  "lines": {
+    "a": {
+      "check": "waiting",
+      "evaluation": "historical-holdout",
+      "maxFlagsPerDay": 10,
+      "minRealShare": 0.6,
+      "realLabel": "signal-not-fired-within-24h",
+      "minMatureFlags": 20
+    },
+    "b": {
+      "check": "waiting",
+      "evaluation": "post-ship-list-only",
+      "anchor": "P-004-live",
+      "evaluateAfterDays": 8,
+      "flagWindowDays": { "from": 0, "to": 7 },
+      "flagsPerDayBand": { "minRatio": 0.5, "maxRatio": 2, "against": "max(holdoutFlagsPerDay, 1)" },
+      "maxFlagsPerDay": 10,
+      "minRealShare": 0.6,
+      "realLabel": "signal-not-fired-within-24h",
+      "minMatureFlags": 10,
+      "onPass": "threshold-notices-on",
+      "onMiss": "stay-list-only-and-file-rule-change-item"
+    },
+    "c": {
+      "check": "effort",
+      "evaluation": "time-split-sanity",
+      "registered": false,
+      "note": "Sanity check only: the rule was chosen while looking at these days (lines from items done 2026-10-14..2026-10-30, flags over 2026-10-31..2026-11-13)."
+    },
+    "d": {
+      "check": "effort",
+      "evaluation": "post-ship-list-only",
+      "anchor": "ship",
+      "evaluateAfterDays": 28,
+      "flagWindowDays": { "from": 0, "to": 14 },
+      "maxFlagsPerDay": 5,
+      "minRealShare": 0.5,
+      "realLabel": "within 14 days: dropped, or reassigned by an actor other than the holder, or judged stuck by a lineage-excluded responder's recorded consult answer",
+      "minMatureFlags": 10,
+      "onPass": "reviews-on",
+      "onMiss": "stay-list-only-and-file-rule-change-item"
+    }
+  },
+  "stuckJudgmentQuestion": "Reading only this timeline, is item <id> stuck: no result and no credible path to one without a change of approach or an owner decision? Answer stuck or not stuck and cite timeline entries.",
+  "repeatedMiss": { "consecutiveEvaluations": 2, "action": "coord:ask-owner with at least 2 options instead of re-arming a third time" },
+  "ruleChangeAfterMiss": "evaluated on new post-ship days, never on the holdout"
+}

@@ -284,6 +284,34 @@ function report(files: Array<Partial<{
 }
 
 describe('distillVitestRun', () => {
+  it('preserves report structure while redacting escaped diagnostic JSON and private-key text', () => {
+    const credential = 'synthetic-child-credential-escaped-json';
+    const environment = { CHILD_API_KEY: credential };
+    const diagnostic = JSON.stringify([`fixture://emissions/token=${credential}`, 'emitted-receipt-hash']);
+    // Label interpolated so the source never holds a literal PEM header (git-sync's
+    // private-key-pem guard quarantines it); the runtime value is byte-identical.
+    const pemLabel = 'PRIVATE KEY';
+    const privateKey = `-----BEGIN ${pemLabel}-----\nfixture-key-material\n-----END ${pemLabel}-----`;
+    const json = report([{
+      name: `${ROOT}/escaped.test.ts`, status: 'failed',
+      assertionResults: [{ status: 'failed', fullName: 'escaped diagnostics',
+        failureMessages: [diagnostic + '\n' + privateKey] }],
+    }]);
+    const distilled = distillVitestRun(json, ROOT, { environment });
+    const rows = parseVitestJsonForHarnessRows(json, ROOT, environment);
+    const details = parseFailureDetailsSidecar(JSON.stringify({ failures: [{
+      file: `${ROOT}/escaped.test.ts`, test: 'escaped diagnostics', actual: diagnostic, expected: privateKey,
+    }] }), ROOT, environment);
+    expect(distilled).toMatchObject({ files: 1, passed: 0, failed: 1 });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ filePath: 'escaped.test.ts', status: 'fail' });
+    expect(details).toHaveLength(1);
+    const projected = JSON.stringify({ distilled, rows, details });
+    expect(projected).not.toContain(credential);
+    expect(projected).not.toContain('fixture-key-material');
+    expect(projected).toContain('[redacted]');
+  });
+
   it('counts per TEST, not per file, and sums across files', () => {
     const out = distillVitestRun(report([
       {

@@ -57,7 +57,7 @@ import {
   parseVerdictFlipQuarantineHealth,
   type VerdictFlipQuarantineHealth,
 } from '../../release/verdict-flip-quarantine-gate';
-import { parseRatchetShadowHealth, type RatchetShadowHealth } from '../../release/ratchet-shadow';
+import { nextStoredRatchetShadow, type RatchetShadowHealth } from '../../release/ratchet-shadow';
 import { parseGateRoundPhases, type GateRoundPhases } from '../../release/gate-round-phases';
 import { releaseCheckpointConfig, readQualificationAdmission } from '../../release-checkpoint-config';
 import {
@@ -4873,6 +4873,9 @@ export async function trackGateStall(
       retriageStaleTip?: string | null;
       retriageDetail?: string | null;
       retriageClassification?: 'real-red' | 'stale-candidate' | 'unknown' | null;
+      /** R15-INSTRUMENT-ROTATION: the stored shadow records. Only its composedProofCohort is
+       *  carried into the next round; nextStoredRatchetShadow re-validates it. */
+      ratchetShadow?: unknown;
     } | null;
     lf: ReleaseFixerRecord | null;
     rq: unknown;
@@ -5440,7 +5443,9 @@ export async function trackGateStall(
   const promotionRatchetRecord = parsePromotionRatchetHealth(options.promotionRatchet);
   // P-008 / #D-025: per-round records like promotionRatchet; an unreported round clears them.
   const verdictFlipQuarantineRecord = parseVerdictFlipQuarantineHealth(options.verdictFlipQuarantine);
-  const ratchetShadowRecord = parseRatchetShadowHealth(options.ratchetShadow) ?? null;
+  // R15-INSTRUMENT-ROTATION: the cohort is the exception to "an unreported round clears". It is
+  // advanced from the STORED cohort plus this round's record, never taken from the report.
+  const ratchetShadowRecord = nextStoredRatchetShadow(gh.ratchetShadow, options.ratchetShadow);
   // P-013: unlike testPassReuse, the phase breakdown carries no sha of its own — it describes the
   // round beside `observedCandidate` — so an unmeasured round CLEARS it (explicit null) instead of
   // leaving an older round's phases next to a newer candidate.

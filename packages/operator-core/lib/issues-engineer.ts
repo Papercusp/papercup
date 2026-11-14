@@ -430,6 +430,12 @@ export interface EngineerIssue {
   sourcePlanItemIds?: string[] | null;
   redundancy?: number | null;
   expectedCostCents?: number | null;
+  /**
+   * The `work_items.condition_key` this row holds, when it was read through
+   * `findIssuesByWatchdogKeys(keys, { includeConditionKeyHolders: true })` and holds one of
+   * those keys. Absent on every other read.
+   */
+  heldConditionKey?: string | null;
 }
 
 export interface EngineerIssueDetail extends EngineerIssue {
@@ -5063,16 +5069,50 @@ export async function issuesByIds(ids: string[], opts: WorkItemReadOptions = {})
  * never a general caller-visible listing — so widening here is safe by the
  * same reasoning as `searchIssuesForDedup` above.
  */
-export async function findIssuesByWatchdogKeys(keys: string[]): Promise<EngineerIssue[]> {
+export interface FindIssuesByWatchdogKeysOptions {
+  /**
+   * Also return rows that HOLD one of `keys` in `work_items.condition_key`. The condition
+   * bridge mints its incident with the key there and NO `payload.watchdogKey`, so a
+   * payload-only lookup misses it and a later capture of the same condition forks a
+   * duplicate (WI-6554700010048655). Each such row carries `heldConditionKey`. Opt-in:
+   * only the improvement-capture path, whose watchdog keys share the condition-key
+   * namespace, asks for it; the other dedup consumers keep the payload-only contract.
+   */
+  includeConditionKeyHolders?: boolean;
+}
+
+export async function findIssuesByWatchdogKeys(
+  keys: string[],
+  opts: FindIssuesByWatchdogKeysOptions = {},
+): Promise<EngineerIssue[]> {
   if (keys.length === 0) return [];
   const { sql } = getOrgPg();
-  const rows = await sql<IssueRowDb[]>`
-    SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
-     WHERE workspace_id = ANY(${dedupScopeWorkspaces()}::text[])
-       AND payload ? 'watchdogKey'
-       AND payload->>'watchdogKey' = ANY(${keys}::text[])
+  const workspaces = dedupScopeWorkspaces();
+  if (!opts.includeConditionKeyHolders) {
+    const rows = await sql<IssueRowDb[]>`
+      SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
+       WHERE workspace_id = ANY(${workspaces}::text[])
+         AND payload ? 'watchdogKey'
+         AND payload->>'watchdogKey' = ANY(${keys}::text[])
+       ORDER BY updated_at DESC`;
+    return rows.map(toIssue);
+  }
+  // engineer_issues has no condition_key column; issue_id is work_items.feature_id.
+  const rows = await sql<(IssueRowDb & { held_condition_key: string | null })[]>`
+    SELECT ${sql.unsafe(ISSUE_COLS)},
+           (SELECT wi.condition_key FROM harness_shared.work_items wi
+             WHERE wi.workspace_id = engineer_issues.workspace_id
+               AND wi.feature_id = engineer_issues.issue_id
+               AND wi.condition_key = ANY(${keys}::text[])
+             LIMIT 1) AS held_condition_key
+      FROM harness_shared.engineer_issues
+     WHERE workspace_id = ANY(${workspaces}::text[])
+       AND ((payload ? 'watchdogKey' AND payload->>'watchdogKey' = ANY(${keys}::text[]))
+         OR issue_id IN (SELECT wi.feature_id FROM harness_shared.work_items wi
+                          WHERE wi.workspace_id = ANY(${workspaces}::text[])
+                            AND wi.condition_key = ANY(${keys}::text[])))
      ORDER BY updated_at DESC`;
-  return rows.map(toIssue);
+  return rows.map((r) => ({ ...toIssue(r), heldConditionKey: r.held_condition_key ?? null }));
 }
 
 /**

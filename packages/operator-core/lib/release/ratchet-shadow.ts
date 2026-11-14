@@ -823,3 +823,23 @@ export function parseRatchetShadowHealth(value: unknown): RatchetShadowHealth | 
   }
   return out.composedProof || out.newRedEjection || out.composedProofCohort ? out : undefined;
 }
+
+/**
+ * R15-INSTRUMENT-ROTATION: the stored-health value for one gate round. The round's own records
+ * replace the stored ones, so an unreported round clears them. The cohort is carried instead: it
+ * is advanced from the STORED cohort plus this round's composed-proof record, and a round without
+ * one leaves it unchanged. A cohort inside `reported` is ignored, so a round cannot report its
+ * own credit.
+ */
+export function nextStoredRatchetShadow(storedRatchetShadow: unknown, reported: unknown): RatchetShadowHealth | null {
+  const round = parseRatchetShadowHealth(reported);
+  const prior = isRecord(storedRatchetShadow)
+    ? parseComposedProofCohort(storedRatchetShadow.composedProofCohort)
+    : undefined;
+  const cohort = round?.composedProof ? advanceComposedProofCohort(prior, round.composedProof) : prior;
+  const out: RatchetShadowHealth = {};
+  if (round?.composedProof) out.composedProof = round.composedProof;
+  if (round?.newRedEjection) out.newRedEjection = round.newRedEjection;
+  if (cohort) out.composedProofCohort = cohort;
+  return out.composedProof || out.newRedEjection || out.composedProofCohort ? out : null;
+}

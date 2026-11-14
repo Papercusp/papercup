@@ -54,6 +54,17 @@ describe('bounded original measurement retention', () => {
     expect(parseRecordedMeasurementProvenance(p)).toEqual(p);
     expect(result.value).toBe(42);
   });
+  it('omits oversized instrument details before redaction while retaining scalar results', () => {
+    const secret = 'never-emit-me';
+    const detail = `API_KEY=${secret} ${'x'.repeat(100_000)}`;
+    const p = retainMeasurementProvenance({ ...times, procedure: { kind: 'platform-instrument', instrumentKey: 'large-detail' },
+      result: { detail, value: 42 } });
+    expect(p.diagnostics).toContainEqual({ path: '$["detail"]', value: '[omitted: oversized diagnostic]' });
+    expect(p.diagnostics).toContainEqual({ path: '$["value"]', value: 42 });
+    expect(p.gaps).toContain('diagnostics-truncated');
+    expect(JSON.stringify(p)).not.toContain(secret);
+    expect(parseRecordedMeasurementProvenance(p)).toEqual(p);
+  });
   it('marks a missing original transaction clock and oversized procedure explicitly', () => {
     const p = retainMeasurementProvenance({ ...times, procedure: { sql: '界'.repeat(9000) }, result: null, needsTransactionClock: true });
     expect(p.procedure.snapshot).toBe('{}');
