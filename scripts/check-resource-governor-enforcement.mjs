@@ -3512,6 +3512,14 @@ export const BYPASS_REGISTRY = new Map([
         "Every detected start is execFileSync('git', ...) for bounded repository identity and dirty-state metadata with an explicit 30s timeout; each call is synchronous and awaited, creates no worker or resident queue, and must remain available to reject a stale host bundle before launch.",
     },
   ],
+  [
+    "apps/operator/bin/bundle-host-snapshot-fence.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "Every detected start is execFileSync('git', ...) plumbing (ls-tree, cat-file --batch-check, hash-object --stdin-paths, check-ignore, rev-parse) with an explicit 60s timeout, comparing a test-only bundle's compiler inputs with its snapshot commit; each call is synchronous and awaited and creates no worker or resident queue (WI-6554700010048234).",
+    },
+  ],
   // ── cheap metadata reads: a git plumbing call that prints and exits ──────────
   // These are D-004's "cheap metadata operations that cannot materially increase
   // residency": single short-lived plumbing processes, awaited, no worker, no queue.
