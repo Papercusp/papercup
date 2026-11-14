@@ -678,95 +678,7 @@ export function prepareBgVerifierBuildRecord({ prepared, dependencies, invocatio
  * @param {BgBuildInvocation} invocation
  * @param {'before-build' | 'before-publication'} boundary
  */
-export function verifyBgVerifierBuildRecord(record: ReturnType<typeof prepareBgVerifierBuildRecord>, invocation: BgBuildInvocation, boundary: "before-build" | "before-publication"): {
-    invocation: {
-        argv: string[];
-        configuration: {
-            path: string;
-            realpath: string;
-            sha256: string;
-        }[];
-        environment: {
-            [k: string]: string;
-        };
-        outputNamespace?: {
-            bank: BgDirectoryIdentity;
-            stage: BgDirectoryIdentity;
-            transactionSha256?: string;
-        } | undefined;
-        builder: {
-            path: string;
-            realpath: string;
-            sha256: string;
-        };
-        compiler: {
-            path: string;
-            realpath: string;
-            sha256: string;
-        };
-        node: {
-            path: string;
-            realpath: string;
-            sha256: string;
-        };
-        packageManager: {
-            path: string;
-            realpath: string;
-            sha256: string;
-        };
-    };
-    expectedHostManifest?: {
-        vdso?: {
-            origin: "kernel-auxv-AT_SYSINFO_EHDR";
-            sha256: string;
-            bytes: number;
-        } | undefined;
-        builtinSources?: {
-            url: string;
-            sha256: string;
-            bytes: number;
-        }[] | undefined;
-        authority: BgExpectedHostManifest;
-        identity: {
-            path: string;
-            realpath: string;
-            sha256: string;
-            dev: string;
-            ino: string;
-            size: string;
-            mtimeNs: string;
-            ctimeNs: string;
-        };
-        files: {
-            path: string;
-            sha256: string;
-            bytes: number;
-        }[];
-    } | undefined;
-    schemaVersion: string;
-    prepared: BgVerifierPreparation;
-    dependencies: {
-        schemaVersion: string;
-        scope: string;
-        root: string;
-        sourceCommit: any;
-        policy: {
-            path: string;
-            sha256: string;
-        };
-        sourceReceiptSha256: string;
-        trees: {
-            path: string;
-            files: {
-                path: string;
-                kind: string;
-                executable: boolean;
-                sha256: string;
-            }[];
-        }[];
-    };
-    originalSourceReceiptSha256: string;
-};
+export function verifyBgVerifierBuildRecord(record: ReturnType<typeof prepareBgVerifierBuildRecord>, invocation: BgBuildInvocation, boundary: "before-build" | "before-publication"): any;
 /** Keep the common source/dependency receipt once, with a separate original
  * command for every maintained main/worker/spawner invocation. Commands are
  * selected by their complete argv, never by entry basename or call order.
@@ -1891,10 +1803,11 @@ export function publishBgVerifierLogicalOutputSet(args: {
                     artifactSha256: string;
                 };
                 interval: {
+                    resolverMetadata: any;
+                    resolverNamespace?: any;
                     rows: any;
                     ancestors: any;
                     toolchain: never[];
-                    resolverMetadata: any;
                 };
             } | undefined;
             effectiveArgv?: string[] | undefined;
@@ -1985,10 +1898,11 @@ export function publishBgVerifierLogicalOutputSet(args: {
                 artifactSha256: string;
             };
             interval: {
+                resolverMetadata: any;
+                resolverNamespace?: any;
                 rows: any;
                 ancestors: any;
                 toolchain: never[];
-                resolverMetadata: any;
             };
         } | undefined;
         effectiveArgv?: string[] | undefined;
@@ -2386,10 +2300,11 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
                     artifactSha256: string;
                 };
                 interval: {
+                    resolverMetadata: any;
+                    resolverNamespace?: any;
                     rows: any;
                     ancestors: any;
                     toolchain: never[];
-                    resolverMetadata: any;
                 };
             } | undefined;
             effectiveArgv?: string[] | undefined;
@@ -2480,10 +2395,11 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
                 artifactSha256: string;
             };
             interval: {
+                resolverMetadata: any;
+                resolverNamespace?: any;
                 rows: any;
                 ancestors: any;
                 toolchain: never[];
-                resolverMetadata: any;
             };
         } | undefined;
         effectiveArgv?: string[] | undefined;
@@ -2893,10 +2809,11 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
                     artifactSha256: string;
                 };
                 interval: {
+                    resolverMetadata: any;
+                    resolverNamespace?: any;
                     rows: any;
                     ancestors: any;
                     toolchain: never[];
-                    resolverMetadata: any;
                 };
             } | undefined;
             effectiveArgv?: string[] | undefined;
@@ -2987,10 +2904,11 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
                 artifactSha256: string;
             };
             interval: {
+                resolverMetadata: any;
+                resolverNamespace?: any;
                 rows: any;
                 ancestors: any;
                 toolchain: never[];
-                resolverMetadata: any;
             };
         } | undefined;
         effectiveArgv?: string[] | undefined;
@@ -3087,10 +3005,11 @@ export function compileBgVerifierInvocation({ record, invocation, argv, expected
                 artifactSha256: string;
             };
             interval: {
+                resolverMetadata: any;
+                resolverNamespace?: any;
                 rows: any;
                 ancestors: any;
                 toolchain: never[];
-                resolverMetadata: any;
             };
         } | undefined;
         effectiveArgv?: string[] | undefined;
@@ -3181,10 +3100,11 @@ export function compileBgVerifierInvocation({ record, invocation, argv, expected
             artifactSha256: string;
         };
         interval: {
+            resolverMetadata: any;
+            resolverNamespace?: any;
             rows: any;
             ancestors: any;
             toolchain: never[];
-            resolverMetadata: any;
         };
     } | undefined;
     effectiveArgv?: string[] | undefined;
@@ -4396,8 +4316,13 @@ import { runTreeRestrictedHoldPreflight } from './lib/restricted-hold-preflight.
 declare function main(argv: any): Promise<number>;
 /** Read one physical file without reopening between validation and hashing.
  * @param {string} path
+ * @param {Map<string, { physical: string, stat: import('node:fs').BigIntStats, sha256: string }>} [identities]
  */
-declare function readBgFileIdentity(path: string): {
+declare function readBgFileIdentity(path: string, identities?: Map<string, {
+    physical: string;
+    stat: import("node:fs").BigIntStats;
+    sha256: string;
+}>): {
     path: string;
     realpath: string;
     sha256: string;

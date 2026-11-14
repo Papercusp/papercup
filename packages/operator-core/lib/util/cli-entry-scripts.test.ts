@@ -261,6 +261,61 @@ describe('engineering evidence release CLI entry in the operator graph', () => {
   });
 });
 
+describe('source-only verifier CLI entry', () => {
+  const script = 'scripts/verifier-source-preflight.mjs';
+  const helper = 'packages/operator-core/lib/util/cli-entry.ts';
+
+  it('stays inert in a host bundle and detects the original entry comparison', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cli-entry-verifier-bundle-'));
+    try {
+      for (const rawGuard of [false, true]) {
+        const entry = join(root, rawGuard ? 'raw.mjs' : 'safe.mjs');
+        await build({
+          entryPoints: [join(REPO_ROOT, script)], outfile: entry,
+          bundle: true, platform: 'node', format: 'esm',
+          define: { __PAPERCUSP_BUNDLED_SIDECAR__: 'true' },
+          plugins: rawGuard ? [{ name: 'restore-verifier-entry-defect', setup(build) {
+            build.onLoad({ filter: /verifier-source-preflight\.mjs$/ }, ({ path }) => {
+              const source = readFileSync(path, 'utf8');
+              const guard = 'if (isCliEntry(import.meta.url))';
+              expect(source).toContain(guard);
+              return { contents: withRawEntryGuard(source, guard), loader: 'js' };
+            });
+          } }] : [],
+        });
+        const result = execute([entry], root);
+        expect(result.error).toBeUndefined();
+        expect(result.status, result.stderr).toBe(rawGuard ? 2 : 0);
+        expect(result.stdout).toBe('');
+        if (rawGuard) expect(result.stderr).toContain('usage: verifier-source-preflight.mjs');
+        else expect(result.stderr).toBe('');
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each([false, true])('runs with plain Node in a source-only checkout (symlink=%s)', symlink => {
+    const root = mkdtempSync(join(tmpdir(), 'cli-entry-verifier-source-'));
+    try {
+      for (const path of [script, helper]) {
+        mkdirSync(dirname(join(root, path)), { recursive: true });
+        writeFileSync(join(root, path), readFileSync(join(REPO_ROOT, path)));
+      }
+      const entry = join(root, script);
+      const invoked = symlink ? join(root, 'verifier-link.mjs') : entry;
+      if (symlink) symlinkSync(entry, invoked);
+      const result = execute([invoked], root);
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(2);
+      expect(result.stderr).toContain('usage: verifier-source-preflight.mjs');
+      expect(result.stderr).not.toContain('ERR_MODULE_NOT_FOUND');
+      const imported = execute(['--input-type=module', '-e',
+        `const module = await import(${JSON.stringify(pathToFileURL(entry).href)}); console.log(JSON.stringify(module.TAURI_VERIFIER_INPUTS));`], root);
+      expect(imported.status, imported.stderr).toBe(0);
+      expect(JSON.parse(imported.stdout)).toContain(helper);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
 describe.each(MODULE_CLIS)('$path CLI entry', ({ path, failure }) => {
   const fixtureEnv = { PAPERCUSP_WORKSPACE_ID: '' };
 

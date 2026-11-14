@@ -224,7 +224,10 @@ describe('rubric re-score: crossing alert (R-8 falsifiers 1 and 2)', () => {
     await rescoreRubric({ rubricRef: RUBRIC, workspaceId: 'ws-test', harnessSlug: supplied }, deps);
     const [results, scope] = record.mock.calls[0] as unknown as [RubricCheckResult[], { workspaceId: string; harnessSlug: string | null }];
     if (expected) {
-      expect(resolvePlatform).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws-test', harnessSlug: expected }));
+      expect(resolvePlatform).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: 'ws-test', harnessSlug: expected }),
+        { workOverhead: expect.any(Function) },
+      );
       expect(results[0]).toMatchObject({ verdict: 'pass', check: { value: 100, unit: '%' } });
     } else {
       expect(resolvePlatform).not.toHaveBeenCalled();

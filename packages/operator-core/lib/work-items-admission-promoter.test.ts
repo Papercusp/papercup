@@ -23,6 +23,7 @@ import {
   type PromoterLlmResult,
   type PromoterPair,
 } from './work-items-admission-promoter';
+import { admissionFailOpenGuaranteedSec } from './work-items-admission';
 
 const queueHealth = (pending: number, sampleSize = 0, p95Ms: number | null = null) => ({
   pending,
@@ -880,5 +881,86 @@ describe('admission endpoint protection — terminal twins', () => {
     expect(result.batch.map((entry) => entry.id)).toEqual(['EI-10']);
     expect(result.prescreen.samples.filter((s) => s.class === 'deferred')).toEqual([]);
     expect(result.forcedHolds.has('EI-10')).toBe(false);
+  });
+
+  describe('twin deferral bound (EI-26674062169820422)', () => {
+    const now = Date.parse('2026-11-14T06:00:00Z');
+    const boundMs = admissionFailOpenGuaranteedSec() * 1000;
+    const pending = item('EI-10');
+    const twin = item('EI-4', { state: 'blocked' });
+    const other = item('EI-5');
+    // The measured shape: a parked (claim-held) twin that is ALSO blocked, so it can never
+    // qualify for the read-only agent-park comparison and its protection never lifts.
+    const twinSnapshot = snapshot('EI-4', { state: 'blocked', payload: { _claimHold: 'true' } });
+    const hold = (heldAtMs: number, overrides: Record<string, unknown> = {}) => ({
+      reason: 'deferred: twin EI-4 is claim-held; held until it can be judged',
+      runId: 'run-1',
+      actor: ADMISSION_REVIEW_RETRY_OWNER,
+      screeningDeferred: true,
+      heldAt: new Date(heldAtMs).toISOString(),
+      ...overrides,
+    });
+    const select = (admissionHold: unknown, opts: { nowMs?: number; withMovable?: boolean } = {}) =>
+      prescreenPromoterWindow({
+        window: [pending],
+        pairs: opts.withMovable
+          ? [pair(pending, twin, [pending.id]), pair(pending, other, [pending.id])]
+          : [pair(pending, twin, [pending.id])],
+        snapshots: new Map<string, AdmissionMergeSnapshot>([
+          ['EI-10', snapshot('EI-10', { admission: 'pending', kind: 'bug', payload: admissionHold ? { admissionHold } : {} })],
+          ['EI-4', twinSnapshot],
+          ['EI-5', snapshot('EI-5')],
+        ]),
+        batchSize: 5,
+        nowMs: 'nowMs' in opts ? opts.nowMs : now,
+      });
+
+    it('the measured twin is transiently (never permanently) protected', () => {
+      expect(admissionEndpointBlock(twinSnapshot, now)).toMatchObject({ permanent: false });
+    });
+
+    it('still defers a row with no deferral yet or one younger than the fail-open guarantee', () => {
+      for (const admissionHold of [null, hold(now - boundMs + 1_000)]) {
+        const result = select(admissionHold);
+        expect(result.batch).toEqual([]);
+        expect(result.deferredHolds.get('EI-10')).toMatch(/^deferred: twin EI-4 is [a-z-]+; held until it can be judged$/);
+        expect(result.prescreen.expiredDeferrals).toBe(0);
+        expect(result.prescreen.rotatedIds).toEqual(['EI-10']);
+      }
+    });
+
+    it('judges a row on its own merits once its deferral outlives the fail-open guarantee', () => {
+      const result = select(hold(now - boundMs));
+      expect(result.batch.map((entry) => entry.id)).toEqual(['EI-10']);
+      expect(result.deferredHolds.size).toBe(0);
+      expect(result.forcedHolds.size).toBe(0);
+      // The protected pair never reaches the model, so nothing is ever written to the twin.
+      expect(result.pairs).toEqual([]);
+      expect(result.prescreen).toMatchObject({ expiredDeferrals: 1, deferred: 0, forcedHolds: 0, rotatedIds: [] });
+      expect(result.prescreen.samples).toContainEqual(
+        expect.objectContaining({ itemId: 'EI-10', class: 'deferral-expired', blockedBy: 'EI-4' }),
+      );
+    });
+
+    it('drops the forced hold on a batched row whose deferral expired, keeping its movable pairs', () => {
+      expect(select(hold(now - boundMs + 1_000), { withMovable: true }).forcedHolds.has('EI-10')).toBe(true);
+      const result = select(hold(now - boundMs), { withMovable: true });
+      expect(result.batch.map((entry) => entry.id)).toEqual(['EI-10']);
+      expect(result.forcedHolds.size).toBe(0);
+      expect(result.pairs.map((entry) => [entry.a.id, entry.b.id].sort())).toEqual([['EI-10', 'EI-5']]);
+    });
+
+    it('counts only a promoter-written twin deferral, and never without a tick clock', () => {
+      const old = now - boundMs * 10;
+      for (const admissionHold of [
+        hold(old, { actor: 'su-someone' }),
+        hold(old, { screeningDeferred: false }),
+        hold(old, { reason: 'model hold: possible duplicate' }),
+        hold(old, { heldAt: 'not-a-date' }),
+      ]) {
+        expect(select(admissionHold).deferredHolds.has('EI-10')).toBe(true);
+      }
+      expect(select(hold(old), { nowMs: undefined }).deferredHolds.has('EI-10')).toBe(true);
+    });
   });
 });

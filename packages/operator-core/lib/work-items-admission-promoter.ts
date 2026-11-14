@@ -45,6 +45,7 @@ import { LEARNING_MODEL_SPEC } from './learning/model-policy';
 import { ALL_SUCCESSFUL_STATUSES, ALL_TERMINAL_STATUSES } from './work-item-blocking';
 import { isSufficientEvidence } from './work-item-completion-authority';
 import {
+  admissionFailOpenGuaranteedSec,
   DEFAULT_PROMOTER_TICK_MINUTES,
   failOpenDedupEligibleWhereSql,
   ownNodeAuthoredRemoteIds,
@@ -4226,7 +4227,28 @@ const PERMANENT_ENDPOINT_PROTECTIONS: ReadonlySet<AdmissionMergeGuardRefusal['re
   'terminal-canonical-without-completion',
 ]);
 
-export type PromoterPrescreenClass = 'self-blocked' | 'deferred' | 'unresolvable-pair' | 'protected-pair';
+export type PromoterPrescreenClass =
+  | 'self-blocked'
+  | 'deferred'
+  | 'unresolvable-pair'
+  | 'protected-pair'
+  | 'deferral-expired';
+
+/** The exact hold text a twin deferral writes; the persistence guard matches the same shape. */
+const TWIN_DEFERRAL_HOLD_RE = /^deferred: twin [^ ]+ is [a-z-]+; held until it can be judged$/;
+
+/**
+ * EI-26674062169820422 — when this row's CURRENT promoter-written twin deferral started, or null.
+ * `admissionHold.heldAt` is rewritten only when the hold reason changes, so for a row still
+ * deferred behind the same protected twin it is the first-deferral time.
+ */
+export function twinDeferralHeldSinceMs(snapshot: AdmissionMergeSnapshot | undefined): number | null {
+  const hold = recordValue(recordValue(snapshot?.payload).admissionHold);
+  if (hold.actor !== PROMOTER_ACTOR || hold.screeningDeferred !== true) return null;
+  if (typeof hold.reason !== 'string' || !TWIN_DEFERRAL_HOLD_RE.test(hold.reason)) return null;
+  const heldAtMs = typeof hold.heldAt === 'string' ? Date.parse(hold.heldAt) : Number.NaN;
+  return Number.isFinite(heldAtMs) ? heldAtMs : null;
+}
 
 export interface PromoterPrescreenSample {
   itemId: string;
@@ -4254,6 +4276,11 @@ export interface PromoterPrescreen {
   protectedPairs: number;
   /** Batch rows held without a promote because a transiently protected twin is unjudged. */
   forcedHolds: number;
+  /**
+   * Rows whose twin deferral outlived the fail-open guarantee: judged on their own merits
+   * instead of being held again behind a twin protection that never lifted.
+   */
+  expiredDeferrals: number;
   samples: PromoterPrescreenSample[];
   /**
    * Every examined row this tick left WITHOUT a verdict that advances its review watermark:
@@ -4501,7 +4528,22 @@ export function prescreenPromoterWindow(input: {
   nowMs?: number;
   /** Preserve authenticated requests' one turn until their component can be judged. */
   componentScreeningItemIds?: readonly string[];
+  /**
+   * EI-26674062169820422 — how long a row may stay deferred behind a transiently protected
+   * twin before that protection stops holding it. Defaults to the fail-open guarantee: the
+   * same wait an unheld pending row is promised, because the fail-open runner never admits a
+   * held row (a hold is a promoter verdict). Without this bound a twin whose protection never
+   * lifts (a parked, blocked claim-held row) kept its pending twin pending forever.
+   */
+  deferralBoundMs?: number;
 }): { batch: PromoterItem[]; pairs: PromoterPair[]; forcedHolds: Map<string, string>; deferredHolds: Map<string, string>; prescreen: PromoterPrescreen } {
+  const deferralBoundMs = input.deferralBoundMs ?? admissionFailOpenGuaranteedSec() * 1000;
+  const deferralExpired = (item: PromoterItem) => {
+    if (input.nowMs === undefined) return false;
+    const heldSinceMs = twinDeferralHeldSinceMs(input.snapshots.get(item.id));
+    return heldSinceMs !== null && input.nowMs - heldSinceMs >= deferralBoundMs;
+  };
+  let expiredDeferrals = 0;
   const samples: PromoterPrescreenSample[] = [];
   const sample = (entry: PromoterPrescreenSample) => {
     if (samples.length < PROMOTER_PRESCREEN_SAMPLE_CAP) samples.push(entry);
@@ -4558,7 +4600,9 @@ export function prescreenPromoterWindow(input: {
   for (const item of input.window) {
     if (selfBlocked.has(item.id)) continue;
     const itemPairs = pairsByItem.get(item.id) ?? [];
+    const expired = deferralExpired(item);
     let movable = 0;
+    let expiredTwin: { id: string; reason: AdmissionMergeGuardRefusal['reason'] } | null = null;
     let protectedTwin: { id: string; reason: AdmissionMergeGuardRefusal['reason'] } | null = null;
     for (const pair of itemPairs) {
       if (!blockedPairKeys.has(pair.pairKey)) {
@@ -4567,14 +4611,23 @@ export function prescreenPromoterWindow(input: {
       }
       const counterpart = pair.a.id === item.id ? pair.b : pair.a;
       const twinBlock = block(input.snapshots.get(counterpart.id));
-      if (twinBlock && !twinBlock.permanent && !protectedTwin) {
+      // An expired deferral ignores EVERY transient twin protection, not just the named one:
+      // re-deferring behind another twin would restart the clock and oscillate forever. The
+      // blocked pair stays out of the model call (pairs below) and the twin is never written.
+      if (twinBlock && !twinBlock.permanent && expired) {
+        expiredTwin ??= { id: counterpart.id, reason: twinBlock.reason };
+      } else if (twinBlock && !twinBlock.permanent && !protectedTwin) {
         protectedTwin = { id: counterpart.id, reason: twinBlock.reason };
       }
       if (twinBlock?.permanent) {
         sample({ itemId: item.id, class: 'unresolvable-pair', reason: twinBlock.reason, blockedBy: counterpart.id });
       }
     }
-    if (protectedTwin && (movable === 0 || input.componentScreeningItemIds?.includes(item.id))) {
+    if (expiredTwin) {
+      expiredDeferrals += 1;
+      sample({ itemId: item.id, class: 'deferral-expired', reason: expiredTwin.reason, blockedBy: expiredTwin.id });
+    }
+    if (protectedTwin &&(movable === 0 || input.componentScreeningItemIds?.includes(item.id))) {
       deferred += 1;
       deferredIds.add(item.id);
       deferredHolds.set(item.id, `deferred: twin ${protectedTwin.id} is ${protectedTwin.reason}; held until it can be judged`);
@@ -4622,6 +4675,7 @@ export function prescreenPromoterWindow(input: {
       unresolvablePairs,
       protectedPairs,
       forcedHolds: forcedHolds.size,
+      expiredDeferrals,
       samples,
       // None of these outcomes advances lastRetryAt (a forced hold is screeningDeferred), so
       // without the ledger the same rows would hold the window head on every tick.
