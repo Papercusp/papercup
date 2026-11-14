@@ -24,7 +24,7 @@ const controls = ['package-lock.json', 'apps/operator/bin/bundle-host-common.sh'
   'packages/operator-core/lib/retained-replay-sources.json'];
 // Build products are not a source universe. A selected input in one of these
 // trees is refused by the first onLoad plugin rather than silently admitted.
-const productDirs = new Set(['.git', '.papercusp', '.next', 'dist-host',
+const productDirs = new Set(['.git', '.papercusp', '.next', 'dist-host', 'dist-verify',
   'dist-sidecar', 'dist', 'build', 'out', 'coverage', 'target', 'sidecar', 'env-sidecars', '_retired', '.cache']);
 const stateDirs = new Set(['.git', '.papercusp', '.cache', '.next', '.turbo']);
 

@@ -4,7 +4,8 @@ import { copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSyn
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { prepareTestingCore, verifyTestingCoreReceipt } from '../../../scripts/lib/testing-core-witness.mjs';
+import { captureTestingCoreInputUniverse, prepareTestingCore, retainTestingCoreResolverMetadata, verifyTestingCoreReceipt } from '../../../scripts/lib/testing-core-witness.mjs';
+import { createCompilerInputCustody } from '../../../scripts/lib/compiler-input-custody.mjs';
 import { localEsbuildNpxPath } from './test-fixtures/local-esbuild-npx';
 
 const repoRoot = resolve(__dirname, '../../..');
@@ -186,27 +187,28 @@ describe('testing core producing-build witness', () => {
     expect(next.input.sources.map((row: {path: string}) => row.path)).not.toContain('.mcp.json');
   });
 
-  it('keeps verification archive dependency metadata outside compiler custody during hard-link churn', async () => {
+  it('keeps verification archive dependency metadata outside compiler custody during hard-link churn', () => {
     const f = fixture();
     const metadata = 'apps/operator/dist-verify/previous-build/node_modules/archive-only/package.json';
     f.put(metadata, '{"name":"archive-only"}');
-    const receipt = await prepareTestingCore({ ...f, phase: async (name: string, run: () => Promise<unknown>) => {
-      if (name === 'final') {
-        const alias = join(dirname(join(f.root, metadata)), 'linked-package.json');
-        linkSync(join(f.root, metadata), alias);
-        rmSync(alias);
-      }
-      return run();
-    } });
-    expect(receipt.input.sources.some((row: {path: string}) => row.path.includes('dist-verify'))).toBe(false);
-    expect(verifyTestingCoreReceipt(receipt, receipt.witness)).toEqual(receipt.witness);
+    const universe = captureTestingCoreInputUniverse(f.root, dirname(f.outfile));
+    const alias = join(dirname(join(f.root, metadata)), 'linked-package.json');
+    linkSync(join(f.root, metadata), alias);
+    rmSync(alias);
+    const retained = retainTestingCoreResolverMetadata(universe);
+    expect(retained.some((row: {path: string}) => row.path.includes('dist-verify'))).toBe(false);
+    expect(retained.some((row: {path: string}) => row.path === join(f.root, 'package.json'))).toBe(true);
   });
 
-  it('refuses a module imported from a verification archive before publishing output', async () => {
+  it('refuses a module input from a verification archive at the compiler custody boundary', () => {
     const f = fixture();
-    f.put('apps/operator/dist-verify/previous-build/core.ts', 'export const result = 99;');
-    f.put('core.ts', 'export {result} from "./apps/operator/dist-verify/previous-build/core";');
-    await expect(prepareTestingCore(f)).rejects.toThrow(/outside original census/);
+    const archived = 'apps/operator/dist-verify/previous-build/core.ts';
+    f.put(archived, 'export const result = 99;');
+    const universe = captureTestingCoreInputUniverse(f.root, dirname(f.outfile));
+    const custody = createCompilerInputCustody({ root: universe.domainRoot, files: universe.files,
+      discoverInputs: true, verifyBoundary: () => {} });
+    expect(custody.readToolchainInput(join(f.root, 'core.ts')).contents.toString()).toContain('42');
+    expect(() => custody.readToolchainInput(join(f.root, archived))).toThrow(/outside original census/);
     expect(existsSync(f.outfile)).toBe(false);
   });
 
