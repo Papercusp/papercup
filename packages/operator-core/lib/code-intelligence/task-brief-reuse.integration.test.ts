@@ -300,23 +300,6 @@ describe('P009 real taskBrief production adapter boundary', () => {
     }
   });
 
-  it('does not reset the hard deadline after base assembly and cancels slow ledger I/O without dropping base', async () => {
-    const deps = await fixture(), base = await buildTaskBrief(ref, deps);
-    vi.useFakeTimers();
-    const observe = vi.fn(), read = vi.fn(source('clones').read), record = vi.fn(async (_input: ReuseIssuedRecord, signal: AbortSignal) => {
-      await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve())); return false;
-    });
-    const options = { ...deps, reuse: { providers: [{ id: 'clones' as const, read }], adapters: { impact: append }, recordIssued: record } };
-    const expired = await enrichTaskBriefWithReuse(base, { ...ref, reuse: { owner: 'su', invocation: 'expired', observe } }, options, Date.now());
-    expect(expired).toBe(base); expect(read).not.toHaveBeenCalled();
-    const pending = enrichTaskBriefWithReuse(base, { ...ref, reuse: { owner: 'su', invocation: 'dispatch', observe } }, options, Date.now() + 500);
-    await vi.advanceTimersByTimeAsync(500);
-    const result = await pending;
-    expect(result.files).toEqual(base.files); expect(result.graph.relationships).toHaveLength(1);
-    expect(record.mock.calls[0]![1].aborted).toBe(true);
-    expect(observe.mock.calls.at(-1)![0].ledger).toBe('unknown');
-  });
-
   it('preserves the base without identity and retains each item in bulk invocation telemetry', async () => {
     const deps = await fixture(), base = await buildTaskBrief(ref, deps), emit = vi.fn();
     const missing = createReuseBriefIdentity('su', undefined, emit);

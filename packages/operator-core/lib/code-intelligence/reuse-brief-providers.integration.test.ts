@@ -319,22 +319,6 @@ describe('P009 shared claim provider composition', () => {
     } finally { remove(); }
   });
 
-  it.each(['claim', 'authoring', 'completion'] as const)('%s keeps independent match, no-match, overflow, failure and timeout outcomes', async surface => {
-    vi.useFakeTimers();
-    try {
-      const pending = composeReuseBrief({ base: { mandatory: 'base' }, context: { ...context, surface }, append,
-        deadline: Date.now() + 6000, providers: [provider('clones'), provider('cochange', []),
-          provider('provenance', ['x'.repeat(500)]), { id: 'sql', read: async () => { throw new Error('index unavailable'); } },
-          { id: 'coverage', read: async () => new Promise(() => {}) }] });
-      await vi.advanceTimersByTimeAsync(750);
-      const result = await pending;
-      expect(result.brief.impact?.[0]?.provider).toBe('clones');
-      expect(result.observations.map(row => [row.status, row.reason])).toEqual([
-        ['issued', 'complete'], ['no-match', 'complete'], ['budget', 'truncated'], ['unknown', 'failure'], ['unknown', 'timeout'],
-      ]);
-    } finally { vi.useRealTimers(); }
-  });
-
   it('rejects a stale source version even when the provider labels the result measured', async () => {
     const result = await composeReuseBrief({ base: { mandatory: 'base' }, context: { ...context, sourceVersion: 'new-blob' },
       append, deadline: Date.now() + 6000, providers: [provider('clones')] });

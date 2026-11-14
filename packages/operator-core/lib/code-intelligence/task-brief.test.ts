@@ -11,7 +11,8 @@ import type { CodeIntelAnswer } from './contracts';
 import { coChangeFromCommits, formatPriorWorkLine, type PriorWorkQuery, type PriorWorkReport } from './change-history';
 import { ENGINEERING_EVIDENCE_LIMITS, readEngineeringEvidence, type EngineeringEvidenceDeps } from './engineering-evidence';
 import { coverageHash, type TestCoverageSnapshot } from '@papercusp/test-config/test-coverage-map';
-import { decodeClaimReuseContribution } from './reuse-brief-providers';
+import { decodeClaimReuseContribution, encodeClaimReuseContribution, type ReuseProviderContext } from './reuse-brief-providers';
+import type { ReuseIssuedRecord } from './reuse-brief-ledger';
 import { toolsetFromNames } from './push-toolset';
 import { firstPartyCallersOffthread } from './first-party-callers-offthread';
 import type { queryPushSnapshot } from './push-snapshot';
@@ -424,6 +425,39 @@ function depsFor(root: string): TaskBriefDeps {
     toolset: vi.fn(async () => toolsetFromNames(RECOVERY_TOOLS)),
   };
 }
+describe('task brief reuse deadline', () => {
+  it('does not reset the hard deadline after base assembly and cancels slow ledger I/O without dropping base', async () => {
+    const root = fixture();
+    writeFileSync(join(root, 'target.ts'), 'export const target = 1;');
+    const deps = depsFor(root);
+    const ref = { workspaceId: 'fixture-workspace', workItem: { id: 'WI-target', harness: 'fixture-harness',
+      sourcePlanSlug: 'fixture-plan', sourcePlanItemIds: ['P-009'], payload: { paths: ['target.ts'] } } };
+    const base = await buildTaskBrief(ref, deps);
+    vi.useFakeTimers();
+    try {
+      const observe = vi.fn();
+      const read = vi.fn(async (context: ReuseProviderContext) => ({ status: 'measured' as const,
+        lines: ['clones target.ts:1; bounded static evidence only'], sourceVersion: context.sourceVersion,
+        indexVersion: 'index-clones', citedPaths: ['target.ts'] }));
+      const record = vi.fn(async (_input: ReuseIssuedRecord, signal: AbortSignal) => {
+        await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve())); return false;
+      });
+      const options: TaskBriefDeps = { ...deps, reuse: { providers: [{ id: 'clones', read }],
+        adapters: { impact: (brief, value) => ({ ...brief,
+          graph: { ...brief.graph, relationships: [...brief.graph.relationships, encodeClaimReuseContribution(brief, value)] } }) },
+        recordIssued: record } };
+      const expired = await enrichTaskBriefWithReuse(base, { ...ref, reuse: { owner: 'su', invocation: 'expired', observe } }, options, Date.now());
+      expect(expired).toBe(base); expect(read).not.toHaveBeenCalled();
+      const pending = enrichTaskBriefWithReuse(base, { ...ref, reuse: { owner: 'su', invocation: 'dispatch', observe } }, options, Date.now() + 500);
+      await vi.advanceTimersByTimeAsync(500);
+      const result = await pending;
+      expect(result.files).toEqual(base.files); expect(result.graph.relationships).toHaveLength(1);
+      expect(record.mock.calls[0]![1].aborted).toBe(true);
+      expect(observe.mock.calls.at(-1)![0].ledger).toBe('unknown');
+    } finally { vi.useRealTimers(); }
+  });
+});
+
 describe('native engineering evidence task context', () => {
   function engineeringFixture(patch: Partial<EngineeringEvidenceDeps> = {}) {
     const deps: EngineeringEvidenceDeps = {
