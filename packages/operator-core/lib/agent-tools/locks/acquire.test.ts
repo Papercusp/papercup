@@ -389,18 +389,19 @@ describe('locks:acquire — outcome branches', () => {
     }
   });
 
-  it.each(['edit submodule', 'PreToolUse:apply_patch'])(
-    'rejects a superproject alias before creating a second submodule lock (%s)',
-    async (intent) => {
+  it.each(['canonical', 'managed-clone'].flatMap(location =>
+    ['edit submodule', 'PreToolUse:apply_patch'].map(intent => ({ location, intent }))))(
+    'rejects a superproject alias before creating a second submodule lock ($location, $intent)',
+    async ({ location, intent }) => {
       const workspace = mkdtempSync(join(tmpdir(), 'locks-acquire-submodule-'));
-      const root = join(workspace, 'papercusp');
+      const root = join(workspace, location === 'canonical' ? 'papercusp' : 'clones/oddsmith');
       const submodule = join(root, 'libs', 'test-config');
       const previousCanonicalTree = process.env.PAPERCUSP_CANONICAL_TREE;
       mkdirSync(join(root, '.git'), { recursive: true });
       writeFileSync(join(root, '.git', 'HEAD'), 'ref: refs/heads/staging\n');
       mkdirSync(join(submodule, 'src'), { recursive: true });
       writeFileSync(join(submodule, '.git'), 'gitdir: ../../.git/modules/test-config\n');
-      process.env.PAPERCUSP_CANONICAL_TREE = root;
+      process.env.PAPERCUSP_CANONICAL_TREE = join(workspace, 'papercusp');
       routeM.mockResolvedValue({
         value: { ok: true, lock_id: 'L-submodule', expires_ts: new Date('2026-02-01T00:00:00Z'), held: ['src/new.test.ts'] },
         via: 'local-authority',

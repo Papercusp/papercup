@@ -355,8 +355,8 @@ export async function preserveEditGeneration(
   // Git output can contain protected source and must stay out of errors.
   const runGit: RunGit = (args, cwd, options) => executeGit(args, cwd, {
     ...options,
-    diagnosticTags: options?.diagnosticTags ?? {
-      runId: input.dispatchCallId, commandClass: 'git',
+    diagnosticTags: {
+      runId: input.dispatchCallId, commandClass: 'git', ...options?.diagnosticTags,
     },
   });
   const request = { requestId: input.dispatchCallId, generation: 1, paths: input.files };
@@ -750,7 +750,7 @@ export async function preserveReleasedEditGenerations(
   }
   const coordinates = new Map(rows.map(row => {
     const identity = isAbsolute(input.repoRoot)
-      ? managedRepositoryPathToLockIdentity(join(input.repoRoot, row.path)) : undefined;
+      ? managedRepositoryPathToLockIdentity(join(input.repoRoot, row.path), input.repoRoot) : undefined;
     return [row.path, { repoRoot: identity?.coordinationDomain ?? input.repoRoot,
       path: identity?.path ?? row.path }];
   }));

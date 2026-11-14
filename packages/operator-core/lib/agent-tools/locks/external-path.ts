@@ -171,8 +171,14 @@ function isManagedRepositoryRoot(repoRoot: string): boolean {
 /**
  * Resolve an absolute path to the repository-domain identity used by hooks.
  * Returns undefined for an ordinary home/runtime file or an unmanaged repo.
+ * Acquire/release may supply their already-validated repository root to resolve
+ * nested repositories in a managed harness clone. This context only narrows an
+ * existing repository operation; external_paths never supplies it as authority.
  */
-export function managedRepositoryPathToLockIdentity(input: string): ExternalLockPathIdentity | undefined {
+export function managedRepositoryPathToLockIdentity(
+  input: string,
+  authorizedRepositoryRoot?: string,
+): ExternalLockPathIdentity | undefined {
   if (!isAbsolute(input)) {
     throw new Error(`external path must be absolute (received ${JSON.stringify(input)})`);
   }
@@ -180,7 +186,12 @@ export function managedRepositoryPathToLockIdentity(input: string): ExternalLock
 
   const absolute = physicalPath(input);
   const repoRoot = findRepoRoot(absolute);
-  if (!repoRoot || !isManagedRepositoryRoot(repoRoot)) return undefined;
+  if (!repoRoot) return undefined;
+  const authorizedRoot = authorizedRepositoryRoot && isAbsolute(authorizedRepositoryRoot)
+    ? physicalPath(authorizedRepositoryRoot) : undefined;
+  const withinAuthorizedRepository = authorizedRoot !== undefined && hasValidGitEntry(authorizedRoot) &&
+    pathIsWithin(repoRoot, authorizedRoot) && pathIsWithin(absolute, authorizedRoot);
+  if (!withinAuthorizedRepository && !isManagedRepositoryRoot(repoRoot)) return undefined;
 
   const repoRelative = relative(repoRoot, absolute);
   if (!repoRelative || repoRelative === '..' || repoRelative.startsWith(`..${sep}`) || isAbsolute(repoRelative)) {

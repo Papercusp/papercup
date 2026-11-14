@@ -11,6 +11,7 @@
   "workspaces": [
     "apps/*",
     "!apps/*-checkpoint",
+    "!apps/slack-asana-bug-drill",
     "packages/*",
     "libs/agent-chat",
     "libs/generic/card-stack",

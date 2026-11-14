@@ -3,8 +3,8 @@
 // scripts/lib/compiler-input-custody.mjs and regenerate.
 /** @param {{ root: string, files: Map<string, {kind: string, sha256?: string}>,
  * label?: string, verifyBoundary: () => void, retainBuffers?: boolean, discoverInputs?: boolean,
- * verifyReadOnly?: boolean }} input */
-export function createCompilerInputCustody({ root, files, label, verifyBoundary, retainBuffers, discoverInputs, verifyReadOnly }: {
+ * verifyReadOnly?: boolean, syntheticDirectories?: string[] }} input */
+export function createCompilerInputCustody({ root, files, label, verifyBoundary, retainBuffers, discoverInputs, verifyReadOnly, syntheticDirectories }: {
     root: string;
     files: Map<string, {
         kind: string;
@@ -15,6 +15,7 @@ export function createCompilerInputCustody({ root, files, label, verifyBoundary,
     retainBuffers?: boolean;
     discoverInputs?: boolean;
     verifyReadOnly?: boolean;
+    syntheticDirectories?: string[];
 }): {
     plugin: {
         name: string;

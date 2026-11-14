@@ -6,6 +6,7 @@ import {
   externalHomePathToLockKey,
   externalPathToLockKey,
   EXTERNAL_RUNTIME_LOCK_PREFIX,
+  managedRepositoryPathToLockIdentity,
   resolveExternalPathLockIdentity,
 } from './external-path';
 
@@ -77,6 +78,22 @@ describe('resolveExternalPathLockIdentity', () => {
       home: '/home/jdoe',
       runtimeDir: null,
     })).toEqual({ path: '@external/home/.config/mimeapps.list' });
+  });
+
+  it('does not grant external repository identity to an unrelated checkout outside the managed roots', () => {
+    const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'lock-unmanaged-repo-')));
+    cleanup.push(fixture);
+    process.env.PAPERCUSP_CANONICAL_TREE = join(fixture, 'canonical');
+    process.env.PAPERCUSP_WORKSPACES_ROOT = join(fixture, 'workspaces');
+    const repo = join(fixture, 'unrelated');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    writeFileSync(join(repo, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    const target = join(repo, 'source.ts');
+    writeFileSync(target, 'export {};\n');
+    expect(managedRepositoryPathToLockIdentity(target, join(fixture, 'workspaces'))).toBeUndefined();
+    expect(() => resolveExternalPathLockIdentity(target, {
+      home: join(fixture, 'home'), runtimeDir: null,
+    })).toThrow(/below/);
   });
 
   it('coordinates a physical offloaded file with its proven HOME alias, including a new lock-file leaf', () => {

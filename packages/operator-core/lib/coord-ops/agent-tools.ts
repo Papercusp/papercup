@@ -18,8 +18,15 @@
  * (coord-program-workflow.ts), used by the event-rule trigger.
  */
 import { defineTool } from '@papercusp/agent-mcp';
+import { z } from 'zod';
+import { getOrgPg } from '@papercusp/db-org';
 import { resolveAgentIdentity } from '../agent-tools/coordination/identity.js';
 import { COORD_ROLES } from '../agent-tools/coordination/roles.js';
+import { resolveAdoptedName } from '../plan-items/agent-names.js';
+import { canonicalHiveHomeSlug } from '../hive-federation.js';
+import { getEffectiveBlueprint } from '../blueprint/project-to-pg.js';
+import { checkAgainstJsonSchema } from '../json-schema-validation.js';
+import { isHarnessOpProxy } from '../harness-ops/proxy.js';
 import { requireCoordOp } from './registry.js';
 import { askArgs } from './ops/compose.js';
 
@@ -54,6 +61,53 @@ function ctxFor(opCtxArgs: { rawCtx: unknown; harness?: string }): CoordOpCtx {
     callerId: identity.ownerId,
   });
 }
+
+// The installed app manifest owns the domain schemas. Resolve it at call time:
+// its proxy need not exist while the operator's tool catalog boots.
+defineTool({
+  name: 'oddsmith:analyze',
+  description: 'Produce a PAPER research proposal through the installed Oddsmith analysis worker. Returns the declared AnalysisResult; never orders or policy changes.',
+  guidance: {
+    when: 'The installed oddsmith-analyst needs to analyze its pinned plan input. Pass the original AnalysisInput as input; the installed manifest validates it strictly.',
+    notWhen: 'Trading, capital or policy mutation; another role, agent, workspace or pot. Use only the installed analysis plan.',
+  },
+  capability: 'coord:write',
+  requirePrincipal: false,
+  agentRoles: ['oddsmith-analyst'],
+  args: z.object({ input: z.record(z.string(), z.unknown()) }).strict(),
+  async handler(args, ctx) {
+    ctx.signal?.throwIfAborted();
+    const identity = resolveAgentIdentity(ctx);
+    const workspaceId = identity.workspaceId;
+    const callerHarness = harnessFromCtx(ctx);
+    if (!workspaceId || workspaceId === 'default' || !callerHarness || ctx.role !== 'oddsmith-analyst') {
+      throw new Error('Oddsmith analysis requires its installed host identity');
+    }
+    const callerHome = await canonicalHiveHomeSlug(workspaceId, callerHarness);
+    const appHome = await canonicalHiveHomeSlug(workspaceId, 'oddsmith');
+    const name = await resolveAdoptedName(workspaceId, identity.ownerId);
+    if (callerHome !== 'oddsmith-hive' || appHome !== callerHome || name !== 'oddsmith-analyst') {
+      throw new Error('Oddsmith analysis requires the pinned oddsmith-analyst in oddsmith-hive');
+    }
+    const blueprint = await getEffectiveBlueprint(getOrgPg().sql, { workspaceId, harnessSlug: 'oddsmith' });
+    const manifest = blueprint?.ops?.find(op => op.name === 'oddsmith:analyze');
+    if (manifest?.argsSchema?.additionalProperties !== false || manifest.resultSchema?.additionalProperties !== false) {
+      throw new Error('Oddsmith analysis requires installed strict input and result schemas');
+    }
+    const inputCheck = checkAgainstJsonSchema(manifest.argsSchema, args.input);
+    if (!inputCheck.ok) throw new Error(`Invalid PAPER analysis input: ${inputCheck.errors.join('; ')}`);
+    const op = requireCoordOp('oddsmith:analyze');
+    if (!isHarnessOpProxy(op)) throw new Error('Oddsmith analysis requires the installed harness proxy');
+    ctx.signal?.throwIfAborted();
+    const result = await op.run(op.argsSchema.parse(args.input), buildCoordOpCtx({
+      identity: { ownerId: identity.ownerId, ownerLabel: identity.ownerLabel },
+      workspaceId, harnessSlug: 'oddsmith', callerId: identity.ownerId,
+    }));
+    const resultCheck = checkAgainstJsonSchema(manifest.resultSchema, result);
+    if (!resultCheck.ok) throw new Error(`Invalid PAPER analysis result: ${resultCheck.errors.join('; ')}`);
+    return jsonText(result);
+  },
+});
 
 // ── coord:vote ──────────────────────────────────────────────────────────────
 const voteOp = requireCoordOp('coord:vote');

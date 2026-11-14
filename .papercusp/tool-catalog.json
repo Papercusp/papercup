@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 996,
+  "count": 997,
   "tools": [
     {
       "name": "ablation:report",
@@ -19942,6 +19942,26 @@
         "when": "The owner asks to post an announcement or alert to their connected Discord channel.",
         "notWhen": "Not for replying in a chat thread (chat:reply) or social posts (social:post).",
         "chaining": "Reuse the same idempotencyKey when repeating an ambiguous send. Report the returned url."
+      }
+    },
+    {
+      "name": "oddsmith:analyze",
+      "http": {
+        "path": "/api/agent-tools/oddsmith/analyze",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Produce a PAPER research proposal through the installed Oddsmith analysis worker. Returns the declared AnalysisResult; never orders or policy changes.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "oddsmith-analyst"
+      ],
+      "guidance": {
+        "when": "The installed oddsmith-analyst needs to analyze its pinned plan input. Pass the original AnalysisInput as input; the installed manifest validates it strictly.",
+        "notWhen": "Trading, capital or policy mutation; another role, agent, workspace or pot. Use only the installed analysis plan."
       }
     },
     {

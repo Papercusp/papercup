@@ -318,7 +318,7 @@ export default defineTool({
       if (isAbsolute(coordinationDomain)) {
         for (const path of paths) {
           if (isExternalLockKey(path)) continue;
-          const identity = managedRepositoryPathToLockIdentity(join(coordinationDomain, path));
+          const identity = managedRepositoryPathToLockIdentity(join(coordinationDomain, path), coordinationDomain);
           if (identity?.coordinationDomain && identity.coordinationDomain !== coordinationDomain) {
             return errorResult(
               `path ${JSON.stringify(path)} belongs to repository ${JSON.stringify(identity.coordinationDomain)}, ` +

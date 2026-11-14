@@ -44,10 +44,11 @@ function fixture(parent?: string) {
 }
 
 describe('preserveEditGeneration', () => {
-  it('fences nested repository aliases before capture, retains lease provenance and replays immutable child bytes', async () => {
+  it.each(['canonical', 'managed-clone'])(
+    'fences nested repository aliases before capture, retains lease provenance and replays immutable child bytes (%s)', async (location) => {
     const parent = fixture();
     const child = fixture(parent.repo);
-    vi.stubEnv('PAPERCUSP_CANONICAL_TREE', parent.repo);
+    vi.stubEnv('PAPERCUSP_CANONICAL_TREE', location === 'canonical' ? parent.repo : join(parent.repo, 'missing-canonical'));
     parent.git('add', 'child');
     parent.git('commit', '-m', 'nested repository');
     writeFileSync(join(parent.repo, 'a.txt'), 'parent A1\n');
@@ -83,10 +84,11 @@ describe('preserveEditGeneration', () => {
     expect(readFileSync(join(child.repo, 'a.txt'), 'utf8')).toBe('successor B1\n');
   });
 
-  it('refuses nested alias capture without a transaction fence or when the canonical child is held', async () => {
+  it.each(['canonical', 'managed-clone'])(
+    'refuses nested alias capture without a transaction fence or when the canonical child is held (%s)', async (location) => {
     const parent = fixture();
     const child = fixture(parent.repo);
-    vi.stubEnv('PAPERCUSP_CANONICAL_TREE', parent.repo);
+    vi.stubEnv('PAPERCUSP_CANONICAL_TREE', location === 'canonical' ? parent.repo : join(parent.repo, 'missing-canonical'));
     const rows = [{ path: 'child/a.txt', lock_id: 'parent-lease', goal_ref: null,
       intent: 'original edit', acquired_ts: new Date('2026-06-01T12:00:00Z') }];
     const preserve = vi.fn();
@@ -142,8 +144,9 @@ describe('preserveEditGeneration', () => {
     expect(stage).toBeDefined();
     expect(stage![2]?.env?.GIT_INDEX_FILE).toBeDefined();
     expect(stage![2]?.env?.GIT_INDEX_FILE).not.toBe(join(f.repo, '.git/index'));
+    expect(stage![2]?.diagnosticTags).toMatchObject({ callsite: 'private-index-candidate' });
     for (const [, , options] of git.mock.calls) {
-      expect(options?.diagnosticTags).toEqual({
+      expect(options?.diagnosticTags).toMatchObject({
         runId: f.input.dispatchCallId, commandClass: 'git',
       });
     }
