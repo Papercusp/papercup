@@ -4,7 +4,7 @@
  * detector implementation, an expired entry, or a throwing detector must never be
  * served a memoised verdict.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONTENT_DETECTORS, type ContentDetector } from '../../content-lint/registry';
 import type { RunGit } from './run-git-sync';
 import { createContentVerdictCache, detectContentOffenders, sharedContentVerdictCache } from './content-guard';
@@ -13,7 +13,7 @@ const runGit = (async () => ({ code: 0, stdout: ' M docs/a.mdx\0', stderr: '' })
 
 function countingDetector(
   verdict: (text: string) => string | null,
-  opts: { cacheable?: boolean } = {},
+  opts: { cacheable?: boolean; epoch?: (file: string) => string | Promise<string> } = {},
 ): ContentDetector & { calls: () => number } {
   let calls = 0;
   return {
@@ -21,6 +21,7 @@ function countingDetector(
     glob: '**/*.mdx',
     fixerRole: 'content-fixer',
     ...(opts.cacheable === false ? {} : { verdictCacheable: true as const }),
+    ...(opts.epoch ? { verdictCacheEpoch: opts.epoch } : {}),
     matches: (f) => f.endsWith('.mdx'),
     detect: (_f, text) => {
       calls++;
@@ -142,6 +143,65 @@ describe('content-guard verdict memo (WI-6554700010048235)', () => {
     for (const key of ['secrets', 'identity-leak']) {
       expect(DEFAULT_CONTENT_DETECTORS.find((d) => d.key === key)?.verdictCacheable).toBeUndefined();
     }
+    // …so only the one whose state is fingerprinted per file is memoised, via an epoch.
+    const epochKeyed = DEFAULT_CONTENT_DETECTORS.filter((d) => d.verdictCacheEpoch).map((d) => d.key);
+    expect(epochKeyed).toEqual(['secrets']);
+  });
+
+  it('memoises an epoch-keyed detector while its epoch holds and re-runs when it changes', async () => {
+    const cache = createContentVerdictCache();
+    let exempt = false;
+    // The secrets shape: the verdict reads runtime exemptions, fingerprinted per file.
+    const det = countingDetector(() => (exempt ? null : 'credential-shaped'), {
+      cacheable: false,
+      epoch: () => (exempt ? 'exempt' : 'scanned'),
+    });
+    expect((await run(det, () => 'same', cache)).map((o) => o.error)).toEqual(['credential-shaped']);
+    expect((await run(det, () => 'same', cache)).map((o) => o.error)).toEqual(['credential-shaped']);
+    expect(det.calls()).toBe(1);
+    exempt = true; // an exemption added for this file is a new key, never a stale hit
+    expect(await run(det, () => 'same', cache)).toEqual([]);
+    expect(det.calls()).toBe(2);
+    exempt = false; // and removing it again replays the original memoised verdict
+    expect((await run(det, () => 'same', cache)).map((o) => o.error)).toEqual(['credential-shaped']);
+    expect(det.calls()).toBe(2);
+  });
+
+  it('never memoises when the epoch throws (re-runs against unknown state)', async () => {
+    const cache = createContentVerdictCache();
+    const det = countingDetector(() => 'credential-shaped', {
+      cacheable: false,
+      epoch: () => {
+        throw new Error('exemptions unavailable');
+      },
+    });
+    expect((await run(det, () => 'same', cache)).map((o) => o.error)).toEqual(['credential-shaped']);
+    expect((await run(det, () => 'same', cache)).map((o) => o.error)).toEqual(['credential-shaped']);
+    expect(det.calls()).toBe(2);
+  });
+
+  it('reports memo hits in the slow-pass diagnostic so a live pass shows whether the cache worked', async () => {
+    const cache = createContentVerdictCache();
+    const det = countingDetector(() => null);
+    const pass = async () => {
+      let clockMs = 0;
+      const log = vi.fn();
+      await detectContentOffenders({
+        runGit,
+        repoPath: '/repo',
+        readText: async () => 'ok',
+        detectors: [det],
+        verdictCache: cache,
+        log,
+        clock: () => (clockMs += 5_000),
+      });
+      const line = log.mock.calls.map(([m]) => String(m)).find((m) => m.startsWith('[git-sync:content-guard] '));
+      return JSON.parse(line!.slice('[git-sync:content-guard] '.length));
+    };
+    expect((await pass()).verdictCacheHits).toBe(0);
+    const warm = await pass();
+    expect(warm.verdictCacheHits).toBe(1);
+    expect(warm.perDetector).toEqual([expect.objectContaining({ key: 'mdx', detectCalls: 0 })]);
   });
 
   it('production shares one process-wide memo across fires', () => {

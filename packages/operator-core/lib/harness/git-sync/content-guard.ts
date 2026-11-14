@@ -123,14 +123,46 @@ export function sharedContentVerdictCache(): ContentVerdictCache {
  * `key`, so two implementations sharing a key (a test stub beside the real detector)
  * can never read each other's verdicts.
  */
-export function contentVerdictCacheKey(repoPath: string, file: string, detector: ContentDetector, textHash: string): string {
+export function contentVerdictCacheKey(
+  repoPath: string,
+  file: string,
+  detector: ContentDetector,
+  textHash: string,
+  epoch?: string,
+): string {
   const s = contentVerdictCacheState;
   let id = s.detectIds.get(detector.detect);
   if (id === undefined) {
     id = s.nextDetectId++;
     s.detectIds.set(detector.detect, id);
   }
-  return `${repoPath}\0${file}\0${detector.key}#${id}\0${textHash}`;
+  const base = `${repoPath}\0${file}\0${detector.key}#${id}\0${textHash}`;
+  // The detector's runtime-state fingerprint (ContentDetector.verdictCacheEpoch): a
+  // change to that state is a different key, never a stale hit.
+  return epoch === undefined ? base : `${base}\0${epoch}`;
+}
+
+/**
+ * The memo key for one (file, detector) on this fire, or `null` when the verdict must
+ * not be memoised: no memo, a detector that neither is pure nor declares an epoch, or
+ * an epoch that threw (fail open: re-run, never cache against unknown state).
+ */
+async function verdictMemoKey(
+  verdictCache: ContentVerdictCache | null,
+  repoPath: string,
+  file: string,
+  detector: ContentDetector,
+  textHash: string,
+): Promise<string | null> {
+  if (!verdictCache) return null;
+  if (detector.verdictCacheEpoch) {
+    try {
+      return contentVerdictCacheKey(repoPath, file, detector, textHash, await detector.verdictCacheEpoch(file));
+    } catch {
+      return null;
+    }
+  }
+  return detector.verdictCacheable ? contentVerdictCacheKey(repoPath, file, detector, textHash) : null;
 }
 
 /** Stable detector-result token shared by the guard and action-layer revalidation. */
@@ -346,6 +378,7 @@ export async function detectContentOffenders(deps: ContentGuardDeps): Promise<Co
       readErrorCount: metrics.readErrorCount,
       detectorCalls: metrics.detectorCalls,
       detectorMs: Math.round(metrics.detectorMs),
+      verdictCacheHits: metrics.verdictCacheHits,
       offenderCount: metrics.offenderCount,
       perDetector: Array.from(perDetector.values())
         .sort((a, b) => a.key.localeCompare(b.key))
@@ -479,11 +512,11 @@ export async function detectContentOffenders(deps: ContentGuardDeps): Promise<Co
       };
       try {
         textHash ??= contentSnapshotHash(text);
-        // Only a detector that declares itself a pure function of (file, text) is memoised;
-        // one that reads runtime state outside its key (secrets exemptions, repo context)
-        // always re-runs, so a memo can never outlive the state its verdict came from.
-        const cacheKey =
-          verdictCache && d.verdictCacheable ? contentVerdictCacheKey(repoPath, file, d, textHash) : null;
+        // Only a detector that is a pure function of (file, text), or that fingerprints the
+        // runtime state it reads (secrets exemptions), is memoised; one that reads
+        // unfingerprinted state (identity-leak's repo context) always re-runs, so a memo
+        // can never outlive the state its verdict came from.
+        const cacheKey = await verdictMemoKey(verdictCache, repoPath, file, d, textHash);
         const memo = cacheKey ? verdictCache!.get(cacheKey) : undefined;
         let error: string | null;
         if (memo !== undefined) {

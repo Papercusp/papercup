@@ -28,6 +28,7 @@ import {
 import {
   findCommitBlockingSecretsSliced,
   describeCommitBlockingSecrets,
+  isCommitScanExempt,
   cachedExemptionLoader,
   defaultExemptionLoader,
   type ExemptionLoader,
@@ -116,12 +117,24 @@ export interface ContentDetector {
    * WI-6554700010048235: `true` declares `detect` a PURE function of `(file, text)` — no
    * repo files, database rows, env or clock — so the git-sync content guard may memoise
    * its verdict per blob and skip re-running it over an unchanged dirty backlog on every
-   * fire. Omit it for any detector that reads state outside its arguments: `secrets`
-   * consults runtime path exemptions, `identity-leak` reads repo context, and a memoised
-   * verdict there could outlive the state it was computed from. A detector that THROWS
-   * is never memoised whatever this says, so an unavailable tool keeps failing open.
+   * fire. Omit it for any detector that reads state outside its arguments (`identity-leak`
+   * reads repo context), because a memoised verdict there could outlive the state it was
+   * computed from — unless that state can be fingerprinted, see {@link verdictCacheEpoch}.
+   * A detector that THROWS is never memoised whatever this says, so an unavailable tool
+   * keeps failing open.
    */
   verdictCacheable?: true;
+  /**
+   * WI-6554700010048235: for a detector whose verdict ALSO depends on runtime state, a
+   * fingerprint of exactly the part of that state this file's verdict reads. Declaring it
+   * makes the detector memoisable with the fingerprint folded into the memo key, so a
+   * change to that state is a new key rather than a stale hit. It must be cheap (it runs
+   * on every fire, cached or not) and must cover EVERY input outside `(file, text)`;
+   * an epoch that throws disables the memo for that file on that fire. `secrets` reads
+   * the runtime exemptions only through one per-file "is this path exempt" boolean, so
+   * that boolean is its whole epoch — and it was 86% of a live slow pass's detector time.
+   */
+  verdictCacheEpoch?: (file: string) => string | Promise<string>;
 }
 
 /** Shared exclusions — retired trees, vendored code, build output (mirror the lint scripts).
@@ -618,6 +631,11 @@ export const secretsDetector: ContentDetector = {
     if (findings.length === 0) return null;
     return describeCommitBlockingSecrets(file, findings);
   },
+  // The runtime exemptions reach the verdict ONLY through this boolean; the scan itself
+  // is a pure function of (file, text). Keying the memo on it lets an unchanged dirty
+  // backlog skip the dominant detector cost while an exemption change still re-scans.
+  verdictCacheEpoch: async (file) =>
+    isCommitScanExempt(file, await loadContentLintExemptions()) ? 'exempt' : 'scanned',
   // The same role the other detectors dispatch to. The remedy for the overwhelming
   // majority case — a credential STAND-IN in a test — is a rename to a low-entropy
   // role-named constant, which is ordinary content-fixer work, and the error string

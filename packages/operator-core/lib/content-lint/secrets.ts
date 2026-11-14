@@ -89,8 +89,15 @@ export async function findCommitBlockingSecretsSliced(
   return scanTextForSecretsSliced(file, text, maybeYield);
 }
 
-/** The static fixture set plus the runtime exemption rows: one rule for both scanners. */
-function isCommitScanExempt(file: string, exemptions: ReadonlySet<string>): boolean {
+/**
+ * The static fixture set plus the runtime exemption rows: one rule for both scanners.
+ *
+ * Exported because it is the ONLY way the runtime exemptions reach a commit verdict:
+ * an exempt file scans to `[]`, any other file to the pure `scanTextForSecretsSliced`
+ * result. The git-sync verdict memo keys the secrets verdict on this one boolean
+ * (WI-6554700010048235), so an exemption added or removed for a file is a new key.
+ */
+export function isCommitScanExempt(file: string, exemptions: ReadonlySet<string>): boolean {
   return isGeneratedNativeFixturePath(file) || isFixtureFile(file) || isPathExempt(exemptions, file);
 }
 
