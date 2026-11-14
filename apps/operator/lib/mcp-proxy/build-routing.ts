@@ -120,6 +120,10 @@ type JsonRecord = Record<string, unknown>;
  * is answered `staging_unavailable`; it never silently runs on the release build.
  */
 export const CURRENT_BUILD_DEFAULT_TOOLS: readonly string[] = [
+  // Generic discovery and invocation must advertise and execute one generation.
+  // A mixed catalog's legacy wrapper cannot validate a current nested target.
+  "tools:find",
+  "tools:invoke",
   "release:repair-queue",
   "release:test-downgrade",
   // Consult delivery/recovery must share the current request and reply contract.
@@ -201,13 +205,14 @@ export function currentBuildDefaultTool(params: JsonRecord): string | null {
   if (typeof params.name !== "string") return null;
   let target = normalizeMcpName(params.name);
   let args = decodeArguments(params.arguments);
+  const wrapper = target === TOOLS_INVOKE_NAME ? target : null;
   if (target === TOOLS_INVOKE_NAME) {
-    if (!args || typeof args.name !== "string") return null;
+    if (!args || typeof args.name !== "string") return wrapper;
     target = normalizeMcpName(args.name);
     args = decodeArguments(args.args);
   }
-  if (target === CODE_RUN_NAME) return currentBuildDefaultToolInScript(args?.script);
-  return CURRENT_BUILD_DEFAULT_LOOKUP.has(target) ? target : null;
+  if (target === CODE_RUN_NAME) return currentBuildDefaultToolInScript(args?.script) ?? wrapper;
+  return CURRENT_BUILD_DEFAULT_LOOKUP.has(target) ? target : wrapper;
 }
 
 function isRecord(value: unknown): value is JsonRecord {

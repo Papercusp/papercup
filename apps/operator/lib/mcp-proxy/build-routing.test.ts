@@ -340,6 +340,7 @@ describe("MCP proxy build routing (end to end)", () => {
 describe("current-build defaults for release repair-plane tools", () => {
   it("enumerates the full repair-plane set", () => {
     expect(CURRENT_BUILD_DEFAULT_TOOLS).toEqual([
+      "tools:find", "tools:invoke",
       "release:repair-queue", "release:test-downgrade",
       "consult:get_feedback", "consult:reply", "consult:decline", "consult:close", "consult:routing-health",
       "locks:release",
@@ -369,6 +370,8 @@ describe("current-build defaults for release repair-plane tools", () => {
           inputSchema: { type: "object", properties: { native_edit_proof: { properties: {} } } },
         },
         { name: "coord:presence", description: "main-only guidance" },
+        { name: "tools:invoke", description: "legacy invocation wrapper" },
+        { name: "tools:find", description: "legacy discovery wrapper" },
       ], contentType));
       const staging = await listen(toolListOperator("staging", seen, [
         {
@@ -390,6 +393,8 @@ describe("current-build defaults for release repair-plane tools", () => {
           },
         },
         { name: "coord:presence", description: "staging-only guidance" },
+        { name: "tools:invoke", _meta: { "papercusp/servingGeneration": "generation:staging" } },
+        { name: "tools:find", _meta: { "papercusp/servingGeneration": "generation:staging" } },
       ], contentType));
       const p = await proxyFor(() => staticMcpProxyTargets("127.0.0.1", port(main), port(staging)));
 
@@ -408,6 +413,10 @@ describe("current-build defaults for release repair-plane tools", () => {
         inputSchema: { properties: { reason: { type: "string" } } },
       });
       expect(listed.find((tool) => tool.name === "coord:presence")?.description).toBe("main-only guidance");
+      for (const name of ["tools:invoke", "tools:find"])
+        expect(listed.find((tool) => tool.name === name)).toMatchObject({
+          _meta: { "papercusp/servingGeneration": "generation:staging" },
+        });
       expect(listed.find((tool) => tool.name === "locks:release")).toMatchObject({
         inputSchema: { properties: { native_edit_proof: { properties: { sessionId: { type: "string" } } } } },
       });
@@ -435,6 +444,49 @@ describe("current-build defaults for release repair-plane tools", () => {
     });
     expect(r.body).not.toContain("stale release guidance");
     expect(seen.map((entry) => entry.label)).toEqual(["main"]);
+  });
+
+  it("executes generic wrappers on their advertised generation and preserves stale-generation refusals", async () => {
+    const seen: Array<{ label: string; body: string }> = [];
+    const main = await listen(toolListOperator("main", seen, [
+      { name: "tools:invoke" }, { name: "tools:find" },
+    ]));
+    const generation = "generation:current-wrapper";
+    const staging = await listen(track(http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => {
+        const body = Buffer.concat(chunks).toString("utf8");
+        seen.push({ label: "staging", body });
+        const request = JSON.parse(body);
+        const payload = request.method === "tools/list"
+          ? { result: { tools: ["tools:invoke", "tools:find"].map((name) => ({
+              name, _meta: { "papercusp/servingGeneration": generation },
+            })) } }
+          : request.params._meta?.["papercusp/servingGeneration"] === generation
+            ? { result: { servedBy: "staging", name: request.params.name } }
+            : { error: { code: -32602, message: "stale_tool_contract" } };
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: request.id, ...payload }));
+      });
+    })));
+    const p = await proxyFor(() => staticMcpProxyTargets("127.0.0.1", port(main), port(staging)));
+    const catalog = await post(p, JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/list" }));
+    const listed = parseToolListResponse(catalog.body, "application/json").result.tools;
+    for (const name of ["tools:invoke", "tools:find"]) {
+      const meta = listed.find((tool) => tool.name === name)?._meta;
+      expect(meta).toEqual({ "papercusp/servingGeneration": generation });
+      const args = name === "tools:invoke"
+        ? { name: "coord:presence", args: {} }
+        : { query: "coord:presence" };
+      const response = await post(p, JSON.stringify(call(name, args, meta as Record<string, unknown>)));
+      expect(JSON.parse(response.body)).toMatchObject({ result: { servedBy: "staging", name } });
+      const stale = await post(p, JSON.stringify(call(name, args, {
+        "papercusp/servingGeneration": "generation:stale",
+      })));
+      expect(JSON.parse(stale.body)).toMatchObject({ error: { message: "stale_tool_contract" } });
+    }
+    expect(seen.filter((entry) => entry.label === "main")).toHaveLength(1);
   });
 
   it("recognizes test-downgrade as a current-build default", () => {
@@ -550,7 +602,9 @@ describe("current-build defaults for release repair-plane tools", () => {
         call("tools:invoke", { name: "code:run", args: { script } }),
       ]) {
         expect(applyMcpBuildSelector(buf(request), { defaultToCurrentBuild: true }))
-          .toEqual({ kind: "none" });
+          .toMatchObject(request.params && (request.params as Record<string, unknown>).name === "tools:invoke"
+            ? { kind: "routed", build: "staging" }
+            : { kind: "none" });
       }
     }
   });
@@ -701,14 +755,17 @@ describe("current-build defaults for release repair-plane tools", () => {
     expect(r.kind === "routed" && r.defaultedTools).toBeFalsy();
   });
 
-  it("leaves repair-queue unrouted when the default is off, and other tools unrouted when it is on", () => {
+  it("leaves direct unrelated calls unrouted and routes generic invocation on its own current contract", () => {
     expect(applyMcpBuildSelector(buf(call("release:repair-queue", { op: "admit" }))).kind).toBe("none");
     expect(applyMcpBuildSelector(buf(call("release:cut", { repair: true })), { defaultToCurrentBuild: true }).kind).toBe("none");
     expect(
       applyMcpBuildSelector(buf(call("tools:invoke", { name: "release:deploy", args: { why: "repair" } })), {
         defaultToCurrentBuild: true,
       }).kind,
-    ).toBe("none");
+    ).toBe("routed");
+    expect(applyMcpBuildSelector(buf(call("tools:invoke", {
+      name: "release:deploy", args: { why: "repair" }, build: "main",
+    })), { defaultToCurrentBuild: true })).toMatchObject({ kind: "routed", build: "main" });
   });
 
   it("treats a defaulted call in a batch with an explicit main call as a conflict", () => {
