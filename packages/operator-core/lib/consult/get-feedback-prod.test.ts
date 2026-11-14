@@ -288,27 +288,27 @@ describe('getFeedbackProd expert-routing settings', () => {
       'workspace-1', 'accepted-conv', expect.objectContaining({ execute: expect.any(Function) })));
   });
 
-  it('does not require prior transcript expertise for the new plan a BAR critique targets', async () => {
+  it.each(['bar-critique', 'rubric-vetting'] as const)('does not require prior transcript expertise for a new %s target', async (policy) => {
     const planSlug = 'rubric-grading-diagnostics-evidence-and-author-handoff-2026-11-02';
     const question = `Review plan ${planSlug} against its acceptance bars`;
     const result = await acceptFeedbackRequestProd({ workspaceId: 'workspace-1', requesterId: 'requester',
-      question, policy: 'bar-critique', originTaskRef: planSlug }, { ownerId: 'requester' } as never,
+      question, policy, originTaskRef: planSlug }, { ownerId: 'requester' } as never,
     { harnessSlug: 'papercusp', allowDispatch: false });
 
     expect(result).toMatchObject({ verdict: 'accepted' });
     expect(h.expertiseSubject).not.toHaveBeenCalled();
     expect(h.expandSubjectRefs).not.toHaveBeenCalled();
     expect(h.acceptFeedbackRequestCore.mock.calls[0]?.[0]).toMatchObject({
-      policy: 'bar-critique', originTaskRef: planSlug, resolvedSubjectRefs: [], unresolvedSubjectRefs: [],
+      policy, originTaskRef: planSlug, resolvedSubjectRefs: [], unresolvedSubjectRefs: [],
     });
     await vi.waitFor(() => expect(h.continueFeedbackRequestCore).toHaveBeenCalled());
   });
 
-  it('preserves explicit expertise source refs for BAR critiques', async () => {
+  it.each(['bar-critique', 'rubric-vetting'] as const)('preserves explicit expertise source refs for %s', async (policy) => {
     const planSlug = 'rubric-grading-diagnostics-evidence-and-author-handoff-2026-11-02';
     const subjectRefs = ['packages/operator-core/lib/agent-tools/plans/spec-quality.ts'];
     const result = await acceptFeedbackRequestProd({ workspaceId: 'workspace-1', requesterId: 'requester',
-      question: `Review plan ${planSlug} against its acceptance bars`, policy: 'bar-critique',
+      question: `Review plan ${planSlug} against its acceptance bars`, policy,
       originTaskRef: planSlug, subjectRefs }, { ownerId: 'requester' } as never,
     { harnessSlug: 'papercusp', allowDispatch: false });
 
@@ -319,6 +319,36 @@ describe('getFeedbackProd expert-routing settings', () => {
       subjectRefs, resolvedSubjectRefs: subjectRefs, unresolvedSubjectRefs: [],
     });
     await vi.waitFor(() => expect(h.continueFeedbackRequestCore).toHaveBeenCalled());
+  });
+
+  it.each(['bar-critique', 'rubric-vetting'] as const)('does not infer target expertise for an immediate %s review', async (policy) => {
+    const planSlug = 'rubric-grading-diagnostics-evidence-and-author-handoff-2026-11-02';
+    await getFeedbackProd({ workspaceId: 'workspace-1', requesterId: 'requester',
+      question: `Review plan ${planSlug}`, policy, originTaskRef: planSlug },
+    { ownerId: 'requester' } as never, { harnessSlug: 'papercusp', allowDispatch: false });
+
+    expect(h.getFeedbackCore.mock.calls[0]?.[0]).toMatchObject({
+      policy, originTaskRef: planSlug, resolvedSubjectRefs: [],
+    });
+  });
+
+  it.each(['bar-critique', 'rubric-vetting'] as const)('preserves declared expertise sources for an immediate %s review', async (policy) => {
+    const path = 'packages/operator-core/lib/agent-tools/plans/spec-quality.ts';
+    for (const sourceFields of [
+      { subjectRefs: [path] },
+      { subjectRef: path },
+      { resolvedSubjectRefs: [path], unresolvedSubjectRefs: ['unresolved-guide.mdx'] },
+    ]) {
+      await getFeedbackProd({ workspaceId: 'workspace-1', requesterId: 'requester',
+        question: 'Review a new target', policy, ...sourceFields },
+      { ownerId: 'requester' } as never, { harnessSlug: 'papercusp', allowDispatch: false });
+
+      const request = h.getFeedbackCore.mock.calls.at(-1)?.[0];
+      expect(request).toMatchObject(sourceFields);
+      if (!('resolvedSubjectRefs' in sourceFields)) {
+        expect(request).not.toHaveProperty('resolvedSubjectRefs');
+      }
+    }
   });
 
   it('retains the exact engineering guide and source anchors through real subject normalization', async () => {

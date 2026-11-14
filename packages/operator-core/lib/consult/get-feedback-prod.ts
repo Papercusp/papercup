@@ -4,7 +4,7 @@ import { hostname } from 'node:os';
 import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
 import { getBuildInfo } from '../build-info';
 import { recordExpertiseRoutingInvocation } from '../endpoint-route/telemetry';
-import { BAR_CRITIQUE_POLICY, CONSULT_DEFAULT_POLICY, methodReviewTarget } from './selection-policies';
+import { BAR_CRITIQUE_POLICY, CONSULT_DEFAULT_POLICY, RUBRIC_VETTING_POLICY, methodReviewTarget } from './selection-policies';
 import type { AcceptedFeedbackResult, GetFeedbackDeps, GetFeedbackRequest } from './get-feedback-core';
 import type { QueryEmbedderAcquisition } from '../agent-tools/search/embedder';
 
@@ -33,6 +33,11 @@ export interface AcceptFeedbackRequestProdOptions extends Pick<GetFeedbackProdOp
     onAccepted?: (accepted: AcceptedFeedbackResult) => Promise<void> | void;
 }
 
+/** Review targets may be new; explicit expertise source refs remain separate. */
+function isFirstPrinciplesTargetReview(policy: GetFeedbackRequest['policy']): boolean {
+    return policy === BAR_CRITIQUE_POLICY || policy === RUBRIC_VETTING_POLICY;
+}
+
 export async function acceptFeedbackRequestProd(
   request: GetFeedbackRequest, identity: AgentIdentity,
     options: AcceptFeedbackRequestProdOptions = {},
@@ -49,11 +54,12 @@ export async function acceptFeedbackRequestProd(
     const planRefusal = await validateBarCritiquePlanOrigin(payload, sql);
     if (planRefusal) return planRefusal;
 
-    // A governed BAR critique targets the plan in originTaskRef. That target
-    // may be new, so it cannot also be required as prior reviewer expertise.
+    // Governed critiques can introduce a new plan or rubric. The target must
+    // not also become a requirement for prior reviewer expertise.
     // Keep caller-supplied subject_refs as source constraints, but disable the
-    // router's generic question inference when a BAR critique has none.
-    const inferredSourceRef = request.policy === BAR_CRITIQUE_POLICY ? null : expertiseSubject(request.question);
+    // router's generic question inference when a target review has none.
+    const targetReview = isFirstPrinciplesTargetReview(request.policy);
+    const inferredSourceRef = targetReview ? null : expertiseSubject(request.question);
     // Caller-supplied refs are hard anchors. Inferred namespace:verb names
     // remain the router's semantic subject; expanding a tool mentioned in
     // workflow prose here would restrict retrieval to literal tool-name matches.
@@ -64,7 +70,7 @@ export async function acceptFeedbackRequestProd(
       ...(subjectExpansion ? {
         resolvedSubjectRefs: subjectExpansion.refs,
         unresolvedSubjectRefs: subjectExpansion.unresolvedDocuments,
-      } : request.policy === BAR_CRITIQUE_POLICY ? {
+      } : targetReview ? {
         resolvedSubjectRefs: [],
         unresolvedSubjectRefs: [],
       } : {}) };
@@ -131,7 +137,14 @@ export async function getFeedbackProd(
   const embeddingProfile = resolved
     ? resolveProseProfileSelection(resolved.mode, resolved.profile)
     : null;
-  return getFeedbackCore({ ...request, allowDispatch: !dispatchDisabled }, {
+  const reviewWithoutSourceRefs = isFirstPrinciplesTargetReview(request.policy)
+    && !request.subjectRef && !request.subjectRefs?.length
+    && request.resolvedSubjectRefs === undefined;
+  return getFeedbackCore({
+    ...request,
+    ...(reviewWithoutSourceRefs ? { resolvedSubjectRefs: [] } : {}),
+    allowDispatch: !dispatchDisabled,
+  }, {
     ...(options.acceptedRequest ? { acceptedRequest: options.acceptedRequest } : {}),
     resumeInitialDispatch: (conversationId) => {
       void continueCascadeDispatchProd(request.workspaceId, conversationId, {
