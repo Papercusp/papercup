@@ -6,6 +6,7 @@ import { getPluginHost } from './plugin-host-runtime';
 import { makeSecretResolver } from './plugin-spawn-impl';
 import { resolveOperatorAppRootFromModuleDir } from './operator-app-root';
 import type { PluginHandlerExecutor } from './plugin-invocation-policy';
+import { mockResolvedTyped } from './testing/typed-mock';
 
 vi.mock('@papercusp/plugin-loader/daemon', async original => ({
   ...await original<typeof import('@papercusp/plugin-loader/daemon')>(),
@@ -44,9 +45,23 @@ describe('production installed executor', () => {
     f.request.toolName = 'fixture.read';
     f.request.tool.capabilities = ['secrets:read:ALLOWED'];
     f.request.ctx.harnessSlug = 'harness';
-    const loaded = { plugin: { name: 'fixture', version: '1.0.0', capabilities: ['secrets:read:ALLOWED'] },
-      ...f.options.installation, runtime: { kind: 'js' }, toolDefinitions: [{ name: 'read' }] };
-    vi.mocked(getPluginHost).mockResolvedValue({ loaded: [loaded] } as never);
+    const loaded = {
+      plugin: {
+        name: 'fixture',
+        version: '1.0.0',
+        papercusp: '^1.0.0',
+        capabilities: ['secrets:read:ALLOWED'],
+      },
+      ...f.options.installation,
+      runtime: { kind: 'js' },
+      toolDefinitions: [{
+        name: 'read',
+        description: 'Reads fixture data',
+        inputSchema: { type: 'object' },
+        capabilities: ['secrets:read:ALLOWED'],
+      }],
+    } satisfies Awaited<ReturnType<typeof getPluginHost>>['loaded'][number];
+    mockResolvedTyped(vi.mocked(getPluginHost), { loaded: [loaded], loadErrors: [] });
     vi.mocked(locatePluginEntry).mockResolvedValue('/installed/fixture/dist/index.cjs');
     vi.mocked(resolveOperatorAppRootFromModuleDir).mockReturnValue('/installed/apps/operator');
     vi.mocked(snapshotInstalledHandlerFiles).mockReturnValue([{ path: '/handler/entry.cjs',
@@ -89,8 +104,10 @@ describe('production installed executor', () => {
   it.each(['missing', 'ambiguous', 'version', 'path', 'source', 'runtime', 'tool', 'entry'] as const)(
     'refuses %s installation binding without runtime admission or guest execution', async axis => {
       const f = productionFixture();
-      if (axis === 'missing') vi.mocked(getPluginHost).mockResolvedValue({ loaded: [] } as never);
-      else if (axis === 'ambiguous') vi.mocked(getPluginHost).mockResolvedValue({ loaded: [f.loaded, f.loaded] } as never);
+      if (axis === 'missing') mockResolvedTyped(vi.mocked(getPluginHost), { loaded: [], loadErrors: [] });
+      else if (axis === 'ambiguous') {
+        mockResolvedTyped(vi.mocked(getPluginHost), { loaded: [f.loaded, f.loaded], loadErrors: [] });
+      }
       else if (axis === 'version') f.loaded.plugin.version = '2.0.0';
       else if (axis === 'path') f.loaded.path = '/other';
       else if (axis === 'source') Object.assign(f.loaded, { source: 'project' });
