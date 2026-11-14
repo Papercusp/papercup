@@ -21,7 +21,7 @@
  *
  * This module must stay free of commerce imports and safe to load in the webview.
  */
-import { FLAGS, resolveFlagFromEnv } from '@papercusp/flags';
+import { FLAGS, resolveFlagFromEnv, type FlagKey } from '@papercusp/flags';
 
 /** The five things v1 does (D-001). */
 export const V1_IN_SCOPE = ['join', 'replicate', 'catch-up', 'restart-identity', 'revoke'] as const;
@@ -32,21 +32,25 @@ export type V1NotInScopeCapabilityId =
   | 'delegated-seats'
   | 'protected-effect-fencing'
   | 'owner-recovery'
-  | 'commerce';
+  | 'commerce'
+  | 'above-limit-hive';
 
+/** One entry of the not-in-v1 capability registry ({@link V1_NOT_IN_SCOPE}). */
 export interface V1NotInScopeCapability {
   readonly id: V1NotInScopeCapabilityId;
   readonly title: string;
+  /**
+   * Flags that gate the capability. The release build locks each one OFF ahead of every
+   * other flag source (`P2P_V1_RELEASE_BUILD_FORCED_OFF` in @papercusp/flags).
+   */
+  readonly flags: readonly FlagKey[];
+  /**
+   * Public activation and dispatch seams that refuse the capability in a release build, as
+   * `<path relative to operator-core/lib>#<export>`. `#module` means loading the module is
+   * refused. The seam test invokes every entry here and nothing else.
+   */
+  readonly seams: readonly string[];
 }
-
-/** What v1 does not ship (D-001; product-shaping non-goals). Above-limit hives are R-8. */
-export const V1_NOT_IN_SCOPE: readonly V1NotInScopeCapability[] = [
-  { id: 'git-bridge-live-flip', title: 'Git bridge live flip (hive P2P git <-> GitHub bridge)' },
-  { id: 'delegated-seats', title: 'Delegated agent seats (remote owner spawns on this host)' },
-  { id: 'protected-effect-fencing', title: 'Protected-effect fencing' },
-  { id: 'owner-recovery', title: 'Owner recovery' },
-  { id: 'commerce', title: 'Commerce modules (payments, settlement, treasury, metering charges)' },
-] as const;
 
 /**
  * R-8: the v1 hive size limit N, in members. A join that would take a hive above N is
@@ -105,6 +109,50 @@ export const V1_COMMERCE_HOST_MODULES = [
   'cupboard/prepaid-credits.ts',
   'cupboard/seller-receipt-rpc.ts',
 ] as const;
+
+/**
+ * The not-in-v1 capability registry (D-001's exclusions plus R-8's above-limit hive): what
+ * v1 does not ship, each with the flags the release build locks off and the seams that refuse
+ * it. The release build disables exactly this set; the contract tests check that both ways.
+ */
+export const V1_NOT_IN_SCOPE: readonly V1NotInScopeCapability[] = [
+  {
+    id: 'git-bridge-live-flip',
+    title: 'Git bridge live flip (hive P2P git <-> GitHub bridge)',
+    flags: [FLAGS.GITHUB_BRIDGE],
+    seams: ['harness/git-sync/hive-git-mode.ts#setPotGitMode'],
+  },
+  {
+    id: 'delegated-seats',
+    title: 'Delegated agent seats (remote owner spawns on this host)',
+    flags: [FLAGS.ACCEPT_DELEGATED_SEATS],
+    seams: ['p2p/accept-delegated-seats.ts#assertHostAcceptsDelegatedSeats', 'p2p/delegated-spawn-honor.ts#module'],
+  },
+  {
+    id: 'protected-effect-fencing',
+    title: 'Protected-effect fencing (owning-hive exclusive Git effects)',
+    flags: [],
+    seams: ['sync/pot-git/hive-effect-authority.ts#requireHiveEffectAuthority'],
+  },
+  {
+    id: 'owner-recovery',
+    title: 'Owner recovery (protected effects resume once owning-hive proof is restored)',
+    flags: [],
+    seams: ['sync/pot-git/hive-effect-authority.ts#loadHiveEffectAuthority'],
+  },
+  {
+    id: 'commerce',
+    title: 'Commerce modules (payments, settlement, treasury, metering charges)',
+    flags: [],
+    seams: V1_COMMERCE_ROOTS.map((root) => `${root}#module`),
+  },
+  {
+    id: 'above-limit-hive',
+    title: `Hives above ${V1_HIVE_SIZE_LIMIT} members (R-8)`,
+    flags: [],
+    seams: ['hive-membership-admission.ts#evaluateJoinAdmission'],
+  },
+];
 
 export const V1_SCOPE_REFUSAL_CODE = 'not_in_v1' as const;
 

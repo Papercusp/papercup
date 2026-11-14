@@ -31,7 +31,11 @@ import {
   evaluateMembershipAdmission,
   type JoinerIdentity,
 } from './hive-membership-policy';
-import { resolveFederatedPotScope, type FederatedPotScope } from './federated-pot-scope';
+import {
+  resolveFederatedPotScope,
+  unsafeFederatedPotScope,
+  type FederatedPotScope,
+} from './federated-pot-scope';
 import {
   recordPendingJoin as realRecordPendingJoin,
   getPendingJoin as realGetPendingJoin,
@@ -41,9 +45,11 @@ import {
 import {
   upsertHiveMember as realUpsertHiveMember,
   getHiveMember as realGetHiveMember,
+  listHiveMembers as realListHiveMembers,
   type HiveMemberRecord,
 } from './hive-membership-store';
 import type { DeviceAttestationEntry } from './harness/contributor-row-types';
+import { V1_HIVE_SIZE_LIMIT, isV1ReleaseBuild } from './p2p/v1-core/v1-scope-contract';
 
 /** The joiner's identity + the devices to bind on (admission material). */
 export interface JoinerInfo extends JoinerIdentity {
@@ -52,14 +58,25 @@ export interface JoinerInfo extends JoinerIdentity {
   deviceAttestations?: DeviceAttestationEntry[];
 }
 
+/** Why a join is refused: the owner policy (banned / not-allowlisted) or the v1 size limit. */
+export type JoinRefusalReason = 'banned' | 'not_allowlisted' | 'hive_size_limit';
+
 export type JoinAdmissionOutcome =
   | { outcome: 'admit' }
   | { outcome: 'pending'; reason: string; pending: PendingJoinRecord }
-  | { outcome: 'refuse'; reason: 'banned' | 'not_allowlisted' };
+  | { outcome: 'refuse'; reason: JoinRefusalReason; detail?: string };
 
 export interface MembershipAdmissionDeps {
   /** Read the current owner-VERIFIED policy. Default: getHivePolicy → .policy. */
   getPolicy?: (workspaceId: string, potHomeSlug: string) => Promise<HivePolicy | null>;
+  /**
+   * R-8 (p2p-v1-core-release-2026-11-13): the hive size limit in members, or null for no
+   * limit. Default: `V1_HIVE_SIZE_LIMIT` from the v1 scope contract in a v1 release build,
+   * otherwise null (dev builds keep unbounded hives, like they keep commerce).
+   */
+  hiveSizeLimit?: number | null;
+  /** Count the hive's current members (pot_members rows). Default: listHiveMembers. */
+  countHiveMembers?: (workspaceId: string, potHomeSlug: FederatedPotScope, sql?: Sql) => Promise<number>;
   recordPendingJoin?: typeof realRecordPendingJoin;
   getPendingJoin?: typeof realGetPendingJoin;
   setPendingJoinDecision?: typeof realSetPendingJoinDecision;
@@ -216,6 +233,36 @@ async function defaultGetPolicy(
   return resolved?.policy ?? null;
 }
 
+/** The effective R-8 limit: an injected value, else the v1 contract's N in a release build. */
+export function resolveHiveSizeLimit(deps: Pick<MembershipAdmissionDeps, 'hiveSizeLimit'> = {}): number | null {
+  if (deps.hiveSizeLimit !== undefined) return deps.hiveSizeLimit;
+  return isV1ReleaseBuild() ? V1_HIVE_SIZE_LIMIT : null;
+}
+
+/**
+ * R-8: may one NEW member join? Admits while the hive holds fewer than the limit, so joins
+ * bringing it to N succeed and the join that would make N+1 is refused. Callers run this only
+ * for a joiner who is not yet a member: a reconnecting member (or a new device of one) never
+ * takes a slot. No limit ⇒ admit without reading the roster.
+ */
+async function checkHiveCapacityForNewMember(
+  workspaceId: string,
+  potHomeSlug: FederatedPotScope,
+  deps: MembershipAdmissionDeps,
+): Promise<{ admit: true } | { admit: false; detail: string }> {
+  const limit = resolveHiveSizeLimit(deps);
+  if (limit === null) return { admit: true };
+  const count =
+    deps.countHiveMembers ??
+    (async (ws: string, home: FederatedPotScope, sql?: Sql) => (await realListHiveMembers(ws, home, sql)).length);
+  const members = await count(workspaceId, potHomeSlug, deps.sql);
+  if (members < limit) return { admit: true };
+  return {
+    admit: false,
+    detail: `hive ${potHomeSlug} has ${members} members; the P2P v1 hive size limit is ${limit}`,
+  };
+}
+
 /**
  * The JOIN-PATH gate. Evaluate the owner-signed policy against a prospective joiner:
  *   - admit   → the caller proceeds to trust-admit (upsertHiveMember).
@@ -240,8 +287,19 @@ export async function evaluateJoinAdmission(
     githubUsername: joiner.githubUsername,
   });
 
-  if (decision.decision === 'admit') return { outcome: 'admit' };
   if (decision.decision === 'refuse') return { outcome: 'refuse', reason: decision.reason };
+
+  // R-8 — the v1 size limit, after the policy's own refusals (a banned joiner is reported as
+  // banned) and BEFORE a pending request is recorded, so a full hive queues nobody. The only
+  // production caller (ownerAdmitOrPend) passes the federated scope, which the brand restates.
+  const capacity = await checkHiveCapacityForNewMember(
+    workspaceId,
+    unsafeFederatedPotScope(potHomeSlug, 'evaluateJoinAdmission is reached with the federated scope'),
+    deps,
+  );
+  if (!capacity.admit) return { outcome: 'refuse', reason: 'hive_size_limit', detail: capacity.detail };
+
+  if (decision.decision === 'admit') return { outcome: 'admit' };
 
   // pending — record the federated request so it reaches the owner queue.
   const pending = await recordPending(
@@ -262,7 +320,7 @@ export async function evaluateJoinAdmission(
 export type DecidePendingResult =
   | { ok: true; status: 'approved'; member: HiveMemberRecord; pending: PendingJoinRecord }
   | { ok: true; status: 'denied'; pending: PendingJoinRecord }
-  | { ok: false; code: 'no_pending'; detail?: string };
+  | { ok: false; code: 'no_pending' | 'hive_size_limit'; detail?: string };
 
 /**
  * OWNER approves a pending joiner: trust-admit them (upsertHiveMember with the devices
@@ -290,6 +348,18 @@ export async function approvePendingJoin(
 
   const pending = await getPending(input.workspaceId, input.potHomeSlug, input.githubUserId, deps.sql);
   if (!pending) return { ok: false, code: 'no_pending' };
+
+  // R-8 — the hive may have filled while this request waited. Re-check at approval; the
+  // request stays pending so the owner can approve it once a slot frees. An approved joiner
+  // who is somehow already a member takes no new slot.
+  if (resolveHiveSizeLimit(deps) !== null) {
+    const getMember = deps.getHiveMember ?? realGetHiveMember;
+    const already = await getMember(input.workspaceId, input.potHomeSlug, pending.githubUserId, deps.sql);
+    if (!already) {
+      const capacity = await checkHiveCapacityForNewMember(input.workspaceId, input.potHomeSlug, deps);
+      if (!capacity.admit) return { ok: false, code: 'hive_size_limit', detail: capacity.detail };
+    }
+  }
 
   const member = await upsertMember(
     {
@@ -377,7 +447,7 @@ export async function denyPendingJoin(
 export type OwnerAdmitOutcome =
   | { action: 'admitted'; member: HiveMemberRecord; reason: 'already_member' | 'policy_admit' }
   | { action: 'pending'; pending: PendingJoinRecord }
-  | { action: 'refuse'; reason: 'banned' | 'not_allowlisted' };
+  | { action: 'refuse'; reason: JoinRefusalReason; detail?: string };
 
 export async function ownerAdmitOrPend(
   // ⚠ SCOPE (WI-6312): FEDERATED, resolved by the caller — see approvePendingJoin above.
@@ -459,7 +529,9 @@ export async function ownerAdmitOrPend(
   if (outcome.outcome === 'pending') {
     return { action: 'pending', pending: outcome.pending };
   }
-  return { action: 'refuse', reason: outcome.reason };
+  return outcome.detail === undefined
+    ? { action: 'refuse', reason: outcome.reason }
+    : { action: 'refuse', reason: outcome.reason, detail: outcome.detail };
 }
 
 /** The result of the owner's substrate-seam admission of an announced peer (the
@@ -468,7 +540,7 @@ export type OwnerAnnounceAdmitResult =
   | { action: 'skip'; reason: 'no_hive_home' | 'not_owner' }
   | { action: 'admitted'; potHomeSlug: string; reason: 'already_member' | 'policy_admit' }
   | { action: 'pending'; potHomeSlug: string }
-  | { action: 'refuse'; potHomeSlug: string; reason: 'banned' | 'not_allowlisted' };
+  | { action: 'refuse'; potHomeSlug: string; reason: JoinRefusalReason; detail?: string };
 
 export interface AdmitAnnouncedPeerDeps extends MembershipAdmissionDeps {
   /** Resolve a harness slug → its Hive home slug. Default: hive-federation
@@ -548,5 +620,7 @@ export async function admitAnnouncedPeerAsOwner(
   );
   if (outcome.action === 'admitted') return { action: 'admitted', potHomeSlug, reason: outcome.reason };
   if (outcome.action === 'pending') return { action: 'pending', potHomeSlug };
-  return { action: 'refuse', potHomeSlug, reason: outcome.reason };
+  return outcome.detail === undefined
+    ? { action: 'refuse', potHomeSlug, reason: outcome.reason }
+    : { action: 'refuse', potHomeSlug, reason: outcome.reason, detail: outcome.detail };
 }

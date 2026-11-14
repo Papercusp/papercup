@@ -9,6 +9,7 @@
 import { randomBytes } from 'node:crypto';
 import { verifyEd25519 } from '../../identity/ed25519';
 import type { SignedProtocolScope } from './signed-context';
+import { isV1ReleaseBuild, V1ScopeRefusal } from '../../p2p/v1-core/v1-scope-contract';
 
 export interface HiveEffectAuthority extends SignedProtocolScope {
   /** Live owner-key signer, not a cached transferable bearer proof. */
@@ -31,6 +32,9 @@ export async function requireHiveEffectAuthority(
   scope: SignedProtocolScope,
   effect: readonly string[],
 ): Promise<void> {
+  // P2P v1 release build: protected-effect fencing is not in v1 (p2p-v1-core-release
+  // P-001), so no exclusive effect proceeds. Fails closed, like the fence itself.
+  if (isV1ReleaseBuild()) throw new V1ScopeRefusal('protected-effect-fencing', 'requireHiveEffectAuthority');
   if (!authority || !scope.hive_id || !scope.repo_key ||
       authority.hive_id !== scope.hive_id || authority.repo_key !== scope.repo_key) {
     throw new HiveEffectAuthorityError();
@@ -55,6 +59,9 @@ export async function loadHiveEffectAuthority(
   potHomeSlug: string,
   scope: SignedProtocolScope,
 ): Promise<HiveEffectAuthority | null> {
+  // P2P v1 release build: owner recovery (restoring owning-hive proof so protected
+  // effects resume after an owner outage) is not in v1 (p2p-v1-core-release P-001).
+  if (isV1ReleaseBuild()) throw new V1ScopeRefusal('owner-recovery', 'loadHiveEffectAuthority');
   const { loadHiveKeyStatus, signWithHiveKey } = await import('../../identity/hive-keypair');
   const status = await loadHiveKeyStatus(workspaceId, potHomeSlug);
   if (status.kind !== 'ok' || status.pubkeyBase64 !== scope.hive_id) return null;

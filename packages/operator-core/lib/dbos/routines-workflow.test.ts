@@ -31,6 +31,7 @@ const state = vi.hoisted(() => ({
   /** Every DBOS.runStep name invoked, including steps a fixture short-circuits. */
   stepNames: [] as string[],
   poolShedFixture: false,
+  dispatchCredits: null as number | null,
   executeLoopRebaseOperation: false,
   slowLoopRebaseMs: 0,
   probe: { rawMs: 3000, admissionMs: 2500, discountMs: 500 },
@@ -55,7 +56,10 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
         // Execute the real registered scheduler up to its critical-probe return,
         // keeping database occupancy and loop-rebase effects private to this fixture.
         if (state.poolShedFixture && config?.name === 'routine-dispatch-feedback-epoch') {
-          return { queues: [] };
+          return { queues: state.dispatchCredits === null ? [] : [{
+            queueName: 'routines', availableStarts: state.dispatchCredits,
+            effectiveWindow: state.dispatchCredits, inFlight: 0,
+          }] };
         }
         if (
           state.poolShedFixture &&
@@ -205,6 +209,7 @@ beforeEach(() => {
   state.sqlCalls.length = 0;
   vi.clearAllMocks();
   state.poolShedFixture = false;
+  state.dispatchCredits = null;
   state.executeLoopRebaseOperation = false;
   state.slowLoopRebaseMs = 0;
   state.dbosStarted = true;
@@ -778,7 +783,7 @@ describe('evaluateRoutineDispatchEpoch — capless delayed-feedback admission (E
     const impl = source.split('async function routinesTickImpl(): Promise<void> {')[1] ?? '';
     const epoch = impl.indexOf("name: 'routine-dispatch-feedback-epoch'");
     const dueByAge = impl.indexOf('const dueByAge = orderDueRoutinesByAge(due);');
-    const loop = impl.indexOf('for (const r of dueByAge) {');
+    const loop = impl.indexOf('for (const { routine: r, starvationPass } of dispatchCandidates) {');
     const budget = impl.indexOf('const remainingStarts = remainingStartsByQueue.get(queueName) ?? 0');
     const claim = impl.indexOf('claimDueRoutine(sql, r)');
     const start = impl.indexOf('DBOS.startWorkflow');
@@ -868,6 +873,97 @@ describe('routinesTickImpl — the starvation bound reaches the zero-credit hold
       const opts = options as { queueName: string; enqueueOptions: { deduplicationID: string } };
       return `${opts.queueName}:${opts.enqueueOptions.deduplicationID}`;
     });
+
+  it('dispatches the overdue half-hour cohort within one feedback budget despite replicated frequent actions', async () => {
+    state.poolShedFixture = true;
+    state.dispatchCredits = 11;
+    vi.mocked(poolPressure).mockResolvedValueOnce('ok');
+    const outbox = Array.from({ length: 22 }, (_, i) => row(`outbox-${i}`, 'system:cross-hive-outbox-drain', 29));
+    const checkpoints = Array.from({ length: 12 }, (_, i) => row(`checkpoint-${i}`, 'system:green-checkpoint', 28.5));
+    const cohort = [
+      ...Array.from({ length: 3 }, (_, i) => row(`promoter-${i}`, 'system:work-item-admission-promoter', 28)),
+      row('orphan-reconcile', 'system:plan-item-orphan-reconcile', 28),
+      row('wake-brain', 'system:wake-brain', 28),
+    ];
+    vi.mocked(listDueCronRoutines).mockResolvedValueOnce([...outbox, ...checkpoints, ...cohort]);
+    vi.mocked(claimDueRoutine).mockResolvedValue(true);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await state.scheduledTick!();
+      const started = startedIds();
+      expect(started).toHaveLength(11);
+      for (const routine of cohort) expect(started).toContain(`${ROUTINES_QUEUE}:routine:${routine.id}`);
+      // Fair selection must spend the supplied credit, never bypass it for younger backlog.
+      expect(claimDueRoutine).toHaveBeenCalledTimes(11);
+      expect(warn.mock.calls.some(([line]) => String(line).includes('starvation bound: starting'))).toBe(false);
+    } finally { warn.mockRestore(); }
+  });
+
+  it('uses durable action admission clocks at one credit without losing same-action FIFO', async () => {
+    state.poolShedFixture = true;
+    state.dispatchCredits = 1;
+    const frequent = [row('outbox-oldest', 'system:cross-hive-outbox-drain', 29), row('outbox-next', 'system:cross-hive-outbox-drain', 28)];
+    const cohort = [row('promoter-oldest', 'system:work-item-admission-promoter', 20), row('promoter-next', 'system:work-item-admission-promoter', 19)];
+    const now = Date.now();
+    for (const routine of frequent) routine.actionLastFiredAt = new Date(now - 1_000);
+    for (const routine of cohort) routine.actionLastFiredAt = new Date(now - 40 * 60_000);
+    vi.mocked(claimDueRoutine).mockResolvedValue(true);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (const [due, expected] of [
+        [[...frequent, ...cohort], 'promoter-oldest'],
+        [[...frequent, cohort[1]], 'outbox-oldest'],
+        [[frequent[1], cohort[1]], 'promoter-next'],
+      ] as const) {
+        vi.mocked(poolPressure).mockResolvedValueOnce('ok');
+        vi.mocked(listDueCronRoutines).mockResolvedValueOnce([...due]);
+        state.startWorkflow.mockClear();
+        await state.scheduledTick!();
+        expect(startedIds()).toEqual([`${ROUTINES_QUEUE}:routine:${expected}`]);
+        const served = [...frequent, ...cohort].find(routine => routine.id === expected)!;
+        for (const routine of [...frequent, ...cohort]) {
+          if (routine.targetRole === served.targetRole) routine.actionLastFiredAt = new Date(now + (expected === 'outbox-oldest' ? 2 : 1));
+        }
+      }
+    } finally { warn.mockRestore(); }
+  });
+
+  it('keeps the global oldest escape after fair normal credit even when action clocks disagree', async () => {
+    state.poolShedFixture = true;
+    state.dispatchCredits = 1;
+    vi.mocked(poolPressure).mockResolvedValueOnce('ok');
+    const oldest = row('oldest', 'system:cross-hive-outbox-drain', 51);
+    const other = row('other-starved', 'system:green-checkpoint', 42);
+    const cohort = row('promoter', 'system:work-item-admission-promoter', 28);
+    oldest.actionLastFiredAt = new Date(Date.now() - 1_000);
+    other.actionLastFiredAt = new Date(Date.now() - 60_000);
+    vi.mocked(listDueCronRoutines).mockResolvedValueOnce([oldest, other, cohort]);
+    vi.mocked(claimDueRoutine).mockResolvedValue(true);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await state.scheduledTick!();
+      expect(startedIds()).toEqual([`${ROUTINES_QUEUE}:routine:promoter`, `${ROUTINES_QUEUE}:routine:oldest`]);
+      expect(claimDueRoutine).toHaveBeenCalledTimes(2);
+    } finally { warn.mockRestore(); }
+  });
+
+  it('does not retry a lost ordinary claim or spend the escape on it', async () => {
+    state.poolShedFixture = true;
+    state.dispatchCredits = 1;
+    vi.mocked(poolPressure).mockResolvedValueOnce('ok');
+    const lost = row('lost', 'system:cross-hive-outbox-drain', 51);
+    const next = row('next', 'system:cross-hive-outbox-drain', 42);
+    const cohort = row('promoter', 'system:work-item-admission-promoter', 28);
+    cohort.actionLastFiredAt = new Date();
+    vi.mocked(listDueCronRoutines).mockResolvedValueOnce([lost, next, cohort]);
+    vi.mocked(claimDueRoutine).mockResolvedValueOnce(false).mockResolvedValueOnce(true).mockResolvedValueOnce(true);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await state.scheduledTick!();
+      expect(startedIds()).toEqual([`${ROUTINES_QUEUE}:routine:promoter`, `${ROUTINES_QUEUE}:routine:next`]);
+      expect(vi.mocked(claimDueRoutine).mock.calls.map(([, routine]) => routine.id)).toEqual(['lost', 'promoter', 'next']);
+    } finally { warn.mockRestore(); }
+  });
 
   it('prebinds the scheduled census to its canonical due slot while retaining scheduler provenance', async () => {
     const { scheduledCensusWorkflowId } = await import('../harness/routines/fire-provenance');

@@ -73,6 +73,7 @@ import type { Sql } from 'postgres';
 // fails if the perf peer graph reaches db-org again.
 import { getHiveSetting, setHiveSetting, deleteHiveSetting } from '../../hive-settings-store';
 import { upsertPotGitGcRoutine, setPotGitGcRoutineActive } from './hive-git-gc-routine';
+import { isV1ReleaseBuild, V1ScopeRefusal } from '../../p2p/v1-core/v1-scope-contract';
 
 /** Who pushes the GitHub remote for this hive (S-5 decision table input). */
 export type PotGitMode = 'legacy' | 'bridged' | 'p2p-only';
@@ -172,6 +173,11 @@ export async function setPotGitMode(
   }
   if (!POT_GIT_MODES.includes(mode)) {
     throw new Error(`setPotGitMode: unknown mode '${String(mode)}' (expected ${POT_GIT_MODES.join(' | ')})`);
+  }
+  // P2P v1 release build: the Git bridge live flip is not in v1 (p2p-v1-core-release
+  // P-001). Refused before any write, so the federated setting never reads 'bridged'.
+  if (mode === 'bridged' && isV1ReleaseBuild()) {
+    throw new V1ScopeRefusal('git-bridge-live-flip', "setPotGitMode('bridged')");
   }
   await setHiveSetting({ workspaceId, potHomeSlug, settingKey: POT_GIT_MODE_SETTING_KEY, value: mode }, sql);
   await syncPotGitGcRoutine(workspaceId, potHomeSlug, mode, sql);

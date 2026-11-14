@@ -22,6 +22,7 @@
 
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { isV1ReleaseBuild, V1ScopeRefusal } from './v1-core/v1-scope-contract';
 
 /** Thrown by {@link assertHostAcceptsDelegatedSeats} when this host has NOT opted in. */
 export class DelegatedSeatsDisabledError extends Error {
@@ -55,6 +56,8 @@ export async function hostAcceptsDelegatedSeats(): Promise<boolean> {
  * delegated-seat spawn requested by a remote owner.
  */
 export async function assertHostAcceptsDelegatedSeats(): Promise<void> {
+  // P2P v1 release build: delegated seats are not in v1 (p2p-v1-core-release P-001).
+  if (isV1ReleaseBuild()) throw new V1ScopeRefusal('delegated-seats', 'assertHostAcceptsDelegatedSeats');
   if (!(await hostAcceptsDelegatedSeats())) {
     throw new DelegatedSeatsDisabledError();
   }

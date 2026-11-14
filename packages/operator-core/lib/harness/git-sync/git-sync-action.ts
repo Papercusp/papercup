@@ -125,6 +125,7 @@ import {
   requireHiveEffectAuthority,
   type HiveEffectAuthority,
 } from '../../sync/pot-git/hive-effect-authority';
+import { isV1ScopeRefusal } from '../../p2p/v1-core/v1-scope-contract';
 import {
   runRefAnnouncePublishTick,
   runRefAnnounceReceiveTick,
@@ -8063,7 +8064,18 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     if ((await defaultRunGit(['rev-parse', '--git-dir'], repoPath)).code !== 0) {
       return void (await decline('no_local_store'));
     }
-    const ownerKey = await loadHiveEffectAuthority(workspaceId, potHomeSlug, protocolScope);
+    let ownerKey: Awaited<ReturnType<typeof loadHiveEffectAuthority>>;
+    try {
+      ownerKey = await loadHiveEffectAuthority(workspaceId, potHomeSlug, protocolScope);
+    } catch (error) {
+      // P2P v1 release build: owner recovery is not in v1, so the owner key is never
+      // loaded and canonical integration declines instead of failing every tick.
+      if (!isV1ScopeRefusal(error)) throw error;
+      return void (await decline(
+        'not_hive_owner',
+        'Owner recovery is not in P2P v1; canonical integration stays off and member-head exchange continues.',
+      ));
+    }
     if (!ownerKey)
       return void (await decline(
         'not_hive_owner',

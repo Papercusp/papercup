@@ -38,11 +38,37 @@ export function platformModeOverride(key: FlagKey, env: EnvMap): boolean | undef
   return undefined;
 }
 
-export type EnvFlagSource = "env" | "platform-mode" | "default" | "unknown-flag";
+/**
+ * Flags the P2P v1 release build forces OFF (p2p-v1-core-release-2026-11-13 P-001, D-001): the
+ * flag-gated members of the not-in-v1 list. The release build is a process launched with
+ * `PAPERCUSP_FLAG_PAPERCUSP_P2P_V1_RELEASE_BUILD=1`.
+ *
+ * This LOCK outranks every other source: the per-flag env override, test overrides, the
+ * override store and PostHog. A not-in-v1 capability must not be re-enabled on the shipped
+ * build by any toggle. The operator-core v1 scope contract test asserts this list equals the
+ * flags of its not-in-v1 capability registry, in both directions.
+ */
+export const P2P_V1_RELEASE_BUILD_FORCED_OFF: readonly FlagKey[] = [
+  FLAGS.GITHUB_BRIDGE,
+  FLAGS.ACCEPT_DELEGATED_SEATS,
+];
+
+/** True when `env` launches the P2P v1 release build. */
+export function isP2pV1ReleaseBuildEnv(env: EnvMap): boolean {
+  return envFlagOverride(FLAGS.P2P_V1_RELEASE_BUILD, env) === true;
+}
+
+/** `false` for a flag the release build locks off; `undefined` otherwise (no opinion). */
+export function releaseBuildLock(key: FlagKey, env: EnvMap): false | undefined {
+  return isP2pV1ReleaseBuildEnv(env) && P2P_V1_RELEASE_BUILD_FORCED_OFF.includes(key) ? false : undefined;
+}
+
+export type EnvFlagSource = "release-build-lock" | "env" | "platform-mode" | "default" | "unknown-flag";
 
 /**
- * Resolve a flag from env alone: env override, then platform mode, then the compiled default.
- * An unknown key resolves to `{ value: null, source: 'unknown-flag' }`, never to false.
+ * Resolve a flag from env alone: the release-build lock, then the env override, then platform
+ * mode, then the compiled default. An unknown key resolves to
+ * `{ value: null, source: 'unknown-flag' }`, never to false.
  */
 export function resolveFlagFromEnv(
   key: string,
@@ -50,6 +76,8 @@ export function resolveFlagFromEnv(
 ): { value: boolean | null; source: EnvFlagSource } {
   if (!Object.prototype.hasOwnProperty.call(FLAG_DEFAULTS, key)) return { value: null, source: "unknown-flag" };
   const flagKey = key as FlagKey;
+  const locked = releaseBuildLock(flagKey, env);
+  if (locked !== undefined) return { value: locked, source: "release-build-lock" };
   const fromEnv = envFlagOverride(flagKey, env);
   if (fromEnv !== undefined) return { value: fromEnv, source: "env" };
   const fromMode = platformModeOverride(flagKey, env);

@@ -45,6 +45,7 @@ import {
   admitUnderPoolShed,
   admitStarvedZeroCreditStart,
   createStarvedZeroCreditBudget,
+  isStarvedPastBound,
   POOL_SHED_STARVATION_BOUND_MS,
 } from './routines-queue-classification';
 import { getOrgPg, listDueCronRoutines, type RoutineRow } from '@papercusp/db-org';
@@ -284,6 +285,7 @@ type DueRoutine = {
   readonly targetRole: string;
   readonly installSlug: string;
   readonly nextFireAt: Date | null;
+  readonly actionLastFiredAt?: Date | null;
 };
 
 /**
@@ -300,6 +302,37 @@ export function orderDueRoutinesByAge<T extends DueRoutine>(due: readonly T[]): 
     if (bAt === undefined) return 1;
     return aAt - bAt || a.id.localeCompare(b.id);
   });
+}
+
+/**
+ * WI-6554700010049079: replicated outbox/checkpoint actions consumed every ordinary
+ * credit ahead of the half-hour cohort. Serve action heads in least-recently-admitted
+ * order, then one row per action per round. The due snapshot carries the clock from
+ * ALL active rows, so a one-credit tick or process restart cannot forget the action
+ * just served when that row leaves the due population. FIFO remains intact within
+ * each action. This changes selection only; every start still spends queue credit.
+ */
+function orderRoutineActionHeads<T extends DueRoutine>(dueByAge: readonly T[]): T[] {
+  const actions = new Map<string, { rows: T[]; lastAdmission: number; oldestIndex: number }>();
+  for (const [index, row] of dueByAge.entries()) {
+    const clock = row.actionLastFiredAt?.getTime();
+    const lastAdmission = clock !== undefined && Number.isFinite(clock) ? clock : 0;
+    const action = actions.get(row.targetRole);
+    if (action) {
+      action.rows.push(row);
+      action.lastAdmission = Math.max(action.lastAdmission, lastAdmission);
+    } else actions.set(row.targetRole, { rows: [row], lastAdmission, oldestIndex: index });
+  }
+  const cohorts = [...actions.values()].sort((a, b) =>
+    a.lastAdmission - b.lastAdmission || a.oldestIndex - b.oldestIndex);
+  const ordered: T[] = [];
+  for (let round = 0; ordered.length < dueByAge.length; round += 1) {
+    for (const cohort of cohorts) {
+      const row = cohort.rows[round];
+      if (row) ordered.push(row);
+    }
+  }
+  return ordered;
 }
 
 export interface RoutineDispatchQueueDecision {
@@ -1354,11 +1387,21 @@ async function routinesTickImpl(): Promise<void> {
   // a critical probe every non-critical queue has zero credit, so without this the routine the
   // shed just admitted was HELD and never fired; under ok/elevated a full window starved it alike.
   const starvedZeroCredit = createStarvedZeroCreditBudget();
-  for (const r of dueByAge) {
+  // Spend ordinary credit fairly first. Revisit the original age order ONLY for
+  // the existing one-start escape: fair selection must not change its oldest-first
+  // guarantee or turn it into one extra start per action.
+  const attempted = new Set<string>();
+  const dispatchCandidates = [
+    ...orderRoutineActionHeads(dueByAge).map(routine => ({ routine, starvationPass: false })),
+    ...dueByAge.map(routine => ({ routine, starvationPass: true })),
+  ];
+  for (const { routine: r, starvationPass } of dispatchCandidates) {
+    if (starvationPass && (starvedZeroCredit.left <= 0 || attempted.has(r.id) || !isStarvedPastBound(r, shedNowMs))) continue;
+    if (!starvationPass && poolCritical && !shouldFireUnderPoolShed(r.targetRole)) continue;
     // Leave withheld rows due, including one-shots. Check again after queueing.
     if (!await routineBackgroundActivityAllowed(r)) continue;
     if (shedAdmitted && !shedAdmitted.has(r)) continue;
-    if (poolCritical && !shouldFireUnderPoolShed(r.targetRole)) {
+    if (starvationPass && poolCritical && !shouldFireUnderPoolShed(r.targetRole)) {
       const overdueMin = r.nextFireAt ? Math.round((shedNowMs - r.nextFireAt.getTime()) / 60_000) : null;
       console.warn(
         `[routines-tick] pool shed: firing STARVED routine ${r.id} (${r.targetRole}, install=${r.installSlug ?? 'none'}) ` +
@@ -1370,7 +1413,8 @@ async function routinesTickImpl(): Promise<void> {
     // previous-cohort feedback and actual durable occupancy. A withheld row has
     // not advanced next_fire_at, so it remains due for the next feedback epoch.
     const remainingStarts = remainingStartsByQueue.get(queueName) ?? 0;
-    if (remainingStarts <= 0 && admitStarvedZeroCreditStart(r, shedNowMs, starvedZeroCredit)) {
+    if (starvationPass && remainingStarts > 0) continue;
+    if (remainingStarts <= 0 && starvationPass && admitStarvedZeroCreditStart(r, shedNowMs, starvedZeroCredit)) {
       const overdueMin = r.nextFireAt ? Math.round((shedNowMs - r.nextFireAt.getTime()) / 60_000) : null;
       console.warn(
         `[routines-tick] starvation bound: starting ${r.id} (${r.targetRole}, install=${r.installSlug ?? 'none'}) ` +
@@ -1392,6 +1436,7 @@ async function routinesTickImpl(): Promise<void> {
       continue;
     }
 
+    attempted.add(r.id);
     const claimed = await DBOS.runStep(() => claimDueRoutine(sql, r), { name: 'claim-routine' });
     if (!claimed) {
       // WI-40883: a bare `continue` here is what let 11 routines sit unclaimable and silent —

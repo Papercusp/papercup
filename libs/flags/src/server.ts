@@ -7,7 +7,7 @@
 
 import { pinModuleState } from "@papercusp/module-singleton";
 import { PostHog } from "posthog-node";
-import { envFlagOverride, platformModeOverride } from "./env-resolution";
+import { envFlagOverride, platformModeOverride, releaseBuildLock } from "./env-resolution";
 import { resolveTestOverrides } from "./test";
 import {
   ALL_FLAG_KEYS,
@@ -112,6 +112,7 @@ const DEFAULT_OVERRIDE_CACHE_TTL_MS = 5_000;
 const DEFAULT_FLAG_BACKEND_TIMEOUT_MS = 2_000;
 
 export type FlagResolutionSource =
+  | "release-build-lock"
   | "env-override"
   | "platform-mode-override"
   | "test-override"
@@ -514,6 +515,16 @@ export async function getFlagAttestation(
     observedAtMs,
   });
 
+  // P2P v1 release build (env-resolution.ts): a not-in-v1 flag is locked OFF ahead of
+  // every other source, so no override or backend can re-enable it on the shipped build.
+  const releaseLock = releaseBuildLock(key, process.env);
+  if (releaseLock !== undefined) {
+    return done(
+      releaseLock,
+      "release-build-lock",
+      inspectOverrideReadWithoutLoading(observedAtMs),
+    );
+  }
   const envOverride = resolveEnvOverride(key);
   if (envOverride !== undefined) {
     return done(
@@ -602,7 +613,10 @@ export async function getFlag(
 function applyEnvOverrides(flags: FlagValues): FlagValues {
   let out = flags;
   for (const key of ALL_FLAG_KEYS) {
-    const v = resolveEnvOverride(key) ?? resolvePlatformModeOverride(key);
+    const v =
+      releaseBuildLock(key, process.env) ??
+      resolveEnvOverride(key) ??
+      resolvePlatformModeOverride(key);
     if (v !== undefined) {
       if (out === flags) out = { ...flags };
       out[key] = v;
