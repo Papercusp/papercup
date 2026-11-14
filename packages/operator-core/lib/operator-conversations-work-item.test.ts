@@ -107,9 +107,15 @@ describe('work-item conversation identity helpers', () => {
   });
 
   it('fails closed when an explicit id belongs to another workspace', async () => {
+    const conversationId = '00000000-0000-4000-8000-000000000042';
     h.unsafe.mockResolvedValueOnce([]);
-    await expect(getConversationById('conversation-1', 'ws-b')).resolves.toBeNull();
-    expect(h.unsafe.mock.calls[0][1]).toEqual(['conversation-1', 'ws-b']);
+    await expect(getConversationById(conversationId, 'ws-b')).resolves.toBeNull();
+    expect(h.unsafe.mock.calls[0][1]).toEqual([conversationId, 'ws-b']);
+  });
+
+  it('rejects a malformed explicit id before querying storage', async () => {
+    await expect(getConversationById('conversation-1', 'ws-a')).resolves.toBeNull();
+    expect(h.unsafe).not.toHaveBeenCalled();
   });
 });
 
