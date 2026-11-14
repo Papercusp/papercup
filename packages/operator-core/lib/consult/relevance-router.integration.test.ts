@@ -1032,10 +1032,10 @@ describe('routeConsult — routing + blend', () => {
       expect(complete?.evidence.every(row => row.anchor?.sessionId && Number.isInteger(row.anchor.turnIdx))).toBe(true);
       expect(covered.snapshot.candidates.find(candidate => candidate.ownerId === 'manual-anchor-partial')?.subjectEvidenceCoverage)
         .toMatchObject({
-          status: 'unmeasured',
+          status: 'unanchored',
           evidence: [
             { subject: 'src/billing.ts', status: 'supported' },
-            { subject: 'src/backup.ts', status: 'unmeasured', score: null },
+            { subject: 'src/backup.ts', status: 'unanchored', score: null },
           ],
         });
       expect(covered.snapshot.candidates.find(candidate => candidate.ownerId === 'manual-anchor-unrelated')).toBeUndefined();
@@ -1088,7 +1088,7 @@ describe('routeConsult — routing + blend', () => {
         evidence: subjectRefs.map(subject => ({ subject, status: 'supported', anchor: { exact: true } })),
       });
       expect(result.snapshot.candidates.find(candidate => candidate.ownerId === 'anchor-partial')?.subjectEvidenceCoverage)
-        .toMatchObject({ status: 'unmeasured' });
+        .toMatchObject({ status: 'unanchored' });
       // The lexical fallback uses the same population filter and remains unqualified.
       const lexical = await routeConsult(request, deps(null));
       expect(lexical.qualified).toEqual([]);
