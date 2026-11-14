@@ -212,6 +212,14 @@ const SESSION_ID_VALUE_PREFIX =
   /\b(?:native[-\s]+)?session(?:[-\s]+(?:id|identifier|uuid|prefix))?\s*(?:[:=#]\s*)?$/i;
 
 /**
+ * Run/workflow identifiers are also hex-shaped and often sit beside "running"
+ * language. Match the label immediately before the value so the identifier cannot
+ * be mistaken for a deployed commit, while an actual commit elsewhere still works.
+ */
+const EXECUTION_RUN_ID_VALUE_PREFIX =
+  /\b(?:(?:private|detached|managed)[-\s]+)?(?:(?:background|workflow)[-\s]+)?run(?:[-\s]+(?:id|identifier|uuid|prefix))?\s*(?:[:=#]\s*)?$/i;
+
+/**
  * Coordination message/request identifiers can be shortened to a bare hex prefix
  * in prose. A nearby word like "released" must not turn that reference into a Git
  * position, even when the prefix happens to resolve to a commit.
@@ -258,7 +266,7 @@ function sameSentenceContextWindow(haystack: string, valueStart: number, valueLe
   const windowEnd = Math.min(haystack.length, valueEnd + CONTEXT_WINDOW);
   const sentenceBoundary = /[.!?](?:["'”’)]*)\s+/g;
 
-  let sentenceStart = windowStart;
+  let sentenceStart: number = windowStart;
   const before = haystack.slice(windowStart, valueStart);
   let boundary: RegExpExecArray | null;
   while ((boundary = sentenceBoundary.exec(before)) !== null) {
@@ -267,8 +275,42 @@ function sameSentenceContextWindow(haystack: string, valueStart: number, valueLe
 
   const after = haystack.slice(valueEnd, windowEnd);
   const nextBoundary = /[.!?](?:["'”’)]*)\s+/.exec(after);
-  const sentenceEnd = nextBoundary ? valueEnd + nextBoundary.index : windowEnd;
+  let sentenceEnd = nextBoundary ? valueEnd + nextBoundary.index : windowEnd;
+
+  // EI-28748184140414061: a character window can cut a word in half, and the slice
+  // edge then reads as a word boundary — "source candidates" truncated to
+  // "source candidate" satisfied /\bcandidate\b/ and named a consult id as the gate
+  // candidate. Drop a partial word at either edge rather than inventing a word.
+  const isWordChar = (ch: string | undefined): boolean => ch !== undefined && /\w/.test(ch);
+  if (sentenceStart > 0 && isWordChar(haystack[sentenceStart - 1]) && isWordChar(haystack[sentenceStart])) {
+    while (sentenceStart < valueStart && isWordChar(haystack[sentenceStart])) sentenceStart += 1;
+  }
+  if (sentenceEnd < haystack.length && isWordChar(haystack[sentenceEnd - 1]) && isWordChar(haystack[sentenceEnd])) {
+    while (sentenceEnd > valueEnd && isWordChar(haystack[sentenceEnd - 1])) sentenceEnd -= 1;
+  }
   return haystack.slice(sentenceStart, sentenceEnd);
+}
+
+/**
+ * Git prints object ids in one case. A token mixing upper- and lower-case hex
+ * letters is a label glued to an id (`Bb8ed0968` = consult B + request prefix,
+ * `A85fd6a08` = consult A), not a transcribed SHA (EI-28748184140414061).
+ */
+function isMixedCaseHexToken(token: string): boolean {
+  return /[A-F]/.test(token) && /[a-f]/.test(token);
+}
+
+/**
+ * Consult request and dispatch identifiers are shortened to bare hex prefixes in
+ * peer reports (`consult b8ed0968`, `dispatched d25ff149`). Anchored to the value
+ * so a consult mentioned elsewhere cannot suppress a real candidate claim.
+ */
+const CONSULT_ID_VALUE_PREFIX =
+  /\b(?:consult(?:ation)?|conv(?:ersation)?[-\s]+request|(?:full|partial|light)\s+review|dispatch(?:ed)?)(?:[-\s]+(?:id|identifier|prefix|request|reply|answer))?\s*(?:[:=#]\s*)?$/i;
+
+function isExplicitConsultIdentifier(haystack: string, valueStart: number): boolean {
+  const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
+  return CONSULT_ID_VALUE_PREFIX.test(before);
 }
 
 function isCheckpointMetadataValue(haystack: string, valueStart: number): boolean {
@@ -289,6 +331,11 @@ function isExplicitMemoryIdentifier(haystack: string, valueStart: number): boole
 function isExplicitSessionIdentifier(haystack: string, valueStart: number): boolean {
   const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
   return SESSION_ID_VALUE_PREFIX.test(before);
+}
+
+function isExplicitExecutionRunIdentifier(haystack: string, valueStart: number): boolean {
+  const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
+  return EXECUTION_RUN_ID_VALUE_PREFIX.test(before);
 }
 
 function isExplicitCoordinationReference(haystack: string, valueStart: number, valueLength: number): boolean {
@@ -399,7 +446,9 @@ const PATTERNS: readonly TranscriptionPattern[] = [
     // pipeline-position pattern and do not let a gate candidate be described as
     // the deployed/serving commit.
     value: /(?<![0-9]\.)(?<![0-9A-Za-z#-])(?=[0-9a-f]{7,40}(?![0-9A-Za-z-]))[0-9a-f]*[a-f][0-9a-f]*(?![0-9A-Za-z-])/gi,
-    context: /\b(candidate|green[- ]?checkpoint)\b/i,
+    // A consult router's "source/responder candidate" is a peer being ranked, not the
+    // gate's candidate commit (EI-28748184140414061).
+    context: /\b(?<!(?:source|responder|expert|consult|routing|reviewer)[-\s])candidate\b|\bgreen[- ]?checkpoint\b/i,
     commitSha: true,
   },
   {
@@ -491,7 +540,10 @@ export function detectCellTranscriptions(text: unknown, options: DetectOptions =
       // that HEAD value keeps it classified as a deployment claim.
       if (
         isExplicitLockOrLeaseIdentifier(haystack, m.index, m[0].length) ||
+        (p.commitSha && isMixedCaseHexToken(m[0])) ||
+        (p.commitSha && isExplicitConsultIdentifier(haystack, m.index)) ||
         (p.commitSha && isExplicitCoordinationReference(haystack, m.index, m[0].length)) ||
+        (p.commitSha && isExplicitExecutionRunIdentifier(haystack, m.index)) ||
         isExplicitMemoryIdentifier(haystack, m.index) ||
         (p.commitSha && isArtifactRevisionValue(haystack, m.index)) ||
         (p.commitSha &&

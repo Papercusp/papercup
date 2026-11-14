@@ -498,6 +498,52 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
   });
 });
 
+describe('EI-28748184140414061 — consult ids are not the green-checkpoint candidate', () => {
+  // The recorded coord:send (summary + part 1) that named Bb8ed0968 as the gate candidate.
+  const recorded =
+    'P002104 reviews dispatched; exact quality audit blocked by mutex timeout; need admitted shared-runtime repair (part 1/4)\n' +
+    'P002 source-bound FULL A85fd6a08 dispatched2bb30060 from cd0fd657; FULL Bb8ed0968 dispatched d25ff149 ' +
+    'from4cdad80d, separate source candidates. Both awaitconsultreply, bounded10min wakes435944/435945.';
+
+  it('does not flag the recorded consult report, even when every token resolves to a commit', async () => {
+    expect(detectCellTranscriptions(recorded, { resolvesToCommit: () => true })).toEqual([]);
+    expect(await cellTranscriptionHintResolvingCommits(recorded, async () => true)).toBeNull();
+  });
+
+  it('does not let the window edge truncate "candidates" into the context word "candidate"', () => {
+    const filler = 'w'.repeat(CONTEXT_WINDOW - 2 - 'candidate'.length);
+    // The 60-char window ends exactly after "candidate", inside "candidates".
+    expect(detectCellTranscriptions(`deadbee1 ${filler} candidates are ranked`)).toEqual([]);
+    // POSITIVE CONTROL: the same window ending on a whole word still sees it.
+    expect(detectCellTranscriptions(`deadbee1 ${filler} candidate is judged`)).toMatchObject([
+      { value: 'deadbee1', cell: 'gate.greenCheckpoint.candidate' },
+    ]);
+  });
+
+  it('rejects mixed-case labelled ids but keeps single-case SHAs', () => {
+    expect(detectCellTranscriptions('green-checkpoint candidate Bb8ed0968')).toEqual([]);
+    expect(detectCellTranscriptions('green-checkpoint candidate A85fd6a08')).toEqual([]);
+    expect(detectCellTranscriptions('green-checkpoint candidate b8ed0968').map((h) => h.value)).toEqual(['b8ed0968']);
+    expect(detectCellTranscriptions('green-checkpoint candidate B8ED0968').map((h) => h.value)).toEqual(['B8ED0968']);
+  });
+
+  it('does not treat a consult source/responder candidate as gate context', () => {
+    expect(detectCellTranscriptions('routed to source candidate 9a4319b7', { resolvesToCommit: () => true })).toEqual([]);
+    expect(detectCellTranscriptions('responder candidate 9a4319b7 declined', { resolvesToCommit: () => true })).toEqual([]);
+    expect(detectCellTranscriptions('gate candidate 9a4319b7').map((h) => h.cell)).toEqual(['gate.greenCheckpoint.candidate']);
+  });
+
+  it('excludes consult and dispatch id prefixes anchored to the value', () => {
+    const opts = { resolvesToCommit: () => true };
+    expect(detectCellTranscriptions('consult b8ed0968 is waiting; the green-checkpoint candidate is unchanged', opts)).toEqual([]);
+    expect(detectCellTranscriptions('dispatched d25ff149; the green-checkpoint candidate is unchanged', opts)).toEqual([]);
+    // A consult mentioned elsewhere does not suppress a real candidate claim.
+    expect(
+      detectCellTranscriptions('consult answered; green-checkpoint is judging candidate 60bb6f3c33', opts).map((h) => h.value),
+    ).toEqual(['60bb6f3c33']);
+  });
+});
+
 describe('EI-25431705270466357 — fractional byte amounts are not commit SHAs', () => {
   for (const amount of ['40,279,831,019.520004B', '14,991,024,619.520004B', '0.1234567B']) {
     for (const context of ['No live reclaim occurred.', 'The green-checkpoint candidate needs space.']) {
