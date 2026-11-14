@@ -3421,7 +3421,11 @@ describe('deferred scratch quota recovery', () => {
                 subphase: row.progress.subphase,
                 phaseElapsedMs: row.progress.phaseElapsedMs,
                 totalElapsedMs: row.progress.totalElapsedMs,
+                recoveryActive: row.progress.recoveryActive,
+                refreshActive: row.progress.refreshActive,
                 mutexWaitOwner: row.progress.mutexWaitOwner,
+                quotaRecoveryDiagnostics: row.progress.quotaRecoveryDiagnostics,
+                usageRefreshDiagnostics: row.progress.usageRefreshDiagnostics,
               },
               refreshWaitMs: row.refreshWaitMs,
               refreshWaitMutexOwner: row.refreshWaitMutexOwner,
@@ -3433,8 +3437,18 @@ describe('deferred scratch quota recovery', () => {
               quotaRecoveryDataMutexWaitOwner: row.quotaRecoveryDataMutexWaitOwner,
               fsMutexAdmissionMs: row.fsMutexAdmissionMs,
             }));
+            const recentRecoveryWriterEvidence = timings.slice(-3).map((row) => ({
+              progress: row.progress,
+              quotaWaitMs: row.quotaWaitMs,
+              refreshWaitMs: row.refreshWaitMs,
+              quotaRecoveryMs: row.quotaRecoveryMs,
+              dataLeaseWaitMs: row.dataLeaseWaitMs,
+              quotaRecoveryDataMutexWaitMs: row.quotaRecoveryDataMutexWaitMs,
+              quotaRecoveryDiagnostics: row.quotaRecoveryDiagnostics,
+              usageRefreshDiagnostics: row.usageRefreshDiagnostics,
+            }));
             reject(new Error(
-              `concurrent scratch writer did not finish before timeout; timing evidence=${JSON.stringify(recentTimingEvidence)}`,
+              `concurrent scratch writer did not finish before timeout; timing evidence=${JSON.stringify({ recentTimingEvidence, recentRecoveryWriterEvidence })}`,
             ));
           }, 7_000);
         }),

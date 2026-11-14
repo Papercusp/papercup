@@ -2961,9 +2961,10 @@ export async function writeWithScratchQuota(
         const reservationBytes = opts.bytes + markerBytes;
         pending.bytes = reservationBytes;
 
-        // Recovery owns the data → quota lock order. Do not wait for it while holding the quota
-        // mutex or the recovery can be unable to acquire the second half of its pair.
-        if (entry.recovering) return SCRATCH_QUOTA_RECOVERY_WAIT_REQUIRED;
+        // A running refresh/recovery does not itself prevent a quota-fitting reservation. The
+        // refresh validates its write generation and shared ledger revision before adopting its
+        // snapshot; recovery's exclusive data lease serializes writes while it evicts. Try the
+        // cached aggregate first, and only join recovery after a refusal, outside both locks.
         try {
           reserveScratchSpace({
             workspaceId: opts.workspaceId,
@@ -2973,7 +2974,9 @@ export async function writeWithScratchQuota(
         } catch (err) {
           if (!(err instanceof ScratchQuotaError)) throw err;
           lastQuotaRefusal = err;
-          return SCRATCH_QUOTA_RECOVERY_REQUIRED;
+          return entry.recovering
+            ? SCRATCH_QUOTA_RECOVERY_WAIT_REQUIRED
+            : SCRATCH_QUOTA_RECOVERY_REQUIRED;
         }
 
         // `reserveScratchSpace` accounts bytes in the target run. The marker belongs to the
