@@ -12224,7 +12224,7 @@
       ],
       "guidance": {
         "when": "Checking what will reach or wake you (active wake awaits plus standing event-key inject subscriptions), whether a wake fired and via which channel, or whether the fleet is wake-storming (meter: true). For exact event-key reads, inspect event_inspection.waiters; active_awaits belongs to generic or await_id reads.",
-        "notWhen": "Reading your message stream — that is coord:inbox. Following an area — topics:feed. Workspace-global read surface: scope comes from request context and caller identity; do not pass `harness` or `workspace` as JSON arguments (those keys are rejected)."
+        "notWhen": "Reading your message stream — that is coord:inbox. Following an area — topics:feed."
       }
     },
     {

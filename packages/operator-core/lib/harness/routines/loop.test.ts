@@ -1787,6 +1787,13 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
     expect(status.lastWakeCreatedAt).toBe('2026-10-09T20:20:14.031Z');
   });
 
+  it('exposes measured execution state for the latest parked fire', async () => {
+    const out = await getLoopStatuses(['su-x'], {
+      sql: rowSql({ parked: true, managed_continuation_in_flight: true }) as any,
+    });
+    expect(out.get('su-x')?.currentExecutionInFlight).toBe(true);
+  });
+
   it('reuses an injected TransactionSql instead of opening a nested transaction', async () => {
     const transaction = rowSql() as TransactionalFakeSql & { begin?: TransactionalFakeSql['begin'] };
     Reflect.deleteProperty(transaction, 'begin');
