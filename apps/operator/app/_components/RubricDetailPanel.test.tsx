@@ -231,11 +231,13 @@ describe('scorecard coverage and pinned procedure presentation', () => {
       ? { data: acceptedPage, loading: false, fetching: false, error: null } : defaultSyncQuery(opts));
     render(<RubricDetailPanel rubricId="rubric-quality" />);
     expect(screen.getByLabelText('Last accepted result').textContent).toContain('older-accepted');
-    expect(screen.getByLabelText('History view')).toHaveProperty('value', 'review-history');
+    expect(screen.getByRole('combobox', { name: 'History view' }).textContent)
+      .toContain('Review history, including excluded results');
     fireEvent.click(screen.getByText('Grading history'));
     fireEvent.click(screen.getByRole('button', { name: 'Load older scorecards' }));
     await waitFor(() => expect(screen.getByText('scorecard-2')).toBeTruthy());
-    fireEvent.change(screen.getByLabelText('History view'), { target: { value: 'accepted' } });
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'History view' }), { key: 'ArrowDown' });
+    fireEvent.click(await screen.findByRole('option', { name: 'Accepted results' }));
     await waitFor(() => expect(screen.queryByText('scorecard-2')).toBeNull());
     expect(sync.useSyncQuery).toHaveBeenCalledWith(expect.objectContaining({ queryName: 'scorecards.list',
       args: { rubricRef: 'rubric-quality', mode: 'accepted', limit: 100 } }));

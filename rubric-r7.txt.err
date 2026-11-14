@@ -1,0 +1,1 @@
+mcp-call: could not read --json-file a-rubric-get.json: ENOENT: no such file or directory, open 'a-rubric-get.json'
