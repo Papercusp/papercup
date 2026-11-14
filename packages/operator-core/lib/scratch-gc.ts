@@ -1405,6 +1405,7 @@ async function evictWorkspaceQuotaLocked(
   reconcileReservations = false,
   diagnostics?: ScratchQuotaRecoveryDiagnostics,
   now: () => number = Date.now,
+  trustedAggregate?: SharedScratchQuotaState,
 ): Promise<{
   used: number; evictions: number; bytes: number;
 }> {
@@ -1424,6 +1425,9 @@ async function evictWorkspaceQuotaLocked(
   let runs: Array<{ dir: string; mtimeMs: number }> | null = null;
   let cacheChanged = false;
   let newlyDiscoveredRunBytes = 0;
+  const useTrustedAggregate = Boolean(
+    reconcileReservations && trustedAggregate && !useCachedRunSizes,
+  );
   // Keep a full-walk index for background refreshes and for the conservative fallback when no
   // stable per-run measurement exists. Request-time recovery uses the stable index instead.
   const runBytesByPath = new Map<string, number>();
@@ -1521,6 +1525,15 @@ async function evictWorkspaceQuotaLocked(
     }
     used = Math.max(0, used);
     if (runs.some((run) => !entry.runBytesByPath.has(run.dir))) cacheChanged = true;
+  } else if (useTrustedAggregate && trustedAggregate) {
+    // A fresh, validated shared ledger is a complete aggregate measurement. It can seed
+    // request-time FIFO recovery without recursively sizing every file in the workspace;
+    // candidate run directories are still remeasured before deletion below.
+    used = trustedAggregate.bytes;
+    entry.bytes = trustedAggregate.bytes;
+    entryBytesAtStart = trustedAggregate.bytes;
+    entry.measuredAt = trustedAggregate.measuredAt;
+    entry.sharedUpdatedAt = trustedAggregate.updatedAt;
   } else {
     const sizeWalkStartedAt = performance.now();
     const sizeWalkErrorCount = scratchQuotaReadErrorCount(diagnostics);
@@ -1708,12 +1721,18 @@ async function evictWorkspaceQuotaLocked(
         return sum + Math.max(0, write.bytes - (observedWriterBytes.get(write.filePath) ?? 0));
       }, 0);
     }
-    entry.measuredAt = now();
+    entry.measuredAt = useTrustedAggregate
+      ? trustedAggregate!.measuredAt
+      : now();
     entry.refreshDeferred = overlappingWrites || cacheChanged;
     if (useCachedRunSizes) {
       entry.runBytesValid = !entry.refreshDeferred;
       if (!entry.runBytesValid) entry.runMtimeByPath.clear();
     } else if (overlappingWrites) {
+      invalidateRunSizeIndex(entry);
+    } else if (useTrustedAggregate) {
+      // Only selected FIFO candidates were measured. Do not mislabel that partial set as a
+      // complete per-run index; later recovery can reuse the aggregate while it remains fresh.
       invalidateRunSizeIndex(entry);
     } else {
       entry.runBytesByPath = runBytesByPath;
@@ -2740,10 +2759,16 @@ export async function writeWithScratchQuota(
    */
   const ensureQuotaRecovery = (): { promise: Promise<void>; started: boolean } => {
     if (entry.recovering) return { promise: entry.recovering, started: false };
-    if (!entry.runBytesValid || entry.refreshDeferred) {
+    if (
+      entry.refreshDeferred ||
+      (!entry.runBytesValid && (
+        entry.refreshing ||
+        Date.now() - entry.measuredAt >= USAGE_REFRESH_MS
+      ))
+    ) {
       // A missing per-run index used to make request-time recovery hold the exclusive data
-      // lease through a full workspace walk. Reuse the optimistic refresh instead: it measures
-      // outside that lease and checks the write generation before adopting its result.
+      // lease through a full workspace walk. A stale/uncertain aggregate still uses the
+      // optimistic refresh; a fresh validated aggregate takes the candidate-only path below.
       const refresh = refreshScratchUsage(opts.workspaceId);
       const diagnostics = entry.refreshDiagnostics;
       if (diagnostics) activeRecoveryDiagnostics = diagnostics;
@@ -2763,6 +2788,7 @@ export async function writeWithScratchQuota(
       await timed('quotaRecoveryMs', async () => {
         const diagnostics = newScratchQuotaRecoveryDiagnostics();
         activeRecoveryDiagnostics = diagnostics;
+        let refreshRequired = false;
         try {
           // The tree walk/deletion is protected by the exclusive data lease. Keep the quota
           // ledger mutex out of that long filesystem phase so result-door reservations can
@@ -2773,11 +2799,41 @@ export async function writeWithScratchQuota(
               WORKSPACE_QUOTA_BYTES - SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES -
                 [...entry.writes.values()].reduce((sum, request) => sum + request.bytes, 0),
             );
+            let trustedAggregate: SharedScratchQuotaState | undefined;
+            if (!entry.runBytesValid) {
+              const writeGeneration = entry.writeGeneration;
+              if (
+                entry.refreshDeferred ||
+                [...entry.writes.values()].some((write) => write.reserved)
+              ) {
+                refreshRequired = true;
+                return;
+              }
+              trustedAggregate = await withScratchWorkspaceMutex(
+                opts.workspaceId,
+                'quota-recovery-aggregate-read',
+                () => readSharedScratchQuotaState(opts.workspaceId),
+              ) ?? undefined;
+              if (
+                !trustedAggregate ||
+                trustedAggregate.measuredAt <= 0 ||
+                Date.now() - trustedAggregate.measuredAt >= USAGE_REFRESH_MS ||
+                entry.writeGeneration !== writeGeneration ||
+                entry.refreshDeferred ||
+                [...entry.writes.values()].some((write) => write.reserved)
+              ) {
+                trustedAggregate = undefined;
+                refreshRequired = true;
+                return;
+              }
+            }
             await evictWorkspaceQuotaLocked(
               opts.workspaceId,
               () => targetBytes,
               true,
               diagnostics,
+              Date.now,
+              trustedAggregate,
             );
           }, opts.onTiming ? (info) => {
             recoveryDataMutexWaitOwner = scratchWriteMutexWaitOwner(info.owner);
@@ -2802,14 +2858,24 @@ export async function writeWithScratchQuota(
             recoveryDataMutexWaitOwner = undefined;
             if (reportedWaitOwner) emitActiveRecoveryProgress?.();
           });
-          await withScratchWorkspaceMutex(opts.workspaceId, 'quota-recovery-state', async () => {
-            await writeSharedScratchQuotaState(
-              opts.workspaceId,
-              entry.bytes,
-              entry.measuredAt || Date.now(),
-              observeAwait,
-            );
-          });
+          if (refreshRequired) {
+            const refresh = refreshScratchUsage(opts.workspaceId);
+            const refreshDiagnostics = entry.refreshDiagnostics;
+            if (refreshDiagnostics) activeRecoveryDiagnostics = refreshDiagnostics;
+            await refresh;
+            if (refreshDiagnostics) {
+              timings.usageRefreshDiagnostics = snapshotScratchQuotaRecoveryDiagnostics(refreshDiagnostics);
+            }
+          } else {
+            await withScratchWorkspaceMutex(opts.workspaceId, 'quota-recovery-state', async () => {
+              await writeSharedScratchQuotaState(
+                opts.workspaceId,
+                entry.bytes,
+                entry.measuredAt || Date.now(),
+                observeAwait,
+              );
+            });
+          }
         } finally {
           timings.quotaRecoveryDiagnostics = snapshotScratchQuotaRecoveryDiagnostics(diagnostics);
           activeRecoveryDiagnostics = undefined;

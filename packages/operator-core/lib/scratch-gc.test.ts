@@ -3291,11 +3291,14 @@ describe('deferred scratch quota recovery', () => {
       expect(otherRuns.every((run) => existsSync(run))).toBe(true);
     });
 
-    expect(timings[0]?.quotaRecoveryDiagnostics?.sizeWalkMs).toBeGreaterThan(0);
+    expect(timings[0]?.quotaRecoveryDiagnostics).toMatchObject({
+      sizeWalkMs: 0, runsConsidered: 1, deleteAttempts: 1,
+    });
     const sizeWalkDirectories = vi.mocked(readdirAsync).mock.calls
       .filter(([, options]) => options != null && typeof options === 'object' && 'withFileTypes' in options)
       .map(([path]) => String(path));
-    expect(sizeWalkDirectories).toContain(scratchRootForWorkspace('ws-Q'));
+    expect(sizeWalkDirectories).toContain(oldest);
+    expect(sizeWalkDirectories).not.toContain(scratchRootForWorkspace('ws-Q'));
     await refreshScratchUsage('ws-Q');
   });
 
@@ -3360,7 +3363,11 @@ describe('deferred scratch quota recovery', () => {
     const retainedRun = makeSparseRun('ws-Q', UUID(1), 2 * 1024 ** 3, 10_000);
     const writerRun = makeRunDir('ws-Q', 'quota', UUID(2), 32);
     await refreshScratchUsage('ws-Q');
-    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES - 1024 * 1024, Date.now());
+    _setScratchUsageForTests(
+      'ws-Q',
+      WORKSPACE_QUOTA_BYTES - 1024 * 1024,
+      Date.now() - USAGE_REFRESH_MS - 1,
+    );
     vi.mocked(readdirAsync).mockClear();
 
     const wsRoot = scratchRootForWorkspace('ws-Q');
