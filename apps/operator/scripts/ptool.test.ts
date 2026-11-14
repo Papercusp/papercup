@@ -80,6 +80,7 @@ import {
   PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS,
   PTOOL_EVENTS_AWAIT_TIMEOUT_MS,
   PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
+  PTOOL_CAPABILITY_BASH_TIMEOUT_MS,
   PTOOL_GIT_EVIDENCE_TIMEOUT_MS,
   PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS,
   PTOOL_PG_HOT_QUERIES_TIMEOUT_MS,
@@ -1399,6 +1400,18 @@ describe('ptool bearer-token resolution', () => {
 });
 
 describe('ptool call deadlines', () => {
+  it.each([false, true])('observes the shell admission refusal beyond the declared 65s server deadline (deferred=%s)', deferred => {
+    const args = { command: 'printf bounded-admission', run_in_background: true, timeout: 7_200_000 };
+    const deadline = deferred
+      ? timeoutForTool('tools:invoke', { name: 'capability:bash', args })
+      : timeoutForTool('capability:bash', args);
+    expect(deadline).toBe(PTOOL_CAPABILITY_BASH_TIMEOUT_MS);
+    expect(deadline).toBeGreaterThan(65_000);
+    // The independent execution timeout must not turn into a blocking RPC.
+    expect(deadline).toBeLessThan(args.timeout);
+    expect(timeoutForTool('ordinary:read')).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
   it.each([
     ['consult:reply', false],
     ['consult:reply', true],

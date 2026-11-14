@@ -2380,6 +2380,13 @@ export const PTOOL_PLAN_STATUS_TIMEOUT_MS = 915_000;
 // cutoff — instead of pre-empting both.
 export const PTOOL_FOREGROUND_TOOL_TIMEOUT_MS = 60_000;
 
+// EI-28793480247033779: capability:bash declares a 60s dispatch budget
+// (50s response window + 10s), and MCP allows another 5s for settlement.
+// Admission now consumes that same dispatch budget. Keep the client outside
+// the full 65s server contract so its typed pre-handler refusal is observable.
+// This changes neither the shell execution deadline nor its permissions.
+export const PTOOL_CAPABILITY_BASH_TIMEOUT_MS = 70_000;
+
 // EI-26161087677172506: capability:git-evidence has a 30s handler budget,
 // and an oversized historical blob can spend another 30s in the result-door
 // scratch-spill wait before the pending cursor is returned. Keep the client
@@ -2664,7 +2671,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['rubrics:amend', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['testing:run', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['build:typecheck', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
-  ['capability:bash', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['capability:bash', PTOOL_CAPABILITY_BASH_TIMEOUT_MS],
   ['capability:inspect', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['capability:git-evidence', PTOOL_GIT_EVIDENCE_TIMEOUT_MS],
   // EI-22780156976598155 (building on EI-21314560074357302): capability:launch-agent
