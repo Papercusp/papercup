@@ -61,28 +61,55 @@ export function isUnderAnyPath(path: string, roots: readonly string[]): boolean 
   return roots.some((root) => path === root || path.startsWith(`${root}/`));
 }
 
-type RunGitLike = (args: string[], cwd: string) => Promise<{ code: number; stdout: string }>;
+type RunGitLike = (args: string[], cwd: string) => Promise<{ code: number; stdout: string; stderr?: string }>;
 
 /**
  * The nested checkouts (among `nested`, repo-relative to `repo`) whose HEAD no
- * `refs/remotes/origin/*` ref contains. A checkout that is not present is skipped: there
- * is no moved gitlink to hold. A failed probe counts as unpublished (fail closed — holding
- * a gitlink one more tick is harmless; pinning an unfetchable commit is not).
+ * `refs/remotes/origin/*` ref contains after refreshing origin's branch refs. The nested
+ * publisher does not necessarily fetch origin after its PR lands. Cached refs alone
+ * could therefore hold the parent pin forever. Unchanged pins need no network probe.
+ * Failed probes still hold the moved link, with evidence for the enclosing sweep.
  */
 export async function unpublishedNestedPotCheckouts(
   runGit: RunGitLike,
   repo: string,
   nested: readonly string[],
+  onHold?: (path: string, detail: string) => void,
 ): Promise<string[]> {
   const out: string[] = [];
   for (const path of nested) {
     const dir = join(repo, path);
     if (!existsSync(join(dir, '.git'))) continue;
+    const [pin, head] = await Promise.all([
+      runGit(['ls-tree', 'HEAD', '--', path], repo).catch(() => ({ code: 1, stdout: '' })),
+      runGit(['rev-parse', 'HEAD'], dir).catch(() => ({ code: 1, stdout: '' })),
+    ]);
+    const pinnedSha = /^160000 commit ([0-9a-f]{40,64})\t/.exec(pin.stdout)?.[1];
+    const headSha = head.code === 0 ? head.stdout.trim() : '';
+    if (pinnedSha && pinnedSha === headSha) continue;
+    const hold = (detail: string): void => {
+      out.push(path);
+      onHold?.(path, detail);
+    };
+    if (!headSha) {
+      hold('Nested pot checkout HEAD could not be read; publication to origin cannot be verified.');
+      continue;
+    }
+    const refreshed = await runGit(
+      ['fetch', '--prune', '--no-tags', 'origin', '+refs/heads/*:refs/remotes/origin/*'],
+      dir,
+    ).catch(() => ({ code: 1, stdout: '' }));
+    if (refreshed.code !== 0) {
+      hold(`Could not refresh origin branches to verify nested pot HEAD ${headSha}; its gitlink remains held until origin is reachable.`);
+      continue;
+    }
     const contained = await runGit(
       ['for-each-ref', '--contains', 'HEAD', '--count=1', '--format=%(refname)', 'refs/remotes/origin/'],
       dir,
     ).catch(() => ({ code: 1, stdout: '' }));
-    if (contained.code !== 0 || !contained.stdout.trim()) out.push(path);
+    if (contained.code !== 0 || !contained.stdout.trim()) {
+      hold(`Nested pot HEAD ${headSha} is not verified on an origin branch. Finish the nested pot's own delivery route to origin; the enclosing sweep can then advance its gitlink.`);
+    }
   }
   return out;
 }

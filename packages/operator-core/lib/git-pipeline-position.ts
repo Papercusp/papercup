@@ -3840,6 +3840,7 @@ export function gitSyncDeferralFor(
     | 'restricted-disclosure'
     | 'restricted-window-unattributed'
     | 'attribution-child-sync'
+    | 'nested-pot-unpublished'
     | 'migration-reservation'
     | 'migration-dependency-fence';
   detail: string;
@@ -3849,7 +3850,7 @@ export function gitSyncDeferralFor(
   const want = path.replace(/^\.\//, '');
   const entry = (gitSync.skippedPaths ?? []).find((s) => {
     const full = !s.scope || s.scope === 'superproject' ? s.path : `${s.scope}/${s.path}`;
-    return full === want;
+    return full === want || (!('owner' in s) && s.reason === 'nested-pot-unpublished' && want.startsWith(`${full}/`));
   });
   if (!entry) return null;
   const when =
@@ -3899,6 +3900,13 @@ export function gitSyncDeferralFor(
         entry.detail,
       lever:
         'Let child synchronization and the final pointer-bump complete, then inspect a fresh completed git-sync result for this path; forcing the same pass does not bypass this ordering guard.',
+    };
+  }
+  if (entry.reason === 'nested-pot-unpublished') {
+    return {
+      reason: 'nested-pot-unpublished',
+      detail: `${when} held this nested pot's gitlink: ${entry.detail}`,
+      lever: 'Finish the nested pot\'s own delivery to its origin, then let the enclosing sweep verify the published commit and advance the gitlink; an enclosing sweep cannot publish the nested pot\'s work for it.',
     };
   }
   if (entry.reason === 'migration-reservation') {

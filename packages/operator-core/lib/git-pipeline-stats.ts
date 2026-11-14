@@ -966,8 +966,8 @@ export function skippedPathArr(v: unknown): GitSyncSkippedPath[] {
       continue;
     }
     if (typeof r.detail !== 'string') continue;
-    if (r.reason === 'migration-reservation') {
-      out.push({ scope: r.scope, path: r.path, reason: 'migration-reservation', detail: r.detail });
+    if (r.reason === 'migration-reservation' || r.reason === 'nested-pot-unpublished' || r.reason === 'attribution-child-sync') {
+      out.push({ scope: r.scope, path: r.path, reason: r.reason, detail: r.detail });
     } else if (r.reason === 'migration-dependency-fence') {
       const blockingMigrations = strings(r.blockingMigrations);
       const blockingAgents = strings(r.blockingAgents);

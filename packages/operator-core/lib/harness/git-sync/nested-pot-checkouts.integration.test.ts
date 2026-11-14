@@ -14,11 +14,12 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { collectChildOutput } from '../../child-output';
 import { runGitSync, type GitSyncConfig, type RunGit } from './run-git-sync';
+import type { RunGitStdin } from '../../sync/pot-git/storage';
 
 /** Real git, fleet hooks off; file transport allowed so local submodules can be cloned. */
-const testRunGit: RunGit = (args, cwd) =>
-  new Promise((resolve) => {
-    const env: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: '1' };
+function runTestGit(args: string[], cwd: string, options?: { env?: NodeJS.ProcessEnv }, input?: string): ReturnType<RunGit> {
+  return new Promise((resolve) => {
+    const env: NodeJS.ProcessEnv = { ...process.env, ...options?.env, GIT_CONFIG_NOSYSTEM: '1' };
     delete env.GIT_CONFIG;
     const child = spawn('git', ['-c', 'core.hooksPath=/nonexistent', '-c', 'protocol.file.allow=always', ...args], {
       cwd,
@@ -27,7 +28,15 @@ const testRunGit: RunGit = (args, cwd) =>
     const output = collectChildOutput(child);
     child.on('error', (e) => resolve({ code: -1, stdout: output.stdout.text(), stderr: output.stderr.text() + String(e) }));
     child.on('close', (code) => resolve({ code: code ?? -1, stdout: output.stdout.text(), stderr: output.stderr.text() }));
+    child.stdin.on('error', () => {});
+    child.stdin.end(input);
   });
+}
+const testRunGit: RunGit = (args, cwd, options) => runTestGit(args, cwd, options);
+const testRunGitStdin: RunGitStdin = async (args, cwd, input, options) => {
+  const result = await runTestGit(args, cwd, options, input);
+  return { ...result, stdout: Buffer.from(result.stdout) };
+};
 
 async function git(args: string[], cwd: string): Promise<string> {
   const r = await testRunGit(args, cwd);
@@ -93,9 +102,9 @@ async function nestedPotCommits(t: Topology): Promise<string> {
   return git(['rev-parse', 'HEAD'], t.sub);
 }
 
-async function tick(t: Topology, nestedPotCheckouts?: string[]) {
+async function tick(t: Topology, nestedPotCheckouts?: string[], runGit: RunGit = testRunGit) {
   const config: GitSyncConfig = { branch: 'main', push: true, ...(nestedPotCheckouts ? { nestedPotCheckouts } : {}) };
-  return runGitSync('enclosing', { runGit: testRunGit, repoPath: t.work, config });
+  return runGitSync('enclosing', { runGit, runGitStdin: testRunGitStdin, repoPath: t.work, config });
 }
 
 beforeEach(async () => {
@@ -114,7 +123,7 @@ describe('nested pot checkout inside an enclosing git-sync tree (WI-655470001001
     const t = await makeTopology();
     const fix = await nestedPotCommits(t);
     const outcome = await tick(t);
-    expect(outcome.status).not.toBe('error');
+    expect(outcome.status, JSON.stringify(outcome)).not.toBe('error');
     expect(await isAncestor(t.subOrigin, fix, 'main')).toBe(true);
   });
 
@@ -127,7 +136,11 @@ describe('nested pot checkout inside an enclosing git-sync tree (WI-655470001001
     const subOriginMain = await git(['rev-parse', 'main'], t.subOrigin);
 
     const outcome = await tick(t, ['apps/drill']);
-    expect(outcome.status).not.toBe('error');
+    expect(outcome.status, JSON.stringify(outcome)).not.toBe('error');
+    expect(outcome.skippedPaths).toContainEqual({
+      scope: 'superproject', path: 'apps/drill', reason: 'nested-pot-unpublished',
+      detail: expect.stringContaining(fix),
+    });
 
     // The submodule origin did not move and never received the nested pot's commit.
     expect(await git(['rev-parse', 'main'], t.subOrigin)).toBe(subOriginMain);
@@ -149,8 +162,39 @@ describe('nested pot checkout inside an enclosing git-sync tree (WI-655470001001
     await git(['fetch', 'origin'], t.sub);
 
     const outcome = await tick(t, ['apps/drill']);
-    expect(outcome.status).not.toBe('error');
+    expect(outcome.status, JSON.stringify(outcome)).not.toBe('error');
     const superMain = await git(['rev-parse', 'main'], t.superOrigin);
     expect(await git(['rev-parse', `${superMain}:apps/drill`], t.superOrigin)).toBe(fix);
+  });
+
+  it('recognizes upstream delivery without a manual fetch in the nested checkout', async () => {
+    const t = await makeTopology();
+    const fix = await nestedPotCommits(t);
+    // Publishing by URL models another publisher: it does not update this checkout's origin refs.
+    await git(['push', '--no-verify', t.subOrigin, 'HEAD:main'], t.sub);
+    expect(await git(['for-each-ref', '--contains', 'HEAD', '--format=%(refname)', 'refs/remotes/origin/'], t.sub)).toBe('');
+
+    const outcome = await tick(t, ['apps/drill']);
+    expect(outcome.status, JSON.stringify(outcome)).not.toBe('error');
+    const superMain = await git(['rev-parse', 'main'], t.superOrigin);
+    expect(await git(['rev-parse', `${superMain}:apps/drill`], t.superOrigin)).toBe(fix);
+    expect(outcome.skippedPaths).not.toEqual(expect.arrayContaining([expect.objectContaining({ reason: 'nested-pot-unpublished' })]));
+  });
+
+  it('holds a moved link when origin cannot be refreshed, even with a cached containing ref', async () => {
+    const t = await makeTopology();
+    await nestedPotCommits(t);
+    await git(['push', '--no-verify', 'origin', 'main'], t.sub);
+    const offline: RunGit = (args, cwd, options) => cwd === t.sub && args[0] === 'fetch'
+      ? Promise.resolve({ code: 1, stdout: '', stderr: 'origin unavailable' })
+      : testRunGit(args, cwd, options);
+    const outcome = await tick(t, ['apps/drill'], offline);
+    expect(outcome.status, JSON.stringify(outcome)).not.toBe('error');
+    expect(outcome.skippedPaths).toContainEqual({
+      scope: 'superproject', path: 'apps/drill', reason: 'nested-pot-unpublished',
+      detail: expect.stringContaining('Could not refresh origin'),
+    });
+    const superMain = await git(['rev-parse', 'main'], t.superOrigin);
+    expect(await git(['rev-parse', `${superMain}:apps/drill`], t.superOrigin)).toBe(t.pinned);
   });
 });

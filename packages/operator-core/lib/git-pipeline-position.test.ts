@@ -3325,6 +3325,21 @@ describe('computeStages: position x health', () => {
   // A forced sync defers the same path again, so the lever sent agents round a loop. When the
   // last pass recorded the queried path as deferred, the stage must name the blocker and owner.
   describe('WI-10006493: a path the last git-sync pass deferred is not unblocked by git-sync:run', () => {
+    it('names the nested delivery prerequisite for a file beneath a held gitlink', () => {
+      const result = gitSyncDeferralFor('apps/drill/package.json', {
+        syncAgeMs: 120_000,
+        skippedPaths: [{ scope: 'superproject', path: 'apps/drill', reason: 'nested-pot-unpublished', detail: 'HEAD is fork-only' }],
+      });
+      expect(result).toMatchObject({ reason: 'nested-pot-unpublished' });
+      expect(result?.detail).toContain('HEAD is fork-only');
+      expect(result?.lever).toContain('own delivery');
+      expect(result?.lever).not.toContain('git-sync:run');
+      expect(gitSyncDeferralFor('apps/drill-other/package.json', {
+        syncAgeMs: 0,
+        skippedPaths: [{ scope: 'superproject', path: 'apps/drill', reason: 'nested-pot-unpublished', detail: 'held' }],
+      })).toBeNull();
+    });
+
     const fenced = {
       scope: 'superproject',
       path: 'packages/operator-core/lib/schema-consumer.ts',

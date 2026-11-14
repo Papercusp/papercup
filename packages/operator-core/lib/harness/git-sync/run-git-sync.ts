@@ -1742,6 +1742,7 @@ export interface GitSyncLockHolding {
 export type GitSyncSkippedPath =
   | { scope: string; path: string; owner: string; intent: string; heldSince?: string }
   | { scope: string; path: string; reason: 'migration-reservation'; detail: string }
+  | { scope: string; path: string; reason: 'nested-pot-unpublished'; detail: string }
   | {
       scope: string;
       path: string;
@@ -11185,9 +11186,13 @@ async function runGitSyncPass(
   // an `origin` ref (.gitmodules resolves through origin, never the pot's fork). Until its
   // own delivery route publishes it, pinning that HEAD would leave this superproject
   // pointing at a commit nobody can fetch.
-  for (const nestedPath of await unpublishedNestedPotCheckouts(runGit, repo, cfg.nestedPotCheckouts ?? [])) {
+  const nestedGitlinkSkips: Extract<GitSyncSkippedPath, { reason: 'nested-pot-unpublished' }>[] = [];
+  for (const nestedPath of await unpublishedNestedPotCheckouts(
+    runGit, repo, cfg.nestedPotCheckouts ?? [],
+    (path, detail) => nestedGitlinkSkips.push({ scope: 'superproject', path, reason: 'nested-pot-unpublished', detail }),
+  )) {
     log(
-      `[git-sync] ${slug}: holding gitlink ${nestedPath} — nested pot checkout HEAD is on no origin ref yet (WI-6554700010018602)`,
+      `[git-sync] ${slug}: holding gitlink ${nestedPath} — ${nestedGitlinkSkips.find((skip) => skip.path === nestedPath)?.detail}`,
     );
     superprojectExcludePaths.push(nestedPath);
   }
@@ -11599,6 +11604,7 @@ async function runGitSyncPass(
     ...(sub.skippedPaths ?? []),
     ...(supr.skippedPaths ?? []),
     ...(priorRootFindings?.skippedPaths ?? []),
+    ...nestedGitlinkSkips,
   ].map((entry) => [JSON.stringify(entry), entry])).values()];
   const dirtyPathCount = (sub.dirtyPathCount ?? 0) + (supr.dirtyPathCount ?? 0) + (earlyRootCommit?.dirtyPathCount ?? 0);
   const committedCount = (sub.committedCount ?? 0) + (supr.committedCount ?? 0) + (earlyRootCommit?.committedCount ?? 0);

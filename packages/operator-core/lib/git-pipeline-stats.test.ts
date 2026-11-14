@@ -40,6 +40,7 @@ import {
 import { decideStallNotification } from './release/stall-escalation-ladder';
 import type { PipelineEventRow } from './harness/git-sync/pipeline-events';
 import { buildCandidateSnapshot } from './release/candidate-snapshot';
+import { FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION } from './release/frozen-candidate-repair-queue';
 
 describe('strict pipeline routine control reads', () => {
   afterEach(() => routineSql.mockReset());
@@ -245,8 +246,9 @@ describe('currentGateInconclusive', () => {
 
 describe('projectFrozenRepairQueueRead — P-025', () => {
   it('exposes a current-plus-one queue as unreadable instead of null/none', () => {
+    const futureSchemaVersion = FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION + 1;
     const projected = projectFrozenRepairQueueRead(
-      { schemaVersion: 5, candidate: 'a'.repeat(40) },
+      { schemaVersion: futureSchemaVersion, candidate: 'a'.repeat(40) },
       {
         freezeAndConverge: {
           enabled: true,
@@ -264,7 +266,7 @@ describe('projectFrozenRepairQueueRead — P-025', () => {
     expect(projected.read).toEqual({
       status: 'unreadable',
       reason: 'schema-newer-than-reader',
-      schemaVersion: 5,
+      schemaVersion: futureSchemaVersion,
       candidate: 'a'.repeat(40),
       repairHead: null,
       phase: null,
@@ -1243,6 +1245,12 @@ describe('skippedPathArr: every persisted git-sync deferral variant survives the
   it('accepts a fence entry written before the provenance fields existed', () => {
     const legacy = { scope: 'superproject', path: 'c.ts', reason: 'migration-dependency-fence', detail: 'd' };
     expect(skippedPathArr([legacy])).toEqual([legacy]);
+  });
+
+  it('retains nested-pot publication and early child-sync holds for pipeline readers', () => {
+    const nested = { scope: 'superproject', path: 'apps/drill', reason: 'nested-pot-unpublished', detail: 'HEAD is fork-only' };
+    const early = { scope: 'superproject', path: 'consumer.ts', reason: 'attribution-child-sync', detail: 'waiting for child' };
+    expect(skippedPathArr([nested, early])).toEqual([nested, early]);
   });
 
   it('drops malformed entries and unknown reasons instead of passing them through', () => {
