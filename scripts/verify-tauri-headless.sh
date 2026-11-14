@@ -1261,7 +1261,7 @@ preflight_verifier_copy_memory() {
     const { readTaskCgroupMemoryMaxMb } = await import(process.argv[1]);
     const limit = readTaskCgroupMemoryMaxMb();
     if (!(Number.isFinite(limit) && limit > 0)) {
-      console.error("VERIFY_TAURI_COPY_MEMORY_UNBOUNDED: independent snapshots require a finite task memory.max; use a test-classified capability:bash command (isolated e2e: cd apps/operator && npm run test:e2e:isolated -- ...). require_task_confinement alone does not reserve memory.");
+      console.error("VERIFY_TAURI_COPY_MEMORY_UNBOUNDED: independent snapshots require a finite task memory.max; use a test-classified capability:bash command (isolated e2e: cd apps/operator && npm run test:e2e:isolated -- ...). If the serving operator build predates that classification, set the ceiling yourself: systemd-run --user --scope -p MemoryMax=16G -- scripts/verify-tauri-headless.sh .... require_task_confinement alone does not reserve memory.");
       process.exit(2);
     }
     console.error(`VERIFY_TAURI_COPY_MEMORY_MAX_MB=${limit}`);
@@ -1286,7 +1286,7 @@ preflight_verifier_pinned_inputs() {
   if [ -n "${VERIFY_TAURI_SOURCE_INPUTS_FILE:-}" ]; then
     input_args+=(--inputs-file "$VERIFY_TAURI_SOURCE_INPUTS_FILE")
   fi
-  node "$source_repo/scripts/source-preview.mjs" verifier-inputs-check \
+  node "$source_repo/scripts/verifier-source-preflight.mjs" verifier-inputs-check \
     --repo "$source_repo" --ref "$VERIFY_TAURI_SOURCE_REF" "${input_args[@]}"
 }
 verifier_run_step verifier-pinned-inputs-preflight preflight_verifier_pinned_inputs || exit $?
@@ -2129,7 +2129,9 @@ reserve_verifier_disk() {
 }
 
 verify_operator_source_lock_census() {
-  local phase="${1:-snapshot}"
+  # mode=settle returns 3 on a lock overlap (rows in VERIFY_SOURCE_LOCK_BLOCKING_ROWS)
+  # so settle_operator_source_snapshot can wait instead of refusing.
+  local phase="${1:-snapshot}" mode="${2:-strict}"
   local workspace="${PAPERCUSP_WORKSPACE_ID:-${PAPERCUSP_WORKSPACE:-}}"
   local coordination_domain coordination_home query_args lock_json blocking_rows census_status=0
   local -a ptool_scope=()
@@ -2250,6 +2252,10 @@ verify_operator_source_lock_census() {
     return 1
   fi
   if [ "$census_status" -ne 0 ]; then
+    if [ "$mode" = settle ]; then
+      VERIFY_SOURCE_LOCK_BLOCKING_ROWS="$blocking_rows"
+      return 3
+    fi
     echo "FATAL: verifier source snapshot overlaps active source-file locks ($phase):" >&2
     printf '%s\n' "$blocking_rows" | sed 's/^/  /' >&2
     echo "Let those edits finish, then rerun the verifier." >&2
@@ -2257,6 +2263,124 @@ verify_operator_source_lock_census() {
     return 1
   fi
   log "verified no active source-file locks in the verifier inputs ($phase)"
+}
+
+# Peers edit the shared tree continuously and a whole-tree copy takes minutes,
+# so one after-copy census refused almost every run under fleet load
+# (EI-25279455104672139). Wait a bounded time for the overlapping locks to
+# release, then re-sync: rsync re-copies only changed files, so each later
+# pass leaves a race window of seconds instead of the full copy time.
+# Waiting for zero overlapping locks does not converge under fleet load: boot 6
+# watched 5 -> 7 held source files across a whole 900s window
+# (EI-25279455104672139). A held file may be mid-edit, so when the window ends
+# each file still held by a PEER takes its committed state (present, or absent
+# when it has no committed version) -- the state git-sync publishes while that
+# edit is in flight. Files the CALLER holds keep their working-tree copy: that
+# is the change under test. Every substitution is printed on stdout.
+substitute_locked_files_from_committed() {
+  local snapshot_root="$1" passes="$2" row path owner probe top rel target subst=0 own=0
+  local caller="${PAPERCUSP_SID:-}"
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    path="${row%% *}"
+    owner="$(printf '%s\n' "$row" | sed -n 's/.* owner=\([^ ]*\).*/\1/p')"
+    case "$path" in
+      ''|/*|..|../*|*/..|*/../*) path='' ;;
+      apps/operator/*|packages/*|libs/*|scripts/*|package.json|package-lock.json|pnpm-lock.yaml|pnpm-workspace.yaml|tsconfig.json) ;;
+      *) path='' ;;
+    esac
+    if [ -z "$path" ]; then
+      echo "FATAL: cannot substitute a held source lock row without a safe repo-relative path: $row" >&2
+      return 1
+    fi
+    if [ -n "$caller" ] && [ "$owner" = "$caller" ]; then
+      own=$((own + 1))
+      printf 'VH_SOURCE_LOCK_KEPT path=%s owner=%s source=working-tree reason=caller-held\n' "$path" "$owner"
+      continue
+    fi
+    # A submodule has its own HEAD: resolve the repository that owns the path
+    # from the nearest directory that still exists in the working tree.
+    probe="$REPO_DIR/$(dirname -- "$path")"
+    while [ ! -d "$probe" ] && [ "$probe" != "$REPO_DIR" ]; do probe="$(dirname -- "$probe")"; done
+    top="$(git -C "$probe" rev-parse --show-toplevel 2>/dev/null)" || {
+      echo "FATAL: could not resolve the git repository for held source file $path" >&2
+      return 1
+    }
+    rel="$(realpath -m --relative-to="$top" -- "$REPO_DIR/$(dirname -- "$path")")/$(basename -- "$path")" || return 1
+    rel="${rel#./}"
+    target="$snapshot_root/$path"
+    if git -C "$top" cat-file -e "HEAD:$rel" 2>/dev/null; then
+      mkdir -p -- "$(dirname -- "$target")" || return 1
+      if ! git -C "$top" show "HEAD:$rel" > "$target.vh-committed"; then
+        rm -f -- "$target.vh-committed"
+        echo "FATAL: could not read the committed version of held source file $path" >&2
+        return 1
+      fi
+      mv -f -- "$target.vh-committed" "$target" || return 1
+      printf 'VH_SOURCE_LOCK_SUBSTITUTED path=%s owner=%s source=committed\n' "$path" "${owner:-unknown}"
+    else
+      rm -f -- "$target" || return 1
+      printf 'VH_SOURCE_LOCK_SUBSTITUTED path=%s owner=%s source=committed state=absent\n' "$path" "${owner:-unknown}"
+    fi
+    subst=$((subst + 1))
+  done <<< "${VERIFY_SOURCE_LOCK_BLOCKING_ROWS:-}"
+  log "settle window spent after $passes re-sync pass(es): $subst peer-held source file(s) use their committed state; $own caller-held file(s) keep the working tree"
+}
+
+settle_operator_source_snapshot() {
+  local snapshot_root="$1"; shift
+  local settle_sec="${VERIFY_TAURI_SOURCE_LOCK_SETTLE_SEC:-180}"
+  local interval="${VERIFY_TAURI_SOURCE_LOCK_SETTLE_INTERVAL_SEC:-30}"
+  local on_expiry="${VERIFY_TAURI_SOURCE_LOCK_ON_EXPIRY:-committed}"
+  local deadline now pass=0 census_rc resync_rc
+  case "$settle_sec" in ''|*[!0-9]*)
+    echo "FATAL: VERIFY_TAURI_SOURCE_LOCK_SETTLE_SEC must be a non-negative integer (got '$settle_sec')" >&2
+    return 1 ;;
+  esac
+  case "$on_expiry" in committed|fail) ;; *)
+    echo "FATAL: VERIFY_TAURI_SOURCE_LOCK_ON_EXPIRY must be 'committed' or 'fail' (got '$on_expiry')" >&2
+    return 1 ;;
+  esac
+  case "$interval" in ''|*[!0-9]*|0)
+    echo "FATAL: VERIFY_TAURI_SOURCE_LOCK_SETTLE_INTERVAL_SEC must be a positive integer (got '$interval')" >&2
+    return 1 ;;
+  esac
+  deadline=$(( $(date +%s) + settle_sec ))
+  while :; do
+    census_rc=0
+    verify_operator_source_lock_census "after copy" settle || census_rc=$?
+    [ "$census_rc" -eq 0 ] && return 0
+    [ "$census_rc" -eq 3 ] || return 1
+    now=$(date +%s)
+    if [ "$now" -ge "$deadline" ]; then
+      if [ "$on_expiry" = committed ]; then
+        substitute_locked_files_from_committed "$snapshot_root" "$pass"
+        return $?
+      fi
+      echo "FATAL: verifier source snapshot overlaps active source-file locks (after copy; still held after a ${settle_sec}s settle window and $pass re-sync pass(es)):" >&2
+      printf '%s\n' "${VERIFY_SOURCE_LOCK_BLOCKING_ROWS:-}" | sed 's/^/  /' >&2
+      echo "VERIFY_TAURI_SOURCE_LOCK_ON_EXPIRY=fail is set. Let those edits finish and rerun the verifier, wait longer with VERIFY_TAURI_SOURCE_LOCK_SETTLE_SEC=<seconds>, or unset it to take the committed state of peer-held files." >&2
+      echo "If your own change is already committed, verify the committed source instead (it never reads peers' in-flight edits): VERIFY_TAURI_SOURCE_REF=\$(git rev-parse HEAD) VERIFY_TAURI_SOURCE_INPUTS=<your changed files> $0 ..." >&2
+      return 1
+    fi
+    pass=$((pass + 1))
+    log "source snapshot overlaps $(printf '%s\n' "${VERIFY_SOURCE_LOCK_BLOCKING_ROWS:-}" | grep -c .) active source-file lock(s); waiting ${interval}s, then re-syncing changed files (settle pass $pass, $((deadline - now))s left)"
+    # stderr is not visible in the live step log until the step ends, so a
+    # settle wait otherwise reads as a silent hang. Mirror one progress line to
+    # stdout, which the phase command-output.log tees live (EI-25279455104672139).
+    printf 'VH_PROGRESS phase=prepare step=operator-source-snapshot settle_pass=%s blocking_locks=%s remaining_sec=%s holders=%s\n' \
+      "$pass" \
+      "$(printf '%s\n' "${VERIFY_SOURCE_LOCK_BLOCKING_ROWS:-}" | grep -c .)" \
+      "$((deadline - now))" \
+      "$(printf '%s\n' "${VERIFY_SOURCE_LOCK_BLOCKING_ROWS:-}" | sed -n 's/.* owner=\([^ ]*\).*/\1/p' | sort -u | paste -sd, -)"
+    sleep "$interval"
+    resync_rc=0
+    vh_probe_admitted_exec "$REPO_DIR" -- rsync -a --delete "$@" "$REPO_DIR/" "$snapshot_root/" || resync_rc=$?
+    if [ "$resync_rc" -ne 0 ] && [ "$resync_rc" -ne 24 ]; then
+      echo "FATAL: could not re-sync the verifier operator source snapshot (rsync exit $resync_rc, settle pass $pass)" >&2
+      return 1
+    fi
+  done
 }
 
 snapshot_verifier_pinned_deps() {
@@ -2278,7 +2402,7 @@ snapshot_verifier_pinned_deps() {
       const { readTaskCgroupMemoryMaxMb } = await import(process.argv[1]);
       const limit = readTaskCgroupMemoryMaxMb();
       if (!(Number.isFinite(limit) && limit > 0)) {
-        console.error("VERIFY_TAURI_COPY_MEMORY_UNBOUNDED: independent snapshots require a finite task memory.max; use a test-classified capability:bash command (isolated e2e: cd apps/operator && npm run test:e2e:isolated -- ...). require_task_confinement alone does not reserve memory.");
+        console.error("VERIFY_TAURI_COPY_MEMORY_UNBOUNDED: independent snapshots require a finite task memory.max; use a test-classified capability:bash command (isolated e2e: cd apps/operator && npm run test:e2e:isolated -- ...). If the serving operator build predates that classification, set the ceiling yourself: systemd-run --user --scope -p MemoryMax=16G -- scripts/verify-tauri-headless.sh .... require_task_confinement alone does not reserve memory.");
         process.exit(2);
       }
       console.error(`VERIFY_TAURI_COPY_MEMORY_MAX_MB=${limit}`);
@@ -2321,9 +2445,9 @@ snapshot_verifier_pinned_deps() {
         mode="$6"
         if [ -n "$source_ref" ]; then
           bash "$generation_script" --integration "$donor" --ensure-ref "$source_ref" \
-            --verifier-source "$snapshot_root"
+            --verifier-source "$snapshot_root" --retain-as native-verifier
         else
-          bash "$generation_script" --integration "$donor"
+          bash "$generation_script" --integration "$donor" --retain-input-as native-verifier
         fi
         bash "$pinned_deps" snapshot-generation-locked "$donor" "$snapshot_root" "$mode"
       '
@@ -2360,7 +2484,18 @@ snapshot_operator_source() {
     snapshot_committed_operator_source
     return $?
   fi
-  verify_operator_source_lock_census "before copy" || return 1
+  # The before-copy census is ADVISORY on a lock overlap: on this shared tree the
+  # fleet almost always holds SOME source lock, so refusing here fails nearly every
+  # run (EI-25279455104672139, boot 5). Consistency is enforced after the copy by
+  # settle_operator_source_snapshot, which re-syncs held files and re-checks within
+  # a bounded window. A census that cannot run at all (rc other than 3) still refuses.
+  local precopy_census_rc=0
+  verify_operator_source_lock_census "before copy" settle || precopy_census_rc=$?
+  if [ "$precopy_census_rc" -eq 3 ]; then
+    log "source snapshot: $(printf '%s\n' "${VERIFY_SOURCE_LOCK_BLOCKING_ROWS:-}" | grep -c .) active source-file lock(s) before copy; copying anyway — the after-copy settle loop re-syncs and re-checks them"
+  elif [ "$precopy_census_rc" -ne 0 ]; then
+    return 1
+  fi
   command -v rsync >/dev/null 2>&1 || {
     echo "FATAL: rsync is required to snapshot the isolated verifier operator source" >&2
     return 1
@@ -2407,7 +2542,7 @@ snapshot_operator_source() {
     echo "FATAL: could not copy an independent verifier operator source snapshot (rsync exit $snapshot_rc)" >&2
     return 1
   fi
-  verify_operator_source_lock_census "after copy" || return 1
+  settle_operator_source_snapshot "$snapshot_root" "${source_filters[@]}" || return 1
   snapshot_verifier_pinned_deps "$snapshot_root" "$pinned_deps_lib" || {
     echo "FATAL: could not create the verifier's locked dependency snapshot" >&2
     return 1
@@ -2475,10 +2610,10 @@ snapshot_committed_operator_source() {
   fi
   # Repeat the early input check at snapshot time to catch intervening edits.
   # verifier-prepare repeats it after export as the final race guard.
-  node "$source_repo/scripts/source-preview.mjs" verifier-inputs-check \
+  node "$source_repo/scripts/verifier-source-preflight.mjs" verifier-inputs-check \
     --repo "$source_repo" --ref "$VERIFY_TAURI_SOURCE_REF" "${input_args[@]}" || return $?
   preflight_verifier_runtime_assets "$source_repo" || return $?
-  source_bytes="$(node "$source_repo/scripts/source-preview.mjs" verifier-measure \
+  source_bytes="$(node "$source_repo/scripts/verifier-source-preflight.mjs" verifier-measure \
     --repo "$source_repo" --ref "$VERIFY_TAURI_SOURCE_REF")" || return 1
   case "$source_bytes" in
     ''|*[!0-9]*|0) echo 'FATAL: committed verifier source size is unmeasured or empty' >&2; return 1 ;;

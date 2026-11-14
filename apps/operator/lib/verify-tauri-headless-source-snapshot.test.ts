@@ -436,7 +436,8 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
       expect(result.status, result.stderr).toBe(0);
       const order = readFileSync(resolve(fixture, 'order'), 'utf8');
       for (const command of ['verifier-inputs-check', 'verifier-measure', 'verifier-prepare']) {
-        expect(order).toContain(`${sourceRepo}/scripts/source-preview.mjs\n${command}\n--repo\n${sourceRepo}\n--ref\ncommit\n`);
+        const script = command === 'verifier-prepare' ? 'source-preview.mjs' : 'verifier-source-preflight.mjs';
+        expect(order).toContain(`${sourceRepo}/scripts/${script}\n${command}\n--repo\n${sourceRepo}\n--ref\ncommit\n`);
       }
       expect(order).toContain(`--inputs-file\n${inputsFile}\n`);
       expect(order).toContain('--tauri-inputs\n');
@@ -1123,16 +1124,16 @@ describe("EI-22616267024724225 — frozen verifier hosts exclude the tsx runtime
       "apps/operator/bin/bundle-host.sh",
     );
     expect(src.slice(bundleFunctionIdx, bundleCallIdx)).toContain(
-      'bin/hono-host.ts "$OPERATOR_HOST_BUNDLE"',
+      'entry=bin/hono-host.ts',
     );
     expect(src.slice(bundleFunctionIdx, bundleCallIdx)).toContain(
-      '[ -s "$OPERATOR_HOST_BUNDLE" ]',
+      'bundle="$OPERATOR_SOURCE_ROOT/apps/operator/dist-verify/$name.mjs"',
     );
     expect(src.slice(bundleFunctionIdx, bundleCallIdx)).toContain(
-      'bash "$bundle_script" e2e/_fake-llm-fixture-child.ts "$fixture_bundle"',
+      'bash "$bundle_script" "$entry" "$bundle"',
     );
     expect(src.slice(bundleFunctionIdx, bundleCallIdx)).toContain(
-      '[ -s "$fixture_bundle" ]',
+      '[ -s "$bundle" ]',
     );
     expect(readFileSync(resolve(__dirname, '../../../scripts/source-preview.mjs'), 'utf8'))
       .toContain("'apps/operator/e2e/_fake-llm-fixture-child.ts'");
@@ -1677,7 +1678,7 @@ describe("pinned verifier inputs fail before native preparation", () => {
     expect(result.status, spawnDiagnostic(result)).toBe(75);
     expect(result.order).toEqual(["verifier-pinned-inputs-preflight"]);
     expect(result.nodeArgs.trim().split(/\s+/)).toEqual([
-      "/selected/source/scripts/source-preview.mjs",
+      "/selected/source/scripts/verifier-source-preflight.mjs",
       "verifier-inputs-check",
       "--repo",
       "/selected/source",
@@ -1708,6 +1709,68 @@ describe("pinned verifier inputs fail before native preparation", () => {
     expect(result.stderr).toContain(
       "FATAL: pinned source requires explicit VERIFY_TAURI_SOURCE_INPUTS or VERIFY_TAURI_SOURCE_INPUTS_FILE",
     );
+  });
+});
+
+describe('dependency-free committed verifier source preflight', () => {
+  it('checks exact pinned inputs and measures a source-only checkout without node_modules', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'verifier-source-only-preflight-'));
+    const scripts = resolve(root, 'scripts');
+    const sourceDir = resolve(root, 'src');
+    const helper = resolve(scripts, 'verifier-source-preflight.mjs');
+    const sourceFile = resolve(sourceDir, 'main.js');
+    const helperSource = readFileSync(resolve(__dirname, '../../../scripts/verifier-source-preflight.mjs'), 'utf8');
+    const sourceText = 'export const verifierFixture = true;\n';
+    const env = {
+      ...hermeticSpawnEnv(),
+      GIT_AUTHOR_NAME: 'Verifier fixture',
+      GIT_AUTHOR_EMAIL: 'verifier-fixture@example.invalid',
+      GIT_COMMITTER_NAME: 'Verifier fixture',
+      GIT_COMMITTER_EMAIL: 'verifier-fixture@example.invalid',
+    };
+    const git = (args: string[]) => {
+      const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf8', env });
+      expect(result.status, spawnDiagnostic(result)).toBe(0);
+      return result.stdout.trim();
+    };
+
+    try {
+      mkdirSync(scripts, { recursive: true });
+      mkdirSync(sourceDir, { recursive: true });
+      writeFileSync(helper, helperSource);
+      writeFileSync(sourceFile, sourceText);
+      git(['init', '--quiet']);
+      git(['add', 'scripts/verifier-source-preflight.mjs', 'src/main.js']);
+      git(['commit', '--quiet', '-m', 'source-only verifier fixture']);
+      const commit = git(['rev-parse', 'HEAD']);
+
+      expect(existsSync(resolve(root, 'node_modules'))).toBe(false);
+      const inputs = spawnSync(process.execPath, [helper, 'verifier-inputs-check', '--repo', root,
+        '--ref', commit, '--inputs', 'scripts/verifier-source-preflight.mjs,src/main.js'], {
+        encoding: 'utf8', env,
+      });
+      expect(inputs.status, spawnDiagnostic(inputs)).toBe(0);
+      expect(JSON.parse(inputs.stdout)).toEqual({
+        sha: commit,
+        paths: ['scripts/verifier-source-preflight.mjs', 'src/main.js'],
+      });
+
+      writeFileSync(sourceFile, `${sourceText}// dirty\n`);
+      const dirty = spawnSync(process.execPath, [helper, 'verifier-inputs-check', '--repo', root,
+        '--ref', commit, '--inputs', 'src/main.js'], { encoding: 'utf8', env });
+      expect(dirty.status, spawnDiagnostic(dirty)).toBe(2);
+      expect(dirty.stderr).toContain('dirty tested-input mismatch: src/main.js');
+
+      const measured = spawnSync(process.execPath, [helper, 'verifier-measure', '--repo', root,
+        '--ref', commit], { encoding: 'utf8', env });
+      expect(measured.status, spawnDiagnostic(measured)).toBe(0);
+      const expectedBytes = Math.ceil(Buffer.byteLength(helperSource) / 4096) * 4096
+        + Math.ceil(Buffer.byteLength(sourceText) / 4096) * 4096;
+      expect(Number(measured.stdout.trim())).toBe(expectedBytes);
+      expect(existsSync(resolve(root, 'node_modules'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1824,7 +1887,7 @@ describe("native copy callers preserve frozen helpers and bounded admission", ()
   it.each([0, 74])("uses the immutable generation when supported and preserves its refusal: %s", status => {
     const result = snapshot("copy", true, status);
     expect(result.status, result.diagnostic).toBe(status);
-    expect(result.order).toBe(`admission\nprewarm:--integration /canonical-donor --ensure-ref fixture-commit\nhelper:${result.helper}\ngeneration:/canonical-donor:${result.frozen}:copy\n`);
+    expect(result.order).toBe(`admission\nprewarm:--integration /canonical-donor --ensure-ref fixture-commit --verifier-source ${result.frozen} --retain-as native-verifier\nhelper:${result.helper}\ngeneration:/canonical-donor:${result.frozen}:copy\n`);
   });
 
   it("prewarms the live input when no committed source ref is selected", () => {
@@ -1832,13 +1895,14 @@ describe("native copy callers preserve frozen helpers and bounded admission", ()
       ...hermeticSpawnEnv(), VERIFY_TAURI_SOURCE_REF: "",
     });
     expect(result.status, result.diagnostic).toBe(0);
-    expect(result.order).toBe(`admission\nprewarm:--integration /canonical-donor\nhelper:${result.helper}\ngeneration:/canonical-donor:${result.frozen}:copy\n`);
+    expect(result.order).toBe(`admission\nprewarm:--integration /canonical-donor --retain-input-as native-verifier\nhelper:${result.helper}\ngeneration:/canonical-donor:${result.frozen}:copy\n`);
   });
 
   it("preserves a dependency prewarm refusal before copying the generation", () => {
     const result = snapshot("copy", true, 0, undefined, 74);
     expect(result.status, result.diagnostic).toBe(74);
-    expect(result.order).toBe("admission\nprewarm:--integration /canonical-donor --ensure-ref fixture-commit\n");
+    expect(result.order).toContain(`prewarm:--integration /canonical-donor --ensure-ref fixture-commit --verifier-source ${result.frozen} --retain-as native-verifier\n`);
+    expect(result.order).not.toContain("helper:");
   });
 
   it('isolates the synthetic copy helper from a failing outer-runner preload', () => {
@@ -1846,7 +1910,7 @@ describe("native copy callers preserve frozen helpers and bounded admission", ()
       ...hermeticSpawnEnv(), NODE_OPTIONS: failingOuterPreload,
     });
     expect(result.status, result.diagnostic).toBe(0);
-    expect(result.order).toBe(`admission\nprewarm:--integration /canonical-donor --ensure-ref fixture-commit\nhelper:${result.helper}\ngeneration:/canonical-donor:${result.frozen}:copy\n`);
+    expect(result.order).toBe(`admission\nprewarm:--integration /canonical-donor --ensure-ref fixture-commit --verifier-source ${result.frozen} --retain-as native-verifier\nhelper:${result.helper}\ngeneration:/canonical-donor:${result.frozen}:copy\n`);
     expect(result.stderr).not.toContain('outer runner preload leaked');
   });
 
@@ -1874,7 +1938,14 @@ describe("native copy callers preserve frozen helpers and bounded admission", ()
       previewSrc.indexOf("export const TAURI_VERIFIER_INPUTS"),
       previewSrc.indexOf("]);", previewSrc.indexOf("export const TAURI_VERIFIER_INPUTS")),
     );
-    for (const path of ["scripts/pc-heavy.sh", "scripts/lib/budgeted-task-scheduler.mjs", "apps/operator/bin/release/dependency-generation.sh"]) {
+    const preflightSrc = readFileSync(resolve(__dirname, "../../../scripts/verifier-source-preflight.mjs"), "utf8");
+    const preflightProfile = preflightSrc.slice(
+      preflightSrc.indexOf("export const TAURI_VERIFIER_INPUTS"),
+      preflightSrc.indexOf("]);", preflightSrc.indexOf("export const TAURI_VERIFIER_INPUTS")),
+    );
+    const entries = (source: string) => [...source.matchAll(/'([^']+)'/g)].map(match => match[1]);
+    expect(entries(preflightProfile)).toEqual(entries(profile));
+    for (const path of ["scripts/verifier-source-preflight.mjs", "scripts/pc-heavy.sh", "scripts/lib/budgeted-task-scheduler.mjs", "apps/operator/bin/release/dependency-generation.sh"]) {
       expect(profile).toContain(`'${path}'`);
     }
   });
