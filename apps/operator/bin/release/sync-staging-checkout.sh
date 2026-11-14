@@ -124,12 +124,199 @@ finish_staging_sync() {
   trap - EXIT
   cleanup_staging_candidate || true
   staging_sync_lock_release || true
+  record_staging_sync_outcome "$status" || true
   # A timer invocation may already have started under the previous notify unit
   # when its drop-in is reloaded. Complete that inherited contract as well.
   if [[ "$status" -eq 0 && -n "${NOTIFY_SOCKET:-}" ]]; then
     systemd-notify --ready --status="staging-sync complete" || status=$?
   fi
   exit "$status"
+}
+
+# WI-6554700010048236: a sync that failed every run used to be visible only in
+# the journal, and :3170 silently stayed on a days-old build. Each tick now keeps
+# a durable failure streak, files ONE alarm per streak, and (via
+# select_staging_fallback_target) bisects toward the newest buildable ancestor.
+STAGING_SYNC_TIP_TARGET=""     # the staging tip this tick observed
+STAGING_SYNC_ATTEMPT_TARGET="" # set once this tick commits to building/restarting a target
+STAGING_SYNC_PHASE=""          # prepare (the sha itself can fail) | restart (runtime only)
+STAGING_SYNC_SERVING_SHA=""    # set only when :3170 is verified serving a sha
+STAGING_SYNC_ALARM_RESULT=""
+
+staging_sync_state_dir() {
+  printf '%s/papercusp' "${XDG_STATE_HOME:-$HOME/.local/state}"
+}
+
+# Print the value of key $2 from the key=value state file $1 (empty when absent).
+staging_sync_state_get() {
+  local file="$1" key="$2" k v
+  [[ -r "$file" ]] || return 0
+  while IFS='=' read -r k v; do
+    if [[ "$k" == "$key" ]]; then
+      printf '%s' "$v"
+      return 0
+    fi
+  done < "$file"
+  return 0
+}
+
+staging_sync_alarm_threshold() {
+  local threshold="${PAPERCUSP_STAGING_SYNC_ALARM_AFTER:-3}"
+  [[ "$threshold" =~ ^[1-9][0-9]*$ ]] || threshold=3
+  printf '%s' "$threshold"
+}
+
+staging_sync_mark_serving() {
+  STAGING_SYNC_SERVING_SHA="$1"
+}
+
+# Called from the EXIT trap. Deferrals and no-attempt exits record nothing.
+record_staging_sync_outcome() {
+  local status="$1" dir now
+  dir="$(staging_sync_state_dir)"
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if [[ -n "$STAGING_SYNC_SERVING_SHA" ]]; then
+    mkdir -p "$dir" || return 0
+    printf 'sha=%s\nat=%s\ntip=%s\n' "$STAGING_SYNC_SERVING_SHA" "$now" "${STAGING_SYNC_TIP_TARGET:-$STAGING_SYNC_SERVING_SHA}" \
+      > "$dir/staging-sync-last-ok.tmp" && mv -f "$dir/staging-sync-last-ok.tmp" "$dir/staging-sync-last-ok"
+    # Only serving the TIP ends a streak; a fallback ancestor is progress, not recovery.
+    if [[ -z "$STAGING_SYNC_TIP_TARGET" || "$STAGING_SYNC_SERVING_SHA" == "$STAGING_SYNC_TIP_TARGET" ]]; then
+      if [[ -f "$dir/staging-sync-failure-streak" ]]; then
+        log "staging-sync failure streak cleared: :3170 serves the staging tip ${STAGING_SYNC_SERVING_SHA:0:10}"
+      fi
+      rm -f "$dir/staging-sync-failure-streak" "$dir/staging-sync-failed-targets"
+    fi
+    return 0
+  fi
+  [[ "$status" -ne 0 && -n "$STAGING_SYNC_ATTEMPT_TARGET" ]] || return 0
+  record_staging_sync_failure "$STAGING_SYNC_ATTEMPT_TARGET" "${STAGING_SYNC_PHASE:-prepare}" "$status" "$now"
+}
+
+record_staging_sync_failure() {
+  local target="$1" phase="$2" status="$3" now="$4" dir streak count first_at first_target alarm
+  dir="$(staging_sync_state_dir)"
+  streak="$dir/staging-sync-failure-streak"
+  if ! mkdir -p "$dir"; then
+    log "WARNING: could not persist the staging-sync failure streak"
+    return 0
+  fi
+  count="$(staging_sync_state_get "$streak" count)"
+  [[ "$count" =~ ^[0-9]+$ ]] || count=0
+  count=$((count + 1))
+  first_at="$(staging_sync_state_get "$streak" first_failed_at)"
+  first_target="$(staging_sync_state_get "$streak" first_target)"
+  alarm="$(staging_sync_state_get "$streak" alarm)"
+  [[ -n "$first_at" ]] || first_at="$now"
+  [[ -n "$first_target" ]] || first_target="$target"
+  [[ -n "$alarm" ]] || alarm=none
+  # Only a failure BEFORE the restart (bundle, migration preflight, schema)
+  # condemns the commit itself. A refused or slow restart says nothing about it.
+  if [[ "$phase" == prepare ]]; then
+    { if [[ -r "$dir/staging-sync-failed-targets" ]]; then tail -n 63 "$dir/staging-sync-failed-targets"; fi
+      printf '%s\n' "$target"; } > "$dir/staging-sync-failed-targets.tmp" &&
+      mv -f "$dir/staging-sync-failed-targets.tmp" "$dir/staging-sync-failed-targets"
+  fi
+  log "staging-sync failure streak: $count consecutive failed run(s) since $first_at (this run: ${target:0:10}, phase $phase, exit $status)"
+  if (( count >= $(staging_sync_alarm_threshold) )) && [[ "$alarm" != sent ]]; then
+    send_staging_sync_streak_alarm "$count" "$first_at" "$first_target" "$target" "$phase" "$status"
+    alarm="$STAGING_SYNC_ALARM_RESULT"
+  fi
+  printf 'count=%s\nfirst_failed_at=%s\nfirst_target=%s\nlast_target=%s\nlast_failed_at=%s\nlast_phase=%s\nlast_exit=%s\nalarm=%s\n' \
+    "$count" "$first_at" "$first_target" "$target" "$now" "$phase" "$status" "$alarm" \
+    > "$streak.tmp" && mv -f "$streak.tmp" "$streak"
+  return 0
+}
+
+# One claimable work-item per streak; a workspace broadcast only when filing fails.
+send_staging_sync_streak_alarm() {
+  local payload
+  STAGING_SYNC_ALARM_RESULT=failed
+  if [[ ! -f "$INTEGRATION_ROOT/scripts/mcp-call.mjs" ]]; then
+    log "ALARM DELIVERY FAILED: scripts/mcp-call.mjs is unavailable; the next failed run retries"
+    return 0
+  fi
+  log "ALARM: staging-sync has failed $1 consecutive runs since $2; :3170 is not advancing"
+  payload="$(STREAK_COUNT="$1" STREAK_FIRST_AT="$2" STREAK_FIRST_TARGET="$3" STREAK_TARGET="$4" \
+    STREAK_PHASE="$5" STREAK_EXIT="$6" STREAK_SERVED="${served_sha:-unknown}" \
+    STREAK_STATE_DIR="$(staging_sync_state_dir)" node -e '
+      const e = process.env;
+      const body = [
+        `The staging sync (papercup-staging-sync.service) has failed ${e.STREAK_COUNT} consecutive runs since ${e.STREAK_FIRST_AT}.`,
+        `:3170 still serves ${e.STREAK_SERVED}. The first failed target was ${e.STREAK_FIRST_TARGET}; the latest was ${e.STREAK_TARGET} (phase ${e.STREAK_PHASE}, exit ${e.STREAK_EXIT}).`,
+        `Diagnose: journalctl --user -u papercup-staging-sync.service --since ${e.STREAK_FIRST_AT}; bundle failures are logged in ~/.papercusp/checkpoint-logs/staging-bundle-*.log.`,
+        `Streak state: ${e.STREAK_STATE_DIR}/staging-sync-failure-streak. While the streak lasts, the sync alternates between the tip and a bisected buildable ancestor. The streak clears when :3170 serves the staging tip.`,
+        `Filed once per streak by apps/operator/bin/release/sync-staging-checkout.sh (WI-6554700010048236).`,
+      ].join("\n\n");
+      process.stdout.write(JSON.stringify({
+        kind: "bug",
+        title: `staging-sync failing since ${e.STREAK_FIRST_AT}: ${e.STREAK_COUNT} consecutive runs, :3170 stuck on ${e.STREAK_SERVED.slice(0, 10)}`,
+        body,
+      }));
+    ' 2>/dev/null || true)"
+  if [ -n "$payload" ] && (
+    cd "$INTEGRATION_ROOT" &&
+    timeout 30 node scripts/mcp-call.mjs work_items:create "$payload" \
+      --client system-staging-sync-streak-alarm --harness papercusp --workspace papercusp-workspace >/dev/null
+  ); then
+    STAGING_SYNC_ALARM_RESULT=sent
+    log "ALARM: filed a staging-sync failure-streak work-item"
+    return 0
+  fi
+  log "ALARM: could not file the staging-sync failure-streak work-item; falling back to a workspace broadcast"
+  payload="$(STREAK_COUNT="$1" STREAK_FIRST_AT="$2" STREAK_SERVED="${served_sha:-unknown}" node -e '
+      const e = process.env;
+      process.stdout.write(JSON.stringify({
+        to: ["*"],
+        expects: "none",
+        summary: `staging-sync has failed ${e.STREAK_COUNT} consecutive runs; :3170 is stuck`,
+        body: [{ text: `The staging sync has failed every run since ${e.STREAK_FIRST_AT}; :3170 still serves ${e.STREAK_SERVED}. Check journalctl --user -u papercup-staging-sync.service.` }],
+      }));
+    ' 2>/dev/null || true)"
+  if [ -n "$payload" ] && (
+    cd "$INTEGRATION_ROOT" &&
+    timeout 30 node scripts/mcp-call.mjs coord:send "$payload" \
+      --client system-staging-sync-streak-alarm --harness papercusp --workspace papercusp-workspace >/dev/null
+  ); then
+    STAGING_SYNC_ALARM_RESULT=sent
+    return 0
+  fi
+  log "ALARM DELIVERY FAILED: neither work_items:create nor coord:send reached the Papercusp workspace; the next failed run retries"
+  return 0
+}
+
+# WI-6554700010048236 (b). While the tip keeps failing, bisect the first-parent
+# range between the serving build (known good) and the OLDEST known-failed
+# commit, so :3170 converges on the newest buildable ancestor in log2(N) runs.
+# Failed runs alternate tip and fallback, so a fix on the tip is retried every
+# other run. Prints the fallback sha, or nothing when no fallback applies.
+select_staging_fallback_target() {
+  local tip="$1" served="$2" dir count threshold failed_file sha lowest_bad=""
+  local -a range=() candidates=()
+  local -A bad=()
+  [[ "${PAPERCUSP_STAGING_SYNC_FALLBACK:-1}" != 0 ]] || return 0
+  dir="$(staging_sync_state_dir)"
+  failed_file="$dir/staging-sync-failed-targets"
+  count="$(staging_sync_state_get "$dir/staging-sync-failure-streak" count)"
+  [[ "$count" =~ ^[0-9]+$ ]] || return 0
+  threshold="$(staging_sync_alarm_threshold)"
+  (( count >= threshold && (count - threshold) % 2 == 0 )) || return 0
+  [[ -r "$failed_file" && "$served" =~ ^[0-9a-f]{40}$ ]] || return 0
+  git -C "$INTEGRATION_ROOT" merge-base --is-ancestor "$served" "$tip" 2>/dev/null || return 0
+  while IFS= read -r sha; do
+    [[ -n "$sha" ]] && bad["$sha"]=1
+  done < "$failed_file"
+  mapfile -t range < <(git -C "$INTEGRATION_ROOT" rev-list --first-parent --max-count=4096 "$tip" "^$served" 2>/dev/null)
+  # Newest first: everything older than the oldest known-failed commit is untried.
+  for sha in "${range[@]}"; do
+    if [[ -n "${bad[$sha]:-}" ]]; then
+      lowest_bad="$sha"
+      candidates=()
+    elif [[ -n "$lowest_bad" ]]; then
+      candidates+=("$sha")
+    fi
+  done
+  (( ${#candidates[@]} > 0 )) || return 0
+  printf '%s' "${candidates[$(( ${#candidates[@]} / 2 ))]}"
 }
 
 # Lock diagnostics are fail-open. The helper writes bounded records to stderr
@@ -1588,10 +1775,17 @@ current="$(git -C "$STAGING_ROOT" rev-parse --verify HEAD 2>/dev/null || echo no
 health_sha="$(staging_health_source_sha || true)"
 served_sha="${health_sha:-$current}"
 checkout_needs_advance=0
+STAGING_SYNC_TIP_TARGET="$target"
+fallback_target="$(select_staging_fallback_target "$target" "$served_sha" || true)"
+if [ -n "$fallback_target" ]; then
+  log "FALLBACK (WI-6554700010048236): the staging tip ${target:0:10} is in a failure streak; trying the bisected ancestor ${fallback_target:0:10} so :$STAGING_PORT does not stay on ${served_sha:0:10}"
+  target="$fallback_target"
+fi
 
 if [ "$target" = "$current" ]; then
   if health_sha_matches_target "$health_sha" "$target"; then
     log "staging checkout and running :3170 bundle already at ${target:0:10} — no-op"
+    staging_sync_mark_serving "$target"
     exit 0
   fi
   # A prior tick may have advanced the checkout before dev:restart was
@@ -1642,6 +1836,10 @@ if [ "$restart_required" = 1 ]; then
     log "staleness ceiling reached (${age}s ≥ ${MAX_STALE_SEC}s) — advancing despite $live_clients live client connection(s) on :$STAGING_PORT"
   fi
 fi
+
+# From here a non-zero exit is a FAILED attempt at $target (WI-6554700010048236).
+STAGING_SYNC_ATTEMPT_TARGET="$target"
+STAGING_SYNC_PHASE=prepare
 
 # EI-21461712128132271: the timer used to bypass the platform's coordinated
 # restart seam with a raw `systemctl restart`. On 2026-08-25 it crossed the
@@ -1729,8 +1927,11 @@ fi
 # would add a ~10-13s outage for zero server-code freshness gain.
 if [ "$restart_required" = 0 ]; then
   log "✅ skipping restart — all ${changed_count} changed path(s) are restart-exempt (SPA/docs/tests); the published SPA is live on :$STAGING_PORT at ${target:0:8}"
+  staging_sync_mark_serving "$target"
   exit 0
 fi
+# The target built and published; later failures are runtime/restart failures.
+STAGING_SYNC_PHASE=restart
 
 # The candidate is complete and published. Downgrade the single-flight lock
 # before systemd ExecStartPre takes the shared lock to verify/reuse the bundle.
@@ -1761,6 +1962,7 @@ if [ -n "$seconds_since_start" ] && [ "$seconds_since_start" -lt "$RECENT_RESTAR
   recent_health_sha="$(staging_health_source_sha || true)"
   if health_sha_matches_target "$recent_health_sha" "$target"; then
     log "skipping restart — $UNIT's recent MainPID ($main_pid, ${seconds_since_start}s old) reports target source ${target:0:10}; peer restart verified"
+    staging_sync_mark_serving "$target"
     exit 0
   fi
   log "recent MainPID ($main_pid, ${seconds_since_start}s old) reports ${recent_health_sha:-no valid source SHA}, not target ${target:0:10} — restart still required"
@@ -2048,6 +2250,7 @@ while [ "$readiness_elapsed_sec" -lt "$READINESS_TIMEOUT_SEC" ]; do
   if health_sha_matches_target "$last_health_sha" "$target" &&
      { [ "$restart_pending" -eq 0 ] || staging_restart_is_observed "$main_pid" "$observed_main_pid" "$last_health_sha" "$target"; }; then
     log "✅ :3170 healthy on exact staging source ${last_health_sha}"
+    staging_sync_mark_serving "$target"
     exit 0
   fi
   readiness_elapsed_sec=$(( $(date +%s) - readiness_started_at ))
