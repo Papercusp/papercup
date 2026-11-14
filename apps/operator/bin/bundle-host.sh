@@ -98,8 +98,9 @@ HELPER_DIR="$OPERATOR_DIR/bin"
 if [[ "${1:-}" == --bg-transaction ]]; then
   # Both modes stay inside the caller-owned generation. Publishing a qualified
   # output receipt does not select a service pointer or activate a runtime.
-  if [[ "$#" != 7 || ( "${7:-}" != --binding-preflight-only && "${7:-}" != --publish-qualified-output-only ) ]]; then
-    echo 'BG recipe requires --bg-transaction <original.json> <sha256> <entry> <outfile> <profile> (--binding-preflight-only|--publish-qualified-output-only)' >&2
+  if [[ ( "$#" != 7 && "$#" != 9 ) || ( "${7:-}" != --binding-preflight-only && "${7:-}" != --publish-qualified-output-only ) ||
+    ( "$#" == 9 && ( "$7" != --publish-qualified-output-only || "$8" != --budget-from || "$9" != /* || ! -f "$9" ) ) ]]; then
+    echo 'BG recipe requires --bg-transaction <original.json> <sha256> <entry> <outfile> <profile> (--binding-preflight-only|--publish-qualified-output-only [--budget-from <completed-phases.jsonl>])' >&2
     exit 78
   fi
   if [[ -n "${NODE_OPTIONS:-}" || -n "${NODE_PATH:-}" ]]; then
@@ -107,9 +108,11 @@ if [[ "${1:-}" == --bg-transaction ]]; then
     exit 78
   fi
   if [[ "$7" == --publish-qualified-output-only ]]; then
+    BG_RECIPE_BUDGET_ARGS=()
+    if [[ "$#" == 9 ]]; then BG_RECIPE_BUDGET_ARGS=(--budget-from "$9"); fi
     node "$REPO_ROOT/scripts/source-preview.mjs" bg-build-run \
       --context "$2" --sha256 "$3" --pid "$$" --entry "$4" --outfile "$5" --profile "$6" \
-      --builder "${BASH_SOURCE[0]}" --repo "$REPO_ROOT"
+      --builder "${BASH_SOURCE[0]}" --repo "$REPO_ROOT" "${BG_RECIPE_BUDGET_ARGS[@]}"
     exit $?
   fi
   BUNDLE_HOST_BG_BUILD_CONTEXT="$(node "$REPO_ROOT/scripts/source-preview.mjs" bg-build-begin \
@@ -135,6 +138,14 @@ fi
 export NODE_OPTIONS="--import=\"$REPO_ROOT/scripts/lib/committed-source-loader.mjs\" ${NODE_OPTIONS:-}"
 COMMITTED_NODE=(node --import "$REPO_ROOT/scripts/lib/committed-source-loader.mjs")
 
+# Resolve the documented output target before lock admission so both it and the
+# package-cache mutex root can be checked on their actual filesystems.
+ENTRY="${1:-bin/hono-host.ts}"
+OUTFILE="${2:-dist-host/hono-host.mjs}"
+[[ "$ENTRY" = /* ]] || ENTRY="$OPERATOR_DIR/$ENTRY"
+[[ "$OUTFILE" = /* ]] || OUTFILE="$OPERATOR_DIR/$OUTFILE"
+OUTDIR="$(dirname "$OUTFILE")"
+
 # EI-21252421327077269: install:safe serializes WRITERS, but a systemd restart
 # could still run this dependency reader while npm was replacing node_modules.
 # That produced a half-extracted @modelcontextprotocol/sdk package and made the
@@ -144,6 +155,22 @@ COMMITTED_NODE=(node --import "$REPO_ROOT/scripts/lib/committed-source-loader.mj
 if ! "${COMMITTED_NODE[@]}" --input-type=module -e \
   'const { installLockNameForRoot, installMutexIsHeld } = await import(process.argv[1]); process.exit(installMutexIsHeld(installLockNameForRoot(process.argv[2])) ? 0 : 1);' \
   "file://$REPO_ROOT/scripts/lib/install-lock-name.mjs" "$REPO_ROOT"; then
+  # >>> host bundle disk admission
+  # The first install-safe reader creates a directory below this shared root.
+  # Resolve the same root as fs-mutex.mjs; TMPDIR is deliberately irrelevant.
+  source "$REPO_ROOT/papercusp-desktop/bin/lib/disk-preflight.sh"
+  HOST_FS_MUTEX_ROOT="$("${COMMITTED_NODE[@]}" --input-type=module -e \
+    'const { resolveFsMutexLockRoot } = await import(process.argv[1]); process.stdout.write(resolveFsMutexLockRoot());' \
+    "file://$REPO_ROOT/scripts/lib/fs-mutex.mjs")" || exit 78
+  HOST_FS_MUTEX_DEVICE="$(papercusp_mount_key "$HOST_FS_MUTEX_ROOT")"
+  HOST_BUNDLE_OUTPUT_DEVICE="$(papercusp_mount_key "$OUTDIR")"
+  if [[ -n "$HOST_FS_MUTEX_DEVICE" && "$HOST_FS_MUTEX_DEVICE" == "$HOST_BUNDLE_OUTPUT_DEVICE" ]]; then
+    papercusp_require_free_gb "$HOST_FS_MUTEX_ROOT" 1 "host bundle" || exit $?
+  else
+    papercusp_require_free_gb "$HOST_FS_MUTEX_ROOT" 1 "host bundle mutex root" || exit $?
+    papercusp_require_free_gb "$OUTDIR" 1 "host bundle output" || exit $?
+  fi
+  # <<< host bundle disk admission
   exec "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/npm-install-safe.mjs" \
     --repo-root "$REPO_ROOT" --exec-under-lock -- "$SCRIPT_DIR/bundle-host.sh" "$@"
 fi
@@ -162,14 +189,6 @@ if [[ "$HOST_BUNDLE_PROFILE" == "release" && "${PAPERCUSP_BUNDLE_REUSE_FRESH:-0}
 fi
 # <<< host bundle profile
 
-ENTRY="${1:-bin/hono-host.ts}"
-OUTFILE="${2:-dist-host/hono-host.mjs}"
-# The package-cache reader executes from REPO_ROOT. Resolve both paths while
-# their documented base is still OPERATOR_DIR, including ordinary relative
-# outputs used by systemd builds, so the reader cannot retarget either path.
-[[ "$ENTRY" = /* ]] || ENTRY="$OPERATOR_DIR/$ENTRY"
-[[ "$OUTFILE" = /* ]] || OUTFILE="$OPERATOR_DIR/$OUTFILE"
-OUTDIR="$(dirname "$OUTFILE")"
 # A verifier retains its journal outside the disposable source checkout.
 # Gate and census children inherit the same destination, including failures.
 export BUNDLE_HOST_STEP_LOG="${BUNDLE_HOST_STEP_LOG:-$OUTFILE.build-steps.jsonl}"
@@ -555,7 +574,9 @@ bundle_rc=0
 # marker. WI-10005113: `|| bundle_rc=$?`, not `if ! ( … ); then bundle_rc=1`, so
 # the subshell's REAL status survives and a signal death (128+N) is reported as one.
 # Resolve in the parent so host, workers and spawner share this build's pin.
-if bundle_host_run_step compiler-resolve bundle_host_prepare_esbuild "$REPO_ROOT" >"$BUILD_LOG" 2>&1; then
+if bundle_host_run_step compiler-resolve bundle_host_prepare_esbuild "$REPO_ROOT" >"$BUILD_LOG" 2>&1 &&
+   bundle_host_run_step host-testing-core bundle_host_prepare_testing_core "$REPO_ROOT" "$OUTDIR" \
+     "${HOST_MINIFY_ARGS[@]}" "${HOST_EXTERNALS[@]}" "${HOST_VIEM_ALIASES[@]}" >>"$BUILD_LOG" 2>&1; then
 (
   bundle_host_run_step bundle-lock flock -w 120 9 || { echo "ERROR: timed out waiting for bundle lock $LOCKFILE (another build stuck?)"; exit 1; }
   # WI-55467: the SAME errexit hole the checker comment below describes applies to
@@ -589,6 +610,7 @@ if bundle_host_run_step compiler-resolve bundle_host_prepare_esbuild "$REPO_ROOT
       --banner:js="$HOST_BANNER" \
       "${HOST_BANNER_DEFINES[@]}" \
       --define:__PAPERCUSP_BUNDLED_SIDECAR__=true \
+      "$BUNDLE_HOST_TESTING_CORE_WITNESS_DEFINE" \
       "${BUNDLED_SOURCE_SHA_DEFINE[@]}" \
       --log-limit=20 \
       "${HOST_EXTERNALS[@]}" "${HOST_VIEM_ALIASES[@]}" || compiler_rc=$?
@@ -639,6 +661,10 @@ if bundle_host_run_step compiler-resolve bundle_host_prepare_esbuild "$REPO_ROOT
   if ! bundle_host_run_step host-ascii-and-syntax "${COMMITTED_NODE[@]}" "$HELPER_DIR/ascii-escape-bundle.mjs" "$TMPFILE" --check; then
     echo "ERROR: the bundled $OUTFILE fails \`node --check\` (it would throw a SyntaxError at load); keeping the last-known-good bundle."
     exit 1
+  fi
+  if ! bundle_host_run_step host-testing-core-verify bundle_host_verify_testing_core "$REPO_ROOT"; then
+    echo 'ERROR: producing testing-core interval or final worker changed; keeping the last-known-good host.'
+    exit 78
   fi
   # Retain the host graph alongside its accepted bundle, as for spawner-sidecar.
   # The temporary restricted-gate copy is removed on exit and cannot serve as a
