@@ -121,7 +121,8 @@ it('cancels an actual native mutation guard and removes its observer and frozen 
       '--mutate', 's/alpha/beta/', '--test',
       `printf '%s' "$PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET" > ${JSON.stringify(marker)}; sleep 30; grep -q alpha {}`], {
       cwd: root,
-      env: { ...process.env, TMPDIR: dir, VERIFY_TAURI_PID: String(native.pid), OPERATOR_SOURCE_ROOT: root,
+      // This guard writes only to the temp marker and subject; checkout containment is out of scope here.
+      env: { ...process.env, TMPDIR: dir, MUTATION_PROBE_CONTAIN_WRITES: '0', VERIFY_TAURI_PID: String(native.pid), OPERATOR_SOURCE_ROOT: root,
         VERIFY_TAURI_SOURCE_REF: commit, VERIFY_TAURI_SOURCE_RECEIPT: receipt,
         PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET: undefined },
     });
