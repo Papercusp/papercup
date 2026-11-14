@@ -68,6 +68,8 @@ import {
   withFsMutexRead,
 } from "./lib/fs-mutex.mjs";
 import { TEST_FILE_EXIT_NOT_MEASURED } from "./lib/test-file-exit-codes.mjs";
+import { expandWorkspaces } from "./assert-workspace-links.mjs";
+import { FOREIGN_HIVE_SUBMODULES } from "./lib/foreign-hive-submodules.mjs";
 
 // npm run exports its own prefix and can carry user config. These fixtures
 // model local installs in a disposable repo; each case sets its routing options.
@@ -1651,6 +1653,26 @@ test(`fallback ${command} with installed ${version} ${reserve ? "reserves repair
   }
 });
 }
+
+test("registered foreign hives retain independent npm workspace ownership", () => {
+  const root = dirname(dirname(fileURLToPath(import.meta.url)));
+  const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  const lock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));
+  const foreignPaths = FOREIGN_HIVE_SUBMODULES.map(({ path }) => path);
+  const workspacePaths = expandWorkspaces(manifest.workspaces, root, {
+    directories: [...foreignPaths, "apps/operator", "packages/operator-core"],
+  });
+  assert.deepEqual(workspacePaths.filter(path => foreignPaths.includes(path)), [],
+    "a foreign hive owns its dependencies and frozen gitlink; parent npm must not resolve it");
+  assert.ok(workspacePaths.includes("apps/operator"));
+  assert.ok(workspacePaths.includes("packages/operator-core"));
+  assert.deepEqual(lock.packages[""].workspaces, manifest.workspaces);
+  for (const path of foreignPaths) {
+    assert.equal(lock.packages[path], undefined, "foreign workspace remains in parent lock: " + path);
+    assert.deepEqual(Object.entries(lock.packages).filter(([, entry]) => entry.link && entry.resolved === path), [],
+      "parent lock still publishes a foreign workspace link: " + path);
+  }
+});
 
 test("recursive lock refusal identifies each selected lockfile, manifest and controlling gitlink", () => {
   const files = new Map(Object.entries({
