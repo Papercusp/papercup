@@ -4,7 +4,7 @@ import { copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSyn
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { captureTestingCoreInputUniverse, prepareTestingCore, retainTestingCoreResolverMetadata, verifyTestingCoreReceipt } from '../../../scripts/lib/testing-core-witness.mjs';
+import { captureTestingCoreInputUniverse, createTestingCoreResolverNamespace, prepareTestingCore, retainTestingCoreResolverMetadata, verifyTestingCoreReceipt } from '../../../scripts/lib/testing-core-witness.mjs';
 import { createCompilerInputCustody } from '../../../scripts/lib/compiler-input-custody.mjs';
 import { localEsbuildNpxPath } from './test-fixtures/local-esbuild-npx';
 
@@ -14,8 +14,8 @@ const hash = (bytes: string | Buffer) => createHash('sha256').update(bytes).dige
 let base: string, compilerPath: string, sequence = 0;
 
 beforeAll(() => {
-  // Keep the native resolver's enclosing namespace stable; global /tmp is
-  // intentionally not claimed to be an unchanged resolution universe.
+  // Keep fixtures private. The compiler closes its enclosing namespace instead
+  // of assuming the shared HOME directory remains idle during these builds.
   const bank = join(homedir(), '.papercusp/testing-core-witness-tests');
   mkdirSync(bank, { recursive: true });
   base = mkdtempSync(join(bank, 'case-'));
@@ -120,6 +120,71 @@ describe('testing core producing-build witness', () => {
     const receipt = await prepareTestingCore(f);
     expect(receipt.input.sources.some((row: {path: string}) => row.path.endsWith('enclosing-custody/index.js'))).toBe(true);
     expect(verifyTestingCoreReceipt(receipt, receipt.witness)).toEqual(receipt.witness);
+  });
+
+  it('accepts unrelated enclosing-directory entry churn throughout native compilation', async () => {
+    const f = fixture(), unrelated = join(dirname(f.root), 'unrelated-agent-state');
+    const receipt = await prepareTestingCore({ ...f,
+      phase: async (name: string, run: () => Promise<unknown>) => {
+        if (name === 'final') {
+          writeFileSync(unrelated, 'another agent wrote state');
+          rmSync(unrelated);
+        }
+        return run();
+      } });
+    expect(verifyTestingCoreReceipt(receipt, receipt.witness)).toEqual(receipt.witness);
+  });
+
+  it('probes native namespace support independently of inherited Node preloads', () => {
+    const f = fixture(), universe = captureTestingCoreInputUniverse(f.root, dirname(f.outfile));
+    const ordinary = createTestingCoreResolverNamespace(universe);
+    const previous = process.env.NODE_OPTIONS;
+    try {
+      process.env.NODE_OPTIONS = '--import=/does-not-exist/testing-core-probe-must-stay-native.mjs';
+      expect(createTestingCoreResolverNamespace(universe)).toEqual(ordinary);
+    } finally {
+      if (previous === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = previous;
+    }
+  });
+
+  it.each(['package.json', 'tsconfig.json'])(
+    'still refuses A/B/restore of original enclosing %s', async name => {
+      const f = fixture(), metadata = join(dirname(f.root), name);
+      const original = name === 'package.json' ? '{"type":"module"}' : '{"compilerOptions":{}}';
+      writeFileSync(metadata, original);
+      await expect(prepareTestingCore({ ...f,
+        phase: async (phase: string, run: () => Promise<unknown>) => {
+          if (phase === 'final') {
+            writeFileSync(metadata, '{}');
+            writeFileSync(metadata, original);
+          }
+          return run();
+        } })).rejects.toThrow(/identity changed|interval changed/);
+      expect(existsSync(f.outfile)).toBe(false);
+    });
+
+  it('keeps a newly created enclosing dependency outside the native resolver namespace', async () => {
+    const f = fixture(), dependency = join(dirname(f.root), 'node_modules/late-ancestor');
+    f.put('core.ts', 'export {result} from "late-ancestor";');
+    const closed = createTestingCoreResolverNamespace(
+      captureTestingCoreInputUniverse(f.root, dirname(f.outfile))) !== undefined;
+    await expect(prepareTestingCore({ ...f,
+      phase: async (phase: string, run: () => Promise<unknown>) => {
+        if (phase === 'discovery') {
+          mkdirSync(dependency, { recursive: true });
+          writeFileSync(join(dependency, 'package.json'), '{"name":"late-ancestor","main":"index.js"}');
+          writeFileSync(join(dependency, 'index.js'), 'export const result = 99;');
+        }
+        return run();
+      } })).rejects.toThrow(closed ? /Could not resolve "late-ancestor"/ : /outside original census|interval changed/);
+    expect(existsSync(f.outfile)).toBe(false);
+    // The same real native binary resolves the new host dependency outside the
+    // namespace. Merely dropping ancestor timestamp checks cannot pass this.
+    const raw = spawnSync(compilerPath, [join(f.root, 'core.ts'), '--bundle', '--platform=node', '--format=esm'],
+      { encoding: 'utf8' });
+    expect(raw.status, raw.stderr).toBe(0);
+    expect(raw.stdout).toContain('99');
   });
 
   it('retains arbitrary-extension recursive JSONC configuration inputs and their changes', async () => {

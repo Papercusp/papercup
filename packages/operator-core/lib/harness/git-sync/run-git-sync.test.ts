@@ -5208,6 +5208,11 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
       const rootSlowPinWhileBlocked = reachedBlockedPush
         ? git(superOrigin, 'rev-parse', 'main:vendor/slow-parent')
         : '';
+      // WI-6554700010048237: the gate and :3170 cut candidates from LOCAL staging, so the
+      // verified leaf pin must be committed locally before deep work even when the root
+      // push is withheld for unverified prior history.
+      const localFastPinWhileBlocked = reachedBlockedPush ? git(repo, 'rev-parse', 'HEAD:libs/sub') : '';
+      const fastChildOriginWhileBlocked = reachedBlockedPush ? git(subOrigin, 'rev-parse', 'main') : '';
       const pushesWhileBlocked = rootPushCount;
       const wasBlocked = blockedPush;
       releaseBlockedPush();
@@ -5215,9 +5220,17 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
 
       expect(reachedBlockedPush).toBe(true);
       expect(wasBlocked).toBe(true);
+      expect(fastChildOriginWhileBlocked).not.toBe(fastInitialRootSha);
+      expect(localFastPinWhileBlocked).toBe(fastChildOriginWhileBlocked);
       if (priorUnverifiedRootPointer) {
         expect(pushesWhileBlocked).toBe(0);
         expect(rootFastPinWhileBlocked).toBe(fastInitialRootSha);
+        const earlyPhase = phaseOutputs.get('git-sync:submodules') as {
+          earlyRootCommit?: { localCommits?: Array<{ sha: string }> };
+        };
+        const earlyLocalSha = earlyPhase.earlyRootCommit?.localCommits?.at(-1)?.sha;
+        expect(earlyLocalSha).toBeDefined();
+        expect(git(repo, 'rev-parse', `${earlyLocalSha}:libs/sub`)).toBe(fastChildOriginWhileBlocked);
       } else {
         expect(pushesWhileBlocked).toBeGreaterThan(0);
         expect(rootFastPinWhileBlocked).toBe(git(subOrigin, 'rev-parse', 'main'));

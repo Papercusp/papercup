@@ -10795,126 +10795,140 @@ async function runGitSyncPass(
           const priorRootAheadCount = priorRootAhead.code === 0 && /^[0-9]+$/.test(priorRootAheadText)
             ? Number.parseInt(priorRootAheadText, 10)
             : null;
-          if (priorRootAheadCount !== 0) {
+          // WI-6554700010048237: unpublished root history gates only the root PUSH. The leaf
+          // child is still synced and verified on its own origin, and its link-only commit
+          // still lands LOCALLY. green-checkpoint and :3170 cut candidates from local staging,
+          // so withholding the local commit left root sources that import new child code
+          // committed against the old pin until the final pointer phase (measured 33 min on
+          // 2026-11-14, while the root was 1056 commits ahead of origin). The final phase
+          // publishes this commit together with the prior history once that verifies.
+          const earlyRootPush = priorRootAheadCount === 0;
+          if (!earlyRootPush) {
             log(
-              '[git-sync] ' + slug + ': early root pointer publication deferred; ' +
+              '[git-sync] ' + slug + ': early root pointer push deferred (the link-only commit stays local); ' +
                 (priorRootAheadCount === null
                   ? 'the existing superproject history could not be verified'
                   : priorRootAheadCount + ' pre-existing local commit(s) are not on the root origin'),
             );
-          } else {
-            for (let batchStart = 0; batchStart < candidatePaths.length; batchStart += SUBMODULE_SYNC_CONCURRENCY) {
-              if (await checkYield()) break;
-              const batch = candidatePaths.slice(batchStart, batchStart + SUBMODULE_SYNC_CONCURRENCY);
-              const batchStartedAt = performance.now();
-              const measurement: NonNullable<PhaseCollect['submoduleTiming']>['batches'][number] = {
-                index: timing.batches.length + timing.omittedBatches,
-                depth: batch[0]!.split('/').length,
-                startOffsetMs: Math.round(batchStartedAt - phaseStartedAt),
-                durationMs: 0,
-                repositories: [],
-              };
-              timingLog('early-root-leaf-batch-start', { batch: measurement.index, scopes: batch });
-              const results = await Promise.allSettled(batch.map(async (scope) => {
-                const startedAt = performance.now();
-                let status: RepoSyncResult['status'] | 'rejected' = 'rejected';
-                try {
-                  const result = await syncSubmodule(scope);
-                  status = result.status;
-                  return result;
-                } finally {
-                  const repository = { scope, durationMs: Math.round(performance.now() - startedAt), status };
-                  measurement.repositories.push(repository);
-                  timingLog('repository-settled', { batch: measurement.index, ...repository });
-                }
-              }));
-              measurement.durationMs = Math.round(performance.now() - batchStartedAt);
-              if (timing.batches.length < 64) timing.batches.push(measurement);
-              else timing.omittedBatches++;
-              timingLog('early-root-leaf-batch-settled', measurement);
-              const readyRootLinks: string[] = [];
-              for (let i = 0; i < results.length; i++) {
-                const result = results[i]!;
-                const scope = batch[i]!;
-                if (result.status === 'rejected') {
-                  log(
-                    '[git-sync] ' + slug + '/' + scope + ': early leaf sync failed (' +
-                      String(result.reason) + '); the regular deepest-first pass will retry it',
-                  );
-                  continue;
-                }
-                if (result.value.status === 'nothing' || result.value.status === 'synced') {
-                  absorb(out, scope, result.value);
-                  if (!out.earlySyncedSubmodulePaths.includes(scope)) out.earlySyncedSubmodulePaths.push(scope);
-                  readyRootLinks.push(scope);
-                } else {
-                  log(
-                    '[git-sync] ' + slug + '/' + scope + ': early leaf sync did not verify a publishable child (' +
-                      result.value.status + '); the regular deepest-first pass will retry it',
-                  );
-                }
+          }
+          for (let batchStart = 0; batchStart < candidatePaths.length; batchStart += SUBMODULE_SYNC_CONCURRENCY) {
+            if (await checkYield()) break;
+            const batch = candidatePaths.slice(batchStart, batchStart + SUBMODULE_SYNC_CONCURRENCY);
+            const batchStartedAt = performance.now();
+            const measurement: NonNullable<PhaseCollect['submoduleTiming']>['batches'][number] = {
+              index: timing.batches.length + timing.omittedBatches,
+              depth: batch[0]!.split('/').length,
+              startOffsetMs: Math.round(batchStartedAt - phaseStartedAt),
+              durationMs: 0,
+              repositories: [],
+            };
+            timingLog('early-root-leaf-batch-start', { batch: measurement.index, scopes: batch });
+            const results = await Promise.allSettled(batch.map(async (scope) => {
+              const startedAt = performance.now();
+              let status: RepoSyncResult['status'] | 'rejected' = 'rejected';
+              try {
+                const result = await syncSubmodule(scope);
+                status = result.status;
+                return result;
+              } finally {
+                const repository = { scope, durationMs: Math.round(performance.now() - startedAt), status };
+                measurement.repositories.push(repository);
+                timingLog('repository-settled', { batch: measurement.index, ...repository });
               }
-              if (readyRootLinks.length === 0) continue;
-
-              // Re-read status so concurrent root edits stay out of this link-only commit.
-              const publishStatus = await runGitForTiming(['status', '--porcelain', '-z', '-uall'], repo);
-              if (publishStatus.code !== 0) {
-                log('[git-sync] ' + slug + ': early root pointer publication skipped; final dirty-path census failed');
+            }));
+            measurement.durationMs = Math.round(performance.now() - batchStartedAt);
+            if (timing.batches.length < 64) timing.batches.push(measurement);
+            else timing.omittedBatches++;
+            timingLog('early-root-leaf-batch-settled', measurement);
+            const readyRootLinks: string[] = [];
+            for (let i = 0; i < results.length; i++) {
+              const result = results[i]!;
+              const scope = batch[i]!;
+              if (result.status === 'rejected') {
+                log(
+                  '[git-sync] ' + slug + '/' + scope + ': early leaf sync failed (' +
+                    String(result.reason) + '); the regular deepest-first pass will retry it',
+                );
                 continue;
               }
-              const publishDirtyPaths = pathsFromPorcelainZ(publishStatus.stdout);
-              const currentReadyLinks = readyRootLinks.filter((path) => publishDirtyPaths.includes(path));
-              if (currentReadyLinks.length === 0) continue;
-              const nestedPotPaths = cfg.nestedPotCheckouts ?? [];
-              const rootProtectedPaths = protectedPaths.filter(
-                (path) => !subPaths.some((subPath) => path === subPath || path.startsWith(subPath + '/')),
-              );
-              const rootProtectedHoldings = protectedHoldings.filter(
-                (holding) =>
-                  !subPaths.some((subPath) => holding.path === subPath || holding.path.startsWith(subPath + '/')) &&
-                  !isUnderAnyPath(holding.path, nestedPotPaths),
-              );
-              const earlyRootExcludePaths = [...new Set([
-                ...rootProtectedPaths,
-                ...nestedPotPaths,
-                ...topLevelSubmodulePaths.filter((path) => !currentReadyLinks.includes(path)),
-                ...publishDirtyPaths.filter((path) => !currentReadyLinks.includes(path)),
-              ])];
-              const earlyPointerCommits: GitSyncRootCommit[] = [];
-              const rootResult = await syncOneRepo(runGitForTiming, repo, {
-                ...repoO,
-                scope: 'superproject',
-                defaultBranch: branch,
-                doPush,
-                disableCommitGraphForSubmoduleMerge: subPaths.length > 0,
-                ...(cfg.syncBack ? { syncBack: cfg.syncBack } : {}),
-                migrationFenceRoster: roster,
-                migrationDependencySubmodulePaths: subPaths,
-                excludePaths: earlyRootExcludePaths,
-                protectedHoldings: rootProtectedHoldings,
-                refreshLiveLockHoldings: refreshLiveLockHoldingsForRepo?.('', subPaths),
-                attribution: attributionMapForRepo(roster, '', repo),
-                onAttribution,
-                priorityPaths: currentReadyLinks,
-                onPublished: (sha) => earlyPointerCommits.push({ sha, committedAtMs: Date.now() }),
-              });
-              recordEarlyRootCommit(rootResult, earlyPointerCommits);
-              if (rootResult.status === 'synced') {
-                out.didSomething ||= rootResult.pushed || rootResult.merged;
-                if (rootResult.pushed && !out.pushed.includes('superproject')) out.pushed.push('superproject');
-                if (rootResult.merged && !out.merged.includes('superproject')) out.merged.push('superproject');
-              } else if (rootResult.status === 'error' || rootResult.status === 'conflict' || rootResult.status === 'skipped-locked') {
+              if (result.value.status === 'nothing' || result.value.status === 'synced') {
+                absorb(out, scope, result.value);
+                if (!out.earlySyncedSubmodulePaths.includes(scope)) out.earlySyncedSubmodulePaths.push(scope);
+                readyRootLinks.push(scope);
+              } else {
                 log(
-                  '[git-sync] ' + slug + ': early root pointer push did not complete (' +
-                    rootResult.status + '); the final pointer-bump phase will retry after child reconciliation',
+                  '[git-sync] ' + slug + '/' + scope + ': early leaf sync did not verify a publishable child (' +
+                    result.value.status + '); the regular deepest-first pass will retry it',
                 );
               }
-              if (rootResult.mergeCompleted && !out.mergeCompleted.includes('superproject')) {
-                out.mergeCompleted.push('superproject');
-              }
             }
-            recordSetupStep('early-root-leaf-publication');
+            if (readyRootLinks.length === 0) continue;
+
+            // Re-read status so concurrent root edits stay out of this link-only commit.
+            const publishStatus = await runGitForTiming(['status', '--porcelain', '-z', '-uall'], repo);
+            if (publishStatus.code !== 0) {
+              log('[git-sync] ' + slug + ': early root pointer publication skipped; final dirty-path census failed');
+              continue;
+            }
+            const publishDirtyPaths = pathsFromPorcelainZ(publishStatus.stdout);
+            const currentReadyLinks = readyRootLinks.filter((path) => publishDirtyPaths.includes(path));
+            if (currentReadyLinks.length === 0) continue;
+            const nestedPotPaths = cfg.nestedPotCheckouts ?? [];
+            const rootProtectedPaths = protectedPaths.filter(
+              (path) => !subPaths.some((subPath) => path === subPath || path.startsWith(subPath + '/')),
+            );
+            const rootProtectedHoldings = protectedHoldings.filter(
+              (holding) =>
+                !subPaths.some((subPath) => holding.path === subPath || holding.path.startsWith(subPath + '/')) &&
+                !isUnderAnyPath(holding.path, nestedPotPaths),
+            );
+            const earlyRootExcludePaths = [...new Set([
+              ...rootProtectedPaths,
+              ...nestedPotPaths,
+              ...topLevelSubmodulePaths.filter((path) => !currentReadyLinks.includes(path)),
+              ...publishDirtyPaths.filter((path) => !currentReadyLinks.includes(path)),
+            ])];
+            const earlyPointerCommits: GitSyncRootCommit[] = [];
+            const rootResult = await syncOneRepo(runGitForTiming, repo, {
+              ...repoO,
+              scope: 'superproject',
+              defaultBranch: branch,
+              doPush: earlyRootPush,
+              disableCommitGraphForSubmoduleMerge: subPaths.length > 0,
+              ...(cfg.syncBack ? { syncBack: cfg.syncBack } : {}),
+              migrationFenceRoster: roster,
+              migrationDependencySubmodulePaths: subPaths,
+              excludePaths: earlyRootExcludePaths,
+              protectedHoldings: rootProtectedHoldings,
+              refreshLiveLockHoldings: refreshLiveLockHoldingsForRepo?.('', subPaths),
+              attribution: attributionMapForRepo(roster, '', repo),
+              onAttribution,
+              priorityPaths: currentReadyLinks,
+              onPublished: (sha) => earlyPointerCommits.push({ sha, committedAtMs: Date.now() }),
+            });
+            recordEarlyRootCommit(rootResult, earlyPointerCommits);
+            if (rootResult.status === 'synced') {
+              out.didSomething ||= rootResult.pushed || rootResult.merged;
+              if (rootResult.pushed && !out.pushed.includes('superproject')) out.pushed.push('superproject');
+              if (rootResult.merged && !out.merged.includes('superproject')) out.merged.push('superproject');
+              if (!earlyRootPush && earlyPointerCommits.length > 0) {
+                log(
+                  '[git-sync] ' + slug + ': early root pointer committed locally for ' + currentReadyLinks.join(', ') +
+                    '; the final pointer-bump phase publishes it',
+                );
+              }
+            } else if (rootResult.status === 'error' || rootResult.status === 'conflict' || rootResult.status === 'skipped-locked') {
+              log(
+                '[git-sync] ' + slug + ': early root pointer ' + (earlyRootPush ? 'push' : 'local commit') +
+                  ' did not complete (' + rootResult.status +
+                  '); the final pointer-bump phase will retry after child reconciliation',
+              );
+            }
+            if (rootResult.mergeCompleted && !out.mergeCompleted.includes('superproject')) {
+              out.mergeCompleted.push('superproject');
+            }
           }
+          recordSetupStep('early-root-leaf-publication');
         }
       }
     }

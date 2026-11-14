@@ -11,9 +11,9 @@ const frozenRows = rows => Object.freeze(rows.map(row => Object.freeze({ ...row 
 
 /** @param {{ root: string, files: Map<string, {kind: string, sha256?: string}>,
  * label?: string, verifyBoundary: () => void, retainBuffers?: boolean, discoverInputs?: boolean,
- * verifyReadOnly?: boolean }} input */
+ * verifyReadOnly?: boolean, syntheticDirectories?: string[] }} input */
 export function createCompilerInputCustody({ root, files, label = 'compiler', verifyBoundary,
-  retainBuffers = false, discoverInputs = false, verifyReadOnly = false }) {
+  retainBuffers = false, discoverInputs = false, verifyReadOnly = false, syntheticDirectories = [] }) {
   const originalFiles = new Map(files);
   const inputIdentity = local => {
     const path = join(root, local), stat = lstatSync(path, { bigint: true });
@@ -32,7 +32,13 @@ export function createCompilerInputCustody({ root, files, label = 'compiler', ve
       while (directory !== '.') { directories.add(directory); directory = dirname(directory); }
     }
   }
-  const directoryIdentities = new Map([...directories].map(local => [local, inputIdentity(local)]));
+  // A caller with a closed native resolver namespace may synthesize enclosing
+  // directories instead of exposing their host entries. All mounted source and
+  // dependency directories still retain their complete original identities.
+  const synthetic = new Set(syntheticDirectories);
+  const directoryIdentities = new Map([...directories]
+    .filter(local => !synthetic.has(resolve(root, local)))
+    .map(local => [local, inputIdentity(local)]));
   const consumed = new Map(), buffers = new Map(), readPaths = new Set();
   const readInput = path => {
     const physical = realpathSync(path), local = relative(root, physical).split(sep).join('/');

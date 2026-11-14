@@ -57,6 +57,62 @@ function verifyPins(pins) {
   }
 }
 
+function resolverMounts(universe) {
+  const parents = new Set(universe.ancestors.filter(row => row.original.kind === 'directory').map(row => row.path));
+  return [universe.root,
+    ...universe.rows.filter(row => basename(row.path) === 'node_modules' && parents.has(dirname(row.path)))
+      .map(row => row.path),
+    ...universe.ancestors.filter(row => row.sha256).map(row => row.path)].sort();
+}
+
+/** Reuse the host's native namespace primitive, keeping the original source
+ * mounts and metadata pins. Missing ancestor candidates remain absent inside
+ * the compiler even if another agent creates them in the host's shared HOME.
+ * Hosts without a working mount namespace retain the stricter legacy fence. */
+export function createTestingCoreResolverNamespace(universe) {
+  const path = '/usr/bin/bwrap';
+  if (process.platform !== 'linux' || !existsSync(path)) return undefined;
+  const launcher = pinFile(path);
+  // This is a native capability probe. Starting Node here would inherit test
+  // and launcher preloads, turning their Git/import requirements into a false
+  // namespace refusal even though the native compiler needs none of them.
+  const probe = spawnSync(launcher.physical, ['--unshare-user', '--ro-bind', '/', '/', '--',
+    launcher.physical, '--version'], { stdio: 'ignore', timeout: 10_000 });
+  verifyPins([launcher]);
+  if (probe.status !== 0) return undefined;
+  for (const row of universe.ancestors.filter(row => row.sha256))
+    assert.equal(row.original.kind, 'file', `Testing core enclosing metadata must be physical: ${row.path}`);
+  return { schemaVersion: 'testing-core-resolver-namespace-v1',
+    root: universe.root, mounts: resolverMounts(universe), launcher: withoutBuffers(launcher) };
+}
+
+export function testingCoreResolverNamespaceIdentity(namespace) {
+  return namespace && { schemaVersion: namespace.schemaVersion, root: namespace.root, mounts: namespace.mounts,
+    launcherSha256: namespace.launcher.sha256 };
+}
+
+/** Only the native service enters this namespace; the API/onLoad host retains
+ * original buffers and file identities. BG may supply its already sealed fd,
+ * whose bytes are copied read-only into the same isolated executable path. */
+export function spawnTestingCoreCompiler(namespace, command, args, options, binaryFd) {
+  if (!namespace) return binaryFd === undefined ? spawn(command, args, options)
+    : spawn('/proc/self/fd/3', args, { ...options, stdio: ['pipe', 'pipe', 'inherit', binaryFd] });
+  verifyPins([namespace.launcher]);
+  assert.ok(isAbsolute(namespace.root) && namespace.mounts.includes(namespace.root),
+    'Testing core native working directory must be an original source mount');
+  const native = '/.papercusp-native-compiler';
+  const argv = ['--unshare-user', '--unshare-pid', '--unshare-net', '--die-with-parent', '--new-session',
+    '--proc', '/proc', '--dev', '/dev'];
+  for (const path of namespace.mounts) argv.push('--ro-bind', path, path);
+  if (binaryFd === undefined) argv.push('--ro-bind', command, native);
+  else argv.push('--perms', '0500', '--ro-bind-data', '3', native);
+  // The API can inherit its host's cwd (a Vitest worker or the operator), which
+  // is deliberately absent here. Build absWorkingDir already names this root.
+  argv.push('--chdir', namespace.root, '--', native, ...args);
+  return spawn(namespace.launcher.physical, argv, { ...options,
+    ...(binaryFd === undefined ? {} : { stdio: ['pipe', 'pipe', 'inherit', binaryFd] }) });
+}
+
 export function captureTestingCoreInputUniverse(root, outputDir) {
   const rows = [], visited = new Set();
   const omittedOutput = relative(root, outputDir).split(sep).join('/');
@@ -101,7 +157,15 @@ export function captureTestingCoreInputUniverse(root, outputDir) {
 }
 
 function verifyUniverse(universe) {
-  for (const row of [...universe.rows, ...universe.ancestors])
+  const namespace = universe.resolverNamespace;
+  if (namespace) {
+    assert.equal(namespace.schemaVersion, 'testing-core-resolver-namespace-v1');
+    assert.equal(namespace.root, universe.root, 'Testing core resolver source root changed');
+    assert.deepEqual(namespace.mounts, resolverMounts(universe), 'Testing core resolver mount population changed');
+    verifyPins([namespace.launcher]);
+  }
+  for (const row of [...universe.rows, ...universe.ancestors.filter(row =>
+    !namespace || row.original.kind !== 'directory')])
     assert.deepEqual(identity(row.path), row.original, `Testing core resolver/input interval changed: ${row.path}`);
 }
 
@@ -212,8 +276,11 @@ export async function prepareTestingCore({ root, compilerPath, argv,
   const outputDir = dirname(options.outfile);
   mkdirSync(outputDir, { recursive: true });
   const universe = await phase('input-census', () => captureTestingCoreInputUniverse(root, realpathSync(outputDir)));
+  universe.resolverNamespace = createTestingCoreResolverNamespace(universe);
   const custody = createCompilerInputCustody({ root: universe.domainRoot, files: universe.files,
     label: 'Testing core compiler', retainBuffers: true, discoverInputs: true, verifyReadOnly: true,
+    syntheticDirectories: universe.resolverNamespace ? universe.ancestors.filter(row =>
+      row.original.kind === 'directory').map(row => row.path) : [],
     verifyBoundary: () => verifyUniverse({ ...universe, rows: universe.rows.filter(row => row.original.kind !== 'file') }) });
   const sourceRecords = [];
   const retain = local => {
@@ -256,7 +323,7 @@ export async function prepareTestingCore({ root, compilerPath, argv,
         assert.deepEqual(args, ['--service=0.25.0', '--ping'], 'Testing core compiler service argv differs');
         assert.equal(launches++, 0, 'Testing core compiler must use one owned native service');
         verifyPins(pins);
-        return spawn(command, args, opts);
+        return spawnTestingCoreCompiler(universe.resolverNamespace, command, args, opts);
       } };
       return trustedRequire(name);
     }, { resolve(name) { assert.ok(isBuiltin(name)); return trustedRequire.resolve(name); } });
@@ -281,6 +348,8 @@ export async function prepareTestingCore({ root, compilerPath, argv,
       resolutionPopulation: universe.rows.map(row => ({ path: relative(root, row.path).split(sep).join('/'),
         kind: row.original.kind, ...(row.original.target ? { target: row.original.target } : {}) })),
       enclosingMetadata: universe.ancestors.filter(row => row.sha256).map(row => ({ path: row.path, sha256: row.sha256 })),
+      ...(universe.resolverNamespace ? {
+        resolverNamespace: testingCoreResolverNamespaceIdentity(universe.resolverNamespace) } : {}),
       profile, toolchain: { node: process.versions.node, platform: process.platform, arch: process.arch,
         files: pins.map((row, i) => ({ role: ['api', 'package', 'binary', 'node'][i], sha256: row.sha256 })) } };
     const sourceSha256 = digest(JSON.stringify(input));
@@ -311,6 +380,7 @@ export async function prepareTestingCore({ root, compilerPath, argv,
         interval: { rows: universe.rows.filter(row => row.original.kind !== 'file'
           || readPaths.has(relative(universe.domainRoot, row.path).split(sep).join('/'))),
           ancestors: universe.ancestors.map(withoutBuffers),
+          ...(universe.resolverNamespace ? { resolverNamespace: universe.resolverNamespace } : {}),
           toolchain: pins.map(withoutBuffers) } };
     } finally { rmSync(temporary, { force: true }); }
   } finally {
@@ -326,7 +396,9 @@ export function verifyTestingCoreInputs(receipt, expected) {
   assert.equal(receipt.schemaVersion, 'testing-core-producing-build-v1');
   assert.deepEqual(receipt.witness, expected, 'Testing core producing expectation changed');
   assert.equal(digest(JSON.stringify(receipt.input)), expected.sourceSha256, 'Testing core source/profile witness changed');
-  verifyUniverse({ rows: receipt.interval.rows, ancestors: receipt.interval.ancestors });
+  assert.deepEqual(testingCoreResolverNamespaceIdentity(receipt.interval.resolverNamespace),
+    receipt.input.resolverNamespace, 'Testing core producing resolver namespace changed');
+  verifyUniverse({ root: receipt.root, ...receipt.interval });
   verifyPins(receipt.interval.toolchain);
   verifyPins(receipt.interval.resolverMetadata ?? []);
   return expected;

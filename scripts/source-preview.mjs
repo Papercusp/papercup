@@ -48,6 +48,7 @@ import { normalizeVerifierInputs, validateCommittedVerifierInputs,
   measureVerifierSourceBytesFromGit } from './verifier-source-preflight.mjs';
 import { compilerOptionsFromArgs, createCompilerInputCustody } from './lib/compiler-input-custody.mjs';
 import { captureTestingCoreInputUniverse, qualifyTestingCoreConfigurationClosure, retainTestingCoreResolverMetadata,
+  createTestingCoreResolverNamespace, spawnTestingCoreCompiler, testingCoreResolverNamespaceIdentity,
   verifyTestingCoreInputs, verifyTestingCoreReceipt } from './lib/testing-core-witness.mjs';
 import { assertCommittedWorkspaceLockMatches, committedWorkRootDependencyDonor } from './lint-as-committed.mjs';
 import { assertRootLockManifestMatches } from './npm-install-safe.mjs';
@@ -2322,6 +2323,7 @@ export async function compileBgVerifierInvocation({ record, invocation, argv, ex
       assert.ok(!testingCore.producer, 'BG testing core producer cannot consume another witness');
       coreUniverse = await runPhase('bg.compiler.core-inputs', () =>
         captureTestingCoreInputUniverse(record.prepared.root, testingCore.binding.transaction.bank.path));
+      coreUniverse.resolverNamespace = createTestingCoreResolverNamespace(coreUniverse);
       coreResolverMetadata = retainTestingCoreResolverMetadata(coreUniverse);
       const { outfile, ...profile } = originalOptions;
       coreInput = { schemaVersion: 1, bgCompiler: bgCompilerConsumptionIdentity(record),
@@ -2331,7 +2333,9 @@ export async function compileBgVerifierInvocation({ record, invocation, argv, ex
           path: relative(record.prepared.root, row.path).split(sep).join('/'), kind: row.original.kind,
           ...(row.original.target ? { target: row.original.target } : {}) })),
         enclosingMetadata: coreUniverse.ancestors.filter(row => row.sha256)
-          .map(row => ({ path: row.path, sha256: row.sha256 })) };
+          .map(row => ({ path: row.path, sha256: row.sha256 })),
+        ...(coreUniverse.resolverNamespace ? {
+          resolverNamespace: testingCoreResolverNamespaceIdentity(coreUniverse.resolverNamespace) } : {}) };
       coreSourceSha256 = bgRecordHash(coreInput);
       effectiveArgv.push('--define:__PAPERCUSP_TESTING_CORE_SOURCE_SHA256__=' + JSON.stringify(coreSourceSha256));
     } else {
@@ -2407,8 +2411,8 @@ export async function compileBgVerifierInvocation({ record, invocation, argv, ex
             // fd 3 is explicitly inherited by the child. The pathname chosen by
             // esbuild stays bound above, but exec consumes the sealed A bytes even
             // if that original pathname temporarily names B during service startup.
-            return spawn('/proc/self/fd/3', args, { ...spawnOptions,
-              env: { ...invocation.environment }, stdio: ['pipe', 'pipe', 'inherit', retainedBinary.fd] });
+            return spawnTestingCoreCompiler(coreUniverse?.resolverNamespace, command, args,
+              { ...spawnOptions, env: { ...invocation.environment } }, retainedBinary.fd);
           },
         };
         return trustedRequire(name);
@@ -2466,6 +2470,7 @@ export async function compileBgVerifierInvocation({ record, invocation, argv, ex
             artifactSha256: readBgIndependentOutputIdentity(options.outfile).sha256 },
           interval: { rows: coreUniverse.rows,
             ancestors: coreUniverse.ancestors.map(({ contents, ...row }) => row), toolchain: [],
+            ...(coreUniverse.resolverNamespace ? { resolverNamespace: coreUniverse.resolverNamespace } : {}),
             resolverMetadata: coreResolverMetadata } };
         verifyTestingCoreReceipt(coreReceipt, coreReceipt.witness);
       }
