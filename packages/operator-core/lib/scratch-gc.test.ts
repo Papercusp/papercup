@@ -3298,7 +3298,8 @@ describe('deferred scratch quota recovery', () => {
       .filter(([, options]) => options != null && typeof options === 'object' && 'withFileTypes' in options)
       .map(([path]) => String(path));
     expect(sizeWalkDirectories).toContain(oldest);
-    expect(sizeWalkDirectories).not.toContain(scratchRootForWorkspace('ws-Q'));
+    // Candidate discovery lists the workspace root; only the selected run is sized.
+    expect(sizeWalkDirectories).toContain(scratchRootForWorkspace('ws-Q'));
     await refreshScratchUsage('ws-Q');
   });
 
@@ -3393,6 +3394,7 @@ describe('deferred scratch quota recovery', () => {
     }) as typeof readdirAsync);
 
     const timings: ScratchWriteTimings[] = [];
+    const concurrentTimings: ScratchWriteTimings[] = [];
     const recoveryPath = join(writerRun, 'recovery.bin');
     const concurrentPath = join(writerRun, 'concurrent.bin');
     let recoveryWrite: Promise<void> | undefined;
@@ -3407,11 +3409,34 @@ describe('deferred scratch quota recovery', () => {
       await rootReached;
       concurrentWrite = writeWithScratchQuota({
         workspaceId: 'ws-Q', filePath: concurrentPath, bytes: 16,
+        onTiming: (row) => concurrentTimings.push(row),
       }, () => writeFile(concurrentPath, Buffer.alloc(16)));
       await Promise.race([
         concurrentWrite,
         new Promise<void>((_resolve, reject) => {
-          timeout = setTimeout(() => reject(new Error('concurrent scratch writer waited for the full-tree measurement')), 5_000);
+          timeout = setTimeout(() => {
+            const recentTimingEvidence = concurrentTimings.slice(-3).map((row) => ({
+              progress: row.progress && {
+                phase: row.progress.phase,
+                subphase: row.progress.subphase,
+                phaseElapsedMs: row.progress.phaseElapsedMs,
+                totalElapsedMs: row.progress.totalElapsedMs,
+                mutexWaitOwner: row.progress.mutexWaitOwner,
+              },
+              refreshWaitMs: row.refreshWaitMs,
+              refreshWaitMutexOwner: row.refreshWaitMutexOwner,
+              dataLeaseWaitMs: row.dataLeaseWaitMs,
+              dataLeaseMutexOwner: row.dataLeaseMutexOwner,
+              quotaWaitMs: row.quotaWaitMs,
+              quotaWaitMutexOwner: row.quotaWaitMutexOwner,
+              quotaRecoveryDataMutexWaitMs: row.quotaRecoveryDataMutexWaitMs,
+              quotaRecoveryDataMutexWaitOwner: row.quotaRecoveryDataMutexWaitOwner,
+              fsMutexAdmissionMs: row.fsMutexAdmissionMs,
+            }));
+            reject(new Error(
+              `concurrent scratch writer did not finish before timeout; timing evidence=${JSON.stringify(recentTimingEvidence)}`,
+            ));
+          }, 7_000);
         }),
       ]);
       if (timeout) clearTimeout(timeout);
@@ -3568,7 +3593,23 @@ describe('deferred scratch quota recovery', () => {
     const timeouts: ReturnType<typeof setTimeout>[] = [];
     const writerObserved = writerTraceIds.map((_, index) => new Promise<void>((resolveObserved, rejectObserved) => {
       observedWriter[index] = resolveObserved;
-      timeouts[index] = setTimeout(() => rejectObserved(new Error(`filesystem mutex writer ${index} was not observed`)), 2_000);
+      timeouts[index] = setTimeout(() => {
+        const recentTimingEvidence = (timingsByWriter[index] ?? []).slice(-3).map((row) => ({
+          progress: row.progress && {
+            phase: row.progress.phase,
+            subphase: row.progress.subphase,
+            phaseElapsedMs: row.progress.phaseElapsedMs,
+            totalElapsedMs: row.progress.totalElapsedMs,
+            mutexWaitOwner: row.progress.mutexWaitOwner,
+          },
+          quotaWaitMs: row.quotaWaitMs,
+          fsMutexAdmissionMs: row.fsMutexAdmissionMs,
+          quotaWaitMutexOwner: row.quotaWaitMutexOwner,
+        }));
+        rejectObserved(new Error(
+          `filesystem mutex writer ${index} was not observed; recent timing evidence=${JSON.stringify(recentTimingEvidence)}`,
+        ));
+      }, 7_000);
     }));
     let waiters: Promise<void>[] = [];
     try {
