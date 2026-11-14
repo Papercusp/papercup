@@ -434,13 +434,88 @@ describe('evaluatePlanSpecQualityGate', () => {
     expect(result).toMatchObject({ satisfied: true, scorecardId: card.issueId });
   });
 
-  it('reports a precise existing-card mismatch across detector revisions', async () => {
+  it('keeps the fields-inspected sentence exact while normalizing detector coverage wording', async () => {
     const clauses = [clause()];
     const card = matchingCard(clauses);
     const entry = card.ratings['implementation-independence']!;
-    entry.evidence = entry.evidence
-      .replace(' Detector semantics revision: ' + IMPLEMENTATION_INDEPENDENCE_DETECTOR_REVISION + '.', '')
-      .replace('including shared UI components/report cards, ', '');
+    const fieldsInspected = 'Fields inspected per clause: behavior and falsifier.observation (falsifier.probeMethod is excluded because it legitimately names the test or probe).';
+    expect(entry.evidence).toContain(fieldsInspected);
+    entry.evidence = entry.evidence.replace(fieldsInspected, 'Fields inspected per clause: behavior only.');
+    card.evidenceFingerprint = scorecardEvidenceFingerprint({ rubricRef: card.rubricRef, ratings: card.ratings });
+    const result = await evaluatePlanSpecQualityGate(
+      { harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'] },
+      gateDeps({ listClauses: vi.fn(async () => clauses), listCards: vi.fn(async () => [card]) }),
+    );
+
+    expect(result).toMatchObject({
+      satisfied: false,
+      code: 'spec_quality_scorecard_missing',
+      scorecardDiagnostics: [{
+        issueId: card.issueId,
+        failedChecks: ['evidence'],
+        differingCriteria: ['implementation-independence'],
+      }],
+    });
+  });
+
+  it('reports a precise existing-card mismatch across detector revisions', async () => {
+    const barPin = {
+      rubricSlug: 'quality-plan-acceptance',
+      barKey: 'R-1',
+      barHash: 'a'.repeat(64),
+      barSetHash: 'b'.repeat(64),
+      rubricRevision: 4,
+      evidencePlane: 'tree' as const,
+    };
+    const clauses = [
+      ...Array.from({ length: 7 }, (_, index) => clause({
+        specId: 'AUTO-BAR-R-' + (index + 1) + '-P-001',
+        sourceValId: null,
+        planItemId: 'P-001',
+        behavior: 'The customer sees outcome ' + (index + 1) + ' after completing a request.',
+        contentHash: 'sha256:bar-' + (index + 1),
+        sourceBar: { ...barPin, barKey: 'R-' + (index + 1) },
+      })),
+      ...Array.from({ length: 6 }, (_, index) => {
+        const id = String(index + 1).padStart(2, '0');
+        return clause({
+          specId: 'SPEC-P-001-' + id,
+          sourceValId: 'VAL-P-001-' + id,
+          planItemId: 'P-001',
+          behavior: 'The customer sees completion ' + (index + 8) + ' after submitting a valid request.',
+          contentHash: 'sha256:spec-' + id,
+          sourceBar: null,
+        });
+      }),
+    ];
+    const evaluation = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses,
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(evaluation.ratings['implementation-independence'].evidence)
+      .toContain('Inspected 13 active/accepted behavior clause(s), including 7 sourceBar-pinned acceptance BAR projection(s).');
+    const card = matchingCard(clauses);
+    const entry = card.ratings['implementation-independence']!;
+    // Exact stored incident evidence; only bind its plan/hash identifiers to this in-memory spec fixture.
+    const legacyIncidentEvidence = [
+      'Source store: plans:get-specs { slug:"rubric-coverage-and-evidence-guidance-2026-11-06", harness:"papercusp" }. ',
+      'Re-run exactly: plans:evaluate-spec-quality { slug:"rubric-coverage-and-evidence-guidance-2026-11-06", harness:"papercusp", classRef:"plan-class-feature-ship", expectedSpecSetHash:"8c5a32fc82df9117f19035d03466fd0f2a3661787cc1f3808f96d538bfb8afe4" }; ',
+      'confirm the returned specSetHash equals "8c5a32fc82df9117f19035d03466fd0f2a3661787cc1f3808f96d538bfb8afe4"; inspect ratings["implementation-independence"]. ',
+      'No active/accepted behavior clause is coupled to an implementation detail covered by the detector. ',
+      'Fields inspected per clause: behavior and falsifier.observation (falsifier.probeMethod is excluded because it legitimately names the test or probe). ',
+      'Detector coverage: implementation filenames, explicitly qualified/quoted construct symbols (including snake_case identifiers), bare lowerCamel identifiers (excluding recognized public platform/device names), repository paths, internal route literals, named operations, mandated reuse of existing surfaces (including runtimes, flows, pipelines, ledgers, mechanisms, scheduling paths and sweeps, including passive by prescriptions), imperative implementation selection, filesystem permission modes, named storage backends, encryption, and mirroring. ',
+      'Inspected 13 active/accepted behavior clause(s), including 7 sourceBar-pinned acceptance BAR projection(s). ',
+      '0 draft/exempt clause(s) excluded; per-clause dispositions are in details.implementationIndependenceClauseDiagnostics. ',
+      'Detector controls: see details.implementationIndependenceDetectorControls for coupled counterexamples and independent observable outcomes. ',
+      'Coverage is structural pattern detection, not a proof of arbitrary natural-language semantics. ',
+      'Historical replay (same rated snapshot): plans:evaluate-spec-quality {"slug":"rubric-coverage-and-evidence-guidance-2026-11-06","harness":"papercusp","classRef":"plan-class-feature-ship","expectedSpecSetHash":"8c5a32fc82df9117f19035d03466fd0f2a3661787cc1f3808f96d538bfb8afe4","replaySnapshot":{"planContentHash":"5d2f0ff921222f88ca6100f8367a329f82699ca491f0d1e0843b95b509a4fe8c","clausesAsOf":"2026-11-06T20:48:46.856Z"}}.',
+    ].join('')
+      .replaceAll('rubric-coverage-and-evidence-guidance-2026-11-06', 'quality-plan')
+      .replaceAll('8c5a32fc82df9117f19035d03466fd0f2a3661787cc1f3808f96d538bfb8afe4', evaluation.specSetHash);
+    entry.evidence = legacyIncidentEvidence;
     card.evidenceFingerprint = scorecardEvidenceFingerprint({ rubricRef: card.rubricRef, ratings: card.ratings });
     const result = await evaluatePlanSpecQualityGate(
       { harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'] },
