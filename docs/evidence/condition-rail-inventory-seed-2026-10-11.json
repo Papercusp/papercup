@@ -3691,6 +3691,13 @@
   ],
   "amendments": [
     {
+      "rowId": "log-only-fallback|scripts/lint-as-committed.mjs|main|1",
+      "change": { "disposition": "removed" },
+      "reason": "The original not-applicable CLI diagnostic site disappeared during committed-dependency materialization refactors. No same-file replacement is reported by the current scanner; the immutable seed row and its historical tooling-only disposition remain unchanged.",
+      "author": "su-62083cf9-96d1-43b6-8b8a-81910d0e8771",
+      "reviewerRef": "thread-post:1228893"
+    },
+    {
       "rowId": "log-only-fallback|packages/operator-core/lib/dbos/in-process-periodic.ts|tick|1",
       "change": { "disposition": "removed", "relocatedTo": "log-only-fallback|packages/operator-core/lib/dbos/in-process-periodic.ts|replayConsequence|1" },
       "reason": "The historical tick identity relocated to replayConsequence|1. Targeted lock-release fallback still records observeFallback; the current scanner reports the live site on the rail.",
