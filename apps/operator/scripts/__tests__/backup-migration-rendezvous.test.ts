@@ -19,6 +19,7 @@ import { join, resolve } from 'node:path';
 // mutant copy (copy-out mode) instead of mutating the shared tree.
 const SCRIPT = process.env.PROBE_SCRIPT ?? resolve(__dirname, '..', 'systemd', 'papercusp-db-backup.sh');
 const source = readFileSync(SCRIPT, 'utf8');
+const FIXTURE_PG_OPTIONS = '-c lock_timeout=15000 -c statement_timeout=30000';
 
 function stripCommentLines(shell: string): string {
   return shell
@@ -105,8 +106,6 @@ describe('papercusp-db-backup.sh migration rendezvous (EI-22634893804237362)', (
         '#!/usr/bin/env bash\n' +
           'if [ "${FAIL_RENDEZVOUS:-0}" = 1 ]; then read -r _; exit 1; fi\n' +
           'while [ "$#" -gt 0 ] && [ "$1" != env ]; do shift; done\n' +
-          '[ "$1" = env ] && shift\n' +
-          'shift\n' +
           'exec "$@"\n',
       );
       writeFileSync(
@@ -128,6 +127,7 @@ describe('papercusp-db-backup.sh migration rendezvous (EI-22634893804237362)', (
         `PATH=${JSON.stringify(dir)}:$PATH`,
         `TRACE=${JSON.stringify(trace)}`,
         `HOST_BACKUP_APPLICATION_NAME=pcbackup`,
+        `BACKUP_PGOPTIONS=${JSON.stringify(FIXTURE_PG_OPTIONS)}`,
         `BACKUP_MIGRATION_ADVISORY_LOCK_KEY='papercusp:backup:migration-rendezvous'`,
         `BACKUP_MIGRATION_ADVISORY_DATABASE=papercusp`,
         `BACKUP_MIGRATION_LOCK_READY='papercusp_backup_migration_lock_acquired'`,
@@ -189,8 +189,6 @@ describe('papercusp-db-backup.sh migration rendezvous (EI-22634893804237362)', (
         '#!/usr/bin/env bash\n' +
           'set -e\n' +
           'while [ "$#" -gt 0 ] && [ "$1" != env ]; do shift; done\n' +
-          '[ "$1" = env ] && shift\n' +
-          'shift\n' +
           'exec "$@"\n',
       );
       writeFileSync(
@@ -199,6 +197,7 @@ describe('papercusp-db-backup.sh migration rendezvous (EI-22634893804237362)', (
           'set -eu\n' +
           `state=${JSON.stringify(state)}\n` +
           'printf "%s\\n" "$@" >"$state.args"\n' +
+          'printf "%s\\n" "$PGOPTIONS" >"$state.pgoptions"\n' +
           ': >"$state.started"\n' +
           'while IFS= read -r line; do\n' +
           '  case "$line" in\n' +
@@ -214,6 +213,7 @@ describe('papercusp-db-backup.sh migration rendezvous (EI-22634893804237362)', (
         'set -euo pipefail',
         `PATH=${JSON.stringify(dir)}:$PATH`,
         `HOST_BACKUP_APPLICATION_NAME=pcbackup`,
+        `BACKUP_PGOPTIONS=${JSON.stringify(FIXTURE_PG_OPTIONS)}`,
         `BACKUP_MIGRATION_ADVISORY_LOCK_KEY='papercusp:backup:migration-rendezvous'`,
         `BACKUP_MIGRATION_ADVISORY_DATABASE=papercusp`,
         `BACKUP_MIGRATION_LOCK_READY='papercusp_backup_migration_lock_acquired'`,
@@ -232,6 +232,7 @@ describe('papercusp-db-backup.sh migration rendezvous (EI-22634893804237362)', (
       ].join('\n');
 
       execFileSync('bash', ['-c', harness], { encoding: 'utf8' });
+      expect(readFileSync(state + '.pgoptions', 'utf8').trim()).toBe(FIXTURE_PG_OPTIONS);
       const args = readFileSync(state + '.args', 'utf8').trim().split('\n');
       const databaseArg = args.indexOf('-d');
       expect(databaseArg).toBeGreaterThanOrEqual(0);
