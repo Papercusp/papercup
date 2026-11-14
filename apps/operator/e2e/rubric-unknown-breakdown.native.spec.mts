@@ -276,6 +276,66 @@ test('rubric unknown reasons, coverage and pinned procedures match the current n
   await info.attach('native coverage and pinned procedure', { path: coverageReceipt, contentType: 'application/json' });
 });
 
+test('rubric history selector uses the registry menu in the native shell', async ({}, info) => {
+  test.setTimeout(180_000);
+  expect(process.env.VERIFY_TAURI_ISOLATED_DB).toBe('1');
+  expect(process.env.VERIFY_TAURI_SEED).toBe('ready');
+  const workspace = process.env.PAPERCUSP_WORKSPACE_ID!;
+  expect(workspace).toMatch(/^verify-tauri-isolated-/);
+  const database = new URL(process.env.HARNESS_ADMIN_DATABASE_URL!);
+  expect(['localhost', '127.0.0.1']).toContain(database.hostname);
+  expect(database.port).not.toBe('5432');
+  expect(database.port).not.toBe('');
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const connection = await getOrgPg().sql`SELECT current_database() AS database, inet_server_port() AS port`;
+  expect(connection[0].database).toBe(decodeURIComponent(database.pathname.slice(1)));
+  expect(Number(connection[0].port)).toBe(Number(database.port));
+  const { proposeRubric } = await import('@papercusp/operator-core/lib/rubrics');
+  const rubricRef = 'native-history-selector';
+  await proposeRubric({ rubricId: rubricRef, title: 'Native history selector',
+    characteristic: 'native-history-selector', status: 'active', by: 'native-fixture',
+    criteria: [{ key: 'observed', title: 'Observed behavior', model: 'The selected history mode is visible.',
+      method: 'Read the native selector.', driftMarkers: 'The selected option differs.', instrumentKey: 'none' }] });
+  const pid = process.env.VERIFY_TAURI_PID!;
+  const tool = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN!;
+  expect(pid).toBeTruthy(); expect(tool).toBeTruthy();
+  async function evaluate(expression: string) {
+    await exec('bash', [process.env.VERIFY_TAURI_LIVENESS_CHECK!], { timeout: 15_000 });
+    const { stdout } = await exec(tool, ['eval', '--pid', pid, expression, '--json'], { timeout: 30_000 });
+    return decodeNativeBridgeJson(stdout, 'eval');
+  }
+  const wait = (expression: string) => expect.poll(() => evaluate(expression), { timeout: 60_000 }).toBe(true);
+  const target = new URL('/adv', process.env.VERIFY_TAURI_DEV_URL!);
+  for (const [key, value] of Object.entries({ tab: 'learning', lview: 'rubrics', rrubric: rubricRef,
+    ws: workspace, 'verify-tauri-isolated': '1' })) target.searchParams.set(key, value);
+  await exec(tool, ['navigate', '--pid', pid, target.href, '--json'], { timeout: 30_000 });
+  const trigger = '[data-testid="rubric-history-mode"]';
+  await wait(`document.querySelector(${JSON.stringify(trigger)})?.textContent.includes('Review history, including excluded results') === true`);
+  expect(await evaluate(`document.querySelector(${JSON.stringify(trigger)}).getAttribute('role')`)).toBe('combobox');
+  const before = await evaluate(`document.querySelector(${JSON.stringify(trigger)}).outerHTML`);
+  await evaluate(`(() => { const trigger = document.querySelector(${JSON.stringify(trigger)});
+    trigger.scrollIntoView({ block: 'center' }); trigger.focus();
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); })()`);
+  await wait(`Array.from(document.querySelectorAll('[role="option"]')).some(option => option.textContent === 'Accepted results')`);
+  const options = await evaluate(`Array.from(document.querySelectorAll('[role="option"]')).map(option => option.textContent)`);
+  expect(options).toEqual(['Review history, including excluded results', 'Accepted results']);
+  const menuCapture = info.outputPath('rubric-history-menu.png');
+  await screenshot(tool, pid, menuCapture);
+  await info.attach('native history menu', { path: menuCapture, contentType: 'image/png' });
+  await evaluate(`(() => { const option = Array.from(document.querySelectorAll('[role="option"]'))
+    .find(option => option.textContent === 'Accepted results'); option.focus();
+    option.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()`);
+  await wait(`document.querySelector(${JSON.stringify(trigger)})?.textContent === 'Accepted results' && !document.querySelector('[role="listbox"]')`);
+  const after = await evaluate(`document.querySelector(${JSON.stringify(trigger)}).outerHTML`);
+  const source = JSON.parse(await readFile(process.env.VERIFY_TAURI_SOURCE_RECEIPT!, 'utf8'));
+  const receipt = info.outputPath('rubric-history-selector.json');
+  await writeFile(receipt, JSON.stringify({ before, options, after, source }, null, 2));
+  await info.attach('native history selector states and source', { path: receipt, contentType: 'application/json' });
+  const selectedCapture = info.outputPath('rubric-history-accepted.png');
+  await screenshot(tool, pid, selectedCapture);
+  await info.attach('native accepted history selection', { path: selectedCapture, contentType: 'image/png' });
+});
+
 test.afterEach(async ({}, info) => {
   if (info.status === info.expectedStatus) return;
   const tool = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN;
