@@ -24,7 +24,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // sibling projected-tool-deps.priority.integration.test.ts.
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-  withPriorityOrgPg: async <T>(run: () => Promise<T>): Promise<T> => run(),
+  withPriorityOrgPg: vi.fn(async <T>(run: () => Promise<T>): Promise<T> => run()),
 }));
 vi.mock('@papercusp/flags/server', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/flags/server')>()),
@@ -61,6 +61,7 @@ import {
   isPaletteUiPollRead,
 } from './projected-tool-deps';
 import { getFlag } from '@papercusp/flags/server';
+import { withPriorityOrgPg } from '@papercusp/db-org';
 import { FLAGS } from '@papercusp/flags';
 import { getOverride, PASS_THROUGH as TESTING_SHELL_PASS_THROUGH } from '@papercusp/testing-shell/llm';
 import { recordDecisionLedger } from './decision-ledger/emit';
@@ -124,6 +125,25 @@ afterEach(() => {
   // installed handler does not leak.
   setReactionPostInvoke(null);
   setKernelEnforcementResolver(null);
+});
+
+describe('reserved authority capacity unavailable', () => {
+  it.each(['kernelEnforcement', 'kernelPolicy'] as const)('denies %s before entering the resolver', async port => {
+    const resolver = vi.fn(async () => ({ decision: 'allow' as const }));
+    setKernelEnforcementResolver(resolver);
+    vi.mocked(withPriorityOrgPg).mockRejectedValueOnce(new Error('priority database selection unavailable'));
+    await expect(PROJECTED_DEPS[port]!({ phase: 'preflight', boundary: 'dispatch',
+      toolName: 'coord:whoami', capabilities: [], args: {}, ctx: ctx() }))
+      .resolves.toMatchObject({ decision: 'deny', code: 'policy-unavailable' });
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it('returns an explicit confinement denial instead of throwing into the generic fallback', async () => {
+    vi.mocked(withPriorityOrgPg).mockRejectedValueOnce(new Error('priority database selection unavailable'));
+    await expect(PROJECTED_DEPS.checkCapabilityEnvelope!({
+      toolName: 'coord:whoami', capabilities: [], args: {}, ctx: ctx(),
+    })).resolves.toMatchObject({ decision: 'deny', posture: 'rejected', applied: true });
+  });
 });
 
 describe('PROJECTED_DEPS.kernelEnforcement — D-030 activation/ownership seat', () => {

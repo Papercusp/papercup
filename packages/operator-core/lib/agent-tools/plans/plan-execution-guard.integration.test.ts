@@ -409,6 +409,40 @@ describe('real write-boundary bypass regression', () => {
     ]));
     expect((await readExecutionPlanBindings(OWNER, WS)).some(row => row.planSlug === 'foreign-plan')).toBe(false);
   });
+  it('retains an unstarted spawn binding on an unbound self-claim; only a durable leader rebind replaces session bindings', async () => {
+    await db.sql`INSERT INTO harness_shared.adv_sessions VALUES (1,${OWNER},${WS},'draft-feature',NULL,now(),NULL,NULL)`;
+    await db.sql`INSERT INTO harness_shared.work_items (taken_by,workspace_id,harness_slug,status,feature_id)
+      VALUES (${OWNER},${WS},'project','open','EI-unbound')`;
+    expect(await readExecutionPlanBindings(OWNER,WS)).toEqual(expect.arrayContaining([
+      expect.objectContaining({planSlug:'draft-feature',source:'active-session'}),
+    ]));
+    const marker = { schemaVersion:1, actorId:'su-leader', targetId:OWNER, fleet:'fleet', at:new Date().toISOString(),
+      reason:'leader reassigns repair',workItemId:'EI-unbound',harness:'project',previousPlanSlug:'draft-feature',planSlug:null };
+    await db.sql`INSERT INTO harness_shared.session_briefs (owner_id,workspace_id,control_state)
+      VALUES (${OWNER},${WS},${JSON.stringify({lifecycle:{executionPlanBinding:marker}})}::text::jsonb)`;
+    expect(await readExecutionPlanBindings(OWNER,WS)).toEqual([]);
+    await db.sql`UPDATE harness_shared.session_briefs SET current_plan_slug='newly-declared-plan' WHERE owner_id=${OWNER}`;
+    expect(await readExecutionPlanBindings(OWNER,WS)).toEqual([
+      expect.objectContaining({planSlug:'newly-declared-plan',source:'session-brief'}),
+    ]);
+    await db.sql`UPDATE harness_shared.session_briefs SET current_plan_slug='draft-feature' WHERE owner_id=${OWNER}`;
+    expect(await readExecutionPlanBindings(OWNER,WS)).toEqual([
+      expect.objectContaining({planSlug:'draft-feature',source:'session-brief'}),
+    ]);
+    await db.sql`UPDATE harness_shared.session_briefs SET current_plan_slug=NULL WHERE owner_id=${OWNER}`;
+    // Receipt supersedes a re-stamped launch, but never actual held plan work.
+    await db.sql`INSERT INTO harness_shared.plan_item_claims (owner,workspace_id,harness_slug,plan_slug,item_id)
+      VALUES (${OWNER},${WS},'project','claim-plan','P-001')`;
+    expect(await readExecutionPlanBindings(OWNER,WS)).toEqual([
+      expect.objectContaining({planSlug:'claim-plan',source:'plan-item-claim'}),
+    ]);
+    await db.sql`UPDATE harness_shared.session_briefs SET control_state=${JSON.stringify({lifecycle:{
+      executionPlanBinding:{...marker,planSlug:'new-unstarted-plan'}}})}::text::jsonb WHERE owner_id=${OWNER}`;
+    expect(await readExecutionPlanBindings(OWNER,WS)).toEqual(expect.arrayContaining([
+      expect.objectContaining({planSlug:'new-unstarted-plan',source:'session-rebind'}),
+      expect.objectContaining({planSlug:'claim-plan',source:'plan-item-claim'}),
+    ]));
+  });
   it('uses the selected work-item when an unrelated plan-item claim is also held', async () => {
     await db.sql`INSERT INTO harness_shared.work_items
       (taken_by,workspace_id,harness_slug,source_plan_slug,status,feature_id)

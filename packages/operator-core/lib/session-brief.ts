@@ -93,6 +93,8 @@ export interface SessionBriefShutdownMarker {
 }
 
 export interface SessionBriefLifecycle {
+  /** Leader-authored execution binding; preserved across native respawn. */
+  executionPlanBinding?: import('./agent-tools/fleet_registry/execution-plan-rebind').ExecutionPlanRebindReceipt;
   released?: SessionBriefReleaseMarker;
   poisoned?: SessionBriefPoisonMarker;
   shutdown?: SessionBriefShutdownMarker;

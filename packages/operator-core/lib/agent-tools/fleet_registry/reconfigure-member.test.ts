@@ -15,6 +15,7 @@ const setClaimSpec = vi.fn();
 const setCompactionLimitForOwner = vi.fn();
 const classifyAgentPane = vi.fn();
 const listFleetMembers = vi.fn();
+const rebindMemberExecutionPlan = vi.fn();
 
 const LEADER = 'su-leader';
 const MEMBER = 'su-member-abc';
@@ -55,6 +56,9 @@ vi.mock('./_shared', () => ({
 }));
 
 import tool from './reconfigure-member';
+vi.mock('./execution-plan-rebind', () => ({
+  rebindMemberExecutionPlan: (...a: unknown[]) => rebindMemberExecutionPlan(...a),
+}));
 
 function parse(res: unknown) {
   return JSON.parse((res as { content: { text: string }[] }).content[0].text);
@@ -80,9 +84,30 @@ beforeEach(() => {
   setClaimSpec.mockResolvedValue({ ok: true, errors: [], revision: 3 });
   sendMessage.mockResolvedValue({ msg_id: 'm1' });
   listFleetMembers.mockResolvedValue([MEMBER]);
+  rebindMemberExecutionPlan.mockResolvedValue({ ok: true, receipt: { planSlug: null } });
 });
 
 describe('fleet:reconfigure-member (P-007)', () => {
+  it('routes explicit execution rebinding through the authorized resolved member', async () => {
+    const executionPlan = { workItemId: 'EI-held', harness: 'project', expectedPlanSlug: 'draft', reason: 'new lane' };
+    expect(tool.args.safeParse({ member: MEMBER, executionPlan }).success).toBe(true);
+    const p = parse(await tool.handler({ member: MEMBER, executionPlan } as never, {} as never));
+    expect(rebindMemberExecutionPlan).toHaveBeenCalledWith(expect.objectContaining({
+      callerId: LEADER, memberOwnerId: MEMBER, slug: SLUG,
+    }), executionPlan);
+    expect(p).toMatchObject({ ok: true, applied: { executionPlan: { ok: true, receipt: { planSlug: null } } } });
+  });
+
+  it('does not apply companion settings after a refused execution rebind', async () => {
+    rebindMemberExecutionPlan.mockResolvedValueOnce({ ok: false, error: 'plan_rebind_requires_distinct_fleet_leader' });
+    const p = parse(await tool.handler({ member: MEMBER, brief: 'new lane', executionPlan: {
+      workItemId: 'EI-held', harness: 'project', expectedPlanSlug: 'draft', reason: 'new lane',
+    } } as never, {} as never));
+    expect(p.ok).toBe(false);
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(setClaimSpec).not.toHaveBeenCalled();
+  });
+
   it('applies all three levers to a member of the default led fleet', async () => {
     const res = await tool.handler(
       { member: MEMBER, compactionLimit: 200_000, claimSpec: validSpec, brief: 'focus on the CDC bugs' } as never,

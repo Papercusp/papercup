@@ -323,6 +323,7 @@ export function normalizeControlAnchorState(input: ControlAnchorState): ControlA
     : input.route;
   const released = input.lifecycle?.released;
   const lifecycle: SessionBriefLifecycle = {
+    ...(input.lifecycle?.executionPlanBinding ? { executionPlanBinding: input.lifecycle.executionPlanBinding } : {}),
     ...(input.lifecycle?.shutdown ? { shutdown: input.lifecycle.shutdown } : {}),
     ...(input.lifecycle?.poisoned ? { poisoned: input.lifecycle.poisoned } : {}),
     ...(input.lifecycle && Object.prototype.hasOwnProperty.call(input.lifecycle, 'assumeCaller')

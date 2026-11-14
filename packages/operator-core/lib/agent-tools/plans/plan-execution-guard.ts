@@ -11,6 +11,7 @@ import type { ResolvedGoal } from '../../agent-goal-ref';
 import type { AcceptanceBarSnapshotSource } from '../../acceptance-bar-contract-snapshot';
 import type { Sql } from 'postgres';
 import { readPlanLineNodes } from './plan-line-graph';
+import { readExecutionPlanRebind } from '../fleet_registry/execution-plan-rebind';
 export { planExecutionMeaning } from './plan-execution-meaning';
 
 // The installed parser has no bundled declarations. Treat its tokens as unknown
@@ -21,6 +22,7 @@ export type ExecutionPlanBindingSource =
   | 'session-brief'
   | 'control-state'
   | 'active-session'
+  | 'session-rebind'
   | 'plan-item-claim'
   | 'work-item';
 export interface ExecutionPlanBinding {
@@ -338,6 +340,7 @@ export function isPlanImplementationCall(toolName: string, args: unknown): boole
 /** Read durable authority, never coord_presence or caller-supplied plan/force/purpose. */
 export async function readExecutionPlanBindings(ownerId: string, workspaceId: string): Promise<ExecutionPlanBinding[]> {
   const { sql } = getOrgPg();
+  const rebind = await readExecutionPlanRebind(sql, ownerId, workspaceId);
   const rows = await sql<Array<{
     plan_slug: string | null;
     harness_slug: string | null;
@@ -365,13 +368,18 @@ export async function readExecutionPlanBindings(ownerId: string, workspaceId: st
      WHERE owner=${ownerId} AND workspace_id=${workspaceId}
     UNION ALL
     SELECT NULL::text, NULL::text, 'work-item'::text, NULL::text WHERE false`;
-  const bindings: ExecutionPlanBinding[] = rows.filter(row => typeof row.plan_slug === 'string' && row.plan_slug.trim())
+  const displaced = new Set([rebind?.previousPlanSlug, ...(rebind?.supersededPlanSlugs ?? [])]);
+  const bindings: ExecutionPlanBinding[] = rows.filter(row =>
+    (!rebind || row.source !== 'active-session' || !displaced.has(row.plan_slug)) &&
+    typeof row.plan_slug === 'string' && row.plan_slug.trim())
     .map(row => ({
       planSlug: row.plan_slug!,
       harnessSlug: row.harness_slug,
       source: row.source,
       sourceRef: row.source_ref,
     }));
+  if (rebind?.planSlug) bindings.push({ planSlug: rebind.planSlug, harnessSlug: rebind.harness,
+    source: 'session-rebind', sourceRef: rebind.workItemId });
   const held = await sql<Array<{ feature_id: string; harness_slug: string; source_plan_slug: string | null;
     plan_slug: string | null; plan_line_id: string | null }>>`
     SELECT feature_id,harness_slug,source_plan_slug,plan_slug,plan_line_id FROM harness_shared.work_items

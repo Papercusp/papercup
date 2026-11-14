@@ -24,6 +24,7 @@ import {
   generated,
   getOrgPg,
   withAcquisitionDeadline,
+  withPriorityOrgPg,
 } from '@papercusp/db-org';
 import { mergeRoleQuota } from './quota-overrides';
 import {
@@ -350,10 +351,11 @@ function elapsedMsSince(startedAt: number): number {
 }
 
 function controlAnchorPoolSnapshot(): KernelAuthorityPoolSnapshot {
+  const pool = getOrgPg().poolLabel ?? 'org-admin';
   return {
     observedAt: new Date().toISOString(),
-    counters: acquireSnapshot('org-admin'),
-    tickets: acquireTicketSnapshot('org-admin'),
+    counters: acquireSnapshot(pool),
+    tickets: acquireTicketSnapshot(pool),
   };
 }
 
@@ -2362,6 +2364,27 @@ const overrideToolImpl: ToolDispatchOverrideFn = async (toolName, args, ctx) => 
   return PASS_THROUGH;
 };
 
+/** Preserve each gate's own error handling once entered. A failure selecting
+ * reserved capacity happens before that handling, so it must deny explicitly
+ * rather than reach the generic dispatcher's optional-port fallback. */
+async function withPriorityAuthorityRead<T>(run: () => Promise<T>, unavailable: () => T): Promise<T> {
+  let entered = false;
+  try {
+    return await withPriorityOrgPg(async () => {
+      entered = true;
+      return run();
+    });
+  } catch (error) {
+    if (entered) throw error;
+    return unavailable();
+  }
+}
+
+const priorityKernelEnforcement: KernelEnforcementPort = request => withPriorityAuthorityRead(
+  async () => operatorKernelEnforcement(request),
+  () => operatorKernelDenial('policy-unavailable', 'Authority database could not be selected; no effect authorized'),
+);
+
 /** Shared deps singleton. Same object reference is safe to pass to
  *  multiple dispatchers — the impls are stateless. */
 export const PROJECTED_DEPS: DispatchProjectedDeps = {
@@ -2391,8 +2414,10 @@ export const PROJECTED_DEPS: DispatchProjectedDeps = {
   // decorators and immediately before handler execution. The resolver is
   // replaceable by the activation/control owner without changing the shared
   // transport adapter.
-  kernelEnforcement: operatorKernelEnforcement,
-  kernelPolicy: operatorKernelEnforcement,
+  // Keep fresh authority reads off the ordinary work queue they authorize.
+  // End each priority scope before the handler uses the ordinary pool.
+  kernelEnforcement: priorityKernelEnforcement,
+  kernelPolicy: priorityKernelEnforcement,
   authorizationFailureHint,
   resolveRoleForAllowlist: resolveInstalledRoleForAllowlist,
   // Turn-level presence beat (liveness-hardening P-001): mark activity as soon
@@ -2438,7 +2463,11 @@ export const PROJECTED_DEPS: DispatchProjectedDeps = {
   // Capability-envelope port (agent-capability-confinement B-06 / P-012). Evaluates the
   // cheap per-role envelope at the dispatch chokepoint; SU/non-fleet callers are exempt
   // (D-002). Enforce-vs-observe is the CAPABILITY_ENVELOPE flag (default OFF ⇒ shadow).
-  checkCapabilityEnvelope: checkCapabilityEnvelopeImpl,
+  checkCapabilityEnvelope: input => withPriorityAuthorityRead(
+    () => checkCapabilityEnvelopeImpl(input),
+    () => ({ decision: 'deny', posture: 'rejected', applied: true,
+      reason: 'Authority database could not be selected; no effect authorized' }),
+  ),
   observeFallback: (mechanism, observation, ctx) => {
     observeFallback(mechanism, observation, { workspaceId: ctx.workspaceId });
   },

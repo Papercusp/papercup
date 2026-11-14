@@ -14,6 +14,9 @@ import { dispatchProjectedTool, lookupByMcpName, type ProjectedTool,
 const connection = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, unavailable: false }));
 vi.mock('@papercusp/db-org', async importOriginal => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  // This fixture supplies its own private connection below. Real reserved
+  // capacity is exercised by projected-tool-deps.priority.integration.test.ts.
+  withPriorityOrgPg: async <T>(run: () => Promise<T>): Promise<T> => run(),
   getOrgPg: () => {
     if (connection.unavailable) throw new Error('private policy database unavailable');
     return { sql: connection.sql };

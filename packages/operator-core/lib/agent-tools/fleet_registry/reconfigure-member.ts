@@ -25,6 +25,7 @@ import { resolveClaimSpecWorkspace, setClaimSpec } from '../../scheduler/claim-s
 import { setCompactionLimitForOwner } from '../config/set-compaction-limit-core';
 import { resolveFleetMemberTarget } from './member-target';
 import { json, ROUTING_LADDER } from './_shared';
+import { rebindMemberExecutionPlan } from './execution-plan-rebind';
 
 export default defineTool({
   name: 'fleet:reconfigure-member',
@@ -80,13 +81,17 @@ export default defineTool({
         .max(4000)
         .optional()
         .describe('A next-wake brief — a durable coord message the member reads on its next wake/orient (does NOT force an immediate wake).'),
+      executionPlan: z.object({
+        workItemId: z.string().min(1), harness: z.string().min(1),
+        expectedPlanSlug: z.string().min(1).nullable(), reason: z.string().min(1).max(4000),
+      }).strict().optional().describe('Recorded fleet leader only, for ANOTHER member: replace its session/spawn plan binding with the plan of this currently held, admitted item (null for unbound work). Audited and durable across carry-respawn. Requires the expected current session plan. Held plan claims still gate execution.'),
     })
-    .refine((a) => a.compactionLimit != null || a.claimSpec != null || a.brief != null, {
-      message: 'pass at least one of compactionLimit / claimSpec / brief',
+    .refine((a) => a.compactionLimit != null || a.claimSpec != null || a.brief != null || a.executionPlan != null, {
+      message: 'pass at least one of compactionLimit / claimSpec / brief / executionPlan',
     }),
   async handler(args, ctx) {
     // Defense-in-depth (the zod refine covers the MCP path): at least one lever.
-    if (args.compactionLimit == null && args.claimSpec == null && args.brief == null) {
+    if (args.compactionLimit == null && args.claimSpec == null && args.brief == null && args.executionPlan == null) {
       return json({ ok: false, error: 'nothing_to_do', message: 'pass at least one of compactionLimit / claimSpec / brief' }, true);
     }
 
@@ -98,6 +103,12 @@ export default defineTool({
 
     // Apply each requested lever, collecting a per-lever result.
     const applied: Record<string, unknown> = {};
+
+    if (args.executionPlan != null) {
+      applied.executionPlan = await rebindMemberExecutionPlan(target, args.executionPlan);
+      if (!(applied.executionPlan as { ok: boolean }).ok)
+        return json({ ok: false, fleet: slug, member: memberOwnerId, invokedAs, applied }, true);
+    }
 
     if (args.compactionLimit != null) {
       // Reuse the P-006 cross-session setter (rejects requests above the MEMBER's
