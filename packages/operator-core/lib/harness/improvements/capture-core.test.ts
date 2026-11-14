@@ -5566,3 +5566,60 @@ describe('captureToolInvocationFriction — one row per signature (review-system
     expect(keys).not.toContain('class-1');
   });
 });
+
+describe('WI-6554700010048655 keyed capture coalesces onto a condition-bridge incident', () => {
+  const KEY = 'git-sync-stall:papercusp';
+  const bridgeRow = (heldConditionKey: string): EngineerIssue =>
+    existing({
+      id: 'WI-BRIDGE-STALL',
+      title: 'git-sync stalled on papercusp',
+      kind: 'bug',
+      severity: 'minor',
+      scope: 'harness:papercusp',
+      signalOrigin: 'organic',
+      payload: { conditionBridgeMint: { conditionKey: heldConditionKey } },
+      heldConditionKey,
+    });
+
+  function bridgeDeps(row: EngineerIssue) {
+    const lookups: Array<{ includeConditionKeyHolders?: boolean } | undefined> = [];
+    const d = {
+      ...deps(),
+      findIssuesByWatchdogKeys: async (_keys: string[], opts?: { includeConditionKeyHolders?: boolean }) => {
+        lookups.push(opts);
+        return opts?.includeConditionKeyHolders ? [row] : [];
+      },
+      updateIssuePatch: async (_id: string, patch: object) => Object.assign(row, patch),
+      mergeIssuePayload: async (_id: string, patch: object) => {
+        row.payload = { ...(row.payload as object), ...patch };
+        return row;
+      },
+    } satisfies CaptureDeps;
+    return { d, lookups };
+  }
+
+  it('a bridge-minted row holding the key in condition_key absorbs the sighting instead of a duplicate', async () => {
+    const row = bridgeRow(KEY);
+    const { d, lookups } = bridgeDeps(row);
+    const result = await captureImprovement(
+      { title: 'git-sync stall sighting: papercusp sweep timed out', kind: 'bug', watchdogKey: KEY, createdBy: 'su-a' },
+      d,
+    );
+    expect(result).toMatchObject({ ok: true, created: false, reason: 'coalesced', issue: { id: 'WI-BRIDGE-STALL' } });
+    expect(d.created).toHaveLength(0);
+    expect(lookups[0]).toEqual({ includeConditionKeyHolders: true });
+    // The coalesce stamps the key into the payload, so later payload-only readers match too.
+    expect((row.payload as Record<string, unknown>).watchdogKey).toBe(KEY);
+  });
+
+  it('a row holding a DIFFERENT condition key is not treated as the same identity', async () => {
+    const row = bridgeRow('git-sync-stall:sidestage');
+    const { d } = bridgeDeps(row);
+    const result = await captureImprovement(
+      { title: 'git-sync stall sighting: papercusp sweep timed out', kind: 'bug', watchdogKey: KEY, createdBy: 'su-a' },
+      d,
+    );
+    expect(result).toMatchObject({ ok: true, created: true });
+    expect(d.created).toHaveLength(1);
+  });
+});
