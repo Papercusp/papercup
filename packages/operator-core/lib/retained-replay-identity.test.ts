@@ -42,6 +42,10 @@ describe('retained replay source identity', () => {
       expect(legacy.status, legacy.stderr).toBe(0);
       expect(legacy.stdout).toBe('--define:__PAPERCUSP_RETAINED_REPLAY_SOURCE_SHA256__=undefined');
       mkdirSync(dirname(join(copy, identityPath)), { recursive: true });
+      const manifest = join(copy, 'packages/operator-core/lib/retained-replay-sources.json');
+      writeFileSync(manifest, '[]');
+      expect(define().status, 'a manifest without its runtime implementation must fail').not.toBe(0);
+      rmSync(manifest);
       writeFileSync(join(copy, identityPath), '// replay identity exists in this target\n');
       const missing = define();
       expect(missing.status).not.toBe(0);
