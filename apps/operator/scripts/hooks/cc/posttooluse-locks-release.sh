@@ -178,6 +178,19 @@ def _coordination_domain_rejection(value):
     return text[:300]
 
 
+def _native_edit_session_id_rejection(value):
+    """Return a short detail when an older release schema rejects proof.sessionId."""
+    try:
+        text = value if isinstance(value, str) else json.dumps(value, sort_keys=True)
+    except Exception:
+        text = str(value)
+    if 'native_edit_proof' not in text or 'sessionId' not in text:
+        return None
+    if not re.search(r'invalid[_ -]?args|unrecognized key|unknown key|unexpected key', text, re.I):
+        return None
+    return text[:300]
+
+
 RETRY_BACKOFFS = (0.4, 0.8, 1.2)
 
 
@@ -768,24 +781,35 @@ if proof is not None:
 # confirm the selected paths were released, and retain the cache token on an
 # unconfirmed outcome so a parent exec completion can recover it.
 released, release_error = call_tool('locks:release', release_args)
-compatibility_error = _coordination_domain_rejection(release_error)
-if compatibility_error is None:
-    compatibility_error = _coordination_domain_rejection(released)
-if compatibility_error and coordination_domain:
-    # A stale operator may reject the domain field even though it can still
-    # release the lock. Retry the same scoped release without that field, and
-    # keep every recovery sidecar unless this compatibility retry is confirmed.
-    compatibility_args = dict(release_args)
-    del compatibility_args['coordination_domain']
-    released, release_error = call_tool('locks:release', compatibility_args)
-    if release_error is None and release_confirmed(released, release_paths or []):
-        mark_release_success('posttooluse-compatibility-fallback', native_release_confirmed=proof is not None)
-        cleanup_sidecars(cache_path[:-len('.lock')])
-    else:
-        mark_release_error('release', release_error or released or 'release not confirmed')
-        emit_release_warning(release_paths or [])
-elif release_error is None and release_confirmed(released, release_paths or []):
-    mark_release_success(native_release_confirmed=proof is not None)
+compatibility_modes = []
+while True:
+    rejection = release_error if release_error is not None else released
+    native_proof = release_args.get('native_edit_proof')
+    if (_native_edit_session_id_rejection(rejection)
+            and isinstance(native_proof, dict) and 'sessionId' in native_proof):
+        # Older operators accept the proof fields but predate its optional
+        # native-session attribution. Preserve the proof and exact lock scope.
+        compatible_proof = dict(native_proof)
+        del compatible_proof['sessionId']
+        release_args['native_edit_proof'] = compatible_proof
+        compatibility_modes.append('posttooluse-native-session-compatibility-fallback')
+        released, release_error = call_tool('locks:release', release_args)
+        continue
+    if ('coordination_domain' in release_args
+            and _coordination_domain_rejection(rejection)):
+        # A stale operator may reject the domain field even though it can still
+        # release the lock. Retry the same scoped release without that field.
+        del release_args['coordination_domain']
+        compatibility_modes.append('posttooluse-compatibility-fallback')
+        released, release_error = call_tool('locks:release', release_args)
+        continue
+    break
+
+if release_error is None and release_confirmed(released, release_paths or []):
+    success_mode = compatibility_modes[-1] if len(compatibility_modes) == 1 else 'posttooluse'
+    if len(compatibility_modes) > 1:
+        success_mode = 'posttooluse-compatibility-fallback'
+    mark_release_success(success_mode, native_release_confirmed='native_edit_proof' in release_args)
     cleanup_sidecars(cache_path[:-len('.lock')])
 else:
     mark_release_error('release', release_error or released or 'release not confirmed')

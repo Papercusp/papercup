@@ -41,6 +41,8 @@ let nextInner: unknown = { ok: true, lock_id: "stub-lock" };
 let nextInnerSeq: unknown[] | null = null;
 /** Simulate a stale operator that rejects the newer coordination_domain arg. */
 let rejectCoordinationDomain = false;
+/** Simulate an older release schema that rejects native_edit_proof.sessionId. */
+let rejectNativeProofSessionId = false;
 /** Simulate a serving operator that rejects hook_operation despite tools/list. */
 let rejectHookOperation = false;
 /** Reject hook_operation only after the native operation authority is pinned. */
@@ -132,6 +134,9 @@ beforeAll(async () => {
       requests.push(lastRequest);
       const rejectsDomain =
         rejectCoordinationDomain && args?.coordination_domain;
+      const rejectsNativeProofSessionId =
+        rejectNativeProofSessionId && toolName === "locks:release" &&
+        args?.native_edit_proof?.sessionId;
       const rejectsHookOperation = toolName === "locks:acquire" && operation &&
         (rejectHookOperation || (rejectHookOperationAfterAuthority && operation.authority));
       let recoveryInner: unknown | null = null;
@@ -160,7 +165,16 @@ beforeAll(async () => {
               ? { state: toolName === 'locks:release' ? 'completed' : 'cancelled' } : {}) }
         : value;
       };
-      const rpc = rejectsHookOperation
+      const rpc = rejectsNativeProofSessionId
+        ? {
+            jsonrpc: "2.0",
+            id: 1,
+            error: {
+              code: -32602,
+              message: 'invalid_input: invalid_args: native_edit_proof: Unrecognized key: "sessionId" — this tool accepts ONLY: lock_id, lock_ids, paths, coordination_domain, all_mine',
+            },
+          }
+        : rejectsHookOperation
         ? {
             jsonrpc: "2.0",
             id: 1,
@@ -248,6 +262,7 @@ afterEach(() => {
   nextInner = { ok: true, lock_id: "stub-lock" };
   nextInnerSeq = null;
   rejectCoordinationDomain = false;
+  rejectNativeProofSessionId = false;
   rejectHookOperation = false;
   rejectHookOperationAfterAuthority = false;
   useSse = false;
@@ -1354,6 +1369,71 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     });
   });
 
+  it("retries an exact legacy release after an older schema rejects native_edit_proof.sessionId", async () => {
+    legacyOrigin = true;
+    rejectNativeProofSessionId = true;
+    const identity = {
+      PAPERCUSP_LOCK_SID: "test-native-proof-compat-owner",
+      PAPERCUSP_SID: "test-native-proof-compat-owner",
+    };
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: sub/native-proof-compat.ts",
+      "@@",
+      "-before",
+      "+after",
+      "*** End Patch",
+    ].join("\n");
+    const input = {
+      tool_name: "apply_patch",
+      tool_input: patch,
+      tool_use_id: "tu-native-proof-compat",
+      session_id: "s",
+      cwd: repo,
+    };
+    nextInner = { ok: true, lock_id: "legacy-lock" };
+    const pre = await run(input, identity);
+    expect(pre.status).toBe(0);
+    expect(fs.readFileSync(join(cache, "tu-native-proof-compat.lock"), "utf8")).toBe("legacy-lock");
+
+    recoveryReleaseInner = {
+      ok: true,
+      released: ["sub/native-proof-compat.ts"],
+      held_before: 1,
+    };
+    const post = await runPost({ ...input, tool_response: {} }, identity);
+    expect(post).toEqual({ status: 0, stdout: "" });
+    const releases = requests.filter((request) => request.body.params.name === "locks:release");
+    expect(releases).toHaveLength(2);
+    expect(releases[0].body.params.arguments.native_edit_proof).toMatchObject({
+      success: true,
+      source: "codex",
+      tool: "apply_patch",
+      paths: ["sub/native-proof-compat.ts"],
+      sessionId: "s",
+    });
+    expect(releases[1].body.params.arguments).toMatchObject({
+      lock_id: "legacy-lock",
+      paths: ["sub/native-proof-compat.ts"],
+      native_edit_proof: {
+        success: true,
+        source: "codex",
+        tool: "apply_patch",
+        paths: ["sub/native-proof-compat.ts"],
+      },
+    });
+    expect(releases[1].body.params.arguments.native_edit_proof).not.toHaveProperty("sessionId");
+    for (const suffix of ["lock", "paths", "domain"]) {
+      expect(fs.existsSync(join(cache, "tu-native-proof-compat." + suffix))).toBe(false);
+    }
+    expect(
+      JSON.parse(fs.readFileSync(join(cache, "owner-test-native-proof-compat-owner-last-success.json"), "utf8")),
+    ).toMatchObject({
+      mode: "posttooluse-native-session-compatibility-fallback",
+      nativeReleaseConfirmed: true,
+    });
+  });
+
   it("already-held grant → allow without caching a PostToolUse release token", async () => {
     // This is the manual locks:acquire → automatic PreToolUse collision:
     // the server reuses the deliberate lock_id but reports no newly-acquired
@@ -1596,6 +1676,28 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
       handler: "pretooluse",
       phase: "identity-refused",
       detail: "request_rejected: superuser_foreign_native_session",
+    });
+  });
+
+  it("denies the split-out stale-live-host identity refusal with its own remedy (WI-6554700010048107)", async () => {
+    acquireRefusalText =
+      "request_rejected: superuser_stale_live_host_native_session This native session is still bound to this owner, " +
+      "but the owner's live psu host record names a different native session.";
+    const r = await run(editOf("sub/held.ts", "tu-stale-live-host"));
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+    const reason: string = out.hookSpecificOutput.permissionDecisionReason;
+    expect(reason).toContain("(superuser_stale_live_host_native_session)");
+    expect(reason).toContain("act from that live session");
+    // capability:edit hits the same server fence, so it is not offered as a way around.
+    expect(reason).not.toContain("capability:edit");
+    const lockCalls = requests.filter((q) => String(q.body.params?.name ?? "").startsWith("locks:"));
+    expect(lockCalls).toHaveLength(1);
+    expect(fs.existsSync(join(cache, "tu-stale-live-host.lock"))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(join(cache, "last-error.json"), "utf8"))).toMatchObject({
+      handler: "pretooluse",
+      phase: "identity-refused",
     });
   });
 
