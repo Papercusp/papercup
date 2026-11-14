@@ -397,6 +397,59 @@ describe('workspace-host snapshot restore (real PG + real RLS)', () => {
     await expect(hostRow(workspaceId, SOURCE)).resolves.toMatchObject({ observed_state: 'absent' });
   });
 
+  it.each([
+    { label: 'missing snapshot', recoveryPoint: undefined },
+    { label: 'another source host', recoveryPoint: { ...snapshot, hostId: 'another-source' } },
+    { label: 'another provider', recoveryPoint: { ...snapshot, target: 'aws' as const } },
+  ])('refuses absent-source recovery with $label before provider work', async ({ recoveryPoint }) => {
+    const workspaceId = freshWorkspace();
+    await seedProvisionedSource(workspaceId);
+    await db.adminSql`
+      UPDATE harness_shared.workspace_host_resources
+      SET state = 'absent'
+      WHERE workspace_id = ${workspaceId} AND host_id = ${SOURCE}
+    `;
+    await updateWorkspaceHostLifecycleState({ workspaceId, hostId: SOURCE, state: 'absent', observedAt: NOW });
+    const operationId = 'op-refused-restore';
+    const { provider, apply } = restoreProvider(operationId);
+
+    await expect(runWorkspaceHostLifecycle({
+      workspaceId,
+      hostId: SOURCE,
+      connection,
+      provider,
+      action: 'restore',
+      operationId,
+      snapshot: recoveryPoint,
+      desired: desired(REPLACEMENT),
+    })).rejects.toThrow('workspace host is absent');
+
+    expect(provider.validateConnection).not.toHaveBeenCalled();
+    expect(provider.plan).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+    await expect(operationRow(workspaceId, operationId)).resolves.toBeUndefined();
+    await expect(hostRow(workspaceId, REPLACEMENT)).resolves.toBeUndefined();
+    await expect(hostRow(workspaceId, SOURCE)).resolves.toMatchObject({ observed_state: 'absent' });
+  });
+
+  it('cannot restore a source visible only in another workspace through the real RLS store', async () => {
+    const sourceWorkspaceId = freshWorkspace();
+    const requestingWorkspaceId = freshWorkspace();
+    await seedProvisionedSource(sourceWorkspaceId);
+    const operationId = 'op-cross-workspace-restore';
+    const { provider, apply } = restoreProvider(operationId);
+
+    await expect(restore(requestingWorkspaceId, operationId, provider))
+      .rejects.toThrow(`workspace host '${SOURCE}' was not found`);
+
+    expect(provider.validateConnection).not.toHaveBeenCalled();
+    expect(provider.plan).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+    await expect(operationRow(requestingWorkspaceId, operationId)).resolves.toBeUndefined();
+    await expect(hostRow(requestingWorkspaceId, REPLACEMENT)).resolves.toBeUndefined();
+    await expect(hostRow(sourceWorkspaceId, SOURCE)).resolves.toMatchObject({ observed_state: 'running' });
+  });
+
   it('records a failed post-restore observation against the NEW host instead of throwing', async () => {
     const workspaceId = freshWorkspace();
     await seedProvisionedSource(workspaceId);

@@ -122,15 +122,52 @@ describe('sweepRestoredClones', () => {
     await expect(lstat(path)).resolves.toBeDefined();
   });
 
-  it('fails closed when either proof source is unreadable or malformed', async () => {
+  it.each(['liveness', 'malformed-sidecar', 'missing-reference', 'symlink-sidecar'])(
+    'fails closed when only the %s proof is unavailable', async (unavailable) => {
     const path = await clone();
     await age(path, DEFAULT_RESTORED_CLONE_MAX_AGE_MS + 1_000);
-    await writeFile(join(workspace, '.broken-op-live.meta.json'), '{not-json');
-    sql.mockRejectedValue(new Error('database unavailable'));
+    const sidecar = join(workspace, '.broken-op-live.meta.json');
+    if (unavailable === 'liveness') sql.mockRejectedValue(new Error('database unavailable'));
+    if (unavailable === 'malformed-sidecar') await writeFile(sidecar, '{not-json');
+    if (unavailable === 'missing-reference') await writeFile(sidecar, JSON.stringify({ live: workspace }));
+    if (unavailable === 'symlink-sidecar') {
+      const target = join(root, 'sidecar.json');
+      await writeFile(target, JSON.stringify({ promotedFrom: path }));
+      await symlink(target, sidecar);
+    }
 
     const result = await sweepRestoredClones(root, { dryRun: false });
 
     expect(result.protected).toEqual([{ path, reason: 'proof-unavailable' }]);
-    await expect(lstat(path)).resolves.toBeDefined();
+    expect(result.removed).toEqual([]);
+    await expect(readFile(join(path, 'payload.txt'), 'utf8')).resolves.toBe('restored');
+  });
+
+  it.each(['done', 'failed'])('permits aged clone cleanup after a terminal %s restore event', async (phase) => {
+    const path = await clone();
+    await age(path, DEFAULT_RESTORED_CLONE_MAX_AGE_MS + 1_000);
+    sql.mockResolvedValue([{ target: path, phase }]);
+
+    const result = await sweepRestoredClones(root, { dryRun: false });
+
+    expect(result.removed).toEqual([path]);
+    expect(result.protected).toEqual([]);
+    await expect(lstat(path)).rejects.toThrow();
+  });
+
+  it('retains a clone exactly at the policy cutoff and removes it only after the cutoff', async () => {
+    const path = await clone();
+    const nowMs = Date.parse('2026-11-13T12:00:00.000Z');
+    const cutoff = new Date(nowMs - DEFAULT_RESTORED_CLONE_MAX_AGE_MS);
+    await utimes(path, cutoff, cutoff);
+
+    const atCutoff = await sweepRestoredClones(root, { dryRun: false, nowMs });
+    expect(atCutoff.protected).toEqual([{ path, reason: 'recent' }]);
+    expect(atCutoff.removed).toEqual([]);
+    await expect(readFile(join(path, 'payload.txt'), 'utf8')).resolves.toBe('restored');
+
+    const afterCutoff = await sweepRestoredClones(root, { dryRun: false, nowMs: nowMs + 1 });
+    expect(afterCutoff.removed).toEqual([path]);
+    await expect(lstat(path)).rejects.toThrow();
   });
 });
