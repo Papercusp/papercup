@@ -1996,6 +1996,30 @@ GIT_SYNC_DRAIN_SEC="$(normalize_git_sync_drain_sec "${PAPERCUSP_STAGING_SYNC_GIT
   exit 1
 }
 
+# EI-28801676705351990: shared staging-server holders (rubrics:amend background
+# runs, measured p50 ~350s / max ~600s) routinely outlast dev:restart's 120s
+# default drain, so every restart hit resource_drain_timeout and :3170 kept
+# serving a stale generation. Writer preference refuses new shared acquires
+# while the exclusive drains, so a LONGER drain converges on in-flight holders.
+# Default to dev:restart's MAX_DRAIN_SEC (300), which still fits inside the
+# 350s restart_tool_timeout_sec client deadline below; clamp overrides to it.
+normalize_restart_max_drain_sec() {
+  local requested="${1:-300}"
+  case "$requested" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  requested=$((10#$requested))
+  if [ "$requested" -gt 300 ]; then
+    requested=300
+  fi
+  printf '%s\n' "$requested"
+}
+
+RESTART_MAX_DRAIN_SEC="$(normalize_restart_max_drain_sec "${PAPERCUSP_STAGING_SYNC_RESTART_MAX_DRAIN_SEC:-300}")" || {
+  log "FATAL: invalid PAPERCUSP_STAGING_SYNC_RESTART_MAX_DRAIN_SEC; expected a non-negative integer"
+  exit 1
+}
+
 # The systemd oneshot has no psu launch record. ptool otherwise falls back to
 # su-loopback, which the identity kernel cannot authorize for dev:restart.
 # Reuse the installer's persistent machine client identity for this first-party
@@ -2074,7 +2098,7 @@ fi
 RESTART_CONTROL_URL="$(resolve_staging_restart_control_url)" || exit 1
 
 # The ptool result may be lost when staging itself receives the request.
-log "requesting coordinated restart of $UNIT via dev:restart (git_sync_drain_sec=${GIT_SYNC_DRAIN_SEC})"
+log "requesting coordinated restart of $UNIT via dev:restart (git_sync_drain_sec=${GIT_SYNC_DRAIN_SEC}, max_drain_sec=${RESTART_MAX_DRAIN_SEC})"
 restart_result_file="$(mktemp)"
 restart_diagnostics_file="$(mktemp)"
 restart_tool_timeout_sec=350
@@ -2092,7 +2116,7 @@ restart_pending=0
   cd "$INTEGRATION_ROOT"
   exec env PAPERCUSP_SID="$PTOOL_CLIENT_SID" "$PTOOL_BIN" dev:restart --url="$RESTART_CONTROL_URL" --json -
 ) >"$restart_result_file" 2>"$restart_diagnostics_file" <<JSON &
-{"target":"staging","confirm":true,"authorize":true,"git_sync_drain_sec":${GIT_SYNC_DRAIN_SEC},"reason":"staging-sync advanced ${current:0:8} to ${target:0:8}"}
+{"target":"staging","confirm":true,"authorize":true,"git_sync_drain_sec":${GIT_SYNC_DRAIN_SEC},"max_drain_sec":${RESTART_MAX_DRAIN_SEC},"reason":"staging-sync advanced ${current:0:8} to ${target:0:8}"}
 JSON
 restart_tool_pid=$!
 
@@ -2206,7 +2230,16 @@ elif [ "$restart_tool_status" -ne 0 ] && printf '%s' "$restart_result $restart_d
   # MCP error results are printed to stderr by ptool (exit 1), including a
   # delivered drain refusal. No restart was scheduled; waiting for health here
   # hides the blocking lease and can never make the target source appear.
-  log "FATAL: coordinated dev:restart resource drain was refused; no restart scheduled: $restart_failure_detail"
+  # EI-28801676705351990: the published generation is already in place, so the
+  # next tick retries ONLY the restart. Defer while the served build is younger
+  # than the staleness ceiling (same bound as resource_draining); past it the
+  # refusal stays FATAL so a persistently held lease fails the unit loudly.
+  age="$(current_commit_age_sec "$served_sha")"
+  if [ "$age" -lt "$MAX_STALE_SEC" ] 2>/dev/null; then
+    log "deferring restart — coordinated dev:restart resource drain timed out after ${RESTART_MAX_DRAIN_SEC}s; no restart scheduled and :3170 serves a ${age}s-old build (< ${MAX_STALE_SEC}s ceiling). The next scheduled sync tick retries the restart. Refusal: $restart_failure_detail"
+    exit 0
+  fi
+  log "FATAL: coordinated dev:restart resource drain was refused; no restart scheduled (served build ${age}s old ≥ ${MAX_STALE_SEC}s ceiling): $restart_failure_detail"
   exit 1
 elif [ "$restart_tool_status" -ne 0 ]; then
   log "coordinated dev:restart returned no terminal receipt (exit $restart_tool_status); waiting for exact target health before deciding; diagnostics: $restart_failure_detail"
