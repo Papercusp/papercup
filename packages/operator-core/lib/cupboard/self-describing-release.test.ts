@@ -36,6 +36,27 @@ import {
   unpackSelfDescribingArchive,
 } from './self-describing-release';
 
+const fsMocks = vi.hoisted(() => ({
+  openSync: vi.fn(),
+  readSync: vi.fn(),
+  readFileSync: vi.fn(),
+  originals: null as unknown,
+}));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  fsMocks.originals = actual;
+  fsMocks.openSync.mockImplementation(actual.openSync);
+  fsMocks.readSync.mockImplementation(actual.readSync);
+  fsMocks.readFileSync.mockImplementation(actual.readFileSync);
+  return {
+    ...actual,
+    openSync: fsMocks.openSync,
+    readSync: fsMocks.readSync,
+    readFileSync: fsMocks.readFileSync,
+  };
+});
+
 let dir: string;
 
 beforeEach(() => {
@@ -43,6 +64,10 @@ beforeEach(() => {
 });
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
+  const actual = fsMocks.originals as typeof import('node:fs');
+  fsMocks.openSync.mockReset().mockImplementation(actual.openSync);
+  fsMocks.readSync.mockReset().mockImplementation(actual.readSync);
+  fsMocks.readFileSync.mockReset().mockImplementation(actual.readFileSync);
 });
 
 function makeSigner(): BlueprintReleaseSigner {
@@ -184,9 +209,9 @@ describe('self-describing archive format', () => {
     const outside = join(dir, 'z-outside.txt');
     writeFileSync(file, 'reviewed bytes');
     writeFileSync(outside, 'replacement bytes');
-    const originalOpen = fs.openSync;
+    const originalOpen = (fsMocks.originals as typeof import('node:fs')).openSync;
     let replaced = false;
-    const open = vi.spyOn(fs, 'openSync').mockImplementation((path, flags, mode) => {
+    const open = fsMocks.openSync.mockImplementation((path, flags, mode) => {
       if (path === file && !replaced) {
         renameSync(file, moved);
         symlinkSync(outside, file);
@@ -197,7 +222,7 @@ describe('self-describing archive format', () => {
 
     expect(codeOf(() => packSelfDescribingDir(dir))).toBe('archive-unsafe-path');
     expect(replaced).toBe(true);
-    const fileOpen = open.mock.calls.find(([path]) => path === file);
+    const fileOpen = fsMocks.openSync.mock.calls.find(([path]) => path === file);
     expect(fileOpen).toBeDefined();
     expect((Number(fileOpen?.[1]) & fs.constants.O_NOFOLLOW)).not.toBe(0);
   });
@@ -205,9 +230,9 @@ describe('self-describing archive format', () => {
   it('refuses a file whose contents change during its descriptor snapshot', () => {
     const file = join(dir, 'entry.txt');
     writeFileSync(file, 'before');
-    const originalRead = fs.readSync;
+    const originalRead = (fsMocks.originals as typeof import('node:fs')).readSync;
     let changed = false;
-    vi.spyOn(fs, 'readSync').mockImplementation((fd, buffer, offset, length, position) => {
+    fsMocks.readSync.mockImplementation((fd, buffer, offset, length, position) => {
       const count = originalRead(fd, buffer, offset, length, position);
       if (!changed) {
         writeFileSync(file, 'change');
@@ -222,8 +247,8 @@ describe('self-describing archive format', () => {
 
   it('refuses an oversized directory file before reading its contents', () => {
     writeSparseFile(join(dir, 'oversized.bin'), MAX_SELF_DESCRIBING_ARTIFACT_BYTES + 1);
-    const readFile = vi.spyOn(fs, 'readFileSync');
-    const read = vi.spyOn(fs, 'readSync');
+    const readFile = fsMocks.readFileSync;
+    const read = fsMocks.readSync;
 
     expect(codeOf(() => packSelfDescribingDir(dir))).toBe('archive-too-large');
     expect(readFile).not.toHaveBeenCalled();
@@ -235,9 +260,9 @@ describe('self-describing archive format', () => {
     writeSparseFile(join(dir, 'a-first.bin'), firstSize);
     writeSparseFile(join(dir, 'b-second.bin'), 3 * 1024 * 1024);
     const readSizes: number[] = [];
-    const readFile = vi.spyOn(fs, 'readFileSync');
-    const originalRead = fs.readSync;
-    vi.spyOn(fs, 'readSync').mockImplementation((fd, buffer, offset, length, position) => {
+    const readFile = fsMocks.readFileSync;
+    const originalRead = (fsMocks.originals as typeof import('node:fs')).readSync;
+    fsMocks.readSync.mockImplementation((fd, buffer, offset, length, position) => {
       readSizes.push(fs.fstatSync(fd).size);
       return originalRead(fd, buffer, offset, length, position);
     });
