@@ -102,6 +102,66 @@ test('reads historical flat overflow as partial without promoting or rejecting i
   assert.equal(verifyNativeProofPacket(directory, { ...saved.locator, manifest: manifestPin, inventoryHash }, contract).status, 'partial');
 });
 
+test('accounts 17100 archive references as nine unique objects while preserving occurrences and byte charges', () => {
+  const occurrenceCount = 17100;
+  const paths = Array.from({ length: 9 }, (_, index) => {
+    const path = join(root, 'unique-source-' + index + '.bin');
+    writeFileSync(path, Buffer.alloc(64, index + 1));
+    return path;
+  });
+  const auxiliary = Array.from({ length: occurrenceCount }, (_, index) => ({
+    role: 'repeated-source', state: 'produced', path: paths[index % paths.length],
+  }));
+  const expected = [{ id: 'unique-archive', attempt: 'primary', selected: ['custody'], runner: 'node',
+    armed: false, out: null, auxiliary }];
+  const identity = { workspace: 'fixture', harness: 'papercusp', runId: 'unique-archive' };
+  const archive = join(root, 'unique-archive');
+  const retained = retainNativeProofPacket(archive, { identity, expected,
+    observations: [{ id: 'unique-archive', out: null }] });
+  assert.equal(retained.status, 'complete');
+  const manifest = retained.manifest, group = manifest.groups[0];
+  assert.equal(manifest.archiveObjectAccounting, 'unique-family-artifact-ref-v1');
+  assert.equal(manifest.objectsRead, 9);
+  assert.equal(manifest.objectsReadByFamily.auxiliary, 9);
+  assert.equal(manifest.bytesReadByFamily.auxiliary, occurrenceCount * 64);
+  assert.equal(group.auxiliary.length, occurrenceCount);
+  assert.equal(new Set(group.auxiliary.map(row => row.artifact.ref)).size, 9);
+  assert.equal(manifest.segments.length, 2);
+  const entries = manifest.segments.flatMap(segment =>
+    JSON.parse(readFileSync(join(archive, 'objects', segment.artifact.ref), 'utf8')).entries);
+  assert.equal(entries.length, occurrenceCount);
+  assert.equal(new Set(entries.map(row => row.family + '\0' + row.artifact.ref)).size, 9);
+  assert.equal(verifyNativeProofPacket(archive, retained.locator, { identity, expected }).status, 'complete');
+});
+
+test('markerless v3 keeps occurrence-based object accounting', () => {
+  const source = join(root, 'markerless-repeat.bin'), archive = join(root, 'markerless-v3');
+  writeFileSync(source, Buffer.alloc(64, 42));
+  const expected = [{ id: 'markerless', attempt: 'primary', selected: ['custody'], runner: 'node',
+    armed: false, out: null, auxiliary: [
+      { role: 'repeated-source', state: 'produced', path: source },
+      { role: 'repeated-source', state: 'produced', path: source },
+    ] }];
+  const identity = { workspace: 'fixture', harness: 'papercusp', runId: 'markerless-v3' };
+  const retained = retainNativeProofPacket(archive, { identity, expected,
+    observations: [{ id: 'markerless', out: null }] });
+  const manifest = structuredClone(retained.manifest);
+  assert.equal(manifest.objectsRead, 1);
+  delete manifest.archiveObjectAccounting;
+  manifest.objectsRead = 2;
+  manifest.objectsReadByFamily.auxiliary = 2;
+  manifest.segments[0].objectsRead = 2;
+  manifest.segments[0].objectsReadByFamily.auxiliary = 2;
+  const manifestPin = createNativeArtifactPersister(join(archive, 'objects'))
+    .persist(Buffer.from(JSON.stringify(manifest)), 'native-proof.json');
+  const locator = { ...retained.locator, manifest: manifestPin,
+    inventoryHash: hash({ groups: manifest.groups, gaps: manifest.gaps, segments: manifest.segments }) };
+  const verified = verifyNativeProofPacket(archive, locator, { identity, expected });
+  assert.equal(verified.status, 'complete');
+  assert.equal(verified.manifest.objectsRead, 2);
+  assert.equal(verified.manifest.bytesReadByFamily.auxiliary, 128);
+});
+
 test('preflights known population capacity and labels runtime capacity unknown', () => {
   assert.deepEqual(preflightNativeProofCustody(expected), { groups: 1, minimumObjects: 1,
     dynamicCapacity: 'unknown-until-capture' });
@@ -122,6 +182,73 @@ test('reseals the original retained packet without reading retired producers or 
   await assert.rejects(retainNativeProofPacketAsync(directory, {
     ...contract, identity: { ...contract.identity, runId: 'foreign' }, retainedLocator: saved.locator,
   }), /custody identity or expected population mismatch/);
+});
+
+for (const operation of ['sync', 'close']) test(`deadline operation attribution: blocked ${operation} retains immutable phase evidence`, async t => {
+  const probe = await open(join(directory, 'objects', saved.locator.manifest.ref));
+  const prototype = Object.getPrototypeOf(probe);
+  await probe.close();
+  const originalSync = prototype.sync;
+  let release, entered;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const operationEntered = new Promise(resolve => { entered = resolve; });
+  const syncing = [], closing = [];
+  t.mock.method(prototype, 'sync', function () {
+    // close is an own bound method on each FileHandle, unlike sync.
+    const originalClose = this.close;
+    t.mock.method(this, 'close', function () {
+      const done = (async () => {
+        if (operation === 'close') { entered(); await blocked; }
+        return originalClose.call(this);
+      })();
+      closing.push(done);
+      return done;
+    });
+    const done = (async () => {
+      if (operation === 'sync') { entered(); await blocked; }
+      return originalSync.call(this);
+    })();
+    syncing.push(done);
+    return done;
+  });
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  const progress = [];
+  const pending = retainNativeProofPacketAsync(directory, { ...contract, retainedLocator: saved.locator,
+    deadlineAtMs: Date.now() + 100, onProgress: record => progress.push(record) });
+  let error;
+  try {
+    await operationEntered;
+    t.mock.timers.tick(101);
+    await assert.rejects(pending, failure => {
+      error = failure;
+      assert.equal(failure.code, 'NATIVE_PROOF_SYNC_DEADLINE');
+      assert.equal(failure.phase, 'object');
+      assert.equal(failure.operation, operation);
+      assert.match(failure.message, new RegExp(`operation=${operation}$`));
+      assert.ok(failure.operationElapsedMs >= 0);
+      assert.equal(typeof failure.operationTimingsMs.open, 'number');
+      assert.equal(failure.operationTimingsMs[operation], null);
+      if (operation === 'close') assert.equal(typeof failure.operationTimingsMs.sync, 'number');
+      return true;
+    });
+    const frozen = JSON.stringify(error.operationTimingsMs);
+    const deadline = progress.find(record => record.phase === 'sync-deadline');
+    assert.equal(deadline.syncPhase, 'object');
+    assert.equal(deadline.operation, operation);
+    assert.deepEqual(deadline.operationTimingsMs, error.operationTimingsMs);
+    assert.equal(progress.some(record => record.phase === 'sync-complete'), false);
+    release();
+    await Promise.all(syncing);
+    await new Promise(resolve => setImmediate(resolve));
+    await Promise.all(closing);
+    assert.equal(JSON.stringify(error.operationTimingsMs), frozen);
+  } finally {
+    release();
+    await pending.catch(() => {});
+    await Promise.all(syncing);
+    await new Promise(resolve => setImmediate(resolve));
+    await Promise.all(closing);
+  }
 });
 
 for (const mode of ['fresh', 'retained']) test(`bounds interrupted ${mode}-packet sync and identifies the pending operation`, async t => {
