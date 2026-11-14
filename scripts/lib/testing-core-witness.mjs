@@ -6,8 +6,9 @@
  */
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync,
-  readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync,
+  readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createRequire, isBuiltin } from 'node:module';
 import { compileFunction } from 'node:vm';
@@ -400,6 +401,163 @@ export async function prepareTestingCore({ root, compilerPath, argv,
   }
 }
 
+const SNAPSHOT_PREFIX = 'papercusp-testing-core-';
+const SNAPSHOT_MAX_AGE_MS = 2 * 60 * 60_000;
+
+/** WI-6554700010048604: a LIVE shared tree cannot hold the producing interval.
+ * Any peer's create, rename or remove in a probed directory changes that
+ * directory's mtime, and the census binds every directory because only that
+ * binding detects a transient failed-probe candidate (create+remove). So compile
+ * from a private, closure-only COPY instead, not a relaxed census: the witness then
+ * binds an immutable population nobody else can write, and its census is the
+ * closure rather than the whole tree (whose node_modules alone is ~20 GB).
+ * Discovery is untrusted: it only chooses what to copy. prepareTestingCore then
+ * re-establishes full custody over the copy, and the bwrap namespace mounts only
+ * the copy, so a resolution the copy cannot satisfy fails rather than reaching
+ * the live tree. The copy is a SUBSET of the live tree, so a candidate the copy
+ * holds was also present live, earlier in no probe order than the live choice.
+ * The snapshot directory is named by its own manifest digest. The witness binds
+ * absolute roots (the resolver namespace mounts, the rewritten entry argv), so a
+ * per-run random directory would change the witness and the artifact bytes on
+ * every prepare. One closure always compiles at one path, so prepares are
+ * reproducible, and concurrent prepares of one closure share one copy. */
+export function materializeTestingCoreSnapshot({ root, compilerPath, argv, snapshotParent = tmpdir() }) {
+  root = realpathSync(root);
+  snapshotParent = realpathSync(snapshotParent);
+  const staging = mkdtempSync(join(snapshotParent, SNAPSHOT_PREFIX + 'staging-'));
+  const scratch = mkdtempSync(join(snapshotParent, SNAPSHOT_PREFIX + 'discovery-'));
+  try {
+    const meta = join(scratch, 'discovery.meta.json');
+    const discovery = spawnSync(realpathSync(compilerPath), [...argv.filter(arg => !/^--(?:outfile|metafile)=/.test(arg)),
+      `--outfile=${join(scratch, 'discovery.mjs')}`, `--metafile=${meta}`], { cwd: root, encoding: 'utf8', timeout: 120_000 });
+    assert.equal(discovery.status, 0, `Testing core snapshot discovery failed: ${discovery.stderr || discovery.error}`);
+    const inputs = Object.keys(JSON.parse(readFileSync(meta, 'utf8')).inputs);
+    const local = path => relative(root, path).split(sep).join('/');
+    const inside = path => { const rel = relative(root, path); return !!rel && !rel.startsWith('..') && !isAbsolute(rel); };
+    const files = new Set(), links = new Map();
+    const addFile = path => {
+      const physical = realpathSync(path);
+      assert.ok(inside(physical) && lstatSync(physical).isFile(), `Testing core snapshot input is outside the source root: ${path}`);
+      files.add(physical);
+    };
+    for (const input of inputs) addFile(resolve(root, input));
+    for (const path of controls) addFile(join(root, path));
+    for (const path of JSON.parse(readFileSync(join(root, 'packages/operator-core/lib/retained-replay-sources.json'), 'utf8')))
+      addFile(join(root, path));
+    // Native resolution reads enclosing package metadata and tsconfig (with its
+    // relative extends closure) for every consumed file, and follows workspace
+    // links in each enclosing node_modules. Copy exactly those, to a fixpoint.
+    const visitedDirs = new Set();
+    for (let size = -1; size !== files.size;) {
+      size = files.size;
+      for (const file of [...files]) for (let dir = dirname(file); ; dir = dirname(dir)) {
+        if (!visitedDirs.has(dir)) {
+          visitedDirs.add(dir);
+          for (const name of ['package.json', 'tsconfig.json', 'jsconfig.json']) {
+            const path = join(dir, name);
+            if (existsSync(path) && lstatSync(path).isFile()) addFile(path);
+          }
+          const modules = join(dir, 'node_modules');
+          const entries = existsSync(modules) && lstatSync(modules).isDirectory()
+            ? readdirSync(modules, { withFileTypes: true }).flatMap(entry => entry.isDirectory() && entry.name.startsWith('@')
+              ? readdirSync(join(modules, entry.name), { withFileTypes: true }).map(child => [join(modules, entry.name, child.name), child])
+              : [[join(modules, entry.name), entry]]) : [];
+          for (const [path, entry] of entries) if (entry.isSymbolicLink() && existsSync(path)) links.set(path, realpathSync(path));
+        }
+        if (dir === root) break;
+      }
+      for (const file of [...files].filter(path => /^[jt]sconfig\.json$/.test(basename(path)))) {
+        const config = configurationObject(readFileSync(file), file);
+        for (const extension of config.extends === undefined ? [] : [config.extends].flat()) {
+          if (typeof extension !== 'string' || !(extension.startsWith('./') || extension.startsWith('../'))) continue;
+          for (const candidate of [resolve(dirname(file), extension), resolve(dirname(file), extension) + '.json'])
+            if (existsSync(candidate) && lstatSync(candidate).isFile()) addFile(candidate);
+        }
+      }
+    }
+    const staged = join(staging, 'source');
+    for (const file of [...files].sort()) {
+      mkdirSync(dirname(join(staged, local(file))), { recursive: true });
+      copyFileSync(file, join(staged, local(file)));
+    }
+    let linkCount = 0;
+    for (const [path, target] of [...links].sort(([a], [b]) => a.localeCompare(b))) {
+      // Keep only links into the copied population, re-pointed relatively.
+      if (!inside(path) || !inside(target) || ![...files].some(file => file.startsWith(target + sep))) continue;
+      const copied = join(staged, local(path));
+      mkdirSync(dirname(copied), { recursive: true });
+      symlinkSync(relative(dirname(copied), join(staged, local(target))), copied);
+      linkCount++;
+    }
+    const closureSha256 = testingCoreSnapshotManifestSha256(staging);
+    const workdir = join(snapshotParent, SNAPSHOT_PREFIX + closureSha256);
+    try {
+      renameSync(staging, workdir);
+    } catch (error) {
+      if (error.code !== 'EEXIST' && error.code !== 'ENOTEMPTY') throw error;
+      // Another prepare already published this closure. Touch it first so the
+      // age collector leaves it alone, then accept it only if it is identical.
+      rmSync(staging, { recursive: true, force: true });
+      const now = new Date();
+      utimesSync(workdir, now, now);
+      assert.equal(testingCoreSnapshotManifestSha256(workdir), closureSha256,
+        'Testing core reused snapshot differs from its closure');
+    }
+    const snapshot = join(workdir, 'source');
+    const rewrite = value => value === root || value.startsWith(root + sep) ? snapshot + value.slice(root.length) : value;
+    const snapshotArgv = argv.map(arg => !arg.startsWith('-') ? rewrite(arg)
+      : arg.startsWith('--alias:') && arg.includes('=')
+        ? arg.slice(0, arg.indexOf('=') + 1) + rewrite(arg.slice(arg.indexOf('=') + 1)) : arg);
+    return { workdir, liveRoot: root, root: snapshot, argv: snapshotArgv, files: files.size, links: linkCount,
+      closureSha256 };
+  } catch (error) {
+    rmSync(staging, { recursive: true, force: true });
+    throw error;
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+}
+
+/** Digest of a snapshot's WHOLE tree: every directory, file and link. A reused
+ * snapshot must match entry for entry, because an extra file can change
+ * resolution as surely as a changed one. */
+export function testingCoreSnapshotManifestSha256(dir) {
+  const hash = createHash('sha256');
+  const walk = (path, local) => {
+    const entries = readdirSync(path, { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    for (const entry of entries) {
+      const child = join(path, entry.name), name = local ? `${local}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) { hash.update(JSON.stringify(['dir', name]) + '\n'); walk(child, name); }
+      else if (entry.isSymbolicLink()) hash.update(JSON.stringify(['link', name, readlinkSync(child)]) + '\n');
+      else if (entry.isFile()) hash.update(JSON.stringify(['file', name, digest(readFileSync(child))]) + '\n');
+      else throw new Error(`Testing core snapshot holds an unsupported entry: ${name}`);
+    }
+  };
+  walk(dir, '');
+  return hash.digest('hex');
+}
+
+/** The receipt names its snapshot root, and the shell verifies it again after
+ * compiling the parent, so a snapshot outlives this call. It is reclaimed by age. */
+export function collectStaleTestingCoreSnapshots(snapshotParent = tmpdir(), now = Date.now()) {
+  for (const name of existsSync(snapshotParent) ? readdirSync(snapshotParent) : []) {
+    if (!name.startsWith(SNAPSHOT_PREFIX)) continue;
+    const path = join(snapshotParent, name);
+    try {
+      if (now - statSync(path).mtimeMs > SNAPSHOT_MAX_AGE_MS) rmSync(path, { recursive: true, force: true });
+    } catch { /* a concurrent collector already removed it */ }
+  }
+}
+
+export async function prepareTestingCoreFromSnapshot({ root, compilerPath, argv, snapshotParent = tmpdir(),
+  phase = async (_name, operation) => operation() }) {
+  collectStaleTestingCoreSnapshots(snapshotParent);
+  const snapshot = materializeTestingCoreSnapshot({ root, compilerPath, argv, snapshotParent });
+  // A failed prepare leaves the snapshot to the age collector: a concurrent
+  // prepare of the same closure may be compiling from it.
+  const receipt = await prepareTestingCore({ root: snapshot.root, compilerPath, argv: snapshot.argv, phase });
+  return { ...receipt, snapshot: { liveRoot: snapshot.liveRoot, workdir: snapshot.workdir,
+    closureSha256: snapshot.closureSha256, files: snapshot.files, links: snapshot.links } };
+}
+
 /** Read ORIGINAL identities from the producing receipt, never take a new
  * endpoint census and call it an interval. The independent receipt digest and
  * worker witness are retained by the shell before compiling its parent. */
@@ -425,7 +583,7 @@ async function main(argv) {
   const [command, rootOrReceipt, compilerOrBinding, receiptPath, marker, ...compilerArgs] = argv;
   if (command === 'prepare') {
     assert.equal(marker, '--', 'Testing core prepare requires the shared compiler argv');
-    const receipt = await prepareTestingCore({ root: rootOrReceipt, compilerPath: compilerOrBinding, argv: compilerArgs });
+    const receipt = await prepareTestingCoreFromSnapshot({ root: rootOrReceipt, compilerPath: compilerOrBinding, argv: compilerArgs });
     const body = JSON.stringify(receipt);
     writeFileSync(receiptPath, body, { mode: 0o600 });
     process.stdout.write(JSON.stringify({ witness: receipt.witness, receiptSha256: digest(body) }));

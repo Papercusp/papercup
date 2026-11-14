@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { captureTestingCoreInputUniverse, createTestingCoreResolverNamespace, prepareTestingCore, retainTestingCoreResolverMetadata, verifyTestingCoreReceipt } from '../../../scripts/lib/testing-core-witness.mjs';
+import { captureTestingCoreInputUniverse, collectStaleTestingCoreSnapshots, createTestingCoreResolverNamespace, prepareTestingCore, prepareTestingCoreFromSnapshot, retainTestingCoreResolverMetadata, verifyTestingCoreReceipt } from '../../../scripts/lib/testing-core-witness.mjs';
 import { createCompilerInputCustody } from '../../../scripts/lib/compiler-input-custody.mjs';
 import { localEsbuildNpxPath } from './test-fixtures/local-esbuild-npx';
 
@@ -315,5 +315,78 @@ describe('testing core producing-build witness', () => {
       'console.log((await import(process.argv[1])).runTestFilesCore());', f.outfile], { encoding: 'utf8' });
     expect(run.status, run.stderr).toBe(0);
     expect(run.stdout.trim()).toBe('false');
+  });
+});
+
+describe('testing core closure snapshot (WI-6554700010048604)', () => {
+  const snapshotParent = () => mkdtempSync(join(base, 'snapshots-'));
+
+  it('is immune to live-tree churn during final compilation and still binds the compiled bytes', async () => {
+    const f = fixture(), parent = snapshotParent();
+    const receipt = await prepareTestingCoreFromSnapshot({ ...f, snapshotParent: parent,
+      phase: async (name: string, run: () => Promise<unknown>) => {
+        if (name === 'final') {
+          // The exact failed-probe substitution that refuses a live prepare, plus unrelated churn.
+          f.put('core.js', 'export const result = 9;'); rmSync(join(f.root, 'core.js'));
+          f.put('packages/operator-core/lib/peer-edit.ts', 'export const peer = 1;');
+          writeFileSync(join(f.root, 'core.ts'), 'export const result: number = 7;');
+        }
+        return run();
+      } });
+    expect(receipt.root.startsWith(parent)).toBe(true);
+    expect(verifyTestingCoreReceipt(receipt, receipt.witness)).toEqual(receipt.witness);
+    const run = spawnSync(process.execPath, ['--input-type=module', '-e',
+      'console.log((await import(process.argv[1])).runTestFilesCore());', f.outfile], { encoding: 'utf8' });
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.stdout.trim()).toBe('42');
+  });
+
+  it('witnesses only the consumed closure, so an unrelated live file changes nothing', async () => {
+    const f = fixture(), parent = snapshotParent();
+    f.put('unrelated/notes.ts', 'export const unrelated = 1;');
+    const first = await prepareTestingCoreFromSnapshot({ ...f, snapshotParent: parent });
+    const population = first.input.resolutionPopulation.map((row: { path: string }) => row.path);
+    expect(population).toContain('core.ts');
+    expect(population).not.toContain('unrelated/notes.ts');
+    f.put('unrelated/more.ts', 'export const more = 2;');
+    const second = await prepareTestingCoreFromSnapshot({ ...f, snapshotParent: parent });
+    // One closure compiles at one content-addressed path, so the whole prepare is
+    // reproducible: same root, same witness, same artifact bytes.
+    expect(second.root).toBe(first.root);
+    expect(second.witness).toEqual(first.witness);
+    f.put('core.ts', 'export const result: number = 43;');
+    const third = await prepareTestingCoreFromSnapshot({ ...f, snapshotParent: parent });
+    expect(third.root).not.toBe(first.root);
+    expect(third.witness.sourceSha256).not.toBe(first.witness.sourceSha256);
+  });
+
+  it('refuses to reuse a published snapshot that no longer matches its closure', async () => {
+    const f = fixture(), parent = snapshotParent();
+    const first = await prepareTestingCoreFromSnapshot({ ...f, snapshotParent: parent });
+    // A planted sibling would win resolution over core.ts without changing any copied byte.
+    writeFileSync(join(first.root, 'core.js'), 'export const result = 9;');
+    await expect(prepareTestingCoreFromSnapshot({ ...f, snapshotParent: parent }))
+      .rejects.toThrow(/reused snapshot differs from its closure/);
+    expect(readdirSync(parent).filter(name => name.includes('staging'))).toEqual([]);
+  });
+
+  it('refuses a resolution the copy cannot satisfy instead of reaching the live tree', async () => {
+    const f = fixture(), parent = snapshotParent();
+    // An input outside the source root cannot enter the closure.
+    const outside = join(dirname(f.root), 'outside.ts');
+    writeFileSync(outside, 'export const result = 5;');
+    f.put('core.ts', `export { result } from ${JSON.stringify(outside)};`);
+    await expect(prepareTestingCoreFromSnapshot({ ...f, snapshotParent: parent })).rejects.toThrow(/outside the source root/);
+    expect(readdirSync(parent).filter(name => !name.includes('discovery'))).toEqual([]);
+  });
+
+  it('reclaims only stale snapshots', () => {
+    const parent = snapshotParent();
+    mkdirSync(join(parent, 'papercusp-testing-core-old')); mkdirSync(join(parent, 'papercusp-testing-core-new'));
+    mkdirSync(join(parent, 'unrelated'));
+    const old = Date.now() / 1000 - 3 * 60 * 60;
+    utimesSync(join(parent, 'papercusp-testing-core-old'), old, old);
+    collectStaleTestingCoreSnapshots(parent);
+    expect(readdirSync(parent).sort()).toEqual(['papercusp-testing-core-new', 'unrelated']);
   });
 });
