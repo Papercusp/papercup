@@ -4139,6 +4139,55 @@ describe('BG inherited manifest and original source boundaries', () => {
       } finally { wholeFileRead.mockRestore(); syncBuiltinESMExports(); }
     });
 
+  it('BG context checks hash common executable bytes once per pass and reread them at later boundaries', async () => {
+    const fixture = await maintainedCompilerCandidate();
+    const nodeIdentity = statSync(fixture.invocation.node);
+    const read = nativeFs.readSync;
+    let bytesRead = 0;
+    const reads = vi.spyOn(nativeFs, 'readSync').mockImplementation((...args) => {
+      const count = Reflect.apply(read, nativeFs, args);
+      const opened = fstatSync(args[0]);
+      if (opened.dev === nodeIdentity.dev && opened.ino === nodeIdentity.ino) bytesRead += count;
+      return count;
+    });
+    syncBuiltinESMExports();
+    try {
+      const worker = { ...fixture.invocation,
+        argv: fixture.invocation.argv.map(arg => arg.replaceAll(fixture.entry, fixture.entry + '.worker')) };
+      const context = prepareBgVerifierBuildContexts({ prepared: fixture.prepared,
+        dependencies: fixture.record.dependencies, invocations: [fixture.invocation, worker] });
+      // One read prepares the original record, one separate read binds the
+      // complete command cohort. Its second command shares only that pass.
+      expect(bytesRead).toBe(2 * nodeIdentity.size);
+      bytesRead = 0;
+      expect(verifyBgVerifierBuildRecord(context.record, fixture.invocation, 'before-publication')).toBe(context.record);
+      expect(bytesRead).toBe(nodeIdentity.size);
+    } finally { reads.mockRestore(); syncBuiltinESMExports(); }
+  });
+
+  it('BG context checks refuse toolchain drift between commands sharing one identity pass', async () => {
+    const fixture = await maintainedCompilerCandidate();
+    const file = nativeFs.realpathSync(fixture.invocation.packageManager);
+    const original = readFileSync(file), open = nativeFs.openSync;
+    let opens = 0, mutated = false;
+    const opening = vi.spyOn(nativeFs, 'openSync').mockImplementation((...args) => {
+      if (args[0] === file && ++opens === 3) {
+        writeFileSync(file, Buffer.concat([original, Buffer.from('\nchanged-toolchain')]));
+        mutated = true;
+      }
+      return Reflect.apply(open, nativeFs, args);
+    });
+    syncBuiltinESMExports();
+    try {
+      const worker = { ...fixture.invocation,
+        argv: fixture.invocation.argv.map(arg => arg.replaceAll(fixture.entry, fixture.entry + '.worker')) };
+      expect(() => prepareBgVerifierBuildContexts({ prepared: fixture.prepared,
+        dependencies: fixture.record.dependencies, invocations: [fixture.invocation, worker] }))
+        .toThrow('BG invocation set changed common build identity');
+      expect(mutated).toBe(true);
+    } finally { opening.mockRestore(); syncBuiltinESMExports(); }
+  });
+
   async function maintainedCompilerCandidate(sourceOnly = false, protectedUnconsumed = false, runtimeModules = false,
     expectedHostManifest?: Parameters<typeof prepareBgVerifierBuildRecord>[0]['expectedHostManifest'], frozenGeneration = false,
     testingCore = false) {
@@ -5542,11 +5591,12 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
   }
 
   it('BG testing core binds original commands to actual sealed compilation before its parent', async () => {
+    const retainedPhase = bgRecipePhaseRunner('testing-core-primary');
     const fixture = await transactionCandidate(true);
     const transaction = prepareBgVerifierBuildTransaction(fixture.args);
     const original = JSON.stringify(transaction), order: string[] = [];
     const publication = await runBgVerifierBuildRecipe({ transaction, ownerPid: process.pid,
-      runPhase: async (phase, operation) => { order.push(phase); return operation(); },
+      runPhase: async (phase, operation) => { order.push(phase); return retainedPhase(phase, operation); },
       budget: { measurements: BG_RECIPE_BUDGET_MEASUREMENTS,
         env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '1000000000' }, now: () => 1_000 } });
     expect(JSON.stringify(transaction)).toBe(original);

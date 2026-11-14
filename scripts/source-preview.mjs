@@ -1320,8 +1320,7 @@ function bgVerifierCompilerCustody({ prepared, dependencies }, verifyBoundary) {
  * argv and explicit environment; inherited ambient resolution is forbidden.
  * @param {BgVerifierPreparation} prepared @param {BgBuildInvocation} invocation
  */
-function readBgBuildInvocation(prepared, invocation) {
-  const identity = readBgFileIdentity;
+function readBgBuildInvocation(prepared, invocation, identity = readBgFileIdentity) {
   const builder = identity(invocation.builder), compiler = identity(invocation.compiler);
   assert.equal(builder.realpath, join(prepared.root, 'apps/operator/bin/bundle-host.sh'),
     'BG builder must be the maintained selected builder');
@@ -1336,7 +1335,7 @@ function readBgBuildInvocation(prepared, invocation) {
     'BG build ambient Node resolution is forbidden');
   assert.ok(Object.entries(invocation.environment).every(([key, value]) =>
     /^[A-Z_][A-Z0-9_]*$/.test(key) && typeof value === 'string'), 'BG build environment is invalid');
-  const configuration = invocation.configuration.map(identity).sort((a, b) => a.path.localeCompare(b.path));
+  const configuration = invocation.configuration.map(path => identity(path)).sort((a, b) => a.path.localeCompare(b.path));
   assert.equal(new Set(configuration.map(row => row.path)).size, configuration.length, 'BG build configuration duplicated');
   for (const file of configuration) {
     const local = relative(prepared.root, file.realpath).split(sep).join('/');
@@ -1450,6 +1449,11 @@ export function prepareBgVerifierBuildRecord({ prepared, dependencies, invocatio
  * @param {'before-build' | 'before-publication'} boundary
  */
 export function verifyBgVerifierBuildRecord(record, invocation, boundary) {
+  return verifyBgVerifierBuildRecordWithIdentity(record, invocation, boundary, readBgFileIdentity);
+}
+
+// The shared reader is private: external callers cannot supply file authority.
+function verifyBgVerifierBuildRecordWithIdentity(record, invocation, boundary, identity) {
   assert.equal(record.schemaVersion, 'bg-build-invocation-v1', 'BG build record is UNKNOWN');
   verifyBgVerifierSource(record.prepared, boundary);
   assert.equal(record.originalSourceReceiptSha256, record.prepared.sourceReceiptSha256,
@@ -1457,7 +1461,7 @@ export function verifyBgVerifierBuildRecord(record, invocation, boundary) {
   if (record.expectedHostManifest) assert.deepEqual(
     readBgExpectedHostManifest(record.expectedHostManifest.authority, record.prepared.root), record.expectedHostManifest,
     'BG original expected host manifest changed');
-  assert.deepEqual(readBgBuildInvocation(record.prepared, invocation), record.invocation,
+  assert.deepEqual(readBgBuildInvocation(record.prepared, invocation, identity), record.invocation,
     'BG builder configuration or toolchain identity changed');
   assert.deepEqual(captureVerifierDependencies({ dest: record.prepared.root, receipt: record.prepared.source }), record.dependencies,
     'BG build dependency census changed');
@@ -1492,8 +1496,9 @@ export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocat
  * @param {BgBuildInvocation[]} invocations
  */
 function readBgVerifierBuildContexts(record, invocations) {
+  const identity = createBgFileIdentityReader();
   const context = freezeBgExpectation({ schemaVersion: 'bg-build-contexts-v1', record,
-    invocations: invocations.map(invocation => ({ invocation, original: readBgBuildInvocation(record.prepared, invocation) })) });
+    invocations: invocations.map(invocation => ({ invocation, original: readBgBuildInvocation(record.prepared, invocation, identity) })) });
   validateBgVerifierBuildContexts(context);
   return context;
 }
@@ -1553,9 +1558,10 @@ function bgTestingCorePlan(contexts) {
  */
 function verifyBgVerifierBuildContexts(context, boundary) {
   validateBgVerifierBuildContexts(context);
-  verifyBgVerifierBuildRecord(context.record, context.invocations[0].invocation, boundary);
+  const identity = createBgFileIdentityReader();
+  verifyBgVerifierBuildRecordWithIdentity(context.record, context.invocations[0].invocation, boundary, identity);
   for (const entry of context.invocations.slice(1))
-    assert.deepEqual(readBgBuildInvocation(context.record.prepared, entry.invocation), entry.original,
+    assert.deepEqual(readBgBuildInvocation(context.record.prepared, entry.invocation, identity), entry.original,
       'BG builder configuration or toolchain identity changed');
 }
 
@@ -2544,20 +2550,33 @@ function readBgIndependentOutputIdentity(path) {
   } finally { closeSync(fd); }
 }
 
+/** Reuse bytes only within one synchronous command-cohort check. Every reuse
+ * opens the physical file and checks its complete mutation identity; no reader
+ * survives a build, publication operation, or later verification boundary. */
+function createBgFileIdentityReader() {
+  const identities = new Map();
+  return path => readBgFileIdentity(path, identities);
+}
+
 /** Read one physical file without reopening between validation and hashing.
  * @param {string} path
+ * @param {Map<string, { physical: string, stat: import('node:fs').BigIntStats, sha256: string }>} [identities]
  */
-function readBgFileIdentity(path) {
+function readBgFileIdentity(path, identities) {
   assert.ok(isAbsolute(path), 'BG build identity requires an absolute path');
   const physical = realpathSync(path);
   const fd = openSync(physical, 'r');
   try {
     const before = fstatSync(fd, { bigint: true });
     assert.ok(before.isFile(), 'BG build identity must be a regular file');
-    const sha256 = hashBgFileDescriptor(fd, before.size);
+    const fields = ['dev', 'ino', 'mode', 'nlink', 'size', 'mtimeNs', 'ctimeNs'];
+    const prior = identities?.get(path);
+    const unchanged = prior?.physical === physical && fields.every(key => before[key] === prior.stat[key]);
+    const sha256 = unchanged ? prior.sha256 : hashBgFileDescriptor(fd, before.size);
     const after = fstatSync(fd, { bigint: true });
-    assert.ok(['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every(key => before[key] === after[key])
+    assert.ok(fields.every(key => before[key] === after[key])
       && realpathSync(path) === physical, 'BG build identity changed while reading');
+    identities?.set(path, { physical, stat: after, sha256 });
     return { path, realpath: physical, sha256 };
   } finally { closeSync(fd); }
 }
