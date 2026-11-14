@@ -607,6 +607,8 @@ export function resolveMcpProxyPort(env = process.env) {
  * the proxy's by a parity test in apps/operator/scripts/mcp-call.test.ts.
  */
 export const CURRENT_BUILD_DEFAULT_TOOLS = Object.freeze([
+  'tools:find',
+  'tools:invoke',
   'release:repair-queue',
   'release:test-downgrade',
   'consult:get_feedback',
@@ -675,17 +677,18 @@ export function currentBuildDefaultToolForCall(params) {
   if (!params || typeof params.name !== 'string') return null;
   let target = normalizeMcpToolName(params.name);
   let args = decodeCallArguments(params.arguments);
-  if (target === 'tools:invoke') {
-    if (!args || typeof args.name !== 'string') return null;
+  const wrapper = target === 'tools:invoke' ? target : null;
+  if (wrapper) {
+    if (!args || typeof args.name !== 'string') return wrapper;
     target = normalizeMcpToolName(args.name);
     args = decodeCallArguments(args.args);
   }
   if (target === 'code:run') {
     const script = args?.script;
-    if (typeof script !== 'string') return null;
-    return CURRENT_BUILD_DEFAULT_SCRIPT_PATTERNS.find((p) => p.pattern.test(script))?.tool ?? null;
+    if (typeof script !== 'string') return wrapper;
+    return CURRENT_BUILD_DEFAULT_SCRIPT_PATTERNS.find((p) => p.pattern.test(script))?.tool ?? wrapper;
   }
-  return CURRENT_BUILD_DEFAULT_LOOKUP.has(target) ? target : null;
+  return CURRENT_BUILD_DEFAULT_LOOKUP.has(target) ? target : wrapper;
 }
 
 /**
