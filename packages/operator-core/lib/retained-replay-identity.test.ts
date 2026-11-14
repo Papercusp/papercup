@@ -32,6 +32,27 @@ function runNode(source: string, args: string[] = []) {
 }
 
 describe('retained replay source identity', () => {
+  it('a historical target has no invented witness, while partial replay features fail closed', () => {
+    const copy = mkdtempSync(join(tmpdir(), 'retained-replay-historical-'));
+    const define = () => spawnSync('bash', ['-c',
+      'set -euo pipefail\nsource "$1"\nbundle_host_replay_identity_define "$2"',
+      'historical-replay-test', common, copy], { encoding: 'utf8', timeout: 10_000 });
+    try {
+      const legacy = define();
+      expect(legacy.status, legacy.stderr).toBe(0);
+      expect(legacy.stdout).toBe('--define:__PAPERCUSP_RETAINED_REPLAY_SOURCE_SHA256__=undefined');
+      mkdirSync(dirname(join(copy, identityPath)), { recursive: true });
+      writeFileSync(join(copy, identityPath), '// replay identity exists in this target\n');
+      const missing = define();
+      expect(missing.status).not.toBe(0);
+      expect(missing.stderr).toContain('retained-replay-sources.json');
+      writeFileSync(join(copy, 'packages/operator-core/lib/retained-replay-sources.json'), '{broken');
+      expect(define().status).not.toBe(0);
+      writeFileSync(join(copy, 'packages/operator-core/lib/retained-replay-sources.json'), '["missing-source.ts"]');
+      expect(define().status).not.toBe(0);
+    } finally { rmSync(copy, { recursive: true, force: true }); }
+  });
+
   it('is byte-bound and relocation-independent, including evaluator, parser, redaction and dependency changes', () => {
     const copy = sourceCopy();
     try {

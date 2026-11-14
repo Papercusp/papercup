@@ -71,7 +71,6 @@ import { createRequire, isBuiltin } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseEnv } from 'node:util';
 import { compileFunction } from 'node:vm';
-import { require as tsxRequire } from 'tsx/cjs/api';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { verifierSourceFiles, verifierGitCheckoutSync, verifyVerifierSourceSync as verifyArchivedSourceSync, VerifierSourceError, writeVerifierTaskReceipt, verifierResourceInventory } from '@papercusp/operator-core/lib/verifier-source';
 import { NOTICES_FILE, collectThirdPartyNotices } from './check-licenses.mjs';
@@ -87,12 +86,17 @@ import { bindFrozenDependencyGeneration } from '@papercusp/operator-core/lib/dep
 // Keep the synchronous qualification API and the host's import graph free of
 // top-level await. esbuild owns the literal require in a host bundle; the
 // documented plain-Node CLI needs scoped TS resolution for extensionless imports.
+// tsx's API is loaded lazily through createRequire, never by a static import:
+// tsx's IPC client connects a socket when its module initializes, so a static
+// import put that connect into every host bundle's boot import and failed the
+// packaged boot-import check (BOOT_IMPORT_IO_FORBIDDEN, WI-6554700010049042).
+// esbuild does not follow createRequire, so the bundle never contains tsx.
 /** @type {typeof import('../packages/operator-core/lib/memory/bench/measurement-manifest.ts').bindNativeLoaderClosure} */
 const bindNativeLoaderClosure = (...args) => {
   // @ts-ignore -- bundle-host defines this marker; plain Node takes the scoped loader.
   const nativeLoader = typeof __PAPERCUSP_BUNDLED_SIDECAR__ !== 'undefined'
     ? require('../packages/operator-core/lib/memory/bench/measurement-manifest.ts')
-    : tsxRequire('../packages/operator-core/lib/memory/bench/measurement-manifest.ts', import.meta.url);
+    : createRequire(import.meta.url)('tsx/cjs/api').require('../packages/operator-core/lib/memory/bench/measurement-manifest.ts', import.meta.url);
   return nativeLoader.bindNativeLoaderClosure(...args);
 };
 
