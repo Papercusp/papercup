@@ -72,7 +72,7 @@ import {
   releasesPageUrl,
   sourceYear,
 } from '../../../scripts/source-preview.mjs';
-import { BG_INPUTS, DROPPED, INTERNAL_DOC_CONTENTS, SHIPPED, childEnv, git, makeBgCandidate, makeBgCompilerCandidate, makeSuperproject, write, type Superproject } from './source-preview.fixture';
+import { BG_INPUTS, DROPPED, INTERNAL_DOC_CONTENTS, SHIPPED, childEnv, copyVerifierGenerationSupport, git, makeBgCandidate, makeBgCompilerCandidate, makeSuperproject, write, type Superproject } from './source-preview.fixture';
 import { assertCommittedWorkspaceLockMatches } from '../../../scripts/lint-as-committed.mjs';
 import { BG_R1_CASE_REGISTRY, BG_R1_SOURCE_CASES, BG_R1_MEMBER_CASES, BG_R1_PARENT_SELECTORS, BG_R1_PARTITION_CASES } from './source-preview.fixture';
 import r1Manifest from './source-preview.r1-cases.fixture.json';
@@ -325,10 +325,7 @@ describe('immutable generation verifier snapshots', () => {
       // relative support files beside the separately frozen helper.
       cpSync(join(SOURCE_ROOT, 'apps/operator/bin/release'), join(root, 'apps/operator/bin/release'),
         { recursive: true });
-      const cliEntryPath = 'packages/operator-core/lib/util/cli-entry.ts';
-      write(root, cliEntryPath, readFileSync(join(SOURCE_ROOT, cliEntryPath), 'utf8'));
-      const sourceVerifierPath = 'libs/test-config/src/verifier-source.ts';
-      write(root, sourceVerifierPath, readFileSync(join(SOURCE_ROOT, sourceVerifierPath), 'utf8'));
+      copyVerifierGenerationSupport(root);
       git(root, ['init', '-q']);
       git(root, ['add', '.']);
       git(root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'current generation tooling']);
@@ -367,8 +364,7 @@ describe('immutable generation verifier snapshots', () => {
         write(dest, '.verifier-source.json', JSON.stringify({ files: [{ path: 'packages/cli/package.json' }] }));
         for (const tree of [donor, dest]) {
           cpSync(join(root, 'apps/operator/bin/release'), join(tree, 'apps/operator/bin/release'), { recursive: true });
-          write(tree, cliEntryPath, readFileSync(join(root, cliEntryPath), 'utf8'));
-          write(tree, sourceVerifierPath, readFileSync(join(root, sourceVerifierPath), 'utf8'));
+          copyVerifierGenerationSupport(tree, root);
           write(tree, '.gitignore', 'node_modules/\ndist/\n.verifier-source.json\n');
           write(tree, 'scripts/npm-install-safe.mjs', 'process.stderr.write("DONOR_READ_FORBIDDEN");process.exit(91);');
           git(tree, ['init', '-q']);
@@ -464,10 +460,14 @@ describe('immutable generation verifier snapshots', () => {
             await expect(bindFrozenDependencyGeneration(dest, sourceCommit)).rejects.toThrow(/invalid publication token/);
             await expect(binding.assertUnchanged()).rejects.toThrow(/provenance/);
             writeFileSync(publication, publicationBytes);
+            await expect(bindFrozenDependencyGeneration(dest, sourceCommit))
+              .resolves.toMatchObject({ identity: binding.identity });
             const lock = join(dest, 'package-lock.json');
             const lockBytes = readFileSync(lock, 'utf8');
             writeFileSync(lock, '{}');
-            await expect(bindFrozenDependencyGeneration(dest, sourceCommit)).rejects.toThrow(/committed dependency input changed|stale-build-input:package-lock.json/);
+            // The whole-source census can reject lock drift before the
+            // binding's narrower committed-input check runs.
+            await expect(bindFrozenDependencyGeneration(dest, sourceCommit)).rejects.toThrow(/committed dependency input changed|stale-build-input:package-lock.json|selected-source-population-mismatch:packages\/cli\/dist/);
             await expect(binding.assertUnchanged()).rejects.toThrow(/committed dependency input changed/);
             writeFileSync(lock, lockBytes);
             const nested = join(dest, 'packages/cli/node_modules/nested/package.json');

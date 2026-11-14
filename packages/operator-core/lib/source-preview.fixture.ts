@@ -180,6 +180,14 @@ export function write(root: string, rel: string, body: string): void {
   writeFileSync(p, body);
 }
 
+/** Freeze the portable import closure used by the dependency-generation verifier. */
+export function copyVerifierGenerationSupport(root: string, sourceRoot = SOURCE_ROOT): void {
+  for (const path of ['packages/operator-core/lib/util/cli-entry.ts',
+    'libs/test-config/src/verifier-source.ts', 'libs/test-config/src/tracked-files.mjs',
+    'libs/test-config/src/git-index-fault-core.mjs'])
+    write(root, path, readFileSync(join(sourceRoot, path), 'utf8'));
+}
+
 /** Eligible runtime docs must survive both public and installer selection (D-009/D-012). */
 export const INTERNAL_DOC_CONTENTS = {
   'apps/operator/public/internal/docs/runtime-guide.md': '# Runtime guide\nBuilt-in agent documentation.\n',
@@ -351,8 +359,7 @@ export async function makeBgCompilerCandidate(base: string, {
   if (frozenGeneration) {
     cpSync(join(SOURCE_ROOT, 'apps/operator/bin/release'), join(c.fixture.repo, 'apps/operator/bin/release'),
       { recursive: true });
-    for (const path of ['packages/operator-core/lib/util/cli-entry.ts', 'libs/test-config/src/verifier-source.ts'])
-      write(c.fixture.repo, path, readFileSync(join(SOURCE_ROOT, path), 'utf8'));
+    copyVerifierGenerationSupport(c.fixture.repo);
   }
   if (cliHarness) {
     write(c.fixture.repo, 'scripts/source-preview.mjs',
