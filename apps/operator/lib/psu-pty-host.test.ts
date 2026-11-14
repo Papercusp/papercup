@@ -585,6 +585,7 @@ const {
   LOOP_FIRE_PROVENANCE_RENEWAL_MAX_AGE_MS,
   isCarryRespawnStale,
   isCarryRespawnSuperseded,
+  buildSupersededCarryRespawnDiagnostic,
   checkWakeProvenanceAge,
   shouldDeferWakeForPendingRespawn,
   ACTIVITY_PERSIST_MS,
@@ -1622,6 +1623,71 @@ describe('isCarryRespawnSuperseded (EI-18665672258948707 — a later respawn alr
     const lastRespawnAtMs = now - 1_000; // a respawn fired 1s ago, after this message arrived
     expect(isCarryRespawnStale(receivedAtMs, { maxAgeMs: 1_800_000, now })).toBe(false);
     expect(isCarryRespawnSuperseded(receivedAtMs, lastRespawnAtMs)).toBe(true);
+  });
+});
+
+describe('buildSupersededCarryRespawnDiagnostic (EI-28096374226247305)', () => {
+  it('suppresses the terminal warning only when the identified replacement has a native-turn-start receipt', () => {
+    const deliveryDedup = makeDeliveryDedup();
+    deliveryDedup.markNativeTurnStarted('replacement-delivery');
+    const result = buildSupersededCarryRespawnDiagnostic({
+      ownerId: 'owner-1',
+      deliveryId: 'old-delivery',
+      supersededByDeliveryId: 'replacement-delivery',
+      turnStartVerified: deliveryDedup.hasDurableNativeTurnStart('replacement-delivery'),
+      receivedAtMs: 100,
+      lastRespawnAtMs: 200,
+      ageMs: 100,
+    });
+
+    expect(result).toEqual({
+      event: {
+        deliveryId: 'old-delivery',
+        supersededByDeliveryId: 'replacement-delivery',
+        supersedingTurnStartVerified: true,
+        receivedAtMs: 100,
+        lastRespawnAtMs: 200,
+        ageMs: 100,
+      },
+      terminalDiagnostic: null,
+    });
+  });
+
+  it('keeps an explicit diagnostic when delivery completed without a durable native-turn-start receipt', () => {
+    const deliveryDedup = makeDeliveryDedup();
+    deliveryDedup.markCompleted('replacement-delivery');
+    expect(deliveryDedup.state('replacement-delivery')).toBe('completed');
+    expect(deliveryDedup.hasDurableNativeTurnStart('replacement-delivery')).toBe(false);
+    const result = buildSupersededCarryRespawnDiagnostic({
+      ownerId: 'owner-1',
+      deliveryId: 'old-delivery',
+      supersededByDeliveryId: 'replacement-delivery',
+      turnStartVerified: deliveryDedup.hasDurableNativeTurnStart('replacement-delivery'),
+      receivedAtMs: 100,
+      lastRespawnAtMs: 200,
+      ageMs: 100,
+    });
+
+    expect(result.event).toMatchObject({
+      deliveryId: 'old-delivery',
+      supersededByDeliveryId: 'replacement-delivery',
+      supersedingTurnStartVerified: false,
+    });
+    expect(result.terminalDiagnostic).toContain('old-delivery');
+    expect(result.terminalDiagnostic).toContain('replacement-delivery');
+    expect(result.terminalDiagnostic).toContain('replacement native turn start unverified');
+    expect(result.terminalDiagnostic).not.toContain('live successor');
+  });
+
+  it('does not suppress the diagnostic if the replacement delivery identity is missing', () => {
+    const result = buildSupersededCarryRespawnDiagnostic({
+      ownerId: 'owner-1',
+      deliveryId: 'old-delivery',
+      turnStartVerified: true,
+    });
+
+    expect(result.event.supersedingTurnStartVerified).toBe(false);
+    expect(result.terminalDiagnostic).toContain('superseded by delivery unknown');
   });
 });
 

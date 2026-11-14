@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import { papercuspHome, papercuspPath } from '@papercusp/host-platform/home';
-import { composeOmpCapabilityTools } from '@papercusp/orchestrator/managed-capability-policy';
+import {
+  composeOmpCapabilityTools,
+  OMP_MANAGED_MCP_DISPATCHER,
+} from '@papercusp/orchestrator/managed-capability-policy';
 /**
  * psu-launcher.mjs — the `psu` command.
  *
@@ -2502,7 +2505,8 @@ export function roleLaunchArgs(
       promptFile,
       ...modelArgsFor("omp", model),
       ...ompTitleMitigationArgs(model),
-      ...composeOmpCapabilityTools([], { ...capabilityPolicy, surface: 'launch', audience: 'headless-agent' }),
+      ...composeOmpCapabilityTools([], { ...capabilityPolicy, surface: 'launch', audience: 'headless-agent',
+        ompManagedMcpDispatcher: OMP_MANAGED_MCP_DISPATCHER }),
     ];
     if (coordExtPath) args.push("-e", coordExtPath);
     // omp-context-injection-parity-2026-08-09 P-003: turn-start + mid-turn
@@ -2651,7 +2655,8 @@ export function suLaunchArgs(
       // provider-backed title request that lost a real tracked session while the
       // pool was throttled. Held by the suLaunchArgs > omp argv regression tests.
       ...ompTitleMitigationArgs(),
-      ...composeOmpCapabilityTools([], { ...capabilityPolicy, surface: 'launch', audience: 'interactive-su' }),
+      ...composeOmpCapabilityTools([], { ...capabilityPolicy, surface: 'launch', audience: 'interactive-su',
+        ompManagedMcpDispatcher: OMP_MANAGED_MCP_DISPATCHER }),
     ];
     if (coordExtPath) args.push("-e", coordExtPath);
     args.push(...nativeOmpExtensionArgs("omp"));
@@ -3335,6 +3340,7 @@ export function resumeArgsFor(
     return { bin: "omp", args: composeOmpCapabilityTools(args, {
       ...capabilityPolicy, surface: 'resume',
       audience: !session.role || launchesOnSuTier(session.role) ? 'interactive-su' : 'headless-agent',
+      ompManagedMcpDispatcher: OMP_MANAGED_MCP_DISPATCHER,
     }) };
   }
   if (session.agent === "codex") {

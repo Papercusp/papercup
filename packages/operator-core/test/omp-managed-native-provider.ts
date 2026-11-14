@@ -10,23 +10,26 @@ export default function(pi) {
   let turn = 0;
   let control = 0;
   let readiness;
+  const expectedDispatcher = process.env.OMP_PROOF_MCP_DISPATCHER;
   // OMP discovers uncached MCP servers in the background. Synchronize with
-  // its actual model-visible registry before emitting an immediate fixture
+  // its exact model-visible dispatcher before emitting an immediate fixture
   // turn; a guessed name or a fixed inference delay cannot prove readiness.
   pi.on('before_agent_start', async () => {
+    if (!expectedDispatcher) throw new Error('OMP proof did not declare its expected MCP dispatcher');
     const startedAt = Date.now();
     phase('before-agent-start');
     for (;;) {
       const names = pi.getActiveTools();
-      const dispatcher = names.find(name => /mcp.*tools_invoke$/.test(name));
+      const dispatcher = names.find(name => name === expectedDispatcher);
       if (dispatcher) {
         readiness = { names, dispatcher, elapsedMs: Date.now() - startedAt };
         phase('mcp-ready', readiness);
         return;
       }
       if (Date.now() - startedAt >= 10000) {
-        phase('mcp-readiness-timeout', { names });
-        throw new Error('OMP managed MCP registration did not become active: ' + JSON.stringify(names));
+        phase('mcp-readiness-timeout', { expectedDispatcher, names });
+        throw new Error('OMP managed MCP dispatcher did not become active: expected ' +
+          expectedDispatcher + '; actual ' + JSON.stringify(names));
       }
       await new Promise(resolve => setTimeout(resolve, 25));
     }
@@ -41,7 +44,7 @@ export default function(pi) {
       const surface = process.env.OMP_PROOF_SURFACE;
       const names = (context.tools ?? []).map(tool => tool.name);
       const reply = id => context.messages.find(row => row.role === 'toolResult' && row.toolCallId === id);
-      let dispatcher = names.find(name => /mcp.*tools_invoke$/.test(name));
+      let dispatcher = names.find(name => name === expectedDispatcher);
       let devicePath;
       let call;
       // Installed OMP may mount MCP tools as devices instead of advertising

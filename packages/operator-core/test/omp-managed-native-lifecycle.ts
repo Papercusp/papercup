@@ -6,7 +6,11 @@ import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { afterAll, expect } from 'vitest';
 import { createOmpNativeHomes } from './omp-native-home';
-import { composeOmpCapabilityTools, type CapabilityPolicyRequest } from '@papercusp/orchestrator/managed-capability-policy';
+import {
+  composeOmpCapabilityTools,
+  OMP_MANAGED_MCP_DISPATCHER,
+  type CapabilityPolicyRequest,
+} from '@papercusp/orchestrator/managed-capability-policy';
 import { invoke } from '@papercusp/orchestrator';
 import { resumeArgsFor, roleLaunchArgs, suLaunchArgs } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import { resumeCommandFor } from '../lib/events/await/wake-executor';
@@ -21,6 +25,7 @@ const nativeHomes = createOmpNativeHomes();
 afterAll(() => nativeHomes.dispose());
 export const admitted: CapabilityPolicyRequest = {
   client: 'omp', surface: 'launch', clientVersions: { omp: '18.0.3' }, ompNativeTools: nativeTools,
+  ompManagedMcpDispatcher: OMP_MANAGED_MCP_DISPATCHER,
   readiness: [{ family: 'shell-ssh-interpreters', cutoverReady: true, openGapIds: [] }],
   cutoverStaging: { 'shell-ssh-interpreters': 'full' },
   adoption: [{ client: 'omp', family: 'shell-ssh-interpreters', managedPathProven: true,
@@ -49,12 +54,13 @@ export async function measureLifecycle(url: string, token: string, policy: Capab
   const tokenFile = join(home, 'mcp-token');
   writeFileSync(tokenFile, token, { mode: 0o600 });
   writeFileSync(join(home, '.mcp.json'), JSON.stringify({ mcpServers: {
-    papercusp: { type: 'stdio', command: process.execPath,
+    'papercusp-su': { type: 'stdio', command: process.execPath,
       args: [join(root, 'apps/operator/scripts/ptool.mjs'), 'tools:invoke', '--stdio',
         '--url', mcpUrl.href, '--token-file', tokenFile] },
   } }), { mode: 0o600 });
   const env = { PATH: process.env.PATH, LANG: process.env.LANG ?? 'C.UTF-8', HOME: home,
     XDG_CONFIG_HOME: join(home, '.config'), XDG_DATA_HOME: join(home, '.local', 'share'),
+    OMP_PROOF_MCP_DISPATCHER: OMP_MANAGED_MCP_DISPATCHER,
     PI_CODING_AGENT_DIR: home, PI_CONFIG_DIR: home, OMP_PROOF_RESULT: resultPath };
   const common = ['--mode', 'json', '--no-title', '--no-extensions', '--no-skills', '--no-rules',
     '--config', mcpConfig, '--extension', extension, '--model', 'surface-fixture/proof', '--thinking', 'off',

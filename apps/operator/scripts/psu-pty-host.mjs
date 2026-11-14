@@ -10796,6 +10796,61 @@ export function isCarryRespawnSuperseded(receivedAtMs, lastRespawnAtMs) {
   return lastRespawnAtMs > receivedAtMs;
 }
 
+/** EI-28096374226247305: distinguish an expected superseded carry from an
+ *  unverified replacement. A newer child timestamp alone does not prove its
+ *  continuation turn started. Keep both delivery identities in the durable
+ *  event, and emit a terminal warning only while that proof is absent.
+ * @param {{
+ *   ownerId: string;
+ *   deliveryId?: string | null;
+ *   supersededByDeliveryId?: string | null;
+ *   turnStartVerified?: boolean;
+ *   receivedAtMs?: number | null;
+ *   lastRespawnAtMs?: number | null;
+ *   ageMs?: number | null;
+ * }} input
+ * @returns {{
+ *   event: {
+ *     deliveryId: string | null;
+ *     supersededByDeliveryId: string | null;
+ *     supersedingTurnStartVerified: boolean;
+ *     receivedAtMs: number | null;
+ *     lastRespawnAtMs: number | null;
+ *     ageMs: number | null;
+ *   };
+ *   terminalDiagnostic: string | null;
+ * }} */
+export function buildSupersededCarryRespawnDiagnostic({
+  ownerId,
+  deliveryId,
+  supersededByDeliveryId,
+  turnStartVerified = false,
+  receivedAtMs = null,
+  lastRespawnAtMs = null,
+  ageMs = null,
+}) {
+  const replacementVerified = Boolean(supersededByDeliveryId) && turnStartVerified === true;
+  const event = {
+    deliveryId: deliveryId ?? null,
+    supersededByDeliveryId: supersededByDeliveryId ?? null,
+    supersedingTurnStartVerified: replacementVerified,
+    receivedAtMs: receivedAtMs ?? null,
+    lastRespawnAtMs: lastRespawnAtMs ?? null,
+    ageMs: ageMs ?? null,
+  };
+  if (replacementVerified) return { event, terminalDiagnostic: null };
+
+  return {
+    event,
+    terminalDiagnostic:
+      'psu-pty-host: SUPERSEDED carry-respawn DROPPED for ' + ownerId +
+      ' (delivery ' + (deliveryId ?? 'unknown') + '; superseded by delivery ' +
+      (supersededByDeliveryId ?? 'unknown') + ' at ' + (lastRespawnAtMs ?? 'unknown') +
+      '; replacement native turn start unverified) — old carry was not delivered; ' +
+      'do not assume a live continuation\n',
+  };
+}
+
 /** EI-18679681961154136 / EI-18681914950138372: should an incoming control
  *  message be DEFERRED because a carry-respawn is currently in flight for this
  *  host — either awaiting its FIRST delivery attempt's outcome, or a re-armed
@@ -16851,20 +16906,30 @@ export function hostThroughPty(o) {
           isCarryRespawnStale(msg.receivedAtMs, { maxAgeMs: carryRespawnMaxAgeMs });
         if (superseded || stale) {
           const ageMs = msg.receivedAtMs != null ? Date.now() - msg.receivedAtMs : null;
+          const supersession = superseded
+            ? buildSupersededCarryRespawnDiagnostic({
+                ownerId,
+                deliveryId: msg.deliveryId,
+                supersededByDeliveryId: lastRespawnCarryRequest?.deliveryId,
+                turnStartVerified: deliveryDedup.hasDurableNativeTurnStart(
+                  lastRespawnCarryRequest?.deliveryId,
+                ),
+                receivedAtMs: msg.receivedAtMs,
+                lastRespawnAtMs,
+                ageMs,
+              })
+            : null;
           const dropExtra = superseded
-            ? { mode: 'carry-respawn', reason: 'superseded', ageMs, lastRespawnAtMs }
+            ? { mode: 'carry-respawn', reason: 'superseded', ...supersession.event }
             : { mode: 'carry-respawn', reason: 'carry-stale', ageMs, maxAgeMs: carryRespawnMaxAgeMs };
           appendHostEvent(ownerId, 'respawn-carry-dropped', dropExtra);
           appendSharedDrillLedgerEvent(ownerId, 'respawn-carry-dropped', dropExtra);
           try {
-            writeTerminalDiagnostic(
-              superseded
-                ? `psu-pty-host: SUPERSEDED carry-respawn DROPPED for ${ownerId} ` +
-                    `(a later respawn already fired at ${lastRespawnAtMs}, this message arrived ` +
-                    `${msg.receivedAtMs}) — never delivered, would have discarded a live successor\n`
-                : `psu-pty-host: STALE carry-respawn DROPPED for ${ownerId} ` +
-                    `(age ${ageMs}ms > ${carryRespawnMaxAgeMs}ms cap) — never delivered\n`,
-            );
+            const terminalDiagnostic = superseded
+              ? supersession.terminalDiagnostic
+              : `psu-pty-host: STALE carry-respawn DROPPED for ${ownerId} ` +
+                  `(age ${ageMs}ms > ${carryRespawnMaxAgeMs}ms cap) — never delivered\n`;
+            if (terminalDiagnostic) writeTerminalDiagnostic(terminalDiagnostic);
           } catch {
             /* diagnostic only */
           }
