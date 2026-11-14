@@ -128,13 +128,39 @@ export function readPartialNativeCompletion(file: any, expected: any, options?: 
         firstAttemptVerdict: any;
         observedCount: number;
         proof: {
-            recordedSha: any;
-            runContext: any;
+            population?: import("../../libs/test-config/src/execution-details.ts").RecordedTestPopulation | undefined;
+            producingRun?: {
+                physicalCustody?: {
+                    rootPid: any;
+                    reporterPid: any;
+                    reporterProcessIdentity: any;
+                    observerPid: any;
+                    childPid: any;
+                    childIdentity: any;
+                    startedAtMs: any;
+                    closedAtMs: any;
+                    terminal: boolean;
+                } | undefined;
+                qualificationAttemptId: any;
+                runGroupId: any;
+                completionId: any;
+                selectedManifestHash: any;
+            } | undefined;
             runnerIdentity: any;
             executedModules: any;
             inputsCaptured: any;
             readPaths: any;
             opaqueReasons: any[];
+            sourceBytes?: import("../../libs/test-config/src/execution-details.ts").RecordedSourceBytes | undefined;
+            sourceSubmodules?: import("../../libs/test-config/src/execution-details.ts").RecordedSourceSubmodules | undefined;
+            workerTestConfiguration?: import("@papercusp/test-config/configuration-snapshot").RecordedWorkerTestConfiguration | undefined;
+            workerDatabaseReset?: import("../../libs/test-config/src/execution-details.ts").RecordedWorkerDatabaseReset | undefined;
+            workerExecution?: import("../../libs/test-config/src/execution-details.ts").RecordedWorkerExecution | undefined;
+            workerCompilerInputs?: import("../../libs/test-config/src/execution-details.ts").RecordedWorkerCompilerInputs | undefined;
+            workerRuntime?: import("../../libs/test-config/src/execution-details.ts").RecordedWorkerRuntime | undefined;
+            proofContext?: import("@papercusp/test-config/configuration-snapshot").ProofContextIdentity | undefined;
+            recordedSha: any;
+            runContext: any;
         };
     }[];
     currentEvidence: Readonly<{

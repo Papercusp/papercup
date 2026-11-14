@@ -3850,6 +3850,11 @@ export function listProcPids({ readdir }?: {
 }): number[];
 /** Consume only an exact, bounded pre-admission reservation; never mint liveness. */
 export function consumeGovernedResumeReservation(env: any, session: any, nowMs?: number): any;
+/** Only the validated managed launch may supply pre-admission custody. A
+ * legacy one-hop environment hint can survive in an interactive shell long
+ * after its lease, or belong to a different agent launched from that shell.
+ * Discard it; ordinary resumes still acquire their own atomic admission. */
+export function governedResumeReservationForLaunch(managedAssume: any, env: any, session: any, nowMs?: number): any;
 export function normalizeResumeLocalLivenessEvidence(value: any): any;
 /**
  * Build the positive witness for an exact Codex resume only when both local

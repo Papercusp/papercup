@@ -13,10 +13,13 @@
  * and delivers per delivery_mode (full | digest | mention — D-006). Tables not in
  * the registry (claims, presence, usage, …) are a no-op.
  *
- * AT-LEAST-ONCE: the drain re-runs a row whose processing failed before it was
- * marked drained, so delivery is idempotent — each notify has a DETERMINISTIC
- * msg_id (`fan-<outbox_id>-<subscriber>`) inserted ON CONFLICT DO NOTHING against
- * the partial unique index (migration 126), so a redrain is a no-op not a dup.
+ * AT-LEAST-ONCE: a failed or timed-out fan-out does NOT hold the row back from
+ * draining (federation must keep moving). The drain persists the failure as the
+ * row's own fan-out retry state (P-003, migration 1632) and `retryPendingFanouts`
+ * re-runs it with backoff, so the same row can fan out more than once. Delivery is
+ * therefore idempotent — each notify has a DETERMINISTIC msg_id
+ * (`fan-<outbox_id>-<subscriber>`) inserted ON CONFLICT DO NOTHING against the
+ * partial unique index (migration 126), so a retry is a no-op, not a duplicate.
  *
  * Federation registration of NEW objects (plans, conversations, engineer-issues)
  * is the companion plans' job (op-keys + a projection module). This file only
@@ -230,9 +233,11 @@ export async function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): P
 }
 
 /**
- * The production fan-out consumer the drain calls per outbox row. Best-effort at
- * the drain level is NOT used: errors propagate so the drain's at-least-once
- * retry re-runs (idempotent insert makes that safe). Returns count delivered.
+ * The production fan-out consumer the drain calls per outbox row (and that
+ * `retryPendingFanouts` re-calls for a row whose fan-out failed). Errors are NOT
+ * swallowed here: they propagate so the drain can record the failure as fan-out
+ * retry state (P-003) for a later retry. The idempotent insert makes a retry safe.
+ * Returns count delivered.
  */
 export async function fanoutOutboxRow(outboxRow: OutboxFanoutRow): Promise<number> {
   const pg = getOrgPg().sql;
