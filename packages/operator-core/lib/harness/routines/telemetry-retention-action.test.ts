@@ -324,7 +324,7 @@ describe('system:telemetry-retention action', () => {
     expect(action).toBeTypeOf('function');
     await action!(ctx({}));
 
-    expect(pruneMock).toHaveBeenCalledTimes(5);
+    expect(pruneMock).toHaveBeenCalledTimes(6);
     expect(cleanupMock).toHaveBeenCalledWith({ workspaceId: 'ws-1' });
     expect(packageCacheRetentionMock).toHaveBeenCalledWith({
       dryRun: false,
@@ -361,6 +361,12 @@ describe('system:telemetry-retention action', () => {
     expect(pruneMock).toHaveBeenNthCalledWith(5, {
       categoryId: 'memory-recall-query-text',
       olderThanDays: 3,
+      dryRun: false,
+      workspaceId: 'ws-1',
+    });
+    expect(pruneMock).toHaveBeenNthCalledWith(6, {
+      categoryId: 'code-intel-research-trails',
+      olderThanDays: 7,
       dryRun: false,
       workspaceId: 'ws-1',
     });
