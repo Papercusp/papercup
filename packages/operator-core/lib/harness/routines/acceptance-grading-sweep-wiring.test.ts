@@ -89,9 +89,12 @@ describe('the sweep is actually wired in, not merely written', () => {
   });
 
   it('a re-seed does not clobber an operator pause', () => {
-    // The whole point of the ON CONFLICT block omitting `active`.
     const src = read(SEED_FILE);
-    expect(src).toContain('active intentionally NOT re-applied on conflict');
+    expect(src).toContain("from './seed-routine-main'");
+    expect(src).toContain('void runRoutineSeed({');
+    expect(src).not.toMatch(/\breplaceActive\s*:/);
+    expect(read(join(HERE, 'seed-routine-main.ts')))
+      .toContain('q.replaceActive ? sql`active = EXCLUDED.active,` : sql``');
   });
 });
 
@@ -219,7 +222,7 @@ describe('R4 at the wiring layer — the routine cannot reach a grading surface'
   // trade one silent bug for a louder one.
   it("counts the 'settled' skip as a dispatch SUCCESS, not a failure", () => {
     expect(read(ACTION_FILE)).toContain('await enqueueAcceptanceGradingDispatch(input)');
-    const okExpr = /if\s*\(\s*!\[([\s\S]*?)\]\.includes\(result\.state\)\)/.exec(read(DISPATCH_FILE))?.[1] ?? '';
+    const okExpr = /if\s*\(\s*!\[([^\[\]]*)\]\.includes\(result\.state\)\)/.exec(read(DISPATCH_FILE))?.[1] ?? '';
     // CALIBRATION FIRST: the three states that were always successes must be
     // found, so a failure on 'settled' below means "it is absent from the
     // allowlist" rather than "the matcher read nothing" — an empty match would

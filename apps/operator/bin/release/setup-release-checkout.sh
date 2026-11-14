@@ -2199,8 +2199,15 @@ if [ -d "$INTEGRATION_ROOT/$PUBLIC_ASSET_REL" ]; then
     else
       log "WARN could not provision gitignored runtime asset $_ignored_entry"
     fi
+  # --ignored=matching, never the traditional bare --ignored
+  # (WI-6554700010048840). Traditional mode folds a directory whose contents are
+  # ALL ignored into ONE entry. Once the generated docs mirror is untracked,
+  # internal/ holds nothing tracked, so it would surface as a single `internal`
+  # entry: the docs.old.* skip above never matches and the leftover is copied
+  # with it. matching mode lists each path at the granularity of the ignore
+  # pattern that matched it, so docs/ and docs.old.<pid>/ stay separate entries.
   done <<EOF
-$(git -C "$INTEGRATION_ROOT" status --porcelain --ignored -- "$PUBLIC_ASSET_REL" 2>/dev/null |
+$(git -C "$INTEGRATION_ROOT" status --porcelain --ignored=matching -- "$PUBLIC_ASSET_REL" 2>/dev/null |
     sed -n 's|^!! ||p' | sed 's|/$||')
 EOF
   rm -rf -- "$PROVISION_STAGE_DIR"

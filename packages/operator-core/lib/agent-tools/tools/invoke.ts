@@ -268,7 +268,7 @@ export function summarizeNestedToolOutcome(result: {
 
 export default defineTool({
   name: 'tools:invoke',
-  expose: { mcp: { streaming: true } },
+  expose: { mcp: { name: 'tools:invoke', streaming: true } },
   // The MCP host races nested dispatch against the target's effective MCP
   // deadline; the projected dispatcher also owns the target's timeout signal.
   // Keep this wrapper outside the longest known target MCP deadline. scorecards:emit

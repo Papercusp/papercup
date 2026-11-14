@@ -17,6 +17,7 @@ import {
   type RadiusQuery,
   type ComposedProofShadowRecord,
   advanceComposedProofCohort,
+  nextStoredRatchetShadow,
   parseComposedProofCohort,
 } from './ratchet-shadow';
 import type { CandidateCommit } from './new-red-ejection';
@@ -398,5 +399,26 @@ describe('composed-proof cohort (R15-INSTRUMENT-ROTATION)', () => {
       expect(advanceComposedProofCohort(forged, run(3)).qualifiedRuns).toBe(1);
       expect(parseRatchetShadowHealth({ composedProofCohort: forged })).toBeUndefined();
     }
+  });
+  it('the stored-health writer carries the cohort across rounds and never takes one from the report', () => {
+    const first = nextStoredRatchetShadow(undefined, { composedProof: run(1) });
+    expect(first?.composedProofCohort).toMatchObject({ instrumentFingerprint: instrument.fingerprint, qualifiedRuns: 1 });
+    // The same candidate:repairHead adds no credit; a new lineage adds one.
+    expect(nextStoredRatchetShadow(first, { composedProof: run(1) })?.composedProofCohort?.qualifiedRuns).toBe(1);
+    const second = nextStoredRatchetShadow(first, { composedProof: run(2) });
+    expect(second?.composedProofCohort?.qualifiedRuns).toBe(2);
+    // An unreported round clears the round records and leaves the cohort unchanged.
+    expect(nextStoredRatchetShadow(second, undefined)).toEqual({ composedProofCohort: second?.composedProofCohort });
+    expect(nextStoredRatchetShadow(undefined, undefined)).toBeNull();
+    // A cohort inside the report is ignored: credit comes only from the stored value.
+    const claimed = { ...second?.composedProofCohort, qualifiedRuns: 2 };
+    expect(nextStoredRatchetShadow(undefined, { composedProofCohort: claimed })).toBeNull();
+    expect(nextStoredRatchetShadow(first, { composedProof: run(3), composedProofCohort: claimed })
+      ?.composedProofCohort?.qualifiedRuns).toBe(2);
+    // An unmeasured instrument holds no credit, and the next measured round starts from zero.
+    const lost = nextStoredRatchetShadow(second, { composedProof: run(5, { instrument: unmeasured }) });
+    expect(lost?.composedProofCohort).toEqual({
+      schemaVersion: 'shadow-cohort-v1', instrumentFingerprint: null, qualifiedRuns: 0, countedRuns: [] });
+    expect(nextStoredRatchetShadow(lost, { composedProof: run(6) })?.composedProofCohort?.qualifiedRuns).toBe(1);
   });
 });

@@ -2735,7 +2735,9 @@ describe('WI-6554700010018008: gate_health.verdictFlipQuarantine and gate_health
     await track(status, { verdictFlipQuarantine: vfq(), ratchetShadow: shadow });
     const written = lastGateHealthWrite();
     expect(written?.verdictFlipQuarantine).toEqual(vfq());
-    expect(written?.ratchetShadow).toEqual(shadow);
+    // R15-INSTRUMENT-ROTATION: this fixture has no measured instrument, so the cohort holds no credit.
+    expect(written?.ratchetShadow).toEqual({ ...shadow, composedProofCohort: {
+      schemaVersion: 'shadow-cohort-v1', instrumentFingerprint: null, qualifiedRuns: 0, countedRuns: [] } });
   });
 
   it('stores reconstructed and legacy comparisons as unqualified even when the marker claims eligibility', async () => {
@@ -2756,6 +2758,17 @@ describe('WI-6554700010018008: gate_health.verdictFlipQuarantine and gate_health
     const written = lastGateHealthWrite();
     expect(written?.verdictFlipQuarantine).toBeNull();
     expect(written?.ratchetShadow).toBeNull();
+  });
+
+  it('⭐ R15-INSTRUMENT-ROTATION: carries the STORED cohort through an unreported round and never stores a reported one', async () => {
+    const cohort = { schemaVersion: 'shadow-cohort-v1', instrumentFingerprint: 'a'.repeat(64), qualifiedRuns: 1,
+      countedRuns: ['1540f7f342c7:ff9f45a40f9d'] };
+    seededGh = { consecutiveReds: 0, lastGreenAt: Date.now(), ratchetShadow: { ...shadow, composedProofCohort: cohort } };
+    await track('advanced', {});
+    expect(lastGateHealthWrite()?.ratchetShadow).toEqual({ composedProofCohort: cohort });
+    seededGh = { consecutiveReds: 0, lastGreenAt: Date.now() };
+    await track('advanced', { ratchetShadow: { newRedEjection: shadow.newRedEjection, composedProofCohort: cohort } });
+    expect(lastGateHealthWrite()?.ratchetShadow).toEqual({ newRedEjection: shadow.newRedEjection });
   });
 
   it('drops malformed values instead of storing them', async () => {
