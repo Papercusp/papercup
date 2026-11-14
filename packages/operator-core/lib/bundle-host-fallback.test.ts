@@ -591,12 +591,23 @@ describe('bundle-host.sh last-known-good fallback', () => {
       .filter((line) => line.length > 0);
   })();
   const GOOD_WORKER = 'export const lastKnownGoodWorker = true;\n';
+  // EI-28788209478703535: testing-core.worker.mjs is the one HOST_WORKER_OUTPUTS entry
+  // that is NOT last-known-good material. bundle-host.sh prepares it at the
+  // host-testing-core step BEFORE the entry compiles, and the entry bakes that
+  // generation's witness define; bundle_host_workers only re-verifies the same
+  // generation (its receipt short-circuit). An older testing core beside the fresh
+  // entry would contradict the baked witness, so a worker failure AFTER a good entry
+  // must leave it fresh. Since 3dcc6d094b listed it here, asserting it stayed
+  // GOOD_WORKER was a stale expectation, not an LKG regression.
+  const ENTRY_COUPLED_WORKERS = ['testing-core.worker.mjs'];
 
   it('derives the worker list from bundle-host-common.sh (positive control)', () => {
     // An unparseable array must fail HERE, not vacuously pass the cases below.
     expect(WORKER_OUTPUTS.length).toBeGreaterThanOrEqual(5);
     expect(WORKER_OUTPUTS).toContain('snapshot-fold.worker.mjs');
     expect(WORKER_OUTPUTS).toContain('event-loop-sentinel.worker.mjs');
+    // The exemption below must name a real output, or it silently exempts nothing.
+    expect(WORKER_OUTPUTS).toEqual(expect.arrayContaining(ENTRY_COUPLED_WORKERS));
     expect(WORKER_OUTPUTS.every((w) => /^[\w.-]+\.mjs$/.test(w))).toBe(true);
   });
 
@@ -628,7 +639,10 @@ describe('bundle-host.sh last-known-good fallback', () => {
 
       // THE POINT: the unit starts instead of crash-looping on a worker edit.
       expect(code, output).toBe(0);
-      expect(workersNotLastKnownGood(WORKER_OUTPUTS)).toEqual([]);
+      // Every worker stays last-known-good EXCEPT the entry-coupled testing core,
+      // which must be the fresh (present, rebuilt) generation the entry compiled against.
+      expect(workersNotLastKnownGood(WORKER_OUTPUTS)).toEqual(ENTRY_COUPLED_WORKERS);
+      expect(ENTRY_COUPLED_WORKERS.filter((worker) => !existsSync(join(dir, 'dist-host', worker)))).toEqual([]);
       // ...and the mixed dist-host (fresh entry, older worker) is loud, not silent.
       expect(output).toMatch(/FALLING BACK/);
       expect(output).toMatch(/STALE CODE/);
