@@ -232,7 +232,9 @@ export function classifyLoopNextWake(
   // Inbox fallback and cursor coalescing also settle without invoking a turn.
   // Reuse the dispatch-scoped proof clock so a later arm or owner turn cannot
   // turn those outcomes into a guaranteed continuation.
-  if (loop.lastWakeStatus === 'delivered' &&
+  // A measured execution for this fire remains a live continuation until it settles.
+  if (!currentExecutionInFlight &&
+      loop.lastWakeStatus === 'delivered' &&
       ['suppressed-redundant', 'coalesced', 'inbox'].includes(loop.lastWakeChannel ?? '')) {
     const wakeAtMs = loop.lastWakeAt == null ? Number.NaN : Date.parse(loop.lastWakeAt);
     // `delivered_at` is stamped when the delivery row settles and can be later than its

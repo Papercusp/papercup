@@ -16,6 +16,7 @@ vi.mock('@papercusp/db-org', async (original) => ({
 
 import { recordLoopTurnStart } from './loop-turn-start-stamp';
 import { getLoopStatus } from './loop';
+import { classifyLoopNextWake } from '../../agent-tools/loop/next-wake';
 import { reconcileLoopRoutines } from './reconcile-loop-routines';
 import { LOOP_TURN_START_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
@@ -411,6 +412,63 @@ describe('loop turn-start producer to reconciler, real Postgres', () => {
         FROM harness_shared.routines WHERE id = ${fixture.id}
     `;
     expect(routine?.parked).toBe(false);
+  });
+
+  it('keeps an inbox-delivered self-compaction fire guaranteed while its exact turn is in flight, real Postgres', async () => {
+    const now = Date.now();
+    const firedAt = new Date(now - 60_000);
+    const dispatchAt = new Date(firedAt.getTime() + 2_000);
+    const promptAt = new Date(firedAt.getTime() + 10_000);
+    const fixture = {
+      id: 'rt-self-inbox-in-flight',
+      owner: 'su-self-inbox-in-flight',
+      wakeCount: 19,
+    };
+    await insertLoopFixture({
+      ...fixture,
+      firedAt,
+      lastStatus: 'loop-delivered-wake-no-loop-turn',
+    });
+
+    const [awaitRow] = await sql<Array<{ id: number }>>`
+      INSERT INTO harness_shared.event_awaits (workspace_id, subscriber_id, event_key)
+      VALUES (${WS}, ${fixture.owner}, 'test:self-compaction-inbox-in-flight')
+      RETURNING id
+    `;
+    await sql`
+      INSERT INTO harness_shared.event_wake_deliveries
+        (workspace_id, await_id, subscriber_id, event_key, source, status, channel,
+         created_at, delivered_at, turn_proof, turn_started_at)
+      VALUES
+        (${WS}, ${awaitRow!.id}, ${fixture.owner}, 'test:self-compaction-inbox-in-flight',
+         ${'loop:' + fixture.id}, 'delivered', 'inbox', ${dispatchAt}, ${dispatchAt},
+         'awaiting', NULL)
+    `;
+
+    const stamped = await createPinnedSelfCompactionPrompt(
+      fixture.owner, fixture.id, fixture.wakeCount, 'Continue the in-flight loop work.',
+    );
+    expect(stamped.ledgerWritten).toBe(true);
+    const sessionId = 'session-' + fixture.id;
+    await sql`
+      INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug,
+         speaker, text, turn_origin, turn_origin_verdict, turn_origin_classifier_version)
+      VALUES
+        (${WS}, 'codex', ${sessionId}, 0, ${promptAt}, ${fixture.owner},
+         'papercusp', 'user', ${stamped.taggedText}, 'self-compaction', 'agent-injected', 1)
+    `;
+    expect(await recordLoopTurnStart({
+      owner: fixture.owner, workspaceId: WS, client: 'codex', prompt: stamped.taggedText,
+    })).toBe(true);
+
+    const status = await getLoopStatus(fixture.owner, { sql });
+    expect(status?.lastDeliveryOutcome).toBe('loop-delivered-wake-no-loop-turn');
+    expect(status?.lastWakeStatus).toBe('delivered');
+    expect(status?.lastWakeChannel).toBe('inbox');
+    expect(status?.lastLoopTurnAt).toBeNull();
+    expect(status?.currentExecutionInFlight).toBe(true);
+    expect(classifyLoopNextWake(status!)).toEqual({ guaranteed: true, reason: null });
   });
 
   it('does not let an older direct loop-fire turn repair a newer fire', async () => {
