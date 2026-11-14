@@ -665,13 +665,13 @@ export async function checkPlanExecutionGuard(input: PlanExecutionGuardInput,
           signal => deps.resolveGoal!(input.ownerId, input.workspaceId, input.observeTiming, signal),
           { fallback: null, timeoutMs: budgetMs, label: 'plan-execution-guard:goal-selector', warn: false },
         ));
-      if (bounded.reason === 'timeout') {
-        return {
-          code: 'plan_execution_not_ready',
-          blockers: ['plan_goal_resolution_timeout'],
-          reason: `Owner-goal selection exceeded the ${budgetMs}ms guard budget. This implementation write is refused fail-closed before the native pre-tool deadline; retry after goal reads respond within budget.`,
-        };
-      }
+      // A timed-out selection (bounded.degraded, reason 'timeout') is handled
+      // like any other degraded one: keep the full census below. Every unique
+      // binding must then pass checkPlan, which is at least as strict as any
+      // selected subset, so a slow goal read can no longer refuse a census
+      // whose plans are all executable (WI-6554700010049036). The pending
+      // goal read is still aborted at the budget, and the latency envelope
+      // (budget + per-binding checks) equals the existing degraded path.
       if (!bounded.degraded) resolution = bounded.value;
     }
     const bindings = resolution && resolution.diagnostics.length === 0
