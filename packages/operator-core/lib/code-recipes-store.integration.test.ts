@@ -198,6 +198,16 @@ describe('code_recipes store (real PG)', () => {
     });
     const before = await getRecipe(db.adminSql, initial.id);
     expect(before).toMatchObject({ runCount: 2, successCount: 2 });
+    const historicalRunBytes = async () => {
+      const rows = await db.adminSql<{ bytes: string }[]>`
+        SELECT row_to_json(history)::text AS bytes
+          FROM harness_shared.code_recipe_runs history
+         WHERE recipe_id = ${initial.id}
+         ORDER BY id`;
+      return rows.map(row => row.bytes);
+    };
+    const beforeRunBytes = await historicalRunBytes();
+    expect(beforeRunBytes).toHaveLength(2);
 
     const result = await reviseRecipeSource(db.adminSql, {
       id: initial.id,
@@ -232,11 +242,7 @@ describe('code_recipes store (real PG)', () => {
       successCount: 2,
     });
 
-    const runRows = await db.adminSql<{ count: string }[]>`
-      SELECT count(*)::text AS count
-        FROM harness_shared.code_recipe_runs
-       WHERE recipe_id = ${initial.id}`;
-    expect(parseInt(runRows[0].count, 10)).toBe(2);
+    expect(await historicalRunBytes()).toEqual(beforeRunBytes);
   });
 
   it('revises a runtime-input contract atomically with the source under the same compare-and-swap', async () => {
