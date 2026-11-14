@@ -9,6 +9,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path';
 import { transformSync } from 'esbuild';
 import { mockImplementationTyped } from '../testing/typed-mock';
 import { stripVitestAnsi } from '../../../../scripts/lib/vitest-summary.mjs';
+import { DbCallDeadlineError } from '@papercusp/db-org';
 import AdminTestRunsReporter, {
   appendTestRunReceipts,
   missingTestRunReceiptPaths,
@@ -4512,6 +4513,56 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     });
     expect(result.governedAdmissionError).not.toBe(true);
     expect(result.governedFinalizationError.cause).toBe(origin);
+    expect(result.actualDemand).toBeDefined();
+  });
+
+  it('retains failed assertion evidence when bounded admin-pool acquisition times out during finalization', async () => {
+    const origin = new DbCallDeadlineError(
+      'boundedOrgTxn:begin(admin)', 45_000, 45_004, 'org-admin-governed-process',
+    );
+    const child = Object.assign(new EventEmitter(), {
+      pid: 424243,
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+    });
+    const spawnImpl = vi.fn(() => child);
+    const governedProcessImpl = vi.fn(async (_options: unknown, run: Function) => {
+      await run(undefined, undefined, { inherited: true });
+      throw origin;
+    });
+    const promise = runCapturedTestProcess('vitest', ['run', 'a.test.ts'], {
+      cwd: REPO_ROOT,
+      files: ['a.test.ts'],
+      spawnImpl,
+      governedProcessImpl,
+      systemdRunPath: null,
+      setsidPath: null,
+      onProgress: vi.fn(),
+    });
+    child.stdout.write(' FAIL  a.test.ts > persisted mutation assertion\n');
+    child.stderr.write('AssertionError: expected persisted value to equal 4\n');
+    child.emit('close', 1, null);
+    const result = await promise;
+
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+    expect(governedProcessImpl).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      status: 1,
+      signal: null,
+      stdout: ' FAIL  a.test.ts > persisted mutation assertion\n',
+      stderr: 'AssertionError: expected persisted value to equal 4\n',
+      error: null,
+      timedOut: false,
+    });
+    expect(result.governedAdmissionError).not.toBe(true);
+    expect(result.governedFinalizationError.cause).toBeInstanceOf(DbCallDeadlineError);
+    expect(result.governedFinalizationError.cause).toBe(origin);
+    expect(origin).toMatchObject({
+      label: 'boundedOrgTxn:begin(admin)',
+      deadlineMs: 45_000,
+      elapsedMs: 45_004,
+      pool: 'org-admin-governed-process',
+    });
     expect(result.actualDemand).toBeDefined();
   });
 
