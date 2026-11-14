@@ -26,6 +26,15 @@ vi.mock('../card-link', () => ({
   commitLinkedConverseCard: vi.fn(async () => {}),
   unblockLinkedCard: vi.fn(),
 }));
+// This handler unit test keeps its log in memory; event-wake persistence is an
+// external collaborator, not part of the resolution/card-unblock contract.
+vi.mock('../../../interest-auto-arm', () => ({
+  reconcileInterestEventAwaits: vi.fn(async () => undefined),
+  retireInterestEventAwaits: vi.fn(async () => undefined),
+}));
+vi.mock('../../../events/await/engine', () => ({
+  emitAwaitedEvent: vi.fn(async () => undefined),
+}));
 
 import resolveTool from '../tools/resolve';
 import { unblockLinkedCard } from '../card-link';

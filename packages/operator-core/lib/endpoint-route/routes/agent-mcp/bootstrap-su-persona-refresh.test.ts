@@ -12,8 +12,8 @@
  *  - it must FAIL SOFT on absolutely everything (a refresh that 500s or throws
  *    would cost the session its respawn, which is far worse than a stale prompt).
  *
- * Mirrors bootstrap-su-session-respawned.test.ts's minimal mock set + beforeAll
- * import (EI-9784: pay bootstrap-su's heavy first import exactly once).
+ * Keep route loading in collection so instrumented cold imports are paid once,
+ * outside the functional setup hook and handler deadlines.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -96,13 +96,16 @@ vi.mock('./bootstrap-su', () => {
   throw new Error('persona refresh must not load the bootstrap launch graph');
 });
 
-let routes: { method: string; path: string; handler: (req: Request) => Promise<Response> }[];
+import personaRefreshRoutes from './bootstrap-su-persona-refresh';
+import { getIdentitySource, resolveNamedIdentityCompositionSelection } from '../../../agent-identities/source';
+
+const routes = personaRefreshRoutes as unknown as {
+  method: string; path: string; handler: (req: Request) => Promise<Response>;
+}[];
 let dir = '';
-beforeAll(async () => {
+beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'persona-refresh-'));
   process.env.PAPERCUSP_LAUNCH_CONTEXT_DIR = dir;
-  const mod = await import('./bootstrap-su-persona-refresh');
-  routes = mod.default as unknown as typeof routes;
 }, 30_000);
 
 const OWNER = 'su-0228816f-1d81-45fd-8832-71c771fecc99';
@@ -230,7 +233,6 @@ describe('POST bootstrap-su/persona-refresh — the happy path', () => {
   });
 
   it('keeps a named composition pin through refresh and refuses an edited component', async () => {
-    const { resolveNamedIdentityCompositionSelection } = await import('../../../agent-identities/source');
     const { recordSuLaunchSpec } = await import('../../../adv-sessions');
     const sourceDir = mkdtempSync(join(tmpdir(), 'refresh-named-composition-'));
     try {
@@ -283,7 +285,6 @@ describe('POST bootstrap-su/persona-refresh — the happy path', () => {
   });
 
   it('pins an inherited slot source even when its picker root revision is unchanged', async () => {
-    const { getIdentitySource } = await import('../../../agent-identities/source');
     const { recordSuLaunchSpec } = await import('../../../adv-sessions');
     const sourceDir = mkdtempSync(join(tmpdir(), 'refresh-inherited-slot-'));
     try {
