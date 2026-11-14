@@ -8,13 +8,13 @@ import { resolveNativePgBinDir } from '../../libs/test-config/src/dedicated-nati
 import { admitTaskDeadline } from '../lib/task-deadline.mjs';
 import { planPgRestoreResume } from './pg-restore-resume.mjs';
 
-const exec = promisify(execFile);
 const reject = reason => { throw new Error(`retained_restore_refused: ${reason}`); };
 
 /** Reuse this attempt's stopped private PG and immutable archive; never initdb,
  * replay completed COPY, edit the old receipt, or remove retained evidence. */
 export async function resumeRetainedState({ root, env = process.env,
   countTables = ['harness_shared.agent_facts', 'harness_shared.documents'] }) {
+  const exec = promisify(execFile);
   root = resolve(root);
   if (await realpath(root) !== root) reject('redirected attempt root');
   const input = JSON.parse(await readFile(join(root, 'proof.json'), 'utf8'));

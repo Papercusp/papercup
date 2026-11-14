@@ -71,7 +71,7 @@ export const VITEST_TEST_FILE_SOURCE = String.raw`\S+\.(?:test|spec)\.[cm]?[jt]s
  * @returns {RegExp}
  */
 export function vitestSummaryFailRow(flags = '') {
-  return new RegExp(String.raw`^\s*❯\s+(${VITEST_TEST_FILE_SOURCE})\s+\([^)]*\bfailed\b[^)]*\)`, flags);
+  return new RegExp(String.raw`^\s*${String.fromCharCode(0x276f)}\s+(${VITEST_TEST_FILE_SOURCE})\s+\([^)]*\bfailed\b[^)]*\)`, flags);
 }
 
 /**

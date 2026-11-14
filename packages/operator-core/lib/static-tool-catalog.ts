@@ -377,6 +377,7 @@ function importedStringConstantBindings(
   repoRoot: string,
   packages: Parameters<typeof resolveGraphImport>[3],
   cache: Map<string, StringConstantBindings>,
+  readSourceFile: (file: string) => ts.SourceFile,
 ): StringConstantBindings {
   const imported: StringConstantBindings = { strings: new Map(), objects: new Map() };
   for (const statement of sourceFile.statements) {
@@ -385,7 +386,7 @@ function importedStringConstantBindings(
     if (!bindings || !ts.isNamedImports(bindings) || bindings.elements.length === 0) continue;
     const target = resolveGraphImport(statement.moduleSpecifier.text, file, repoRoot, packages);
     if (!target) continue;
-    const exported = exportedStringConstantBindings(target, repoRoot, packages, cache);
+    const exported = exportedStringConstantBindings(target, repoRoot, packages, cache, readSourceFile);
     for (const element of bindings.elements) {
       if (element.isTypeOnly) continue;
       const name = (element.propertyName ?? element.name).text;
@@ -409,19 +410,14 @@ function exportedStringConstantBindings(
   repoRoot: string,
   packages: Parameters<typeof resolveGraphImport>[3],
   cache: Map<string, StringConstantBindings>,
+  readSourceFile: (file: string) => ts.SourceFile,
 ): StringConstantBindings {
   const cached = cache.get(target);
   if (cached) return cached;
   const exported: StringConstantBindings = { strings: new Map(), objects: new Map() };
   // Seeded before the walk so a re-export cycle terminates instead of recursing.
   cache.set(target, exported);
-  const targetSource = ts.createSourceFile(
-    target,
-    readFileSync(target, 'utf8'),
-    ts.ScriptTarget.Latest,
-    true,
-    scriptKind(target),
-  );
+  const targetSource = readSourceFile(target);
   for (const [name, value] of sameFileStringConstants(targetSource, true)) exported.strings.set(name, value);
   for (const [name, entries] of stringObjectConstants(targetSource, true)) exported.objects.set(name, entries);
   for (const statement of targetSource.statements) {
@@ -435,7 +431,7 @@ function exportedStringConstantBindings(
     }
     const source = resolveGraphImport(statement.moduleSpecifier.text, target, repoRoot, packages);
     if (!source) continue;
-    const reexported = exportedStringConstantBindings(source, repoRoot, packages, cache);
+    const reexported = exportedStringConstantBindings(source, repoRoot, packages, cache, readSourceFile);
     const clause = statement.exportClause;
     if (!clause) {
       for (const [name, entries] of reexported.objects) {
@@ -469,18 +465,22 @@ function buildToolSourceSnapshot(repoRootInput: string): ToolSourceSnapshot {
   const visited = new Set<string>();
   const fileIndex = new Map<string, string[]>();
   const constantCache = new Map<string, StringConstantBindings>();
+  // Imported identity resolution and graph traversal visit the same modules.
+  // Share their immutable ASTs within this build instead of reading/parsing twice.
+  const sourceFiles = new Map<string, ts.SourceFile>();
+  const readSourceFile = (file: string): ts.SourceFile => {
+    const cachedSource = sourceFiles.get(file);
+    if (cachedSource) return cachedSource;
+    const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true, scriptKind(file));
+    sourceFiles.set(file, source);
+    return source;
+  };
   while (pending.length > 0) {
     const file = pending.pop()!;
     if (visited.has(file)) continue;
     visited.add(file);
-    const sourceFile = ts.createSourceFile(
-      file,
-      readFileSync(file, 'utf8'),
-      ts.ScriptTarget.Latest,
-      true,
-      scriptKind(file),
-    );
-    const imported = importedStringConstantBindings(sourceFile, file, repoRoot, packages, constantCache);
+    const sourceFile = readSourceFile(file);
+    const imported = importedStringConstantBindings(sourceFile, file, repoRoot, packages, constantCache, readSourceFile);
     for (const name of toolNamesIn(sourceFile, imported)) {
       const existing = fileIndex.get(name);
       if (existing) existing.push(file);
