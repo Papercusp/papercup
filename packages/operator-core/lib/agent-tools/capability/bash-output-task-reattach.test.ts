@@ -160,7 +160,7 @@ async function readWithActiveRunnerMarker(identity: Parameters<typeof identityRu
   process.env.PATH = `${fakeBin}:${previousPath ?? ''}`;
   try {
     const result = await bashOutput.handler({ task_id: LIVE_RUNNER_TASK_ID }, ctx('ws-current', stateDir));
-    return { result, payload: JSON.parse(result.content[0]!.text) as Record<string, unknown> };
+    return { result, logPath, payload: JSON.parse(result.content[0]!.text) as Record<string, unknown> };
   } finally {
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;
@@ -431,7 +431,7 @@ describe('capability:bash_output — durable task attachment', () => {
   });
 
   it('reconciles a failed runner JOB END while the exact systemd service is still active', async () => {
-    const { result, payload } = await readWithActiveRunnerMarker();
+    const { result, payload, logPath } = await readWithActiveRunnerMarker();
 
     expect(result.isError).toBe(true);
     expect(payload).toMatchObject({
@@ -455,6 +455,9 @@ describe('capability:bash_output — durable task attachment', () => {
       undefined,
       expect.objectContaining({ onTerminalPersisted: expect.any(Function) }),
     );
+    expect(store.closeTask.mock.calls[0]?.[1]).toMatchObject({
+      exitReason: expect.stringContaining(`read from ${logPath}`),
+    });
     expect(jobs.startBackground).not.toHaveBeenCalled();
   });
 
@@ -947,6 +950,9 @@ esac
         undefined,
         expect.objectContaining({ onTerminalPersisted: expect.any(Function) }),
       );
+      expect(store.closeTask.mock.calls[0]?.[1]).toMatchObject({
+        exitReason: expect.stringContaining(`read from ${logPath}`),
+      });
       expect(jobs.startBackground).not.toHaveBeenCalled();
     } finally {
       rmSync(stateDir, { recursive: true, force: true });

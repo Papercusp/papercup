@@ -774,7 +774,7 @@ function terminalBashTaskRecovery(
 }
 
 export interface StrandedJobLogInspection {
-  terminal: { status: RecoveredJobStatus; exitCode: number | null } | null;
+  terminal: ReturnType<typeof parseJobLogEndMarker>;
   /** A ledger-confirmed unobserved terminal marker appended by recovery. */
   died?: { status: 'failed'; state: string; exitCode: number | null };
   output: string;
@@ -1398,7 +1398,7 @@ export default defineTool({
             exitReason:
               `runner-log: identity-bound JOB END status=${marker.status} ` +
               `exit=${marker.exitCode ?? 'null'} scope=${marker.scopeUnit} ` +
-              `invocation=${marker.invocationId} read from ${strandedLog.logPath}`,
+              `invocation=${marker.invocationId} read from ${recoveredLogPath}`,
           });
           if (ledgerReconciled) {
             const markerOk = marker.status === 'completed';
@@ -1491,7 +1491,7 @@ export default defineTool({
                 exitCode: strandedLog.terminal.exitCode,
                 exitReason:
                   `runner-log: JOB END status=${strandedLog.terminal.status} ` +
-                  `exit=${strandedLog.terminal.exitCode ?? 'null'} read from ${strandedLog.logPath}`,
+                  `exit=${strandedLog.terminal.exitCode ?? 'null'} read from ${recoveredLogPath}`,
               })
             : false;
           return {

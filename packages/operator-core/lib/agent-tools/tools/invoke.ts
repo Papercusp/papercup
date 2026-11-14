@@ -317,7 +317,7 @@ export default defineTool({
   // its idempotency-replay store, and an annotation-keyed approval policy could
   // wave a shell command through (D-021). Per call it is the target's own effect.
   effect: 'write',
-  effectForCall(raw) {
+  effectForCall(raw: unknown) {
     const call = raw && typeof raw === 'object' ? raw as { name?: unknown; args?: unknown } : {};
     const name = typeof call.name === 'string' ? call.name.trim() : '';
     const target = name && name !== 'tools:invoke' ? resolveMcpName(name) : undefined;
