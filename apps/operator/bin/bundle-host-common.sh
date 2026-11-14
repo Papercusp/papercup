@@ -238,6 +238,17 @@ BUNDLE_HOST_TESTING_CORE_UNWITNESSED='unwitnessed:helper-not-committed'
 # The fallback is loud (WARN line + build-steps journal); it never lets an
 # unwitnessed testing core RUN, which is the property the witness protects.
 BUNDLE_HOST_TESTING_CORE_DEGRADED='unwitnessed:custody-refused'
+# EI-28774020156533677: bundle-host-fallback.test.ts drives the real bundle-host.sh
+# against the real repo root to exercise the HOST fallback contract, not the testing
+# core, yet the producing witness walks the whole input universe (node_modules
+# included) on every call: measured >=65s of a ~110s case. This opt-in builds the
+# worker UNWITNESSED instead, which is the fail-closed state (the bundled testing core
+# refuses to run), so it can never forge a witness. Both keys are required: VITEST
+# keeps a stray export of the opt-in from silently degrading a live host build.
+BUNDLE_HOST_TESTING_CORE_FIXTURE='unwitnessed:vitest-fixture'
+bundle_host_testing_core_fixture_opt_in() {
+  [[ -n "${VITEST:-}" && "${PAPERCUSP_BUNDLE_HOST_UNWITNESSED_TESTING_CORE:-}" == 1 ]]
+}
 BUNDLE_HOST_TESTING_CORE_WORKER_ARGS=()
 bundle_host_degrade_testing_core() { # <repo root> <reason>
   echo "WARN(EI-28752668992567658): $2; building testing-core.worker.mjs UNWITNESSED — the bundled testing core refuses to run until a witnessed rebuild succeeds." >&2
@@ -268,6 +279,14 @@ bundle_host_prepare_testing_core() { # <repo root> <out dir> [parent boundary ar
     --outfile="$out_dir/testing-core.worker.mjs" --metafile="$out_dir/testing-core.worker.mjs.meta.json"
   )
   BUNDLE_HOST_TESTING_CORE_WORKER_ARGS=("${worker_args[@]}")
+  if bundle_host_testing_core_fixture_opt_in; then
+    echo 'WARN(EI-28774020156533677): VITEST fixture opt-in; building testing-core.worker.mjs UNWITNESSED (the bundled testing core fails closed).' >&2
+    bundle_host_esbuild "$repo_root" "${worker_args[@]}" >&2 || return 1
+    BUNDLE_HOST_TESTING_CORE_WITNESS_DEFINE='--define:__PAPERCUSP_TESTING_CORE_WITNESS__=undefined'
+    BUNDLE_HOST_TESTING_CORE_RECEIPT="$receipt"
+    BUNDLE_HOST_TESTING_CORE_BINDING="$BUNDLE_HOST_TESTING_CORE_FIXTURE"
+    return 0
+  fi
   # WI-6554700010048115: COMMITTED_NODE refuses a helper with no committed
   # version, while this script itself runs from the working tree. Until the
   # witness helper is committed, compile the worker WITHOUT a producing witness
@@ -303,6 +322,10 @@ bundle_host_verify_testing_core() { # <repo root>
   fi
   if [[ "$BUNDLE_HOST_TESTING_CORE_BINDING" == "$BUNDLE_HOST_TESTING_CORE_DEGRADED" ]]; then
     echo 'WARN(EI-28752668992567658): testing-core witness verification skipped (worker already built unwitnessed).' >&2
+    return 0
+  fi
+  if [[ "$BUNDLE_HOST_TESTING_CORE_BINDING" == "$BUNDLE_HOST_TESTING_CORE_FIXTURE" ]]; then
+    echo 'WARN(EI-28774020156533677): testing-core witness verification skipped (VITEST fixture build).' >&2
     return 0
   fi
   local -a witness_node=("${COMMITTED_NODE[@]:-node}")

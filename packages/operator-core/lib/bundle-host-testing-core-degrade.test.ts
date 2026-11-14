@@ -75,8 +75,22 @@ describe('bundle-host testing-core witness refusal (EI-28752668992567658)', () =
     return repo;
   }
 
+  /** The child env: no inherited binding or fixture opt-in unless a case sets one;
+   * an `undefined` override REMOVES the key (e.g. VITEST, which vitest exports). */
+  function childEnv(overrides: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...process.env, BUNDLE_HOST_TESTING_CORE_RECEIPT: '',
+      BUNDLE_HOST_TESTING_CORE_BINDING: '', PAPERCUSP_BUNDLE_HOST_UNWITNESSED_TESTING_CORE: '' };
+    for (const [key, value] of Object.entries(overrides)) {
+      if (value === undefined) delete env[key];
+      else env[key] = value;
+    }
+    return env;
+  }
+
   /** Source the real functions, stub the compiler, run prepare (+ optionally verify). */
-  function drive(mode: WitnessMode, opts: { verify?: boolean; failUnwitnessedCompile?: boolean } = {}): Outcome {
+  function drive(mode: WitnessMode, opts: {
+    verify?: boolean; failUnwitnessedCompile?: boolean; env?: Record<string, string | undefined>;
+  } = {}): Outcome {
     const repo = fakeRepo(mode);
     const calls = join(work, 'compiles.log');
     writeFileSync(calls, '');
@@ -108,7 +122,7 @@ describe('bundle-host testing-core witness refusal (EI-28752668992567658)', () =
       timeout: 30_000,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, BUNDLE_HOST_TESTING_CORE_RECEIPT: '', BUNDLE_HOST_TESTING_CORE_BINDING: '' },
+      env: childEnv(opts.env),
     });
     const field = (key: string) => (out.match(new RegExp(`^${key}=(.*)$`, 'm'))?.[1] ?? '').trim();
     const verifyRc = field('VERIFY_RC');
@@ -160,5 +174,70 @@ describe('bundle-host testing-core witness refusal (EI-28752668992567658)', () =
     expect(r.prepareRc).not.toBe(0);
     expect(r.binding).not.toBe(DEGRADED);
     expect(r.compiles).toEqual(['witnessed', 'unwitnessed']);
+  });
+});
+
+describe('bundle-host testing-core VITEST fixture opt-in (EI-28774020156533677)', () => {
+  // Drives the same real functions as above, with its own throwaway repo.
+  let work: string;
+  beforeEach(() => { work = mkdtempSync(join(tmpdir(), 'bh-tc-fixture-')); });
+  afterEach(() => { rmSync(work, { recursive: true, force: true }); });
+
+  function run(env: Record<string, string | undefined>): { out: string; compiles: string[] } {
+    const repo = join(work, 'repo');
+    mkdirSync(join(repo, 'scripts/lib'), { recursive: true });
+    // A witness helper that would succeed if it were ever consulted: the opt-in
+    // must not consult it, and without the opt-in the witnessed path must run.
+    writeFileSync(join(repo, 'scripts/lib/testing-core-witness.mjs'),
+      `if (process.argv[2] === 'define') console.log(${JSON.stringify(WITNESSED_DEFINE)});\n`);
+    execFileSync('bash', ['-c', 'git init -q && git add -A && git -c user.email=t@example.invalid -c user.name=t '
+      + '-c commit.gpgsign=false -c core.hooksPath=/dev/null commit -qm fixture'], { cwd: repo, timeout: 10_000, stdio: 'pipe' });
+    const calls = join(work, 'compiles.log');
+    writeFileSync(calls, '');
+    const out = execFileSync('bash', ['-c', [
+      'source "$1" || exit 90',
+      'unset COMMITTED_NODE',
+      'TC_CALLS="$3"',
+      'bundle_host_esbuild() {',
+      '  if [[ -n "${BUNDLE_HOST_TESTING_CORE_PREPARE_RECEIPT:-}" ]]; then echo witnessed >> "$TC_CALLS"; echo "witnessed-binding"; return 0; fi',
+      '  echo unwitnessed >> "$TC_CALLS"',
+      '}',
+      'bundle_host_prepare_testing_core "$2" "$2/out"; prc=$?',
+      'bundle_host_verify_testing_core "$2"; vrc=$?',
+      'printf "PREPARE_RC=%s\\nVERIFY_RC=%s\\nBINDING=%s\\nDEFINE=%s\\n" "$prc" "$vrc" "${BUNDLE_HOST_TESTING_CORE_BINDING:-}" "${BUNDLE_HOST_TESTING_CORE_WITNESS_DEFINE:-}"',
+    ].join('\n'), 'tc-fixture', COMMON, repo, calls], {
+      timeout: 30_000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      env: (() => {
+        const e: NodeJS.ProcessEnv = { ...process.env, BUNDLE_HOST_TESTING_CORE_RECEIPT: '',
+          BUNDLE_HOST_TESTING_CORE_BINDING: '', PAPERCUSP_BUNDLE_HOST_UNWITNESSED_TESTING_CORE: '' };
+        for (const [k, v] of Object.entries(env)) { if (v === undefined) delete e[k]; else e[k] = v; }
+        return e;
+      })(),
+    });
+    return { out, compiles: readFileSync(calls, 'utf8').split('\n').filter(Boolean) };
+  }
+  const field = (out: string, key: string) => (out.match(new RegExp(`^${key}=(.*)$`, 'm'))?.[1] ?? '').trim();
+
+  it('under VITEST, the opt-in builds the worker UNWITNESSED, never consults the witness, and verify skips', () => {
+    const { out, compiles } = run({ VITEST: 'true', PAPERCUSP_BUNDLE_HOST_UNWITNESSED_TESTING_CORE: '1' });
+    expect(field(out, 'PREPARE_RC')).toBe('0');
+    expect(field(out, 'VERIFY_RC')).toBe('0');
+    expect(field(out, 'BINDING')).toBe('unwitnessed:vitest-fixture');
+    expect(field(out, 'DEFINE')).toBe(UNWITNESSED_DEFINE);
+    expect(compiles).toEqual(['unwitnessed']);
+  });
+
+  it('WITHOUT VITEST the opt-in is ignored: a live host build stays witnessed', () => {
+    const { out, compiles } = run({ VITEST: undefined, PAPERCUSP_BUNDLE_HOST_UNWITNESSED_TESTING_CORE: '1' });
+    expect(field(out, 'PREPARE_RC')).toBe('0');
+    expect(field(out, 'BINDING')).toBe('witnessed-binding');
+    expect(field(out, 'DEFINE')).toBe(WITNESSED_DEFINE);
+    expect(compiles).toEqual(['witnessed']);
+  });
+
+  it('under VITEST without the opt-in, the witnessed path still runs', () => {
+    const { out, compiles } = run({ VITEST: 'true' });
+    expect(field(out, 'BINDING')).toBe('witnessed-binding');
+    expect(compiles).toEqual(['witnessed']);
   });
 });

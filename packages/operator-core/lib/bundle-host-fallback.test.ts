@@ -92,6 +92,11 @@ function runBundler(entry: string, extraEnv?: Record<string, string>): { code: n
         PAPERCUSP_BUNDLE_ALLOW_STALE_START: '0',
         PAPERCUSP_MUTATION_PROBE_TMPDIR: dir,
         PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE: census,
+        // EI-28774020156533677: these cases exercise the HOST fallback contract. The
+        // testing-core producing witness walks the whole repo per call (>=65s of a ~110s
+        // case), so opt into the VITEST-only fail-closed UNWITNESSED worker build.
+        // bundle-host-testing-core-degrade.test.ts owns the witness/degrade contract.
+        PAPERCUSP_BUNDLE_HOST_UNWITNESSED_TESTING_CORE: '1',
         PATH: compilerPath,
         ...extraEnv,
       },
@@ -603,6 +608,17 @@ describe('bundle-host.sh last-known-good fallback', () => {
     return { entry, env: { PAPERCUSP_EMBED_WORKER_SCRIPT: join(dir, 'missing-embed-worker.script.mjs') } };
   }
 
+  // Names the workers that were NOT kept last-known-good. Comparing whole files with
+  // toBe(GOOD_WORKER) printed an entire generated bundle as the diff (a single
+  // failing run wrote a 105 MB log, EI-28774020156533677) and still never said
+  // WHICH worker was replaced; a name list is bounded and diagnostic.
+  function workersNotLastKnownGood(outputs: string[]): string[] {
+    return outputs.filter((worker) => {
+      const path = join(dir, 'dist-host', worker);
+      return !existsSync(path) || readFileSync(path, 'utf8') !== GOOD_WORKER;
+    });
+  }
+
   it(
     'lets a SUPERVISOR boot on last-known-good WORKERS when a worker fails to build',
     () => {
@@ -612,9 +628,7 @@ describe('bundle-host.sh last-known-good fallback', () => {
 
       // THE POINT: the unit starts instead of crash-looping on a worker edit.
       expect(code, output).toBe(0);
-      for (const worker of WORKER_OUTPUTS) {
-        expect(readFileSync(join(dir, 'dist-host', worker), 'utf8')).toBe(GOOD_WORKER);
-      }
+      expect(workersNotLastKnownGood(WORKER_OUTPUTS)).toEqual([]);
       // ...and the mixed dist-host (fresh entry, older worker) is loud, not silent.
       expect(output).toMatch(/FALLING BACK/);
       expect(output).toMatch(/STALE CODE/);
@@ -641,7 +655,7 @@ describe('bundle-host.sh last-known-good fallback', () => {
       // The fresh entry was published before the worker step, so dist-host is a
       // mix whatever the caller decides — the marker records that fact.
       expect(existsSync(marker)).toBe(true);
-      expect(readFileSync(join(dir, 'dist-host', WORKER_OUTPUTS[4]), 'utf8')).toBe(GOOD_WORKER);
+      expect(workersNotLastKnownGood([WORKER_OUTPUTS[4]])).toEqual([]);
     },
     260_000,
   );
