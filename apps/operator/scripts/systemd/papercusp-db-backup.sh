@@ -126,6 +126,11 @@ sudo -n install -d -o postgres -g "$BACKUP_GROUP" -m 0775 "$PGOUT" 2>/dev/null |
 # exact-owner cleanup, not a cluster-wide backup kill switch.
 readonly HOST_BACKUP_APPLICATION_NAME=pcbackup
 export PGAPPNAME="$HOST_BACKUP_APPLICATION_NAME"
+# PostgreSQL 18's shared AIO workers do not inherit client/backend ionice.
+# Bound read-ahead on backup connections themselves (host default measured 200)
+# without changing the database service or interactive sessions. Keep existing
+# caller options; the final values enforce this producer's low-impact policy.
+readonly BACKUP_PGOPTIONS="${PGOPTIONS:+$PGOPTIONS }-c effective_io_concurrency=1 -c maintenance_io_concurrency=1"
 
 # Throwaway schemas no restore needs, passed to every pg_dump as
 # --exclude-schema (WI-10004136). The memory benches create a pid-scoped
@@ -352,6 +357,93 @@ if [ "$PC_FREE_GB" -lt "$PC_BACKUP_MIN_FREE_GB" ]; then
 fi
 log "headroom ok: ${PC_FREE_GB} GiB free (floor ${PC_BACKUP_MIN_FREE_GB} GiB)"
 
+# The client service's nice/ionice settings do not reach server processes:
+# PostgreSQL forks them from its own postmaster. Measured pcbackup backends
+# retained nice 0/default I/O priority while waiting on DataFileRead. Apply the
+# same low-impact policy to our exact application identity, including parallel
+# workers. Use the lowest best-effort I/O priority: idle-class reads can be
+# deprived of service by other traffic while the dump's watchdog keeps running.
+# Never reprioritize the PostgreSQL service or other clients.
+prioritize_backup_backends() {
+  local pids pid
+  if ! pids=$($PSQL "SET statement_timeout = '3s';
+      SELECT pid FROM pg_stat_activity
+       WHERE pid <> pg_backend_pid()
+         AND (application_name = '$HOST_BACKUP_APPLICATION_NAME'
+              OR leader_pid IN (SELECT pid FROM pg_stat_activity
+                                 WHERE application_name = '$HOST_BACKUP_APPLICATION_NAME'));" 2>/dev/null); then
+    log "WARN: could not inspect backup backend priority; retrying at the next watchdog sample"
+    return 0
+  fi
+  while IFS= read -r pid; do
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
+    # A backend can finish between the query and the syscall. Its disappearance
+    # must not fail an otherwise valid archive. Run as postgres, not root.
+    sudo -n -u postgres renice -n 19 -p "$pid" >/dev/null 2>&1 || true
+    sudo -n -u postgres ionice -c 2 -n 7 -p "$pid" >/dev/null 2>&1 || true
+  done <<< "$pids"
+}
+
+# Retain COPY/wait evidence before a failed temporary archive is removed. The
+# producer lock makes the exact host tag unique to this run. Never log general
+# application SQL: only the COPY relation prefix contains useful backup context.
+# Both server and wall deadlines keep a diagnostic failure from wedging cleanup.
+log_backup_diagnostics() {
+  local progress_path="$1" elapsed="$2" archive_bytes="$3" reason="$4"
+  local snapshot probe_status=0 probe_outcome=ok probe_detail=none
+  local snapshot_source=current snapshot_elapsed="$elapsed"
+  # These variables are local to run_bounded_watched, so a later artifact or
+  # invocation cannot inherit a successful sample from an earlier producer.
+  if [ "${backup_diagnostic_last_path:-}" != "$progress_path" ]; then
+    backup_diagnostic_last_snapshot=''
+    backup_diagnostic_last_elapsed=''
+  fi
+  backup_diagnostic_last_path="$progress_path"
+  snapshot=$(LC_ALL=C timeout --verbose --kill-after=1s 4s sudo -n -u postgres env \
+    PGAPPNAME=pcbackup-diagnostics \
+    'PGOPTIONS=-c statement_timeout=2000 -c lock_timeout=1000' \
+    psql -X -h /var/run/postgresql -d postgres -At -v ON_ERROR_STOP=1 -c "
+      SELECT coalesce(json_agg(d), '[]'::json) FROM (
+        SELECT a.pid, a.backend_start, a.datname, a.state,
+               a.wait_event_type, a.wait_event, a.query_start,
+               CASE WHEN a.query LIKE 'COPY %'
+                    THEN left(split_part(a.query, ' (', 1), 180) END AS copy,
+               p.bytes_processed AS copy_bytes, p.tuples_processed AS copy_tuples
+          FROM pg_stat_activity a
+          LEFT JOIN pg_stat_progress_copy p ON p.pid = a.pid
+         WHERE a.application_name = '$HOST_BACKUP_APPLICATION_NAME'
+           AND a.pid <> pg_backend_pid()
+         ORDER BY a.pid LIMIT 16
+      ) d;" 2>&1) || probe_status=$?
+  snapshot=${snapshot//$'\n'/ }
+  snapshot=${snapshot//$'\r'/ }
+  if [ "$probe_status" -eq 0 ]; then
+    backup_diagnostic_last_snapshot="${snapshot:0:12000}"
+    backup_diagnostic_last_elapsed="$elapsed"
+  else
+    probe_detail="${snapshot:0:1000}"
+    case "$probe_status" in
+      124) probe_outcome=wall-timeout ;;
+      137)
+        # SIGKILL alone is not proof of a deadline: require timeout's own
+        # signal report before classifying it as kill-after escalation.
+        if [[ "$snapshot" == *'sending signal KILL'* ]]; then
+          probe_outcome=wall-timeout-kill
+        else
+          probe_outcome=signal-kill
+        fi
+        ;;
+      *) probe_outcome=failed ;;
+    esac
+    snapshot="${backup_diagnostic_last_snapshot:-[]}"
+    snapshot_elapsed="${backup_diagnostic_last_elapsed:-unknown}"
+    snapshot_source=unavailable
+    [ "$snapshot_elapsed" = unknown ] || snapshot_source=previous
+  fi
+  log "backup diagnostics: path=$progress_path elapsed=$elapsed archive_bytes=$archive_bytes reason=$reason probe_status=$probe_status probe_outcome=$probe_outcome probe_detail=${probe_detail:-<empty>} invocation=${INVOCATION_ID:-unknown} source=${BACKUP_SELF:-unknown} snapshot_source=$snapshot_source snapshot_elapsed=$snapshot_elapsed snapshot=${snapshot:0:12000}" || true
+  return 0
+}
+
 # ── mid-flight headroom watchdog ────────────────────────────────────────────
 # The pre-flight gate can pass and the dump can STILL eat the volume: the
 # database may have grown since its last dump, and the estimate below is only an
@@ -366,16 +458,23 @@ run_bounded_watched() {
   local floor_secs="$1" max_secs="$2" progress_path="$3"; shift 3
   local rc=0 dump_pid watch_pid start_epoch now_epoch elapsed
   local last_bytes=0 last_progress_epoch=0 current_bytes=0 progress_path_seen=0
+  local last_diagnostic_epoch
+  local backup_diagnostic_last_path='' backup_diagnostic_last_snapshot='' backup_diagnostic_last_elapsed=''
   start_epoch=$(date +%s)
   last_progress_epoch="$start_epoch"
+  last_diagnostic_epoch="$start_epoch"
   "$@" &
   dump_pid=$!
   (
     while kill -0 "$dump_pid" 2>/dev/null; do
       sleep "$PC_BACKUP_WATCH_SEC"
+      prioritize_backup_backends
+      now_epoch=$(date +%s)
+      elapsed=$(( now_epoch - start_epoch ))
       now=$(fs_avail_gb)
       if [ "$now" -lt "$PC_BACKUP_MIN_FREE_GB" ]; then
         log "ABORTING DUMP: free space fell to ${now} GiB (floor ${PC_BACKUP_MIN_FREE_GB} GiB) while dumping — killing this dump to protect the volume"
+        log_backup_diagnostics "$progress_path" "$elapsed" "$last_bytes" space-floor
         kill -TERM "$dump_pid" 2>/dev/null
         sleep 5
         kill -KILL "$dump_pid" 2>/dev/null
@@ -383,8 +482,6 @@ run_bounded_watched() {
         return 0
       fi
 
-      now_epoch=$(date +%s)
-      elapsed=$(( now_epoch - start_epoch ))
       # A -Fd producer may not have created its output directory by the first
       # watch sample. Treat that startup interval as zero bytes while the free
       # space floor and elapsed watchdog remain active. Once observed, a missing
@@ -400,6 +497,7 @@ run_bounded_watched() {
           measurement_detail=$(printf '%s' "$measurement_output" | tr '\r\n' ' ')
           measurement_detail=${measurement_detail:0:240}
           log "ABORTING DUMP: unable to measure archive progress at $progress_path as postgres (du_status=$measurement_rc output=${measurement_detail:-<empty>}); terminating bounded producer"
+          log_backup_diagnostics "$progress_path" "$elapsed" "$last_bytes" progress-unreadable
           kill -TERM "$dump_pid" 2>/dev/null
           sleep "$KILL_GRACE_SEC"
           kill -KILL "$dump_pid" 2>/dev/null
@@ -418,9 +516,16 @@ run_bounded_watched() {
            [ $(( now_epoch - last_progress_epoch )) -ge "$PROGRESS_STALE_SEC" ]; then
         log "ABORTING DUMP: no archive growth for ${PROGRESS_STALE_SEC}s after ${floor_secs}s floor (output ${last_bytes} bytes); killing stalled producer"
       else
+        # Sparse per-run samples distinguish a long COPY from a stalled client
+        # without adding a query to every 15-second space/progress check.
+        if [ $(( now_epoch - last_diagnostic_epoch )) -ge 300 ]; then
+          log_backup_diagnostics "$progress_path" "$elapsed" "$last_bytes" progress
+          last_diagnostic_epoch="$now_epoch"
+        fi
         continue
       fi
 
+      log_backup_diagnostics "$progress_path" "$elapsed" "$last_bytes" abort
       kill -TERM "$dump_pid" 2>/dev/null
       sleep "$KILL_GRACE_SEC"
       kill -KILL "$dump_pid" 2>/dev/null
@@ -523,7 +628,7 @@ release_shared_backup_lock() {
 acquire_migration_rendezvous() {
   local line acquired=false leg="${1:-host dump}"
   coproc BACKUP_MIGRATION_LOCK_PSQL {
-    exec sudo -n -u postgres env "PGAPPNAME=$HOST_BACKUP_APPLICATION_NAME" \
+    exec sudo -n -u postgres env "PGAPPNAME=$HOST_BACKUP_APPLICATION_NAME" "PGOPTIONS=$BACKUP_PGOPTIONS" \
       psql -X -q -v ON_ERROR_STOP=1 -At \
       -h /var/run/postgresql -d "$BACKUP_MIGRATION_ADVISORY_DATABASE"
   }
@@ -634,7 +739,7 @@ declare -A ARTIFACT_DUMP_SYSTEM_IDENTIFIERS=()
 GLOBALS_STDERR=$(mktemp "${TMPDIR:-/tmp}/papercusp-db-backup-globals.XXXXXX") || GLOBALS_STDERR=""
 if [[ -z "$GLOBALS_STDERR" ]]; then
   FAILED+=("globals"); log "globals FAIL (could not create stderr capture)"
-elif run_bounded 120 sudo -n -u postgres env "PGAPPNAME=$HOST_BACKUP_APPLICATION_NAME" \
+elif run_bounded 120 sudo -n -u postgres env "PGAPPNAME=$HOST_BACKUP_APPLICATION_NAME" "PGOPTIONS=$BACKUP_PGOPTIONS" \
       pg_dumpall -h /var/run/postgresql --globals-only -f "$PGOUT/globals.sql.tmp" 2>"$GLOBALS_STDERR"; then
   mv -f "$PGOUT/globals.sql.tmp" "$PGOUT/globals.sql"
   log "globals ok ($(stat -c%s "$PGOUT/globals.sql") bytes)"
@@ -716,7 +821,9 @@ rm_tmp() {
   }
 }
 
-# Publish a validated local transcript candidate without removing the live path.
+# Publish a validated directory candidate without removing the live path.
+# The existing transcript installer also protects ordinary/state and embedded
+# archives: readers must see either complete generation throughout publication.
 # Linux directory exchange leaves the old archive at .tmp for cleanup only AFTER
 # success. Unsupported/failed exchanges refuse publication; there is no rm fallback.
 install_transcript_archive() {
@@ -801,7 +908,7 @@ dump_one() {
 
   dumperr=$(mktemp -t "pcbackup-$label-XXXXXX.err")
   if run_bounded_watched "$TIMEOUT_SEC" "$TIMEOUT_MAX_SEC" "$out.tmp" \
-        sudo -n -u postgres env "PGAPPNAME=$HOST_BACKUP_APPLICATION_NAME" \
+        sudo -n -u postgres env "PGAPPNAME=$HOST_BACKUP_APPLICATION_NAME" "PGOPTIONS=$BACKUP_PGOPTIONS" \
         pg_dump -h /var/run/postgresql -Fd -j "$JOBS" --compress=none \
           --exclude-schema="$DISPOSABLE_SCHEMA_PATTERN" "$@" -f "$out.tmp" "$db" 2>"$dumperr"; then
 
@@ -849,29 +956,18 @@ dump_one() {
     # erroring its snapshot of db-dumps every cycle (found 2026-07-12: errors:4).
     # On FAILURE we still leave the existing "$out" untouched (see the branch
     # above), so last-known-good survives a bad run without any .prev.
-    if [ "$label" = "$db-transcript" ]; then
-      if [ "$db" = "$BACKUP_MIGRATION_ADVISORY_DATABASE" ]; then
-        if ! kopia_with_hold_lease "$db" kopia_install_dump_if_held "$out" install_transcript_archive; then
-          log "$label FAIL — atomic transcript publication or legal-hold lease failed; previous dump preserved"
-          rm -f "$dumperr"
-          return 1
-        fi
-      elif ! install_transcript_archive "$out"; then
-        log "$label FAIL — atomic transcript publication failed; previous dump preserved"
+    if [ "$db" = "$BACKUP_MIGRATION_ADVISORY_DATABASE" ]; then
+      if ! kopia_with_hold_lease "$db" kopia_install_dump_if_held "$out" install_transcript_archive; then
+        log "$label FAIL — atomic archive publication or legal-hold lease failed; previous dump preserved"
         rm -f "$dumperr"
         return 1
       fi
-      rm_tmp "$out.tmp" || log "$label WARN — successor retained; superseded temporary archive cleanup failed"
-    elif [ "$db" = "$BACKUP_MIGRATION_ADVISORY_DATABASE" ]; then
-      if ! kopia_with_hold_lease "$db" kopia_install_dump_if_held "$out"; then
-        log "$label FAIL — legal-hold rotation lease unavailable; previous dump preserved"
-        rm -f "$dumperr"
-        return 1
-      fi
-    else
-      rm -rf "$out"
-      mv -f "$out.tmp" "$out"
+    elif ! install_transcript_archive "$out"; then
+      log "$label FAIL — atomic archive publication failed; previous dump preserved"
+      rm -f "$dumperr"
+      return 1
     fi
+    rm_tmp "$out.tmp" || log "$label WARN — successor retained; superseded temporary archive cleanup failed"
     sz=$(du -sb "$out" 2>/dev/null | cut -f1)
     log "$label ok ($(numfmt --to=iec "${sz:-0}" 2>/dev/null || echo "${sz:-0}") , $(pg_restore -l "$out" 2>/dev/null | grep -c '^[0-9]') objects)"
     rm -f "$dumperr"
@@ -1208,7 +1304,7 @@ else
     # PGPASSWORD is exported INSIDE a subshell so it is neither in argv nor in
     # this script's environment for anything else that runs after.
     (
-      export PGPASSWORD="$odds_pass" PGAPPNAME="$HOST_BACKUP_APPLICATION_NAME"
+      export PGPASSWORD="$odds_pass" PGAPPNAME="$HOST_BACKUP_APPLICATION_NAME" PGOPTIONS="$BACKUP_PGOPTIONS"
       run_bounded "$TIMEOUT_SEC" pg_dump -h "$odds_host" -p "$odds_port" -U "$odds_user" \
         -Fd -j "$JOBS" --compress=none -f "$odds_out.tmp" "$odds_db"
     ) 2>"$odds_err"
@@ -1217,12 +1313,16 @@ else
       # Same rule as the loop above: VALIDATE THE ARTIFACT, never the exit code.
       if pg_restore -l "$odds_out.tmp" >/dev/null 2>&1; then
         chmod -R u=rwX,g=rX,o= "$odds_out.tmp" 2>/dev/null || true
-        rm -rf "$odds_out"
-        mv -f "$odds_out.tmp" "$odds_out"
-        osz=$(du -sb "$odds_out" 2>/dev/null | cut -f1)
-        ODDS_OK=true
-        ODDS_NOTE="ok"
-        log "oddsmith ok ($(numfmt --to=iec "${osz:-0}" 2>/dev/null || echo "${osz:-0}"), $(pg_restore -l "$odds_out" 2>/dev/null | grep -c '^[0-9]') objects)"
+        if install_transcript_archive "$odds_out"; then
+          rm_tmp "$odds_out.tmp" || log "oddsmith WARN — superseded temporary archive cleanup failed"
+          osz=$(du -sb "$odds_out" 2>/dev/null | cut -f1)
+          ODDS_OK=true
+          ODDS_NOTE="ok"
+          log "oddsmith ok ($(numfmt --to=iec "${osz:-0}" 2>/dev/null || echo "${osz:-0}"), $(pg_restore -l "$odds_out" 2>/dev/null | grep -c '^[0-9]') objects)"
+        else
+          ODDS_NOTE="atomic archive publication failed"
+          log "oddsmith FAIL — $ODDS_NOTE; previous dump left intact"
+        fi
       else
         rm_tmp "$odds_out.tmp"
         ODDS_NOTE="dump completed but is NOT a valid archive (pg_restore -l could not read it)"

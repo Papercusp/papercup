@@ -484,8 +484,13 @@ fi
 for d in "$DUMP"/pg/*/; do
   [ -d "$d" ] || continue
   case "$(basename "$d")" in *.tmp|*.prev) continue ;; esac
-  pg_restore -l "$d" >/dev/null 2>&1 \
-    || fail "dump $(basename "$d") exists but is NOT a readable archive (pg_restore -l failed)"
+  if archive_detail=$(pg_restore -l "$d" 2>&1 >/dev/null); then
+    :
+  else
+    archive_rc=$?
+    archive_detail=$(printf '%s' "$archive_detail" | tr '\r\n\t' '   ' | cut -c 1-512)
+    fail "dump $(basename "$d") exists but is NOT a readable archive (pg_restore -l failed, exit $archive_rc)${archive_detail:+: $archive_detail}"
+  fi
 done
 
 # ── 1b. THE ODDSMITH EMBEDDED PG (5544) — asserted INDEPENDENTLY (WI-39502) ──
@@ -743,6 +748,18 @@ fi
 if [ -n "$leftover" ]; then
   LEFTOVER_NOTE=""   # this page IS the finding; do not append it a second time
   fail "Kopia process(es) outlived their stopped unit: $leftover. They run outside kopia-global.lock until the unit's next start reaps them (ExecStartPre --cleanup). Inspect with: sudo ps -o pid,etimes,args -p <pid>. See WI-6554700010011924."
+fi
+
+# EI-27672009448091168: fresh snapshots can coexist with an unreadable
+# maintenance schedule. The required-source leg deliberately skips automatic
+# maintenance, so snapshot recency alone cannot detect the zero-byte schedule
+# blob that prevents subsequent maintenance. Use Kopia's own reader; this probe
+# never resets metadata or changes retention, and cannot hold the timer forever.
+maintenance_info=$(kopia_as_root "$SUDO_BIN" /usr/bin/timeout 30 "$KOPIA_BIN" maintenance info --json 2>&1)
+maintenance_rc=$?
+if [ "$maintenance_rc" -ne 0 ]; then
+  maintenance_detail=$(printf '%s\n' "$maintenance_info" | tail -n 3 | head -c 600)
+  fail "Kopia maintenance metadata is unreadable (exit $maintenance_rc): $maintenance_detail. Preserve repository metadata before repair; fresh snapshots do not verify maintenance health."
 fi
 
 echo "[$(date -Iseconds)] OK: dump $(( age / 60 ))m old, snapshot $(( snap_age / 60 ))m old" >> "$LOG"

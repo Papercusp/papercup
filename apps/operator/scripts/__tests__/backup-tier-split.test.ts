@@ -119,6 +119,7 @@ function producerHarness(extra: string[]): string {
     src.match(/^declare -A ARTIFACT_DUMP_START_EPOCHS=.*$/m)![0],
     src.match(/^declare -A ARTIFACT_DUMP_SYSTEM_IDENTIFIERS=.*$/m)![0],
     'PC_BACKUP_SPACE_SAFETY=150; PC_BACKUP_MIN_FREE_GB=0; HOST_BACKUP_APPLICATION_NAME=pcbackup',
+    src.match(/^readonly BACKUP_PGOPTIONS=.*$/m)![0],
     src.match(/^readonly DISPOSABLE_SCHEMA_PATTERN=.*$/m)![0],
     src.match(/^PC_BACKUP_TRANSCRIPT_TABLES=.*$/m)![0],
     src.match(/    ex=\(\); inc=\(\)[\s\S]*?    done/)![0],
@@ -141,7 +142,7 @@ type ArchiveFailure = 'setup' | 'partial' | 'invalid-toc' | 'promotion' | 'unsup
 const publicationObserver = [
   "import ctypes, errno, os, pathlib, sys",
   "root = pathlib.Path(os.environ['FIXTURE_ROOT'])",
-  "target = root / 'fixture-transcript'",
+  "target = root / os.environ['FIXTURE_LABEL']",
   "def snapshot(path):",
   "    if not path.is_dir():",
   "        return None",
@@ -188,7 +189,7 @@ const publicationObserver = [
 
 function runArchiveReplacementFixture(
   root: string, failure: ArchiveFailure,
-  options: { guarded?: boolean; hold?: 't' | 'f' | 'unreadable'; control?: 'remove-then-move' } = {},
+  options: { guarded?: boolean; hold?: 't' | 'f' | 'unreadable'; control?: 'remove-then-move'; tier?: 'whole' | 'state' | 'transcript'; observeReads?: boolean } = {},
 ) {
   const quoteShell = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
   // Execute the production coprocess/SQL handshake and callback lifetime;
@@ -212,7 +213,10 @@ function runArchiveReplacementFixture(
   chmodSync(psqlPath, 0o755);
   const script = producerHarness([
     'run_bounded_watched() { shift 3; "$@"; }',
-    'sudo() { [ "$1" = -n ] && shift; if [ "$1" = -u ]; then shift 2; fi; if [ "$1" = env ]; then shift 2; fi; case "$1" in chown|chmod) return 0;; *) "$@";; esac; }',
+    'observe_archive_read() { [ "$OBSERVE_READS" = 1 ] || return 0; if pg_restore -l "$PGOUT/$FIXTURE_LABEL" >/dev/null 2>&1; then echo readable; else echo unreadable; fi >> "$FIXTURE_ROOT/publication-reads"; }',
+    'rm() { command rm "$@"; local rc=$?; observe_archive_read; return "$rc"; }',
+    'mv() { command mv "$@"; local rc=$?; observe_archive_read; return "$rc"; }',
+    'sudo() { [ "$1" = -n ] && shift; if [ "$1" = -u ]; then shift 2; fi; if [ "$1" = env ]; then shift; while [[ "$1" == *=* ]]; do shift; done; fi; case "$1" in chown|chmod) return 0;; *) "$@";; esac; }',
     'if [ "$GUARDED" = 1 ]; then BACKUP_MIGRATION_ADVISORY_DATABASE="$db"; fi',
     'cp() { if [ "$FAILURE" = hold-copy ] && [ "$1" = -al ]; then return 1; fi; command cp "$@"; }',
     'pg_dump() {',
@@ -225,26 +229,31 @@ function runArchiveReplacementFixture(
     '}',
     'pg_restore() {',
     '  [ "$FAILURE" != invalid-toc ] || return 1',
-    '  if [ "$2" = "$PGOUT/fixture-transcript.tmp" ]; then',
+    '  [ -r "$2/toc.dat" ] || { echo "archive path unavailable" >&2; return 1; }',
+    '  if [ "$2" = "$PGOUT/$FIXTURE_LABEL.tmp" ]; then',
     '    cp -a -- "$2" "$FIXTURE_ROOT/validated-candidate"',
     '    : > "$FIXTURE_ROOT/candidate-validated"',
     '  fi',
     '  printf "1; fixture entry\\n"',
     '}',
     'python3() {',
-    '  printf "%s\\n" "$PGOUT/fixture-transcript" >> "$FIXTURE_ROOT/promotion-paths"',
+    '  printf "%s\\n" "$PGOUT/$FIXTURE_LABEL" >> "$FIXTURE_ROOT/promotion-paths"',
     '  if [ -f "$FIXTURE_ROOT/candidate-validated" ]; then printf "validated\\n"; else printf "unvalidated\\n"; fi >> "$FIXTURE_ROOT/promotion-validation"',
-    '  cp -a -- "$PGOUT/fixture-transcript" "$FIXTURE_ROOT/prior-at-promotion" 2>/dev/null || :',
-    '  cp -a -- "$PGOUT/fixture-transcript.tmp" "$FIXTURE_ROOT/candidate-at-promotion" 2>/dev/null || :',
+    '  cp -a -- "$PGOUT/$FIXTURE_LABEL" "$FIXTURE_ROOT/prior-at-promotion" 2>/dev/null || :',
+    '  cp -a -- "$PGOUT/$FIXTURE_LABEL.tmp" "$FIXTURE_ROOT/candidate-at-promotion" 2>/dev/null || :',
     '  command python3 -c ' + quoteShell(publicationObserver) + ' "$@"',
+    '  local rc=$?; observe_archive_read; return "$rc"',
     '}',
-    producerCall('transcript'),
+    'observe_archive_read',
+    producerCall(options.tier ?? 'transcript'),
   ]);
   return spawnSync('bash', ['-c', script], {
     encoding: 'utf8', timeout: 10_000,
     env: { ...process.env, FIXTURE_ROOT: root, FAILURE: failure, PC_BACKUP_TRANSCRIPT_TABLES: '',
       KOPIA_HOLD_SUDO_BIN: sudoPath, KOPIA_HOLD_PSQL_BIN: psqlPath,
-      GUARDED: options.guarded ? '1' : '0', HOLD: options.hold ?? 'f', PUBLICATION_CONTROL: options.control ?? '' },
+      GUARDED: options.guarded ? '1' : '0', HOLD: options.hold ?? 'f', PUBLICATION_CONTROL: options.control ?? '',
+      FIXTURE_LABEL: options.tier === 'whole' ? 'fixture' : `fixture-${options.tier ?? 'transcript'}`,
+      OBSERVE_READS: options.observeReads ? '1' : '0' },
   });
 }
 
@@ -538,6 +547,30 @@ describe('papercusp-db-backup.sh tiered dump (WI-2146225)', () => {
     });
   });
 
+  describe('directory publication visibility (EI-28646224189373945)', () => {
+    it.each([
+      { tier: 'whole' as const, guarded: false, hold: 'f' as const },
+      { tier: 'state' as const, guarded: false, hold: 'f' as const },
+      { tier: 'state' as const, guarded: true, hold: 't' as const },
+      { tier: 'state' as const, guarded: true, hold: 'f' as const },
+    ])('keeps a paused health reader usable during $tier publication (guarded=$guarded, hold=$hold)', (options) => {
+      const root = mkdtempSync(join(tmpdir(), 'backup-publication-reader-'));
+      try {
+        const label = options.tier === 'whole' ? 'fixture' : 'fixture-state';
+        const prior = join(root, label);
+        mkdirSync(prior);
+        writeFileSync(join(prior, 'toc.dat'), 'prior toc');
+        const run = runArchiveReplacementFixture(root, 'none', { ...options, observeReads: true });
+        expect(run.status, run.stderr).toBe(0);
+        const reads = readFileSync(join(root, 'publication-reads'), 'utf8').trim().split('\n');
+        expect(reads.length).toBeGreaterThan(1);
+        expect(reads).not.toContain('unreadable');
+        expect(readFileSync(join(prior, 'toc.dat'), 'utf8')).toBe('candidate toc');
+        expect(readFileSync(join(root, 'promotion-states'), 'utf8')).not.toContain('missing');
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+  });
+
   describe('atomic transcript publication (WI-6554700010028863)', () => {
     function seedPrior(root: string) {
       const prior = join(root, 'fixture-transcript');
@@ -761,6 +794,7 @@ describe('papercusp-db-backup globals failure diagnostics', () => {
       const harness = [
         'set -uo pipefail',
         'PGOUT="$FIXTURE_ROOT"; HOST_BACKUP_APPLICATION_NAME=pcbackup; FAILED=()',
+        src.match(/^readonly BACKUP_PGOPTIONS=.*$/m)![0],
         'log() { printf "LOG %s\\n" "$*"; }',
         'run_bounded() { shift; printf "%s" "$FIXTURE_STDERR" >&2; return "$FIXTURE_EXIT"; }',
         globalsBlock,

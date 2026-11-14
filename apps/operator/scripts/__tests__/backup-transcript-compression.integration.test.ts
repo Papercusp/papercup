@@ -111,6 +111,7 @@ it('restores native PG18 transcript values and reduces paired snapshot archive b
         'PSQL=fixture_psql',
         'fixture_psql() { "$NATIVE_PG_BIN/psql" -h 127.0.0.1 -p "$FIXTURE_PORT" -U postgres -d postgres -tAc "$@"; }',
         'PC_BACKUP_SPACE_SAFETY=140; PC_BACKUP_MIN_FREE_GB=0; HOST_BACKUP_APPLICATION_NAME=pcbackup',
+        source.match(/^readonly BACKUP_PGOPTIONS=.*$/m)![0],
         "DISPOSABLE_SCHEMA_PATTERN='bench_memory*'",
         'inc=(--table=public.backup_transcript_fixture "--snapshot=$FIXTURE_SNAPSHOT")',
         // The native fixture owns its whole cluster. Adapt OS identity and the
@@ -118,7 +119,7 @@ it('restores native PG18 transcript values and reduces paired snapshot archive b
         'sudo() {',
         '  [ "$1" != -n ] || shift',
         '  if [ "$1" = -u ]; then shift 2; fi',
-        '  if [ "$1" = env ]; then shift; export "$1"; shift; fi',
+        '  if [ "$1" = env ]; then shift; while [[ "$1" == *=* ]]; do export "$1"; shift; done; fi',
         '  if [ "$1" = chown ]; then return 0; fi',
         '  "$@"',
         '}',
