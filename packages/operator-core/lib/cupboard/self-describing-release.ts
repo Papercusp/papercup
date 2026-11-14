@@ -20,7 +20,7 @@
  * anything touches the user layer.
  */
 import { createHash } from 'node:crypto';
-import { lstatSync, readdirSync, readFileSync } from 'node:fs';
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readdirSync, readSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import {
@@ -51,29 +51,152 @@ export class SelfDescribingArchiveError extends Error {
   }
 }
 
+const MAX_SELF_DESCRIBING_ARTIFACT_BYTES_BIGINT = BigInt(MAX_SELF_DESCRIBING_ARTIFACT_BYTES);
+const EMPTY_SELF_DESCRIBING_ARCHIVE_BYTES = BigInt(Buffer.byteLength(canonicalJson({
+  schema: SELF_DESCRIBING_ARCHIVE_SCHEMA,
+  files: [],
+}), 'utf8'));
+const EMPTY_ARCHIVE_ENTRY_SHA256 = '0'.repeat(64);
+
+interface ArchiveBudget {
+  fileCount: number;
+  rawBytes: bigint;
+  archiveBytes: bigint;
+}
+
+interface StableFsStat {
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly mode: bigint;
+  readonly size: bigint;
+  readonly mtimeNs: bigint;
+  readonly ctimeNs: bigint;
+  isDirectory(): boolean;
+  isFile(): boolean;
+  isSymbolicLink(): boolean;
+}
+
+function newArchiveBudget(): ArchiveBudget {
+  return { fileCount: 0, rawBytes: 0n, archiveBytes: EMPTY_SELF_DESCRIBING_ARCHIVE_BYTES };
+}
+
+function accountArchiveFile(budget: ArchiveBudget, path: string, size: bigint): void {
+  if (budget.fileCount >= MAX_SELF_DESCRIBING_ARCHIVE_FILES) {
+    throw new SelfDescribingArchiveError(
+      `listing dir has more than ${MAX_SELF_DESCRIBING_ARCHIVE_FILES} files`,
+      'archive-too-large',
+    );
+  }
+  const rawBytes = budget.rawBytes + size;
+  if (rawBytes > MAX_SELF_DESCRIBING_ARTIFACT_BYTES_BIGINT) {
+    throw new SelfDescribingArchiveError(
+      `archive file content exceeds ${MAX_SELF_DESCRIBING_ARTIFACT_BYTES} bytes`,
+      'archive-too-large',
+    );
+  }
+  const entryShellBytes = BigInt(Buffer.byteLength(canonicalJson({
+    path,
+    sha256: EMPTY_ARCHIVE_ENTRY_SHA256,
+    contentBase64: '',
+  }), 'utf8'));
+  const base64Bytes = ((size + 2n) / 3n) * 4n;
+  const archiveBytes = budget.archiveBytes + (budget.fileCount > 0 ? 1n : 0n) + entryShellBytes + base64Bytes;
+  if (archiveBytes > MAX_SELF_DESCRIBING_ARTIFACT_BYTES_BIGINT) {
+    throw new SelfDescribingArchiveError(
+      `archive would exceed ${MAX_SELF_DESCRIBING_ARTIFACT_BYTES} bytes`,
+      'archive-too-large',
+    );
+  }
+  budget.fileCount++;
+  budget.rawBytes = rawBytes;
+  budget.archiveBytes = archiveBytes;
+}
+
+function sameStableStat(left: StableFsStat, right: StableFsStat): boolean {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.mode === right.mode
+    && left.size === right.size
+    && left.mtimeNs === right.mtimeNs
+    && left.ctimeNs === right.ctimeNs
+    && left.isFile() === right.isFile()
+    && left.isDirectory() === right.isDirectory()
+    && left.isSymbolicLink() === right.isSymbolicLink();
+}
+
+function changedArchivePath(path: string): SelfDescribingArchiveError {
+  return new SelfDescribingArchiveError(
+    `listing path "${path || '.'}" changed while being packed`,
+    'archive-unsafe-path',
+  );
+}
+
+function readStableFile(abs: string, rel: string, expected: StableFsStat): Buffer {
+  let fd: number;
+  try {
+    fd = openSync(abs, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0));
+  } catch (error) {
+    const code = typeof error === 'object' && error !== null && 'code' in error
+      ? (error as { code?: unknown }).code
+      : undefined;
+    if (code === 'ELOOP') throw changedArchivePath(rel);
+    throw error;
+  }
+
+  try {
+    const before = fstatSync(fd, { bigint: true });
+    if (!before.isFile() || !sameStableStat(expected, before)) throw changedArchivePath(rel);
+    const bytes = Buffer.allocUnsafe(Number(before.size));
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (!count) throw changedArchivePath(rel);
+      offset += count;
+    }
+
+    const after = fstatSync(fd, { bigint: true });
+    let pathAfter: ReturnType<typeof lstatSync>;
+    try {
+      pathAfter = lstatSync(abs, { bigint: true });
+    } catch {
+      throw changedArchivePath(rel);
+    }
+    if (!after.isFile() || !pathAfter.isFile()
+      || !sameStableStat(before, after) || !sameStableStat(before, pathAfter)) {
+      throw changedArchivePath(rel);
+    }
+    return bytes;
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export interface SelfDescribingArchiveFile {
   /** POSIX path relative to the listing's dir. */
   path: string;
   bytes: Buffer;
 }
 
-function walk(dir: string, prefix: string, out: SelfDescribingArchiveFile[]): void {
+function walk(dir: string, prefix: string, out: SelfDescribingArchiveFile[], budget: ArchiveBudget): void {
+  const directoryBefore = lstatSync(dir, { bigint: true });
+  if (!directoryBefore.isDirectory()) throw changedArchivePath(prefix);
   for (const name of readdirSync(dir).sort()) {
     const abs = join(dir, name);
     const rel = prefix ? `${prefix}/${name}` : name;
-    const st = lstatSync(abs);
+    const st = lstatSync(abs, { bigint: true });
     // A symlink would let a publisher smuggle a file that is not in the dir they reviewed.
     if (st.isSymbolicLink()) {
       throw new SelfDescribingArchiveError(`refusing symlink "${rel}" in a self-describing listing`, 'archive-unsafe-path');
     }
-    if (st.isDirectory()) walk(abs, rel, out);
-    else if (st.isFile()) out.push({ path: rel, bytes: readFileSync(abs) });
-    if (out.length > MAX_SELF_DESCRIBING_ARCHIVE_FILES) {
-      throw new SelfDescribingArchiveError(
-        `listing dir has more than ${MAX_SELF_DESCRIBING_ARCHIVE_FILES} files`,
-        'archive-too-large',
-      );
+    if (st.isDirectory()) walk(abs, rel, out, budget);
+    else if (st.isFile()) {
+      accountArchiveFile(budget, rel, st.size);
+      out.push({ path: rel, bytes: readStableFile(abs, rel, st) });
     }
+  }
+  const directoryAfter = lstatSync(dir, { bigint: true });
+  if (!directoryAfter.isDirectory() || !sameStableStat(directoryBefore, directoryAfter)) {
+    throw changedArchivePath(prefix);
   }
 }
 
@@ -86,13 +209,18 @@ export function isSafeArchivePath(path: unknown): path is string {
 
 /** Pack the on-disk dir into the canonical archive bytes (sorted, deterministic). */
 export function packSelfDescribingArchive(files: readonly SelfDescribingArchiveFile[]): Buffer {
+  if (files.length > MAX_SELF_DESCRIBING_ARCHIVE_FILES) {
+    throw new SelfDescribingArchiveError('archive declares too many files', 'archive-too-large');
+  }
   const sorted = [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   const seen = new Set<string>();
+  const budget = newArchiveBudget();
   for (const f of sorted) {
     if (!isSafeArchivePath(f.path) || seen.has(f.path)) {
       throw new SelfDescribingArchiveError(`unsafe or duplicate archive path ${JSON.stringify(f.path)}`, 'archive-unsafe-path');
     }
     seen.add(f.path);
+    accountArchiveFile(budget, f.path, BigInt(f.bytes.length));
   }
   const archive = Buffer.from(
     canonicalJson({
@@ -116,7 +244,7 @@ export function packSelfDescribingArchive(files: readonly SelfDescribingArchiveF
 
 export function packSelfDescribingDir(dir: string): Buffer {
   const files: SelfDescribingArchiveFile[] = [];
-  walk(dir, '', files);
+  walk(dir, '', files, newArchiveBudget());
   return packSelfDescribingArchive(files);
 }
 

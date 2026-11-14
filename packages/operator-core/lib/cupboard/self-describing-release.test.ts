@@ -10,7 +10,8 @@
  * anything it cannot verify against the pinned root).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import * as fs from 'node:fs';
+import { closeSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -60,6 +61,15 @@ function writeListingDir(target: string): void {
   writeFileSync(join(target, 'listing.json'), '{"kind":"recipe","version":"1.0.0"}\n');
   writeFileSync(join(target, 'nested', 'README.md'), '# demo\n');
   writeFileSync(join(target, 'nested', 'deeper', 'data.bin'), Buffer.from([0, 1, 2, 253, 254, 255]));
+}
+
+function writeSparseFile(target: string, size: number): void {
+  const fd = openSync(target, 'w');
+  try {
+    ftruncateSync(fd, size);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** Hand-craft an archive the way a hostile publisher would — bypassing `pack*`'s own checks. */
@@ -168,10 +178,82 @@ describe('self-describing archive format', () => {
     expect(codeOf(() => packSelfDescribingDir(dir))).toBe('archive-unsafe-path');
   });
 
+  it('opens a file with no-follow and refuses a symlink substituted after enumeration', () => {
+    const file = join(dir, 'a-entry.txt');
+    const moved = join(dir, 'a-entry-original.txt');
+    const outside = join(dir, 'z-outside.txt');
+    writeFileSync(file, 'reviewed bytes');
+    writeFileSync(outside, 'replacement bytes');
+    const originalOpen = fs.openSync;
+    let replaced = false;
+    const open = vi.spyOn(fs, 'openSync').mockImplementation((path, flags, mode) => {
+      if (path === file && !replaced) {
+        renameSync(file, moved);
+        symlinkSync(outside, file);
+        replaced = true;
+      }
+      return originalOpen(path, flags, mode);
+    });
+
+    expect(codeOf(() => packSelfDescribingDir(dir))).toBe('archive-unsafe-path');
+    expect(replaced).toBe(true);
+    const fileOpen = open.mock.calls.find(([path]) => path === file);
+    expect(fileOpen).toBeDefined();
+    expect((Number(fileOpen?.[1]) & fs.constants.O_NOFOLLOW)).not.toBe(0);
+  });
+
+  it('refuses a file whose contents change during its descriptor snapshot', () => {
+    const file = join(dir, 'entry.txt');
+    writeFileSync(file, 'before');
+    const originalRead = fs.readSync;
+    let changed = false;
+    vi.spyOn(fs, 'readSync').mockImplementation((fd, buffer, offset, length, position) => {
+      const count = originalRead(fd, buffer, offset, length, position);
+      if (!changed) {
+        writeFileSync(file, 'change');
+        changed = true;
+      }
+      return count;
+    });
+
+    expect(codeOf(() => packSelfDescribingDir(dir))).toBe('archive-unsafe-path');
+    expect(changed).toBe(true);
+  });
+
+  it('refuses an oversized directory file before reading its contents', () => {
+    writeSparseFile(join(dir, 'oversized.bin'), MAX_SELF_DESCRIBING_ARTIFACT_BYTES + 1);
+    const readFile = vi.spyOn(fs, 'readFileSync');
+    const read = vi.spyOn(fs, 'readSync');
+
+    expect(codeOf(() => packSelfDescribingDir(dir))).toBe('archive-too-large');
+    expect(readFile).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('accounts for cumulative serialized size before reading the file that exceeds the cap', () => {
+    const firstSize = 4 * 1024 * 1024;
+    writeSparseFile(join(dir, 'a-first.bin'), firstSize);
+    writeSparseFile(join(dir, 'b-second.bin'), 3 * 1024 * 1024);
+    const readSizes: number[] = [];
+    const readFile = vi.spyOn(fs, 'readFileSync');
+    const originalRead = fs.readSync;
+    vi.spyOn(fs, 'readSync').mockImplementation((fd, buffer, offset, length, position) => {
+      readSizes.push(fs.fstatSync(fd).size);
+      return originalRead(fd, buffer, offset, length, position);
+    });
+
+    expect(codeOf(() => packSelfDescribingDir(dir))).toBe('archive-too-large');
+    expect(readFile).not.toHaveBeenCalled();
+    expect(readSizes.length).toBeGreaterThan(0);
+    expect(new Set(readSizes)).toEqual(new Set([firstSize]));
+  });
+
   it('refuses an archive larger than the origin accepts', () => {
     // Incompressible-by-construction: base64 inflates 7 MiB past the 8 MiB origin cap.
     const big = Buffer.alloc(7 * 1024 * 1024, 7);
+    const encode = vi.spyOn(Buffer.prototype, 'toString');
     expect(codeOf(() => packSelfDescribingArchive([{ path: 'big.bin', bytes: big }]))).toBe('archive-too-large');
+    expect(encode.mock.calls.some(([encoding]) => encoding === 'base64')).toBe(false);
   });
 });
 
