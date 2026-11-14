@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { scorecardEvidenceFingerprint, type ScorecardRow } from '../../scorecards';
 import type { TaskRow } from '../../task-manager/types';
 import type { SpecClauseRevision } from './spec-clauses-store';
-import { evaluatePlanSpecQuality, SPEC_QUALITY_RUBRIC_REF } from './spec-quality';
+import { evaluatePlanSpecQuality, IMPLEMENTATION_INDEPENDENCE_DETECTOR_REVISION, SPEC_QUALITY_RUBRIC_REF } from './spec-quality';
 import { evaluatePlanSpecQualityGate } from './plan-spec-quality-gate';
 import type { PlanClassRubricRef } from './spec-test-adequacy';
 
@@ -417,6 +417,50 @@ describe('evaluatePlanSpecQualityGate', () => {
       scorecardId: 'EI-quality-card',
       wouldBlock: [],
     });
+  });
+
+  it('accepts detector coverage wording changes within the same detector revision', async () => {
+    const clauses = [clause()];
+    const card = matchingCard(clauses);
+    const entry = card.ratings['implementation-independence']!;
+    expect(entry.evidence).toContain('Detector semantics revision: ' + IMPLEMENTATION_INDEPENDENCE_DETECTOR_REVISION + '.');
+    entry.evidence = entry.evidence.replace('including shared UI components/report cards, ', '');
+    card.evidenceFingerprint = scorecardEvidenceFingerprint({ rubricRef: card.rubricRef, ratings: card.ratings });
+    const result = await evaluatePlanSpecQualityGate(
+      { harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'] },
+      gateDeps({ listClauses: vi.fn(async () => clauses), listCards: vi.fn(async () => [card]) }),
+    );
+
+    expect(result).toMatchObject({ satisfied: true, scorecardId: card.issueId });
+  });
+
+  it('reports a precise existing-card mismatch across detector revisions', async () => {
+    const clauses = [clause()];
+    const card = matchingCard(clauses);
+    const entry = card.ratings['implementation-independence']!;
+    entry.evidence = entry.evidence
+      .replace(' Detector semantics revision: ' + IMPLEMENTATION_INDEPENDENCE_DETECTOR_REVISION + '.', '')
+      .replace('including shared UI components/report cards, ', '');
+    card.evidenceFingerprint = scorecardEvidenceFingerprint({ rubricRef: card.rubricRef, ratings: card.ratings });
+    const result = await evaluatePlanSpecQualityGate(
+      { harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'] },
+      gateDeps({ listClauses: vi.fn(async () => clauses), listCards: vi.fn(async () => [card]) }),
+    );
+
+    expect(result).toMatchObject({
+      satisfied: false,
+      code: 'spec_quality_scorecard_detector_mismatch',
+      scorecardId: card.issueId,
+      wouldBlock: ['exact-specSetHash-scorecard-detector-revision-mismatch'],
+      scorecardDiagnostics: [{
+        issueId: card.issueId,
+        failedChecks: ['evidence'],
+        differingCriteria: ['implementation-independence'],
+        detectorRevision: { scorecard: 1, current: IMPLEMENTATION_INDEPENDENCE_DETECTOR_REVISION },
+      }],
+    });
+    expect(result.message).toContain('not a missing scorecard');
+    expect(result.message).toContain('superseding card');
   });
 
   it('refuses an otherwise exact current scorecard once superseded', async () => {

@@ -14,6 +14,7 @@ import {
   evaluatePlanSpecQuality,
   specQualityCanonicalBarScopes,
   specQualityEvidenceWithoutReplay,
+  IMPLEMENTATION_INDEPENDENCE_DETECTOR_REVISION,
   SPEC_QUALITY_RUBRIC_REF,
   type PlanSpecQualityResult,
   type SpecQualityPlanItem,
@@ -24,6 +25,7 @@ import { SPEC_SET_HASH_VERSION } from './spec-clause-compiler';
 export type PlanSpecQualityGateCode =
   | 'spec_quality_failed'
   | 'spec_quality_scorecard_missing'
+  | 'spec_quality_scorecard_detector_mismatch'
   | 'spec_quality_scorecard_grading_audit_pending'
   | 'spec_quality_scorecard_grading_audit_failed'
   | 'spec_quality_class_missing'
@@ -46,6 +48,7 @@ export interface PlanSpecQualityGateVerdict {
     issueId: string;
     failedChecks: string[];
     differingCriteria: string[];
+    detectorRevision?: { scorecard: number; current: number };
   }>;
   candidates?: Array<{
     classRef: PlanClassRubricRef;
@@ -162,18 +165,112 @@ function matchesSpecQualityEvidence(card: ScorecardRow, evaluation: PlanSpecQual
   const identity = evaluation.ratings['stable-revision-identity'];
   const allActiveSuffix =
     ` ${evaluation.clauseCount} current clause(s) have unique identities, content hashes, and acceptance provenance.`;
+  if (identity.rating === 'pass' && identity.evidence.endsWith(allActiveSuffix)) {
+    const interimRatings = {
+      ...evaluation.ratings,
+      'stable-revision-identity': {
+        ...identity,
+        evidence: identity.evidence.slice(0, -allActiveSuffix.length)
+          + allActiveSuffix.replace(' current clause(s)', ' active/accepted current clause(s)'),
+      },
+    };
+    if (fingerprint(currentFindings) === fingerprint(interimRatings)) return true;
+  }
+
+  const cardRevision = implementationIndependenceDetectorRevision(
+    card.ratings['implementation-independence']?.evidence,
+  );
+  const currentRevision = implementationIndependenceDetectorRevision(
+    evaluation.ratings['implementation-independence']?.evidence,
+  );
+  return cardRevision !== null && cardRevision === currentRevision &&
+    currentRevision === IMPLEMENTATION_INDEPENDENCE_DETECTOR_REVISION &&
+    matchesEvidenceIgnoringDetectorCoverage(card, evaluation, false);
+}
+
+function implementationIndependenceDetectorRevision(evidence: string | undefined): number | null {
+  if (!evidence) return null;
+  const marker = ' Detector semantics revision: ';
+  const markerAt = evidence.indexOf(marker);
+  if (markerAt >= 0) {
+    const revisionText = evidence.slice(markerAt + marker.length).split('.')[0];
+    const revision = Number(revisionText);
+    return Number.isSafeInteger(revision) && revision > 0 ? revision : null;
+  }
+  // Historical scorecards predate the explicit revision marker.
+  return evidence.includes(' Detector coverage: ') ? 1 : null;
+}
+
+function stripImplementationIndependenceCoverage(evidence: string, stripRevision: boolean): string | null {
+  let normalized = evidence;
+  const revisionMarker = ' Detector semantics revision: ';
+  if (stripRevision) {
+    const revisionAt = normalized.indexOf(revisionMarker);
+    if (revisionAt >= 0) {
+      const revisionEnd = normalized.indexOf('.', revisionAt + revisionMarker.length);
+      if (revisionEnd < 0) return null;
+      normalized = normalized.slice(0, revisionAt) + normalized.slice(revisionEnd + 1);
+    }
+  }
+  const coverageAt = normalized.indexOf(' Detector coverage: ');
+  const inspectedAt = normalized.indexOf(' Inspected ', coverageAt);
+  if (coverageAt < 0 || inspectedAt < 0) return null;
+  return normalized.slice(0, coverageAt) + normalized.slice(inspectedAt);
+}
+
+function ratingsMatchWithIdentityCompatibility(
+  storedFindings: ScorecardRow['ratings'],
+  currentRatings: PlanSpecQualityResult['ratings'],
+  evaluation: PlanSpecQualityResult,
+  fingerprint: (ratings: ScorecardRow['ratings']) => string,
+): boolean {
+  if (fingerprint(storedFindings) === fingerprint(currentRatings)) return true;
+  const identity = currentRatings['stable-revision-identity'];
+  const allActiveSuffix = ` ${evaluation.clauseCount} current clause(s) have unique identities, content hashes, and acceptance provenance.`;
   if (identity.rating !== 'pass' || !identity.evidence.endsWith(allActiveSuffix)) return false;
   const interimRatings = {
-    ...evaluation.ratings,
+    ...currentRatings,
     'stable-revision-identity': {
       ...identity,
       evidence: identity.evidence.slice(0, -allActiveSuffix.length)
         + allActiveSuffix.replace(' current clause(s)', ' active/accepted current clause(s)'),
     },
   };
-  return fingerprint(currentFindings) === fingerprint(interimRatings);
+  return fingerprint(storedFindings) === fingerprint(interimRatings);
 }
 
+function matchesEvidenceIgnoringDetectorCoverage(
+  card: ScorecardRow,
+  evaluation: PlanSpecQualityResult,
+  stripRevision: boolean,
+): boolean {
+  const fingerprint = (ratings: ScorecardRow['ratings']) => scorecardEvidenceFingerprint({
+    rubricRef: SPEC_QUALITY_RUBRIC_REF,
+    ratings,
+    instrumentSnapshots: card.instrumentSnapshots,
+    ...(card.rerunRecipe ? { rerunRecipe: card.rerunRecipe } : {}),
+  });
+  // A stored fingerprint must attest to the card's actual persisted ratings first.
+  if (card.evidenceFingerprint !== fingerprint(card.ratings)) return false;
+  const storedFindings = Object.fromEntries(Object.entries(card.ratings).map(([key, entry]) => [key, {
+    ...entry, evidence: specQualityEvidenceWithoutReplay(entry.evidence, evaluation),
+  }])) as ScorecardRow['ratings'];
+  const storedEntry = storedFindings['implementation-independence'];
+  const currentEntry = evaluation.ratings['implementation-independence'];
+  if (!storedEntry || !currentEntry) return false;
+  const storedEvidence = stripImplementationIndependenceCoverage(storedEntry.evidence, stripRevision);
+  const currentEvidence = stripImplementationIndependenceCoverage(currentEntry.evidence, stripRevision);
+  if (storedEvidence === null || currentEvidence === null) return false;
+  const normalizedStored = {
+    ...storedFindings,
+    'implementation-independence': { ...storedEntry, evidence: storedEvidence },
+  };
+  const normalizedCurrent = {
+    ...evaluation.ratings,
+    'implementation-independence': { ...currentEntry, evidence: currentEvidence },
+  };
+  return ratingsMatchWithIdentityCompatibility(normalizedStored, normalizedCurrent, evaluation, fingerprint);
+}
 /**
  * Every scorecard test EXCEPT the P-013 grade-the-grader audit stamp — deliberately
  * split from {@link scorecardMatches} so a card that fails ONLY on a pending/failed
@@ -199,6 +296,42 @@ function scorecardStructurallyExact(card: ScorecardRow, evaluation: PlanSpecQual
     matchesSpecQualityEvidence(card, evaluation) &&
     Object.values(card.ratings).every(acceptedRating)
   );
+}
+
+function scorecardIdentityExact(card: ScorecardRow, evaluation: PlanSpecQualityResult): boolean {
+  return (
+    card.rubricRef === SPEC_QUALITY_RUBRIC_REF &&
+    card.subject?.kind === 'plan' &&
+    card.subject.ref === evaluation.scorecardDraft.subject.ref &&
+    (!card.rerunRecipe || (card.rerunRecipe.evaluator === 'plans:evaluate-spec-quality' &&
+      card.rerunRecipe.specSetHashVersion === SPEC_SET_HASH_VERSION &&
+      card.rerunRecipe.args.expectedSpecSetHash === evaluation.specSetHash)) &&
+    card.rubricResolved &&
+    card.missingKeys.length === 0 &&
+    card.extraKeys.length === 0 &&
+    !card.synthesized &&
+    !card.retracted &&
+    !card.supersededBy &&
+    card.provisional === undefined
+  );
+}
+
+function scorecardDetectorRevisionMismatch(
+  card: ScorecardRow,
+  evaluation: PlanSpecQualityResult,
+): { scorecard: number; current: number } | null {
+  if (!scorecardIdentityExact(card, evaluation) || !Object.values(card.ratings).every(acceptedRating)) return null;
+  const scorecardRevision = implementationIndependenceDetectorRevision(
+    card.ratings['implementation-independence']?.evidence,
+  );
+  const currentRevision = implementationIndependenceDetectorRevision(
+    evaluation.ratings['implementation-independence']?.evidence,
+  );
+  if (scorecardRevision === null || currentRevision !== IMPLEMENTATION_INDEPENDENCE_DETECTOR_REVISION ||
+      scorecardRevision === currentRevision) return null;
+  return matchesEvidenceIgnoringDetectorCoverage(card, evaluation, true)
+    ? { scorecard: scorecardRevision, current: currentRevision }
+    : null;
 }
 
 function scorecardMatches(card: ScorecardRow, evaluation: PlanSpecQualityResult): boolean {
@@ -488,6 +621,32 @@ export async function evaluatePlanSpecQualityGate(
           `plans:evaluate-spec-quality { slug:'${input.planSlug}', classRef:'${evaluation.classRef}' }, ` +
           'repair whatever the audit flagged, then emit a fresh scorecard through scorecards:emit for a new ' +
           'grading-integrity audit.',
+      };
+    }
+    const detectorMismatch = cards
+      .map((card) => ({ card, revision: scorecardDetectorRevisionMismatch(card, evaluation) }))
+      .find(({ card, revision }) => revision !== null && settledGradingAuditIsCurrent(card));
+    if (detectorMismatch?.revision) {
+      const diagnostic = rejectedScorecardDiagnostic(detectorMismatch.card, evaluation);
+      return {
+        satisfied: false,
+        applicable: true,
+        mode: 'enforced',
+        planSlug: input.planSlug,
+        specSetHash: evaluation.specSetHash,
+        classRef: evaluation.classRef,
+        scorecardId: detectorMismatch.card.issueId,
+        code: 'spec_quality_scorecard_detector_mismatch',
+        wouldBlock: ['exact-specSetHash-scorecard-detector-revision-mismatch'],
+        candidates,
+        scorecardDiagnostics: [{ ...diagnostic, detectorRevision: detectorMismatch.revision }],
+        message:
+          `Plan '${input.planSlug}' has an existing exact, passing spec-quality scorecard ${detectorMismatch.card.issueId} ` +
+          `for specSetHash ${evaluation.specSetHash}, but its implementation-independence evidence uses detector revision ` +
+          `${detectorMismatch.revision.scorecard}; the current evaluator uses revision ${detectorMismatch.revision.current}. ` +
+          'This is a detector-generation mismatch, not a missing scorecard. Keep the existing card and audit intact. ' +
+          `Re-evaluate this exact spec set, emit the current scorecardDraft as a superseding card for ${detectorMismatch.card.issueId}, ` +
+          'settle the separate independent grading-integrity audit, then retry plans:start. The gate remains fail-closed until that current revision is audited.',
       };
     }
     scorecardDiagnostics = cards.map((card) => rejectedScorecardDiagnostic(card, evaluation));
