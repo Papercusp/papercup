@@ -48,6 +48,8 @@ import { isLocalDiskFullError, localDiskFullClause } from '../harness/git-sync/g
 import { gitSyncLegPhrase } from '../harness/git-sync/git-sync-escalation';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import {
+  GIT_SYNC_STALL_PREFIX,
+  gitSyncInstallHarness,
   gitSyncStallConditionKey,
   raiseStallIncidentSeverity,
   type StallSeverityDeps,
@@ -658,6 +660,89 @@ export function gitSyncStallDurationMs(
  * per-install alarm key (a hand-keyed incident may use it) and the per-harness key that agent
  * sightings filed through `improvements:capture` default to.
  */
+/**
+ * WI-6554700010048637: the stall alarm is ONE per HARNESS. A superproject freeze stalls every
+ * submodule install at the same time, and each install used to page and broadcast under its own
+ * `git-sync-stall:<install>` key, so the condition bridge saw one condition per install.
+ *
+ * Each install still flips its own `watchdog_alerted` flag, because recovery is tracked per
+ * install. Only the FIRST install of a harness to flip pages and broadcasts, under the harness key.
+ * The flip and the sibling check run in one transaction under an advisory lock on the harness key,
+ * so two hosts sweeping two installs of one harness at the same moment cannot both page.
+ * An inactive install is never a sibling: the sweep skips it, so its flag can never clear.
+ */
+export interface GitSyncStallAlarmClaim {
+  /** this call flipped the install's flag false→true (false: already alerted, or another host won). */
+  flipped: boolean;
+  /** no other active install of the same harness is alerted, so this one pages and broadcasts. */
+  firstForHarness: boolean;
+}
+
+export async function claimGitSyncStallAlarm(sql: Sql, installSlug: string): Promise<GitSyncStallAlarmClaim> {
+  const harness = gitSyncInstallHarness(installSlug);
+  return sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtext(${gitSyncStallConditionKey(installSlug)}))`;
+    const flip = await tx`
+      UPDATE harness_shared.routines
+         SET metadata = COALESCE(metadata, '{}'::jsonb) || '{"watchdog_alerted":true}'::jsonb,
+             updated_at = now()
+       WHERE install_slug = ${installSlug}
+         AND target_role = 'system:git-sync'
+         AND COALESCE((metadata->>'watchdog_alerted')::boolean, false) = false`;
+    if (flip.count !== 1) return { flipped: false, firstForHarness: false };
+    const siblings = await tx`
+      SELECT 1 FROM harness_shared.routines
+       WHERE target_role = 'system:git-sync'
+         AND active = true
+         AND split_part(install_slug, '/', 1) = ${harness}
+         AND install_slug <> ${installSlug}
+         AND COALESCE((metadata->>'watchdog_alerted')::boolean, false) = true
+       LIMIT 1`;
+    return { flipped: true, firstForHarness: siblings.length === 0 };
+  }) as Promise<GitSyncStallAlarmClaim>;
+}
+
+/**
+ * Clear one install's flag after it recovers. `harnessClear` is true once no other active
+ * install of its harness is still alerted: only then is the harness condition resolved.
+ */
+export async function releaseGitSyncStallAlarm(sql: Sql, installSlug: string): Promise<{ harnessClear: boolean }> {
+  const harness = gitSyncInstallHarness(installSlug);
+  return sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtext(${gitSyncStallConditionKey(installSlug)}))`;
+    await tx`
+      UPDATE harness_shared.routines
+         SET metadata = COALESCE(metadata, '{}'::jsonb) || '{"watchdog_alerted":false}'::jsonb,
+             updated_at = now()
+       WHERE install_slug = ${installSlug}
+         AND target_role = 'system:git-sync'`;
+    const siblings = await tx`
+      SELECT 1 FROM harness_shared.routines
+       WHERE target_role = 'system:git-sync'
+         AND active = true
+         AND split_part(install_slug, '/', 1) = ${harness}
+         AND install_slug <> ${installSlug}
+         AND COALESCE((metadata->>'watchdog_alerted')::boolean, false) = true
+       LIMIT 1`;
+    return { harnessClear: siblings.length === 0 };
+  }) as Promise<{ harnessClear: boolean }>;
+}
+
+/**
+ * The condition keys a recovered install resolves. Its legacy per-install key always goes, so
+ * alarms broadcast before the per-harness switch are superseded. The harness key goes only once
+ * the whole harness is clear. For a top-level install the two keys are the same string, so that
+ * key waits for the harness too.
+ */
+export function gitSyncStallRecoveryKeys(installSlug: string, harnessClear: boolean): string[] {
+  const harnessKey = gitSyncStallConditionKey(installSlug);
+  const legacyKey = `${GIT_SYNC_STALL_PREFIX}${installSlug.trim()}`;
+  const keys: string[] = [];
+  if (legacyKey !== harnessKey) keys.push(legacyKey);
+  if (harnessClear) keys.push(harnessKey);
+  return keys;
+}
+
 export function gitSyncStallIncidentKeys(installSlug: string): string[] {
   return [...new Set([`git-sync-stall:${installSlug}`, gitSyncStallConditionKey(installSlug)])];
 }
@@ -793,6 +878,10 @@ export async function checkGitSyncStall(
     // EI-9030b: harnesses that recovered from OUR alarm THIS sweep — broadcast ONE
     // coalesced all-clear after the loop instead of one message per harness.
     const recoveredForBroadcast: string[] = [];
+    // WI-6554700010048637: the condition keys those recoveries resolve, and the harnesses that are
+    // now fully clear (every install recovered).
+    const recoveredConditionKeys: string[] = [];
+    const recoveredHarnesses: string[] = [];
     // EI-1835: same coalescing, for the separate eligibility-loss alert class.
     const eligibilityRecoveredForBroadcast: string[] = [];
     for (const row of rows) {
@@ -994,9 +1083,9 @@ export async function checkGitSyncStall(
       if (verdict.stalled) {
         // WI-6554700010048238: severity rises with stall duration. This runs on EVERY confirmed
         // stalled sweep, including after the one-shot alarm below, because that is when the
-        // duration grows. It raises only an incident that already exists: today that is one
-        // opened by an agent's improvements:capture sighting. The alarm itself mints none yet
-        // (WI-6554700010048637), so with no sighting there is nothing to raise.
+        // duration grows. It raises only an incident that already exists: one minted by the
+        // condition bridge from the per-harness alarm broadcast below (WI-6554700010048637), or
+        // one opened by an agent's improvements:capture sighting.
         if (watchdogAlerted || shouldAlarmSustained(verdict.stalled, stallSweeps, stallSustainMinSweeps)) {
           await raiseGitSyncStallIncidentSeverity(
             sql,
@@ -1011,21 +1100,17 @@ export async function checkGitSyncStall(
         // per-signal thresholds judged ONE sweep; this requires the verdict to persist across
         // consecutive sweeps, the edge-triggering the fleet's 6 flapping hive stalls lacked.
         if (!shouldAlarmSustained(verdict.stalled, stallSweeps, stallSustainMinSweeps)) continue;
-        // Cross-process exactly-once: only the writer that flips watchdog_alerted false→true alarms.
-        const flip = await sql`
-          UPDATE harness_shared.routines
-             SET metadata = COALESCE(metadata, '{}'::jsonb) || '{"watchdog_alerted":true}'::jsonb,
-                 updated_at = now()
-           WHERE install_slug = ${row.install_slug}
-             AND target_role = 'system:git-sync'
-             AND COALESCE((metadata->>'watchdog_alerted')::boolean, false) = false`;
-        if (flip.count !== 1) continue; // another process won the flip
+        // Cross-process exactly-once: only the writer that flips watchdog_alerted false→true alarms,
+        // and only the first install of its harness pages (WI-6554700010048637).
+        const claim = await claimGitSyncStallAlarm(sql, row.install_slug);
+        if (!claim.flipped) continue; // already alerted, or another process won the flip
 
         // Say what the verdict actually is: a frozen-HEAD/fire/reap stall strands code; a pure
         // persistent-fault streak is a FAILING LEG with HEAD still advancing. One derivation
         // feeds the broadcast, the notification and the escalation row so they cannot disagree.
         const diagnosis = gitSyncStallDiagnosis(verdict, row.install_slug);
         const summary = diagnosis.summary;
+        if (claim.firstForHarness) {
         try {
           const { notifyAttention } = await import('../attention-notify');
           await notifyAttention({
@@ -1047,11 +1132,13 @@ export async function checkGitSyncStall(
           category: 'severe-event',
           // WI-1444 condition lifecycle: recovery below broadcasts the matching
           // resolution, so late inbox readers see this alarm annotated resolved.
-          conditionKey: `git-sync-stall:${row.install_slug}`,
+          // WI-6554700010048637: keyed per HARNESS, so the condition bridge mints one incident.
+          conditionKey: gitSyncStallConditionKey(row.install_slug),
           // WI-6228: one-shot until recovery (`watchdogAlerted` above) — our
           // silence is deliberate, never evidence git-sync started committing.
           oneShot: true,
         });
+        }
         try {
           await sql`
             INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
@@ -1086,13 +1173,11 @@ export async function checkGitSyncStall(
              AND phase = ${WATCHDOG_PHASE}
              AND escalation IS NOT NULL`;
         if (watchdogAlerted) {
-          // Recovered from OUR alarm: clear the flag + supersede the fleet broadcast.
-          await sql`
-            UPDATE harness_shared.routines
-               SET metadata = COALESCE(metadata, '{}'::jsonb) || '{"watchdog_alerted":false}'::jsonb,
-                   updated_at = now()
-             WHERE install_slug = ${row.install_slug}
-               AND target_role = 'system:git-sync'`;
+          // Recovered from OUR alarm: clear the flag + supersede the fleet broadcast. The harness
+          // condition resolves only once no other install of the harness is still alerted.
+          const { harnessClear } = await releaseGitSyncStallAlarm(sql, row.install_slug);
+          recoveredConditionKeys.push(...gitSyncStallRecoveryKeys(row.install_slug, harnessClear));
+          if (harnessClear) recoveredHarnesses.push(gitSyncInstallHarness(row.install_slug));
           // WI-1444 + EI-9030b: supersede the fleet alarm, but COALESCED — collect this
           // recovery and emit ONE all-clear after the loop (a shared root-cause, e.g. a DBOS
           // engine wedge, recovers many harnesses in the same sweep; one message per harness
@@ -1109,14 +1194,18 @@ export async function checkGitSyncStall(
     }
     // EI-9030b: ONE coalesced all-clear for every harness that recovered this sweep, carrying
     // all their condition keys so coord:inbox supersedes each prior stall alarm. (0 → no-op.)
-    if (recoveredForBroadcast.length > 0) {
-      const list = recoveredForBroadcast.join(', ');
+    // WI-6554700010048637: nothing to resolve while a recovered install's harness still has an
+    // alerted install, so no all-clear is sent for it yet.
+    const conditionKeysToResolve = [...new Set(recoveredConditionKeys)];
+    if (conditionKeysToResolve.length > 0) {
+      const named = recoveredHarnesses.length > 0 ? [...new Set(recoveredHarnesses)] : recoveredForBroadcast;
+      const list = named.join(', ');
       await broadcastSevereEventResolvedMany({
-        conditionKeys: recoveredForBroadcast.map((slug) => `git-sync-stall:${slug}`),
+        conditionKeys: conditionKeysToResolve,
         summary:
-          recoveredForBroadcast.length === 1
+          named.length === 1
             ? `git-sync RECOVERED on ${list} — commits are landing again; the earlier stall alarm is stale.`
-            : `git-sync RECOVERED on ${recoveredForBroadcast.length} harnesses (${list}) — commits are landing again; the earlier stall alarms are stale.`,
+            : `git-sync RECOVERED on ${named.length} harnesses (${list}) — commits are landing again; the earlier stall alarms are stale.`,
       });
     }
     // EI-1835: ONE coalesced all-clear for every harness whose eligibility-loss alarm resolved
