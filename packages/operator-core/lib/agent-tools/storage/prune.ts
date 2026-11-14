@@ -81,12 +81,12 @@ export default defineTool({
   name: 'storage:prune',
   profile: 'engineer',
   description:
-    "Delete a storage category's rows/entries older than N days (or all). Local-only safe categories only; federated categories are refused. Bloat tables also VACUUM FULL to reclaim disk. Pass dryRun to preview count + estimated reclaim.",
+    "Delete a storage category's rows/entries older than N days (or all). Local-only safe categories only; federated categories are refused. Bloat tables also VACUUM FULL to reclaim disk. Pass dryRun to preview count + estimated reclaim. For a partial scratch result, pass its continuation.cursor with the same category, age, and dryRun values to resume.",
   capability: 'storage:write',
   guidance: {
     when: 'The owner (or the Storage settings page) deliberately trims a local-only category — telemetry tables, the drained federation outbox, or on-disk session/scratch/flight-recorder stores.',
     notWhen: 'To read sizes use storage:usage. Federated categories (plans/features/issues/coord) are refused — trimming would change what peers see.',
-    chaining: 'storage:usage { category } → storage:prune { category, olderThanDays, dryRun: true } → review reclaim → storage:prune { category, olderThanDays }.',
+    chaining: 'storage:usage { category } → storage:prune { category, olderThanDays, dryRun: true } → review reclaim → storage:prune { category, olderThanDays }. If scratch pruning returns partial, pass its continuation.cursor unchanged with the same parameters to resume.',
     seeAlso: [
       'storage:usage (read sizes before trimming)',
     ],
@@ -111,6 +111,15 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('Preview matched count + estimated reclaim WITHOUT deleting.'),
+    cursor: z.object({
+      schemaVersion: z.literal(1),
+      scopeHash: z.string().regex(/^[a-f0-9]{64}$/),
+      scanNow: z.number().finite(),
+      phase: z.enum(['retention', 'post-retention']),
+      workspaceId: z.string().nullable(),
+      toolDirName: z.string().nullable(),
+      runDirName: z.string().nullable(),
+    }).optional().describe('Validated continuation.cursor returned by a partial scratch prune. Repeat the same category, age, and dryRun values.'),
   }),
   async handler(args, ctx) {
     const { pruneStorageCategory } = await import('../../storage/prune');
@@ -121,6 +130,7 @@ export default defineTool({
       categoryId: args.category,
       olderThanDays: args.olderThanDays ?? null,
       dryRun: args.dryRun ?? false,
+      cursor: args.cursor,
       workspaceId: ws,
       signal: ctx?.signal,
     });

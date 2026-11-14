@@ -473,9 +473,25 @@ describe('pruneStorageCategory — disk (plain store)', () => {
     expect(r.ok).toBe(true);
     expect(r.partial).toBe(true);
     expect(r.complete).toBe(false);
-    expect(r.continuation).toEqual({ categoryId: 'scratch', olderThanDays: 1 });
+    expect(r.continuation).toMatchObject({
+      categoryId: 'scratch',
+      olderThanDays: 1,
+      cursor: { schemaVersion: 1, phase: 'retention', workspaceId: 'ws-test' },
+    });
     expect(r.reclaimEstimated).toBe(true);
     expect(r.note).toMatch(/scan budget of 0ms exhausted/);
+    expect(existsSync(fixture.staleRun)).toBe(true);
+
+    const resumed = await pruneStorageCategory(REQ({
+      categoryId: 'scratch',
+      olderThanDays: 1,
+      dryRun: true,
+      scanBudgetMs: 1_000,
+      cursor: r.continuation?.cursor,
+    }));
+    expect(resumed.ok).toBe(true);
+    expect(resumed.partial).toBeUndefined();
+    expect(resumed.removed).toBe(1);
     expect(existsSync(fixture.staleRun)).toBe(true);
   });
 });

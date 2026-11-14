@@ -32,7 +32,7 @@ import {
   planSessionDirGc,
 } from '../session-dir-gc';
 import { readRegistryAsync } from '../workspace-registry';
-import { RETENTION_MS, runScratchGc } from '../scratch-gc';
+import { RETENTION_MS, runScratchGc, type ScratchGcContinuationCursor } from '../scratch-gc';
 
 export interface PruneRequest {
   categoryId: string;
@@ -45,6 +45,8 @@ export interface PruneRequest {
   signal?: AbortSignal;
   /** Test-only seam for the foreground scratch-scan budget; omitted in production calls. */
   scanBudgetMs?: number;
+  /** Cursor returned by a partial scratch prune. It is bound to the original scan scope. */
+  cursor?: ScratchGcContinuationCursor;
   /**
    * Wall-time budget (ms) for the chunked PG delete loop (EI-11379). When the
    * budget is hit mid-drain, the loop stops and returns a continuation instead
@@ -82,7 +84,12 @@ export interface PruneResult {
    * WHERE clause) and reports only what IT removed, so re-running never
    * double-counts. Present only while `complete` is false.
    */
-  continuation?: { categoryId: string; olderThanDays: number | null };
+  continuation?: {
+    categoryId: string;
+    olderThanDays: number | null;
+    /** Scratch GC cursor; PG continuations continue to replay category/age args only. */
+    cursor?: ScratchGcContinuationCursor;
+  };
 }
 
 /** chunked-delete batch size + per-call ceiling (rerun to continue past it). */
@@ -430,7 +437,21 @@ async function pruneScratch(cat: DiskStorageCategory, req: PruneRequest): Promis
     quietMs: retentionMs,
     enforceQuota: false,
     maxDurationMs: scanBudgetMs,
+    cursor: req.cursor,
   });
+  if (gc.continuationError) {
+    return {
+      ok: false,
+      categoryId: cat.id,
+      dryRun: req.dryRun,
+      removed: 0,
+      reclaimedBytes: 0,
+      reclaimEstimated: false,
+      vacuumed: false,
+      reason: 'invalid_continuation',
+      note: 'The scratch continuation cursor does not match this prune scope; start a fresh scan without cursor.',
+    };
+  }
   const removed = gc.retentionEvictions + gc.deadWorkspaces;
   const notes: string[] = [];
   if (retentionMs > requestedMs) {
@@ -441,7 +462,7 @@ async function pruneScratch(cat: DiskStorageCategory, req: PruneRequest): Promis
     notes.push(`kept ${gc.deadWorkspacesDeferred.length} marked workspace root(s) without complete quiet/open-writer proof`);
   }
   if (gc.truncated) {
-    notes.push(`scratch scan budget of ${scanBudgetMs}ms exhausted; this result is partial — re-run with the same arguments to continue`);
+    notes.push(`scratch scan budget of ${scanBudgetMs}ms exhausted; this result is partial — pass continuation.cursor with the same prune arguments to resume`);
   }
   return {
     ok: true,
@@ -455,7 +476,11 @@ async function pruneScratch(cat: DiskStorageCategory, req: PruneRequest): Promis
       ? {
           partial: true,
           complete: false,
-          continuation: { categoryId: cat.id, olderThanDays: req.olderThanDays },
+          continuation: {
+            categoryId: cat.id,
+            olderThanDays: req.olderThanDays,
+            ...(gc.continuationCursor ? { cursor: gc.continuationCursor } : {}),
+          },
         }
       : {}),
     ...(notes.length > 0 ? { note: notes.join('; ') } : {}),

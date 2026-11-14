@@ -1223,6 +1223,63 @@ describe('runScratchGc — no synchronous fs on the event loop (WI-10005135)', (
     expect(r.retentionEvictions).toBe(0);
   });
 
+  it('resumes a bounded retention scan after the last fully processed run directory', async () => {
+    const firstRun = makeRunDir('ws-A', 'tool', UUID(80), 64, RETENTION_MS + 60_000);
+    const interruptedRun = makeRunDir('ws-A', 'tool', UUID(81), 64, RETENTION_MS + 60_000);
+    makeRunDir('ws-A', 'tool', UUID(82), 64, RETENTION_MS + 60_000);
+
+    let clock = Date.now();
+    let expired = false;
+    let firstRunReads = 0;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const readdirMock = vi.mocked(readdirAsync);
+    const originalReaddir = readdirMock.getMockImplementation()!;
+    readdirMock.mockImplementation(async (...args) => {
+      const result = await originalReaddir(...args);
+      const path = String(args[0]);
+      if (path === firstRun) firstRunReads += 1;
+      if (path === interruptedRun && !expired) {
+        clock += 1_000;
+        expired = true;
+      }
+      return result;
+    });
+
+    try {
+      const first = await runScratchGc({
+        workspaceRegistry: ['ws-A'],
+        dryRun: true,
+        enforceQuota: false,
+        maxDurationMs: 1_000,
+      });
+
+      expect(first.truncated).toBe(true);
+      expect(first.retentionEvictions).toBe(1);
+      expect(first.continuationCursor).toMatchObject({
+        schemaVersion: 1,
+        phase: 'retention',
+        workspaceId: 'ws-A',
+        toolDirName: 'tool',
+        runDirName: firstRun.split(sep).at(-1),
+      });
+
+      const resumed = await runScratchGc({
+        workspaceRegistry: ['ws-A'],
+        dryRun: true,
+        enforceQuota: false,
+        maxDurationMs: 1_000,
+        cursor: first.continuationCursor,
+      });
+
+      expect(resumed.truncated).toBeFalsy();
+      expect(resumed.retentionEvictions).toBe(2);
+      expect(firstRunReads).toBe(1);
+    } finally {
+      readdirMock.mockImplementation(originalReaddir);
+      nowSpy.mockRestore();
+    }
+  });
+
   it.each([false, true])('processes registered retention before a dead-tree walk exhausts the budget (dryRun=%s)', async (dryRun) => {
     const expired = makeRunDir('ws-A', 'tool', UUID(71), 64, RETENTION_MS + 60_000);
     const pinned = makeRunDir('ws-A', 'tool', UUID(72), 32, RETENTION_MS + 60_000);

@@ -768,6 +768,20 @@ export interface ScratchGcSummary {
   }>;
   /** The caller's wall-time budget expired before the full sweep completed. */
   truncated?: boolean;
+  /** Validated continuation state for a bounded foreground scratch prune. */
+  continuationCursor?: ScratchGcContinuationCursor;
+  /** Invalid cursors fail before any filesystem mutation. */
+  continuationError?: 'invalid_cursor';
+}
+
+export interface ScratchGcContinuationCursor {
+  schemaVersion: 1;
+  scopeHash: string;
+  scanNow: number;
+  phase: 'retention' | 'post-retention';
+  workspaceId: string | null;
+  toolDirName: string | null;
+  runDirName: string | null;
 }
 
 interface ScratchGcBudget {
@@ -779,6 +793,47 @@ function scratchGcBudgetExpired(budget?: ScratchGcBudget): boolean {
   if (!budget || Date.now() < budget.deadlineMs) return false;
   budget.truncated = true;
   return true;
+}
+
+function scratchGcCursorScopeHash(opts: {
+  workspaceRegistry: ReadonlyArray<string>;
+  retentionMs: number;
+  quietMs: number;
+  dryRun: boolean;
+  enforceQuota?: boolean;
+  scanNow: number;
+}): string {
+  return createHash('sha256').update(JSON.stringify({
+    workspaceRegistry: opts.workspaceRegistry,
+    retentionMs: opts.retentionMs,
+    quietMs: opts.quietMs,
+    dryRun: opts.dryRun,
+    enforceQuota: opts.enforceQuota !== false,
+    scanNow: opts.scanNow,
+  })).digest('hex');
+}
+
+function safeScratchCursorName(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value !== '.' && value !== '..' &&
+    !value.includes('/') && !value.includes('\\') && !value.includes('\0');
+}
+
+function isValidScratchGcCursor(
+  value: unknown,
+  scopeHash: string,
+  workspaceRegistry: ReadonlyArray<string>,
+): value is ScratchGcContinuationCursor {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const cursor = value as Partial<ScratchGcContinuationCursor>;
+  if (cursor.schemaVersion !== 1 || cursor.scopeHash !== scopeHash ||
+      typeof cursor.scanNow !== 'number' || !Number.isFinite(cursor.scanNow)) return false;
+  if (cursor.phase === 'post-retention') {
+    return cursor.workspaceId === null && cursor.toolDirName === null && cursor.runDirName === null;
+  }
+  if (cursor.phase !== 'retention' || typeof cursor.workspaceId !== 'string' ||
+      !workspaceRegistry.includes(cursor.workspaceId)) return false;
+  if (cursor.toolDirName === null && cursor.runDirName === null) return true;
+  return safeScratchCursorName(cursor.toolDirName) && safeScratchCursorName(cursor.runDirName);
 }
 
 export async function runScratchGc(opts: {
@@ -796,8 +851,10 @@ export async function runScratchGc(opts: {
   enforceQuota?: boolean;
   /** Optional wall-time cap for foreground callers; a capped sweep returns a partial summary. */
   maxDurationMs?: number;
+  /** Resume a previously returned bounded foreground scan without revisiting its completed prefix. */
+  cursor?: ScratchGcContinuationCursor;
 }): Promise<ScratchGcSummary> {
-  const now = opts.now ?? Date.now();
+  const now = opts.cursor?.scanNow ?? opts.now ?? Date.now();
   const dryRun = opts.dryRun ?? false;
   const retentionMs = Math.max(RETENTION_MS, opts.retentionMs ?? RETENTION_MS);
   const quietMs = Math.max(DEAD_WORKSPACE_QUIET_MS, opts.quietMs ?? DEAD_WORKSPACE_QUIET_MS);
@@ -816,6 +873,19 @@ export async function runScratchGc(opts: {
   };
 
   const registrySet = new Set(opts.workspaceRegistry);
+  const cursorScopeHash = scratchGcCursorScopeHash({
+    workspaceRegistry: opts.workspaceRegistry,
+    retentionMs,
+    quietMs,
+    dryRun,
+    enforceQuota: opts.enforceQuota,
+    scanNow: now,
+  });
+  if (opts.cursor && !isValidScratchGcCursor(opts.cursor, cursorScopeHash, opts.workspaceRegistry)) {
+    summary.continuationError = 'invalid_cursor';
+    return summary;
+  }
+  let continuationCursor = opts.cursor;
   const budget = opts.maxDurationMs == null
     ? undefined
     : { deadlineMs: Date.now() + Math.max(0, opts.maxDurationMs), truncated: false };
@@ -838,27 +908,88 @@ export async function runScratchGc(opts: {
 
   // Retention comes first: marker backfill or an abandoned tree walk can exhaust a
   // foreground caller's budget before any registered workspace reclaims expired runs.
-  for (const workspaceId of opts.workspaceRegistry) {
-    if (scratchGcBudgetExpired(budget)) break;
+  const resumeAtPostRetention = opts.cursor?.phase === 'post-retention';
+  const resumeWorkspaceIndex = opts.cursor?.phase === 'retention'
+    ? opts.workspaceRegistry.indexOf(opts.cursor.workspaceId!)
+    : 0;
+  let retentionComplete = resumeAtPostRetention;
+  if (!resumeAtPostRetention) retentionComplete = true;
+  if (!resumeAtPostRetention) for (let workspaceIndex = resumeWorkspaceIndex;
+    workspaceIndex < opts.workspaceRegistry.length; workspaceIndex += 1) {
+    const workspaceId = opts.workspaceRegistry[workspaceIndex];
+    if (!continuationCursor || continuationCursor.phase !== 'retention' ||
+        continuationCursor.workspaceId !== workspaceId) {
+      continuationCursor = {
+        schemaVersion: 1,
+        scopeHash: cursorScopeHash,
+        scanNow: now,
+        phase: 'retention',
+        workspaceId,
+        toolDirName: null,
+        runDirName: null,
+      };
+    }
+    if (scratchGcBudgetExpired(budget)) {
+      retentionComplete = false;
+      break;
+    }
+    const resumeAfter = opts.cursor?.phase === 'retention' && workspaceIndex === resumeWorkspaceIndex &&
+      opts.cursor.toolDirName !== null && opts.cursor.runDirName !== null
+      ? { toolDirName: opts.cursor.toolDirName, runDirName: opts.cursor.runDirName }
+      : undefined;
     // Walk and size candidates without the workspace mutex. A retention sweep can visit many
     // run directories, and a slow stat/readdir here must not hold up result-door reservations
     // for the whole workspace. Each deletion still takes the mutex and revalidates the run's
     // mtime immediately before removing it, so a cooperating writer that started after this
     // scan keeps its run alive. Pin state is checked inside the same deletion critical section.
-    const candidates = (await runDirsOf(scratchRootForWorkspace(workspaceId), undefined, budget))
-      .filter((run) => now - run.mtimeMs > retentionMs);
+    const workspaceRoot = scratchRootForWorkspace(workspaceId);
+    const candidates = await runDirsOf(workspaceRoot, undefined, budget, resumeAfter);
     let removed = false;
+    let lastCompletedCursor = continuationCursor;
     for (const candidate of candidates) {
-      if (scratchGcBudgetExpired(budget)) break;
+      if (scratchGcBudgetExpired(budget)) {
+        retentionComplete = false;
+        break;
+      }
+      const relativeRun = relative(workspaceRoot, candidate.dir);
+      const [toolDirName, runDirName] = relativeRun.split(sep);
+      if (!safeScratchCursorName(toolDirName) || !safeScratchCursorName(runDirName)) continue;
+      const candidateCursor: ScratchGcContinuationCursor = {
+        schemaVersion: 1,
+        scopeHash: cursorScopeHash,
+        scanNow: now,
+        phase: 'retention',
+        workspaceId,
+        toolDirName,
+        runDirName,
+      };
+      if (now - candidate.mtimeMs <= retentionMs) {
+        continuationCursor = candidateCursor;
+        lastCompletedCursor = candidateCursor;
+        continue;
+      }
       const bytes = await sizeOfDirAsync(candidate.dir, undefined, undefined, 0, undefined, undefined, budget);
-      if (scratchGcBudgetExpired(budget)) break;
+      if (scratchGcBudgetExpired(budget)) {
+        // The current candidate was not completely measured or acted on. Leave the
+        // cursor at the last completed candidate so this one is retried in full.
+        continuationCursor = lastCompletedCursor;
+        retentionComplete = false;
+        break;
+      }
       if (dryRun) {
         if (!(await removeForGc(workspaceId, candidate.dir, true))) {
-          if (summary.pinAdmissionDeferred?.length) return summary;
+          if (summary.pinAdmissionDeferred?.length) {
+            summary.continuationCursor = lastCompletedCursor;
+            return summary;
+          }
+          continuationCursor = candidateCursor;
+          lastCompletedCursor = candidateCursor;
           continue;
         }
         summary.retentionEvictions += 1;
         summary.retentionEvictedBytes += bytes;
+        continuationCursor = candidateCursor;
+        lastCompletedCursor = candidateCursor;
         continue;
       }
 
@@ -881,12 +1012,20 @@ export async function runScratchGc(opts: {
         });
       }));
       if (!evicted) {
-        if (summary.pinAdmissionDeferred?.length) break;
+        if (summary.pinAdmissionDeferred?.length) {
+          continuationCursor = lastCompletedCursor;
+          retentionComplete = false;
+          break;
+        }
+        continuationCursor = candidateCursor;
+        lastCompletedCursor = candidateCursor;
         continue;
       }
       removed = true;
       summary.retentionEvictions += 1;
       summary.retentionEvictedBytes += bytes;
+      continuationCursor = candidateCursor;
+      lastCompletedCursor = candidateCursor;
     }
     if (removed) {
       await withScratchWorkspaceDataMutex(workspaceId, 'retention-gc-state', () =>
@@ -896,6 +1035,21 @@ export async function runScratchGc(opts: {
         }));
     }
     if (summary.pinAdmissionDeferred?.length) return summary;
+    if (budget?.truncated) {
+      retentionComplete = false;
+      break;
+    }
+  }
+  if (retentionComplete) {
+    continuationCursor = {
+      schemaVersion: 1,
+      scopeHash: cursorScopeHash,
+      scanNow: now,
+      phase: 'post-retention',
+      workspaceId: null,
+      toolDirName: null,
+      runDirName: null,
+    };
   }
 
   if (!dryRun) {
@@ -1020,7 +1174,10 @@ export async function runScratchGc(opts: {
     }
   }
 
-  if (budget?.truncated) summary.truncated = true;
+  if (budget?.truncated) {
+    summary.truncated = true;
+    summary.continuationCursor = continuationCursor;
+  }
 
   return summary;
 }
@@ -1051,6 +1208,8 @@ async function childDirs(
   dir: string,
   diagnostics?: ScratchQuotaRecoveryDiagnostics,
   budget?: ScratchGcBudget,
+  afterName?: string,
+  includeAfter = false,
 ): Promise<Array<{ dir: string; mtimeMs: number }>> {
   const out: Array<{ dir: string; mtimeMs: number }> = [];
   if (scratchGcBudgetExpired(budget)) return out;
@@ -1069,8 +1228,11 @@ async function childDirs(
     return out;
   }
   scratchGcBudgetExpired(budget);
+  entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
   for (const entry of entries) {
     if (scratchGcBudgetExpired(budget)) break;
+    if (afterName !== undefined &&
+        (entry.name < afterName || (!includeAfter && entry.name === afterName))) continue;
     // Keep following directory symlinks as before, but do not stat regular files just
     // to discover that they are not run directories.
     if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
@@ -1094,11 +1256,16 @@ async function runDirsOf(
   wsRoot: string,
   diagnostics?: ScratchQuotaRecoveryDiagnostics,
   budget?: ScratchGcBudget,
+  after?: { toolDirName: string; runDirName: string },
 ): Promise<Array<{ dir: string; mtimeMs: number }>> {
   const runs: Array<{ dir: string; mtimeMs: number }> = [];
-  for (const toolDir of await childDirs(wsRoot, diagnostics, budget)) {
+  const toolDirs = await childDirs(wsRoot, diagnostics, budget, after?.toolDirName, true);
+  for (const toolDir of toolDirs) {
     if (scratchGcBudgetExpired(budget)) break;
-    runs.push(...(await childDirs(toolDir.dir, diagnostics, budget)));
+    const afterRun = after && toolDir.dir === join(wsRoot, after.toolDirName)
+      ? after.runDirName
+      : undefined;
+    runs.push(...(await childDirs(toolDir.dir, diagnostics, budget, afterRun)));
   }
   return runs;
 }
