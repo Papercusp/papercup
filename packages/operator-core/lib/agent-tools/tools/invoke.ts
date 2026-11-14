@@ -317,7 +317,7 @@ export default defineTool({
   // its idempotency-replay store, and an annotation-keyed approval policy could
   // wave a shell command through (D-021). Per call it is the target's own effect.
   effect: 'write',
-  effectForCall(raw: unknown) {
+  effectForCall(raw: unknown): 'read' | 'write' {
     const call = raw && typeof raw === 'object' ? raw as { name?: unknown; args?: unknown } : {};
     const name = typeof call.name === 'string' ? call.name.trim() : '';
     const target = name && name !== 'tools:invoke' ? resolveMcpName(name) : undefined;
@@ -400,7 +400,8 @@ export default defineTool({
         );
       }
     }
-    if (!ctx.dispatchTool) {
+    const dispatchTool = ctx.dispatchTool;
+    if (!dispatchTool) {
       return {
         isError: true,
         content: [{
@@ -432,7 +433,7 @@ export default defineTool({
         : undefined;
       try {
         reportProgress('Dispatching nested tool "' + name + '".');
-        return await ctx.dispatchTool(name, dispatchArgs);
+        return await dispatchTool(name, dispatchArgs);
       } finally {
         progressTimer?.stop();
       }
