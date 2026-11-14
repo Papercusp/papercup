@@ -105,7 +105,7 @@ export function baseRequest({ port, client, owner, cwd, env }: {
  * @param {{ env?: NodeJS.ProcessEnv, fetchImpl?: typeof fetch, now?: () => number,
  *   onTurnStartOutcome?: (outcome: object) => void,
  *   onHookOutcome?: (outcome: object) => void }} [opts]
- * @returns {Promise<{ text: string, deliveryToken: string | null, factBodyOffers?: object[], memoryFragmentOffers?: object[] } | null>} the text
+ * @returns {Promise<{ text: string, deliveryToken: string | null, packingReceipt?: { attemptId: string, sha256: string }, factBodyOffers?: object[], memoryFragmentOffers?: object[] } | null>} the text
  *   to inject plus the turn-start orientation delivery token (delivery-ledger.mjs),
  *   or null to inject nothing
  */
@@ -118,6 +118,10 @@ export function postInjection(port: InjectionPort, body: InjectionRequest, opts?
 }): Promise<{
     text: string;
     deliveryToken: string | null;
+    packingReceipt?: {
+        attemptId: string;
+        sha256: string;
+    };
     factBodyOffers?: object[];
     memoryFragmentOffers?: object[];
 } | null>;
@@ -235,7 +239,7 @@ export function clampPrompt(prompt: unknown): string;
  * @param {unknown} args.event
  * @param {NodeJS.ProcessEnv} [args.env]
  * @param {typeof fetch} [args.fetchImpl]
- * @param {(owner: string, env: NodeJS.ProcessEnv, port?: 'turn-start' | 'mid-turn') => import('./delivery-ledger.mjs').DeliveryLedger | null} [args.openDeliveryLedger]
+ * @param {(owner: string, env: NodeJS.ProcessEnv, port?: 'turn-start' | 'mid-turn' | 'compact') => import('./delivery-ledger.mjs').DeliveryLedger | null} [args.openDeliveryLedger]
  *   Native context ports opt into ACK-ON-PROOF: the last confirmed orientation token
  *   rides as `confirmedDelivery`, and the returned token is OFFERED to the ledger
  *   once a payload exists. Committing it is the caller's job, after it has actually
@@ -248,7 +252,7 @@ export function runInjection({ adapter, nativeEvent, event, env, fetchImpl, open
     event: unknown;
     env?: NodeJS.ProcessEnv | undefined;
     fetchImpl?: typeof fetch | undefined;
-    openDeliveryLedger?: ((owner: string, env: NodeJS.ProcessEnv, port?: "turn-start" | "mid-turn") => import("./delivery-ledger.mjs").DeliveryLedger | null) | undefined;
+    openDeliveryLedger?: ((owner: string, env: NodeJS.ProcessEnv, port?: "turn-start" | "mid-turn" | "compact") => import("./delivery-ledger.mjs").DeliveryLedger | null) | undefined;
 }): Promise<string | null>;
 /**
  * Opt-in, diagnostic-only trace of why ONE hook invocation emitted what it did.
