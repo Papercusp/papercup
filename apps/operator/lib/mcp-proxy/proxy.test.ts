@@ -11200,6 +11200,76 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     }
   }, 10_000);
 
+  it("WI-6554700010048424: loop/session continuation writes are owner-keyed, so one owner's held write cannot shed another owner's Codex home", async () => {
+    let releaseHeld: () => void = () => {};
+    const heldGate = new Promise<void>((resolve) => { releaseHeld = resolve; });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const pending: Array<Promise<unknown>> = [];
+    const upstream = track(http.createServer((req, res) => {
+      const client = new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get("client") ?? "(none)";
+      hits.push(client);
+      void (client === "su-owner-a" && hits.filter((hit) => hit === "su-owner-a").length === 1
+        ? heldGate : Promise.resolve()).then(() => res.end('{"ok":true}'));
+    }));
+    await listen(upstream);
+    const proxy = track(createMcpProxy({
+      listenPort: 0,
+      targetHost: "127.0.0.1",
+      targetPort: port(upstream),
+      retryWindowMs: 1_000,
+      maxInFlight: 10,
+      controlPlaneReserve: 3,
+      maxCriticalContinuationQueue: 8,
+      criticalContinuationQueueWaitLogMs: 10,
+      log: (line) => logs.push(line),
+    }));
+    await listen(proxy);
+    const call = (tool: string, args: Record<string, unknown>, client?: string) => {
+      const result = request(port(proxy), JSON.stringify({
+        jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: args },
+      }), client ? "/api/mcp?client=" + client : "/api/mcp");
+      pending.push(result);
+      return result;
+    };
+    const queuedCount = () => logs.filter((line) => line.includes("queued critical-continuation request")).length;
+    try {
+      const held = call("loop:checkpoint", { did: "held" }, "su-owner-a");
+      await waitFor(() => hits.includes("su-owner-a"));
+
+      // Another owner's loop write and a Codex home preparation (the EI-27281507652566971
+      // carry-respawn shape) both progress while owner A's checkpoint is held.
+      expect((await call("loop:end", {}, "su-owner-b")).status).toBe(200);
+      const home = request(port(proxy), JSON.stringify({ owner: "su-owner-c", advSessionId: 105 }),
+        "/api/adv/sessions/ensure-codex-home?client=home-c");
+      pending.push(home);
+      expect((await home).status).toBe(200);
+      expect(queuedCount()).toBe(0);
+
+      // Same owner stays ordered: by the caller, by an explicit ownerId, and via tools:invoke.
+      const sameOwner = call("session:request-compaction", { autoContinue: true }, "su-owner-a");
+      const explicitTarget = call("loop:end", { ownerId: "su-owner-a" }, "su-owner-d");
+      const invoked = call("tools:invoke", { name: "loop:checkpoint", args: { did: "x" } }, "su-owner-a");
+      // An unidentified caller keeps the conservative global barrier.
+      const unkeyed = call("loop:checkpoint", { did: "anon" });
+      await waitFor(() => queuedCount() >= 4);
+      expect(hits).toEqual(["su-owner-a", "su-owner-b", "home-c"]);
+      const health = JSON.parse((await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body);
+      const queuedKeys = health.inFlight.criticalContinuationQueue.requests
+        .map((row: { conflictKeys: string[] | null }) => row.conflictKeys);
+      expect(queuedKeys).toContain(null);
+      expect(new Set(queuedKeys.filter(Boolean).map((keys: string[]) => keys.join(","))).size).toBe(1);
+
+      releaseHeld();
+      for (const result of [held, sameOwner, explicitTarget, invoked, unkeyed]) {
+        expect((await result).status).toBe(200);
+      }
+    } finally {
+      releaseHeld();
+      await Promise.allSettled(pending);
+    }
+  }, 10_000);
+
   it("WI-6554700010044894: Codex home queue refusal is deadline-bounded and correlated to its repair attempt", async () => {
     const fs = await import("node:fs");
     const os = await import("node:os");
@@ -11297,7 +11367,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     }
   }, 10_000);
 
-  it("WI-6554700010029903: a carry-respawn identity report is forwarded while unkeyed continuation writes hold the critical socket", async () => {
+  it("WI-6554700010029903: a carry-respawn identity report is forwarded while same-owner continuation writes hold the critical socket", async () => {
     let releaseHeld: () => void = () => {};
     const heldGate = new Promise<void>((resolve) => { releaseHeld = resolve; });
     const hits: string[] = [];
@@ -11330,11 +11400,13 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       return result;
     };
     try {
-      // Unkeyed loop:checkpoint is a global barrier on the critical lane: it holds the
-      // socket, and a second one queues behind it (the 2026-10-27 proxy journal shape).
-      toolCall("held-loop-checkpoint", "loop:checkpoint", { did: "x" });
+      // A loop:checkpoint holds the critical socket and a second write to the SAME owner's
+      // loop queues behind it (the 2026-10-27 proxy journal shape). Since WI-6554700010048424
+      // these writes are keyed per owner, so the shared explicit ownerId is what keeps the
+      // second one ordered; the distinct ?client= values only label the upstream hits.
+      toolCall("held-loop-checkpoint", "loop:checkpoint", { ownerId: "su-held-owner", did: "x" });
       await waitFor(() => hits.includes("held-loop-checkpoint"));
-      toolCall("queued-loop-checkpoint", "loop:checkpoint", { did: "y" });
+      toolCall("queued-loop-checkpoint", "loop:checkpoint", { ownerId: "su-held-owner", did: "y" });
       await waitFor(() =>
         logs.some((line) => line.includes("queued critical-continuation request")));
 

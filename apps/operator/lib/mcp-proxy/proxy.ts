@@ -3412,15 +3412,63 @@ const WORK_ITEM_SCOPED_CONTINUATION_TOOLS = new Set([
   normalizeMcpName("work_items:complete"),
 ]);
 
+// EI-27281507652566971 / WI-6554700010048424 — these three mutate only the loop/session state
+// of ONE owner. While they were unkeyed (global), one agent's slow loop:checkpoint or
+// session:request-compaction held every later arrival in the FIFO, so another agent's
+// ensure-codex-home was shed with 429 not_forwarded until its carry-respawn dropped
+// (codex-route-unavailable). Keying them per owner keeps same-owner writes ordered while
+// different owners progress independently.
+const OWNER_SCOPED_CONTINUATION_TOOLS = new Set([
+  normalizeMcpName("loop:checkpoint"),
+  normalizeMcpName("loop:end"),
+  normalizeMcpName("session:request-compaction"),
+]);
+
+function boundedContinuationOwner(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const owner = value.trim();
+  return owner.length > 0 && owner.length <= 256 && /^[A-Za-z0-9._-]+$/.test(owner)
+    ? owner
+    : null;
+}
+
+/** The caller's own session identity (`?client=`), the domain of an owner-scoped write. */
+function criticalContinuationCallerOwner(requestPath?: string): string | null {
+  if (!requestPath) return null;
+  try {
+    return boundedContinuationOwner(
+      new URL(requestPath, "http://127.0.0.1").searchParams.get("client"),
+    );
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Derive the narrow mutation domain carried by the two work-item continuation tools.
- * Anything malformed, unkeyed, or outside that pair stays globally conflicting; admission
- * must never guess an identity before the upstream tool has validated its own arguments.
+ * Derive the narrow mutation domain carried by a continuation tool: the work-item ids of the
+ * two work-item tools, or the target owner of the three loop/session tools. Anything
+ * malformed, unkeyed, or outside those sets stays globally conflicting; admission must never
+ * guess an identity before the upstream tool has validated its own arguments.
  */
 function criticalContinuationConflictKeysForTool(
   toolName: string,
   args: unknown,
+  callerOwner: string | null = null,
 ): string[] | null {
+  if (OWNER_SCOPED_CONTINUATION_TOOLS.has(toolName)) {
+    if (args !== undefined && (!args || typeof args !== "object" || Array.isArray(args)))
+      return null;
+    const explicit = (args as { ownerId?: unknown } | undefined)?.ownerId;
+    // An explicit ownerId (loop:end / loop:checkpoint on another session) names the mutated
+    // loop; "self" or no ownerId means the caller's own session.
+    const owner =
+      explicit === undefined || explicit === "self"
+        ? callerOwner
+        : boundedContinuationOwner(explicit);
+    return owner
+      ? ["continuation-owner:" + createHash("sha256").update(owner).digest("hex")]
+      : null;
+  }
   if (!WORK_ITEM_SCOPED_CONTINUATION_TOOLS.has(toolName)) return null;
   if (!args || typeof args !== "object" || Array.isArray(args)) return null;
   const input = args as { id?: unknown; items?: unknown };
@@ -3480,11 +3528,16 @@ function classifyCriticalContinuationCall(
     const tools: string[] = [];
     const conflictKeys = new Set<string>();
     let globallyConflicting = false;
+    const callerOwner = criticalContinuationCallerOwner(requestPath);
     const recordCriticalTool = (toolName: string, args: unknown): void => {
       tools.push(
         CRITICAL_CONTINUATION_DISPLAY_NAMES.get(toolName) ?? toolName,
       );
-      const keys = criticalContinuationConflictKeysForTool(toolName, args);
+      const keys = criticalContinuationConflictKeysForTool(
+        toolName,
+        args,
+        callerOwner,
+      );
       if (keys === null) globallyConflicting = true;
       else for (const key of keys) conflictKeys.add(key);
     };
