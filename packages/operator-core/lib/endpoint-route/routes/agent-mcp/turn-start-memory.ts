@@ -35,7 +35,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { createHash, randomUUID } from 'node:crypto';
 import { computeTurnDoors, contextPackingCarrier, optionalRecallContextCandidates, packContextCandidates, type ContextCandidate, type ContextCandidateSource } from '../../../context-doors';
 import { getDoorConstantsSync } from '../../../context-doors-config';
-import { saveContextPackingReceipt, loadContextPackingReceipt, pageContextPackingReceipt } from '../../../context-packing-receipts';
+import { captureContextPackingAttribution, saveContextPackingReceipt, loadContextPackingReceipt, pageContextPackingReceipt } from '../../../context-packing-receipts';
 import type { ActivationRevision } from '../../../session-activation';
 import type { LaunchGovernanceTarget } from '../../../governance-policy/session-governance';
 import type { PreparedMemoryBlock, MemoryFragmentOffer, MemoryEmissionConfirmation } from '../../../memory/session-epoch-ledger';
@@ -334,6 +334,7 @@ const turnStartMemory = defineTool({
       const workspace = (body.workspace ?? '').trim();
       const { activeWorkspaceId } = await import('../../../workspace-registry');
       const workspaceId = workspace && workspace !== '*' ? workspace : activeWorkspaceId();
+      const packingAttribution = await captureContextPackingAttribution({ workspaceId, ownerId: owner, client: body.client ?? '' });
       // EI-24791346664119438: lifecycle evidence is independent of whether this
       // request may receive ambient context. Start the marker before the ambient
       // gate so a denied context read cannot erase proof that the loop turn began.
@@ -1115,10 +1116,18 @@ const turnStartMemory = defineTool({
       // Persist before staging or emission. A failed evidence write fails closed
       // through the endpoint's existing silent-response contract.
       const packingReceipt = await saveContextPackingReceipt({ workspaceId, ownerId: owner,
-        harness: harness || 'operator', port: 'turn-start', client: body.client ?? '' }, packed.receipt);
+        harness: harness || 'operator', port: 'turn-start', client: body.client ?? '' }, packed.receipt, {
+        createdAt: new Date(arrivedAt).toISOString(), text: packed.text, selectedIndexes: packed.selectedIndexes, candidates,
+        attribution: packingAttribution,
+      });
       if (selected(2)) deliveryToken = orientation.stageDelivery
         ? await orientation.stageDelivery() : orientation.deliveryToken;
-      if (packages.receipt && (selectedSource('turn-start:packages') || (!appendedPackages && selected(2)))) {
+      // A fenced package evaluation can have no rows and no platform block.
+      // Its metadata receipt still needs an ACK token; an empty candidate is
+      // deliberately never selected by the packer. Nonempty composite blocks
+      // continue to require selection before their receipt is staged.
+      if (packages.receipt && (selectedSource('turn-start:packages') ||
+          (!appendedPackages && (!orientationBlock || selected(2))))) {
         const token = deliveryToken ?? randomUUID();
         try {
           const { stage } = await import('../../../agent-tools/coordination/read-cursors');

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { Rubric } from './rubrics';
-import { critiqueCoversRubric, readCurrentAcceptanceRubricCritique } from './acceptance-rubric-critique';
+import {
+  critiqueCoversRubric,
+  readCurrentAcceptanceRubricCritique,
+} from './acceptance-rubric-critique';
 
 const rubric = {
   rubricId: 'acceptance-host-memory-right-sizing-2026-10-31',
@@ -70,5 +73,59 @@ describe('readCurrentAcceptanceRubricCritique with pinned reviews', () => {
       candidates: async () => [candidate],
       consult: async () => answer,
     })).resolves.toBeNull();
+  });
+});
+
+describe('work-item critique candidate discovery', () => {
+  const gcsRubric = {
+    rubricId: 'acceptance-r2-to-gcs-storage-migration-2026-10-23',
+    criteriaHash: '637ae03c71dedbe043add79a2dddca77416a9456deb5e80607fb69171f807b1',
+    createdBy: 'su-rubric-author',
+    proposedBy: 'su-rubric-author',
+  } as Rubric;
+  const originalReview = {
+    id: 'WI-6554700010046043',
+    title: 'Independent full-contract critique of GCS acceptance rubric revision4',
+    summary: `Review ${gcsRubric.rubricId} criteriaHash: ${gcsRubric.criteriaHash}; reviewer ebe9`,
+    updatedAt: '2026-11-06T20:00:36.784Z',
+  };
+  const readWorkItemReview = (
+    review: typeof originalReview,
+    answer: { exists: boolean; critiquePosts: number; critics: string[] },
+  ) => readCurrentAcceptanceRubricCritique(gcsRubric, 4, {
+    consultCandidates: async () => [],
+    searchReviewWorkItems: async () => ({ items: [review] }),
+    workItem: async () => answer,
+  });
+
+  it('discovers and admits an exact-hash full-contract review without magic vetting wording', async () => {
+    await expect(readWorkItemReview(originalReview, {
+      exists: true,
+      critiquePosts: 1,
+      critics: ['ebe9'],
+    })).resolves.toMatchObject({
+      workItemId: originalReview.id,
+      criteriaHash: gcsRubric.criteriaHash,
+      critics: ['ebe9'],
+    });
+  });
+
+  it('still rejects stale-hash, self-authored, and unanswered reviews', async () => {
+    const staleReview = {
+      ...originalReview,
+      summary: `Review ${gcsRubric.rubricId} criteriaHash: stale`,
+    };
+    await expect(readWorkItemReview(staleReview, {
+      exists: true,
+      critiquePosts: 1,
+      critics: ['ebe9'],
+    })).resolves.toBeNull();
+
+    for (const answer of [
+      { exists: true, critiquePosts: 1, critics: ['su-rubric-author'] },
+      { exists: true, critiquePosts: 0, critics: ['ebe9'] },
+    ]) {
+      await expect(readWorkItemReview(originalReview, answer)).resolves.toBeNull();
+    }
   });
 });

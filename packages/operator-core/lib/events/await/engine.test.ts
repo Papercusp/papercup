@@ -7,14 +7,13 @@ import type { AwaitRow, DeliveryWork, WakeOutcome } from './types';
 import type { ProducerHealthCertificate, VerifiedWaitTimeoutResult } from './verified-wait';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { configureScheduledRegistry, getManaged, resetScheduledRegistry } from '@papercusp/scheduled-registry';
+import { createParkRecoveryReceipt, parkRecoveryCertificate } from '../../durable-park-recovery';
 
-type SettleVerifiedAwaitTimeoutInput = {
-  id: number;
-  result: VerifiedWaitTimeoutResult;
-  nextCertificate?: ProducerHealthCertificate;
-};
+type SettleVerifiedAwaitTimeoutInput = Parameters<typeof import('./store').settleVerifiedAwaitTimeout>[0];
 
 const h = vi.hoisted(() => ({
+  parkCheck: vi.fn(),
+  parkRoute: vi.fn(),
   store: {
     fireAwaitsForKey: vi.fn(async (): Promise<unknown[]> => []),
     insertDeliveries: vi.fn(async () => 0),
@@ -104,6 +103,15 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('./store', () => h.store);
+vi.mock('../../durable-park-recovery', async original => ({
+  ...(await original<typeof import('../../durable-park-recovery')>()),
+  checkParkRecoveryInTransaction: h.parkCheck,
+  routeParkRecoveryDeliveryInTransaction: h.parkRoute,
+}));
+vi.mock('../../pg-bounded-txn', async original => ({
+  ...(await original<typeof import('../../pg-bounded-txn')>()),
+  boundedOrgTxn: async (run: (tx: unknown) => unknown) => run({}),
+}));
 // event-wait-settlement-2026-10-20 P-007: the completion-fire clear the emit loads lazily.
 const autoClear = vi.hoisted(() => ({
   settleWorkItemDoneFire: vi.fn(async (_key: string, _workspaces: readonly string[] | undefined): Promise<unknown[]> => []),
@@ -222,6 +230,8 @@ function workRow(over: Partial<DeliveryWork> = {}): DeliveryWork {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  h.parkCheck.mockReset();
+  h.parkRoute.mockReset();
   h.store.claimDueVerifiedAwaits.mockResolvedValue([]);
   h.store.compactSupersededLoopDeliveries.mockResolvedValue(0);
   h.store.settleVerifiedAwaitTimeout.mockResolvedValue(null);
@@ -350,6 +360,98 @@ describe('sweepOnce — declared-gate recovery on timed-out announced waits', ()
   });
 });
 
+describe('automatic park recovery verifier and pump', () => {
+  const receipt = createParkRecoveryReceipt({ workspaceId: 'ws-test', harness: 'h',
+    workItemId: 'WI-park', custodianId: 'su-custodian', generation: 1, admittedAtMs: 1_000,
+    condition: { condition: 'All current inputs qualify', trigger: 'fixture:qualified', owner: 'su-producer' } });
+  const timer = () => awaitRow({ id: 901, eventKey: receipt.id + ':deadline',
+    firedAt: null, firedReason: null, producerHealthCertificate: parkRecoveryCertificate(receipt) });
+  const delivery = () => workRow({ id: 902, awaitId: 901, subscriberId: receipt.id,
+    eventKey: receipt.id + ':deadline', attempts: 20 });
+
+  it.each(['waiting', 'renewed', 'retired', 'unchanged'])(
+    'does not consume or enqueue the timer when the atomic check is %s', async disposition => {
+      h.store.claimDueVerifiedAwaits.mockResolvedValueOnce([timer()]);
+      h.parkCheck.mockResolvedValueOnce({ disposition });
+      await sweepOnce('ws-test');
+      expect(h.parkCheck).toHaveBeenCalledWith({}, { awaitId: 901, receipt });
+      expect(h.store.settleVerifiedAwaitTimeout).not.toHaveBeenCalled();
+      expect(h.store.insertDeliveries).not.toHaveBeenCalled();
+      expect(h.observeCheckpointProducer).not.toHaveBeenCalled();
+    });
+
+  it('enqueues only after the durable action commit and keeps a failed check retryable', async () => {
+    h.store.claimDueVerifiedAwaits.mockResolvedValueOnce([timer()]);
+    h.parkCheck.mockRejectedValueOnce(new Error('transaction rolled back'));
+    await sweepOnce('ws-test');
+    expect(h.store.settleVerifiedAwaitTimeout).not.toHaveBeenCalled();
+    expect(h.store.insertDeliveries).not.toHaveBeenCalled();
+    h.store.claimDueVerifiedAwaits.mockResolvedValueOnce([timer()]);
+    h.parkCheck.mockResolvedValueOnce({ disposition: 'recovery', admission: {
+      awaitId: 901, receipt: { ...receipt, state: 'recovery' }, recoveryWorkItemId: 'WI-action' } });
+    h.store.settleVerifiedAwaitTimeout.mockResolvedValueOnce(timer());
+    await sweepOnce('ws-test');
+    expect(h.store.settleVerifiedAwaitTimeout).toHaveBeenCalledWith({ id: 901,
+      result: expect.objectContaining({ classification: 'stalled',
+        evidence: { receiptId: receipt.id, actionId: 'WI-action' } }) });
+    expect(h.store.insertDeliveries).toHaveBeenCalledWith(expect.objectContaining({
+      awaits: [expect.objectContaining({ id: 901 })] }));
+  });
+
+  it.each(['pending', 'retired', 'error'])(
+    'does not launch an unelected recovery owner when routing is %s', async disposition => {
+      h.store.claimDueDeliveries.mockResolvedValueOnce([delivery()]);
+      if (disposition === 'error') h.parkRoute.mockRejectedValueOnce(new Error('owner read unavailable'));
+      else h.parkRoute.mockResolvedValueOnce({ disposition });
+      await pumpWakeDeliveries('ws-test');
+      expect(h.executeWake).not.toHaveBeenCalled();
+      expect(h.degradeToInboxOrDrop).not.toHaveBeenCalled();
+      if (disposition === 'retired') expect(h.store.markDeliveryDropped).toHaveBeenCalledWith(902, expect.any(String));
+      else expect(h.store.markDeliveryParked).toHaveBeenCalledWith(902, expect.any(String), 60_000);
+    });
+
+  it.each([
+    { kind: 'delivered', channel: 'resume' },
+    { kind: 'parked', reason: 'pending-host' },
+    { kind: 'dropped', reason: 'recipient-dead' },
+    { kind: 'error', error: 'wake transport failed' },
+  ])('routes and coalesces a recovery with ordinary work for the elected target: $kind', async outcome => {
+    h.store.claimDueDeliveries.mockResolvedValueOnce([delivery(),
+      workRow({ id: 903, subscriberId: 'su-successor', eventKey: 'fixture:ordinary', attempts: 20 })]);
+    h.parkRoute.mockResolvedValueOnce({ disposition: 'target', ownerId: 'su-successor', actionId: 'WI-action' });
+    h.executeWake.mockResolvedValueOnce(outcome);
+    await pumpWakeDeliveries('ws-test');
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+    expect(h.executeWake).toHaveBeenCalledWith(expect.objectContaining({ subscriberId: 'su-successor',
+      coalescedCount: 2 }), expect.anything());
+    if (outcome.kind !== 'delivered') {
+      expect(h.store.markDeliveryParked).toHaveBeenCalledWith(902, expect.any(String), 60_000);
+      expect(h.store.markDeliveryDropped).not.toHaveBeenCalled();
+      expect(h.store.markDeliveryFailed).not.toHaveBeenCalled();
+      expect(h.degradeToInboxOrDrop).not.toHaveBeenCalled();
+    } else expect(h.store.markDeliveryDelivered).toHaveBeenCalled();
+  });
+
+  it('request-only hosts neither check admissions nor elect or wake their owners', async () => {
+    vi.stubEnv('PAPERCUSP_BACKGROUND_WORKERS', '0');
+    try {
+      h.store.claimDueVerifiedAwaits.mockResolvedValueOnce([timer()]);
+      h.store.claimDueDeliveries.mockResolvedValueOnce([delivery()]);
+      await sweepOnce('ws-test');
+      await pumpWakeDeliveries('ws-test');
+      expect(h.store.claimDueVerifiedAwaits).not.toHaveBeenCalled();
+      expect(h.store.claimDueDeliveries).not.toHaveBeenCalled();
+      expect(h.parkCheck).not.toHaveBeenCalled();
+      expect(h.parkRoute).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+      // The host fence deliberately never consumes these once results.
+      h.store.claimDueVerifiedAwaits.mockReset().mockResolvedValue([]);
+      h.store.claimDueDeliveries.mockReset().mockResolvedValue([]);
+    }
+  });
+});
+
 describe('sweepOnce — verified-wait producer controls', () => {
   const verifiedAwait = (over: Partial<AwaitRow> = {}): AwaitRow =>
     awaitRow({
@@ -372,6 +474,41 @@ describe('sweepOnce — verified-wait producer controls', () => {
       },
       ...over,
     });
+
+  it('settles an identified dependency using its episode receipt without a takeover or producer-liveness probe', async () => {
+    const awaited = verifiedAwait();
+    const receipt = { observationId: 'episode:1', sequence: 1, revision: 2, claimToken: 'claim',
+      claimedAtMs: 1000, callbacks: ['timeout'], state: 'pending' as const };
+    awaited.producerHealthCertificate!.waitEpisode = { id: 'episode', workspaceId: 'ws-test',
+      harness: 'papercusp', drivingWorkItemId: 'WI-driver' };
+    awaited.producerHealthCertificate!.waitEpisodeReceipt = receipt;
+    h.store.claimDueVerifiedAwaits.mockResolvedValueOnce([awaited]);
+    await sweepOnce('ws-test');
+    expect(h.observeCheckpointProducer).not.toHaveBeenCalled();
+    expect(h.store.settleVerifiedAwaitTimeout).toHaveBeenCalledWith({ id: awaited.id,
+      waitEpisodeReceipt: receipt, result: expect.objectContaining({ nextAction: 're-await',
+        evidence: { predicate: awaited.eventKey, observed: 'exact push event remains unfired' } }) });
+    expect(h.store.insertDeliveries).not.toHaveBeenCalled();
+  });
+
+  it.each(['progress', 'unknown', 'exception'])('carries the pre-probe receipt through %s settlement', async (outcome) => {
+    const awaited = verifiedAwait();
+    const receipt = { observationId: 'observation-1', sequence: 3, claimToken: 'claim-2', state: 'pending' as const };
+    awaited.producerHealthCertificate!.verificationReceipt = receipt;
+    h.store.claimDueVerifiedAwaits.mockResolvedValueOnce([awaited]);
+    if (outcome === 'exception') h.observeCheckpointProducer.mockRejectedValueOnce(new Error('unreadable'));
+    else h.observeCheckpointProducer.mockResolvedValueOnce({
+      checkedAtMs: 2_000, producerPresent: true,
+      ...(outcome === 'unknown' ? { state: 'unknown' as const } : {}),
+      lastProgressAtMs: outcome === 'progress' ? 1_900 : null, lastFireAtMs: null, completedAtMs: null,
+    });
+    await sweepOnce('ws-test');
+    expect(h.store.settleVerifiedAwaitTimeout).toHaveBeenCalledWith(expect.objectContaining({
+      id: awaited.id, observationReceipt: receipt,
+      result: expect.objectContaining({ classification: outcome === 'progress' ? 'progressing' : 'unknown' }),
+    }));
+    expect(h.store.insertDeliveries).not.toHaveBeenCalled();
+  });
 
   it('keeps a progressing producer parked by renewing the same await without a wake delivery', async () => {
     const awaited = verifiedAwait();
@@ -453,7 +590,7 @@ describe('sweepOnce — verified-wait producer controls', () => {
 
     expect(h.store.settleVerifiedAwaitTimeout).toHaveBeenCalledWith({
       id: 91,
-      result: expect.objectContaining({ classification: 'unknown', nextAction: 're-await' }),
+      result: expect.objectContaining({ classification: 'unknown', nextAction: 'resolve-uncertainty' }),
       nextCertificate: undefined,
     });
     expect(h.store.insertDeliveries).not.toHaveBeenCalled();
@@ -486,6 +623,22 @@ describe('sweepOnce — verified-wait producer controls', () => {
         results: [expect.objectContaining({ classification: 'already-complete', nextAction: 'resume' })],
       }),
     }));
+  });
+
+  it('persists a verifier exception as unknown without waking or taking over the producer', async () => {
+    h.store.claimDueVerifiedAwaits.mockResolvedValueOnce([verifiedAwait()]);
+    h.observeCheckpointProducer.mockRejectedValueOnce(new Error('resolver unavailable'));
+
+    await sweepOnce('ws-test');
+
+    expect(h.store.settleVerifiedAwaitTimeout).toHaveBeenCalledWith({
+      id: 91,
+      result: expect.objectContaining({
+        classification: 'unknown', nextAction: 'resolve-uncertainty',
+        evidence: { verifierError: 'resolver unavailable' },
+      }),
+    });
+    expect(h.store.insertDeliveries).not.toHaveBeenCalled();
   });
 });
 afterEach(() => {
@@ -2342,6 +2495,61 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
     expect(h.readWatermark).toHaveBeenCalledWith('su-a');
     expect(wake.hostCancellation).toEqual({ deliveryIds: ['51'], handledMsgIds: ['m-fyi'] });
     expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(51, 'suppressed-redundant', 1);
+    expect(stats.suppressed).toBe(1);
+  });
+
+  it('cancels an accepted ask when its exact reply arrives before turn start', async () => {
+    const acceptedReason = 'psu-host accepted: delivery accepted before turn-start proof; retry remains durable';
+    const envelope = {
+      msg_id: 'm-ask',
+      ts: new Date(5000).toISOString(),
+      from: 'su-b',
+      to: ['su-a'],
+      kind: 'message',
+      expects: 'action',
+      expectsReply: true,
+      wake: true,
+    };
+    h.readWatermark
+      .mockResolvedValueOnce({ messages_shown_ts: new Date(1000).toISOString() })
+      .mockResolvedValueOnce({ messages_shown_ts: new Date(1000).toISOString() });
+    h.repliedMsgIdsBatch
+      .mockResolvedValueOnce(new Set())
+      .mockResolvedValueOnce(new Set(['m-ask']));
+    h.getLineEnvelopeById
+      .mockResolvedValueOnce(envelope)
+      .mockResolvedValueOnce(envelope);
+    h.store.claimDueDeliveries
+      .mockResolvedValueOnce([
+        workRow({
+          id: 55,
+          subscriberId: 'su-a',
+          eventKey: 'coord:inbox-wake:su-a',
+          payload: { msg_id: 'm-ask' },
+        }),
+      ])
+      .mockResolvedValueOnce([
+        workRow({
+          id: 55,
+          subscriberId: 'su-a',
+          eventKey: 'coord:inbox-wake:su-a',
+          payload: { msg_id: 'm-ask' },
+          attempts: 2,
+          lastError: acceptedReason,
+        }),
+      ]);
+    h.executeWake
+      .mockResolvedValueOnce({ kind: 'park', reason: acceptedReason })
+      .mockResolvedValueOnce({ kind: 'delivered', channel: 'suppressed-redundant' });
+
+    await pumpWakeDeliveries('ws-test');
+    const stats = await pumpWakeDeliveries('ws-test');
+
+    expect(h.repliedMsgIdsBatch).toHaveBeenNthCalledWith(2, 'su-a', ['m-ask']);
+    expect(h.executeWake.mock.calls[1][0]).toMatchObject({
+      hostCancellation: { deliveryIds: ['55'], handledMsgIds: ['m-ask'] },
+    });
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(55, 'suppressed-redundant', 1);
     expect(stats.suppressed).toBe(1);
   });
 

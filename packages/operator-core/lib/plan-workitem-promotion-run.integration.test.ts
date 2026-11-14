@@ -459,6 +459,56 @@ const depEdges = async () => {
 const base = { workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, createdBy: 'su-test' };
 
 describe('promotePlanItems (P-006): plan → placeable work-items, against real PG', () => {
+  it('repairs the finish stamp on an exact single-item adopted feature without minting a duplicate', async () => {
+    h.plans.set(PLAN, { items: [{ id: 'P-001', status: 'todo', text: 'Repair the legacy plan link' }] });
+    await db.sql`INSERT INTO harness_shared.plan_items
+      (workspace_id,harness_slug,plan_slug,item_id,seq,item_text,status)
+      VALUES (${WS},${HARNESS},${PLAN},'P-001',1,'Repair the legacy plan link','todo')`;
+    const adopted = await wi.createWorkItem({
+      kind: 'feature', title: 'Legacy adopted feature', harness: HARNESS, workspaceId: WS,
+      sourcePlanSlug: PLAN, sourcePlanItemIds: ['P-001'], createdBy: 'su-test',
+      payload: { legacyMarker: 'preserved' },
+    });
+    await wi.linkWorkItem(adopted.id,
+      { kind: PLAN_ITEM_KIND, ref: planItemRef(PLAN, 'P-001') }, convert.IMPLEMENTS_REL,
+      { harness: HARNESS, by: 'su-test' });
+
+    const result = await run.promotePlanItems(base);
+
+    expect(result).toMatchObject({ promoted: 0, skipped: 1 });
+    expect((await features()).map((row) => row.feature_id)).toEqual([adopted.id]);
+    expect((await wi.getWorkItem(adopted.id, HARNESS))?.payload).toMatchObject({
+      legacyMarker: 'preserved',
+      plan_item: { plan_slug: PLAN, item_id: 'P-001', harness_slug: HARNESS },
+    });
+  });
+
+  it('leaves a grouped adopted feature unstamped when one plan item cannot represent its full source', async () => {
+    h.plans.set(PLAN, { items: [
+      { id: 'P-001', status: 'todo', text: 'First grouped item' },
+      { id: 'P-002', status: 'todo', text: 'Second grouped item' },
+    ] });
+    await db.sql`INSERT INTO harness_shared.plan_items
+      (workspace_id,harness_slug,plan_slug,item_id,seq,item_text,status)
+      VALUES (${WS},${HARNESS},${PLAN},'P-001',1,'First grouped item','todo'),
+        (${WS},${HARNESS},${PLAN},'P-002',2,'Second grouped item','todo')`;
+    const adopted = await wi.createWorkItem({
+      kind: 'feature', title: 'Grouped adopted feature', harness: HARNESS, workspaceId: WS,
+      sourcePlanSlug: PLAN, sourcePlanItemIds: ['P-001', 'P-002'], createdBy: 'su-test',
+    });
+    for (const itemId of ['P-001', 'P-002']) {
+      await wi.linkWorkItem(adopted.id,
+        { kind: PLAN_ITEM_KIND, ref: planItemRef(PLAN, itemId) }, convert.IMPLEMENTS_REL,
+        { harness: HARNESS, by: 'su-test' });
+    }
+
+    const result = await run.promotePlanItems(base);
+
+    expect(result).toMatchObject({ promoted: 0, skipped: 2 });
+    expect((await features()).map((row) => row.feature_id)).toEqual([adopted.id]);
+    expect((await wi.getWorkItem(adopted.id, HARNESS))?.payload ?? {}).not.toHaveProperty('plan_item');
+  });
+
   it('retries current-spec evidence transfer after the canonical item was already minted', async () => {
     h.plans.set(PLAN, { items: [{ id: 'P-001', status: 'todo', text: 'Reopen the plan item' }] });
     await db.sql`INSERT INTO harness_shared.plan_items

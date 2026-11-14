@@ -156,6 +156,7 @@ export function currentSuNativeRetainedArtifacts(managedCarry: boolean): string[
   return [
     'phases/prepare/operator-api-build.log', 'phases/prepare/operator-api-build-result.json',
     'phases/prepare/native-egress-preflight.json',
+    'phases/execute/private-mcp-preflight.json',
     ...(managedCarry ? ['phases/execute/native-model-requests.json'] : []),
     'phases/prepare/bundle-restricted-hold-inputs.json',
     'phases/prepare/hono-host.mjs.build-steps.jsonl',
@@ -882,15 +883,16 @@ export async function isolatedIntegrationSourceFiles(root: string, commit: strin
   }
   progress('fixture-support-derive-complete');
   const launcher = 'scripts/with-test-pg.mjs';
-  // The launcher owns teardown. Its extracted helper belongs to the same
-  // source receipt even when an older caller only declares the launcher.
-  // Read the actual import so historical launchers with inline cleanup keep
-  // their original source population; a missing imported helper fails closed.
-  if (sourcePaths.includes(launcher) &&
-      /\b(?:from\s*|import\s*\(\s*)['"]\.\/lib\/with-test-pg-cleanup\.mjs['"]/.test(
-        readFileSync(join(root, launcher), 'utf8'))) {
-    if (!sourcePaths.includes('scripts/lib/with-test-pg-cleanup.mjs'))
-      sourcePaths.push('scripts/lib/with-test-pg-cleanup.mjs');
+  // Extracted private-runtime helpers control admission, evidence and teardown.
+  // Bind the helpers actually imported by this launcher, including historical
+  // editions with inline implementations. Missing imported helpers fail closed.
+  if (sourcePaths.includes(launcher)) {
+    const launcherSource = readFileSync(join(root, launcher), 'utf8');
+    for (const imported of launcherSource.matchAll(
+      /\b(?:from\s*|import\s*\(\s*)['"](\.\/lib\/with-test-pg-[a-z-]+\.mjs)['"]/g)) {
+      const helper = `scripts/${imported[1]!.slice(2)}`;
+      if (!sourcePaths.includes(helper)) sourcePaths.push(helper);
+    }
   }
   const files = sourcePaths.map(path => {
     assert.ok(path && !path.startsWith('/') && !path.split('/').some(p => p === '..' || p === '.'));

@@ -29,12 +29,23 @@ describe('inboxWakeHeldWorkReminderText (WI-6554700010018536)', () => {
       guaranteedAwaitWake: null,
     });
     expect(t).toContain('work list snapshot): a recent read found 2 unfinished work-item(s) [WI-1, WI-2]');
-    expect(t).toContain("recheck each item's current state and assignee with work_items:get");
+    expect(t).toContain("recheck each item's current state and assignee with bounded continuation reads:");
     expect(t).toContain('does not finish any still-open items');
     expect(t).not.toContain('you still hold');
     // No autonomy mode ⇒ no claim about wakes.
     expect(t).not.toContain('nothing will wake you');
     expect(t).not.toContain('\n');
+    expect(t).toContain("work_items:get { id: 'WI-1', harness: 'papercusp', resume: true }");
+    expect(t).toContain("work_items:get { id: 'WI-2', harness: 'papercusp', resume: true }");
+  });
+
+  it('keeps EI recovery workspace-scoped and repeats bounded hints without embedding archive data', () => {
+    const facts = { held: [{ id: 'EI-1', harness: 'foreign-hive' }], autonomyModes: [],
+      loopActive: null, guaranteedAwaitWake: null };
+    const first = inboxWakeHeldWorkReminderText(facts);
+    expect(inboxWakeHeldWorkReminderText(facts)).toBe(first);
+    expect(first).toContain("work_items:get { id: 'EI-1', resume: true }");
+    expect(first).not.toContain('foreign-hive');
   });
 
   it('adds the no-wake sentence only for an autonomy mode with no loop armed', () => {

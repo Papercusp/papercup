@@ -25,6 +25,7 @@ import { leadingScaleLabel } from '../../rubric-rating-vocabulary';
 import { SERVING_RUNTIME_IDS, RUNTIME_VINTAGE_EVIDENCE_RUNTIME_RE, type RuntimeVintageEvidenceRuntimeId } from '../../serving-runtimes';
 import { registerPlanTemplate, type PlanTemplate } from './template-registry';
 import { parseProductionConfiguration } from './declared-configuration';
+import { durableHeadroomBindingSchema } from '../../storage/reclaim-provenance';
 
 /** The template TYPE name — a rubric-template plan's `template:` frontmatter/column. */
 export const RUBRIC_TEMPLATE_NAME = 'rubric';
@@ -312,6 +313,9 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
       maxAgeMs: z.number().int().positive().optional().describe('Maximum age of the latest ledger measurement at grading time. Expired, invalid or future timestamps grade unknown; historical values remain evidence.'),
       experimentId: z.string().trim().min(1).max(200).optional().describe(
         'Preregistered experiment identity. Omission keeps the historical default; unknown ids fail closed.',
+      ),
+      headroomBinding: durableHeadroomBindingSchema.optional().describe(
+        'Governed R-10 accepted committed inputs, BG service and exact prerequisite native run; supplied measurements cannot replace this binding.',
       ),
       instrumentKey: z
         .string()

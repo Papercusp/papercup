@@ -51,6 +51,7 @@ import { renderColdWakeInjection } from '../../su-cold-loop';
 import type { DeliveryWork, WakeHandle } from './types';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { getLoopStatus } from '../../harness/routines/loop';
+import { withCarryNoteWalls } from '../../carry-note';
 import {
   codexFreshDefaultAuthPreflight,
   rehealResumeCodexAuth,
@@ -1896,6 +1897,55 @@ describe('executeWake ambient-push seam (P-003, DEFAULT-OFF)', () => {
   });
 });
 
+describe('executeWake CLARITY current measurement assembly', () => {
+  const now = Date.parse('2026-11-09T16:00:00.000Z');
+  const measurement = {
+    origin: 'canonical-cell-read' as const,
+    status: 'value' as const,
+    measuredAt: '2026-11-09T15:59:59.000Z',
+    source: 'session.state',
+    summary: 'live',
+  };
+
+  it('carries the canonical fold callback into DeliveryWork and the rendered current state', async () => {
+    const fold = vi.spyOn(await import('./cell-wake-fold'), 'prepareCellWakeFold')
+      .mockImplementation(async (input) => {
+        input.onCurrentMeasurement?.(measurement);
+        return '[cell] session.state = live';
+      });
+    const delivery = work({ wakeHandle: null, createdAt: '2026-11-09T15:00:00.000Z' });
+    try {
+      await executeWake(delivery, deps({ presence: vi.fn(async () => stalePresence) as never }));
+      expect(fold).toHaveBeenCalledWith({
+        eventKey: delivery.eventKey,
+        workspaceId: delivery.workspaceId,
+        onCurrentMeasurement: expect.any(Function),
+      });
+      expect(delivery.currentStateMeasurement).toEqual(measurement);
+      expect(wakeTurnText(delivery, now)).toContain('observedAt=2026-11-09T15:00:00.000Z, ageAtRender=3600s');
+      expect(wakeTurnText(delivery, now)).toContain(
+        'current state: measured, measuredAt=2026-11-09T15:59:59.000Z, source=session.state, live',
+      );
+    } finally {
+      fold.mockRestore();
+    }
+  });
+
+  it('clears a previous assembly measurement when the current fold has no canonical read', async () => {
+    const fold = vi.spyOn(await import('./cell-wake-fold'), 'prepareCellWakeFold').mockResolvedValue(null);
+    const delivery = work({ wakeHandle: null, currentStateMeasurement: measurement });
+    try {
+      await executeWake(delivery, deps({ presence: vi.fn(async () => stalePresence) as never }));
+      expect(fold).toHaveBeenCalledOnce();
+      expect(delivery.currentStateMeasurement).toBeUndefined();
+      expect(wakeTurnText(delivery, now)).toContain('current state: UNKNOWN (not measured at delivery)');
+      expect(wakeTurnText(delivery, now)).not.toContain('current state: measured');
+    } finally {
+      fold.mockRestore();
+    }
+  });
+});
+
 describe('executeWake inbox-wake held-work reminder seam (WI-6554700010018536)', () => {
   const REMINDER =
     "REMINDER (work list snapshot): a recent read found 2 unfinished work-item(s) [WI-1, WI-2]. " +
@@ -1986,6 +2036,35 @@ describe('executeWake inbox-wake held-work reminder seam (WI-6554700010018536)',
 });
 
 describe('wakeTurnText', () => {
+  describe('CLARITY event freshness', () => {
+    const now = Date.parse('2026-11-09T16:00:00.000Z');
+    it('separates delayed historical death from recovered current state at a fixed render clock', () => {
+      const text = wakeTurnText(work({ createdAt: '2026-11-09T15:00:00.000Z', summary: 'member ended',
+        currentStateMeasurement: { origin: 'canonical-cell-read', status: 'value', measuredAt: '2026-11-09T15:59:59.000Z', source: 'session.state', summary: 'live' } }), now);
+      expect(text).toContain('observedAt=2026-11-09T15:00:00.000Z, ageAtRender=3600s');
+      expect(text).toContain('current state: measured, measuredAt=2026-11-09T15:59:59.000Z, source=session.state, live');
+      expect(text).toContain('member ended');
+    });
+    it('never lets historical payload fields self-attest current state', () => {
+      const text = wakeTurnText(work({ createdAt: '2026-11-09T15:00:00.000Z',
+        payload: { currentState: 'healthy', currentStateMeasurement: { origin: 'canonical-cell-read', status: 'value', measuredAt: '2026-11-09T15:59:59.000Z', source: 'fake', summary: 'healthy' } } }), now);
+      expect(text).toContain('current state: UNKNOWN (not measured at delivery)');
+    });
+    it.each(['', 'invalid', '2026-11-09T17:00:00.000Z'])('keeps missing/invalid/future observation %j unknown', (createdAt) => {
+      const text = wakeTurnText(work({ createdAt }), now);
+      expect(text).toContain('observedAt=UNKNOWN, ageAtRender=UNKNOWN');
+      expect(text).not.toContain('ageAtRender=0s');
+    });
+    it('preserves an unavailable current read and its source independently of valid observation age', () => {
+      const text = wakeTurnText(work({ createdAt: '2026-11-09T15:00:00.000Z',
+        currentStateMeasurement: { origin: 'canonical-cell-read', status: 'unknown', measuredAt: '2026-11-09T15:59:59.000Z', source: 'session.state', summary: 'resolver-failed' } }), now);
+      expect(text).toContain('ageAtRender=3600s');
+      expect(text).toContain('current state: UNKNOWN, measuredAt=2026-11-09T15:59:59.000Z, source=session.state, resolver-failed');
+    });
+    it.each(['bad', '2026-11-09T17:00:00.000Z'])('rejects an invalid/future current measurement %s', (measuredAt) => {
+      expect(wakeTurnText(work({ currentStateMeasurement: { origin: 'canonical-cell-read', status: 'value', measuredAt, source: 'session.state', summary: 'live' } }), now)).toContain('current state: UNKNOWN (not measured at delivery)');
+    });
+  });
   it('carries the key, summary, note and a bounded payload on one line', () => {
     const t = wakeTurnText(work({ payload: { x: 'y'.repeat(1000) } }));
     expect(t).toContain('lock:grant:t-1');
@@ -2266,8 +2345,10 @@ describe('wakeTurnText', () => {
   });
 
   it('is byte-identical to the base wake when no ambient block is set (DEFAULT-OFF)', () => {
-    const base = wakeTurnText(work());
-    const withUndef = wakeTurnText(work({ ambientPushBlock: undefined }));
+    const delivery = work();
+    const now = Date.now();
+    const base = wakeTurnText(delivery, now);
+    const withUndef = wakeTurnText({ ...delivery, ambientPushBlock: undefined }, now);
     expect(withUndef).toBe(base);
     expect(base).not.toContain('⟦ambient⟧');
   });
@@ -2292,11 +2373,13 @@ describe('wakeTurnText', () => {
 
   it('WI-6554700010018536: the reminder is ignored on a non-inbox-wake key and absent ⇒ byte-identical', () => {
     const reminder = 'REMINDER (held work): you still hold 1 unfinished work-item(s) [WI-7].';
-    const other = wakeTurnText(work({ eventKey: 'work-item:done:WI-9', inboxWakeHeldWorkReminder: reminder }));
+    const delivery = work();
+    const now = Date.now();
+    const other = wakeTurnText({ ...delivery, eventKey: 'work-item:done:WI-9', inboxWakeHeldWorkReminder: reminder }, now);
     expect(other).not.toContain('REMINDER (held work)');
-    expect(other).toBe(wakeTurnText(work({ eventKey: 'work-item:done:WI-9' })));
-    const inboxBase = wakeTurnText(work({ eventKey: 'coord:inbox-wake:su-abc' }));
-    expect(wakeTurnText(work({ eventKey: 'coord:inbox-wake:su-abc', inboxWakeHeldWorkReminder: undefined }))).toBe(
+    expect(other).toBe(wakeTurnText({ ...delivery, eventKey: 'work-item:done:WI-9' }, now));
+    const inboxBase = wakeTurnText({ ...delivery, eventKey: 'coord:inbox-wake:su-abc' }, now);
+    expect(wakeTurnText({ ...delivery, eventKey: 'coord:inbox-wake:su-abc', inboxWakeHeldWorkReminder: undefined }, now)).toBe(
       inboxBase,
     );
   });
@@ -2735,6 +2818,38 @@ describe('rehydrateLoopWakeText (EI-10935: wake-handoff carry-note re-check)', (
     expect(out.indexOf('LIVE RE-CHECK')).toBeLessThan(out.indexOf(STALE_TEXT));
     expect(out).toMatch(/contentHash=[0-9a-f]{12}/);
     expect(out).toMatch(/writtenAt=\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('delivery-time reconciliation removes only the wall bound to a terminal conversation', async () => {
+    const note = withCarryNoteWalls('## Next action\ncontinue', [
+      { id: 'withdrawn', origin: 'owner', conversationId: 'conv-old', claim: 'withdrawn funding question' },
+      { id: 'current', origin: 'owner', conversationId: 'conv-current', claim: 'current owner question' },
+      { id: 'unrelated', origin: 'owner', claim: 'deployment approval' },
+    ]);
+    const readConversationStatesByIdsFn = vi.fn(async () => [
+      { id: 'conv-old', state: 'superseded' },
+      { id: 'conv-current', state: 'open' },
+    ]);
+    const d = work({
+      payload: { harness: 'papercusp', wakeCount: 5 },
+      subscriberId: 'su-loop-conversations',
+      workspaceId: 'ws-test',
+    });
+    const out = await rehydrateLoopWakeText(
+      d,
+      'Loop fired.\n\n⛔ OPEN WALLS — stale snapshot: withdrawn funding question',
+      {
+        getLoopCarryNoteWithMetaFn: vi.fn(async () => ({ note, updatedAtMs: Date.now() })),
+        readConversationStatesByIdsFn,
+      },
+    );
+    const liveBlock = out.slice(0, out.indexOf('Loop fired.'));
+
+    expect(readConversationStatesByIdsFn).toHaveBeenCalledWith(['conv-old', 'conv-current'], 'ws-test');
+    expect(liveBlock).toContain('LIVE RE-CHECK');
+    expect(liveBlock).not.toContain('withdrawn funding question');
+    expect(liveBlock).toContain('current owner question');
+    expect(liveBlock).toContain('deployment approval');
   });
 
   it('does not call a note current when its committed write timestamp is unavailable', async () => {

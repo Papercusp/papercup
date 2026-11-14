@@ -41,6 +41,8 @@ const packingMocks = vi.hoisted(() => ({ budgetBytes: 4000, save: vi.fn(async (_
   load: vi.fn(async (..._args: unknown[]): Promise<StoredContextPackingReceipt | null> => null) }));
 vi.mock('../../../context-packing-receipts', async orig => ({
   ...await orig<typeof import('../../../context-packing-receipts')>(),
+  captureContextPackingAttribution: vi.fn(async () => ({ observedAt: '2026-11-12T15:00:00.000Z',
+    epoch: null, epochEvidenceRef: null, nativeSession: null, unknown: ['epoch-unavailable', 'native-session-unavailable'] })),
   saveContextPackingReceipt: packingMocks.save, loadContextPackingReceipt: packingMocks.load,
 }));
 vi.mock('../../../context-doors-config', () => ({ getDoorConstantsSync: () => ({
@@ -348,7 +350,8 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
     const stageDelivery = vi.fn(async () => 'orientation-source-allocation');
     buildTurnStartOrientationBlockMock.mockResolvedValue({ block: orientation, deliveryToken: null, stageDelivery });
     getMemoryBlockBoundedResultMock.mockResolvedValue({ status: 'ready', block: { text: memory, fragments: [large, small] } });
-    packingMocks.budgetBytes = Buffer.byteLength(`${orientation}\n\n## Recall\n\n${small.rendered}`);
+    // Door allocations are integral token proxies (four bytes each).
+    packingMocks.budgetBytes = Math.ceil(Buffer.byteLength(`${orientation}\n\n## Recall\n\n${small.rendered}`) / 4) * 4;
     const out = await post({ owner: 'su-per-source', prompt: 'relevant query', client: 'codex', memoryReceiptMode: true });
     expect(out.text).toBe(`${orientation}\n\n## Recall\n\n${small.rendered}`);
     expect(out.memoryFragmentOffers).toEqual([small]);
@@ -356,6 +359,9 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
     expect(packingMocks.save).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ candidates: expect.arrayContaining([
       expect.objectContaining({ reason: 'budget', sourceUnits: [expect.objectContaining({ sourceRef: 'memory:large' })] }),
       expect.objectContaining({ reason: 'selected', sourceUnits: [expect.objectContaining({ sourceRef: 'memory:small' })] }),
+    ]) }), expect.objectContaining({ text: out.text, candidates: expect.arrayContaining([
+      expect.objectContaining({ sourceUnits: [expect.objectContaining({ rendered: large.rendered })] }),
+      expect.objectContaining({ sourceUnits: [expect.objectContaining({ rendered: small.rendered })] }),
     ]) }));
   });
 
@@ -365,7 +371,7 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
     const memory = `## Recall\n\n${large.rendered}\n${small.rendered}`;
     buildTurnStartOrientationBlockMock.mockResolvedValue({ block: small.rendered, deliveryToken: null });
     getMemoryBlockBoundedResultMock.mockResolvedValue({ status: 'ready', block: { text: memory, fragments: [large, small] } });
-    packingMocks.budgetBytes = Buffer.byteLength(small.rendered);
+    packingMocks.budgetBytes = Math.ceil(Buffer.byteLength(small.rendered) / 4) * 4;
     const out = await post({ owner: 'su-source-collision', prompt: 'relevant query', client: 'codex', memoryReceiptMode: true });
     expect(out.text).toBe(small.rendered);
     expect(out.memoryFragmentOffers ?? []).toEqual([]);
@@ -392,7 +398,11 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
     expect(out.memoryFragmentOffers).toBeUndefined();
     expect(stageDelivery).not.toHaveBeenCalled();
     expect(packingMocks.save).toHaveBeenCalledWith(expect.objectContaining({ ownerId: 'su-packing' }),
-      expect.objectContaining({ attemptId: 'packing-zero', contextBytes: 0, status: 'mandatory-overflow' }));
+      expect.objectContaining({ attemptId: 'packing-zero', contextBytes: 0, status: 'mandatory-overflow' }),
+      expect.objectContaining({ text: '', selectedIndexes: [], createdAt: expect.any(String),
+        attribution: expect.objectContaining({ epoch: null, nativeSession: null,
+          unknown: ['epoch-unavailable', 'native-session-unavailable'] }),
+        candidates: expect.arrayContaining([expect.objectContaining({ text: 'Required owner duty' })]) }));
     expect(memoryReceiptSqlMock.mock.calls.filter(([chunks]) => chunks.join('?').includes('memory-emission:'))).toHaveLength(0);
   });
 
@@ -406,7 +416,7 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
     expect(packingMocks.save).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
       contextBytes: 0, bodyBytes: 0, status: 'mandatory-overflow',
       carrier: expect.objectContaining({ client: 'omp', port: 'turn-start', framingBytes: 0 }),
-    }));
+    }), expect.objectContaining({ text: '', selectedIndexes: [] }));
     packingMocks.budgetBytes = 4;
     const selected = await post({ owner: 'su-omp-carrier-fit', prompt: 'relevant query', client: 'omp', memoryEnabled: false });
     expect(selected.text).toBe('字');
@@ -415,7 +425,7 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
     expect(packingMocks.save).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
       contextBytes: 4, bodyBytes: 3,
       carrier: { client: 'omp', port: 'turn-start', framingBytes: 1, accounting: 'exact', emittedContextBytes: 'UNKNOWN' },
-    }));
+    }), expect.objectContaining({ text: '字', createdAt: expect.any(String) }));
   });
 
   it('persists the packing receipt before staging the selected orientation', async () => {
@@ -1447,12 +1457,12 @@ describe('portable-identity P-010 package sink', () => {
     configureReadCursorStore(store);
   });
 
-  it('appends package rows after the platform block and stages a rendered receipt under the delivered token', async () => {
+  it('packs package rows after higher-priority context and stages a rendered receipt under the delivered token', async () => {
     buildTurnStartOrientationBlockMock.mockResolvedValue({ block: PLATFORM, deliveryToken: 'tok-o' });
     evaluateTurnStartPackageSinkMock.mockResolvedValue({ result: null, classes: [brief] });
     packageSinkReceiptMock.mockReturnValue({ version: 1, status: 'rendered' });
     const out = await post({ owner: 'sess-1', prompt: 'package turn' });
-    expect(out.text).toBe(`${PLATFORM}\n- pkg-a/brief: hello\n\nMEM-BLOCK`);
+    expect(out.text).toBe(`${PLATFORM}\n\nMEM-BLOCK\n\n\n- pkg-a/brief: hello`);
     expect(out.deliveryToken).toBe('tok-o');
     expect(store.staged).toEqual([
       { ownerId: 'sess-1', version: 1, status: 'rendered', rendered: true, [DELIVERY_TOKEN_KEY]: 'tok-o' },

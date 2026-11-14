@@ -28,6 +28,54 @@ ${decisions}
 `);
 
 describe('staging-first activation guard', () => {
+  describe('receipt provenance and downstream inventory (EI-28686759817053778)', () => {
+    const receiptMetadata = 'Its receipt must name the actual prerequisite WI and returned/machine-derived completion event, exact source/schema/runtime and maintained regression-ledger evidence, independent acceptance and any genuinely required promotion/deploy receipt.';
+
+    it('allows a linked decision to describe prerequisite receipt fields', () => {
+      const parsed = plan(
+        ['- **P-001** `todo` Qualify existing capture on current-build.'],
+        `### D-021 — Capture qualification\nDate: 2026-11-13\n${receiptMetadata}\nRelated: P-001`,
+      );
+
+      expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+    });
+
+    it.each([
+      ' Wait for main before continuing implementation.',
+      ' Implementation may start only after :3070 serves the repair.',
+      ' The receipt must name the deployed host before implementation.',
+    ])('retains an actual release prerequisite after receipt metadata: %s', (wait) => {
+      const parsed = plan(
+        ['- **P-001** `todo` Qualify existing capture on current-build.'],
+        `### D-021 — Capture qualification\nDate: 2026-11-13\n${receiptMetadata}${wait}\nRelated: P-001`,
+      );
+
+      expect(stagingFirstActivationProblems(parsed)).toEqual([
+        expect.objectContaining({ itemId: 'P-001', code: 'non_final_deployed_main_wait' }),
+      ]);
+    });
+
+    it('allows inventory for downstream deployed verification before source work', () => {
+      const parsed = plan([
+        '- **P-001** `todo` Freeze the action population for downstream P-014 deployed verification. P-001 owns current-build inventory only.',
+        '- **P-006** `todo` Write and run approved-apply failure regressions on current-build. blocked-by: P-001',
+      ]);
+
+      expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+    });
+
+    it('retains a real deployed-host check in the inventory prerequisite', () => {
+      const parsed = plan([
+        '- **P-001** `todo` Freeze the action population for downstream P-014 deployed verification. Verify the deployed host.',
+        '- **P-006** `todo` Write and run approved-apply failure regressions on current-build. blocked-by: P-001',
+      ]);
+
+      expect(stagingFirstActivationProblems(parsed)).toEqual([
+        expect.objectContaining({ itemId: 'P-006', code: 'non_final_deployed_main_wait' }),
+      ]);
+    });
+  });
+
   describe('source-only dependency release clauses (D098)', () => {
     it('allows the exact P039 source-only dependency on the P040 no-deployment repair', () => {
       const source = "Enforce the existing verifier's absolute cleanup-reserve cutoff, the concrete preallocation blocker proved by D072/WI5858 post1188965. Extend scripts/source-preview.mjs runVerifierCommand/budget admission and its existing processGroupLifetime cancellation path; reuse the existing task deadline, phase/task ownership receipts and maintained source-preview-export.test.ts suite. Reserve R=max(120000ms, observed cleanup, source.freeze, deps.snapshot); refuse impossible budgets before child launch and terminate the owned child group by deadline-R, verify exit before cleanup, retain deadline/reserve/cutoff/cleanup evidence. Add deterministic clock and owned hung-child behavioral regressions for cutoff, completion/cancellation races, signal cleanup, no-deadline compatibility and peer-root preservation. No new runner/service, timeout increase, custody override or PG/P037 proof replay. This is independent source work; sole5858 stays proof custodian,6515 remains terminal. Acceptance is focused maintained test evidence plus matching committed source identity, not main/ship acceptance.";

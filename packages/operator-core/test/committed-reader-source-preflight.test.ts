@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import { linuxProcessIdentityFromStat } from '../lib/process-identity';
+import { processMonotonicClock } from '../lib/process-monotonic-clock';
 import { verifierSourceFiles } from '../lib/verifier-source';
 import { loaderIdentity } from '../../../scripts/lib/vitest-startup-trace.mjs';
 import { preparePrivateOperatorApiBundle, produceCommittedReaderPrivateApiBundle, qualifyCommittedReaderSource,
@@ -77,6 +78,29 @@ describe('cooperative observer comparison controls', () => {
 
 describe('cooperative parent native timing', () => {
   const epoch = '22222222-2222-4222-8222-222222222222';
+  it.each([false, true])('binds original same-process task samples (rejected join: %s)', async rejected => {
+    const dir = mkdtempSync(join(tmpdir(), 'cooperative-task-binding-')); temporary.push(dir);
+    const observer = observeCooperativeHostTermination({ traceOut: join(dir, 'sources.json'), epoch, runGroupId: null });
+    const host = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    const closed = once(host, 'close'); observer.attach(host);
+    try {
+      const entryMs = processMonotonicClock.now(), assignmentId = 'bench-assignment:original';
+      const entry = { kind: 'entry' as const, assignmentId, atMs: entryMs, clock: processMonotonicClock };
+      if (rejected) expect(() => observer.observeTaskEndpoint({ ...entry, clock: { ...processMonotonicClock } }))
+        .toThrow('Exact same-process task sampler');
+      observer.observeTaskEndpoint(entry);
+      if (rejected) expect(() => observer.observeTaskEndpoint({ ...entry, kind: 'result', assignmentId: 'bench-assignment:other',
+        atMs: processMonotonicClock.now(), terminalDisposition: 'done' })).toThrow('Matching original task result');
+      const terminalMs = processMonotonicClock.now();
+      observer.observeTaskEndpoint({ ...entry, kind: 'result', atMs: terminalMs, terminalDisposition: 'error' });
+      host.kill('SIGKILL'); await closed;
+      expect(observer.snapshot()).toMatchObject({ status: 'unknown', taskTiming: {
+        status: rejected ? 'unknown' : 'bound', clockId: processMonotonicClock.id, entry: { atMs: entryMs, assignmentId },
+        result: { atMs: terminalMs, assignmentId, terminalDisposition: 'error' },
+        elapsedMs: terminalMs - entryMs, observerDeductionMs: 0, fullRuntimeQualification: 'unknown',
+      } });
+    } finally { host.kill('SIGKILL'); await closed; observer.stop(); }
+  });
   async function run(control: 'valid' | 'epoch' | 'run' | 'no-request' | 'other-signal') {
     const dir = mkdtempSync(join(tmpdir(), 'cooperative-parent-clock-')); temporary.push(dir);
     const traceOut = join(dir, 'sources.json'), worker = join(dir, 'worker.mjs');

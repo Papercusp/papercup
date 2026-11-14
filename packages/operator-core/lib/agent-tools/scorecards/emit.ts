@@ -141,6 +141,7 @@ import { emitScorecardEmitted } from '../../scorecard-emitted-events';
 import {
   evaluateCriterionCargoChecks,
   evaluateCriterionProbeChecks,
+  createCriterionProbePlan,
   evaluateCriterionTestChecks,
   evaluateCriterionCoverageChecks,
   evaluateCriterionRequirementChecks,
@@ -817,7 +818,7 @@ const scorecardEmitBaseShape = {
     rerunRecipe: z.union([specTestAdequacyRerunRecipeSchema, specQualityRerunRecipeSchema]).optional(),
     subject: z
       .object({
-        kind: z.enum(['agent-run', 'session', 'work-item', 'plan', 'pot', 'rubric', 'scorecard']).optional(),
+        kind: z.enum(['agent-run', 'session', 'work-item', 'plan', 'pot', 'fleet', 'rubric', 'scorecard']).optional(),
         ref: z.string().min(1).max(200),
         windowStart: z.string().min(1).max(64).optional(),
         windowEnd: z.string().min(1).max(64).optional(),
@@ -2093,13 +2094,15 @@ export async function emitScorecard(
       ok?: boolean; specSetHash?: string; evaluatorBuild?: { sha: string | null; version: string };
       specSetHashVersion?: number; scorecardDraft?: { subject?: { kind?: string; ref?: string }; ratings?: ObservationRatings }; error?: string;
       scorecardBinding?: { subject?: { kind?: string; ref?: string }; evidenceFingerprint?: string };
+      replaySnapshot?: { planContentHash?: string };
     } | null;
     try {
-      // Reuse the adequacy replay's compact, full-tier transport. The evaluator
-      // hashes every rating/evidence byte before shaping; a default bounded
-      // response can omit the draft entirely or trim its evidence narratives.
+      // A new publication needs live authority, including after DBOS restores
+      // its earlier evaluation step. Keep the historical recipe on the card,
+      // but do not use its snapshot to bypass current plan/clauses checks.
+      const { replaySnapshot: _historical, ...currentArgs } = pin.args;
       replay = unwrapSpecTestAdequacyReplay(await deps.dispatchTool(
-        pin.evaluator, compactSpecTestAdequacyReplayArgs(pin.args),
+        pin.evaluator, compactSpecTestAdequacyReplayArgs(currentArgs),
       )) as typeof replay;
     } catch (error) {
       return invalid(`Quality evaluator replay failed (${error instanceof Error ? error.message : String(error)}); no card or audit was created.`);
@@ -2111,12 +2114,13 @@ export async function emitScorecard(
         ? scorecardEvidenceFingerprint({ rubricRef: SPEC_QUALITY_RUBRIC_REF, ratings: replay.scorecardDraft.ratings })
         : undefined;
     if (replay?.ok !== true || replay.specSetHash !== pin.args.expectedSpecSetHash ||
+        replay.replaySnapshot?.planContentHash !== pin.args.replaySnapshot.planContentHash ||
         replay.specSetHashVersion !== pin.specSetHashVersion || !replay.evaluatorBuild ||
         specQualityIdentityRefusal(replay, pin.evaluatorBuild) ||
         replaySubject?.kind !== args.subject?.kind || replaySubject?.ref !== args.subject?.ref ||
         replayFingerprint !==
           scorecardEvidenceFingerprint({ rubricRef: SPEC_QUALITY_RUBRIC_REF, ratings: args.ratings ?? {} })) {
-      return invalid(`Quality replay did not reproduce the exact subject, ratings and evaluator identity (${replay?.error ?? 'mismatch'}); no card or audit was created.`);
+      return invalid(`Current quality evaluation did not reproduce the exact plan, subject, ratings and evaluator identity (${replay?.error ?? 'mismatch'}); no card or audit was created.`);
     }
   }
   const specTestAdequacyBindingError = validateSpecTestAdequacyBinding(args);
@@ -2642,6 +2646,10 @@ export async function emitScorecard(
         ...(args.subject
           ? { subject: { ...(args.subject.kind ? { kind: args.subject.kind } : {}), ref: args.subject.ref } }
           : {}),
+        ...(args.subject?.windowStart || args.subject?.windowEnd ? {
+          subjectWindow: { windowStart: args.subject.windowStart ?? '', windowEnd: args.subject.windowEnd ?? '' },
+          ...(rubric.subjectHarnessSlug ? { harnessSlug: rubric.subjectHarnessSlug } : {}),
+        } : {}),
       });
       const fill = fillRatingsFromLedger({
         criteria: rubric.criteria,
@@ -3993,6 +4001,16 @@ export async function emitScorecard(
     let checkRuns: Record<string, import('../../rubrics-criterion-checks').CriterionCheckRun> | undefined;
     /** P-006: where this emit's executed checks landed in the results ledger (null = none executed). */
     let checkLedger: CheckLedgerOutcome | null = null;
+    // Census both paths before tests.all can dispatch. Ledger-owned standalone probes
+    // are not executed here; tests conjunctions retain their existing execution policy.
+    const probePreparation = createCriterionProbePlan({
+      criteria: rubric.criteria.filter(c =>
+        c.check?.kind === 'tests' ? !deps.evaluateChecks
+          : c.check?.kind === 'probe' && !deps.evaluateProbeChecks && !ledgerOwnedKeys.has(c.key)),
+      ratings,
+    });
+    if (!probePreparation.ok) return { ok: false as const, error: probePreparation.detail, checkRefusal: probePreparation };
+    const probePlan = probePreparation.plan;
     const testCheckedCriteria = rubric.criteria.filter((c) => c.check?.kind === 'tests');
     if (testCheckedCriteria.length > 0) {
       const evaluateChecks = deps.evaluateChecks ?? evaluateCriterionTestChecks;
@@ -4011,6 +4029,7 @@ export async function emitScorecard(
           ratings,
           root: checkScope.root,
           dispatchTool: deps.dispatchTool,
+          probePlan,
           ...(checkScope.workspaceId ? { workspaceId: checkScope.workspaceId } : {}),
           ...(checkScope.harnessSlug ? { harnessSlug: checkScope.harnessSlug } : {}),
           ...(deps.evaluateChecks ? {} : {
@@ -4074,6 +4093,7 @@ export async function emitScorecard(
           criteria: rubric.criteria.filter((c) => !ledgerOwnedKeys.has(c.key)),
           ratings,
           dispatchTool: deps.dispatchTool,
+          probePlan,
         }),
       );
       // test-rubric-unification-2026-10-12 P-006 (D-004 rule 1): every EXECUTED probe writes one

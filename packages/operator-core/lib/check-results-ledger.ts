@@ -87,8 +87,29 @@ export interface RubricCheckLedgerScope {
  * latest-per-check. A subject row keeps the rubric prefix — its history stays beside the
  * rubric's — and appends the subject, so no unscoped or other-subject row shares its file.
  */
-export function rubricCheckLedgerPath(rubricRef: string, checkId: string, subject?: RecordedRubricCheckSubject): string {
-  return `rubric-check/${rubricRef}/${checkId}${subject ? rubricCheckSubjectSuffix(subject) : ''}`;
+export function rubricCheckLedgerPath(rubricRef: string, checkId: string, subject?: RecordedRubricCheckSubject,
+  window?: { windowStart: string; windowEnd: string; harnessSlug?: string }): string {
+  const windowSuffix = subject && window ? `@window/${encodeURIComponent(new Date(window.windowStart).toISOString())}` +
+    `/${encodeURIComponent(new Date(window.windowEnd).toISOString())}@harness/${encodeURIComponent(window.harnessSlug ?? '-')}` : '';
+  return `rubric-check/${rubricRef}/${checkId}${subject ? rubricCheckSubjectSuffix(subject) : ''}${windowSuffix}`;
+}
+
+/** Reuse the retained procedure as window authority; no parallel evidence store or
+ * unvalidated label. Missing/truncated legacy provenance cannot certify an interval. */
+function recordedSubjectWindow(check: RecordedRubricCheck): {
+  workspaceId: string; harnessSlug?: string; windowStart: string; windowEnd: string;
+} | undefined {
+  if (!check.subject || !check.provenance || check.provenance.gaps.includes('procedure-truncated') || check.provenance.redacted) return undefined;
+  try {
+    const procedure = JSON.parse(check.provenance.procedure.snapshot);
+    const w = procedure.window;
+    if (procedure.kind !== 'platform-instrument' || !w || typeof w.workspaceId !== 'string' ||
+        !sameRecordedSubject(w.subject, check.subject) || typeof w.windowStart !== 'string' || typeof w.windowEnd !== 'string' ||
+        !Number.isFinite(Date.parse(w.windowStart)) || !Number.isFinite(Date.parse(w.windowEnd)) ||
+        Date.parse(w.windowStart) >= Date.parse(w.windowEnd) ||
+        (w.harnessSlug !== undefined && typeof w.harnessSlug !== 'string')) return undefined;
+    return w;
+  } catch { return undefined; }
 }
 
 /** The file_path suffix that marks a subject row. `-` stands for an absent kind. */
@@ -232,7 +253,8 @@ export function instrumentCheckResult(input: {
 
 interface InstrumentCheckedCriterion {
   key: string;
-  check?: { kind: string; instrumentKey?: string; expect?: RecordedRubricCheckExpect } | null;
+  check?: { kind: string; instrumentKey?: string; expect?: RecordedRubricCheckExpect;
+    headroomBinding?: import('./storage/reclaim-provenance').DurableHeadroomBinding } | null;
 }
 
 /**
@@ -248,6 +270,9 @@ export async function runInstrumentChecks(input: {
   harnessSlug?: string | null;
   /** Only an explicitly subject-scoped instrument consumes/stamps this identity. */
   subject?: RecordedRubricCheckSubject;
+  /** Explicit completed observation interval for subject-scoped instruments. Identity
+   * stays separate from the window; workspace/harness instruments keep their own cadence. */
+  subjectWindow?: { windowStart: string; windowEnd: string };
   resolvePlatform?: NonNullable<PlatformInstrument['rescore']>['resolve'];
 }): Promise<RubricCheckResult[]> {
   const subject = input.subject === undefined ? undefined : parseRecordedRubricCheckSubject(input.subject);
@@ -256,6 +281,13 @@ export async function runInstrumentChecks(input: {
   const now = input.now ?? Date.now;
   const out: RubricCheckResult[] = [];
   const windowEndMs = now();
+  if (input.subjectWindow) {
+    const start = Date.parse(input.subjectWindow.windowStart);
+    const end = Date.parse(input.subjectWindow.windowEnd);
+    if (!subject || !Number.isFinite(start) || !Number.isFinite(end) || start >= end || end > windowEndMs) {
+      throw new Error('invalid_rubric_check_subject_window');
+    }
+  }
   // A fixed event-time window is still mutable while transcripts are ingested. Paired
   // instruments must grade one reading, including the same failure, within this execution.
   // Never share it with another run, even for an identical window.
@@ -280,9 +312,12 @@ export async function runInstrumentChecks(input: {
       const measuredAt = new Date(windowEndMs).toISOString();
       const window = {
         workspaceId: input.workspaceId ?? '',
+        ...(check.headroomBinding ? { headroomBinding: check.headroomBinding } : {}),
         ...(input.harnessSlug?.trim() ? { harnessSlug: input.harnessSlug.trim() } : {}),
-        windowStart: new Date(windowEndMs - instrument.rescore.windowMs).toISOString(),
-        windowEnd: measuredAt,
+        ...(subjectScoped && input.subjectWindow ? input.subjectWindow : {
+          windowStart: new Date(windowEndMs - instrument.rescore.windowMs).toISOString(),
+          windowEnd: measuredAt,
+        }),
         ...(subjectScoped && subject ? { subject } : {}),
       };
       let verdict: RubricCheckVerdict = 'error';
@@ -364,7 +399,12 @@ export interface RubricCheckLedgerRow {
 
 /** Build the test_runs row for one check result. Throws if the details would not read back. */
 export function buildRubricCheckLedgerRow(result: RubricCheckResult, scope: RubricCheckLedgerScope): RubricCheckLedgerRow {
-  const filePath = rubricCheckLedgerPath(result.check.rubricRef, result.check.id, result.check.subject);
+  const window = recordedSubjectWindow(result.check);
+  if (window && (window.workspaceId !== scope.workspaceId ||
+      (window.harnessSlug !== undefined && window.harnessSlug !== scope.harnessSlug))) {
+    throw new Error('rubric_check_subject_window_scope_mismatch');
+  }
+  const filePath = rubricCheckLedgerPath(result.check.rubricRef, result.check.id, result.check.subject, window);
   const execution = result.check.provenance ? parseRecordedMeasurementProvenance(result.check.provenance) : null;
   const finishedAt = execution?.finishedAt ?? result.measuredAt;
   const startedAt = execution?.startedAt ?? (result.durationMs === null
@@ -485,6 +525,8 @@ export interface LatestRubricCheckResult {
  */
 export async function readLatestRubricCheckResults(
   input: { rubricRef: string; workspaceId: string | null; subject?: RecordedRubricCheckSubject;
+    subjectWindow?: { windowStart: string; windowEnd: string };
+    harnessSlug?: string;
     /** Historical readers must not substitute a later run for the recorded assessment. */
     asOf?: string;
     /** Exact retained receipts cited by a historical scorecard. An empty list selects none. */
@@ -493,6 +535,11 @@ export async function readLatestRubricCheckResults(
 ): Promise<Map<string, LatestRubricCheckResult>> {
   if (input.asOf !== undefined && !Number.isFinite(Date.parse(input.asOf))) {
     throw new Error('A rubric-check historical cutoff must be a valid timestamp');
+  }
+  if (input.subjectWindow && (!input.subject || !Number.isFinite(Date.parse(input.subjectWindow.windowStart)) ||
+      !Number.isFinite(Date.parse(input.subjectWindow.windowEnd)) ||
+      Date.parse(input.subjectWindow.windowStart) >= Date.parse(input.subjectWindow.windowEnd))) {
+    throw new Error('invalid_rubric_check_subject_window');
   }
   if (input.testRunIds?.length === 0) return new Map();
   const prefix = `rubric-check/${input.rubricRef}/`;
@@ -541,7 +588,17 @@ export async function readLatestRubricCheckResults(
     const check = result.check;
     if (check.subject) {
       perSubjectChecks.add(check.id);
-      if (input.subject && sameRecordedSubject(check.subject, input.subject)) own.set(check.id, result);
+      if (input.subject && sameRecordedSubject(check.subject, input.subject)) {
+        if (input.subjectWindow) {
+          const window = recordedSubjectWindow(check);
+          if (!window || window.workspaceId !== input.workspaceId ||
+              (input.harnessSlug !== undefined && window.harnessSlug !== input.harnessSlug) ||
+              Date.parse(window.windowStart) !== Date.parse(input.subjectWindow.windowStart) ||
+              Date.parse(window.windowEnd) !== Date.parse(input.subjectWindow.windowEnd)) continue;
+        }
+        const prior = own.get(check.id);
+        if (!prior || newer(result, prior)) own.set(check.id, result);
+      }
       continue;
     }
     out.set(check.id, result);

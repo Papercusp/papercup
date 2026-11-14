@@ -19,7 +19,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import {
-  checkReleaseAcceptance, detectPlatform, judgeEvidence, parseRequiredMatrix, REPO_ROOT,
+  checkReleaseAcceptance, detectPlatform, judgeEvidence, parseRequiredMatrix, readNativeAccountCatalog, REPO_ROOT,
   type AcceptanceMatrixFile, type Candidate, type EvidenceRow, type Verdict,
 } from './release-acceptance';
 import type { EvidenceFile } from './release-acceptance-reporter';
@@ -568,26 +568,7 @@ async function preflightRoutedAccountCatalog(real: RealLeg[] | undefined): Promi
     const account = leg.env?.PUI_REAL_ACCOUNT ?? process.env.PUI_REAL_ACCOUNT;
     if (account !== 'auto') continue;
     const catalogPath = leg.env?.PUI_NATIVE_ACCOUNT_CATALOG ?? process.env.PUI_NATIVE_ACCOUNT_CATALOG;
-    if (!catalogPath?.trim()) {
-      throw new Error(`PUI_REAL_ACCOUNT=auto for ${leg.backend} requires PUI_NATIVE_ACCOUNT_CATALOG: a current accounts:list JSON snapshot with id/provider metadata, before installed suites run`);
-    }
-    if (!path.isAbsolute(catalogPath)) {
-      throw new Error(`PUI_NATIVE_ACCOUNT_CATALOG must be an absolute path so the installed suites read the same file: ${catalogPath}`);
-    }
-    let accounts: unknown;
-    try {
-      const parsed = JSON.parse(readFileSync(catalogPath, 'utf8')) as { accounts?: unknown };
-      accounts = parsed.accounts;
-    } catch {
-      throw new Error(`PUI_NATIVE_ACCOUNT_CATALOG must point to readable accounts:list JSON with id/provider metadata: ${catalogPath}`);
-    }
-    if (!Array.isArray(accounts) || accounts.length === 0 || accounts.some((entry: unknown) => {
-      const row = entry as Record<string, unknown> | null;
-      return !row || typeof row.id !== 'string' || !/^[A-Za-z0-9._-]+$/.test(row.id)
-        || !['claude', 'codex'].includes(String(row.provider));
-    })) {
-      throw new Error(`PUI_NATIVE_ACCOUNT_CATALOG must contain nonempty accounts:list accounts with valid id/provider metadata: ${catalogPath}`);
-    }
+    readNativeAccountCatalog(catalogPath, account);
     if (leg.backend === 'codex' && leg.model) {
       const receipt = await probeRoutedCodexModel(leg.model, process.env.PAPERCUSP_SID ?? '');
       console.info('PUI_ROUTED_CODEX_MODEL_PREFLIGHT', JSON.stringify(receipt));

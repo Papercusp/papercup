@@ -16,6 +16,7 @@ import { randomBytes } from 'node:crypto';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { PLAN_ITEM_KIND, planItemRef } from '../issue-blocks-merge';
+import { activeWorkspaceId } from '../workspace-registry';
 // NOTE (WI-10004585): do NOT statically import './convert' (or anything else that
 // reaches '../agent-tools/plans/source') here — see the SUT import below.
 
@@ -36,10 +37,13 @@ interface StubWorkItem {
    *  residue, not real in-flight work). Defaults to null (unclaimed). */
   assignee?: string | null;
   payload?: Record<string, unknown> | null;
+  sourcePlanSlug?: string | null;
+  sourcePlanItemIds?: string[] | null;
 }
 
 const h2 = vi.hoisted(() => ({
   items: new Map<string, StubWorkItem>(),
+  useRealGetWorkItem: false,
   setWorkItemState: vi.fn(async (id: string, state: string) => {
     const wi = h2.items.get(id);
     if (wi) wi.state = state;
@@ -100,7 +104,8 @@ vi.mock('../work-items', async () => {
     // export mock turns every newly imported helper into a swallowed `noop` and
     // makes lane-sync assertions fail without revealing the missing export.
     ...actual,
-    getWorkItem: (id: string) => h2.items.get(id) ?? null,
+    getWorkItem: (id: string, harness?: string) =>
+      h2.useRealGetWorkItem ? actual.getWorkItem(id, harness) : h2.items.get(id) ?? null,
     setWorkItemState: h2.setWorkItemState,
     setWorkItemStateWithAliasInfo: h2.setWorkItemStateWithAliasInfo,
     mergeWorkItemPayload: h4.mergeWorkItemPayload,
@@ -156,6 +161,8 @@ vi.mock('../agent-tools/coordination/log', async () => {
 });
 
 const {
+  filterOpenLinkedCoverageWorkItems,
+  findAllLinkedWorkItems,
   reconcileLinkedWorkItemsForPlanItem,
   reconcileOrphanedPlanItemWorkItems,
   reconcilePlanAuthoredDependenciesNow,
@@ -223,6 +230,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await rootSql`TRUNCATE harness_shared.coord_links, harness_shared.work_items, harness_shared.work_item_deps, harness_shared.plan_items`;
   h2.items.clear();
+  h2.useRealGetWorkItem = false;
   setWorkItemState.mockClear();
   setWorkItemStateWithAliasInfo.mockClear();
   h3.getPlanRow.mockReset();
@@ -263,6 +271,7 @@ async function insertWorkItemRow(o: {
   planSlug: string;
   itemId: string;
   harness?: string;
+  workspaceId?: string;
   linkage?: 'payload' | 'columns';
 }) {
   // jsonb_build_object (NOT `${jsonString}::jsonb`) — postgres.js binds a JS string
@@ -273,7 +282,7 @@ async function insertWorkItemRow(o: {
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, item_kind, status, payload,
        source_plan_slug, source_plan_item_ids, created_ts, updated_ts)
-    VALUES (${WS}, ${o.harness ?? 'sheets'}, ${o.id}, ${o.kind}, ${o.status},
+    VALUES (${o.workspaceId ?? WS}, ${o.harness ?? 'sheets'}, ${o.id}, ${o.kind}, ${o.status},
             ${
               o.linkage === 'columns'
                 ? rootSql.json({})
@@ -502,13 +511,53 @@ describe('reconcileLinkedWorkItemsForPlanItem (PG, EI-5925)', () => {
     expect(call?.[2]).not.toHaveProperty('completionRef');
   });
 
-  // NOTE: the payload.plan_item STAMP backstop path (mirroring
-  // findConvertedWorkItemByStamp's already-proven jsonb-string-scalar unwrap,
-  // convert.integration.test.ts) is exercised by findAllLinkedWorkItems's
-  // second query but is NOT separately covered here — a first attempt at this
-  // case did not match as expected and, given time budget, is left for a
-  // follow-up rather than shipped un-debugged. The PRIMARY truth source (the
-  // `implements` coord_links edge, covered above) is fully proven.
+  it('keeps an open stamped issue in the coverage set beside a terminal source-plan-only duplicate', async () => {
+    const plan = 'p-admin-duplicate-coverage';
+    const itemId = 'P-001';
+    const workspaceId = activeWorkspaceId();
+    const source = stub({
+      id: 'WI-open-source',
+      harness: 'sheets',
+      state: 'open',
+      family: 'issue',
+      lastProgressAt: null,
+      payload: { plan_item: { plan_slug: plan, item_id: itemId, harness_slug: 'sheets' } },
+      sourcePlanSlug: plan,
+      sourcePlanItemIds: [itemId],
+    });
+    const duplicate = stub({
+      id: 'F-generated-duplicate',
+      harness: 'sheets',
+      state: 'dropped',
+      family: 'feature',
+      lastProgressAt: null,
+      payload: {},
+      sourcePlanSlug: plan,
+      sourcePlanItemIds: [itemId],
+    });
+
+    // No implements edge: the open issue is visible only through its real JSONB stamp,
+    // while the generated feature duplicate is visible only through source-plan columns.
+    await insertWorkItemRow({ id: source.id, kind: 'bug', status: 'open', planSlug: plan, itemId, workspaceId });
+    await rootSql`
+      UPDATE harness_shared.work_items
+         SET source_plan_slug = ${plan}, source_plan_item_ids = ${[itemId]}
+       WHERE workspace_id = ${workspaceId} AND harness_slug = 'sheets' AND feature_id = ${source.id}`;
+    await insertWorkItemRow({
+      id: duplicate.id, kind: 'feature', status: 'dropped', planSlug: plan, itemId, workspaceId, linkage: 'columns',
+    });
+
+    // Exercise the production getWorkItem implementation as well as the real SQL
+    // coverage query; the source issue must survive the issue-family read path.
+    h2.useRealGetWorkItem = true;
+    const linked = await findAllLinkedWorkItems(plan, itemId);
+    expect(linked.map((wi) => wi.id).sort()).toEqual([duplicate.id, source.id].sort());
+
+    // This is the actual predicate used by plans:set-status's terminal coverage guard:
+    // after the duplicate closes, the canonical open issue must still block a terminal flip.
+    const stillCovered = filterOpenLinkedCoverageWorkItems(linked);
+    expect(stillCovered.map((wi) => wi.id)).toEqual([source.id]);
+  });
 
   it('no linked work-item at all is a clean no-op', async () => {
     const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-999' });
@@ -1001,6 +1050,68 @@ describe('reconcileLinkedWorkItemsForPlanItem — stale plan-lane hold cleared b
       false,
       expect.objectContaining({ by: 'system:plan-item-lane-sync' }),
     );
+  });
+});
+
+describe('scheduled execution provenance (EI-28554899885517154)', () => {
+  const template = 'scheduled-triage';
+  const instance = `${template}@run-1360`;
+  const itemId = 'P-001';
+
+  async function execution() {
+    const payload = {
+      plan_item: { plan_slug: instance, item_id: itemId },
+      plan_run: { runId: 1360, instancePlanSlug: instance, templateSlug: template },
+    };
+    await insertWorkItemRow({
+      id: 'F-scheduled-execution', kind: 'feature', status: 'todo',
+      planSlug: template, itemId, linkage: 'columns',
+    });
+    await rootSql`
+      UPDATE harness_shared.work_items SET payload = ${rootSql.json(payload)}
+       WHERE workspace_id = ${WS} AND feature_id = 'F-scheduled-execution'`;
+    return stub({
+      id: 'F-scheduled-execution', state: 'todo', family: 'feature', payload,
+      sourcePlanSlug: template, sourcePlanItemIds: [itemId],
+    });
+  }
+
+  it.each(['done', 'dropped'] as const)(
+    'does not apply template %s to an unexecuted run through grouping columns',
+    async (status) => {
+      const wi = await execution();
+
+      const result = await reconcileLinkedWorkItemsForPlanItem(
+        { planSlug: template, itemId }, { knownTerminalStatus: status },
+      );
+
+      expect(result.reconciled).toEqual([]);
+      expect(setWorkItemState).not.toHaveBeenCalled();
+      expect(wi.state).toBe('todo');
+    },
+  );
+
+  it('still reconciles the exact run instance through its implementation stamp', async () => {
+    const wi = await execution();
+
+    const result = await reconcileLinkedWorkItemsForPlanItem(
+      { planSlug: instance, itemId }, { knownTerminalStatus: 'done' },
+    );
+
+    expect(result.reconciled).toEqual([wi.id]);
+    expect(setWorkItemState).toHaveBeenCalledWith(wi.id, 'passed', expect.anything());
+  });
+
+  it('retains legacy column precedence for a contradictory run tuple', async () => {
+    const wi = await execution();
+    (wi.payload!.plan_run as { templateSlug: string }).templateSlug = 'another-template';
+
+    const result = await reconcileLinkedWorkItemsForPlanItem(
+      { planSlug: template, itemId }, { knownTerminalStatus: 'done' },
+    );
+
+    expect(result.reconciled).toEqual([wi.id]);
+    expect(setWorkItemState).toHaveBeenCalledWith(wi.id, 'passed', expect.anything());
   });
 });
 
@@ -1803,6 +1914,52 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
     expect(row.state).toBe('todo');
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
+
+  it.each(['done', 'dropped'] as const)(
+    'preserves a unified plan-line dependency after its prerequisite is %s (EI-28608507104431518)',
+    async (status) => {
+      const plan = `p-unified-settled-${status}`;
+      const marker = { planSlug: plan, itemId: 'P-002', blockerWorkItemIds: ['F-finished'] };
+      const target = stub({ id: 'F-target', family: 'feature', state: 'todo',
+        payload: { [PLAN_AUTHORED_BLOCKERS_KEY]: marker } });
+      stub({ id: 'F-finished', family: 'feature', state: status });
+      await insertDependencyRows(['F-target', 'F-finished', 'F-manual']);
+      for (const [id, itemId, seq] of [
+        ['F-finished', 'P-001', 1], ['F-target', 'P-002', 2],
+      ] as const) {
+        await rootSql`UPDATE harness_shared.work_items
+          SET plan_slug = ${plan}, plan_line_id = ${itemId}, plan_seq = ${seq},
+              plan_line_text = ${id}, status = ${id === 'F-finished' ? status : 'open'}
+          WHERE workspace_id = ${WS} AND harness_slug = 'sheets' AND feature_id = ${id}`;
+      }
+      await mirrorWorkItemBlockingEdge(
+        { kind: 'feature', ref: 'sheets#F-finished' }, { kind: 'feature', ref: 'sheets#F-target' },
+        { satisfaction: 'settled', createdBy: `plan-dependency:sheets/${plan}` },
+      );
+      await mirrorWorkItemBlockingEdge(
+        { kind: 'feature', ref: 'sheets#F-manual' }, { kind: 'feature', ref: 'sheets#F-target' },
+        { satisfaction: 'success', createdBy: 'manual-source' },
+      );
+      h3.getPlanRow.mockResolvedValue({ workspaceId: WS, harnessSlug: 'sheets', items: [
+        { id: 'P-001', status, blockedBy: [] },
+        { id: 'P-002', status: 'todo', blockedBy: ['P-001'] },
+      ] });
+      const edges = () => rootSql`SELECT id, blocker_ref, satisfaction, created_by, created_at
+        FROM harness_shared.work_item_deps WHERE blocked_ref = 'sheets#F-target'
+        ORDER BY blocker_ref`;
+      const before = await edges();
+      expect(before).toHaveLength(2);
+
+      await reconcilePlanAuthoredDependenciesNow(plan, 'P-002', 'sheets');
+      await resyncPlanItemLaneNow(plan, 'P-002', 'sheets');
+
+      const { readPlanLineNodes } = await import('../agent-tools/plans/plan-line-graph');
+      const nodes = await readPlanLineNodes(rootSql, { workspaceId: WS, harnessSlug: 'sheets', slug: plan });
+      expect(nodes.find((node) => node.id === 'P-002')?.blockedBy).toEqual(['P-001']);
+      expect(await edges()).toEqual(before);
+      expect(target.payload?.[PLAN_AUTHORED_BLOCKERS_KEY]).toEqual(marker);
+    },
+  );
 
   it('D-050: replaces only plan-authored blocker edges while preserving an unrelated live blocker', async () => {
     const plan = 'p-dependency-replace';

@@ -49,12 +49,15 @@ import { getClaim } from '../../plan-items/claims';
 import { autoConvertClaimIntent } from '../../plan-items/claim-holder';
 import {
   convertPlanItem,
+  IMPLEMENTS_REL,
   findConvertedWorkItemByStamp,
   findCoverageWorkItems,
   looksLikeResidualClosure,
   TERMINAL_WORK_ITEM_STATES,
 } from '../../plan-items/convert';
+import { implementsLinkScopes, PLAN_ITEM_KIND } from '../../issue-blocks-merge';
 import {
+  filterOpenLinkedCoverageWorkItems,
   findAllLinkedWorkItems,
   reconcileLinkedWorkItemsForPlanItem,
   resyncDependentPlanItemLanesNow,
@@ -1298,8 +1301,9 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   // goes terminal, coverage is empty and the flip proceeds — 1:1 behaviour is unchanged.
   if (it.onlyIfNoOtherOpenCoverage && (it.status === 'dropped' || it.status === 'done')) {
     try {
-      const linked = await findAllLinkedWorkItems(it.slug, it.itemId);
-      const stillCovered = linked.filter((wi) => !TERMINAL_WORK_ITEM_STATES.has(wi.state));
+      const coverageScope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
+      const linked = await findAllLinkedWorkItems(it.slug, it.itemId, coverageScope);
+      const stillCovered = filterOpenLinkedCoverageWorkItems(linked);
       if (stillCovered.length > 0) {
         return {
           ok: true,
@@ -1521,6 +1525,45 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         await applyBlockerDecisionMutation(tx, { workspace: scope.workspaceId,
           harness: scope.harnessSlug, id: blockerSubject.id }, blockerMutation);
         return absorptionDependencies;
+      },
+      validatePlanLineLifecycleProjectionInTransaction: async (tx, scope, value) => {
+        // A split-ID execution closes its own proof-bearing row before this
+        // reflection runs. Permit the canonical plan-line row to mirror done
+        // only when a distinct implements-linked child has committed terminal
+        // evidence; the child's authority/evidence columns remain untouched.
+        if (!value.ok || it.status !== 'done' || !it.onlyIfNoOtherOpenCoverage) return;
+        const canonicalRows = await tx<{ feature_id: string }[]>`
+          SELECT feature_id FROM harness_shared.work_items
+          WHERE workspace_id=${scope.workspaceId} AND harness_slug=${scope.harnessSlug}
+            AND plan_slug=${it.slug} AND plan_line_id=${it.itemId}
+          FOR UPDATE`;
+        if (canonicalRows.length !== 1) return;
+        const [source] = await tx<{ feature_id: string }[]>`
+          SELECT wi.feature_id
+          FROM harness_shared.work_items wi
+          JOIN harness_shared.coord_links edge
+            ON edge.workspace_id = ANY(${implementsLinkScopes()})
+           AND edge.rel = ${IMPLEMENTS_REL}
+           AND edge.dst_kind = ${PLAN_ITEM_KIND}
+           AND edge.dst_ref = ${planItemRef(it.slug, it.itemId)}
+           AND (
+             (edge.src_kind = 'issue' AND edge.src_ref = wi.feature_id)
+             OR (edge.src_kind = 'feature' AND edge.src_ref = wi.harness_slug || '#' || wi.feature_id)
+           )
+          WHERE wi.workspace_id=${scope.workspaceId} AND wi.harness_slug=${scope.harnessSlug}
+            AND wi.feature_id <> ${canonicalRows[0].feature_id}
+            AND wi.status = ANY(${['done', 'resolved', 'passed']}::text[])
+            AND wi.authority='committed'
+            AND jsonb_typeof(wi.payload -> '_completionEvidence')='object'
+          ORDER BY wi.closed_ts DESC NULLS LAST, wi.feature_id
+          LIMIT 1
+          FOR SHARE OF wi, edge`;
+        if (!source) return;
+        return new Map([[it.itemId, {
+          canonicalFeatureId: canonicalRows[0].feature_id,
+          sourceWorkItemId: source.feature_id,
+          terminalStatus: 'done' as const,
+        }]]);
       },
       inTransaction: async (tx, _writtenBody, scope, value) => {
         if (value.ok && carryRequired) {

@@ -24,6 +24,7 @@ async function nativeScenario(scenario: 'current-su-native' | 'current-su-native
   | 'current-su-native-frozen-carry-on' | 'current-su-native-frozen-carry-off', context: TestContext) {
   const dockerHost = privateNativeDockerHost(['--native-docker-host=' + (process.env.DOCKER_HOST ?? '')]);
   let prepared: Awaited<ReturnType<typeof preparePrivateOperatorApiBundle>> | undefined;
+  let preparedSourceSha: string | undefined;
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/external-bench/current-su-native.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/staging-first-http-fixture.ts',
@@ -53,7 +54,8 @@ async function nativeScenario(scenario: 'current-su-native' | 'current-su-native
     prepare: async evidenceDir => {
       // The native MCP handshake requires a known serving generation. Reject
       // unqualified working source before the expensive build or allocation.
-      privateMcpSourceSha(root);
+      const sourceSha = privateMcpSourceSha(root);
+      preparedSourceSha = sourceSha;
       await preflightCurrentSuNativeEgress(evidenceDir);
       // Compilation and every guard must finish before the disposable native
       // runtime/database exists. The worker consumes only these pinned bytes.
@@ -66,6 +68,7 @@ async function nativeScenario(scenario: 'current-su-native' | 'current-su-native
       const censusPath = join(evidenceDir, 'restricted-hold-census.json');
       await (await import('node:fs/promises')).writeFile(censusPath, '[]\n', { mode: 0o600 });
       prepared = await preparePrivateOperatorApiBundle(root, evidenceDir, {
+        sourceSha,
         builder: { timeoutMs: 240_000, maxMs: 420_000,
           env: { ...process.env, VITEST: 'true', PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE: censusPath } },
       });
@@ -117,6 +120,65 @@ async function nativeScenario(scenario: 'current-su-native' | 'current-su-native
   console.info('CURRENT_SU_NATIVE_PROOF_RUN ' + runId);
 }
 
+async function privateMcpPreflightOnlyScenario(context: TestContext) {
+  let prepared: Awaited<ReturnType<typeof preparePrivateOperatorApiBundle>> | undefined;
+  let preparedSourceSha: string | undefined;
+  const runId = await recordIsolatedIntegrationProof({ root,
+    filePath: 'packages/operator-core/lib/external-bench/current-su-native.integration.test.ts',
+    sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/staging-first-http-fixture.ts',
+      'packages/operator-core/test/private-http-workspace-preflight.ts',
+      'packages/operator-core/test/isolated-integration-proof.ts',
+      'apps/operator/bin/hono-host.ts', 'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh',
+      'packages/operator-core/lib/serving-generation.ts', 'packages/operator-core/lib/superuser-token.ts'],
+    retainedArtifacts: currentSuNativeRetainedArtifacts(false)
+      .filter(path => path !== 'phases/prepare/native-egress-preflight.json'),
+    prepare: async evidenceDir => {
+      // testing:run doesn't inherit shell-local test harness selectors. Pass
+      // this test's exact harness to both source qualification and the builder.
+      const buildEnv = { ...process.env, PAPERCUSP_TEST_RUN_HARNESS: 'papercusp' };
+      const sourceSha = privateMcpSourceSha(root, buildEnv);
+      preparedSourceSha = sourceSha;
+      const censusPath = join(evidenceDir, 'restricted-hold-census.json');
+      await (await import('node:fs/promises')).writeFile(censusPath, '[]\n', { mode: 0o600 });
+      prepared = await preparePrivateOperatorApiBundle(root, evidenceDir, {
+        sourceSha,
+        builder: { timeoutMs: 240_000, maxMs: 420_000,
+          env: { ...buildEnv, VITEST: 'true', PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE: censusPath } },
+      });
+    },
+    execute: async (observe, evidenceDir) => {
+      expect(prepared, 'Private API preparation must precede isolated runtime allocation').toBeDefined();
+      await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
+      await mkdir(join(evidenceDir, 'tmp'));
+      const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--managed-tasks', '--',
+        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts'),
+        '--prepared-api-sha=' + prepared!.sha256, '--prepared-receipt-sha=' + prepared!.receiptSha256],
+      { cwd: root, detached: true, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+        env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
+          STAGING_FIRST_HTTP_SCENARIO: 'private-mcp-preflight-only',
+          STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir,
+          TMPDIR: process.env.TMPDIR ?? join(evidenceDir, 'tmp') } });
+      observe(child);
+      let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
+      try { result = await captureIsolatedWorker(child, evidenceDir, options); }
+      finally { await rm(join(evidenceDir, 'node_modules')); }
+      expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ code: 0, signal: null,
+        timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
+      const line = result.output.split('\n').find(row => row.startsWith('PRIVATE_MCP_PREFLIGHT_ONLY_RECEIPT '));
+      expect(line, result.output.slice(-4000)).toBeTruthy();
+      const receipt = JSON.parse(line!.slice('PRIVATE_MCP_PREFLIGHT_ONLY_RECEIPT '.length));
+      expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/),
+        sourceSha: preparedSourceSha, healthSha: preparedSourceSha, hostStopped: true, nativeLaunches: 0,
+        servingGeneration: expect.stringMatching(/^serving-generation-v1:[a-f0-9]{64}$/),
+        toolCount: expect.any(Number) });
+      expect(receipt.toolCount).toBeGreaterThan(0);
+      expect(result.output).not.toContain('CURRENT_SU_NATIVE_RECEIPT');
+    },
+  });
+  Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+  console.info('PRIVATE_MCP_PREFLIGHT_ONLY_PROOF_RUN ' + runId);
+}
+
 it('checks native egress startup without private API compilation or model requests', async context => {
   const benchDockerHost = privateNativeDockerHost(['--native-docker-host=unix:///run/docker-bench.sock']);
   vi.stubEnv('DOCKER_HOST', benchDockerHost);
@@ -148,6 +210,10 @@ it('checks native egress startup without private API compilation or model reques
     vi.unstubAllEnvs();
   }
 }, 120_000);
+
+it('verifies the digest-pinned private MCP generation before any native launch', async context => {
+  await privateMcpPreflightOnlyScenario(context);
+}, options.testTimeoutMs);
 
 it('launches autonomous current-su through the native container adapter without provider forwarding',
   context => nativeScenario('current-su-native', context), options.testTimeoutMs);

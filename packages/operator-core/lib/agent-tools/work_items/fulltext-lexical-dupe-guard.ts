@@ -36,7 +36,7 @@
  * switch (PAPERCUSP_WI_FULLTEXT_DUPE=off) returns null — the caller proceeds
  * silently. Only OPEN (non-terminal) candidates are surfaced.
  */
-import { searchWorkItems } from '../../work-items';
+import { searchWorkItemDuplicateCandidates } from '../../work-items';
 import { DUP_THRESHOLD, titleSimilarity } from '../../harness/improvements/digest';
 import { ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
 import type { SemanticDupeCandidate } from './semantic-dupe-guard';
@@ -58,23 +58,14 @@ export interface FulltextLexicalDupeRow {
 
 /** Injectable seam (tests + any future non-issues space). */
 export interface FulltextLexicalDupeDeps {
-  searchWorkItems: (query: string) => Promise<FulltextLexicalDupeRow[]>;
+  /** Null means complete candidate coverage could not be proven within its bound. */
+  searchWorkItems: (query: string) => Promise<FulltextLexicalDupeRow[] | null>;
 }
 
 const realDeps: FulltextLexicalDupeDeps = {
   searchWorkItems: async (query) => {
-    const result = await searchWorkItems(query, { semantic: false });
-    // A degraded lexical leg is not a clean no-match verdict. Throw into the
-    // guard's existing fail-open boundary rather than admitting a duplicate
-    // from a degraded empty page.
-    if (result.legs.degraded) throw new Error('unified lexical work-item search degraded');
-    return result.items.map((item) => ({
-      id: item.id,
-      title: item.title,
-      summary: item.summary,
-      state: item.state,
-      harness: item.harness,
-    }));
+    const result = await searchWorkItemDuplicateCandidates(query);
+    return result.complete ? result.items : null;
   },
 };
 
@@ -101,6 +92,7 @@ async function classify(
 ): Promise<SemanticDupeCandidate[]> {
   const query = searchableText(input.title, input.summary);
   const rows = await d.searchWorkItems(query);
+  if (rows === null) throw new Error('complete lexical duplicate candidate coverage unavailable');
   const scored = rows
     .filter((r) => r.id !== input.excludeId && !ALL_TERMINAL_STATUSES.has(r.state))
     .map((r) => ({

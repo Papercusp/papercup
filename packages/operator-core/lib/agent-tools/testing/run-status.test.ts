@@ -262,6 +262,19 @@ describe('testing:run-status handler', () => {
       'testing:run-status { runId }',
     );
   });
+
+  it('keeps dirty integration timeout recovery on the maintained route before offering the committed CLI', () => {
+    const hint = detachedTestTimeoutHint(['packages/operator-core/lib/example.integration.test.ts']);
+
+    expect(hint).toContain('dirty tested inputs');
+    expect(hint).toContain('testing:run using the original files, root, and regex selection');
+    expect(hint).toContain('direct CLI requires committed tested inputs and refuses dirty ones');
+    expect(hint).toContain('Do not start another run while that recovery is active or its outcome is unknown');
+    expect(hint).toContain('For committed tested inputs only, re-run detached with capability:bash');
+    expect(hint).toContain('npm run test:file -- <test path>');
+    expect(hint.indexOf('testing:run-status { runId }')).toBeLessThan(hint.indexOf('capability:bash'));
+    expect(hint).not.toContain('capability:inspect');
+  });
 });
 
 /**

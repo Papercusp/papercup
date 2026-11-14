@@ -1,11 +1,11 @@
 /** Shared installed OMP fixture for focused preflight and production lifecycle proof. */
 import { execFile, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import { expect } from 'vitest';
+import { afterAll, expect } from 'vitest';
+import { createOmpNativeHomes } from './omp-native-home';
 import { composeOmpCapabilityTools, type CapabilityPolicyRequest } from '@papercusp/orchestrator/managed-capability-policy';
 import { invoke } from '@papercusp/orchestrator';
 import { resumeArgsFor, roleLaunchArgs, suLaunchArgs } from '../../../apps/operator/scripts/psu-launcher.mjs';
@@ -17,6 +17,8 @@ import { ompLifecycleProvider } from './omp-managed-native-provider';
 const root = resolve(import.meta.dirname, '../../..');
 const privateMcpUrl = process.env.OMP_MANAGED_PRIVATE_MCP_URL;
 const nativeTools = ['read', 'bash', 'edit', 'write', 'grep', 'glob', 'task', 'todo', 'web_search'];
+const nativeHomes = createOmpNativeHomes();
+afterAll(() => nativeHomes.dispose());
 export const admitted: CapabilityPolicyRequest = {
   client: 'omp', surface: 'launch', clientVersions: { omp: '18.0.3' }, ompNativeTools: nativeTools,
   readiness: [{ family: 'shell-ssh-interpreters', cutoverReady: true, openGapIds: [] }],
@@ -34,7 +36,7 @@ export async function measureLifecycle(url: string, token: string, policy: Capab
   const omp = wellKnownBackendBin('omp') ?? resolveOnPath('omp');
   expect(omp, 'Installed OMP is required').toBeTruthy();
   const version = execFileSync(omp!, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim();
-  const home = mkdtempSync(join(tmpdir(), 'omp-managed-lifecycle-'));
+  const home = nativeHomes.allocate();
   const extension = join(home, 'provider.ts');
   const sessions = join(home, 'sessions');
   const resultPath = join(home, 'result.json');
@@ -56,7 +58,8 @@ export async function measureLifecycle(url: string, token: string, policy: Capab
     '--auto-approve', '--session-dir', sessions];
   const selection = ['--tools', nativeTools.join(',')];
   const observations: { surface: string; version: string; names: string[]; hasNativeExecution: boolean;
-    nativeRefused: boolean; managedCalls: number; managedRefusal: boolean; managedPath: string }[] = [];
+    nativeRefused: boolean; managedCalls: number; managedRefusal: boolean; managedPath: string;
+    startup: { elapsedMs: number; nativeFilesBefore: string[]; nativeFilesAfter: string[]; phases: string | null } }[] = [];
   let transcript: string | undefined;
   try {
     const surfaces = viaInvoke ? ['invoke'] as const
@@ -93,6 +96,13 @@ export async function measureLifecycle(url: string, token: string, policy: Capab
       }
       let result: { stdout: string; stderr: string };
       let observedResult: typeof result | undefined;
+      const phasesPath = join(home, 'startup-' + surface + '.ndjson');
+      const startedAt = Date.now();
+      const nativeFilesBefore = nativeHomes.nativeFiles();
+      const startup = () => ({ elapsedMs: Date.now() - startedAt, nativeFilesBefore,
+        nativeFilesAfter: nativeHomes.nativeFiles(),
+        phases: (() => { try { return readFileSync(phasesPath, 'utf8'); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; } })() });
       result = await withIsolatedNativeLaunchDiagnostics(evidenceDir!, async () => {
       if (surface === 'invoke') {
         const stateDir = join(home, '.papercusp');
@@ -106,14 +116,15 @@ export async function measureLifecycle(url: string, token: string, policy: Capab
           agentBackend: 'omp', claudeCmd: [omp!, ...common, ...args].join(' '), dept: '',
           log: line => logs.push(line) }, 'reviewer', [], { capabilityPolicy: policy,
           inlinePrompt: prompt, cwd: home, extraEnv: Object.fromEntries(Object.entries({ ...env,
-            OMP_PROOF_SURFACE: surface }).filter((entry): entry is [string, string] => entry[1] !== undefined)) });
+            OMP_PROOF_SURFACE: surface, OMP_PROOF_PHASE_FILE: phasesPath })
+            .filter((entry): entry is [string, string] => entry[1] !== undefined)) });
         observedResult = { stdout: readFileSync(invoked.jsonlPath, 'utf8'),
           stderr: readFileSync(invoked.jsonlPath.replace(/\.jsonl$/, '.err'), 'utf8') };
         expect(invoked.exitCode, JSON.stringify({ logs, stderr: observedResult.stderr })).toBe(0);
         return observedResult;
       } else {
         const execution = promisify(execFile)(omp!, [...common, ...args], {
-          cwd: home, env: { ...env, OMP_PROOF_SURFACE: surface }, timeout: 30_000,
+          cwd: home, env: { ...env, OMP_PROOF_SURFACE: surface, OMP_PROOF_PHASE_FILE: phasesPath }, timeout: 30_000,
           killSignal: 'SIGKILL', maxBuffer: 2 * 1024 * 1024,
         });
         // OMP reads piped stdin before the positional prompt.
@@ -123,12 +134,12 @@ export async function measureLifecycle(url: string, token: string, policy: Capab
       }, async outcome => {
         if (outcome.status !== 'rejected') return;
         const error = outcome.error as { code?: unknown; signal?: unknown; stdout?: string; stderr?: string };
-        const sources = { stdout: join(home, 'stdout.log'), stderr: join(home, 'stderr.log') };
+        const sources = { stdout: join(home, 'stdout.log'), stderr: join(home, 'stderr.log'), boot: phasesPath };
         writeFileSync(sources.stdout, error?.stdout ?? outcome.result?.stdout ?? observedResult?.stdout ?? '', { mode: 0o600 });
         writeFileSync(sources.stderr, error?.stderr ?? outcome.result?.stderr ?? observedResult?.stderr ?? '', { mode: 0o600 });
         retainIsolatedNativeTaskDiagnostics(evidenceDir!, { client: 'omp', surface, version,
           state: 'failed', exitCode: error?.code ?? null, signal: error?.signal ?? null,
-          expectRestricted, error: String(outcome.error) }, sources);
+          expectRestricted, error: String(outcome.error), startup: startup() }, sources);
       }, async result => {
       expect(result.stderr).not.toMatch(/Invalid tool names/);
       const measured = JSON.parse(readFileSync(resultPath, 'utf8'));
@@ -156,7 +167,7 @@ export async function measureLifecycle(url: string, token: string, policy: Capab
       observations.push({ surface, version, names: measured.names,
         hasNativeExecution: native?.isError !== true && JSON.stringify(native).includes('OMP_NATIVE_ESCAPE'),
         nativeRefused: native?.isError === true, managedCalls: 1, managedRefusal: true,
-        managedPath: privateMcpUrl ? 'production-capability-bash' : 'local-mcp-preflight' });
+        managedPath: privateMcpUrl ? 'production-capability-bash' : 'local-mcp-preflight', startup: startup() });
       const files = readdirSync(sessions, { recursive: true }).map(String).filter(name => name.endsWith('.jsonl'));
       expect(files, 'One persisted native session must survive all lifecycle processes').toHaveLength(1);
       const next = join(sessions, files[0]!);

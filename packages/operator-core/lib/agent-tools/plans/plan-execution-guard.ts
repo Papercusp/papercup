@@ -9,6 +9,8 @@ import { planExecutionMeaning } from './plan-execution-meaning';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import type { ResolvedGoal } from '../../agent-goal-ref';
 import type { AcceptanceBarSnapshotSource } from '../../acceptance-bar-contract-snapshot';
+import type { Sql } from 'postgres';
+import { readPlanLineNodes } from './plan-line-graph';
 export { planExecutionMeaning } from './plan-execution-meaning';
 
 // The installed parser has no bundled declarations. Treat its tokens as unknown
@@ -26,6 +28,8 @@ export interface ExecutionPlanBinding {
   harnessSlug: string | null;
   source?: ExecutionPlanBindingSource;
   sourceRef?: string | null;
+  canonical?: { itemId: string; lineId: string; ownerId: string; nodeVersion: string; lineVersion: string; planVersion: number; planHash: string };
+  canonicalInvalid?: boolean;
 }
 export interface PlanExecutionRefusal {
   code: 'plan_execution_not_ready';
@@ -127,6 +131,13 @@ function hasActiveShellExpansion(command: string): boolean {
 /** A deliberately small read-only shell subset; arbitrary interpreters require activation. */
 export function isPlanResearchCommand(command: unknown): boolean {
   if (isPlanPtoolReadCommand(command)) return true;
+  // Native exec batches independent reads with newlines. Check each complete
+  // line instead of letting shell-quote merge a later command into file args.
+  // Unfinished quotes, continuations and any mutating line still fail closed.
+  if (typeof command === 'string' && command.includes('\n')) {
+    const lines = command.replace(/\r\n/g, '\n').split('\n').filter(line => line.trim());
+    return lines.length > 0 && lines.every(line => isPlanResearchCommand(line));
+  }
   // Single-quoted constants such as sed's '$p' do not expand in the shell.
   if (typeof command !== 'string' || /[\n\r]/.test(command) || hasActiveShellExpansion(command)) return false;
   try {
@@ -136,6 +147,14 @@ export function isPlanResearchCommand(command: unknown): boolean {
     for (const token of tokens) {
       if (typeof token === 'string') {
         current.push(token);
+        continue;
+      }
+      // Filename globs are argument data. A literal prefix prevents expansion
+      // into leading options; command names and external hooks stay restricted.
+      if (token && typeof token === 'object' && 'op' in token && token.op === 'glob'
+        && 'pattern' in token && typeof token.pattern === 'string'
+        && /^[A-Za-z0-9_./]/.test(token.pattern) && current.length > 0) {
+        current.push(token.pattern);
         continue;
       }
       if (token && typeof token === 'object' && 'op' in token && typeof token.op === 'string'
@@ -167,13 +186,28 @@ const readOnlyPtoolTools = new Set([
   'tools:find', 'plans:get', 'plans:get-input-schema', 'plans:items', 'work_items:get', 'reports:get',
   'plans:evaluate-spec-quality',
   'consult:get_feedback', 'conversations:get', 'coord:inbox', 'coord:read', 'docs:get', 'docs:search',
+  'sessions:read', 'sessions:search', 'plans:revisions', 'plans:revision-transcript',
+  'journal:push-utilization', 'facts:list', 'capability:read',
+  'plans:get-specs', 'plans:get-spec-evidence', 'plans:get-item', 'recipes:search',
+  'rubrics:get', 'rubrics:list', 'rubrics:search', 'rubrics:amend-status', 'scorecards:get', 'processes:list',
+]);
+
+// These canonical handlers retain their own authorization, custody and content
+// checks. Their quoted CLI routes must be usable to establish plan readiness,
+// just like direct tool calls; none grants implementation or new autonomy.
+const readinessControlPtoolTools = new Set([
+  'consult:reply', 'consult:decline', 'plans:start', 'plans:audit', 'plans:set-content',
+  'coord:send', 'coord:declare-intent', 'work_items:checkpoint', 'work_items:comment',
+  'work_items:release', 'work_items:link', 'loop:checkpoint',
+  'scorecards:repair',
+  'plans:edit', 'plans:set-specs', 'plans:migrate-acceptance-bars', 'rubrics:amend',
 ]);
 
 /**
  * Recognize only a single ptool JSON call with a quoted heredoc. Its body is
  * inert data; the exact target verb is checked against a narrow allowlist below.
  */
-function ptoolJsonHeredocTool(command: unknown): string | null {
+function ptoolJsonHeredocCall(command: unknown): { name: string; args: Record<string, unknown> } | null {
   if (typeof command !== 'string' || command.length > 32_768 || command.includes('\0')) return null;
   const normalized = command.replace(/\r\n/g, '\n');
   if (normalized.includes('\r')) return null;
@@ -190,6 +224,9 @@ function ptoolJsonHeredocTool(command: unknown): string | null {
   // inputs. The CLI/tool still validates their effective scope; never evaluate
   // an expansion here. Wrong variables and every other expansion remain invalid.
   const literalHeader = match[1]!
+    // Suppressing CLI diagnostics does not turn a typed read/repair into an
+    // implementation write. Every other redirection remains outside this door.
+    .replace(/(^|[ \t])2>\/dev\/null(?=[ \t]|$)/, '$1')
     .replace(/(^|[ \t])--workspace="\$(?:PAPERCUSP_WORKSPACE|\{PAPERCUSP_WORKSPACE\})"(?=[ \t]|$)/g, '$1--workspace=scope')
     .replace(/(^|[ \t])--harness="\$(?:PAPERCUSP_HARNESS_SLUG|\{PAPERCUSP_HARNESS_SLUG\})"(?=[ \t]|$)/g, '$1--harness=scope');
   // Validate complete, balanced shell words before parsing: shell-quote is
@@ -207,18 +244,29 @@ function ptoolJsonHeredocTool(command: unknown): string | null {
     if (tokens.some(token => typeof token !== 'string')) return null;
     words = tokens as string[];
   } catch { return null; }
-  if (words[0] !== 'ptool' || !/^[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*$/.test(words[1] ?? '')) return null;
+  if (words[0] !== 'ptool') return null;
+  let verb: string | null = null;
   const flags = new Set<string>();
-  for (let index = 2; index < words.length; index++) {
+  // ptool's value flags are global: they may precede or follow the verb.
+  // A transport idempotency key identifies a replay; it never authorizes the
+  // target verb, which is still classified below and checked by its handler.
+  for (let index = 1; index < words.length; index++) {
     const token = words[index]!;
+    if (!token.startsWith('--')) {
+      if (verb !== null || !/^[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*$/.test(token)) return null;
+      verb = token;
+      continue;
+    }
     const equals = token.indexOf('=');
     const flag = equals < 0 ? token : token.slice(0, equals);
-    if (!['--json', '--workspace', '--harness', '--url'].includes(flag) || flags.has(flag)) return null;
+    if (!['--json', '--workspace', '--harness', '--url', '--idempotency-key'].includes(flag) || flags.has(flag)) return null;
     const value = equals < 0 ? words[++index] : token.slice(equals + 1);
     if (value === undefined) return null;
     flags.add(flag);
     if (flag === '--json') {
       if (value !== '-') return null;
+    } else if (flag === '--idempotency-key') {
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(value)) return null;
     } else if (flag === '--url') {
       try {
         const url = new URL(value);
@@ -228,32 +276,48 @@ function ptoolJsonHeredocTool(command: unknown): string | null {
       } catch { return null; }
     } else if (!/^[A-Za-z0-9._-]+$/.test(value)) return null;
   }
-  if (!flags.has('--json')) return null;
+  if (!verb || !flags.has('--json')) return null;
 
   try {
     const payload: unknown = JSON.parse(lines.join('\n'));
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
-    if (words[1] !== 'tools:invoke') return words[1]!;
+    if (verb !== 'tools:invoke') return { name: verb, args: payload as Record<string, unknown> };
     const nested = payload as Record<string, unknown>;
     if (Object.keys(nested).some(key => !['name', 'args', 'projection'].includes(key))) return null;
     return typeof nested.name === 'string' && nested.args && typeof nested.args === 'object' && !Array.isArray(nested.args)
-      ? nested.name : null;
+      ? { name: nested.name, args: nested.args as Record<string, unknown> } : null;
   } catch {
     return null;
   }
 }
 
 function isPlanPtoolReadCommand(command: unknown): boolean {
-  const tool = ptoolJsonHeredocTool(command);
-  return tool !== null && readOnlyPtoolTools.has(tool);
+  const call = ptoolJsonHeredocCall(command);
+  return call !== null && (readOnlyPtoolTools.has(call.name) ||
+    (call.name === 'scorecards:evaluate' && call.args.eligibilityOnly === true));
 }
 
 function isPlanPtoolControlCommand(command: unknown): boolean {
-  const tool = ptoolJsonHeredocTool(command);
+  const call = ptoolJsonHeredocCall(command);
+  const reconcile = call?.args.reconcile;
   // plans:audit is a canonical plan-control operation; its handler owns audit
   // evidence validation and any activation transition. It does not grant code
   // execution, which remains behind the implementation readiness check.
-  return tool === 'consult:reply' || tool === 'consult:decline' || tool === 'plans:start' || tool === 'plans:audit';
+  // Spec-quality persistence establishes readiness. Other scorecard emits can
+  // run rubric checks, so they remain implementation; eligibilityOnly above
+  // returns before grading and its handler rejects incompatible inputs.
+  // Acceptance-rubric creation establishes the completion contract. Its handler
+  // retains subject, criterion and vetting checks; standard proposals and
+  // ratification remain outside this readiness route.
+  // Evidence-based park reconciliation can be the remaining prerequisite to
+  // start. Its handler retains sign-off, assignment, fingerprint CAS and audit
+  // checks; bare hold/clear and force routes remain implementation operations.
+  return call !== null && (readinessControlPtoolTools.has(call.name) ||
+    (call.name === 'rubrics:propose' && call.args.kind === 'acceptance') ||
+    (call.name === 'work_items:hold_open' && call.args.clear === true &&
+      (call.args.force === undefined || call.args.force === false) &&
+      reconcile !== null && typeof reconcile === 'object' && !Array.isArray(reconcile)) ||
+    (call.name === 'scorecards:emit' && call.args.rubricRef === 'spec-quality'));
 }
 
 export function isPlanImplementationCall(toolName: string, args: unknown): boolean {
@@ -300,27 +364,88 @@ export async function readExecutionPlanBindings(ownerId: string, workspaceId: st
       FROM harness_shared.plan_item_claims
      WHERE owner=${ownerId} AND workspace_id=${workspaceId}
     UNION ALL
-    SELECT source_plan_slug, harness_slug, 'work-item'::text, feature_id
-      FROM harness_shared.work_items
-     WHERE taken_by=${ownerId} AND workspace_id=${workspaceId}
-       AND source_plan_slug IS NOT NULL
-       AND NOT (status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))`;
-  return rows.filter(row => typeof row.plan_slug === 'string' && row.plan_slug.trim())
+    SELECT NULL::text, NULL::text, 'work-item'::text, NULL::text WHERE false`;
+  const bindings: ExecutionPlanBinding[] = rows.filter(row => typeof row.plan_slug === 'string' && row.plan_slug.trim())
     .map(row => ({
       planSlug: row.plan_slug!,
       harnessSlug: row.harness_slug,
       source: row.source,
       sourceRef: row.source_ref,
     }));
+  const held = await sql<Array<{ feature_id: string; harness_slug: string; source_plan_slug: string | null;
+    plan_slug: string | null; plan_line_id: string | null }>>`
+    SELECT feature_id,harness_slug,source_plan_slug,plan_slug,plan_line_id FROM harness_shared.work_items
+     WHERE workspace_id=${workspaceId} AND taken_by=${ownerId}
+       AND NOT(status=ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))`;
+  for (const row of held) {
+    // Only truly absent canonical fields permit historical source fallback.
+    if (row.plan_slug === null && row.plan_line_id === null) {
+      if (row.source_plan_slug) bindings.push({ planSlug: row.source_plan_slug, harnessSlug: row.harness_slug,
+        source: 'work-item', sourceRef: row.feature_id });
+      continue;
+    }
+    const binding: ExecutionPlanBinding = { planSlug: row.plan_slug ?? '', harnessSlug: row.harness_slug,
+      source: 'work-item', sourceRef: row.feature_id };
+    const canonical = await readCanonicalExecutionIdentity(sql, workspaceId, binding, row.plan_line_id, ownerId);
+    if (!canonical) binding.canonicalInvalid = true;
+    else binding.canonical = canonical;
+    bindings.push(binding);
+  }
+  return bindings;
+}
+
+/** Exact index/graph back-mapping, not a provenance stamp or a readiness label. */
+async function readCanonicalExecutionIdentity(sql: Sql, workspaceId: string, binding: ExecutionPlanBinding,
+  lineId: string | null, ownerId: string): Promise<ExecutionPlanBinding['canonical'] | null> {
+  if (!binding.planSlug?.trim() || !lineId?.trim() || !binding.harnessSlug || !binding.sourceRef) return null;
+  const plans = await sql<Array<{ version: number; content_hash: string }>>`
+    SELECT version,content_hash FROM harness_shared.harness_plans WHERE workspace_id=${workspaceId}
+      AND harness_slug=${binding.harnessSlug} AND plan_slug=${binding.planSlug}`;
+  if (plans.length !== 1) return null;
+  const index = await sql`SELECT item_id,xmin::text AS version FROM harness_shared.plan_items WHERE workspace_id=${workspaceId}
+    AND harness_slug=${binding.harnessSlug} AND plan_slug=${binding.planSlug} AND item_id=${lineId}`;
+  if (index.length !== 1) return null;
+  const nodes = await readPlanLineNodes(sql, { workspaceId,harnessSlug:binding.harnessSlug,slug:binding.planSlug });
+  const mapped = nodes.filter(node => node.id === lineId);
+  if (mapped.length !== 1 || mapped[0].featureId !== binding.sourceRef ||
+      nodes.filter(node => node.featureId === binding.sourceRef).length !== 1) return null;
+  const [{claimHoldExclusionSql},{admissionHoldExclusionSql}] = await Promise.all([
+    import('../../work-items'),import('../../work-items-admission')]);
+  const rows = await sql<Array<{ version: string; held: boolean }>>`
+    SELECT xmin::text AS version,
+      NOT ((${claimHoldExclusionSql(sql,'payload')}) AND (${admissionHoldExclusionSql(sql,'payload')})) AS held
+      FROM harness_shared.work_items WHERE workspace_id=${workspaceId} AND harness_slug=${binding.harnessSlug}
+        AND feature_id=${binding.sourceRef} AND taken_by=${ownerId} AND plan_slug=${binding.planSlug} AND plan_line_id=${lineId}`;
+  if (rows.length !== 1 || rows[0].held) return null;
+  return { itemId: binding.sourceRef,lineId,ownerId,nodeVersion:rows[0].version,lineVersion:index[0].version,
+    planVersion:Number(plans[0].version),planHash:plans[0].content_hash };
 }
 
 function uniquePlanBindings(bindings: readonly ExecutionPlanBinding[]): ExecutionPlanBinding[] {
   const unique = new Map<string, ExecutionPlanBinding>();
   for (const binding of bindings) {
-    const key = JSON.stringify([binding.planSlug, binding.harnessSlug]);
-    unique.set(key, { planSlug: binding.planSlug, harnessSlug: binding.harnessSlug });
+    const key = JSON.stringify([binding.planSlug, binding.harnessSlug,
+      binding.canonical || binding.canonicalInvalid ? binding.sourceRef : null]);
+    unique.set(key, binding.canonical || binding.canonicalInvalid ? { ...binding }
+      : { planSlug: binding.planSlug, harnessSlug: binding.harnessSlug });
   }
   return [...unique.values()];
+}
+
+/**
+ * WI-6554700010048224: true when every binding names ONE plan. A single plan reached
+ * through several sources dedupes to several bindings: a NULL-harness session row,
+ * a harness-scoped claim, and a canonical work item keyed by its own id. Goal
+ * selection can only narrow the census, and the full set is checked when it is
+ * skipped, so skipping it there grants nothing. Counting bindings instead of plans
+ * sent every ordinary single-plan executor through the bounded selector, and its
+ * timeout refused all of their implementation writes.
+ */
+function namesSinglePlan(bindings: readonly ExecutionPlanBinding[]): boolean {
+  const slugs = new Set(bindings.map(binding => binding.planSlug));
+  const harnesses = new Set(bindings.map(binding => binding.harnessSlug)
+    .filter((harness): harness is string => Boolean(harness)));
+  return slugs.size === 1 && harnesses.size <= 1;
 }
 
 /** Narrow enforcement by source identity only when the resolver and binding census agree. */
@@ -371,10 +496,19 @@ async function readExecutionPlanGoal(ownerId: string, workspaceId: string,
 
 export async function checkExecutionPlan(binding: ExecutionPlanBinding, workspaceId: string,
   observe?: PlanExecutionTimingObserver): Promise<string[]> {
+  if (binding.canonicalInvalid) return ['canonical_plan_binding_invalid'];
+  const canonicalCurrent = async () => {
+    if (!binding.canonical) return true;
+    const current = await readCanonicalExecutionIdentity(getOrgPg().sql, workspaceId, binding, binding.canonical.lineId,binding.canonical.ownerId);
+    return current !== null && JSON.stringify(current) === JSON.stringify(binding.canonical);
+  };
+  if (!await canonicalCurrent()) return ['canonical_plan_binding_stale'];
   const { readPlanExecutionStart } = await import('./plan-execution-authority');
   const proof = await measurePlanStage('start_proof', observe, () => readPlanExecutionStart(binding, workspaceId));
   if (proof.length) return proof;
-  return checkPlanExecutionReadiness(binding, workspaceId, observe, 'continuation');
+  const blockers = await checkPlanExecutionReadiness(binding, workspaceId, observe, 'continuation');
+  if (blockers.length) return blockers;
+  return await canonicalCurrent() ? [] : ['canonical_plan_binding_stale'];
 }
 
 /** Current policy is required both when issuing authority and on every use. */
@@ -513,7 +647,7 @@ export async function checkPlanExecutionGuard(input: PlanExecutionGuardInput,
     const uniqueBindings = uniquePlanBindings(allBindings);
     if (uniqueBindings.length === 0) return null;
     let resolution: ExecutionPlanGoalResolution | null = null;
-    if (uniqueBindings.length === 1) {
+    if (namesSinglePlan(uniqueBindings)) {
       try { input.observeTiming?.({ stage: 'goal_selector_skipped', durationMs: 0 }); }
       catch { /* diagnostics cannot change the guard verdict */ }
     } else if (deps.resolveGoal) {
@@ -536,6 +670,8 @@ export async function checkPlanExecutionGuard(input: PlanExecutionGuardInput,
       ? selectExecutionPlanBindings(allBindings, resolution.goal)
       : uniqueBindings;
     for (const binding of bindings) {
+      if (binding.canonicalInvalid) return {code:'plan_execution_not_ready',blockers:['canonical_plan_binding_invalid'],
+        reason:'The selected work-item has an invalid canonical identity; historical lineage is not a fallback permit.'};
       const blockers = await measurePlanStage('binding', input.observeTiming,
         () => deps.checkPlan(binding, input.workspaceId, input.observeTiming));
       if (blockers.length) return { code: 'plan_execution_not_ready', planSlug: binding.planSlug, blockers,

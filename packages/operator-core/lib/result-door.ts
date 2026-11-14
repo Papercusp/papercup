@@ -947,6 +947,14 @@ const PLANS_START_RECEIPT_RECOVERY =
   'fields already omitted upstream cannot be recovered from that copy. Read plans:get for each preserved ' +
   'slug/harnessSlug and work_items:get for promoted workItemIds to inspect current state before follow-up.';
 
+// Successful audit writes may record ready:false. Keep the decision ahead of
+// large target/evidence echoes, including the read-only recovery call.
+const DISCOVERY_AUDIT_DECISION_PATHS = [
+  'ok', 'auditSeq', 'readiness.ready', 'readiness.state',
+  'readiness.blockers[].code', 'readiness.blockers[].path', 'readiness.blockers[].detail',
+  'slug', 'harness', 'phase', 'readback', 'workflow.stage', 'readiness.nextAction',
+] as const;
+
 const FLEET_ADMISSION_RECEIPT_PRESERVE_PATHS = [
   'ok', 'error', 'reason', 'message', 'blockingPlanItemIds', 'blockingWorkItemIds', 'namedFloors',
   'repairCall', 'repairCall.tool', 'repairCall.args', 'repairCall.effect', 'blockerCounts',
@@ -4325,8 +4333,14 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       ...(isScorecardsEmitCall(opts) ? scorecardsEmitPreservePaths(bodyShape.json?.parsed) : []),
       ...(opts.toolName === 'plans:get' ||
         (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'plans:get')
-        ? ['results[].shipReadiness', 'results[].items[].text']
+        ? ['results[].auditSeq', 'results[].readSource', 'results[].historical',
+            'results[].readiness.ready', 'results[].readiness.state',
+            'results[].readiness.blockers[].code', 'results[].readiness.blockers[].path',
+            'results[].readiness.blockers[].detail', 'results[].shipReadiness', 'results[].items[].text']
         : []),
+      ...(opts.toolName === 'plans:audit' ||
+        (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'plans:audit')
+        ? DISCOVERY_AUDIT_DECISION_PATHS : []),
       ...(opts.toolName === 'plans:bind-spec-evidence' ||
         (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'plans:bind-spec-evidence')
         ? PLANS_BIND_SPEC_EVIDENCE_REFUSAL_PRESERVE_PATHS

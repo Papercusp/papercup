@@ -437,10 +437,10 @@ export default defineTool({
   guidance: {
     when: "Before activation read the COMPLETE source conversation; map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, follow-up. ## Requirements: **R-N — Title.** outcome; use a fenced `requirement` JSON block for METHOD/check/layers. Design needs a BAR-to-work map; ordinary bullet lists do not satisfy the BAR parser. Finalize incorporated Discovery with { slug, phase:'discovery' } before implementation review. Completion cites actual code.",
     returns:
-      `Shaping: provisional discovery brief/intent feedback. Discovery: derived readiness, workflow stage/evidence refs/next action and auditSeq; dryRun never finalizes. Activation: audited/current revision id/seq/contentHash, mappings, provenance and BAR seed; gaps refuse. Re-audit after ${ACTIVATION_REAUDIT_MATERIAL_CHANGES.join(', ')}; not ${ACTIVATION_REAUDIT_COSMETIC_CHANGES.join(', ')}. Completion: coverage, uncoveredItems, problems; proposeCitations:true is read-only.`,
+      `Shaping: provisional discovery brief/intent feedback. Discovery: readiness, workflow, auditSeq and readback (plans:get discoveryAudit); dryRun never finalizes. Activation: audited/current revision id/seq/contentHash, mappings, provenance and BAR seed; gaps refuse. Activation results include advisory activationReadiness stages with codes, dependencies, next actions and counts; primary errors and autoStart partial-effect receipts retain authority. Dry-run consult advice is explicitly unavailable. Re-audit after ${ACTIVATION_REAUDIT_MATERIAL_CHANGES.join(', ')}; not ${ACTIVATION_REAUDIT_COSMETIC_CHANGES.join(', ')}. Completion: coverage, uncoveredItems, problems; proposeCitations:true is read-only.`,
     notWhen: "Rubrics: scorecards:emit. Decisions: plans:add-decision.",
     chaining:
-      'Brief → scoped discovery → findings incorporated via plans:set-content → discovery audit → full independent implementation review → activation → start. Completion → rubric/scorecard → shipped.',
+      'Brief → scoped discovery → findings incorporated via plans:set-content → discovery audit → full independent implementation review → plans:get { slug, harness, activationReadiness:true } → activation → start. Quality and its independent grading audit precede contract critique. A nested start shares its actual consult advice with this response; history and truthful consulted/reason/id disposition remain required. Completion → rubric/scorecard → shipped.',
     seeAlso: [
       'plans:set-status (drop an item you intentionally departed from, with a reason)',
       'plans:set-plan-status (the completion gate that reads this audit)',
@@ -471,6 +471,7 @@ export default defineTool({
       unresolved: z.unknown().optional(),
       truncatedByLimit: z.boolean().optional(),
       auditSeq: z.number().int().nonnegative().optional(),
+      readback: z.unknown().optional(),
       auditedPlanRevision: z.unknown().optional(),
       mappings: z.unknown().optional(),
       // `returns` promises barSeed on the activation envelope (the active rubric
@@ -541,7 +542,9 @@ export default defineTool({
       return { data: { ...result, slug: args.slug, harness: harnessSlug, phase: 'discovery',
         ...('discovery' in result && result.discovery ? { readiness: result.discovery.readiness,
           workflow: discoveryWorkflow(result.discovery.readiness, 'audit' in result && Boolean(result.audit)) } : {}),
-        ...('audit' in result && result.audit ? { auditSeq: result.audit.auditSeq } : {}) } };
+        ...('audit' in result && result.audit ? { auditSeq: result.audit.auditSeq,
+          readback: { tool: 'plans:get', args: { slug: args.slug, harness: harnessSlug,
+            discoveryAudit: result.audit.auditSeq }, readOnly: true } } : {}) } };
     }
 
     if (args.phase === 'shaping') {

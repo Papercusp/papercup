@@ -128,6 +128,7 @@ import {
   probeRunnerLiveness,
   readStoredQualification,
   recordStoredQualificationScheduledFire,
+  recordStoredQualificationExecutorIdentityBlock,
   recordStoredQualificationScheduledTerminalRecovery,
   recordStoredQualificationVerdict,
   recordStoredQualificationComposedVerdict,
@@ -2941,8 +2942,35 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   }
   const executorBuild = getResolvedBuild();
   const executorBuildSha = executorBuild.sha;
+  const qualificationAtLaunch = await readStoredQualification(ctx).catch(() => ({
+    status: 'unreadable' as const,
+    error: 'qualification read failed before launch',
+  }));
+  if (qualificationAtLaunch.status === 'unreadable') {
+    await appendPipelineEvent({
+      workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, kind: 'green_checkpoint',
+      status: 'skipped-qualification-unreadable',
+      detail: withGateFireId({ reason: qualificationAtLaunch.error ?? 'qualification read failed' }),
+    });
+    return;
+  }
   if (!executorBuildSha || !/^[0-9a-f]{7,64}$/i.test(executorBuildSha)) {
-    console.warn('[green-checkpoint] skip ' + ctx.installSlug + ': executor build identity is unavailable');
+    // This refusal precedes ordinary admission. Persist it on the existing
+    // attempt so an older request snapshot cannot keep reporting launch-ready.
+    // Missing/moved/terminal/live attempts stay untouched; never create a
+    // successor or clear unrelated blockers to record this observation.
+    const observed = qualificationAtLaunch;
+    const attempt = observed.status === 'present' ? observed.transaction : null;
+    const blocked = attempt
+      ? await recordStoredQualificationExecutorIdentityBlock(ctx, {
+          attemptId: attempt.attemptId, candidate: attempt.candidate, repairHead: attempt.repairHead,
+          shaSource: executorBuild.shaSource, evidenceRefs: [`gate-fire:${gateFireId}`],
+        })
+      : null;
+    if (blocked?.status === 'updated' || blocked?.status === 'idempotent') {
+      await recordStoredQualificationScheduledFire(ctx, attempt!.attemptId);
+    }
+    console.warn(`${orchestratorStdoutTag()} skip ${ctx.installSlug}: executor build identity is unavailable`);
     await appendPipelineEvent({
       workspaceId: ctx.workspaceId,
       installSlug: ctx.installSlug,
@@ -2951,7 +2979,25 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
       detail: withGateFireId({
         reason: 'executor-build-identity-unavailable',
         executorShaSource: executorBuild.shaSource,
+        attemptId: attempt?.attemptId ?? null,
+        blockerPersistence: blocked?.status ?? observed.status,
       }),
+    });
+    return;
+  }
+  const recoveryAttempt = qualificationAtLaunch.status === 'present' ? qualificationAtLaunch.transaction : null;
+  if (recoveryAttempt && recoveryAttempt.phase !== 'terminal' && recoveryAttempt.currentPhysicalRunner === null &&
+      recoveryAttempt.blockers?.some(blocker => blocker.code === 'executor-build-identity-unavailable')) {
+    // A newly available SHA does not prove the original artifact/publication
+    // contract. Only the fenced qualified-recovery adapter may clear this
+    // blocker; ordinary reservation must never erase it as a side effect.
+    await recordStoredQualificationScheduledFire(ctx, recoveryAttempt.attemptId);
+    await appendPipelineEvent({
+      workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, kind: 'green_checkpoint',
+      status: 'skipped-no-tooling',
+      detail: withGateFireId({ reason: 'executor-artifact-recovery-unverified',
+        executorShaSource: executorBuild.shaSource, attemptId: recoveryAttempt.attemptId,
+        blockerPersistence: 'retained' }),
     });
     return;
   }
@@ -3055,18 +3101,6 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // Join the existing logical attempt, or create its successor before spawning a physical run.
   // A scheduled tick is not suite progress: record its own clock while retaining the exact
   // attempt identity that the CLI and terminal marker will later settle.
-  const qualificationAtLaunch = await readStoredQualification(ctx).catch(() => ({
-    status: 'unreadable' as const,
-    error: 'qualification read failed before launch',
-  }));
-  if (qualificationAtLaunch.status === 'unreadable') {
-    await appendPipelineEvent({
-      workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, kind: 'green_checkpoint',
-      status: 'skipped-qualification-unreadable',
-      detail: withGateFireId({ reason: qualificationAtLaunch.error ?? 'qualification read failed' }),
-    });
-    return;
-  }
   const activeAttempt =
     qualificationAtLaunch.status === 'present' && qualificationAtLaunch.transaction.phase !== 'terminal'
       ? qualificationAtLaunch.transaction

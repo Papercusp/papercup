@@ -10,7 +10,7 @@ import {
   type ActivityHookBundleDeps,
 } from './hook-bundle';
 import { InMemoryReadCursorStore } from '../coordination/read-cursors';
-import { changedSystemNoticeDelivery } from '../coordination/inbox-visibility';
+import { changedSystemNoticeDelivery, systemNoticeIdentity, systemNoticeReplayState } from '../coordination/inbox-visibility';
 
 function deps(generation = 'host-a:42') {
   const inbox = vi.fn(
@@ -49,6 +49,49 @@ function deps(generation = 'host-a:42') {
 }
 
 describe('activity hook bundle', () => {
+  it('retries a dropped native notice behind the timestamp floor on an unchanged generation, then reminds only when due', async () => {
+    const d = deps();
+    const row = { msg_id: 'retained-alarm', ts: '2026-07-13T19:59:30.000Z', from: 'system-watchdog',
+      to: ['*'], auto: true, kind: 'message', category: 'severe-event', summary: 'Unresolved alarm' };
+    const identity = systemNoticeIdentity(row)!;
+    let now = new Date('2026-07-13T20:00:00.000Z').getTime();
+    d.value.now = () => new Date(now);
+    let proofs: Record<string, { fingerprint: string; emittedAt: number }> = {};
+    const calls: Array<{ floor: unknown; state: unknown }> = [];
+    d.value.inbox = async (floor, _ctx, state) => {
+      calls.push({ floor, state });
+      const delivery = changedSystemNoticeDelivery([row], proofs, 8, { now, reminderMs: 30 * 60_000 });
+      return { entries: delivery.entries, injection: delivery.entries.length ? row.summary : '',
+        summary: { newest_ts: row.ts }, __systemNoticeState: systemNoticeReplayState([row], proofs, now) };
+    };
+    await buildActivityHookBundle('su-abc', { force_resync: true, glance_stale: false }, {} as never, d.value);
+    // The first final payload was dropped: arrival ACK must not lose its ID.
+    const retry = await buildActivityHookBundle('su-abc', { generation: 'host-a:42', glance_stale: false }, {} as never, d.value);
+    expect(retry).toMatchObject({ changed: true, complete: true });
+    expect(retry.surfaces?.inbox?.injection).toBe(row.summary);
+    expect(calls[1]).toMatchObject({ floor: row.ts, state: { candidates: [{ msgId: row.msg_id }] } });
+    proofs = { [identity.key]: { fingerprint: identity.fingerprint, emittedAt: now } };
+    await buildActivityHookBundle('su-abc', { generation: 'host-a:42', glance_stale: false }, {} as never, d.value);
+    const quiet = await buildActivityHookBundle('su-abc', { generation: 'host-a:42', glance_stale: false }, {} as never, d.value);
+    expect(quiet).toMatchObject({ changed: false });
+    expect(calls).toHaveLength(3);
+    now += 30 * 60_000;
+    const due = await buildActivityHookBundle('su-abc', { generation: 'host-a:42', glance_stale: false }, {} as never, d.value);
+    expect(due.surfaces?.inbox?.injection).toBe(row.summary);
+    expect(calls).toHaveLength(4);
+    expect(d.glance).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not advance the timestamp past bounded notice replay overflow', async () => {
+    const d = deps();
+    d.inbox.mockResolvedValue({ entries: [], summary: { newest_ts: '2026-07-13T19:59:30.000Z' },
+      __systemNoticeState: { version: 1, candidates: [], nextCheckAt: 0, overflow: true } });
+    await buildActivityHookBundle('su-abc', { force_resync: true }, {} as never, d.value);
+    expect(d.stageInboxCursor).toHaveBeenCalledWith('su-abc', expect.objectContaining({ since_ts: null }));
+    const retry = await buildActivityHookBundle('su-abc', { generation: 'host-a:42' }, {} as never, d.value);
+    expect(retry.changed).toBe(true);
+  });
+
   it('commits notice fingerprints with the existing delivery cursor and retries a failed stage', async () => {
     const d = deps();
     const row = { msg_id: 'alarm', ts: '2026-07-13T19:59:30.000Z', from: 'system-watchdog',

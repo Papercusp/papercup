@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { captureGateSuiteVerdictReplay, captureGateDecisionReplay, gateReplayCanonical,
   type GateSuiteVerdictReplay } from '@papercusp/operator-core/lib/release/gate-hygiene-split';
 import { createFrozenCandidateQueue, markFrozenCandidateVerificationRed,
@@ -175,6 +176,66 @@ describe('P-014 downstream recorded verdict replay', () => {
     expect(checkRecordedGateVerdict({ ...previous, runId: 'another-measurement' }, [transition]).ok).toBe(false);
     expect(checkRecordedGateVerdict(previous, [{ ...transition, decisionRef: '' }]).ok).toBe(false);
     expect(checkRecordedGateVerdict(previous, [{ ...transition, accepted: transition.previous }]).ok).toBe(false);
+  });
+
+  it('pins a lossless-frontier transition to complete snapshot hashes and rejects unrelated changes', () => {
+    const failures = Array.from({ length: 60 }, (_, index) => `failure-${index}.test.ts`);
+    const queue = {
+      ...createFrozenCandidateQueue({ candidate, base: null, failingTests: failures, nowMs: 100 }),
+      phase: 'ready-to-verify' as const,
+      repairHead: candidate,
+    };
+    const input = { repairHead: candidate, nowMs: 200, failingTests: failures };
+    const result = markFrozenRepairVerificationRed(queue, input);
+    expect(result.failingTests).toHaveLength(60);
+    const accepted = snapshot();
+    accepted.decisions!.push(captureGateDecisionReplay('post-gate-action', ['block'], true));
+    accepted.decisions!.push(captureGateDecisionReplay('post-gate-action', ['block'], true));
+    accepted.decisions!.push(captureGateDecisionReplay('frozen-repair-red', [queue, input], result));
+    const previous = JSON.parse(JSON.stringify(accepted)) as GateSuiteVerdictReplay;
+    const legacy = previous.decisions![2]!.expected as typeof result;
+    legacy.failingTests = legacy.failingTests.slice(0, 50);
+    legacy.signature = legacy.signature.slice(0, 50);
+    const hash = (value: unknown) => createHash('sha256').update(gateReplayCanonical(value)).digest('hex');
+    const transition = {
+      decisionRef: 'slack-asana-reproduced-bug-fix-pr-workflow-2026-10-08#D-087',
+      reason: 'reviewed removal of the historical failure cap',
+      snapshotSha256: { previous: hash(previous), accepted: hash(accepted) },
+    };
+    expect(checkRecordedGateVerdict(previous, []).ok).toBe(false);
+    expect(checkRecordedGateVerdict(previous, [transition])).toMatchObject({
+      ok: true, detail: expect.stringContaining(transition.decisionRef),
+    });
+    expect(legacy.failingTests).toHaveLength(50);
+    expect(checkRecordedGateVerdict({ ...previous,
+      input: Object.fromEntries(Object.entries(previous.input).reverse()) as typeof previous.input,
+    }, [transition]).ok).toBe(true);
+
+    const mutations: Array<[string, (value: GateSuiteVerdictReplay) => void]> = [
+      ['candidate', value => { value.candidate = 'b'.repeat(40); }],
+      ['run', value => { value.runId = 'another-run'; }],
+      ['measurement time', value => { value.measuredAtMs += 1; }],
+      ['suite input', value => { value.input.infraFault = true; }],
+      ['decision input', value => { (value.decisions![2]!.args[0] as typeof queue).attempts += 1; }],
+      ['failure input', value => { (value.decisions![2]!.args[1] as typeof input).failingTests[0] = 'other.test.ts'; }],
+      ['phase', value => { (value.decisions![2]!.expected as typeof result).phase = 'ready-to-promote'; }],
+      ['head', value => { (value.decisions![2]!.expected as typeof result).repairHead = 'b'.repeat(40); }],
+      ['failure identity', value => { (value.decisions![2]!.expected as typeof result).failingTests[0] = 'other.test.ts'; }],
+      ['other decision', value => { value.decisions![0]!.expected = false; }],
+    ];
+    for (const [name, mutate] of mutations) {
+      const changed = JSON.parse(JSON.stringify(previous)) as GateSuiteVerdictReplay;
+      mutate(changed);
+      expect(checkRecordedGateVerdict(changed, [transition]).ok, name).toBe(false);
+    }
+    for (const snapshotSha256 of [
+      { previous: 'not-a-digest', accepted: transition.snapshotSha256.accepted },
+      { previous: transition.snapshotSha256.previous, accepted: transition.snapshotSha256.previous },
+      { previous: transition.snapshotSha256.previous, accepted: '0'.repeat(64) },
+    ]) {
+      expect(checkRecordedGateVerdict(previous, [{ ...transition, snapshotSha256 }]).ok).toBe(false);
+    }
+    expect(checkRecordedGateVerdict(previous, [{ ...transition, reason: '' }]).ok).toBe(false);
   });
 
   it('accepts only the measured frozen-repair replay with its two additive projections', () => {

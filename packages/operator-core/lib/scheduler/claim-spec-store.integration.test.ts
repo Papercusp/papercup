@@ -178,6 +178,33 @@ describe('migration 389 restored after the migration 555 table rename', () => {
 });
 
 describe('cup_claim_specs store (mig 372)', () => {
+  it('absent-only binding preserves an incumbent policy and its metadata', async () => {
+    const cupId = 'su-start-absent-only-incumbent';
+    const incumbent = { ...DEFAULT_CLAIM_SPEC, specId: 'leader-reviewed', revision: 8,
+      view: { filter: { field: 'id', op: 'in', value: ['WI-original', 'EI-dependency'] } },
+      states: ['open'], limits: { maxConcurrentClaims: 1 } };
+    await setClaimSpec({ cupId, spec: incumbent, updatedBy: 'leader', potSlug: 'papercusp' }, db.sql);
+    const before = await db.sql`SELECT * FROM harness_shared.cup_claim_specs WHERE workspace_id = 'default' AND bee_id = ${cupId}`;
+
+    const result = await setClaimSpec({ cupId, spec: DEFAULT_CLAIM_SPEC, ifAbsent: true,
+      updatedBy: 'starter' }, db.sql);
+
+    expect(result.ok).toBe(false);
+    expect(await db.sql`SELECT * FROM harness_shared.cup_claim_specs WHERE workspace_id = 'default' AND bee_id = ${cupId}`).toEqual(before);
+  });
+
+  it('concurrent absent-only bindings admit one winner without rewriting its revision', async () => {
+    const cupId = 'su-start-absent-only-race';
+    const specs = Array.from({ length: 4 }, (_, i) => ({ ...DEFAULT_CLAIM_SPEC,
+      specId: `start-candidate-${i}`, view: { filter: { field: 'id', op: 'in', value: [`WI-${i}`] } } }));
+    const results = await Promise.all(specs.map(spec => setClaimSpec({ cupId, spec, ifAbsent: true }, db.sql)));
+    expect(results.filter(result => result.ok)).toHaveLength(1);
+    const winner = results.findIndex(result => result.ok);
+    const [stored] = await db.sql`SELECT spec, revision FROM harness_shared.cup_claim_specs WHERE workspace_id = 'default' AND bee_id = ${cupId}`;
+    expect(stored.spec).toEqual(specs[winner]);
+    expect(stored.revision).toBe(specs[winner]!.revision);
+  });
+
   it('appendIds preserves incumbent cohort ids and policy in exactly one revision', async () => {
     const cupId = fleetSpecBeeKey('append-preserves-policy');
     const incumbent = {

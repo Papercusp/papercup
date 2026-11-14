@@ -28,6 +28,8 @@ import { deriveSubstitutionPrefilterHeads } from "@papercusp/operator-core/lib/b
 
 import {
   buildActivityArgs,
+  readOwnOmpRuntimeVersion,
+  recordOmpRuntimeVersion,
   consumeActivityHookBundle,
   buildDisplayTitleOsc,
   buildObjectiveTitleOsc,
@@ -2930,6 +2932,42 @@ describe('formatTurnStartReminder', () => {
   });
 });
 
+describe('OMP runtime version provenance', () => {
+  it.each(['omp/18.0.3\n', 'omp/18.0.3-rc.1+build.2\r\n', 'v25.9.0\n', '1.3.0\n', 'omp/3\n',
+    'version: omp/18.0.3\n', 'omp/18.0.3\nextra', ''])('probes only its own executable and parses %j', async output => {
+    const run = vi.fn((_file, _args, _options, done) => done(null, output, ''));
+    expect(await readOwnOmpRuntimeVersion(run as never)).toBe(output.startsWith('omp/18.0.3') && !output.includes('extra')
+      ? output.trim().slice(4) : null);
+    expect(run).toHaveBeenCalledWith(process.platform === 'linux' ? '/proc/self/exe' : process.execPath,
+      ['--version'], { timeout: 5000, maxBuffer: 4096, encoding: 'utf8' }, expect.any(Function));
+    const error = vi.fn((_file, _args, _options, done) => done(new Error('unavailable'), output, ''));
+    expect(await readOwnOmpRuntimeVersion(error as never)).toBeNull();
+  });
+
+  it('persists measured metadata through the existing native API without a model message', async () => {
+    const appendEntry = vi.fn(), ensureOnDisk = vi.fn(async () => {});
+    const ctx = { sessionManager: { getSessionId: () => 'exact-native', ensureOnDisk } };
+    const before = Date.now();
+    expect(await recordOmpRuntimeVersion({ appendEntry }, ctx, async () => '18.0.3')).toBe(true);
+    expect(appendEntry).toHaveBeenCalledExactlyOnceWith('papercusp-omp-runtime', {
+      schemaVersion: 1, nativeSessionId: 'exact-native', clientVersion: '18.0.3', measuredAt: expect.any(String),
+    });
+    expect(Date.parse(appendEntry.mock.calls[0]![1].measuredAt)).toBeGreaterThanOrEqual(before);
+    expect(ensureOnDisk).toHaveBeenCalledOnce();
+  });
+
+  it('retains unknown versions and refuses a session rotated while the measurement was pending', async () => {
+    const appendEntry = vi.fn(), readVersion = vi.fn(async () => '18.0.3');
+    expect(await recordOmpRuntimeVersion({}, {}, readVersion)).toBe(false);
+    expect(readVersion).not.toHaveBeenCalled();
+    let session = 'original'; const ctx = { sessionManager: { getSessionId: () => session } };
+    expect(await recordOmpRuntimeVersion({ appendEntry }, ctx, async () => null)).toBe(false);
+    expect(await recordOmpRuntimeVersion({ appendEntry }, ctx, async () => '3')).toBe(false);
+    expect(await recordOmpRuntimeVersion({ appendEntry }, ctx, async () => { session = 'resumed'; return '18.0.3'; })).toBe(false);
+    expect(appendEntry).not.toHaveBeenCalled();
+  });
+});
+
 describe('register (OMP adapter)', () => {
   it('makes a managed seed natively readable before any assistant response', async () => {
     const root = mkdtempSync(join(tmpdir(), 'omp-seed-persistence-'));
@@ -5131,18 +5169,19 @@ describe('mid-turn coord delivery uses followUp, not steer (ornith-coord-inbox-f
   ])('reports an explicit NOT checked signal when the budget hook is %s', async (_name, source, expected) => {
     const root = mkdtempSync(join(tmpdir(), 'omp-budget-hook-failure-'));
     const hook = join(root, '.papercusp/hooks/cc/posttooluse-launch-prose-budget-nudge.mjs');
-    const previousHome = process.env.HOME;
+    const previousPapercuspHome = process.env.PAPERCUSP_HOME;
     try {
       mkdirSync(dirname(hook), { recursive: true });
       if (source !== undefined) writeFileSync(hook, source);
-      process.env.HOME = root;
+      process.env.PAPERCUSP_HOME = join(root, '.papercusp');
       const call = { type: 'tool_call' as const, toolName: 'edit', toolCallId: 'budget-failure', input: { path: 'apps/operator/prompts/example.md' } };
       stageActivityReport(call);
       const verdict = await launchProseBudgetForResult({ type: 'tool_result', toolCallId: call.toolCallId, content: 'EDIT SUCCEEDED' });
       expect(verdict).toContain('launch-prose budget NOT checked');
       expect(verdict).toContain(expected);
     } finally {
-      if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+      if (previousPapercuspHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = previousPapercuspHome;
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -5150,11 +5189,11 @@ describe('mid-turn coord delivery uses followUp, not steer (ornith-coord-inbox-f
   it('delivers shared hook output from the registered OMP result handler', async () => {
     const root = mkdtempSync(join(tmpdir(), 'omp-budget-hook-'));
     const hook = join(root, '.papercusp/hooks/cc/posttooluse-launch-prose-budget-nudge.mjs');
-    const previousHome = process.env.HOME;
+    const previousPapercuspHome = process.env.PAPERCUSP_HOME;
     try {
       mkdirSync(dirname(hook), { recursive: true });
       writeFileSync(hook, 'export function shouldCheck(){return true;} if(process.argv[1]?.endsWith("posttooluse-launch-prose-budget-nudge.mjs")){process.stdin.resume(); process.stdin.on("end",()=>console.log(JSON.stringify({hookSpecificOutput:{additionalContext:"budget breach: overlay over by 4 B"}})));}');
-      process.env.HOME = root;
+      process.env.PAPERCUSP_HOME = join(root, '.papercusp');
       const subs = new Map<string, (e: unknown, ctx?: unknown) => unknown>();
       const sendMessage = vi.fn();
       const { default: register } = await import('../coord-hook');
@@ -5167,7 +5206,8 @@ describe('mid-turn coord delivery uses followUp, not steer (ornith-coord-inbox-f
       expect(sendMessage).not.toHaveBeenCalled();
       expect(await runLaunchProseBudgetHook({ ...call, toolName: 'read' })).toBe('');
     } finally {
-      if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+      if (previousPapercuspHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = previousPapercuspHome;
       rmSync(root, { recursive: true, force: true });
     }
   });

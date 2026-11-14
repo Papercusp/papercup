@@ -45,6 +45,7 @@ import {
   isWakeSource,
   nonWakeReason,
   readHeldWorkItems,
+  readExhaustedPushParkCoverage,
   readWorkItemAwaitTargets,
   type HeldWorkItem,
   type WorkItemAwaitTargets,
@@ -504,6 +505,7 @@ export default defineTool({
                       held,
                       guaranteed:
                         hasPendingDelivery || live.some((a) => guaranteesWake(a, targets, INBOX_WAKE_KEY_PREFIX)),
+                      exhaustedPushPark: await readExhaustedPushParkCoverage(ownerId, workspaceId, held).catch(() => false),
                       untimedSources: live
                         .filter((a) => !guaranteesWake(a, targets, INBOX_WAKE_KEY_PREFIX))
                         .map((a) => a.eventKey),
@@ -531,7 +533,7 @@ export default defineTool({
     // keyed to the blocker the held item states, never the acknowledgement.
     let ownerStopDirectiveHonored: number | null = null;
     const claimHolder = wakeRead?.claimHolder ?? null;
-    if (claimHolder && !claimHolder.guaranteed && workspaceId) {
+    if (claimHolder && !claimHolder.guaranteed && !claimHolder.exhaustedPushPark && workspaceId) {
       const goalAchieved = Boolean(activeGoal) && args.disposition === 'achieved';
       const stopDirective =
         !goalAchieved && args.ownerStopDirectiveId != null

@@ -66,6 +66,7 @@ const {
   codexHomeLaunchReadiness,
   prepareCodexGatewayLaunch,
   mintCodexQuotaResumeArgs,
+  ensureCodexHomeViaOperator,
 } = launcher;
 
 let dir: string;
@@ -91,6 +92,34 @@ beforeEach(() => {
 });
 
 describe('selected Codex route at the actual child boundary', () => {
+  it.each(['auto', 'pin'] as const)('keeps the %s provider resolvable during canonical home refresh', async (mode) => {
+    const repairLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const owner = 'su-refresh-route';
+    const sessionId = 81;
+    const codexHome = join(dir, '.papercusp', 'su-codex-homes', `session-${sessionId}`);
+    mkdirSync(codexHome, { recursive: true });
+    applyCodexGatewayRoute(codexHome, { mode, id: mode === 'pin' ? 'pool-a' : null, ownerId: owner });
+    let publishedDuringRequest = '';
+    const result = await ensureCodexHomeViaOperator(owner, codexHome, sessionId, {
+      routeMode: mode, accountId: mode === 'pin' ? 'pool-a' : null,
+      operatorUrl: 'http://127.0.0.1:3170', token: 'fixture-token', env: {},
+      fetchImpl: async (_url, options) => {
+        const request = JSON.parse(options.body);
+        // Reproduce the writer's complete replacement before the response.
+        writeFileSync(join(codexHome, 'config.toml'), codexGatewayConfigPatch('model = "fixture-model"\n', null,
+          { gatewayOn: request.requireGatewayProvider, ownerId: owner }));
+        publishedDuringRequest = readFileSync(join(codexHome, 'config.toml'), 'utf8');
+        return { ok: true, status: 200, json: async () => ({ ok: true, repaired: true }) };
+      },
+    });
+    expect(result?.ok).toBe(true);
+    expect(publishedDuringRequest).toContain('[model_providers.papercusp-codex-gateway]');
+    expect(readFileSync(join(codexHome, 'config.toml'), 'utf8').includes('"x-papercusp-account" = "pool-a"'))
+      .toBe(mode === 'pin');
+    expect(repairLog).toHaveBeenCalledWith(expect.stringContaining('repaired this session'));
+    repairLog.mockRestore();
+  });
+
   it.each(['auto', 'pin'])('reapplies %s after home refresh and overrides stale provider argv', (mode) => {
     writeFileSync(join(dir, 'config.toml'), 'model_provider = "openai"\nmodel = "gpt-6.1-sol"\nmodel_reasoning_effort = "xhigh"\n');
     const env = { PAPERCUSP_AGENT: 'codex', CODEX_HOME: dir, PAPERCUSP_SID: 'su-route',

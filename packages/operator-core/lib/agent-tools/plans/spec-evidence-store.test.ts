@@ -119,10 +119,72 @@ import {
   measureRepoFilesEvidenceAtRoot,
   measureWorkItemsEvidenceForScope,
   hasMatchingDeclaredCaseTitle,
+  historicalManualEvidenceSupport,
   retractSpecEvidence,
   supersedeSpecEvidenceAtRevisionBatch,
   testRunEnvironmentUnprovenWarning,
 } from './spec-evidence-store';
+
+describe('historical manual witness identity projection', () => {
+  const subject = { ref: 'audit:manual', windowStart: '2026-11-01T00:00:00Z', windowEnd: '2026-11-02T00:00:00Z' };
+  const pin = { rubricSlug: 'manual', rubricRevision: 2, barKey: 'review',
+    barHash: 'b'.repeat(64), barSetHash: 'c'.repeat(64), evidencePlane: 'tree' as const };
+  const tuple = { sourceFingerprint: 'source', testFingerprint: null, fixtureFingerprint: null,
+    rubricFingerprint: null, environmentFingerprint: null };
+  const witness = { schemaVersion: 1, measuredAt: '2026-11-01T12:00:00Z', workspaceId: 'workspace-test',
+    harnessSlug: 'papercusp', bindingFingerprint: 'd'.repeat(64), workItemId: 'WI-1', planSlug: 'manual-plan',
+    specId: 'SPEC-001', specRevision: 1, specFingerprint: 'a'.repeat(64),
+    rubric: { rubricSlug: pin.rubricSlug, rubricRevision: pin.rubricRevision, barKey: pin.barKey,
+      barHash: pin.barHash, barSetHash: pin.barSetHash }, evidenceRef: 'archive:review', subject, fingerprints: tuple };
+  const fixture = () => ({
+    row: { id: 7, workItemId: 'WI-1', planSlug: 'manual-plan', specId: 'SPEC-001', specRevision: 1,
+      specFingerprint: 'a'.repeat(64), evidenceKind: 'manual', evidenceRef: 'archive:review', testRunId: null,
+      bindingFingerprint: witness.bindingFingerprint, observedAt: witness.measuredAt, createdAt: witness.measuredAt,
+      fingerprints: { ...tuple }, details: { historicalMeasurement: structuredClone(witness) } },
+    clause: { planSlug: 'manual-plan', specId: 'SPEC-001', revision: 1, contentHash: 'a'.repeat(64), sourceBar: { ...pin } },
+    context: { workspaceId: 'workspace-test', harnessSlug: 'papercusp', comparisonTime: subject.windowEnd,
+      rubricSlug: 'manual', rubricRevision: 2, barSetHash: pin.barSetHash, criterionKey: 'review',
+      evidenceRef: 'spec-evidence:7', subject: { ...subject } },
+  });
+  const project = (f: ReturnType<typeof fixture>) => historicalManualEvidenceSupport(
+    f.row as unknown as Parameters<typeof historicalManualEvidenceSupport>[0],
+    f.clause as unknown as Parameters<typeof historicalManualEvidenceSupport>[1], f.context);
+  it('describes the pinned measurement without changing the receipt', () => {
+    const f = fixture(); const before = JSON.stringify(f);
+    expect(project(f)).toEqual({ evidenceRef: 'spec-evidence:7', observedAt: witness.measuredAt });
+    expect(JSON.stringify(f)).toBe(before);
+  });
+  it('preserves a historical measurement when the receipt was withdrawn after that clock', () => {
+    const f = fixture();
+    Object.assign(f.row, { withdrawal: { at: '2026-11-03T00:00:00Z' } });
+    expect(project(f)).toEqual({ evidenceRef: 'spec-evidence:7', observedAt: witness.measuredAt });
+  });
+  it.each([
+    ['binding locator', (f: ReturnType<typeof fixture>) => { f.context.evidenceRef = 'spec-evidence:8'; }],
+    ['binding fingerprint', f => { f.row.bindingFingerprint = 'e'.repeat(64); }],
+    ['work item', f => { f.row.workItemId = 'WI-2'; }],
+    ['plan', f => { f.row.planSlug = 'other'; }],
+    ['spec', f => { f.row.specId = 'SPEC-002'; }],
+    ['spec revision', f => { f.clause.revision = 2; }],
+    ['spec hash', f => { f.clause.contentHash = 'e'.repeat(64); }],
+    ['criterion', f => { f.context.criterionKey = 'other'; }],
+    ['rubric revision', f => { f.context.rubricRevision = 3; }],
+    ['BAR hash', f => { f.clause.sourceBar.barHash = 'e'.repeat(64); }],
+    ['BAR set', f => { f.context.barSetHash = 'e'.repeat(64); }],
+    ['workspace', f => { f.context.workspaceId = 'other'; }],
+    ['harness', f => { f.context.harnessSlug = 'other'; }],
+    ['subject', f => { f.context.subject.ref = 'audit:other'; }],
+    ['window', f => { f.context.subject.windowStart = '2026-10-31T00:00:00Z'; }],
+    ['measurement after clock', f => { f.row.details.historicalMeasurement.measuredAt = '2026-11-03T00:00:00Z'; }],
+    ['future insertion', f => { f.row.createdAt = '2026-11-03T00:00:00Z'; }],
+    ['invalid clock', f => { f.context.comparisonTime = 'invalid'; }],
+    ['source', f => { f.row.fingerprints.sourceFingerprint = 'changed'; }],
+    ['withdrawal', f => { Object.assign(f.row, { withdrawal: { at: subject.windowEnd } }); }],
+    ['legacy', f => { f.row.details = {} as typeof f.row.details; }],
+  ] satisfies Array<[string, (f: ReturnType<typeof fixture>) => void]>)('refuses mismatched %s', (_name, mutate) => {
+    const f = fixture(); mutate(f); expect(project(f)).toBeNull();
+  });
+});
 
 describe('current operational artifact byte fence', () => {
   let root: string;

@@ -67,6 +67,7 @@ import {
 } from '../../release/frozen-lineage-execution-policy';
 import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
 import { promotedFromSchema, validatePromotedFrom, promotionDecisionBody, type PromotionSource } from '../../promotion-lineage';
+import { measurePlanSize, planSizeAdvisory, type PlanSizeMeasure } from './plan-size-advisory';
 
 const REFS = z
   .array(z.string().regex(/^P-\d{3,}$/))
@@ -350,7 +351,9 @@ export function findRetryDuplicateOfLastDecision(
 /** Explicit result payload so `withPlanLock`'s `T` is fixed by the type
  *  argument, not inferred from a union-returning mutator. */
 type AddDecisionValue =
-  | { ok: true; decisionId: string; slug: string; deduped?: boolean }
+  // `planSize` is measured under the lock and consumed by the handler to build
+  // `planSizeAdvisory`; it is never spread onto the result (WI-6554700010048088).
+  | { ok: true; decisionId: string; slug: string; deduped?: boolean; planSize?: PlanSizeMeasure }
   | { ok: false; code: 'not_found' | 'legacy_plan'; reason?: LegacyReason }
   // WI-10004529: the live body is missing decisions its own latest revision recorded.
   | { ok: false; code: 'stale_base_decisions_lost'; reason: string };
@@ -553,9 +556,19 @@ export async function addDecisionOne(
       // EI-19383795443003151: a blind retry of a timed-out-but-actually-landed
       // write must not duplicate. No-op (no write, no revision, no plan-event)
       // and hand back the id that already carries this exact decision.
+      const today = todayISO();
       const retryDup = findRetryDuplicateOfLastDecision(parsed.decisions, it.title, it.body, affects);
       if (retryDup) {
-        return { newBody: null, value: { ok: true, decisionId: retryDup.id, slug: it.slug, deduped: true } };
+        return {
+          newBody: null,
+          value: {
+            ok: true,
+            decisionId: retryDup.id,
+            slug: it.slug,
+            deduped: true,
+            planSize: measurePlanSize(current, parsed.decisions, today),
+          },
+        };
       }
       const decisionId = allocateNextDecisionId(current);
       const appended = appendDecisionToBody(
@@ -563,14 +576,14 @@ export async function addDecisionOne(
         decisionId,
         it.title,
         it.body,
-        todayISO(),
+        today,
         it.refs ?? [],
         affects,
       );
       const final = bumpUpdatedDate(appended);
       return {
         newBody: final,
-        value: { ok: true, decisionId, slug: it.slug },
+        value: { ok: true, decisionId, slug: it.slug, planSize: measurePlanSize(final, parsed.decisions, today, 1) },
       };
     },
   );
@@ -601,14 +614,19 @@ export async function addDecisionOne(
     };
   }
 
-  // `result.value` is narrowed to the ok-variant by the guard above.
-  const decisionId = result.value.decisionId;
+  // `result.value` is narrowed to the ok-variant by the guard above. The size measure
+  // is split off here so it never rides the result: only the advisory built from it does.
+  const { planSize, ...landed } = result.value;
+  const decisionId = landed.decisionId;
   const titlePrefix = titleIdPrefixAdvisory(titleIdPrefix, decisionId, planDecisionRef(it.slug, decisionId));
+  // WI-6554700010048088: advice only. The decision has ALREADY landed; this never refuses,
+  // it names the work item as the home for a step-by-step note on an over-budget plan.
+  const sizeAdvisory = planSizeAdvisory(planSize);
 
   // A retry-duplicate no-op: nothing was written, so nothing to ledger, event,
   // or propagate — just hand back the id the earlier (already-landed) call
   // allocated.
-  if (result.value.deduped) {
+  if (landed.deduped) {
     return {
       ok: true,
       decisionId,
@@ -619,6 +637,7 @@ export async function addDecisionOne(
       ...(titlePrefix ? { titleIdPrefix: titlePrefix } : {}),
       ...(measurementAdvisory ? { measurementAdvisory } : {}),
       ...(citedRuleAdvisory ? { citedRuleAdvisory } : {}),
+      ...(sizeAdvisory ? { planSizeAdvisory: sizeAdvisory } : {}),
       ...provenance,
     };
   }
@@ -700,7 +719,7 @@ export async function addDecisionOne(
   );
 
   return {
-    ...result.value,
+    ...landed,
     ...(cascadeActivationAudit ? { activationAudit: cascadeActivationAudit } : {}),
     // The citable form. `decisionId` alone is allocated per-plan and so is not a
     // reference — cite `ref`. See planDecisionRef for the measured ambiguity.
@@ -718,6 +737,7 @@ export async function addDecisionOne(
     ...(titlePrefix ? { titleIdPrefix: titlePrefix } : {}),
     ...(measurementAdvisory ? { measurementAdvisory } : {}),
     ...(citedRuleAdvisory ? { citedRuleAdvisory } : {}),
+    ...(sizeAdvisory ? { planSizeAdvisory: sizeAdvisory } : {}),
     // WI-42142: advisory provenance fields — absent on the clean common case, so a
     // decision with no directive shape and no turn ref keeps its exact prior shape.
     ...provenance,
@@ -730,7 +750,7 @@ export default defineTool({
     "Append one or many decisions to a plan. Allocates the next D-NNN inside a lock and bumps frontmatter `updated:`; concurrent calls stay collision-free. Single: `{ slug, title, body }`; bulk: `items:[{ slug, title, body, refs?, affects? }]`. Tree-fact decisions require `Measured: <file:line or command + result>`; without it, source-like paths return `measurementAdvisory` and a ruling resting on another decision as authority returns `citedRuleAdvisory`. CITE `ref` (`<slug>#D-NNN`) anywhere the decision is quoted onward — a bare `D-NNN` is allocated per-plan, so it is not a reference: `D-001` names 904 different rulings in this harness. Exact `{ title, body }` retries dedupe against the plan's most recent decision instead of appending.",
   guidance: {
     returns:
-      '`{ ok, results:[{ ok, slug, decisionId, ref, deduped?, propagated_to?, measurementAdvisory?, citedRuleAdvisory?, absenceLint? | error }], counts }`. Correlate each result by `decisionId`; one failure never fails the rest. Three advisories, all non-blocking: `measurementAdvisory` (names source-like paths with no `Measured:` line), `citedRuleAdvisory` (the body leans on a cited decision as authority with no `Measured:` line — a cited decision is design authority, not tree evidence; an overruling citation such as "supersedes D-003" is exempt), and `absenceLint` (an uncovered absence premise).',
+      '`{ ok, results:[{ ok, slug, decisionId, ref, deduped?, propagated_to?, measurementAdvisory?, citedRuleAdvisory?, planSizeAdvisory?, absenceLint? | error }], counts }`. Correlate each result by `decisionId`; one failure never fails the rest. Four advisories, all non-blocking: `measurementAdvisory` (names source-like paths with no `Measured:` line), `citedRuleAdvisory` (the body leans on a cited decision as authority with no `Measured:` line — a cited decision is design authority, not tree evidence; an overruling citation such as "supersedes D-003" is exempt), `planSizeAdvisory` (the plan is past its size budget; the decision was still recorded, and step-by-step notes belong on the work item), and `absenceLint` (an uncovered absence premise).',
     when: "Trade-off resolved, scope ratified, or a choice made. Record it so fresh agents do not relitigate. For current-tree claims, open the tree and add `Measured: <file:line or command + result>`. Design authority is not tree evidence. Use items:[…] for bulk.",
     notWhen:
       'Adding work units — use plans:add-item. Flipping status — plans:set-status. Updating overall state — plans:set-now.',
@@ -742,7 +762,7 @@ export default defineTool({
     ],
   },
   // Envelope described by `_bulk`; per-item stays OPEN (`decisionId`/`ref` plus the
-  // three conditional advisories on success, `error` on failure). Required because
+  // conditional advisories on success, `error` on failure). Required because
   // `guidance.returns` above is authored prose: a tool that promises a shape must
   // register it, so the response comes from a schema instead of prose becoming a
   // second, unverifiable type system (guidance-output-schema-live-guard.test.ts).

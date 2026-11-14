@@ -33,7 +33,6 @@ import { selectCriterionEvidenceAction } from './scorecard-ledger-fill';
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
   shortIdleTimeoutMs: undefined as number | undefined,
-  coveredWorkItemLookups: undefined as string[] | undefined,
 }));
 
 const MAX_BOUNDED_LOCK_BUSY_RETRIES = 2;
@@ -72,17 +71,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
         if (h.shortIdleTimeoutMs !== undefined) {
           await tx`SELECT set_config('idle_in_transaction_session_timeout', ${`${h.shortIdleTimeoutMs}ms`}, true)`;
         }
-        const measuredTx = new Proxy(tx, {
-          apply(target, thisArg, args) {
-            const query = Array.isArray(args[0]) ? args[0].join('') : '';
-            if (h.coveredWorkItemLookups && query.includes('SELECT w.feature_id AS work_item_id') &&
-                query.includes('w.source_plan_item_ids')) {
-              h.coveredWorkItemLookups.push(String(args[4]));
-            }
-            return Reflect.apply(target, thisArg, args);
-          },
-        });
-        return cb(measuredTx as unknown as postgres.Sql);
+        return cb(tx as unknown as postgres.Sql);
       }) as Promise<T>,
   };
 });
@@ -3175,9 +3164,92 @@ describe('template_data persistence boundary — the set-template-data door', ()
     },
   );
 
-  // `check` rides with `layers`: both are verification contract (HOW the promise is
+  it.each(['legacy', 'sourceRefs', 'rationale', 'request', 'constraints', 'model', 'missing-pin'] as const)(
+    'preserves atomic refinements only for proven intent annotations (%s)',
+    async (change) => {
+      const seeded = await seedBarContract(`intent-annotation-${change}`, { authorMethods: true });
+      const { listSpecClauses, setSpecClause } = await import('./agent-tools/plans/spec-clauses-store');
+      const scope = { harnessSlug: 'papercusp', planSlug: seeded.subject };
+      if (change !== 'legacy') {
+        const current = (await rubrics.getRubric(seeded.rubricSlug))!;
+        const initial = {
+          rubricId: seeded.rubricSlug, actorId: 'intent-author', reason: 'Record the unchanged canonical request.',
+          criteria: current.criteria.map((criterion) => ({ ...criterion,
+            intent: { request: criterion.model!, sourceRefs: ['request:original'] },
+          })),
+        };
+        await rubrics.amendRubric({ ...initial, approvalRef: await postApproval(initial) });
+      }
+      const draft = (await listSpecClauses(scope))[0]!;
+      const authored = {
+        behavior: 'The selected task remains complete after restarting the application.',
+        behaviorClass: 'lifecycle' as const,
+        requiredEvidence: ['tree', 'Inspect the selected task after restart.'],
+        requiredTestLayers: ['unit', 'e2e'], mutationRequired: true,
+        falsifier: { observation: 'The completed task reopens after restart.',
+          probeMethod: 'Restart after completing one task.', causalPairing: 'one-to-one' as const,
+          requiredScenarios: ['restart.broken', 'restart.repaired'] },
+        lifecycleStatus: 'accepted' as const,
+      };
+      await setSpecClause({ ...draft, ...scope, ...authored, expectedRevision: draft.revision, actorId: 'atomic-author' });
+      const before = (await listSpecClauses(scope))[0]!;
+      const rubricBefore = (await rubrics.getRubric(seeded.rubricSlug))!;
+      if (change === 'missing-pin') {
+        // A live row alone cannot certify which BAR produced the refinement.
+        await db.adminSql`DELETE FROM harness_shared.plan_revisions
+          WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.rubricSlug}`;
+      }
+      const amendment = {
+        rubricId: seeded.rubricSlug, actorId: 'intent-annotator', reason: 'Annotate intent without assuming semantic equivalence.',
+        criteria: rubricBefore.criteria.map((criterion) => criterion.barKey === before.sourceBar!.barKey
+          ? { ...criterion,
+              ...(change === 'model' ? { model: 'The changed outcome holds.', bar: undefined } : {}),
+              intent: {
+                request: change === 'request' ? 'A different requested outcome holds.' : criterion.intent?.request ?? criterion.model!,
+                ...(change === 'constraints' ? { constraints: ['Require a new approval before restart.'] } : {}),
+                ...(change === 'rationale' ? { rationale: 'Retain the original request provenance.' } : {}),
+                sourceRefs: ['request:original', 'decision:annotation'],
+              },
+            }
+          : criterion),
+      };
+      const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
+      expect(preview).toMatchObject({ changedBars: [before.sourceBar!.barKey] });
+      expect((await listSpecClauses(scope))[0]).toEqual(before);
+      const rubricAfter = (await rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment) }))!;
+      const after = (await listSpecClauses(scope)).find((clause) => clause.specId === before.specId)!;
+      if (['legacy', 'sourceRefs', 'rationale'].includes(change)) {
+        expect(after).toMatchObject({ ...authored,
+          requiredEvidence: before.requiredEvidence, requiredTestLayers: before.requiredTestLayers });
+      } else {
+        const criterion = rubricAfter.criteria.find((entry) => entry.barKey === before.sourceBar!.barKey)!;
+        expect(after.behavior).toBe(criterion.model);
+        expect(after.falsifier).toEqual({ observation: criterion.driftMarkers });
+      }
+      // Provenance still participates in proof identity: annotation never carries
+      // accepted evidence forward onto a new BAR fingerprint.
+      expect(after.revision).toBe(before.revision + 1);
+      expect(after.contentHash).not.toBe(before.contentHash);
+      expect(after.sourceBar).toMatchObject({ rubricRevision: rubricAfter.revision,
+        barSetHash: rubricAfter.barSetHash,
+        barHash: rubricAfter.criteria.find((entry) => entry.barKey === before.sourceBar!.barKey)!.barHash });
+      expect(after.acceptanceRef).toBe(`${seeded.rubricSlug}@${rubricAfter.revision}:${before.sourceBar!.barKey}`);
+      expect((await listSpecClauses({ ...scope, includeHistory: true })).find(
+        (clause) => clause.specId === before.specId && clause.revision === before.revision,
+      )).toEqual({ ...before, currentRevision: after.revision });
+
+      const compound = { ...amendment, criteria: rubricAfter.criteria.map((criterion) =>
+        criterion.barKey === before.sourceBar!.barKey
+          ? { ...criterion, model: 'The task remains complete and the notification reaches the reviewer.', bar: undefined }
+          : criterion) };
+      await expect(rubrics.previewAcceptanceBarAmendment(compound)).rejects.toThrow(/non_atomic/);
+      expect((await listSpecClauses(scope)).find((clause) => clause.specId === before.specId)).toEqual(after);
+    },
+  );
+
+  // `check` and `plane` ride with `layers`: all are verification contract (HOW the promise is
   // proven), so an amendment adding the structured check the ship gate demands must
-  // not erase the atomic clause either (WI-10002563). model/falsifier/plane are
+  // not erase the atomic clause either (WI-10002563). model/falsifier are
   // meaning changes and still re-project.
   it.each(['layers', 'check', 'model', 'falsifier', 'plane'] as const)(
     'preserves reviewed scenarios and causal pairing only for verification-contract changes (%s)',
@@ -3239,10 +3311,12 @@ describe('template_data persistence boundary — the set-template-data door', ()
         expect(rubricAfter.criteria.find((entry) => entry.barKey === before.sourceBar!.barKey)!.check)
           .toEqual({ kind: 'tests', files: ['packages/operator-core/lib/rubrics.integration.test.ts', alternateUnitCheck] });
       }
-      if (change === 'layers' || change === 'check') {
+      if (change === 'layers' || change === 'check' || change === 'plane') {
         expect(after).toMatchObject({
           ...authored,
-          requiredEvidence: before.requiredEvidence,
+          requiredEvidence: change === 'plane'
+            ? before.requiredEvidence.map((value) => value === 'tree' ? 'live' : value)
+            : before.requiredEvidence,
           requiredTestLayers: ['e2e', 'integration', 'unit'],
         });
       } else {
@@ -3254,7 +3328,6 @@ describe('template_data persistence boundary — the set-template-data door', ()
         // its reviewed behavior/falsifier refinement, but not that extra e2e proof.
         expect(after.requiredTestLayers).toEqual(['e2e', 'integration', 'unit']);
         expect(after.behaviorClass).not.toBe('lifecycle');
-        if (change === 'plane') expect(after.requiredEvidence).toContain('live');
       }
       expect(after.revision).toBe(before.revision + 1);
       expect(after.sourceBar).toMatchObject({
@@ -3577,6 +3650,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
       SELECT work_item_id, spec_id, spec_revision
         FROM harness_shared.work_item_spec_revision_edges
        WHERE workspace_id=${workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}
+         AND work_item_id = ANY(${[explicitWorkItemId, provenanceWorkItemId]}::text[])
        ORDER BY work_item_id, spec_id`;
     expect(priorEdges).toHaveLength(2);
 
@@ -4196,6 +4270,8 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(rollback!.content).toBe(staleContent);
     expect(Number(rollback!.version)).toBe(seeded.subjectRevision);
     const after = (await rubrics.amendRubric(repair))!;
+    const canonicalReadback = (await rubrics.getRubric(seeded.rubricSlug))!;
+    expect(after.criteriaHash).toBe(canonicalReadback.criteriaHash);
     expect(after).toMatchObject({ revision: seeded.rubric.revision, criteria: seeded.rubric.criteria,
       barSetHash: seeded.rubric.barSetHash,
       barContract: { ...seeded.rubric.barContract, subjectPlanRevision: seeded.subjectRevision + 1 } });
@@ -4671,7 +4747,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
       criterion: { ...amendment.criterion, text: 'The first outcome is absent or has the wrong value.' },
     };
     await expect(rubrics.amendRubric({ ...nextAmendment, approvalRef })).rejects.toThrow(
-      'acceptance_bar_approval_stale_or_mismatched',
+      'acceptance_bar_review_source_mismatched',
     );
     await expect(
       rubrics.amendRubric({
@@ -5122,12 +5198,33 @@ describe('template_data persistence boundary — the set-template-data door', ()
       }),
     };
     const approvalRef = await postApproval(amendment);
-    h.coveredWorkItemLookups = [];
+    const originalSql = h.sql;
+    const coveredWorkItemLookups: string[] = [];
+    const observe = (tx: postgres.Sql): postgres.Sql => new Proxy(tx, {
+      apply(target, thisArg, args) {
+        const query = Array.isArray(args[0]) ? args[0].join('') : '';
+        if (query.includes('SELECT w.feature_id AS work_item_id') && query.includes('w.source_plan_item_ids')) {
+          coveredWorkItemLookups.push(String(args[4]));
+        }
+        return Reflect.apply(target, thisArg, args);
+      },
+    });
+    // Dependency admission opens a serializable transaction on getOrgPg().sql;
+    // observing withWorkspace alone misses that real write path entirely.
+    h.sql = new Proxy(originalSql, {
+      get(target, property, receiver) {
+        if (property !== 'begin') return Reflect.get(target, property, receiver);
+        return (...args: unknown[]) => {
+          const run = args.pop() as (tx: postgres.Sql) => Promise<unknown>;
+          return Reflect.apply(target.begin, target, [...args, (tx: postgres.Sql) => run(observe(tx))]);
+        };
+      },
+    });
     try {
       await rubrics.amendRubric({ ...amendment, approvalRef });
-      expect(h.coveredWorkItemLookups.sort()).toEqual(['P-001', 'P-002']);
+      expect(coveredWorkItemLookups.sort()).toEqual(['P-001', 'P-002']);
     } finally {
-      h.coveredWorkItemLookups = undefined;
+      h.sql = originalSql;
     }
     const edges = await db.adminSql<{ bar: string; work_item_id: string }[]>`
       SELECT r.source_bar_key AS bar,e.work_item_id
@@ -5139,6 +5236,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
           ON r.workspace_id=c.workspace_id AND r.harness_slug=c.harness_slug AND r.plan_slug=c.plan_slug
          AND r.spec_id=c.spec_id AND r.revision=c.current_revision
        WHERE e.workspace_id=${seeded.workspaceId} AND e.harness_slug='papercusp' AND e.plan_slug=${subject}
+         AND e.work_item_id = ANY(${[canonicalId, legacyId, explicitId]}::text[])
        ORDER BY r.source_bar_key,e.work_item_id`;
     expect(edges).toEqual([
       { bar: 'R-1', work_item_id: canonicalId },
@@ -5223,7 +5321,8 @@ describe('template_data persistence boundary — the set-template-data door', ()
       },
       approvalRef,
     };
-    await expect(rubrics.amendRubric(substituted)).rejects.toThrow('acceptance_bar_approval_patch_mismatched');
+    // The complete reviewed source is checked before the narrower patch hash.
+    await expect(rubrics.amendRubric(substituted)).rejects.toThrow('acceptance_bar_review_source_mismatched');
     const exactPreview = await rubrics.amendRubric({ ...amendment, approvalRef });
     expect(exactPreview!.criteria[0]!).toMatchObject({
       model: amendment.requirement.acceptance.condition,
@@ -5811,7 +5910,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
         criterionEvidencePlane: { ...approvedAmendment.criterionEvidencePlane, evidencePlane: 'deployed' },
         approvalRef,
       }),
-    ).rejects.toThrow('acceptance_bar_approval_stale_or_mismatched');
+    ).rejects.toThrow('acceptance_bar_review_source_mismatched');
 
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before.revision);
   });
@@ -6328,6 +6427,13 @@ describe('template_data persistence boundary — the set-template-data door', ()
     await db.adminSql`UPDATE harness_shared.plan_items SET status = 'dropped'
      WHERE workspace_id = ${workspaceId} AND harness_slug = 'papercusp'
        AND plan_slug = ${subject} AND item_id = ANY(${D006_DROPPED}::text[])`;
+    // Seed an already-settled fixture in the canonical work graph as well as its
+    // legacy index. The amendment reflects lifecycle state; it cannot drop work.
+    await db.adminSql`UPDATE harness_shared.work_items
+       SET status = 'dropped', authority = 'committed', terminal_owner = 'd006-fixture-dropper',
+           taken_by = NULL, closed_ts = ${Date.now()}
+     WHERE workspace_id = ${workspaceId} AND harness_slug = 'papercusp'
+       AND plan_slug = ${subject} AND plan_line_id = ANY(${D006_DROPPED}::text[])`;
 
     const before = (await rubrics.getRubric(rubricSlug))!;
     expect(before.criteria.map((criterion) => criterion.barKey)).toEqual(Object.keys(D006_MAP));

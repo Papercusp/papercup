@@ -1,18 +1,26 @@
 // @vitest-environment node
 import { it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { readFileSync, existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { readFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import { hostThroughPty, eventLogPathForOwner, KICKOFF_PROOF_PATH_ENV, KICKOFF_PROOF_TOKEN_ENV } from '../scripts/psu-pty-host.mjs';
 import { scanTextForSecrets } from '../../../packages/operator-core/lib/sync/pot-git/secrets-guard';
 
-const failure = 'Error: account/read failed during TUI bootstrap: account/read failed: ' +
+const workspaceFailure = 'Error: account/read failed during TUI bootstrap: account/read failed: ' +
   'workspace routing discovery timed out (code -32603)';
+const mcpFailure = 'Error: Failed to start a fresh session through the app server: ' +
+  'thread/start failed during TUI bootstrap: thread/start failed: error creating thread: ' +
+  'Fatal error: Failed to initialize session: required MCP servers failed to initialize: ' +
+  'papercusp-su: timed out handshaking with MCP server after 30s (code -32603)';
 
-it.each(['codex', 'claude'])('records a split pre-frame native discovery failure only for %s', async (agent) => {
+it.each([
+  { failure: workspaceFailure, stage: 'account/read', reason: 'workspace-routing-discovery-timeout' },
+  { failure: mcpFailure, stage: 'thread/start', reason: 'required-mcp-handshake-timeout' },
+].flatMap(failure => ['codex', 'claude'].map(agent => ({ ...failure, agent }))))(
+  'records a split pre-frame $stage failure only for Codex: $agent', async ({ agent, failure, stage, reason }) => {
   const ownerId = `test-bootstrap-${agent}-${process.pid}-${Date.now()}`;
   let output = '';
   const stdin = Object.assign(new EventEmitter(), { isTTY: false, resume() {}, pause() {} });
@@ -37,13 +45,49 @@ it.each(['codex', 'claude'])('records a split pre-frame native discovery failure
   const failures = events.filter(row => row.kind === 'backend-bootstrap-failed');
   expect(failures).toHaveLength(agent === 'codex' ? 1 : 0);
   if (agent === 'codex') {
-    expect(failures[0]).toMatchObject({ agent: 'codex', stage: 'account/read',
-      reason: 'workspace-routing-discovery-timeout', gatewayRequested: false, accountPinPresent: false });
+    expect(failures[0]).toMatchObject({ agent: 'codex', stage,
+      reason, gatewayRequested: false, accountPinPresent: false });
     expect(failures[0].msAfterFirstOutput).toBeGreaterThanOrEqual(0);
     expect(JSON.stringify(failures)).not.toContain('do-not-persist');
     expect(failures[0]).not.toHaveProperty('output');
   }
 }, 15_000);
+
+it.each([
+  { exitCode: 0, nativeStarted: false, expectedFailure: false },
+  { exitCode: 1, nativeStarted: false, expectedFailure: true },
+  { exitCode: 1, nativeStarted: true, expectedFailure: false },
+])('classifies post-frame MCP failure only on failed native startup: exit=$exitCode started=$nativeStarted', async ({ exitCode, nativeStarted, expectedFailure }) => {
+  const ownerId = `test-bootstrap-after-frame-${process.pid}-${Date.now()}`;
+  const nativeHome = mkdtempSync(join(tmpdir(), 'bootstrap-post-frame-'));
+  const nativeId = randomUUID();
+  const sessionsDir = join(nativeHome, 'sessions');
+  mkdirSync(sessionsDir);
+  const transcriptPath = join(sessionsDir, `rollout-${nativeId}.jsonl`);
+  const stdin = Object.assign(new EventEmitter(), { isTTY: false, resume() {}, pause() {} });
+  const stdout = { isTTY: false, columns: 120, rows: 30, write() { return true; } };
+  const frame = '\x1b[6n\x1b[1;1H│ >_ OpenAI Codex (v0.159.3) │\n' +
+    '› Ask Codex to do anything\nReady · GPT-6.1-Sol default · Context 100% left\n';
+  const childCode = [
+    nativeStarted ? `require('node:fs').writeFileSync(${JSON.stringify(transcriptPath)},JSON.stringify({timestamp:new Date().toISOString(),type:'event_msg',payload:{type:'task_started',turn_id:'fixture-turn'}})+'\\n');` : '',
+    `process.stdout.write(${JSON.stringify(frame)});`,
+    `setTimeout(()=>process.stdout.write(${JSON.stringify(mcpFailure)}+'\\n'),80);`,
+    `setTimeout(()=>process.exit(${exitCode}),150);`,
+  ].join('');
+  try {
+    await hostThroughPty({
+      command: process.execPath, args: ['-e', childCode], cwd: process.cwd(), ownerId,
+      env: hermeticEnv({ PAPERCUSP_AGENT: 'codex', PAPERCUSP_SID: ownerId, CODEX_HOME: nativeHome }),
+      resolveRespawnNativeId: () => nativeId,
+      io: { stdin, stdout }, bridgeTty: false, onExit: () => {},
+    });
+    const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(events.some(row => row.kind === 'backend-session-frame-observed')).toBe(true);
+    expect(events.filter(row => row.kind === 'backend-bootstrap-failed')).toHaveLength(expectedFailure ? 1 : 0);
+  } finally {
+    rmSync(nativeHome, { recursive: true, force: true });
+  }
+});
 
 it.each([
   { withOutput: false, exitCode: 1, signal: null },

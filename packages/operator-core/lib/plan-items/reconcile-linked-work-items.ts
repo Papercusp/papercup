@@ -32,7 +32,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { PLAN_ITEM_KIND, planItemRef, implementsLinkScopes } from '../issue-blocks-merge';
-import { IMPLEMENTS_REL } from './convert';
+import { IMPLEMENTS_REL, TERMINAL_WORK_ITEM_STATES } from './convert';
 import {
   getWorkItem,
   setWorkItemState,
@@ -64,6 +64,7 @@ import {
 import { RECONCILER_SYSTEM_ACTOR } from '../completion-audit';
 import type { AgenticPlanExecutionTarget } from '../agentic-plan-execution-target';
 import { acquireWithContentionRetry, isWorkspaceContended } from '../agent-tools/locks/contention-retry';
+import { planItemProvenanceFromRow } from '../plan-item-provenance';
 
 /** The two TERMINAL plan-item statuses this reconciler heals (mirrors
  *  `isTerminalStatus` in agent-tools/plans/set-status.ts) and the settled
@@ -136,6 +137,18 @@ export interface ReconcileLinkedWorkItemsResult {
  * plan item rather than merely referencing it — see the reconcile guard.
  */
 export type LinkedWorkItem = WorkItem & { viaImplementsEdge: boolean; viaPlanLineNode?: boolean };
+
+/**
+ * Return linked execution rows that still count as open plan-item coverage.
+ * The canonical plan-line node is the lifecycle destination, not a sibling
+ * execution; its intentionally-open state must not block that transition.
+ */
+export function filterOpenLinkedCoverageWorkItems(
+  linked: readonly LinkedWorkItem[],
+): LinkedWorkItem[] {
+  return linked.filter((wi) =>
+    !wi.viaPlanLineNode && !TERMINAL_WORK_ITEM_STATES.has(wi.state));
+}
 
 /**
  * D-046 (byoc-cloud-workspaces-gcp-aws-azure-2026-08-22 / WI-40754): ONE canonical
@@ -215,6 +228,23 @@ export async function findAllLinkedWorkItems(
   // proven by the edge, and the later stamp pass must not downgrade it.
   const add = (wi: WorkItem | null, viaImplementsEdge: boolean, viaPlanLineNode = false) => {
     if (!wi) return;
+    const payload = wi.payload as Record<string, unknown> | null;
+    const stamp = payload?.plan_item as { plan_slug?: unknown; item_id?: unknown } | undefined;
+    const run = payload?.plan_run as { instancePlanSlug?: unknown; templateSlug?: unknown } | undefined;
+    const provenance = planItemProvenanceFromRow({
+      source_plan_slug: wi.sourcePlanSlug,
+      source_plan_item_ids: wi.sourcePlanItemIds,
+      stamped_plan_slug: typeof stamp?.plan_slug === 'string' ? stamp.plan_slug : null,
+      stamped_item_id: typeof stamp?.item_id === 'string' ? stamp.item_id : null,
+      run_instance_plan_slug: typeof run?.instancePlanSlug === 'string' ? run.instancePlanSlug : null,
+      run_template_slug: typeof run?.templateSlug === 'string' ? run.templateSlug : null,
+    });
+    // Coherent scheduled tuples implement their exact instance. Their source
+    // columns only group runs under the template; a template transition must
+    // never close or gate an execution reached through those columns (or a stale
+    // edge). The shared resolver preserves legacy precedence for other rows.
+    if (wi.sourcePlanSlug && provenance.planSlug !== wi.sourcePlanSlug &&
+        (provenance.planSlug !== planSlug || !provenance.itemIds.includes(itemId))) return;
     const key = `${wi.harness ?? ''}#${wi.id}`;
     const prior = found.get(key);
     found.set(key, {
@@ -838,6 +868,10 @@ export function requiresOwnerCapability(blocker: ExternalBlockerRecord): boolean
  */
 export function restoreStateAfterUngate(wi: Pick<WorkItem, 'state' | 'family' | 'payload' | 'assignee'>): string {
   const fallback = wi.family === 'feature' ? 'todo' : 'open';
+  // A canonical public begin can commit before its awaited lane resync clears
+  // the derived blocker. Preserve that newly held state; the older pre-park
+  // snapshot must not undo an authorized start on the same canonical node.
+  if (wi.assignee && IN_PROGRESS_WORK_ITEM_STATES.has(wi.state.toLowerCase())) return wi.state;
   const parkedFrom = readPlanLaneParkedFrom(wi.payload);
   if (!parkedFrom) return fallback;
   const normalized = parkedFrom.toLowerCase();
@@ -1439,6 +1473,10 @@ export async function reconcilePlanAuthoredDependenciesNow(
     // Pass the prior owned subset below rather than replacing all of the target's edges.
     const { canonical } = selectCanonicalLinkedWorkItem(await findAllLinkedWorkItems(planSlug, itemId, row));
     if (!canonical || canonical.family !== 'feature' || !canonical.harness) return null;
+    // Unified plan-line nodes use these same edges as their authored dependency
+    // graph. withPlanLock owns that graph, including settled prerequisites;
+    // legacy D-050 subtraction would erase them after their rows become terminal.
+    if (canonical.viaPlanLineNode) return null;
     const harness = canonical.harness;
 
     // Resolve each CURRENT still-open blocker plan item to its canonical linked

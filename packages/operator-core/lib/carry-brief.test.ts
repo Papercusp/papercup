@@ -48,11 +48,12 @@ import {
   type CarryBriefDeferredItem,
   type BuildCarryBriefOpts,
 } from './carry-brief';
-import { shortCarryHash } from './carry-note';
+import { shortCarryHash, withCarryNoteWalls } from './carry-note';
 
 const carryConversationMocks = vi.hoisted(() => ({
   getConversation: vi.fn(),
   getConsultStates: vi.fn(),
+  getConversationStatesByIds: vi.fn(async () => []),
 }));
 
 vi.mock('./agent-tools/coordination/conversations', () => carryConversationMocks);
@@ -350,6 +351,35 @@ describe('buildCarryBrief — assembly + per-leg fail-soft', () => {
     ]);
     // The note itself stays verbatim on the brief (walls included).
     expect(brief.loop?.carryNote).toContain('## Walls');
+  });
+
+  it('omits terminal conversation walls while retaining open and unrelated owner walls in the note', async () => {
+    const walls = [
+      { id: 'withdrawn', origin: 'owner' as const, conversationId: 'conv-withdrawn', claim: 'withdrawn funding question' },
+      { id: 'open', origin: 'owner' as const, conversationId: 'conv-open', claim: 'current owner question' },
+      { id: 'unknown', origin: 'owner' as const, conversationId: 'conv-missing', claim: 'unreadable question' },
+      { id: 'unrelated', origin: 'owner' as const, claim: 'deployment approval' },
+    ];
+    const note = withCarryNoteWalls('## Next action\ncontinue the work', walls);
+    carryConversationMocks.getConversationStatesByIds.mockResolvedValueOnce([
+      { id: 'conv-withdrawn', state: 'superseded' },
+      { id: 'conv-open', state: 'open' },
+    ]);
+
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({ getLoopCarryNoteWithMetaFn: async () => ({ note, updatedAtMs: Date.now() }) }),
+    );
+
+    expect(carryConversationMocks.getConversationStatesByIds).toHaveBeenCalledWith(
+      ['conv-withdrawn', 'conv-open', 'conv-missing'],
+      'ws-test',
+    );
+    expect(brief.walls).toEqual([walls[1], walls[2], walls[3]]);
+    expect(brief.loop?.carryNote).not.toContain('withdrawn funding question');
+    expect(brief.loop?.carryNote).toContain('current owner question');
+    expect(brief.loop?.carryNote).toContain('unreadable question');
+    expect(brief.loop?.carryNote).toContain('deployment approval');
   });
 
   it('a loop with no carry-note still reports the loop (note null)', async () => {
@@ -1794,8 +1824,10 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     // that matters most. Strictly more disclosure, paid for inside the budget
     // asserted on the line above.
     expect(ckptLine).toContain('…');
-    expect(ckptLine).toMatch(/chars withheld — full text: work_items:get \{ id: 'WI-1', harness: 'h' \}⟩$/);
-    expect(out).toContain('(no checkpoint written — read the item via work_items:get before acting)');
+    expect(ckptLine).toMatch(/chars withheld — full text: work_items:get \{ id: 'WI-1', harness: 'h', checkpointOnly: true \}⟩$/);
+    expect(out).toContain("continuation: work_items:get { id: 'WI-1', harness: 'h', resume: true }");
+    expect(out).toContain("(no checkpoint written — recover with work_items:get { id: 'WI-2', harness: 'h', resume: true } before acting)");
+    expect(out.indexOf('continuation:')).toBeLessThan(out.indexOf('checkpoint: yyy'));
   });
 
   it('discloses when a capped checkpoint shows only part of its structured Checks rows', () => {
@@ -1831,7 +1863,7 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     // real subset, so a renderer that silently stopped emitting rows still fails.
     expect(Number(disclosure?.[1])).toBeGreaterThan(0);
     expect(Number(disclosure?.[1])).toBeLessThanOrEqual(23);
-    expect(out).toContain("work_items:get { id: 'WI-3496', harness: 'h' }");
+    expect(out).toContain("work_items:get { id: 'WI-3496', harness: 'h', checksOnly: true }");
   });
 
   // EI-22431465725244151. The old wording ("checks: showing 0 of 11 stored rows in

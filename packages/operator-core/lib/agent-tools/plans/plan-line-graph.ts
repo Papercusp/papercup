@@ -1,12 +1,32 @@
 /** Plan-line storage over the existing work graph (migration 1601). */
 import type { Sql } from 'postgres';
+import { createHash } from 'node:crypto';
 import { deriveIndexFromContent, type PlanIndexItem } from './derive-index';
 import { ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
-import type { WorkItemDependencyMutation } from '../../dbos/work-item-deps-store';
+import {
+  mutateWorkItemDependenciesInTransaction, withWorkItemDependencyAdmissionTransaction,
+  type WorkItemDependencyMutation,
+} from '../../dbos/work-item-deps-store';
+import { acquirePlanAdvisoryLock, planAdvisoryLockKey } from './plan-lock-key';
+import { hashPlanContent } from './content-hash';
+import { summarizeItemParse } from './item-parse-feedback';
 
 export interface PlanLineScope { workspaceId: string; harnessSlug: string; slug: string }
 export interface PlanLineNode extends PlanIndexItem { featureId: string; kind: string; planSlug: string }
+export interface ValidatedPlanLineAdoption { featureId: string; kind: string; status: string; planStatus: string }
+/** Transaction-validated status projection from a distinct committed execution row. */
+export interface ValidatedPlanLineLifecycleProjection {
+  canonicalFeatureId: string;
+  sourceWorkItemId: string;
+  terminalStatus: 'done';
+}
+export function planLineStatusFromWorkItem(status: string): string {
+  return ['done', 'resolved', 'closed'].includes(status) ? 'done'
+    : ['dropped', 'superseded'].includes(status) ? 'dropped'
+      : status === 'wip' ? 'wip' : status === 'needs-human' ? 'needs-human'
+        : status === 'blocked' ? 'blocked' : 'todo';
+}
 
 const endpoint = (node: PlanLineNode, harness: string) =>
   (ISSUE_FAMILY_ROUTE_KINDS as readonly string[]).includes(node.kind)
@@ -166,25 +186,70 @@ export async function readPlanLineItemsByPlan(
 /** Under the plan lock; admit the returned edge changes in the SAME transaction. */
 export async function writePlanLineNodes(
   tx: Sql, scope: PlanLineScope, before: readonly PlanLineNode[], items: readonly PlanIndexItem[],
-  options: { allowDraftStatusProjection?: boolean } = {},
+  options: {
+    /** Migration only: preserve every represented row without even a timestamp UPDATE. */
+    addOnly?: boolean;
+    allowDraftStatusProjection?: boolean;
+    validatedAdoptions?: ReadonlyMap<string, ValidatedPlanLineAdoption>;
+    validatedLifecycleProjections?: ReadonlyMap<string, ValidatedPlanLineLifecycleProjection>;
+  } = {},
 ): Promise<WorkItemDependencyMutation[]> {
   const { workspaceId, harnessSlug, slug } = scope;
   const prior = new Map(before.map((n) => [n.id, n]));
+  if (options.addOnly) {
+    const represented = items.filter(item => prior.has(item.id));
+    if (new Set(items.map(item => item.id)).size !== items.length ||
+        planIndexFingerprint(represented) !== planIndexFingerprint(before) ||
+        before.some((node, seq) => items[seq]?.id !== node.id) ||
+        items.some(item => !prior.has(item.id) && item.status !== 'todo') ||
+        options.validatedAdoptions?.size || options.validatedLifecycleProjections?.size) {
+      throw new Error('saved_plan_lines_not_additive');
+    }
+  }
   const next = new Map<string, PlanLineNode>();
   const now = Date.now();
   for (const [seq, item] of items.entries()) {
     const old = prior.get(item.id);
     const status = item.status === 'todo' ? 'open' : item.status;
-    if (old) {
+    const adopted = options.validatedAdoptions?.get(item.id);
+    if (adopted) {
+      if (old || item.status !== adopted.planStatus) throw new Error('adoption_canonical_conflict');
+      // A validated adoption is an UPDATE of the original row, never a late
+      // attachment followed by INSERT against the frozen prior-node map.
+      const updated = await tx<{ feature_id: string }[]>`
+        UPDATE harness_shared.work_items SET plan_slug=${slug},plan_line_id=${item.id},plan_seq=${seq},
+          plan_phase=${item.phase},plan_importance=${item.importance},plan_decision_refs=${item.decisionRefs}::text[],
+          plan_deliverable=${item.deliverable ?? null},plan_owner_gate_marker=${item.ownerGateMarker ?? null},
+          plan_line_text=${item.text},updated_ts=${now},origin='local'
+        WHERE workspace_id=${workspaceId} AND harness_slug=${harnessSlug} AND feature_id=${adopted.featureId}
+          AND item_kind=${adopted.kind} AND status=${adopted.status} AND plan_slug IS NULL AND plan_line_id IS NULL
+        RETURNING feature_id`;
+      if (updated.length !== 1) throw new Error('adoption_canonical_conflict');
+      next.set(item.id, { ...item, featureId: adopted.featureId, kind: adopted.kind, planSlug: slug });
+    } else if (old) {
+      if (options.addOnly) {
+        next.set(item.id, old);
+        continue;
+      }
       const changeStatus = item.status !== old.status;
-      const changeText = item.text !== old.text;
+      // Match planExecutionMeaning's whitespace semantics. Rendering metadata
+      // before a legacy inline note can change its separator spacing; storing
+      // that cosmetic change revokes the start via fence_plan_execution_graph.
+      // Retain the canonical bytes (and title/summary) until the text changes.
+      const changeText = item.text.replace(/\s+/g, ' ').trim() !== old.text.replace(/\s+/g, ' ').trim();
       // A plan rewrite has no authenticated completion evidence. It must not
       // close a claimed node while preserving its holder and null authority,
       // or reopen a settled node while retaining its old completion record.
       // Canonical lifecycle writers update the graph first; their subsequent
       // plan reflection has no status edge here and remains a normal rewrite.
+      const lifecycleProjection = options.validatedLifecycleProjections?.get(item.id);
+      const verifiedCompletionProjection =
+        lifecycleProjection?.canonicalFeatureId === old.featureId &&
+        lifecycleProjection.sourceWorkItemId !== old.featureId &&
+        lifecycleProjection.terminalStatus === status;
       if (!options.allowDraftStatusProjection && changeStatus &&
-          [status, old.status].some(value => value === 'done' || value === 'dropped')) {
+          [status, old.status].some(value => value === 'done' || value === 'dropped') &&
+          !verifiedCompletionProjection) {
         throw new Error(`plan_line_status_change_requires_lifecycle_writer: ${harnessSlug}#${old.featureId} ` +
           `(${slug}#${item.id}); use work_items:complete for completion or work_items:set_state for other lifecycle changes`);
       }
@@ -192,7 +257,7 @@ export async function writePlanLineNodes(
         UPDATE harness_shared.work_items SET plan_seq = ${seq}, plan_phase = ${item.phase},
           plan_importance = ${item.importance}, plan_decision_refs = ${item.decisionRefs}::text[],
           plan_deliverable = ${item.deliverable ?? null}, plan_owner_gate_marker = ${item.ownerGateMarker ?? null},
-          plan_line_text = ${item.text},
+          plan_line_text = CASE WHEN ${changeText} THEN ${item.text} ELSE plan_line_text END,
           title = CASE WHEN ${changeText} THEN ${item.text.slice(0, 300)} ELSE title END,
           summary = CASE WHEN ${changeText} THEN ${item.text} ELSE summary END,
           status = CASE WHEN ${changeStatus} THEN ${status} ELSE status END,
@@ -243,4 +308,108 @@ export async function writePlanLineNodes(
     });
   }
   return mutations;
+}
+
+export interface SavedPlanLinesPreview {
+  issuedAt: string;
+  fingerprint: string;
+}
+
+/** Bounded reconciliation for a matching old-writer witness, never a plan rewrite.
+ * The caller supplies the normal app SQL client; the dependency writer owns the
+ * SERIALIZABLE boundary. DB-rendered JSON/xmin retains all claim, hold, completion
+ * and edge versions without JS timestamp/number round trips.
+ */
+export async function repairSavedPlanLines(sql: Sql, input: PlanLineScope & {
+  expectedVersion: number;
+  expectedContentHash: string;
+  dryRun: boolean;
+  preview?: SavedPlanLinesPreview;
+}) {
+  return withWorkItemDependencyAdmissionTransaction(sql, async tx => {
+    const { workspaceId, harnessSlug, slug } = input;
+    await tx`SELECT set_config('app.workspace_id', ${workspaceId}, true),
+      set_config('search_path', 'harness_shared, papercusp_shared, public', true)`;
+    await acquirePlanAdvisoryLock(tx, planAdvisoryLockKey(workspaceId, harnessSlug, slug));
+    const [parent] = await tx<{
+      content: string; content_hash: string; version: string; items: unknown; record: string;
+    }[]>`SELECT p.content,p.content_hash,p.version::text,p.items,
+        jsonb_build_object('row',to_jsonb(p),'xmin',p.xmin::text)::text AS record
+      FROM harness_shared.harness_plans p WHERE p.workspace_id=${workspaceId}
+        AND p.harness_slug=${harnessSlug} AND p.plan_slug=${slug} FOR UPDATE`;
+    if (!parent || parent.version !== String(input.expectedVersion) ||
+        parent.content_hash !== input.expectedContentHash || hashPlanContent(parent.content) !== parent.content_hash)
+      throw new Error('saved_plan_lines_parent_changed');
+    // A matching derived index is insufficient when both copies omitted an
+    // invalid physical item line (for example an unknown status token).
+    if (summarizeItemParse(parent.content, { bodyProvided: true }).unparsedItemLines)
+      throw new Error('saved_plan_lines_not_additive');
+    const saved = matchingLegacyPlanItems(parent.items, parent.content);
+    if (!saved) throw new Error('saved_plan_lines_witness_mismatch');
+    const rows = await tx<{ feature_id: string; plan_seq: number; record: string }[]>`
+      SELECT w.feature_id,w.plan_seq,jsonb_build_object('row',to_jsonb(w),'xmin',w.xmin::text)::text AS record
+      FROM harness_shared.work_items w WHERE w.workspace_id=${workspaceId}
+        AND w.harness_slug=${harnessSlug} AND w.plan_slug=${slug} AND w.plan_line_id IS NOT NULL
+      ORDER BY w.plan_seq,w.plan_line_id,w.feature_id LIMIT 513 FOR UPDATE`;
+    if (!rows.length || rows.length > 512 || saved.length > 512)
+      throw new Error('saved_plan_lines_scope_unavailable');
+    const before = await readPlanLineNodes(tx, input);
+    const ids = rows.map(row => row.feature_id);
+    const refs = [...ids, ...ids.map(id => `${harnessSlug}#${id}`)];
+    const dependencies = await tx<{ record: string }[]>`
+      SELECT jsonb_build_object('row',to_jsonb(d),'xmin',d.xmin::text)::text AS record
+      FROM harness_shared.work_item_deps d WHERE d.workspace_id=${DEFAULT_COORD_WORKSPACE}
+        AND (d.blocked_ref=ANY(${refs}::text[]) OR d.blocker_ref=ANY(${refs}::text[]))
+      ORDER BY d.workspace_id,d.blocked_kind,d.blocked_ref,d.blocker_kind,d.blocker_ref,d.dep_type,d.id
+      LIMIT 2049 FOR UPDATE`;
+    const links = await tx<{ record: string }[]>`
+      SELECT jsonb_build_object('row',to_jsonb(l),'xmin',l.xmin::text)::text AS record
+      FROM harness_shared.coord_links l WHERE l.workspace_id=${DEFAULT_COORD_WORKSPACE}
+        AND (l.src_ref=ANY(${refs}::text[]) OR l.dst_ref=ANY(${refs}::text[]))
+      ORDER BY l.workspace_id,l.src_kind,l.src_ref,l.dst_kind,l.dst_ref,l.rel,l.id LIMIT 2049 FOR UPDATE`;
+    if (dependencies.length + links.length > 2048) throw new Error('saved_plan_lines_scope_too_large');
+    const prior = new Map(before.map(node => [node.id, node]));
+    // The graph owns represented lifecycle state: legacy saved todo bytes may
+    // predate a current blocked hold. Preserve that state rather than projecting
+    // the stale index back over it; all other represented meaning must agree.
+    const represented = saved.filter(item => prior.has(item.id))
+      .map(item => ({ ...item, status: prior.get(item.id)!.status }));
+    const missing = saved.filter(item => !prior.has(item.id));
+    if (new Set(saved.map(item => item.id)).size !== saved.length ||
+        rows.some((row, seq) => row.plan_seq !== seq) ||
+        planIndexFingerprint(represented) !== planIndexFingerprint(before) ||
+        before.some((node, seq) => saved[seq]?.id !== node.id) ||
+        missing.some(item => item.status !== 'todo') ||
+        saved.some(item => item.blockedBy.some(id => !saved.some(candidate => candidate.id === id))))
+      throw new Error('saved_plan_lines_not_additive');
+    const issuedAt = input.dryRun ? new Date().toISOString() : input.preview?.issuedAt;
+    const age = issuedAt ? Date.now() - Date.parse(issuedAt) : NaN;
+    if (!Number.isFinite(age) || age < 0 || age > 300_000) throw new Error('saved_plan_lines_preview_expired');
+    const record = { schemaVersion: 1, workspaceId, harnessSlug, slug, issuedAt,
+      parent: parent.record, nodes: rows.map(row => row.record),
+      dependencies: dependencies.map(row => row.record), links: links.map(row => row.record) };
+    const [canonical] = await tx<{ canonical: string }[]>`SELECT ${tx.json(record)}::jsonb::text AS canonical`;
+    const preview: SavedPlanLinesPreview = { issuedAt: issuedAt!,
+      fingerprint: `v1:${createHash('sha256').update(canonical.canonical).digest('hex')}` };
+    // An already reconciled request is a no-op, even when its original preview
+    // predates the inserts. Never run the ordinary writer over represented rows.
+    if (!input.dryRun && missing.length && input.preview?.fingerprint !== preview.fingerprint)
+      throw new Error('saved_plan_lines_preview_changed');
+    let edgesWritten = 0;
+    if (!input.dryRun && missing.length) {
+      const desired = saved.map(item => prior.get(item.id) ?? item);
+      const mutations = await writePlanLineNodes(tx, input, before, desired, { addOnly: true });
+      if (mutations.some(mutation => mutation.op !== 'add')) throw new Error('saved_plan_lines_not_additive');
+      const result = await mutateWorkItemDependenciesInTransaction(tx, {
+        workspaceId: DEFAULT_COORD_WORKSPACE, itemWorkspaceId: workspaceId, mutations,
+      });
+      edgesWritten = result.inserted;
+    }
+    return { dryRun: input.dryRun, slug, expectedVersion: input.expectedVersion,
+      expectedContentHash: input.expectedContentHash, preview,
+      representedItemIds: before.map(node => node.id),
+      representedRows: rows.map(row => row.record), missingItems: missing,
+      nodesAdded: input.dryRun ? 0 : missing.length, edgesWritten,
+      alreadyReconciled: missing.length === 0 };
+  });
 }

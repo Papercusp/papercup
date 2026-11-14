@@ -19,6 +19,8 @@ import { ensureWorkspaceEntry, isKnownWorkspace } from '../lib/workspace-registr
 import { PANEL_LABELS, type PanelKey, type SystemHealth } from '../lib/system-health/types';
 import { readVerifierSourceReceiptSync, verifierSourceFiles, type VerifierSourceFile } from '../lib/verifier-source';
 import { linuxProcStateFromStat, linuxStartTicksFromProcStat, readProcessIdentity } from '../lib/process-identity';
+import { processMonotonicClock } from '../lib/process-monotonic-clock';
+import type { CurrentBenchTaskEndpointObservation } from '../lib/external-bench/current-su';
 import type { CommittedReaderObservationCohort, CommittedReaderObservationIdentity,
   CommittedReaderPreparationHandoff } from './isolated-integration-proof';
 import type { LegacyAdoptionEvidence, LegacyAdoptionPayload,
@@ -54,6 +56,7 @@ export function observeCooperativeHostTermination(o: {
   const directory = o.traceOut + '.native-processes';
   assert.ok(!existsSync(o.traceOut) && !existsSync(directory), 'Fresh OUT required');
   const setupStartNs = process.hrtime.bigint().toString();
+  const taskClockSetupMs = processMonotonicClock.now();
   mkdirSync(directory, { recursive: false });
   const gaps = new Set<string>(), seen = new Set<string>();
   type Stamp = { atNs: string; kernelProcessIdentity: string | null };
@@ -65,6 +68,10 @@ export function observeCooperativeHostTermination(o: {
   let terminal: { atNs: string; code: number | null; signal: NodeJS.Signals | null } | null = null;
   let closedAtNs: string | null = null;
   const endpoints: Partial<Record<'entry' | 'result', Endpoint>> = {};
+  const taskEndpoints: Partial<Record<'entry' | 'result', {
+    assignmentId: string; atMs: number; parentObservedAtMs: number;
+    terminalDisposition?: CurrentBenchTaskEndpointObservation['terminalDisposition'];
+  }>> = {};
   const receive = (_event: string, name: string | null) => {
     const atNs = process.hrtime.bigint().toString();
     if (!name || !/^[a-f0-9]{64}\.json$/.test(name) || seen.has(name)) return;
@@ -128,6 +135,24 @@ export function observeCooperativeHostTermination(o: {
       assert.ok(id && !endpoints[kind] && host && !terminal && !stopped, 'Original live task endpoint required');
       endpoints[kind] = { id, atNs: process.hrtime.bigint().toString() };
     },
+    observeTaskEndpoint(event: Readonly<CurrentBenchTaskEndpointObservation>) {
+      try {
+        const parentObservedAtMs = processMonotonicClock.now();
+        assert.ok(event.kind === 'entry' || event.kind === 'result', 'Original task endpoint kind required');
+        assert.ok(host && !terminal && !stopped && !taskEndpoints[event.kind], 'Original live task endpoint required');
+        assert.equal(event.clock, processMonotonicClock, 'Exact same-process task sampler required');
+        assert.ok(event.assignmentId.startsWith('bench-assignment:') && Number.isFinite(event.atMs) &&
+          event.atMs >= taskClockSetupMs && event.atMs <= parentObservedAtMs, 'Original parent-clock task sample required');
+        if (event.kind === 'entry') assert.equal(event.terminalDisposition, undefined, 'Entry is not a business result');
+        else {
+          assert.ok(taskEndpoints.entry && taskEndpoints.entry.assignmentId === event.assignmentId &&
+            taskEndpoints.entry.atMs <= event.atMs && typeof event.terminalDisposition === 'string' &&
+            event.terminalDisposition.length > 0, 'Matching original task result required');
+        }
+        taskEndpoints[event.kind] = { assignmentId: event.assignmentId, atMs: event.atMs, parentObservedAtMs,
+          ...(event.kind === 'result' ? { terminalDisposition: event.terminalDisposition } : {}) };
+      } catch (error) { gaps.add('parent-task-endpoint-unbound'); throw error; }
+    },
     snapshot() {
       const failures = new Set(gaps);
       if (!entry || !pinned?.kernelProcessIdentity || !request?.kernelProcessIdentity || !terminal)
@@ -154,6 +179,13 @@ export function observeCooperativeHostTermination(o: {
         K: structuredClone(terminal), closedAtNs, setup: { startNs: setupStartNs, endNs: setupEndNs },
         task, requestToKObservedNs: request && terminal && BigInt(terminal.atNs) >= BigInt(request.atNs)
           ? (BigInt(terminal.atNs) - BigInt(request.atNs)).toString() : null,
+        taskTiming: taskEndpoints.entry && taskEndpoints.result ? {
+          scope: 'native-generation-entry-to-terminal-result',
+          status: gaps.has('parent-task-endpoint-unbound') ? 'unknown' : 'bound',
+          clockId: processMonotonicClock.id, entry: { ...taskEndpoints.entry }, result: { ...taskEndpoints.result },
+          elapsedMs: taskEndpoints.result.atMs - taskEndpoints.entry.atMs, observerDeductionMs: 0,
+          instrumented: true, fullRuntimeQualification: 'unknown',
+        } : null,
         clock: 'same-parent-process-hrtime', instrumented: true, gaps: [...failures],
         fullRuntimeQualification: 'unknown' };
     },
@@ -827,6 +859,31 @@ export function privateMcpSourceSha(root: string, env: NodeJS.ProcessEnv = proce
   assert.match(sourceSha, /^[a-f0-9]{7,64}$/,
     'Private MCP requires attributable source before compilation; run through scripts/source-preview.mjs verifier-run');
   return sourceSha;
+}
+
+/** A private MCP is usable only when its serving process and every tools/list
+ * entry identify the exact source pin and complete serving generation prepared
+ * for this run. */
+export function assertPrivateMcpSourceIdentity(expectedSourceSha: string, healthSha: unknown): string {
+  assert.match(expectedSourceSha, /^[a-f0-9]{7,64}$/, 'Prepared private MCP source SHA must be attributable');
+  assert.ok(typeof healthSha === 'string' && /^[a-f0-9]{7,64}$/.test(healthSha),
+    'Private MCP serving build SHA is unknown');
+  assert.equal(healthSha, expectedSourceSha,
+    'Private MCP serving build SHA is foreign to the prepared bundle source pin');
+  return expectedSourceSha;
+}
+
+export function assertPrivateMcpToolsListGeneration(expectedGeneration: string,
+  tools: readonly { _meta?: Record<string, unknown> | null }[]) {
+  assert.match(expectedGeneration, /^serving-generation-v1:[a-f0-9]{64}$/,
+    'Expected private MCP serving generation must be known');
+  assert.ok(tools.length > 0, 'Private MCP tools/list returned no tools');
+  const generations = tools.map(tool => tool._meta?.['papercusp/servingGeneration']);
+  assert.ok(generations.every(value => typeof value === 'string' && value.trim()),
+    'Private MCP tools/list omitted its serving generation');
+  assert.ok(generations.every(value => value === expectedGeneration),
+    'Private MCP tools/list returned an unknown or foreign serving generation');
+  return { servingGeneration: expectedGeneration, toolCount: tools.length };
 }
 
 /** Prepared ESM bundles must not inherit test transformers or Vitest's passive
@@ -2143,7 +2200,7 @@ type PrivateBundleBuilder = { command?: string; args?: string[]; timeoutMs: numb
   retainedEvidenceDir?: string;
   onProgress?: (progress: { step: string; completedSteps: number;
     completedFiles?: number; totalFiles?: number; bytesRead?: number }) => void };
-type PrivateBundleReceipt = { path: string; sha256: string };
+type PrivateBundleReceipt = { path: string; sha256: string; sourceSha?: string };
 
 /** The final restricted-hold census verifies the complete selected source after
  * compilation. Its existing child deadline must fit in the enclosing builder:
@@ -2358,7 +2415,7 @@ type PreparedPrivateApiBundleReceipt = PrivateApiBundleReceipt & { receiptSha256
 type CommittedPrivateApiBundle = {
   committedReader: { receiptPath: string; sourceReceiptPath: string; selectedCommit: string };
 };
-type ProgressPrivateApiBundle = { builder: PrivateBundleBuilder & { maxMs: number } };
+type ProgressPrivateApiBundle = { builder: PrivateBundleBuilder & { maxMs: number }; sourceSha?: string };
 type ObservedSourcePrivateApiBundle = {
   observedSource: { sourceReceiptPath: string; selectedCommit: string; sourceReceiptSha256: string };
 };
@@ -2371,9 +2428,16 @@ export function preparePrivateOperatorApiBundle(root: string, evidenceDir: strin
 } | ObservedSourcePrivateApiBundle | (ProgressPrivateApiBundle & Partial<ObservedSourcePrivateApiBundle>)) {
   assertPrivatePreparationEvidence();
   const retain = (receipt: PrivateApiBundleReceipt): PreparedPrivateApiBundleReceipt => {
-    const receiptBytes = JSON.stringify(receipt);
+    const sourceSha = options && 'sourceSha' in options ? options.sourceSha : undefined;
+    if (sourceSha !== undefined) {
+      assert.match(sourceSha, /^[a-f0-9]{7,64}$/, 'Prepared source SHA must be attributable');
+      assert.equal(privateMcpSourceSha(root), sourceSha,
+        'Private operator source changed between its pin and completed bundle preparation');
+    }
+    const preparedReceipt = sourceSha === undefined ? receipt : { ...receipt, sourceSha };
+    const receiptBytes = JSON.stringify(preparedReceipt);
     writeFileSync(join(evidenceDir, 'operator-api-preflight.json'), receiptBytes);
-    return { ...receipt, receiptSha256: digestBytes(receiptBytes) };
+    return { ...preparedReceipt, receiptSha256: digestBytes(receiptBytes) };
   };
   if (options && 'observedSource' in options && options.observedSource) {
     const selected = options.observedSource;
@@ -2506,7 +2570,7 @@ function readPreparedPrivateApiBundle(argv: readonly string[], evidenceDir: stri
   assert.equal(createHash('sha256').update(readFileSync(path)).digest('hex'), sha256,
     'Prepared private API changed after preflight');
   const receipts = argv.filter(value => value.startsWith('--prepared-receipt-sha='));
-  let receipt: { path: string; sha256: string; sourceCommit?: string; selectedSource?: {
+  let receipt: { path: string; sha256: string; sourceSha?: string; sourceCommit?: string; selectedSource?: {
     receiptPath: string; sha256: string; sourceCommit: string;
   } } | undefined;
   let receiptSha256: string | undefined;
@@ -2527,6 +2591,16 @@ function readPreparedPrivateApiBundle(argv: readonly string[], evidenceDir: stri
 /** A worker may reuse only the artifact from its own original prepare phase. */
 export function resolvePreparedPrivateApiBundle(argv: readonly string[], evidenceDir: string) {
   return readPreparedPrivateApiBundle(argv, evidenceDir)?.path;
+}
+
+/** Resolve the source pin from the receipt whose digest accompanied the bundle. */
+export function resolvePreparedPrivateApiSourceSha(argv: readonly string[], evidenceDir: string): string {
+  const prepared = readPreparedPrivateApiBundle(argv, evidenceDir);
+  assert.ok(prepared?.receipt, 'Private MCP source pin requires its prepared API receipt');
+  const sourceSha = prepared.receipt.sourceSha;
+  assert.ok(typeof sourceSha === 'string' && /^[a-f0-9]{7,64}$/.test(sourceSha),
+    'Prepared private API receipt has no attributable source SHA');
+  return sourceSha;
 }
 
 /** Selected source crosses the sanitized child boundary through the parent's

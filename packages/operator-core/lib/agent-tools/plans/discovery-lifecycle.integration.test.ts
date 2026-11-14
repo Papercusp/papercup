@@ -10,6 +10,7 @@ import { writePlanIndexRows } from './plan-index-rows';
 import { readPlanLineNodes, writePlanLineNodes } from './plan-line-graph';
 import { seedPlan, setupPlanPgFixture, type PlanPgFixture } from './__tests__/_pg-tool-fixture';
 import { checkDraftItemStartGate } from './draft-item-start-gate';
+import getInputSchemaTool from './get-input-schema';
 import { discoveryDeclarationSchema, type DiscoveryDeclaration } from './plan-declarations';
 import { resolveDiscoveryAuditContext } from './plan-declaration-resolvers';
 import { recordCurrentDiscoveryAudit, withCurrentDiscovery } from '../../plan-audits';
@@ -616,6 +617,28 @@ describe('original proof-warming discovery before review and implementation', ()
     expect(review.route).toHaveBeenCalledOnce();
     expect(review.open).not.toHaveBeenCalled();
     expect(await startAttempt('P-002')).toBeNull();
+  });
+
+  it('plans:get-input-schema reports the Discovery refusal for a legacy ready plan', async () => {
+    await revision(content.replace('status: draft', 'status: ready'));
+    expect(await current()).toMatchObject({ ok: false, error: 'discovery_not_ready' });
+
+    const args = getInputSchemaTool.args.parse({ slug, harness });
+    const result = await getInputSchemaTool.handler(args, {
+      workspaceId: fx.workspaceId,
+      harnessSlug: harness,
+    } as never) as { data: { results: Array<Record<string, unknown>> } };
+
+    expect(result.data.results[0]).toMatchObject({
+      slug,
+      source: 'none',
+      required: [],
+      missing: [],
+      ready: false,
+      code: 'discovery_not_ready',
+      issues: ['discovery_not_ready'],
+      hint: expect.any(String),
+    });
   });
 
   it('DISCOVERY-R10 derives discovery facts and finalizes first delta batch and retry paths without redundant authored confirmations', async () => {

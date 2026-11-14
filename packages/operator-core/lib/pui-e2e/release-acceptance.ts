@@ -26,6 +26,36 @@ export const REPO_ROOT = moduleRepoRoot(import.meta.url);
 export const UX_CONTRACT = path.join(REPO_ROOT, 'apps/tui/PUBLIC_RELEASE_UX.md');
 export const ACCEPTANCE_MATRIX = path.join(REPO_ROOT, 'apps/tui/release/acceptance-matrix.json');
 
+/** Private native fixtures need route metadata, never upstream credentials.
+ * Validate before allocating their database or opening an installed archive. */
+export function readNativeAccountCatalog(catalogPath: string | undefined, account = 'auto') {
+  if (account === 'default' && !catalogPath?.trim()) return [];
+  if (!catalogPath?.trim()) {
+    throw new Error(`Account ${account} requires PUI_NATIVE_ACCOUNT_CATALOG before installed suites run or private databases start`);
+  }
+  if (!path.isAbsolute(catalogPath)) {
+    throw new Error(`PUI_NATIVE_ACCOUNT_CATALOG must be an absolute path: ${catalogPath}`);
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(readFileSync(catalogPath, 'utf8')); }
+  catch { throw new Error(`PUI_NATIVE_ACCOUNT_CATALOG must point to readable accounts:list JSON: ${catalogPath}`); }
+  const entries = parsed && typeof parsed === 'object' && 'accounts' in parsed ? parsed.accounts : undefined;
+  const invalid = () => new Error(`PUI_NATIVE_ACCOUNT_CATALOG must contain nonempty accounts:list accounts with valid id/provider metadata: ${catalogPath}`);
+  if (!Array.isArray(entries) || entries.length === 0) throw invalid();
+  const ids = new Set<string>();
+  const accounts = entries.map((entry: unknown) => {
+    if (!entry || typeof entry !== 'object' || !('id' in entry) || typeof entry.id !== 'string'
+      || !/^[A-Za-z0-9._-]+$/.test(entry.id) || ids.has(entry.id)
+      || !('provider' in entry) || (entry.provider !== 'claude' && entry.provider !== 'codex')) throw invalid();
+    ids.add(entry.id);
+    return { id: entry.id, provider: entry.provider, credentialRef: '', addedAt: 0, boundTo: [] as string[] };
+  });
+  if (account !== 'auto' && account !== 'default' && !ids.has(account)) {
+    throw new Error(`Requested native account ${account} is absent from PUI_NATIVE_ACCOUNT_CATALOG`);
+  }
+  return accounts;
+}
+
 /** Classify the SU prerequisite approvals the fixture already answers. OMP
  * mounts MCP calls as native Write devices; remembering that approval would
  * grant all native Write calls, including the later effect under test. */

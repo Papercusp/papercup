@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { WorkspaceHostDesiredSpec } from '@papercusp/deployment-driver';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import type { AdmitHostedLifecycleJobInput, HostedPoolObservation } from './hosted-lifecycle-store';
 import { Governor } from '../resource-governor/admission';
@@ -37,7 +38,7 @@ const incarnationMigration = fileURLToPath(new URL('../../../../libs/papercusp/l
 const incarnationSql = readFileSync(existsSync(incarnationMigration) ? incarnationMigration : `${incarnationMigration}.DRAFT`, 'utf8');
 const authorityMigration = fileURLToPath(new URL('../../../../libs/papercusp/libs/db/sql/1524-hosted-entitlement-authority.sql', import.meta.url));
 const authoritySql = readFileSync(authorityMigration, 'utf8');
-const scope = { kind: 'project', id: 'pool-project' };
+const scope = { kind: 'project' as const, id: 'pool-project' };
 const release = {
   version: 'pool-v1', bundleSha256: 'a'.repeat(64), signingKeySha256: 'b'.repeat(64),
   protocolVersion: 'workspace-host-bootstrap-v1', schemaVersion: '1522',
@@ -101,6 +102,12 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
       VALUES (${ws}, 'pool-connection', 'gcp', 'pool integration', 'test://no-provider-calls', 'connected')
       ON CONFLICT DO NOTHING`;
     const o = options.placeholder ? null : options.observation ?? observation();
+    const desired = {
+      hostId: id, target: 'gcp', scope, region: 'us-central1', zone: 'us-central1-a', size: 'test-4',
+      image: { id: 'test-image' }, data: { volumeGiB: 256,
+        allocation: { dbGiB: 256, workspaceGiB: 0 }, encrypted: true },
+      credentials: { cloudCredentialRef: { kind: 'cloud', ref: 'test://no-provider-calls' } },
+    } satisfies WorkspaceHostDesiredSpec;
     await db.adminSql`
       INSERT INTO harness_shared.workspace_hosts
         (workspace_id, id, name, connection_id, target, scope_label, region, size, image,
@@ -109,8 +116,7 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
          desired_revision, observed_revision)
       VALUES (${ws}, ${id}, ${id}, 'pool-connection', 'gcp', 'pool-project', 'us-central1',
         'test-4', 'test-image', 256, 'default', 'running', ${options.placeholder ? 'provisioning' : options.state ?? 'running'},
-        ${JSON.stringify({ scope, zone: 'us-central1-a', data: { volumeGiB: 256,
-          allocation: { dbGiB: 256, workspaceGiB: 0 }, encrypted: true } })}::jsonb, 1, 'controller-a', 7,
+        ${JSON.stringify(desired)}::jsonb, 1, 'controller-a', 7,
         ${JSON.stringify(release)}::jsonb, ${o ? JSON.stringify(o) : null}::jsonb,
         ${options.placeholder ? null : 'healthy'}, now(), 1, 1)`;
   }
@@ -312,6 +318,26 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     expect(await operations(ws)).toEqual([]);
   });
 
+  it('P539 keeps budget-refused demand visible without reserving pending capacity', async () => {
+    const ws = fresh(), demand = await capacityDemand(ws);
+    await allowance(organization(ws, demand.id), {}, 0);
+    const result = await reconcileHostedPoolDemand(ws, demand.deps);
+    expect(result).toMatchObject({ considered: 1, enqueued: [], held: [{ hostId: demand.hostId }] });
+    expect(await operations(ws)).toEqual([]);
+    expect(await db.adminSql`SELECT state, workspace_host_id FROM harness_shared.customer_workspaces
+      WHERE workspace_id = ${ws} AND id = ${demand.id}`)
+      .toEqual([{ state: 'provisioning', workspace_host_id: demand.hostId }]);
+  });
+
+  it('P539 leaves the default warm floor at zero when durable demand is absent', async () => {
+    const readTarget = vi.fn(), admitAndStart = vi.fn(), startLifecycle = vi.fn();
+    expect(await reconcileHostedPoolDemand(fresh(), { readTarget, admitAndStart, startLifecycle }))
+      .toEqual({ considered: 0, enqueued: [], held: [] });
+    expect(readTarget).not.toHaveBeenCalled();
+    expect(admitAndStart).not.toHaveBeenCalled();
+    expect(startLifecycle).not.toHaveBeenCalled();
+  });
+
   it('P539 rotates a held tenant so another queued customer can progress on the next tick', async () => {
     const ws = fresh(), first = await capacityDemand(ws), second = await capacityDemand(ws);
     await allowance(organization(ws, first.id), { 'pool.hosts': 0 });
@@ -411,6 +437,8 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
       SET last_activity_at = ${new Date(measuredAt - 60 * 60_000).toISOString()}::timestamptz,
           idle_stop_after_minutes = 1
       WHERE workspace_id = ${ws} AND id = ${id}`;
+    expect((await readWorkspaceHostDestroyTarget(ws, binding.hostId))?.desired)
+      .toMatchObject({ hostId: binding.hostId, target: 'gcp' });
     const request: AdmitHostedLifecycleJobInput = { ...input(ws, id, binding.hostId),
       pool: undefined, action: 'stop', idleStop: true, riskTier: 'low',
       estimate: { cents: 0, currency: 'USD', source: 'test-catalog', evidenceRef: 'test://stop',
@@ -428,6 +456,71 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     expect(receipt.idleStop?.authorityRevision).toBe(grants.get(binding.organizationId)!.revision);
     expect(await admitHostedLifecycleJob(request)).toEqual({ ...receipt, created: false });
     expect(await operations(ws)).toHaveLength(1);
+  });
+
+  it('P539 recovers a lost idle-stop enqueue using the original admission and operation identity', async () => {
+    const { ws, binding, measuredAt } = await idleRequest();
+    const startLifecycle = vi.fn(async (request: { operationId: string; hostId: string }) => ({
+      status: 'accepted' as const, operationId: request.operationId, hostId: request.hostId,
+    })).mockRejectedValueOnce(new Error('fixture:workflow-enqueue-unavailable'));
+    const first = await reconcileHostedPoolDemand(ws, { startLifecycle });
+    expect(first).toEqual({ considered: 1, enqueued: [], held: [{
+      hostId: binding.hostId, reason: 'fixture:workflow-enqueue-unavailable',
+    }] });
+    const [admitted] = await operations(ws);
+    expect(admitted.id).toMatch(/^pool-idle-[a-f0-9]{32}$/);
+    expect(admitted.admission_receipt.result.idleStop).toMatchObject({
+      hostGeneration: 1, controllerFence: 7, connectorGeneration: binding.generation,
+      workloadObservedAtMs: measuredAt,
+    });
+    for (const _fire of ['recovery', 'replay']) {
+      expect(await reconcileHostedPoolDemand(ws, { startLifecycle }))
+        .toEqual({ considered: 1, enqueued: [admitted.id], held: [] });
+    }
+    expect(await operations(ws)).toEqual([admitted]);
+    expect(startLifecycle).toHaveBeenCalledTimes(3);
+    for (const [request] of startLifecycle.mock.calls) expect(request).toMatchObject({
+      workspaceId: ws, hostId: binding.hostId, hostedCustomerWorkspaceId: binding.customerWorkspaceId,
+      action: 'stop', operationId: admitted.id,
+    });
+    // Enqueue acceptance is not provider completion: the running host remains recorded.
+    expect(await db.adminSql`SELECT observed_state FROM harness_shared.workspace_hosts
+      WHERE workspace_id = ${ws} AND id = ${binding.hostId}`).toEqual([{ observed_state: 'running' }]);
+  });
+
+  it.each(['active', 'stale'] as const)('P539 never enqueues idle drain with %s workload evidence', async kind => {
+    const { ws, binding, o, measuredAt } = await idleRequest();
+    const workload = { ...o.workload, ...(kind === 'active'
+      ? { activeCommands: 1 } : { observedAtMs: measuredAt - 100_000 }) };
+    await db.adminSql`UPDATE harness_shared.workspace_hosts
+      SET pool_observation = ${JSON.stringify({ ...o, workload })}::jsonb
+      WHERE workspace_id = ${ws} AND id = ${binding.hostId}`;
+    const startLifecycle = vi.fn();
+    const result = await reconcileHostedPoolDemand(ws, { startLifecycle });
+    expect(result).toEqual({ considered: 1, enqueued: [], held: [{ hostId: binding.hostId,
+      reason: kind === 'active' ? 'hosted_pool_idle_active_work' : 'hosted_pool_idle_workload_unverified',
+    }] });
+    expect(startLifecycle).not.toHaveBeenCalled();
+    expect(await operations(ws)).toEqual([]);
+  });
+
+  it('P539 holds queued native work before idle drain and admits one stop after settlement', async () => {
+    const { ws, binding } = await idleRequest();
+    const reserve = createHostedPoolAgentReservations(binding, db.adminSql as any);
+    await reserve('reserve', 'pending-idle-agent');
+    const startLifecycle = vi.fn(async (request: { operationId: string; hostId: string }) => ({
+      status: 'accepted' as const, operationId: request.operationId, hostId: request.hostId,
+    }));
+    expect(await reconcileHostedPoolDemand(ws, { startLifecycle })).toEqual({
+      considered: 1, enqueued: [], held: [{ hostId: binding.hostId, reason: 'hosted_pool_idle_active_work' }],
+    });
+    expect(startLifecycle).not.toHaveBeenCalled();
+    expect(await operations(ws)).toEqual([]);
+    await reserve('finish', 'pending-idle-agent');
+    const result = await reconcileHostedPoolDemand(ws, { startLifecycle });
+    const [admitted] = await operations(ws);
+    expect(result).toEqual({ considered: 1, enqueued: [admitted.id], held: [] });
+    expect(startLifecycle).toHaveBeenCalledTimes(1);
   });
 
   it.each([undefined, 0])('idle-stop holds without an enabled canonical idle quota (%s), ignoring directory defaults', async minutes => {

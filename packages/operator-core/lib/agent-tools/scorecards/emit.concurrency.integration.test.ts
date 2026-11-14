@@ -303,6 +303,57 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
     }
   }, 30_000);
 
+  it('queues distinct subjects before the dedicated pool reservation when all slots are held', async () => {
+    await _closeGradingAuditSubjectMutexForTests();
+    const workspaceId = activeWorkspaceId();
+    const releases: Array<() => Promise<void>> = [];
+    let waiterRelease: (() => Promise<void>) | undefined;
+    let waiter: Promise<'acquired' | 'rejected'> | undefined;
+
+    try {
+      for (let index = 0; index < 8; index += 1) {
+        releases.push(await acquireGradingAuditSubjectMutex({
+          workspaceId,
+          subjectIssueId: `EI-MUTEX-POOL-ADMISSION-${index}`,
+        }, undefined, 10_000));
+      }
+
+      const phases = createPhaseTracker();
+      waiter = acquireGradingAuditSubjectMutex({
+        workspaceId,
+        subjectIssueId: 'EI-MUTEX-POOL-ADMISSION-WAITER',
+      }, phases, 5_000).then(
+        (release) => { waiterRelease = release; return 'acquired' as const; },
+        () => 'rejected' as const,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const pending = phases.snapshot().activePhases;
+      expect(pending).toContain('scorecards:emit:mutex:grading-audit-subject:pool-admission');
+      expect(pending).not.toContain('scorecards:emit:mutex:grading-audit-subject:pool-reservation');
+
+      await releases.shift()!();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const result = await Promise.race([
+        waiter,
+        new Promise<'timeout'>((resolve) => {
+          timer = setTimeout(() => resolve('timeout'), 2_000);
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
+      expect(result).toBe('acquired');
+      expect(phases.intervals().map(({ phase }) => phase)).toEqual(expect.arrayContaining([
+        'scorecards:emit:mutex:grading-audit-subject:pool-admission',
+        'scorecards:emit:mutex:grading-audit-subject:pool-reservation',
+        'scorecards:emit:mutex:grading-audit-subject:advisory-lock',
+      ]));
+    } finally {
+      await Promise.all(releases.map((release) => release()));
+      if (waiter) await Promise.allSettled([waiter]);
+      await waiterRelease?.();
+      await _closeGradingAuditSubjectMutexForTests();
+    }
+  }, 30_000);
+
   it('bounds grading-audit mutex pool acquisition and releases a late reservation', async () => {
     await _closeGradingAuditSubjectMutexForTests();
     const pool = getLongLivedAdminPool('grading-audit-subject', { max: 8 });
@@ -640,7 +691,11 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
       argv: [],
       launchedBy: GRADING_AUDIT_DISPATCH_ACTOR,
       harnessSlug: SOURCE_HIVE,
-      detail: { label: reservation.key, coordOwnerId: 'su-audit-concurrency-a' },
+      detail: {
+        label: reservation.key,
+        coordOwnerId: 'su-audit-concurrency-a',
+        gradingAudit: { issueId: subject.id, reservation },
+      },
     }, { workspaceId: activeWorkspaceId() }, db.adminSql);
 
     const passRatings = Object.fromEntries(

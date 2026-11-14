@@ -83,7 +83,8 @@ import { emitRollout } from './reproducibility/emit';
 import type { runFrontierSweCurrentArm } from './frontier-swe-arm';
 import type { MinecraftTaskLaunch, runMinecraftProvisionedTrial } from './minecraft-launch-adapter';
 import { allocateBenchFixtureReadLease, freezeBenchFixtureReadBoundary, requireBenchFixturePreflight,
-  type BenchFixtureAllocation } from './private-fixture-reads';
+  requireBenchFixtureReadLease, requireBenchFixtureSourcePins, benchFixtureResultSnapshot, benchFixtureProductCall,
+  type BenchFixtureAllocation, type BenchFixtureReadBoundary } from './private-fixture-reads';
 
 export { currentBenchSessionRequestDelta, currentBenchSessionUsageDelta,
   type CurrentBenchTaskRequestCensus } from './current-su';
@@ -167,6 +168,9 @@ export interface LaunchDeps {
   currentRepoRoot?: string;
   /** Host-owned source allocation, pinned by the committed arm. Never launch JSON. */
   currentFixtureReads?: BenchFixtureAllocation;
+  /** Trusted private-host preparation, captured with its owned database/context.
+   * Forwarded through the default task factory; never accepted from launch JSON. */
+  currentFixturePreparation?: (boundary: BenchFixtureReadBoundary) => Promise<void>;
   /** Assignment-local runtime seam; production starts the maintained native gateway/driver. */
   currentTask?: (input: CurrentTaskInput) => Promise<{ driver: BenchHarnessDriver; stop(): Promise<void> }>;
   currentGeneration?: Pick<import('./types').GenerationPorts, 'clone' | 'extractDiff'>;
@@ -192,6 +196,7 @@ export interface CurrentTaskInput {
   /** Operational run row retaining private host recovery pins. */
   hostRunId: string;
   fixtureReads?: BenchFixtureAllocation;
+  prepareFixture?: (boundary: BenchFixtureReadBoundary) => Promise<void>;
   observation: NonNullable<LaunchBenchRunInput['current']>['observation'];
 }
 
@@ -716,6 +721,9 @@ function currentBenchResources(protocol: CurrentBenchmarkProtocol): LearningRese
 export async function startCurrentBenchTaskAssignment(input: CurrentTaskInput, ports: {
   /** Existing gateway service seam for isolated factory verification; not launch JSON. */
   startGateway?: Parameters<ReturnType<typeof currentBenchGatewayController>['startNativeGateway']>[1];
+  /** Trusted private-host lifecycle only. Never exposed in launch JSON or the
+   * native tool ceiling; T06 solver reads cannot initiate an event replay. */
+  prepareFixture?: (boundary: BenchFixtureReadBoundary) => Promise<void>;
 } = {}): Promise<
   Pick<FrontierSweNativeAssignment, 'options' | 'observations' | 'stop' | 'readModelCalls' | 'readRequestCensus' | 'issueSessionBudget'>> {
   const { options, protocol, task, context, scope, resources, loopId } = input;
@@ -744,6 +752,17 @@ export async function startCurrentBenchTaskAssignment(input: CurrentTaskInput, p
     })();
   };
   try {
+    if (fixtureLease?.boundary.taskId === 'LATENCY-M1:T06') {
+      const prepareFixture = ports.prepareFixture ?? input.prepareFixture;
+      if (!prepareFixture) throw new Error('Private attention assignment requires its trusted host replay.');
+      await prepareFixture(fixtureLease.boundary);
+      await requireBenchFixtureReadLease(fixtureLease.boundary, scope);
+      await requireBenchFixtureSourcePins(fixtureLease.boundary, scope);
+      // Returning from a host callback alone does not establish a replay. Both
+      // immutable product observations must exist before any provider allocation.
+      for (const which of ['A', 'B'] as const) await benchFixtureResultSnapshot(fixtureLease.boundary,
+        benchFixtureProductCall(fixtureLease.boundary, { operation: 'attention', case: which }), scope);
+    }
     const capture = await currentBenchTaskProviderCapture(input);
     auth = currentBenchProviderAuthenticator({ workspaceId: options.workspaceId, preregHash: options.preregistration.preregHash,
       protocol, armId: options.armId, taskId: task.instanceId, seed: options.seed });
@@ -1246,7 +1265,8 @@ async function launchCurrentBenchRun(input: LaunchBenchRunInput, deps: LaunchDep
           instantiate: async (blueprintId, task, checkout, budget) => {
             if (abort.signal.aborted) throw new Error('Current benchmark assignment cancelled before host allocation.');
             owned = await (deps.currentTask ?? liveCurrentTask)({ options, protocol, task, context, scope, resources, loopId,
-              checkout, hostRunId: runId, observation: current.observation, fixtureReads: deps.currentFixtureReads });
+              checkout, hostRunId: runId, observation: current.observation, fixtureReads: deps.currentFixtureReads,
+              prepareFixture: deps.currentFixturePreparation });
             active.stopCurrent = owned.stop;
             try { return await owned.driver.spinRunAndCost({ blueprintId, task, checkout, budget }); }
             finally { await owned.stop(); owned = undefined; active.stopCurrent = undefined; }

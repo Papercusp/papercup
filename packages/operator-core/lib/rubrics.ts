@@ -867,7 +867,7 @@ export function parseRubricRevisionTemplateData(snapshot: string): unknown | nul
  * callers that already have a row; database-backed reads use this helper so an
  * acceptance rubric's criteriaHash changes when its class rubric is revised.
  */
-async function mapRubricPlanRows(rows: RubricPlanRow[]): Promise<Rubric[]> {
+async function mapRubricPlanRows(rows: RubricPlanRow[], transaction?: { sql: ReturnType<typeof getOrgPg>['sql']; workspaceId: string }): Promise<Rubric[]> {
   const mapped = rows.map((row) => planRowToRubric(row));
   const classRefs = [
     ...new Set(
@@ -881,11 +881,11 @@ async function mapRubricPlanRows(rows: RubricPlanRow[]): Promise<Rubric[]> {
   }
 
   try {
-    const { sql } = getOrgPg();
+    const sql = transaction?.sql ?? getOrgPg().sql;
     const classRows = await sql<{ plan_slug: string; version: string | number | null }[]>`
       SELECT plan_slug, version
         FROM harness_shared.harness_plans
-       WHERE workspace_id = ${rubricsScopeWorkspace()}
+       WHERE workspace_id = ${transaction?.workspaceId ?? rubricsScopeWorkspace()}
          AND template = ${RUBRIC_TEMPLATE_NAME}
          AND template_slug IS NULL
          AND (template_data->>'kind' IS DISTINCT FROM 'acceptance')
@@ -910,7 +910,8 @@ async function mapRubricPlanRows(rows: RubricPlanRow[]): Promise<Rubric[]> {
         return planRowToRubric(row, revisions.get(rubric.classRef) ?? null);
       })
       .filter((rubric): rubric is Rubric => rubric !== null);
-  } catch {
+  } catch (error) {
+    if (transaction) throw error;
     return mapped.filter((rubric): rubric is Rubric => rubric !== null);
   }
 }
@@ -1140,20 +1141,20 @@ export type RubricLookupResult =
  * failed direct read never falls through to the same broad query it was added to
  * avoid.
  */
-async function readRubricPlanRowById(rubricId: string): Promise<RubricPlanRowRead> {
+async function readRubricPlanRowById(rubricId: string, transaction?: { sql: ReturnType<typeof getOrgPg>['sql']; workspaceId: string }): Promise<RubricPlanRowRead> {
   try {
-    const rows = await traceNamedQueryStage('rubric-plan-row-read', () => boundedPgReadTxn<RubricPlanRow[]>(
-      (tx) => tx<RubricPlanRow[]>`
+    const read = (tx: ReturnType<typeof getOrgPg>['sql']) => tx<RubricPlanRow[]>`
       SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
              version, owner, archived, template_data
         FROM harness_shared.harness_plans
-       WHERE workspace_id = ${rubricsScopeWorkspace()}
+       WHERE workspace_id = ${transaction?.workspaceId ?? rubricsScopeWorkspace()}
          AND template = ${RUBRIC_TEMPLATE_NAME}
          AND template_slug IS NULL
          AND plan_slug = ${rubricId}
        ORDER BY harness_slug
-       LIMIT 2`,
-    ));
+       LIMIT 2`;
+    const rows = await traceNamedQueryStage('rubric-plan-row-read', () => transaction
+      ? read(transaction.sql) : boundedPgReadTxn<RubricPlanRow[]>(tx => read(tx as ReturnType<typeof getOrgPg>['sql'])));
     const row = uniqueRubricRow(rows, rubricId);
     return row ? { kind: 'found', row } : { kind: 'missing' };
   } catch (error) {
@@ -1647,8 +1648,10 @@ export async function getRubricWithoutSeeding(rubricId: string): Promise<Rubric 
  * and a failed read. Use this in grading decisions where `null` would become a
  * misleading "not found" result.
  */
-export async function readRubricWithoutSeeding(rubricId: string): Promise<RubricLookupResult> {
-  return readRubricWithoutSeedingResult(rubricId);
+export async function readRubricWithoutSeeding(rubricId: string,
+  transaction?: { sql?: ReturnType<typeof getOrgPg>['sql']; workspaceId: string }): Promise<RubricLookupResult> {
+  return readRubricWithoutSeedingResult(rubricId, transaction
+    ? { sql: transaction.sql ?? getOrgPg().sql, workspaceId: transaction.workspaceId } : undefined);
 }
 
 /**
@@ -1669,14 +1672,14 @@ export async function readRubric(rubricId: string): Promise<RubricLookupResult> 
   return result;
 }
 
-async function readRubricWithoutSeedingResult(rubricId: string): Promise<RubricLookupResult> {
-  const direct = await readRubricPlanRowById(rubricId);
+async function readRubricWithoutSeedingResult(rubricId: string, transaction?: { sql: ReturnType<typeof getOrgPg>['sql']; workspaceId: string }): Promise<RubricLookupResult> {
+  const direct = await readRubricPlanRowById(rubricId, transaction);
   if (direct.kind === 'ambiguous') return direct;
   if (direct.kind === 'error') return { kind: 'read-failed', diagnostic: direct.diagnostic };
   if (direct.kind === 'missing') return direct;
 
   try {
-    const rubric = (await traceNamedQueryStage('rubric-row-map', () => mapRubricPlanRows([direct.row])))[0];
+    const rubric = (await traceNamedQueryStage('rubric-row-map', () => mapRubricPlanRows([direct.row], transaction)))[0];
     // A present but malformed row cannot safely be presented as a missing rubric.
     return rubric ? { kind: 'found', rubric } : {
       kind: 'read-failed', diagnostic: rubricReadFailure('row-map', undefined, 'invalid-row'),
@@ -4682,7 +4685,8 @@ async function readAcceptanceBarAmendmentReplay(
   };
 }
 
-function amendmentRequestHash(input: AmendRubricInput): string {
+/** Exact typed writer preimage; evidence readers must reuse this without normalization. */
+export function amendmentRequestHash(input: AmendRubricInput): string {
   return hashPlanContent(
     JSON.stringify([
       input.rubricId,
@@ -5219,6 +5223,16 @@ async function amendAcceptanceBarRubric(
       if (!stored || stored.kind !== 'acceptance' || stored.subjectPlan !== subjectPlanHint ||
           (stored.subjectHarnessSlug && stored.subjectHarnessSlug !== subjectScope.harnessSlug)) return null;
       assertRubricWritable(stored, 'rubrics:amend');
+      const readCanonicalRubric = async (): Promise<Rubric> => {
+        const readback = await readRubricWithoutSeeding(input.rubricId, {
+          sql: tx as never,
+          workspaceId: rubricScope.workspaceId,
+        });
+        if (readback.kind !== 'found') {
+          throw new Error(`acceptance_bar_amendment_readback_failed: rubric '${input.rubricId}'`);
+        }
+        return readback.rubric;
+      };
 
       // An explicit replay token identifies the original request, including its
       // approval receipt. Handle retries before CAS and re-applying append text.
@@ -5841,7 +5855,7 @@ async function amendAcceptanceBarRubric(
           injectAmendmentFault(input, 'after-projection');
         }
         if (requirementsRerender.rerendered.length === 0) return {
-          rubric: { ...stored, revision: oldRubricRevision }, decisionId: '', rubricRevision: oldRubricRevision,
+          rubric: await readCanonicalRubric(), decisionId: '', rubricRevision: oldRubricRevision,
           subjectPlanRevision: oldSubjectRevision, barSetHash: stored.barSetHash!,
           changedBars, reboundContracts: 0, invalidated: { evidence: 0, scorecards: 0, vetting: 0 },
           idempotencyKey: '',
@@ -5888,8 +5902,7 @@ async function amendAcceptanceBarRubric(
           identity: { ownerId: actorId, ownerLabel: actorId, source: 'static-client', workspaceId: null, userId: null },
         });
         return {
-          rubric: { ...stored, revision: oldRubricRevision,
-            barContract: { ...stored.barContract!, subjectPlanRevision: nextSubjectRevision } },
+          rubric: await readCanonicalRubric(),
           decisionId: '', rubricRevision: oldRubricRevision, subjectPlanRevision: nextSubjectRevision,
           barSetHash: stored.barSetHash!, changedBars, reboundContracts: 0,
           invalidated: { evidence: 0, scorecards: 0, vetting: 0 }, idempotencyKey: '',

@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { cleanupOwnedTestDatabases } from '@papercusp/test-config/pg';
+import { TEST_RUN_READER_CONTRACT_ENV, TEST_RUN_READER_REFUSAL_PATH_ENV,
+  testRunExecutionDetailsReaderContract } from '@papercusp/test-config/execution-details';
 
 // EI-24100872054224181: a testing:run { evidence } refused by the mutation-probe fence used to
 // register pending spec-evidence rows first and then FINISH them, leaving two never-settling
@@ -206,6 +208,82 @@ const timedOutRouter = () => vi.fn(async (_args: string[], _root: string,
   code: null, signal: null, timedOut: true, aborted: false, output: '',
 }));
 
+it.each([undefined, '{}', JSON.stringify({ schemaVersion: 1, fields: ['schemaVersion'] })])(
+  'refuses detached replay before resources when its originating reader contract is %s', async contract => {
+    const root = await makeTestRoot(true);
+    vi.stubEnv('PAPERCUSP_TEST_RUN_GROUP', 'originating-reader-run');
+    vi.stubEnv(TEST_RUN_READER_CONTRACT_ENV, contract);
+    const runRouterFn = timedOutRouter();
+    const packet = vi.spyOn(runArtifacts.TestRunArtifactPacket.prototype, 'bindNativeIdentity');
+    const result = await runTestFilesCore({ root, files: ['feature.test.ts'],
+      runId: 'originating-reader-run', timeoutMs: 10_000 },
+    { runRouterFn, artifactBaseDir: root, reportDirectories: { [root]: join(root, 'sink') } });
+    expect(result).toMatchObject({ ok: false, error: 'test_run_reader_incompatible' });
+    expect(result).not.toHaveProperty('passed');
+    expect(result).not.toHaveProperty('artifacts');
+    expect(packet).not.toHaveBeenCalled();
+    expect(phases.snapshot).not.toHaveBeenCalled();
+    expect(runRouterFn).not.toHaveBeenCalled();
+    expect(phases.detach).not.toHaveBeenCalled();
+  });
+
+it('preserves a compatible originating reader through detached replay', async () => {
+  const root = await makeTestRoot(true);
+  const contract = testRunExecutionDetailsReaderContract();
+  vi.stubEnv('PAPERCUSP_TEST_RUN_GROUP', 'originating-reader-run');
+  vi.stubEnv(TEST_RUN_READER_CONTRACT_ENV, contract);
+  const sink = join(root, 'sink');
+  await mkdir(sink);
+  const runRouterFn = vi.fn(async (_args: string[], _root: string, env: NodeJS.ProcessEnv) => {
+    expect(env[TEST_RUN_READER_CONTRACT_ENV]).toBe(contract);
+    return { code: 1, signal: null, timedOut: false, aborted: false, output: '' };
+  });
+  const result = await runTestFilesCore({ root, files: ['feature.test.ts'],
+    runId: 'originating-reader-run', timeoutMs: 10_000, allowDetachedRecovery: false },
+  { runRouterFn, artifactBaseDir: root, reportDirectories: { [root]: sink } });
+  expect(result).toMatchObject({ ok: false, error: 'no_report' });
+  expect(runRouterFn).toHaveBeenCalledOnce();
+});
+
+it.each([undefined, JSON.stringify({ schemaVersion: 1, fields: ['schemaVersion'] })])(
+  'passes the originating reader contract through foreground execution: %s', async inherited => {
+    vi.stubEnv(TEST_RUN_READER_CONTRACT_ENV, inherited);
+    const root = await makeTestRoot(true);
+    const expected = inherited ?? testRunExecutionDetailsReaderContract();
+    const runRouterFn = vi.fn(async (_args: string[], _root: string, env: NodeJS.ProcessEnv) => {
+      expect(env[TEST_RUN_READER_CONTRACT_ENV]).toBe(expected);
+      await writeFile(env[TEST_RUN_READER_REFUSAL_PATH_ENV]!, JSON.stringify({ schemaVersion: 1,
+        readerContract: expected, reason: 'reader-missing-fields:population' }));
+      return { code: 1, signal: null, timedOut: false, aborted: false,
+        output: 'Error: TEST_FILE_READER_INCOMPATIBLE reader-missing-fields:population' };
+    });
+    const result = await runTestFilesCore({ root, files: ['feature.test.ts'],
+      allowDetachedRecovery: false, timeoutMs: 10_000 }, { runRouterFn, artifactBaseDir: root });
+    expect(result).toMatchObject({ ok: false, error: 'test_run_reader_incompatible' });
+    expect(result).not.toHaveProperty('passed');
+    expect(phases.detach).not.toHaveBeenCalled();
+    expect(JSON.parse(await readFile(result.artifacts!.manifest, 'utf8'))).toMatchObject({
+      childState: 'closed', cleanup: { complete: true },
+    });
+  });
+
+it.each(['absent', 'wrong-reader', 'malformed'])(
+  'does not infer reader incompatibility from arbitrary test output with %s receipt', async receipt => {
+    const root = await makeTestRoot(true);
+    const runRouterFn = vi.fn(async (_args: string[], _root: string, env: NodeJS.ProcessEnv) => {
+      if (receipt !== 'absent') await writeFile(env[TEST_RUN_READER_REFUSAL_PATH_ENV]!,
+        receipt === 'malformed' ? '{' : JSON.stringify({ schemaVersion: 1,
+          readerContract: 'another-reader', reason: 'reader-missing-fields:population' }));
+      return { code: 1, signal: null, timedOut: false, aborted: false,
+        output: 'Error: TEST_FILE_READER_INCOMPATIBLE reader-missing-fields:population' };
+    });
+    const result = await runTestFilesCore({ root, files: ['feature.test.ts'],
+      allowDetachedRecovery: false, timeoutMs: 10_000 }, { runRouterFn, artifactBaseDir: root });
+    expect(result).not.toMatchObject({ error: 'test_run_reader_incompatible' });
+    expect(result).toMatchObject({ ok: false, error: 'no_report' });
+    expect(phases.detach).not.toHaveBeenCalled();
+  });
+
 it.each(['dropped', 'error'] as const)('retains nested private-PG %s cleanup in the root result and manifest', async outcome => {
   const root = await makeTestRoot(true);
   const drop = vi.fn(async () => {
@@ -356,6 +434,22 @@ it('R5 writes both checkout reports at the paths retained by caller-bound detach
       .toBe(join(artifact.root, 'feature.test.ts'));
   }
   expect(phases.detach).not.toHaveBeenCalled();
+});
+
+it('reads a complete report containing escaped receipt JSON without a false no_report refusal', async () => {
+  const root = await makeTestRoot(true);
+  const diagnostic = JSON.stringify(['fixture://emissions/token=fixture-receipt-token-value', 'emitted-receipt-hash']);
+  const runRouterFn = vi.fn(async (args: string[]) => {
+    const output = args.find(arg => arg.startsWith('--outputFile='))!.slice('--outputFile='.length);
+    await writeFile(output, JSON.stringify({ success: true, numPassedTests: 1, numFailedTests: 0,
+      numPendingTests: 0, testResults: [{ name: join(root, 'feature.test.ts'), status: 'passed',
+        assertionResults: [{ title: 'noop', fullName: 'noop', status: 'passed', meta: { diagnostic } }] }] }));
+    return { code: 0, signal: null, timedOut: false, aborted: false, output: '' };
+  });
+  const result = await runTestFilesCore({ root, files: ['feature.test.ts'],
+    timeoutMs: 45_000, allowDetachedRecovery: false }, { runRouterFn, artifactBaseDir: root });
+  expect(result).toMatchObject({ ok: true, files: 1, passed: 1, failed: 0 });
+  expect(runRouterFn).toHaveBeenCalledOnce();
 });
 
 it('retains replay report bytes after the detached store consumes its temporary sink', async () => {

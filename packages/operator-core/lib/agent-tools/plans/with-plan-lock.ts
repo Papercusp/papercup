@@ -55,7 +55,15 @@ import {
   type PlanCandidateDependencyDiagnostic,
 } from './plan-candidate-dependencies';
 import { writePlanIndexRows } from './plan-index-rows';
-import { missingStoredPlanLineIds, readPlanLineItems, readPlanLineNodes, writePlanLineNodes } from './plan-line-graph';
+import {
+  missingStoredPlanLineIds,
+  readPlanLineItems,
+  readPlanLineNodes,
+  writePlanLineNodes,
+  type ValidatedPlanLineAdoption,
+  type ValidatedPlanLineLifecycleProjection,
+} from './plan-line-graph';
+import type { WorkItemAdoptionProjection } from '../../work-items';
 import { renderPlanLines } from './plan-line-render';
 import {
   noteFromContentWrite,
@@ -207,6 +215,8 @@ export async function settleRoutedPlanIdeaOnTerminalEntry(
 
 /** Current state handed to the mutator alongside the body — for version CAS. */
 export interface PlanWriteMeta {
+  /** Measured and locked before the candidate mutator on EACH serializable attempt. */
+  preparedAdoption?: WorkItemAdoptionProjection;
   version: number;
   contentHash: string;
   /** Saved preimage captured under the lock, before graph-owned lines are rendered. */
@@ -315,6 +325,11 @@ export interface OutputSchemaPatch {
 }
 
 export interface WithPlanLockOpts<T = unknown> {
+  /** Adoption must enter canonical dependency isolation on its first attempt. */
+  dependencyTransaction?: boolean;
+  prepareAdoptionInTransaction?: (
+    tx: Sql, meta: PlanWriteMeta | null, scope: { workspaceId: string; harnessSlug: string },
+  ) => Promise<WorkItemAdoptionProjection>;
   /** Plan slug (the PG key + the advisory lock key). */
   slug: string;
   /** One-line description of the mutation, surfaced to busy callers. */
@@ -411,6 +426,13 @@ export interface WithPlanLockOpts<T = unknown> {
     scope: { workspaceId: string; harnessSlug: string },
     value: T,
   ) => Promise<void | readonly import('../../dbos/work-item-deps-store').WorkItemDependencyMutation[]>;
+  /** Narrow lifecycle exception, validated against canonical linked completion evidence
+   * inside the plan transaction before the graph writer can change an admitted line. */
+  validatePlanLineLifecycleProjectionInTransaction?: (
+    tx: TransactionSql,
+    scope: { workspaceId: string; harnessSlug: string },
+    value: T,
+  ) => Promise<ReadonlyMap<string, ValidatedPlanLineLifecycleProjection> | undefined>;
 }
 
 /**
@@ -533,6 +555,7 @@ export async function withPlanLock<T>(
     nowNote?: PlanNowNote;
     /** Proposed anchor replacements, validated with the candidate body before writes. */
     anchorWrites?: PlanAnchorWrite[];
+    validatedAdoptions?: ReadonlyMap<string, ValidatedPlanLineAdoption>;
   }>,
 ): Promise<WithPlanLockResult<T>> {
   if (typeof opts.slug !== 'string' || !VALID_PLAN_SLUG.test(opts.slug)) {
@@ -655,6 +678,10 @@ export async function withPlanLock<T>(
           version: curVersion,
         }
       : null;
+    if (opts.prepareAdoptionInTransaction) {
+      const prepared = await opts.prepareAdoptionInTransaction(tx, meta, { workspaceId, harnessSlug });
+      if (meta) meta.preparedAdoption = prepared;
+    }
     const mutation = await mutator(
       cur?.content ?? null,
       meta,
@@ -1070,12 +1097,18 @@ export async function withPlanLock<T>(
       const coupledDependencies = await opts.beforeGraphWriteInTransaction?.(
         tx as unknown as TransactionSql, { workspaceId, harnessSlug }, value,
       );
+      const validatedLifecycleProjections =
+        await opts.validatePlanLineLifecycleProjectionInTransaction?.(
+          tx as unknown as TransactionSql, { workspaceId, harnessSlug }, value,
+        );
       const dependencyMutations = await writePlanLineNodes(
         tx, { workspaceId, harnessSlug, slug }, lineNodes, idx.items,
         // Drafts can describe proposed or historical progress. Once execution
         // is admitted, lifecycle state belongs to the work-item writer. Derive
         // this exception from the locked preimage, never from caller options.
-        { allowDraftStatusProjection: cur?.status === 'draft' && idx.status === 'draft' && !cur.op_status },
+        { allowDraftStatusProjection: cur?.status === 'draft' && idx.status === 'draft' && !cur.op_status,
+          validatedAdoptions: mutation.validatedAdoptions,
+          validatedLifecycleProjections },
       );
       if (coupledDependencies) dependencyMutations.push(...coupledDependencies);
       if (dependencyMutations.length > 0) {
@@ -1302,7 +1335,12 @@ export async function withPlanLock<T>(
       priorBody: string | null;
     };
   };
-  return withWorkspace(workspaceId, (tx) => write(tx)).catch(async (err: unknown) => {
+  const serializableWrite = () => withWorkItemDependencyAdmissionTransaction(getOrgPgApp().sql as Sql, async tx => {
+    await tx`SELECT set_config('app.workspace_id', ${workspaceId}, true),
+                    set_config('search_path', 'harness_shared, papercusp_shared, public', true)`;
+    return write(tx, true);
+  });
+  return (opts.dependencyTransaction ? serializableWrite() : withWorkspace(workspaceId, (tx) => write(tx))).catch(async (err: unknown) => {
     if (!(err instanceof PromotedDependencyTransactionRequired)) throw err;
     return withWorkItemDependencyAdmissionTransaction(getOrgPgApp().sql as Sql, async (tx) => {
       // Same app connection/RLS scope as withWorkspace, including PgBouncer's

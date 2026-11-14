@@ -52,7 +52,7 @@ export default defineTool({
   guidance: {
     when: 'The thing you were waiting on no longer matters (cancel the await), or a parked wake reached you in-turn via the inbox and you handled it (ack the delivery so the system does not also resume you). For a standing watch, inspect events:status and pass confirm_standing:true deliberately. A loopless owner may opt out of coord:inbox-wake; an active loop must end before its wake watch can be cancelled.',
     notWhen: 'A fired await needs no cancel (one-shot — it already cleared). Do not use await_id as a mistaken substitute for the narrow delivery_id ACK path. You cannot cancel or ack a peer’s; evidence-only judges can only ACK their own wake deliveries.',
-    returns: '`active_loop_inbox_wake_requires_loop_end` means the owner still has an active engine loop, so the standing coord:inbox-wake remains armed. Call loop:end before retrying; an owner without an active loop may explicitly opt out.',
+    returns: '`active_loop_inbox_wake_requires_loop_end` means the owner still has an active engine loop, so the standing coord:inbox-wake remains armed. Call loop:end before retrying; an owner without an active loop may explicitly opt out. `delivery_ack_pending` means the delivery is owned and still pending/parked, but its acknowledgement was not confirmed; it may still arrive. A pending host cancellation is reported separately as cancellation_requested, not as a successful ACK.',
     chaining: 'events:status to find the await_id / delivery_id / declaration id → events:cancel.',
     argRedirects: {
       reason: {
@@ -231,19 +231,23 @@ export default defineTool({
                 'This delivery was already handed to the wake host and cannot be recalled. A queued/in-flight wake may still arrive; reconcile it once as stale rather than repeating the handled action.';
             }
           }
-          const cancellationPending =
-            !ack.acked && !ack.alreadySettled &&
-            (ack.status === 'delivering' || (ack.status === 'delivered' && ack.cancellationRequested));
+          const queuedAckPending =
+            !ack.acked && !ack.alreadySettled && (ack.status === 'pending' || ack.status === 'parked');
+          const cancellationPending = queuedAckPending ||
+            (!ack.acked && !ack.alreadySettled &&
+              (ack.status === 'delivering' || (ack.status === 'delivered' && ack.cancellationRequested)));
           if (cancellationPending) {
             if (ack.cancellationRequested) out.cancellation_requested = true;
             const warning = ack.cancellationRequested
               ? 'The host accepted cancellation, but has not confirmed its pre-write barrier; this delivery remains in flight and may still reach the recipient.'
-              : 'This delivery is already in flight and cannot be recalled; it may still reach the recipient.';
+              : queuedAckPending
+                ? 'This delivery is still active, but its acknowledgement was not confirmed; it may still reach the recipient.'
+                : 'This delivery is already in flight and cannot be recalled; it may still reach the recipient.';
             out.warning = out.warning ? `${out.warning} ${warning}` : warning;
           }
           if (!ack.acked && !ack.alreadySettled && item.await_id == null && item.root_id == null) {
             out.ok = false;
-            if (cancellationPending) out.error = 'delivery_in_flight';
+            if (cancellationPending) out.error = queuedAckPending ? 'delivery_ack_pending' : 'delivery_in_flight';
           }
         }
         if (item.announcement_id != null) {

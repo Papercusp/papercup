@@ -17,6 +17,7 @@ import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { RpcFrame, SuStdioPeer, SuStdioReceipt } from './su-session-stdio-peer';
+import { ledgerDir, openDeliveryLedger, recordOmpMcpEmission } from '../../../apps/operator/scripts/hooks/inject/delivery-ledger.mjs';
 
 const NEVER_EMIT_MARKER = 'never-emit-me';
 
@@ -79,7 +80,7 @@ afterEach(async () => {
   processState.children.clear(); processState.stderr = ''; processState.killFailure = ''; processState.killError = ''; processState.killCalls.length = 0;
 });
 
-async function peer(binary: string, args: string[], env: NodeJS.ProcessEnv = {}, onMessage = (_frame: RpcFrame) => {}, config?: string,
+async function peer(binary: string, args: string[], env: NodeJS.ProcessEnv = {}, onMessage: (frame: RpcFrame, payload?: string) => void = () => {}, config?: string,
   onReceipt?: (receipt: SuStdioReceipt) => void, existingHome?: string) {
   const home = existingHome ?? mkdtempSync(join(tmpdir(), 'pui-native-protocol-'));
   if (!existingHome) homes.push(home);
@@ -344,6 +345,86 @@ function controllerLoaderProbe(home: string, name: string, selected: CarryArtifa
 }
 
 describe('native JSON-line pipe transport', () => {
+  it.each(['complete', 'partial', 'absent', 'removed-content', 'metadata-only', 'foreign-owner', 'error', 'other-tool', 'early-event'] as const)(
+    'joins only final model-visible OMP memory to the actual %s stdout line', async mode => {
+      const home = mkdtempSync(join(tmpdir(), 'omp-emission-receipt-')); homes.push(home);
+      const env = { PAPERCUSP_HOME: home }, owner = 'su-omp-emission-fixture';
+      const text = 'Ask for approval before publishing ☃';
+      const fragment = { kind: 'memory', id: randomUUID(), epoch: 7, port: 'orient', rendered: text,
+        bodySha256: createHash('sha256').update(text).digest('hex'), bodyBytes: Buffer.byteLength(text) };
+      const unrendered = { ...fragment, id: randomUUID(), rendered: 'Not present in final output',
+        bodySha256: createHash('sha256').update('Not present in final output').digest('hex'),
+        bodyBytes: Buffer.byteLength('Not present in final output') };
+      const content = [{ type: 'text', text: JSON.stringify({ context: text }) }];
+      const token = randomUUID();
+      const frame = { type: mode === 'early-event' ? 'tool_execution_start' : 'tool_execution_end',
+        toolCallId: 'native-call', toolName: mode === 'other-tool' ? 'bash' : 'mcp__papercusp_su_coord_orient',
+        isError: mode === 'error', result: {
+          content: mode === 'metadata-only' ? [] : mode === 'removed-content' ? [{ type: 'text', text: 'Removed by a later hook' }] : content,
+          details: { content, _meta: { 'papercusp/memoryEmission': {
+            owner: mode === 'foreign-owner' ? 'su-other' : owner, token, fragments: [fragment, unrendered],
+          } } },
+        } };
+      const payload = `  ${JSON.stringify(frame)}\r\n`;
+      const output = mode === 'absent' ? '' : mode === 'partial' ? payload.slice(0, -2) : payload;
+      const recorded: boolean[] = [];
+      const p = await peer(process.execPath, ['-e', `
+        const bytes = Buffer.from(${JSON.stringify(output)});
+        const split = Math.max(1, bytes.indexOf(Buffer.from('☃')) + 1);
+        process.stdout.write(bytes.subarray(0, split));
+        setImmediate(() => process.stdout.write(bytes.subarray(split)));
+      `], {}, (_frame, raw) => { recorded.push(recordOmpMcpEmission(raw, owner, 'native-omp', env)); });
+      await p.done;
+      const proofs = openDeliveryLedger(owner, env, 'mcp')!.confirmedMemoryDeliveries();
+      if (mode !== 'complete') {
+        expect(recorded.every(value => !value)).toBe(true);
+        expect(proofs).toEqual([]);
+        return;
+      }
+      const { rendered: _text, ...manifest } = fragment;
+      expect(recorded).toEqual([true]);
+      expect(proofs).toEqual([{ token, fragments: [manifest] }]);
+      const receipt = JSON.parse(readFileSync(join(ledgerDir(env), `${owner}.mcp.emissions`,
+        `${createHash('sha256').update(token).digest('hex')}.json`), 'utf8'));
+      expect(receipt).toMatchObject({ stage: 'stdout-emitted', client: 'omp', nativeSessionId: 'native-omp',
+        payloadSha256: createHash('sha256').update(payload).digest('hex'), payloadBytes: Buffer.byteLength(payload) });
+      expect(JSON.stringify(receipt)).not.toContain(text);
+    });
+
+  it('retains exact complete stdout bytes across Unicode splits, whitespace and coalesced frames', async () => {
+    const first = '  { "type": "tool_execution_end", "result": { "content": [{"type":"text","text":"Approval first ☃"}] } }\r\n';
+    const second = '{"type":"agent_end"}\n';
+    const messages: Array<{ frame: RpcFrame; payload?: string }> = [], receipts: SuStdioReceipt[] = [];
+    await peer(process.execPath, ['-e', `
+      const bytes = Buffer.from(${JSON.stringify(first + second)});
+      const split = bytes.indexOf(Buffer.from('☃')) + 1;
+      process.stdout.write(bytes.subarray(0, split));
+      setImmediate(() => process.stdout.write(bytes.subarray(split)));
+      process.stdin.resume();
+    `], {}, (frame, payload) => { messages.push({ frame, payload }); frame.type = 'consumer-mutated'; },
+    undefined, receipt => receipts.push(receipt));
+    await vi.waitFor(() => expect(messages).toHaveLength(2));
+    expect(messages.map(message => message.payload)).toEqual([first, second]);
+    expect(receipts.map(receipt => receipt.frame.type)).toEqual(['tool_execution_end', 'agent_end']);
+    expect(receipts.map(receipt => receipt.wire)).toEqual([first, second].map(payload => ({
+      sha256: createHash('sha256').update(payload).digest('hex'), byteLength: Buffer.byteLength(payload),
+    })));
+    expect(receipts[0].wire?.sha256).not.toBe(createHash('sha256').update(JSON.stringify(receipts[0].frame) + '\n').digest('hex'));
+  });
+
+  it.each(['absent', 'partial', 'invalid-utf8'] as const)('does not certify %s native stdout as a complete frame', async mode => {
+    const messages: RpcFrame[] = [], receipts: SuStdioReceipt[] = [];
+    const output = mode === 'absent' ? Buffer.alloc(0) : mode === 'partial'
+      ? Buffer.from('{"type":"tool_execution_end","result":{"content":"unfinished ☃"}}')
+      : Buffer.concat([Buffer.from('{"type":"tool_execution_end","text":"'), Buffer.from([255]), Buffer.from('"}\n')]);
+    const p = await peer(process.execPath, ['-e', `process.stdout.write(Buffer.from(${JSON.stringify([...output])}));`],
+      {}, frame => messages.push(frame), undefined, receipt => receipts.push(receipt));
+    if (mode === 'invalid-utf8') await expect(p.done).rejects.toThrow('invalid UTF-8');
+    else await p.done;
+    expect(messages).toEqual([]);
+    expect(receipts).toEqual([]);
+  });
+
   it('reports a recognized MCP startup cause without echoing private native error text', async () => {
     const failure = [{ method: 'mcpServer/startupStatus/updated', params: { threadId: 'thread', name: 'fixture',
       status: 'failed', error: 'HTTP 401 Unauthorized: Bearer PRIVATE_MARKER at https://private.example/secret' } }];

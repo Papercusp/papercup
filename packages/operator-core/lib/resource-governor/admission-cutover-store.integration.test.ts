@@ -134,6 +134,36 @@ function runtime(
 }
 
 describe('PgAdmissionCutoverQueueStore', () => {
+  it.each([
+    ['legacy', true], ['cutover', true], ['legacy', false], ['cutover', false],
+  ] as const)('retains startup protection evidence on %s when reservation matched=%s', async (kind, matched) => {
+    const resolve = (async (subjects: readonly { ownerId: string }[]) => new Map(subjects.map(({ ownerId }) => [
+      ownerId, { sessionState: ownerId === 'launcher' ? 'parked' : 'ended' },
+    ]))) as never;
+    await db.sql`INSERT INTO harness_shared.adv_sessions
+      (id, workspace_id, coord_owner_id, ended_at, resume_claim_key, resume_claimed_at)
+      VALUES (11, ${WORKSPACE}, 'ended-source', to_timestamp(1), ${matched ? 'private-startup-key' : 'changed-key'}, to_timestamp(50))`;
+    const d = runtime(kind, 'diagnostic', { now: () => 50_000, namespace: 'agent-process', resolveSessionStatesFn: resolve });
+    const admitted = await d.governor.admit({ idempotencyKey: 'diagnostic', admissionClass: 'agent', metadata: {
+      targetOwnerId: 'ended-source', launchedBy: 'launcher', resumeAdvSessionId: 11,
+      resumeClaimKey: 'private-startup-key', resumeStartupExpiresAtMs: 55_000,
+    } });
+    if (admitted.kind !== 'queued') throw new Error('expected queued diagnostic receipt');
+    expect(await d.driver.leaseReceipt({ receiptId: admitted.receipt.receiptId, owner: 'ended-source', ttlMs: 10_000 })).not.toBeNull();
+    await d.store.reconcileExpired?.('agent-process', 50_000);
+    const [stored] = kind === 'legacy'
+      ? await db.sql`SELECT payload->'resource_governor' AS record FROM harness_shared.work_items
+          WHERE workspace_id = ${WORKSPACE} AND feature_id = ${admitted.receipt.receiptId}`
+      : await db.sql`SELECT record FROM harness_shared.resource_governor_admissions
+          WHERE workspace_id = ${WORKSPACE} AND receipt_id = ${admitted.receipt.receiptId}`;
+    expect(stored.record).toMatchObject({ state: 'queued', decision: { reason: 'owner-ended', evidence: {
+      resumeStartupReservationMatched: matched, resumeStartupLauncherState: matched ? 'parked' : null,
+      resumeStartupObservedAtMs: 50_000, resumeStartupExpiresAtMs: 55_000,
+    } } });
+    expect(JSON.stringify(stored.record.decision.evidence)).not.toContain('private-startup-key');
+    expect(JSON.stringify(stored.record.decision.evidence)).not.toContain('changed-key');
+  });
+
   it.each(['legacy', 'cutover'] as const)('starts an ended-source lease on %s with a live launcher, then restores child death and expiry protection', async (kind) => {
     const clock = { now: 50_000 };
     let childLive = false;

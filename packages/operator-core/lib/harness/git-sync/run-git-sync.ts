@@ -2491,6 +2491,12 @@ async function untrackedModulesAbsentFromIndex(
   return { ok: true, paths: modules.filter((path) => !headModuleCandidates(path).some((c) => indexed.has(c))) };
 }
 
+/** A repo-relative file's HEAD text, or null when HEAD has no such blob. */
+async function readHeadFileText(runGit: RunGit, repoPath: string, relPath: string): Promise<string | null> {
+  const result = await runGit(['show', `HEAD:${relPath}`], repoPath);
+  return result.code === 0 ? result.stdout : null;
+}
+
 async function isModuleResolvableAtHead(
   runGit: RunGit,
   repoPath: string,
@@ -5176,12 +5182,15 @@ export async function guardStagedIndexBeforeCommit(opts: {
         // A tracked provider excluded from this commit (another group's change, a late lock,
         // drift) therefore must not hold such an importer: forcing every excluded path to
         // "absent" held the agent-tools/index.ts registration hub whenever ANY tool module it
-        // loads was dirty elsewhere. Named imports never reach this seam and stay held.
-        // Untracked providers and gitlink/package-closure exclusions stay unresolvable.
+        // loads was dirty elsewhere. Untracked providers and gitlink/package-closure
+        // exclusions stay unresolvable. EI-28731613452428882: a named edge also reaches this
+        // seam, but only once `readHeadText` proves the importer already bound every one of
+        // those names at HEAD; a new name or a namespace edge stays held.
         sideEffectTargetAtHead: async (path) => {
           if (absentFromIndex.has(path) || unresolvableExclusions.has(path)) return false;
           return isModuleResolvableAtHead(runGit, repoPath, path, log);
         },
+        readHeadText: (path) => readHeadFileText(runGit, repoPath, path),
         exclusionLabel: 'post-stage exclusion, or untracked and absent from this commit',
         exclusionReasonFor: (path) => postStageReasons.get(path),
         log,
@@ -8601,6 +8610,7 @@ async function commitOneRepoWithScratch(
         dirtyFiles: dirtyForScan,
         alreadyQuarantined: preDeletionQuarantined,
         isResolvableAtHead: (rel) => isModuleResolvableAtHead(runGit, repoPath, rel, o.log),
+        readHeadText: (rel) => readHeadFileText(runGit, repoPath, rel),
         exclusionReasonFor: (rel) => exclusionReasons.get(rel),
         log: o.log,
       });
@@ -8720,6 +8730,7 @@ async function commitOneRepoWithScratch(
         dirtyFiles: dirty,
         alreadyQuarantined: atomicExclusions.paths,
         sideEffectTargetAtHead: (rel) => isModuleResolvableAtHead(runGit, repoPath, rel, o.log),
+        readHeadText: (rel) => readHeadFileText(runGit, repoPath, rel),
         exclusionLabel: 'live-lock exclusion',
         exclusionReasonFor: (rel) => exclusionReasons.get(rel),
         log: o.log,

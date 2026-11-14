@@ -20,6 +20,9 @@ it('preserves fixed rubric coverage and historical ratings through private curre
       'packages/operator-core/test/private-http-workspace-preflight.ts',
       'packages/operator-core/test/isolated-integration-proof.ts',
       'packages/operator-core/lib/scorecards.ts', 'packages/operator-core/lib/check-results-ledger.ts',
+      'packages/operator-core/lib/acceptance-bar-seed.ts',
+      'packages/operator-core/lib/agent-tools/plans/bind-spec-evidence.ts',
+      'packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts',
       'packages/operator-core/lib/agent-tools/scorecards/list.ts', 'packages/operator-core/lib/agent-tools/scorecards/get.ts',
       'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh', 'apps/operator/bin/hono-host.ts'],
     prepare: async evidenceDir => {
@@ -51,7 +54,9 @@ it('preserves fixed rubric coverage and historical ratings through private curre
       expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/), hostStopped: true,
         bundleSha256: expect.stringMatching(/^[a-f0-9]{64}$/), health: { service: 'papercusp-operator' },
         summaries: [{ subject: 'fleet:luna-max-coverage-fixture', historicalJsonUnchanged: true },
-          { subject: 'audit:manual-coverage-fixture', historicalJsonUnchanged: true }] });
+          { subject: 'audit:manual-coverage-fixture', historicalJsonUnchanged: true,
+            coverage: { evidence: { current: ['manual-review'], absent: ['executable-review'] },
+              unresolvedKeys: ['executable-review'], fulfillment: 'unknown' } }] });
       console.info('RUBRIC_COVERAGE_HTTP_VERIFIED ' + JSON.stringify(receipt));
     },
   });

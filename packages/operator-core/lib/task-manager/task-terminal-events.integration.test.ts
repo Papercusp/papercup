@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import postgres from 'postgres';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import type { ScanResult } from './scan';
 import { formatJobLogEndMarker } from '../agent-tools/capability/bash-jobs';
 import bashOutputTool from '../agent-tools/capability/bash_output';
 
@@ -29,6 +30,7 @@ vi.mock('../workspace-registry', async (importOriginal) => ({
 }));
 
 const taskStore = await import('./store');
+const { reconcileTick } = await import('./reconcile-tick');
 const eventStore = await import('../events/await/store');
 const eventEngine = await import('../events/await/engine');
 const { taskTerminalEventKey, emitTaskTerminalEvent } = await import('./task-terminal-events');
@@ -37,11 +39,11 @@ const bashOutput = bashOutputTool as unknown as {
   handler: (args: unknown, ctx: unknown) => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
 };
 
-async function waitForEmission(eventKey: string, taskId = 'task-terminal-integration'): Promise<{
+async function waitForEmission(eventKey: string, taskId = 'task-terminal-integration', timeoutMs = 3_000): Promise<{
   fire: Record<string, any>;
   delivery: Record<string, any>;
 }> {
-  const deadline = Date.now() + 3_000;
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const [fire] = await h.sql`
       SELECT fire_count, last_payload, last_fired_by
@@ -120,11 +122,18 @@ describe('task terminal awaited-event bridge (real PG)', () => {
       .toEqual([{ fire_count: 1 }]);
   });
 
-  it('recovers a successful JOB END through BashOutput and wakes an already-armed exact waiter', async () => {
-    const taskId = 'tskterminal1234';
-    const bashJobId = 'bash-terminal-recovery';
+  it.each([
+    { name: 'successful', markerStatus: 'completed' as const, markerExitCode: 0,
+      serviceResult: 'success', execMainCode: 0, execMainStatus: 0, expectedError: false },
+    { name: 'failed', markerStatus: 'failed' as const, markerExitCode: 4,
+      serviceResult: 'exit-code', execMainCode: 1, execMainStatus: 4, expectedError: true },
+  ])('recovers a $name JOB END through BashOutput and wakes an already-armed exact waiter', async ({
+    name, markerStatus, markerExitCode, serviceResult, execMainCode, execMainStatus, expectedError,
+  }) => {
+    const taskId = `tskterminal${name}1234`;
+    const bashJobId = `bash-terminal-recovery-${name}`;
     const scopeUnit = `pc-${taskId}.service`;
-    const invocationId = 'terminal-recovery-invocation';
+    const invocationId = `terminal-recovery-${name}-invocation`;
     const nonce = 'a'.repeat(64);
     const eventKey = taskTerminalEventKey(taskId);
     const stateDir = mkdtempSync(join(tmpdir(), 'bash-output-terminal-event-'));
@@ -134,10 +143,10 @@ describe('task terminal awaited-event bridge (real PG)', () => {
     const fakeSystemctl = join(fakeBin, 'systemctl');
     writeFileSync(
       fakeSystemctl,
-      '#!/bin/sh\nfor unit; do :; done\nprintf "Id=%s\\nLoadState=loaded\\nActiveState=active\\nResult=success\\nExecMainCode=0\\nExecMainStatus=0\\nInvocationID=terminal-recovery-invocation\\n" "$unit"\n',
+      `#!/bin/sh\nfor unit; do :; done\nprintf "Id=%s\\nLoadState=loaded\\nActiveState=active\\nResult=${serviceResult}\\nExecMainCode=${execMainCode}\\nExecMainStatus=${execMainStatus}\\nInvocationID=${invocationId}\\n" "$unit"\n`,
     );
     chmodSync(fakeSystemctl, 0o755);
-    writeFileSync(logPath, `successful output${formatJobLogEndMarker('completed', 0, Date.now(), {
+    writeFileSync(logPath, `${name} output${formatJobLogEndMarker(markerStatus, markerExitCode, Date.now(), {
       taskId, bashJobId, scopeUnit, invocationId, nonce,
     })}`);
     const previousPath = process.env.PATH;
@@ -151,7 +160,7 @@ describe('task terminal awaited-event bridge (real PG)', () => {
          WHERE task_id = ${taskId}
       `;
       await eventStore.registerAwait({
-        subscriberId: 'su-bash-output-terminal-waiter', eventKey, policy: 'wake',
+        subscriberId: `su-bash-output-terminal-waiter-${name}`, eventKey, policy: 'wake',
       });
 
       const result = await bashOutput.handler({ task_id: taskId }, {
@@ -163,11 +172,11 @@ describe('task terminal awaited-event bridge (real PG)', () => {
       });
       const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
 
-      expect(result.isError).toBeUndefined();
+      expect(result.isError).toBe(expectedError ? true : undefined);
       expect(payload).toMatchObject({
         task_id: taskId,
-        status: 'completed',
-        exit_code: 0,
+        status: markerStatus,
+        exit_code: markerExitCode,
         running: false,
         recovered_from_log_marker: true,
         recovered_from_live_runner_marker: true,
@@ -176,14 +185,150 @@ describe('task terminal awaited-event bridge (real PG)', () => {
       });
       const { fire, delivery } = await waitForEmission(eventKey, taskId);
       expect(fire.last_payload).toMatchObject({
-        taskId, state: 'exited', exitCode: 0, terminalEventRevision: 1,
+        taskId, state: 'exited', exitCode: markerExitCode, terminalEventRevision: 1,
       });
       expect(delivery.payload).toEqual(fire.last_payload);
       expect(await h.sql`SELECT state, exit_code FROM harness_shared.task_ledger WHERE task_id = ${taskId}`)
-        .toEqual([{ state: 'exited', exit_code: 0 }]);
+        .toEqual([{ state: 'exited', exit_code: markerExitCode }]);
     } finally {
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reconciles a failed JOB END after watcher loss and fires the already-armed exact waiter', async () => {
+    const taskId = 'terminal-reconcile-failed-job-end';
+    const bashJobId = 'bash-terminal-reconcile-failed';
+    const scopeUnit = `pc-${taskId}.service`;
+    const invocationId = 'terminal-reconcile-failed-invocation';
+    const nonce = 'b'.repeat(64);
+    const eventKey = taskTerminalEventKey(taskId);
+    const stateDir = mkdtempSync(join(tmpdir(), 'task-reconcile-terminal-event-'));
+    const logPath = join(stateDir, 'terminal.log');
+    writeFileSync(logPath, `failed verifier output${formatJobLogEndMarker('failed', 4, Date.now(), {
+      taskId, bashJobId, scopeUnit, invocationId, nonce,
+    })}`);
+
+    const scan: ScanResult = {
+      processes: [],
+      ownedRootAbs: '/sys/fs/cgroup/user.slice/user@1000.service/papercusp.slice',
+      ownedRootExists: true,
+      userManagerRoot: '/user.slice/user@1000.service',
+      ownedTruncated: false,
+      foreignTruncated: false,
+      unlistedIdentityByPid: new Map(),
+    };
+
+    try {
+      await insertTask(taskId);
+      await h.sql`
+        UPDATE harness_shared.task_ledger
+           SET scope_unit = ${scopeUnit}, log_path = ${logPath},
+               started_at = now() - interval '10 minutes',
+               last_seen_at = now() - interval '10 minutes',
+               detail = ${JSON.stringify({ bashJobId, runnerMarkerNonceHash: nonce })}::jsonb
+         WHERE task_id = ${taskId}
+      `;
+      await eventStore.registerAwait({
+        subscriberId: 'su-task-reconcile-terminal-waiter', eventKey, policy: 'wake',
+      });
+
+      const result = await reconcileTick({
+        workspaceId: h.ws,
+        scan: async () => scan,
+        checkScopesReleased: async units => new Set(units),
+        readJobLogTerminal: logPathToRead => logPathToRead === logPath
+          ? { status: 'failed', exitCode: 4 }
+          : null,
+        resetFailedTaskUnit: async () => true,
+      });
+
+      expect(result.recoveredFromJobLogCount).toBe(1);
+      expect(await h.sql`SELECT state, exit_code FROM harness_shared.task_ledger WHERE task_id = ${taskId}`)
+        .toEqual([{ state: 'exited', exit_code: 4 }]);
+      const { fire, delivery } = await waitForEmission(eventKey, taskId);
+      expect(fire.last_payload).toMatchObject({
+        taskId, state: 'exited', exitCode: 4, terminalEventRevision: 1,
+      });
+      expect(delivery.payload).toEqual(fire.last_payload);
+      expect(await h.sql`SELECT fired_reason FROM harness_shared.event_awaits
+        WHERE subscriber_id = 'su-task-reconcile-terminal-waiter' AND event_key = ${eventKey}`)
+        .toEqual([{ fired_reason: 'event' }]);
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not hold a failed JOB END wake behind a slow unrelated unobserved close', async () => {
+    const slowTaskId = 'terminal-slow-unobserved-sidecar';
+    const slowScope = `pc-${slowTaskId}.scope`;
+    const taskId = 'terminal-fast-failed-job-end';
+    const bashJobId = 'bash-terminal-fast-failed';
+    const scopeUnit = `pc-${taskId}.scope`;
+    const invocationId = 'terminal-fast-failed-invocation';
+    const nonce = 'c'.repeat(64);
+    const eventKey = taskTerminalEventKey(taskId);
+    const stateDir = mkdtempSync(join(tmpdir(), 'task-reconcile-terminal-unblocked-'));
+    const logPath = join(stateDir, 'terminal.log');
+    writeFileSync(logPath, `failed verifier output${formatJobLogEndMarker('failed', 6, Date.now(), {
+      taskId, bashJobId, scopeUnit, invocationId, nonce,
+    })}`);
+    const scan: ScanResult = {
+      processes: [],
+      ownedRootAbs: '/sys/fs/cgroup/user.slice/user@1000.service/papercusp.slice',
+      ownedRootExists: true,
+      userManagerRoot: '/user.slice/user@1000.service',
+      ownedTruncated: false,
+      foreignTruncated: false,
+      unlistedIdentityByPid: new Map(),
+    };
+    let reconciliation: ReturnType<typeof reconcileTick> | undefined;
+
+    try {
+      await insertTask(slowTaskId);
+      await insertTask(taskId);
+      await h.sql`
+        UPDATE harness_shared.task_ledger
+           SET class = 'sidecar', scope_unit = ${slowScope},
+               started_at = now() - interval '10 minutes',
+               last_seen_at = now() - interval '10 minutes'
+         WHERE task_id = ${slowTaskId}
+      `;
+      await h.sql`
+        UPDATE harness_shared.task_ledger
+           SET scope_unit = ${scopeUnit}, log_path = ${logPath},
+               started_at = now() - interval '10 minutes',
+               last_seen_at = now() - interval '10 minutes',
+               detail = ${JSON.stringify({ bashJobId, runnerMarkerNonceHash: nonce })}::jsonb
+         WHERE task_id = ${taskId}
+      `;
+      await eventStore.registerAwait({
+        subscriberId: 'su-terminal-fast-waiter', eventKey, policy: 'wake',
+      });
+      await h.sql.unsafe(`CREATE FUNCTION harness_shared.delay_terminal_test_close() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.task_id = '${slowTaskId}' THEN PERFORM pg_sleep(2); END IF; RETURN NEW; END $$`);
+      await h.sql.unsafe(`CREATE TRIGGER delay_terminal_test_close BEFORE UPDATE ON harness_shared.task_ledger
+        FOR EACH ROW EXECUTE FUNCTION harness_shared.delay_terminal_test_close()`);
+
+      reconciliation = reconcileTick({
+        workspaceId: h.ws,
+        scan: async () => scan,
+        checkScopesReleased: async units => new Set(units),
+        readJobLogTerminal: path => path === logPath ? { status: 'failed', exitCode: 6 } : null,
+        resetFailedTaskUnit: async () => true,
+      });
+      const { fire } = await waitForEmission(eventKey, taskId, 1_000);
+      expect(fire.last_payload).toMatchObject({ taskId, state: 'exited', exitCode: 6 });
+      expect(await h.sql`SELECT state FROM harness_shared.task_ledger WHERE task_id = ${slowTaskId}`)
+        .toEqual([{ state: 'running' }]);
+      await reconciliation;
+      expect(await h.sql`SELECT state, exit_code FROM harness_shared.task_ledger WHERE task_id = ${taskId}`)
+        .toEqual([{ state: 'exited', exit_code: 6 }]);
+    } finally {
+      if (reconciliation) await reconciliation;
+      await h.sql.unsafe('DROP TRIGGER IF EXISTS delay_terminal_test_close ON harness_shared.task_ledger');
+      await h.sql.unsafe('DROP FUNCTION IF EXISTS harness_shared.delay_terminal_test_close()');
       rmSync(stateDir, { recursive: true, force: true });
     }
   });

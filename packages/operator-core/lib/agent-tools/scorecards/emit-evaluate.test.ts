@@ -589,7 +589,9 @@ describe('emitScorecard', () => {
       getEvaluatorBuild: () => build,
       dispatchTool: vi.fn(async (_name, replayArgs) => {
         expect(replayArgs).toMatchObject({ detail: 'summary', payloadTier: 'full' });
+        expect(replayArgs).not.toHaveProperty('replaySnapshot');
         const payload = { ok: true, specSetHash: 'b'.repeat(64), specSetHashVersion: 2, evaluatorBuild: build,
+          replaySnapshot: { planContentHash: 'c'.repeat(64), clausesAsOf: '2026-11-01T00:00:00Z' },
           ...(representation === 'unwrapped' ? { scorecardDraft: { subject, ratings: RATINGS } }
             : { scorecardBinding: { subject, evidenceFingerprint: scorecardEvidenceFingerprint({ rubricRef: 'spec-quality', ratings: RATINGS }) } }) };
         if (representation === 'unwrapped') return payload;

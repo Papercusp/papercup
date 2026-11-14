@@ -51,6 +51,17 @@ vi.mock('../../coord/condition-bridge', () => ({
 vi.mock('../../events/await/compose-store', () => ({
   listActiveComposedRoots: vi.fn(async () => []),
   loadTreeLeaves: vi.fn(async () => []),
+  loadNode: vi.fn(async () => null),
+  findRootAnchor: vi.fn(async () => null),
+}));
+vi.mock('../../serving-host-identity', () => ({
+  getServingHostIdentity: vi.fn(() => ({ host: 'port-3170', processId: 'worker-identity', buildSha: 'a'.repeat(40) })),
+}));
+vi.mock('../../observability/runtime', () => ({
+  runtimeObservabilityHealth: vi.fn(() => ({
+    initialized: false, observerFailures: 0, globalProviderRegistered: false, tracing: null, posthog: null,
+    artifact: null,
+  })),
 }));
 
 import status, { resolveAnnouncementOwnership, turnProofFields } from './status';
@@ -72,6 +83,8 @@ import { applyResultDoorAsync, resetResultDoorAggregatesForTests, RESULT_DOOR_TO
 import { _resetScratchUsageForTests } from '../../scratch-gc';
 import { readVolatileScratchReference } from '../../scratch-reference';
 import { findConditionKeyHolder } from '../../coord/condition-bridge';
+import { getServingHostIdentity } from '../../serving-host-identity';
+import { runtimeObservabilityHealth } from '../../observability/runtime';
 import type { AwaitRow, DeliveryRow } from '../../events/await/types';
 import type { SubscriptionRow } from '@papercusp/coordination/capabilities';
 
@@ -145,6 +158,11 @@ const EVENT_SUBSCRIPTION_ROW: SubscriptionRow = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(getServingHostIdentity).mockReturnValue({ host: 'port-3170', processId: 'worker-identity', buildSha: 'a'.repeat(40) });
+  vi.mocked(runtimeObservabilityHealth).mockReturnValue({
+    initialized: false, observerFailures: 0, globalProviderRegistered: false, tracing: null, posthog: null,
+    artifact: null,
+  });
   vi.mocked(listActiveAwaits).mockResolvedValue([AWAIT_ROW]);
   vi.mocked(listMyEventKeySubscriptions).mockResolvedValue([EVENT_SUBSCRIPTION_ROW]);
   vi.mocked(listRecentDeliveries).mockResolvedValue([DELIVERY_ROW]);
@@ -157,11 +175,84 @@ beforeEach(() => {
     oldestCreatedAt: 'C2',
   });
   vi.mocked(wakeMeter).mockResolvedValue({ total: 7 } as never);
-  vi.mocked(inspectEventKey).mockResolvedValue({ announcements: [], waiters: [], deliveries: [], fireLatch: null } as never);
+  // Clear queued one-shot responses as well as call history, including when a
+  // preceding assertion or dependency failed before consuming its response.
+  vi.mocked(inspectEventKey).mockReset().mockResolvedValue({ announcements: [], waiters: [], deliveries: [], fireLatch: null } as never);
   vi.mocked(findConditionKeyHolder).mockResolvedValue(null);
 });
 
 describe('events:status projection', () => {
+  it('publishes strict condition inspection only for an exact event selector', () => {
+    expect(status.args.safeParse({ event: 'work-item:done:WI-42', condition: 'specific' }).success).toBe(true);
+    for (const args of [
+      { condition: 'specific' },
+      { await_id: 11, condition: 'specific' },
+      { event: 'work-item:done:WI-42', condition: 'broad' },
+      { event: 'work-item:done:WI-42', condition: 'specific', meter: true },
+      { event: 'work-item:done:WI-42', condition: 'specific', after_generation: 1 },
+    ]) expect(status.args.safeParse(args).success).toBe(false);
+  });
+
+  it('returns canonical strict completion evidence and the same worker/workspace boot identity', async () => {
+    const event = 'work-item:done:WI-42';
+    const paths = [
+      'packages/operator-core/lib/agent-tools/events/status.ts',
+      'packages/operator-core/lib/external-condition-reachability.ts',
+      'packages/operator-core/lib/blocker-resolution-evidence.ts',
+    ];
+    vi.mocked(runtimeObservabilityHealth).mockReturnValue({
+      initialized: false, observerFailures: 0, globalProviderRegistered: false, tracing: null, posthog: null,
+      artifact: {
+        status: 'measured', sourceSha: 'a'.repeat(40), bundleSha256: 'b'.repeat(64),
+        manifestSha256: 'c'.repeat(64), evidenceRef: '/boot/artifact.json',
+        sourceBlobs: Object.fromEntries([...paths.map((path) => [path, 'd'.repeat(40)]), ['unrelated.ts', 'x'.repeat(10_000)]]),
+      },
+    });
+    vi.mocked(inspectEventKey).mockResolvedValueOnce({
+      announcements: [], waiters: [], deliveries: [], composedRoot: null,
+      fireLatch: {
+        workspaceId: 'ws-x', eventKey: event,
+        firstFiredAt: '2026-11-12T15:00:00.000Z', lastFiredAt: '2026-11-12T15:00:00.000Z',
+        lastFiredBy: 'work-items', lastPayload: null, fireCount: 1,
+      },
+    });
+
+    const out = await call({ event, condition: 'specific' });
+
+    expect(out.condition_reachability).toMatchObject({ verdict: 'reachable', basis: 'fired', authoritative: true });
+    expect(out.condition_reachability.firedAt).toBe('2026-11-12T15:00:00.000Z');
+    expect(out.observingRuntime).toMatchObject({ host: 'port-3170', processId: 'worker-identity', workspaceId: 'ws-x' });
+    expect(out.observingRuntime.artifact.sourceBlobs).toEqual(Object.fromEntries(paths.map((path) => [path, 'd'.repeat(40)])));
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(5_000);
+    expect(inspectEventKey).toHaveBeenCalledExactlyOnceWith(event);
+    expect(listActiveAwaits).not.toHaveBeenCalled();
+    expect(listRecentDeliveries).not.toHaveBeenCalled();
+    expect(out).not.toHaveProperty('event_inspection');
+  });
+
+  it('keeps a broad wake uncertified without querying the event ledger', async () => {
+    const out = await call({ event: 'coord:inbox-wake:su-status', condition: 'specific' });
+    expect(out.condition_reachability).toMatchObject({ verdict: 'unknown', authoritative: false, uncertifiedReason: 'broad' });
+    expect(inspectEventKey).not.toHaveBeenCalled();
+  });
+
+  it('preserves strict resolver failure evidence and unknown boot provenance', async () => {
+    vi.mocked(inspectEventKey).mockRejectedValueOnce(new Error('same-process event read unavailable'));
+    vi.mocked(getServingHostIdentity).mockReturnValue({ host: 'port-3170', processId: null, buildSha: null });
+    const out = await call({ event: 'work-item:done:WI-42', condition: 'specific' });
+    expect(out.condition_reachability).toMatchObject({
+      verdict: 'unknown', basis: 'unmeasured', authoritative: false,
+      evidence: 'reachability resolver failed: same-process event read unavailable',
+    });
+    expect(out.observingRuntime).toEqual({ host: 'port-3170', processId: null, buildSha: null, workspaceId: 'ws-x', artifact: null });
+  });
+
+  it('rejects a strict read without an exact event even when called without schema validation', async () => {
+    await expect(call({ condition: 'specific' })).rejects.toThrow(/condition requires an exact/);
+    expect(inspectEventKey).not.toHaveBeenCalled();
+    expect(listActiveAwaits).not.toHaveBeenCalled();
+  });
+
   it('admits the evidence-only judge role', () => {
     expect(status.agentRoles).toContain('judge');
   });
@@ -185,7 +276,7 @@ describe('events:status projection', () => {
     expect(out).not.toHaveProperty('meter');
   });
 
-  it.each([{ event: 'work-item:claimable' }, { meter: true }])('judge rejects restricted arguments before any store reads: %j', async (args) => {
+  it.each([{ event: 'work-item:claimable' }, { event: 'work-item:done:WI-42', condition: 'specific' }, { meter: true }])('judge rejects restricted arguments before any store reads: %j', async (args) => {
     const judgeCtx = { ...ctx, role: 'judge' } as typeof ctx;
 
     await expect(call(args, judgeCtx)).rejects.toThrow('evidence-only judge');
@@ -1047,7 +1138,11 @@ describe('events:status — await_id/event exclusivity is declared, not only enf
     };
     const branches = schema.anyOf ?? schema.oneOf ?? [];
 
-    expect(branches).toHaveLength(3);
+    expect(branches.every((branch) => !(branch.required?.includes('await_id') && branch.required?.includes('event')))).toBe(true);
+    const strict = branches.filter((branch) => branch.required?.includes('condition'));
+    expect(strict).toHaveLength(1);
+    expect(strict[0].required).toContain('event');
+    expect(strict[0].properties?.condition).toMatchObject({ const: 'specific' });
     expect(branches.some((branch) => branch.required?.includes('await_id'))).toBe(true);
     expect(branches.some((branch) => branch.required?.includes('event'))).toBe(true);
     expect(branches.some((branch) => !branch.required?.includes('await_id') && !branch.required?.includes('event'))).toBe(true);

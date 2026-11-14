@@ -586,6 +586,16 @@ export default defineTool({
                 id: CARRY_ROW_ID_SCHEMA,
                 replaces: CARRY_ROW_REPLACES_SCHEMA,
                 origin: z.enum(['owner', 'system', 'external', 'self']).optional(),
+                conversationId: z
+                  .string()
+                  .trim()
+                  .min(1)
+                  .max(120)
+                  .regex(/^[A-Za-z0-9._:-]+$/)
+                  .optional()
+                  .describe(
+                    'Exact conversation id that keeps this owner wait current. A terminal conversation retires only this bound wall; leave absent for unrelated owner commitments.',
+                  ),
                 appliesWhile: carryRowTextSchema(
                   CARRY_ROW_SOFT_CAPS.recheck,
                   'The live condition under which a self/external wall still applies.',

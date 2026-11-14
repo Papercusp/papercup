@@ -127,6 +127,31 @@ describe('evidence-based independently executable steps', () => {
       expect(auditExecutableStep({ ...step, ...variant })).toMatchObject({ status: 'unknown' });
     }
   });
+  it('does not mark explicit owner/dependency waits or deferred notes as executable', () => {
+    const nonExecutableSteps = [
+      "Preserve Avi's preparation gate: do not self-approve, rearm, refreeze, republish, or run. Future authorized fix only.",
+      "Read Avi's authenticated answer or explicit bounded delegation first. Until valid answer, keep the loop off.",
+      "Await the issuer's actual proof; no periodic supervisor.",
+      'Keep this finding queued outside current implementation scope. Revisit on a later specific assignment.',
+    ];
+    for (const next of nonExecutableSteps) {
+      expect(auditExecutableStep({ ...step, next })).toMatchObject({ status: 'known', value: false });
+    }
+  });
+  it('does not upgrade unclassified next-step prose into executable work', () => {
+    expect(auditExecutableStep({ ...step, next: 'This note records a disposition but no concrete action.' }))
+      .toMatchObject({ status: 'unknown' });
+  });
+  it('honors authoritative carry walls and keeps other walls unverified', () => {
+    expect(auditExecutableStep({ ...step, walls: [{ origin: 'owner', claim: 'Owner approval is required.' }] }))
+      .toMatchObject({ status: 'known', value: false });
+    expect(auditExecutableStep({ ...step, walls: [{ origin: 'system', claim: 'System gate remains active.' }] }))
+      .toMatchObject({ status: 'known', value: false });
+    expect(auditExecutableStep({ ...step, walls: [{ origin: 'external', claim: 'Issuer proof is pending.' }] }))
+      .toMatchObject({ status: 'unknown' });
+    expect(auditExecutableStep({ ...step, walls: [{ claim: 'Legacy wall without typed origin.' }] }))
+      .toMatchObject({ status: 'unknown' });
+  });
   it('never waives a hold or unresolved dependency even with a current AUTO checkpoint', () => {
     for (const variant of [{ held: true }, { dependencies: 'blocked' as const }, { planLane: 'blocked' as const }]) {
       expect(auditExecutableStep({ ...step, ...variant })).toMatchObject({ status: 'known', value: false });

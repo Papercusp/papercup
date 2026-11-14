@@ -326,6 +326,70 @@ describe('retained preview recovery across generated declaration times (EI-28093
     expect(brief).not.toContain(`candidate/source SHA-256 ${input().preview.approval.reviewSourceHash}`);
   });
 
+  it.each(['prose-approval', 'missing-attestation', 'wrong-hash', 'wrong-preview', 'duplicate-attestation'])(
+    'requires an independently authored repair for %s instead of settling the review', async (fault) => {
+      const { input, reviewed } = await fixture();
+      const request = input();
+      const hash = acceptanceBarReviewSourceHash(reviewed);
+      const pointer = `approve ${request.previewPostRef}`;
+      const attestation = `verified-complete-source sha256:${hash}`;
+      const bodies: Record<string, string> = {
+        'prose-approval': `APPROVE — complete source ${hash} was checked.`,
+        'missing-attestation': pointer,
+        'wrong-hash': `${pointer}\nverified-complete-source sha256:${'0'.repeat(64)}`,
+        'wrong-preview': `approve thread-post:1\n${attestation}`,
+        'duplicate-attestation': `${pointer}\n${attestation}\n${attestation}`,
+      };
+      const [bad] = await db.adminSql<Array<{ id: number }>>`
+        INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, origin)
+        VALUES (${workspaceId}, 'retained-time-preview', 'independent-reviewer', ${bodies[fault]!}, 'local') RETURNING id`;
+      const healthInput = { workspaceId, previewPostRef: request.previewPostRef,
+        reviewer: { state: 'launched', taskId: 'signed-reviewer', ownerId: 'independent-reviewer' } };
+      const healthDeps = { readTaskState: async () => 'exited' as const };
+      const health = await inspectFreshAmendmentReviewer(healthInput, healthDeps);
+      expect(health).toMatchObject({ state: 'signature-repair-required', replyPostRef: `thread-post:${bad!.id}` });
+      expect(health.reason).toContain(request.previewPostRef);
+
+      // Neither requester notes nor remote/foreign-author signatures repair this review.
+      for (const [author, origin, scope] of [
+        ['applier', 'local', workspaceId], ['independent-reviewer', 'remote', workspaceId],
+        ['another-reviewer', 'local', workspaceId], ['independent-reviewer', 'local', 'foreign-workspace'],
+      ]) {
+        await db.adminSql`
+          INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, origin)
+          VALUES (${scope!}, 'retained-time-preview', ${author!}, ${`${pointer}\n${attestation}`}, ${origin!})`;
+      }
+      expect(await inspectFreshAmendmentReviewer(healthInput, healthDeps))
+        .toMatchObject({ state: 'signature-repair-required', replyPostRef: `thread-post:${bad!.id}` });
+
+      await db.adminSql`
+        INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, origin)
+        VALUES (${workspaceId}, 'retained-time-preview', 'independent-reviewer', ${`${pointer}\n${attestation}`}, 'local')`;
+      expect(await inspectFreshAmendmentReviewer(healthInput, healthDeps))
+        .toMatchObject({ state: 'later-post', disposition: 'signed-approval' });
+
+      const [evidence] = await db.adminSql<Array<{ id: number }>>`
+        INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, origin)
+        VALUES (${workspaceId}, 'retained-time-preview', 'applier', 'New evidence requires a new verdict', 'local') RETURNING id`;
+      expect(await inspectFreshAmendmentReviewer({ ...healthInput,
+        reviewEvidencePost: `thread-post:${evidence!.id}` }, healthDeps))
+        .toMatchObject({ state: 'reclaimable' });
+    });
+
+  it.each(['objection', 'receipt'])('preserves a complete independent %s', async (kind) => {
+    const { input, reviewed } = await fixture();
+    const request = input();
+    const body = kind === 'objection' ? 'DO NOT APPROVE: the complete source weakens the requirement.'
+      : `${acceptanceBarReviewPostBody(preview(reviewed).approval, reviewed)}\nverified-complete-source sha256:${acceptanceBarReviewSourceHash(reviewed)}`;
+    await db.adminSql`
+      INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, origin)
+      VALUES (${workspaceId}, 'retained-time-preview', 'independent-reviewer', ${body}, 'local')`;
+    expect(await inspectFreshAmendmentReviewer({ workspaceId, previewPostRef: request.previewPostRef,
+      reviewer: { state: 'launched', taskId: 'signed-reviewer', ownerId: 'independent-reviewer' } },
+    { readTaskState: async () => 'exited' as const }))
+      .toMatchObject({ state: 'later-post', disposition: kind === 'objection' ? 'objection' : 'signed-approval' });
+  });
+
   it('rejects missing truncated or changed immutable review sources', async () => {
     const { input, deps, route, body } = await fixture();
     await expect(openAcceptanceBarAmendmentReview({ ...input(), previewPostRef: 'thread-post:999999999' }, deps))

@@ -581,6 +581,8 @@ const {
   DELIVERY_DEDUP_TTL_MS,
   makeInjectMutex,
   makeStaleFireGuard,
+  renewCurrentLoopFireProvenance,
+  LOOP_FIRE_PROVENANCE_RENEWAL_MAX_AGE_MS,
   isCarryRespawnStale,
   isCarryRespawnSuperseded,
   checkWakeProvenanceAge,
@@ -1416,6 +1418,62 @@ describe('makeStaleFireGuard (WI-5510 — delivery-side dead-man switch against 
   });
 });
 
+describe('current loop-fire provenance renewal (WI-6554700010048011)', () => {
+  it('appends a fresh exact-row version while preserving nonce, hash, and issuer', async () => {
+    const nowMs = 2_000_000;
+    const issuedAtMs = nowMs - WAKE_PROVENANCE_MAX_AGE_MS - 1;
+    const original = {
+      sid: 'owner-1',
+      nonce: '0123456789abcdef',
+      origin: 'loop-fire',
+      sha256: 'a'.repeat(64),
+      ts: issuedAtMs,
+      issuer: { buildSha: 'historical-build' },
+    };
+    let appended;
+    const renewedAtMs = await renewCurrentLoopFireProvenance({
+      mode: 'turn',
+      ownerId: original.sid,
+      routineId: 'routine-1',
+      fireNumber: 17,
+      provenanceIssuedAtMs: issuedAtMs,
+      data: `⟦turn-origin:loop-fire nonce:${original.nonce}⟧\nDelayed loop wake`,
+    }, {
+      nowMs,
+      readRows: async (sid) => sid === original.sid ? [original] : [],
+      appendRow: async (row) => { appended = row; return true; },
+    });
+
+    expect(renewedAtMs).toBe(nowMs);
+    expect(appended).toEqual({
+      ...original,
+      ts: nowMs,
+      ttlMs: LOOP_FIRE_PROVENANCE_RENEWAL_MAX_AGE_MS,
+      loopFire: { routineId: 'routine-1', wakeCount: 17 },
+    });
+  });
+
+  it('does not advance high-water when the current fire has no exact row to renew', async () => {
+    const guard = makeStaleFireGuard();
+    guard.commit('routine-1', 16);
+    const comparison = guard.compare('routine-1', 17);
+    expect(comparison).toEqual({ admit: true, lastDelivered: 16 });
+
+    const renewedAtMs = await renewCurrentLoopFireProvenance({
+      mode: 'turn',
+      ownerId: 'owner-1',
+      routineId: 'routine-1',
+      fireNumber: 17,
+      provenanceIssuedAtMs: 1_000_000,
+      data: '⟦turn-origin:loop-fire nonce:0123456789abcdef⟧\nDelayed loop wake',
+    }, { nowMs: 1_000_000 + WAKE_PROVENANCE_MAX_AGE_MS + 1, readRows: async () => [] });
+    if (renewedAtMs != null) guard.commit('routine-1', 17);
+
+    expect(renewedAtMs).toBeNull();
+    expect(guard.compare('routine-1', 17)).toEqual({ admit: true, lastDelivered: 16 });
+  });
+});
+
 describe('wake provenance TTL guard (EI-18126834395314388)', () => {
   it('accepts the exact TTL boundary, rejects older and future timestamps, and preserves legacy senders', () => {
     const nowMs = 1_000_000;
@@ -1444,14 +1502,19 @@ describe('wake provenance TTL guard (EI-18126834395314388)', () => {
       .not.toHaveProperty('provenanceIssuedAtMs');
   });
 
-  it('runs receipt and final coalesced-text checks before dedup and stale-fire commit', () => {
+  it('compares current fire, renews provenance, then commits high-water', () => {
     const src = readFileSync(new URL('../scripts/psu-pty-host.mjs', import.meta.url), 'utf8');
     const receiveGuard = src.indexOf("rejectWakeProvenance(msg, 'receive')");
     const dedup = src.indexOf('const duplicateState = deliveryDedup.state(msg.deliveryId)');
+    const fireCompare = src.indexOf('staleFireGuard.compare(deliver.routineId, deliver.fireNumber)');
+    const renewal = src.indexOf('await renewCurrentLoopFireProvenance(deliver)');
     const writeGuard = src.indexOf("rejectWakeProvenance(deliver, 'pre-write')");
-    const staleFireCommit = src.indexOf('staleFireGuard.admit(deliver.routineId, deliver.fireNumber)');
+    const staleFireCommit = src.indexOf('staleFireGuard.commit(deliver.routineId, deliver.fireNumber)');
     expect(receiveGuard).toBeGreaterThan(-1);
     expect(receiveGuard).toBeLessThan(dedup);
+    expect(fireCompare).toBeGreaterThan(-1);
+    expect(fireCompare).toBeLessThan(renewal);
+    expect(renewal).toBeLessThan(writeGuard);
     expect(writeGuard).toBeGreaterThan(-1);
     expect(writeGuard).toBeLessThan(staleFireCommit);
     expect(src).toContain('provenanceIssuedAtMs: message.provenanceIssuedAtMs ?? null');

@@ -1986,6 +1986,15 @@ describe("native OMP capability selection", () => {
     expect(() => nativeOmpExtensionArgs("omp", env, "linux", () => false)).toThrow("bundle missing");
     expect(() => nativeOmpExtensionArgs("omp", {}, "linux", () => false)).toThrow("bundle missing");
   });
+
+  it("loads the owned native MCP extension for OMP over HTTP on every platform", () => {
+    const httpEnv = { PAPERCUSP_MCP_TRANSPORT: "http" };
+    const args = nativeOmpExtensionArgs("omp", httpEnv, "linux", () => true);
+    expect(args[0]).toBe("-e");
+    expect(args[1]).toMatch(/omp-plugin\/dist\/native-extension\.mjs$/);
+    expect(nativeOmpExtensionArgs("omp", httpEnv, "win32", () => true)).toEqual(args);
+    expect(nativeOmpExtensionArgs("codex", httpEnv, "linux", () => true)).toEqual([]);
+  });
 });
 
 describe("writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-session config)", () => {

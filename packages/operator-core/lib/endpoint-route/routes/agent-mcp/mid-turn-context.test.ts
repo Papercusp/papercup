@@ -28,6 +28,24 @@ import { configureReadCursorStore, InMemoryReadCursorStore, resetReadCursorStore
 import { memoryFragmentOffer, _resetSessionEpochLedgerForTests } from '../../../memory/session-epoch-ledger';
 import { buildDigest } from '../../../../../../apps/operator/scripts/hooks/inject/core.mjs';
 import { extractRecallSignals } from '../../../../../../apps/operator/scripts/hooks/inject/recall-query.mjs';
+import { packContextCandidates } from '../../../context-doors';
+import type { StoredContextPackingReceipt } from '../../../context-packing-receipts';
+
+const packingMocks = vi.hoisted(() => ({
+  save: vi.fn(async (_scope: unknown, receipt: { attemptId: string }) =>
+    ({ attemptId: receipt.attemptId, path: 'evidence/context-packing/mid-turn-test.json' })),
+  load: vi.fn(async (..._args: unknown[]): Promise<StoredContextPackingReceipt | null> => null),
+}));
+vi.mock('../../../context-packing-receipts', async orig => ({
+  ...await orig<typeof import('../../../context-packing-receipts')>(),
+  captureContextPackingAttribution: vi.fn(async () => ({ observedAt: '2026-11-12T15:00:00.000Z',
+    epoch: null, epochEvidenceRef: null, nativeSession: null, unknown: ['epoch-unavailable', 'native-session-unavailable'] })),
+  saveContextPackingReceipt: packingMocks.save, loadContextPackingReceipt: packingMocks.load,
+}));
+vi.mock('../../../context-doors-config', () => ({ getDoorConstantsSync: () => ({
+  maxTurnFloorTokens: 8000, maxTurnCapTokens: 15000, maxTurnWindowDivisor: 26, compactionOverheadTokens: 4000,
+  doorSplit: { output: 0.5, resultEach: 0.1875, resultSlots: 2, injections: 0.125 },
+}) }));
 
 const memoryReceiptSqlMock = vi.hoisted(() => vi.fn(async (chunks: TemplateStringsArray, ..._values: unknown[]) =>
   Array.isArray(chunks) && chunks.join('?').includes('RETURNING memory_id') ? [{ memory_id: 'inserted' }] : []));
@@ -158,6 +176,8 @@ const owner = (): string => `sess-${++seq}`;
 const firstCall = () => buildMemoryContextBlockMock.mock.calls[0]![0] as Record<string, unknown>;
 
 beforeEach(() => {
+  packingMocks.save.mockClear();
+  packingMocks.load.mockReset().mockResolvedValue(null);
   configureReadCursorStore(new InMemoryReadCursorStore());
   _resetSessionEpochLedgerForTests();
   memoryReceiptSqlMock.mockClear();
@@ -187,6 +207,21 @@ describe('exact mid-turn emission receipts', () => {
   const inserts = () => memoryReceiptSqlMock.mock.calls.filter(([chunks]) =>
     chunks.join('?').includes('INSERT INTO harness_shared.memory_session_surfaced'));
 
+  it('allocates recall by complete source without stamping a budget-omitted source', async () => {
+    const { packMidTurnContext } = await import('./mid-turn-context');
+    const large = memoryFragmentOffer('memory', 'large', 4, 'mid-turn', '- ' + 'large '.repeat(35));
+    const small = memoryFragmentOffer('corpus', 'WI-small', 4, 'mid-turn', '- unless waived, retain the whole ☃ condition');
+    const memory = `## Recall\n\n${large.rendered}\n${small.rendered}`;
+    const expected = `Binding rule\n\n## Recall\n\n${small.rendered}`;
+    const packed = packMidTurnContext(memory, '', 'Binding rule', '', Buffer.byteLength(expected) + 3,
+      '00000000-0000-4000-8000-000000000113', [large, small], 'omp');
+    expect(packed.text).toBe(expected);
+    expect(packed.receipt.contextBytes).toBe(Buffer.byteLength(expected) + 3);
+    expect(packed.receipt.candidates.filter(row => row.sourceUnits).map(row => ({
+      reason: row.reason, source: row.sourceUnits?.[0].sourceRef,
+    }))).toEqual([{ reason: 'budget', source: 'memory:large' }, { reason: 'selected', source: 'corpus:WI-small' }]);
+  });
+
   it('stages only complete final fragments and confirms them before the next no-signal branch', async () => {
     const who = owner();
     const a = memoryFragmentOffer('memory', '11111111-1111-1111-1111-111111111111', 4, 'mid-turn', '- complete memory condition ☃');
@@ -207,17 +242,28 @@ describe('exact mid-turn emission receipts', () => {
     expect(out.text).toContain(a.rendered);
     expect(out.text).not.toContain(b.rendered);
     expect(out.memoryFragmentOffers).toEqual([a]);
+    expect(packingMocks.save).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ candidates: expect.arrayContaining([
+      expect.objectContaining({ sourceRef: 'mid-turn:memory', sourceUnits: [expect.objectContaining({
+        sourceRef: `memory:${a.id}`, revision: `epoch:4:sha256:${a.bodySha256}`, class: 'memory',
+        fragmentSha256: a.bodySha256, bytes: a.bodyBytes,
+      })] }),
+    ]) }), expect.objectContaining({ text: out.text, createdAt: expect.any(String),
+      attribution: expect.objectContaining({ epoch: null, nativeSession: null,
+        unknown: ['epoch-unavailable', 'native-session-unavailable'] }),
+      candidates: expect.arrayContaining([expect.objectContaining({
+        sourceUnits: [expect.objectContaining({ rendered: a.rendered })],
+      })]) }));
     expect(inserts()).toHaveLength(0);
     const { rendered: _text, ...fragment } = a;
     const confirmation = { owner: who, tool: 'unknown-tool', confirmedMemoryDeliveries: [
       { token: out.deliveryToken, fragments: [fragment] },
     ] };
     const originalConfirmation = structuredClone(confirmation);
-    expect(await post(confirmation)).toEqual({ ok: true, text: '' });
+    expect(await post(confirmation)).toMatchObject({ ok: true, text: '' });
     expect(confirmation).toEqual(originalConfirmation);
     expect(inserts()).toHaveLength(1);
     expect(inserts()[0]).toContain(4);
-    expect(await post(confirmation)).toEqual({ ok: true, text: '' });
+    expect(await post(confirmation)).toMatchObject({ ok: true, text: '' });
     expect(confirmation).toEqual(originalConfirmation);
     expect(inserts()).toHaveLength(1);
     expect(buildMemoryContextBlockMock).toHaveBeenCalledTimes(1);
@@ -235,12 +281,69 @@ describe('exact mid-turn emission receipts', () => {
   });
 });
 
+it('fails silently without staging memory when the packing evidence store is unavailable', async () => {
+  const a = memoryFragmentOffer('memory', '11111111-1111-1111-1111-111111111111', 4, 'mid-turn', '- complete memory condition');
+  preparedFragmentsMock.mockReturnValue([a]);
+  buildMemoryContextBlockMock.mockResolvedValue(a.rendered);
+  packingMocks.save.mockRejectedValueOnce(new Error('packing store unavailable'));
+  const out = await post({ owner: owner(), tool: 'Grep', toolInput: { pattern: 'evidence store failure' },
+    client: 'codex', memoryReceiptMode: true });
+  expect(out).toEqual({ ok: true, text: '' });
+  expect(packingMocks.save).toHaveBeenCalledTimes(1);
+  expect(memoryReceiptSqlMock.mock.calls.filter(([chunks]) => chunks.join('?').includes('memory-emission:'))).toHaveLength(0);
+});
+
+it('carries the OMP newline and string separator reservation through the actual response branch', async () => {
+  const out = await post({ owner: owner(), tool: 'Grep', toolInput: { pattern: 'native carrier bytes' }, client: 'omp' });
+  expect(out.text).not.toBe('');
+  const bodyBytes = Buffer.byteLength(out.text);
+  expect(packingMocks.save).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
+    bodyBytes, contextBytes: bodyBytes + 3,
+    carrier: { client: 'omp', port: 'mid-turn', framingBytes: 3, accounting: 'upper-bound', emittedContextBytes: 'UNKNOWN' },
+    tokenEstimate: { kind: 'token-proxy-v1', value: Math.ceil((bodyBytes + 3) / 4), billedTokens: 'UNKNOWN' },
+  }), expect.objectContaining({ text: out.text, createdAt: expect.any(String), selectedIndexes: expect.any(Array) }));
+});
+
+it('serves complete packing diagnostic pages without consuming corrections or preparing recall', async () => {
+  const scope = { workspaceId: 'ws-test', ownerId: 'su-mid-diagnostic', harness: 'papercusp', port: 'mid-turn' as const, client: 'codex' };
+  const receipt = packContextCandidates({ attemptId: 'diagnostic-zero', budgetBytes: 0, candidates:
+    Array.from({ length: 30 }, (_, i) => ({ sourceRef: `memory:${i}:` + '字'.repeat(150), revision: 'r1',
+      class: 'memory' as const, required: false, text: `complete condition ${i}` })) }).receipt;
+  const stored = { scope, receipt };
+  packingMocks.load.mockResolvedValue(stored);
+  const chunks: Buffer[] = [];
+  let offset: number | null = 0;
+  do {
+    const res = await endpoint.handler(new Request('http://localhost/agent-mcp/mid-turn-context', { method: 'POST',
+      body: JSON.stringify({ owner: scope.ownerId, harness: scope.harness, client: scope.client,
+        packingDiagnostic: { attemptId: receipt.attemptId, offset } }) }));
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(6000);
+    const page = JSON.parse(text);
+    expect(page).not.toHaveProperty('text');
+    expect(page.offset).toBe(offset);
+    chunks.push(Buffer.from(page.data, 'base64'));
+    if (page.nextOffset !== null) expect(page.nextOffset).toBeGreaterThan(offset!);
+    offset = page.nextOffset;
+  } while (offset !== null);
+  expect(chunks.length).toBeGreaterThan(1);
+  expect(JSON.parse(Buffer.concat(chunks).toString('utf8'))).toEqual(stored);
+  expect(packingMocks.load).toHaveBeenCalledWith(scope, receipt.attemptId);
+  expect(packingMocks.save).not.toHaveBeenCalled();
+  expect(takePendingFailureLoopHintMock).not.toHaveBeenCalled();
+  expect(evaluateHookContextSinkMock).not.toHaveBeenCalled();
+  expect(codeIntelPushTextMock).not.toHaveBeenCalled();
+  expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
+  expect(memoryReceiptSqlMock).not.toHaveBeenCalled();
+});
+
 it('delivers code intelligence even when the memory query has no signal', async () => {
   codeIntelPushTextMock.mockResolvedValue('SNAPSHOT BRIEF');
   const who = owner();
   const calls = [{ tool: 'unknown-tool', toolInput: {} }];
   expect(await post({ owner: who, workspace: 'ws-test', harness: 'papercusp', toolCalls: calls }))
-    .toEqual({ ok: true, text: 'SNAPSHOT BRIEF' });
+    .toMatchObject({ ok: true, text: 'SNAPSHOT BRIEF' });
   expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
   expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ owner: who, calls }));
 });
@@ -251,7 +354,7 @@ it('forwards bounded measured incident attribution without deriving it in the en
   const incidentAttribution = { status: 'measured', changedSymbols: ['target:target.ts:4'],
     workItems: [{ id: 'WI-42', state: 'open', title: 'target repair', paths: ['target.ts'] }] };
   expect(await post({ owner: who, workspace: 'ws-test', harness: 'papercusp', incidentAttribution,
-    tool: 'testing:run', toolInput: { files: ['target.test.ts'] }, })).toEqual({ ok: true, text: 'INCIDENT BRIEF' });
+    tool: 'testing:run', toolInput: { files: ['target.test.ts'] }, })).toMatchObject({ ok: true, text: 'INCIDENT BRIEF' });
   expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ incidentAttribution }));
 });
 
@@ -340,8 +443,8 @@ it('context reliability: shell boilerplate abstains while grounded identifiers r
   expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
   const signal = extractRecallSignals('Grep', { pattern: 'WI-6512' });
   await post({ owner: owner(), tool: 'Grep', toolInput: { pattern: 'WI-6512' } });
-  expect(firstCall().queryContext).toEqual({ userText: '', lexicalText: 'WI-6512', fingerprint: signal.fingerprint });
   expect(buildMemoryContextBlockMock).toHaveBeenCalledTimes(1);
+  expect(firstCall().queryContext).toEqual({ userText: '', lexicalText: 'WI-6512', fingerprint: signal.fingerprint });
 });
 
 it('uses the pre-clamp normalized manifest and verifies its fingerprint at the production seam', async () => {
@@ -545,7 +648,8 @@ describe('mid-turn-context — the cost properties', () => {
       tool: 'Grep',
       toolInput: { pattern: 'optional recall under fleet burst' },
     });
-    expect(out).toEqual({ ok: true, text: '' });
+    expect(out).toMatchObject({ ok: true, text: '' });
+    expect(out).toHaveProperty('packingReceipt');
     expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
     await flushCoverage();
     expect(coverageEvents()).toContainEqual(expect.objectContaining({
@@ -563,7 +667,8 @@ describe('mid-turn-context — the cost properties', () => {
       tool: 'Grep',
       toolInput: { pattern: 'identity admission' },
     });
-    expect(out).toEqual({ ok: true, text: '' });
+    expect(out).toMatchObject({ ok: true, text: '' });
+    expect(out).toHaveProperty('packingReceipt');
     await flushCoverage();
     expect(coverageEvents()).toContainEqual(expect.objectContaining({
       outcome: 'suppressed-identity-unreadable',
@@ -675,7 +780,7 @@ describe('mid-turn-context — EI-6139 failure-loop bridge', () => {
     expect(out.text).toBe('FAILURE LOOP HINT');
   });
 
-  it('keeps the failure, rule and memory budgets independent when composing', () => {
+  it('reserves complete failure corrections and rules before optional memory within the aggregate budget', () => {
     expect(composeMidTurnContextText('MEMORY', 'FAILURE', 'RULES')).toBe('FAILURE\n\nRULES\n\nMEMORY');
     expect(composeMidTurnContextText('MEMORY', '', '')).toBe('MEMORY');
   });

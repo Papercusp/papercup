@@ -419,6 +419,42 @@ describe('resource-governor queue liveness and census boundaries (EI-219699)', (
     expect(sql).not.toHaveBeenCalled();
   });
 
+  it.each(['parked', 'suspect', 'ended', null] as const)(
+    'records the matched startup reservation and actual launcher verdict %s when reclaiming',
+    (sessionState) => {
+      const row = { receiptId: 'new', leaseId: 'new-lease', owner: 'ended-source', resumeMetadata: {
+        launchedBy: 'launcher', resumeClaimKey: 'private-startup-key', resumeStartupExpiresAtMs: 55_000,
+      } };
+      const verdicts = new Map<string, { sessionState: any }>([
+        ['ended-source', { sessionState: 'ended' }], ['launcher', { sessionState }],
+      ]);
+      const [ended] = selectEndedLeaseOwners([row], verdicts, new Map([['new', 'launcher']]), 50_000);
+      expect(ended).toMatchObject({ startupProtection: {
+        resumeStartupReservationMatched: true, resumeStartupLauncherState: sessionState,
+        resumeStartupObservedAtMs: 50_000, resumeStartupExpiresAtMs: 55_000,
+      } });
+      expect(JSON.stringify(ended.startupProtection)).not.toContain('private-startup-key');
+      expect(verdicts.get('ended-source')?.sessionState).toBe('ended');
+      verdicts.set('launcher', { sessionState: 'live' });
+      expect(selectEndedLeaseOwners([row], verdicts, new Map([['new', 'launcher']]), 50_000)).toEqual([]);
+    },
+  );
+
+  it('distinguishes an unmatched startup reservation from an unknown matched launcher', () => {
+    const row = { receiptId: 'new', leaseId: 'lease', owner: 'source', resumeMetadata: {
+      resumeClaimKey: 'private-key', resumeStartupExpiresAtMs: 55_000,
+    } };
+    const verdicts = new Map([['source', { sessionState: 'ended' as const }]]);
+    const [unmatched] = selectEndedLeaseOwners([row], verdicts, new Map(), 50_000);
+    const [unknown] = selectEndedLeaseOwners([row], verdicts, new Map([['new', 'launcher']]), 50_000);
+    expect(unmatched.startupProtection).toMatchObject({
+      resumeStartupReservationMatched: false, resumeStartupLauncherState: null,
+    });
+    expect(unknown.startupProtection).toMatchObject({
+      resumeStartupReservationMatched: true, resumeStartupLauncherState: null,
+    });
+  });
+
   it('maps complete census rows and PostgreSQL numeric strings without bounding the input', () => {
     expect(
       mapGovernorQueuePopulationRows([

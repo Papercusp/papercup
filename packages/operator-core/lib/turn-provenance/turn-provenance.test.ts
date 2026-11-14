@@ -52,6 +52,33 @@ function row(over: Partial<LedgerRow> = {}): LedgerRow {
   return { sid: SID, nonce: 'a1b2c3d4e5f60718', origin: 'wake-pump', sha256: 'x', ts: NOW, ...over };
 }
 
+describe('renewed loop-fire ledger rows', () => {
+  it('uses the latest exact nonce row for envelope and hash-only classification', () => {
+    const text = 'a delayed but current loop wake';
+    const nonce = '0123456789abcdef';
+    const original = row({
+      nonce,
+      origin: 'loop-fire',
+      sha256: payloadSha256(text),
+      ts: NOW - TTL - 1,
+      ttlMs: TTL,
+    });
+    const renewed = {
+      ...original,
+      ts: NOW,
+      ttlMs: LOOP_FIRE_PROVENANCE_TTL_MS,
+      loopFire: { routineId: 'routine-1', wakeCount: 17 },
+    };
+
+    expect(classify(`${formatEnvelope('loop-fire', nonce)}\n${text}`, [original, renewed], {
+      nowMs: NOW,
+      ttlMs: TTL,
+    })).toMatchObject({ verdict: 'verified-agent', origin: 'loop-fire', nonce, matchedBy: 'nonce+hash' });
+    expect(classify(text, [original, renewed], { nowMs: NOW, ttlMs: TTL }))
+      .toMatchObject({ verdict: 'verified-agent', origin: 'loop-fire', nonce, matchedBy: 'hash' });
+  });
+});
+
 describe('envelope format + parse', () => {
   it('round-trips format → parse, payload preserved', () => {
     const nonce = mintNonce();

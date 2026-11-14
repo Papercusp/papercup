@@ -19,7 +19,9 @@ import { startDedicatedNativePg, type DedicatedNativePg } from '@papercusp/test-
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA, type SuSessionEvent } from '@papercusp/chat-protocol';
 import { parseSseStream, type ParsedSseEvent } from '@papercusp/sse';
-import { confirmedProviderRateLimit } from './su-session-attached-live-rate-limit';
+import { confirmedProviderRateLimit, nativeAcceptanceFailure, nativePendingImports } from './su-session-attached-live-rate-limit';
+import { CODEX_SAFE_DEFAULT_MODEL } from './model-context-budget.mjs';
+import { readNativeAccountCatalog } from './pui-e2e/release-acceptance';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
 import { createOrgTestDb, type OrgTestDb } from '../test/_org-test-db';
 import { modelArgsFor } from '../../../apps/operator/scripts/psu-launcher.mjs';
@@ -220,7 +222,7 @@ vi.mock('./interactive-claude-config', async (importOriginal) => {
   } };
 });
 
-describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attached SU engine', () => {
+describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1' && process.env.PAPERCUSP_ATTACHED_CATALOG_PREFLIGHT !== '1')('live attached SU engine', () => {
   let db: OrgTestDb | undefined;
   let pg: DedicatedNativePg | undefined;
   let fixture: BaselineCoordFixture | undefined;
@@ -228,6 +230,7 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
   let home: string | undefined;
   let previousEnv: Record<string, string | undefined> = {};
   let startup = { stage: 'not-started', startedAt: Date.now(), finished: false };
+  let catalogPreflight: { listedTools: string[]; authenticated: boolean } | undefined;
   async function setupStep<T>(stage: string, action: () => Promise<T>): Promise<T> {
     startup = { stage, startedAt: Date.now(), finished: false };
     console.info('SU_EXEC_NATIVE_SETUP', JSON.stringify({ stage, state: 'started' }));
@@ -246,17 +249,9 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
   beforeAll(async () => {
     const account = process.env.PAPERCUSP_ATTACHED_TEST_ACCOUNT?.trim() || 'auto';
     const catalogPath = process.env.PUI_NATIVE_ACCOUNT_CATALOG;
-    const accounts = account === 'auto' ? (() => {
-      if (!catalogPath) throw new Error('Attached auto-route acceptance requires PUI_NATIVE_ACCOUNT_CATALOG');
-      const catalog = JSON.parse(readFileSync(catalogPath, 'utf8')) as { accounts?: unknown };
-      if (!Array.isArray(catalog.accounts) || !catalog.accounts.length) throw new Error('Attached account catalog is empty');
-      return catalog.accounts.map((entry: { id?: string; provider?: string }) => {
-        if (!entry.id || !/^[A-Za-z0-9._-]+$/.test(entry.id) || !['claude', 'codex'].includes(entry.provider ?? '')) {
-          throw new Error('Attached account catalog needs valid id/provider metadata');
-        }
-        return { id: entry.id, provider: entry.provider, credentialRef: '', addedAt: 0, boundTo: [] };
-      });
-    })() : [];
+    const accounts = readNativeAccountCatalog(catalogPath, account);
+    console.info('SU_EXEC_NATIVE_ACCOUNT_PREFLIGHT', JSON.stringify({ accountRequested: account,
+      accounts: accounts.map(({ id, provider }) => ({ id, provider })) }));
     home = mkdtempSync(join(tmpdir(), 'pui-attached-live-'));
     previousEnv.PAPERCUSP_TEST_PG_ADMIN_URL = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
     pg = await setupStep('private-pg', () => startDedicatedNativePg({ baseDir: home!,
@@ -265,7 +260,7 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
     db = await setupStep('org-db', () => createOrgTestDb());
     expect(new URL(db.adminDsn).port, 'the org fixture must use this test-owned PG process')
       .toBe(new URL(pg.getConnectionUri()).port);
-    if (account === 'auto') await db.adminSql`
+    if (accounts.length) await db.adminSql`
       INSERT INTO harness_shared.operator_account_pool (workspace_id, payload, updated_at)
       VALUES ('papercusp-workspace', ${JSON.stringify({ accounts })}::text::jsonb, ${Date.now()})
       ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at`;
@@ -325,6 +320,8 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
     await setupStep('warm-private-mcp-catalogue', async () => {
       const { ensureOperatorToolsLoaded } = await import('./endpoint-route/routes/transport/_mcp-host');
       await ensureOperatorToolsLoaded();
+      console.info('SU_EXEC_NATIVE_CATALOG_IMPORTS', JSON.stringify(
+        nativePendingImports((globalThis as { __vitest_worker__?: unknown }).__vitest_worker__)));
     });
     server = createAdaptorServer({ fetch: app.fetch });
     await setupStep('listen-private-operator', () => new Promise<void>((done, reject) => {
@@ -368,6 +365,7 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
       })));
       const listed = await setupStep('mcp-list-tools', () => client.listTools({}, { timeout: 30_000 }));
       expect(listed.tools.map(tool => tool.name)).toEqual(expect.arrayContaining(['coord:whoami', 'tools:invoke']));
+      catalogPreflight = { listedTools: listed.tools.map(tool => tool.name), authenticated: true };
     } finally {
       await client.close();
     }
@@ -375,7 +373,8 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
 
   afterAll(async () => {
     if (!startup.finished) console.error('SU_EXEC_NATIVE_SETUP', JSON.stringify({ stage: startup.stage,
-      state: 'interrupted', elapsedMs: Date.now() - startup.startedAt }));
+      state: 'interrupted', elapsedMs: Date.now() - startup.startedAt,
+      pendingImports: nativePendingImports((globalThis as { __vitest_worker__?: unknown }).__vitest_worker__) }));
     try {
       if (server) await new Promise<void>((done, reject) => {
         server!.close(error => error ? reject(error) : done());
@@ -396,7 +395,13 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
     }
   }, 60_000);
 
-  it.each(['claude', 'codex'] as const)('P006 actual-image-dependent native result and durable reconnect (%s)', async backend => {
+  it('native catalogue and authenticated MCP preflight without provider inference', () => {
+    expect(catalogPreflight).toMatchObject({ authenticated: true,
+      listedTools: expect.arrayContaining(['coord:whoami', 'tools:invoke']) });
+    console.info('SU_EXEC_NATIVE_CATALOG_PREFLIGHT', JSON.stringify({ ...catalogPreflight, providerLaunched: false }));
+  });
+
+  it.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1').each(['claude', 'codex'] as const)('P006 actual-image-dependent native result and durable reconnect (%s)', async backend => {
     const [{ createChat, archiveChat, getChat }, { default: launchRoutes }, { suSessionRoutes },
       { getRegisteredSuSessionHost }, { readSuperuserToken }, { activeWorkspaceId }] = await Promise.all([
       import('./agent-chats-data'), import('./endpoint-route/routes/adv/launch-su'),
@@ -521,7 +526,7 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
     }
   }, 240_000);
 
-  it.each(['claude', 'codex'] as const)('SU-EXEC R-8 acceptance contract: native %s programmatic supervision', async backend => {
+  it.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1').each(['claude', 'codex'] as const)('SU-EXEC R-8 acceptance contract: native %s programmatic supervision', async backend => {
     const [{ createChat, archiveChat }, { default: launchRoutes }, { suSessionRoutes },
       { getRegisteredSuSessionHost }, { readSuperuserToken }, { activeWorkspaceId },
       { readDurableSuSession }, { listTasks, getTask }] = await Promise.all([
@@ -538,7 +543,10 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
     const key = { workspaceId, harnessSlug: harness, agentChatId: chatId };
     const headers = { 'content-type': 'application/json', host: 'localhost', authorization: `Bearer ${readSuperuserToken()}` };
     const context = { params: { slug: harness, chatId } } as never;
-    const model = backend === 'claude' ? 'sonnet' : 'gpt-5.5';
+    const model = process.env.PAPERCUSP_ATTACHED_TEST_MODEL?.trim()
+      || (backend === 'claude' ? 'sonnet' : CODEX_SAFE_DEFAULT_MODEL);
+    const account = process.env.PAPERCUSP_ATTACHED_TEST_ACCOUNT?.trim() || 'auto';
+    let stage = 'launch';
     let host: ReturnType<typeof getRegisteredSuSessionHost>;
     let taskId: string | undefined;
     let subscription: AsyncGenerator<ParsedSseEvent, void, unknown> | undefined;
@@ -550,11 +558,12 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
         'http://localhost/api/adv/sessions/launch-su', { method: 'POST', headers,
           body: JSON.stringify({ agent: backend, attached_engine: true, execution_kind: 'programmatic',
             agent_chat_id: chatId, harness_slug: harness, model,
-            account: process.env.PAPERCUSP_ATTACHED_TEST_ACCOUNT?.trim() || 'auto', carry: 'warm' }) }), context);
+            account, carry: 'warm' }) }), context);
       const launched = await response.json();
       expect(response.status, JSON.stringify(launched)).toBe(200);
       host = getRegisteredSuSessionHost(key);
       if (!host) throw new Error('R8 launch did not register a native host');
+      stage = 'readiness';
       await vi.waitFor(() => {
         const errors = host!.recent.flatMap(({ event }) => event.type === 'error' ? [event.message] : []);
         expect(host!.snapshot(), JSON.stringify(errors)).toMatchObject({ executorAttached: true, streamReady: true, terminal: false });
@@ -566,6 +575,7 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
       expect(Number.isSafeInteger(generation)).toBe(true);
       expect(generation).toBeGreaterThanOrEqual(0);
       expect(identity.nativeSessionId).toBeTruthy();
+      stage = 'enrollment';
       const tasks = await listTasks({ workspaceId, sessionId: identity.nativeSessionId!, coordOwnerId: identity.ownerId,
         classes: ['agent-session'] });
       expect(tasks, 'one enrolled native process per logical session').toHaveLength(1);
@@ -592,6 +602,7 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
         issuedAt: new Date().toISOString(), target: identity, expectedRuntimeGeneration: generation,
         content: `This is a bounded read-only transport acceptance test. Call Papercusp coord:whoami exactly once (tools:invoke if deferred), then reply with ${nonce}. Do nothing else.` };
       await connectClient();
+      stage = 'owner-turn';
       const post = () => route.handler(new Request('http://localhost/commands', { method: 'POST', headers,
         body: JSON.stringify(command) }), context);
       expect((await post()).status).toBe(202);
@@ -635,6 +646,7 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
       }
       // Reconnecting a consumer must keep the native process, generation and
       // durable command identity. A retry returns the receipt, never inference.
+      stage = 'reconnect';
       client!.abort();
       await subscription!.return();
       subscription = undefined;
@@ -646,6 +658,7 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
         classes: ['agent-session'] })).toHaveLength(1);
       const mismatched = await host.acceptCommand({ ...command, commandId: `mismatch-${randomUUID()}`, expectedRuntimeGeneration: generation + 1 });
       expect(await mismatched.terminal).toMatchObject({ status: 'refused', refusal: { code: 'runtime_generation_mismatch' } });
+      stage = 'interrupt-end';
       const interrupt = host.startCommand({ schema: SU_SESSION_SCHEMA, protocolVersion: SU_SESSION_PROTOCOL_VERSION,
         type: 'interrupt', commandId: `interrupt-${randomUUID()}`, issuedAt: new Date().toISOString(), target: identity });
       expect(await interrupt.terminal).toMatchObject({ status: 'completed' });
@@ -662,6 +675,10 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
         // This case deliberately does not claim the separate PTY, active-tool
         // interruption, background-child or operator-loss qualification duties.
         remaining: ['native-pty', 'active-tool-interrupt', 'background-child', 'operator-loss'] }));
+    } catch (error) {
+      console.error('SU_EXEC_R8_NATIVE_FAILURE', JSON.stringify(nativeAcceptanceFailure({ backend, model, account,
+        stage, descriptor: (host ?? getRegisteredSuSessionHost(key))?.descriptor(), events: observed, error })));
+      throw error;
     } finally {
       host ??= getRegisteredSuSessionHost(key);
       if (host && !host.snapshot().terminal) await host.startCommand({ schema: SU_SESSION_SCHEMA,
@@ -675,7 +692,7 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
     }
   }, 300_000);
 
-  it('creates through launch-su, commits an owner turn, proves scoped SU tools, and ends the child', async (ctx) => {
+  it.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('creates through launch-su, commits an owner turn, proves scoped SU tools, and ends the child', async (ctx) => {
     const [{ createChat, archiveChat, getChat }, { default: launchRoutes }, { suSessionRoutes }, { getRegisteredSuSessionHost }, { readSuperuserToken }, { activeWorkspaceId }, { readDurableSuSession }] = await Promise.all([
       import('./agent-chats-data'), import('./endpoint-route/routes/adv/launch-su'),
       import('./endpoint-route/routes/agent-chats/su-session'), import('./su-session-host'),

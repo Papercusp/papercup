@@ -4,7 +4,7 @@
  * scope-key constructors, and the journal ring bounds. No DB — the store
  * round-trip is proven against real PG in carry-note.integration.test.ts.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,6 +28,7 @@ import {
   parseCarryNote,
   renderWallLine,
   parseWallLine,
+  reconcileConversationBoundWalls,
   renderCheckLine,
   parseCheckLine,
   splitCarryNoteWalls,
@@ -206,6 +207,7 @@ describe('walls — commitments as rows (compaction-continuity-hardening P-006)'
     const conditional: WallEntry = {
       id: 'repair-run',
       origin: 'self',
+      conversationId: 'conv-current-question',
       claim: 'Do not mutate the repair queue',
       appliesWhile: 'repair run rr-123 is active',
       recheck: 'release:repair-queue status rr-123',
@@ -219,6 +221,29 @@ describe('walls — commitments as rows (compaction-continuity-hardening P-006)'
       claim: 'c',
       sinceMs: 1751892000000,
     });
+  });
+
+  it('retires only walls bound to terminal conversations and preserves unknown or unrelated walls', async () => {
+    const walls: WallEntry[] = [
+      { id: 'withdrawn', origin: 'owner', conversationId: 'conv-old', claim: 'withdrawn funding question' },
+      { id: 'current', origin: 'owner', conversationId: 'conv-current', claim: 'current owner wait' },
+      { id: 'missing', origin: 'owner', conversationId: 'conv-missing', claim: 'unreadable owner wait' },
+      { id: 'unrelated', origin: 'owner', claim: 'deployment approval' },
+    ];
+    const readStates = vi.fn(async () => [
+      { id: 'conv-old', state: 'superseded' },
+      { id: 'conv-current', state: 'open' },
+    ]);
+
+    const retained = await reconcileConversationBoundWalls(walls, 'ws-test', readStates);
+
+    expect(readStates).toHaveBeenCalledWith(['conv-old', 'conv-current', 'conv-missing'], 'ws-test');
+    expect(retained).toEqual([walls[1], walls[2], walls[3]]);
+    await expect(
+      reconcileConversationBoundWalls(walls, 'ws-test', vi.fn(async () => {
+        throw new Error('conversation store unavailable');
+      })),
+    ).resolves.toEqual(walls);
   });
 
   it('parseWallLine rejects non-row lines', () => {

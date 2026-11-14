@@ -34,6 +34,12 @@ describe('resume launch custody', () => {
 });
 
 describe('sanitizeInheritedEnv (EI-8868/EI-8877)', () => {
+  it('never passes a one-hop governed resume reservation to an independent native child', () => {
+    const dirty = { PAPERCUSP_GOVERNED_RESUME_RESERVATION: 'parent-only-resume-lease', PATH: '/bin' };
+    expect(sanitizeInheritedEnv(dirty)).toEqual({ PATH: '/bin' });
+    expect(dirty.PAPERCUSP_GOVERNED_RESUME_RESERVATION).toBe('parent-only-resume-lease');
+  });
+
   it('strips npm_config_local_prefix, npm_package_*, npm_lifecycle_*, and INIT_CWD', () => {
     const dirty = {
       npm_config_local_prefix: '/home/dev/papercupai-workspace/papercup-release',

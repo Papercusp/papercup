@@ -21,6 +21,7 @@ import { openWriterPidsMany, type OpenWriterScan } from '../native-bg-task-ledge
 import { readRegistry } from '../workspace-registry';
 import { mapWithConcurrency } from '../gym/concurrency';
 import { sampleDiskSnapshots, type DiskSnapshot } from './disk-space-alarm';
+import { captureReclaimRuntime, type ReclaimRuntime } from './reclaim-provenance';
 import { RetentionAllocationCounter, type RetentionHardlink, type RetentionCensusTiming } from './disk-consumer-census';
 import {
   retentionPolicyForWorkspaceRoot, compilePolicy, containsClassRoot, deletionClassFor,
@@ -87,6 +88,8 @@ export interface DiskReclaimReceipt {
   schemaVersion: 1; id: string; startedAt: string; finishedAt: string; dryRun: boolean;
   /** Native machine identity; legacy hostless receipts cannot certify a host soak. */
   host?: string;
+  /** Captured once by the owning scheduled BG process; legacy absence is unknown. */
+  runtime?: ReclaimRuntime | null;
   complete: boolean;
   /** Unknown for partial runs; a successful run drained every unprotected selected entry. */
   policyExhausted: boolean | null;
@@ -126,6 +129,8 @@ export interface DiskReclaimReceipt {
   }>;
 }
 export interface DiskReclaimOptions {
+  /** Internal scheduled-runtime witness, never reconstructed from checkout HEAD. */
+  runtime?: ReclaimRuntime | null;
   dryRun?: boolean; home?: string; policy?: readonly RetentionClass[];
   /** Restrict recovery to exact, freshly enrolled policy roots. Scoped passes
    * never invoke delegates, whose effects can extend beyond these roots. */
@@ -947,7 +952,7 @@ export async function scanRetentionRootHolders(root: { path: string; aliases: st
 /** Expand policy patterns using the policy's own compiled segment matchers. No symlink traversal. */
 export async function policyRoots(policy: CompiledPolicy, home: string, errors: string[], io: {
   lstat: typeof lstat; readdir: (path: string) => Promise<string[]>;
-} = { lstat, readdir }): Promise<Array<{ path: string; classId: string }>> {
+} = { lstat, readdir }, purpose: 'reclaim' | 'placement' = 'reclaim'): Promise<Array<{ path: string; classId: string }>> {
   const roots: Array<{ path: string; classId: string }> = [];
   // Policy patterns share long literal prefixes and wildcard parents. Reuse
   // discovery metadata only for this pass; physical ownership, census and
@@ -963,8 +968,10 @@ export async function policyRoots(policy: CompiledPolicy, home: string, errors: 
     return stats.get(path)!;
   };
   for (const cls of policy.classes.values()) {
-    if (!cls.enforcers.some((e) => e.kind === 'standing-reclaim' && !e.via)) continue;
-    if (cls.keep.kind !== 'max-age' && cls.keep.kind !== 'newest') continue;
+    if (purpose === 'reclaim') {
+      if (!cls.enforcers.some((e) => e.kind === 'standing-reclaim' && !e.via)) continue;
+      if (cls.keep.kind !== 'max-age' && cls.keep.kind !== 'newest') continue;
+    }
     for (const root of policy.roots.filter((r) => r.classId === cls.id)) {
       const literal = root.pattern.replace(/^~(?=\/)/, home).split('/').filter(Boolean);
       let parents = ['/'];
@@ -1054,6 +1061,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
   const runDeadline = Date.now() + (options.runBudgetMs ?? DEFAULT_RECLAIM_RUN_BUDGET_MS);
   const receipt: DiskReclaimReceipt = {
     schemaVersion: 1, id: randomUUID(), host: hostname(), startedAt: new Date(started).toISOString(), finishedAt: '',
+    runtime: options.runtime ?? null,
     dryRun: options.dryRun ?? false, complete: false, policyExhausted: null, devices: [], entries: [], delegates: [], errors: [],
   };
   const phaseTimings = receipt.timings = { beforeSampleMs: 0, afterSampleMs: 0, auditMs: 0,
@@ -2170,7 +2178,9 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
     });
   };
   const holders = createRetentionHolderScanner();
+  const runtime = await captureReclaimRuntime();
   return runScheduledDiskReclaimWithFailureReceipt(() => runDiskReclaimOnce({ ...options, yieldAfterProductiveEffects: true, yieldAfterPendingCensus: true,
+    runtime,
     previousReceipt, delegates, readProtection, inspectTrees, inspectInitialCappedTrees,
     removeEntry: (entry, timeoutMs, observeTiming) => removePrivilegedRetentionEntry(entry, timeoutMs, nativeRetentionCommand, observeTiming),
     scanHolders: holders.scan, acquireRegularFileLease: holders.acquireRegularFileLease,

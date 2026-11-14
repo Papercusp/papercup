@@ -78,8 +78,12 @@ describe('rubric probe checks above the per-wake batch size run in chunks, never
       ratings: blankRatings(count) as never,
       dispatchTool,
     });
-    expect(evaluation.ok).toBe(false);
-    expect(JSON.stringify(evaluation)).toContain(`exceed execution cap ${RUBRIC_PROBE_MAX_PER_EMIT}`);
+    expect(evaluation).toMatchObject({
+      ok: false,
+      error: 'probe_invalid',
+      criterionKey: '(probe batch)',
+      detail: expect.stringContaining(`${count} distinct probes exceed the execution cap of ${RUBRIC_PROBE_MAX_PER_EMIT}`),
+    });
     expect(calls).toHaveLength(0);
   });
 });

@@ -37,6 +37,7 @@ const attestWorkItemCheckpointUnchanged = vi.fn();
 const getWorkItem = vi.fn();
 const commentWorkItem = vi.fn();
 const readSuccessfulActionInvocations = vi.hoisted(() => vi.fn());
+const readSuccessfulReadProofs = vi.hoisted(() => vi.fn());
 const resolveCurrentTokens = vi.hoisted(() => vi.fn());
 const readFrozenRepairMarker = vi.hoisted(() => vi.fn());
 const postLearnedAtLevel = vi.hoisted(() => vi.fn());
@@ -52,6 +53,12 @@ vi.mock('../../carry-surface-action-proof', async () => {
     '../../carry-surface-action-proof',
   );
   return { ...actual, readSuccessfulActionInvocations };
+});
+vi.mock('../../carry-surface-read-proof', async () => {
+  const actual = await vi.importActual<typeof import('../../carry-surface-read-proof')>(
+    '../../carry-surface-read-proof',
+  );
+  return { ...actual, readSuccessfulReadProofs };
 });
 vi.mock('../../freshness/resolvers', async () => {
   const actual = await vi.importActual<typeof import('../../freshness/resolvers')>('../../freshness/resolvers');
@@ -180,6 +187,7 @@ beforeEach(() => {
   getWorkItemCheckpoint.mockReset();
   getWorkItem.mockReset();
   readSuccessfulActionInvocations.mockReset();
+  readSuccessfulReadProofs.mockReset();
   resolveCurrentTokens.mockReset();
   readFrozenRepairMarker.mockReset();
   postLearnedAtLevel.mockReset();
@@ -189,6 +197,7 @@ beforeEach(() => {
   commentWorkItem.mockReset();
   commentWorkItem.mockResolvedValue({ id: 5894 });
   readSuccessfulActionInvocations.mockResolvedValue([]);
+  readSuccessfulReadProofs.mockResolvedValue([]);
   resolveCurrentTokens.mockResolvedValue(new Map());
   // Provenance verification is an I/O dependency. Keep this unit suite on its
   // declared seam so a missing transcript cannot consume the 3s bounded I/O
@@ -5972,6 +5981,48 @@ describe('work_items:checkpoint — launched-but-unread run lint (EI-19455262557
       signals: { inFlight: ['still running'], runRefs: ['/tmp/scorecard-repair.log'] },
     });
     expect(result.unreadRunLint.signals.runRefs).not.toContain('/tmp/focused-tests.log');
+  });
+
+  it.each([
+    ['direct capability:read', 'direct'],
+    ['nested code:run capability:read', 'nested-code-run'],
+  ] as const)('suppresses an exact completed log path proven by a same-turn %s', async (_label, source) => {
+    const path = '/tmp/same-turn-verification.log';
+    const body = `The verification test suite was launched; output: ${path}.`;
+    const turnRef = '[turn:session1@2026-11-12T20:00:00.000Z]';
+    getWorkItem.mockResolvedValue({ id: `WI-UNREAD-PROVEN-${source}`, harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+    readSuccessfulReadProofs.mockResolvedValueOnce([{ path, source }]);
+    resolveCurrentTurnStamp.mockResolvedValueOnce({ ref: turnRef });
+
+    const result = await one({ id: `WI-UNREAD-PROVEN-${source}`, checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty('unreadRunLint');
+    expect(readSuccessfulReadProofs).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'default',
+      turnRef,
+    }));
+    expect(resolveCurrentTurnStamp).toHaveBeenCalled();
+  });
+
+  it('retains the warning when the successful read proof names a different path', async () => {
+    const body = 'The verification test suite was launched; output: /tmp/unread-output.log.';
+    getWorkItem.mockResolvedValue({ id: 'WI-UNREAD-DIFFERENT-PATH', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+    readSuccessfulReadProofs.mockResolvedValueOnce([
+      { path: '/tmp/other-output.log', source: 'direct' },
+    ]);
+    resolveCurrentTurnStamp.mockResolvedValueOnce({ ref: '[turn:session1@2026-11-12T20:00:00.000Z]' });
+
+    const result = await one({ id: 'WI-UNREAD-DIFFERENT-PATH', checkpoint: body });
+
+    expect(result.unreadRunLint).toMatchObject({
+      flagged: true,
+      signals: { runRefs: ['/tmp/unread-output.log'] },
+    });
   });
 
   it('stays absent for an ordinary progress checkpoint', async () => {

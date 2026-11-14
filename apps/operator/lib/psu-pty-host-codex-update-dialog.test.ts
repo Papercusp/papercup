@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
+import { CODEX_MCP_STARTUP_TIMEOUT_SEC } from './mcp-proxy/budgets.mjs';
 import {
   CODEX_STARTUP_UPDATE_CHECK_OVERRIDE,
   CODEX_STARTUP_UPDATE_DIALOG_ESCAPE_KEY,
@@ -94,7 +95,8 @@ describe('managed Codex startup update dialog', () => {
     const argv = ['--no-daemon', '--no-alt-screen', 'resume', '01a12344-bee8-73d1-9ff7-8a27ed86b011'];
     expect(CODEX_STARTUP_UPDATE_CHECK_OVERRIDE).toBe('check_for_update_on_startup=false');
     expect(withManagedCodexStartupConfig({ command, args: argv, env }))
-      .toEqual(['-c', 'check_for_update_on_startup=false', ...argv]);
+      .toEqual(['-c', 'check_for_update_on_startup=false',
+        '-c', `mcp_servers.papercusp-su.startup_timeout_sec=${CODEX_MCP_STARTUP_TIMEOUT_SEC}`, ...argv]);
     for (const bin of ['codex', 'C:\\tools\\codex.exe', '/opt/codex.cmd']) {
       expect(withManagedCodexStartupConfig({ command: bin, args: argv, env })[0]).toBe('-c');
     }
@@ -117,11 +119,29 @@ describe('managed Codex startup update dialog', () => {
       ['--config=check_for_update_on_startup=true'],
     ]) {
       expect(withManagedCodexStartupConfig({ command, args: [...explicit, ...argv], env }))
-        .toEqual([...explicit, ...argv]);
+        .toEqual(['-c', `mcp_servers.papercusp-su.startup_timeout_sec=${CODEX_MCP_STARTUP_TIMEOUT_SEC}`, ...explicit, ...argv]);
     }
     // Idempotent: applying it to an already-overridden argv adds nothing.
     const once = withManagedCodexStartupConfig({ command, args: argv, env });
     expect(withManagedCodexStartupConfig({ command, args: once, env })).toEqual(once);
+  });
+
+  it.each(['', 'worker'])('covers fresh, resume and carry argv for role=%s with independent overrides', role => {
+    const env = { PAPERCUSP_AGENT: 'codex', PAPERCUSP_ROLE: role };
+    const server = role ? 'papercusp' : 'papercusp-su';
+    const key = `mcp_servers.${server}.startup_timeout_sec`;
+    for (const args of [[], ['resume', 'native-id'], ['--', 'carry prompt']]) {
+      const configured = withManagedCodexStartupConfig({ command: 'codex', args, env });
+      expect(configured).toEqual(['-c', CODEX_STARTUP_UPDATE_CHECK_OVERRIDE,
+        '-c', `${key}=${CODEX_MCP_STARTUP_TIMEOUT_SEC}`, ...args]);
+      expect(withManagedCodexStartupConfig({ command: 'codex', args: configured, env })).toEqual(configured);
+    }
+    for (const explicit of [['-c', `${key}=240`], ['--config', `${key} = 240`], ['--config=' + key + '=240']]) {
+      expect(withManagedCodexStartupConfig({ command: 'codex', args: explicit, env }))
+        .toEqual(['-c', CODEX_STARTUP_UPDATE_CHECK_OVERRIDE, ...explicit]);
+    }
+    expect(withManagedCodexStartupConfig({ command: 'codex', args: ['--', '-c', `${key}=1`], env }))
+      .toContain(`${key}=${CODEX_MCP_STARTUP_TIMEOUT_SEC}`);
   });
 
   it('ignores ordinary startup prose and menus missing any exact choice', () => {

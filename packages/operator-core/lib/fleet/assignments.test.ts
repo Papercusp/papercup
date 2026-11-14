@@ -348,6 +348,49 @@ describe('summarizeOrphan — WI-5975', () => {
     expect(productive.claim_health.reasons.join(' ')).toContain('non-housekeeping tool progress');
   });
 
+  it('only counts claim-health progress that happened after this claim was acquired', () => {
+    const now = Date.parse('2026-07-26T06:30:00.000Z');
+    const claimAcquiredTs = '2026-07-26T06:29:55.000Z';
+    const beforeClaim = '2026-07-26T06:29:54.000Z';
+    const afterClaim = '2026-07-26T06:29:56.000Z';
+    const row = {
+      ...heldByLive,
+      claimAcquiredTs,
+      lastProgressAt: null,
+      stalled: false,
+    };
+
+    const preAssignmentToolCall = deriveClaimHealth(
+      row,
+      { sessionState: 'live', lastToolCallAt: beforeClaim },
+      now,
+    );
+    const preAssignmentProductiveCall = deriveClaimHealth(
+      row,
+      { sessionState: 'live', productiveToolCallAt: beforeClaim },
+      now,
+    );
+    const preAssignmentCheckpoint = deriveClaimHealth(
+      { ...row, lastProgressAt: beforeClaim },
+      { sessionState: 'live', checkpointKind: 'authored' },
+      now,
+    );
+
+    expect([
+      preAssignmentToolCall.status,
+      preAssignmentProductiveCall.status,
+      preAssignmentCheckpoint.status,
+    ]).toEqual(['suspect', 'suspect', 'suspect']);
+
+    const postAssignmentToolCall = deriveClaimHealth(
+      row,
+      { sessionState: 'live', lastToolCallAt: afterClaim },
+      now,
+    );
+    expect(postAssignmentToolCall.status).toBe('healthy');
+    expect(postAssignmentToolCall.reasons.join(' ')).toContain('fresh tool progress');
+  });
+
   it('P-005 mechanical-only checkpoints and heartbeat-only liveness do not keep a claim healthy', () => {
     const now = Date.parse('2026-07-26T06:30:00.000Z');
     const mechanicalOnly = deriveClaimHealth(

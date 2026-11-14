@@ -28,6 +28,27 @@ async function captureForBrief(root: string, paths: string[], filePath: string) 
   return { packed, graph, startedAtMs, elapsedMs: Date.now() - startedAtMs };
 }
 describe('native P012 current scoped brief integration', () => {
+  it('R11: canonical resume withholds compiler consumers when input identity is lost', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'task-brief-r11-')); dirs.push(root);
+    writeFileSync(join(root, 'target.ts'), 'export function target() { return 1; }\n');
+    writeFileSync(join(root, 'consumer.ts'), 'import { target } from "./target";\nexport const value = target();\n');
+    const item = { id: 'WI-r11-resume', harness: 'r11-fixture', state: 'open',
+      payload: { paths: ['target.ts', 'consumer.ts'] } };
+    const captured = await captureForBrief(root, item.payload.paths, 'target.ts');
+    const graph = { ...captured.graph, evidence: { ...captured.graph.evidence!,
+      sourceScope: { ...captured.graph.evidence!.sourceScope, sourceFingerprint: null } } };
+    const resumed = await readWorkItemResume(item, { checkpoint: async () => ({ checkpoint: null, updatedAtMs: null }),
+      freshness: async () => undefined, evidence: async () => [], taskBrief: async () => ({
+        taskBrief: await buildTaskBrief({ workspaceId: 'r11-workspace', workItem: item }, {
+          root: async () => root, effects: DEFAULT_PACKER_EFFECTS,
+          pack: async () => captured.packed, graph: async () => graph,
+        }),
+      }) });
+    expect(resumed.taskBrief?.status).toBe('current');
+    expect(resumed.taskBrief).toHaveProperty('graph.status', 'unknown');
+    expect(resumed.taskBrief).toHaveProperty('graph.consumers', []);
+    expect(item.state).toBe('open');
+  }, 60_000);
   it('P018: carries recorded error references and real compiler hypotheses through canonical resume without asserting causation', async () => {
     const root = mkdtempSync(join(tmpdir(), 'native-incident-brief-')); dirs.push(root);
     writeFileSync(join(root, 'a-target.ts'), 'export function target() { return "source"; }\n');

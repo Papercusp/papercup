@@ -35,6 +35,7 @@ import { advanceCascade, continueCascadeDispatchCore, makeDigestEntry } from './
 import { HARD_BLOCKED_EXPIRY_MS, PROCEED_EXPIRY_MS } from './get-feedback-core';
 import { acquireConsultSpawnLease, makeDeferredConsultReachDispatcher } from './consult-dispatch';
 import { readConsultReview } from './review-findings';
+import { BAR_CRITIQUE_POLICY } from './selection-policies';
 import { mockOrgPgSql } from '../testing/mock-org-pg';
 
 const WS = 'ws-consult-verbs';
@@ -1755,14 +1756,18 @@ describe('consultCloseCore', () => {
     }
   });
 
-  it('does not count a requester answer disposition as a responder critique', async () => {
+  it('a requester answer disposition signals the reply-key await without counting as a responder critique', async () => {
     const id = await seedConsult({ state: 'active' });
     const { deps, emits } = makeDeps();
     expect(await consultCloseCore({ workspaceId: WS, authorId: REQUESTER, conversationId: id,
       outcome: 'answered', answer: 'resolved independently', evidence: EVIDENCE }, deps))
       .toMatchObject({ ok: true, state: 'closed_answered' });
-    expect(emits.map((event) => event.key)).toEqual([`consult:closed:${id}`]);
-    expect(emits[0]).toMatchObject({ to: [], payload: { state: 'closed_answered', closed_by: REQUESTER } });
+    expect(emits.map((event) => event.key)).toEqual([`consult:reply:${id}`, `consult:closed:${id}`]);
+    expect(emits[0]).toMatchObject({
+      to: [REQUESTER],
+      payload: { conversation_id: id, kind: 'close', closed_by: REQUESTER, state: 'closed_answered' },
+    });
+    expect(emits[1]).toMatchObject({ to: [], payload: { state: 'closed_answered', closed_by: REQUESTER } });
   });
 
   it("cant_help requires the reason; answered requires the answer — outcome validation refuses incomplete closes", async () => {
@@ -1778,7 +1783,7 @@ describe('consultCloseCore', () => {
     expect((await stateRow(id)).state).toBe('active');
   });
 
-  it("the requester may close (cant_help path) — no park-key emit for their own close", async () => {
+  it('the requester may close (cant_help path) and signals their existing reply-key await', async () => {
     const id = await seedConsult({ state: 'active' });
     const { deps, emits } = makeDeps();
     const r = await consultCloseCore(
@@ -1788,7 +1793,11 @@ describe('consultCloseCore', () => {
     if ('error' in r) throw new Error(r.error);
     expect(r.state).toBe('closed_cant_help');
     expect((await stateRow(id)).outcome).toEqual({ reason: 'answered it myself meanwhile' });
-    expect(emits.map((event) => event.key)).toEqual([`consult:closed:${id}`]);
+    expect(emits.map((event) => event.key)).toEqual([`consult:reply:${id}`, `consult:closed:${id}`]);
+    expect(emits[0]).toMatchObject({
+      to: [REQUESTER],
+      payload: { conversation_id: id, kind: 'close', closed_by: REQUESTER, state: 'closed_cant_help' },
+    });
   });
 
   it('a closed consult refuses a second close', async () => {
@@ -1817,7 +1826,8 @@ describe('consultCloseCore', () => {
     expect(posts).toHaveLength(1);
     expect(settlements).toHaveLength(1);
     expect(dispatchCalls).toEqual([]);
-    expect(emits.map((event) => event.key)).toEqual([`consult:closed:${id}`]);
+    expect(emits.map((event) => event.key)).toEqual([`consult:reply:${id}`, `consult:closed:${id}`]);
+    expect(emits[0]).toMatchObject({ to: [REQUESTER], payload: { kind: 'close', closed_by: REQUESTER } });
     expect(await consultCloseCore({ workspaceId: WS, authorId: REQUESTER, conversationId: id, outcome: 'cant_help', reason }, deps))
       .toMatchObject({ error: 'consult_not_open', state: 'closed_cant_help' });
     expect(posts).toHaveLength(1);
@@ -1911,7 +1921,7 @@ describe('consultCloseCore — graduate', () => {
     expect(emits[0].key).toBe(`consult:reply:${id}`);
   });
 
-  it('the requester may graduate too (close symmetry) — no park-key emit for their own close', async () => {
+  it('the requester may graduate too and signals their existing reply-key await', async () => {
     const id = await seedConsult({ state: 'active' });
     const { deps, emits, minted } = makeDeps({ withMint: true });
     const r = await consultCloseCore(
@@ -1921,7 +1931,8 @@ describe('consultCloseCore — graduate', () => {
     if ('error' in r) throw new Error(r.error);
     expect(r.state).toBe('graduated');
     expect(minted[0].closedBy).toBe(REQUESTER);
-    expect(emits.map((event) => event.key)).toEqual([`consult:closed:${id}`]);
+    expect(emits.map((event) => event.key)).toEqual([`consult:reply:${id}`, `consult:closed:${id}`]);
+    expect(emits[0]).toMatchObject({ to: [REQUESTER], payload: { kind: 'close', closed_by: REQUESTER } });
   });
 
   it('graduate requires the reason — refused with nothing written', async () => {
@@ -2033,7 +2044,7 @@ describe('cascade advance (D-005/P-013)', () => {
     expect(reachCalls[0].body).toContain('against those original scenarios');
     expect(dispatchCalls).toEqual([]);
   });
-  it('keeps the existing exchange cap after material design follow-ups', async () => {
+  it('keeps the ordinary exchange cap after material design follow-ups', async () => {
     const id = await seedConsult({ state: 'active', maxExchanges: 2 });
     const { deps, posts } = makeDeps();
     const req = { workspaceId: WS, authorId: REQUESTER, conversationId: id, kind: 'new_fact' as const,
@@ -2044,6 +2055,56 @@ describe('cascade advance (D-005/P-013)', () => {
     expect(posts).toHaveLength(2);
     expect((await stateRow(id)).max_exchanges).toBe(2);
   });
+  it('allows required BAR critique follow-ups beyond the ordinary exchange cap without resetting accounting', async () => {
+    const routing = { ...menuSnapshot([RESPONDER]), policy: BAR_CRITIQUE_POLICY };
+    routing.selection.selected[0].answeringOwnerId = 'review-answerer';
+    const id = await seedConsult({ state: 'active', exchangesUsed: 2, maxExchanges: 2, routing });
+    const { deps, posts, reachCalls } = makeDeps();
+    for (const [index, kind] of (['new_fact', 'question', 'new_fact'] as const).entries()) {
+      const result = await consultReplyCore({ workspaceId: WS, authorId: REQUESTER, conversationId: id,
+        kind, body: `Review the complete revised contract, revision ${index + 1}.` }, deps);
+      expect(result).toMatchObject({ ok: true, exchanges_used: index + 3, max_exchanges: 2 });
+      if ('error' in result) throw new Error(result.error);
+      expect(result.hint).not.toContain('cap reached');
+      expect(result.hint).not.toContain('Further replies are refused');
+    }
+    expect(posts).toHaveLength(3);
+    expect(reachCalls).toHaveLength(3);
+    expect(reachCalls.every(call => call.responder === 'review-answerer')).toBe(true);
+    expect(reachCalls[0].body).toContain('no round cap');
+    expect(await stateRow(id)).toMatchObject({ state: 'active', exchanges_used: 5, max_exchanges: 2 });
+  });
+  it('accepts an earlier BAR critique reviewer re-review at the ordinary exchange cap', async () => {
+    const id = await seedConsult({ state: 'active', responderId: 'resp-2', exchangesUsed: 2, maxExchanges: 2,
+      routing: { ...menuSnapshot([RESPONDER, 'resp-2']), policy: BAR_CRITIQUE_POLICY } });
+    await rootSql`UPDATE harness_shared.consult_state SET cascade_cursor = 1
+      WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    const { deps, posts, dispatchCalls } = makeDeps();
+    const result = await consultReplyCore({ workspaceId: WS, authorId: RESPONDER, conversationId: id,
+      kind: 'answer', body: 'The revised whole contract addresses the original scenarios.', evidence: EVIDENCE,
+      review: { subjectRef: 'plan:revised-contract@revision-2', coverage: 'complete', findings: [] } }, deps);
+    expect(result).toMatchObject({ ok: true, exchanges_used: 3, max_exchanges: 2,
+      review: { answers: [expect.objectContaining({ coverage: 'complete' })] } });
+    if ('error' in result) throw new Error(result.error);
+    expect(result.hint).not.toContain('cap reached');
+    expect(result.hint).not.toContain('Further replies are refused');
+    expect(result.cascade).toBeUndefined();
+    expect(posts).toHaveLength(1);
+    expect(dispatchCalls).toEqual([]);
+    expect((await stateRow(id)).exchanges_used).toBe(3);
+  });
+  it.each([undefined, 'rubric-vetting', 'bar-critique-other'])(
+    'keeps the ordinary exchange cap for policy %s even when prose requests BAR critique', async policy => {
+      const id = await seedConsult({ state: 'active', exchangesUsed: 2, maxExchanges: 2,
+        routing: policy ? { policy } : {} });
+      const { deps, posts } = makeDeps();
+      expect(await consultReplyCore({ workspaceId: WS, authorId: REQUESTER, conversationId: id,
+        kind: 'new_fact', body: 'BAR critique: full-contract re-review has no round cap.' }, deps))
+        .toMatchObject({ error: 'exchange_cap', exchanges_used: 2, max_exchanges: 2 });
+      expect(posts).toEqual([]);
+      expect((await stateRow(id)).exchanges_used).toBe(2);
+    },
+  );
   it('does not add a review round for cosmetic-only follow-ups', async () => {
     const id = await seedConsult({ state: 'active', routing: menuSnapshot([RESPONDER, 'resp-2']) });
     const before = await stateRow(id);
@@ -2453,7 +2514,7 @@ describe('consultCloseCore — late disposition on an expired consult (WI-39862 
       digest: [{ ownerId: 'rev-1', kind: 'answer', at: NOW.toISOString(), excerpt: 'ans' }],
       outcome: { disposition: 'cascade_exhausted_with_answers', answers: 1, answered_by: ['rev-1'] },
     });
-    const { deps, posts } = makeDeps();
+    const { deps, posts, emits } = makeDeps();
     const r = await consultCloseCore(
       { workspaceId: WS, authorId: REQUESTER, conversationId: id, outcome: 'answered', answer: 'the settled answer', confidence: 0.8 },
       deps,
@@ -2466,6 +2527,11 @@ describe('consultCloseCore — late disposition on an expired consult (WI-39862 
     const outcome = typeof row.outcome === 'string' ? JSON.parse(row.outcome as string) : row.outcome;
     expect(outcome).toMatchObject({ answer: 'the settled answer', confidence: 0.8 });
     expect(row.closed_at).not.toBeNull();
+    expect(emits.map((event) => event.key)).toEqual([`consult:reply:${id}`, `consult:closed:${id}`]);
+    expect(emits[0]).toMatchObject({
+      to: [REQUESTER],
+      payload: { conversation_id: id, kind: 'close', closed_by: REQUESTER, state: 'closed_answered' },
+    });
   });
 
   it('a NON-requester (even the last responder) still cannot close an expired consult', async () => {

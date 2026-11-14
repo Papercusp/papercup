@@ -54,7 +54,7 @@ import { scopeSettlementManifestToRepository, type SettlementScopeGit } from './
 import type { ProjectEntry } from '../harness-registry';
 import type { PrHost } from '../pr-host/types';
 import type { AuditGit } from './pr-delivery-audit';
-import { resolveIssuePhysicalSlug } from '../work-items-physical-row';
+import { pickPhysicalSlug, resolveIssuePhysicalSlug } from '../work-items-physical-row';
 import { githubRepoOf } from '../harness/git-sync/standing-pr';
 import { STANDING_PR_BRANCH } from '../harness/git-sync/decide-standing-pr';
 
@@ -153,18 +153,53 @@ async function readStandingPrAdmissionRows(
     expectedPayload?: Record<string, JSONValue>;
   },
 ): Promise<AdmissionStandingPrRow[]> {
-  return sql<AdmissionStandingPrRow[]>`
-    SELECT DISTINCT w.feature_id, w.harness_slug, w.payload
-      FROM harness_shared.work_admissions a
-      JOIN harness_shared.work_items w ON w.workspace_id = a.workspace_id
-       AND w.feature_id = a.work_item_id AND w.harness_slug = COALESCE(${input.workItemHarness ?? null}, a.harness_slug)
-     WHERE a.workspace_id = ${input.workspaceId} AND a.harness_slug = ANY(${input.harnesses}::text[])
-       AND (${input.workItemId ?? null}::text IS NULL OR w.feature_id = ${input.workItemId ?? null})
-       AND (${input.expectedPayload ? sql.json(input.expectedPayload) : null}::jsonb IS NULL
-         OR w.payload IS NOT DISTINCT FROM ${input.expectedPayload ? sql.json(input.expectedPayload) : null}::jsonb)
-       AND w.item_kind = 'bug' AND w.status = ANY(${[...COMPLETED_STATES]}::text[])
-       AND w.authority = 'committed'
-     ORDER BY w.feature_id LIMIT ${LIFECYCLE_RECONCILE_MAX}`;
+  type Candidate = AdmissionStandingPrRow & {
+    admission_harness_slug: string;
+    item_kind: string;
+    status: string;
+    authority: string | null;
+    matches_expected_payload: boolean;
+  };
+  // Admission harnesses fence the repository route, not the physical pot home.
+  // Read every physical candidate before filtering completion: otherwise a live
+  // or uncommitted twin could disappear and make an ambiguous id look unique.
+  const candidates = await sql<Candidate[]>`
+    WITH admitted AS (
+      SELECT DISTINCT a.work_item_id, a.harness_slug
+        FROM harness_shared.work_admissions a
+       WHERE a.workspace_id = ${input.workspaceId} AND a.harness_slug = ANY(${input.harnesses}::text[])
+         AND (${input.workItemId ?? null}::text IS NULL OR a.work_item_id = ${input.workItemId ?? null})
+       ORDER BY a.work_item_id, a.harness_slug LIMIT ${LIFECYCLE_RECONCILE_MAX}
+    )
+    SELECT w.feature_id, w.harness_slug, w.payload, w.item_kind, w.status, w.authority,
+           a.harness_slug AS admission_harness_slug,
+           (${input.expectedPayload ? sql.json(input.expectedPayload) : null}::jsonb IS NULL
+             OR w.payload IS NOT DISTINCT FROM ${input.expectedPayload ? sql.json(input.expectedPayload) : null}::jsonb)
+             AS matches_expected_payload
+      FROM admitted a
+      JOIN harness_shared.work_items w ON w.workspace_id = ${input.workspaceId} AND w.feature_id = a.work_item_id
+     ORDER BY w.feature_id, a.harness_slug, w.harness_slug`;
+  const admissions = new Map<string, Candidate[]>();
+  for (const row of candidates) {
+    const key = JSON.stringify([row.feature_id, row.admission_harness_slug]);
+    const rows = admissions.get(key) ?? [];
+    rows.push(row);
+    admissions.set(key, rows);
+  }
+  const selected = new Map<string, AdmissionStandingPrRow>();
+  for (const rows of admissions.values()) {
+    const first = rows[0]!;
+    const physical = pickPhysicalSlug(rows.map(row => row.harness_slug),
+      input.workItemHarness ?? first.admission_harness_slug,
+      { id: first.feature_id, workspaceId: input.workspaceId });
+    const row = rows.find(candidate => candidate.harness_slug === physical);
+    if (!row || row.item_kind !== 'bug' || !COMPLETED_STATES.has(row.status)
+      || row.authority !== 'committed' || !row.matches_expected_payload) continue;
+    selected.set(JSON.stringify([row.feature_id, row.harness_slug]), {
+      feature_id: row.feature_id, harness_slug: row.harness_slug, payload: row.payload,
+    });
+  }
+  return [...selected.values()];
 }
 
 async function inspectAdmissionStandingPrPaths(

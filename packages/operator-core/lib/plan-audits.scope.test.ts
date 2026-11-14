@@ -21,6 +21,7 @@ vi.mock("./workspace-registry", async (importOriginal) => ({
 import {
   getLatestActivationAudit,
   getLatestPlanAudit,
+  getStoredDiscoveryAudit,
   getPlanItemStatuses,
   resolvePlanItemHomeHarness,
   repoCitationDeps,
@@ -79,6 +80,39 @@ const row = {
   findings: [],
   summary: "verified",
 };
+
+describe('stored Discovery audit scope', () => {
+  beforeEach(() => M.sql.mockReset());
+
+  it.each([undefined, 76])('scopes the receipt by workspace, harness, kind and sequence %s', async (auditSeq) => {
+    const discovery = { readiness: { ready: false, blockers: [{ code: 'discovery_evidence_unusable', path: 'findings.F-002' }] } };
+    M.sql.mockResolvedValue([{ ...row, audit_seq: 76, audit_kind: 'discovery', discovery }]);
+    expect(await getStoredDiscoveryAudit('scoped-plan', {
+      workspaceId: 'receipt-ws', harnessSlug: 'papercusp', auditSeq,
+    })).toMatchObject({ auditSeq: 76, auditKind: 'discovery', discovery });
+    const [query, ...values] = M.sql.mock.calls[0]!;
+    expect(query.join(' ')).toContain("audit_kind = 'discovery'");
+    expect(values).toEqual(['receipt-ws', 'papercusp', 'scoped-plan', auditSeq ?? null, auditSeq ?? null]);
+  });
+
+  it('never falls back from a missing exact sequence, kind or harness', async () => {
+    for (const foreign of [{ audit_seq: 77, audit_kind: 'discovery' },
+      { audit_seq: 76, audit_kind: 'activation' },
+      { audit_seq: 76, audit_kind: 'discovery', harness_slug: 'other-harness' }]) {
+      M.sql.mockResolvedValueOnce([{ ...row, ...foreign }]);
+      expect(await getStoredDiscoveryAudit('scoped-plan', {
+        workspaceId: 'receipt-ws', harnessSlug: 'papercusp', auditSeq: 76,
+      })).toBeNull();
+    }
+  });
+
+  it('preserves unavailable storage as an error', async () => {
+    M.sql.mockRejectedValueOnce(new Error('receipt storage unavailable'));
+    await expect(getStoredDiscoveryAudit('scoped-plan', {
+      workspaceId: 'receipt-ws', harnessSlug: 'papercusp',
+    })).rejects.toThrow('receipt storage unavailable');
+  });
+});
 
 describe("getLatestPlanAudit workspace scope", () => {
   beforeEach(() => {

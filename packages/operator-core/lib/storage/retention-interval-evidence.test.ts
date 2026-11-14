@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { RECLAIM_SOURCE_PATHS, selectReclaimRuntime } from './reclaim-provenance';
+import { rubricCriterionCheckSchema } from '../agent-tools/plans/rubric-template';
 import { assessDurableHeadroomTargets, measureDurableHeadroomTargets, assessDiskHeadroomSoak, measureDiskHeadroomSoakWindow, readDiskHeadroomSoakEvidence, assessQualifiedDerivativeReceipts, assessRetainedStorageInterval, assessRetainedStorageSamples, assessPostgresRetentionEvidence, measurePostgresRetentionEvidence } from './retention-interval-evidence';
 import { tableRetentionTargets } from './table-retention';
 
@@ -119,21 +121,82 @@ describe('native R-8 Postgres retention binding', () => {
 
 describe('durable R-10 exact headroom targets', () => {
   const at = (h: number) => new Date(Date.UTC(2026, 9, 10) + h * 3_600_000).toISOString();
-  const window = { host: 'fixture-host', windowStart: at(0), windowEnd: at(72), measuredAt: at(73) };
+  const headroomBinding = { readinessRunId: 'ready', runtimeHost: 'port-3271', sourceSha: 'a'.repeat(40),
+    sourceBlobs: Object.fromEntries(RECLAIM_SOURCE_PATHS.map(path => [path, 'b'.repeat(40)])) };
+  const runtime = { service: headroomBinding.runtimeHost, processId: 'fixture-boot:123:456', artifact: {
+    sourceSha: headroomBinding.sourceSha, sourceBlobs: headroomBinding.sourceBlobs,
+    bundleSha256: 'c'.repeat(64), manifestSha256: 'd'.repeat(64), evidenceRef: '/fixture/bg.artifact.json' } };
+  const devices = ['/', '/mnt/data'].map(path => ({ path,
+    beforeFreeBytes: path === '/' ? 400 * 1000 ** 3 : 2 * 1000 ** 4,
+    afterFreeBytes: path === '/' ? 400 * 1000 ** 3 : 2 * 1000 ** 4 }));
+  const window = { host: 'fixture-host', windowStart: at(0), windowEnd: at(72), measuredAt: at(73), headroomBinding };
   const fixture = () => ({
     censuses: Array.from({ length: 72 }, (_, h) => ['/', '/mnt/data'].map(path => ({
       id: `${path}-${h}`, host: window.host, path, at: at(h + 0.5), complete: true,
       availableBytes: path === '/' ? 400 * 1000 ** 3 : 2 * 1000 ** 4,
     }))).flat(),
-    attempts: Array.from({ length: 72 }, (_, h) => ({ id: `run-${h}`, host: window.host, startedAt: at(h + 0.2) })),
-    receipts: Array.from({ length: 72 }, (_, h) => ({ id: `run-${h}`, host: window.host, startedAt: at(h + 0.2),
+    attempts: [{ id: 'ready', host: window.host, runtime: structuredClone(runtime), dryRun: false as const, startedAt: at(-1) },
+      ...Array.from({ length: 72 }, (_, h) => ({ id: `run-${h}`, host: window.host, runtime: structuredClone(runtime), dryRun: false as const, startedAt: at(h + 0.2) }))],
+    receipts: [{ id: 'ready', host: window.host, runtime: structuredClone(runtime), devices: structuredClone(devices),
+      startedAt: at(-1), finishedAt: at(-0.5), dryRun: false as const, complete: true, policyExhausted: true,
+      errors: [] as string[], entries: [] as Array<{ status: string }>, delegates: [] as Array<{ ok: boolean }> },
+      ...Array.from({ length: 72 }, (_, h) => ({ id: `run-${h}`, host: window.host, runtime: structuredClone(runtime), devices: structuredClone(devices), startedAt: at(h + 0.2),
       finishedAt: at(h + 0.3), dryRun: false as const, complete: true, policyExhausted: true,
-      errors: [] as string[], entries: [] as Array<{ status: string }>, delegates: [] as Array<{ ok: boolean }> })),
+      errors: [] as string[], entries: [] as Array<{ status: string }>, delegates: [] as Array<{ ok: boolean }> }))],
     dispositions: { supersededPlan: 'disk-headroom-standing-reclaim-2026-10-12', successorPlan: 'disk-durable-headroom-2026-10-15',
       planTerminal: true, linkedSuccessor: true, siblingId: 'WI-10007751', siblingTerminal: true },
   });
   it('accepts the exact decimal-byte floors for every hour and complete native run', () => {
     expect(assessDurableHeadroomTargets(fixture(), window).verdict).toBe('pass');
+  });
+  it('retains native readiness identity for independent acceptance and exact shipment', () => {
+    const result = assessDurableHeadroomTargets(fixture(), window);
+    expect(JSON.parse(result.detail).readiness).toEqual({ binding: headroomBinding, runtime, runId: 'ready', readyAt: at(-0.5) });
+    expect(rubricCriterionCheckSchema.parse({ kind: 'instrument', instrumentKey: 'storage:durable-headroom-targets-72h', headroomBinding }))
+      .toHaveProperty('headroomBinding', headroomBinding);
+  });
+  it('allows the prerequisite reclaim itself to establish the required free space', () => {
+    const input = fixture(); input.receipts[0]!.devices[0]!.beforeFreeBytes = 1;
+    expect(assessDurableHeadroomTargets(input, window).verdict).toBe('pass');
+  });
+  it.each(['missing-binding', 'missing-start', 'missing-terminal', 'pre-readiness', 'unrelated-source',
+    'wrong-input', 'wrong-service', 'missing-runtime', 'reboot', 'changed-bundle', 'changed-manifest'])(
+    'rejects a healthy older or unqualified window (%s)', kind => {
+      const input = fixture(); const request = structuredClone(window);
+      if (kind === 'missing-binding') delete (request as { headroomBinding?: unknown }).headroomBinding;
+      if (kind === 'missing-start') input.attempts.shift();
+      if (kind === 'missing-terminal') input.receipts.shift();
+      if (kind === 'pre-readiness') input.receipts[0]!.finishedAt = at(0.01);
+      if (kind === 'unrelated-source') request.headroomBinding.sourceSha = 'e'.repeat(40);
+      if (kind === 'wrong-input') request.headroomBinding.sourceBlobs[RECLAIM_SOURCE_PATHS[0]] = 'e'.repeat(40);
+      if (kind === 'wrong-service') request.headroomBinding.runtimeHost = 'port-3170';
+      if (kind === 'missing-runtime') (input.receipts[30] as { runtime?: unknown }).runtime = null;
+      if (kind === 'reboot') input.attempts[30]!.runtime.processId = 'other-boot:123:456';
+      if (kind === 'changed-bundle') input.receipts[30]!.runtime.artifact.bundleSha256 = 'e'.repeat(64);
+      if (kind === 'changed-manifest') input.receipts[30]!.runtime.artifact.manifestSha256 = 'e'.repeat(64);
+      expect(assessDurableHeadroomTargets(input, request).verdict).toBe('unknown');
+    });
+  it.each(['incomplete', 'delegate', 'floor'])('fails a measured prerequisite failure (%s)', kind => {
+    const input = fixture();
+    if (kind === 'incomplete') input.receipts[0]!.complete = false;
+    if (kind === 'delegate') input.receipts[0]!.delegates.push({ ok: false });
+    if (kind === 'floor') input.receipts[0]!.devices[0]!.afterFreeBytes--;
+    const result = assessDurableHeadroomTargets(input, window);
+    expect(result.verdict).toBe('fail');
+    expect(JSON.parse(result.detail).readiness).toBeNull();
+  });
+  it('preserves a measured window dip when the accepted readiness binding is absent', () => {
+    const input = fixture(); input.censuses[0]!.availableBytes--;
+    expect(assessDurableHeadroomTargets(input, { ...window, headroomBinding: undefined }).verdict).toBe('fail');
+  });
+  it('captures only verified boot inputs and a measured native process', () => {
+    const artifact = { status: 'measured' as const, ...runtime.artifact };
+    const serving = { host: runtime.service, processId: runtime.processId, buildSha: null };
+    expect(selectReclaimRuntime(artifact, serving)).toEqual(runtime);
+    expect(selectReclaimRuntime({ status: 'unknown', reason: 'missing' }, serving)).toBeNull();
+    expect(selectReclaimRuntime(artifact, { ...serving, processId: null })).toBeNull();
+    const missing = structuredClone(artifact); delete missing.sourceBlobs[RECLAIM_SOURCE_PATHS[0]];
+    expect(selectReclaimRuntime(missing, serving)).toBeNull();
   });
   it.each(['healthy', 'floor-dip', 'incomplete-run'])(
     'keeps unset predecessor linkage unknown without hiding independent evidence (%s)', mode => {
@@ -184,6 +247,14 @@ describe('durable R-10 exact headroom targets', () => {
       expect(assessDurableHeadroomTargets(input, window).verdict).toBe('fail');
     }
   });
+  it.each([undefined, null, 'false', 0, true])(
+    'does not certify an extra potentially-real start with malformed dryRun=%j', dryRun => {
+      const input = fixture();
+      const extra: Record<string, unknown> = { ...input.attempts[30], id: 'ambiguous-extra-start', dryRun };
+      if (dryRun === undefined) delete extra.dryRun;
+      expect(assessDurableHeadroomTargets({ ...input, attempts: [...input.attempts, extra] }, window).verdict)
+        .toBe('unknown');
+    });
   it('keeps vanished or silent runs, missing dispositions and hostless/foreign evidence unknown', () => {
     const missing = fixture(); missing.receipts.splice(30, 1);
     expect(assessDurableHeadroomTargets(missing, window).verdict).toBe('unknown');
@@ -206,7 +277,9 @@ describe('durable R-10 exact headroom targets', () => {
     expect((await measureDurableHeadroomTargets({ unsafe } as never, { ...window, workspaceId: 'workspace', harnessSlug: 'harness' })).verdict).toBe('pass');
     expect(unsafe.mock.calls[0]![0]).toContain("actor='system:disk-retention'");
     expect(unsafe.mock.calls[0]![0]).toContain("action IN ('disk-retention:started','disk-retention:receipt')");
-    expect(unsafe.mock.calls[0]![1]).toEqual([window.host, at(0), at(72), 'workspace', Date.parse(at(0)), expect.any(Number), 'harness']);
+    expect(unsafe.mock.calls[0]![0]).toContain("details->'dryRun' IS DISTINCT FROM 'true'::jsonb");
+    expect(unsafe.mock.calls[0]![0]).toContain('OR subject=$8');
+    expect(unsafe.mock.calls[0]![1]).toEqual([window.host, at(0), at(72), 'workspace', Date.parse(at(0)), expect.any(Number), 'harness', 'ready']);
   });
 });
 

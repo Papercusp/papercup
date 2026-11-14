@@ -451,6 +451,123 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
       .toMatchObject({ state: 'ready', output: { count: 2 }, evidenceRef: `plan-run:${child.target.runId}` });
   }, 90_000);
 
+  it('WI-6554700010048197: blueprint plan targets retain stable app dispatch, scoped status and replay', async () => {
+    const execution = { appHarnessSlug: APP_HARNESS, agentName: 'blueprint-plan-agent' };
+    const wakeOwner = 'su-blueprint-plan-dispatch-it';
+    // Supply current discovery prerequisites without bypassing the real gate.
+    const content = TEMPLATE_CONTENT + '\n\n## Discovery\n\n```discovery\n' + JSON.stringify({
+      questions: [], notApplicable: 'This fixture reuses the existing plan DAG to isolate operation dispatch.',
+      findings: [{ id: 'F-1', questions: [], conclusion: 'The existing DAG is the complete fixture workload.',
+        evidenceRefs: ['doc:stable-dispatch-fixture'], dispositions: ITEMS.map(item => ({
+          target: item.id, decision: 'reuse', reason: 'Reuse the existing root and dependent fixture items.',
+        })) }],
+    }) + '\n```\n';
+    const fixtureDoc = 'The private dispatch fixture has one actionable root, one completed item and one dependent item.';
+    const { deriveIndexFromContent, readPlanBySlug } = await import('../../agent-tools/plans/source');
+    const index = deriveIndexFromContent(content);
+    expect(index.items.filter(item => item.status === 'todo')).toHaveLength(2);
+    await sql`INSERT INTO harness_shared.harness_docs
+      (workspace_id, harness_slug, doc_id, source, subject_ref, anchor_paths, status, title,
+       content, content_hash, frontmatter)
+      VALUES (${WS}, ${HARNESS}, 'stable-dispatch-fixture', 'manual', '[]'::jsonb, ARRAY[]::text[],
+        'fresh', 'Stable dispatch fixture', ${fixtureDoc}, ${hashPlanContent(fixtureDoc)}, '{}'::jsonb)`;
+    await sql`
+      UPDATE harness_shared.harness_plans
+         SET content = ${content}, content_hash = ${hashPlanContent(content)},
+             items = ${JSON.stringify(index.items)}::text::jsonb,
+             schedule = ${JSON.stringify({ kind: 'rrule', rrule: 'FREQ=DAILY', execution })}::text::jsonb
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
+    await sql`INSERT INTO harness_shared.plan_revisions
+      (workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot, rationale,
+       author_kind, author_id, session_id, session_kind, created_at)
+      VALUES (${WS}, ${HARNESS}, ${TEMPLATE}, 1, ${hashPlanContent(content)}, ${content},
+        'Private stable-dispatch regression fixture', 'agent', ${wakeOwner}, 'fixture', 'codex', ${Date.now()})`;
+    const { recordCurrentDiscoveryAudit, withCurrentDiscovery } = await import('../../plan-audits');
+    const discoveryInput = { workspaceId: WS, harnessSlug: HARNESS, planSlug: TEMPLATE, createdBy: wakeOwner };
+    const finalized = await recordCurrentDiscoveryAudit(discoveryInput);
+    if (!finalized.ok) throw new Error(`fixture discovery finalization failed: ${JSON.stringify(finalized)}`);
+    expect(finalized.discovery.readiness.ready, JSON.stringify(finalized.discovery.readiness)).toBe(true);
+    const preflight = await withCurrentDiscovery(discoveryInput, async () => undefined);
+    expect(preflight.ok, JSON.stringify(preflight)).toBe(true);
+    const readable = await readPlanBySlug(TEMPLATE, { workspaceId: WS, harnessSlug: HARNESS });
+    expect(readable?.row.items.map(item => item.id), 'promotion must read the canonical derived item index')
+      .toEqual(['P-001', 'P-002', 'P-003']);
+    const source = {
+      id: 'stable-plan-invocation-fixture', workItem: { kind: 'feature' },
+      roles: [{ id: 'worker' }], spine: { edges: { DONE: { to: 'done' } } },
+      operations: [{
+        id: 'stable-monitor', version: '1',
+        target: { kind: 'plan', template: {
+          kind: 'plan-template', ref: TEMPLATE, revision: '0',
+          contentHash: hashPlanContent(content),
+        } },
+        inputSchema: { type: 'object' }, acceptance: { resultSchema: { type: 'object' } },
+      }],
+    };
+    await projectBlueprintToPg(sql, {
+      workspaceId: WS, harnessSlug: HARNESS, blueprint: BlueprintSchema.parse(source),
+      specification: compileAgentSpecification({ source }),
+    });
+    await upsertInboxWakeAwait({ subscriberId: wakeOwner, eventKey: inboxWakeKey(wakeOwner),
+      note: 'blueprint plan-target regression', minSleepSec: 0 });
+    await recordAdvSession({ workspaceId: WS, mode: 'console', agent: 'codex', coordOwnerId: wakeOwner });
+    await adoptAgentName(WS, wakeOwner, execution.agentName, wakeOwner);
+    setAutoPumpEnabledForTests(false);
+    try {
+      const request = { workspaceId: WS, harnessSlug: HARNESS, callerId: 'stable-plan-app',
+        operationId: 'stable-monitor', requestKey: 'stable-monitor-001', input: {} };
+      const handle = await submitBlueprintOperation(sql, request);
+      if (handle.target.kind !== 'plan') throw new Error('expected a plan-target operation');
+      const runId = handle.target.runId;
+      const [run] = await sql<Array<{ harness: string }>>`
+        SELECT harness_slug AS harness FROM harness_shared.plan_runs
+         WHERE workspace_id = ${WS} AND id = ${runId}`;
+      expect(run.harness).toBe(APP_HARNESS);
+      const items = await sql<Array<{ harness: string; assignee: string | null; status: string; payload: any }>>`
+        SELECT harness_slug AS harness, taken_by AS assignee, status, payload
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${WS} AND payload->'plan_run'->>'runId' = ${String(runId)}
+         ORDER BY (source_plan_item_ids)[1]`;
+      expect(items, JSON.stringify({ run, items, plan: await sql`
+        SELECT items, content FROM harness_shared.harness_plans
+         WHERE workspace_id = ${WS} AND harness_slug = ${APP_HARNESS}
+           AND plan_slug = ${handle.target.instanceSlug}` })).toHaveLength(2);
+      expect(items.every(item => item.harness === APP_HARNESS &&
+        item.payload.plan_run.execution.agentName === execution.agentName)).toBe(true);
+      expect(items[0]).toMatchObject({ status: 'open', assignee: execution.agentName });
+      expect(items[1]).toMatchObject({ status: 'blocked', assignee: null });
+      expect((await listRecentDeliveries(wakeOwner, 20)).some(delivery =>
+        delivery.source === 'system:plan-run-direct-dispatch')).toBe(true);
+      expect(await getBlueprintOperationStatus(sql, handle, request.callerId))
+        .toMatchObject({ phase: 'waiting', outcome: null });
+      expect(await submitBlueprintOperation(sql, request)).toEqual(handle);
+      // A pinned receipt never broadens a read to another harness to find a matching run.
+      await sql`UPDATE harness_shared.blueprint_operation_invocations
+        SET target_harness_slug = ${HARNESS} WHERE id = ${handle.receiptId} AND workspace_id = ${WS}`;
+      await expect(getBlueprintOperationStatus(sql, handle, request.callerId))
+        .rejects.toThrow('missing or outside its harness');
+      await expect(submitBlueprintOperation(sql, request)).rejects.toThrow('missing plan run');
+      await sql`UPDATE harness_shared.blueprint_operation_invocations
+        SET target_harness_slug = ${APP_HARNESS}, target_ref = NULL
+        WHERE id = ${handle.receiptId} AND workspace_id = ${WS}`;
+      expect(await submitBlueprintOperation(sql, request)).toEqual(handle);
+      const [population] = await sql<Array<{ count: number }>>`
+        SELECT count(*)::int AS count FROM harness_shared.plan_runs
+         WHERE workspace_id = ${WS} AND harness_slug = ${APP_HARNESS} AND plan_slug = ${TEMPLATE}`;
+      expect(population.count).toBe(1);
+    } finally {
+      try {
+        await sql`DELETE FROM harness_shared.event_wake_deliveries WHERE subscriber_id = ${wakeOwner}`;
+        await sql`DELETE FROM harness_shared.event_awaits WHERE subscriber_id = ${wakeOwner}`;
+        await sql`DELETE FROM harness_shared.agent_name_sessions
+          WHERE workspace_id = ${WS} AND session_owner_id = ${wakeOwner}`;
+        await sql`DELETE FROM harness_shared.agent_names
+          WHERE workspace_id = ${WS} AND agent_name = ${execution.agentName}`;
+        await sql`DELETE FROM harness_shared.adv_sessions WHERE coord_owner_id = ${wakeOwner}`;
+      } finally { setAutoPumpEnabledForTests(true); }
+    }
+  }, 90_000);
+
   it('admits one pinned blueprint plan run under concurrent replay and repairs an interrupted receipt update', async () => {
     const source = {
       id: 'plan-invocation-fixture', workItem: { kind: 'feature' },

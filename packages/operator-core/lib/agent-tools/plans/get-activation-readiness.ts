@@ -334,7 +334,7 @@ async function createPlanActivationReadinessRequestInWorkspace(params: {
       discovery ??= discoveryNow;
       const basis = { ...planScope, requesterId: params.requesterId, planRevision: next.row.version,
         planHash: next.row.contentHash, policyHash: hash([facts.policy, CONSULT_DEFAULT_POLICY]),
-        specSetHash: compiler.computeSpecSetHash(clauses),
+        specSetHash: compiler.computeSpecSetHash(clauses.filter(critique.isLiveBarCritiqueClause)),
         evidenceHash: hash([facts.evidence, discoveryNow.ok ? discoveryNow.result : discoveryNow]) };
       adviceBasis ??= basis;
       basisEstablished = true;

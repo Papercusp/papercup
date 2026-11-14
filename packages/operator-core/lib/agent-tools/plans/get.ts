@@ -45,7 +45,7 @@ import { readIterationMetrics } from '../../verification-attempts/plan-iteration
 import type { PlanLifecycleReconciliation } from '@papercusp/plan-parser';
 import { summarizePlanStatus, type PlanItemHolder } from '@papercusp/plan-parser';
 import { getAcceptanceRubricForPlan } from '../../rubrics';
-import { getLatestActivationAudit, getLatestPlanAudit } from '../../plan-audits';
+import { getLatestActivationAudit, getLatestPlanAudit, getStoredDiscoveryAudit } from '../../plan-audits';
 import { splitPlanSections } from './plan-sections';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { getDoorConstantsSync } from '../../context-doors-config';
@@ -124,6 +124,9 @@ const argsSchema = z
       .max(100)
       .optional()
       .describe('Plan slugs to fetch in one call. Equivalent to calling this tool once per slug.'),
+    discoveryAudit: z.union([z.literal(true), z.number().int().positive().max(Number.MAX_SAFE_INTEGER)])
+      .optional()
+      .describe('Read only the stored Discovery audit: true selects the latest, a positive auditSeq selects that exact receipt. Returns recorded readiness, never current execution permission. Does not re-run or write an audit.'),
     revision: z
       .union([z.number().int().positive().max(Number.MAX_SAFE_INTEGER), z.string().regex(/^[a-f0-9]{64}$/)])
       .optional()
@@ -282,6 +285,9 @@ const argsSchema = z
   })
   .refine((v) => v.revision === undefined || (!!v.slug && !v.slugs?.length), {
     message: 'revision requires one slug, without slugs.',
+  })
+  .refine((v) => v.discoveryAudit === undefined || (!!v.slug && !v.slugs?.length && v.revision === undefined), {
+    message: 'discoveryAudit requires one slug, without slugs or revision.',
   })
   .refine((v) => v.revision === undefined || !(
     v.includeEnrichments || v.includeHistory || v.priorAttemptRefs?.length ||
@@ -707,10 +713,10 @@ export default defineTool({
   description:
     "Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too. Judge callers also receive the exact latest activation-audit record and requirement mappings as `latestActivationAudit`. An exact slug can auto-resolve its owning harness within the caller's workspace ONLY from an unscoped (operator/superuser) session; a session already scoped to a concrete harness stays scoped to it and reports which harness actually owns the slug on a miss. Pass a concrete `harness` (for example, 'papercusp') to disambiguate, constrain, or escape the ambient scope. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
   guidance: {
-    when: "You have an exact slug and need the plan contents. In operator/superuser scope, the slug auto-resolves its owning harness within the caller's workspace; pass a concrete `harness` (for example, 'papercusp') when you need to constrain or disambiguate that lookup. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
+    when: "Read an exact slug from PG. Pass a concrete harness to constrain/disambiguate lookup; operator scope resolves its owner within the workspace. harness:'all' requires an unscoped session.",
     notWhen: "You don't know the slug — call plans:list first. Item-only queries across plans should use plans:items.",
     chaining:
-      'plans:list → plans:get { slug } (or { slug, harness } to constrain scope) → optionally plans:items for cross-plan picks.',
+      'plans:list → plans:get { slug, harness, activationReadiness:true } before activation audit/start: inspect the complete stage population, canonical codes, dependencies and next actions. Detail is bounded with explicit counts; unknown/waiting stages need resolution. The preview is read-only and advisory; canonical start and execution guards still apply. Use plans:items for cross-plan picks.',
     argRedirects: {
       sections: {
         drop: true,
@@ -783,6 +789,22 @@ export default defineTool({
       sctx = harnessScopedCtx(args.harness, ctx);
     }
     const opts = await ctxToPlanSourceOpts(sctx);
+    // Receipt recovery bypasses mutable enrichment/cache. Its verdict describes
+    // the recorded basis and never calls recordCurrentDiscoveryAudit.
+    if (args.discoveryAudit !== undefined) {
+      const auditScope = await resolvePlanScope(opts);
+      const audit = await getStoredDiscoveryAudit(args.slug!, {
+        ...auditScope,
+        ...(typeof args.discoveryAudit === 'number' ? { auditSeq: args.discoveryAudit } : {}),
+      });
+      return { data: { ok: audit !== null, results: [{
+        ok: audit !== null, slug: args.slug!, harness: auditScope.harnessSlug,
+        readSource: 'stored-discovery-audit', historical: true,
+        ...(audit ? { auditSeq: audit.auditSeq, readiness: audit.discovery?.readiness ?? null,
+          audit, note: 'Recorded Discovery verdict only; current evidence and execution authority may have changed.' }
+          : { error: 'discovery_audit_not_found', requestedAudit: args.discoveryAudit }),
+      }], counts: { ok: audit ? 1 : 0, failed: audit ? 0 : 1 } } };
+    }
     const ambientCallerHarness = !args.harness && scope.kind === 'harness' ? scope.slug : null;
     // An EXPLICIT harness is checked AFTER the read, not before it like the
     // ambient case: a named harness is usually the right one, so a hit must not

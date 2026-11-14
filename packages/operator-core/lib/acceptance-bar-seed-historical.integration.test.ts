@@ -110,8 +110,8 @@ describe('historical deterministic acceptance BAR rubric collision', () => {
       }) + '\n```',
     );
     await insertSubject(slug, content(exact));
-    const seed = (testName: string, dryRun = false) => db.adminSql.begin(tx => seedAcceptanceBarsInTransaction({
-      ...seedInput(slug, content(testName), 'su-seeder'), executor: tx as unknown as SpecClauseSql, dryRun,
+    const seed = (testName: string, dryRun = false, planContent = content(testName)) => db.adminSql.begin(tx => seedAcceptanceBarsInTransaction({
+      ...seedInput(slug, planContent, 'su-seeder'), executor: tx as unknown as SpecClauseSql, dryRun,
     }));
     const initial = await seed(exact);
     expect(initial.ok).toBe(true);
@@ -138,6 +138,22 @@ describe('historical deterministic acceptance BAR rubric collision', () => {
       expect(await seed('another nonexistent case', dryRun)).toMatchObject({
         ok: false, error: 'bar_contract_check_invalid',
       });
+      expect(await snapshot()).toEqual(before);
+      const renamed = await seed(exact, dryRun, content(exact).replace(
+        '**R-1 — Canonical outcome.**', '**R-1 — Renamed outcome.**',
+      ));
+      expect(renamed).toMatchObject({
+        ok: false, error: 'bar_contract_live_requirement_drift',
+        problems: [expect.objectContaining({
+          barKey: 'R-1',
+          detail: expect.stringContaining('stored verification was retained'),
+        })],
+      });
+      if (renamed.ok) throw new Error('changed promise must retain the approved check');
+      expect(renamed.message).toContain('stored heading "Canonical outcome"');
+      expect(renamed.message).toContain('live heading "Renamed outcome"');
+      expect(renamed.message).toContain('historical suite-only selector');
+      expect(renamed.message).toContain('rubrics:amend');
       expect(await snapshot()).toEqual(before);
     }
   });

@@ -411,6 +411,18 @@ export function consultExpiryFindSilentResponders(
       rows.map(async (row) => {
         const routedMs = Date.parse(row.routedAt);
         if (!Number.isFinite(routedMs)) return;
+        if (row.followupPostId) {
+          // The core measured typed post order, so an old answer cannot veto
+          // current follow-up debt. Require exact terminal task evidence here,
+          // rather than inferring failure from quiet logs or a parked owner.
+          if (!row.answeringOwnerId || !row.sourceOwnerId) return;
+          const sessionState = verdicts.get(row.answeringOwnerId)?.sessionState;
+          if (sessionState != null && !DEAD_RESPONDER_STATES.has(sessionState)) return;
+          if (!await endedLaunch(row)) return;
+          if (await hasRecentCarryRespawn(row.answeringOwnerId, routedMs)) return;
+          silent.add(row.conversationId);
+          return;
+        }
         if (row.answeringOwnerId === null) {
           // onAnsweringOwner reserves a participant before launch. No stamp
           // after this window plus no post is a failed dispatch; a stamp alone

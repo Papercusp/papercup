@@ -21,6 +21,8 @@ import { LOOP_TURN_START_MARKER } from '../../agent-tools/activity/lifecycle-mar
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { recordAdvSession, recordSuLaunchSpec } from '../../adv-sessions';
 import { cleanupScopedNativeFixtureDatabase } from '../../../../../apps/operator/vitest-shims/scoped-native-fixture-cleanup';
+import * as codexAdapter from '../../../../../apps/operator/scripts/hooks/inject/adapters/codex.mjs';
+import { runInjection } from '../../../../../apps/operator/scripts/hooks/inject/core.mjs';
 
 let pg: DedicatedNativePg;
 let org: OrgTestDb;
@@ -188,12 +190,15 @@ describe('loop turn-start producer to reconciler, real Postgres', () => {
         // Memory is disabled so this proves stamping independently of recall.
         const { default: routes } = await import('../../endpoint-route/routes/agent-mcp/turn-start-memory');
         const endpoint = routes[0] as unknown as { handler(req: Request): Promise<Response> };
+        const received: Array<Record<string, unknown>> = [];
         const server = createServer(async (incoming, outgoing) => {
           try {
             const chunks: Buffer[] = [];
             for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
+            const requestBody = Buffer.concat(chunks).toString();
+            received.push(JSON.parse(requestBody) as Record<string, unknown>);
             const response = await endpoint.handler(new Request('http://127.0.0.1/api/agent-mcp/turn-start-memory', {
-              method: incoming.method, body: Buffer.concat(chunks).toString(),
+              method: incoming.method, body: requestBody,
             }));
             outgoing.writeHead(response.status, { 'content-type': 'application/json' });
             outgoing.end(await response.text());
@@ -211,13 +216,31 @@ describe('loop turn-start producer to reconciler, real Postgres', () => {
         try {
           const address = server.address();
           if (!address || typeof address === 'string') throw new Error('private HTTP listener missing');
-          const response = await fetch(`http://127.0.0.1:${address.port}/api/agent-mcp/turn-start-memory`, {
-            method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ owner: c.owner, workspace: WS, client: 'codex', prompt,
-              memoryEnabled: false, wallMs: 2500 }),
+          // Exercise Codex's actual UserPromptSubmit adapter and dispatcher, not
+          // just a hand-built request to the endpoint.
+          await runInjection({
+            adapter: codexAdapter,
+            nativeEvent: 'UserPromptSubmit',
+            event: { prompt, cwd: '/repo' },
+            env: {
+              ...process.env,
+              PAPERCUSP_SID: c.owner,
+              PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${address.port}`,
+              PAPERCUSP_WORKSPACE: WS,
+              PAPERCUSP_HARNESS_SLUG: 'papercusp',
+              PAPERCUSP_TURN_START_MEMORY: 'off',
+            },
           });
-          expect(response.status).toBe(200);
-          expect(await response.json()).toMatchObject({ ok: true });
+          expect(received).toHaveLength(1);
+          expect(received[0]).toMatchObject({
+            owner: c.owner,
+            workspace: WS,
+            harness: 'papercusp',
+            client: 'codex',
+            prompt,
+            memoryEnabled: false,
+          });
+          expect(received[0]?.turnStartRequestId).toEqual(expect.stringMatching(/^[A-Za-z0-9_-]{1,80}$/));
           await vi.waitFor(async () => {
             const stamps = await sql`SELECT detail FROM harness_shared.agent_activity
               WHERE workspace_id = ${WS} AND owner_id = ${c.owner} AND summary = ${LOOP_TURN_START_MARKER}`;
@@ -390,7 +413,7 @@ describe('loop turn-start producer to reconciler, real Postgres', () => {
     expect(routine?.parked).toBe(false);
   });
 
-  it('joins a direct loop-fire marker by exact nonce when the marker follows the prompt timestamp', async () => {
+  it('does not let an older direct loop-fire turn repair a newer fire', async () => {
     const now = Date.now();
     const firedAt = new Date(now - 60_000);
     const fixture = {
@@ -501,17 +524,37 @@ describe('loop turn-start producer to reconciler, real Postgres', () => {
       VALUES (${WS}, ${fixture.owner}, ${`session-${fixture.id}-exact-nonce`},
               'tool', 'nonce regression activity', ${new Date(stamps[0]!.created_at.getTime() + 500)})
     `;
-    expect.soft(await getLoopStatus(fixture.owner, { sql })).toMatchObject({
+    const sameFireStatus = await getLoopStatus(fixture.owner, { sql });
+    expect(sameFireStatus).toMatchObject({
+      fireCount: fixture.wakeCount,
+      lastFiredAt: firedAt.toISOString(),
       lastLoopTurnAt: null,
       turnsStalled: false,
+    });
+    const newerFireAt = new Date(now + 5_000);
+    const nextFireAt = new Date(now + 60_000);
+    await sql`
+      UPDATE harness_shared.routines
+         SET last_fired_at = ${newerFireAt},
+             next_fire_at = ${nextFireAt},
+             metadata = jsonb_set(metadata, '{fire_count}', '18'::jsonb)
+       WHERE id = ${fixture.id}
+    `;
+    expect.soft(await getLoopStatus(fixture.owner, { sql })).toMatchObject({
+      lastLoopTurnAt: null,
+      turnsStalled: true,
     });
     await insertAssistant(`session-${fixture.id}-exact-nonce`, exactAssistantAt);
 
     const status = await getLoopStatus(fixture.owner, { sql });
     expect(status).toMatchObject({
-      lastLoopTurnAt: exactAssistantAt.toISOString(),
-      lastSuppressedWakeLoopTurnAt: exactAssistantAt.toISOString(),
-      lastFailedFireLoopTurnCompletedAt: exactAssistantAt.toISOString(),
+      fireCount: 18,
+      lastFiredAt: newerFireAt.toISOString(),
+      nextFireAt: nextFireAt.toISOString(),
+      lastLoopTurnAt: null,
+      lastSuppressedWakeLoopTurnAt: null,
+      lastFailedFireLoopTurnCompletedAt: null,
+      turnsStalled: true,
     });
   });
 });

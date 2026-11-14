@@ -22,7 +22,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import type { GitPipelineSnapshot } from '../../git-pipeline-stats';
-import { LogicalGateConflictError } from './types';
+import { LogicalGateConflictError, type AwaitRow } from './types';
 
 const hb = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -92,6 +92,7 @@ const {
   probePatternMatchScope,
   claimDueVerifiedAwaits,
   settleVerifiedAwaitTimeout,
+  settleIdentifiedWaitRoutine,
   FLEET_BENCH_NOTE_PREFIX,
 } = await import('./store');
 const { reconcileAgentObligationReminders } = await import('../../agent-obligation-reminders');
@@ -100,6 +101,7 @@ const { classifyVerifiedWaitTimeout } = await import('./verified-wait');
 const { observeCheckpointProducer } = await import('./checkpoint-verified-wait');
 import type { ProducerHealthCertificate } from './verified-wait';
 import { AWAIT_CANCEL_REASONS } from './cancel-reasons';
+import { waitEpisodeFingerprint } from './wait-episode';
 
 let rootSql: postgres.Sql;
 
@@ -198,7 +200,9 @@ beforeAll(async () => {
       harness_slug text NOT NULL DEFAULT 'papercusp', condition_key text,
       item_kind text NOT NULL DEFAULT 'bug', payload jsonb, updated_ts bigint NOT NULL DEFAULT 0,
       taken_by text, last_progress_at timestamptz,
-      admission text, admitted_at timestamptz, admitted_by text
+      admission text, admitted_at timestamptz, admitted_by text,
+      -- Nullable like the real column: readHeldWorkItems() excludes lane='observation'.
+      lane text
     )`);
   // event-wait-settlement-2026-10-20 P-007: the fire latch probes a work-item:done:<id> key
   // through migration 1543's function; apply the real migration (function + index).
@@ -209,7 +213,8 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.routines (
       id bigserial PRIMARY KEY, workspace_id text NOT NULL DEFAULT 'default',
       target_owner_id text, active boolean NOT NULL DEFAULT true,
-      reschedule_interval_sec integer
+      reschedule_interval_sec integer, payload_template jsonb, next_fire_at timestamptz,
+      last_fired_at timestamptz, metadata jsonb, updated_at timestamptz
     )`);
   await rootSql.unsafe(`CREATE TABLE harness_shared.audit_log (
     id text PRIMARY KEY, ts bigint NOT NULL, actor text NOT NULL, action text NOT NULL,
@@ -2567,6 +2572,317 @@ describe('await-event store (PG)', () => {
   });
 });
 
+describe('durable dependency episodes (real PG)', () => {
+  async function setup(budget = 1, owner = 'episode-leader', substages?: Array<{ id: string; valueFingerprint: string }>) {
+    const eventKey = 'episode:qualified';
+    const { DEFAULT_COORD_WORKSPACE: ws } = await import('@papercusp/coordination/event-log');
+    await rootSql`INSERT INTO harness_shared.work_items(workspace_id,harness_slug,feature_id,status,taken_by,payload)
+      VALUES(${ws},'papercusp','WI-driver','open',${owner},
+        ${JSON.stringify({ externalBlockers: [{ kind: 'event', ref: eventKey, status: 'active' }] })}::text::jsonb)`;
+    await registerAnnouncement({ subscriberId: 'upstream', eventKey, scopeKind: 'global',
+      logicalGateKey: 'episode-qualified', expectedCondition: { kind: 'predicate', predicate: { qualified: true } } });
+    const certificate: ProducerHealthCertificate = {
+      version: 1, producer: { kind: 'bounded-dependency', id: 'transport-ignored' },
+      owner: { ownerId: 'upstream', workItemId: 'WI-producer' }, issuedAtMs: Date.now(),
+      lastProgressAtMs: null, lastFireAtMs: null, expectedCadenceMs: 1000, verificationDeadlineMs: Date.now()+1000,
+    };
+    if (budget !== 1) {
+      // This is the same server-created lease envelope the public progress
+      // registration supplies; the driver and exact blocker are independently
+      // authenticated by actual store admission below.
+      certificate.progressLease = {
+        leaseId: 'transport', sourceKind: 'managed-task-advance', subscriberId: owner,
+        resolver: { tool: 'tasks:get', args: { id: 'build' }, path: 'state', op: 'changed',
+          workspaceId: ws, harnessSlug: 'papercusp', role: 'su', onBehalfOf: owner },
+        writer: 'tasks:get', units: 'state', baselineFingerprint: waitEpisodeFingerprint('running'),
+        latestEvidence: { writer: 'tasks:get', units: 'state', observedAtMs: Date.now(), valuePreview: 'running',
+          valueFingerprint: waitEpisodeFingerprint('running'), reference: { tool: 'tasks:get', args: { id: 'build' }, path: 'state' }, uncertainty: null },
+        missCount: 0, remedyAfterMisses: 2, remedy: { kind: 'leader-claim', workItemId: 'WI-producer' }, history: [],
+        drivingWorkItemId: 'WI-driver', noDeltaBudget: budget,
+        ...(substages ? { substages } : {}),
+      };
+    }
+    const register = (subscriberId = owner, cert = certificate) => registerAwait({ subscriberId, eventKey,
+      timeoutSec: 1, producerHealthCertificate: cert });
+    return { ws, eventKey, certificate, register, row: await register() };
+  }
+  async function episode() {
+    const [item] = await rootSql`SELECT payload FROM harness_shared.work_items WHERE feature_id='WI-driver'`;
+    return Object.values(item.payload.waitEpisodes)[0] as import('./wait-episode').WaitEpisode;
+  }
+  async function due(id: number) {
+    const state = await episode();
+    // Move the two canonical clocks together without sleeping a real cadence.
+    await rootSql`UPDATE harness_shared.work_items SET payload=jsonb_set(payload,
+      ARRAY['waitEpisodes',${state.id},'nextProbeAtMs'],to_jsonb(${Date.now()-1000}::bigint)) WHERE feature_id='WI-driver'`;
+    await rootSql`UPDATE harness_shared.event_awaits SET expires_ts=now()-interval '1 second' WHERE id=${id}`;
+  }
+  const observed = (row: AwaitRow) => ({
+    classification: 'stalled' as const, nextAction: 're-await' as const,
+    producer: row.producerHealthCertificate!.producer, owner: row.producerHealthCertificate!.owner,
+    checkedAtMs: Date.now(), verificationDeadlineMs: row.producerHealthCertificate!.verificationDeadlineMs,
+    lastProgressAtMs: null, lastFireAtMs: null,
+    ...(row.producerHealthCertificate?.progressLease ? {
+      evidence: { progressLease: row.producerHealthCertificate.progressLease.latestEvidence },
+    } : {}),
+  });
+
+  it('automatically bounds an identified dependency and retains exactly one push continuation after exhaustion/rearm', async () => {
+    const { row, register, eventKey } = await setup();
+    expect(row.producerHealthCertificate!.waitEpisode).toMatchObject({ drivingWorkItemId: 'WI-driver' });
+    await due(row.id);
+    const [claimed] = await claimDueVerifiedAwaits();
+    expect(claimed.producerHealthCertificate!.waitEpisodeReceipt).toMatchObject({ state: 'pending', sequence: 1 });
+    await settleVerifiedAwaitTimeout({ id: row.id, result: observed(claimed),
+      waitEpisodeReceipt: claimed.producerHealthCertificate!.waitEpisodeReceipt! });
+    const state = await episode();
+    expect(state).toMatchObject({ state: 'exhausted', debits: 1, remainingNoDeltaBudget: 0 });
+    const replacement = await register();
+    expect(replacement.expiresTs).toBeNull();
+    expect(replacement.producerHealthCertificate!.waitEpisodeReceipt).toEqual(state.receipt);
+    expect(await episode()).toMatchObject({ id: state.id, debits: 1, remainingNoDeltaBudget: 0 });
+    expect(await claimDueVerifiedAwaits()).toEqual([]);
+    const pending = await rootSql`SELECT id FROM harness_shared.event_awaits
+      WHERE policy='wake' AND fired_at IS NULL AND cancelled_at IS NULL`;
+    expect(pending.map(r => Number(r.id))).toEqual([replacement.id]);
+    // Existing persisted fire intent recovers one delivery after a crash before
+    // fan-out. Exhaustion has neither consumed the predicate nor authorized a remedy.
+    expect((await fireAwaitsForKey({ eventKey, payload: { qualified: true } })).map(r => r.id)).toEqual([replacement.id]);
+    await rootSql`UPDATE harness_shared.event_awaits SET fired_at=now()-interval '3 seconds' WHERE id=${replacement.id}`;
+    expect(await reconcileFiredWakeDeliveries()).toBe(1);
+    expect(await reconcileFiredWakeDeliveries()).toBe(0);
+  });
+
+
+  it('admits only a current exhausted await with its real host verdict, and rejects cancelled or unknown witnesses', async () => {
+    const { row, ws, eventKey, register } = await setup();
+    await due(row.id);
+    const [claimed] = await claimDueVerifiedAwaits();
+    await settleVerifiedAwaitTimeout({ id: row.id, result: observed(claimed),
+      waitEpisodeReceipt: claimed.producerHealthCertificate!.waitEpisodeReceipt! });
+    const replacement = await register();
+    const { prepareBlockerDecision } = await import('../../blocker-resolution-decision');
+    const ref = { kind: 'event' as const, ref: eventKey };
+    const prepared = prepareBlockerDecision({}, {
+      schemaVersion: 1, idempotencyKey: 'exhausted-park', disposition: 'defer',
+      symptom: 'The upstream predicate is still pending',
+      investigation: [{ action: 'Read exact producer', outcome: 'Current upstream custody', evidenceRefs: [ref] }],
+      attempts: [], evidenceRefs: [ref], deferral: { reason: 'active-peer', reasonEvidenceRefs: [ref],
+        responsibleParty: 'upstream', nextAction: 'Resume on the exact push', recheckRef: ref },
+    }, { ownerId: 'episode-leader', sessionId: 'episode-leader', workItemId: 'WI-driver', custodianId: 'episode-leader' });
+    if (!prepared.ok) throw new Error(prepared.code);
+    await rootSql`UPDATE harness_shared.work_items SET status='blocked',
+      payload=payload || ${JSON.stringify(prepared.patch)}::text::jsonb
+      WHERE workspace_id=${ws} AND harness_slug='papercusp' AND feature_id='WI-driver'`;
+    const { readHeldWorkItems, readExhaustedPushParkCoverage } = await import('./wake-source-predicate');
+    const held = await readHeldWorkItems('episode-leader', ws, rootSql);
+    const options = { sql: rootSql, readEvidence: async () => ({
+      status: 'available' as const, condition: 'pending' as const, reachable: true,
+      liveOwnerId: 'upstream', responsibleParty: 'upstream',
+    }) };
+    expect(await readExhaustedPushParkCoverage('episode-leader', ws, held, options)).toBe(true);
+    await rootSql`UPDATE harness_shared.event_awaits SET cancelled_at=now() WHERE id=${replacement.id}`;
+    expect(await readExhaustedPushParkCoverage('episode-leader', ws, held, options)).toBe(false);
+    await rootSql`UPDATE harness_shared.event_awaits SET cancelled_at=NULL WHERE id=${replacement.id}`;
+    await rootSql`UPDATE harness_shared.event_awaits SET timeout_verification=jsonb_set(
+      timeout_verification, '{evidence,waitEpisode,state}', '"unknown"'::jsonb) WHERE id=${row.id}`;
+    // A payload claiming budget zero cannot replace the host's measured verdict.
+    expect(await readExhaustedPushParkCoverage('episode-leader', ws, held, options)).toBe(false);
+  });
+
+  it('serializes concurrent claims/settlements and replays crash-before-debit with the same observation', async () => {
+    const { row } = await setup(2);
+    await due(row.id);
+    const claims = await Promise.all([claimDueVerifiedAwaits(), claimDueVerifiedAwaits()]);
+    const first = claims.flat()[0];
+    expect(claims.flat()).toHaveLength(1);
+    const prior = first.producerHealthCertificate!.waitEpisodeReceipt!;
+    const state = await episode();
+    await rootSql`UPDATE harness_shared.work_items SET payload=jsonb_set(payload,
+      ARRAY['waitEpisodes',${state.id},'receipt','claimedAtMs'],to_jsonb(${Date.now()-180000}::bigint)) WHERE feature_id='WI-driver'`;
+    await rootSql`UPDATE harness_shared.event_awaits SET verification_claimed_at=now()-interval '3 minutes' WHERE id=${row.id}`;
+    const [recovered] = await claimDueVerifiedAwaits();
+    const receipt = recovered.producerHealthCertificate!.waitEpisodeReceipt!;
+    expect(receipt.observationId).toBe(prior.observationId);
+    expect(receipt.claimToken).not.toBe(prior.claimToken);
+    await settleVerifiedAwaitTimeout({ id: row.id, result: observed(first), waitEpisodeReceipt: prior });
+    expect((await episode()).debits).toBe(0);
+    await Promise.all([1, 2].map(() => settleVerifiedAwaitTimeout({ id: row.id,
+      result: observed(recovered), waitEpisodeReceipt: receipt })));
+    expect(await episode()).toMatchObject({ state: 'active', debits: 1, remainingNoDeltaBudget: 1 });
+    const [stored] = await rootSql`SELECT expires_ts, producer_health FROM harness_shared.event_awaits WHERE id=${row.id}`;
+    expect(stored.expires_ts).not.toBeNull();
+    expect(stored.producer_health.waitEpisodeReceipt.state).toBe('settled');
+  });
+
+  it('rolls back a debit when its continuation write fails; recovery spends it only once', async () => {
+    const { row } = await setup();
+    await due(row.id);
+    const [claimed] = await claimDueVerifiedAwaits();
+    const input = { id: row.id, result: observed(claimed), waitEpisodeReceipt: claimed.producerHealthCertificate!.waitEpisodeReceipt! };
+    await rootSql`ALTER TABLE harness_shared.event_awaits ADD CONSTRAINT reject_episode_settlement
+      CHECK (timeout_verification IS NULL)`;
+    try {
+      await expect(settleVerifiedAwaitTimeout(input)).rejects.toThrow();
+      expect(await episode()).toMatchObject({ debits: 0, remainingNoDeltaBudget: 1 });
+    } finally { await rootSql`ALTER TABLE harness_shared.event_awaits DROP CONSTRAINT reject_episode_settlement`; }
+    await settleVerifiedAwaitTimeout(input);
+    await settleVerifiedAwaitTimeout(input);
+    expect(await episode()).toMatchObject({ debits: 1, remainingNoDeltaBudget: 0 });
+  });
+
+  it('preserves allowance through equivalent generations and authenticated cold successor carry', async () => {
+    const { row, eventKey, certificate, register } = await setup(2);
+    await due(row.id);
+    const [claimed] = await claimDueVerifiedAwaits();
+    await settleVerifiedAwaitTimeout({ id: row.id, result: observed(claimed), waitEpisodeReceipt: claimed.producerHealthCertificate!.waitEpisodeReceipt! });
+    const before = await episode();
+    await registerAnnouncement({ subscriberId: 'upstream', eventKey, scopeKind: 'global',
+      logicalGateKey: 'episode-qualified', expectedCondition: { kind: 'predicate', predicate: { qualified: true } } });
+    await rootSql`UPDATE harness_shared.work_items SET taken_by='successor' WHERE feature_id='WI-driver'`;
+    const carried = structuredClone(certificate);
+    carried.progressLease!.subscriberId = 'successor';
+    carried.progressLease!.resolver.onBehalfOf = 'successor';
+    const next = await register('successor', carried);
+    expect(next.producerHealthCertificate!.waitEpisode!.id).toBe(before.id);
+    expect(await episode()).toMatchObject({ remainingNoDeltaBudget: 1, debits: 1,
+      custodianId: 'successor', contract: { sourceGeneration: 2 } });
+    await expect(register('episode-leader')).rejects.toThrow('currently held');
+  });
+
+  it('persists exact uncertainty without debit or automatic rearm, including registration retries', async () => {
+    const { row, register } = await setup();
+    await due(row.id);
+    const [claimed] = await claimDueVerifiedAwaits();
+    await settleVerifiedAwaitTimeout({ id: row.id, result: { ...observed(claimed), classification: 'unknown',
+      nextAction: 'resolve-uncertainty', evidence: { uncertainty: 'resolver record is missing' } },
+      waitEpisodeReceipt: claimed.producerHealthCertificate!.waitEpisodeReceipt! });
+    expect(await episode()).toMatchObject({ state: 'unknown', remainingNoDeltaBudget: 1, debits: 0,
+      lastObservation: { uncertainty: 'resolver record is missing' } });
+    expect((await register()).expiresTs).toBeNull();
+    expect(await claimDueVerifiedAwaits()).toEqual([]);
+  });
+
+  it('keeps cancellation and task-terminal tombstones across registration retries', async () => {
+    const { row, register } = await setup();
+    await cancelAwait({ awaitId: row.id, subscriberId: row.subscriberId, source: 'operator' });
+    expect((await episode()).state).toBe('cancelled');
+    const next = await register();
+    expect(next.expiresTs).toBeNull();
+    expect((await episode()).state).toBe('cancelled');
+    await rootSql`UPDATE harness_shared.work_items SET status='done' WHERE feature_id='WI-driver'`;
+    const closed = await register();
+    expect(closed.expiresTs).toBeNull();
+    expect(closed.cancelledAt).not.toBeNull();
+    expect((await episode()).state).toBe('task-terminal');
+    expect(await fireAwaitsForKey({ eventKey: 'episode:qualified', payload: { qualified: true } })).toHaveLength(0);
+  });
+
+  it('closes a terminal driving task before final-event fan-out and registration cannot resurrect its continuation', async () => {
+    const { register, eventKey } = await setup();
+    await rootSql`UPDATE harness_shared.work_items SET status='done' WHERE feature_id='WI-driver'`;
+    expect(await fireAwaitsForKey({ eventKey, payload: { qualified: true } })).toHaveLength(0);
+    expect((await episode()).state).toBe('task-terminal');
+    expect((await register()).cancelledAt).not.toBeNull();
+    const [pending] = await rootSql`SELECT count(*)::int AS n FROM harness_shared.event_awaits
+      WHERE policy='wake' AND fired_at IS NULL AND cancelled_at IS NULL`;
+    expect(pending.n).toBe(0);
+  });
+
+  it('accepts a frozen ordered outcome once, ignores repeated apparent progress and separately checks the final predicate', async () => {
+    const { waitEpisodeFingerprint } = await import('./wait-episode');
+    const { row, eventKey, register } = await setup(2, 'episode-leader', [{ id: 'build', valueFingerprint: waitEpisodeFingerprint('exited') }]);
+    // A false final predicate must retain the same exact continuation.
+    expect(await fireAwaitsForKey({ eventKey, payload: { qualified: false } })).toEqual([]);
+    expect((await episode()).state).toBe('active');
+    for (const [i, value] of ['running', 'exited', 'exited', { heartbeat: 5000 }].entries()) {
+      await due(row.id);
+      const [claimed] = await claimDueVerifiedAwaits();
+      await settleVerifiedAwaitTimeout({ id: row.id, waitEpisodeReceipt: claimed.producerHealthCertificate!.waitEpisodeReceipt!,
+        result: { ...observed(claimed), classification: 'progressing', evidence: { progressLease: {
+          writer: 'tasks:get', units: 'state', observedAtMs: Date.now(), valuePreview: value,
+          valueFingerprint: waitEpisodeFingerprint(value), reference: { tool: 'tasks:get', args: { id: 'build' }, path: 'state' }, uncertainty: null,
+        } } } });
+      expect((await episode()).stage).toBe(i === 0 ? 0 : 1);
+    }
+    expect(await episode()).toMatchObject({ state: 'exhausted', remainingNoDeltaBudget: 0, stage: 1, debits: 3 });
+    const fired = await fireAwaitsForKey({ eventKey, payload: { qualified: true } });
+    expect(fired).toHaveLength(1);
+    expect((await episode()).state).toBe('complete');
+    expect((await register()).cancelledAt).not.toBeNull();
+    expect(await fireAwaitsForKey({ eventKey, payload: { qualified: true } })).toHaveLength(0);
+  });
+
+  it('rejects duplicate stage evidence before persisting an episode or push continuation', async () => {
+    const fingerprint = waitEpisodeFingerprint('exited');
+    await expect(setup(2, 'episode-leader', [
+      { id: 'build', valueFingerprint: fingerprint },
+      { id: 'renamed-build', valueFingerprint: fingerprint },
+    ])).rejects.toThrow('distinct outcome evidence');
+    const [driver] = await rootSql`SELECT taken_by,payload FROM harness_shared.work_items WHERE feature_id='WI-driver'`;
+    expect(driver.taken_by).toBe('episode-leader');
+    expect(driver.payload.waitEpisodes).toBeUndefined();
+    const [pending] = await rootSql`SELECT count(*)::int AS n FROM harness_shared.event_awaits
+      WHERE policy='wake' AND fired_at IS NULL AND cancelled_at IS NULL`;
+    expect(pending.n).toBe(0);
+  });
+
+  async function routine(ws: string, payload: Record<string, unknown>) {
+    const fireAt = new Date(Date.now()-4000).toISOString();
+    const [row] = await rootSql`INSERT INTO harness_shared.routines
+      (workspace_id,target_owner_id,active,reschedule_interval_sec,payload_template,last_fired_at,next_fire_at)
+      VALUES(${ws},'episode-leader',true,1,${JSON.stringify(payload)}::text::jsonb,
+        ${fireAt}::timestamptz,'infinity'::timestamptz) RETURNING id`;
+    return { routineId: String(row.id), fireAt, sql: rootSql, workspaceId: ws,
+      harness: 'papercusp', ownerId: 'episode-leader', drivingWorkItemId: 'WI-driver',
+      eventKey: 'episode:qualified', intervalMs: 1000 };
+  }
+
+  it.each(['work', 'monitor'])('settles actual persisted %s routines against the same episode and keeps independent ready work runnable', async mode => {
+    const { row, ws, eventKey } = await setup();
+    const before = await episode();
+    const input = await routine(ws, { mode, workItem: 'WI-driver', blockedOn: { event: eventKey } });
+    const independent = await routine(ws, { mode: 'work', workItem: 'WI-independent' });
+    await rootSql`UPDATE harness_shared.routines SET next_fire_at=now()-interval '1 second' WHERE id=${independent.routineId}`;
+    await due(row.id);
+    await settleIdentifiedWaitRoutine(input);
+    expect(await episode()).toMatchObject({ id: before.id, state: 'exhausted', remainingNoDeltaBudget: 0, debits: 1 });
+    const [parked] = await rootSql`SELECT active,next_fire_at::text,metadata FROM harness_shared.routines WHERE id=${input.routineId}`;
+    expect(parked).toMatchObject({ active: true, next_fire_at: 'infinity',
+      metadata: { wait_episode: { id: before.id, disposition: 'push-only' } } });
+    // A relabel and an explicit re-arm do not bypass the already spent episode.
+    const fireAt = new Date().toISOString();
+    await rootSql`UPDATE harness_shared.routines SET last_fired_at=${fireAt}::timestamptz,
+      payload_template=jsonb_set(payload_template,'{mode}',to_jsonb(${mode === 'work' ? 'monitor' : 'work'}::text)) WHERE id=${input.routineId}`;
+    await settleIdentifiedWaitRoutine({ ...input, fireAt });
+    expect((await episode()).debits).toBe(1);
+    const [ready] = await rootSql`SELECT active, next_fire_at<=now() AS runnable FROM harness_shared.routines WHERE id=${independent.routineId}`;
+    expect(ready).toEqual({ active: true, runnable: true });
+    const [item] = await rootSql`SELECT taken_by,status FROM harness_shared.work_items WHERE feature_id='WI-driver'`;
+    expect(item).toEqual({ taken_by: 'episode-leader', status: 'open' });
+  });
+
+  it('rolls back both the debit and await rearm when actual routine disposition persistence fails', async () => {
+    const { row, ws, eventKey } = await setup();
+    const input = await routine(ws, { mode: 'work', workItem: 'WI-driver', blockedOn: { event: eventKey } });
+    await due(row.id);
+    await rootSql`ALTER TABLE harness_shared.routines ADD CONSTRAINT reject_push_only
+      CHECK (COALESCE(metadata->'wait_episode'->>'disposition','')<>'push-only')`;
+    try {
+      await expect(settleIdentifiedWaitRoutine(input)).rejects.toThrow();
+      expect(await episode()).toMatchObject({ state: 'active', debits: 0, remainingNoDeltaBudget: 1 });
+      const [pending] = await rootSql`SELECT producer_health,expires_ts FROM harness_shared.event_awaits WHERE id=${row.id}`;
+      expect(pending.producer_health.waitEpisodeReceipt.state).toBe('pending');
+      expect(pending.expires_ts).not.toBeNull();
+    } finally { await rootSql`ALTER TABLE harness_shared.routines DROP CONSTRAINT reject_push_only`; }
+    const current = await episode();
+    await settleVerifiedAwaitTimeout({ id: row.id, waitEpisodeReceipt: current.receipt!, result: observed(row) });
+    expect((await episode()).debits).toBe(1);
+    const [parked] = await rootSql`SELECT next_fire_at::text FROM harness_shared.routines WHERE id=${input.routineId}`;
+    expect(parked.next_fire_at).toBe('infinity');
+  });
+});
+
 describe('verified-wait fallback campaign (PG)', () => {
   const checkpointSnapshot = (
     overrides: {
@@ -2617,6 +2933,84 @@ describe('verified-wait fallback campaign (PG)', () => {
     return row;
   }
 
+  it('preserves the park-recovery adapter independent transactional receipt', async () => {
+    const cert = certificate({ producer: { kind: 'durable-park-recovery', id: 'park-recovery:admission' },
+      details: { parkRecovery: { id: 'park-recovery:admission', state: 'waiting' } } });
+    const row = await registerDueVerifiedAwait('park-recovery:admission', cert);
+    const [claimed] = await claimDueVerifiedAwaits();
+    expect(claimed.id).toBe(row.id);
+    expect(claimed.producerHealthCertificate).toEqual(cert);
+    expect(claimed.producerHealthCertificate!.verificationReceipt).toBeUndefined();
+  });
+
+  it('persists a receipt before probing and recovers the same observation with a new writer fence', async () => {
+    const row = await registerDueVerifiedAwait('waiter-receipt');
+    const [first] = await claimDueVerifiedAwaits();
+    const firstReceipt = first.producerHealthCertificate!.verificationReceipt!;
+    expect(firstReceipt).toMatchObject({ sequence: 1, state: 'pending' });
+    const stored = await rootSql`SELECT producer_health FROM harness_shared.event_awaits WHERE id = ${row.id}`;
+    expect(stored[0].producer_health.verificationReceipt).toEqual(firstReceipt);
+    // A concurrent sweeper cannot dispatch a second probe under a live lease.
+    expect(await claimDueVerifiedAwaits()).toEqual([]);
+    // Simulate a crash after receipt commit and before observation settlement.
+    await rootSql`UPDATE harness_shared.event_awaits SET verification_claimed_at = now() - interval '3 minutes' WHERE id = ${row.id}`;
+    const [recovered] = await claimDueVerifiedAwaits();
+    const recoveredReceipt = recovered.producerHealthCertificate!.verificationReceipt!;
+    expect(recoveredReceipt).toMatchObject({ observationId: firstReceipt.observationId, sequence: 1, state: 'pending' });
+    expect(recoveredReceipt.claimToken).not.toBe(firstReceipt.claimToken);
+    const result = classifyVerifiedWaitTimeout(certificate(), {
+      checkedAtMs: 2_000, producerPresent: false, lastProgressAtMs: null, lastFireAtMs: null, completedAtMs: null,
+    });
+    // Neither the abandoned verifier nor a caller omitting its receipt may
+    // borrow the replacement's authority to settle.
+    expect(await settleVerifiedAwaitTimeout({ id: row.id, result, observationReceipt: firstReceipt })).toBeNull();
+    expect(await settleVerifiedAwaitTimeout({ id: row.id, result })).toBeNull();
+    const [stillClaimed] = await rootSql`SELECT fired_at, producer_health FROM harness_shared.event_awaits WHERE id = ${row.id}`;
+    expect(stillClaimed.fired_at).toBeNull();
+    expect(stillClaimed.producer_health.verificationReceipt).toEqual(recoveredReceipt);
+    expect(await settleVerifiedAwaitTimeout({ id: row.id, result, observationReceipt: recoveredReceipt })).toMatchObject({
+      firedReason: 'verified-timeout',
+      producerHealthCertificate: { verificationReceipt: { ...recoveredReceipt, state: 'settled', disposition: 'deliver' } },
+    });
+    // Crash after settlement, before insertDeliveries: the existing intent
+    // outbox recovers exactly one continuation without repeating the probe.
+    await rootSql`UPDATE harness_shared.event_awaits SET fired_at = now() - interval '3 seconds' WHERE id = ${row.id}`;
+    expect(await reconcileFiredWakeDeliveries()).toBe(1);
+    expect(await reconcileFiredWakeDeliveries()).toBe(0);
+    expect(await claimDueVerifiedAwaits()).toEqual([]);
+    const deliveries = await rootSql`SELECT id, payload FROM harness_shared.event_wake_deliveries WHERE await_id = ${row.id}`;
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0].payload).toEqual({ timeout: true, verified: true, results: [result] });
+  });
+
+  it('settles concurrent callbacks once and increments the sequence only for the next observation', async () => {
+    const row = await registerDueVerifiedAwait('waiter-concurrent-receipt');
+    const [claimed] = await claimDueVerifiedAwaits();
+    const receipt = claimed.producerHealthCertificate!.verificationReceipt!;
+    const result = classifyVerifiedWaitTimeout(certificate(), {
+      checkedAtMs: 2_000, producerPresent: true, lastProgressAtMs: 1_999, lastFireAtMs: null, completedAtMs: null,
+    });
+    expect(result.classification).toBe('progressing');
+    await Promise.all(['first', 'second'].map(tag => settleVerifiedAwaitTimeout({
+      id: row.id, observationReceipt: receipt,
+      result: { ...result, evidence: { tag } },
+      nextCertificate: certificate({ verificationDeadlineMs: Date.now() + 60_000, details: { tag } }),
+    })));
+    const [settled] = await rootSql`SELECT producer_health, timeout_verification FROM harness_shared.event_awaits WHERE id = ${row.id}`;
+    const winner = settled.timeout_verification;
+    expect(settled.producer_health.details.tag).toBe(winner.evidence.tag);
+    expect(settled.producer_health.verificationReceipt).toEqual({ ...receipt, state: 'settled', disposition: 'rearm' });
+    // A late callback cannot replace the winner's result or its next deadline.
+    await settleVerifiedAwaitTimeout({ id: row.id, observationReceipt: receipt,
+      result: { ...result, evidence: { tag: 'late' } }, nextCertificate: certificate() });
+    const [unchanged] = await rootSql`SELECT producer_health, timeout_verification FROM harness_shared.event_awaits WHERE id = ${row.id}`;
+    expect(unchanged).toEqual(settled);
+    await rootSql`UPDATE harness_shared.event_awaits SET expires_ts = now() - interval '1 second' WHERE id = ${row.id}`;
+    const [next] = await claimDueVerifiedAwaits();
+    expect(next.producerHealthCertificate!.verificationReceipt).toMatchObject({ sequence: 2, state: 'pending' });
+    expect(next.producerHealthCertificate!.verificationReceipt!.observationId).not.toBe(receipt.observationId);
+  });
+
   it('producer dies before emit: persists an absent verdict and an owner-aware takeover', async () => {
     const row = await registerDueVerifiedAwait('waiter-died');
     const [claimed] = await claimDueVerifiedAwaits();
@@ -2633,7 +3027,7 @@ describe('verified-wait fallback campaign (PG)', () => {
     });
     const result = classifyVerifiedWaitTimeout(claimed!.producerHealthCertificate!, observation);
     expect(result).toMatchObject({ classification: 'absent', nextAction: 'wake-owner-or-takeover' });
-    expect(await settleVerifiedAwaitTimeout({ id: row.id, result })).toMatchObject({
+    expect(await settleVerifiedAwaitTimeout({ id: row.id, result, observationReceipt: claimed!.producerHealthCertificate!.verificationReceipt })).toMatchObject({
       firedReason: 'verified-timeout',
       timeoutVerification: { classification: 'absent' },
     });
@@ -2708,7 +3102,7 @@ describe('verified-wait fallback campaign (PG)', () => {
       lastProgressAtMs: observation.lastProgressAtMs,
       verificationDeadlineMs: observation.checkedAtMs + 500,
     });
-    expect(await settleVerifiedAwaitTimeout({ id: row.id, result, nextCertificate })).toBeNull();
+    expect(await settleVerifiedAwaitTimeout({ id: row.id, result, nextCertificate, observationReceipt: claimed!.producerHealthCertificate!.verificationReceipt })).toBeNull();
     expect(await listActiveAwaitsForKey('release:green:papercusp')).toEqual([
       expect.objectContaining({
         id: row.id,
@@ -2717,6 +3111,45 @@ describe('verified-wait fallback campaign (PG)', () => {
         timeoutVerification: expect.objectContaining({ classification: 'progressing' }),
       }),
     ]);
+  });
+
+  it('unknown verification parks probes, rejects stale settlement and preserves one exact push continuation', async () => {
+    const row = await registerDueVerifiedAwait('waiter-unknown');
+    const [claimed] = await claimDueVerifiedAwaits();
+    expect(claimed.id).toBe(row.id);
+    const unknown = {
+      classification: 'unknown' as const, nextAction: 'resolve-uncertainty' as const,
+      producer: certificate().producer, owner: certificate().owner,
+      checkedAtMs: 2_000, verificationDeadlineMs: 2_000,
+      lastProgressAtMs: 1_000, lastFireAtMs: null,
+      evidence: { verifierError: 'resolver unavailable; producer state not measured' },
+    };
+    await Promise.all([
+      settleVerifiedAwaitTimeout({ id: row.id, result: unknown, observationReceipt: claimed.producerHealthCertificate!.verificationReceipt }),
+      settleVerifiedAwaitTimeout({ id: row.id, result: unknown, observationReceipt: claimed.producerHealthCertificate!.verificationReceipt }),
+    ]);
+    expect(await claimDueVerifiedAwaits()).toEqual([]);
+    expect(await settleVerifiedAwaitTimeout({
+      id: row.id, result: { ...unknown, classification: 'progressing', nextAction: 're-await' },
+      nextCertificate: certificate(),
+    })).toBeNull();
+    expect(await settleVerifiedAwaitTimeout({
+      id: row.id, result: { ...unknown, classification: 'stalled', nextAction: 'wake-owner-or-takeover' },
+    })).toBeNull();
+    expect(await listActiveAwaitsForKey(row.eventKey)).toEqual([
+      expect.objectContaining({ id: row.id, expiresTs: null, firedAt: null, timeoutVerification: unknown }),
+    ]);
+    expect(await listVerifiedWaitTakeoversForSubscribers(['waiter-unknown'])).toEqual([]);
+    const ready = await registerAwait({ subscriberId: 'independent', eventKey: 'independent:ready' });
+    expect((await fireAwaitsForKey({ eventKey: ready.eventKey })).map(a => a.id)).toEqual([ready.id]);
+    const fired = await fireAwaitsForKey({ eventKey: row.eventKey });
+    expect(fired.map(a => a.id)).toEqual([row.id]);
+    await Promise.all([
+      insertDeliveries({ awaits: fired, summary: 'actual final event' }),
+      insertDeliveries({ awaits: fired, summary: 'duplicate final event' }),
+    ]);
+    const deliveries = await rootSql`SELECT id FROM harness_shared.event_wake_deliveries WHERE await_id = ${row.id}`;
+    expect(deliveries).toHaveLength(1);
   });
 
   it('latched completion: authoritative completion wins over a missing producer', async () => {
@@ -2738,7 +3171,7 @@ describe('verified-wait fallback campaign (PG)', () => {
     });
     const result = classifyVerifiedWaitTimeout(claimed!.producerHealthCertificate!, observation);
     expect(result).toMatchObject({ classification: 'already-complete', nextAction: 'resume' });
-    expect(await settleVerifiedAwaitTimeout({ id: row.id, result })).toMatchObject({
+    expect(await settleVerifiedAwaitTimeout({ id: row.id, result, observationReceipt: claimed!.producerHealthCertificate!.verificationReceipt })).toMatchObject({
       firedReason: 'verified-timeout',
       timeoutVerification: expect.objectContaining({ classification: 'already-complete' }),
     });

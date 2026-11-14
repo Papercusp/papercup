@@ -110,6 +110,7 @@ beforeAll(async () => {
       ADD COLUMN plan_owner_gate_marker text, ADD COLUMN plan_seq integer;
     CREATE TABLE harness_shared.work_item_deps (workspace_id text, dep_type text,
       blocked_kind text, blocked_ref text, blocker_kind text, blocker_ref text);
+    CREATE TABLE harness_shared.plan_items (workspace_id text,harness_slug text,plan_slug text,item_id text);
     -- Exercise every goal-source leg with real SQL, including the facts reader's
     -- nested tagged predicates; unavailable-schema fallbacks must not hide errors.
     ALTER TABLE harness_shared.work_items
@@ -133,9 +134,65 @@ beforeEach(async () => {
   policy.readQuality.mockImplementation(async () => ({ satisfied: true, applicable: policy.qualityApplicable, mode: 'enforced' }));
   policy.readAdmission.mockReset();
   policy.critique.mockReset();
-  await db.sql.unsafe('TRUNCATE harness_shared.session_briefs, harness_shared.adv_sessions, harness_shared.plan_item_claims, harness_shared.work_items, harness_shared.harness_plans, harness_shared.plan_audits, harness_shared.plan_revisions, harness_shared.agent_facts, harness_shared.fleet_membership_events');
+  await db.sql.unsafe('TRUNCATE harness_shared.session_briefs, harness_shared.adv_sessions, harness_shared.plan_item_claims, harness_shared.work_items, harness_shared.harness_plans, harness_shared.plan_audits, harness_shared.plan_revisions, harness_shared.agent_facts, harness_shared.fleet_membership_events,harness_shared.plan_items');
   await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,content,content_hash,op_status) VALUES (${WS}, 'project', 'draft-feature',
     ${'---\ntitle: Draft\nstatus: draft\n---\n# Draft\n'}, 'draft-hash', NULL)`;
+});
+
+describe('canonical adopted repair binding', () => {
+  async function seed() {
+    await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,content,content_hash,status)
+      VALUES (${WS},'project','repair-plan','---\nstatus: ready\n---\n# Repair\n','repair-hash','ready')`;
+    await db.sql`INSERT INTO harness_shared.plan_items VALUES (${WS},'project','repair-plan','P-001')`;
+    await db.sql`INSERT INTO harness_shared.work_items
+      (workspace_id,harness_slug,feature_id,item_kind,taken_by,status,source_plan_slug,plan_slug,plan_line_id,
+       plan_line_text,plan_importance,plan_decision_refs,plan_seq,payload)
+      VALUES (${WS},'project','EI-original','bug',${OWNER},'wip','historical-draft','repair-plan','P-001',
+        'Repair','normal',ARRAY[]::text[],0,'{}'::jsonb)`;
+  }
+  it('uses the validated canonical execution plan while retaining source provenance', async () => {
+    await seed();
+    const bindings = await readExecutionPlanBindings(OWNER,WS);
+    expect(bindings).toEqual([expect.objectContaining({planSlug:'repair-plan',harnessSlug:'project',
+      source:'work-item',sourceRef:'EI-original',canonical:expect.objectContaining({lineId:'P-001',planHash:'repair-hash'})})]);
+    const [original] = await db.sql`SELECT source_plan_slug FROM harness_shared.work_items`;
+    expect(original.source_plan_slug).toBe('historical-draft');
+    // Selection proof only. Complete runtime admission is the independent P-002 contract.
+    const checked: string[]=[];
+    expect(await checkPlanExecutionGuard({ownerId:OWNER,workspaceId:WS,toolName:'apply_patch',args:{}}, {
+      readBindings:readExecutionPlanBindings,checkPlan:async b=>{checked.push(b.planSlug);return [];},
+    })).toBeNull();
+    expect(checked).toEqual(['repair-plan']);
+  });
+  it.each(['partial','missing-plan','missing-line','duplicate-line','duplicate-node','held'])('refuses incomplete stale or unstarted canonical bindings: %s', async kind => {
+    await seed();
+    if(kind==='partial')await db.sql`UPDATE harness_shared.work_items SET plan_line_id=NULL`;
+    if(kind==='missing-plan')await db.sql`DELETE FROM harness_shared.harness_plans WHERE plan_slug='repair-plan'`;
+    if(kind==='missing-line')await db.sql`DELETE FROM harness_shared.plan_items`;
+    if(kind==='duplicate-line')await db.sql`INSERT INTO harness_shared.plan_items SELECT * FROM harness_shared.plan_items`;
+    if(kind==='duplicate-node')await db.sql`INSERT INTO harness_shared.work_items (workspace_id,harness_slug,feature_id,item_kind,status,plan_slug,plan_line_id)
+      VALUES (${WS},'project','EI-other','bug','open','repair-plan','P-001')`;
+    if(kind==='held')await db.sql`UPDATE harness_shared.work_items SET payload='{"_claimHold":true}'::jsonb`;
+    const bindings=await readExecutionPlanBindings(OWNER,WS);
+    expect(bindings.some(b=>b.canonicalInvalid)).toBe(true);
+    // Invalid identity is retained even if goal narrowing would choose another lane.
+    expect(await checkPlanExecutionGuard({ownerId:OWNER,workspaceId:WS,toolName:'apply_patch',args:{}},{
+      readBindings:async()=>bindings,resolveGoal:async()=>({goal:resolveAgentGoal({workItems:[{id:'EI-other'}]})!,diagnostics:[]}),
+      checkPlan:async()=>[],
+    })).toMatchObject({blockers:['canonical_plan_binding_invalid']});
+  });
+  it('rechecks exact canonical revision and normal start authority',async()=>{
+    await seed();
+    const [binding]=await readExecutionPlanBindings(OWNER,WS);
+    expect(await checkExecutionPlan(binding,WS)).toEqual(['plan_not_started']);
+    await db.sql`UPDATE harness_shared.harness_plans SET version=version+1 WHERE plan_slug='repair-plan'`;
+    expect(await checkExecutionPlan(binding,WS)).toEqual(['canonical_plan_binding_stale']);
+  });
+  it('retains historical fallback only when both canonical fields are absent',async()=>{
+    await seed();
+    await db.sql`UPDATE harness_shared.work_items SET plan_slug=NULL,plan_line_id=NULL`;
+    expect(await readExecutionPlanBindings(OWNER,WS)).toEqual([{planSlug:'historical-draft',harnessSlug:'project',source:'work-item',sourceRef:'EI-original'}]);
+  });
 });
 
 describe('real write-boundary bypass regression', () => {

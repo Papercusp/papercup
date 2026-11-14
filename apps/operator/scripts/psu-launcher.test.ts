@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   consumeGovernedResumeReservation,
+  governedResumeReservationForLaunch,
   freshSuBootstrapBody,
   GOVERNED_RESUME_RESERVATION_ENV,
   resolveOperatorTarget,
@@ -86,6 +87,25 @@ describe('governed exact resume reservation', () => {
     const env = { [GOVERNED_RESUME_RESERVATION_ENV]: JSON.stringify({ ...reservation, ...override }) };
     expect(() => consumeGovernedResumeReservation(env, session, 50_000)).toThrow(/reservation/);
     expect(env).toEqual({});
+  });
+
+  it.each([
+    JSON.stringify({ ...reservation, expiresAtMs: 1 }),
+    JSON.stringify({ ...reservation, ownerId: 'another-owner' }),
+    'malformed legacy hint',
+  ])('an ordinary resume discards inherited custody and uses normal admission: %s', (raw) => {
+    const env = { [GOVERNED_RESUME_RESERVATION_ENV]: raw };
+    expect(governedResumeReservationForLaunch(null, env, session, 50_000)).toBeNull();
+    expect(env).toEqual({});
+  });
+
+  it('uses only the validated managed envelope and consumes the ambient hint', () => {
+    const env = { [GOVERNED_RESUME_RESERVATION_ENV]: 'stale-parent-custody' };
+    expect(governedResumeReservationForLaunch({ reservation }, env, session, 50_000)).toEqual(reservation);
+    expect(env).toEqual({});
+    expect(() => governedResumeReservationForLaunch({ reservation: { ...reservation, ownerId: 'other' } },
+      env, session, 50_000)).toThrow(/reservation/);
+    expect(() => governedResumeReservationForLaunch({ reservation }, env, session, 60_000)).toThrow(/reservation/);
   });
 });
 

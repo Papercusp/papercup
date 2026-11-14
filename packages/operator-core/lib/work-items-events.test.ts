@@ -467,6 +467,32 @@ describe('emitUnblockedOnEdgeRemoved (WI-4034)', () => {
     expect(emit).not.toHaveBeenCalled();
   });
 
+  // EI-28728976349181609: removing the last `blocks` edge must NOT announce
+  // "last blocker cleared" while the dependent still carries an ACTIVE external
+  // (runtime/event) blocker. Identical setup to the listIn-empty case below,
+  // which DOES fire — the active external blocker is the only difference.
+  it('does NOT fire when the removed edge was the last edge but an active external blocker remains', async () => {
+    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null, waiters: 0 }));
+    const dependent = wi({
+      id: 'WI-DEP',
+      state: 'open',
+      assignee: 'su-claimant',
+      payload: {
+        externalBlockers: [{
+          kind: 'runtime', capability: 'mac-vm', capabilitySource: 'declared', ref: 'runtime:mac-vm',
+          summary: 'authorized macOS host unavailable', status: 'active', createdAt: '2026-01-01T00:00:00.000Z',
+          createdBy: 'su-test', updatedAt: '2026-01-01T00:00:00.000Z',
+        }],
+      },
+    });
+    await emitUnblockedOnEdgeRemoved({ kind: 'issue', ref: 'WI-DEP' }, 'WI-1', {
+      emit: emit as never,
+      getItem: vi.fn(async () => dependent) as never,
+      listIn: vi.fn(async () => []) as never,
+    });
+    expect(emit).not.toHaveBeenCalled();
+  });
+
   it('does NOT fire for an already-settled dependent', async () => {
     const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null, waiters: 0 }));
     const settledDependent = wi({ id: 'WI-DEP', state: 'resolved' });

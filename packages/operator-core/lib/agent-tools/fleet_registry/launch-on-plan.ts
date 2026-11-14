@@ -5490,6 +5490,12 @@ export default defineTool({
               }
             });
             wave.openedOwnerIds = openedThisWave;
+            // Verification may outlive the response, or the serving process.
+            // Persist completed spawn effects before waiting for first-turn
+            // evidence so a successor (including the governor) sees the real
+            // opened set. This retains the same revision guard: a concurrent
+            // transaction change still stops this launch instead of erasing it.
+            await persistLaunchTransaction();
             const spawnFailed = waveResults.some((result) => result.status !== 'ok');
             return {
               payload: { wave, openedThisWave, spawnFailed },

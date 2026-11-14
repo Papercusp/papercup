@@ -1809,8 +1809,119 @@ function fixture(opts = options) {
     sleep: vi.fn(async ms => { clock += ms; }),
     readCompletion: vi.fn(async () => null), readIdentity: vi.fn(async () => identity),
   };
-  return { row, ports, lifecycle, context, run: () => currentSuBenchHarnessDriver(lifecycle, ports, opts).spinRunAndCost(request) };
+  return { row, ports, lifecycle, context, advance: (ms: number) => { clock += ms; },
+    run: () => currentSuBenchHarnessDriver(lifecycle, ports, opts).spinRunAndCost(request) };
 }
+describe('current benchmark task interval observation', () => {
+  it('passes original samples to the parent and retains entry observer work without shifting the result', async () => {
+    const f = fixture(), events: Array<{ kind: string; atMs: number; assignmentId: string }> = [];
+    f.ports.observeTaskEndpoint = event => { events.push(event); f.advance(event.kind === 'entry' ? 5 : 90); };
+    vi.mocked(f.ports.readCompletion).mockImplementation(async () => { f.advance(7); return 'done'; });
+    const run = await f.run();
+    expect(events).toEqual([
+      expect.objectContaining({ kind: 'entry', atMs: 0, clock: null }),
+      expect.objectContaining({ kind: 'result', atMs: 12, clock: null, terminalDisposition: 'done' }),
+    ]);
+    expect(events[1]!.assignmentId).toBe(events[0]!.assignmentId);
+    expect(run.telemetry.armMeta?.currentExecution).toMatchObject({ taskTiming: {
+      entryMs: 0, terminalMs: 12, elapsedMs: 12, observerDeductionMs: 0, parentEndpoints: 'observed' } });
+    expect(run.telemetry.wallClockMs).toBe(102);
+  });
+  it('retains business failure and elapsed time when the parent endpoint observer refuses the join', async () => {
+    const f = fixture();
+    f.ports.observeTaskEndpoint = () => { f.advance(5); throw new Error('parent-clock-mismatch'); };
+    vi.mocked(f.ports.launch).mockRejectedValue(new Error('business-launch-failed'));
+    const run = await f.run();
+    expect(run.telemetry.stopReason).toBe('error');
+    expect(run.telemetry.armMeta?.currentExecution).toMatchObject({ taskTiming: {
+      status: 'unknown', entryMs: 0, terminalMs: 5, elapsedMs: 5, terminalDisposition: 'error',
+      parentEndpoints: 'unknown', gaps: expect.arrayContaining([
+        'task-clock-parent-entry-unobserved', 'task-clock-parent-result-unobserved']) } });
+  });
+  it('includes verification, launch and in-interval observer work while excluding setup and cleanup', async () => {
+    const f = fixture();
+    vi.mocked(f.lifecycle.createHarness).mockImplementation(async () => { f.advance(100); return handle; });
+    vi.mocked(f.ports.verifyContext).mockImplementation(async () => { f.advance(10); return f.context; });
+    vi.mocked(f.ports.launch).mockImplementation(async () => {
+      f.advance(20); return { agentStarted: true, tasks: [{ taskId: f.row.taskId }] };
+    });
+    vi.mocked(f.ports.readIdentity).mockImplementation(async () => { f.advance(30); return identity; });
+    vi.mocked(f.ports.readCompletion).mockImplementation(async () => { f.advance(40); return 'done'; });
+    vi.mocked(f.ports.killTask).mockImplementation(async taskId => {
+      f.advance(200); return { ok: true, taskId, action: 'kill' };
+    });
+    vi.mocked(f.lifecycle.collectCost).mockImplementation(async () => {
+      f.advance(300); return { costUsd: 0.25, tokensIn: 20, tokensOut: 10, turns: 1 };
+    });
+    vi.mocked(f.lifecycle.teardown).mockImplementation(async () => { f.advance(400); });
+    const run = await f.run();
+    expect(run.telemetry.stopReason).toBe('done');
+    expect(run.telemetry.armMeta?.currentExecution).toMatchObject({ taskTiming: {
+      status: 'unknown', clockId: null, entryMs: 100, terminalMs: 200, elapsedMs: 100,
+      terminalDisposition: 'done', observerDeductionMs: 0, gaps: ['task-clock-sampler-unverified'],
+      fullRuntimeQualification: 'unknown' } });
+    expect(run.telemetry.wallClockMs).toBe(1100);
+  });
+  it('retains a yielded wait and its intermediate spend verification in the task interval', async () => {
+    const f = fixture();
+    f.row.state = 'running'; f.row.exitCode = null;
+    const waits: number[] = [];
+    vi.mocked(f.lifecycle.collectCost).mockImplementation(async () => {
+      f.advance(7); return { costUsd: 0.25, tokensIn: 20, tokensOut: 10, turns: 1 };
+    });
+    vi.mocked(f.ports.sleep).mockImplementation(async ms => {
+      waits.push(ms); f.advance(ms); f.row.state = 'exited'; f.row.exitCode = 0;
+    });
+    const run = await f.run();
+    expect(run.telemetry.stopReason).toBe('done');
+    expect(waits).toHaveLength(1);
+    expect(waits[0]).toBeGreaterThan(0);
+    expect(run.telemetry.armMeta?.currentExecution).toMatchObject({ taskTiming: {
+      entryMs: 0, terminalMs: waits[0]! + 7, elapsedMs: waits[0]! + 7,
+      terminalDisposition: 'done', observerDeductionMs: 0 } });
+    expect(run.telemetry.wallClockMs).toBe(waits[0]! + 14);
+  });
+  it('binds only the maintained monotonic sampler and retains the actual terminal verification', async () => {
+    const f = fixture();
+    f.lifecycle.now = processMonotonicClock.now;
+    let observedVerification = 0;
+    vi.mocked(f.ports.readCompletion).mockImplementation(async () => {
+      observedVerification = processMonotonicClock.now(); return 'done';
+    });
+    const run = await f.run();
+    const execution = run.telemetry.armMeta?.currentExecution as { taskTiming: {
+      status: string; clockId: string; entryMs: number; terminalMs: number; elapsedMs: number; gaps: string[] } };
+    expect(execution.taskTiming).toMatchObject({ status: 'bound', clockId: processMonotonicClock.id, gaps: [] });
+    expect(execution.taskTiming.entryMs).toBeLessThanOrEqual(observedVerification);
+    expect(execution.taskTiming.terminalMs).toBeGreaterThanOrEqual(observedVerification);
+    expect(execution.taskTiming.elapsedMs).toBe(execution.taskTiming.terminalMs - execution.taskTiming.entryMs);
+  });
+  it('retains failure timing without inventing an entry for a rejected admission', async () => {
+    const f = fixture();
+    vi.mocked(f.ports.admit).mockResolvedValueOnce({ admitted: false, receiptRef: 'budget:rejected' });
+    expect((await f.run()).telemetry.armMeta?.currentExecution).toMatchObject({ taskTiming: null });
+    vi.mocked(f.ports.launch).mockImplementation(async () => { f.advance(20); throw new Error('launch-failed'); });
+    const run = await f.run();
+    expect(run.telemetry.stopReason).toBe('error');
+    expect(run.telemetry.armMeta?.currentExecution).toMatchObject({ taskTiming: {
+      entryMs: 0, terminalMs: 20, elapsedMs: 20, terminalDisposition: 'error', observerDeductionMs: 0 } });
+  });
+  it.each(['regression', 'replacement', 'unavailable'] as const)('leaves a %s task clock unknown', async changed => {
+    const f = fixture();
+    vi.mocked(f.ports.launch).mockImplementation(async () => {
+      if (changed === 'regression') f.advance(-1);
+      if (changed === 'replacement') f.lifecycle.now = () => 1234;
+      if (changed === 'unavailable') f.lifecycle.now = () => { throw new Error('clock-unavailable'); };
+      throw new Error('launch-failed');
+    });
+    const run = await f.run();
+    const execution = run.telemetry.armMeta?.currentExecution as { taskTiming: { status: string; elapsedMs: number | null; gaps: string[] } };
+    expect(execution.taskTiming).toMatchObject({ status: 'unknown', elapsedMs: null });
+    expect(execution.taskTiming.gaps).toContain(changed === 'regression' ? 'task-clock-invalid-or-nonmonotonic' :
+      changed === 'replacement' ? 'task-clock-sampler-changed' : 'task-clock-terminal-unavailable');
+    expect(f.ports.killTask).toHaveBeenCalled();
+  });
+});
 function nativeFailureFixture() {
   const now = Date.now(), f = fixture();
   Object.assign(f.row, { state: 'running', exitCode: null, startedAt: new Date(now - 3000).toISOString(),
@@ -2588,7 +2699,8 @@ describe('current benchmark restart and live binding', () => {
     if (!ledger) {
     const nativeSessionId = randomUUID();
     const dispatch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
-      expect(url).toBe('http://benchmark.invalid/mcp');
+      // The automatic hook preserves this route and marks its own origin.
+      expect(url).toBe('http://benchmark.invalid/mcp?origin=hook');
       const request = JSON.parse(String(init?.body));
       expect(request.params._meta.threadId).toBe(nativeSessionId);
       expect(request.params.name).toBe('session:request-compaction');

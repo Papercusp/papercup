@@ -92,6 +92,7 @@ export type AcceptanceBarSeedCode =
   | 'bar_contract_check_missing'
   // D-011: an item type's criterion declares a check that is not a declarative rubric check.
   | 'bar_contract_check_invalid'
+  | 'bar_contract_live_requirement_drift'
   | 'bar_contract_test_layers_missing'
   | 'bar_contract_check_layer_mismatch';
 
@@ -1340,6 +1341,23 @@ export async function seedAcceptanceBarsInTransaction(
   const liveVerification = overlayLiveRequirementVerification(built.criteria, requirements.bars);
   const citationProblems = acceptanceBarTestCitationProblems(liveVerification.criteria, undefined, {
     allowPlannedPaths: subjectPlanAllowsPlannedPaths(input.planStatus),
+  }).map((problem): AcceptanceBarSeedProblem => {
+    // Citation validation names rubric criterion keys, while the overlay names
+    // canonical BAR keys (for example r-1 versus R-1).
+    const stored = built.criteria.find(criterion => criterion.key === problem.barKey);
+    const retained = liveVerification.kept.find(entry =>
+      entry.barKey === stored?.barKey && entry.reason === 'meaning-changed');
+    if (!retained) return problem;
+    const current = requirements.bars.find(bar => bar.barKey === retained.barKey);
+    return {
+      ...problem,
+      barKey: retained.barKey,
+      code: 'bar_contract_live_requirement_drift',
+      detail: `${retained.barKey}: the live requirement promise differs from the approved rubric ` +
+        `(stored heading ${JSON.stringify(stored?.title)}, live heading ${JSON.stringify(current?.title)}); ` +
+        `stored verification was retained. ${problem.detail}. ` +
+        'Restore the approved heading and promise, or use rubrics:amend for a reviewed meaning change.',
+    };
   });
   if (citationProblems.length > 0) return refusal(citationProblems) as Exclude<AcceptanceBarSeedBuildResult, { ok: true }>;
 

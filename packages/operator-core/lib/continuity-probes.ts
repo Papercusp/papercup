@@ -23,7 +23,7 @@ import { getCellUnchecked } from './cell-registry';
 import { withBoundedTimeout } from './bounded-timeout';
 import { mapWithConcurrency } from './gym/concurrency';
 import type { CheckEntry } from './carry-note';
-import { CONTINUITY_PROBE_MAX_PER_WAKE, LIMITS } from './agent-tools/limits';
+import { CONTINUITY_PROBE_MAX_PER_WAKE, LIMITS, SQL_PROBE_DEFAULT_MAX_ROWS } from './agent-tools/limits';
 import { assertSingleReadStatement, PG_READ_QUERY_HARD_MAX_ROWS, pgReadQuery } from './pg-read-query';
 import { compileRetainedSql, retainedSqlCaptureExpression, retainedSqlImplementationSha256, SQL_INPUT_COLUMN } from './retained-sql';
 import { retainedReplaySourceIdentity } from './retained-replay-identity';
@@ -46,7 +46,7 @@ export const CONTINUITY_PROBE_TIMEOUT_MS = 2_500;
  * pgReadQuery runs, and the READ ONLY transaction stays the real enforcement.
  */
 export const SQL_PROBE_TOOL = 'dev:pg_query';
-export const SQL_PROBE_DEFAULT_MAX_ROWS = 50;
+export { SQL_PROBE_DEFAULT_MAX_ROWS } from './agent-tools/limits';
 /** dev:pg_query's own `timeoutMs` ceiling. */
 export const SQL_PROBE_MAX_TIMEOUT_MS = 30_000;
 
@@ -834,6 +834,9 @@ export interface ContinuityProbeDispatchContext {
   dispatchTool?: (name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>;
   /** Rubric measurements retain context; ordinary wake probes keep their small envelope. */
   retainMeasurement?: boolean;
+  /** Rubric grading requires a complete successful response, even for an honest failing rating.
+   * Ordinary continuity/historical scalar replay retains its existing partial-input policy. */
+  requireCompleteResult?: boolean;
   now?: () => number;
   /**
    * Per-probe dispatch budget. Defaults to CONTINUITY_PROBE_TIMEOUT_MS, which is
@@ -972,6 +975,16 @@ async function runOne(
   // projection), and scorecard criterion probes fail closed on that refusal, so
   // no independent acceptance card could be filed. A selected value that is
   // itself over budget (e.g. `exists` on a huge subtree) is still refused.
+  const body = decoded && typeof decoded === 'object' ? decoded as Record<string, unknown> : {};
+  const partial = body._partial === true || body.partial === true || body.truncated === true
+    || body.complete === false || (body._projection && typeof body._projection === 'object'
+      && (body._projection as Record<string, unknown>).truncated === true);
+  if (ctx.requireCompleteResult && (decoded === undefined || partial || body.ok === false)) {
+    return { ...base, status: 'error', executed: true, diagnostic: {
+      code: partial ? 'partial_result' : decoded === undefined ? 'empty_result' : 'tool_error',
+      message: `rubric probe ${name} returned an absent, failed or incomplete response; no predicate verdict is available`,
+    } };
+  }
   const verdict = evaluateContinuityPredicate(probe.expect, decoded);
   const judgedBytes = verdict.actual === undefined ? 0 : jsonBytes(verdict.actual);
   if (judgedBytes === null || judgedBytes > CONTINUITY_PROBE_RESULT_MAX_BYTES) {
@@ -988,10 +1001,6 @@ async function runOne(
   const observed = observedScalar(verdict.actual);
   const finishedAt = new Date(ctx.now?.() ?? Date.now()).toISOString();
   const parts = predicatePath(probe.expect.path);
-  const body = decoded && typeof decoded === 'object' ? decoded as Record<string, unknown> : {};
-  const partial = body._partial === true || body.partial === true || body.truncated === true
-    || body.complete === false || (body._projection && typeof body._projection === 'object'
-      && (body._projection as Record<string, unknown>).truncated === true);
   const predicateInput = parts && !parts.some(part => isSensitiveValueKey(String(part))) && !partial
     ? { path: '$' + parts.map(part => `[${JSON.stringify(String(part))}]`).join(''), value: verdict.actual }
     : undefined;

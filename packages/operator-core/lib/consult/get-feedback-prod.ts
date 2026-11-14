@@ -38,7 +38,7 @@ export async function acceptFeedbackRequestProd(
     options: AcceptFeedbackRequestProdOptions = {},
 ) {
     methodReviewTarget(request);
-    const [{ getOrgPg }, { acceptFeedbackRequestCore, validateBarCritiquePlanOrigin }, conversations, { publicManualSource }, { expertiseSubject }] = await Promise.all([
+    const [{ getOrgPg }, { acceptFeedbackRequestCore, validateBarCritiquePlanOrigin }, conversations, { publicManualSource }, { expertiseSubject, isToolSubject }] = await Promise.all([
       import('@papercusp/db-org'), import('./get-feedback-core'), import('../agent-tools/coordination/conversations'),
       import('../agent-tools/docs/_public-manual'), import('./relevance-router'),
     ]);
@@ -54,8 +54,11 @@ export async function acceptFeedbackRequestProd(
     // Keep caller-supplied subject_refs as source constraints, but disable the
     // router's generic question inference when a BAR critique has none.
     const inferredSourceRef = request.policy === BAR_CRITIQUE_POLICY ? null : expertiseSubject(request.question);
+    // Caller-supplied refs are hard anchors. Inferred namespace:verb names
+    // remain the router's semantic subject; expanding a tool mentioned in
+    // workflow prose here would restrict retrieval to literal tool-name matches.
     const sourceRefs = request.subjectRefs?.length ? request.subjectRefs :
-      inferredSourceRef ? [inferredSourceRef] : [];
+      inferredSourceRef && !isToolSubject(inferredSourceRef) ? [inferredSourceRef] : [];
     const subjectExpansion = sourceRefs.length ? await publicManualSource().expandSubjectRefs(sourceRefs) : null;
     const acceptedPayload = { ...payload,
       ...(subjectExpansion ? {

@@ -5,13 +5,19 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { Socket } from 'node:net';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { getOrgPg, getOrgPgApp, getOrgPgListener, _resetForTests } from '@papercusp/db-org';
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import { readPgBackendCensus } from './_pg-backend-census';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
 import { readProcessIdentity } from '../lib/process-identity';
 import { resolvePlanScope } from '../lib/agent-tools/plans/source';
-import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, privateNativeDockerHost, waitForPrivateOperator, stopPrivateOperatorHost, qualifyCommittedReaderSource, observeCommittedReaderLoadedSources, retainCommittedReaderWorkerEnvironment, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
+import { readServingGeneration } from '../lib/serving-generation';
+import { assertPrivateMcpSourceIdentity, assertPrivateMcpToolsListGeneration, buildPrivateOperatorApiBundle,
+  privateBundleRuntimeEnv, privateNativeDockerHost, waitForPrivateOperator, stopPrivateOperatorHost,
+  qualifyCommittedReaderSource, observeCommittedReaderLoadedSources, retainCommittedReaderWorkerEnvironment,
+  resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle, resolvePreparedPrivateApiSourceSha } from './private-http-workspace-preflight';
 import { captureIsolatedWorker, codexManagedToolsNativeProofOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerReceipt, retainIsolatedWorkerProgress } from './isolated-integration-proof';
 import { measurePrivateUnrelatedCheckpointScenario } from './private-unrelated-write-http-scenario';
 
@@ -173,7 +179,9 @@ async function main() {
   const sourcePath = 'packages/operator-core/lib/agent-tools/plans/staging-first-activation-guard.ts';
   const sourceSha256 = createHash('sha256').update(readFileSync(join(root, sourcePath))).digest('hex');
   const isCommittedReader = e.STAGING_FIRST_HTTP_SCENARIO === 'committed-reader';
+  const isCommittedReaderObservation = e.STAGING_FIRST_HTTP_SCENARIO === 'committed-reader-observation';
   const isBlueprintRoute = e.STAGING_FIRST_HTTP_SCENARIO === 'blueprint-account-route';
+  const isPrivateMcpPreflightOnly = e.STAGING_FIRST_HTTP_SCENARIO === 'private-mcp-preflight-only';
   const isCurrentSuNative = ['current-su-native', 'current-su-native-carry',
     'current-su-native-frozen-carry-on', 'current-su-native-frozen-carry-off'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '');
   // The supervisor deliberately strips DOCKER_* credentials and routing.
@@ -182,12 +190,15 @@ async function main() {
   const isCodexManagedTools = e.STAGING_FIRST_HTTP_SCENARIO === 'codex-managed-tools';
   const isOmpManagedTools = e.STAGING_FIRST_HTTP_SCENARIO === 'omp-managed-tools';
   const isSecurityCensus = e.STAGING_FIRST_HTTP_SCENARIO === 'security-census';
-  const requiresPrepared = isCommittedReader || isBlueprintRoute || isCurrentSuNative || isCodexManagedTools || isOmpManagedTools
-    || isSecurityCensus || ['testing-background', 'private-completion-mcp'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '');
+  const requiresPrepared = isCommittedReader || isCommittedReaderObservation || isBlueprintRoute || isCurrentSuNative
+    || isPrivateMcpPreflightOnly || isCodexManagedTools || isOmpManagedTools
+    || isSecurityCensus || ['testing-background', 'private-completion-mcp', 'rubric-coverage'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '');
   const prepared = requiresPrepared
     ? resolvePreparedPrivateApiBundle(process.argv.slice(2), evidenceDir) : undefined;
   assert.ok(!requiresPrepared || prepared,
     'Selected request scenario requires its prepared pinned API');
+  const preparedSourceSha = isCurrentSuNative || isPrivateMcpPreflightOnly
+    ? resolvePreparedPrivateApiSourceSha(process.argv.slice(2), evidenceDir) : undefined;
   const shippedTarget = e.STAGING_FIRST_HTTP_SCENARIO === 'discovery-guidance'
     ? await (await import('./discovery-guidance-http-scenario')).readDiscoveryShippedTarget(process.argv.slice(2)) : null;
   assert.ok(!(shippedTarget && prepared), 'choose exactly one API artifact authority');
@@ -207,8 +218,8 @@ async function main() {
   const bundleSha256 = createHash('sha256').update(bundleBytes).digest('hex');
   if (shippedTarget) assert.equal(bundleSha256, shippedTarget.artifact.bundleSha256,
     'execute the already loaded shipped bundle bytes without rebuilding');
-  let qualifySource: (() => ReturnType<typeof qualifyCommittedReaderSource>) | undefined;
-  let loadedSourceOptions: Parameters<typeof qualifyCommittedReaderSource>[0] | undefined;
+  let qualifySource: (() => unknown) | undefined;
+  let loadedSourceOptions: (Parameters<typeof qualifyCommittedReaderSource>[0] & { buildObservationOnly?: true }) | undefined;
   if (isCommittedReader) {
     const selection = resolvePreparedCommittedReaderSource(process.argv.slice(2), evidenceDir);
     // Compare the actual required private column/type/nullability/default
@@ -225,6 +236,15 @@ async function main() {
       ...selection, schema, environment: e };
     qualifySource = () => qualifyCommittedReaderSource(loadedSourceOptions!);
     writeFileSync(join(evidenceDir, 'committed-reader-source-preflight.json'), JSON.stringify(qualifySource()));
+  }
+  if (isCommittedReaderObservation) {
+    const observation = { buildObservationOnly: true as const, root };
+    const selection = resolvePreparedCommittedReaderSource(process.argv.slice(2), evidenceDir, observation);
+    loadedSourceOptions = { bundle, ...selection, ...observation, preparationOnly: true,
+      receiptPath: join(dirname(bundle), 'operator-api-preflight.json') };
+    // Recheck original build inputs before effects; this branch never calls
+    // the ordinary reader or qualifies its missing caller contract.
+    qualifySource = () => resolvePreparedCommittedReaderSource(process.argv.slice(2), evidenceDir, observation);
   }
   // The required source guard runs before preparation opens its private sidecar.
   const committedReader = isCommittedReader
@@ -250,7 +270,9 @@ async function main() {
   // Apply the mount boundary to the whole operator/invoke/native lineage.
   const privateRoot = dirname(e.HOME!);
   const traceOut = join(evidenceDir, 'committed-reader-host-source.json');
-  const hostEnv = privateBundleRuntimeEnv(e, loadedSourceOptions ? { traceOut } : undefined);
+  const hostEnv = privateBundleRuntimeEnv(e, loadedSourceOptions ? { traceOut, pinnedSources: [{
+    path: bundle, sha256: bundleSha256, byteLength: bundleBytes.length,
+  }] } : undefined);
   if (blueprintRoute) {
     // `with-test-pg --isolated-runtime` deliberately scrubs ambient
     // PAPERCUSP_* keys. The blueprint scenario selects the maintained checkout
@@ -291,10 +313,14 @@ async function main() {
     // values come from this actual host's exec environment, never hostEnv.
     qualifySource!();
     const preparation = JSON.parse(readFileSync(selected.receiptPath, 'utf8'));
+    const environment = isCommittedReaderObservation
+      ? Object.fromEntries(Object.entries(hostEnv).filter((pair): pair is [string, string] => typeof pair[1] === 'string')
+        .map(([key, value]) => [key, createHash('sha256').update(value).digest('hex')]))
+      : preparation.environment;
     const original = retainCommittedReaderWorkerEnvironment({ sourceCommit: selected.selectedCommit,
       runId: e.PAPERCUSP_TEST_RUN_GROUP!, process: { pid: host.pid!, identity: hostIdentity } },
-    Object.keys(preparation.environment), join(evidenceDir, 'committed-reader-host-environment.json'));
-    assert.deepEqual(original.observation.value, preparation.environment,
+    Object.keys(environment), join(evidenceDir, 'committed-reader-host-environment.json'));
+    assert.deepEqual(original.observation.value, environment,
       'Actual API worker exec environment differs from pinned preparation');
     retainHostEnvironment = () => writeFileSync(join(evidenceDir, 'committed-reader-host-environment-terminal.json'),
       JSON.stringify(original.terminal(host!)), { flag: 'wx', mode: 0o600 });
@@ -311,8 +337,67 @@ async function main() {
   }
   const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, hostIdentity, environment: hostEnv,
     requireBuildIdentity: isCurrentSuNative || isCodexManagedTools || isOmpManagedTools || isSecurityCensus
-      || e.STAGING_FIRST_HTTP_SCENARIO === 'private-completion-mcp' });
+      || isPrivateMcpPreflightOnly || e.STAGING_FIRST_HTTP_SCENARIO === 'private-completion-mcp' });
+  if (isCurrentSuNative || isPrivateMcpPreflightOnly) {
+    const preflightPath = join(evidenceDir, 'private-mcp-preflight.json');
+    let expectedServingGeneration: string | null = null;
+    let identity: ReturnType<typeof assertPrivateMcpToolsListGeneration> | undefined;
+    try {
+      assert.ok(preparedSourceSha, 'Current-su native MCP requires the prepared source pin');
+      assertPrivateMcpSourceIdentity(preparedSourceSha, health.sha);
+      const expectedGeneration = await readServingGeneration({ buildSha: preparedSourceSha });
+      if (expectedGeneration.state !== 'known') {
+        throw new Error(`Private native MCP serving generation is unknown: ${expectedGeneration.reason}`);
+      }
+      expectedServingGeneration = expectedGeneration.revision;
+      const { isValidSuperuserBearer, readSuperuserToken } = await import('../lib/superuser-token');
+      const token = readSuperuserToken();
+      assert.ok(isValidSuperuserBearer(token), 'Private native MCP preflight requires its private bearer');
+      const mcpUrl = new URL('/api/mcp', base);
+      for (const [key, value] of Object.entries({ superuser: '1', workspace, harness,
+        client: 'su-private-native-preflight', format: 'json', profile: 'engineer', structured: '1' }))
+        mcpUrl.searchParams.set(key, value);
+      const client = new Client({ name: 'private-native-mcp-preflight', version: '1' });
+      let listing: Awaited<ReturnType<typeof client.listTools>>;
+      try {
+        await client.connect(new StreamableHTTPClientTransport(mcpUrl,
+          { requestInit: { headers: { ...headers, Authorization: `Bearer ${token}` } } }), { timeout: 30_000 });
+        listing = await client.listTools(undefined, { timeout: 30_000 });
+      } finally {
+        await client.close();
+      }
+      identity = assertPrivateMcpToolsListGeneration(expectedGeneration.revision, listing.tools);
+      writeFileSync(preflightPath, JSON.stringify({
+        sourceSha: preparedSourceSha, healthSha: health.sha, ...identity,
+      }), { flag: 'wx', mode: 0o600 });
+    } catch (error) {
+      writeFileSync(preflightPath, JSON.stringify({
+        outcome: 'failed', sourceSha: preparedSourceSha ?? null, healthSha: health.sha ?? null,
+        expectedServingGeneration,
+        error: error instanceof Error ? error.message : String(error),
+      }), { flag: 'wx', mode: 0o600 });
+      throw error;
+    }
+    if (isPrivateMcpPreflightOnly) {
+      assert.ok(identity, 'Private MCP tools/list identity must be verified before shutdown');
+      await stopHost();
+      console.log('PRIVATE_MCP_PREFLIGHT_ONLY_RECEIPT ' + JSON.stringify({
+        workspace, sourceSha: preparedSourceSha, healthSha: health.sha, ...identity,
+        hostStopped: true, nativeLaunches: 0,
+      }));
+      return;
+    }
+  }
   console.log('STAGING_FIRST_HTTP_PHASE request-ready');
+  if (isCommittedReaderObservation) {
+    await stopHost();
+    const observation = JSON.parse(readFileSync(join(evidenceDir, 'committed-reader-loaded-source.json'), 'utf8'));
+    assert.ok(observation.pending.includes('preparation-qualification'), 'Build observations must remain unqualified');
+    console.log('COMMITTED_READER_OBSERVATION_RECEIPT ' + JSON.stringify({ workspace, hostPid: host.pid,
+      hostStopped: true, bundleSha256, health, qualification: 'pending',
+      observationPath: join(evidenceDir, 'committed-reader-loaded-source.json') }));
+    return;
+  }
   if (isSecurityCensus) {
     const receipt = await (await import('./security-census-http-scenario')).measureSecurityCensusScenario({
       workspace, base, evidenceDir, bundle, hostPid: host.pid!, expectedSha: health.sha,
@@ -464,6 +549,15 @@ async function main() {
     });
     await stopHost();
     console.log('COMPACTION_WARM_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostPid: host.pid,
+      hostStopped: true, bundleSha256, health }));
+    return;
+  }
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'rubric-coverage') {
+    const receipt = await (await import('./rubric-coverage-http-scenario')).measureRubricCoverageScenario({
+      workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
+    });
+    await stopHost();
+    console.log('RUBRIC_COVERAGE_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostPid: host.pid,
       hostStopped: true, bundleSha256, health }));
     return;
   }

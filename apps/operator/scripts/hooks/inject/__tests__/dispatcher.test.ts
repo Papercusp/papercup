@@ -26,6 +26,23 @@ import { promisify } from 'node:util';
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ledgerDir, openDeliveryLedger } from '../delivery-ledger.mjs';
+import { contextPackingCarrier, packContextCandidates } from '../../../../../../packages/operator-core/lib/context-doors';
+
+/** Complete typed hook environments without inheriting live host settings. */
+function hookEnv(overrides: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
+  return { NODE_ENV: 'test', ...overrides };
+}
+
+it('keeps typed hook fixtures isolated from host operator settings', () => {
+  vi.stubEnv('PAPERCUSP_OPERATOR_URL', 'http://host-private.invalid');
+  try {
+    const env = hookEnv({ PAPERCUSP_SID: 'fixture-owner' });
+    expect(env).toEqual({ NODE_ENV: 'test', PAPERCUSP_SID: 'fixture-owner' });
+    expect(env.PAPERCUSP_OPERATOR_URL).toBeUndefined();
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -36,6 +53,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLI = process.env.PROBE_SCRIPT || path.join(HERE, '..', 'index.mjs');
 let cliFixtureRoot: string;
 let copiedCli: string;
+let cliInvocation = 0;
 
 function copyDispatcher(destination: string) {
   for (const rel of ['', 'adapters']) {
@@ -66,7 +84,7 @@ const ports = await import(path.join(HERE, '..', 'ports.mjs'));
  * A fake operator. Records what it received; answers with injectable text.
  * `opts` is read per request, so a test may mutate it between turns.
  */
-function fakeOperator(opts: { text?: string | null; delayMs?: number; deliveryToken?: string; memoryFragmentOffers?: object[]; onRequest?: () => void } = {}) {
+function fakeOperator(opts: { text?: string | null; delayMs?: number; deliveryToken?: string; packingReceipt?: { attemptId: string; sha256: string }; memoryFragmentOffers?: object[]; onRequest?: () => void } = {}) {
   const received: Array<{ url: string; body: Record<string, unknown> }> = [];
   const server: Server = createServer((req, res) => {
     let raw = '';
@@ -80,6 +98,7 @@ function fakeOperator(opts: { text?: string | null; delayMs?: number; deliveryTo
           JSON.stringify({
             text: opts.text ?? 'INJECTED',
             ...(opts.deliveryToken ? { deliveryToken: opts.deliveryToken } : {}),
+            ...(opts.packingReceipt ? { packingReceipt: opts.packingReceipt } : {}),
             ...(opts.memoryFragmentOffers ? { memoryFragmentOffers: opts.memoryFragmentOffers } : {}),
           }),
         );
@@ -107,24 +126,56 @@ async function runCli(
   stdin: string,
   env: Record<string, string> = {},
   cli = copiedCli,
-): Promise<{ code: number; stdout: string; stderr: string }> {
+): Promise<{ code: number; stdout: string; stderr: string; hookOutcome: string }> {
+  const outcomeFile = path.join(cliFixtureRoot, `outcome-${++cliInvocation}.jsonl`);
+  // Preserve the test loader and evidence carriers, but let each fixture own
+  // its operator route. Inherited staging markers can redirect even a pinned
+  // unavailable URL to a live proxy and turn a denial into an empty verdict.
+  const inherited = { ...process.env };
+  for (const key of Object.keys(inherited)) {
+    if (key === 'PAPERCUSP_OPERATOR_URL' || key.startsWith('PAPERCUSP_MCP_')) delete inherited[key];
+  }
   return await new Promise((resolve) => {
     const child = execFile(
       process.execPath,
       [cli, ...args],
-      { env: { ...process.env, ...env }, timeout: 20_000 },
+      { env: { ...inherited, ...env, PAPERCUSP_HOOK_OUTCOME_FILE: outcomeFile }, timeout: 20_000 },
       (err, stdout, stderr) => {
         // Bind to a local before narrowing: two separate `(err as ...).code`
         // cast expressions don't narrow each other, which is what triggered
         // TS2352 here (a genuine, if pre-existing, type-safety gap).
         const rawCode = err ? (err as NodeJS.ErrnoException).code : undefined;
-        const code = typeof rawCode === 'number' ? rawCode : 0;
-        resolve({ code, stdout: String(stdout), stderr: String(stderr) });
+        const signal = err
+          ? (err as NodeJS.ErrnoException & { signal?: NodeJS.Signals | null }).signal
+          : undefined;
+        // A signal, timeout, or spawn error has no numeric exit code. Do not
+        // collapse it to 0; that made empty child stdout look like success.
+        const code = typeof rawCode === 'number' ? rawCode : err ? -1 : 0;
+        const diagnostic = err
+          ? `execFile error: ${err.message} (code=${String(rawCode ?? 'none')}, signal=${signal ?? 'none'})`
+          : '';
+        const stderrText = String(stderr);
+        resolve({ code, stdout: String(stdout),
+          stderr: diagnostic ? [stderrText, diagnostic].filter(Boolean).join('\n') : stderrText,
+          hookOutcome: existsSync(outcomeFile) ? readFileSync(outcomeFile, 'utf8') : '' });
       },
     );
     child.stdin?.end(stdin);
   });
 }
+
+it('reports signal-terminated CLI children as failures with the signal', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'inject-cli-signal-'));
+  const childScript = path.join(root, 'terminate.mjs');
+  try {
+    writeFileSync(childScript, "process.kill(process.pid, 'SIGTERM');\n");
+    const result = await runCli([], '', {}, childScript);
+    expect(result.code).toBe(-1);
+    expect(result.stderr).toContain('signal=SIGTERM');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 let running: { stop: () => Promise<void> } | null = null;
 afterEach(async () => {
@@ -132,9 +183,31 @@ afterEach(async () => {
   running = null;
 });
 
+it('emits the exact OMP stdout newline reserved by final context packing', async () => {
+  const text = 'Complete owner duty 字\ncondition';
+  const packed = packContextCandidates({ attemptId: 'stdout-budget', budgetBytes: Buffer.byteLength(text) + 1,
+    carrier: contextPackingCarrier('omp', 'turn-start'),
+    candidates: [{ sourceRef: 'order:14', revision: 'r1', class: 'owner', required: true, text }] });
+  const op = fakeOperator({ text: packed.text });
+  const base = await op.start();
+  running = op;
+  const home = mkdtempSync(path.join(tmpdir(), 'inject-carrier-budget-'));
+  try {
+    const out = await runCli(['--client=omp', '--event=before_agent_start'], JSON.stringify({ prompt: 'measure' }), {
+      PAPERCUSP_SID: 'su-native-carrier', PAPERCUSP_OPERATOR_URL: base, PAPERCUSP_HOME: home,
+    });
+    expect(out.code).toBe(0);
+    expect(out.stdout).toBe(text + '\n');
+    expect(Buffer.byteLength(out.stdout)).toBe(packed.receipt.contextBytes);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 describe('native stdout memory receipts', () => {
   for (const client of ['codex', 'claude', 'omp'] as const)
-    for (const port of ['turn-start', 'mid-turn'] as const)
+    for (const port of (client === 'omp' ? ['turn-start', 'mid-turn'] as const
+      : ['turn-start', 'mid-turn', 'compaction'] as const))
       for (const kind of ['memory', 'corpus'] as const)
         for (const failure of ['broken', 'partial'] as const)
         it(`${client} ${port} ${kind}: ${failure} stdout does not confirm; a complete retry does`, async ({ task }) => {
@@ -145,23 +218,27 @@ describe('native stdout memory receipts', () => {
           const rendered = `- ${kind}: retain the complete snowman ☃ fragment` +
             (failure === 'partial' ? 'x'.repeat(512 * 1024) : '');
           const fragment = { kind, id: kind === 'memory' ? '11111111-1111-1111-1111-111111111111' : 'WI-123',
-            epoch: 3, port, rendered, bodyBytes: Buffer.byteLength(rendered),
+            epoch: 3, port: port === 'compaction' ? 'compact' : port, rendered, bodyBytes: Buffer.byteLength(rendered),
             bodySha256: createHash('sha256').update(rendered).digest('hex') };
           const opts = { text: rendered, deliveryToken: `receipt-${client}-${port}-${kind}`,
+            packingReceipt: { attemptId: `packing-${client}-${port}-${kind}`, sha256: 'a'.repeat(64) },
             memoryFragmentOffers: [fragment] };
           const op = fakeOperator(opts);
           running = op;
           const base = await op.start();
           const env = { ...process.env, PAPERCUSP_SID: owner, PAPERCUSP_HOME: home,
             PAPERCUSP_OPERATOR_URL: base };
-          const event = port === 'turn-start' ? { prompt: 'receipt delivery' }
+          const event = port === 'compaction' ? { source: 'compact', session_id: 'native-compact-receipt' }
+            : port === 'turn-start' ? { prompt: 'receipt delivery' }
             : client === 'codex' ? { tool_name: 'Grep', tool_input: { pattern: 'receipt' }, tool_response: '' }
             : client === 'claude' ? { tool_calls: [{ tool_name: 'Grep', tool_input: { pattern: 'receipt' }, tool_response: '' }] }
             : { message: { content: [{ type: 'toolCall', id: 'call-1', name: 'Grep', arguments: { pattern: 'receipt' } }] },
               toolResults: [{ toolCallId: 'call-1', toolName: 'Grep', content: [{ type: 'text', text: '' }] }] };
-          const nativeEvent = port === 'turn-start' ? (client === 'omp' ? 'before_agent_start' : 'UserPromptSubmit')
+          const nativeEvent = port === 'compaction' ? 'SessionStart'
+            : port === 'turn-start' ? (client === 'omp' ? 'before_agent_start' : 'UserPromptSubmit')
             : client === 'codex' ? 'PostToolUse' : client === 'claude' ? 'PostToolBatch' : 'turn_end';
           const args = [`--client=${client}`, `--event=${nativeEvent}`];
+          const ledgerPort = port === 'compaction' ? 'compact' : port;
           try {
             // Break the actual consumer before writing or after the first
             // bytes. Neither case mocks ledger.commit or dispatch's return.
@@ -184,7 +261,7 @@ describe('native stdout memory receipts', () => {
               expect(partialBytes).toBeLessThan(fragment.bodyBytes);
             }
             expect(op.received).toHaveLength(1);
-            expect(openDeliveryLedger(owner, env, port)?.confirmedMemoryDeliveries()).toEqual([]);
+            expect(openDeliveryLedger(owner, env, ledgerPort)?.confirmedMemoryDeliveries()).toEqual([]);
             expect(op.received[0]!.body.confirmedMemoryDeliveries).toEqual([]);
 
             const retry = await runCli(args, JSON.stringify(event), env);
@@ -192,13 +269,19 @@ describe('native stdout memory receipts', () => {
             expect(retry.stdout).toContain(rendered);
             const { rendered: _text, ...manifest } = fragment;
             const proof = [{ token: opts.deliveryToken, fragments: [manifest] }];
-            expect(openDeliveryLedger(owner, env, port)?.confirmedMemoryDeliveries()).toEqual(proof);
-            const namespace = port === 'turn-start' ? owner : `${owner}.${port}`;
+            expect(openDeliveryLedger(owner, env, ledgerPort)?.confirmedMemoryDeliveries()).toEqual(proof);
+            const namespace = ledgerPort === 'turn-start' ? owner : `${owner}.${ledgerPort}`;
             const receipt = JSON.parse(readFileSync(path.join(ledgerDir(env), `${namespace}.emissions`,
               `${createHash('sha256').update(opts.deliveryToken).digest('hex')}.json`), 'utf8'));
             const payload = retry.stdout; // Receipt covers the complete framed stdout.
             expect(retry.stdout.endsWith('\n')).toBe(true);
+            // Retain the precise broken link even when a failing object matcher
+            // elides matching properties from the terminal report.
+            Object.assign(task.meta, { packingReceiptJoin: { expected: opts.packingReceipt,
+              actual: receipt.packingReceipt ?? null } });
+            expect(receipt.packingReceipt).toEqual(opts.packingReceipt);
             expect(receipt).toMatchObject({ stage: 'stdout-emitted', owner, token: opts.deliveryToken, client,
+              packingReceipt: opts.packingReceipt,
               payloadSha256: createHash('sha256').update(payload).digest('hex'),
               payloadBytes: Buffer.byteLength(payload), memoryFragments: [manifest] });
             expect(op.received[1]!.body.confirmedMemoryDeliveries).toEqual([]);
@@ -207,7 +290,13 @@ describe('native stdout memory receipts', () => {
             // the proof. Reprinting one token cannot multiply the receipt.
             await runCli(args, JSON.stringify(event), env);
             expect(op.received[2]!.body.confirmedMemoryDeliveries).toEqual(proof);
-            expect(openDeliveryLedger(owner, env, port)?.confirmedMemoryDeliveries()).toEqual(proof);
+            expect(openDeliveryLedger(owner, env, ledgerPort)?.confirmedMemoryDeliveries()).toEqual(proof);
+            if (port === 'compaction') {
+              expect(op.received[0]!.body.memoryReceiptMode).toBe(true);
+              expect(op.received[0]!.body).not.toHaveProperty('confirmedDelivery');
+              expect(openDeliveryLedger(owner, env)!.confirmed()).toBeNull();
+              expect(receipt.nativeSessionId).toBe('native-compact-receipt');
+            }
             Object.assign(task.meta, { nativeDispatcherReceipt: {
               client, port, source: kind, failure, partialBytes,
               fragment: manifest, failedOutputReceipts: 0, completeRetryReceipts: 1,
@@ -222,6 +311,35 @@ describe('native stdout memory receipts', () => {
 });
 
 describe('standalone installed dispatcher', () => {
+  it('ignores inherited staging proxy markers when a fixture pins unavailable authority', async () => {
+    const op = fakeOperator({ text: '' });
+    const base = await op.start();
+    running = op;
+    vi.stubEnv('PAPERCUSP_MCP_STAGING_PROXY_PORT', new URL(base).port);
+    vi.stubEnv('PAPERCUSP_MCP_PROXY_TARGET_PORT', '3170');
+    try {
+      const result = await runCli(['--client=codex', '--event=PreToolUse'], JSON.stringify({
+        tool_name: 'apply_patch', tool_input: { patch:
+          '*** Begin Patch\n*** Update File: source.ts\n@@\n-old\n+new\n*** End Patch' },
+      }), {
+        PAPERCUSP_SID: 'sid-isolated-route', PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9',
+        PAPERCUSP_MCP_PROXY_PORT: '9',
+      });
+      expect(op.received).toHaveLength(0);
+      expect(result.code, JSON.stringify(result)).toBe(0);
+      expect(result.stdout, JSON.stringify(result)).not.toBe('');
+      expect(JSON.parse(result.stdout).hookSpecificOutput).toMatchObject({
+        permissionDecision: 'deny',
+        permissionDecisionReason: expect.stringContaining('no server verdict was received'),
+      });
+      const outcome = JSON.parse(result.hookOutcome.trim());
+      expect(outcome.stage).toBe('guard-unavailable-deny');
+      expect(outcome.post.operatorOrigin).toBe('http://127.0.0.1:9');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('loads and injects without repository node_modules in its ancestry', async () => {
     const home = mkdtempSync(path.join(tmpdir(), 'inject-standalone-'));
     const installed = path.join(home, '.papercusp', 'hooks', 'inject');
@@ -268,6 +386,9 @@ describe('standalone installed dispatcher', () => {
       scopedFind,
       heredoc('ptool work_items:get --workspace=papercusp-workspace --harness=papercusp --json -', { id: 'WI-123' }),
       heredoc('ptool work_items:get --json - --workspace=papercusp-workspace --harness=papercusp', { id: 'WI-123' }),
+      heredoc('ptool work_items:get --workspace papercusp-workspace --harness papercusp --json -', { id: 'WI-123' }),
+      heredoc('ptool facts:list --workspace "$PAPERCUSP_WORKSPACE" --harness "$PAPERCUSP_HARNESS_SLUG" --json -', { scope: 'workspace' }),
+      heredoc('ptool tools:find --json - --workspace "$PAPERCUSP_WORKSPACE" --harness "$PAPERCUSP_HARNESS_SLUG"', { query: 'work_items:get' }),
     ]) {
       const result = await runCli(['--client=codex', '--event=PreToolUse'],
         JSON.stringify({ tool_name: 'exec_command', tool_input: { cmd } }), env);
@@ -278,6 +399,9 @@ describe('standalone installed dispatcher', () => {
       { tool_name: 'exec_command', tool_input: { cmd: heredoc(
         'ptool work_items:complete --workspace=papercusp-workspace --json -', { id: 'WI-123', state: 'done' }),
       } },
+      { tool_name: 'exec_command', tool_input: { cmd: heredoc(
+        'ptool work_items:get --workspace papercusp-workspace --workspace=other --json -', { id: 'WI-123' }),
+      } },
       { tool_name: 'exec_command', tool_input: { cmd: scopedFind + '\ntouch source.ts' } },
       { tool_name: 'apply_patch', tool_input: { patch:
         '*** Begin Patch\n*** Update File: source.ts\n@@\n-old\n+new\n*** End Patch',
@@ -285,6 +409,7 @@ describe('standalone installed dispatcher', () => {
     ]) {
       const result = await runCli(['--client=codex', '--event=PreToolUse'], JSON.stringify(event), env);
       expect(result.code).toBe(0);
+      expect(result.stdout, JSON.stringify({ event, ...result })).not.toBe('');
       expect(JSON.parse(result.stdout).hookSpecificOutput).toMatchObject({
         permissionDecision: 'deny',
         permissionDecisionReason: expect.stringContaining('no server verdict was received'),
@@ -303,7 +428,10 @@ describe('standalone installed dispatcher', () => {
           PAPERCUSP_SID: 'sid-copied-guard', PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9', PAPERCUSP_MCP_PROXY_PORT: '9',
         });
       expect(result.code).toBe(0);
-      if (denied) expect(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision).toBe('deny');
+      if (denied) {
+        expect(result.stdout, JSON.stringify({ url, ...result })).not.toBe('');
+        expect(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision).toBe('deny');
+      }
       else expect(result.stdout).toBe('');
     }
   });
@@ -440,6 +568,19 @@ describe('adapter parse / render', () => {
     }
   });
 
+  it('recognises Codex command payloads and moved patch destinations before clamping', () => {
+    const patch = `*** Begin Patch\n*** Update File: lib/old.ts\n*** Move to: lib/new.ts\n@@\n-${'x'.repeat(600)}\n+y\n*** Add File: lib/added.ts\n+export {};\n*** End Patch`;
+    for (const tool of ['apply_patch', 'functions.apply_patch']) {
+      for (const toolInput of [{ command: patch }, { patch }, { input: patch }, patch]) {
+        const parsed = codex.parse('mid-turn', {
+          tool_name: tool, tool_input: toolInput, tool_response: 'ok',
+        }) as { toolCalls: Array<{ editedPaths: string[]; toolInput: string }> };
+        expect(parsed.toolCalls[0]!.editedPaths).toEqual(['lib/old.ts', 'lib/new.ts', 'lib/added.ts']);
+        expect(parsed.toolCalls[0]!.toolInput).toHaveLength(400);
+      }
+    }
+  });
+
   it('parse returns null when there is no signal, so nothing is spent', () => {
     expect(claude.parse('turn-start', { prompt: 123 })).toBeNull();
     expect(claude.parse('mid-turn', { tool_calls: [] })).toBeNull();
@@ -479,6 +620,122 @@ describe('kill-switch asymmetry (the load-bearing one)', () => {
 });
 
 describe('identity hook ports through the real CLI (P-011)', () => {
+  it('does not let a staging tool-guard fall back to an unselected main-build proxy', async () => {
+    const { runInjection } = await import('../core.mjs');
+    const origins: string[] = [];
+    const fetchImpl = (async (input: unknown) => {
+      const url = new URL(String(input));
+      origins.push(url.origin);
+      if (url.port === '3170') throw new Error('staging unavailable');
+      // An older main build without the current plan guard returns no refusal.
+      return { ok: true, status: 200, json: async () => ({ text: '' }) } as Response;
+    }) as typeof fetch;
+    const result = await runInjection({
+      adapter: codex,
+      nativeEvent: 'pre-tool-use',
+      event: { tool_name: 'apply_patch', tool_input: { patch: '*** Begin Patch\\n*** End Patch' }, cwd: '/repo' },
+      env: hookEnv({
+        PAPERCUSP_SID: 'sid-staging-guard',
+        PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3170',
+        PAPERCUSP_MCP_STAGING_PROXY: '0',
+      }),
+      fetchImpl,
+    });
+
+    expect(origins).toEqual(['http://127.0.0.1:3170']);
+    expect(result).toContain('plan_execution_not_ready');
+    expect(JSON.parse(result!).hookSpecificOutput).toMatchObject({
+      permissionDecision: 'deny',
+      permissionDecisionReason: expect.stringContaining('execution-authority lookup failed'),
+    });
+  });
+
+  it('routes a staging guard with a legacy :9071 pin through the same-build :9171 proxy', async () => {
+    const { runInjection } = await import('../core.mjs');
+    const origins: string[] = [];
+    const stagingVerdict = 'plan_execution_not_ready: staging execution has not started';
+    const fetchImpl = (async (input: unknown) => {
+      const url = new URL(String(input));
+      origins.push(url.origin);
+      if (url.port === '9171')
+        return { ok: true, status: 200, json: async () => ({ text: stagingVerdict }) } as Response;
+      throw new Error('unexpected non-staging guard route: ' + url.origin);
+    }) as typeof fetch;
+    const result = await runInjection({
+      adapter: codex,
+      nativeEvent: 'pre-tool-use',
+      event: { tool_name: 'apply_patch', tool_input: { patch: 'not a real patch' }, cwd: '/repo' },
+      env: hookEnv({
+        PAPERCUSP_SID: 'sid-staging-guard-legacy-pin',
+        PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071',
+        PAPERCUSP_MCP_STAGING_PROXY_PORT: '9171',
+      }),
+      fetchImpl,
+    });
+
+    expect(origins).toEqual(['http://127.0.0.1:9171']);
+    expect(result).toContain('plan_execution_not_ready');
+    expect(JSON.parse(result!).hookSpecificOutput).toMatchObject({
+      permissionDecision: 'deny',
+      permissionDecisionReason: expect.stringContaining(stagingVerdict),
+    });
+  });
+
+  it('falls back from the staging proxy only to the direct staging host', async () => {
+    const { runInjection } = await import('../core.mjs');
+    const origins: string[] = [];
+    const stagingVerdict = 'plan_execution_not_ready: staging execution has not started';
+    const fetchImpl = (async (input: unknown) => {
+      const url = new URL(String(input));
+      origins.push(url.origin);
+      if (url.port === '9171') throw new Error('staging proxy unavailable');
+      if (url.port === '3170')
+        return { ok: true, status: 200, json: async () => ({ text: stagingVerdict }) } as Response;
+      throw new Error('unexpected non-staging guard route: ' + url.origin);
+    }) as typeof fetch;
+    const result = await runInjection({
+      adapter: codex,
+      nativeEvent: 'pre-tool-use',
+      event: { tool_name: 'apply_patch', tool_input: { patch: 'not a real patch' }, cwd: '/repo' },
+      env: hookEnv({
+        PAPERCUSP_SID: 'sid-staging-guard-fallback',
+        PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071',
+        PAPERCUSP_MCP_STAGING_PROXY_PORT: '9171',
+      }),
+      fetchImpl,
+    });
+
+    expect(origins).toEqual(['http://127.0.0.1:9171', 'http://127.0.0.1:3170']);
+    expect(result).toContain('plan_execution_not_ready');
+    expect(JSON.parse(result!).hookSpecificOutput).toMatchObject({
+      permissionDecision: 'deny',
+      permissionDecisionReason: expect.stringContaining(stagingVerdict),
+    });
+  });
+
+  it('does not infer staging from an ordinary :9071 pin alone', async () => {
+    const { runInjection } = await import('../core.mjs');
+    const origins: string[] = [];
+    const fetchImpl = (async (input: unknown) => {
+      const url = new URL(String(input));
+      origins.push(url.origin);
+      return { ok: true, status: 200, json: async () => ({ text: 'main guard verdict' }) } as Response;
+    }) as typeof fetch;
+    const result = await runInjection({
+      adapter: codex,
+      nativeEvent: 'pre-tool-use',
+      event: { tool_name: 'apply_patch', tool_input: { patch: 'not a real patch' }, cwd: '/repo' },
+      env: hookEnv({
+        PAPERCUSP_SID: 'sid-main-guard-pin',
+        PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071',
+      }),
+      fetchImpl,
+    });
+
+    expect(origins).toEqual(['http://127.0.0.1:9071']);
+    expect(result).toContain('main guard verdict');
+  });
+
   it('pre-tool: a refusal from the operator becomes a deny for that one call', async () => {
     const op = fakeOperator({ text: 'Refused by identity safe-coder rule no-rm: no recursive deletes' });
     const base = await op.start();
@@ -512,7 +769,7 @@ describe('identity hook ports through the real CLI (P-011)', () => {
     expect(op.received).toHaveLength(1);
   });
 
-  it('pre-tool: unreachable execution authority keeps writes closed and allows only safe shell operations', async () => {
+  it('pre-tool: unreachable authority allows canonical plan repairs but keeps unsupported writes closed', async () => {
     const { runInjection } = await import('../core.mjs');
     const fetchImpl = (async () => { throw new Error('connection refused'); }) as typeof fetch;
     const planAnchorRepair = [
@@ -537,7 +794,7 @@ describe('identity hook ports through the real CLI (P-011)', () => {
       for (const tool of ['apply_patch', 'Write', 'exec_command']) {
         const output = await runInjection({ adapter, nativeEvent,
           event: { tool_name: tool, tool_input: { cmd: 'touch source.ts' } },
-          env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl });
+          env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl });
         const decision = JSON.parse(output!).hookSpecificOutput;
         expect(decision).toMatchObject({
           permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('plan_execution_not_ready'),
@@ -545,10 +802,10 @@ describe('identity hook ports through the real CLI (P-011)', () => {
         expect(decision.permissionDecisionReason).toContain('no server verdict was received');
       }
       expect(await runInjection({ adapter, nativeEvent, event: { tool_name: 'Read', tool_input: { file_path: 'source.ts' } },
-        env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl })).toBeNull();
+        env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl })).toBeNull();
       for (const cmd of ['rg --files apps/operator/scripts/hooks/inject', "rg -n -F 'plan_execution_not_ready' apps/operator/scripts/hooks/inject"]) {
         expect(await runInjection({ adapter, nativeEvent, event: { tool_name: 'exec_command', tool_input: { cmd } },
-          env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl })).toBeNull();
+          env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl })).toBeNull();
       }
       for (const cmd of [
         'cat apps/operator/scripts/hooks/inject/core.mjs',
@@ -557,11 +814,12 @@ describe('identity hook ports through the real CLI (P-011)', () => {
         "rg -n -F 'plan_execution_not_ready' apps/operator/scripts/hooks/inject",
       ]) {
         expect(await runInjection({ adapter, nativeEvent, event: { tool_name: 'exec_command', tool_input: { cmd } },
-          env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl })).toBeNull();
+          env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl })).toBeNull();
       }
       for (const cmd of [
         'rg --pre=cat --files .',
         'rg --files; touch source.ts',
+        'rg --files --no-config apps/operator/scripts/hooks/inject | head -n 20; touch source.ts',
         'cat source.ts > copy.ts',
         "sed -i 's/old/new/' source.ts",
         "sed -n '1w output' source.ts",
@@ -569,31 +827,82 @@ describe('identity hook ports through the real CLI (P-011)', () => {
         "sed -n '1,20p' source.ts > output",
       ]) {
         const output = await runInjection({ adapter, nativeEvent, event: { tool_name: 'exec_command', tool_input: { cmd } },
-          env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl });
+          env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl });
         expect(JSON.parse(output!).hookSpecificOutput.permissionDecision).toBe('deny');
       }
       expect(await runInjection({ adapter, nativeEvent, event: { tool_name: 'exec_command', tool_input: { cmd: planAnchorRepair } },
-        env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl })).toBeNull();
-      const rejectedContentEdit = await runInjection({ adapter, nativeEvent,
+        env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl })).toBeNull();
+      const admittedContentEdit = await runInjection({ adapter, nativeEvent,
         event: { tool_name: 'exec_command', tool_input: { cmd: contentEdit } },
-        env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl });
-      expect(JSON.parse(rejectedContentEdit!).hookSpecificOutput.permissionDecision).toBe('deny');
+        env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl });
+      expect(admittedContentEdit).toBeNull();
     }
   });
 
-  it('pre-tool: unavailable authority permits typed anchor repair on local staging but refuses arbitrary destinations and shell execution', async () => {
+  it('pre-tool: unreachable authority admits everyday read-only wrappers but keeps writes closed (EI-28725785038939067)', async () => {
+    const { runInjection } = await import('../core.mjs');
+    const fetchImpl = (async () => { throw new Error('connection refused'); }) as typeof fetch;
+    // Shapes agents actually type for reads; the old fallback admitted only bare rg/head/cat/sed/ps.
+    const admitted = [
+      'cd apps/operator && rg -n -F runInjection scripts/hooks/inject/core.mjs',
+      'timeout 20 rg -n -F runInjection apps/operator/scripts/hooks/inject 2>/dev/null | head -n 5',
+      'grep -rn plan_execution_not_ready apps/operator/scripts/hooks/inject 2>&1 | head -20',
+      'ls -la apps/operator/scripts/hooks/inject | wc -l',
+      "echo '--- core ---'; tail -n 20 apps/operator/scripts/hooks/inject/core.mjs",
+      'rg -c runInjection apps/operator/scripts/hooks/inject | sort -t: -k2 -rn | uniq -c',
+      'rg --files apps/operator/scripts/hooks/inject > /dev/null || true',
+      'pwd; cut -d: -f1 apps/operator/package.json | head -n 3',
+      'timeout -s KILL 5s ps -eo pid,comm | grep -F node',
+    ];
+    const refused = [
+      'cd apps && touch source.ts',
+      'rg --files 2>errors.log',
+      'ls > listing.txt',
+      'grep -rn x . >> out.txt',
+      'echo hi >& out.txt',
+      'sort -o sorted.txt input.txt',
+      'sort -uo sorted.txt input.txt',
+      'sort --output=sorted.txt input.txt',
+      'sort --compress-program=sh input.txt',
+      'uniq input.txt output.txt',
+      'timeout 5 touch source.ts',
+      'timeout 5',
+      'timeout rg --files',
+      'rg --files || touch source.ts',
+      'cd a b',
+      'ls $HOME',
+      'find . -name x -delete',
+    ];
+    for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
+      for (const cmd of admitted) {
+        expect(await runInjection({ adapter, nativeEvent, event: { tool_name: 'exec_command', tool_input: { cmd } },
+          env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl }), cmd).toBeNull();
+      }
+      for (const cmd of refused) {
+        const output = await runInjection({ adapter, nativeEvent, event: { tool_name: 'exec_command', tool_input: { cmd } },
+          env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl });
+        expect(output, cmd).not.toBeNull();
+        expect(JSON.parse(output!).hookSpecificOutput.permissionDecision, cmd).toBe('deny');
+      }
+    }
+  });
+
+  it('pre-tool: unavailable authority permits typed plan edits on local staging but refuses arbitrary destinations and shell execution', async () => {
     const { runInjection } = await import('../core.mjs');
     const fetchImpl = (async () => { throw Error('authority unavailable'); }) as typeof fetch;
     const payload = { slug: 'optional-evaluations', itemId: 'P-002', anchors: [{
       path: 'packages/operator-core/lib/harness/docs/native-architecture.ts',
       change: { action: 'investigate', summary: 'Evaluate current source citations', reason: 'Evaluation only' },
     }] };
+    const textEdit = { slug: 'optional-evaluations', old_string: 'old plan text',
+      new_string: 'repaired plan text', expectedHash: 'a'.repeat(64), rationale: 'Repair before activation' };
     const command = (flags: string, body: unknown = payload) =>
       [`ptool plans:edit ${flags} <<'JSON'`, JSON.stringify(body), 'JSON'].join('\n');
     const safe = [
       command('--url http://127.0.0.1:3170 --json -'),
       command('--json - --url=http://localhost:3170/ --harness=papercusp'),
       command('--json - --url "http://[::1]:3170" --workspace=papercusp-workspace'),
+      command('--json - --url=http://127.0.0.1:3170 --harness=papercusp', textEdit),
     ];
     const unsafe = [
       ...['http://example.com:3170', 'http://127.0.0.1:39047', 'http://127.0.0.1:3170.evil',
@@ -608,12 +917,69 @@ describe('identity hook ports through the real CLI (P-011)', () => {
     for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
       for (const cmd of safe) expect(await runInjection({ adapter, nativeEvent,
         event: { tool_name: 'exec_command', tool_input: { cmd } },
-        env: { PAPERCUSP_SID: 'sid-anchor-repair' }, fetchImpl }), cmd).toBeNull();
+        env: hookEnv({ PAPERCUSP_SID: 'sid-anchor-repair' }), fetchImpl }), cmd).toBeNull();
       for (const cmd of unsafe) {
         const result = await runInjection({ adapter, nativeEvent,
           event: { tool_name: 'exec_command', tool_input: { cmd } },
-          env: { PAPERCUSP_SID: 'sid-anchor-repair' }, fetchImpl });
+          env: hookEnv({ PAPERCUSP_SID: 'sid-anchor-repair' }), fetchImpl });
         expect(JSON.parse(result!).hookSpecificOutput, cmd).toMatchObject({
+          permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('no server verdict was received'),
+        });
+      }
+    }
+  });
+
+  it('pre-tool: unavailable authority admits typed pre-start plans:audit and invoke retries only', async () => {
+    const { runInjection } = await import('../core.mjs');
+    const ptool = (name: string, args: unknown, flags = '') =>
+      ['ptool ' + name + (flags ? ' ' + flags : '') + " --json - <<'JSON'",
+        JSON.stringify(args), 'JSON'].join('\n');
+    const textEdit = { slug: 'repair-plan', harness: 'papercusp', old_string: 'stale anchor',
+      new_string: 'repaired anchor', expectedHash: 'b'.repeat(64), rationale: 'Repair before plan start' };
+    const activationAudit = { slug: 'repair-plan', harness: 'papercusp', phase: 'activation', dryRun: false,
+      sourceRanges: [{ sourceKind: 'codex', sessionId: 'codex-session-1', fromTurn: 0, toTurn: 1 }],
+      mappings: [{ id: 'M-001', sourceRefs: ['codex-session-1:turn:0'], requirement: 'Repair plan readiness',
+        planTargets: ['P-001'], disposition: 'covered' }] };
+    const discoveryAudit = { slug: 'repair-plan', harness: 'papercusp', phase: 'discovery', dryRun: false };
+    const safe = [
+      ptool('plans:edit', textEdit, '--workspace=papercusp-workspace --harness=papercusp'),
+      ptool('tools:invoke', { name: 'plans:edit', args: textEdit }),
+      ptool('plans:audit', discoveryAudit),
+      ptool('tools:invoke', { name: 'plans:audit', args: activationAudit },
+        '--idempotency-key=fe2d13ae-60b6-4054-bd68-3b3631f7a27f'),
+    ];
+    const unsafe = [
+      ptool('plans:edit', { ...textEdit, replace_all: true }),
+      ptool('plans:edit', { ...textEdit, allowDecisionDrop: true }),
+      ptool('plans:edit', { ...textEdit, itemId: 'P-001', anchors: [{ path: 'source.ts' }] }),
+      ptool('plans:audit', { ...activationAudit, phase: 'completion',
+        items: [{ itemId: 'P-001', verdict: 'implemented' }] }),
+      ptool('tools:invoke', { name: 'plans:audit', args: activationAudit, projection: { pick: ['status'] } }),
+      ptool('tools:invoke', { name: 'capability:write', args: { file_path: 'source.ts', content: 'changed' } }),
+      ptool('tools:invoke', { name: 'plans:audit', args: activationAudit },
+        '--idempotency-key=$(touch source.ts)'),
+    ];
+    const unavailable = (async () => { throw Error('authority unavailable'); }) as typeof fetch;
+    const explicitRefusal = (async () => new Response(JSON.stringify({ text: 'Target plan repair refusal' }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    })) as typeof fetch;
+
+    for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
+      const env = { PAPERCUSP_SID: 'sid-plan-repair', PAPERCUSP_WORKSPACE: 'papercusp-workspace',
+        PAPERCUSP_HARNESS_SLUG: 'papercusp' };
+      for (const cmd of safe) expect(await runInjection({ adapter, nativeEvent,
+        event: { tool_name: 'exec_command', tool_input: { cmd } }, env: hookEnv(env), fetchImpl: unavailable }), cmd).toBeNull();
+
+      const targetRefusal = await runInjection({ adapter, nativeEvent,
+        event: { tool_name: 'exec_command', tool_input: { cmd: safe[3] } }, env: hookEnv(env), fetchImpl: explicitRefusal });
+      expect(JSON.parse(targetRefusal!).hookSpecificOutput).toMatchObject({
+        permissionDecision: 'deny', permissionDecisionReason: 'Target plan repair refusal',
+      });
+
+      for (const cmd of unsafe) {
+        const refused = await runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'exec_command', tool_input: { cmd } }, env: hookEnv(env), fetchImpl: unavailable });
+        expect(JSON.parse(refused!).hookSpecificOutput, cmd).toMatchObject({
           permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('no server verdict was received'),
         });
       }
@@ -642,11 +1008,52 @@ describe('identity hook ports through the real CLI (P-011)', () => {
     for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
       for (const cmd of safe) expect(await runInjection({ adapter, nativeEvent,
         event: { tool_name: 'exec_command', tool_input: { cmd } },
-        env: { PAPERCUSP_SID: 'sid-reviewer' }, fetchImpl }), cmd).toBeNull();
+        env: hookEnv({ PAPERCUSP_SID: 'sid-reviewer' }), fetchImpl }), cmd).toBeNull();
       for (const cmd of unsafe) {
         const output = await runInjection({ adapter, nativeEvent,
           event: { tool_name: 'exec_command', tool_input: { cmd } },
-          env: { PAPERCUSP_SID: 'sid-reviewer' }, fetchImpl });
+          env: hookEnv({ PAPERCUSP_SID: 'sid-reviewer' }), fetchImpl });
+        expect(JSON.parse(output!).hookSpecificOutput, cmd).toMatchObject({
+          permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('no server verdict was received'),
+        });
+      }
+    }
+  });
+
+  it('pre-tool: unavailable authority admits pinned plan evaluation reads but keeps writes and remote URLs closed', async () => {
+    const { runInjection } = await import('../core.mjs');
+    const args = {
+      harness: 'papercusp',
+      slug: 'agent-latency-causes-remediation-2026-11-06',
+      detail: 'summary',
+    };
+    const command = (header: string, payload: unknown) =>
+      [header + " <<'JSON'", JSON.stringify(payload), 'JSON'].join('\n');
+    const evaluate = command('ptool plans:evaluate-spec-quality --json - --url=http://127.0.0.1:3170', args);
+    const unsafe = [
+      command('ptool plans:evaluate-spec-quality --json - --url=http://example.com:3170', args),
+      command('ptool work_items:complete --json - --url=http://127.0.0.1:3170', {
+        id: 'EI-28073769942770404', state: 'resolved',
+      }),
+    ];
+    const unavailable = (async () => { throw new Error('authority unavailable'); }) as typeof fetch;
+    for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
+      expect(await runInjection({ adapter, nativeEvent,
+        event: { tool_name: 'exec_command', tool_input: { cmd: evaluate } },
+        env: hookEnv({ PAPERCUSP_SID: 'sid-plan-evaluation' }), fetchImpl: unavailable }), evaluate).toBeNull();
+      const refusal = await runInjection({ adapter, nativeEvent,
+        event: { tool_name: 'exec_command', tool_input: { cmd: evaluate } },
+        env: hookEnv({ PAPERCUSP_SID: 'sid-plan-evaluation' }),
+        fetchImpl: (async () => new Response(JSON.stringify({ text: 'Explicit operator refusal' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })) as typeof fetch });
+      expect(JSON.parse(refusal!).hookSpecificOutput, evaluate).toMatchObject({
+        permissionDecision: 'deny', permissionDecisionReason: 'Explicit operator refusal',
+      });
+      for (const cmd of unsafe) {
+        const output = await runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'exec_command', tool_input: { cmd } },
+          env: hookEnv({ PAPERCUSP_SID: 'sid-plan-evaluation' }), fetchImpl: unavailable });
         expect(JSON.parse(output!).hookSpecificOutput, cmd).toMatchObject({
           permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('no server verdict was received'),
         });
@@ -659,11 +1066,18 @@ describe('identity hook ports through the real CLI (P-011)', () => {
     const command = (header: string, args: unknown = { issueId: 'EI-123', rerunRecipeOffset: 2580 }) =>
       [header + " <<'JSON'", JSON.stringify(args), 'JSON'].join('\n');
     const pinned = 'node scripts/mcp-call.mjs --port 38453 scorecards:get --json -';
+    const pinnedGitEvidence = 'node scripts/mcp-call.mjs --port=3170 capability:git-evidence --json -';
+    const pinnedToolsFind = 'node scripts/mcp-call.mjs --port=3170 tools:find --json -';
     const safe = [
       command('ptool scorecards:get --json -'),
       command('ptool scorecards:get --json - --url=http://127.0.0.1:3170'),
       command(pinned),
       command(pinned + ' --allow-partial'),
+      command(pinnedGitEvidence, {
+        op: 'readFileAtCommit', commitSha: 'a'.repeat(40), path: 'apps/operator/scripts/hooks/inject/core.mjs',
+        rootHarnessSlug: 'papercusp', byte_offset: 37050, byte_limit: 3072,
+      }),
+      command(pinnedToolsFind, { query: 'scorecards:emit' }),
       command('node scripts/mcp-call.mjs --port=38453 capability:read --json -', {
         file_path: 'papercusp://scratch/papercusp-workspace/scorecards:get/evidence.spill',
         byte_offset: 0, byte_limit: 3072,
@@ -675,6 +1089,9 @@ describe('identity hook ports through the real CLI (P-011)', () => {
       command(pinned.replace('scorecards:get', 'work_items:complete')),
       command(pinned.replace('scorecards:get', 'tools:invoke'), {
         name: 'scorecards:get', args: { issueId: 'EI-123' },
+      }),
+      command(pinnedToolsFind.replace('tools:find', 'tools:invoke'), {
+        name: 'tools:find', args: { query: 'scorecards:emit' },
       }),
       command(pinned + ' --client=someone-else'),
       command(pinned.replace('38453', '65536')),
@@ -692,10 +1109,10 @@ describe('identity hook ports through the real CLI (P-011)', () => {
       for (const cmd of safe) {
         expect(await runInjection({ adapter, nativeEvent,
           event: { tool_name: 'exec_command', tool_input: { cmd } },
-          env: { PAPERCUSP_SID: 'sid-reviewer' }, fetchImpl }), cmd).toBeNull();
+          env: hookEnv({ PAPERCUSP_SID: 'sid-reviewer' }), fetchImpl }), cmd).toBeNull();
         const refusal = await runInjection({ adapter, nativeEvent,
           event: { tool_name: 'exec_command', tool_input: { cmd } },
-          env: { PAPERCUSP_SID: 'sid-reviewer' },
+          env: hookEnv({ PAPERCUSP_SID: 'sid-reviewer' }),
           fetchImpl: (async () => new Response(JSON.stringify({ text: 'Explicit operator refusal' }), {
             status: 200, headers: { 'Content-Type': 'application/json' },
           })) as typeof fetch });
@@ -706,7 +1123,7 @@ describe('identity hook ports through the real CLI (P-011)', () => {
       for (const cmd of unsafe) {
         const output = await runInjection({ adapter, nativeEvent,
           event: { tool_name: 'exec_command', tool_input: { cmd } },
-          env: { PAPERCUSP_SID: 'sid-reviewer' }, fetchImpl });
+          env: hookEnv({ PAPERCUSP_SID: 'sid-reviewer' }), fetchImpl });
         expect(JSON.parse(output!).hookSpecificOutput, cmd).toMatchObject({ permissionDecision: 'deny' });
       }
     }
@@ -736,10 +1153,10 @@ describe('identity hook ports through the real CLI (P-011)', () => {
         PAPERCUSP_HARNESS_SLUG: 'papercusp',
       };
       for (const cmd of safe) expect(await runInjection({ adapter, nativeEvent,
-        event: { tool_name: 'exec_command', tool_input: { cmd } }, env, fetchImpl }), cmd).toBeNull();
+        event: { tool_name: 'exec_command', tool_input: { cmd } }, env: hookEnv(env), fetchImpl }), cmd).toBeNull();
       for (const cmd of unsafe) {
         const output = await runInjection({ adapter, nativeEvent,
-          event: { tool_name: 'exec_command', tool_input: { cmd } }, env, fetchImpl });
+          event: { tool_name: 'exec_command', tool_input: { cmd } }, env: hookEnv(env), fetchImpl });
         expect(JSON.parse(output!).hookSpecificOutput, cmd).toMatchObject({
           permissionDecision: 'deny',
           permissionDecisionReason: expect.stringContaining('no server verdict was received'),
@@ -747,7 +1164,7 @@ describe('identity hook ports through the real CLI (P-011)', () => {
       }
       const invalidScope = await runInjection({ adapter, nativeEvent,
         event: { tool_name: 'exec_command', tool_input: { cmd: safe[0] } },
-        env: { ...env, PAPERCUSP_WORKSPACE: 'workspace; touch source.ts' }, fetchImpl });
+        env: hookEnv({ ...env, PAPERCUSP_WORKSPACE: 'workspace; touch source.ts' }), fetchImpl });
       expect(JSON.parse(invalidScope!).hookSpecificOutput.permissionDecision).toBe('deny');
     }
   });
@@ -781,8 +1198,8 @@ describe('identity hook ports through the real CLI (P-011)', () => {
     for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
       for (const cmd of safe) {
         const event = { tool_name: 'exec_command', tool_input: { cmd } };
-        expect(await runInjection({ adapter, nativeEvent, event, env, fetchImpl: unavailable }), cmd).toBeNull();
-        const refusal = await runInjection({ adapter, nativeEvent, event, env,
+        expect(await runInjection({ adapter, nativeEvent, event, env: hookEnv(env), fetchImpl: unavailable }), cmd).toBeNull();
+        const refusal = await runInjection({ adapter, nativeEvent, event, env: hookEnv(env),
           fetchImpl: (async () => new Response(JSON.stringify({ text: 'Explicit operator refusal' }), {
             status: 200, headers: { 'Content-Type': 'application/json' },
           })) as typeof fetch });
@@ -792,7 +1209,7 @@ describe('identity hook ports through the real CLI (P-011)', () => {
       }
       for (const cmd of unsafe) {
         const output = await runInjection({ adapter, nativeEvent,
-          event: { tool_name: 'exec_command', tool_input: { cmd } }, env, fetchImpl: unavailable });
+          event: { tool_name: 'exec_command', tool_input: { cmd } }, env: hookEnv(env), fetchImpl: unavailable });
         expect(JSON.parse(output!).hookSpecificOutput, cmd).toMatchObject({ permissionDecision: 'deny' });
       }
     }
@@ -831,10 +1248,10 @@ describe('identity hook ports through the real CLI (P-011)', () => {
     for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
       const env = { PAPERCUSP_SID: 'sid-recovery', PAPERCUSP_WORKSPACE: 'papercusp-workspace' };
       for (const cmd of safe) expect(await runInjection({ adapter, nativeEvent,
-        event: { tool_name: 'exec_command', tool_input: { cmd } }, env, fetchImpl }), cmd).toBeNull();
+        event: { tool_name: 'exec_command', tool_input: { cmd } }, env: hookEnv(env), fetchImpl }), cmd).toBeNull();
       for (const cmd of unsafe) {
         const output = await runInjection({ adapter, nativeEvent,
-          event: { tool_name: 'exec_command', tool_input: { cmd } }, env, fetchImpl });
+          event: { tool_name: 'exec_command', tool_input: { cmd } }, env: hookEnv(env), fetchImpl });
         expect(JSON.parse(output!).hookSpecificOutput, cmd).toMatchObject({
           permissionDecision: 'deny',
           permissionDecisionReason: expect.stringContaining('no server verdict was received'),
@@ -843,7 +1260,7 @@ describe('identity hook ports through the real CLI (P-011)', () => {
     }
   });
 
-  it('pre-tool: unavailable authority permits only the documented scoped ptool tools:find wrapper', async () => {
+  it('pre-tool: unavailable authority permits documented scoped ptool reads only', async () => {
     const { runInjection } = await import('../core.mjs');
     const scopedPtool = (tool: string, args: unknown) => [
       'ptool_scope=(--workspace="${PAPERCUSP_WORKSPACE}")',
@@ -855,7 +1272,13 @@ describe('identity hook ports through the real CLI (P-011)', () => {
       'JSON',
     ].join('\n');
     const safe = scopedPtool('tools:find', { query: 'work_items:claim' });
+    const safeTestingRuns = [
+      "ptool testing:runs --workspace=papercusp-workspace --harness=papercusp --json - <<'JSON'",
+      JSON.stringify({ limit: 1 }),
+      'JSON',
+    ].join('\n');
     const unsafe = scopedPtool('work_items:complete', { id: 'WI-123', state: 'done' });
+    const unsafeCheckpoint = scopedPtool('work_items:checkpoint', { id: 'WI-123', checkpoint: 'attempt' });
     const fetchImpl = (async () => { throw Error('authority unavailable'); }) as typeof fetch;
     const env = {
       PAPERCUSP_SID: 'sid-scoped-find',
@@ -865,17 +1288,20 @@ describe('identity hook ports through the real CLI (P-011)', () => {
 
     for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
       expect(await runInjection({ adapter, nativeEvent,
-        event: { tool_name: 'exec_command', tool_input: { cmd: safe } }, env, fetchImpl })).toBeNull();
+        event: { tool_name: 'exec_command', tool_input: { cmd: safe } }, env: hookEnv(env), fetchImpl })).toBeNull();
+      expect(await runInjection({ adapter, nativeEvent,
+        event: { tool_name: 'exec_command', tool_input: { cmd: safeTestingRuns } }, env: hookEnv(env), fetchImpl })).toBeNull();
       expect(await runInjection({ adapter, nativeEvent,
         event: { tool_name: 'exec_command', tool_input: { cmd: safe } },
-        env: { ...env, PAPERCUSP_HARNESS_SLUG: '' }, fetchImpl })).toBeNull();
+        env: hookEnv({ ...env, PAPERCUSP_HARNESS_SLUG: '' }), fetchImpl })).toBeNull();
 
       for (const [cmd, callEnv] of [
         [unsafe, env],
+        [unsafeCheckpoint, env],
         [safe, { ...env, PAPERCUSP_HARNESS_SLUG: 'papercusp;touch' }],
       ] as const) {
         const output = await runInjection({ adapter, nativeEvent,
-          event: { tool_name: 'exec_command', tool_input: { cmd } }, env: callEnv, fetchImpl });
+          event: { tool_name: 'exec_command', tool_input: { cmd } }, env: hookEnv(callEnv), fetchImpl });
         expect(JSON.parse(output!).hookSpecificOutput).toMatchObject({
           permissionDecision: 'deny',
           permissionDecisionReason: expect.stringContaining('no server verdict was received'),
@@ -899,11 +1325,13 @@ describe('identity hook ports through the real CLI (P-011)', () => {
       "sed -n '2855,2960p' packages/operator-core/lib/agent-tools/capability/launch-agent.ts",
       "rg -n 'reconcilePendingGradingAudits|dispatch.*Audit|launchSummary|dispatchReservation|launch-agent' packages/operator-core/lib/grading-audit-routing.ts packages/operator-core/lib/scorecards.ts",
     ].join('\n');
-    // The reported fourth line is a read-only pipeline, but pipelines stay
-    // fail-closed when the authority lookup is unavailable.
+    // A pipe is admitted only when every stage is independently allowlisted as
+    // read-only; unknown commands and writes remain fail-closed.
     const reportedReadOnlyPipeline = [
-      reportedReadOnlyReads,
-      "rg --files packages/operator-core/lib | rg '(agent-launch|launch-ledger|spawn-attempt)'",
+      "rg --files --no-config packages/operator-core/lib | rg --no-config '(agent-launch|launch-ledger|spawn-attempt)'",
+      "ps -eo pid,comm | rg --no-config -F 'codex'",
+      'rg --files --no-config apps/operator/scripts/hooks/inject | head -n 20',
+      "rg --no-config -n -F 'plan_execution_not_ready' apps/operator/scripts/hooks/inject | head -n 20",
     ].join('\n');
     const readOnlyCommands = [
       readOnlyInspection,
@@ -947,7 +1375,7 @@ describe('identity hook ports through the real CLI (P-011)', () => {
         for (const cmd of readOnlyCommands) {
           const read = runInjection({ adapter, nativeEvent,
             event: { tool_name: 'exec_command', tool_input: { cmd } },
-            env: { PAPERCUSP_SID: 'sid-guard', PAPERCUSP_WORKSPACE: 'papercusp-workspace' },
+            env: hookEnv({ PAPERCUSP_SID: 'sid-guard', PAPERCUSP_WORKSPACE: 'papercusp-workspace' }),
             fetchImpl: stalledFetch });
           await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
           expect(await read, cmd).toBeNull();
@@ -955,16 +1383,22 @@ describe('identity hook ports through the real CLI (P-011)', () => {
 
         const pipeline = runInjection({ adapter, nativeEvent,
           event: { tool_name: 'exec_command', tool_input: { cmd: reportedReadOnlyPipeline } },
-          env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl: stalledFetch });
+          env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl: stalledFetch });
         await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
-        expect(JSON.parse((await pipeline)!).hookSpecificOutput).toMatchObject({
+        expect(await pipeline).toBeNull();
+
+        const mutatingPipeline = runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'exec_command', tool_input: { cmd: 'ps -eo pid,comm | touch output' } },
+          env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl: stalledFetch });
+        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+        expect(JSON.parse((await mutatingPipeline)!).hookSpecificOutput).toMatchObject({
           permissionDecision: 'deny',
           permissionDecisionReason: expect.stringContaining('plan_execution_not_ready'),
         });
 
         const write = runInjection({ adapter, nativeEvent,
           event: { tool_name: 'exec_command', tool_input: { cmd: 'touch source.ts' } },
-          env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl: stalledFetch });
+          env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl: stalledFetch });
         await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
         const decision = JSON.parse((await write)!).hookSpecificOutput;
         expect(decision).toMatchObject({
@@ -975,7 +1409,7 @@ describe('identity hook ports through the real CLI (P-011)', () => {
           event: { tool_name: 'apply_patch', tool_input: {
             patch: '*** Begin Patch\n*** Update File: source.ts\n@@\n-old\n+new\n*** End Patch',
           } },
-          env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl: stalledFetch });
+          env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl: stalledFetch });
         await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
         const patchDecision = JSON.parse((await nativePatch)!).hookSpecificOutput;
         expect(patchDecision).toMatchObject({
@@ -986,7 +1420,7 @@ describe('identity hook ports through the real CLI (P-011)', () => {
         expect(patchDecision.permissionDecisionReason).toContain('timeoutMs=1500');
         const ptoolWrite = runInjection({ adapter, nativeEvent,
           event: { tool_name: 'exec_command', tool_input: { cmd: refusedPtoolWrite } },
-          env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl: stalledFetch });
+          env: hookEnv({ PAPERCUSP_SID: 'sid-guard' }), fetchImpl: stalledFetch });
         await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
         expect(JSON.parse((await ptoolWrite)!).hookSpecificOutput).toMatchObject({
           permissionDecision: 'deny',
@@ -1040,7 +1474,8 @@ describe('the happy path (so the fail-silent tests below are not vacuous)', () =
       JSON.stringify({ prompt: 'hello' }),
       { PAPERCUSP_SID: 'sid-1', PAPERCUSP_OPERATOR_URL: base },
     );
-    expect(res.code).toBe(0);
+    expect(res.code, res.stderr || 'execFile returned no error detail').toBe(0);
+    expect(res.stdout, res.stderr || 'the CLI exited successfully without emitting its required JSON payload').not.toBe('');
     expect(JSON.parse(res.stdout)).toEqual({
       hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: 'INJECTED' },
     });

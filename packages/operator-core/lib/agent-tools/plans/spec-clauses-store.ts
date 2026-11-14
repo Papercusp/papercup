@@ -489,7 +489,6 @@ export async function setSpecClause(
   const scope = transaction ?? (await resolvePlanScope({ harnessSlug: input.harnessSlug }));
   const normalized = canonicalWrite(input);
   const falsifier = normalizedFalsifier(input.falsifier);
-  const contentHash = specClauseContentHash(input);
 
   const write = async (tx: SpecClauseSql): Promise<SetSpecClauseResult> => {
     // P-022 / D-018: a clause for a work-item that belongs to no plan is authored into the
@@ -622,13 +621,16 @@ export async function setSpecClause(
     // `null` clears it. Writing NULL on omission did two silent things at once: it stripped
     // the ref spec-quality demands, and it made a lifecycle-only promotion hash as a real
     // edit, so the WI-10002889 proof carry below never fired and every binding went stale.
-    // The hash is taken over the EFFECTIVE write, so the stored row and its hash agree.
+    // Resolve BOTH lineage fields before hashing. Hashing the caller's omitted pin
+    // while persisting the prior pin makes an identical explicit-pin reseed append
+    // a revision and invalidate proof tied to the otherwise unchanged contract.
     const priorAcceptanceRef = identity?.acceptance_ref ?? null;
-    const effectiveInput: SpecClauseWrite =
-      input.acceptanceRef === undefined && priorAcceptanceRef !== null
-        ? { ...input, acceptanceRef: priorAcceptanceRef }
-        : input;
-    const writeHash = effectiveInput === input ? contentHash : specClauseContentHash(effectiveInput);
+    const effectiveInput: SpecClauseWrite = {
+      ...input,
+      sourceBar: effectiveBarPin,
+      acceptanceRef: input.acceptanceRef === undefined ? priorAcceptanceRef : input.acceptanceRef,
+    };
+    const writeHash = specClauseContentHash(effectiveInput);
     const writeAcceptanceRef = canonicalWrite(effectiveInput).acceptanceRef;
 
     if (!identity && input.sourceValId) {

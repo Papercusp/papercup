@@ -172,6 +172,68 @@ export type SpecAdequacyCompletionGateResult = (
  */
 type WorkItemForSpecGate = WorkItemForContract;
 
+type AdequacyPhaseTrack = <T>(phase: string, work: () => Promise<T>) => Promise<T>;
+
+/**
+ * Read current adequacy cards with one bounded union scan per subject batch. The
+ * scorecard store's `subjectRefs` filter limits the newest-first UNION, not each
+ * subject independently; a full union page is therefore ambiguous and falls back
+ * to the old exact per-subject window. This keeps the 20-card admission contract
+ * while removing the serial query chain from the common case.
+ */
+async function listAdequacyCardsBySubject(
+  subjectRefs: readonly string[],
+  listCards: typeof listScorecards,
+  track: AdequacyPhaseTrack,
+): Promise<Map<string, ScorecardRow[]>> {
+  const perSubjectLimit = 20;
+  const subjectsPerBatch = 25; // 20 × 25 fits listScorecards' 500-row ceiling.
+  const fallbackConcurrency = 5;
+  const uniqueRefs = [...new Set(subjectRefs)];
+  const result = new Map<string, ScorecardRow[]>();
+
+  for (let offset = 0; offset < uniqueRefs.length; offset += subjectsPerBatch) {
+    const batch = uniqueRefs.slice(offset, offset + subjectsPerBatch);
+    const limit = batch.length * perSubjectLimit;
+    const cards = await track('scorecards', () => listCards({
+      rubricRef: SPEC_TEST_ADEQUACY_RUBRIC_REF,
+      ...(batch.length === 1 ? { subjectRef: batch[0] } : { subjectRefs: batch }),
+      limit,
+    }));
+
+    // A full union cannot prove that every subject's newest 20 cards were present:
+    // one busy subject may have occupied the whole page. Re-read this bounded batch
+    // with the original per-subject filter, keeping concurrency below the batch size.
+    if (batch.length > 1 && cards.length >= limit) {
+      for (let fallbackOffset = 0; fallbackOffset < batch.length; fallbackOffset += fallbackConcurrency) {
+        const fallbackRefs = batch.slice(fallbackOffset, fallbackOffset + fallbackConcurrency);
+        const fallbackRows = await Promise.all(fallbackRefs.map(async (subjectRef) => [
+          subjectRef,
+          await track('scorecards', () => listCards({
+            rubricRef: SPEC_TEST_ADEQUACY_RUBRIC_REF,
+            subjectRef,
+            limit: perSubjectLimit,
+          })),
+        ] as const));
+        for (const [subjectRef, rows] of fallbackRows) result.set(subjectRef, rows);
+      }
+      continue;
+    }
+
+    const grouped = new Map<string, ScorecardRow[]>();
+    for (const card of cards) {
+      const subjectRef = card.subject?.ref;
+      if (!subjectRef || !batch.includes(subjectRef)) continue;
+      const rows = grouped.get(subjectRef) ?? [];
+      if (rows.length < perSubjectLimit) rows.push(card);
+      grouped.set(subjectRef, rows);
+    }
+    for (const subjectRef of batch) result.set(subjectRef, grouped.get(subjectRef) ?? []);
+  }
+
+  return result;
+}
+
 /**
  * A file suffix is only a contradiction signal; it never grants an exemption by itself.
  * Scope authority comes from a current, registered INVENTORY-P-NNN clause below.
@@ -828,6 +890,23 @@ export async function specTestAdequacyCompletionGate(
   const clauseKey = (clause: SpecClauseRevision) => `${clause.planSlug}/${clause.specId}@${clause.revision}:${clause.contentHash}`;
   const deferredKeys = new Set(deferredContributions.map((entry) =>
     `${entry.projection.planSlug}/${entry.projection.specId}@${entry.projection.revision}:${entry.projection.contentHash}`));
+  const uniqueRelevantClauses = [...new Map(relevant
+    .filter((clause) => !deferredKeys.has(clauseKey(clause)))
+    .map((clause) => [clauseKey(clause), clause])).values()];
+  const sourceBarRequirementsByClause = new Map<string, Awaited<ReturnType<typeof resolvePinnedSourceBarTestRequirements>>>();
+  const sourceBarConcurrency = 5;
+  for (let offset = 0; offset < uniqueRelevantClauses.length; offset += sourceBarConcurrency) {
+    const batch = uniqueRelevantClauses.slice(offset, offset + sourceBarConcurrency);
+    const requirements = await Promise.all(batch.map(async (clause) => [
+      clauseKey(clause),
+      await track('source-bar', () => resolvePinnedSourceBarTestRequirements(
+        clause.sourceBar,
+        sourceBarRubricCache,
+      )),
+    ] as const));
+    for (const [key, value] of requirements) sourceBarRequirementsByClause.set(key, value);
+  }
+
   const proven = new Set<string>();
   const checked: string[] = [];
   const carriedAcrossEvaluatorRevision: CarriedAdequacyCard[] = [];
@@ -835,6 +914,13 @@ export async function specTestAdequacyCompletionGate(
   const pendingGradingAuditTargetIds = new Set<string>();
   const failedGradingAuditTargetIds = new Set<string>();
   const failedGradingAudits: FailedGradingAudit[] = [];
+  const scorecardCandidates: Array<{
+    label: string;
+    proofKey: string;
+    clauseEvidence: SpecEvidenceForAdequacy[];
+    result: SpecTestAdequacyResult;
+    subjectRef: string;
+  }> = [];
   for (const clause of relevant) {
     if (deferredKeys.has(clauseKey(clause))) continue;
     const certificates = deferredContributions.filter(entry =>
@@ -847,10 +933,7 @@ export async function specTestAdequacyCompletionGate(
     // row A may not borrow adequacy from an unreviewed row/cohort B.
     const certifiedIds = certificates[0] && new Set(certificates[0].proofCohort.map(pin => pin.bindingId));
     const clauseEvidence = certifiedIds ? evidence.filter(row => row.id != null && certifiedIds.has(row.id)) : evidence;
-    const sourceBarTestRequirements = await track('source-bar', () => resolvePinnedSourceBarTestRequirements(
-      clause.sourceBar,
-      sourceBarRubricCache,
-    ));
+    const sourceBarTestRequirements = sourceBarRequirementsByClause.get(clauseKey(clause))!;
     const label = `${clause.specId}@${clause.revision}`;
     const mechanical = evaluateMechanicalTestAdequacy({ clause, evidence: clauseEvidence, sourceBarTestRequirements });
     if (mechanical.applicable) {
@@ -897,11 +980,16 @@ export async function specTestAdequacyCompletionGate(
       continue;
     }
     const subjectRef = specTestAdequacySubjectRef(result.planSlug, result.specId, result.specRevision);
-    const cards = await track('scorecards', () => listCards({
-      rubricRef: SPEC_TEST_ADEQUACY_RUBRIC_REF,
-      subjectRef,
-      limit: 20,
-    }));
+    scorecardCandidates.push({ label, proofKey: clauseKey(clause), clauseEvidence, result, subjectRef });
+  }
+
+  const cardsBySubject = await listAdequacyCardsBySubject(
+    scorecardCandidates.map((candidate) => candidate.subjectRef),
+    listCards,
+    track,
+  );
+  for (const { label, proofKey, clauseEvidence, result, subjectRef } of scorecardCandidates) {
+    const cards = cardsBySubject.get(subjectRef) ?? [];
     if (!cards.some((card) => scorecardMatches(card, result, clauseEvidence))) {
       const failedAuditsForLabel: FailedGradingAudit[] = [];
       const pendingAuditsForLabel: string[] = [];
@@ -983,7 +1071,7 @@ export async function specTestAdequacyCompletionGate(
       });
     }
     checked.push(label);
-    proven.add(clauseKey(clause));
+    proven.add(proofKey);
   }
   for (const entry of deferredContributions) {
     const pin = entry.covering;

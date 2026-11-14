@@ -13,6 +13,11 @@ import { runToolOrchestration } from '@papercusp/agent-mcp';
 import type { ProjectedTool } from '@papercusp/tooldef';
 import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
 import { applyNestedProjection } from '../../result-projection';
+import { createHash } from 'node:crypto';
+import { renderCarryNote, workItemSubjectFingerprint } from '../../carry-note';
+import { inboxWakeHeldWorkReminderText } from '../../events/await/inbox-wake-held-work-reminder';
+import { shapeWorkItemsGet } from './get-shape';
+import { RESUME_PACKET_BUDGET } from './resume';
 
 const getWorkItem = vi.fn();
 const getWorkItemsByIds = vi.fn();
@@ -74,6 +79,11 @@ vi.mock('../../harness/improvements/corroboration', async (importOriginal) => ({
 vi.mock('../plans/spec-evidence-store', async (original) => ({
   ...(await original<typeof import('../plans/spec-evidence-store')>()),
   listSpecEvidence: (...args: unknown[]) => listSpecEvidence(...args),
+}));
+
+vi.mock('../../code-intelligence/task-brief', async (original) => ({
+  ...(await original<typeof import('../../code-intelligence/task-brief')>()),
+  getClaimTimeTaskBrief: vi.fn().mockResolvedValue(null),
 }));
 
 import get, { WORK_ITEMS_GET_BUDGET_MS, WORK_ITEMS_GET_MAX_CONCURRENCY, workItemsGetSourceReadOptions } from './get';
@@ -350,6 +360,79 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('work_items:get:changeKinds exceeded'));
 
     warnSpy.mockRestore();
+  });
+
+  it('dispatches real automatic wake hints before archive readers, and preserves repeated explicit expansion', async () => {
+    vi.useRealTimers();
+    const stored = { id: 'WI-auto-recovery', kind: 'change', family: 'feature', harness: 'papercusp',
+      state: 'open', assignee: 'su-current', title: 'Recovery', summary: 'Current task', payload: {} };
+    const next = 'Continue the approved independent implementation after current authority is checked.';
+    const archive = 'IMMUTABLE-ARCHIVE-DO-NOT-INLINE '.repeat(4000);
+    const saved = renderCarryNote({ did: archive, next,
+      checks: Array.from({ length: 12 }, (_, i) => ({ id: `proof-${i}`, claim: 'retained proof '.repeat(80) })) });
+    getWorkItem.mockResolvedValue(stored);
+    getWorkItemDetail.mockResolvedValue({ ...stored, posts: [{ id: 1, body: archive }] });
+    getWorkItemThreadWindow.mockResolvedValue({ posts: [{ id: 1, body: archive }], shown: 1, total: 1 });
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: saved, updatedAtMs: 1234,
+      subjectFingerprint: workItemSubjectFingerprint(stored) });
+    getWorkItemCheckpointFreshness.mockResolvedValue({ verdict: 'fresh', changed: [], unresolvable: [] });
+    listSpecEvidence.mockResolvedValue([]);
+
+    const wake = inboxWakeHeldWorkReminderText({ held: [stored], autonomyModes: ['auto'],
+      loopActive: true, guaranteedAwaitWake: false });
+    const command = wake.match(/work_items:get (\{[^}]+\})/)?.[1];
+    expect(command).toBeDefined();
+    // Parse only the emitted command's literal fields; an ordinary-get regression
+    // therefore reaches the real history reader and fails the negative assertions.
+    const args = get.args.parse({ id: command!.match(/id: '([^']+)'/)![1],
+      harness: command!.match(/harness: '([^']+)'/)?.[1],
+      ...(command!.includes('resume: true') ? { resume: true } : {}) });
+    for (let i = 0; i < 2; i++) {
+      const out = await get.handler(args as never, ctx as never) as any;
+      for (const tier of ['trimmed', 'standard'] as const) {
+        const shaped = shapeWorkItemsGet(out.data, tier) as any;
+        const packet = shaped.results[0].resume;
+        expect(JSON.stringify(packet).length).toBeLessThanOrEqual(RESUME_PACKET_BUDGET);
+        expect(packet.nextAction).toMatchObject({ status: 'available', text: next });
+        expect(packet.checks.rows.length + packet.checks.omitted).toBe(12);
+        expect(packet.checkpoint.contentSha256).toBe(createHash('sha256').update(saved).digest('hex'));
+        expect(JSON.stringify(packet)).not.toContain('IMMUTABLE-ARCHIVE-DO-NOT-INLINE');
+      }
+    }
+    expect(getWorkItemDetail).not.toHaveBeenCalled();
+    expect(getWorkItemThreadWindow).not.toHaveBeenCalled();
+
+    // Same archive, changed dependency/control or holder: re-read current state,
+    // withhold stale Next, and keep exact bounded repair references.
+    getWorkItem.mockResolvedValue({ ...stored, assignee: 'su-new-holder' });
+    getWorkItemCheckpointFreshness.mockResolvedValue({ verdict: 'stale',
+      changed: [{ dep: 'control:owner', was: 'old', now: 'new' }], unresolvable: [] });
+    const changed = await get.handler(args as never, ctx as never) as any;
+    expect(changed.data.results[0].resume.claim.assignee).toBe('su-new-holder');
+    expect(changed.data.results[0].resume.nextAction).toMatchObject({ status: 'unknown', text: null });
+    expect(changed.data.results[0].resume.authority.readRef).toEqual({ tool: 'coord:orient', args: { afterCompaction: true } });
+    getWorkItemCheckpointFreshness.mockRejectedValue(new Error('unreadable dependency'));
+    const unknown = await get.handler(args as never, ctx as never) as any;
+    expect(unknown.data.results[0].resume.nextAction).toMatchObject({ status: 'unknown', text: null });
+
+    // Independent source/audit reads remain callable twice and reconstruct exactly
+    // the retained UTF-8 bytes bound by the continuation's full canonical digest.
+    for (let i = 0; i < 2; i++) {
+      let offset = 0;
+      let exact = '';
+      do {
+        const expanded = await get.handler({ id: stored.id, harness: stored.harness,
+          checkpointOnly: true, offset, limit: 5000 } as never, ctx as never) as any;
+        const page = expanded.data.results[0].checkpointPage;
+        exact += page.text;
+        offset = page.nextOffset;
+      } while (offset !== null);
+      expect(exact).toBe(saved);
+      const audit = await get.handler({ id: stored.id, harness: stored.harness,
+        threadLimit: 1 } as never, ctx as never) as any;
+      expect(audit.data.results[0].threadWindow.posts[0].body).toBe(archive);
+    }
+    expect(getWorkItemThreadWindow).toHaveBeenCalledTimes(2);
   });
 
   it('bounds resume enrichment when a checkpoint dependency never settles', async () => {

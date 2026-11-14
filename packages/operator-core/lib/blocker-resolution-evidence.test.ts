@@ -1,4 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createBlockerEvidenceReader, preflightBlockerDecision } from './blocker-resolution-evidence';
 import { prepareBlockerDecision } from './blocker-resolution-decision';
 import { activeExternalBlockers } from './external-blockers';
@@ -6,17 +10,25 @@ import type { UnresolvedDepBlocker } from './work-items';
 
 const mocks = vi.hoisted(() => ({ item: vi.fn(), presence: vi.fn(), cell: vi.fn(), event: vi.fn(),
   doc: vi.fn(), session: vi.fn(), test: vi.fn(), deps: vi.fn(async (): Promise<UnresolvedDepBlocker[]> => []),
-  workspace: vi.fn(() => 'workspace-a'), hoist: vi.fn((): string | null => null), runtime: vi.fn() }));
+  workspace: vi.fn(() => 'workspace-a'), hoist: vi.fn((): string | null => null), runtime: vi.fn(),
+  hold: vi.fn(), parked: vi.fn(), nodes: vi.fn(), plan: vi.fn(), scorecard: vi.fn() }));
 vi.mock('./runtime-blocker-condition', () => ({ readRuntimeBlockerCondition: mocks.runtime }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: mocks.workspace }));
-vi.mock('./work-items', () => ({ getWorkItem: mocks.item, readUnresolvedDepBlockers: mocks.deps }));
-vi.mock('./work-item-blocking', () => ({ ALL_TERMINAL_STATUSES: new Set(['done', 'dropped']) }));
+vi.mock('./work-items', () => ({ getWorkItem: mocks.item, readUnresolvedDepBlockers: mocks.deps,
+  readWorkItemClaimHoldProvenance: mocks.hold, isClaimHoldParked: mocks.parked }));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+vi.mock('./agent-tools/plans/plan-line-graph', () => ({ readPlanLineNodes: mocks.nodes }));
+vi.mock('./agent-tools/plans/source', () => ({ getPlanRow: mocks.plan,
+  planItemsForRow: (row: { items: unknown[] }) => row.items }));
+vi.mock('./work-item-blocking', () => ({ ALL_TERMINAL_STATUSES: new Set(['done', 'dropped']),
+  ALL_SUCCESSFUL_STATUSES: new Set(['done', 'resolved', 'passed']) }));
 vi.mock('./agent-tools/coordination/presence', () => ({ getPresence: mocks.presence }));
 vi.mock('./cell-read', () => ({ readCell: mocks.cell, formatCellHoist: mocks.hoist }));
 vi.mock('./external-condition-reachability', () => ({ readEventConditionReachability: mocks.event }));
 vi.mock('./harness/docs/doc-record', () => ({ getAuthoredDocContent: mocks.doc }));
 vi.mock('./session-brief', () => ({ getSessionBrief: mocks.session }));
 vi.mock('./testing-run-store', () => ({ readHarnessTestRunEvidence: mocks.test }));
+vi.mock('./scorecards', () => ({ readScorecardRecipeHeader: mocks.scorecard }));
 
 const ctx = { ownerId: 'su-a', workItemId: 'WI-1', workspaceId: 'workspace-a', harnessSlug: 'harness-a',
   role: 'bee', root: process.cwd(), blockers: [] };
@@ -64,6 +76,14 @@ describe('canonical blocker evidence readers', () => {
     expect((await read({ kind: 'event', ref: 'dependency:ready:42' })).status).toBe('unknown');
     expect((await read({ kind: 'authority', ref: 'authority:trust-me' })).status).toBe('absent');
   });
+  it('preserves the event resolver diagnostic without promoting unknown evidence', async () => {
+    const evidence = 'reachability resolver failed: permission denied for table event_key_fires';
+    mocks.item.mockClear();
+    mocks.event.mockResolvedValue({ authoritative: false, verdict: 'unknown', basis: 'unmeasured', evidence });
+    expect(await createBlockerEvidenceReader(ctx)({ kind: 'event', ref: 'work-item:done:WI-2' }))
+      .toEqual({ status: 'unknown', detail: `event condition could not be measured: ${evidence}` });
+    expect(mocks.item).not.toHaveBeenCalled();
+  });
   it('keeps document session and exact test evidence within authenticated scope', async () => {
     const read = createBlockerEvidenceReader(ctx);
     mocks.doc.mockResolvedValue('Canonical content');
@@ -84,6 +104,374 @@ describe('canonical blocker evidence readers', () => {
   });
 });
 
+describe('legacy grading-audit conditions', () => {
+  const legacy = { kind: 'event' as const, ref: 'grading-audit:EI-target' };
+  const canonical = { kind: 'event' as const, ref: 'scorecard:grading-audit:EI-target' };
+  const target = () => ({ issueId: 'EI-target', createdBy: 'su-author',
+    gradingAudit: { state: 'passed', metaRubricRef: 'grading-integrity', auditIssueId: 'EI-audit',
+      auditor: 'su-auditor', auditedAt: '2026-11-13T18:00:00Z', rubricRevision: 14, criteriaHash: 'audit-hash' } });
+  const audit = () => ({ issueId: 'EI-audit', createdBy: 'su-auditor', rubricRef: 'grading-integrity',
+    subject: { kind: 'scorecard', ref: 'EI-target' }, rubricRevision: 14, criteriaHash: 'audit-hash' });
+  let subject: ReturnType<typeof target>;
+  let verdict: ReturnType<typeof audit>;
+  beforeEach(() => {
+    subject = target(); verdict = audit();
+    mocks.workspace.mockReset().mockReturnValue(ctx.workspaceId); mocks.deps.mockResolvedValue([]);
+    mocks.event.mockReset().mockResolvedValue({ authoritative: false, verdict: 'unknown' });
+    mocks.scorecard.mockReset().mockImplementation(async (id: string) => id === 'EI-target'
+      ? { kind: 'found', scorecard: subject } : id === 'EI-audit'
+        ? { kind: 'found', scorecard: verdict } : { kind: 'not_found' });
+  });
+  it('measures a passed legacy audit from its exact canonical card', async () => {
+    const read = createBlockerEvidenceReader(ctx);
+    const measured = await read(legacy);
+    expect(measured).toMatchObject({ status: 'available', condition: 'satisfied', reachable: true });
+    expect(await read(canonical)).toEqual(measured);
+    expect(mocks.scorecard).toHaveBeenCalledWith('EI-target');
+    expect(mocks.scorecard).toHaveBeenCalledWith('EI-audit');
+    expect(mocks.event).not.toHaveBeenCalled();
+  });
+  it.each(['pending', 'awaiting-reemit', 'failed', 'cancelled'])('retains a %s audit despite a fired event', async state => {
+    subject.gradingAudit.state = state;
+    mocks.event.mockResolvedValue({ authoritative: true, verdict: 'reachable', basis: 'fired' });
+    expect(await createBlockerEvidenceReader(ctx)(legacy)).toMatchObject({ status: 'available', condition: 'pending' });
+    expect(mocks.event).not.toHaveBeenCalled();
+  });
+  it.each(['not_found', 'not_scorecard'])('refuses a %s target', async kind => {
+    mocks.scorecard.mockResolvedValue({ kind });
+    expect(await createBlockerEvidenceReader(ctx)(legacy)).toMatchObject({ status: 'unknown' });
+  });
+  it.each([
+    ['wrong subject', () => { verdict.subject.ref = 'EI-other'; }],
+    ['wrong audit rubric', () => { verdict.rubricRef = 'other'; }],
+    ['wrong audit identity', () => { verdict.issueId = 'EI-other'; }],
+    ['wrong target identity', () => { subject.issueId = 'EI-other'; }],
+    ['wrong auditor', () => { verdict.createdBy = 'su-other'; }],
+    ['self audit', () => { subject.gradingAudit.auditor = subject.createdBy; verdict.createdBy = subject.createdBy; }],
+    ['wrong revision', () => { verdict.rubricRevision = 13; }],
+    ['wrong hash', () => { verdict.criteriaHash = 'other'; }],
+    ['missing timestamp', () => { subject.gradingAudit.auditedAt = ''; }],
+  ] as const)('refuses %s', async (_label, change) => {
+    change(); expect(await createBlockerEvidenceReader(ctx)(legacy)).toMatchObject({ status: 'unknown' });
+  });
+  it.each(['retracted', 'provisional', 'supersededBy'])('refuses an audit carrying %s', async field => {
+    Object.assign(verdict, { [field]: field === 'supersededBy' ? 'EI-new' : {} });
+    expect(await createBlockerEvidenceReader(ctx)(legacy)).toMatchObject({ status: 'unknown' });
+  });
+  it('retains uncertainty on a reader failure or foreign tenant', async () => {
+    mocks.scorecard.mockRejectedValue(new Error('unavailable'));
+    expect(await createBlockerEvidenceReader(ctx)(legacy)).toMatchObject({ status: 'unknown' });
+    mocks.scorecard.mockClear(); mocks.workspace.mockReturnValue('workspace-b');
+    expect(await createBlockerEvidenceReader(ctx)(legacy)).toMatchObject({ status: 'unknown' });
+    expect(mocks.scorecard).not.toHaveBeenCalled();
+  });
+  it('canonically verifies a stored legacy obligation using the same-target alias without rewriting it', async () => {
+    const gate = { kind: 'event' as const, ref: legacy.ref, status: 'active' as const,
+      capability: 'live-dependency' as const, capabilitySource: 'explicit' as const,
+      summary: 'Independent grading audit', createdBy: ctx.ownerId, createdAt: '2026-11-13T17:00:00Z',
+      updatedAt: '2026-11-13T17:00:00Z' };
+    const item = { id: ctx.workItemId, harness: ctx.harnessSlug, state: 'blocked', assignee: ctx.ownerId,
+      payload: { externalBlockers: [gate] } };
+    const before = structuredClone(item);
+    expect(activeExternalBlockers(item.payload)).toHaveLength(1);
+    const decision = { schemaVersion: 1 as const, idempotencyKey: 'settled-audit',
+      disposition: 'self_resolve' as const, symptom: 'Legacy audit reservation remains blocked',
+      evidenceRefs: [canonical], investigation: [{ action: 'Read exact target and audit',
+        outcome: 'Canonical stamp passed', evidenceRefs: [canonical] }], attempts: [],
+      verification: { outcome: 'Exact audited target settled', evidenceRefs: [canonical] } };
+    const verified = await preflightBlockerDecision(item, decision, { ...ctx, sessionId: ctx.ownerId },
+      { effect: { status: 'wip' } });
+    expect(verified, JSON.stringify({ verified, reads: mocks.scorecard.mock.calls })).toMatchObject({ ok: true });
+    expect(mocks.scorecard.mock.calls).toEqual(expect.arrayContaining([
+      ['EI-target'], ['EI-audit'],
+    ]));
+    expect(mocks.scorecard).toHaveBeenCalledTimes(4);
+    expect(item).toEqual(before);
+    subject.gradingAudit.state = 'pending';
+    expect(await preflightBlockerDecision(item, decision, { ...ctx, sessionId: ctx.ownerId },
+      { effect: { status: 'wip' } })).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
+    expect(item).toEqual(before);
+  });
+  it('does not clear a pending original with a different passed audit', async () => {
+    subject.gradingAudit.state = 'pending';
+    const other = { ...target(), issueId: 'EI-other' };
+    const otherAudit = { ...audit(), subject: { kind: 'scorecard', ref: other.issueId } };
+    mocks.scorecard.mockImplementation(async (id: string) => id === subject.issueId
+      ? { kind: 'found', scorecard: subject } : id === other.issueId
+        ? { kind: 'found', scorecard: other } : { kind: 'found', scorecard: otherAudit });
+    const otherRef = { kind: 'event' as const, ref: 'scorecard:grading-audit:EI-other' };
+    expect(await createBlockerEvidenceReader(ctx)(otherRef)).toMatchObject({ condition: 'satisfied' });
+    const item = { id: ctx.workItemId, harness: ctx.harnessSlug, state: 'blocked', assignee: ctx.ownerId,
+      payload: { externalBlockers: [{ kind: 'event', ref: legacy.ref, status: 'active',
+        capability: 'live-dependency', capabilitySource: 'explicit', summary: 'Original audit',
+        createdBy: ctx.ownerId, createdAt: '2026-11-13T17:00:00Z', updatedAt: '2026-11-13T17:00:00Z' }] } };
+    expect(activeExternalBlockers(item.payload)).toHaveLength(1);
+    const decision = { schemaVersion: 1, idempotencyKey: 'unrelated-audit', disposition: 'self_resolve',
+      symptom: 'Original audit pending', evidenceRefs: [otherRef],
+      investigation: [{ action: 'Read another audit', outcome: 'Other target passed', evidenceRefs: [otherRef] }],
+      attempts: [], verification: { outcome: 'Other target passed', evidenceRefs: [otherRef] } };
+    expect(await preflightBlockerDecision(item, decision, { ...ctx, sessionId: ctx.ownerId },
+      { effect: { status: 'wip' } })).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
+  });
+  it.each(['grading-audit:', 'grading-audit:*', 'grading-audit:WI-target',
+    'grading-audit:EI-target#other', 'grading-audit:EI-target/other',
+    'scorecard:grading-audit:EI-target extra'])('refuses malformed alias %s despite a fire', async ref => {
+    mocks.event.mockResolvedValue({ authoritative: true, verdict: 'reachable', basis: 'fired' });
+    expect(await createBlockerEvidenceReader(ctx)({ kind: 'event', ref })).toMatchObject({ status: 'absent' });
+    expect(mocks.event).not.toHaveBeenCalled();
+    expect(mocks.scorecard).not.toHaveBeenCalled();
+  });
+  it.each(['retracted', 'provisional'])('refuses a target carrying %s', async field => {
+    Object.assign(subject, { [field]: {} });
+    expect(await createBlockerEvidenceReader(ctx)(legacy)).toMatchObject({ status: 'unknown' });
+  });
+  it('refuses a missing audit and incomplete or unrecognized canonical stamps', async () => {
+    mocks.scorecard.mockImplementation(async (id: string) => id === subject.issueId
+      ? { kind: 'found', scorecard: subject } : { kind: 'not_found' });
+    expect(await createBlockerEvidenceReader(ctx)(legacy)).toMatchObject({ status: 'unknown' });
+    for (const patch of [{ state: 'unrecognized' }, { criteriaHash: '' }, { rubricRevision: 0 },
+      { auditedAt: 'invalid' }, { auditor: '' }, { metaRubricRef: 'other' }]) {
+      Object.assign(subject.gradingAudit, target().gradingAudit, patch);
+      expect(await createBlockerEvidenceReader(ctx)(legacy)).toMatchObject({ status: 'unknown' });
+    }
+  });
+  it('allows the exact historical audit without substituting the superseding target', async () => {
+    Object.assign(subject, { supersededBy: 'EI-successor' });
+    expect(await createBlockerEvidenceReader(ctx)(legacy)).toMatchObject({ condition: 'satisfied' });
+    expect(mocks.scorecard).not.toHaveBeenCalledWith('EI-successor');
+  });
+});
+
+describe('system-derived plan-lane evidence', () => {
+  const ref = { kind: 'event' as const, ref: 'plan-lane:recovery#P-002' };
+  const gate = { kind: 'gate' as const, ref: ref.ref, status: 'active' as const,
+    capability: 'live-dependency' as const, capabilitySource: 'explicit' as const, summary: 'Canonical prerequisite',
+    createdBy: 'system:plan-item-lane-sync', createdAt: '2026-11-10T00:00:00Z', updatedAt: '2026-11-10T00:00:00Z' };
+  const subject = () => ({ id: ctx.workItemId, harness: ctx.harnessSlug, state: 'blocked', assignee: ctx.ownerId,
+    payload: { planLaneParkedFrom: 'open', externalBlockers: [gate] } });
+  const plan = () => ({ workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug, items: [
+    { id: 'P-001', text: 'Prerequisite', storedStatus: 'done', blockedBy: [], lineNumber: 1, rawLine: '' },
+    { id: 'P-002', text: 'Recover lane', storedStatus: 'blocked', blockedBy: ['P-001'], lineNumber: 2, rawLine: '' },
+  ] });
+  const context = () => ({ ...ctx, custodianId: ctx.ownerId, blockers: [gate] });
+  const read = () => createBlockerEvidenceReader(context())(ref);
+  const decision = () => ({ schemaVersion: 1 as const, idempotencyKey: 'derived-recovery',
+    disposition: 'self_resolve' as const, symptom: 'Derived lane remained blocked after prerequisite completion',
+    evidenceRefs: [ref], investigation: [{ action: 'Read canonical graph', outcome: 'Prerequisite settled', evidenceRefs: [ref] }],
+    attempts: [], verification: { outcome: 'Exact dependency predicate satisfied', evidenceRefs: [ref] } });
+  beforeEach(() => {
+    mocks.workspace.mockReturnValue(ctx.workspaceId);
+    mocks.item.mockResolvedValue(subject());
+    mocks.hold.mockReturnValue({ parked: null, heldOpen: null, attributed: false });
+    mocks.parked.mockReturnValue(false);
+    mocks.nodes.mockResolvedValue([{ id: 'P-001', featureId: 'WI-2' }, { id: 'P-002', featureId: ctx.workItemId }]);
+    mocks.plan.mockResolvedValue(plan());
+    mocks.deps.mockResolvedValue([]);
+    mocks.event.mockReset();
+  });
+  it('measures the canonical graph without manufacturing an event', async () => {
+    const measured = await read();
+    expect(measured, JSON.stringify(measured)).toMatchObject({ status: 'available', condition: 'satisfied',
+      reachable: true, subjectWorkItemId: ctx.workItemId });
+    expect(mocks.event).not.toHaveBeenCalled();
+    expect(await preflightBlockerDecision(subject(), decision(), { ...context(), sessionId: ctx.ownerId },
+      { effect: { status: 'wip' } })).toMatchObject({ ok: true });
+  });
+  it('retains a pending prerequisite and refuses self-resolution', async () => {
+    const pending = plan();
+    pending.items[0].storedStatus = 'wip';
+    mocks.plan.mockResolvedValue(pending);
+    const measured = await read();
+    expect(measured, JSON.stringify(measured)).toMatchObject({ status: 'available', condition: 'pending' });
+    expect(await preflightBlockerDecision(subject(), decision(), { ...context(), sessionId: ctx.ownerId },
+      { effect: { status: 'wip' } })).toMatchObject({ ok: false, code: 'blocker_decision_evidence',
+      missing: expect.arrayContaining([`unresolved canonical condition event:${ref.ref}`]) });
+  });
+  it.each(['todo', 'wip'])('measures an actionable %s lane with no dependencies', async status => {
+    const actionable = plan();
+    actionable.items[1].storedStatus = status;
+    actionable.items[1].blockedBy = [];
+    mocks.plan.mockResolvedValue(actionable);
+
+    expect(await read()).toMatchObject({ status: 'available', condition: 'satisfied',
+      reachable: true, subjectWorkItemId: ctx.workItemId });
+    expect(await preflightBlockerDecision(subject(), decision(), { ...context(), sessionId: ctx.ownerId },
+      { effect: { status: 'wip' } })).toMatchObject({ ok: true });
+  });
+  it('retains an explicitly blocked lane with no declared prerequisites', async () => {
+    const blocked = plan();
+    blocked.items[1].blockedBy = [];
+    mocks.plan.mockResolvedValue(blocked);
+
+    expect(await read()).toMatchObject({ status: 'unknown' });
+  });
+  it('permits accountable parking of a dependency-free lane without resolving an external condition', async () => {
+    const actionable = plan();
+    actionable.items[1].storedStatus = 'todo';
+    actionable.items[1].blockedBy = [];
+    mocks.plan.mockResolvedValue(actionable);
+    const external = { ...gate, kind: 'event' as const, ref: 'fixture:external', createdBy: 'su-other' };
+    const externalRef = { kind: 'event' as const, ref: external.ref };
+    mocks.event.mockResolvedValue({ authoritative: true, verdict: 'reachable', basis: 'announced' });
+    const current = subject();
+    const item = { ...current, payload: { ...current.payload, externalBlockers: [gate, external] } };
+
+    expect(await preflightBlockerDecision(item, decision(), { ...context(), sessionId: ctx.ownerId },
+      { effect: { release: true } })).toMatchObject({ ok: false,
+      missing: expect.arrayContaining(['unresolved canonical condition event:fixture:external']) });
+    const defer = { schemaVersion: 1 as const, idempotencyKey: 'actionable-lane-park',
+      disposition: 'defer' as const, symptom: 'Independent source condition remains pending',
+      evidenceRefs: [ref, externalRef],
+      investigation: [{ action: 'Read the canonical lane and independent condition',
+        outcome: 'The lane is actionable; the external condition is pending', evidenceRefs: [ref, externalRef] }],
+      attempts: [], deferral: { reason: 'external-dependency' as const,
+        responsibleParty: `event:${external.ref}`, reasonEvidenceRefs: [externalRef],
+        nextAction: 'Reconsider the parked work when its independent source condition changes', recheckRef: externalRef } };
+    expect(await preflightBlockerDecision(item, defer, { ...context(), sessionId: ctx.ownerId },
+      { effect: { release: true, claimHold: true } })).toMatchObject({ ok: true });
+  });
+  it.each([
+    ['other custodian', { custodianId: 'su-other' }],
+    ['other tenant', { workspaceId: 'workspace-b' }],
+    ['missing harness', { harnessSlug: null }],
+    ['forged author', { blockers: [{ ...gate, createdBy: ctx.ownerId }] }],
+    ['wrong kind', { blockers: [{ ...gate, kind: 'event' }] }],
+    ['wrong capability', { blockers: [{ ...gate, capability: 'owner-decision' }] }],
+    ['ambiguous gates', { blockers: [gate, gate] }],
+  ])('fails closed for %s', async (_label, patch) => {
+    const measured = await createBlockerEvidenceReader({ ...context(), ...patch } as ReturnType<typeof context>)(ref);
+    expect(measured).toMatchObject({ status: 'unknown' });
+  });
+  it.each([
+    ['lost custody', { assignee: 'su-other' }],
+    ['terminal node', { state: 'done' }],
+    ['other harness', { harness: 'other-harness' }],
+    ['independent park', { payload: { ...subject().payload, _claimHold: true } }],
+    ['missing pre-park provenance', { payload: { externalBlockers: [gate] } }],
+    ['ambiguous canonical blocker', { payload: { ...subject().payload, externalBlockers: [gate, gate] } }],
+  ])('retains %s', async (_label, patch) => {
+    mocks.item.mockResolvedValue({ ...subject(), ...patch });
+    if (_label === 'independent park') mocks.parked.mockReturnValue(true);
+    expect(await read()).toMatchObject({ status: 'unknown' });
+  });
+  it.each(['parked', 'heldOpen'])('retains an independent %s lease', async field => {
+    mocks.hold.mockReturnValue({ parked: null, heldOpen: null, [field]: { by: 'su-other' } });
+    expect(await read()).toMatchObject({ status: 'unknown' });
+  });
+  it('honors the canonical anonymous claim-park predicate', async () => {
+    mocks.parked.mockReturnValue(true);
+    expect(await read()).toMatchObject({ status: 'unknown' });
+  });
+  describe('plain release with an owned reservation', () => {
+    const reserved = () => ({ ...subject(), payload: { ...subject().payload,
+      _claimHold: true, held_open_by: ctx.ownerId, held_open_reason: 'Preserve original custody',
+      held_open_at: '2026-11-10T00:00:00Z' } });
+    const effect = { release: true, claimHold: null, claimHoldRelease: null,
+      reason: 'Retain the reservation and unresolved dependency', force: false };
+    const options = { effect, releasePayload: { patch: {}, unset: [] } };
+    const defer = () => ({ schemaVersion: 1 as const, idempotencyKey: 'reserved-lane-release',
+      disposition: 'defer' as const, symptom: 'The original dependency remains pending', evidenceRefs: [ref],
+      investigation: [{ action: 'Read the exact canonical dependency and custody',
+        outcome: 'The owner reservation remains and the dependency is pending', evidenceRefs: [ref] }],
+      attempts: [{ action: 'Inspect the safe ordinary release boundary',
+        outcome: 'Only release the inactive assignment; retain the condition', evidenceRefs: [ref] }],
+      deferral: { reason: 'technical-limit' as const, responsibleParty: ctx.ownerId,
+        reasonEvidenceRefs: [ref], nextAction: 'Reconsider the original dependency when it changes', recheckRef: ref } });
+    beforeEach(() => {
+      const pending = plan();
+      pending.items[0].storedStatus = 'wip';
+      mocks.plan.mockResolvedValue(pending);
+      mocks.item.mockResolvedValue(reserved());
+      mocks.parked.mockReturnValue(true);
+      mocks.hold.mockReturnValue({ parked: null, heldOpen: { by: ctx.ownerId,
+        reason: 'Preserve original custody', at: '2026-11-10T00:00:00Z' }, attributed: true });
+    });
+    it('admits an accountable plain release without changing the reservation or pending gate', async () => {
+      const item = reserved();
+      const before = structuredClone(item);
+      expect(await preflightBlockerDecision(item, defer(), { ...context(), sessionId: ctx.ownerId }, options))
+        .toMatchObject({ ok: true });
+      expect(item).toEqual(before);
+      expect(mocks.event).not.toHaveBeenCalled();
+    });
+    it('does not extend the reservation exception to other effects or hidden writer mutations', async () => {
+      const boundaries = [
+        { ...options, effect: { status: 'wip' } },
+        { ...options, effect: { ...effect, force: true } },
+        { ...options, effect: { ...effect, claimHold: false } },
+        { ...options, effect: { ...effect, claimHold: true } },
+        { ...options, releasePayload: { patch: { held_open_by: null }, unset: [] } },
+        { ...options, releasePayload: { patch: {}, unset: ['externalBlockers'] } },
+        { ...options, additionalDependencyRefs: ['harness-a#WI-2'] },
+      ];
+      for (const boundary of boundaries) {
+        expect(await preflightBlockerDecision(reserved(), defer(), { ...context(), sessionId: ctx.ownerId }, boundary))
+          .toMatchObject({ ok: false });
+      }
+    });
+    it('retains foreign, coexisting durable, and unattributed holds during ordinary release', async () => {
+      for (const hold of [
+        { parked: null, heldOpen: { by: 'su-other' }, attributed: true },
+        { parked: { by: ctx.ownerId }, heldOpen: { by: ctx.ownerId }, attributed: true },
+        { parked: { by: 'su-other' }, heldOpen: { by: ctx.ownerId }, attributed: true },
+        { parked: null, heldOpen: null, attributed: false },
+      ]) {
+        mocks.hold.mockReturnValue(hold);
+        expect(await preflightBlockerDecision(reserved(), defer(), { ...context(), sessionId: ctx.ownerId }, options))
+          .toMatchObject({ ok: false });
+      }
+    });
+    it('retains unattributed durable-park metadata beside an owned reservation', async () => {
+      for (const park of [{ claim_hold_by: 'su-other' }, { claim_hold_reason: 'Independent restriction' },
+        { claim_hold_at: '2026-11-09T00:00:00Z' }]) {
+        const item = reserved();
+        mocks.item.mockResolvedValue({ ...item, payload: { ...item.payload, ...park } });
+        expect(await preflightBlockerDecision(item, defer(), { ...context(), sessionId: ctx.ownerId }, options))
+          .toMatchObject({ ok: false });
+      }
+    });
+    it('does not permit self-resolution through an owned reservation even when the lane is satisfied', async () => {
+      mocks.plan.mockResolvedValue(plan());
+      expect(await preflightBlockerDecision(reserved(), decision(), { ...context(), sessionId: ctx.ownerId }, options))
+        .toMatchObject({ ok: false });
+    });
+  });
+  it.each(['missing', 'tenant', 'harness', 'missing-reference', 'cycle'])('rejects %s plan evidence', async fault => {
+    const current = plan();
+    if (fault === 'tenant') current.workspaceId = 'other-workspace';
+    if (fault === 'harness') current.harnessSlug = 'other-harness';
+    if (fault === 'missing-reference') current.items[1].blockedBy = ['P-999'];
+    if (fault === 'cycle') current.items[0].blockedBy = ['P-002'];
+    mocks.plan.mockResolvedValue(fault === 'missing' ? null : current);
+    expect(await read()).toMatchObject({ status: 'unknown' });
+  });
+  it.each([
+    [], [{ id: 'P-002', featureId: 'WI-other' }],
+    [{ id: 'P-002', featureId: ctx.workItemId }, { id: 'P-002', featureId: ctx.workItemId }],
+  ])('rejects missing, substituted or ambiguous node identities (%j)', async (...nodes) => {
+    mocks.nodes.mockResolvedValue(nodes);
+    expect(await read()).toMatchObject({ status: 'unknown' });
+  });
+  it('fails closed when a canonical reader is unavailable', async () => {
+    mocks.plan.mockRejectedValue(new Error('reader unavailable'));
+    expect(await read()).toMatchObject({ status: 'unknown' });
+  });
+  it('retains a canonical owner gate marker', async () => {
+    mocks.nodes.mockResolvedValue([{ id: 'P-002', featureId: ctx.workItemId, ownerGateMarker: 'owner approval' }]);
+    expect(await read()).toMatchObject({ status: 'unknown' });
+  });
+  it('does not discharge a genuine independent external condition', async () => {
+    const external = { ...gate, kind: 'event' as const, ref: 'fixture:external', createdBy: 'su-other' };
+    mocks.event.mockResolvedValue({ authoritative: true, verdict: 'reachable', basis: 'announced' });
+    const item = subject();
+    const payload = { ...item.payload, externalBlockers: [gate, external] };
+    mocks.item.mockResolvedValue({ ...item, payload });
+    expect(await preflightBlockerDecision({ ...item, payload }, decision(), { ...context(), sessionId: ctx.ownerId },
+      { effect: { status: 'wip' } })).toMatchObject({ ok: false,
+      missing: expect.arrayContaining(['unresolved canonical condition event:fixture:external']) });
+  });
+});
+
 describe('unmeasured runtime plain public release', () => {
   const runtime = { kind: 'runtime' as const, ref: 'runtime:codex-execution-authority:9171' };
   const remedy = { kind: 'source' as const, ref: 'source:package.json:1' };
@@ -100,11 +488,71 @@ describe('unmeasured runtime plain public release', () => {
     attempts: [{ action: 'Inspect safe remedy', outcome: 'Source confirms missing adapter', evidenceRefs: [remedy] }],
     deferral: { reason: 'technical-limit' as const, responsibleParty: 'su-a', reasonEvidenceRefs: [runtime],
       nextAction: 'Continue the owned diagnosis', recheckRef: { kind: 'work-item' as const, ref: 'harness-a#WI-2' } } });
+  const settlementRef = { kind: 'event' as const, ref: 'work-item:settled:WI-2' };
+  const manifest = () => ({ version: 1, generation: 1, evidenceHash: 'e'.repeat(64),
+    repositoryRoot: process.cwd(), headSha: 'a'.repeat(40), normalizedPaths: ['repair.ts'],
+    contentIdentity: [{ path: 'repair.ts', headBlobSha: 'b'.repeat(40), workingTreeBlobSha: 'c'.repeat(40) }] });
+  const proposal = () => ({ id: 'WI-2', harness: 'harness-a', state: 'done', assignee: null,
+    terminalOwner: 'su-a', completionAuthority: 'proposed',
+    terminalCompletionEvidence: { settlementManifest: manifest() } });
+  const settlementDecision = () => ({ ...decision(), deferral: { ...decision().deferral, recheckRef: settlementRef } });
   beforeEach(() => {
     mocks.deps.mockResolvedValue([]);
     mocks.workspace.mockReturnValue('workspace-a');
     mocks.item.mockResolvedValue({ id: 'WI-2', harness: 'harness-a', state: 'wip', assignee: 'su-a' });
     mocks.runtime.mockResolvedValue({ status: 'unknown', detail: 'No canonical bound measurement' });
+    mocks.event.mockResolvedValue({ authoritative: true, verdict: 'reachable', basis: 'live-resolver' });
+  });
+  it('retains a pending owned proposal as a commit-settlement recheck', async () => {
+    const row = proposal();
+    mocks.item.mockResolvedValue(row);
+    // Lifecycle completion remains distinct from the exact commit-settlement event.
+    expect(await createBlockerEvidenceReader(ctx)({ kind: 'work-item', ref: 'WI-2' }))
+      .toMatchObject({ condition: 'satisfied' });
+    const before = structuredClone(item);
+    expect(await preflightBlockerDecision(item, settlementDecision(), context, options)).toMatchObject({ ok: true });
+    expect(item).toEqual(before);
+    expect(row).toEqual(proposal());
+  });
+  it.each(['work-item:done:WI-2', 'dependency:settled:WI-2', 'work-item:settled:WI-2:extra'])(
+    'refuses an unrelated or malformed event recheck %s', async ref => {
+      mocks.item.mockResolvedValue(proposal());
+      const input = settlementDecision(); input.deferral.recheckRef.ref = ref;
+      expect(await preflightBlockerDecision(item, input, context, options)).toMatchObject({ ok: false });
+    });
+  it.each([
+    { terminalOwner: 'su-b' }, { terminalOwner: null }, { assignee: 'su-b' },
+    { completionAuthority: 'committed' }, { state: 'wip' }, { state: 'dropped' },
+    { harness: 'harness-b' }, { id: 'WI-1' }, { id: 'WI-other' },
+    { terminalCompletionEvidence: null }, { terminalCompletionEvidence: {} },
+  ])('refuses an unowned, settled or unbound proposal %j', async override => {
+    mocks.item.mockResolvedValue({ ...proposal(), ...override });
+    expect(await preflightBlockerDecision(item, settlementDecision(), context, options)).toMatchObject({ ok: false });
+  });
+  it.each([
+    { ...manifest(), version: 2 }, { ...manifest(), generation: 0 },
+    { ...manifest(), evidenceHash: 'unmeasured' }, { ...manifest(), contentIdentity: [] },
+    { ...manifest(), contentIdentity: [{ path: 'repair.ts', workingTreeBlobSha: null }] },
+    { ...manifest(), normalizedPaths: ['unrelated.ts'] },
+    { ...manifest(), residualPaths: [{ path: 'repair.ts', reason: 'superseded-before-commit' }] },
+    { ...manifest(), residualPaths: [{ path: 'repair.ts', reason: 'not-a-repository-path' }] },
+  ])('requires a complete settleable manifest %j', async settlementManifest => {
+    mocks.item.mockResolvedValue({ ...proposal(), terminalCompletionEvidence: { settlementManifest } });
+    expect(await preflightBlockerDecision(item, settlementDecision(), context, options)).toMatchObject({ ok: false });
+  });
+  it('refuses a fired or unmeasured settlement key and non-release effects', async () => {
+    mocks.item.mockResolvedValue(proposal());
+    for (const read of [{ authoritative: true, verdict: 'reachable', basis: 'fired' },
+      { authoritative: false, verdict: 'unknown' }]) {
+      mocks.event.mockResolvedValue(read);
+      expect(await preflightBlockerDecision(item, settlementDecision(), context, options)).toMatchObject({ ok: false });
+    }
+    mocks.event.mockResolvedValue({ authoritative: true, verdict: 'reachable', basis: 'live-resolver' });
+    for (const changed of [{ ...options, requireResolution: true },
+      { ...options, effect: { ...effect, claimHold: true } },
+      { ...options, releasePayload: { patch: { rewritten: true }, unset: [] } }]) {
+      expect(await preflightBlockerDecision(item, settlementDecision(), context, changed)).toMatchObject({ ok: false });
+    }
   });
   it('keeps a distinct host-only unmeasured variant and the exact original payload', async () => {
     const before = structuredClone(item);
@@ -293,5 +741,85 @@ describe('canonical blocker boundary preflight', () => {
       missing: expect.arrayContaining(['unresolved canonical condition event:new:dependency']) });
     expect(mocks.event).toHaveBeenCalledWith('new:dependency', expect.any(Object));
     expect(await preflightBlockerDecision(observedItem, decision, context, { effect })).toMatchObject({ ok: true });
+  });
+});
+
+describe('subject-bound git-sync commit evidence', () => {
+  const eventRef = { kind: 'event' as const, ref: 'git-sync:committed' };
+  const blocker = { kind: 'event' as const, capability: 'live-dependency' as const,
+    capabilitySource: 'explicit' as const, ref: eventRef.ref, status: 'active' as const,
+    summary: 'Wait for this work item’s code files', createdBy: ctx.ownerId,
+    createdAt: '2026-11-13T00:00:00.000Z', updatedAt: '2026-11-13T00:00:00.000Z' };
+  const paths = ['src/a.ts', 'src/b.ts'];
+  let root: string;
+  let current: { id: string; harness: string; state: string; assignee: string; takenAt: string; payload: Record<string, unknown> };
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8',
+    env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' }, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const commit = (author: string) => git(root, '-c', `user.name=${author}`, '-c',
+    'user.email=fixture@example.invalid', 'commit', '--allow-empty', '-qm', 'fixture');
+  const subject = () => ({ id: current.id, harness: current.harness, state: current.state,
+    assignee: current.assignee, payload: current.payload });
+  const evidenceContext = () => ({ ...ctx, root, custodianId: ctx.ownerId, blockers: [blocker] });
+  const read = () => createBlockerEvidenceReader(evidenceContext())(eventRef);
+  const deferred = () => ({ schemaVersion: 1 as const, idempotencyKey: 'git-sync-working-set-defer',
+    disposition: 'defer' as const, symptom: 'The local sync has not committed this work item’s files',
+    evidenceRefs: [eventRef],
+    investigation: [{ action: 'Measure each owner-stamped file against local HEAD',
+      outcome: 'At least one exact working blob is not in a sync-authored commit', evidenceRefs: [eventRef] }],
+    attempts: [], deferral: { reason: 'external-dependency' as const, responsibleParty: 'system:git-sync',
+      reasonEvidenceRefs: [eventRef], nextAction: 'Recheck the exact code working set after the local commit',
+      recheckRef: eventRef } });
+  const resolved = () => ({ schemaVersion: 1 as const, idempotencyKey: 'git-sync-working-set-resolve',
+    disposition: 'self_resolve' as const, symptom: 'The local sync committed this work item’s files',
+    evidenceRefs: [eventRef],
+    investigation: [{ action: 'Measure each owner-stamped file against local HEAD',
+      outcome: 'Every exact working blob is in a sync-authored commit', evidenceRefs: [eventRef] }],
+    attempts: [], verification: { outcome: 'All current code working-set blobs are committed', evidenceRefs: [eventRef] } });
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'git-sync-blocker-evidence-'));
+    git(root, 'init', '-q');
+    mkdirSync(join(root, 'src'));
+    for (const path of paths) writeFileSync(join(root, path), 'baseline\n');
+    git(root, 'add', ...paths);
+    commit('fixture-baseline');
+    current = { id: ctx.workItemId, harness: ctx.harnessSlug!, state: 'blocked', assignee: ctx.ownerId,
+      takenAt: '2026-11-13T00:00:00.000Z', payload: { externalBlockers: [blocker], codeWorkingSet: {
+        owner: ctx.ownerId, epoch: 1, derivedAt: '2026-11-13T00:01:00.000Z', paths, symbols: [],
+      } } };
+    mocks.workspace.mockReturnValue(ctx.workspaceId);
+    mocks.item.mockResolvedValue(current);
+    mocks.deps.mockResolvedValue([]);
+    mocks.event.mockReset().mockResolvedValue({ authoritative: false, verdict: 'unknown', evidence: 'broad key' });
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it('defers on exact pending blobs, ignores unrelated commits, then verifies sync-authored containment', async () => {
+    for (const path of paths) writeFileSync(join(root, path), `changed ${path}\n`);
+    const context = { ...evidenceContext(), sessionId: ctx.ownerId };
+    expect(await read()).toMatchObject({ status: 'available', condition: 'pending', reachable: true,
+      responsibleParty: 'system:git-sync', subjectWorkItemId: ctx.workItemId });
+    expect(await preflightBlockerDecision(subject(), deferred(), context, { effect: { state: 'blocked' } }))
+      .toMatchObject({ ok: true });
+
+    writeFileSync(join(root, 'src/unrelated.ts'), 'unrelated\n');
+    git(root, 'add', 'src/unrelated.ts');
+    commit('papercusp-git-sync');
+    expect(await read()).toMatchObject({ status: 'available', condition: 'pending', reachable: true });
+
+    git(root, 'add', ...paths);
+    commit('papercusp-git-sync');
+    expect(await read()).toMatchObject({ status: 'available', condition: 'satisfied', reachable: true });
+    expect(await preflightBlockerDecision(subject(), resolved(), context,
+      { effect: { state: 'done' }, requireResolution: true })).toMatchObject({ ok: true });
+    expect(mocks.event).not.toHaveBeenCalled();
+  });
+
+  it('keeps the broad wake unmeasured without a current owner-stamped work set', async () => {
+    current.payload = { externalBlockers: [blocker], codeWorkingSet: {
+      owner: 'su-other', epoch: 1, derivedAt: '2026-11-13T00:01:00.000Z', paths, symbols: [],
+    } };
+    expect(await read()).toMatchObject({ status: 'unknown' });
+    expect(mocks.event).not.toHaveBeenCalled();
   });
 });

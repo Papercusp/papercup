@@ -228,6 +228,9 @@ export function buildFleetDependencyEscape(args: {
   };
   const scopedHarness = args.harness?.trim() || undefined;
   const harnessArg = scopedHarness ? { harness: scopedHarness } : {};
+  const specTarget = admission.scope.record.source === 'cup'
+    ? { cupId: admission.scope.ownerId }
+    : { fleet: admission.scope.fleetSlug };
   const outsideAssignee = '<live-non-member-owner-id>';
   return {
     kind: 'dependency_escape',
@@ -242,11 +245,11 @@ export function buildFleetDependencyEscape(args: {
         calls: [
           {
             tool: 'scheduler:preview_spec_delta',
-            args: { fleet: admission.scope.fleetSlug, proposed, ...harnessArg },
+            args: { ...specTarget, proposed, ...harnessArg },
           },
           {
             tool: 'scheduler:set_claim_spec',
-            args: { fleet: admission.scope.fleetSlug, spec: proposed, ...harnessArg },
+            args: { ...specTarget, spec: proposed, ...harnessArg },
           },
         ],
       },

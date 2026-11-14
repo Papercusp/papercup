@@ -248,6 +248,55 @@ describe('WI-4413 — explainIssueClaimFloors names the floor that actually refu
     ]);
   });
 
+  it('scope authoring identifies a target-held WIP row and keeps blocked and foreign rows excluded', async () => {
+    await seedIssue('EI-SCOPE-WIP', null, 'wip');
+    await seedIssue('EI-SCOPE-BLOCKED', null, 'blocked');
+    await seedIssue('EI-SCOPE-FOREIGN-STATUS', null, 'wip');
+    await db.sql`
+      UPDATE harness_shared.work_items SET taken_by = 'su-member'
+       WHERE feature_id IN ('EI-SCOPE-WIP', 'EI-SCOPE-BLOCKED')`;
+    await db.sql`
+      UPDATE harness_shared.work_items SET taken_by = 'su-foreign'
+       WHERE feature_id = 'EI-SCOPE-FOREIGN-STATUS'`;
+    await db.sql`
+      INSERT INTO harness_shared.work_items (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, title)
+      VALUES ('papercusp', 'EI-SCOPE-BLOCKER', 'bug', 'open', NULL, 'default', 0, 0, 'blocker')`;
+    await db.sql`
+      INSERT INTO harness_shared.work_item_deps
+        (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, created_by)
+      VALUES ('default', 'issue', 'EI-SCOPE-BLOCKED', 'issue', 'EI-SCOPE-BLOCKER', 'blocks', 'test')`;
+
+    const ids = ['EI-SCOPE-WIP', 'EI-SCOPE-BLOCKED', 'EI-SCOPE-FOREIGN-STATUS'];
+    const [wip, blocked, foreign] = await explainIssueClaimFloors(H, ids, { scopeMembers: ['su-member'] });
+    expect(wip).toMatchObject({ scopeHolder: 'su-member', scopeStatus: 'wip', refusedBy: 'not-claimable-status' });
+    expect(blocked).toMatchObject({ scopeHolder: 'su-member', scopeStatus: 'blocked', refusedBy: 'not-claimable-status' });
+    expect(foreign.scopeHolder).toBeUndefined();
+
+    const preview = await previewClaimSpecAdmission({
+      spec: {
+        specVersion: '1.0',
+        specId: 'held-review-wave',
+        revision: 3,
+        view: { filter: { field: 'id', op: 'in', value: ids } },
+        rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+      },
+      harness: H,
+      assignee: 'su-leader',
+      fleet: 'repair-fleet',
+      resolveFamily: async () => 'issue',
+      resolveFleetMembers: async () => ['su-member'],
+    });
+    expect(preview.preview).toMatchObject({
+      admissibleIds: [],
+      scopeAdmissibleIds: ['EI-SCOPE-WIP'],
+      alreadyHeldIds: ['EI-SCOPE-WIP'],
+    });
+    expect(preview.preview?.floored?.map((row) => row.id).sort()).toEqual([
+      'EI-SCOPE-BLOCKED',
+      'EI-SCOPE-FOREIGN-STATUS',
+    ]);
+  });
+
   it.each([
     ['observation-lane', { lane: 'observation' }, 'open'],
     ['claim-hold', { _claimHold: true }, 'open'],

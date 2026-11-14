@@ -10,8 +10,9 @@ import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { connectAgentMcp } from '../../../agent-mcp-client.ts';
 import { assertManagedRecoveryRefusal, assertManagedToolSuccess, excludedRecoveryTools,
   finishManagedApiTeardown } from './managed-api-result.ts';
-import { privateBundleRuntimeEnv, resolvePreparedPrivateApiBundle, stopPrivateOperatorHost,
-  waitForPrivateOperator } from '../../../../test/private-http-workspace-preflight.ts';
+import { assertPrivateMcpSourceIdentity, privateBundleRuntimeEnv, resolvePreparedPrivateApiBundle,
+  resolvePreparedPrivateApiSourceSha, stopPrivateOperatorHost, waitForPrivateOperator }
+  from '../../../../test/private-http-workspace-preflight.ts';
 import { readProcessIdentity } from '../../../process-identity.ts';
 
 const stage = (name: string) => console.log('MANAGED_API_STAGE=' + name);
@@ -28,24 +29,35 @@ assert.equal(process.env.PAPERCUSP_POT_HOME_SLUG, workspace);
 assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '0');
 assert.equal(process.env.PAPERCUSP_DBOS_ROUTINES, '0');
 assert(process.env.PAPERCUSP_EMBED_SIDECAR_URL, 'Maintained operator-api preflight required');
-const { superuserTokenPath } = await import('../../../superuser-token.ts');
-const { getOrgPg } = await import('@papercusp/db-org');
-const token = randomBytes(32).toString('hex');
-await writeFile(superuserTokenPath(), token, { mode: 0o600, flag: 'wx' });
 const evidenceDir = process.env.STAGING_FIRST_HTTP_EVIDENCE_DIR!;
 assert(evidenceDir, 'Retained execution evidence directory required');
+const preparedSourceSha = resolvePreparedPrivateApiSourceSha(process.argv.slice(2), evidenceDir);
 const bundle = resolvePreparedPrivateApiBundle(process.argv.slice(2), evidenceDir);
 assert(bundle, 'Pinned prepared operator bundle required before host allocation');
 const base = process.env.PAPERCUSP_OPERATOR_URL!;
 assert.match(base, /^http:\/\/127\.0\.0\.1:\d+$/);
+const { superuserTokenPath } = await import('../../../superuser-token.ts');
+const { getOrgPg } = await import('@papercusp/db-org');
+const tokenPath = superuserTokenPath();
+const token = randomBytes(32).toString('hex');
+await writeFile(tokenPath, token, { mode: 0o600, flag: 'wx' });
 const hostEnv = privateBundleRuntimeEnv(process.env);
 const host = spawn(process.execPath, [bundle], { env: hostEnv, stdio: ['ignore', 'pipe', 'pipe'] });
 host.stdout.on('data', data => process.stdout.write(data));
 host.stderr.on('data', data => process.stderr.write(data));
 const hostIdentity = readProcessIdentity(host.pid!);
-try { await waitForPrivateOperator({ host, base, evidenceDir, environment: hostEnv, hostIdentity,
-  requireBuildIdentity: true }); }
-catch (error) { await stopPrivateOperatorHost(host); throw error; }
+try {
+  const health = await waitForPrivateOperator({ host, base, evidenceDir, environment: hostEnv, hostIdentity,
+    requireBuildIdentity: true });
+  assertPrivateMcpSourceIdentity(preparedSourceSha, health.sha);
+} catch (error) {
+  const cleanupErrors: unknown[] = [];
+  try { await stopPrivateOperatorHost(host); } catch (cleanupError) { cleanupErrors.push(cleanupError); }
+  try { await rm(tokenPath, { force: true }); } catch (cleanupError) { cleanupErrors.push(cleanupError); }
+  if (cleanupErrors.length) throw new AggregateError([error, ...cleanupErrors],
+    'Managed API source identity failed and early cleanup was incomplete');
+  throw error;
+}
 stage('host-ready');
 const clients: Client[] = [];
 const owner = 'managed-private-parity-owner';

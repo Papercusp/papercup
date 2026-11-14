@@ -34,12 +34,14 @@ import {
 } from './work-item-dispatch-states';
 import {
   getLoopCarryNoteWithMeta,
+  reconcileConversationBoundWalls,
   renderCheckLine,
   renderWallLine,
   isCarryWallAuthoritative,
   shortCarryHash,
   splitCarryNoteChecks,
   splitCarryNoteWalls,
+  withCarryNoteWalls,
   type CheckEntry,
   type LoopCarryNoteWithMeta,
   type WallEntry,
@@ -324,7 +326,7 @@ function renderCheckpointChecksDisclosure(
   const shown = stored.filter((check) => excerpt.includes(renderCheckLine(check))).length;
   const hidden = stored.length - shown;
   if (hidden === 0) {
-    return `\n    checks: all ${stored.length} stored rows shown above — full set: ${workItemFetchHint(id, harness)}`;
+    return `\n    checks: all ${stored.length} stored rows shown above — full set: ${workItemFetchHint(id, harness, 'checks')}`;
   }
   // EI-22431465725244151: this line used to read "showing 0 of 11 stored rows in
   // this excerpt", which parses as a formatting note about the excerpt above it —
@@ -340,7 +342,7 @@ function renderCheckpointChecksDisclosure(
   return (
     `\n    ⚠ checks: ${hidden} of ${stored.length} rows on THIS ITEM'S checkpoint are NOT shown above` +
     ` — a separate set from the loop's "CARRIED CHECKS" block, and an unread row cannot warn you.` +
-    ` Read them before acting on this item: ${workItemFetchHint(id, harness)}`
+    ` Read them before acting on this item: ${workItemFetchHint(id, harness, 'checks')}`
   );
 }
 
@@ -354,7 +356,7 @@ function renderCheckpointWallsDisclosure(
   return (
     `\n    ⚠ walls: ${walls.length} self/external or legacy-unscoped row(s) require a current-source check. ` +
     'They are not authority by themselves; treat them as blocking only while an explicit predicate/source is verified. ' +
-    `Read the full item checkpoint before acting: ${workItemFetchHint(id, harness)}`
+    `Read the full item checkpoint before acting: ${workItemFetchHint(id, harness, 'checkpoint')}`
   );
 }
 /** An INACTIVE loop's carry-note older than this renders as a labeled STALE
@@ -1650,6 +1652,17 @@ export async function buildCarryBrief(ownerId: string, opts: BuildCarryBriefOpts
       );
       const carryNoteReadFailed = meta.readFailed === true;
       const carryNote = carryNoteReadFailed ? null : meta.note;
+      const walls = await reconcileConversationBoundWalls(
+        splitCarryNoteWalls(carryNote).walls,
+        concreteWorkspaceId ?? workspaceId,
+        async (ids, scopedWorkspaceId) => {
+          const { getConversationStatesByIds } = await import('./agent-tools/coordination/conversations');
+          return getConversationStatesByIds(ids, scopedWorkspaceId);
+        },
+      );
+      const currentCarryNote = carryNote === null
+        ? null
+        : withCarryNoteWalls(splitCarryNoteWalls(carryNote).body, walls);
       return {
         loop: {
           harness: loop.harnessSlug,
@@ -1657,13 +1670,13 @@ export async function buildCarryBrief(ownerId: string, opts: BuildCarryBriefOpts
           intervalSec: loop.intervalSec ?? null,
           carry: loop.carry,
           goal: loop.goal ?? null,
-          carryNote,
+          carryNote: currentCarryNote,
           carryNoteUpdatedAtMs: carryNoteReadFailed ? null : meta.updatedAtMs,
           carryNoteReadFailed,
         },
         // P-006/P-001 delivery parity: walls and checks share the same structured
         // extraction as before; only their scheduling changed.
-        walls: splitCarryNoteWalls(carryNote).walls,
+        walls,
         checks: splitCarryNoteChecks(carryNote).checks,
       };
     },
@@ -2375,7 +2388,7 @@ export function renderCarryBriefColdExtras(
       // WI-<n> ids are not globally unique.
       const excerpt = capPreservingOperative(h.checkpoint!, COLD_CHECKPOINT_CAP, {
         inlineNotice: true,
-        more: workItemFetchHint(h.id, h.harness),
+        more: workItemFetchHint(h.id, h.harness, 'checkpoint'),
       });
       return (
         excerpt +
@@ -2397,9 +2410,9 @@ export function renderCarryBriefColdExtras(
         : '';
       let ckpt: string;
       if (h.checkpointReadFailed) {
-        ckpt = `\n    checkpoint: UNKNOWN — store read failed; do not infer absence or overwrite. Re-read ${workItemFetchHint(h.id, h.harness)}`;
+        ckpt = `\n    checkpoint: UNKNOWN — store read failed; do not infer absence or overwrite. Re-read ${workItemFetchHint(h.id, h.harness, 'continuation')}`;
       } else if (!h.checkpoint) {
-        ckpt = '\n    (no checkpoint written — read the item via work_items:get before acting)';
+        ckpt = `\n    (no checkpoint written — recover with ${workItemFetchHint(h.id, h.harness, 'continuation')} before acting)`;
       } else {
         const superseded =
           sessionActivityMs != null &&
@@ -2419,7 +2432,8 @@ export function renderCarryBriefColdExtras(
           : `\n    checkpoint: ${excerptCheckpoint(h)}`;
       }
       const decision = h.blockerResolution ? `\n    blocker decision: ${JSON.stringify(h.blockerResolution)}` : '';
-      return `  • ${h.id}${title}${lane}${pathScope}${decision}${ckpt}`;
+      const continuation = `\n    continuation: ${workItemFetchHint(h.id, h.harness, 'continuation')}`;
+      return `  • ${h.id}${title}${continuation}${lane}${pathScope}${decision}${ckpt}`;
     });
     sections.push(
       `You HELD these work-items as of just before this respawn (the full checkpoint re-injects on the item's next invocation; refresh it before ending). ` +

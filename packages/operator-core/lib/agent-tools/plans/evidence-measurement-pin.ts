@@ -289,6 +289,73 @@ export async function buildMeasurementPin(
   };
 }
 
+/**
+ * A measured submodule whose own HEAD is ahead of (or apart from) the commit its PARENT
+ * repository's HEAD pins (EI-28726074328095969). The bind preflight accepts such a measurement:
+ * every measured path is clean against the owning submodule's HEAD. Committed reads, though,
+ * resolve the submodule through the parent's gitlink, so the binding reads stale until the
+ * parent publishes the newer gitlink. After that the same binding becomes current with no
+ * rerun. The fault class is a publication lag, not bad evidence.
+ */
+export interface ParentPublicationPending {
+  repo: string;
+  rootHarnessSlug?: string;
+  /** The submodule commit the measured bytes are clean against. */
+  head: string;
+  /** The submodule commit the parent repository's HEAD pins. */
+  gitlink: string;
+  /** Measured paths owned by this submodule, sorted. */
+  paths: string[];
+}
+
+/** Pure: every measured submodule whose HEAD differs from the parent's pinned gitlink. */
+export function parentPublicationPending(pin: MeasurementPin | null | undefined): ParentPublicationPending[] {
+  if (!pin) return [];
+  const key = (entry: { repo: string; rootHarnessSlug?: string }) => `${entry.rootHarnessSlug ?? ''}\0${entry.repo}`;
+  const pathsByRepo = new Map<string, string[]>();
+  for (const file of pin.files) {
+    const paths = pathsByRepo.get(key(file)) ?? [];
+    paths.push(file.path);
+    pathsByRepo.set(key(file), paths);
+  }
+  const pending: ParentPublicationPending[] = [];
+  for (const repo of pin.repos) {
+    if (repo.head === null || repo.gitlink === null || repo.head === repo.gitlink) continue;
+    const paths = pathsByRepo.get(key(repo));
+    if (!paths || paths.length === 0) continue;
+    pending.push({
+      repo: repo.repo,
+      ...(repo.rootHarnessSlug ? { rootHarnessSlug: repo.rootHarnessSlug } : {}),
+      head: repo.head,
+      gitlink: repo.gitlink,
+      paths: [...new Set(paths)].sort(),
+    });
+  }
+  return pending.sort((a, b) =>
+    (a.rootHarnessSlug ?? '').localeCompare(b.rootHarnessSlug ?? '') || a.repo.localeCompare(b.repo));
+}
+
+/**
+ * The bind-result field for {@link parentPublicationPending}: empty when every measured
+ * submodule agrees with its parent gitlink, so a normal bind result is unchanged.
+ */
+export function parentPublicationAdvisory(
+  pin: MeasurementPin | null | undefined,
+): { parentPublicationPending?: { repos: ParentPublicationPending[]; note: string } } {
+  const repos = parentPublicationPending(pin);
+  if (repos.length === 0) return {};
+  const named = repos.map((entry) => `${entry.repo}@${entry.gitlink.slice(0, 12)} (measured HEAD ${entry.head.slice(0, 12)})`);
+  return {
+    parentPublicationPending: {
+      repos,
+      note:
+        `Stored, but the parent HEAD pins ${named.join(', ')}, not the measured submodule HEAD. ` +
+        'Committed reads resolve the submodule through the parent gitlink, so this binding reads stale ' +
+        'until the parent publishes the measured commit. It then becomes current automatically, with no rerun.',
+    },
+  };
+}
+
 export function readMeasurementPin(details: Record<string, unknown> | null | undefined): MeasurementPin | null {
   const parsed = measurementPinSchema.safeParse(details?.[MEASUREMENT_PIN_DETAILS_KEY]);
   return parsed.success ? parsed.data : null;

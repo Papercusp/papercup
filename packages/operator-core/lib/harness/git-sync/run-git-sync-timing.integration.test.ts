@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -25,7 +25,12 @@ const sidecarSourcePaths = [
 ];
 const options = isolatedWorkerOptions(90_000);
 
-it.for(['local', 'sidecar'] as const)('persists real Git setup and pointer timing through %s in an isolated current-source background runtime', { timeout: options.testTimeoutMs }, async (mode: 'local' | 'sidecar', context: TestContext) => {
+function assertProbeSyntax(probe: string) {
+  const result = spawnSync(process.execPath, ['--check', '--input-type=module'], { input: probe, encoding: 'utf8' });
+  expect(result.status, result.stderr).toBe(0);
+}
+
+it.for(['local', 'sidecar', 'instrumented-stdin'] as const)('persists real Git setup and pointer timing through %s in an isolated current-source background runtime', { timeout: options.testTimeoutMs }, async (mode: 'local' | 'sidecar' | 'instrumented-stdin', context: TestContext) => {
   const paths = [...sourcePaths, ...(mode === 'sidecar' ? sidecarSourcePaths : [])];
   const runId = await recordIsolatedIntegrationProof({ root, filePath, sourcePaths: paths,
     retainedArtifacts: ['phases/execute/worker.log', 'phases/execute/worker-result.json',
@@ -38,7 +43,7 @@ it.for(['local', 'sidecar'] as const)('persists real Git setup and pointer timin
         import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
         import { join } from 'node:path';
         import postgres from 'postgres';
-        import { runGitSync } from './packages/operator-core/lib/harness/git-sync/run-git-sync.ts';
+        import { runGitSync, runGitBounded, gitTimeoutMsFor, runGitSyncStdinBounded } from './packages/operator-core/lib/harness/git-sync/run-git-sync.ts';
         import { getSidecarFallbackStats } from './packages/operator-core/lib/fleet/git-via-sidecar.ts';
         import { closeSpawnerIpcClient } from './packages/operator-core/lib/fleet/spawner-ipc-client.ts';
         import { managedSpawn, markManagedSpawnTeardown } from './packages/operator-core/lib/task-manager/managed-spawn.ts';
@@ -56,6 +61,10 @@ it.for(['local', 'sidecar'] as const)('persists real Git setup and pointer timin
         assert.equal(process.env.PAPERCUSP_SUBSTRATE_IPC_SOCKET, undefined);
         const mode = ${JSON.stringify(mode)};
         const paths = ${JSON.stringify(paths)};
+        // Runtime isolation strips arbitrary application environment keys.
+        // These are fixed test evidence destinations, carried in the program.
+        const controlOutput = ${JSON.stringify(join(evidenceDir, 'timing-control.json'))};
+        const sidecarLog = ${JSON.stringify(join(evidenceDir, 'sidecar.log'))};
         const hashes = async () => Object.fromEntries(await Promise.all(paths.map(async path =>
           [path, createHash('sha256').update(await readFile(path)).digest('hex')])));
         const before = await hashes();
@@ -84,6 +93,12 @@ it.for(['local', 'sidecar'] as const)('persists real Git setup and pointer timin
         git(repo, 'commit', '--no-verify', '-qm', 'fixture submodule');
         await writeFile(join(repo, 'root-work.txt'), 'root work\\n');
         await writeFile(join(repo, 'libs/child/child-work.txt'), 'child work\\n');
+        if (mode === 'instrumented-stdin') {
+          await mkdir(join(repo, 'batch'));
+          for (let i = 0; i < 48; i++) {
+            await writeFile(join(repo, 'batch', i + '.txt'), 'batch ' + i + ' — non-ASCII content\\n');
+          }
+        }
         // EI-27693013605402344: exercise named-fatal batch recovery through
         // the complete job. Known child paths are filtered before root staging;
         // a symlink descendant reaches the root classifier in both passes.
@@ -173,11 +188,32 @@ it.for(['local', 'sidecar'] as const)('persists real Git setup and pointer timin
           // exercises the existing durable-step seam without a shared DBOS run.
           await sql.unsafe("CREATE TABLE public.timing_control_steps (name text PRIMARY KEY, output jsonb NOT NULL CHECK (jsonb_typeof(output) = 'object'))");
           const logs = [];
+          const stdinCalls = [];
+          const individualContentReads = [];
           const outcome = await runGitSync('isolated-timing-control', {
             repoPath: repo,
             config: { push: false, pushSubmoduleOrigins: false },
             excludePaths: protectedPaths,
             log: line => logs.push(line),
+            ...(mode === 'instrumented-stdin' ? {
+              // Match the action's paired custom runners. Unit orchestration
+              // controls pin the action wiring; this proves real Git bytes,
+              // private-index forwarding and the complete background job.
+              runGit: (args, cwd, options) => {
+                if (args[0] === 'show' && args.some(arg => /^:batch\\//.test(arg))) individualContentReads.push(args);
+                return runGitBounded(args, cwd, gitTimeoutMsFor(args), options);
+              },
+              runGitStdin: async (args, cwd, stdin, options) => {
+                const result = await runGitSyncStdinBounded(args, cwd, stdin, options);
+                assert.ok(Buffer.isBuffer(result.stdout));
+                stdinCalls.push({ args, cwd, index: options?.env?.GIT_INDEX_FILE,
+                  code: result.code, bytes: result.stdout.length });
+                return result;
+              },
+              contentDetectors: [{ key: 'batch-control', glob: 'batch/*.txt', fixerRole: 'content-fixer',
+                matches: path => path.startsWith('batch/'),
+                detect: (_path, text) => text.includes('non-ASCII content') ? null : 'batch bytes changed' }],
+            } : {}),
             step: async (name, execute) => {
               const output = await execute();
               await sql.unsafe('INSERT INTO public.timing_control_steps VALUES ($1, $2::text::jsonb)',
@@ -207,6 +243,15 @@ it.for(['local', 'sidecar'] as const)('persists real Git setup and pointer timin
           assert.ok(Math.abs(sum - setup.setupMs) <= setup.setupSteps.length, 'rounded setup partition');
           assert.ok(pointer.durationMs >= pointer.commitDurationMs);
           assert.equal(git(repo, 'show', 'HEAD:root-work.txt'), 'root work');
+          if (mode === 'instrumented-stdin') {
+            assert.ok(stdinCalls.some(call => call.args.includes('--batch')), 'staged content used binary batches');
+            assert.ok(stdinCalls.some(call => call.args.some(arg => arg.startsWith('--batch-check='))), 'batch metadata was read');
+            assert.ok(stdinCalls.every(call => call.code === 0 && call.index && call.bytes > 0),
+              'every batch preserved its private index and returned real bytes');
+            assert.deepEqual(individualContentReads, [], 'no per-file staged content fallback');
+            assert.equal(git(repo, 'ls-tree', '-r', '--name-only', 'HEAD', '--', 'batch').split('\\n').length, 48);
+            assert.equal(git(repo, 'show', 'HEAD:batch/47.txt'), 'batch 47 — non-ASCII content');
+          }
           assert.ok(logs.some(line => line.includes('pre-filtering protected path(s) beyond a symbolic link')),
             'the job exercised named-fatal batch recovery');
           assert.equal(git(join(repo, 'libs/child'), 'show', 'HEAD:child-work.txt'), 'child work');
@@ -220,7 +265,7 @@ it.for(['local', 'sidecar'] as const)('persists real Git setup and pointer timin
             // Wait for the server's final log writes and exact socket teardown
             // before inspecting its request-settled records.
             await stopSidecar();
-            await writeFile(process.env.PC_TIMING_SIDECAR_LOG, sidecarOutput);
+            await writeFile(sidecarLog, sidecarOutput);
             const requests = sidecarOutput.split('\\n')
               .filter(line => line.startsWith('[spawner-process-exec-stage] '))
               .map(line => JSON.parse(line.slice('[spawner-process-exec-stage] '.length)));
@@ -254,14 +299,15 @@ it.for(['local', 'sidecar'] as const)('persists real Git setup and pointer timin
             runner: mode === 'local' ? 'default local Git; sidecar and shared-host contention excluded'
               : 'real IPC sidecar with default production admission; shared-host contention excluded',
             ...(sidecarProof ? { sidecar: sidecarProof } : {}),
+            ...(mode === 'instrumented-stdin' ? { stdinCalls, individualContentReads } : {}),
             privateDatabase: true, stepsPersisted: rows.map(row => row.name), setup, pointer };
-          await writeFile(process.env.PC_TIMING_CONTROL_OUTPUT, JSON.stringify(proof, null, 2));
+          await writeFile(controlOutput, JSON.stringify(proof, null, 2));
           console.log('GIT_SYNC_TIMING_CONTROL ' + JSON.stringify({ setupMs: setup.setupMs,
             setupSteps: setup.setupSteps, pointerMs: pointer.durationMs }));
         } finally {
           try { await stopSidecar(); }
           finally {
-            if (mode === 'sidecar') await writeFile(process.env.PC_TIMING_SIDECAR_LOG, sidecarOutput);
+            if (mode === 'sidecar') await writeFile(sidecarLog, sidecarOutput);
             await sql.end({ timeout: 5 });
           }
         }
@@ -270,13 +316,12 @@ it.for(['local', 'sidecar'] as const)('persists real Git setup and pointer timin
           process.exit(1);
         }
       `;
+      assertProbeSyntax(probe);
       const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
         '--isolated-runtime', ...(mode === 'sidecar' ? ['--managed-tasks'] : []),
         '--', process.execPath, '--import', 'tsx', '--input-type=module', '-e', probe], {
         cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1',
-          PC_TIMING_CONTROL_OUTPUT: join(evidenceDir, 'timing-control.json'),
-          PC_TIMING_SIDECAR_LOG: join(evidenceDir, 'sidecar.log'),
           OPENAI_API_KEY: 'forbidden-private-runtime-canary',
           PAPERCUSP_SUBSTRATE_IPC_SOCKET: '/forbidden-private-runtime-canary.sock' },
       });
@@ -461,7 +506,7 @@ it.for(['acquisition', 'admission'] as const)('distinguishes %s delay in private
                 phases, enqueueTiming, enqueueQueries, receipts };
             });
             assert.deepEqual(await hashes(), before, 'source stable through control');
-            await writeFile(process.env.PC_ADMISSION_CONTROL_OUTPUT, JSON.stringify({
+            await writeFile(${JSON.stringify(join(evidenceDir, 'admission-control.json'))}, JSON.stringify({
               ...proof, hashes: before, workspace, privateDatabase: true,
               scope: 'controlled pool occupancy versus identity advisory lock; not historical/shared-host causality',
             }, null, 2));
@@ -475,11 +520,11 @@ it.for(['acquisition', 'admission'] as const)('distinguishes %s delay in private
           process.exitCode = 1;
         }
       `;
+      assertProbeSyntax(probe);
       const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime',
         '--', process.execPath, '--import', 'tsx', '--input-type=module', '-e', probe], {
         cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-        env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1',
-          PC_ADMISSION_CONTROL_OUTPUT: join(evidenceDir, 'admission-control.json') },
+        env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1' },
       });
       observe(child);
       const result = await captureIsolatedWorker(child, evidenceDir, options);

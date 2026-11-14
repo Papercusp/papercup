@@ -57,7 +57,7 @@ export interface ProgressLeaseRemedyOutcome {
 }
 
 export interface ProgressLeaseTransition {
-  state: 'armed' | 'progress' | 'miss' | 'owner-wake' | 'remedy';
+  state: 'armed' | 'progress' | 'miss' | 'unknown' | 'owner-wake' | 'remedy';
   atMs: number;
   writer: string;
   units: string;
@@ -89,6 +89,11 @@ export interface ProgressLeaseState {
   remedyAfterMisses: number;
   remedy: ProgressLeaseRemedy;
   history: ProgressLeaseTransition[];
+  /** Authenticated at registration against this item's current custody and
+   * identified event blocker. These are frozen on the first episode. */
+  drivingWorkItemId?: string;
+  noDeltaBudget?: number;
+  substages?: Array<{ id: string; valueFingerprint: string }>;
 }
 
 export interface ProducerHealthCertificate {
@@ -109,6 +114,20 @@ export interface ProducerHealthCertificate {
   details?: Record<string, unknown>;
   /** Delegated-wait progress contract. Absent on legacy producer-health waits. */
   progressLease?: ProgressLeaseState;
+  /** Store-owned receipt, committed before dispatching a fallback probe. A
+   * recovered claim keeps the observation identity and rotates only its writer
+   * token; a result from the abandoned attempt cannot settle the replacement. */
+  verificationReceipt?: VerifiedWaitObservationReceipt;
+  waitEpisode?: import('./wait-episode').WaitEpisodeReference;
+  waitEpisodeReceipt?: import('./wait-episode').WaitEpisodeReceipt;
+}
+
+export interface VerifiedWaitObservationReceipt {
+  observationId: string;
+  sequence: number;
+  claimToken: string;
+  state: 'pending' | 'settled';
+  disposition?: 'rearm' | 'push-only' | 'deliver';
 }
 
 /**
@@ -156,7 +175,7 @@ export type VerifiedWaitTimeoutClassification =
   | "absent"
   | "already-complete";
 
-export type VerifiedWaitNextAction = "re-await" | "resume" | "wake-owner-or-takeover";
+export type VerifiedWaitNextAction = "re-await" | "resume" | "wake-owner-or-takeover" | "resolve-uncertainty";
 
 export interface VerifiedWaitTimeoutResult {
   classification: VerifiedWaitTimeoutClassification;
@@ -219,7 +238,7 @@ export function classifyVerifiedWaitTimeout(
     return { ...base, classification: "expected-idle", nextAction: "re-await" };
   }
   if (observation.state === "unknown") {
-    return { ...base, classification: "unknown", nextAction: "re-await" };
+    return { ...base, classification: "unknown", nextAction: "resolve-uncertainty" };
   }
   // EI-21045433666635330: `active` is the adapter's OWN authoritative liveness probe
   // (e.g. a systemd/run-lock read) confirming the producer is executing right now —

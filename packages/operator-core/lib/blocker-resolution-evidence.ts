@@ -1,11 +1,14 @@
+import { execFile } from 'node:child_process';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { CellReadEnv } from './cell-read';
 import type { ExternalBlockerRecord } from './external-blockers';
+import { activeWorkspaceId } from './workspace-registry';
+import { readGitFilePublicationCondition, type GitFilePublicationBinding } from './git-file-publication-condition';
 import { hasUnresolvedBlockerObligation, prepareBlockerDecision, readBlockerResolution,
   validateBlockerDecisionEvidence, type BlockerEvidenceMeasurement, type BlockerEvidenceRef,
-  type BlockerDecisionProblem, type PreparedBlockerDecision } from './blocker-resolution-decision';
+  type BlockerDecisionProblem, type PreparedBlockerDecision, type UnmeasuredRuntimeScope } from './blocker-resolution-decision';
 import type { WorkItem } from './work-items';
 
 /** Authenticated host context; never part of the public tool's arguments. */
@@ -138,17 +141,18 @@ export async function preflightBlockerDecision(
       obligationRefs.push(prior.current.decision.deferral.recheckRef);
     }
     const { ALL_TERMINAL_STATUSES } = await import('./work-item-blocking');
-    const unmeasuredRuntimeDeferral = !options.requireResolution && !options.allowAbsorption &&
+    const plainReleaseScope = !options.requireResolution && !options.allowAbsorption &&
       !options.additionalBlockers?.length && !options.additionalDependencyRefs?.length &&
       !ALL_TERMINAL_STATUSES.has(item.state) && item.assignee === context.ownerId && context.workspaceId && item.harness &&
       plainPublicRelease(options.effect, options.releasePayload)
       ? { workspaceId: context.workspaceId, harnessSlug: item.harness, workItemId: item.id, custodianId: context.ownerId }
       : undefined;
     const readEvidence = createBlockerEvidenceReader({ ...context, harnessSlug: item.harness,
-      workItemId: item.id, custodianId: item.assignee, blockers });
+      workItemId: item.id, custodianId: item.assignee, blockers,
+      retainedReservationRelease: prepared.record.decision.disposition === 'defer' ? plainReleaseScope : undefined });
     const checked = await validateBlockerDecisionEvidence(prepared.record.decision, {
       ownerId: context.ownerId, workItemId: item.id, obligationRefs, relatedConditionRefs,
-      allowAbsorption: options.allowAbsorption, unmeasuredRuntimeDeferral, readEvidence,
+      allowAbsorption: options.allowAbsorption, unmeasuredRuntimeDeferral: plainReleaseScope, readEvidence,
     });
     return checked.ok ? prepared : checked;
   } catch {
@@ -166,9 +170,95 @@ export interface BlockerEvidenceContext extends CellReadEnv {
   blockers: readonly ExternalBlockerRecord[];
   /** Canonical pre-write subject custody, never request-supplied. */
   custodianId?: string | null;
+  /** Host-only plain-release deferral: the writer preserves this custodian's
+   * reservation and every blocker while releasing only the inactive assignment. */
+  retainedReservationRelease?: UnmeasuredRuntimeScope;
 }
 const absent = (detail: string): BlockerEvidenceMeasurement => ({ status: 'absent', detail });
 const unknown = (detail: string): BlockerEvidenceMeasurement => ({ status: 'unknown', detail });
+
+function readGitText(cwd: string, args: string[], signal?: AbortSignal): Promise<string | null> {
+  return new Promise(resolveText => {
+    execFile('git', args, { cwd, encoding: 'utf8', timeout: 5000, maxBuffer: 64 * 1024, windowsHide: true,
+      ...(signal ? { signal } : {}) }, (error, stdout) => resolveText(error ? null : stdout.trim()));
+  });
+}
+
+/** `git-sync:committed` is a global wake, so it cannot prove which files it
+ * committed. For a current custodian whose host-stamped codeWorkingSet names
+ * the affected paths, measure the exact file-acceptance predicate instead.
+ * The broad event remains only a wake hint: unrelated commits leave this
+ * subject-bound predicate pending. */
+async function readGitSyncWorkingSetCondition(context: BlockerEvidenceContext, root: string):
+Promise<BlockerEvidenceMeasurement> {
+  const { activeWorkspaceId } = await import('./workspace-registry');
+  if (!context.workspaceId || activeWorkspaceId() !== context.workspaceId || !context.harnessSlug ||
+      !context.workItemId || !context.ownerId || context.custodianId !== context.ownerId) {
+    return unknown('canonical work-item custody and tenant are required for a git-sync file predicate');
+  }
+  const supplied = context.blockers.filter(blocker => blocker.ref === 'git-sync:committed' &&
+    blocker.kind === 'event' && blocker.status === 'active' && blocker.capability === 'live-dependency');
+  if (supplied.length !== 1) return unknown('one exact active git-sync commit blocker is required');
+
+  const { getWorkItem } = await import('./work-items');
+  const current = await getWorkItem(context.workItemId, context.harnessSlug);
+  if (!current || current.id !== context.workItemId || current.harness !== context.harnessSlug ||
+      current.assignee !== context.ownerId || !['blocked', 'open', 'todo', 'wip'].includes(current.state)) {
+    return unknown('canonical nonterminal work-item custody is unavailable');
+  }
+  const { activeExternalBlockers } = await import('./external-blockers');
+  const canonicalBlockers = activeExternalBlockers(current.payload).filter(blocker => blocker.ref === 'git-sync:committed');
+  if (canonicalBlockers.length !== 1 || !isDeepStrictEqual(canonicalBlockers[0], supplied[0])) {
+    return unknown('canonical git-sync blocker changed or is ambiguous');
+  }
+
+  const payload = current.payload && typeof current.payload === 'object' && !Array.isArray(current.payload)
+    ? current.payload as Record<string, unknown> : null;
+  const stamp = payload?.codeWorkingSet;
+  if (!stamp || typeof stamp !== 'object' || Array.isArray(stamp)) {
+    return unknown('host-stamped code working set is unavailable');
+  }
+  const workingSet = stamp as { owner?: unknown; epoch?: unknown; derivedAt?: unknown; paths?: unknown };
+  const takenAt = (current as typeof current & { takenAt?: string | null }).takenAt;
+  const derivedAtMs = typeof workingSet.derivedAt === 'string' ? Date.parse(workingSet.derivedAt) : NaN;
+  const takenAtMs = typeof takenAt === 'string' ? Date.parse(takenAt) : NaN;
+  if (workingSet.owner !== context.ownerId || !Number.isInteger(workingSet.epoch) ||
+      !Number.isFinite(derivedAtMs) || !Number.isFinite(takenAtMs) || derivedAtMs < takenAtMs ||
+      !Array.isArray(workingSet.paths) || workingSet.paths.length < 1 || workingSet.paths.length > 12 ||
+      !workingSet.paths.every(path => typeof path === 'string' && path.length > 0 && !isAbsolute(path) &&
+        !path.includes('\\') && path.split('/').every(part => part && part !== '.' && part !== '..')) ||
+      new Set(workingSet.paths).size !== workingSet.paths.length) {
+    return unknown('a current, owner-stamped, bounded code working set is required');
+  }
+  const paths = workingSet.paths as string[];
+  const canonicalRoot = await realpath(root).catch(() => null);
+  if (!canonicalRoot) return unknown('canonical harness repository root is unavailable');
+  const parentCommit = await readGitText(canonicalRoot, ['rev-parse', 'HEAD'], context.signal);
+  if (!parentCommit || !/^[a-f0-9]{40}$/.test(parentCommit)) return unknown('current parent commit could not be measured');
+
+  const checks = await Promise.all(paths.map(async filePath => {
+    const [sourceCommit, expectedBlob] = await Promise.all([
+      readGitText(canonicalRoot, ['log', '-1', '--format=%H', 'HEAD', '--', filePath], context.signal),
+      readGitText(canonicalRoot, ['hash-object', '--', filePath], context.signal),
+    ]);
+    if (!sourceCommit || !/^[a-f0-9]{40}$/.test(sourceCommit) || !expectedBlob || !/^[a-f0-9]{40}$/.test(expectedBlob)) {
+      return unknown(`current committed and working blobs could not be measured for ${filePath}`);
+    }
+    const binding: GitFilePublicationBinding = { schemaVersion: 1, kind: 'git-file-publication', filePath,
+      sourceCommit, expectedBlob, parentCommit,
+      reason: 'Measure the current work-item code working-set blob in the local git-sync commit',
+      reasonRef: context.workItemId };
+    return readGitFilePublicationCondition(binding, canonicalRoot);
+  }));
+  const unavailable = checks.find(check => check.status !== 'available');
+  if (unavailable) return unknown(`exact local git-sync file predicate is unavailable: ${unavailable.status}`);
+  const condition = checks.every(check => check.status === 'available' && check.condition === 'satisfied')
+    ? 'satisfied' : 'pending';
+  return { status: 'available', condition, reachable: true, responsibleParty: 'system:git-sync',
+    subjectWorkItemId: current.id,
+    conditionIdentity: JSON.stringify(['git-sync-code-working-set', context.workspaceId,
+      context.harnessSlug, current.id, workingSet.epoch, paths]) };
+}
 
 /** Read-only adapter over the existing work, presence, cell, event, docs and
  * test ledgers. No dispatch under a substituted role, new table or new monitor.
@@ -177,7 +267,59 @@ const unknown = (detail: string): BlockerEvidenceMeasurement => ({ status: 'unkn
  * testing:runs:RUN_GROUP:ROW_ID; authority:STORED_BLOCKER_REF.
  * Plain refs omit the kind prefix except test refs, which retain testing:runs.
  */
+/** A legacy grading-audit reservation names a scorecard predicate, not a fire.
+ * Resolve both spellings against that exact tenant-scoped target and its settled
+ * independent audit; superseding target cards never substitute for this gate. */
+async function readGradingAuditCondition(
+  ref: string, context: BlockerEvidenceContext,
+  loadHeader: () => Promise<typeof import('./scorecards').readScorecardRecipeHeader>,
+): Promise<BlockerEvidenceMeasurement> {
+  const match = /^(?:scorecard:)?grading-audit:(EI-[A-Za-z0-9_-]+)$/.exec(ref);
+  if (!match) return absent('expected an exact grading-audit scorecard id');
+  const activeWorkspace = activeWorkspaceId();
+  if (!context.workspaceId || activeWorkspace !== context.workspaceId) {
+    return unknown(`grading-audit tenant context mismatch (${JSON.stringify({
+      active: activeWorkspace, expected: context.workspaceId,
+    })})`);
+  }
+  const readScorecardRecipeHeader = await loadHeader();
+  const targetRead = await readScorecardRecipeHeader(match[1]);
+  if (targetRead.kind !== 'found') return unknown('grading-audit target is unavailable');
+  const target = targetRead.scorecard;
+  if (target.issueId !== match[1] || target.retracted || target.provisional) {
+    return unknown('grading-audit target identity is not eligible');
+  }
+  const stamp = target.gradingAudit;
+  if (!stamp || stamp.metaRubricRef !== 'grading-integrity') return unknown('canonical grading-audit stamp is unavailable');
+  const measurement = { status: 'available' as const, reachable: true,
+    conditionIdentity: JSON.stringify(['scorecard-grading-audit', context.workspaceId, match[1]]) };
+  if (['pending', 'awaiting-reemit', 'failed', 'cancelled'].includes(stamp.state)) {
+    return { ...measurement, condition: 'pending' };
+  }
+  if (stamp.state !== 'passed' || !stamp.auditIssueId || !/^EI-[A-Za-z0-9_-]+$/.test(stamp.auditIssueId) ||
+      !target.createdBy || !stamp.auditor || stamp.auditor === target.createdBy ||
+      !stamp.auditedAt || !Number.isFinite(Date.parse(stamp.auditedAt)) ||
+      !Number.isInteger(stamp.rubricRevision) || (stamp.rubricRevision ?? 0) < 1 || !stamp.criteriaHash?.trim()) {
+    return unknown('settled grading-audit identity is incomplete');
+  }
+  const auditRead = await readScorecardRecipeHeader(stamp.auditIssueId);
+  if (auditRead.kind !== 'found') return unknown('canonical grading-audit card is unavailable');
+  const audit = auditRead.scorecard;
+  if (audit.issueId !== stamp.auditIssueId || audit.rubricRef !== 'grading-integrity' ||
+      audit.subject?.kind !== 'scorecard' || audit.subject.ref !== target.issueId ||
+      audit.createdBy !== stamp.auditor || audit.retracted || audit.provisional || audit.supersededBy ||
+      audit.rubricRevision !== stamp.rubricRevision || audit.criteriaHash !== stamp.criteriaHash) {
+    return unknown('canonical grading-audit card does not match its target stamp');
+  }
+  return { ...measurement, condition: 'satisfied' };
+}
+
 export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
+  // Alias checks in one decision share a lazy module binding, while every read
+  // still measures current tenant-scoped rows rather than caching a verdict.
+  let auditHeader: Promise<typeof import('./scorecards').readScorecardRecipeHeader> | undefined;
+  const loadAuditHeader = () => auditHeader ??= import('./scorecards').then(module => module.readScorecardRecipeHeader);
+
   async function repositoryRoot(): Promise<string | null> {
     return context.root ?? (context.harnessSlug
       ? await (await import('./harness/docs/harness-repo')).resolveHarnessRepoRoot(context.harnessSlug) : null);
@@ -187,7 +329,12 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
     const { activeWorkspaceId } = await import('./workspace-registry');
     // The work reader resolves the request's active tenant. A mismatch is not
     // permission to read an unscoped fallback row from another workspace.
-    if (activeWorkspaceId() !== context.workspaceId) return unknown('work-item tenant context mismatch');
+    const activeWorkspace = activeWorkspaceId();
+    if (activeWorkspace !== context.workspaceId) {
+      return unknown(`work-item tenant context mismatch (${JSON.stringify({
+        active: activeWorkspace, expected: context.workspaceId,
+      })})`);
+    }
     const raw = ref.replace(/^work-item:/, '');
     const match = /^(?:([A-Za-z0-9_.-]+)#)?((?:WI|EI|F)-[A-Za-z0-9_-]+)$/.exec(raw);
     if (!match) return absent('expected work-item:[harness#]ID');
@@ -263,10 +410,131 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
             condition: isDeepStrictEqual(actual, expected) ? 'satisfied' : 'pending' };
         }
         case 'event': {
+          if (ref.ref.startsWith('grading-audit:') || ref.ref.startsWith('scorecard:grading-audit:')) {
+            return await readGradingAuditCondition(ref.ref, context, loadAuditHeader);
+          }
+          // A generated plan lane is a predicate over the canonical graph, not
+          // an emitted event. Keep the existing reference/decision contract;
+          // never manufacture a fire or let a caller assert its measurement.
+          if (ref.ref.startsWith('plan-lane:')) {
+            const match = /^plan-lane:([^#]+)#(P-\d{3,})$/.exec(ref.ref);
+            const gates = context.blockers.filter(blocker => blocker.ref === ref.ref &&
+              blocker.kind === 'gate' && blocker.status === 'active' &&
+              blocker.capability === 'live-dependency' && blocker.createdBy === 'system:plan-item-lane-sync');
+            if (!match || gates.length !== 1 || !context.workspaceId || !context.harnessSlug ||
+                !context.ownerId || context.custodianId !== context.ownerId) {
+              return unknown('exact system-derived lane and authenticated current custody required');
+            }
+            const { activeWorkspaceId } = await import('./workspace-registry');
+            if (activeWorkspaceId() !== context.workspaceId) return unknown('plan-lane tenant context mismatch');
+            const { getWorkItem, readWorkItemClaimHoldProvenance, isClaimHoldParked } = await import('./work-items');
+            const current = await getWorkItem(context.workItemId, context.harnessSlug);
+            if (!current || current.harness !== context.harnessSlug || current.assignee !== context.ownerId ||
+                !['blocked', 'open', 'todo', 'wip'].includes(current.state)) {
+              return unknown('canonical nonterminal lane custody is unavailable');
+            }
+            const { activeExternalBlockers } = await import('./external-blockers');
+            const canonicalGates = activeExternalBlockers(current.payload).filter(blocker => blocker.ref === ref.ref);
+            if (canonicalGates.length !== 1 || !isDeepStrictEqual(canonicalGates[0], gates[0])) {
+              return unknown('canonical derived blocker changed or is ambiguous');
+            }
+            const payload = current.payload as Record<string, unknown> | null;
+            if (!payload || !['open', 'todo', 'wip'].includes(String(payload.planLaneParkedFrom))) {
+              return unknown('generated lane lacks actionable pre-park provenance');
+            }
+            const hold = readWorkItemClaimHoldProvenance(current.payload);
+            const release = context.retainedReservationRelease;
+            const preservesOwnReservation = release && release.workspaceId === context.workspaceId &&
+              release.harnessSlug === context.harnessSlug && release.workItemId === current.id &&
+              release.custodianId === context.ownerId && hold.heldOpen?.by === context.ownerId &&
+              !hold.parked && payload.claim_hold_by == null && payload.claim_hold_reason == null &&
+              payload.claim_hold_at == null;
+            if (hold.parked || ((isClaimHoldParked(current.payload) || hold.heldOpen) && !preservesOwnReservation)) {
+              return unknown('independent park or lease must be resolved through its own authority');
+            }
+            const { getOrgPg } = await import('@papercusp/db-org');
+            const { readPlanLineNodes } = await import('./agent-tools/plans/plan-line-graph');
+            const { getPlanRow, planItemsForRow } = await import('./agent-tools/plans/source');
+            const { resolveEffectiveStatusForItems } = await import('@papercusp/plan-parser');
+            const [nodes, plan] = await Promise.all([
+              readPlanLineNodes(getOrgPg().sql, { workspaceId: context.workspaceId,
+                harnessSlug: context.harnessSlug, slug: match[1] }),
+              getPlanRow(match[1], { workspaceId: context.workspaceId, harnessSlug: context.harnessSlug }),
+            ]);
+            const identities = nodes.filter(node => node.id === match[2]);
+            if (!plan || plan.workspaceId !== context.workspaceId || plan.harnessSlug !== context.harnessSlug ||
+                identities.length !== 1 || identities[0].featureId !== current.id || identities[0].ownerGateMarker ||
+                new Set(nodes.map(node => node.id)).size !== nodes.length) {
+              return unknown('exact canonical plan-line identity is unavailable or ambiguous');
+            }
+            const graph = resolveEffectiveStatusForItems(planItemsForRow(plan));
+            const item = graph.items.find(item => item.id === match[2]);
+            // A stale generated gate can outlive the lane's last dependency.
+            // Only an actionable lane may establish that dependency-free case;
+            // a still-explicitly-blocked lane supplies no release predicate.
+            if (!item || (!item.blockedBy.length && item.storedStatus === 'blocked') || item.needsHuman ||
+                !['blocked', 'todo', 'wip'].includes(item.storedStatus ?? '') ||
+                graph.missingRefs.length || graph.cycleMembers.length) {
+              return unknown('complete unambiguous derived dependency condition required');
+            }
+            return { status: 'available', condition: item.unresolvedBlockers.length ? 'pending' : 'satisfied',
+              reachable: true, subjectWorkItemId: current.id,
+              conditionIdentity: JSON.stringify(['plan-lane', context.workspaceId, context.harnessSlug, match[1], match[2]]) };
+          }
+          if (ref.ref === 'git-sync:committed' && context.blockers.some(blocker =>
+            blocker.kind === 'event' && blocker.ref === ref.ref && blocker.status === 'active')) {
+            const root = await repositoryRoot();
+            return root ? readGitSyncWorkingSetCondition(context, root)
+              : unknown('canonical harness repository root is unavailable');
+          }
           const { readEventConditionReachability } = await import('./external-condition-reachability');
           const read = await readEventConditionReachability(ref.ref, { requireSpecificCondition: true });
-          if (!read.authoritative || read.verdict === 'unknown') return unknown('event condition could not be measured');
+          if (!read.authoritative || read.verdict === 'unknown') {
+            return unknown(read.evidence
+              ? `event condition could not be measured: ${read.evidence}`
+              : 'event condition could not be measured');
+          }
           if (read.uncertifiedReason) return absent('event cannot certify this specific condition');
+          const settlement = /^work-item:settled:((?:WI|EI|F)-[A-Za-z0-9_-]+)$/.exec(ref.ref);
+          if (settlement) {
+            // Completion state and committed-content settlement are distinct.
+            // Only an authenticated plain release may retain this exact pending
+            // proposal as its custodian's next recheck; never reopen the repair.
+            const scope = context.retainedReservationRelease;
+            const { activeWorkspaceId } = await import('./workspace-registry');
+            if (!scope || scope.workspaceId !== context.workspaceId || scope.harnessSlug !== context.harnessSlug ||
+                scope.workItemId !== context.workItemId || scope.custodianId !== context.ownerId ||
+                context.custodianId !== context.ownerId || activeWorkspaceId() !== context.workspaceId ||
+                settlement[1] === context.workItemId || read.basis === 'fired' || read.verdict !== 'reachable') {
+              return unknown('exact pending settlement and authenticated retained custody required');
+            }
+            const { getWorkItem } = await import('./work-items');
+            const item = await getWorkItem(settlement[1], scope.harnessSlug);
+            const { ALL_SUCCESSFUL_STATUSES } = await import('./work-item-blocking');
+            if (!item || item.id !== settlement[1] || item.harness !== scope.harnessSlug ||
+                !ALL_SUCCESSFUL_STATUSES.has(item.state) || item.completionAuthority !== 'proposed' ||
+                item.terminalOwner !== context.ownerId || (item.assignee != null && item.assignee !== context.ownerId)) {
+              return unknown('canonical same-custodian proposed completion required');
+            }
+            const { CompletionSettlementManifestSchema } = await import('./coord-lifecycle/records');
+            const parsed = CompletionSettlementManifestSchema.safeParse(item.terminalCompletionEvidence?.settlementManifest);
+            if (!parsed.success) return unknown('canonical settlement manifest is missing or invalid');
+            const manifest = parsed.data;
+            const paths = manifest.contentIdentity.map(entry => entry.path).sort();
+            if (!isDeepStrictEqual(paths, [...manifest.normalizedPaths].sort()) ||
+                manifest.contentIdentity.some(entry => isAbsolute(entry.path) || entry.path.startsWith(':') ||
+                  entry.path.includes('\\') || entry.path.split('/').some(part => !part || part === '.' || part === '..') ||
+                  (entry.deletion === true ? entry.workingTreeBlobSha !== null :
+                    typeof entry.workingTreeBlobSha !== 'string')) ||
+                manifest.residualPaths?.some(entry => ['superseded-before-commit', 'not-a-repository-path'].includes(entry.reason))) {
+              return unknown('complete settleable content identity required');
+            }
+            return { status: 'available', condition: 'pending', reachable: true,
+              canonicalWorkItemId: item.id, responsibleParty: item.terminalOwner,
+              conditionIdentity: JSON.stringify(['work-item-settlement', context.workspaceId, scope.harnessSlug,
+                item.id, manifest.generation, manifest.evidenceHash]),
+              pendingCommitSettlement: { generation: manifest.generation, evidenceHash: manifest.evidenceHash } };
+          }
           const dependency = /^work-item:done:((?:WI|EI|F)-[A-Za-z0-9_-]+)$/.exec(ref.ref);
           const owner = dependency ? await workItem(dependency[1]) : null;
           return { ...(owner?.status === 'available' ? owner : {}), status: 'available',

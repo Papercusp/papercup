@@ -30,6 +30,7 @@ const stores = vi.hoisted(() => ({
   listClauses: vi.fn(),
   listRubrics: vi.fn(),
 }));
+const startGate = vi.hoisted(() => ({ check: vi.fn() }));
 const metadataSnapshot = '---\ntitle: Metadata fixture\nstatus: ready\n---\n## Items\n- **P-001** `todo` Accept events';
 vi.mock('./revisions', async (importOriginal) => ({
   ...await importOriginal<typeof import('./revisions')>(),
@@ -42,6 +43,19 @@ vi.mock('./source', async (importOriginal) => ({
     return read ? { ...read, row: { ...read.row, contentHash: hashPlanContent(metadataSnapshot) } } : read;
   },
   getPlanRow: stores.getPlanRow,
+}));
+vi.mock('./plan-start-gate', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./plan-start-gate')>(),
+  checkPlanStartable: startGate.check,
+}));
+vi.mock('../../plan-audits', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../plan-audits')>(),
+  // The discovery lifecycle has dedicated PostgreSQL integration coverage;
+  // keep this handler baseline hermetic while its plan stores are injected.
+  withCurrentDiscovery: async (_input, accept) => ({
+    ok: true as const,
+    result: await accept({} as never, {} as never),
+  }),
 }));
 vi.mock('./spec-clauses-store', async (importOriginal) => ({
   ...await importOriginal<typeof import('./spec-clauses-store')>(),
@@ -58,6 +72,7 @@ import getInputSchemaTool from './get-input-schema';
 const context: UnifiedToolContext = {
   harnessSlug: metadataHarness,
   workspaceId: 'metadata-fixture-workspace',
+  isSuperuser: true,
   log: () => {},
   signal: new AbortController().signal,
   progress: () => {},
@@ -66,6 +81,7 @@ const context: UnifiedToolContext = {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  startGate.check.mockResolvedValue({ ok: true });
   stores.readPlan.mockResolvedValue({
     row: {
       items: [{ id: 'P-001' }],

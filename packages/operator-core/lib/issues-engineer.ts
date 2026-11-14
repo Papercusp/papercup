@@ -3059,10 +3059,10 @@ export interface UpdateIssuePatch {
   title?: string;
   body?: string;
   severity?: IssueSeverity;
-  /** Correct a mislabeled work-item kind (issue-surface kinds only — bug|change).
+  /** Correct a stored work-item kind, including task records used by work_items:*.
    *  The kind column is load-bearing post close-the-self-improvement-loop D-002
    *  (it picks the auto-implement lane), so mislabels must be fixable via the verb. */
-  kind?: IssueKind;
+  kind?: IssueStoreKind;
   foundDuring?: string | null;
   linkedFeatureId?: string | null;
   /** Parent work-item id for duplicate/child relationships; null clears the edge. */
@@ -3946,6 +3946,14 @@ export async function setIssueState(
     if (Object.hasOwn(opts, 'expectedWorkDefinition')) {
       assertWorkItemDefinitionUnchanged(priorRow.payload, opts.expectedWorkDefinition);
     }
+    if (['resolved', 'committed', 'done', 'shipped'].includes(state)) {
+      const { fenceWorkDefinitionCompletion } = await import('./work-item-definition-source');
+      await fenceWorkDefinitionCompletion(tx as unknown as Sql, {
+        target: { workspaceId: ws, harnessSlug: priorRow.harness_slug, workItemId: id },
+        definition: (priorRow.payload as { workDefinition?: unknown } | null)?.workDefinition,
+        evidence: opts.completionEvidence,
+      });
+    }
     if (opts.expectedCurrentState !== undefined && priorRow.status !== opts.expectedCurrentState) {
       return [] as IssueRowDb[];
     }
@@ -4432,7 +4440,22 @@ export async function mergeIssuePayload(
   // -key clear, which routes through this identical unset path.
   // Writing the base table also stops a lossy round-trip: the trigger rebuilds `_ei` from
   // the view's scalar projection, whereas the stored `_ei` is preserved untouched here.
-  const updatePayload = (db: OrgSql) => db<{ ok: number }[]>`
+  const definitionMutation = Object.hasOwn(payloadPatch, 'workDefinition') || unset.includes('workDefinition');
+  const updatePayload = async (db: OrgSql) => {
+    if (definitionMutation) {
+      const [current] = await db<{ payload: { workDefinition?: unknown } }[]>`
+        SELECT payload FROM harness_shared.work_items
+         WHERE workspace_id=${ws} AND harness_slug=${physicalSlug} AND feature_id=${id} FOR UPDATE`;
+      if (!current) return [];
+      if (fenceDefinition) assertWorkItemDefinitionUnchanged(current.payload, opts.expectedWorkDefinition);
+      const { fenceWorkDefinitionMutation } = await import('./work-item-definition-source');
+      await fenceWorkDefinitionMutation(db as unknown as Sql, {
+        target: { workspaceId: ws, harnessSlug: physicalSlug!, workItemId: id },
+        previousDefinition: current.payload?.workDefinition,
+        nextDefinition: unset.includes('workDefinition') ? undefined : payloadPatch.workDefinition,
+      });
+    }
+    return db<{ ok: number }[]>`
     UPDATE harness_shared.work_items
        SET payload = (COALESCE(payload, '{}'::jsonb) || ${JSON.stringify(payloadPatch)}::text::jsonb) - ${unset}::text[],
            -- A promoted issue has TWO row-level admission identities:
@@ -4468,6 +4491,7 @@ export async function mergeIssuePayload(
        -- ledger; never rewrite the foreign publisher's payload here.
        AND origin <> 'remote'
     RETURNING 1 AS ok`;
+  };
 
   let rows: { ok: number }[];
   if (clearingPlanItem) {
@@ -4526,7 +4550,7 @@ export async function mergeIssuePayload(
       return updated;
     });
   } else {
-    rows = await updatePayload(sql as OrgSql);
+    rows = await (definitionMutation ? boundedOrgTxn(tx => updatePayload(tx)) : updatePayload(sql as OrgSql));
   }
   if (!rows[0]) return null;
   return getIssueInWorkspace(ws, id, { baseHarnessSlug: physicalSlug });

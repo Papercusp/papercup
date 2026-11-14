@@ -46,6 +46,15 @@ const stalled: VerifiedWaitTimeoutResult = {
 beforeEach(() => vi.clearAllMocks());
 
 describe('progress lease stale actions', () => {
+  it('does not wake a delegated owner from unknown evidence', async () => {
+    const result = await wakeProgressLeaseOwner(certificate({ kind: 'leader-claim', workItemId: 'WI-1' }), {
+      ...stalled, classification: 'unknown', nextAction: 'resolve-uncertainty',
+      evidence: { uncertainty: 'resolver unavailable' },
+    });
+    expect(result).toEqual({ attempted: false, queued: 0, staged: 0 });
+    expect(wakeRecipients).not.toHaveBeenCalled();
+    expect(claimWorkItem).not.toHaveBeenCalled();
+  });
   it('directly wakes the delegated owner with evidence on the first miss', async () => {
     const result = await wakeProgressLeaseOwner(certificate({ kind: 'spec-widen', instructions: 'widen tags' }), stalled);
     expect(result).toEqual({ attempted: true, queued: 1, staged: 0 });

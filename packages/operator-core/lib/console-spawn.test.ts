@@ -24,6 +24,7 @@ import {
   macHasGuiSession,
   spawnConsole,
   spawnHeadless,
+  reconcileKickoffProof,
   headlessLogPath,
   headlessNormalizedLogPath,
   wrapHeadlessSigtermDiagnostic,
@@ -71,6 +72,8 @@ const spawnMock = vi.fn();
 const taskEnrolment = vi.hoisted(() => ({
   begin: vi.fn(() => ({ taskId: 'task1234', confined: false, scopeUnit: null })),
   complete: vi.fn(),
+  finish: vi.fn(),
+  scopePath: vi.fn((): string | null => null),
 }));
 const taskControl = vi.hoisted(() => ({
   kill: vi.fn(async () => ({ ok: true, taskId: 'task1234', action: 'kill' })),
@@ -82,6 +85,8 @@ vi.mock('node:child_process', async (orig) => ({
 vi.mock('./task-manager/enroll-sync', () => ({
   beginSyncEnrolment: taskEnrolment.begin,
   completeSyncEnrolment: taskEnrolment.complete,
+  finishSyncEnrolment: taskEnrolment.finish,
+  syncEnrolmentScopePath: taskEnrolment.scopePath,
 }));
 vi.mock('./task-manager/control', () => ({ killTask: taskControl.kill }));
 
@@ -658,6 +663,9 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     spawnMock.mockReset();
     taskEnrolment.begin.mockClear();
     taskEnrolment.complete.mockClear();
+    taskEnrolment.finish.mockClear();
+    taskEnrolment.scopePath.mockReset();
+    taskEnrolment.scopePath.mockReturnValue(null);
     taskControl.kill.mockClear();
   });
   afterEach(() => vi.unstubAllEnvs());
@@ -670,6 +678,50 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
   // with whichever host/CI runner actually runs the suite (same class of bug
   // findLinuxTerminal's _resetTerminalCacheForTests exists for).
   const noSystemdRun = { spawnCommandProbes: { hasSystemdRun: () => false } };
+
+  it.each([
+    { code: 0, signal: null, state: 'exited' },
+    { code: 7, signal: null, state: 'exited' },
+    { code: null, signal: 'SIGTERM', state: 'killed' },
+    { code: 0, signal: 'SIGKILL', state: 'killed' },
+  ])('finalizes a late child exit ($code/$signal) in the task ledger', async ({ code, signal, state }) => {
+    const child = fakeChild(7797);
+    spawnMock.mockImplementation(() => child);
+    const result = await spawnHeadless({ envelope, label: 'late-ledger-exit',
+      bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 }, ...noSystemdRun });
+    expect(result.status).toBe('ok');
+    expect(taskEnrolment.finish).not.toHaveBeenCalled();
+    child.emit('exit', code, signal);
+    await (result as { childExit: Promise<unknown> }).childExit;
+    expect(taskEnrolment.finish).toHaveBeenCalledExactlyOnceWith(
+      taskEnrolment.complete.mock.calls[0]![0],
+      { state, exitCode: code, exitReason: signal }, { scopeCgroupPath: null });
+    child.emit('exit', 1, null);
+    await Promise.resolve();
+    expect(taskEnrolment.finish).toHaveBeenCalledTimes(1);
+  });
+
+  it('finalizes a fast spawn error with the registered object and scope handoff path', async () => {
+    const child = fakeChild(7798);
+    spawnMock.mockImplementation(() => child);
+    const registrationReady = Promise.resolve();
+    taskEnrolment.complete.mockImplementationOnce((enrolment) => { enrolment.registrationReady = registrationReady; });
+    taskEnrolment.scopePath.mockReturnValue('/user.slice/fixture.scope');
+    await spawnHeadless({ envelope, label: 'fast-ledger-exit',
+      beforeSpawn: async () => true,
+      afterSpawn: async () => { child.emit('error', new Error('launcher refused')); },
+      bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 }, ...noSystemdRun });
+    const registered = taskEnrolment.complete.mock.calls[0]![0];
+    expect(registered.registrationReady).toBe(registrationReady);
+    expect(taskEnrolment.scopePath).toHaveBeenCalledWith(registered, 'agent-session');
+    expect(taskEnrolment.finish).toHaveBeenCalledExactlyOnceWith(
+      registered, { state: 'exited', exitCode: null, exitReason: 'launcher refused' },
+      { scopeCgroupPath: '/user.slice/fixture.scope' });
+    expect(taskEnrolment.finish.mock.calls[0]![0]).toBe(registered);
+    child.emit('exit', 1, null);
+    await Promise.resolve();
+    expect(taskEnrolment.finish).toHaveBeenCalledTimes(1);
+  });
 
   it('cancels before enrolment when the caller becomes stale during the install-boundary wait', async () => {
     let current = true;
@@ -1009,9 +1061,27 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
         [KICKOFF_PROOF_TOKEN_ENV]: receiptToken,
       })).toEqual({ published: true });
       expect(JSON.parse(readFileSync(receiptPath, 'utf8'))).toMatchObject({ token: receiptToken, ...proof });
+      const retained = (r as { kickoffProof: import('./console-spawn').KickoffProofResult }).kickoffProof;
+      expect(JSON.stringify(retained)).not.toContain(receiptToken);
+      expect(reconcileKickoffProof(JSON.parse(JSON.stringify(retained)))).toEqual(proof);
+      expect(reconcileKickoffProof({ ...retained, recovery: { path: receiptPath, tokenHash: '0'.repeat(64) } })).toEqual({
+        ...retained, recovery: { path: receiptPath, tokenHash: '0'.repeat(64) },
+      });
+      chmodSync(receiptPath, 0o644);
+      expect(reconcileKickoffProof(retained)).toEqual(retained);
+      chmodSync(receiptPath, 0o600);
       expect(taskControl.kill).not.toHaveBeenCalled();
       child.emit('exit', 0, null);
       await (r as { childExit: Promise<unknown> }).childExit;
+      expect(existsSync(receiptPath)).toBe(true);
+      expect(reconcileKickoffProof(retained)).toEqual(proof);
+      const link = `${receiptPath}.link`;
+      try {
+        symlinkSync(receiptPath, link);
+        const linked = { ...retained, recovery: { ...retained.recovery!, path: link } };
+        expect(reconcileKickoffProof(linked)).toEqual(linked);
+      } finally { rmSync(link, { force: true }); }
+      expect(reconcileKickoffProof(retained, { consume: true })).toEqual(proof);
       expect(existsSync(receiptPath)).toBe(false);
     } finally {
       child.emit('exit', 0, null);
@@ -1342,6 +1412,20 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     expect(result.status).toBe('error');
     expect((result as { code: number }).code).toBe(502);
     expect((result as { error: string }).error).toMatch(/died at boot/i);
+  });
+
+  it('publishes exact task custody before a failed boot returns', async () => {
+    const receipts: unknown[] = [];
+    spawnMock.mockImplementation(() => {
+      const child = fakeChild(8891);
+      queueMicrotask(() => child.emit('exit', 1, null));
+      return child;
+    });
+    const result = await spawnHeadless({ envelope, label: 'early-custody', logDir: null,
+      ...noSystemdRun, onProcessCreated: async (receipt) => { receipts.push(receipt); } });
+    expect(result.status).toBe('error');
+    expect(receipts).toEqual([expect.objectContaining({ taskId: expect.any(String), pid: 8891,
+      logPath: expect.any(String), normalizedLogPath: expect.any(String) })]);
   });
 
   it('keeps a large kickoff out of both headless shell argv and inherited env', async () => {

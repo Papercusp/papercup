@@ -33,6 +33,9 @@
 import type { Sql } from 'postgres';
 import { awaitGuaranteesRewake } from '../../turn-end-tracking';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
+import { readBlockerResolution, type BlockerEvidenceMeasurement } from '../../blocker-resolution-decision';
+import { waitEpisodeFingerprint, type WaitEpisode } from './wait-episode';
+import type { ProducerHealthCertificate } from './verified-wait';
 
 /** The await fields the predicate reads. Every await read in this codebase can supply them. */
 export interface WakeSourceAwait {
@@ -199,6 +202,9 @@ export interface HeldWorkItem {
   id: string;
   harness: string;
   status: string;
+  workspaceId?: string;
+  custodianId?: string | null;
+  payload?: unknown;
   /** Active typed external blockers of kind 'event' (their `ref` IS the event key). */
   eventBlockers: Array<{ ref: string; summary: string; recheckAt: string | null }>;
 }
@@ -215,22 +221,137 @@ export async function readHeldWorkItems(
 ): Promise<HeldWorkItem[]> {
   const db = await resolveSql(sql);
   const rows = await db<
-    Array<{ feature_id: string; harness_slug: string; status: string; blockers: unknown }>
+    Array<{ feature_id: string; harness_slug: string; status: string; blockers: unknown;
+      workspace_id: string; taken_by: string | null; payload: unknown }>
   >`
-    SELECT feature_id, harness_slug, status, payload->'externalBlockers' AS blockers
+    SELECT feature_id, harness_slug, status, workspace_id, taken_by, payload,
+           payload->'externalBlockers' AS blockers
       FROM harness_shared.work_items
      WHERE taken_by = ${ownerId}
        AND workspace_id = ${workspaceId}
        AND lane IS DISTINCT FROM 'observation'
        AND status <> ALL(${[...ANY_FAMILY_TERMINAL_STATES]}::text[])
      ORDER BY feature_id
-     LIMIT 50`;
+     LIMIT 51`;
   return rows.map((r) => ({
     id: r.feature_id,
     harness: r.harness_slug,
     status: r.status,
+    workspaceId: r.workspace_id,
+    custodianId: r.taken_by,
+    payload: r.payload,
     eventBlockers: readActiveEventBlockers(r.blockers),
   }));
+}
+
+
+/** Admission preserves custody and an exact push subscription; it never promises
+ * a timed wake or replenishes the exhausted monitoring budget. */
+export interface ExhaustedPushParkProof {
+  item: HeldWorkItem;
+  awaited: WakeSourceAwait & {
+    policy: string;
+    firedAt: string | null;
+    cancelledAt: string | null;
+    producerHealthCertificate: ProducerHealthCertificate | null;
+    settlement: { id: string; state: string; remainingNoDeltaBudget: number; disposition: string } | null;
+  };
+  source: BlockerEvidenceMeasurement;
+}
+
+export function exhaustedPushParkCoversHeldWork(input: {
+  ownerId: string; workspaceId: string; held: readonly HeldWorkItem[];
+  proofs: readonly ExhaustedPushParkProof[];
+}): boolean {
+  // readHeldWorkItems returns a 51st sentinel instead of silently truncating 50.
+  if (!input.held.length || input.held.length > 50) return false;
+  return input.held.every(held => input.proofs.some(({ item, awaited: a, source }) => {
+    try {
+      if (item.id !== held.id || item.harness !== held.harness || item.status !== 'blocked' ||
+          item.workspaceId !== input.workspaceId || item.custodianId !== input.ownerId ||
+          a.subscriberId !== input.ownerId || a.policy !== 'wake' || a.once !== true ||
+          a.firedAt !== null || a.cancelledAt !== null || a.expiresTs !== null ||
+          !item.eventBlockers.some(blocker => blocker.ref === a.eventKey)) return false;
+      const target = parseWorkItemAwaitKey(a.eventKey);
+      if (target?.verb === 'done' && input.held.some(item => item.id === target.itemId)) return false;
+      const health = a.producerHealthCertificate;
+      const ref = health?.waitEpisode;
+      const payload = item.payload as { waitEpisodes?: Record<string, WaitEpisode> } | undefined;
+      const episode = ref && payload?.waitEpisodes?.[ref.id];
+      if (!ref || !episode || episode.version !== 1 || episode.id !== ref.id ||
+          ref.workspaceId !== input.workspaceId || ref.harness !== item.harness ||
+          ref.drivingWorkItemId !== item.id || episode.workspaceId !== ref.workspaceId ||
+          episode.harness !== ref.harness || episode.drivingWorkItemId !== ref.drivingWorkItemId ||
+          episode.custodianId !== input.ownerId || episode.state !== 'exhausted' ||
+          !Number.isSafeInteger(episode.remainingNoDeltaBudget) || episode.remainingNoDeltaBudget > 0 ||
+          episode.nextProbeAtMs !== null || episode.receipt?.state !== 'settled' ||
+          episode.receipt.disposition !== 'push-only' ||
+          a.settlement?.id !== episode.id || a.settlement.state !== 'exhausted' ||
+          a.settlement.remainingNoDeltaBudget !== episode.remainingNoDeltaBudget ||
+          a.settlement.disposition !== 'push-only' ||
+          waitEpisodeFingerprint(episode.receipt) !== waitEpisodeFingerprint(health?.waitEpisodeReceipt)) return false;
+      const { sourceGeneration: _generation, ...contract } = episode.contract;
+      if (episode.contractFingerprint !== waitEpisodeFingerprint(contract) ||
+          episode.id !== waitEpisodeFingerprint([input.workspaceId, item.harness, item.id,
+            episode.contract.dependencyRef, episode.contract.predicateKey])) return false;
+      const resolution = readBlockerResolution(item.payload);
+      if (resolution.status !== 'recorded' || resolution.current.workItemId !== item.id ||
+          resolution.current.authorId !== input.ownerId || resolution.current.sessionId !== input.ownerId ||
+          resolution.current.decision.disposition !== 'defer') return false;
+      const deferral = resolution.current.decision.deferral;
+      if (deferral.reason !== 'active-peer' || deferral.responsibleParty === input.ownerId ||
+          deferral.responsibleParty !== episode.contract.sourceOwnerId ||
+          deferral.recheckRef.kind !== 'event' || deferral.recheckRef.ref !== a.eventKey ||
+          !deferral.reasonEvidenceRefs.some(ref => ref.kind === 'event' && ref.ref === a.eventKey)) return false;
+      return source.status === 'available' && source.condition === 'pending' && source.reachable === true &&
+        source.liveOwnerId === deferral.responsibleParty && source.responsibleParty === deferral.responsibleParty;
+    } catch {
+      return false;
+    }
+  }));
+}
+
+/** Read existing canonical custody, await settlement and current dependency
+ * evidence. A failed read grants no admission; callers retain their fallback. */
+export async function readExhaustedPushParkCoverage(
+  ownerId: string, workspaceId: string, held: readonly HeldWorkItem[],
+  options: { sql?: Sql; readEvidence?: (eventKey: string, item: HeldWorkItem) => Promise<BlockerEvidenceMeasurement> } = {},
+): Promise<boolean> {
+  if (!held.length || held.length > 50 || held.some(item =>
+    item.status !== 'blocked' || readBlockerResolution(item.payload).status !== 'recorded')) return false;
+  const current = await readHeldWorkItems(ownerId, workspaceId, options.sql);
+  if (current.length !== held.length || current.some(item =>
+    !held.some(prior => prior.id === item.id && prior.harness === item.harness))) return false;
+  const db = await resolveSql(options.sql);
+  const rows = await db.unsafe<Array<{ subscriber_id: string; event_key: string; producer_health: ProducerHealthCertificate;
+    settlement: ExhaustedPushParkProof['awaited']['settlement'] }>>(
+    "SELECT a.subscriber_id, a.event_key, a.producer_health, (" +
+    "SELECT p.timeout_verification->'evidence'->'waitEpisode' FROM harness_shared.event_awaits p " +
+    "WHERE p.subscriber_id=a.subscriber_id " +
+    "AND p.producer_health->'waitEpisode'=a.producer_health->'waitEpisode' " +
+    "AND p.producer_health->'waitEpisodeReceipt'=a.producer_health->'waitEpisodeReceipt' " +
+    "AND p.timeout_verification->'evidence'->'waitEpisode'->>'state'='exhausted' " +
+    "ORDER BY p.id DESC LIMIT 1) AS settlement FROM harness_shared.event_awaits a " +
+    "WHERE a.subscriber_id=$1 AND a.policy='wake' AND a.once=true " +
+    "AND a.fired_at IS NULL AND a.cancelled_at IS NULL AND a.expires_ts IS NULL " +
+    "AND a.producer_health->'waitEpisode'->>'workspaceId'=$2", [ownerId, workspaceId]);
+  const proofs: ExhaustedPushParkProof[] = [];
+  const read = options.readEvidence ?? (async (eventKey: string, subject: HeldWorkItem) => {
+    const { createBlockerEvidenceReader } = await import('../../blocker-resolution-evidence');
+    return createBlockerEvidenceReader({ workspaceId, ownerId, workItemId: subject.id,
+      // No dispatch role is available at a host stop boundary; grant none.
+      role: '', harnessSlug: subject.harness, root: null, blockers: [], custodianId: ownerId })({ kind: 'event', ref: eventKey });
+  });
+  for (const item of current) {
+    for (const row of rows) {
+      const ref = row.producer_health?.waitEpisode;
+      if (!ref || ref.harness !== item.harness || ref.drivingWorkItemId !== item.id) continue;
+      proofs.push({ item, awaited: { subscriberId: row.subscriber_id, eventKey: row.event_key,
+        expiresTs: null, once: true, policy: 'wake', firedAt: null, cancelledAt: null,
+        producerHealthCertificate: row.producer_health, settlement: row.settlement }, source: await read(row.event_key, item) });
+    }
+  }
+  return exhaustedPushParkCoversHeldWork({ ownerId, workspaceId, held: current, proofs });
 }
 
 function readActiveEventBlockers(raw: unknown): HeldWorkItem['eventBlockers'] {

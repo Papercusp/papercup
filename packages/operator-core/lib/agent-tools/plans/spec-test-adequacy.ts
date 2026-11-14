@@ -4367,6 +4367,9 @@ export function evaluateSpecTestAdequacy(input: {
               const unknownReasons = unknownEvidence.flatMap((row) =>
                 row.currentness.unknownReasons.map((reason) => `${row.evidenceRef}: ${reason}`),
               );
+              const missingEnvironmentFingerprint = unknownEvidence.filter((row) =>
+                row.currentness.unknownReasons.includes('environment-evidence-fingerprint-not-recorded'),
+              );
               return partiallyServerMeasured.length > 0
                 ? `Repository fingerprints were server-measured, but applicable non-repository dimensions ` +
                     `were only caller-attested and cannot establish freshness for: ${partiallyServerMeasured
@@ -4378,9 +4381,14 @@ export function evaluateSpecTestAdequacy(input: {
                     ? `Current fingerprints were supplied by a replayed snapshot and MATCHED the stored values; a replayed tuple is not an independent measurement, so freshness is unknown for this replay input—nothing is missing and nothing is stale. Re-run so the server measures each binding's own persisted measurement basis. Awaiting independent measurement for: ${refs}.`
                     : callerOmittedCurrent
                       ? `Current fingerprints were not supplied by this call (current[] was omitted), so freshness is unknown for this replay input—not evidence that stored bindings are stale. If replaying a rerunRecipe, pass rerunRecipe.current.fingerprints. Missing comparison for: ${refs}.`
-                      : unknownReasons.length > 0
-                        ? `Freshness is unknown because the currentness probe reported: ${unknownReasons.join(', ')}.`
-                        : `Current fingerprints are missing for: ${refs}.`;
+                      : missingEnvironmentFingerprint.length > 0
+                        ? `Live/deployed binding(s) ${missingEnvironmentFingerprint
+                            .map((row) => row.evidenceRef)
+                            .join(', ')} recorded no environment fingerprint, so freshness is unknown. ` +
+                            'Rebind with measurement.runtimeUnits (runtime_vintage units such as postgres:5432) to record it.'
+                        : unknownReasons.length > 0
+                          ? `Freshness is unknown because the currentness probe reported: ${unknownReasons.join(', ')}.`
+                          : `Current fingerprints are missing for: ${refs}.`;
             })(),
             evidence.filter((row) => row.currentness.overall === 'unknown'),
           ),

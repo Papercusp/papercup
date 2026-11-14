@@ -70,6 +70,19 @@ export interface QuarantineImportGuardDeps {
    *  all bare `import './…'`) bridged ANY peer's lock on one tool file into every
    *  route that imports the hub for registration. */
   sideEffectTargetAtHead?: (relPath: string) => Promise<boolean>;
+  /** EI-28731613452428882: read a repo-relative file's HEAD text (null when absent from
+   *  HEAD). An excluded provider stays at its HEAD blob, so a BINDING edge whose named
+   *  imports were ALL already imported from the same specifier by the importer's HEAD
+   *  text asks HEAD's provider for nothing it lacks: when the target is also present at
+   *  HEAD (the `sideEffectTargetAtHead ?? isResolvableAtHead` seam), the edge does not
+   *  propagate the hold. Namespace, dynamic, `require` and `export *` edges consume an
+   *  opaque surface and stay infectious; a new edge, a new name, a new importer or a
+   *  failed read stays infectious (fail safe). Omitted ⇒ every binding edge is infectious.
+   *  Without this, one live lock on a hub (scorecards.ts) held the whole rubric/work-item
+   *  layer transitively although none of it consumed anything new from the hub. The
+   *  residual risk — a consumer relying on a held provider's changed SIGNATURE under an
+   *  unchanged name — is the same one an unexcluded cross-turn edit already carries. */
+  readHeadText?: (relPath: string) => Promise<string | null>;
   /** Human-readable source of the exclusion for the diagnostic; defaults to the
    *  historical content/deletion guard wording. */
   exclusionLabel?: string;
@@ -229,6 +242,7 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
     alreadyQuarantined,
     isResolvableAtHead,
     sideEffectTargetAtHead,
+    readHeadText,
     exclusionLabel = 'content/deletion guard',
     exclusionReasonFor,
     log,
@@ -269,6 +283,10 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
   // no re-reading a file just because it wasn't infected on an earlier pass).
   const specsByFile = new Map<string, string[]>();
   const sideEffectOnlyByFile = new Map<string, Set<string>>();
+  // EI-28731613452428882: names each candidate binds per specifier, for the HEAD-satisfied
+  // edge check below (only when that check can run at all).
+  const compareAgainstHead = Boolean(readHeadText && headTarget);
+  const boundByFile = new Map<string, Map<string, Set<string>>>();
   await mapPool(candidates, MAX_READ_CONCURRENCY, async (file) => {
     let text: string | null;
     try {
@@ -280,6 +298,7 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
     if (text == null) return; // gone/unreadable (e.g. a deletion in the dirty set)
     specsByFile.set(file, extractImportSpecifiers(text));
     if (headTarget) sideEffectOnlyByFile.set(file, extractSideEffectOnlySpecifiers(text));
+    if (compareAgainstHead) boundByFile.set(file, boundNamesBySpecifier(text));
   });
 
   // Actual repo path behind each normalized infectious target, so a side-effect edge
@@ -311,6 +330,32 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
       headPresence.set(path, cached);
     }
     return cached;
+  };
+  // EI-28731613452428882: the importer's HEAD bindings, read lazily — only for a file with
+  // an edge that would otherwise propagate the hold — and once per file.
+  const headBound = new Map<string, Promise<Map<string, Set<string>> | null>>();
+  const headBindingsOf = (file: string): Promise<Map<string, Set<string>> | null> => {
+    let cached = headBound.get(file);
+    if (!cached) {
+      cached = (readHeadText as (p: string) => Promise<string | null>)(file)
+        .then((text) => (text == null ? null : boundNamesBySpecifier(text)))
+        .catch((e) => {
+          log?.(`[quarantine-import-guard] could not read ${file} at HEAD — keeping its edges infectious (fail safe): ${errMsg(e)}`);
+          return null;
+        });
+      headBound.set(file, cached);
+    }
+    return cached;
+  };
+  /** True when every name `file` binds from `spec` was already bound from `spec` at HEAD. */
+  const edgeSatisfiedAtHead = async (file: string, spec: string): Promise<boolean> => {
+    if (!compareAgainstHead) return false;
+    const current = boundByFile.get(file)?.get(spec);
+    if (!current || current.size === 0 || current.has('*')) return false;
+    const atHead = (await headBindingsOf(file))?.get(spec);
+    if (!atHead) return false;
+    for (const name of current) if (!atHead.has(name)) return false;
+    return true;
   };
 
   const offenders: ContentOffender[] = pairedDeclarations.map(({ path, source }) => {
@@ -347,6 +392,9 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
         // WI-10006940: a bare side-effect import consumes no symbols — it only needs
         // the target to EXIST in HEAD. Propagate through it only when it does not.
         if (sideEffectOnly?.has(spec) && (await targetPresentAtHead(target))) continue;
+        // EI-28731613452428882: the target stays at its HEAD blob; a binding edge that asks
+        // it only for names the importer already imported at HEAD needs nothing new.
+        if ((await edgeSatisfiedAtHead(file, spec)) && (await targetPresentAtHead(target))) continue;
         quarantined.add(file);
         await registerPackage(file);
         const fileNormalized = normalizeModulePath(file);
@@ -404,8 +452,10 @@ function extractBoundModuleReferences(text: string): BoundModuleReference[] {
         const imported = entry.trim().replace(/^type\s+/, '').split(/\s+as\s+/)[0].trim();
         if (imported) names.add(imported);
       }
-    } else if (clause.startsWith('*')) {
+    } else if (clause.includes('*')) {
+      // `* as ns`, `* as ns` re-export, or `Def, * as ns` — a namespace consumes the opaque surface.
       names.add('*');
+      if (!clause.startsWith('*')) names.add('default');
     } else if (clause) {
       names.add('default');
     }
@@ -415,6 +465,11 @@ function extractBoundModuleReferences(text: string): BoundModuleReference[] {
   for (const match of text.matchAll(/\bimport\s*\(\s*['\"]([^'\"]+)['\"]\s*\)/g)) add(match[1], ['*']);
   for (const match of text.matchAll(/\brequire\s*\(\s*['\"]([^'\"]+)['\"]\s*\)/g)) add(match[1], ['*']);
   return [...bySpecifier].map(([specifier, names]) => ({ specifier, names: [...names] }));
+}
+
+/** Names bound per specifier (`'*'` = an opaque namespace/dynamic/require surface). */
+function boundNamesBySpecifier(text: string): Map<string, Set<string>> {
+  return new Map(extractBoundModuleReferences(text).map(({ specifier, names }) => [specifier, new Set(names)]));
 }
 
 interface ExportSurface {

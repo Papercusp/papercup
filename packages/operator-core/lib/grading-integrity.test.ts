@@ -3457,6 +3457,59 @@ describe('dispatchPendingGradingAudits', () => {
     });
   });
 
+  // EI-28169033003070918: a running parent is not a viable auditor after
+  // its host has recorded a non-retryable native authentication failure.
+  it.each(['terminal', 'quoted', 'resumed', 'retryable'] as const)(
+    'preserves grading target identity when a retained API401 receipt is %s', async (proof) => {
+      const d = deps();
+      const issueId = 'EI-retained-auth-failure';
+      const taskId = 'task-retained-auth-failure';
+      const receipt = '[psu] native-turn-failed agent=claude code=api_error_401 retryable=false retryAfterMs=unknown';
+      const log = proof === 'quoted' ? `\`\`\`text\n${receipt}\n\`\`\``
+        : proof === 'resumed' ? `${receipt}\n● I resumed the audit.`
+        : proof === 'retryable' ? receipt.replace('retryable=false', 'retryable=true')
+        : receipt;
+      d.listScorecards.mockResolvedValue([card(issueId)]);
+      d.listTasks.mockResolvedValue([{
+        taskId, state: 'running', startedAt: new Date().toISOString(),
+        detail: { label: `grading-audit:${issueId}` },
+        logPath: '/tmp/retained-auth-failure.log',
+      } as unknown as TaskRow]);
+      d.launch.mockResolvedValue(launchResult({
+        deduped: false,
+        launch: { tasks: [{ taskId: 'task-auth-recovery', logPath: '/tmp/auth-recovery.log' }] },
+      }));
+      const killTask = vi.fn(async (id: string) => ({ ok: true as const, taskId: id, action: 'kill' }));
+
+      const result = await reconcilePendingGradingAudits({ ctx, harness: 'papercusp' }, {
+        ...d, killTask,
+        readLogTail: (path: string) => path.endsWith('retained-auth-failure.log') ? log : 'healthy recovery boot',
+        sleep: async () => undefined,
+        terminalLogMaxRechecks: 0,
+      });
+
+      expect(result.receipts[0]?.issueId).toBe(issueId);
+      expect(d.reserve.mock.calls.every(([target]) => target === issueId)).toBe(true);
+      if (proof === 'terminal') {
+        expect(killTask).toHaveBeenCalledExactlyOnceWith(taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
+        expect(d.launch).toHaveBeenCalledOnce();
+        expect(d.launch).toHaveBeenCalledWith(expect.objectContaining({
+          agent: 'codex', account: 'auto',
+          idempotencyKey: expect.stringMatching(/^grading-audit:EI-retained-auth-failure:recovery:[a-f0-9]{16}$/),
+        }), auditorCtx);
+        expect(result.receipts[0]).toMatchObject({
+          state: 'launched', terminalRecovery: {
+            retiredTaskIds: [taskId], codes: ['model_authentication_failed'], attempts: 1,
+          },
+        });
+      } else {
+        expect(killTask).not.toHaveBeenCalled();
+        expect(d.launch).not.toHaveBeenCalled();
+        expect(result.receipts[0]).toMatchObject({ state: 'deduped', launch: { mode: 'live-task-guard' } });
+      }
+    },
+  );
+
   it('retires a ledger-live auditor with a delayed terminal log and launches the bounded Codex fallback', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-live-terminal-auditor')]);

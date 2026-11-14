@@ -14,9 +14,11 @@
  *     FAMILY that times out over and over — with ~no matching event ever — is a
  *     systematic dead-drop: a mistyped key, a dead/renamed emitter, an event that
  *     never fires. That is a BUG the fallback would otherwise silently paper over.
- *     `summarizeTimeoutFires` groups a sweep's fires by normalized family;
- *     `recordTimeoutFires` accumulates across sweeps and flags a family the moment
- *     its running total crosses a warn threshold.
+ *     `summarizeTimeoutFires` groups a sweep's fires by normalized family for the
+ *     per-sweep log line. Detection across sweeps is the durable waiting check
+ *     (`../../stuck-work/waiting-check.ts`), which reads the waits table so its
+ *     counts survive a restart; the in-process lifetime tally that used to live
+ *     here reset on every restart and was retired (EI-28703701301066960).
  */
 
 import type { AwaitRow } from './types';
@@ -193,40 +195,3 @@ export function summarizeTimeoutFires(awaits: Array<Pick<AwaitRow, 'eventKey'>>)
 // warn threshold, so the operator log gets ONE loud line per systematic dead-drop
 // rather than a trickle that blends into the noise.
 
-const cumulativeTotals = new Map<string, number>();
-
-/** Warn once a family's lifetime timeout-fire total reaches this. */
-export const TIMEOUT_FIRE_WARN_THRESHOLD = 10;
-
-export interface TimeoutFireCrossing {
-  family: string;
-  total: number;
-}
-
-/**
- * Fold a sweep's per-family summaries into the lifetime totals; return the
- * families that JUST crossed the warn threshold on THIS call (edge-triggered —
- * reported once at the crossing, not on every sweep thereafter).
- */
-export function recordTimeoutFires(summaries: TimeoutFireSummary[]): TimeoutFireCrossing[] {
-  const crossed: TimeoutFireCrossing[] = [];
-  for (const s of summaries) {
-    const prev = cumulativeTotals.get(s.family) ?? 0;
-    const total = prev + s.count;
-    cumulativeTotals.set(s.family, total);
-    if (total >= TIMEOUT_FIRE_WARN_THRESHOLD && prev < TIMEOUT_FIRE_WARN_THRESHOLD) {
-      crossed.push({ family: s.family, total });
-    }
-  }
-  return crossed;
-}
-
-/** Snapshot the lifetime per-family totals (detector inspection / tests). */
-export function timeoutFireTotals(): Record<string, number> {
-  return Object.fromEntries(cumulativeTotals);
-}
-
-/** Test hook: reset the cumulative counter between cases. */
-export function __resetTimeoutFireTotals(): void {
-  cumulativeTotals.clear();
-}

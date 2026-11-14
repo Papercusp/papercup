@@ -252,7 +252,9 @@ const spawnGovernedAgentProcessMock = vi.fn(
 const getFleetHeadcountTargetMock = vi.hoisted(() => vi.fn());
 const createFleetIfAbsentMock = vi.hoisted(() => vi.fn());
 const getFleetSchemeMock = vi.hoisted(() => vi.fn());
+const reconcileKickoffProofMock = vi.hoisted(() => vi.fn((proof: unknown, _options?: unknown) => proof));
 vi.mock('../../console-spawn', () => ({
+  reconcileKickoffProof: (proof: unknown, options?: unknown) => reconcileKickoffProofMock(proof, options),
   spawnConsole: (o: unknown) => spawnConsoleMock(o),
   spawnHeadless: (o: unknown) => spawnHeadlessMock(o),
 }));
@@ -326,6 +328,13 @@ vi.mock('../coordination/identity', () => ({
 // The shared core: the resolver + idempotency ledger hit PG, so they are stubbed;
 // the pure command builders/injectors run FOR REAL (they are what we're pinning).
 const resolveResumeTargetMock = vi.fn();
+const readCompletedRecoveryForSourceMock = vi.fn(async (_opts: unknown): Promise<import('../../agent-launch-core').AgentRecoveryAttribution> => ({ status: 'unknown', reason: 'no exact receipt' }));
+const readAgentLaunchClaimMock = vi.fn(async (_opts: unknown): Promise<{
+  won: boolean;
+  priorSummary: Record<string, unknown> | null;
+  priorLaunchedAt: number | null;
+  priorLaunchedBy: string | null;
+} | null> => null);
 // Both mocks are CALLED with one argument below, so they must DECLARE one —
 // a zero-arg vi.fn() is a TS2554 the vitest run cannot see (esbuild strips types,
 // so the suite stays green while the file is type-broken). Same shape as the
@@ -361,6 +370,8 @@ const waitForPtyHostGoneMock = vi.fn(async (_ownerId: unknown) => true);
 vi.mock('../../agent-launch-core', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   resolveResumeTarget: (ref: unknown) => resolveResumeTargetMock(ref as never),
+  readAgentLaunchClaim: (opts: unknown) => readAgentLaunchClaimMock(opts),
+  readCompletedRecoveryForSource: (opts: unknown) => readCompletedRecoveryForSourceMock(opts),
   verifyFreshLaunchStarted: (args: unknown) => verifyFreshLaunchStartedMock(args as never),
   verifyResumeStarted: (ownerId: unknown, opts: unknown) => verifyResumeStartedMock(ownerId as never, opts as never),
   waitForPtyHostGone: (ownerId: unknown) => waitForPtyHostGoneMock(ownerId),
@@ -376,7 +387,7 @@ const { goalHolderPlanFleetBypass, INTERNAL_LOOP_FIRE_ORIGIN, INTERNAL_SCOPED_IN
 
 const ctx = { workspaceId: 'ws-test', harnessSlug: 'papercusp', role: 'su' } as never;
 const textOf = (res: unknown): string => (res as { content: Array<{ text: string }> }).content[0].text;
-const dataOf = (res: unknown) => (res as { data?: { deduped?: boolean; completionReceipt?: unknown; launch?: Record<string, unknown>; launchFailure?: { stage: string; processesOpened: number } } }).data;
+const dataOf = (res: unknown) => (res as { data?: { deduped?: boolean; completionReceipt?: unknown; recoveryAttribution?: import('../../agent-launch-core').AgentRecoveryAttribution; launch?: Record<string, unknown>; launchFailure?: { stage: string; processesOpened: number } } }).data;
 const isError = (res: unknown): boolean => !!(res as { isError?: boolean }).isError;
 /** The command the tool actually handed to the spawner. */
 const spawnedCommand = (mock = spawnConsoleMock): string =>
@@ -422,6 +433,9 @@ beforeEach(() => {
     priorLaunchedAt: null,
     priorLaunchedBy: null,
   });
+  readAgentLaunchClaimMock.mockReset().mockResolvedValue(null);
+  reconcileKickoffProofMock.mockReset().mockImplementation((proof: unknown) => proof);
+  readCompletedRecoveryForSourceMock.mockReset().mockResolvedValue({ status: 'unknown', reason: 'no exact receipt' });
   recordAgentLaunchResultMock.mockReset().mockImplementation(async (opts: unknown) => {
     const summary = (opts as { summary?: { launchState?: string } }).summary;
     // Progress must be durable before a spawn; leave the final completion write
@@ -2083,6 +2097,73 @@ describe('resume + fork (D-004/D-007)', () => {
     },
   };
 
+  describe('CLARITY recovery attribution', () => {
+    it('persists the exact original effect through initial, progress and completed receipt writes', async () => {
+      resolveResumeTargetMock.mockResolvedValue(dead);
+      findLiveHostMock.mockReturnValue(null);
+      recordAgentLaunchResultMock.mockResolvedValue(true);
+      const res = await launchAgent.handler({ resume: { sessionId: 'sid-dead' }, fork: false, idempotencyKey: 'original-recovery', brief: 'continue original' }, ctx);
+      expect(isError(res)).toBe(false);
+      const binding = { workspaceId: 'ws-test', sessionId: 'sid-dead', ownerId: dead.ownerId, advSessionId: 11, effect: 'original-session-resume' };
+      expect(claimAgentLaunchMock).toHaveBeenCalledWith(expect.objectContaining({ initialSummary: expect.objectContaining({ sourceBinding: binding }) }));
+      expect(recordAgentLaunchResultMock).toHaveBeenCalled();
+      for (const [write] of recordAgentLaunchResultMock.mock.calls) expect(write).toMatchObject({ summary: { sourceBinding: binding } });
+      expect(dataOf(res)?.launch).toMatchObject({ sourceBinding: binding, completedAt: expect.any(String), opened: 1, failed: 0 });
+    });
+
+    it('different retry key K2 preserves LIVE refusal and attributes unique prior completed K1 with zero opens', async () => {
+      resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true });
+      findLiveHostMock.mockReturnValue(null);
+      readCompletedRecoveryForSourceMock.mockResolvedValue({ status: 'known', priorActor: 'su-prior', completedAt: '2026-01-01T00:00:00.000Z',
+        priorIdempotencyKey: 'K1', receiptRef: 'agent-launch:K1', effectRef: 'original-session-resume:sid-dead',
+        source: { workspaceId: 'ws-test', sessionId: 'sid-dead', ownerId: dead.ownerId, advSessionId: 11, effect: 'original-session-resume' } });
+      const res = await launchAgent.handler({ resume: { sessionId: 'sid-dead' }, fork: false, idempotencyKey: 'K2', brief: 'continue the original' }, ctx);
+      expect(isError(res)).toBe(true);
+      expect(textOf(res)).toContain('Already recovered by su-prior');
+      expect(textOf(res)).toContain('at 2026-01-01T00:00:00.000Z; receipt agent-launch:K1');
+      expect(textOf(res)).toContain('source session is still LIVE');
+      expect(dataOf(res)?.recoveryAttribution).toMatchObject({ status: 'known', priorIdempotencyKey: 'K1', completedAt: '2026-01-01T00:00:00.000Z', receiptRef: 'agent-launch:K1' });
+      expect(readCompletedRecoveryForSourceMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', sessionId: 'sid-dead', ownerId: dead.ownerId, advSessionId: 11, effect: 'original-session-resume' });
+      expect(claimAgentLaunchMock).not.toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+      expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+    });
+
+    it.each(['missing', 'ambiguous', 'wrong workspace/kind/source/effect', 'unfinished', 'unreadable'])('keeps %s attribution unknown and opens zero processes', async (reason) => {
+      resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true });
+      findLiveHostMock.mockReturnValue(null);
+      readCompletedRecoveryForSourceMock.mockResolvedValue({ status: 'unknown', reason });
+      const res = await launchAgent.handler({ resume: { sessionId: 'sid-dead' }, fork: false, idempotencyKey: 'K2', brief: 'continue the original' }, ctx);
+      expect(isError(res)).toBe(true);
+      expect(dataOf(res)?.recoveryAttribution).toEqual({ status: 'unknown', reason });
+      expect(textOf(res)).not.toContain('Already recovered by');
+      expect(claimAgentLaunchMock).not.toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+      expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+    });
+
+    it('same-key exact-session replay validates binding before recovery attribution and never opens', async () => {
+      readAgentLaunchClaimMock.mockResolvedValue({ won: false, priorLaunchedAt: 123, priorLaunchedBy: 'su-prior', priorSummary: {
+        requestKind: 'capability:launch-agent', launchState: 'completed', mode: 'resume', opened: 1, failed: 0, completedAt: '2026-01-01T00:00:00.000Z',
+        sourceBinding: { workspaceId: 'ws-test', sessionId: 'sid-dead', ownerId: dead.ownerId, advSessionId: 11, effect: 'original-session-resume' },
+      } });
+      const res = await launchAgent.handler({ resume: { sessionId: 'sid-dead' }, fork: false, idempotencyKey: 'K1', brief: 'continue the original' }, ctx);
+      expect(dataOf(res)?.recoveryAttribution).toMatchObject({ status: 'known', priorIdempotencyKey: 'K1', completedAt: '2026-01-01T00:00:00.000Z', receiptRef: 'agent-launch:K1' });
+      expect(textOf(res)).toContain('Already recovered by su-prior at 2026-01-01T00:00:00.000Z; receipt agent-launch:K1');
+      expect(resolveResumeTargetMock).not.toHaveBeenCalled();
+      expect(claimAgentLaunchMock).not.toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+      expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+      const mismatch = await launchAgent.handler({ resume: { sessionId: 'different-original' }, fork: false, idempotencyKey: 'K1', brief: 'continue the original' }, ctx);
+      expect(dataOf(mismatch)?.recoveryAttribution).toMatchObject({ status: 'unknown' });
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    });
+  });
+
   describe('explicit resume inherited goal context', () => {
     let inheritedGoal: string | null;
     let callerGoal: string | null;
@@ -2338,7 +2419,7 @@ describe('resume + fork (D-004/D-007)', () => {
       readAdvSessionLaunchRecordByOwnerMock.mockResolvedValue({ ...record, launchSpec: {} });
       const result = await launchAgent.handler(request as never, ctx);
       expect(isError(result)).toBe(true);
-      expect(textOf(result)).toContain('Original member routing provenance is missing');
+      expect(textOf(result)).toContain('Original historical launch epoch, exact scope or requested/opened/verified custody is missing');
       expect(spawnConsoleMock).not.toHaveBeenCalled();
       expect(spawnHeadlessMock).not.toHaveBeenCalled();
     });
@@ -2715,9 +2796,54 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(textOf(res)).toContain("predecessor's recorded harness 'papercusp'");
   });
 
-  it('lets an explicit harness override the predecessor harness for a successor', async () => {
+  it.each([null, '*'])('preserves a recorded operator successor scope (%s) for a scoped caller', async (harnessSlug) => {
     findLiveHostMock.mockReturnValue(null);
-    resolveResumeTargetMock.mockResolvedValue({ ...dead, workspaceId: 'ws-test', harnessSlug: 'other-hive' });
+    resolveResumeTargetMock.mockResolvedValue({
+      ...dead, workspaceId: 'ws-test', harnessSlug, harnessScopeKnown: true,
+    });
+    const res = await launchAgent.handler(
+      { successor: { agentId: dead.ownerId }, brief: 'continue the recovery' }, ctx,
+    );
+    expect(isError(res), textOf(res)).toBe(false);
+    expect(spawnedCommand()).toContain('--owner-id=su-a1a71');
+    expect(spawnedCommand()).not.toContain('--harness=');
+    expect(buildConsoleEnvelopeMock.mock.calls[0]?.[0]).toMatchObject({ slug: null });
+    expect(gateWorkScopeMock).toHaveBeenLastCalledWith('capability:launch-agent', expect.objectContaining({ harness: null }));
+    expect(textOf(res)).toContain("predecessor's recorded operator scope");
+  });
+
+  it('keeps the caller harness when the successor source scope is unknown', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue({
+      ...dead, workspaceId: 'ws-test', harnessSlug: null, harnessScopeKnown: false,
+    });
+    const res = await launchAgent.handler(
+      { successor: { agentId: dead.ownerId }, brief: 'continue the recovery' }, ctx,
+    );
+    expect(isError(res), textOf(res)).toBe(false);
+    expect(spawnedCommand()).toContain('--harness=papercusp');
+  });
+
+  it('refuses an operator successor when the resulting scope is excluded', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue({
+      ...dead, workspaceId: 'ws-test', harnessSlug: null, harnessScopeKnown: true,
+    });
+    gateWorkScopeMock.mockResolvedValueOnce({ allowed: true }).mockResolvedValueOnce({
+      allowed: false, message: 'operator scope excluded',
+    });
+    const res = await launchAgent.handler(
+      { successor: { agentId: dead.ownerId }, brief: 'continue the recovery' }, ctx,
+    );
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('operator scope excluded');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['other-hive', null])('lets an explicit harness override predecessor scope (%s) for a successor', async (harnessSlug) => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, workspaceId: 'ws-test', harnessSlug, harnessScopeKnown: true });
     verifyFreshLaunchStartedMock.mockResolvedValue({
       agentStarted: true,
       waitedMs: 5,
@@ -2998,6 +3124,56 @@ describe('resume + fork (D-004/D-007)', () => {
       findLiveHostMock.mockReturnValue(null);
     });
 
+    describe('successor startup admission', () => {
+      beforeEach(() => resolveResumeTargetMock.mockResolvedValue(dead));
+
+      it('protects the exact ended successor through governed admission with its live launcher', async () => {
+        spawnGovernedAgentProcessMock.mockImplementationOnce(async (input: any, spawnProcess) => {
+          const claimKey = acquireAdvSessionResumeMock.mock.calls[0]?.[1];
+          if (!claimKey || input.metadata?.resumeClaimKey !== claimKey) {
+            return { status: 'error', code: 409, error: 'owner-ended' };
+          }
+          expect(input).toMatchObject({ owner: dead.ownerId, metadata: {
+            launchedBy: 'su-caller', targetOwnerId: dead.ownerId, resumeAdvSessionId: 11,
+            resumeClaimKey: claimKey, resumeStartupExpiresAtMs: expect.any(Number),
+          } });
+          return spawnProcess({ receiptId: 'successor-protected', leaseId: 'successor-lease' });
+        });
+
+        const result = await launchAgent.handler(request, ctx);
+        expect(isError(result), textOf(result)).toBe(false);
+        expect(acquireAdvSessionResumeMock).toHaveBeenCalledWith(11, expect.any(String), 300,
+          undefined, undefined, true, { workspaceId: 'ws-test', binding: dead.binding, requireTerminal: true });
+        expect(acquireAdvSessionResumeMock.mock.invocationCallOrder[0])
+          .toBeLessThan(spawnGovernedAgentProcessMock.mock.invocationCallOrder[0]);
+        expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+        // Keep the bounded reservation while the fresh child is bootstrapping;
+        // releasing it at process-open would recreate the ended-owner race.
+        expect(releaseAdvSessionResumeMock).not.toHaveBeenCalled();
+      });
+
+      it('opens nothing when the exact terminal predecessor reservation is contested', async () => {
+        acquireAdvSessionResumeMock.mockResolvedValueOnce({ acquired: false, status: 'reserved' });
+        const result = await launchAgent.handler(request, ctx);
+        expect(isError(result)).toBe(true);
+        expect(textOf(result)).toContain('reservation refused: reserved');
+        expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+        expect(spawnConsoleMock).not.toHaveBeenCalled();
+        expect(spawnHeadlessMock).not.toHaveBeenCalled();
+        expect(releaseAdvSessionResumeMock).not.toHaveBeenCalled();
+      });
+
+      it('releases its exact reservation when governed admission refuses before process creation', async () => {
+        spawnGovernedAgentProcessMock.mockRejectedValueOnce(new Error('owner-ended'));
+        const result = await launchAgent.handler(request, ctx);
+        expect(isError(result)).toBe(true);
+        expect(spawnConsoleMock).not.toHaveBeenCalled();
+        expect(acquireAdvSessionResumeMock).toHaveBeenCalledTimes(1);
+        expect(releaseAdvSessionResumeMock).toHaveBeenCalledWith(11,
+          acquireAdvSessionResumeMock.mock.calls[0][1]);
+      });
+    });
+
     describe('exact terminal headless task custody (EI-26731140517030664)', () => {
       const source = { ...stale, agent: 'codex', workspaceId: 'ws-test', harnessSlug: 'papercusp', pid: 4102 };
       const task = {
@@ -3039,7 +3215,14 @@ describe('resume + fork (D-004/D-007)', () => {
         expect(claimAgentLaunchMock.mock.invocationCallOrder[0]).toBeLessThan(acquireAdvSessionResumeMock.mock.invocationCallOrder[0]);
         expect(acquireAdvSessionResumeMock.mock.invocationCallOrder[0]).toBeLessThan(markAdvSessionEndedMock.mock.invocationCallOrder[0]);
         expect(markAdvSessionEndedMock.mock.invocationCallOrder[0]).toBeLessThan(spawnConsoleMock.mock.invocationCallOrder[0]);
-        expect(releaseAdvSessionResumeMock).toHaveBeenCalledWith(11, acquireAdvSessionResumeMock.mock.calls[0][1]);
+        expect(spawnGovernedAgentProcessMock).toHaveBeenCalledWith(expect.objectContaining({
+          owner: source.ownerId, metadata: expect.objectContaining({
+            launchedBy: 'su-caller', targetOwnerId: source.ownerId, resumeAdvSessionId: 11,
+            resumeClaimKey: acquireAdvSessionResumeMock.mock.calls[0][1],
+            resumeStartupExpiresAtMs: expect.any(Number),
+          }),
+        }), expect.any(Function));
+        expect(releaseAdvSessionResumeMock).not.toHaveBeenCalled();
       });
 
       const noSpawn = () => {
@@ -3055,7 +3238,7 @@ describe('resume + fork (D-004/D-007)', () => {
         listSuccessorTasksMock.mockResolvedValue([task, { ...task, taskId: 'older', pid: 123, startedAt: '2026-07-11T09:00:30.000Z' }]);
         expect(isError(await launchAgent.handler(request, ctx))).toBe(false);
         expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
-        expect(releaseAdvSessionResumeMock).toHaveBeenCalledTimes(1);
+        expect(releaseAdvSessionResumeMock).not.toHaveBeenCalled();
       });
 
       it.each([
@@ -4762,6 +4945,74 @@ describe('resume + fork (D-004/D-007)', () => {
 });
 
 describe('idempotency (P-014: a replay must not open a second set of windows)', () => {
+  it('refuses an unreadable replay receipt before resolving or spawning a source', async () => {
+    readAgentLaunchClaimMock.mockRejectedValue(new Error('ledger unavailable'));
+    const res = await launchAgent.handler({
+      resume: { agentId: 'su-original' }, fork: false,
+      brief: 'continue the original work', idempotencyKey: 'unreadable-resume',
+    }, ctx);
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('Cannot reconcile the launch idempotency receipt');
+    expect(resolveResumeTargetMock).not.toHaveBeenCalled();
+    expect(claimAgentLaunchMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['live', 'rotated', 'unavailable'])('returns a completed resume replay before resolving a %s source', async (source) => {
+    const prior = {
+      requestKind: 'capability:launch-agent', launchState: 'completed',
+      mode: 'resume', opened: 1, failed: 0, ownerIds: ['su-original'],
+      tasks: [{ taskId: 'original-task', logPath: '/tmp/original.log' }],
+    };
+    readAgentLaunchClaimMock.mockResolvedValue({
+      won: false, priorSummary: prior, priorLaunchedAt: 1, priorLaunchedBy: 'su-caller',
+    });
+    if (source === 'unavailable') resolveResumeTargetMock.mockRejectedValue(new Error('source lookup unavailable'));
+    else resolveResumeTargetMock.mockResolvedValue({
+      ok: true, live: true, ownerId: 'su-original', agent: 'codex',
+      sessionId: source === 'rotated' ? 'new-native' : 'original-native',
+    });
+
+    const res = await launchAgent.handler({
+      resume: { agentId: 'su-original' }, fork: false,
+      brief: 'continue the original work', idempotencyKey: 'completed-resume',
+    }, ctx);
+
+    expect(isError(res)).toBe(false);
+    expect(dataOf(res)?.launch).toEqual({ ...prior, deduped: true });
+    expect(dataOf(res)?.completionReceipt).toEqual({ status: 'recorded', effectRef: 'agent-launch:completed-resume' });
+    expect(readAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'completed-resume' });
+    expect(resolveResumeTargetMock).not.toHaveBeenCalled();
+    expect(codexThreadWriterHolderMock).not.toHaveBeenCalled();
+    expect(acquireAdvSessionResumeMock).not.toHaveBeenCalled();
+    expect(claimAgentLaunchMock).not.toHaveBeenCalled();
+    expect(recordAgentLaunchResultMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it.each([null, { requestKind: 'capability:launch-agent', launchState: 'spawning' }])('keeps live-source fork:false refusal without a completed receipt (%j)', async (prior) => {
+    if (prior) readAgentLaunchClaimMock.mockResolvedValue({
+      won: false, priorSummary: prior, priorLaunchedAt: 1, priorLaunchedBy: 'su-caller',
+    });
+    resolveResumeTargetMock.mockResolvedValue({
+      ok: true, live: true, ownerId: 'su-original', agent: 'codex', sessionId: 'original-native',
+    });
+
+    const res = await launchAgent.handler({
+      resume: { agentId: 'su-original' }, fork: false,
+      brief: 'continue the original work', idempotencyKey: 'unfinished-resume',
+    }, ctx);
+
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('source session is still LIVE');
+    expect(resolveResumeTargetMock).toHaveBeenCalledOnce();
+    expect(claimAgentLaunchMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
   it('spawns nothing and reports the ORIGINAL launch when the key was already claimed', async () => {
     claimAgentLaunchMock.mockResolvedValue({
       won: false,
@@ -4778,6 +5029,125 @@ describe('idempotency (P-014: a replay must not open a second set of windows)', 
       deduped: true,
       launch: { deduped: true, opened: 2, tasks: [{ taskId: 'task-original', logPath: '/tmp/original.log' }] },
     });
+  });
+
+  it.each([true, false])('reconciles exact late native proof only after durable CAS (recorded=%s)', async (recorded) => {
+    const pending = { persisted: false, nativeRef: null, reason: 'kickoff-proof-timeout',
+      recovery: { path: '/private/original.json', tokenHash: 'a'.repeat(64) } };
+    const prior = { launchState: 'completed', claimToken: 'original-claim', opened: 1, failed: 0,
+      partial: true, kickoffProof: { required: true, persisted: false },
+      tasks: [{ taskId: 'task-original', ownerId: 'owner-original', kickoffProof: pending }] };
+    claimAgentLaunchMock.mockResolvedValue({ won: false, priorSummary: prior,
+      priorLaunchedAt: 1, priorLaunchedBy: 'system:acceptance-bar-amendment-review' });
+    const settled = { persisted: true, nativeRef: '/native/original.jsonl', reason: null };
+    reconcileKickoffProofMock.mockReturnValue(settled);
+    recordAgentLaunchResultMock.mockResolvedValue(recorded);
+    const res = await launchAgent.handler({ brief: 'same review', idempotencyKey: 'original-key' }, ctx);
+    expect(reconcileKickoffProofMock).toHaveBeenCalledWith(pending, undefined);
+    expect(recordAgentLaunchResultMock).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-test', idempotencyKey: 'original-key', claimToken: 'original-claim',
+      summary: expect.objectContaining({ partial: false, tasks: [{
+        taskId: 'task-original', ownerId: 'owner-original', kickoffProof: settled,
+      }] }),
+    }));
+    expect(dataOf(res)?.launch).toMatchObject({ partial: !recorded,
+      tasks: [{ taskId: 'task-original', ownerId: 'owner-original', kickoffProof: recorded ? settled : pending }] });
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(reconcileKickoffProofMock.mock.calls.some(([, options]) =>
+      (options as { consume?: boolean } | undefined)?.consume)).toBe(recorded);
+  });
+
+  it('does not promote a batch when one opened task has no retained proof', async () => {
+    const prior = { launchState: 'completed', claimToken: 'original-claim', opened: 2, failed: 0,
+      partial: true, tasks: [{ taskId: 'task-original', ownerId: 'owner-original',
+        kickoffProof: { persisted: false, nativeRef: null, reason: 'kickoff-proof-timeout' } }] };
+    claimAgentLaunchMock.mockResolvedValue({ won: false, priorSummary: prior, priorLaunchedAt: 1, priorLaunchedBy: 'su-caller' });
+    reconcileKickoffProofMock.mockReturnValue({ persisted: true, nativeRef: '/native/original.jsonl', reason: null });
+    recordAgentLaunchResultMock.mockResolvedValue(true);
+    const res = await launchAgent.handler({ brief: 'same batch', idempotencyKey: 'original-key' }, ctx);
+    expect(dataOf(res)?.launch).toMatchObject({ opened: 2, partial: true });
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves a sibling receipt whose owner custody is incomplete', async () => {
+    const pending = { persisted: false, nativeRef: null, reason: 'kickoff-proof-timeout',
+      recovery: { path: '/private/proved.json', tokenHash: 'a'.repeat(64) } };
+    const sibling = { ...pending, recovery: { path: '/private/unbound.json', tokenHash: 'b'.repeat(64) } };
+    const prior = { launchState: 'completed', claimToken: 'original-claim', opened: 2, failed: 0,
+      partial: true, tasks: [
+        { taskId: 'task-original', ownerId: 'owner-original', kickoffProof: pending },
+        { taskId: 'task-unbound', kickoffProof: sibling },
+      ] };
+    claimAgentLaunchMock.mockResolvedValue({ won: false, priorSummary: prior, priorLaunchedAt: 1, priorLaunchedBy: 'su-caller' });
+    reconcileKickoffProofMock.mockReturnValue({ persisted: true, nativeRef: '/native/original.jsonl', reason: null });
+    recordAgentLaunchResultMock.mockResolvedValue(true);
+    const res = await launchAgent.handler({ brief: 'same batch', idempotencyKey: 'original-key' }, ctx);
+    expect(dataOf(res)?.launch).toMatchObject({ partial: true, tasks: [
+      { taskId: 'task-original', kickoffProof: { persisted: true } },
+      { taskId: 'task-unbound', kickoffProof: sibling },
+    ] });
+    expect(reconcileKickoffProofMock).not.toHaveBeenCalledWith(sibling, expect.anything());
+    expect(reconcileKickoffProofMock.mock.calls.filter(([, options]) =>
+      (options as { consume?: boolean } | undefined)?.consume)).toEqual([[pending, { consume: true }]]);
+  });
+
+  it('keeps recovered proof after a same-token overlapping replay and rereads the winning receipt', async () => {
+    const pending = (id: string) => ({ persisted: false, nativeRef: null, reason: 'kickoff-proof-timeout',
+      recovery: { path: `/private/${id}.json`, tokenHash: id.repeat(64) } });
+    let stored = { launchState: 'completed', claimToken: 'original-claim', opened: 2, failed: 0,
+      partial: true, tasks: [
+        { taskId: 'a', ownerId: 'owner-a', kickoffProof: pending('a') },
+        { taskId: 'b', ownerId: 'owner-b', kickoffProof: pending('b') },
+      ] } as Record<string, unknown>;
+    const clone = (value: unknown) => JSON.parse(JSON.stringify(value));
+    const claim = (summary: Record<string, unknown>) => ({ won: false, priorSummary: clone(summary),
+      priorLaunchedAt: 1, priorLaunchedBy: 'system:acceptance-bar-amendment-review' });
+    let capturedSecond!: () => void;
+    const secondCaptured = new Promise<void>(resolve => { capturedSecond = resolve; });
+    let consumedFirst!: () => void;
+    const firstConsumed = new Promise<void>(resolve => { consumedFirst = resolve; });
+    let claims = 0;
+    claimAgentLaunchMock.mockImplementation(async () => {
+      const snapshot = claim(stored);
+      const index = ++claims;
+      if (index === 1) await secondCaptured;
+      if (index === 2) { capturedSecond(); await firstConsumed; }
+      return snapshot;
+    });
+    readAgentLaunchClaimMock.mockImplementation(async () => claim(stored));
+    const consumed = new Set<string>();
+    reconcileKickoffProofMock.mockImplementation((raw: unknown, options?: unknown) => {
+      const proof = raw as KickoffProofResult;
+      const id = proof.recovery?.path === '/private/a.json' ? 'a' : 'b';
+      if (consumed.has(id) || (id === 'b' && !consumed.has('a'))) return raw;
+      if ((options as { consume?: boolean } | undefined)?.consume) {
+        consumed.add(id);
+        if (id === 'a') consumedFirst();
+      }
+      return { persisted: true, nativeRef: `/native/${id}.jsonl`, reason: null };
+    });
+    recordAgentLaunchResultMock.mockImplementation(async (raw: unknown) => {
+      const write = raw as { expectedSummary?: unknown; summary: Record<string, unknown> };
+      if (write.expectedSummary && JSON.stringify(write.expectedSummary) !== JSON.stringify(stored)) return false;
+      stored = clone(write.summary);
+      return true;
+    });
+    const args = { brief: 'same batch', idempotencyKey: 'original-key' };
+    const [first, stale] = await Promise.all([launchAgent.handler(args, ctx), launchAgent.handler(args, ctx)]);
+    for (const result of [first, stale]) expect(dataOf(result)?.launch).toMatchObject({
+      tasks: [{ taskId: 'a', kickoffProof: { persisted: true } }, { taskId: 'b', kickoffProof: { persisted: false } }],
+    });
+    expect(consumed).toEqual(new Set(['a']));
+    expect(readAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'original-key' });
+    const fresh = await launchAgent.handler(args, ctx);
+    expect(dataOf(fresh)?.launch).toMatchObject({ partial: false,
+      tasks: [{ kickoffProof: { persisted: true } }, { kickoffProof: { persisted: true } }],
+    });
+    expect(consumed).toEqual(new Set(['a', 'b']));
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 
   it('returns an explicit unknown outcome for an unfinalized claim instead of fabricated zero counts', async () => {
@@ -5013,6 +5383,20 @@ describe('launch result after the dispatch deadline', () => {
 });
 
 describe('failure reporting', () => {
+  it('persists early task custody before kickoff returns and retains it on boot failure', async () => {
+    spawnHeadlessMock.mockImplementationOnce(async (opts: unknown) => {
+      const hooks = opts as { beforeSpawn: () => Promise<boolean>; onProcessCreated: (receipt: unknown) => Promise<void> };
+      await hooks.beforeSpawn();
+      await hooks.onProcessCreated({ taskId: 'early-task', pid: 7788, logPath: '/early.log', normalizedLogPath: '/early.jsonl' });
+      const last = recordAgentLaunchResultMock.mock.calls.at(-1)![0] as { summary: unknown };
+      expect(last.summary).toMatchObject({ launchState: 'spawning', tasks: [expect.objectContaining({ taskId: 'early-task' })] });
+      return { status: 'error', code: 502, error: 'boot failed' };
+    });
+    await launchAgent.handler({ brief: 'grade', headless: true, idempotencyKey: 'early-task-custody' }, ctx);
+    const final = recordAgentLaunchResultMock.mock.calls.at(-1)![0] as { summary: unknown };
+    expect(final.summary).toMatchObject({ tasks: [expect.objectContaining({ taskId: 'early-task', status: 'error' })] });
+  });
+
   it('keeps the headless attempt empty until post-install preparation permits process creation', async () => {
     const key = 'post-install-native-boundary';
     spawnHeadlessMock.mockImplementationOnce(async (opts: unknown) => {

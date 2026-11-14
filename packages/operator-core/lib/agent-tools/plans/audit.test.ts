@@ -6,6 +6,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { lookupByMcpName } from '@papercusp/agent-mcp';
 import type { ToolResult } from '@papercusp/tooldef';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 
 const { mockOrgSql, mockOrgSqlArray } = vi.hoisted(() => {
   const mockOrgSql = vi.fn();
@@ -216,7 +217,8 @@ describe('non-activating discovery finalization', () => {
     expect(blocked.readiness.ready).toBe(false);
     mockRecordDiscovery.mockResolvedValueOnce({ ok: true, audit: { auditSeq: 1 }, discovery: blocked } as never);
     const refusal = await tool.handler(tool.args.parse({ slug: 'draft', harness: 'papercusp', phase: 'discovery' }), ctx);
-    expect('data' in refusal && refusal.data).toMatchObject({ readiness: { ready: false }, workflow: { stage: 'discovery' } });
+    expect('data' in refusal && refusal.data).toMatchObject({ readiness: { ready: false }, workflow: { stage: 'discovery' },
+      auditSeq: 1, readback: { tool: 'plans:get', args: { slug: 'draft', harness: 'papercusp', discoveryAudit: 1 }, readOnly: true } });
     const reconciled = assessDiscovery(fixture.body, fixture.context);
     expect(reconciled.readiness.ready).toBe(true);
     mockRecordDiscovery.mockResolvedValueOnce({ ok: true, audit: { auditSeq: 2 }, discovery: reconciled } as never);
@@ -1649,7 +1651,11 @@ describe('plans:audit phase:activation', () => {
       .replace('| R-1 | P-001 | tree |', '| R-1 | P-001 | live |');
     resolvePlanContent(conflictingPlan);
     mockOrgSql.mockResolvedValue([{ acceptance_bar_epoch: '1' }]);
-    mockPreviewActivation.mockResolvedValue({ ok: true, preview: true } as never);
+    mockResolvedTyped(mockPreviewActivation, {
+      ok: true,
+      preview: true,
+      auditedPlanRevision: { id: 41, seq: 6, contentHash: 'a'.repeat(64) },
+    });
 
     const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
 

@@ -518,7 +518,8 @@ async function readCanonicalOperation(sql: Sql, handle: BlueprintOperationHandle
     SELECT id, instance_plan_slug, status, outcome, outputs
       FROM harness_shared.plan_runs
      WHERE id = ${ref.target.runId} AND workspace_id = ${ref.workspaceId}
-       AND harness_slug = ${ref.harnessSlug} AND instance_plan_slug = ${ref.target.instanceSlug}
+       AND harness_slug = ${receipt.target_harness_slug ?? ref.harnessSlug}
+       AND instance_plan_slug = ${ref.target.instanceSlug}
   `;
   const run = runs[0];
   if (!run) throw new Error('blueprint operation plan run is missing or outside its harness');

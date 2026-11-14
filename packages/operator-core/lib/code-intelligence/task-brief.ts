@@ -14,7 +14,7 @@ import { firstPartyCallersOffthread } from './first-party-callers-offthread';
 import { pushSnapshotMissReason, queryPushSnapshot } from './push-snapshot';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { LSP_VENDOR_DIR } from './lsp-adapter';
-import type { CodeIntelAnswer } from './contracts';
+import { versionedSymbolIdentity, type CodeIntelAnswer } from './contracts';
 import { getClaimTimePlanDecisions, type ClaimTimePlanDecisionsBrief } from '../plan-decisions-claim-port';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { composeReuseBrief, encodeClaimReuseContribution, registeredReuseBriefProviders, type ReuseBriefDestination, type ReuseBriefProvider,
@@ -85,7 +85,8 @@ export interface TaskBrief {
   commit: string | null;
   files: { path: string; sha256: string; kind: 'implementation' | 'test' | 'doc' }[];
   excerpts: { path: string; text: string }[];
-  graph: { status: 'measured' | 'unknown'; consumers: string[]; relationships: string[]; reason?: string };
+  graph: { status: 'measured' | 'unknown'; consumers: string[]; relationships: string[]; reason?: string;
+    sourceFingerprint?: string; freshness?: CodeIntelAnswer['freshness']; sourceCompleteness?: 'unverified' };
   incident?: TaskIncidentBrief;
   engineering?: TaskEngineeringEvidence;
   /** P-008: function-specific evidence, independent of whole-file task scope. */
@@ -519,17 +520,40 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults,
             ]);
           } finally { clearTimeout(compilerTimer); }
         }
-        const scope = graph?.evidence?.sourceScope;
-        if (graph && !graph.error && scope?.repositoryId && scope.supportingFiles.length
-          && scope.supportingFiles.every(file => texts.has(file.path) && file.contentHash === hash(texts.get(file.path)!))) {
-          brief.graph = { status: 'measured', consumers: graph.sites.filter((site, index) => texts.has(site.path)
-            && graph.evidence?.relationships.some(edge => edge.siteIndex === index && edge.knowledge === 'observed'))
+        const evidence = graph?.evidence;
+        const scope = evidence?.sourceScope;
+        const qualified = new Set<number>();
+        // Support-file hashes and returned reference identities must agree.
+        if (graph && !graph.error && graph.freshness.staleVsDisk !== true
+          && scope?.repositoryId && scope.identityKind !== 'unknown' && scope.sourceFingerprint
+          && (scope.identityKind !== 'local-root' || scope.repositoryId === `local-root:${hash(root)}`)
+          && evidence?.graphScope.basis === 'compiler-project' && scope.supportingFiles.length
+          && scope.supportingFiles.every(file => file.representation === 'full-source'
+            && included.has(file.path) && texts.has(file.path) && file.contentHash === hash(texts.get(file.path)!))) {
+          const sources = new Map(scope.supportingFiles.map(file => [file.path, file]));
+          for (const [index, site] of graph.sites.entries()) {
+            const source = sources.get(site.path);
+            const identities = evidence.siteIdentities.filter(row => row.siteIndex === index);
+            const edges = evidence.relationships.filter(edge => edge.siteIndex === index);
+            const expected = versionedSymbolIdentity(scope.repositoryId, site, source);
+            if (expected && identities.length === 1 && identities[0]!.sourcePath === site.path
+              && identities[0]!.contentHash === source?.contentHash && identities[0]!.versionedSymbolId === expected
+              && edges.length === 1 && edges[0]!.knowledge === 'observed'
+              && edges[0]!.origin === 'compiler' && edges[0]!.kind === 'callers') qualified.add(index);
+          }
+        }
+        if (graph && qualified.size && scope?.sourceFingerprint) {
+          brief.graph = { status: 'measured', consumers: graph.sites.filter((_site, index) => qualified.has(index))
             .map(site => `${site.path}:${site.line1 ?? '?'}`),
-            relationships: (graph.evidence?.relationships ?? []).slice(0, 8).map(edge => `${edge.knowledge}:${edge.kind}:${edge.source?.site.path ?? '?'}->${edge.target?.site.path ?? '?'}`) };
+            relationships: evidence!.relationships.filter(edge => qualified.has(edge.siteIndex)).slice(0, 8)
+              .map(edge => `${edge.knowledge}:${edge.kind}:${edge.source?.site.path ?? '?'}->${edge.target?.site.path ?? '?'}`),
+            sourceFingerprint: scope.sourceFingerprint, freshness: graph.freshness, sourceCompleteness: 'unverified' };
+          if (qualified.size < graph.sites.length) brief.exclusions.push('Unqualified compiler references omitted; those consumers remain unknown.');
           if (graph.truncation.truncated) brief.exclusions.push('Additional compiler sites omitted by the bounded query.');
         } else brief.graph.reason = graph?.error?.slice(0, 180) ?? (graph
-          ? 'Compiler evidence is unavailable or outside the measured task files.'
+          ? 'No consumer has qualified current compiler and source identities; missing or empty results do not prove absence.'
           : 'Compiler enrichment exceeded its remaining budget or was unavailable.');
+        brief.exclusions.push('Source completeness is unverified; compiler consumers are scoped lower bounds and empty results do not prove absence.');
       } else brief.graph.reason = 'No named function or class in the bounded implementation scope.';
     } else brief.graph.reason = 'No supported implementation in the stored task scope.';
     remaining();

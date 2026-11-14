@@ -1,15 +1,96 @@
 import { spawn, spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import type {} from '../test/admission-http-fixture';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { assertPrivateManagedTaskRoute, preparePrivateOperatorApiBundle } from '../test/private-http-workspace-preflight';
+import { isolatedRuntimeEvidenceKeys, isolatedRuntimeInheritedEnvironment, privatePgSeedEnvironment } from '../../../scripts/lib/with-test-pg-env.mjs';
+import { executedSourceMapArmed } from '@papercusp/test-config/vitest-config';
 
 const root = resolve(import.meta.dirname, '../../..');
+
+describe('private runtime inherited environment', () => {
+  it('keeps the source-map reporter armed with the launcher evidence allowlist while stripping ambient authority', () => {
+    const input = {
+      PC_EXECUTED_SOURCE_MAP_WORKSPACE: '@papercusp/operator-core',
+      PC_EXECUTED_SOURCE_MAP_OUT: '/owned-proof/executed-source-map.json',
+      PC_EXECUTED_SOURCE_MAP_RESULT: '/owned-proof/source-map-results.jsonl',
+      PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://reporter.invalid/evidence',
+      PAPERCUSP_TEST_ARTIFACT_DIR: '/owned-proof/recorder-tapes',
+      PAPERCUSP_TEST_ARTIFACT_DIR_COPY: '/live/mutable-destination',
+      PAPERCUSP_SUBSTRATE_IPC_SOCKET: '/live/substrate.sock',
+      PAPERCUSP_OPERATOR_URL: 'https://live.invalid',
+      PAPERCUSP_SID: 'live-owner', EXPERIMENTAL_PROVIDER_TOKEN: 'credential-value',
+      PC_EXECUTED_SOURCE_MAP_OUT_COPY: '/live/mutable-destination',
+    };
+    const result = isolatedRuntimeInheritedEnvironment(input,
+      isolatedRuntimeEvidenceKeys('PAPERCUSP_TEST_OWNED_DB_DIR'));
+    expect(executedSourceMapArmed(result.environment)).toMatchObject({
+      workspaceName: input.PC_EXECUTED_SOURCE_MAP_WORKSPACE,
+      outPath: input.PC_EXECUTED_SOURCE_MAP_OUT,
+      resultPath: input.PC_EXECUTED_SOURCE_MAP_RESULT,
+    });
+    expect(result.environment).toEqual({
+      PC_EXECUTED_SOURCE_MAP_WORKSPACE: input.PC_EXECUTED_SOURCE_MAP_WORKSPACE,
+      PC_EXECUTED_SOURCE_MAP_OUT: input.PC_EXECUTED_SOURCE_MAP_OUT,
+      PC_EXECUTED_SOURCE_MAP_RESULT: input.PC_EXECUTED_SOURCE_MAP_RESULT,
+      PAPERCUSP_TEST_RUNS_DB_URL: input.PAPERCUSP_TEST_RUNS_DB_URL,
+      PAPERCUSP_TEST_ARTIFACT_DIR: input.PAPERCUSP_TEST_ARTIFACT_DIR,
+    });
+    expect(result.discardedKeys).toEqual(Object.keys(input).filter(key => !(key in result.environment)).sort());
+    expect(JSON.stringify(result)).not.toContain('credential-value');
+  });
+
+  it('keeps tooling and exact admitted evidence without inheriting unknown mutable destinations', () => {
+    const input = {
+      PATH: '/tool/bin', LANG: 'en_US.UTF-8', LC_ALL: 'C', NODE_OPTIONS: '--enable-source-maps',
+      PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://reporter.invalid/evidence',
+      DOCKER_HOST: 'unix:///run/explicit-test-engine.sock',
+      ELEVENLABS_WEBHOOK_SECRET: 'credential-value', EXPERIMENTAL_PROVIDER_TOKEN: 'credential-value',
+      SMTP_HOST: 'outbound.invalid', REDIS_URL: 'redis://shared.invalid',
+      UNCLASSIFIED_MUTABLE_ROOT: '/shared/state', ARBITRARY_SERVICE_ENDPOINT: 'https://shared.invalid',
+      MY_PRODUCTION_DATABASE: 'shared', LOCAL_QUEUE_DIR: '/shared/queue',
+      PAPERCUSP_SID: 'live-owner', DATABASE_URL: 'postgresql://live.invalid/state',
+    };
+    const evidence = new Set(['PAPERCUSP_TEST_RUNS_DB_URL', 'DOCKER_HOST']);
+    const result = isolatedRuntimeInheritedEnvironment(input, evidence);
+    expect(result.environment).toEqual({ PATH: input.PATH, LANG: input.LANG, LC_ALL: input.LC_ALL,
+      NODE_OPTIONS: input.NODE_OPTIONS, PAPERCUSP_TEST_RUNS_DB_URL: input.PAPERCUSP_TEST_RUNS_DB_URL,
+      DOCKER_HOST: input.DOCKER_HOST });
+    expect(result.discardedKeys).toEqual(Object.keys(input).filter(key => !(key in result.environment)).sort());
+    expect(input.ELEVENLABS_WEBHOOK_SECRET).toBe('credential-value');
+    expect(JSON.stringify(result)).not.toContain('credential-value');
+  });
+
+  it('carries only the configured private-PG seed controls into detached test runs', () => {
+    const input = {
+      PAPERCUSP_PG_SEED_PATH: '/sidecar/db-seed.dump',
+      PAPERCUSP_PG_RESTORE_BIN: '/sidecar/bin/pg_restore',
+      PAPERCUSP_PG_DISABLE_SEED: '1',
+      PAPERCUSP_SID: 'live-owner',
+      DATABASE_URL: 'postgresql://live.invalid/state',
+      PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://reporter.invalid/evidence',
+    };
+    expect(privatePgSeedEnvironment(input)).toEqual({
+      PAPERCUSP_PG_SEED_PATH: input.PAPERCUSP_PG_SEED_PATH,
+      PAPERCUSP_PG_RESTORE_BIN: input.PAPERCUSP_PG_RESTORE_BIN,
+      PAPERCUSP_PG_DISABLE_SEED: input.PAPERCUSP_PG_DISABLE_SEED,
+    });
+  });
+
+  it('does not infer evidence or tooling authority from a prefix or an undefined value', () => {
+    expect(isolatedRuntimeInheritedEnvironment({ PATH: undefined, LC_ALL: 'C', LC_TOKEN: 'secret',
+      NODE_PROVIDER_SECRET: 'secret', PC_UNKNOWN_DESTINATION: '/shared',
+      PAPERCUSP_TEST_RUNS_DB_URL_COPY: 'postgresql://live.invalid/state' }, new Set())).toEqual({
+      environment: { LC_ALL: 'C' },
+      discardedKeys: ['LC_TOKEN', 'NODE_PROVIDER_SECRET', 'PAPERCUSP_TEST_RUNS_DB_URL_COPY', 'PC_UNKNOWN_DESTINATION'],
+    });
+  });
+});
 
 describe('required private database extensions', () => {
   it.each([false, true])('checks required extensions before runtime allocation (ready=%s)', ready => {
@@ -40,6 +121,38 @@ describe('required private database extensions', () => {
       '[with-test-pg] extension preflight failed: REQUIRED_EXTENSION_NOT_READY');
     expect(result.stderr, diagnostic).not.toContain(ready ? 'REQUIRED_EXTENSION_NOT_READY' : 'EXTENSION_ADMISSION_REACHED');
     expect(result.stdout, diagnostic).not.toContain('booting throwaway PG');
+  });
+});
+
+describe('private-PG setup budget receipt', () => {
+  it('records an expired setup and refuses before allocating Postgres or starting tests', () => {
+    const entry = join(root, 'scripts/with-test-pg.mjs');
+    const artifactDir = mkdtempSync(join(tmpdir(), 'private-pg-setup-receipt-'));
+    const phasesPath = join(artifactDir, 'phases.jsonl');
+    writeFileSync(join(artifactDir, 'manifest.json'), JSON.stringify({ schemaVersion: 1 }));
+    writeFileSync(phasesPath, '');
+    try {
+      const startedAt = performance.now();
+      const result = spawnSync(process.execPath, [entry, '--', process.execPath, '-e', 'process.exit(91)'], {
+        cwd: root, encoding: 'utf8', timeout: 10_000,
+        env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: undefined, PAPERCUSP_TEST_RUNS_DB_URL: undefined,
+          PAPERCUSP_TEST_ARTIFACT_DIR: artifactDir,
+          PAPERCUSP_TEST_PRIVATE_PG_SETUP_TIMEOUT_MS: '300000',
+          PAPERCUSP_TEST_PRIVATE_PG_SETUP_DEADLINE_AT_MS: '1' },
+      });
+      const diagnostic = childDiagnostic(result, startedAt);
+      expect(result.status, diagnostic).toBe(1);
+      expect(result.stderr, diagnostic).toContain('private-PG setup budget exhausted');
+      expect(result.stdout, diagnostic).not.toContain('booting throwaway PG');
+      expect(result.stdout, diagnostic).not.toContain('ready —');
+      const stages = readFileSync(phasesPath, 'utf8').trim().split('\n').filter(Boolean)
+        .map(line => JSON.parse(line).stage);
+      expect(stages).toEqual(expect.arrayContaining([
+        'private-pg-setup-start', 'private-pg-seed-preflight', 'private-pg-setup-timeout',
+      ]));
+    } finally {
+      rmSync(artifactDir, { recursive: true, force: true });
+    }
   });
 });
 

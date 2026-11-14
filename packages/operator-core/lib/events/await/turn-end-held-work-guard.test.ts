@@ -39,6 +39,7 @@ function deps(over: Partial<TurnEndHeldWorkDeps> = {}): Partial<TurnEndHeldWorkD
     getLoopActive: async () => false,
     listParkedAwaits: async () => [inboxKeepalive],
     readAwaitTargets: async () => new Map(),
+    hasExhaustedPushPark: async () => false,
     hasPendingDeliberateWakeDelivery: async () => false,
     hasFreshPendingCarryRespawn: async () => false,
     armRewake: async () => ({ kind: 'armed', attempt: 1, timeoutSec: 900 }),
@@ -81,12 +82,25 @@ function deliveryDeps(over: NonNullable<Parameters<typeof classifyTurnEndRewakeD
     getLoopActive: async () => false,
     listParkedAwaits: async () => [inboxKeepalive, rewakeAwait],
     readAwaitTargets: async () => new Map<string, never[]>(),
+    hasExhaustedPushPark: async () => false,
     hasPendingDeliberateWakeDelivery: async () => false,
     ...over,
   };
 }
 
 describe('turn-end rewake delivery freshness (EI-26908413306331308)', () => {
+  it('retires a fallback for canonical exhausted push-only coverage without asserting a guaranteed wake', async () => {
+    await expect(classifyTurnEndRewakeDelivery({ ownerId: OWNER,
+      deps: deliveryDeps({ hasExhaustedPushPark: async () => true }),
+    })).resolves.toEqual({ kind: 'obsolete', reason: 'every held item has a canonical exhausted push-only park' });
+  });
+
+  it('keeps a fallback when the exhausted-park authority read fails', async () => {
+    await expect(classifyTurnEndRewakeDelivery({ ownerId: OWNER,
+      deps: deliveryDeps({ hasExhaustedPushPark: async () => { throw new Error('unreadable'); } }),
+    })).resolves.toEqual({ kind: 'keep' });
+  });
+
   it('supersedes a fired fallback when a newer dependency await guarantees a wake', async () => {
     const dependency: WakeSourceAwait = {
       subscriberId: OWNER,
@@ -206,6 +220,25 @@ describe('turn-end rewake timer (WI-6554700010018567)', () => {
 });
 
 describe('turn-end held-work guard (WI-6554700010015550)', () => {
+  it('admits canonical exhausted push-only coverage and cancels the safety timer', async () => {
+    const spy = rewakeSpy();
+    const coverage = vi.fn(async () => true);
+    expect(await evaluateTurnEndHeldWorkStop({ ownerId: OWNER, workspaceId: WS,
+      deps: deps({ ...spy.deps, hasExhaustedPushPark: coverage }),
+    })).toBe('');
+    expect(coverage).toHaveBeenCalledWith(OWNER, WS, [held('WI-1'), held('WI-2')]);
+    expect(spy.calls).toEqual({ armed: [], cancelled: 1 });
+  });
+
+  it('refuses and retains fallback behavior when exhausted-park evidence cannot be read', async () => {
+    const spy = rewakeSpy();
+    expect(await evaluateTurnEndHeldWorkStop({ ownerId: OWNER, workspaceId: WS,
+      deps: deps({ ...spy.deps, hasExhaustedPushPark: async () => { throw new Error('unreadable'); } }),
+    })).toContain('TURN-END REFUSED');
+    expect(spy.calls.armed).toHaveLength(1);
+    expect(spy.calls.cancelled).toBe(0);
+  });
+
   it('refuses the incident shape: AUTO + held work + no loop + only the inbox keepalive', async () => {
     const text = await evaluateTurnEndHeldWorkStop({ ownerId: OWNER, workspaceId: WS, deps: deps() });
     expect(text).toContain('TURN-END REFUSED');

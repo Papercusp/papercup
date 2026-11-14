@@ -178,6 +178,9 @@ const h = vi.hoisted(() => {
     /** Replay receipts the handler asked to persist. */
     replayStores: [] as Array<{ ownerKey: string; idempotencyKey: string; result: unknown }>,
     replayLookupFromStores: false,
+    activityNotice: null as null | { rendered: string; omit: boolean },
+    activityReceiptScopes: [] as Array<{ owner: string; collecting: boolean }>,
+    activityWrites: [] as Array<{ owner: string }>,
     afterReplayStore: null as null | (() => Promise<void>),
     /**
      * WI-6792 seam: the stored outcome `lookupStoredMcpResult` finds, or null for
@@ -464,6 +467,28 @@ vi.mock('../../superuser-token', async (importOriginal) => {
   // isLoopbackRequest stays REAL (pure header logic — part of the matrix).
   return { ...actual, isValidSuperuserBearer: h.isValidSuperuserBearer };
 });
+// R-8 host wiring uses the real activity handler and receipt AsyncLocalStorage.
+// Retrieval and persistence remain fixture leaves in this unit-tier matrix;
+// real PG/native stdout replay is exercised by session-epoch-cross-port.
+vi.mock('../../activity-pg-store', () => ({
+  createPgTelemetryStore: () => ({ append: async (record: { owner: string }) => {
+    h.activityWrites.push(record);
+    return { id: 'r8-host-activity' };
+  } }),
+}));
+vi.mock('../../agent-tools/activity/hook-bundle', () => ({
+  buildActivityHookBundle: async (owner: string) => {
+    const ledger = await import('../../memory/session-epoch-ledger');
+    h.activityReceiptScopes.push({ owner, collecting: ledger.collectsMemoryEmission(owner) });
+    const notice = h.activityNotice;
+    if (!notice) return { complete: true, generation: 'r8-host:1' };
+    const fragment = { ...ledger.memoryFragmentOffer('notice', 'a'.repeat(64), 0, 'inbox', notice.rendered),
+      sourceFingerprint: 'b'.repeat(64) };
+    ledger.collectMemoryEmission(owner, [fragment]);
+    return { complete: true, generation: 'r8-host:1',
+      surfaces: { inbox: { injection: notice.omit ? '' : notice.rendered } } };
+  },
+}));
 // PI authentication is the only additional external seam. The MCP context
 // builder, capability gate, real ask-choice handler and card correlator run.
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
@@ -672,6 +697,7 @@ vi.mock('../../agent-tools/operator-tool-catalogue', () => ({
       import('../../agent-tools/delta-flag-wiring'),
       import('../../agent-tools/ambient-args-wiring'),
       import('../../agent-tools/tools/invoke'),
+      import('../../agent-tools/activity/report'),
       import('../../agent-tools/git_sync/run'),
       import('../../agent-tools/tools/find'),
       import('../../agent-tools/reports/get'),
@@ -1878,6 +1904,55 @@ describe('authenticated listener — real signed envelope verification', () => {
   });
 });
 
+describe('context reliability R-8: authenticated activity receipt host', () => {
+  it.each(['codex', 'claude', 'omp'] as const)(
+    'binds %s notice offers to the authenticated owner and final visible response', async agent => {
+      const owner = `su-r8-host-${agent}`;
+      const rendered = `R8 ${agent} actionable notice — preserve approval ☃`;
+      const extra = superuserExtra(`&workspace=ws-test&client=${owner}&agent=${agent}`);
+      const args = { owner, agent, kind: 'lifecycle', summary: 'R8 host fixture', hook_bundle: {} };
+      const receiptMeta = { 'papercusp/memoryReceipt': { version: 1, owner: 'forged-recipient', confirmations: [] } };
+      h.activityNotice = { rendered, omit: false };
+      await withSdkHost(extra, async client => {
+        const withoutOptIn = await client.callTool({ name: 'activity:report', arguments: args });
+        expect(withoutOptIn.isError).not.toBe(true);
+        expect(withoutOptIn._meta?.['papercusp/memoryEmission']).toBeUndefined();
+        expect(h.activityReceiptScopes.at(-1)).toEqual({ owner, collecting: false });
+
+        const visible = await client.callTool({ name: 'activity:report', arguments: args, _meta: receiptMeta });
+        expect(visible.isError).not.toBe(true);
+        expect(jsonOf(visible as CallResult)).toMatchObject({ ok: true, owner,
+          hook_bundle: { surfaces: { inbox: { injection: rendered } } } });
+        expect(h.activityReceiptScopes.at(-1)).toEqual({ owner, collecting: true });
+        expect(visible._meta?.['papercusp/memoryEmission']).toMatchObject({ owner, token: expect.any(String),
+          fragments: [{ kind: 'notice', id: 'a'.repeat(64), sourceFingerprint: 'b'.repeat(64),
+            bodySha256: createHash('sha256').update(rendered).digest('hex'), bodyBytes: Buffer.byteLength(rendered) }] });
+
+        h.activityNotice = { rendered, omit: true };
+        const omitted = await client.callTool({ name: 'activity:report', arguments: args, _meta: receiptMeta });
+        expect(omitted.isError).not.toBe(true);
+        expect(h.activityReceiptScopes.at(-1)).toEqual({ owner, collecting: true });
+        expect(omitted._meta?.['papercusp/memoryEmission']).toBeUndefined();
+
+        const before = h.activityWrites.length;
+        const foreign = await client.callTool({ name: 'activity:report',
+          arguments: { ...args, owner: 'su-foreign-recipient' }, _meta: receiptMeta });
+        expect(foreign.isError).toBe(true);
+        expect(h.activityWrites).toHaveLength(before);
+      }, 'listener');
+    });
+
+  it('refuses invalid credentials before activity ingestion or receipt collection', async () => {
+    const extra = superuserExtra('&workspace=ws-test&client=su-r8-invalid', { authorization: 'Bearer invalid' });
+    await expect(withSdkHost(extra, client => client.callTool({ name: 'activity:report',
+      arguments: { kind: 'lifecycle', summary: 'R8 host fixture', hook_bundle: {} },
+      _meta: { 'papercusp/memoryReceipt': { version: 1, confirmations: [] } },
+    }), 'listener')).rejects.toThrow('uds_auth_failed');
+    expect(h.activityWrites).toEqual([]);
+    expect(h.activityReceiptScopes).toEqual([]);
+  });
+});
+
 describe('public Papercup PI card transport (EI-22679615443261276)', () => {
   it.each(['?superuser=1', '?principal=pi&workspace=ws-pi-card',
     '?harness=papercusp&workspace=ws-pi-card&role=operator&run=r&spawn=s', ''])
@@ -2894,6 +2969,9 @@ beforeEach(() => {
   h.txEvents.length = 0;
   h.replayStores.length = 0;
   h.replayLookupFromStores = false;
+  h.activityNotice = null;
+  h.activityReceiptScopes.length = 0;
+  h.activityWrites.length = 0;
   h.afterReplayStore = null;
   h.storedReplay = null;
   h.invocations.length = 0;
@@ -5133,7 +5211,7 @@ describe('tools/list — strict-mode listing matrix', () => {
     }
   });
 
-  it('records native-session verifier diagnostics when tools/list rejects before listing tools', async () => {
+  it('lists tools when the native-session verifier is unavailable, while tools/call stays fail-closed (WI-6554700010048023)', async () => {
     const nativeThread = 'native-list-verifier-session';
     h.nativeSessionVerifierFailure = {
       sessionId: nativeThread,
@@ -5149,12 +5227,20 @@ describe('tools/list — strict-mode listing matrix', () => {
       _meta: meta,
     };
 
-    await expect(listTools(extra)).rejects.toThrow(/mcp_auth_failed.*superuser_native_session_verifier_unavailable/);
-
+    // Claude fetches tools/list ONCE per connection: a transient verifier outage
+    // at connect must not strand the session with zero tools for its lifetime.
+    const listed = await listTools(extra);
+    expect(listed.tools.map((t) => t.name)).toContain('gatingtest:engineer');
     expect(h.nativeSessionCalls).toEqual([{ ownerId: 'su-owner', sessionId: nativeThread }]);
-    expect(h.invocations).toHaveLength(1);
-    expect(h.invocations[0]).toMatchObject({
-      toolName: 'tools/list',
+    expect(h.invocations).not.toContainEqual(expect.objectContaining({ errorCode: 'mcp_auth_failed' }));
+
+    // Listing grants nothing: the same unverified incarnation still cannot act,
+    // and the call path records the verifier diagnostics.
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('superuser_native_session_verifier_unavailable');
+    const authFailure = h.invocations.find((inv) => inv.errorCode === 'mcp_auth_failed');
+    expect(authFailure).toMatchObject({
       status: 'error',
       errorCode: 'mcp_auth_failed',
       errorMessage: 'superuser_native_session_verifier_unavailable',
@@ -5174,8 +5260,8 @@ describe('tools/list — strict-mode listing matrix', () => {
         },
       },
     });
-    expect(JSON.stringify(h.invocations[0]?.metadataJson)).not.toContain(nativeThread);
-    expect(JSON.stringify(h.invocations[0]?.metadataJson)).not.toContain('su-owner');
+    expect(JSON.stringify(authFailure?.metadataJson)).not.toContain(nativeThread);
+    expect(JSON.stringify(authFailure?.metadataJson)).not.toContain('su-owner');
   });
 
   it('?superuser=1 from a NON-loopback host is a failed ctx → throws loud auth error (WI-574, real isLoopbackRequest)', async () => {
@@ -7340,7 +7426,16 @@ describe('successful native-session audit (get-feedback D-006)', () => {
     };
     const stale = await callTool('gatingtest:scoped', {}, staleExtra, staleMeta);
     expect(stale.isError).toBe(true);
-    expect(textOf(stale)).toBe('request_rejected: superuser_foreign_native_session');
+    // WI-6554700010048107: the predecessor is still DB-bound to su-owner, so this
+    // is the live-host incarnation fence, NOT a DB-foreign binding. It carries
+    // its own reason (plus a recovery hint) so telemetry can tell them apart.
+    expect(textOf(stale)).toMatch(/^request_rejected: superuser_stale_live_host_native_session /);
+    expect(textOf(stale)).toContain('live psu host record names a different native session');
+    expect(h.invocations.at(-1)).toMatchObject({
+      status: 'error',
+      errorCode: 'mcp_auth_failed',
+      errorMessage: 'superuser_stale_live_host_native_session',
+    });
     expect(seen).toHaveLength(0);
 
     const currentMeta = { threadId: successor, callId: 'call_current-carry-successor' };
@@ -7351,6 +7446,58 @@ describe('successful native-session audit (get-feedback D-006)', () => {
     const current = await callTool('gatingtest:scoped', {}, currentExtra, currentMeta);
     expect(current.isError, textOf(current)).toBeUndefined();
     expect(seen).toHaveLength(1);
+  });
+
+  // WI-6554700010048023: Claude fetches tools/list ONCE per connection. A carry
+  // successor's first connect can land while the live host's discovery record
+  // still names the other incarnation; refusing the LISTING there left resumed
+  // sessions with zero papercusp tools until a manual /mcp reconnect. The
+  // incarnation fence gates ACTING, so listing proceeds and every call re-fences.
+  it('lists tools across a live-host incarnation mismatch while tools/call stays fenced', async () => {
+    const predecessor = 'native-carry-predecessor';
+    const successor = 'native-carry-successor';
+    h.nativeSessionRows = new Map([['su-owner', [
+      { id: 541, session_id: predecessor, active: true },
+      { id: 543, session_id: successor, active: true },
+    ]]]);
+    h.livePtyHost = {
+      ownerId: 'su-owner', advSessionId: '543', pid: 1234, ptyPid: 5678,
+      sock: '/tmp/current-host.sock', command: 'claude', startedAt: 1,
+      nativeSessionId: successor,
+    };
+    const staleMeta = { threadId: predecessor, callId: 'call_stale-listing' };
+    const staleExtra = {
+      ...(superuserExtra('&workspace=ws-test&client=su-owner') as Record<string, unknown>),
+      _meta: staleMeta,
+    };
+
+    const listed = await listTools(staleExtra);
+    expect(listed.tools.map((t) => t.name)).toContain('gatingtest:engineer');
+
+    const stale = await callTool('gatingtest:scoped', {}, staleExtra, staleMeta);
+    expect(stale.isError).toBe(true);
+    expect(textOf(stale)).toMatch(/^request_rejected: superuser_stale_live_host_native_session /);
+    expect(seen).toHaveLength(0);
+  });
+
+  // WI-6554700010048107: the DB-foreign branch keeps its original reason and
+  // gets no stale-live-host hint (no live host is registered here).
+  it('lists tools for a DB-foreign native session while tools/call stays fenced', async () => {
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: 'native-owner', active: true }]]]);
+    const meta = { threadId: 'native-unbound-successor', callId: 'call_foreign-listing' };
+    const extra = {
+      ...(superuserExtra('&workspace=ws-test&client=su-owner') as Record<string, unknown>),
+      _meta: meta,
+    };
+
+    const listed = await listTools(extra);
+    expect(listed.tools.map((t) => t.name)).toContain('gatingtest:engineer');
+    expect(h.nativeSessionCalls).toEqual([{ ownerId: 'su-owner', sessionId: 'native-unbound-successor' }]);
+
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toBe('request_rejected: superuser_foreign_native_session');
+    expect(seen).toHaveLength(0);
   });
 
   it('records caller consistency without claiming physical actor proof for a different connection', async () => {

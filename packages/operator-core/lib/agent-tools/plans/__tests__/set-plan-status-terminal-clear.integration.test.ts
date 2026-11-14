@@ -54,6 +54,7 @@ const WS = DEFAULT_WORKSPACE_ID;
 const RUBRIC_ID = `zzz-sps-term-acceptance-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const PREVIOUS_RUBRIC_ID = 'zzz-sps-term-acceptance-2026-06-16';
 const COVERAGE_WORK_ITEM_ID = `WI-SPS-COVERAGE-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const STAMPED_SOURCE_WORK_ITEM_ID = `WI-SPS-STAMPED-SOURCE-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 function planBody(status: 'draft' | 'ready' | 'superseded' | 'shipped'): string {
   return `---
@@ -75,6 +76,12 @@ status: ${status}
 ## Background
 
 Some prose for the body.
+
+## Discovery
+
+\`\`\`discovery
+{"questions":[],"notApplicable":"This fixture verifies an existing plan status writer contract.","findings":[{"id":"F-1","questions":[],"conclusion":"Exercise the current terminal item-status path.","evidenceRefs":["work-item:${COVERAGE_WORK_ITEM_ID}"],"dispositions":[{"target":"P-001","decision":"reuse","reason":"The fixture covers the maintained status writer."}]}]}
+\`\`\`
 
 ## Decisions
 `;
@@ -120,34 +127,50 @@ async function seedStartedPlan(status: 'draft' | 'ready' | 'superseded' | 'shipp
 
 async function cleanupCoverageWorkItem(): Promise<void> {
   const srcRef = `${HARNESS}#${COVERAGE_WORK_ITEM_ID}`;
-  const dstRef = planItemRef(SLUG, 'P-001');
   await admin`
     DELETE FROM harness_shared.coord_links
      WHERE workspace_id = ${WS} AND src_kind = 'feature' AND src_ref = ${srcRef}
-       AND rel = 'relates' AND dst_kind = ${PLAN_ITEM_KIND} AND dst_ref = ${dstRef}
+       AND rel = 'relates'
   `;
   await admin`
     DELETE FROM harness_shared.work_items
      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = ${COVERAGE_WORK_ITEM_ID}
   `;
+  await admin`
+    DELETE FROM harness_shared.work_items
+     WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = ${STAMPED_SOURCE_WORK_ITEM_ID}
+  `;
 }
 
-async function seedCoverageWorkItem(): Promise<void> {
+async function seedCoverageWorkItem(itemId = 'P-001', status: 'open' | 'dropped' = 'open'): Promise<void> {
   await admin`
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, item_kind, status, title, summary,
        source_plan_slug, source_plan_item_ids, created_ts, updated_ts)
     VALUES
-      (${WS}, ${HARNESS}, ${COVERAGE_WORK_ITEM_ID}, 'feature', 'open',
+      (${WS}, ${HARNESS}, ${COVERAGE_WORK_ITEM_ID}, 'feature', ${status},
        'Draft item-start gate coverage', 'Fixture coverage for P-001.',
-       ${SLUG}, ARRAY['P-001']::text[], 1, 1)
+       ${SLUG}, ARRAY[${itemId}]::text[], 1, 1)
   `;
   await admin`
     INSERT INTO harness_shared.coord_links
       (workspace_id, src_kind, src_ref, rel, dst_kind, dst_ref)
     VALUES
       (${WS}, 'feature', ${`${HARNESS}#${COVERAGE_WORK_ITEM_ID}`}, 'relates',
-       ${PLAN_ITEM_KIND}, ${planItemRef(SLUG, 'P-001')})
+       ${PLAN_ITEM_KIND}, ${planItemRef(SLUG, itemId)})
+  `;
+}
+
+async function seedStampedSourceIssue(itemId = 'P-001'): Promise<void> {
+  await admin`
+    INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, status, title, summary, payload,
+       created_ts, updated_ts)
+    VALUES
+      (${WS}, ${HARNESS}, ${STAMPED_SOURCE_WORK_ITEM_ID}, 'bug', 'open',
+       'Open stamped source issue', 'Fixture source coverage for P-001.',
+       ${admin.json({ plan_item: { plan_slug: SLUG, item_id: itemId, harness_slug: HARNESS } })},
+       1, 1)
   `;
 }
 
@@ -191,7 +214,7 @@ async function opStatus(): Promise<string | null> {
 }
 
 beforeAll(async () => {
-  fx = await setupPlanPgFixture();
+  fx = await setupPlanPgFixture({ isolated: true });
   admin = fx.admin;
 }, 60_000);
 
@@ -233,26 +256,19 @@ describe('plans:set-plan-status — terminal set clears the started op-row', () 
   });
 
   it('can supersede after a child reopens between the preflight gate and the locked parent write', async () => {
-    // Keep the draft lifecycle so marking P-001 done cannot drain the plan before
-    // the race; a real nonterminal coverage item makes the draft start eligible.
-    await seedPlan(admin, WS, HARNESS, SLUG, planBody('draft'));
-    const added = (await runWithWorkspace(WS, () => addItemTool.handler(
-      {
-        harness: HARNESS,
-        slug: SLUG,
-        phase: 'Phase 1 — Work',
-        text: 'Child work reopened during terminal transition.',
-        importance: 'normal',
-      } as never,
-      makeCtx(),
-    ))) as { data: { results: Array<{ ok: boolean; itemId?: string }> } };
-    expect(added.data.results[0]).toMatchObject({ ok: true, itemId: 'P-001' });
+    // Start P-001 as wip so the draft's discovery gate is not part of this
+    // terminal-transition race; the coverage row keeps the plan operational.
+    const raceBody = planBody('draft').replace(
+      '\n## Discovery',
+      '\n## Phase 1 — Work\n\n- **P-001** `wip` Child work reopened during terminal transition.\n\n## Discovery',
+    );
+    await seedPlan(admin, WS, HARNESS, SLUG, raceBody);
     await seedCoverageWorkItem();
     const closed = (await runWithWorkspace(WS, () => setStatusTool.handler(
       { harness: HARNESS, slug: SLUG, item: 'P-001', status: 'done' } as never,
       makeCtx(),
     ))) as { data: { results: Array<{ ok: boolean }> } };
-    expect(closed.data.results[0]?.ok).toBe(true);
+    expect(closed.data.results[0]?.ok, JSON.stringify(closed.data.results[0])).toBe(true);
     expect(await runWithWorkspace(WS, () => getPlanItemStatuses(SLUG, { harnessSlug: HARNESS })))
       .toMatchObject([{ itemId: 'P-001', status: 'done' }]);
 
@@ -297,6 +313,46 @@ describe('plans:set-plan-status — terminal set clears the started op-row', () 
     expect(rows[0]?.content).toContain('- **P-001** `todo`');
     expect(await runWithWorkspace(WS, () => getPlanItemStatuses(SLUG, { harnessSlug: HARNESS })))
       .toMatchObject([{ itemId: 'P-001', status: 'todo' }]);
+  });
+
+  it('keeps a stamped open source issue in coverage after its generated feature duplicate was dropped', async () => {
+    await seedPlan(admin, WS, HARNESS, SLUG, planBody('draft'));
+    const added = (await runWithWorkspace(WS, () => addItemTool.handler(
+      {
+        harness: HARNESS,
+        slug: SLUG,
+        phase: 'Phase 1 — Work',
+        text: 'Keep the source issue covered when a generated duplicate is dropped.',
+        importance: 'normal',
+      } as never,
+      makeCtx(),
+    ))) as { data: { results: Array<{ ok: boolean; itemId?: string }> } };
+    expect(added.data.results[0]?.ok, JSON.stringify(added.data.results[0])).toBe(true);
+    const itemId = added.data.results[0]?.itemId;
+    expect(itemId).toBeTruthy();
+    if (!itemId) throw new Error('add-item did not return the fixture plan-item id');
+    await seedCoverageWorkItem(itemId, 'dropped');
+    await seedStampedSourceIssue(itemId);
+
+    const result = (await runWithWorkspace(WS, () => setStatusTool.handler(
+      {
+        harness: HARNESS,
+        slug: SLUG,
+        item: itemId,
+        status: 'dropped',
+        note: 'Automated reflection fixture.',
+        onlyIfNoOtherOpenCoverage: true,
+      } as never,
+      makeCtx(),
+    ))) as { data: { results: Array<Record<string, unknown>> } };
+
+    expect(result.data.results[0], JSON.stringify(result.data.results[0])).toMatchObject({
+      ok: true,
+      skipped: 'coverage_guard',
+      coveredBy: [STAMPED_SOURCE_WORK_ITEM_ID],
+    });
+    expect(await runWithWorkspace(WS, () => getPlanItemStatuses(SLUG, { harnessSlug: HARNESS })))
+      .toContainEqual(expect.objectContaining({ itemId, status: 'todo' }));
   });
 
   // ── P1-2: the terminal-NOOP path ────────────────────────────────────────

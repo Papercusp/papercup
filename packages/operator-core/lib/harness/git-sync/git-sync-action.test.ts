@@ -117,7 +117,7 @@ const tryReleaseResourceMock = vi.fn(
 );
 const tryHeartbeatResourceMock = vi.fn(async (
   _tx: unknown, _domain: string, _owner: string, _lockId: string, _ttlSec: number,
-): Promise<{ extended: boolean; expires_ts: Date | null }> => ({ extended: true, expires_ts: new Date() }));
+): ReturnType<typeof import('@papercusp/locks').tryHeartbeatResource> => ({ extended: true, expires_ts: new Date() }));
 const releaseAllResourcesForOwnerMock = vi.fn(
   async (
     _tx: unknown,
@@ -373,6 +373,7 @@ const runGitSyncMock = vi.fn(
   }),
 );
 const runGitBoundedMock = vi.fn(async (..._args: unknown[]) => ({ code: 0, stdout: '', stderr: '' }));
+const runGitStdinBoundedMock = vi.fn(async (..._args: unknown[]) => ({ code: 0, stdout: Buffer.alloc(0), stderr: '' }));
 /** WI-10007606: a yield-shaped error. The action detects it by `name`, so this fake
  *  needs no class identity shared with the real run-git-sync module. */
 const yieldError = (reason: string, boundary: string, synced: number, total: number): Error =>
@@ -415,6 +416,7 @@ vi.mock('./run-git-sync', async importOriginal => {
   // The action also pulls these for its bounded git plumbing; the sweep paths
   // exercised here never reach them with empty stash/submodule sets.
   runGitBounded: (...args: unknown[]) => runGitBoundedMock(...args),
+  runGitSyncStdinBounded: (...args: unknown[]) => runGitStdinBoundedMock(...args),
   gitTimeoutMsFor: () => 30_000,
   DEFAULT_MAX_BLOB_BYTES: 95 * 1024 * 1024,
   DEFAULT_MAX_COMMIT_TOTAL_BYTES: 250 * 1024 * 1024,
@@ -1111,7 +1113,7 @@ function definitelyDeadPid(): Promise<number> {
 }
 
 beforeEach(() => {
-  readCandidateMock.mockReset().mockResolvedValue({ ok: false, error: 'candidate-not-captured' });
+  readCandidateMock.mockReset().mockResolvedValue({ ok: false, error: 'source-custody-refused:candidate-not-captured' });
   prepareMetadataMock.mockReset();
   captureCandidateMock.mockReset();
   publishCandidateMock.mockReset();
@@ -1168,6 +1170,7 @@ beforeEach(() => {
   liveLockHoldingsStrictMock.mockReset();
   liveLockHoldingsStrictMock.mockResolvedValue([]);
   runGitSyncMock.mockReset();
+  runGitStdinBoundedMock.mockReset().mockResolvedValue({ code: 0, stdout: Buffer.alloc(0), stderr: '' });
   runGitBoundedMock.mockReset().mockImplementation(async (...args: unknown[]) => ({
     code: 0,
     stdout: Array.isArray(args[0]) && args[0].join(' ') === 'rev-parse --verify HEAD^{commit}'
@@ -1393,6 +1396,19 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     expect(runGitSyncMock).not.toHaveBeenCalled();
     expect(heldResourcesByOwner.size).toBe(0);
   });
+
+  it.each(['candidate-ref-read', 'candidate-manifest-read', 'candidate-input-mismatch'])(
+    'metadata repair refuses retained custody %s errors before preparing a replacement', async reason => {
+      const error = 'source-custody-refused:' + reason;
+      readCandidateMock.mockResolvedValue({ ok: false, error });
+      expect(await fireGitSyncNow(ctx.installSlug, ctx.workspaceId, repoDir, repairMetadata))
+        .toMatchObject({ status: 'error', committedCount: 0, errors: [{ scope: 'superproject', message: error }] });
+      expect(prepareMetadataMock).not.toHaveBeenCalled();
+      expect(captureCandidateMock).not.toHaveBeenCalled();
+      expect(publishCandidateMock).not.toHaveBeenCalled();
+      expect(runGitSyncMock).not.toHaveBeenCalled();
+      expect(heldResourcesByOwner.size).toBe(0);
+    });
 
   it('metadata repair reuses retained custody after publication without resolving npm again', async () => {
     readCandidateMock.mockResolvedValue({ ok: true, candidate: { base: repairMetadata.base,
@@ -2849,12 +2865,26 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
           writes.push('before-loss');
           // Another owner now holds the per-install resource.
           const acquisitions = tryAcquireResourceMock.mock.calls.length;
-          tryHeartbeatResourceMock.mockResolvedValueOnce({ extended: false, expires_ts: null });
+          tryHeartbeatResourceMock.mockResolvedValueOnce({ extended: false, expires_ts: null, refusal: {
+            reason: 'expired', observed_ts: new Date('2030-01-01T00:10:00Z'),
+            acquired_ts: new Date('2030-01-01T00:00:00Z'),
+            lease_expires_ts: new Date('2030-01-01T00:10:00Z'),
+            domain_matches: true, owner_matches: true,
+          } });
           expect(heartbeat).not.toBeNull();
           heartbeat!();
           await vi.waitFor(() =>
             expect(error).toHaveBeenCalledWith(expect.stringContaining('LOST exclusive lock git-sync:papercup')),
           );
+          const message = error.mock.calls.map(([value]) => String(value))
+            .find(value => value.includes('LOST exclusive lock git-sync:papercup'))!;
+          const detail = JSON.parse(message.split('; renewal=')[1]);
+          expect(detail).toMatchObject({ coordinationDomain: 'ws-42', owner: expect.any(String),
+            lockId: expect.any(String), sentAt: expect.any(Number), completedAt: expect.any(Number),
+            refusal: { reason: 'expired', observed_ts: '2030-01-01T00:10:00.000Z',
+              lease_expires_ts: '2030-01-01T00:10:00.000Z' } });
+          expect(tryHeartbeatResourceMock.mock.calls.some(([, domain, owner, lockId]) =>
+            domain === detail.coordinationDomain && owner === detail.owner && lockId === detail.lockId)).toBe(true);
           expect(tryAcquireResourceMock.mock.calls).toHaveLength(acquisitions);
           lease.assertHeld();
           writes.push('after-loss');
@@ -3984,6 +4014,30 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
           last_error: expect.stringContaining('git-sync action timed out'),
         }),
       );
+      // EI-28696436611358092: the timeout record must be dated and attributable on
+      // its own, because `git_sync_activity.timeout` is overwritten by the next fire
+      // while `last_errors` survives until the next completed outcome.
+      const timeoutPatch = allRoutinePatches().find(
+        (patch) => (patch as { last_timeout?: unknown }).last_timeout !== undefined,
+      ) as Record<string, unknown> | undefined;
+      expect(timeoutPatch).toMatchObject({
+        last_error: expect.stringContaining('[install papercup]'),
+        last_errors: ['git-sync action timeout (idle) during read-content-guard-flag'],
+        last_errors_at: expect.any(Number),
+        last_timeout: {
+          at: expect.any(Number),
+          kind: 'idle',
+          phase: 'read-content-guard-flag',
+          timeout_ms: 25,
+          fire_started_at: expect.any(Number),
+          owner: expect.any(String),
+          owner_pid: process.pid,
+        },
+      });
+      const lastTimeout = timeoutPatch!.last_timeout as { at: number; fire_started_at: number; workflow_id: unknown };
+      expect(timeoutPatch!.last_errors_at).toBe(lastTimeout.at);
+      expect(lastTimeout.fire_started_at).toBeLessThanOrEqual(lastTimeout.at);
+      expect(lastTimeout).toHaveProperty('workflow_id');
 
       // The underlying setup promise may eventually resolve, but the guarded
       // await has already rejected and must not let the pipeline resume.
@@ -4216,6 +4270,31 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     }
   });
 
+  it.each([0, 1])('preserves instrumented binary batch reads and private-index custody (exit %s)', async (code) => {
+    const bytes = Buffer.from([0, 255, 10]);
+    const env = { GIT_INDEX_FILE: join(repoDir, '.git', 'private.index') };
+    runGitStdinBoundedMock.mockResolvedValueOnce({ code, stdout: bytes, stderr: '' });
+    runGitSyncMock.mockImplementationOnce(async (_slug, raw) => {
+      const opts = raw as unknown as RunGitSyncOpts;
+      expect(opts.runGitStdin).toBeTypeOf('function');
+      const result = await opts.runGitStdin!(['cat-file', '--batch', '--buffer'], repoDir, 'abc\n', { env });
+      expect(result.stdout).toBe(bytes);
+      expect(result.code).toBe(code);
+      return syncedOutcome;
+    });
+    await action(ctx);
+    expect(runGitStdinBoundedMock).toHaveBeenCalledWith(
+      ['cat-file', '--batch', '--buffer'], repoDir, 'abc\n',
+      expect.objectContaining({ env, signal: expect.any(AbortSignal), onProgress: expect.any(Function) }),
+    );
+    expect(gitSyncActivityPatches().at(-1)?.git_commands).toMatchObject({
+      active_count: 0,
+      completed_count: 1,
+      completed: [{ subcommand: 'cat-file', status: code === 0 ? 'succeeded' : 'failed', exit_code: code }],
+    });
+    expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
+  });
+
   it.each(['idle', 'hard'] as const)('captures command custody before a cooperative child settles on abort (%s)', async (kind) => {
     vi.useFakeTimers();
     vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS', kind === 'idle' ? '25' : '60000');
@@ -4300,6 +4379,49 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
         exit_code: 0,
       })),
     });
+  });
+
+  it('retains whole-fire durations after slow, failed and thrown commands leave the bounded window', async () => {
+    let clock = 0;
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    runGitSyncMock.mockImplementationOnce(async (_slug, raw) => {
+      const opts = raw as unknown as RunGitSyncOpts;
+      runGitBoundedMock.mockImplementationOnce(async () => {
+        clock += 120_000;
+        return { code: 0, stdout: '', stderr: '' };
+      }).mockImplementationOnce(async () => {
+        clock += 10_000;
+        return { code: 1, stdout: '', stderr: '' };
+      }).mockImplementationOnce(async () => {
+        clock += 7;
+        throw new Error('child failed');
+      }).mockImplementation(async () => {
+        clock += 1;
+        return { code: 0, stdout: '', stderr: '' };
+      });
+      await opts.runGit!(['status', '--private-argument'], repoDir);
+      await opts.runGit!(['status'], join(repoDir, 'child'));
+      await expect(opts.runGit!(['status'], join(repoDir, 'child'))).rejects.toThrow('child failed');
+      for (let index = 0; index < 20; index += 1) await opts.runGit!(['status'], repoDir);
+      return syncedOutcome;
+    });
+    try {
+      await action(ctx);
+      const commands = gitSyncActivityPatches().at(-1)!.git_commands as Record<string, unknown>;
+      expect(commands).toMatchObject({
+        completed_count: 23,
+        completed_omitted_count: 7,
+        completed_totals: {
+          duration_ms: 130_027,
+          superproject: { count: 21, duration_ms: 120_020 },
+          other_repositories: { count: 2, duration_ms: 10_007 },
+        },
+      });
+      expect(commands.completed).toHaveLength(16);
+      expect(JSON.stringify(commands)).not.toContain('private-argument');
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it('bounds concurrent command diagnostics, omits private argv, and clears settled commands', async () => {

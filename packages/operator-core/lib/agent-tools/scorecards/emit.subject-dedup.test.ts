@@ -4,6 +4,7 @@
  * prior card and make the emitter append a duplicate.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 const getRubric = vi.fn();
 const readRubric = vi.fn();
@@ -40,8 +41,15 @@ vi.mock('../../issues-engineer', async (importOriginal) => {
 });
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
 vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted: async () => {} }));
+// Deduplication is independent of the host running this fixture. A unit run
+// must not resolve systemd/Git/Scout state to obtain its evaluator identity.
+vi.mock('../../scout/generation-watermark', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../scout/generation-watermark')>()),
+  readRunningGeneration: async () => ({ deployedSha: 'a'.repeat(40), hostStartedAt: null,
+    bootHeadSha: null, scoutCodeHash: null, staleHost: null }),
+}));
 
-import { emitScorecard } from './emit';
+import scorecardEmitTool, { emitScorecard } from './emit';
 import {
   asStructuredObservation,
   type SpecTestAdequacyRerunRecipe,
@@ -127,6 +135,23 @@ beforeEach(() => {
 });
 
 describe('scorecards:emit unchanged-evidence subject scope', () => {
+  it('accepts a typed fleet and observation window through the public input schema', () => {
+    expect((scorecardEmitTool.args as z.ZodType).safeParse({ rubricRef, ratings,
+      subject: { kind: 'fleet', ref: 'fleet-a', windowStart: '2026-10-01T00:00:00Z', windowEnd: '2026-10-02T00:00:00Z' } }).success)
+      .toBe(true);
+  });
+
+  it('passes the fleet identity, exact observation window and rubric harness to the ledger reader', async () => {
+    const readLatestCheckResults = vi.fn(async () => new Map());
+    const result = await emitScorecard({ rubricRef, fromLedger: true,
+      subject: { kind: 'fleet', ref: 'fleet-a', windowStart: '2026-10-01T00:00:00Z', windowEnd: '2026-10-02T00:00:00Z' } },
+    { createdBy: 'su-grader', ctxHarness: 'papercusp' }, { readLatestCheckResults });
+    expect(readLatestCheckResults).toHaveBeenCalledExactlyOnceWith({ rubricRef, workspaceId: RUBRIC.workspaceId,
+      subject: { kind: 'fleet', ref: 'fleet-a' },
+      subjectWindow: { windowStart: '2026-10-01T00:00:00Z', windowEnd: '2026-10-02T00:00:00Z' } });
+    expect(result).toMatchObject({ ok: false }); // This fixture's manual criterion still needs a rating.
+  });
+
   it('finds the prior same-subject card when a newer other-subject card exists', async () => {
     const args = { rubricRef, ratings, subject: { kind: 'plan' as const, ref: subjectRef } };
     const input = { createdBy: 'su-grader', ctxHarness: 'papercusp' };

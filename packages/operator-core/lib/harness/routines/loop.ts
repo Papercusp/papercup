@@ -45,6 +45,7 @@ import { extractGoalWorkItemIds } from './loop-goal-staleness';
 import { recordLoopTransition, type LoopCycleTurn } from './loop-transition-log';
 import { LOOP_TURN_START_MARKER, SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 import { boundedPgReadTxn } from '../../pg-read-query';
+import { boundedOrgTxn } from '../../pg-bounded-txn';
 // Import from the dependency-free automatic-tool-names.ts, NOT from
 // '../../agent-tools/sessions/timeline' (which re-exports the same constant) — timeline.ts
 // imports `@papercusp/agent-mcp`, whose index.ts unconditionally imports './bootstrap' and
@@ -63,6 +64,7 @@ import type { PersistedMonitorConfig } from './monitor-policy';
 import type { LoopBlockedOnRecord } from './loop-blocker-liveness';
 import {
   readMonitorStanddownRecord,
+  readIdentifiedWaitForRoutine,
   readPersistedMonitorConfig,
   type MonitorStanddownRecord,
 } from './monitor-standdown';
@@ -415,14 +417,50 @@ export interface MaterializeLoopInput {
  * the same session updates the one logical row even if the resolved harness
  * namespace changes between a concrete slug and the operator wildcard fallback.
  */
-export async function materializeLoop(input: MaterializeLoopInput): Promise<{
+type MaterializedLoop = {
   id: string;
   name: string;
   nextFireAt: Date | null;
   targetRole: string;
   intervalSec: number | null;
   changed: boolean;
-}> {
+};
+
+export async function materializeLoop(input: MaterializeLoopInput): Promise<MaterializedLoop> {
+  // An exact dependency must join its durable allowance BEFORE the new routine
+  // becomes visible to the fire runner. Settlement alone permits one extra model
+  // turn on every explicit arm of an already exhausted/unknown episode.
+  const identified = input.workItem === null ? null : readIdentifiedWaitForRoutine({
+    workItem: input.workItem ?? 'inherited', blockedOn: input.blockedOn,
+    mode: input.mode, monitor: input.monitor,
+  });
+  if (!identified) return materializeLoopRow(input);
+  const sql = input.sql ?? getOrgPg().sql;
+  const workspaceId = input.workspaceId ?? activeWorkspaceId();
+  return boundedOrgTxn(async raw => {
+    const tx = raw as unknown as TransactionSql;
+    // Match the await store's event -> driving item -> routine lock order.
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'event-announce:' + identified.eventKey}, 0))`;
+    let driver = input.workItem?.trim().toUpperCase();
+    if (!driver) {
+      const [prior] = await tx`SELECT payload_template->>'workItem' AS driver
+        FROM harness_shared.routines WHERE workspace_id=${workspaceId}
+          AND name=${loopRoutineName(input.ownerId)} AND target_owner_id=${input.ownerId}
+          AND reschedule_interval_sec IS NOT NULL
+        ORDER BY (install_slug=${input.harnessSlug}) DESC, active DESC, updated_at DESC LIMIT 1`;
+      driver = prior?.driver;
+    }
+    if (!driver) return materializeLoopRow({ ...input, sql: tx as unknown as Sql });
+    const [item] = await tx`SELECT taken_by FROM harness_shared.work_items
+      WHERE workspace_id=${workspaceId} AND harness_slug=${input.harnessSlug}
+        AND feature_id=${driver} FOR UPDATE`;
+    if (item?.taken_by !== input.ownerId) throw new Error('wait episode arm requires current driving custody');
+    return materializeLoopRow({ ...input, sql: tx as unknown as Sql }, { ...identified, drivingWorkItemId: driver });
+  }, { client: sql });
+}
+
+async function materializeLoopRow(input: MaterializeLoopInput,
+  identifiedWait?: { drivingWorkItemId: string; eventKey: string }): Promise<MaterializedLoop> {
   const sql = input.sql ?? getOrgPg().sql;
   const workspaceId = input.workspaceId ?? activeWorkspaceId();
   const now = input.now ?? new Date();
@@ -507,6 +545,15 @@ export async function materializeLoop(input: MaterializeLoopInput): Promise<{
       intervalSec: active.reschedule_interval_sec == null ? null : Number(active.reschedule_interval_sec),
       changed: false,
     };
+  }
+  // Omission is a retune/carry, not evidence that an unresolved dependency
+  // disappeared. Preserve its exact identity when the driving objective stays
+  // the same, then take the transactional admission path before any write.
+  const priorWait = readIdentifiedWaitForRoutine(existing[0]?.payload_template);
+  if (!identifiedWait && input.blockedOn === undefined && input.workItem !== null && priorWait &&
+      (!workItemText || workItemText === priorWait.drivingWorkItemId)) {
+    return materializeLoop({ ...input,
+      blockedOn: { reason: 'retained identified dependency', event: priorWait.eventKey } });
   }
   // EI-22079408866636029: a retune that omits workItem must preserve the durable
   // death-resilience anchor already stored on the loop row. The handler normally
@@ -651,6 +698,14 @@ export async function materializeLoop(input: MaterializeLoopInput): Promise<{
     );
     row = { id: inserted.id, name: inserted.name, nextFireAt: inserted.nextFireAt, targetRole: inserted.targetRole };
   }
+  if (identifiedWait && (input.active ?? true)) {
+    const { bindIdentifiedWaitRoutineArm } = await import('../../events/await/store');
+    row.nextFireAt = normalizeNextFireAt(await bindIdentifiedWaitRoutineArm({
+      tx: sql as unknown as TransactionSql, workspaceId, harness: input.harnessSlug,
+      ownerId: input.ownerId, routineId: row.id, intervalMs: input.intervalSec * 1000,
+      ...identifiedWait,
+    }));
+  }
   // EI-7613 — refresh the dead-man clock's arm instant on EVERY materialize (a fresh arm
   // AND a re-arm alike): the upsert above never touches `created_at` on its ON CONFLICT DO
   // UPDATE path, so without this a re-armed loop's maxDurationSec bound kept measuring from
@@ -671,7 +726,7 @@ export async function materializeLoop(input: MaterializeLoopInput): Promise<{
     );
   }
   const recordedNextFireAt = normalizeNextFireAt(row.nextFireAt);
-  void recordLoopTransition(sql, {
+  await recordLoopTransition(sql, {
     workspaceId,
     installSlug: input.harnessSlug,
     routineId: row.id,

@@ -1469,3 +1469,161 @@ describe('plans:add-decision — caller-supplied D-NNN title prefix (EI-27020408
     expect(sink.body).toBeNull();
   });
 });
+
+// WI-6554700010048088 — size advice on an over-budget plan. The pure budget lines are
+// pinned in plan-size-advisory.test.ts; these run the REAL handler and read the RESULT,
+// because three things can each be broken without the others noticing:
+//   (1) the decision is STILL WRITTEN — this is advice, never a refusal;
+//   (2) the advisory reaches the caller, on the append path AND the retry-dedupe path;
+//   (3) the raw measure never rides the result, and a plan within budget keeps its
+//       exact prior result shape.
+describe('plans:add-decision — planSizeAdvisory on an over-budget plan (WI-6554700010048088)', () => {
+  const planWith = (n: number, design = 'Small design.') =>
+    [
+      '---',
+      'slug: handler-plan',
+      'status: active',
+      '---',
+      '',
+      '## Now',
+      'State: testing',
+      '',
+      '## Design',
+      design,
+      '',
+      '## Decisions',
+      '',
+      ...Array.from({ length: n }, (_, i) => {
+        const id = `D-${String(i + 1).padStart(3, '0')}`;
+        return `### ${id} — Ruling ${i + 1}\nDate: 2026-10-26\nBody of ruling ${i + 1}.\n`;
+      }),
+    ].join('\n');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    handlerMocks.readFrozenRepairMarker.mockReturnValue(null);
+    handlerMocks.carryProvenanceFields.mockResolvedValue({});
+    handlerMocks.planRevisionCapture.mockReturnValue({ afterWrite: undefined, recorded: { current: null } });
+    handlerMocks.harnessScopedCtx.mockImplementation((harness: unknown, ctx: Record<string, unknown>) => ({
+      ...ctx,
+      harnessSlug: typeof harness === 'string' ? harness : 'session-harness',
+    }));
+  });
+
+  /** One-shot lock that runs the real mutator over `planBody` and captures what it would write. */
+  function lockOver(planBody: string, sink: { body: string | null }) {
+    handlerMocks.withPlanLock.mockImplementationOnce(async (_ctx, _opts, mutate) => {
+      const mutation = await (mutate as (
+        body: string,
+        meta: unknown,
+      ) => Promise<{ newBody: string | null; value: Record<string, unknown> }>)(planBody, {});
+      sink.body = mutation.newBody;
+      return { kind: 'ok', value: mutation.value, filePath: 'handler-plan.md' } as never;
+    });
+  }
+
+  const add = (title: string, body = 'A ruling other lanes must follow.') =>
+    handlerBody({ harness: 'explicit-harness', slug: 'handler-plan', title, body }, handlerContext());
+
+  it('documents the advisory in the tool returns', () => {
+    expect(tool.guidance?.returns).toContain('planSizeAdvisory');
+  });
+
+  it('records the decision AND returns the advisory once the plan is past the decision budget', async () => {
+    // Positive control on the fixture: the parser sees exactly the 30 decisions the budget allows.
+    expect(parsePlan(planWith(30), { filePath: 'handler-plan.md' }).decisions).toHaveLength(30);
+    const sink = { body: null as string | null };
+    lockOver(planWith(30), sink);
+
+    const out = await add('The thirty-first ruling');
+
+    expect(out.counts).toMatchObject({ ok: 1, failed: 0 });
+    expect(out.results[0]).toMatchObject({
+      ok: true,
+      decisionId: 'D-031',
+      planSizeAdvisory: {
+        code: 'plan_over_size_budget',
+        decisions: 31,
+        decisionsToday: 1,
+        budget: { decisions: 30, bytes: 100_000 },
+        over: ['decisions'],
+      },
+    });
+    // (1) Advice, not a refusal: the write went through with the new decision in it.
+    expect(sink.body).toContain('### D-031 — The thirty-first ruling\n');
+    // The message is what the author reads: it must say the write landed and name the better home.
+    const message = (out.results[0].planSizeAdvisory as { message: string }).message;
+    expect(message).toMatch(/^Recorded\./);
+    expect(message).toContain('work_items:checkpoint');
+    // (3) The raw measure stays internal.
+    expect(out.results[0]).not.toHaveProperty('planSize');
+  });
+
+  it('stays silent at the budget: the thirtieth decision keeps the exact prior result shape', async () => {
+    const sink = { body: null as string | null };
+    lockOver(planWith(29), sink);
+
+    const out = await add('The thirtieth ruling');
+
+    expect(out.results[0]).toMatchObject({ ok: true, decisionId: 'D-030' });
+    expect(out.results[0]).not.toHaveProperty('planSizeAdvisory');
+    expect(out.results[0]).not.toHaveProperty('planSize');
+    expect(sink.body).toContain('### D-030 — The thirtieth ruling\n');
+  });
+
+  it('fires on size alone when a large plan holds few decisions', async () => {
+    const sink = { body: null as string | null };
+    lockOver(planWith(1, 'x'.repeat(100_001)), sink);
+
+    const out = await add('A second ruling on a very large plan');
+
+    expect(out.results[0]).toMatchObject({
+      ok: true,
+      decisionId: 'D-002',
+      planSizeAdvisory: { code: 'plan_over_size_budget', decisions: 2, over: ['bytes'] },
+    });
+    expect(sink.body).toContain('### D-002 — A second ruling on a very large plan\n');
+  });
+
+  it('returns the advisory on a deduped retry, without writing again', async () => {
+    const sink = { body: null as string | null };
+    // The last decision is `### D-031 — Ruling 31` / `Body of ruling 31.` — retry exactly that.
+    lockOver(planWith(31), sink);
+
+    const out = await add('Ruling 31', 'Body of ruling 31.');
+
+    expect(out.results[0]).toMatchObject({
+      ok: true,
+      decisionId: 'D-031',
+      deduped: true,
+      // A no-op retry adds nothing: 31 decisions, none of them dated today.
+      planSizeAdvisory: { code: 'plan_over_size_budget', decisions: 31, decisionsToday: 0, over: ['decisions'] },
+    });
+    expect(sink.body).toBeNull();
+    expect(out.results[0]).not.toHaveProperty('planSize');
+  });
+
+  it('gives each bulk item its own verdict', async () => {
+    const big = { body: null as string | null };
+    const small = { body: null as string | null };
+    lockOver(planWith(30), big);
+    lockOver(planWith(2), small);
+
+    const out = await handlerBody(
+      {
+        harness: 'explicit-harness',
+        items: [
+          { slug: 'handler-plan', title: 'Onto the big plan', body: 'A ruling.' },
+          { slug: 'handler-plan', title: 'Onto the small plan', body: 'Another ruling.' },
+        ],
+      },
+      handlerContext(),
+    );
+
+    expect(out.counts).toMatchObject({ ok: 2, failed: 0 });
+    expect(out.results[0]).toMatchObject({ ok: true, decisionId: 'D-031', planSizeAdvisory: { over: ['decisions'] } });
+    // Negative control in the SAME call, so hard-coding the field onto every result is caught too.
+    expect(out.results[1]).toMatchObject({ ok: true, decisionId: 'D-003' });
+    expect(out.results[1]).not.toHaveProperty('planSizeAdvisory');
+  });
+});

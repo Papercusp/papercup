@@ -7,9 +7,16 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { captureConfigurationSnapshot, createProofContextIdentity, PROOF_CONTEXT_COMPONENTS,
+  type ProofContextIdentity } from '@papercusp/test-config/configuration-snapshot';
+import { TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION, captureRecordedProofContext,
+  createRecordedTestPopulation } from '@papercusp/test-config/execution-details';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { classifyReadPaths, writeExecutedSourceMapSnapshot } from '../../../../libs/test-config/src/executed-source-map-reporter';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import * as buildInfo from '../build-info';
+import { getSystemAction } from '../harness/routines/system-actions';
+import { CHECKPOINT_ELIGIBILITY_PREDICATES, buildCheckpointEligibilitySnapshot } from './checkpoint-eligibility-snapshot';
 
 const db = vi.hoisted(() => ({ sql: null as Sql | null }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
@@ -45,6 +52,9 @@ import {
   continueStoredQualificationWork,
   type QualificationWorkProgressInput,
   recordStoredQualificationScheduledFire,
+  recordStoredQualificationExecutorIdentityBlock,
+  recoverStoredQualificationExecutorIdentity,
+  waitQualificationTransaction,
   recordStoredQualificationVerdict,
   recordStoredQualificationComposedVerdict,
   reserveQualificationRunner,
@@ -68,7 +78,8 @@ import { evaluatePartialTaskContinuation, registerPartialNativeProducer, partial
   partialTaskCommandInputs, preparePartialTaskCommandDefinitions, readPartialTaskCommandCompletion } from '../../../../scripts/lib/partial-task-resume.mjs';
 import { nativeProcessTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
 import { syncBudgetedTaskNativeExecutionReceipt, writeBudgetedTaskNativeExecutionReceipt } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
-import { vitestConfigLoaderPolicy } from '../../../../scripts/lib/vitest-host-preflight.mjs';
+import { vitestConfigLoaderPolicy, NATIVE_QUALIFICATION_SUITE_NAME, NATIVE_QUALIFICATION_CASE_NAME,
+  NATIVE_QUALIFICATION_SCENARIOS } from '../../../../scripts/lib/vitest-host-preflight.mjs';
 import { captureRuntimeProofIdentity, runtimeProofFingerprint } from '../../../../scripts/lib/runtime-compatibility.mjs';
 import { createQualificationYieldBoundary, resolveQualificationYieldBudget } from '../../../../scripts/lib/batch-watchdog.mjs';
 
@@ -104,7 +115,120 @@ async function metadata(): Promise<Record<string, unknown>> {
   return rows[0]!.metadata;
 }
 
-describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
+describe(NATIVE_QUALIFICATION_SUITE_NAME, () => {
+  it('persists an unavailable executor through the real scheduled handler and refuses unqualified recovery', async () => {
+    const fence = { attemptId: 'executor-identity-attempt', candidate: 'frozen-candidate', repairHead: 'frozen-repair' };
+    const started = Date.now() - 1000;
+    const snapshot = buildCheckpointEligibilitySnapshot({ ...fence, observedAtMs: started,
+      predicates: CHECKPOINT_ELIGIBILITY_PREDICATES.map(code => ({
+        code, status: 'clear' as const, detail: code + ' clear', clearEvents: [], evidenceRefs: [],
+      })),
+    });
+    const original = waitQualificationTransaction({
+      ...beginQualificationTransaction(null, { ...fence, nowMs: started }).transaction, eligibilitySnapshot: snapshot,
+    }, { attemptId: fence.attemptId, reason: 'dependency-generation', nowMs: started,
+      blockers: [{ code: 'dependency-generation', clearEvents: ['dependency:ready'] }] }).transaction;
+    await seed({ qualificationTransaction: original, retainedUnrelatedMetadata: { proof: 'original' } });
+    const rootBefore = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    const logsBefore = process.env.PAPERCUSP_CHECKPOINT_LOG_DIR;
+    const logs = mkdtempSync(join(tmpdir(), 'executor-identity-regression-'));
+    process.env.PAPERCUSP_INTEGRATION_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
+    process.env.PAPERCUSP_CHECKPOINT_LOG_DIR = logs;
+    const build = vi.spyOn(buildInfo, 'getResolvedBuild').mockReturnValue(buildInfo.resolveBuild({
+      env: {}, bundled: true, bakedSha: '0123456789abcdef+dirty',
+    }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await getSystemAction('green-checkpoint')!({ ...target, triggerConfig: {}, payloadTemplate: null });
+      const first = await readStoredQualification(target);
+      expect(first.status).toBe('present');
+      if (first.status !== 'present') throw Error('original qualification row was not readable');
+      expect(first.transaction).toMatchObject({ ...fence, phase: 'waiting', currentPhysicalRunner: null });
+      expect(first.transaction.blockers).toContainEqual(original.blockers[0]);
+      const identity = first.transaction.blockers.find(blocker => blocker.code === 'executor-build-identity-unavailable');
+      expect(identity).toMatchObject({ clearEvents: [], detail: expect.stringContaining('dirty') });
+      expect(projectCheckpointQualificationState(first.transaction).safeNextAction.code).not.toMatch(/^launch-/);
+      expect((await metadata()).retainedUnrelatedMetadata).toEqual({ proof: 'original' });
+
+      await getSystemAction('green-checkpoint')!({ ...target, triggerConfig: {}, payloadTemplate: null });
+      const repeated = await readStoredQualification(target);
+      if (repeated.status !== 'present') throw Error('repeated refusal lost the qualification row');
+      expect(repeated.transaction.blockers).toEqual(first.transaction.blockers);
+      expect(repeated.transaction.lastStartedAtMs).toBeUndefined();
+
+      // The SHA check itself now passes, but the original artifact recovery
+      // still lacks its qualified publication/runtime evidence.
+      build.mockReturnValue({ sha: 'a'.repeat(40), shaSource: 'baked', version: 'test' });
+      await getSystemAction('green-checkpoint')!({ ...target, triggerConfig: {}, payloadTemplate: null });
+      const identityAvailable = await readStoredQualification(target);
+      if (identityAvailable.status !== 'present') throw Error('available SHA lost the qualification row');
+      expect(identityAvailable.transaction).toMatchObject({ ...fence, phase: 'waiting', currentPhysicalRunner: null });
+      expect(identityAvailable.transaction.blockers).toEqual(first.transaction.blockers);
+      expect(identityAvailable.transaction.lastStartedAtMs).toBeUndefined();
+
+      const beforeRecovery = await metadata();
+      const verify = vi.fn(async () => ({ status: 'blocked' as const, reason: 'original-artifact-proof-unavailable' }));
+      expect(await recoverStoredQualificationExecutorIdentity(target, fence, verify))
+        .toMatchObject({ status: 'conflict', refusalReason: 'original-artifact-proof-unavailable' });
+      expect(await metadata()).toEqual(beforeRecovery);
+      expect(await recordStoredQualificationExecutorIdentityBlock(target, {
+        ...fence, candidate: 'a-stale-candidate', shaSource: 'dirty',
+      })).toMatchObject({ status: 'conflict', refusalReason: 'executor-attempt-fence-mismatch' });
+      expect(await metadata()).toEqual(beforeRecovery);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('executor build identity is unavailable'));
+    } finally {
+      build.mockRestore(); warn.mockRestore(); buildInfo._resetBuildInfoForTest();
+      if (rootBefore === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+      else process.env.PAPERCUSP_INTEGRATION_ROOT = rootBefore;
+      if (logsBefore === undefined) delete process.env.PAPERCUSP_CHECKPOINT_LOG_DIR;
+      else process.env.PAPERCUSP_CHECKPOINT_LOG_DIR = logsBefore;
+      rmSync(logs, { recursive: true, force: true });
+    }
+  });
+
+  it('P021: persists the derived original-unit context in the existing PG qualification row and refuses a transplant', async () => {
+    const owner = { attemptId: 'context-aggregation', candidate: 'context-candidate', runnerId: 'context-runner',
+      runId: 'context-run', pid: 42, pidIdentity: 'boot:42', leaseDurationMs: 1000, started: true, nowMs: 200 };
+    const current = reserveQualificationRunner(beginQualificationTransaction(null, owner).transaction, owner).transaction;
+    await seed({ qualificationTransaction: current });
+    // Partial fixture measurements exercise persistence. They never qualify a
+    // runtime or a reusable pass, and do not stand for actual producer coverage.
+    const context = createProofContextIdentity({ ...Object.fromEntries(PROOF_CONTEXT_COMPONENTS.map(key => [key, null])),
+      population: '1'.repeat(64), testConfiguration: '2'.repeat(64) } as ProofContextIdentity['components'])!;
+    const work: QualificationWorkProgressInput = { ...owner, repairHead: null, root: '/repo',
+      taskKey: 'context-work', runContext: 'ci', runnerIdentity: 'unqualified-fixture', retryStates: [], nowMs: 300,
+      manifest: { schemaVersion: 1, units: [{ id: 'selected', kind: 'test', path: 'selected.test.ts' }] },
+      updates: [{ receipt: { unitId: 'selected', completionId: 'context-original', observedAtMs: 250,
+        state: 'pass', firstAttemptVerdict: 'pass', worktreeDirty: true, observedCount: 1,
+        proof: { recordedSha: owner.candidate, runContext: 'ci', runnerIdentity: 'unqualified-fixture',
+          executedModules: ['selected.test.ts'], readPaths: [], inputsCaptured: true, opaqueReasons: [],
+          proofContext: context } } }] };
+    const saved = await recordStoredQualificationWorkProgress(target, work);
+    expect(saved.status).toBe('updated');
+    if (saved.status !== 'updated') throw new Error('qualification context was not persisted');
+    const aggregate = saved.transaction.continuation!.proofContext!;
+    expect(aggregate.components.population).toMatch(/^[a-f0-9]{64}$/);
+    expect(aggregate.components.testConfiguration).toMatch(/^[a-f0-9]{64}$/);
+    expect(aggregate.components.source).toBeNull();
+    expect(aggregate.components.runtimeCapabilities).toBeNull();
+    expect(await readStoredQualification(target)).toMatchObject({ status: 'present', transaction: {
+      continuation: { proofContext: aggregate, receipts: work.updates.map(update => update.receipt) } } });
+    expect(await recordStoredQualificationWorkProgress(target, { ...work, updates: [] }))
+      .toMatchObject({ status: 'idempotent' });
+    const transplanted = createProofContextIdentity({ ...aggregate.components, population: '3'.repeat(64) })!;
+    await sql`UPDATE harness_shared.routines
+      SET metadata = jsonb_set(metadata, '{qualificationTransaction,continuation,proofContext}', ${JSON.stringify(transplanted)}::text::jsonb)
+      WHERE workspace_id = ${target.workspaceId} AND install_slug = ${target.installSlug}`;
+    expect(await readStoredQualification(target)).toMatchObject({ status: 'unreadable' });
+    expect(await recordStoredQualificationWorkProgress(target, { ...work, updates: [] }))
+      .toMatchObject({ status: 'unreadable' });
+    // The original remains durable even when its separately stored aggregate is invalid.
+    const raw = await metadata();
+    expect(raw).toMatchObject({ qualificationTransaction: { continuation: {
+      receipts: work.updates.map(update => update.receipt),
+    } } });
+  });
+
   it('progress-before-stop: re-reads an advancing enrolled payload before a stale stop decision', async () => {
     const nowMs = Date.now();
     const owner = { attemptId: 'stop-race', candidate: 'candidate-stop-race', runnerId: 'runner-stop-race',
@@ -282,7 +406,8 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
       } finally { configureRunnerLivenessProber(null); fixture?.cleanup(); rmSync(root, { recursive: true, force: true }); }
     }, 30_000,
   );
-  it.each(['complete', 'missing-post', 'partial-native', 'native-error', 'missing-output', 'source-drift', 'old-fence'])(
+  it.each(['complete', 'missing-post', 'partial-native', 'native-error', 'missing-output', 'source-drift', 'old-fence',
+    'selection-mismatch', 'missing-population', 'missing-channel', 'foreign-source'])(
     'composes the frozen full manifest atomically: %s', async scenario => {
       const root = mkdtempSync(join(tmpdir(), 'qualification-composition-source-'));
       const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -294,24 +419,37 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
         writeFileSync(join(root, 'input.json'), '{}\n');
         git('add', 'native.test.ts', 'input.json');
         git('-c', 'user.name=Qualification fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'fixture');
-        fixture = await nativeRecoveryFixture({ root, candidate: git('rev-parse', 'HEAD') });
+        fixture = await nativeRecoveryFixture({ root, candidate: git('rev-parse', 'HEAD'), physicalChannel: true });
         const input = fixture.input;
         input.manifest.units.push({ id: 'guard', kind: 'guard', path: 'input.json' },
           { id: 'post', kind: 'post-suite', path: 'input.json' });
+        // This contract fixture supplies explicit measured contexts only for
+        // retained non-test work. The native file must authenticate its current
+        // physical outcome; its runtime-input context remains unmeasured.
+        const context = createProofContextIdentity(Object.fromEntries(PROOF_CONTEXT_COMPONENTS.map(key =>
+          [key, createHash('sha256').update(`composition-fixture:${key}`).digest('hex')])) as ProofContextIdentity['components'])!;
+        input.proofContexts = { guard: { after: context }, post: { after: context } };
         const observation = fixture.enroll();
         expect((await recordStoredQualificationNativeProducer(target, input, observation)).status).toBe('updated');
         expect((await recoverStoredQualificationNativeCompletions(target, input, observation.classifyReadPaths)).status).toBe('updated');
         const proof = { recordedSha: input.candidate, runContext: input.runContext, runnerIdentity: input.runnerIdentity,
-          executedModules: ['input.json'], inputsCaptured: true, readPaths: [], opaqueReasons: [] };
+          executedModules: ['input.json'], inputsCaptured: true, readPaths: [], opaqueReasons: [], proofContext: context };
         expect((await recordStoredQualificationWorkProgress(target, { ...input, updates:
           ['guard', ...(scenario === 'missing-post' ? [] : ['post'])].map(id => ({ receipt: {
             unitId: id, completionId: `${id}-completion`, state: 'pass' as const, observedAtMs: 280,
             observedCount: 1, worktreeDirty: false, proof,
           } })) })).status).toBe('updated');
         if (scenario !== 'partial-native') Object.assign(fixture.snapshot.nativeRun, {
-          finishedAtMs: 290, reason: 'passed', unhandledErrorCount: 0, modulePopulationMatched: true,
+          finishedAtMs: 290, terminalHook: 'onTestRunEnd', reason: 'passed', unhandledErrorCount: 0,
+          modulePopulationMatched: true, selectedPopulationMatched: true,
         });
+        else Object.assign(fixture.snapshot.nativeRun, { finishedAtMs: null, terminalHook: null, reason: null,
+          unhandledErrorCount: null, modulePopulationMatched: false, selectedPopulationMatched: false });
         if (scenario === 'native-error') Object.assign(fixture.snapshot.nativeRun, { reason: 'failed', unhandledErrorCount: 1 });
+        if (scenario === 'selection-mismatch') fixture.snapshot.nativeRun.selectedPopulationMatched = false;
+        if (scenario === 'missing-population') delete (fixture.snapshot.nativeRun.files[0] as { population?: unknown }).population;
+        if (scenario === 'missing-channel') rmSync(`${observation.path}.binding.json`);
+        if (scenario === 'foreign-source') fixture.snapshot.recordedSha = 'f'.repeat(40);
         fixture.save();
         if (scenario === 'missing-output') rmSync(observation.path);
         if (scenario === 'source-drift') writeFileSync(join(root, 'input.json'), '{"changed":true}\n');
@@ -323,7 +461,8 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
         const composed = await composeStoredQualificationWork(target,
           { ...input, ...(scenario === 'old-fence' ? { runnerId: 'old' } : {}) },
           compositionOptions);
-        expect(composed.status).toBe(scenario === 'complete' ? 'idempotent' : 'conflict');
+        expect({ status: composed.status, refusalReason: 'refusalReason' in composed ? composed.refusalReason : undefined })
+          .toMatchObject({ status: scenario === 'complete' ? 'idempotent' : 'conflict' });
         // Even a complete population cannot settle or release the physical owner
         // before the caller has performed its promotion decision.
         expect(await readStoredQualification(target)).toMatchObject({ transaction: { outcome: { kind: 'pending' },
@@ -348,6 +487,70 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
           WHERE workspace_id = ${target.workspaceId} AND status = 'qualification-composition-fixture'
             AND detail->>'scenario' = ${scenario}`;
         expect(events[0]?.count).toBe(scenario === 'complete' ? 1 : 0);
+      } finally { fixture?.cleanup(); rmSync(root, { recursive: true, force: true }); }
+    }, 30_000,
+  );
+  it.each(['clean', 'tracked-drift', 'untracked-input'])(
+    'P021 final source check overrides submodule ignore settings: %s', async scenario => {
+      const root = mkdtempSync(join(tmpdir(), 'qualification-submodule-source-'));
+      const module = join(root, 'module');
+      const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+      const commit = (cwd: string) => git(cwd, '-c', 'user.name=Qualification fixture',
+        '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'fixture');
+      let fixture: Awaited<ReturnType<typeof nativeRecoveryFixture>> | undefined;
+      try {
+        git(root, 'init', '--quiet');
+        mkdirSync(module);
+        git(module, 'init', '--quiet');
+        writeFileSync(join(module, 'input.txt'), 'original\n');
+        git(module, 'add', 'input.txt');
+        commit(module);
+        const moduleHead = git(module, 'rev-parse', 'HEAD');
+        writeFileSync(join(root, '.gitmodules'), '[submodule "module"]\n\tpath = module\n\turl = ./module\n');
+        writeFileSync(join(root, 'post.mjs'), 'export {};\n');
+        git(root, 'add', '.gitmodules', 'module', 'post.mjs');
+        commit(root);
+        git(root, 'config', 'submodule.module.ignore', 'all');
+        fixture = await nativeRecoveryFixture({ root, candidate: git(root, 'rev-parse', 'HEAD') });
+        const input = fixture.input;
+        input.manifest = { schemaVersion: 1, units: [{ id: 'post', kind: 'post-suite', path: 'post.mjs' }] };
+        // A complete retained-leg contract fixture isolates the final source
+        // boundary from native process/population custody. It grants no claim
+        // about the completeness of production input measurements.
+        const context = createProofContextIdentity(Object.fromEntries(PROOF_CONTEXT_COMPONENTS.map(key =>
+          [key, createHash('sha256').update(`source-check-fixture:${key}`).digest('hex')])) as ProofContextIdentity['components'])!;
+        input.proofContexts = { post: { after: context } };
+        input.updates = [{ receipt: { unitId: 'post', completionId: 'post-completion', state: 'pass',
+          observedAtMs: 280, observedCount: 1, worktreeDirty: false,
+          proof: { recordedSha: input.candidate, runContext: input.runContext, runnerIdentity: input.runnerIdentity,
+            executedModules: ['post.mjs'], readPaths: [], inputsCaptured: true, opaqueReasons: [], proofContext: context } } }];
+        expect((await recordStoredQualificationWorkProgress(target, input)).status).toBe('updated');
+        if (scenario === 'tracked-drift') writeFileSync(join(module, 'input.txt'), 'changed\n');
+        if (scenario === 'untracked-input') writeFileSync(join(module, 'new-input.txt'), 'new\n');
+        expect(git(root, 'status', '--porcelain', '--untracked-files=normal')).toBe('');
+        expect(git(root, 'rev-parse', 'HEAD')).toBe(input.candidate);
+        expect(git(module, 'rev-parse', 'HEAD')).toBe(moduleHead);
+        expect(git(root, 'status', '--porcelain', '--untracked-files=normal', '--ignore-submodules=none') === '')
+          .toBe(scenario === 'clean');
+        const request = { ...input, updates: [] };
+        const composed = await composeStoredQualificationWork(target, request);
+        expect(composed, JSON.stringify(composed)).toMatchObject(scenario === 'clean'
+          ? { status: 'idempotent' } : { status: 'conflict', refusalReason: 'continuation-source-changed' });
+        const result = await recordStoredQualificationComposedVerdict(target, request, {
+          candidate: input.candidate, runId: input.runId, reason: 'advanced', green: true, nowMs: 400,
+          terminalEvent: { status: 'submodule-source-integrity-fixture', detail: { scenario } },
+        });
+        expect(result).toMatchObject(scenario === 'clean'
+          ? { status: 'updated', transaction: { outcome: { kind: 'green' }, currentPhysicalRunner: null } }
+          : { status: 'conflict', refusalReason: 'continuation-source-changed' });
+        expect(await readStoredQualification(target)).toMatchObject({ transaction: scenario === 'clean'
+          ? { outcome: { kind: 'green' }, currentPhysicalRunner: null }
+          : { outcome: { kind: 'pending' }, currentPhysicalRunner: { id: input.runnerId } } });
+        const events = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.pipeline_events
+          WHERE workspace_id = ${target.workspaceId} AND status = 'submodule-source-integrity-fixture'
+            AND detail->>'scenario' = ${scenario}`;
+        expect(events[0]?.n).toBe(scenario === 'clean' ? 1 : 0);
       } finally { fixture?.cleanup(); rmSync(root, { recursive: true, force: true }); }
     }, 30_000,
   );
@@ -457,8 +660,9 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
     }
   }, 150_000);
 
-  it.each(['SIGTERM', 'SIGKILL', 'primary-yield'] as const)('keeps a real acknowledged file banked across %s and executes only its unfinished peer', async scenario => {
-    const signal = scenario === 'primary-yield' ? 'SIGTERM' : scenario;
+  it.each(NATIVE_QUALIFICATION_SCENARIOS)(NATIVE_QUALIFICATION_CASE_NAME, async scenario => {
+    const recordsOriginals = scenario === 'original-ledger';
+    const signal = scenario === 'SIGKILL' ? 'SIGKILL' : 'SIGTERM';
     const sourceRoot = fileURLToPath(new URL('../../../../', import.meta.url));
     const directory = mkdtempSync(join(tmpdir(), 'qualification-banked-native-'));
     const root = join(directory, 'source');
@@ -564,12 +768,15 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
         runId: 'native-banked-run-one', leaseDurationMs: 120_000 };
       const outPath = join(directory, 'prefix.json');
       Object.assign(env, { PC_COMPLETION_CONTINUATION_FIXTURE: '1',
-        PC_COMPLETION_CRASH_WINDOW: scenario === 'primary-yield' ? scenario : 'after-first-bank', PC_COMPLETION_CRASH_SIGNAL: signal,
+        PC_COMPLETION_CRASH_WINDOW: recordsOriginals ? 'registered-complete'
+          : scenario === 'primary-yield' ? scenario : 'after-first-bank', PC_COMPLETION_CRASH_SIGNAL: signal,
         PC_EXECUTED_SOURCE_MAP_WORKSPACE: '@papercusp/durable-completion-fixture',
         PC_EXECUTED_SOURCE_MAP_OUT: outPath, PC_EXECUTED_SOURCE_MAP_NO_PERSIST: '1',
         PC_EXECUTED_INPUTS_DIR: join(directory, 'inputs-one'), PAPERCUSP_TEST_RUN_GROUP: owner.runId,
         PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID: owner.attemptId,
-        PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://127.0.0.1:1/native-banked-fixture' });
+        PAPERCUSP_TEST_RUNS_DB_URL: recordsOriginals ? org.adminDsn : 'postgresql://127.0.0.1:1/native-banked-fixture',
+        ...(recordsOriginals ? { PC_COMPLETION_RECORD_ORIGINALS: '1', PC_COMPLETION_DATABASE_RESET: '1',
+          PAPERCUSP_TEST_PG_ADMIN_URL: org.adminDsn } : {}) });
       const trace = await import(pathToFileURL(join(root, 'scripts/lib/vitest-startup-trace.mjs')).href);
       // The router already preloads the shared observer. This fixture owns a
       // copied source graph: replace that observer rather than installing both
@@ -693,11 +900,11 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
       }
       // Native Vitest handles a parent-requested TERM and exits with 128+15.
       // The crash fixtures remove that handler and retain the signal directly.
-      expect(await first.closed, first.output()).toEqual(scenario === 'primary-yield'
-        ? { code: 143, signal: null } : { code: null, signal });
+      expect(await first.closed, first.output()).toEqual(recordsOriginals ? { code: 0, signal: null }
+        : scenario === 'primary-yield' ? { code: 143, signal: null } : { code: null, signal });
       stop(first.child);
       expect(first.output()).toContain('COMPLETION_ACK ids=');
-      if (scenario !== 'primary-yield')
+      if (scenario !== 'primary-yield' && !recordsOriginals)
         expect(first.output()).toContain(`REAL_COMPLETION_WRITE_INTERRUPTED phase=after-first-bank signal=${signal}`);
       const prefixBytes = readFileSync(outPath);
       const snapshot = JSON.parse(prefixBytes.toString('utf8'));
@@ -705,7 +912,95 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
       expect(snapshot.recordedSha).toBe(candidate);
       const producer = JSON.parse(readFileSync(`${outPath}.producer.json`, 'utf8'));
       expect(snapshot.nativeRun.startedAtMs).toBeGreaterThanOrEqual(producer.registeredAtMs);
-      expect(snapshot.nativeRun.files).toHaveLength(1);
+      expect(snapshot.nativeRun.files).toHaveLength(recordsOriginals ? specifications.length : 1);
+      if (recordsOriginals) {
+        // Both sides are produced independently by the maintained reporters in
+        // the real worker run. No authored native OUT or inserted pass row.
+        expect(snapshot.nativeRun).toMatchObject({ terminalHook: 'onTestRunEnd', reason: 'passed',
+          selectedPopulationMatched: true, unhandledErrorCount: 0 });
+        const originals = await sql<Array<{ id: string; file_path: string; execution_details: unknown }>>`
+          SELECT id::text, file_path, execution_details FROM harness_shared.test_runs
+           WHERE run_group_id = ${owner.runId} ORDER BY file_path`;
+        expect(originals.map(row => row.file_path)).toEqual(specifications.map(spec => spec.testFile).sort());
+        const recover = () => recoverStoredQualificationNativeCompletions(target, input, classifier);
+        const recovered = await recover();
+        expect(recovered, first.output()).toMatchObject({ status: 'updated', transaction: {
+          outcome: { kind: 'pending' }, continuation: { nativeProducers: [{ originals: { status: 'known',
+            runGroupId: owner.runId, selectedManifestHash: snapshot.nativeRun.selectedManifest.sha256,
+            bindings: expect.arrayContaining(originals.map(row => expect.objectContaining({ unitId: row.file_path,
+              reference: expect.objectContaining({ testRunId: row.id }) }))),
+          } }] } } });
+        if (recovered.status !== 'updated') throw Error('real native original rows did not authenticate');
+        const bank = recovered.transaction.continuation!.receipts;
+        expect(bank).toHaveLength(specifications.length);
+        for (const receipt of bank) {
+          const original = originals.find(row => row.file_path === receipt.unitId)!;
+          const details = original.execution_details as { workerExecution: { before: { pid: number } }; population: unknown };
+          expect(receipt.proof).toMatchObject({ workerExecution: details.workerExecution,
+            population: details.population, producingRun: { qualificationAttemptId: owner.attemptId,
+              runGroupId: owner.runId, completionId: receipt.completionId } });
+          expect(details.workerExecution.before.pid).not.toBe(first.child.pid);
+        }
+        expect((await recover()).status).toBe('idempotent');
+        const resetOriginal = originals.find(row => row.file_path.endsWith('/remaining.fixture.ts'))!;
+        expect(resetOriginal).toBeDefined();
+        const { confirmedRecordedWorkerDatabaseReset } = await import('@papercusp/test-config/execution-details');
+        const resetDetails = resetOriginal.execution_details as { workerDatabaseReset: unknown; workerExecution: unknown };
+        const reset = confirmedRecordedWorkerDatabaseReset(resetDetails.workerDatabaseReset, resetDetails.workerExecution, owner.runId);
+        expect(reset?.databases).toHaveLength(1);
+        expect(reset?.databases[0]?.name).toMatch(/^nativereset_/);
+        expect(bank.find(receipt => receipt.unitId === resetOriginal.file_path)?.proof?.workerDatabaseReset).toEqual(reset);
+        try {
+          await sql`UPDATE harness_shared.test_runs SET execution_details = jsonb_set(execution_details,
+            '{workerDatabaseReset,databases,0,cleanup,outcome}', '"deferred"'::jsonb)
+            WHERE id::text = ${resetOriginal.id}`;
+          expect(await recover()).toMatchObject({ status: 'updated', transaction: { continuation: {
+            receipts: bank, nativeProducers: [{ originals: { status: 'unknown',
+              reason: 'original-native-worker-population-or-context-mismatch' } }],
+          } } });
+        } finally {
+          await sql`UPDATE harness_shared.test_runs SET execution_details =
+            ${JSON.stringify(resetOriginal.execution_details)}::text::jsonb WHERE id::text = ${resetOriginal.id}`;
+        }
+        expect(await recover()).toMatchObject({ status: 'updated', transaction: { continuation: {
+          nativeProducers: [{ originals: { status: 'known' } }],
+        } } });
+        const original = originals[0]!;
+        try {
+          await sql`UPDATE harness_shared.test_runs SET run_group_id = ${`${owner.runId}-foreign`}
+            WHERE id::text = ${original.id}`;
+          expect(await recover()).toMatchObject({ status: 'updated', transaction: { continuation: {
+            receipts: bank, nativeProducers: [{ originals: { status: 'unknown',
+              reason: 'original-population-incomplete-or-ambiguous' } }],
+          } } });
+        } finally {
+          await sql`UPDATE harness_shared.test_runs SET run_group_id = ${owner.runId} WHERE id::text = ${original.id}`;
+        }
+        expect(await recover()).toMatchObject({ status: 'updated', transaction: { continuation: {
+          nativeProducers: [{ originals: { status: 'known' } }],
+        } } });
+        try {
+          await sql`UPDATE harness_shared.test_runs SET execution_details = jsonb_set(execution_details,
+            '{workerExecution,before,pid}', '999999'::jsonb)
+            WHERE id::text = ${original.id}`;
+          expect(await recover()).toMatchObject({ status: 'updated', transaction: { continuation: {
+            receipts: bank, nativeProducers: [{ originals: { status: 'unknown',
+              reason: 'original-native-worker-population-or-context-mismatch' } }],
+          } } });
+        } finally {
+          await sql`UPDATE harness_shared.test_runs SET execution_details =
+            ${JSON.stringify(original.execution_details)}::text::jsonb WHERE id::text = ${original.id}`;
+        }
+        expect(await recover()).toMatchObject({ status: 'updated', transaction: { continuation: {
+          nativeProducers: [{ originals: { status: 'known' } }],
+        } } });
+        const restored = await readStoredQualification(target);
+        expect(await recoverStoredQualificationNativeCompletions(target, { ...input, runnerId: 'stale-native-runner' }, classifier))
+          .toMatchObject({ status: 'conflict', refusalReason: 'runner-fence-mismatch' });
+        expect(await readStoredQualification(target)).toEqual(restored);
+        expect(git('status', '--porcelain')).toBe('');
+        return;
+      }
       const bankedFile = snapshot.nativeRun.files[0].testFile as string;
       const bankedId = snapshot.nativeRun.files[0].completionId as string;
       expect(snapshot.nativeRun.files[0].state, first.output()).toBe('passed');
@@ -873,6 +1168,72 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
       rmSync(directory, { recursive: true, force: true });
     }
   }, 240_000);
+
+  it('persists and rechecks native original ledger evidence on the existing locked qualification row', async () => {
+    // Synthetic native contract inputs, with real PostgreSQL persistence. This
+    // does not claim actual reporter/worker or disposable-reset acceptance.
+    const fixture = await nativeRecoveryFixture();
+    const insertedIds: string[] = [];
+    try {
+      const file = fixture.snapshot.nativeRun.files[0]!;
+      const workerProcess = { pid: 123, threadId: 0,
+        bootId: '01234567-89ab-cdef-0123-456789abcdef', startTicks: '456' };
+      const workerExecution = { schemaVersion: 'worker-execution-v1',
+        captureId: '12345678-9abc-def0-1234-56789abcdef0', testFile: '/repo/native.test.ts',
+        before: workerProcess, after: { ...workerProcess } };
+      const workerTestConfiguration = { schemaVersion: 'vitest-worker-configuration-v1',
+        before: 'b'.repeat(64), after: 'b'.repeat(64) };
+      const proofContext = captureRecordedProofContext({ commitSha: fixture.input.candidate,
+        worktreeDirty: false, population: file.population, workerTestConfiguration });
+      Object.assign(file, { proofContext });
+      Object.assign(file.proof, { inputs: { workerExecution, testConfiguration: workerTestConfiguration } });
+      fixture.save();
+      const observation = fixture.enroll();
+      expect((await recordStoredQualificationNativeProducer(target, fixture.input, observation)).status).toBe('updated');
+      const recover = () => recoverStoredQualificationNativeCompletions(target, fixture.input, observation.classifyReadPaths);
+      expect(await recover()).toMatchObject({ status: 'updated', transaction: { continuation: { nativeProducers: [
+        { originals: { status: 'unknown', reason: 'original-population-incomplete-or-ambiguous' } },
+      ] } } });
+      const details = { schemaVersion: TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION, root: fixture.input.root,
+        filePath: file.testFile, runGroupId: fixture.input.runId, workspaceId: null, harnessSlug: null,
+        testNamePattern: null, passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+        mutationPhase: null, commitSha: fixture.input.candidate, worktreeDirty: false,
+        populationCaptureStatus: 'captured', population: file.population, workerExecution,
+        workerTestConfiguration, proofContext };
+      const insert = async () => {
+        const rows = await sql<{ id: string }[]>`INSERT INTO harness_shared.test_runs
+          (workspace_id, harness_slug, file_path, status, framework, started_at, finished_at, duration_ms,
+           commit_sha, run_group_id, source, branch, worktree_dirty, is_scratch_config,
+           configuration_snapshot, execution_details)
+          VALUES (NULL, NULL, ${file.testFile}, 'pass', 'vitest', ${new Date(230)}, ${new Date(240)}, 10,
+           ${fixture.input.candidate}, ${fixture.input.runId}, 'ci', 'fixture', false, false,
+           ${JSON.stringify(captureConfigurationSnapshot({}))}::text::jsonb, ${JSON.stringify(details)}::text::jsonb)
+          RETURNING id::text`;
+        insertedIds.push(rows[0]!.id);
+      };
+      await insert();
+      const measured = await recover();
+      expect(measured).toMatchObject({ status: 'updated', transaction: { continuation: { nativeProducers: [
+        { originals: { status: 'known', bindings: [{ unitId: 'native', reference: { testRunId: insertedIds[0] } }] } },
+      ] } } });
+      if (measured.status !== 'updated') throw Error('original ledger binding was not stored');
+      const originalReceipts = measured.transaction.continuation!.receipts;
+      expect(await readStoredQualification(target)).toMatchObject({ transaction: measured.transaction });
+      expect((await recover()).status).toBe('idempotent');
+      await insert(); // Duplicate original rows cannot be hidden by latest-per-file selection.
+      expect(await recover()).toMatchObject({ status: 'updated', transaction: { continuation: {
+        receipts: originalReceipts, nativeProducers: [
+          { originals: { status: 'unknown', reason: 'original-population-incomplete-or-ambiguous' } },
+        ],
+      } } });
+      expect((await recordStoredQualificationNativeProducer(target, fixture.input, observation)).status).toBe('idempotent');
+      expect(await recoverStoredQualificationNativeCompletions(target, { ...fixture.input, runnerId: 'old-runner' },
+        observation.classifyReadPaths)).toMatchObject({ status: 'conflict', refusalReason: 'runner-fence-mismatch' });
+    } finally {
+      if (insertedIds.length) await sql`DELETE FROM harness_shared.test_runs WHERE id::text = ANY(${insertedIds}::text[])`;
+      fixture.cleanup();
+    }
+  });
 
   it('recovers a producer killed before its first snapshot only after a measured dead handoff', async () => {
     const fixture = await nativeRecoveryFixture();
@@ -2025,7 +2386,7 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
 });
 
 /** Native artifact contract fixture; actual Vitest crash proof remains in the recorder suite. */
-async function nativeRecoveryFixture(options: { root?: string; candidate?: string;
+async function nativeRecoveryFixture(options: { root?: string; candidate?: string; physicalChannel?: boolean;
   runner?: { pid: number; pidIdentity: string } } = {}) {
   await seed();
   await beginStoredQualification(target, { attemptId: 'attempt-native', candidate: options.candidate ?? 'candidate-native', nowMs: 100 });
@@ -2046,13 +2407,56 @@ async function nativeRecoveryFixture(options: { root?: string; candidate?: strin
       inputsCaptured: true, opaqueReasons: [] }],
     nativeRun: { schemaVersion: 'native-vitest-run-v1', startedAtMs: 220, finishedAtMs: null, gaps: [],
       terminalHook: null, reason: null, unhandledErrorCount: null, modulePopulationMatched: false,
+      selectedPopulationMatched: false,
       selectedManifest: { specifications: structuredClone(specifications), sha256: createHash('sha256')
         .update(JSON.stringify(specifications)).digest('hex') },
       files: [{ testFile: 'native.test.ts', state: 'passed', firstAttemptVerdict: 'pass',
         completionId: 'native-completion', observedAtMs: 250, cases: [{ status: 'pass' }],
+        projectName: null, populationCaptureStatus: 'captured',
+        population: createRecordedTestPopulation([
+          { identity: ['', 'native.test.ts', 'passes', 1, 'test'], selected: true, outcome: 'passed' },
+        ], [['', 'native.test.ts', 'passes', 1, 'test']]),
+        execution: { collectionFailed: false, passed: 1, failed: 0, skipped: 0 },
         proof: { sourceEvidence: { schemaVersion: 'vite-collected-source-evidence-v1', status: 'stable', reasons: [],
           sources: [{ path: 'native.test.ts', sha256: 'a'.repeat(64), currentSha256: 'a'.repeat(64) }] } } }] } };
-  const directory = mkdtempSync(join(tmpdir(), 'native-qualification-')), file = join(directory, 'out.json');
+  const directory = mkdtempSync(join(tmpdir(), 'native-qualification-'));
+  const traceOut = join(directory, 'out');
+  const file = options.physicalChannel ? `${traceOut}.step-0` : join(directory, 'out.json');
+  const channel = { traceOut, script: 'test', command: 'vitest run', step: 0 };
+  if (options.physicalChannel) {
+    // Original channel artifacts exercise the production parser. These are
+    // synthetic contract inputs, not evidence of an actual native execution.
+    const binding = { schemaVersion: 1, kind: 'native-channel-binding', ...channel, outPath: file,
+      parentPid: 10, processIdentity: 'npm-process', childIdentity: 'test-child' };
+    Object.assign(snapshot.nativeRun, { scope: 'vitest-reporter-callbacks', pid: 12, ppid: 11,
+      finishedAtMs: 290, terminalHook: 'onTestRunEnd', reason: 'passed', unhandledErrorCount: 0,
+      modulePopulationMatched: true, selectedPopulationMatched: true });
+    mkdirSync(`${traceOut}.native-processes`);
+    const emptyHash = createHash('sha256').update('').digest('hex');
+    const stream = { scope: 'node-writable-call-inputs', captureComplete: true, sha256: emptyHash,
+      ref: `${emptyHash}.stream`, byteLength: 0, observedByteLength: 0 };
+    writeFileSync(join(`${traceOut}.native-processes`, stream.ref), '');
+    const lifecycle = { event: 'test', script: channel.command };
+    const events = [
+      { event: 'node-entry', pid: 10, ppid: 1, processIdentity: 'npm-process', atMs: 211,
+        cwd: input.root, argv: ['/node', '/npm-cli.js', 'run', 'test'], reporterOut: traceOut },
+      { event: 'child-spawn', pid: 10, ppid: 1, processIdentity: 'npm-process', atMs: 215,
+        childIdentity: binding.childIdentity, childPid: 11, nativeChannel: binding, shell: false,
+        command: 'sh', argv: ['-c', channel.command], cwd: input.root, lifecycle },
+      { event: 'node-entry', pid: 12, ppid: 11, processIdentity: 'reporter-process', atMs: 218,
+        cwd: input.root, reporterOut: file, lifecycle },
+      { event: 'node-exit', pid: 12, ppid: 11, processIdentity: 'reporter-process', atMs: 295,
+        code: 0, exitListenersComplete: true, streams: { stdout: stream, stderr: stream } },
+      { event: 'child-close', pid: 10, ppid: 1, processIdentity: 'npm-process', atMs: 297,
+        childIdentity: binding.childIdentity, childPid: 11, code: 0, signal: null },
+    ];
+    for (const event of events) {
+      const value = { schemaVersion: 1, kind: 'native-node-process-event', ...event };
+      const hash = createHash('sha256').update(JSON.stringify(value)).digest('hex');
+      writeFileSync(join(`${traceOut}.native-processes`, `${hash}.json`), JSON.stringify(value));
+    }
+    writeFileSync(`${file}.binding.json`, JSON.stringify(binding));
+  }
   const save = () => writeExecutedSourceMapSnapshot(file, snapshot);
   save();
   const observation = { path: file, workspaceName: snapshot.workspaceName,
@@ -2066,6 +2470,7 @@ async function nativeRecoveryFixture(options: { root?: string; candidate?: strin
       attemptId: input.attemptId, runGroupId: input.runId, root: input.root, taskKey,
       workspaceName: snapshot.workspaceName, sourceCommit: input.candidate, registeredAtMs: 210,
       selectedSpecifications: structuredClone(specifications), command: { cwd: input.root, cmd: 'npm', argv: ['run', 'test'] },
+      ...(options.physicalChannel ? { nativeChannel: channel } : {}),
     }, { NODE_ENV: 'test' });
     return { ...observation, selectedSpecifications: structuredClone(specifications), taskKey, producerPath: producer.path };
   };

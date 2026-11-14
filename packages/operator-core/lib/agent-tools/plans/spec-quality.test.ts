@@ -860,6 +860,41 @@ describe('evaluatePlanSpecQuality', () => {
   });
 
   it.each([
+    'Any role readback omits or changes receiptSha256/artifact commit/tree.',
+    'The complete ordered unique remainingObligations differs from the independently frozen expectation.',
+    'The recorded authorizedRecipients differs from the independently frozen expectation.',
+    'Any original source/metadata/p001 role is missing, substituted, reordered or only transport-ACKed; ' +
+      'any role readback omits or changes receiptSha256/artifact commit/tree or lacks verified accessibility or an explicit refusal blocker; ' +
+      'a readback occurs after callback settlement/expiry; the complete ordered unique remainingObligations differs from the independently frozen WI7050 expectation; ' +
+      'or delivery/cleanup is reported as downstream qualification.',
+  ])('recognizes a normative public receipt field observation: %s', (observation) => {
+    const contract = clause({
+      behavior: 'The concrete source-only artifact handoff records exactly the three original-role deliveries and identity/accessibility readbacks within its live producer callback',
+      falsifier: { observation },
+    });
+    const before = structuredClone(contract);
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      classRef: 'plan-class-feature-ship', clauses: [contract],
+    });
+    expect(result.ratings['implementation-independence'].rating).toBe('pass');
+    expect(contract).toEqual(before);
+  });
+
+  it.each([
+    'Any role readback omits receiptSha256 because function buildPrivateReceipt recomputes it.',
+    'The complete ordered unique remainingObligations differs from the expectation; remainingObligations evaluates the handoff.',
+    'The private field remainingObligations differs from the independently frozen expectation.',
+  ])('keeps private machinery checked beside a normative public receipt field: %s', (observation) => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      classRef: 'plan-class-feature-ship',
+      clauses: [clause({ behavior: 'The receipt exposes the handoff outcome.', falsifier: { observation } })],
+    });
+    expect(result.ratings['implementation-independence'].rating).toBe('fail');
+  });
+
+  it.each([
     {
       specId: 'AUTO-BAR-R-1-P-001',
       behavior: 'A diagnostic assessment is ineligible to satisfy any finalized gating or default-history role.',
@@ -1113,6 +1148,35 @@ describe('evaluatePlanSpecQuality', () => {
 
     expect(result.ratings['implementation-independence'].rating).toBe('fail');
     expect(result.ratings['implementation-independence'].evidence).toContain('"runSyncBatchDeltaCheck"');
+  });
+
+  it.each(['behavior', 'falsifier'] as const)(
+    'accepts the public nDCG metric in %s',
+    (field) => {
+      const text = 'The retrieval report includes nDCG@5 for the frozen queries and ground truth.';
+      const result = evaluatePlanSpecQuality({
+        planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+        classRef: 'plan-class-feature-ship',
+        clauses: [clause(field === 'behavior'
+          ? { behavior: text }
+          : { falsifier: { observation: text } })],
+      });
+
+      expect(result.ratings['implementation-independence'].rating).toBe('pass');
+    },
+  );
+
+  it.each([
+    'The function nDCG calculates the retrieval scores.',
+    'The function `nDCG` calculates the retrieval scores.',
+    'The report includes nDCG@5 while runSyncBatchDeltaCheck evaluates the batch.',
+  ])('still rejects implementation symbols alongside a public metric: %s', (behavior) => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      classRef: 'plan-class-feature-ship', clauses: [clause({ behavior })],
+    });
+
+    expect(result.ratings['implementation-independence'].rating).toBe('fail');
   });
 
   it('accepts observable persistence without prescribing its storage mechanism', () => {

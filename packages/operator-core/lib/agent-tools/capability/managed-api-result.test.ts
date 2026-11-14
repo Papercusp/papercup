@@ -1,5 +1,30 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { assertManagedRecoveryRefusal, assertManagedToolSuccess, finishManagedApiTeardown } from './__fixtures__/managed-api-result';
+
+describe('managed HTTP acceptance source identity', () => {
+  it('pins the bundle before preparation and checks serving identity before opening MCP clients', () => {
+    const proof = readFileSync(new URL('./_managed-capability-api-proof.ts', import.meta.url), 'utf8');
+    const fixture = readFileSync(new URL('./__fixtures__/managed-api-client.mts', import.meta.url), 'utf8');
+    const pin = proof.indexOf('const sourceSha = privateMcpSourceSha(root, buildEnv);');
+    const prepare = proof.indexOf('preparePrivateOperatorApiBundle(root, evidenceDir, {');
+    expect(pin).toBeGreaterThanOrEqual(0);
+    expect(prepare).toBeGreaterThan(pin);
+    expect(proof).toContain("const buildEnv: NodeJS.ProcessEnv = { ...process.env, VITEST: 'true' };");
+    expect(proof).toContain('sourceSha,\n        builder: { timeoutMs: 240_000, maxMs: 420_000, env: buildEnv }');
+
+    const receiptPin = fixture.indexOf('const preparedSourceSha = resolvePreparedPrivateApiSourceSha(');
+    const hostStart = fixture.indexOf('const host = spawn(');
+    const healthProbe = fixture.indexOf('const health = await waitForPrivateOperator(');
+    const healthCheck = fixture.indexOf('assertPrivateMcpSourceIdentity(preparedSourceSha, health.sha);');
+    const firstClient = fixture.indexOf('await client(owner);', healthCheck);
+    expect(receiptPin).toBeGreaterThanOrEqual(0);
+    expect(hostStart).toBeGreaterThan(receiptPin);
+    expect(healthProbe).toBeGreaterThanOrEqual(0);
+    expect(healthCheck).toBeGreaterThan(healthProbe);
+    expect(firstClient).toBeGreaterThan(healthCheck);
+  });
+});
 
 describe('excluded recovery running-path detector', () => {
   const name = 'capability:offline_recovery';

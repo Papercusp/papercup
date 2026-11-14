@@ -60,6 +60,35 @@ beforeEach(() => {
 });
 
 describe('work_items:update handler (bulk keyed-array)', () => {
+  describe('task kind corrections', () => {
+    const id = 'EI-review-intake';
+    const title = 'Rubric-vetting: current acceptance contract';
+    const request = 'Review revision 12, criteriaHash 630deaae; preserve every acceptance bar.';
+
+    it.each([
+      ['inline', { id, kind: 'task', title }],
+      ['per-item', { items: [{ id, kind: 'task', title }] }],
+      ['bulk default', { kind: 'task', items: [{ id, title }] }],
+    ])('corrects a promoted review through the %s schema without replacing its request', async (_form, args) => {
+      const original = workItemFixture({ id, kind: 'bug', summary: request });
+      getM.mockResolvedValue(original);
+      updM.mockResolvedValue({ ok: true, item: { ...original, kind: 'task', title } });
+
+      const parsed = tool.args.parse(args);
+      const out = await body(parsed);
+
+      expect(updM).toHaveBeenCalledExactlyOnceWith(id,
+        expect.objectContaining({ kind: 'task', title, body: undefined }), 'me', expect.any(Object));
+      expect(out.results[0]).toMatchObject({ ok: true, id, item: { kind: 'task', summary: request } });
+      expect(refuseM).toHaveBeenCalledWith('ws-test', id, ['title']);
+    });
+
+    it.each(['feature', 'chunk', 'research-task', 'cleanup'])('rejects an unsupported %s kind correction', (kind) => {
+      expect(tool.args.safeParse({ id, kind }).success).toBe(false);
+      expect(tool.args.safeParse({ items: [{ id, kind }] }).success).toBe(false);
+    });
+  });
+
   describe('declared acceptance criteria survive work definition updates', () => {
     const criteria = ['Measure every requested criterion', 'Verify automatic fleet reporting'];
     const definition = { acceptanceCriteria: criteria };

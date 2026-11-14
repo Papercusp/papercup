@@ -482,30 +482,87 @@ export async function claimPlanItem(opts: ClaimPlanItemOpts): Promise<ClaimPlanI
   const alreadyHeld = Boolean(hasLiveClaim && prior?.owner === opts.owner);
   if (!alreadyHeld && (!hasLiveClaim || opts.forceTakeover)) {
     const { admitSubjectForFleetTarget } = await import('../scheduler/fleet-scope-admission');
+    let subject: import('../scheduler/claim-spec-match').ClaimSpecSubject = {
+      id: null,
+      title: null,
+      summary: null,
+      kind: 'feature',
+      priority: null,
+      tags: [],
+      paths: [],
+      plan: opts.planSlug,
+      planItem: [opts.itemId],
+      fleet: null,
+      triageGate: null,
+      itemClass: 'work',
+      age: Date.now(),
+      riskTier: null,
+      redundancy: null,
+      estCost: null,
+      assignee: assignment?.assigneeName ?? null,
+      severity: null,
+      goal: null,
+    };
+    // EI-28614045227308413: exact-ID specs name the implementing work-item,
+    // not this synthetic, pre-conversion subject. Resolve its canonical identity
+    // through the same cross-family reader used by conversion; never choose an
+    // arbitrary live edge or grant a lease while the binding is unknown.
+    try {
+      const [{ findAllLinkedWorkItems, selectCanonicalLinkedWorkItem },
+        { claimSpecSubjectFromWorkItem }, { planItemProvenanceFromRow },
+        { isClaimHoldParked, readWorkItemClaimHoldProvenance }] = await Promise.all([
+        import('./reconcile-linked-work-items'),
+        import('../scheduler/claim-spec-match'),
+        import('../plan-item-provenance'),
+        import('../work-items'),
+      ]);
+      const linked = await findAllLinkedWorkItems(opts.planSlug, opts.itemId, {
+        workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug,
+      });
+      const { canonical, duplicates } = selectCanonicalLinkedWorkItem(linked);
+      if (duplicates.length > 0) {
+        return { status: 'refused', reason: 'ambiguous_plan_item_mapping: multiple non-terminal linked work-items' };
+      }
+      if (canonical) {
+        const payload = canonical.payload as {
+          plan_item?: { plan_slug?: string; item_id?: string; harness_slug?: string };
+          plan_run?: { instancePlanSlug?: string; templateSlug?: string };
+        } | null;
+        const stamp = payload?.plan_item;
+        const provenance = planItemProvenanceFromRow({
+          source_plan_slug: canonical.sourcePlanSlug,
+          source_plan_item_ids: canonical.sourcePlanItemIds,
+          stamped_plan_slug: stamp?.plan_slug,
+          stamped_item_id: stamp?.item_id,
+          run_instance_plan_slug: payload?.plan_run?.instancePlanSlug,
+          run_template_slug: payload?.plan_run?.templateSlug,
+        });
+        if ((canonical.harness && canonical.harness !== opts.harnessSlug) ||
+            (stamp?.harness_slug && stamp.harness_slug !== opts.harnessSlug) ||
+            (provenance.planSlug && provenance.planSlug !== opts.planSlug) ||
+            (provenance.itemIds.length > 0 && !provenance.itemIds.includes(opts.itemId))) {
+          return { status: 'refused', reason: 'plan_item_mapping_mismatch: linked work-item belongs to another plan lane' };
+        }
+        if (isClaimHoldParked(canonical.payload)) {
+          return {
+            status: 'refused',
+            reason: `work item ${canonical.id} is parked by claimHold; clear the claim hold explicitly before claiming this plan item again`,
+            claimHold: { workItemId: canonical.id, provenance: readWorkItemClaimHoldProvenance(canonical.payload) },
+          };
+        }
+        subject = claimSpecSubjectFromWorkItem(canonical);
+        // Edge-only legacy records need the proven lane coordinates; every
+        // populated work-item field keeps the scheduler's canonical projection.
+        subject.plan ??= opts.planSlug;
+        if (subject.planItem.length === 0) subject.planItem = [opts.itemId];
+      }
+    } catch {
+      return { status: 'refused', reason: 'plan_item_mapping_unavailable: cannot verify the implementing work-item before a new lease' };
+    }
     const admission = await admitSubjectForFleetTarget({
       target: opts.owner,
       workspaceId: opts.workspaceId,
-      subject: {
-        id: null,
-        title: null,
-        summary: null,
-        kind: 'feature',
-        priority: null,
-        tags: [],
-        paths: [],
-        plan: opts.planSlug,
-        planItem: [opts.itemId],
-        fleet: null,
-        triageGate: null,
-        itemClass: 'work',
-        age: Date.now(),
-        riskTier: null,
-        redundancy: null,
-        estCost: null,
-        assignee: assignment?.assigneeName ?? null,
-        severity: null,
-        goal: null,
-      },
+      subject,
     });
     if (!admission.allowed) {
       return {

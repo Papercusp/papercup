@@ -55,6 +55,7 @@ if (privateMcpUrl) {
       minimumFileRunTimeoutMs: workerOptions.testTimeoutMs + workerOptions.killGraceMs + 20_000,
       sourcePaths: ['packages/operator-core/test/omp-managed-native-lifecycle.ts',
         'packages/operator-core/test/omp-managed-native-provider.ts',
+        'packages/operator-core/test/omp-native-home.ts',
         'libs/papercusp/packages/orchestrator/src/managed-capability-policy.ts',
         'libs/papercusp/packages/orchestrator/src/invoke.ts',
         'apps/operator/scripts/psu-launcher.mjs', 'packages/operator-core/lib/events/await/wake-executor.ts',

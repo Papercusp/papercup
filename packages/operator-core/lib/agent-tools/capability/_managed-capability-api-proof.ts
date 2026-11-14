@@ -5,7 +5,7 @@ import { rm, symlink, writeFile } from 'node:fs/promises';
 import { expect } from 'vitest';
 import { captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerReceipt } from '../../../test/isolated-integration-proof';
 import type { recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
-import { preparePrivateOperatorApiBundle } from '../../../test/private-http-workspace-preflight';
+import { preparePrivateOperatorApiBundle, privateMcpSourceSha } from '../../../test/private-http-workspace-preflight';
 
 export function managedCapabilityApiProofOptions(
   filePath: `packages/operator-core/lib/agent-tools/capability/managed-capability-api.${'integration' | 'e2e'}.test.ts`
@@ -23,8 +23,11 @@ export function managedCapabilityApiProofOptions(
       'packages/operator-core/lib/agent-tools/capability/__fixtures__/managed-api-result.ts'],
     retainedArtifacts: ['phases/execute/worker.log', 'phases/execute/managed-api-proof.json'],
     prepare: async evidenceDir => {
+      const buildEnv: NodeJS.ProcessEnv = { ...process.env, VITEST: 'true' };
+      const sourceSha = privateMcpSourceSha(root, buildEnv);
       prepared = await preparePrivateOperatorApiBundle(root, evidenceDir, {
-        builder: { timeoutMs: 240_000, maxMs: 420_000, env: { ...process.env, VITEST: 'true' } },
+        sourceSha,
+        builder: { timeoutMs: 240_000, maxMs: 420_000, env: buildEnv },
       });
     },
     execute: async (observe, evidenceDir) => {

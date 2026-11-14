@@ -396,6 +396,139 @@ describe('detectQuarantineImporters', () => {
     expect(offenders.map(row => row.file)).toEqual(['lib/consumer.ts']);
   });
 
+  describe('EI-28731613452428882: an import edge already satisfied at HEAD does not propagate the hold', () => {
+    // One live lock on a hub (scorecards.ts) held every dirty file whose import chain reached
+    // it — rubrics.ts, work-items.ts and both plan-1 repair files — although none of them asked
+    // the hub for anything HEAD's copy lacked. The excluded provider stays at its HEAD blob, so a
+    // consumer whose named imports from it were ALL already imported at HEAD commits safely alone.
+    const run = (opts: {
+      files: Record<string, string>;
+      head: Record<string, string>;
+      dirty: string[];
+      quarantined: string[];
+      presentAtHead?: (path: string) => boolean;
+      readHeadText?: (path: string) => Promise<string | null>;
+    }) => detectQuarantineImporters({
+      readText: async (rel) => opts.files[rel] ?? null,
+      dirtyFiles: opts.dirty,
+      alreadyQuarantined: opts.quarantined,
+      sideEffectTargetAtHead: async (path) => (opts.presentAtHead ?? (() => true))(path),
+      readHeadText: opts.readHeadText ?? (async (rel) => opts.head[rel] ?? null),
+    });
+
+    it('releases a consumer whose named imports from the excluded provider are unchanged since HEAD', async () => {
+      const offenders = await run({
+        files: { 'lib/consumer.ts': `import { a, type B } from './provider';\nexport const v = a(2);\n` },
+        head: { 'lib/consumer.ts': `import { a, type B } from './provider';\nexport const v = a(1);\n` },
+        dirty: ['lib/provider.ts', 'lib/consumer.ts'],
+        quarantined: ['lib/provider.ts'],
+      });
+      expect(offenders).toEqual([]);
+    });
+
+    it('releases a subset of HEAD names, and does not bridge the chain through a released file', async () => {
+      const offenders = await run({
+        files: {
+          'lib/mid.ts': `import { a } from './hub';\nexport const m = a;\n`,
+          'lib/top.ts': `import { m } from './mid';\nexport const t = m;\n`,
+        },
+        head: {
+          'lib/mid.ts': `import { a, b } from './hub';\nexport const m = a ?? b;\n`,
+          'lib/top.ts': `export const t = 1;\n`, // NEW edge to mid — but mid is no longer held
+        },
+        dirty: ['lib/hub.ts', 'lib/mid.ts', 'lib/top.ts'],
+        quarantined: ['lib/hub.ts'],
+      });
+      expect(offenders).toEqual([]);
+    });
+
+    it('still holds a consumer that asks the excluded provider for a NEW name, and its new-edge importers', async () => {
+      const offenders = await run({
+        files: {
+          'lib/mid.ts': `import { a, newlyAdded } from './hub';\nexport const m = newlyAdded(a);\n`,
+          'lib/top.ts': `import { m } from './mid';\nexport const t = m;\n`,
+        },
+        head: { 'lib/mid.ts': `import { a } from './hub';\nexport const m = a;\n` },
+        dirty: ['lib/hub.ts', 'lib/mid.ts', 'lib/top.ts'],
+        quarantined: ['lib/hub.ts'],
+      });
+      expect(offenders.map(row => row.file)).toEqual(['lib/mid.ts', 'lib/top.ts']);
+    });
+
+    it('releases an unchanged import of a HELD importer — the held file stays at its HEAD blob too', async () => {
+      const offenders = await run({
+        files: {
+          'lib/mid.ts': `import { a, newlyAdded } from './hub';\nexport const m = newlyAdded(a);\n`,
+          'lib/top.ts': `import { m } from './mid';\nexport const t = [m];\n`,
+        },
+        head: {
+          'lib/mid.ts': `import { a } from './hub';\nexport const m = a;\n`,
+          'lib/top.ts': `import { m } from './mid';\nexport const t = m;\n`,
+        },
+        dirty: ['lib/hub.ts', 'lib/mid.ts', 'lib/top.ts'],
+        quarantined: ['lib/hub.ts'],
+      });
+      expect(offenders.map(row => row.file)).toEqual(['lib/mid.ts']);
+    });
+
+    it('still holds namespace, default-plus-namespace, dynamic and require edges even when unchanged', async () => {
+      const forms = [
+        `import * as hub from './hub';\nexport const v = hub.a;\n`,
+        `import Hub, * as hub from './hub';\nexport const v = [Hub, hub.a];\n`,
+        `export const v = () => import('./hub');\n`,
+        `const hub = require('./hub');\nmodule.exports = hub.a;\n`,
+        `export * from './hub';\n`,
+      ];
+      for (const text of forms) {
+        const offenders = await run({
+          files: { 'lib/consumer.ts': text },
+          head: { 'lib/consumer.ts': text },
+          dirty: ['lib/hub.ts', 'lib/consumer.ts'],
+          quarantined: ['lib/hub.ts'],
+        });
+        expect(offenders.map(row => row.file), text).toEqual(['lib/consumer.ts']);
+      }
+    });
+
+    it('still holds when the edge is new, the importer is new, or the provider is absent from HEAD', async () => {
+      const consumer = `import { a } from './provider';\nexport const v = a;\n`;
+      const newEdge = await run({
+        files: { 'lib/consumer.ts': consumer },
+        head: { 'lib/consumer.ts': `export const v = 1;\n` },
+        dirty: ['lib/provider.ts', 'lib/consumer.ts'],
+        quarantined: ['lib/provider.ts'],
+      });
+      const newImporter = await run({
+        files: { 'lib/consumer.ts': consumer },
+        head: {},
+        dirty: ['lib/provider.ts', 'lib/consumer.ts'],
+        quarantined: ['lib/provider.ts'],
+      });
+      const untrackedProvider = await run({
+        files: { 'lib/consumer.ts': consumer },
+        head: { 'lib/consumer.ts': consumer },
+        dirty: ['lib/provider.ts', 'lib/consumer.ts'],
+        quarantined: ['lib/provider.ts'],
+        presentAtHead: () => false,
+      });
+      for (const offenders of [newEdge, newImporter, untrackedProvider]) {
+        expect(offenders.map(row => row.file)).toEqual(['lib/consumer.ts']);
+      }
+    });
+
+    it('fails safe (holds) when the importer HEAD text cannot be read', async () => {
+      const consumer = `import { a } from './provider';\nexport const v = a;\n`;
+      const offenders = await run({
+        files: { 'lib/consumer.ts': consumer },
+        head: {},
+        dirty: ['lib/provider.ts', 'lib/consumer.ts'],
+        quarantined: ['lib/provider.ts'],
+        readHeadText: async () => { throw new Error('git show failed'); },
+      });
+      expect(offenders.map(row => row.file)).toEqual(['lib/consumer.ts']);
+    });
+  });
+
   it('holds package-export alias consumers and their relative consumers to a fixed point', async () => {
     const files: Record<string, string> = {
       'packages/operator-core/package.json': JSON.stringify({ name: '@papercusp/operator-core',

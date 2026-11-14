@@ -16,6 +16,7 @@
  */
 import { z } from 'zod';
 import { WorkItemDefinitionSchema } from '../../work-item-definition';
+import { resolveWorkDefinitionApproval, WorkDefinitionApprovalError } from '../../work-item-definition-source';
 import { defineTool } from '@papercusp/agent-mcp';
 import { clampText, hardText, softText, LIMITS } from '../limits';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -238,9 +239,9 @@ const FIELDS = {
   summary: hardText(8000).optional().describe('alias for `body` — the item’s main text (work_items:get/create name it `summary`). Pass either; both-with-different-values is rejected (WI-4492).'),
   severity: z.enum(['critical', 'major', 'minor', 'nit']).optional(),
   kind: z
-    .enum(['bug', 'change'])
+    .enum(['bug', 'change', 'task'])
     .optional()
-    .describe('correct a mislabeled work-item kind — bug = broken (auto-implement-eligible), change = desired improvement (human-gated)'),
+    .describe('Correct an issue-family kind: bug (broken), change (improvement), or task (execution/review).'),
   reporterQuestion: z.string().min(1).max(4000).optional().describe('Ask the end-user reporter one follow-up question. Only the current fixer may ask; actor/id/time are server-stamped, text is redacted, and retry is idempotent. Use alone, without other edits. The reporter replies from their install.'),
   // EI-10943 (same trap as improvements:capture): a provenance LABEL must never bounce
   // the whole update on length. Soft-capped — truncated handler-side by `clampText`,
@@ -509,15 +510,33 @@ export default defineTool({
               .map((value) => value.trim()).filter(Boolean))] : [];
           const nextCriteria = new Set(parsed?.success ? parsed.data.acceptanceCriteria ?? [] : []);
           const removedCriteria = priorCriteria.filter((criterion) => !nextCriteria.has(criterion));
-          if (removedCriteria.length > 0) return {
+          // A scope change is admissible only from the complete captured owner
+          // statement for this exact previous definition. AUTO and caller prose
+          // do not supply that authority. Storage repeats this under its fence.
+          if (parsed?.success && parsed.data.assessmentScope) {
+            const approval = await resolveWorkDefinitionApproval({
+              target: { workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
+                harnessSlug: current.harness ?? '', workItemId: current.id },
+              definition: parsed.data, previousDefinition: prior, operation: 'admission',
+            });
+            if (approval.kind !== 'verified') return { ok: false as const, id: it.id,
+              error: 'definition_approval_refused', reason: approval.reason };
+          }
+          if (removedCriteria.length > 0 && !(parsed?.success && parsed.data.assessmentScope)) return {
             ok: false as const, id: it.id, error: 'definition_acceptance_criteria_removed', removedCriteria,
             message: 'Retain the declared acceptance criteria. Keep unfinished work open or explicitly dispose ' +
               'the original work and register a bounded replacement; deleting criteria cannot establish fulfillment. No fields were written.',
           };
-          const item = await mergeWorkItemPayload(it.id,
+          let item;
+          try { item = await mergeWorkItemPayload(it.id,
             parsed?.success ? { workDefinition: parsed.data } : {},
             { harness: it.harness, expectedWorkDefinition: prior,
               ...(it.definition === null ? { unset: ['workDefinition'] } : {}) });
+          } catch (error) {
+            if (error instanceof WorkDefinitionApprovalError) return { ok: false as const, id: it.id,
+              error: error.code, reason: error.reason };
+            throw error;
+          }
           return item ? { ok: true as const, id: it.id, item } : {
             ok: false as const, id: it.id, error: 'definition_changed', retryable: true,
             message: 'The work definition changed or the item became unavailable before the write. Re-read before retrying; no unfenced write was attempted.',

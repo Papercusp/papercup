@@ -1,7 +1,7 @@
 /** PUI's pipe transport for the native Codex and OMP RPC servers. The native
  * process still owns inference/tools/history; the existing task manager owns
  * its process tree. No terminal, shell quoting, or provider loop is involved. */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { Duplex } from 'node:stream';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { startSupervisorBeat } from '../../../apps/operator/scripts/psu-launcher.mjs';
@@ -30,6 +30,9 @@ export interface SuStdioReceipt {
   atMs: number;
   phase: 'write-started' | 'write-completed' | 'write-failed' | 'received';
   frame: RpcFrame;
+  /** Exact UTF-8 JSON-line bytes, including whitespace and the line ending.
+   * Absent on older receipts: the parsed frame cannot reconstruct this proof. */
+  wire?: { sha256: string; byteLength: number };
 }
 export interface SuStdioPeer {
   request(frame: RpcFrame, timeoutMs?: number): Promise<RpcFrame>;
@@ -62,7 +65,10 @@ export interface SuStdioPeerOptions {
   workspaceId: string;
   spec: TaskSpec;
   ownerId: string;
-  onMessage(frame: RpcFrame): void;
+  /** Complete native stdout only. A partial line never reaches this callback.
+   * The optional second argument preserves the exact wire for delivery joins;
+   * injected/older peers without it cannot certify final output bytes. */
+  onMessage(frame: RpcFrame, payload?: string): void;
   /** Owned OMP extension only. Acknowledged before the hook returns; ordinary
    * stdout/UI frames cannot enter this callback. No credential crosses it. */
   onNativeToolCall?(call: SuNativeToolCall): Promise<void>;
@@ -83,18 +89,19 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
   const pending = new Map<string, { resolve(value: RpcFrame): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
   let closed = false;
   let exited = false;
-  let buffer = '';
+  let buffer = Buffer.alloc(0);
   let stderr = '';
   let stderrTruncated = false;
   const peerId = randomUUID();
   let receiptSequence = 0;
   let receiptSinkFailed = false;
   let pendingWrites = 0;
-  function receipt(phase: SuStdioReceipt['phase'], frame: RpcFrame): void {
+  function receipt(phase: SuStdioReceipt['phase'], frame: RpcFrame, payload: string | Buffer): void {
     if (!options.onReceipt) return;
     try {
       options.onReceipt({ peerId, sequence: ++receiptSequence, clockId: processMonotonicClock.id,
-        atMs: processMonotonicClock.now(), phase, frame: structuredClone(frame) });
+        atMs: processMonotonicClock.now(), phase, frame: structuredClone(frame),
+        wire: { sha256: createHash('sha256').update(payload).digest('hex'), byteLength: Buffer.byteLength(payload) } });
     } catch (error) { receiptSinkFailed = true; throw error; }
   }
   const diagnosticSecrets = Object.entries(options.env)
@@ -174,13 +181,14 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
     // reached the native pipe. Capture the serialized value so later caller
     // mutation cannot rewrite the evidence of what was actually enqueued.
     const line = JSON.stringify(frame);
+    const payload = `${line}\n`;
     const sent = options.onReceipt ? JSON.parse(line) as RpcFrame : frame;
     try {
-      receipt('write-started', sent);
+      receipt('write-started', sent, payload);
       pendingWrites++;
-      child.stdin!.write(`${line}\n`, (error) => {
+      child.stdin!.write(payload, (error) => {
         pendingWrites--;
-        try { receipt(error ? 'write-failed' : 'write-completed', sent); }
+        try { receipt(error ? 'write-failed' : 'write-completed', sent, payload); }
         catch (failure) { fail(failure instanceof Error ? failure : new Error(String(failure))); return; }
         if (error) fail(error);
       });
@@ -195,21 +203,26 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
   child.stdin.on('error', fail);
   child.stdout.on('error', fail);
   child.stderr.on('error', fail);
-  child.stdout.setEncoding('utf8');
-  child.stdout.on('data', (chunk: string) => {
-    buffer += chunk;
+  child.stdout.on('data', (chunk: Buffer) => {
+    buffer = Buffer.concat([buffer, chunk]);
     // A corrupt peer must fail visibly, never retain an unbounded partial frame.
-    if (Buffer.byteLength(buffer) > 16 * 1024 * 1024) { fail(new Error('Structured engine frame exceeds 16 MiB')); return; }
+    if (buffer.byteLength > 16 * 1024 * 1024) { fail(new Error('Structured engine frame exceeds 16 MiB')); return; }
     let end: number;
-    while ((end = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, end).trim(); buffer = buffer.slice(end + 1);
-      if (!line) continue;
+    while ((end = buffer.indexOf(10)) >= 0) {
+      const bytes = buffer.subarray(0, end + 1);
+      buffer = buffer.subarray(end + 1);
+      const payload = bytes.toString('utf8');
+      if (!payload.trim()) continue;
       try {
-        const frame = JSON.parse(line) as RpcFrame;
+        // Replacement decoding would attest different bytes from those the
+        // native process emitted. Validate only after a complete byte frame,
+        // so a multibyte character split across pipe chunks remains valid.
+        if (!Buffer.from(payload, 'utf8').equals(bytes)) throw new Error('Structured engine emitted invalid UTF-8');
+        const frame = JSON.parse(payload) as RpcFrame;
         if (!frame || typeof frame !== 'object' || Array.isArray(frame)) throw new Error('Structured engine emitted a non-object frame');
         // Separate the retained observation from the mutable response/event
         // objects exposed to consumers. A slow callback cannot move its clock.
-        receipt('received', frame);
+        receipt('received', frame, bytes);
         const id = frame.id == null ? null : String(frame.id);
         const response = frame.type === 'response' || (!frame.method && ('result' in frame || 'error' in frame));
         const request = id && response ? pending.get(id) : undefined;
@@ -219,7 +232,7 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
             const error = frame.error;
             request.reject(new SuStdioRequestRefusal(typeof error === 'string' ? error : JSON.stringify(error)));
           } else request.resolve((frame.result ?? frame.data ?? {}) as RpcFrame);
-        } else options.onMessage(frame);
+        } else options.onMessage(frame, payload);
       } catch (error) { fail(error instanceof Error ? error : new Error(String(error))); return; }
     }
   });

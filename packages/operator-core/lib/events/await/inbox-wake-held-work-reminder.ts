@@ -32,6 +32,7 @@ import { getLoopStatus } from '../../harness/routines/loop';
 import { getModes } from '../../modes/store';
 import { modeImpliesAutonomy } from '../../modes/registry';
 import { concreteWorkspaceIdOrNull } from '../../workspace-registry';
+import { workItemFetchHint } from '../../work-item-fetch-hint';
 import { INBOX_WAKE_KEY_PREFIX, listParkedAwaitsForSubscribers } from './store';
 import { isTurnEndRewakeKey } from './turn-end-rewake';
 import {
@@ -50,7 +51,7 @@ export const INBOX_WAKE_HELD_WORK_BUDGET_MS = 1500;
 /** Everything the reminder depends on, already read. */
 export interface InboxWakeHeldWorkFacts {
   /** Non-terminal, non-observation work-items this session holds. */
-  held: readonly Pick<HeldWorkItem, 'id'>[];
+  held: readonly (Pick<HeldWorkItem, 'id'> & Partial<Pick<HeldWorkItem, 'harness'>>)[];
   /** Registered modes of this session that imply autonomy (auto, cold-auto, drain, goal, grade). */
   autonomyModes: readonly string[];
   /** true = an engine loop is armed; false = none; null = unknown (never claims "no loop"). */
@@ -68,7 +69,9 @@ export function inboxWakeHeldWorkReminderText(f: InboxWakeHeldWorkFacts): string
     (ids.length > INBOX_WAKE_HELD_WORK_LISTED_CAP ? `, +${ids.length - INBOX_WAKE_HELD_WORK_LISTED_CAP} more` : '');
   const parts = [
     `REMINDER (work list snapshot): a recent read found ${ids.length} unfinished work-item(s) [${listed}].` +
-      " This snapshot may be stale by the time you act; recheck each item's current state and assignee with work_items:get before continuing. " +
+      " This snapshot may be stale by the time you act; recheck each item's current state and assignee with bounded continuation reads: " +
+      f.held.slice(0, INBOX_WAKE_HELD_WORK_LISTED_CAP)
+        .map((h) => workItemFetchHint(h.id, h.harness, 'continuation')).join('; ') + '. ' +
       'Answering or reconciling this message does not finish any still-open items.',
   ];
   if (f.autonomyModes.length > 0 && f.loopActive === false && f.guaranteedAwaitWake === false) {

@@ -34,6 +34,29 @@ describe('lintAcceptanceCriterionMethods', () => {
   it('returns no standard-rubric policy by construction when given no acceptance criteria', () => {
     expect(lintAcceptanceCriterionMethods([])).toEqual([]);
   });
+
+  it.each([
+    'The existing liveness writer uses Linux boot ID plus /proc start ticks.',
+    'Inspect source/test evidence for Linux boot ID plus /proc start ticks.',
+    'The source reads /proc/<pid>/stat to derive start ticks.',
+    'Use state:read to inspect the liveness identity derived from /proc.',
+  ])('does not treat a proc source citation as a shell instruction: %s', (method) => {
+    expect(lintAcceptanceCriterionMethods([{ key: 'r-6', method }])).toEqual([]);
+  });
+
+  it.each([
+    'Read /proc/<pid>/environ for the running proxy.',
+    '1. Read `/proc/<pid>/stat` and compare the start ticks.',
+    'Manually inspect /proc/<pid>/stat.',
+    'Read state:read first, then read /proc/<pid>/stat.',
+    'Use /proc/<pid>/stat to read start ticks directly.',
+    'Run cat /proc/sys/kernel/random/boot_id and compare the output.',
+    'Use sed -n 1p /proc/<pid>/stat and compare the start ticks.',
+    'Inspect `cat /proc/sys/kernel/random/boot_id` and compare the output.',
+  ])('retains the proc advisory for direct native actions: %s', (method) => {
+    expect(lintAcceptanceCriterionMethods([{ key: 'native', method }]))
+      .toEqual([expect.objectContaining({ markers: expect.arrayContaining(['proc-path']) })]);
+  });
 });
 
 describe('acceptance implementation dependency coverage', () => {

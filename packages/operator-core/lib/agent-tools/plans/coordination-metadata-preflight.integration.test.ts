@@ -35,8 +35,8 @@ vi.mock('./source', async (original) => ({
 // Pin only its registry inputs; leave its SQL, parsing and readiness path real.
 vi.mock('./_ctx-opts', async (original) => ({
   ...await original<typeof import('./_ctx-opts')>(),
-  ctxToPlanSourceOpts: async (ctx: { harnessSlug: string }) => ({
-    workspaceId: WS, harnessSlug: ctx.harnessSlug,
+  ctxToPlanSourceOpts: async (ctx: { harnessSlug?: string } | null) => ({
+    workspaceId: WS, harnessSlug: ctx?.harnessSlug ?? A,
   }),
 }));
 vi.mock('../../hive-federation', async (original) => ({
@@ -50,6 +50,7 @@ const { getAcceptanceRubricForPlan, getAcceptanceRubricsForPlan, getRetiredAccep
 const evaluate = (await import('./evaluate-spec-quality')).default;
 const { readAcceptanceBarContractSnapshot } = await import('../../acceptance-bar-contract-snapshot');
 const { recordSystemPlanRevisionInTransaction } = await import('./revisions');
+const { recordCurrentDiscoveryAudit } = await import('../../plan-audits');
 let db: OrgTestDb;
 let legacyMigration: string;
 let expandMigration: string;
@@ -89,12 +90,24 @@ async function replayLegacyMigration() {
 }
 
 async function plan(harness: string, inputs: object = { harness: A, attempts: 1 }) {
-  const content = `---\ntitle: Metadata fixture\nslug: ${metadataPlanSlug}\nstatus: draft\n---\n\n## Phase\n- **P-001** \`todo\` Submit an event\n`;
+  const discovery = {
+    questions: [], notApplicable: 'The isolated fixture exercises existing metadata readers; no implementation choice remains.',
+    findings: [{ id: 'D-1', questions: [], conclusion: 'Reuse the current isolated plan, clause and rubric readers.',
+      evidenceRefs: ['doc:metadata-preflight-fixture'],
+      dispositions: [{ target: 'P-001', decision: 'unchanged', reason: 'Keep the same submit-event contract for preflight.' }] }],
+  };
+  const content = `---\ntitle: Metadata fixture\nslug: ${metadataPlanSlug}\nstatus: draft\n---\n\n## Phase\n- **P-001** \`todo\` Submit an event\n\n## Discovery\n\n\`\`\`discovery\n${JSON.stringify(discovery)}\n\`\`\`\n`;
   // Both the plan-body evaluator and persisted item reader must see the same
   // positive control; a zero-item parse would make refusal assertions vacuous.
   expect(parsePlan(content).items.map((item) => item.id)).toEqual(['P-001']);
   await h.sql.begin(async (tx) => {
     await acquirePlanAdvisoryLock(tx, planAdvisoryLockKey(WS, harness, metadataPlanSlug));
+    // The discovery gate resolves a real, harness-scoped canonical document;
+    // no identity, audit or acceptance checker is stubbed to grant admission.
+    await tx`INSERT INTO harness_shared.harness_docs (workspace_id,harness_slug,doc_id,content,status)
+      VALUES (${WS},${harness},'metadata-preflight-fixture',
+        'This private fixture isolates real plan, clause and rubric readers while retaining their production gates.','fresh')
+      ON CONFLICT (workspace_id,harness_slug,doc_id) DO NOTHING`;
     const contentHash = hashPlanContent(content);
     await tx`
       INSERT INTO harness_shared.harness_plans
@@ -112,6 +125,16 @@ async function plan(harness: string, inputs: object = { harness: A, attempts: 1 
       content, contentHash, rationale: 'Seed metadata preflight fixture',
       authorId: 'metadata-preflight-fixture',
     });
+  });
+  // Finalize the real prerequisite before any test snapshots state. A fixture
+  // missing a discovery contract fails here, rather than masking the metadata
+  // blockers/assertions the evaluator cases are intended to exercise.
+  const discoveryAudit = await inWorkspace(() => recordCurrentDiscoveryAudit({
+    workspaceId: WS, harnessSlug: harness, planSlug: metadataPlanSlug,
+    createdBy: 'coordination-metadata-preflight-test',
+  }));
+  expect(discoveryAudit, JSON.stringify(discoveryAudit)).toMatchObject({
+    ok: true, discovery: { readiness: { ready: true } },
   });
 }
 
@@ -134,8 +157,9 @@ async function clause(harness: string) {
 }
 
 async function grade(harness: string) {
-  const result = await inWorkspace(() => evaluate.handler({ harness, slug: metadataPlanSlug }, {
+  const result = await inWorkspace(() => evaluate.handler({ harness, slug: metadataPlanSlug, detail: 'full' }, {
     harnessSlug: harness, workspaceId: WS, log: () => {}, signal: new AbortController().signal,
+    principal: { kind: 'agent', slug: 'coordination-metadata-preflight-test', workspaceId: WS },
     progress: () => {}, emit: () => {},
   } as never));
   if (!('data' in result)) throw new Error('evaluate handler returned no structured data');

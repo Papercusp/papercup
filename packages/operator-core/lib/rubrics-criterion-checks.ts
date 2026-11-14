@@ -61,7 +61,7 @@ import {
 import { selectUnambiguousEvidenceRoot } from './evidence-root-selection';
 import { declaredCaseTitles, mayMatchUnresolvedCaseTitle } from './testing-declared-case-titles';
 import { hasMatchingDeclaredCaseTitle } from './testing-case-filter';
-import { rubricCriterionCheckSchema, type RubricCriterionCheck } from './agent-tools/plans/rubric-template';
+import { criterionProbeIdentity, distinctCriterionProbeCount, rubricCriterionCheckSchema, type RubricCriterionCheck } from './agent-tools/plans/rubric-template';
 import type { ActivationAuditMapping, EffectiveItemAudit, PlanItemStatus } from './plan-audits';
 import {
   describeUnrealized,
@@ -327,10 +327,11 @@ export function validateCriterionCheckPaths(
   const normalizedByKey: Record<string, string[]> = {};
   const normalizedCargoByKey: Record<string, NormalizedCargoCheckPaths> = {};
   let checked = 0;
-  const probeCount = criteria.reduce((n, c) => n + (c.check?.kind === 'probe' ? (c.check.all?.length ?? 1)
-    : c.check?.kind === 'tests' ? (c.check.all?.length ?? 0) : 0), 0);
+  let probeCount = 0;
+  try { probeCount = distinctCriterionProbeCount(criteria); }
+  catch (error) { scopeFailures.push({ criterionKey: '(probe batch)', path: 'all', reason: `invalid probe identity: ${String(error)}` }); }
   if (probeCount > RUBRIC_PROBE_MAX_PER_EMIT) {
-    scopeFailures.push({ criterionKey: '(probe batch)', path: 'all', reason: `${probeCount} probes exceed the execution cap of ${RUBRIC_PROBE_MAX_PER_EMIT}` });
+    scopeFailures.push({ criterionKey: '(probe batch)', path: 'all', reason: `${probeCount} distinct probes exceed the execution cap of ${RUBRIC_PROBE_MAX_PER_EMIT}` });
   }
   for (const c of criteria) {
     if (c.check?.kind === 'probe' || (c.check?.kind === 'tests' && c.check.all !== undefined)) {
@@ -940,6 +941,43 @@ export type CriterionProbeDispatcher = (
  */
 export const CRITERION_PROBE_TIMEOUT_MS = 60_000;
 
+type CriterionProbeConsumer = { key: string; childIndex: number; grouped: boolean; probe: ContinuityProbe; identity: string };
+/** A single evaluation's consumer census and measurements. Never retain across emits/retries. */
+export interface CriterionProbePlan {
+  consumers: ReadonlyArray<CriterionProbeConsumer>;
+  measurements: Map<string, Awaited<ReturnType<typeof runContinuityProbeBatch>>['results'][number]>;
+}
+
+/** Preflight BOTH executable paths before either can dispatch. Files stay on the tests
+ * path; each probe still receives the complete live contract and grader-access checks. */
+export function createCriterionProbePlan(input: {
+  criteria: ReadonlyArray<CheckedCriterion>;
+  ratings: Record<string, { rating: string } | undefined>;
+}): { ok: true; plan: CriterionProbePlan } | { ok: false; error: 'probe_invalid'; criterionKey: string; detail: string } {
+  const consumers: CriterionProbeConsumer[] = [];
+  for (const c of input.criteria) {
+    if ((c.check?.kind !== 'probe' && c.check?.kind !== 'tests') || input.ratings[c.key] === undefined) continue;
+    const shape = rubricCriterionCheckSchema.safeParse(c.check);
+    if (!shape.success) return { ok: false, error: 'probe_invalid', criterionKey: c.key, detail: shape.error.message };
+    const probes = c.check.all ?? (c.check.kind === 'probe' ? [c.check.probe] : []);
+    for (const [childIndex, probe] of probes.entries()) {
+      const parsed = continuityProbeSchema.safeParse(probe);
+      if (!parsed.success) return { ok: false, error: 'probe_invalid', criterionKey: c.key, detail: parsed.error.message };
+      try {
+        consumers.push({ key: c.key, childIndex, grouped: c.check.all !== undefined, probe: parsed.data, identity: criterionProbeIdentity(parsed.data) });
+      } catch (error) {
+        return { ok: false, error: 'probe_invalid', criterionKey: c.key, detail: `invalid probe identity: ${String(error)}` };
+      }
+    }
+  }
+  const validation = validateCriterionCheckPaths(consumers.map(c => ({ key: c.key, check: { kind: 'probe', probe: c.probe } })));
+  if (validation.scopeFailures.length) return {
+    ok: false, error: 'probe_invalid', criterionKey: validation.scopeFailures[0]!.criterionKey,
+    detail: validation.scopeFailures.map(f => `${f.path}: ${f.reason}`).join('; '),
+  };
+  return { ok: true, plan: { consumers, measurements: new Map() } };
+}
+
 /**
  * GRADING-time evaluation for kind:'probe' checks. Rubrics deliberately keep
  * `check.probe` dependency-light (`unknown`) so the template does not import
@@ -959,37 +997,19 @@ export async function evaluateCriterionProbeChecks(input: {
   nowIso?: () => string;
   /** Per-probe dispatch budget; defaults to CRITERION_PROBE_TIMEOUT_MS. */
   probeTimeoutMs?: number;
+  /** Same call-local plan shared with tests.all by scorecards:emit. */
+  probePlan?: CriterionProbePlan;
 }): Promise<CriterionCheckEvaluation> {
-  const planned: Array<{ key: string; childIndex: number; grouped: boolean; probe: ContinuityProbe }> = [];
-  for (const c of input.criteria) {
-    if (c.check?.kind !== 'probe' || input.ratings[c.key] === undefined) continue;
-    const shape = rubricCriterionCheckSchema.safeParse(c.check);
-    if (!shape.success) return { ok: false, error: 'probe_invalid', criterionKey: c.key, detail: shape.error.message };
-    for (const [childIndex, probe] of (c.check.all ?? [c.check.probe]).entries()) {
-      const parsed = continuityProbeSchema.safeParse(probe);
-      if (!parsed.success) {
-        const detail = parsed.error.issues
-          .slice(0, 4)
-          .map((issue) => `${issue.path.join('.') || '(probe)'}: ${issue.message}`)
-          .join('; ');
-        return {
-          ok: false,
-          error: 'probe_invalid',
-          criterionKey: c.key,
-          detail:
-            `criterion '${c.key}' carries a probe that is not executable against the current ` +
-            `read-only platform contract${detail ? ` (${detail})` : ''}. Fix the probe binding or ` +
-            'remove the check to leave the criterion fuzzy.',
-        };
-      }
-      planned.push({ key: c.key, childIndex, grouped: c.check.all !== undefined, probe: parsed.data });
+  const prepared = createCriterionProbePlan({ ...input, criteria: input.criteria.filter(c => c.check?.kind === 'probe') });
+  if (!prepared.ok) return prepared;
+  const planned = prepared.plan.consumers;
+  if (planned.length === 0) return { ok: true, checkRuns: {} };
+  const plan = input.probePlan ?? prepared.plan;
+  for (const c of planned) {
+    if (!plan.consumers.some(p => p.key === c.key && p.childIndex === c.childIndex && p.identity === c.identity)) {
+      return { ok: false, error: 'probe_invalid', criterionKey: c.key, detail: 'probe consumer changed after evaluation preflight; no undeclared measurement may be borrowed' };
     }
   }
-  if (planned.length === 0) return { ok: true, checkRuns: {} };
-  if (planned.length > RUBRIC_PROBE_MAX_PER_EMIT) return {
-    ok: false, error: 'probe_invalid', criterionKey: planned[0]!.key,
-    detail: `${planned.length} declared probes exceed execution cap ${RUBRIC_PROBE_MAX_PER_EMIT}; no probe was dispatched`,
-  };
   if (!input.dispatchTool) {
     return {
       ok: false,
@@ -1002,7 +1022,8 @@ export async function evaluateCriterionProbeChecks(input: {
   }
 
   const nowIso = input.nowIso ?? (() => new Date().toISOString());
-  const sources = planned.map((item, checkIndex) => ({
+  const distinct = [...new Map(planned.filter(p => !plan.measurements.has(p.identity)).map(p => [p.identity, p])).values()];
+  const sources = distinct.map((item, checkIndex) => ({
     source: { kind: 'work-item' as const, id: `scorecard-probe:${item.key}` },
     checkIndex,
     check: {
@@ -1020,12 +1041,13 @@ export async function evaluateCriterionProbeChecks(input: {
       dispatchTool: input.dispatchTool,
       timeoutMs: input.probeTimeoutMs ?? CRITERION_PROBE_TIMEOUT_MS,
       retainMeasurement: true,
+      requireCompleteResult: true,
       now: () => Date.parse(nowIso()),
     });
     batch.results.push(...chunk.results);
     batch.truncated += chunk.truncated;
   }
-  if (batch.truncated > 0 || batch.results.length !== planned.length) {
+  if (batch.truncated > 0 || batch.results.length !== distinct.length || distinct.some((_, index) => batch.results.filter(r => r.checkIndex === index).length !== 1)) {
     return {
       ok: false,
       error: 'probe_run_failed',
@@ -1033,16 +1055,17 @@ export async function evaluateCriterionProbeChecks(input: {
         planned[Math.min(batch.results.length, planned.length - 1)]?.key ?? planned[0]!.key,
       detail:
         `the probe-check batch could not execute one result per declared criterion ` +
-        `(${planned.length} declared, ${batch.results.length} returned, ${batch.truncated} truncated). ` +
+        `(${distinct.length} distinct operations, ${planned.length} consumers, ${batch.results.length} returned, ${batch.truncated} truncated). ` +
         'A capped or partially executed probe set is unjudgeable, so scorecards:emit refuses rather ' +
         'than silently accepting a criterion without distinct platform evidence.',
     };
   }
+  for (const [index, item] of distinct.entries()) plan.measurements.set(item.identity, batch.results.find(r => r.checkIndex === index)!);
 
   const checkRuns: Record<string, CriterionCheckRun> = {};
   const records = new Map<string, ScorecardSingleProbeCheckRun[]>();
-  for (const [index, item] of planned.entries()) {
-    const result = batch.results.find((candidate) => candidate.checkIndex === index);
+  for (const item of planned) {
+    const result = plan.measurements.get(item.identity);
     if (!result || !result.executed || (result.status !== 'fresh' && result.status !== 'stale')) {
       const diagnostic = result?.diagnostic;
       return {
@@ -1062,7 +1085,7 @@ export async function evaluateCriterionProbeChecks(input: {
       status: result.status,
       executed: true,
       ...(result.observed !== undefined ? { observed: result.observed as string | number | boolean | null } : {}),
-      ...(result.provenance ? { provenance: result.provenance } : {}),
+      ...(result.provenance ? { provenance: structuredClone(result.provenance) } : {}),
       measuredAt: result.provenance?.finishedAt ?? nowIso(),
     };
     records.set(item.key, [...(records.get(item.key) ?? []), record]);
@@ -1652,6 +1675,8 @@ export async function evaluateCriterionTestChecks(input: {
   caseBaselineLoader?: CriterionCaseBaselineLoader;
   /** Typed probe conjuncts use the same read-only dispatcher as standalone probes. */
   dispatchTool?: CriterionProbeDispatcher;
+  /** Shared with standalone probes only within this composing emit. */
+  probePlan?: CriterionProbePlan;
   /** Exact request-bound run group supplied by a composing durable scorecard emit. */
   runId?: string;
   nowIso?: () => string;
@@ -1953,6 +1978,7 @@ export async function evaluateCriterionTestChecks(input: {
     ratings: Object.fromEntries(probeCriteria.map(c => [c.key, { rating: 'broken' }])),
     dispatchTool: input.dispatchTool,
     nowIso,
+    probePlan: input.probePlan,
   });
   if (!probes.ok) return probes;
   for (const c of probeCriteria) {

@@ -864,6 +864,90 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
     expect(reachCalls).toHaveLength(1);
   });
 
+  it.each(['stranded', 'new-fact-followup', 'answered', 'clarifying', 'no-followup', 'unknown-author',
+    'foreign-author', 'live-sibling', 'carry', 'missing-task', 'closed-race'] as const)(
+    'alerts an active pending follow-up with an exact stranded task, retaining feedback and recovery guards (%s)', async evidence => {
+      const routedAt = new Date(NOW.getTime() - 30 * 60_000).toISOString();
+      const id = await seedConsult({ state: 'active', expiresAt: FUTURE, updatedAt: routedAt,
+        routing: menuSnapshot(['resp-1', 'resp-2'], ['resp-1-fork', 'resp-2-fork']) });
+      try {
+      // Same timestamps deliberately exercise the canonical post-id tiebreaker.
+      const posts = [
+        { author: 'resp-1-fork', kind: 'answer' },
+        ...(evidence === 'no-followup' ? [] : [{ author: 'req-1', kind: evidence === 'new-fact-followup' ? 'new_fact' : 'question' }]),
+        { author: evidence === 'unknown-author' ? null : evidence === 'foreign-author' ? 'unrelated' : 'resp-1-fork',
+          kind: evidence === 'answered' ? 'answer' : evidence === 'clarifying' ? 'clarifying_question' : 'new_fact' },
+      ];
+      const base = 900000 + seq * 10;
+      for (let i = 0; i < posts.length; i++) {
+        await rootSql`INSERT INTO harness_shared.consult_post_meta
+          (workspace_id, post_id, conversation_id, author_id, kind, created_at)
+          VALUES (${WS}, ${base + i}, ${id}, ${posts[i].author}, ${posts[i].kind}, ${routedAt}::timestamptz)`;
+      }
+      const { deps, alerts, reachCalls, emits } = makeDeps({ withReach: true });
+      const task = { workspaceId: WS, taskId: 'stranded-answerer', class: 'agent-session', state: 'stranded',
+        endedAt: PAST, detail: { consultAnswer: { conversationId: id, sourceOwnerId: 'resp-1',
+          answeringOwnerId: 'resp-1-fork' } } } as TaskRow;
+      const detector = consultExpiryFindSilentResponders({
+        now: () => NOW, getPresence: async () => null,
+        resolveSessionStates: async () => new Map([['resp-1-fork', { sessionState: 'ended' }]]),
+        listAnsweringTasks: async () => evidence === 'missing-task' ? [] : evidence === 'live-sibling'
+          ? [task, { ...task, taskId: 'live-successor', state: 'running', endedAt: null }] : [task],
+        getCarryRespawnOutcome: async () => ({ outcome: evidence === 'carry' ? 'delivered' : 'none', ts: PAST }),
+        getThreadStore: () => ({
+          getThreadByParent: async () => ({ thread_id: id }) as never,
+          listRecentPosts: async () => ({ total: posts.length, posts: posts.map(p => ({ author_id: p.author })) }),
+        }),
+      });
+      deps.findSilentResponders = async rows => {
+        const detected = await detector(rows.filter(row => row.conversationId === id));
+        if (evidence === 'closed-race') {
+          await rootSql`UPDATE harness_shared.consult_state SET state = 'closed_answered',
+            closed_at = ${NOW.toISOString()}::timestamptz, updated_at = ${NOW.toISOString()}::timestamptz
+            WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+        }
+        return detected;
+      };
+      const before = await cascadeRow(id);
+      const result = await sweepExpiredConsults(deps);
+      expect(result.advanced).toBe(0);
+      const shouldAlert = evidence === 'stranded' || evidence === 'new-fact-followup';
+      expect(alerts.filter(alert => alert.conversationId === id)).toHaveLength(shouldAlert ? 1 : 0);
+      if (shouldAlert) {
+        expect(alerts.find(alert => alert.conversationId === id)).toMatchObject({
+          requesterId: 'req-1', workspaceId: WS,
+          summary: expect.stringContaining('follow-up'), body: expect.stringContaining('original answering continuation'),
+        });
+        // The existing durable writer must deduplicate repeated observations.
+        const notified = consultExpiryNotifyRequester(sendMessage);
+        const first = alerts.find(alert => alert.conversationId === id)!;
+        await notified(first);
+        deps.notifyRequester = async alert => { alerts.push(alert); await notified(alert); };
+        await sweepExpiredConsults(deps);
+        expect(alerts.filter(alert => alert.conversationId === id)[1].msgId).toBe(first.msgId);
+        const durable = () => rootSql`SELECT body FROM harness_shared.coord_event_log
+          WHERE workspace_id = ${WS} AND surface = 'messages' AND body->>'conversation_id' = ${id}`;
+        expect(await durable()).toHaveLength(1);
+        // A later request gets its own alert rather than replaying the old one.
+        await rootSql`INSERT INTO harness_shared.consult_post_meta
+          (workspace_id, post_id, conversation_id, author_id, kind, created_at)
+          VALUES (${WS}, ${base + 3}, ${id}, 'req-1', 'new_fact', ${routedAt}::timestamptz)`;
+        await sweepExpiredConsults(deps);
+        expect(alerts.filter(alert => alert.conversationId === id)[2].msgId).not.toBe(first.msgId);
+        expect(await durable()).toHaveLength(2);
+      }
+      if (evidence === 'closed-race') expect(await stateOf(id)).toMatchObject({ state: 'closed_answered' });
+      else expect(await cascadeRow(id)).toEqual(before);
+      expect(reachCalls).toHaveLength(0);
+      expect(emits).toHaveLength(0);
+      } finally {
+        await rootSql`DELETE FROM harness_shared.consult_post_meta WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+        await rootSql`DELETE FROM harness_shared.consult_state WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+        await rootSql`DELETE FROM harness_shared.coord_conversations WHERE workspace_id = ${WS} AND id = ${id}`;
+      }
+    },
+  );
+
   it.each(['quiet', 'active', 'unreadable'] as const)('wires the production detector into the real-PG cascade for a parked no-pickup responder (%s log)', async (progress) => {
     const routedAt = new Date(NOW.getTime() - 60 * 60_000).toISOString();
     const id = await seedConsult({

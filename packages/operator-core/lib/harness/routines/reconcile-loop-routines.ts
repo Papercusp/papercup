@@ -217,6 +217,7 @@ import {
   monitorDeltaObservedForFire,
   persistMonitorNoDeltaBudget,
   readPersistedMonitorConfig,
+  readIdentifiedWaitForRoutine,
   recheckMonitorAuthority as defaultRecheckMonitorAuthority,
   standDownMonitorLoop,
 } from './monitor-standdown';
@@ -2493,6 +2494,17 @@ export async function reconcileLoopRoutines(
       const settledTurnVia =
         turnDeath == null &&
         (via === 'lifecycle' || via === 'turn-journal' || via === 'presence-quiescence' || via === 'note-refresh');
+      const identifiedWait = settledTurnVia ? readIdentifiedWaitForRoutine(row.payload_template) : null;
+      if (identifiedWait) {
+        const { settleIdentifiedWaitRoutine } = await import('../../events/await/store');
+        const settled = await settleIdentifiedWaitRoutine({ sql: db, routineId: row.id,
+          ownerId: row.target_owner_id, workspaceId: row.routine_workspace_id, harness: row.install_slug,
+          ...identifiedWait, fireAt: new Date(lastFiredMs).toISOString(), intervalMs });
+        if (settled.handled) {
+          if (settled.rearmed) result.rearmed++;
+          continue;
+        }
+      }
       const monitorConfig = settledTurnVia ? readPersistedMonitorConfig(row.payload_template) : null;
       if (monitorConfig) {
         // The authority reads resolve work-items / presence / fleets, which are

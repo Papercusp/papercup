@@ -7,11 +7,16 @@ import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { COLD_ARCHIVE_INTEGRITY_ACTION, measureColdMounts, observeColdArchiveIntegrity, type ColdMountObservation } from './cold-tier-evidence';
 import { exportArchiveToColdTier, verifyColdArchiveIntegrity, sha256Hex, type ArchiveStampRow, type ArchiveFileRow } from '../session-archive';
 import { measureDurableHeadroomTargets } from './retention-interval-evidence';
+import { RECLAIM_SOURCE_PATHS } from './reclaim-provenance';
 
 describe('cold tier native evidence ledgers', () => {
   let db: FreshPgDb;
   const at = (h: number) => new Date(Date.UTC(2026, 9, 10) + h * 3_600_000).toISOString();
-  const window = { workspaceId: 'workspace', harnessSlug: 'harness', host: 'fixture-host', windowStart: at(0), windowEnd: at(72) };
+  const headroomBinding = { readinessRunId: 'ready', runtimeHost: 'port-3271', sourceSha: 'a'.repeat(40),
+    sourceBlobs: Object.fromEntries(RECLAIM_SOURCE_PATHS.map(path => [path, 'b'.repeat(40)])) };
+  const runtime = { service: 'port-3271', processId: 'fixture-boot:123:456', artifact: { sourceSha: headroomBinding.sourceSha,
+    sourceBlobs: headroomBinding.sourceBlobs, bundleSha256: 'c'.repeat(64), manifestSha256: 'd'.repeat(64), evidenceRef: '/fixture/bg.artifact.json' } };
+  const window = { workspaceId: 'workspace', harnessSlug: 'harness', host: 'fixture-host', windowStart: at(0), windowEnd: at(72), headroomBinding };
   beforeAll(async () => {
     db = await createFreshPgDb('cold-evidence');
     await db.sql.unsafe(`CREATE TABLE harness_shared.audit_log
@@ -102,8 +107,10 @@ describe('cold tier native evidence ledgers', () => {
       SELECT device||hour, 'fixture-host',device, ${at(0)}::timestamptz+(hour+0.5)*interval '1 hour',
         CASE WHEN device='/' THEN 400000000000::bigint ELSE 2000000000000::bigint END,true
       FROM generate_series(0,71) hour CROSS JOIN (VALUES ('/'),('/mnt/data')) d(device)`;
-    for (let h = 0; h < 72; h++) {
-      const receipt = { id: `run-${h}`, host: window.host, schemaVersion: 1, startedAt: at(h + 0.2), finishedAt: at(h + 0.3),
+    for (let h = -1; h < 72; h++) {
+      const receipt = { id: h === -1 ? 'ready' : `run-${h}`, host: window.host, runtime, schemaVersion: 1, startedAt: at(h + 0.2), finishedAt: at(h + 0.3),
+        devices: ['/', '/mnt/data'].map(path => ({ path, beforeFreeBytes: path === '/' ? 400000000000 : 2000000000000,
+          afterFreeBytes: path === '/' ? 400000000000 : 2000000000000 })),
         dryRun: false, complete: true, policyExhausted: true, errors: [], entries: [], delegates: [] };
       for (const phase of ['started', 'receipt']) {
         const details = phase === 'started' ? { ...receipt, finishedAt: '', complete: false } : receipt;
@@ -119,6 +126,30 @@ describe('cold tier native evidence ledgers', () => {
     expect((await measureDurableHeadroomTargets(db.sql, window)).verdict).toBe('unknown');
     expect((await measureDurableHeadroomTargets(db.sql, { ...window, host: 'other-host' })).verdict).toBe('unknown');
   });
+  it('reads prerequisite completion before the window and rejects another accepted edition', async () => {
+    await seedTargets();
+    const result = await measureDurableHeadroomTargets(db.sql, window);
+    expect(result.verdict).toBe('pass');
+    expect(JSON.parse(result.detail).readiness).toMatchObject({ runId: 'ready', readyAt: at(-0.7), runtime });
+    expect((await measureDurableHeadroomTargets(db.sql, { ...window,
+      headroomBinding: { ...headroomBinding, sourceSha: 'e'.repeat(40) } })).verdict).toBe('unknown');
+    await db.sql`UPDATE harness_shared.audit_log SET details=jsonb_set(details,'{finishedAt}',${db.sql.json(at(1))}) WHERE id='-1-receipt'`;
+    expect((await measureDurableHeadroomTargets(db.sql, window)).verdict).toBe('unknown');
+  });
+  it.each([undefined, null, 'false', 'true', 0, false, true])(
+    'keeps ambiguous extra native starts beside a healthy cohort (dryRun=%j)', async dryRun => {
+      await seedTargets();
+      const details: Record<string, string | number | boolean | null> = {
+        id: 'extra-start', host: window.host, startedAt: at(30.4),
+      };
+      if (dryRun !== undefined) details.dryRun = dryRun;
+      await db.sql`INSERT INTO harness_shared.audit_log VALUES
+        ('extra-start',${Date.parse(at(30.4))},'system:disk-retention','disk-retention:started',
+         'extra-start',${db.sql.json(details)},'workspace')`;
+      // Only a native boolean true proves that this extra attempt was dry.
+      expect((await measureDurableHeadroomTargets(db.sql, window)).verdict)
+        .toBe(dryRun === true ? 'pass' : 'unknown');
+    });
   it('does not hide a middle dip or hostless legacy attempt behind good endpoints', async () => {
     await seedTargets();
     await db.sql`UPDATE harness_shared.audit_log SET details=details-'host' WHERE id='30-started'`;

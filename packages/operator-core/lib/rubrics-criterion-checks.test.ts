@@ -1117,7 +1117,7 @@ describe('evaluateCriterionTestChecks (grading time)', () => {
       expect(record).toMatchObject({ kind: 'tests', files: ['packages/x/real.test.ts'], passed: 3, failed, testRunIds: [901], verdict,
         all: [{ kind: 'probe', executed: true }, { kind: 'probe', executed: true }] });
       expect(runner).toHaveBeenCalledTimes(1);
-      expect(dispatchTool).toHaveBeenCalledTimes(2);
+      expect(dispatchTool).toHaveBeenCalledTimes(1);
       const readback = asStructuredObservation({ checkRuns: { det: record } })?.checkRuns?.det;
       expect(readback).toEqual(record);
       expect(probeCheckResults('tests-and-probes', { det: readback! })).toHaveLength(2);
@@ -1133,7 +1133,7 @@ describe('evaluateCriterionTestChecks (grading time)', () => {
         const result = await evaluateCriterionTestChecks({ criteria: [criterion()] as never, ratings: { det: { rating: 'healthy' } }, root,
           runner, dispatchTool: async () => { throw new Error('unavailable'); } });
         expect(result).toMatchObject({ ok: false, error: 'probe_run_failed' });
-        expect(warning).toHaveBeenCalledTimes(2);
+        expect(warning).toHaveBeenCalledTimes(1);
         expect(warning.mock.calls.every(([message]) => String(message).includes('unavailable'))).toBe(true);
       } finally { warning.mockRestore(); }
       runner.mockClear();
@@ -1145,7 +1145,8 @@ describe('evaluateCriterionTestChecks (grading time)', () => {
     });
 
     it('enforces the combined probe budget before running tests', async () => {
-      const criteria = Array.from({ length: RUBRIC_PROBE_MAX_PER_EMIT / 2 + 1 }, (_, index) => ({ ...criterion(), key: `c-${index}` }));
+      const criteria = Array.from({ length: RUBRIC_PROBE_MAX_PER_EMIT / 2 + 1 }, (_, index) => ({ ...criterion(), key: `c-${index}`,
+        check: { ...criterion().check, all: [0, 1].map(n => ({ ...probe(), sql: `SELECT ${index * 2 + n} AS n` })) } }));
       const runner = vi.fn();
       const ratings = Object.fromEntries(criteria.map(c => [c.key, { rating: 'healthy' }]));
       expect(validateCriterionCheckPaths([...criteria, { key: 'standalone', check: { kind: 'probe', probe: probe() } }] as never, { root }).scopeFailures)

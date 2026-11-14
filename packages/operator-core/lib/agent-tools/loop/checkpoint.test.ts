@@ -4148,7 +4148,7 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     setLoopCarryNote.mockImplementation(async (_ref: unknown, note: unknown) => note as string);
     expect(body(await call({ did: 'progress',
       checks: [{ claim: 'shared wording', recheck: 'probe', verified: 'observed' }],
-      walls: [{ claim: 'shared wording', recheck: 'ask for decision' }],
+      walls: [{ claim: 'shared wording', recheck: 'ask for decision', conversationId: 'conv-question-1' }],
     })).ok).toBe(true);
     const first = lastStoredNote;
     const check = splitCarryNoteChecks(first).checks[0]!;
@@ -4156,6 +4156,7 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     expect(check.id).toEqual(expect.any(String));
     expect(wall.id).toEqual(expect.any(String));
     expect(check.id).not.toBe(wall.id);
+    expect(wall.conversationId).toBe('conv-question-1');
     getLoopCarryNote.mockResolvedValue(first);
     expect(body(await call({ note: null })).ok).toBe(true);
     expect(splitCarryNoteChecks(lastStoredNote).checks).toEqual([check]);

@@ -90,7 +90,9 @@ import {
   type RepairDowngradeCoverage,
 } from "@papercusp/operator-core/lib/release/promotion-ratchet";
 import { quietCutSecFromEnv } from "@papercusp/operator-core/lib/release/quiet-cut";
+import { runtimeObservabilityHealth } from "@papercusp/operator-core/lib/observability/runtime";
 import {
+  captureRatchetInstrument,
   compactRatchetShadow,
   compareComposedProofShadow,
   parseCommitPathLog,
@@ -102,6 +104,15 @@ import {
   type RatchetShadowHealth,
 } from "@papercusp/operator-core/lib/release/ratchet-shadow";
 import type { ChangedFile } from "@papercusp/operator-core/lib/release/composed-promotion-proof";
+import {
+  CHECKPOINT_PROOF_CONTEXT_SELECTION_ARGS,
+  CHECKPOINT_SPA_CONFLICT_MARKER_ARGS as SPA_CONFLICT_MARKER_ARGS,
+  captureCheckpointProofContextAtRef,
+  checkpointPostSuiteCommandArgv,
+  checkpointProofContextLegEntries,
+  compareCheckpointProofContextCaptures,
+  type CheckpointProofContextCapture,
+} from "./checkpoint-proof-context-reach";
 import {
   buildRedLegsAtR1,
   decideKnownGoodFreezeCut,
@@ -1316,6 +1327,9 @@ export interface CheckpointDeps {
     ref: string,
     paths: string[],
   ): Promise<RepairHeadRadius | null>;
+  /** P-021 source preparation at an exact ref. Unknown semantic/execution inputs remain null.
+   * Captures finish sequentially because setupTree reuses the same isolated checkout. */
+  captureProofContextAtRef?(ref: string): Promise<CheckpointProofContextCapture>;
   /** WI-38422: run candidate-scoped owning typechecks BEFORE the expensive affected-test
    *  sweep. The caller passes the exact committed diff from the last green pin to the
    *  candidate; the real dep routes every changed file through a discovered owning
@@ -8396,12 +8410,25 @@ const SHADOW_SCRIPT_FILE = /\.(?:[cm]?[jt]s|[jt]sx)$/;
  * is only recorded and later compared with the full run; no decision reads it. Never throws.
  */
 export async function shadowComposedProofAtRepairHead(input: {
+  proofContext?: Parameters<typeof planComposedProofShadow>[0]["proofContext"];
+  captureProofContextAtRef?: CheckpointDeps["captureProofContextAtRef"];
   root: string;
   queue: Pick<FrozenCandidateRepairQueue, "candidate" | "convergenceRounds">;
   repairHead: string;
   affectedTestsAtRef?: (ref: string, paths: string[]) => Promise<RepairHeadRadius | null>;
   nowMs: number;
 }): Promise<ComposedProofShadow> {
+  let proofContext = input.proofContext;
+  if (input.captureProofContextAtRef) {
+    try {
+      const before = await input.captureProofContextAtRef(input.queue.candidate);
+      const after = await input.captureProofContextAtRef(input.repairHead);
+      proofContext = compareCheckpointProofContextCaptures({ candidate: input.queue.candidate,
+        repairHead: input.repairHead, before, after });
+    } catch {
+      proofContext = { before: null, after: null };
+    }
+  }
   const round1Row = (input.queue.convergenceRounds ?? []).find((r) => r.head === input.queue.candidate);
   const round1 = round1Row?.failingTests
     ? { failingTests: round1Row.failingTests, failingCount: round1Row.failingCount }
@@ -8439,6 +8466,8 @@ export async function shadowComposedProofAtRepairHead(input: {
     }
   };
   return planComposedProofShadow({
+    instrument: captureRatchetInstrument(runtimeObservabilityHealth().artifact, proofContext?.after),
+    proofContext,
     candidate: input.queue.candidate,
     repairHead: input.repairHead,
     round1,
@@ -14693,6 +14722,7 @@ async function runGreenCheckpointInner(
           root: cfg.integrationRoot,
           queue: repairQueue,
           repairHead: candidate,
+          captureProofContextAtRef: deps.captureProofContextAtRef?.bind(deps),
           affectedTestsAtRef: deps.affectedTestsAtRef?.bind(deps),
           nowMs: Date.now(),
         });
@@ -20501,10 +20531,6 @@ function postSuiteCommandId(cmd: string, args: readonly string[]): string {
   return `${cmd}:${args.join(" ")}`;
 }
 
-const SPA_CONFLICT_MARKER_ARGS = [
-  'grep', '-n', '-I', '-E', '^(<{7}|>{7}|\\|{7})([ \\t]|$)', '--', '.',
-];
-
 const checkpointCommandWrapperInputs = (root: string, command: readonly string[]) => {
   try {
     const files = ['package.json', 'package-lock.json', 'npm-shrinkwrap.json', '.npmrc'];
@@ -20562,9 +20588,8 @@ export function checkpointQualificationPostSuiteDefinition(
   const leg = POST_SUITE_LEG_DEFINITIONS.find(leg => `post:${leg.id}` === unitId);
   if (!leg) return null;
   const commands = leg.commands.map(id => {
-    if (id === 'build' && !spaWorkspace) return null;
-    const argv = id === 'spa:conflict-markers' ? ['git', ...SPA_CONFLICT_MARKER_ARGS] :
-      id === 'build' ? ['npm', '--workspace', spaWorkspace, 'run', 'build'] : ['npm', 'run', id];
+    const argv = checkpointPostSuiteCommandArgv(id, spaWorkspace);
+    if (!argv) return null;
     const wrapper = checkpointCommandWrapperInputs(progress.root, argv);
     return wrapper ? { id, task: `${unitId}:${id}`, argv, cwd: progress.root,
       originalCommand: wrapper.script, inputs: wrapper.inputs,
@@ -20692,8 +20717,7 @@ export function createCheckpointQualificationPostSuiteExecutor(
                 execution.captureComplete !== true || execution.signal !== null || execution.error !== null ||
                 !Number.isSafeInteger(execution.exitCode))
               throw new Error('qualification-post-suite-reuse-outcome-mismatch');
-            const canonical = outcome.command === 'spa:conflict-markers' ? ['git', ...SPA_CONFLICT_MARKER_ARGS] :
-              outcome.command === 'build' ? ['npm', '--workspace', requested[2], 'run', 'build'] : ['npm', 'run', outcome.command];
+            const canonical = checkpointPostSuiteCommandArgv(outcome.command, requested[2]);
             if (!isDeepStrictEqual(requested, canonical) ||
                 (outcome.command === commandId && (!isDeepStrictEqual(invocation.command, requested) ||
                   execution.invocation.environmentSha256 !== invocation.environmentSha256)) ||
@@ -21957,9 +21981,10 @@ export async function runPostSuiteLegs(
       // building a workspace it does not have — the very failure the comment says was cured,
       // still live for every case except the empty one. The parameter was threaded in at the
       // signature and read only by the emptiness guard.
+      const buildArgv = checkpointPostSuiteCommandArgv('build', spaWorkspace)!;
       const b = await exec(
-        "npm",
-        ["--workspace", spaWorkspace, "run", "build"],
+        buildArgv[0]!,
+        buildArgv.slice(1),
         {
           cwd: treeDir,
           env: { ...env, PAPERCUSP_RETAIN_DIST_CHUNKS: "1" },
@@ -26015,6 +26040,17 @@ export function realCheckpointDeps(
     // tip may carry workspaces the lineage lacks. A setupTree throw (e.g. a missing dependency
     // generation) or a non-zero selector exit PROPAGATES as an error naming its cause;
     // verifyRepairHead carries it into the hold (WI-10004151). `null` is only malformed output.
+    async captureProofContextAtRef(ref) {
+      return captureCheckpointProofContextAtRef({ ref,
+        setupTree: async pinned => { await this.setupTree(pinned); return cfg.checkpointRoot; },
+        readTree: async root => ({ head: (await git(root, ["rev-parse", "HEAD"])).trim(),
+          dirty: !!(await git(root, ["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"])).trim() }),
+        select: root => exec(process.execPath,
+          [path.join(root, "scripts/affected-tests.mjs"), ...CHECKPOINT_PROOF_CONTEXT_SELECTION_ARGS],
+          { cwd: root, allowNonZero: true, timeoutMs: SETUP_TREE_TIMEOUT_MS, killProcessGroupOnTimeout: true }),
+        legs: root => checkpointProofContextLegEntries(root, POST_SUITE_LEG_DEFINITIONS, cfg.spaBuildWorkspace),
+      });
+    },
     async affectedTestsAtRef(ref, paths) {
       return traceRepairVerificationPhase({ log, runId, ref }, "radius", async (phase) => {
       await traceRepairVerificationPhase(phase, "setup", () => this.setupTree(ref));

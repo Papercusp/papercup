@@ -2061,6 +2061,32 @@ export async function getLatestPlanAudit(
   }
 }
 
+/** Immutable Discovery receipt recovery. No evidence resolution or audit writes.
+ * Discovery belongs to the exact plan harness. Read errors must propagate:
+ * unavailable storage is not a missing receipt. */
+export async function getStoredDiscoveryAudit(
+  planSlug: string,
+  scope: { workspaceId: string; harnessSlug: string; auditSeq?: number },
+): Promise<PlanAudit | null> {
+  const { sql } = getOrgPg();
+  const auditSeq = scope.auditSeq ?? null;
+  const rows = await sql<PlanAuditRow[]>`
+    SELECT plan_slug, harness_slug, audit_seq, created_by, created_at, audit_kind, audited_sha,
+           activation, discovery, audited_plan_revision_id, audited_plan_revision_seq,
+           audited_plan_content_hash, items, findings, summary
+      FROM harness_shared.plan_audits
+     WHERE workspace_id = ${scope.workspaceId}
+       AND harness_slug = ${scope.harnessSlug}
+       AND plan_slug = ${planSlug}
+       AND audit_kind = 'discovery'
+       AND (${auditSeq}::bigint IS NULL OR audit_seq = ${auditSeq})
+     ORDER BY audit_seq DESC LIMIT 1`;
+  const row = rows.find(candidate => candidate.plan_slug === planSlug &&
+    candidate.harness_slug === scope.harnessSlug && candidate.audit_kind === 'discovery' &&
+    (auditSeq === null || candidate.audit_seq === auditSeq));
+  return row ? rowToAudit(row) : null;
+}
+
 /** Latest completed pre-activation conversation audit for a plan. */
 export async function getLatestActivationAudit(
   planSlug: string,

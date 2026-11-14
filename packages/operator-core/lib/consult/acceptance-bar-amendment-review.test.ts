@@ -15,6 +15,7 @@ import {
   filterAmendmentReviewRoute,
   inspectFreshAmendmentReviewer,
   launchFreshAmendmentReviewer,
+  recoverFreshReviewerTask,
   MAX_DEAD_REVIEWER_CHAIN,
   MAX_FRESH_REVIEWER_MODEL_ATTEMPTS,
   openAcceptanceBarAmendmentReview,
@@ -91,6 +92,43 @@ describe('P-003 compact immutable amendment packet', () => {
       .toThrow('acceptance_bar_review_source_incomplete');
     expect(() => readAcceptanceBarReviewSource(retained.replace('Old detector', 'Altered detector'), hash))
       .toThrow('acceptance_bar_review_source_mismatched');
+  });
+
+  it.each(['before', 'after'] as const)('does not report an equal read-only bar alias on %s as an outcome change', (side) => {
+    const { input, source } = packet();
+    const change = input.preview.criterionChanges![0]!;
+    change.before = { ...change.before!, barKey: 'R-1' };
+    change.after = { ...change.after!, barKey: 'R-1' };
+    change[side] = { ...change[side]!, bar: change[side]!.model };
+    const retained = acceptanceBarReviewPostBody(input.preview.approval, source);
+    const original = structuredClone(input);
+
+    const brief = buildAmendmentReviewBrief(input);
+    const line = brief.split('\n').find((value) => value.startsWith('Semantic field changes'))!;
+    const { criteria } = JSON.parse(line.slice(line.indexOf(': ') + 2));
+
+    expect(criteria[0].fields).toEqual({ method: { before: 'Old detector', after: 'New detector' } });
+    expect(criteria[1]).toMatchObject({ barKey: 'R-2', disposition: 'removed', fields: {
+      model: { before: 'Retired outcome', after: null },
+    } });
+    expect(input).toEqual(original);
+    expect(acceptanceBarReviewPostBody(input.preview.approval, source)).toBe(retained);
+    expect(readAcceptanceBarReviewSource(retained, input.preview.approval.reviewSourceHash!)).toEqual(source);
+  });
+
+  it('keeps a real canonical outcome change visible when the old read alias disappears', () => {
+    const { input } = packet();
+    const change = input.preview.criterionChanges![0]!;
+    change.before = { ...change.before!, barKey: 'R-1', bar: change.before!.model };
+    change.after = { ...change.after!, barKey: 'R-1', model: 'A different outcome' };
+
+    const brief = buildAmendmentReviewBrief(input);
+    const line = brief.split('\n').find((value) => value.startsWith('Semantic field changes'))!;
+    const { criteria } = JSON.parse(line.slice(line.indexOf(': ') + 2));
+
+    expect(criteria[0].fields.model).toEqual({ before: 'Persist the outcome', after: 'A different outcome' });
+    expect(criteria[0].fields).not.toHaveProperty('bar');
+    expect(criteria[0].fields.method).toEqual({ before: 'Old detector', after: 'New detector' });
   });
 
   it('prefers the complete post reader while preserving paged recovery and signed source verification on both review routes', () => {
@@ -540,6 +578,21 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     ).rejects.toThrow(/reviewPreviewPost must be thread-post:<id>/);
   });
 
+  it.each(['acceptance_bar_review_source_incomplete', 'acceptance_bar_review_source_mismatched'])(
+    'offers source-complete recovery after %s without routing an invalid preview', async (reason) => {
+      const route = vi.fn();
+      const verifyPreviewPost = vi.fn().mockRejectedValue(new Error(reason));
+      const failure = await openAcceptanceBarAmendmentReview(baseInput, { verifyPreviewPost, route })
+        .then(() => null, (error: Error) => error);
+
+      expect(failure?.message).toContain(reason);
+      expect(failure?.message).toContain('requestReview:{workItemId,harness}');
+      expect(failure?.message).toContain('complete preview and source');
+      expect(failure?.message).not.toContain('Post the current preview.approval JSON');
+      expect(route).not.toHaveBeenCalled();
+    },
+  );
+
   it('opens the routed review for the preview post and returns its reference', async () => {
     const route = vi.fn().mockResolvedValue({ state: 'routed', conversationId: 'conv-1', responderId: 'su-outsider', screenedOut: [] });
     const resolveSources = vi.fn().mockResolvedValue(reviewSources);
@@ -709,6 +762,25 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     expect(result.freshReviewer).toEqual({ state: 'not-launched', reason: expect.stringContaining('reviewEvidencePost') });
     expect(result.next).toContain('retained reviewer su-reviewer already replied');
     expect(result.next).toContain('reviewEvidencePost');
+  });
+
+  it('returns the same-reviewer correction instead of asking for another complete review', async () => {
+    const route = vi.fn(async () => ({ state: 'no-eligible-reviewer' as const,
+      conversationId: 'conv-empty', reason: 'no eligible expert', screenedOut: [] }));
+    const launchFresh = vi.fn(async () => ({ state: 'launched' as const,
+      launcherId: ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR, taskId: 'retained-reviewer',
+      label: 'retained', idempotencyKey: 'retained', deduped: true,
+      answerOn: { workItemId: 'WI-7', harness: 'papercusp' }, ownerId: 'su-reviewer' }));
+    const reason = 'Same independent reviewer must correct thread-post:43 for thread-post:42; no replacement.';
+    const readReply = vi.fn(async () => ({ state: 'signature-repair-required' as const,
+      replyPostRef: 'thread-post:43', reason }));
+    const result = await openAcceptanceBarAmendmentReview(baseInput, {
+      verifyPreviewPost: vi.fn(), route, launchFresh, readReply,
+    });
+    expect(launchFresh).toHaveBeenCalledTimes(1);
+    expect(readReply).toHaveBeenCalledWith({ workspaceId: 'ws', previewPostRef: 'thread-post:42',
+      authorId: 'su-reviewer', excludeAuthorId: 'su-implementer' });
+    expect(result).toMatchObject({ next: reason, freshReviewer: { state: 'not-launched', reason } });
   });
 
   // WI-10003299: an empty menu used to end the review ("re-request later"), so a
@@ -1280,6 +1352,40 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
     expect(args).not.toHaveProperty('harness');
   });
 
+  it('recovers a legacy missing task only from the exact system launch owner', async () => {
+    const readLaunch = vi.fn(async () => ({ launchedBy: ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR,
+      summary: { ownerIds: ['exact-owner'] } }));
+    const listTasks = vi.fn(async () => [{ taskId: 'exact-task', logPath: '/exact.log' }]);
+    expect(await recoverFreshReviewerTask('ws', 'acceptance-bar-amendment-review:abc',
+      { readLaunch, listTasks } as never)).toEqual({ taskId: 'exact-task', ownerId: 'exact-owner', logPath: '/exact.log' });
+    expect(listTasks).toHaveBeenCalledWith({ workspaceId: 'ws', coordOwnerId: 'exact-owner',
+      classes: ['agent-session'], launchedBy: ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR, includeEnded: true, limit: 2 });
+  });
+
+  it('refuses ambiguous legacy tasks and a foreign launch principal', async () => {
+    const readLaunch = vi.fn(async () => ({ launchedBy: ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR,
+      summary: { ownerIds: ['exact-owner'] } }));
+    const listTasks = vi.fn(async () => [{ taskId: 'one' }, { taskId: 'two' }]);
+    expect(await recoverFreshReviewerTask('ws', 'acceptance-bar-amendment-review:abc',
+      { readLaunch, listTasks } as never)).toBeNull();
+    listTasks.mockClear();
+    expect(await recoverFreshReviewerTask('ws', 'acceptance-bar-amendment-review:abc',
+      { readLaunch: async () => ({ launchedBy: 'caller', summary: { ownerIds: ['exact-owner'] } }), listTasks } as never)).toBeNull();
+    expect(listTasks).not.toHaveBeenCalled();
+  });
+
+  it('replaces a terminal legacy reviewer with missing replay handles through the canonical launcher', async () => {
+    const d = deps({ launch: vi.fn().mockResolvedValueOnce({ data: { deduped: true, launch: {} } })
+      .mockResolvedValueOnce({ data: { deduped: false, launch: { tasks: [kickoffTask('replacement')] } } }),
+      recoverTask: vi.fn(async () => ({ taskId: 'retired-exact', ownerId: 'old-owner' })),
+      readTaskState: vi.fn(async () => 'ended_unobserved' as const),
+      hasReviewerAnswer: vi.fn(async () => false) });
+    const result = await launchFreshAmendmentReviewer(input, d as never);
+    expect(d.launch).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ state: 'launched', taskId: 'replacement', relaunchedAfter: ['retired-exact'] });
+    expect(d.launch.mock.calls[1]![0].idempotencyKey).toContain(':after:retired-exact');
+  });
+
   it('reports a refused launch', async () => {
     const d = deps({ launch: vi.fn().mockResolvedValue({ isError: true, content: [{ text: 'quota walled' }] }) });
     await expect(launchFreshAmendmentReviewer(input, d as never)).resolves.toEqual({
@@ -1748,6 +1854,17 @@ describe('inspectFreshAmendmentReviewer', () => {
       kickoffProof: { persisted: true, nativeRef: '/retained/reviewer-1.jsonl' } }],
   } });
 
+  it.each(['ended_unobserved', 'running'] as const)('reclaims missing-task kickoff receipts only when exact custody is terminal (%s)', async (state) => {
+    const hasLaterPost = vi.fn(async () => false);
+    const result = await inspectFreshAmendmentReviewer({ ...input, reviewer: {
+      state: 'blocked', reason: 'kickoff-unverified', taskId: null,
+      launcherId: ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR, idempotencyKey: 'acceptance-bar-amendment-review:legacy',
+    } }, { recoverTask: async () => ({ taskId: 'exact-retired', ownerId: 'reviewer-owner' }),
+      readTaskState: async () => state, hasLaterPost });
+    expect(result).toMatchObject({ state: state === 'running' ? 'unknown' : 'reclaimable', taskId: 'exact-retired' });
+    expect(hasLaterPost).toHaveBeenCalledTimes(state === 'running' ? 0 : 1);
+  });
+
   it('recovers legacy receipt custody before detecting a running reviewer rejected with native 401', async () => {
     const rejection = analyzeClaudeResumeTranscript([
       JSON.stringify({ type: 'user', message: { role: 'user', content: 'Review the amendment' } }),
@@ -1794,6 +1911,34 @@ describe('inspectFreshAmendmentReviewer', () => {
       expect(hasLaterPost).not.toHaveBeenCalled();
     },
   );
+
+  it.each([false, true])('adopts a blocked kickoff only from its exact durable native receipt (answered=%s)', async (answered) => {
+    const result = await inspectFreshAmendmentReviewer({ ...legacyInput, reviewer: {
+      ...legacyInput.reviewer, state: 'blocked', reason: 'kickoff-unverified',
+      ownerId: 'reviewer-owner', nativeRef: 'unknown',
+    } }, {
+      readRetainedLaunch: vi.fn(async () => retainedLaunch()),
+      readTaskState: vi.fn(async () => 'running' as const),
+      resolveSessionStates: vi.fn(async () => new Map([['reviewer-owner', {
+        sessionState: 'live', selfWake: 'loop',
+      }]])) as never,
+      analyzeTranscript: vi.fn(() => ({ trailingAccountWallTurns: 1,
+        lastAccountWallEvidence: 'native authentication failed' })) as never,
+      hasLaterPost: vi.fn(async () => answered),
+    });
+    expect(result).toMatchObject({ state: answered ? 'later-post' : 'reclaimable', taskId: 'reviewer-1' });
+    if (!answered) expect(result).toMatchObject({ nativeRef: '/retained/reviewer-1.jsonl', reason: 'account-walled' });
+  });
+
+  it('keeps a blocked timeout unknown without authenticated late proof', async () => {
+    const retained = retainedLaunch();
+    retained.summary.tasks[0]!.kickoffProof.persisted = false;
+    const readTaskState = vi.fn(async () => 'exited' as const);
+    expect(await inspectFreshAmendmentReviewer({ ...legacyInput, reviewer: {
+      ...legacyInput.reviewer, state: 'blocked', reason: 'kickoff-unverified', nativeRef: 'unknown',
+    } }, { readRetainedLaunch: vi.fn(async () => retained), readTaskState })).toMatchObject({ state: 'unknown' });
+    expect(readTaskState).not.toHaveBeenCalled();
+  });
 
   it('does not infer legacy custody when its retained launch is unavailable', async () => {
     for (const readRetainedLaunch of [vi.fn(async () => null), vi.fn(async () => { throw new Error('unavailable'); })]) {

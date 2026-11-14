@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import type { AdvSessionLaunchRecord } from '../../adv-sessions';
 import type { FleetHeadcountTarget } from '../../agent-fleets-store';
 import {
@@ -150,6 +151,146 @@ describe('saved fleet launch spec resolver (agent-launch-unification P-043)', ()
           field).toBe(false);
       }
       expect(savedOriginalMemberLaunchSpec(record, current, 'ws-test', 'byoc').ok).toBe(false);
+    });
+  });
+
+  describe('retained original invocation and artifact recovery', () => {
+    function fixture() {
+      const binding = { advSessionId: 71, ownerId: 'su-original', sessionId: 'native-successor', harnessSlug: 'papercusp' };
+      const compile = (revision: string, profile = 'engineer') => compileAgentSpecification({
+        source: { id: 'original-launch', workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } } },
+        prompt: { role: 'su', text: `Retained ${revision} prompt.` }, inputClosure: [],
+        mutableState: { ref: 'launch-state-v1', revision, value: {
+          schemaVersion: 1, principal: { kind: 'su', role: 'su', profile },
+          policy: { mcp: 'superuser', contextSize: 'trimmed', personaTier: 'fleet' }, stack: [],
+        } },
+      });
+      const original = compile('state-original');
+      const later = compile('state-current');
+      const receipt = { specificationRevision: original.specificationRevision, stateRevision: 'state-original',
+        specificationArtifact: original, stack: [] as string[], selectedIdentity: null as unknown };
+      const args: Record<string, unknown> = { name: 'byoc', plan: 'byoc-plan', harness: 'papercusp', count: 1,
+        agent: 'codex', model: 'gpt-6.1-sol:xhigh', account: 'auto', carry: 'warm', headless: true };
+      const transaction = { version: 1, transactionId: 'original-epoch', launcherOwnerId: 'su-leader',
+        requestedMemberIds: [binding.ownerId], openedMemberIds: [binding.ownerId], verifiedMemberIds: [binding.ownerId],
+        requestedMembers: [{ index: 0, ownerId: binding.ownerId, agent: 'codex', model: 'gpt-6.1-sol:xhigh',
+          account: 'auto', carry: 'warm', headless: true }] };
+      const record = { workspaceId: 'ws-test', agent: 'codex' as const,
+        launchArgv: ['psu', '--account=default', '--model=attractive-later-model'],
+        launchSpec: { ...(legacyRecord.launchSpec as Record<string, unknown>), principalId: 'system:superuser',
+          specificationRevision: later.specificationRevision, stateRevision: 'state-current', specificationArtifact: later,
+          identityHistory: [receipt] },
+        originalMemberHistoricalSource: { workspaceId: 'ws-test', fleetSlug: 'byoc', ...binding,
+          originalSessionId: 'native-original', currentSessionId: binding.sessionId, transaction,
+          invocation: { id: '201', actor: 'su-leader', harnessSlug: 'papercusp', args },
+          originalApplied: { id: '101', specificationRevision: original.specificationRevision,
+            stateRevision: 'state-original', actorId: binding.ownerId, principalId: 'system:superuser',
+            sessionId: binding.ownerId, stack: [] as string[] },
+          currentApplied: { id: '102', specificationRevision: later.specificationRevision,
+            stateRevision: 'state-current', actorId: binding.ownerId, principalId: 'system:superuser',
+            sessionId: binding.ownerId, stack: [] as string[] } },
+      } satisfies AdvSessionLaunchRecord;
+      const resolve = () => savedOriginalMemberLaunchSpec(record, binding, 'ws-test', 'byoc');
+      return { record, binding, args, transaction, receipt, compile, resolve };
+    }
+
+    it('replays the exact original artifact and retains the complete source snapshot without backfilling', () => {
+      const f = fixture();
+      const before = structuredClone(f.record);
+      const result = f.resolve();
+      expect(result).toMatchObject({ ok: true, config: { account: 'auto', model: 'gpt-6.1-sol',
+        effort: 'xhigh', carry: 'warm', headless: true }, saved: { member: { profile: 'engineer', stack: [] } } });
+      expect(f.record).toEqual(before);
+      if (!result.ok) throw new Error(result.message);
+      expect(result.originalEvidence?.snapshot).toEqual(before);
+      expect(result.originalEvidence?.receipt).toEqual(f.receipt);
+      result.originalEvidence!.snapshot.launchArgv = [];
+      expect(f.record).toEqual(before);
+    });
+
+    it('uses the original producer normalization to bind a fleet name to its slug', () => {
+      const f = fixture();
+      f.args.name = '  BYOC  ';
+      expect(f.resolve()).toMatchObject({ ok: true });
+    });
+
+    it('preserves explicit visible placement, member precedence and supported profile/passthrough fields', () => {
+      const f = fixture();
+      f.args.account = 'default';
+      f.args.profile = 'wrong-top-profile';
+      f.args.members = [{ account: 'auto', headless: false, profile: 'engineer', contextSize: 'trimmed',
+        compactionLimit: 400000, addDir: ["/tmp/Avi's work"], allowSubagents: false, brain: true,
+        feature: 'exact-feature', display: ':110', extraArgs: ['--add-dir=/tmp/extra'], brief: 'Original first turn' }];
+      f.args.launchContext = '/tmp/original-kickoff.md';
+      f.args.supervise = false;
+      f.args.confirmRouteSwitch = true;
+      f.transaction.requestedMembers[0].headless = false;
+      expect(f.resolve()).toMatchObject({ ok: true, saved: { member: { headless: false, account: 'auto',
+        profile: 'engineer', compactionLimit: 400000, addDir: ["/tmp/Avi's work"], allowSubagents: false,
+        brain: true, feature: 'exact-feature', display: ':110',
+        extraArgs: ['--add-dir=/tmp/extra', '--no-subagents', '--persona-tier=fleet'] } },
+        originalEvidence: { fieldDispositions: { launchContext: 'launch-only', supervise: 'launch-only',
+          confirmRouteSwitch: 'guard', 'members[0].brief': 'launch-only' } } });
+      const result = f.resolve();
+      if (!result.ok) throw new Error(result.message);
+      expect(result.saved.member).not.toHaveProperty('brief');
+      expect(result.saved.member).not.toHaveProperty('launchContext');
+    });
+
+    const mutations: Array<[string, (f: ReturnType<typeof fixture>) => void]> = [
+      ['wrong workspace', f => { f.record.originalMemberHistoricalSource.workspaceId = 'other'; }],
+      ['wrong fleet', f => { f.record.originalMemberHistoricalSource.fleetSlug = 'other'; }],
+      ['different original request fleet', f => { f.args.name = 'other-fleet'; }],
+      ['wrong owner', f => { f.record.originalMemberHistoricalSource.ownerId = 'other'; }],
+      ['wrong ADV', f => { f.record.originalMemberHistoricalSource.advSessionId++; }],
+      ['wrong current native', f => { f.record.originalMemberHistoricalSource.currentSessionId = 'other'; }],
+      ['missing original native (original307)', f => { f.record.originalMemberHistoricalSource.originalSessionId = ''; }],
+      ['wrong invocation harness', f => { f.record.originalMemberHistoricalSource.invocation.harnessSlug = 'other'; }],
+      ['wrong invocation actor', f => { f.record.originalMemberHistoricalSource.invocation.actor = 'other'; }],
+      ['successor transaction', f => { Object.assign(f.transaction, { previousTransactionId: 'older' }); }],
+      ['unopened member', f => { f.transaction.openedMemberIds = []; }],
+      ['unverified member', f => { f.transaction.verifiedMemberIds = []; }],
+      ['duplicate requested identity', f => { f.transaction.requestedMemberIds.push(f.binding.ownerId); }],
+      ['duplicate member slot', f => { f.transaction.requestedMembers.push(f.transaction.requestedMembers[0]); }],
+      ['wrong slot index', f => { f.transaction.requestedMembers[0].index = 1; }],
+      ['wrong slot owner', f => { f.transaction.requestedMembers[0].ownerId = 'sibling'; }],
+      ['missing original carry (original307)', f => { Object.assign(f.transaction.requestedMembers[0], { carry: null }); }],
+      ['auto/default contradiction (original307)', f => { f.transaction.requestedMembers[0].account = 'default'; }],
+      ['route effort mismatch', f => { f.args.effort = 'low'; }],
+      ['unknown request key', f => { f.args.unknownControl = true; }],
+      ['unknown member key', f => { f.args.members = [{ unknownControl: true }]; }],
+      ['unsupported delegated seat', f => { f.args.fromSeats = true; }],
+      ['different original request harness', f => { f.args.harness = 'other'; }],
+      ['partial cohort count', f => { f.args.count = 2; }],
+      ['unrepresentable extra argument', f => { f.args.extraArgs = ['--undocumented-control']; }],
+      ['route override in extraArgs', f => { f.args.extraArgs = ['--account=default']; }],
+      ['duplicate feature control', f => { f.args.feature = 'a'; f.args.extraArgs = ['--feature=b']; }],
+      ['duplicate extra control', f => { f.args.extraArgs = ['--feature=a', '--feature=b']; }],
+      ['wrong applied principal', f => { f.record.originalMemberHistoricalSource.originalApplied.principalId = 'other'; }],
+      ['wrong applied actor', f => { f.record.originalMemberHistoricalSource.originalApplied.actorId = 'sibling'; }],
+      ['wrong applied owner session', f => { f.record.originalMemberHistoricalSource.originalApplied.sessionId = 'sibling'; }],
+      ['reversed custody', f => { f.record.originalMemberHistoricalSource.originalApplied.id = '999'; }],
+      ['stale current applied pair', f => { f.record.originalMemberHistoricalSource.currentApplied.stateRevision = 'other'; }],
+      ['missing exact original state pair', f => { f.receipt.stateRevision = 'other'; }],
+      ['duplicate exact artifact pair', f => { f.record.launchSpec.identityHistory.push(structuredClone(f.receipt)); }],
+      ['sibling valid artifact', f => { f.receipt.specificationArtifact = f.compile('state-sibling'); }],
+      ['tampered artifact closure', f => { f.receipt.specificationArtifact = {
+        ...structuredClone(f.receipt.specificationArtifact), specificationRevision: 'f'.repeat(64) }; }],
+      ['unbound selected identity', f => { f.receipt.selectedIdentity = { ref: 'identity:sibling', sourceRevision: 'f'.repeat(64) }; }],
+      ['valid artifact layer misrepresented as original selected root', f => {
+        const layer = f.receipt.specificationArtifact.inputs.find(input => input.kind === 'blueprint-layer')!;
+        f.receipt.selectedIdentity = { ref: `identity:${layer.ref}`, sourceRevision: layer.contentHash };
+      }],
+      ['applied stack mismatch', f => { f.record.originalMemberHistoricalSource.originalApplied.stack = ['identity:sibling']; }],
+      ['request profile mismatch', f => { f.args.profile = 'sibling'; }],
+      ['request policy mismatch', f => { f.args.contextSize = 'steward'; }],
+      ['malformed present receipt', f => { Object.assign(f.record.launchSpec, { originalMemberLaunch: null }); }],
+    ];
+    it.each(mutations)('refuses %s with an independently passing control', (_name, mutate) => {
+      const f = fixture();
+      expect(f.resolve()).toMatchObject({ ok: true });
+      mutate(f);
+      expect(f.resolve()).toMatchObject({ ok: false, message: expect.any(String) });
     });
   });
 

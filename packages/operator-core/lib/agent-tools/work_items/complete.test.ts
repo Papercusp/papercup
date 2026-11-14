@@ -44,6 +44,26 @@ vi.mock('../../owner-directive-recovery', () => ({
   directiveRecoveryClosureError: (...args: unknown[]) => directiveRecovery.closureError(...args),
 }));
 const contentIdentityPreview = vi.hoisted(() => ({ stamp: vi.fn() }));
+const verificationProbes = vi.hoisted(() => ({
+  paths: vi.fn<typeof import('./untouched-paths').untouchedPathsInCompletion>(),
+  tests: vi.fn<typeof import('./test-result-binding').testResultContradictedByRun>(),
+}));
+vi.mock('./untouched-paths', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./untouched-paths')>();
+  return {
+    ...actual,
+    untouchedPathsInCompletion: (...args: Parameters<typeof actual.untouchedPathsInCompletion>) =>
+      verificationProbes.paths(...args) ?? actual.untouchedPathsInCompletion(...args),
+  };
+});
+vi.mock('./test-result-binding', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./test-result-binding')>();
+  return {
+    ...actual,
+    testResultContradictedByRun: (...args: Parameters<typeof actual.testResultContradictedByRun>) =>
+      verificationProbes.tests(...args) ?? actual.testResultContradictedByRun(...args),
+  };
+});
 vi.mock('./completion-freshness', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./completion-freshness')>();
   return {
@@ -458,6 +478,8 @@ beforeEach(() => {
   blockerPreflight.read.mockReset().mockResolvedValue({ ok: true, ordinary: true });
   directiveRecovery.closureError.mockReset().mockResolvedValue(null);
   contentIdentityPreview.stamp.mockReset();
+  verificationProbes.paths.mockReset();
+  verificationProbes.tests.mockReset();
   completionBriefPort.read.mockReset();
   completionBriefPort.read.mockResolvedValue(null);
   conformanceClosure.read.mockReset();
@@ -1848,6 +1870,57 @@ describe('work_items:complete (keyed-array)', () => {
       expect(attachCompletionEvidenceToSettledItem).toHaveBeenCalled();
     } finally {
       release(null);
+      try { await attempt; }
+      finally {
+        if (previousPhases) Object.defineProperty(ctxFields, 'phases', previousPhases);
+        else Reflect.deleteProperty(ctxFields, 'phases');
+      }
+    }
+  });
+
+  it.each([
+    { probe: 'paths' as const, phase: 'completion:untouched-paths', rejects: false },
+    { probe: 'tests' as const, phase: 'completion:test-result-binding', rejects: false },
+    { probe: 'paths' as const, phase: 'completion:untouched-paths', rejects: true },
+    { probe: 'tests' as const, phase: 'completion:test-result-binding', rejects: true },
+  ])('attributes a pending verification probe $probe (rejects=$rejects)', async ({ probe, phase, rejects }) => {
+    getWorkItem.mockResolvedValue(item);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+    const path = 'packages/operator-core/lib/agent-tools/work_items/complete.ts';
+    contentIdentityPreview.stamp.mockResolvedValue({
+      headSha: 'a'.repeat(40),
+      contentIdentity: [{ path, workingTreeBlobSha: 'b'.repeat(40), headBlobSha: 'b'.repeat(40) }],
+    });
+    let release!: () => void;
+    let entered!: () => void;
+    const enteredProbe = new Promise<void>(resolve => { entered = resolve; });
+    const pending = new Promise<undefined>((resolve, reject) => {
+      release = () => rejects ? reject(new Error('verification probe failed')) : resolve(undefined);
+    });
+    verificationProbes[probe].mockImplementationOnce(() => { entered(); return pending; });
+    const phases = createPhaseTracker();
+    const previousPhases = Object.getOwnPropertyDescriptor(ctxFields, 'phases');
+    Object.assign(ctxFields, { phases });
+    const attempt = one({
+      id: item.id, state: 'passed',
+      completion: { summary: 'verified', verifiedHow: 'unit', testResult: 'passed', filesChanged: [path] },
+    });
+    try {
+      await enteredProbe;
+      expect(phases.snapshot().activePhase).toBe(phase);
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      release();
+      const result = await attempt;
+      expect(phases.snapshot().activePhases).toEqual([]);
+      if (rejects) {
+        expect(result).toMatchObject({ ok: false, error: expect.stringContaining('verification probe failed') });
+        expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      } else {
+        expect(result).toMatchObject({ ok: true, completionAuthority: 'committed' });
+        expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(1);
+      }
+    } finally {
+      release();
       try { await attempt; }
       finally {
         if (previousPhases) Object.defineProperty(ctxFields, 'phases', previousPhases);
@@ -9612,6 +9685,56 @@ describe('work_items:complete — change-kind proof gate (change-kind-declared-p
     // D-002: the terminal transition is never attempted, and the completion record survives.
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     expect(r.completion).toMatchObject({ summary: 'restyled the queue panel' });
+  });
+
+  it('returns a cheap service proof refusal before expensive close gates without changing item state', async () => {
+    getWorkItem.mockResolvedValue(claimed(AFTER_CUTOVER));
+    declaredAtClaim(['service', 'logic']);
+    const completion = {
+      summary: 'fixed the service logic',
+      verifiedHow: 'unit',
+      testsRun: 'testing:run { files: ["packages/operator-core/lib/example.test.ts"] }',
+      testResult: '1 passed',
+      filesChanged: ['packages/operator-core/lib/agent-tools/work_items/complete.ts'],
+      verification: { workOutcome: 'introduced-change' },
+      kindEvidence: [
+        {
+          kind: 'service' as const,
+          testsRun: 'testing:run { files: ["packages/operator-core/lib/example.test.ts"] }',
+          testResult: '1 passed',
+        },
+        {
+          kind: 'logic' as const,
+          testsRun: 'testing:run { files: ["packages/operator-core/lib/example.test.ts"] }',
+          testResult: '1 passed',
+        },
+      ],
+    };
+    const r = await one({ id: 'F-12', state: 'passed', assumptions: 'none', completion });
+
+    expect(r).toMatchObject({
+      ok: false,
+      stateError: expect.stringMatching(/^REJECTED — F-12 declares change kind\(s\) service, logic/),
+      completionEvidenceStored: false,
+      completionReturnedOnly: true,
+      completion: { summary: 'fixed the service logic' },
+      workItem: { state: 'in_progress' },
+    });
+    expect(r.changeKindProof.kinds).toEqual(['service', 'logic']);
+    expect(r.changeKindProof.missing.map((entry: { kind: string }) => entry.kind)).toEqual(['service']);
+    expect(r.error).toContain('Other terminal-close checks were not run');
+    expect(r.completionContract.requirements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'change-kind-proof', evaluated: true, satisfied: false }),
+        expect.objectContaining({ key: 'spec-test-adequacy', evaluated: false }),
+      ]),
+    );
+    expect(specTestAdequacyCompletionGate).not.toHaveBeenCalled();
+    expect(conformanceClosure.read).not.toHaveBeenCalled();
+    expect(contentIdentityPreview.stamp).not.toHaveBeenCalled();
+    expect(verificationProbes.paths).not.toHaveBeenCalled();
+    expect(verificationProbes.tests).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 
   it('a validateOnly preview reports the change-kind-proof contract requirement as unsatisfied', async () => {

@@ -84,7 +84,6 @@ import {
 import { isAcceptedPsuHostDelivery, wakeChannelInvokesTurn, type AwaitRow, type DeliveryWork, type WakeChannel } from './types';
 import {
   payloadIsTimeout,
-  recordTimeoutFires,
   summarizeTimeoutFires,
   wakeSummaryHeadline,
   TIMEOUT_WAKE_GUIDANCE,
@@ -102,6 +101,8 @@ import {
 } from './progress-lease';
 import { appendFleetEventActivity } from '../../fleet-event-activity';
 import { pumpHealth } from './pump-health';
+import { boundedOrgTxn } from '../../pg-bounded-txn';
+import { isParkRecoveryTimer } from '../../durable-park-recovery';
 
 function log(msg: string): void {
   console.warn(`[await-event] ${msg}`);
@@ -1088,7 +1089,31 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: PumpWakeDep
     const cancelledIds = await settleCancelledAwaitDeliveries(claimed);
     stats.cancelled = cancelledIds.length;
     const cancelled = new Set(cancelledIds);
-    const eligible = claimed.filter((delivery) => !cancelled.has(delivery.id));
+    const eligible: DeliveryWork[] = [];
+    for (const delivery of claimed.filter(row => !cancelled.has(row.id))) {
+      if (!isParkRecoveryTimer(delivery.eventKey)) { eligible.push(delivery); continue; }
+      try {
+        const { routeParkRecoveryDeliveryInTransaction } = await import('../../durable-park-recovery');
+        const route = await boundedOrgTxn(tx => routeParkRecoveryDeliveryInTransaction(tx as unknown as import('postgres').TransactionSql, {
+          awaitId: delivery.awaitId, deliveryId: delivery.id,
+        }));
+        if (route.disposition === 'retired') {
+          await markDeliveryDropped(delivery.id, 'automatic park recovery superseded or action settled');
+          stats.dropped++;
+        } else if (route.disposition === 'pending') {
+          await markDeliveryParked(delivery.id, 'automatic park recovery awaits a verified live action owner', 60_000);
+          stats.parked++;
+        } else {
+          eligible.push({ ...delivery, subscriberId: route.ownerId!,
+            summary: `${delivery.summary ?? 'Park recovery'}; action ${route.actionId}. ` +
+              'Recovery action ownership grants no custody, qualification, lock or safety-hold transition on the parked obligation.' });
+        }
+      } catch (error) {
+        await markDeliveryParked(delivery.id,
+          `automatic park recovery routing failed: ${error instanceof Error ? error.message : String(error)}`, 60_000);
+        stats.parked++;
+      }
+    }
     const freshnessReader = deps.readOpenTaskReminderFreshnessFn ?? readOpenTaskReminderFreshness;
     const freshnessReads = new Map<string, Promise<OpenTaskReminderFreshness | null>>();
     const staleReminderReasons = new Map<number, string>();
@@ -1394,6 +1419,18 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: PumpWakeDep
         // standing between a cold-armed loop and resetting a session someone is talking to.
         activeInteractiveExchange: deps.activeInteractiveExchange ?? defaultActiveInteractiveExchange,
       });
+
+      // This delivery belongs to the obligation, not to the recipient we just
+      // elected. A death/channel failure races liveness; retain the same row so
+      // the next attempt elects a live successor rather than dropping recovery.
+      if (outcome.kind !== 'delivered' && group.some(row => isParkRecoveryTimer(row.eventKey))) {
+        const reason = outcome.kind === 'error' ? outcome.error : outcome.reason;
+        for (const row of group) {
+          await markDeliveryParked(row.id, `park recovery will recheck accountable owner: ${reason}`, 60_000);
+          stats.parked++;
+        }
+        continue;
+      }
 
       if (outcome.kind === 'delivered') {
         if (
@@ -1884,25 +1921,73 @@ export async function sweepOnce(workspaceId?: string): Promise<void> {
   for (const awaited of dueVerified) {
     const certificate = awaited.producerHealthCertificate;
     if (!certificate) continue;
+    const observationFence = certificate.verificationReceipt
+      ? { observationReceipt: certificate.verificationReceipt }
+      : {};
     try {
+      if (certificate.waitEpisode) {
+        if (!certificate.waitEpisodeReceipt) throw new Error('bounded wait probe lacks its pre-dispatch episode receipt');
+        const result = certificate.progressLease ? await observeProgressLease(certificate) : {
+          classification: 'stalled' as const, nextAction: 're-await' as const,
+          producer: certificate.producer, owner: certificate.owner, checkedAtMs: Date.now(),
+          verificationDeadlineMs: certificate.verificationDeadlineMs,
+          lastProgressAtMs: certificate.lastProgressAtMs, lastFireAtMs: certificate.lastFireAtMs,
+          evidence: { predicate: awaited.eventKey, observed: 'exact push event remains unfired' },
+        };
+        // An episode can only spend its admitted observation allowance here.
+        // Legacy progress labels and misses never grant owner-wake/takeover.
+        await settleVerifiedAwaitTimeout({ id: awaited.id, result,
+          waitEpisodeReceipt: certificate.waitEpisodeReceipt });
+        continue;
+      }
+      if (certificate.producer.kind === 'durable-park-recovery') {
+        const { checkParkRecoveryInTransaction } = await import('../../durable-park-recovery');
+        const receipt = certificate.details?.parkRecovery;
+        if (!receipt) throw new Error('automatic park timer is missing its admission receipt');
+        const checked = await boundedOrgTxn(tx => checkParkRecoveryInTransaction(tx as unknown as import('postgres').TransactionSql, {
+          awaitId: awaited.id, receipt: receipt as import('../../durable-park-recovery').ParkRecoveryReceipt,
+        }));
+        if (checked.disposition === 'recovery' && checked.admission) {
+          const result = {
+            classification: 'stalled' as const, nextAction: 'wake-owner-or-takeover' as const,
+            producer: certificate.producer, owner: certificate.owner, checkedAtMs: Date.now(),
+            verificationDeadlineMs: checked.admission.receipt.deadlineMs,
+            lastProgressAtMs: certificate.lastProgressAtMs, lastFireAtMs: certificate.lastFireAtMs,
+            evidence: { receiptId: checked.admission.receipt.id, actionId: checked.admission.recoveryWorkItemId },
+          };
+          const fired = await settleVerifiedAwaitTimeout({ id: awaited.id, result, ...observationFence });
+          if (fired) verifiedWakes.push(fired);
+        }
+        continue;
+      }
       if (certificate.progressLease) {
         const result = await observeProgressLease(certificate);
+        if (result.classification === 'unknown') {
+          // Keep the exact push subscription, persist the uncertainty and stop
+          // automatic probes. An unreadable resolver spends neither budget nor
+          // remedy authority, even after earlier verified misses.
+          await settleVerifiedAwaitTimeout({
+            id: awaited.id, result, ...observationFence,
+            finalCertificate: advanceProgressLeaseCertificate(certificate, result),
+          });
+          continue;
+        }
         const nextMissCount =
           result.classification === 'progressing' ? 0 : certificate.progressLease.missCount + 1;
         if (result.classification === 'progressing') {
           const nextCertificate = advanceProgressLeaseCertificate(certificate, result);
-          await settleVerifiedAwaitTimeout({ id: awaited.id, result, nextCertificate });
+          await settleVerifiedAwaitTimeout({ id: awaited.id, result, nextCertificate, ...observationFence });
           continue;
         }
         if (nextMissCount < certificate.progressLease.remedyAfterMisses) {
           const wake = nextMissCount === 1 ? await wakeProgressLeaseOwner(certificate, result) : undefined;
           const nextCertificate = advanceProgressLeaseCertificate(certificate, result, { wake });
-          await settleVerifiedAwaitTimeout({ id: awaited.id, result, nextCertificate });
+          await settleVerifiedAwaitTimeout({ id: awaited.id, result, nextCertificate, ...observationFence });
           continue;
         }
         const remedy = await executeProgressLeaseRemedy(certificate);
         const finalCertificate = advanceProgressLeaseCertificate(certificate, result, { remedy });
-        const fired = await settleVerifiedAwaitTimeout({ id: awaited.id, result, finalCertificate });
+        const fired = await settleVerifiedAwaitTimeout({ id: awaited.id, result, finalCertificate, ...observationFence });
         if (fired) verifiedWakes.push(fired);
         continue;
       }
@@ -1923,15 +2008,21 @@ export async function sweepOnce(workspaceId?: string): Promise<void> {
               verificationDeadlineMs: observation.checkedAtMs + certificate.expectedCadenceMs,
             }
           : undefined;
-      const fired = await settleVerifiedAwaitTimeout({ id: awaited.id, result, nextCertificate });
+      const fired = await settleVerifiedAwaitTimeout({ id: awaited.id, result, nextCertificate, ...observationFence });
       if (fired) verifiedWakes.push(fired);
     } catch (e) {
-      // A verifier failure is itself diagnosed evidence, never permission to
-      // silently drop the fallback. Classify it as stalled and wake ownership.
+      if (certificate.producer.kind === 'durable-park-recovery') {
+        // Retain the admission and retry after the verifier lease expires. The
+        // generic catch must never consume this timer without its action commit.
+        log(`automatic park recovery verification failed for await ${awaited.id}: ${e instanceof Error ? e.message : String(e)}`);
+        continue;
+      }
+      // A verifier failure establishes uncertainty, never producer failure or
+      // takeover authority. The store retains the push wait without re-polling.
       const checkedAtMs = Math.max(Date.now(), certificate.verificationDeadlineMs);
       const result = {
-        classification: 'stalled' as const,
-        nextAction: 'wake-owner-or-takeover' as const,
+        classification: 'unknown' as const,
+        nextAction: 'resolve-uncertainty' as const,
         producer: certificate.producer,
         owner: certificate.owner,
         checkedAtMs,
@@ -1940,7 +2031,8 @@ export async function sweepOnce(workspaceId?: string): Promise<void> {
         lastFireAtMs: certificate.lastFireAtMs,
         evidence: { verifierError: e instanceof Error ? e.message : String(e) },
       };
-      const fired = await settleVerifiedAwaitTimeout({ id: awaited.id, result });
+      const fired = await settleVerifiedAwaitTimeout({ id: awaited.id, result, ...observationFence,
+        ...(certificate.waitEpisodeReceipt ? { waitEpisodeReceipt: certificate.waitEpisodeReceipt } : {}) });
       if (fired) verifiedWakes.push(fired);
     }
   }
@@ -2050,22 +2142,17 @@ export async function sweepOnce(workspaceId?: string): Promise<void> {
         });
       }
     }
-    // P-003 detector: group this sweep's timeout-fires by key family and accumulate
-    // across sweeps — a family that keeps timing out (with ~no event ever) is a
-    // systematic dead-drop (mistyped key / dead or renamed emitter) the fallback
-    // would otherwise silently mask. Log the per-sweep breakdown; warn loudly the
-    // first time a family's lifetime total crosses the threshold.
+    // Per-sweep breakdown only. Never-fires detection is the durable waiting
+    // check (stuck-work/waiting-check.ts, routine `stuck-work-waiting-check`),
+    // which counts missed alarms from the waits table so the count survives a
+    // restart and raises a notice instead of a log line. The old in-process
+    // lifetime tally reset on every restart (EI-28703701301066960), so it was
+    // retired rather than kept as a second, weaker detector.
     const families = summarizeTimeoutFires(timedOut);
     log(
       `fired ${timedOut.length} timed-out awaits — by key family: ` +
         families.map((f) => `${f.family}×${f.count}`).join(', '),
     );
-    for (const c of recordTimeoutFires(families)) {
-      log(
-        `⚠ DEAD-DROP suspected: key family "${c.family}" has timed out ${c.total}× (process lifetime) — ` +
-          'a mistyped key, a dead/renamed emitter, or an event that never fires. Investigate the emit side.',
-      );
-    }
   }
 
   const lapsed = await expireLapsedAwaits();

@@ -44,17 +44,19 @@ function phasesRecord(elapsedMs: number, attributedMs: number, phases: Phase[] |
 
 async function seed(
   db: OrgTestDb,
-  opts: { workspaceId?: string; toolName: string; agoMs?: number; metadata: Record<string, unknown> | null },
+  opts: { workspaceId?: string; toolName: string; agoMs?: number; durationMs?: number; metadata: Record<string, unknown> | null },
 ) {
   const invokedAt = new Date(Date.now() - (opts.agoMs ?? HOUR)).toISOString();
   const metadata = opts.metadata == null ? null : JSON.stringify(opts.metadata);
+  const phases = opts.metadata?.handlerPhases as { elapsedMs?: unknown } | undefined;
+  const durationMs = opts.durationMs ?? (typeof phases?.elapsedMs === 'number' ? phases.elapsedMs : 0);
   await db.adminSql`
     INSERT INTO harness_shared.tool_invocations
       (id, workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id,
-       invoked_at, window_key, status, transport, metadata_json)
+       invoked_at, window_key, duration_ms, status, transport, metadata_json)
     VALUES
       (${nextId++}, ${opts.workspaceId ?? WS}, 'h1', 'core', ${opts.toolName}, 'worker', ${`sp-${nextId}`},
-       ${invokedAt}::timestamptz, 'w', 'ok', 'mcp', ${metadata}::jsonb)`;
+       ${invokedAt}::timestamptz, 'w', ${durationMs}, 'ok', 'mcp', ${metadata}::jsonb)`;
 }
 
 describe('handlerPhaseRollup (P-001)', () => {
@@ -93,8 +95,8 @@ describe('handlerPhaseRollup (P-001)', () => {
     });
 
     // Rows the WS-scoped 24 h rollup must exclude.
-    await seed(db, { toolName: 'coord:orient', metadata: { dispatchStages: { schemaVersion: 'dispatch-stages-v1' } } });
-    await seed(db, { toolName: 'coord:orient', metadata: null });
+    await seed(db, { toolName: 'coord:orient', durationMs: 900, metadata: { dispatchStages: { schemaVersion: 'dispatch-stages-v1' } } });
+    await seed(db, { toolName: 'coord:orient', durationMs: 600, metadata: null });
     await seed(db, {
       toolName: 'work_items:list',
       metadata: { handlerPhases: phasesRecord(500, 500, [{ phase: 'list:query', startMs: 0, durationMs: 500 }]) },
@@ -116,20 +118,29 @@ describe('handlerPhaseRollup (P-001)', () => {
       toolName: 'fleet:assignments',
       metadata: { handlerPhases: phasesRecord(800, 400, 'not-an-array') },
     });
+    await seed(db, { toolName: 'scheduler:get_next', durationMs: 700, metadata: null });
   }, 180_000);
 
   afterAll(async () => {
     await db?.cleanup();
   });
 
-  it('computes coverage over calls that carried handlerPhases, scoped by tool, workspace and window', async () => {
+  it('reports tracked coverage and keeps uninstrumented call time visible as unknown', async () => {
     const r = await handlerPhaseRollup({ toolName: 'coord:orient', workspaceIds: [WS], hours: 24 });
 
     expect(r.tool_name).toBe('coord:orient');
     expect(r.hours).toBe(24);
+    expect(r.calls_total).toBe(5);
     expect(r.calls_with_phases).toBe(3);
+    expect(r.calls_without_phases).toBe(2);
+    expect(r.wall_time_ms).toBe(5500);
+    expect(r.attributed_ms).toBe(2850);
+    expect(r.unattributed_ms).toBe(1150);
+    expect(r.unknown_ms).toBe(1500);
     // (950 + 1000 + 900) / (1000 + 2000 + 1000) = 2850 / 4000 = 0.7125
     expect(r.coverage_total).toBeCloseTo(0.7125, 2);
+    // The full population includes two calls with no handler phases: 2850 / 5500 = 0.518.
+    expect(r.population_coverage_total).toBeCloseTo(0.518, 3);
     // per-call ratios 0.95, 0.50, 0.90 -> median 0.90
     expect(r.coverage_p50).toBeCloseTo(0.9, 3);
     // 0.95 and 0.90 meet the >= 0.9 bar (0.90 is the inclusive boundary); 0.50 does not
@@ -153,9 +164,14 @@ describe('handlerPhaseRollup (P-001)', () => {
   it('widens to every listed workspace when several are passed', async () => {
     const r = await handlerPhaseRollup({ toolName: 'coord:orient', workspaceIds: [WS, OTHER_WS], hours: 24 });
 
+    expect(r.calls_total).toBe(6);
     expect(r.calls_with_phases).toBe(4);
+    expect(r.calls_without_phases).toBe(2);
+    expect(r.unknown_ms).toBe(1500);
     // (2850 + 0) / (4000 + 1000) = 0.57
     expect(r.coverage_total).toBeCloseTo(0.57, 3);
+    // Full-population denominator also includes the two uninstrumented calls.
+    expect(r.population_coverage_total).toBeCloseTo(2850 / 6500, 3);
     expect(r.phases.find((p) => p.phase === 'other-ws')).toEqual({
       phase: 'other-ws',
       count: 1,
@@ -180,18 +196,37 @@ describe('handlerPhaseRollup (P-001)', () => {
     expect(r.phases).toEqual([]);
   });
 
-  it('returns nulls, not zeros, when no call carried handlerPhases', async () => {
+  it('reports an uninstrumented call as unknown without assigning its time to a phase', async () => {
     const r = await handlerPhaseRollup({ toolName: 'scheduler:get_next', workspaceIds: [WS], hours: 24 });
 
     expect(r).toEqual({
       tool_name: 'scheduler:get_next',
       hours: 24,
+      calls_total: 1,
       calls_with_phases: 0,
+      calls_without_phases: 1,
+      wall_time_ms: 700,
+      attributed_ms: null,
+      unattributed_ms: null,
+      unknown_ms: 700,
       coverage_total: null,
+      population_coverage_total: 0,
       coverage_p50: null,
       coverage_ge_90_share: null,
       phases: [],
     });
+  });
+
+  it('returns null coverage and zero counts when no calls match', async () => {
+    const r = await handlerPhaseRollup({ toolName: 'unseen:tool', workspaceIds: [WS], hours: 24 });
+
+    expect(r.calls_total).toBe(0);
+    expect(r.calls_with_phases).toBe(0);
+    expect(r.calls_without_phases).toBe(0);
+    expect(r.wall_time_ms).toBeNull();
+    expect(r.unknown_ms).toBeNull();
+    expect(r.coverage_total).toBeNull();
+    expect(r.population_coverage_total).toBeNull();
   });
 
   it('clamps the window to 1..336 hours', async () => {

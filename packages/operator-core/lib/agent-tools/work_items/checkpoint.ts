@@ -187,6 +187,7 @@ import {
 } from '../../carry-surface-provenance-stamp';
 import { resolveCurrentTurnStamp } from '../../turn-provenance/turn-ref';
 import { hasPotentialActionClaim, readSuccessfulActionInvocations } from '../../carry-surface-action-proof';
+import { readSuccessfulReadProofs } from '../../carry-surface-read-proof';
 import {
   CARRY_CAP_HARD_MULTIPLE,
   CARRY_NOTE_MAX_CHECKS,
@@ -3209,11 +3210,29 @@ export default defineTool({
            * a lint fault, and absent when nothing was flagged so the common result
            * shape is unchanged.
            */
-          ...(() => {
+          ...await (async () => {
             try {
               if (stored === null || typeof checkpoint !== 'string' || !checkpoint.trim()) return {};
               const submittedBody = splitCarryNoteChecks(checkpoint).body;
-              const advisory = describeUnreadRun(submittedBody, splitCarryNoteChecks(stored).checks.length);
+              const storedChecks = splitCarryNoteChecks(stored).checks.length;
+              const initial = describeUnreadRun(submittedBody, storedChecks);
+              if (!initial) return {};
+              const currentTurn = sentinelTurn ?? await runPhase(
+                'unread-run-proof-current-turn',
+                () => resolveCurrentTurnStamp(ident.ownerId).catch(() => null),
+              );
+              const readProofs = currentTurn
+                ? await runPhase('unread-run-proof-read', () => readSuccessfulReadProofs({
+                    workspaceId,
+                    coordOwnerId: ident.ownerId,
+                    turnRef: currentTurn.ref,
+                  }))
+                : null;
+              const advisory = describeUnreadRun(
+                submittedBody,
+                storedChecks,
+                readProofs?.map((proof) => proof.path) ?? [],
+              );
               return advisory ? { unreadRunLint: advisory } : {};
             } catch {
               return {};

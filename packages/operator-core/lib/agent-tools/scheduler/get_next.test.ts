@@ -172,6 +172,9 @@ const getPresenceM = vi.hoisted(() => vi.fn(async (_ownerId?: string) => null as
 const writePresenceM = vi.hoisted(() =>
   vi.fn(async (_identity?: unknown, _input?: Record<string, unknown>, _harness?: unknown) => {}),
 );
+const sendMessageM = vi.hoisted(() =>
+  vi.fn(async (_identity?: unknown, _options?: Record<string, unknown>) => ({})),
+);
 // EI-21834503221873518: the post-claim enrichment regression deliberately hangs this
 // dynamically imported recall seam. Keep the rest of the suite off real memory/PG I/O
 // and make the fake-timer test exercise the production timeout boundary directly.
@@ -188,6 +191,10 @@ vi.mock('../coordination/presence', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getPresence: getPresenceM,
   writePresence: writePresenceM,
+}));
+vi.mock('../coordination/messages', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  sendMessage: sendMessageM,
 }));
 vi.mock('@papercusp/flags/server', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -1916,6 +1923,18 @@ describe('a successful claim declares the caller intent (EI-20099413453852234)',
     expect(writePresenceM.mock.calls[0]![1]).toMatchObject({
       intent: 'WI-4242: Fix the flaky thing',
     });
+    expect(sendMessageM).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: 'su-member', workspaceId: 'ws-1' }),
+      expect.objectContaining({
+        to: [],
+        summary: 'now working on: WI-4242: Fix the flaky thing',
+        extra: expect.objectContaining({
+          auto: true,
+          lifecycle: 'intent',
+          declared_goal_refs: ['WI-4242'],
+        }),
+      }),
+    );
   });
 
   it('refreshes and replicates the goal stamp for the latest self-pulled claim', async () => {
@@ -2112,6 +2131,7 @@ describe('a successful claim declares the caller intent (EI-20099413453852234)',
     });
     await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
     expect(writePresenceM).not.toHaveBeenCalled();
+    expect(sendMessageM).not.toHaveBeenCalled();
   });
 
   // The claim is COMMITTED before this runs, so losing the caller's result over a presence
@@ -2127,6 +2147,15 @@ describe('a successful claim declares the caller intent (EI-20099413453852234)',
 
   it('still returns the claim when the presence READ throws', async () => {
     getPresenceM.mockRejectedValue(new Error('presence read failed'));
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+      data?: unknown;
+      content?: Array<{ text: string }>;
+    };
+    expect(handlerPayload(out)).toMatchObject({ workItem: { id: 'WI-4242' } });
+  });
+
+  it('still returns the committed claim when the append-only intent event fails', async () => {
+    sendMessageM.mockRejectedValueOnce(new Error('coord event log unavailable'));
     const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
       data?: unknown;
       content?: Array<{ text: string }>;

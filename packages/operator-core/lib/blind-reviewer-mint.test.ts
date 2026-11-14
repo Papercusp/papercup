@@ -1009,6 +1009,48 @@ describe('mintBlindGapReviewer', () => {
     expect(d.launcher).not.toHaveBeenCalled();
   });
 
+  it('does not wake a live reviewer while its provider 429 retry-after window is active', async () => {
+    const d = deps();
+    const target = await d.resolveResumeTarget({ sessionId: 'native-review-1' });
+    const host = await d.readLiveHost('su-reviewer-1');
+    if (!target.ok || !host) throw new Error('fixture target missing');
+    const retryAfterMs = 60_000;
+    d.resolveResumeTarget.mockResolvedValue({ ...target, live: true, endedAt: null });
+    d.readLiveHost.mockResolvedValue({ ...host, execution: { ...host.execution!, phase: 'failed',
+      failure: { code: 'api_error_429', retryable: false, retryAfterMs, atMs: Date.now() } } });
+
+    const result = await resumeBlindGapReviewer({ slug: SLUG, harness: 'papercusp', recruiterOwnerId: 'su-author',
+      ctx: { workspaceId: 'ws-1' } }, d.deps);
+
+    expect(result).toMatchObject({ ok: false, code: 'resume_failed',
+      message: expect.stringContaining('retry-after is still active') });
+    expect(d.wakeReviewer).not.toHaveBeenCalled();
+    expect(d.reserveNativeAttempt).not.toHaveBeenCalled();
+    expect(d.launcher).not.toHaveBeenCalled();
+    expect(d.releaseSessionResume).toHaveBeenCalledWith(7, 'lease-1');
+  });
+
+  it('allows a same-binding wake after the provider 429 retry-after window expires', async () => {
+    const d = deps();
+    const target = await d.resolveResumeTarget({ sessionId: 'native-review-1' });
+    const host = await d.readLiveHost('su-reviewer-1');
+    if (!target.ok || !host) throw new Error('fixture target missing');
+    const retryAfterMs = 60_000;
+    d.resolveResumeTarget.mockResolvedValue({ ...target, live: true, endedAt: null });
+    d.readLiveHost.mockResolvedValue({ ...host, execution: { ...host.execution!, phase: 'failed',
+      failure: { code: 'api_error_429', retryable: false, retryAfterMs,
+        atMs: Date.now() - retryAfterMs - 60_000 } } });
+
+    const result = await resumeBlindGapReviewer({ slug: SLUG, harness: 'papercusp', recruiterOwnerId: 'su-author',
+      ctx: { workspaceId: 'ws-1' } }, d.deps);
+
+    expect(result).toMatchObject({ ok: true, leaseReleased: true,
+      launch: { mode: 'wake', opened: 0, pickupConfirmed: false } });
+    expect(d.wakeReviewer).toHaveBeenCalledTimes(1);
+    expect(d.reserveNativeAttempt).not.toHaveBeenCalled();
+    expect(d.launcher).not.toHaveBeenCalled();
+  });
+
   it.each(['missing', 'foreign', 'unreadable'])('refuses an %s current host reading without wake or launch', async state => {
     const d = deps();
     const target = await d.resolveResumeTarget({ sessionId: 'native-review-1' });

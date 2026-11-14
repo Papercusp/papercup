@@ -290,6 +290,71 @@ function passingDeps() {
   };
 }
 
+function multiClauseAdequacyWorld() {
+  const clauses = [
+    clause({ sourceBar: {
+      barKey: 'R-1', barHash: 'bar-r1', barSetHash: 'bars-v1',
+      rubricSlug: 'reconnect-acceptance', rubricRevision: 3, evidencePlane: 'deployed',
+    } }),
+    clause({ specId: 'SPEC-003-02', sourceValId: 'VAL-003-02', sourceBar: {
+      barKey: 'R-2', barHash: 'bar-r2', barSetHash: 'bars-v1',
+      rubricSlug: 'reconnect-acceptance', rubricRevision: 3, evidencePlane: 'deployed',
+    } }),
+  ];
+  const rowsByClause = clauses.map((currentClause, clauseIndex) => passingEvidence().map((row, rowIndex) => ({
+    ...row,
+    id: (clauseIndex + 1) * 10 + rowIndex,
+    sourceValId: currentClause.sourceValId,
+    specId: currentClause.specId,
+    evidenceRef: row.evidenceKind === 'test'
+      ? `test:${currentClause.specId}`
+      : `counterexample:${currentClause.specId}`,
+    bindingFingerprint: `sha256:${currentClause.specId}:${rowIndex}`,
+    details: {
+      ...row.details,
+      adequacy: {
+        ...((row.details.adequacy ?? {}) as Record<string, unknown>),
+        targeted: currentClause.specId.toLowerCase(),
+      },
+    },
+  })));
+  const rows = rowsByClause.flat();
+  const deps = {
+    ...passingDeps(),
+    resolveSourceBarTestRequirements: vi.fn<NonNullable<GateDeps['resolveSourceBarTestRequirements']>>(
+      async () => ({ status: 'not-required' }),
+    ),
+  };
+  deps.listClauses.mockResolvedValue(clauses);
+  deps.listEvidence.mockImplementation(async (options) => rows.filter((row) =>
+    (!options.specIds || options.specIds.includes(row.specId)) &&
+    (!options.evidenceRefs || options.evidenceRefs.includes(row.evidenceRef)),
+  ));
+  const cards = clauses.map((currentClause, index) => {
+    const result = evaluateSpecTestAdequacy({
+      clause: currentClause,
+      evidence: rowsByClause[index]!,
+      classRef: 'plan-class-feature-ship',
+      harness: 'papercusp',
+      sourceBarTestRequirements: { status: 'not-required' },
+    });
+    return matchingCard({
+      subject: result.scorecardDraft.subject,
+      ratings: result.ratings,
+      nKeys: Object.keys(result.ratings).length,
+      evidenceFingerprint: scorecardEvidenceFingerprint({
+        rubricRef: SPEC_TEST_ADEQUACY_RUBRIC_REF,
+        ratings: result.ratings,
+      }),
+    });
+  });
+  deps.listCards.mockImplementation(async (options) => {
+    const requested = options.subjectRefs ?? (options.subjectRef ? [options.subjectRef] : []);
+    return cards.filter((card) => requested.includes(card.subject?.ref ?? ''));
+  });
+  return { deps, clauses, cards };
+}
+
 function mechanicalDeps() {
   const deps = passingDeps();
   const rows = passingEvidence();
@@ -343,6 +408,52 @@ describe('completion phase attribution', () => {
     expect(await pendingGate).toMatchObject({ ok: false, applicable: true, retryable: true });
     expect(active.size).toBe(0);
     expect(deps.listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('resolves independent source BARs concurrently and batches clause scorecards', async () => {
+    const { deps, clauses, cards } = multiClauseAdequacyWorld();
+    let releaseReads!: () => void;
+    let started = 0;
+    const readsReleased = new Promise<void>((resolve) => { releaseReads = resolve; });
+    deps.resolveSourceBarTestRequirements.mockImplementation(async () => {
+      started += 1;
+      await readsReleased;
+      return { status: 'not-required' };
+    });
+
+    const pendingGate = specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(started).toBe(clauses.length);
+    releaseReads();
+
+    const result = await pendingGate;
+    expect(result).toMatchObject({ ok: true, applicable: true, checked: ['SPEC-003-01@1', 'SPEC-003-02@1'] });
+    expect(deps.listCards).toHaveBeenCalledTimes(1);
+    expect(deps.listCards).toHaveBeenCalledWith(expect.objectContaining({
+      subjectRefs: cards.map((card) => card.subject?.ref),
+      limit: 40,
+    }));
+  });
+
+  it('falls back to exact per-subject windows when the batched scorecard page fills', async () => {
+    const { deps, cards } = multiClauseAdequacyWorld();
+    deps.listCards.mockImplementation(async (options) => {
+      if (options.subjectRefs) {
+        return Array.from({ length: options.limit ?? 0 }, (_unused, index) => ({
+          ...cards[0]!,
+          issueId: `EI-filler-${index}`,
+        }));
+      }
+      return cards.filter((card) => card.subject?.ref === options.subjectRef);
+    });
+
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+    expect(result).toMatchObject({ ok: true, applicable: true, checked: ['SPEC-003-01@1', 'SPEC-003-02@1'] });
+    expect(deps.listCards).toHaveBeenCalledTimes(3);
+    expect(deps.listCards.mock.calls.slice(1).map(([options]) => options.subjectRef)).toEqual(
+      cards.map((card) => card.subject?.ref),
+    );
+    expect(deps.listCards.mock.calls.slice(1).every(([options]) => options.limit === 20)).toBe(true);
   });
 });
 
@@ -460,7 +571,8 @@ describe('test-checked completion uses mechanical adequacy', () => {
       reason: expect.stringContaining('SPEC-003-02@1: mechanical test adequacy is unknown') });
     expect(result).not.toHaveProperty('pendingGradingAuditTargetIds');
     expect(result).not.toHaveProperty('failedGradingAuditTargetIds');
-    expect(deps.listCards).toHaveBeenCalledTimes(1);
+    // The later unknown clause short-circuits before any scorecard reads are needed.
+    expect(deps.listCards).not.toHaveBeenCalled();
   });
 
   it('accepts reader-certified frozen oracles and preserves explicit oracle contradictions as failures', async () => {

@@ -60,10 +60,40 @@ describe('spec quality emission identity (EI-28010197882392568)', () => {
       specSetHash: 'c'.repeat(64), scorecardDraft: args });
     const result = await emitScorecard(args, { createdBy: 'independent-grader' }, { getEvaluatorBuild: () => build, dispatchTool });
     expect(result).toMatchObject({ ok: false, code: 'invalid_spec_quality_binding' });
+    const { replaySnapshot: _historical, ...currentArgs } = recipe.args;
     expect(dispatchTool).toHaveBeenCalledExactlyOnceWith('plans:evaluate-spec-quality', {
-      ...recipe.args, detail: 'summary', payloadTier: 'full',
+      ...currentArgs, detail: 'summary', payloadTier: 'full',
     });
   });
+
+  it('revalidates current plan and clause authority instead of restoring the historical evaluation', async () => {
+    const dispatchTool = vi.fn().mockResolvedValue({ ok: false, error: 'spec_set_hash_mismatch' });
+    const result = await emitScorecard(args, { createdBy: 'independent-grader' },
+      { getEvaluatorBuild: () => build, dispatchTool });
+    expect(result).toMatchObject({ ok: false, code: 'invalid_spec_quality_binding' });
+    const { replaySnapshot: _historical, ...currentArgs } = recipe.args;
+    expect(dispatchTool).toHaveBeenCalledExactlyOnceWith('plans:evaluate-spec-quality', {
+      ...currentArgs, detail: 'summary', payloadTier: 'full',
+    });
+  });
+
+  it.each(['changed-plan', 'missing-plan', 'changed-evidence', 'revoked-authority'])(
+    'refuses recovered publication with %s even if its recorded evaluation passed', async change => {
+      const payload = { ok: change !== 'revoked-authority', error: 'current_authority_changed',
+        evaluatorBuild: build, specSetHashVersion: 2, specSetHash: recipe.args.expectedSpecSetHash,
+        replaySnapshot: change === 'missing-plan' ? undefined : {
+          planContentHash: change === 'changed-plan' ? 'c'.repeat(64) : recipe.args.replaySnapshot.planContentHash,
+        },
+        scorecardBinding: { subject: args.subject, evidenceFingerprint: change === 'changed-evidence' ? 'd'.repeat(64)
+          : scorecardEvidenceFingerprint({ rubricRef: args.rubricRef, ratings: args.ratings }) },
+      };
+      const dispatchTool = vi.fn().mockResolvedValue(payload);
+      expect(await emitScorecard(args, { createdBy: 'independent-grader' },
+        { getEvaluatorBuild: () => build, dispatchTool }))
+        .toMatchObject({ ok: false, code: 'invalid_spec_quality_binding' });
+      expect(dispatchTool).toHaveBeenCalledOnce();
+      expect(dispatchTool.mock.calls[0][1]).not.toHaveProperty('replaySnapshot');
+    });
 
   it.each(['missing-version', 'missing-ratings', 'unavailable'])('fails closed when replay is %s', async failure => {
     const dispatchTool = failure === 'unavailable' ? vi.fn().mockRejectedValue(new Error('evaluator unavailable'))

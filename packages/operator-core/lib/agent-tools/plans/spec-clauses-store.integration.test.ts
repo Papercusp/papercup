@@ -528,6 +528,59 @@ describe('first-class plan spec clauses', () => {
     expect(await barKeyAt('SPEC-003-01', 2)).toBe('R-1');
   });
 
+  it.each([false, true])('keeps an omitted-pin promotion and explicit BAR reseed hash-identical (omit acceptance ref: %s)', async (omitAcceptanceRef) => {
+    const first = clause({
+      specId: 'AUTO-BAR-R-1-P-003',
+      lifecycleStatus: 'draft',
+      acceptanceRef: BAR_ACCEPTANCE_REF,
+      sourceBar: BAR_PIN,
+    });
+    expect(await store.setSpecClause(first)).toMatchObject({ status: 'created', revision: 1 });
+
+    const spec = {
+      specId: first.specId,
+      expectedRevision: 1,
+      sourceValId: first.sourceValId,
+      planItemId: first.planItemId,
+      behavior: first.behavior,
+      behaviorClass: first.behaviorClass,
+      requiredEvidence: first.requiredEvidence,
+      requiredTestLayers: first.requiredTestLayers,
+      mutationRequired: first.mutationRequired,
+      lifecycleStatus: 'active' as const,
+      ...(omitAcceptanceRef ? {} : { acceptanceRef: BAR_ACCEPTANCE_REF }),
+    };
+    const writeThroughTool = async (expectedRevision: number) => {
+      const args = setSpecsTool.args.parse({
+        harness: HARNESS, slug: first.planSlug, spec: { ...spec, expectedRevision },
+      });
+      return await setSpecsTool.handler(args as never, CTX) as {
+        data: { results: Array<Record<string, unknown>> };
+      };
+    };
+
+    const promoted = await writeThroughTool(1);
+    expect(promoted.data.results[0]).toMatchObject({ ok: true, status: 'revised', revision: 2 });
+    const expectedHash = store.specClauseContentHash({ ...first, lifecycleStatus: 'active' });
+    const [current] = await store.listSpecClauses({
+      harnessSlug: HARNESS, planSlug: first.planSlug, specIds: [first.specId],
+    });
+    expect(current).toMatchObject({
+      revision: 2, contentHash: expectedHash, sourceBar: BAR_PIN, acceptanceRef: BAR_ACCEPTANCE_REF,
+    });
+
+    // Activation seeding supplies the complete pin. It must see the same contract
+    // written by plans:set-specs, preserving its exact revision and proof identity.
+    expect(await store.setSpecClause({ ...first, lifecycleStatus: 'active', expectedRevision: 2 }))
+      .toMatchObject({ status: 'unchanged', revision: 2, contentHash: expectedHash });
+    expect((await writeThroughTool(2)).data.results[0])
+      .toMatchObject({ ok: true, status: 'unchanged', revision: 2 });
+    const history = await store.listSpecClauses({
+      harnessSlug: HARNESS, planSlug: first.planSlug, specIds: [first.specId], includeHistory: true,
+    });
+    expect(history).toHaveLength(2);
+  });
+
   it('refuses to unlink an AUTO-BAR projection with an explicit null pin', async () => {
     const specId = 'AUTO-BAR-R-1-P-003';
     expect(

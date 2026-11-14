@@ -20,6 +20,7 @@ import { stopTheLineExplanation } from '../../work-items-admission';
 import { getPlanRow, planItemsForRow } from './source';
 import { analyzePlanDagParallelism, type PlanDagParallelismDiagnostics } from './plan-dag-parallelism';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
+import { readExternalBlockers } from '../../external-blockers';
 
 const ISSUE_KINDS = new Set<string>(ISSUE_FAMILY_KINDS);
 
@@ -54,7 +55,7 @@ export function buildExactPlanClaimSpec(
 }
 
 type AdmissionWorkItem = Pick<WorkItem, 'id' | 'family' | 'sourcePlanItemIds' | 'payload'> &
-  Partial<Pick<WorkItem, 'assignee' | 'takenAt' | 'state' | 'parent'>>;
+  Partial<Pick<WorkItem, 'assignee' | 'takenAt' | 'state' | 'parent' | 'sourcePlanSlug' | 'harness'>>;
 type RootClass = 'dependency' | 'sticky' | 'cycle' | 'dangling' | 'needs-human' | 'non-actionable-status';
 export type ExactPlanAdmissionReason =
   | 'ready'
@@ -121,6 +122,17 @@ function provenanceIds(item: AdmissionWorkItem): string[] {
   const stamp = record(payload.plan_item ?? payload.planItem);
   const one = stamp.item_id ?? stamp.itemId ?? stamp.item;
   return typeof one === 'string' && one ? [one] : [];
+}
+
+function isExecutableContinuationRow(item: AdmissionWorkItem): boolean {
+  const payload = record(item.payload);
+  if ((item.state !== 'open' && item.state !== 'wip') || isClaimHoldParked(item.payload) ||
+      payload.needsHuman === true || payload.needs_human === true) return false;
+  const raw = payload.externalBlockers;
+  const blockers = readExternalBlockers(item.payload);
+  // An unparseable blocker is unknown, not evidence that a row is executable.
+  return (raw == null || (Array.isArray(raw) && raw.length === blockers.length)) &&
+    blockers.every((blocker) => blocker.status === 'cleared');
 }
 
 /**
@@ -362,6 +374,44 @@ export function evaluateExactPlanAdmission(args: {
       });
     }),
   );
+  // A narrow execution child deliberately carries no plan stamp. It proves
+  // existing custody only: its parent remains the sole promotion/coverage row,
+  // and it contributes no unclaimed width to a new fleet.
+  const allRowsById = new Map(args.workItems.map((row) => [row.id, row]));
+  const callerHeldExecutionChildren = args.allowCallerHeld === true && args.requestedSeats == null && args.assignee
+    ? args.workItems.filter((child) => {
+        const payload = record(child.payload);
+        if (child.assignee !== args.assignee || !child.parent || !isExecutableContinuationRow(child) ||
+            child.sourcePlanSlug || provenanceIds(child).length || 'plan_item' in payload || 'planItem' in payload) return false;
+        const parent = liveById.get(child.parent);
+        if (!parent || !isExecutableContinuationRow(parent) ||
+            (parent.assignee && parent.assignee !== args.assignee) ||
+            (parent.harness && child.harness && parent.harness !== child.harness)) return false;
+        const stamp = record(record(parent.payload).plan_item ?? record(parent.payload).planItem);
+        const stampedPlan = stamp.plan_slug ?? stamp.planSlug;
+        if ((parent.sourcePlanSlug && parent.sourcePlanSlug !== args.planSlug) ||
+            (stampedPlan && stampedPlan !== args.planSlug)) return false;
+        const seen = new Set([child.id]);
+        let ancestor: AdmissionWorkItem | undefined = parent;
+        while (ancestor) {
+          if (seen.has(ancestor.id)) return false;
+          seen.add(ancestor.id);
+          if (ancestor.parent && !allRowsById.has(ancestor.parent)) return false;
+          ancestor = ancestor.parent ? allRowsById.get(ancestor.parent) : undefined;
+        }
+        return true;
+      })
+    : [];
+  for (const child of callerHeldExecutionChildren) {
+    const parent = liveById.get(child.parent!)!;
+    for (const id of provenanceIds(parent).filter((id) => planIds.has(id))) {
+      const planItem = resolvedById.get(id);
+      if (planItem && (planItem.effectiveStatus === 'wip' ||
+          (planItem.effectiveStatus === 'todo' && !planItem.needsHuman && planItem.unresolvedBlockers.length === 0))) {
+        callerOwnedActivePlanItemIds.add(id);
+      }
+    }
+  }
   const callerOwnsActiveLane = callerOwnedActivePlanItemIds.size > 0;
   // `readClaimSpecLaneHealth` deliberately excludes taken rows from claimable. That is
   // correct for a new fleet, but plans:start is also called by the agent that may already
@@ -664,13 +714,35 @@ export async function preflightExactPlanAdmission(args: {
   // readers below accept this explicit workspaceId. Bind the same scope for
   // the promoted-row census or a cross-workspace caller sees false promotion
   // lag even when this exact plan has a real promoted row.
-  const workItems = await runWithWorkspaceIfConcrete(args.workspaceId, () => listWorkItems({
+  let workItems = await runWithWorkspaceIfConcrete(args.workspaceId, () => listWorkItems({
     harness: args.harnessSlug,
     sourcePlanSlug: args.planSlug,
     includeChildren: true,
     limit: WORK_ITEMS_MAX_LIMIT,
   }));
   const sourceCapExhausted = workItems.length >= WORK_ITEMS_MAX_LIMIT;
+  let callerCensusUnavailable: string | null = null;
+  if (!sourceCapExhausted && args.allowCallerHeld === true && args.requestedSeats == null && args.claimant) {
+    try {
+      const callerRows = await runWithWorkspaceIfConcrete(args.workspaceId, () => listWorkItems({
+        harness: args.harnessSlug, assignee: args.claimant,
+        states: ['open', 'wip'], includeChildren: true, limit: WORK_ITEMS_MAX_LIMIT,
+      }));
+      if (!Array.isArray(callerRows) || callerRows.length >= WORK_ITEMS_MAX_LIMIT) {
+        callerCensusUnavailable = 'The caller-owned child census is unknown or hit its source cap.';
+      } else {
+        const parents = new Set(workItems.map((row) => row.id));
+        const merged = new Map(workItems.map((row) => [row.id, row]));
+        for (const child of callerRows) {
+          if (child.assignee === args.claimant && child.parent && parents.has(child.parent) &&
+              (!child.harness || child.harness === args.harnessSlug) && !merged.has(child.id)) merged.set(child.id, child);
+        }
+        workItems = [...merged.values()];
+      }
+    } catch (error) {
+      callerCensusUnavailable = `The caller-owned child census failed: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
   // These structural refusals are definitive before the scheduler lane is read.
   // The lane oracle can be comparatively slow and cannot turn an unpromoted,
   // duplicate-covered, or non-actionable plan into a launchable one. Returning
@@ -688,6 +760,8 @@ export async function preflightExactPlanAdmission(args: {
     allowCallerHeld: args.allowCallerHeld,
     claimKinds: args.claimKinds,
   });
+  if (callerCensusUnavailable) return { ...structural, ready: false, status: 'refused',
+    reason: 'lane-unknown', message: callerCensusUnavailable };
   if (
     structural.reason === 'no-actionable-plan-items' ||
     structural.reason === 'promotion-lag' ||

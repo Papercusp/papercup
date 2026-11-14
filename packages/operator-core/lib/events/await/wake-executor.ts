@@ -171,9 +171,12 @@ import { recordColdNoHostParkAndMaybeEscalate } from './cold-nohost-park-guard';
 import {
   getLoopCarryNote,
   getLoopCarryNoteWithMeta as defaultGetLoopCarryNoteWithMeta,
+  reconcileConversationBoundWalls,
   shortCarryHash,
   splitCarryNoteChecks,
   splitCarryNoteWalls,
+  withCarryNoteWalls,
+  type CarryWallConversationStateReader,
   type CheckEntry,
 } from '../../carry-note';
 import {
@@ -1980,7 +1983,23 @@ function deliveryHasNonLoopComponent(payload: unknown): boolean {
 }
 
 /** Compose the single-line wake turn injected/submitted into the woken session. */
-export function wakeTurnText(d: DeliveryWork): string {
+function wakeFreshnessText(d: DeliveryWork, renderNowMs: number): string {
+  const observed = Date.parse(d.createdAt);
+  const validTime = (time: number) => Number.isFinite(time) && Number.isFinite(renderNowMs) && time <= renderNowMs;
+  const historical = validTime(observed)
+    ? `observedAt=${new Date(observed).toISOString()}, ageAtRender=${Math.floor((renderNowMs - observed) / 1000)}s (delivery observation)`
+    : 'observedAt=UNKNOWN, ageAtRender=UNKNOWN (missing, invalid or future delivery observation time)';
+  // A separate typed producer input, never payload.currentState or a historical summary.
+  const measurement = d.currentStateMeasurement;
+  const measuredAt = measurement ? Date.parse(measurement.measuredAt) : NaN;
+  const current = measurement?.origin === 'canonical-cell-read' && measurement.source?.trim() && validTime(measuredAt) &&
+    (measurement.status === 'value' || measurement.status === 'unknown')
+    ? `${measurement.status === 'value' ? 'measured' : 'UNKNOWN'}, measuredAt=${measurement.measuredAt}, source=${measurement.source.slice(0, 120)}, ${measurement.summary.slice(0, 160).replace(/\s+/g, ' ')}`
+    : 'UNKNOWN (not measured at delivery)';
+  return `[event freshness] historical observation: ${historical}; current state: ${current}. Historical summaries are not current-state evidence.`;
+}
+
+export function wakeTurnText(d: DeliveryWork, renderNowMs = Date.now()): string {
   // EI-20130618357432548 — the owner's own chat-pane message is delivered AS the
   // turn, not wrapped in the machinery below. The wrapper is right for every
   // agent/system wake (it names the key, the delivery id and the reconcile rule),
@@ -1994,9 +2013,11 @@ export function wakeTurnText(d: DeliveryWork): string {
   const ownerChatText = readOwnerChatTurnText(d.payload);
   if (ownerChatText) return ownerChatTurnText(ownerChatText);
 
+  const freshness = wakeFreshnessText(d, renderNowMs);
   const note = d.note ? ` (your note: ${d.note})` : '';
   const summary = d.summary ? ` — ${d.summary}` : '';
-  const payload = d.payload != null ? ` payload: ${JSON.stringify(d.payload).slice(0, 400)}` : '';
+  // Share the existing bounded preview budget with the observation metadata.
+  const payload = d.payload != null ? ` payload: ${JSON.stringify(d.payload).slice(0, Math.max(0, 400 - freshness.length))}` : '';
   // EI-21925527092611786: stamp the delivery's OWN await_id (the event_wake_deliveries
   // row's await_id column — always populated, independent of payload shape) so a stale/
   // delayed re-delivery of an earlier, already-retired timeout is mechanically
@@ -2040,7 +2061,7 @@ export function wakeTurnText(d: DeliveryWork): string {
   // wake count — unlabeled "wake #12672" next to a loop's own "wake #5" read as
   // two contradictory counters and confused resuming agents. Label it as an id.
   const base = (
-    `[await-event] ${d.eventKey} fired${timeout}${summary}.${note}${payload} ` +
+    `[await-event] ${freshness} ${d.eventKey} fired${timeout}${summary}.${note}${payload} ` +
     `(event-wake delivery #${d.id} — a delivery-log id, not your wake count; you registered this with events:await — continue the work that was waiting on it.)${inboxWakeReconcile}${heldWorkReminder}`
   ).replace(/\s*\n\s*/g, ' ');
   // Ambient-push rail (P-003) and the P-022 cell fold: prepared blocks ride the wake
@@ -2428,6 +2449,7 @@ export async function rehydrateLoopWakeText(
      * one additional authoritative read and must return the newest valid snapshot.
      */
     refreshLoopCarryNoteWithMetaFn?: typeof defaultGetLoopCarryNoteWithMeta;
+    readConversationStatesByIdsFn?: CarryWallConversationStateReader;
     /** Capture the exact delivery-time snapshot used to compose the live block. */
     captureLoopCarryNoteMeta?: (meta: DeliveryCarryNoteMeta) => void;
     getLoopStatusFn?: typeof getLoopStatus;
@@ -2507,17 +2529,11 @@ export async function rehydrateLoopWakeText(
     // "none open" wall text would turn an unavailable store into a false
     // clearance signal and invite a stale wake to proceed.
     const readableNote = carryNoteReadFailed ? null : meta.note;
-    const { walls } = splitCarryNoteWalls(readableNote);
-    const wallsNow = carryNoteReadFailed
-      ? '  ⚠ UNKNOWN — the carry-note read failed at delivery time; do not infer that no walls are open'
-      : renderLoopWallsBlock(walls) ?? '  (none open — any wall shown OPEN above has been CLEARED since)';
+    const { walls: parsedWalls } = splitCarryNoteWalls(readableNote);
     // P-001 (cold-carry-system-hardening) delivery parity: the live re-read covers
     // carried checks too — a stale staged wake must not resurrect a cleared check
     // (or hide a fresh one) any more than a wall.
     const { checks } = splitCarryNoteChecks(readableNote);
-    const checksNow = carryNoteReadFailed
-      ? '🧪 CARRIED CHECKS — UNKNOWN: the delivery-time carry-note read failed; do not infer that no checks are open.'
-      : renderLoopChecksBlock(checks);
     // P-001 (carry-recheck-and-governed-memory-2026-10-14, D-004): the block above prints each
     // carried check's claim and probe; RUN the probes too, so a stale claim is reported as changed
     // at delivery instead of being trusted. Only the note already read here is probed — no extra
@@ -2526,18 +2542,42 @@ export async function rehydrateLoopWakeText(
     const hasRefs = readableNote
       ? (await import('../../carry-ref-stamps')).extractCarryRefDeps(readableNote, { max: 1 }).length > 0
       : false;
+    const hasConversationBoundWalls = parsedWalls.some((wall) => Boolean(wall.conversationId));
     // The loop note and delivery row are pinned to DEFAULT_COORD_WORKSPACE.
     // Their probes/references read tenant data, just as the checkpoint writer
     // stamps references in the caller's workspace. Never substitute the host's
     // ambient workspace when the subscriber's persisted scope is unavailable.
     let recheckWorkspaceId = concreteWorkspaceIdOrNull(d.workspaceId);
-    if (d.workspaceId === DEFAULT_COORD_WORKSPACE && (hasProbes || hasRefs)) {
+    if (d.workspaceId === DEFAULT_COORD_WORKSPACE && (hasProbes || hasRefs || hasConversationBoundWalls)) {
       const scope = await withBoundedTimeout(
         () => (deps.workspaceForCoordOwnerFn ?? workspaceForCoordOwner)(d.subscriberId),
         { fallback: null, timeoutMs: 1_000, label: 'wake-carry-subscriber-workspace' },
       );
       recheckWorkspaceId = concreteWorkspaceIdOrNull(scope.value);
     }
+    const wallWorkspaceId =
+      d.workspaceId === DEFAULT_COORD_WORKSPACE ? recheckWorkspaceId : d.workspaceId ?? null;
+    const walls =
+      hasConversationBoundWalls && wallWorkspaceId == null
+        ? parsedWalls
+        : await reconcileConversationBoundWalls(
+            parsedWalls,
+            wallWorkspaceId,
+            deps.readConversationStatesByIdsFn ??
+              (async (ids, workspaceId) => {
+                const { getConversationStatesByIds } = await import('../../agent-tools/coordination/conversations');
+                return getConversationStatesByIds(ids, workspaceId);
+              }),
+          );
+    const reconciledNote = readableNote === null
+      ? null
+      : withCarryNoteWalls(splitCarryNoteWalls(readableNote).body, walls);
+    const wallsNow = carryNoteReadFailed
+      ? '  ⚠ UNKNOWN — the carry-note read failed at delivery time; do not infer that no walls are open'
+      : renderLoopWallsBlock(walls) ?? '  (none open — any wall shown OPEN above has been CLEARED since)';
+    const checksNow = carryNoteReadFailed
+      ? '🧪 CARRIED CHECKS — UNKNOWN: the delivery-time carry-note read failed; do not infer that no checks are open.'
+      : renderLoopChecksBlock(checks);
     const probesNow = hasProbes
       ? recheckWorkspaceId
         ? await (deps.carriedProbeBlockFn ?? defaultCarriedProbeBlock)({
@@ -2580,7 +2620,7 @@ export async function rehydrateLoopWakeText(
     // so the state that governs the turn survives the door. Keep the narrative note in
     // this high-priority block (not only walls/checks): those fields carry the candidate
     // and next action that a stale wake can otherwise resurrect.
-    const liveNote = readableNote ? clipLoopCheckpointForWake(readableNote, 2_200) : null;
+    const liveNote = reconciledNote ? clipLoopCheckpointForWake(reconciledNote, 2_200) : null;
     // A note body alone is not enough to call the delivery-time read current: a
     // legacy/corrupt row (or a degraded reader) can return text without the
     // committed write timestamp needed to order it against later checkpoint writes.
@@ -3578,6 +3618,8 @@ export interface ExecuteWakeDeps {
    *  walls text is still current. Injected for tests; defaults to the real
    *  getLoopCarryNoteWithMeta (carry-note.ts). */
   getLoopCarryNoteWithMetaFn?: typeof defaultGetLoopCarryNoteWithMeta;
+  /** Read exact conversation lifecycle rows for delivery-time wall reconciliation. */
+  readConversationStatesByIdsFn?: CarryWallConversationStateReader;
   /**
    * Delivery-boundary refresh for the carry-note snapshot. The normal reader is
    * memoized so all paths in one wake agree, while this seam may perform one
@@ -5042,7 +5084,10 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
      * budget-bounded, so a slow or broken resolver costs this wake nothing.
      */
     try {
-      const fold = await prepareCellWakeFold({ eventKey: d.eventKey, workspaceId: d.workspaceId });
+      // A reused DeliveryWork must not retain a previous assembly's measurement.
+      delete d.currentStateMeasurement;
+      const fold = await prepareCellWakeFold({ eventKey: d.eventKey, workspaceId: d.workspaceId,
+        onCurrentMeasurement: (measurement) => { d.currentStateMeasurement = measurement; } });
       if (fold) d.cellWakeFoldBlock = fold;
     } catch {
       /* a fold must never break a wake */

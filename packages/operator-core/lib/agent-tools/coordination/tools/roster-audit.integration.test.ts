@@ -14,7 +14,9 @@ import { publishReport } from '../../../report-library';
 import { parkedAuditOperatorRoute, parkedAuditToolFailure, pickupDispositionViolations } from '../parked-agent-audit-oracles';
 import { getWorkItemsByIds } from '../../../work-items';
 import { setWorkItemCheckpoint } from '../../../work-item-checkpoint';
+import { renderCarryNote } from '../../../carry-note';
 import { registerHarnessProject } from '../../plans/__tests__/_pg-tool-fixture';
+import { deriveIndexFromContent } from '../../plans/derive-index';
 
 const fixture = vi.hoisted(() => ({ workspaceId: 'audit-test-ws', sql: null as unknown }));
 vi.mock('@papercusp/db-org', async importOriginal => ({
@@ -341,7 +343,7 @@ describe('roster frozen audit PG persistence', () => {
       VALUES (${scope.workspaceId}, ${owner}, 'autonomy', 'auto', ${owner})`;
     for (const [id, state, takenBy] of [
       ['F-ready', 'wip', owner], ['F-held-done', 'wip', owner], ['F-held-live', 'wip', owner],
-      ['F-held-human', 'wip', owner], ['WI-9100001', 'done', null], ['WI-9100002', 'open', null],
+      ['F-held-human', 'wip', owner], ['F-held-wall', 'wip', owner], ['WI-9100001', 'done', null], ['WI-9100002', 'open', null],
     ]) {
       await db.adminSql`INSERT INTO harness_shared.work_items
         (workspace_id, harness_slug, feature_id, item_kind, title, summary, status, taken_by)
@@ -356,9 +358,12 @@ describe('roster frozen audit PG persistence', () => {
         ref, summary: 'Recorded hold', status: 'active', createdAt: asOf, updatedAt: asOf, createdBy: 'fixture',
       }] })} WHERE workspace_id=${scope.workspaceId} AND harness_slug=${harness} AND feature_id=${id}`;
     }
-    const [ready] = await getWorkItemsByIds(['F-ready'], harness);
+    const [ready, heldWall] = await getWorkItemsByIds(['F-ready', 'F-held-wall'], harness);
     await setWorkItemCheckpoint({ harness, workItemId: ready!.id, workspaceId: scope.workspaceId },
       '## Did\nPrepared the fixture.\n\n## Next action\nRun the focused unit suite.', { workItem: ready! });
+    await setWorkItemCheckpoint({ harness, workItemId: heldWall!.id, workspaceId: scope.workspaceId },
+      renderCarryNote({ next: 'Run the work item now.', walls: [{ origin: 'owner', claim: 'Owner approval is required before proceeding.' }] }),
+      { workItem: heldWall! });
     const before = await db.adminSql`SELECT feature_id, status, payload FROM harness_shared.work_items
       WHERE workspace_id=${scope.workspaceId} AND harness_slug=${harness} AND taken_by=${owner} ORDER BY feature_id`;
     const snapshot = await buildRosterAudit({ harness, scope, asOf, expectedPopulation: 1,
@@ -371,6 +376,8 @@ describe('roster frozen audit PG persistence', () => {
     for (const id of ['F-held-done', 'F-held-live', 'F-held-human']) {
       expect(work(id).fields.executable).toMatchObject({ status: 'known', value: false });
     }
+    expect(work('F-held-wall').fields.executable).toMatchObject({ status: 'known', value: false,
+      reason: 'An explicit owner/system carry wall remains in force.' });
     const clearance = (id: string) => snapshot.records.find(row => row.id === `work:${owner}:${harness}:${id}:blocker:0`)!.fields.clearance;
     expect(clearance('F-held-done')).toMatchObject({ status: 'known', value: true });
     expect(clearance('F-held-live')).toMatchObject({ status: 'known', value: false });
@@ -394,9 +401,10 @@ describe('roster frozen audit PG persistence', () => {
     await setWorkItemCheckpoint({ harness, workItemId: item!.id, workspaceId: scope.workspaceId },
       '## Did\nPrepared the plan fixture.\n\n## Next action\nRun the independent focused suite.', { workItem: item! });
     const content = '## Phase 1\n\n- **P-001** `todo` Run the independent suite.\n\n## Decisions\n';
+    const items = deriveIndexFromContent(content).items;
     await db.adminSql`INSERT INTO harness_shared.harness_plans
-      (workspace_id, harness_slug, plan_slug, status, content, content_hash, version)
-      VALUES (${scope.workspaceId}, ${harness}, ${slug}, 'active', ${content}, md5(${content}), 1)`;
+      (workspace_id, harness_slug, plan_slug, status, content, content_hash, version, items)
+      VALUES (${scope.workspaceId}, ${harness}, ${slug}, 'active', ${content}, md5(${content}), 1, ${db.adminSql.json(items)})`;
     const read = async () => {
       const snapshot = await buildRosterAudit({ harness, scope, asOf, expectedPopulation: 1,
         viewer: { ownerId: 'reader-a' }, agents: [{ ownerId: owner, sessionState: 'parked', awaitingEvent: false }] });
@@ -404,10 +412,11 @@ describe('roster frozen audit PG persistence', () => {
     };
     expect(await read()).toMatchObject({ status: 'known', value: true });
     const gated = content + '\n### D-001 — Owner-gated\nDate: 2026-10-18\nRelated: P-001\nWait for an owner-attended session.\n';
-    await db.adminSql`UPDATE harness_shared.harness_plans SET content=${gated}
+    const gatedItems = deriveIndexFromContent(gated).items;
+    await db.adminSql`UPDATE harness_shared.harness_plans SET content=${gated}, items=${db.adminSql.json(gatedItems)}
       WHERE workspace_id=${scope.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
     expect(await read()).toMatchObject({ status: 'known', value: false });
-    await db.adminSql`UPDATE harness_shared.harness_plans SET content=${content}, op_status='paused'
+    await db.adminSql`UPDATE harness_shared.harness_plans SET content=${content}, items=${db.adminSql.json(items)}, op_status='paused'
       WHERE workspace_id=${scope.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
     expect(await read()).toMatchObject({ status: 'unknown' });
     await db.adminSql`UPDATE harness_shared.harness_plans SET op_status='started', content='## Phase 1'

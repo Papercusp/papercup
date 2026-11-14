@@ -8,7 +8,11 @@ import { pathToFileURL } from 'node:url';
 import { afterEach, expect, it, vi } from 'vitest';
 import { runHarness } from '@papercusp/verification-harness';
 import * as ts from 'typescript';
-import { archivePrivateOperatorApiBuild, buildPrivateOperatorApiBundle, censusPrivateRuntimeArtifact, preparePrivateOperatorApiBundle, privateOperatorApiBuildBudget, privateBundleRuntimeEnv, privateGitCloneBundleEnv, privateMcpSourceSha, privatePgStartupIdentity, stopPrivateOperatorHost, waitForPrivateOperator, type PrivateHostStopObservation } from './private-http-workspace-preflight';
+import { archivePrivateOperatorApiBuild, assertPrivateMcpSourceIdentity, assertPrivateMcpToolsListGeneration,
+  buildPrivateOperatorApiBundle, censusPrivateRuntimeArtifact, preparePrivateOperatorApiBundle,
+  privateOperatorApiBuildBudget, privateBundleRuntimeEnv, privateGitCloneBundleEnv, privateMcpSourceSha,
+  privatePgStartupIdentity, resolvePreparedPrivateApiSourceSha, stopPrivateOperatorHost,
+  waitForPrivateOperator, type PrivateHostStopObservation } from './private-http-workspace-preflight';
 import { createHash, randomUUID } from 'node:crypto';
 import { readProcessIdentity } from '../lib/process-identity';
 import { hashNativeArtifactBytes, readNativeProcessTraceArtifacts } from '../../../scripts/lib/budgeted-task-scheduler.mjs';
@@ -805,7 +809,7 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
     };
     visit(source);
   }
-  expect(callers.sort()).toEqual([routingProof, nativeProof, 'blog-post-http-fixture.ts', 'cupboard-listing-install-http-fixture.ts',
+  expect(callers.sort()).toEqual([routingProof, nativeProof, nativeProof, 'blog-post-http-fixture.ts', 'cupboard-listing-install-http-fixture.ts',
     'customer-data-support-http-fixture.ts', 'governance-http-fixture.ts', 'grading-audit-runtime-fixture.ts', 'grading-audit-runtime-fixture.ts', 'integrations-setup-http-fixture.ts', 'knowledge-native-fixture.ts', 'liveness-alarm-http-fixture.ts',
     'roster-stop-http-fixture.ts', 'staging-first-http-fixture.ts']);
 });
@@ -866,6 +870,19 @@ it.each([
 it('validates rubric HTTP reader request schemas before private API compilation', async () => {
   const { assertRubricCoverageReaderContracts } = await import('./rubric-coverage-http-scenario');
   expect(() => assertRubricCoverageReaderContracts()).not.toThrow();
+});
+
+it('preflights the complete manual fixture BAR pin and rejects an uninitialized plan revision', async () => {
+  const { manualCoverageRubricProposal, manualCoveragePlanContent } = await import('./rubric-coverage-http-scenario');
+  const input = { rubricRef: 'manual-coverage-fixture', planSlug: 'measured-manual-coverage', harness: 'papercusp',
+    subjectPlanRevision: 1, measuredAt: '2026-11-01T12:00:00Z', actorId: 'su-fixture' };
+  const proposal = manualCoverageRubricProposal(input);
+  expect(proposal.barSetHash).toMatch(/^[a-f0-9]{64}$/);
+  expect(proposal.barContract).toMatchObject({ subjectPlanRevision: 1, schemaVersion: 1 });
+  expect(proposal.criteria.map(criterion => criterion.evidencePlane)).toEqual(['tree', 'tree']);
+  expect(proposal.criteria.map(criterion => criterion.barKey)).toEqual(['R-1', 'R-2']);
+  expect(manualCoveragePlanContent(input.planSlug)).toContain('| R-1 | P-001 | tree |');
+  expect(() => manualCoverageRubricProposal({ ...input, subjectPlanRevision: 0 })).toThrow(/subjectPlanRevision/);
 });
 
 it('prepares every roster API bundle before the private execute phase', () => {
@@ -1467,3 +1484,33 @@ it.each([null, 'abcdef123456'])(
       server.close(); await once(server, 'close');
     }
   });
+
+it('carries the prepared source pin and refuses unknown or foreign private MCP generations', () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-mcp-source-pin-')); dirs.push(root);
+  const prepareDir = join(root, 'prepare');
+  const executeDir = join(root, 'execute');
+  mkdirSync(prepareDir);
+  mkdirSync(executeDir);
+  const bundlePath = join(prepareDir, 'hono-host.mjs');
+  const bundleBytes = Buffer.from('private prepared bundle');
+  writeFileSync(bundlePath, bundleBytes);
+  const sourceSha = 'abcdef123456';
+  const bundleSha = createHash('sha256').update(bundleBytes).digest('hex');
+  const receiptBytes = Buffer.from(JSON.stringify({ path: bundlePath, sha256: bundleSha, sourceSha }));
+  writeFileSync(join(prepareDir, 'operator-api-preflight.json'), receiptBytes);
+  const args = [`--prepared-api-sha=${bundleSha}`,
+    `--prepared-receipt-sha=${createHash('sha256').update(receiptBytes).digest('hex')}`];
+  expect(resolvePreparedPrivateApiSourceSha(args, executeDir)).toBe(sourceSha);
+
+  const generation = `serving-generation-v1:${'a'.repeat(64)}`;
+  expect(assertPrivateMcpSourceIdentity(sourceSha, sourceSha)).toBe(sourceSha);
+  expect(assertPrivateMcpToolsListGeneration(generation, [
+    { _meta: { 'papercusp/servingGeneration': generation } },
+    { _meta: { 'papercusp/servingGeneration': generation } },
+  ])).toEqual({ servingGeneration: generation, toolCount: 2 });
+  expect(() => assertPrivateMcpSourceIdentity(sourceSha, null)).toThrow(/unknown/);
+  expect(() => assertPrivateMcpSourceIdentity(sourceSha, 'fedcba654321')).toThrow(/foreign/);
+  expect(() => assertPrivateMcpToolsListGeneration(generation, [
+    { _meta: { 'papercusp/servingGeneration': `serving-generation-v1:${'b'.repeat(64)}` } },
+  ])).toThrow(/unknown or foreign/);
+});

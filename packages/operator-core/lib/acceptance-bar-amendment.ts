@@ -18,6 +18,9 @@ import type { Sql, TransactionSql } from 'postgres';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import { acquirePlanAdvisoryLock, planAdvisoryLockKey, PLAN_ADVISORY_LOCK_NAMESPACE } from './agent-tools/plans/plan-lock-key';
 import { rubricTemplateDataAuthoringSchema } from './agent-tools/plans/rubric-template';
+import type { AmendRubricInput } from './rubrics';
+import { guardAcceptanceBarTemplateDataWrite, nextAcceptanceBarMeaningRevision } from './agent-tools/plans/rubric-loss-guard';
+import { classifyAmendmentAdditivity } from './acceptance-bar-amendment-additivity';
 import { normalizeBarMappingDelta } from './acceptance-bar-amendment-requirements-drift';
 import { AcceptanceBarCandidateError, acceptanceBarCandidateHash, acceptanceBarCriterionWithoutDeclarationTime } from './acceptance-bar-projection';
 import { specBehaviorNonAtomicReason, specBehaviorNonFalsifiableReason } from './agent-tools/plans/spec-clause-compiler';
@@ -105,6 +108,29 @@ async function legacyRequirementMaterializations(previousBody: string, nextBody:
     materialized.push(after.criterion);
   }
   return materialized.length > 0 ? materialized : null;
+}
+
+/** A reviewed canonical Intent may be restored into authored Requirements after
+ * apply. Reuse the writer's bounded materialization check; a different promise,
+ * map, or unreviewed Intent still changes the source. */
+async function reviewedRequirementSourceContinues(previous: unknown, next: unknown, canonical: unknown): Promise<boolean> {
+  if (typeof previous !== 'string' || typeof next !== 'string') return false;
+  const [before, after] = await Promise.all([
+    acceptanceBarSourceFingerprint(previous), acceptanceBarSourceFingerprint(next),
+  ]);
+  if (!before || !after) return false;
+  if (before === after) return true;
+  const materialized = await legacyRequirementMaterializations(previous, next);
+  const template = rubricTemplateDataAuthoringSchema.safeParse(canonical);
+  if (!materialized || !template.success || template.data.kind !== 'acceptance') return false;
+  const { normalizeAcceptanceBarCriterion } = await import('./rubrics');
+  const { verificationNeutralCriterion } = await import('./acceptance-live-requirements');
+  const meaning = (value: Parameters<typeof normalizeAcceptanceBarCriterion>[0]) =>
+    canonicalJson(verificationNeutralCriterion(normalizeAcceptanceBarCriterion(value)));
+  return materialized.every(criterion => {
+    const reviewed = template.data.criteria.find(value => (value.barKey?.trim() || value.key.trim()) === criterion.barKey);
+    return !!reviewed && meaning({ ...reviewed, ...criterion }) === meaning(reviewed);
+  });
 }
 
 /** Keep a derived subject-version pin current after a BAR-neutral write.
@@ -493,10 +519,29 @@ export function approvalReceiptJsonSource(body: string): string {
   return fences[0]?.content ?? body;
 }
 
+/** Retained pre-apply input/source, never reconstructed from the current rubric. */
+export interface AppliedAcceptanceBarContinuation {
+  amendmentKey: string;
+  expectedRequest: AmendRubricInput;
+  source: AcceptanceBarReviewSource;
+  sourceSha256: string;
+}
+
+interface AppliedAcceptanceBarScope {
+  amendmentKey: string;
+  rubricHarnessSlug: string;
+  subjectHarnessSlug: string;
+  additiveContinuations?: AppliedAcceptanceBarContinuation[];
+}
+
 export async function resolveAcceptanceBarApproval(
   sql: SpecClauseSql,
   args: { workspaceId: string; approvalRef?: string; approvedBy?: string; expected: AcceptanceBarApproval;
     expectedSource?: AcceptanceBarReviewSource;
+    /** Separately retained original typed writer input, required for applied evidence. */
+    expectedRequest?: AmendRubricInput;
+    /** Evidence read only. Does not authorize an operation or acquire its effect fence. */
+    applied?: AppliedAcceptanceBarScope;
     /** Internal recruitment precheck of the requester's preview, before a reviewer signs. */
     purpose?: 'review-recruitment' },
 ): Promise<{
@@ -506,7 +551,16 @@ export async function resolveAcceptanceBarApproval(
   certifies?: string;
   doesNotCertify?: string[];
   reviewSource?: AcceptanceBarReviewSource;
+  applied?: AppliedAcceptanceBarApproval;
 }> {
+  // Retain the caller's exact expectation before the first database await.
+  if (args.applied) {
+    args = structuredClone(args);
+    if (args.purpose === 'review-recruitment' || !args.expected.reviewSourceHash ||
+        typeof (sql as unknown as Partial<TransactionSql>).savepoint !== 'function') {
+      throw new Error('acceptance_bar_applied_approval_requires_transaction_and_signed_source');
+    }
+  }
   const match = /^thread-post:([1-9][0-9]*)$/.exec(args.approvalRef?.trim() ?? '');
   if (!match) throw new Error('acceptance_bar_approval_required: use thread-post:<id> from an authenticated reviewer post containing the preview approval JSON');
   const [post] = await sql<Array<{ author_id: string | null; body: string; approved_at: string }>>`
@@ -657,6 +711,9 @@ export async function resolveAcceptanceBarApproval(
   if (args.approvedBy && args.approvedBy.trim() !== post.author_id) {
     throw new Error('acceptance_bar_approval_author_mismatch');
   }
+  const applied = args.applied
+    ? await readAppliedAcceptanceBarApproval(sql, args, receipt, reviewedSource!, post.author_id, post.approved_at)
+    : undefined;
   return {
     approvalRef: `thread-post:${match[1]}`,
     approvedBy: post.author_id,
@@ -664,6 +721,245 @@ export async function resolveAcceptanceBarApproval(
     certifies: receipt.certifies,
     doesNotCertify: receipt.doesNotCertify,
     ...(args.purpose === 'review-recruitment' && reviewedSource ? { reviewSource: reviewedSource } : {}),
+    ...(applied ? { applied } : {}),
+  };
+}
+
+/** Current rule evidence, deliberately distinct from packet approval and permission. */
+export interface AppliedAcceptanceBarApproval {
+  amendmentKey: string;
+  decisionId: string;
+  workspaceId: string;
+  rubricHarnessSlug: string;
+  rubricRef: string;
+  subjectHarnessSlug: string;
+  subjectPlan: string;
+  approvedSourceSha256: string;
+  approvedPatchSha256: string;
+  requestSha256: string;
+  ruleSha256: string;
+  rubricRevision: number;
+  subjectRevision: number;
+  rubricContentSha256: string;
+  subjectContentSha256: string;
+  appliedRubricRevisions: { before: number; after: number };
+  appliedSubjectRevisions: { before: number; after: number };
+  additiveContinuations?: Array<{
+    amendmentKey: string; decisionId: string; requestSha256: string; sourceSha256: string;
+    rubricRevisions: { before: number; after: number };
+    subjectRevisions: { before: number; after: number };
+  }>;
+}
+
+async function readAppliedAcceptanceBarApproval(
+  sql: SpecClauseSql,
+  args: { workspaceId: string; approvalRef?: string;
+    expectedRequest?: AmendRubricInput;
+    applied?: AppliedAcceptanceBarScope },
+  receipt: AcceptanceBarApproval,
+  source: AcceptanceBarReviewSource,
+  approvedBy: string,
+  approvedAt: string,
+): Promise<AppliedAcceptanceBarApproval> {
+  const { additiveContinuations = [], ...scope } = z.object({ amendmentKey: z.string().trim().min(1),
+    rubricHarnessSlug: z.string().trim().min(1), subjectHarnessSlug: z.string().trim().min(1),
+    additiveContinuations: z.array(z.object({ amendmentKey: z.string().trim().min(1),
+      expectedRequest: z.custom<AmendRubricInput>(value => !!value && typeof value === 'object'),
+      source: z.custom<AcceptanceBarReviewSource>(value => !!value && typeof value === 'object'),
+      sourceSha256: z.string().regex(/^[a-f0-9]{64}$/),
+    }).strict()).max(8).optional(),
+  }).strict().parse(args.applied);
+  function refuse(reason: string): never { throw new Error(`acceptance_bar_applied_approval_${reason}`); }
+  if (source.schemaVersion !== 1 || source.rubric?.ref !== receipt.rubricRef ||
+      source.subjectPlan?.slug !== receipt.subjectPlan || source.subjectPlan.harness !== scope.subjectHarnessSlug ||
+      !Number.isSafeInteger(source.rubric.revision) || source.rubric.revision < 1 ||
+      !Number.isSafeInteger(source.subjectPlan.revision) || source.subjectPlan.revision < 1) refuse('scope_mismatched');
+  type PlanRow = { content: string; content_hash: string; version: number | string; template_data: unknown;
+    acceptance_bar_rubric_slug: string | null; acceptance_bar_rubric_revision: number | string | null;
+    acceptance_bar_set_hash: string | null };
+  // Same row order as the canonical amendment writer. The caller's short
+  // transaction retains these locks only for its evidence/CAS work, never Git.
+  const rubricRows = await sql<PlanRow[]>`SELECT content, content_hash, version, template_data,
+      acceptance_bar_rubric_slug, acceptance_bar_rubric_revision, acceptance_bar_set_hash
+    FROM harness_shared.harness_plans WHERE workspace_id = ${args.workspaceId}
+      AND harness_slug = ${scope.rubricHarnessSlug} AND plan_slug = ${receipt.rubricRef}
+      AND template = 'rubric' AND archived = false AND origin = 'local' FOR SHARE`;
+  const subjectRows = await sql<PlanRow[]>`SELECT content, content_hash, version, template_data,
+      acceptance_bar_rubric_slug, acceptance_bar_rubric_revision, acceptance_bar_set_hash
+    FROM harness_shared.harness_plans WHERE workspace_id = ${args.workspaceId}
+      AND harness_slug = ${scope.subjectHarnessSlug} AND plan_slug = ${receipt.subjectPlan}
+      AND archived = false AND origin = 'local' FOR SHARE`;
+  if (rubricRows.length !== 1 || subjectRows.length !== 1) refuse('rows_unavailable');
+  const rubric = rubricRows[0]!;
+  const subject = subjectRows[0]!;
+  const sha256 = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
+  if (sha256(rubric.content) !== rubric.content_hash || sha256(subject.content) !== subject.content_hash) refuse('content_mismatched');
+  const { parsePlan } = await import('@papercusp/plan-parser');
+  const decisions = parsePlan(subject.content).decisions;
+  const readDecision = (key: string) => {
+    const matches = decisions.filter(decision => decision.body.split('\n').includes(`Amendment-Id: ${key}`));
+    if (matches.length !== 1) refuse('decision_unavailable_or_ambiguous');
+    const decision = matches[0]!;
+    const field = (name: string): string => {
+      const lines = decision.body.split('\n').filter(line => line.startsWith(`${name}:`));
+      if (lines.length !== 1 || !lines[0]!.startsWith(`${name}: `)) refuse('decision_field_ambiguous');
+      return lines[0]!.slice(name.length + 2);
+    };
+    if (field('Amendment-Id') !== key) refuse('decision_approval_mismatched');
+    return { decision, field };
+  };
+  const { decision, field } = readDecision(scope.amendmentKey);
+  // Finding a key selects a candidate; only a unique exact field binds it.
+  // Otherwise one Decision can alias several independently scoped amendments.
+  if (field('Amendment-Id') !== scope.amendmentKey ||
+      field('Approval-Ref') !== args.approvalRef?.trim() || field('Approved-By') !== approvedBy ||
+      field('Approved-At') !== approvedAt || !field('Actor').trim() || !/^[a-f0-9]{64}$/.test(field('Request-Hash'))) {
+    refuse('decision_approval_mismatched');
+  }
+  // A syntactically valid digest is not provenance. Bind the exact retained
+  // typed request with the SAME hash function used by the canonical writer.
+  // Do not reconstruct this input from the later normalized rubric candidate.
+  const request = args.expectedRequest;
+  if (!request || request.rubricId !== receipt.rubricRef ||
+      request.approvalRef !== args.approvalRef?.trim() ||
+      (request.actorId ?? request.by ?? '').trim() !== field('Actor') ||
+      (request.reason ?? `rubrics:amend ${request.rubricId}`).trim() !== source.reason ||
+      (request.idempotencyKey !== undefined && request.idempotencyKey !== scope.amendmentKey)) {
+    refuse('request_mismatched');
+  }
+  const { amendmentRequestHash, computeAcceptanceBarHash } = await import('./rubrics');
+  const requestSha256 = amendmentRequestHash(request);
+  if (field('Request-Hash') !== requestSha256) refuse('request_mismatched');
+  const revisions = (name: string, before: number, read = field) => {
+    const match = /^([1-9][0-9]*) → ([1-9][0-9]*)$/.exec(read(name));
+    if (!match || Number(match[1]) !== before || Number(match[2]) !== before + 1) refuse('revisions_mismatched');
+    return { before, after: before + 1 };
+  };
+  const appliedRubricRevisions = revisions('Rubric revision', source.rubric.revision);
+  const appliedSubjectRevisions = revisions('Subject plan revision', source.subjectPlan.revision);
+  const current = rubricTemplateDataAuthoringSchema.safeParse(rubric.template_data);
+  const candidate = rubricTemplateDataAuthoringSchema.safeParse(source.rubric.candidate);
+  if (!current.success || !candidate.success || current.data.kind !== 'acceptance' || candidate.data.kind !== 'acceptance') refuse('rule_unreadable');
+  // Compare the COMPLETE signed candidate, including methods and unknown fields.
+  // Only the canonical writer's declaration timestamp and neutral subject pin
+  // may differ. No semantic-equivalence inference or BAR-hash-only comparison.
+  const normalize = (value: unknown) => {
+    const record = structuredClone(value) as Record<string, unknown>;
+    if (Array.isArray(record.criteria)) record.criteria = record.criteria.map(acceptanceBarCriterionWithoutDeclarationTime);
+    const contract = record.barContract as Record<string, unknown> | undefined;
+    if (contract && Number.isSafeInteger(contract.subjectPlanRevision)) contract.subjectPlanRevision = 'pin';
+    return record;
+  };
+  let terminalCandidate = source.rubric.candidate;
+  let terminalRubricRevision = appliedRubricRevisions.after;
+  let terminalSubjectRevision = appliedSubjectRevisions.after;
+  let terminalSource = source;
+  const continuationEvidence: NonNullable<AppliedAcceptanceBarApproval['additiveContinuations']> = [];
+  const seenKeys = new Set([scope.amendmentKey]);
+  for (const continuation of additiveContinuations) {
+    const next = continuation.source;
+    const input = continuation.expectedRequest;
+    const baseline = rubricTemplateDataAuthoringSchema.safeParse(next.rubric?.baseline);
+    const nextCandidate = rubricTemplateDataAuthoringSchema.safeParse(next.rubric?.candidate);
+    if (!baseline.success || !nextCandidate.success || baseline.data.kind !== 'acceptance' ||
+        nextCandidate.data.kind !== 'acceptance') refuse('continuation_unreadable');
+    // This reader supports the maintained full-criteria additive writer path.
+    // Other patch forms need their own exact derivation, never a guessed join.
+    const inputKeys = new Set(['rubricId', 'actorId', 'by', 'reason', 'criteria', 'expectedRubricRevision',
+      'expectedSubjectPlanRevision', 'idempotencyKey', 'checkPathRoot']);
+    if (seenKeys.has(continuation.amendmentKey) || next.schemaVersion !== 1 ||
+        next.rubric?.ref !== receipt.rubricRef || next.subjectPlan?.slug !== receipt.subjectPlan ||
+        next.subjectPlan.harness !== scope.subjectHarnessSlug || next.rubric.revision !== terminalRubricRevision ||
+        !Number.isSafeInteger(next.subjectPlan.revision) || next.subjectPlan.revision < terminalSubjectRevision ||
+        (Object.hasOwn(next.subjectPlan, 'proposedContentUnchanged') &&
+          (next.subjectPlan.proposedContentUnchanged !== true || Object.hasOwn(next.subjectPlan, 'proposedContent'))) ||
+        !Array.isArray(next.mappingDelta) || next.mappingDelta.length !== 0 ||
+        acceptanceBarReviewSourceHash(next) !== continuation.sourceSha256 ||
+        canonicalJson(normalize(next.rubric.baseline)) !== canonicalJson(normalize(terminalCandidate)) ||
+        Object.keys(input).some(key => !inputKeys.has(key)) || input.rubricId !== receipt.rubricRef ||
+        input.idempotencyKey !== continuation.amendmentKey || input.expectedRubricRevision !== next.rubric.revision ||
+        input.expectedSubjectPlanRevision !== next.subjectPlan.revision || input.reason !== next.reason ||
+        !Array.isArray(input.criteria) ||
+        canonicalJson(input.criteria) !== canonicalJson((next.rubric.candidate as Record<string, unknown>).criteria) ||
+        nextCandidate.data.criteria.some(criterion => criterion.barHash !== computeAcceptanceBarHash(criterion))) {
+      refuse('continuation_mismatched');
+    }
+    seenKeys.add(continuation.amendmentKey);
+    const committed = readDecision(continuation.amendmentKey);
+    const actorId = (input.actorId ?? input.by ?? '').trim();
+    const nextRequestHash = amendmentRequestHash(input);
+    if (!actorId || committed.field('Actor') !== actorId || committed.field('Reason') !== next.reason ||
+        committed.field('Request-Hash') !== nextRequestHash ||
+        committed.decision.body.split('\n').some(line => /^(Approval-Ref|Approved-By|Approved-At):/.test(line))) {
+      refuse('continuation_mismatched');
+    }
+    const rubricRevisions = revisions('Rubric revision', terminalRubricRevision, committed.field);
+    const subjectRevisions = revisions('Subject plan revision', next.subjectPlan.revision, committed.field);
+    const guarded = guardAcceptanceBarTemplateDataWrite({ slug: receipt.rubricRef,
+      storedTemplateData: next.rubric.baseline,
+      nextTemplateData: { ...baseline.data, criteria: input.criteria },
+      subjectPlan: { status: 'active', revision: subjectRevisions.after }, actorId,
+      amendment: { actorId, reason: next.reason } });
+    const classification = classifyAmendmentAdditivity({ changes: guarded.changes,
+      prior: baseline.data.criteria, next: nextCandidate.data.criteria,
+      barKeyOf: criterion => String(criterion.barKey ?? criterion.key) });
+    if (!guarded.started || classification.approvalRequired ||
+        committed.field('Approval') !== `not required — every change is additive (${classification.additiveBars.join(', ')})`) {
+      refuse('continuation_not_additive');
+    }
+    const contract = guarded.data.barContract as Record<string, unknown>;
+    contract.meaningRevision = nextAcceptanceBarMeaningRevision({ priorCriteria: baseline.data.criteria,
+      nextCriteria: nextCandidate.data.criteria,
+      priorMeaningRevision: baseline.data.barContract?.meaningRevision,
+      priorRevision: terminalRubricRevision, nextRevision: rubricRevisions.after });
+    if (canonicalJson(normalize(guarded.data)) !== canonicalJson(normalize(next.rubric.candidate))) {
+      refuse('continuation_mismatched');
+    }
+    const proposed = next.subjectPlan.proposedContentUnchanged === true && next.subjectPlan.proposedContent === undefined
+      ? next.subjectPlan.content : next.subjectPlan.proposedContent;
+    const previousContent = terminalSource.subjectPlan.proposedContentUnchanged === true &&
+      terminalSource.subjectPlan.proposedContent === undefined ? terminalSource.subjectPlan.content
+      : terminalSource.subjectPlan.proposedContent;
+    if (!await reviewedRequirementSourceContinues(previousContent, next.subjectPlan.content, terminalCandidate) ||
+        !await reviewedRequirementSourceContinues(next.subjectPlan.content, proposed, next.rubric.candidate)) {
+      refuse('source_not_current');
+    }
+    continuationEvidence.push({ amendmentKey: continuation.amendmentKey, decisionId: committed.decision.id,
+      requestSha256: nextRequestHash, sourceSha256: continuation.sourceSha256, rubricRevisions, subjectRevisions });
+    terminalCandidate = next.rubric.candidate;
+    terminalRubricRevision = rubricRevisions.after;
+    terminalSubjectRevision = subjectRevisions.after;
+    terminalSource = next;
+  }
+  const rule = normalize(rubric.template_data);
+  if (Number(rubric.version) !== terminalRubricRevision ||
+      !Number.isSafeInteger(Number(subject.version)) || Number(subject.version) < terminalSubjectRevision ||
+      canonicalJson(rule) !== canonicalJson(normalize(terminalCandidate)) ||
+      current.data.subjectPlan !== receipt.subjectPlan ||
+      (current.data.subjectHarnessSlug !== undefined && current.data.subjectHarnessSlug !== scope.subjectHarnessSlug) ||
+      subject.acceptance_bar_rubric_slug !== receipt.rubricRef ||
+      Number(subject.acceptance_bar_rubric_revision) !== Number(rubric.version) ||
+      subject.acceptance_bar_set_hash !== current.data.barSetHash || !current.data.barSetHash ||
+      current.data.barContract?.subjectPlanRevision !== Number(subject.version)) refuse('rule_not_current');
+  if (Object.hasOwn(source.subjectPlan, 'proposedContentUnchanged') &&
+      (source.subjectPlan.proposedContentUnchanged !== true || source.subjectPlan.proposedContent !== undefined)) refuse('source_ambiguous');
+  const reviewedContent = terminalSource.subjectPlan.proposedContentUnchanged === true && terminalSource.subjectPlan.proposedContent === undefined
+    ? terminalSource.subjectPlan.content : terminalSource.subjectPlan.proposedContent;
+  if (typeof reviewedContent !== 'string') refuse('source_unavailable');
+  const currentFingerprint = await acceptanceBarSourceFingerprint(subject.content);
+  if (!currentFingerprint || !await reviewedRequirementSourceContinues(reviewedContent, subject.content, terminalCandidate)) {
+    refuse('source_not_current');
+  }
+  return {
+    ...scope, decisionId: decision.id, workspaceId: args.workspaceId, rubricRef: receipt.rubricRef,
+    subjectPlan: receipt.subjectPlan, approvedSourceSha256: receipt.reviewSourceHash!,
+    approvedPatchSha256: receipt.proposedPatchHash,
+    requestSha256,
+    ruleSha256: sha256(canonicalJson({ rubric: rule, sourceFingerprint: currentFingerprint })),
+    rubricRevision: Number(rubric.version), subjectRevision: Number(subject.version),
+    rubricContentSha256: rubric.content_hash, subjectContentSha256: subject.content_hash,
+    appliedRubricRevisions, appliedSubjectRevisions,
+    ...(continuationEvidence.length ? { additiveContinuations: continuationEvidence } : {}),
   };
 }
 
@@ -697,7 +993,7 @@ function historicalAcceptanceBarPinResolver(
   args: { workspaceId: string; harnessSlug: string; rubricSlug: string },
 ) {
   const pinnedSnapshots = new Map<number, Promise<unknown[]>>();
-  return async (clause: ProjectedAcceptanceClause, next: SpecClauseWrite): Promise<boolean> => {
+  return async (clause: ProjectedAcceptanceClause, next: Pick<SpecClauseWrite, 'sourceBar'>): Promise<boolean> => {
     const revision = Number(clause.source_rubric_revision);
     let pending = pinnedSnapshots.get(revision);
     if (!pending) {
@@ -730,6 +1026,7 @@ async function acceptanceBarClauseWrite(args: {
   subjectPlan: string; rubricSlug: string; rubricRevision: number; barSetHash: string;
   barKey: string; planItemId: string; criterion: ProjectionCriterion;
   prior?: ProjectionCriterion; clause?: ProjectedAcceptanceClause; actorId: string;
+  historicalPinResolves?: ReturnType<typeof historicalAcceptanceBarPinResolver>;
 }): Promise<SpecClauseWrite> {
   const { acceptanceBarBehaviorClass, acceptanceBarProjectedBehavior } = await import('./acceptance-bar-seed');
   const { criterion, prior, clause, barKey } = args;
@@ -760,7 +1057,25 @@ async function acceptanceBarClauseWrite(args: {
     computeAcceptanceBarHash({ ...criterion, requiredTestLayers: prior.requiredTestLayers, check: prior.check,
       evidencePlane: prior.evidencePlane, requiredEvidencePlanes: prior.requiredEvidencePlanes })
       === clause.source_bar_hash;
-  const preserveRefinements = unchangedBar || proofOnly;
+  // Intent is hashed, so annotation must refresh proof identity. It must not
+  // replace reviewed atomic refinements with their possibly compound parent.
+  // Only rationale/source provenance may change; a legacy intent must repeat
+  // the canonical request exactly and introduce no constraints. Resolve the
+  // immutable old pin before trusting that historical refinement.
+  const normalizedText = (text: string | undefined) => (text ?? '').replace(/\r\n?/g, '\n').trim();
+  const normalizedConstraints = (values: string[] | undefined) =>
+    canonicalJson([...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))].sort());
+  const requestUnchanged = prior && criterion.intent && (prior.intent
+    ? normalizedText(criterion.intent.request) === normalizedText(prior.intent.request)
+    : [prior.model, acceptanceBarProjectedBehavior(prior)]
+      .some((request) => normalizedText(criterion.intent!.request) === normalizedText(request)));
+  const intentAnnotationOnly = !unchangedBar && prior?.barHash === clause.source_bar_hash &&
+    requestUnchanged && normalizedConstraints(criterion.intent?.constraints) === normalizedConstraints(prior.intent?.constraints) &&
+    computeAcceptanceBarHash({ ...criterion, intent: prior.intent,
+      requiredTestLayers: prior.requiredTestLayers, check: prior.check,
+      evidencePlane: prior.evidencePlane, requiredEvidencePlanes: prior.requiredEvidencePlanes }) === clause.source_bar_hash &&
+    await args.historicalPinResolves?.(clause, common);
+  const preserveRefinements = unchangedBar || proofOnly || intentAnnotationOnly;
   // Keep atomic-only proof layers; remove a parent's explicitly dropped layers.
   const projectedFromPrior = prior !== undefined && prior.barHash === clause.source_bar_hash;
   // Only the prior BAR's known contribution can be removed. Preserve independent
@@ -1085,6 +1400,7 @@ export async function synchronizeAcceptanceBarRevision(
     const next = await acceptanceBarClauseWrite({
       ...args, subjectPlan, barSetHash: data.barSetHash, barKey: effectiveBarKey,
       planItemId: clause.plan_item_id, criterion, prior: previousByKey.get(effectiveBarKey), clause,
+      historicalPinResolves,
     });
     // P-001 stable clause identity: a clause is keyed to ITS OWN meaning, not to the
     // rubric-wide BAR set. When the only difference from the stored revision is the
@@ -1279,7 +1595,7 @@ export async function validateAcceptanceBarRevisionProjectionPreview(
     const next = await acceptanceBarClauseWrite({
       ...args, subjectPlan, barSetHash: data.barSetHash!, barKey: effectiveBarKey!,
       planItemId: clause.plan_item_id, criterion, prior: previousByKey.get(effectiveBarKey!),
-      clause, actorId: 'preview',
+      clause, actorId: 'preview', historicalPinResolves,
     });
     // Apply does not write an identical, historically resolvable revision. Linting
     // that retained promise as a new behavior made unrelated amendments impossible
@@ -1520,10 +1836,11 @@ export async function carryUnchangedBarEvidenceBindings(
      ORDER BY b.id LIMIT 1001`;
   if (rows.length > 1000) throw new Error('acceptance_bar_amendment_evidence_carry_truncated');
   if (!rows.length) return 0;
-  const { specEvidenceBindingFingerprint } = await import('./agent-tools/plans/spec-evidence-store');
+  const { specEvidenceBindingFingerprint, withoutHistoricalMeasurement } = await import('./agent-tools/plans/spec-evidence-store');
   let carried = 0;
   const copiedIds = new Map<number, number>();
   const copy = async (row: typeof rows[number], verifiesBindingId?: number): Promise<void> => {
+    const details = withoutHistoricalMeasurement(row.details ?? {});
     const coverageEvidenceRef = row.coverage_evidence_ref == null ? null : Number(row.coverage_evidence_ref);
     const testRunId = row.test_run_id == null ? null : Number(row.test_run_id);
     const bindingFingerprint = specEvidenceBindingFingerprint({
@@ -1544,7 +1861,7 @@ export async function carryUnchangedBarEvidenceBindings(
       coverageEvidenceRef,
       testRunId,
       ...(verifiesBindingId === undefined ? {} : { verifiesBindingId }),
-      details: row.details ?? {},
+      details,
     });
     const inserted = await sql<Array<{ id: number | string }>>`
       INSERT INTO harness_shared.spec_evidence_bindings (
@@ -1567,7 +1884,7 @@ export async function carryUnchangedBarEvidenceBindings(
         -- spec-evidence-store.ts). The details CHECK (jsonb_typeof = 'object') is what
         -- turns the wrong form into a loud failure rather than silent corruption. See
         -- /internal/docs/agent-insights/postgres-js-jsonb-binding.
-        ${coverageEvidenceRef}, ${testRunId}, ${JSON.stringify(row.details ?? {})}::text::jsonb,
+        ${coverageEvidenceRef}, ${testRunId}, ${JSON.stringify(details)}::text::jsonb,
         ${row.observed_at}, ${bindingFingerprint}, ${row.created_by}, ${verifiesBindingId ?? null}
       ) ON CONFLICT DO NOTHING RETURNING id`;
     // A repeated carry must remap citations to the already-carried row too.

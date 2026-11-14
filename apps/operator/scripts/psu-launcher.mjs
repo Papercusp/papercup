@@ -12868,6 +12868,7 @@ export function sanitizeInheritedEnv(env) {
   const out = stripRecoveryMarkers(env);
   stripLauncherInspectorOption(out);
   delete out.PAPERCUSP_ORIGINAL_CODEX_ROUTING;
+  delete out[GOVERNED_RESUME_RESERVATION_ENV];
   delete out[SCOPED_INFERENCE_GATEWAY_ENV];
   // Only this host's explicit code-adoption envelope may carry its slot. A
   // newly launched session must not inherit its parent's native reservation.
@@ -14770,6 +14771,18 @@ export function consumeGovernedResumeReservation(env, session, nowMs = Date.now(
   return value;
 }
 
+/** Only the validated managed launch may supply pre-admission custody. A
+ * legacy one-hop environment hint can survive in an interactive shell long
+ * after its lease, or belong to a different agent launched from that shell.
+ * Discard it; ordinary resumes still acquire their own atomic admission. */
+export function governedResumeReservationForLaunch(managedAssume, env, session, nowMs = Date.now()) {
+  delete env[GOVERNED_RESUME_RESERVATION_ENV];
+  if (!managedAssume) return null;
+  return consumeGovernedResumeReservation({
+    [GOVERNED_RESUME_RESERVATION_ENV]: JSON.stringify(managedAssume.reservation),
+  }, session, nowMs);
+}
+
 export function normalizeResumeLocalLivenessEvidence(value) {
   if (value == null || typeof value !== "object" || Array.isArray(value))
     return null;
@@ -15303,8 +15316,7 @@ async function launchResume(
         process.exit(2);
       }
     }
-    const governedReservation = consumeGovernedResumeReservation(managedAssume
-      ? { [GOVERNED_RESUME_RESERVATION_ENV]: JSON.stringify(managedAssume.reservation) } : process.env, session);
+    const governedReservation = governedResumeReservationForLaunch(managedAssume, process.env, session);
     const claim = await acquireSessionResumeWithRecovery(session.id, {
       ...(governedReservation ? { resumeClaimKey: governedReservation.claimKey } : {}),
       ...(localLivenessEvidence ? { localLivenessEvidence } : {}),
@@ -17862,7 +17874,11 @@ export async function ensureCodexHomeViaOperator(
         body: JSON.stringify({
           owner,
           advSessionId,
-          requireGatewayProvider,
+          // The running native child can reload config during this request.
+          // Keep its selected provider in the canonical writer's atomic
+          // publication, before the caller restores route-specific headers.
+          requireGatewayProvider: requireGatewayProvider || (!preserveArtifact &&
+            (routeMode === "auto" || routeMode === "pin" || env[SCOPED_INFERENCE_GATEWAY_ENV] !== undefined)),
           ...(model ? { model } : {}),
           ...(typeof headless === "boolean" ? { headless } : {}),
           ...(preserveArtifact ? {

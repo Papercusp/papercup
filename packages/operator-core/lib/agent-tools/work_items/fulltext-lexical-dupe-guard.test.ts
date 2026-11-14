@@ -94,6 +94,22 @@ describe('classification (advisory-only)', () => {
     for (let i = 1; i < r!.length; i++) expect(r![i - 1].similarity).toBeGreaterThanOrEqual(r![i].similarity);
   });
 
+  it('keeps a qualifying match after more than fifty lower-similarity candidates', async () => {
+    const query = 'alpha bravo charlie delta echo foxtrot golf hotel india juliet';
+    const crowd = Array.from({ length: 80 }, (_, i) => row(
+      'F-DECOY-' + i,
+      'crowded result ' + i,
+      'open',
+      'papercusp',
+      query + ' noiseone noisetwo noisethree noisefour noisefive noisesix noiseseven noiseeight noisenine noiseeleven',
+    ));
+    const r = await findFulltextLexicalDupes(
+      { title: query },
+      depsWith([...crowd, row('F-REAL', 'alpha bravo charlie delta echo foxtrot golf hotel')]),
+    );
+    expect(r?.map((candidate) => candidate.id)).toEqual(['F-REAL']);
+  });
+
   it('a candidate below DUP_THRESHOLD (0.6) is not surfaced', async () => {
     const r = await findFulltextLexicalDupes(
       { title: 'alpha bravo charlie delta echo foxtrot golf' },
@@ -158,6 +174,11 @@ describe('fail-open — every failure mode returns null (create proceeds)', () =
       },
     };
     expect(await findFulltextLexicalDupes({ title: 't' }, deps)).toBeNull();
+  });
+
+  it('an incomplete bounded candidate set is not reported as a clean no-duplicate result', async () => {
+    const deps: FulltextLexicalDupeDeps = { searchWorkItems: async () => null };
+    expect(await findFulltextLexicalDupes({ title: 'known existing phrase here' }, deps)).toBeNull();
   });
 
   it('budget expiry: a hung search forfeits the verdict instead of blocking the create', async () => {

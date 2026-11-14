@@ -238,6 +238,40 @@ describe('consultExpiryDispatch', () => {
 });
 
 describe('consultExpiryFindSilentResponders', () => {
+  it('detects terminal follow-up continuations without confusing historical posts with current progress', async () => {
+    const now = new Date('2026-11-12T18:40:00Z');
+    const routedAt = '2026-11-12T18:13:00Z';
+    const cases = ['stranded', 'live-sibling', 'carry', 'missing', 'wrong-tag', 'unknown-end', 'live-owner'];
+    const terminal = (id: string): TaskRow => ({
+      taskId: id, workspaceId: ROW_WS, class: 'agent-session', state: 'stranded',
+      endedAt: id === 'unknown-end' ? null : '2026-11-12T18:33:00Z',
+      detail: { consultAnswer: { conversationId: id === 'wrong-tag' ? 'other' : id,
+        sourceOwnerId: 'source', answeringOwnerId: 'answerer-' + id } },
+    } as TaskRow);
+    const found = await consultExpiryFindSilentResponders({
+      now: () => now,
+      getPresence: async () => null,
+      resolveSessionStates: async () => new Map(cases.map(id => [
+        'answerer-' + id, { sessionState: id === 'live-owner' ? 'live' : 'ended' },
+      ])),
+      listAnsweringTasks: async (_ws, owner) => {
+        const id = owner.slice('answerer-'.length);
+        if (id === 'missing') return [];
+        const task = terminal(id);
+        return id === 'live-sibling' ? [task, { ...task, taskId: 'successor', state: 'running', endedAt: null }] : [task];
+      },
+      getCarryRespawnOutcome: async owner => ({
+        outcome: owner === 'answerer-carry' ? 'delivered' : 'none', ts: '2026-11-12T18:39:00Z',
+      }),
+      getThreadStore: () => ({
+        getThreadByParent: async () => ({ thread_id: 'old-answer' }) as never,
+        listRecentPosts: async () => ({ total: 1, posts: [{ author_id: 'answerer-stranded' }] }),
+      }),
+    })(cases.map(id => ({ workspaceId: ROW_WS, conversationId: id, requesterId: 'requester',
+      sourceOwnerId: 'source', answeringOwnerId: 'answerer-' + id, routedAt, followupPostId: '42' })));
+    expect(found).toEqual(new Set(['stranded']));
+  });
+
   it('pins the native refusal reader to the tagged task incarnation and retains unknown bindings', async () => {
     const task = { class: 'agent-session', sessionId: 'native-exact', workspaceId: ROW_WS, logPath: '/exact.log',
       detail: { consultAnswer: { conversationId: 'conv', sourceOwnerId: 'source', answeringOwnerId: 'answerer' } } } as unknown as TaskRow;

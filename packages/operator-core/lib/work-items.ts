@@ -29,6 +29,7 @@
  * trigger (already wired) — so neither path needs an extra fan-out call here.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { DUP_THRESHOLD, dedupSignature } from './harness/improvements/digest';
 import { assertWorkItemDefinitionUnchanged, readWorkItemDefinition, type WorkItemDefinition } from './work-item-definition';
 import { createPlanSearchSource } from './agent-tools/search/knowledge-sources';
 import { observeFallback } from './degradation/fallback-observations';
@@ -1786,6 +1787,101 @@ export async function countWorkItemsByState(filter: ListWorkItemsFilter = {}): P
   return byState;
 }
 
+export class WorkItemAdoptionError extends Error {
+  constructor(readonly code: string, message: string) { super(message); this.name = 'WorkItemAdoptionError'; }
+}
+
+export interface WorkItemAdoptionScope { workspaceId: string; harnessSlug: string; id: string }
+export interface WorkItemAdoptionProjection {
+  schemaVersion: 1;
+  fingerprint: string;
+  root: {
+    feature_id: string; item_kind: string; status: string; parent_id: string | null;
+    taken_by: string | null; plan_slug: string | null; plan_line_id: string | null;
+    terminal_owner: string | null; nature: string | null; audience: string | null;
+    payload: Record<string, unknown> | null;
+  };
+}
+
+/** One complete projection shared by the public snapshot and the locked writer.
+ * PostgreSQL renders row JSON and xmin before JS sees them: timestamps, nulls,
+ * numeric precision and independently mutable edge versions never round-trip
+ * through Date or Number. SERIALIZABLE predicate reads also fence new members.
+ */
+export async function readWorkItemAdoptionProjectionInTransaction(
+  tx: Sql, scope: WorkItemAdoptionScope, lock = false,
+): Promise<WorkItemAdoptionProjection> {
+  const isolation = await tx<{ transaction_isolation: string }[]>`SHOW transaction_isolation`;
+  if (isolation[0]?.transaction_isolation !== 'serializable')
+    throw new WorkItemAdoptionError('adoption_snapshot_unavailable', 'A coherent SERIALIZABLE snapshot is required.');
+  const { workspaceId, harnessSlug, id } = scope;
+  const family = await tx<{ feature_id: string; cycle: boolean }[]>`
+    WITH RECURSIVE family AS (
+      SELECT feature_id, ARRAY[feature_id] AS path, false AS cycle
+        FROM harness_shared.work_items WHERE workspace_id=${workspaceId}
+          AND harness_slug=${harnessSlug} AND feature_id=${id}
+      UNION ALL
+      SELECT w.feature_id, f.path || w.feature_id, w.feature_id=ANY(f.path)
+        FROM family f JOIN harness_shared.work_items w ON w.workspace_id=${workspaceId}
+          AND w.harness_slug=${harnessSlug} AND w.parent_id=f.feature_id
+       WHERE NOT f.cycle AND cardinality(f.path)<=256
+    ) SELECT feature_id, cycle FROM family LIMIT 257`;
+  if (!family.length) throw new WorkItemAdoptionError('adoption_scope_mismatch', 'No exact visible work-item in the requested workspace and harness.');
+  if (family.length > 256) throw new WorkItemAdoptionError('adoption_snapshot_too_large', 'Observed at least 257 nodes; limit is 256.');
+  if (family.some(row => row.cycle) || new Set(family.map(row => row.feature_id)).size !== family.length)
+    throw new WorkItemAdoptionError('adoption_identity_ambiguous', 'Descendant cycle or duplicate scoped identity.');
+  const ids = family.map(row => row.feature_id).sort();
+  const nodes = await tx<Array<WorkItemAdoptionProjection['root'] & { record: string }>>`
+    SELECT w.feature_id,w.item_kind,w.status,w.parent_id,w.taken_by,w.plan_slug,w.plan_line_id,
+           w.terminal_owner,w.nature,w.audience,w.payload,
+           jsonb_build_object('row',to_jsonb(w),'xmin',w.xmin::text)::text AS record
+      FROM harness_shared.work_items w WHERE w.workspace_id=${workspaceId}
+        AND w.harness_slug=${harnessSlug} AND w.feature_id=ANY(${ids}::text[])
+      ORDER BY w.workspace_id,w.harness_slug,w.feature_id,w.item_kind
+      ${lock ? tx`FOR UPDATE` : tx``}`;
+  if (nodes.length !== ids.length)
+    throw new WorkItemAdoptionError('adoption_identity_ambiguous', 'The scoped node census is ambiguous.');
+  const refs = [...ids, ...ids.map(value => `${harnessSlug}#${value}`)];
+  const dependencies = await tx<{ record: string }[]>`
+    SELECT jsonb_build_object('row',to_jsonb(d),'xmin',d.xmin::text)::text AS record
+      FROM harness_shared.work_item_deps d WHERE d.workspace_id=${DEFAULT_COORD_WORKSPACE}
+        AND (d.blocked_ref=ANY(${refs}::text[]) OR d.blocker_ref=ANY(${refs}::text[]))
+      ORDER BY d.workspace_id,d.blocked_kind,d.blocked_ref,d.blocker_kind,d.blocker_ref,d.dep_type,d.id
+      LIMIT 2049 ${lock ? tx`FOR UPDATE` : tx``}`;
+  const links = await tx<{ record: string }[]>`
+    SELECT jsonb_build_object('row',to_jsonb(l),'xmin',l.xmin::text)::text AS record
+      FROM harness_shared.coord_links l WHERE l.workspace_id=${DEFAULT_COORD_WORKSPACE}
+        AND (l.src_ref=ANY(${refs}::text[]) OR l.dst_ref=ANY(${refs}::text[]))
+      ORDER BY l.workspace_id,l.src_kind,l.src_ref,l.dst_kind,l.dst_ref,l.rel,l.id
+      LIMIT 2049 ${lock ? tx`FOR UPDATE` : tx``}`;
+  if (dependencies.length + links.length > 2048)
+    throw new WorkItemAdoptionError('adoption_snapshot_too_large',
+      `Observed at least ${dependencies.length + links.length} incident edges; limit is 2048.`);
+  const record = { schemaVersion: 1, workspaceId, harnessSlug, id,
+    store: 'harness_shared.work_items', coordinationWorkspace: DEFAULT_COORD_WORKSPACE,
+    nodes: nodes.map(row => row.record), dependencies: dependencies.map(row => row.record), links: links.map(row => row.record) };
+  const [canonical] = await tx<{ canonical: string }[]>`SELECT ${tx.json(record)}::jsonb::text AS canonical`;
+  const root = nodes.find(row => row.feature_id === id)!;
+  return { schemaVersion: 1, fingerprint: `v1:${createHash('sha256').update(canonical.canonical).digest('hex')}`,
+    root: { feature_id: root.feature_id, item_kind: root.item_kind, status: root.status, parent_id: root.parent_id,
+      taken_by: root.taken_by, plan_slug: root.plan_slug, plan_line_id: root.plan_line_id,
+      terminal_owner: root.terminal_owner, nature: root.nature, audience: root.audience, payload: root.payload } };
+}
+
+export async function getWorkItemAdoptionSnapshot(scope: WorkItemAdoptionScope): Promise<{ schemaVersion: 1; fingerprint: string }> {
+  return withWorkItemDependencyAdmissionTransaction(getOrgPg().sql, async tx => {
+    await tx`SET TRANSACTION READ ONLY`;
+    await tx`SET LOCAL statement_timeout='5s'`;
+    await tx`SELECT set_config('app.workspace_id',${scope.workspaceId},true)`;
+    // Preserve the existing visibility/read contract before exposing a token.
+    const visible = await getWorkItem(scope.id, scope.harnessSlug, { includeBody: false }, tx);
+    if (!visible || visible.harness !== scope.harnessSlug)
+      throw new WorkItemAdoptionError('adoption_scope_mismatch', 'No exact visible work-item in the requested scope.');
+    const { schemaVersion, fingerprint } = await readWorkItemAdoptionProjectionInTransaction(tx, scope);
+    return { schemaVersion, fingerprint };
+  });
+}
+
 /** Resolve one work-item by id, searching both kind-tables (ids are disjoint across families). */
 export async function getWorkItem(
   id: string,
@@ -2839,6 +2935,126 @@ export async function searchWorkItems(
     ...(discovery ? { discovery } : {}),
     ...(coverage ? { coverage } : {}),
     ...(retry ? { retry } : {}),
+  };
+}
+
+export interface WorkItemDuplicateCandidate {
+  id: string;
+  title: string;
+  summary?: string;
+  state: string;
+  harness: string | null;
+}
+
+export interface WorkItemDuplicateCandidateSearch {
+  complete: boolean;
+  items: WorkItemDuplicateCandidate[];
+  reason?: 'empty-query' | 'query-too-large' | 'insufficient-indexable-terms' | 'candidate-limit-exceeded';
+}
+
+const DUPLICATE_CANDIDATE_MAX_QUERY_TOKENS = 512;
+const DUPLICATE_CANDIDATE_DEFAULT_LIMIT = 1000;
+const DUPLICATE_CANDIDATE_MAX_LIMIT = 5000;
+
+/**
+ * Candidate-complete lexical prescreen for create-time duplicate detection. The scorer rounds
+ * Jaccard to two decimals before applying DUP_THRESHOLD, so any surfaced row shares at least
+ * ceil((threshold - .01) * queryTokenCount) tokens. Select the longest indexable query terms
+ * from the existing _search GIN index and require enough seed hits after accounting for every
+ * query token omitted from that seed set. This is a recall bound, not a ranked top-K. If
+ * stopwords, an oversized query or the explicit candidate cap prevents a complete census, the
+ * caller receives complete:false and fails open rather than interpreting a partial page as a
+ * clean no-match. The general search/ranker remains unchanged.
+ */
+export async function searchWorkItemDuplicateCandidates(
+  query: string,
+  opts: { maxCandidates?: number } = {},
+): Promise<WorkItemDuplicateCandidateSearch> {
+  const tokens = dedupSignature(query).split(' ').filter(Boolean);
+  if (!tokens.length) return { complete: false, items: [], reason: 'empty-query' };
+  if (tokens.length > DUPLICATE_CANDIDATE_MAX_QUERY_TOKENS)
+    return { complete: false, items: [], reason: 'query-too-large' };
+
+  const requestedLimit = Number.isFinite(opts.maxCandidates)
+    ? Math.floor(opts.maxCandidates!)
+    : DUPLICATE_CANDIDATE_DEFAULT_LIMIT;
+  const maxCandidates = Math.max(1, Math.min(DUPLICATE_CANDIDATE_MAX_LIMIT, requestedLimit));
+  const minimumOverlap = Math.ceil((DUP_THRESHOLD - 0.01) * tokens.length);
+  const { sql } = getOrgPg();
+  const indexableTokens = await sql<{ token: string }[]>`
+    SELECT input.token
+      FROM unnest(${tokens}::text[]) AS input(token)
+     WHERE numnode(plainto_tsquery('english', input.token)) > 0
+  ORDER BY length(input.token) DESC, input.token`;
+  const seedCount = Math.min(indexableTokens.length, Math.ceil(indexableTokens.length * 0.8));
+  const seedTokens = indexableTokens.slice(0, seedCount).map(({ token }) => token);
+  const requiredSeedMatches = minimumOverlap - (tokens.length - seedTokens.length);
+  if (requiredSeedMatches < 1)
+    return { complete: false, items: [], reason: 'insufficient-indexable-terms' };
+
+  const seedQuery = seedTokens.join(' | ');
+  const issueWorkspace = issuesScopeWorkspace();
+  const featureWorkspace = activeWorkspaceId();
+  const rows = await sql<Array<{
+    id: string;
+    title: string;
+    summary: string | null;
+    state: string;
+    harness: string | null;
+  }>>`
+    WITH seed AS MATERIALIZED (
+      SELECT to_tsquery('english', ${seedQuery}) AS query
+    ),
+    candidates AS MATERIALIZED (
+      SELECT wi.feature_id AS id, wi.title, wi.summary, wi.status AS state,
+             CASE WHEN wi.harness_slug IS NULL OR wi.harness_slug = ''
+                        OR wi.harness_slug LIKE 'operator:%'
+                  THEN NULL ELSE wi.harness_slug END AS harness
+        FROM harness_shared.work_items wi
+        CROSS JOIN seed
+        CROSS JOIN LATERAL (
+          SELECT count(*)::integer AS matched
+            FROM unnest(${seedTokens}::text[]) AS seed_term(token)
+           WHERE wi._search @@ plainto_tsquery('english', seed_term.token)
+        ) seed_matches
+       WHERE wi.workspace_id = ${issueWorkspace}
+         AND wi.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
+         AND wi.lane IS DISTINCT FROM 'observation'
+         AND NOT (wi.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+         AND wi._search @@ seed.query
+         AND seed_matches.matched >= ${requiredSeedMatches}
+      UNION ALL
+      SELECT w.feature_id AS id, w.title, w.summary, w.status AS state, w.harness_slug AS harness
+        FROM harness_shared.harness_features_consolidated w
+        CROSS JOIN seed
+        CROSS JOIN LATERAL (
+          SELECT count(*)::integer AS matched
+            FROM unnest(${seedTokens}::text[]) AS seed_term(token)
+           WHERE w._search @@ plainto_tsquery('english', seed_term.token)
+        ) seed_matches
+       WHERE w.workspace_id = ${featureWorkspace}
+         AND ${featureFamilyKindClause(sql, featureWorkspace)}
+         AND ${natureWhereSql(sql, undefined, undefined)}
+         AND ${observationLaneExclusionSql(sql, 'w.payload')}
+         AND NOT (w.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+         AND w._search @@ seed.query
+         AND seed_matches.matched >= ${requiredSeedMatches}
+    )
+    SELECT id, title, summary, state, harness
+      FROM candidates
+     LIMIT ${maxCandidates + 1}`;
+
+  if (rows.length > maxCandidates)
+    return { complete: false, items: [], reason: 'candidate-limit-exceeded' };
+  return {
+    complete: true,
+    items: rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      ...(row.summary === null ? {} : { summary: row.summary }),
+      state: row.state,
+      harness: row.harness,
+    })),
   };
 }
 
@@ -4832,7 +5048,7 @@ export async function setWorkItemState(
     // set_state) already catches and reports as `stateError` (the completion record is
     // never lost, EI-24).
     const rows = await boundedOrgTxn(async (tx) => {
-      if (isTerminal && Object.hasOwn(opts, 'expectedWorkDefinition')) {
+      if (isTerminal && (Object.hasOwn(opts, 'expectedWorkDefinition') || ['resolved', 'committed', 'done', 'shipped'].includes(state))) {
         const current = await tx<{ payload: unknown }[]>`
           SELECT payload FROM harness_shared.harness_features_consolidated
            WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = ${wi.harness} AND feature_id = ${id}
@@ -4840,7 +5056,16 @@ export async function setWorkItemState(
         if (!current.length) return [] as FeatureRowDb[];
         // Check under the same row lock as the terminal write, matching the issue
         // lifecycle path. Other zero-row CAS refusals retain their own meaning.
-        assertWorkItemDefinitionUnchanged(current[0].payload, opts.expectedWorkDefinition);
+        if (Object.hasOwn(opts, 'expectedWorkDefinition'))
+          assertWorkItemDefinitionUnchanged(current[0].payload, opts.expectedWorkDefinition);
+        if (['resolved', 'committed', 'done', 'shipped'].includes(state)) {
+          const { fenceWorkDefinitionCompletion } = await import('./work-item-definition-source');
+          await fenceWorkDefinitionCompletion(tx as unknown as Sql, {
+            target: { workspaceId: activeWorkspaceId(), harnessSlug: wi.harness!, workItemId: id },
+            definition: (current[0].payload as { workDefinition?: unknown } | null)?.workDefinition,
+            evidence: opts.completionEvidence,
+          });
+        }
       }
       if (blockerMutation) await applyBlockerDecisionMutation(tx, {
         workspace: activeWorkspaceId(), harness: wi.harness!, id,
@@ -5940,7 +6165,22 @@ export async function mergeWorkItemPayload(
     const expectedDefinition = JSON.stringify(opts.expectedWorkDefinition ?? null);
     const fenceCustodian = Object.hasOwn(opts, 'expectedCustodianId');
     let wrote = false;
-    const updatePayload = (db: OrgSql) => db<{ ok: number }[]>`
+    const definitionMutation = Object.hasOwn(patchValue, 'workDefinition') || unset.includes('workDefinition');
+    const updatePayload = async (db: OrgSql) => {
+      if (definitionMutation) {
+        const [current] = await db<{ payload: { workDefinition?: unknown } }[]>`
+          SELECT payload FROM harness_shared.harness_features_consolidated
+           WHERE workspace_id=${workspaceId} AND harness_slug=${featureHarness} AND feature_id=${id} FOR UPDATE`;
+        if (!current) return [];
+        if (fenceDefinition) assertWorkItemDefinitionUnchanged(current.payload, opts.expectedWorkDefinition);
+        const { fenceWorkDefinitionMutation } = await import('./work-item-definition-source');
+        await fenceWorkDefinitionMutation(db as unknown as Sql, {
+          target: { workspaceId, harnessSlug: featureHarness, workItemId: id },
+          previousDefinition: current.payload?.workDefinition,
+          nextDefinition: unset.includes('workDefinition') ? undefined : patchValue.workDefinition,
+        });
+      }
+      return db<{ ok: number }[]>`
       UPDATE harness_shared.harness_features_consolidated
          SET payload = (COALESCE(payload, '{}'::jsonb) || ${patch}::text::jsonb) - ${unset}::text[],
              -- A promoted feature has the same three admission identities as an
@@ -5967,6 +6207,7 @@ export async function mergeWorkItemPayload(
          AND (${!fenceCustodian} OR taken_by IS NOT DISTINCT FROM ${opts.expectedCustodianId ?? null})
          AND (${!opts.requireNonTerminal} OR NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])))
       RETURNING 1 AS ok`;
+    };
 
     if (clearingPlanItem) {
       // Snapshot only the row-represented refs under a lock, clear all row
@@ -6019,7 +6260,9 @@ export async function mergeWorkItemPayload(
         }
       });
     } else {
-      wrote = (await updatePayload(sql as OrgSql)).length > 0;
+      wrote = (await (definitionMutation
+        ? boundedOrgTxn(tx => updatePayload(tx))
+        : updatePayload(sql as OrgSql))).length > 0;
     }
     if (!wrote) return null;
   }
@@ -9202,6 +9445,14 @@ export interface ClaimFloorAttribution {
    */
   heldBy?: string | null;
   /**
+   * Scope-authoring only: the current holder and status, but only when the caller
+   * explicitly supplied a verified target-member roster containing that holder.
+   * This lets fixed-cohort preview distinguish a target member's WIP row from a
+   * blocked/foreign row without exposing holder identity to ordinary floor reads.
+   */
+  scopeHolder?: string;
+  scopeStatus?: string;
+  /**
    * EI-25209690807142935 — present ONLY on an `admission-pending` refusal for a row the
    * independent fail-open runner never admits (degraded dedup coverage, duplicate candidates,
    * or a typed duplicate verdict). Such a row carries NO `retry` bound: only re-screening or
@@ -9453,6 +9704,11 @@ export async function explainIssueClaimFloors(
      * acquisition door; omitting it preserves the ordinary already-taken floor.
      */
     scopeHeldBy?: readonly string[];
+    /**
+     * Scope-authoring preview ONLY: expose holder/status for rows owned by this
+     * verified target roster while preserving every ordinary acquisition floor.
+     */
+    scopeMembers?: readonly string[];
   } = {},
   /** Caller-owned read context, including transaction-local planner policy and snapshot. */
   sqlOverride?: OrgSql,
@@ -9470,6 +9726,7 @@ export async function explainIssueClaimFloors(
       id: string;
       created_ts: number | string | null;
       taken_by: string | null;
+      status: string;
       ok_status: boolean;
       ok_untaken: boolean;
       ok_origin: boolean;
@@ -9500,6 +9757,7 @@ export async function explainIssueClaimFloors(
     SELECT wi.feature_id AS id,
            wi.created_ts                                                          AS created_ts,
            wi.taken_by                                                            AS taken_by,
+           wi.status                                                              AS status,
            wi.duplicate_of                                                        AS duplicate_of,
            (wi.status = ANY(${[...states]}::text[]))                              AS ok_status,
            ${issueClaimBarFloorColumnsSql(sql, {
@@ -9581,6 +9839,9 @@ export async function explainIssueClaimFloors(
       // refusal is a property of the ROW, so `heldBy` stays absent rather than
       // carrying a stale `taken_by` that had nothing to do with the refusal.
       ...(refusedBy === 'already-taken' && r?.taken_by ? { heldBy: r.taken_by } : {}),
+      ...(r?.taken_by && opts.scopeMembers?.includes(r.taken_by)
+        ? { scopeHolder: r.taken_by, scopeStatus: r.status }
+        : {}),
       // EI-21973318733042066: admission-pending is the one floor here whose clearing is on a
       // SCHEDULE the code owns, so it is the one that can honestly publish a bound. Both numbers
       // and the remedy are derived (from the promoter cadence and from ADMISSION_CREATE_BYPASSES
@@ -11593,7 +11854,7 @@ export interface UpdateWorkItemPatch {
   title?: string;
   body?: string;
   severity?: IssueSeverity;
-  kind?: IssueKind;
+  kind?: IssueStoreKind;
   foundDuring?: string | null;
   linkedFeatureId?: string | null;
   /** Parent work-item id for issue-family duplicate/child relationships; null clears it. */

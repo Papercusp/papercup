@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -40,12 +41,14 @@ vi.mock('./evidence', async (original) => ({
 
 import { BashProvenanceRefusal } from '../capability/bash-task-provenance';
 import { REPO_ROOT } from '../docs/_repo-paths';
-import runTool, { buildDetachedTestRunBootstrapScript, testingRunAbortCompletionReceipt } from './run';
+import runTool, { buildDetachedTestRunBootstrapScript, buildDetachedTestRunRequest,
+  compiledTestingCoreNodeOptions, TestingCoreRefusal, testingRunAbortCompletionReceipt } from './run';
 import { testRunDeadline, type TestRunDeadline } from './run-artifacts';
 
 const roots: string[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   const directories = phases.detach.mock.calls.flatMap(([request]) =>
     (request.detachedReportArtifacts ?? []).map((artifact: { reportPath: string }) => join(artifact.reportPath, '..')));
   await Promise.all(directories.map(directory => rm(directory, { recursive: true, force: true })));
@@ -53,13 +56,16 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function invoke(extra: Record<string, unknown> = {}) {
+async function invoke(extra: Record<string, unknown> = {}, options: { autoPrivatePg?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'testing-run-loop-gate-'));
   roots.push(root);
   await mkdir(join(root, '.git'));
   await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: [] }));
   await writeFile(join(root, 'vitest.config.ts'), 'export default {};\n');
-  await writeFile(join(root, 'feature.test.ts'), "import { it } from 'vitest';\nit('noop', () => {});\n");
+  if (options.autoPrivatePg) vi.stubEnv('PAPERCUSP_TEST_PG_ADMIN_URL', '');
+  await writeFile(join(root, 'feature.test.ts'), options.autoPrivatePg
+    ? "import { recordIsolatedIntegrationProof } from './isolated-integration-proof';\nrecordIsolatedIntegrationProof();\n"
+    : "import { it } from 'vitest';\nit('noop', () => {});\n");
   const evidence = { workItemId: 'WI-grinding', planSlug: 'gate-plan', bindings: [{
     specId: 'SPEC-001', specRevision: 1, testPath: 'feature.test.ts', sourcePaths: ['feature.ts'], testLayer: 'unit' as const,
   }] };
@@ -78,6 +84,174 @@ const refusal = {
   fingerprints: ['exit:aaa', 'log:bbb'],
   message: 'loop_audit_required — WI-grinding is grinding',
 };
+
+const sourceSha256 = 'a'.repeat(64);
+const coreSource = (marker: string, source = sourceSha256) => `
+  import { origin } from './origin.mjs';
+  export const testingCoreSourceSha256 = ${JSON.stringify(source)};
+  export async function runTestFilesCore(options, deps) {
+    return { ok: true, marker: ${JSON.stringify(marker)}, origin, options, reports: deps.reportDirectories };
+  }
+`;
+
+async function stagedCore(source = coreSource('A')) {
+  const root = await mkdtemp(join(tmpdir(), 'testing-compiled-core-'));
+  roots.push(root);
+  const core = join(root, 'core.mjs');
+  await writeFile(core, source);
+  await writeFile(join(root, 'origin.mjs'), 'export const origin = "original-file-origin";');
+  const expected = { schemaVersion: 1, sourceSha256,
+    artifactSha256: createHash('sha256').update(source).digest('hex') };
+  const options = { root, files: ['feature.test.ts'], deadline: testRunDeadline(120_000),
+    workspaceId: 'compiled-workspace', harnessSlug: 'compiled-harness', workItemId: 'WI-compiled',
+    privatePg: true, reporterStageTrace: true, maxFailures: 7, timeoutMs: 120_000,
+    testNamePattern: 'preserved pattern', allowSiblingCheckoutFallback: false,
+    compiledCore: { moduleUrl: pathToFileURL(core).href, expected } };
+  const request = () => {
+    const result = buildDetachedTestRunRequest(options);
+    roots.push(...(result.detachedReportArtifacts ?? []).map(artifact => join(artifact.reportPath, '..')));
+    return result;
+  };
+  return { root, core, source, options, expected, request };
+}
+
+function runCompiled(request: ReturnType<typeof buildDetachedTestRunRequest>, extraPreload?: string) {
+  const result = spawnSync(request.command, request.args, {
+    cwd: request.cwd, encoding: 'utf8', timeout: 10_000,
+    env: { ...process.env, ...request.env, PAPERCUSP_TEST_RUN_GROUP: 'compiled-run',
+      ...(extraPreload ? { NODE_OPTIONS: request.env!.NODE_OPTIONS + ' --import=' + JSON.stringify(pathToFileURL(extraPreload).href) } : {}) },
+  });
+  expect(result.error, result.stderr).toBeUndefined();
+  const parsed = result.stdout.trim() ? JSON.parse(result.stdout.trim().split('\n').at(-1)!) : null;
+  return { ...result, parsed };
+}
+
+it('runs an independently staged compiled core with plain Node and exact replay/report identity', async () => {
+  const f = await stagedCore();
+  const request = f.request();
+  expect(request.args).not.toContain('tsx');
+  const result = runCompiled(request);
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.parsed).toMatchObject({ ok: true, marker: 'A', origin: 'original-file-origin', options: {
+    root: f.root, files: f.options.files, deadline: f.options.deadline, runId: 'compiled-run',
+    timeoutMs: 120_000, taskDeadlineAtMs: f.options.deadline.taskDeadlineAtMs,
+    cleanupReserveMs: f.options.deadline.cleanupReserveMs, allowDetachedRecovery: false,
+    workspaceId: 'compiled-workspace', harnessSlug: 'compiled-harness', workItemId: 'WI-compiled',
+    privatePg: true, reporterStageTrace: true, maxFailures: 7, testNamePattern: 'preserved pattern',
+    allowSiblingCheckoutFallback: false,
+  }, reports: { [f.root]: join(request.detachedReportArtifacts![0]!.reportPath, '..') } });
+  const verified = result.stderr.split('\n').map(line => {
+    try { return JSON.parse(line); } catch { return null; }
+  }).find(row => row?.phase === 'core-witness-verified');
+  expect(verified).toMatchObject({ schemaVersion: 'testing-run-bootstrap-v1', coreMode: 'compiled', witnessSchemaVersion: 1 });
+  expect(verified.sourceSha256).toMatch(/^[a-f0-9]{64}$/);
+  expect(verified.artifactSha256).toMatch(/^[a-f0-9]{64}$/);
+});
+
+it.each(['unchanged', 'swap', 'restore'] as const)(
+  'loads retained A through an outer native observer despite candidate %s', async mode => {
+    const f = await stagedCore();
+    const request = f.request();
+    const observer = join(f.root, 'observer.mjs'), receipt = join(f.root, 'observed.json');
+    const replacement = coreSource('B'); // Deliberately exports the SAME source witness.
+    await writeFile(observer, `
+      import { registerHooks } from 'node:module';
+      import { readFileSync, writeFileSync } from 'node:fs';
+      registerHooks({ load(url, context, nextLoad) {
+        if (!url.includes('papercusp-testing-core=')) return nextLoad(url, context);
+        if (${JSON.stringify(mode)} !== 'unchanged') writeFileSync(${JSON.stringify(f.core)}, ${JSON.stringify(replacement)});
+        const substituted = readFileSync(${JSON.stringify(f.core)}, 'utf8');
+        if (${JSON.stringify(mode)} === 'restore') writeFileSync(${JSON.stringify(f.core)}, ${JSON.stringify(f.source)});
+        const loaded = nextLoad(url, context);
+        writeFileSync(${JSON.stringify(receipt)}, JSON.stringify({ substituted,
+          endpoint: readFileSync(${JSON.stringify(f.core)}, 'utf8'), source: Buffer.from(loaded.source).toString() }));
+        return loaded;
+      } });
+    `);
+    const result = runCompiled(request, observer);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.parsed).toMatchObject({ marker: 'A', origin: 'original-file-origin' });
+    const observed = JSON.parse(await readFile(receipt, 'utf8'));
+    expect(observed.source).toBe(f.source);
+    expect(observed.substituted).toBe(mode === 'unchanged' ? f.source : replacement);
+    expect(observed.endpoint).toBe(mode === 'swap' ? replacement : f.source);
+  }, 15_000,
+);
+
+it('distinguishes a source witness mismatch from an artifact mismatch or missing/invalid expectation', async () => {
+  const f = await stagedCore(coreSource('A', 'b'.repeat(64)));
+  const mismatch = runCompiled(f.request());
+  expect(mismatch.status).toBe(1);
+  expect(mismatch.parsed).toMatchObject({ error: 'testing_core_source_mismatch', failedPhase: 'core-witness' });
+  await writeFile(f.core, coreSource('B'));
+  expect(f.request).toThrowError(expect.objectContaining({ code: 'testing_core_artifact_mismatch' }));
+  expect(() => buildDetachedTestRunRequest({ ...f.options, compiledCore: {
+    moduleUrl: pathToFileURL(f.core).href, expected: undefined,
+  } })).toThrowError(expect.objectContaining({ code: 'testing_core_missing_witness' }));
+  expect(() => buildDetachedTestRunRequest({ ...f.options, compiledCore: {
+    moduleUrl: pathToFileURL(f.core).href, expected: { schemaVersion: 1 },
+  } })).toThrowError(expect.objectContaining({ code: 'testing_core_invalid_witness' }));
+  await rm(f.core);
+  expect(f.request).toThrowError(expect.objectContaining({ code: 'testing_core_missing_artifact' }));
+});
+
+it.each([
+  ['matching', `export const testingCoreSourceSha256 = ${JSON.stringify(sourceSha256)};`, true],
+  ['missing', '', false],
+  ['invalid', 'export const testingCoreSourceSha256 = "not-a-sha256";', false],
+] as const)('checks a %s loaded source export before core execution', async (_kind, declaration, accepted) => {
+  const f = await stagedCore([
+    'import { appendFileSync } from "node:fs";', declaration,
+    'export async function runTestFilesCore() {',
+    '  appendFileSync(new URL("./core-executed", import.meta.url), "once\\n");',
+    '  return { ok: true };',
+    '}',
+  ].join('\n'));
+  // stagedCore independently hashes each loadable artifact, so refusal must
+  // come from its loaded source export rather than the artifact/import guard.
+  const result = runCompiled(f.request());
+  const phases = result.stderr.split('\n').map(line => {
+    try { return JSON.parse(line); } catch { return null; }
+  }).filter(row => row?.schemaVersion === 'testing-run-bootstrap-v1');
+  expect(phases.filter(row => row.phase === 'core-import-complete')).toHaveLength(1);
+  const execution = phases.filter(row => row.phase.startsWith('core-execution-')).map(row => row.phase);
+  const marker = readFile(join(f.root, 'core-executed'), 'utf8');
+  if (accepted) {
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.parsed).toEqual({ ok: true });
+    expect(execution).toEqual(['core-execution-start', 'core-execution-complete']);
+    await expect(marker).resolves.toBe('once\n');
+  } else {
+    expect(result.status).toBe(1);
+    expect(result.parsed).toMatchObject({ error: 'testing_core_source_mismatch', failedPhase: 'core-witness' });
+    expect(phases.filter(row => row.phase === 'bootstrap-error')).toEqual([
+      expect.objectContaining({ failedPhase: 'core-witness' }),
+    ]);
+    expect(phases.some(row => row.phase === 'core-witness-verified')).toBe(false);
+    expect(execution).toEqual([]);
+    await expect(marker).rejects.toMatchObject({ code: 'ENOENT' });
+  }
+});
+
+it('removes source interpreters while retaining native tracing and Node options', () => {
+  expect(compiledTestingCoreNodeOptions('--max-old-space-size=2048 --import tsx --import="file:///trace.mjs" --require ts-node/register'))
+    .toBe('--max-old-space-size=2048 --import="file:///trace.mjs"');
+  expect(() => compiledTestingCoreNodeOptions('--loader ./custom-loader.mjs')).toThrow(TestingCoreRefusal);
+});
+
+it('keeps the one-shot transfer preload out of test descendants', async () => {
+  const f = await stagedCore(`
+    import { execFileSync } from 'node:child_process';
+    export const testingCoreSourceSha256 = ${JSON.stringify(sourceSha256)};
+    export async function runTestFilesCore() {
+      const child = execFileSync(process.execPath, ['-e', 'process.stdout.write("child-ok")'], { encoding: 'utf8' });
+      return { ok: true, child };
+    }
+  `);
+  const result = runCompiled(f.request());
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.parsed).toEqual({ ok: true, child: 'child-ok' });
+});
 
 async function invokeBootstrap(source: string, deadline = testRunDeadline(120_000)) {
   const root = await mkdtemp(join(tmpdir(), 'testing-run-bootstrap-'));
@@ -237,6 +411,31 @@ it('records delayed background preparation and handoff without renewing the dead
     detachedRunId: 'delayed-background', taskId: 'task-delayed', phaseTimingsMs: result.phaseTimingsMs,
   } });
   expect(phases.detach).toHaveBeenCalledOnce();
+});
+
+it('defaults auto-detected private-PG files to durable background dispatch', async () => {
+  phases.gate.mockResolvedValue(null);
+  phases.fence.mockResolvedValue(null);
+  phases.prepare.mockResolvedValue([{}]);
+  phases.detach.mockResolvedValue({ snapshot: { runId: 'auto-private-pg' }, durable: true });
+
+  const { result } = await invoke({}, { autoPrivatePg: true });
+
+  expect(result).toMatchObject({ mode: 'background', status: 'pending',
+    detachedRunId: 'auto-private-pg', detachedDurable: true });
+  expect(phases.gate).toHaveBeenCalledWith(expect.objectContaining({ background: true }));
+  expect(phases.detach).toHaveBeenCalledOnce();
+  expect((phases.detach.mock.calls[0]![0] as { args: string[] }).args.join(' ')).toContain('"privatePg":true');
+});
+
+it('preserves an explicit foreground choice for auto-detected private-PG files', async () => {
+  phases.gate.mockResolvedValue(refusal);
+
+  const { result } = await invoke({ background: false }, { autoPrivatePg: true });
+
+  expect(result).toMatchObject({ reason: 'loop_audit_required' });
+  expect(phases.gate).toHaveBeenCalledWith(expect.objectContaining({ background: false }));
+  expect(phases.detach).not.toHaveBeenCalled();
 });
 
 it('retires prepared evidence and starts no child when preparation exhausts the deadline', async () => {

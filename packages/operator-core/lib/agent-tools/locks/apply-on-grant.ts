@@ -40,6 +40,7 @@ import {
   type GrantedPendingEdit,
   type PendingEdit,
   type ReleaseLockRow,
+  type ProtectReleasePaths,
 } from './su-lock-store';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { lockGrantKey } from './lock-grant-key';
@@ -131,7 +132,7 @@ export interface ApplyOnGrantDeps {
     intent?: string;
     goalRef?: string;
   }) => Promise<void>;
-  releaseLock?: (g: GrantedPendingEdit, beforeRelease: (rows: ReleaseLockRow[]) => Promise<void>) => Promise<void>;
+  releaseLock?: (g: GrantedPendingEdit, beforeRelease: (rows: ReleaseLockRow[], protectRepositoryPaths?: ProtectReleasePaths) => Promise<void>) => Promise<void>;
   cancelWakeAwaits?: (ticketId: string, owner: string) => Promise<void>;
   notify?: (n: {
     owner: string;
@@ -141,7 +142,7 @@ export interface ApplyOnGrantDeps {
   }) => Promise<void>;
 }
 
-async function defaultReleaseLock(g: GrantedPendingEdit, beforeRelease: (rows: ReleaseLockRow[]) => Promise<void>): Promise<void> {
+async function defaultReleaseLock(g: GrantedPendingEdit, beforeRelease: (rows: ReleaseLockRow[], protectRepositoryPaths?: ProtectReleasePaths) => Promise<void>): Promise<void> {
   let protectedSelection = false;
   const result = await inWorkspaceTxn(g.coordination_domain, g.owner, (tx) =>
     tryRelease(tx, {
@@ -149,11 +150,11 @@ async function defaultReleaseLock(g: GrantedPendingEdit, beforeRelease: (rows: R
       owner: g.owner,
       lockId: g.granted_lock_id,
       paths: g.paths,
-      beforeRelease: async rows => {
+      beforeRelease: async (rows, protectRepositoryPaths) => {
         if (rows.length !== g.paths.length || g.paths.some(p => !rows.some(row => row.path === p))) {
           throw new Error('apply-on-grant:protected-release-missing');
         }
-        await beforeRelease(rows);
+        await beforeRelease(rows, protectRepositoryPaths);
         protectedSelection = true;
       },
     }),
@@ -230,7 +231,7 @@ export async function applyPendingEditOnGrant(
   }
 
   try {
-    await releaseLock(claimed, async rows => {
+    await releaseLock(claimed, async (rows, protectRepositoryPaths) => {
       // Mutate only after the exact live lease is selected under the existing
       // path transaction. An expired historical grant cannot edit a successor.
       const res = applyEdit(claimed.coordination_domain, claimed.pending_edit);
@@ -238,6 +239,7 @@ export async function applyPendingEditOnGrant(
       const preserved = await preserveReleasedEditGenerations({
         repoRoot: claimed.coordination_domain, rows, agentId: claimed.owner,
         workspaceId, sessionId: claimed.owner,
+        ...(protectRepositoryPaths ? { protectRepositoryPaths } : {}),
       });
       const attribution = { repoRoot: claimed.coordination_domain, file: claimed.pending_edit.file,
         owner: claimed.owner, workspaceId, intent: claimed.intent, goalRef: claimed.pending_edit.goal_ref };

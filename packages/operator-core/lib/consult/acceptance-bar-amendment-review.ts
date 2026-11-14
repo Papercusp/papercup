@@ -35,7 +35,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
-import type { AcceptanceBarAmendmentPreview, AcceptanceBarApproverEligibilityCheck } from '../rubrics';
+import { normalizeAcceptanceBarCriterion, type AcceptanceBarAmendmentPreview, type AcceptanceBarApproverEligibilityCheck } from '../rubrics';
 import type { RouteResult } from './relevance-router';
 import type { ConsultReviewerModel } from './get-feedback-core';
 import { resolveExpertModelAllowlist, type AllowedExpertModel } from './expert-model-allowlist';
@@ -241,7 +241,7 @@ function reviewPatch(input: AmendmentReviewBriefInput): ReviewPatchExcerpt {
 
 export interface AmendmentReviewBriefInput {
   rubricRef: string;
-  /** `thread-post:<id>` — the requester's post carrying the exact preview approval JSON. */
+  /** `thread-post:<id>` — the requester's complete preview approval and pinned source record. */
   previewPostRef: string;
   preview: Pick<AcceptanceBarAmendmentPreview, 'approval' | 'changes' | 'criterionChanges' | 'reviewSource' | 'candidateValidation'>;
   /** Revision-pinned live baseline supplied to the reviewer independently of transcript spans. */
@@ -368,8 +368,11 @@ function buildPinnedAmendmentReviewBrief(input: AmendmentReviewBriefInput, answe
   const changes = input.preview.criterionChanges;
   if (!changes || !input.preview.candidateValidation) throw new Error('acceptance_bar_review_packet_incomplete');
   const fieldDelta = changes.map(({ barKey, before, after }) => {
-    const prior = (before ?? {}) as Record<string, unknown>;
-    const next = (after ?? {}) as Record<string, unknown>;
+    // The read projection echoes `model` into `bar`, while the writer removes
+    // that alias. Compare both sides through the same canonical normalizer so
+    // removing the echo cannot masquerade as deleting the acceptance outcome.
+    const prior = (before ? normalizeAcceptanceBarCriterion(before) : {}) as Record<string, unknown>;
+    const next = (after ? normalizeAcceptanceBarCriterion(after) : {}) as Record<string, unknown>;
     const fields = Object.fromEntries([...new Set([...Object.keys(prior), ...Object.keys(next)])]
       .filter((key) => JSON.stringify(prior[key]) !== JSON.stringify(next[key]))
       .map((key) => [key, { before: prior[key] ?? null, after: next[key] ?? null }]));
@@ -548,8 +551,71 @@ export async function previewThreadHasLaterPost(args: {
   return rows.length > 0;
 }
 
+export interface AmendmentReviewReply {
+  state: 'none' | 'later-post' | 'signature-repair-required';
+  disposition?: 'signed-approval' | 'objection';
+  replyPostRef?: string;
+  reason?: string;
+}
+
+/** Presence establishes custody, not approval. Keep the apply resolver as the
+ * single authority for pointer, receipt and complete-source validation. */
+export async function readAmendmentReviewReply(
+  args: Parameters<typeof previewThreadHasLaterPost>[0],
+  providedSql?: import('postgres').Sql,
+): Promise<AmendmentReviewReply> {
+  if (!PREVIEW_POST_REF.test(args.previewPostRef) ||
+      (args.afterPostRef !== undefined && !PREVIEW_POST_REF.test(args.afterPostRef))) {
+    throw new Error('invalid amendment preview or evidence reference');
+  }
+  const sql = providedSql ?? (await import('@papercusp/db-org')).getOrgPg().sql;
+  const [row] = await sql<Array<{ id: string; body: string; preview_body: string }>>`
+    SELECT p.id::text AS id, p.body, pv.body AS preview_body
+      FROM harness_shared.coord_thread_posts pv
+      JOIN harness_shared.coord_thread_posts p
+        ON p.workspace_id = pv.workspace_id AND p.thread_id = pv.thread_id AND p.id > pv.id
+     WHERE pv.workspace_id = ${args.workspaceId}
+       AND pv.id = ${args.previewPostRef.slice('thread-post:'.length)}::bigint
+       AND pv.origin = 'local' AND p.origin = 'local'
+       AND p.id > ${(args.afterPostRef ?? args.previewPostRef).slice('thread-post:'.length)}::bigint
+       AND (${args.authorId ?? null}::text IS NULL OR p.author_id = ${args.authorId ?? null})
+       AND (${args.excludeAuthorId ?? null}::text IS NULL OR p.author_id <> ${args.excludeAuthorId ?? null})
+     ORDER BY p.id DESC LIMIT 1`;
+  if (!row) return { state: 'none' };
+  const replyPostRef = `thread-post:${row.id}`;
+  const { acceptanceBarApprovalSchema, approvalReceiptJsonSource, resolveAcceptanceBarApproval } =
+    await import('../acceptance-bar-amendment');
+  const expected = acceptanceBarApprovalSchema.parse(JSON.parse(approvalReceiptJsonSource(row.preview_body)));
+  const firstLine = row.body.split(/\r?\n/).find((line) => line.trim())?.trim() ?? '';
+  const affirmative = /^(?:verdict\s*:\s*)?[*#>\s]*(?:approve|approved|approval)\b/i.test(firstLine);
+  let receiptCandidate = false;
+  if (!affirmative) {
+    try {
+      receiptCandidate = acceptanceBarApprovalSchema.safeParse(JSON.parse(approvalReceiptJsonSource(row.body))).success;
+    } catch { /* Non-approval prose remains an objection, not a broken signature. */ }
+  }
+  if (!affirmative && !receiptCandidate) return { state: 'later-post', disposition: 'objection', replyPostRef };
+  try {
+    const pointer = /^approve (thread-post:[1-9][0-9]*)(?:[ \t]|$)/.exec(firstLine);
+    if (affirmative && pointer?.[1] !== args.previewPostRef) throw new Error('acceptance_bar_approval_preview_pointer_required');
+    await resolveAcceptanceBarApproval(sql as never, { workspaceId: args.workspaceId, approvalRef: replyPostRef, expected });
+    return { state: 'later-post', disposition: 'signed-approval', replyPostRef };
+  } catch (error) {
+    const refusal = error instanceof Error ? error.message : String(error);
+    if (!refusal.startsWith('acceptance_bar_')) throw error;
+    return { state: 'signature-repair-required', replyPostRef,
+      reason: `${replyPostRef} purports to approve ${args.previewPostRef}, but the apply resolver refused it (${refusal}). ` +
+        'The same independent reviewer must verify the retained source and post its own corrected approval, or an objection, on this thread. ' +
+        `The first non-empty line must be approve ${args.previewPostRef}. ` +
+        (expected.reviewSourceHash ? `Exactly one standalone verified-complete-source sha256:${expected.reviewSourceHash} line is required. ` : '') +
+        'Do not synthesize a reviewer signature, duplicate the preview or recruit a replacement for a formatting repair.' };
+  }
+}
+
 export interface FreshAmendmentReviewerHealth {
-  state: 'unknown' | 'no-failure-observed' | 'later-post' | 'reclaimable';
+  state: 'unknown' | 'no-failure-observed' | 'later-post' | 'signature-repair-required' | 'reclaimable';
+  disposition?: AmendmentReviewReply['disposition'];
+  replyPostRef?: string;
   taskId?: string;
   taskState?: TaskState;
   nativeRef?: string;
@@ -567,6 +633,26 @@ async function readRetainedReviewerLaunch(workspaceId: string, idempotencyKey: s
   return row ? { launchedBy: row.launched_by, summary: row.summary } : null;
 }
 
+/** Recover legacy receipts only through the exact system launch's retained owner.
+ * Multiple tasks are ambiguous; neither labels nor caller identities grant custody. */
+export async function recoverFreshReviewerTask(workspaceId: string, idempotencyKey: string, deps: {
+  readLaunch?: typeof readRetainedReviewerLaunch;
+  listTasks?: typeof import('../task-manager/store').listTasks;
+} = {}): Promise<{ taskId: string; ownerId: string; logPath?: string } | null> {
+  if (!idempotencyKey.startsWith(FRESH_REVIEWER_LAUNCH_KEY_PREFIX)) return null;
+  const launch = await (deps.readLaunch ?? readRetainedReviewerLaunch)(workspaceId, idempotencyKey);
+  if (launch?.launchedBy !== ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR) return null;
+  const summary = launch.summary as { ownerIds?: unknown } | null;
+  if (!Array.isArray(summary?.ownerIds) || summary.ownerIds.length !== 1 ||
+      typeof summary.ownerIds[0] !== 'string' || !summary.ownerIds[0].trim()) return null;
+  const ownerId = summary.ownerIds[0];
+  const list = deps.listTasks ?? (await import('../task-manager/store')).listTasks;
+  const tasks = await list({ workspaceId, coordOwnerId: ownerId, classes: ['agent-session'],
+    launchedBy: ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR, includeEnded: true, limit: 2 });
+  if (tasks.length !== 1) return null;
+  return { taskId: tasks[0].taskId, ownerId, ...(tasks[0].logPath ? { logPath: tasks[0].logPath } : {}) };
+}
+
 /**
  * Inspect a retained fresh reviewer before reporting or reclaiming its amend
  * receipt. A running ledger row is not proof that its native turn can still
@@ -578,22 +664,45 @@ export async function inspectFreshAmendmentReviewer(
   input: { workspaceId: string; previewPostRef: string; reviewEvidencePost?: string; reviewer: unknown },
   deps: {
     readRetainedLaunch?: typeof readRetainedReviewerLaunch;
+    recoverTask?: typeof recoverFreshReviewerTask;
     readTaskState?: (taskId: string) => Promise<TaskState | null>;
     resolveSessionStates?: ResolveSessionStates;
     analyzeTranscript?: typeof analyzeClaudeResumeTranscriptFile;
     hasLaterPost?: typeof previewThreadHasLaterPost;
+    readReply?: typeof readAmendmentReviewReply;
   } = {},
 ): Promise<FreshAmendmentReviewerHealth> {
   const reviewer = input.reviewer && typeof input.reviewer === 'object'
     ? input.reviewer as Record<string, unknown>
     : undefined;
   const taskId = typeof reviewer?.taskId === 'string' ? reviewer.taskId : undefined;
-  let nativeRef = typeof reviewer?.nativeRef === 'string' ? reviewer.nativeRef : undefined;
+  let nativeRef = typeof reviewer?.nativeRef === 'string' && reviewer.nativeRef !== 'unknown' ? reviewer.nativeRef : undefined;
   let ownerId = typeof reviewer?.ownerId === 'string' ? reviewer.ownerId : undefined;
+  const blockedKickoff = reviewer?.state === 'blocked' && reviewer.reason === 'kickoff-unverified';
+  if (blockedKickoff && !taskId && reviewer.launcherId === ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR &&
+      typeof reviewer.idempotencyKey === 'string' && PREVIEW_POST_REF.test(input.previewPostRef) &&
+      (input.reviewEvidencePost === undefined || PREVIEW_POST_REF.test(input.reviewEvidencePost))) {
+    try {
+      const task = await (deps.recoverTask ?? recoverFreshReviewerTask)(input.workspaceId, reviewer.idempotencyKey);
+      if (!task || (ownerId && ownerId !== task.ownerId)) return { state: 'unknown', reason: 'legacy reviewer custody is ambiguous' };
+      const taskState = await (deps.readTaskState ?? readLedgerTaskState)(task.taskId);
+      if (!taskState || !isTerminalState(taskState)) return { state: 'unknown', taskId: task.taskId, reason: 'legacy reviewer is not verified terminal' };
+      const args = { workspaceId: input.workspaceId, previewPostRef: input.previewPostRef, authorId: task.ownerId,
+        ...(input.reviewEvidencePost ? { afterPostRef: input.reviewEvidencePost } : {}) };
+      const reply = deps.readReply ? await deps.readReply(args)
+        : deps.hasLaterPost ? { state: await deps.hasLaterPost(args) ? 'later-post' as const : 'none' as const }
+          : await readAmendmentReviewReply(args);
+      if (reply.state !== 'none') return { ...reply, state: reply.state, taskId: task.taskId, taskState };
+      return { state: 'reclaimable', taskId: task.taskId, taskState, reason: 'task-ended' };
+    } catch {
+      return { state: 'unknown', reason: 'legacy reviewer custody could not be read' };
+    }
+  }
+  let recoveredKickoff = false;
   // Older amend receipts omitted these fields even though the original launch
   // ledger retained them. Recover only that exact system launch and task; a
   // label, process state or caller-supplied identity cannot establish custody.
-  if (reviewer?.state === 'launched' && taskId && (!ownerId || !nativeRef) &&
+  if ((reviewer?.state === 'launched' || blockedKickoff) && taskId && (!ownerId || !nativeRef || blockedKickoff) &&
     reviewer.launcherId === ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR &&
     typeof reviewer.idempotencyKey === 'string' &&
     reviewer.idempotencyKey.startsWith(FRESH_REVIEWER_LAUNCH_KEY_PREFIX) &&
@@ -619,8 +728,9 @@ export async function inspectFreshAmendmentReviewer(
       (ownerId && ownerId !== task.ownerId) || (nativeRef && nativeRef !== proof.nativeRef)) return unknown;
     ownerId = task.ownerId;
     nativeRef = proof.nativeRef;
+    recoveredKickoff = true;
   }
-  if (reviewer?.state !== 'launched' || !taskId || !ownerId || !PREVIEW_POST_REF.test(input.previewPostRef) ||
+  if ((reviewer?.state !== 'launched' && !(blockedKickoff && recoveredKickoff)) || !taskId || !ownerId || !PREVIEW_POST_REF.test(input.previewPostRef) ||
     (input.reviewEvidencePost !== undefined && !PREVIEW_POST_REF.test(input.reviewEvidencePost))) {
     return { state: 'unknown', ...(taskId ? { taskId } : {}), reason: 'reviewer or preview identity is incomplete' };
   }
@@ -642,18 +752,22 @@ export async function inspectFreshAmendmentReviewer(
   const reason = failure?.reason ?? (stranded ? 'parked-without-self-wake' : terminal ? 'task-ended' : undefined);
 
   // A durable answer can precede task exit; it also outranks a stale running ledger row.
-  let laterPost: boolean;
+  let reply: AmendmentReviewReply;
   try {
-    laterPost = await (deps.hasLaterPost ?? previewThreadHasLaterPost)({
+    const args = {
       workspaceId: input.workspaceId,
       previewPostRef: input.previewPostRef,
       authorId: ownerId,
       ...(input.reviewEvidencePost ? { afterPostRef: input.reviewEvidencePost } : {}),
-    });
+    };
+    reply = deps.readReply ? await deps.readReply(args)
+      : deps.hasLaterPost ? { state: await deps.hasLaterPost(args) ? 'later-post' : 'none' }
+        : await readAmendmentReviewReply(args);
   } catch {
     return { state: 'unknown', taskId, taskState, reason: 'preview-thread history could not be read' };
   }
-  if (laterPost) return { state: 'later-post', taskId, taskState, reason: 'a post exists after the preview' };
+  if (reply.state !== 'none') return { ...reply, state: reply.state, taskId, taskState,
+    reason: reply.reason ?? 'a post exists after the preview' };
   if (!reason) return { state: 'no-failure-observed', taskId, taskState, ...(nativeRef ? { nativeRef } : {}) };
   return {
     state: 'reclaimable',
@@ -723,7 +837,10 @@ function freshReviewerKickoff(input: FreshAmendmentReviewerInput, target: FreshR
     'Use the review procedure and source recovery instructions in that full question. Its consult reply instructions apply to a routed responder; your answer target is the work-item below. Do not call rubrics:amend, reopen the review, edit files or recruit anyone.',
     `This exact preview is ${input.previewPostRef}. Its immutable approval JSON must match the full review:`,
     JSON.stringify(input.preview.approval),
-    `To approve, use ${commentCall}, body: approve ${input.previewPostRef} on the first non-empty line. Add verification notes after it. If evidence is incomplete, stale or substantively wrong, post the objection there instead.`,
+    `To approve after independently verifying the complete source, use ${commentCall}, body:${JSON.stringify(
+      `approve ${input.previewPostRef}` + (input.preview.approval.reviewSourceHash
+        ? `\nverified-complete-source sha256:${input.preview.approval.reviewSourceHash}` : ''),
+    )}. Both signature lines are required when a source hash is present. Add verification notes after them. If evidence is incomplete, stale or substantively wrong, post the objection there instead.`,
     "Post once, then call session:end { reason: 'BAR amendment review complete' }.",
   ].join('\n');
   if (brief.length > FRESH_REVIEWER_INLINE_MAX_CHARS) {
@@ -871,6 +988,7 @@ export async function launchFreshAmendmentReviewer(
     resolveSessionStates?: ResolveSessionStates;
     hasReviewerAnswer?: typeof previewThreadHasLaterPost;
     stopFailedLaunch?: typeof defaultStopFailedLaunch;
+    recoverTask?: typeof recoverFreshReviewerTask;
   } = {},
 ): Promise<FreshAmendmentReviewerResult> {
   const previewPostRef = input.previewPostRef.trim();
@@ -942,7 +1060,15 @@ export async function launchFreshAmendmentReviewer(
       }
       return finished;
     }
-    const deadTask = result.data?.launch?.tasks?.[0];
+    let deadTask = result.data?.launch?.tasks?.[0];
+    if (typeof deadTask?.taskId !== 'string') {
+      try {
+        deadTask = await (deps.recoverTask ?? recoverFreshReviewerTask)(input.workspaceId, attemptKey) ?? undefined;
+      } catch {
+        // Missing authority or unavailable ledger evidence must never authorize replacement.
+        return finishFreshReviewerLaunch(result, attemptKey, attemptLabel);
+      }
+    }
     const deadTaskId = typeof deadTask?.taskId === 'string' ? deadTask.taskId : null;
     if (!deadTaskId) return finishFreshReviewerLaunch(result, attemptKey, attemptLabel);
     const authorId = typeof deadTask?.ownerId === 'string' ? deadTask.ownerId : undefined;
@@ -1382,6 +1508,7 @@ export async function openAcceptanceBarAmendmentReview(
     launchFresh?: typeof launchFreshAmendmentReviewer;
     resolveEvidence?: typeof resolveAmendmentReviewEvidence;
     hasLaterPost?: typeof previewThreadHasLaterPost;
+    readReply?: typeof readAmendmentReviewReply;
     resolveSources?: typeof resolveAmendmentReviewSources;
     resolveSourceTarget?: typeof resolvePreviewPostWorkItem;
     verifyCandidate?: typeof verifyAmendmentReviewCandidate;
@@ -1408,7 +1535,8 @@ export async function openAcceptanceBarAmendmentReview(
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
       `acceptance_bar_amendment_review_preview_invalid: ${previewPostRef} does not carry this preview's approval (${message}). ` +
-        'Post the current preview.approval JSON once with work_items:comment and pass that post.',
+        'Use rubrics:amend with dryRun:true and requestReview:{workItemId,harness} to retain the complete preview and source and start review. ' +
+        'A manual reviewPreviewPost must contain the full acceptanceBarReviewPostBody(preview.approval, preview.reviewSource) record; approval-only JSON cannot supply a required amendment-source block.',
     );
   }
   if (input.reviewEvidencePost) input.onPhase?.('review-evidence');
@@ -1486,13 +1614,22 @@ export async function openAcceptanceBarAmendmentReview(
   // supplied, to replies posted after the new requester evidence.
   if (freshReviewer.state === 'launched' && freshReviewer.deduped && freshReviewer.ownerId) {
     input.onPhase?.('review-thread-history');
-    if (await (deps.hasLaterPost ?? previewThreadHasLaterPost)({
+    const replyArgs = {
       workspaceId: input.workspaceId,
       previewPostRef,
       authorId: freshReviewer.ownerId,
       excludeAuthorId: input.identity.ownerId,
       ...(reviewEvidence ? { afterPostRef: reviewEvidence.postRef } : {}),
-    })) {
+    };
+    const reply = deps.readReply ? await deps.readReply(replyArgs)
+      : deps.hasLaterPost ? { state: await deps.hasLaterPost(replyArgs) ? 'later-post' : 'none' } as AmendmentReviewReply
+        : await readAmendmentReviewReply(replyArgs);
+    if (reply.state !== 'none') {
+      if (reply.state === 'signature-repair-required') return {
+        ...routed, previewPostRef,
+        ...(reviewEvidence ? { reviewEvidencePost: reviewEvidence.postRef } : {}),
+        next: reply.reason!, freshReviewer: { state: 'not-launched', reason: reply.reason! },
+      };
       const afterEvidence = reviewEvidence ? ' after evidence ' + reviewEvidence.postRef : '';
       const reason = 'retained reviewer ' + freshReviewer.ownerId +
         ' already replied' + afterEvidence + ' on preview ' + previewPostRef +

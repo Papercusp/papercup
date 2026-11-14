@@ -3854,6 +3854,34 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings.freshness.evidence).not.toContain('Current fingerprints are missing');
   });
 
+  it('explains how to resolve a missing environment fingerprint on live operational evidence', () => {
+    const base = evidence();
+    const row = evidence({
+      evidenceKind: 'operational',
+      fingerprints: { ...base.fingerprints, environmentFingerprint: null },
+      details: { ...base.details, evidencePlane: 'live' },
+      currentness: {
+        ...base.currentness,
+        overall: 'unknown',
+        provenance: 'server-measured',
+        dimensions: { ...base.currentness.dimensions, environment: 'unknown' },
+        unknownReasons: ['environment-evidence-fingerprint-not-recorded'],
+      },
+    });
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [row],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.freshness).toMatchObject({ rating: 'unknown' });
+    expect(result.ratings.freshness.evidence).toContain('environment fingerprint');
+    expect(result.ratings.freshness.evidence).toContain(
+      'Rebind with measurement.runtimeUnits (runtime_vintage units such as postgres:5432)',
+    );
+    expect(result.ratings.freshness.evidence).not.toContain('Current fingerprints are missing');
+  });
+
   // RECURRENCE GUARD (WI-10002320). A replayed tuple that MATCHED its stored values is
   // capped at 'unknown' precisely BECAUSE it matched — so the one thing the message must
   // never say is that fingerprints are missing. Without its own arm the chain fell through

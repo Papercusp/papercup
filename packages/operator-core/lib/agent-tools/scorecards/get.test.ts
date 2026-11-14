@@ -166,7 +166,8 @@ describe('scorecards:get evidence-first projection', () => {
     expect(() => rubricCoverageCriterionCard({ ok: false, error: 'unavailable' })).toThrow();
   });
 
-  it('grading system full and compact readers preserve every criterion', async () => {
+  it.each([undefined, { id: 'WI-assessment-selection', harness: 'papercusp' }])(
+    'grading system full and compact readers preserve every criterion and selected scope reference (%j)', async (assessmentWorkItem) => {
     const comparisonTime = '2026-11-01T12:01:00.001Z';
     const lastMeasurement = { testRunId: 1, value: 840, unit: 'ms', status: 'pass' as const,
       finishedAt: '2026-11-01T12:00:00Z', comparisonTime, ageMs: 60_001, freshness: 'stale' as const };
@@ -189,14 +190,18 @@ describe('scorecards:get evidence-first projection', () => {
         return readJsonResult(dispatched.result!) as unknown as Page;
       };
       const indexed: Array<{ key: string; read: Call }> = [];
-      let args: Record<string, unknown> | undefined = { issueId: card.issueId, comparisonTime, indexOffset: 0 };
+      let args: Record<string, unknown> | undefined = { issueId: card.issueId, comparisonTime, indexOffset: 0,
+        ...(assessmentWorkItem ? { assessmentWorkItem } : {}) };
       let pages = 0;
       while (args) {
         expect(++pages).toBeLessThan(30);
         const page = await read(args);
         indexed.push(...page.evidenceRead.criteria!);
         args = page.evidenceRead.next?.args;
-        if (args) expect(args.comparisonTime).toBe(comparisonTime);
+        if (args) {
+          expect(args.comparisonTime).toBe(comparisonTime);
+          expect(args.assessmentWorkItem).toEqual(assessmentWorkItem);
+        }
       }
       expect(indexed.map(entry => entry.key)).toEqual(card.criteria.map(entry => entry.key));
       for (const entry of indexed) {
@@ -206,6 +211,7 @@ describe('scorecards:get evidence-first projection', () => {
         while (next) {
           expect(++evidencePages).toBeLessThan(30);
           expect(next.comparisonTime).toBe(comparisonTime);
+          expect(next.assessmentWorkItem).toEqual(assessmentWorkItem);
           const page = await read(next);
           expect(page.scorecard.criteria).toHaveLength(1);
           expect(page.scorecard.criteria[0]).toMatchObject({ key: entry.key, ledgerResult, lastMeasurement });
@@ -216,7 +222,8 @@ describe('scorecards:get evidence-first projection', () => {
       }
       const shortCard = { ...card, criteria: card.criteria.map(entry => ({ ...entry, evidence: 'Retained evidence.' })) };
       readScorecardEvidenceM.mockResolvedValueOnce({ kind: 'found', scorecard: shortCard });
-      const full = await read({ issueId: card.issueId, comparisonTime });
+      const full = await read({ issueId: card.issueId, comparisonTime,
+        ...(assessmentWorkItem ? { assessmentWorkItem } : {}) });
       expect(full.scorecard.criteria).toEqual(shortCard.criteria);
     }
   });

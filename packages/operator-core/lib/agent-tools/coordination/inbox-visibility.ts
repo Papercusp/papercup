@@ -518,16 +518,17 @@ export function expandInboxChunkGroupsForMessageIds<T extends Record<string, unk
   });
 }
 
-/** Select + order the visible inbox window by P-009 priority before applying
- * the caller's display limit. Rows within a bucket are newest-first so a flood
- * of low-priority broadcasts cannot crowd an older actionable ask out of a
- * bounded default read. A chunked coord:send is one logical message even though
- * only its final row carries `expects`; select a complete group together or do
- * not show any part. Otherwise the final actionable part can survive the limit
+/** Select + order the visible inbox window before applying the caller's limit.
+ * The default P-009 order ranks actionable asks ahead of newer lower-priority
+ * traffic; explicit sender/directed views can request newest matching entries
+ * across buckets. A chunked coord:send is one logical message even though only
+ * its final row carries `expects`; select a complete group together or do not
+ * show any part. Otherwise the final actionable part can survive the limit
  * while the continuation holding the first half of its instructions disappears. */
 export function prioritizedInboxWindow<T extends Record<string, unknown>>(
   entries: readonly T[],
   limit: number,
+  options: { order?: "priority" | "newest" } = {},
 ): T[] {
   if (limit <= 0) return [];
   type RankedUnit = { entries: T[]; bucket: number; ts: string; msgId: string };
@@ -590,7 +591,7 @@ export function prioritizedInboxWindow<T extends Record<string, unknown>>(
   }
 
   units.sort((a, b) => {
-    if (a.bucket !== b.bucket) return a.bucket - b.bucket;
+    if (options.order !== "newest" && a.bucket !== b.bucket) return a.bucket - b.bucket;
     if (a.ts !== b.ts) return b.ts.localeCompare(a.ts);
     return b.msgId.localeCompare(a.msgId);
   });

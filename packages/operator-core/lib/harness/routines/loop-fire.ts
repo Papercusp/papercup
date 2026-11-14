@@ -37,11 +37,13 @@ import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import {
   getLoopCarryNote as defaultGetLoopCarryNote,
   getLoopCarryNoteWithMeta as defaultGetLoopCarryNoteWithMeta,
+  reconcileConversationBoundWalls,
   renderCheckLine,
   renderWallLine,
   splitCarryNoteChecks,
   splitCarryNoteWalls,
   isCarryWallAuthoritative,
+  type CarryWallConversationStateReader,
   type CheckEntry,
   type WallEntry,
 } from '../../carry-note';
@@ -140,6 +142,8 @@ export interface LoopFireDeps {
   getLoopCarryNote?: typeof defaultGetLoopCarryNote;
   /** P-002: the meta-carrying read (note + write instant) the staleness stamp needs. */
   getLoopCarryNoteWithMeta?: typeof defaultGetLoopCarryNoteWithMeta;
+  /** Read exact conversation lifecycle rows for conversation-bound carried walls. */
+  readConversationStatesByIds?: CarryWallConversationStateReader;
   /** P-005c: the top-recipe lookup the SHORT wake form splices (fail-soft, time-bounded). */
   findWakeRecipe?: typeof defaultFindTopRecipeForWake;
   /** P-006: read-and-clear the pending turn-settle wall nag (fail-soft). */
@@ -1420,7 +1424,15 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   // render the block in every form. The pending turn-settle nag is taken
   // (read-and-cleared) here, fail-soft.
   const wallSplit = splitCarryNoteWalls(checkpointMeta.note);
-  const walls = wallSplit.walls;
+  const walls = await reconcileConversationBoundWalls(
+    wallSplit.walls,
+    input.workspaceId,
+    deps.readConversationStatesByIds ??
+      (async (ids, workspaceId) => {
+        const { getConversationStatesByIds } = await import('../../agent-tools/coordination/conversations');
+        return getConversationStatesByIds(ids, workspaceId);
+      }),
+  );
   const { body: checkpointBody, checks } = splitCarryNoteChecks(wallSplit.body);
   const takeWallNag = deps.takeWallNag ?? defaultTakeLoopWallNag;
   const nag = await takeWallNag({ harness: input.installSlug, ownerId: input.targetOwnerId }).catch(() => null);

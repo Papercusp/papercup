@@ -1,6 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+vi.mock('./predicate-watch', async (original) => ({
+  ...await original<typeof import('./predicate-watch')>(),
+  dispatchReadOnlyTool: vi.fn(),
+}));
+import { dispatchReadOnlyTool } from './predicate-watch';
 import type { ProducerHealthCertificate, VerifiedWaitTimeoutResult } from './verified-wait';
-import { advanceProgressLeaseCertificate, progressValueFingerprint } from './progress-lease';
+import { advanceProgressLeaseCertificate, observeProgressLease, progressValueFingerprint } from './progress-lease';
 
 function certificate(): ProducerHealthCertificate {
   const evidence = {
@@ -68,14 +73,22 @@ describe('delegated wait progress leases', () => {
     expect(next.progressLease?.history[2]).toMatchObject({ writer: 'work_items:get', units: 'checkpoint-revision' });
   });
 
-  it('preserves explicit uncertainty and appends the repeated-miss remedy result', () => {
-    const first = advanceProgressLeaseCertificate(certificate(), result(false, 7, 'resolver unavailable'));
-    const secondResult = { ...result(false, 7, 'resolver unavailable'), checkedAtMs: 3_000 };
-    const second = advanceProgressLeaseCertificate(first, secondResult, {
-      remedy: { kind: 'leader-claim', disposition: 'executed', summary: 'transferred', workItemId: 'WI-1' },
-    });
-    expect(second.progressLease?.missCount).toBe(2);
-    expect(second.progressLease?.history.at(-1)).toMatchObject({ state: 'remedy', remedy: { disposition: 'executed' } });
-    expect(second.progressLease?.latestEvidence.uncertainty).toBe('resolver unavailable');
+  it.each(['exception', 'missing-path'])('keeps %s uncertainty separate from a measured miss and remedy authority', async (failure) => {
+    let current = advanceProgressLeaseCertificate(certificate(), result(false, 7));
+    for (const checkedAtMs of [3_000, 4_000]) {
+      if (failure === 'exception') vi.mocked(dispatchReadOnlyTool).mockRejectedValueOnce(new Error('resolver unavailable'));
+      else vi.mocked(dispatchReadOnlyTool).mockResolvedValueOnce({});
+      const observed = await observeProgressLease(current, checkedAtMs);
+      expect(observed).toMatchObject({
+        classification: 'unknown', nextAction: 'resolve-uncertainty',
+        evidence: { progressed: false, missCount: 1, uncertainty: expect.any(String) },
+      });
+      expect(() => advanceProgressLeaseCertificate(current, observed, {
+        remedy: { kind: 'leader-claim', disposition: 'executed', summary: 'invalid' },
+      })).toThrow('Unknown progress evidence');
+      current = advanceProgressLeaseCertificate(current, observed);
+      expect(current.progressLease).toMatchObject({ missCount: 1, baselineFingerprint: progressValueFingerprint(7) });
+      expect(current.progressLease?.history.at(-1)?.state).toBe('unknown');
+    }
   });
 });

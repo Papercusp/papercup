@@ -13,6 +13,9 @@ it('accepts one dirty background test over current-build HTTP and retains its te
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/agent-tools/testing/run-background.integration.test.ts',
     sourcePaths: ['packages/operator-core/lib/agent-tools/testing/run.ts',
+      'packages/operator-core/lib/agent-tools/testing/testing-core.worker.ts',
+      'scripts/lib/testing-core-witness.mjs', 'scripts/lib/compiler-input-custody.mjs',
+      'apps/operator/bin/bundle-host-common.sh',
       'packages/operator-core/lib/agent-tools/testing/run-artifacts.ts',
       'packages/operator-core/lib/testing-run-store.ts',
       'packages/operator-core/test/staging-first-http-fixture.ts',
@@ -21,6 +24,7 @@ it('accepts one dirty background test over current-build HTTP and retains its te
       'packages/operator-core/test/isolated-integration-proof.ts', 'scripts/with-test-pg.mjs'],
     retainedArtifacts: ['phases/execute/background-http-receipt.json',
       'phases/prepare/operator-api-build.log', 'phases/prepare/operator-api-build-result.json',
+      'phases/prepare/testing-core.worker.witness.json', 'phases/prepare/testing-core.worker.mjs.meta.json',
       'phases/prepare/hono-host.mjs.build-steps.jsonl'],
     prepare: async evidenceDir => {
       prepared = await preparePrivateOperatorApiBundle(root, evidenceDir,
@@ -48,6 +52,7 @@ it('accepts one dirty background test over current-build HTTP and retains its te
       expect(line, result.output.slice(-8_000)).toBeTruthy();
       const receipt = JSON.parse(line!.slice('TESTING_BACKGROUND_HTTP_RECEIPT '.length));
       expect(receipt).toMatchObject({ hostStopped: true, executions: 1, cleanupComplete: true,
+        compiledCore: { schemaVersion: 1 },
         accepted: { mode: 'background', status: 'pending', detachedDurable: true }, terminal: { status: 'pass' } });
       console.info('TESTING_BACKGROUND_HTTP_VERIFIED ' + JSON.stringify(receipt));
     },

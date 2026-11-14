@@ -463,7 +463,7 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
         // per-id hydration issued one point read per active lease owner.
         { hydrateBatch: true, nowMs },
       );
-      return selectEndedLeaseOwners(active, verdicts, resumeLaunchers);
+      return selectEndedLeaseOwners(active, verdicts, resumeLaunchers, nowMs);
     } catch (error) {
       console.warn(
         `[resource-governor] ledger active lease liveness resolution failed: ${error instanceof Error ? error.message : error}`,
@@ -546,6 +546,7 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
           owner: identity?.owner ?? stored.record.lease?.owner ?? null,
           leaseId: identity?.leaseId ?? stored.record.lease?.leaseId ?? null,
           sessionState: 'ended',
+          ...identity?.startupProtection,
         }),
         lease: undefined,
       };

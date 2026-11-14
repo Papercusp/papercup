@@ -20,6 +20,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { resolveAgentIdentity, type AgentIdentity } from '../coordination/identity';
 import { getPresence, writePresence } from '../coordination/presence';
+import { sendMessage } from '../coordination/messages';
 import { COORD_ROLES } from '../coordination/roles';
 import {
   getNextForBee,
@@ -103,21 +104,21 @@ import { decideGoalStewardGate, goalStewardRefusalResult } from '../../scheduler
 import { readGoalHolderAuthority } from '../../goals/holder-authority';
 import { getOrgPg } from '@papercusp/db-org';
 import { shapeGetNextResult } from './get-next-shape';
+import { renderIntent } from '../../coord-lifecycle/render';
 export { IDLE_PULL_MISS_ADVICE };
 
 /**
  * EI-20099413453852234 — declare the caller's intent for the item it just claimed.
  *
- * This tool CLAIMS an item but used to leave the claimant's declared intent untouched,
- * so from the instant of the claim `coord_presence` held a live claim beside a stale
- * intent and presence computed `intentDivergent: true` for an agent that was actively
- * mid-implementation. Peers use exactly that signal to judge whether a claim is real:
+ * A claim updates the live presence intent AND appends the matching immutable lifecycle
+ * intent event. The latter advances `tool_invocations.intent_event_id`; without it,
+ * calls for a newly claimed goal remain attached to the previous declaration and the
+ * intent-divergence sweep can report a false multi-goal warning. Peers also use the live
+ * presence signal to judge whether a claim is real:
  * one read it and offered to take an item out from under its holder, who was mid-fix on
  * that very item. An agent in a get_next loop re-claims every wake, so its intent was
  * stale BY CONSTRUCTION unless it remembered a second, entirely optional call each time.
- * The divergence is also invisible from INSIDE the agent that causes it and visible only
- * to peers — the worst shape for a self-correcting signal — so it is fixed HERE, at the
- * claim, rather than left to per-agent discipline.
+ * Both writes happen HERE at the claim, rather than relying on per-agent follow-up.
  *
  * ⚠ READ-MODIFY-WRITE, DELIBERATELY — do not "simplify" this to a bare write.
  * `PgPresenceStore.write()`'s ON CONFLICT sets `current_plan_slug = EXCLUDED.current_plan_slug`,
@@ -147,15 +148,33 @@ async function declareIntentForClaim(
   if (prev?.intent && prev.intent.includes(id)) return;
   const title = typeof wi?.title === 'string' ? wi.title.trim() : '';
   const clipped = title.length > 120 ? `${title.slice(0, 119)}…` : title;
+  const intent = clipped ? `${id}: ${clipped}` : id;
   await writePresence(
     identity,
     {
-      intent: clipped ? `${id}: ${clipped}` : id,
+      intent,
       // The one field that MUST be carried — see the ON CONFLICT note above.
       currentPlanSlug: prev?.currentPlanSlug ?? null,
     },
     harnessSlug ?? null,
   );
+
+  // Presence is mutable; telemetry and divergence detection read the append-only
+  // intent event pointer. Persist a typed, no-audience lifecycle event so the
+  // subsequent tool_invocations rows start a new intent bucket for this claim.
+  // Empty `to` persists the event without duplicating the live presence update.
+  const rendered = renderIntent({ intent });
+  await sendMessage(identity, {
+    to: [],
+    summary: rendered.summary,
+    ...(rendered.body ? { body: rendered.body } : {}),
+    ...(harnessSlug && harnessSlug !== '*' ? { harnessSlug } : {}),
+    extra: {
+      auto: true,
+      lifecycle: 'intent',
+      declared_goal_refs: [id],
+    },
+  });
 }
 
 /**

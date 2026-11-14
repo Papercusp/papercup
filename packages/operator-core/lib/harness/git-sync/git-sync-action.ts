@@ -274,6 +274,7 @@ import {
   type GitSyncWriterAuthority,
   type GitSyncPublishedLibrarySelection,
   runGitBounded,
+  runGitSyncStdinBounded,
   type GitSyncYieldError,
   DEFAULT_MAX_BLOB_BYTES,
   DEFAULT_MAX_COMMIT_TOTAL_BYTES,
@@ -394,13 +395,19 @@ export class GitSyncActionTimeoutError extends Error {
   readonly phase: string;
   readonly timeoutKind: 'idle' | 'hard';
   readonly timeoutMs: number;
+  /** EI-28696436611358092: the install slug, so the bare journal line is attributable. */
+  readonly subject: string | null;
 
-  constructor(phase: string, timeoutKind: 'idle' | 'hard', timeoutMs: number) {
-    super(`git-sync action timed out during ${phase} after ${timeoutMs}ms (${timeoutKind} liveness deadline)`);
+  constructor(phase: string, timeoutKind: 'idle' | 'hard', timeoutMs: number, subject: string | null = null) {
+    super(
+      `git-sync action timed out during ${phase} after ${timeoutMs}ms (${timeoutKind} liveness deadline)` +
+        (subject ? ` [install ${subject}]` : ''),
+    );
     this.name = 'GitSyncActionTimeoutError';
     this.phase = phase;
     this.timeoutKind = timeoutKind;
     this.timeoutMs = timeoutMs;
+    this.subject = subject;
   }
 }
 
@@ -440,6 +447,8 @@ interface GitSyncActionLivenessGuard {
 function createGitSyncActionLivenessGuard(opts: {
   idleTimeoutMs: number;
   hardTimeoutMs: number;
+  /** Install slug carried into the timeout error message (EI-28696436611358092). */
+  subject?: string | null;
   onTimeout: (error: GitSyncActionTimeoutError) => void | Promise<void>;
 }): GitSyncActionLivenessGuard {
   const controller = new AbortController();
@@ -470,6 +479,7 @@ function createGitSyncActionLivenessGuard(opts: {
       activePhaseName(),
       kind,
       kind === 'idle' ? opts.idleTimeoutMs : opts.hardTimeoutMs,
+      opts.subject ?? null,
     );
     // Abort first. Guarded awaits reject immediately, but the owning action
     // must drain any started Git executions before stopping its lease heartbeat.
@@ -514,7 +524,7 @@ function createGitSyncActionLivenessGuard(opts: {
     const phaseName = typeof phase === 'string' ? () => phase : phase;
     if (stopped) return Promise.reject(new Error(`git-sync action is already stopped before ${phaseName()}`));
     if (timedOut)
-      return Promise.reject(timeoutError ?? new GitSyncActionTimeoutError(activePhaseName(), 'idle', opts.idleTimeoutMs));
+      return Promise.reject(timeoutError ?? new GitSyncActionTimeoutError(activePhaseName(), 'idle', opts.idleTimeoutMs, opts.subject ?? null));
     const phaseId = Symbol();
     activePhases.set(phaseId, phaseName);
     touch();
@@ -537,7 +547,7 @@ function createGitSyncActionLivenessGuard(opts: {
         if (settled) return;
         settled = true;
         finish();
-        reject(timeoutError ?? new GitSyncActionTimeoutError(activePhaseName(), 'idle', opts.idleTimeoutMs));
+        reject(timeoutError ?? new GitSyncActionTimeoutError(activePhaseName(), 'idle', opts.idleTimeoutMs, opts.subject ?? null));
       };
       if (controller.signal.aborted) {
         onAbort();
@@ -550,7 +560,7 @@ function createGitSyncActionLivenessGuard(opts: {
           settled = true;
           finish();
           if (controller.signal.aborted) {
-            reject(timeoutError ?? new GitSyncActionTimeoutError(activePhaseName(), 'idle', opts.idleTimeoutMs));
+            reject(timeoutError ?? new GitSyncActionTimeoutError(activePhaseName(), 'idle', opts.idleTimeoutMs, opts.subject ?? null));
             return;
           }
           touch();
@@ -579,7 +589,7 @@ function createGitSyncActionLivenessGuard(opts: {
     },
     touch,
     assertActive: () => {
-      if (timedOut) throw timeoutError ?? new GitSyncActionTimeoutError(activePhaseName(), 'idle', opts.idleTimeoutMs);
+      if (timedOut) throw timeoutError ?? new GitSyncActionTimeoutError(activePhaseName(), 'idle', opts.idleTimeoutMs, opts.subject ?? null);
       if (stopped) throw new Error('git-sync action liveness guard is stopped');
     },
     run,
@@ -1150,23 +1160,25 @@ function startLockHeartbeat(
       // exclusive restart drain converge under a multi-fire settle burst.
       const results = await acquireWithContentionRetry(() =>
         inWorkspaceTxn(cd, owner, async (tx) => {
-          const refreshed: Array<{ resource: string; result: Awaited<ReturnType<typeof tryHeartbeatResource>> }> = [];
+          const refreshed: Array<{ resource: string; lockId: string; result: Awaited<ReturnType<typeof tryHeartbeatResource>> }> = [];
           for (const { resource, lockId } of resources) {
             const result = await tryHeartbeatResource(tx, cd, owner, lockId, LOCK_TTL_SEC);
-            refreshed.push({ resource, result });
+            refreshed.push({ resource, lockId, result });
           }
           return refreshed;
         }, { leaseRenewal: true }),
       );
       let refused = false;
-      for (const { resource, result } of results) {
+      for (const { resource, lockId, result } of results) {
         if (!result.extended) {
           refused = true;
-          console.error(
-            `[git-sync] ${slug}: LOST exclusive lock ${resource} during lease refresh (lease expired or no longer owned)`,
-          );
+          const detail = JSON.stringify({
+            coordinationDomain: cd, owner, lockId, sentAt,
+            completedAt: Date.now(), refusal: result.refusal ?? null,
+          });
+          console.error(`[git-sync] ${slug}: LOST exclusive lock ${resource} during lease refresh; renewal=${detail}`);
           // Before WI-10006724 this was log-only and the fire kept writing.
-          fence?.markLost('refused', `${resource}: lease expired or no longer owned`);
+          fence?.markLost('refused', `${resource}: renewal=${detail}`);
         }
       }
       if (!refused) fence?.confirm(sentAt);
@@ -2681,6 +2693,12 @@ type GitSyncCompletedCommand = GitSyncCommand & {
   status: 'succeeded' | 'failed' | 'threw';
   exit_code?: number;
 };
+type GitSyncCommandTotals = {
+  /** Sum of settled command durations, including overlaps; not elapsed wall time. */
+  duration_ms: number;
+  superproject: { count: number; duration_ms: number };
+  other_repositories: { count: number; duration_ms: number };
+};
 type GitSyncCommandSnapshot = {
   /** Only the existing runGitSync runner seam, not unrelated sidecar work. */
   scope: 'local-sync-runner';
@@ -2690,6 +2708,7 @@ type GitSyncCommandSnapshot = {
   completed_count: number;
   completed_omitted_count: number;
   completed: GitSyncCompletedCommand[];
+  completed_totals: GitSyncCommandTotals;
 };
 type GitSyncTimeoutSnapshot = {
   at: number;
@@ -2826,6 +2845,9 @@ async function recordOutcome(
       last_merge_completed_at: mergeCompleted.length > 0 ? localSyncRecordedAt : null,
       last_conflicts: outcome.status === 'conflict' ? outcome.conflicts.map((c) => c.scope) : [],
       last_errors: errors.map((e) => `${e.scope}: ${e.message}`),
+      // EI-28696436611358092: every last_errors writer stamps when it wrote, so a
+      // reader can tell a stale list from one belonging to the fire now in flight.
+      last_errors_at: localSyncRecordedAt,
       // GAP-3: clear the stale single error on any non-error outcome (JSONB `||` keeps old keys).
       last_error: outcome.status === 'error' ? errorMessage : null,
       // EI-18 counters: ticks-of-uninterrupted-error + the true per-file oversized
@@ -3873,6 +3895,11 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   const activeGitCommands = new Map<number, GitSyncCommand>();
   const completedGitCommands: GitSyncCompletedCommand[] = [];
   let completedGitCommandCount = 0;
+  const completedGitCommandTotals: GitSyncCommandTotals = {
+    duration_ms: 0,
+    superproject: { count: 0, duration_ms: 0 },
+    other_repositories: { count: 0, duration_ms: 0 },
+  };
   let nextGitCommandId = 0;
   let timeoutSnapshot: GitSyncTimeoutSnapshot | undefined;
   const snapshotGitCommands = (): GitSyncCommandSnapshot => {
@@ -3886,6 +3913,11 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       completed_count: completedGitCommandCount,
       completed_omitted_count: completedGitCommandCount - completed.length,
       completed,
+      completed_totals: {
+        duration_ms: completedGitCommandTotals.duration_ms,
+        superproject: { ...completedGitCommandTotals.superproject },
+        other_repositories: { ...completedGitCommandTotals.other_repositories },
+      },
     };
   };
   const withActivityOwner = (activity: GitSyncActivityFields): GitSyncActivityMarker => ({
@@ -4137,6 +4169,21 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         local_sync_status: 'error',
         last_error: error.message,
         last_errors: [`git-sync action timeout (${error.timeoutKind}) during ${error.phase}`],
+        // EI-28696436611358092: `last_errors` survives until the next COMPLETED outcome,
+        // while `git_sync_activity` (which carries `timeout`) is replaced by the next
+        // fire's first heartbeat. Without these, a later live pass sat beside an
+        // undated, unattributed timeout string that read as current.
+        last_errors_at: failedAt,
+        last_timeout: {
+          at: failedAt,
+          kind: error.timeoutKind,
+          phase: error.phase,
+          timeout_ms: error.timeoutMs,
+          fire_started_at: activityStartedAt,
+          owner: lockOwner,
+          owner_pid: process.pid,
+          workflow_id: ctx.workflowId ?? null,
+        },
         git_sync_activity: marker,
       }),
     ).then(() => {
@@ -4153,6 +4200,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   const liveness = createGitSyncActionLivenessGuard({
     idleTimeoutMs: gitSyncActionIdleTimeoutMs(),
     hardTimeoutMs: gitSyncActionHardTimeoutMs(),
+    subject: slug,
     onTimeout: async (error) => {
       // Record expiry promptly; cleanup itself fences on active Git settlement.
       const activity = recordTimeoutActivity(error);
@@ -4376,6 +4424,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
             last_lock_read_error: detail,
             last_error: `live lock read failed (fail-closed): ${detail}`,
             last_errors: [`live-lock-read: ${detail}`],
+            last_errors_at: skippedAt,
             git_sync_activity: withActivityOwner({
               active: false,
               phase: 'error',
@@ -4471,6 +4520,57 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         }
       : undefined;
 
+    // Both Git seams share custody: an injected text runner intentionally disables
+    // the pipeline's default stdin runner, so supply its binary batch companion too.
+    const trackGitCommand = async <T extends { code: number }>(
+      args: readonly string[], cwd: string, execute: () => Promise<T>,
+    ): Promise<T> => {
+      leaseFence?.assertHeld();
+      liveness.assertActive();
+      const commandId = ++nextGitCommandId;
+      const subcommand = gitSubcommandOf(args);
+      const command: GitSyncCommand = {
+        id: commandId,
+        subcommand: subcommand && /^[a-z][a-z0-9-]{0,63}$/.test(subcommand) ? subcommand : null,
+        cwd: cwd.slice(0, 1024),
+        ...(cwd.length > 1024 ? { cwd_truncated: true as const } : {}),
+        started_at: Date.now(),
+      };
+      const commandStartedAt = performance.now();
+      activeGitCommands.set(commandId, command);
+      let commandStatus: GitSyncCompletedCommand['status'] = 'threw';
+      let exitCode: number | undefined;
+      try {
+        const execution = execute();
+        activeGitExecutions.add(execution);
+        try {
+          const result = await execution;
+          exitCode = result.code;
+          commandStatus = result.code === 0 ? 'succeeded' : 'failed';
+          return result;
+        } finally {
+          activeGitExecutions.delete(execution);
+        }
+      } finally {
+        const durationMs = Math.max(0, Math.round(performance.now() - commandStartedAt));
+        completedGitCommandCount += 1;
+        completedGitCommandTotals.duration_ms += durationMs;
+        const totals = repoPath !== null && resolve(cwd) === resolve(repoPath)
+          ? completedGitCommandTotals.superproject
+          : completedGitCommandTotals.other_repositories;
+        totals.count += 1;
+        totals.duration_ms += durationMs;
+        completedGitCommands.push({ ...command, completed_at: Date.now(), duration_ms: durationMs,
+          status: commandStatus, ...(exitCode === undefined ? {} : { exit_code: exitCode }) });
+        if (completedGitCommands.length > 16) completedGitCommands.shift();
+        activeGitCommands.delete(commandId);
+      }
+    };
+    const onGitProgress = (): void => {
+      liveness.touch();
+      enqueueActivityHeartbeat(liveness, 'local-sync', null);
+    };
+
     // 'acquired' (locked) or 'error' (unlocked best-effort) → run.
     outcome = await guarded('run-git-sync', () =>
       runGitSync(slug, {
@@ -4484,57 +4584,19 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         onRootCommit: ({ sha, committedAtMs }) => {
           emitGitSyncCommittedEvent(sha, { scope: { installSlug: slug, workspaceId } }, committedAtMs);
         },
-        runGit: async (args, cwd, gitOptions) => {
-          // WI-10006724: a fire that can no longer prove it holds its lease must
-          // not start another Git command; another fire may own this index now.
-          leaseFence?.assertHeld();
-          liveness.assertActive();
-          const commandId = ++nextGitCommandId;
-          const subcommand = gitSubcommandOf(args);
-          const command: GitSyncCommand = {
-            id: commandId,
-            subcommand: subcommand && /^[a-z][a-z0-9-]{0,63}$/.test(subcommand) ? subcommand : null,
-            cwd: cwd.slice(0, 1024),
-            ...(cwd.length > 1024 ? { cwd_truncated: true as const } : {}),
-            started_at: Date.now(),
-          };
-          const commandStartedAt = performance.now();
-          activeGitCommands.set(commandId, command);
-          let commandStatus: GitSyncCompletedCommand['status'] = 'threw';
-          let exitCode: number | undefined;
-          try {
-            const execution = runGitBounded(args, cwd, gitTimeoutMsFor(args), {
-              // WI-10006705: forward the attributed commit's private GIT_INDEX_FILE.
-              env: gitOptions?.env,
-              diagnosticTags: gitOptions?.diagnosticTags,
-              signal: liveness.signal,
-              onProgress: () => {
-                liveness.touch();
-                enqueueActivityHeartbeat(liveness, 'local-sync', null);
-              },
-            });
-            activeGitExecutions.add(execution);
-            try {
-              const result = await execution;
-              exitCode = result.code;
-              commandStatus = result.code === 0 ? 'succeeded' : 'failed';
-              return result;
-            } finally {
-              activeGitExecutions.delete(execution);
-            }
-          } finally {
-            completedGitCommandCount += 1;
-            completedGitCommands.push({
-              ...command,
-              completed_at: Date.now(),
-              duration_ms: Math.max(0, Math.round(performance.now() - commandStartedAt)),
-              status: commandStatus,
-              ...(exitCode === undefined ? {} : { exit_code: exitCode }),
-            });
-            if (completedGitCommands.length > 16) completedGitCommands.shift();
-            activeGitCommands.delete(commandId);
-          }
-        },
+        runGit: (args, cwd, gitOptions) => trackGitCommand(args, cwd, () =>
+          runGitBounded(args, cwd, gitTimeoutMsFor(args), {
+            env: gitOptions?.env,
+            diagnosticTags: gitOptions?.diagnosticTags,
+            signal: liveness.signal,
+            onProgress: onGitProgress,
+          })),
+        runGitStdin: (args, cwd, stdin, gitOptions) => trackGitCommand(args, cwd, () =>
+          runGitSyncStdinBounded(args, cwd, stdin, {
+            ...gitOptions,
+            signal: liveness.signal,
+            onProgress: onGitProgress,
+          })),
         beforePush: gate.hiveGitMode
           ? async (args, cwd) => {
               // F6/D-022 covers independent submodule origins too. Resolve a live
@@ -4826,6 +4888,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   const postLegsLiveness = createGitSyncActionLivenessGuard({
     idleTimeoutMs: gitSyncActionIdleTimeoutMs(),
     hardTimeoutMs: gitSyncActionHardTimeoutMs(),
+    subject: slug,
     onTimeout: async (error) => {
       // Same shape as the local-sync guard's onTimeout. cleanupLocks() is
       // memoized/idempotent — safe even though local-sync's finally already
@@ -5893,6 +5956,7 @@ export async function runGithubBridgeLeg(
             last_status: 'error',
             last_error: bridgeError,
             last_errors: outcome.errors.slice(0, 10),
+            last_errors_at: Date.now(),
           }
         : {}),
       github_bridge: completeGithubBridgeState({
@@ -8944,7 +9008,7 @@ async function fireGitSyncMetadataRepair(slug: string, workspaceId: string, repo
       request = { requestId: repair.requestId, generation: repair.generation, base: candidate.base,
         paths: candidate.paths, contentSource: candidate.contentSource };
     } else {
-      if (prior.error !== 'candidate-not-captured') throw new Error(prior.error);
+      if (prior.error !== 'source-custody-refused:candidate-not-captured') throw new Error(prior.error);
       // npm resolution owns only private materialization and runs outside the writer lease.
       const source = await prepareGitSyncMetadataRepair(runGit, repo,
         { requestId: repair.requestId, generation: repair.generation, base: repair.base,

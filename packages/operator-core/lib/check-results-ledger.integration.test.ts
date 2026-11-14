@@ -94,6 +94,40 @@ it('retains subject-specific platform measurements through the real ledger witho
   } finally { lookup.mockRestore(); }
 });
 
+it('keeps fleet observation windows and harnesses separate through real ledger persistence and replay', async () => {
+  const key = 'code-intel:native-adoption-good-use';
+  const registered = instruments.getRegisteredInstrument(key);
+  if (registered?.evaluator !== 'platform' || !registered.rescore) throw new Error('fixture instrument unavailable');
+  const lookup = vi.spyOn(instruments, 'getRegisteredInstrument').mockReturnValue({ ...registered,
+    rescore: { ...registered.rescore, scope: 'subject' } });
+  const rubricRef = 'fleet-window-roundtrip';
+  const subject = { kind: 'fleet', ref: 'fleet-a' };
+  const subjectWindow = { windowStart: '2026-10-01T00:00:00Z', windowEnd: '2026-10-02T00:00:00Z' };
+  const at = Date.parse('2026-10-27T01:00:00.000Z');
+  try {
+    for (const [workspaceId, harnessSlug, ref, windowStart, value] of [
+      [WS, 'papercusp', 'fleet-a', subjectWindow.windowStart, 7],
+      [WS, 'papercusp', 'fleet-a', '2026-09-30T00:00:00Z', 99],
+      [WS, 'other', 'fleet-a', subjectWindow.windowStart, 100],
+      [WS, 'papercusp', 'fleet-b', subjectWindow.windowStart, 101],
+      [OTHER_WS, 'papercusp', 'fleet-a', subjectWindow.windowStart, 102],
+    ] as const) {
+      const results = await runInstrumentChecks({ rubricRef, workspaceId, harnessSlug, subject: { ...subject, ref },
+        subjectWindow: { ...subjectWindow, windowStart }, now: () => at + value,
+        criteria: [{ key: 'usage', check: { kind: 'instrument', instrumentKey: key } }],
+        resolvePlatform: async () => ({ verdict: 'pass', value, detail: `fixture:${value}` }) });
+      await recordRubricCheckResults(results, { ...SCOPE, workspaceId, harnessSlug }, sql());
+    }
+    const latest = await readLatestRubricCheckResults({ rubricRef, workspaceId: WS, harnessSlug: 'papercusp', subject, subjectWindow }, sql());
+    expect(latest.get('usage:instrument')?.check.value).toBe(7);
+    expect(latest.get('usage:instrument')?.check.provenance?.procedure.snapshot).toContain('2026-10-01T00:00:00Z');
+    const absent = await readLatestRubricCheckResults({ rubricRef, workspaceId: WS, harnessSlug: 'papercusp', subject,
+      subjectWindow: { ...subjectWindow, windowStart: '2026-09-29T00:00:00Z' } }, sql());
+    expect(absent.size).toBe(0);
+    expect(await readLatestRubricCheckResults({ rubricRef, workspaceId: WS }, sql())).toEqual(new Map());
+  } finally { lookup.mockRestore(); }
+});
+
 function sqlProbe(expectValue: number) {
   const schemaRevision = continuityProbeRevision(SQL_PROBE_TOOL);
   if (!schemaRevision) throw new Error(`${SQL_PROBE_TOOL} is not registered; its probe revision is unresolvable`);

@@ -13,9 +13,11 @@
  * deadline always counts from the latest stop. The gate cancels it when a later stop is safe.
  * Deadlines are jittered so a mass stop (a provider usage limit) does not wake everyone at once.
  *
- * Budget: after TURN_END_REWAKE_NO_PROGRESS_BUDGET timed rewakes with no progress on the held
- * items (work_items.last_progress_at), the timer is no longer armed. The silent-halt census still
- * counts the session. Nothing here pages anyone [owner 2026-10-15: "I don't want to be paged"].
+ * Budget: at most TURN_END_REWAKE_NO_PROGRESS_BUDGET timed rewakes during the current held-claim
+ * epoch. Checkpoints update last_progress_at for claim liveness, including a no-delta checkpoint;
+ * that clock must not replenish this safety budget. A later claim starts a fresh budget. The
+ * silent-halt census still counts the session. Nothing here pages anyone
+ * [owner 2026-10-15: "I don't want to be paged"].
  */
 
 import type { Sql } from 'postgres';
@@ -92,7 +94,7 @@ export function turnEndRewakeRefusalLine(outcome: TurnEndRewakeOutcome): string 
 
 /** IO seams, injectable for tests. */
 export interface TurnEndRewakeDeps {
-  /** Timed rewakes of this owner that fired after the latest progress on the held items. */
+  /** Timed rewakes of this owner that fired during the current held-claim epoch. */
   countFiredWithoutProgress: (ownerId: string, heldIds: readonly string[]) => Promise<number>;
   arm: (input: { ownerId: string; eventKey: string; timeoutSec: number; note: string }) => Promise<void>;
   cancel: (ownerId: string, eventKey: string) => Promise<void>;
@@ -105,8 +107,10 @@ async function orgSql(): Promise<Sql> {
 }
 
 /**
- * Fires of this owner's rewake key after the progress mark: the newest last_progress_at (or claim
- * time) across the held items. No progress mark at all counts every fire.
+ * Fires of this owner's rewake key after the newest claim time across the held items.
+ * Preserve the existing API name, but do not confuse checkpoint liveness with a new claim:
+ * a checkpoint-only response to a fallback must not reset that fallback's bounded budget.
+ * No claim time at all counts every fire.
  */
 export async function countTurnEndRewakesWithoutProgress(
   ownerId: string,
@@ -116,7 +120,7 @@ export async function countTurnEndRewakesWithoutProgress(
   const db = sql ?? (await orgSql());
   const rows = await db<Array<{ n: number }>>`
     WITH progress AS (
-      SELECT max(GREATEST(last_progress_at, taken_at)) AS mark
+      SELECT max(taken_at) AS mark
         FROM harness_shared.work_items
        WHERE taken_by = ${ownerId}
          AND feature_id = ANY(${heldIds as string[]})

@@ -29,8 +29,11 @@ import {
   explainMovedPaths,
   gitBlobId,
   owningRepo,
+  parentPublicationAdvisory,
+  parentPublicationPending,
   readMeasurementPin,
   MEASUREMENT_PIN_DETAILS_KEY,
+  type MeasurementPin,
 } from './evidence-measurement-pin';
 import {
   measureAndPinRepoFilesEvidenceAtRoot,
@@ -326,5 +329,52 @@ describe('evidence measurement pin (P-018)', () => {
     expect(otherHead).toBe(without);
     // Control: the fingerprint still moves when real proof metadata moves.
     expect(specEvidenceBindingFingerprint({ ...base, details: { currentMeasurement: { ...recipe, sourcePaths: ['src/a.ts'] } } })).not.toBe(without);
+  });
+});
+
+describe('parentPublicationPending (EI-28726074328095969)', () => {
+  const HEAD = 'a'.repeat(40);
+  const LINK = 'b'.repeat(40);
+  const ROOT = 'c'.repeat(40);
+  const file = (path: string, repo: string, rootHarnessSlug?: string) => ({
+    path, dimension: 'source' as const, sha256: 'x', repo, headBlob: 'd'.repeat(40), clean: true,
+    ...(rootHarnessSlug ? { rootHarnessSlug } : {}),
+  });
+  const pinOf = (repos: MeasurementPin['repos'], files: MeasurementPin['files']): MeasurementPin =>
+    ({ schemaVersion: 1, files, repos });
+
+  it('names a measured submodule whose HEAD is ahead of the parent gitlink, with its sorted paths', () => {
+    const pin = pinOf(
+      [{ repo: '.', head: ROOT, gitlink: null }, { repo: 'libs/sub', head: HEAD, gitlink: LINK }],
+      [file('libs/sub/z.ts', 'libs/sub'), file('libs/sub/a.ts', 'libs/sub'), file('src/root.ts', '.')],
+    );
+    expect(parentPublicationPending(pin)).toEqual([
+      { repo: 'libs/sub', head: HEAD, gitlink: LINK, paths: ['libs/sub/a.ts', 'libs/sub/z.ts'] },
+    ]);
+    const advisory = parentPublicationAdvisory(pin).parentPublicationPending;
+    expect(advisory?.repos).toHaveLength(1);
+    expect(advisory?.note).toContain(`libs/sub@${LINK.slice(0, 12)}`);
+    expect(advisory?.note).toContain(`measured HEAD ${HEAD.slice(0, 12)}`);
+    expect(advisory?.note).toMatch(/no rerun/);
+  });
+
+  it('keys paths by measurement root, so a same-named repo under another root is not conflated', () => {
+    const pin = pinOf(
+      [{ repo: 'libs/sub', rootHarnessSlug: 'other', head: HEAD, gitlink: LINK }, { repo: 'libs/sub', head: HEAD, gitlink: HEAD }],
+      [file('libs/sub/a.ts', 'libs/sub'), file('libs/sub/b.ts', 'libs/sub', 'other')],
+    );
+    expect(parentPublicationPending(pin)).toEqual([
+      { repo: 'libs/sub', rootHarnessSlug: 'other', head: HEAD, gitlink: LINK, paths: ['libs/sub/b.ts'] },
+    ]);
+  });
+
+  it('returns nothing for the root repo, an agreeing gitlink, an unmeasured repo, an unread head, or no pin', () => {
+    expect(parentPublicationPending(pinOf([{ repo: '.', head: ROOT, gitlink: null }], [file('src/a.ts', '.')]))).toEqual([]);
+    expect(parentPublicationPending(pinOf([{ repo: 'libs/sub', head: LINK, gitlink: LINK }], [file('libs/sub/a.ts', 'libs/sub')]))).toEqual([]);
+    expect(parentPublicationPending(pinOf([{ repo: 'libs/sub', head: HEAD, gitlink: LINK }], [file('src/a.ts', '.')]))).toEqual([]);
+    expect(parentPublicationPending(pinOf([{ repo: 'libs/sub', head: null, gitlink: LINK }], [file('libs/sub/a.ts', 'libs/sub')]))).toEqual([]);
+    expect(parentPublicationPending(null)).toEqual([]);
+    expect(parentPublicationPending(undefined)).toEqual([]);
+    expect(parentPublicationAdvisory(null)).toEqual({});
   });
 });

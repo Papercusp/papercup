@@ -27,6 +27,8 @@ import { DEFERRED_SPEND_INSTRUMENT_KEYS } from './workspace-host/deferred-spend-
 import { TOOL_DELIVERY_INSTRUMENTS } from './tool-delivery-acceptance';
 import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage/cold-tier-evidence';
 import { LIVE_FORKSERVER_INSTRUMENT_KEY } from './fleet/forkserver/live-instrument';
+import { FLEET_PRODUCTIVITY_KEY } from './fleet/execution-productivity';
+import { FLEET_COMMS_KEY } from './fleet/execution-comms';
 import { DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, POSTGRES_RETENTION_INSTRUMENT_KEY } from './storage/retention-interval-evidence';
 import { LEAD_SOURCE_OBSERVATIONS_INSTRUMENT_KEY } from './relationship-graph/qualification-instrument';
 import { MANAGED_INVENTORY_EVIDENCE_INSTRUMENT } from './managed-capability-inventory-evidence';
@@ -250,6 +252,8 @@ describe('the registry seed set', () => {
 
   it('registers exactly the keys scorecards resolves as platform-computed', () => {
     const expected = [
+      FLEET_PRODUCTIVITY_KEY,
+      FLEET_COMMS_KEY,
       MANAGED_INVENTORY_EVIDENCE_INSTRUMENT,
       DREAM_CONTROL_LIVE_INSTRUMENT_KEY,
       'observability:configured-project-delivery',
@@ -288,7 +292,7 @@ describe('the registry seed set', () => {
     for (const key of expected) expect(instrumentRegistry().get(key)?.evaluator, key).toBe('platform');
   });
 
-  it('only registered scheduled families opt into windows and adoption uses its real rater', async () => {
+  it('only registered families opt into windows and adoption uses its real rater', async () => {
     const window = { workspaceId: 'ws-native', windowStart: '2026-10-10T04:00:00.000Z', windowEnd: '2026-10-13T04:00:00.000Z' };
     const metrics = nativeAdoption.summarizeNativeAdoption({ window, invocations: [], shellCommands: [] });
     const measure = vi.spyOn(nativeAdoption, 'measureNativeAdoptionWindow').mockResolvedValue(metrics);
@@ -362,6 +366,15 @@ describe('the registry seed set', () => {
             expect(instrument.rescore?.unit).toBe('count');
             expect(instrument.rescore?.scope).toBe('harness');
             expect(await instrument.rescore!.resolve(window)).toEqual({ verdict: 'unknown', detail: 'Exact workspace and harness required.' });
+          } else if (key === FLEET_PRODUCTIVITY_KEY || key === FLEET_COMMS_KEY) {
+            expect(instrument.rescore?.windowMs).toBe(7 * 24 * 60 * 60_000);
+            expect(instrument.rescore?.unit).toBe('count');
+            expect(instrument.rescore?.scope).toBe('subject');
+            const missing = await instrument.rescore!.resolve(window);
+            expect(missing.verdict).toBe('unknown');
+            expect(missing).not.toHaveProperty('value');
+            expect(await instrument.rescore!.resolve({ ...window, harnessSlug: 'h', subject: { kind: 'plan', ref: 'f' } }))
+              .toMatchObject({ verdict: 'unknown' });
           } else if (key === MANAGED_INVENTORY_EVIDENCE_INSTRUMENT) {
             expect(instrument.rescore?.windowMs).toBe(7 * 24 * 60 * 60_000);
             expect(instrument.rescore?.scope).toBe('subject');

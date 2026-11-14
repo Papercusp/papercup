@@ -19,12 +19,13 @@ const kinds = (text: string) => lintCarrySurfaceProvenance(text).matches.map((m)
 
 describe('unprobed-deploy-dependency', () => {
   it.each([
-    'R-3 needs main before it can be graded',
+    'R-3 needs Git main before it can be graded',
+    'R-3 needs the main branch before it can be graded',
     'Waiting on the deploy to :3070, then re-grade R-1',
     'blocked on green main — resume after release:deployed',
     'Wait for the release deployment before the maintenance window.',
     'Acceptance is pending deployment; nothing else to do',
-    "can't grade R-3 until it lands on main",
+    "can't grade R-3 until it lands on the main branch",
     'R-3 needs the fix to be deployed before it can be graded',
   ])('flags: %s', (line) => {
     expect(kinds(line)).toContain('unprobed-deploy-dependency');
@@ -32,7 +33,7 @@ describe('unprobed-deploy-dependency', () => {
 
   it.each([
     // a probe on the same line
-    'R-3 needs main? re-check: dev:pipeline_position { path } → servingRuntimes shows bg-host has it',
+    'R-3 needs Git main? re-check: dev:pipeline_position { path } → servingRuntimes shows bg-host has it',
     'waiting on the deploy — measured: :3070 /api/health be8396c6dd lacks the blob',
     // hedged / tagged / questioned
     'R-3 probably needs main [inferred]',
@@ -47,6 +48,7 @@ describe('unprobed-deploy-dependency', () => {
     'merged the main loop refactor',
     'Wait for the release event before acquiring shared leases or reading refs.',
     'Wait for resource:released:git-sync before acquiring shared leases or reading refs.',
+    'Need main P2 actual volume/Preboot census; oldlibfsapfs package cannot currently supply it.',
   ])('does not flag: %s', (line) => {
     expect(kinds(line)).not.toContain('unprobed-deploy-dependency');
   });
@@ -116,9 +118,9 @@ describe('unprobed-deploy-dependency', () => {
   });
 
   it('an all-deploy-dependency write gets its own note; a mixed write keeps the louder one', () => {
-    expect(provenanceLintField('R-3 needs main before grading')?.note).toBe(PROVENANCE_LINT_DEPLOY_DEPENDENCY_NOTE);
+    expect(provenanceLintField('R-3 needs Git main before grading')?.note).toBe(PROVENANCE_LINT_DEPLOY_DEPENDENCY_NOTE);
     expect(PROVENANCE_LINT_DEPLOY_DEPENDENCY_NOTE).toMatch(/servingRuntimes/);
-    const mixed = provenanceLintField('R-3 needs main before grading\nThe owner said to wait for main');
+    const mixed = provenanceLintField('R-3 needs Git main before grading\nThe owner said to wait for the main branch');
     expect(mixed?.note).not.toBe(PROVENANCE_LINT_DEPLOY_DEPENDENCY_NOTE);
   });
 });

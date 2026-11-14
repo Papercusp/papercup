@@ -40,6 +40,7 @@ import {
   DEFAULT_ARCHIVE_FLOOR,
   acceptFeedbackRequestCore,
   continueFeedbackRequestCore,
+  consultSubjectKeys,
   getFeedbackCore,
   HARD_BLOCKED_EXPIRY_MS,
   MAX_CONSULT_DEPTH,
@@ -1101,6 +1102,125 @@ async function stateRow(conversationId: string, ws: string = WS) {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 describe('recoverable interactive feedback requests', () => {
+  async function exhaustedPreparation(key: string, legacy = false) {
+    const fixture = makeDeps(routeOf([cand('preparation-recovered-expert')]));
+    const request = { ...baseReq, requestKey: key };
+    const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    if ('error' in accepted) throw new Error(accepted.error);
+    const execute = vi.fn(async () => { throw new Error('preparation storage unavailable'); });
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await expect(continueFeedbackRequestCore(WS, accepted.conversation_id, {
+        getSql: () => rootSql, now: () => new Date(NOW.getTime() + attempt * 31_000), execute,
+      })).rejects.toThrow('preparation storage unavailable');
+      const row = await stateRow(accepted.conversation_id);
+      expect(row.state).toBe(attempt < 2 ? 'routing' : 'no_qualified_responder');
+      expect(row.routing).toMatchObject({ request: { attempts: attempt + 1,
+        lastError: 'Error: preparation storage unavailable' } });
+      if (attempt < 2) expect(row.routing).not.toHaveProperty('request.result');
+      else expect(row.routing).toMatchObject({ request: { leaseToken: null, leaseUntil: null,
+        result: { error: 'preparation_failed', stage: 'preparation', retryable: true,
+          hint: expect.stringContaining('Relevance is unmeasured') } } });
+    }
+    expect(execute).toHaveBeenCalledTimes(3);
+    expect(fixture.routeCalls).toHaveLength(0);
+    expect(fixture.reached).toHaveLength(0);
+    if (legacy) await rootSql`UPDATE harness_shared.consult_state
+      SET routing = jsonb_set(routing, '{request}', (routing->'request') - 'result')
+      WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+    return { fixture, request, accepted };
+  }
+
+  it.each([false, true])('recovers an exhausted preparation only on an explicit same-key retry (legacy=%s)', async (legacy) => {
+    const { fixture, request, accepted } = await exhaustedPreparation(`preparation-recovery-${legacy}`, legacy);
+    const before = await stateRow(accepted.conversation_id);
+    const later = () => new Date(NOW.getTime() + 93_000);
+    const retryDeps = { ...fixture.deps, now: later };
+    const forbidden = vi.fn(async () => { throw new Error('automatic retry of exhausted preparation'); });
+    expect(await continueFeedbackRequestCore(WS, accepted.conversation_id, {
+      getSql: () => rootSql, now: later, execute: forbidden,
+    })).toBe(false);
+    expect(forbidden).not.toHaveBeenCalled();
+    expect(await acceptFeedbackRequestCore({ ...request, question: 'different question' }, retryDeps))
+      .toMatchObject({ error: 'request_key_conflict' });
+    expect(await stateRow(accepted.conversation_id)).toEqual(before);
+    const retries = await Promise.all([
+      acceptFeedbackRequestCore(request, retryDeps), acceptFeedbackRequestCore(request, retryDeps),
+    ]);
+    for (const retry of retries) expect(retry).toMatchObject({
+      conversation_id: accepted.conversation_id, request_key: request.requestKey, state: 'routing', pending: true,
+    });
+    const recovered = await stateRow(accepted.conversation_id);
+    expect(recovered.routing).toMatchObject({ request: { attempts: 0,
+      lastError: 'Error: preparation storage unavailable', recoveryHistory: [{
+        attempts: 3, lastError: 'Error: preparation storage unavailable',
+        result: legacy ? null : { error: 'preparation_failed' },
+      }] } });
+    expect((recovered.routing as { request: { recoveryHistory: unknown[] } }).request.recoveryHistory).toHaveLength(1);
+    const execute = vi.fn((payload: GetFeedbackRequest, context: NonNullable<GetFeedbackDeps['acceptedRequest']>) =>
+      getFeedbackCore(payload, { ...retryDeps, acceptedRequest: context }));
+    const results = await Promise.all([0, 1].map(() => continueFeedbackRequestCore(WS, accepted.conversation_id, {
+      getSql: () => rootSql, now: later, execute,
+    })));
+    expect(results.sort()).toEqual([false, true]);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(fixture.reached).toHaveLength(1);
+    expect(await acceptFeedbackRequestCore(request, retryDeps)).toMatchObject({
+      conversation_id: accepted.conversation_id, state: 'awaiting_responder', pending: false,
+      result: { verdict: 'routed' },
+    });
+    expect(await continueFeedbackRequestCore(WS, accepted.conversation_id, {
+      getSql: () => rootSql, now: later, execute,
+    })).toBe(false);
+    expect(fixture.reached).toHaveLength(1);
+  });
+
+  it.each(['selected', 'responder', 'dispatch', 'cascade', 'wake', 'exchange', 'outcome', 'archive',
+    'closed', 'closed-conversation', 'reply', 'unexpired-lease', 'result-dispatch', 'result-wake',
+    'payload-provenance', 'missing-error', 'insufficient-attempts'].flatMap(fence =>
+    [false, true].map(legacy => ({ fence, legacy }))))(
+    'does not recover exhausted preparation past $fence (legacy=$legacy)', async ({ fence, legacy }) => {
+      const { fixture, request, accepted } = await exhaustedPreparation(`preparation-fence-${fence}-${legacy}`, legacy);
+      const patch = fence === 'selected' ? { selection: { selected: [{ ownerId: 'selected-expert' }] } }
+        : fence === 'cascade' ? { cascadeDispatch: { state: 'pending' } } : {};
+      await rootSql`UPDATE harness_shared.consult_state SET routing = routing || ${rootSql.json(patch)},
+        responder_id = ${fence === 'responder' ? 'selected-expert' : null},
+        dispatch_attempts = ${rootSql.json(fence === 'dispatch' ? [{ dispatched: false }] : [])},
+        wakes_used = ${fence === 'wake' ? 1 : 0}, exchanges_used = ${fence === 'exchange' ? 1 : 0},
+        outcome = ${fence === 'outcome' || fence === 'archive' ? rootSql.json({ source: 'archive' }) : null},
+        closed_at = ${fence === 'closed' ? NOW.toISOString() : null}::timestamptz
+        WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+      if (fence === 'unexpired-lease') await rootSql`UPDATE harness_shared.consult_state
+        SET routing = jsonb_set(routing, '{request,leaseUntil}', ${rootSql.json(new Date(NOW.getTime() + 120_000).toISOString())})
+        WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+      if (fence === 'result-dispatch' || fence === 'result-wake') await rootSql`UPDATE harness_shared.consult_state
+        SET routing = jsonb_set(routing, '{request,result}', COALESCE(routing #> '{request,result}', '{}'::jsonb) ||
+          ${rootSql.json(fence === 'result-dispatch' ? { dispatch: { answeringOwnerId: 'maybe-launched' } }
+            : { wake: { attempted: true, queued: 0, woke: 0 } })})
+        WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+      if (fence === 'missing-error') await rootSql`UPDATE harness_shared.consult_state
+        SET routing = jsonb_set(routing, '{request}', (routing->'request') - 'lastError')
+        WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+      if (fence === 'insufficient-attempts') await rootSql`UPDATE harness_shared.consult_state
+        SET routing = jsonb_set(routing, '{request,attempts}', '2'::jsonb)
+        WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+      if (fence === 'payload-provenance') await rootSql`UPDATE harness_shared.consult_state
+        SET routing = jsonb_set(routing, '{request,payload,question}', '"tampered"'::jsonb)
+        WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+      if (fence === 'reply') await rootSql`INSERT INTO harness_shared.consult_post_meta
+        (workspace_id, post_id, conversation_id, author_id, kind)
+        VALUES (${WS}, ${Number.parseInt(randomBytes(6).toString('hex'), 16)},
+          ${accepted.conversation_id}, 'prior-answer', 'answer')`;
+      if (fence === 'closed-conversation') await rootSql`INSERT INTO harness_shared.coord_conversations
+        (workspace_id, id, state) VALUES (${WS}, ${accepted.conversation_id}, 'closed')`;
+      const before = await stateRow(accepted.conversation_id);
+      const retry = await acceptFeedbackRequestCore(request, { ...fixture.deps, now: () => new Date(NOW.getTime() + 93_000) });
+      expect(retry).toMatchObject(fence === 'payload-provenance' ? { error: 'request_key_conflict' }
+        : { state: 'no_qualified_responder', pending: false });
+      expect(await stateRow(accepted.conversation_id)).toEqual(before);
+      expect(fixture.reached).toHaveLength(0);
+    },
+  );
+
   it('retains the original runtime through same-key retries on another host and durable recovery', async () => {
     const fixture = makeDeps(routeOf([cand('runtime-expert')]));
     const request = { ...baseReq, requestKey: 'saved-runtime', launchOperatorBaseUrl: 'http://localhost:3170' };
@@ -2413,15 +2533,28 @@ describe('getFeedbackCore — honest no_qualified_responder', () => {
   });
 
   it('keeps unavailable subject evidence honest at the requester contract', async () => {
-    const { deps } = makeDeps(routeOf([], { degraded: 'evidence-unavailable' }));
+    const route = routeOf([], { degraded: 'evidence-unavailable' });
+    const diagnostic: NonNullable<typeof route.snapshot.subjectValidation> = {
+      subjects: ['src/direct.ts'], threshold: 0.6, evaluated: 0,
+      unmeasured: 1, budgetLimited: 0, limit: 8, budgetMs: 120000,
+      unresolved: [], failures: [{ reason: 'scorer-error', errorCode: 'ETIMEDOUT', count: 1 }],
+      scoring: [{ subject: 'src/direct.ts', passages: 1, textChars: 240,
+        outcome: 'threw', durationMs: 10, phases: [{ phase: 'inference', outcome: 'threw', durationMs: 10 }] }],
+    };
+    route.snapshot.subjectValidation = diagnostic;
+    const { deps, reached } = makeDeps(route);
     const r = asOk(await getFeedbackCore(baseReq, deps));
     expect(r.verdict).toBe('relevance_unmeasured');
     expect(r.reason).toBe('evidence_unavailable');
     expect(r.degraded).toBe('evidence-unavailable');
     expect(r.hint).toContain('does not prove no expert exists');
     expect(r.unmeasured_candidates).toEqual([]);
+    expect(r.subject_validation).toEqual(diagnostic);
+    expect(reached).toHaveLength(0);
     expect(r.hint).toContain('No unmeasured candidate transcript references');
-    expect((await stateRow(r.conversation_id)).routing).toMatchObject({ degraded: 'evidence-unavailable' });
+    expect((await stateRow(r.conversation_id)).routing).toMatchObject({
+      degraded: 'evidence-unavailable', subjectValidation: diagnostic,
+    });
   });
 
   it('preserves bounded subject uncertainty without claiming an instrument outage or measured absence', async () => {
@@ -3645,6 +3778,32 @@ describe('getFeedbackCore — archive-first retrieval (P-006)', () => {
 
     expect(r.verdict).toBe('routed');
     expect(r.archive).toBeUndefined();
+    expect(reached).toHaveLength(1);
+  });
+
+  it('does not reuse an operational archive for a source-recipe question with different code subjects', async () => {
+    const ws = 'ws-arch-source-recipe-subject-fence';
+    const archivedQuestion =
+      'Is there any remaining storage-correctness risk in a bounded process/operator restart?';
+    const question =
+      'Can sourcePaths from a clean fromTestRun be narrowed after one with-plan-lock.ts notice change?';
+    await seedClosedConsult({
+      ws,
+      conv: 'arch-unrelated-process-restart',
+      vec: vecAt(0), // Deliberately identical embedding: the subject fence must decide.
+      question: archivedQuestion,
+      outcome: { answer: 'no remaining material storage-correctness risk', confidence: 'high' },
+    });
+    expect(consultSubjectKeys(question)).toEqual(expect.arrayContaining([
+      'code:sourcePaths', 'code:fromTestRun', 'code:with-plan-lock.ts',
+    ]));
+    const { deps, reached } = makeDeps(
+      routeOf([cand('cand-live')], { queryVec: qv }),
+    );
+    const result = asOk(await getFeedbackCore({ ...baseReq, workspaceId: ws, question }, deps));
+
+    expect(result.verdict).toBe('routed');
+    expect(result.archive).toBeUndefined();
     expect(reached).toHaveLength(1);
   });
 

@@ -636,6 +636,100 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
     expect(result).toMatchObject({ checkLedger: { recorded: 0, error: expect.stringMatching(/results-ledger write failed: connection refused/) } });
   });
 
+  it('shares 24 mixed-path operations across 32 separate consumers and remeasures the next emit', async () => {
+    const file = 'packages/operator-core/lib/agent-tools/scorecards/emit.checks.test.ts';
+    const probe = (n: number) => ({ kind: 'tool' as const, tool: 'scorecards:get', args: { issueId: `EI-shared-${n}` },
+      schemaRevision: 'live', expect: { path: '$.count', op: 'eq' as const, value: 2 } });
+    const criteria = Array.from({ length: 24 }, (_, n) => ({ ...CHECKED_RUBRIC.criteria[0], key: `p${n}`, check: { kind: 'probe', probe: probe(n) } }));
+    criteria.push({ ...CHECKED_RUBRIC.criteria[0], key: 'group', check: { kind: 'tests', files: [file], all: Array.from({ length: 8 }, (_, n) => probe(n)) } } as never);
+    getRubric.mockResolvedValue({ ...CHECKED_RUBRIC, criteria });
+    const ratings = Object.fromEntries(criteria.map(c => [c.key, { rating: 'pass', evidence: 'mixed-path measurement' }]));
+    const order: string[] = [];
+    const dispatchTool = vi.fn(async () => { order.push('probe'); return { count: 2 }; });
+    const runRecoverableChecks = vi.fn(async (opts: { root: string }) => {
+      order.push('tests');
+      return { ok: true, root: opts.root, runId: 'mixed-test-run', files: 1, passed: 3, failed: 0, skipped: 0,
+        byFile: { [file]: { passed: 3, failed: 0, skipped: 0, collectionFailed: false } },
+        failures: [], failuresTruncated: false, durationMs: 1, testRunIds: [900] };
+    });
+    const recordCheckResults = vi.fn<typeof recordRubricCheckResults>().mockResolvedValue([]);
+    for (let round = 1; round <= 2; round++) {
+      const result = await emitScorecard(emitArgs({ ratings }) as never, { ...EMIT_INPUT, checkRoot: REPO_ROOT },
+        { runRecoverableChecks, dispatchTool, recordCheckResults });
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+      expect(dispatchTool).toHaveBeenCalledTimes(round * 24);
+      const rows = recordCheckResults.mock.calls.slice((round - 1) * 2, round * 2).flatMap(([rows]) => rows);
+      expect(rows).toHaveLength(32);
+      expect(new Set(rows.map(r => r.check.id)).size).toBe(32);
+    }
+    expect(order[0]).toBe('tests');
+    expect(order[25]).toBe('tests');
+  });
+
+  it('keeps different arguments, predicates and projections separate across both emit paths', async () => {
+    const file = 'packages/operator-core/lib/agent-tools/scorecards/emit.checks.test.ts';
+    const base = { kind: 'tool' as const, tool: 'scorecards:get', args: { issueId: 'EI-identity' },
+      schemaRevision: 'live', expect: { path: '$.count', op: 'eq' as const, value: 2 } };
+    const probes = [base, { ...base, args: { issueId: 'EI-other' } },
+      { ...base, expect: { ...base.expect, op: 'gte' as const } },
+      { ...base, projection: { pick: ['count'] } }];
+    const criteria = probes.map((probe, n) => ({ ...CHECKED_RUBRIC.criteria[0], key: `p${n}`, check: { kind: 'probe', probe } }));
+    criteria.push({ ...CHECKED_RUBRIC.criteria[0], key: 'group', check: { kind: 'tests', files: [file], all: probes } } as never);
+    getRubric.mockResolvedValue({ ...CHECKED_RUBRIC, criteria });
+    const ratings = Object.fromEntries(criteria.map(c => [c.key, { rating: 'pass', evidence: 'complete identity control' }]));
+    const dispatchTool = vi.fn(async () => ({ count: 2 }));
+    const runRecoverableChecks = vi.fn(async (opts: { root: string }) => ({ ok: true, root: opts.root, runId: 'identity-run', files: 1,
+      passed: 3, failed: 0, skipped: 0, byFile: { [file]: { passed: 3, failed: 0, skipped: 0, collectionFailed: false } },
+      failures: [], failuresTruncated: false, durationMs: 1, testRunIds: [900] }));
+    const recordCheckResults = vi.fn<typeof recordRubricCheckResults>().mockResolvedValue([]);
+    const result = await emitScorecard(emitArgs({ ratings }) as never, { ...EMIT_INPUT, checkRoot: REPO_ROOT },
+      { runRecoverableChecks, dispatchTool, recordCheckResults });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+    expect(dispatchTool).toHaveBeenCalledTimes(4);
+    const rows = recordCheckResults.mock.calls.flatMap(([rows]) => rows);
+    expect(rows).toHaveLength(8);
+    expect(new Set(rows.map(row => row.check.id)).size).toBe(8);
+  });
+
+  it.each(['missing', 'unknown', 'truncated', 'error'] as const)('refuses a mixed-path shared %s result before filing or executing the second path', async mode => {
+    const file = 'packages/operator-core/lib/agent-tools/scorecards/emit.checks.test.ts';
+    const probe = { kind: 'tool', tool: 'scorecards:get', args: { issueId: 'EI-shared-failure' }, schemaRevision: 'live', expect: { path: '$.count', op: 'eq', value: 2 } };
+    getRubric.mockResolvedValue({ ...CHECKED_RUBRIC, criteria: [
+      { ...CHECKED_RUBRIC.criteria[0], check: { kind: 'probe', probe } },
+      { ...CHECKED_RUBRIC.criteria[1], check: { kind: 'tests', files: [file], all: [probe] } },
+    ] });
+    const dispatchTool = vi.fn(async () => {
+      if (mode === 'error') throw new Error('unavailable');
+      if (mode === 'missing') return undefined;
+      return mode === 'unknown' ? { ok: false, error: 'unavailable' } : { count: 2, _projection: { truncated: true } };
+    });
+    const runRecoverableChecks = vi.fn(async (opts: { root: string }) => ({ ok: true, root: opts.root, runId: 'failed-probe-run', files: 1, passed: 3, failed: 0, skipped: 0,
+      byFile: { [file]: { passed: 3, failed: 0, skipped: 0, collectionFailed: false } }, failures: [], failuresTruncated: false, durationMs: 1, testRunIds: [900] }));
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await emitScorecard(emitArgs() as never, { ...EMIT_INPUT, checkRoot: REPO_ROOT }, { runRecoverableChecks, dispatchTool });
+      expect(result).toMatchObject({ ok: false, checkRefusal: { error: 'probe_run_failed' } });
+      expect(dispatchTool).toHaveBeenCalledOnce();
+      expect(captureImprovement).not.toHaveBeenCalled();
+    } finally { warning.mockRestore(); }
+  });
+
+  it('refuses 25 combined distinct operations before either path dispatches', async () => {
+    const probe = (n: number) => ({ kind: 'tool' as const, tool: 'scorecards:get', args: { issueId: `EI-limit-${n}` },
+      schemaRevision: 'live', expect: { path: '$.count', op: 'eq' as const, value: 2 } });
+    const criteria = Array.from({ length: 24 }, (_, n) => ({ ...CHECKED_RUBRIC.criteria[0], key: `p${n}`, check: { kind: 'probe', probe: probe(n) } }));
+    criteria.push({ ...CHECKED_RUBRIC.criteria[0], key: 'group', check: { kind: 'tests', files: ['packages/operator-core/lib/agent-tools/scorecards/emit.checks.test.ts'], all: [probe(24)] } } as never);
+    getRubric.mockResolvedValue({ ...CHECKED_RUBRIC, criteria });
+    const ratings = Object.fromEntries(criteria.map(c => [c.key, { rating: 'pass', evidence: 'cap control' }]));
+    const dispatchTool = vi.fn();
+    const runRecoverableChecks = vi.fn();
+    const result = await emitScorecard(emitArgs({ ratings }) as never, { ...EMIT_INPUT, checkRoot: REPO_ROOT }, { runRecoverableChecks, dispatchTool });
+    expect(result).toMatchObject({ ok: false, checkRefusal: { error: 'probe_invalid' } });
+    expect(dispatchTool).not.toHaveBeenCalled();
+    expect(runRecoverableChecks).not.toHaveBeenCalled();
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
   it.each([[0, 2, true], [0, 0, false], [1, 2, false]] as const)(
     'keeps both halves and probe ledger receipts for tests.all (%s failures, %s observed)', async (failed, count, accepted) => {
       const file = 'packages/operator-core/lib/agent-tools/scorecards/emit.checks.test.ts';

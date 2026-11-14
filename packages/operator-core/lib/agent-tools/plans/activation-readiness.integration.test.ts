@@ -11,6 +11,7 @@ import { writePlanIndexRows } from './plan-index-rows';
 import { readPlanLineNodes, writePlanLineNodes } from './plan-line-graph';
 import { readPlanBySlug } from './source';
 import { listSpecClauses, setSpecClause } from './spec-clauses-store';
+import { evaluatePlanSpecQuality } from './spec-quality';
 import { buildBarCritiqueRecord, evaluateBarCritiqueGate } from './plan-start-critique-gate';
 import { mergeActivationAuditCoverage, type ActivationAuditPayload } from '../../plan-audits';
 import { checkExecutionPlan } from './plan-execution-guard';
@@ -102,6 +103,47 @@ beforeEach(async () => {
 });
 
 describe('activation readiness application-read-only boundary', () => {
+  it('pins the same live contract as spec quality while retaining superseded and retired history', async () => {
+    const write = { harnessSlug: harness, planSlug: slug, planItemId: 'P-001',
+      behavior: 'A changed input is rejected before a write.', behaviorClass: 'boundary' as const,
+      requiredEvidence: ['code'], requiredTestLayers: ['unit'], actorId: requesterId,
+      falsifier: { observation: 'The changed input is accepted.', probeMethod: 'Run the invalid-input fixture.' } };
+    const scope = { workspaceId: fx.workspaceId, harnessSlug: harness, planSlug: slug };
+    for (let index = 0; index < 22; index++) {
+      const lifecycleStatus = index < 20 ? 'draft' : index === 20 ? 'superseded' : 'retired';
+      const result = await fx.admin.begin(tx => setSpecClause({ ...write, expectedRevision: 0,
+        specId: 'CONTRACT-' + index, lifecycleStatus },
+      { executor: tx as never, workspaceId: fx.workspaceId, harnessSlug: harness }));
+      expect(result).toMatchObject({ status: 'created' });
+    }
+    const original = await listSpecClauses(scope);
+    expect(original).toHaveLength(22);
+    expect(original.filter(clause => clause.lifecycleStatus === 'draft')).toHaveLength(20);
+    const qualityHash = (clauses: typeof original) => evaluatePlanSpecQuality({
+      harnessSlug: harness, planSlug: slug, planItemIds: ['P-001'], clauses,
+      classRef: 'plan-class-feature-ship',
+    }).specSetHash;
+    const before = await snapshot();
+    const diagnostic = await readPlanActivationReadiness(request());
+    if (!diagnostic.basis) throw new Error('The canonical readiness basis must be available.');
+    expect(diagnostic.basis.specSetHash).toBe(qualityHash(original));
+    expect(await snapshot()).toEqual(before);
+    expect(await listSpecClauses(scope)).toEqual(original);
+
+    // A matching pin must still invalidate when the live contract changes.
+    const changed = await fx.admin.begin(tx => setSpecClause({ ...write, specId: 'CONTRACT-0',
+      expectedRevision: 1, lifecycleStatus: 'draft', behavior: 'A changed input is rejected before any external effect.' },
+    { executor: tx as never, workspaceId: fx.workspaceId, harnessSlug: harness }));
+    expect(changed).toMatchObject({ status: 'revised' });
+    const current = await listSpecClauses(scope);
+    const updated = await readPlanActivationReadiness(request());
+    if (!updated.basis) throw new Error('The updated readiness basis must be available.');
+    expect(updated.basis.specSetHash).toBe(qualityHash(current));
+    expect(updated.basis.specSetHash).not.toBe(diagnostic.basis.specSetHash);
+    expect(current.filter(clause => ['superseded', 'retired'].includes(clause.lifecycleStatus)))
+      .toEqual(original.filter(clause => ['superseded', 'retired'].includes(clause.lifecycleStatus)));
+  }, 120_000);
+
   it('previews the activation audit Conformance refusal and requirement keys without writes', async () => {
     const read = await readPlanBySlug(slug, { workspaceId: fx.workspaceId, harnessSlug: harness });
     const content = read!.row.content + '\n## Requirements\n\n' + ['R-1', 'R-2'].map(key =>
@@ -201,6 +243,13 @@ describe('activation readiness application-read-only boundary', () => {
     expect(refused.ok).toBe(false);
     expect(refused.error).toBeTruthy();
     const diagnostics = [read.activationReadiness, audit.data.activationReadiness, refused.activationReadiness];
+    for (const diagnostic of diagnostics) {
+      expect(diagnostic).toMatchObject({ schemaVersion: 1, advisory: true, ready: false,
+        counts: { total: ACTIVATION_STAGE_IDS.length, returned: ACTIVATION_STAGE_IDS.length, omitted: 0 } });
+      expect(diagnostic.stages.map((stage: { id: string }) => stage.id)).toEqual([...ACTIVATION_STAGE_IDS]);
+      expect(diagnostic.stages.find((stage: { id: string }) => stage.id === 'conformance'))
+        .toMatchObject({ status: 'not-applicable', codes: ['conformance_not_applicable'] });
+    }
     const project = (diagnostic: any) => ({ basis: diagnostic.basis, freshness: diagnostic.freshness,
       stages: diagnostic.stages.filter((s: any) => s.id !== 'consult') });
     expect(diagnostics[0]).toMatchObject({ ready: false, freshness: 'current',

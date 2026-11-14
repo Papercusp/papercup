@@ -18,6 +18,7 @@ import { parseScratchReference } from '../../../scratch-reference';
 import { configurePlanAdmissionPolicySource } from '../plan-admission-gate';
 import * as activationReadiness from '../get-activation-readiness';
 import { PLANS_START_DIAGNOSTIC_TIMEOUT_MS } from '../start';
+import { DEFAULT_CLAIM_SPEC, validateClaimSpec } from '../../../scheduler/claim-spec';
 import {
   projectAcceptanceBarContractSnapshot,
   readAcceptanceBarContractSnapshot,
@@ -27,7 +28,7 @@ import {
 } from '../../../acceptance-bar-contract-snapshot';
 
 const admissionMocks = vi.hoisted(() => ({ preflight: vi.fn(), laneHealth: vi.fn() }));
-const claimSpecMocks = vi.hoisted(() => ({ setClaimSpec: vi.fn() }));
+const claimSpecMocks = vi.hoisted(() => ({ setClaimSpec: vi.fn(), getClaimSpecRecord: vi.fn() }));
 const activationMocks = vi.hoisted(() => ({ gate: vi.fn() }));
 const planLockMocks = vi.hoisted(() => ({ withPlanLock: vi.fn() }));
 
@@ -173,6 +174,7 @@ vi.mock('../../../scheduler/claim-spec-store', async (orig) => {
   return {
     ...actual,
     setClaimSpec: (...args: unknown[]) => claimSpecMocks.setClaimSpec(...args),
+    getClaimSpecRecord: (...args: unknown[]) => claimSpecMocks.getClaimSpecRecord(...args),
   };
 });
 
@@ -352,6 +354,9 @@ beforeEach(() => {
   };
   claimSpecMocks.setClaimSpec.mockReset();
   claimSpecMocks.setClaimSpec.mockResolvedValue({ ok: true, errors: [], revision: 1 });
+  claimSpecMocks.getClaimSpecRecord.mockReset();
+  claimSpecMocks.getClaimSpecRecord.mockResolvedValue({ source: 'default', spec: DEFAULT_CLAIM_SPEC,
+    revision: null, updatedBy: null, updatedAt: null });
   promotePlanItemsMock.mockReset();
   promotePlanItemsMock.mockResolvedValue({ promoted: 0, skipped: 0, flagOff: false, ...NO_EDGES });
   planLockMocks.withPlanLock.mockReset();
@@ -1288,6 +1293,7 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
       workspaceId: 'ws-of-harness',
       updatedBy: 'agent-test',
       potSlug: 'papercup',
+      ifAbsent: true,
       spec: expect.objectContaining({
         specId: 'plans-start-live-plan-2026-06-02',
         view: {
@@ -1300,6 +1306,41 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
         },
       }),
     }));
+  });
+
+  it.each(['cup', 'fleet'] as const)('preserves an authored %s policy during ordinary start', async source => {
+    const spec = { ...DEFAULT_CLAIM_SPEC, specId: 'leader-reviewed-cohort', revision: 7,
+      view: { filter: { all: [
+        { field: 'id', op: 'in', value: ['WI-original', 'EI-admitted-dependency'] },
+        { not: { field: 'id', op: '=', value: 'WI-excluded' } },
+      ] } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'severity_rank', dir: 'desc' }, { expr: 'age', dir: 'asc' }] },
+      states: ['open'], limits: { maxConcurrentClaims: 1 } };
+    expect(validateClaimSpec(spec).ok).toBe(true);
+    const record = { source, spec, revision: 7, updatedBy: 'leader', updatedAt: '2026-11-12T00:00:00Z',
+      harnessSlug: 'papercup', ...(source === 'fleet' ? { fleetSlug: 'original-fleet' } : {}) };
+    const before = structuredClone(record);
+    claimSpecMocks.getClaimSpecRecord.mockResolvedValueOnce(record);
+
+    const res = await run({ slug: 'live-plan-2026-06-02' });
+
+    expect(res.data.counts).toEqual({ ok: 1, failed: 0 });
+    expect(res.data.results[0]).toMatchObject({ claimSpecBinding: { ok: true, revision: 7 } });
+    expect(claimSpecMocks.getClaimSpecRecord).toHaveBeenCalledWith({ cupId: 'agent-test', workspaceId: 'ws-of-harness' });
+    expect(claimSpecMocks.setClaimSpec).not.toHaveBeenCalled();
+    expect(record).toEqual(before);
+  });
+
+  it.each(['unreadable policy', 'missing fleet policy'])('refuses to replace an %s with a default binding', async reason => {
+    if (reason === 'unreadable policy') claimSpecMocks.getClaimSpecRecord.mockRejectedValueOnce(new Error('policy unavailable'));
+    else claimSpecMocks.getClaimSpecRecord.mockResolvedValueOnce({ source: 'default', spec: DEFAULT_CLAIM_SPEC,
+      revision: null, fleetSlug: 'transitioning-fleet' });
+
+    const res = await run({ slug: 'live-plan-2026-06-02' });
+
+    expect(res.data.counts).toEqual({ ok: 0, failed: 1 });
+    expect(res.data.results[0]).toMatchObject({ error: 'claim_spec_binding_failed' });
+    expect(claimSpecMocks.setClaimSpec).not.toHaveBeenCalled();
   });
 
   it('returns an immutable receipt before trimmed HTTP shaping can hide a post-promotion refusal', async () => {

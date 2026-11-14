@@ -22,6 +22,12 @@ import { recordRubricCheckResults, readLatestRubricCheckResults } from './check-
 import { fillRatingsFromLedger } from './scorecard-ledger-fill';
 import { retainMeasurementProvenance } from './measurement-provenance';
 import { SQL_PROBE_TOOL, continuityProbeRevision } from './continuity-probes';
+import { createHash } from 'node:crypto';
+import { formatWorkDefinitionApproval, formatWorkDefinitionProposal, formatWorkDefinitionProposalSelection,
+  workDefinitionFingerprint, workDefinitionAssessmentCompletionError } from './work-item-definition-source';
+import { publishReport, retireReport } from './report-library';
+import type { WorkItemDefinition, WorkItemDefinitionFields } from './work-item-definition';
+import { recordOwnerDirective } from './owner-directives';
 import './agent-tools/dev/pg_query';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
@@ -71,6 +77,10 @@ const { OBSERVATION_TOPIC } = await import('./harness/improvements/read-items');
 const { resolveLocalRubric } = await import('./cupboard/rubric-store');
 const { createOrgTestDb } = await import('../test/_org-test-db');
 const { confirmPendingGradingAuditReservation } = await import('./grading-integrity');
+const { createWorkItem, getWorkItem, mergeWorkItemPayload, setWorkItemState } = await import('./work-items');
+const definitionUpdate = (await import('./agent-tools/work_items/update')).default;
+const definitionComplete = (await import('./agent-tools/work_items/complete')).default;
+const { createOneWorkItem } = await import('./agent-tools/work_items/_create-core');
 const {
   buildScorecardHistoryPredicate,
   normalizeScorecardHistoryArgs,
@@ -203,6 +213,559 @@ async function fileScorecard(
   await db.adminSql`UPDATE harness_shared.engineer_issues SET created_at = ${opts.createdAt} WHERE issue_id = ${issue.id}`;
   return issue.id;
 }
+
+describe('owner-admitted assessment scope through production stores (D-008) — real PG', () => {
+  let db: OrgTestDb;
+  let sequence = 0;
+  const keys = Array.from({ length: 26 }, (_, i) => `scope-criterion-${i + 1}`);
+  const fields: WorkItemDefinitionFields = { acceptanceCriteria: ['Assess the approved fleet criteria', 'Preserve the original fleet window'] };
+  const at = '2026-11-01T12:00:00Z';
+  const clock = '2026-11-02T00:00:00Z';
+  // Terminal fences retain one transaction while canonical readers use another;
+  // race controls also need an advisory holder and an independent observer.
+  beforeAll(async () => { db = await createOrgTestDb({ adminPoolMax: 8 }); h.sql = db.adminSql; await seedAuditRubric(); });
+  afterAll(async () => db?.cleanup());
+
+  async function fixture(options: { family?: 'issue' | 'feature'; startedAt?: string; finishedAt?: string } = {}) {
+    const n = ++sequence;
+    const rubricRef = `source-scope-${n}`;
+    const subject = { kind: 'pot' as const, ref: `fleet:source-scope-${n}`, windowStart: at, windowEnd: clock };
+    const schemaRevision = continuityProbeRevision(SQL_PROBE_TOOL)!;
+    await proposeRubric({ rubricId: rubricRef, characteristic: 'scope-parity', title: 'Source scope controls',
+      status: 'active', by: 'su-scope-fixture', criteria: keys.map(key => ({ key, title: key,
+        model: 'A requested measurement is independently retained.', method: 'Inspect the original retained check.',
+        driftMarkers: 'An unknown criterion is counted as fulfilled.',
+        check: key === keys[0] ? { kind: 'probe' as const, probe: { kind: 'sql' as const, sql: 'SELECT 3 AS n', schemaRevision,
+          expect: { path: '$.rowCount', op: 'gte' as const, value: 10 } } }
+          : { kind: 'tests' as const, files: ['packages/operator-core/lib/scorecards.test.ts'] } })) });
+    const rubric = (await getRubric(rubricRef))!;
+    const provenance = retainMeasurementProvenance({ startedAt: options.startedAt ?? at, finishedAt: options.finishedAt ?? at,
+      procedure: { kind: 'command', argv: ['source-scope-fixture-check'] }, result: { value: 3 } });
+    const check = { id: `${keys[0]}:0`, rubricRef, criterionKey: keys[0]!, kind: 'probe' as const,
+      value: 3, unit: null, subject: { kind: subject.kind, ref: subject.ref }, provenance };
+    const [testRunId] = await recordRubricCheckResults([{ check, verdict: 'fail', measuredAt: at, durationMs: 1 }],
+      { workspaceId: issuesScopeWorkspace(), harnessSlug: 'papercusp' }, db.adminSql);
+    const row = (await readLatestRubricCheckResults({ rubricRef, workspaceId: issuesScopeWorkspace(),
+      testRunIds: [testRunId!], subject: check.subject,
+      asOf: new Date(Math.max(Date.parse(clock), Date.parse(options.finishedAt ?? at))).toISOString() }, db.adminSql)).get(check.id);
+    if (!row) throw new Error('Fixture did not retain its exact measured receipt at its own clock');
+    const ratings = Object.fromEntries(keys.map(key => [key, key === keys[0]
+      ? { rating: 'degraded', evidence: 'A retained adverse measurement.', ratedFrom: 'ledger' as const,
+          ledgerResult: { testRunId: testRunId!, value: 3, unit: null,
+            provenance: row.check.provenance, provenanceStatus: row.provenanceStatus } }
+      : { rating: 'unknown', evidence: 'Not measured in the original fleet window.', unknownReason: 'not-assessed' as const } ]));
+    const cardId = await fileScorecard(db, { id: rubricRef, rubricRef, ratings, subject,
+      createdAt: clock, finalized: true });
+    const work = options.family === 'feature'
+      ? await createWorkItem({ kind: 'feature', title: `Assess ${rubricRef}`, harness: 'papercusp',
+          workspaceId: issuesScopeWorkspace(), createdBy: 'su-scope-fixture', assignee: 'su-scope-fixture',
+          payload: { workDefinition: fields } })
+      : await createIssue({ kind: 'task', title: `Assess ${rubricRef}`, scope: 'harness:papercusp',
+          createdBy: 'su-scope-fixture', assignee: 'su-scope-fixture', payload: { workDefinition: fields } });
+    const item = (await getWorkItem(work.id))!;
+    const target = { workspaceId: issuesScopeWorkspace(), harnessSlug: item.harness!, workItemId: item.id };
+    const selector = { id: item.id, harness: item.harness! };
+    const ctx = { isSuperuser: true, uiClientId: 'su-scope-fixture', workspaceId: target.workspaceId };
+    const update = async (definition: WorkItemDefinition | null) =>
+      (await definitionUpdate.handler({ id: item.id, harness: item.harness!, definition } as never, ctx as never) as { data: any }).data;
+    const approve = async (criterionKeys: string[], previousDefinition: unknown, definition = fields) => {
+      const assessment = { rubricRef, rubricRevision: rubric.revision!, criteriaHash: rubric.criteriaHash!, subject, criterionKeys };
+      const body = formatWorkDefinitionApproval({ schema: 'work-definition-approval-v1', target,
+        previousDefinitionHash: workDefinitionFingerprint(previousDefinition), definition, assessment });
+      const directive = await recordOwnerDirective({ workspaceId: target.workspaceId, ownerId: 'human-fixture',
+        recordedBy: 'su-scope-fixture', capturedByHook: true, sessionRef: `scope-source-${n}`,
+        sourceTurnRef: `session_turn:codex:scope-source-${n}:${++sequence}`, verbatimText: body }, db.adminSql);
+      const source = { directiveId: directive.id, principalId: directive.ownerId, sourceTurnRef: directive.sourceTurnRef!,
+        bodySha256: createHash('sha256').update(body).digest('hex') };
+      return { ...definition, assessmentScope: { assessment, source } };
+    };
+    const propose = async (criterionKeys: string[], previousDefinition: unknown) => {
+      const assessment = { rubricRef, rubricRevision: rubric.revision!, criteriaHash: rubric.criteriaHash!, subject, criterionKeys };
+      const statement = { schema: 'work-definition-approval-v1' as const, target,
+        previousDefinitionHash: workDefinitionFingerprint(previousDefinition), definition: fields, assessment };
+      const report = await publishReport(db.adminSql, { workspaceId: target.workspaceId,
+        title: 'Exact assessment mapping', bodyMd: formatWorkDefinitionProposal(statement), kind: 'proposal',
+        subject: { kind: 'work_item', ref: item.id }, visibility: 'workspace' },
+      { harnessSlug: target.harnessSlug, authorOwnerId: 'su-scope-fixture', authorSessionRef: `scope-proposal-${n}` });
+      const proposal = { reportId: report.reportId, bodySha256: report.bodySha256 };
+      const selection = formatWorkDefinitionProposalSelection({ target, proposal });
+      const directive = await recordOwnerDirective({ workspaceId: target.workspaceId, ownerId: 'human-fixture',
+        recordedBy: 'su-scope-fixture', capturedByHook: true, sessionRef: `proposal-source-${n}`,
+        sourceTurnRef: `session_turn:codex:proposal-source-${n}:${++sequence}`, verbatimText: selection }, db.adminSql);
+      const source = { directiveId: directive.id, principalId: directive.ownerId, sourceTurnRef: directive.sourceTurnRef!,
+        bodySha256: createHash('sha256').update(selection).digest('hex'), proposal };
+      return { definition: { ...fields, assessmentScope: { assessment, source } }, report, statement };
+    };
+    const evidence = { testsRun: 'Retained canonical rubric-check result', testResult: 'One measured adverse result; 25 unmeasured',
+      verifiedHow: 'test' as const, assessmentScorecardId: cardId,
+      coverage: { population: [...fields.acceptanceCriteria!], checked: [...fields.acceptanceCriteria!],
+        notChecked: [], notApplicable: [], residue: [] } };
+    const readers = async (comparisonTime = clock) => {
+      const listed = (await listScorecards({ issueIds: [cardId], comparisonTime,
+        assessmentWorkItem: selector, includeGeneration: false }))[0]!;
+      const detail = await readScorecardEvidence(cardId, comparisonTime, selector);
+      if (detail.kind !== 'found') throw new Error('Source-scope card missing');
+      expect(detail.scorecard.coverage).toEqual(listed.coverage);
+      return listed.coverage!;
+    };
+    const stored = async () => (await getWorkItem(item.id, item.harness!))!.payload as { workDefinition: WorkItemDefinition };
+    return { approve, propose, update, readers, stored, target, selector, evidence, ctx, cardId, rubric, item };
+  }
+
+  it.each(['issue', 'feature'] as const)(
+    'readable proposal admits exact bounded scope through public update, both readers and %s terminal writer', async family => {
+      const f = await fixture({ family });
+      const { definition, report } = await f.propose([keys[0]!], fields);
+      const historical = await db.adminSql`SELECT payload FROM harness_shared.engineer_issues WHERE issue_id=${f.cardId}`;
+      expect(report.bodyMd).toContain(formatWorkDefinitionApproval({ schema: 'work-definition-approval-v1',
+        target: f.target, previousDefinitionHash: workDefinitionFingerprint(fields), definition: fields,
+        assessment: definition.assessmentScope.assessment }));
+      expect((await f.readers()).requestedScope.state).toBe('unknown'); // An unselected proposal grants nothing.
+      expect((await f.update(definition)).results[0].ok).toBe(true);
+      expect((await f.stored()).workDefinition).toEqual(definition);
+      expect(await f.readers()).toMatchObject({ denominator: 26, unresolvedKeys: keys.slice(1),
+        requestedScope: { state: 'verified', denominator: 1, criterionKeys: [keys[0]], unresolvedKeys: [] }, fulfillment: 'fulfilled' });
+      expect(await workDefinitionAssessmentCompletionError({ target: f.target, definition, evidence: f.evidence })).toBeNull();
+      expect((await setWorkItemState(f.item.id, 'resolved', { harness: f.item.harness!, by: 'su-scope-fixture',
+        completionAuthority: 'committed', completionEvidence: f.evidence, expectedWorkDefinition: definition }))?.state).toBe('done');
+      expect(await db.adminSql`SELECT payload FROM harness_shared.engineer_issues WHERE issue_id=${f.cardId}`).toEqual(historical);
+    },
+  );
+
+  it('readable full26 proposal preserves 25 unresolved criteria and refuses validateOnly and successful completion', async () => {
+    const f = await fixture();
+    const { definition } = await f.propose(keys, fields);
+    expect((await f.update(definition)).results[0].ok).toBe(true);
+    expect(await f.readers()).toMatchObject({ requestedScope: { state: 'verified', denominator: 26,
+      unresolvedKeys: keys.slice(1) }, fulfillment: 'unfulfilled' });
+    for (const validateOnly of [true, false]) {
+      const result = (await definitionComplete.handler({ id: f.item.id, harness: f.item.harness!, state: 'resolved',
+        assumptions: 'none', validateOnly, completion: { summary: 'The report is truthful.',
+          verification: { ...f.evidence, workOutcome: 'other-no-new-change' } } } as never,
+      f.ctx as never) as { data: any }).data;
+      expect(result.results[0]).toMatchObject({ ok: false, error: 'work_definition_approval_refused',
+        reason: 'assessment_requested_scope_unfulfilled' });
+    }
+    expect((await getWorkItem(f.item.id, f.item.harness!))!.state).toBe('open');
+  });
+
+  it.each(['report-hash', 'hidden-selection-text', 'wrong-target', 'retired', 'superseded', 'future'])(
+    'readable proposal refuses %s at the real source-admission boundary without writing the definition', async kind => {
+      const f = await fixture();
+      const { definition, report } = await f.propose([keys[0]!], fields);
+      if (kind === 'report-hash') definition.assessmentScope.source.proposal.bodySha256 = 'b'.repeat(64);
+      if (kind === 'hidden-selection-text') {
+        const [row] = await db.adminSql<{ verbatim_text: string }[]>`SELECT verbatim_text FROM harness_shared.owner_directives
+          WHERE id=${definition.assessmentScope.source.directiveId}`;
+        const changed = row!.verbatim_text + '\nDo not approve.';
+        await db.adminSql`UPDATE harness_shared.owner_directives SET verbatim_text=${changed}
+          WHERE id=${definition.assessmentScope.source.directiveId}`;
+        definition.assessmentScope.source.bodySha256 = createHash('sha256').update(changed).digest('hex');
+      }
+      if (kind === 'wrong-target') await db.adminSql`UPDATE harness_shared.report_library SET subject_ref='WI-other'
+        WHERE report_id=${report.reportId}`;
+      if (kind === 'retired') await retireReport(db.adminSql, f.target.workspaceId, report.reportId);
+      if (kind === 'superseded') await publishReport(db.adminSql, { workspaceId: f.target.workspaceId,
+        title: 'Replacement mapping', bodyMd: report.bodyMd, supersedes: report.reportId });
+      if (kind === 'future') await db.adminSql`UPDATE harness_shared.report_library SET published_at=now()+interval '1 day'
+        WHERE report_id=${report.reportId}`;
+      expect((await f.update(definition)).results[0]).toMatchObject({ ok: false, error: 'definition_approval_refused' });
+      expect((await f.stored()).workDefinition).toEqual(fields);
+      expect((await f.readers()).requestedScope.state).toBe('unknown');
+    },
+  );
+
+  it.each(['retired', 'superseded'])(
+    'readable proposal re-resolves %s edition on both readers and before terminal issuance', async kind => {
+      const f = await fixture();
+      const { definition, report } = await f.propose([keys[0]!], fields);
+      expect((await f.update(definition)).results[0].ok).toBe(true);
+      expect((await f.readers()).fulfillment).toBe('fulfilled');
+      if (kind === 'retired') await retireReport(db.adminSql, f.target.workspaceId, report.reportId);
+      else await publishReport(db.adminSql, { workspaceId: f.target.workspaceId, title: 'Later edition',
+        bodyMd: report.bodyMd, supersedes: report.reportId });
+      expect((await f.readers()).requestedScope.state).toBe('unknown');
+      await expect(setWorkItemState(f.item.id, 'resolved', { harness: f.item.harness!, by: 'su-scope-fixture',
+        completionAuthority: 'committed', completionEvidence: f.evidence, expectedWorkDefinition: definition }))
+        .rejects.toThrow('approval_proposal_unavailable');
+      expect((await getWorkItem(f.item.id, f.item.harness!))!.state).toBe('open');
+    },
+  );
+
+  it('readable proposal enforces prior-definition CAS and cannot replay an already used selection', async () => {
+    const f = await fixture();
+    const first = await f.propose([keys[0]!], fields);
+    const competing = await f.propose(keys, fields);
+    const results = await Promise.all([f.update(first.definition), f.update(competing.definition)]);
+    expect(results.filter(result => result.results[0].ok)).toHaveLength(1);
+    expect((await f.update(first.definition)).results[0].ok).toBe(false);
+    expect((await f.update(competing.definition)).results[0].ok).toBe(false);
+    const current = (await f.stored()).workDefinition;
+    const next = await f.propose([keys[0]!], current);
+    expect((await f.update(next.definition)).results[0].ok).toBe(true);
+  });
+
+  it.each(['issue', 'feature'] as const)(
+    'readable proposal withdrawal after preflight blocks the %s writer at its real issuance fence', async family => {
+      const f = await fixture({ family });
+      const { definition, report } = await f.propose([keys[0]!], fields);
+      expect((await f.update(definition)).results[0].ok).toBe(true);
+      expect(await workDefinitionAssessmentCompletionError({ target: f.target, definition, evidence: f.evidence })).toBeNull();
+      const source = await import('./work-item-definition-source');
+      const realFence = source.fenceWorkDefinitionCompletion;
+      const fence = vi.spyOn(source, 'fenceWorkDefinitionCompletion').mockImplementation(async (sql, input) => {
+        if (input.target.workItemId === f.item.id)
+          await retireReport(db.adminSql, f.target.workspaceId, report.reportId);
+        return realFence(sql, input);
+      });
+      try {
+        await expect(setWorkItemState(f.item.id, 'resolved', { harness: f.item.harness!, by: 'su-scope-fixture',
+          completionAuthority: 'committed', completionEvidence: f.evidence, expectedWorkDefinition: definition }))
+          .rejects.toThrow('approval_proposal_unavailable');
+      } finally { fence.mockRestore(); }
+      expect((await getWorkItem(f.item.id, f.item.harness!))!.state).toBe('open');
+    },
+  );
+
+  it('readable proposal holds a competing report retirement until the verified terminal write commits', async () => {
+    const f = await fixture();
+    const { definition, report } = await f.propose([keys[0]!], fields);
+    expect((await f.update(definition)).results[0].ok).toBe(true);
+    const source = await import('./work-item-definition-source');
+    const realFence = source.fenceWorkDefinitionCompletion;
+    let held!: () => void;
+    const atFence = new Promise<void>(resolve => { held = resolve; });
+    let release!: () => void;
+    const mayCommit = new Promise<void>(resolve => { release = resolve; });
+    const fence = vi.spyOn(source, 'fenceWorkDefinitionCompletion').mockImplementation(async (sql, input) => {
+      await realFence(sql, input);
+      if (input.target.workItemId === f.item.id) { held(); await mayCommit; }
+    });
+    const closing = setWorkItemState(f.item.id, 'resolved', { harness: f.item.harness!, by: 'su-scope-fixture',
+      completionAuthority: 'committed', completionEvidence: f.evidence, expectedWorkDefinition: definition });
+    let retiring: Promise<unknown> | undefined;
+    try {
+      await Promise.race([atFence, closing.then(() => { throw new Error('terminal write missed the issuance latch'); })]);
+      let reportWriterPid: number | undefined;
+      retiring = db.adminSql.begin(async tx => {
+        const [backend] = await tx<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`;
+        reportWriterPid = backend!.pid;
+        return retireReport(tx as unknown as postgres.Sql, f.target.workspaceId, report.reportId);
+      });
+      await expect.poll(async () => {
+        if (!reportWriterPid) return false;
+        const [lock] = await db.adminSql<{ waiting: boolean }[]>`SELECT EXISTS (
+          SELECT 1 FROM pg_locks WHERE pid=${reportWriterPid}
+            AND relation='harness_shared.report_library'::regclass AND mode='RowExclusiveLock' AND NOT granted
+        ) AS waiting`;
+        return lock!.waiting;
+      }, { timeout: 5000, interval: 10 }).toBe(true);
+      expect((await getWorkItem(f.item.id, f.item.harness!))!.state).toBe('open');
+      release();
+      expect((await closing)?.state).toBe('done');
+      await retiring;
+      expect((await f.readers()).requestedScope.state).toBe('unknown');
+    } finally {
+      release();
+      await Promise.allSettled([closing, ...(retiring ? [retiring] : [])]);
+      fence.mockRestore();
+    }
+  });
+
+  it('full26/25unresolved refuses successful write and validateOnly despite truthful artifact coverage', async () => {
+    const f = await fixture();
+    const definition = await f.approve(keys, fields);
+    expect((await f.update(definition)).results[0].ok).toBe(true);
+    expect((await f.stored()).workDefinition).toEqual(definition);
+    expect(await f.readers()).toMatchObject({ denominator: 26, unresolvedKeys: keys.slice(1),
+      requestedScope: { state: 'verified', denominator: 26, unresolvedKeys: keys.slice(1) }, fulfillment: 'unfulfilled' });
+    for (const validateOnly of [true, false]) {
+      const result = (await definitionComplete.handler({ id: f.item.id, harness: f.item.harness!, state: 'resolved',
+        assumptions: 'none', validateOnly, completion: { summary: 'Truthful limited report, integrity accepted.',
+          verification: { ...f.evidence, workOutcome: 'other-no-new-change' } } } as never,
+      f.ctx as never) as { data: any }).data;
+      expect(result.results[0]).toMatchObject({ ok: false, error: 'work_definition_approval_refused',
+        reason: 'assessment_requested_scope_unfulfilled' });
+    }
+    expect((await getWorkItem(f.item.id, f.item.harness!))!.state).toBe('open');
+    expect(await workDefinitionAssessmentCompletionError({ target: f.target, definition, evidence: f.evidence }))
+      .toBe('assessment_requested_scope_unfulfilled');
+  });
+
+  it('explicit bounded approval fulfills one measured key while preserving 25 global unresolved keys and stored ratings', async () => {
+    const f = await fixture();
+    const before = await db.adminSql`SELECT payload FROM harness_shared.engineer_issues WHERE issue_id=${f.cardId}`;
+    const definition = await f.approve([keys[0]!], fields);
+    expect((await f.update(definition)).results[0].ok).toBe(true);
+    expect(await f.readers()).toMatchObject({ denominator: 26, unresolvedKeys: keys.slice(1),
+      requestedScope: { state: 'verified', denominator: 1, criterionKeys: [keys[0]], unresolvedKeys: [] }, fulfillment: 'fulfilled' });
+    expect(await workDefinitionAssessmentCompletionError({ target: f.target, definition, evidence: f.evidence })).toBeNull();
+    const closed = await setWorkItemState(f.item.id, 'resolved', { harness: f.item.harness!, by: 'su-scope-fixture',
+      completionAuthority: 'committed', completionEvidence: f.evidence, expectedWorkDefinition: definition });
+    expect(closed?.state).toBe('done');
+    expect(await db.adminSql`SELECT payload FROM harness_shared.engineer_issues WHERE issue_id=${f.cardId}`).toEqual(before);
+  });
+
+  it.each([
+    ['2026-11-01T11:59:59Z', '2026-11-01T12:00:01Z'],
+    ['2026-11-01T11:59:58Z', '2026-11-01T11:59:59Z'],
+    ['2026-11-02T00:00:01Z', '2026-11-02T00:00:02Z'],
+  ])('refuses out-of-window measured interval %s..%s through both readers and successful issuance', async (startedAt, finishedAt) => {
+    const f = await fixture({ startedAt, finishedAt });
+    const definition = await f.approve([keys[0]!], fields);
+    expect((await f.update(definition)).results[0].ok).toBe(true);
+    for (const comparisonTime of [clock, '2026-11-03T00:00:00Z'])
+      expect(await f.readers(comparisonTime)).toMatchObject({
+        requestedScope: { state: 'verified', unresolvedKeys: [keys[0]] }, fulfillment: 'unfulfilled' });
+    expect(await workDefinitionAssessmentCompletionError({ target: f.target, definition, evidence: f.evidence }))
+      .toBe('assessment_requested_scope_unfulfilled');
+    await expect(setWorkItemState(f.item.id, 'resolved', { harness: f.item.harness!, by: 'su-scope-fixture',
+      completionAuthority: 'committed', completionEvidence: f.evidence, expectedWorkDefinition: definition }))
+      .rejects.toThrow('assessment_requested_scope_unfulfilled');
+    expect((await getWorkItem(f.item.id, f.item.harness!))!.state).toBe('open');
+  });
+
+  it('keeps list/detail populations on the retained snapshot after the live rubric removes and adds keys', async () => {
+    const f = await fixture();
+    const original = await db.adminSql`SELECT payload FROM harness_shared.engineer_issues WHERE issue_id=${f.cardId}`;
+    await proposeRubric({ rubricId: f.rubric.rubricId, characteristic: f.rubric.characteristic,
+      title: f.rubric.title, status: 'active', by: 'su-scope-fixture', dropKeys: [keys[0]!],
+      criteria: [...f.rubric.criteria.slice(1), { ...f.rubric.criteria[0]!, key: 'new-live-criterion' }] });
+    const listed = (await listScorecards({ issueIds: [f.cardId], comparisonTime: clock, includeGeneration: false }))[0]!;
+    const detail = await readScorecardEvidence(f.cardId, clock);
+    if (detail.kind !== 'found') throw new Error('Historical scorecard disappeared');
+    expect(detail.scorecard.criteria.map(c => c.key)).toEqual(keys);
+    expect(detail.scorecard.missingKeys).toEqual([]);
+    expect(detail.scorecard.extraKeys).toEqual([]);
+    expect(listed.missingKeys).toEqual(detail.scorecard.missingKeys);
+    expect(listed.extraKeys).toEqual(detail.scorecard.extraKeys);
+    expect(listed.coverage).toEqual(detail.scorecard.coverage);
+    expect(listed.coverage?.denominator).toBe(26);
+    expect(listed.rubricCurrentness).toMatchObject({ state: 'stale' });
+    expect(await db.adminSql`SELECT payload FROM harness_shared.engineer_issues WHERE issue_id=${f.cardId}`).toEqual(original);
+  });
+
+  it.each(['issue', 'feature'] as const)('fences concurrent retraction and superseder mutation until the %s terminal write commits', async family => {
+    const f = await fixture({ family });
+    const definition = await f.approve([keys[0]!], fields);
+    expect((await f.update(definition)).results[0].ok).toBe(true);
+    const superseder = await fileScorecard(db, { id: `${f.cardId}-correction`, rubricRef: f.rubric.rubricId,
+      ratings: { [keys[0]!]: { rating: 'unknown', evidence: 'Unrelated until explicitly linked.' } },
+      subject: { kind: 'pot', ref: 'unrelated-fixture-subject' }, createdAt: '2026-11-03T00:00:00Z', finalized: true });
+    const mutations = [[f.cardId, 'retracted', true], [superseder, 'supersedes', f.cardId]] as const;
+    const mutate = async (tx: postgres.TransactionSql, id: string, field: string, value: string | boolean) =>
+      tx`UPDATE harness_shared.engineer_issues
+        SET payload=jsonb_set(payload, ARRAY['observation', ${field}], ${JSON.stringify(value)}::text::jsonb)
+        WHERE issue_id=${id}`;
+    // Calibrate the exact DML before opening the latch. A rollback preserves
+    // admissibility; malformed SQL/JSON must fail here with its original error.
+    const rollback = new Error('scope-race-calibration-rollback');
+    for (const [id, field, value] of mutations) {
+      await db.adminSql.begin(async tx => { expect((await mutate(tx, id, field, value)).count).toBe(1); throw rollback; })
+        .catch(error => { if (error !== rollback) throw error; });
+    }
+    await mergeWorkItemPayload(f.item.id, { scopeRacePause: true }, { harness: f.item.harness! });
+    await db.adminSql`CREATE OR REPLACE FUNCTION harness_shared.scope_terminal_pause() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.payload->>'scopeRacePause' = 'true' AND NEW.status IN ('resolved', 'done') THEN
+          PERFORM pg_advisory_xact_lock(184214);
+        END IF;
+        RETURN NEW;
+      END $$`;
+    await db.adminSql`CREATE TRIGGER scope_terminal_pause BEFORE UPDATE ON harness_shared.work_items
+      FOR EACH ROW EXECUTE FUNCTION harness_shared.scope_terminal_pause()`;
+    let unlock!: () => void;
+    let ready!: () => void;
+    const held = new Promise<void>(resolve => { unlock = resolve; });
+    const acquired = new Promise<void>(resolve => { ready = resolve; });
+    const holder = db.adminSql.begin(async tx => { await tx`SELECT pg_advisory_xact_lock(184214)`; ready(); await held; });
+    await acquired;
+    const closing = setWorkItemState(f.item.id, 'resolved', { harness: f.item.harness!, by: 'su-scope-fixture',
+      completionAuthority: 'committed', completionEvidence: f.evidence, expectedWorkDefinition: definition });
+    const settled = closing.then(value => ({ value }), error => ({ error }));
+    let earlyResult: unknown;
+    void settled.then(result => { earlyResult = result; });
+    try {
+      await vi.waitFor(async () => {
+        const [waiter] = await db.adminSql`SELECT pid FROM pg_locks
+          WHERE locktype='advisory' AND objid=184214 AND NOT granted`;
+        expect(waiter, `terminal writer settled before latch: ${JSON.stringify(earlyResult)}`).toBeDefined();
+        const [fence] = await db.adminSql`SELECT EXISTS(SELECT 1 FROM pg_locks
+          WHERE pid=${waiter!.pid} AND relation='harness_shared.work_items'::regclass
+            AND mode='ShareRowExclusiveLock' AND granted) AS held`;
+        expect(fence!.held).toBe(true);
+      }, { timeout: 5000, interval: 20 });
+      for (const [id, field, value] of mutations) {
+        const outcome = await db.adminSql.begin(async tx => {
+          await tx`SET LOCAL lock_timeout = '100ms'`;
+          await mutate(tx, id, field, value);
+        }).then(() => ({ code: 'unexpected-success' }), error => ({ code: error.code,
+          message: error.message, detail: error.detail, where: error.where }));
+        expect(outcome).toMatchObject({ code: '55P03' });
+      }
+    } finally {
+      unlock();
+      await holder;
+      await settled;
+      await db.adminSql`DROP TRIGGER scope_terminal_pause ON harness_shared.work_items`;
+      await db.adminSql`DROP FUNCTION harness_shared.scope_terminal_pause()`;
+    }
+    expect(await settled).not.toHaveProperty('error');
+    expect((await getWorkItem(f.item.id, f.item.harness!))!.state).toBe('done');
+    // Once the terminal transaction releases its lock the same mutation works,
+    // proving the refusal above came from the fence, not invalid view DML.
+    for (const [id, field, value] of mutations)
+      await db.adminSql.begin(tx => mutate(tx, id, field, value));
+    expect(await workDefinitionAssessmentCompletionError({ target: f.target, definition, evidence: f.evidence }))
+      .toBe('assessment_requested_scope_unfulfilled');
+  });
+
+  it('commits independent issue and feature assessments without a terminal-fence lock-upgrade deadlock', async () => {
+    const first = await fixture({ family: 'issue' });
+    const second = await fixture({ family: 'feature' });
+    const definitions = await Promise.all([first, second].map(f => f.approve([keys[0]!], fields)));
+    for (const [i, f] of [first, second].entries())
+      expect((await f.update(definitions[i]!)).results[0].ok).toBe(true);
+
+    const source = await import('./work-item-definition-source');
+    const realFence = source.fenceWorkDefinitionCompletion;
+    let firstFenced = false;
+    let secondPid: number | undefined;
+    let releaseFirst!: () => void;
+    const firstMayWrite = new Promise<void>(resolve => { releaseFirst = resolve; });
+    // Instrument only the scheduling boundary. Both public lifecycle writers
+    // still run the actual source, ledger and issuance checks in real PG.
+    const fence = vi.spyOn(source, 'fenceWorkDefinitionCompletion').mockImplementation(async (sql, input) => {
+      if (input.target.workItemId === second.item.id) {
+        const [backend] = await sql<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`;
+        secondPid = backend!.pid;
+      }
+      await realFence(sql, input);
+      if (input.target.workItemId === first.item.id) {
+        firstFenced = true;
+        await firstMayWrite;
+      }
+    });
+    const close = (f: typeof first, definition: WorkItemDefinition) =>
+      setWorkItemState(f.item.id, 'resolved', { harness: f.item.harness!, by: 'su-scope-fixture',
+        completionAuthority: 'committed', completionEvidence: f.evidence, expectedWorkDefinition: definition })
+        .then(value => ({ value }), error => ({ error: { message: error.message, code: error.code } }));
+    const closing = [close(first, definitions[0]!)];
+    let earlyFirst: unknown;
+    void closing[0]!.then(value => { earlyFirst = value; });
+    try {
+      await vi.waitFor(() => expect(firstFenced, JSON.stringify(earlyFirst)).toBe(true), { timeout: 5000 });
+      closing.push(close(second, definitions[1]!));
+      // Wait until the second real transaction is fenced behind the first:
+      // either before its read/write fence or at its later table-lock upgrade.
+      await vi.waitFor(async () => {
+        expect(secondPid).toBeDefined();
+        const locks = await db.adminSql`SELECT mode, granted FROM pg_locks
+          WHERE pid=${secondPid!} AND relation='harness_shared.work_items'::regclass
+            AND mode IN ('RowExclusiveLock', 'ShareRowExclusiveLock') AND NOT granted`;
+        expect(locks.length).toBeGreaterThan(0);
+      }, { timeout: 5000, interval: 20 });
+      releaseFirst();
+      const outcomes = (await Promise.all(closing)).map(result =>
+        'error' in result ? result : { state: result.value?.state });
+      expect(outcomes).toEqual([{ state: 'done' }, { state: 'done' }]);
+    } finally {
+      releaseFirst();
+      await Promise.all(closing);
+      fence.mockRestore();
+    }
+  });
+
+  it.each(['agent', 'withdrawn', 'principal', 'subject', 'window', 'revision', 'hash', 'expansion', 'contraction', 'missing', 'turn', 'body'])(
+    'refuses %s authority before persisting a definition', async kind => {
+      const f = await fixture();
+      const definition = await f.approve([keys[0]!], fields);
+      const scope = definition.assessmentScope;
+      if (kind === 'agent') await db.adminSql`UPDATE harness_shared.owner_directives SET captured_by_hook=false WHERE id=${scope.source.directiveId}`;
+      if (kind === 'withdrawn') await db.adminSql`UPDATE harness_shared.owner_directives SET disposition_status='declined', dispositioned_at=now() WHERE id=${scope.source.directiveId}`;
+      if (kind === 'principal') scope.source.principalId = 'someone-else';
+      if (kind === 'subject') scope.assessment.subject.ref = 'fleet:another';
+      if (kind === 'window') scope.assessment.subject.windowStart = '2026-10-31T00:00:00Z';
+      if (kind === 'revision') scope.assessment.rubricRevision++;
+      if (kind === 'hash') scope.assessment.criteriaHash = 'b'.repeat(64);
+      if (kind === 'expansion') scope.assessment.criterionKeys.push(keys[1]!);
+      if (kind === 'contraction') scope.assessment.criterionKeys = [];
+      if (kind === 'missing') scope.source.directiveId = 2_000_000_000;
+      if (kind === 'turn') scope.source.sourceTurnRef = 'session_turn:codex:another-source:1';
+      if (kind === 'body') await db.adminSql`UPDATE harness_shared.owner_directives
+        SET verbatim_text=verbatim_text || ' Do not approve.' WHERE id=${scope.source.directiveId}`;
+      const result = await f.update(definition);
+      expect(result.results[0].ok).toBe(false);
+      expect((await f.stored()).workDefinition).toEqual(fields);
+      expect((await f.readers()).requestedScope.state).toBe('unknown');
+    },
+  );
+
+  it('re-resolves withdrawal on both readers and the terminal writer; an old serialized definition cannot bypass it', async () => {
+    const f = await fixture();
+    const definition = await f.approve([keys[0]!], fields);
+    expect((await f.update(definition)).results[0].ok).toBe(true);
+    expect((await f.readers()).fulfillment).toBe('fulfilled');
+    await db.adminSql`UPDATE harness_shared.owner_directives SET disposition_status='declined', dispositioned_at=now()
+      WHERE id=${definition.assessmentScope.source.directiveId}`;
+    expect((await f.readers()).requestedScope.state).toBe('unknown');
+    await expect(setWorkItemState(f.item.id, 'resolved', { harness: f.item.harness!, by: 'su-scope-fixture',
+      completionAuthority: 'committed', completionEvidence: f.evidence, expectedWorkDefinition: definition }))
+      .rejects.toThrow('approval_source_withdrawn');
+    expect((await getWorkItem(f.item.id, f.item.harness!))!.state).toBe('open');
+  });
+
+  it('requires the exact prior definition for a later scope change and refuses replay, clearing and stale CAS', async () => {
+    const f = await fixture();
+    const first = await f.approve([keys[0]!], fields);
+    expect((await f.update(first)).results[0].ok).toBe(true);
+    const expanded = await f.approve(keys, first);
+    expect((await f.update(expanded)).results[0].ok).toBe(true);
+    expect((await f.update(first)).results[0].ok).toBe(false);
+    expect((await f.update(null)).results[0].ok).toBe(false);
+    await expect(mergeWorkItemPayload(f.item.id, { workDefinition: first }, { harness: f.item.harness!,
+      expectedWorkDefinition: fields })).rejects.toThrow('work definition changed');
+    expect((await f.stored()).workDefinition).toEqual(expanded);
+    expect((await f.readers()).requestedScope).toMatchObject({ state: 'verified', denominator: 26 });
+    const contracted = await f.approve([keys[0]!], expanded);
+    expect((await f.update(contracted)).results[0].ok).toBe(true);
+    expect((await f.readers()).requestedScope).toMatchObject({ state: 'verified', denominator: 1 });
+    expect((await f.update(expanded)).results[0].ok).toBe(false);
+  });
+
+  it('does not infer subset authority from an ordinary original definition or a reference selector', async () => {
+    const f = await fixture();
+    expect((await f.readers()).requestedScope.state).toBe('unknown');
+    const definition = await f.approve([keys[0]!], fields);
+    const before = await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.work_items`;
+    expect(await createOneWorkItem({ kind: 'task', title: 'Unresolved target identity', definition },
+      { ownerId: 'su-scope-fixture', workspaceId: f.target.workspaceId } as never))
+      .toMatchObject({ ok: false, error: 'definition_target_identity_required' });
+    expect(await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.work_items`).toEqual(before);
+  });
+
+  it('serializes competing approvals against one prior definition without losing the winning scope', async () => {
+    const f = await fixture();
+    const a = await f.approve([keys[0]!], fields);
+    const b = await f.approve(keys, fields);
+    const results = await Promise.all([f.update(a), f.update(b)]);
+    expect(results.filter(result => result.results[0].ok)).toHaveLength(1);
+    expect([a, b]).toContainEqual((await f.stored()).workDefinition);
+    expect((await f.readers()).requestedScope.state).toBe('verified');
+  });
+
+  it('re-resolves live rubric revision movement before readers and successful issuance', async () => {
+    const f = await fixture();
+    const definition = await f.approve([keys[0]!], fields);
+    expect((await f.update(definition)).results[0].ok).toBe(true);
+    await db.adminSql`UPDATE harness_shared.harness_plans SET version=version+1
+      WHERE workspace_id=${f.target.workspaceId} AND plan_slug=${f.rubric.rubricId}`;
+    expect((await f.readers()).requestedScope.state).toBe('unknown');
+    await expect(setWorkItemState(f.item.id, 'resolved', { harness: f.item.harness!, by: 'su-scope-fixture',
+      completionAuthority: 'committed', completionEvidence: f.evidence, expectedWorkDefinition: definition }))
+      .rejects.toThrow('approval_rubric_identity_unknown');
+  });
+});
 
 describe('listScorecards (P-013) — real PG', () => {
   let db: OrgTestDb;
@@ -441,7 +1004,7 @@ describe('listScorecards (P-013) — real PG', () => {
     ]);
   });
 
-  it('projects createdBy + sourceHive + nKeys, and computes missingKeys against the rubric', async () => {
+  it('preserves stored metadata while keeping a missing historical rubric pin unknown', async () => {
     const rows = await listScorecards({ rubricRef: RUBRIC, sourceHive: 'papercusp' });
     expect(rows.map((r) => r.createdAt)).toEqual(['2026-06-20T12:00:00.000Z', '2026-06-20T10:00:00.000Z']); // complete, partial
 
@@ -450,11 +1013,11 @@ describe('listScorecards (P-013) — real PG', () => {
     expect(complete.sourceHive).toBe('papercusp');
     expect(complete.nKeys).toBe(4);
     expect(complete.missingKeys).toEqual([]); // all 3 criteria rated
-    expect(complete.extraKeys).toEqual(['legacy-ad-hoc-check']);
-    expect(complete.rubricResolved).toBe(true);
+    expect(complete.extraKeys).toEqual([]);
+    expect(complete.rubricResolved).toBe(false);
     expect(complete.rubricRevision).toBe(17);
     expect(complete.criteriaHash).toBe('criteria-hash-roundtrip');
-    expect(complete.score10).toBe(5); // known criteria only: broken(0), healthy(10), degraded(5)
+    expect(complete.score10).toBeNull(); // revision17/hash has no retained definition
     expect(complete.ratings['end-to-end-flow']).toEqual({
       rating: 'broken', evidence: '88 unplaced', evidenceRef: 'test:placement-snapshot',
       evidenceKind: 'test', attribution: 'subject',
@@ -1806,6 +2369,134 @@ describe('pinned historical evidence action readers — real PG', () => {
     expect(listed.ratings).toEqual(ratings);
     expect(await db.adminSql`SELECT payload FROM harness_shared.engineer_issues WHERE issue_id = ${cardId}`).toEqual(before);
     // This honest negative control does not fulfill R7's required positive manual support.
+  });
+
+  it('reads the fixed manual fixture from the real measured binding producer without granting live freshness', async () => {
+    const { bindSpecEvidenceItems } = await import('./agent-tools/plans/bind-spec-evidence');
+    const { bindSpecEvidence, listSpecEvidence, retractSpecEvidence } = await import('./agent-tools/plans/spec-evidence-store');
+    const { manualCoverageRubricProposal, manualCoveragePlanContent } = await import('../test/rubric-coverage-http-scenario');
+    const { hashPlanContent } = await import('@papercusp/plan-parser/content-hash');
+    const workspaceId = issuesScopeWorkspace();
+    const planSlug = 'measured-manual-coverage';
+    const rubricRef = 'acceptance-measured-manual-coverage';
+    const clock = '2026-11-02T00:00:00Z';
+    const measuredAt = '2026-11-01T12:00:00Z';
+    const subject = { ref: 'audit:manual-coverage-fixture', windowStart: '2026-11-01T00:00:00Z', windowEnd: clock };
+    // Control both clocks in this disposable database. No persisted witness or
+    // measurement is hand-inserted/backdated, and production has no clock input.
+    const clockTables = ['plan_spec_clauses', 'plan_spec_clause_revisions', 'spec_evidence_bindings'];
+    for (const table of clockTables) await db.adminSql.unsafe(
+      `ALTER TABLE harness_shared.${table} ALTER COLUMN created_at SET DEFAULT '2026-11-01T12:00:00Z'::timestamptz`);
+    try {
+      const content = manualCoveragePlanContent(planSlug);
+      await db.adminSql`INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, version, content, content_hash)
+        VALUES (${workspaceId}, 'papercusp', ${planSlug}, 1, ${content}, ${hashPlanContent(content)})`;
+      await db.adminSql`INSERT INTO harness_shared.plan_items (workspace_id, harness_slug, plan_slug, item_id, seq)
+        VALUES (${workspaceId}, 'papercusp', ${planSlug}, 'P-001', 1)`;
+      await db.adminSql`INSERT INTO harness_shared.work_items
+        (workspace_id,harness_slug,feature_id,item_kind,status,admission,title,summary,payload,source_plan_slug,source_plan_item_ids)
+        VALUES (${workspaceId},'papercusp','WI-901001','bug','open','admitted','Manual fixture','','{}'::jsonb,${planSlug},ARRAY['P-001']::text[])`;
+      await db.adminSql`INSERT INTO harness_shared.work_items
+        (workspace_id,harness_slug,feature_id,item_kind,status,admission,title,summary,payload,terminal_owner,terminal_completion_ref,authority)
+        VALUES (${workspaceId},'papercusp','WI-901002','bug','done','admitted','Archived review','','{}'::jsonb,
+          'su-fixture','fixture:archived-manual-review','validated')`;
+      const [subjectPlan] = await db.adminSql<{ version: number; content: string }[]>`SELECT version, content FROM harness_shared.harness_plans
+        WHERE workspace_id=${workspaceId} AND harness_slug='papercusp' AND plan_slug=${planSlug}`;
+      expect(subjectPlan!.content).toBe(content);
+      const { parseRequirementBars, seedAcceptanceBarsInTransaction } = await import('./acceptance-bar-seed');
+      expect(parseRequirementBars(subjectPlan!.content)).toMatchObject({ ok: true });
+      const proposal = manualCoverageRubricProposal({ rubricRef, planSlug, harness: 'papercusp',
+        subjectPlanRevision: Number(subjectPlan!.version), measuredAt, actorId: 'su-fixture' });
+      // Author the methods before activation captures their complete immutable BAR pin.
+      const { barContract: _contract, barSetHash: _hash, ...authored } = proposal;
+      await proposeRubric(authored);
+      const seeded = await db.adminSql.begin(tx => seedAcceptanceBarsInTransaction({
+        executor: tx as never, workspaceId, harnessSlug: 'papercusp', planSlug, planContent: subjectPlan!.content,
+        planTitle: 'Manual coverage fixture', planStatus: 'ready', planVersion: Number(subjectPlan!.version),
+        adoptionEpoch: 1, cohort: 'post-epoch', actorId: 'su-fixture', now: new Date(measuredAt),
+      }));
+      expect(seeded).toMatchObject({ ok: true, rubricSlug: rubricRef });
+      const rubric = (await getRubric(rubricRef))!;
+      expect(rubric.barSetHash).toMatch(/^[a-f0-9]{64}$/);
+      const measurement = { schemaVersion: 1 as const, kind: 'work-items' as const,
+        workItemIds: ['WI-901002'], successfulCompletionReceipts: true as const };
+      const binding = { workItemId: 'WI-901001', specId: 'AUTO-BAR-R-1-P-001', evidenceKind: 'manual' as const,
+        evidenceRef: 'archive:manual-review', measurement, details: { subject,
+          instrument: { none: true as const, reason: 'Only the binder built-in successful-receipt measurement is used.' } } };
+      let produced: Awaited<ReturnType<typeof bindSpecEvidenceItems>>;
+      vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(measuredAt);
+      try {
+        produced = await bindSpecEvidenceItems({ harnessSlug: 'papercusp', workspaceId,
+          actorId: 'su-fixture', slug: planSlug, items: [binding] });
+      } finally { vi.useRealTimers(); }
+      expect(produced).toMatchObject({ ok: true, results: [{ ok: true, status: 'created' }] });
+      const bindingId = (produced.results[0] as { id: number }).id;
+      const readRows = (comparisonTime = clock) => listSpecEvidence({ workspaceId, harnessSlug: 'papercusp', planSlugs: [planSlug],
+        auditAsOf: new Date(comparisonTime), includeRetracted: true, measurementMode: 'metadata', limit: 201 });
+      const databaseClock = async () => {
+        const [row] = await db.adminSql<{ at: Date }[]>`SELECT clock_timestamp() + interval '1 second' AS at`;
+        return new Date(row!.at).toISOString();
+      };
+      const [proof] = await readRows();
+      expect(proof!.details.historicalMeasurement).toMatchObject({ schemaVersion: 1, measuredAt: new Date(measuredAt).toISOString(),
+        bindingFingerprint: proof!.bindingFingerprint, specId: 'AUTO-BAR-R-1-P-001', subject });
+      expect(proof!.currentness.overall).toBe('unknown');
+      const ratings = { 'manual-review': { rating: 'healthy', evidence: 'Archived reviewer judgment.',
+        evidenceKind: 'manual', evidenceRef: `spec-evidence:${bindingId}` },
+        'executable-review': { rating: 'unknown', evidence: 'Not assessed.', unknownReason: 'not-assessed' as const } };
+      const cardId = await fileScorecard(db, { id: 'manual-producer-supported', rubricRef,
+        rubricRevision: rubric.revision, criteriaHash: rubric.criteriaHash, ratings, subject, createdAt: clock });
+      const before = await db.adminSql`SELECT payload::text AS payload FROM harness_shared.engineer_issues WHERE issue_id=${cardId}`;
+      const read = async (comparisonTime = clock) => {
+        const listed = (await listScorecards({ issueIds: [cardId], comparisonTime, includeGeneration: false }))[0]!;
+        const detail = await readScorecardEvidence(cardId, comparisonTime);
+        if (detail.kind !== 'found') throw new Error('Manual producer card missing');
+        expect(detail.scorecard.coverage).toEqual(listed.coverage);
+        expect(listed.ratings).toEqual(ratings);
+        expect(listed.coverage!.fulfillment).toBe('unknown');
+        expect(listed.coverage!.requestedScope.state).toBe('unknown');
+        expect(await db.adminSql`SELECT payload::text AS payload FROM harness_shared.engineer_issues WHERE issue_id=${cardId}`).toEqual(before);
+        return listed.coverage!;
+      };
+      const supported = await read();
+      expect(supported.evidence).toEqual({ current: ['manual-review'], stale: [], absent: ['executable-review'], unknown: [] });
+      expect(supported.unresolvedKeys).toEqual(['executable-review']);
+      expect(await bindSpecEvidenceItems({ harnessSlug: 'papercusp', workspaceId, actorId: 'su-fixture',
+        slug: planSlug, items: [binding] })).toMatchObject({ ok: true, results: [{ status: 'unchanged', id: bindingId }] });
+      // Today's source changing cannot rewrite support at the historical clock.
+      await db.adminSql`UPDATE harness_shared.work_items SET status='open' WHERE feature_id='WI-901002'`;
+      expect(await read()).toEqual(supported);
+      // A serialized capture is not a producer token; this is a real legacy writer path.
+      // Its actual insertion clock also prevents a backdated observedAt from rewriting history.
+      await db.adminSql`ALTER TABLE harness_shared.spec_evidence_bindings ALTER COLUMN created_at SET DEFAULT now()`;
+      const legacy = await bindSpecEvidence({ workspaceId, harnessSlug: 'papercusp', planSlug,
+        workItemId: 'WI-901001', specId: 'AUTO-BAR-R-1-P-001', evidenceKind: 'manual', evidenceRef: 'archive:legacy',
+        ...proof!.fingerprints, details: { subject, currentMeasurement: measurement }, actorId: 'su-fixture' },
+        { ...proof!.fingerprints });
+      expect(legacy.status).toBe('created');
+      expect((await readRows(await databaseClock())).find(row => row.evidenceRef === 'archive:legacy')!.details).not.toHaveProperty('historicalMeasurement');
+      expect((await read(await databaseClock())).evidence.current).toEqual([]);
+      expect(await read()).toEqual(supported);
+      await expect(bindSpecEvidence({ workspaceId, harnessSlug: 'papercusp', planSlug,
+        workItemId: 'WI-901001', specId: 'AUTO-BAR-R-1-P-001', evidenceKind: 'manual', evidenceRef: 'archive:spoof',
+        ...proof!.fingerprints, details: { historicalMeasurement: proof!.details.historicalMeasurement }, actorId: 'su-fixture' }))
+        .rejects.toThrow('historical_measurement_reserved');
+      if (legacy.status !== 'created') throw new Error('Legacy fixture binding missing');
+      await retractSpecEvidence({ workspaceId, harnessSlug: 'papercusp', bindingId: legacy.id,
+        actorId: 'su-fixture', reason: 'Remove unsupported legacy control from the historical population.' });
+      expect(await read(await databaseClock())).toEqual(supported);
+      await retractSpecEvidence({ workspaceId, harnessSlug: 'papercusp', bindingId,
+        actorId: 'su-fixture', reason: 'Withdraw the actual manual receipt at the database clock.' });
+      expect((await read(await databaseClock())).evidence.current).toEqual([]);
+      // Later withdrawal does not rewrite the earlier assessment's evidence.
+      expect(await read()).toEqual(supported);
+      expect((await readRows()).every(row => row.currentness.overall === 'unknown')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+      for (const table of clockTables) await db.adminSql.unsafe(
+        `ALTER TABLE harness_shared.${table} ALTER COLUMN created_at SET DEFAULT now()`);
+    }
   });
 
   it('reads old procedures after a live amendment, bounds list actions and preserves persisted ratings and acceptance', async () => {

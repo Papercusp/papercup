@@ -660,6 +660,53 @@ describe('P-006 SPEC-P-006-B: a brief names a recovery tool only when the recipi
   });
 });
 describe('P012 bounded scoped task briefs', () => {
+  it.each(['missing-input-identity', 'stale-index', 'missing-site-identity', 'stale-site-identity',
+    'stub-source', 'unobserved', 'empty-result', 'other-root'] as const)(
+    'R11: keeps %s consumer evidence unknown at the production task-brief seam', async mode => {
+      const root = fixture();
+      writeFileSync(join(root, 'target.ts'), 'export function target() { return 1; }\n');
+      writeFileSync(join(root, 'consumer.ts'), 'import { target } from "./target";\nexport const value = target();\n');
+      const graph = firstPartyCallers({ ts, root, name: 'target', filePath: 'target.ts',
+        paths: ['target.ts', 'consumer.ts'], op: 'callers', limit: 8 });
+      expect(graph.error).toBeNull();
+      expect(graph.sites).toContainEqual(expect.objectContaining({ path: 'consumer.ts', line1: 2 }));
+      const evidence = graph.evidence!;
+      const altered: CodeIntelAnswer = { ...graph,
+        ...(mode === 'stale-index' ? { freshness: { ...graph.freshness, staleVsDisk: true } } : {}),
+        ...(mode === 'empty-result' ? { sites: [] } : {}),
+        evidence: { ...evidence,
+          sourceScope: { ...evidence.sourceScope,
+            ...(mode === 'missing-input-identity' ? { sourceFingerprint: null } : {}),
+            ...(mode === 'other-root' ? { repositoryId: `local-root:${'0'.repeat(64)}` } : {}),
+            ...(mode === 'stub-source' ? { supportingFiles: evidence.sourceScope.supportingFiles.map(file =>
+              ({ ...file, representation: 'reexport-stub' as const })) } : {}),
+          },
+          ...(mode === 'missing-site-identity' ? { siteIdentities: [] } : {}),
+          ...(mode === 'stale-site-identity' ? { siteIdentities: evidence.siteIdentities.map(site =>
+            ({ ...site, contentHash: '0'.repeat(64) })) } : {}),
+          ...(mode === 'unobserved' ? { relationships: evidence.relationships.map(edge =>
+            ({ ...edge, knowledge: 'unknown' as const })) } : {}),
+        },
+      };
+      const brief = await buildTaskBrief({ workspaceId: 'w', workItem: { id: 'WI-r11', harness: 'h',
+        payload: { paths: ['target.ts', 'consumer.ts'] } } }, { ...depsFor(root), graph: async () => altered });
+      expect(brief.status).toBe('current');
+      expect(brief.graph, mode).toMatchObject({ status: 'unknown', consumers: [], relationships: [] });
+      expect(brief.graph.reason).toBeTruthy();
+    });
+  it('R11: retains versioned current compiler consumers with explicit coverage limits', async () => {
+    const root = fixture();
+    writeFileSync(join(root, 'target.ts'), 'export function target() { return 1; }\n');
+    writeFileSync(join(root, 'consumer.ts'), 'import { target } from "./target";\nexport const value = target();\n');
+    const graph = firstPartyCallers({ ts, root, name: 'target', filePath: 'target.ts',
+      paths: ['target.ts', 'consumer.ts'], op: 'callers', limit: 8 });
+    const brief = await buildTaskBrief({ workspaceId: 'w', workItem: { id: 'WI-r11', harness: 'h',
+      payload: { paths: ['target.ts', 'consumer.ts'] } } }, { ...depsFor(root), graph: async () => graph });
+    expect(brief.graph).toMatchObject({ status: 'measured', consumers: ['consumer.ts:2'] });
+    expect(brief.exclusions.join(' ')).toContain('Source completeness is unverified');
+    expect(brief.exclusions.join(' ')).toContain('empty results do not prove absence');
+    expect(JSON.stringify(brief).length).toBeLessThanOrEqual(TASK_BRIEF_MAX_CHARS);
+  });
   it('captures explicit no-claim intent scope without inventing a work-item identity', async () => {
     const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return "INTENT_SOURCE"; }');
     const deps = depsFor(root); deps.claimedPaths = vi.fn(async () => []); deps.failures = vi.fn(async () => []);

@@ -1027,12 +1027,21 @@ describe('commitAttributedGroups failure isolation (WI-6554700010018197, real gi
 describe('commitAttributedGroups import-linked groups (WI-6554700010019415, real git)', () => {
   /** A provider that drops an export its committed importer consumes, plus that importer's
    *  edit away from it, attributed to one agent under two intents. */
-  async function splitProviderRepo(prefix: string): Promise<string> {
+  async function splitProviderRepo(prefix: string, renamedExport?: string): Promise<string> {
     const repo = await seededRepo(prefix);
     await writeFile(join(repo, 'provider.ts'), 'export const keep = 1;\nexport const MAX_AGE = 2;\n');
     await writeFile(join(repo, 'importer.ts'), "import { keep, MAX_AGE } from './provider';\nexport const both = keep + MAX_AGE;\n");
     await git(repo, 'add', 'provider.ts', 'importer.ts');
     await git(repo, ...ID, 'commit', '-qm', 'provider + importer');
+    if (renamedExport) {
+      // The importer now binds a name it did not bind at HEAD, from a provider that only gains it now.
+      await writeFile(join(repo, 'provider.ts'), `export const keep = 1;\nexport const ${renamedExport} = 2;\n`);
+      await writeFile(
+        join(repo, 'importer.ts'),
+        `import { keep, ${renamedExport} } from './provider';\nexport const both = keep + ${renamedExport};\n`,
+      );
+      return repo;
+    }
     await writeFile(join(repo, 'provider.ts'), 'export const keep = 1;\n');
     await writeFile(join(repo, 'importer.ts'), "import { keep } from './provider';\nexport const both = keep;\n");
     return repo;
@@ -1050,8 +1059,29 @@ describe('commitAttributedGroups import-linked groups (WI-6554700010019415, real
       log: (m) => logs.push(m),
     });
 
-  it('control: in two private indexes the post-stage guard holds both halves', async () => {
-    const repo = await splitProviderRepo('gs-attr-linked-control-');
+  it('in two private indexes the importer commits on names it already bound at HEAD (EI-28731613452428882)', async () => {
+    // provider.ts is held: the committed importer still binds MAX_AGE. importer.ts's own index
+    // carries provider.ts at its HEAD blob, which still exports `keep`, the only name the importer
+    // now binds and one it already bound at HEAD. So the importer commits and the next tick can
+    // commit the provider, instead of each half holding the other forever.
+    const repo = await splitProviderRepo('gs-attr-linked-headbound-');
+    const base = await git(repo, 'rev-parse', 'HEAD');
+    const logs: string[] = [];
+
+    const res = await commitAttributedGroups(realRunGit, repo, attribution, [], MSG, {
+      beforeCommit: guardFor(repo, logs),
+      readText: async () => null, // no import edges, so the groups stay split
+    });
+
+    expect(res.agentGroupCount).toBe(2);
+    expect(res.agentCommitCount).toBe(1);
+    expect(await git(repo, 'status', '--porcelain')).toBe('M provider.ts');
+    expect(await git(repo, 'diff', '--name-only', base, 'HEAD')).toBe('importer.ts');
+    expect(logs.some((m) => m.includes('provider.ts') && m.includes('removes those exports'))).toBe(true);
+  });
+
+  it('control: in two private indexes a name new since HEAD keeps both halves held', async () => {
+    const repo = await splitProviderRepo('gs-attr-linked-control-', 'MAX_TTL');
     const logs: string[] = [];
 
     const res = await commitAttributedGroups(realRunGit, repo, attribution, [], MSG, {

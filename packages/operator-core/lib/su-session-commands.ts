@@ -20,7 +20,9 @@ export interface SuSessionCommandReceipt {
 }
 
 export interface SuSessionCommandStore {
-  reserve(command: SuSessionCommand, fingerprint: string): Promise<{
+  /** The host supplies its admission generation independently of optional
+   * client fencing, without rewriting the persisted command or fingerprint. */
+  reserve(command: SuSessionCommand, fingerprint: string, runtimeGeneration?: number): Promise<{
     created: boolean;
     receipt: SuSessionCommandReceipt;
   }>;
@@ -35,9 +37,10 @@ function receiptKey(command: SuSessionCommand): string {
 export function pgSuSessionCommandStore(options: { sql?: Sql } = {}): SuSessionCommandStore {
   const db = () => options.sql ?? getOrgPg().sql;
   return {
-    async reserve(command, fingerprint) {
+    async reserve(command, fingerprint, runtimeGeneration) {
       const target = command.target;
       const sourceId = receiptKey(command);
+      const admissionGeneration = runtimeGeneration ?? command.expectedRuntimeGeneration ?? null;
       return db().begin(async (sql) => {
         const rows = await sql<{ id: string }[]>`
           SELECT c.id
@@ -52,8 +55,8 @@ export function pgSuSessionCommandStore(options: { sql?: Sql } = {}): SuSessionC
                 WHERE a.workspace_id = c.workspace_id AND a.id = ${target.advSessionId}
                   AND a.su_agent_chat_id = c.id AND a.coord_owner_id = ${target.ownerId}
                   AND a.agent = ${target.backend}
-                  AND (${command.expectedRuntimeGeneration ?? null}::bigint IS NULL
-                    OR a.su_runtime_generation = ${command.expectedRuntimeGeneration ?? null})
+                  AND (${admissionGeneration}::bigint IS NULL
+                    OR a.su_runtime_generation = ${admissionGeneration})
                   AND COALESCE(a.session_id, a.su_session_descriptor->'identity'->>'nativeSessionId') = ${target.nativeSessionId}
              )
            FOR UPDATE OF c`;

@@ -11,6 +11,7 @@ import type { PuiSuSessionBinding } from './launch-agent';
 import { SuStdioRequestRefusal, type RpcFrame, type SuStdioPeerOptions } from './su-session-stdio-peer';
 import { prepareSuLaunch } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import { nativeInstalledPerUseTurns } from './agent-tools/per-use-chokepoint';
+import { openDeliveryLedger } from '../../../apps/operator/scripts/hooks/inject/delivery-ledger.mjs';
 
 const mocks = vi.hoisted(() => ({
   link: vi.fn(async () => 'linked'), persist: vi.fn(async () => true),
@@ -188,6 +189,27 @@ function command(engine: SuRpcEngine, type: 'owner_turn' | 'interrupt', id: stri
 }
 
 describe('native process enrollment before readiness', () => {
+  it('records OMP memory only from the complete native payload during an active owner turn', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pui-omp-memory-')); nativeDirs.push(dir);
+    const env = { PAPERCUSP_HOME: dir };
+    const f = fixture('omp', { env }); await f.engine.ready;
+    await f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn')).terminal;
+    const text = 'Keep the requested approval boundary.';
+    const fragment = { kind: 'memory', id: 'memory-fixture', epoch: 1, port: 'orient', rendered: text,
+      bodySha256: createHash('sha256').update(text).digest('hex'), bodyBytes: Buffer.byteLength(text) };
+    const frame = { type: 'tool_execution_end', toolCallId: 'native-call', toolName: 'mcp__papercusp_su_coord_orient',
+      result: { content: [{ type: 'text', text }], details: { _meta: { 'papercusp/memoryEmission': {
+        owner: 'su-rpc-fixture', token: 'exact-token', fragments: [fragment],
+      } } } } };
+    const ledger = openDeliveryLedger('su-rpc-fixture', env, 'mcp')!;
+    f.emit(frame); // An older peer's parsed object cannot reconstruct stdout.
+    expect(ledger.confirmedMemoryDeliveries()).toEqual([]);
+    f.transport().onMessage(frame, ` ${JSON.stringify(frame)}\r\n`);
+    expect(ledger.confirmedMemoryDeliveries()).toEqual([{ token: 'exact-token', fragments: [
+      { kind: 'memory', id: fragment.id, epoch: 1, port: 'orient', bodySha256: fragment.bodySha256, bodyBytes: fragment.bodyBytes },
+    ] }]);
+  });
+
   it.each(['codex', 'omp'] as const)('waits for the confirmed %s identity before accepting input', async backend => {
     let release!: () => void;
     const waiting = new Promise<void>(resolve => { release = resolve; });

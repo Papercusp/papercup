@@ -16,6 +16,7 @@ import { retainMeasurementProvenance } from './measurement-provenance';
 import { fillRatingsFromLedger } from './scorecard-ledger-fill';
 import { asStructuredObservation } from './harness/improvements/observation-types';
 import { measurementJsonBytes } from '@papercusp/test-config/execution-details';
+import { RECLAIM_SOURCE_PATHS } from './storage/reclaim-provenance';
 
 const AT = '2026-10-13T04:00:00.000Z';
 const adoption = { key: 'r-31', check: { kind: 'instrument', instrumentKey: 'code-intel:native-adoption-good-use' } };
@@ -168,6 +169,14 @@ describe('per-subject check rows (crm plan D-049)', () => {
 });
 
 describe('scheduled platform instrument results', () => {
+  it('preserves the governed headroom prerequisite selection in scheduled measurements', async () => {
+    const headroomBinding = { readinessRunId: 'ready', runtimeHost: 'port-3271', sourceSha: 'a'.repeat(40),
+      sourceBlobs: Object.fromEntries(RECLAIM_SOURCE_PATHS.map(path => [path, 'b'.repeat(40)])) };
+    const resolvePlatform = vi.fn(async () => ({ verdict: 'unknown' as const, detail: 'native prerequisites unmeasured' }));
+    await runInstrumentChecks({ rubricRef: 'headroom', workspaceId: 'ws', harnessSlug: 'papercusp', now: () => Date.parse(AT),
+      criteria: [{ key: 'r-10', check: { kind: 'instrument', instrumentKey: 'storage:durable-headroom-targets-72h', headroomBinding } }], resolvePlatform });
+    expect(resolvePlatform).toHaveBeenCalledWith(expect.objectContaining({ headroomBinding }), expect.anything());
+  });
   const overheadCriteria = Object.entries(workOverhead.WORK_OVERHEAD_INSTRUMENT_KEYS).map(([key, instrumentKey]) =>
     ({ key, check: { kind: 'instrument', instrumentKey } }));
 
@@ -249,8 +258,9 @@ describe('scheduled platform instrument results', () => {
       expect(results.map(row => [row.check.subject?.ref, row.check.value])).toEqual([['PER-a', 80], ['PER-b', 20]]);
       expect(JSON.parse(results[0]!.check.provenance!.procedure.snapshot).window.subject.ref).toBe('PER-a');
       expect(results[0]!.check.provenance!.diagnostics).toContainEqual({ path: '$["value"]', value: 80 });
-      expect(buildRubricCheckLedgerRow(results[0]!, { workspaceId: 'ws', harnessSlug: 'crm' }).filePath)
-        .toBe('rubric-check/leads/r-31:instrument@subject/person/PER-a');
+      expect(buildRubricCheckLedgerRow(results[0]!, { workspaceId: 'ws', harnessSlug: null }).filePath)
+        .toBe('rubric-check/leads/r-31:instrument@subject/person/PER-a' +
+          '@window/2026-10-10T04%3A00%3A00.000Z/2026-10-13T04%3A00%3A00.000Z@harness/-');
       const resolvePlatform = vi.fn(async () => ({ verdict: 'pass' as const, value: 99, detail: 'unsafe' }));
       const [missing] = await runInstrumentChecks({ rubricRef: 'leads', criteria: [adoption], workspaceId: 'ws', resolvePlatform });
       expect(resolvePlatform).not.toHaveBeenCalled();
@@ -259,6 +269,77 @@ describe('scheduled platform instrument results', () => {
         subject: { ref: '' }, resolvePlatform })).rejects.toThrow('invalid_rubric_check_subject');
       expect(resolvePlatform).not.toHaveBeenCalled();
     } finally { lookup.mockRestore(); }
+  });
+
+  it('retains the exact historical subject window without moving the execution clock or cadence of workspace checks', async () => {
+    const registered = instruments.getRegisteredInstrument(adoption.check.instrumentKey);
+    if (registered?.evaluator !== 'platform' || !registered.rescore) throw new Error('fixture instrument unavailable');
+    const lookup = vi.spyOn(instruments, 'getRegisteredInstrument').mockReturnValue({ ...registered,
+      rescore: { ...registered.rescore, scope: 'subject' } });
+    const subjectWindow = { windowStart: '2026-10-01T00:00:00Z', windowEnd: '2026-10-02T00:00:00Z' };
+    const resolvePlatform = vi.fn(async (_window: Parameters<NonNullable<Parameters<typeof runInstrumentChecks>[0]['resolvePlatform']>>[0]) =>
+      ({ verdict: 'pass' as const, value: 7, detail: 'historical sample' }));
+    try {
+      const [result] = await runInstrumentChecks({ rubricRef: 'fleet-health', criteria: [adoption],
+        workspaceId: 'ws', harnessSlug: 'papercusp', subject: { kind: 'fleet', ref: 'fleet-a' },
+        subjectWindow, now: () => Date.parse(AT), resolvePlatform });
+      expect(resolvePlatform.mock.calls[0]?.[0]).toEqual({ ...subjectWindow, workspaceId: 'ws', harnessSlug: 'papercusp',
+        subject: { kind: 'fleet', ref: 'fleet-a' } });
+      expect(result).toMatchObject({ measuredAt: AT, check: { value: 7, subject: { kind: 'fleet', ref: 'fleet-a' } } });
+      expect(JSON.parse(result!.check.provenance!.procedure.snapshot).window).toMatchObject(subjectWindow);
+      lookup.mockReturnValue(registered);
+      await runInstrumentChecks({ rubricRef: 'fleet-health', criteria: [adoption], workspaceId: 'ws',
+        subject: { kind: 'fleet', ref: 'fleet-a' }, subjectWindow, now: () => Date.parse(AT), resolvePlatform });
+      expect(resolvePlatform.mock.calls[1]?.[0]).toMatchObject({ windowEnd: AT });
+      expect(resolvePlatform.mock.calls[1]?.[0]).not.toHaveProperty('subject');
+    } finally { lookup.mockRestore(); }
+  });
+
+  it.each([
+    { windowStart: AT, windowEnd: AT },
+    { windowStart: AT, windowEnd: '2026-10-12T00:00:00Z' },
+    { windowStart: 'invalid', windowEnd: AT },
+    { windowStart: AT, windowEnd: '2026-10-14T00:00:00Z' },
+  ])('refuses an invalid historical interval before running a resolver: %j', async subjectWindow => {
+    const resolvePlatform = vi.fn();
+    await expect(runInstrumentChecks({ rubricRef: 'fleet-health', criteria: [adoption], workspaceId: 'ws',
+      subject: { kind: 'fleet', ref: 'fleet-a' }, subjectWindow, now: () => Date.parse(AT), resolvePlatform }))
+      .rejects.toThrow('invalid_rubric_check_subject_window');
+    expect(resolvePlatform).not.toHaveBeenCalled();
+  });
+
+  it('refuses a subject window with no subject identity', async () => {
+    await expect(runInstrumentChecks({ rubricRef: 'fleet-health', criteria: [adoption], workspaceId: 'ws',
+      subjectWindow: { windowStart: '2026-10-01T00:00:00Z', windowEnd: AT }, now: () => Date.parse(AT) }))
+      .rejects.toThrow('invalid_rubric_check_subject_window');
+  });
+
+  it('replays only the requested subject/harness/window, keeping a newer failure and its own prior measurement', async () => {
+    const subject = { kind: 'fleet', ref: 'fleet-a' };
+    const window = { workspaceId: 'ws', harnessSlug: 'papercusp', windowStart: '2026-10-01T00:00:00Z',
+      windowEnd: '2026-10-02T00:00:00Z', subject };
+    const make = (id: number, change: Partial<typeof window> = {}, status: 'pass' | 'error' = 'pass') => {
+      const w = { ...window, ...change };
+      const result = { check: { id: 'c:instrument', rubricRef: 'fleet-health', criterionKey: 'c', kind: 'instrument' as const,
+        subject: w.subject, value: status === 'pass' ? id : null, unit: 'count',
+        provenance: retainMeasurementProvenance({ procedure: { kind: 'platform-instrument', instrumentKey: 'fixture', window: w },
+          result: { value: id }, startedAt: AT, finishedAt: AT }) }, verdict: status, measuredAt: AT, durationMs: 0 };
+      const built = buildRubricCheckLedgerRow(result, { workspaceId: 'ws', harnessSlug: w.harnessSlug });
+      return { id, status, file_path: built.filePath, finished_at: AT, output_tail: null,
+        execution_details: JSON.parse(JSON.stringify(built.executionDetails)) };
+    };
+    const rows = [make(1), make(2, {}, 'error'), make(99, { windowStart: '2026-09-30T00:00:00Z' }),
+      make(100, { harnessSlug: 'other' }), make(101, { subject: { kind: 'fleet', ref: 'fleet-b' } })];
+    expect(new Set(rows.map(r => r.file_path)).size).toBe(4);
+    const latest = await readLatestRubricCheckResults({ rubricRef: 'fleet-health', workspaceId: 'ws',
+      harnessSlug: 'papercusp', subject, subjectWindow: { windowStart: '2026-10-01T00:00:00.000Z', windowEnd: window.windowEnd } },
+    async () => rows);
+    expect(latest.get('c:instrument')).toMatchObject({ testRunId: 2, status: 'error', lastMeasurement: { testRunId: 1 } });
+    const missing = await readLatestRubricCheckResults({ rubricRef: 'fleet-health', workspaceId: 'ws', harnessSlug: 'papercusp',
+      subject, subjectWindow: { windowEnd: window.windowEnd, windowStart: '2026-09-29T00:00:00Z' } }, async () => rows);
+    expect(missing.size).toBe(0);
+    expect(() => buildRubricCheckLedgerRow({ check: rows[0]!.execution_details.check, verdict: 'pass', measuredAt: AT, durationMs: 0 },
+      { workspaceId: 'foreign', harnessSlug: 'papercusp' })).toThrow('rubric_check_subject_window_scope_mismatch');
   });
 
   it('does not relabel a rubric-wide measurement as a subject measurement', async () => {

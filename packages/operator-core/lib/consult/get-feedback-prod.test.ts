@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { resolve } from 'node:path';
 import { mockResolvedOnceTyped } from '../testing/typed-mock';
 
 type ValidateBarCritiquePlanOrigin = typeof import('./get-feedback-core').validateBarCritiquePlanOrigin;
@@ -30,6 +31,7 @@ const h = vi.hoisted(() => {
     routeConsult: vi.fn(async (_params: unknown, _deps: unknown) => ({ verdict: 'no_qualified_responder' })),
     expertiseSubject: vi.fn((question: string) =>
       question.match(/\b(?:existing|plan|campaign)\s+([a-z][a-z0-9-]*-\d{4}-\d{2}-\d{2})\b/i)?.[1] ?? null),
+    isToolSubject: vi.fn((subject: string) => /^[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*$/i.test(subject) && !/^plan:/i.test(subject)),
     expandSubjectRefs: vi.fn(async (refs: string[]) => ({ refs, unresolvedDocuments: [] as string[] })),
     makeConsultReachDispatcher: vi.fn((_context: unknown, _deps: unknown) => async () => ({})),
     continueCascadeDispatchProd: vi.fn(async (_workspace: string, _conversation: string, _context: unknown, _options: unknown) => true),
@@ -49,7 +51,8 @@ vi.mock('./get-feedback-core', () => ({ getFeedbackCore: h.getFeedbackCore,
 vi.mock('../rubrics', () => ({ resolveAcceptanceBarApproverScreen: h.resolveAcceptanceBarApproverScreen }));
 // expertiseSubject: acceptFeedbackRequestProd reads it since f36b33ffd5; the mock
 // lacked it, so the acceptance test failed at HEAD.
-vi.mock('./relevance-router', () => ({ routeConsult: h.routeConsult, expertiseSubject: h.expertiseSubject }));
+vi.mock('./relevance-router', () => ({ routeConsult: h.routeConsult, expertiseSubject: h.expertiseSubject,
+  isToolSubject: h.isToolSubject }));
 vi.mock('../agent-tools/docs/_public-manual', () => ({
   publicManualSource: () => ({ expandSubjectRefs: h.expandSubjectRefs }),
 }));
@@ -318,6 +321,35 @@ describe('getFeedbackProd expert-routing settings', () => {
     await vi.waitFor(() => expect(h.continueFeedbackRequestCore).toHaveBeenCalled());
   });
 
+  it('retains the exact engineering guide and source anchors through real subject normalization', async () => {
+    const { createPublicManualSource } = await vi.importActual<typeof import('../agent-tools/docs/_public-manual')>('../agent-tools/docs/_public-manual');
+    const source = createPublicManualSource(resolve(import.meta.dirname, '../../../../apps/papercusp-docs/src/content/docs'));
+    h.expandSubjectRefs.mockImplementationOnce(refs => source.expandSubjectRefs(refs));
+    const subjectRefs = [
+      'apps/operator-docs/src/content/docs/agent-insights/gate-test-reuse-yield-grading.mdx',
+      'packages/operator-core/lib/rubrics.ts',
+      'packages/operator-core/lib/acceptance-rubric-vetting.ts',
+      'packages/operator-core/lib/agent-tools/testing/run.ts',
+      'packages/operator-core/lib/testing-run-store.ts',
+      'scripts/lib/pure-lane-proof-capture.mjs',
+      'apps/operator/lib/release/green-checkpoint.ts',
+      'packages/operator-core/lib/release/test-pass-reuse-report.test.ts',
+      'packages/operator-core/lib/__tests__/pure-lane-proof-capture.test.ts',
+      'apps/operator/lib/release/green-checkpoint-pure-proof-capture.test.ts',
+      'apps/operator/lib/release/green-checkpoint.test.ts',
+      'packages/operator-core/lib/__tests__/schema-symbol-drift.test.ts',
+    ];
+    const result = await acceptFeedbackRequestProd({ workspaceId: 'workspace-1', requesterId: 'requester',
+      question: 'Review the full engineering guide and its source anchors', subjectRefs,
+    }, { ownerId: 'requester' } as never, { harnessSlug: 'papercusp', allowDispatch: false });
+
+    expect(result).toMatchObject({ verdict: 'accepted' });
+    expect(h.acceptFeedbackRequestCore.mock.calls[0]?.[0]).toMatchObject({
+      subjectRefs, resolvedSubjectRefs: subjectRefs, unresolvedSubjectRefs: [],
+    });
+    await vi.waitFor(() => expect(h.continueFeedbackRequestCore).toHaveBeenCalled());
+  });
+
   it('retains inferred source refs for other accepted consults', async () => {
     const planSlug = 'rubric-grading-diagnostics-evidence-and-author-handoff-2026-11-02';
     const question = `Review plan ${planSlug} for its diagnostic approach`;
@@ -328,6 +360,19 @@ describe('getFeedbackProd expert-routing settings', () => {
     expect(h.expertiseSubject).toHaveBeenCalledWith(question);
     expect(h.expandSubjectRefs).toHaveBeenCalledWith([planSlug]);
     expect(h.acceptFeedbackRequestCore.mock.calls[0]?.[0]).toMatchObject({ resolvedSubjectRefs: [planSlug] });
+    await vi.waitFor(() => expect(h.continueFeedbackRequestCore).toHaveBeenCalled());
+  });
+
+  it('keeps inferred tool subjects semantic instead of turning mentions into exact source anchors', async () => {
+    const question = 'Review this plan before normal plans:start, using first-principles judgment.';
+    h.expertiseSubject.mockReturnValueOnce('plans:start');
+    const result = await acceptFeedbackRequestProd({ workspaceId: 'workspace-1', requesterId: 'requester', question },
+      { ownerId: 'requester' } as never, { harnessSlug: 'papercusp', allowDispatch: false });
+
+    expect(result).toMatchObject({ verdict: 'accepted' });
+    expect(h.isToolSubject).toHaveBeenCalledWith('plans:start');
+    expect(h.expandSubjectRefs).not.toHaveBeenCalled();
+    expect(h.acceptFeedbackRequestCore.mock.calls[0]?.[0]).not.toHaveProperty('resolvedSubjectRefs');
     await vi.waitFor(() => expect(h.continueFeedbackRequestCore).toHaveBeenCalled());
   });
 

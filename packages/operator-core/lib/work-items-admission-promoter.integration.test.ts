@@ -154,6 +154,15 @@ const DDL = `
     source_plan_slug text,
     goal_id text,
     source_plan_item_ids text[],
+    plan_slug text,
+    plan_line_id text,
+    plan_seq integer,
+    plan_phase text,
+    plan_importance text,
+    plan_decision_refs text[],
+    plan_deliverable text,
+    plan_owner_gate_marker text,
+    plan_line_text text,
     created_ts bigint,
     updated_ts bigint,
     closed_ts bigint,
@@ -2005,6 +2014,85 @@ describe('work-item admission promoter (real Postgres)', () => {
       expect(await admissionOf('WI-request')).toBe('pending');
     }, 90_000);
 
+    it('refreshes only deferred-screening holds when the normal component rescreen finds a new protected twin', async () => {
+      const actor = 'system:work-item-admission-promoter';
+      const variants = [
+        { key: 'marked', title: 'marked deferred finding', vector: '[1,0,0]', mode: 'marked' },
+        { key: 'legacy', title: 'legacy deferred finding', vector: '[0,1,0]', mode: 'legacy' },
+        { key: 'judged', title: 'judged deferred finding', vector: '[0,0,1]', mode: 'judged' },
+      ] as const;
+      const targetIds: string[] = [];
+      const twinIds: string[] = [];
+      const previousHolds = new Map<string, Record<string, unknown>>();
+      const currentReasons = new Map<string, string>();
+
+      for (const variant of variants) {
+        const oldTwin = `WI-old-${variant.key}`;
+        const currentTwin = `WI-current-${variant.key}`;
+        const target = `WI-target-${variant.key}`;
+        const oldReason = `deferred: twin ${oldTwin} is blocked-state; held until it can be judged`;
+        const currentReason = `deferred: twin ${currentTwin} is review-gated; held until it can be judged`;
+        const hold = {
+          actor,
+          reason: oldReason,
+          runId: `old-${variant.key}-run`,
+          heldAt: new Date(NOW - 50_000).toISOString(),
+          ...(variant.mode === 'legacy' ? {} : { screeningDeferred: variant.mode === 'marked' }),
+        };
+        previousHolds.set(target, hold);
+        currentReasons.set(target, currentReason);
+        targetIds.push(target);
+        twinIds.push(oldTwin, currentTwin);
+
+        await seedItem({ id: oldTwin, title: variant.title, summary: variant.title, admission: 'admitted',
+          status: 'done', authority: 'committed', vector: variant.vector, createdAtMs: NOW - 60_000 });
+        await db.sql`UPDATE harness_shared.work_items SET terminal_completion_ref = 'verified by focused integration suite'
+          WHERE feature_id = ${oldTwin}`;
+        await seedItem({ id: currentTwin, title: variant.title, summary: variant.title, admission: 'admitted',
+          vector: variant.vector, payload: { agentReview: { round: 1, status: 'pending', submittedBy: 'reviewer', ledgerIdeaId: currentTwin } },
+          createdAtMs: NOW - 40_000 });
+        await seedItem({ id: target, title: variant.title, summary: variant.title, admission: 'pending',
+          vector: variant.vector, payload: { admissionHold: hold }, createdAtMs: NOW - 20_000 });
+      }
+
+      const model = distinctCall();
+      const result = await runWorkItemAdmissionPromoter({
+        workspaceId: WS, harnessSlug: HARNESS, runId: 'screening-deferred-hold-refresh',
+        sql: db.sql, llmCall: model, now: () => NOW, batchSize: 1, recentTerminalDays: 30,
+        componentScreeningItemIds: targetIds,
+      });
+      expect(model).not.toHaveBeenCalled();
+      expect(result.prescreen).toMatchObject({ window: 3, selected: 0, deferred: 3 });
+
+      const heldRows = await db.sql<Array<{ feature_id: string; admission: string; hold: Record<string, unknown> }>>`
+        SELECT feature_id, admission, payload->'admissionHold' AS hold
+          FROM harness_shared.work_items WHERE feature_id = ANY(${targetIds}::text[])`;
+      const heldById = new Map(heldRows.map((row) => [row.feature_id, row]));
+      for (const variant of variants) {
+        const id = `WI-target-${variant.key}`;
+        const held = heldById.get(id);
+        expect(held?.admission).toBe('pending');
+        if (variant.mode === 'judged') expect(held?.hold).toEqual(previousHolds.get(id));
+        else expect(held?.hold).toMatchObject({
+          actor, reason: currentReasons.get(id), runId: 'screening-deferred-hold-refresh', screeningDeferred: true,
+        });
+      }
+
+      const twins = await db.sql<Array<{ feature_id: string; status: string; admission: string;
+        terminal_completion_ref: string | null; agent_review: Record<string, unknown> | null }>>`
+        SELECT feature_id, status, admission, terminal_completion_ref, payload->'agentReview' AS agent_review
+          FROM harness_shared.work_items WHERE feature_id = ANY(${twinIds}::text[])`;
+      const twinsById = new Map(twins.map((row) => [row.feature_id, row]));
+      for (const variant of variants) {
+        const oldTwin = twinsById.get(`WI-old-${variant.key}`);
+        const currentTwin = twinsById.get(`WI-current-${variant.key}`);
+        expect(oldTwin).toMatchObject({ status: 'done', admission: 'admitted',
+          terminal_completion_ref: 'verified by focused integration suite' });
+        expect(currentTwin).toMatchObject({ status: 'open', admission: 'admitted',
+          agent_review: { round: 1, status: 'pending' } });
+      }
+    }, 90_000);
+
     describe.each(['agent', 'watchdog'] as const)('authenticated audited %s park comparison', creator => {
       const actor = 'su-f376159c-ff71-45aa-b34c-cded72705429';
       const reason = 'future independent source work';
@@ -2277,7 +2365,7 @@ describe('work-item admission promoter (real Postgres)', () => {
       });
       expect(first).toHaveBeenCalledTimes(1);
       expect(promptKeys(first)).toEqual(['WI-beta-free::WI-beta-new']);
-      expect(tick1).toMatchObject({ promoted: 0, held: 1, guardRefusals: [] });
+      expect(tick1).toMatchObject({ promoted: 0, held: 2, guardRefusals: [] });
       expect(tick1.prescreen).toMatchObject({ selected: 1, deferred: 1, protectedPairs: 2, forcedHolds: 1 });
       // Neither outcome advances lastRetryAt, so both enter the rotation ledger (WI-6554700010018072).
       expect([...(tick1.prescreen?.rotatedIds ?? [])].sort()).toEqual(['WI-alpha-new', 'WI-beta-new']);
@@ -2293,13 +2381,13 @@ describe('work-item admission promoter (real Postgres)', () => {
         await db.sql`SELECT verdict FROM harness_shared.dedup_adjudications WHERE a = 'WI-beta-free' AND b = 'WI-beta-new'`,
       ).toEqual([{ verdict: 'distinct' }]);
 
-      // Unchanged state: both rows are now deferred and the tick spends NO model time.
+      // Unchanged state: both rows remain held as dispositions, with NO model time or hold rewrite.
       const second = distinctCall();
       const tick2 = await runWorkItemAdmissionPromoter({
         workspaceId: WS, harnessSlug: HARNESS, runId: 'prescreen-protected-2', sql: db.sql, llmCall: second, now: () => NOW,
       });
       expect(second).not.toHaveBeenCalled();
-      expect(tick2).toMatchObject({ batchSize: 0, promoted: 0, held: 0 });
+      expect(tick2).toMatchObject({ batchSize: 0, promoted: 0, held: 2 });
       expect(tick2.prescreen).toMatchObject({ selected: 0, deferred: 2 });
 
       // The claims end: nothing is memoized, so both rows re-enter and are judged at once.
@@ -2342,12 +2430,15 @@ describe('work-item admission promoter (real Postgres)', () => {
         SELECT detail #> '{prescreen,rotatedIds}' AS rotated FROM harness_shared.admission_runs WHERE id = 'rotation-1'`;
       expect(ledger?.rotated).toEqual(['WI-held-1', 'WI-held-2', 'WI-held-3']);
 
-      // The ledger stamp sorts the deferred rows behind the never-examined row, which now gets
-      // its turn — and the rotation wrote nothing to the deferred rows themselves.
+      // The first screen writes an explicit deferred-hold marker and advances these rows once.
+      // The ledger then sorts them behind the never-examined row, which gets its turn.
+      const refreshed = await heldStamps();
+      expect(refreshed.map(({ feature_id }) => feature_id)).toEqual(before.map(({ feature_id }) => feature_id));
+      expect(refreshed.every(({ updated_ts }) => Number(updated_ts) === NOW)).toBe(true);
       const tick2 = await tick('rotation-2');
       expect(tick2).toMatchObject({ promoted: 1 });
       expect(await admissionOf('WI-fresh')).toBe('admitted');
-      expect(await heldStamps()).toEqual(before);
+      expect(await heldStamps()).toEqual(refreshed);
 
       // Outside the scheduled model window the ledger is ignored: a plain read keeps FIFO order.
       expect((await readPendingBatch(db.sql, WS, HARNESS, 3)).map((row) => row.id))

@@ -46,6 +46,8 @@ const SCORECARD_GET_DIAGNOSTIC_STAGE = {
 type ScorecardGetDiagnosticStage = (typeof SCORECARD_GET_DIAGNOSTIC_STAGE)[keyof typeof SCORECARD_GET_DIAGNOSTIC_STAGE];
 
 export const scorecardGetArgs = z.object({
+  assessmentWorkItem: z.object({ id: z.string().min(1).max(200), harness: z.string().min(1).max(120) })
+    .strict().optional().describe('Resolve requested scope from this exact work item and captured owner approval. A selector alone never authorizes a subset.'),
   comparisonTime: z.string().datetime({ offset: true }).optional()
     .describe('Read evidence age/currentness at one UTC clock; defaults to request time. Historical values and ratings stay immutable.'),
   issueId: z
@@ -117,14 +119,19 @@ function inlineResultBudgetChars(ownerId?: string | null): number {
   );
 }
 
-const evidenceReadCall = (issueId: string, criterionKey: string, evidenceOffset = 0, comparisonTime?: string) => ({
+type AssessmentSelector = z.infer<typeof scorecardGetArgs>['assessmentWorkItem'];
+const evidenceReadCall = (issueId: string, criterionKey: string, evidenceOffset = 0, comparisonTime?: string,
+  assessmentWorkItem?: AssessmentSelector) => ({
   tool: 'scorecards:get',
-  args: { issueId, criterionKey, evidenceOffset, ...(comparisonTime ? { comparisonTime } : {}) },
+  args: { issueId, criterionKey, evidenceOffset, ...(comparisonTime ? { comparisonTime } : {}),
+    ...(assessmentWorkItem ? { assessmentWorkItem } : {}) },
 });
 
-const criterionIndexReadCall = (issueId: string, indexOffset: number, comparisonTime?: string) => ({
+const criterionIndexReadCall = (issueId: string, indexOffset: number, comparisonTime?: string,
+  assessmentWorkItem?: AssessmentSelector) => ({
   tool: 'scorecards:get',
-  args: { issueId, indexOffset, ...(comparisonTime ? { comparisonTime } : {}) },
+  args: { issueId, indexOffset, ...(comparisonTime ? { comparisonTime } : {}),
+    ...(assessmentWorkItem ? { assessmentWorkItem } : {}) },
 });
 
 const rerunRecipeReadCall = (issueId: string, rerunRecipeOffset = 0) => ({
@@ -298,7 +305,7 @@ const scorecardEvidenceSchema = z.object({
   evidenceFingerprint: z.string().optional(),
   sourceHive: z.string().optional(),
   subject: z.object({
-    kind: z.enum(['agent-run', 'session', 'work-item', 'plan', 'pot', 'rubric', 'scorecard']).optional(),
+    kind: z.enum(['agent-run', 'session', 'work-item', 'plan', 'pot', 'fleet', 'rubric', 'scorecard']).optional(),
     ref: z.string(),
     windowStart: z.string().optional(),
     windowEnd: z.string().optional(),
@@ -531,12 +538,12 @@ function boundedEvidenceRead(
           instruction: 'Evidence has NOT been read. For a criterion-index page, follow evidenceRead.next until the full index is assembled; then read every indexed criterion and concatenate its pages before grading.',
           criteria: scorecard.criteria.slice(indexOffset, endOffset).map(({ key, rating, evidence }) => ({
             key, rating, evidenceChars: evidence.length,
-            read: evidenceReadCall(issueId, key, 0, args.comparisonTime),
+            read: evidenceReadCall(issueId, key, 0, args.comparisonTime, args.assessmentWorkItem),
           })),
           scope: 'criterion-index' as const,
           offset: indexOffset,
           totalCriteria: scorecard.criteria.length,
-          ...(!completeIndex ? { next: criterionIndexReadCall(issueId, endOffset, args.comparisonTime) } : {}),
+          ...(!completeIndex ? { next: criterionIndexReadCall(issueId, endOffset, args.comparisonTime, args.assessmentWorkItem) } : {}),
         },
       };
     };
@@ -581,7 +588,7 @@ function boundedEvidenceRead(
         offset,
         totalChars: criterion.evidence.length,
         instruction: 'Concatenate this criterion’s pages in offset order. Complete applies only to this criterion; audit every key from the card index.',
-        ...(!complete ? { next: evidenceReadCall(issueId, criterion.key, nextOffset, args.comparisonTime) } : {}),
+        ...(!complete ? { next: evidenceReadCall(issueId, criterion.key, nextOffset, args.comparisonTime, args.assessmentWorkItem) } : {}),
       },
     };
   };
@@ -735,8 +742,9 @@ export default defineTool({
             const recipePage = args.rerunRecipeOffset !== undefined;
             const result = await runDiagnosticStage(
               SCORECARD_GET_DIAGNOSTIC_STAGE.evidenceRead,
-              () => recipePage ? readScorecardRecipeHeader(issueId) : args.comparisonTime
-                ? readScorecardEvidence(issueId, args.comparisonTime) : readScorecardEvidence(issueId),
+              () => recipePage ? readScorecardRecipeHeader(issueId) : args.assessmentWorkItem
+                ? readScorecardEvidence(issueId, args.comparisonTime, args.assessmentWorkItem)
+                : args.comparisonTime ? readScorecardEvidence(issueId, args.comparisonTime) : readScorecardEvidence(issueId),
             );
             if (result.kind === 'not_found') {
               return respond({ ok: false, error: `scorecard '${issueId}' not found` });

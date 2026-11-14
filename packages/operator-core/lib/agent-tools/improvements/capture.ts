@@ -1013,7 +1013,7 @@ export default defineTool({
             subject: z
               .object({
                 kind: z
-                  .enum(['agent-run', 'session', 'work-item', 'plan', 'pot'])
+                  .enum(['agent-run', 'session', 'work-item', 'plan', 'pot', 'fleet'])
                   .optional()
                   .describe('what `ref` names; omit if you did not classify it'),
                 ref: z

@@ -777,9 +777,14 @@ export function classify(
   const isLive = (r: LedgerRow) => nowMs - r.ts <= (r.ttlMs ?? ttlMs);
   const text = unwrapWholePaste(promptText ?? '');
   const env = parseEnvelope(text) ?? parseCodexStopHookEnvelope(text);
+  // Renewals append a new version of the exact same nonce. Keep that append-only
+  // history, but classify against its newest row so the refreshed TTL takes effect.
+  const latestRowsByNonce = new Map<string, LedgerRow>();
+  for (const row of rows) latestRowsByNonce.set(row.nonce, row);
+  const classificationRows = [...latestRowsByNonce.values()];
 
   if (env) {
-    const row = rows.find((r) => r.nonce === env.nonce);
+    const row = classificationRows.find((r) => r.nonce === env.nonce);
     if (row && isLive(row)) {
       const hashMatch = payloadSha256(env.payload) === row.sha256;
       const originMismatch = env.origin !== row.origin;
@@ -835,7 +840,7 @@ export function classify(
   // authoritative verdict than a live row would have. Absence and expiry are
   // one class — GC deleting a row is just absence arriving on a schedule.
   const hash = payloadSha256(text);
-  const row = rows.find((r) => r.sha256 === hash);
+  const row = classificationRows.find((r) => r.sha256 === hash);
   if (row && isLive(row)) {
     return {
       verdict: 'verified-agent',

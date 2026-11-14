@@ -10,7 +10,7 @@ import { createServer as createTcpServer, type AddressInfo, type Socket } from '
 import type { SuSessionEvent } from '@papercusp/chat-protocol';
 import * as path from 'node:path';
 import { createTextCollector } from '../child-output';
-import { assertInstalledPuiStore, checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, nativeApprovalFollowupDecline, nativeApprovalRequest, nativeApprovalTurnSettled, nativeInterruptRequest, parseAcceptanceLines, parseHarnessLine, REPO_ROOT, suToolApproval, type Candidate, type EvidenceRow } from './release-acceptance';
+import { assertInstalledPuiStore, checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, nativeApprovalFollowupDecline, nativeApprovalRequest, nativeApprovalTurnSettled, nativeInterruptRequest, parseAcceptanceLines, parseHarnessLine, readNativeAccountCatalog, REPO_ROOT, suToolApproval, type Candidate, type EvidenceRow } from './release-acceptance';
 import {
   CLOUD_DEVICE_START_ATTEMPTS, cloudDeviceStartBlocksLegs, cloudDeviceStartTransient, DOCKER_START_PROBE_TIMEOUT_MS,
   legsBlocked, measureCloudDeviceStart, measureRunnerTree, prepareOperatorRuntimePackages, probeDockerCreateStart, probeRoutedCodexModel, remeasureCloudDeviceStart, remeasureStockMachines,
@@ -846,6 +846,34 @@ describe('release acceptance evidence parsing', () => {
 });
 
 describe('release acceptance account preflight', () => {
+  it('seeds named and auto routes with identical credential-free private metadata', () => {
+    const work = mkdtempSync(path.join(tmpdir(), 'native-account-catalog-'));
+    const catalog = path.join(work, 'accounts.json');
+    try {
+      writeFileSync(catalog, JSON.stringify({ accounts: [{ id: 'codex-account', provider: 'codex',
+        credentialRef: 'secret-ref', apiKey: 'must-not-copy', addedAt: 12, boundTo: ['production'] }] }));
+      const metadata = [{ id: 'codex-account', provider: 'codex', credentialRef: '', addedAt: 0, boundTo: [] }];
+      expect(readNativeAccountCatalog(catalog, 'auto')).toEqual(metadata);
+      expect(readNativeAccountCatalog(catalog, 'codex-account')).toEqual(metadata);
+      expect(() => readNativeAccountCatalog(catalog, 'missing-account')).toThrow(/absent from PUI_NATIVE_ACCOUNT_CATALOG/);
+      expect(() => readNativeAccountCatalog(undefined, 'codex-account')).toThrow(/before.*private databases start/);
+      expect(readNativeAccountCatalog(undefined, 'default')).toEqual([]);
+    } finally { rmSync(work, { recursive: true, force: true }); }
+  });
+
+  it.each([null, {}, { accounts: [] }, { accounts: [null] }, { accounts: ['codex'] },
+    { accounts: [{ id: 'bad id', provider: 'codex' }] },
+    { accounts: [{ id: 'account', provider: 'unsupported' }] },
+    { accounts: [{ id: 'same', provider: 'codex' }, { id: 'same', provider: 'claude' }] },
+  ])('rejects malformed or ambiguous private account metadata: %j', value => {
+    const work = mkdtempSync(path.join(tmpdir(), 'native-account-catalog-'));
+    try {
+      const catalog = path.join(work, 'accounts.json');
+      writeFileSync(catalog, JSON.stringify(value));
+      expect(() => readNativeAccountCatalog(catalog)).toThrow(/valid id\/provider metadata/);
+    } finally { rmSync(work, { recursive: true, force: true }); }
+  });
+
   it('requires completed inference and attributes the auto route without pinning an account', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(
       'data: {"type":"response.output_text.delta","delta":"OK"}\n\n'

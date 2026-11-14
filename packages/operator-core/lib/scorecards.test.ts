@@ -251,6 +251,22 @@ describe('retained scorecard ledger diagnostics', () => {
   });
 
   it.each([
+    ['2026-10-31T23:59:59Z', at],
+    [at, '2026-11-02T00:00:01Z'],
+    ['2026-11-02T00:00:01Z', '2026-11-02T00:00:02Z'],
+  ])('does not fulfill an approved window with interval %s..%s', (startedAt, finishedAt) => {
+    const measured = retainMeasurementProvenance({ startedAt, finishedAt,
+      procedure: { kind: 'command', argv: ['declared-fixture-check'] }, result: { value: 3 } });
+    const diagnosis = projectScorecardLedgerDiagnostics({ rubric, comparisonTime: '2026-11-03T00:00:00Z',
+      observation: { ...observation, ratings: { history: { ...observation.ratings.history,
+        ledgerResult: { ...observation.ratings.history.ledgerResult, provenance: measured } } } },
+      measurementWindow: subject, latest: new Map([[row.check.id,
+        { ...row, check: { ...row.check, provenance: measured } }]]) });
+    expect(diagnosis.supportByKey).toEqual({});
+    expect(diagnosis.findingsByKey.history![0]!.reason).toBe('identity-mismatch');
+  });
+
+  it.each([
     { check: { ...row.check, value: 11 } },
     { check: { ...row.check, criterionKey: 'other' } },
     { check: { ...row.check, subject: { kind: 'fleet', ref: 'fleet:other' } } },

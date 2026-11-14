@@ -40,40 +40,65 @@ export function critiqueCoversRubric(request: string, rubric: Rubric, revision: 
   return revision != null && new RegExp(`\\b(?:rev(?:ision)?)[\\s:=#]*${revision}\\b`, 'i').test(request);
 }
 
+type RubricReviewWorkItem = {
+  id: string;
+  title: string;
+  summary?: string | null;
+  updatedAt: string;
+};
+
+type RubricReviewWorkItemSearch = (
+  rubricId: string,
+  options: { semantic: false; kind: 'task'; limit: 50 },
+) => Promise<{ items: readonly RubricReviewWorkItem[] }>;
+
 type CritiqueDeps = {
   candidates: (rubric: Rubric) => Promise<RubricCritiqueCandidate[]>;
+  consultCandidates?: (rubric: Rubric) => Promise<RubricCritiqueCandidate[]>;
+  searchReviewWorkItems?: RubricReviewWorkItemSearch;
   consult: (id: string, rubric: Rubric) => Promise<{ exists: boolean; critiquePosts: number; critics: string[] }>;
   workItem: (id: string, rubric: Rubric) => Promise<{ exists: boolean; critiquePosts: number; critics: string[] }>;
 };
 
-async function defaultCandidates(rubric: Rubric): Promise<RubricCritiqueCandidate[]> {
-  const { getOrgPg } = await import('@papercusp/db-org');
-  const sql = getOrgPg().sql;
-  const rows = await sql`
-    SELECT cs.conversation_id,
-           CASE WHEN cs.outcome->>'source' = 'archive' THEN source.question ELSE cs.question END AS question,
-           CASE WHEN cs.outcome->>'source' = 'archive' THEN source.updated_at ELSE cs.updated_at END AS updated_at
-      FROM harness_shared.consult_state cs
-      LEFT JOIN harness_shared.consult_state source
-        ON source.workspace_id = cs.workspace_id
-       AND source.conversation_id = cs.outcome->>'source_conversation_id'
-     WHERE cs.workspace_id = ${rubric.workspaceId}
-       AND cs.question ILIKE ${'%' + rubric.rubricId + '%'}
-     ORDER BY cs.updated_at DESC LIMIT 50
-  `;
-  const candidates: RubricCritiqueCandidate[] = rows.flatMap(row => {
-    const createdAt = pgTimestampToIsoOrNull(row.updated_at);
-    return typeof row.conversation_id === 'string' && typeof row.question === 'string' && createdAt
-      ? [{ consultId: row.conversation_id, request: row.question, createdAt }] : [];
-  });
-  // Pullable reviews are an existing alternate critique channel. Search their durable
-  // opening request, then let the same third-party-comment reader validate the answer.
-  const { searchWorkItems } = await import('./work-items');
-  const reviews = await searchWorkItems(rubric.rubricId, { semantic: false, kind: 'task', limit: 50 });
-  for (const item of reviews.items) {
-    if (!/rubric.vetting|vet\s+(?:acceptance\s+)?rubric/i.test(`${item.title}\n${item.summary}`)) continue;
-    candidates.push({ workItemId: item.id, request: `${item.title}\n${item.summary}`, createdAt: item.updatedAt });
+function workItemCritiqueCandidates(items: readonly RubricReviewWorkItem[]): RubricCritiqueCandidate[] {
+  return items.map(item => ({
+    workItemId: item.id,
+    request: `${item.title}\n${item.summary ?? ''}`,
+    createdAt: item.updatedAt,
+  }));
+}
+
+async function defaultCandidates(rubric: Rubric, deps: Partial<CritiqueDeps> = {}): Promise<RubricCritiqueCandidate[]> {
+  let candidates: RubricCritiqueCandidate[];
+  if (deps.consultCandidates) {
+    candidates = await deps.consultCandidates(rubric);
+  } else {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const sql = getOrgPg().sql;
+    const rows = await sql`
+      SELECT cs.conversation_id,
+             CASE WHEN cs.outcome->>'source' = 'archive' THEN source.question ELSE cs.question END AS question,
+             CASE WHEN cs.outcome->>'source' = 'archive' THEN source.updated_at ELSE cs.updated_at END AS updated_at
+        FROM harness_shared.consult_state cs
+        LEFT JOIN harness_shared.consult_state source
+          ON source.workspace_id = cs.workspace_id
+         AND source.conversation_id = cs.outcome->>'source_conversation_id'
+       WHERE cs.workspace_id = ${rubric.workspaceId}
+         AND cs.question ILIKE ${'%' + rubric.rubricId + '%'}
+       ORDER BY cs.updated_at DESC LIMIT 50
+    `;
+    candidates = rows.flatMap(row => {
+      const createdAt = pgTimestampToIsoOrNull(row.updated_at);
+      return typeof row.conversation_id === 'string' && typeof row.question === 'string' && createdAt
+        ? [{ consultId: row.conversation_id, request: row.question, createdAt }] : [];
+    });
   }
+  // Pullable reviews are an existing alternate critique channel. Search their durable
+  // opening request. Search is already scoped to this rubric; don't require editorial
+  // trigger wording before the exact identity and third-party-answer checks below.
+  const searchWorkItems = deps.searchReviewWorkItems ?? (await import('./work-items')).searchWorkItems;
+  const reviews = await searchWorkItems(rubric.rubricId, { semantic: false, kind: 'task', limit: 50 });
+  candidates.push(...workItemCritiqueCandidates(reviews.items));
   return candidates;
 }
 
@@ -82,7 +107,9 @@ export async function readCurrentAcceptanceRubricCritique(
   revision: number | null,
   deps: Partial<CritiqueDeps> = {},
 ): Promise<AcceptanceRubricCritique | null> {
-  const candidates = await (deps.candidates ?? defaultCandidates)(rubric);
+  const candidates = deps.candidates
+    ? await deps.candidates(rubric)
+    : await defaultCandidates(rubric, deps);
   for (const candidate of candidates.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))) {
     if (!critiqueCoversRubric(candidate.request, rubric, revision)) continue;
     let critique: { exists: boolean; critiquePosts: number; critics: string[] } | undefined;

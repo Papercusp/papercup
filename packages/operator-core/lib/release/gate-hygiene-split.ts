@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 /**
  * P-005 (green-main-fast-2026-08-25): which gate failures may hold `main` red.
  *
@@ -544,13 +546,18 @@ interface GateReplayBaselineTransitionBase {
   reason: string;
 }
 
-/** Explicit, source-reviewed transition. The usual form pins complete canonical snapshots.
+/** Explicit, source-reviewed transition. Literal and SHA-256 forms pin complete canonical snapshots.
+ * Hash pairs avoid inlining large historical observations; neither form masks changed fields.
  * The field-addition form is event-bound and accepts only when the same suite, every decision
  * input, every other decision, and every other output field reproduce exactly. It preserves the
  * append-only measurement while permitting reviewed additive projections on that exact row. */
 export type GateReplayBaselineTransition =
-  | (GateReplayBaselineTransitionBase & { previous: string; accepted: string; fieldAddition?: never })
-  | (GateReplayBaselineTransitionBase & { fieldAddition: GateReplayDecisionFieldAddition; previous?: never; accepted?: never });
+  | (GateReplayBaselineTransitionBase & { previous: string; accepted: string; fieldAddition?: never; snapshotSha256?: never })
+  | (GateReplayBaselineTransitionBase & { fieldAddition: GateReplayDecisionFieldAddition; previous?: never; accepted?: never; snapshotSha256?: never })
+  | (GateReplayBaselineTransitionBase & {
+      snapshotSha256: { previous: string; accepted: string };
+      previous?: never; accepted?: never; fieldAddition?: never;
+    });
 
 export const GATE_REPLAY_BASELINE_TRANSITIONS: readonly GateReplayBaselineTransition[] = Object.freeze([
   {
@@ -578,6 +585,14 @@ export const GATE_REPLAY_BASELINE_TRANSITIONS: readonly GateReplayBaselineTransi
         { path: ['legs'] },
         { path: ['convergenceRounds', 1, 'failingTests'] },
       ],
+    },
+  },
+  {
+    decisionRef: 'slack-asana-reproduced-bug-fix-pr-workflow-2026-10-08#D-087',
+    reason: 'Lossless-frontier change c5209e24fc7 retains the 60 failures reported to historical event 981204 instead of its capped 50; pin both complete snapshots, including refreshed omitted-failure leg histories and frontier provenance.',
+    snapshotSha256: {
+      previous: '1273a0c2b8fd328d457c498aadf11e6563136bdb39e892875d7ef951bffd1fbd',
+      accepted: 'ca6e63e82fbd17078d11b4f47edd629654c64b7d61331c282f85b005e693a260',
     },
   },
 ]);
@@ -683,6 +698,14 @@ export function acceptedGateReplayTransition(previous: unknown, accepted: unknow
     if (!/^[-a-z0-9]+#D-\d+$/.test(transition.decisionRef) || !transition.reason.trim()) continue;
     if ('fieldAddition' in transition && transition.fieldAddition !== undefined) {
       if (acceptsEventBoundFieldAddition(previous, accepted, transition.fieldAddition)) return transition.decisionRef;
+      continue;
+    }
+    if ('snapshotSha256' in transition && transition.snapshotSha256 !== undefined) {
+      const pair = transition.snapshotSha256;
+      const valid = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+      if (!isRecord(pair) || !valid(pair.previous) || !valid(pair.accepted) || pair.previous === pair.accepted) continue;
+      const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+      if (pair.previous === hash(from) && pair.accepted === hash(to)) return transition.decisionRef;
       continue;
     }
     if (!('previous' in transition) || !('accepted' in transition)) continue;

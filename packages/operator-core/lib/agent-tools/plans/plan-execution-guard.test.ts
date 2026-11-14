@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { checkPlanExecutionGuard, isPlanImplementationCall, isPlanResearchCommand, planExecutionMeaning } from './plan-execution-guard';
+import type { ExecutionPlanBinding } from './plan-execution-guard';
 import { resolveAgentGoal } from '../../agent-goal-ref';
 
 const call = (toolName = 'apply_patch', args: unknown = { patch: 'implementation' }) =>
@@ -154,6 +155,37 @@ describe('implementation authority before direct writes (EI-27540173897381380)',
       blockers: ['plan_not_started'],
     });
   });
+  it('skips goal selection when several sources name one plan (WI-6554700010048224)', async () => {
+    // Census shape measured on live fleet members: a NULL-harness session row, a
+    // harness-scoped claim and a canonical work item, all naming ONE plan.
+    const census: ExecutionPlanBinding[] = [
+      { planSlug: 'bound-plan', harnessSlug: null, source: 'active-session', sourceRef: 'bound-plan' },
+      { planSlug: 'bound-plan', harnessSlug: 'project', source: 'plan-item-claim', sourceRef: 'bound-plan#P-001' },
+      { planSlug: 'bound-plan', harnessSlug: 'project', source: 'work-item', sourceRef: 'WI-1',
+        canonical: { itemId: 'WI-1', lineId: 'P-001', ownerId: 'su-builder', nodeVersion: '1', lineVersion: '1',
+          planVersion: 1, planHash: 'h' } },
+    ];
+    const resolveGoal = vi.fn((): Promise<never> => new Promise(() => {}));
+    const checkPlan = vi.fn(async () => [] as string[]);
+    const timings: string[] = [];
+    const result = await checkPlanExecutionGuard({ ...call(), observeTiming: t => { timings.push(t.stage); } },
+      { readBindings: async () => census, resolveGoal, checkPlan, goalResolutionBudgetMs: 5 });
+
+    expect(result).toBeNull();
+    expect(resolveGoal).not.toHaveBeenCalled();
+    expect(timings).toContain('goal_selector_skipped');
+    // Skipping selection still enforces the whole same-plan census.
+    expect(checkPlan).toHaveBeenCalledTimes(3);
+  });
+  it('still selects when one slug is bound in two harnesses (WI-6554700010048224)', async () => {
+    const resolveGoal = vi.fn((): Promise<never> => new Promise(() => {}));
+    const result = await checkPlanExecutionGuard(call(), {
+      readBindings: async () => [binding, { planSlug: binding.planSlug, harnessSlug: 'other-project' }],
+      resolveGoal, checkPlan: vi.fn(), goalResolutionBudgetMs: 5,
+    });
+    expect(resolveGoal).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ blockers: ['plan_goal_resolution_timeout'] });
+  });
   it('keeps the full binding census when current goal resolution is incomplete', async () => {
     const checkPlan = vi.fn(async (binding: { planSlug: string }) =>
       binding.planSlug === 'unrelated-plan' ? ['plan_status:draft'] : []);
@@ -180,12 +212,83 @@ describe('implementation authority before direct writes (EI-27540173897381380)',
       expect(isPlanResearchCommand(command), command).toBe(true);
     for (const command of ['cat x > source.ts', 'python -c "open(\"x\",\"w\")"', 'rg --pre=sh x',
       'rg --hostname-bin sh x', 'ls $(touch x)', 'ls `touch x`', 'cat x\ntouch y', 'ls || touch x', 'ls |',
+      'rg -n scope *', 'rg -n scope --*', 'r* -n scope source.ts', './r* -n scope source.ts',
+      "sed -n '1*p' source.ts", 'rg --pre=sh scope src/*.ts', 'rg -n scope src/$(touch x)*',
       "sed -i 's/old/new/' source.ts", "sed -n '1w output' source.ts",
       "sed -n '1,20p' source.ts > copy.ts", "sed -n '1,20p' source.ts; touch output",
       "python -c \"print(open('scratch.txt').read())\""])
       expect(isPlanResearchCommand(command), command).toBe(false);
     expect(isPlanImplementationCall('write_stdin', { chars: '' })).toBe(false);
     expect(isPlanImplementationCall('write_stdin', { chars: 'touch x\n' })).toBe(true);
+  });
+  it.each([
+    'pwd\nrg -n scope source.ts\nsed -n \'1,20p\' source.ts\n',
+    'cat source.ts\r\nhead -20 other.ts',
+    '\n  \ncat source.ts\n',
+  ])('allows batches of complete read-only lines without plan authority: %s', async cmd => {
+    const readBindings = vi.fn(async () => [binding]);
+    expect(await checkPlanExecutionGuard(call('exec_command', { cmd }), {
+      readBindings, checkPlan: vi.fn(async () => ['plan_not_started']),
+    })).toBeNull();
+    expect(readBindings).not.toHaveBeenCalled();
+  });
+  it.each([
+    'cat source.ts\ntouch output',
+    'cat source.ts\npython3 -c "print(1)"',
+    "cat 'source\nfile.ts'",
+    'cat source.ts \\\ntouch output',
+    'cat source.ts\n> output',
+  ])('keeps mixed, incomplete and mutating line batches behind plan authority: %s', cmd => {
+    expect(isPlanResearchCommand(cmd)).toBe(false);
+    expect(isPlanImplementationCall('exec_command', { cmd })).toBe(true);
+  });
+  it.each([
+    "rg -n 'bar-critique|rubric-vetting' packages/operator-core/lib/agent-tools/consult packages/operator-core/lib/consult*",
+    "rg -n 'scope*' src/*.ts",
+    'rg -n scope ./source*.ts',
+    'rg -n scope /tmp/source?.ts',
+    "sed -n '1p' src/*.ts",
+    'rg -n scope src/[abc]*.ts | head -5',
+  ])('permits filename glob research without consulting blocked plan authority: %s', async cmd => {
+    const readBindings = vi.fn(async () => [binding]);
+    const checkPlan = vi.fn(async () => ['plan_not_started']);
+    expect(isPlanResearchCommand(cmd)).toBe(true);
+    expect(await checkPlanExecutionGuard(call('exec_command', { cmd }), { readBindings, checkPlan })).toBeNull();
+    expect(readBindings).not.toHaveBeenCalled();
+    expect(checkPlan).not.toHaveBeenCalled();
+  });
+  it.each([
+    'ptool --idempotency-key 9c552a68-e724-4afe-8da1-15eca6a7e32a plans:audit --json -',
+    'ptool plans:audit --json - --idempotency-key=9c552a68-e724-4afe-8da1-15eca6a7e32a',
+    'ptool --workspace=papercusp --harness papercusp --json - plans:audit',
+    'ptool --url http://127.0.0.1:3170 plans:audit --json -',
+    'ptool plans:audit --json - 2>/dev/null',
+  ])('preserves canonical activation repair through supported CLI flags: %s', async header => {
+    const cmd = [header + " <<'JSON'", '{"slug":"review-plan","phase":"activation"}', 'JSON'].join('\n');
+    const readBindings = vi.fn(async () => [binding]);
+    expect(await checkPlanExecutionGuard(call('exec_command', { cmd }), {
+      readBindings, checkPlan: vi.fn(async () => ['plan_not_started']),
+    })).toBeNull();
+    expect(readBindings).not.toHaveBeenCalled();
+  });
+  it('checks the wrapped target and rejects malformed replay headers', () => {
+    const wrapped = (header: string, name = 'plans:audit') => [
+      header + " <<'JSON'", JSON.stringify({ name, args: { slug: 'review-plan' } }), 'JSON',
+    ].join('\n');
+    const header = 'ptool --idempotency-key replay-1 tools:invoke --json -';
+    expect(isPlanImplementationCall('exec_command', { cmd: wrapped(header) })).toBe(false);
+    expect(isPlanImplementationCall('exec_command', { cmd: wrapped(header, 'capability:bash') })).toBe(true);
+    for (const invalid of [
+      'ptool --idempotency-key tools:invoke --json -',
+      'ptool --idempotency-key=a tools:invoke --idempotency-key=b --json -',
+      'ptool --idempotency-key="$(touch output)" tools:invoke --json -',
+      'ptool --idempotency-key="" tools:invoke --json -',
+      'ptool --token-file=/tmp/token tools:invoke --json -',
+      'ptool --url=http://outside.example tools:invoke --json -',
+      'ptool tools:invoke --json - > /tmp/output',
+      'ptool tools:invoke --json - 2>/tmp/output',
+      'ptool tools:invoke --json -; touch output',
+    ]) expect(isPlanImplementationCall('exec_command', { cmd: wrapped(invalid) }), invalid).toBe(true);
   });
   it('permits bounded PTool contract reads and consult replies while refusing implementation calls', async () => {
     const readCommand = [
@@ -233,6 +336,133 @@ describe('implementation authority before direct writes (EI-27540173897381380)',
     expect(await checkPlanExecutionGuard(call('exec_command', { cmd: writeCommand }), { readBindings, checkPlan }))
       .toMatchObject({ code: 'plan_execution_not_ready', blockers: ['plan_status:draft'] });
     expect(readBindings).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('canonical readiness evidence and coordination remain available before activation (WI-6554700010047155)', () => {
+  const ptool = (name: string, args: unknown, wrapped = false) => [
+    `ptool ${wrapped ? 'tools:invoke' : name} --url=http://127.0.0.1:3170 --json - --harness=papercusp <<'JSON'`,
+    JSON.stringify(wrapped ? { name, args } : args),
+    'JSON',
+  ].join('\n');
+
+  it.each([
+    ['sessions:read', { ref: 'session_turn:codex:source:0' }],
+    ['sessions:search', { session: 'self', mode: 'verbatim', query: 'original requirement' }],
+    ['plans:revisions', { slug: 'review-plan' }],
+    ['plans:revision-transcript', { revisionId: 1 }],
+    ['journal:push-utilization', { sinceHours: 24 }],
+    ['facts:list', { scope: 'workspace', key: 'required-guard', full: true }],
+    ['capability:read', { file_path: 'source.ts' }],
+    ['plans:get-specs', { slug: 'review-plan', planItemIds: ['P-008'] }],
+    ['plans:get-spec-evidence', { slug: 'review-plan' }],
+    ['plans:get-item', { slug: 'review-plan', id: 'P-008' }],
+    ['recipes:search', { query: 'canonical acceptance preparation' }],
+    ['rubrics:get', { rubricRef: 'spec-quality' }],
+    ['rubrics:list', { subjectPlan: 'review-plan', limit: 1 }],
+    ['rubrics:search', { query: 'acceptance-review-plan', kind: 'acceptance' }],
+    ['rubrics:propose', { kind: 'acceptance', rubricRef: 'acceptance-review-plan', subjectPlan: 'review-plan',
+      classRef: 'plan-class-investigation', characteristic: 'quality', title: 'Acceptance', criteria: [] }],
+    ['rubrics:amend-status', { amendmentId: 'amend-1' }],
+    ['scorecards:get', { issueId: 'EI-123' }],
+    ['processes:list', { taskId: 'readiness-review-task', live: true, limit: 1 }],
+    ['scorecards:evaluate', { rubricRef: 'spec-quality', eligibilityOnly: true }],
+    ['scorecards:emit', { rubricRef: 'spec-quality', ratings: {} }],
+    ['scorecards:repair', { targetIds: ['EI-123'], harness: 'papercusp' }],
+    ['plans:edit', { slug: 'review-plan', action: 'update', itemId: 'P-008', text: 'Reconciled outcome' }],
+    ['plans:set-specs', { slug: 'review-plan', specs: [] }],
+    ['plans:migrate-acceptance-bars', { planSlug: 'review-plan', dryRun: true, batchSize: 1 }],
+    ['rubrics:amend', { rubricRef: 'acceptance-review-plan', expectedRevision: 1, dryRun: true }],
+    ['coord:send', { to: ['peer'], summary: 'Readiness evidence', expects: 'none' }],
+    ['coord:declare-intent', { intent: 'Reconcile draft discovery' }],
+    ['work_items:checkpoint', { id: 'WI-123', next: 'Read original source' }],
+    ['work_items:comment', { id: 'WI-123', body: 'Source evidence retained' }],
+    ['work_items:release', { id: 'WI-123', reason: 'Hand back preserved evidence' }],
+    ['work_items:link', { id: 'WI-provider', rel: 'blocks', target_id: 'WI-123', satisfaction: 'success' }],
+    ['work_items:hold_open', { id: 'WI-123', clear: true, ownerOverride: true,
+      reconcile: { reasonCode: 'operator-directed', evidence: 'Reviewed readiness disposition D-044', dryRun: true } }],
+    ['work_items:hold_open', { id: 'WI-123', clear: true, ownerOverride: true,
+      reconcile: { reasonCode: 'operator-directed', evidence: 'Reviewed readiness disposition D-044', expectedParkFingerprint: 'a'.repeat(64) } }],
+    ['loop:checkpoint', { next: 'Continue discovery' }],
+    ['plans:set-content', { slug: 'review-plan', content: 'Reconciled discovery' }],
+  ])('permits exact %s calls without consulting an unstarted plan', async (name, args) => {
+    for (const wrapped of [false, true]) {
+      const cmd = ptool(name as string, args, wrapped);
+      const readBindings = vi.fn(async () => [binding]);
+      const checkPlan = vi.fn(async () => ['plan_not_started']);
+      expect(await checkPlanExecutionGuard(call('exec_command', { cmd }), { readBindings, checkPlan }), cmd).toBeNull();
+      expect(readBindings).not.toHaveBeenCalled();
+      expect(checkPlan).not.toHaveBeenCalled();
+    }
+  });
+
+  it('keeps implementation, autonomy changes and altered shell envelopes behind readiness', async () => {
+    const valid = ptool('sessions:read', { session: 'self' });
+    for (const cmd of [
+      valid + '\ntouch source.ts',
+      valid.replace("<<'JSON'", '<<JSON'),
+      valid.replace(" <<'JSON'", " > output <<'JSON'"),
+      ptool('capability:write', { file_path: 'source.ts', content: 'changed' }, true),
+      ptool('code:run', { script: 'return 1' }, true),
+      ptool('work_items:set_state', { id: 'WI-123', state: 'done' }),
+      ptool('work_items:hold_open', { id: 'WI-123', reason: 'Create a new hold' }),
+      ptool('work_items:hold_open', { id: 'WI-123', clear: true }),
+      ptool('work_items:hold_open', { id: 'WI-123', clear: 'true', reconcile: {} }),
+      ptool('work_items:hold_open', { id: 'WI-123', clear: true, reconcile: null }),
+      ptool('work_items:hold_open', { id: 'WI-123', clear: true, reconcile: [] }),
+      ptool('work_items:hold_open', { id: 'WI-123', clear: true, reconcile: 'reviewed' }),
+      ptool('work_items:hold_open', { id: 'WI-123', clear: true, force: true,
+        reconcile: { reasonCode: 'operator-directed', evidence: 'Reviewed readiness disposition D-044', dryRun: true } }),
+      ptool('loop:arm', { intervalSec: 60, goal: 'New autonomous mission' }),
+      ptool('tools:invoke', { name: 'sessions:read', args: { session: 'self' } }, true),
+      ptool('sessions:unknown', {}),
+    ]) {
+      expect(await checkPlanExecutionGuard(call('exec_command', { cmd }), {
+        readBindings: async () => [binding], checkPlan: async () => ['plan_not_started'],
+      }), cmd).toMatchObject({ blockers: ['plan_not_started'] });
+    }
+  });
+
+  it.each([
+    ['rubrics:list', { subjectPlan: 'review-plan', limit: 1 }],
+    ['rubrics:search', { query: 'acceptance-review-plan', kind: 'acceptance' }],
+    ['rubrics:propose', { kind: 'acceptance', rubricRef: 'acceptance-review-plan', subjectPlan: 'review-plan' }],
+  ])('keeps altered %s bootstrap envelopes behind plan readiness', async (name, args) => {
+    for (const wrapped of [false, true]) {
+      const valid = ptool(name as string, args, wrapped);
+      for (const cmd of [
+        valid + '\ntouch source.ts',
+        valid.replace("<<'JSON'", '<<JSON'),
+        valid.replace(" <<'JSON'", " > output <<'JSON'"),
+      ]) {
+        expect(await checkPlanExecutionGuard(call('exec_command', { cmd }), {
+          readBindings: async () => [binding], checkPlan: async () => ['plan_not_started'],
+        }), cmd).toMatchObject({ blockers: ['plan_not_started'] });
+      }
+    }
+  });
+
+  it('keeps general grading and scorecard persistence behind implementation readiness', async () => {
+    const cases = [
+      ['rubrics:propose', { rubricRef: 'standard-quality' }],
+      ['rubrics:propose', { kind: 'standard', rubricRef: 'standard-quality' }],
+      ['rubrics:propose', { kind: true, rubricRef: 'acceptance-review-plan' }],
+      ['rubrics:ratify', { rubricRef: 'acceptance-review-plan' }],
+      ['scorecards:evaluate', { rubricRef: 'spec-quality' }],
+      ['scorecards:evaluate', { rubricRef: 'spec-quality', eligibilityOnly: false }],
+      ['scorecards:evaluate', { rubricRef: 'spec-quality', eligibilityOnly: 'true' }],
+      ['scorecards:emit', { rubricRef: 'acceptance-review-plan', ratings: {} }],
+      ['scorecards:emit', { rubricRef: 'grading-integrity', ratings: {} }],
+      ['processes:kill', { taskId: 'readiness-review-task' }],
+      ['processes:freeze', { taskId: 'readiness-review-task' }],
+    ] as const;
+    for (const [name, args] of cases) {
+      for (const wrapped of [false, true]) {
+        expect(await checkPlanExecutionGuard(call('exec_command', { cmd: ptool(name, args, wrapped) }), {
+          readBindings: async () => [binding], checkPlan: async () => ['plan_not_started'],
+        })).toMatchObject({ code: 'plan_execution_not_ready', blockers: ['plan_not_started'] });
+      }
+    }
   });
 });
 

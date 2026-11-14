@@ -39,6 +39,7 @@ import { listAllProjectedTools } from '@papercusp/tooldef';
 import { productionInstalledToolFunding } from './cupboard/installed-tool-funding';
 import { synthesizeTransportPrincipal } from './endpoint-route/routes/transport/role-principal-caps';
 import { canonicalJson } from './authority/authority-rpc-envelope';
+import { recordOmpMcpEmission } from '../../../apps/operator/scripts/hooks/inject/delivery-ledger.mjs';
 import type { HostRequestPrincipalResolver } from './auth/require-principal';
 
 type Backend = 'codex' | 'omp';
@@ -748,7 +749,7 @@ export function startSuRpcEngine(
       await close();
     });
   }
-  function onMessage(frame: RpcFrame): void {
+  function onMessage(frame: RpcFrame, payload?: string): void {
     if (closed || !ownsRuntime()) { void withdrawOmpInput(); return; }
     const frameThreadId = object(frame.params).threadId ?? object(frame.params).conversationId;
     if (backend === 'codex' && frameThreadId && !nativeId()) {
@@ -860,7 +861,13 @@ export function startSuRpcEngine(
       } else if ((type === 'tool_execution_start' || type === 'tool_execution_end') && ownerTurnId) {
         const callId = string(frame.toolCallId), name = string(frame.toolName);
         if (type === 'tool_execution_start') emit({ type: 'tool', phase: 'started', turnId: ownerTurnId, callId, name, input: frame.args as SuSessionJsonValue });
-        else emit({ type: 'tool', phase: 'completed', turnId: ownerTurnId, callId, name, output: frame.result as SuSessionJsonValue, isError: frame.isError === true });
+        else {
+          // The pipe preserves the original complete JSON line. Reconstructing
+          // it from frame (or an older injected peer) cannot prove emission.
+          if (su && ready && !nativeBindingFailed && nativeId() && payload)
+            recordOmpMcpEmission(payload, binding.ownerId, nativeId(), env);
+          emit({ type: 'tool', phase: 'completed', turnId: ownerTurnId, callId, name, output: frame.result as SuSessionJsonValue, isError: frame.isError === true });
+        }
       } else if (type === 'agent_end' || type === 'prompt_result' && frame.agentInvoked === false) void finish('completed');
       else if (type === 'agent_start') {
         if (ompInput) { ompInput.agentStarted = true; acceptOmpInput(); }

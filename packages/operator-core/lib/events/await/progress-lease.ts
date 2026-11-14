@@ -27,6 +27,9 @@ export interface ProgressLeaseRegistration {
   work_item_id?: string;
   remedy_after_misses?: number;
   remedy: ProgressLeaseRemedy;
+  driving_work_item_id?: string;
+  no_delta_budget?: number;
+  substages?: Array<{ id: string; valueFingerprint: string }>;
 }
 
 export interface ProgressLeaseRegistrationContext {
@@ -152,6 +155,9 @@ export async function createProgressLeaseCertificate(
       remedyAfterMisses: registration.remedy_after_misses ?? 2,
       remedy: registration.remedy,
       history: [{ state: 'armed', atMs: nowMs, writer: initial.writer, units: initial.units, missCount: 0, evidence: initial }],
+      ...(registration.driving_work_item_id ? { drivingWorkItemId: registration.driving_work_item_id } : {}),
+      ...(registration.no_delta_budget != null ? { noDeltaBudget: registration.no_delta_budget } : {}),
+      ...(registration.substages ? { substages: registration.substages } : {}),
     },
   };
 }
@@ -209,15 +215,15 @@ export async function observeProgressLease(
       uncertainty,
     });
     return {
-      classification: 'stalled',
-      nextAction: 'wake-owner-or-takeover',
+      classification: 'unknown',
+      nextAction: 'resolve-uncertainty',
       producer: certificate.producer,
       owner: certificate.owner,
       checkedAtMs: nowMs,
       verificationDeadlineMs: certificate.verificationDeadlineMs,
       lastProgressAtMs: certificate.lastProgressAtMs,
       lastFireAtMs: certificate.lastFireAtMs,
-      evidence: { progressLease: current, progressed: false, missCount: lease.missCount + 1, uncertainty },
+      evidence: { progressLease: current, progressed: false, missCount: lease.missCount, uncertainty },
     };
   }
 }
@@ -237,9 +243,13 @@ export function advanceProgressLeaseCertificate(
   if (!lease) throw new Error('progress lease certificate is missing progressLease state');
   const current = resultEvidence(result);
   const progressing = result.classification === 'progressing';
-  const missCount = progressing ? 0 : lease.missCount + 1;
+  const unknown = result.classification === 'unknown';
+  if (unknown && (sideEffect.wake || sideEffect.remedy)) {
+    throw new Error('Unknown progress evidence cannot authorize an owner wake or remedy');
+  }
+  const missCount = unknown ? lease.missCount : progressing ? 0 : lease.missCount + 1;
   const baseTransition: ProgressLeaseTransition = {
-    state: progressing ? 'progress' : 'miss',
+    state: unknown ? 'unknown' : progressing ? 'progress' : 'miss',
     atMs: result.checkedAtMs,
     writer: current.writer,
     units: current.units,
@@ -268,6 +278,7 @@ export async function wakeProgressLeaseOwner(
   certificate: ProducerHealthCertificate,
   result: VerifiedWaitTimeoutResult,
 ): Promise<ProgressLeaseTransition['wake']> {
+  if (result.classification === 'unknown') return { attempted: false, queued: 0, staged: 0 };
   const ownerId = certificate.owner.ownerId;
   if (!ownerId) return { attempted: false, queued: 0, staged: 0 };
   const wake = await wakeRecipients([ownerId], {

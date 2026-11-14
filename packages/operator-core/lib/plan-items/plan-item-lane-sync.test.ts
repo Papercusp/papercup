@@ -324,6 +324,16 @@ describe('restoreStateAfterUngate — what an un-park restores TO [WI-37914]', (
     expect(restoreStateAfterUngate(held)).toBe('wip');
   });
 
+  it.each(['wip', 'in_progress', 'in-progress', 'validating'])('preserves a newly held %s start over an older open snapshot', state => {
+    expect(restoreStateAfterUngate(row({ state, assignee: 'su-abc123',
+      payload: { planLaneParkedFrom: 'open' } }))).toBe(state);
+  });
+
+  it('does not preserve an unheld in-progress state during recovery', () => {
+    expect(restoreStateAfterUngate(row({ state: 'wip', assignee: null,
+      payload: { planLaneParkedFrom: 'open' } }))).toBe('open');
+  });
+
   it('does NOT restore `wip` once the holder is gone — that would recreate an orphaned claim', () => {
     const abandoned = row({ payload: { planLaneParkedFrom: 'wip' }, assignee: null });
     expect(restoreStateAfterUngate(abandoned)).toBe('open');

@@ -77,11 +77,13 @@ vi.mock('../../events/await/compose-store', () => ({
 const predicateH = vi.hoisted(() => ({
   readHeldWorkItems: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
   readWorkItemAwaitTargets: vi.fn(async (..._a: unknown[]) => new Map()),
+  readExhaustedPushParkCoverage: vi.fn(async (..._a: unknown[]) => false),
 }));
 vi.mock('../../events/await/wake-source-predicate', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../events/await/wake-source-predicate')>()),
   readHeldWorkItems: (...a: unknown[]) => predicateH.readHeldWorkItems(...a),
   readWorkItemAwaitTargets: (...a: unknown[]) => predicateH.readWorkItemAwaitTargets(...a),
+  readExhaustedPushParkCoverage: (...a: unknown[]) => predicateH.readExhaustedPushParkCoverage(...a),
 }));
 const getOwnerDirectiveMock = vi.hoisted(() => vi.fn(async (..._a: unknown[]) => null as unknown));
 vi.mock('../../owner-directives', () => ({ getOwnerDirective: (...a: unknown[]) => getOwnerDirectiveMock(...a) }));
@@ -219,6 +221,8 @@ beforeEach(() => {
   predicateH.readHeldWorkItems.mockResolvedValue([]);
   predicateH.readWorkItemAwaitTargets.mockReset();
   predicateH.readWorkItemAwaitTargets.mockResolvedValue(new Map());
+  predicateH.readExhaustedPushParkCoverage.mockReset();
+  predicateH.readExhaustedPushParkCoverage.mockResolvedValue(false);
   getOwnerDirectiveMock.mockReset();
   getOwnerDirectiveMock.mockResolvedValue(null);
 });
@@ -551,6 +555,23 @@ describe('loop:end guidance (P-008)', () => {
 });
 
 describe('the P-009 claim-holder guard (D-008 (1), D-009)', () => {
+  it('permits canonical exhausted push-only custody without asserting a bounded wake', async () => {
+    listParkedAwaitsMock.mockResolvedValue([{ subscriberId: 'su-caller-own-id', eventKey: 'work-item:done:WI-9',
+      expiresTs: null, once: true }]);
+    predicateH.readHeldWorkItems.mockResolvedValue([{ id: 'WI-1', harness: 'papercusp', status: 'blocked', eventBlockers: [] }]);
+    predicateH.readExhaustedPushParkCoverage.mockResolvedValue(true);
+    const got = await run({ reason: 'bounded monitoring exhausted; retain exact push' });
+    expect(got.isError).not.toBe(true);
+    expect(deactivateLoopMock).toHaveBeenCalled();
+  });
+
+  it('retains the claim-holder refusal when the canonical coverage reader fails', async () => {
+    predicateH.readExhaustedPushParkCoverage.mockRejectedValue(new Error('unreadable'));
+    const got = await run({ reason: 'cannot prove park' });
+    expect(got.error).toBe('wake_less_claim_holder_refused');
+    expect(deactivateLoopMock).not.toHaveBeenCalled();
+  });
+
   const ME = 'su-caller-own-id';
   const held = (over: Record<string, unknown> = {}) => ({
     id: 'WI-1',

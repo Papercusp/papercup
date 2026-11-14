@@ -1253,10 +1253,19 @@ export function deriveClaimHealth(
   }
 
   const reasons: string[] = [];
-  const freshProductive = isFreshIso(holder?.productiveToolCallAt, nowMs, expectedCadenceMs);
-  const freshTool = isFreshIso(holder?.lastToolCallAt, nowMs, ACTIVE_TOOL_CALL_WINDOW_MS);
+  const claimAcquiredAt = r.claimAcquiredTs == null ? Number.NaN : Date.parse(r.claimAcquiredTs);
+  const isFreshClaimProgress = (value: string | null | undefined, windowMs: number): boolean => {
+    if (!value || !Number.isFinite(claimAcquiredAt)) return false;
+    const evidenceAt = Date.parse(value);
+    // Recent activity proves this claim is progressing only when it happened
+    // after this particular assignment was acquired. Equality is ambiguous at
+    // the stored timestamp precision, so it does not establish attribution.
+    return Number.isFinite(evidenceAt) && evidenceAt > claimAcquiredAt && isFreshIso(value, nowMs, windowMs);
+  };
+  const freshProductive = isFreshClaimProgress(holder?.productiveToolCallAt, expectedCadenceMs);
+  const freshTool = isFreshClaimProgress(holder?.lastToolCallAt, ACTIVE_TOOL_CALL_WINDOW_MS);
   const freshAuthoredCheckpoint =
-    holder?.checkpointKind === 'authored' && isFreshIso(r.lastProgressAt, nowMs, expectedCadenceMs);
+    holder?.checkpointKind === 'authored' && isFreshClaimProgress(r.lastProgressAt, expectedCadenceMs);
   const mechanicalOnly =
     holder?.checkpointKind === 'mechanical' && !freshProductive && !freshTool;
   // `work-item:claimable` is a broad queue wake (created-unclaimed, released,

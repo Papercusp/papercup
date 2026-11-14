@@ -2,7 +2,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { snapshotCloneLeg } from './clone-advisory';
-import { AGENT_ANTIPATTERN_RULES } from './agent-antipatterns';
+import { AGENT_ADVISORY_RULES } from './agent-antipatterns';
 import { formatPriorWorkLine, readPriorWork, type PriorWorkReader, type PriorWorkReport } from './change-history';
 import { symbolSpans } from './edited-symbols';
 import { getActiveClaimForOwner } from '../work-item-claims';
@@ -185,7 +185,7 @@ export function snapshotAntipatternLeg(input: PushInput): PushFact[] {
       const edit = raw as { path?: string; sha256?: string; status?: string; hits?: { ruleId?: string; line1?: number }[] };
       if (!edit || edit.status !== 'measured' || !safeSnapshotPath(edit.path ?? '') || !/^[a-f0-9]{64}$/.test(edit.sha256 ?? '') || !Array.isArray(edit.hits)) continue;
       for (const hit of edit.hits.slice(0, 100)) {
-        const rule = AGENT_ANTIPATTERN_RULES.find(rule => rule.id === hit.ruleId);
+        const rule = AGENT_ADVISORY_RULES.find(rule => rule.id === hit.ruleId);
         const key = `${edit.path}:${edit.sha256}:${hit.ruleId}:${hit.line1}`;
         if (!rule || !Number.isSafeInteger(hit.line1) || hit.line1! < 1 || seen.has(key)) continue;
         seen.add(key);

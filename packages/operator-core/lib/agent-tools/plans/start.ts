@@ -147,9 +147,9 @@ export default defineTool({
   description:
     "Approve a plan and promote its open items to claimable work-items. A draft moves to ready only after `plans:audit { phase:'activation' }`; plans with first-class clauses also require `plans:evaluate-spec-quality`, its terminal `scorecards:emit` scorecard, and a settled independent non-author `grading-integrity` audit. Re-starting is a no-op. Runs a plan-start consult and may return `consult_available`; override with `consulted` + `consult_reason`.",
   guidance: {
-    when: "After scoped Discovery findings are incorporated and finalized with plans:audit { slug, phase:'discovery' }, full implementation review and the complete source-conversation activation audit. First-class clauses must follow `plans:evaluate-spec-quality` → `scorecards:emit` with `terminal:true` → settled, automatically routed independent non-author `grading-integrity` audit before `plans:start`. In-flight work and historical terminal records are preserved.",
+    when: "After finalized Discovery, full implementation review and source-conversation activation audit. First-class clauses need a terminal exact spec-quality card and settled independent non-author grading-integrity audit. Preserve in-flight and historical work.",
     notWhen: 'The plan is already started; use plans:pause or plans:set-run-status.',
-    chaining: "Brief → scoped discovery → findings incorporated → plans:audit { slug, phase:'discovery' } → full independent implementation review → activation audit → plans:evaluate-spec-quality → `scorecards:emit` the returned draft with `terminal:true` → settled automatically routed non-author `grading-integrity` audit → plans:start { slug }. Relevant changes reopen affected discovery judgments; cosmetic edits reuse them. See `/internal/docs/system/plan-inputs`.",
+    chaining: "plans:get { slug, harness, activationReadiness:true } → activation audit → plans:evaluate-spec-quality → scorecards:emit its exact draft with terminal:true → settled independent grading-integrity audit → current contract critique → plans:start. Refusals retain primary errors and approval/promotion receipts alongside advisory stages; a preview never grants start authority. Use consult history; answer consult_available truthfully with consulted, consult_reason and applicable consult_id. Material changes reopen affected judgments; cosmetic edits reuse provenance. Full sequence: /internal/docs/system/plan-inputs.",
     seeAlso: [
       'plans:launch (have an agent autonomously advance the started plan)',
       'plans:set-status (manually move items along once started)',
@@ -973,20 +973,29 @@ export default defineTool({
             allowCallerHeld: true,
           });
 
-          // The preflight's exact-plan spec is an in-memory admission oracle. Persist
-          // the same property-filtered spec under the starter's identity before this
-          // tool returns, otherwise its immediately-following scheduler:get_next falls
-          // back to DEFAULT_CLAIM_SPEC and can claim a different plan's work.
+          // The exact-plan oracle measures plan readiness; it is not a replacement
+          // for an authored worker policy. Preserve cohort/dependency exceptions,
+          // exclusions, ranking and limits, including inherited fleet policy.
+          // Only an unscoped solo starter needs a new exact-plan default binding.
           if (admission.ready) {
             try {
-              const { setClaimSpec } = await import('../../scheduler/claim-spec-store');
-              claimSpecBinding = await setClaimSpec({
-                cupId: ownerId,
-                workspaceId: startWorkspaceId,
-                spec: buildExactPlanClaimSpec(`plans-start-${slug}`, slug, admission.claimKinds ?? undefined),
-                updatedBy: ownerId,
-                potSlug: harnessSlug,
-              });
+              const { getClaimSpecRecord, setClaimSpec } = await import('../../scheduler/claim-spec-store');
+              const current = await getClaimSpecRecord({ cupId: ownerId, workspaceId: startWorkspaceId });
+              if (current.source !== 'default') {
+                claimSpecBinding = { ok: true, errors: [], revision: current.revision ?? undefined,
+                  warning: `Preserved existing ${current.source} claim policy ${current.spec.specId}; no replacement binding was written.` };
+              } else if (current.fleetSlug) {
+                throw new Error(`Fleet '${current.fleetSlug}' has no readable claim policy; restore it before retrying plans:start.`);
+              } else {
+                claimSpecBinding = await setClaimSpec({
+                  cupId: ownerId,
+                  workspaceId: startWorkspaceId,
+                  spec: buildExactPlanClaimSpec(`plans-start-${slug}`, slug, admission.claimKinds ?? undefined),
+                  ifAbsent: true,
+                  updatedBy: ownerId,
+                  potSlug: harnessSlug,
+                });
+              }
               if (!claimSpecBinding.ok) {
                 claimSpecBindingError = claimSpecBinding.errors.filter(Boolean).join('; ') ||
                   'the claim-spec store rejected the exact-plan binding';

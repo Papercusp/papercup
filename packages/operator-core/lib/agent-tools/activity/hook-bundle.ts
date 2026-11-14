@@ -35,6 +35,7 @@ import {
   type CursorState,
 } from '../coordination/read-cursors';
 import { pickUnreadCursor, readWatermark as readCoordWatermark } from '../coordination/watermarks';
+import { systemNoticeReplayDue } from '../coordination/inbox-visibility';
 import { censusCoordFold, coordFoldObserverFor, type CoordFoldCensus } from './coord-fold-census';
 
 export const ACTIVITY_HOOK_BUNDLE_SCHEMA = 'activity-hook-bundle-v1';
@@ -391,9 +392,8 @@ export async function buildActivityHookBundle(
   const observe = safeObserve(deps.observe ?? coordFoldObserverFor(ctx));
   const startedMs = deps.now().getTime();
 
-  // ACK the previous delivery before deciding whether this heartbeat is quiet.
-  // The call itself is the ACK; if the prior turn died, its pending floor is
-  // promoted and the next changed heartbeat re-reads from that floor.
+  // This timestamp ACK proves arrival only. Native notices retain exact log
+  // references independently; only the final stdout receipt suppresses replay.
   const [generation, inboxCursor] = await Promise.all([deps.generation(), deps.readInboxCursor(ownerId)]);
   const delta = sameHostCoordGenerationDelta(request.generation, generation);
   let changed = request.force_resync === true || request.generation !== generation;
@@ -414,6 +414,11 @@ export async function buildActivityHookBundle(
       relevanceUncertain = true;
     }
   }
+  // A quiet producer generation says nothing about an omitted final fragment
+  // or a reminder becoming due. The existing heartbeat owns this retry; no
+  // second timer, scheduler or wall-clock "delivered" stamp is introduced.
+  const noticeReplayDue = systemNoticeReplayDue(inboxCursor.committed?.systemNoticeState, startedMs);
+  if (noticeReplayDue) changed = true;
   // `changed` remains the INBOX gate. A current client explicitly says when its
   // cached display is fresh; a relevant inbox delta then does not also pay for
   // GLANCE. Old clients omit the flag and keep the full-fold behavior. Baselines,
@@ -422,7 +427,7 @@ export async function buildActivityHookBundle(
   const fullResync =
     request.force_resync === true ||
     request.generation == null ||
-    (changed && delta === null) ||
+    (changed && delta === null && request.generation !== generation) ||
     relevanceUncertain;
   const hydrateGlance = changed
     ? request.glance_stale !== false || fullResync
@@ -532,7 +537,11 @@ export async function buildActivityHookBundle(
     // incomplete fold: the next heartbeat re-delivers from the committed floor.
     try {
       await deps.stageInboxCursor(ownerId, {
-        since_ts: inboxNewestTimestamp(inbox) ?? sinceTs,
+        // A bounded replay list must never silently evict unseen episodes.
+        // Keep the timestamp floor while the retained population exceeds it.
+        since_ts: inbox?.__systemNoticeState && typeof inbox.__systemNoticeState === 'object' &&
+          'overflow' in inbox.__systemNoticeState && inbox.__systemNoticeState.overflow === true
+          ? sinceTs : [sinceTs, inboxNewestTimestamp(inbox)].filter((ts): ts is string => !!ts).sort().at(-1) ?? null,
         ...(inbox && Object.prototype.hasOwnProperty.call(inbox, '__systemNoticeState')
           ? { systemNoticeState: inbox.__systemNoticeState } : {}),
       });

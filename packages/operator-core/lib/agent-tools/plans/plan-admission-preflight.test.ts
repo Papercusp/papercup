@@ -769,6 +769,83 @@ describe('evaluateExactPlanAdmission', () => {
     });
   });
 
+  it.each(['open', 'wip'])('admits an unstamped held %s direct child without changing parent coverage or inputs', (state) => {
+    const parent = { id: 'WI-direct-parent', family: 'feature' as const, state: 'open',
+      assignee: null, sourcePlanItemIds: ['P-001'],
+      payload: { plan_item: { plan_slug: 'plan-a', item_id: 'P-001' } } };
+    const child = { id: 'WI-unstamped-child', family: 'issue' as const, state,
+      assignee: 'su-caller', parent: parent.id, sourcePlanItemIds: undefined, payload: {} };
+    const workItems = [parent, child];
+    const before = JSON.stringify(workItems);
+
+    const verdict = evaluateExactPlanAdmission({
+      planSlug: 'plan-a', planItems: [item('P-001')], workItems,
+      laneHealth: lane({ issue: 0, feature: 0, issueMatchedByFilter: 0,
+        featureMatchedByFilter: 1, featureExcluded: { stopTheLine: 1 } }),
+      assignee: 'su-caller', allowCallerHeld: true,
+    });
+
+    expect(JSON.stringify(workItems)).toBe(before);
+    expect(child.sourcePlanItemIds).toBeUndefined();
+    expect(child.payload).toEqual({});
+    expect(verdict).toMatchObject({ ready: true, reason: 'ready', executableWidth: 0,
+      promotion: { rows: 1, coveredActionable: 1, duplicateActionable: [] },
+      actionableRows: [{ planItemId: 'P-001', workItemId: parent.id }] });
+  });
+
+  it.each([
+    { label: 'missing child', missingChild: true },
+    { label: 'foreign custody', child: { assignee: 'su-other' } },
+    { label: 'unclaimed child', child: { assignee: null } },
+    { label: 'unrelated child', child: { parent: 'WI-unrelated' } },
+    { label: 'settled child', child: { state: 'done' } },
+    { label: 'blocked child', child: { state: 'blocked' } },
+    { label: 'parked child', child: { payload: { _claimHold: true } } },
+    { label: 'human-action child', child: { payload: { needsHuman: true } } },
+    { label: 'active external human blocker', child: { payload: { externalBlockers: [{ kind: 'human',
+      ref: 'approval', summary: 'Needs approval', status: 'active', createdBy: 'owner',
+      createdAt: '2026-11-12T00:00:00.000Z', updatedAt: '2026-11-12T00:00:00.000Z' }] } } },
+    { label: 'malformed active blocker', child: { payload: { externalBlockers: [{ status: 'active' }] } } },
+    { label: 'stamped child', child: { sourcePlanItemIds: ['P-002'] } },
+    { label: 'legacy stamped child', child: { payload: { planItem: {} } } },
+    { label: 'foreign source child', child: { sourcePlanSlug: 'plan-other' } },
+    { label: 'foreign harness child', child: { harness: 'other' } },
+    { label: 'missing parent', missingParent: true },
+    { label: 'wrong-plan parent', parent: { sourcePlanSlug: 'plan-other' } },
+    { label: 'foreign-held parent', parent: { assignee: 'su-other' } },
+    { label: 'parked parent', parent: { payload: { _claimHold: true } } },
+    { label: 'settled parent', parent: { state: 'done' } },
+    { label: 'unknown parent state', parent: { state: undefined } },
+    { label: 'cyclic ancestry', parent: { parent: 'WI-unstamped-child' } },
+    { label: 'incomplete ancestry', parent: { parent: 'WI-unknown-ancestor' } },
+    { label: 'invalid target scope', planItemIds: ['P-404'] },
+    { label: 'blocked DAG', blockedDag: true, planItemIds: ['P-001'] },
+    { label: 'incomplete plan census', sourceCapExhausted: true },
+    { label: 'new fleet seats', requestedSeats: 1 },
+    { label: 'caller-neutral launch', allowCallerHeld: false },
+  ] as Array<{ label: string; child?: Record<string, unknown>; parent?: Record<string, unknown>;
+    missingChild?: boolean; missingParent?: boolean; planItemIds?: string[]; blockedDag?: boolean;
+    sourceCapExhausted?: boolean; requestedSeats?: number; allowCallerHeld?: boolean }>)
+  ('refuses child-based admission for $label without changing custody', (control) => {
+    const parent = { id: 'WI-direct-parent', family: 'feature' as const, state: 'open',
+      assignee: null, harness: 'papercusp', sourcePlanItemIds: ['P-001'], payload: null, ...control.parent };
+    const child = { id: 'WI-unstamped-child', family: 'issue' as const, state: 'open',
+      assignee: 'su-caller', harness: 'papercusp', parent: parent.id,
+      sourcePlanItemIds: undefined, payload: {}, ...control.child };
+    const workItems = [...(control.missingParent ? [] : [parent]), ...(control.missingChild ? [] : [child])];
+    const before = JSON.stringify(workItems);
+    const verdict = evaluateExactPlanAdmission({
+      planSlug: 'plan-a', planItems: control.blockedDag
+        ? [item('P-001', 'todo', ['P-002']), item('P-002')] : [item('P-001')],
+      workItems, laneHealth: lane({ issue: 0, feature: 0, featureMatchedByFilter: 1,
+        featureExcluded: { stopTheLine: 1 } }), assignee: 'su-caller',
+      allowCallerHeld: control.allowCallerHeld ?? true, requestedSeats: control.requestedSeats,
+      sourceCapExhausted: control.sourceCapExhausted, planItemIds: control.planItemIds,
+    });
+    expect(verdict.ready).toBe(false);
+    expect(JSON.stringify(workItems)).toBe(before);
+  });
+
   it('admits plans:start when the caller already holds every actionable ready row', () => {
     const verdict = evaluateExactPlanAdmission({
       planSlug: 'plan-a',
@@ -929,6 +1006,56 @@ describe('preflightExactPlanAdmission IO wiring', () => {
       },
     ]);
     mocks.readClaimSpecLaneHealth.mockResolvedValue(lane({ issue: 1, featureReachable: false }));
+  });
+
+  it('reads independent exact-plan and caller-owned populations for an unstamped held child', async () => {
+    const parent = { id: 'WI-parent', family: 'feature', state: 'open', assignee: null,
+      sourcePlanItemIds: ['P-001'], payload: null };
+    const child = { id: 'WI-child', family: 'issue', state: 'open', assignee: 'su-caller',
+      parent: parent.id, sourcePlanItemIds: null, payload: {} };
+    const before = JSON.stringify([parent, child]);
+    mocks.listWorkItems.mockImplementation(async (filter) => {
+      if (filter.sourcePlanSlug === 'plan-a') return [parent];
+      if (filter.assignee === 'su-caller') return [child, { ...child }, parent];
+      throw new Error('Unexpected unscoped census');
+    });
+    mocks.readClaimSpecLaneHealth.mockResolvedValue(lane({ issue: 0, feature: 0,
+      featureMatchedByFilter: 1, featureExcluded: { stopTheLine: 1 } }));
+    const verdict = await preflightExactPlanAdmission({ workspaceId: 'ws-1', harnessSlug: 'papercusp',
+      planSlug: 'plan-a', actor: 'su-caller', claimant: 'su-caller', specId: 'child-start', allowCallerHeld: true });
+    expect(verdict).toMatchObject({ ready: true, reason: 'ready', promotion: { rows: 1, duplicateActionable: [] },
+      actionableRows: [{ planItemId: 'P-001', workItemId: parent.id }] });
+    expect(mocks.listWorkItems.mock.calls.map(([filter]) => filter)).toEqual([
+      { harness: 'papercusp', sourcePlanSlug: 'plan-a', includeChildren: true, limit: 2_000 },
+      { harness: 'papercusp', assignee: 'su-caller', states: ['open', 'wip'], includeChildren: true, limit: 2_000 },
+    ]);
+    expect(JSON.stringify([parent, child])).toBe(before);
+    expect(child.payload).toEqual({});
+  });
+
+  it.each(['failed', 'capped', 'unknown'])('refuses an incomplete caller-owned child census: %s', async (condition) => {
+    const parent = { id: 'WI-parent', family: 'feature', state: 'open', sourcePlanItemIds: ['P-001'], payload: null };
+    mocks.listWorkItems.mockImplementation(async (filter) => {
+      if (filter.sourcePlanSlug === 'plan-a') return [parent];
+      if (condition === 'failed') throw new Error('Independent caller census unavailable');
+      return condition === 'capped' ? Array(2_000).fill(parent) : null;
+    });
+    const verdict = await preflightExactPlanAdmission({ workspaceId: 'ws-1', harnessSlug: 'papercusp',
+      planSlug: 'plan-a', actor: 'su-caller', claimant: 'su-caller', specId: 'child-start', allowCallerHeld: true });
+    expect(verdict).toMatchObject({ ready: false, reason: 'lane-unknown' });
+    expect(verdict.message).toContain('caller-owned child census');
+    expect(mocks.readClaimSpecLaneHealth).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { allowCallerHeld: false, requestedSeats: undefined },
+    { allowCallerHeld: true, requestedSeats: 1 },
+  ])('keeps the caller census out of fleet-width admission: %j', async (control) => {
+    mocks.readClaimSpecLaneHealth.mockResolvedValue(lane({ issue: 0, featureReachable: false }));
+    expect(await preflightExactPlanAdmission({ workspaceId: 'ws-1', harnessSlug: 'papercusp',
+      planSlug: 'plan-a', actor: 'su-test', claimant: 'su-test', specId: 'fleet', ...control }))
+      .toMatchObject({ ready: false });
+    expect(mocks.listWorkItems).toHaveBeenCalledOnce();
   });
 
   it('reads lane health before admitting a caller whose only unfinished item is WIP', async () => {

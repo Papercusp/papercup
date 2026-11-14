@@ -612,6 +612,12 @@ describe('routines:list', () => {
             ],
             completed_count: 1,
             completed_omitted_count: 0,
+            completed_totals: {
+              duration_ms: 500,
+              superproject: { count: 1, duration_ms: 500, argv: ['private-total'] },
+              other_repositories: { count: 0, duration_ms: 0 },
+              env: { PRIVATE_TOKEN: 'totals-secret' },
+            },
             completed: [
               {
                 id: 6,
@@ -651,6 +657,11 @@ describe('routines:list', () => {
         }],
         completed_count: 1,
         completed_omitted_count: 0,
+        completed_totals: {
+          duration_ms: 500,
+          superproject: { count: 1, duration_ms: 500 },
+          other_repositories: { count: 0, duration_ms: 0 },
+        },
         completed: [{
           id: 6,
           subcommand: 'status',
@@ -668,6 +679,29 @@ describe('routines:list', () => {
     expect(projected).not.toContain('private-argument');
     expect(projected).not.toContain('active-secret');
     expect(projected).not.toContain('completed-secret');
+    expect(projected).not.toContain('totals-secret');
+    expect(projected).not.toContain('private-total');
+  });
+
+  it.each([
+    undefined,
+    { duration_ms: 5, superproject: { count: 0, duration_ms: 5 }, other_repositories: { count: 0, duration_ms: 0 } },
+    { duration_ms: 4, superproject: { count: 1, duration_ms: 5 }, other_repositories: { count: 0, duration_ms: 0 } },
+    { duration_ms: 5, superproject: { count: 1, duration_ms: -1 }, other_repositories: { count: 0, duration_ms: 6 } },
+  ])('does not invent whole-fire totals for legacy or inconsistent command snapshots (%j)', completedTotals => {
+    const now = Date.parse('2026-08-29T16:58:00.000Z');
+    const verdict = deriveGitSyncFreshness({
+      git_sync_activity: {
+        active: true, phase: 'local-sync', started_at: now - 1_000, updated_at: now,
+        git_commands: {
+          scope: 'local-sync-runner', active: [], completed: [],
+          active_count: 0, omitted_count: 0, completed_count: 1, completed_omitted_count: 1,
+          completed_totals: completedTotals,
+        },
+      },
+    }, '0 */3 * * * *', true, now);
+    const commands = (verdict.execution as Record<string, unknown>).git_commands;
+    expect(commands).not.toHaveProperty('completed_totals');
   });
 
   it('CONTROL: the same row WITHOUT the in-flight marker reads fresh — proving the check above convicts on the wedged fire, not on the clock', () => {

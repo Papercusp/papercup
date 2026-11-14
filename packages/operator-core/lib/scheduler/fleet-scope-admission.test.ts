@@ -2554,6 +2554,69 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(payload.body).toMatch(/DEPENDENCY ESCAPE/);
       expect(payload.extra.fleetAdmissionBlock.dependencyEscape).toEqual(result.dependencyEscape);
     });
+
+    it('routes dependency escape widening through the effective per-member claim spec', async () => {
+      const dependencyId = 'WI-member-blocked';
+      admissionMocks.readHeldDependencyEscapeContext.mockResolvedValue({
+        dependencyId,
+        dependencyKind: 'issue',
+        blockedHeldItems: [{ id: 'WI-held', kind: 'change', harness: 'papercusp' }],
+      });
+      const memberOverride = {
+        ...scope.record.spec,
+        specId: 'su-member-specialized-lane',
+        revision: 39,
+        view: { filter: { field: 'kind', op: '=' as const, value: 'change' } },
+        rank: { mode: 'lexicographic' as const, terms: [{ expr: 'age', dir: 'desc' as const }] },
+      };
+      const memberScope = {
+        ...scope,
+        record: {
+          ...scope.record,
+          source: 'cup' as const,
+          spec: memberOverride,
+          revision: 39,
+          updatedBy: 'su-member',
+        },
+      };
+      const memberViolation: Extract<FleetScopeAdmission, { allowed: false }> = {
+        ...violation,
+        reason: `work-item ${dependencyId} does not match ${memberOverride.specId}@39 for member su-member`,
+        refusal: fleetScopeRefusalContract('fleet_scope_violation', memberScope),
+        scope: memberScope,
+      };
+
+      const result = await notifyFleetScopeRefusal(
+        { ownerId: 'su-member' } as never,
+        memberViolation,
+        `work_items:claim ${dependencyId} → stable-builder`,
+        { harness: 'papercusp', subject: { itemId: dependencyId, member: 'stable-builder' } },
+      );
+
+      const specWiden = result.dependencyEscape?.routes.find((route) => route.kind === 'spec_widen');
+      const expectedSpec = {
+        specId: 'su-member-specialized-lane',
+        revision: 40,
+        rank: memberOverride.rank,
+        view: {
+          filter: {
+            any: [
+              { field: 'kind', op: '=', value: 'change' },
+              { field: 'id', op: '=', value: dependencyId },
+            ],
+          },
+        },
+      };
+      expect(specWiden?.calls[0]).toMatchObject({
+        tool: 'scheduler:preview_spec_delta',
+        args: { cupId: 'su-member', harness: 'papercusp', proposed: expectedSpec },
+      });
+      expect(specWiden?.calls[1]).toMatchObject({
+        tool: 'scheduler:set_claim_spec',
+        args: { cupId: 'su-member', harness: 'papercusp', spec: expectedSpec },
+      });
+      for (const call of specWiden?.calls ?? []) expect(call.args).not.toHaveProperty('fleet');
+    });
   });
 
   // WI-6326 (residual half of EI-18784357226895330): "route the work elsewhere" named an

@@ -262,6 +262,13 @@ export interface QueueLeaseOwnerObservation {
   readonly leaseId: string;
   readonly owner: string;
   readonly resumeMetadata?: Readonly<Record<string, unknown>>;
+  /** Non-secret evidence measured by the scan that selected this exact lease. */
+  readonly startupProtection?: Readonly<{
+    resumeStartupReservationMatched: boolean;
+    resumeStartupLauncherState: LivenessVerdict['sessionState'];
+    resumeStartupObservedAtMs: number;
+    resumeStartupExpiresAtMs: number | null;
+  }>;
 }
 
 export const GOVERNOR_QUEUE_OBSERVATION_WINDOW_MS = 60_000;
@@ -436,9 +443,21 @@ export function selectEndedLeaseOwners(
   rows: readonly QueueLeaseOwnerObservation[],
   verdicts: ReadonlyMap<string, Pick<LivenessVerdict, 'sessionState'>>,
   resumeLaunchers: ReadonlyMap<string, string> = new Map(),
+  nowMs = Date.now(),
 ): QueueLeaseOwnerObservation[] {
   return rows.filter((row) => verdicts.get(row.owner)?.sessionState === 'ended' &&
-    verdicts.get(resumeLaunchers.get(row.receiptId) ?? '')?.sessionState !== 'live');
+    verdicts.get(resumeLaunchers.get(row.receiptId) ?? '')?.sessionState !== 'live')
+    .map((row) => {
+      if (!row.resumeMetadata) return row;
+      const launcher = resumeLaunchers.get(row.receiptId);
+      const expiresAtMs = row.resumeMetadata.resumeStartupExpiresAtMs;
+      return { ...row, startupProtection: {
+        resumeStartupReservationMatched: launcher !== undefined,
+        resumeStartupLauncherState: launcher ? verdicts.get(launcher)?.sessionState ?? null : null,
+        resumeStartupObservedAtMs: nowMs,
+        resumeStartupExpiresAtMs: typeof expiresAtMs === 'number' && Number.isFinite(expiresAtMs) ? expiresAtMs : null,
+      } };
+    });
 }
 
 /**
@@ -1192,7 +1211,7 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
         // per-id hydration issued one point read per active lease owner.
         { hydrateBatch: true, nowMs },
       );
-      return selectEndedLeaseOwners(active, verdicts, resumeLaunchers);
+      return selectEndedLeaseOwners(active, verdicts, resumeLaunchers, nowMs);
     } catch (error) {
       // Unknown liveness is never owner death. Keep the lease intact and allow
       // the independent TTL/deadline/abandonment legs to proceed.
@@ -1228,18 +1247,21 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
         ? []
         : await tx<QueueDbRow[]>`
           WITH candidates AS (
-            SELECT item.workspace_id, item.harness_slug, item.feature_id, identity.lease_id, identity.owner
+            SELECT item.workspace_id, item.harness_slug, item.feature_id, identity.lease_id, identity.owner,
+                   identity.startup_protection
               FROM harness_shared.work_items AS item
               JOIN jsonb_to_recordset(${JSON.stringify(
                 endedLeaseOwners.map((row) => ({
                   receipt_id: row.receiptId,
                   lease_id: row.leaseId,
                   owner: row.owner,
+                  startup_protection: row.startupProtection,
                 })),
               )}::text::jsonb) AS identity(
                 receipt_id text,
                 lease_id text,
-                owner text
+                owner text,
+                startup_protection jsonb
               )
                 ON identity.receipt_id = item.feature_id
              WHERE item.workspace_id = ${this.workspaceId}
@@ -1267,7 +1289,7 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
                          'owner', candidates.owner,
                          'leaseId', candidates.lease_id,
                          'sessionState', 'ended'
-                       )
+                       ) || COALESCE(candidates.startup_protection, '{}'::jsonb)
                      )
                    ),
                    true

@@ -13,7 +13,10 @@ import type { Sql } from 'postgres';
 // that internal call succeeds silently, exactly like a real (if inert) postgres client.
 const { upsertRoutineSpy, sqlStub, orgSqlHolder } = vi.hoisted(() => ({
   upsertRoutineSpy: vi.fn(),
-  sqlStub: (_strings: TemplateStringsArray, ..._values: unknown[]) => Promise.resolve([]),
+  sqlStub: Object.assign(
+    (_strings: TemplateStringsArray, ..._values: unknown[]) => Promise.resolve([]),
+    { begin: async <T>(work: (tx: unknown) => Promise<T>): Promise<T> => work(sqlStub) },
+  ),
   orgSqlHolder: { sql: null as unknown },
 }));
 

@@ -858,6 +858,38 @@ describe('completed child with failed router finalization (WI-10004947)', () => 
     expect(out.routerOutput).toContain('TEST_FILE_FINALIZATION_ERROR detail=receipt-finish-failed');
     expect(out.routerOutput).not.toContain('no test file ran');
   });
+
+  it('keeps close-timeout stderr in a report-backed result and manifest after output-tail truncation', async () => {
+    const file = 'packages/x/completed.test.ts';
+    const cause = 'TEST_FILE_CLOSE_TIMEOUT_FINALIZATION_ERROR: Vitest forced process exit after a close timeout.';
+    const root = await makeScratchTestCheckout('papercusp-testing-finalization-tail-', file);
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    const report = {
+      numTotalTests: 1, numPassedTests: 1, numFailedTests: 0, numPendingTests: 0,
+      numTotalTestSuites: 1, numPassedTestSuites: 1, numFailedTestSuites: 0,
+      startTime: Date.now(), success: true,
+      testResults: [{
+        name: join(root, file), status: 'passed',
+        assertionResults: [{ fullName: 'completed before finalization', status: 'passed' }],
+      }],
+    };
+    await writeFile(join(root, 'scripts', 'test-files.mjs'), [
+      "import { writeFileSync } from 'node:fs';",
+      `writeFileSync(process.argv.find(a => a.startsWith('--outputFile=')).slice('--outputFile='.length), ${JSON.stringify(JSON.stringify(report))});`,
+      `console.error(${JSON.stringify(cause)});`,
+      `console.log(${JSON.stringify('router progress '.repeat(1_000))});`,
+      "console.log('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed finalizationError=true');",
+      'process.exitCode = 3;',
+    ].join('\n'));
+    await sealScratchTestCheckout(root);
+    const out = await runTestFilesCore({ root, files: [file], timeoutMs: 10_000 });
+    expect(out.error, JSON.stringify(out)).toBeUndefined();
+    if (out.error !== undefined) return;
+    expect(out).toMatchObject({ ok: false, passed: 1, failed: 0, skipped: 0, files: 1 });
+    expect(out.routerOutput).toContain(cause);
+    const manifest = JSON.parse(await readFile(join(out.artifacts!.directory, 'manifest.json'), 'utf8'));
+    expect(manifest.result).toMatchObject({ ok: false, routerOutput: expect.stringContaining(cause) });
+  });
 });
 
 describe('mixed-checkout test batches (EI-22733560502709681)', () => {
@@ -1464,7 +1496,11 @@ describe('testing:run (integration)', () => {
         harnessSlug: null,
         launchedBy: 'testing:run:restart-survival-run',
         runtimeMaxSec: 65,
-        detail: { runGroup: 'restart-survival-run', foreground: true },
+        detail: {
+          runGroup: 'restart-survival-run',
+          foreground: true,
+          verificationPurpose: 'work-item-verification',
+        },
       }),
       expect.objectContaining({
         workspaceId: 'papercusp-workspace',

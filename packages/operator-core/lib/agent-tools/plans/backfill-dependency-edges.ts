@@ -30,6 +30,8 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolvePlanWriteScope } from './_write-scope';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { backfillPromotedDependencyEdges } from '../../plan-workitem-promotion-run';
+import { getOrgPgApp } from '@papercusp/db-org';
+import { repairSavedPlanLines } from './plan-line-graph';
 
 const argsSchema = z.object({
   harness: harnessArg,
@@ -44,6 +46,12 @@ const argsSchema = z.object({
     .max(500)
     .optional()
     .describe('Restrict to these plans. Omit to cover every plan with at least one promoted item.'),
+  savedLines: z.object({
+    slug: z.string().min(1),
+    expectedVersion: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/),
+    preview: z.object({ issuedAt: z.string().datetime(), fingerprint: z.string().regex(/^v1:[a-f0-9]{64}$/) }).optional(),
+  }).optional().describe('Single-plan additive repair of matching saved todo lines absent from its graph. Preview first; apply requires the returned preview (valid 5 minutes). Preserves existing rows and migration parks.'),
 });
 
 export default defineTool({
@@ -70,6 +78,16 @@ export default defineTool({
     // how the two come to disagree. Never activeWorkspaceId(), never a literal.
     const sctx = harnessScopedCtx(args.harness, ctx);
     const { workspaceId, harnessSlug } = await resolvePlanWriteScope(sctx);
+
+    if (args.savedLines) {
+      if (args.planSlugs) throw new Error('saved_plan_lines_single_scope_required');
+      const result = await repairSavedPlanLines(getOrgPgApp().sql, {
+        workspaceId, harnessSlug, ...args.savedLines, dryRun: args.dryRun ?? true,
+      });
+      ctxAny.metadata?.({ harnessSlug, savedLines: true, slug: result.slug,
+        dryRun: result.dryRun, nodesAdded: result.nodesAdded, edgesWritten: result.edgesWritten });
+      return { data: { harnessSlug, ...result } };
+    }
 
     const result = await backfillPromotedDependencyEdges({
       workspaceId,

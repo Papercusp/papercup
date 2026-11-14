@@ -11,22 +11,30 @@
  * allowlist at recovery time.
  */
 import dns from 'node:dns';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { createDurableCaptureRecorder } from './_durable-orchestration-capture';
 import postgres from 'postgres';
+import pg from 'pg';
 import { DBOS } from '@dbos-inc/dbos-sdk';
-import type { ProjectedTool, ToolResult, UnifiedToolContext } from '@papercusp/tooldef';
+import type { DispatchNext, ProjectedTool, ToolResult, UnifiedToolContext, WrapDispatch } from '@papercusp/tooldef';
 
 const dsn = process.env.DURABLE_CRASH_DSN;
-const runKey = process.env.DURABLE_CRASH_RUN_KEY;
-const mode = process.env.DURABLE_CRASH_MODE;
+const configuredRunKey = process.env.DURABLE_CRASH_RUN_KEY;
+const configuredMode = process.env.DURABLE_CRASH_MODE;
 const script = process.env.DURABLE_CRASH_SCRIPT;
 const crashTarget = process.env.DURABLE_CRASH_TARGET ?? '';
 const recipeInputs = JSON.parse(process.env.DURABLE_CRASH_INPUTS ?? '{}');
+const gecScope = process.env.DURABLE_CRASH_GEC_SCOPE ? JSON.parse(process.env.DURABLE_CRASH_GEC_SCOPE) : undefined;
 const revoked = new Set((process.env.DURABLE_CRASH_REVOKE ?? '').split(',').filter(Boolean));
-if (!dsn || !runKey || !script || !['crash', 'recover', 'code'].includes(mode ?? '')) {
+if (!dsn || !configuredRunKey || !script || !configuredMode || !['crash', 'recover', 'code'].includes(configuredMode)) {
   throw new Error('durable orchestration crash fixture configuration is incomplete: ' + JSON.stringify({
-    dsnPresent: Boolean(dsn), runKeyPresent: Boolean(runKey), mode: mode ?? null, scriptChars: script?.length ?? 0,
+    dsnPresent: Boolean(dsn), runKeyPresent: Boolean(configuredRunKey), mode: configuredMode ?? null, scriptChars: script?.length ?? 0,
   }));
 }
+// Capture validated strings after the guard so hoisted tool callbacks retain
+// their non-optional types as well as the original runtime values.
+const runKey = configuredRunKey, mode = configuredMode;
 
 const sql = postgres(dsn, { max: 2, onnotice: () => {} });
 
@@ -108,8 +116,151 @@ const TOOLS: ProjectedTool[] = [
   probeTool('plans:evaluate-spec-quality', 'read', false),
   probeTool('scorecards:emit', 'write', false),
   probeTool('scorecards:get', 'read', false),
+  // Frozen GEC C5/C6 use these in-process doubles only. No provider or mail
+  // transport is installed: their sole effect is the independent private SQL log.
+  ...(process.env.DURABLE_CRASH_GEC_SCOPE ? [
+    probeTool('items:get', 'read', false), probeTool('items:put', 'write', true),
+    probeTool('mail:send', 'write', false),
+  ] : []),
 ];
 
+let sealGecCapture: (() => void) | undefined;
+const gecPhases: Array<{ phase: string; monotonicMs: number }> = [];
+let retainGecPhase: (() => void) | undefined;
+const markGecPhase = (phase: string) => {
+  if (!gecScope) return;
+  gecPhases.push({ phase, monotonicMs: performance.now() });
+  retainGecPhase?.();
+};
+let runGecStoreWindow = <R>(fn: () => R): R => fn();
+let restoreGecStore: (() => void) | undefined;
+let dispatchGec: WrapDispatch = (_tool, _name, _args, ctx, next) => next(ctx);
+if (process.env.DURABLE_CRASH_GEC_SCOPE) {
+  const { observeGroundedDurableHost, observeGroundedStoreOperations, observeGroundedToolDispatch } = await import('../lib/grounded-evidence-measurement');
+  const scope = gecScope;
+  const path = process.env.DURABLE_CRASH_GEC_TAPE;
+  if (!path) throw new Error('GEC durable capture requires an original tape path before launch');
+  const recorder = createDurableCaptureRecorder(path);
+  const original = DBOS.runStep.bind(DBOS);
+  const optionsByName = new Map<string, Parameters<typeof DBOS.runStep>[1]>();
+  const tap = observeGroundedDurableHost({ scope, sourceRef: path, attemptId: `${runKey}:${mode}`,
+    host: { runStep<R>(name: string, fn: () => Promise<R>) { return original(fn, optionsByName.get(name)); } } });
+  const admittedAt = new Date().toISOString(), monotonicStartMs = performance.now();
+  const sqlObservations: import('../lib/grounded-evidence-measurement').GroundedSqlObservation[] = [];
+  const digest = (source: Buffer) => createHash('sha256').update(source).digest('hex');
+  const serializerSourceRef = 'source:pg/lib/query.js@'
+    + digest(readFileSync(new URL('../../../node_modules/pg/lib/query.js', import.meta.url)))
+    + '+utils.js@' + digest(readFileSync(new URL('../../../node_modules/pg/lib/utils.js', import.meta.url))) + '#Bind.prepareValue';
+  // Reviewed SDK setup subscribes three channels and sends one fixed self-test;
+  // it does not persist application values. Pin the writer as well as every SQL
+  // byte/command/status. A changed SDK must be reviewed before qualifying it.
+  const notificationSourceHash = 'b8594818c046779927f646b94aa6a159ac1d97655a88bfdd451dbe494858bf55';
+  const notificationSourceMatches = digest(readFileSync(new URL(
+    '../../../node_modules/@dbos-inc/dbos-sdk/dist/src/system_database.js', import.meta.url))) === notificationSourceHash;
+  const notificationControls = notificationSourceMatches ? [
+    { queryHash: '2dfb06715dd1ca9db551ee03eed8cf4d1560b086c0adf99d3b543437df32f7d7', command: 'LISTEN' as const },
+    { queryHash: '832fb87fb98cee7914c921ec44ede3fb437008fd3e8bf4985f5af80e2dfcf6ab', command: 'LISTEN' as const },
+    { queryHash: '6cb0b99e8615da9b0be254f3b925ad08d748b0dd54ce15532ecc16262111a272', command: 'LISTEN' as const },
+    { queryHash: '51d3f928cd16813b7a8f257cd05b53f2fe093baa8066900c62203e876c24e538', command: 'NOTIFY' as const },
+  ].map(row => ({ ...row, kind: 'control' as const, status: 'ok' as const,
+    sourceRef: `source:@dbos-inc/dbos-sdk/dist/src/system_database.js@${notificationSourceHash}#notification-setup` })) : [];
+  // This exact installed writer can report INSERT 1 for an unchanged upsert.
+  // Only a proven zero-row outcome certifies zero output/error bytes; positive
+  // counts stay unknown. The executor marker UPDATE has a separate zero/all
+  // contract. Any SDK source or SQL change leaves both writes unregistered.
+  const operationOutputStatement = `INSERT INTO dbos.operation_outputs
+         (workflow_uuid, function_id, output, error, function_name, child_workflow_id, started_at_epoch_ms, completed_at_epoch_ms, serialization, application_name)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT (workflow_uuid, function_id) DO UPDATE
+         SET completed_at_epoch_ms = operation_outputs.completed_at_epoch_ms
+         RETURNING completed_at_epoch_ms;`;
+  const executorStatement = `UPDATE "dbos".workflow_status
+             SET executor_id = $1
+           WHERE workflow_uuid = $2 AND executor_id IS DISTINCT FROM $1`;
+  const operationOutputSourceRef = `source:@dbos-inc/dbos-sdk/dist/src/system_database.js@${notificationSourceHash}#recordOperationResultInternal`;
+  let storeTap: ReturnType<typeof observeGroundedStoreOperations>;
+  const invocationTap = observeGroundedToolDispatch({ scope, sourceRef: path, attemptId: `${runKey}:${mode}`,
+    boundary: 'internal', originRef: 'current-source:DurableOrchestrationRuntime.inner',
+    registrations: Object.fromEntries(TOOLS.map(tool => [tool.expose!.mcp!.name,
+      { purpose: tool.effect === 'read' ? 'retrieval' as const : 'other' as const,
+        purposeRef: `registered-fixture-contract:${tool.expose!.mcp!.name}` }])),
+    onObservation: () => retain(false),
+    dispatch: async (_name, _args, ctx: UnifiedToolContext, next: DispatchNext) => next(ctx),
+  });
+  const retention = { scope: 'completed-prior-publications', completed: 0, failed: 0,
+    snapshotMs: 0, serializationMs: 0, publicationMs: 0, publishedBytes: 0, maxTotalMs: 0 };
+  const retain = (settled: boolean) => {
+    const started = performance.now();
+    try {
+      const capture = {
+        kind: 'current-source-durable-capture', acceptance: 'unmeasured', mode, workflowRunKey: runKey,
+        phases: gecPhases,
+        sqlObservations,
+        // This publication cannot include its own final write duration. Keep the
+        // accounting scope explicit; the next snapshot retains this one's cost.
+        retention: { ...retention },
+        // Preserve the actual in-process double contracts for the resumed consumer;
+        // the parent must not reconstruct them from an expected next action.
+        catalog: TOOLS.filter(tool => ['items:get', 'items:put'].includes(tool.expose?.mcp?.name ?? ''))
+          .map(tool => ({ name: tool.expose!.mcp!.name, description: tool.description, input: tool.inputSchema })),
+        census: settled ? tap.seal() : tap.snapshot(),
+        // The live dispatcher excludes recorded DBOS replay and pre-dispatch
+        // authorization/reconciliation halts. Pending admissions survive SIGKILL.
+        invocations: settled ? invocationTap.seal() : invocationTap.snapshot(),
+        // Both physical drivers live in THIS process. The source-pinned SQL tape
+        // includes DBOS bootstrap Clients, its own Pool, and the effect-log client.
+        // No unreviewed SQL is inferred nonpersisting or assigned byte totals.
+        storage: settled ? storeTap.seal() : storeTap.snapshot(),
+        boundary: settled ? { scope, sourceRef: path, admittedAt, settledAt: new Date().toISOString(),
+          monotonicStartMs, monotonicEndMs: performance.now(), drained: true } : null,
+      };
+      const snapshotMs = performance.now() - started;
+      const timing = recorder.retain(capture);
+      retention.completed++;
+      retention.snapshotMs += snapshotMs;
+      retention.serializationMs += timing.serializationMs;
+      retention.publicationMs += timing.publicationMs;
+      retention.publishedBytes += timing.bytes;
+      retention.maxTotalMs = Math.max(retention.maxTotalMs, performance.now() - started);
+    } catch (error) {
+      retention.failed++;
+      throw error;
+    }
+  };
+  storeTap = observeGroundedStoreOperations({ scope, deps: {}, operations: [], sourceRef: path,
+    attemptId: `${runKey}:${mode}`, postgres: [{ pool: 'child-effect-log', client: sql }],
+    nodePostgres: [{ pool: 'child-dbos-all-clients', clientPrototype: pg.Client.prototype,
+      queryPrototype: pg.Query.prototype, serializerSourceRef }],
+    nonPersistingSql: notificationControls,
+    serializedSqlParameters: notificationSourceMatches ? [
+      { pool: 'child-dbos-all-clients', sourceRef: operationOutputSourceRef, serializerSourceRef,
+        queryHash: digest(Buffer.from(operationOutputStatement)), command: 'INSERT', parameterCount: 10,
+        persistedParameters: [2, 3], allOrNoneRows: 'zero-only' },
+      { pool: 'child-dbos-all-clients', sourceRef: operationOutputSourceRef, serializerSourceRef,
+        queryHash: digest(Buffer.from(executorStatement)), command: 'UPDATE', parameterCount: 2,
+        persistedParameters: [0], allOrNoneRows: 1 },
+    ] : [],
+    onSqlObservation: row => sqlObservations.push(row), onObservation: () => retain(false) });
+  runGecStoreWindow = fn => storeTap.run(fn);
+  restoreGecStore = () => storeTap.restore();
+  dispatchGec = (_tool, name, args, ctx, next) => invocationTap.dispatch(name, args, ctx, next);
+  DBOS.runStep = (async (fn, options) => {
+    const name = options?.name ?? '<unnamed>';
+    optionsByName.set(name, options);
+    const pending = tap.host.runStep(name, fn);
+    // Synchronous retention survives the intentional SIGKILL inside the callback.
+    retain(false);
+    try { return await pending; }
+    finally { retain(false); }
+  }) as typeof DBOS.runStep;
+  retain(false);
+  retainGecPhase = () => retain(false);
+  markGecPhase('capture-admitted');
+  sealGecCapture = () => retain(true);
+}
+
+await runGecStoreWindow(async () => {
+try {
 DBOS.setConfig({
   name: 'durable-orchestration-crash-p019',
   systemDatabaseUrl: dsn,
@@ -118,7 +269,9 @@ DBOS.setConfig({
   runAdminServer: false,
 });
 
+markGecPhase('workflow-import-start');
 const workflow = await import('../lib/dbos/durable-orchestration-workflow');
+markGecPhase('workflow-import-end');
 // The seam MUST be configured before DBOS.launch: recovery starts at launch and would otherwise
 // resolve the real operator registry.
 workflow.configureDurableOrchestrationRuntime({
@@ -128,12 +281,14 @@ workflow.configureDurableOrchestrationRuntime({
   ),
   excluded: new Set<string>(),
   deps: () => ({}),
-  inner: (_tool, _name, _args, ctx, next) => next(ctx),
+  inner: dispatchGec,
 });
 
 const launchStartedAt = performance.now();
+markGecPhase('launch-start');
 try {
   await DBOS.launch();
+  markGecPhase('launch-end');
   process.stderr.write('DURABLE_DBOS_STARTUP ' + JSON.stringify({ phase: 'launch-complete',
     elapsedMs: Math.round(performance.now() - launchStartedAt), lookups: lookupSequence }) + '\n');
 } catch (error) {
@@ -148,7 +303,8 @@ const input = {
   script,
   inputs: recipeInputs,
   pin: { sourceSha256: 'fixture', bindingsSha256: 'fixture' },
-  caller: { ownerId: 'durable-crash-caller', workspaceId: 'ws-p019-crash', role: 'worker' },
+  caller: { ownerId: 'durable-crash-caller', workspaceId: process.env.DURABLE_CRASH_WORKSPACE ?? 'ws-p019-crash', role: 'worker',
+    ...(gecScope ? { harnessSlug: gecScope.harness } : {}) },
   timeoutSec: 60,
 };
 const workflowId = workflow.durableOrchestrationWorkflowId(input.caller.workspaceId, runKey);
@@ -190,13 +346,26 @@ if (mode === 'code') {
 }
 
 if (mode === 'crash') {
+  markGecPhase('workflow-start');
   await workflow.startDurableOrchestration(input);
+  markGecPhase('workflow-admitted');
   const settled = await DBOS.getResult(workflowId, 60);
   throw new Error('crash point was not reached; workflow settled with ' + JSON.stringify(settled));
 }
 
+markGecPhase('result-start');
 const outcome = await DBOS.getResult(workflowId, 90);
+markGecPhase('result-end');
+markGecPhase('status-start');
 const status = await workflow.getDurableOrchestrationStatus(workflowId);
-process.stdout.write('DURABLE_OUTCOME ' + JSON.stringify({ outcome, status }) + '\n');
+markGecPhase('status-end');
+markGecPhase('shutdown-start');
 await DBOS.shutdown();
+markGecPhase('shutdown-end');
+markGecPhase('effect-client-end-start');
 await sql.end({ timeout: 5 });
+markGecPhase('effect-client-end-end');
+sealGecCapture?.();
+process.stdout.write('DURABLE_OUTCOME ' + JSON.stringify({ outcome, status }) + '\n');
+} finally { restoreGecStore?.(); }
+});

@@ -1,9 +1,9 @@
 /** Installed OMP native-tool controls, with deterministic local inference. */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
+import { createOmpNativeHomes } from '../test/omp-native-home';
 import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
 import { nativeToolInventory } from '../../../libs/papercusp/packages/orchestrator/src/managed-capability-client-inventory';
 import { composeOmpCapabilityTools, type CapabilityPolicyRequest } from '@papercusp/orchestrator/managed-capability-policy';
@@ -16,18 +16,29 @@ declare module 'vitest' {
 }
 
 const canary = 'mcp__managed_surface_canary';
+const homes = createOmpNativeHomes();
+afterAll(() => homes.dispose());
 
-function captureSurface(noTools: boolean | readonly string[]) {
+type NativeCensusDiagnostic = {
+  nativeFilesBefore: string[]; nativeFilesAfter: string[]; [key: string]: unknown;
+};
+
+function captureSurface(noTools: boolean | readonly string[], diagnostics: NativeCensusDiagnostic[]) {
   const omp = wellKnownBackendBin('omp') ?? resolveOnPath('omp');
   if (!omp) throw new Error('Installed OMP is required for native-tool removal evidence');
-  const home = mkdtempSync(join(tmpdir(), 'omp-managed-surface-'));
+  const home = homes.allocate();
   const resultPath = join(home, 'census.json');
+  const phasesPath = join(home, 'phases.ndjson');
+  const nativeFilesBefore = homes.nativeFiles();
   const extensionPath = join(home, 'census.ts');
   // Reuse the installed-runtime provider/extension boundary exercised by the
   // maintained omp-client-uds-roundtrip integration suite. No provider traffic.
   writeFileSync(extensionPath, `
 import { writeFileSync } from 'node:fs';
 export default function(pi) {
+  const phase = name => writeFileSync(process.env.PAPERCUSP_NATIVE_TOOL_PHASE_FILE,
+    JSON.stringify({ name, at: Date.now() }) + '\\n', { flag: 'a' });
+  phase('extension-entry');
   let calls = 0;
   let turns = 0;
   pi.registerTool({ name: '${canary}', label: 'Managed canary',
@@ -41,6 +52,7 @@ export default function(pi) {
     models: [{ id: 'proof', name: 'Local surface proof', reasoning: false, input: ['text'],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 1024 }],
     streamSimple(model, context) {
+      phase('provider-stream');
       if (++turns > 2) throw new Error('Unexpected inference turn');
       const names = (context.tools ?? []).map(tool => tool.name);
       writeFileSync(process.env.PAPERCUSP_NATIVE_TOOL_CENSUS_FILE, JSON.stringify({ names, calls, turns,
@@ -64,6 +76,7 @@ export default function(pi) {
 }
 `, { mode: 0o600 });
   try {
+    const startedAt = Date.now();
     const result = spawnSync(omp, ['--print', '--mode', 'json', '--no-session', '--no-title',
       '--no-extensions', '--no-skills', '--no-rules', '--extension', extensionPath,
       '--model', 'surface-fixture/proof', '--thinking', 'off', '--auto-approve',
@@ -72,8 +85,16 @@ export default function(pi) {
       env: { PATH: process.env.PATH, LANG: process.env.LANG ?? 'C.UTF-8', HOME: home,
         XDG_CONFIG_HOME: join(home, '.config'), XDG_DATA_HOME: join(home, '.local', 'share'),
         PI_CODING_AGENT_DIR: home, PI_CONFIG_DIR: home,
-        PAPERCUSP_NATIVE_TOOL_CENSUS_FILE: resultPath },
+        PAPERCUSP_NATIVE_TOOL_CENSUS_FILE: resultPath, PAPERCUSP_NATIVE_TOOL_PHASE_FILE: phasesPath },
     });
+    // Retain startup and command evidence even when the first census fails.
+    const diagnostic = { selection: noTools, startedAt, elapsedMs: Date.now() - startedAt,
+      status: result.status, signal: result.signal, error: result.error?.message ?? null,
+      phases: existsSync(phasesPath) ? readFileSync(phasesPath, 'utf8') : null,
+      nativeFilesBefore, nativeFilesAfter: homes.nativeFiles(),
+      stdoutTail: result.stdout.slice(-1500), stderrTail: result.stderr.slice(-1500) };
+    diagnostics.push(diagnostic);
+    console.info('OMP_NATIVE_CENSUS_COMMAND ' + JSON.stringify(diagnostic));
     expect(result.status, `${result.error?.message ?? ''}\n${result.stderr}\n${result.stdout.slice(-1500)}`).toBe(0);
     const census = JSON.parse(readFileSync(resultPath, 'utf8')) as {
       names: string[]; calls: number; turns: number;
@@ -98,11 +119,13 @@ describe('OMP managed replacement installed-client census', () => {
   };
 
   it('applies the shared restriction on su, role, fleet and resume without losing the managed canary', ({ task }) => {
+    const diagnostics: NativeCensusDiagnostic[] = [];
+    task.meta.nativeToolSurface = { diagnostics };
     // Explicit operator-selected native mode is representable by --tools.
     // Default code mode is measured separately and must remain retained.
-    const baseline = captureSurface(['--tools', admitted.ompNativeTools!.join(',')]);
+    const baseline = captureSurface(['--tools', admitted.ompNativeTools!.join(',')], diagnostics);
     const observations: { routes: string[]; argv: string[]; names: string[]; calls: number; version: string }[] = [];
-    task.meta.nativeToolSurface = { baseline, observations, controlVersion: admitted.clientVersions!.omp };
+    task.meta.nativeToolSurface = { baseline, observations, diagnostics, controlVersion: admitted.clientVersions!.omp };
     const toolSelection = (argv: (string | undefined)[]) => {
       const index = argv.indexOf('--tools');
       expect(index, JSON.stringify(argv)).toBeGreaterThanOrEqual(0);
@@ -122,7 +145,7 @@ describe('OMP managed replacement installed-client census', () => {
     for (const [route, argv] of Object.entries(routes)) {
       const prior = observations.find(row => JSON.stringify(row.argv) === JSON.stringify(argv));
       if (prior) prior.routes.push(route);
-      else observations.push({ routes: [route], argv, ...captureSurface(argv) });
+      else observations.push({ routes: [route], argv, ...captureSurface(argv, diagnostics) });
     }
     expect(baseline.names).toContain('bash');
     for (const result of observations) {
@@ -132,7 +155,7 @@ describe('OMP managed replacement installed-client census', () => {
       expect(result.names.filter(name => name !== canary).sort())
         .toEqual(baseline.names.filter(name => name !== 'bash' && name !== canary).sort());
     }
-    const defaultSurface = captureSurface(false);
+    const defaultSurface = captureSurface(false, diagnostics);
     const defaultPolicy = { ...admitted, ompNativeTools: defaultSurface.names.filter(name => name !== canary) };
     expect(defaultSurface.names).toEqual(expect.arrayContaining(['eval', 'hub']));
     expect(composeOmpCapabilityTools([], defaultPolicy)).toEqual([]);
@@ -141,14 +164,22 @@ describe('OMP managed replacement installed-client census', () => {
       adoption: admitted.adoption!.map(row => ({ ...row, atClientVersion: undefined })) });
     expect(drift).toEqual([]);
     expect(defaultSurface.names).toContain('bash');
+    const extracted = diagnostics[0]!.nativeFilesAfter;
+    expect(extracted.some(path => path.endsWith('.node')), 'Installed OMP must populate the owned cache').toBe(true);
+    for (const sample of diagnostics.slice(1)) {
+      expect(sample.nativeFilesBefore).toEqual(extracted);
+      expect(sample.nativeFilesAfter).toEqual(extracted);
+    }
   }, 180_000);
 
   it('removes built-in execution tools while an extension tool still executes', ({ task }) => {
-    const baseline = captureSurface(false);
-    const restricted = captureSurface(true);
+    const diagnostics: NativeCensusDiagnostic[] = [];
+    task.meta.nativeToolSurface = { diagnostics };
+    const baseline = captureSurface(false, diagnostics);
+    const restricted = captureSurface(true, diagnostics);
     const inventory = nativeToolInventory({ client: 'omp', clientVersion: baseline.version,
       nativeNames: [...baseline.names, ...restricted.names], managedNames: [canary] });
-    task.meta.nativeToolSurface = { baseline, restricted, inventory };
+    task.meta.nativeToolSurface = { baseline, restricted, inventory, diagnostics };
     expect(inventory.rows.every(row => row.gap === null || row.gap === 'client-version-drift' ||
       row.gap === 'native-parity-unverified')).toBe(true);
     expect(baseline.descriptions.find(row => row.name === 'eval')?.description).toMatch(/persistent kernel/i);

@@ -250,10 +250,10 @@ describe('R-4 — rubric probe checks run read-only SQL through the dev:pg_query
     expect(fakeDb.state.sentinel.v).toBe('written');
   });
 
-  it('applies the declared row cap and reports truncation in the typed result', async () => {
+  it('applies the declared row cap and refuses truncated rubric evidence even when its predicate matches', async () => {
     const capped = sqlProbe('SELECT i FROM generate_series(1, 10) AS i', { path: '$.truncated', op: 'eq', value: true }, { maxRows: 3 });
     const result = await grade(capped, 'healthy');
-    expect(result).toMatchObject({ ok: true, checkRuns: { 'r-4': { verdict: 'pass' } } });
+    expect(result).toMatchObject({ ok: false, error: 'probe_run_failed', criterionKey: 'r-4' });
     expect(dispatched[0]?.args).toMatchObject({ maxRows: 3 });
     expect(dataStatements(fakeDb.state.txns[0]!)).toEqual([`SELECT * FROM (${dispatched[0]!.args.sql}) AS _pgq LIMIT 4`]);
     expect(dispatched[0]!.args.sql).toContain('FROM (SELECT i FROM generate_series(1, 10) AS i)');
@@ -263,7 +263,14 @@ describe('R-4 — rubric probe checks run read-only SQL through the dev:pg_query
       sqlProbe('SELECT i FROM generate_series(1, 10) AS i', { path: '$.rowCount', op: 'eq', value: 3 }, { maxRows: 3 }),
       'healthy',
     );
-    expect(rowCount).toMatchObject({ ok: true, checkRuns: { 'r-4': { verdict: 'pass', observed: 3 } } });
+    expect(rowCount).toMatchObject({ ok: false, error: 'probe_run_failed', criterionKey: 'r-4' });
+
+    fakeDb.reset();
+    const complete = await grade(
+      sqlProbe('SELECT i FROM generate_series(1, 10) AS i', { path: '$.rowCount', op: 'eq', value: 10 }, { maxRows: 20 }),
+      'healthy',
+    );
+    expect(complete).toMatchObject({ ok: true, checkRuns: { 'r-4': { verdict: 'pass', observed: 10 } } });
   });
 
   it('pins an explicit row cap into every persisted SQL probe, even when the author omits one', () => {

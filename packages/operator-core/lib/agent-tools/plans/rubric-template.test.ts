@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vitest';
 import {
   rubricTemplateDataSchema,
   rubricTemplateDataAuthoringSchema,
+  criterionProbeIdentity,
   rubricCriterionSchema,
   rubricCriterionCheckSchema,
   rubricCriterionWindowSchema,
@@ -42,6 +43,27 @@ const minimalData = {
 };
 
 describe('rubric template schema', () => {
+  it('admits six complete repeated probe groups and mixed 32-consumer declarations within 24 operations', () => {
+    const probe = (n: number) => ({ kind: 'sql', sql: `SELECT ${n} AS n`, schemaRevision: 'live', expect: { path: '$.rows[0].n', op: 'eq', value: n } });
+    const criterion = (key: string, check: unknown) => ({ ...minimalCriterion, key, check });
+    const repeated = Array.from({ length: 6 }, (_, i) => criterion(`c${i}`, { kind: 'tests', files: ['lib/a.test.ts'], all: Array.from({ length: 5 }, (_, n) => probe(n)) }));
+    expect(rubricTemplateDataAuthoringSchema.safeParse({ ...minimalData, criteria: repeated }).success).toBe(true);
+    const standalone = Array.from({ length: 24 }, (_, n) => criterion(`p${n}`, { kind: 'probe', probe: probe(n) }));
+    const group = criterion('group', { kind: 'tests', files: ['lib/a.test.ts'], all: Array.from({ length: 8 }, (_, n) => probe(n)) });
+    expect(rubricTemplateDataAuthoringSchema.safeParse({ ...minimalData, criteria: [...standalone, group] }).success).toBe(true);
+    expect(rubricTemplateDataAuthoringSchema.safeParse({ ...minimalData, criteria: [...standalone, group, criterion('extra', { kind: 'probe', probe: probe(24) })] }).success).toBe(false);
+  });
+
+  it('normalizes shape defaults and object order without dropping identity fields', () => {
+    const p = { kind: 'tool', tool: 'status:read', schemaRevision: 'r', args: { b: 2, a: 1 }, expect: { path: '$.ok', op: 'eq', value: true } };
+    expect(criterionProbeIdentity(p)).toBe(criterionProbeIdentity({ ...p, args: { a: 1, b: 2 } }));
+    expect(criterionProbeIdentity({ ...p, args: undefined })).toBe(criterionProbeIdentity({ ...p, args: {} }));
+    for (const patch of [{ args: { a: 1 } }, { schemaRevision: 'other' }, { projection: { pick: ['ok'] } }, { expect: { ...p.expect, value: false } }]) {
+      expect(criterionProbeIdentity({ ...p, ...patch })).not.toBe(criterionProbeIdentity(p));
+    }
+    expect(() => criterionProbeIdentity({ ...p, args: { bad: Infinity } })).toThrow();
+  });
+
   it('retains an additive 23-file guard inventory within the test runner 50-file bound', () => {
     const files = Array.from({ length: 50 }, (_, i) => `lib/guard-${i}.test.ts`);
     expect(rubricCriterionCheckSchema.parse({ kind: 'tests', files: files.slice(0, 23) }))

@@ -1,0 +1,1194 @@
+/** GEC P-001 adapters over existing recorder outputs. These are measurements,
+ * not acceptance verdicts. Persist returned checks in test_runs.execution_details;
+ * the original recorder census stays at its existing evidence reference. */
+import { createHash } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import type postgres from 'postgres';
+import { canonicalJson } from '@papercusp/hash-chain';
+import { parseSseStream } from '@papercusp/sse';
+import { parseClaudeResultEvent } from '@papercusp/papercusp-shared/agent';
+import { parseTestRunExecutionDetails, type RecordedRubricCheck } from '@papercusp/test-config/execution-details';
+import { parseCodexResponsesSse } from './llm-testing/targets/codex-responses-tool-loop';
+import type { RubricCheckResult } from './check-results-ledger';
+import fixture from './grounded-evidence-fixture.json';
+import { retainMeasurementProvenance } from './measurement-provenance';
+
+export const GROUNDED_MANIFEST_SHA256 = '565555fb5e75131c3c9fc59664eb42e21d2142d19f34713d2265795aada09e6a';
+const hash = (value: unknown): string => createHash('sha256').update(canonicalJson(value), 'utf8').digest('hex');
+if (hash(fixture) !== GROUNDED_MANIFEST_SHA256) throw new Error('GEC immutable fixture hash mismatch');
+export const GROUNDED_DIMENSIONS = [
+  'endToEndMs', 'modelCalls', 'modelInputTokens', 'modelOutputTokens',
+  'extractionCalls', 'extractionInputTokens', 'extractionOutputTokens',
+  'refreshCalls', 'refreshInputTokens', 'refreshOutputTokens', 'retrievalCalls',
+  'foregroundLookups', 'repeatedCalls', 'agentAuthoringCalls', 'agentAuthoringInputTokens',
+  'agentAuthoringOutputTokens', 'newMandatoryFields', 'newMandatoryNarrativeSurfaces',
+  'durableSteps', 'storageOperations', 'storageBytes',
+] as const;
+export type GroundedDimension = typeof GROUNDED_DIMENSIONS[number];
+
+/** Only the allocated run token and generated store keys may vary. The oracle
+ * bytes never depend on a product result. This map is retained before either arm. */
+export function materializeGroundedFixture(runId: string, storeKeys: Readonly<Record<string, string>> = {}) {
+  if (!/^[a-zA-Z0-9_-]{1,100}$/.test(runId)) throw new Error('invalid GEC run token');
+  const logical = Object.values(fixture.namespace).filter((value): value is string => typeof value === 'string');
+  const allowed = new Set<string>([...logical, fixture.seed.exactArchive.logicalPost,
+    fixture.seed.exactArchive.foreignThreadPost, fixture.seed.exactArchive.foreignWorkspacePost,
+    ...Object.values(fixture.seed.proof).filter((value): value is string => typeof value === 'string'),
+    ...fixture.seed.events.map(event => event.id),
+    ...Array.from({ length: 25 }, (_, index) => `child-${String(index + 1).padStart(2, '0')}`)]);
+  const mapping = Object.fromEntries([...allowed].map(key => [key, key.replace('<registered-run-id>', runId)]));
+  for (const [key, value] of Object.entries(storeKeys)) {
+    if (!allowed.has(key) || !value.trim()) throw new Error('unknown or blank GEC store key');
+    mapping[key] = value;
+  }
+  if (new Set(Object.values(mapping)).size !== Object.keys(mapping).length) throw new Error('GEC store map is not bijective');
+  return { manifest: structuredClone(fixture), manifestHash: GROUNDED_MANIFEST_SHA256, mapping, mappingHash: hash(mapping) };
+}
+
+export interface GroundedMeasurementScope {
+  workspaceId: string;
+  potId: string;
+  harness: string;
+  runId: string;
+  ownerId: string;
+  caseId: string;
+  arm: 'pre' | 'post';
+  iteration: number;
+  manifestHash: string;
+  fixtureHash: string;
+  sourceFingerprint: string;
+  testFingerprint: string;
+  runtimeFingerprint: string;
+  configFingerprint: string;
+}
+const scopeKeys = ['workspaceId', 'potId', 'harness', 'runId', 'ownerId', 'caseId', 'arm', 'iteration',
+  'manifestHash', 'fixtureHash', 'sourceFingerprint', 'testFingerprint', 'runtimeFingerprint', 'configFingerprint'] as const;
+
+/** ids are the independent recorder's admitted population, not rows.map(id).
+ * complete means its request admission, child tasks and recorder drain settled.
+ * An empty complete, armed census can measure zero; an absent census cannot. */
+export interface GroundedCensus<T extends { id: string }> {
+  scope: GroundedMeasurementScope;
+  sourceRef: string;
+  complete: boolean;
+  ids: readonly string[];
+  rows: readonly T[];
+}
+export interface GroundedModelUsage {
+  id: string;
+  purpose: 'model' | 'extraction' | 'refresh' | 'authoring' | 'unknown';
+  /** Registered caller boundary and final provider parser/tape identity. */
+  purposeRef: string;
+  usageRef: string | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+}
+export interface GroundedInvocation {
+  id: string;
+  tool: string;
+  args: unknown;
+  /** Derived at the transport/call_origin boundary, never from answer prose. */
+  boundary: 'consumer' | 'internal' | 'control' | 'unknown';
+  originRef: string;
+  purpose: 'retrieval' | 'other' | 'unknown';
+  purposeRef: string;
+}
+// Some reviewed upserts report a positive affected count for an unchanged
+// payload. Those writers can prove only zero-row no-ops from CommandComplete.
+type GroundedPersistedRows = number | 'zero-only';
+export interface GroundedStorageOperation {
+  id: string;
+  kind: 'read' | 'control' | 'write' | 'unknown';
+  /** null for reads/session controls; exact UTF8 persisted value bytes for writes. */
+  persistedBytes: number | null;
+  sql?: { pool: string; queryId: number; queryHash: string; command: string | null; status: 'ok' | 'error';
+    rowOutcome?: { allOrNoneRows: GroundedPersistedRows; affectedRows: number | null };
+    nonPersisting?: { sourceRef: string; kind: 'read' | 'control' };
+    serializedWrite?: { sourceRef: string; templateHash: string;
+      values: readonly { argument: number; sha256: string; bytes: number }[] };
+    serializedParameters?: { sourceRef: string; serializerSourceRef: string; parameterCount: number;
+      values: readonly { parameter: number; sha256: string | null; bytes: number }[] } };
+}
+/** A bounded source review, not a SQL safety parser. Register before execution;
+ * any byte, command or terminal-status change requires a fresh review. */
+export interface GroundedNonPersistingSql {
+  queryHash: string; sourceRef: string; kind: 'read' | 'control';
+  command: 'SELECT' | 'BEGIN' | 'COMMIT' | 'ROLLBACK' | 'SET' | 'LISTEN' | 'NOTIFY' | null;
+  status: 'ok' | 'error';
+}
+/** Optional original-driver diagnostics. These observations never classify SQL
+ * or certify persisted bytes; the caller must retain/review them separately. */
+export interface GroundedSqlObservation {
+  id: string; pool: string; phase: 'admission' | 'submit' | 'terminal';
+  monotonicMs: number; query: string | null;
+  command?: string | null; status?: 'ok' | 'error';
+}
+export interface GroundedContractChange {
+  id: string;
+  beforeRequiredPaths: readonly string[];
+  afterRequiredPaths: readonly string[];
+  beforeNarrativePaths: readonly string[];
+  afterNarrativePaths: readonly string[];
+}
+/** Independently retained catalogue population and original schema rows. */
+export interface GroundedSchemaSnapshot {
+  sourceRef: string;
+  sourceFingerprint: string;
+  complete: boolean;
+  ids: readonly string[];
+  /** The independently admitted contract channels, identical at both pins.
+   * Full callers include result/authority/acceptance; input-only callers cannot
+   * silently claim coverage of an absent channel. */
+  requiredKinds?: readonly ('input' | 'result' | 'authority' | 'acceptance')[];
+  rows: readonly { id: string; inputSchema: unknown; resultSchema?: unknown;
+    authoritySchema?: unknown; acceptanceSchema?: unknown }[];
+  /** Original code-only contracts that have no faithful schema projection.
+   * ids are admitted independently of the completed reads. Exact unchanged
+   * bytes prove zero additions; changed code requires an exact detector. */
+  sourceFiles?: {
+    ids: readonly string[];
+    rows: readonly { id: string; sourceRef: string; body: string; sha256: string }[];
+  };
+}
+export interface GroundedMeasurementInput {
+  scope: GroundedMeasurementScope;
+  boundary: {
+    scope: GroundedMeasurementScope;
+    sourceRef: string;
+    admittedAt: string;
+    settledAt: string;
+    monotonicStartMs: number;
+    monotonicEndMs: number;
+    drained: boolean;
+  } | null;
+  models?: GroundedCensus<GroundedModelUsage>;
+  invocations?: GroundedCensus<GroundedInvocation>;
+  durable?: GroundedCensus<{ id: string; source: 'live' | 'recorded' }>;
+  storage?: GroundedCensus<GroundedStorageOperation>;
+  contracts?: GroundedCensus<GroundedContractChange>;
+}
+
+const integer = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+const nonblank = (s: unknown): s is string => typeof s === 'string' && s.trim().length > 0;
+const sameScope = (a: GroundedMeasurementScope, b: GroundedMeasurementScope): boolean =>
+  scopeKeys.every(key => a[key] === b[key]);
+const lookups = new Set(['graph:query', 'plans:get', 'work_items:get', 'goals:get', 'search:query', 'search:semantic',
+  'search:fulltext', 'tools:find']);
+const dimensionUnit = (dimension: GroundedDimension): string => dimension.endsWith('Tokens') ? 'tokens'
+  : dimension === 'storageBytes' ? 'bytes' : dimension === 'endToEndMs' ? 'ms' : 'count';
+
+/** Pure projection of original capture, including failures and replay attempts.
+ * Missing/foreign/duplicated/dropped observations cannot become free operations. */
+export function measureGroundedEvidence(input: GroundedMeasurementInput) {
+  const values = Object.fromEntries(GROUNDED_DIMENSIONS.map(key => [key, null])) as Record<GroundedDimension, number | null>;
+  const gaps = new Set<string>();
+  // The original census may itself be unretainable. Preserve that failure
+  // through provenance creation instead of hashing it again outside the guard.
+  const sourceHashes = new WeakMap<object, string | null>();
+  const sourceHash = (source: object): string | null => {
+    if (!sourceHashes.has(source)) {
+      try { sourceHashes.set(source, hash(source)); }
+      catch { sourceHashes.set(source, null); }
+    }
+    return sourceHashes.get(source)!;
+  };
+  const validScope = scopeKeys.every(key => key === 'iteration' ? integer(input.scope[key]) && input.scope[key] >= 1
+    : nonblank(input.scope[key])) && input.scope.iteration <= 3
+    && ['pre', 'post'].includes(input.scope.arm)
+    && input.scope.manifestHash === GROUNDED_MANIFEST_SHA256
+    && fixture.cases.some(c => c.id === input.scope.caseId);
+  if (!validScope) gaps.add('invalid-measurement-scope');
+  const census = <T extends { id: string }>(name: string, capture?: GroundedCensus<T>): readonly T[] | null => {
+    if (!capture || !capture.complete || !nonblank(capture.sourceRef) || !sameScope(input.scope, capture.scope)) {
+      gaps.add(`${name}:missing-incomplete-or-foreign-census`); return null;
+    }
+    const ids = new Set(capture.ids);
+    const rows = new Set(capture.rows.map(row => row.id));
+    if (ids.size !== capture.ids.length || rows.size !== capture.rows.length
+      || [...ids, ...rows].some(id => !nonblank(id)) || ids.size !== rows.size || [...ids].some(id => !rows.has(id))) {
+      gaps.add(`${name}:recorder-population-mismatch`); return null;
+    }
+    if (sourceHash(capture) === null) { gaps.add(`${name}:unretainable-source`); return null; }
+    return capture.rows;
+  };
+  const b = input.boundary;
+  const validBoundary = b && sameScope(input.scope, b.scope) && nonblank(b.sourceRef) && b.drained
+    && Number.isFinite(Date.parse(b.admittedAt)) && Number.isFinite(Date.parse(b.settledAt))
+    && Date.parse(b.settledAt) >= Date.parse(b.admittedAt)
+    && Number.isFinite(b.monotonicStartMs) && b.monotonicStartMs >= 0
+    && Number.isFinite(b.monotonicEndMs) && b.monotonicEndMs >= b.monotonicStartMs;
+  if (validBoundary) values.endToEndMs = b.monotonicEndMs - b.monotonicStartMs;
+  else gaps.add('boundary:unsettled-or-missing');
+
+  const models = census('models', input.models);
+  if (models) {
+    values.modelCalls = models.length;
+    const validPurposes = models.every(m => ['model', 'extraction', 'refresh', 'authoring'].includes(m.purpose) && nonblank(m.purposeRef));
+    const tokens = (rows: readonly GroundedModelUsage[], field: 'inputTokens' | 'outputTokens'): number | null => {
+      if (rows.some(m => !nonblank(m.usageRef) || !integer(m[field]))) { gaps.add(`models:missing-final-${field}`); return null; }
+      const total = rows.reduce((sum, m) => sum + m[field]!, 0);
+      if (!integer(total)) { gaps.add('models:unsafe-token-total'); return null; }
+      return total;
+    };
+    values.modelInputTokens = tokens(models, 'inputTokens');
+    values.modelOutputTokens = tokens(models, 'outputTokens');
+    if (!validPurposes) gaps.add('models:unclassified-caller-purpose');
+    else for (const [purpose, count, inTokens, outTokens] of [
+      ['extraction', 'extractionCalls', 'extractionInputTokens', 'extractionOutputTokens'],
+      ['refresh', 'refreshCalls', 'refreshInputTokens', 'refreshOutputTokens'],
+      ['authoring', 'agentAuthoringCalls', 'agentAuthoringInputTokens', 'agentAuthoringOutputTokens'],
+    ] as const) {
+      const selected = models.filter(m => m.purpose === purpose);
+      values[count] = selected.length;
+      values[inTokens] = tokens(selected, 'inputTokens');
+      values[outTokens] = tokens(selected, 'outputTokens');
+    }
+  }
+  const invocations = census('invocations', input.invocations);
+  if (invocations) {
+    if (invocations.some(i => !['consumer', 'internal', 'control'].includes(i.boundary) || !nonblank(i.originRef) || !nonblank(i.tool)))
+      gaps.add('invocations:missing-origin');
+    else {
+      const foreground = invocations.filter(i => i.boundary === 'consumer');
+      const canonicalCall = (i: GroundedInvocation) => {
+        if (i.tool === 'tools:invoke' && i.args && typeof i.args === 'object' && 'name' in i.args
+          && typeof i.args.name === 'string') return { tool: i.args.name, args: 'args' in i.args ? i.args.args : {} };
+        return { tool: i.tool, args: i.args };
+      };
+      values.foregroundLookups = foreground.filter(i => lookups.has(canonicalCall(i).tool)).length;
+      try {
+        const normalized = foreground.map(i => canonicalJson(canonicalCall(i)));
+        values.repeatedCalls = normalized.length - new Set(normalized).size;
+      } catch { gaps.add('invocations:invalid-canonical-args'); }
+    }
+    if (invocations.some(i => !['retrieval', 'other'].includes(i.purpose) || !nonblank(i.purposeRef)
+      || !['consumer', 'internal', 'control'].includes(i.boundary))) gaps.add('invocations:unclassified-caller-purpose');
+    else values.retrievalCalls = invocations.filter(i => i.purpose === 'retrieval' && i.boundary !== 'control').length;
+  }
+  const durable = census('durable', input.durable);
+  if (durable) {
+    if (durable.every(step => step.source === 'live' || step.source === 'recorded')) values.durableSteps = durable.length;
+    else gaps.add('durable:missing-replay-source');
+  }
+  const storage = census('storage', input.storage);
+  if (storage) {
+    // Completion coverage proves the operation count independently of whether
+    // a write's original serialized value is available.
+    values.storageOperations = storage.length;
+    if (storage.some(op => !['read', 'control', 'write'].includes(op.kind)
+      || (op.kind === 'write' ? !integer(op.persistedBytes) : op.persistedBytes !== null))) gaps.add('storage:missing-persisted-bytes');
+    else {
+      const bytes = storage.reduce((sum, op) => sum + (op.persistedBytes ?? 0), 0);
+      if (integer(bytes)) values.storageBytes = bytes; else gaps.add('storage:unsafe-byte-total');
+    }
+  }
+  const contracts = census('contracts', input.contracts);
+  if (contracts) {
+    const added = (before: readonly string[], after: readonly string[]): number => {
+      if ([...before, ...after].some(path => !nonblank(path)) || new Set(before).size !== before.length
+        || new Set(after).size !== after.length) throw new Error('invalid contract paths');
+      const old = new Set(before); return after.filter(path => !old.has(path)).length;
+    };
+    try {
+      values.newMandatoryFields = contracts.reduce((sum, c) => sum + added(c.beforeRequiredPaths, c.afterRequiredPaths), 0);
+      values.newMandatoryNarrativeSurfaces = contracts.reduce((sum, c) => sum + added(c.beforeNarrativePaths, c.afterNarrativePaths), 0);
+    } catch { values.newMandatoryFields = null; values.newMandatoryNarrativeSurfaces = null; gaps.add('contracts:invalid-path-census'); }
+  }
+  // Child work and recorder drains bound EVERY dimension, not merely latency.
+  if (!validScope || !validBoundary) for (const key of GROUNDED_DIMENSIONS) values[key] = null;
+  const checks = GROUNDED_DIMENSIONS.map(dimension => {
+    const value = values[dimension];
+    const provenance = retainMeasurementProvenance({
+      startedAt: validBoundary ? b.admittedAt : '1970-01-01T00:00:00.000Z',
+      finishedAt: validBoundary ? b.settledAt : '1970-01-01T00:00:00.000Z',
+      procedure: { kind: 'grounded-evidence-capture', scope: input.scope, boundaryRef: b?.sourceRef ?? null,
+        sources: Object.fromEntries(['models', 'invocations', 'durable', 'storage', 'contracts'].map(name => {
+          const source = input[name as keyof Pick<GroundedMeasurementInput, 'models' | 'invocations' | 'durable' | 'storage' | 'contracts'>];
+          return [name, source ? { ref: source.sourceRef, sha256: sourceHash(source), complete: source.complete } : null];
+        })) },
+      result: { dimension, value, gaps: [...gaps] }, predicateInput: { path: '$["value"]', value },
+    });
+    const check: RecordedRubricCheck = {
+      id: `gec:${input.scope.caseId}:${input.scope.arm}:${input.scope.iteration}:${dimension}`,
+      rubricRef: 'acceptance-grounded-evidence-and-continuity-2026-11-05', criterionKey: 'r-8', kind: 'instrument',
+      value, unit: dimensionUnit(dimension),
+      subject: { ref: `${fixture.edition}/${input.scope.caseId}/${input.scope.arm}/${input.scope.iteration}/${dimension}` }, provenance,
+    };
+    return { status: value === null ? 'unknown' as const : 'captured' as const, check };
+  });
+  const ledgerResults: RubricCheckResult[] = checks.map(({ status, check }) => ({
+    check, verdict: status === 'captured' ? 'pass' : 'error',
+    // test_runs.duration_ms is BIGINT; the precise monotonic scalar remains
+    // unchanged in check.value. Round only the auxiliary row duration.
+    measuredAt: check.provenance!.finishedAt, durationMs: values.endToEndMs === null ? null : Math.ceil(values.endToEndMs),
+    ...(status === 'unknown' ? { detail: [...gaps].join('; ') } : {}),
+  }));
+  return { values, gaps: [...gaps], checks, ledgerResults, complete: checks.every(row => row.status === 'captured') };
+}
+
+/** Inspect the existing results ledger by exact subject AND retained source
+ * identity. A file-level pass, an older passing scalar, or a row from another
+ * run cannot repair a missing latest dimension. Callers select the exact run. */
+export function readGroundedMeasurementRows(scope: GroundedMeasurementScope, rows: readonly {
+  id: number; status: string; executionDetails: unknown;
+}[]) {
+  const values = Object.fromEntries(GROUNDED_DIMENSIONS.map(key => [key, null])) as Record<GroundedDimension, number | null>;
+  const gaps: string[] = [];
+  const prefix = `${fixture.edition}/${scope.caseId}/${scope.arm}/${scope.iteration}/`;
+  for (const dimension of GROUNDED_DIMENSIONS) {
+    const selected = rows.map(row => ({ ...row, details: parseTestRunExecutionDetails(row.executionDetails) }))
+      .filter(row => row.details?.check?.subject?.ref === prefix + dimension);
+    if (selected.length !== 1) { gaps.push(`${dimension}:missing-or-ambiguous-row`); continue; }
+    const row = selected[0]!, check = row.details!.check!;
+    let recordedScope: GroundedMeasurementScope | null = null;
+    try { recordedScope = JSON.parse(check.provenance!.procedure.snapshot).scope; } catch { /* explicit gap below */ }
+    if (row.status !== 'pass' || check.kind !== 'instrument' || check.criterionKey !== 'r-8'
+      || check.rubricRef !== 'acceptance-grounded-evidence-and-continuity-2026-11-05'
+      || check.id !== `gec:${scope.caseId}:${scope.arm}:${scope.iteration}:${dimension}` || check.unit !== dimensionUnit(dimension)
+      || typeof check.value !== 'number' || !Number.isFinite(check.value) || check.value < 0
+      || (dimension !== 'endToEndMs' && !integer(check.value))
+      || !check.provenance || check.provenance.gaps.length || !recordedScope || !sameScope(scope, recordedScope)
+      || row.details!.workspaceId !== scope.workspaceId || row.details!.harnessSlug !== scope.harness
+      || row.details!.runGroupId !== scope.runId) { gaps.push(`${dimension}:unqualified-row`); continue; }
+    values[dimension] = check.value;
+  }
+  return { values, gaps, complete: gaps.length === 0 };
+}
+
+/** Persisted values use the SAME serialization supplied to the original write.
+ * Reads and failed writes must be recorded too; only writes carry byte counts. */
+export function groundedPersistedBytes(serializedValue: string | Uint8Array): number {
+  return typeof serializedValue === 'string' ? Buffer.byteLength(serializedValue, 'utf8') : serializedValue.byteLength;
+}
+
+/** Wrap the collector's existing store methods. Admission ids are captured
+ * BEFORE invocation and completed rows AFTER settlement, so a dropped row is
+ * detectable without deriving the expected population from those same rows.
+ * The caller seals only after the public action and its child work settle. */
+export function observeGroundedStoreReads<T extends object>(input: {
+  scope: GroundedMeasurementScope; deps: T; methods: readonly (keyof T)[]; sourceRef: string; attemptId: string;
+}) {
+  return observeGroundedStoreOperations({ ...input,
+    operations: input.methods.map(method => ({ method, kind: 'read' as const })) });
+}
+
+/** Observe the existing storage boundary, including prototype methods. A write
+ * can supply the index of its already-serialized argument; a failed or opaque
+ * write keeps bytes unknown because it may have committed before throwing.
+ * Never estimate persisted bytes from a returned result or reserialization. */
+export function observeGroundedStoreOperations<T extends object>(input: {
+  scope: GroundedMeasurementScope; deps: T; sourceRef: string; attemptId: string;
+  /** Retain a synchronous original snapshot after each admission/terminal so
+   * intentional producer death cannot erase its pending population. */
+  onObservation?: () => void;
+  onSqlObservation?: (observation: GroundedSqlObservation) => void;
+  operations: readonly { method: keyof T; kind: 'read' | 'write'; serializedArgument?: number }[];
+  /** Arm every pool in the selected consumer closure before run(). These are
+   * postgres-js's actual admission/result hooks, not its bounded diagnostic ring.
+   * A source-reviewed classifier may certify a read. Writes require their
+   * original serialized argument at Query construction, before driver binding;
+   * wire bytes, protocol parameters and returned rows cannot supply it. */
+  postgres?: readonly { pool: string; client: postgres.Sql }[];
+  /** Install on the actual loaded node-postgres prototypes before creating any
+   * child clients. This covers Pool clients AND DBOS's standalone bootstrap
+   * Clients without counting Pool.query's delegation a second time. */
+  nodePostgres?: readonly { pool: string; clientPrototype: object; queryPrototype: object;
+    serializerSourceRef: string }[];
+  isReadOnlySql?: (result: postgres.QueryResultDiagnostic) => boolean;
+  /** Exact reviewed reads and session/transaction controls. A failed SELECT
+   * needs its own registration; failure alone never proves zero write bytes. */
+  nonPersistingSql?: readonly GroundedNonPersistingSql[];
+  /** Exact source-pinned tagged-template registration. Only these original
+   * string arguments are already-serialized persisted values. Never serialize
+   * an object here or infer a value from a similar-looking SQL statement.
+   * Conditional writes use the same allOrNoneRows contract documented below. */
+  serializedSqlWrites?: readonly { pool: string; sourceRef: string; template: readonly string[];
+    command: 'INSERT' | 'UPDATE'; serializedArguments: readonly number[]; allOrNoneRows?: GroundedPersistedRows }[];
+  /** postgres.js Bind stores each actual serializer output in Query.parameters.
+   * Read it synchronously at the successful terminal, never serialize again.
+   * Pin both writer and driver source and the exact emitted statement/arity;
+   * protocol framing, returned bytes and unregistered parameters are excluded. */
+  serializedSqlParameters?: readonly { pool: string; sourceRef: string; serializerSourceRef: string;
+    queryHash: string; command: 'INSERT' | 'UPDATE'; parameterCount: number;
+    persistedParameters: readonly number[];
+    /** Source-reviewed conditional write: all selected values persist only when
+     * CommandComplete affects this many rows. Zero certifies a no-op; a partial,
+     * missing or invalid count leaves bytes unknown. 'zero-only' never qualifies
+     * positive counts (including unchanged upsert retries). Omit only when the reviewed
+     * writer unconditionally persists every selected value on success. */
+    allOrNoneRows?: GroundedPersistedRows }[];
+}) {
+  const ids: string[] = [], rows: GroundedStorageOperation[] = [];
+  let pending = 0, sealed = false, late = false, captureFailed = false, restored = false;
+  const active = new AsyncLocalStorage<boolean>();
+  const notify = () => { try { input.onObservation?.(); } catch { captureFailed = true; } };
+  const notifySql = (observation: Omit<GroundedSqlObservation, 'monotonicMs'>) => {
+    if (!input.onSqlObservation) return;
+    try { input.onSqlObservation({ ...observation, monotonicMs: performance.now() }); }
+    catch { captureFailed = true; }
+  };
+  const marker = Symbol('grounded-store-admission');
+  const outstanding = new Set<string>();
+  // Query construction also captures SQL fragments that never execute on their
+  // own. Keep the driver's live state independently of terminal callbacks.
+  const queryStates = new Map<string, { readonly executed: boolean }>();
+  const admissions: Array<{ id: string; origin: string | null;
+    /** Original mapper outputs, including unregistered and pending queries.
+     * These are diagnostic input bytes, never proof of a persisted write. */
+    boundParameters?: { serializerSourceRef: string; parameterCount: number; complete: boolean;
+      values: readonly { parameter: number; sha256: string | null; bytes: number }[] } }> = [];
+  const restorers: Array<{ intact: () => boolean; restore: () => void }> = [];
+  const optionsSeen = new Set<object>();
+  // Validate the complete registration before installing ANY hook, so a bad
+  // later registration cannot leave an earlier pool partially instrumented.
+  if ((input.postgres?.length || input.nodePostgres?.length) && input.operations.length)
+    throw new Error('GEC select one physical store boundary');
+  for (const { pool, client } of input.postgres ?? []) {
+    if (!pool.trim() || optionsSeen.has(client.options)) throw new Error('GEC duplicate or blank SQL pool');
+    optionsSeen.add(client.options);
+  }
+  const nodeDrivers = (input.nodePostgres ?? []).map(driver => {
+    const client = driver.clientPrototype as Record<string, unknown>;
+    const query = driver.queryPrototype as Record<string, unknown>;
+    if (!driver.pool.trim() || !driver.serializerSourceRef.trim() || optionsSeen.has(client) || optionsSeen.has(query)
+      || typeof client.query !== 'function'
+      || ['submit', 'handleReadyForQuery', 'handleError'].some(key => typeof query[key] !== 'function'))
+      throw new Error('GEC invalid node-postgres driver boundary');
+    optionsSeen.add(client); optionsSeen.add(query);
+    return { ...driver, client, query };
+  });
+  const nonPersisting = new Map<string, GroundedNonPersistingSql>();
+  const statementKey = (queryHash: string, command: string | null, status: string) =>
+    JSON.stringify([queryHash, command, status]);
+  for (const registration of input.nonPersistingSql ?? []) {
+    const { queryHash, sourceRef, kind, command, status } = registration;
+    if (!/^[a-f0-9]{64}$/.test(queryHash) || !sourceRef.trim()
+      || !['read', 'control'].includes(kind) || !['ok', 'error'].includes(status)
+      || (kind === 'read' ? command !== 'SELECT' && !(command === null && status === 'error')
+        : status !== 'ok' || !['BEGIN', 'COMMIT', 'ROLLBACK', 'SET', 'SELECT', 'LISTEN', 'NOTIFY'].includes(command ?? '')))
+      throw new Error('GEC invalid nonpersisting SQL registration');
+    const key = statementKey(queryHash, command, status);
+    if (nonPersisting.has(key)) throw new Error('GEC duplicate nonpersisting SQL registration');
+    nonPersisting.set(key, { ...registration });
+  }
+  const writeRegistrations = new Map<string, { sourceRef: string; templateHash: string;
+    command: 'INSERT' | 'UPDATE'; serializedArguments: readonly number[]; allOrNoneRows?: GroundedPersistedRows }>();
+  for (const registration of input.serializedSqlWrites ?? []) {
+    const { pool, sourceRef, template, command, serializedArguments, allOrNoneRows } = registration;
+    if (!input.postgres?.some(p => p.pool === pool) || !sourceRef.trim()
+      || template.length < 2 || template.some(part => typeof part !== 'string')
+      || !['INSERT', 'UPDATE'].includes(command) || !serializedArguments.length
+      || new Set(serializedArguments).size !== serializedArguments.length
+      || serializedArguments.some(index => !integer(index) || index >= template.length - 1)
+      || (allOrNoneRows !== undefined && allOrNoneRows !== 'zero-only' && (!integer(allOrNoneRows) || allOrNoneRows === 0)))
+      throw new Error('GEC invalid original SQL write registration');
+    const templateHash = hash(template), key = `${pool}:${templateHash}`;
+    if (writeRegistrations.has(key)) throw new Error('GEC duplicate original SQL write registration');
+    writeRegistrations.set(key, { sourceRef, templateHash, command, serializedArguments: [...serializedArguments], allOrNoneRows });
+  }
+  const parameterWrites = new Map<string, NonNullable<typeof input.serializedSqlParameters>[number]>();
+  for (const registration of input.serializedSqlParameters ?? []) {
+    const { pool, sourceRef, serializerSourceRef, queryHash, command, parameterCount, persistedParameters, allOrNoneRows } = registration;
+    if (!(input.postgres?.some(p => p.pool === pool) || nodeDrivers.some(p => p.pool === pool))
+      || !sourceRef.trim() || !serializerSourceRef.trim()
+      || !/^[a-f0-9]{64}$/.test(queryHash) || !['INSERT', 'UPDATE'].includes(command)
+      || !integer(parameterCount) || !persistedParameters.length
+      || new Set(persistedParameters).size !== persistedParameters.length
+      || persistedParameters.some(index => !integer(index) || index >= parameterCount)
+      || (allOrNoneRows !== undefined && allOrNoneRows !== 'zero-only' && (!integer(allOrNoneRows) || allOrNoneRows === 0)))
+      throw new Error('GEC invalid original SQL parameter registration');
+    const key = `${pool}:${queryHash}`;
+    if (parameterWrites.has(key)) throw new Error('GEC duplicate original SQL parameter registration');
+    parameterWrites.set(key, { ...registration, persistedParameters: [...persistedParameters] });
+  }
+  const bytesForOutcome = (bytes: number | null, allOrNoneRows: GroundedPersistedRows | undefined, affectedRows: number | null) =>
+    bytes === null || allOrNoneRows === undefined ? bytes
+      : affectedRows === 0 ? 0 : affectedRows === allOrNoneRows ? bytes : null;
+  const methodsSeen = new Set<keyof T>();
+  for (const operation of input.operations) {
+    if (typeof input.deps[operation.method] !== 'function') throw new Error(`GEC missing store method: ${String(operation.method)}`);
+    if (methodsSeen.has(operation.method)) throw new Error(`GEC duplicate store method: ${String(operation.method)}`);
+    methodsSeen.add(operation.method);
+  }
+  for (const driver of nodeDrivers) {
+    const originalQuery = driver.client.query as (...args: unknown[]) => unknown;
+    const originalSubmit = driver.query.submit as (...args: unknown[]) => unknown;
+    const originalReady = driver.query.handleReadyForQuery as (...args: unknown[]) => unknown;
+    const originalError = driver.query.handleError as (...args: unknown[]) => unknown;
+    type Query = Record<string, unknown>;
+    type Entry = { id: string; admission: typeof admissions[number]; query?: Query; queryHash?: string; parameterCount?: number;
+      values: Map<number, { parameter: number; sha256: string | null; bytes: number }>; bound: boolean };
+    const current = new AsyncLocalStorage<Entry>();
+    const queries = new WeakMap<object, Entry>();
+    const associate = (query: Query): Entry | undefined => {
+      const entry = queries.get(query) ?? current.getStore();
+      if (!entry) return;
+      if ((entry.query && entry.query !== query) || (queries.has(query) && queries.get(query) !== entry)) {
+        captureFailed = true; return;
+      }
+      entry.query = query; queries.set(query, entry);
+      return entry;
+    };
+    const terminal = (query: Query, status: 'ok' | 'error') => {
+      const entry = associate(query);
+      if (!entry || !outstanding.has(entry.id)) return;
+      const result = query._results as { command?: unknown; rowCount?: unknown } | undefined;
+      const command = status === 'ok' && result && !Array.isArray(result) && typeof result.command === 'string'
+        ? result.command : null;
+      const affectedRows = command !== null && integer(result?.rowCount) ? result.rowCount : null;
+      // The successful terminal must still name the exact statement submitted.
+      const queryHash = entry.queryHash ?? (typeof query.text === 'string'
+        ? createHash('sha256').update(query.text).digest('hex') : null);
+      if (!queryHash || (entry.queryHash && (typeof query.text !== 'string'
+        || createHash('sha256').update(query.text).digest('hex') !== entry.queryHash))) captureFailed = true;
+      const reviewed = queryHash ? nonPersisting.get(statementKey(queryHash, command, status)) : undefined;
+      const registration = queryHash ? parameterWrites.get(`${driver.pool}:${queryHash}`) : undefined;
+      let kind: GroundedStorageOperation['kind'] = reviewed?.kind ?? (registration ? 'write' : 'unknown');
+      let persistedBytes: number | null = null;
+      let serializedParameters: NonNullable<GroundedStorageOperation['sql']>['serializedParameters'];
+      if (registration) {
+        if (reviewed) { captureFailed = true; kind = 'unknown'; }
+        const values = registration.persistedParameters.flatMap(parameter => {
+          const value = entry.values.get(parameter); return value ? [value] : [];
+        });
+        serializedParameters = { sourceRef: registration.sourceRef, serializerSourceRef: driver.serializerSourceRef,
+          parameterCount: entry.parameterCount ?? 0, values };
+        const bytes = values.reduce((sum, value) => sum + value.bytes, 0);
+        if (!reviewed && status === 'ok' && command === registration.command && entry.bound
+          && entry.parameterCount === registration.parameterCount && entry.values.size === entry.parameterCount
+          && registration.serializerSourceRef === driver.serializerSourceRef
+          && values.length === registration.persistedParameters.length && integer(bytes))
+          persistedBytes = bytesForOutcome(bytes, registration.allOrNoneRows, affectedRows);
+      }
+      rows.push({ id: entry.id, kind, persistedBytes, sql: { pool: driver.pool,
+        queryId: Number(entry.id.split(':node:').at(-1)), queryHash: queryHash ?? '', command, status,
+        ...(registration?.allOrNoneRows !== undefined
+          ? { rowOutcome: { allOrNoneRows: registration.allOrNoneRows, affectedRows } } : {}),
+        ...(reviewed ? { nonPersisting: { sourceRef: reviewed.sourceRef, kind: reviewed.kind } } : {}),
+        ...(serializedParameters ? { serializedParameters } : {}) } });
+      notifySql({ id: entry.id, pool: driver.pool, phase: 'terminal',
+        query: typeof query.text === 'string' ? query.text : null, command, status });
+      outstanding.delete(entry.id); pending--; notify();
+    };
+    const query = function(this: Query, ...args: unknown[]) {
+      if (!active.getStore()) return Reflect.apply(originalQuery, this, args);
+      late ||= sealed;
+      const id = `${input.attemptId}:store:${ids.length + 1}:node:${ids.length + 1}`;
+      const admission: typeof admissions[number] = {
+        id, origin: new Error().stack?.split('\n').slice(2, 10).join('\n') ?? null };
+      const entry: Entry = { id, admission, values: new Map(), bound: false };
+      ids.push(id); outstanding.add(id); pending++;
+      admissions.push(admission);
+      const queryText = typeof args[0] === 'string' ? args[0]
+        : args[0] && typeof args[0] === 'object' && typeof (args[0] as Query).text === 'string'
+          ? (args[0] as { text: string }).text : null;
+      notifySql({ id, pool: driver.pool, phase: 'admission', query: queryText });
+      notify();
+      try {
+        const result = current.run(entry, () => Reflect.apply(originalQuery, this, args));
+        // A queued Query submits in another query's async context. Bind its
+        // identity NOW, before that context can run; never attribute by timing.
+        if (!entry.query && Array.isArray(this._queryQueue)) {
+          const queued = this._queryQueue.filter(candidate => candidate && typeof candidate === 'object'
+            && !queries.has(candidate));
+          if (queued.length === 1) { entry.query = queued[0]; queries.set(queued[0], entry); }
+          else if (queued.length > 1) captureFailed = true;
+        }
+        return result;
+      } catch (error) { captureFailed = true; throw error; }
+    };
+    const submit = function(this: Query, ...args: unknown[]) {
+      const entry = associate(this);
+      if (!entry) return Reflect.apply(originalSubmit, this, args);
+      if (typeof this.text === 'string') entry.queryHash = createHash('sha256').update(this.text).digest('hex');
+      else captureFailed = true;
+      entry.parameterCount = Array.isArray(this.values) ? this.values.length : 0;
+      notifySql({ id: entry.id, pool: driver.pool, phase: 'submit', query: typeof this.text === 'string' ? this.text : null });
+      const connection = args[0] as Record<string, unknown> | undefined;
+      const originalBind = connection?.bind;
+      if (!connection || typeof originalBind !== 'function') {
+        captureFailed = true; return Reflect.apply(originalSubmit, this, args);
+      }
+      const bind = function(this: object, ...bindArgs: unknown[]) {
+        const config = bindArgs[0] as { valueMapper?: unknown } | undefined;
+        const mapper = config?.valueMapper;
+        if (!config || typeof mapper !== 'function') { captureFailed = true; return Reflect.apply(originalBind, this, bindArgs); }
+        const captured = { ...config, valueMapper: function(this: unknown, value: unknown, parameter: number) {
+          // Call the ORIGINAL mapper exactly once. toJSON/toPostgres can be
+          // stateful; a second serialization would fabricate persisted bytes.
+          const serialized = Reflect.apply(mapper, this, [value, parameter]);
+          if (!integer(parameter) || entry.values.has(parameter)) captureFailed = true;
+          if (serialized === null) entry.values.set(parameter, { parameter, sha256: null, bytes: 0 });
+          else if (typeof serialized === 'string' || serialized instanceof Uint8Array)
+            entry.values.set(parameter, { parameter, sha256: createHash('sha256').update(serialized).digest('hex'),
+              bytes: groundedPersistedBytes(serialized) });
+          else captureFailed = true;
+          return serialized;
+        } };
+        try {
+          const result = Reflect.apply(originalBind, this, [captured, ...bindArgs.slice(1)]);
+          entry.bound = true;
+          return result;
+        } finally {
+          // Preserve the original mapper outputs before a terminal or a crash.
+          // A partial serialization remains explicit and never invokes a mapper
+          // again. The existing snapshot/journal owns retention and integrity.
+          const values = [...entry.values.values()].sort((a, b) => a.parameter - b.parameter);
+          entry.admission.boundParameters = { serializerSourceRef: driver.serializerSourceRef,
+            parameterCount: entry.parameterCount ?? 0,
+            complete: entry.bound && values.length === entry.parameterCount, values };
+          notify();
+        }
+      };
+      connection.bind = bind;
+      try { return Reflect.apply(originalSubmit, this, args); }
+      finally {
+        if (connection.bind === bind) connection.bind = originalBind;
+        else captureFailed = true;
+      }
+    };
+    const ready = function(this: Query, ...args: unknown[]) {
+      // pg routes row-decoder failures through handleError inside this method.
+      if (!this._canceledDueToError) terminal(this, 'ok');
+      return Reflect.apply(originalReady, this, args);
+    };
+    const error = function(this: Query, ...args: unknown[]) {
+      terminal(this, 'error'); return Reflect.apply(originalError, this, args);
+    };
+    driver.client.query = query; driver.query.submit = submit;
+    driver.query.handleReadyForQuery = ready; driver.query.handleError = error;
+    restorers.push({ intact: () => driver.client.query === query && driver.query.submit === submit
+        && driver.query.handleReadyForQuery === ready && driver.query.handleError === error,
+      restore: () => {
+        if (driver.client.query === query) driver.client.query = originalQuery;
+        if (driver.query.submit === submit) driver.query.submit = originalSubmit;
+        if (driver.query.handleReadyForQuery === ready) driver.query.handleReadyForQuery = originalReady;
+        if (driver.query.handleError === error) driver.query.handleError = originalError;
+      } });
+  }
+  for (const { pool, client } of input.postgres ?? []) {
+    const options = client.options;
+    const priorContext = options.onquerycontext, priorResult = options.onresult;
+    const onquerycontext: NonNullable<typeof options.onquerycontext> = query => {
+      let prior: unknown;
+      try { prior = priorContext?.(query); }
+      catch (error) { if (active.getStore()) captureFailed = true; throw error; }
+      if (!active.getStore()) return prior;
+      late ||= sealed;
+      const id = `${input.attemptId}:store:${ids.length + 1}:sql:${pool}`;
+      ids.push(id); outstanding.add(id); pending++;
+      if (query && typeof query.executed === 'boolean') queryStates.set(id, query);
+      else captureFailed = true; // Older drivers cannot certify the population.
+      admissions.push({ id, origin: new Error().stack?.split('\n').slice(2, 10).join('\n') ?? null });
+      notifySql({ id, pool, phase: 'admission', query: null });
+      let write: { command: 'INSERT' | 'UPDATE'; bytes: number | null; allOrNoneRows?: GroundedPersistedRows;
+        evidence: NonNullable<GroundedStorageOperation['sql']>['serializedWrite'] } | undefined;
+      try {
+        // The existing hook receives the actual Query, whose constructor stores
+        // strings/args before calling onquerycontext. Retain scalars now: the
+        // caller can mutate its Query before a later terminal callback.
+        const original = query as unknown as { tagged?: boolean; strings?: unknown; args?: unknown } | undefined;
+        if (writeRegistrations.size && original?.tagged === true && Array.isArray(original.strings)
+          && original.strings.every(part => typeof part === 'string')) {
+          const registration = writeRegistrations.get(`${pool}:${hash(original.strings)}`);
+          if (registration) {
+            const args = original.args;
+            const values = Array.isArray(args) && args.length === original.strings.length - 1
+              ? registration.serializedArguments.flatMap(argument => typeof args[argument] === 'string'
+                ? [{ argument, sha256: createHash('sha256').update(args[argument], 'utf8').digest('hex'),
+                  bytes: groundedPersistedBytes(args[argument]) }] : []) : [];
+            const total = values.reduce((sum, value) => sum + value.bytes, 0);
+            write = { command: registration.command, allOrNoneRows: registration.allOrNoneRows,
+              bytes: values.length === registration.serializedArguments.length && integer(total) ? total : null,
+              evidence: { sourceRef: registration.sourceRef, templateHash: registration.templateHash, values } };
+          }
+        }
+      } catch { captureFailed = true; }
+      notify();
+      return { marker, id, prior, write };
+    };
+    const onresult = (result: postgres.QueryResultDiagnostic) => {
+      const context = result.context as { marker?: symbol; id?: string; prior?: unknown;
+        write?: { command: string; bytes: number | null; allOrNoneRows?: GroundedPersistedRows;
+          evidence: NonNullable<GroundedStorageOperation['sql']>['serializedWrite'] } } | undefined;
+      if (context?.marker !== marker) { priorResult?.(result); return; }
+      try {
+        if (!context.id || !outstanding.delete(context.id)) { captureFailed = true; return; }
+        const queryHash = createHash('sha256').update(result.query).digest('hex');
+        // Diagnostic rowCount counts DataRow messages, NOT affected rows. Read
+        // the actual single Result's CommandComplete count even without RETURNING.
+        // Multi-statement results and failed queries cannot certify this outcome.
+        const terminalResult = result.result as { command?: unknown; count?: unknown } | undefined;
+        const affectedRows = result.status === 'ok' && terminalResult?.command === result.command
+          && integer(terminalResult?.count) ? terminalResult.count : null;
+        const reviewed = nonPersisting.get(statementKey(queryHash, result.command, result.status));
+        let kind: GroundedStorageOperation['kind'] = reviewed?.kind ?? 'unknown';
+        try { if (input.isReadOnlySql?.(result)) kind = 'read'; }
+        catch { captureFailed = true; }
+        let persistedBytes: number | null = null;
+        let serializedParameters: NonNullable<GroundedStorageOperation['sql']>['serializedParameters'];
+        if (context.write) {
+          if (kind !== 'unknown' || (result.status === 'ok' && result.command !== context.write.command)) captureFailed = true;
+          else {
+            kind = 'write';
+            if (result.status === 'ok') {
+              // A mutable Query is not an immutable receipt. Certify bytes only
+              // if the original strings still reach this terminal unchanged.
+              const original = queryStates.get(context.id) as unknown as { strings?: unknown; args?: unknown };
+              try {
+                const evidence = context.write.evidence, args = original?.args;
+                if (evidence && Array.isArray(original?.strings) && hash(original.strings) === evidence.templateHash
+                  && Array.isArray(args) && args.length === original.strings.length - 1
+                  && evidence.values.every(value => typeof args[value.argument] === 'string'
+                    && createHash('sha256').update(args[value.argument], 'utf8').digest('hex') === value.sha256))
+                  persistedBytes = bytesForOutcome(context.write.bytes, context.write.allOrNoneRows, affectedRows);
+              } catch { captureFailed = true; }
+            }
+          }
+        }
+        const parameterWrite = parameterWrites.get(`${pool}:${queryHash}`);
+        if (parameterWrite) {
+          if (kind !== 'unknown' || context.write
+            || (result.status === 'ok' && result.command !== parameterWrite.command)) captureFailed = true;
+          else {
+            kind = 'write';
+            const original = queryStates.get(context.id) as unknown as {
+              executed?: boolean; parameters?: unknown; statement?: { string?: unknown }; options?: { simple?: boolean } };
+            const parameters = original?.parameters;
+            // A successful extended-protocol terminal follows Bind. Its array
+            // contains those same serializer outputs, including sql.json and
+            // dynamic builders. Simple queries have no such serialization proof.
+            if (result.status === 'ok' && original?.executed === true && !original.options?.simple
+              && original.statement?.string === result.query && Array.isArray(parameters)
+              && parameters.length === parameterWrite.parameterCount) {
+              const values = parameterWrite.persistedParameters.flatMap<{ parameter: number; sha256: string | null; bytes: number }>(parameter => {
+                const value = parameters[parameter];
+                return value === null ? [{ parameter, sha256: null, bytes: 0 }]
+                  : typeof value === 'string' ? [{ parameter,
+                    sha256: createHash('sha256').update(value, 'utf8').digest('hex'), bytes: groundedPersistedBytes(value) }]
+                  : [];
+              });
+              const total = values.reduce((sum, value) => sum + value.bytes, 0);
+              serializedParameters = { sourceRef: parameterWrite.sourceRef,
+                serializerSourceRef: parameterWrite.serializerSourceRef, parameterCount: parameterWrite.parameterCount, values };
+              if (values.length === parameterWrite.persistedParameters.length && integer(total))
+                persistedBytes = bytesForOutcome(total, parameterWrite.allOrNoneRows, affectedRows);
+            }
+          }
+        }
+        rows.push({ id: context.id, kind, persistedBytes, sql: {
+          pool, queryId: result.queryId, queryHash,
+          command: result.command, status: result.status,
+          ...((parameterWrite?.allOrNoneRows ?? context.write?.allOrNoneRows) !== undefined
+            ? { rowOutcome: { allOrNoneRows: (parameterWrite?.allOrNoneRows ?? context.write?.allOrNoneRows)!, affectedRows } } : {}),
+          ...(reviewed ? { nonPersisting: { sourceRef: reviewed.sourceRef, kind: reviewed.kind } } : {}),
+          ...(context.write ? { serializedWrite: context.write.evidence } : {}),
+          ...(serializedParameters ? { serializedParameters } : {}),
+        } });
+        notifySql({ id: context.id, pool, phase: 'terminal', query: result.query,
+          command: result.command, status: result.status });
+        pending--; notify();
+      } finally {
+        // Keep existing diagnostic attribution byte-for-byte, even when the
+        // terminal callback runs outside the caller's async context.
+        priorResult?.({ ...result, context: context.prior });
+      }
+    };
+    options.onquerycontext = onquerycontext;
+    options.onresult = onresult;
+    restorers.push({ intact: () => options.onquerycontext === onquerycontext && options.onresult === onresult,
+      restore: () => {
+        if (options.onquerycontext === onquerycontext) options.onquerycontext = priorContext;
+        if (options.onresult === onresult) options.onresult = priorResult;
+      } });
+  }
+  const wrapped = new Map<PropertyKey, (...args: unknown[]) => Promise<unknown>>();
+  for (const operation of input.operations) {
+    const name = operation.method, original = input.deps[name];
+    if (typeof original !== 'function') throw new Error(`GEC missing store method: ${String(name)}`);
+    if (wrapped.has(name)) throw new Error(`GEC duplicate store method: ${String(name)}`);
+    wrapped.set(name, async (...args: unknown[]) => {
+      late ||= sealed;
+      const id = `${input.attemptId}:store:${ids.length + 1}:${String(name)}`;
+      ids.push(id); pending++;
+      const value = operation.serializedArgument === undefined ? undefined : args[operation.serializedArgument];
+      const bytes = typeof value === 'string' || value instanceof Uint8Array ? groundedPersistedBytes(value) : null;
+      let succeeded = false;
+      try {
+        const result = await Reflect.apply(original, input.deps, args);
+        succeeded = true;
+        return result;
+      } finally {
+        rows.push({ id, kind: operation.kind,
+          persistedBytes: operation.kind === 'write' && succeeded ? bytes : null });
+        pending--;
+      }
+    });
+  }
+  const deps = new Proxy(input.deps, { get(target, key) {
+    if (wrapped.has(key)) return wrapped.get(key);
+    const value = Reflect.get(target, key, target);
+    return typeof value === 'function' ? value.bind(target) : value;
+  } });
+  const capture = (): GroundedCensus<GroundedStorageOperation> & { diagnostics: {
+      pending: number; pendingIds: string[]; late: boolean; captureFailed: boolean; hooksIntact: boolean;
+      admissions: typeof admissions; excludedUnexecutedIds: string[];
+    } } => {
+    const excluded = new Set([...queryStates].filter(([id, query]) => {
+      // A live admission can execute immediately AFTER its snapshot is saved.
+      // Only a final drain can exclude an independently unexecuted fragment.
+      if (!sealed || query.executed !== false) return false;
+      // A terminal result contradicting the driver's state is instrumentation
+      // loss, never grounds to remove an observed physical operation.
+      if (!outstanding.has(id)) { captureFailed = true; return false; }
+      return true;
+    }).map(([id]) => id));
+    const pendingIds = [...outstanding].filter(id => !excluded.has(id));
+    return { scope: { ...input.scope }, sourceRef: input.sourceRef,
+      complete: sealed && pendingIds.length === 0 && pending === outstanding.size && !late && !captureFailed
+        && (restored || restorers.every(hook => hook.intact())),
+      diagnostics: { pending: pendingIds.length, pendingIds, late, captureFailed,
+        hooksIntact: restored || restorers.every(hook => hook.intact()), admissions: structuredClone(admissions),
+        excludedUnexecutedIds: [...excluded] },
+      ids: ids.filter(id => !excluded.has(id)), rows: structuredClone(rows) };
+  };
+  return { deps, run: <R>(fn: () => R): R => {
+      if (restored) throw new Error('GEC store recorder already restored');
+      return active.run(true, fn);
+    },
+    restore: () => { captureFailed ||= pending !== outstanding.size
+        || [...outstanding].some(id => queryStates.get(id)?.executed !== false)
+        || restorers.some(hook => !hook.intact());
+      for (const hook of restorers) hook.restore(); restored = true; },
+    snapshot: capture,
+    seal: () => { sealed = true; return capture(); },
+  };
+}
+
+/** Tap an existing dispatcher at its registered transport boundary. Registration
+ * supplies purpose; neither returned prose nor a guessed tool-name heuristic
+ * does. Unknown registrations, failures, repeats and nested calls remain in the
+ * original census. Retain this census in the caller's existing recorder. */
+export function observeGroundedToolDispatch<Rest extends unknown[], Result>(input: {
+  scope: GroundedMeasurementScope; sourceRef: string; attemptId: string;
+  boundary: GroundedInvocation['boundary']; originRef: string;
+  /** Retain the original admission before a dispatched handler can kill its producer. */
+  onObservation?: () => void;
+  registrations: Readonly<Record<string, { purpose: GroundedInvocation['purpose']; purposeRef: string }>>;
+  dispatch: (tool: string, args: unknown, ...rest: Rest) => Promise<Result>;
+}) {
+  const ids: string[] = [], rows: GroundedInvocation[] = [];
+  const admissions: GroundedInvocation[] = [];
+  const outstanding = new Set<string>();
+  let pending = 0, sealed = false, late = false, captureFailed = false;
+  const notify = () => { try { input.onObservation?.(); } catch { captureFailed = true; } };
+  const dispatch = async (tool: string, args: unknown, ...rest: Rest): Promise<Result> => {
+    late ||= sealed;
+    const id = `${input.attemptId}:dispatch:${ids.length + 1}`;
+    ids.push(id); pending++;
+    const registration = Object.hasOwn(input.registrations, tool) ? input.registrations[tool] : undefined;
+    let originalArgs: unknown;
+    try { originalArgs = structuredClone(args); }
+    catch { originalArgs = null; captureFailed = true; }
+    const row: GroundedInvocation = { id, tool, args: originalArgs,
+      boundary: input.boundary, originRef: input.originRef,
+      purpose: registration?.purpose ?? 'unknown', purposeRef: registration?.purposeRef ?? '' };
+    admissions.push(row); outstanding.add(id); notify();
+    try { return await input.dispatch(tool, args, ...rest); }
+    finally { rows.push(row); outstanding.delete(id); pending--; notify(); }
+  };
+  const capture = () => ({ scope: { ...input.scope }, sourceRef: input.sourceRef,
+    complete: sealed && pending === 0 && !late && !captureFailed,
+    ids: [...ids], rows: structuredClone(rows),
+    diagnostics: { pending, pendingIds: [...outstanding], late, captureFailed, admissions: structuredClone(admissions) } });
+  return { dispatch, snapshot: capture, seal: () => { sealed = true; return capture(); } };
+}
+
+/** Count actual host.runStep attempts including replay, preserving the host's
+ * return/throw behavior. This does not guess DBOS persistence byte counts. */
+export function observeGroundedDurableHost<T extends { runStep<R>(name: string, fn: () => Promise<R>): Promise<R> }>(input: {
+  scope: GroundedMeasurementScope; host: T; sourceRef: string; attemptId: string;
+}) {
+  const ids: string[] = [], rows: Array<{ id: string; source: 'live' | 'recorded' }> = [];
+  let pending = 0, sealed = false, late = false;
+  const runStep = async <R>(name: string, fn: () => Promise<R>): Promise<R> => {
+    late ||= sealed;
+    const id = `${input.attemptId}:durable:${ids.length + 1}:${name}`;
+    ids.push(id); pending++;
+    let live = false;
+    try {
+      const result = await input.host.runStep(name, async () => { live = true; return fn(); });
+      rows.push({ id, source: live ? 'live' : 'recorded' });
+      return result;
+    } finally { pending--; }
+  };
+  const host = new Proxy(input.host, { get(target, key) {
+    if (key === 'runStep') return runStep;
+    const value = Reflect.get(target, key, target);
+    return typeof value === 'function' ? value.bind(target) : value;
+  } });
+  const capture = (complete: boolean): GroundedCensus<{ id: string; source: 'live' | 'recorded' }> => ({
+    scope: { ...input.scope }, sourceRef: input.sourceRef, complete,
+    ids: [...ids], rows: rows.map(row => ({ ...row })),
+  });
+  return { host,
+    // Retain admitted work before a producer can die. A snapshot never closes
+    // admission or certifies a drain, even when no step happens to be pending.
+    snapshot: () => capture(false),
+    seal: () => { sealed = true; return capture(pending === 0 && !late); },
+  };
+}
+
+/** A measurement tap at the existing injected provider fetch seam. Every send,
+ * including retries and failures, is admitted before transport. The caller binds
+ * purpose at its registered model/extraction/refresh/authoring boundary and saves
+ * the original response in its existing recorder, never in a second usage store.
+ * Drain after the public action/children settle, then seal the census. */
+export function observeGroundedModelFetch(input: {
+  scope: GroundedMeasurementScope;
+  sourceRef: string;
+  attemptId: string;
+  provider: 'codex' | 'anthropic';
+  purpose: GroundedModelUsage['purpose'];
+  purposeRef: string;
+  fetchImpl: typeof fetch;
+  retainTape: (tape: { id: string; provider: 'codex' | 'anthropic'; raw: string; sha256: string }) => Promise<string | null>;
+}) {
+  const ids: string[] = [], rows: GroundedModelUsage[] = [];
+  const jobs = new Set<Promise<void>>();
+  let pending = 0, sealed = false, late = false;
+  const observedFetch: typeof fetch = async (request, options) => {
+    late ||= sealed;
+    const id = `${input.attemptId}:model:${ids.length + 1}`;
+    ids.push(id); pending++;
+    const row: GroundedModelUsage = { id, purpose: input.purpose, purposeRef: input.purposeRef,
+      usageRef: null, inputTokens: null, outputTokens: null };
+    let response: Response;
+    try { response = await input.fetchImpl(request, options); }
+    catch (error) { rows.push(row); pending--; throw error; }
+    // A clone preserves the caller's original body/stream and return behavior.
+    // If cloning, parsing, or retention fails, this admitted request stays unknown.
+    let copy: Response;
+    try { copy = response.clone(); }
+    catch { rows.push(row); pending--; return response; }
+    const job = (async () => {
+      try {
+        const raw = await copy.text();
+        const sha256 = createHash('sha256').update(raw, 'utf8').digest('hex');
+        const ref = await input.retainTape({ id, provider: input.provider, raw, sha256 });
+        if (!response.ok || !nonblank(ref)) return;
+        const usage = await groundedFinalProviderUsage(input.provider, raw);
+        if (!usage) return;
+        row.usageRef = `${ref}#sha256=${sha256}`;
+        row.inputTokens = usage.inputTokens; row.outputTokens = usage.outputTokens;
+      } catch { /* Recorder/transport gaps are retained as unknown, never free usage. */ }
+      finally { rows.push(row); pending--; }
+    })();
+    jobs.add(job);
+    void job.finally(() => jobs.delete(job));
+    return response;
+  };
+  return {
+    fetch: observedFetch,
+    drain: async () => { await Promise.all([...jobs]); },
+    seal: (): GroundedCensus<GroundedModelUsage> => {
+      sealed = true;
+      return { scope: { ...input.scope }, sourceRef: input.sourceRef, complete: pending === 0 && !late,
+        ids: [...ids], rows: rows.map(row => ({ ...row })) };
+    },
+  };
+}
+
+/** Validate terminal presence before invoking the existing target parsers: those
+ * parsers also serve playback and may default an absent token field to zero. */
+async function groundedFinalProviderUsage(provider: 'codex' | 'anthropic', raw: string) {
+  const object = (value: unknown): Record<string, unknown> | null =>
+    value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  const valid = (value: unknown) => {
+    const usage = object(value);
+    return usage && integer(usage.input_tokens) && integer(usage.output_tokens) ? usage : null;
+  };
+  let json: Record<string, unknown> | null = null;
+  try { json = object(JSON.parse(raw)); } catch { /* SSE below. */ }
+  if (provider === 'anthropic' && json?.type === 'message' && nonblank(json.stop_reason) && valid(json.usage)) {
+    const parsed = parseClaudeResultEvent(json);
+    return { inputTokens: parsed.tokensIn!, outputTokens: parsed.tokensOut! };
+  }
+  // The generic streaming parser may discard an unfinished last frame. A
+  // retained partial tail cannot certify complete final usage.
+  if (!/\r?\n\r?\n$/.test(raw)) return null;
+  const events: Record<string, unknown>[] = [];
+  for await (const event of parseSseStream(new Response(raw).body)) {
+    if (event.data === '[DONE]') continue;
+    // A malformed provider frame is missing capture, even if a later frame looks complete.
+    const value = object(JSON.parse(event.data));
+    if (!value) return null;
+    events.push(value);
+  }
+  if (provider === 'codex') {
+    const terminal = events.filter(event => event.type === 'response.completed');
+    const completed = terminal.length === 1 ? object(terminal[0]!.response) : null;
+    if (!completed || !valid(completed.usage) || events.at(-1) !== terminal[0]
+      || events.some(event => ['error', 'response.failed', 'response.incomplete'].includes(String(event.type)))) return null;
+    const parsed = parseCodexResponsesSse(raw);
+    // The target's replay parser has narrower framing support. Never let its
+    // fallback zeros replace a present, nonzero terminal count.
+    const usage = object(completed.usage)!;
+    if (parsed.inputTokens !== usage.input_tokens || parsed.outputTokens !== usage.output_tokens) return null;
+    return { inputTokens: parsed.inputTokens, outputTokens: parsed.outputTokens };
+  }
+  const starts = events.filter(event => event.type === 'message_start');
+  const deltas = events.filter(event => event.type === 'message_delta');
+  const startUsage = starts.length === 1 ? object(object(starts[0]!.message)?.usage) : null;
+  const finalUsage = deltas.length > 0 ? object(deltas.at(-1)!.usage) : null;
+  if (events.filter(event => event.type === 'message_stop').length !== 1 || events.at(-1)?.type !== 'message_stop'
+    || events.some(event => event.type === 'error')
+    || !integer(startUsage?.input_tokens) || !integer(finalUsage?.output_tokens)) return null;
+  const parsed = parseClaudeResultEvent({ usage: { ...startUsage, ...finalUsage } });
+  if (!integer(parsed.tokensIn) || !integer(parsed.tokensOut)) return null;
+  return { inputTokens: parsed.tokensIn!, outputTokens: parsed.tokensOut! };
+}
+
+/** Census projected schemas instead of an agent-authored changed-field list.
+ * Unsupported validation and unclassified new mandatory text remain unknown.
+ * Original snapshots are retained by the existing recorder at sourceRef. */
+export function captureGroundedContractChanges(input: {
+  scope: GroundedMeasurementScope; sourceRef: string;
+  before: GroundedSchemaSnapshot; after: GroundedSchemaSnapshot;
+}) {
+  const gaps: string[] = [], rows: GroundedContractChange[] = [];
+  const snapshots = [input.before, input.after];
+  const sourceHashes = snapshots.map(snapshot => hash(snapshot));
+  const kinds = ['input', 'result', 'authority', 'acceptance'] as const;
+  const admittedKinds: Array<readonly (typeof kinds)[number][]> =
+    snapshots.map(snapshot => snapshot.requiredKinds ?? ['input']);
+  for (const [index, declared] of admittedKinds.entries()) {
+    if (!declared.length || new Set(declared).size !== declared.length || declared.some(kind => !kinds.includes(kind)))
+      gaps.push(`contracts:${index === 0 ? 'before' : 'after'}-invalid-channel-population`);
+  }
+  if (hash([...admittedKinds[0]!].sort()) !== hash([...admittedKinds[1]!].sort()))
+    gaps.push('contracts:channel-population-changed');
+  const maps = snapshots.map((snapshot, index) => {
+    const map = new Map(snapshot.rows.map(row => [row.id, row]));
+    if (!snapshot.complete || !nonblank(snapshot.sourceRef) || !nonblank(snapshot.sourceFingerprint)
+      || map.size !== snapshot.rows.length || new Set(snapshot.ids).size !== snapshot.ids.length
+      || snapshot.ids.length !== map.size || snapshot.ids.some(id => !nonblank(id) || !map.has(id)))
+      gaps.push(`contracts:${index === 0 ? 'before' : 'after'}-recorder-population-mismatch`);
+    return map;
+  });
+  if (input.after.sourceFingerprint !== input.scope.sourceFingerprint) gaps.push('contracts:foreign-current-source');
+  const ids: string[] = [];
+  const sourceMaps = snapshots.map((snapshot, index) => {
+    const sources = snapshot.sourceFiles;
+    const map = new Map(sources?.rows.map(row => [row.id, row]) ?? []);
+    if (sources && (new Set(sources.ids).size !== sources.ids.length || map.size !== sources.rows.length
+      || sources.ids.length !== map.size || sources.ids.some(id => !nonblank(id) || !map.has(id))
+      || sources.rows.some(row => !nonblank(row.sourceRef) || typeof row.body !== 'string'
+        || createHash('sha256').update(row.body, 'utf8').digest('hex') !== row.sha256)))
+      gaps.push(`contracts:${index === 0 ? 'before' : 'after'}-source-population-mismatch`);
+    return map;
+  });
+  if (Boolean(input.before.sourceFiles) !== Boolean(input.after.sourceFiles))
+    gaps.push('contracts:source-census-missing');
+  for (const target of [...new Set(snapshots.flatMap(snapshot => [...snapshot.sourceFiles?.ids ?? []]))].sort()) {
+    const id = JSON.stringify([target, 'source']); ids.push(id);
+    const before = sourceMaps[0]!.get(target), after = sourceMaps[1]!.get(target);
+    if (!before || !after || before.body !== after.body) {
+      gaps.push(`contracts:${id}:changed-or-missing-source-needs-exact-detector`);
+      continue;
+    }
+    rows.push({ id, beforeRequiredPaths: [], afterRequiredPaths: [], beforeNarrativePaths: [], afterNarrativePaths: [] });
+  }
+  for (const target of [...new Set([...input.before.ids, ...input.after.ids])].sort()) {
+    for (const kind of kinds) {
+      const key = `${kind}Schema` as 'inputSchema' | 'resultSchema' | 'authoritySchema' | 'acceptanceSchema';
+      if (!admittedKinds.some(declared => declared.includes(kind))
+        && !maps.some(map => map.get(target)?.[key] !== undefined)) continue;
+      const id = JSON.stringify([target, kind]);
+      ids.push(id);
+      try {
+        const schemas = maps.map((map, index) => {
+          const row = map.get(target);
+          if (row && admittedKinds[index]!.includes(kind) && row[key] === undefined)
+            throw new Error('missing admitted contract channel');
+          return row?.[key] ?? {};
+        });
+        // Identical retained bytes prove no additions even for a schema whose
+        // conditional semantics require a more specialized changed-path reader.
+        if (hash(schemas[0]) === hash(schemas[1])) {
+          rows.push({ id, beforeRequiredPaths: [], afterRequiredPaths: [],
+            beforeNarrativePaths: [], afterNarrativePaths: [] });
+          continue;
+        }
+        const before = groundedRequiredSchemaPaths(schemas[0]);
+        const after = groundedRequiredSchemaPaths(schemas[1]);
+        const changedStrings = [...after.strings].filter(([path, node]) => before.strings.get(path)?.hash !== node.hash);
+        if (changedStrings.some(([, node]) => node.kind === 'unknown')) gaps.push(`contracts:${id}:unclassified-mandatory-text`);
+        rows.push({ id, beforeRequiredPaths: [...before.paths].sort(), afterRequiredPaths: [...after.paths].sort(),
+          beforeNarrativePaths: [...before.strings].filter(([, node]) => node.kind === 'narrative').map(([path]) => path).sort(),
+          afterNarrativePaths: [...after.strings].filter(([, node]) => node.kind === 'narrative').map(([path]) => path).sort() });
+      } catch { gaps.push(`contracts:${id}:unsupported-schema`); }
+    }
+  }
+  const census: GroundedCensus<GroundedContractChange> = {
+    scope: { ...input.scope }, sourceRef: input.sourceRef, complete: gaps.length === 0, ids, rows,
+  };
+  return { census, gaps, sourceHashes };
+}
+
+function groundedRequiredSchemaPaths(schema: unknown) {
+  const object = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === 'object' && !Array.isArray(value);
+  if (!object(schema)) throw new Error('missing schema');
+  const root = schema, paths = new Set<string>();
+  const strings = new Map<string, { hash: string; kind: 'narrative' | 'identifier' | 'unknown' }>();
+  const segment = (key: string) => key.replace(/~/g, '~0').replace(/\//g, '~1');
+  const visit = (node: unknown, path: string, required: boolean, refs: readonly string[], depth: number) => {
+    if (!object(node) || depth > 64) throw new Error('unsupported schema');
+    if (['oneOf', 'anyOf', 'if', 'then', 'else', 'not', 'dependentRequired', 'dependentSchemas', 'dependencies',
+      'patternProperties', 'minProperties', 'maxProperties', 'minItems', 'maxItems', 'contains', 'prefixItems',
+      'propertyNames', 'unevaluatedProperties', 'unevaluatedItems']
+      .some(key => key in node) || Array.isArray(node.type)) throw new Error('conditional schema needs an exact detector');
+    if ('$ref' in node && typeof node.$ref !== 'string') throw new Error('invalid ref');
+    if (required && !node.type && !node.$ref && !node.allOf && !node.enum && !('const' in node)) throw new Error('untyped required value');
+    if (typeof node.$ref === 'string') {
+      if (!node.$ref.startsWith('#/') || refs.includes(node.$ref)) throw new Error('unresolved or recursive ref');
+      let target: unknown = root;
+      for (const part of node.$ref.slice(2).split('/')) target = object(target) ? target[part.replace(/~1/g, '/').replace(/~0/g, '~')] : undefined;
+      visit(target, path, required, [...refs, node.$ref], depth + 1);
+    }
+    if (required && node.type === 'string') {
+      const kind = 'const' in node || Array.isArray(node.enum)
+        || ['uuid', 'uri', 'date-time', 'date', 'time', 'email', 'hostname', 'ipv4', 'ipv6'].includes(String(node.format)) ? 'identifier'
+        : ['text/plain', 'text/markdown'].includes(String(node.contentMediaType)) ? 'narrative' : 'unknown';
+      const value = { hash: hash(node), kind } as const;
+      if (strings.has(path) && strings.get(path)!.hash !== value.hash) throw new Error('overlapping string constraints');
+      strings.set(path, value);
+    }
+    if (node.required !== undefined && (!Array.isArray(node.required) || node.required.some(key => !nonblank(key))
+      || new Set(node.required).size !== node.required.length)) throw new Error('invalid required set');
+    const mandatory = new Set((node.required ?? []) as string[]);
+    const properties = object(node.properties) ? node.properties : {};
+    for (const key of mandatory) {
+      if (!(key in properties)) throw new Error('required property without a schema');
+      paths.add(`${path}/${segment(key)}`);
+    }
+    for (const [key, child] of Object.entries(properties)) visit(child, `${path}/${segment(key)}`, mandatory.has(key), refs, depth + 1);
+    if (node.items !== undefined) visit(node.items, `${path}/[]`, required, refs, depth + 1);
+    if (node.allOf !== undefined) {
+      if (!Array.isArray(node.allOf)) throw new Error('invalid allOf');
+      for (const child of node.allOf) visit(child, path, required, refs, depth + 1);
+    }
+  };
+  visit(root, '', false, [], 0);
+  return { paths, strings };
+}
+
+export function compareGroundedPairedCost(before: readonly (number | null)[], after: readonly (number | null)[]) {
+  if (before.length !== 3 || after.length !== 3 || [...before, ...after].some(n => n === null || !Number.isFinite(n) || n < 0))
+    return { verdict: 'unknown' as const, baselineMedian: null, candidateMedian: null };
+  const median = (ns: readonly (number | null)[]): number => [...ns as readonly number[]].sort((a, b) => a - b)[1]!;
+  const baselineMedian = median(before), candidateMedian = median(after);
+  return { verdict: (baselineMedian === 0 ? candidateMedian === 0 : candidateMedian <= baselineMedian * fixture.budgets.pairedMedianRatioMaximum)
+    ? 'pass' as const : 'fail' as const, baselineMedian, candidateMedian };
+}

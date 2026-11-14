@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   SU_SESSION_PROTOCOL_VERSION,
   SU_SESSION_SCHEMA,
+  type SuSessionDescriptor,
   type SuSessionEvent,
   type SuSessionIdentity,
 } from '@papercusp/chat-protocol';
-import { confirmedProviderRateLimit, throwIfProviderRateLimited, throwIfProviderRefused } from './su-session-attached-live-rate-limit';
+import { confirmedProviderRateLimit, nativeAcceptanceFailure, nativePendingImports, throwIfProviderRateLimited, throwIfProviderRefused } from './su-session-attached-live-rate-limit';
 import { pollUntil } from './pui-e2e/poll-until';
 
 const session: SuSessionIdentity<'claude'> = {
@@ -17,6 +18,105 @@ const session: SuSessionIdentity<'claude'> = {
   workspaceId: 'fixture-ws',
   harnessSlug: null,
 };
+
+describe('native pending import diagnostics', () => {
+  const node = (evaluated = false) => ({ evaluated, promise: Promise.resolve(),
+    imports: new Set(['dependency.ts']), importers: new Set(['parent.ts']) });
+
+  it('preserves unavailable and malformed worker evidence instead of reporting zero pending imports', () => {
+    expect(nativePendingImports(undefined)).toMatchObject({ workerState: 'unavailable',
+      resolving: { state: 'unavailable', count: null }, evaluating: { state: 'unavailable', pendingCount: null } });
+    expect(nativePendingImports(null).workerState).toBe('invalid');
+    expect(nativePendingImports({ resolvingModules: [], evaluatedModules: { idToModuleMap: {} } }))
+      .toMatchObject({ resolving: { state: 'invalid', count: null }, evaluating: { state: 'invalid', pendingCount: null } });
+    expect(nativePendingImports({ resolvingModules: new Set([null]),
+      evaluatedModules: { idToModuleMap: new Map([['broken.ts', null]]) } }))
+      .toMatchObject({ resolving: { state: 'invalid', invalidIds: 1 },
+        evaluating: { state: 'invalid', invalidNodes: 1, pendingCount: null } });
+  });
+
+  it('names resolving and evaluating modules with both import edges, excluding completed modules', () => {
+    const result = nativePendingImports({ resolvingModules: new Set(['resolving.ts']), evaluatedModules: {
+      idToModuleMap: new Map([['pending.ts', node()], ['completed.ts', node(true)],
+        ['idle.ts', { ...node(), promise: undefined }]]),
+    } });
+    expect(result).toMatchObject({ resolving: { state: 'available', ids: ['resolving.ts'] },
+      evaluating: { state: 'available', total: 3, scanned: 3, scanComplete: true, pendingCount: 1,
+        pending: [{ id: 'pending.ts', imports: { ids: ['dependency.ts'] }, importers: { ids: ['parent.ts'] } }] } });
+    expect(nativePendingImports({ resolvingModules: new Set(), evaluatedModules: { idToModuleMap: new Map() } }))
+      .toMatchObject({ resolving: { count: 0 }, evaluating: { pendingCount: 0, scanComplete: true } });
+  });
+
+  it('bounds emitted IDs and edges, marks truncation, and redacts credentials', () => {
+    const longId = 'x'.repeat(500);
+    const entries = Array.from({ length: 20 }, (_, i) => [`pending-${i}`, { ...node(),
+      imports: new Set(Array.from({ length: 10 }, (_, j) => `edge-${j}`)), importers: new Set([longId]) }] as const);
+    const result = nativePendingImports({ resolvingModules: new Set([longId, 'Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz123456']),
+      evaluatedModules: { idToModuleMap: new Map(entries) } });
+    expect(result.resolving.truncated).toBe(true);
+    expect(JSON.stringify(result)).not.toContain('sk-abcdefghijklmnopqrstuvwxyz123456');
+    expect(result.resolving.ids[0]).toHaveLength(256);
+    expect(result.evaluating).toMatchObject({ pendingCount: 20, truncated: true });
+    expect(result.evaluating.pending).toHaveLength(12);
+    expect(result.evaluating.pending[0].imports).toMatchObject({ count: 10, truncated: true });
+    expect(result.evaluating.pending[0].imports.ids).toHaveLength(4);
+    expect(result.evaluating.pending[0].importers.truncated).toBe(true);
+  });
+
+  it('bounds the scan and leaves the full pending count unknown when the graph exceeds it', () => {
+    const graph = new Map(Array.from({ length: 10_001 }, (_, i) => [`module-${i}`, node()]));
+    expect(nativePendingImports({ evaluatedModules: { idToModuleMap: graph } }).evaluating)
+      .toMatchObject({ total: 10_001, scanned: 10_000, pendingSeen: 10_000,
+        pendingCount: null, scanComplete: false, truncated: true });
+  });
+
+  it('ranks completed import wall and self times separately without summing nested durations', () => {
+    const result = nativePendingImports({ moduleExecutionInfo: new Map([
+      ['catalogue.ts', { duration: 140_000, selfTime: 5, importer: 'fixture.ts' }],
+      ['leaf.ts', { duration: 30_000, selfTime: 29_000, importer: 'catalogue.ts' }],
+    ]) }).completed;
+    expect(result).toMatchObject({ state: 'available', total: 2, scanned: 2, scanComplete: true,
+      durationBasis: 'inclusive-evaluator-wall-ms', selfBasis: 'duration-minus-child-imports-ms' });
+    expect(result.slowestByDuration.map(row => row.id)).toEqual(['catalogue.ts', 'leaf.ts']);
+    expect(result.slowestBySelf.map(row => row.id)).toEqual(['leaf.ts', 'catalogue.ts']);
+    expect(result.slowestByDuration[0]).toMatchObject({ durationMs: 140_000, selfMs: 5, importer: 'fixture.ts' });
+  });
+
+  it('preserves unknown or malformed timing metadata and bounds its output', () => {
+    expect(nativePendingImports(undefined).completed).toMatchObject({ state: 'unavailable', total: null });
+    expect(nativePendingImports({ moduleExecutionInfo: [] }).completed).toMatchObject({ state: 'invalid', total: null });
+    expect(nativePendingImports({ moduleExecutionInfo: new Map([['bad.ts', { duration: NaN, selfTime: 0 }]]) }).completed)
+      .toMatchObject({ state: 'invalid', invalidTimings: 1 });
+    const result = nativePendingImports({ moduleExecutionInfo: new Map(Array.from({ length: 20 }, (_, i) =>
+      [`module-${i}`, { duration: i, selfTime: i, importer: 'Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz123456' }])) }).completed;
+    expect(result).toMatchObject({ total: 20, truncated: true });
+    expect(result.slowestByDuration).toHaveLength(12);
+    expect(JSON.stringify(result)).not.toContain('sk-abcdefghijklmnopqrstuvwxyz123456');
+  });
+});
+
+describe('R8 native failure evidence', () => {
+  it('retains the requested route and structured refusal while served account remains unknown', () => {
+    const error = new Error('codex_turn_failed: 429 Too Many Requests');
+    const receipt = nativeAcceptanceFailure({ backend: 'codex', model: 'gpt-5.5', account: 'auto',
+      stage: 'owner-turn', events: [{ type: 'error', code: 'codex_turn_failed', message: error.message } as SuSessionEvent], error });
+    expect(receipt).toMatchObject({ backend: 'codex', model: 'gpt-5.5', accountRequested: 'auto',
+      accountServed: null, ownerId: null, runtimeGeneration: null, stage: 'owner-turn', accepted: false,
+      errors: [{ code: 'codex_turn_failed', message: error.message }] });
+  });
+
+  it('uses the measured descriptor account and redacts credentials in failure output', () => {
+    const descriptor = { accountServed: 'codex-served', runtimeGeneration: 4, lifecycle: 'failed',
+      identity: { ownerId: 'fixture-owner', nativeSessionId: 'fixture-native' } } as SuSessionDescriptor;
+    const message = 'Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz123456';
+    const receipt = nativeAcceptanceFailure({ backend: 'codex', model: 'gpt-5.5', account: 'codex-requested',
+      stage: 'owner-turn', descriptor, events: [{ type: 'error', code: 'refused', message } as SuSessionEvent], error: new Error(message) });
+    expect(receipt).toMatchObject({ accountRequested: 'codex-requested', accountServed: 'codex-served',
+      ownerId: 'fixture-owner', nativeSessionId: 'fixture-native', runtimeGeneration: 4, lifecycle: 'failed' });
+    expect(JSON.stringify(receipt)).not.toContain('sk-abcdefghijklmnopqrstuvwxyz123456');
+  });
+});
+
 let sequence = 0;
 
 function base() {

@@ -44,7 +44,7 @@ import type { AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { parseBindingRef } from '@papercusp/orchestrator/blueprint';
 import { buildConsoleEnvelope } from '../../console-launcher';
-import { spawnConsole, spawnHeadless, type SpawnChildExit, type SpawnConsoleResult } from '../../console-spawn';
+import { reconcileKickoffProof, spawnConsole, spawnHeadless, type KickoffProofResult, type SpawnChildExit, type SpawnConsoleResult } from '../../console-spawn';
 import { AGENT_LAUNCH_HANDLER_TIMEOUT_SEC, RESUME_VERIFY_TIMEOUT_MS } from '../../agent-kickoff/launch-budgets.mjs';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
@@ -68,6 +68,11 @@ import { getLoopStatus } from '../../harness/routines/loop';
 import {
   buildAgentLaunchCommand,
   claimAgentLaunch,
+  readAgentLaunchClaim,
+  readCompletedRecoveryForSource,
+  recoveryAttributionFromClaim,
+  type AgentRecoveryAttribution,
+  type AgentLaunchSourceBinding,
   composeModelSpec,
   deriveFreshLaunchEvidenceSummary,
   foldMemberSpec,
@@ -86,6 +91,7 @@ import {
   verifyFreshLaunchStarted,
   verifyResumeStarted,
   type CodexModelSource,
+  type AgentLaunchClaim,
   waitForPtyHostGone,
   type FleetMemberDefaults,
   type FreshLaunchVerdict,
@@ -245,6 +251,105 @@ function agentLaunchCompletionReceipt(
   const key = idempotencyKey?.trim();
   if (!key || !summaryRecorded) return null;
   return { status: 'recorded', effectRef: `agent-launch:${key}` };
+}
+
+async function completedAgentLaunchReplay(workspaceId: string, idempotencyKey: string | null | undefined, claim: AgentLaunchClaim) {
+  let prior = claim.priorSummary && Object.keys(claim.priorSummary).length ? claim.priorSummary : null;
+  let priorLaunch = prior && typeof prior.launch === 'object' && prior.launch !== null
+    ? prior.launch as Record<string, unknown> : prior;
+  if (!prior || !(prior.launchState === 'completed' ||
+      (prior.launchState !== 'reconciliation-required' &&
+        typeof priorLaunch?.opened === 'number' && typeof priorLaunch.failed === 'number'))) return null;
+  // Reconcile only a completed, token-owned receipt's exact existing tasks.
+  // A failed CAS/read stays partial; it never authorizes another process.
+  if (typeof prior.claimToken === 'string' && prior.claimToken && Array.isArray(priorLaunch?.tasks)) {
+    let changed = false;
+    let needsReadback = false;
+    const consumedAfterCommit: KickoffProofResult[] = [];
+    const tasks = priorLaunch.tasks.map((task: unknown) => {
+      const record = asRecord(task);
+      const proof = asRecord(record?.kickoffProof);
+      if (!record || typeof record.taskId !== 'string' || !record.taskId ||
+          typeof record.ownerId !== 'string' || !record.ownerId ||
+          !proof || proof.reason !== 'kickoff-proof-timeout' || proof.persisted !== false) return task;
+      const pending = proof as unknown as KickoffProofResult;
+      const settled = reconcileKickoffProof(pending);
+      if (settled === pending) {
+        // A concurrent replay may have committed and consumed this private
+        // receipt since our snapshot. Only the durable record can settle it.
+        needsReadback ||= Boolean(pending.recovery);
+        return task;
+      }
+      changed = true;
+      consumedAfterCommit.push(pending);
+      return { ...record, kickoffProof: settled };
+    });
+    if (changed) {
+      const allProved = tasks.length > 0 && tasks.length === priorLaunch.opened && tasks.every((task: unknown) => {
+        const record = asRecord(task);
+        const proof = asRecord(record?.kickoffProof);
+        return record?.status !== 'error' && proof?.persisted === true &&
+          typeof proof.nativeRef === 'string' && Boolean(proof.nativeRef.trim());
+      });
+      const nextLaunch = { ...priorLaunch, tasks,
+        ...(allProved ? { kickoffProof: { required: true, persisted: true },
+          partial: priorLaunch.failed !== 0 || asRecord(priorLaunch.verifierCoupling)?.status === 'failed' } : {}),
+      };
+      const next = priorLaunch === prior ? nextLaunch : { ...prior, launch: nextLaunch };
+      const recorded = await recordAgentLaunchResult({ workspaceId, idempotencyKey,
+        claimToken: prior.claimToken, expectedSummary: prior, summary: next });
+      if (recorded) {
+        for (const proof of consumedAfterCommit) reconcileKickoffProof(proof, { consume: true });
+        prior = next;
+        priorLaunch = nextLaunch;
+        needsReadback = false;
+      } else {
+        needsReadback = true;
+      }
+    }
+    if (needsReadback) {
+      // No retry write here: preserve the winner's proof and leave this
+      // replay's uncommitted private receipts available for the next request.
+      let latest: AgentLaunchClaim | null = null;
+      try { latest = await readAgentLaunchClaim({ workspaceId, idempotencyKey }); }
+      catch { /* unreadable authority stays at the original conservative result */ }
+      const summary = asRecord(latest?.priorSummary);
+      const launch = asRecord(summary?.launch) ?? summary;
+      if (summary && launch && summary.claimToken === prior.claimToken &&
+          latest?.priorLaunchedBy === claim.priorLaunchedBy &&
+          (summary.launchState === 'completed' || (summary.launchState !== 'reconciliation-required' &&
+            typeof launch.opened === 'number' && typeof launch.failed === 'number'))) {
+        prior = summary;
+        priorLaunch = launch;
+      }
+    }
+  }
+  const when = claim.priorLaunchedAt ? new Date(claim.priorLaunchedAt).toISOString() : 'earlier';
+  return {
+    content: [{ type: 'text' as const, text:
+      `Already launched (deduped) — idempotencyKey ${JSON.stringify(idempotencyKey)} was claimed at ${when}` +
+      `${claim.priorLaunchedBy ? ` by ${claim.priorLaunchedBy}` : ''}. Nothing new was spawned.\n` +
+      `That call reported: ${JSON.stringify(prior)}` }],
+    data: {
+      deduped: true,
+      launch: { ...priorLaunch, deduped: true },
+      ...(agentLaunchCompletionReceipt(idempotencyKey, true)
+        ? { completionReceipt: agentLaunchCompletionReceipt(idempotencyKey, true) } : {}),
+    },
+  };
+}
+
+function withRecoveryAttribution(
+  result: ToolResult & { data?: Record<string, unknown> }, attribution: AgentRecoveryAttribution,
+): ToolResult & { data: Record<string, unknown> } {
+  const text = attribution.status === 'known'
+    ? `Already recovered by ${attribution.priorActor} at ${attribution.completedAt}; receipt ${attribution.receiptRef}, prior key ${JSON.stringify(attribution.priorIdempotencyKey)}, effect ${attribution.effectRef}. No new process was opened.`
+    : `Completed recovery attribution: UNKNOWN (${attribution.reason}).`;
+  const content = result.content ?? [];
+  const firstText = content.findIndex((block) => block.type === 'text');
+  return { ...result, content: firstText < 0 ? [{ type: 'text', text }, ...content]
+    : content.map((block, index) => index === firstText && block.type === 'text' ? { ...block, text: `${text}\n${block.text}` } : block),
+    data: { ...result.data, recoveryAttribution: attribution } };
 }
 
 /**
@@ -1243,6 +1348,24 @@ export default defineTool({
         );
       }
     }
+    // An ordinary source retry retrieves the original completed receipt, not
+    // today's mutable native binding. Only native proof on that same receipt
+    // may be reconciled; absent/unfinished receipts still pass every source
+    // check and the atomic pre-spawn claim.
+    // Private recovery protocols retain their own current-custody validation.
+    if (sourceAction && args.idempotencyKey?.trim() && !originalRecoveryOwnerId &&
+        !args.originalRouting && !blindResumePermit && !privateConfinement) {
+      try {
+        const prior = await readAgentLaunchClaim({ workspaceId, idempotencyKey: args.idempotencyKey });
+        if (prior && (!prior.priorSummary?.requestKind || prior.priorSummary.requestKind === 'capability:launch-agent')) {
+          const replay = await completedAgentLaunchReplay(workspaceId, args.idempotencyKey, prior);
+          if (replay) return withRecoveryAttribution(replay, recoveryAttributionFromClaim(
+            { workspaceId, sessionId: args.resume?.sessionId ?? '' }, args.idempotencyKey, prior));
+        }
+      } catch (error) {
+        return err(`Cannot reconcile the launch idempotency receipt: ${(error as Error)?.message ?? error}. No process was opened.`);
+      }
+    }
     // DRAIN is a durable caller overlay. Resolve it before composing either a
     // fresh command or a resume/fork command so every capability launch path
     // carries the same mode into bootstrap-su.
@@ -1263,6 +1386,7 @@ export default defineTool({
     let resumeRole: string | null = null;
     let resumeFeature: string | null = null;
     let resumeHarnessSlug: string | null = null;
+    let resumeHarnessScopeKnown = false;
     let resumeSourceAdvSessionId: number | null = null;
     let resumeNeedsStartupReservation = false;
     let resumeLocalLivenessEvidence: AdvSessionLocalLivenessEvidence | undefined;
@@ -1272,8 +1396,11 @@ export default defineTool({
     let resumeAccount: string | null = null;
     let resumeHeadless: boolean | undefined;
     let successorBrief: string | null = null;
+    type StartupReservation = { advSessionId: number; ownerId: string; claimKey: string; expiresAtMs: number };
     const successorPreparation: { reconcile?: () => Promise<string | null>;
-      beforeSpawn?: () => Promise<void>; release?: () => Promise<void> } = {};
+      beforeSpawn?: () => Promise<void>; release?: () => Promise<void>;
+      startupPin?: { advSessionId: number; pin: AdvSessionResumePin };
+      startupReservation?: StartupReservation } = {};
     let reconcileOriginalRouting: (() => Promise<void>) | null = null;
     let recheckInPlaceResume: (() => Promise<void>) | null = null;
     let originalMemberTarget: ResumeTarget | null = null;
@@ -1381,6 +1508,7 @@ export default defineTool({
       resumeRole = target.role;
       resumeFeature = target.feature;
       resumeHarnessSlug = target.harnessSlug ?? null;
+      resumeHarnessScopeKnown = target.harnessScopeKnown === true;
       resumeSourceAdvSessionId = target.advSessionId;
       resumeNeedsStartupReservation = hasAdvSessionTerminalEvidence(target) || target.live === false;
       resumeModel = target.model;
@@ -1661,7 +1789,11 @@ export default defineTool({
           if (readSourceCodexWriter()?.held) {
             return 'Cannot start successor: an active native Codex writer appeared during preparation. No process was opened.';
           }
-          if (current.endedAt != null) return null;
+          if (current.endedAt != null) {
+            successorPreparation.startupPin = { advSessionId: target.advSessionId,
+              pin: { workspaceId, binding, requireTerminal: true } };
+            return null;
+          }
           const task = !hasAdvSessionTerminalEvidence(current) ? await readSuccessorTerminalTask(current) : null;
           if (task) {
             const fingerprint = successorTaskFingerprint(task);
@@ -1675,6 +1807,8 @@ export default defineTool({
             if (!reservation.acquired) return `Cannot start successor: task custody reservation refused (${reservation.status}). No process was opened.`;
             successorPreparation.release = async () => { await releaseAdvSessionResume(target.advSessionId, claimKey); };
             const expiresAt = Date.parse(reservation.leaseExpiresAt);
+            successorPreparation.startupReservation = { advSessionId: target.advSessionId,
+              ownerId: binding.coordOwnerId, claimKey, expiresAtMs: expiresAt };
             successorPreparation.beforeSpawn = async () => {
               if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) throw new Error('task custody lease expired');
               const lease = await reserve();
@@ -1715,6 +1849,10 @@ export default defineTool({
           });
           if (!ended) {
             return 'Cannot start successor: predecessor binding reconciliation lost its compare-and-swap. Re-resolve the source; no process was opened.';
+          }
+          if (!successorPreparation.startupReservation) {
+            successorPreparation.startupPin = { advSessionId: target.advSessionId,
+              pin: { workspaceId, binding, requireTerminal: true } };
           }
           await successorPreparation.beforeSpawn?.();
           notes.push(`✓ Reconciled terminal predecessor binding #${target.advSessionId} before successor launch; actual exit time remains unknown.`);
@@ -1793,7 +1931,13 @@ export default defineTool({
         if (args.fork === false) {
           const refusal = `Cannot resume ${target.resumeId ?? target.sessionId} in place: `;
           if (sourceStillLive) {
-            return err(refusal + 'the source session is still LIVE. Explicit `fork:false` is fail-closed; omit `fork` to allow the normal protective auto-fork, or retry after the source ends.');
+            const result = err(refusal + 'the source session is still LIVE. Explicit `fork:false` is fail-closed; omit `fork` to allow the normal protective auto-fork, or retry after the source ends.');
+            const attribution: AgentRecoveryAttribution = !originalRecoveryOwnerId && !args.originalRouting &&
+                !blindResumePermit && !privateConfinement && target.sessionId
+              ? await readCompletedRecoveryForSource({ workspaceId, sessionId: target.sessionId,
+                  ownerId: target.ownerId, advSessionId: target.advSessionId, effect: 'original-session-resume' })
+              : { status: 'unknown', reason: 'private recovery guards or exact source binding prohibit attribution here' };
+            return withRecoveryAttribution(result, attribution);
           }
           const custody = (current: typeof target) => JSON.stringify([
             current.ownerId, current.advSessionId, current.sessionId, current.resumeId, current.binding,
@@ -1940,11 +2084,13 @@ export default defineTool({
     // caller's. Without this an operator-scope caller (ctx harness '*'/unset) opened a
     // successor with no --harness and no harness in its MCP envelope, and the fresh psu
     // bound to an unrelated hive where every claim was refused harness_forbidden. An
-    // explicit `harness` argument still wins. This runs AFTER the source block so a resume
+    // A recorded operator scope must also survive a scoped caller; missing argv is
+    // unknown, so only a positive metadata witness can clear the caller's harness.
+    // An explicit `harness` argument still wins. This runs AFTER the source block so a resume
     // promoted to a successor (critical-dormant) is covered too, and re-applies the
     // work-scope gate to the harness actually launched into.
     const predecessorHarness = resumeHarnessSlug && resumeHarnessSlug !== '*' ? resumeHarnessSlug : null;
-    if (isSuccessor && !args.harness?.trim() && predecessorHarness && predecessorHarness !== slug) {
+    if (isSuccessor && !args.harness?.trim() && (predecessorHarness || resumeHarnessScopeKnown) && predecessorHarness !== slug) {
       const { gateWorkScope } = await import('../../work-scope-policy');
       const scope = await gateWorkScope('capability:launch-agent', {
         harness: predecessorHarness,
@@ -1953,7 +2099,9 @@ export default defineTool({
       });
       if (!scope.allowed) return err(scope.message);
       notes.push(
-        `✓ Successor launched in the predecessor's recorded harness '${predecessorHarness}'` +
+        (predecessorHarness
+          ? `✓ Successor launched in the predecessor's recorded harness '${predecessorHarness}'`
+          : '✓ Successor launched in the predecessor\'s recorded operator scope') +
           (slug ? ` (not the caller's '${slug}')` : ' (the caller has no harness scope)') +
           ' so it keeps access to the claims it retains.',
       );
@@ -2755,6 +2903,9 @@ export default defineTool({
     // claim still lands immediately before the first spawn, preventing duplicate
     // windows for re-fired calls. (No key ⇒ unguarded, exactly like cup:spawn.)
     const spawnStartedAt = Date.now();
+    const sourceBinding: AgentLaunchSourceBinding | null = isResume && !fork && resumeSessionId
+      ? { workspaceId, sessionId: resumeSessionId, ownerId: resumeOwnerId,
+          advSessionId: resumeSourceAdvSessionId, effect: 'original-session-resume' } : null;
     const launchClaimToken = randomUUID();
     const claim = await claimAgentLaunch({
       workspaceId,
@@ -2763,6 +2914,7 @@ export default defineTool({
       preserveAmbiguousClaims: true,
       initialSummary: {
         requestKind: 'capability:launch-agent',
+        ...(sourceBinding ? { sourceBinding } : {}),
         claimToken: launchClaimToken,
         launchState: 'claimed',
         startedAt: spawnStartedAt,
@@ -2792,13 +2944,8 @@ export default defineTool({
           ? (prior.launch as Record<string, unknown>)
           : prior;
       const when = claim.priorLaunchedAt ? new Date(claim.priorLaunchedAt).toISOString() : 'earlier';
-      const priorIsComplete = Boolean(
-        prior &&
-          (prior.launchState === 'completed' ||
-            (prior.launchState !== 'reconciliation-required' &&
-              typeof priorLaunch?.opened === 'number' &&
-              typeof priorLaunch.failed === 'number')),
-      );
+      const completedReplay = await completedAgentLaunchReplay(workspaceId, args.idempotencyKey, claim);
+      const priorIsComplete = Boolean(completedReplay);
       if (!priorIsComplete) {
         const priorState = typeof prior?.launchState === 'string' ? prior.launchState : 'unrecorded';
         const recoveryDetails = {
@@ -2816,6 +2963,7 @@ export default defineTool({
           spawnAttempted: prior?.spawnAttempted ?? priorLaunch?.spawnAttempted ?? null,
           nativeSpawnAttempted: prior?.nativeSpawnAttempted ?? priorLaunch?.nativeSpawnAttempted ?? null,
           processHandles: prior?.processHandles ?? priorLaunch?.processHandles ?? null,
+          tasks: prior?.tasks ?? priorLaunch?.tasks ?? null,
           memberResults: prior?.memberResults ?? priorLaunch?.memberResults ?? null,
         };
         return {
@@ -2847,28 +2995,7 @@ export default defineTool({
           },
         };
       }
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text:
-              `Already launched (deduped) — idempotencyKey ${JSON.stringify(args.idempotencyKey)} was claimed at ${when}` +
-              `${claim.priorLaunchedBy ? ` by ${claim.priorLaunchedBy}` : ''}. Nothing new was spawned.\n` +
-              (prior
-                ? `That call reported: ${JSON.stringify(prior)}`
-                : 'No summary was recorded for that call — check /adv/sessions for what it opened.'),
-          },
-        ],
-        data: {
-          deduped: true,
-          launch: priorLaunch
-            ? { ...priorLaunch, deduped: true }
-            : { deduped: true, opened: 0, failed: 0, mode: 'deduped', fleet: null, tasks: [] },
-          ...(agentLaunchCompletionReceipt(args.idempotencyKey, prior !== null)
-            ? { completionReceipt: agentLaunchCompletionReceipt(args.idempotencyKey, prior !== null) }
-            : {}),
-        },
-      };
+      return completedReplay!;
     }
 
     if (successorPreparation.reconcile) {
@@ -2971,6 +3098,7 @@ export default defineTool({
     const progressLaunchMode = isSuccessor ? 'successor' : isResume ? (fork ? 'fork' : 'resume') : 'fresh';
     const currentLaunchProgress = () => ({
       requestKind: 'capability:launch-agent',
+      ...(sourceBinding ? { sourceBinding } : {}),
       launchState: 'spawning',
       startedAt: spawnStartedAt,
       expectedCount: count,
@@ -3000,6 +3128,7 @@ export default defineTool({
     const persistMemberLaunchResult = async (memberIndex: number, result: SpawnConsoleResult) => {
       const key = String(memberIndex);
       const member: Record<string, unknown> = {
+        ...launchProcessHandles[key],
         memberIndex,
         ownerId: memberOwnerIds[memberIndex] ?? null,
         label: memberLabels[memberIndex],
@@ -3093,11 +3222,17 @@ export default defineTool({
         // proof are surfaced in the recoverable partial result below rather
         // than being mistaken for a clean launch.
         const requireKickoffProof = kickoffProofRequired[i];
-        let startupReservation: { advSessionId: number; ownerId: string; claimKey: string; expiresAtMs: number } | null = null;
+        let startupReservation: StartupReservation | null = null;
+        let successorProcessStarted = false;
         const releaseStartup = async () => {
-          if (!startupReservation) return;
+          if (!startupReservation || successorProcessStarted) return;
           try {
-            await releaseAdvSessionResume(startupReservation.advSessionId, startupReservation.claimKey);
+            if (startupReservation === successorPreparation.startupReservation) {
+              await successorPreparation.release?.();
+              successorPreparation.release = undefined;
+            } else {
+              await releaseAdvSessionResume(startupReservation.advSessionId, startupReservation.claimKey);
+            }
           } catch (error) {
             notes.push(`Resume startup reservation cleanup is unconfirmed (${String(error)}); its bounded expiry remains in force.`);
           }
@@ -3123,6 +3258,24 @@ export default defineTool({
             if (!reservation.acquired) throw new Error(`Ended-source resume reservation refused: ${reservation.status}`);
             startupReservation = { advSessionId: resumeSourceAdvSessionId, ownerId: targetOwnerId,
               claimKey, expiresAtMs: new Date(reservation.leaseExpiresAt).getTime() };
+          }
+          // A successor retains an intentionally ended owner's identity too.
+          // Reuse exact task custody when present; otherwise reserve the pinned
+          // terminal ADV. The governor already validates this bounded key and
+          // its live launcher before protecting only this new process lease.
+          if (isSuccessor) {
+            startupReservation = successorPreparation.startupReservation ?? null;
+            const source = successorPreparation.startupPin;
+            if (!startupReservation && source) {
+              if (!targetOwnerId || !callerOwnerId) throw new Error('Successor startup requires exact source and launcher identities.');
+              const claimKey = `governed-successor:${randomUUID()}`;
+              const reservation = await acquireAdvSessionResume(source.advSessionId, claimKey,
+                RESUME_RESERVATION_MAX_LEASE_SEC, undefined, undefined, true, source.pin);
+              if (!reservation.acquired) throw new Error(`Successor startup reservation refused: ${reservation.status}`);
+              startupReservation = { advSessionId: source.advSessionId, ownerId: targetOwnerId,
+                claimKey, expiresAtMs: new Date(reservation.leaseExpiresAt).getTime() };
+            }
+            if (!startupReservation) throw new Error('Successor startup reservation is unavailable.');
           }
           const result = await spawnGovernedAgentProcess(
           {
@@ -3171,6 +3324,12 @@ export default defineTool({
             };
             if (foldedConfigs[i].headless) {
               const result = await spawnHeadless({
+                onProcessCreated: async (receipt) => {
+                  // An early receipt establishes custody, not kickoff success.
+                  launchProcessHandles[String(i)] = { memberIndex: i, ownerId: targetOwnerId,
+                    label: memberLabel, headless: true, ...receipt };
+                  await recordLaunchProgress();
+                },
                 // Installation preparation can outlive this host. Persist the
                 // native-attempt fence only at the spawner's post-install
                 // boundary, before task enrolment and process creation.
@@ -3181,6 +3340,7 @@ export default defineTool({
                   if (recheckInPlaceResume) await recheckInPlaceResume();
                   if (recheckOriginalMember) await recheckOriginalMember();
                   if (reconcileOriginalRouting) await reconcileOriginalRouting();
+                  await successorPreparation.beforeSpawn?.();
                   await interruptionRecovery?.beforeNativeCreate?.();
                   if (startupReservation && startupReservation.expiresAtMs <= Date.now())
                     throw new Error('Ended-source resume startup reservation expired before process start.');
@@ -3212,6 +3372,7 @@ export default defineTool({
                 // distinct identity is pinned in both argv and this receipt.
                 coordOwnerId: targetOwnerId,
               });
+              if (isSuccessor && result.status === 'ok') successorProcessStarted = true;
               // Persist the returned process/task handles before inbox-wake
               // setup or any later verification can be cancelled.
               await persistMemberLaunchResult(i, result);
@@ -3263,6 +3424,7 @@ export default defineTool({
               // launches with no explicit terminal preference.
               preferProcessPerWindow: !isResume && !process.env.TERMINAL?.trim(),
             });
+            if (isSuccessor && result.status === 'ok') successorProcessStarted = true;
             await persistMemberLaunchResult(i, result);
             return result;
           },
@@ -3284,7 +3446,10 @@ export default defineTool({
           await persistMemberLaunchResult(i, failedResult);
           return failedResult;
         } finally {
-          await successorPreparation.release?.();
+          // Process-open is not bootstrap completion. Retain the bounded key
+          // while the child starts; expiry/launcher death still restores normal
+          // owner-ended reclamation, and a newer ADV removes startup protection.
+          if (!successorProcessStarted) await successorPreparation.release?.();
         }
       }),
     );
@@ -3699,6 +3864,8 @@ export default defineTool({
     const launchSummary = {
       deduped: false,
       requestKind: 'capability:launch-agent',
+      ...(sourceBinding ? { sourceBinding } : {}),
+      completedAt: new Date().toISOString(),
       launchState:
         nativeSpawnAttempted.size > 0 && opened.length === 0 && Object.keys(launchProcessHandles).length === 0
           ? 'reconciliation-required'

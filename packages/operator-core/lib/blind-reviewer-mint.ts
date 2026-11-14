@@ -618,7 +618,26 @@ export async function resumeBlindGapReviewer(
         throw new Error('The bound reviewer has no verified live host reading. No wake or process was opened.');
       }
       const failure = host.execution?.phase === 'failed' ? host.execution.failure : undefined;
-      if (failure?.retryable === false) {
+      const retryAfterMs = failure?.retryAfterMs;
+      const hasRetryAfter = typeof retryAfterMs === 'number' && Number.isFinite(retryAfterMs) && retryAfterMs > 0;
+      // The PTY host deliberately marks a Claude 429 non-retryable for immediate
+      // retry, while retaining the provider's explicit cooldown. Permit a later
+      // wake of this same, verified live binding only after that window expires.
+      const delayedRateLimit = failure?.code === 'api_error_429' && hasRetryAfter;
+      if (hasRetryAfter) {
+        const nowMs = Date.now();
+        const retryAtMs = failure.atMs + retryAfterMs;
+        if (!Number.isFinite(failure.atMs) || failure.atMs <= 0 || failure.atMs > nowMs || !Number.isFinite(retryAtMs)) {
+          throw new Error('The bound reviewer provider retry-after could not be safely anchored to its failed turn. ' +
+            'No wake or process was opened.');
+        }
+        const remainingMs = Math.ceil(retryAtMs - nowMs);
+        if (remainingMs > 0) {
+          throw new Error(`The bound reviewer provider retry-after is still active for ${remainingMs}ms. ` +
+            'No wake or process was opened.');
+        }
+      }
+      if (failure?.retryable === false && !delayedRateLimit) {
         throw new Error(`The bound reviewer's native turn failed (${failure.code}); a queued wake is not recovery. ` +
           'Repair the provider failure and recover this same confined reviewer before retrying. No wake or process was opened.');
       }

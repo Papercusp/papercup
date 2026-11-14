@@ -3,12 +3,16 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { PROOF_CONTEXT_COMPONENTS, createProofContextIdentity, type ProofContextIdentity } from "@papercusp/test-config/configuration-snapshot";
 import {
   parseRepairHeadRadius,
   shadowComposedProofAtRepairHead,
   shadowNewRedEjectionAtCandidate,
+  realCheckpointDeps,
   type RepairHeadRadius,
 } from "./green-checkpoint";
+import { releaseConfig } from "./release-config";
 
 /** green-main-ratchet-convergence-2026-10-17 #D-025: the P-018 shadow reads a real lineage diff. */
 const dirs: string[] = [];
@@ -43,11 +47,15 @@ const exactRadius = (files: string[]): RepairHeadRadius => ({
 });
 
 describe("shadowComposedProofAtRepairHead (P-018 shadow)", () => {
+  const context = createProofContextIdentity(Object.fromEntries(PROOF_CONTEXT_COMPONENTS.map(key =>
+    [key, createHash('sha256').update(key).digest('hex')])) as ProofContextIdentity['components'])!;
+  const proofContext = { before: context, after: context };
   it("re-runs the radius of a runtime change, carries the rest of round 1, and asks the selector at the repair head", async () => {
     const { root, candidate, commit } = repoWith({ "src/a.ts": "export const a = 1;\n", "src/t.ts": "export type T = number;\n" });
     const repairHead = commit({ "src/a.ts": "export const a = 2;\n" });
     const asked: Array<[string, string[]]> = [];
     const shadow = await shadowComposedProofAtRepairHead({
+      proofContext,
       root,
       queue: {
         candidate,
@@ -62,6 +70,10 @@ describe("shadowComposedProofAtRepairHead (P-018 shadow)", () => {
     });
     expect(asked).toEqual([[repairHead, ["src/a.ts"]]]);
     expect(shadow.record).toMatchObject({ status: "planned", mode: "composed", rerunCount: 1, carriedFailing: ["src/b.test.ts"] });
+    // The actual caller uses boot-time observability, never this fixture's Git
+    // checkout as evidence of the executing artifact. Vitest has no boot receipt.
+    expect(shadow.record.instrument).toMatchObject({ schemaVersion: 'instrument-v1', status: 'unknown',
+      fingerprint: null, missing: expect.arrayContaining(['executing-artifact-unmeasured']) });
   });
 
   it("asks nothing for a type-only change and reads a widened selector as a full gate", async () => {
@@ -69,6 +81,7 @@ describe("shadowComposedProofAtRepairHead (P-018 shadow)", () => {
     const typeOnly = commit({ "src/t.ts": "export type T = string;\n" });
     let calls = 0;
     const quiet = await shadowComposedProofAtRepairHead({
+      proofContext,
       root,
       queue: { candidate, convergenceRounds: [{ round: 1, head: candidate, failingCount: 0, failingTests: [], atMs: 1 }] },
       repairHead: typeOnly,
@@ -83,6 +96,7 @@ describe("shadowComposedProofAtRepairHead (P-018 shadow)", () => {
 
     const runtime = commit({ "src/a.ts": "export const a = 3;\n" });
     const widened = await shadowComposedProofAtRepairHead({
+      proofContext,
       root,
       queue: { candidate, convergenceRounds: [{ round: 1, head: candidate, failingCount: 0, failingTests: [], atMs: 1 }] },
       repairHead: runtime,
@@ -97,6 +111,57 @@ describe("shadowComposedProofAtRepairHead (P-018 shadow)", () => {
     const head = commit({ "src/a.ts": "export const a = 2;\n" });
     const s = await shadowComposedProofAtRepairHead({ root, queue: { candidate }, repairHead: head, nowMs: 1 });
     expect(s.record).toMatchObject({ status: "skipped" });
+  });
+
+  it("keeps legacy production observations in full fallback when context is absent", async () => {
+    const { root, candidate, commit } = repoWith({ "src/a.ts": "export const a = 1;\n" });
+    const head = commit({ "src/a.ts": "export const a = 2;\n" });
+    const shadow = await shadowComposedProofAtRepairHead({ root,
+      queue: { candidate, convergenceRounds: [{ round: 1, head: candidate, failingCount: 0, failingTests: [], atMs: 1 }] },
+      repairHead: head, affectedTestsAtRef: async () => exactRadius(["src/a.test.ts"]), nowMs: 1 });
+    expect(shadow.record).toMatchObject({ status: "planned", mode: "full-gate", reason: "proof-context-unmeasured" });
+  });
+
+  it("captures candidate then repair head sequentially and rejects incomplete actual evidence over a supplied context", async () => {
+    const { root, candidate, commit } = repoWith({ "src/t.ts": "export type T = number;" });
+    const repairHead = commit({ "src/t.ts": "export type T = string;" });
+    const refs: string[] = [];
+    const shadow = await shadowComposedProofAtRepairHead({ root, proofContext,
+      queue: { candidate, convergenceRounds: [{ round: 1, head: candidate, failingCount: 0, failingTests: [], atMs: 1 }] },
+      repairHead, nowMs: 1, captureProofContextAtRef: async ref => {
+        refs.push(ref);
+        return { ref, context: null, reach: { status: 'unknown', reason: 'consumer-census-incomplete' } };
+      } });
+    expect(refs).toEqual([candidate, repairHead]);
+    expect(shadow.record).toMatchObject({ mode: 'full-gate', reason: 'proof-context-unmeasured' });
+  });
+
+  it("keeps the full gate when real capture throws or returns a context for another ref", async () => {
+    const { root, candidate, commit } = repoWith({ "src/t.ts": "export type T = number;" });
+    const repairHead = commit({ "src/t.ts": "export type T = string;" });
+    for (const fails of [true, false]) {
+      const shadow = await shadowComposedProofAtRepairHead({ root, proofContext,
+        queue: { candidate, convergenceRounds: [{ round: 1, head: candidate, failingCount: 0, failingTests: [], atMs: 1 }] },
+        repairHead, nowMs: 1, captureProofContextAtRef: async () => {
+          if (fails) throw new Error('setup unavailable');
+          return { ref: 'foreign', context, reach: { status: 'unknown', reason: 'unmeasured' } };
+        } });
+      expect(shadow.record).toMatchObject({ mode: 'full-gate', reason: 'proof-context-unmeasured' });
+    }
+  });
+
+  it("real CheckpointDeps pins the isolated root and skips discovery when actual post-suite inputs are unmeasured", async () => {
+    const { root, candidate } = repoWith({ 'package.json': JSON.stringify({ name: 'source-fixture', scripts: {} }) });
+    const executed: string[] = [];
+    const deps = realCheckpointDeps(releaseConfig({ integrationRoot: path.join(root, 'not-the-source'),
+      releaseRoot: root, checkpointRoot: root, checkpointLogDir: root, spaBuildWorkspace: '@fixture/spa' }),
+      async (command) => { executed.push(command); throw new Error('no child should run'); });
+    const refs: string[] = [];
+    deps.setupTree = async ref => { refs.push(ref); };
+    const capture = await deps.captureProofContextAtRef!(candidate);
+    expect(refs).toEqual([candidate]); expect(executed).toEqual([]);
+    expect(capture).toMatchObject({ ref: candidate, context: null,
+      reach: { status: 'unknown', reason: 'post-suite-leg-inputs-unmeasured' } });
   });
 });
 

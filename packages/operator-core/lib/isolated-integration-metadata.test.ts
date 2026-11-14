@@ -317,11 +317,13 @@ it('pins direct calibrated fixture imports before recording an original lifetime
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-it('pins an imported private cleanup helper even when the caller lists only the launcher', async () => {
+it.each(['cleanup', 'env', 'migrations'])('pins an imported private %s helper even when the caller lists only the launcher', async kind => {
   const root = mkdtempSync(join(tmpdir(), 'isolated-cleanup-source-'));
   const launcher = 'scripts/with-test-pg.mjs';
-  const helper = 'scripts/lib/with-test-pg-cleanup.mjs';
-  const launcherBytes = "const cleanup = await import('./lib/with-test-pg-cleanup.mjs');\n";
+  const helper = `scripts/lib/with-test-pg-${kind}.mjs`;
+  const launcherBytes = kind === 'cleanup'
+    ? "const cleanup = await import('./lib/with-test-pg-cleanup.mjs');\n"
+    : `import { helper } from './lib/with-test-pg-${kind}.mjs';\n`;
   const helperBytes = 'export const cleanup = "original";\n';
   const digest = (text: string) => createHash('sha256').update(text).digest('hex');
   const git = (...args: string[]) => execFileSync('git', ['-C', root,

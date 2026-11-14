@@ -432,6 +432,8 @@ export async function setClaimSpec(
     cupId: string;
     workspaceId?: string;
     spec?: unknown;
+    /** Bootstrap only: never replace a policy installed after the caller's read. */
+    ifAbsent?: boolean;
     appendIds?: string[];
     /** Run the tool's existing admission oracle against the locked candidate. */
     validateAppend?: (spec: ClaimSpec, harnessSlug: string | null) => Promise<{ errors: string[]; warning?: string }>;
@@ -446,7 +448,7 @@ export async function setClaimSpec(
   sqlOverride?: OrgSql,
 ): Promise<SetClaimSpecResult> {
   if (args.appendIds !== undefined) {
-    if (args.spec !== undefined || !args.cupId.startsWith('fleet:') || args.appendIds.length === 0 ||
+    if (args.ifAbsent || args.spec !== undefined || !args.cupId.startsWith('fleet:') || args.appendIds.length === 0 ||
         args.appendIds.some((id) => typeof id !== 'string' || !id.trim())) {
       return { ok: false, errors: ['appendIds requires a fleet target, nonempty ids, and no replacement spec'] };
     }
@@ -515,6 +517,18 @@ export async function setClaimSpec(
   // pin (a fixed wave), as opposed to a property-filtered standing lane. Denormalized so
   // over-reliance is a one-line COUNT, keeping the describe-by-property discipline visible.
   const idOnly = isIdOnlySelector(v.spec);
+
+  if (args.ifAbsent) {
+    // One statement arbitrates a concurrent bootstrap/re-steer without touching
+    // the incumbent's policy, revision, provenance or federation scope.
+    const rows = await sql`
+      INSERT INTO harness_shared.cup_claim_specs (workspace_id, bee_id, spec, revision, id_only, updated_by, harness_slug, updated_at)
+      VALUES (${ws}, ${args.cupId}, ${JSON.stringify(v.spec)}::text::jsonb, ${v.spec.revision}, ${idOnly}, ${args.updatedBy ?? null}, ${potSlug}, now())
+      ON CONFLICT (workspace_id, bee_id) DO NOTHING RETURNING revision`;
+    return rows.length
+      ? { ok: true, errors: [], revision: rows[0]!.revision, ...(strandWarning ? { warning: strandWarning } : {}) }
+      : { ok: false, errors: ['A claim policy was installed during binding; retry against the current policy.'] };
+  }
 
   // L9 (cross-machine-coord-parity-and-trust-2026-07-01 P-058, audit D-013):
   // TOMBSTONE ON SCOPE-DOWNGRADE. cup_claim_specs is keyed (workspace_id, bee_id)

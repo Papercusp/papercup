@@ -63,7 +63,7 @@ describe("classifyVerifiedWaitTimeout", () => {
         certificate({ issuedAtMs: 1_000, lastProgressAtMs: 900 }),
         observation({ checkedAtMs: 2_000, lastProgressAtMs: 900, state: "unknown" }),
       ),
-    ).toMatchObject({ classification: "unknown", nextAction: "re-await" });
+    ).toMatchObject({ classification: "unknown", nextAction: "resolve-uncertainty" });
   });
 
   it("EI-21045433666635330: never falls back to the staleness heuristic when the adapter observed the producer as actively running, even with a stale progress marker", () => {

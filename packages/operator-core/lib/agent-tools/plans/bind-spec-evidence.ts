@@ -14,6 +14,7 @@ import {
   bindSpecEvidence,
   evidenceMeasurementSchema,
   MEASUREMENT_PIN_DETAILS_KEY,
+  HISTORICAL_MEASUREMENT_DETAILS_KEY,
   measureAndPinEvidenceForScope,
   measureAndPinRepoFilesEvidenceAtCommitForScope,
   resolveMeasurementRoot,
@@ -41,6 +42,7 @@ import {
 } from './declared-configuration';
 import { listScorecards } from '../../scorecards';
 import { assertCodeDependencyVersions, captureCodeDependencies, dependencyQueriesSchema } from './code-dependency-evidence';
+import { parentPublicationAdvisory } from './evidence-measurement-pin';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { unvettedRubricBindAdvisory, VET_BEFORE_PROOF_ORDER } from './bind-vetting-advisory';
 import {
@@ -188,6 +190,10 @@ const bindingDetailsSchema = z.preprocess((value) => {
       .passthrough(),
   )
   .superRefine((details, ctx) => {
+    if (Object.prototype.hasOwnProperty.call(details, HISTORICAL_MEASUREMENT_DETAILS_KEY)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [HISTORICAL_MEASUREMENT_DETAILS_KEY],
+        message: 'historicalMeasurement is reserved for the measured binding producer' });
+    }
     if (details.testLayer !== undefined) {
       if (typeof details.testLayer !== 'string') {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['testLayer'], message: 'details.testLayer must be a string' });
@@ -1267,11 +1273,11 @@ export async function bindSpecEvidenceItems(
                 ...(args.slug ? { planSlug: args.slug } : {}),
                 harnessSlug,
                 actorId,
-              }),
+              }, measured ?? undefined),
             );
             timing.stored(result);
             return OK.has(result.status)
-              ? { ok: true as const, slug: reportedSlug, ...derived, ...result }
+              ? { ok: true as const, slug: reportedSlug, ...derived, ...result, ...parentPublicationAdvisory(measured?.pin) }
               : { ok: false as const, slug: reportedSlug, error: result.status, ...derived, ...result };
           },
           {

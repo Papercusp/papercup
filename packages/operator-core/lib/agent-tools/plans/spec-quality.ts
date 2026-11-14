@@ -484,6 +484,18 @@ function withoutPublicContractIdentifiers(behavior: string): string {
     /(\b(?:scorecard|criterion|rating|receipt|record|row|payload|response|result|assessment|entry)\b[^.;\n]{0,160}?\b(?:recorded|stored|persisted|returned)\s+with\s+)([a-z_$][A-Za-z0-9_$]*[A-Z][A-Za-z0-9_$]*)(?=\s+(?:'[^'\r\n]+'|"[^"\r\n]+"))/gi,
     (_match, prefix: string, field: string) => prefix + ' '.repeat(field.length),
   );
+  // A readback can expose a missing or changed public field. Mask only the
+  // field immediately following that observation, not later helper names.
+  text = text.replace(
+    /(\breadbacks?\s+(?:omits?|changes?|lacks?)(?:\s+(?:or|and)\s+(?:omits?|changes?|lacks?))*\s+)([A-Za-z_$][A-Za-z0-9_$]*)\b/gi,
+    (_match, prefix: string, field: string) => prefix + ' '.repeat(field.length),
+  );
+  // Qualified data compared with an expected value is observable contract
+  // state. Other uses of the same name remain subject to the construct scan.
+  text = text.replace(
+    /(\b(?:(?:complete|ordered|unique|canonical|recorded|returned|serialized|public|normative)\s+)+)([A-Za-z_$][A-Za-z0-9_$]*)(?=\s+(?:differs?\s+from|matches?|equals?)\b)/gi,
+    (_match, prefix: string, field: string) => prefix + ' '.repeat(field.length),
+  );
   // Names in persisted/public records are observable even when an observation
   // describes a missing or lost field instead of a successful response. Stop
   // before explanatory clauses so a private helper later in the sentence is
@@ -611,10 +623,10 @@ function implementationCouplingReason(behavior: string, publicContract?: string)
   // A bare lower-camel identifier is also an implementation reference: clauses
   // can name a function directly (for example, `runSyncBatchDeltaCheck
   // evaluates the batch`) without an introductory "function" or code quotes.
-  // Public platform and device product names (Apple brands them lowerCamel)
-  // describe the environment visible to a user, not code. Continue scanning
-  // after them so a later actual implementation symbol still fails.
-  const publicPlatformNames = new Set([
+  // Public platform/device names and established metric spellings describe
+  // observable inputs or results. Explicit construct references above still
+  // fail, and scanning continues so a later implementation symbol also fails.
+  const publicObservableNames = new Set([
     'macOS',
     'iOS',
     'iPadOS',
@@ -625,6 +637,7 @@ function implementationCouplingReason(behavior: string, publicContract?: string)
     'iPad',
     'iPod',
     'iMac',
+    'nDCG',
   ]);
   let identifierText = withoutPublicContractIdentifiers(behavior);
   if (publicContract) {
@@ -637,7 +650,7 @@ function implementationCouplingReason(behavior: string, publicContract?: string)
     );
   }
   for (const match of identifierText.matchAll(/\b[a-z_$][A-Za-z0-9_$]*[A-Z][A-Za-z0-9_$]*\b/g)) {
-    if (!publicPlatformNames.has(match[0])) {
+    if (!publicObservableNames.has(match[0])) {
       return 'names implementation construct ' + JSON.stringify(match[0]) + ' instead of an observable contract';
     }
   }
@@ -1120,7 +1133,7 @@ export function evaluatePlanSpecQuality(input: {
   const implementationIndependenceControlsPassed = implementationIndependenceDetectorControls.every((control) => control.passed);
   const implementationIndependenceCoverage =
     ' Fields inspected per clause: behavior and falsifier.observation (falsifier.probeMethod is excluded because it legitimately names the test or probe).' +
-    ' Detector coverage: implementation filenames, explicitly qualified/quoted construct symbols (including snake_case identifiers), bare lowerCamel identifiers (excluding recognized public platform/device names), repository paths, internal route literals, named operations, mandated reuse of existing surfaces (including shared UI components/report cards, runtimes, flows, pipelines, ledgers, mechanisms, scheduling paths and sweeps, including passive by prescriptions), imperative implementation selection, filesystem permission modes, named storage backends, encryption, and mirroring. Inspected ' +
+    ' Detector coverage: implementation filenames, explicitly qualified/quoted construct symbols (including snake_case identifiers), bare lowerCamel identifiers (excluding recognized public platform/device names and metric spellings), repository paths, internal route literals, named operations, mandated reuse of existing surfaces (including shared UI components/report cards, runtimes, flows, pipelines, ledgers, mechanisms, scheduling paths and sweeps, including passive by prescriptions), imperative implementation selection, filesystem permission modes, named storage backends, encryption, and mirroring. Inspected ' +
     behavioral.length + ' active/accepted behavior clause(s), including ' +
     behavioral.filter(isProjectedBar).length + ' sourceBar-pinned acceptance BAR projection(s).' +
     ` ${currentSet.length - behavioral.length} draft/exempt clause(s) excluded; per-clause dispositions are in details.implementationIndependenceClauseDiagnostics.` +

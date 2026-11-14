@@ -40,6 +40,7 @@ import {
 import {
   guaranteesWake,
   readHeldWorkItems,
+  readExhaustedPushParkCoverage,
   readWorkItemAwaitTargets,
   type HeldWorkItem,
   type WakeSourceAwait,
@@ -103,6 +104,7 @@ export interface TurnEndHeldWorkDeps {
   getLoopActive: (ownerId: string) => Promise<boolean | null>;
   listParkedAwaits: (ownerId: string) => Promise<WakeSourceAwait[]>;
   readAwaitTargets: (awaits: WakeSourceAwait[]) => Promise<WorkItemAwaitTargets>;
+  hasExhaustedPushPark: (ownerId: string, workspaceId: string, held: readonly HeldWorkItem[]) => Promise<boolean>;
   hasPendingDeliberateWakeDelivery: (ownerId: string, excludeDeliveryIds?: readonly number[]) => Promise<boolean>;
   /** A recent host-ledger receipt says this owner has an accepted carry-respawn in flight. */
   hasFreshPendingCarryRespawn: (ownerId: string) => Promise<boolean>;
@@ -122,6 +124,7 @@ const defaultDeps: TurnEndHeldWorkDeps = {
   listParkedAwaits: async (ownerId) =>
     (await listParkedAwaitsForSubscribers([ownerId])).map((a) => ({ ...a, subscriberId: ownerId })),
   readAwaitTargets: (awaits) => readWorkItemAwaitTargets(awaits),
+  hasExhaustedPushPark: (ownerId, workspaceId, held) => readExhaustedPushParkCoverage(ownerId, workspaceId, held),
   hasPendingDeliberateWakeDelivery: (ownerId, excludeDeliveryIds) =>
     hasPendingDeliberateWakeDelivery(ownerId, excludeDeliveryIds),
   hasFreshPendingCarryRespawn: async (ownerId) => {
@@ -142,6 +145,7 @@ type TurnEndRewakeDeliveryDeps = Pick<
   | 'getLoopActive'
   | 'listParkedAwaits'
   | 'readAwaitTargets'
+  | 'hasExhaustedPushPark'
   | 'hasPendingDeliberateWakeDelivery'
 > & {
   resolveRecipientWorkspace: (ownerId: string) => Promise<string | null>;
@@ -154,6 +158,7 @@ const defaultTurnEndRewakeDeliveryDeps: TurnEndRewakeDeliveryDeps = {
   getLoopActive: defaultDeps.getLoopActive,
   listParkedAwaits: defaultDeps.listParkedAwaits,
   readAwaitTargets: defaultDeps.readAwaitTargets,
+  hasExhaustedPushPark: defaultDeps.hasExhaustedPushPark,
   hasPendingDeliberateWakeDelivery: defaultDeps.hasPendingDeliberateWakeDelivery,
 };
 
@@ -197,6 +202,9 @@ export async function classifyTurnEndRewakeDelivery(input: {
       return { kind: 'obsolete', reason: 'a current bounded wake is already guaranteed' };
     }
 
+    if (await deps.hasExhaustedPushPark(ownerId, workspaceId, held).catch(() => false)) {
+      return { kind: 'obsolete', reason: 'every held item has a canonical exhausted push-only park' };
+    }
     return { kind: 'keep' };
   } catch {
     return { kind: 'keep', reason: 'freshness read failed' };
@@ -244,6 +252,8 @@ export async function evaluateTurnEndHeldWorkStop(input: {
     const targets = await deps.readAwaitTargets(chosen);
     const guaranteedWake = chosen.some((a) => guaranteesWake(a, targets, INBOX_WAKE_KEY_PREFIX));
     if (guaranteedWake) return safeStop();
+    // Event-driven admission retains custody without renewing the spent timer budget.
+    if (await deps.hasExhaustedPushPark(ownerId, workspaceId, held).catch(() => false)) return safeStop();
     if (pendingCarryRespawn) {
       // The host may still terminally drop an accepted carry. Let the pty go quiet only after
       // retaining this bounded fallback; a failed/exhausted timer keeps the refusal in force.

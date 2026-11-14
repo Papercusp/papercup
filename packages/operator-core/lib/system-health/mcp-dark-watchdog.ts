@@ -51,6 +51,7 @@ import {
   readWorkItemAwaitTargets,
 } from '../events/await/wake-source-predicate';
 import type { PsuPtyHost } from '../events/await/psu-pty-discovery';
+import { EXPOSED_TOOLS_REFRESH_MS } from '../code-intelligence/push-toolset';
 import type { RespawnLaunchSpec } from '../carry-respawn';
 
 /** Supervisor beat is ~60s; fresh within 3× ⇒ the process is alive. */
@@ -360,6 +361,8 @@ const DEFAULT_PTY_FRESH_MS = 10 * 60_000;
 const DEFAULT_NO_LOOP_STALE_MS = 30 * 60_000;
 /** Repeated assistant turns with no agent-origin MCP call indicate a missing client tool catalog. */
 const DEFAULT_TOOLLESS_ASSISTANT_TURN_THRESHOLD = 3;
+/** WI-6554700010048116: tools/list happens at connect, so a child this old without one is toolless. */
+const DEFAULT_CHILD_UNLISTED_MS = 3 * 60_000;
 /** A host execution observation is current-turn evidence only while freshly sampled. */
 const DEFAULT_EXECUTION_FRESH_MS = 15_000;
 /** Armed-loop clause floor (beats 3× a short loop interval). */
@@ -394,9 +397,19 @@ export interface InteractiveDarkSnapshot {
   hostParked?: boolean;
   /** Fresh host-side native execution observation; stale/absent evidence is unknown. */
   execution?: Pick<NonNullable<PsuPtyHost['execution']>, 'phase' | 'pendingTools' | 'observedAt'> | null;
+  /** WI-6554700010048116: epoch ms the host's CURRENT CLI child started (a carry replaces the
+   *  child under an unchanged hostStartedMs). Null/absent = unknown (an older host). */
+  childStartedMs?: number | null;
+  /** Latest session_exposed_tools.listed_at for this owner (epoch ms). null = never listed;
+   *  undefined = NOT MEASURED (the read failed), which disables the unlisted-child clause. */
+  lastToolListingMs?: number | null;
 }
 
 export interface InteractiveDarkThresholds {
+  /** A live child this old with no tools/list recorded since it started is toolless. */
+  childUnlistedMs?: number;
+  /** How far before child start a recorded listing still counts (the record dedup window). */
+  listingToleranceMs?: number;
   graceMs?: number;
   ptyFreshMs?: number;
   noLoopStaleMs?: number;
@@ -419,6 +432,11 @@ export function evaluateInteractiveMcpDark(
   const ptyFreshMs = opts.ptyFreshMs ?? DEFAULT_PTY_FRESH_MS;
   const noLoopStaleMs = opts.noLoopStaleMs ?? DEFAULT_NO_LOOP_STALE_MS;
   const loopStaleFloorMs = opts.loopStaleFloorMs ?? DEFAULT_LOOP_STALE_FLOOR_MS;
+
+  // WI-6554700010048116: positive per-CHILD evidence, so it precedes the host-age grace and the
+  // presence check — a carry successor inherits both from its predecessor's host and owner.
+  const unlisted = unlistedChildReason(s, nowMs, opts);
+  if (unlisted) return { dark: true, reason: unlisted };
 
   // Host too young (or unknown age): the session may simply not have tool-called yet.
   if (s.hostStartedMs == null || nowMs - s.hostStartedMs < graceMs) return { dark: false, reason: null };
@@ -504,6 +522,45 @@ export function evaluateInteractiveMcpDark(
       `whose last MCP tool call was ~${mins(staleMs)}m ago — the transport is severed while the session works on dark ` +
       `(local tools only).`,
   };
+}
+
+/**
+ * WI-6554700010048116: a CLI child past the listing grace with NO tools/list recorded since it
+ * started never received its tool catalog. Claude fetches that catalog once per connection, so
+ * such a child stays toolless until reconnected — and it may simply stop, never accruing the
+ * assistant turns the tool-free-turn clause needs. A recorded listing up to the record dedup
+ * window before child start still counts: a dedup-skipped write proves an earlier write at most
+ * that long before the listing. Unknown inputs (older host, unmeasured listing) never fire, and
+ * neither does a parked host or a child that is visibly executing right now.
+ */
+function unlistedChildReason(
+  s: InteractiveDarkSnapshot,
+  nowMs: number,
+  opts: InteractiveDarkThresholds,
+): string | null {
+  if (s.childStartedMs == null || s.lastToolListingMs === undefined || s.hostParked === true) return null;
+  // A session with no presence beat AND no listing ever may not be a Papercusp session at all
+  // (EI-18154797330496809: healing one re-injected /mcp forever). A carry successor always has one.
+  if (s.presenceHeartbeatMs == null && s.lastToolListingMs == null) return null;
+  const childAgeMs = nowMs - s.childStartedMs;
+  if (childAgeMs < (opts.childUnlistedMs ?? DEFAULT_CHILD_UNLISTED_MS)) return null;
+  const toleranceMs = opts.listingToleranceMs ?? EXPOSED_TOOLS_REFRESH_MS;
+  if (s.lastToolListingMs != null && s.lastToolListingMs >= s.childStartedMs - toleranceMs) return null;
+  const e = s.execution;
+  const executionAgeMs = e?.observedAt == null ? null : nowMs - e.observedAt;
+  const executing =
+    e != null &&
+    executionAgeMs != null &&
+    executionAgeMs >= 0 &&
+    executionAgeMs <= (opts.executionFreshMs ?? DEFAULT_EXECUTION_FRESH_MS) &&
+    (e.phase === 'running' || e.pendingTools > 0);
+  if (executing) return null;
+  const lastListing = s.lastToolListingMs == null ? 'never' : `~${mins(nowMs - s.lastToolListingMs)}m ago`;
+  return (
+    `interactive CLI child started ~${mins(childAgeMs)}m ago and has no tools/list recorded since ` +
+    `(last listing for this owner: ${lastListing}) — it never received its Papercusp tool catalog, ` +
+    `which the client fetches only once per connection.`
+  );
 }
 
 export type InteractiveHealAction = 'heal' | 'defer-budget' | 'notify' | 'announce-healed' | 'none';
@@ -980,6 +1037,16 @@ export async function checkInteractiveMcpDark(
     // live hosts means zero owners can be dark THIS pass), which the recovery
     // sweep below then treats identically to "all clear".
     if (owners.length > 0) {
+      // WI-6554700010048116: each owner's latest recorded tools/list. A failed read is NOT
+      // "never listed" — it maps to undefined, which disables the unlisted-child clause.
+      const listingRowsPromise = Promise.resolve()
+        .then(() => sql<{ owner_id: string; listed_ms: string | number | null }[]>`
+          SELECT owner_id, extract(epoch from max(listed_at)) * 1000 AS listed_ms
+            FROM harness_shared.session_exposed_tools
+           WHERE owner_id = ANY(${owners})
+           GROUP BY owner_id`)
+        .then((rows) => (Array.isArray(rows) ? rows : null))
+        .catch(() => null);
       const [presenceRows, loopRows, agentInvocationRows, openAwaits] = await Promise.all([
         sql<{ owner_id: string; presence_ms: string | number | null }[]>`
           SELECT owner_id, extract(epoch from heartbeat_at) * 1000 AS presence_ms
@@ -1002,6 +1069,10 @@ export async function checkInteractiveMcpDark(
         openAwaitsPromise,
       ]);
       const toolFreeTurnRows = await toolFreeTurnRowsPromise;
+      const listingRows = await listingRowsPromise;
+      const listingBy = listingRows
+        ? new Map(listingRows.map((r) => [r.owner_id, r.listed_ms != null ? Number(r.listed_ms) : null]))
+        : null;
       const workItemAwaitTargets = await readWorkItemAwaitTargets(openAwaits, sql);
       const wakeSourcesByOwner = countWakeSourcesBySubscriber(
         openAwaits,
@@ -1049,6 +1120,8 @@ export async function checkInteractiveMcpDark(
             hasWakeSource: (wakeSourcesByOwner.get(h.ownerId) ?? 0) > 0,
             hostParked: h.parked === true,
             execution: h.execution ?? null,
+            childStartedMs: h.childStartedAt ?? null,
+            lastToolListingMs: listingBy ? (listingBy.get(h.ownerId) ?? null) : undefined,
           },
           now,
           opts,

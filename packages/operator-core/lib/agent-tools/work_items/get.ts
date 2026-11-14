@@ -19,6 +19,8 @@ import {
   getWorkItemDetail,
   getWorkItemThreadWindow,
   SETTLED_WORK_ITEM_STATES,
+  getWorkItemAdoptionSnapshot,
+  WorkItemAdoptionError,
 } from "../../work-items";
 import { mergeIds, runBulk, bulkContent, bulkEnvelopeSchema } from "../_bulk";
 import { cachedRead, type CachedReadCtx } from "../../cache";
@@ -671,6 +673,7 @@ const workItemIdentityResultSchema = z.object({
 const workItemsGetResultRowSchema = z.object({
   ok: z.boolean(),
   id: z.string(),
+  adoptionSnapshot: z.object({ schemaVersion: z.literal(1), fingerprint: z.string() }).optional(),
   // EI-25202926303923365: resume is a continuation packet, and checks is
   // a bounded ledger rather than an array. Publish the consumer's real path
   // and validate it instead of accepting any resume value via passthrough.
@@ -919,6 +922,7 @@ export default defineTool({
         .describe(
           "also return topics, thread posts (comments), outgoing links, `lifecycle` — the unified history (blocks, holds, reopens) with a coverage report saying what is NOT recorded — and `priorAttempts`, the bounded prior-attempt brief (what was already tried on this item's plan lane, and what the budget OMITTED). Accepts `true`/`false`, or the aliases `'full'`/`'summary'` (some tools in this catalog use that string-enum convention instead).",
         ),
+      adoptionSnapshot: z.boolean().optional().describe('Read a coherent complete adoption fingerprint for this exact authenticated workspace and harness; no cached permit.'),
       checksOnly: z
         .boolean()
         .optional()
@@ -1030,6 +1034,27 @@ export default defineTool({
   },
   async handler(args, ctx) {
     const ids = mergeIds(args.id, args.ids);
+    if (args.adoptionSnapshot) {
+      const workspaceId = ctx.workspaceId;
+      const startedAt=Date.now();
+      const envelope = await runBulk(ids, async id => {
+        if (!workspaceId || !args.harness || !ctx.principal)
+          return { ok: false, id, error: 'adoption_scope_required', message: 'An authenticated workspace and exact harness are required.' };
+        try {
+          const remaining=WORK_ITEMS_GET_BUDGET_MS-(Date.now()-startedAt);
+          if(remaining<=0)return {ok:false,id,error:'adoption_snapshot_unavailable',availability:'unavailable'};
+          const measured=await withWorkItemsGetBudget(getWorkItemAdoptionSnapshot({ workspaceId, harnessSlug: args.harness, id }),
+            {timeoutMs:remaining,signal:ctx.signal,label:'complete adoption snapshot'});
+          if(measured.reason==='error')throw measured.error;
+          if(measured.reason!==null)return {ok:false,id,error:'adoption_snapshot_unavailable',availability:'unavailable'};
+          return { ok: true, id, adoptionSnapshot:measured.value };
+        } catch (error) {
+          if (error instanceof WorkItemAdoptionError) return { ok: false, id, error: error.code, message: error.message };
+          return { ok: false, id, error: 'adoption_snapshot_unavailable', message: 'The complete coherent snapshot could not be measured.' };
+        }
+      },{maxConcurrency:Math.max(1,Math.min(ids.length,WORK_ITEMS_GET_MAX_CONCURRENCY))});
+      return bulkContent(envelope);
+    }
     const bulkStartedAt = Date.now();
     // P-008: the operational brief projects from the whole row (payload for set_blocker
     // records, checkpoint, holder, planItemBlocked), so a requested brief forces the

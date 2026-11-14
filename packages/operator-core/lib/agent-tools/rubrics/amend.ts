@@ -296,8 +296,8 @@ async function reviewReceiptKey(
 
 /**
  * P-004 (plan-verification-friction-reduction-2026-10-11): post preview.approval
- * on the named work-item so the routed review opens in the same call. The body is
- * the approval JSON exactly, which is what the apply resolver parses. No
+ * on the named work-item so the routed review opens in the same call. The body
+ * includes the complete pinned source when its hash is required. No
  * writerOwnerId: this is server-templated, and a sealed stub would fail that parse.
  */
 async function postPreviewApproval(
@@ -415,7 +415,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .regex(/^thread-post:[1-9][0-9]*$/)
       .optional()
       .describe(
-        "dryRun only: thread-post:<id> containing this preview's approval JSON; opens the routed review when required and returns its state/next.",
+        'dryRun only: complete preview/source post. Prefer requestReview to retain it and open review automatically.',
       ),
     requestReview: z
       .object({
@@ -640,11 +640,11 @@ export default defineTool({
     notWhen:
       'For standard rubric criteria, key, or rating changes use rubrics:propose. Complete `criteria` is acceptance-only and must preserve stored keys unless removal is explicitly allowed.',
     chaining:
-      "Started BAR: read the subject plan's `## Requirements`/`## Design`; map changes to a non-dropped P-NNN item in `### Bar-to-work map for this plan` (removals exempt). Prefer `dryRun:true, requestReview:{workItemId}` to post approval and start review in one call. Manual compatibility: post preview.approval via work_items:comment (a thread post is readable on every surface; a payload needs payloadTier) and pass `reviewPreviewPost:'thread-post:<preview-id>'`. Follow review.next; after `approve thread-post:<preview-post-id>`, apply the same patch with `approvalRef:'thread-post:<answer-id>'`. Large previews return an approvalRef/receipt. The relevance router chooses the outside-lineage reviewer; never pick or message one yourself; do not create a counter-sign work-item. Posts are immutable workspace/id refs (no hash transcription). Full contract: /internal/docs/agent-insights/unified-requirement-contract.",
+      "Started BAR: read subject plan's `## Requirements`/`## Design`; map to a non-dropped P-NNN item in `### Bar-to-work map for this plan` (removals exempt). Prefer `dryRun:true, requestReview:{workItemId,harness}` for complete preview/source + review. Manual: work_items:comment with acceptanceBarReviewPostBody(preview.approval, preview.reviewSource), then `reviewPreviewPost:'thread-post:<preview-id>'`; JSON alone lacks required source. Follow review.next. After `approve thread-post:<preview-post-id>`, apply same patch with `approvalRef:'thread-post:<answer-id>'`. Large replies include approvalRef/receipt. The relevance router chooses outside-lineage reviewers; do not pick/message one; do not create a counter-sign work-item. Posts: immutable workspace/id refs, no hash transcription. Contract: /internal/docs/agent-insights/unified-requirement-contract.",
     seeAlso: [
       'rubrics:propose (whole-document revision)',
       'rubrics:get (read before amending)',
-      'work_items:comment (post the exact approval JSON as a Threadable body)',
+      'work_items:comment (review answers or complete preview/source records)',
       'conversations:get (find the routed reviewer answer post id)',
     ],
   },

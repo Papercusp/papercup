@@ -217,14 +217,21 @@ function relatedExceptionText(item: PlanItem, decisions: PlanDecision[]): string
 
 function strongDeployedGateClauses(text: string): string[] {
   return gateProseClauses(neutralizePlanIdentifiers(text)).filter(
-      (clause) =>
-        DEPLOYED_ENV_RE.test(clause) &&
-        (STRONG_GATE_RE.test(clause) || RELEASE_PLANE_UNTIL_RE.test(clause) ||
+      (clause) => {
+        // A receipt's prerequisite-WI field identifies evidence; it does not
+        // itself require deployment. Keep actual wait/order language in the
+        // same clause, and preserve the original clause for diagnostic output.
+        const dependencyText = /^(?:its|the|this|that)\s+receipt\s+(?:must|shall|should)\s+(?:name|record|include|bind|identify|list)\b/i.test(clause)
+          ? clause.replace(/\bprerequisite(?=\s+(?:WI\b|work[- ]item\b))/gi, 'referenced')
+          : clause;
+        return DEPLOYED_ENV_RE.test(dependencyText) &&
+        (STRONG_GATE_RE.test(dependencyText) || RELEASE_PLANE_UNTIL_RE.test(dependencyText) ||
           // Bind only-after to its object, rather than a scanned release subject
           // earlier in the sentence. A later explicit prerequisite still counts.
-          [...clause.matchAll(/\bonly\s+after\b([^;,.!?]*)/gi)]
+          [...dependencyText.matchAll(/\bonly\s+after\b([^;,.!?]*)/gi)]
             .some((match) => DEPLOYED_ENV_RE.test(match[1]!))) &&
-        !NEGATED_OR_META_GATE_RE.test(clause),
+        !NEGATED_OR_META_GATE_RE.test(dependencyText);
+      },
     );
 }
 
@@ -436,7 +443,9 @@ export function stagingFirstActivationProblems(plan: ParsedPlan): StagingFirstAc
           /\b(?:deploy|promote|release|ship|rollout)\b.{0,120}(?:\bmain\b|:3070\b|\bgreen[- ](?:checkpoint|pin)\b|\bproduction\b|\bdeployed[- ]host\b)/i.test(positiveReleaseText);
         return DEPLOYED_ENV_RE.test(positiveReleaseText) && (
           hasStrongDeployedGate(positiveReleaseText) ||
-          /\bdeploy(?:ed|ing)?\b/i.test(positiveReleaseText) ||
+          // "deployed verification" can name inputs frozen for a downstream
+          // final item. Require an operation or an actual deployment obligation.
+          /\bdeploy(?:ing)?\b|\b(?:must|shall|needs? to|required to)\s+(?:be\s+)?deployed\b/i.test(positiveReleaseText) ||
           /\bdeployment\s+readiness\b/i.test(positiveReleaseText) ||
           FINAL_LIFECYCLE_RE.test(positiveReleaseText) ||
           FINAL_PHASE_RE.test(blocker.phase ?? '') ||

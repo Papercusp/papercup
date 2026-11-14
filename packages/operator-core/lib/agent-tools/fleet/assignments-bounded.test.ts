@@ -439,6 +439,12 @@ describe('fleet:assignments bounded handler reads', () => {
       summary: {
         agents: 1,
         alive: null,
+        population: {
+          liveness: {
+            byState: {}, unknown: 1, live: null, liveShare: null, overstatesActivity: null,
+            note: expect.stringContaining('unmeasured'),
+          },
+        },
         claims: 1,
         scheduler_claim_state_status: 'unknown',
         scheduler_active_work_item_claims: null,
@@ -450,10 +456,12 @@ describe('fleet:assignments bounded handler reads', () => {
       agents: [expect.objectContaining({ agentId: 'su-worker', alive: null, heartbeatFresh: true })],
     });
     const shaped = shapeFleetAssignments(result.data, 'trimmed') as {
-      summary?: { alive?: unknown };
+      summary?: { alive?: unknown; population?: { liveness?: { live?: unknown; note?: string } } };
       agents?: Array<{ alive?: unknown }>;
     };
     expect(shaped.summary?.alive).toBeNull();
+    expect(shaped.summary?.population?.liveness?.live).toBeNull();
+    expect(shaped.summary?.population?.liveness?.note).toContain('unmeasured');
     expect(shaped.agents?.[0]?.alive).toBeNull();
     expect(result.data.unmeasuredMetrics).toContain('orphaned_claims');
     expect(result.data.unmeasuredMetrics).toContain('summary.alive');

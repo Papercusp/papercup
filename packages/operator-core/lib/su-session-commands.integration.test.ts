@@ -51,8 +51,9 @@ beforeEach(async () => {
     VALUES (${workspaceId}, ${harnessSlug}, ${agentChatId}, 'operator', '[]'::jsonb,
             ${Date.now()}, ${Date.now()}, 'su-session')`;
   const [row] = await sql<{ id: number }[]>`
-    INSERT INTO harness_shared.adv_sessions (workspace_id, mode, agent, coord_owner_id, su_agent_chat_id, session_id)
-    VALUES (${workspaceId}, 'console', 'claude', 'su-command-fixture', ${agentChatId}, 'native-command-fixture') RETURNING id`;
+    INSERT INTO harness_shared.adv_sessions
+      (workspace_id, mode, agent, coord_owner_id, su_agent_chat_id, session_id, su_runtime_generation)
+    VALUES (${workspaceId}, 'console', 'claude', 'su-command-fixture', ${agentChatId}, 'native-command-fixture', 1) RETURNING id`;
   advSessionId = Number(row.id);
 });
 
@@ -88,6 +89,46 @@ async function storedTurns() {
 }
 
 describe('SU command acceptance through real PostgreSQL', () => {
+  it.each((['claude', 'codex'] as const).flatMap(backend =>
+    (['pty', 'programmatic'] as const).map(executionKind => ({ backend, executionKind })),
+  ))(
+    'P-009: $backend $executionKind stale host cannot reserve a legacy command after durable replacement', async ({ backend, executionKind }) => {
+      await sql`UPDATE harness_shared.adv_sessions SET agent = ${backend} WHERE id = ${advSessionId}`;
+      const snapshot = { ...descriptor(), executionKind,
+        identity: { ...descriptor().identity, backend },
+        backendExtension: backend === 'claude' ? descriptor().backendExtension : { backend, codexHome: null },
+      } as SuSessionDescriptor;
+      expect(await persistSuSessionDescriptor(advSessionId, snapshot, workspaceId)).toBe(true);
+      const next = { ...snapshot, runtimeGeneration: 2 };
+      expect(await persistSuSessionDescriptor(advSessionId, next, workspaceId)).toBe(true);
+      const original = vi.fn(async () => ({ status: 'completed' as const }));
+      const stale = new SuSessionHost({ descriptor: snapshot, executeCommand: original });
+      const durable = pgSuSessionCommandStore({ sql });
+      const command = { ...ownerTurn(`${backend}-${executionKind}-legacy-after-replacement`), target: snapshot.identity };
+      // Older clients do not send expectedRuntimeGeneration. The host's own
+      // admission generation must still match the authoritative durable row.
+      expect(command).not.toHaveProperty('expectedRuntimeGeneration');
+      try {
+        await expect(stale.acceptCommand(command, durable)).rejects.toThrow('no writable, identity-bound conversation');
+        expect(original).not.toHaveBeenCalled();
+        expect(stale.recent.some(({ event }) => event.type === 'command_result')).toBe(false);
+        expect(await storedTurns()).toEqual([]);
+      } finally { stale.dispose(); }
+
+      // The same exact legacy payload is usable by the current generation;
+      // the internal fence must not rewrite the owner's persisted command.
+      const replacement = vi.fn(async () => ({ status: 'completed' as const }));
+      const current = new SuSessionHost({ descriptor: next, executeCommand: replacement });
+      try {
+        const dispatch = await current.acceptCommand(command, durable);
+        expect((await dispatch.terminal).status).toBe('completed');
+        expect(replacement).toHaveBeenCalledOnce();
+        expect(await storedTurns()).toMatchObject([{ su_command: { command, outcome: { status: 'completed' } } }]);
+        expect((await storedTurns())[0]!.su_command.command).not.toHaveProperty('expectedRuntimeGeneration');
+      } finally { current.dispose(); }
+    },
+  );
+
   it.each((['claude', 'codex'] as const).flatMap(backend =>
     (['pty', 'programmatic'] as const).map(executionKind => ({ backend, executionKind })),
   ))(

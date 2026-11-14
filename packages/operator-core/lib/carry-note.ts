@@ -102,6 +102,8 @@ export interface WallEntry {
   claim: string;
   /** Who or what makes this a wall. Missing origin is legacy/unscoped, not authority by itself. */
   origin?: WallOrigin;
+  /** Exact conversation whose open lifecycle keeps this owner wait current. */
+  conversationId?: string;
   /** For self/external walls, the condition under which the restriction still applies. */
   appliesWhile?: string;
   /** A concrete re-check command a successor runs to test whether the wall still stands. */
@@ -111,6 +113,57 @@ export interface WallEntry {
 }
 
 export type WallOrigin = 'owner' | 'system' | 'external' | 'self';
+
+const CARRY_WALL_CONVERSATION_ID_RE = /^[A-Za-z0-9._:-]{1,120}$/;
+const TERMINAL_CARRY_WALL_CONVERSATION_STATES = new Set(['resolved', 'closed', 'superseded', 'expired']);
+
+function normalizeCarryWallConversationId(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const id = value.trim();
+  return CARRY_WALL_CONVERSATION_ID_RE.test(id) ? id : undefined;
+}
+
+export type CarryWallConversationStateReader = (
+  ids: readonly string[],
+  workspaceId?: string,
+) => Promise<ReadonlyArray<{ id: string; state: string }>>;
+
+/**
+ * Remove only walls tied to a conversation whose exact current state is terminal.
+ * Missing rows and read failures preserve their walls, as do open conversations
+ * and unrelated owner commitments.
+ */
+export async function reconcileConversationBoundWalls(
+  walls: readonly WallEntry[],
+  workspaceId: string | null | undefined,
+  readStates: CarryWallConversationStateReader,
+): Promise<WallEntry[]> {
+  const conversationIds = [
+    ...new Set(
+      walls
+        .map((wall) => normalizeCarryWallConversationId(wall.conversationId))
+        .filter((id): id is string => id !== undefined),
+    ),
+  ];
+  if (conversationIds.length === 0) return [...walls];
+
+  let states: ReadonlyArray<{ id: string; state: string }>;
+  try {
+    states = await readStates(conversationIds, workspaceId ?? undefined);
+  } catch {
+    return [...walls];
+  }
+
+  const terminalIds = new Set(
+    states
+      .filter((row) => TERMINAL_CARRY_WALL_CONVERSATION_STATES.has(row.state.trim().toLowerCase()))
+      .map((row) => row.id),
+  );
+  return walls.filter((wall) => {
+    const conversationId = normalizeCarryWallConversationId(wall.conversationId);
+    return !conversationId || !terminalIds.has(conversationId);
+  });
+}
 
 /** Only an explicit owner or system source is an unconditional carried gate. */
 export function isCarryWallAuthoritative(wall: Pick<WallEntry, 'origin'>): boolean {
@@ -1481,10 +1534,12 @@ export function renderWallLine(w: WallEntry): string {
   const recheck = (w.recheck ?? '').trim();
   const id = sanitizeCarryRowId(w.id);
   const origin = w.origin ? '[origin:' + w.origin + '] ' : '';
+  const conversationId = normalizeCarryWallConversationId(w.conversationId);
+  const conversation = conversationId ? '[conversation:' + conversationId + '] ' : '';
   const appliesWhile = (w.appliesWhile ?? '').trim();
   const applies = appliesWhile ? ' — applies while: ' + appliesWhile : '';
   const since = w.sinceMs != null && Number.isFinite(w.sinceMs) ? ` (since ${new Date(w.sinceMs).toISOString()})` : '';
-  return '- ' + (id ? '[#' + id + '] ' : '') + origin + w.claim.trim() + applies +
+  return '- ' + (id ? '[#' + id + '] ' : '') + origin + conversation + w.claim.trim() + applies +
     (recheck ? ' — re-check: ' + recheck : '') + since;
 }
 
@@ -1492,23 +1547,25 @@ export function renderWallLine(w: WallEntry): string {
  *  non-row line (blank, prose, malformed). */
 export function parseWallLine(line: string): WallEntry | null {
   const m =
-    /^-\s+(?:\[#([A-Za-z0-9._:-]{1,40})\]\s+)?(?:\[origin:(owner|system|external|self)\]\s+)?(.+?)(?:\s+—\s+applies while:\s+(.+?))?(?:\s+—\s+re-check:\s+(.+?))?(?:\s+\(since\s+([^)]+)\))?\s*$/.exec(
+    /^-\s+(?:\[#([A-Za-z0-9._:-]{1,40})\]\s+)?(?:\[origin:(owner|system|external|self)\]\s+)?(?:\[conversation:([A-Za-z0-9._:-]{1,120})\]\s+)?(.+?)(?:\s+—\s+applies while:\s+(.+?))?(?:\s+—\s+re-check:\s+(.+?))?(?:\s+\(since\s+([^)]+)\))?\s*$/.exec(
       line,
     );
   if (!m) return null;
-  const claim = (m[3] ?? '').trim();
+  const claim = (m[4] ?? '').trim();
   if (!claim) return null;
   const out: WallEntry = { claim };
   const id = sanitizeCarryRowId(m[1]);
   if (id) out.id = id;
   const origin = m[2] as WallOrigin | undefined;
   if (origin) out.origin = origin;
-  const appliesWhile = (m[4] ?? '').trim();
+  const conversationId = normalizeCarryWallConversationId(m[3]);
+  if (conversationId) out.conversationId = conversationId;
+  const appliesWhile = (m[5] ?? '').trim();
   if (appliesWhile) out.appliesWhile = appliesWhile;
-  const recheck = (m[5] ?? '').trim();
+  const recheck = (m[6] ?? '').trim();
   if (recheck) out.recheck = recheck;
-  if (m[6]) {
-    const t = Date.parse(m[6]);
+  if (m[7]) {
+    const t = Date.parse(m[7]);
     if (Number.isFinite(t)) out.sinceMs = t;
   }
   return out;
@@ -1891,6 +1948,7 @@ export function normalizeWallEntries(
     id?: string;
     claim: string;
     origin?: WallOrigin;
+    conversationId?: string;
     appliesWhile?: string;
     recheck?: string;
     sinceMs?: number;
@@ -1909,12 +1967,14 @@ export function normalizeWallEntries(
     const existing = priorRowForIncoming(e, prior, priorByKey);
     const id = sanitizeCarryRowId(e.id) ?? existing?.id;
     const origin = e.origin ?? existing?.origin;
+    const conversationId = normalizeCarryWallConversationId(e.conversationId ?? existing?.conversationId);
     const appliesWhile = (e.appliesWhile ?? existing?.appliesWhile ?? '').trim();
     const recheck = (e.recheck ?? existing?.recheck ?? '').trim();
     out.push({
       ...(id ? { id } : {}),
       claim,
       ...(origin ? { origin } : {}),
+      ...(conversationId ? { conversationId } : {}),
       ...(appliesWhile ? { appliesWhile } : {}),
       ...(recheck ? { recheck } : {}),
       sinceMs: e.sinceMs ?? existing?.sinceMs ?? nowMs,

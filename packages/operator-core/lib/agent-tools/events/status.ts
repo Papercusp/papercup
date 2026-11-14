@@ -37,6 +37,9 @@ import {
 } from '../../events/await/declared-gate-recovery-runtime';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { eventStatusReadAccessError } from '../../events/await/status-access';
+import { readEventConditionReachability } from '../../external-condition-reachability';
+import { getServingHostIdentity } from '../../serving-host-identity';
+import { runtimeObservabilityHealth } from '../../observability/runtime';
 
 const EVENTS_SCOPE_NOTE =
   'Workspace-global read surface: scope comes from request context and caller identity; do not pass `harness` or `workspace` as JSON arguments (those keys are rejected).';
@@ -72,6 +75,7 @@ const statusArgs = z.union([
       .describe('Filter active awaits and recent wake deliveries to the id returned by events:await. The generic/await_id response lists registrations under active_awaits. A targeted recent delivery includes its payload (capped at 2000 characters). Mutually exclusive with `event`.'),
     event: z.never().optional().describe('Only valid for exact event-key inspection; mutually exclusive with `await_id`.'),
     after_generation: z.never().optional().describe('Only valid with an exact `event` key.'),
+    condition: z.never().optional(),
   }),
   z.object({
     ...statusArgsCommon,
@@ -82,12 +86,21 @@ const statusArgs = z.union([
       .max(200)
       .describe('Exact event key to inspect across declarations, waiter registrations, and wake outcomes. Exact-key waiter rows are under event_inspection.waiters (with state and expires_ts), not active_awaits. Mutually exclusive with `await_id`.'),
     after_generation: z.number().int().nonnegative().optional().describe('Your cached declaration generation for `event`. The response says whether it is stale and how to resync.'),
+    condition: z.never().optional(),
+  }),
+  z.object({
+    event: z.string().min(1).max(200).describe('Exact event key whose specific release condition should be measured.'),
+    condition: z.literal('specific').describe('Read the canonical strict condition verdict, including resolver diagnostics and the same worker/workspace boot identity, instead of event history. Read-only; cannot be combined with meter, await_id or after_generation.'),
+    await_id: z.never().optional(),
+    meter: z.never().optional(),
+    after_generation: z.never().optional(),
   }),
   z.object({
     ...statusArgsCommon,
     await_id: z.never().optional().describe('Only valid for await-id inspection; mutually exclusive with `event`.'),
     event: z.never().optional().describe('Only valid for exact event-key inspection; mutually exclusive with `await_id`.'),
     after_generation: z.never().optional().describe('Only valid with an exact `event` key.'),
+    condition: z.never().optional(),
   }),
 ]);
 
@@ -350,7 +363,7 @@ export async function resolveAnnouncementOwnership(
 export default defineTool({
   name: 'events:status',
   description:
-    `Inspect the await-event surface: your active wake awaits, standing event-key inject subscriptions, trees, and recent wakes, or pass an exact event key for its declaration generations, expected condition, waiter registrations, wake outcomes, and a deterministic watermark/resync verdict. Exact-key waiter rows are under event_inspection.waiters; generic and await_id responses use active_awaits. Exact-key history is a bounded recent window; history_window reports omitted rows. Optionally include the fleet-wide wake meter. Evidence-only judges may inspect only their own awaits and recent wakes; exact-key inspection and the fleet-wide meter are unavailable. ${EVENTS_SCOPE_NOTE}`,
+    `Inspect the await-event surface: your active wake awaits, standing event-key inject subscriptions, trees, and recent wakes, or pass an exact event key for its declaration generations, expected condition, waiter registrations, wake outcomes, and a deterministic watermark/resync verdict. Add condition:'specific' to an exact event read for the canonical strict condition verdict and same-process runtime/workspace provenance instead of history. Exact-key waiter rows are under event_inspection.waiters; generic and await_id responses use active_awaits. Exact-key history is a bounded recent window; history_window reports omitted rows. Optionally include the fleet-wide wake meter. Evidence-only judges may inspect only their own awaits and recent wakes; exact-key inspection and the fleet-wide meter are unavailable. ${EVENTS_SCOPE_NOTE}`,
   guidance: {
     when: 'Checking what will reach or wake you (active wake awaits plus standing event-key inject subscriptions), whether a wake fired and via which channel, or whether the fleet is wake-storming (meter: true). For exact event-key reads, inspect event_inspection.waiters; active_awaits belongs to generic or await_id reads.',
     notWhen: `Reading your message stream — that is coord:inbox. Following an area — topics:feed. ${EVENTS_SCOPE_NOTE}`,
@@ -378,8 +391,42 @@ export default defineTool({
     if (args.after_generation != null && !args.event) {
       throw new Error('events:status — after_generation requires an exact `event` key.');
     }
+    if (args.condition != null && !args.event) {
+      throw new Error('events:status — condition requires an exact `event` key.');
+    }
+    if (args.condition != null && (args.meter != null || args.after_generation != null)) {
+      throw new Error('events:status — condition cannot be combined with meter or after_generation.');
+    }
     return eventsStatusReadGate.run(async () => {
       const identity = resolveAgentIdentity(ctx);
+      if (args.condition === 'specific' && args.event) {
+        // Invoke the real condition reader in THIS worker. A separate child import,
+        // the listener PID, or a terminal work-item row cannot attest this result.
+        const condition = await readEventConditionReachability(args.event, { requireSpecificCondition: true });
+        const bootArtifact = runtimeObservabilityHealth().artifact;
+        const sourcePaths = [
+          'packages/operator-core/lib/agent-tools/events/status.ts',
+          'packages/operator-core/lib/external-condition-reachability.ts',
+          'packages/operator-core/lib/blocker-resolution-evidence.ts',
+        ];
+        const artifact = bootArtifact?.status === 'measured'
+          ? {
+              ...bootArtifact,
+              sourceBlobs: Object.fromEntries(sourcePaths
+                .filter((path) => bootArtifact.sourceBlobs[path] != null)
+                .map((path) => [path, bootArtifact.sourceBlobs[path]])),
+            }
+          : bootArtifact;
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            ok: true,
+            event: args.event,
+            require_specific_condition: true,
+            condition_reachability: condition,
+            observingRuntime: { ...getServingHostIdentity(), workspaceId: identity.workspaceId, artifact },
+          }) }],
+        };
+      }
     // Exact-key inspection is an authority read for one event.  Do not spend
     // the result budget rendering this caller's unrelated await tree first —
     // under a busy fleet that list can hide the only requested evidence.

@@ -420,6 +420,56 @@ export interface MeasuredRepoEvidenceFingerprints {
   environmentFingerprint?: string | null;
 }
 
+/** Recording metadata, never a live-currentness or acceptance input. */
+export const HISTORICAL_MEASUREMENT_DETAILS_KEY = 'historicalMeasurement';
+const historicalSubjectSchema = z.object({
+  ref: z.string().min(1), kind: z.string().min(1).optional(),
+  windowStart: z.string().datetime({ offset: true }), windowEnd: z.string().datetime({ offset: true }),
+}).strict();
+const historicalMeasurementSchema = z.object({
+  schemaVersion: z.literal(1), measuredAt: z.string().datetime({ offset: true }),
+  workspaceId: z.string().min(1), harnessSlug: z.string().min(1),
+  bindingFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  workItemId: z.string().min(1), planSlug: z.string().min(1), specId: z.string().min(1),
+  specRevision: z.number().int().positive(), specFingerprint: z.string().min(1),
+  rubric: z.object({ rubricSlug: z.string().min(1), rubricRevision: z.number().int().positive(),
+    barKey: z.string().min(1), barHash: z.string().min(1), barSetHash: z.string().min(1) }).strict(),
+  evidenceRef: z.string().min(1), subject: historicalSubjectSchema,
+  fingerprints: z.object({ sourceFingerprint: z.string().min(1), testFingerprint: z.string().nullable(),
+    fixtureFingerprint: z.string().nullable(), rubricFingerprint: z.string().nullable(),
+    environmentFingerprint: z.string().nullable() }).strict(),
+}).strict();
+
+function fingerprintTuple(value: EvidenceFingerprints) {
+  return { sourceFingerprint: value.sourceFingerprint, testFingerprint: value.testFingerprint ?? null,
+    fixtureFingerprint: value.fixtureFingerprint ?? null, rubricFingerprint: value.rubricFingerprint ?? null,
+    environmentFingerprint: value.environmentFingerprint ?? null };
+}
+
+// Private object identity cannot survive a wire/JSON round trip. Copies prevent a
+// mutation of the returned tuple from minting a witness for unmeasured values.
+const historicalMeasurementCaptures = new WeakMap<object, {
+  workspaceId: string; harnessSlug: string; recipe: string; measuredAt: string;
+  fingerprints: ReturnType<typeof fingerprintTuple>;
+}>();
+function captureHistoricalMeasurement<T extends MeasuredRepoEvidenceFingerprints>(
+  measured: T, workspaceId: string, harnessSlug: string, measurement: EvidenceMeasurement,
+): T {
+  // A disposition census can intentionally hash absent/null rows. Only the
+  // successful-receipt variant proves that the selected ledger population exists.
+  if (measurement.kind === 'work-items' && !measurement.successfulCompletionReceipts) return measured;
+  historicalMeasurementCaptures.set(measured, { workspaceId, harnessSlug,
+    recipe: JSON.stringify(canonicalJson(measurement)), measuredAt: new Date().toISOString(),
+    fingerprints: fingerprintTuple(measured) });
+  return measured;
+}
+
+/** Transferring an existing binding does not measure its new identity. */
+export function withoutHistoricalMeasurement(details: Record<string, unknown>) {
+  const { [HISTORICAL_MEASUREMENT_DETAILS_KEY]: _historical, ...rest } = details;
+  return rest;
+}
+
 
 function containedBy(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
@@ -1133,7 +1183,7 @@ export async function measureAndPinRepoFilesEvidenceAtCommitForScope(
     ...(hasRepoFixturePaths(measurement) && fixtureRootHarnessSlug ? { roots: { [fixtureRootHarnessSlug]: fixtureRoot } } : {}),
   });
   await retainCompletedRuntimeArtifacts(measurement);
-  return {
+  return captureHistoricalMeasurement({
     sourceFingerprint: detailed.sourceFingerprint,
     testFingerprint: detailed.testFingerprint,
     ...(detailed.fixtureFingerprint !== undefined ? { fixtureFingerprint: detailed.fixtureFingerprint } : {}),
@@ -1142,7 +1192,7 @@ export async function measureAndPinRepoFilesEvidenceAtCommitForScope(
       detailed.files.find(file => file.path === measurement.artifactReceiptPath && file.dimension === 'source')!.sha256,
       { verifyExpectations: true }) } : {}),
     pin,
-  };
+  }, workspaceId, harnessSlug, measurement);
 }
 
 export async function resolveMeasurementRoot(
@@ -1330,10 +1380,10 @@ export async function measureAndPinEvidenceForScope(
   harnessSlug: string,
   measurement: EvidenceMeasurement,
 ): Promise<MeasuredRepoEvidenceFingerprints & { pin: MeasurementPin | null }> {
-  if (measurement.kind === 'work-items') {
-    return { ...(await measureWorkItemsEvidenceForScope(workspaceId, harnessSlug, measurement)), pin: null };
-  }
-  return measureAndPinRepoFilesEvidence(workspaceId, harnessSlug, measurement);
+  const measured = measurement.kind === 'work-items'
+    ? { ...(await measureWorkItemsEvidenceForScope(workspaceId, harnessSlug, measurement)), pin: null }
+    : await measureAndPinRepoFilesEvidence(workspaceId, harnessSlug, measurement);
+  return captureHistoricalMeasurement(measured, workspaceId, harnessSlug, measurement);
 }
 
 const MAX_OPERATIONAL_ARTIFACT_BYTES = 8 * 1024 * 1024;
@@ -1792,7 +1842,7 @@ export function specEvidenceBindingFingerprint(input: CanonicalBinding): string 
   // sha moves with every unrelated commit, so fingerprinting it would turn a re-bind of
   // byte-identical proof into a fresh row instead of `unchanged`. Rows that predate the
   // pin carry no such key, so their fingerprints are unchanged by this omission.
-  const { [MEASUREMENT_PIN_DETAILS_KEY]: _pin, ...fingerprintedDetails } = input.details;
+  const { [MEASUREMENT_PIN_DETAILS_KEY]: _pin, ...fingerprintedDetails } = withoutHistoricalMeasurement(input.details);
   return createHash('sha256')
     .update(JSON.stringify(canonicalJson({ ...input, details: fingerprintedDetails })))
     .digest('hex');
@@ -1807,6 +1857,11 @@ interface SpecIdentityRow {
 interface SpecRevisionRow {
   content_hash: string;
   plan_item_id: string;
+  source_rubric_slug?: string | null;
+  source_rubric_revision?: number | string | null;
+  source_bar_key?: string | null;
+  source_bar_hash?: string | null;
+  source_bar_set_hash?: string | null;
 }
 
 interface PriorTestRunBindingRow {
@@ -1820,7 +1875,11 @@ interface PriorTestRunBindingRow {
 }
 
 /** Resolve the selector and append one idempotent exact evidence binding. */
-export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<BindSpecEvidenceResult> {
+export async function bindSpecEvidence(input: BindSpecEvidenceInput,
+  measured?: MeasuredRepoEvidenceFingerprints): Promise<BindSpecEvidenceResult> {
+  if (input.details && Object.prototype.hasOwnProperty.call(input.details, HISTORICAL_MEASUREMENT_DETAILS_KEY)) {
+    throw new Error('historical_measurement_reserved: only the measured binding producer may write historicalMeasurement');
+  }
   const scope = await resolvePlanScope({ harnessSlug: input.harnessSlug, workspaceId: input.workspaceId });
   const writeBinding = (): Promise<BindSpecEvidenceResult> => withWorkspace(scope.workspaceId, async (tx) => {
     // P-022 / D-018: a caller with no plan gets the harness's shared ad-hoc spec scope
@@ -1836,10 +1895,14 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
       source_plan_item_ids: string[] | null;
       stamped_plan_slug: string | null;
       stamped_item_id: string | null;
+      run_instance_plan_slug: string | null;
+      run_template_slug: string | null;
     }[]>`
       SELECT feature_id, source_plan_slug, source_plan_item_ids,
              payload -> 'plan_item' ->> 'plan_slug' AS stamped_plan_slug,
-             payload -> 'plan_item' ->> 'item_id' AS stamped_item_id
+             payload -> 'plan_item' ->> 'item_id' AS stamped_item_id,
+             payload -> 'plan_run' ->> 'instancePlanSlug' AS run_instance_plan_slug,
+             payload -> 'plan_run' ->> 'templateSlug' AS run_template_slug
         FROM harness_shared.work_items
        WHERE workspace_id = ${scope.workspaceId}
          AND harness_slug = ${scope.harnessSlug}
@@ -1872,7 +1935,8 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
 
     const specRevision = input.specRevision ?? Number(identity.current_revision);
     const revisions = await tx<SpecRevisionRow[]>`
-      SELECT content_hash, plan_item_id
+      SELECT content_hash, plan_item_id, source_rubric_slug, source_rubric_revision,
+             source_bar_key, source_bar_hash, source_bar_set_hash
         FROM harness_shared.plan_spec_clause_revisions
        WHERE workspace_id = ${scope.workspaceId}
          AND harness_slug = ${scope.harnessSlug}
@@ -2274,7 +2338,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
           )[0]?.details
         : undefined;
 
-    let details = (input.details ?? priorDetails ?? priorTestRunBinding?.details ?? {}) as Record<string, unknown>;
+    let details = withoutHistoricalMeasurement(input.details ?? priorDetails ?? priorTestRunBinding?.details ?? {});
     if (canonicalizedTestCases !== undefined) {
       const rawAdequacy = details.adequacy;
       if (rawAdequacy !== null && typeof rawAdequacy === 'object' && !Array.isArray(rawAdequacy)) {
@@ -2522,6 +2586,26 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
       details: (canonicalJson(details) ?? {}) as Record<string, unknown>,
     };
     const bindingFingerprint = specEvidenceBindingFingerprint(canonical);
+    const capture = measured && historicalMeasurementCaptures.get(measured);
+    const subject = historicalSubjectSchema.safeParse(canonical.details.subject);
+    const declaredWindow = canonical.details.window;
+    const subjectWindow = subject.success ? { from: subject.data.windowStart, to: subject.data.windowEnd } : null;
+    if (capture && canonical.evidenceKind === 'manual' && canonical.testRunId === null && subject.success &&
+      Date.parse(subject.data.windowStart) < Date.parse(subject.data.windowEnd) &&
+      (declaredWindow === undefined || JSON.stringify(canonicalJson(declaredWindow)) === JSON.stringify(canonicalJson(subjectWindow))) &&
+      capture.workspaceId === scope.workspaceId && capture.harnessSlug === scope.harnessSlug &&
+      capture.recipe === JSON.stringify(canonicalJson(canonical.details.currentMeasurement)) &&
+      JSON.stringify(capture.fingerprints) === JSON.stringify(fingerprintTuple(canonical))) {
+      const witness = historicalMeasurementSchema.safeParse({
+        schemaVersion: 1, measuredAt: capture.measuredAt, workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug,
+        bindingFingerprint, workItemId: canonical.workItemId, planSlug, specId: canonical.specId,
+        specRevision, specFingerprint: canonical.specFingerprint, evidenceRef: canonical.evidenceRef,
+        rubric: { rubricSlug: revision.source_rubric_slug, rubricRevision: Number(revision.source_rubric_revision),
+          barKey: revision.source_bar_key, barHash: revision.source_bar_hash, barSetHash: revision.source_bar_set_hash },
+        subject: subject.data, fingerprints: capture.fingerprints,
+      });
+      if (witness.success) canonical.details[HISTORICAL_MEASUREMENT_DETAILS_KEY] = witness.data;
+    }
 
     await tx`
       INSERT INTO harness_shared.work_item_spec_revision_edges (
@@ -3297,6 +3381,36 @@ export function projectSpecCriterionApplicability(clause: SpecClauseRevision,
   };
 }
 
+/** Historical support only; metadata currentness remains unknown. */
+export function historicalManualEvidenceSupport(row: Awaited<ReturnType<typeof listSpecEvidence>>[number],
+  clause: SpecClauseRevision, context: { workspaceId: string; harnessSlug: string; comparisonTime: string;
+    rubricSlug: string; rubricRevision: number; barSetHash: string; criterionKey: string;
+    evidenceRef: string | undefined; subject: unknown }) {
+  const parsed = historicalMeasurementSchema.safeParse(row.details?.[HISTORICAL_MEASUREMENT_DETAILS_KEY]);
+  const subject = historicalSubjectSchema.safeParse(context.subject);
+  if (!parsed.success || !subject.success || !clause.sourceBar || row.evidenceKind !== 'manual' ||
+    row.testRunId !== null || context.evidenceRef !== `spec-evidence:${row.id}`) return null;
+  const w = parsed.data;
+  const pin = clause.sourceBar;
+  const clock = Date.parse(context.comparisonTime);
+  const timestamps = [w.measuredAt, row.observedAt, row.createdAt].map(value => Date.parse(value));
+  const withdrawnAt = row.withdrawal ? Date.parse(row.withdrawal.at) : null;
+  if (!Number.isFinite(clock) || (withdrawnAt !== null && (!Number.isFinite(withdrawnAt) || withdrawnAt <= clock)) ||
+    timestamps.some(value => !Number.isFinite(value) || value > clock) ||
+    w.workspaceId !== context.workspaceId || w.harnessSlug !== context.harnessSlug ||
+    w.bindingFingerprint !== row.bindingFingerprint || w.workItemId !== row.workItemId ||
+    w.planSlug !== clause.planSlug || row.planSlug !== clause.planSlug || w.specId !== clause.specId || row.specId !== clause.specId ||
+    w.specRevision !== clause.revision || row.specRevision !== clause.revision ||
+    w.specFingerprint !== clause.contentHash || row.specFingerprint !== clause.contentHash ||
+    w.evidenceRef !== row.evidenceRef || JSON.stringify(canonicalJson(w.subject)) !== JSON.stringify(canonicalJson(subject.data)) ||
+    JSON.stringify(w.fingerprints) !== JSON.stringify(fingerprintTuple(row.fingerprints)) ||
+    w.rubric.rubricSlug !== context.rubricSlug || w.rubric.rubricRevision !== context.rubricRevision ||
+    w.rubric.barKey !== context.criterionKey || w.rubric.barSetHash !== context.barSetHash ||
+    w.rubric.rubricSlug !== pin.rubricSlug || w.rubric.rubricRevision !== pin.rubricRevision ||
+    w.rubric.barKey !== pin.barKey || w.rubric.barHash !== pin.barHash || w.rubric.barSetHash !== pin.barSetHash) return null;
+  return { evidenceRef: `spec-evidence:${row.id}`, observedAt: w.measuredAt };
+}
+
 export interface ListSpecEvidenceOptions {
   harnessSlug?: string;
   /** Pin historical audit reads to the workspace recorded on the graded card. */
@@ -3508,10 +3622,14 @@ export async function carryForwardCurrentSpecEvidence(
       source_plan_item_ids: string[] | null;
       stamped_plan_slug: string | null;
       stamped_item_id: string | null;
+      run_instance_plan_slug: string | null;
+      run_template_slug: string | null;
     }[]>`
       SELECT feature_id, source_plan_slug, source_plan_item_ids,
              payload -> 'plan_item' ->> 'plan_slug' AS stamped_plan_slug,
-             payload -> 'plan_item' ->> 'item_id' AS stamped_item_id
+             payload -> 'plan_item' ->> 'item_id' AS stamped_item_id,
+             payload -> 'plan_run' ->> 'instancePlanSlug' AS run_instance_plan_slug,
+             payload -> 'plan_run' ->> 'templateSlug' AS run_template_slug
         FROM harness_shared.work_items
        WHERE workspace_id = ${input.workspaceId}
          AND harness_slug = ${input.harnessSlug}
@@ -3593,7 +3711,7 @@ export async function carryForwardCurrentSpecEvidence(
       coverageEvidenceRef: row.coverage_evidence_ref == null ? null : Number(row.coverage_evidence_ref),
       testRunId: row.test_run_id == null ? null : Number(row.test_run_id),
       ...(verifiesBindingId === undefined ? {} : { verifiesBindingId }),
-      details: row.details ?? {},
+      details: withoutHistoricalMeasurement(row.details ?? {}),
       observedAt: new Date(row.observed_at).toISOString(),
       actorId: row.created_by ?? input.actorId,
     });

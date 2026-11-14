@@ -9,6 +9,8 @@ import { criticalWriteHeadroomBytes, DEFAULT_DISK_POLICY } from './disk-space-al
 import { observeColdArchiveIntegrity, type ColdEvidence } from './cold-tier-evidence';
 import { getStorageCategory, isPgCategory } from './categories';
 import { tableRetentionTargets } from './table-retention';
+import { durableHeadroomBindingSchema, reclaimRuntimeSchema, RECLAIM_SOURCE_PATHS, sameReclaimRuntime,
+  type DurableHeadroomBinding, type ReclaimRuntime } from './reclaim-provenance';
 
 const bytes = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const identity = z.string().regex(/^v1-[a-f0-9]{64}$/);
@@ -220,8 +222,10 @@ export async function measurePostgresRetentionEvidence(sql: Pick<import('postgre
 const targetRecordsSchema = z.object({
   censuses: soakCensusRows(),
   attempts: z.array(z.object({ id: z.string().min(1), host: z.string().min(1),
-    startedAt: z.string().datetime({ offset: true }) })).max(20_000),
+    runtime: z.unknown().optional(),
+    dryRun: z.literal(false), startedAt: z.string().datetime({ offset: true }) })).max(20_000),
   receipts: z.array(z.object({ id: z.string().min(1), host: z.string().min(1), dryRun: z.literal(false),
+    runtime: z.unknown().optional(), devices: z.unknown().optional(),
     startedAt: z.string().datetime({ offset: true }), finishedAt: z.string().datetime({ offset: true }),
     complete: z.boolean(), policyExhausted: z.boolean().nullable(), errors: z.array(z.string()),
     entries: z.array(z.object({ status: z.string() })), delegates: z.array(z.object({ ok: z.boolean() })),
@@ -238,12 +242,13 @@ function soakCensusRows() {
 /** Exact R-10 assessment: decimal GB/TB, 72 hourly buckets on each device, and
  * the full native started/finished population. No alarm can excuse a target dip. */
 export function assessDurableHeadroomTargets(input: unknown,
-  window: { host: string; windowStart: string; windowEnd: string; measuredAt: string }) {
+  window: { host: string; windowStart: string; windowEnd: string; measuredAt: string; headroomBinding?: DurableHeadroomBinding }) {
   const checks: RetentionEvidenceCheck[] = [];
+  let readiness: { binding: DurableHeadroomBinding; runtime: ReclaimRuntime; runId: string; readyAt: string } | null = null;
   const add = (id: string, status: RetentionEvidenceCheck['status'], detail: string) => checks.push({ id, status, detail });
   const finish = () => ({ verdict: checks.some(c => c.status === 'fail') ? 'fail' as const :
     checks.some(c => c.status === 'unknown') ? 'unknown' as const : 'pass' as const,
-    detail: JSON.stringify({ checks, scope: 'Hourly native samples only; capacity between samples is unmeasured. GB/TB are decimal bytes.' }), checks });
+    detail: JSON.stringify({ checks, readiness, scope: 'Hourly native samples only; capacity between samples is unmeasured. GB/TB are decimal bytes.' }), checks });
   const parsed = targetRecordsSchema.safeParse(input);
   const start = Date.parse(window.windowStart), end = Date.parse(window.windowEnd), measured = Date.parse(window.measuredAt);
   const hour = 3_600_000;
@@ -254,6 +259,42 @@ export function assessDurableHeadroomTargets(input: unknown,
   const { censuses, attempts, receipts, dispositions } = parsed.data;
   if ([...censuses, ...attempts, ...receipts].some(r => r.host !== window.host)) {
     add('host-scope', 'unknown', 'Foreign-host records cannot certify this window.'); return finish();
+  }
+  const binding = durableHeadroomBindingSchema.safeParse(window.headroomBinding);
+  if (!binding.success) add('readiness-binding', 'unknown', 'The governed check must pin the accepted committed input map, BG service and exact prerequisite run.');
+  else {
+    const expected = binding.data;
+    const starts = attempts.filter(r => r.id === expected.readinessRunId);
+    const terminals = receipts.filter(r => r.id === expected.readinessRunId);
+    const begin = starts.length === 1 ? starts[0] : undefined;
+    const ready = terminals.length === 1 ? terminals[0] : undefined;
+    const runtime = reclaimRuntimeSchema.safeParse(ready?.runtime);
+    const beginRuntime = reclaimRuntimeSchema.safeParse(begin?.runtime);
+    const qualified = runtime.success && beginRuntime.success && sameReclaimRuntime(runtime.data, beginRuntime.data) &&
+      runtime.data.service === expected.runtimeHost && runtime.data.artifact.sourceSha === expected.sourceSha &&
+      RECLAIM_SOURCE_PATHS.every(path => runtime.data.artifact.sourceBlobs[path] === expected.sourceBlobs[path]);
+    add('readiness-source-runtime', qualified ? 'pass' : 'unknown',
+      'Exactly one native start/terminal pair must retain the accepted committed inputs and actual BG boot/bundle.');
+    if (begin && ready) {
+      const readyAt = Date.parse(ready.finishedAt);
+      add('readiness-completion', ready.startedAt !== begin.startedAt || readyAt < Date.parse(begin.startedAt) ||
+        !ready.complete || ready.policyExhausted !== true || ready.errors.length ||
+        ready.entries.some(e => e.status === 'failed') || ready.delegates.some(d => !d.ok) ? 'fail' : 'pass',
+      'Prerequisite native reclaim must complete without failed effects/delegates and exhaust its policy.');
+      add('readiness-before-window', readyAt <= start && readyAt <= measured ? 'pass' : 'unknown',
+        'The original 72-hour window must begin after this edition completed its native prerequisites.');
+      const devices = z.array(z.object({ path: z.string(), beforeFreeBytes: bytes.nullable(), afterFreeBytes: bytes.nullable() })).safeParse(ready.devices);
+      for (const [path, floor] of [['/', 400 * 1000 ** 3], ['/mnt/data', 2 * 1000 ** 4]] as const) {
+        const matches = devices.success ? devices.data.filter(d => d.path === path) : [];
+        const device = matches.length === 1 ? matches[0] : undefined;
+        add(`readiness-floor:${path}`, !device || device.afterFreeBytes === null ? 'unknown' :
+          device.afterFreeBytes < floor ? 'fail' : 'pass',
+        'Native prerequisite completion samples must meet the original decimal-byte floor.');
+      }
+      if (qualified && runtime.success && checks.filter(c => c.id.startsWith('readiness')).every(c => c.status === 'pass')) {
+        readiness = { binding: expected, runtime: runtime.data, runId: ready.id, readyAt: ready.finishedAt };
+      }
+    }
   }
   for (const path of ['/', '/mnt/data'] as const) {
     const rows = censuses.filter(r => r.path === path && Date.parse(r.at) >= start && Date.parse(r.at) <= end);
@@ -270,6 +311,10 @@ export function assessDurableHeadroomTargets(input: unknown,
   }
   const runs = attempts.filter(r => Date.parse(r.startedAt) >= start && Date.parse(r.startedAt) <= end);
   const results = receipts.filter(r => Date.parse(r.startedAt) >= start && Date.parse(r.startedAt) <= end);
+  add('window-source-runtime', readiness && [...runs, ...results].every(r => {
+    const runtime = reclaimRuntimeSchema.safeParse(r.runtime);
+    return runtime.success && sameReclaimRuntime(runtime.data, readiness!.runtime);
+  }) ? 'pass' : 'unknown', 'Every observed start/terminal must retain the prerequisite boot, bundle and committed input identities.');
   add('run-population', runs.length && new Set(runs.map(r => r.id)).size === runs.length &&
     new Set(results.map(r => r.id)).size === results.length && results.every(r => runs.some(a => a.id === r.id)) ? 'pass' : 'unknown',
   'Every real start must have exactly one matching terminal receipt; empty or ambiguous populations cannot pass.');
@@ -292,7 +337,7 @@ export function assessDurableHeadroomTargets(input: unknown,
 /** Extend the existing native ledger reader; never use supplied scores, receipt
  * claims, policy floors, or data from another host as R-10 evidence. */
 export async function measureDurableHeadroomTargets(sql: Pick<import('postgres').Sql, 'unsafe'>,
-  input: { workspaceId: string; harnessSlug: string; host: string; windowStart: string; windowEnd: string }) {
+  input: { workspaceId: string; harnessSlug: string; host: string; windowStart: string; windowEnd: string; headroomBinding?: DurableHeadroomBinding }) {
   const start = Date.parse(input.windowStart), end = Date.parse(input.windowEnd);
   if (!input.workspaceId.trim() || !input.harnessSlug.trim() || !input.host.trim() || !Number.isFinite(start) || end - start !== 72 * 3_600_000) {
     return { verdict: 'unknown' as const, detail: 'Canonical workspace/harness/host and exact 72h window required.' };
@@ -304,8 +349,12 @@ export async function measureDurableHeadroomTargets(sql: Pick<import('postgres')
   ), activity AS (
     SELECT action, details FROM harness_shared.audit_log
     WHERE workspace_id=$4 AND actor='system:disk-retention' AND action IN ('disk-retention:started','disk-retention:receipt')
-      AND (details->>'host'=$1 OR details->>'host' IS NULL) AND details->>'dryRun'='false'
-      AND ts BETWEEN $5 AND $6 ORDER BY ts,id LIMIT 40001
+      AND (details->>'host'=$1 OR jsonb_typeof(details->'host') IS DISTINCT FROM 'string')
+      -- Only an explicitly boolean dry run is known not to have real effects.
+      -- Missing/malformed flags must reach the assessor, never vanish beside a
+      -- healthy cohort and turn an incomplete population into a passing window.
+      AND details->'dryRun' IS DISTINCT FROM 'true'::jsonb
+      AND (ts BETWEEN $5 AND $6 OR subject=$8) ORDER BY ts,id LIMIT 40001
   ), predecessor AS (
     SELECT plan_slug, status, superseded_by FROM harness_shared.harness_plans
     WHERE workspace_id=$4 AND harness_slug=$7 AND plan_slug='disk-headroom-standing-reclaim-2026-10-12'
@@ -318,7 +367,7 @@ export async function measureDurableHeadroomTargets(sql: Pick<import('postgres')
       'linkedSuccessor',superseded_by='disk-durable-headroom-2026-10-15',
       'siblingId','WI-10007751','siblingTerminal',COALESCE((SELECT status IN ('done','resolved','dropped','declined')
         FROM harness_shared.work_items WHERE workspace_id=$4 AND harness_slug=$7 AND feature_id='WI-10007751'),false)) FROM predecessor) AS dispositions`,
-  [input.host, input.windowStart, input.windowEnd, input.workspaceId, start, Date.now(), input.harnessSlug]);
+  [input.host, input.windowStart, input.windowEnd, input.workspaceId, start, Date.now(), input.harnessSlug, input.headroomBinding?.readinessRunId ?? null]);
   return assessDurableHeadroomTargets(rows[0], { ...input, measuredAt: new Date().toISOString() });
 }
 

@@ -37,6 +37,7 @@ import { suggestResearchAnchors } from '../../code-intelligence/research-trail';
 import { sessionAllowsAmbientContext } from '../../capability-envelope/session-confinement-port';
 import { productShapingScaffold, productShapingWriteAdvisory } from './product-shaping';
 import { discoveryDeclarationScaffold, planDeclarationsScaffold, planDeclarationsWriteAdvisory } from './plan-declarations';
+import { planAuthoringChecklist } from './plan-authoring-checklist';
 import {
   parseBarMappings,
   parseRequirementBars,
@@ -243,14 +244,190 @@ heading with a date line and a body paragraph.)
 export function validateAcceptanceBarAuthoring(planContent: string): AcceptanceBarSeedProblem[] {
   if (!/^##\s+Requirements\s*$/im.test(planContent)) return [];
 
+  // EI-28712348345595435: BOTH halves of the contract are checked on every call. This
+  // used to return as soon as the requirement records failed to parse, so the map was
+  // only looked at on the NEXT attempt — one refusal for "no R-N records", then a second
+  // for "## Design has no Bar-to-work map", each costing a full re-send of the plan body.
   const requirements = parseRequirementBars(planContent);
-  if (!requirements.ok) return requirements.problems;
-
   const mappings = parseBarMappings(
     planContent,
-    new Set(requirements.bars.map((bar) => bar.barKey)),
+    requirements.ok
+      ? new Set(requirements.bars.map((bar) => bar.barKey))
+      : authoredRequirementKeys(planContent),
   );
-  return mappings.ok ? [] : mappings.problems;
+  return [
+    ...(requirements.ok ? [] : requirements.problems),
+    ...(mappings.ok ? [] : mappings.problems),
+  ];
+}
+
+/**
+ * The R-N keys as AUTHORED under `## Requirements`, well-formed or not. Only used to
+ * keep the map check honest when the records themselves failed to parse: a malformed
+ * `**R-2 ...` record is already reported once, and must not be reported a second time
+ * as "the map names R-2, which has no Requirements record" or hide "R-2 has no map row".
+ */
+function authoredRequirementKeys(planContent: string): Set<string> {
+  const lines = planContent.split('\n');
+  const start = lines.findIndex((line) => /^##\s+Requirements\s*$/i.test(line));
+  const keys = new Set<string>();
+  if (start < 0) return keys;
+  for (const line of lines.slice(start + 1)) {
+    if (/^##\s+/.test(line)) break;
+    const key = /^\*\*(R-\d+)\b/.exec(line)?.[1];
+    if (key) keys.add(key);
+  }
+  return keys;
+}
+
+/** Which pre-persistence check a problem came from. */
+export type NewPlanCheck = 'item-grammar' | 'acceptance-bar' | 'property-schema' | 'similar-plans';
+
+/** One problem found before a plan is written. `plans:new` reports ALL of them in one refusal. */
+export interface NewPlanProblem {
+  check: NewPlanCheck;
+  code: string;
+  detail: string;
+}
+
+const SIMILAR_PLANS_HINT =
+  'Existing plans overlap this topic. Continue one of them (plans:get → set-now/add-item). ' +
+  'Before reaching for force: true, note search:semantic does NOT cover plans (only escalations/brainstorm/turns/decisions) — ' +
+  'this refusal is the only plan-aware dedup check that ran. force: true bypasses it with no other check behind it, so only ' +
+  'pass it after reading the candidates above and confirming this is genuinely a new effort, not after a semantic/grep search came up clean.';
+
+/** The map's parent section, heading and columns: one copy for the refusal block and the skeleton below. */
+const BAR_MAP_SECTION = '## Design';
+const BAR_MAP_HEADING = '### Bar-to-work map for this plan';
+const BAR_MAP_COLUMNS = ['bar', 'implementing plan items', 'evidence plane'] as const;
+
+/**
+ * The smallest plan body that passes the whole acceptance-bar contract, returned with an
+ * acceptance-bar refusal.
+ *
+ * WHY. Three independent reports (EI-24791664511417016, EI-25792549631608914,
+ * EI-28712348345595435) describe the same author: told the rules one at a time, and still
+ * opening an older plan to see where the pieces sit. Listing every problem in one refusal
+ * fixes the first half. This fixes the second, by showing the three placements those
+ * refusals were about: a record is a standalone paragraph (not a bullet) under
+ * `## Requirements`, the map sits under `## Design` (not after the last record), and each
+ * item is one bullet.
+ *
+ * It is an illustration, never a body to submit: the titles are placeholders. A test feeds
+ * it to `validateAcceptanceBarAuthoring` and to plans:new itself, so it cannot drift from
+ * the validator it illustrates.
+ */
+export const ACCEPTANCE_BAR_SKELETON = [
+  '## Requirements',
+  '',
+  '**R-1 — Short title.** One sentence stating the outcome that must be true.',
+  '',
+  BAR_MAP_SECTION,
+  '',
+  BAR_MAP_HEADING,
+  '',
+  `| ${BAR_MAP_COLUMNS.join(' | ')} |`,
+  '|---|---|---|',
+  '| R-1 | P-001 | tree |',
+  '',
+  '## Phase 1',
+  '',
+  '- **P-001** `todo` the work that makes R-1 true',
+  '',
+].join('\n');
+
+const ACCEPTANCE_BAR_HINT =
+  'Add one map row for every **R-N — Title.** record, using only the bare R-N key in the bar cell (for example, | R-1 | P-001 | tree |); do not infer the mapping.';
+
+/** What each failing check contributes to the refusal. Absent key = that check passed (or did not run). */
+export interface NewPlanRefusalInput {
+  slug: string;
+  problems: NewPlanProblem[];
+  parseSummary: Record<string, unknown>;
+  acceptanceBarProblems: AcceptanceBarSeedProblem[];
+  propertySchemaIssues?: unknown;
+  similarPlans?: {
+    similar: unknown[];
+    semanticallyCleared: Array<{ slug: string; similarity: number }>;
+    cosineConfirm: Record<string, unknown>;
+  };
+}
+
+const PRIMARY_MESSAGE: Record<NewPlanCheck, (input: NewPlanRefusalInput) => string | null> = {
+  'item-grammar': () =>
+    'plans:new refused to create the plan because one or more item-looking lines do not match the canonical P-NNN item grammar.',
+  'acceptance-bar': (input) =>
+    'plans:new refused to create the plan because its Requirements would not satisfy the post-epoch acceptance BAR contract. ' +
+    `${input.acceptanceBarProblems[0]?.detail ?? 'See acceptanceBar.problems'}.`,
+  'property-schema': () => 'plans:new refused to create the plan because its property declarations are invalid.',
+  // A lone similar-plans refusal keeps its established shape, which carries a hint and no message.
+  'similar-plans': () => null,
+};
+
+/**
+ * Build the ONE refusal for everything the pre-persistence pass found (EI-28712348345595435).
+ *
+ * `error` / `reason` stay those of the FIRST failing check, in the order the checks have
+ * always run, so every existing matcher (`similar_exists`, `invalid_plan_content` +
+ * `reason`, `bad_property_schema`) keeps working. What is new is that nothing is held
+ * back for the next attempt: `problems` lists every problem from every check, each
+ * failing check's detail block is present, and the authoring checklist rides along.
+ *
+ * Key order is deliberate. The result door clips a long payload from the END, so the
+ * problems come first and the echo of parsed items — the least useful part of a
+ * refusal — comes last.
+ */
+export function buildNewPlanRefusal(input: NewPlanRefusalInput): Record<string, unknown> {
+  const { problems } = input;
+  const primary = problems[0]!.check;
+  const failed = new Set(problems.map((problem) => problem.check));
+  const invalidContent = primary === 'item-grammar' || primary === 'acceptance-bar';
+  const primaryMessage = PRIMARY_MESSAGE[primary](input);
+  const message =
+    problems.length > 1
+      ? `plans:new found ${problems.length} problems in one pass and did not create the plan. ` +
+        '`problems` lists every one: fix them all before retrying.' +
+        (primaryMessage ? ` First: ${primaryMessage}` : '')
+      : primaryMessage;
+  const similarBlock = input.similarPlans
+    ? {
+        similar: input.similarPlans.similar,
+        ...(input.similarPlans.semanticallyCleared.length > 0
+          ? { semanticallyCleared: input.similarPlans.semanticallyCleared }
+          : {}),
+        cosineConfirm: input.similarPlans.cosineConfirm,
+        hint: SIMILAR_PLANS_HINT,
+      }
+    : null;
+  return {
+    error: primary === 'similar-plans' ? 'similar_exists' : primary === 'property-schema' ? 'bad_property_schema' : 'invalid_plan_content',
+    ...(primary === 'item-grammar' ? { reason: 'unparsed_item_lines' } : {}),
+    ...(primary === 'acceptance-bar' ? { reason: 'acceptance_bar_authoring' } : {}),
+    slug: input.slug,
+    ...(message ? { message } : {}),
+    problemCount: problems.length,
+    problems,
+    ...(failed.has('item-grammar') ? { parseFeedback: input.parseSummary } : {}),
+    ...(failed.has('acceptance-bar')
+      ? {
+          acceptanceBar: {
+            problems: input.acceptanceBarProblems,
+            requiredMapHeading: BAR_MAP_HEADING,
+            requiredMapSection: BAR_MAP_SECTION,
+            requiredColumns: [...BAR_MAP_COLUMNS],
+            allowedEvidencePlanes: ['tree', 'deployed', 'live'],
+            hint: ACCEPTANCE_BAR_HINT,
+            skeleton: ACCEPTANCE_BAR_SKELETON,
+          },
+        }
+      : {}),
+    ...(failed.has('property-schema') ? { issues: input.propertySchemaIssues } : {}),
+    // The similar-plans block sits at the top level only when it is the primary refusal —
+    // its `hint` would otherwise collide with the item-grammar hint spread in below.
+    ...(similarBlock ? (primary === 'similar-plans' ? similarBlock : { similarPlans: similarBlock }) : {}),
+    authoringChecklist: planAuthoringChecklist(),
+    ...(invalidContent ? input.parseSummary : {}),
+  };
 }
 
 /** Explicit result payload so `withPlanLock`'s `T` is fixed by the type
@@ -463,29 +640,26 @@ export default defineTool({
       hintOnZeroItems: true,
     });
 
-    // Parse admission happens before any plan lock or persistence. A body that
-    // contains item-looking lines but fails the strict P-NNN grammar would
-    // otherwise create a plan that looks successful while promoting zero
-    // items later. Return the same structured feedback the body writers use so
-    // callers can repair the exact lines without a follow-up read.
-    if ((parseSummary.unparsedItemLines ?? 0) > 0) {
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              error: 'invalid_plan_content',
-              reason: 'unparsed_item_lines',
-              slug,
-              message:
-                'plans:new refused to create the plan because one or more item-looking lines do not match the canonical P-NNN item grammar.',
-              parseFeedback: parseSummary,
-              ...parseSummary,
-            }),
-          },
-        ],
-        isError: true,
-      };
+    // EI-28712348345595435 — ONE PASS, EVERY PROBLEM. Each check below used to return
+    // its own refusal as soon as it failed, so an author met them one at a time and
+    // re-sent the whole plan body for each (measured: four calls to create one small
+    // draft). Every check now runs, each failure is collected here, and a single
+    // refusal after the last check reports all of them. Nothing is written until
+    // `problems` is empty, exactly as before.
+    const problems: NewPlanProblem[] = [];
+
+    // Parse admission. A body that contains item-looking lines but fails the strict
+    // P-NNN grammar would otherwise create a plan that looks successful while
+    // promoting zero items later. The refusal carries the same structured feedback
+    // the body writers use, so callers can repair the exact lines without a
+    // follow-up read.
+    const unparsedItemLines = parseSummary.unparsedItemLines ?? 0;
+    if (unparsedItemLines > 0) {
+      problems.push({
+        check: 'item-grammar',
+        code: 'unparsed_item_lines',
+        detail: `${unparsedItemLines} item-looking line(s) do not match the canonical P-NNN item grammar`,
+      });
     }
 
     // Post-epoch plans seed acceptance BARs from Requirements plus the
@@ -497,33 +671,8 @@ export default defineTool({
     const acceptanceBarProblems = body != null && body.trim().length > 0
       ? validateAcceptanceBarAuthoring(renderedBody)
       : [];
-    if (acceptanceBarProblems.length > 0) {
-      const first = acceptanceBarProblems[0]!;
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              error: 'invalid_plan_content',
-              reason: 'acceptance_bar_authoring',
-              slug,
-              message:
-                'plans:new refused to create the plan because its Requirements would not satisfy the post-epoch acceptance BAR contract. ' +
-                `${first.detail}.`,
-              acceptanceBar: {
-                problems: acceptanceBarProblems,
-                requiredMapHeading: '### Bar-to-work map for this plan',
-                requiredColumns: ['bar', 'implementing plan items', 'evidence plane'],
-                allowedEvidencePlanes: ['tree', 'deployed', 'live'],
-                hint:
-                  'Add one map row for every **R-N — Title.** record, using only the bare R-N key in the bar cell (for example, | R-1 | P-001 | tree |); do not infer the mapping.',
-              },
-              ...parseSummary,
-            }),
-          },
-        ],
-        isError: true,
-      };
+    for (const problem of acceptanceBarProblems) {
+      problems.push({ check: 'acceptance-bar', code: problem.code, detail: problem.detail });
     }
 
     const sctx = harnessScopedCtx(args.harness, ctx);
@@ -543,6 +692,7 @@ export default defineTool({
     // satisfy their datatype's payload_schema), so a bad declaration refuses
     // cleanly instead of half-creating a plan that then cannot be stamped.
     let propertySchemaDoc: Record<string, unknown> | null = null;
+    let propertySchemaIssues: unknown;
     if (args.propertySchema) {
       const declScope = await resolvePlanScope({
         ...(harnessSlug ? { harnessSlug } : {}),
@@ -552,17 +702,15 @@ export default defineTool({
         validatePropertySchemaDeclaration(tx as never, declScope.workspaceId, args.propertySchema),
       );
       if (!propCheck.ok) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({ error: 'bad_property_schema', slug: args.slug, issues: propCheck.issues }),
-            },
-          ],
-          isError: true,
-        };
+        propertySchemaIssues = propCheck.issues;
+        problems.push({
+          check: 'property-schema',
+          code: 'bad_property_schema',
+          detail: 'one or more property declarations are invalid; see `issues`',
+        });
+      } else {
+        propertySchemaDoc = args.propertySchema;
       }
-      propertySchemaDoc = args.propertySchema;
     }
 
     // Search-first dedup (audit P-049 / EI-134): surface overlapping plans
@@ -579,6 +727,7 @@ export default defineTool({
     // CONFIRMED overlap from one the classifier never got to judge — the state
     // the inert 0.6 constant left every refusal in, indistinguishably.
     let cosineConfirm: Record<string, unknown> = { basis: 'not-run' };
+    let similarPlans: NewPlanRefusalInput['similarPlans'];
     if (args.force !== true) {
       try {
         const rows = await listPlanIndexRows({
@@ -638,30 +787,40 @@ export default defineTool({
           }
         }
         if (similar.length > 0) {
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: JSON.stringify({
-                  error: 'similar_exists',
-                  slug,
-                  similar,
-                  ...(semanticallyCleared.length > 0 ? { semanticallyCleared } : {}),
-                  cosineConfirm,
-                  hint:
-                    'Existing plans overlap this topic. Continue one of them (plans:get → set-now/add-item). ' +
-                    'Before reaching for force: true, note search:semantic does NOT cover plans (only escalations/brainstorm/turns/decisions) — ' +
-                    'this refusal is the only plan-aware dedup check that ran. force: true bypasses it with no other check behind it, so only ' +
-                    'pass it after reading the candidates above and confirming this is genuinely a new effort, not after a semantic/grep search came up clean.',
-                }),
-              },
-            ],
-            isError: true,
-          };
+          similarPlans = { similar, semanticallyCleared, cosineConfirm };
+          problems.push({
+            check: 'similar-plans',
+            code: 'similar_exists',
+            detail:
+              `${similar.length} existing plan(s) overlap this topic: ${similar.map((plan) => plan.slug).join(', ')}. ` +
+              'Continue one of them, or pass force: true once you have confirmed this is a new effort.',
+          });
         }
       } catch {
         /* dedup is advisory — never block creation on an index hiccup */
       }
+    }
+
+    // The single refusal for everything found above. Nothing has been written.
+    if (problems.length > 0) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              buildNewPlanRefusal({
+                slug,
+                problems,
+                parseSummary: parseSummary as unknown as Record<string, unknown>,
+                acceptanceBarProblems,
+                ...(propertySchemaIssues !== undefined ? { propertySchemaIssues } : {}),
+                ...(similarPlans ? { similarPlans } : {}),
+              }),
+            ),
+          },
+        ],
+        isError: true,
+      };
     }
 
     // Authority is checked before withPlanLock can write the plan. This is
@@ -817,11 +976,18 @@ export default defineTool({
 
     const shapingAdvisory = body != null && body.trim().length > 0 ? productShapingWriteAdvisory(body) : null;
     const declarationsAdvisory = body != null && body.trim().length > 0 ? planDeclarationsWriteAdvisory(body) : null;
-    const adviceOwner = resolveAgentIdentity(ctx).ownerId;
-    const allowAdvice = await sessionAllowsAmbientContext({ ownerId: adviceOwner, workspaceId: result.scope.workspaceId });
+    // The plan is ALREADY written here, so nothing below may throw. This used to resolve the
+    // transport identity a second time with no fallback: a caller without one (the legacy
+    // in-process callers `creatorOwnerId` above exists for) got an exception for a plan that
+    // had been created, and its retry then met `slug_exists`. Advice is optional; reuse the
+    // owner resolved above and skip the advice when there is none.
+    const adviceOwner = creatorOwnerId;
+    const allowAdvice = adviceOwner
+      ? await sessionAllowsAmbientContext({ ownerId: adviceOwner, workspaceId: result.scope.workspaceId })
+      : false;
     const reuseAdvice = allowAdvice ? await authoringReuse(ctx, { workspaceId: result.scope.workspaceId,
       harness: result.scope.harnessSlug, plan: value.slug, text: body ?? args.title }) : undefined;
-    const suggestedAnchors = allowAdvice ? await suggestResearchAnchors(result.scope.workspaceId,
+    const suggestedAnchors = allowAdvice && adviceOwner ? await suggestResearchAnchors(result.scope.workspaceId,
       adviceOwner, harnessSlug ?? result.scope.harnessSlug) : undefined;
     return {
       content: [

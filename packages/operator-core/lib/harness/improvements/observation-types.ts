@@ -862,6 +862,7 @@ export type ObservationSubjectKind =
   | 'work-item'
   | 'plan'
   | 'pot'
+  | 'fleet'
   | 'rubric'
   // P-013 (goal-mode-design-intent-hardening-2026-08-16): a grading-integrity AUDIT
   // scorecard grades another SCORECARD (`ref` = the graded card's issue id).

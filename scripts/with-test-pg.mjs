@@ -38,9 +38,79 @@ import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { resolveFsMutexLockRoot } from './lib/fs-mutex.mjs';
 import { snapshotMigrationSource } from './lib/with-test-pg-migrations.mjs';
+import { isolatedRuntimeEvidenceKeys, isolatedRuntimeInheritedEnvironment } from './lib/with-test-pg-env.mjs';
 import { ensureRequiredEmbeddedExtensions } from './install-embedded-pgvector.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const testArtifactDirectory = process.env.PAPERCUSP_TEST_ARTIFACT_DIR?.trim();
+const privatePgSetupDeadlineAtMs = Number(process.env.PAPERCUSP_TEST_PRIVATE_PG_SETUP_DEADLINE_AT_MS);
+const privatePgSetupBudgetMs = Number(process.env.PAPERCUSP_TEST_PRIVATE_PG_SETUP_TIMEOUT_MS);
+let privatePgSetupStartedAtMs = null;
+let privatePgSetupPhase = 'preflight';
+let privatePgSetupExpired = false;
+let privatePgSetupReady = false;
+let privatePgSetupTimer = null;
+let activeMigration = null;
+let activeMigrationStartedAtMs = null;
+
+function recordPrivatePgSetup(stage, detail = {}) {
+  if (!testArtifactDirectory) return;
+  const artifactDir = resolve(testArtifactDirectory);
+  const manifestPath = join(artifactDir, 'manifest.json');
+  const phasesPath = join(artifactDir, 'phases.jsonl');
+  if (!existsSync(manifestPath) || !existsSync(phasesPath)) return;
+  appendFileSync(phasesPath, JSON.stringify({ kind: 'testing-run-phase',
+    stage: 'private-pg-' + stage, atMs: Date.now(), ...detail }) + '\n', { mode: 0o600 });
+}
+
+function assertPrivatePgSetupBudget(stage) {
+  privatePgSetupPhase = stage;
+  if (privatePgSetupExpired || (Number.isFinite(privatePgSetupDeadlineAtMs) && privatePgSetupDeadlineAtMs > 0 &&
+      Date.now() >= privatePgSetupDeadlineAtMs)) {
+    if (!privatePgSetupExpired) {
+      privatePgSetupExpired = true;
+      recordPrivatePgSetup('setup-timeout', { phase: stage, elapsedMs: privatePgSetupStartedAtMs === null
+        ? null : Date.now() - privatePgSetupStartedAtMs, setupDeadlineAtMs: privatePgSetupDeadlineAtMs });
+    }
+    throw new Error('private-PG setup budget exhausted during ' + stage);
+  }
+}
+
+function beginPrivatePgSetup() {
+  privatePgSetupStartedAtMs = Date.now();
+  recordPrivatePgSetup('setup-start', {
+    setupTimeoutMs: Number.isFinite(privatePgSetupBudgetMs) && privatePgSetupBudgetMs > 0
+      ? privatePgSetupBudgetMs : null,
+    setupDeadlineAtMs: Number.isFinite(privatePgSetupDeadlineAtMs) && privatePgSetupDeadlineAtMs > 0
+      ? privatePgSetupDeadlineAtMs : null,
+  });
+  recordPrivatePgSetup('seed-preflight', {
+    configured: privatePgSeedConfigured,
+    available: privatePgSeedAvailable,
+    kind: privatePgSeedKind,
+    disabled: Boolean(process.env.PAPERCUSP_PG_DISABLE_SEED),
+    migrationFallbackExpected: !privatePgSeedAvailable || Boolean(process.env.PAPERCUSP_PG_DISABLE_SEED),
+  });
+  if (Number.isFinite(privatePgSetupDeadlineAtMs) && privatePgSetupDeadlineAtMs > 0) {
+    privatePgSetupTimer = setTimeout(() => {
+      if (privatePgSetupReady || privatePgSetupExpired) return;
+      privatePgSetupExpired = true;
+      recordPrivatePgSetup('setup-timeout', { phase: privatePgSetupPhase,
+        elapsedMs: Date.now() - privatePgSetupStartedAtMs, setupDeadlineAtMs: privatePgSetupDeadlineAtMs });
+    }, Math.max(0, privatePgSetupDeadlineAtMs - Date.now()));
+    privatePgSetupTimer.unref?.();
+  }
+  assertPrivatePgSetupBudget('bootstrap-start');
+}
+
+function finishPrivatePgSetup() {
+  assertPrivatePgSetupBudget('test-start');
+  privatePgSetupReady = true;
+  if (privatePgSetupTimer) clearTimeout(privatePgSetupTimer);
+  recordPrivatePgSetup('ready', { elapsedMs: privatePgSetupStartedAtMs === null
+    ? null : Date.now() - privatePgSetupStartedAtMs, seedConfigured: privatePgSeedConfigured,
+    seedAvailable: privatePgSeedAvailable, seedKind: privatePgSeedKind });
+}
 
 const sep = process.argv.indexOf('--');
 const cmd = sep >= 0 ? process.argv.slice(sep + 1) : [];
@@ -309,9 +379,13 @@ function freePort() {
   });
 }
 
-const { startEmbeddedPostgresServer } = await import(
+const { startEmbeddedPostgresServer, resolveSeedPath, seedKind } = await import(
   '../libs/papercusp/packages/embedded-postgres-server/src/index.js'
 );
+const privatePgSeedPath = resolveSeedPath({}, process.env);
+const privatePgSeedConfigured = Boolean(privatePgSeedPath);
+const privatePgSeedAvailable = Boolean(privatePgSeedPath && existsSync(privatePgSeedPath));
+const privatePgSeedKind = privatePgSeedPath ? seedKind(privatePgSeedPath) : null;
 
 // Reuse the test launcher's capacity policy before initdb or migration writes.
 ensurePapercuspTmpdir();
@@ -558,9 +632,11 @@ function assertNotTerminating() {
 }
 
 async function main() {
+beginPrivatePgSetup();
 // Product restarts must use the same bytes that seeded this private database.
 // A live shared-tree migration arriving mid-test otherwise withholds the next
 // request listener because the disposable DB never reserved that new file.
+assertPrivatePgSetupBudget('migration-source-snapshot');
 if (isolatedRuntime) sqlDir = snapshotMigrationSource(sqlDir, join(runtimeRoot, 'db-sql'));
 console.log(`[with-test-pg] booting throwaway PG on :${port} (datadir ${dataDir})`);
 console.log(`[with-test-pg] migrations: ${sqlDir}`);
@@ -582,15 +658,41 @@ const pgHandle = await startEmbeddedPostgresServer({ dataDir, port, dbSqlDir: sq
     // Preserve boot/migration progress as well as shutdown. A deadline before
     // start() returns otherwise erases the stage that actually consumed it.
     console.log('[with-test-pg] pg ' + String(message));
+    const text = String(message);
+    const migration = text.match(/^apply ([\w.-]+\.sql)$/)?.[1];
+    if (migration) {
+      const atMs = Date.now();
+      if (activeMigration && activeMigrationStartedAtMs !== null) {
+        recordPrivatePgSetup('migration-complete', { migration: activeMigration,
+          durationMs: atMs - activeMigrationStartedAtMs });
+      }
+      activeMigration = migration;
+      activeMigrationStartedAtMs = atMs;
+      privatePgSetupPhase = 'migration:' + migration;
+      recordPrivatePgSetup('migration-start', { migration });
+    }
+    const migrationSummary = text.match(/^migrations: (\d+) applied this boot \((\d+) total known\)$/);
+    if (migrationSummary) {
+      if (activeMigration && activeMigrationStartedAtMs !== null) {
+        recordPrivatePgSetup('migration-complete', { migration: activeMigration,
+          durationMs: Date.now() - activeMigrationStartedAtMs });
+        activeMigration = null;
+        activeMigrationStartedAtMs = null;
+      }
+      recordPrivatePgSetup('migration-summary', { appliedCount: Number(migrationSummary[1]),
+        totalKnown: Number(migrationSummary[2]) });
+    }
+    if (/logical seed failed/i.test(text)) {
+      recordPrivatePgSetup('seed-fallback', { fallback: 'full-migration-replay' });
+    }
+    const setupStage = text.startsWith('initialising data dir') ? 'initdb'
+      : text.includes('syncing data to disk') ? 'initdb-sync'
+      : text.startsWith('starting postgres on ') ? 'postmaster'
+      : text.startsWith('creating database ') ? 'database'
+      : migration ? 'migration:' + migration : null;
+    if (setupStage) privatePgSetupPhase = setupStage;
     if (!child && cleanupStartedAt === null && process.env.PC_ISOLATED_RUNTIME_PROOF === '1' && process.connected) {
-      const text = String(message);
-      const migration = text.match(/^apply ([\w.-]+\.sql)$/)?.[1];
-      const stage = text.startsWith('initialising data dir') ? 'initdb'
-        : text.includes('syncing data to disk') ? 'initdb:sync'
-        : text.startsWith('starting postgres on ') ? 'postmaster'
-        : text.startsWith('creating database ') ? 'database'
-        : migration ? 'migration:' + migration : null;
-      if (stage) process.send({ kind: 'isolated-runtime-bootstrap-progress', stage }, () => {});
+      if (setupStage) process.send({ kind: 'isolated-runtime-bootstrap-progress', stage: setupStage }, () => {});
     }
     if (cleanupStartedAt !== null) queueCleanupStage('pg-log', { message });
 } });
@@ -598,6 +700,7 @@ const pgHandle = await startEmbeddedPostgresServer({ dataDir, port, dbSqlDir: sq
 // the wrapper's final teardown. A failed early stop is retried by final cleanup.
 pg = { ...pgHandle, stop: createSingleFlightStop(() => pgHandle.stop()) };
 assertNotTerminating();
+assertPrivatePgSetupBudget('postgres-ready');
 console.log(`[with-test-pg] ready — ${pg.urls.admin.replace(/:[^:@]*@/, ':***@')}`);
 
 let runtimeEnv = {};
@@ -755,7 +858,7 @@ if (runtimeRoot && runtimeId) {
   };
 }
 
-const childEnv = { ...process.env };
+let childEnv = { ...process.env };
 if (ownedDatabaseDir) childEnv[OWNED_TEST_DB_DIR_ENV] = ownedDatabaseDir;
 // A product DSN pin outranks PAPERCUSP_PG_PORT in both connection resolvers.
 // Keeping an ambient DATABASE_URL made ordinary affected integration workers
@@ -773,52 +876,19 @@ if (isolatedRuntime) {
   // The existing test reporters have a separate explicit ledger sink and
   // attribution contract. Preserve only those keys; product pools still receive
   // the private runtime URLs below, and unrelated PAPERCUSP_ keys stay scrubbed.
-  const evidenceKeys = new Set([
-    // Verifier ownership identifies the enclosing managed task, not the private
-    // product identity. Its receipt must survive runtime isolation for cleanup.
-    'PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID',
-    // The enclosing test door admitted this run before product DB/identity
-    // isolation. Its decision is execution provenance, not a product endpoint.
-    // Dropping it repeats shared-tree policy against the private product DB.
-    'PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT',
-    // Optional receipts from the existing committed-source loader are evidence,
-    // not an operator identity or endpoint. Retain them in the profile child.
-    'PAPERCUSP_COMMITTED_SOURCE_AUDIT', 'PAPERCUSP_COMMITTED_SOURCE_NOTICES',
-    // This is the test router's execution contract, not a product endpoint.
-    // Multi-process proofs validate it before allocating their nested runtime.
-    'PAPERCUSP_TEST_FILE_TIMEOUT_MS',
-    // Retained isolated-integration evidence written by the private worker.
-    'PAPERCUSP_ISOLATED_PROGRESS_FILE',
-    'PAPERCUSP_TEST_RUNS_DB_URL', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
-    'PAPERCUSP_TEST_RUN_WORKSPACE', 'PAPERCUSP_TEST_RUN_HARNESS',
-    'PAPERCUSP_TEST_RUN_WORK_ITEM',
-    'PAPERCUSP_TEST_RUN_OWNER_ID',
-    'PAPERCUSP_TEST_RUN_GROUP', 'PAPERCUSP_TEST_RUN_SOURCE',
-    OWNED_TEST_DB_DIR_ENV,
-    'PAPERCUSP_TEST_RUN_COMMIT', 'PAPERCUSP_TEST_RUN_CASE_TITLE_PATTERN',
-    'PAPERCUSP_TEST_RUN_LOOP_LAG_P95_MS',
-    // The reporter needs the maintained probe's phase and original checkout
-    // to distinguish an expected mutant failure from an ordinary dirty run.
-    'PAPERCUSP_MUTATION_PROBE', 'PAPERCUSP_MUTATION_PHASE',
-    'PAPERCUSP_MUTATION_PROBE_ORIGIN_ROOT', 'PAPERCUSP_MUTATION_PROBE_SUBJECT',
-    // What the probe mutated (libs/test-config/src/mutation-descriptor.ts).
-    'PAPERCUSP_MUTATION_DESCRIPTOR',
-    // The explicitly selected parser reader, source checkout and fail-closed
-    // requirement are mutation evidence provenance, not product endpoints.
-    'PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL',
-    'PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO',
-    'PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED',
-  ]);
+  const evidenceKeys = isolatedRuntimeEvidenceKeys(OWNED_TEST_DB_DIR_ENV);
   if (isolatedDockerHost !== null) {
     childEnv.DOCKER_HOST = isolatedDockerHost;
     evidenceKeys.add('DOCKER_HOST');
   }
-  for (const key of Object.keys(childEnv)) {
-    if (evidenceKeys.has(key)) continue;
-    if (/^(PAPERCUSP_|HARNESS_|DBOS__|PG[A-Z]|DATABASE_URL$|AWS_|AZURE_|GOOGLE_|GCP_|OPENAI_|ANTHROPIC_|GITHUB_|GH_|CLOUDSDK_|DOCKER_|GIT_ASKPASS$|GIT_CONFIG_|SSH_AUTH_SOCK$|CODEX_HOME$|VITEST(?:_|$)|DBUS_SESSION_BUS_ADDRESS$|GNOME_KEYRING_CONTROL$)/i.test(key)) {
-      delete childEnv[key];
-    }
-  }
+  const inherited = isolatedRuntimeInheritedEnvironment(childEnv, evidenceKeys);
+  childEnv = inherited.environment;
+  // Names establish the actual inherited population; credential values never
+  // enter this diagnostic. Owned product roots/endpoints are added separately.
+  console.log('[with-test-pg] inherited environment ' + JSON.stringify({
+    observedAt: new Date().toISOString(),
+    retainedKeys: Object.keys(childEnv).sort(), discardedKeys: inherited.discardedKeys,
+  }));
   if (callerTestRunWorkspace) childEnv.PAPERCUSP_TEST_RUN_WORKSPACE = callerTestRunWorkspace;
   if (callerTestRunOwnerId) childEnv.PAPERCUSP_TEST_RUN_OWNER_ID = callerTestRunOwnerId;
 }
@@ -1017,11 +1087,15 @@ if (operatorApi) {
     console.log('[with-test-pg] operator-api preflight ready — private home harness, measured paused pipeline and embedding sidecar; background/DBOS disabled');
   } catch (error) {
     console.error('[with-test-pg] operator-api preflight failed: ' + (error?.stack ?? error));
+    if (privatePgSetupTimer) clearTimeout(privatePgSetupTimer);
+    if (!privatePgSetupExpired) recordPrivatePgSetup('setup-failed', { phase: privatePgSetupPhase,
+      elapsedMs: privatePgSetupStartedAtMs === null ? null : Date.now() - privatePgSetupStartedAtMs });
     await cleanup();
     process.exit(1);
   }
 }
 assertNotTerminating();
+finishPrivatePgSetup();
 const observedRuntime = isolatedRuntime && process.env.PC_ISOLATED_RUNTIME_PROOF === '1' && process.send;
 // Only a direct Node child can return the release acknowledgement to this owner.
 // Isolated runtimes retain their full proof-observed cleanup ordering.
@@ -1154,6 +1228,11 @@ async function finishChildOwned(code, signal) {
 
 main().catch(async error => {
   console.error(`[with-test-pg] bootstrap failed: ${error?.stack ?? error}`);
+  if (privatePgSetupTimer) clearTimeout(privatePgSetupTimer);
+  if (!privatePgSetupReady && !privatePgSetupExpired) {
+    recordPrivatePgSetup('setup-failed', { phase: privatePgSetupPhase,
+      elapsedMs: privatePgSetupStartedAtMs === null ? null : Date.now() - privatePgSetupStartedAtMs });
+  }
   await cleanup();
   process.exit(terminatingSignal === 'SIGTERM' ? 143 : terminatingSignal === 'SIGINT' ? 130 : 1);
 });

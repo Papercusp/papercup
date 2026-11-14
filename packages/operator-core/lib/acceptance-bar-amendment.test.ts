@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 const h = vi.hoisted(() => ({ withWorkspace: vi.fn() }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
@@ -21,6 +22,7 @@ import {
   shouldCarryBarEvidence,
   validateAcceptanceBarRevisionProjectionPreview,
   type AcceptanceBarReviewSource,
+  type AppliedAcceptanceBarContinuation,
 } from './acceptance-bar-amendment';
 import { AcceptanceBarCandidateError } from './acceptance-bar-projection';
 import { specEvidenceBindingFingerprint } from './agent-tools/plans/spec-evidence-store';
@@ -31,6 +33,9 @@ import {
   acceptanceCanonicalUnchangedIgnoringLegacyChecks,
   computeAcceptanceBarSetHash,
   normalizeAcceptanceBarCriterion,
+  amendmentRequestHash,
+  computeAcceptanceBarHash,
+  type AmendRubricInput,
 } from './rubrics';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import {
@@ -1180,6 +1185,328 @@ describe('approval receipt parsing (EI-22617748468342848)', () => {
     await expect(resolve(wrongSchema)).rejects.toThrow(/acceptance_bar_approval_invalid_receipt/);
     await expect(resolve(wrongSchema)).rejects.not.toThrow(/unparseable/);
   });
+});
+
+describe('current applied approval evidence (EI-28280477757151195)', () => {
+  const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+  function fixture() {
+    const content = `---
+title: Subject
+slug: applied-subject
+status: active
+created: 2026-11-12
+updated: 2026-11-12
+---
+# Subject
+## Requirements
+**R-1 — Canonical outcome.** The writer persists one canonical BAR.
+## Design
+### Bar-to-work map for this plan
+| bar | implementing plan items | evidence plane |
+|---|---|---|
+| R-1 | P-001 | tree |
+## Phase 1 — Build
+- **P-001** \`todo\` persist the canonical BAR
+`;
+    const seed = buildAcceptanceBarSeed({ planSlug: 'applied-subject', planContent: content,
+      actorId: 'author', declaredAt: '2026-11-12T00:00:00.000Z', cohort: 'post-epoch', adoptionEpoch: 1,
+      subjectPlanRevision: 4, rubricSlug: 'acceptance-applied-subject', rubricRevision: 3 });
+    if (!seed.ok) throw new Error('seed failed');
+    const candidate = rubricTemplateDataAuthoringSchema.parse(seed.templateData);
+    candidate.criteria[0]!.requiredTestLayers = ['unit'];
+    candidate.criteria[0]!.barHash = computeAcceptanceBarHash(candidate.criteria[0]!);
+    candidate.barSetHash = computeAcceptanceBarSetHash(candidate.criteria);
+    const source: AcceptanceBarReviewSource = { schemaVersion: 1,
+      rubric: { ref: 'acceptance-applied-subject', revision: 2, baseline: candidate, candidate },
+      subjectPlan: { slug: 'applied-subject', harness: 'papercusp', revision: 3,
+        content, proposedContentUnchanged: true }, reason: 'Reviewed method', mappingDelta: [] };
+    const expected = acceptanceBarApprovalSchema.parse({ schemaVersion: 1, kind: 'acceptance-bar-amendment-approval',
+      rubricRef: source.rubric.ref, subjectPlan: source.subjectPlan.slug, proposedPatchHash: 'c'.repeat(64),
+      reviewSourceHash: acceptanceBarReviewSourceHash(source),
+      bars: [{ barKey: 'R-1', priorBarHash: candidate.criteria[0]!.barHash, nextBarHash: candidate.criteria[0]!.barHash }] });
+    const expectedRequest: AmendRubricInput = { rubricId: source.rubric.ref, actorId: 'author',
+      reason: source.reason, approvalRef: 'thread-post:123', idempotencyKey: 'applied-key',
+      criterion: { key: candidate.criteria[0]!.key, field: 'method', mode: 'replace', text: 'Reviewed method' } };
+    const requestSha256 = amendmentRequestHash(expectedRequest);
+    const decision = `\n## Decisions\n### D-001 — Acceptance BAR amendment\n\nAmendment-Id: applied-key
+Request-Hash: ${requestSha256}
+Actor: author
+Approval-Ref: thread-post:123
+Approved-By: reviewer
+Approved-At: 2026-11-12T00:01:00.000Z
+Rubric revision: 2 → 3
+Subject plan revision: 3 → 4
+`;
+    const rubric = { content: '# Rubric', content_hash: digest('# Rubric'), version: 3,
+      template_data: structuredClone(candidate) };
+    rubric.template_data.barContract!.subjectPlanRevision = 5;
+    const subject = { content: content + decision, content_hash: digest(content + decision), version: 5,
+      acceptance_bar_rubric_slug: source.rubric.ref, acceptance_bar_rubric_revision: 3,
+      acceptance_bar_set_hash: candidate.barSetHash };
+    const queries: Array<{ query: string; values: unknown[] }> = [];
+    const query = vi.fn(async (parts: TemplateStringsArray, ...values: unknown[]) => {
+      const text = parts.join('?');
+      queries.push({ query: text, values });
+      if (text.includes('coord_thread_posts')) return [{ author_id: 'reviewer',
+        body: acceptanceBarReviewPostBody(expected, source) + `\nverified-complete-source sha256:${expected.reviewSourceHash}`,
+        approved_at: '2026-11-12T00:01:00.000Z' }];
+      return values.includes(source.rubric.ref) ? [rubric] : [subject];
+    });
+    const sql = Object.assign(query, { savepoint: vi.fn() }) as unknown as Parameters<typeof resolveAcceptanceBarApproval>[0];
+    const args = { workspaceId: 'workspace', approvalRef: 'thread-post:123', expected, expectedRequest,
+      applied: { amendmentKey: 'applied-key', rubricHarnessSlug: 'papercusp', subjectHarnessSlug: 'papercusp' } };
+    return { args, rubric, subject, source, queries, query, sql, requestSha256,
+      resolve: () => resolveAcceptanceBarApproval(sql, args),
+      editSubject: (edit: (value: string) => string) => {
+        subject.content = edit(subject.content); subject.content_hash = digest(subject.content);
+      } };
+  }
+
+  it('joins the signed source and patch to current committed rule evidence without granting an operation', async () => {
+    const f = fixture();
+    const result = await f.resolve();
+    expect(result.applied).toMatchObject({ amendmentKey: 'applied-key', decisionId: 'D-001',
+      approvedSourceSha256: acceptanceBarReviewSourceHash(f.source), approvedPatchSha256: 'c'.repeat(64),
+      rubricRevision: 3, subjectRevision: 5, appliedRubricRevisions: { before: 2, after: 3 },
+      appliedSubjectRevisions: { before: 3, after: 4 }, subjectContentSha256: f.subject.content_hash });
+    expect(result.applied!.requestSha256).toBe(f.requestSha256);
+    expect(result.applied!.ruleSha256).not.toBe(result.applied!.approvedSourceSha256);
+    expect(result.applied!.ruleSha256).not.toBe(result.applied!.approvedPatchSha256);
+    expect(result).not.toHaveProperty('allowed');
+    for (const read of f.queries.slice(1)) {
+      expect(read.query).toContain('FOR SHARE');
+      expect(read.query).toContain("origin = 'local'");
+      expect(read.values[0]).toBe('workspace');
+      expect(read.values[1]).toBe('papercusp');
+    }
+  });
+
+  it('refuses a well-formed Request-Hash that does not bind the retained typed request', async () => {
+    const f = fixture();
+    f.editSubject(body => body.replace(`Request-Hash: ${f.requestSha256}`, `Request-Hash: ${'e'.repeat(64)}`));
+    await expect(f.resolve()).rejects
+      .toThrow('acceptance_bar_applied_approval_request_mismatched');
+  });
+
+  it.each(['missing', 'actor', 'rubric', 'approval', 'reason', 'key', 'method'] as const)(
+    'refuses %s typed request provenance without reconstructing it from the signed candidate', async mode => {
+      const f = fixture();
+      if (mode === 'missing') delete (f.args as { expectedRequest?: AmendRubricInput }).expectedRequest;
+      if (mode === 'actor') f.args.expectedRequest.actorId = 'another';
+      if (mode === 'rubric') f.args.expectedRequest.rubricId = 'another';
+      if (mode === 'approval') f.args.expectedRequest.approvalRef = 'thread-post:456';
+      if (mode === 'reason') f.args.expectedRequest.reason = 'another';
+      if (mode === 'key') f.args.expectedRequest.idempotencyKey = 'another';
+      if (mode === 'method') f.args.expectedRequest.criterion!.text = 'Unreviewed method';
+      await expect(f.resolve()).rejects.toThrow('acceptance_bar_applied_approval_request_mismatched');
+    },
+  );
+
+  it.each(['missing', 'duplicate', 'different approval', 'different reviewer', 'wrong revisions'])(
+    'refuses %s committed amendment evidence', async mode => {
+      const f = fixture();
+      f.editSubject(body => mode === 'missing' ? body.replace('Amendment-Id: applied-key', 'Amendment-Id: other')
+        : mode === 'duplicate' ? body + '\n### D-002 — Duplicate\n\nAmendment-Id: applied-key\n'
+        : mode === 'different approval' ? body.replace('thread-post:123', 'thread-post:456')
+        : mode === 'different reviewer' ? body.replace('Approved-By: reviewer', 'Approved-By: another')
+        : body.replace('Rubric revision: 2 → 3', 'Rubric revision: 1 → 2'));
+      await expect(f.resolve()).rejects.toThrow('acceptance_bar_applied_approval_');
+    });
+
+  it.each([
+    { label: 'repeated key', extra: 'Amendment-Id: applied-key', key: 'applied-key' },
+    { label: 'mixed keys selecting the first', extra: 'Amendment-Id: shadow-key', key: 'applied-key' },
+    { label: 'mixed keys selecting the second', extra: 'Amendment-Id: shadow-key', key: 'shadow-key' },
+    { label: 'malformed duplicate field', extra: 'Amendment-Id:shadow-key', key: 'applied-key' },
+  ])('refuses $label within one Decision', async ({ extra, key }) => {
+    const f = fixture();
+    f.editSubject(body => body.replace('Amendment-Id: applied-key', `Amendment-Id: applied-key\n${extra}`));
+    f.args.applied.amendmentKey = key;
+    await expect(f.resolve()).rejects.toThrow('acceptance_bar_applied_approval_decision_field_ambiguous');
+  });
+
+  it.each(['method', 'new rule field', 'later rubric', 'pin', 'source meaning', 'map', 'hash'])(
+    'refuses uncovered current %s even though the old receipt is valid', async mode => {
+      const f = fixture();
+      if (mode === 'method') f.rubric.template_data.criteria[0]!.method = 'A later unreviewed method';
+      if (mode === 'new rule field') Object.assign(f.rubric.template_data, { newRule: 'unreviewed' });
+      if (mode === 'later rubric') f.rubric.version = 4;
+      if (mode === 'pin') f.subject.acceptance_bar_rubric_revision = 2;
+      if (mode === 'source meaning') f.editSubject(body => body.replace('persists one canonical BAR.', 'deletes every BAR.'));
+      if (mode === 'map') f.editSubject(body => body.replace('| R-1 | P-001 | tree |', '| R-1 | P-002 | tree |'));
+      if (mode === 'hash') f.subject.content_hash = 'a'.repeat(64);
+      await expect(f.resolve()).rejects.toThrow('acceptance_bar_applied_approval_');
+    });
+
+  it('refuses an unbound pool, recruitment purpose, absent full source, and foreign subject harness', async () => {
+    const f = fixture();
+    for (const args of [{ ...f.args, purpose: 'review-recruitment' as const },
+      { ...f.args, expected: { ...f.args.expected, reviewSourceHash: undefined } },
+      { ...f.args, applied: { ...f.args.applied, subjectHarnessSlug: 'foreign' } }]) {
+      await expect(resolveAcceptanceBarApproval(f.sql, args)).rejects.toThrow('acceptance_bar_applied_approval_');
+    }
+    const pool = vi.fn() as unknown as typeof f.sql;
+    await expect(resolveAcceptanceBarApproval(pool, f.args))
+      .rejects.toThrow('requires_transaction_and_signed_source');
+  });
+
+  it('detaches the complete expectation before waiting for the signed post', async () => {
+    const f = fixture();
+    const pending = f.resolve();
+    f.args.applied.amendmentKey = 'another';
+    f.args.expected.proposedPatchHash = 'a'.repeat(64);
+    f.args.expectedRequest.criterion!.text = 'Changed while awaiting approval';
+    const result = await pending;
+    expect(result.applied).toMatchObject({ amendmentKey: 'applied-key', approvedPatchSha256: 'c'.repeat(64),
+      requestSha256: f.requestSha256 });
+  });
+
+  function restoredIntentFixture() {
+    const f = fixture();
+    const candidate = structuredClone(f.rubric.template_data);
+    candidate.criteria[0] = normalizeAcceptanceBarCriterion({ ...candidate.criteria[0]!,
+      intent: { request: 'Preserve the original outcome.', constraints: ['Reviewed producer restriction.'] } });
+    candidate.barSetHash = computeAcceptanceBarSetHash(candidate.criteria);
+    const criterion = candidate.criteria[0]!;
+    const requirement = (constraint: string) => `**R-1 — Canonical outcome.**\n\n\`\`\`requirement\n${JSON.stringify({
+      intent: { request: 'Preserve the original outcome.', constraints: [constraint] },
+      acceptance: { condition: criterion.model, falsifier: criterion.driftMarkers,
+        role: criterion.role, mandatory: criterion.mandatory, requiredScope: criterion.requiredScope,
+        evidencePlane: criterion.evidencePlane, requiredTestLayers: criterion.requiredTestLayers,
+        passRatings: criterion.passRatings },
+      verification: { method: criterion.method ?? 'Run the maintained check.' },
+    })}\n\`\`\``;
+    const legacy = '**R-1 — Canonical outcome.** The writer persists one canonical BAR.';
+    f.source.subjectPlan.content = f.source.subjectPlan.content.replace(legacy, requirement('Original restriction.'));
+    f.source.rubric.candidate = structuredClone(candidate);
+    f.rubric.template_data = structuredClone(candidate);
+    f.subject.acceptance_bar_set_hash = candidate.barSetHash;
+    f.args.expected.reviewSourceHash = acceptanceBarReviewSourceHash(f.source);
+    f.args.expected.bars[0]!.nextBarHash = criterion.barHash!;
+    f.args.expectedRequest = { ...f.args.expectedRequest, criteria: structuredClone(candidate.criteria) };
+    delete f.args.expectedRequest.criterion;
+    f.editSubject(body => body.replace(legacy, requirement('Reviewed producer restriction.'))
+      .replace(f.requestSha256, amendmentRequestHash(f.args.expectedRequest)));
+    return f;
+  }
+
+  it('joins exact reviewed Intent restored into the authored source after approval', async () => {
+    const f = restoredIntentFixture();
+    expect(await acceptanceBarSourceFingerprint(f.source.subjectPlan.content))
+      .not.toBe(await acceptanceBarSourceFingerprint(f.subject.content));
+    await expect(f.resolve()).resolves.toMatchObject({ applied: { rubricRevision: 3, subjectRevision: 5 } });
+  });
+
+  it.each(['unreviewed Intent', 'promise', 'map', 'layer'])(
+    'refuses reviewed Intent restoration combined with a changed %s', async mode => {
+      const f = restoredIntentFixture();
+      f.editSubject(body => mode === 'unreviewed Intent'
+        ? body.replace('Reviewed producer restriction.', 'An invented restriction.')
+        : mode === 'promise' ? body.replace(criterionModel(f), 'A weaker authored promise.')
+        : mode === 'map' ? body.replace('| R-1 | P-001 | tree |', '| R-1 | P-002 | tree |')
+        : body.replace('"requiredTestLayers":["unit"]', '"requiredTestLayers":["integration"]'));
+      await expect(f.resolve()).rejects.toThrow('acceptance_bar_applied_approval_source_not_current');
+    },
+  );
+
+  function criterionModel(f: ReturnType<typeof fixture>) { return f.rubric.template_data.criteria[0]!.model!; }
+
+  function continuedFixture(f = fixture()) {
+    const baseline = structuredClone(f.rubric.template_data);
+    const candidate = structuredClone(baseline);
+    candidate.criteria[0]!.requiredTestLayers = ['unit', 'integration'];
+    candidate.criteria[0]!.barHash = computeAcceptanceBarHash(candidate.criteria[0]!);
+    candidate.barSetHash = computeAcceptanceBarSetHash(candidate.criteria);
+    candidate.barContract!.meaningRevision = 4;
+    candidate.barContract!.subjectPlanRevision = 6;
+    const source: AcceptanceBarReviewSource = { schemaVersion: 1,
+      rubric: { ref: f.source.rubric.ref, revision: 3, baseline, candidate },
+      subjectPlan: { slug: f.source.subjectPlan.slug, harness: 'papercusp', revision: 5,
+        content: f.subject.content, proposedContentUnchanged: true },
+      reason: 'Add a required integration layer', mappingDelta: [] };
+    const expectedRequest: AmendRubricInput = { rubricId: source.rubric.ref, actorId: 'author',
+      criteria: structuredClone(candidate.criteria), reason: source.reason, idempotencyKey: 'additive-key',
+      expectedRubricRevision: 3, expectedSubjectPlanRevision: 5 };
+    const continuation: AppliedAcceptanceBarContinuation = { amendmentKey: 'additive-key', source,
+      sourceSha256: acceptanceBarReviewSourceHash(source), expectedRequest };
+    const args = { ...f.args, applied: { ...f.args.applied, additiveContinuations: [continuation] } };
+    const originalBody = f.subject.content;
+    function recommit() {
+      f.rubric.template_data = structuredClone(source.rubric.candidate) as typeof candidate;
+      f.rubric.version = 4;
+      f.subject.version = 6;
+      f.subject.acceptance_bar_rubric_revision = 4;
+      f.subject.acceptance_bar_set_hash = candidate.barSetHash!;
+      continuation.sourceSha256 = acceptanceBarReviewSourceHash(source);
+      f.editSubject(() => originalBody + `\n### D-002 — Acceptance BAR amendment\n\nAmendment-Id: additive-key
+Request-Hash: ${amendmentRequestHash(expectedRequest)}
+Actor: author
+Reason: ${source.reason}
+Approval: not required — every change is additive (R-1)
+Rubric revision: 3 → 4
+Subject plan revision: 5 → 6
+`);
+    }
+    recommit();
+    return { ...f, args, continuation, baseline, candidate, recommit,
+      resolve: () => resolveAcceptanceBarApproval(f.sql, args) };
+  }
+
+  it('joins a committed additive continuation without treating its author as an outside approver', async () => {
+    const f = continuedFixture();
+    const result = await f.resolve();
+    expect(result.approvedBy).toBe('reviewer');
+    expect(result.applied).toMatchObject({ decisionId: 'D-001', rubricRevision: 4, subjectRevision: 6,
+      additiveContinuations: [{ decisionId: 'D-002', amendmentKey: 'additive-key',
+        requestSha256: amendmentRequestHash(f.continuation.expectedRequest),
+        sourceSha256: f.continuation.sourceSha256,
+        rubricRevisions: { before: 3, after: 4 }, subjectRevisions: { before: 5, after: 6 } }] });
+    expect(result).not.toHaveProperty('allowed');
+  });
+
+  it('joins reviewed Intent restoration before the retained additive continuation', async () => {
+    const f = continuedFixture(restoredIntentFixture());
+    await expect(f.resolve()).resolves.toMatchObject({ applied: { rubricRevision: 4,
+      additiveContinuations: [{ amendmentKey: 'additive-key' }] } });
+  });
+
+  it.each(['input', 'source hash', 'baseline', 'missing decision', 'request hash', 'revisions',
+    'approval alias', 'duplicate key', 'missing link', 'current drift'] as const)(
+    'refuses an unbound additive continuation: %s', async mode => {
+      const f = continuedFixture();
+      if (mode === 'input') f.continuation.expectedRequest.reason = 'another';
+      if (mode === 'source hash') f.continuation.sourceSha256 = 'a'.repeat(64);
+      if (mode === 'baseline') f.baseline.criteria[0]!.method = 'different baseline';
+      if (mode === 'missing decision') f.editSubject(body => body.replace('Amendment-Id: additive-key', 'Amendment-Id: missing'));
+      if (mode === 'request hash') f.editSubject(body => body.replace(
+        amendmentRequestHash(f.continuation.expectedRequest), 'e'.repeat(64)));
+      if (mode === 'revisions') f.editSubject(body => body.replace('Rubric revision: 3 → 4', 'Rubric revision: 4 → 5'));
+      if (mode === 'approval alias') f.editSubject(body => body + '\nApproval-Ref: thread-post:123\n');
+      if (mode === 'duplicate key') f.editSubject(body => body + '\nAmendment-Id: additive-key\n');
+      if (mode === 'missing link') f.args.applied.additiveContinuations = [];
+      if (mode === 'current drift') f.rubric.template_data.criteria[0]!.method = 'later changed method';
+      await expect(f.resolve()).rejects.toThrow();
+    },
+  );
+
+  it.each(['promise', 'removed layer', 'top-level field', 'extra patch', 'mapping', 'ambiguous source'] as const)(
+    'refuses a self-consistent committed continuation that changes %s', async mode => {
+      const f = continuedFixture();
+      if (mode === 'promise') f.candidate.criteria[0]!.model = 'The writer deletes the canonical BAR.';
+      if (mode === 'removed layer') {
+        f.candidate.criteria[0]!.requiredTestLayers = ['integration'];
+      }
+      if (mode === 'top-level field') f.candidate.description = 'A different rubric';
+      if (mode === 'extra patch') f.continuation.expectedRequest.methodRef = 'different-policy';
+      if (mode === 'mapping') f.continuation.source.mappingDelta = [{ barKey: 'R-1' }];
+      if (mode === 'ambiguous source') f.continuation.source.subjectPlan.proposedContent = f.subject.content;
+      f.candidate.criteria[0]!.barHash = computeAcceptanceBarHash(f.candidate.criteria[0]!);
+      f.candidate.barSetHash = computeAcceptanceBarSetHash(f.candidate.criteria);
+      f.continuation.expectedRequest.criteria = structuredClone(f.candidate.criteria);
+      f.recommit();
+      await expect(f.resolve()).rejects.toThrow();
+    },
+  );
 });
 
 describe('WI-6554700010046154 approval survives apply-time new-BAR metadata', () => {

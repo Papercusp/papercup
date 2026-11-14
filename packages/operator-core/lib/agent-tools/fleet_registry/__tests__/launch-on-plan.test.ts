@@ -4020,6 +4020,14 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
   it('returns a durable pending handle before a slow verifier settles, then persists the detached result', async () => {
     vi.useFakeTimers();
     try {
+      // Copy at the store boundary: mock.calls retains the mutable transaction
+      // reference and would falsely report later in-memory updates as durable.
+      const stored: Array<import('../../../agent-fleets-store').FleetLaunchTransaction> = [];
+      launchTransaction.persist.mockImplementation(async (raw: unknown) => {
+        const { transaction } = raw as { transaction: import('../../../agent-fleets-store').FleetLaunchTransaction };
+        stored.push(structuredClone(transaction));
+        return true;
+      });
       let resolveVerification!: (value: {
         agentStarted: boolean;
         waitedMs: number;
@@ -4081,6 +4089,15 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
         status: 'pending',
       });
       expect(payload.launchTransaction.state).toBe('launching');
+      // If this API process dies here, a fresh reader must recover the opened
+      // canary from storage without relying on this pending verifier/promise.
+      expect(stored.at(-1)).toMatchObject({
+        transactionId: payload.launchTransaction.transactionId,
+        state: 'launching',
+        openedMemberIds: payload.launchTransaction.requestedMemberIds,
+        verifiedMemberIds: [],
+        waves: [{ openedOwnerIds: payload.launchTransaction.requestedMemberIds, state: 'opening' }],
+      });
       expect(payload.message).toContain('continues in the background');
       expect(payload.ignoredRoleDiagnostics).toEqual([
         {
@@ -4109,6 +4126,51 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
         },
       );
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retains the opened canary when a governor revision wins during verification', async () => {
+    vi.useFakeTimers();
+    const store = { transaction: null as import('../../../agent-fleets-store').FleetLaunchTransaction | null };
+    launchTransaction.persist.mockImplementation(async (raw: unknown) => {
+      const args = raw as Parameters<typeof import('../../../agent-fleets-store').setFleetLaunchTransaction>[0];
+      const prior = store.transaction;
+      const expected = args.expectedRevision;
+      if (expected && (expected.transactionId !== prior?.transactionId || expected.updatedAt !== prior?.updatedAt)) {
+        return false;
+      }
+      store.transaction = structuredClone(args.transaction);
+      return true;
+    });
+    let releaseVerification!: () => void;
+    const verification = new Promise<void>(resolve => { releaseVerification = resolve; });
+    launchTransaction.verify.mockImplementation(async () => {
+      await verification;
+      return { agentStarted: true, waitedMs: 1, sessions: [], note: 'verified' };
+    });
+    const response = invokeLaunchHandler({
+      name: 'Concurrent Governor Fleet', plan: 'my-plan', harness: 'papercusp', count: 2, headless: true,
+    });
+    try {
+      await vi.waitFor(() => expect(launchTransaction.verify).toHaveBeenCalledOnce(), { timeout: 5_000, interval: 10 });
+      expect(store.transaction?.openedMemberIds).toHaveLength(1);
+      expect(store.transaction?.verifiedMemberIds).toEqual([]);
+      // The governor reads this independently persisted snapshot, adds its
+      // hold and wins the revision while the launch's verification is pending.
+      store.transaction!.updatedAt += 1;
+      store.transaction!.recovery.nextAction = 'preserve explicit member stop';
+      const governorSnapshot = structuredClone(store.transaction);
+      releaseVerification();
+      const payload = parseHandlerPayload(await response);
+      expect(payload.launchTransaction.recovery.nextAction).toContain('changed concurrently');
+      expect(store.transaction).toEqual(governorSnapshot);
+      expect(store.transaction?.openedMemberIds).toEqual(payload.launchTransaction.openedMemberIds);
+      expect(spawnHeadlessMock).toHaveBeenCalledOnce();
+    } finally {
+      releaseVerification();
+      await vi.runAllTimersAsync();
+      await response;
       vi.useRealTimers();
     }
   });

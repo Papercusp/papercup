@@ -190,6 +190,44 @@ describe('events:cancel dual-path result', () => {
     expect(out).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 }, results: [{ ok: false, delivery_id: 3, acked: false, error: 'not_found_or_not_yours_or_already_settled' }] });
   });
 
+  it.each(['pending', 'parked'])('reports an owned %s delivery as an unconfirmed ACK rather than a missing delivery', async (status) => {
+    vi.mocked(ackDelivery).mockResolvedValue({ acked: false, alreadySettled: false, status });
+
+    const out = await call({ delivery_id: 3 });
+
+    expect(out).toMatchObject({
+      ok: false,
+      counts: { ok: 0, failed: 1 },
+      results: [{ ok: false, delivery_id: 3, acked: false, status, error: 'delivery_ack_pending' }],
+    });
+    expect(out.results[0].warning).toMatch(/still active.*acknowledgement was not confirmed/);
+    expect(out.results[0].already_settled).toBeUndefined();
+  });
+
+  it('retains a pending host cancellation when the owned delivery remains parked', async () => {
+    vi.mocked(ackDelivery).mockResolvedValue({
+      acked: false,
+      alreadySettled: false,
+      status: 'parked',
+      cancellationRequested: true,
+    });
+
+    const out = await call({ delivery_id: 3 });
+
+    expect(out).toMatchObject({
+      ok: false,
+      results: [{
+        delivery_id: 3,
+        acked: false,
+        status: 'parked',
+        error: 'delivery_ack_pending',
+        cancellation_requested: true,
+      }],
+    });
+    expect(out.results[0].warning).toMatch(/not confirmed its pre-write barrier/);
+    expect(out.results[0].already_settled).toBeUndefined();
+  });
+
   it('ack-only in-flight delivery reports its status and reason', async () => {
     vi.mocked(ackDelivery).mockResolvedValue({ acked: false, alreadySettled: false, status: 'delivering' });
 

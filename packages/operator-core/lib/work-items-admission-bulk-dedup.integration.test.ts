@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { hostname } from 'node:os';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { readPlanLineNodes } from './agent-tools/plans/plan-line-graph';
 import { readProcessIdentity } from './process-identity';
 import {
   configureRuntimeVintageStore, InMemoryRuntimeVintageStore,
@@ -53,6 +54,10 @@ const DDL = `
   CREATE EXTENSION IF NOT EXISTS vector;
   CREATE EXTENSION IF NOT EXISTS pg_trgm;
   CREATE SCHEMA IF NOT EXISTS harness_shared;
+  CREATE TABLE harness_shared.audit_log (
+    id text PRIMARY KEY, ts bigint NOT NULL, workspace_id text NOT NULL,
+    actor text NOT NULL, action text NOT NULL, subject text NOT NULL, details jsonb
+  );
   CREATE TABLE harness_shared.work_items (
     workspace_id text NOT NULL,
     harness_slug text NOT NULL,
@@ -81,6 +86,15 @@ const DDL = `
     authority text,
     source_plan_slug text,
     source_plan_item_ids text[],
+    plan_slug text,
+    plan_line_id text,
+    plan_seq integer,
+    plan_phase text,
+    plan_importance text,
+    plan_decision_refs text[],
+    plan_deliverable text,
+    plan_owner_gate_marker text,
+    plan_line_text text,
     terminal_reason text,
     terminal_owner text,
     closed_ts bigint,
@@ -757,8 +771,19 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     await db.sql`
       UPDATE harness_shared.work_items
          SET source_plan_slug = 'gym-plan', source_plan_item_ids = ARRAY['P-009'],
+             plan_slug = 'gym-plan', plan_line_id = 'P-009', plan_seq = 2,
+             plan_phase = 'implementation', plan_importance = 'high',
+             plan_decision_refs = ARRAY['D-011'], plan_deliverable = 'recoverable plan execution',
+             plan_owner_gate_marker = 'owner-review-required',
+             plan_line_text = 'Restore the merged plan-line owner without losing its spec.',
              see_also = ARRAY['EI-gym-outgoing']
        WHERE feature_id = ${historicalId}`;
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET plan_slug = 'gym-plan', plan_line_id = 'P-008', plan_seq = 1,
+             plan_phase = 'implementation', plan_importance = 'normal',
+             plan_decision_refs = ARRAY[]::text[], plan_line_text = 'Completed prerequisite'
+       WHERE feature_id = 'EI-gym-blocker'`;
     await db.sql`
       UPDATE harness_shared.work_items SET see_also = ARRAY[${historicalId}]
        WHERE feature_id = 'EI-gym-referrer'`;
@@ -802,6 +827,15 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
         see_also: string[];
         source_plan_slug: string | null;
         source_plan_item_ids: string[];
+        plan_slug: string | null;
+        plan_line_id: string | null;
+        plan_seq: number | null;
+        plan_phase: string | null;
+        plan_importance: string | null;
+        plan_decision_refs: string[] | null;
+        plan_deliverable: string | null;
+        plan_owner_gate_marker: string | null;
+        plan_line_text: string | null;
         receipt: Record<string, any> | null;
       }>
     >`
@@ -809,6 +843,8 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
              payload #>> '{admissionMerge,canonicalId}' AS canonical,
              coalesce(see_also, ARRAY[]::text[]) AS see_also,
              source_plan_slug, coalesce(source_plan_item_ids, ARRAY[]::text[]) AS source_plan_item_ids,
+             plan_slug, plan_line_id, plan_seq, plan_phase, plan_importance,
+             plan_decision_refs, plan_deliverable, plan_owner_gate_marker, plan_line_text,
              payload->'admissionMerge' AS receipt
         FROM harness_shared.work_items
        WHERE feature_id = ANY(${[historicalId, keyedId]}::text[])
@@ -822,6 +858,15 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
         see_also: [keyedId, 'EI-gym-outgoing'].sort(),
         source_plan_slug: 'gym-plan',
         source_plan_item_ids: ['P-009'],
+        plan_slug: null,
+        plan_line_id: null,
+        plan_seq: null,
+        plan_phase: 'implementation',
+        plan_importance: 'high',
+        plan_decision_refs: ['D-011'],
+        plan_deliverable: 'recoverable plan execution',
+        plan_owner_gate_marker: 'owner-review-required',
+        plan_line_text: 'Restore the merged plan-line owner without losing its spec.',
         receipt: expect.objectContaining({
           schemaVersion: 2,
           state: 'complete',
@@ -829,11 +874,23 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
           prior: expect.objectContaining({
             sourcePlanSlug: 'gym-plan',
             sourcePlanItemIds: ['P-009'],
+            planLine: expect.objectContaining({
+              planSlug: 'gym-plan', lineId: 'P-009', seq: 2, decisionRefs: ['D-011'],
+              deliverable: 'recoverable plan execution',
+              text: 'Restore the merged plan-line owner without losing its spec.',
+            }),
             seeAlso: ['EI-gym-outgoing'],
+          }),
+          canonical: expect.objectContaining({
+            prior: expect.objectContaining({planLine: expect.objectContaining({planSlug: null, lineId: null})}),
+            applied: expect.objectContaining({
+              planLine: expect.objectContaining({planSlug: 'gym-plan', lineId: 'P-009', seq: 2}),
+            }),
           }),
           transfers: expect.objectContaining({
             incomingReferenceSources: ['EI-gym-referrer'],
             duplicateOccurrenceCreated: true,
+            planLine: { disposition: 'transferred', loserBindingReleased: true },
             dependencyEdges: [
               expect.objectContaining({
                 disposition: 'merged-with-existing-edge',
@@ -854,6 +911,15 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
         see_also: [historicalId, 'EI-gym-outgoing'].sort(),
         source_plan_slug: 'gym-plan',
         source_plan_item_ids: ['P-009'],
+        plan_slug: 'gym-plan',
+        plan_line_id: 'P-009',
+        plan_seq: 2,
+        plan_phase: 'implementation',
+        plan_importance: 'high',
+        plan_decision_refs: ['D-011'],
+        plan_deliverable: 'recoverable plan execution',
+        plan_owner_gate_marker: 'owner-review-required',
+        plan_line_text: 'Restore the merged plan-line owner without losing its spec.',
         receipt: null,
       },
     ]);
@@ -876,6 +942,18 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     const dependencies = await db.sql<Array<{ blocked_ref: string; satisfaction: string; created_by: string | null }>>`
       SELECT blocked_ref, satisfaction, created_by FROM harness_shared.work_item_deps ORDER BY id`;
     expect(dependencies).toEqual([{ blocked_ref: keyedId, satisfaction: 'success', created_by: 'keyed-writer' }]);
+
+    const planLines = await readPlanLineNodes(db.sql, {workspaceId: WS, harnessSlug: HARNESS, slug: 'gym-plan'});
+    expect(planLines.map(({id, featureId, status, blockedBy, phase, importance, decisionRefs, deliverable,
+      ownerGateMarker, text}) => ({
+      id, featureId, status, blockedBy, phase, importance, decisionRefs, deliverable, ownerGateMarker, text,
+    }))).toEqual([
+      {id: 'P-008', featureId: 'EI-gym-blocker', status: 'done', blockedBy: [], phase: 'implementation',
+        importance: 'normal', decisionRefs: [], deliverable: null, ownerGateMarker: null, text: 'Completed prerequisite'},
+      {id: 'P-009', featureId: keyedId, status: 'todo', blockedBy: ['P-008'], phase: 'implementation',
+        importance: 'high', decisionRefs: ['D-011'], deliverable: 'recoverable plan execution',
+        ownerGateMarker: 'owner-review-required', text: 'Restore the merged plan-line owner without losing its spec.'},
+    ]);
 
     const adjudications = await db.sql<Array<{ canonical: string | null }>>`
       SELECT canonical FROM harness_shared.dedup_adjudications

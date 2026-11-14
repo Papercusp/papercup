@@ -716,7 +716,7 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
     const admissionRefusal = this.commandRuntimeRefusal(runtime);
     if (admissionRefusal) return this.rememberImmediateRefusal(command, fingerprint, admissionRefusal);
     const dispatch = (async (): Promise<SuSessionCommandDispatch<B>> => {
-      const reserved = await store.reserve(command, fingerprint);
+      const reserved = await store.reserve(command, fingerprint, runtime.generation);
       if (reserved.receipt.fingerprint !== fingerprint) {
         throw new SuSessionHostError('command_id_conflict', 'commandId was already committed with a different payload', 409);
       }

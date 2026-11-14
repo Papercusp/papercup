@@ -59,6 +59,19 @@ export function operatorBase(env = process.env) {
 }
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+const PLAN_TEXT_REPAIR_KEYS = new Set([
+  'slug', 'harness', 'old_string', 'new_string', 'replace_all', 'allowDecisionDrop', 'expectedHash', 'rationale',
+]);
+const PLAN_AUDIT_BASE_KEYS = new Set(['slug', 'harness', 'phase', 'dryRun']);
+const PLAN_AUDIT_ACTIVATION_KEYS = new Set([
+  'classRef', 'sourceRanges', 'mappings', 'itemProvenance', 'repairedOmissions',
+  'rejectedOrSuperseded', 'unresolvedBlockers', 'summary',
+]);
+const PLAN_AUDIT_PRESTART_PHASES = new Set(['activation', 'discovery', 'shaping']);
+const PLAN_AUDIT_CLASS_REFS = new Set([
+  'plan-class-feature-ship', 'plan-class-bugfix', 'plan-class-migration',
+  'plan-class-investigation', 'plan-class-general',
+]);
 
 /**
  * The operators to try, in order: the pin, then — for a LOOPBACK pin only — the
@@ -101,7 +114,6 @@ export function operatorBases(env = process.env) {
  * configured fallback is tried. */
 function preToolGuardRoute(env = process.env) {
   const bases = operatorBases(env);
-  if (bases.length > 1) return { bases, splitWall: true };
   let pinned;
   try { pinned = new URL(operatorBase(env)); }
   catch { return { bases, splitWall: false }; }
@@ -109,6 +121,44 @@ function preToolGuardRoute(env = process.env) {
   const raw = String(env.PAPERCUSP_MCP_PROXY_PORT ?? '').trim();
   const proxyPort = /^\d+$/.test(raw) && Number(raw) > 0 && Number(raw) <= 65535 ? String(Number(raw)) : '9071';
   const pinnedPort = pinned.port || (pinned.protocol === 'https:' ? '443' : '80');
+  const rawStagingPort = String(env.PAPERCUSP_MCP_STAGING_PROXY_PORT ?? '').trim();
+  const configuredStagingPort = /^\d+$/.test(rawStagingPort) &&
+    Number(rawStagingPort) > 0 && Number(rawStagingPort) <= 65535
+    ? String(Number(rawStagingPort)) : null;
+  const stagingProxyPort = configuredStagingPort ?? '9171';
+  const proxyTargetPort = String(env.PAPERCUSP_MCP_PROXY_TARGET_PORT ?? '').trim();
+  const stagingRuntime =
+    pinnedPort === '3170' ||
+    pinnedPort === stagingProxyPort ||
+    (pinnedPort === proxyPort && configuredStagingPort !== null &&
+      proxyTargetPort !== '3271') ||
+    (pinnedPort === proxyPort && proxyTargetPort === '3170');
+  if (stagingRuntime) {
+    // The staging API exposes a same-build proxy (:9171 → :3170). A legacy
+    // launcher may still pin :9071, whose default is green main; the explicit
+    // staging marker must override that route. :3170 is the only safe fallback.
+    const directStagingBase = pinnedPort === '3170'
+      ? (bases.find(base => {
+        try { return new URL(base).port === '3170'; } catch { return false; }
+      }) ?? operatorBase(env))
+      : 'http://127.0.0.1:3170';
+    const stagingProxyEnabled =
+      env.PAPERCUSP_MCP_PROXY !== '0' && env.PAPERCUSP_MCP_STAGING_PROXY !== '0';
+    if (!stagingProxyEnabled || stagingProxyPort === '3170')
+      return { bases: [directStagingBase], splitWall: false };
+    return {
+      bases: ['http://127.0.0.1:' + stagingProxyPort, directStagingBase],
+      splitWall: true,
+    };
+  }
+  // An HTTP tool-guard request carries no MCP build selector. The proxy's
+  // default target is green main, so falling back from an explicit current-
+  // build pin (for example :3170 staging) could turn a staging outage into an
+  // empty, permissive verdict from older main code. Keep build-specific pins
+  // fail-closed; only the :3070/main and :9071/default-proxy pair may cross-fallback.
+  if (pinnedPort !== '3070' && pinnedPort !== proxyPort)
+    return { bases: [bases[0] ?? operatorBase(env)], splitWall: false };
+  if (bases.length > 1) return { bases, splitWall: true };
   if (proxyPort !== '9071' || pinnedPort !== proxyPort) return { bases, splitWall: false };
   return { bases: [...bases, 'http://localhost:3070'], splitWall: true };
 }
@@ -214,7 +264,7 @@ export function baseRequest({ port, client, owner, cwd, env = process.env }) {
  * @param {{ env?: NodeJS.ProcessEnv, fetchImpl?: typeof fetch, now?: () => number,
  *   onTurnStartOutcome?: (outcome: object) => void,
  *   onHookOutcome?: (outcome: object) => void }} [opts]
- * @returns {Promise<{ text: string, deliveryToken: string | null, factBodyOffers?: object[], memoryFragmentOffers?: object[] } | null>} the text
+ * @returns {Promise<{ text: string, deliveryToken: string | null, packingReceipt?: { attemptId: string, sha256: string }, factBodyOffers?: object[], memoryFragmentOffers?: object[] } | null>} the text
  *   to inject plus the turn-start orientation delivery token (delivery-ledger.mjs),
  *   or null to inject nothing
  */
@@ -261,6 +311,8 @@ export async function postInjection(port, body, opts = {}) {
           preFetchMs: fetchStartedAt === null ? null : Math.max(0, fetchStartedAt - startedAt),
           fetchMs: fetchStartedAt === null ? null : Math.max(0, (headersReceivedAt ?? now()) - fetchStartedAt),
           responseStatus,
+          proxyTraceId,
+          upstreamOrigin,
           headersElapsedMs: headersReceivedAt === null ? null : Math.max(0, headersReceivedAt - startedAt),
           responseBodyMs: bodyStartedAt === null ? null : Math.max(0, (bodyFinishedAt ?? now()) - bodyStartedAt),
         },
@@ -282,7 +334,10 @@ export async function postInjection(port, body, opts = {}) {
   let bodyFinishedAt = null;
   let transportPhase = null;
   let responseStatus = null;
+  let proxyTraceId = null;
+  let upstreamOrigin = null;
   const collectErrors = [];
+  const guardAttempts = [];
   let hookOutcomeReported = false;
   const reportHookOutcome = (stage, extra = {}) => {
     if (hookOutcomeReported || typeof opts.onHookOutcome !== 'function') return;
@@ -299,6 +354,7 @@ export async function postInjection(port, body, opts = {}) {
         } : {}),
         ...(guardRequestId ? { guardRequestId } : {}),
         ...(attemptedOperatorOrigin ? { operatorOrigin: attemptedOperatorOrigin } : {}),
+        ...(guardAttempts.length ? { guardAttempts: guardAttempts.map(attempt => ({ ...attempt })) } : {}),
         ...(collectErrors.length ? { collectErrors } : {}), ...extra,
       });
     } catch { /* diagnostic only */ }
@@ -312,12 +368,15 @@ export async function postInjection(port, body, opts = {}) {
   }
 
   if (port === 'turn-start' || port === 'compaction') codeIntelDelivery(body.owner, env, () => null, port);
-  const finish = (text = '', deliveryToken = null, factBodyOffers = [], memoryFragmentOffers = []) => {
+  const finish = (text = '', deliveryToken = null, factBodyOffers = [], memoryFragmentOffers = [], packingReceipt = undefined) => {
+    const packing = packingReceipt ? { packingReceipt } : {};
     if (port !== 'mid-turn') return text.trim() ? { text, deliveryToken,
+      ...packing,
       ...(factBodyOffers.length ? { factBodyOffers } : {}),
       ...(memoryFragmentOffers.length ? { memoryFragmentOffers } : {}) } : null;
     const merged = mergeCodeIntel(body, text, env);
     return merged?.trim() ? { text: merged, deliveryToken,
+      ...packing,
       ...(memoryFragmentOffers.length ? { memoryFragmentOffers } : {}) } : null;
   };
 
@@ -355,28 +414,32 @@ export async function postInjection(port, body, opts = {}) {
     let res = null;
     fetchStartedAt = now();
     transportPhase = 'waiting-for-headers';
-    // Context ports retain their single-wall fallback rules because a delayed
-    // answer may acknowledge delivery on another host. The native tool guard is
-    // an idempotent authority read: when pinned to the local :9071 proxy, split
-    // its hard wall with the direct :3070 route so a proxy header stall still
-    // leaves time for one bounded server verdict. Never retry an HTTP response.
+    // Context ports retain serial fallback: a delayed answer may acknowledge
+    // delivery on another host. Guard lookups are idempotent reads. Start their
+    // fallback at half-wall without cancelling a primary that can still answer
+    // inside the absolute wall. The first HTTP response wins, including errors;
+    // a refusal must never trigger a search for a more permissive response.
     const guardRoute = port === 'pre-tool' ? preToolGuardRoute(env) : null;
     const bases = guardRoute?.bases ?? operatorBases(env);
-    for (let index = 0; index < bases.length; index++) {
-      const base = bases[index];
-      let attemptTimer = null;
+    const guardRequests = [];
+    const fetchOrigin = async base => {
+      const attemptStartedAt = port === 'pre-tool' ? now() : null;
+      const attemptController = port === 'pre-tool' ? new AbortController() : null;
+      const signal = attemptController
+        ? AbortSignal.any([controller.signal, attemptController.signal]) : controller.signal;
+      signal.throwIfAborted();
+      const origin = new URL(base).origin;
+      let attempt = null;
+      if (attemptStartedAt !== null) {
+        attempt = { origin, startElapsedMs: Math.max(0, attemptStartedAt - startedAt),
+          headerBudgetMs: Math.max(1, spec.timeoutMs - Math.max(0, attemptStartedAt - startedAt)),
+          headerWaitMs: null, outcome: 'request-failed', status: null };
+        guardAttempts.push(attempt);
+        guardRequests.push({ controller: attemptController, attempt, startedAt: attemptStartedAt });
+      }
+      attemptedOperatorOrigin = origin;
       try {
-        let signal = controller.signal;
-        if (guardRoute?.splitWall && index === 0) {
-          const remainingWallMs = Math.max(1, spec.timeoutMs - Math.max(0, now() - startedAt));
-          const attemptBudgetMs = Math.max(1, Math.floor(remainingWallMs / (bases.length - index)));
-          const attemptController = new AbortController();
-          attemptTimer = setTimeout(() => attemptController.abort(), attemptBudgetMs);
-          signal = AbortSignal.any([controller.signal, attemptController.signal]);
-        }
-        // URL.origin excludes credentials, paths and query parameters.
-        attemptedOperatorOrigin = new URL(base).origin;
-        res = await fetchImpl(base + spec.endpoint, {
+        const response = await fetchImpl(base + spec.endpoint, {
           method: 'POST',
           // The route stack sees headers before the handler reads the body.
           // Reuse this lookup's opaque id to attribute pre-handler delays too.
@@ -386,14 +449,66 @@ export async function postInjection(port, body, opts = {}) {
           body: payloadBody,
           signal,
         });
-        headersReceivedAt = now();
-        responseStatus = res.status;
-        transportPhase = 'headers-received';
-        break;
+        signal.throwIfAborted();
+        if (attempt) {
+          attempt.outcome = 'headers-received';
+          attempt.status = Number.isInteger(response.status) ? response.status : null;
+        }
+        return { response, origin, headersAt: now(), controller: attemptController };
       } catch (err) {
-        if (controller.signal.aborted) throw err;
+        if (attempt && attempt.outcome !== 'superseded')
+          attempt.outcome = controller.signal.aborted ? 'wall-expired' : 'request-failed';
+        throw err;
       } finally {
-        if (attemptTimer) clearTimeout(attemptTimer);
+        if (attempt && attempt.headerWaitMs === null)
+          attempt.headerWaitMs = Math.max(0, now() - attemptStartedAt);
+      }
+    };
+    let selected = null;
+    let fallbackTimer = null;
+    try {
+      if (guardRoute?.splitWall) {
+        const primary = fetchOrigin(bases[0]);
+        const first = await Promise.race([
+          primary.then(value => ({ value }), () => null),
+          new Promise(resolve => {
+            const remaining = Math.max(1, spec.timeoutMs - Math.max(0, now() - startedAt));
+            fallbackTimer = setTimeout(() => resolve(null), Math.max(1, Math.floor(remaining / 2)));
+          }),
+        ]);
+        clearTimeout(fallbackTimer);
+        if (first) selected = first.value;
+        else selected = await Promise.any([primary, fetchOrigin(bases[1])]);
+      } else {
+        for (const base of bases) {
+          try { selected = await fetchOrigin(base); break; }
+          catch (err) { if (controller.signal.aborted) throw err; }
+        }
+      }
+    } catch (err) {
+      if (controller.signal.aborted) throw err;
+    } finally {
+      if (fallbackTimer) clearTimeout(fallbackTimer);
+      for (const pending of guardRequests) {
+        if (pending.controller === selected?.controller) continue;
+        // Freeze diagnostics before abort listeners settle so the emitted
+        // receipt includes cancellation even when a losing fetch is pending.
+        if (pending.attempt.headerWaitMs === null) {
+          pending.attempt.headerWaitMs = Math.max(0, now() - pending.startedAt);
+          pending.attempt.outcome = controller.signal.aborted ? 'wall-expired' : 'superseded';
+        }
+        pending.controller.abort();
+      }
+    }
+    if (selected) {
+      res = selected.response;
+      attemptedOperatorOrigin = selected.origin;
+      headersReceivedAt = selected.headersAt;
+      responseStatus = res.status;
+      transportPhase = 'headers-received';
+      if (port === 'turn-start') {
+        proxyTraceId = res.headers?.get('x-papercusp-mcp-trace-id') ?? null;
+        upstreamOrigin = res.headers?.get('x-papercusp-mcp-upstream-origin') ?? null;
       }
     }
     if (!res || !res.ok) {
@@ -414,11 +529,11 @@ export async function postInjection(port, body, opts = {}) {
       return finish();
     }
     reportTurnStartOutcome('response-received', payload);
-    const { text, deliveryToken, factBodyOffers, memoryFragmentOffers } = payload;
+    const { text, deliveryToken, factBodyOffers, memoryFragmentOffers, packingReceipt } = payload;
     reportHookOutcome('response-received', { textChars: typeof text === 'string' ? text.length : 0 });
     return finish(typeof text === 'string' ? text : '', typeof deliveryToken === 'string' && deliveryToken ? deliveryToken : null,
       Array.isArray(factBodyOffers) ? factBodyOffers : [],
-      Array.isArray(memoryFragmentOffers) ? memoryFragmentOffers : []);
+      Array.isArray(memoryFragmentOffers) ? memoryFragmentOffers : [], packingReceipt);
   } catch (err) {
     // Timeout, connection refused, malformed JSON, operator restarting mid-call.
     // All of it is "inject nothing" — never an error the turn can see.
@@ -562,9 +677,9 @@ export function editedPathsFor(tool, input) {
     return typeof path === 'string' && path.length <= 1000 ? [path] : [];
   }
   if (!/(?:^|_|:|\.)(?:apply_patch)$/.test(tool ?? '')) return [];
-  const patch = typeof input === 'string' ? input : input?.patch ?? input?.input;
+  const patch = typeof input === 'string' ? input : input?.command ?? input?.patch ?? input?.input;
   if (typeof patch !== 'string' || patch.length > 2_000_000) return [];
-  return [...new Set([...patch.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm)].map(match => match[1]))]
+  return [...new Set([...patch.matchAll(/^\*\*\* (?:(?:Update|Add|Delete) File|Move to): (.+)$/gm)].map(match => match[1]))]
     .filter(path => path.length <= 1000).slice(0, 12);
 }
 
@@ -737,9 +852,14 @@ function shellCommandFromPartial(partial) {
 }
 
 /**
- * Parse a bounded shell command into simple invocations. Newlines, `;`, and
- * `&&` separate commands; every other shell operator stays fail-closed. Split
- * newlines before parsing because shell-quote treats them as whitespace.
+ * Parse a bounded shell command into simple invocations. Newlines, semicolons,
+ * logical AND/OR, and a pipe separate command segments; every stage must independently
+ * match the read-only allowlist. The only redirections admitted are ones that cannot
+ * create or modify a file: discarding output to /dev/null (`2>/dev/null`, `>/dev/null`)
+ * and duplicating a descriptor (`2>&1`). The fd number before a redirect stays in the
+ * segment's tokens (shell-quote does not keep adjacency), so allowlists see it as an
+ * ordinary argument and judge conservatively. Other shell operators stay fail-closed.
+ * Split newlines before parsing because shell-quote treats them as whitespace.
  * @param {string} command
  * @returns {string[][] | null}
  */
@@ -765,15 +885,23 @@ function readOnlyCommandSegments(command) {
     if (!Array.isArray(tokens) || tokens.length === 0) return null;
 
     let current = [];
-    for (const token of tokens) {
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i];
       if (typeof token === 'string') {
         current.push(token);
         continue;
       }
       if (token && typeof token === 'object' &&
-          (token.op === ';' || token.op === '&&') && current.length > 0) {
+          (token.op === ';' || token.op === '&&' || token.op === '||' || token.op === '|') && current.length > 0) {
         segments.push(current);
         current = [];
+        continue;
+      }
+      const target = tokens[i + 1];
+      if (token && typeof token === 'object' && current.length > 0 && typeof target === 'string' &&
+          (((token.op === '>' || token.op === '>>') && target === '/dev/null') ||
+           (token.op === '>&' && /^\d$/.test(target)))) {
+        i++;
         continue;
       }
       return null;
@@ -799,6 +927,66 @@ function isReadOnlyRipgrepInvocation(tokens, env) {
   return true;
 }
 
+/** ps only reads process metadata; shell operators and interpolation are rejected earlier. */
+function isReadOnlyProcessListInvocation(tokens) {
+  return tokens[0] === 'ps';
+}
+
+/** head reads files/stdin and writes only to stdout; shell redirections are rejected earlier. */
+function isReadOnlyHeadInvocation(tokens) {
+  return tokens[0] === 'head';
+}
+
+/**
+ * Everyday inspection utilities that read files/stdin and write only to stdout
+ * (EI-28725785038939067: agents' real read commands routinely wrap these around
+ * rg/sed, so a fallback that admitted only bare rg/head/cat/sed/ps refused most
+ * reads whenever the authority lookup hit its wall). Options that write a file or
+ * execute a helper are refused: `sort -o`/`--output`/`--compress-program`, and
+ * uniq's optional OUTPUT operand (uniq is admitted stdin-only).
+ * @param {string[]} tokens
+ */
+function isReadOnlyInspectionUtilityInvocation(tokens) {
+  const [tool, ...args] = tokens;
+  switch (tool) {
+    case 'cd':
+      return args.length <= 1;
+    case 'pwd':
+    case 'true':
+    case 'echo':
+    case 'ls':
+    case 'wc':
+    case 'grep':
+    case 'tail':
+    case 'cut':
+      return true;
+    case 'sort':
+      return !args.some(arg => /^--(?:output|compress-program)(?:=|$)/.test(arg) || /^-[^-]*o/.test(arg));
+    case 'uniq':
+      return args.every(arg => arg.startsWith('-'));
+    default:
+      return false;
+  }
+}
+
+/**
+ * `timeout [options] DURATION command...` only bounds the wrapped command, so judge
+ * the wrapped command. Returns the segment unchanged when it is not a timeout
+ * wrapper, or null when the wrapper is malformed.
+ * @param {string[]} tokens
+ * @returns {string[] | null}
+ */
+function unwrapTimeoutInvocation(tokens) {
+  if (tokens[0] !== 'timeout') return tokens;
+  let i = 1;
+  while (i < tokens.length && tokens[i].startsWith('-')) {
+    i += ['-s', '-k', '--signal', '--kill-after'].includes(tokens[i]) ? 2 : 1;
+  }
+  if (i >= tokens.length || !/^\d+(?:\.\d+)?[smhd]?$/.test(tokens[i])) return null;
+  const wrapped = tokens.slice(i + 1);
+  return wrapped.length > 0 ? wrapped : null;
+}
+
 /**
  * cat accepts only input paths; sed accepts only explicit line-range printing.
  * @param {string[]} tokens
@@ -816,13 +1004,83 @@ function isReadOnlyFileReadInvocation(tokens) {
 }
 
 /**
- * Permit the typed canonical plan-anchor repair path. The quoted heredoc makes
- * its JSON data inert to the shell, and the allowlisted payload cannot replace
- * plan prose or requirements. The operator still validates and authorizes the
- * plans:edit call.
+ * Validate only the two documented plans:edit repair shapes. The target tool
+ * still performs schema, CAS, lint and capability checks after this shell-level
+ * admission; implementation tools remain behind the live authority verdict.
+ * @param {unknown} args
+ */
+function isCanonicalPlanEditArgs(args) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
+  const value = /** @type {Record<string, unknown>} */ (args);
+  if (typeof value.slug !== 'string' || !/^[a-z0-9][a-z0-9-]*$/i.test(value.slug) ||
+      (value.harness !== undefined &&
+        (typeof value.harness !== 'string' || !/^[A-Za-z0-9._-]+$/.test(value.harness))) ||
+      (value.expectedHash !== undefined && typeof value.expectedHash !== 'string') ||
+      (value.rationale !== undefined && typeof value.rationale !== 'string')) return false;
+  const hasAnchorFields = Object.hasOwn(value, 'itemId') || Object.hasOwn(value, 'anchors');
+  const hasTextFields = Object.hasOwn(value, 'old_string') || Object.hasOwn(value, 'new_string');
+  if (hasAnchorFields === hasTextFields) return false;
+  const allowedKeys = hasAnchorFields ? PLAN_ANCHOR_REPAIR_KEYS : PLAN_TEXT_REPAIR_KEYS;
+  if (Object.keys(value).some(key => !allowedKeys.has(key))) return false;
+  if (hasAnchorFields) {
+    return typeof value.itemId === 'string' && /^P-\d{3,}$/.test(value.itemId) &&
+      Array.isArray(value.anchors) && value.anchors.length > 0 && value.anchors.length <= 32;
+  }
+  if (typeof value.old_string !== 'string' || value.old_string.length === 0 ||
+      typeof value.new_string !== 'string' || value.old_string === value.new_string ||
+      (value.replace_all !== undefined && value.replace_all !== false) ||
+      (value.allowDecisionDrop !== undefined && value.allowDecisionDrop !== false)) return false;
+  return true;
+}
+
+/**
+ * Admit only pre-start plan audit phases. The plans:audit tool remains the
+ * authority for its detailed mappings and whether an audit can be recorded.
+ * Completion audits are intentionally excluded from this recovery path.
+ * @param {unknown} args
+ */
+function isCanonicalPlanAuditArgs(args) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
+  const value = /** @type {Record<string, unknown>} */ (args);
+  if (typeof value.slug !== 'string' || !/^[a-z0-9][a-z0-9-]*$/i.test(value.slug) ||
+      (value.harness !== undefined &&
+        (typeof value.harness !== 'string' || !/^[A-Za-z0-9._-]+$/.test(value.harness))) ||
+      typeof value.dryRun !== 'boolean' ||
+      typeof value.phase !== 'string' || !PLAN_AUDIT_PRESTART_PHASES.has(value.phase)) return false;
+  const allowedKeys = value.phase === 'activation'
+    ? new Set([...PLAN_AUDIT_BASE_KEYS, ...PLAN_AUDIT_ACTIVATION_KEYS])
+    : PLAN_AUDIT_BASE_KEYS;
+  if (Object.keys(value).some(key => !allowedKeys.has(key))) return false;
+  return value.classRef === undefined ||
+    (value.phase === 'activation' && typeof value.classRef === 'string' && PLAN_AUDIT_CLASS_REFS.has(value.classRef));
+}
+
+/**
+ * Remove one inert, bounded ptool idempotency token before parsing the canonical
+ * command header. Reject duplicates and shell metacharacters instead of
+ * expanding them away.
+ * @param {string} header
+ * @returns {{header:string,idempotencyKey:string|null}|null}
+ */
+function stripCanonicalPtoolIdempotencyKey(header) {
+  const matches = [...header.matchAll(/[ \t]+--idempotency-key(?:=|[ \t]+)([A-Za-z0-9][A-Za-z0-9._:-]{0,199})(?=[ \t]|$)/g)];
+  if (matches.length > 1) return null;
+  if (matches.length === 0) return { header, idempotencyKey: null };
+  const match = matches[0];
+  const start = match.index ?? -1;
+  if (start < 0) return null;
+  return {
+    header: header.slice(0, start) + header.slice(start + match[0].length),
+    idempotencyKey: match[1],
+  };
+}
+
+/**
+ * Permit a typed canonical plans:edit repair through a quoted ptool heredoc.
+ * The operator still validates and authorizes the target tool call.
  * @param {string} command
  */
-function isCanonicalPlanAnchorRepairCommand(command) {
+function isCanonicalPlanEditCommand(command) {
   if (command.length > 32_768 || command.includes(String.fromCharCode(0))) return false;
   const lines = command.split('\n').map(line => line.endsWith('\r') ? line.slice(0, -1) : line);
   if (lines.at(-1) === '') lines.pop();
@@ -863,15 +1121,7 @@ function isCanonicalPlanAnchorRepairCommand(command) {
   } catch {
     return false;
   }
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
-  if (Object.keys(payload).some(key => !PLAN_ANCHOR_REPAIR_KEYS.has(key))) return false;
-  return typeof payload.slug === 'string' &&
-    /^[a-z0-9][a-z0-9-]*$/i.test(payload.slug) &&
-    typeof payload.itemId === 'string' &&
-    /^P-\d{3,}$/.test(payload.itemId) &&
-    Array.isArray(payload.anchors) &&
-    payload.anchors.length > 0 &&
-    payload.anchors.length <= 32;
+  return isCanonicalPlanEditArgs(payload);
 }
 
 /**
@@ -945,30 +1195,46 @@ function isCanonicalReviewPtoolCommand(command, env) {
   if (lines.length < 3) return false;
   let header = lines.shift();
   const closingDelimiter = lines.pop();
+  let idempotencyKey = null;
   // ptool's explicit staging route never forwards the bearer to another host.
   // Remove at most one exact flag; duplicates and all other URLs still fail
   // the canonical header parser below.
   if (header.startsWith('ptool ')) {
+    // Discarding diagnostics is inert. Other redirections, duplicates and
+    // shell operators still fail the complete canonical-header parser below.
+    header = header.replace(/[ \t]+2>\/dev\/null(?=[ \t]|$)/, '');
+    const normalized = stripCanonicalPtoolIdempotencyKey(header);
+    if (!normalized) return false;
+    header = normalized.header;
+    idempotencyKey = normalized.idempotencyKey;
     header = header.replace(/[ \t]+--url=http:\/\/(?:localhost|127\.0\.0\.1|\[::1\]):3170\/?(?=[ \t])/, '');
   }
   const pinned = /^node[ \t]+scripts\/mcp-call\.mjs[ \t]+--port(?:[ \t]+|=)([1-9][0-9]{0,4})[ \t]+([a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*)[ \t]+--json[ \t]+-(?:[ \t]+--allow-partial)?[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(header);
   if (pinned && (Number(pinned[1]) > 65535 ||
-      !['scorecards:get', 'capability:read'].includes(pinned[2]))) return false;
+      !['scorecards:get', 'capability:read', 'capability:git-evidence', 'tools:find'].includes(pinned[2]))) return false;
   // mcp-call validates its explicit port as a loopback-only destination. Keep
   // this recovery form limited to evidence reads and the inherited identity.
-  const scoped = /^ptool[ \t]+([a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*)((?:[ \t]+--(?:workspace|harness)=(?:"[^"\r\n]*"|'[^'\r\n]*'|[A-Za-z0-9._-]+))*)[ \t]+--json[ \t]+-((?:[ \t]+--(?:workspace|harness)=(?:"[^"\r\n]*"|'[^'\r\n]*'|[A-Za-z0-9._-]+))*)[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(header);
+  const scoped = /^ptool[ \t]+([a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*)((?:[ \t]+--(?:workspace|harness)(?:=(?:"[^"\t\r\n ]*"|'[^'\t\r\n ]*'|[A-Za-z0-9._-]+)|[ \t]+(?:"[^"\t\r\n ]*"|'[^'\t\r\n ]*'|[A-Za-z0-9._-]+)))*)[ \t]+--json[ \t]+-((?:[ \t]+--(?:workspace|harness)(?:=(?:"[^"\t\r\n ]*"|'[^'\t\r\n ]*'|[A-Za-z0-9._-]+)|[ \t]+(?:"[^"\t\r\n ]*"|'[^'\t\r\n ]*'|[A-Za-z0-9._-]+)))*)[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(header);
   // ptool accepts scopes on either side of --json -. Validate their combined
   // set so reordering cannot evade duplicate-scope or environment checks.
   const match = pinned ? [pinned[0], pinned[2], '', pinned[3]] :
     scoped ? [scoped[0], scoped[1], scoped[2] + scoped[3], scoped[4]] : null;
   if (!match || closingDelimiter !== match[3] || lines.includes(match[3])) return false;
   const seenScopes = new Set();
-  for (const argument of match[2].trim().split(/[ \t]+/).filter(Boolean)) {
-    const scope = /^--(workspace|harness)=(.+)$/.exec(argument);
-    if (!scope || seenScopes.has(scope[1])) return false;
+  const scopeTokens = match[2].trim().split(/[ \t]+/).filter(Boolean);
+  for (let index = 0; index < scopeTokens.length; index++) {
+    let scope = /^--(workspace|harness)=(.+)$/.exec(scopeTokens[index]);
+    let rawValue;
+    if (scope) {
+      rawValue = scope[2];
+    } else {
+      scope = /^--(workspace|harness)$/.exec(scopeTokens[index]);
+      if (!scope || index + 1 >= scopeTokens.length) return false;
+      rawValue = scopeTokens[++index];
+    }
+    if (seenScopes.has(scope[1])) return false;
     seenScopes.add(scope[1]);
 
-    const rawValue = scope[2];
     const quote = rawValue.startsWith('"') && rawValue.endsWith('"') ? '"' :
       rawValue.startsWith("'") && rawValue.endsWith("'") ? "'" : null;
     const value = quote ? rawValue.slice(1, -1) : rawValue;
@@ -988,15 +1254,23 @@ function isCanonicalReviewPtoolCommand(command, env) {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
     let tool = match[1];
     let toolArgs = payload;
+    let hasInvokeProjection = false;
     if (tool === 'tools:invoke') {
       if (Object.keys(payload).some(key => !['name', 'args', 'projection'].includes(key)) ||
           typeof payload.name !== 'string' || !payload.args ||
           typeof payload.args !== 'object' || Array.isArray(payload.args)) return false;
+      hasInvokeProjection = Object.hasOwn(payload, 'projection');
       tool = payload.name;
       toolArgs = payload.args;
     }
+    if (tool === 'plans:edit') return !hasInvokeProjection && isCanonicalPlanEditArgs(toolArgs);
+    if (tool === 'plans:audit') return !hasInvokeProjection && isCanonicalPlanAuditArgs(toolArgs);
+    if (idempotencyKey !== null) return false;
     if (tool === 'events:await') return isCanonicalGradingAuditAwait(toolArgs);
-    return ['tools:find', 'dev:pg_query', 'plans:get', 'plans:items', 'plans:evaluate-spec-quality', 'work_items:get', 'events:status', 'reports:get',
+    // The pinned mcp-call verb has already passed its narrower evidence-read allowlist above.
+    // Keep that decision authoritative here so the two-stage checks cannot drift apart.
+    return (pinned !== null && pinned[2] === tool) ||
+      ['facts:list', 'tools:find', 'testing:runs', 'dev:pg_query', 'plans:get', 'plans:items', 'plans:evaluate-spec-quality', 'work_items:get', 'events:status', 'reports:get',
       'scorecards:get', 'capability:read',
       'conversations:get', 'coord:inbox', 'coord:read', 'docs:get', 'docs:search',
       'consult:reply', 'consult:decline'].includes(tool);
@@ -1017,9 +1291,16 @@ function isSafeWithoutExecutionAuthority(partial, env) {
   const command = shellCommandFromPartial(partial);
   if (command === null) return false;
   const segments = readOnlyCommandSegments(command);
-  return (segments !== null && segments.every(tokens =>
-    isReadOnlyRipgrepInvocation(tokens, env) || isReadOnlyFileReadInvocation(tokens))) ||
-    isCanonicalPlanAnchorRepairCommand(command) || isCanonicalReviewPtoolCommand(command, env);
+  return (segments !== null && segments.every(segment => {
+    const tokens = unwrapTimeoutInvocation(segment);
+    return tokens !== null && (
+      isReadOnlyRipgrepInvocation(tokens, env) ||
+      isReadOnlyHeadInvocation(tokens) ||
+      isReadOnlyFileReadInvocation(tokens) ||
+      isReadOnlyProcessListInvocation(tokens) ||
+      isReadOnlyInspectionUtilityInvocation(tokens));
+  })) ||
+    isCanonicalPlanEditCommand(command) || isCanonicalReviewPtoolCommand(command, env);
 }
 
 /**
@@ -1037,7 +1318,7 @@ function isSafeWithoutExecutionAuthority(partial, env) {
  * @param {unknown} args.event
  * @param {NodeJS.ProcessEnv} [args.env]
  * @param {typeof fetch} [args.fetchImpl]
- * @param {(owner: string, env: NodeJS.ProcessEnv, port?: 'turn-start' | 'mid-turn') => import('./delivery-ledger.mjs').DeliveryLedger | null} [args.openDeliveryLedger]
+ * @param {(owner: string, env: NodeJS.ProcessEnv, port?: 'turn-start' | 'mid-turn' | 'compact') => import('./delivery-ledger.mjs').DeliveryLedger | null} [args.openDeliveryLedger]
  *   Native context ports opt into ACK-ON-PROOF: the last confirmed orientation token
  *   rides as `confirmedDelivery`, and the returned token is OFFERED to the ledger
  *   once a payload exists. Committing it is the caller's job, after it has actually
@@ -1081,7 +1362,8 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
             (post.guardRequestId ? `; requestId=${post.guardRequestId}` : '') +
             (Number.isInteger(post.status) ? `; httpStatus=${post.status}` : '') +
             (post.transportPhase ? `; transportPhase=${post.transportPhase}; fetchMs=${post.fetchMs}; headersElapsedMs=${post.headersElapsedMs}; responseBodyMs=${post.responseBodyMs}` : '') +
-            (post.operatorOrigin ? `; operatorOrigin=${post.operatorOrigin}` : '')
+            (post.operatorOrigin ? `; operatorOrigin=${post.operatorOrigin}` : '') +
+            (post.guardAttempts?.length ? `; guardAttempts=${JSON.stringify(post.guardAttempts)}` : '')
           : `stage=guard-threw; errorType=${error?.name ?? 'unknown'}`;
         return adapter.render('pre-tool',
           'plan_execution_not_ready: execution-authority lookup failed; no server verdict was received. ' +
@@ -1095,8 +1377,10 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
       env.PAPERCUSP_FAILURE_LOOP_SESSION_KEY.trim()
         ? env.PAPERCUSP_FAILURE_LOOP_SESSION_KEY.trim()
         : owner;
-    const ledger = (port === 'turn-start' || port === 'mid-turn') && openDeliveryLedger
-      ? openDeliveryLedger(owner, env, port) : null;
+    // SessionStart shares fragment proofs with later hooks, while its token
+    // stays in the existing compact namespace, separate from orientation ACKs.
+    const ledger = (port === 'turn-start' || port === 'mid-turn' || port === 'compaction') && openDeliveryLedger
+      ? openDeliveryLedger(owner, env, port === 'compaction' ? 'compact' : port) : null;
     const turnStartRequestId = port === 'turn-start' ? randomUUID() : null;
     const request = {
       ...baseRequest({ port, client: adapter.client, owner, cwd: partial.cwd, env }),
@@ -1109,7 +1393,7 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
       // preserves older hook launches that predate the carrier.
       ...(port === 'mid-turn' ? { detectorSessionKey } : {}),
       ...(ledger && port === 'turn-start' ? { confirmedDelivery: ledger.confirmed() } : {}),
-      ...(ledger && port === 'mid-turn' ? { memoryReceiptMode: true } : {}),
+      ...(ledger && (port === 'mid-turn' || port === 'compaction') ? { memoryReceiptMode: true } : {}),
       ...(port === 'turn-start' && typeof ledger?.confirmedFactBodies === 'function' ? { confirmedFactBodies: ledger.confirmedFactBodies() } : {}),
       ...(typeof ledger?.confirmedMemoryDeliveries === 'function' ? { confirmedMemoryDeliveries: ledger.confirmedMemoryDeliveries() } : {}),
       ...(turnStartRequestId ? { turnStartRequestId } : {}),
@@ -1130,6 +1414,7 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
     if (typeof payload !== 'string' || payload.length === 0) return done('render-empty', null, { port });
     if (ledger && response?.deliveryToken) ledger.offer(response.deliveryToken, {
       payload: payload + '\n',
+      packingReceipt: response.packingReceipt,
       factBodyOffers: response.factBodyOffers,
       memoryFragmentOffers: response.memoryFragmentOffers,
       client: adapter.client,

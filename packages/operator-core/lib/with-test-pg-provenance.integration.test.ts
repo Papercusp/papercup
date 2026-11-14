@@ -33,9 +33,11 @@ describe('ordinary PostgreSQL endpoint isolation', () => {
       admissionShellSha256: createHash('sha256').update(readFileSync(admissionCommand)).digest('hex'),
       fixtureSha256: createHash('sha256').update(readFileSync(join(root, fixturePath))).digest('hex'),
     };
-    // The real launcher owns platform subscriptions. Keep those in a bounded
-    // fixture process so they cannot prevent the Vitest worker from settling.
-    const { stdout } = await run(process.execPath, ['--import', 'tsx',
+    // The controller itself writes a task ledger before starting its nested PG.
+    // Give that ledger and managed-task transport an owned runtime too; a bare
+    // fixture process would otherwise select the protected native database.
+    const { stdout } = await run(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+      '--isolated-runtime', '--managed-tasks', '--', process.execPath, '--import', 'tsx',
       join(root, 'packages/operator-core/test/fixtures/private-pg-confined-cleanup.ts')], {
       cwd: root, env: process.env, timeout: 195_000, maxBuffer: 8 * 1024 * 1024,
     });
@@ -149,11 +151,75 @@ describe('ordinary PostgreSQL endpoint isolation', () => {
   }, 200_000);
 });
 
+
+describe('disposable migrated clone feasibility', () => {
+  it('preserves acknowledged and lost-ack writes at the clone cut without mutating the source', async () => {
+    const child = `
+      import assert from 'node:assert/strict';
+      import postgres from 'postgres';
+      import { performance } from 'node:perf_hooks';
+      const observedAt = new Date().toISOString();
+      const url = new URL(process.env.HARNESS_ADMIN_DATABASE_URL);
+      assert.equal(url.port, process.env.PAPERCUSP_PG_PORT); assert.notEqual(url.port, '5432');
+      assert.match(process.env.PAPERCUSP_WORKSPACE_ID, /^test-runtime-/);
+      const originalName = decodeURIComponent(url.pathname.slice(1)); assert.match(originalName, /^[a-zA-Z0-9_]+$/);
+      const source = postgres(url.href,{max:1}); const adminUrl = new URL(url);adminUrl.pathname='/postgres';
+      const admin = postgres(adminUrl.href,{max:1});let clone;
+      const t = performance.now();
+      try {
+       const [{data_directory:dataDir}] = await source.unsafe('SHOW data_directory'); assert.match(dataDir,/papercusp-test-pg-/);
+       const [{system_identifier:systemIdentifier}] = await source.unsafe('SELECT system_identifier::text FROM pg_control_system()');
+       await source.unsafe('CREATE TABLE public.safety_p001_probe (id text PRIMARY KEY, acknowledgement text NOT NULL)');
+       await source.unsafe("INSERT INTO public.safety_p001_probe VALUES ('before-ack','acknowledged'),('before-lost-ack','response-lost')");
+       const [{tables}] = await source.unsafe("SELECT count(*)::int AS tables FROM pg_class WHERE relkind='r' AND relnamespace NOT IN (SELECT oid FROM pg_namespace WHERE nspname LIKE 'pg_%' OR nspname='information_schema')");
+       await source.end();
+       const cloneStarted=performance.now();await admin.unsafe('CREATE DATABASE safety_p001_clone TEMPLATE "'+originalName+'"');const cloneMs=performance.now()-cloneStarted;
+       const cloneUrl=new URL(url);cloneUrl.pathname='/safety_p001_clone';clone=postgres(cloneUrl.href,{max:1});
+       const preserved=await clone.unsafe('SELECT id,acknowledgement FROM public.safety_p001_probe ORDER BY id');assert.equal(preserved.length,2);
+       const [{tables:cloneTables}] = await clone.unsafe("SELECT count(*)::int AS tables FROM pg_class WHERE relkind='r' AND relnamespace NOT IN (SELECT oid FROM pg_namespace WHERE nspname LIKE 'pg_%' OR nspname='information_schema')");assert.equal(cloneTables,tables);
+       await clone.unsafe("INSERT INTO public.safety_p001_probe VALUES ('clone-only','acknowledged')");
+       const check=postgres(url.href,{max:1});try{assert.equal((await check.unsafe("SELECT id FROM public.safety_p001_probe WHERE id='clone-only'")).length,0);await check.unsafe("INSERT INTO public.safety_p001_probe VALUES ('after-cut','acknowledged')");}finally{await check.end();}
+       assert.equal((await clone.unsafe("SELECT id FROM public.safety_p001_probe WHERE id='after-cut'")).length,0);
+       console.log('SAFETY_P001_CLONE '+JSON.stringify({observedAt,workspace:process.env.PAPERCUSP_WORKSPACE_ID,privatePort:Number(url.port),systemIdentifier,sourceDatabase:originalName,cloneDatabase:'safety_p001_clone',tables,cloneTables,cloneMs:Math.ceil(cloneMs),totalProbeMs:Math.ceil(performance.now()-t),snapshotWrites:preserved.map(r=>r.id),lostAckPreserved:true,sourceUnaffected:true,postCutWriteAbsent:true,scope:'private fully-migrated schema plus controlled representative writes; no installed production-data/RTO guarantee'}));
+      } finally {await source.end();if(clone)await clone.end();await admin.unsafe('DROP DATABASE IF EXISTS safety_p001_clone');await admin.end();}
+
+    `;
+    const { stdout } = await run(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+      '--isolated-runtime', '--', process.execPath, '--input-type=module', '-e', child], {
+      cwd: root, env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: undefined },
+      timeout: 180_000, maxBuffer: 8 * 1024 * 1024,
+    });
+    const line = stdout.split('\n').find(line => line.startsWith('SAFETY_P001_CLONE '));
+    expect(line).toBeDefined();
+    const measured = JSON.parse(line!.slice('SAFETY_P001_CLONE '.length));
+    expect(measured).toMatchObject({ lostAckPreserved: true, sourceUnaffected: true,
+      postCutWriteAbsent: true, snapshotWrites: ['before-ack', 'before-lost-ack'] });
+    expect(measured.tables).toBeGreaterThan(0);
+    expect(measured.cloneTables).toBe(measured.tables);
+    expect(measured.cloneMs).toBeGreaterThanOrEqual(0);
+    expect(measured.privatePort).not.toBe(5432);
+    const cleanup = stdout.split('\n').filter(line => line.startsWith('[with-test-pg] cleanup '))
+      .map(line => JSON.parse(line.slice('[with-test-pg] cleanup '.length)))
+      .find(receipt => receipt.stage === 'complete');
+    expect(cleanup).toMatchObject({ runtimeRemoved: true, pgDataRemoved: true });
+    expect(existsSync(cleanup.runtimeRoot)).toBe(false);
+    expect(existsSync(cleanup.dataDir)).toBe(false);
+    console.log(line);
+  }, 200_000);
+});
+
 describe('private PostgreSQL Docker routing', () => {
   it('retains the selected local Docker socket and reporter attribution while isolating product identity and credentials', async () => {
     const host = 'unix:///run/docker-bench.sock';
     const workItem = 'WI-isolated-evidence';
     const ownerId = 'agent-isolated-evidence';
+    const ambientDestinations = {
+      ELEVENLABS_WEBHOOK_SECRET: 'private-boundary-secret-control',
+      EXPERIMENTAL_PROVIDER_TOKEN: 'private-boundary-secret-control',
+      SMTP_HOST: 'outbound.invalid', REDIS_URL: 'redis://shared.invalid',
+      UNCLASSIFIED_MUTABLE_ROOT: '/shared/state', ARBITRARY_SERVICE_ENDPOINT: 'https://shared.invalid',
+      MY_PRODUCTION_DATABASE: 'shared', LOCAL_QUEUE_DIR: '/shared/queue',
+    };
     const child = `
       import assert from 'node:assert/strict';
       assert.equal(process.env.DOCKER_HOST, ${JSON.stringify(host)});
@@ -163,6 +229,8 @@ describe('private PostgreSQL Docker routing', () => {
       assert.notEqual(process.env.PAPERCUSP_WORKSPACE_ID, 'parent-evidence-test');
       for (const key of ['DOCKER_CONTEXT', 'DOCKER_CONFIG', 'DOCKER_TLS_VERIFY',
         'DOCKER_CERT_PATH', 'DOCKER_AUTH_CONFIG']) assert.equal(process.env[key], undefined, key);
+      for (const key of ${JSON.stringify(Object.keys(ambientDestinations))})
+        assert.equal(process.env[key], undefined, key);
       console.log('PRIVATE_DOCKER_ROUTE_RETAINED=' + process.env.DOCKER_HOST);
       console.log('PRIVATE_REPORTER_ATTRIBUTION_RETAINED=' + process.env.PAPERCUSP_TEST_RUN_WORK_ITEM);
     `;
@@ -170,6 +238,7 @@ describe('private PostgreSQL Docker routing', () => {
       '--isolated-runtime', '--', process.execPath, '--input-type=module', '-e', child], {
       cwd: root,
       env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: undefined, DOCKER_HOST: host,
+        ...ambientDestinations,
         PAPERCUSP_SID: ownerId, PAPERCUSP_TEST_RUN_OWNER_ID: undefined,
         PAPERCUSP_TEST_RUN_WORK_ITEM: workItem, PAPERCUSP_WORKSPACE_ID: 'parent-evidence-test',
         DOCKER_CONTEXT: 'ambient-main', DOCKER_CONFIG: '/unavailable/credentials', DOCKER_TLS_VERIFY: '1',
@@ -179,6 +248,7 @@ describe('private PostgreSQL Docker routing', () => {
     });
     expect(stdout, stderr.slice(-1000)).toContain('PRIVATE_DOCKER_ROUTE_RETAINED=' + host);
     expect(stdout, stderr.slice(-1000)).toContain('PRIVATE_REPORTER_ATTRIBUTION_RETAINED=' + workItem);
+    expect(stdout + stderr).not.toContain('private-boundary-secret-control');
     expect(stdout).toContain('"runtimeRemoved":true,"pgDataRemoved":true');
   }, 200_000);
 });

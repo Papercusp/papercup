@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isCarryWallAuthoritative, type WallEntry } from '../../../carry-note';
 
 /** Frozen evidence uses the existing text-artifact store; paging never re-derives liveness. */
 export const ROSTER_AUDIT_SCHEMA = 'parked-agent-audit-v1' as const;
@@ -32,13 +33,54 @@ export interface AuditRecord {
   fields: Record<string, AuditField>;
 }
 
+type NextActionDisposition = 'executable' | 'await' | 'deferred' | 'unknown';
+
+const NEXT_STEP_DEFERRED_RE =
+  /\b(?:defer(?:red|ring)?|queued\s+outside|outside\s+(?:the\s+)?current(?:\s+implementation)?\s+scope|later\s+(?:specific\s+)?assignment)\b/i;
+const NEXT_STEP_WAIT_RE =
+  /\b(?:await(?:ing)?|wait(?:ing)?\s+(?:for|on)|owner[- ]gated|preparation gate|future authorized (?:fix|action))\b/i;
+const NEXT_STEP_CONDITION_WAIT_RE =
+  /\b(?:until|after|pending)\s+(?:(?:a|an|the|valid|actual|authenticated)\s+)*(?:owner|issuer|answer|proof|approval|authorization|delegation|callback|decision|dependency|gate)\b/i;
+const NEXT_STEP_PROHIBITED_ACTION_RE =
+  /\bdo not\s+(?:self[- ]?approve|re[- ]?arm|re[- ]?freeze|republish|run)\b/i;
+const NEXT_STEP_GATE_CONTEXT_RE = /\b(?:owner|gate|authorization|approval|answer|proof)\b/i;
+const EXECUTABLE_NEXT_STEP_VERBS = new Set([
+  'add', 'annotate', 'apply', 'assign', 'audit', 'build', 'capture', 'check', 'classify',
+  'close', 'collect', 'compare', 'compile', 'complete', 'confirm', 'convert', 'create',
+  'delete', 'derive', 'document', 'download', 'edit', 'emit', 'execute', 'fetch', 'finish',
+  'fix', 'follow', 'gather', 'implement', 'inspect', 'install', 'investigate', 'list',
+  'measure', 'merge', 'migrate', 'move', 'open', 'parse', 'preserve', 'probe', 'propose',
+  'publish', 'pull', 'query', 'read', 'rebuild', 'reconcile', 'recheck', 'recover',
+  'refactor', 'remove', 'rename', 'repair', 'replace', 'report', 'reproduce', 'resolve',
+  'restore', 'retire', 'review', 'revert', 'run', 'scan', 'search', 'set', 'start',
+  'summarize', 'test', 'trace', 'update', 'validate', 'verify', 'write',
+]);
+
+/** Free-text next steps need a positive action verb; waits and deferrals are dispositions. */
+function classifyNextAction(next?: string): NextActionDisposition {
+  const text = next?.trim().replace(/^(?:[-*•]\s+|\d+[.)]\s+)/, '').toLowerCase();
+  if (!text) return 'unknown';
+  if (NEXT_STEP_DEFERRED_RE.test(text)) return 'deferred';
+  if (NEXT_STEP_WAIT_RE.test(text) || NEXT_STEP_CONDITION_WAIT_RE.test(text) ||
+      (NEXT_STEP_PROHIBITED_ACTION_RE.test(text) && NEXT_STEP_GATE_CONTEXT_RE.test(text))) {
+    return 'await';
+  }
+  const firstWord = text.match(/^[a-z]+/)?.[0];
+  return firstWord && EXECUTABLE_NEXT_STEP_VERBS.has(firstWord) ? 'executable' : 'unknown';
+}
+
 /** Advisory assessment of the assigned step, never permission to clear a hold. */
 export function auditExecutableStep(input: {
   current: boolean; next?: string; auto: boolean | null; held: boolean;
   dependencies: 'clear' | 'blocked' | 'unknown'; planLinked: boolean; observedAt: string;
   planLane?: 'clear' | 'blocked' | 'unknown';
+  walls?: WallEntry[];
 }): AuditField<boolean> {
-  const source = 'work_items + carry_notes.latestUpdate.next + agent_modes + work_item_deps + plan item lane/decisions';
+  const source = 'work_items + carry_notes.latestUpdate.next + carry_notes.note.walls + agent_modes + work_item_deps + plan item lane/decisions';
+  if (input.walls?.some(isCarryWallAuthoritative)) return {
+    ...auditKnown(false, source, input.observedAt),
+    reason: 'An explicit owner/system carry wall remains in force.',
+  };
   if (input.held || input.dependencies === 'blocked' || input.planLane === 'blocked') return {
     ...auditKnown(false, source, input.observedAt),
     reason: input.held ? 'A recorded owner, external or state hold remains in force.'
@@ -50,8 +92,25 @@ export function auditExecutableStep(input: {
     : input.auto !== true ? 'Registered AUTO authority was not established.'
     : input.planLinked && input.planLane !== 'clear' ? 'Current plan lane and owner-decision evidence was unavailable; dependency clearance alone is insufficient.'
     : null;
-  return reason ? auditUnknown<boolean>(source, input.observedAt, reason)
-    : { ...auditKnown(true, source, input.observedAt), reason: 'The assigned current step has registered AUTO authority and no measured work dependency or recorded hold. This is evidence, not a new grant of authority.' };
+  if (reason) return auditUnknown<boolean>(source, input.observedAt, reason);
+  const nextAction = classifyNextAction(input.next);
+  if (nextAction === 'await') return {
+    ...auditKnown(false, source, input.observedAt),
+    reason: 'The current next step explicitly waits on an owner, dependency or external condition.',
+  };
+  if (nextAction === 'deferred') return {
+    ...auditKnown(false, source, input.observedAt),
+    reason: 'The current next step explicitly defers this work outside the active scope.',
+  };
+  if (input.walls?.length) {
+    return auditUnknown<boolean>(source, input.observedAt,
+      'A carried external, self or legacy wall lacks authoritative clearance evidence.');
+  }
+  if (nextAction === 'unknown') {
+    return auditUnknown<boolean>(source, input.observedAt,
+      'The next-action prose does not establish an independently executable step.');
+  }
+  return { ...auditKnown(true, source, input.observedAt), reason: 'The assigned current step has registered AUTO authority and no measured work dependency or recorded hold. This is evidence, not a new grant of authority.' };
 }
 
 export interface AuditProvenance {

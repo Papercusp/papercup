@@ -268,13 +268,15 @@ export async function buildRosterAudit(input: AuditBuildInput): Promise<RosterAu
       const matching = compareWorkItemSubjectFingerprint(item, saved.subjectFingerprint).status === 'current';
       const latest = saved.latestUpdate?.status === 'available' ? saved.latestUpdate.text :
         saved.checkpoint && !/^---\s*$/m.test(saved.checkpoint) ? saved.checkpoint : null;
-      const fields = latest ? parseCarryNote(latest) : {};
+      const checkpointFields = saved.checkpoint ? parseCarryNote(saved.checkpoint) : {};
+      const fields = latest ? parseCarryNote(latest) : checkpointFields;
+      const walls = checkpointFields.walls ?? fields.walls;
       const current = !saved.readFailed && matching && Boolean(latest);
       const recordedAt = saved.updatedAtMs ? new Date(saved.updatedAtMs).toISOString() : null;
       const blockers = activeExternalBlockers(item.payload);
       const liveDependencies = dependencies.get(`${item.harness ?? '*'}:${item.id}`);
       const payload = obj(item.payload);
-      const executable = auditExecutableStep({ current, next: fields.next,
+      const executable = auditExecutableStep({ current, next: fields.next, walls,
         auto: modesRead.ok ? modeRows.some((row: { mode: string }) => ['auto', 'cold-auto'].includes(row.mode)) : null,
         held: blockers.length > 0 || isClaimHoldParked(item.payload) || payload.needsHuman === true ||
           payload.needsOwnerAction === true || ['blocked', 'needs-human', 'paused'].includes(item.state),

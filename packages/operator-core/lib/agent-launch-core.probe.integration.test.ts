@@ -51,7 +51,8 @@ beforeAll(async () => {
       workspace_id text, first_seen_at timestamptz, launch_spec jsonb, launch_argv jsonb,
       plan_slug text, agent text, role text, feature text, mode text, terminal_bin text,
       pid integer, window_id text, omp_thread_id text, label text, display text, cwd text,
-      started_at timestamptz, ended_at timestamptz, exit_code integer, ended_by text
+      started_at timestamptz, ended_at timestamptz, exit_code integer, ended_by text,
+      port_status text
     );
     CREATE TABLE harness_shared.session_turns (
       session_id text, owner text, ingested_at timestamptz
@@ -209,6 +210,42 @@ describe('launch claim ownership across progress receipts (real PG)', () => {
     expect(row.summary).toEqual({ claimToken, opened: 1 });
     expect(await releaseAgentLaunchClaim({ workspaceId, idempotencyKey, claimToken })).toBe(true);
   });
+
+  it.each(['A', 'B'])('fences a stale same-token proof replay after %s was durably recovered (real PG)', async (first) => {
+    const workspaceId = `ws-late-proof-${first}`;
+    const idempotencyKey = 'late-proof';
+    const claimToken = 'same-original-launch';
+    const initial = { claimToken, launchState: 'completed', tasks: [
+      { taskId: 'A', kickoffProof: { persisted: false } },
+      { taskId: 'B', kickoffProof: { persisted: false } },
+    ] };
+    await claimAgentLaunch({ workspaceId, idempotencyKey, failClosed: true, initialSummary: initial });
+    // Both replays read before either writes. Release the winner first, then
+    // the stale sibling: no sleeps or scheduler timing determine the result.
+    const [a] = await sql`SELECT summary FROM harness_shared.agent_launch_idempotency
+      WHERE workspace_id = ${workspaceId} AND idempotency_key = ${idempotencyKey}`;
+    const [b] = await sql`SELECT summary FROM harness_shared.agent_launch_idempotency
+      WHERE workspace_id = ${workspaceId} AND idempotency_key = ${idempotencyKey}`;
+    const recovered = (snapshot: typeof initial, taskId: string) => ({ ...snapshot,
+      tasks: snapshot.tasks.map(task => task.taskId === taskId
+        ? { ...task, kickoffProof: { persisted: true } } : task),
+    });
+    const winner = { workspaceId, idempotencyKey, claimToken, expectedSummary: a.summary,
+      summary: recovered(a.summary, first) };
+    expect(await recordAgentLaunchResult(winner)).toBe(true);
+    const stale = { workspaceId, idempotencyKey, claimToken, expectedSummary: b.summary,
+      summary: recovered(b.summary, first === 'A' ? 'B' : 'A') };
+    expect(await recordAgentLaunchResult(stale)).toBe(false);
+    const [retained] = await sql`SELECT summary FROM harness_shared.agent_launch_idempotency
+      WHERE workspace_id = ${workspaceId} AND idempotency_key = ${idempotencyKey}`;
+    expect(retained.summary).toEqual(winner.summary);
+    const fresh = { workspaceId, idempotencyKey, claimToken, expectedSummary: retained.summary,
+      summary: recovered(retained.summary, first === 'A' ? 'B' : 'A') };
+    expect(await recordAgentLaunchResult(fresh)).toBe(true);
+    const [complete] = await sql`SELECT summary FROM harness_shared.agent_launch_idempotency
+      WHERE workspace_id = ${workspaceId} AND idempotency_key = ${idempotencyKey}`;
+    expect(complete.summary.tasks.every((task: { kickoffProof: { persisted: boolean } }) => task.kickoffProof.persisted)).toBe(true);
+  });
 });
 
 describe('resume target registration election (real PG)', () => {
@@ -283,6 +320,29 @@ describe('resume target registration election (real PG)', () => {
       ok: true,
       pid: process.pid,
       headless: true,
+    });
+  });
+
+  // EI-28727118895372194: the consult planner gates resume/fork on
+  // portStatusAllowsResume(target.portStatus). When the SELECT omitted
+  // s.port_status, every row mapped to portStatus:null, the guard always passed,
+  // and a failed-port source was handed to psu --resume on all five ranks.
+  it.each([
+    [108, 'failed'],
+    [109, 'delivered'],
+  ])('carries the recorded session-port status (row %i, port_status=%s)', async (id, portStatus) => {
+    const owner = `su-resume-port-${portStatus}-${randomBytes(5).toString('hex')}`;
+    await sql`
+      INSERT INTO harness_shared.adv_sessions
+        (id, coord_owner_id, session_id, workspace_id, agent, started_at, port_status)
+      VALUES (${id}, ${owner}, ${owner + '-session'}, 'source-workspace', 'codex', now(), ${portStatus})
+    `;
+
+    await expect(resolveResumeTarget({ agentId: owner })).resolves.toMatchObject({
+      ok: true, advSessionId: id, portStatus,
+    });
+    await expect(resolveResumeTarget({ sessionId: owner + '-session' })).resolves.toMatchObject({
+      ok: true, advSessionId: id, portStatus,
     });
   });
 

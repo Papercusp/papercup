@@ -1,5 +1,6 @@
 /** Bounded continuation over the existing checkpoint and spec-evidence stores. */
-import { parseCarryNote, shortCarryHash } from '../../carry-note';
+import { createHash } from 'node:crypto';
+import { compareWorkItemSubjectFingerprint, parseCarryNote, shortCarryHash, type WorkItemSubject } from '../../carry-note';
 import { getWorkItemCheckpointWithMeta, getWorkItemCheckpointFreshness, type WorkItemCheckpointWithMeta } from '../../work-item-checkpoint';
 import { ADHOC_WORK_ITEM_SPEC_SCOPE, listSpecEvidence } from '../plans/spec-evidence-store';
 import { compactTaskBrief, getClaimTimeTaskBrief, type TaskBrief } from '../../code-intelligence/task-brief';
@@ -8,7 +9,7 @@ import { projectBlockerResolution } from '../../blocker-resolution-decision';
 
 export const RESUME_PACKET_BUDGET = 5_000;
 const EVIDENCE_READ_LIMIT = 9;
-type ResumeItem = { id: string; harness?: string | null; state?: string | null; assignee?: string | null; payload?: unknown };
+type ResumeItem = { id: string; harness?: string | null; state?: string | null; assignee?: string | null; payload?: unknown } & Partial<Pick<WorkItemSubject, 'kind' | 'title' | 'summary'>>;
 type Checkpoint = WorkItemCheckpointWithMeta;
 type Evidence = Awaited<ReturnType<typeof listSpecEvidence>>;
 type ResumeDeps = {
@@ -48,6 +49,14 @@ export function buildWorkItemResume(input: {
   const { item, checkpoint } = input;
   const plan = planOf(item);
   const admissionBlocker = admissionActionBlocker(item);
+  const scope = { id: item.id, ...(item.harness && !item.id.startsWith('EI-') ? { harness: item.harness } : {}) };
+  const subject = compareWorkItemSubjectFingerprint(item as WorkItemSubject, checkpoint.subjectFingerprint);
+  const freshness = input.freshness as { verdict?: string; changed?: unknown[]; unresolvable?: unknown[] } | null;
+  const dependenciesCurrent = (freshness?.verdict === 'fresh' || freshness?.verdict === 'recomputed')
+    && !freshness.unresolvable?.length;
+  const blockerResolution = projectBlockerResolution(item.payload, item);
+  const blockerChanged = blockerResolution?.status === 'recorded'
+    && Date.parse(blockerResolution.current.recordedAt) > (checkpoint.updatedAtMs ?? 0);
   const fields = checkpoint.readFailed || checkpoint.checkpoint === null ? {} : parseCarryNote(checkpoint.checkpoint);
   const latest = checkpoint.latestUpdate;
   const latestFields = latest?.text ? parseCarryNote(latest.text) : fields;
@@ -59,18 +68,27 @@ export function buildWorkItemResume(input: {
     || (!latest && /^---\s*$/m.test(checkpoint.checkpoint ?? ''))
     || (latest?.status === 'available' && latestNext === null && checkpointNext !== null);
   const next = ambiguous ? null : latest?.status === 'available' ? latestNext : checkpointNext;
+  // Archive identity never certifies current subject, dependencies or authority.
+  // A newer canonical blocker decision takes precedence over the prose it replaces.
+  const unknownNext = checkpoint.readFailed || ambiguous || subject.status !== 'current'
+    || !dependenciesCurrent || blockerChanged || blockerResolution?.status === 'invalid';
   const resume = {
     schemaVersion: 'work-item-resume-v1',
     taskBrief: undefined as TaskBrief | { status: 'omitted'; recover: TaskBrief['recover'] } | undefined,
     claim: { id: item.id, assignee: item.assignee ?? null, state: item.state ?? null },
     plan,
-    blockerResolution: projectBlockerResolution(item.payload, item),
+    blockerResolution,
+    authority: {
+      status: 'requires-current-control',
+      note: 'Continuation text is not execution authority. Resync changed or unknown live control; archive hashes do not renew claim, mode, admission or peer ownership.',
+      readRef: { tool: 'coord:orient', args: { afterCompaction: true } },
+    },
     nextAction: admissionBlocker
       ? { status: 'blocked', text: null, reason: admissionBlocker }
       : {
-        status: checkpoint.readFailed || ambiguous ? 'unknown' : next === null ? 'missing' : 'available',
-        text: next,
-        ...(latest?.status === 'available' && next !== null
+        status: next === null && !checkpoint.readFailed && !ambiguous ? 'missing' : unknownNext ? 'unknown' : 'available',
+        text: unknownNext ? null : next,
+        ...(!unknownNext && latest?.status === 'available' && next !== null
           ? { source: 'next-action' }
           : {}),
         ...(admissionCaution(item) ? { admissionCaution: admissionCaution(item) } : {}),
@@ -79,12 +97,16 @@ export function buildWorkItemResume(input: {
       status: checkpoint.readFailed ? 'unknown' : checkpoint.checkpoint === null ? 'absent' : 'available',
       updatedAtMs: checkpoint.updatedAtMs,
       contentHash: checkpoint.readFailed || checkpoint.checkpoint === null ? null : shortCarryHash(checkpoint.checkpoint),
+      contentSha256: checkpoint.readFailed || checkpoint.checkpoint === null ? null
+        : createHash('sha256').update(checkpoint.checkpoint, 'utf8').digest('hex'),
+      subjectFingerprint: subject,
       freshness: input.freshness ?? { verdict: 'unknown', reason: 'no measured dependency verdict' },
       // Preserve the continuation mode in the recovery reference. Omitting
       // `resume:true` silently replays an ordinary full-row read, which drops
       // this bounded packet's next action and checkpoint metadata instead of
       // reproducing the continuation view the caller was given.
-      readRef: { tool: 'work_items:get', args: { id: item.id, harness: item.harness ?? undefined, resume: true } },
+      readRef: { tool: 'work_items:get', args: { ...scope, resume: true } },
+      sourceRef: { tool: 'work_items:get', args: { ...scope, checkpointOnly: true } },
     },
     checks: { rows: [] as unknown[], omitted: fields.checks?.length ?? 0 },
     walls: { rows: [] as unknown[], omitted: fields.walls?.length ?? 0 },
@@ -99,8 +121,13 @@ export function buildWorkItemResume(input: {
     },
   };
   if (JSON.stringify(resume.checkpoint.freshness).length > 400) {
-    const freshness = input.freshness as { verdict?: string } | null;
-    resume.checkpoint.freshness = { verdict: freshness?.verdict ?? 'unknown', detailsOmitted: true };
+    resume.checkpoint.freshness = {
+      verdict: freshness?.verdict ?? 'unknown', detailsOmitted: true,
+      changedCount: freshness?.changed?.length ?? null,
+      unresolvableCount: freshness?.unresolvable?.length ?? null,
+      readRef: { tool: 'work_items:get', args: { ...scope,
+        projection: { pick: ['results[].checkpointFreshness'] } } },
+    };
   }
   if (!admissionBlocker && JSON.stringify(resume).length > RESUME_PACKET_BUDGET) {
     resume.nextAction.status = 'oversized';
@@ -115,6 +142,10 @@ export function buildWorkItemResume(input: {
   // Execution constraints precede proof; omitted counts always retain a recovery path.
   for (const wall of fields.walls ?? []) {
     if (append(resume.walls.rows, wall)) resume.walls.omitted -= 1;
+  }
+  if (resume.walls.omitted && !admissionBlocker) {
+    resume.nextAction.status = 'oversized';
+    resume.nextAction.text = null;
   }
   if (input.taskBrief) {
     const withoutBrief = JSON.stringify(resume).length;

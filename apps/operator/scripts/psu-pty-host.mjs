@@ -82,6 +82,7 @@ import net from 'node:net';
 import { createTerminalOutput } from './psu-terminal-output.mjs';
 import { createPendingCarryFence } from './psu-carry-fence.mjs';
 import { observeClaudeDialogWrites } from './hooks/cc/dialog-answer-provenance.mjs';
+import { CODEX_MCP_STARTUP_TIMEOUT_SEC } from '../lib/mcp-proxy/budgets.mjs';
 
 /**
  * Serialize atomic discovery-file writes without blocking the PTY host's event
@@ -3267,6 +3268,48 @@ export function terminalPidFromEnv(value) {
  *  ever get typed, and if not why" is a one-file read. */
 export function eventLogPathForOwner(ownerId, dir = PSU_PTY_DIR) {
   return join(dir, `${sanitizeKey(ownerId)}.events.jsonl`);
+}
+
+function readAdoptedCarrySourceLineage(ownerId, launchContextPath, advSessionId, adoptedNativeId, dir = PSU_PTY_DIR) {
+  if (!ownerId || typeof launchContextPath !== 'string' || !launchContextPath) return null;
+  const sessionId = Number(advSessionId);
+  if (!Number.isSafeInteger(sessionId) || sessionId <= 0) return null;
+  try {
+    const lines = readFileSync(eventLogPathForOwner(ownerId, dir), 'utf8').split('\n');
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      if (!lines[index].trim()) continue;
+      let event;
+      try {
+        event = JSON.parse(lines[index]);
+      } catch {
+        continue;
+      }
+      if (event?.kind !== 'respawned' || event.mode !== 'carry-respawn' ||
+          event.launchContextPath !== launchContextPath) continue;
+      const lineage = event.managedCarryLineage;
+      if (!lineage || typeof lineage !== 'object' || Array.isArray(lineage) ||
+          lineage.ownerId !== ownerId || Number(lineage.advSessionId) !== sessionId) continue;
+      const sourceNativeId = typeof lineage.sourceNativeId === 'string' ? lineage.sourceNativeId.trim() : '';
+      const sourceNativeRef = typeof lineage.sourceNativeRef === 'string' ? lineage.sourceNativeRef.trim() : '';
+      const sourceChildGeneration = Number(lineage.sourceChildGeneration);
+      const targetChildGeneration = Number(lineage.targetChildGeneration);
+      const sourceLeaf = sourceNativeRef.replace(/\\/g, '/').split('/').pop()?.toLowerCase() ?? '';
+      const sourceSuffix = sourceNativeId.toLowerCase() + '.jsonl';
+      if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(sourceNativeId) ||
+          (sourceLeaf !== sourceSuffix && !sourceLeaf.endsWith('-' + sourceSuffix)) ||
+          !Number.isSafeInteger(sourceChildGeneration) || sourceChildGeneration < 0 ||
+          !Number.isSafeInteger(targetChildGeneration) ||
+          targetChildGeneration !== sourceChildGeneration + 1) continue;
+      const recordedTarget = typeof lineage.targetNativeId === 'string'
+        ? lineage.targetNativeId.trim() : '';
+      const adoptedTarget = typeof adoptedNativeId === 'string' ? adoptedNativeId.trim() : '';
+      if (recordedTarget && adoptedTarget && recordedTarget !== adoptedTarget) continue;
+      return lineage;
+    }
+  } catch {
+    // An unreadable or absent owner ledger is no lineage evidence.
+  }
+  return null;
 }
 
 /** Keep the PTY spawn receipt useful for route diagnosis without persisting
@@ -8393,12 +8436,13 @@ export function managedCodexStartupUpdateDialogEnabled(env = process.env) {
  * stays as the backstop. */
 export const CODEX_STARTUP_UPDATE_CHECK_OVERRIDE = 'check_for_update_on_startup=false';
 
-/** Prepend CODEX_STARTUP_UPDATE_CHECK_OVERRIDE to a managed Codex child's argv.
+/** Prepend managed startup defaults to a Codex child's argv.
  * Pure. Applies only when the agent is Codex AND the command is the Codex
  * binary itself (the bin test of the launcher's codexManagedDaemonArgs), so a
  * wrapper or another program run under PAPERCUSP_AGENT=codex never receives a
- * foreign `-c`. Argv that already sets the key is returned unchanged, so an
- * explicit caller choice always wins.
+ * foreign `-c`. Explicit caller choices win independently for each key.
+ * The MCP budget reaches carry children even if their retained home predates
+ * the current materializer. Only the managed server receives the override.
  * @param {{command: string, args: readonly string[], env?: EnvironmentMap}} target
  * @returns {string[]}
  */
@@ -8406,14 +8450,21 @@ export function withManagedCodexStartupConfig({ command, args, env = process.env
   const list = Array.isArray(args) ? [...args] : [];
   if (!managedCodexStartupUpdateDialogEnabled(env)) return list;
   if (!/(^|[\\/])codex(?:\.exe|\.cmd)?$/.test(String(command ?? ''))) return list;
+  const server = String(env.PAPERCUSP_ROLE ?? '').trim() ? 'papercusp' : 'papercusp-su';
+  const startupKey = `mcp_servers.${server}.startup_timeout_sec`;
+  const defaults = new Map([
+    ['check_for_update_on_startup', CODEX_STARTUP_UPDATE_CHECK_OVERRIDE],
+    [startupKey, `${startupKey}=${CODEX_MCP_STARTUP_TIMEOUT_SEC}`],
+  ]);
   for (let i = 0; i < list.length; i++) {
+    if (list[i] === '--') break;
     const arg = String(list[i] ?? '');
     const assignment = arg === '-c' || arg === '--config'
       ? String(list[i + 1] ?? '')
       : arg.startsWith('--config=') ? arg.slice('--config='.length) : null;
-    if (assignment !== null && /^\s*check_for_update_on_startup\s*=/.test(assignment)) return list;
+    if (assignment !== null) defaults.delete(assignment.split('=', 1)[0].trim());
   }
-  return ['-c', CODEX_STARTUP_UPDATE_CHECK_OVERRIDE, ...list];
+  return [...Array.from(defaults.values()).flatMap(value => ['-c', value]), ...list];
 }
 
 /** Watch the current VT screen for Codex's exact optional update menu. Reading
@@ -10579,30 +10630,133 @@ export function makeInjectMutex({
 // OLD loop's higher fire count — a fresh routineId always admits.
 export function makeStaleFireGuard() {
   const lastByRoutine = new Map();
+  const compare = (routineId, fireNumber) => {
+    if (routineId == null || fireNumber == null) return { admit: true, lastDelivered: null };
+    const lastDelivered = lastByRoutine.get(routineId) ?? 0;
+    return { admit: fireNumber > lastDelivered, lastDelivered };
+  };
+  const commit = (routineId, fireNumber) => {
+    const verdict = compare(routineId, fireNumber);
+    if (verdict.admit && routineId != null && fireNumber != null) lastByRoutine.set(routineId, fireNumber);
+    return verdict;
+  };
   return {
     /**
-     * Decide + COMMIT in one call (mirrors makeTurnCoalescer's admit/claim
-     * commit-at-delivery style): a message with no `routineId`/`fireNumber`
+     * Compare without committing so provenance can be renewed for a still-current
+     * fire. A message with no `routineId`/`fireNumber`
      * (not a loop-fire wake, or a pre-WI-5510 sender) always admits and never
      * touches the map — this guard is opt-in per-message, not a new
-     * requirement on every control-socket write. When both are present,
-     * admits (and records `fireNumber` as the new high-water mark) only when
-     * `fireNumber` is STRICTLY NEWER than the last one committed for this
-     * `routineId`; an equal-or-older fire number is a stale/duplicate
-     * delivery and must be DROPPED (admit:false) without updating state.
+     * requirement on every control-socket write.
      */
+    compare,
+    /** Commit only after all freshness checks and any exact-row renewal succeed. */
+    commit,
+    /** Backward-compatible compare + commit operation for callers without renewal. */
     admit(routineId, fireNumber) {
-      if (routineId == null || fireNumber == null) return { admit: true, lastDelivered: null };
-      const lastDelivered = lastByRoutine.get(routineId) ?? 0;
-      if (fireNumber <= lastDelivered) return { admit: false, lastDelivered };
-      lastByRoutine.set(routineId, fireNumber);
-      return { admit: true, lastDelivered };
+      const verdict = compare(routineId, fireNumber);
+      if (verdict.admit) commit(routineId, fireNumber);
+      return verdict;
     },
     /** Live count of distinct loop instances tracked (diagnostics/tests). */
     size() {
       return lastByRoutine.size;
     },
   };
+}
+
+/** The bounded renewal horizon mirrors turn-provenance.ts's 65-minute loop-fire TTL. */
+export const LOOP_FIRE_PROVENANCE_RENEWAL_MAX_AGE_MS = 65 * 60_000;
+
+function provenanceLedgerPathForSid(sid) {
+  const safeSid = String(sid || 'unknown').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 200);
+  const dir = process.env.PAPERCUSP_TURN_PROVENANCE_DIR || papercuspPath('turn-provenance');
+  return join(dir, `${safeSid}.jsonl`);
+}
+
+async function readProvenanceRowsForSid(sid) {
+  try {
+    const raw = await fsPromises.readFile(provenanceLedgerPathForSid(sid), 'utf8');
+    return raw.split('\n').flatMap((line) => {
+      if (!line.trim()) return [];
+      try {
+        const row = JSON.parse(line);
+        return row && row.sid === sid && typeof row.nonce === 'string' &&
+          typeof row.origin === 'string' && /^[a-f0-9]{64}$/i.test(row.sha256) &&
+          Number.isFinite(row.ts)
+          ? [row]
+          : [];
+      } catch {
+        return [];
+      }
+    });
+  } catch {
+    return [];
+  }
+}
+
+async function appendProvenanceRow(row) {
+  try {
+    await fsPromises.appendFile(provenanceLedgerPathForSid(row.sid), `${JSON.stringify(row)}\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Renew one exact loop-fire ledger row after the host has compared its fire
+ * identity against the high-water mark. The append retains the original nonce,
+ * payload hash, and issuer; missing or mismatched evidence fails closed.
+ */
+export async function renewCurrentLoopFireProvenance(message, {
+  nowMs = Date.now(),
+  readRows = readProvenanceRowsForSid,
+  appendRow = appendProvenanceRow,
+} = {}) {
+  const sid = message?.ownerId;
+  const routineId = message?.routineId;
+  const fireNumber = message?.fireNumber;
+  const issuedAtMs = message?.provenanceIssuedAtMs;
+  const data = message?.data;
+  if (
+    typeof sid !== 'string' || sid.length === 0 ||
+    typeof routineId !== 'string' || routineId.length === 0 ||
+    !Number.isInteger(fireNumber) || fireNumber <= 0 ||
+    message?.provenanceTimestampInvalid ||
+    typeof issuedAtMs !== 'number' || !Number.isFinite(issuedAtMs) || issuedAtMs <= 0 ||
+    typeof data !== 'string'
+  ) return null;
+  const ageMs = nowMs - issuedAtMs;
+  if (ageMs <= WAKE_PROVENANCE_MAX_AGE_MS || ageMs > LOOP_FIRE_PROVENANCE_RENEWAL_MAX_AGE_MS) return null;
+  const envelope = /^⟦turn-origin:([A-Za-z0-9:._@-]+) nonce:([a-f0-9]{16})⟧\r?\n/.exec(data);
+  if (!envelope || envelope[1] !== 'loop-fire') return null;
+
+  let rows;
+  try {
+    rows = await readRows(sid);
+  } catch {
+    return null;
+  }
+  const row = Array.isArray(rows)
+    ? rows.slice().reverse().find((candidate) =>
+      candidate?.sid === sid && candidate.nonce === envelope[2] && candidate.origin === 'loop-fire' &&
+      candidate.ts === issuedAtMs && /^[a-f0-9]{64}$/i.test(candidate.sha256))
+    : null;
+  if (!row || (row.loopFire !== undefined && (
+    !row.loopFire || row.loopFire.routineId !== routineId || row.loopFire.wakeCount !== fireNumber
+  ))) return null;
+
+  const renewed = {
+    ...row,
+    ts: nowMs,
+    ttlMs: LOOP_FIRE_PROVENANCE_RENEWAL_MAX_AGE_MS,
+    loopFire: row.loopFire ?? { routineId, wakeCount: fireNumber },
+  };
+  try {
+    return await appendRow(renewed) === true ? nowMs : null;
+  } catch {
+    return null;
+  }
 }
 
 /** EI-18109211232286833: is a `carry-respawn` control message too stale to
@@ -11795,6 +11949,7 @@ export function hostThroughPty(o) {
     ...options, ...(managedSuccessionPermit ? { managedSuccessionPermit } : {}),
   });
   let adoptedCarryDrillTerminalRecorded = false;
+  let adoptedCarryManagedLineage = null;
   const recordAdoptedCarryDrillEvent = (kind, extra = {}) => {
     const drillId = typeof adoptedCarryRespawn?.drillId === 'string'
       ? adoptedCarryRespawn.drillId.trim()
@@ -12403,6 +12558,39 @@ export function hostThroughPty(o) {
     // "unknown version", never to "up to date".
     hostCodeVersion: LOADED_HOST_CODE_VERSION,
   };
+  if (adoptedCarryRespawn && env.PAPERCUSP_AGENT === 'codex') {
+    const advSessionId = Number(baseMeta.advSessionId);
+    const sourceLineage = readAdoptedCarrySourceLineage(
+      ownerId,
+      adoptedCarryRespawn.launchContextPath,
+      advSessionId,
+      adoptedCarryRespawn.nativeId,
+    );
+    const hostStartedAt = Number(baseMeta.startedAt);
+    if (sourceLineage && Number.isSafeInteger(advSessionId) && advSessionId > 0 &&
+        Number.isFinite(hostStartedAt) && hostStartedAt > 0 &&
+        Number.isSafeInteger(childGeneration) && childGeneration > 0) {
+      adoptedCarryManagedLineage = {
+        ownerId,
+        advSessionId,
+        hostStartedAt,
+        sourceNativeId: sourceLineage.sourceNativeId,
+        sourceNativeRef: sourceLineage.sourceNativeRef,
+        sourceChildGeneration: childGeneration - 1,
+        targetChildGeneration: childGeneration,
+        targetNativeId: null,
+        targetNativeRef: null,
+      };
+      appendHostEvent(ownerId, 'respawned', {
+        ownerId,
+        mode: 'carry-respawn',
+        nativeId: adoptedCarryRespawn.nativeId ?? null,
+        managedCarryLineage: adoptedCarryManagedLineage,
+        launchContextPath: adoptedCarryRespawn.launchContextPath,
+        adopted: true,
+      });
+    }
+  }
   const identityAssumeSupported = typeof identityAssume?.verify === 'function' &&
     typeof identityAssume?.prepare === 'function' && typeof onReexec === 'function' && reexecExitCodeFrom(env) != null;
   if (identityAssumeSupported) {
@@ -12484,6 +12672,10 @@ export function hostThroughPty(o) {
         ...authBlockDetector.snapshot(),
         accountRoutingMode: liveAccountRoutingMode,
         childGeneration,
+        // WI-6554700010048116: the CURRENT child's start. A carry replaces the child under an
+        // unchanged host startedAt, so the MCP-dark watchdog needs this to ask "has this child
+        // been listed its tools yet?".
+        childStartedAt: childStartedAtMs > 0 ? childStartedAtMs : null,
         nativeSessionId: env.PAPERCUSP_AGENT === 'codex'
           ? currentNativeSessionId(child.pid, resolveRespawnNativeId) : nativeSessionIdFromLaunchArgs(liveChildArgs),
         managedSuccession: managedSuccessionRequest,
@@ -14377,20 +14569,32 @@ export function hostThroughPty(o) {
             isCurrent: () => child === adoptedCarryChild && !recycling && !shuttingDown && !hostCleanedUp,
           });
           const adoptedNativeId = adoptedAnnouncement.nativeId ?? adoptedCarryRespawn.nativeId ?? null;
+          const completedAdoptedCarryLineage = adoptedCarryManagedLineage && adoptedNativeId &&
+            typeof proof.nativeRef === 'string' && proof.nativeRef
+            ? {
+                ...adoptedCarryManagedLineage,
+                targetNativeId: adoptedNativeId,
+                targetNativeRef: proof.nativeRef,
+              }
+            : null;
           appendHostEvent(ownerId, 'respawn-carry-delivered', {
+            ownerId,
             mode: 'carry-respawn',
             nativeId: adoptedNativeId,
             outputSeen: childStartupOutput.length > 0,
             turnStartVerified: true,
             nativeRef: proof.nativeRef ?? null,
+            ...(completedAdoptedCarryLineage ? { managedCarryLineage: completedAdoptedCarryLineage } : {}),
             adopted: true,
           });
           recordAdoptedCarryDrillTerminal('carry-drill-carry-delivered', {
+            ownerId,
             nativeId: adoptedNativeId,
             attempts: r.attempts,
             budgetMs: kickoffBudgetMs,
             outputSeen: childStartupOutput.length > 0,
             nativeRef: proof.nativeRef ?? null,
+            ...(completedAdoptedCarryLineage ? { managedCarryLineage: completedAdoptedCarryLineage } : {}),
             adopted: true,
           });
           if (!adoptedAnnouncement.announced) {
@@ -16862,10 +17066,6 @@ export function hostThroughPty(o) {
             };
           }
         }
-        const preWriteProvenanceRejection = rejectWakeProvenance(deliver, 'pre-write');
-        if (preWriteProvenanceRejection) {
-          return { ok: false, reason: preWriteProvenanceRejection };
-        }
         if (msg.mode === 'turn') {
           if (ownerStopGeneration !== ownerStopGenerationAtReceive) {
             return { ok: false, reason: 'deferred-owner-stop' };
@@ -16888,30 +17088,62 @@ export function hostThroughPty(o) {
             return { ok: false, reason: 'native-turn-start-unavailable' };
           }
         }
-        // WI-5510: commit the latest coalesced fire only after the provenance
-        // fence, immediately before the pty write. An expired text cannot move
-        // the high-water mark and block its fresh retry.
-        if (deliver.fireNumber != null && deliver.routineId) {
-          const verdict = staleFireGuard.admit(deliver.routineId, deliver.fireNumber);
-          if (!verdict.admit) {
-            const dropExtra = {
+        // Compare before renewal, but defer the high-water commit until renewal
+        // and the final provenance fence both succeed.
+        const hasFireIdentity = deliver.fireNumber != null && !!deliver.routineId;
+        const dropStaleFire = (verdict) => {
+          const dropExtra = {
+            routineId: deliver.routineId,
+            fireNumber: deliver.fireNumber,
+            lastDelivered: verdict.lastDelivered,
+            mode: deliver.mode,
+          };
+          appendHostEvent(ownerId, 'stale-fire-dropped', dropExtra);
+          try {
+            writeTerminalDiagnostic(
+              `psu-pty-host: STALE fire #${deliver.fireNumber} DROPPED for ${ownerId} ` +
+                `(routine ${deliver.routineId} already delivered fire #${verdict.lastDelivered}; ` +
+                `mode:${deliver.mode}) — superseded by a later fire, never written\n`,
+            );
+          } catch {
+            /* diagnostic only */
+          }
+          return { ok: false, reason: 'stale-fire-dropped' };
+        };
+        if (hasFireIdentity) {
+          const comparison = staleFireGuard.compare(deliver.routineId, deliver.fireNumber);
+          if (!comparison.admit) return dropStaleFire(comparison);
+        }
+        const currentProvenance = wakeProvenanceRejection(deliver);
+        if (hasFireIdentity && currentProvenance?.reason === 'expired') {
+          const renewedAtMs = await renewCurrentLoopFireProvenance(deliver);
+          if (renewedAtMs == null) {
+            appendHostEvent(ownerId, 'wake-provenance-renewal-failed', {
+              deliveryId: deliver.deliveryId ?? null,
               routineId: deliver.routineId,
               fireNumber: deliver.fireNumber,
-              lastDelivered: verdict.lastDelivered,
-              mode: deliver.mode,
-            };
-            appendHostEvent(ownerId, 'stale-fire-dropped', dropExtra);
-            try {
-              writeTerminalDiagnostic(
-                `psu-pty-host: STALE fire #${deliver.fireNumber} DROPPED for ${ownerId} ` +
-                  `(routine ${deliver.routineId} already delivered fire #${verdict.lastDelivered}; ` +
-                  `mode:${deliver.mode}) — superseded by a later fire, never written\n`,
-              );
-            } catch {
-              /* diagnostic only */
-            }
-            return { ok: false, reason: 'stale-fire-dropped' };
+              provenanceIssuedAtMs: deliver.provenanceIssuedAtMs ?? null,
+              ageMs: currentProvenance.freshness.ageMs,
+            });
+          } else {
+            deliver = { ...deliver, provenanceIssuedAtMs: renewedAtMs };
+            appendHostEvent(ownerId, 'wake-provenance-renewed', {
+              deliveryId: deliver.deliveryId ?? null,
+              routineId: deliver.routineId,
+              fireNumber: deliver.fireNumber,
+              provenanceIssuedAtMs: renewedAtMs,
+              priorAgeMs: currentProvenance.freshness.ageMs,
+            });
           }
+        }
+        const preWriteProvenanceRejection = rejectWakeProvenance(deliver, 'pre-write');
+        if (preWriteProvenanceRejection) {
+          return { ok: false, reason: preWriteProvenanceRejection };
+        }
+        // A failed freshness check or exact-row renewal leaves high-water alone.
+        if (hasFireIdentity) {
+          const committed = staleFireGuard.commit(deliver.routineId, deliver.fireNumber);
+          if (!committed.admit) return dropStaleFire(committed);
         }
         if (machineTurn) {
           machineTurnActive = true;
@@ -17284,6 +17516,8 @@ export function hostThroughPty(o) {
   // listeners are per-process). onStdin/onResize below read the live `child`
   // closure, so they need no re-wiring.
   let writeOwnerPtyInput = (data) => child.write(data);
+  /** @type {(failedNativeExit?: boolean) => void} */
+  let recordNativeBootstrapFailure = () => {};
   wireChildData = () => {
     writeOwnerPtyInput = String(env.PAPERCUSP_AGENT ?? '').toLowerCase() === 'claude'
       ? observeClaudeDialogWrites(child, ownerId, env, bridgeTty)
@@ -17297,6 +17531,30 @@ export function hostThroughPty(o) {
     const startupDialogChild = child;
     const startupDialogChildPid = Number.isInteger(startupDialogChild.pid) ? startupDialogChild.pid : null;
     let bootstrapFailureRecorded = false;
+    const recordBootstrapFailure = (failedNativeExit = false) => {
+      if (bootstrapFailureRecorded || env.PAPERCUSP_AGENT !== 'codex' ||
+          (childBackendFirstFrameAt && !failedNativeExit)) return;
+      const failure = isCodexWorkspaceDiscoveryTimeout(childStartupOutput)
+        ? { stage: 'account/read', reason: 'workspace-routing-discovery-timeout' }
+        : /thread\/start failed during TUI bootstrap:\s*thread\/start failed:[\s\S]*?required MCP servers failed to initialize:[\s\S]*?timed out handshaking with MCP server after \d+(?:\.\d+)?s\b/
+          .test(stripAnsi(childStartupOutput))
+          ? { stage: 'thread/start', reason: 'required-mcp-handshake-timeout' }
+          : null;
+      if (!failure) return;
+      // Codex can paint its frame while required MCP initialization is pending.
+      // After that frame, require a genuine failed native exit and no observed
+      // native turn; ordinary output quoting an old error is not a boot failure.
+      if (childBackendFirstFrameAt && (!failedNativeExit || failure.stage !== 'thread/start' ||
+          currentNativeExecution().turnStartedAt !== null)) return;
+      bootstrapFailureRecorded = true;
+      appendHostEvent(ownerId, 'backend-bootstrap-failed', {
+        agent: 'codex', ...failure,
+        gatewayRequested: env.PAPERCUSP_CODEX_GATEWAY === '1' || Boolean(env.PAPERCUSP_ACCOUNT_ID),
+        accountPinPresent: Boolean(env.PAPERCUSP_ACCOUNT_ID),
+        msAfterFirstOutput: Date.now() - childStartupFirstOutputAt,
+      });
+    };
+    recordNativeBootstrapFailure = recordBootstrapFailure;
     modelCapacityDetector?.reset();
     latestModelCapacity = null;
     if (headlessClaudeOnboardingExpiryTimer) {
@@ -17412,19 +17670,10 @@ export function hostThroughPty(o) {
       childBracketedPasteTail = `${childBracketedPasteTail}${raw}`.slice(-BRACKETED_PASTE_TAIL_CHARS);
       childStartupOutput += raw;
       if (childStartupOutput.length > 65_536) childStartupOutput = childStartupOutput.slice(-32_768);
-      // Persist only a classified pre-frame failure, never arbitrary terminal
+      // Persist only a classified bootstrap failure, never arbitrary terminal
       // text or a later turn quoting an earlier error. Accumulation handles
       // native diagnostics split across PTY chunks; the guard resets per child.
-      if (!bootstrapFailureRecorded && !childBackendFirstFrameAt &&
-          env.PAPERCUSP_AGENT === 'codex' && isCodexWorkspaceDiscoveryTimeout(childStartupOutput)) {
-        bootstrapFailureRecorded = true;
-        appendHostEvent(ownerId, 'backend-bootstrap-failed', {
-          agent: 'codex', stage: 'account/read', reason: 'workspace-routing-discovery-timeout',
-          gatewayRequested: env.PAPERCUSP_CODEX_GATEWAY === '1' || Boolean(env.PAPERCUSP_ACCOUNT_ID),
-          accountPinPresent: Boolean(env.PAPERCUSP_ACCOUNT_ID),
-          msAfterFirstOutput: Date.now() - childStartupFirstOutputAt,
-        });
-      }
+      recordBootstrapFailure();
       if (
         !childBackendTuiStartedAt &&
         String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex' &&
@@ -18089,6 +18338,7 @@ export function hostThroughPty(o) {
         // Link existing output evidence without copying potentially secret text.
         if (!hostCleanedUp && !shuttingDown) {
           nativeChildExitReason = `native-child-exited:exit=${Number.isInteger(exitCode) ? exitCode : 'unknown'};signal=${signalNameFromCode(signal) ?? 'none'}`;
+          if (Number.isInteger(exitCode) && exitCode > 0 && !signal) recordNativeBootstrapFailure(true);
         }
         appendHostEvent(ownerId, 'pty-child-exited', {
           childPid: Number.isInteger(thisChild.pid) ? thisChild.pid : null,
@@ -19046,6 +19296,7 @@ export function hostThroughPty(o) {
       } else {
         const managedCarryLineage = managedCarryLineageForTarget();
         appendHostEvent(ownerId, 'respawned', {
+          ownerId,
           mode: respawnMode,
           nativeId: nativeId ?? null,
           ...(managedCarryLineage ? { managedCarryLineage } : {}),
@@ -19512,6 +19763,7 @@ export function hostThroughPty(o) {
           ? managedCarryLineageForTarget(nativeId ?? null, turnStartProof?.nativeRef ?? null)
           : null;
         const terminalExtra = {
+          ownerId,
           mode: respawnMode,
           nativeId: nativeId ?? null,
           ...(managedCarryLineage ? { managedCarryLineage } : {}),

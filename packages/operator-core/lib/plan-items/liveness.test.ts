@@ -9,6 +9,8 @@
  * convert.integration.test.ts) — this file adds no PG dependency.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { matchesClaimSpecFilter, type ClaimSpecSubject } from '../scheduler/claim-spec-match';
+import type { LinkedWorkItem } from './reconcile-linked-work-items';
 
 const h = vi.hoisted(() => {
   const state = {
@@ -16,13 +18,17 @@ const h = vi.hoisted(() => {
     assignments: [] as Array<{ itemId: string; assigneeName: string }>,
     claims: [] as Array<{ itemId: string; expired: boolean }>,
     implementing: new Map<string, unknown>(),
+    linked: [] as LinkedWorkItem[],
+    priorClaim: null as PlanItemClaim | null,
     admission: { decision: null as unknown },
   };
   return {
     ...state,
     admission: state.admission,
-    admitSubjectForFleetTarget: vi.fn(async () => state.admission.decision ?? { allowed: true, scoped: false }),
+    admitSubjectForFleetTarget: vi.fn(async (_args: { subject: ClaimSpecSubject }) => state.admission.decision ?? { allowed: true, scoped: false }),
     findImplementingWorkItem: vi.fn(async (_planSlug: string, itemId: string) => state.implementing.get(itemId) ?? null),
+    findAllLinkedWorkItems: vi.fn(async () => state.linked),
+    acquireClaim: vi.fn(async () => ({ ok: true, claim: { owner: 'su-member', expired: false } })),
   };
 });
 
@@ -42,8 +48,8 @@ vi.mock('./assignments', () => ({
 }));
 vi.mock('./claims', () => ({
   listClaimsForPlan: async () => h.claims,
-  getClaim: async () => null,
-  acquireClaim: async () => { throw new Error('unexpected claim acquisition'); },
+  getClaim: async () => h.priorClaim,
+  acquireClaim: h.acquireClaim,
   forceTakeoverClaim: async () => { throw new Error('unexpected force takeover'); },
   releaseClaim: async () => false,
 }));
@@ -58,7 +64,12 @@ vi.mock('./work-group', () => ({
 vi.mock('../scheduler/fleet-scope-admission', () => ({
   admitSubjectForFleetTarget: h.admitSubjectForFleetTarget,
 }));
+vi.mock('./reconcile-linked-work-items', async (original) => ({
+  ...await original<typeof import('./reconcile-linked-work-items')>(),
+  findAllLinkedWorkItems: h.findAllLinkedWorkItems,
+}));
 vi.mock('../work-items', () => ({
+  isSettledWorkItemState: (state: string) => ['done', 'dropped', 'passed', 'deprecated', 'closed', 'resolved'].includes(state),
   isClaimHoldParked: (payload: unknown) => String((payload as { _claimHold?: unknown } | null)?._claimHold) === 'true',
   readWorkItemClaimHoldProvenance: (payload: unknown) => {
     const p = (payload ?? {}) as {
@@ -90,8 +101,12 @@ beforeEach(() => {
   h.assignments = [];
   h.claims = [];
   h.implementing.clear();
+  h.linked.length = 0;
+  h.priorClaim = null;
   h.admission.decision = null;
   h.admitSubjectForFleetTarget.mockClear();
+  h.findAllLinkedWorkItems.mockClear();
+  h.acquireClaim.mockClear();
 });
 
 describe('priorHolderStillLive (EI-7189)', () => {
@@ -218,7 +233,131 @@ describe('claimPlanItem linked claim-hold refusal', () => {
 });
 
 describe('claimPlanItem fleet admission', () => {
+  const claim = () => claimPlanItem({
+    workspaceId: 'default', harnessSlug: 'papercusp', planSlug: 'plan', itemId: 'P-001',
+    owner: 'su-member', ownerUser: 'member@example.com', livenessMode: 'availability',
+  });
+  const linked = (overrides: Partial<LinkedWorkItem> = {}): LinkedWorkItem => ({
+    id: 'WI-exact', family: 'feature', kind: 'feature', harness: 'papercusp',
+    state: 'open', title: 'Canonical implementation', summary: 'lease admission',
+    priority: 2, assignee: null, createdAt: '2026-11-12T00:00:00Z',
+    sourcePlanSlug: 'plan', sourcePlanItemIds: ['P-001'],
+    payload: { tags: ['lease'], paths: ['lib/lease.ts'] }, viaImplementsEdge: true,
+    ...overrides,
+  } as LinkedWorkItem);
+
+  it('admits an exact implementing ID using the real scheduler fields', async () => {
+    h.linked.push(linked());
+    h.admitSubjectForFleetTarget.mockImplementationOnce(async ({ subject }) => {
+      const filter: import('../scheduler/claim-spec').FilterNode = { all: [
+        { field: 'id', op: '=', value: 'WI-exact' },
+        { field: 'tags', op: 'contains', value: 'lease' },
+      ] };
+      // The old null identity must fail the SAME policy that the real row passes.
+      expect(matchesClaimSpecFilter({ ...subject, id: null }, filter)).toBe(false);
+      return { allowed: matchesClaimSpecFilter(subject, filter), scoped: true };
+    });
+    expect(await claim()).toMatchObject({ status: 'claimed' });
+    expect(h.findAllLinkedWorkItems).toHaveBeenCalledWith('plan', 'P-001', {
+      workspaceId: 'default', harnessSlug: 'papercusp',
+    });
+    expect(h.admitSubjectForFleetTarget).toHaveBeenCalledWith(expect.objectContaining({
+      subject: expect.objectContaining({ id: 'WI-exact', title: 'Canonical implementation',
+        summary: 'lease admission', tags: ['lease'], paths: ['lib/lease.ts'], plan: 'plan', planItem: ['P-001'] }),
+    }));
+    expect(h.acquireClaim).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains the pre-conversion subject when no implementation exists', async () => {
+    expect(await claim()).toMatchObject({ status: 'claimed' });
+    expect(h.admitSubjectForFleetTarget).toHaveBeenCalledWith(expect.objectContaining({
+      subject: expect.objectContaining({ id: null, kind: 'feature', plan: 'plan', planItem: ['P-001'] }),
+    }));
+  });
+
+  it('does not let an unconverted lane borrow an exact work-item allowlist', async () => {
+    h.admitSubjectForFleetTarget.mockImplementationOnce(async ({ subject }) => ({
+      allowed: matchesClaimSpecFilter(subject, { field: 'id', op: '=', value: 'WI-exact' }),
+      code: 'fleet_scope_violation', reason: 'no bound work-item',
+    }));
+    expect(await claim()).toMatchObject({ status: 'refused', reason: expect.stringContaining('fleet_scope_violation') });
+    expect(h.acquireClaim).not.toHaveBeenCalled();
+  });
+
+  it('ignores a terminal predecessor when resolving the one live implementation', async () => {
+    h.linked.push(linked({ id: 'WI-old', state: 'dropped' }), linked());
+    expect(await claim()).toMatchObject({ status: 'claimed' });
+    expect(h.admitSubjectForFleetTarget).toHaveBeenCalledWith(expect.objectContaining({
+      subject: expect.objectContaining({ id: 'WI-exact' }),
+    }));
+  });
+
+  it('projects proven edge-only identity without fabricating other work-item fields', async () => {
+    h.linked.push(linked({ sourcePlanSlug: null, sourcePlanItemIds: null, payload: {} }));
+    expect(await claim()).toMatchObject({ status: 'claimed' });
+    expect(h.admitSubjectForFleetTarget).toHaveBeenCalledWith(expect.objectContaining({
+      subject: expect.objectContaining({ id: 'WI-exact', plan: 'plan', planItem: ['P-001'], tags: [] }),
+    }));
+  });
+
+  it('keeps coherent scheduled-instance binding and scheduler template semantics', async () => {
+    h.linked.push(linked({ sourcePlanSlug: 'template', payload: {
+      plan_item: { plan_slug: 'plan', item_id: 'P-001', harness_slug: 'papercusp' },
+      plan_run: { instancePlanSlug: 'plan', templateSlug: 'template' },
+    } }));
+    expect(await claim()).toMatchObject({ status: 'claimed' });
+    expect(h.admitSubjectForFleetTarget).toHaveBeenCalledWith(expect.objectContaining({
+      subject: expect.objectContaining({ id: 'WI-exact', plan: 'template', planItem: ['P-001'] }),
+    }));
+  });
+
+  it('refuses ambiguous live mappings before admission or lease mutation', async () => {
+    h.linked.push(linked(), linked({ id: 'WI-twin' }));
+    expect(await claim()).toMatchObject({ status: 'refused', reason: expect.stringContaining('ambiguous_plan_item_mapping') });
+    expect(h.admitSubjectForFleetTarget).not.toHaveBeenCalled();
+    expect(h.acquireClaim).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { harness: 'other' },
+    { sourcePlanSlug: 'other-plan' },
+    { sourcePlanItemIds: ['P-002'] },
+    { payload: { plan_item: { plan_slug: 'plan', item_id: 'P-001', harness_slug: 'other' } } },
+  ])('refuses a conflicting canonical back-reference: %j', async (overrides) => {
+    h.linked.push(linked(overrides));
+    expect(await claim()).toMatchObject({ status: 'refused', reason: expect.stringContaining('plan_item_mapping_mismatch') });
+    expect(h.acquireClaim).not.toHaveBeenCalled();
+  });
+
+  it('honors a canonical plan-node park even without a legacy implements edge', async () => {
+    h.linked.push(linked({ viaImplementsEdge: false, viaPlanLineNode: true, payload: { _claimHold: true } }));
+    expect(await claim()).toMatchObject({ status: 'refused', claimHold: { workItemId: 'WI-exact' } });
+    expect(h.admitSubjectForFleetTarget).not.toHaveBeenCalled();
+    expect(h.acquireClaim).not.toHaveBeenCalled();
+  });
+
+  it('refuses a new lease when the canonical mapping read fails', async () => {
+    h.findAllLinkedWorkItems.mockRejectedValueOnce(new Error('mapping unavailable'));
+    expect(await claim()).toMatchObject({ status: 'refused', reason: expect.stringContaining('plan_item_mapping_unavailable') });
+    expect(h.acquireClaim).not.toHaveBeenCalled();
+  });
+
+  it('keeps fleet-scope refusal for an unmatched exact ID', async () => {
+    h.linked.push(linked());
+    h.admission.decision = { allowed: false, code: 'fleet_scope_violation', reason: 'exact ID outside the authored policy' };
+    expect(await claim()).toMatchObject({ status: 'refused', reason: expect.stringContaining('fleet_scope_violation') });
+    expect(h.acquireClaim).not.toHaveBeenCalled();
+  });
+
+  it('preserves an already-held lease without another fleet admission', async () => {
+    h.priorClaim = { owner: 'su-member', expired: false } as PlanItemClaim;
+    expect(await claim()).toMatchObject({ status: 'claimed' });
+    expect(h.findAllLinkedWorkItems).not.toHaveBeenCalled();
+    expect(h.admitSubjectForFleetTarget).not.toHaveBeenCalled();
+  });
+
   it('refuses a new plan-item lease while the target fleet is winding down', async () => {
+    h.linked.push(linked());
     h.admission.decision = {
       allowed: false,
       scoped: true,

@@ -712,7 +712,9 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     const resolveFleetMembers = vi.fn(async () => ['su-member']);
     const explain = vi.fn(
       async (_harness: string, _ids: readonly string[], opts?: { scopeHeldBy?: readonly string[] }) =>
-        opts?.scopeHeldBy?.includes(held.heldBy!) ? [eligible] : [held],
+        opts?.scopeHeldBy?.includes(held.heldBy!)
+          ? [{ ...eligible, scopeHolder: 'su-member', scopeStatus: 'open' }]
+          : [{ ...held, scopeHolder: 'su-member', scopeStatus: 'open' }],
     );
     const result = await previewClaimSpecAdmission({ ...args, resolveFleetMembers, explain });
 
@@ -728,6 +730,7 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     expect(explain).toHaveBeenLastCalledWith('papercusp', [held.id], {
       assignee: 'su-member',
       states: ['open'],
+      scopeMembers: ['su-member'],
       includeAllFloors: true,
       scopeHeldBy: ['su-member'],
       claimantFleetSlug: 'repair-fleet',
@@ -741,7 +744,9 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     const selfEligible = { ...eligible };
     const explain = vi.fn(
       async (_harness: string, _ids: readonly string[], opts?: { scopeHeldBy?: readonly string[] }) =>
-        opts?.scopeHeldBy?.includes('su-self') ? [selfEligible] : [selfHeld],
+        opts?.scopeHeldBy?.includes('su-self')
+          ? [{ ...selfEligible, scopeHolder: 'su-self', scopeStatus: 'open' }]
+          : [{ ...selfHeld, scopeHolder: 'su-self', scopeStatus: 'open' }],
     );
     const result = await previewClaimSpecAdmission({
       ...args,
@@ -762,9 +767,108 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     expect(explain).toHaveBeenLastCalledWith('papercusp', [held.id], {
       assignee: 'su-self',
       states: ['open'],
+      scopeMembers: ['su-self'],
       includeAllFloors: true,
       scopeHeldBy: ['su-self'],
     });
+  });
+
+  it('includes a same-fleet WIP row held by the target, but not as newly claimable work', async () => {
+    const wip = {
+      id: held.id,
+      admissible: false,
+      refusedBy: 'not-claimable-status',
+      failedFloors: ['not-claimable-status'],
+      detail: 'status is not in the pull allowlist',
+      scopeHolder: 'su-member',
+      scopeStatus: 'wip',
+    };
+    const explain = vi.fn(async (_harness: string, _ids: readonly string[], opts?: { scopeHeldBy?: readonly string[] }) => [wip]);
+    const result = await previewClaimSpecAdmission({
+      ...args,
+      resolveFleetMembers: async () => ['su-member'],
+      explain,
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.preview).toMatchObject({
+      admissibleIds: [],
+      scopeAdmissibleIds: [held.id],
+      alreadyHeldIds: [held.id],
+      floored: [],
+    });
+    expect(explain).toHaveBeenLastCalledWith('papercusp', [held.id], expect.objectContaining({
+      assignee: 'su-member',
+      scopeHeldBy: ['su-member'],
+      scopeMembers: ['su-member'],
+      includeAllFloors: true,
+    }));
+  });
+
+  it('rechecks fresh-filer grace as the current holder before accepting scope', async () => {
+    const filedGrace = {
+      id: held.id,
+      admissible: false,
+      refusedBy: 'cooldown',
+      failedFloors: ['cooldown'],
+      detail: 'filed by another assignee within the filing-grace window',
+      scopeHolder: 'su-member',
+      scopeStatus: 'open',
+    };
+    const explain = vi.fn(async () => [filedGrace]);
+    const result = await previewClaimSpecAdmission({
+      ...args,
+      resolveFleetMembers: async () => ['su-member'],
+      explain,
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.preview).toMatchObject({
+      admissibleIds: [],
+      scopeAdmissibleIds: [held.id],
+      alreadyHeldIds: [held.id],
+      floored: [],
+    });
+    expect(explain.mock.calls[1][2]).toMatchObject({ assignee: 'su-member', scopeHeldBy: ['su-member'] });
+  });
+
+  it('does not treat a blocked row held by the target as scope-admissible', async () => {
+    const blocked = {
+      id: held.id,
+      admissible: false,
+      refusedBy: 'not-claimable-status',
+      failedFloors: ['not-claimable-status', 'blocked-dep'],
+      detail: 'blocked work is leader-triage-only',
+      scopeHolder: 'su-member',
+      scopeStatus: 'blocked',
+    };
+    const explain = vi.fn(async () => [blocked]);
+    const result = await previewClaimSpecAdmission({
+      ...args,
+      resolveFleetMembers: async () => ['su-member'],
+      explain,
+    });
+
+    expect(result.errors.join('\n')).toContain('not-claimable-status');
+    expect(result.preview).toMatchObject({
+      alreadyHeldIds: [],
+      scopeAdmissibleIds: [],
+      floored: [expect.objectContaining({ failedFloors: ['not-claimable-status', 'blocked-dep'] })],
+    });
+  });
+
+  it('does not scope a held row owned by a non-member of the target fleet', async () => {
+    const foreign = { ...held, heldBy: 'su-foreign' };
+    const explain = vi.fn(async () => [foreign]);
+    const result = await previewClaimSpecAdmission({
+      ...args,
+      resolveFleetMembers: async () => ['su-member'],
+      explain,
+    });
+
+    expect(result.errors.join('\n')).toContain('already-taken');
+    expect(result.preview).toMatchObject({ alreadyHeldIds: [], scopeAdmissibleIds: [] });
+    expect(explain).toHaveBeenCalledTimes(1);
   });
 
   it('uses the direct target member cooldown instead of the leader writer cooldown', async () => {
@@ -792,6 +896,7 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     expect(explain).toHaveBeenCalledWith('papercusp', [held.id], {
       assignee: 'su-member',
       states: ['open'],
+      scopeMembers: ['su-member'],
       includeAllFloors: true,
     });
   });
@@ -800,7 +905,9 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     const targetHeld = { ...held, heldBy: 'su-member' };
     const explain = vi.fn(
       async (_harness: string, _ids: readonly string[], opts?: { scopeHeldBy?: readonly string[] }) =>
-        opts?.scopeHeldBy?.includes('su-member') ? [eligible] : [targetHeld],
+        opts?.scopeHeldBy?.includes('su-member')
+          ? [{ ...eligible, scopeHolder: 'su-member', scopeStatus: 'open' }]
+          : [targetHeld],
     );
     const result = await previewClaimSpecAdmission({
       ...args,
@@ -821,6 +928,7 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     expect(explain).toHaveBeenLastCalledWith('papercusp', [held.id], {
       assignee: 'su-member',
       states: ['open'],
+      scopeMembers: ['su-member'],
       includeAllFloors: true,
       scopeHeldBy: ['su-member'],
     });
@@ -958,7 +1066,9 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
       spec: fixedSpec([held.id, foreign.id, unknownId]),
       resolveFamily: async (id) => id === unknownId ? null : 'issue',
       resolveFleetMembers: async () => ['su-member'],
-      explain: async (_harness, _ids, opts) => opts?.scopeHeldBy ? [eligible] : [held, foreign],
+      explain: async (_harness, _ids, opts) => opts?.scopeHeldBy
+        ? [{ ...eligible, scopeHolder: 'su-member', scopeStatus: 'open' }]
+        : [held, foreign],
     });
     expect(result.errors).toEqual([]);
     expect(result.preview).toMatchObject({
@@ -977,7 +1087,9 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     getClaimSpecRecord.mockResolvedValueOnce(null);
     getWorkItem.mockResolvedValueOnce({ family: 'issue' });
     listFleetControlMembers.mockResolvedValueOnce(['su-member']);
-    explainIssueClaimFloors.mockResolvedValueOnce([held]).mockResolvedValueOnce([eligible]);
+    explainIssueClaimFloors.mockResolvedValueOnce([held]).mockResolvedValueOnce([
+      { ...eligible, scopeHolder: 'su-member', scopeStatus: 'open' },
+    ]);
     setClaimSpec.mockClear();
     setClaimSpec.mockResolvedValueOnce({ ok: true, revision: 2 });
     listFleetMembers.mockResolvedValueOnce([]);
@@ -1005,7 +1117,9 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     fetchWakeability.mockResolvedValueOnce(new Map([['su-leader', { wakeable: true }]]));
     getClaimSpecRecord.mockResolvedValueOnce(null);
     getWorkItem.mockResolvedValueOnce({ family: 'issue' });
-    explainIssueClaimFloors.mockResolvedValueOnce([selfHeld]).mockResolvedValueOnce([selfEligible]);
+    explainIssueClaimFloors.mockResolvedValueOnce([selfHeld]).mockResolvedValueOnce([
+      { ...selfEligible, scopeHolder: 'su-leader', scopeStatus: 'open' },
+    ]);
     setClaimSpec.mockClear();
     setClaimSpec.mockResolvedValueOnce({ ok: true, revision: 2 });
     listFleetMembers.mockResolvedValueOnce([]);
@@ -1026,6 +1140,7 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     expect(explainIssueClaimFloors).toHaveBeenLastCalledWith('papercusp', [held.id], {
       assignee: 'su-leader',
       states: ['open'],
+      scopeMembers: ['su-leader'],
       includeAllFloors: true,
       scopeHeldBy: ['su-leader'],
     });
@@ -1040,7 +1155,9 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     getClaimSpecRecord.mockResolvedValueOnce(null);
     getWorkItem.mockResolvedValueOnce({ family: 'issue' });
     explainIssueClaimFloors.mockClear();
-    explainIssueClaimFloors.mockResolvedValueOnce([targetHeld]).mockResolvedValueOnce([eligible]);
+    explainIssueClaimFloors.mockResolvedValueOnce([targetHeld]).mockResolvedValueOnce([
+      { ...eligible, scopeHolder: 'su-member', scopeStatus: 'open' },
+    ]);
     setClaimSpec.mockClear();
     setClaimSpec.mockResolvedValueOnce({ ok: true, revision: 3 });
     wakeClaimableAwaitersForSubscribers.mockResolvedValueOnce(0);
@@ -1059,11 +1176,13 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     expect(explainIssueClaimFloors).toHaveBeenNthCalledWith(1, 'papercusp', [held.id], {
       assignee: 'su-member',
       states: ['open'],
+      scopeMembers: ['su-member'],
       includeAllFloors: true,
     });
     expect(explainIssueClaimFloors).toHaveBeenNthCalledWith(2, 'papercusp', [held.id], {
       assignee: 'su-member',
       states: ['open'],
+      scopeMembers: ['su-member'],
       includeAllFloors: true,
       scopeHeldBy: ['su-member'],
     });
@@ -1098,6 +1217,7 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     expect(explainIssueClaimFloors).toHaveBeenCalledWith('papercusp', [held.id], {
       assignee: 'su-member',
       states: ['open'],
+      scopeMembers: ['su-member'],
       includeAllFloors: true,
     });
     expect(setClaimSpec).not.toHaveBeenCalled();

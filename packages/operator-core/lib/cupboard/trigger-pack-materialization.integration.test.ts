@@ -15,6 +15,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { acceptanceBarSourceContractProblems, validateAcceptanceBarSource } from '../acceptance-bar-seed';
+import { evaluateDiscoveryReadiness } from '../agent-tools/plans/plan-declarations';
+import { resolveDiscoveryAuditContext } from '../agent-tools/plans/plan-declaration-resolvers';
 import {
   fakeRegistry,
   FOLLOW_SLUG,
@@ -123,6 +125,25 @@ describe('trigger-pack materialization (R-8)', () => {
       const parsed = validateAcceptanceBarSource(template.content);
       if (!parsed.ok) throw new Error(`${label}: ${parsed.problems.map(problem => problem.code).join(', ')}`);
       expect(acceptanceBarSourceContractProblems(parsed.bars, parsed.mappings), label).toEqual([]);
+    }
+  });
+
+  it('keeps bug-triage templates discovery-ready with current filing and startup evidence', async () => {
+    const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+    for (const name of ['plan.md', 'report.md']) {
+      const content = await fs.readFile(join(repoRoot, 'libs/papercusp/plugins/bug-triage', name), 'utf8');
+      const context = await resolveDiscoveryAuditContext(content, null, {
+        repoRoot, harnessSlug: HARNESS, ownerId: 'trigger-pack-discovery-test', planSlug: `bug-triage-${name}`,
+      });
+      const resolved = { targets: context.targets, evidence: new Map(context.evidence.map(row => [row.ref, row])) };
+      const readiness = evaluateDiscoveryReadiness(content, resolved);
+      expect(readiness.blockers, name).toEqual([]);
+      expect(readiness.ready, name).toBe(true);
+      // The missing declaration that refused the real Slack run must fail this guard.
+      const missing = content.replace(/## Discovery\n[\s\S]*?(?=\n## )/, '');
+      const refused = evaluateDiscoveryReadiness(missing, resolved);
+      expect(refused.ready, name).toBe(false);
+      expect(refused.blockers.some(row => row.code === 'discovery_missing'), name).toBe(true);
     }
   });
 

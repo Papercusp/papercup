@@ -661,6 +661,10 @@ export async function createOneWorkItem(
   if (rawDefinition !== undefined) {
     const parsed = WorkItemDefinitionSchema.safeParse(rawDefinition);
     if (!parsed.success) return { ok: false, error: 'invalid_definition', message: parsed.error.message };
+    // This producer allocates the id after admission. An approval for a named
+    // target cannot authorize a not-yet-identified row, including dedup/adoption.
+    if (parsed.data.assessmentScope) return { ok: false, error: 'definition_target_identity_required',
+      message: 'Create the ordinary work item first, then admit its exact owner-approved assessment definition with work_items:update. No work item was created or adopted.' };
     args = { ...args, payload: { ...args.payload, workDefinition: parsed.data } };
   }
   if (args.conditionReplay === 'include-terminal') {

@@ -40,6 +40,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, w
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as buildInfo from '../../build-info';
 
 // --- mocks (hoisted) ---------------------------------------------------------
 const spawnMock = vi.fn();
@@ -78,6 +79,7 @@ const readStoredQualification = vi.hoisted(() =>
 );
 const beginStoredQualification = vi.hoisted(() => vi.fn());
 const recordStoredQualificationScheduledFire = vi.hoisted(() => vi.fn());
+const recordStoredQualificationExecutorIdentityBlock = vi.hoisted(() => vi.fn());
 const reserveStoredQualificationRunner = vi.hoisted(() => vi.fn());
 const probeRunnerLiveness = vi.hoisted(() => vi.fn());
 vi.mock('../../release/checkpoint-qualification-transaction', async (orig) => ({
@@ -88,6 +90,7 @@ vi.mock('../../release/checkpoint-qualification-transaction', async (orig) => ({
   readStoredQualification: (...a: unknown[]) => readStoredQualification(...a),
   beginStoredQualification: (...a: unknown[]) => beginStoredQualification(...a),
   recordStoredQualificationScheduledFire: (...a: unknown[]) => recordStoredQualificationScheduledFire(...a),
+  recordStoredQualificationExecutorIdentityBlock: (...a: unknown[]) => recordStoredQualificationExecutorIdentityBlock(...a),
   reserveStoredQualificationRunner: (...a: unknown[]) => reserveStoredQualificationRunner(...a),
   probeRunnerLiveness: (...a: unknown[]) => probeRunnerLiveness(...a),
 }));
@@ -1337,7 +1340,11 @@ beforeEach(() => {
   spawnMock.mockReset();
   appendPipelineEvent.mockClear();
   emitAwaitedEvent.mockClear();
-  fakeSql.unsafe.mockClear();
+  // Clear queued one-shot responses as well as call history. Otherwise a test
+  // that needs fewer writes than its fixture supplies corrupts the next test's
+  // SELECT, making valid candidate snapshots look absent.
+  fakeSql.unsafe.mockReset();
+  fakeSql.unsafe.mockImplementation(async (..._a: unknown[]) => sqlRows([]));
   recordStoredQualificationVerdict.mockClear();
   recordStoredQualificationComposedVerdict.mockReset();
   recordStoredQualificationVerdict.mockResolvedValue({ status: 'missing' });
@@ -1353,6 +1360,7 @@ beforeEach(() => {
   recordStoredQualificationScheduledFire.mockResolvedValue({
     status: 'updated', transaction: { attemptId: 'scheduled-attempt', phase: 'ready', currentPhysicalRunner: null, outcome: { kind: 'pending' } },
   });
+  recordStoredQualificationExecutorIdentityBlock.mockReset();
   reserveStoredQualificationRunner.mockReset();
   reserveStoredQualificationRunner.mockResolvedValue({ status: 'updated' });
   probeRunnerLiveness.mockReset();
@@ -2744,6 +2752,57 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
         rmSync(dir, { recursive: true, force: true });
       }
     });
+  });
+
+  it.each(['dirty', 'unresolved'] as const)('persists an unavailable %s executor on the same waiting attempt before returning', async shaSource => {
+    const transaction = beginQualificationTransaction(null, {
+      attemptId: 'identity-wait', candidate: 'frozen-candidate', repairHead: 'frozen-repair', nowMs: 100,
+    }).transaction;
+    readStoredQualification.mockResolvedValueOnce({ status: 'present', transaction });
+    recordStoredQualificationExecutorIdentityBlock.mockResolvedValueOnce({ status: 'updated', transaction });
+    const build = vi.spyOn(buildInfo, 'getResolvedBuild').mockReturnValue({ sha: null, shaSource, version: 'test' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await getSystemAction('green-checkpoint')!(ctx);
+      expect(recordStoredQualificationExecutorIdentityBlock).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: ctx.workspaceId, installSlug: ctx.installSlug }),
+        expect.objectContaining({
+          attemptId: 'identity-wait', candidate: 'frozen-candidate', repairHead: 'frozen-repair', shaSource,
+        }),
+      );
+      expect(recordStoredQualificationScheduledFire).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: ctx.workspaceId, installSlug: ctx.installSlug }), 'identity-wait',
+      );
+      expect(spawnMock).not.toHaveBeenCalled();
+      expect(beginStoredQualification).not.toHaveBeenCalled();
+      expect(reserveStoredQualificationRunner).not.toHaveBeenCalled();
+      expect(appendPipelineEvent).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'skipped-no-tooling', detail: expect.objectContaining({
+          reason: 'executor-build-identity-unavailable', attemptId: 'identity-wait', blockerPersistence: 'updated',
+        }),
+      }));
+    } finally { build.mockRestore(); warn.mockRestore(); }
+  });
+
+  it('retains the executor recovery blocker when a baked SHA becomes available without qualified artifact proof', async () => {
+    const transaction = waitQualificationTransaction(beginQualificationTransaction(null, {
+      attemptId: 'identity-wait', candidate: 'frozen-candidate', repairHead: 'frozen-repair', nowMs: 100,
+    }).transaction, { attemptId: 'identity-wait', reason: 'infra-inconclusive', nowMs: 200,
+      blockers: [{ code: 'executor-build-identity-unavailable', clearEvents: [] }] }).transaction;
+    readStoredQualification.mockResolvedValueOnce({ status: 'present', transaction });
+    const build = vi.spyOn(buildInfo, 'getResolvedBuild').mockReturnValue({ sha: 'a'.repeat(40), shaSource: 'baked', version: 'test' });
+    try {
+      await getSystemAction('green-checkpoint')!(ctx);
+      expect(spawnMock).not.toHaveBeenCalled();
+      expect(beginStoredQualification).not.toHaveBeenCalled();
+      expect(reserveStoredQualificationRunner).not.toHaveBeenCalled();
+      expect(transaction.blockers).toEqual([{ code: 'executor-build-identity-unavailable', clearEvents: [], observedAtMs: 200 }]);
+      expect(appendPipelineEvent).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'skipped-no-tooling', detail: expect.objectContaining({
+          reason: 'executor-artifact-recovery-unverified', attemptId: 'identity-wait', blockerPersistence: 'retained',
+        }),
+      }));
+    } finally { build.mockRestore(); }
   });
 
   it('the PERIODIC gate launches the suite under systemd-run --scope (own cgroup, stdout marker still parsed)', async () => {
@@ -4702,6 +4761,7 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       // Current readers fail closed when legacy rows predate the selective
       // coverage field, so absence materializes as blocked rather than green.
       selectiveCoverageBlocked: true,
+      failureFrontierCompleteness: 'unknown',
     });
     expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
       1,

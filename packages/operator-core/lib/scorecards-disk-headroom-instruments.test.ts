@@ -5,6 +5,7 @@ import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY } from './storage/retention-interval-
 import { DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY } from './storage/retention-interval-evidence';
 import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage/cold-tier-evidence';
 import type { Rubric } from './rubrics';
+import { RECLAIM_SOURCE_PATHS } from './storage/reclaim-provenance';
 
 const key = DISK_HEADROOM_SOAK_INSTRUMENT_KEY;
 const rubric = { workspaceId: 'workspace', subjectHarnessSlug: 'install', subjectPlan: 'disk-plan',
@@ -29,6 +30,16 @@ const measurement = (verdict: 'pass' | 'fail' | 'unknown') => ({
 });
 
 describe('ledger-backed disk headroom scorecard instrument', () => {
+  it('takes readiness from the governed criterion and ignores supplied identity claims', async () => {
+    const headroomBinding = { readinessRunId: 'ready', runtimeHost: 'port-3271', sourceSha: 'a'.repeat(40),
+      sourceBlobs: Object.fromEntries(RECLAIM_SOURCE_PATHS.map(path => [path, 'b'.repeat(40)])) };
+    const scopedRubric = { ...rubric, criteria: [{ key: 'r-10', check: { kind: 'instrument',
+      instrumentKey: DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, headroomBinding } }] } as unknown as Rubric;
+    const coldEvidence = vi.fn(async () => ({ verdict: 'unknown' as const, detail: 'native result' }));
+    await resolveScorecardInstrumentSnapshots({ rubric: scopedRubric, subject,
+      supplied: { [DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY]: { ...supplied[key]!, window: { headroomBinding: 'forged' } } } }, { now, coldEvidence });
+    expect(coldEvidence).toHaveBeenCalledWith(DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, expect.objectContaining({ headroomBinding }));
+  });
   it.each([COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY, DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY])(
     'replaces supplied pass for %s with native failure, and rejects historical host reads', async instrumentKey => {
       const liveSubject = { ...subject, windowEnd: new Date(now()).toISOString(),

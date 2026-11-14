@@ -269,20 +269,38 @@ export async function handlerPhaseRollup(input: HandlerPhaseRollupInput): Promis
   const workspaceIds = input.workspaceIds ?? [];
   const wsFilter = workspaceIds.length > 0 ? sql`AND t.workspace_id = ANY(${sql.array(workspaceIds)})` : sql``;
 
-  type CoverageRow = { calls: number; attributed: number | null; elapsed: number | null; cov_p50: number | null; cov_ge_90: number | null };
+  type CoverageRow = {
+    calls_total: number;
+    calls_with_phases: number;
+    calls_without_phases: number;
+    wall_time_ms: number | null;
+    attributed: number | null;
+    elapsed: number | null;
+    unknown_ms: number | null;
+    cov_p50: number | null;
+    cov_ge_90: number | null;
+  };
   const [coverage] = (await sql`
-    SELECT count(*)::int AS calls,
+    SELECT count(*)::int AS calls_total,
+           (count(*) FILTER (WHERE has_handler_phases))::int AS calls_with_phases,
+           (count(*) FILTER (WHERE NOT has_handler_phases))::int AS calls_without_phases,
+           sum(duration_ms)::float8 AS wall_time_ms,
            sum(attributed)::float8 AS attributed,
            sum(elapsed)::float8 AS elapsed,
+           sum(CASE
+                 WHEN elapsed IS NULL THEN duration_ms
+                 ELSE GREATEST(duration_ms - elapsed, 0)
+               END)::float8 AS unknown_ms,
            percentile_cont(0.5) WITHIN GROUP (ORDER BY attributed / NULLIF(elapsed, 0)) AS cov_p50,
            avg((attributed / NULLIF(elapsed, 0) >= 0.9)::int)::float8 AS cov_ge_90
       FROM (
-        SELECT (t.metadata_json->'handlerPhases'->>'attributedMs')::float8 AS attributed,
+        SELECT t.duration_ms,
+               coalesce(t.metadata_json ? 'handlerPhases', false) AS has_handler_phases,
+               (t.metadata_json->'handlerPhases'->>'attributedMs')::float8 AS attributed,
                (t.metadata_json->'handlerPhases'->>'elapsedMs')::float8 AS elapsed
           FROM harness_shared.tool_invocations t
          WHERE t.invoked_at > ${sinceIso}::timestamptz
            AND t.tool_name = ${input.toolName}
-           AND t.metadata_json ? 'handlerPhases'
            ${wsFilter}
       ) c
   `) as unknown as CoverageRow[];
@@ -309,12 +327,29 @@ export async function handlerPhaseRollup(input: HandlerPhaseRollupInput): Promis
 
   const round = (v: number | null | undefined) => (v == null ? null : Math.round(v));
   const ratio = (v: number | null | undefined) => (v == null ? null : Math.round(v * 1000) / 1000);
-  const c = coverage ?? { calls: 0, attributed: null, elapsed: null, cov_p50: null, cov_ge_90: null };
+  const c = coverage ?? {
+    calls_total: 0,
+    calls_with_phases: 0,
+    calls_without_phases: 0,
+    wall_time_ms: null,
+    attributed: null,
+    elapsed: null,
+    unknown_ms: null,
+    cov_p50: null,
+    cov_ge_90: null,
+  };
   return {
     tool_name: input.toolName,
     hours,
-    calls_with_phases: c.calls ?? 0,
+    calls_total: c.calls_total ?? 0,
+    calls_with_phases: c.calls_with_phases ?? 0,
+    calls_without_phases: c.calls_without_phases ?? 0,
+    wall_time_ms: round(c.wall_time_ms),
+    attributed_ms: round(c.attributed),
+    unattributed_ms: c.elapsed == null ? null : round(Math.max(0, c.elapsed - (c.attributed ?? 0))),
+    unknown_ms: round(c.unknown_ms),
     coverage_total: c.elapsed ? ratio((c.attributed ?? 0) / c.elapsed) : null,
+    population_coverage_total: c.wall_time_ms ? ratio((c.attributed ?? 0) / c.wall_time_ms) : null,
     coverage_p50: ratio(c.cov_p50),
     coverage_ge_90_share: ratio(c.cov_ge_90),
     phases: phaseRows.map((r) => ({

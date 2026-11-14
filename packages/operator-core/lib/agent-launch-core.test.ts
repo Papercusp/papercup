@@ -1074,6 +1074,21 @@ describe('composeModelSpec (D-001: effort rides the model spec)', () => {
 });
 
 describe('resolveResumeTarget', () => {
+  it.each([
+    { launchArgv: ['psu', '--agent=codex'], harnessSlug: null, harnessScopeKnown: true },
+    { launchArgv: ['psu', '--harness=papercusp'], harnessSlug: 'papercusp', harnessScopeKnown: true },
+    { launchArgv: [], harnessSlug: null, harnessScopeKnown: false },
+    { launchArgv: null, harnessSlug: null, harnessScopeKnown: false },
+  ])('distinguishes recorded operator scope from absent launch metadata ($launchArgv)', async ({ launchArgv, harnessSlug, harnessScopeKnown }) => {
+    launchCoreSql.mockResolvedValue([{
+      id: 22664, workspace_id: 'ws-test', coord_owner_id: OWNER, session_id: 'original-native',
+      agent: 'codex', cwd: '/repo', launch_argv: launchArgv,
+    }] as unknown[]);
+    await expect(resolveResumeTarget({ agentId: OWNER })).resolves.toMatchObject({
+      ok: true, harnessSlug, harnessScopeKnown,
+    });
+  });
+
   it.each([true, false])('retains recorded headless placement (%s)', async (headless) => {
     launchCoreSql.mockResolvedValue([{
       id: 22664, workspace_id: 'ws-test', coord_owner_id: OWNER, session_id: 'original-native',
@@ -1591,7 +1606,7 @@ describe('verifyResumeStarted (resume liveness is three-state)', () => {
   const sourceNativeRef = `/codex/sessions/2026/10/01/rollout-2026-10-01T09-00-00-${sourceNativeId}.jsonl`;
   const targetNativeRef = `/codex/sessions/2026/10/01/rollout-2026-10-01T10-00-00-${targetNativeId}.jsonl`;
 
-  it('refuses an observed Codex successor even when launch argv requests the original UUID', async () => {
+  it('keeps an observed Codex successor unconfirmed when exact carry lineage is absent', async () => {
     const result = await verifyResumeStarted(OWNER, {
       expectedSessionId: 'original-native',
       findHost: () => ptyHostFixture({
@@ -1601,7 +1616,7 @@ describe('verifyResumeStarted (resume liveness is three-state)', () => {
       timeoutMs: 0,
     });
 
-    expect(result).toMatchObject({ started: false, mismatch: true,
+    expect(result).toMatchObject({ started: null, mismatch: false,
       expectedSessionId: 'original-native', actualSessionId: 'carry-successor' });
   });
 
@@ -1669,6 +1684,106 @@ describe('verifyResumeStarted (resume liveness is three-state)', () => {
       actualSessionId: targetNativeId,
     });
     expect(readAdvSession).toHaveBeenCalledWith(11);
+  });
+
+  it('accepts an exact carry when the matching binding confirmation follows delivery', async () => {
+    const lineage = {
+      ownerId: OWNER,
+      advSessionId: 11,
+      hostStartedAt: 100,
+      sourceNativeId,
+      sourceNativeRef,
+      sourceChildGeneration: 1,
+      targetChildGeneration: 2,
+      targetNativeId,
+      targetNativeRef,
+    };
+    const events = [
+      { kind: 'respawned', mode: 'carry-respawn', ownerId: OWNER,
+        managedCarryLineage: { ...lineage, targetNativeId: null, targetNativeRef: null } },
+      { kind: 'respawn-carry-delivered', mode: 'carry-respawn', ownerId: OWNER,
+        nativeId: targetNativeId, turnStartVerified: true,
+        nativeRef: targetNativeRef, managedCarryLineage: { ...lineage } },
+      { kind: 'respawn-binding-confirmed', ownerId: OWNER, advSessionId: 11,
+        hostStartedAt: 100, childGeneration: 2, nativeId: targetNativeId },
+    ] as unknown as PtyHostEvent[];
+    const result = await verifyResumeStarted(OWNER, {
+      expectedSessionId: sourceNativeId,
+      findHost: () => ptyHostFixture({
+        advSessionId: '11', startedAt: 100, childGeneration: 2, nativeSessionId: targetNativeId,
+      }),
+      readAdvSession: async (id) => ({
+        id, coordOwnerId: OWNER, agent: 'codex', sessionId: targetNativeId,
+      } as never),
+      readHostEvents: () => events,
+      timeoutMs: 0,
+    });
+
+    expect(result).toMatchObject({ started: true, mismatch: false, managedCarry: true });
+  });
+
+  it('keeps an adopted delivery without lineage metadata unconfirmed', async () => {
+    const lineage = {
+      ownerId: OWNER,
+      advSessionId: 11,
+      hostStartedAt: 100,
+      sourceNativeId,
+      sourceNativeRef,
+      sourceChildGeneration: 1,
+      targetChildGeneration: 2,
+      targetNativeId,
+      targetNativeRef,
+    };
+    const events = [
+      { kind: 'respawned', mode: 'carry-respawn', ownerId: OWNER,
+        managedCarryLineage: { ...lineage, targetNativeId: null, targetNativeRef: null } },
+      { kind: 'respawn-binding-confirmed', ownerId: OWNER, advSessionId: 11,
+        hostStartedAt: 100, childGeneration: 2, nativeId: targetNativeId },
+      { kind: 'respawn-carry-delivered', mode: 'carry-respawn', ownerId: OWNER,
+        nativeId: targetNativeId, turnStartVerified: true, nativeRef: targetNativeRef },
+    ] as unknown as PtyHostEvent[];
+    const result = await verifyResumeStarted(OWNER, {
+      expectedSessionId: sourceNativeId,
+      findHost: () => ptyHostFixture({
+        advSessionId: '11', startedAt: 100, childGeneration: 2, nativeSessionId: targetNativeId,
+      }),
+      readHostEvents: () => events,
+      timeoutMs: 0,
+    });
+
+    expect(result).toMatchObject({ started: null, mismatch: false,
+      expectedSessionId: sourceNativeId, actualSessionId: targetNativeId });
+  });
+
+  it('keeps a carry unconfirmed until its exact child binding is recorded', async () => {
+    const lineage = {
+      ownerId: OWNER,
+      advSessionId: 11,
+      hostStartedAt: 100,
+      sourceNativeId,
+      sourceNativeRef,
+      sourceChildGeneration: 1,
+      targetChildGeneration: 2,
+      targetNativeId,
+      targetNativeRef,
+    };
+    const events = [
+      { kind: 'respawned', mode: 'carry-respawn', ownerId: OWNER,
+        managedCarryLineage: { ...lineage, targetNativeId: null, targetNativeRef: null } },
+      { kind: 'respawn-carry-delivered', mode: 'carry-respawn', ownerId: OWNER,
+        nativeId: targetNativeId, turnStartVerified: true,
+        nativeRef: targetNativeRef, managedCarryLineage: { ...lineage } },
+    ] as unknown as PtyHostEvent[];
+    const result = await verifyResumeStarted(OWNER, {
+      expectedSessionId: sourceNativeId,
+      findHost: () => ptyHostFixture({
+        advSessionId: '11', startedAt: 100, childGeneration: 2, nativeSessionId: targetNativeId,
+      }),
+      readHostEvents: () => events,
+      timeoutMs: 0,
+    });
+
+    expect(result).toMatchObject({ started: null, mismatch: false });
   });
 
   it('keeps a lineage-confirmed Codex carry pending before carry delivery instead of reporting a UUID mismatch', async () => {
@@ -1788,9 +1903,9 @@ describe('verifyResumeStarted (resume liveness is three-state)', () => {
       lineage.targetNativeRef = wrongRef;
       delivery.nativeRef = wrongRef;
     }],
-    ['missing binding confirmation', (events: PtyHostEvent[]) => {
-      const index = events.findIndex((event) => event.kind === 'respawn-binding-confirmed');
-      events.splice(index, 1);
+    ['conflicting binding UUID', (events: PtyHostEvent[]) => {
+      const binding = events.find((event) => event.kind === 'respawn-binding-confirmed') as unknown as Record<string, unknown>;
+      binding.nativeId = 'different-native-id';
     }],
     ['wrong child generation', (events: PtyHostEvent[]) => {
       for (const event of events) {
@@ -1886,7 +2001,7 @@ describe('verifyResumeStarted (resume liveness is three-state)', () => {
     expect(sleep).toHaveBeenCalledTimes(1);
   });
 
-  it('refuses a live owner host whose backend resumed a different native UUID', async () => {
+  it('keeps a live owner host unconfirmed when a different UUID has no exact lineage proof', async () => {
     const r = await verifyResumeStarted(OWNER, {
       expectedSessionId: 'later-rollout-uuid',
       findHost: () => ({
@@ -1900,8 +2015,8 @@ describe('verifyResumeStarted (resume liveness is three-state)', () => {
     });
 
     expect(r).toMatchObject({
-      started: false,
-      mismatch: true,
+      started: null,
+      mismatch: false,
       expectedSessionId: 'later-rollout-uuid',
       actualSessionId: 'older-root-uuid',
     });
@@ -2060,11 +2175,11 @@ describe('verifyResumeStarted prepared cross-backend continuation', () => {
     });
   });
 
-  it('does not use a port receipt to override an ordinary same-backend UUID mismatch', async () => {
+  it('keeps an ordinary same-backend UUID difference unconfirmed without carry evidence', async () => {
     const f = fixture();
     const { expectedPort: _port, ...ordinary } = f.options;
-    expect(await verifyResumeStarted(OWNER, ordinary)).toMatchObject({ started: false,
-      expectedSessionId: 'source-native', actualSessionId: 'target-native', mismatch: true });
+    expect(await verifyResumeStarted(OWNER, ordinary)).toMatchObject({ started: null,
+      expectedSessionId: 'source-native', actualSessionId: 'target-native', mismatch: false });
     expect(f.options.readPort).not.toHaveBeenCalled();
   });
 });

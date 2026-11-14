@@ -108,6 +108,7 @@ const MIGRATION_1175 = migration('1175-spec-evidence-dedup-partial-on-live.sql')
 // deployed by dropping the obsolete total index (WI-10001850 / EI-23634085867209303).
 const MIGRATION_1176 = migration('1176-spec-evidence-drop-total-dedup-contract-phase.sql');
 const MIGRATION_1378 = migration('1378-preserve-spec-bound-test-runs.sql');
+const MIGRATION_1628 = migration('1628-preserve-bound-mutation-controls.sql');
 // 1478 adds the per-case results ledger (test-rubric-unification P-002): the bind path
 // resolves declared testCases against it when the run recorded its cases.
 const MIGRATION_1478 = migration('1478-test-case-runs.sql');
@@ -307,6 +308,8 @@ beforeAll(async () => {
   await applyMigrationForTest(db.sql, MIGRATION_1176); // idempotent and replay-safe
   await applyMigrationForTest(db.sql, MIGRATION_1378);
   await applyMigrationForTest(db.sql, MIGRATION_1378); // idempotent and replay-safe
+  await applyMigrationForTest(db.sql, MIGRATION_1628);
+  await applyMigrationForTest(db.sql, MIGRATION_1628); // indirect controls remain protected on replay
   await applyMigrationForTest(db.sql, MIGRATION_1445);
   await applyMigrationForTest(db.sql, MIGRATION_1478);
   // Lazy ad-hoc scopes stamp the same verification profile as plans:new.
@@ -645,7 +648,7 @@ describe('promotion carry-forward of current spec evidence', () => {
     expect(count.count).toBe(expectedCount);
   });
 
-  it('copies exact proof from a dropped predecessor to the canonical item and remaps its verification citation', async () => {
+  it.each([false, true])('copies exact proof from a dropped predecessor and remaps its verification citation (scheduled execution=%s)', async (scheduled) => {
     const observedAt = '2026-10-20T01:02:03.000Z';
     await specs.setSpecClause(clause({ mutationRequired: false }));
     const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
@@ -684,8 +687,10 @@ describe('promotion carry-forward of current spec evidence', () => {
     await db.sql`INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, status, payload, source_plan_slug, source_plan_item_ids)
       VALUES (${WORKSPACE}, ${HARNESS}, 'WI-103', 'open',
-        ${JSON.stringify({ plan_item: { plan_slug: 'reconnect-plan', item_id: 'P-003' } })}::text::jsonb,
-        'reconnect-plan', ARRAY['P-003']::text[])`;
+        ${JSON.stringify({ plan_item: { plan_slug: 'reconnect-plan', item_id: 'P-003' },
+          ...(scheduled ? { plan_run: { instancePlanSlug: 'reconnect-plan', templateSlug: 'reconnect-template' } } : {}),
+        })}::text::jsonb,
+        ${scheduled ? 'reconnect-template' : 'reconnect-plan'}, ARRAY['P-003']::text[])`;
     await evidenceStore.ensureWorkItemSpecRevisionEdges({
       workspaceId: WORKSPACE, harnessSlug: HARNESS, planSlug: 'reconnect-plan',
       planItemIds: ['P-003'], workItemId: 'WI-103', actorId: 'su-promoter',
@@ -4550,6 +4555,70 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
     expect(evidence?.testRunProvenance?.mutationBaseline).toMatchObject({
       testRunId: calibration, status: 'pass',
       mutation: { leg: 'copy-baseline', probeInvocationId: descriptor.probeInvocationId },
+    });
+  });
+
+  it.each(['inferred', 'explicit', 'legacy'] as const)('retains both bound mutation controls through deletion (%s)', async mode => {
+    await specs.setSpecClause(clause());
+    const failedCase = 'guard > catches the retained mutant';
+    const descriptor = {
+      schemaVersion: 1, probeInvocationId: 'probe-retained-calibration-0001', mode: 'copy-out',
+      subjectPath: 'src/reconnect.ts', mutateExpression: 's/true/false/', againstCommit: null,
+      subjectBeforeSha256: 'b'.repeat(64), subjectAfterSha256: 'c'.repeat(64),
+      mutantDiff: '-true\n+false\n', mutantDiffTruncated: false,
+      testCommandSha256: 'd'.repeat(64), testFileSha256: 'a'.repeat(64),
+    };
+    async function leg(kind: 'baseline' | 'copy-baseline' | 'mutant', over: {
+      workspaceId?: string; harnessSlug?: string; probeInvocationId?: string; subjectBeforeSha256?: string;
+    } = {}) {
+      const failed = kind === 'mutant' ? 1 : 0;
+      const runId = await recordRun({ workspaceId: over.workspaceId ?? WORKSPACE,
+        harnessSlug: over.harnessSlug ?? null, source: 'mutation-probe', status: failed ? 'fail' : 'pass' });
+      await setRunExecutionDetails(runId, {
+        schemaVersion: 1, root: h.repoRoot, filePath: DERIVE_TEST, runGroupId: null,
+        workspaceId: over.workspaceId ?? WORKSPACE, harnessSlug: over.harnessSlug ?? null,
+        testNamePattern: null, passed: failed ? 0 : 1, failed, skipped: 0, collectionFailed: false,
+        mutationPhase: kind, commitSha: 'c0ffee1234567890', worktreeDirty: false, testLayer: 'unit',
+        ...(failed ? { failedCaseTitles: [failedCase] } : { passedCaseTitles: [failedCase] }),
+        ...(mode === 'legacy' ? {} : { mutation: { ...descriptor, leg: kind,
+          ...(over.probeInvocationId ? { probeInvocationId: over.probeInvocationId } : {}),
+          ...(over.subjectBeforeSha256 ? { subjectBeforeSha256: over.subjectBeforeSha256 } : {}) } }),
+      });
+      return runId;
+    }
+    const baseline = await leg('baseline');
+    const copyBaseline = await leg('copy-baseline');
+    const mutant = await leg('mutant');
+    const unrelated = [
+      await leg('baseline', { probeInvocationId: 'another-probe' }),
+      await leg('baseline', { subjectBeforeSha256: 'e'.repeat(64) }),
+      await leg('baseline', { harnessSlug: 'some-other-harness' }),
+      await leg('baseline', { workspaceId: OTHER_WORKSPACE }),
+    ];
+    const bound = await bindFromRun(mutant, 'WI-101', {
+      adequacy: { targeted: 'SPEC-003-01', testCases: [failedCase] },
+      ...(mode !== 'inferred' ? { causalControls: {
+        baselineTestRunId: baseline, copyBaselineTestRunId: copyBaseline, mutantTestRunId: mutant,
+      } } : {}),
+    }, false, ['src/reconnect.ts']);
+    expect(bound, JSON.stringify(bound)).toMatchObject({ ok: true, status: 'created' });
+
+    // Exercise the production retention boundary, not a mocked lookup: controls
+    // are indirect immutable proof references even when they remain harness-NULL.
+    const ids = [baseline, copyBaseline, mutant, ...unrelated];
+    const deleted = await db.sql<{ id: number }[]>`DELETE FROM harness_shared.test_runs
+      WHERE id = ANY(${ids}::bigint[]) RETURNING id`;
+    expect(deleted.map(row => Number(row.id)).sort((a, b) => a - b)).toEqual(unrelated);
+    const remaining = await db.sql<{ id: number }[]>`SELECT id FROM harness_shared.test_runs
+      WHERE id = ANY(${ids}::bigint[]) ORDER BY id`;
+    expect(remaining.map(row => Number(row.id))).toEqual([baseline, copyBaseline, mutant]);
+    const [evidence] = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS, planSlugs: ['reconnect-plan'], workItemIds: ['WI-101'],
+    });
+    expect(evidence?.testRunId).toBe(mutant);
+    if (mode !== 'legacy') expect(evidence?.testRunProvenance?.mutationBaseline?.testRunId).toBe(copyBaseline);
+    else expect(evidence?.details?.causalControls).toEqual({
+      baselineTestRunId: baseline, copyBaselineTestRunId: copyBaseline, mutantTestRunId: mutant,
     });
   });
 

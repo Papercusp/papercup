@@ -13,6 +13,7 @@ import { createHash } from 'node:crypto';
 import { discoverySubjectSnapshot, type DiscoveryAuditContext, type DiscoveryAuditPayload } from '../../plan-audits';
 import { previewDiscoveryDeclaration } from './plan-declarations';
 import { listSpecEvidence } from './spec-evidence-store';
+import { resolveSessionTurnRefs, SESSION_TURN_REF_PREFIX } from '../sessions/_shared';
 
 /** Existing source research and canonical evidence bindings supply facts; the
  * declaration supplies only the conclusion and the selected references. */
@@ -35,6 +36,11 @@ export async function resolveDiscoveryAuditContext(content: string, previous: st
     workspaceId: options.workspaceId, harnessSlug: options.harnessSlug, planSlugs: [options.planSlug],
     bindingIds: proofIds, limit: proofIds.length + 1,
   }).catch(() => []) : [];
+  const sessionRefs = refs.filter(ref => ref.startsWith(SESSION_TURN_REF_PREFIX));
+  const sessionTurns = sessionRefs.length && options.sql && options.workspaceId
+    ? await resolveSessionTurnRefs(options.sql, options.workspaceId, sessionRefs, {
+      evidenceForOwner: options.ownerId,
+    }) : [];
   for (const ref of refs.sort()) {
     const unknown = (reason: string) => evidence.push({ ref, state: 'unknown', usable: false, fingerprint: null, reason });
     if (ref.startsWith('source:')) {
@@ -48,6 +54,14 @@ export async function resolveDiscoveryAuditContext(content: string, previous: st
         const bytes = await readFile(located.location.absolutePath);
         evidence.push({ ref, state: 'current', usable: true, fingerprint: createHash('sha256').update(bytes).digest('hex') });
       } catch { unknown('The selected source could not be read at finalization.'); }
+    } else if (ref.startsWith(SESSION_TURN_REF_PREFIX)) {
+      const turn = sessionTurns.find(row => row.ref === ref);
+      if (!turn?.ok || !turn.evidence) {
+        unknown('The selected session turn is unavailable or not readable for this owner.');
+        continue;
+      }
+      evidence.push({ ref, state: 'current', usable: true, fingerprint: turn.evidence.fingerprint,
+        reason: `Measured ${turn.source} session source; origin ${turn.evidence.origin.verdict}. Source readability does not establish owner authority.` });
     } else if (/^proof:[1-9]\d*$/.test(ref)) {
       const proof = proofs.find(row => row.id === Number(ref.slice(6)));
       if (!proof) { unknown('Canonical evidence binding unavailable.'); continue; }
@@ -63,7 +77,7 @@ export async function resolveDiscoveryAuditContext(content: string, previous: st
       if (!doc) { unknown('Canonical document unavailable.'); continue; }
       evidence.push({ ref, state: doc.status === 'fresh' ? 'current' : 'unknown', usable: doc.status === 'fresh',
         fingerprint: createHash('sha256').update(doc.content).digest('hex') });
-    } else unknown('Select source:<captured path>, proof:<canonical binding id>, or doc:<canonical slug>; an invocation alone is not evidence.');
+    } else unknown('Select source:<path>, session_turn:<kind>:<session>:<turn>, proof:<canonical binding id>, or doc:<canonical slug>; an invocation alone is not evidence.');
   }
   return { targets, evidence };
 }

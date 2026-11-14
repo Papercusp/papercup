@@ -41,6 +41,12 @@ import {
 import { persistMonitorNoDeltaBudget, standDownMonitorLoop } from './monitor-standdown';
 import { classifyLoopNextWake } from '../../agent-tools/loop/next-wake';
 
+const episodeDb = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: episodeDb.sql }),
+}));
+
 // Alarm resolution has its own rail tests. Keep this real-PG loop suite bound to
 // its throwaway org fixture instead of resolving against the process-wide condition stream.
 vi.mock('../../alarm-attention', async (importOriginal) => ({
@@ -58,6 +64,7 @@ const NEXT_OWNER = 'su-successor-test';
 beforeAll(async () => {
   org = await createOrgTestDb();
   sql = org.adminSql; // RLS-bypass; the loop helpers take sql as a seam
+  episodeDb.sql = sql;
 });
 
 afterAll(async () => {
@@ -67,6 +74,126 @@ afterAll(async () => {
 beforeEach(async () => {
   await sql`TRUNCATE harness_shared.routines, harness_shared.carry_notes`;
   await sql`TRUNCATE harness_shared.event_awaits, harness_shared.predicate_watches`;
+});
+
+describe('identified dependency arm admission (real PG)', () => {
+  const driver = 'WI-ARM-EPISODE';
+  const eventKey = 'arm-episode:qualified';
+  const owner = 'su-arm-episode';
+  beforeEach(async () => {
+    await sql`DELETE FROM harness_shared.work_items WHERE workspace_id=${WS} AND feature_id=${driver}`;
+    await sql`INSERT INTO harness_shared.work_items
+      (workspace_id,harness_slug,feature_id,title,status,item_kind,taken_by,payload,created_ts,updated_ts)
+      VALUES(${WS},${HARNESS},${driver},'bounded arm fixture','open','change',${owner},'{}'::jsonb,0,0)`;
+    const { registerAnnouncement } = await import('../../events/await/store');
+    await registerAnnouncement({ subscriberId: 'upstream', eventKey, scopeKind: 'global',
+      logicalGateKey: 'arm-qualified', expectedCondition: { kind: 'predicate', predicate: { qualified: true } } });
+  });
+  const arm = (mode: 'work' | 'monitor' = 'work', overrides: Partial<Parameters<typeof materializeLoop>[0]> = {}) =>
+    materializeLoop({ workspaceId: WS, harnessSlug: HARNESS, ownerId: owner, sql,
+      intervalSec: 60, kickoff: 'wait for exact qualification', workItem: driver, mode,
+      blockedOn: { reason: 'exact qualification', event: eventKey },
+      ...(mode === 'monitor' ? { monitor: { predicateKey: eventKey, stopCondition: 'qualified',
+        noDeltaBudget: 1, remainingNoDeltaBudget: 1,
+        authority: { kind: 'work-item' as const, workItem: driver } } } : {}), ...overrides });
+  async function episode() {
+    const [item] = await sql`SELECT payload FROM harness_shared.work_items WHERE workspace_id=${WS} AND feature_id=${driver}`;
+    return Object.values(item.payload.waitEpisodes)[0] as import('../../events/await/wait-episode').WaitEpisode;
+  }
+  async function pending() {
+    return sql`SELECT * FROM harness_shared.event_awaits WHERE subscriber_id=${owner} AND event_key=${eventKey}
+      AND policy='wake' AND fired_at IS NULL AND cancelled_at IS NULL`;
+  }
+  async function stop(kind: 'exhausted' | 'unknown' | 'cancelled' | 'task-terminal') {
+    const store = await import('../../events/await/store');
+    const [row] = await pending();
+    if (kind === 'cancelled') { await store.cancelAwait({ awaitId: Number(row.id), subscriberId: owner, source: 'operator' }); return; }
+    if (kind === 'task-terminal') {
+      await sql`UPDATE harness_shared.work_items SET status='done' WHERE workspace_id=${WS} AND feature_id=${driver}`;
+      await store.cancelAwait({ awaitId: Number(row.id), subscriberId: owner, source: 'operator' });
+      return;
+    }
+    const state = await episode();
+    await sql`UPDATE harness_shared.work_items SET payload=jsonb_set(payload,
+      ARRAY['waitEpisodes',${state.id},'nextProbeAtMs'],to_jsonb(${Date.now()-1000}::bigint))
+      WHERE workspace_id=${WS} AND feature_id=${driver}`;
+    await sql`UPDATE harness_shared.event_awaits SET expires_ts=now()-interval '1 second' WHERE id=${row.id}`;
+    const [claimed] = await store.claimDueVerifiedAwaits();
+    const cert = claimed.producerHealthCertificate!;
+    await store.settleVerifiedAwaitTimeout({ id: claimed.id, waitEpisodeReceipt: cert.waitEpisodeReceipt!, result: {
+      classification: kind === 'unknown' ? 'unknown' : 'stalled', nextAction: 're-await',
+      producer: cert.producer, owner: cert.owner, checkedAtMs: Date.now(),
+      verificationDeadlineMs: cert.verificationDeadlineMs, lastProgressAtMs: null, lastFireAtMs: null,
+      ...(kind === 'unknown' ? { evidence: { uncertainty: 'resolver unavailable' } } : {}),
+    } });
+  }
+
+  it.each((['work', 'monitor'] as const).flatMap(mode =>
+    (['exhausted', 'unknown', 'cancelled', 'task-terminal'] as const).map(state => [mode, state] as const)))
+  ('parks %s re-arms before a model turn when the canonical episode is %s', async (mode, kind) => {
+    const first = await arm(mode);
+    const original = await episode();
+    expect(original.remainingNoDeltaBudget).toBe(1);
+    await stop(kind);
+    const stopped = await episode();
+    // Re-label, retune, concurrent explicit arms and recovery all use the same
+    // persisted allowance; none gets as far as another model fire.
+    await Promise.all([arm(mode === 'work' ? 'monitor' : 'work'), arm(mode)]);
+    await arm(mode);
+    await arm(mode, { blockedOn: undefined, monitor: undefined, workItem: undefined });
+    const [routine] = await sql`SELECT active,next_fire_at::text,metadata FROM harness_shared.routines WHERE id=${first.id}`;
+    expect(routine.next_fire_at).toBe(kind === 'task-terminal' ? null : 'infinity');
+    expect(await episode()).toMatchObject({ id: original.id, state: kind,
+      remainingNoDeltaBudget: stopped.remainingNoDeltaBudget, debits: stopped.debits });
+    expect(await pending()).toHaveLength(kind === 'task-terminal' ? 0 : 1);
+    const independent = await materializeLoop({ workspaceId: WS, harnessSlug: HARNESS, ownerId: 'independent',
+      intervalSec: 60, firstFireInSec: -1, kickoff: 'productive work', sql });
+    const [ready] = await sql`SELECT active,next_fire_at<=now() AS runnable FROM harness_shared.routines WHERE id=${independent.id}`;
+    expect(ready).toEqual({ active: true, runnable: true });
+  });
+
+  it.each(['work','monitor'] as const)('delivers the final exact push to a never-fired parked %s routine', async mode => {
+    const first = await arm(mode);
+    await stop('unknown');
+    await arm(mode, { workItem: undefined }); // the durable driver survives an omitted anchor
+    const { fireAwaitsForKey } = await import('../../events/await/store');
+    expect(await fireAwaitsForKey({ eventKey, payload: { qualified: false } })).toHaveLength(0);
+    expect((await episode()).state).toBe('unknown');
+    expect(await fireAwaitsForKey({ eventKey, payload: { qualified: true } })).toHaveLength(1);
+    expect((await episode()).state).toBe('complete');
+    const [routine] = await sql`SELECT active,next_fire_at::text,payload_template,last_fired_at
+      FROM harness_shared.routines WHERE id=${first.id}`;
+    expect(routine.last_fired_at).toBeNull();
+    expect(routine.active).toBe(mode === 'work');
+    expect(routine.payload_template.blockedOn).toBeUndefined();
+    expect(routine.next_fire_at).toEqual(mode === 'monitor' ? null : expect.any(String));
+    if (mode === 'work') expect(routine.next_fire_at).not.toBe('infinity');
+  });
+
+  it('rolls back routine arming and the replacement continuation together on admission failure', async () => {
+    const first = await arm();
+    await stop('cancelled');
+    await sql`ALTER TABLE harness_shared.event_awaits ADD CONSTRAINT reject_episode_continuation
+      CHECK (subscriber_id<>'su-arm-episode') NOT VALID`;
+    try {
+      await expect(arm('work', { kickoff: 'must roll back' })).rejects.toThrow();
+      const [routine] = await sql`SELECT payload_template,next_fire_at::text FROM harness_shared.routines WHERE id=${first.id}`;
+      expect(routine.payload_template.kickoff).toBe('wait for exact qualification');
+      expect(await pending()).toHaveLength(0);
+      expect((await episode()).state).toBe('cancelled');
+    } finally { await sql`ALTER TABLE harness_shared.event_awaits DROP CONSTRAINT reject_episode_continuation`; }
+    await arm();
+    expect(await pending()).toHaveLength(1);
+  });
+
+  it('refuses a dependency arm after custody moves to a peer without modifying its claim', async () => {
+    await arm();
+    await sql`UPDATE harness_shared.work_items SET taken_by='live-peer' WHERE workspace_id=${WS} AND feature_id=${driver}`;
+    await expect(arm()).rejects.toThrow('current driving custody');
+    const [item] = await sql`SELECT taken_by FROM harness_shared.work_items WHERE workspace_id=${WS} AND feature_id=${driver}`;
+    expect(item.taken_by).toBe('live-peer');
+    expect(await pending()).toHaveLength(1);
+  });
 });
 
 describe('managed self-compaction continuation keeps loop status from reporting false fire-starvation', () => {

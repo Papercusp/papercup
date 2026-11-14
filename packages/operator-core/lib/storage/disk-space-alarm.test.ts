@@ -37,7 +37,7 @@ import {
   type DiskAlarmPolicy,
   type DiskAlarmContext,
 } from './disk-space-alarm';
-import { DECLARED_MOUNT_ALARM_CONDITION_KEY, DECLARED_MOUNT_ALARM_TITLE } from './declared-mounts';
+import { DECLARED_MOUNT_ALARM_CONDITION_KEY, DECLARED_MOUNT_ALARM_TITLE, findDeclaredMountDeviceProblems, readMissingDeclaredMounts } from './declared-mounts';
 
 const GIB = 1024 ** 3;
 
@@ -825,6 +825,29 @@ describe('describeWriteHeadroomBreach (EI-23424266636870803)', () => {
 describe('runDiskSpaceAlarmOnce — declared bind mounts', () => {
   const missing = [{ source: '/mnt/data/papercusp-scratch/home', target: '/home/u/.papercusp/scratch', options: ['bind', 'nofail'] }];
   const healthyDisk = async () => [snap({ path: '/', freeBytes: 250 * GIB, freePct: 0.5 })];
+
+  it.each(['wrong-device', 'scratch-on-root'])('notifies about %s despite healthy free space', async problem => {
+    const dir = mkdtempSync(join(tmpdir(), 'alarm-scratch-'));
+    const escalate = vi.fn(async (_t: AttentionNotifyInput) => {});
+    const resolve = vi.fn(async (_input: { conditionKey: string }) => true);
+    try {
+      const mountinfo = '1 0 8:1 / / rw - ext4 /dev/root rw\n2 1 8:2 / /mnt/data rw - xfs /dev/data rw\n3 1 8:1 /scratch /scratch rw - ext4 /dev/root rw';
+      writeFileSync(join(dir, 'fstab'), '');
+      writeFileSync(join(dir, 'mountinfo'), mountinfo);
+      const problems = problem === 'wrong-device'
+        ? findDeclaredMountDeviceProblems('/mnt/data/scratch /scratch none bind 0 0', mountinfo)
+        : await readMissingDeclaredMounts(join(dir, 'fstab'), join(dir, 'mountinfo'), {
+          scratchRoots: async () => ['/new-registered-scratch'], realpath: async path => path,
+        });
+      await runDiskSpaceAlarmOnce({ sample: healthyDisk, escalate, resolve, readMissingMounts: async () => problems });
+      const notification = escalate.mock.calls.map(([input]) => input).find(input => input.data?.conditionKey === DECLARED_MOUNT_ALARM_CONDITION_KEY);
+      expect(notification?.body).toContain(problem);
+      expect(notification?.data).toMatchObject({ missingMounts: [expect.objectContaining({
+        target: problem === 'wrong-device' ? '/scratch' : '/new-registered-scratch',
+      })] });
+      expect(resolve.mock.calls.map(([input]) => input.conditionKey)).not.toContain(DECLARED_MOUNT_ALARM_CONDITION_KEY);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 
   it('escalates a declared-but-unmounted bind under its own condition key, even when free space is healthy', async () => {
     const escalate = vi.fn(async (_t: AttentionNotifyInput) => {});

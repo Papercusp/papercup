@@ -409,6 +409,23 @@ async function read(args: Record<string, unknown>, owner = "owner-a", workspace 
 }
 
 describe("coord:inbox — share only equivalent full derives (P-011)", () => {
+  it("keeps the newest sender/directed match ahead of an older actionable ask", async () => {
+    M.readInbox.mockResolvedValueOnce([
+      { msg_id: "older-ask", kind: "message", from: "peer-a", to: ["owner-a"],
+        ts: "2026-11-10T16:39:00Z", summary: "older pending question", expects: "answer" },
+      { msg_id: "newer-reply", kind: "message", from: "peer-a", to: ["owner-a"],
+        ts: "2026-11-10T17:44:58Z", summary: "new directed reply" },
+    ] as unknown[]);
+
+    const senderDirected = await read({ from: "peer-a", directed: true, limit: 1, max_body_chars: 0 });
+    const directed = await read({ directed: true, limit: 1, max_body_chars: 0 });
+
+    expect(senderDirected.entries.map(({ msg_id }) => msg_id)).toEqual(["newer-reply"]);
+    expect(directed.entries.map(({ msg_id }) => msg_id)).toEqual(["newer-reply"]);
+    expect(senderDirected.summary.total).toBe(2);
+    expect(directed.summary.total).toBe(2);
+  });
+
   it("uses a verified bare session alias for directed and unanswered filters", async () => {
     const bareSessionId = "su-judge-session";
     const namespacedOwnerId = `system:judge/${bareSessionId}`;

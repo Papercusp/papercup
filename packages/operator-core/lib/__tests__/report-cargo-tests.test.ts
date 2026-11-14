@@ -115,17 +115,31 @@ describe('Cargo reporter CLI usage (EI-25299812440954833)', () => {
           '--', '--nocapture', '--exact', 'fixture',
         ], {
           encoding: 'utf8', timeout: 10_000,
+          // This subprocess must exercise the edited reporter bytes; do not inherit
+          // the committed-source loader. Keep its environment allow-listed and the
+          // only configured ledger endpoint points at an unreachable fixture port.
           env: {
-            ...process.env, ...PERMISSIVE_REPORTER_DISK_ENV, PATH: `${root}:${process.env.PATH ?? ''}`,
+            HOME: process.env.HOME,
+            PATH: `${root}:${process.env.PATH ?? ''}`,
+            NODE_OPTIONS: '',
+            ...PERMISSIVE_REPORTER_DISK_ENV,
             CARGO_TARGET_DIR: join(root, 'target'), CARGO_CLI_ARGV_FILE: argvFile,
             // Keep this fake-Cargo invocation away from the live test ledger.
             PAPERCUSP_TEST_RUNS_DB_URL: 'postgres://fixture:fixture@127.0.0.1:1/fixture',
             HARNESS_ADMIN_DATABASE_URL: 'postgres://fixture:fixture@127.0.0.1:1/fixture',
+            // Exercise the ordinary no-receipt-file path: exact failed rows still reach the log.
+            PAPERCUSP_TEST_RUN_RECEIPT_FILE: '',
           },
         });
         expect(result.error).toBeUndefined();
         expect(result.status, result.stderr).toBe(0);
         expect(result.stderr).not.toContain('shared test-run reporter helpers unavailable');
+        const receiptLine = result.stderr.split('\n').find((line) => line.includes('[report-cargo-tests] ledger row receipt:'));
+        expect(receiptLine, result.stderr).toBeDefined();
+        const receipt = JSON.parse(receiptLine!.slice(receiptLine.indexOf('receipt:') + 'receipt:'.length).trim());
+        expect(receipt).toMatchObject({ status: 'pass', outcome: 'failed' });
+        expect(receipt.filePath).toContain('fixture');
+        expect(receipt.reason).toBeTruthy();
         const args = JSON.parse(readFileSync(argvFile, 'utf8')) as string[];
         expect(args[0]).toBe(coverage ? 'llvm-cov' : 'test');
         expect(args.slice(args.indexOf('--') + 1)).toEqual([

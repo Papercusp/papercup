@@ -38,6 +38,7 @@ import { readPlanBySlug, type PlanRow } from './agent-tools/plans/source';
 import {
   getWorkItem,
   linkWorkItem,
+  mergeWorkItemPayload,
   rebindOrphanedPlanFleetReservation,
   type ActiveFeatureFamilyKind,
   type WorkItemDesignStatus,
@@ -47,6 +48,7 @@ import { resolvePlanPromotionGoal, stampPromotedGoal } from './goals/provenance-
 import { PLAN_ITEM_KIND, planItemRef } from './issue-blocks-merge';
 import {
   findConvertedWorkItemByStamp,
+  findImplementingWorkItem,
   IMPLEMENTS_REL,
   listConvertedPlanItemRefs,
   listCoveredPlanItemRefs,
@@ -658,9 +660,41 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
   const alreadyIds = openItems.map((i) => i.id).filter((id) =>
     nodeByItem.has(id) || coveredRefs.has(planItemRef(opts.planSlug, id)));
 
+  const textById = new Map(openItems.map((i) => [i.id, i.text]));
+  const stampForPlanItem = (itemId: string): PlanItemStamp => {
+    const itemTextHash = planItemTextHash(textById.get(itemId));
+    return {
+      plan_slug: opts.planSlug,
+      item_id: itemId,
+      harness_slug: opts.harnessSlug,
+      ...(itemTextHash ? { item_text_hash: itemTextHash } : {}),
+    };
+  };
+
   let reservationsRebound = 0;
   for (const itemId of alreadyIds) {
     const existing = await findConvertedWorkItemByStamp(opts.planSlug, itemId, opts.harnessSlug);
+    // Older promoted features can be covered by the canonical `implements` edge and
+    // exact single-item source columns while missing the payload stamp consumed by
+    // completion's plan reflection. Repair only that unambiguous adopted shape: grouped
+    // rows and mismatched/partial provenance remain untouched, and the edge ensures this
+    // does not mint a duplicate execution record.
+    const implementing = await findImplementingWorkItem(opts.planSlug, itemId);
+    const implementingPayload = implementing?.payload && typeof implementing.payload === 'object' && !Array.isArray(implementing.payload)
+      ? implementing.payload as Record<string, unknown>
+      : null;
+    const priorStamp = implementingPayload?.plan_item;
+    const exactSingleItemFeature = implementing?.family === 'feature' &&
+      implementing.harness === opts.harnessSlug &&
+      implementing.sourcePlanSlug === opts.planSlug &&
+      implementing.sourcePlanItemIds?.length === 1 &&
+      implementing.sourcePlanItemIds[0] === itemId;
+    if (exactSingleItemFeature && (priorStamp === undefined || priorStamp === null)) {
+      const repaired = await mergeWorkItemPayload(implementing.id, { plan_item: stampForPlanItem(itemId) }, {
+        harness: implementing.harness ?? opts.harnessSlug,
+      });
+      if (!repaired) throw new Error(`plan_promotion_finish_stamp_backfill_failed:${opts.planSlug}#${itemId}:${implementing.id}`);
+    }
     const payload =
       existing?.payload && typeof existing.payload === 'object' && !Array.isArray(existing.payload)
         ? (existing.payload as Record<string, unknown>)
@@ -724,16 +758,6 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
   // on the primary plan→work path if the coordination store is temporarily down.
   const planTopics = await listObjectTags('plan', opts.planRun?.templateSlug ?? opts.planSlug).catch(() => []);
 
-  const textById = new Map(openItems.map((i) => [i.id, i.text]));
-  const stampForPlanItem = (itemId: string): PlanItemStamp => {
-    const itemTextHash = planItemTextHash(textById.get(itemId));
-    return {
-      plan_slug: opts.planSlug,
-      item_id: itemId,
-      harness_slug: opts.harnessSlug,
-      ...(itemTextHash ? { item_text_hash: itemTextHash } : {}),
-    };
-  };
   let promoted = 0;
   /**
    * WI-10005696: stamp every minted OR adopted lane with the goal this promotion serves, so a

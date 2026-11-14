@@ -91,6 +91,8 @@ export interface RetentionClass {
   origin: RetentionOrigin;
   /** path patterns (see header). */
   roots: string[];
+  /** Read-only placement guard for scratch classes, shared by alarm and doctor. */
+  offRoot?: boolean;
   /** non-path census keys this class owns, matched by prefix (`docker:`, `postgres:`). */
   stores?: string[];
   /** Explicit R-5 partition. Optional for caller-supplied policies; absence is
@@ -382,6 +384,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   // ── Agent classes with an existing scheduled enforcer ────────────────────
   {
     id: 'tmp-scratch',
+    offRoot: true,
     acceptance: disposable(STANDING_OWNER, STANDING_OWNER),
     title: 'Shared agent scratch (/tmp and its data-disk alias)',
     origin: 'agent',
@@ -404,6 +407,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'papercusp-scratch',
+    offRoot: true,
     acceptance: disposable(STANDING_OWNER, 'papercusp/packages/operator-core/lib/scratch-gc.ts'),
     title: 'Tool and agent scratch under ~/.papercusp/scratch',
     origin: 'agent',
@@ -528,6 +532,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'repo-scratch',
+    offRoot: true,
     acceptance: disposable(STANDING_OWNER, STANDING_OWNER),
     title: 'In-tree agent scratch, tmp and tool caches under a checkout’s .papercusp',
     origin: 'agent',

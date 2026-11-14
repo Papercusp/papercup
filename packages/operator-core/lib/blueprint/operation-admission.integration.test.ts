@@ -70,7 +70,7 @@ beforeAll(async () => {
   connection.sql = sql;
   await sql`CREATE SCHEMA IF NOT EXISTS dbos`;
   await sql`CREATE TABLE IF NOT EXISTS dbos.workflow_status (
-    workflow_uuid text PRIMARY KEY, status text NOT NULL
+    workflow_uuid text PRIMARY KEY, name text NOT NULL, status text NOT NULL, inputs text
   )`;
   await sql`
     INSERT INTO harness_shared.pots (workspace_id, pot_home_slug, public_key, keychain_id, created_at)
@@ -719,8 +719,8 @@ describe('program child admission pins the root specification', () => {
       acceptedOperation: accepted };
     expect(coordProgramWorkflowId(run)).toBe(`coord-program:operation:${workspaceId}:${accepted.receiptId}`);
     expect(coordProgramWorkflowId({ ...run, runId: 'lost-response-retry' })).toBe(coordProgramWorkflowId(run));
-    await sql`INSERT INTO dbos.workflow_status (workflow_uuid, status)
-      VALUES (${coordProgramWorkflowId(run)}, 'PENDING')`;
+    await sql`INSERT INTO dbos.workflow_status (workflow_uuid, name, status)
+      VALUES (${coordProgramWorkflowId(run)}, 'programWorkflow', 'PENDING')`;
     expect((await findUnstartedAcceptedCoordPrograms(sql))
       .some((input) => input.acceptedOperation?.receiptId === accepted.receiptId)).toBe(false);
     await sql`DELETE FROM dbos.workflow_status WHERE workflow_uuid = ${coordProgramWorkflowId(run)}`;

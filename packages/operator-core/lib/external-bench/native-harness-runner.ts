@@ -41,6 +41,7 @@ import { currentBenchAssignmentId, currentBenchAttemptLabel, currentStockBenchHa
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import type { DbScope } from './reproducibility/db';
 import type { BenchHarnessOps } from './bench-harness-live';
+import { processMonotonicClock } from '../process-monotonic-clock';
 import { managedSpawn } from '../task-manager/managed-spawn';
 import { CONTAINER_CLAUDE_BIN_PATH, CONTAINER_CODEX_BIN_PATH, materializeDockerExecWrapper, validateDockerExecTarget } from './container-exec-target';
 import { redactSensitiveText } from '../sensitive-text';
@@ -252,7 +253,7 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
     },
   };
   const lifecycle: BenchHarnessOps = {
-    now: Date.now,
+    now: processMonotonicClock.now,
     createHarness: async ({ checkout }) => ({ slug: `stock-native-${createHash('sha256').update(currentBenchAssignmentId(opts.runId,
       opts.armId, checkout.dir, opts.seed)).digest('hex').slice(0, 24)}`, featureId: 'native-assignment', worktreePath: checkout.dir }),
     addFeature: async () => {}, driveToDone: async () => { throw new Error('Native assignment driver was not composed.'); },

@@ -26,7 +26,12 @@ export interface CriterionMethodForLint {
 }
 
 const NPM_RUN_RE = /\bnpm\s+run\b/i;
-const PROC_PATH_RE = /(?:^|[\s`])\/proc(?:\/|[\s`]|$)/i;
+// A kernel path can describe the liveness writer's inputs. Require an
+// instruction aimed at that path or a shell-shaped read, not a path citation.
+const PROC_READ_INSTRUCTION_RE =
+  /(?:^|[.!?;:,\n]|\b(?:then|and)\s+)\s*(?:[-*]\s*|\d+[.)]\s*)?(?:(?:please|manually)\s+)?(?:read|inspect|open|check|use|examine|parse|sample|monitor|watch|tail|dump)\s+(?:the\s+)?[`"']?\/proc(?:\/|[\s`"']|$)/i;
+const PROC_SHELL_READ_RE =
+  /\b(?:cat|head|tail|less|more|sed|awk|grep|cut|od|strings)\s+[^\n;`]*?\/proc(?:\/|[\s`"']|$)/i;
 const PGREP_RE = /\bpgrep\b/i;
 
 // Keep this list deliberately narrow. It catches a command-shaped inline shell
@@ -53,7 +58,7 @@ export function lintAcceptanceCriterionMethods(
 
     const markers: AcceptanceMethodLintMarker[] = [];
     if (NPM_RUN_RE.test(method)) markers.push('npm-run');
-    if (PROC_PATH_RE.test(method)) markers.push('proc-path');
+    if (PROC_READ_INSTRUCTION_RE.test(method) || PROC_SHELL_READ_RE.test(method)) markers.push('proc-path');
     if (PGREP_RE.test(method)) markers.push('pgrep');
     if (BACKTICKED_SHELL_RE.test(method)) markers.push('backticked-shell');
     if (markers.length === 0) continue;

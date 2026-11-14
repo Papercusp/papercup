@@ -132,6 +132,8 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES, 'judge'],
   args: z.object({
+    assessmentWorkItem: z.object({ id: z.string().min(1).max(200), harness: z.string().min(1).max(120) })
+      .strict().optional().describe('Resolve requested scope from this exact work item and captured owner approval. The rubric-wide population remains intact.'),
     historyMode: z.enum(['accepted', 'review-history']).optional().describe(
       'accepted keeps the normal settled eligibility filter. review-history includes pending, failed, provisional and diagnostic cards with exclusionReasons and a separately queried lastAccepted card, independent of the current page.',
     ),
@@ -217,6 +219,7 @@ export default defineTool({
         const filter = {
           rubricRef: args.rubricRef, sourceHive: args.sourceHive, subjectRef: args.subjectRef,
           since: args.since, includeSynthesized: args.includeSynthesized, comparisonTime,
+          ...(args.assessmentWorkItem ? { assessmentWorkItem: args.assessmentWorkItem } : {}),
         };
         const page = await listScorecardPage({
           ...filter,

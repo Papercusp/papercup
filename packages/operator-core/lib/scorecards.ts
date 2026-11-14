@@ -177,6 +177,7 @@ import { selectCriterionEvidenceAction, ledgerCheckBindings, ledgerRowMatchesBin
 import { readLatestRubricCheckResults, type LatestRubricCheckResult } from './check-results-ledger';
 import type { OrgSql } from './work-items';
 import { pgTimestampToIso } from './pg-timestamp';
+import { resolveWorkDefinitionApproval, isVerifiedWorkDefinitionApproval } from './work-item-definition-source';
 import {
   compareGenerationFreshness,
   readBgHostActiveEnterMs,
@@ -733,7 +734,11 @@ export async function resolveScorecardInstrumentSnapshots(
         continue;
       }
       try {
-        const request = { workspaceId, harnessSlug, windowStart: subject.windowStart, windowEnd: subject.windowEnd };
+        const headroomChecks = input.rubric.criteria.filter(c => c.check?.kind === 'instrument' && c.check.instrumentKey === DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY);
+        const headroomBinding = headroomChecks.length === 1 && headroomChecks[0]?.check?.kind === 'instrument'
+          ? headroomChecks[0].check.headroomBinding : undefined;
+        const request = { workspaceId, harnessSlug, windowStart: subject.windowStart, windowEnd: subject.windowEnd,
+          ...(key === DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY ? { headroomBinding } : {}) };
         const instrument = getRegisteredInstrument(key);
         let result: { verdict: 'pass' | 'fail' | 'unknown'; detail: string };
         if (deps.coldEvidence) result = await deps.coldEvidence(key, request);
@@ -902,6 +907,33 @@ export async function resolveScorecardInstrumentSnapshots(
             quantity: result.value, unit: instrument.rescore.unit } };
       } catch (error) {
         snapshots[key] = { ...unknown(`Inventory comparison unavailable: ${error instanceof Error ? error.message : String(error)}`), evidenceRef };
+      }
+      continue;
+    }
+    // Subject resolvers own subject-type validation. Dispatch new fleet/person/etc.
+    // instruments through the existing registry rather than a per-key branch here.
+    // Special-purpose guards above (including native inventory) remain authoritative.
+    const subjectInstrument = getRegisteredInstrument(key);
+    if (subjectInstrument?.evaluator === 'platform' && subjectInstrument.rescore?.scope === 'subject') {
+      const workspaceId = input.rubric.workspaceId, harnessSlug = input.rubric.subjectHarnessSlug;
+      const evidenceRef = `platform-instrument:${key}`;
+      if (!workspaceId?.trim() || workspaceId === '*' || !harnessSlug?.trim() || harnessSlug === '*' ||
+          start >= end || end > Date.parse(measuredAt)) {
+        snapshots[key] = { ...unknown('An exact workspace, harness, subject and completed observation window are required.'), evidenceRef };
+        continue;
+      }
+      const scopedWindow = { ...window, workspaceId, harnessSlug };
+      try {
+        const result = await subjectInstrument.rescore.resolve({ workspaceId, harnessSlug,
+          windowStart: subject.windowStart, windowEnd: subject.windowEnd,
+          subject: { ...(subject.kind ? { kind: subject.kind } : {}), ref: subject.ref } });
+        snapshots[key] = { verdict: result.verdict, measuredAt, provenance: 'platform-computed',
+          evidenceRef, window: scopedWindow,
+          value: { resolver: key, resolverVersion: 1, detail: result.detail, evidenceRefs: result.evidenceRefs,
+            ...(result.value === undefined ? {} : { quantity: result.value, unit: subjectInstrument.rescore.unit }) } };
+      } catch (error) {
+        snapshots[key] = { ...unknown(`Subject instrument unavailable: ${error instanceof Error ? error.message : String(error)}`),
+          evidenceRef, window: scopedWindow };
       }
       continue;
     }
@@ -2162,8 +2194,9 @@ function classifyScorecardEvidenceBindingCurrentness(
  * keeps the exact evidence available while making the bounded wire contract
  * independent of those unrelated fields (EI-22710824425098387).
  */
-export function readScorecardEvidence(issueId: string, comparisonTime?: string): Promise<ScorecardEvidenceReadResult> {
-  return readScorecard(issueId, 'evidence', comparisonTime) as Promise<ScorecardEvidenceReadResult>;
+export function readScorecardEvidence(issueId: string, comparisonTime?: string,
+  assessmentWorkItem?: AssessmentWorkItemSelector): Promise<ScorecardEvidenceReadResult> {
+  return readScorecard(issueId, 'evidence', comparisonTime, assessmentWorkItem) as Promise<ScorecardEvidenceReadResult>;
 }
 
 /**
@@ -2179,6 +2212,7 @@ async function readScorecard(
   issueId: string,
   mode: 'evidence' | 'recipe-header',
   comparisonTime = new Date().toISOString(),
+  assessmentWorkItem?: AssessmentWorkItemSelector,
 ): Promise<ScorecardReadResult> {
   const rows = await acquireWithContentionRetry(() =>
     boundedPgReadTxn<ScorecardEvidenceDb[]>((tx) => tx<ScorecardEvidenceDb[]>`
@@ -2431,13 +2465,16 @@ async function readScorecard(
     findingsByKey: diagnostics.findingsByKey,
   });
   const actionByKey = new Map(evidenceActions.map(action => [action.criterionKey, action]));
-  const criteriaKeys = rubric
-    ? rubric.criteria.map((criterion) => criterion.key)
-    : builtInCriterionKeysForRubric(observation.rubricRef);
+  const populationRubric = pinnedRubric ??
+    (!observation.rubricRevision && !observation.criteriaHash ? rubric : null);
+  const criteriaKeys = populationRubric
+    ? populationRubric.criteria.map((criterion) => criterion.key)
+    : !observation.rubricRevision && !observation.criteriaHash
+      ? builtInCriterionKeysForRubric(observation.rubricRef) : null;
   const rubricResolved = criteriaKeys !== null;
   const normalizedRatings = projectScorecardRatingsAtTime(normalizeScorecardRatings(
     observation.ratings!,
-    rubric ? { ratingScale: rubric.ratingScale, criteria: rubric.criteria } : null,
+    populationRubric ? { ratingScale: populationRubric.ratingScale, criteria: populationRubric.criteria } : null,
   ), comparisonTime);
   const ratedKeys = new Set(Object.keys(normalizedRatings));
   const missingKeys = rubricResolved ? criteriaKeys!.filter((key) => !ratedKeys.has(key)) : [];
@@ -2463,8 +2500,9 @@ async function readScorecard(
       missingKeys,
       extraKeys,
       rubricResolved,
-      coverage: projectScorecardCoverage(normalizedRatings, pinnedRubric?.criteria.map(criterion => criterion.key) ?? null,
-        diagnostics.supportByKey, comparisonTime),
+      coverage: await resolveScorecardRequestedCoverage(projectScorecardCoverage(normalizedRatings,
+        pinnedRubric?.criteria.map(criterion => criterion.key) ?? null, diagnostics.supportByKey, comparisonTime),
+        observation, pinnedRubric, assessmentWorkItem),
     },
   };
 }
@@ -3490,6 +3528,7 @@ export async function markGradingAuditReplayRefused(
 const GRADING_AUDIT_SUBJECT_MUTEX_NAMESPACE = 'scorecards:grading-audit:subject';
 /** Registry label of the dedicated mutex pool; also its `pcusp:<label>:p<pid>` application_name. */
 const GRADING_AUDIT_SUBJECT_MUTEX_POOL = 'grading-audit-subject';
+const GRADING_AUDIT_SUBJECT_MUTEX_POOL_MAX = 8;
 
 /** Keep scorecard mutex waits below the MCP caller's 300s deadline. */
 export const SCORECARD_EMIT_MUTEX_WAIT_TIMEOUT_MS = 240_000;
@@ -3507,7 +3546,7 @@ export class ScorecardEmitMutexWaitTimeoutError extends Error {
   ) {
     const waitingFor = phase === 'pool-reservation'
       ? 'pool connection'
-      : phase === 'local-queue' ? 'in-process mutex queue' : 'mutex';
+      : phase === 'local-queue' ? 'in-process mutex admission queue' : 'mutex';
     super(
       `Timed out after ${timeoutMs}ms waiting for the scorecard ${mutex} ${waitingFor}. ` +
         'No scorecard was persisted by this attempt; retry after the current emitter settles.',
@@ -3561,7 +3600,7 @@ function gradingAuditSubjectMutexSql(): postgres.Sql {
   // getLongLivedAdminPool rebuilds the pool when the admin URL moves (EI-19306394439939264).
   // Its idle_timeout cannot release a held session advisory lock: postgres-js cancels a
   // connection's idle timer while it is reserved (move(c, reserved) in postgres/src/index.js).
-  return getLongLivedAdminPool(GRADING_AUDIT_SUBJECT_MUTEX_POOL, { max: 8 });
+  return getLongLivedAdminPool(GRADING_AUDIT_SUBJECT_MUTEX_POOL, { max: GRADING_AUDIT_SUBJECT_MUTEX_POOL_MAX });
 }
 
 function gradingAuditSubjectMutexKey(input: {
@@ -3624,6 +3663,54 @@ async function acquireGradingAuditSubjectLocalQueue(
   return release;
 }
 
+// postgres.js already caps this dedicated pool at eight connections. Queue
+// callers before reserve() so a full pool waits within the mutex budget instead
+// of turning ordinary backpressure into the separate 30s pool-reservation error.
+type GradingAuditSubjectPoolAdmissionWaiter = {
+  resolve: (release: () => void) => void;
+  reject: (error: Error) => void;
+  settled: boolean;
+  timer?: ReturnType<typeof setTimeout>;
+};
+
+let gradingAuditSubjectPoolAdmissions = 0;
+const gradingAuditSubjectPoolWaiters: GradingAuditSubjectPoolAdmissionWaiter[] = [];
+
+function makeGradingAuditSubjectPoolAdmissionRelease(): () => void {
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    while (gradingAuditSubjectPoolWaiters.length) {
+      const waiter = gradingAuditSubjectPoolWaiters.shift()!;
+      if (waiter.settled) continue;
+      waiter.settled = true;
+      if (waiter.timer) clearTimeout(waiter.timer);
+      waiter.resolve(makeGradingAuditSubjectPoolAdmissionRelease());
+      return;
+    }
+    gradingAuditSubjectPoolAdmissions = Math.max(0, gradingAuditSubjectPoolAdmissions - 1);
+  };
+}
+
+async function acquireGradingAuditSubjectPoolAdmission(timeoutMs: number): Promise<() => void> {
+  if (gradingAuditSubjectPoolAdmissions < GRADING_AUDIT_SUBJECT_MUTEX_POOL_MAX) {
+    gradingAuditSubjectPoolAdmissions += 1;
+    return makeGradingAuditSubjectPoolAdmissionRelease();
+  }
+  return await new Promise<() => void>((resolve, reject) => {
+    const waiter: GradingAuditSubjectPoolAdmissionWaiter = { resolve, reject, settled: false };
+    waiter.timer = setTimeout(() => {
+      if (waiter.settled) return;
+      waiter.settled = true;
+      const index = gradingAuditSubjectPoolWaiters.indexOf(waiter);
+      if (index >= 0) gradingAuditSubjectPoolWaiters.splice(index, 1);
+      reject(new ScorecardEmitMutexWaitTimeoutError('grading-audit-subject', timeoutMs, 'local-queue'));
+    }, Math.max(1, Math.trunc(timeoutMs)));
+    gradingAuditSubjectPoolWaiters.push(waiter);
+  });
+}
+
 /**
  * Serialize grading-audit reservation and emission for one scorecard subject.
  * This uses a dedicated direct connection because session advisory locks must
@@ -3637,15 +3724,21 @@ export async function acquireGradingAuditSubjectMutex(input: {
   const waitBudgetMs = Math.max(1, Math.trunc(waitTimeoutMs));
   const deadlineAt = Date.now() + waitBudgetMs;
   const localQueuePhase = 'scorecards:emit:mutex:grading-audit-subject:local-queue';
+  const poolAdmissionPhase = 'scorecards:emit:mutex:grading-audit-subject:pool-admission';
   const poolPhase = 'scorecards:emit:mutex:grading-audit-subject:pool-reservation';
   let reservationTimeoutMs = scorecardMutexPoolAcquireTimeoutMs(waitBudgetMs);
   let advisoryTimeoutMs = waitBudgetMs;
   let releaseLocal: (() => void) | undefined;
+  let releasePoolAdmission: (() => void) | undefined;
   let reserved: Awaited<ReturnType<ReturnType<typeof gradingAuditSubjectMutexSql>['reserve']>> | undefined;
   let acquired = false;
   try {
     releaseLocal = await trackPhase(phases, localQueuePhase, () =>
       acquireGradingAuditSubjectLocalQueue(key, waitBudgetMs),
+    );
+    const poolAdmissionBudgetMs = Math.max(1, Math.trunc(deadlineAt - Date.now()));
+    releasePoolAdmission = await trackPhase(phases, poolAdmissionPhase, () =>
+      acquireGradingAuditSubjectPoolAdmission(poolAdmissionBudgetMs),
     );
     const reserveBudgetMs = Math.max(1, Math.trunc(deadlineAt - Date.now()));
     reservationTimeoutMs = scorecardMutexPoolAcquireTimeoutMs(reserveBudgetMs);
@@ -3674,7 +3767,11 @@ export async function acquireGradingAuditSubjectMutex(input: {
         try {
           connection.release();
         } finally {
-          releaseLocal?.();
+          try {
+            releasePoolAdmission?.();
+          } finally {
+            releaseLocal?.();
+          }
         }
       }
     };
@@ -3682,7 +3779,11 @@ export async function acquireGradingAuditSubjectMutex(input: {
     try {
       reserved?.release();
     } finally {
-      releaseLocal?.();
+      try {
+        releasePoolAdmission?.();
+      } finally {
+        releaseLocal?.();
+      }
     }
     if (isScorecardMutexPoolAcquisitionError(error)) {
       throw new ScorecardEmitMutexWaitTimeoutError('grading-audit-subject', reservationTimeoutMs, 'pool-reservation');
@@ -3980,8 +4081,54 @@ export interface ScorecardCoverage {
   freshness: { current: string[]; stale: string[]; unknown: string[] };
   unresolvedKeys: string[];
   /** No caller-authored subset can narrow this population. See EI-28017561467711444. */
-  requestedScope: { state: 'unknown'; denominator: null; reason: 'canonical-scope-authority-unavailable' };
-  fulfillment: 'unknown';
+  requestedScope: { state: 'unknown'; denominator: null; reason: string } | {
+    state: 'verified'; denominator: number; criterionKeys: string[]; unresolvedKeys: string[];
+    workItemId: string; harness: string; definitionHash: string; sourceDirectiveId: number;
+  };
+  fulfillment: 'unknown' | 'unfulfilled' | 'fulfilled';
+}
+
+/** A reader reference selects which definition to resolve. It grants no authority. */
+export interface AssessmentWorkItemSelector { id: string; harness: string }
+
+async function resolveScorecardRequestedCoverage(coverage: ScorecardCoverage,
+  observation: ScorecardEvidenceActionObservation, rubric: Rubric | null,
+  selector?: AssessmentWorkItemSelector): Promise<ScorecardCoverage> {
+  if (!selector) return coverage;
+  try {
+    const { getWorkItem } = await import('./work-items');
+    const item = await getWorkItem(selector.id, selector.harness);
+    if (!item || item.id !== selector.id || item.harness !== selector.harness) return coverage;
+    const definition = (item.payload as { workDefinition?: unknown } | null)?.workDefinition;
+    const approval = await resolveWorkDefinitionApproval({
+      target: { workspaceId: issuesScopeWorkspace(), harnessSlug: selector.harness, workItemId: selector.id },
+      definition, operation: 'read',
+    });
+    if (!isVerifiedWorkDefinitionApproval(approval)) return coverage;
+    const tuple = approval.assessment;
+    if (tuple.rubricRef !== observation.rubricRef || tuple.rubricRevision !== observation.rubricRevision
+      || tuple.criteriaHash !== observation.criteriaHash || !observation.subject
+      || tuple.subject.kind !== observation.subject.kind || tuple.subject.ref !== observation.subject.ref
+      || tuple.subject.windowStart !== observation.subject.windowStart || tuple.subject.windowEnd !== observation.subject.windowEnd
+      || coverage.denominator === null || !rubric) return coverage;
+    // D-007's retained manual support remains a historical diagnostic. Only the
+    // canonical measurement ledger can establish this fulfillment projection.
+    // The card's declared window alone is not measurement custody. Re-read the
+    // cited receipts at the approved clock and require their entire measured
+    // interval inside it. Keep caller-clock/global diagnostics independent.
+    const clock = tuple.subject.windowEnd;
+    const diagnostics = await readScorecardLedgerDiagnostics(observation, rubric, clock, tuple.subject);
+    const requested = projectScorecardCoverage(observation.ratings ?? {},
+      rubric.criteria.map(criterion => criterion.key), diagnostics.supportByKey, clock);
+    const unresolvedKeys = tuple.criterionKeys.filter(key => requested.unresolvedKeys.includes(key)
+      || observation.ratings?.[key]?.ratedFrom !== 'ledger');
+    return { ...coverage, requestedScope: { state: 'verified', denominator: tuple.criterionKeys.length,
+      criterionKeys: [...tuple.criterionKeys], unresolvedKeys, workItemId: selector.id, harness: selector.harness,
+      definitionHash: approval.definitionHash, sourceDirectiveId: approval.source.directiveId },
+      fulfillment: unresolvedKeys.length ? 'unfulfilled' : 'fulfilled' };
+  } catch {
+    return coverage;
+  }
 }
 
 /**
@@ -4048,6 +4195,7 @@ export function projectScorecardLedgerDiagnostics(input: {
   rubric: Rubric;
   comparisonTime: string;
   latest: ReadonlyMap<string, LatestRubricCheckResult>;
+  measurementWindow?: { windowStart: string; windowEnd: string };
 }) {
   const findingsByKey: Record<string, { reason: EvidenceActionReason; sourceRef: string }[]> = {};
   const supportByKey: Record<string, ScorecardCriterionSupport> = {};
@@ -4071,7 +4219,13 @@ export function projectScorecardLedgerDiagnostics(input: {
       const measured = Date.parse(row.finishedAt);
       const clock = Date.parse(input.comparisonTime);
       const binding = bindings[0]!;
+      const window = input.measurementWindow;
+      const start = Date.parse(row.check.provenance?.startedAt ?? '');
+      const end = Date.parse(row.check.provenance?.finishedAt ?? '');
       if (!Number.isFinite(measured) || !Number.isFinite(clock) || measured > clock) reason = 'identity-mismatch';
+      else if (window && (!row.check.subject || !Number.isFinite(start) || !Number.isFinite(end)
+        || start > end || start < Date.parse(window.windowStart) || end > Date.parse(window.windowEnd)
+        || measured < Date.parse(window.windowStart) || measured > Date.parse(window.windowEnd))) reason = 'identity-mismatch';
       else if (row.provenanceStatus !== 'retained' || receipt.provenanceStatus !== 'retained' ||
           JSON.stringify(row.check.provenance) !== JSON.stringify(receipt.provenance)) reason = 'unknown';
       else if (binding.maxAgeMs !== undefined && clock - measured > binding.maxAgeMs) {
@@ -4091,9 +4245,8 @@ export function projectScorecardLedgerDiagnostics(input: {
   return { findingsByKey, supportByKey };
 }
 
-async function readScorecardEvidenceDiagnostics(observation: ScorecardEvidenceActionObservation,
-  rubric: Rubric | null, comparisonTime: string) {
-  if (!rubric) return { findingsByKey: {}, supportByKey: {} };
+async function readScorecardLedgerDiagnostics(observation: ScorecardEvidenceActionObservation,
+  rubric: Rubric, comparisonTime: string, measurementWindow?: { windowStart: string; windowEnd: string }) {
   const ids = Object.values(observation.ratings ?? {}).flatMap(rating =>
     rating.ratedFrom === 'ledger' && Number.isSafeInteger(rating.ledgerResult?.testRunId)
       ? [rating.ledgerResult!.testRunId] : []);
@@ -4106,7 +4259,8 @@ async function readScorecardEvidenceDiagnostics(observation: ScorecardEvidenceAc
           ...(observation.subject.kind ? { kind: observation.subject.kind } : {}) } } : {}),
         asOf: comparisonTime, testRunIds: [...new Set(ids)],
       });
-      Object.assign(diagnostics, projectScorecardLedgerDiagnostics({ observation, rubric, comparisonTime, latest }));
+      Object.assign(diagnostics, projectScorecardLedgerDiagnostics({ observation, rubric, comparisonTime, latest,
+        measurementWindow }));
     } catch {
       // An unavailable ledger is not proof that the cited historical row is absent.
       for (const [key, rating] of Object.entries(observation.ratings ?? {})) {
@@ -4115,10 +4269,17 @@ async function readScorecardEvidenceDiagnostics(observation: ScorecardEvidenceAc
       }
     }
   }
+  return diagnostics;
+}
+
+async function readScorecardEvidenceDiagnostics(observation: ScorecardEvidenceActionObservation,
+  rubric: Rubric | null, comparisonTime: string) {
+  if (!rubric) return { findingsByKey: {}, supportByKey: {} };
+  const diagnostics = await readScorecardLedgerDiagnostics(observation, rubric, comparisonTime);
   if (rubric.subjectPlan && rubric.subjectHarnessSlug) {
     const sourceRef = `plans:get-spec-evidence:${rubric.subjectHarnessSlug}/${rubric.subjectPlan}`;
     try {
-      const [{ listSpecClauses }, { listSpecEvidence, projectSpecCriterionApplicability }] = await Promise.all([
+      const [{ listSpecClauses }, { listSpecEvidence, projectSpecCriterionApplicability, historicalManualEvidenceSupport }] = await Promise.all([
         import('./agent-tools/plans/spec-clauses-store'), import('./agent-tools/plans/spec-evidence-store'),
       ]);
       const clauses = await listSpecClauses({ planSlug: rubric.subjectPlan, harnessSlug: rubric.subjectHarnessSlug,
@@ -4138,7 +4299,7 @@ async function readScorecardEvidenceDiagnostics(observation: ScorecardEvidenceAc
           byKey.set(key, [...(byKey.get(key) ?? []), clause]);
         }
         for (const criterion of rubric.criteria) {
-          const applicable = byKey.get(criterion.key);
+          const applicable = byKey.get(criterion.barKey ?? criterion.key);
           if (!applicable?.length || diagnostics.supportByKey[criterion.key]) continue;
           const projected = applicable.map(clause => projectSpecCriterionApplicability(clause, evidence,
             comparisonTime, { planSlug: rubric.subjectPlan!,
@@ -4151,6 +4312,23 @@ async function readScorecardEvidenceDiagnostics(observation: ScorecardEvidenceAc
             ? [{ reason: reasons[row.state]!, sourceRef: `${sourceRef}#${row.spec.specId}@${row.spec.revision}` }] : []);
           if (projected.every(row => row.state === 'missing')) {
             diagnostics.supportByKey[criterion.key] = { support: 'absent', freshness: 'unknown' };
+          }
+          const rating = observation.ratings?.[criterion.key];
+          if (rating?.evidenceKind === 'manual' && !criterion.check && clauses.length <= 200 && evidence.length <= 200) {
+            const supports = applicable.map(clause => {
+              const receipts = evidence.filter(row => row.planSlug === clause.planSlug && row.specId === clause.specId);
+              if (!receipts.length) return null;
+              const retained = receipts.map(row => historicalManualEvidenceSupport(row, clause, {
+                workspaceId: issuesScopeWorkspace(), harnessSlug: rubric.subjectHarnessSlug!, comparisonTime,
+                rubricSlug: rubric.rubricId, rubricRevision: rubric.revision!, barSetHash: rubric.barSetHash!,
+                criterionKey: criterion.barKey ?? criterion.key, evidenceRef: rating.evidenceRef, subject: observation.subject,
+              }));
+              return retained.every(Boolean) ? retained[0]! : null;
+            });
+            if (supports.every(Boolean)) {
+              diagnostics.supportByKey[criterion.key] = { support: 'current', freshness: 'current', ...supports[0]! };
+              diagnostics.findingsByKey[criterion.key] = [];
+            }
           }
         }
       }
@@ -4310,6 +4488,7 @@ export interface ScorecardListCursor {
 }
 
 export interface ListScorecardsFilter {
+  assessmentWorkItem?: AssessmentWorkItemSelector;
   /** One UTC comparison clock for this request's evidence selection and age projection. */
   comparisonTime?: string;
   /** Exclude incomplete and unsettled observations BEFORE counting page slots. */
@@ -4831,9 +5010,12 @@ async function listScorecardsAtLimit(
     // Canonical READ boundary: historic `PASS`/`pass` rows project to the rubric's
     // exact scale spelling, so distributions, RLE, and direction math never split a
     // semantic rating merely because an older writer used different case.
-    const ratings = projectScorecardRatingsAtTime(normalizeScorecardRatings(observation.ratings, meta.ratingRubric), comparisonTime);
+    const populationRubric = pinnedRubric ??
+      (!observation.rubricRevision && !observation.criteriaHash ? meta.ratingRubric : null);
+    const ratings = projectScorecardRatingsAtTime(normalizeScorecardRatings(observation.ratings, populationRubric), comparisonTime);
     const ratedKeys = new Set(Object.keys(ratings));
-    const criteriaKeys = meta.keys;
+    const criteriaKeys = populationRubric ? populationRubric.criteria.map(criterion => criterion.key)
+      : !observation.rubricRevision && !observation.criteriaHash ? meta.keys : null;
     const rubricResolved = criteriaKeys !== null;
     const missingKeys = rubricResolved ? criteriaKeys!.filter((k) => !ratedKeys.has(k)) : [];
     const criterionKeySet = rubricResolved ? new Set(criteriaKeys!) : null;
@@ -4843,7 +5025,7 @@ async function listScorecardsAtLimit(
     // depress the score while still being visible via `extraKeys`.
     const projectionRatings = criterionKeySet
       ? Object.fromEntries(Object.entries(ratings).filter(([k]) => criterionKeySet.has(k)))
-      : ratings;
+      : {};
     // Read the synthesized marker from the RAW payload (not the parsed observation,
     // which may strip unknown keys) so the floor stays distinguishable.
     const synthRaw = (row.payload as { observation?: { synthesized?: unknown } } | null)?.observation?.synthesized;
@@ -4898,8 +5080,9 @@ async function listScorecardsAtLimit(
       missingKeys,
       extraKeys,
       rubricResolved,
-      coverage: projectScorecardCoverage(ratings, pinnedRubric?.criteria.map(criterion => criterion.key) ?? null,
-        diagnostics.supportByKey, comparisonTime),
+      coverage: await resolveScorecardRequestedCoverage(projectScorecardCoverage(ratings,
+        pinnedRubric?.criteria.map(criterion => criterion.key) ?? null, diagnostics.supportByKey, comparisonTime),
+        observation, pinnedRubric, filter.assessmentWorkItem),
       evidenceActions: evidenceActions.slice(0, 3),
       omittedActionCount: Math.max(0, evidenceActions.length - 3),
       exclusionReasons: scorecardHistoryExclusions(observation, meta.keys,
@@ -4920,7 +5103,7 @@ async function listScorecardsAtLimit(
       ...(observation.vetting ? { vetting: observation.vetting } : {}),
       ...(row.superseded_by ? { supersededBy: row.superseded_by } : {}),
       synthesized,
-      score10: scorecardScore10(projectionRatings, meta.overrides),
+      score10: scorecardScore10(projectionRatings, populationRubric ? scoreOverridesForScale(populationRubric.ratingScale) : undefined),
       linkedItems: linksByIssue.get(row.issue_id) ?? [],
       ...(gradedGeneration ? { gradedGeneration } : {}),
       ...(generationFreshness ? { generationFreshness } : {}),

@@ -1,12 +1,13 @@
 /** Real-Git capture and frozen-publication contracts in the maintained integration router. */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { fork, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { captureGitSyncCandidate, readGitSyncCandidate, publishGitSyncCandidate, prepareGeneratedGitSyncCandidateTree, prepareGitSyncMetadataRepair,
-  prepareGitSyncMetadataSelectionTree, runGitSync, type GitSyncStepRunner,
+  prepareGitSyncMetadataSelectionTree, inspectGitSyncImmutableSource, runGitSync, type GitSyncStepRunner,
+  type GitSyncImmutableSourceInput,
   SOURCE_CUSTODY_REF_PREFIX, type RunGit, type GitSyncGeneratedLockTreeRequest } from './run-git-sync';
 import { createGitSyncLeaseFence } from './git-sync-lease-fence';
 import { runWithGitSyncPerInstallLease } from './git-sync-action';
@@ -14,7 +15,10 @@ import { checkFrozenEditCohortEvidence, describeEditCohort } from '../../edit-at
 import * as gitlinkOrigins from './submodule-forks';
 import { startDedicatedNativePg } from '@papercusp/test-config/pg';
 import { getOrgPg, _resetForTests as resetOrgPg } from '@papercusp/db-org';
+import type { RunGitStdin } from '../../sync/pot-git/storage';
 import { configureLocks, locksHost, _resetForTests as resetLocks, getTxPool } from '../../agent-tools/locks/su-lock-store';
+import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions,
+  recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -105,6 +109,428 @@ function unpublishedState(f: ReturnType<typeof fixture>) {
 // callers must supply the existing git-sync lease's assertHeld method.
 const pilotChecks = { assertHeld: () => {}, beforePublish: async () => ({ ok: true as const }) };
 
+describe('P003 immutable source inspection', () => {
+  type V1Input = Extract<GitSyncImmutableSourceInput, { schemaVersion: 1 }>;
+  const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
+  // Independent wire-format oracle frozen before extending the v1 implementation.
+  const canonical = (value: unknown): string => {
+    if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
+    if (value && typeof value === 'object') return '{' + Object.keys(value).sort()
+      .map(key => JSON.stringify(key) + ':' + canonical((value as Record<string, unknown>)[key])).join(',') + '}';
+    return JSON.stringify(value) as string;
+  };
+  const binaryGit: RunGitStdin = async (args, cwd, input, options) => {
+    const result = spawnSync('git', args, { cwd, input, timeout: 30_000,
+      env: { ...process.env, ...options?.env } });
+    return { code: result.status ?? -1, stdout: result.stdout ?? Buffer.alloc(0),
+      stderr: String(result.stderr ?? '') };
+  };
+  function nominated(recursive = false) {
+    const f = fixture();
+    const binary = Buffer.from([0, 0xff, 0x80, 0xc3, 0x28, 10]);
+    writeFileSync(join(f.repo, 'binary.bin'), binary);
+    let child: ReturnType<typeof fixture> | undefined;
+    let grandchild: ReturnType<typeof fixture> | undefined;
+    if (recursive) {
+      grandchild = fixture();
+      writeFileSync(join(grandchild.repo, 'a.txt'), 'pinned grandchild\n');
+      grandchild.git('add', '-A'); grandchild.git('commit', '-m', 'grandchild input');
+      child = fixture();
+      writeFileSync(join(child.repo, 'a.txt'), 'pinned child\n');
+      child.git('-c', 'protocol.file.allow=always', 'submodule', 'add', grandchild.repo, 'nested');
+      child.git('add', '-A'); child.git('commit', '-m', 'child input and transitive pin');
+      f.git('-c', 'protocol.file.allow=always', 'submodule', 'add', child.repo, 'libs/child');
+      f.git('-c', 'protocol.file.allow=always', 'submodule', 'update', '--init', '--recursive');
+    }
+    f.git('add', '-A'); f.git('commit', '-m', 'nominated source');
+    const rootCommit = f.git('rev-parse', 'HEAD');
+    const request: V1Input = { schemaVersion: 1, rootCommit,
+      rootTree: f.git('rev-parse', rootCommit + '^{tree}'), gitlinks: [], inputs: [
+        { path: 'a.txt', mode: '100644', blobOid: f.git('rev-parse', rootCommit + ':a.txt'), sha256: digest('baseline a\n') },
+        { path: 'binary.bin', mode: '100644', blobOid: f.git('rev-parse', rootCommit + ':binary.bin'), sha256: digest(binary) },
+      ] };
+    if (child && grandchild) {
+      for (const [path, owner, contents] of [
+        ['libs/child', child, 'pinned child\n'], ['libs/child/nested', grandchild, 'pinned grandchild\n'],
+      ] as const) {
+        const commit = owner.git('rev-parse', 'HEAD');
+        request.gitlinks.push({ path, commit, tree: owner.git('rev-parse', commit + '^{tree}') });
+        request.inputs.push({ path: path + '/a.txt', mode: '100644',
+          blobOid: owner.git('rev-parse', commit + ':a.txt'), sha256: digest(contents) });
+      }
+    }
+    return { ...f, request };
+  }
+
+  it('reads exact recursive pins and binary blobs while preserving later HEAD, index, worktree and refs', async () => {
+    const f = nominated(true), expected = structuredClone(f.request);
+    writeFileSync(join(f.repo, 'b.txt'), 'later root commit\n');
+    f.git('add', '--', 'b.txt'); f.git('commit', '-m', 'later HEAD');
+    writeFileSync(join(f.repo, 'a.txt'), 'later staged\n'); f.git('add', '--', 'a.txt');
+    writeFileSync(join(f.repo, 'a.txt'), 'later working\n');
+    for (const path of ['libs/child', 'libs/child/nested']) {
+      writeFileSync(join(f.repo, path, 'a.txt'), 'later child working\n');
+    }
+    const before = candidateState(f), refs = f.git('for-each-ref', '--format=%(refname) %(objectname)');
+    const calls: Array<{ args: string[]; env: Readonly<Record<string, string>> | undefined }> = [];
+    const observed: RunGit = async (args, cwd, options) => {
+      calls.push({ args, env: options?.env }); return f.runGit(args, cwd, options);
+    };
+    const observedBinary: RunGitStdin = async (args, cwd, input, options) => {
+      calls.push({ args, env: options?.env }); return binaryGit(args, cwd, input, options);
+    };
+    const result = await inspectGitSyncImmutableSource(observed, observedBinary, f.repo, f.request, expected);
+    expect(result).toEqual({ ok: true, rootCommit: expected.rootCommit, rootTree: expected.rootTree,
+      manifestSha256: digest(canonical(expected)), gitlinkCount: 2, inputCount: 4 });
+    expect(Reflect.ownKeys(result).sort()).toEqual(
+      ['ok', 'rootCommit', 'rootTree', 'manifestSha256', 'gitlinkCount', 'inputCount'].sort());
+    expect(candidateState(f)).toEqual(before);
+    expect(f.git('for-each-ref', '--format=%(refname) %(objectname)')).toBe(refs);
+    expect(calls.every(call => call.env?.GIT_NO_LAZY_FETCH === '1' && call.env?.GIT_NO_REPLACE_OBJECTS === '1')).toBe(true);
+    const subcommands = calls.map(call => call.args[8]);
+    expect(new Set(subcommands)).toEqual(new Set(['rev-parse', 'cat-file', 'ls-tree']));
+    expect(calls.some(call => call.args.some(arg => arg.includes('HEAD')))).toBe(false);
+  });
+
+  it('detaches both independent input documents before its first asynchronous read', async () => {
+    const f = nominated(), expected = structuredClone(f.request), rootCommit = f.request.rootCommit;
+    const pending = inspectGitSyncImmutableSource(f.runGit, binaryGit, f.repo, f.request, expected);
+    f.request.rootCommit = 'HEAD'; expected.rootTree = '0'.repeat(40);
+    expect(await pending).toMatchObject({ ok: true, rootCommit });
+  });
+
+  it('rejects request substitution against the separately retained expectation', async () => {
+    const f = nominated(), expected = structuredClone(f.request);
+    f.request.inputs[0].sha256 = '1'.repeat(64);
+    expect(await inspectGitSyncImmutableSource(f.runGit, binaryGit, f.repo, f.request, expected))
+      .toEqual({ ok: false, error: 'immutable-source-expectation-mismatch' });
+  });
+
+  const counterexamples: Array<{ name: string; error: string; recursive?: boolean; mutate: (input: V1Input) => void }> = [
+    { name: 'a commit substituted for the nominated tree', error: 'immutable-source-root-binding', mutate: input => { input.rootTree = input.rootCommit; } },
+    { name: 'a tree substituted for the nominated commit', error: 'immutable-source-root-binding', mutate: input => { input.rootCommit = input.rootTree; } },
+    { name: 'an unavailable root commit', error: 'immutable-source-object-read', mutate: input => { input.rootCommit = '1'.repeat(40); } },
+    { name: 'an unavailable root tree', error: 'immutable-source-object-read', mutate: input => { input.rootTree = '1'.repeat(40); } },
+    { name: 'a different blob OID', error: 'immutable-source-selected-input', mutate: input => { input.inputs[0].blobOid = '1'.repeat(40); } },
+    { name: 'a content SHA256 substituted for a Git OID', error: 'immutable-source-selected-input', mutate: input => { input.inputs[0].blobOid = input.inputs[0].sha256; } },
+    { name: 'a different content digest', error: 'immutable-source-content-digest', mutate: input => { input.inputs[0].sha256 = '1'.repeat(64); } },
+    { name: 'a different selected mode', error: 'immutable-source-selected-input', mutate: input => { input.inputs[0].mode = '100755'; } },
+    { name: 'an unlisted selected file', error: 'immutable-source-selected-input', mutate: input => { input.inputs[0].path = 'absent.txt'; } },
+    { name: 'an extra gitlink', error: 'immutable-source-gitlink-inventory', mutate: input => { input.gitlinks.push({ path: 'extra', commit: input.rootCommit, tree: input.rootTree }); } },
+    { name: 'an omitted transitive gitlink', error: 'immutable-source-gitlink', recursive: true, mutate: input => { input.gitlinks.pop(); } },
+    { name: 'a substituted transitive commit', error: 'immutable-source-gitlink', recursive: true, mutate: input => { input.gitlinks[1].commit = '1'.repeat(40); } },
+    { name: 'an unavailable transitive tree', error: 'immutable-source-object-read', recursive: true, mutate: input => { input.gitlinks[1].tree = '1'.repeat(40); } },
+  ];
+  it.each(counterexamples)('refuses $name even when nominated in both documents', async ({ recursive, mutate, error }) => {
+    const f = nominated(recursive), request = structuredClone(f.request);
+    mutate(request); request.inputs.sort((a, b) => a.path.localeCompare(b.path));
+    const before = candidateState(f);
+    expect(await inspectGitSyncImmutableSource(f.runGit, binaryGit, f.repo, request, structuredClone(request)))
+      .toEqual({ ok: false, error });
+    expect(candidateState(f)).toEqual(before);
+  });
+
+  it('refuses aliases, overlays, duplicate/unsorted members and nullable roots without reading Git', async () => {
+    const f = nominated(true), run = vi.fn(f.runGit);
+    const invalid = [
+      { ...f.request, rootCommit: 'HEAD' }, { ...f.request, rootCommit: null },
+      { ...f.request, bytes: 'caller replacement' }, { ...f.request, inputs: [] },
+      { ...f.request, inputs: [f.request.inputs[0], f.request.inputs[0]] },
+      { ...f.request, inputs: [...f.request.inputs].reverse() },
+      { ...f.request, gitlinks: [f.request.gitlinks[0], f.request.gitlinks[0]] },
+      { ...f.request, gitlinks: [...f.request.gitlinks].reverse() },
+    ];
+    for (const request of invalid) {
+      expect(await inspectGitSyncImmutableSource(run, binaryGit, f.repo, request, request))
+        .toEqual({ ok: false, error: 'immutable-source-input' });
+    }
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('refuses a missing transitive repository without reading a parent repository as its substitute', async () => {
+    const f = nominated(true);
+    rmSync(join(f.repo, 'libs/child/nested/.git'));
+    expect(await inspectGitSyncImmutableSource(f.runGit, binaryGit, f.repo, f.request, structuredClone(f.request)))
+      .toEqual({ ok: false, error: 'immutable-source-repository' });
+  });
+
+
+  it.each([
+    ['missing text reader', 'immutable-source-binary-reader'],
+    ['missing binary reader', 'immutable-source-binary-reader'],
+    ['failed object read', 'immutable-source-object-read'],
+    ['thrown object read', 'immutable-source-object-read'],
+    ['wrong repository', 'immutable-source-repository'],
+    ['failed tree listing', 'immutable-source-tree-list'],
+    ['decoded tree listing', 'immutable-source-tree-list'],
+    ['unterminated tree listing', 'immutable-source-tree-list'],
+    ['malformed tree listing', 'immutable-source-tree-list'],
+  ] as const)('preserves frozen v1 diagnostic: %s', async (defect, error) => {
+    const f = nominated();
+    const text: RunGit = async (args, cwd, options) => {
+      if (defect === 'failed object read') return { code: 1, stdout: '', stderr: 'unavailable' };
+      if (defect === 'thrown object read') throw Error('unavailable');
+      if (defect === 'wrong repository') return { code: 0, stdout: '/different-repository', stderr: '' };
+      return f.runGit(args, cwd, options);
+    };
+    const binary: RunGitStdin = async (args, cwd, input, options) => {
+      if (args[8] === 'ls-tree') {
+        if (defect === 'failed tree listing') return { code: 1, stdout: Buffer.alloc(0), stderr: 'unavailable' };
+        if (defect === 'decoded tree listing') return { code: 0, stdout: '' as never, stderr: '' };
+        if (defect === 'unterminated tree listing') return { code: 0, stdout: Buffer.from('unterminated'), stderr: '' };
+        if (defect === 'malformed tree listing') return { code: 0, stdout: Buffer.from('garbage\0'), stderr: '' };
+      }
+      return binaryGit(args, cwd, input, options);
+    };
+    expect(await inspectGitSyncImmutableSource(
+      defect === 'missing text reader' ? null as unknown as RunGit : text,
+      defect === 'missing binary reader' ? null as unknown as RunGitStdin : binary,
+      f.repo, f.request, structuredClone(f.request))).toEqual({ ok: false, error });
+  });
+
+  it.each(['decoded', 'wrong-bytes', 'failed'] as const)('refuses a %s binary reader without text fallback', async defect => {
+    const f = nominated();
+    const broken: RunGitStdin = async (args, cwd, input, options) => args[8] === 'ls-tree'
+      ? binaryGit(args, cwd, input, options) : ({ code: defect === 'failed' ? 1 : 0,
+        stdout: (defect === 'decoded' ? 'baseline a\n' : Buffer.from('wrong')) as never, stderr: '' });
+    expect(await inspectGitSyncImmutableSource(f.runGit, broken, f.repo, f.request, structuredClone(f.request)))
+      .toEqual({ ok: false, error: 'immutable-source-content-digest' });
+  });
+
+  it('refuses invalid UTF-8 tree paths rather than accepting a decoded filename alias', async () => {
+    const f = nominated();
+    writeFileSync(Buffer.concat([Buffer.from(f.repo + '/'), Buffer.from([0xff]), Buffer.from('.ts')]), 'source\n');
+    f.git('add', '-A'); f.git('commit', '-m', 'non-UTF8 filename');
+    f.request.rootCommit = f.git('rev-parse', 'HEAD');
+    f.request.rootTree = f.git('rev-parse', 'HEAD^{tree}');
+    const raw = spawnSync('git', ['ls-tree', '-r', '-z', f.request.rootTree], { cwd: f.repo, timeout: 30_000 }).stdout;
+    expect(Buffer.from(raw.toString('utf8'), 'utf8').equals(raw)).toBe(false);
+    expect(await inspectGitSyncImmutableSource(f.runGit, binaryGit, f.repo, f.request, structuredClone(f.request)))
+      .toEqual({ ok: false, error: 'immutable-source-tree-list' });
+  });
+
+  it('preserves an existing v2 capture and its literal replay without retaining new custody', async () => {
+    const f = nominated();
+    const captured = await captureGitSyncCandidate(f.runGit, f.repo, { requestId: 'original-fixture',
+      generation: 1, base: f.request.rootCommit, paths: ['a.txt'] });
+    expect(captured.ok).toBe(true);
+    const before = await readGitSyncCandidate(f.runGit, f.repo, { requestId: 'original-fixture', generation: 1 });
+    const refs = f.git('for-each-ref', '--format=%(refname) %(objectname)');
+    expect(await inspectGitSyncImmutableSource(f.runGit, binaryGit, f.repo, f.request, structuredClone(f.request)))
+      .toMatchObject({ ok: true });
+    expect(await readGitSyncCandidate(f.runGit, f.repo, { requestId: 'original-fixture', generation: 1 })).toEqual(before);
+    expect(f.git('for-each-ref', '--format=%(refname) %(objectname)')).toBe(refs);
+  });
+});
+
+describe('P003 immutable source payload v2', () => {
+  type V2Input = Extract<GitSyncImmutableSourceInput, { schemaVersion: 2 }>;
+  const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+  const canonical = (value: unknown): string => {
+    if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
+    if (value && typeof value === 'object') return '{' + Object.keys(value).sort()
+      .map(key => JSON.stringify(key) + ':' + canonical((value as Record<string, unknown>)[key])).join(',') + '}';
+    return JSON.stringify(value) as string;
+  };
+  const rawGit = (repo: string, ...args: string[]): Buffer => {
+    const result = spawnSync('git', args, { cwd: repo, timeout: 30_000 });
+    if (result.status !== 0) throw Error(String(result.stderr));
+    return result.stdout;
+  };
+  const gitAt = (repo: string, ...args: string[]) => rawGit(repo, ...args).toString('utf8').trim();
+  const binaryGit: RunGitStdin = async (args, cwd, input, options) => {
+    const result = spawnSync('git', args, { cwd, input, timeout: 30_000,
+      env: { ...process.env, ...options?.env } });
+    return { code: result.status ?? -1, stdout: result.stdout ?? Buffer.alloc(0), stderr: String(result.stderr ?? '') };
+  };
+  const freeze = (value: unknown): void => {
+    if (value && typeof value === 'object') {
+      Object.values(value).forEach(freeze);
+      Object.freeze(value);
+    }
+  };
+
+  async function payloadFixture() {
+    const f = fixture(), child = fixture(), grandchild = fixture();
+    const binary = Buffer.from([0, 0xff, 0x80, 0xc3, 0x28, 10]);
+    writeFileSync(join(grandchild.repo, 'a.txt'), 'grandchild source\n');
+    grandchild.git('add', '-A'); grandchild.git('commit', '-m', 'grandchild source');
+    writeFileSync(join(child.repo, 'a.txt'), 'child source\n');
+    child.git('-c', 'protocol.file.allow=always', 'submodule', 'add', grandchild.repo, 'nested');
+    child.git('add', '-A'); child.git('commit', '-m', 'child source and recursive pin');
+    f.git('-c', 'protocol.file.allow=always', 'submodule', 'add', child.repo, 'libs/child');
+    f.git('-c', 'protocol.file.allow=always', 'submodule', 'update', '--init', '--recursive');
+    writeFileSync(join(f.repo, 'binary.bin'), binary);
+    f.git('add', '-A'); f.git('commit', '-m', 'original source');
+    const base = f.git('rev-parse', 'HEAD'), baseTree = f.git('rev-parse', base + '^{tree}');
+    // Retain a genuine original capture BEFORE constructing the new payload.
+    const captured = await captureGitSyncCandidate(f.runGit, f.repo,
+      { requestId: 'original-v2-fixture', generation: 1, base, paths: ['a.txt'] });
+    if (!captured.ok) throw Error('fixture capture refused');
+    writeFileSync(join(f.repo, 'a.txt'), 'literal uncommitted payload\n');
+    f.git('add', '--', 'a.txt');
+    const payloadTree = f.git('write-tree');
+    const expected: V2Input = { schemaVersion: 2, base, baseTree, payloadTree,
+      gitlinks: [
+        { path: 'libs/child', commit: child.git('rev-parse', 'HEAD'), tree: child.git('rev-parse', 'HEAD^{tree}') },
+        { path: 'libs/child/nested', commit: grandchild.git('rev-parse', 'HEAD'), tree: grandchild.git('rev-parse', 'HEAD^{tree}') },
+      ],
+      inputs: [
+        { path: 'a.txt', mode: '100644', blobOid: f.git('rev-parse', payloadTree + ':a.txt'), sha256: digest('literal uncommitted payload\n') },
+        { path: 'binary.bin', mode: '100644', blobOid: f.git('rev-parse', payloadTree + ':binary.bin'), sha256: digest(binary) },
+        { path: 'libs/child/a.txt', mode: '100644', blobOid: child.git('rev-parse', 'HEAD:a.txt'), sha256: digest('child source\n') },
+        { path: 'libs/child/nested/a.txt', mode: '100644', blobOid: grandchild.git('rev-parse', 'HEAD:a.txt'), sha256: digest('grandchild source\n') },
+      ] };
+    freeze(expected);
+    return { ...f, captured, expected, request: structuredClone(expected),
+      repositories: [f.repo, join(f.repo, 'libs/child'), join(f.repo, 'libs/child/nested')] };
+  }
+
+  // Snapshot physical loose/packed objects and raw index/worktree bytes. Git
+  // status is deliberately absent: it can refresh the very index being tested.
+  function treeBytes(root: string, skipGit = false) {
+    const rows: Array<{ path: string; mode: number; kind: string; value?: string }> = [];
+    const walk = (dir: string, prefix: string) => {
+      for (const name of readdirSync(dir).sort()) {
+        if (skipGit && name === '.git') continue;
+        const path = prefix + name, absolute = join(dir, name), stat = lstatSync(absolute);
+        const kind = stat.isSymbolicLink() ? 'link' : stat.isDirectory() ? 'directory' : 'file';
+        rows.push({ path, mode: stat.mode, kind, ...(kind === 'directory' ? {} :
+          { value: kind === 'link' ? readlinkSync(absolute) : readFileSync(absolute).toString('base64') }) });
+        if (kind === 'directory') walk(absolute, path + '/');
+      }
+    };
+    walk(root, '');
+    return rows;
+  }
+  function repositoryState(repo: string) {
+    const gitdir = gitAt(repo, 'rev-parse', '--absolute-git-dir');
+    return {
+      head: readFileSync(join(gitdir, 'HEAD')).toString('base64'),
+      refs: gitAt(repo, 'for-each-ref', '--format=%(refname) %(objectname)'),
+      index: readFileSync(join(gitdir, 'index')).toString('base64'),
+      objects: treeBytes(join(gitdir, 'objects')),
+      inventory: gitAt(repo, 'cat-file', '--batch-all-objects', '--batch-check=%(objectname) %(objecttype) %(objectsize)'),
+      worktree: treeBytes(repo, true),
+    };
+  }
+  function originalState(f: Awaited<ReturnType<typeof payloadFixture>>) {
+    const ref = f.captured.ref;
+    return {
+      ref, descriptor: f.captured.candidate,
+      custodyRefs: f.git('for-each-ref', '--format=%(refname) %(objectname)', SOURCE_CUSTODY_REF_PREFIX),
+      wrapper: rawGit(f.repo, 'cat-file', 'tree', ref).toString('base64'),
+      manifest: rawGit(f.repo, 'show', ref + ':manifest.json').toString('base64'),
+      payload: rawGit(f.repo, 'cat-file', 'tree', f.captured.candidate.tree).toString('base64'),
+      capturedBlob: rawGit(f.repo, 'show', ref + ':payload/a.txt').toString('base64'),
+    };
+  }
+  function success(expected: V2Input) {
+    return { ok: true, schemaVersion: 2, base: expected.base, baseTree: expected.baseTree,
+      payloadTree: expected.payloadTree, manifestSha256: digest(canonical(expected)), gitlinkCount: 2, inputCount: 4 };
+  }
+
+  it('returns the exact canonical v2 observation for a genuine uncommitted literal payload', async () => {
+    const f = await payloadFixture();
+    expect(f.expected.baseTree).not.toBe(f.expected.payloadTree);
+    const commits = gitAt(f.repo, 'cat-file', '--batch-all-objects', '--batch-check=%(objectname) %(objecttype)')
+      .split('\n').filter(row => row.endsWith(' commit')).map(row => row.split(' ')[0]);
+    expect(commits.length).toBeGreaterThan(0);
+    expect(commits.map(oid => f.git('show', '-s', '--format=%T', oid))).not.toContain(f.expected.payloadTree);
+    // Different JSON key insertion order must preserve the canonical digest.
+    const request = { inputs: f.request.inputs, gitlinks: f.request.gitlinks, payloadTree: f.request.payloadTree,
+      baseTree: f.request.baseTree, base: f.request.base, schemaVersion: 2 };
+    const result = await inspectGitSyncImmutableSource(f.runGit, binaryGit, f.repo, request, f.expected);
+    expect(result).toEqual(success(f.expected));
+    expect(Reflect.ownKeys(result).sort()).toEqual(
+      ['ok', 'schemaVersion', 'base', 'baseTree', 'payloadTree', 'manifestSha256', 'gitlinkCount', 'inputCount'].sort());
+  });
+
+  it('detaches both v2 documents before the first asynchronous object read', async () => {
+    const f = await payloadFixture(), expected = structuredClone(f.expected);
+    const pending = inspectGitSyncImmutableSource(f.runGit, binaryGit, f.repo, f.request, expected);
+    f.request.base = 'HEAD'; f.request.inputs[0].sha256 = '1'.repeat(64);
+    expected.payloadTree = '1'.repeat(40); expected.gitlinks.pop();
+    expect(await pending).toEqual(success(f.expected));
+  });
+
+  it('refuses changed or invalid independent expectations before reading Git', async () => {
+    const f = await payloadFixture(), expected = structuredClone(f.expected), run = vi.fn(f.runGit);
+    expected.inputs[0].sha256 = '1'.repeat(64);
+    expect(await inspectGitSyncImmutableSource(run, binaryGit, f.repo, f.request, expected))
+      .toEqual({ ok: false, error: 'immutable-source-expectation-mismatch' });
+    expect(await inspectGitSyncImmutableSource(run, binaryGit, f.repo, f.request, { ...f.expected, overlay: 'caller bytes' }))
+      .toEqual({ ok: false, error: 'immutable-source-input' });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  type PayloadFixture = Awaited<ReturnType<typeof payloadFixture>>;
+  const refusals: Array<{ name: string; error: string; mutate: (input: V2Input, f: PayloadFixture) => void }> = [
+    { name: 'base alias', error: 'input', mutate: input => { input.base = 'HEAD'; } },
+    { name: 'missing base', error: 'input', mutate: input => { delete (input as Partial<V2Input>).base; } },
+    { name: 'missing base tree', error: 'input', mutate: input => { delete (input as Partial<V2Input>).baseTree; } },
+    { name: 'missing payload tree', error: 'input', mutate: input => { delete (input as Partial<V2Input>).payloadTree; } },
+    { name: 'nullable payload', error: 'input', mutate: input => { input.payloadTree = null as never; } },
+    { name: 'extra v1 identity', error: 'input', mutate: input => { Object.assign(input, { rootCommit: input.base }); } },
+    { name: 'unavailable base', error: 'object-read', mutate: input => { input.base = '1'.repeat(40); } },
+    { name: 'tree-typed base', error: 'root-binding', mutate: input => { input.base = input.baseTree; } },
+    { name: 'commit-typed base tree', error: 'root-binding', mutate: input => { input.baseTree = input.base; } },
+    { name: 'different genuine base tree', error: 'root-binding', mutate: input => { input.baseTree = input.payloadTree; } },
+    { name: 'unavailable base tree', error: 'object-read', mutate: input => { input.baseTree = '1'.repeat(40); } },
+    { name: 'commit-typed payload', error: 'root-binding', mutate: input => { input.payloadTree = input.base; } },
+    { name: 'blob-typed payload', error: 'root-binding', mutate: input => { input.payloadTree = input.inputs[0].blobOid; } },
+    { name: 'unavailable payload', error: 'object-read', mutate: input => { input.payloadTree = '1'.repeat(40); } },
+    { name: 'substituted literal payload', error: 'selected-input', mutate: input => { input.payloadTree = input.baseTree; } },
+    { name: 'missing immediate pin', error: 'gitlink', mutate: input => { input.gitlinks.shift(); } },
+    { name: 'missing recursive pin', error: 'gitlink', mutate: input => { input.gitlinks.pop(); } },
+    { name: 'extra pin', error: 'gitlink-inventory', mutate: input => { input.gitlinks.push({ path: 'zz-extra', commit: input.base, tree: input.baseTree }); } },
+    { name: 'changed recursive commit', error: 'gitlink', mutate: input => { input.gitlinks[1].commit = input.base; } },
+    { name: 'unavailable recursive tree', error: 'object-read', mutate: input => { input.gitlinks[1].tree = '1'.repeat(40); } },
+    { name: 'different genuine recursive tree', error: 'root-binding', mutate: (input, f) => {
+      input.gitlinks[1].tree = gitAt(f.repositories[2], 'rev-parse', 'HEAD~1^{tree}');
+    } },
+    { name: 'wrong mode', error: 'selected-input', mutate: input => { input.inputs[0].mode = '100755'; } },
+    { name: 'wrong blob OID', error: 'selected-input', mutate: input => { input.inputs[0].blobOid = input.base; } },
+    { name: 'content hash used as OID', error: 'selected-input', mutate: input => { input.inputs[0].blobOid = input.inputs[0].sha256; } },
+    { name: 'wrong content digest', error: 'content-digest', mutate: input => { input.inputs[0].sha256 = '1'.repeat(64); } },
+    { name: 'unlisted member', error: 'selected-input', mutate: input => { input.inputs[0].path = '0-missing.txt'; } },
+    { name: 'duplicate members', error: 'input', mutate: input => { input.inputs.splice(1, 0, input.inputs[0]); } },
+    { name: 'unsorted members', error: 'input', mutate: input => { input.inputs.reverse(); } },
+    { name: 'duplicate pins', error: 'input', mutate: input => { input.gitlinks.splice(1, 0, input.gitlinks[0]); } },
+    { name: 'unsorted pins', error: 'input', mutate: input => { input.gitlinks.reverse(); } },
+  ];
+  it.each(refusals)('refuses $name against a matching separately retained document', async ({ mutate, error }) => {
+    const f = await payloadFixture();
+    mutate(f.request, f);
+    expect(await inspectGitSyncImmutableSource(f.runGit, binaryGit, f.repo, f.request, structuredClone(f.request)))
+      .toEqual({ ok: false, error: 'immutable-source-' + error });
+  });
+
+  it.each(['success', 'refusal'] as const)('preserves recursive repositories, objects and original custody on %s', async disposition => {
+    const f = await payloadFixture();
+    writeFileSync(join(f.repo, 'b.txt'), 'later HEAD\n');
+    f.git('add', '--', 'b.txt'); f.git('commit', '-m', 'later unrelated HEAD');
+    writeFileSync(join(f.repo, 'a.txt'), 'later staged root\n'); f.git('add', '--', 'a.txt');
+    writeFileSync(join(f.repo, 'a.txt'), 'later working root\n');
+    for (const repo of f.repositories.slice(1)) {
+      writeFileSync(join(repo, 'a.txt'), 'later staged child\n'); gitAt(repo, 'add', '--', 'a.txt');
+      writeFileSync(join(repo, 'a.txt'), 'later working child\n');
+    }
+    // Exercise packed objects as well as the uncommitted loose payload objects.
+    for (const repo of f.repositories) gitAt(repo, 'repack', '-a', '-d');
+    const before = f.repositories.map(repositoryState), original = originalState(f);
+    expect(before.every(state => state.objects.some(row => row.path.endsWith('.pack')))).toBe(true);
+    expect(before[0].objects.some(row => /^[a-f0-9]{2}\/[a-f0-9]+$/.test(row.path))).toBe(true);
+    if (disposition === 'refusal') f.request.inputs[0].sha256 = '1'.repeat(64);
+    const result = await inspectGitSyncImmutableSource(f.runGit, binaryGit, f.repo, f.request,
+      disposition === 'refusal' ? structuredClone(f.request) : f.expected);
+    expect(result).toEqual(disposition === 'success' ? success(f.expected)
+      : { ok: false, error: 'immutable-source-content-digest' });
+    expect(f.repositories.map(repositoryState)).toEqual(before);
+    expect(originalState(f)).toEqual(original);
+  });
+});
+
 describe('P003 selected library input tree', () => {
   // This independent fixture names both reviewed members and mappings. It does
   // not derive its expectations from production eligibility or fingerprint code.
@@ -117,13 +543,20 @@ describe('P003 selected library input tree', () => {
     const rows = members.map((member, i) => {
       const child = fixture();
       writeFileSync(join(child.repo, 'package.json'), JSON.stringify({ name: member.name, version: '1.0.0' }));
+      if (control === 'workspace-container' && member.path === 'libs/papercusp') {
+        mkdirSync(join(child.repo, 'packages/cli'), { recursive: true });
+        writeFileSync(join(child.repo, 'packages/cli/package.json'), JSON.stringify({ name: 'selected-cli', version: '1.0.0' }));
+      }
       child.git('add', '-A'); child.git('commit', '-m', 'old published library');
       f.git('-c', 'protocol.file.allow=always', 'submodule', 'add', child.repo, member.path);
       f.git('config', '-f', '.gitmodules', `submodule.${member.path}.url`, member.url);
       return { ...member, old: child.git('rev-parse', 'HEAD'), i };
     });
     const manifest = { name: 'joint-parent', version: '1.0.0',
-      workspaces: control === 'nonworkspace' ? ['libs/papercusp'] : members.map(row => row.path),
+      workspaces: control === 'nonworkspace' ? ['libs/papercusp']
+        : control === 'nonworkspace-papercusp' ? [members[0].path]
+        : control === 'workspace-container' ? [members[0].path, 'libs/papercusp/packages/cli']
+        : members.map(row => row.path),
       dependencies: Object.fromEntries(members.map(row => [row.name, 'file:./' + row.path])) };
     writeFileSync(join(f.repo, 'package.json'), JSON.stringify(manifest));
     writeFileSync(join(f.repo, 'package-lock.json'), JSON.stringify({ name: manifest.name, version: manifest.version,
@@ -181,8 +614,34 @@ describe('P003 selected library input tree', () => {
     expect(f.git('for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).toBe('');
   });
 
-  it('resolves v2 from actual selected library trees and binds new capture and CAS observations to the writer', async () => {
+  it('admits a selected library container owning a declared descendant workspace without changing caller custody', async () => {
+    const f = selectedFixture('workspace-container');
+    const before = candidateState(f);
+    const refs = members.map(row => f.git('-C', row.path, 'show-ref'));
+    const result = await prepareGitSyncMetadataSelectionTree(f.runGit, f.repo,
+      { base: f.base, publishedLibrarySelections: f.selected });
+    expect(f.git('diff-tree', '--no-commit-id', '--name-only', '-r', f.base, result.selectedInputTree))
+      .toBe(members.map(row => row.path).join('\n'));
+    expect(f.git('rev-parse', `${result.selectedInputTree}:package.json`)).toBe(f.git('rev-parse', `${f.base}:package.json`));
+    expect(candidateState(f)).toEqual(before);
+    expect(members.map(row => f.git('-C', row.path, 'show-ref'))).toEqual(refs);
+
+    const excluded = selectedFixture('nonworkspace-papercusp');
+    await expect(prepareGitSyncMetadataSelectionTree(excluded.runGit, excluded.repo,
+      { base: excluded.base, publishedLibrarySelections: excluded.selected })).rejects.toThrow('generated-lock-library-eligibility');
+  });
+
+  // Each route repeats real preparation/custody. Keeping independent controls
+  // selectable prevents their cumulative work from exhausting the router budget
+  // before later assertions run; no publication predicate is mocked or omitted.
+  it.each(['capture-and-cas', 'cas-refusals-observation', 'cas-refusals-availability',
+    'egress-refusals-observation', 'egress-refusals-custody', 'egress-publication-first',
+    'egress-publication-non-ff', 'egress-publication-https', 'egress-publication-late-refusals'] as const)(
+    'resolves v2 from actual selected library trees and binds new capture and CAS observations to the writer (%s)', async scenario => {
     const f = selectedFixture();
+    const startedAt = Date.now();
+    // Vitest buffers console output; fd2 remains observable if the event loop stalls.
+    const phase = (stage: string) => writeSync(2, 'METADATA_JOINT_PHASE ' + JSON.stringify({ stage, elapsedMs: Date.now() - startedAt }) + '\n');
     const before = candidateState(f);
     const refs = members.map(row => f.git('-C', row.path, 'for-each-ref', '--format=%(refname):%(objectname)'));
     // The observer's isolated real-network policy has its own real bare-origin
@@ -197,8 +656,10 @@ describe('P003 selected library input tree', () => {
         authority: { kind: 'default-head', ref: control === 'authority' ? 'refs/heads/changed' : 'refs/heads/main' },
         tip: control === 'tip' ? row.expectedBasePin : row.selectedCommit };
     });
+    phase('prepare-source-start');
     const source = await prepareGitSyncMetadataRepair(f.runGit, f.repo,
-      { requestId: 'selected-v2', generation: 2, base: f.base, publishedLibrarySelections: f.selected }, { log: () => {} });
+      { requestId: 'selected-v2', generation: 2, base: f.base, publishedLibrarySelections: f.selected }, { log: phase });
+    phase('prepare-source-complete');
     expect(observer.mock.calls.map(([input]) => input)).toEqual(members.map(row => ({ url: row.url })));
     const identity = source.fingerprint;
     expect(identity.schemaVersion).toBe(2);
@@ -225,6 +686,7 @@ describe('P003 selected library input tree', () => {
       base: f.base, path: identity.output.path, bytes: source.bytes, sha256: identity.output.sha256,
       blobOid: identity.output.blobOid, selectedInputTree: identity.selectedInputTree, publishedLibrarySelections: f.selected,
     });
+    phase('prepare-tree-complete');
     if (!prepared.ok) throw new Error(prepared.error);
     expect(f.git('diff-tree', '--no-commit-id', '--name-only', '-r', f.base, prepared.tree))
       .toBe([...members.map(row => row.path), 'package-lock.json'].join('\n'));
@@ -241,6 +703,7 @@ describe('P003 selected library input tree', () => {
       owner: 'fixture-held-owner', lockId: 'fixture-acquired-lock' };
     const fence = { ...pilotChecks, writer, assertHeld: vi.fn() };
     const captured = await captureGitSyncCandidate(f.runGit, f.repo, request, fence);
+    phase('capture-complete');
     if (!captured.ok) throw new Error(captured.error);
     expect(captured.candidate).toMatchObject({ version: 4, tree: prepared.tree,
       originCapture: { phase: 'capture', writer, requestId: request.requestId, generation: 2,
@@ -250,15 +713,26 @@ describe('P003 selected library input tree', () => {
     expect(captureProof.observations.map(row => row.path)).toEqual(members.map(row => row.path));
     expect(captureProof.observations.map(row => row.observation.tip)).toEqual(f.selected.map(row => row.selectedCommit));
     expect(observer).toHaveBeenCalledTimes(4);
-    expect(await readGitSyncCandidate(f.runGit, f.repo, request)).toEqual(captured);
-    expect(observer).toHaveBeenCalledTimes(4); // replay reads the immutable capture, not a replacement baseline
-    for (const changed of ['tip', 'authority', 'stale', 'unavailable'] as const) {
+    if (scenario === 'capture-and-cas') {
+      expect(await readGitSyncCandidate(f.runGit, f.repo, request)).toEqual(captured);
+      expect(observer).toHaveBeenCalledTimes(4); // replay reads the immutable capture, not a replacement baseline
+    }
+    const casControls = scenario === 'cas-refusals-observation' ? ['tip', 'authority'] as const
+      : scenario === 'cas-refusals-availability' ? ['stale', 'unavailable'] as const : [];
+    for (const changed of casControls) {
+      phase('publish-refusal-' + changed);
       control = changed;
       expect(await publishGitSyncCandidate(f.runGit, f.repo, request, fence)).toMatchObject({ status: 'error' });
       expect(candidateState(f)).toEqual(before);
     }
+    if (scenario.startsWith('cas-refusals-')) {
+      expect(members.map(row => f.git('-C', row.path, 'for-each-ref', '--format=%(refname):%(objectname)'))).toEqual(refs);
+      expect(readdirSync(join(f.repo, '.git')).filter(name => name.startsWith('papercusp-'))).toEqual([]);
+      return;
+    }
     control = undefined;
     const published = await publishGitSyncCandidate(f.runGit, f.repo, request, fence);
+    phase('publish-complete');
     if (published.status !== 'committed') throw new Error(JSON.stringify(published));
     expect(published).toMatchObject({ tree: prepared.tree, originProofs: [{ phase: 'pre-cas', writer,
       requestId: request.requestId, generation: 2, commit: published.commit, tree: prepared.tree }] });
@@ -269,8 +743,12 @@ describe('P003 selected library input tree', () => {
     expect(f.git('rev-parse', 'HEAD')).toBe(published.commit);
     expect(unpublishedState(f)).toEqual((({ head: _head, ...state }) => state)(before));
     expect(members.map(row => f.git('-C', row.path, 'for-each-ref', '--format=%(refname):%(objectname)'))).toEqual(refs);
-    expect(await publishGitSyncCandidate(f.runGit, f.repo, request, fence))
-      .toMatchObject({ status: 'already-published', commit: published.commit, tree: prepared.tree });
+    if (scenario === 'capture-and-cas') {
+      expect(await publishGitSyncCandidate(f.runGit, f.repo, request, fence))
+        .toMatchObject({ status: 'already-published', commit: published.commit, tree: prepared.tree });
+      expect(readdirSync(join(f.repo, '.git')).filter(name => name.startsWith('papercusp-'))).toEqual([]);
+      return;
+    }
     // Exercise the actual per-push dispatch for a pre-existing repair HEAD.
     // Replay only the commit phase: pending work/index/child refs must stay intact.
     const remote = mkdtempSync(join(tmpdir(), 'joint-egress-'));
@@ -312,7 +790,10 @@ describe('P003 selected library input tree', () => {
       diffSubjects: false, log: () => {}, ...(withWriter ? { writerFence: { writer: egressWriter,
         assertHeld: () => { if (lost) throw new Error('owning writer expired'); } } } : {}) });
     // Every refusal leaves even the first remote ref absent, with no transport.
-    for (const changed of ['tip', 'authority', 'stale', 'unavailable', 'writer', 'lost-writer'] as const) {
+    const egressControls = scenario === 'egress-refusals-observation' ? ['tip', 'authority', 'stale'] as const
+      : scenario === 'egress-refusals-custody' ? ['unavailable', 'writer', 'lost-writer'] as const : [];
+    for (const changed of egressControls) {
+      phase('egress-refusal-' + changed);
       control = changed === 'tip' || changed === 'authority' || changed === 'stale' || changed === 'unavailable'
         ? changed : undefined;
       loseAfterObservation = changed === 'lost-writer';
@@ -322,8 +803,15 @@ describe('P003 selected library input tree', () => {
       expect(f.git('--git-dir', remote, 'for-each-ref', '--format=%(refname)', 'refs/heads')).toBe('');
       lost = false; loseAfterObservation = false;
     }
+    if (scenario.startsWith('egress-refusals-')) {
+      expect(unpublishedState(f)).toEqual((({ head: _head, ...state }) => state)(before));
+      expect(members.map(row => f.git('-C', row.path, 'for-each-ref', '--format=%(refname):%(objectname)'))).toEqual(refs);
+      expect(readdirSync(join(f.repo, '.git')).filter(name => name.startsWith('papercusp-'))).toEqual([]);
+      return;
+    }
     control = undefined;
     const firstPush = await push();
+    phase('egress-first-complete');
     expect(firstPush.status).toBe('synced');
     expect(firstPush.metadataOriginProofs).toMatchObject([{ phase: 'egress', writer: egressWriter,
       requestId: request.requestId, generation: 2, commit: published.commit, tree: prepared.tree,
@@ -334,11 +822,15 @@ describe('P003 selected library input tree', () => {
     expect(new Set([...ids, ...firstProof.observations.map(row => row.observation.observationId)]).size).toBe(8);
     // A later unrelated HEAD is transported as an exact OID. Each retry gets its
     // own direct observation, including the process-local HTTPS fallback.
-    for (const failure of ['non-ff', 'https'] as const) {
+    const retries = scenario === 'egress-publication-non-ff' ? ['non-ff'] as const
+      : scenario === 'egress-publication-https' ? ['https'] as const : [];
+    for (const failure of retries) {
+      phase('egress-retry-' + failure + '-start');
       const head = f.git('commit-tree', prepared.tree, '-p', f.git('rev-parse', 'HEAD'), '-m', 'later ancestry');
       f.git('update-ref', 'HEAD', head);
       retry = failure; transports.length = 0;
       const result = await push();
+      phase('egress-retry-' + failure + '-complete');
       expect(result.status).toBe('synced');
       expect(transports).toHaveLength(2);
       expect(transports.map(args => args.at(-1))).toEqual([`${head}:refs/heads/main`, `${head}:refs/heads/main`]);
@@ -350,19 +842,23 @@ describe('P003 selected library input tree', () => {
     }
     // Reused observations on another attempt, and mutations of metadata at a
     // later HEAD, fail before transport even when the original repair is ancestor.
-    reusedId = captureProof.observations[0]!.observation.observationId;
-    const remoteHead = f.git('rev-parse', 'HEAD');
-    const later = f.git('commit-tree', prepared.tree, '-p', remoteHead, '-m', 'pending ancestry');
-    f.git('update-ref', 'HEAD', later); transports.length = 0;
-    expect((await push()).status).toBe('error');
-    expect(transports).toEqual([]);
-    reusedId = undefined;
-    // Use the original base tree as a coherent but wrong selected vector.
-    const changed = f.git('commit-tree', identity.baseTree, '-p', later, '-m', 'changed selected inputs');
-    f.git('update-ref', 'HEAD', changed);
-    expect((await push()).status).toBe('error');
-    expect(transports).toEqual([]);
-    expect(f.git('--git-dir', remote, 'rev-parse', 'refs/heads/main')).toBe(remoteHead);
+    if (scenario === 'egress-publication-late-refusals') {
+      phase('egress-late-refusals-start');
+      reusedId = captureProof.observations[0]!.observation.observationId;
+      const remoteHead = f.git('rev-parse', 'HEAD');
+      const later = f.git('commit-tree', prepared.tree, '-p', remoteHead, '-m', 'pending ancestry');
+      f.git('update-ref', 'HEAD', later); transports.length = 0;
+      expect((await push()).status).toBe('error');
+      expect(transports).toEqual([]);
+      reusedId = undefined;
+      // Use the original base tree as a coherent but wrong selected vector.
+      const changed = f.git('commit-tree', identity.baseTree, '-p', later, '-m', 'changed selected inputs');
+      f.git('update-ref', 'HEAD', changed);
+      expect((await push()).status).toBe('error');
+      expect(transports).toEqual([]);
+      expect(f.git('--git-dir', remote, 'rev-parse', 'refs/heads/main')).toBe(remoteHead);
+      phase('egress-late-refusals-complete');
+    }
     expect(unpublishedState(f)).toEqual((({ head: _head, ...state }) => state)(before));
     expect(members.map(row => f.git('-C', row.path, 'for-each-ref', '--format=%(refname):%(objectname)'))).toEqual(refs);
     expect(readdirSync(join(f.repo, '.git')).filter(name => name.startsWith('papercusp-'))).toEqual([]);
@@ -1153,6 +1649,54 @@ describe('lifecycle P003 frozen publication', () => {
 });
 
 describe('lifecycle P003 common writer', () => {
+  it('runs the current background metadata repair entry with private writes and original cleanup', async context => {
+    const root = resolve(import.meta.dirname, '../../../../..');
+    const helper = 'packages/operator-core/test/_git-sync-metadata-background-child.ts';
+    const options = isolatedWorkerOptions(180_000, process.env, 180_000, {}, 180_000);
+    const runId = await recordIsolatedIntegrationProof({ root,
+      filePath: 'packages/operator-core/lib/harness/git-sync/lifecycle-candidate.integration.test.ts',
+      sourcePaths: [helper, 'packages/operator-core/lib/harness/git-sync/git-sync-action.ts',
+        'packages/operator-core/lib/harness/git-sync/run-git-sync.ts',
+        'packages/operator-core/lib/harness/git-sync/staged-workspace-lock.ts',
+        'packages/operator-core/lib/harness/git-sync/submodule-forks.ts',
+        'packages/operator-core/lib/harness-registry.ts', 'packages/operator-core/lib/operator-state-pg.ts',
+        'packages/operator-core/lib/agent-tools/locks/su-lock-store.ts', 'scripts/npm-install-safe.mjs'],
+      retainedArtifacts: ['phases/execute/background-entry-source.json',
+        'phases/execute/background-entry-proof.json', 'phases/execute/background-entry-cleanup.json'],
+      execute: async (observe, evidenceDir) => {
+        const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime', '--',
+          process.execPath, '--import', 'tsx', join(root, helper), '--evidence-dir=' + evidenceDir,
+          '--source-receipt=' + join(evidenceDir, '../prepare/source.json')], {
+          cwd: root, detached: true, execArgv: [],
+          env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0', NODE_OPTIONS: '', NODE_PATH: '' },
+          stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+        });
+        observe(child);
+        const result = await captureIsolatedWorker(child, evidenceDir, options);
+        expect(result, isolatedWorkerFailureDetail(result.output, result)).toMatchObject({ code: 0,
+          signal: null, timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
+        const proof = JSON.parse(readFileSync(join(evidenceDir, 'background-entry-proof.json'), 'utf8'));
+        expect(proof).toMatchObject({ backgroundWorkers: true, privateDatabase: true,
+          first: { status: 'synced', committedCount: 1, metadataRepair: { publication: 'committed',
+            remoteEgressConfirmed: false, routineMetadataRecorded: true } },
+          replay: { status: 'synced', committedCount: 0, metadataRepair: { publication: 'already-published' } },
+          stale: { status: 'error' }, callerStatePreserved: true, releasedLeaseCount: 0 });
+        expect(proof.database.workspace).toMatch(/^test-runtime-/);
+        expect(proof.routine.metadata).toMatchObject({ last_status: 'synced', local_sync_status: 'synced',
+          head_sha: proof.first.metadataRepair.commit, preserved: 'unrelated routine metadata' });
+        const source = JSON.parse(readFileSync(join(evidenceDir, 'background-entry-source.json'), 'utf8'));
+        const planned = JSON.parse(readFileSync(join(evidenceDir, '../prepare/source.json'), 'utf8'));
+        expect(source.before).toEqual(planned.files);
+        expect(source.after).toEqual(source.before);
+        expect(source.entry).toBe(join(root, 'packages/operator-core/lib/harness/git-sync/git-sync-action.ts'));
+        expect(JSON.parse(readFileSync(join(evidenceDir, 'background-entry-cleanup.json'), 'utf8')))
+          .toMatchObject({ repositoryRemoved: true, poolsClosed: true });
+      },
+    });
+    Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+    console.info('GIT_SYNC_METADATA_BACKGROUND_RUN ' + runId);
+  }, isolatedWorkerOptions(180_000, process.env, 180_000, {}, 180_000).testTimeoutMs);
+
   it('serializes competing fires through the production per-install lease and releases it', async () => {
     const pg = await startDedicatedNativePg();
     const previousHost = locksHost();
@@ -1244,7 +1788,8 @@ describe('lifecycle P003 refusal boundaries', () => {
       passed: true, runId: 'actual-fixture-check' }];
     laterState(f, 'split');
     const before = candidateState(f);
-    for (const changed of ['generation', 'base', 'dependency', 'configuration', 'environment'] as const) {
+    for (const changed of ['generation', 'base', 'dependency', 'configuration', 'environment',
+      'missing-check', 'stale-check', 'failed-check', 'unmeasured-check'] as const) {
       const wrong = structuredClone(captures);
       const candidate = wrong[request.requestId].capture.candidate;
       if (changed === 'generation') candidate.generation++;
@@ -1255,11 +1800,15 @@ describe('lifecycle P003 refusal boundaries', () => {
         const verdict = checkFrozenEditCohortEvidence({ frozen, captures: wrong, ...context,
           ...(changed === 'configuration' ? { configurationIdentity: 'config-B' } : {}),
           ...(changed === 'environment' ? { environmentIdentity: 'environment-B' } : {}),
-          publicationIntent: true, dependencies: [], checks });
+          publicationIntent: true, dependencies: [], checks: changed === 'missing-check' ? []
+            : changed === 'stale-check' ? [{ ...checks[0], identity: 'previous-candidate' }]
+            : changed === 'failed-check' ? [{ ...checks[0], passed: false }]
+            : changed === 'unmeasured-check' ? [{ ...checks[0], runId: '' }] : checks });
         return verdict.ok ? { ok: true as const } : { ok: false as const, error: verdict.reason };
       });
       expect(await publishGitSyncCandidate(f.runGit, f.repo, request, { assertHeld: () => {}, beforePublish: callbacks }))
-        .toMatchObject({ status: 'error', error: 'cohort-changed' });
+        .toMatchObject({ status: 'error', error: changed.endsWith('-check')
+          ? 'cohort-check-missing-or-stale' : 'cohort-changed' });
       expect(callbacks).toHaveBeenCalledOnce();
       expect(candidateState(f)).toEqual(before);
       expect(f.git('for-each-ref', '--format=%(refname)', SOURCE_CUSTODY_REF_PREFIX)).not.toContain('-publication');
@@ -1299,7 +1848,9 @@ describe('lifecycle P003 refusal boundaries', () => {
           passed: true, runId: 'actual-fixture-check' }] });
       return verdict.ok ? { ok: true as const } : { ok: false as const, error: verdict.reason };
     };
-    for (const dependencies of [[], [{ ...dependency, repository: capture.candidate.repository, tree: 'f'.repeat(40) }]]) {
+    for (const dependencies of [[],
+      [{ ...dependency, repository: capture.candidate.repository, tree: 'f'.repeat(40) }],
+      [{ ...dependency, repository: capture.candidate.repository, generation: 2 }]]) {
       expect(await publishGitSyncCandidate(f.runGit, f.repo, request, {
         assertHeld: () => {}, beforePublish: async () => checked(dependencies),
       })).toMatchObject({ status: 'error', error: 'cohort-ancestor-unfinished' });

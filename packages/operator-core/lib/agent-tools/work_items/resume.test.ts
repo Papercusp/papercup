@@ -1,16 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
-import { readCarryLatestUpdate, renderCarryNote, shortCarryHash } from '../../carry-note';
+import { createHash } from 'node:crypto';
+import { readCarryLatestUpdate, renderCarryNote, shortCarryHash, workItemSubjectFingerprint } from '../../carry-note';
 import { shapeWorkItemsGet } from './get-shape';
 import { buildWorkItemResume, readWorkItemResume, RESUME_PACKET_BUDGET } from './resume';
 import type { TaskBrief } from '../../code-intelligence/task-brief';
 import { prepareBlockerDecision } from '../../blocker-resolution-decision';
 
-const item = { id: 'WI-resume', harness: 'h1', assignee: 'su-current', state: 'open',
+const item = { id: 'WI-resume', harness: 'h1', assignee: 'su-current', state: 'open', kind: 'change', title: 'Resume', summary: 'Current subject',
   payload: { plan_item: { plan_slug: 'resume-plan', item_id: 'P-001' } } };
 const next = 'Bind test-run:17717253 to the current clause, then request independent acceptance.';
-const checkpoint = { checkpoint: renderCarryNote({ did: 'Historical detail. '.repeat(900), next }), updatedAtMs: 1234 };
+const checkpoint = { checkpoint: renderCarryNote({ did: 'Historical detail. '.repeat(900), next }), updatedAtMs: 1234,
+  subjectFingerprint: workItemSubjectFingerprint(item) };
 const build = (overrides: Partial<Parameters<typeof buildWorkItemResume>[0]> = {}) => buildWorkItemResume({
-  item, checkpoint, freshness: { verdict: 'fresh' }, evidence: [], ...overrides,
+  item, freshness: { verdict: 'fresh' }, evidence: [], ...overrides,
+  checkpoint: { subjectFingerprint: checkpoint.subjectFingerprint, ...(overrides.checkpoint ?? checkpoint) },
 });
 
 describe('bounded work-item resume', () => {
@@ -32,6 +35,9 @@ describe('bounded work-item resume', () => {
           deferral: { responsibleParty: 'su-peer', nextAction: 'Peer verifies repair' } } });
       expect(packet.blockerResolution).not.toHaveProperty('nudge');
       expect(JSON.stringify(packet).length).toBeLessThanOrEqual(RESUME_PACKET_BUDGET);
+      if (checkpoint.checkpoint !== null) {
+        expect(packet.nextAction).toMatchObject({ status: 'unknown', text: null });
+      }
     }
   });
 
@@ -203,6 +209,38 @@ describe('bounded work-item resume', () => {
     expect(result.nextAction.text).toBe(next);
   });
 
+  it('separates immutable archive digest from subject, dependency and live authority freshness', () => {
+    const unchanged = build();
+    const sha = createHash('sha256').update(checkpoint.checkpoint).digest('hex');
+    expect(unchanged.checkpoint.contentSha256).toBe(sha);
+    expect(unchanged.authority).toMatchObject({ status: 'requires-current-control',
+      readRef: { tool: 'coord:orient', args: { afterCompaction: true } } });
+    for (const overrides of [
+      { item: { ...item, summary: 'Changed source/spec' } },
+      { checkpoint: { ...checkpoint, subjectFingerprint: undefined } },
+      { freshness: { verdict: 'stale', changed: [{ dep: 'plan:resume-plan', was: '1', now: '2' }] } },
+      { freshness: { verdict: 'unknown' } },
+      { freshness: { verdict: 'fresh', unresolvable: ['item:WI-peer'] } },
+    ]) {
+      const packet = build(overrides);
+      expect(packet.checkpoint.contentSha256).toBe(sha);
+      expect(packet.nextAction).toMatchObject({ status: 'unknown', text: null });
+    }
+    expect(build().nextAction.text).toBe(next); // first cold successor still gets the complete bounded action
+  });
+
+  it('bounds partial changed sets and oversized stop constraints with exact scoped recovery', () => {
+    const packet = build({ item: { ...item, id: 'EI-1', harness: 'foreign-hive' },
+      freshness: { verdict: 'stale', changed: Array.from({ length: 1000 }, (_, i) => ({ dep: `item:WI-${i}` })) },
+      checkpoint: { ...checkpoint, checkpoint: renderCarryNote({ next, walls: [{ claim: 'STOP '.repeat(2000) }] }) } });
+    expect(JSON.stringify(packet).length).toBeLessThanOrEqual(RESUME_PACKET_BUDGET);
+    expect(packet.checkpoint.freshness).toMatchObject({ detailsOmitted: true, changedCount: 1000,
+      readRef: { args: { id: 'EI-1', projection: { pick: ['results[].checkpointFreshness'] } } } });
+    expect(packet.checkpoint.sourceRef.args).toEqual({ id: 'EI-1', checkpointOnly: true });
+    expect(packet.walls.omitted).toBe(1);
+    expect(packet.nextAction).toMatchObject({ status: 'oversized', text: null });
+  });
+
   it('reads the canonical item scope once and exposes evidence-store failures as unknown', async () => {
     const deps = { checkpoint: vi.fn().mockResolvedValue(checkpoint), freshness: vi.fn().mockResolvedValue(undefined),
       evidence: vi.fn().mockRejectedValue(new Error('database unavailable')) };
@@ -212,6 +250,6 @@ describe('bounded work-item resume', () => {
       workItemIds: [item.id], limit: 9 });
     expect(result.evidence).toMatchObject({ status: 'unknown', hasMore: null, omittedFromWindow: null });
     expect(result.checkpoint.freshness).toMatchObject({ verdict: 'unknown' });
-    expect(result.nextAction.text).toBe(next);
+    expect(result.nextAction).toEqual({ status: 'unknown', text: null });
   });
 });

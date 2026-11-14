@@ -50,6 +50,16 @@ import { authoringReuse } from '../../code-intelligence/reuse-authoring';
 import { suggestResearchAnchors } from '../../code-intelligence/research-trail';
 import { sessionAllowsAmbientContext } from '../../capability-envelope/session-confinement-port';
 import { notifySyncInvalidate } from '../../sync-sse';
+import { WorkItemAdoptionError, readWorkItemAdoptionProjectionInTransaction } from '../../work-items';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
+import { planLineStatusFromWorkItem, type ValidatedPlanLineAdoption } from './plan-line-graph';
+
+const adoptionInput = z.object({
+  id: z.string().min(1), expectedPlanVersion: z.number().int().nonnegative(),
+  expectedPlanHash: z.string().min(1),
+  expectedAdoptionFingerprint: z.string().regex(/^v1:[a-f0-9]{64}$/),
+}).strict();
 
 /**
  * EI-8811: normalize a caller-supplied phase heading to satisfy the parser's
@@ -163,6 +173,7 @@ const itemSpec = z.object({
   harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
   rationale: z.string().optional().describe('per-item revision rationale (else the batch `rationale`)'),
   anchors: anchorsInputSchema.optional(),
+  adoptExistingWorkItem: adoptionInput.optional(),
 });
 
 // Exported (back-compat name) — the SINGLE-item arg shape, now folded into a
@@ -179,6 +190,7 @@ export const argsSchema = z
     importance: IMPORTANCE.optional(),
     deliverable: DELIVERABLE.optional(),
     anchors: anchorsInputSchema.optional(),
+    adoptExistingWorkItem: adoptionInput.optional(),
     items: z
       .array(itemSpec)
       .min(1)
@@ -215,6 +227,8 @@ export const argsSchema = z
   // field's type/domain on the FIRST refusal (including that `phase: null` is not
   // accepted — `plans:items` reports phase:null for existing items, which invites it).
   .superRefine((a, ctx) => {
+    if (a.items?.length && a.adoptExistingWorkItem) ctx.addIssue({ code: 'custom',
+      path: ['adoptExistingWorkItem'], message: 'Adoption is per-item; put it on the exact items[] entry, never on a bulk default.' });
     const bulk = (a.items?.length ?? 0) > 0;
     const targets: Array<{ it: z.infer<typeof itemSpec>; path: Array<string | number> }> = bulk
       ? a.items!.map((it, i) => ({ it, path: ['items', i] }))
@@ -264,6 +278,7 @@ interface NewItem {
   harness?: string;
   rationale?: string;
   anchors?: AnchorInput[];
+  adoptExistingWorkItem?: z.infer<typeof adoptionInput>;
 }
 
 function formatPadded(n: number): string {
@@ -433,6 +448,13 @@ type AddItemValue =
  *  allocated itemId rides the result (CREATE → result embeds what the single call
  *  returned). */
 async function addItemOne(it: NewItem, ctx: UnifiedToolContext): Promise<BulkItemResult> {
+  try { return await addItemPrepared(it, ctx); }
+  catch (error) {
+    if (error instanceof WorkItemAdoptionError) return { ok: false, slug: it.slug, error: error.code, message: error.message };
+    throw error;
+  }
+}
+async function addItemPrepared(it: NewItem, ctx: UnifiedToolContext): Promise<BulkItemResult> {
   const sctx = harnessScopedCtx(it.harness, ctx);
   const harnessSlug = resolveCtxHarnessSlug(sctx);
   const rev = planRevisionCapture(
@@ -453,14 +475,39 @@ async function addItemOne(it: NewItem, ctx: UnifiedToolContext): Promise<BulkIte
       slug: it.slug,
       intent: `plans:add-item to "${it.phase.slice(0, 40)}"`,
       ...(harnessSlug ? { harnessSlug } : {}),
-      afterWrite: rev.afterWrite,
+      ...(it.adoptExistingWorkItem ? {
+        dependencyTransaction: true,
+        revisionInTransaction: rev.inTransaction,
+        prepareAdoptionInTransaction: async (tx, meta, lockedScope) => {
+          const requested = it.adoptExistingWorkItem!;
+          if (!meta || meta.version !== requested.expectedPlanVersion || meta.contentHash !== requested.expectedPlanHash)
+            throw new WorkItemAdoptionError('adoption_plan_stale', 'Both saved plan version and content hash must match.');
+          const projection = await readWorkItemAdoptionProjectionInTransaction(tx, {
+            ...lockedScope, id: requested.id }, true);
+          if (projection.fingerprint !== requested.expectedAdoptionFingerprint)
+            throw new WorkItemAdoptionError('adoption_snapshot_stale', 'The complete adoption preimage changed.');
+          const root = projection.root;
+          if (!(ISSUE_FAMILY_ROUTE_KINDS as readonly string[]).includes(root.item_kind) || root.parent_id !== null ||
+              ANY_FAMILY_TERMINAL_STATES.includes(root.status) || root.terminal_owner !== null ||
+              root.payload?._completionEvidence != null || root.nature !== 'work' || root.audience !== 'agent')
+            throw new WorkItemAdoptionError('adoption_ineligible', 'Only a top-level nonterminal issue-family work row without terminal authority is eligible.');
+          if (root.taken_by !== resolveAgentIdentity(ctx).ownerId)
+            throw new WorkItemAdoptionError('adoption_foreign_holder', 'The authenticated caller must already hold this exact row.');
+          if (root.payload?.lane === 'observation' || root.payload?._lane === 'observation')
+            throw new WorkItemAdoptionError('adoption_observation', 'Observation rows cannot be adopted as work.');
+          if (root.plan_slug !== null || root.plan_line_id !== null)
+            throw new WorkItemAdoptionError('adoption_binding_conflict', 'The row already has a canonical association.');
+          return projection;
+        },
+      } : { afterWrite: rev.afterWrite }),
       inTransaction: async (tx, _body, lockedScope, value) => {
         if (value.ok && anchors !== undefined) await writePlanItemAnchors(tx,
           { ...lockedScope, planSlug: it.slug }, { itemId: value.itemId, anchors }, resolveAgentIdentity(ctx).ownerId);
       },
     },
     async (current, meta): Promise<{ newBody: string | null; value: AddItemValue;
-      anchorWrites?: import('../../plan-items/anchor-store').PlanAnchorWrite[] }> => {
+      anchorWrites?: import('../../plan-items/anchor-store').PlanAnchorWrite[];
+      validatedAdoptions?: ReadonlyMap<string, ValidatedPlanLineAdoption> }> => {
       if (current === null) {
         return { newBody: null, value: { ok: false, code: 'not_found' } };
       }
@@ -494,7 +541,10 @@ async function addItemOne(it: NewItem, ctx: UnifiedToolContext): Promise<BulkIte
           },
         };
       }
-      const itemLine = buildItemLine(itemId, it.text, it.blockedBy ?? [], it.importance, it.deliverable);
+      const adoption = meta?.preparedAdoption;
+      const planStatus = adoption ? planLineStatusFromWorkItem(adoption.root.status) : 'todo';
+      const itemLine = buildItemLine(itemId, it.text, it.blockedBy ?? [], it.importance, it.deliverable)
+        .replace('`todo`', '`' + planStatus + '`');
       const { newBody, createdPhase } = appendItemToBody(current, it.phase, itemLine);
       const final = bumpUpdatedDate(newBody);
       writtenBody = final;
@@ -502,6 +552,10 @@ async function addItemOne(it: NewItem, ctx: UnifiedToolContext): Promise<BulkIte
         newBody: final,
         value: { ok: true, itemId, createdPhase, slug: it.slug },
         anchorWrites: [{ itemId, anchors: anchors ?? [] }],
+        ...(adoption ? { validatedAdoptions: new Map([[itemId, {
+          featureId: adoption.root.feature_id, kind: adoption.root.item_kind,
+          status: adoption.root.status, planStatus,
+        }]]) } : {}),
       };
     },
   );
@@ -609,6 +663,7 @@ export default defineTool({
           harness: it.harness ?? args.harness,
           rationale: it.rationale ?? args.rationale,
           anchors: it.anchors ?? args.anchors,
+          adoptExistingWorkItem: it.adoptExistingWorkItem,
         }))
       : [
           {
@@ -621,6 +676,7 @@ export default defineTool({
             harness: args.harness,
             rationale: args.rationale,
             anchors: args.anchors,
+            adoptExistingWorkItem: args.adoptExistingWorkItem,
           },
         ];
     const env = await runBulk(list, (it) => addItemOne(it, ctx), {

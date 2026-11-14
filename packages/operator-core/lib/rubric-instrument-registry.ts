@@ -6,6 +6,7 @@ import { MANAGED_INVENTORY_EVIDENCE_INSTRUMENT, managedCapabilityInventoryRescor
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import { engineeringEvidenceReleaseInstrument } from './code-intelligence/engineering-evidence-release-instrument';
 import { CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY, codeIntelUnknownRateRescore } from './code-intelligence/code-intel-unknown-rate-probe';
+import { FINAL_CONTEXT_SAMPLE_INSTRUMENT, finalContextSampleRescore } from './memory/final-context-measurement';
 import { CODE_INTEL_LIVENESS_INSTRUMENT_KEY, codeIntelLivenessRescore } from './code-intelligence/push-leg-liveness';
 import { CLEANUP_OUTCOME_INSTRUMENT_KEYS, cleanupOutcomeRescore, metricForCleanupInstrument } from './code-cleanup/outcome';
 import { lunaCapacityInstruments } from './fleet/capacity-recovery-evidence';
@@ -75,6 +76,8 @@ import {
   type WorkOverheadWindow, type WorkOverheadMetrics,
 } from './agent-work-overhead-metrics';
 import { REUSE_MEASUREMENT_INSTRUMENT_KEYS, type ReuseMetric } from './code-intelligence/reuse-measurement';
+import { FLEET_PRODUCTIVITY_KEY, fleetProductivityRescore } from './fleet/execution-productivity';
+import { FLEET_COMMS_KEY, fleetCommsRescore } from './fleet/execution-comms';
 
 /** The explicit manual binding: the criterion is deliberately graded by a person. */
 export const MANUAL_INSTRUMENT_KEY = 'none';
@@ -278,6 +281,7 @@ export interface PlatformInstrument {
     unit: InstrumentUnit;
     scope?: 'workspace' | 'harness' | 'subject';
     resolve(window: { workspaceId: string; harnessSlug?: string; windowStart: string; windowEnd: string;
+      headroomBinding?: import('./storage/reclaim-provenance').DurableHeadroomBinding;
       /** Present only for a subject-scoped instrument; a label is not identity authority. */
       subject?: RecordedRubricCheckSubject;
     }, context?: {
@@ -799,8 +803,11 @@ const COMMAND_INSTRUMENTS: readonly CommandInstrument[] = Object.freeze([
  */
 export function platformComputedInstrumentKeys(): string[] {
   return [
+    FLEET_PRODUCTIVITY_KEY,
+    FLEET_COMMS_KEY,
     MANAGED_INVENTORY_EVIDENCE_INSTRUMENT,
     LEAD_SOURCE_OBSERVATIONS_INSTRUMENT_KEY,
+    FINAL_CONTEXT_SAMPLE_INSTRUMENT,
     CARRY_DRILL_LIFECYCLE_INSTRUMENT_KEY,
     DREAM_CONTROL_LIVE_INSTRUMENT_KEY,
     ...Object.values(OBSERVABILITY_INSTRUMENT_KEYS),
@@ -867,9 +874,12 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
       evaluator: 'platform',
       description: 'Resolved in-process by scorecards:emit / scorecards:evaluate as a platform-computed snapshot.',
       resolvedBy: 'scorecards:instrument-snapshots',
-      ...(key === MANAGED_INVENTORY_EVIDENCE_INSTRUMENT ? { rescore: managedCapabilityInventoryRescore() }
+      ...(key === FLEET_PRODUCTIVITY_KEY ? { rescore: fleetProductivityRescore() }
+        : key === FLEET_COMMS_KEY ? { rescore: fleetCommsRescore() }
+        : key === MANAGED_INVENTORY_EVIDENCE_INSTRUMENT ? { rescore: managedCapabilityInventoryRescore() }
         : key === LEAD_SOURCE_OBSERVATIONS_INSTRUMENT_KEY ? { rescore: leadSourceObservationsRescore() }
         : key === CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY ? { rescore: codeIntelUnknownRateRescore() }
+        : key === FINAL_CONTEXT_SAMPLE_INSTRUMENT ? { rescore: finalContextSampleRescore() }
         : key === CODE_INTEL_LIVENESS_INSTRUMENT_KEY ? { rescore: codeIntelLivenessRescore() }
         : key === LEG_OUTCOMES_INSTRUMENT_KEY ? { rescore: codeIntelLegOutcomesRescore() }
         : key === COUPLING_SHADOW_WINDOW_INSTRUMENT_KEY ? { rescore: codeIntelCouplingShadowRescore() }

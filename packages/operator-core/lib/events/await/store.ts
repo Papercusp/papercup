@@ -76,8 +76,10 @@ import type {
   WakeHandle,
 } from './types';
 import { EXPLICIT_PARK_NOTE_MARKER, INBOX_WAKE_KEY_PREFIX, isExplicitParkNote } from './types';
-import type { ProducerHealthCertificate, ProducerHealthObservation, VerifiedWaitTimeoutResult } from './verified-wait';
+import type { ProducerHealthCertificate, ProducerHealthObservation, VerifiedWaitTimeoutResult, VerifiedWaitObservationReceipt } from './verified-wait';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
+import { admitWaitEpisode, claimWaitEpisode, lockWaitEpisodeItem, persistWaitEpisode,
+  retireWaitEpisode, settleWaitEpisode, waitEpisodeItemIsTerminal, type WaitEpisodeReceipt } from './wait-episode';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -352,7 +354,21 @@ export async function registerAwait(input: {
       );
     }
   };
-  const insertAwait = async (tx: any): Promise<AwaitRow> => {
+  const prepareEpisode = async (tx: any) =>
+    input.policy !== 'announce' && input.once !== false && !isPattern(input.eventKey)
+      ? await admitWaitEpisode(tx, { eventWorkspaceId: ws, subscriberId: input.subscriberId,
+          eventKey: input.eventKey, payloadFilter: input.payloadFilter ?? null,
+          certificate: input.producerHealthCertificate ?? null, timeoutSec: input.timeoutSec ?? null })
+      : null;
+  const insertAwait = async (tx: any, admitted: Awaited<ReturnType<typeof prepareEpisode>>): Promise<AwaitRow> => {
+    const certificate = admitted?.certificate ?? input.producerHealthCertificate;
+    const expected = admitted?.episode.contract.expectedCondition as { kind?: string; predicate?: unknown; sha?: string } | null;
+    const predicate = expected?.kind === 'predicate' ? expected.predicate
+      : expected?.kind === 'sha' ? { sha: expected.sha } : null;
+    const storedFilter = predicate ? input.payloadFilter == null ? predicate
+      : { $and: [input.payloadFilter, predicate] } : input.payloadFilter;
+    const deadline = admitted ? admitted.episode.nextProbeAtMs === null ? null
+      : new Date(admitted.episode.nextProbeAtMs).toISOString() : expiresTs;
     const rows = input.boundTo
       ? await tx`
           INSERT INTO harness_shared.event_awaits
@@ -361,10 +377,10 @@ export async function registerAwait(input: {
           VALUES
             (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
              ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
-             ${timeoutBehavior}, ${expiresTs}, ${input.once ?? true}, ${input.minSleepSec ?? null},
+             ${timeoutBehavior}, ${deadline}, ${input.once ?? true}, ${input.minSleepSec ?? null},
              ${input.urgency ?? false},
-             ${input.payloadFilter != null ? JSON.stringify(input.payloadFilter) : null}::text::jsonb,
-             ${input.producerHealthCertificate ? JSON.stringify(input.producerHealthCertificate) : null}::text::jsonb,
+             ${storedFilter != null ? JSON.stringify(storedFilter) : null}::text::jsonb,
+             ${certificate ? JSON.stringify(certificate) : null}::text::jsonb,
              ${JSON.stringify(assertLifecycleBinding(input.boundTo))}::text::jsonb)
           RETURNING *
         `
@@ -374,12 +390,17 @@ export async function registerAwait(input: {
           VALUES
             (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
              ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
-             ${timeoutBehavior}, ${expiresTs}, ${input.once ?? true}, ${input.minSleepSec ?? null},
+             ${timeoutBehavior}, ${deadline}, ${input.once ?? true}, ${input.minSleepSec ?? null},
              ${input.urgency ?? false},
-             ${input.payloadFilter != null ? JSON.stringify(input.payloadFilter) : null}::text::jsonb,
-             ${input.producerHealthCertificate ? JSON.stringify(input.producerHealthCertificate) : null}::text::jsonb)
+             ${storedFilter != null ? JSON.stringify(storedFilter) : null}::text::jsonb,
+             ${certificate ? JSON.stringify(certificate) : null}::text::jsonb)
           RETURNING *
         `;
+    if (admitted && (admitted.episode.state === 'complete' || admitted.episode.state === 'task-terminal')) {
+      const [closed] = await tx`UPDATE harness_shared.event_awaits SET cancelled_at=now(),
+        cancel_reason=${AWAIT_CANCEL_REASONS.internalCleanup},expires_ts=NULL WHERE id=${rows[0].id} RETURNING *`;
+      return mapAwait(closed);
+    }
     return mapAwait(rows[0]);
   };
   // Ordinary, unfiltered exact one-shot registrations are the shared primitive
@@ -454,6 +475,7 @@ export async function registerAwait(input: {
         throw new Error('allEventKeys supersession requires includeNotePrefix');
       }
       await assertGenerationPin(tx);
+      const admitted = await prepareEpisode(tx);
       // Exact-key supersession serializes one subscriber/key pair. A coordination
       // surface that owns at most one current row per subscriber (fleet:bench)
       // serializes at subscriber scope so concurrent cross-key retargets cannot
@@ -481,7 +503,7 @@ export async function registerAwait(input: {
            ${noteFilter}
         RETURNING id
       `;
-      const row = await insertAwait(tx);
+      const row = await insertAwait(tx, admitted);
       return { ...row, supersededPendingCount: superseded.length };
     }, transactionOptions);
   }
@@ -492,14 +514,16 @@ export async function registerAwait(input: {
   if (input.expectedGeneration != null) {
     return boundedOrgTxn(async (tx) => {
       await assertGenerationPin(tx);
+      const admitted = await prepareEpisode(tx);
       const explicit = await reconcileExactPending(tx);
-      return explicit ?? insertAwait(tx);
+      return explicit ?? insertAwait(tx, admitted);
     }, transactionOptions);
   }
   if (exactOneShot) {
     return boundedOrgTxn(async (tx) => {
+      const admitted = await prepareEpisode(tx);
       const explicit = await reconcileExactPending(tx);
-      return explicit ?? insertAwait(tx);
+      return explicit ?? insertAwait(tx, admitted);
     }, transactionOptions);
   }
   // Keep the legacy insert byte-for-byte free of `bound_to` when no binding was
@@ -507,7 +531,7 @@ export async function registerAwait(input: {
   // hand-rolled test fixtures keep exercising the unbound path honestly. It is
   // still bounded: this is the final pre-registration write, so it must not
   // escape the interactive transaction budget merely because it is legacy.
-  return boundedOrgTxn((tx) => insertAwait(tx), transactionOptions);
+  return boundedOrgTxn(async (tx) => insertAwait(tx, await prepareEpisode(tx)), transactionOptions);
 }
 
 /**
@@ -990,6 +1014,16 @@ export async function cancelAwaitDetailed(input: {
   const { sql } = getOrgPg();
   const ws = eventsWs();
   return sql.begin(async (tx) => {
+    let episodeLock: Awaited<ReturnType<typeof lockWaitEpisodeItem>> | null = null;
+    if (input.source === 'operator') {
+      const [snapshot] = await tx`SELECT producer_health, event_key FROM harness_shared.event_awaits
+        WHERE workspace_id=${ws} AND id=${input.awaitId} AND subscriber_id=${input.subscriberId}`;
+      const health = parseJsonb<ProducerHealthCertificate>(snapshot?.producer_health);
+      if (health?.waitEpisode) {
+        await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'event-announce:' + snapshot.event_key}, 0))`;
+        episodeLock = await lockWaitEpisodeItem(tx, health.waitEpisode);
+      }
+    }
     const candidates = await tx`
       SELECT id, event_key, once, expires_ts
         FROM harness_shared.event_awaits
@@ -1071,6 +1105,10 @@ export async function cancelAwaitDetailed(input: {
         inFlightDeliveries: 0,
       };
     }
+
+    if (episodeLock) await persistWaitEpisode(tx,
+      retireWaitEpisode(episodeLock.episode, 'cancelled'), episodeLock.episode.revision);
+    if (episodeLock) await persistWaitEpisodeRoutineDisposition(tx, retireWaitEpisode(episodeLock.episode, 'cancelled'));
 
     const droppedDeliveries = await settleQueuedDeliveriesForCancelledAwaits(
       rows.map((row: any) => Number(row.id)),
@@ -2180,6 +2218,48 @@ interface AwaitFireInput {
 
 export async function fireAwaitsForKey(input: AwaitFireInput): Promise<AwaitRow[]> {
   const { sql } = getOrgPg();
+  const episodeRows = await sql`SELECT producer_health FROM harness_shared.event_awaits
+    WHERE workspace_id=${eventsWs()} AND event_key=${input.eventKey}
+      AND fired_at IS NULL AND cancelled_at IS NULL AND producer_health ? 'waitEpisode'
+    ORDER BY producer_health->'waitEpisode'->>'id'`;
+  if (episodeRows.length) {
+    return await sql.begin(async tx => {
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'event-announce:' + input.eventKey}, 0))`;
+      const locked: Array<Awaited<ReturnType<typeof lockWaitEpisodeItem>>> = [];
+      for (const row of episodeRows) {
+        const ref = parseJsonb<ProducerHealthCertificate>(row.producer_health)!.waitEpisode!;
+        const value = await lockWaitEpisodeItem(tx, ref);
+        if (!locked.some(v => v.episode.id === value.episode.id)) locked.push(value);
+      }
+      // A task may have ended after registration but before its final push.
+      // Close its continuation under the same item lock before fan-out can
+      // manufacture a wake for an already terminal objective.
+      for (const { item, episode } of locked) {
+        if (waitEpisodeItemIsTerminal(item) || episode.state === 'complete' || episode.state === 'task-terminal') {
+          const closed = waitEpisodeItemIsTerminal(item) ? retireWaitEpisode(episode, 'task-terminal') : episode;
+          if (closed !== episode) await persistWaitEpisode(tx, closed, episode.revision);
+          await tx`UPDATE harness_shared.event_awaits SET cancelled_at=now(),
+            cancel_reason=${AWAIT_CANCEL_REASONS.internalCleanup},expires_ts=NULL
+            WHERE workspace_id=${eventsWs()} AND producer_health->'waitEpisode'->>'id'=${episode.id}
+              AND fired_at IS NULL AND cancelled_at IS NULL`;
+          await persistWaitEpisodeRoutineDisposition(tx, closed);
+        }
+      }
+      if (input.taskTerminal && !(await currentTaskTerminal(tx, input.eventKey, input.taskTerminal, input.payload)).length) return [];
+      const fired = await fireAwaitsForKeyInStore(input, tx);
+      for (const { episode } of locked) {
+        const expected = episode.contract.expectedCondition as { kind?: string; predicate?: unknown; sha?: string } | null;
+        const matches = expected?.kind === 'predicate' ? payloadMatchesFilter(expected.predicate, input.payload)
+          : expected?.kind === 'sha' ? (input.payload as { sha?: unknown } | null)?.sha === expected.sha
+          : fireCertifiesCondition(input.eventKey);
+        if (matches && fired.some(row => row.producerHealthCertificate?.waitEpisode?.id === episode.id)) {
+          await persistWaitEpisode(tx, retireWaitEpisode(episode, 'complete'), episode.revision);
+          await persistWaitEpisodeRoutineDisposition(tx, retireWaitEpisode(episode, 'complete'));
+        }
+      }
+      return fired;
+    }) as AwaitRow[];
+  }
   if (input.taskTerminal) {
     // The latch can have been accepted before a newer terminal close. Fence the
     // actual claims too, including the filtered/pattern second UPDATE. Only store
@@ -3128,6 +3208,8 @@ export async function fireTimedOutAwaits(): Promise<AwaitRow[]> {
 export async function claimDueVerifiedAwaits(limit = 100): Promise<AwaitRow[]> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
+  const claimToken = globalThis.crypto.randomUUID();
+  const episodeClaims = await claimDueWaitEpisodeAwaits(limit);
   const rows = await sql`
     WITH due AS (
       SELECT id
@@ -3135,6 +3217,7 @@ export async function claimDueVerifiedAwaits(limit = 100): Promise<AwaitRow[]> {
        WHERE workspace_id = ${ws}
          AND timeout_behavior = 'wake'
          AND producer_health IS NOT NULL
+         AND NOT COALESCE(producer_health ? 'waitEpisode', false)
          AND expires_ts IS NOT NULL AND (expires_ts <= now() OR (
            producer_health->'producer'->>'kind' = 'durable-park-recovery'
            AND jsonb_typeof(producer_health->'details'->'nextCheckAtMs') = 'number'
@@ -3147,38 +3230,327 @@ export async function claimDueVerifiedAwaits(limit = 100): Promise<AwaitRow[]> {
        FOR UPDATE SKIP LOCKED
     )
     UPDATE harness_shared.event_awaits a
-       SET verification_claimed_at = now()
+       SET verification_claimed_at = now(),
+           -- Park recovery already settles its own admission receipt under
+           -- the driving-item transaction and rewrites this certificate there.
+           -- Its separate protocol must not inherit a fallback-probe token.
+           producer_health = CASE WHEN a.producer_health->'producer'->>'kind' = 'durable-park-recovery'
+             THEN a.producer_health ELSE jsonb_set(a.producer_health, '{verificationReceipt}',
+             jsonb_build_object(
+               'observationId', CASE
+                 WHEN a.producer_health->'verificationReceipt'->>'state' = 'pending'
+                   THEN a.producer_health->'verificationReceipt'->>'observationId'
+                 ELSE ${claimToken}::text || ':' || a.id::text END,
+               'sequence', CASE
+                 WHEN a.producer_health->'verificationReceipt'->>'state' = 'pending'
+                   THEN (a.producer_health->'verificationReceipt'->>'sequence')::bigint
+                 ELSE COALESCE((a.producer_health->'verificationReceipt'->>'sequence')::bigint, 0) + 1 END,
+               'claimToken', ${claimToken}::text,
+               'state', 'pending'
+             ), true) END
       FROM due
      WHERE a.id = due.id
     RETURNING a.*
   `;
-  return rows.map(mapAwait);
+  return [...episodeClaims, ...rows.map(mapAwait)];
+}
+
+/** Shared episode claim is committed before the engine dispatches a resolver.
+ * Independent event/loop callbacks cannot each acquire a fresh observation. */
+async function claimDueWaitEpisodeAwaits(limit: number, selection?: { id: number; callback: string }, sqlOverride?: postgres.Sql): Promise<AwaitRow[]> {
+  const sql = sqlOverride ?? getOrgPg().sql;
+  const candidates = await sql`SELECT * FROM harness_shared.event_awaits
+    WHERE workspace_id=${eventsWs()} AND producer_health ? 'waitEpisode'
+      AND timeout_behavior='wake' AND expires_ts<=now() AND fired_at IS NULL AND cancelled_at IS NULL
+      AND (${selection?.id ?? null}::bigint IS NULL OR id=${selection?.id ?? null})
+      AND (verification_claimed_at IS NULL OR verification_claimed_at<now()-interval '2 minutes')
+    ORDER BY expires_ts, id LIMIT ${Math.min(Math.max(limit, 1), 500)}`;
+  const claimed: AwaitRow[] = [];
+  for (const candidate of candidates) {
+    const awaited = mapAwait(candidate);
+    const ref = awaited.producerHealthCertificate!.waitEpisode!;
+    const result = await boundedOrgTxn(async raw => {
+      const tx = raw as unknown as postgres.TransactionSql;
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'event-announce:' + awaited.eventKey}, 0))`;
+      const { item, episode } = await lockWaitEpisodeItem(tx, ref);
+      if (waitEpisodeItemIsTerminal(item)) {
+        const retired = retireWaitEpisode(episode, 'task-terminal');
+        await persistWaitEpisode(tx, retired, episode.revision);
+        await tx`UPDATE harness_shared.event_awaits SET expires_ts=NULL WHERE id=${awaited.id}`;
+        await persistWaitEpisodeRoutineDisposition(tx, retired);
+        return null;
+      }
+      if (item.taken_by !== awaited.subscriberId || episode.custodianId !== awaited.subscriberId) return null;
+      const [row] = await tx`SELECT * FROM harness_shared.event_awaits WHERE id=${awaited.id}
+        AND fired_at IS NULL AND cancelled_at IS NULL AND expires_ts<=now() FOR UPDATE`;
+      if (!row) return null;
+      const current = mapAwait(row);
+      const claim = claimWaitEpisode(episode, { callback: selection?.callback ?? `await:${current.id}:${current.expiresTs}`, nowMs: Date.now() });
+      if (!claim.receipt) return null;
+      await persistWaitEpisode(tx, claim.episode, episode.revision);
+      const health = { ...current.producerHealthCertificate!, waitEpisodeReceipt: claim.receipt };
+      const [updated] = await tx`UPDATE harness_shared.event_awaits SET verification_claimed_at=now(),
+        producer_health=${JSON.stringify(health)}::text::jsonb WHERE id=${current.id} RETURNING *`;
+      return mapAwait(updated);
+    }, { client: sql });
+    if (result) claimed.push(result);
+  }
+  return claimed;
+}
+
+async function settleWaitEpisodeAwait(input: {
+  id: number; result: VerifiedWaitTimeoutResult; waitEpisodeReceipt: WaitEpisodeReceipt;
+}, sqlOverride?: postgres.Sql): Promise<null> {
+  return boundedOrgTxn(async raw => {
+    const tx = raw as unknown as postgres.TransactionSql;
+    const [snapshot] = await tx`SELECT * FROM harness_shared.event_awaits WHERE workspace_id=${eventsWs()} AND id=${input.id}`;
+    if (!snapshot) return null;
+    const awaited = mapAwait(snapshot);
+    const ref = awaited.producerHealthCertificate?.waitEpisode;
+    if (!ref) return null;
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'event-announce:' + awaited.eventKey}, 0))`;
+    const { item, episode } = await lockWaitEpisodeItem(tx, ref);
+    if (item.taken_by !== awaited.subscriberId || episode.custodianId !== awaited.subscriberId) return null;
+    const [current] = await tx`SELECT id FROM harness_shared.event_awaits WHERE id=${input.id}
+      AND fired_at IS NULL AND cancelled_at IS NULL FOR UPDATE`;
+    if (!current) return null;
+    const missingEvidence = !!awaited.producerHealthCertificate?.progressLease && !input.result.evidence?.progressLease;
+    const settlement = settleWaitEpisode(episode, input.waitEpisodeReceipt, {
+      kind: input.result.classification === 'unknown' || missingEvidence ? 'unknown' : 'observed',
+      checkedAtMs: input.result.checkedAtMs,
+      ...(input.result.evidence?.progressLease ? { evidence: input.result.evidence.progressLease as import('./verified-wait').ProgressLeaseEvidence } : {}),
+      ...(input.result.evidence?.uncertainty ? { uncertainty: String(input.result.evidence.uncertainty) } : {}),
+      ...(missingEvidence ? { uncertainty: 'frozen resolver evidence is missing' } : {}),
+    });
+    if (!settlement.accepted) return null;
+    const next = waitEpisodeItemIsTerminal(item) ? retireWaitEpisode(settlement.episode, 'task-terminal') : settlement.episode;
+    await persistWaitEpisode(tx, next, episode.revision);
+    const health = { ...awaited.producerHealthCertificate!, waitEpisodeReceipt: next.receipt };
+    const result = { ...input.result, nextAction: next.state === 'unknown' ? 'resolve-uncertainty' : 're-await',
+      evidence: { ...input.result.evidence, waitEpisode: { id: next.id, state: next.state,
+        remainingNoDeltaBudget: next.remainingNoDeltaBudget, stage: next.stage,
+        disposition: next.receipt?.disposition, remedyAuthority: 'none' } } };
+    // The item debit and the exact continuation's next disposition are one
+    // transaction. No fire is manufactured by exhaustion or uncertainty. The
+    // existing push-event path owns delivery intent + outbox recovery.
+    await tx`UPDATE harness_shared.event_awaits SET producer_health=${JSON.stringify(health)}::text::jsonb,
+      expires_ts=${next.nextProbeAtMs === null ? null : new Date(next.nextProbeAtMs).toISOString()}::timestamptz,
+      timeout_verification=${JSON.stringify(result)}::text::jsonb, verification_claimed_at=NULL
+      WHERE id=${input.id}`;
+    await persistWaitEpisodeRoutineDisposition(tx, next);
+    return null;
+  }, sqlOverride ? { client: sqlOverride } : {});
+}
+
+/** Only routines bound to THIS episode and THIS still-current fire are changed.
+ * The episode debit, await disposition and routine rearm/park commit together. */
+async function persistWaitEpisodeRoutineDisposition(tx: postgres.TransactionSql,
+  episode: import('./wait-episode').WaitEpisode): Promise<void> {
+  const completed = episode.state === 'complete' || episode.state === 'task-terminal';
+  const disposition = completed ? 'complete' : episode.state === 'active' ? 'rearm' : 'push-only';
+  await tx`UPDATE harness_shared.routines r SET
+    next_fire_at=CASE
+      WHEN ${episode.state === 'task-terminal'} OR (${completed} AND payload_template->>'mode'='monitor') THEN NULL
+      WHEN ${completed} THEN now() + reschedule_interval_sec * interval '1 second'
+      WHEN ${episode.state === 'active' && episode.receipt?.state !== 'pending'}
+        THEN to_timestamp(${episode.nextProbeAtMs ?? 0} / 1000.0)
+      ELSE 'infinity'::timestamptz END,
+    active=CASE WHEN ${episode.state === 'task-terminal'} OR (${completed} AND payload_template->>'mode'='monitor')
+      THEN false ELSE active END,
+    -- A completed prerequisite releases productive work. A terminal driving
+    -- task retains the identity tombstone, so an omitted retune cannot turn
+    -- the same finished objective back into a fresh unblocked model loop.
+    payload_template=CASE WHEN ${episode.state === 'complete'} THEN payload_template-'blockedOn' ELSE payload_template END,
+    metadata=jsonb_set(metadata,'{wait_episode}',(metadata->'wait_episode') ||
+      jsonb_build_object('disposition',${disposition}::text,'remainingNoDeltaBudget',${episode.remainingNoDeltaBudget}::int,
+        'state',${episode.state}::text)), updated_at=now()
+    WHERE workspace_id=${episode.workspaceId} AND target_owner_id=${episode.custodianId}
+      AND active=true AND payload_template->>'workItem'=${episode.drivingWorkItemId}
+      AND metadata->'wait_episode'->>'id'=${episode.id}
+      AND (metadata->'wait_episode'->>'fireToken') IS NOT DISTINCT FROM last_fired_at::text`;
+}
+
+/** Arm-time admission runs inside the routine writer's transaction, after the
+ * event and driving-item locks. An explicit arm or recovery cannot buy another
+ * inspection; a never-fired routine can still be released by the exact push. */
+export async function bindIdentifiedWaitRoutineArm(input: {
+  tx: postgres.TransactionSql; routineId: string; ownerId: string; workspaceId: string; harness: string;
+  drivingWorkItemId: string; eventKey: string; intervalMs: number;
+}): Promise<string | null> {
+  const { tx } = input;
+  const [routine] = await tx`SELECT payload_template FROM harness_shared.routines
+    WHERE id=${input.routineId} AND workspace_id=${input.workspaceId} AND target_owner_id=${input.ownerId}
+      AND active=true AND payload_template->>'workItem'=${input.drivingWorkItemId}`;
+  const { readIdentifiedWaitForRoutine } = await import('../../harness/routines/monitor-standdown');
+  if (readIdentifiedWaitForRoutine(routine?.payload_template)?.eventKey !== input.eventKey) {
+    throw new Error('wait episode arm binding changed during admission');
+  }
+  const [pending] = await tx`SELECT * FROM harness_shared.event_awaits
+    WHERE workspace_id=${eventsWs()} AND subscriber_id=${input.ownerId} AND event_key=${input.eventKey}
+      AND fired_at IS NULL AND cancelled_at IS NULL
+      AND producer_health->'waitEpisode'->>'drivingWorkItemId'=${input.drivingWorkItemId}
+      AND producer_health->'waitEpisode'->>'workspaceId'=${input.workspaceId}
+      AND producer_health->'waitEpisode'->>'harness'=${input.harness}
+    ORDER BY id DESC LIMIT 1`;
+  const awaited = pending ? mapAwait(pending) : await registerAwait({
+    subscriberId: input.ownerId, eventKey: input.eventKey, timeoutSec: input.intervalMs / 1000,
+    producerHealthCertificate: { version: 1, producer: { kind: 'bounded-dependency', id: input.eventKey },
+      owner: { ownerId: null, workItemId: null }, issuedAtMs: Date.now(),
+      expectedCadenceMs: input.intervalMs, verificationDeadlineMs: Date.now() + input.intervalMs,
+      lastProgressAtMs: null, lastFireAtMs: null,
+      details: { drivingContext: { workspaceId: input.workspaceId, harness: input.harness,
+        workItemId: input.drivingWorkItemId, noDeltaBudget: routine.payload_template?.monitor?.noDeltaBudget ?? 1 } } },
+  }, tx);
+  if (!awaited.producerHealthCertificate?.waitEpisode) throw new Error('wait episode arm admission missing');
+  const { item, episode: admittedEpisode } = await lockWaitEpisodeItem(tx, awaited.producerHealthCertificate.waitEpisode);
+  const episode = waitEpisodeItemIsTerminal(item) ? retireWaitEpisode(admittedEpisode, 'task-terminal') : admittedEpisode;
+  if (episode !== admittedEpisode) await persistWaitEpisode(tx, episode, admittedEpisode.revision);
+  if (item.taken_by !== input.ownerId || episode.custodianId !== input.ownerId) {
+    throw new Error('wait episode arm custody changed');
+  }
+  if (episode.state === 'complete' || episode.state === 'task-terminal') {
+    await tx`UPDATE harness_shared.event_awaits SET cancelled_at=now(),
+      cancel_reason=${AWAIT_CANCEL_REASONS.internalCleanup},expires_ts=NULL WHERE id=${awaited.id}
+        AND fired_at IS NULL AND cancelled_at IS NULL`;
+  }
+  await tx`UPDATE harness_shared.routines SET metadata=COALESCE(metadata,'{}'::jsonb) ||
+    jsonb_build_object('wait_episode',jsonb_build_object('id',${episode.id}::text,'fireToken',last_fired_at::text)),
+    updated_at=now() WHERE id=${input.routineId}`;
+  await persistWaitEpisodeRoutineDisposition(tx, episode);
+  const [current] = await tx`SELECT next_fire_at::text FROM harness_shared.routines WHERE id=${input.routineId}`;
+  return current?.next_fire_at ?? null;
+}
+
+/** The genuine-settlement branch of the loop reconciler calls this for either
+ * label. A pre-probe crash leaves a persisted observation and a parked routine;
+ * the await sweeper resumes it. An unrelated productive routine is untouched. */
+export async function settleIdentifiedWaitRoutine(input: {
+  sql: postgres.Sql; routineId: string; ownerId: string; workspaceId: string; harness: string;
+  drivingWorkItemId: string; eventKey: string; fireAt: string; intervalMs: number;
+}): Promise<{ handled: boolean; rearmed: boolean }> {
+  const { sql } = input;
+  const awaited = await sql.begin(async tx => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'event-announce:' + input.eventKey}, 0))`;
+    const [routine] = await tx`SELECT payload_template FROM harness_shared.routines
+      WHERE id=${input.routineId} AND workspace_id=${input.workspaceId} AND target_owner_id=${input.ownerId}
+        AND active=true AND last_fired_at=${input.fireAt}::timestamptz
+        AND payload_template->>'workItem'=${input.drivingWorkItemId}`;
+    if (!routine) return null;
+    const { readIdentifiedWaitForRoutine } = await import('../../harness/routines/monitor-standdown');
+    if (readIdentifiedWaitForRoutine(routine.payload_template)?.eventKey !== input.eventKey) return null;
+    const [pending] = await tx`SELECT * FROM harness_shared.event_awaits
+      WHERE workspace_id=${eventsWs()} AND subscriber_id=${input.ownerId} AND event_key=${input.eventKey}
+        AND fired_at IS NULL AND cancelled_at IS NULL
+        AND producer_health->'waitEpisode'->>'drivingWorkItemId'=${input.drivingWorkItemId}
+      ORDER BY id DESC LIMIT 1`;
+    const row = pending ? mapAwait(pending) : await registerAwait({
+      subscriberId: input.ownerId, eventKey: input.eventKey, timeoutSec: input.intervalMs / 1000,
+      producerHealthCertificate: { version: 1, producer: { kind: 'bounded-dependency', id: input.eventKey },
+        owner: { ownerId: null, workItemId: null }, issuedAtMs: Date.parse(input.fireAt)-input.intervalMs,
+        expectedCadenceMs: input.intervalMs, verificationDeadlineMs: Date.parse(input.fireAt),
+        lastProgressAtMs: null, lastFireAtMs: null,
+        details: { drivingContext: { workspaceId: input.workspaceId, harness: input.harness,
+          workItemId: input.drivingWorkItemId,
+          noDeltaBudget: routine.payload_template?.monitor?.noDeltaBudget ?? 1 } } },
+    }, tx);
+    if (!row.producerHealthCertificate?.waitEpisode) return null;
+    const { item, episode } = await lockWaitEpisodeItem(tx, row.producerHealthCertificate.waitEpisode);
+    if (item.taken_by !== input.ownerId || episode.custodianId !== input.ownerId) return null;
+    const linked = await tx`UPDATE harness_shared.routines SET metadata=COALESCE(metadata,'{}'::jsonb) ||
+      jsonb_build_object('wait_episode',jsonb_build_object('id',${episode.id}::text,'fireToken',last_fired_at::text)),
+      updated_at=now()
+      WHERE id=${input.routineId} AND active=true AND target_owner_id=${input.ownerId}
+        AND last_fired_at=${input.fireAt}::timestamptz AND payload_template->>'workItem'=${input.drivingWorkItemId}
+      RETURNING id`;
+    if (!linked.length) throw new Error('wait episode routine fire CAS lost');
+    await persistWaitEpisodeRoutineDisposition(tx, episode);
+    return row;
+  });
+  if (!awaited) return { handled: false, rearmed: false };
+  const [claimed] = await claimDueWaitEpisodeAwaits(1, { id: awaited.id,
+    callback: `loop:${input.routineId}:${input.fireAt}` }, sql);
+  if (claimed) {
+    const certificate = claimed.producerHealthCertificate!;
+    const { observeProgressLease } = await import('./progress-lease');
+    const result = certificate.progressLease ? await observeProgressLease(certificate) : {
+      classification: 'stalled' as const, nextAction: 're-await' as const,
+      producer: certificate.producer, owner: certificate.owner, checkedAtMs: Date.now(),
+      verificationDeadlineMs: certificate.verificationDeadlineMs,
+      lastProgressAtMs: certificate.lastProgressAtMs, lastFireAtMs: certificate.lastFireAtMs,
+      evidence: { predicate: input.eventKey, observed: 'exact push event remains unfired' },
+    };
+    await settleWaitEpisodeAwait({ id: claimed.id, result, waitEpisodeReceipt: certificate.waitEpisodeReceipt! }, sql);
+  }
+  const [current] = await sql`SELECT next_fire_at::text FROM harness_shared.routines WHERE id=${input.routineId}`;
+  return { handled: true, rearmed: !!current?.next_fire_at && current.next_fire_at !== 'infinity' };
 }
 
 /**
  * Persist a verified timeout verdict. Progress extends the same one-shot await;
- * every other classification consumes it and returns the row for wake delivery.
+ * uncertainty parks probes while retaining the exact push subscription. Other
+ * classifications consume it and return the row for wake delivery.
  */
 export async function settleVerifiedAwaitTimeout(input: {
   id: number;
   result: VerifiedWaitTimeoutResult;
   nextCertificate?: ProducerHealthCertificate;
   finalCertificate?: ProducerHealthCertificate;
+  observationReceipt?: VerifiedWaitObservationReceipt;
+  waitEpisodeReceipt?: WaitEpisodeReceipt;
 }): Promise<AwaitRow | null> {
+  if (input.waitEpisodeReceipt) return settleWaitEpisodeAwait({ ...input, waitEpisodeReceipt: input.waitEpisodeReceipt });
   const { sql } = getOrgPg();
   const ws = eventsWs();
+  // The pre-probe claim is the revision fence. In particular, do not infer it
+  // by reading the current row here: that would let an old verifier borrow the
+  // new verifier's authority. Legacy unclaimed waits have no receipt to fence.
+  const receipt = input.observationReceipt;
+  const receiptGuard = receipt
+    ? sql`AND producer_health->'verificationReceipt'->>'claimToken' = ${receipt.claimToken}
+          AND producer_health->'verificationReceipt'->>'observationId' = ${receipt.observationId}
+          AND producer_health->'verificationReceipt'->>'sequence' = ${String(receipt.sequence)}
+          AND producer_health->'verificationReceipt'->>'state' = 'pending'
+          AND NOT COALESCE(producer_health ? 'waitEpisode', false)`
+    : sql`AND NOT COALESCE(producer_health ? 'verificationReceipt', false)
+          AND NOT COALESCE(producer_health ? 'waitEpisode', false)`;
+  const nextHealth = input.nextCertificate ?? input.finalCertificate;
+  const health = receipt
+    ? sql`jsonb_set(COALESCE(${nextHealth ? JSON.stringify(nextHealth) : null}::text::jsonb, producer_health),
+          '{verificationReceipt}', ${JSON.stringify({
+            ...receipt,
+            state: 'settled',
+            disposition: input.result.classification === 'unknown' ? 'push-only' : input.nextCertificate ? 'rearm' : 'deliver',
+          })}::text::jsonb, true)`
+    : sql`COALESCE(${nextHealth ? JSON.stringify(nextHealth) : null}::text::jsonb, producer_health)`;
+  if (input.result.classification === 'unknown') {
+    if (input.nextCertificate) throw new Error('unknown verified wait cannot automatically rearm');
+    await sql`
+      UPDATE harness_shared.event_awaits
+         SET expires_ts = NULL,
+             timeout_verification = ${JSON.stringify(input.result)}::text::jsonb,
+             producer_health = ${health},
+             verification_claimed_at = NULL
+       WHERE workspace_id = ${ws} AND id = ${input.id}
+         AND fired_at IS NULL AND cancelled_at IS NULL
+         AND timeout_verification->>'classification' IS DISTINCT FROM 'unknown'
+         ${receiptGuard}
+    `;
+    return null;
+  }
   if (input.result.classification === 'progressing' && !input.nextCertificate) {
     throw new Error('progressing verified wait requires nextCertificate');
   }
   if (input.nextCertificate) {
     await sql`
       UPDATE harness_shared.event_awaits
-         SET producer_health = ${JSON.stringify(input.nextCertificate)}::text::jsonb,
+         SET producer_health = ${health},
              expires_ts = to_timestamp(${input.nextCertificate.verificationDeadlineMs} / 1000.0),
              timeout_verification = ${JSON.stringify(input.result)}::text::jsonb,
              verification_claimed_at = NULL
        WHERE workspace_id = ${ws} AND id = ${input.id}
          AND fired_at IS NULL AND cancelled_at IS NULL
+         AND timeout_verification->>'classification' IS DISTINCT FROM 'unknown'
+         ${receiptGuard}
     `;
     return null;
   }
@@ -3186,11 +3558,15 @@ export async function settleVerifiedAwaitTimeout(input: {
     UPDATE harness_shared.event_awaits
        SET fired_at = now(), fired_reason = 'verified-timeout',
            fired_delivery_intent_at = CASE WHEN policy = 'wake' AND node_id IS NULL AND root_id IS NULL THEN now() ELSE NULL END,
+           fired_payload = ${JSON.stringify({ timeout: true, verified: true, results: [input.result] })}::text::jsonb,
+           fired_by = 'verified-wait',
            timeout_verification = ${JSON.stringify(input.result)}::text::jsonb,
-           producer_health = COALESCE(${input.finalCertificate ? JSON.stringify(input.finalCertificate) : null}::text::jsonb, producer_health),
+           producer_health = ${health},
            verification_claimed_at = NULL
      WHERE workspace_id = ${ws} AND id = ${input.id}
        AND fired_at IS NULL AND cancelled_at IS NULL
+       AND timeout_verification->>'classification' IS DISTINCT FROM 'unknown'
+       ${receiptGuard}
     RETURNING *
   `;
   return rows[0] ? mapAwait(rows[0]) : null;

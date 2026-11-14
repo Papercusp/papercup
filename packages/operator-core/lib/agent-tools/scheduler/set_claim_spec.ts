@@ -236,30 +236,12 @@ export async function previewClaimSpecAdmission(args: {
     !args.fleet && args.targetAssignee && args.targetAssignee === args.cupId
       ? args.targetAssignee
       : args.assignee;
-  const explain = args.explain ?? (await import('../../work-items')).explainIssueClaimFloors;
-  const rows =
-    issueIds.length > 0
-      ? await explain(args.harness, issueIds, {
-          assignee: previewAssignee,
-          states: effectiveStates,
-          includeAllFloors: true,
-        })
-      : [];
-  const unknownRows: ClaimFloorAttribution[] = unknownIds.map((id) => ({
-    id,
-    admissible: false,
-    refusedBy: 'not-found',
-    detail: 'no such work-item in either family for this harness/workspace',
-  }));
-  const admissibleIds = rows.filter((row) => row.admissible).map((row) => row.id);
-  const scopeRows = new Map(rows.map((row) => [row.id, row]));
-  const alreadyHeldIds: string[] = [];
-  let heldPreviewError: string | undefined;
-  const heldRows = rows.filter((row) => row.refusedBy === 'already-taken' && row.heldBy);
   const selfTarget = !args.fleet && args.cupId === previewAssignee;
-  if ((args.fleet || selfTarget) && heldRows.length > 0) {
+  const explain = args.explain ?? (await import('../../work-items')).explainIssueClaimFloors;
+  let members: Set<string> | undefined;
+  let heldPreviewError: string | undefined;
+  if ((args.fleet || selfTarget) && issueIds.length > 0) {
     try {
-      let members: Set<string>;
       if (args.fleet) {
         // Reuse the binding-control roster, NOT the delivery audience: muted/digest
         // members still own fleet work. Never infer membership from the writer.
@@ -271,21 +253,50 @@ export async function previewClaimSpecAdmission(args: {
         // caller remains the writer; targetAssignee is separately verified against cupId.
         members = new Set([previewAssignee]);
       }
+    } catch (err) {
+      heldPreviewError = `could not verify target-fleet held-cohort membership: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+  const rows =
+    issueIds.length > 0
+      ? await explain(args.harness, issueIds, {
+          assignee: previewAssignee,
+          states: effectiveStates,
+          includeAllFloors: true,
+          ...(members ? { scopeMembers: [...members] } : {}),
+        })
+      : [];
+  const unknownRows: ClaimFloorAttribution[] = unknownIds.map((id) => ({
+    id,
+    admissible: false,
+    refusedBy: 'not-found',
+    detail: 'no such work-item in either family for this harness/workspace',
+  }));
+  const admissibleIds = rows.filter((row) => row.admissible).map((row) => row.id);
+  const scopeRows = new Map(rows.map((row) => [row.id, row]));
+  const alreadyHeldIds: string[] = [];
+  const heldRows = rows.filter((row) =>
+    row.scopeHolder || (row.refusedBy === 'already-taken' && row.heldBy),
+  );
+  if ((args.fleet || selfTarget) && members && heldRows.length > 0) {
+    try {
       const byHolder = new Map<string, string[]>();
       for (const row of heldRows) {
-        if (!members.has(row.heldBy!)) continue;
-        const ids = byHolder.get(row.heldBy!) ?? [];
+        const holder = row.scopeHolder ?? row.heldBy;
+        if (!holder || !members.has(holder)) continue;
+        const ids = byHolder.get(holder) ?? [];
         ids.push(row.id);
-        byHolder.set(row.heldBy!, ids);
+        byHolder.set(holder, ids);
       }
       for (const [holder, ids] of byHolder) {
-        // already-taken is the FIRST refusal. Merely waiving that attribution
-        // would conceal claim-hold, admission, blockers, etc. Recheck through
-        // the SAME SQL floors, with this holder's cooldown/plan-lane context.
+        // Recheck through the SAME SQL floors with this holder's context. The
+        // scope-members result proves exact ownership even when status/cooldown,
+        // rather than already-taken, was the first acquisition refusal.
         const checked = await explain(args.harness, ids, {
           assignee: holder,
           states: effectiveStates,
           scopeHeldBy: [holder],
+          scopeMembers: [holder],
           includeAllFloors: true,
           ...(args.fleet
             ? {
@@ -297,8 +308,16 @@ export async function previewClaimSpecAdmission(args: {
         });
         for (const row of checked) {
           if (!ids.includes(row.id)) continue;
-          scopeRows.set(row.id, row);
-          if (row.admissible) alreadyHeldIds.push(row.id);
+          const failures = row.failedFloors ?? (row.refusedBy ? [row.refusedBy] : []);
+          const scopeOnlyFloors = failures.every((floor) =>
+            floor === 'cooldown' || (floor === 'not-claimable-status' && row.scopeStatus === 'wip'),
+          );
+          if (row.scopeHolder === holder && (row.admissible || scopeOnlyFloors)) {
+            scopeRows.set(row.id, { ...row, admissible: true, refusedBy: null, detail: null });
+            alreadyHeldIds.push(row.id);
+          } else {
+            scopeRows.set(row.id, row);
+          }
         }
       }
     } catch (err) {

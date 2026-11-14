@@ -15,11 +15,13 @@ import {
   splitModelSpec,
 } from '../../agent-config-constants';
 import {
+  fleetSlugFromName,
   getFleetHeadcountTarget,
   type FleetHeadcountConfig,
   type FleetHeadcountTarget,
 } from '../../agent-fleets-store';
-import type { MemberSpec } from '../../agent-launch-core';
+import { foldMemberSpec, memberSpecSchema, type MemberSpec } from '../../agent-launch-core';
+import { replayAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { readAdvSessionLaunchRecordByOwner, type AdvSessionLaunchRecord } from '../../adv-sessions';
 import { parseSuLaunchSpecRecord } from '../../su-persona-render';
 import { normalizeSuContextSize } from '../../su-context-size.mjs';
@@ -227,13 +229,246 @@ export function savedFleetLaunchSpecFromConfig(config: SavedFleetLaunchConfig): 
 }
 
 export type LegacyLaunchParseResult =
-  | { ok: true; config: SavedFleetLaunchConfig; saved: SavedFleetLaunchSpec; normalizedLegacyContextSize: boolean }
+  | { ok: true; config: SavedFleetLaunchConfig; saved: SavedFleetLaunchSpec; normalizedLegacyContextSize: boolean;
+      originalEvidence?: { snapshot: AdvSessionLaunchRecord; receipt: Record<string, unknown>;
+        fieldDispositions: Record<string, 'recipe' | 'launch-only' | 'guard'> } }
   | { ok: false; message: string };
 
 export interface OriginalMemberLaunchBinding {
   advSessionId: number;
   ownerId: string;
   sessionId: string;
+  /** Required by historical recovery; never inferred from today's profile. */
+  harnessSlug?: string;
+}
+
+const originalRecipeFields = [
+  'agent', 'model', 'effort', 'account', 'carry', 'headless', 'role', 'stack', 'profile',
+  'contextSize', 'compactionLimit', 'addDir', 'allowSubagents', 'brain', 'feature', 'display', 'extraArgs',
+] as const;
+const originalLaunchOnlyFields = [
+  'name', 'count', 'leader', 'supervise', 'brief', 'launchContext', 'perMemberLaunchContext', 'claimKinds',
+] as const;
+const originalGuardFields = [
+  'plan', 'harness', 'workspace', 'type', 'placement', 'confirmRouteSwitch', 'overrideCapacityClamp',
+  'confirmClaimCollapse', 'confirmKickoffMismatch',
+] as const;
+
+function launchObject(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : null;
+}
+
+function uniqueStrings(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(v => typeof v === 'string' && v.trim().length > 0) &&
+    new Set(value).size === value.length;
+}
+
+/** Decode only the original invocation joined by the reader's independent
+ * launch epoch. Current argv and current fleet defaults are never inputs.
+ * This branch is read-only: its artifact is evidence, not an authority grant. */
+function savedHistoricalOriginalMemberLaunchSpec(
+  record: AdvSessionLaunchRecord,
+  binding: OriginalMemberLaunchBinding,
+  workspaceId: string,
+  fleetSlug: string,
+): LegacyLaunchParseResult {
+  const refuse = (message: string): LegacyLaunchParseResult => ({ ok: false, message });
+  const source = record.originalMemberHistoricalSource;
+  const tx = launchObject(source?.transaction);
+  const requestedIds = tx?.requestedMemberIds;
+  const openedIds = tx?.openedMemberIds;
+  const verifiedIds = tx?.verifiedMemberIds;
+  const args = launchObject(source?.invocation.args);
+  const current = launchObject(record.launchSpec);
+  const id = (value: unknown): value is string => typeof value === 'string' && /^[1-9][0-9]*$/.test(value);
+  if (!source || !tx || !args || record.workspaceId !== workspaceId ||
+      !binding.harnessSlug || source.workspaceId !== workspaceId || source.fleetSlug !== fleetSlug ||
+      source.ownerId !== binding.ownerId || source.advSessionId !== binding.advSessionId ||
+      source.currentSessionId !== binding.sessionId || !source.originalSessionId ||
+      !Number.isSafeInteger(binding.advSessionId) || binding.advSessionId <= 0 ||
+      source.invocation.harnessSlug !== binding.harnessSlug || !id(source.invocation.id) ||
+      tx.version !== 1 || typeof tx.transactionId !== 'string' || !tx.transactionId.trim() ||
+      tx.previousTransactionId !== undefined || tx.launcherOwnerId !== source.invocation.actor ||
+      !source.invocation.actor || !uniqueStrings(requestedIds) ||
+      !uniqueStrings(openedIds) || !uniqueStrings(verifiedIds) ||
+      !requestedIds.includes(binding.ownerId) || !openedIds.includes(binding.ownerId) ||
+      !verifiedIds.includes(binding.ownerId) ||
+      openedIds.some(v => !requestedIds.includes(v)) ||
+      verifiedIds.some(v => !openedIds.includes(v))) {
+    return refuse('Original historical launch epoch, exact scope or requested/opened/verified custody is missing.');
+  }
+  if (!Array.isArray(tx.requestedMembers) || tx.requestedMembers.length !== requestedIds.length ||
+      tx.requestedMembers.some((value, index) => {
+        const slot = launchObject(value);
+        return !slot || slot.index !== index || slot.ownerId !== requestedIds[index];
+      })) return refuse('Original launch member slots are missing, duplicated or not index-aligned.');
+  const index = requestedIds.indexOf(binding.ownerId);
+  const slot = launchObject(tx.requestedMembers[index])!;
+  const allowed = new Set<string>([...originalRecipeFields, ...originalLaunchOnlyFields,
+    ...originalGuardFields, 'members']);
+  if (Object.keys(args).some(key => !allowed.has(key))) return refuse('Original launch request has an unclassified key.');
+  if (args.count !== requestedIds.length ||
+      (args.type !== undefined && args.type !== 'single') ||
+      (args.placement !== undefined && args.placement !== 'local') ||
+      (args.leader !== undefined && args.leader !== 'caller') ||
+      (args.workspace !== undefined && args.workspace !== workspaceId) ||
+      (args.harness !== undefined && args.harness !== binding.harnessSlug) ||
+      (args.plan !== undefined && (typeof args.plan !== 'string' || !args.plan.trim())) ||
+      typeof args.name !== 'string' || !args.name.trim() || fleetSlugFromName(args.name) !== fleetSlug) {
+    return refuse('Original launch request does not describe this complete local single fleet epoch.');
+  }
+  if (!memberSpecSchema.pick({ claimKinds: true }).safeParse({ claimKinds: args.claimKinds }).success ||
+      (args.plan === undefined && args.claimKinds === undefined)) return refuse('Original scheduling scope is missing or malformed.');
+  for (const key of ['supervise', 'confirmRouteSwitch', 'overrideCapacityClamp',
+    'confirmClaimCollapse', 'confirmKickoffMismatch']) {
+    if (args[key] !== undefined && typeof args[key] !== 'boolean') return refuse(`Original ${key} is malformed.`);
+  }
+  for (const key of ['brief', 'launchContext']) {
+    if (args[key] !== undefined && typeof args[key] !== 'string') return refuse(`Original ${key} is malformed.`);
+  }
+  if (args.perMemberLaunchContext !== undefined &&
+      (!Array.isArray(args.perMemberLaunchContext) || !args.perMemberLaunchContext.every(v => typeof v === 'string'))) {
+    return refuse('Original per-member launch context is malformed.');
+  }
+  const top = Object.fromEntries(originalRecipeFields.filter(key => args[key] !== undefined).map(key => [key, args[key]]));
+  // The shared strict member schema is the inventory of supported recipe knobs.
+  // Top-level steward context predates its per-member schema; validate it separately.
+  const topContext = top.contextSize;
+  const normalized = normalizeSuContextSize(topContext);
+  if (!normalized.ok) return refuse('Original context policy is malformed.');
+  const validatedTop = memberSpecSchema.safeParse({ ...top,
+    ...(topContext !== undefined ? { contextSize: 'trimmed' } : {}) });
+  if (!validatedTop.success || !Array.isArray(args.members ?? []) ||
+      ((args.members ?? []) as unknown[]).length > requestedIds.length) {
+    return refuse('Original fleet recipe or member list is malformed.');
+  }
+  const members: MemberSpec[] = [];
+  for (const value of (args.members ?? []) as unknown[]) {
+    const parsed = memberSpecSchema.safeParse(value);
+    if (!parsed.success) return refuse('Original member request has an unsupported or malformed field.');
+    members.push(parsed.data);
+  }
+  const requested = members[index];
+  if (!['claude', 'codex', 'omp'].includes(String(slot.agent)) ||
+      typeof slot.model !== 'string' || !splitModelSpec(slot.model).model ||
+      typeof slot.account !== 'string' || !slot.account.trim() ||
+      !['warm', 'cold'].includes(String(slot.carry)) || typeof slot.headless !== 'boolean' ||
+      slot.agent !== record.agent) return refuse('Original member slot lacks a complete route.');
+  const folded = foldMemberSpec({ ...validatedTop.data, agent: String(slot.agent),
+    ...(topContext !== undefined ? { contextSize: normalized.contextSize } : {}) }, requested);
+  const display = requested?.display ?? validatedTop.data.display;
+  let model: string | undefined;
+  try {
+    const originalModel = splitModelSpec(slot.model);
+    const requestModel = splitModelSpec(folded.model);
+    model = composeLaunchModelSpec(requestModel.model ?? originalModel.model!,
+      folded.effort ?? requestModel.effort ?? originalModel.effort ?? undefined);
+  } catch { return refuse('Original request model and effort cannot be composed.'); }
+  if ((folded.agent !== slot.agent) ||
+      (validatedTop.data.agent !== undefined && !requested?.agent && validatedTop.data.agent !== slot.agent) ||
+      (model !== undefined && model !== slot.model) ||
+      (folded.account !== undefined && folded.account !== slot.account) ||
+      (folded.carry !== undefined && folded.carry !== slot.carry) ||
+      (folded.headless !== undefined && folded.headless !== slot.headless)) {
+    return refuse('Original request route contradicts the indexed original member slot.');
+  }
+  const first = source.originalApplied;
+  const last = source.currentApplied;
+  if (!id(first.id) || !id(last.id) || BigInt(first.id) > BigInt(last.id) ||
+      (source.originalSessionId !== source.currentSessionId && first.id === last.id) ||
+      first.actorId !== binding.ownerId || last.actorId !== binding.ownerId ||
+      first.sessionId !== binding.ownerId || last.sessionId !== binding.ownerId ||
+      !first.principalId || first.principalId !== last.principalId ||
+      first.principalId !== current?.principalId ||
+      current.workspaceId !== workspaceId || current.harnessSlug !== binding.harnessSlug ||
+      current.specificationRevision !== last.specificationRevision || current.stateRevision !== last.stateRevision ||
+      !uniqueStrings(first.stack) || !uniqueStrings(last.stack)) {
+    return refuse('Original applied identity/principal/native custody is inconsistent.');
+  }
+  const receipts = [current, ...(Array.isArray(current?.identityHistory) ? current.identityHistory : [])]
+    .map(launchObject).filter((value): value is Record<string, unknown> => value !== null &&
+      value.specificationRevision === first.specificationRevision && value.stateRevision === first.stateRevision);
+  if (receipts.length !== 1) return refuse('Original applied artifact/state receipt is missing or ambiguous.');
+  const receipt = receipts[0];
+  try {
+    const artifact = replayAgentSpecification(receipt.specificationArtifact);
+    const states = artifact.inputs.filter(input => input.kind === 'setting' && input.ref === 'launch-state-v1');
+    const statePin = states.length === 1 && states[0].kind === 'setting' ? states[0] : null;
+    const state = launchObject(statePin?.value);
+    const principal = launchObject(state?.principal);
+    const policy = launchObject(state?.policy);
+    if (artifact.specificationRevision !== first.specificationRevision ||
+        statePin?.revision !== first.stateRevision || state?.schemaVersion !== 1 ||
+        principal?.kind !== 'su' || principal.role !== 'su' || typeof principal.profile !== 'string' ||
+        !principal.profile || policy?.mcp !== 'superuser' ||
+        !['trimmed', 'steward'].includes(String(policy.contextSize)) ||
+        !['full', 'fleet'].includes(String(policy.personaTier)) ||
+        !valuesEqual(state.stack, first.stack) || !valuesEqual(receipt.stack, first.stack) ||
+        (folded.profile !== undefined && folded.profile !== principal.profile) ||
+        (folded.contextSize !== undefined && folded.contextSize !== policy.contextSize)) {
+      return refuse('Original artifact state does not match its applied principal/profile/policy/stack receipt.');
+    }
+    const selection = receipt.selectedIdentity;
+    if (selection != null) {
+      const pin = launchObject(selection);
+      const selectedRef = pin?.ref;
+      if (!pin || typeof selectedRef !== 'string' ||
+          !/^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9._-]*$/.test(selectedRef) ||
+          typeof pin.sourceRevision !== 'string' || !/^[a-f0-9]{64}$/.test(pin.sourceRevision) ||
+          folded.stack?.length !== 1 || folded.stack[0] !== selectedRef ||
+          !artifact.inputs.some(input => input.kind === 'blueprint-layer' &&
+            input.ref === selectedRef.slice(selectedRef.indexOf(':') + 1) && input.contentHash === pin.sourceRevision)) {
+        return refuse('Original selected identity is not in the replayed source closure.');
+      }
+    }
+    if (folded.stack !== undefined && !valuesEqual(folded.stack, first.stack) &&
+        !(folded.stack.length === 1 && launchObject(selection)?.ref === folded.stack[0])) {
+      return refuse('Original requested stack differs from its applied identity.');
+    }
+    const extraArgs = [...(folded.extraArgs ?? [])];
+    const seen = new Set<string>();
+    // No escape hatch can replace identity, route, native, grant, kickoff or
+    // automation controls. Preserve only explicit supported additive tokens.
+    for (const token of extraArgs) {
+      const match = /^(--add-dir|--feature|--display)=([^\u0000\r\n]+)$/.exec(token);
+      if (!match || (match[1] !== '--add-dir' && seen.has(match[1])) ||
+          (match[1] === '--feature' && folded.feature !== undefined) ||
+          (match[1] === '--display' && display !== undefined)) {
+        return refuse('Original extraArgs has an unsupported or duplicate control token.');
+      }
+      seen.add(match[1]);
+    }
+    if (folded.allowSubagents === false) extraArgs.push('--no-subagents');
+    extraArgs.push(`--persona-tier=${policy.personaTier}`);
+    const routeModel = splitModelSpec(slot.model);
+    const config: SavedFleetLaunchConfig = {
+      ...(typeof args.plan === 'string' ? { plan: args.plan } : {}), harness: binding.harnessSlug,
+      agent: slot.agent as FleetHeadcountConfig['agent'], model: routeModel.model!,
+      ...(routeModel.effort ? { effort: routeModel.effort } : {}), account: slot.account,
+      carry: slot.carry as 'warm' | 'cold', headless: slot.headless,
+      ...(folded.role ? { role: folded.role } : {}),
+      contextSize: policy.contextSize as 'trimmed' | 'steward',
+      ...(folded.compactionLimit !== undefined ? { compactionLimit: folded.compactionLimit } : {}),
+      ...(extraArgs.length ? { extraArgs } : {}),
+    };
+    const saved = savedFleetLaunchSpecFromConfig(config);
+    saved.member = { ...saved.member, profile: principal.profile, stack: [...first.stack],
+      ...(folded.addDir ? { addDir: [...folded.addDir] } : {}),
+      ...(folded.allowSubagents !== undefined ? { allowSubagents: folded.allowSubagents } : {}),
+      ...(folded.brain !== undefined ? { brain: folded.brain } : {}),
+      ...(folded.feature !== undefined ? { feature: folded.feature } : {}),
+      ...(display !== undefined ? { display } : {}) };
+    const fieldDispositions: Record<string, 'recipe' | 'launch-only' | 'guard'> = {};
+    for (const key of Object.keys(args)) fieldDispositions[key] = originalRecipeFields.includes(key as never)
+      ? 'recipe' : originalLaunchOnlyFields.includes(key as never) ? 'launch-only' : 'guard';
+    for (const key of Object.keys(requested ?? {})) fieldDispositions[`members[${index}].${key}`] =
+      ['brief', 'launchContext', 'claimKinds'].includes(key) ? 'launch-only' : 'recipe';
+    return { ok: true, config, saved, normalizedLegacyContextSize: normalized.normalizedLegacyFull,
+      originalEvidence: { snapshot: structuredClone(record), receipt: structuredClone(receipt), fieldDispositions } };
+  } catch {
+    return refuse('Original artifact cannot be replayed from its exact retained source closure.');
+  }
 }
 
 /** Original means the lifecycle receipt captured before the first resume,
@@ -246,6 +481,9 @@ export function savedOriginalMemberLaunchSpec(
   fleetSlug: string,
 ): LegacyLaunchParseResult {
   const spec = record?.launchSpec as Record<string, unknown> | null;
+  if (record && spec && !Object.prototype.hasOwnProperty.call(spec, 'originalMemberLaunch')) {
+    return savedHistoricalOriginalMemberLaunchSpec(record, binding, workspaceId, fleetSlug);
+  }
   const original = spec?.originalMemberLaunch as Record<string, unknown> | undefined;
   const custody = record?.originalMemberNativeCustody;
   const nativeMatches = original?.sessionId === binding.sessionId ||

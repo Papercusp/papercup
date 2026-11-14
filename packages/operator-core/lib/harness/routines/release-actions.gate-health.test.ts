@@ -14,6 +14,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { buildGateSuiteMeasurement } from '../../release/test-pass-reuse-report';
+import type { RatchetShadowHealth } from '../../release/ratchet-shadow';
 
 // EI-19329732364513693: trackGateStall now measures candidate staleness via git whenever a
 // candidate is passed. Keep this file HERMETIC — without this mock, every existing test that
@@ -2703,6 +2704,7 @@ describe('WI-6554700010018008: gate_health.verdictFlipQuarantine and gate_health
       repairHead: 'ff9f45a40f9d',
       atMs: 1_792_478_000_000,
       status: 'planned',
+      mode: 'composed',
       rerunCount: 4,
       comparison: {
         fullGreen: false,
@@ -2711,6 +2713,7 @@ describe('WI-6554700010018008: gate_health.verdictFlipQuarantine and gate_health
         missedByComposed: [],
         extraInComposed: [],
         rerunReadFrom: 'full-run-failing-set',
+        qualification: { status: 'ineligible', reason: 'qualification-context-unmeasured' },
       },
     },
     newRedEjection: {
@@ -2733,6 +2736,18 @@ describe('WI-6554700010018008: gate_health.verdictFlipQuarantine and gate_health
     const written = lastGateHealthWrite();
     expect(written?.verdictFlipQuarantine).toEqual(vfq());
     expect(written?.ratchetShadow).toEqual(shadow);
+  });
+
+  it('stores reconstructed and legacy comparisons as unqualified even when the marker claims eligibility', async () => {
+    for (const mode of ['composed', 'full-gate', undefined]) {
+      await track('advanced', { ratchetShadow: { composedProof: { ...shadow.composedProof, mode,
+        comparison: { ...shadow.composedProof.comparison,
+          qualification: { status: 'eligible', instrumentHash: 'f'.repeat(64) } } } } });
+      const stored = lastGateHealthWrite()?.ratchetShadow as RatchetShadowHealth | undefined;
+      expect(stored?.composedProof?.comparison).toMatchObject({ agree: true,
+        qualification: { status: 'ineligible', reason: mode === 'composed' ? 'qualification-context-unmeasured'
+          : mode === 'full-gate' ? 'full-gate-fallback' : 'unverified-legacy-comparison' } });
+    }
   });
 
   it('⭐ an unreported round CLEARS both (explicit null), never an older round beside a newer candidate', async () => {

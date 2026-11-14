@@ -2905,6 +2905,7 @@ export function completionEvidenceFromRecord(
   // minting a new one would widen the tool's arg surface for a field that has no legacy
   // callers to keep cheap.
   const requirementDisposition = nested.requirementDisposition;
+  const assessmentScorecardId = nested.assessmentScorecardId;
   // EI-22175397357614106: canonical-nested ONLY, no top-level alias — same reasoning as
   // requirementDisposition above (a new field has no legacy callers to keep cheap).
   //
@@ -2916,6 +2917,7 @@ export function completionEvidenceFromRecord(
   const claims = nested.claims;
   const evidence: CompletionVerificationEvidence = {};
   if (requirementDisposition?.length) evidence.requirementDisposition = requirementDisposition;
+  if (assessmentScorecardId) evidence.assessmentScorecardId = assessmentScorecardId;
   if (claims?.length) evidence.claims = claims;
   if (filesChanged?.length) evidence.filesChanged = filesChanged;
   if (filesDeleted?.length) evidence.filesDeleted = filesDeleted;
@@ -4319,6 +4321,82 @@ async function completeOneTracked(
     };
   }
 
+  // Service and logic proof checks are pure over the submitted evidence. Run this small
+  // subset before spec/conformance and repository close checks, which can each take seconds
+  // or minutes. A missing proof already makes the terminal transition inadmissible, so
+  // return the evidence for correction without paying for checks that cannot make this
+  // close land. Keep UI/refactor and other kinds on the full path because their proof
+  // resolvers perform external reads.
+  if (
+    closeIntentRequested &&
+    successfulClose &&
+    !duplicateCloseCoverageException &&
+    !isAbandonedClose &&
+    !it.validateOnly &&
+    gateRefusals.length === 0
+  ) {
+    const declarationWorkspace = (ident as { workspaceId?: string | null }).workspaceId ?? ctx.workspaceId ?? 'default';
+    const declarationIds = [...new Set([existing.id, it.id].filter((id): id is string => Boolean(id)))];
+    let stored: ChangeKindsView | null = null;
+    let storedReadError: string | undefined;
+    try {
+      const views = await track('change-kind-proof-preflight', () => readChangeKinds(declarationWorkspace, declarationIds));
+      stored = declarationIds.map((id) => views.get(id)).find((view) => view && view.history.length > 0) ?? views.get(declarationIds[0]!) ?? null;
+    } catch (error) {
+      storedReadError = error instanceof Error ? error.message : String(error);
+    }
+    const fastKinds = it.changeKinds?.length ? it.changeKinds : stored?.current ?? [];
+    const cheapKindsOnly =
+      fastKinds.length > 0 && fastKinds.every((kind) => kind === 'service' || kind === 'logic');
+    if (cheapKindsOnly) {
+      const gate = await evaluateChangeKindGate(
+        {
+          itemId: it.id,
+          successfulClose: true,
+          declaredAtClose: it.changeKinds ?? null,
+          declaredReason: it.changeKindReason ?? null,
+          stored,
+          storedReadError,
+          claimStartedAt: existing.takenAt ?? existing.createdAt ?? null,
+          kindEvidence: it.completion.kindEvidence ?? null,
+          root: {
+            summary: it.completion.summary,
+            testsRun: completionEvidenceForGate?.testsRun,
+            testResult: completionEvidenceForGate?.testResult,
+            filesChanged: completionEvidenceForGate?.filesChanged,
+            filesDeleted: completionEvidenceForGate?.filesDeleted,
+          },
+        },
+      );
+      const missingCheapProof =
+        gate.applicable &&
+        gate.outcome === 'refuse' &&
+        gate.missing.some((missing) => missing.kind === 'service' || missing.kind === 'logic');
+      if (missingCheapProof && gate.outcome === 'refuse') {
+        setContractRequirement('change-kind-proof', true, gate.error);
+        const error =
+          'COMPLETION EVIDENCE RETURNED, BUT ' + it.id + ' DID NOT CLOSE — its state remains ' +
+          (existing.state ?? 'open') + ' and it is still claimable. The cheap service/logic proof check failed: ' +
+          gate.error + ' Other terminal-close checks were not run and may still need repair. ' +
+          'No completion evidence or terminal state was written; the supplied evidence is returned below.';
+        return {
+          ok: false,
+          id: it.id,
+          error,
+          stateError: gate.error,
+          completionEvidenceStored: false,
+          completionReturnedOnly: true,
+          changeKindProof: { kinds: gate.kinds, missing: gate.missing, problems: gate.problems },
+          completionContract: completionContract(),
+          completionContractVersion: WORK_ITEMS_COMPLETION_CONTRACT.version,
+          workItem: ctx.payloadTierOverride !== 'full' ? toWorkItemReceipt(existing, COMPLETE_RECEIPT) : existing,
+          completion: it.completion,
+          reflect: renderReflectStep({ harnessActive: Boolean(existing.harness) }),
+        };
+      }
+    }
+  }
+
   // first-class-spec-clauses-and-prior-attempt-briefs-2026-08-20 P-007 /
   // D-003..D-006: terminal completion is the hard per-clause adequacy gate. Recompute
   // against the exact CURRENT clause/evidence revisions and require the corresponding
@@ -4580,6 +4658,15 @@ async function completeOneTracked(
       isVerificationWorkItem(existing) &&
       claimsUniversalVerification(it.completion));
   const coverage = completionEvidenceForGate?.coverage;
+  if (closeIntentRequested && successfulClose && workDefinition?.assessmentScope) {
+    const { workDefinitionAssessmentCompletionError } = await import('../../work-item-definition-source');
+    const error = await workDefinitionAssessmentCompletionError({
+      target: { workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
+        harnessSlug: existing.harness ?? '', workItemId: existing.id },
+      definition: workDefinition, evidence: completionEvidenceForGate,
+    });
+    if (error) return { ok: false, id: it.id, error: 'work_definition_approval_refused', reason: error };
+  }
   const declaredCriteriaCoverageError = (() => {
     if (!declaredCriteriaCoverageApplicable) return undefined;
     const contract =
@@ -5066,7 +5153,7 @@ async function completeOneTracked(
   );
   const registeredRepoRoots =
     initialUnresolvedPaths || hasAbsoluteCheckoutPath
-      ? await completionRepoRootsForWorkspace(ctx.workspaceId, declaredCompletionPaths)
+      ? await track('repo-roots', () => completionRepoRootsForWorkspace(ctx.workspaceId, declaredCompletionPaths))
       : undefined;
 
   // P-001 / D-016 (design-to-code-coverage-seam-2026-09-02): make `filesChanged` FALSIFIABLE.
@@ -5101,7 +5188,7 @@ async function completeOneTracked(
   // landing `proposed` cannot be lowered further, so the git work buys nothing there.
   const untouchedPaths =
     authorityByEvidence === 'committed'
-      ? await untouchedPathsInCompletion(
+      ? await track('untouched-paths', () => untouchedPathsInCompletion(
           completionEvidenceForGate,
           [existing.createdAt, existing.takenAt]
             .map((value) => (value ? Date.parse(String(value)) : NaN))
@@ -5111,7 +5198,7 @@ async function completeOneTracked(
               undefined,
             ),
           { repoRoots: registeredRepoRoots ?? [completionRoot()].filter((r): r is string => r !== null) },
-        )
+        ))
       : undefined;
 
   // P-002 / D-017: make `testResult` FALSIFIABLE against the run ledger.
@@ -5122,7 +5209,7 @@ async function completeOneTracked(
   // gating discipline as the fabricated-path probe above.
   const testRunContradiction =
     authorityByEvidence === 'committed'
-      ? await testResultContradictedByRun(completionEvidenceForGate, it.id, {
+      ? await track('test-result-binding', () => testResultContradictedByRun(completionEvidenceForGate, it.id, {
           latestTestingRun: (workItemId) =>
             latestTestingRunForOwner(
               ident.ownerId,
@@ -5131,7 +5218,7 @@ async function completeOneTracked(
               it.harness ?? existing.harness ?? null,
             ),
           ledgerRowsInWindow: (paths, from, to) => testRunLedgerRowsInWindow(paths, from, to),
-        })
+        }))
       : undefined;
 
   // P-021 / D-014: make the close's account of THE ASK falsifiable, not just its account
@@ -5933,8 +6020,9 @@ async function completeOneTracked(
       // A definition race invalidates the checked coverage itself. Preserve the
       // same no-record refusal as the earlier coverage preflight rather than
       // falling through to the ordinary record-and-warn state-error path.
-      if (e && typeof e === 'object' && 'code' in e && e.code === 'work_definition_changed') {
-        return { ok: false, id: it.id, error: 'work_definition_changed', retryable: true,
+      if (e && typeof e === 'object' && 'code' in e &&
+          (e.code === 'work_definition_changed' || e.code === 'work_definition_approval_refused')) {
+        return { ok: false, id: it.id, error: e.code, retryable: true,
           message: e instanceof Error ? e.message : 'The work definition changed after completion validation.' };
       }
       stateError = e instanceof Error ? e.message : String(e);

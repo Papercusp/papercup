@@ -11,6 +11,7 @@ import { CONTAINER_CLAUDE_BIN_PATH, CONTAINER_CODEX_BIN_PATH, type DockerExecTar
 import type { RunAgentChatOptions, ChatEvent } from '../agent-chat-stream';
 import type { CurrentStockBenchPorts, CurrentSuBenchOptions, CurrentSuBenchObservations } from './current-su';
 import type { BenchHarnessOps } from './bench-harness-live';
+import { processMonotonicClock } from '../process-monotonic-clock';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 
 const h = vi.hoisted(() => ({
@@ -85,6 +86,16 @@ afterEach(async () => {
 });
 
 describe('current stock native factory', () => {
+  it('keeps the actual factory task clock monotonic across a wall-clock jump', () => {
+    const value = factory(), before = processMonotonicClock.now();
+    const wall = vi.spyOn(Date, 'now').mockReturnValue(-1);
+    try {
+      const observed = value.lifecycle.now();
+      expect(value.lifecycle.now).toBe(processMonotonicClock.now);
+      expect(observed).toBeGreaterThanOrEqual(before);
+      expect(observed).toBeLessThanOrEqual(processMonotonicClock.now());
+    } finally { wall.mockRestore(); }
+  });
   it('enrolls Claude with its scoped transport and ingests only its retained projects', async () => {
     h.run.mockImplementation(async function* (options) {
       await options.spawnProcess!('claude', ['-p'], { cwd: h.home, env: { PATH: '/private/runtime', CLAUDE_CONFIG_DIR: h.home,

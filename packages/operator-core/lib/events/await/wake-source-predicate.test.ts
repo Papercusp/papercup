@@ -6,6 +6,8 @@ import { describe, expect, it } from 'vitest';
 import {
   BOUNDED_AWAIT_DEFAULT_TIMEOUT_SEC,
   boundedAwaitTemplateFor,
+  exhaustedPushParkCoversHeldWork,
+  type ExhaustedPushParkProof,
   countWakeSourcesBySubscriber,
   guaranteesWake,
   isWakeSource,
@@ -15,6 +17,8 @@ import {
   type HeldWorkItem,
   type WorkItemAwaitTarget,
 } from './wake-source-predicate';
+
+import { createWaitEpisode, claimWaitEpisode, settleWaitEpisode } from './wait-episode';
 
 const PREFIX = 'coord:inbox-wake:';
 const ME = 'su-me';
@@ -209,5 +213,108 @@ describe('boundedAwaitTemplateFor', () => {
 
   it('returns null when no held item states a blocker', () => {
     expect(boundedAwaitTemplateFor([item({}), item({ id: 'WI-2', status: 'open' })], NOW)).toBeNull();
+  });
+});
+
+
+describe('canonical exhausted push-only park admission (EI-28701246782258193)', () => {
+  function fixture() {
+    const eventKey = 'work-item:done:WI-9';
+    const ref = { kind: 'event' as const, ref: eventKey };
+    const claimed = claimWaitEpisode(createWaitEpisode({
+      workspaceId: 'ws', harness: 'papercusp', drivingWorkItemId: 'WI-1', custodianId: ME, nowMs: 0,
+      contract: { dependencyRef: eventKey, predicateKey: eventKey, sourceOwnerId: 'su-peer',
+        sourceGeneration: 1, expectedCondition: null, payloadFilter: null, noDeltaBudget: 1,
+        cadenceMs: 1000, evidence: null, substages: [] },
+    }), { callback: 'timeout', nowMs: 1000 });
+    const episode = settleWaitEpisode(claimed.episode, claimed.receipt!,
+      { kind: 'observed', checkedAtMs: 1000 }).episode;
+    const payload = { waitEpisodes: { [episode.id]: episode }, blockerResolution: { schemaVersion: 1, history: [{
+      id: 'decision', revision: 1, workItemId: 'WI-1', authorId: ME, sessionId: ME,
+      recordedAt: new Date(0).toISOString(), requestHash: 'a'.repeat(64),
+      decision: { schemaVersion: 1, idempotencyKey: 'park', disposition: 'defer',
+        symptom: 'pending dependency', investigation: [{ action: 'Read dependency', outcome: 'Live peer owns it', evidenceRefs: [ref] }],
+        attempts: [], evidenceRefs: [ref], deferral: { reason: 'active-peer', reasonEvidenceRefs: [ref],
+          responsibleParty: 'su-peer', nextAction: 'Resume on exact completion push', recheckRef: { ...ref } } },
+    }] } };
+    const proof: ExhaustedPushParkProof = {
+      item: { id: 'WI-1', harness: 'papercusp', status: 'blocked', workspaceId: 'ws', custodianId: ME, payload,
+        eventBlockers: [{ ref: eventKey, summary: 'pending', recheckAt: null }] },
+      awaited: { subscriberId: ME, eventKey, expiresTs: null, timeoutBehavior: 'wake', once: true,
+        policy: 'wake', firedAt: null, cancelledAt: null,
+        settlement: { id: episode.id, state: 'exhausted', remainingNoDeltaBudget: 0, disposition: 'push-only' },
+        producerHealthCertificate: {
+          version: 1, producer: { kind: 'bounded-dependency', id: 'producer' },
+          owner: { ownerId: 'su-peer', workItemId: 'WI-9' }, issuedAtMs: 0, lastProgressAtMs: null,
+          lastFireAtMs: null, expectedCadenceMs: 1000, verificationDeadlineMs: 1000,
+          waitEpisode: { workspaceId: 'ws', harness: 'papercusp', drivingWorkItemId: 'WI-1', id: episode.id },
+          waitEpisodeReceipt: structuredClone(episode.receipt!),
+        } },
+      source: { status: 'available', condition: 'pending', reachable: true, liveOwnerId: 'su-peer', responsibleParty: 'su-peer' },
+    };
+    return { proof, episode, payload };
+  }
+  const admits = (f: ReturnType<typeof fixture>) => exhaustedPushParkCoversHeldWork({
+    ownerId: ME, workspaceId: 'ws', held: [f.proof.item], proofs: [f.proof],
+  });
+
+  it('admits a settled exhausted episode bound to its live await and current peer, without guaranteeing a wake', () => {
+    const f = fixture();
+    expect(admits(f)).toBe(true);
+    expect(guaranteesWake(f.proof.awaited, NONE, PREFIX)).toBe(false);
+  });
+
+  const invalid: Array<[string, (f: ReturnType<typeof fixture>) => void]> = [
+    ['unknown push-only result', f => { f.episode.state = 'unknown'; }],
+    ['cancelled tombstone', f => { f.episode.state = 'cancelled'; }],
+    ['active episode', f => { f.episode.state = 'active'; }],
+    ['unspent budget', f => { f.episode.remainingNoDeltaBudget = 1; }],
+    ['pending receipt', f => { f.episode.receipt!.state = 'pending'; }],
+    ['unknown host settlement', f => { f.proof.awaited.settlement!.state = 'unknown'; }],
+    ['missing host settlement', f => { f.proof.awaited.settlement = null; }],
+    ['different host settlement budget', f => { f.proof.awaited.settlement!.remainingNoDeltaBudget = 1; }],
+    ['missing host receipt', f => { delete f.proof.awaited.producerHealthCertificate!.waitEpisodeReceipt; }],
+    ['different host receipt', f => { f.proof.awaited.producerHealthCertificate!.waitEpisodeReceipt!.claimToken = 'other'; }],
+    ['different episode', f => { f.proof.awaited.producerHealthCertificate!.waitEpisode!.id = 'other'; }],
+    ['different harness', f => { f.proof.awaited.producerHealthCertificate!.waitEpisode!.harness = 'other'; }],
+    ['different workspace', f => { f.proof.item.workspaceId = 'other'; }],
+    ['different custodian', f => { f.proof.item.custodianId = 'su-peer'; }],
+    ['unblocked work', f => { f.proof.item.status = 'open'; }],
+    ['fired await', f => { f.proof.awaited.firedAt = new Date(0).toISOString(); }],
+    ['cancelled await', f => { f.proof.awaited.cancelledAt = new Date(0).toISOString(); }],
+    ['expiring await', f => { f.proof.awaited.expiresTs = new Date(0).toISOString(); }],
+    ['standing watch', f => { f.proof.awaited.once = false; }],
+    ['announcement', f => { f.proof.awaited.policy = 'announce'; }],
+    ['foreign subscriber', f => { f.proof.awaited.subscriberId = 'other'; }],
+    ['unknown source', f => { f.proof.source = { status: 'unknown', detail: 'not measured' }; }],
+    ['missing source', f => { f.proof.source = { status: 'absent', detail: 'no target' }; }],
+    ['ownerless source', f => { f.proof.source = { status: 'available', condition: 'pending', reachable: true }; }],
+    ['terminal source', f => { f.proof.source = { status: 'available', condition: 'satisfied', reachable: true, liveOwnerId: 'su-peer', responsibleParty: 'su-peer' }; }],
+    ['unrelated await', f => { f.proof.awaited.eventKey = 'work-item:done:WI-8'; }],
+    ['unrelated deferral', f => { f.payload.blockerResolution.history[0].decision.deferral.recheckRef.ref = 'other'; }],
+    ['foreign decision author', f => { f.payload.blockerResolution.history[0].authorId = 'other'; }],
+    ['foreign decision subject', f => { f.payload.blockerResolution.history[0].workItemId = 'WI-8'; }],
+    ['prose-only budget', f => { f.proof.item.payload = { checkpoint: 'budget 0; push only' }; }],
+  ];
+  it.each(invalid)('refuses %s', (_name, mutate) => {
+    const f = fixture();
+    mutate(f);
+    expect(admits(f)).toBe(false);
+  });
+
+  it('requires separate coverage for every held item, including the same id in another harness', () => {
+    const f = fixture();
+    for (const other of [{ ...f.proof.item, id: 'WI-2' }, { ...f.proof.item, harness: 'other' }]) {
+      expect(exhaustedPushParkCoversHeldWork({ ownerId: ME, workspaceId: 'ws',
+        held: [f.proof.item, other], proofs: [f.proof] })).toBe(false);
+    }
+  });
+
+  it('refuses the held-population sentinel and self-held completion dependencies', () => {
+    const f = fixture();
+    expect(exhaustedPushParkCoversHeldWork({ ownerId: ME, workspaceId: 'ws',
+      held: Array.from({ length: 51 }, () => f.proof.item), proofs: [f.proof] })).toBe(false);
+    expect(exhaustedPushParkCoversHeldWork({ ownerId: ME, workspaceId: 'ws',
+      held: [f.proof.item, { ...f.proof.item, id: 'WI-9' }], proofs: [f.proof] })).toBe(false);
   });
 });

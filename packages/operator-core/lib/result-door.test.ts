@@ -121,6 +121,36 @@ describe('discovery schema integrity', () => {
   });
 });
 
+describe('Discovery audit decision receipt (EI-28620270213137680)', () => {
+  it.each([
+    { toolName: 'plans:audit' },
+    { toolName: 'tools:invoke', nestedTargetToolName: 'plans:audit' },
+  ])('retains a large committed ready:false verdict through $toolName', (route) => {
+    const readiness = { ready: false, state: 'blocked', blockers: [{
+      code: 'discovery_evidence_unusable', path: 'findings.F-002',
+      detail: 'The observed source changed; reconcile this finding.',
+    }], evidenceRefs: ['source:changed.ts'], supportedTargets: [], nextAction: 'Reconcile F-002.' };
+    const discovery = { schemaVersion: 1, requestKey: 'a'.repeat(64), subjectHash: 'b'.repeat(64),
+      targets: Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`P-${i}`, 'c'.repeat(64)])),
+      evidence: Array.from({ length: 200 }, (_, i) => ({ ref: `source:file-${i}.ts`,
+        state: 'current', usable: true, fingerprint: 'd'.repeat(64) })), readiness };
+    // Match the writer's order: decision fields follow two large audit echoes.
+    const source = { ok: true, audit: { auditSeq: 76, discovery }, discovery,
+      slug: 'large-draft', harness: 'papercusp', phase: 'discovery', readiness,
+      workflow: { stage: 'discovery', nextAction: readiness.nextAction }, auditSeq: 76,
+      readback: { tool: 'plans:get', args: { slug: 'large-draft', harness: 'papercusp', discoveryAudit: 76 }, readOnly: true } };
+    const tiered = applyPayloadTier({ toolName: 'plans:audit', tier: 'trimmed',
+      shape: undefined, effect: 'write', deferHardCeilingToResultDoor: true,
+      response: { data: source }, args: { slug: source.slug, phase: 'discovery' } });
+    const out = applyResultDoor({ content: [{ type: 'text', text: JSON.stringify(tiered.data) }] },
+      { ...route, workspaceId: 'ws-1', runId: RUN_ID });
+    expect(boundedBody(out)).toMatchObject({ ok: true, auditSeq: 76, readback: source.readback,
+      readiness: { ready: false, blockers: [{ code: 'discovery_evidence_unusable', path: 'findings.F-002' }] } });
+    expect(measureResultContextBytes(out)).toBeLessThanOrEqual(BUDGET_CHARS);
+    expect(readSpill('ws-1', route.toolName, RUN_ID)).toContain(JSON.stringify(source));
+  });
+});
+
 describe('fleet admission receipt recovery', () => {
   it('keeps the repair header and original full-details cursor through a nested partial-result door', () => {
     const source = { ok: false, error: 'admission_refused', reason: 'floor-gated',
@@ -4078,7 +4108,7 @@ describe('applyResultDoor', () => {
         ...(nested ? { nestedTargetToolName: 'testing:runs' } : {}),
         effect: 'read', workspaceId: 'ws-1', runId: RUN_ID,
       });
-      const inline = boundedBody(doored) as {
+      const inline = boundedBody(doored) as unknown as {
         _partial: boolean;
         _projection: { cursor: { bodyComplete?: boolean } };
         runs: Array<{ filePath?: string; framework?: string }>;
@@ -4705,7 +4735,7 @@ describe('applyResultDoor', () => {
         logsNotice: { truncatedLines: 1, textTruncated: true },
         logs: [withMarker('result head … [truncated 1227 chars] … result tail\n', BUDGET_CHARS * 3)],
       });
-      const doored = applyResultDoor(
+      const doored: DoorableResult = applyResultDoor(
         { content: [{ type: 'text' as const, text }] },
         { toolName: 'code:run', workspaceId: 'ws-1', runId: RUN_ID },
       );

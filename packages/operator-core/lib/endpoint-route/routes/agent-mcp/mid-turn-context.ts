@@ -65,7 +65,7 @@ import { createMemoryWorkDeadline } from '../../../memory/op-deadline';
 import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { contextPackingCarrier, optionalRecallContextCandidates, packContextCandidates, type ContextCandidate } from '../../../context-doors';
-import { saveContextPackingReceipt, loadContextPackingReceipt, pageContextPackingReceipt } from '../../../context-packing-receipts';
+import { captureContextPackingAttribution, saveContextPackingReceipt, loadContextPackingReceipt, pageContextPackingReceipt } from '../../../context-packing-receipts';
 import { contextInjectionBudgetBytes } from './turn-start-memory';
 import type { PreparedMemoryBlock, MemoryFragmentOffer, MemoryEmissionConfirmation } from '../../../memory/session-epoch-ledger';
 
@@ -486,17 +486,18 @@ export function clampToBudget(block: string, budget: number = MID_TURN_BUDGET_CH
 export function packMidTurnContext(memoryBlock: string, failureHint: string, ruleContext: string, codeIntel = '',
   budgetBytes = contextInjectionBudgetBytes(''), attemptId = randomUUID(), fragments?: readonly MemoryFragmentOffer[], client?: unknown) {
   const memory = clampToBudget(memoryBlock).trim();
-  return packContextCandidates({ attemptId, budgetBytes, carrier: contextPackingCarrier(client, 'mid-turn'), candidates: [
+  const candidates: ContextCandidate[] = [
     { sourceRef: 'mid-turn:failure-hint', class: 'correction', required: true, text: failureHint },
     { sourceRef: 'mid-turn:binding-rules', class: 'policy', required: true, text: ruleContext },
     { sourceRef: 'mid-turn:code-intelligence', class: 'code', required: false, text: codeIntel },
     { sourceRef: 'mid-turn:memory', class: 'memory', required: false, text: memory,
       ...(fragments ? { sourceUnits: fragments.filter(row => (`\n${memory}\n`).includes(`\n${row.rendered}\n`)).map(row => ({
         sourceRef: `${row.kind}:${row.id}`, revision: `epoch:${row.epoch}:sha256:${row.bodySha256}`,
-        class: row.kind, rendered: row.rendered,
+        class: row.kind === 'notice' ? 'ambient' as const : row.kind, rendered: row.rendered,
       })) } : {}) },
   ].map(row => ({ ...row, class: row.class as ContextCandidate['class'], revision: createHash('sha256').update(row.text).digest('hex') }))
-    .flatMap(candidate => candidate.sourceRef === 'mid-turn:memory' ? optionalRecallContextCandidates(candidate) : [candidate]) });
+    .flatMap(candidate => candidate.sourceRef === 'mid-turn:memory' ? optionalRecallContextCandidates(candidate) : [candidate]);
+  return { ...packContextCandidates({ attemptId, budgetBytes, carrier: contextPackingCarrier(client, 'mid-turn'), candidates }), candidates };
 }
 
 export function composeMidTurnContextText(memoryBlock: string, failureHint: string, ruleContext: string, codeIntel = ''): string {
@@ -815,6 +816,8 @@ const midTurnContext = defineTool({
       return activeWorkspaceId();
     })();
     workspaceIdResolved.catch(() => undefined);
+    const packingAttribution = await captureContextPackingAttribution({ workspaceId: await workspaceIdResolved,
+      ownerId: owner, client: body.client ?? '' });
     const recordSuppression = (outcome: InjectionDeliveryOutcome): void => {
       const record = (workspaceId: string) => void recordInjectionCoverage([{
         port: 'mid-turn', client: coverageClient, workspaceId, outcome,
@@ -889,7 +892,11 @@ const midTurnContext = defineTool({
       let packingReceipt: Awaited<ReturnType<typeof saveContextPackingReceipt>>;
       try {
         packingReceipt = await saveContextPackingReceipt({ workspaceId: await workspaceIdResolved,
-          ownerId: owner, harness: (await harnessResolved) || 'operator', port: 'mid-turn', client: body.client ?? '' }, packed.receipt);
+          ownerId: owner, harness: (await harnessResolved) || 'operator', port: 'mid-turn', client: body.client ?? '' }, packed.receipt, {
+          createdAt: new Date(arrivedAt).toISOString(), text: packed.text,
+          selectedIndexes: packed.selectedIndexes, candidates: packed.candidates,
+          attribution: packingAttribution,
+        });
       } catch {
         // Preparation alone cannot justify emission. Preserve replay eligibility
         // and the hook's silent failure contract if durable evidence is unavailable.

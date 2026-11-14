@@ -19,6 +19,7 @@ import {
   readInbox,
   readDirectedInbox,
   mergeInboxEntries,
+  getMessagesByIds,
   drainAndDeliverUserMailbox,
   getSupersededMap,
   getRemoteOriginMsgIds,
@@ -42,6 +43,10 @@ import {
   excludeIntentDeclares,
   coalesceRepeatedBroadcasts,
   changedSystemNoticeDelivery,
+  systemNoticeIdentity,
+  systemNoticeReplayCandidates,
+  systemNoticeReplayState,
+  systemNoticeRecentlyEmitted,
   relevantSystemNoticeDelivery,
   inboxPriorityBucket,
   prioritizedInboxWindow,
@@ -82,6 +87,9 @@ import { getContextUsage } from "../../../system-health/context-usage-cache";
 import { selfCompactionAvailabilityAsync } from "../../../events/await/psu-pty-discovery";
 import { listActiveClaimFreshnessForOwner } from "../../../work-item-claims";
 import { activeWorkspaceId } from "../../../workspace-registry";
+import { AMBIENT_PUSH_WINDOW_MS } from "../../../ambient-push";
+import { collectsMemoryEmission, collectMemoryEmission, memoryFragmentOffer,
+  currentSessionEpoch, provenSystemNoticeEmissions } from "../../../memory/session-epoch-ledger";
 import { cachedRead, type CachedReadCtx } from "../../../cache";
 import { fetchUnansweredDirected, type UnansweredDirectedEntry } from "../unanswered-directed";
 import { authoredFieldsMarker, senderContextMarker } from "../message-fields";
@@ -1256,7 +1264,7 @@ export default defineTool({
       .max(500)
       .optional()
       .describe(
-        `Max entries in the priority-ranked window; newest-first overall is not guaranteed. Default: what fits one result, max ${DEFAULT_INBOX_LIMIT}.`,
+        `Max entries in the result window. Default inboxes rank actionable asks first; explicit sender/directed views select newest matches first. Default: what fits one result, max ${DEFAULT_INBOX_LIMIT}.`,
       ),
     include_ambient: z
       .boolean()
@@ -1646,7 +1654,7 @@ export default defineTool({
       identity.ownerId,
       ...(sessionAlias && sessionAlias !== identity.ownerId ? [sessionAlias] : []),
     ];
-    const all = sessionAlias
+    const freshInbox = sessionAlias
       ? mergeInboxEntries(
           ownInbox,
           await measureInboxPhase(
@@ -1662,6 +1670,20 @@ export default defineTool({
             }),
         )
       : ownInbox;
+
+    // Timestamp ACKs cannot certify final native emission. Exact indexed reads
+    // recover retained notices even after newer mail moved the timestamp floor.
+    // Filter log rows again by recipient/system identity before using them.
+    // A failed lookup aborts this fold, preserving the previous cursor state.
+    const replayCandidates = nativeNoticeDelivery ? systemNoticeReplayCandidates(
+      (args as unknown as Record<string, unknown>)['__systemNoticeState']) : [];
+    const replayRows = replayCandidates.length
+      ? [...(await measureInboxPhase('notice-replay-read', () =>
+          getMessagesByIds(replayCandidates.map(candidate => candidate.msgId)))).values()]
+          .filter(entry => Array.isArray(entry.to) && entry.to.includes('*') &&
+            systemNoticeIdentity(entry as unknown as Record<string, unknown>) !== null)
+      : [];
+    const all = replayRows.length ? mergeInboxEntries(replayRows, freshInbox) : freshInbox;
 
     const ambientExcluded = includeAmbient
       ? 0
@@ -1734,9 +1756,10 @@ export default defineTool({
 
     // P-009: order by priority BEFORE slicing, so actionable asks survive a
     // low-priority flood even when they are older than the newest status rows.
-    const priorityWindow = prioritizedInboxWindow(
+    const selectedWindow = prioritizedInboxWindow(
       coalesced as unknown as Array<Record<string, unknown>>,
       limit,
+      { order: resolvedFrom || directedOnly ? "newest" : "priority" },
     );
     // P-006 D-002: a DEFAULT read (no limit, no max_body_chars, no explicit full
     // tier) is fitted to the caller's result door at the cap it will be bounded at.
@@ -1744,15 +1767,15 @@ export default defineTool({
     // and every read receipt describe what the agent actually receives.
     const doorFitCap =
       args.limit === undefined && args.max_body_chars === undefined && !explicitFullRequest
-        ? priorityWindow.length > 0
-          ? Math.min(tierDefaults.bodyChars, Math.floor(INBOX_ENTRY_BUDGET / priorityWindow.length))
+        ? selectedWindow.length > 0
+          ? Math.min(tierDefaults.bodyChars, Math.floor(INBOX_ENTRY_BUDGET / selectedWindow.length))
           : tierDefaults.bodyChars
         : undefined;
     const doorFit =
       doorFitCap === undefined
         ? undefined
-        : fitInboxWindowToChars(priorityWindow, doorFitCap, inboxDefaultWindowChars(identity.ownerId));
-    const entries = (doorFit ? doorFit.kept : priorityWindow) as unknown as typeof filtered;
+        : fitInboxWindowToChars(selectedWindow, doorFitCap, inboxDefaultWindowChars(identity.ownerId));
+    const entries = (doorFit ? doorFit.kept : selectedWindow) as unknown as typeof filtered;
     const truncated = Math.max(0, coalesced.length - entries.length);
 
     const byKind: Record<string, number> = {};
@@ -1863,18 +1886,55 @@ export default defineTool({
     const maxInjectionLines = 8;
     let noticeRelevance: ReturnType<typeof relevantSystemNoticeDelivery> | null = null;
     if (nativeNoticeDelivery) {
+      // Resolve old retained alarms against current lifecycle state before
+      // deciding what to replay. Reuse the existing exact-key resolution reader.
+      const resolutions = await measureInboxPhase('notice-replay-resolutions', () =>
+        readMissingConditionResolutions(replayRows as unknown as Array<Record<string, unknown>>,
+          all as unknown as Array<Record<string, unknown>>));
+      injectionPopulation = annotateResolvedConditions(injectionPopulation,
+        [...all as unknown as Array<Record<string, unknown>>, ...resolutions]);
       noticeRelevance = relevantSystemNoticeDelivery(injectionPopulation, noticeScope);
-      injectionEntries = prioritizedInboxWindow(noticeRelevance.entries, limit) as unknown as typeof injectionEntries;
+      // Suppress proven repeats BEFORE the visible window; otherwise a recent
+      // proven head can starve older omitted notices indefinitely.
+      injectionEntries = noticeRelevance.entries as unknown as typeof injectionEntries;
     }
+    let noticeEpoch: number | null = null;
+    let provenNotices: Awaited<ReturnType<typeof provenSystemNoticeEmissions>> = {};
+    if (nativeNoticeDelivery && collectsMemoryEmission(identity.ownerId)) {
+      try {
+        const { getOrgPg } = await import('@papercusp/db-org');
+        const sql = getOrgPg().sql;
+        noticeEpoch = await currentSessionEpoch(sql, identity.ownerId);
+        const keys = [...new Set(injectionEntries.flatMap(entry => {
+            const notice = systemNoticeIdentity(entry as unknown as Record<string, unknown>);
+            return notice ? [notice.key] : [];
+          }))];
+        // The existing proof reader bounds each exact lookup to 256 keys.
+        // Preserve that bound without silently leaving overflow unmeasured.
+        for (let offset = 0; offset < keys.length; offset += 256) {
+          Object.assign(provenNotices, await provenSystemNoticeEmissions(sql, identity.ownerId, noticeEpoch,
+            keys.slice(offset, offset + 256)));
+        }
+      } catch { noticeEpoch = null; } // Unknown proof permits delivery.
+    }
+    const noticeNow = Date.now();
+    const freshIds = new Set(freshInbox.map(entry => entry.msg_id));
+    const nativeCandidates = (injectionEntries as unknown as Array<Record<string, unknown>>).filter(entry => {
+      if (freshIds.has(String(entry['msg_id']))) return true;
+      if (entry['resolved'] === true) return false;
+      const identity = systemNoticeIdentity(entry);
+      return !identity || !systemNoticeRecentlyEmitted(identity, provenNotices, noticeNow);
+    });
     const noticeDelivery = nativeNoticeDelivery
       ? changedSystemNoticeDelivery(
-          injectionEntries as unknown as Array<Record<string, unknown>>,
-          (args as InboxDeliveryFloor).__systemNoticeState,
+          nativeCandidates,
+          provenNotices,
           maxInjectionLines,
+          { now: noticeNow, reminderMs: AMBIENT_PUSH_WINDOW_MS },
         )
       : null;
     if (noticeDelivery) {
-      injectionEntries = noticeDelivery.entries as unknown as typeof injectionEntries;
+      injectionEntries = prioritizedInboxWindow(noticeDelivery.entries, limit) as unknown as typeof injectionEntries;
     }
 
     // EI-213057 READ-RECEIPT: emit receipts for newly SHOWN directed messages before
@@ -2028,10 +2088,26 @@ export default defineTool({
     } catch {
       bodyRefs = undefined;
     }
+    const injectionNowMs = Date.now();
     const coordInjection = renderInjection(
       injectionEntries as unknown as CoordLineSource[],
-      { cueScope, relatedQuotes, bodyRefs, maxLines: maxInjectionLines },
+      { cueScope, relatedQuotes, bodyRefs, maxLines: maxInjectionLines, nowMs: injectionNowMs },
     );
+    if (nativeNoticeDelivery && noticeEpoch !== null) {
+      const offers = injectionEntries.flatMap(entry => {
+        const notice = systemNoticeIdentity(entry as unknown as Record<string, unknown>);
+        if (!notice) return [];
+        // Match the final visible line, excluding the batch-dependent header.
+        // The enclosing receipt additionally checks the fully shaped response;
+        // omission/truncation at either boundary cannot advance the floor.
+        const rendered = renderInjection([entry as unknown as CoordLineSource],
+          { cueScope, relatedQuotes, bodyRefs, maxLines: 1, nowMs: injectionNowMs }).split('\n').slice(1).join('\n');
+        if (!rendered || !(`\n${coordInjection}\n`).includes(`\n${rendered}\n`)) return [];
+        return [{ ...memoryFragmentOffer('notice', notice.key, noticeEpoch!, 'coord-inbox', rendered),
+          sourceFingerprint: notice.fingerprint }];
+      });
+      collectMemoryEmission(identity.ownerId, offers);
+    }
 
     // P-010 re-bootstrap-on-compaction (D-007): on the first read after a fresh
     // context / resume (a session-lifecycle start set snapshot_rebootstrap_pending),
@@ -2431,7 +2507,7 @@ export default defineTool({
             recent: entriesOut.map((e) => e["msg_id"]),
             injection,
             ...(noticeDelivery ? {
-              __systemNoticeState: noticeDelivery.state,
+              __systemNoticeState: systemNoticeReplayState(noticeRelevance?.entries ?? [], provenNotices, noticeNow),
               system_notices_suppressed: noticeDelivery.suppressed,
               system_notices_irrelevant: noticeRelevance?.excluded ?? 0,
               system_notice_history: { tool: 'coord:feed' },

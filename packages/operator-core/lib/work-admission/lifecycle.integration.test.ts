@@ -384,7 +384,8 @@ describe('admission lifecycle (P-003)', () => {
     },
   );
 
-  it('links an admitted fix only when its recorded content is in the tested PR diff, with one provider comment across retries', async () => {
+  it.each(['same-home', 'physical-pot-home'])(
+    'links an admitted fix only when its recorded content is in the tested PR diff, with one provider comment across retries: %s', async (home) => {
     const root = mkdtempSync(join(tmpdir(), 'admission-standing-pr-'));
     const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
     try {
@@ -410,11 +411,26 @@ describe('admission lifecycle (P-003)', () => {
       } };
       await sql`UPDATE harness_shared.work_items SET item_kind = 'bug', status = 'done', authority = 'committed',
         payload = ${sql.json(payload)} WHERE workspace_id = ${WS} AND feature_id = ${id}`;
-      const input = { workspaceId: WS, harnesses: [HARNESS], repositoryRoot: root,
+      const admissionHarness = home === 'physical-pot-home' ? 'repo-member' : HARNESS;
+      await sql`UPDATE harness_shared.work_admissions SET harness_slug = ${admissionHarness}
+        WHERE workspace_id = ${WS} AND work_item_id = ${id}`;
+      const input = { workspaceId: WS, harnesses: [admissionHarness], repositoryRoot: root,
         testedSha: head, targetSha: target, url: 'https://github.com/acme/widgets/pull/7', number: 7 };
       expect(await correlateAdmissionStandingPr(sql, { ...input, testedSha: target })).toEqual({ linked: [], failed: [] });
       expect((await item(id)).payload).not.toHaveProperty('standingPr');
       expect(await correlateAdmissionStandingPr(sql, { ...input, harnesses: ['another-pot'] })).toEqual({ linked: [], failed: [] });
+      expect(await correlateAdmissionStandingPr(sql, { ...input, workspaceId: 'another-workspace' }))
+        .toEqual({ linked: [], failed: [] });
+      expect(await correlateAdmissionStandingPr(sql, { ...input, expectedPayload: { stale: true } }))
+        .toEqual({ linked: [], failed: [] });
+      for (const state of [{ status: 'open', authority: 'committed' }, { status: 'done', authority: 'proposed' }]) {
+        await sql`UPDATE harness_shared.work_items SET status = ${state.status}, authority = ${state.authority}
+          WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+        expect(await correlateAdmissionStandingPr(sql, input)).toEqual({ linked: [], failed: [] });
+        expect(await resolveAdmissionStandingPrPaths(sql, input)).toEqual({ ok: true, paths: [], workItemIds: [] });
+      }
+      await sql`UPDATE harness_shared.work_items SET status = 'done', authority = 'committed'
+        WHERE workspace_id = ${WS} AND feature_id = ${id}`;
       let reopened = false;
       expect(await correlateAdmissionStandingPr(sql, input, {
         headBlobs: async (...args) => {
@@ -431,6 +447,40 @@ describe('admission lifecycle (P-003)', () => {
       expect(await correlateAdmissionStandingPr(sql, input)).toEqual({ linked: [], failed: [] });
       expect(await resolveAdmissionStandingPrPaths(sql, input)).toEqual({ ok: true, paths: ['bug.txt'], workItemIds: [id] });
       const linkedPayload = (await item(id)).payload as Record<string, JSONValue>;
+      if (home === 'physical-pot-home') {
+        // Migration 1444 prevents new twins. Recreate legacy rows only inside
+        // this disposable DB transaction; any failed assertion rolls back DDL too.
+        await sql.begin(async (tx) => {
+          await tx`DROP INDEX harness_shared.work_items_workspace_feature_id_uq`;
+          await tx`INSERT INTO harness_shared.work_items
+            (workspace_id, harness_slug, feature_id, item_kind, title, status, authority, payload, created_ts, updated_ts)
+            SELECT workspace_id, 'legacy-other-home', feature_id, item_kind, title, 'open', 'committed',
+              ${tx.json({ legacyTwin: true })}, created_ts, updated_ts
+              FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+          for (const state of [{ status: 'open', authority: 'committed' }, { status: 'done', authority: 'proposed' }]) {
+            await tx`UPDATE harness_shared.work_items SET status = ${state.status}, authority = ${state.authority}
+              WHERE workspace_id = ${WS} AND feature_id = ${id} AND harness_slug = 'legacy-other-home'`;
+            // A terminal transition adds completion-intent metadata. Capture the
+            // actual row before correlation so the no-write check includes it.
+            const [before] = await tx`SELECT payload FROM harness_shared.work_items
+              WHERE workspace_id = ${WS} AND feature_id = ${id} AND harness_slug = 'legacy-other-home'`;
+            expect(await resolveAdmissionStandingPrPaths(tx, input)).toMatchObject({
+              ok: false, reason: expect.stringContaining('ambiguous'),
+            });
+            await expect(correlateAdmissionStandingPr(tx, { ...input, expectedPayload: linkedPayload }))
+              .rejects.toMatchObject({ code: 'work_item_id_ambiguous' });
+            expect(await correlateAdmissionStandingPr(tx, { ...input, workItemHarness: HARNESS, expectedPayload: linkedPayload }))
+              .toEqual({ linked: [], failed: [] });
+            const [after] = await tx`SELECT payload FROM harness_shared.work_items
+              WHERE workspace_id = ${WS} AND feature_id = ${id} AND harness_slug = 'legacy-other-home'`;
+            expect(after!.payload).toEqual(before!.payload);
+          }
+          await tx`DELETE FROM harness_shared.work_items
+            WHERE workspace_id = ${WS} AND feature_id = ${id} AND harness_slug = 'legacy-other-home'`;
+          await tx`CREATE UNIQUE INDEX work_items_workspace_feature_id_uq
+            ON harness_shared.work_items (workspace_id, feature_id)`;
+        });
+      }
       const completionEvidence = linkedPayload._completionEvidence as Record<string, unknown>;
       const linkedManifest = completionEvidence.settlementManifest as Record<string, unknown>;
       await sql`UPDATE harness_shared.work_items SET payload = ${sql.json({
@@ -456,7 +506,8 @@ describe('admission lifecycle (P-003)', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+    },
+  );
 
   it('runs on calibrated fixtures', async () => {
     // (1) Both fixture trackers are valid provider descriptors (the production registry's

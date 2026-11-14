@@ -3,6 +3,7 @@ import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { hashPlanContent } from './content-hash';
+import { withPlanLock } from './with-plan-lock';
 
 const gates = vi.hoisted(() => ({ blocker: '', unavailable: false,
   selectedReview: false, ordinaryCritiques: false, omitFinalReviewFence: false,
@@ -38,21 +39,30 @@ vi.mock('@papercusp/db-org', async original => ({
 // Policy readers have their own maintained suites. Control their verdicts here;
 // the canonical writer, scoped SQL, revision insert, trigger, native guard and GC
 // remain real so a ready verdict alone cannot manufacture a start receipt.
-vi.mock('./plan-activation-gate', () => ({ evaluateConversationActivationGate: async () => {
+vi.mock('./plan-activation-gate', async original => ({
+  ...(await original<typeof import('./plan-activation-gate')>()),
+  evaluateConversationActivationGate: async () => {
   await gates.beforeReadiness?.();
   if (gates.unavailable) throw new Error('policy reader unavailable');
   return { satisfied: gates.blocker !== 'conversation_audit_required', grandfathered: true,
     code: 'conversation_audit_required' };
-} }));
+  },
+}));
 // The canonical start gate includes the pre-start BAR contract check.
-vi.mock('./plan-start-gate', () => ({ checkPlanStartable: async (...args: unknown[]) => {
+vi.mock('./plan-start-gate', async original => ({
+  ...(await original<typeof import('./plan-start-gate')>()),
+  checkPlanStartable: async (...args: unknown[]) => {
   gates.startGate(...args);
   return ['initial_change_scope_missing', 'bar_contract_not_ready'].includes(gates.blocker)
     ? { ok: false, refusal: { code: gates.blocker } } : { ok: true };
-} }));
-vi.mock('./plan-spec-quality-gate', () => ({ evaluatePlanSpecQualityGate: async () => ({
+  },
+}));
+vi.mock('./plan-spec-quality-gate', async original => ({
+  ...(await original<typeof import('./plan-spec-quality-gate')>()),
+  evaluatePlanSpecQualityGate: async () => ({
   satisfied: gates.blocker !== 'spec_quality_not_current', applicable: true, mode: 'enforced', code: 'spec_quality_not_current',
-}) }));
+  }),
+}));
 vi.mock('./plan-start-critique-gate', async original => ({
   ...(await original<typeof import('./plan-start-critique-gate')>()),
   isPlanStartBarCritiqueInCohort: () => true,
@@ -67,12 +77,21 @@ vi.mock('./plan-start-critique-gate', async original => ({
     ...(selected ? { ownerSelectedReview: selected } : {}) };
   },
 }));
-vi.mock('../../acceptance-bar-lifecycle-evaluator', () => ({ readAndEvaluateAcceptanceBarLifecycle: async () => ({
+vi.mock('../../acceptance-bar-lifecycle-evaluator', async original => ({
+  ...(await original<typeof import('../../acceptance-bar-lifecycle-evaluator')>()),
+  readAndEvaluateAcceptanceBarLifecycle: async () => ({
   satisfied: gates.blocker !== 'bar_contract_not_ready', codes: ['bar_contract_not_ready'],
-}) }));
-vi.mock('../../plan-types/pins', () => ({ withPinnedPlanTypes: async (_scope: unknown, fn: () => Promise<unknown>) => fn() }));
-vi.mock('./plan-admission-gate', () => ({ checkPlanAdmission: async () => gates.blocker === 'governance_refused'
-  ? { admitted: false, refusal: { code: gates.blocker } } : { admitted: true } }));
+  }),
+}));
+vi.mock('../../plan-types/pins', async original => ({
+  ...(await original<typeof import('../../plan-types/pins')>()),
+  withPinnedPlanTypes: async (_scope: unknown, fn: () => Promise<unknown>) => fn(),
+}));
+vi.mock('./plan-admission-gate', async original => ({
+  ...(await original<typeof import('./plan-admission-gate')>()),
+  checkPlanAdmission: async () => gates.blocker === 'governance_refused'
+    ? { admitted: false, refusal: { code: gates.blocker } } : { admitted: true },
+}));
 vi.mock('./source', async original => ({
   ...(await original<typeof import('./source')>()),
   resolvePlanScope: async () => ({ workspaceId: 'execution-ws', harnessSlug: 'project' }),
@@ -421,13 +440,14 @@ describe('canonical successful-start revision authority (real PG)', () => {
     expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_not_started']);
   });
 
-  it.each([null, { reason: 'prior author edit', priorRevision: 17 }])(
+  it.each([undefined, null, { reason: 'prior author edit', priorRevision: 17 }])(
     'admits legacy lifecycle metadata %j without admitting changed authority inputs or body', async invalidation => {
       const receipt = await issue();
       const [stored] = await db.sql<{ content_snapshot: string }[]>`
         SELECT content_snapshot FROM harness_shared.plan_revisions WHERE seq=${receipt.seq}`;
       const legacy = JSON.parse(stored!.content_snapshot);
-      legacy.inputs.execution_start_invalidation = invalidation;
+      if (invalidation === undefined) delete legacy.inputs.execution_start_invalidation;
+      else legacy.inputs.execution_start_invalidation = invalidation;
       const replaceReceipt = async (snapshot: unknown) => db.sql`
         UPDATE harness_shared.plan_revisions SET content_snapshot=${JSON.stringify(snapshot)}
         WHERE seq=${receipt.seq}`;
@@ -747,6 +767,97 @@ describe('canonical successful-start revision authority (real PG)', () => {
     });
   });
 
+  it.each(['text', 'importance', 'legacy note'] as const)(
+    'retains canonical legacy-note bytes across repeated reflected progress and fences changed %s', async changedField => {
+      const { deriveIndexFromContent } = await import('./derive-index');
+      const { readPlanLineNodes, writePlanLineNodes } = await import('./plan-line-graph');
+      const { renderPlanLines } = await import('./plan-line-render');
+      const { flipStatusInBody } = await import('./set-status');
+      await import('../../plan-items/reflect-rules');
+      const { reactionRulesFor } = await import('../../events/registry');
+      const graphScope = { workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, slug: scope.planSlug };
+      let current = body + '\n## Phase 1\n'
+        + '- **P-001** `wip` Preserve findings deliverable: code\n'
+        + '- **P-002** `todo` Retain artifacts D-050 importance: low deliverable: doc — note: Original evidence\n'
+        + '- **P-003** `todo` Preserve provenance D-051 importance: high deliverable: code — note: Historical evidence\n';
+      const initialItems = deriveIndexFromContent(current).items;
+      for (const [seq, item] of initialItems.entries()) {
+        await seedLine(item.id, seq);
+        // Historical graph projections can retain fewer separator bytes than
+        // a current metadata render/parse. Both represent the same author text.
+        const storedText = item.text.replace(/\s+/g, ' ').trim();
+        await db.sql`UPDATE harness_shared.work_items SET
+          plan_line_text=${storedText},plan_phase=${item.phase},plan_importance=${item.importance},
+          plan_deliverable=${item.deliverable ?? null},plan_decision_refs=${item.decisionRefs}::text[],
+          status=${item.status === 'todo' ? 'open' : item.status},
+          title='Retained title',summary='Retained summary' WHERE plan_line_id=${item.id}`;
+      }
+      await db.sql`UPDATE harness_shared.harness_plans SET content=${current},content_hash=${hashPlanContent(current)}`;
+      await db.sql`INSERT INTO harness_shared.session_briefs
+        (owner_id,workspace_id,current_plan_slug,harness_slug)
+        VALUES (${identity.ownerId},${scope.workspaceId},${scope.planSlug},${scope.harnessSlug})`;
+      expect(await readExecutionPlanBindings(identity.ownerId, scope.workspaceId))
+        .toEqual([expect.objectContaining(binding)]);
+      const receipt = await issue();
+      const originalRows = await db.sql`SELECT plan_line_id,plan_line_text,title,summary
+        FROM harness_shared.work_items ORDER BY plan_seq`;
+      const rule = reactionRulesFor('work_items:release').find(r => r.id === 'plan-item-reflect:release');
+      if (!rule || typeof rule.args !== 'function') throw new Error('release reflection rule missing');
+      const releaseArgs = rule.args({
+        tool: 'work_items:release', args: {}, ctx: { uiClientId: identity.ownerId },
+        result: { ok: true, data: { workItem: { id: 'WI-6554700010046542', state: 'open',
+          payload: { plan_item: { plan_slug: scope.planSlug, item_id: 'P-001', harness_slug: scope.harnessSlug } } } } },
+      } as import('../../events/types').ToolInvocationEvent) as {
+        item: string; status: string; note: string; noteKind?: 'author' | 'progress';
+      };
+      const reflections = [releaseArgs, { item: 'P-001', status: 'wip',
+        note: 'Claim progress blocked-by: P-999 importance: high D-999', noteKind: 'progress' as const }, releaseArgs];
+      for (const [pass, args] of reflections.entries()) {
+        const beforeNodes = await readPlanLineNodes(db.sql, graphScope);
+        const rendered = renderPlanLines(current, beforeNodes);
+        if (pass === 0) {
+          // This is the production failure mechanism: multiple metadata fields
+          // leave different separator bytes before an ordinary legacy note.
+          const roundTrip = deriveIndexFromContent(rendered).items;
+          expect(roundTrip.map(item => item.text)).not.toEqual(beforeNodes.map(item => item.text));
+          const meaning = (text: string) => text.replace(/\s+/g, ' ').trim();
+          expect(roundTrip.map(item => meaning(item.text))).toEqual(beforeNodes.map(item => meaning(item.text)));
+        }
+        const reflected = flipStatusInBody(rendered, args.item, args.status, args.note, args.noteKind);
+        expect(reflected.found).toBe(true);
+        const next = reflected.newBody;
+        const mutations = await db.sql.begin(async tx => {
+          await preservePlanExecutionProgress(tx, scope, current, next, hashPlanContent(current), hashPlanContent(next));
+          await tx`UPDATE harness_shared.harness_plans SET content=${next},content_hash=${hashPlanContent(next)}`;
+          return writePlanLineNodes(tx as unknown as Parameters<typeof writePlanLineNodes>[0],
+            graphScope, beforeNodes, deriveIndexFromContent(next).items);
+        });
+        expect(mutations).toEqual([]);
+        expect(await db.sql`SELECT plan_line_id,plan_line_text,title,summary
+          FROM harness_shared.work_items ORDER BY plan_seq`).toEqual(originalRows);
+        expect((await readExecutionPlanRow(scope))?.execution_start_revision_seq).toBe(receipt.seq);
+        expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual([]);
+        expect(await checkPlanExecutionGuard({ ownerId: identity.ownerId, workspaceId: scope.workspaceId,
+          toolName: 'apply_patch', args: {} })).toBeNull();
+        current = next;
+      }
+      const changed = changedField === 'text' ? current.replace('Preserve findings deliverable:', 'Discard findings deliverable:')
+        : changedField === 'importance' ? current.replace('importance: low', 'importance: high')
+          : current.replace('Original evidence', 'Different evidence');
+      expect(changed).not.toBe(current);
+      expect(deriveIndexFromContent(changed).items).not.toEqual(deriveIndexFromContent(current).items);
+      const beforeNodes = await readPlanLineNodes(db.sql, graphScope);
+      // Exercise the graph fence directly: no body update or preservation helper
+      // can clear the receipt on behalf of this meaningful-change control.
+      await db.sql.begin(tx => writePlanLineNodes(tx as unknown as Parameters<typeof writePlanLineNodes>[0],
+        graphScope, beforeNodes, deriveIndexFromContent(changed).items));
+      expect((await readExecutionPlanRow(scope))?.execution_start_revision_seq).toBeNull();
+      expect((await readExecutionPlanRow(scope))?.execution_start_invalidation).toMatchObject({ reason: 'plan_line_changed' });
+      expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_not_started']);
+      expect(await checkPlanExecutionGuard({ ownerId: identity.ownerId, workspaceId: scope.workspaceId,
+        toolName: 'apply_patch', args: {} })).toMatchObject({ blockers: ['plan_not_started'] });
+    });
+
   it('preserves execution authority for a typed progress note through the plan-line graph writer', async () => {
     await seedLine('P-001');
     await db.sql`UPDATE harness_shared.work_items SET plan_phase='Phase 1',plan_deliverable='code' WHERE plan_line_id='P-001'`;
@@ -791,6 +902,61 @@ describe('canonical successful-start revision authority (real PG)', () => {
     expect(authorMutations).toEqual([]);
     expect((await readExecutionPlanRow(scope))?.execution_start_revision_seq).toBeNull();
     expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_not_started']);
+  });
+
+  it('preserves and invalidates execution authority through the canonical locked content writer', async () => {
+    // withPlanLock also reads plan admission metadata; this fixture intentionally
+    // models that field lazily so the canonical content-writer path remains covered.
+    await db.sql.unsafe('ALTER TABLE harness_shared.harness_plans ADD COLUMN IF NOT EXISTS acceptance_bar_rubric_slug text');
+    await db.sql.unsafe("CREATE OR REPLACE FUNCTION harness_shared.hlc_now() RETURNS text LANGUAGE sql VOLATILE AS $$ SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint::text || ':00000:test' $$");
+    const planCtx = { ...identity, harnessSlug: scope.harnessSlug };
+    const writeOptions = { workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug,
+      slug: scope.planSlug, actorId: identity.ownerId, intent: 'execution-authority writer regression' };
+    await db.sql`INSERT INTO harness_shared.session_briefs
+      (owner_id,workspace_id,current_plan_slug,harness_slug,control_state)
+      VALUES (${identity.ownerId},${scope.workspaceId},${scope.planSlug},${scope.harnessSlug},NULL)`;
+    expect(await readExecutionPlanBindings(identity.ownerId, scope.workspaceId)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ planSlug: scope.planSlug, harnessSlug: scope.harnessSlug })]),
+    );
+    // The direct fixture INSERT has not projected content-derived columns yet.
+    // Run the canonical writer before issuing the receipt so this regression
+    // isolates the subsequent Now-only edit instead of testing first-write
+    // normalization of is_legacy/promote_policy as a structured input change.
+    const canonicalWrite = await withPlanLock(planCtx, writeOptions, async current => {
+      if (current === null) throw new Error('started plan disappeared before canonical setup write');
+      return { newBody: current, value: null };
+    });
+    expect(canonicalWrite.kind).toBe('applied');
+    const receipt = await issue();
+
+    const progressWrite = await withPlanLock(planCtx, writeOptions, async current => {
+      if (current === null) throw new Error('started plan disappeared before progress write');
+      return { newBody: current.replace('Building', 'Testing'), value: null };
+    });
+    expect(progressWrite.kind).toBe('applied');
+    const progressRow = await readExecutionPlanRow(scope);
+    expect(progressRow?.execution_start_invalidation).toBeNull();
+    expect(progressRow?.execution_start_revision_seq).toBe(receipt.seq);
+    expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual([]);
+    expect(await checkPlanExecutionGuard({ ownerId: identity.ownerId, workspaceId: scope.workspaceId,
+      toolName: 'apply_patch', args: {} })).toBeNull();
+
+    // Seq 76 added this exact untyped author note after start receipt 75. It is
+    // not a typed operational-progress receipt, so execution meaning changes.
+    const authorWrite = await withPlanLock(planCtx, writeOptions, async current => {
+      if (current === null) throw new Error('started plan disappeared before author write');
+      return { newBody: current.replace('Preserve findings',
+        'Preserve findings — note: Canonical start75 and current executionReadiness ready; direct SELF implementation of existing shared PUI/native contracts continues.'), value: null };
+    });
+    expect(authorWrite.kind).toBe('applied');
+    const invalidated = await readExecutionPlanRow(scope);
+    expect(invalidated?.execution_start_revision_seq).toBeNull();
+    expect(invalidated?.execution_start_invalidation).toMatchObject({
+      schema: 'plan-execution-invalidation-v1', startRevisionSeq: receipt.seq, reason: 'plan_body_changed',
+    });
+    expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_not_started']);
+    expect(await checkPlanExecutionGuard({ ownerId: identity.ownerId, workspaceId: scope.workspaceId,
+      toolName: 'apply_patch', args: {} })).toMatchObject({ blockers: ['plan_not_started'] });
   });
 
   it('preserves Now-only writes but atomically invalidates edit-then-revert and structured changes', async () => {

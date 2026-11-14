@@ -12,6 +12,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { unknownAnchor, type PlanItemAnchor } from '../../plan-items/anchors';
+import { ACTIVATION_STAGE_IDS, readPlanActivationReadiness, type ActivationReadinessDiagnostic } from './get-activation-readiness';
 
 const M = vi.hoisted(() => {
   // The real readPlanBySlug (source.ts:1419) returns `{…} | null` — null IS the
@@ -730,6 +731,25 @@ describe('plans:get — cache wiring', () => {
   it('does not evaluate activation readiness unless explicitly requested', async () => {
     await run({ slug: 'alpha' });
     expect(M.previewPlanStartConsult).not.toHaveBeenCalled();
+  });
+
+  it('preserves the plan read and complete unknown stages when live preview setup fails', async () => {
+    vi.mocked(readPlanActivationReadiness).mockRejectedValueOnce(new Error('readiness source offline'));
+    const result = await run({ slug: 'alpha', activationReadiness: true });
+    const plan = result.results[0];
+    const diagnostic = plan.activationReadiness as ActivationReadinessDiagnostic;
+    expect(plan).toMatchObject({ ok: true, slug: 'alpha', activationReadiness: {
+      schemaVersion: 1, advisory: true, ready: false, freshness: 'unknown', basis: null,
+      counts: { total: ACTIVATION_STAGE_IDS.length, returned: ACTIVATION_STAGE_IDS.length, omitted: 0 },
+    } });
+    expect(diagnostic.stages.map(stage => stage.id)).toEqual([...ACTIVATION_STAGE_IDS]);
+    expect(diagnostic.stages.every(stage => stage.status === 'unknown')).toBe(true);
+    expect(diagnostic.stages.find(stage => stage.id === 'quality-audit'))
+      .toMatchObject({ dependencies: ['spec-quality'], codes: ['activation_stage_unavailable'] });
+    expect(diagnostic).toMatchObject({ consult: { outcome: 'unavailable' } });
+    const ordinary = await run({ slug: 'alpha' });
+    expect(ordinary.results[0]).toMatchObject({ ok: true, slug: 'alpha' });
+    expect(ordinary.results[0]).not.toHaveProperty('activationReadiness');
   });
 
   it('surfaces the permanent forced-past marker on ordinary and meta reads', async () => {

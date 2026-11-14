@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { hostname } from 'node:os';
+import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 
 const h = vi.hoisted(() => ({ sql: null as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async (orig) => ({
@@ -27,6 +28,112 @@ afterAll(async () => {
 });
 
 describe('rubric amend receipts in shared Postgres', () => {
+  it('reads authenticated applied rule evidence under real scoped row locks, refusing foreign scope and later rule drift', async () => {
+    const { buildAcceptanceBarSeed } = await import('../../acceptance-bar-seed');
+    const { rubricTemplateDataAuthoringSchema } = await import('../plans/rubric-template');
+    const { acceptanceBarReviewPostBody, acceptanceBarReviewSourceHash, resolveAcceptanceBarApproval } =
+      await import('../../acceptance-bar-amendment');
+    const { amendmentRequestHash } = await import('../../rubrics');
+    const workspace = activeWorkspaceId();
+    const slug = 'applied-approval-pg';
+    const rubricRef = 'acceptance-applied-approval-pg';
+    const content = `---
+title: Applied approval
+slug: ${slug}
+status: active
+created: 2026-11-12
+updated: 2026-11-12
+---
+# Applied approval
+## Requirements
+**R-1 — Canonical outcome.** The writer persists one canonical BAR.
+## Design
+### Bar-to-work map for this plan
+| bar | implementing plan items | evidence plane |
+|---|---|---|
+| R-1 | P-001 | tree |
+## Phase 1 — Build
+- **P-001** \`todo\` persist the canonical BAR
+`;
+    const seeded = buildAcceptanceBarSeed({ planSlug: slug, planContent: content, actorId: 'author',
+      declaredAt: '2026-11-12T00:00:00.000Z', cohort: 'post-epoch', adoptionEpoch: 1,
+      subjectPlanRevision: 4, rubricSlug: rubricRef, rubricRevision: 3 });
+    if (!seeded.ok) throw new Error('seed failed');
+    const candidate = rubricTemplateDataAuthoringSchema.parse(seeded.templateData);
+    const source = { schemaVersion: 1 as const, rubric: { ref: rubricRef, revision: 2, baseline: candidate, candidate },
+      subjectPlan: { slug, harness: 'papercusp', revision: 3, content, proposedContentUnchanged: true as const },
+      reason: 'Reviewed method', mappingDelta: [] };
+    const expected = { schemaVersion: 1 as const, kind: 'acceptance-bar-amendment-approval' as const,
+      rubricRef, subjectPlan: slug, proposedPatchHash: 'c'.repeat(64), reviewSourceHash: acceptanceBarReviewSourceHash(source),
+      bars: [{ barKey: 'R-1', priorBarHash: candidate.criteria[0]!.barHash!, nextBarHash: candidate.criteria[0]!.barHash! }] };
+    const postBody = acceptanceBarReviewPostBody(expected, source) + `\nverified-complete-source sha256:${expected.reviewSourceHash}`;
+    const [post] = await db.adminSql<Array<{ id: string; approved_at: string }>>`
+      INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, origin)
+      VALUES (${workspace}, 'applied-approval-pg', 'reviewer', ${postBody}, 'local') RETURNING id,
+        to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS approved_at`;
+    const approvalRef = `thread-post:${post!.id}`;
+    const expectedRequest = { rubricId: rubricRef, actorId: 'author', reason: source.reason,
+      approvalRef, idempotencyKey: 'applied-key', criterion: {
+        key: candidate.criteria[0]!.key, field: 'method' as const, mode: 'replace' as const,
+        text: 'Reviewed method',
+      } };
+    const requestHash = amendmentRequestHash(expectedRequest);
+    const subject = content + `\n## Decisions\n### D-001 — Acceptance BAR amendment\n\nAmendment-Id: applied-key
+Request-Hash: ${requestHash}
+Actor: author
+Approval-Ref: ${approvalRef}
+Approved-By: reviewer
+Approved-At: ${post!.approved_at}
+Rubric revision: 2 → 3
+Subject plan revision: 3 → 4
+`;
+    await db.adminSql`INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, content, content_hash, version, template, template_data)
+      VALUES (${workspace}, 'papercusp', ${rubricRef}, '# Rubric', ${hashPlanContent('# Rubric')}, 3, 'rubric', ${JSON.stringify(candidate)}::text::jsonb)`;
+    await db.adminSql`INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, content, content_hash, version,
+        acceptance_bar_rubric_slug, acceptance_bar_rubric_revision, acceptance_bar_set_hash,
+        acceptance_bar_seeded_at, acceptance_bar_seeded_by)
+      VALUES (${workspace}, 'papercusp', ${slug}, ${subject}, ${hashPlanContent(subject)}, 4,
+        ${rubricRef}, 3, ${candidate.barSetHash!}, now(), 'author')`;
+    const args = { workspaceId: workspace, approvalRef, expected, expectedRequest,
+      applied: { amendmentKey: 'applied-key', rubricHarnessSlug: 'papercusp', subjectHarnessSlug: 'papercusp' } };
+    // Both sides of the provenance join matter: an exact stored digest cannot
+    // bless a different request, and a valid request cannot bless a wrong digest.
+    await expect(db.adminSql.begin(tx => resolveAcceptanceBarApproval(tx as never, {
+      ...args, expectedRequest: { ...expectedRequest,
+        criterion: { ...expectedRequest.criterion, text: 'Unreviewed method' } },
+    }))).rejects.toThrow('acceptance_bar_applied_approval_request_mismatched');
+    await expect(db.adminSql.begin(async tx => {
+      const wrongHashSubject = subject.replace(`Request-Hash: ${requestHash}`, `Request-Hash: ${'e'.repeat(64)}`);
+      await tx`UPDATE harness_shared.harness_plans
+        SET content = ${wrongHashSubject}, content_hash = ${hashPlanContent(wrongHashSubject)}
+        WHERE workspace_id = ${workspace} AND harness_slug = 'papercusp' AND plan_slug = ${slug}`;
+      await resolveAcceptanceBarApproval(tx as never, args);
+    })).rejects.toThrow('acceptance_bar_applied_approval_request_mismatched');
+    // The rejected transaction rolls back its wrong digest. The positive
+    // control below must still resolve the same original authenticated post.
+    await db.adminSql.begin(async tx => {
+      const result = await resolveAcceptanceBarApproval(tx as never, args);
+      expect(result.applied).toMatchObject({ rubricRevision: 3, subjectRevision: 4,
+        approvedSourceSha256: expected.reviewSourceHash, approvedPatchSha256: expected.proposedPatchHash,
+        requestSha256: requestHash });
+      // A policy/operation fence is NOT asserted here: this tests only the two
+      // existing plan rows that this reader actually holds until its short CAS ends.
+      await expect(db.adminSql.begin(async writer => {
+        await writer`SET LOCAL lock_timeout = '100ms'`;
+        await writer`UPDATE harness_shared.harness_plans SET version = 4
+          WHERE workspace_id = ${workspace} AND harness_slug = 'papercusp' AND plan_slug = ${rubricRef}`;
+      })).rejects.toMatchObject({ code: '55P03' });
+    });
+    await expect(db.adminSql.begin(tx => resolveAcceptanceBarApproval(tx as never,
+      { ...args, workspaceId: 'foreign-workspace' }))).rejects.toThrow('acceptance_bar_approval_unreadable');
+    await db.adminSql`UPDATE harness_shared.harness_plans SET version = 4
+      WHERE workspace_id = ${workspace} AND harness_slug = 'papercusp' AND plan_slug = ${rubricRef}`;
+    await expect(db.adminSql.begin(tx => resolveAcceptanceBarApproval(tx as never, args)))
+      .rejects.toThrow('acceptance_bar_applied_approval_rule_not_current');
+  });
+
   it('persists running and committed results across fresh modules, and reserves a key once', async () => {
     const key = 'shared-receipt-integration';
     const rubric = 'acceptance-receipt-integration';
@@ -425,7 +532,7 @@ describe('rubric amend receipts in shared Postgres', () => {
     };
     await trackAmendRun(key, rubric, async () => result);
 
-    const status = await amendStatusTool.handler({ rubricRef: rubric, idempotencyKey: key }, {}) as {
+    const status = await amendStatusTool.handler({ rubricRef: rubric, idempotencyKey: key }, {} as never) as {
       data: Record<string, unknown>;
     };
     expect(status.data).toMatchObject({
@@ -436,7 +543,7 @@ describe('rubric amend receipts in shared Postgres', () => {
     await h.sql`
       INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, origin)
       VALUES (${ws}, ${thread}, 'fresh-reviewer-owner', 'Reply to new evidence', 'local')`;
-    const answered = await amendStatusTool.handler({ rubricRef: rubric, idempotencyKey: key }, {}) as {
+    const answered = await amendStatusTool.handler({ rubricRef: rubric, idempotencyKey: key }, {} as never) as {
       data: Record<string, unknown>;
     };
     expect(answered.data).toMatchObject({ freshReviewerHealth: { state: 'later-post' } });

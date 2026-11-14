@@ -25,8 +25,9 @@
  * driftMarkers reported `inSync:true` after an amendment moved `check.files` to a different test,
  * so a reviewer who read the plan graded a stale file list (pui-chat-first-ux rev 10). The
  * Verification fields are compared whenever the block is explicit, because the seeder never
- * defaults them; requiredScope/requiredTestLayers/evidencePlane/evidenceRuntime only when the
- * block states them, because the seeder fills those from the Bar-to-work map otherwise.
+ * defaults them; map-derived acceptance metadata is compared only when the block states it.
+ * Additional evidence planes and runtime bindings cannot be derived from that map, so their
+ * introduction, change and removal must stay visible even when the old block omitted them.
  */
 import { createHash } from 'node:crypto';
 import type { ParsedRequirementBar } from './acceptance-bar-seed';
@@ -42,6 +43,7 @@ export type RequirementsDriftField =
   | 'requiredScope'
   | 'requiredTestLayers'
   | 'evidencePlane'
+  | 'requiredEvidencePlanes'
   | 'evidenceRuntime'
   | 'passRatings'
   | 'mandatory'
@@ -52,9 +54,12 @@ export type RequirementsDriftField =
 const VERIFICATION_FIELDS = ['method', 'check', 'replication', 'productionConfiguration'] as const;
 /** Compared only when the plan block states them: otherwise the seeder derives them from the map. */
 const STATED_ACCEPTANCE_FIELDS = [
-  'requiredScope', 'requiredTestLayers', 'evidencePlane', 'evidenceRuntime',
+  'requiredScope', 'requiredTestLayers', 'evidencePlane', 'requiredEvidencePlanes', 'evidenceRuntime',
   'passRatings', 'mandatory', 'role', 'coversBarKeys',
 ] as const;
+/** These bindings have no Bar-to-work map default and must be projected when introduced. */
+const NON_DERIVED_ACCEPTANCE_FIELDS: ReadonlySet<RequirementsDriftField> =
+  new Set(['requiredEvidencePlanes', 'evidenceRuntime']);
 
 export interface RequirementsDriftEntry {
   barKey: string;
@@ -159,7 +164,8 @@ export function diffAmendedCriteriaAgainstRequirements(input: {
         if (!sameStructure(criterion[field], stated[field])) fields.push(field);
       }
       for (const field of STATED_ACCEPTANCE_FIELDS) {
-        if (stated[field] !== undefined && !sameStructure(criterion[field], stated[field])) fields.push(field);
+        if ((stated[field] !== undefined || NON_DERIVED_ACCEPTANCE_FIELDS.has(field)) &&
+            !sameStructure(criterion[field], stated[field])) fields.push(field);
       }
     }
     if (fields.length) entries.push({ barKey, changedByAmendment, kind: 'text-differs', fields });
@@ -207,8 +213,9 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
  * This is the inverse of `diffAmendedCriteriaAgainstRequirements`: it writes exactly the fields that
  * function compares — supplied Intent, condition (model), falsifier (driftMarkers),
  * method/check/replication, and any STATED acceptance metadata — so a re-rendered block reads in
- * sync. Acceptance metadata the block does not state is left unstated, because the seeder derives
- * it from the Bar-to-work map. Legacy criteria that omit Intent preserve the plan's recorded
+ * sync. Map-derived acceptance metadata the block does not state stays unstated. Additional
+ * evidence planes and runtime bindings are projected when introduced because the map cannot
+ * supply them. Legacy criteria that omit Intent preserve the plan's recorded
  * request. Legacy prose R-N records, unchanged BARs, and blocks that do not parse are left
  * byte-identical. Pure: callers write the result.
  */
@@ -260,7 +267,7 @@ export function rerenderAmendedRequirementBlocks(
     if (typeof criterion.model === 'string') acceptance.condition = criterion.model;
     if (typeof criterion.driftMarkers === 'string') acceptance.falsifier = criterion.driftMarkers;
     for (const field of STATED_ACCEPTANCE_FIELDS) {
-      if (acceptance[field] === undefined) continue;
+      if (acceptance[field] === undefined && !NON_DERIVED_ACCEPTANCE_FIELDS.has(field)) continue;
       if (criterion[field] === undefined || criterion[field] === null) delete acceptance[field];
       else acceptance[field] = criterion[field];
     }

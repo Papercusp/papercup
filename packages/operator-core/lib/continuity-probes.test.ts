@@ -128,13 +128,62 @@ describe('criterion ALL probes', () => {
     // Each group stays within its own 8-child limit; together they exceed the per-emit cap, which
     // is derived here so the case keeps exceeding it when the cap moves.
     const groups = Math.floor(RUBRIC_PROBE_MAX_PER_EMIT / 8) + 1;
-    const criteria = Array.from({ length: groups }, (_, i) => ({ key: `g${i}`, check: check(Array(8).fill(readProbe())) }));
+    const criteria = Array.from({ length: groups }, (_, i) => ({ key: `g${i}`, check: check(Array.from({ length: 8 }, (_, n) => readProbe({ args: { id: `${i}:${n}` } }))) }));
     expect(groups * 8).toBeGreaterThan(RUBRIC_PROBE_MAX_PER_EMIT);
     expect(validateCriterionCheckPaths(criteria).ok).toBe(false);
     const dispatch = vi.fn(async () => ({ state: 'green' }));
     const ratings = Object.fromEntries(criteria.map((c) => [c.key, { rating: 'pass' }]));
     expect(await evaluateCriterionProbeChecks({ criteria, ratings, dispatchTool: dispatch })).toMatchObject({ ok: false, error: 'probe_invalid' });
     expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('measures repeated groups once and returns independent receipts and fresh later measurements', async () => {
+    const criteria = Array.from({ length: 6 }, (_, i) => ({ key: `c${i}`, check: check(Array.from({ length: 5 }, (_, n) => readProbe({ args: { id: `${n}` } }))) }));
+    const ratings = Object.fromEntries(criteria.map(c => [c.key, { rating: 'pass' }]));
+    const dispatch = vi.fn(async () => ({ state: 'green' }));
+    expect(validateCriterionCheckPaths(criteria).ok).toBe(true);
+    const first = await evaluateCriterionProbeChecks({ criteria, ratings, dispatchTool: dispatch });
+    expect(first.ok).toBe(true);
+    expect(dispatch).toHaveBeenCalledTimes(5);
+    if (!first.ok) return;
+    expect(Object.keys(first.checkRuns)).toHaveLength(6);
+    expect(first.checkRuns.c0).not.toBe(first.checkRuns.c1);
+    expect(first.checkRuns.c0).toMatchObject({ all: Array.from({ length: 5 }, () => ({ verdict: 'pass' })) });
+    dispatch.mockImplementation(async () => ({ state: 'red' }));
+    const second = await evaluateCriterionProbeChecks({ criteria, ratings, dispatchTool: dispatch });
+    expect(second).toMatchObject({ ok: false, error: 'probe_contradicted' });
+    expect(dispatch).toHaveBeenCalledTimes(10);
+  });
+
+  it('does not share different arguments, predicates or projections and validates stale declarations before dispatch', async () => {
+    const probes = [readProbe(), readProbe({ args: { id: 'other-source-pin' } }),
+      readProbe({ expect: { path: '$.state', op: 'ne', value: 'red' } }), readProbe({ projection: { pick: ['state'] } })];
+    const dispatch = vi.fn(async () => ({ state: 'green' }));
+    const result = await evaluate(probes, dispatch);
+    expect(result).toMatchObject({ ok: true, checkRuns: { proof: { all: Array.from({ length: 4 }, () => ({ verdict: 'pass' })) } } });
+    expect(dispatch).toHaveBeenCalledTimes(4);
+    dispatch.mockClear();
+    expect(await evaluate([...probes, readProbe({ schemaRevision: 'stale' })], dispatch)).toMatchObject({ ok: false, error: 'probe_invalid' });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it.each(['missing', 'unknown', 'truncated', 'error', 'timeout'] as const)('refuses shared %s measurements for every dependent consumer', async mode => {
+    const p = readProbe();
+    const criteria = [{ key: 'a', check: check([p, p]) }, { key: 'b', check: check([p, p]) }];
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const dispatch = vi.fn(async () => {
+      if (mode === 'error') throw new Error('unavailable');
+      if (mode === 'timeout') return await new Promise<never>(() => {});
+      if (mode === 'missing') return undefined;
+      if (mode === 'unknown') return { ok: false, error: 'unavailable' };
+      return { state: 'green', _projection: { truncated: true } };
+    });
+    try {
+      const result = await evaluateCriterionProbeChecks({ criteria, ratings: { a: { rating: 'broken' }, b: { rating: 'broken' } }, dispatchTool: dispatch, probeTimeoutMs: 5 });
+      expect(result).toMatchObject({ ok: false, error: 'probe_run_failed' });
+      expect(dispatch).toHaveBeenCalledOnce();
+      expect(result).not.toHaveProperty('checkRuns');
+    } finally { warning.mockRestore(); }
   });
 
   it('rejects single and ALL rubric probes that independent judges cannot read', () => {

@@ -130,6 +130,7 @@ vi.mock('./scheduler/plan-item-lane-guard', () => ({
 }));
 
 const wi = await import('./work-items');
+const fulltextDupeGuard = await import('./agent-tools/work_items/fulltext-lexical-dupe-guard');
 const checkpointStore = await import('./work-item-checkpoint');
 const blockerPersistence = await import('./blocker-resolution-persistence');
 
@@ -4068,6 +4069,78 @@ describe('unified work_items surface (real PG)', () => {
     const onlyFeatures = await wi.searchWorkItems('export', { kind: 'feature' });
     expect(onlyFeatures.items.length).toBeGreaterThan(0);
     expect(onlyFeatures.items.every((w) => w.family === 'feature')).toBe(true);
+  });
+
+  it('fulltext duplicate screening stays complete past feature-family candidate crowding', async () => {
+    const query = 'alpha bravo charlie delta echo foxtrot golf hotel india juliet';
+    for (let i = 0; i < 80; i += 1) {
+      const noise = Array.from({ length: 11 }, (_, j) => 'noise' + i + 'extra' + j).join(' ');
+      await wi.createWorkItem({
+        kind: 'feature',
+        title: 'crowding decoy ' + i,
+        summary: query + ' ' + noise,
+        harness: 'papercup',
+        createdBy: 'agA',
+      });
+    }
+    const duplicate = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'alpha bravo charlie delta echo foxtrot golf hotel',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
+    const terminal = await wi.createWorkItem({
+      kind: 'feature',
+      title: query,
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET status = ${ANY_FAMILY_TERMINAL_STATES[0]}
+       WHERE feature_id = ${terminal.id}`;
+    const observation = await wi.createWorkItem({
+      kind: 'feature',
+      title: query,
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { lane: 'observation' },
+    });
+
+    const candidates = await wi.searchWorkItemDuplicateCandidates(query);
+    expect(candidates.complete).toBe(true);
+    expect(candidates.items).toHaveLength(81);
+    expect(candidates.items.some((candidate) => candidate.id === duplicate.id)).toBe(true);
+    expect(candidates.items.some((candidate) => candidate.id === terminal.id)).toBe(false);
+    expect(candidates.items.some((candidate) => candidate.id === observation.id)).toBe(false);
+
+    const capped = await wi.searchWorkItemDuplicateCandidates(query, { maxCandidates: 20 });
+    expect(capped).toMatchObject({
+      complete: false,
+      items: [],
+      reason: 'candidate-limit-exceeded',
+    });
+    expect(await wi.searchWorkItemDuplicateCandidates('the and with from')).toMatchObject({
+      complete: false,
+      items: [],
+      reason: 'insufficient-indexable-terms',
+    });
+
+    vi.stubEnv('PAPERCUSP_WI_FULLTEXT_DUPE', 'on');
+    try {
+      const screened = await fulltextDupeGuard.findFulltextLexicalDupes(
+        { title: query },
+        {
+          searchWorkItems: async (searchQuery) => {
+            const result = await wi.searchWorkItemDuplicateCandidates(searchQuery);
+            return result.complete ? result.items : null;
+          },
+        },
+      );
+      expect(screened?.map((candidate) => candidate.id)).toEqual([duplicate.id]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('search excludes retired chunks by default but an explicit chunk read remains available', async () => {

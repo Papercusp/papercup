@@ -218,10 +218,24 @@ export interface AdmissionMergeSnapshot {
   completionAuthority: string | null;
   sourcePlanSlug: string | null;
   sourcePlanItemIds: string[];
+  /** The plan-line binding and specification copied from the canonical work-graph row. */
+  planLine?: AdmissionPlanLineSnapshot;
   seeAlso: string[];
   incomingSeeAlso: AdmissionMergeIncomingReference[];
   dependencies: AdmissionMergeDependency[];
   fingerprint: string;
+}
+
+export interface AdmissionPlanLineSnapshot {
+  planSlug: string | null;
+  lineId: string | null;
+  seq: number | null;
+  phase: string | null;
+  importance: string | null;
+  decisionRefs: string[] | null;
+  deliverable: string | null;
+  ownerGateMarker: string | null;
+  text: string | null;
 }
 
 export interface AdmissionMergeGuardRefusal {
@@ -1248,6 +1262,15 @@ interface AdmissionMergeSnapshotRow extends WorkItemRow {
   authority: string | null;
   source_plan_slug: string | null;
   source_plan_item_ids: string[] | null;
+  plan_slug: string | null;
+  plan_line_id: string | null;
+  plan_seq: string | number | null;
+  plan_phase: string | null;
+  plan_importance: string | null;
+  plan_decision_refs: string[] | null;
+  plan_deliverable: string | null;
+  plan_owner_gate_marker: string | null;
+  plan_line_text: string | null;
   see_also: string[] | null;
 }
 
@@ -1334,6 +1357,70 @@ function nullableFiniteMs(value: string | number | null | undefined): number | n
   return Number.isFinite(n) ? n : null;
 }
 
+function nullableFiniteNumber(value: string | number | null | undefined): number | null {
+  if (value == null) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function planLineSnapshotFromRow(row: {
+  plan_slug: string | null;
+  plan_line_id: string | null;
+  plan_seq: string | number | null;
+  plan_phase: string | null;
+  plan_importance: string | null;
+  plan_decision_refs: string[] | null;
+  plan_deliverable: string | null;
+  plan_owner_gate_marker: string | null;
+  plan_line_text: string | null;
+}): AdmissionPlanLineSnapshot {
+  return {
+    planSlug: row.plan_slug ?? null,
+    lineId: row.plan_line_id ?? null,
+    seq: nullableFiniteNumber(row.plan_seq),
+    phase: row.plan_phase ?? null,
+    importance: row.plan_importance ?? null,
+    decisionRefs: row.plan_decision_refs == null ? null : [...row.plan_decision_refs],
+    deliverable: row.plan_deliverable ?? null,
+    ownerGateMarker: row.plan_owner_gate_marker ?? null,
+    text: row.plan_line_text ?? null,
+  };
+}
+
+function resolveAdmissionPlanLineMerge(
+  loser: AdmissionPlanLineSnapshot,
+  canonical: AdmissionPlanLineSnapshot,
+): {
+  canonicalApplied: AdmissionPlanLineSnapshot;
+  disposition: 'none' | 'canonical-retained' | 'transferred' | 'duplicate-line-coalesced';
+  releaseLoserBinding: boolean;
+} {
+  const loserHasSlug = Boolean(loser.planSlug?.trim());
+  const loserHasLine = Boolean(loser.lineId?.trim());
+  const canonicalHasSlug = Boolean(canonical.planSlug?.trim());
+  const canonicalHasLine = Boolean(canonical.lineId?.trim());
+  if (loserHasSlug !== loserHasLine || canonicalHasSlug !== canonicalHasLine) {
+    throw new Error('admission plan-line identity is incomplete');
+  }
+
+  const loserBound = loserHasSlug && loserHasLine;
+  const canonicalBound = canonicalHasSlug && canonicalHasLine;
+  if (loserBound && canonicalBound) {
+    if (JSON.stringify(loser) !== JSON.stringify(canonical)) {
+      throw new Error('admission plan-line identity conflict between merge endpoints');
+    }
+    return { canonicalApplied: canonical, disposition: 'duplicate-line-coalesced', releaseLoserBinding: true };
+  }
+  if (loserBound) {
+    return { canonicalApplied: loser, disposition: 'transferred', releaseLoserBinding: true };
+  }
+  return {
+    canonicalApplied: canonical,
+    disposition: canonicalBound ? 'canonical-retained' : 'none',
+    releaseLoserBinding: false,
+  };
+}
+
 function nullableIso(value: Date | string | null | undefined): string | null {
   if (value == null) return null;
   const date = value instanceof Date ? value : new Date(value);
@@ -1397,7 +1484,10 @@ export async function readAdmissionMergeSnapshots(
            wi.updated_ts, wi.admitted_at, wi.admitted_by, wi.origin, wi.taken_by,
            wi.payload, wi.completion_ref, wi.terminal_completion_ref, wi.terminal_owner,
            wi.terminal_reason, wi.closed_ts, wi.authority,
-           wi.source_plan_slug, wi.source_plan_item_ids, wi.see_also
+           wi.source_plan_slug, wi.source_plan_item_ids,
+           wi.plan_slug, wi.plan_line_id, wi.plan_seq, wi.plan_phase, wi.plan_importance,
+           wi.plan_decision_refs, wi.plan_deliverable, wi.plan_owner_gate_marker, wi.plan_line_text,
+           wi.see_also
       FROM harness_shared.work_items wi
      WHERE wi.workspace_id = ${input.workspaceId}
        AND wi.harness_slug = ${input.harnessSlug}
@@ -1528,6 +1618,7 @@ export async function readAdmissionMergeSnapshots(
       completionAuthority: row.authority?.trim() || null,
       sourcePlanSlug: row.source_plan_slug?.trim() || null,
       sourcePlanItemIds: normalizedStringArray(row.source_plan_item_ids),
+      planLine: planLineSnapshotFromRow(row),
       seeAlso: normalizedStringArray(row.see_also),
       incomingSeeAlso: (incomingByTarget.get(row.feature_id) ?? []).sort((a, b) =>
         a.sourceId.localeCompare(b.sourceId),
@@ -2444,6 +2535,7 @@ export async function readPromoterWindow(
   pairRows: PromoterPair[];
   snapshotsById: Map<string, AdmissionMergeSnapshot>;
   forcedHolds: Map<string, string>;
+  deferredHolds: Map<string, string>;
   prescreen: PromoterPrescreen | null;
 }> {
   const readSnapshots = (ids: readonly string[]) =>
@@ -2468,7 +2560,7 @@ export async function readPromoterWindow(
     const snapshotsById = await readSnapshots([
       ...new Set([...pendingRows.map((item) => item.id), ...pairRows.flatMap((pair) => [pair.a.id, pair.b.id])]),
     ]);
-    return { pendingRows, pairRows, snapshotsById, forcedHolds: new Map(), prescreen: null };
+    return { pendingRows, pairRows, snapshotsById, forcedHolds: new Map(), deferredHolds: new Map(), prescreen: null };
   }
   const window = await readPendingBatch(
     sql,
@@ -2553,6 +2645,7 @@ export async function readPromoterWindow(
     pairRows: selected.pairs,
     snapshotsById,
     forcedHolds: selected.forcedHolds,
+    deferredHolds: selected.deferredHolds,
     prescreen: selected.prescreen,
   };
 }
@@ -2654,24 +2747,31 @@ export function applyClaimedReReviewHolds(
     // judged, so record the hold (and advance its watermark) rather than leave it silent.
     if (!present.has(itemId) && claimed.has(itemId)) dispositions.push({ itemId, action: 'hold', reason });
   }
-  return { ...plan, dispositions: dispositions.sort((a, b) => a.itemId.localeCompare(b.itemId)) };
+  return { ...plan, dispositions };
 }
 
 /**
  * A batch row with an unjudged, transiently protected twin must not be PROMOTED past it.
  * A merge into a movable canonical (or a model hold) already resolves the row and stands.
  */
-export function applyPrescreenHolds(plan: PromoterPlan, forcedHolds: ReadonlyMap<string, string>): PromoterPlan {
-  if (forcedHolds.size === 0) return plan;
-  return {
-    ...plan,
-    dispositions: plan.dispositions.map((disposition) => {
-      const reason = forcedHolds.get(disposition.itemId);
-      return reason && disposition.action === 'promote'
-        ? { itemId: disposition.itemId, action: 'hold', reason, screeningDeferred: true as const }
-        : disposition;
-    }),
-  };
+export function applyPrescreenHolds(
+  plan: PromoterPlan,
+  forcedHolds: ReadonlyMap<string, string>,
+  deferredHolds: ReadonlyMap<string, string> = new Map(),
+): PromoterPlan {
+  if (forcedHolds.size === 0 && deferredHolds.size === 0) return plan;
+  const dispositions = plan.dispositions.map((disposition) => {
+    const reason = forcedHolds.get(disposition.itemId);
+    return reason && disposition.action === 'promote'
+      ? { itemId: disposition.itemId, action: 'hold' as const, reason, screeningDeferred: true as const }
+      : disposition;
+  });
+  const present = new Set(dispositions.map((disposition) => disposition.itemId));
+  for (const [itemId, reason] of deferredHolds) {
+    if (present.has(itemId)) continue;
+    dispositions.push({ itemId, action: 'hold', reason, screeningDeferred: true });
+  }
+  return { ...plan, dispositions: dispositions.sort((a, b) => a.itemId.localeCompare(b.itemId)) };
 }
 
 async function unadjudicatedCensus(sql: OrgSql, workspaceId: string, harnessSlug: string): Promise<number> {
@@ -4401,7 +4501,7 @@ export function prescreenPromoterWindow(input: {
   nowMs?: number;
   /** Preserve authenticated requests' one turn until their component can be judged. */
   componentScreeningItemIds?: readonly string[];
-}): { batch: PromoterItem[]; pairs: PromoterPair[]; forcedHolds: Map<string, string>; prescreen: PromoterPrescreen } {
+}): { batch: PromoterItem[]; pairs: PromoterPair[]; forcedHolds: Map<string, string>; deferredHolds: Map<string, string>; prescreen: PromoterPrescreen } {
   const samples: PromoterPrescreenSample[] = [];
   const sample = (entry: PromoterPrescreenSample) => {
     if (samples.length < PROMOTER_PRESCREEN_SAMPLE_CAP) samples.push(entry);
@@ -4452,6 +4552,7 @@ export function prescreenPromoterWindow(input: {
 
   const batch: PromoterItem[] = [];
   const forcedHolds = new Map<string, string>();
+  const deferredHolds = new Map<string, string>();
   const deferredIds = new Set<string>();
   let deferred = 0;
   for (const item of input.window) {
@@ -4476,6 +4577,7 @@ export function prescreenPromoterWindow(input: {
     if (protectedTwin && (movable === 0 || input.componentScreeningItemIds?.includes(item.id))) {
       deferred += 1;
       deferredIds.add(item.id);
+      deferredHolds.set(item.id, `deferred: twin ${protectedTwin.id} is ${protectedTwin.reason}; held until it can be judged`);
       sample({ itemId: item.id, class: 'deferred', reason: protectedTwin.reason, blockedBy: protectedTwin.id });
       continue;
     }
@@ -4511,6 +4613,7 @@ export function prescreenPromoterWindow(input: {
     batch,
     pairs,
     forcedHolds,
+    deferredHolds,
     prescreen: {
       window: input.window.length,
       selected: batch.length,
@@ -4758,6 +4861,15 @@ interface AdmissionMergeMutableRow {
   payload: unknown;
   source_plan_slug: string | null;
   source_plan_item_ids: string[] | null;
+  plan_slug: string | null;
+  plan_line_id: string | null;
+  plan_seq: string | number | null;
+  plan_phase: string | null;
+  plan_importance: string | null;
+  plan_decision_refs: string[] | null;
+  plan_deliverable: string | null;
+  plan_owner_gate_marker: string | null;
+  plan_line_text: string | null;
   see_also: string[] | null;
   closed_ts: string | number | null;
   terminal_reason: string | null;
@@ -4821,7 +4933,9 @@ async function persistApprovedAdmissionMerge(
 ): Promise<void> {
   const [loserPrior] = await sql<AdmissionMergeMutableRow[]>`
     SELECT feature_id, status, taken_by, admission, admitted_at, admitted_by, condition_key, payload,
-           source_plan_slug, source_plan_item_ids, see_also, closed_ts, terminal_reason, terminal_owner
+           source_plan_slug, source_plan_item_ids, plan_slug, plan_line_id, plan_seq, plan_phase,
+           plan_importance, plan_decision_refs, plan_deliverable, plan_owner_gate_marker, plan_line_text,
+           see_also, closed_ts, terminal_reason, terminal_owner
       FROM harness_shared.work_items
      WHERE workspace_id = ${input.workspaceId}
        AND harness_slug = ${input.harnessSlug}
@@ -4893,12 +5007,18 @@ async function persistApprovedAdmissionMerge(
 
   const [canonicalPrior] = await sql<AdmissionMergeMutableRow[]>`
     SELECT feature_id, status, taken_by, admission, admitted_at, admitted_by, condition_key, payload,
-           source_plan_slug, source_plan_item_ids, see_also, closed_ts, terminal_reason, terminal_owner
+           source_plan_slug, source_plan_item_ids, plan_slug, plan_line_id, plan_seq, plan_phase,
+           plan_importance, plan_decision_refs, plan_deliverable, plan_owner_gate_marker, plan_line_text,
+           see_also, closed_ts, terminal_reason, terminal_owner
       FROM harness_shared.work_items
      WHERE workspace_id = ${input.workspaceId}
        AND harness_slug = ${input.harnessSlug}
        AND feature_id = ${input.canonicalId}`;
   if (!canonicalPrior) throw new Error(`admission merge guard conditional-write-miss: canonical ${input.canonicalId}`);
+
+  const loserPlanLine = planLineSnapshotFromRow(loserPrior);
+  const canonicalPriorPlanLine = planLineSnapshotFromRow(canonicalPrior);
+  const planLineMerge = resolveAdmissionPlanLineMerge(loserPlanLine, canonicalPriorPlanLine);
 
   const loserIdentity = snapshotRecurrenceIdentity(input.loserSnapshot);
   const canonicalPayload = { ...recordValue(canonicalPrior.payload) };
@@ -4981,12 +5101,39 @@ async function persistApprovedAdmissionMerge(
   const canonicalPriorSeeAlso = normalizedStringArray(canonicalPrior.see_also);
   const canonicalOutgoingAdded = canonicalSeeAlso.filter((id) => !canonicalPriorSeeAlso.includes(id));
   const canonicalConditionKey = canonicalIdentity.conditionKey ?? loserIdentity.conditionKey;
+  // Free the unique plan-line binding before attaching it to the canonical row.
+  // Both endpoints are locked and the surrounding transaction rolls this back
+  // together with the merge if any later preservation guard refuses.
+  if (planLineMerge.releaseLoserBinding) {
+    const released = await sql<Array<{ feature_id: string }>>`
+      UPDATE harness_shared.work_items
+         SET plan_slug = NULL, plan_line_id = NULL, plan_seq = NULL, updated_ts = ${input.nowMs}
+       WHERE workspace_id = ${input.workspaceId}
+         AND harness_slug = ${input.harnessSlug}
+         AND feature_id = ${input.loserId}
+         AND plan_slug IS NOT DISTINCT FROM ${loserPrior.plan_slug}
+         AND plan_line_id IS NOT DISTINCT FROM ${loserPrior.plan_line_id}
+         AND plan_seq IS NOT DISTINCT FROM ${loserPrior.plan_seq}
+      RETURNING feature_id`;
+    if (released.length !== 1) {
+      throw new Error(`admission plan-line conditional-write-miss for ${input.loserId}`);
+    }
+  }
   const canonicalUpdated = await sql<Array<{ feature_id: string }>>`
     UPDATE harness_shared.work_items
        SET condition_key = ${canonicalConditionKey},
            payload = ${JSON.stringify(canonicalPayload)}::text::jsonb,
            source_plan_slug = ${canonicalPlanSlug},
            source_plan_item_ids = ${canonicalPlanItems.length > 0 ? canonicalPlanItems : null}::text[],
+           plan_slug = ${planLineMerge.canonicalApplied.planSlug},
+           plan_line_id = ${planLineMerge.canonicalApplied.lineId},
+           plan_seq = ${planLineMerge.canonicalApplied.seq},
+           plan_phase = ${planLineMerge.canonicalApplied.phase},
+           plan_importance = ${planLineMerge.canonicalApplied.importance},
+           plan_decision_refs = ${planLineMerge.canonicalApplied.decisionRefs}::text[],
+           plan_deliverable = ${planLineMerge.canonicalApplied.deliverable},
+           plan_owner_gate_marker = ${planLineMerge.canonicalApplied.ownerGateMarker},
+           plan_line_text = ${planLineMerge.canonicalApplied.text},
            see_also = ${canonicalSeeAlso}::text[],
            updated_ts = ${input.nowMs}
      WHERE workspace_id = ${input.workspaceId}
@@ -5136,6 +5283,7 @@ async function persistApprovedAdmissionMerge(
       sourcePlanItemIds: loserPrior.source_plan_item_ids
         ? normalizedStringArray(loserPrior.source_plan_item_ids)
         : null,
+      planLine: loserPlanLine,
       seeAlso: loserPrior.see_also ? loserPriorSeeAlso : null,
       closedAtMs: nullableFiniteMs(loserPrior.closed_ts),
       terminalReason: loserPrior.terminal_reason,
@@ -5151,6 +5299,7 @@ async function persistApprovedAdmissionMerge(
         sourcePlanItemIds: canonicalPrior.source_plan_item_ids
           ? normalizedStringArray(canonicalPrior.source_plan_item_ids)
           : null,
+        planLine: canonicalPriorPlanLine,
         seeAlso: canonicalPrior.see_also ? canonicalPriorSeeAlso : null,
       },
       applied: {
@@ -5158,6 +5307,7 @@ async function persistApprovedAdmissionMerge(
         watchdogIdentity: payloadIdentityState(canonicalPayload),
         sourcePlanSlug: canonicalPlanSlug,
         sourcePlanItemIds: canonicalPlanItems.length > 0 ? canonicalPlanItems : null,
+        planLine: planLineMerge.canonicalApplied,
         seeAlso: canonicalSeeAlso,
       },
       sourceEntryAdded,
@@ -5173,6 +5323,10 @@ async function persistApprovedAdmissionMerge(
       })),
       duplicateOccurrenceId: String(duplicateOccurrence.occurrence_id),
       duplicateOccurrenceCreated,
+      planLine: {
+        disposition: planLineMerge.disposition,
+        loserBindingReleased: planLineMerge.releaseLoserBinding,
+      },
       dependencyEdges,
     },
     reversalInstructions: {
@@ -5184,6 +5338,7 @@ async function persistApprovedAdmissionMerge(
         'repoint transferred occurrence IDs to their prior canonical and delete the duplicate occurrence only when duplicateOccurrenceCreated=true',
         'remove canonical only from the recorded incomingReferenceSources and canonicalOutgoingAdded entries',
         'restore canonical identity, plan and reference fields only when they still equal canonical.applied',
+        'restore canonical plan-line fields only when they still equal canonical.applied.planLine; rebind loser from prior.planLine',
         'restore loser lifecycle, admission, condition, plan, references and admissionReview from prior; then remove admissionMerge',
       ],
     },
@@ -5349,6 +5504,17 @@ async function persistAdmissionPlanUnchecked(sql: OrgSql, input: PersistAdmissio
          WHERE workspace_id = ${input.workspaceId}
            AND harness_slug = ${input.harnessSlug}
            AND feature_id = ${disposition.itemId}
+          AND (
+            ${disposition.screeningDeferred !== true}
+            OR payload->'admissionHold' IS NULL
+            OR jsonb_typeof(payload->'admissionHold') = 'null'
+            OR payload #>> '{admissionHold,screeningDeferred}' = 'true'
+            OR (
+              payload #>> '{admissionHold,actor}' = 'system:work-item-admission-promoter'
+              AND payload #>> '{admissionHold,screeningDeferred}' IS NULL
+              AND payload #>> '{admissionHold,reason}' ~ '^deferred: twin [^ ]+ is [a-z-]+; held until it can be judged$'
+            )
+          )
            AND (
              (admission = 'unreviewed' AND NOT ${disposition.screeningDeferred === true})
              OR (admission IN ('pending', 'unreviewed') AND (
@@ -6147,7 +6313,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
     // Capture ONE authoritative endpoint/reference identity immediately before
     // the model call. Both the prompt and the writer are bound to these exact
     // values; persistence re-reads them under row locks.
-    const { pendingRows, pairRows, snapshotsById, forcedHolds, prescreen } = await readPromoterWindow(sql, {
+    const { pendingRows, pairRows, snapshotsById, forcedHolds, deferredHolds, prescreen } = await readPromoterWindow(sql, {
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harnessSlug,
       batchSize,
@@ -6221,6 +6387,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
           onConflict: 'hold',
         }),
         forcedHolds,
+        noModel ? new Map<string, string>() : deferredHolds,
       );
     // Explicit review carries its own renewable authority and custody fence.
     const fullPlan = opts.reviewOnly ? screenedPlan : applyClaimedReReviewHolds(

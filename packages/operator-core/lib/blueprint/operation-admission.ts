@@ -502,6 +502,7 @@ export interface AcceptedBlueprintPlanRun {
 
 interface PlanInvocationReceiptRow extends InvocationReceiptRow {
   id: number | string;
+  target_harness_slug: string | null;
 }
 
 /** Reserve a durable identity before minting the plan instance. A crash after
@@ -571,7 +572,7 @@ async function acceptBlueprintPlanRunScoped(
           [request.workspaceId, request.harnessSlug, callerId, request.operationId, key].join(':');
         await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
         const prior = await tx<PlanInvocationReceiptRow[]>`
-      SELECT id, request_fingerprint, target_kind, target_ref, specification_revision
+      SELECT id, request_fingerprint, target_kind, target_ref, specification_revision, target_harness_slug
         FROM harness_shared.blueprint_operation_invocations
        WHERE workspace_id = ${request.workspaceId} AND harness_slug = ${request.harnessSlug}
          AND caller_id = ${callerId} AND operation_id = ${request.operationId} AND request_key = ${key}
@@ -607,7 +608,7 @@ async function acceptBlueprintPlanRunScoped(
          specification_revision, target_kind)
       VALUES (${request.workspaceId}, ${request.harnessSlug}, ${callerId}, ${request.operationId}, ${key},
               ${fingerprint}, ${revision}, 'plan')
-      RETURNING id, request_fingerprint, target_kind, target_ref, specification_revision
+      RETURNING id, request_fingerprint, target_kind, target_ref, specification_revision, target_harness_slug
     `;
         return { receipt: inserted[0], revision, template: operation.target.template };
       });
@@ -616,7 +617,8 @@ async function acceptBlueprintPlanRunScoped(
       if (receipt.target_ref) {
         const runs = await sql<Array<{ id: number | string }>>`
       SELECT id FROM harness_shared.plan_runs
-       WHERE workspace_id = ${request.workspaceId} AND harness_slug = ${request.harnessSlug}
+       WHERE workspace_id = ${request.workspaceId}
+         AND harness_slug = ${receipt.target_harness_slug ?? request.harnessSlug}
          AND instance_plan_slug = ${receipt.target_ref}
        LIMIT 1
     `;
@@ -642,7 +644,7 @@ async function acceptBlueprintPlanRunScoped(
         trigger: 'event',
         runToken: String(receipt.id),
         inputs: input,
-        execution: null,
+        // Inherit the immutable template's stable app/agent execution target.
         expectedTemplate: { revision: template.revision, contentHash: template.contentHash },
       });
       if (!fired.started) {
@@ -650,7 +652,8 @@ async function acceptBlueprintPlanRunScoped(
       }
       const updated = await sql<Array<{ target_ref: string }>>`
     UPDATE harness_shared.blueprint_operation_invocations
-       SET target_ref = ${fired.instanceSlug}, updated_at = now()
+       SET target_ref = ${fired.instanceSlug},
+           target_harness_slug = ${fired.execution?.appHarnessSlug ?? request.harnessSlug}, updated_at = now()
      WHERE id = ${receipt.id} AND workspace_id = ${request.workspaceId}
        AND (target_ref IS NULL OR target_ref = ${fired.instanceSlug})
      RETURNING target_ref

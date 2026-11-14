@@ -31,6 +31,16 @@ export const progressLeaseInputSchema = z.object({
   expected_cadence_sec: z.number().int().positive().max(7 * 24 * 60 * 60),
   owner_id: z.string().min(1).max(200),
   work_item_id: z.string().min(1).max(200).optional(),
+  driving_work_item_id: z.string().min(1).max(200).optional().describe(
+    'Your currently assigned driving task with an identified blocker on this event. Its durable episode survives re-arms and authenticated custody changes.',
+  ),
+  no_delta_budget: z.number().int().min(1).max(100).optional().describe(
+    'Finite quiet-observation allowance (default 1), frozen by the first dependency episode.',
+  ),
+  substages: z.array(z.object({ id: z.string().min(1).max(200),
+    valueFingerprint: z.string().regex(/^[a-f0-9]{64}$/) })).max(100).optional().describe(
+    'Ordered outcome fingerprints on this frozen writer/resolver/units contract. Each can credit the allowance once; checkpoint prose and liveness cannot credit it.',
+  ),
   remedy_after_misses: z.number().int().min(2).max(10).optional(),
   remedy: progressLeaseRemedySchema.describe(
     'Applied after repeated cadence misses. The first cadence miss automatically wakes owner_id; accepted kinds are spec-widen, outside-lane-placement, leader-claim, and create-unblock-item. wake-owner is not a remedy kind.',

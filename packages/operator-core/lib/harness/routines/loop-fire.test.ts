@@ -26,7 +26,13 @@ import {
   type OwnerStewardshipDeps,
 } from './loop-fire';
 import { AGENT_OBLIGATION_REMINDER_BINDING_KIND } from '../../agent-obligation-reminders';
-import { renderCheckLine, splitCarryNoteChecks, splitCarryNoteWalls, type CheckEntry } from '../../carry-note';
+import {
+  renderCheckLine,
+  splitCarryNoteChecks,
+  splitCarryNoteWalls,
+  withCarryNoteWalls,
+  type CheckEntry,
+} from '../../carry-note';
 
 /** A fresh set of injected deps with sensible "allow + woke 1" defaults; override per test. */
 function mkDeps(
@@ -41,6 +47,7 @@ function mkDeps(
     | 'wake'
     | 'costCap'
     | 'getLoopCarryNoteWithMeta'
+    | 'readConversationStatesByIds'
     | 'readFireCount'
     | 'incrementFireCount'
     | 'findWakeRecipe'
@@ -76,6 +83,7 @@ function mkDeps(
     })) as never,
     costCap: vi.fn(async () => ({ breach: false, spendCents: 0, capCents: null })) as never,
     getLoopCarryNoteWithMeta: vi.fn(async () => ({ note: null, updatedAtMs: null })) as never,
+    readConversationStatesByIds: vi.fn(async () => []) as never,
     readFireCount: vi.fn(async () => 0) as never,
     incrementFireCount: vi.fn(async () => {}) as never,
     findWakeRecipe: vi.fn(async () => null) as never,
@@ -2030,6 +2038,32 @@ describe('walls + turn-settle nag in the wake text (compaction-continuity-harden
     expect(opts.summary).toContain('  • [origin:owner] 3 zombie PIDs await owner OK to kill — re-check: ps -p 95902');
     expect(opts.summary).not.toContain('## Walls'); // the section never rides the truncatable body
     expect(opts.summary).toContain('ship P-006'); // the narrative body still renders
+  });
+
+  it('fireLoopWake retires a superseded conversation wall and preserves other owner walls', async () => {
+    const note = withCarryNoteWalls('## Next action\ngo', [
+      { id: 'withdrawn', origin: 'owner', conversationId: 'conv-old', claim: 'withdrawn funding question' },
+      { id: 'current', origin: 'owner', conversationId: 'conv-current', claim: 'current owner question' },
+      { id: 'unrelated', origin: 'owner', claim: 'deployment approval' },
+    ]);
+    const readConversationStatesByIds = vi.fn(async () => [
+      { id: 'conv-old', state: 'superseded' },
+      { id: 'conv-current', state: 'open' },
+    ]);
+    const deps = mkDeps({
+      readFireCount: vi.fn(async () => 4) as never,
+      getLoopCarryNoteWithMeta: vi.fn(async () => ({ note, updatedAtMs: Date.now() })) as never,
+      readConversationStatesByIds: readConversationStatesByIds as never,
+    });
+
+    const result = await fireLoopWake({ ...baseInput, payloadTemplate: { kickoff: FULL_KICKOFF } }, deps);
+
+    expect(result).toMatchObject({ fired: true });
+    expect(readConversationStatesByIds).toHaveBeenCalledWith(['conv-old', 'conv-current'], baseInput.workspaceId);
+    const [, opts] = (deps.wake as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(opts.summary).not.toContain('withdrawn funding question');
+    expect(opts.summary).toContain('current owner question');
+    expect(opts.summary).toContain('deployment approval');
   });
 
   it('fireLoopWake takes the pending nag (read-and-clear) and splices the hard mandate', async () => {

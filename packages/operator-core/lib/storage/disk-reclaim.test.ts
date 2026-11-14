@@ -14,6 +14,7 @@ import { compilePolicy, RETENTION_POLICY, retentionRootSizeCap, type RetentionCl
 import { createRetentionHolderScanner, DISK_RECLAIM_CRONTAB, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, policyRoots, prioritizeRetentionRoots, readReclaimReceipt, reclaimRunBudgetForDrain, runScheduledDiskReclaimWithFailureReceipt, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry, type RetentionCapReceipt } from './disk-reclaim';
 import { createWorkspaceHostCutRetentionDelegate, runDiskReclaimOnce, type runScheduledDiskReclaim } from './disk-reclaim';
 import { pinProtection } from '../../../../scripts/lib/retention-pins.mjs';
+import { RECLAIM_SOURCE_PATHS } from './reclaim-provenance';
 
 const delegateSpawn = vi.hoisted(() => vi.fn());
 vi.mock('../task-manager/managed-spawn', () => ({ managedSpawn: delegateSpawn }));
@@ -68,6 +69,18 @@ describe('scoped retention recovery on real files', () => {
       scanHolders: async () => ({ complete: true, byPath: new Map<string, string[]>() }) };
     return { root, options };
   }
+  it('preserves the owning BG boot witness in both native start and terminal receipts', async () => {
+    const { options } = await setup();
+    const runtime = { service: 'port-3271', processId: 'fixture-boot:123:456', artifact: {
+      sourceSha: 'a'.repeat(40), sourceBlobs: Object.fromEntries(RECLAIM_SOURCE_PATHS.map(path => [path, 'b'.repeat(40)])),
+      bundleSha256: 'c'.repeat(64), manifestSha256: 'd'.repeat(64), evidenceRef: '/fixture/bg.artifact.json' } };
+    const records: Array<{ phase: string; details: unknown }> = [];
+    const receipt = await runDiskReclaimOnce({ ...options, runtime, record: async (phase, details) => {
+      records.push({ phase, details: structuredClone(details) });
+    } });
+    expect(receipt.runtime).toEqual(runtime);
+    for (const phase of ['started', 'receipt']) expect(records.find(r => r.phase === phase)?.details).toMatchObject({ runtime });
+  });
   it('scopes recovery to an enrolled root while retaining pins and unrelated roots', async () => {
     const { root, options } = await setup();
     const selected = join(root, 'selected'), unrelated = join(root, 'unrelated');

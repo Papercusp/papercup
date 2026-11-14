@@ -4991,20 +4991,33 @@ describe("WI-6740: upstream silence — bounded + replayed for the handshake, ne
     }
   });
 
-  it("logs proxy response finish for tools/call without recording request data", async () => {
+  it.each([false, true])("logs proxy response finish stages for tools/call without recording request data (retry=%s)", async (retry) => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const body = '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"build:typecheck","arguments":{"q":"private-query"}}}';
     const result = JSON.stringify({
       jsonrpc: "2.0",
       id: 1,
       result: { content: [{ type: "text", text: "ok" }] },
     });
     let upstreamTraceId = "";
+    let upstreamRequests = 0;
     try {
+      expect(prepareForward("POST", {}, Buffer.from(body), {
+        keyingEnabled: true, readonlyRetryEnabled: true, genKey: () => "unused-key",
+      }).klass).toBe("readonly");
       const upstream = track(
         http.createServer((req, res) => {
+          upstreamRequests++;
+          if (retry && upstreamRequests === 1) {
+            res.destroy();
+            return;
+          }
           upstreamTraceId = String(req.headers[MCP_PROXY_TRACE_HEADER] ?? "");
-          res.writeHead(200, { "content-type": "application/json" });
-          res.end(result);
+          setTimeout(() => {
+            res.writeHead(200, { "content-type": "application/json" });
+            res.flushHeaders();
+            setTimeout(() => res.end(result), 30);
+          }, 30);
         }),
       );
       await listen(upstream);
@@ -5020,12 +5033,10 @@ describe("WI-6740: upstream silence — bounded + replayed for the handshake, ne
       );
       await listen(proxy, proxyPort);
 
-      const response = await request(
-        proxyPort,
-        '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"coord:feed","arguments":{"q":"private-query"}}}',
-      );
+      const response = await request(proxyPort, body);
       expect(response.status).toBe(200);
       expect(response.body).toBe(result);
+      expect(upstreamRequests).toBe(retry ? 2 : 1);
 
       const eventLine = info.mock.calls
         .map(([line]) => String(line))
@@ -5043,11 +5054,50 @@ describe("WI-6740: upstream silence — bounded + replayed for the handshake, ne
         httpStatus: 200,
       });
       expect(event.elapsedMs).toEqual(expect.any(Number));
-      expect(eventLine).not.toContain("coord:feed");
+      const stages = event.proxyStageTimingsMs as Record<string, number>;
+      expect(stages).toEqual({
+        bodyReadMs: expect.any(Number),
+        admissionWaitMs: expect.any(Number),
+        forwardSetupMs: expect.any(Number),
+        forwardToHeadersMs: expect.any(Number),
+        responseStreamMs: expect.any(Number),
+      });
+      expect(Object.values(stages).every(ms => Number.isInteger(ms) && ms >= 0)).toBe(true);
+      expect(stages.forwardToHeadersMs).toBeGreaterThanOrEqual(15);
+      expect(stages.responseStreamMs).toBeGreaterThanOrEqual(15);
+      expect(Object.values(stages).reduce((total, ms) => total + ms, 0)).toBe(event.elapsedMs);
+      expect(eventLine).not.toContain("build:typecheck");
       expect(eventLine).not.toContain("private-query");
     } finally {
       info.mockRestore();
     }
+  });
+
+  it.each([200, 503])("binds turn-start transport evidence to the actual upstream for HTTP %s", async (status) => {
+    let upstreamTraceId = "";
+    const body = JSON.stringify({ text: "", privateResponse: "not diagnostic data" });
+    const upstream = track(http.createServer((req, res) => {
+      upstreamTraceId = String(req.headers[MCP_PROXY_TRACE_HEADER] ?? "");
+      res.writeHead(status, {
+        "content-type": "application/json",
+        [MCP_PROXY_TRACE_HEADER]: "untrusted-upstream-trace",
+        "x-papercusp-mcp-upstream-origin": "http://untrusted.invalid",
+      });
+      res.end(body);
+    }));
+    await listen(upstream);
+    const proxy = track(createMcpProxy({
+      listenPort: 0, targetHost: "127.0.0.1", targetPort: port(upstream), retryWindowMs: 5_000, log: () => {},
+    }));
+    await listen(proxy);
+    const response = await request(port(proxy), '{"prompt":"PRIVATE PROMPT"}',
+      "/api/agent-mcp/turn-start-memory", { [MCP_PROXY_TRACE_HEADER]: "untrusted-client-trace" });
+
+    expect(response.status).toBe(status);
+    expect(response.body).toBe(body);
+    expect(upstreamTraceId).toMatch(/^[a-f0-9-]{36}$/);
+    expect(response.headers[MCP_PROXY_TRACE_HEADER]).toBe(upstreamTraceId);
+    expect(response.headers["x-papercusp-mcp-upstream-origin"]).toBe(`http://127.0.0.1:${port(upstream)}`);
   });
 
   it("forwards streamed initialize bytes unchanged when the observer or telemetry logger fails", async () => {

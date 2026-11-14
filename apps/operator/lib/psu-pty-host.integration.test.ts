@@ -4497,6 +4497,8 @@ describe('host-code adopted carry drill lifecycle (EI-25602595012290893)', () =>
     const root = mkdtempSync(join(tmpdir(), 'psu-adopted-carry-drill-'));
     const codexHome = join(root, 'codex-home');
     const nativeId = 'acba1234-1234-4234-8234-123456789abc';
+    const sourceNativeId = 'bcba1234-1234-4234-8234-123456789abc';
+    const sourceNativeRef = `/codex/sessions/2026/10/10/rollout-${sourceNativeId}.jsonl`;
     const drillId = `d-adopt-${process.pid}-${Math.floor(performance.now())}`;
     const sessionClass = 'codex-su';
     const launchContextPath = '/safe/adopted-carry-context.md';
@@ -4507,6 +4509,23 @@ describe('host-code adopted carry drill lifecycle (EI-25602595012290893)', () =>
     const ledgerPath = sharedDrillLedgerPath(PSU_PTY_DIR);
     const marker = '⟦turn-origin:carry-drill nonce:0123456789abcdef⟧';
     const kickoff = `${marker}\nADOPTED_DRILL_CARRY`;
+    appendHostEvent(ownerId, 'respawned', {
+      ownerId,
+      mode: 'carry-respawn',
+      nativeId: sourceNativeId,
+      launchContextPath,
+      managedCarryLineage: {
+        ownerId,
+        advSessionId: 77,
+        hostStartedAt: 1,
+        sourceNativeId,
+        sourceNativeRef,
+        sourceChildGeneration: 0,
+        targetChildGeneration: 1,
+        targetNativeId: null,
+        targetNativeRef: null,
+      },
+    });
     const { captured, io } = fakeIo();
     const childCode = [
       "const fs=require('fs'),path=require('path');process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
@@ -4537,6 +4556,7 @@ describe('host-code adopted carry drill lifecycle (EI-25602595012290893)', () =>
           TERM: 'xterm-256color',
         },
         ownerId,
+        advSessionId: 77,
         io,
         bridgeTty: false,
         kickoff,
@@ -4566,6 +4586,33 @@ describe('host-code adopted carry drill lifecycle (EI-25602595012290893)', () =>
           adopted: true,
         }));
       }
+      expect(ownerRows.find((row) => row.kind === 'respawned' && row.adopted)).toMatchObject({
+        ownerId,
+        mode: 'carry-respawn',
+        launchContextPath,
+        managedCarryLineage: {
+          ownerId,
+          advSessionId: 77,
+          sourceNativeId,
+          sourceNativeRef,
+          sourceChildGeneration: 0,
+          targetChildGeneration: 1,
+          targetNativeId: null,
+          targetNativeRef: null,
+        },
+      });
+      expect(ownerRows.find((row) => row.kind === 'respawn-carry-delivered' && row.adopted)).toMatchObject({
+        ownerId,
+        nativeId,
+        managedCarryLineage: {
+          ownerId,
+          advSessionId: 77,
+          sourceNativeId,
+          sourceNativeRef,
+          targetNativeId: nativeId,
+          targetNativeRef: nativeFile,
+        },
+      });
       await rawInject(sock, 'QUIT\n');
       expect(await done).toBe(0);
     } finally {

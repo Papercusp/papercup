@@ -20,6 +20,7 @@ import { nativeProcessTraceEnv } from '../../../../scripts/lib/vitest-startup-tr
 import { syncBudgetedTaskNativeExecutionReceipt, writeBudgetedTaskNativeExecutionReceipt } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
 import { releaseConfig } from './release-config';
 import { resolveQualificationYieldBudget } from '../../../../scripts/lib/batch-watchdog.mjs';
+import { createProofContextIdentity, PROOF_CONTEXT_COMPONENTS } from '@papercusp/test-config/configuration-snapshot';
 
 const storedRead = vi.hoisted(() => vi.fn());
 const storedProgress = vi.hoisted(() => vi.fn());
@@ -485,6 +486,16 @@ describe('production post-suite qualification capture', () => {
         recordedSha: state.input.progress.candidate, runContext: state.input.progress.runContext,
         runnerIdentity: state.input.progress.runnerIdentity, executedModules: ['package.json'],
         inputsCaptured: true, readPaths: [], opaqueReasons: [] } });
+      // This fixture models an independently eligible retained pass, including
+      // the current context gate. These synthetic pins are never producer proof.
+      const context = createProofContextIdentity(Object.fromEntries(PROOF_CONTEXT_COMPONENTS
+        .map(key => [key, 'c'.repeat(64)])) as Record<(typeof PROOF_CONTEXT_COMPONENTS)[number], string>)!;
+      saved.proof!.proofContext = context;
+      state.input.progress.proofContexts = { [saved.unitId]: { after: context, reach: [] } };
+      expect(evaluatePartialTaskContinuation({ root, taskKey: state.input.progress.taskKey,
+        continuation: state.transaction.continuation },
+      { ...state.input.progress, sourceCommit: state.input.progress.candidate }))
+        .toMatchObject({ status: 'ready', reused: [saved.unitId] });
       const execute = vi.fn<CheckpointExec>();
       const resume = () => createCheckpointQualificationPostSuiteExecutor(state.input, execute,
         { record: state.record, now: Date.now });
@@ -527,6 +538,19 @@ describe('production post-suite qualification capture', () => {
       await expect(fixture.resume()('npm', ['run', 'lint:tsc'],
         { cwd: fixture.root, env: { ...environment, P003_ADDED_INPUT: 'new' } })).rejects.toThrow('reuse-command-mismatch');
       expect(fixture.execute).not.toHaveBeenCalled();
+    } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it('runs a retained post leg again when its proof context was not measured', async () => {
+    const fixture = await bankedFixture();
+    try {
+      const completion = fixture.saved.completionId;
+      delete fixture.saved.proof!.proofContext;
+      fixture.execute.mockResolvedValue({ code: 0, stdout: 'fresh execution', stderr: '' });
+      expect(await fixture.resume()('npm', ['run', 'lint:tsc'], { cwd: fixture.root }))
+        .toMatchObject({ code: 0, stdout: 'fresh execution' });
+      expect(fixture.execute).toHaveBeenCalledTimes(1);
+      expect(fixture.state.transaction.continuation.receipts[0]!.completionId).not.toBe(completion);
     } finally { rmSync(fixture.root, { recursive: true, force: true }); }
   });
 

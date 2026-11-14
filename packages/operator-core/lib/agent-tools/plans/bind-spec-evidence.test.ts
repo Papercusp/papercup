@@ -11,6 +11,16 @@ import {
 import tool from './bind-spec-evidence';
 import { EVIDENCE_MEASUREMENT_SCHEMA_VERSION, evidenceMeasurementSchema } from './spec-evidence-store';
 
+describe('historical measurement producer boundary', () => {
+  it.each([{}, { schemaVersion: 1 }, null])('refuses a caller-authored reserved witness (%j)', historicalMeasurement => {
+    const parsed = bindingSchema.safeParse({ workItemId: 'WI-1', specId: 'SPEC-001',
+      evidenceKind: 'manual', evidenceRef: 'archive:review', sourceFingerprint: 'opaque',
+      details: { historicalMeasurement } });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) expect(parsed.error.issues.some(issue => issue.path.join('.') === 'details.historicalMeasurement')).toBe(true);
+  });
+});
+
 describe('native compiler dependency binding input', () => {
   it('requires a repo-files measurement or a recorded test run', () => {
     const base = { slug: 'native-plan', dependencies: [{ name: 'target', file: 'src/target.ts', paths: ['src'] }],

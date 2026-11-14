@@ -7,10 +7,11 @@ import type { FreshPgDb } from '../../../test/_pg-helpers';
 import { createPublicParkTestDb } from '../../../test/_public-park-pg';
 import type { BlockerDecisionInput } from '../../blocker-resolution-decision';
 import { activeExternalBlockers, updateExternalBlockerHistory } from '../../external-blockers';
-import { createBlockerEvidenceReader, preflightBlockerDecision } from '../../blocker-resolution-evidence';
+import { blockerBoundaryContext, createBlockerEvidenceReader, preflightBlockerDecision } from '../../blocker-resolution-evidence';
 import { planLaneBlockerRef, syncLinkedWorkItemsToPlanLane } from '../../plan-items/reconcile-linked-work-items';
 import { readPlanLineNodes } from '../plans/plan-line-graph';
 import { readAgentReviewState } from '../../harness/improvements/agent-review-policy';
+import { PLAN_ITEM_KIND, planItemRef } from '../../issue-blocks-merge';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql,
   parkConsult: vi.fn(), parkWake: vi.fn(), parkNotify: vi.fn() }));
@@ -19,16 +20,51 @@ vi.mock('../../consult/park-door', async original => ({
   makeProdParkDoorDeps: () => ({ now: () => Date.now(), openConsult: h.parkConsult,
     registerVerdictWake: h.parkWake, notifyOwner: h.parkNotify }),
 }));
-vi.mock('@papercusp/db-org', async original => ({
-  ...(await original<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }),
+vi.mock('@papercusp/db-org', async original => {
+  const { drizzle } = await import('drizzle-orm/postgres-js');
+  const actual = await original<typeof import('@papercusp/db-org')>();
+  const privatePg = () => {
+    const db = drizzle(h.sql);
+    // Mirror production connection initialization: Drizzle installs transparent
+    // serializers, so restore raw SQL's Date/JSONB bindings on this same client.
+    actual.restoreRawDateSerializers(h.sql);
+    actual.restoreRawJsonbSerializer(h.sql);
+    return { sql: h.sql, db };
+  };
+  return {
+  ...actual,
+  getOrgPg: privatePg,
+  getOrgPgApp: privatePg,
+  withWorkspace: async <T>(workspace: string, callback: (sql: postgres.Sql) => Promise<T>) =>
+    h.sql.begin(async tx => {
+      await tx`SELECT set_config('app.workspace_id', ${workspace}, true)`;
+      return callback(tx as unknown as postgres.Sql);
+    }) as Promise<T>,
+};
+});
+vi.mock('../plans/source', async original => ({
+  ...(await original<typeof import('../plans/source')>()),
+  resolvePlanScope: async (opts: { harnessSlug?: string } = {}) => ({
+    workspaceId: 'default', harnessSlug: opts.harnessSlug ?? 'blocker-boundaries',
+  }),
 }));
-vi.mock('../../workspace-registry', async original => ({
-  ...(await original<typeof import('../../workspace-registry')>()), activeWorkspaceId: () => 'default',
+vi.mock('../plans/_ctx-opts', async original => ({
+  ...(await original<typeof import('../plans/_ctx-opts')>()),
+  ctxToPlanSourceOpts: async (ctx: { harnessSlug?: string }) => ({
+    workspaceId: 'default', harnessSlug: ctx.harnessSlug ?? 'blocker-boundaries',
+  }),
 }));
 vi.mock('../../harness-core', async original => ({
   ...(await original<typeof import('../../harness-core')>()),
   resolveProject: async (slug: string) => ({ slug, path: `/tmp/${slug}` }),
 }));
+vi.mock('../../harness-registry', async original => {
+  const { fileURLToPath } = await import('node:url');
+  return { ...(await original<typeof import('../../harness-registry')>()),
+    loadHarnessRegistry: async () => ({ projects: [{ slug: 'blocker-boundaries',
+      path: fileURLToPath(new URL('../../../../../', import.meta.url)), harness_kind: 'project' }] }),
+  };
+});
 vi.mock('../../blueprint/operation-worker-binding', async original => ({
   ...(await original<typeof import('../../blueprint/operation-worker-binding')>()),
   readActiveOperationWorkerClaimBinding: async () => ({ status: 'none' as const }),
@@ -39,14 +75,19 @@ vi.mock('../coordination/federation-scope', async original => ({
 }));
 vi.mock('../coordination/presence', async original => ({
   ...(await original<typeof import('../coordination/presence')>()),
+  listPresence: async () => [{ ownerId: 'agent-repair', workspaceId: 'default', stale: false }],
   getPresence: async (ownerId: string) => ownerId === 'agent-repair'
     ? { ownerId, workspaceId: 'default', stale: false } : null,
 }));
 
+// Use the real tenant resolver throughout lazy/circular imports. An async
+// partial module mock can leave one evidence reader using the host registry
+// while another sees the mocked tenant, invalidating the private DB fixture.
+vi.stubEnv('PAPERCUSP_WORKSPACE_ID', 'default');
 const wi = await import('../../work-items');
 const parkRecovery = await import('../../durable-park-recovery');
 const checkpoints = await import('../../work-item-checkpoint');
-const { registerAnnouncement, registerAwait } = await import('../../events/await/store');
+const { registerAnnouncement, registerAwait, recordKeyFire, fireAwaitsForKey, inspectEventKey } = await import('../../events/await/store');
 const { readEventConditionReachability } = await import('../../external-condition-reachability');
 const { readBlockerResolution } = await import('../../blocker-resolution-decision');
 const { default: setBlocker } = await import('./set_blocker');
@@ -54,6 +95,8 @@ const { default: setState } = await import('./set_state');
 const { default: release } = await import('./release');
 const { default: park } = await import('./park');
 const { default: link } = await import('./link');
+const { default: claim } = await import('./claim');
+const { default: holdOpen } = await import('./hold_open');
 
 const HARNESS = 'blocker-boundaries';
 const OWNER = 'su-blocker-boundaries';
@@ -62,9 +105,9 @@ const ref = { kind: 'event' as const, ref: EVENT };
 const CTX = { isSuperuser: true, uiClientId: OWNER, workspaceId: 'default', role: 'su',
   signal: new AbortController().signal, log: () => {}, progress: () => {}, metadata: () => {} } as never;
 type Result = { ok?: boolean; code?: string; error?: string; nextAction?: string;
-  results?: Result[]; replayed?: boolean; blockerDecision?: { id: string } };
-async function call(tool: { handler: (args: never, ctx: never) => Promise<unknown> }, args: Record<string, unknown>) {
-  const result = await tool.handler(args as never, CTX) as { data?: Result; content?: { text?: string }[] };
+  results?: Result[]; replayed?: boolean; blockerDecision?: { id: string }; slowPathTiming?: unknown };
+async function call(tool: { handler: (args: never, ctx: never) => Promise<unknown> }, args: Record<string, unknown>, ctx = CTX) {
+  const result = await tool.handler(args as never, ctx) as { data?: Result; content?: { text?: string }[] };
   const data = result.data ?? JSON.parse(result.content?.find(entry => entry.text?.startsWith('{'))?.text ?? '{}') as Result;
   const row = data.results?.[0] ?? data;
   if (!row.ok && args.blockerDecision) console.info('BOUNDARY_REFUSAL', JSON.stringify({ args, result: row }));
@@ -105,8 +148,15 @@ async function repairCondition() {
 beforeAll(async () => {
   db = await createPublicParkTestDb('blocker-boundaries');
   h.sql = db.sql;
+  const { getOrgPg } = await import('@papercusp/db-org');
+  getOrgPg();
+  const [raw] = await db.sql`SELECT ${db.sql.json({ ready: true })}::jsonb AS value`;
+  expect(raw.value).toEqual({ ready: true });
 }, 90_000);
-afterAll(async () => { await db?.cleanup(); });
+afterAll(async () => {
+  try { await db?.cleanup(); }
+  finally { vi.unstubAllEnvs(); }
+});
 beforeEach(async () => {
   h.parkConsult.mockReset().mockResolvedValue({ consultId: 'prospective-authority-review' });
   h.parkWake.mockReset().mockResolvedValue(undefined);
@@ -114,7 +164,8 @@ beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps,
     harness_shared.carry_notes, harness_shared.coord_event_log, harness_shared.blocker_boundary_transactions,
     harness_shared.event_awaits, harness_shared.event_key_fires, harness_shared.predicate_watches,
-    harness_shared.coord_entity_subscriptions, harness_shared.routines RESTART IDENTITY CASCADE`;
+    harness_shared.coord_entity_subscriptions, harness_shared.routines,
+    harness_shared.coord_links RESTART IDENTITY CASCADE`;
   await declareCondition();
 });
 async function seed(kind: 'task' | 'bug' | 'feature' = 'feature', blocked = true) {
@@ -197,6 +248,37 @@ async function expectPairedMutationTransaction(id: string) {
   expect(rows.map(row => row.phase)).toEqual(['decision', 'lifecycle']);
   expect(rows[0].transaction_id).toBe(rows[1].transaction_id);
 }
+
+describe('catalogued work-item completion evidence', () => {
+  it('measures a completed review and fired waiter without a producer announcement', async () => {
+    const review = await wi.createWorkItem({ kind: 'feature', title: 'Independent review', harness: HARNESS, createdBy: OWNER });
+    const event = `work-item:done:${review.id}`;
+    const eventRef = { kind: 'event' as const, ref: event };
+    const waiter = await registerAwait({ subscriberId: OWNER, eventKey: event, policy: 'notify', timeoutSec: 60 });
+    const read = createBlockerEvidenceReader({ ownerId: OWNER, sessionId: OWNER, workspaceId: 'default',
+      harnessSlug: HARNESS, role: 'su', root: null, workItemId: 'WI-original', blockers: [] });
+
+    expect(await read(eventRef)).toMatchObject({ status: 'available', condition: 'pending' });
+    await db.sql`UPDATE harness_shared.work_items SET status='done'
+      WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${review.id}`;
+    // A terminal row alone must not substitute for the exact event's proof.
+    expect(await read(eventRef)).toMatchObject({ status: 'available', condition: 'pending' });
+    const payload = { id: review.id, state: 'done', harness: HARNESS };
+    await recordKeyFire({ eventKey: event, firedBy: 'fixture-review-completion', payload });
+    await fireAwaitsForKey({ eventKey: event, source: 'work-items', payload });
+
+    const snapshot = await inspectEventKey(event);
+    expect(snapshot.announcements).toEqual([]);
+    expect(snapshot.fireLatch?.lastFiredAt).toBeTruthy();
+    expect(snapshot.waiters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: waiter.id, firedReason: 'event' }),
+    ]));
+    expect(await readEventConditionReachability(event, { requireSpecificCondition: true }))
+      .toMatchObject({ authoritative: true, verdict: 'reachable', basis: 'fired' });
+    expect(await read(eventRef)).toMatchObject({ status: 'available', condition: 'satisfied',
+      reachable: true, canonicalWorkItemId: review.id });
+  });
+});
 
 // Four maintained callers, including both homogeneous ids and heterogeneous
 // items defaults. The request goes through the PUBLIC parser and handler; no
@@ -380,8 +462,46 @@ describe('public blocker resolution boundaries', () => {
       attempts: [{ action: 'Attempt the recorded safe diagnostic', outcome: 'The owned diagnostic retains the measurement gap', evidenceRefs: [witness] }],
       deferral: { reason: 'technical-limit', responsibleParty: OWNER, reasonEvidenceRefs: [runtime],
         nextAction: 'Continue diagnosis under the separate retained recheck', recheckRef: witness } };
-    return { id, input, blockers };
+    return { id, input, blockers, recheck };
   }
+
+  async function proposedSettlementRecheck() {
+    const fixture = await legacyRuntime();
+    const settlementManifest = { version: 1, generation: 1, evidenceHash: 'e'.repeat(64),
+      repositoryRoot: process.cwd(), headSha: 'a'.repeat(40), normalizedPaths: ['repair.ts'],
+      contentIdentity: [{ path: 'repair.ts', headBlobSha: 'b'.repeat(40), workingTreeBlobSha: 'c'.repeat(40) }] };
+    await db.sql`UPDATE harness_shared.work_items SET status='done', taken_by=NULL,
+      terminal_owner=${OWNER}, authority='proposed',
+      payload=payload || ${db.sql.json({ _completionEvidence: { settlementManifest } })}
+      WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${fixture.recheck}`;
+    fixture.input.deferral.recheckRef = { kind: 'event', ref: `work-item:settled:${fixture.recheck}` };
+    return fixture;
+  }
+
+  it('plain release retains a real pending owned commit settlement without clearing the runtime blocker', async () => {
+    const { id, input, blockers, recheck } = await proposedSettlementRecheck();
+    expect(await call(release, { id, harness: HARNESS, blockerDecision: input }))
+      .toMatchObject({ ok: true, blockerDecision: { decision: { disposition: 'defer' } } });
+    const current = await wi.getWorkItem(id, HARNESS);
+    expect(current).toMatchObject({ state: 'blocked', assignee: null });
+    expect((current!.payload as Record<string, unknown>).externalBlockers).toEqual(blockers);
+    expect(await wi.getWorkItem(recheck, HARNESS))
+      .toMatchObject({ state: 'done', completionAuthority: 'proposed', terminalOwner: OWNER, assignee: null });
+  });
+
+  it.each(['foreign owner', 'missing manifest'])('refuses an invalid pending settlement: %s', async invalid => {
+    const { id, input, recheck } = await proposedSettlementRecheck();
+    if (invalid === 'foreign owner') {
+      await db.sql`UPDATE harness_shared.work_items SET terminal_owner='su-other'
+        WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${recheck}`;
+    } else {
+      await db.sql`UPDATE harness_shared.work_items SET payload=payload - '_completionEvidence'
+        WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${recheck}`;
+    }
+    const before = await snapshot(id);
+    expect(await call(release, { id, harness: HARNESS, blockerDecision: input })).toMatchObject({ ok: false });
+    expect(await snapshot(id)).toEqual(before);
+  });
 
   it('ordinary public release executes the real writer without clearing an unmeasured runtime condition', async () => {
     const { id, input, blockers } = await legacyRuntime();
@@ -745,6 +865,50 @@ describe('public blocker resolution boundaries', () => {
     expect(await snapshot(child)).toEqual(before);
     expect(await snapshot(node)).toEqual(terminal);
   });
+  it('isolates canonical lanes across workspace harness plan item and legacy implements collisions', async () => {
+    const node = await planNode('open');
+    const stamp = await legacyChild();
+    const execution = await legacyChild();
+    const edgeOnly = await seed('feature', false);
+    await db.sql`UPDATE harness_shared.work_items SET status='open', taken_by=NULL,
+      created_ts=1, payload=payload - 'plan_item', parent_id=${node}
+      WHERE feature_id=${execution} OR feature_id=${edgeOnly}`;
+    await db.sql`INSERT INTO harness_shared.coord_links
+      (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel)
+      VALUES ('default', 'feature', ${`${HARNESS}#${edgeOnly}`},
+        ${PLAN_ITEM_KIND}, ${planItemRef(PLAN, 'P-001')}, 'implements')`;
+    const otherHarness = await planNode('open', `${HARNESS}-other`);
+    const otherPlan = await seed('task', false);
+    const otherItem = await seed('task', false);
+    const otherWorkspace = await seed('task', false);
+    for (const [id, workspace, plan, item] of [
+      [otherPlan, 'default', `${PLAN}-other`, 'P-001'],
+      [otherItem, 'default', PLAN, 'P-002'],
+      [otherWorkspace, 'other-workspace', PLAN, 'P-001'],
+    ]) await db.sql`UPDATE harness_shared.work_items SET workspace_id=${workspace},
+      status='open', plan_slug=${plan}, plan_line_id=${item}, plan_seq=1,
+      plan_line_text='Collision decoy', payload='{}'::jsonb WHERE feature_id=${id}`;
+    const allRows = async () => [...await db.sql`SELECT to_jsonb(w) AS value
+      FROM harness_shared.work_items w ORDER BY workspace_id, harness_slug, feature_id`];
+    const before = await allRows();
+    expect(before).toHaveLength(8);
+    const untouched = (rows: Awaited<ReturnType<typeof allRows>>) => rows.filter(row => row.value.feature_id !== node);
+    const gated = await syncLinkedWorkItemsToPlanLane(lane, 'blocked');
+    expect(gated).toMatchObject({ gated: [node] });
+    expect(gated.failures).toBeUndefined();
+    expect(gated.skippedDuplicates).toEqual(expect.arrayContaining([stamp, edgeOnly]));
+    expect(untouched(await allRows())).toEqual(untouched(before));
+    expect(await wi.getWorkItem(node, HARNESS)).toMatchObject({ state: 'blocked' });
+    expect(await wi.getWorkItem(otherHarness, `${HARNESS}-other`)).toMatchObject({ state: 'open' });
+    // A terminal canonical node remains authoritative even though an older
+    // implements edge and live stamp/execution rows remain discoverable.
+    await db.sql`UPDATE harness_shared.work_items SET status='done' WHERE feature_id=${node}`;
+    const terminal = await allRows();
+    const result = await syncLinkedWorkItemsToPlanLane(lane, 'blocked');
+    expect(result).toMatchObject({ gated: [], skippedAlreadyTerminal: [node] });
+    expect(result.failures).toBeUndefined();
+    expect(await allRows()).toEqual(terminal);
+  });
   it('partial lane ungate preserves independent blockers state holds and dispatch custody', async () => {
     const node = await planNode('blocked');
     const laneRef = planLaneBlockerRef(PLAN, 'P-001');
@@ -776,6 +940,428 @@ describe('public blocker resolution boundaries', () => {
     expect(after.events).toEqual(before.events);
     expect(after.monitors).toEqual(before.monitors);
   });
+
+  it('guards removal and reclassification of existing blocking relations before mutation', async () => {
+    const dependent = await seed();
+    const source = await seed('feature', false);
+    const dst = { kind: 'feature', ref: `${HARNESS}#${dependent}` };
+    // Establish the existing relation through its production system writer;
+    // admission requires adding dependencies BEFORE the dependent is active.
+    // Every attempted agent change below uses the public link handler.
+    async function establishBeforeActivation(id: string) {
+      const original = (await snapshot(id)).row;
+      const inactive = await db.sql`UPDATE harness_shared.work_items SET status='open', taken_by=NULL,
+        taken_at=NULL WHERE feature_id=${id} RETURNING status, taken_by`;
+      expect(inactive).toMatchObject([{ status: 'open', taken_by: null }]);
+      const added = await wi.linkWorkItem(source, { kind: 'feature', ref: `${HARNESS}#${id}` },
+        'blocks', { harness: HARNESS, by: 'system:fixture' });
+      expect(added, JSON.stringify(added)).toEqual({ ok: true });
+      await db.sql`UPDATE harness_shared.work_items SET status=${original.status},
+        taken_by=${original.taken_by}, taken_at=${original.taken_at}::text::timestamptz WHERE feature_id=${id}`;
+      expect((await snapshot(id)).row).toEqual(original);
+    }
+    await establishBeforeActivation(dependent);
+    await seedMonitors(dependent);
+    const before = await snapshot(dependent);
+    expect(before.edges).toEqual(expect.arrayContaining([expect.objectContaining({
+      blocked_ref: dst.ref, blocker_ref: `${HARNESS}#${source}`, dep_type: 'blocks',
+    })]));
+    const remove = { id: source, harness: HARNESS, target_id: dependent, rel: 'blocks', remove: true };
+    expect(await call(link, remove)).toMatchObject({ ok: false });
+    expect(await snapshot(dependent)).toEqual(before);
+    expect(await call(link, { ...remove, rel: 'relates', blockerDecision: deferral('relabel-escape') }))
+      .toMatchObject({ ok: false, error: 'blockerDecision is valid only for rel=blocks' });
+    expect(await snapshot(dependent)).toEqual(before);
+    // Descriptive relations cannot reclassify or delete an existing blocks
+    // relation. The removal half remains independently guarded.
+    expect(await call(link, { ...remove, rel: 'relates', remove: false })).toMatchObject({ ok: true });
+    const relabeled = await snapshot(dependent);
+    expect(relabeled.row).toEqual(before.row);
+    expect(relabeled.edges).toEqual(before.edges);
+    expect(relabeled.checkpoint).toEqual(before.checkpoint);
+    expect(await call(link, remove)).toMatchObject({ ok: false });
+    expect(await snapshot(dependent)).toEqual(relabeled);
+    expect(await call(link, { ...remove, blockerDecision: deferral('evidenced-unlink') })).toMatchObject({ ok: true });
+    const evidenced = await snapshot(dependent);
+    expect(evidenced.edges).toEqual([]);
+    expect(evidenced.row).toMatchObject({ taken_by: OWNER, status: before.row.status });
+    expect(activeExternalBlockers(evidenced.row.payload)).toEqual(activeExternalBlockers(before.row.payload));
+    expect(readBlockerResolution(evidenced.row.payload)).toMatchObject({ status: 'recorded',
+      current: { decision: { disposition: 'defer' } } });
+    expect(evidenced.checkpoint).toEqual(before.checkpoint);
+    const ordinary = await seed('feature', false);
+    await establishBeforeActivation(ordinary);
+    await db.sql`UPDATE harness_shared.work_items SET status='passed' WHERE feature_id=${source}`;
+    expect(await call(link, { ...remove, target_id: ordinary })).toMatchObject({ ok: true });
+    expect((await snapshot(ordinary)).edges).toEqual([]);
+    expect((await wi.getWorkItem(ordinary, HARNESS))?.assignee).toBe(OWNER);
+  });
+
+  it('preserves unresolved blocker obligations through explicit public handoff', async () => {
+    for (const blocked of [true, false]) {
+      const id = await seed('feature', blocked);
+      if (blocked) expect(await state(id, 'handoff-investigation')).toMatchObject({ ok: true });
+      const before = await snapshot(id);
+      // work_items:claim is the atomic custody-transfer route. coord:handoff
+      // records an envelope and cannot itself transfer or settle the item.
+      const transferred = await call(claim, { id, harness: HARNESS, assignee: 'agent-repair' });
+      expect(transferred, JSON.stringify(transferred)).toMatchObject({ ok: true });
+      const after = await snapshot(id);
+      expect(after.row.taken_by).toBe('agent-repair');
+      expect(after.row.status).toBe(before.row.status);
+      expect(after.row.payload.externalBlockers).toEqual(before.row.payload.externalBlockers);
+      expect(after.row.payload.blockerResolution).toEqual(before.row.payload.blockerResolution);
+      expect(after.checkpoint).toEqual(before.checkpoint);
+      expect(after.edges).toEqual(before.edges);
+      if (blocked) {
+        const peerCtx = { ...(CTX as object), uiClientId: 'agent-repair' } as never;
+        expect(await call(setState, { id, harness: HARNESS, state: 'open' }, peerCtx)).toMatchObject({ ok: false });
+        expect(await snapshot(id)).toEqual(after);
+        expect(readBlockerResolution(after.row.payload)).toMatchObject({ status: 'recorded',
+          current: { decision: { disposition: 'defer' } } });
+      }
+    }
+  });
+
+  it('partial lane ungate resumes after final authorized blocker and hold clearance without duplicate monitors', async () => {
+    const node = await planNode('blocked');
+    const laneRef = planLaneBlockerRef(PLAN, 'P-001');
+    const laneHistory = updateExternalBlockerHistory({}, { kind: 'gate', capability: 'live-dependency',
+      ref: laneRef, summary: 'Plan prerequisite pending' }, 'system:plan-item-lane-sync');
+    const blockers = updateExternalBlockerHistory({ externalBlockers: laneHistory.blockers }, {
+      kind: 'event', capability: 'live-dependency', ref: EVENT, summary: 'Independent dependency pending',
+    }, OWNER).blockers;
+    await db.sql`UPDATE harness_shared.work_items SET taken_by=${OWNER}, taken_at=now(),
+      payload=${JSON.stringify({ externalBlockers: blockers, planLaneParkedFrom: 'open',
+        _claimHold: true, claim_hold_by: OWNER, claim_hold_reason: 'Independent dependency',
+        keep: 'original' })}::text::jsonb WHERE feature_id=${node}`;
+    await checkpoints.setWorkItemCheckpoint(checkpointRef(node), 'Original checkpoint');
+    await seedMonitors(node);
+    const before = await snapshot(node);
+    expect(await syncLinkedWorkItemsToPlanLane(lane, 'actionable')).toMatchObject({ ungated: [node] });
+    const partial = await snapshot(node);
+    expect(partial.row).toMatchObject({ status: 'blocked', taken_by: OWNER,
+      payload: { _claimHold: true, claim_hold_by: OWNER, planLaneParkedFrom: 'open' } });
+    expect(activeExternalBlockers(partial.row.payload)).toMatchObject([{ ref: EVENT }]);
+    expect(partial.monitors).toEqual(before.monitors);
+    const clear = { id: node, harness: HARNESS, ref: EVENT, clear: true,
+      blockerDecision: resolution('final-lane-repair') };
+    expect(await call(setBlocker, clear)).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
+    expect(await snapshot(node)).toEqual(partial);
+    await repairCondition();
+    const measured = await snapshot(node);
+    expect(await call(setBlocker, clear)).toMatchObject({ ok: true });
+    expect(activeExternalBlockers((await wi.getWorkItem(node, HARNESS))?.payload)).toEqual([]);
+    // Clear the independent hold in place. park releases the claim and cannot
+    // exercise preservation of custody through this final authorized ungate.
+    const clearedHold = await call(holdOpen, { id: node, harness: HARNESS, clear: true });
+    expect(clearedHold, JSON.stringify(clearedHold)).toMatchObject({ ok: true });
+    const resumed = await syncLinkedWorkItemsToPlanLane(lane, 'actionable');
+    expect(resumed.failures).toBeUndefined();
+    const after = await snapshot(node);
+    expect(after.row.status).toBe('open');
+    expect(after.row.taken_by).toBe(OWNER);
+    expect(after.row.taken_at).toBe(before.row.taken_at);
+    expect(after.row.payload).toMatchObject({ keep: 'original', blockerResolution: {
+        history: [{ authorId: OWNER, sessionId: OWNER, decision: { disposition: 'self_resolve' } }],
+      } });
+    expect(after.row.payload._claimHold).not.toBe(true);
+    expect(after.row.payload.claim_hold_by).toBeUndefined();
+    // The public blocker clearer already restored the state. Reconciliation
+    // retains the original-state provenance on this already-actionable row.
+    expect(after.row.payload.planLaneParkedFrom).toBe('open');
+    expect(after.checkpoint).toBe(before.checkpoint);
+    expect(after.edges).toEqual(before.edges);
+    expect(after.monitors).toEqual(measured.monitors);
+    // Repeated reconciliation must not mint monitors, reassign custody or
+    // append a second decision after the final authorized clearance.
+    expect((await syncLinkedWorkItemsToPlanLane(lane, 'actionable')).failures).toBeUndefined();
+    expect(await snapshot(node)).toEqual(after);
+  });
+
+  it('guards the actual plans:set-status blocker boundary before mutation', async () => {
+    // The real plan writer needs the complete production schema. Its app,
+    // admin and workspace-scoped entry points all use this private database.
+    const { createOrgTestDb } = await import('../../../test/_org-test-db');
+    const isolated = await createOrgTestDb();
+    const sql = isolated.adminSql;
+    h.sql = sql;
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let checkedWarnings = 0;
+    try {
+      const { default: setStatus } = await import('../plans/set-status');
+      const { hashPlanContent } = await import('../plans/content-hash');
+      const { parsePlan } = await import('../plans/parser');
+      const { insertHiveIfAbsent } = await import('../../hive-store');
+      const { generateEd25519KeypairDer } = await import('../../identity/ed25519');
+      // A public park CAS saves a PG-canonical artifact through Drizzle as well
+      // as writing its SQL audit. Verify both clients point at the private DB
+      // before interpreting any later refusal as a product recovery defect.
+      const { saveTextArtifact, loadTextArtifact } = await import('../../text-artifacts');
+      await saveTextArtifact(HARNESS, 'fixture/blocker-recovery-preflight.json', '{"ready":true}');
+      expect(await loadTextArtifact(HARNESS, 'fixture/blocker-recovery-preflight.json')).toBe('{"ready":true}');
+      await insertHiveIfAbsent({ workspaceId: 'default', homeSlug: HARNESS,
+        pubkeyBase64: generateEd25519KeypairDer().pubkeyBase64,
+        keychainId: 'isolated-blocker-plan' }, sql);
+      // Source-internal calls retain the real Hive resolver even when the
+      // public scope adapter is mocked. Check that prerequisite explicitly.
+      const source = await vi.importActual<typeof import('../plans/source')>('../plans/source');
+      expect(await source.resolvePlanScope({ workspaceId: 'default', harnessSlug: HARNESS }))
+        .toEqual({ workspaceId: 'default', harnessSlug: HARNESS });
+      const slug = 'blocker-public-status';
+      const content = '---\ntitle: Public blocker boundary\nstatus: draft\nupdated: 2026-11-10\n---\n\n' +
+        '## Phase\n- **P-001** `wip` Investigate dependency\n- **P-002** `todo` Ordinary control\n';
+      expect(parsePlan(content).items.map(item => item.id)).toEqual(['P-001', 'P-002']);
+      await sql`INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, title, status)
+        VALUES ('default', ${HARNESS}, ${slug}, ${content}, ${hashPlanContent(content)},
+          'Public blocker boundary', 'draft')`;
+      const condition = await registerAnnouncement({ subscriberId: OWNER, eventKey: EVENT,
+        scopeKind: 'harness', scopeRef: HARNESS, note: 'Private plan dependency',
+        expectedCondition: { kind: 'predicate', predicate: { ready: { eq: true } } } });
+      expect(condition.id).toBeGreaterThan(0);
+      const blockers = updateExternalBlockerHistory({}, { kind: 'event', capability: 'live-dependency',
+        ref: EVENT, summary: 'Private plan dependency pending' }, OWNER).blockers;
+      const nodes: string[] = [];
+      for (const [index, itemId] of ['P-001', 'P-002'].entries()) {
+        const item = await wi.createWorkItem({ kind: 'task', title: index ? 'Ordinary control' : 'Investigate dependency',
+          harness: HARNESS, createdBy: OWNER });
+        nodes.push(item.id);
+        await sql`UPDATE harness_shared.work_items SET status=${index ? 'open' : 'wip'},
+          taken_by=${OWNER}, taken_at=now(), plan_slug=${slug}, plan_line_id=${itemId}, plan_seq=${index + 1},
+          plan_line_text=${index ? 'Ordinary control' : 'Investigate dependency'},
+          payload=${JSON.stringify(index ? {} : { keep: 'original', externalBlockers: blockers })}::text::jsonb
+          WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${item.id}`;
+      }
+      await checkpoints.setWorkItemCheckpoint(checkpointRef(nodes[0]), 'Plan investigation remains actionable');
+      await registerAwait({ subscriberId: OWNER, eventKey: EVENT,
+        policy: 'notify', boundTo: { kind: 'work-item', ref: nodes[0] } });
+      const capture = async () => ({
+        plan: [...await sql`SELECT to_jsonb(p) AS value FROM harness_shared.harness_plans p
+          WHERE workspace_id='default' AND harness_slug=${HARNESS} AND plan_slug=${slug}`],
+        nodes: [...await sql`SELECT to_jsonb(w) AS value FROM harness_shared.work_items w
+          WHERE workspace_id='default' AND harness_slug=${HARNESS} AND plan_slug=${slug} ORDER BY plan_seq`],
+        revisions: [...await sql`SELECT to_jsonb(r) AS value FROM harness_shared.plan_revisions r
+          WHERE workspace_id='default' AND harness_slug=${HARNESS} AND plan_slug=${slug} ORDER BY seq`],
+        checkpoint: await checkpoints.getWorkItemCheckpoint(checkpointRef(nodes[0])),
+        awaits: [...await sql`SELECT to_jsonb(a) AS value FROM harness_shared.event_awaits a ORDER BY id`],
+        edges: [...await sql`SELECT to_jsonb(d) AS value FROM harness_shared.work_item_deps d ORDER BY blocked_ref, blocker_ref`],
+      });
+      const args = { slug, item: 'P-001', harness: HARNESS, status: 'blocked' };
+      const invoke = async (input: Record<string, unknown>, ctx = CTX) => {
+        expect(warning.mock.calls).toHaveLength(checkedWarnings);
+        const offset = warning.mock.calls.length;
+        const result = await call(setStatus, setStatus.args.parse(input), ctx);
+        expect(warning.mock.calls.slice(offset)).toEqual(result.slowPathTiming
+          ? [[`[plans:set-status] slow ${slug}#${input.item} ${JSON.stringify(result.slowPathTiming)}`]]
+          : []);
+        checkedWarnings = warning.mock.calls.length;
+        return result;
+      };
+      const before = await capture();
+      expect(before.nodes).toHaveLength(2);
+      expect(before.awaits.length).toBeGreaterThan(0);
+      const baseline = await source.readPlanBySlug(slug, { workspaceId: 'default', harnessSlug: HARNESS });
+      expect(baseline?.parsed.items).toMatchObject([
+        { id: 'P-001', storedStatus: 'wip' }, { id: 'P-002', storedStatus: 'todo' },
+      ]);
+      for (const input of [args, { ...args, blockerDecision: resolution('unmeasured-plan-repair') }]) {
+        const refused = await invoke(input);
+        expect(refused, JSON.stringify(refused)).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
+        expect(await capture()).toEqual(before);
+      }
+      const evidenced = { ...args, blockerDecision: deferral('public-plan-deferral') };
+      const peerCtx = { ...(CTX as object), uiClientId: 'agent-repair' } as never;
+      const unauthorized = await invoke(evidenced, peerCtx);
+      expect(unauthorized, JSON.stringify(unauthorized)).toMatchObject({ ok: false, code: 'blocker_decision_custody' });
+      expect(await capture()).toEqual(before);
+      // Inject failure at the canonical graph write, after receipt preparation:
+      // neither the receipt nor the plan body/revision may commit alone.
+      await sql.unsafe(`CREATE FUNCTION harness_shared.reject_public_plan_block() RETURNS trigger LANGUAGE plpgsql AS $fn$
+        BEGIN IF NEW.status='blocked' THEN RAISE EXCEPTION 'injected public plan graph failure'; END IF; RETURN NEW; END $fn$;
+        CREATE TRIGGER reject_public_plan_block BEFORE UPDATE ON harness_shared.work_items
+        FOR EACH ROW EXECUTE FUNCTION harness_shared.reject_public_plan_block()`);
+      try {
+        const rolledBack = await invoke(evidenced);
+        expect(rolledBack, JSON.stringify(rolledBack)).toMatchObject({
+          ok: false, error: 'injected public plan graph failure',
+        });
+        expect(await capture()).toEqual(before);
+      } finally { await sql.unsafe('DROP TRIGGER reject_public_plan_block ON harness_shared.work_items'); }
+      const accepted = await invoke(evidenced);
+      expect(accepted, JSON.stringify(accepted)).toMatchObject({ ok: true });
+      const after = await capture();
+      expect(after.nodes[0].value).toMatchObject({ status: 'blocked', taken_by: OWNER,
+        payload: { keep: 'original', blockerResolution: { history: [{ authorId: OWNER,
+          decision: { disposition: 'defer' } }] } } });
+      expect(readBlockerResolution(after.nodes[0].value.payload)).toMatchObject({ status: 'recorded' });
+      // Read the graph-backed plan through the production reader used by plans:get.
+      const rendered = await source.readPlanBySlug(slug, { workspaceId: 'default', harnessSlug: HARNESS });
+      expect(rendered?.parsed.items.find(item => item.id === 'P-001')).toMatchObject({
+        id: 'P-001', storedStatus: 'blocked',
+      });
+      expect(after.checkpoint).toEqual(before.checkpoint);
+      expect(after.awaits).toEqual(before.awaits);
+      const replayed = await invoke(evidenced);
+      expect(replayed, JSON.stringify(replayed)).toMatchObject({ ok: true });
+      expect(await capture()).toEqual(after);
+      // Ordinary blocker-free edits and the explicit system lane remain usable.
+      const ordinary = await invoke({ slug, item: 'P-002', harness: HARNESS, status: 'todo', note: 'Ordinary update' });
+      expect(ordinary, JSON.stringify(ordinary)).toMatchObject({ ok: true });
+      // System provenance exempts the agent-decision requirement, while the
+      // database still requires a named condition before entering blocked.
+      await sql`UPDATE harness_shared.work_items SET payload=${JSON.stringify({ externalBlockers: blockers })}::text::jsonb
+        WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${nodes[1]}`;
+      expect(activeExternalBlockers((await wi.getWorkItem(nodes[1], HARNESS))?.payload))
+        .toMatchObject([{ ref: EVENT, status: 'active' }]);
+      const systemCtx = { ...(CTX as object), uiClientId: 'system:plan-item-lane-sync' } as never;
+      const system = await invoke({ slug, item: 'P-002', harness: HARNESS, status: 'blocked' }, systemCtx);
+      expect(system, JSON.stringify(system)).toMatchObject({ ok: true });
+      expect(await wi.getWorkItem(nodes[1], HARNESS)).toMatchObject({ state: 'blocked' });
+      expect(readBlockerResolution((await wi.getWorkItem(nodes[1], HARNESS))?.payload))
+        .toEqual({ status: 'unproven', state: null, current: null });
+      expect(warning.mock.calls).toHaveLength(checkedWarnings);
+
+      // EI-28396634030775553: the dependency can finish while an independent
+      // migration park remains. Clearing that park must leave a supported
+      // public begin path, without inventing an event for a derived plan lane.
+      const recoverySlug = 'blocker-public-derived-lane-recovery';
+      const discovery = { questions: [],
+        notApplicable: 'This bounded lifecycle fixture reuses the current blocker-evidence and lane-reconciliation implementation.',
+        findings: [{ id: 'F-1', questions: [],
+          conclusion: 'Use the existing canonical blocker preflight and generated-lane recovery seam.',
+          evidenceRefs: ['source:packages/operator-core/lib/blocker-resolution-evidence.ts'],
+          dispositions: ['P-001', 'P-002'].map(target => ({ target, decision: 'reuse',
+            reason: 'The maintained source supplies this lifecycle boundary.' })) }] };
+      const recoveryContent = '---\ntitle: Derived lane recovery\nstatus: ready\nupdated: 2026-11-10\n---\n\n' +
+        '## Phase\n- **P-001** `done` Completed prerequisite\n' +
+        '- **P-002** `todo` Resume canonical lane blocked-by: P-001\n' +
+        `\n## Discovery\n\n\`\`\`discovery\n${JSON.stringify(discovery)}\n\`\`\`\n`;
+      await sql`INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, title, status)
+        VALUES ('default', ${HARNESS}, ${recoverySlug}, ${recoveryContent}, ${hashPlanContent(recoveryContent)},
+          'Derived lane recovery', 'ready')`;
+      const recoveryNodes: string[] = [];
+      const recoveryRef = planLaneBlockerRef(recoverySlug, 'P-002');
+      const recoveryBlockers = updateExternalBlockerHistory({}, { kind: 'gate', capability: 'live-dependency',
+        ref: recoveryRef, summary: 'Prerequisite was pending before migration clearance' },
+      'system:plan-item-lane-sync').blockers;
+      for (const [index, itemId] of ['P-001', 'P-002'].entries()) {
+        const node = await wi.createWorkItem({ kind: 'task', title: 'Derived recovery fixture',
+          harness: HARNESS, createdBy: OWNER });
+        recoveryNodes.push(node.id);
+        await sql`UPDATE harness_shared.work_items SET status=${index ? 'blocked' : 'done'},
+          taken_by=NULL, taken_at=NULL, plan_slug=${recoverySlug}, plan_line_id=${itemId}, plan_seq=${index + 1},
+          plan_line_text=${index ? 'Resume canonical lane' : 'Completed prerequisite'},
+          payload=${JSON.stringify(index ? { keep: 'original', externalBlockers: recoveryBlockers,
+            planLaneParkedFrom: 'open', _claimHold: true,
+            claim_hold_by: 'migration:plan-line-work-item-nodes', claim_hold_at: '2026-11-10T00:00:00Z',
+            claim_hold_reason: 'D-011 P-008 conversion park' } : {})}::text::jsonb
+          WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${node.id}`;
+      }
+      const target = recoveryNodes[1];
+      await sql`INSERT INTO harness_shared.work_item_deps
+        (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction)
+        VALUES ('default', 'issue', ${target}, 'issue', ${recoveryNodes[0]}, 'blocks', 'settled')`;
+      const recoveryPlan = await source.readPlanBySlug(recoverySlug, { workspaceId: 'default', harnessSlug: HARNESS });
+      expect(recoveryPlan?.parsed.items).toMatchObject([
+        { id: 'P-001', storedStatus: 'done' },
+        { id: 'P-002', storedStatus: 'blocked', blockedBy: ['P-001'] },
+      ]);
+      // New starts retain the real discovery gate. Seed its canonical revision
+      // and finalize against current source rather than mocking acceptance.
+      await sql`INSERT INTO harness_shared.plan_revisions
+        (workspace_id,harness_slug,plan_slug,seq,content_hash,content_snapshot,rationale,author_kind,author_id,session_id,session_kind,created_at)
+        VALUES ('default',${HARNESS},${recoverySlug},1,${hashPlanContent(recoveryContent)},${recoveryContent},
+          'Private canonical lifecycle fixture','agent',${OWNER},'fixture','codex',${Date.now()})`;
+      const { recordCurrentDiscoveryAudit, withCurrentDiscovery } = await import('../../plan-audits');
+      const discoveryInput = { workspaceId: 'default', harnessSlug: HARNESS, planSlug: recoverySlug, createdBy: OWNER };
+      const discoveryAudit = await recordCurrentDiscoveryAudit(discoveryInput);
+      expect(discoveryAudit, JSON.stringify(discoveryAudit))
+        .toMatchObject({ ok: true, discovery: { readiness: { ready: true } } });
+      const discoveryReadback = await withCurrentDiscovery(discoveryInput, async () => true);
+      expect(discoveryReadback, JSON.stringify(discoveryReadback)).toMatchObject({ ok: true });
+      expect(await wi.getWorkItem(target, HARNESS)).toMatchObject({ state: 'blocked', assignee: null,
+        payload: { _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes' } });
+      const clearPark = { id: target, harness: HARNESS, clear: true, ownerOverride: true,
+        reconcile: { reasonCode: 'operator-directed', dryRun: true,
+          evidence: 'Isolated fixture: exact migration-only adoption after prerequisite completion' } };
+      const preview = await call(holdOpen, holdOpen.args.parse(clearPark)) as Result & {
+        wouldClear?: boolean; observedParkFingerprint?: string;
+      };
+      expect(preview, JSON.stringify(preview)).toMatchObject({ ok: true, wouldClear: true });
+      expect(preview.observedParkFingerprint).toMatch(/^[a-f0-9]{64}$/);
+      const clearedPark = await call(holdOpen, holdOpen.args.parse({ ...clearPark, reconcile: { ...clearPark.reconcile,
+        dryRun: false, expectedParkFingerprint: preview.observedParkFingerprint } }));
+      expect(clearedPark, JSON.stringify(clearedPark)).toMatchObject({ ok: true, outcome: 'cleared' });
+      expect(activeExternalBlockers((await wi.getWorkItem(target, HARNESS))?.payload))
+        .toMatchObject([{ ref: recoveryRef, status: 'active' }]);
+      const claimed = await call(claim, claim.args.parse({ id: target, harness: HARNESS, force: false }));
+      expect(claimed, JSON.stringify(claimed)).toMatchObject({ ok: true });
+      const held = await wi.getWorkItem(target, HARNESS);
+      expect(held).toMatchObject({ assignee: OWNER, state: 'blocked' });
+      const beginArgs = { slug: recoverySlug, harness: HARNESS, item: 'P-002', status: 'wip' };
+      const unmeasuredBegin = await call(setStatus, setStatus.args.parse(beginArgs));
+      expect(unmeasuredBegin, JSON.stringify(unmeasuredBegin)).toMatchObject({ ok: false,
+        code: 'blocker_decision_evidence' });
+      expect(await wi.getWorkItem(target, HARNESS)).toEqual(held);
+      const laneEvidence = { kind: 'event' as const, ref: recoveryRef };
+      const prerequisiteEvidence = { kind: 'work-item' as const, ref: `${HARNESS}#${recoveryNodes[0]}` };
+      const tenant = await import('../../workspace-registry');
+      const evidenceContext = await blockerBoundaryContext(CTX, OWNER, HARNESS);
+      const scopeEvidence = { active: tenant.activeWorkspaceId(),
+        resolved: tenant.resolveConcreteWorkspaceId('default'), context: evidenceContext.workspaceId };
+      expect(scopeEvidence, JSON.stringify(scopeEvidence)).toEqual({ active: 'default', resolved: 'default', context: 'default' });
+      const prerequisiteMeasurement = await createBlockerEvidenceReader({ ...evidenceContext,
+        workItemId: target, custodianId: OWNER, blockers: activeExternalBlockers(held?.payload) })(prerequisiteEvidence);
+      expect(prerequisiteMeasurement, JSON.stringify({ scopeEvidence, prerequisiteMeasurement }))
+        .toMatchObject({ status: 'available', condition: 'satisfied' });
+      // Legacy JSON can carry the durable park as a string and without a
+      // provenance stamp. The canonical park predicate still reserves it.
+      try {
+        for (const claimHold of [true, 'true']) {
+          const parkedPayload = { ...(held?.payload ?? {}), _claimHold: claimHold };
+          await sql`UPDATE harness_shared.work_items SET payload=${JSON.stringify(parkedPayload)}::text::jsonb
+            WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${target}`;
+          const guarded = await createBlockerEvidenceReader({ ...evidenceContext, workItemId: target,
+            custodianId: OWNER, blockers: activeExternalBlockers(parkedPayload) })(laneEvidence);
+          expect(guarded, JSON.stringify({ claimHold, guarded })).toMatchObject({ status: 'unknown' });
+        }
+      } finally {
+        await sql`UPDATE harness_shared.work_items SET payload=${JSON.stringify(held?.payload ?? {})}::text::jsonb
+          WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${target}`;
+      }
+      expect(await wi.getWorkItem(target, HARNESS)).toEqual(held);
+      const begun = await call(setStatus, setStatus.args.parse({ ...beginArgs, blockerDecision: {
+        schemaVersion: 1, idempotencyKey: 'derived-lane-after-authorized-park-clear', disposition: 'self_resolve',
+        symptom: 'The derived dependency lane remains blocked after its prerequisite settled',
+        evidenceRefs: [laneEvidence, prerequisiteEvidence],
+        investigation: [{ action: 'Read the canonical prerequisite and exact generated lane',
+          outcome: 'Prerequisite is done; the only remaining blocker is this system-derived lane',
+          evidenceRefs: [laneEvidence, prerequisiteEvidence] }],
+        attempts: [{ action: 'Clear the independent migration park through its authorized fingerprint CAS',
+          outcome: 'CAS cleared the migration park; ordinary custody is retained',
+          evidenceRefs: [prerequisiteEvidence] }],
+        verification: { outcome: 'Fresh canonical dependency graph satisfies the exact derived lane condition',
+          evidenceRefs: [laneEvidence, prerequisiteEvidence] },
+      } }));
+      expect(begun, JSON.stringify(begun)).toMatchObject({ ok: true });
+      const resumed = await wi.getWorkItem(target, HARNESS);
+      expect(resumed, JSON.stringify(resumed)).toMatchObject({ state: 'wip', assignee: OWNER, payload: { keep: 'original' } });
+      expect((await source.readPlanBySlug(recoverySlug, { workspaceId: 'default', harnessSlug: HARNESS }))?.parsed.items)
+        .toMatchObject([{ id: 'P-001', storedStatus: 'done' }, { id: 'P-002', storedStatus: 'wip' }]);
+      expect(readBlockerResolution(resumed?.payload)).toMatchObject({ status: 'recorded',
+        current: { decision: { disposition: 'self_resolve' } } });
+      expect(activeExternalBlockers(resumed?.payload)).toEqual([]);
+      expect(resumed?.payload).toMatchObject({ externalBlockers: [expect.objectContaining({
+        ref: recoveryRef, status: 'cleared', clearedBy: 'system:plan-item-lane-sync',
+      })] });
+    } finally {
+      warning.mockRestore();
+      h.sql = db.sql;
+      await isolated.cleanup();
+    }
+  }, 120_000);
 
   for (const [family, kind] of [['issue', 'task'], ['feature', 'feature']] as const) {
     it(`rolls back decision history when lifecycle mutation fails for ${family} payloads`, async () => {

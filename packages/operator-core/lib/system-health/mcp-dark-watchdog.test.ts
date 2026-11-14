@@ -156,6 +156,51 @@ function interactiveDark(over: Partial<InteractiveDarkSnapshot> = {}): Interacti
   };
 }
 
+describe('evaluateInteractiveMcpDark — unlisted CLI child (WI-6554700010048116)', () => {
+  // Otherwise healthy: fresh presence beat under an armed loop, so only the new clause can fire.
+  const healthy = (over: Partial<InteractiveDarkSnapshot> = {}) =>
+    interactiveDark({ presenceHeartbeatMs: INOW - 1 * M, childStartedMs: INOW - 5 * M, ...over });
+
+  it('flags a child past the grace whose last listing predates it (the carry-successor shape)', () => {
+    const v = evaluateInteractiveMcpDark(healthy({ lastToolListingMs: INOW - 60 * M }), INOW);
+    expect(v.dark).toBe(true);
+    expect(v.reason).toMatch(/no tools\/list recorded since/);
+  });
+
+  it('flags a never-listed child of a registered owner, even on a host younger than the host grace', () => {
+    const v = evaluateInteractiveMcpDark(
+      healthy({ hostStartedMs: INOW - 5 * M, lastToolListingMs: null }), INOW);
+    expect(v.dark).toBe(true);
+    expect(v.reason).toMatch(/last listing for this owner: never/);
+  });
+
+  it('stays quiet once the child was listed, including a dedup-skipped re-list inside the tolerance', () => {
+    expect(evaluateInteractiveMcpDark(healthy({ lastToolListingMs: INOW - 4 * M }), INOW).dark).toBe(false);
+    expect(evaluateInteractiveMcpDark(healthy({ lastToolListingMs: INOW - 5 * M - 30_000 }), INOW).dark)
+      .toBe(false);
+  });
+
+  it('never fires on unknown or quiet-by-design inputs', () => {
+    const unlisted = { lastToolListingMs: INOW - 60 * M };
+    expect(evaluateInteractiveMcpDark(healthy({ ...unlisted, childStartedMs: INOW - 2 * M }), INOW).dark)
+      .toBe(false); // younger than the 3-min listing grace
+    expect(evaluateInteractiveMcpDark(healthy({ ...unlisted, childStartedMs: null }), INOW).dark)
+      .toBe(false); // older host: no child start published
+    expect(evaluateInteractiveMcpDark(healthy({ lastToolListingMs: undefined }), INOW).dark)
+      .toBe(false); // listing read failed: unmeasured, not "never"
+    expect(evaluateInteractiveMcpDark(healthy({ ...unlisted, hostParked: true }), INOW).dark).toBe(false);
+    expect(evaluateInteractiveMcpDark(
+      healthy({ ...unlisted, execution: { phase: 'running', pendingTools: 0, observedAt: INOW - 1_000 } }),
+      INOW,
+    ).dark).toBe(false);
+  });
+
+  it('does not heal a session with no presence beat and no listing ever (EI-18154797330496809)', () => {
+    const v = evaluateInteractiveMcpDark(healthy({ presenceHeartbeatMs: null, lastToolListingMs: null }), INOW);
+    expect(v.dark).toBe(false);
+  });
+});
+
 describe('evaluateInteractiveMcpDark (P-005 — NOT pinned to operator restart)', () => {
   it('detects the su-39f07 shape: armed loop + presence beat past 3× interval', () => {
     const v = evaluateInteractiveMcpDark(interactiveDark(), INOW);

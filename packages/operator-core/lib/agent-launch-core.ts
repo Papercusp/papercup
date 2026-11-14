@@ -248,6 +248,8 @@ export interface ResumeTarget {
   workspaceId: string | null;
   /** Harness recorded in the exact source launch argv; absent argv stays unknown. */
   harnessSlug: string | null;
+  /** Non-empty launch argv distinguishes operator scope (no harness) from missing metadata. */
+  harnessScopeKnown?: boolean;
   agent: string | null;
   /** Persona role recorded on the source session; null means the standard SU role. */
   role: string | null;
@@ -306,7 +308,7 @@ export type ResolveResumeResult = ({ ok: true } & ResumeTarget) | ResolveResumeE
 /** Read the model and account settings that a resume must carry from launch argv. */
 function resumeLaunchMetadata(
   launchArgv: unknown,
-): Pick<ResumeTarget, 'model' | 'modelSource' | 'account' | 'harnessSlug'> {
+): Pick<ResumeTarget, 'model' | 'modelSource' | 'account' | 'harnessSlug' | 'harnessScopeKnown'> {
   const source = flagValueFromArgv(launchArgv, 'model-source');
   const account = accountFromArgv(launchArgv);
   return {
@@ -317,6 +319,7 @@ function resumeLaunchMetadata(
         : null,
     account: account && isLaunchAccountValue(account) ? account : null,
     harnessSlug: flagValueFromArgv(launchArgv, 'harness')?.trim() || null,
+    harnessScopeKnown: Array.isArray(launchArgv) && launchArgv.length > 0,
   };
 }
 
@@ -458,7 +461,14 @@ export async function resolveResumeTarget(ref: {
              ) END
            ) AS pid,
            s.window_id, s.omp_thread_id, s.label, s.cwd, s.coord_owner_id, s.session_id, s.display, s.started_at, s.ended_at, s.exit_code,
-           s.ended_by, s.launch_argv, s.started_at::text AS binding_started_at
+           s.ended_by, s.launch_argv, s.started_at::text AS binding_started_at,
+           -- EI-28727118895372194: the consult planner refuses a non-delivered
+           -- session-port row via portStatusAllowsResume(target.portStatus). Without
+           -- this column mapAdvSessionRow yields null, the guard always passes, and
+           -- psu refuses the launch for every rank instead. Read through to_jsonb
+           -- like the other adv_sessions port readers (WI-4936 rollout compat): a
+           -- schema without the column yields null instead of failing the resolve.
+           to_jsonb(s)->>'port_status' AS port_status
       FROM harness_shared.adv_sessions s
      WHERE ${
        sessionId
@@ -1593,6 +1603,8 @@ export async function recordAgentLaunchResult(opts: {
   workspaceId: string;
   idempotencyKey: string | null | undefined;
   claimToken?: string;
+  /** Replays must compare the exact receipt they read, not only its stable token. */
+  expectedSummary?: Record<string, unknown>;
   summary: Record<string, unknown>;
 }): Promise<boolean> {
   const key = opts.idempotencyKey?.trim();
@@ -1607,6 +1619,7 @@ export async function recordAgentLaunchResult(opts: {
                 ELSE '{}'::jsonb END
        WHERE workspace_id = ${opts.workspaceId} AND idempotency_key = ${key}
          AND (${opts.claimToken ?? null}::text IS NULL OR summary ->> 'claimToken' = ${opts.claimToken ?? null})
+         AND (${opts.expectedSummary === undefined} OR summary = ${JSON.stringify(opts.expectedSummary ?? {})}::text::jsonb)
       RETURNING idempotency_key
     `;
     return updated.some((row) => row.idempotency_key === key);
@@ -2582,61 +2595,75 @@ async function verifyManagedCarryResumeLineage(
   const advSessionId = Number(host.advSessionId);
   const hostStartedAt = Number(host.startedAt);
   const targetGeneration = Number(host.childGeneration);
-  if (host.ownerId !== ownerId ||
-      !Number.isSafeInteger(advSessionId) || advSessionId <= 0 ||
+  if (host.ownerId !== ownerId) return false;
+  if (!Number.isSafeInteger(advSessionId) || advSessionId <= 0 ||
       !Number.isFinite(hostStartedAt) || hostStartedAt <= 0 ||
-      !Number.isSafeInteger(targetGeneration) || targetGeneration <= 0) return false;
+      !Number.isSafeInteger(targetGeneration) || targetGeneration <= 0) return null;
 
   try {
     const events = readHostEvents(ownerId);
     let deliveredIndex = -1;
-    let deliveryObserved = false;
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const event = events[index] as Record<string, unknown>;
-      const lineage = managedCarryLineageOf(events[index]);
       if (event.kind === 'respawn-carry-delivered' && event.mode === 'carry-respawn' &&
           event.ownerId === ownerId && event.nativeId === actualSessionId) {
-        deliveryObserved = true;
+        const lineage = managedCarryLineageOf(events[index]);
+        // The newest delivery for this exact child is authoritative. Old rows
+        // without lineage are incomplete evidence, not proof of a UUID swap.
+        if (!lineage) return null;
+        if (event.turnStartVerified !== true ||
+            !matchesManagedCarrySource(lineage, ownerId, advSessionId, hostStartedAt,
+              expectedSessionId, targetGeneration) ||
+            lineage.targetNativeId !== actualSessionId ||
+            !codexNativeTranscriptRefMatches(lineage.targetNativeRef, actualSessionId) ||
+            lineage.sourceNativeRef === lineage.targetNativeRef ||
+            event.nativeRef !== lineage.targetNativeRef) return false;
+        deliveredIndex = index;
+        break;
       }
-      if (event.kind !== 'respawn-carry-delivered' || event.mode !== 'carry-respawn' ||
-          event.ownerId !== ownerId || event.nativeId !== actualSessionId ||
-          event.turnStartVerified !== true || !lineage ||
-          !matchesManagedCarrySource(lineage, ownerId, advSessionId, hostStartedAt,
-            expectedSessionId, targetGeneration) ||
-          lineage.targetNativeId !== actualSessionId ||
-          !codexNativeTranscriptRefMatches(lineage.targetNativeRef, actualSessionId) ||
-          lineage.sourceNativeRef === lineage.targetNativeRef ||
-          event.nativeRef !== lineage.targetNativeRef) continue;
-      deliveredIndex = index;
-      break;
     }
+    if (deliveredIndex < 0) return null;
+
     let respawnRecorded = false;
     let bindingConfirmed = false;
-    const evidenceEndIndex = deliveredIndex < 0 ? events.length : deliveredIndex;
-    for (let index = 0; index < evidenceEndIndex; index += 1) {
+    let bindingContradictory = false;
+    for (let index = 0; index < deliveredIndex; index += 1) {
       const event = events[index] as Record<string, unknown>;
       if (event.kind === 'respawned' && event.mode === 'carry-respawn') {
         const lineage = managedCarryLineageOf(events[index]);
-        if (lineage && matchesManagedCarrySource(lineage, ownerId, advSessionId,
-          hostStartedAt, expectedSessionId, targetGeneration)) respawnRecorded = true;
+        if (lineage && lineage.ownerId === ownerId &&
+            Number(lineage.advSessionId) === advSessionId &&
+            Number(lineage.hostStartedAt) === hostStartedAt &&
+            Number(lineage.targetChildGeneration) === targetGeneration) {
+          if (!matchesManagedCarrySource(lineage, ownerId, advSessionId,
+            hostStartedAt, expectedSessionId, targetGeneration)) return false;
+          respawnRecorded = true;
+        }
       }
+    }
+    // Binding can be durably recorded after the delivery row. Inspect the full
+    // event tail instead of treating that ordering as a definitive mismatch.
+    for (const rawEvent of events) {
+      const event = rawEvent as Record<string, unknown>;
       if (event.kind === 'respawn-binding-confirmed' && event.ownerId === ownerId &&
           Number(event.advSessionId) === advSessionId &&
           Number(event.hostStartedAt) === hostStartedAt &&
-          Number(event.childGeneration) === targetGeneration &&
-          event.nativeId === actualSessionId) bindingConfirmed = true;
+          Number(event.childGeneration) === targetGeneration) {
+        if (event.nativeId === actualSessionId) bindingConfirmed = true;
+        else bindingContradictory = true;
+      }
     }
-    if (!respawnRecorded || !bindingConfirmed) return false;
+    if (bindingContradictory) return false;
+    if (!respawnRecorded || !bindingConfirmed) return null;
     // The confirmed child binding protects this successor from mismatch
     // rollback, but does not prove that its carried turn has started. Keep
     // observing until the durable carry-delivered event arrives.
-    if (deliveredIndex < 0) return deliveryObserved ? false : null;
-
     const row = await readAdvSession(advSessionId);
-    return Boolean(row && Number(row.id) === advSessionId && row.coordOwnerId === ownerId &&
-      row.agent === 'codex' && row.sessionId === actualSessionId);
+    if (!row) return null;
+    return Number(row.id) === advSessionId && row.coordOwnerId === ownerId &&
+      row.agent === 'codex' && row.sessionId === actualSessionId;
   } catch {
-    return false;
+    return null;
   }
 }
 

@@ -118,7 +118,7 @@ export const scorecardEvaluateArgs = z
     pendingDeliveryBarKeys: z.array(z.string().trim().min(1).max(120)).min(1).max(50).optional()
       .describe('Explicit pre-publication review: named manual instrument:none deployed/live BARs must rate unknown. Defers only their delivery proof at pre-grading; final ship still requires it. Omit for ordinary grading.'),
     subject: z.object({
-      kind: z.enum(['agent-run', 'session', 'work-item', 'plan', 'pot', 'rubric', 'scorecard']).optional(),
+      kind: z.enum(['agent-run', 'session', 'work-item', 'plan', 'pot', 'fleet', 'rubric', 'scorecard']).optional(),
       ref: z.string().min(1).max(500),
       windowStart: z.string().min(1).max(64).optional(),
       windowEnd: z.string().min(1).max(64).optional(),

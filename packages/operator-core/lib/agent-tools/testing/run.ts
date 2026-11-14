@@ -62,30 +62,34 @@ import { parkedAuditScorecardEnvironment } from '../coordination/parked-agent-au
 
 import { z } from 'zod';
 import type { ChildProcess } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { createRequire } from 'node:module';
+import * as nodeModule from 'node:module';
 import {
   appendFileSync,
   closeSync,
   existsSync,
+  fstatSync,
   mkdtempSync,
   openSync,
   readFileSync,
   readdirSync,
   realpathSync,
   statSync,
+  writeFileSync,
   type Dirent,
 } from 'node:fs';
 import { cp, open, readdir, readFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
-import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
+import { parseTestRunExecutionDetails, TEST_RUN_READER_CONTRACT_ENV, TEST_RUN_READER_REFUSAL_PATH_ENV,
+  testRunExecutionDetailsReaderContract, testRunExecutionDetailsReaderMismatch } from '@papercusp/test-config/execution-details';
 import { resolveTestRunsPgUrl } from '@papercusp/test-config/admin-test-runs-reporter';
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import { cleanupOwnedTestDatabases, dropDatabaseOnDedicatedConnection, type OwnedTestDbCleanupResult } from '@papercusp/test-config/pg';
@@ -117,6 +121,7 @@ import { executeSecurityQualification, securityQualificationMetadata, securityQu
 import { resolveAgentWorkspaceRoot, resolveCapabilityIntegrationRoot } from '../capability/base-dir';
 import { harnessArg, resolveConcreteHarnessSlug } from '../_harness-scope';
 import { REPO_ROOT } from '../docs/_repo-paths';
+import { privatePgSeedEnvironment } from '../../../../../scripts/lib/with-test-pg-env.mjs';
 import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { currentRequestWorkspaceId } from '../../workspace-als';
@@ -144,7 +149,7 @@ import {
   walkCgroupTree,
   type CgroupFs,
 } from '../../task-manager/cgroup-read';
-import { deriveUserManagerRoot, scopeCgroupRelPath } from '../../task-manager/types';
+import { deriveUserManagerRoot, scopeCgroupRelPath, WORK_ITEM_VERIFICATION_PURPOSE } from '../../task-manager/types';
 import { hostShutdownSignal, isShuttingDown } from '../../shutdown-state';
 import {
   admissionContextFromEnvironment,
@@ -281,6 +286,7 @@ export function testingRunAbortCompletionReceipt(
  *  indefinitely. 21% of corpus commands already hand-wrapped a `timeout`; this
  *  makes that budget the tool's own rather than something each agent re-picks. */
 const DEFAULT_TIMEOUT_MS = 300_000;
+const DEFAULT_PRIVATE_PG_SETUP_TIMEOUT_MS = 300_000;
 // Explicit integration budgets share the maintained router's two-hour ceiling.
 // Its composed source/worker/cleanup phases can exceed fifteen minutes.
 const MAX_TIMEOUT_MS = 120 * 60_000;
@@ -373,8 +379,10 @@ const DETACHED_INSPECT_TEST_HINT =
   'capability:inspect accepts one test path per call; split a multi-file run into one detached call per file, and do not pass the file array as onlyPaths (that field is typecheck-only). If testing:run returns both runId and detachedRunId, pass the detachedRunId value as testing:run-status { runId }; the top-level runId is the foreground origin. ';
 
 const DETACHED_ROUTER_TEST_HINT =
-  "For integration test files, re-run detached with capability:bash { command: 'npm run test:file -- <test path>', run_in_background: true }, then poll capability:bash_output. " +
-  'The test:file router selects the owning Vitest config; run one file per detached call when needed. If testing:run returns both runId and detachedRunId, pass the detachedRunId value as testing:run-status { runId }; the top-level runId is the foreground origin. ';
+  'If testing:run returns both runId and detachedRunId, pass the detachedRunId value as testing:run-status { runId }; the top-level runId is the foreground origin. Do not start another run while that recovery is active or its outcome is unknown. ' +
+  'For integration test files with dirty tested inputs, retry with testing:run using the original files, root, and regex selection after that recovery finishes. The direct CLI requires committed tested inputs and refuses dirty ones. ' +
+  "For committed tested inputs only, re-run detached with capability:bash { command: 'npm run test:file -- <test path>', run_in_background: true }, then poll capability:bash_output. " +
+  'The test:file router selects the owning Vitest config; run one file per detached call when needed. ';
 
 function detachedRunStatusHint(detachedRunId: string): string {
   return `started detached recovery run ${detachedRunId}; poll it with testing:run-status { runId: '${detachedRunId}' } (this is the detachedRunId, not the foreground runId). `;
@@ -423,8 +431,9 @@ export function detachedRecoveryHint(opts: { runId?: string | undefined; durable
  * `capability:inspect check:"test"` intentionally launches the package's default
  * `npx vitest` config. That config excludes `*.integration.test.*`, so prescribing
  * it for an integration timeout deterministically fails before the suite starts.
- * The repository's `npm run test:file` router is the owning-config surface for
- * integration files and must be the recovery path instead.
+ * The repository's `npm run test:file` router selects the owning config, but its
+ * direct CLI requires committed tested inputs. Dirty inputs need testing:run's
+ * maintained capture route, and an existing recovery must be checked first.
  */
 export function detachedTestTimeoutHint(files: string[]): string {
   const hasIntegrationFile = files.some((file) => /\.integration\.test\.[cm]?[jt]sx?$/i.test(file));
@@ -489,11 +498,139 @@ export function clampTestingRunForegroundTimeoutMs(requestedTimeoutMs: number): 
   );
 }
 
+export interface TestingCoreWitness {
+  schemaVersion: 1;
+  sourceSha256: string;
+  artifactSha256: string;
+}
+
+declare const __PAPERCUSP_BUNDLED_SIDECAR__: boolean;
+declare const __PAPERCUSP_TESTING_CORE_WITNESS__: unknown;
+
+export class TestingCoreRefusal extends Error {
+  constructor(public readonly code: string, message: string) {
+    super(message);
+    this.name = 'TestingCoreRefusal';
+  }
+}
+
+interface DetachedTestingCore {
+  moduleUrl: string;
+  compiled?: { witness: TestingCoreWitness; bytes: Buffer; nodeOptions: string };
+}
+
+/** Keep native instrumentation; a compiled child must not install a source interpreter. */
+export function compiledTestingCoreNodeOptions(options: string): string {
+  const tokens = options.match(/(?:[^\s"']+|"(?:\\.|[^"\\])*"|'[^']*')+/g) ?? [];
+  const kept: string[] = [];
+  const unquote = (value: string) => value.replace(/^(['"])(.*)\1$/, '$2');
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    const flag = /^(--import|--require|-r|--loader|--experimental-loader)(?:=(.*))?$/.exec(token);
+    if (!flag) { kept.push(token); continue; }
+    const value = unquote(flag[2] ?? tokens[++i] ?? '');
+    if (/(^|[/:])(?:tsx|ts-node|jiti|sucrase)(?:[/:]|$)/.test(value)) continue;
+    if (flag[1]!.includes('loader') || /\.[cm]?tsx?(?:[?#]|$)/.test(value)) {
+      throw new TestingCoreRefusal('testing_core_source_loader_refused',
+        `Compiled testing cannot qualify source interpretation by ${flag[1]}.`);
+    }
+    kept.push(token, ...(flag[2] === undefined ? [tokens[i]!] : []));
+  }
+  return kept.join(' ');
+}
+
+/** The producing parent supplies an independent expectation, never a boot-time tree hash. */
+function selectDetachedTestingCore(staged?: { moduleUrl: string; expected: unknown }): DetachedTestingCore {
+  const bundled = typeof __PAPERCUSP_BUNDLED_SIDECAR__ !== 'undefined' && __PAPERCUSP_BUNDLED_SIDECAR__;
+  if (!bundled && !staged) return {
+    moduleUrl: pathToFileURL(join(REPO_ROOT, 'packages/operator-core/lib/agent-tools/testing/run.ts')).href,
+  };
+  const expected = staged?.expected ?? (typeof __PAPERCUSP_TESTING_CORE_WITNESS__ === 'undefined'
+    ? undefined : __PAPERCUSP_TESTING_CORE_WITNESS__);
+  if (expected === undefined || expected === null) {
+    throw new TestingCoreRefusal('testing_core_missing_witness', 'The producing host has no testing-core witness.');
+  }
+  const witness = expected as Partial<TestingCoreWitness>;
+  if (witness.schemaVersion !== 1 || typeof witness.sourceSha256 !== 'string'
+    || !/^[a-f0-9]{64}$/.test(witness.sourceSha256) || typeof witness.artifactSha256 !== 'string'
+    || !/^[a-f0-9]{64}$/.test(witness.artifactSha256)) {
+    throw new TestingCoreRefusal('testing_core_invalid_witness', 'The producing testing-core witness is invalid.');
+  }
+  if (process.versions.bun || typeof nodeModule.registerHooks !== 'function') {
+    throw new TestingCoreRefusal('testing_core_verified_import_unavailable',
+      'Compiled testing requires Node synchronous resolve/load hooks.');
+  }
+  const nodeOptions = compiledTestingCoreNodeOptions(process.env.NODE_OPTIONS ?? '');
+  const moduleUrl = staged?.moduleUrl ?? new URL('./testing-core.worker.mjs', import.meta.url).href;
+  let bytes: Buffer;
+  try {
+    const fd = openSync(fileURLToPath(moduleUrl), 'r');
+    try {
+      const before = fstatSync(fd, { bigint: true });
+      bytes = readFileSync(fd);
+      const after = fstatSync(fd, { bigint: true });
+      if (!before.isFile() || ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].some(key =>
+        before[key as keyof typeof before] !== after[key as keyof typeof after])) {
+        throw new TestingCoreRefusal('testing_core_artifact_mismatch', 'The testing core changed while being retained.');
+      }
+    } finally { closeSync(fd); }
+  } catch (error) {
+    if (error instanceof TestingCoreRefusal) throw error;
+    throw new TestingCoreRefusal('testing_core_missing_artifact', `Cannot retain the required testing core: ${String(error)}`);
+  }
+  if (createHash('sha256').update(bytes).digest('hex') !== witness.artifactSha256) {
+    throw new TestingCoreRefusal('testing_core_artifact_mismatch', 'The required testing core differs from its producing host.');
+  }
+  return { moduleUrl, compiled: { witness: witness as TestingCoreWitness, bytes, nodeOptions } };
+}
+
+/** A small native-JS first preload transfers the retained bytes without an argv-sized bundle.
+ * It validates the private transfer, then returns THAT buffer to Node's loader. The original
+ * file origin preserves relative/external resolution; it is never reopened for evaluation.
+ */
+function compiledTestingCorePreload(input: {
+  transferPath: string; moduleUrl: string; guardKey: string; witness: TestingCoreWitness;
+}): string {
+  const source = `import * as modules from 'node:module';
+import { readFileSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+const input = ${JSON.stringify(input)};
+const refuse = (code, message) => { const error = new Error(message); error.code = code; throw error; };
+try {
+  if (typeof modules.registerHooks !== 'function') refuse('testing_core_verified_import_unavailable', 'Native synchronous import custody is unavailable');
+  const bytes = readFileSync(input.transferPath);
+  if (createHash('sha256').update(bytes).digest('hex') !== input.witness.artifactSha256)
+    refuse('testing_core_artifact_mismatch', 'Retained testing-core transfer differs');
+  rmSync(input.transferPath);
+  const hooks = modules.registerHooks({
+    resolve(specifier, context, nextResolve) {
+      return specifier === input.moduleUrl ? { url: input.moduleUrl, shortCircuit: true } : nextResolve(specifier, context);
+    },
+    load(url, context, nextLoad) {
+      return url === input.moduleUrl ? { format: 'module', source: bytes, shortCircuit: true } : nextLoad(url, context);
+    },
+  });
+  globalThis[Symbol.for(input.guardKey)] = { url: input.moduleUrl, deregister: () => hooks.deregister() };
+  // The transfer belongs to this bootstrap alone. Test/router descendants keep
+  // instrumentation, but must never reopen the already consumed transfer.
+  const ownPreload = '--import=' + JSON.stringify(import.meta.url);
+  const inherited = process.env.NODE_OPTIONS ?? '';
+  if (!inherited.startsWith(ownPreload)) refuse('testing_core_import_order_invalid', 'Verified import guard must be the first preload');
+  process.env.NODE_OPTIONS = inherited.slice(ownPreload.length).trimStart();
+} catch (error) {
+  console.log(JSON.stringify({ ok: false, error: error.code ?? 'testing_core_transfer_failed', phase: 'verified-core-load' }));
+  process.exitCode = 1;
+  throw error;
+}`;
+  return 'data:text/javascript;base64,' + Buffer.from(source).toString('base64');
+}
+
 /** Retain the worker's cold-start phases even when the core never creates a packet. */
 export function buildDetachedTestRunBootstrapScript(opts: {
   coreModuleUrl: string;
   replay: RunTestFilesCoreOptions & { deadline: TestRunDeadline };
   reportDirectories: Record<string, string>;
+  compiledCore?: { witness: TestingCoreWitness; guardKey: string };
 }): string {
   return [
     `const replay = ${JSON.stringify(opts.replay)};`,
@@ -510,10 +647,27 @@ export function buildDetachedTestRunBootstrapScript(opts: {
     'trace("bootstrap-start");',
     'let failedPhase = "core-import";',
     'let exitCode = 1;',
+    `const compiled = ${JSON.stringify(opts.compiledCore ?? null)};`,
+    'const refuse = (code, message) => { const error = new Error(message); error.code = code; throw error; };',
+    'const checkCutoff = () => { if (compiled && Date.now() >= replay.deadline.childCutoffAtMs)',
+    '  refuse("deadline_exhausted", "Original child cutoff exhausted before core entry"); };',
     'try {',
+    '  checkCutoff();',
+    `  const guard = compiled ? globalThis[Symbol.for(compiled.guardKey)] : null;`,
+    `  if (compiled && guard?.url !== ${JSON.stringify(opts.coreModuleUrl)}) refuse("testing_core_verified_import_unavailable", "Verified core import was not installed");`,
     '  trace("core-import-start");',
-    `  const { runTestFilesCore } = await import(${JSON.stringify(opts.coreModuleUrl)});`,
+    '  let core;',
+    `  try { core = await import(${JSON.stringify(opts.coreModuleUrl)}); } finally { guard?.deregister(); }`,
+    '  const { runTestFilesCore } = core;',
     '  trace("core-import-complete");',
+    '  if (compiled) {',
+    '    failedPhase = "core-witness";',
+    '    if (core.testingCoreSourceSha256 !== compiled.witness.sourceSha256)',
+    '      refuse("testing_core_source_mismatch", "Loaded core producing-source witness differs");',
+    '    trace("core-witness-verified", { coreMode: "compiled", witnessSchemaVersion: compiled.witness.schemaVersion,',
+    '      sourceSha256: compiled.witness.sourceSha256, artifactSha256: compiled.witness.artifactSha256 });',
+    '  }',
+    '  checkCutoff();',
     '  failedPhase = "core-execution";',
     '  trace("core-execution-start");',
     `  const result = await runTestFilesCore({ ...replay, runId: process.env.PAPERCUSP_TEST_RUN_GROUP }, { reportDirectories: ${JSON.stringify(opts.reportDirectories)} });`,
@@ -523,6 +677,8 @@ export function buildDetachedTestRunBootstrapScript(opts: {
     '} catch (error) {',
     '  trace("bootstrap-error", { failedPhase, errorName: error instanceof Error ? error.name : "unknown" });',
     '  console.error(error);',
+    '  if (compiled && typeof error?.code === "string") console.log(JSON.stringify({',
+    '    ok: false, error: error.code, deadline: replay.deadline, failedPhase }));',
     '}',
     // The leaf worker imports operator clients that can retain sockets/timers.
     // Its core has already completed cleanup; drain both evidence streams before
@@ -551,6 +707,8 @@ export function buildDetachedTestRunRequest(opts: {
   timeoutMs?: number;
   /** Run the detached router inside the maintained throwaway-Postgres wrapper. */
   privatePg?: boolean;
+  /** Private-PG bootstrap allowance, additive to the assertion timeout. */
+  privatePgSetupTimeoutMs?: number;
   /** Emit reporter finalization spans for this run only. */
   reporterStageTrace?: boolean;
   /** Caller-bound recovery retains the original absolute budget and owns a new artifact packet. */
@@ -565,8 +723,13 @@ export function buildDetachedTestRunRequest(opts: {
   maxFailures?: number;
   allowSiblingCheckoutFallback?: boolean;
   background?: boolean;
+  /** Source callers can stage a worker with an independently supplied producing expectation. */
+  compiledCore?: { moduleUrl: string; expected: unknown };
+  /** Retained by the background handler before provenance, child or report effects. */
+  selectedCore?: DetachedTestingCore;
 }): SpawnRequest {
   if (opts.deadline) {
+    const core = opts.selectedCore ?? selectDetachedTestingCore(opts.compiledCore);
     // Re-enter the maintained core, rather than the bare router: only the core
     // enforces the absolute child cutoff and owns cleanup after confirmed exit.
     // The store still owns the detached lifecycle and run-group/ledger identity.
@@ -583,6 +746,21 @@ export function buildDetachedTestRunRequest(opts: {
       };
     });
     const reportDirectories = Object.fromEntries(reportArtifacts.map(artifact => [resolve(artifact.root), dirname(artifact.reportPath)]));
+    let coreModuleUrl = core.moduleUrl;
+    let compiledCore: { witness: TestingCoreWitness; guardKey: string } | undefined;
+    let nodeOptions: string | undefined;
+    if (core.compiled) {
+      const transferPath = join(dirname(reportArtifacts[0]!.reportPath), 'testing-core.retained.mjs');
+      writeFileSync(transferPath, core.compiled.bytes, { flag: 'wx', mode: 0o600 });
+      const guardKey = 'papercusp.testing-core.' + randomUUID();
+      const url = new URL(core.moduleUrl);
+      url.searchParams.set('papercusp-testing-core', randomUUID());
+      coreModuleUrl = url.href;
+      compiledCore = { witness: core.compiled.witness, guardKey };
+      const preload = compiledTestingCorePreload({ transferPath, moduleUrl: coreModuleUrl, guardKey,
+        witness: core.compiled.witness });
+      nodeOptions = `--import=${JSON.stringify(preload)} ${core.compiled.nodeOptions}`.trim();
+    }
     const replay = {
       root: opts.root, files: opts.files, deadline: opts.deadline,
       timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
@@ -594,6 +772,7 @@ export function buildDetachedTestRunRequest(opts: {
       ...(opts.harnessSlug !== undefined ? { harnessSlug: opts.harnessSlug } : {}),
       ...(opts.workItemId !== undefined ? { workItemId: opts.workItemId } : {}),
       ...(opts.privatePg !== undefined ? { privatePg: opts.privatePg } : {}),
+      ...(opts.privatePgSetupTimeoutMs !== undefined ? { privatePgSetupTimeoutMs: opts.privatePgSetupTimeoutMs } : {}),
       ...(opts.maxFailures !== undefined ? { maxFailures: opts.maxFailures } : {}),
       ...(opts.allowSiblingCheckoutFallback !== undefined
         ? { allowSiblingCheckoutFallback: opts.allowSiblingCheckoutFallback } : {}),
@@ -605,10 +784,11 @@ export function buildDetachedTestRunRequest(opts: {
       filePath: opts.files.length === 1 ? opts.files[0] : undefined,
       requestedFiles: requestedLedgerFilePaths(opts.root, opts.files),
       command: process.execPath,
-      args: ['--import', 'tsx', '--input-type=module', '-e', buildDetachedTestRunBootstrapScript({
+      args: [...(compiledCore ? [] : ['--import', 'tsx']), '--input-type=module', '-e', buildDetachedTestRunBootstrapScript({
         // import.meta.url names the host bundle in a serving operator. Replaying
         // that bundle boots a second server instead of entering this leaf core.
-        coreModuleUrl: pathToFileURL(join(REPO_ROOT, 'packages/operator-core/lib/agent-tools/testing/run.ts')).href,
+        coreModuleUrl,
+        ...(compiledCore ? { compiledCore } : {}),
         replay,
         reportDirectories,
       })],
@@ -622,10 +802,18 @@ export function buildDetachedTestRunRequest(opts: {
       ...(opts.originRunId ? { originRunId: opts.originRunId } : {}),
       env: {
         NODE_ENV: 'test',
+        [TEST_RUN_READER_CONTRACT_ENV]: process.env[TEST_RUN_READER_CONTRACT_ENV] ?? testRunExecutionDetailsReaderContract(),
+        ...(nodeOptions !== undefined ? { NODE_OPTIONS: nodeOptions } : {}),
         PAPERCUSP_TEST_TASK_DEADLINE_AT_MS: String(opts.deadline.taskDeadlineAtMs),
         PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS: String(opts.deadline.childCutoffAtMs),
         PAPERCUSP_TEST_CLEANUP_RESERVE_MS: String(opts.deadline.cleanupReserveMs),
-        ...(opts.privatePg ? { PAPERCUSP_TEST_RUNS_DB_URL: resolveTestRunsPgUrl(process.env) } : {}),
+        ...(opts.privatePg ? {
+          PAPERCUSP_TEST_RUNS_DB_URL: resolveTestRunsPgUrl(process.env),
+          PAPERCUSP_TEST_PRIVATE_PG_SETUP_TIMEOUT_MS: String(opts.privatePgSetupTimeoutMs ?? DEFAULT_PRIVATE_PG_SETUP_TIMEOUT_MS),
+          ...(opts.deadline.setupDeadlineAtMs !== undefined
+            ? { PAPERCUSP_TEST_PRIVATE_PG_SETUP_DEADLINE_AT_MS: String(opts.deadline.setupDeadlineAtMs) } : {}),
+          ...privatePgSeedEnvironment(process.env),
+        } : {}),
         ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
         ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
         ...(opts.reporterStageTrace ? { PAPERCUSP_TEST_REPORTER_STAGE_TRACE: '1' } : {}),
@@ -652,12 +840,19 @@ export function buildDetachedTestRunRequest(opts: {
   ];
   const env: NodeJS.ProcessEnv = {
     NODE_ENV: 'test',
+    [TEST_RUN_READER_CONTRACT_ENV]: process.env[TEST_RUN_READER_CONTRACT_ENV] ?? testRunExecutionDetailsReaderContract(),
     PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(detachedRecoveryRouterTimeoutMs(opts.timeoutMs)),
     ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
     ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
     ...(opts.reporterStageTrace ? { PAPERCUSP_TEST_REPORTER_STAGE_TRACE: '1' } : {}),
   };
-  if (opts.privatePg) env.PAPERCUSP_TEST_RUNS_DB_URL = resolveTestRunsPgUrl(process.env);
+  if (opts.privatePg) {
+    env.PAPERCUSP_TEST_RUNS_DB_URL = resolveTestRunsPgUrl(process.env);
+    env.PAPERCUSP_TEST_PRIVATE_PG_SETUP_TIMEOUT_MS = String(opts.privatePgSetupTimeoutMs ?? DEFAULT_PRIVATE_PG_SETUP_TIMEOUT_MS);
+    // No setup-deadline env here: a caller-bound `opts.deadline` returns through the
+    // maintained-core branch above, so this bare-router path never carries one.
+    Object.assign(env, privatePgSeedEnvironment(process.env));
+  }
   const routerArgs = [join(opts.root, 'scripts', 'test-files.mjs'), ...opts.files, '--', ...vitestArgs];
   const commandArgs = opts.privatePg
     ? [join(opts.root, 'scripts', 'with-test-pg.mjs'), '--', process.execPath, ...routerArgs]
@@ -791,6 +986,7 @@ export function buildDetachedMixedTestRunRequest(opts: {
   const root = opts.groups[0]?.root ?? resolveAgentWorkspaceRoot({});
   const env: NodeJS.ProcessEnv = {
     NODE_ENV: 'test',
+    [TEST_RUN_READER_CONTRACT_ENV]: process.env[TEST_RUN_READER_CONTRACT_ENV] ?? testRunExecutionDetailsReaderContract(),
     PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(detachedRecoveryRouterTimeoutMs(opts.timeoutMs)),
     ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
     ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
@@ -1725,6 +1921,7 @@ type TestFilesCorePayload =
         | 'managed_app_path_unresolved'
         | 'private_pg_requires_single_checkout'
         | 'private_pg_route_unavailable'
+        | 'test_run_reader_incompatible'
         | 'mutation_probe_active'
         | 'mutation_probe_state_unknown'
         | 'restricted_write_held'
@@ -2366,6 +2563,7 @@ export function waitForManagedTestTaskSettlement(
 
 const ROUTER_OUTPUT_TAIL_CHARS = 8_192;
 const ROUTER_PRIORITY_DIAGNOSTIC_CHARS = 1_600;
+const NODE_FAILURE_DIAGNOSTIC_RE = /^TEST_FILE_(?:NON_)?ASSERTION_FAILURE file=("(?:[^"\\]|\\.)*") name=("(?:[^"\\]|\\.)*") message=("(?:[^"\\]|\\.)*")\s*$/;
 
 /**
  * Machine lines that explain why a routed run was refused or establish its
@@ -2405,12 +2603,27 @@ export function createBoundedRouterOutputCapture(
   const diagnosticLines: string[] = [];
   const seenDiagnostics = new Set<string>();
   const nodeProtocol: string[] = [];
+  const nodeDiagnostics: string[] = [];
+  let nodeDiagnosticChars = 0;
+  let nodeDiagnosticsTruncated = false;
   let inNodeGroup = false;
   let tail = '';
   let finished: string | null = null;
 
   const retainLine = (line: string, channel: 'stdout' | 'stderr') => {
     const normalized = line.replace(ANSI_SGR, '').trimEnd();
+    // Failure markers use either pipe and can arrive after the final stdout
+    // verdict. Keep whole JSON lines separately so noise cannot erase them or
+    // turn a clipped marker into apparently complete evidence.
+    if (NODE_FAILURE_DIAGNOSTIC_RE.test(normalized) && !nodeDiagnostics.includes(normalized)) {
+      if (nodeDiagnosticChars + normalized.length + 1 <= tailChars) {
+        nodeDiagnostics.push(normalized);
+        nodeDiagnosticChars += normalized.length + 1;
+      } else {
+        nodeDiagnosticsTruncated = true;
+      }
+    }
+    if (/^TEST_FILE_ASSERTION_FAILURES_TRUNCATED\b/.test(normalized)) nodeDiagnosticsTruncated = true;
     // A group's stdout is execution evidence. Stderr diagnostics can evict it
     // from the display tail, but must never erase its per-file result.
     if (channel === 'stdout') {
@@ -2436,7 +2649,8 @@ export function createBoundedRouterOutputCapture(
       for (const line of parts) retainLine(line, channel);
     },
     nodeTestOutput() {
-      return nodeProtocol.join('\n');
+      return [...nodeProtocol, ...nodeDiagnostics,
+        ...(nodeDiagnosticsTruncated ? ['TEST_FILE_ASSERTION_FAILURES_TRUNCATED reason=bounded-capture'] : [])].join('\n');
     },
     finish() {
       if (finished !== null) return finished;
@@ -2562,7 +2776,7 @@ export async function launchManagedTestProcess(
         runtimeMaxSec: Math.max(1, Math.ceil((Number(opts.env.PAPERCUSP_TEST_TASK_DEADLINE_AT_MS) > 0
           ? Number(opts.env.PAPERCUSP_TEST_TASK_DEADLINE_AT_MS) - Date.now()
           : opts.timeoutMs + FOREGROUND_TERMINATION_GRACE_MS) / 1_000)),
-        detail: { runGroup: opts.runGroup, foreground: true },
+        detail: { runGroup: opts.runGroup, foreground: true, verificationPurpose: WORK_ITEM_VERIFICATION_PURPOSE },
       },
       {
         workspaceId: opts.workspaceId,
@@ -3498,6 +3712,18 @@ export function parseNodeTestGroupRuns(
   opts: { maxFailures?: number } = {},
 ): DistilledTestRun[] {
   const lines = output.split(/\r?\n/);
+  // stderr may be appended after the final stdout marker. Decode the router's
+  // existing wire format from the full capture, then scope it to each group.
+  const diagnostics: Array<{ file: string; test: string; message: string }> = [];
+  const diagnostic = new RegExp(NODE_FAILURE_DIAGNOSTIC_RE.source, 'gm');
+  for (const match of output.matchAll(diagnostic)) {
+    try {
+      const [file, test, message] = match.slice(1).map(value => JSON.parse(value) as unknown);
+      if (typeof file === 'string' && typeof test === 'string' && typeof message === 'string') {
+        diagnostics.push({ file, test, message });
+      }
+    } catch { /* A malformed diagnostic cannot attest a failure. */ }
+  }
   const runs: DistilledTestRun[] = [];
   for (let i = 0; i < lines.length; i++) {
     const route = /^ROUTE cwd=(\S+) runner=node:test\s*$/.exec(lines[i]!);
@@ -3528,6 +3754,22 @@ export function parseNodeTestGroupRuns(
       opts,
     );
     if (!run) continue;
+    if (run.failed > 0) {
+      run.failuresTruncated ||= /^TEST_FILE_ASSERTION_FAILURES_TRUNCATED\b/m.test(output);
+      const requestedFiles = mapped.filter((file): file is string => file !== null);
+      const details = diagnostics.flatMap(detail => {
+        const file = matchRequestedFile(detail.file, requestedFiles);
+        return file ? [{ ...detail, file }] : [];
+      });
+      if (details.length) {
+        const failures = [...details, ...run.failures.filter(failure =>
+          !failure.test.startsWith('(node:test failure')
+          && !details.some(detail => detail.file === failure.file && detail.test === failure.test))];
+        const maxFailures = Math.max(1, Math.floor(opts.maxFailures ?? 20));
+        run.failures = failures.slice(0, maxFailures);
+        run.failuresTruncated ||= failures.length > maxFailures;
+      }
+    }
     runs.push(attributable ? run : { ...run, byFile: {} });
     i = end - 1;
   }
@@ -3810,6 +4052,8 @@ export interface RunTestFilesCoreOptions {
   allowDetachedRecovery?: boolean;
   /** Run through the maintained private-PG wrapper. Auto-selected for isolated integration proof files. */
   privatePg?: boolean;
+  /** Private-PG bootstrap allowance, separate from the test-file timeout. */
+  privatePgSetupTimeoutMs?: number;
   /** Explicit registered roots keep relative paths inside that checkout. */
   allowSiblingCheckoutFallback?: boolean;
   /** Optional handler-owned timing accumulator; omitted by internal callers. */
@@ -3834,26 +4078,46 @@ function usesIsolatedIntegrationSourceObserver(file: string, root: string): bool
   }
 }
 
-export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: TestFilesCoreDeps = {}): Promise<TestFilesCoreResult> {
-  const normalizedForPrivatePg = normalizeTestFilePaths(opts.files, opts.root, undefined, {
+function shouldUsePrivatePg(opts: Pick<RunTestFilesCoreOptions, 'files' | 'root' | 'privatePg' | 'allowSiblingCheckoutFallback'>): boolean {
+  if (opts.privatePg !== undefined) return opts.privatePg;
+  if (process.env.PAPERCUSP_TEST_PG_ADMIN_URL?.trim()) return false;
+  const normalized = normalizeTestFilePaths(opts.files, opts.root, undefined, {
     allowSiblingCheckoutFallback: opts.allowSiblingCheckoutFallback,
   });
-  const autoPrivatePg = opts.privatePg === undefined
-    && !process.env.PAPERCUSP_TEST_PG_ADMIN_URL?.trim()
-    && normalizedForPrivatePg.ok
-    && normalizedForPrivatePg.files.some(file => usesIsolatedIntegrationSourceObserver(file, opts.root));
-  const executionOpts = autoPrivatePg ? { ...opts, privatePg: true } : opts;
+  return normalized.ok && normalized.files.some(file => usesIsolatedIntegrationSourceObserver(file, opts.root));
+}
+
+export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: TestFilesCoreDeps = {}): Promise<TestFilesCoreResult> {
+  // An older serving parent can import this newer core for detached recovery.
+  // Its missing reader envelope must not be replaced by the child's own newer
+  // contract: that would measure assertions the actual parent cannot consume.
+  const inheritedRunId = process.env.PAPERCUSP_TEST_RUN_GROUP?.trim();
+  if (deps.reportDirectories && inheritedRunId && inheritedRunId === opts.runId) {
+    const contract = process.env[TEST_RUN_READER_CONTRACT_ENV];
+    const mismatch = contract === undefined ? 'originating-reader-contract-missing'
+      : testRunExecutionDetailsReaderMismatch(contract);
+    if (mismatch) return { ok: false, runId: inheritedRunId, root: resolve(opts.root),
+      error: 'test_run_reader_incompatible',
+      hint: `${mismatch}; load a compatible originating reader before starting another run; no test child or artifact packet was created` };
+  }
+  const executionOpts = shouldUsePrivatePg(opts) ? { ...opts, privatePg: true } : opts;
   const runId = opts.runId ?? randomUUID();
   // The foreground cap bounds transport waiting, while recoveryTimeoutMs is
   // the requested task budget. Preparation must not consume a cleanup reserve
   // derived from the shorter transport cap and prevent detached recovery.
-  const deadline = opts.deadline ?? testRunDeadline(opts.recoveryTimeoutMs ?? opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, opts);
+  const verificationTimeoutMs = opts.recoveryTimeoutMs ?? opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const privatePgSetupTimeoutMs = executionOpts.privatePg
+    ? executionOpts.privatePgSetupTimeoutMs ?? DEFAULT_PRIVATE_PG_SETUP_TIMEOUT_MS : 0;
+  const deadline = opts.deadline ?? testRunDeadline(verificationTimeoutMs, {
+    now: Date.now(), taskDeadlineAtMs: opts.taskDeadlineAtMs, cleanupReserveMs: opts.cleanupReserveMs,
+    ...(executionOpts.privatePg ? { setupTimeoutMs: privatePgSetupTimeoutMs } : {}),
+  });
   if (Date.now() >= deadline.childCutoffAtMs) return { ok: false, runId, root: resolve(opts.root),
     error: 'deadline_exhausted', hint: 'absolute child cutoff reached; no test child or artifact packet was created' };
   // Transport time and the caller's absolute task budget are independent. A
   // replay owns a new cleanup registry, but must retain the same fixed cutoff.
   const callerBound = opts.deadline !== undefined || opts.taskDeadlineAtMs !== undefined || opts.cleanupReserveMs !== undefined;
-  const foregroundTransportAtMs = Date.now() + (opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const foregroundTransportAtMs = Date.now() + (opts.timeoutMs ?? DEFAULT_TIMEOUT_MS) + privatePgSetupTimeoutMs;
   const foregroundCutoffAtMs = Math.min(foregroundTransportAtMs, deadline.childCutoffAtMs);
   const packet = new TestRunArtifactPacket(runId, resolve(opts.root), deadline, deps.artifactBaseDir);
   packet.bindNativeIdentity(opts.workspaceId, opts.harnessSlug);
@@ -4094,6 +4358,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
   const dir = deps.reportDirectories?.[resolve(opts.root)] ?? packet.paths.reports;
   const reportPath = join(dir, 'report.json');
   const failureDetailsPath = join(dir, TEST_FAILURE_DETAILS_FILENAME);
+  const readerRefusalPath = join(packet.paths.directory, 'reader-compatibility-refusal.json');
   let outputLogPaths: string[] = [];
   try {
     const vitestArgs = ['--reporter=json', `--outputFile=${reportPath}`];
@@ -4118,6 +4383,8 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
       // Vitest preserves an existing NODE_ENV. The serving operator uses production,
       // which makes Vite erase builtin identities in jsdom before tests can collect.
       NODE_ENV: 'test',
+      [TEST_RUN_READER_CONTRACT_ENV]: process.env[TEST_RUN_READER_CONTRACT_ENV] ?? testRunExecutionDetailsReaderContract(),
+      [TEST_RUN_READER_REFUSAL_PATH_ENV]: readerRefusalPath,
       PAPERCUSP_TEST_RUN_GROUP: runId,
       // Bind this request explicitly, including clearing stale operator context.
       PAPERCUSP_TEST_RUN_WORK_ITEM: opts.workItemId ?? '',
@@ -4142,9 +4409,19 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
     }));
     // An absolute child cutoff includes preparation/admission time and leaves
     // a separate cleanup reserve before the task's final deadline.
-    childEnv.PAPERCUSP_TEST_FILE_TIMEOUT_MS = String(
-      Math.max(1, Math.min(120 * 60_000, foregroundCutoffAtMs - Date.now())),
-    );
+    childEnv.PAPERCUSP_TEST_FILE_TIMEOUT_MS = String(opts.privatePg
+      ? Math.max(1, Math.min(MAX_TIMEOUT_MS, timeoutMs))
+      : Math.max(1, Math.min(MAX_TIMEOUT_MS, foregroundCutoffAtMs - Date.now())));
+    if (opts.privatePg) {
+      // runTestFilesCore binds privatePgSetupTimeoutMs in ITS scope only; this internal
+      // function receives executionOpts, so re-derive the same value from opts.
+      childEnv.PAPERCUSP_TEST_PRIVATE_PG_SETUP_TIMEOUT_MS = String(deadline.effectiveSetupTimeoutMs
+        ?? opts.privatePgSetupTimeoutMs ?? DEFAULT_PRIVATE_PG_SETUP_TIMEOUT_MS);
+      if (deadline.setupDeadlineAtMs !== undefined) {
+        childEnv.PAPERCUSP_TEST_PRIVATE_PG_SETUP_DEADLINE_AT_MS = String(deadline.setupDeadlineAtMs);
+      }
+      Object.assign(childEnv, privatePgSeedEnvironment(process.env));
+    }
     packet.write('configuration.json', captureConfigurationSnapshot(childEnv));
     packet.stage('router-start', { deadline });
     // `testing:run` can itself be invoked from the repository's pc-heavy
@@ -4396,6 +4673,24 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
           : {}),
       };
     }
+    let readerRefused = false;
+    if (outcome.code !== null && outcome.code !== 0) {
+      try {
+        if (statSync(readerRefusalPath).size <= 16_384) {
+          const refusal = JSON.parse(readFileSync(readerRefusalPath, 'utf8'));
+          readerRefused = refusal?.schemaVersion === 1 && Object.keys(refusal).length === 3
+            && refusal.readerContract === childEnv[TEST_RUN_READER_CONTRACT_ENV]
+            && typeof refusal.reason === 'string'
+            && /^(?:invalid-reader-contract|reader-missing-fields:[A-Za-z0-9,]+)$/.test(refusal.reason);
+        }
+      } catch { /* No exact refusal receipt: preserve the ordinary run result. */ }
+    }
+    if (readerRefused) {
+      return { ok: false, runId, root, error: 'test_run_reader_incompatible',
+        hint: 'The selected reporter cannot write results understood by the loaded test-run reader. ' +
+          'Update and qualify the consuming operator before rerunning; keep the strict parser and recorded rows intact.',
+        routerOutput: outcome.output.slice(-2000) };
+    }
     // A typed router refusal is still exit 2, but its strict marker distinguishes
     // governed admission starvation from an ordinary route/launch error. Parse
     // only the reserved exit code so a test's arbitrary output cannot manufacture
@@ -4457,10 +4752,15 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
       if (routerResult) {
         const executedNothing = zeroExecutedRefusal(routerResult, { runId, root });
         if (executedNothing) return executedNothing;
+        const routerDiagnostic = outcome.code === ROUTER_EXIT_FINALIZATION_ERROR
+          ? await readRouterFailureDiagnostic(outputLogPaths, outcome.output, childEnv)
+          : undefined;
         return boundTestRunPayload(
           {
             ok: routerResult.failed === 0 && outcome.code === 0, runId, root,
-            ...(outcome.code === ROUTER_EXIT_FINALIZATION_ERROR ? { routerOutput: outcome.output.slice(-2000) } : {}),
+            ...(outcome.code === ROUTER_EXIT_FINALIZATION_ERROR
+              ? { routerOutput: routerDiagnostic ?? outcome.output.slice(-2000) }
+              : {}),
           },
           routerResult,
         ) as TestFilesCoreResult;
@@ -4513,7 +4813,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
     );
     const mergedReportRun = mergeDistilledRuns(distilledRuns, { maxFailures: opts.maxFailures });
     const missingVitestFiles = unreportedVitestFiles(mergedReportRun.byFile, pathResolution.files, root);
-    const routerDiagnostic = missingVitestFiles.length > 0
+    const routerDiagnostic = missingVitestFiles.length > 0 || outcome.code === ROUTER_EXIT_FINALIZATION_ERROR
       ? await readRouterFailureDiagnostic(outputLogPaths, outcome.output, childEnv)
       : undefined;
     const shouldRecordCollectionFailure = missingVitestFiles.length > 0
@@ -4588,7 +4888,9 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
       ok: run.failed === 0 && outcome.code === 0, runId, root,
       ...(collectionFailureReport
         ? { routerOutput: routerDiagnostic ?? outcome.output.slice(-2000) }
-        : outcome.code === ROUTER_EXIT_FINALIZATION_ERROR ? { routerOutput: outcome.output.slice(-2000) } : {}),
+        : outcome.code === ROUTER_EXIT_FINALIZATION_ERROR
+          ? { routerOutput: routerDiagnostic ?? outcome.output.slice(-2000) }
+          : {}),
     }, run) as TestFilesCoreResult;
   } finally {
     packet.stage('report-finalized', { outputLogPaths });
@@ -4694,7 +4996,7 @@ export default defineTool({
         'Vitest -t REGEX over full test names. Escape literal names (including parentheses, + and [). Zero matches refuse with name_filter_no_match and return an escaped retry; skipped tests never count as a pass.',
       ),
     background: z.boolean().optional().describe(
-      'Start one tracked background run immediately, without a foreground attempt or timeout replay. Returns a pending handle; poll testing:run-status with detachedRunId, then read testing:runs. Evidence stays pending until recoverEvidence reconciles the terminal run.',
+      'Start one tracked background run immediately, without a foreground attempt or timeout replay. Detected private-PG test files default to this path; pass background:false to keep them foreground. Returns a pending handle; poll testing:run-status with detachedRunId, then read testing:runs. Evidence stays pending until recoverEvidence reconciles the terminal run.',
     ),
     timeoutMs: z
       .number()
@@ -4703,10 +5005,13 @@ export default defineTool({
       .max(MAX_TIMEOUT_MS)
       .optional()
       .describe(
-        `Hard budget for the whole run. Default ${DEFAULT_TIMEOUT_MS}ms. Use background:true for long or dirty integration runs. A FOREGROUND run is capped at ${FOREGROUND_TIMEOUT_CEILING_MS - TESTING_RUN_HANDLER_PHASE_HEADROOM_MS}ms for the child process, reserving ${TESTING_RUN_HANDLER_PHASE_HEADROOM_MS}ms for preparation and finalization before the ~55s MCP transport cap.`,
+        `Hard test-execution budget. Default ${DEFAULT_TIMEOUT_MS}ms. For private-PG runs, privatePgSetupTimeoutMs is additive and cleanup keeps its separate reserve; other runs retain a whole-run budget. Use background:true for long or dirty integration runs; detected private-PG test files default to background unless background:false is explicit. A FOREGROUND run is capped at ${FOREGROUND_TIMEOUT_CEILING_MS - TESTING_RUN_HANDLER_PHASE_HEADROOM_MS}ms for the child process, reserving ${TESTING_RUN_HANDLER_PHASE_HEADROOM_MS}ms for preparation and finalization before the ~55s MCP transport cap.`,
       ),
     privatePg: z.boolean().optional().describe(
       'Run tests from one Papercusp router checkout inside scripts/with-test-pg.mjs. Automatically selected for files that call recordIsolatedIntegrationProof when no PAPERCUSP_TEST_PG_ADMIN_URL is set; pass false to opt out. Product PG is disposable; the durable test-ledger sink stays separate.',
+    ),
+    privatePgSetupTimeoutMs: z.number().int().min(1000).max(MAX_TIMEOUT_MS).optional().describe(
+      `Maximum private-PG bootstrap time, separate from and additive to timeoutMs. Default ${DEFAULT_PRIVATE_PG_SETUP_TIMEOUT_MS}ms. The setup receipt records seed readiness and migration progress; the full timeoutMs assertion budget begins only after the private database is ready.`,
     ),
     reporterStageTrace: z.boolean().optional().describe(
       'Emit reporter-stage timing spans for this run only. Enables PAPERCUSP_TEST_REPORTER_STAGE_TRACE in its Vitest child and detached recovery; ordinary runs keep the trace disabled.',
@@ -4741,6 +5046,7 @@ export default defineTool({
     if (args.background && !args.files) {
       return { data: { ok: false, error: 'background_requires_executed_files' } };
     }
+    let selectedCore: DetachedTestingCore | undefined;
     const securitySelectionError = securityQualificationSelectionError(args);
     if (securitySelectionError) return { data: { ok: false, error: securitySelectionError } };
     if (args.securityQualification) {
@@ -4753,7 +5059,7 @@ export default defineTool({
       }
     }
     if (args.nativeConsult) {
-      if (['files', 'changedPaths', 'evidence', 'recoverEvidence', 'remeasureEvidence', 'rootHarnessSlug', 'testNamePattern', 'timeoutMs', 'privatePg', 'reporterStageTrace', 'taskDeadlineAtMs', 'cleanupReserveMs', 'maxFailures', 'recheckReason']
+      if (['files', 'changedPaths', 'evidence', 'recoverEvidence', 'remeasureEvidence', 'rootHarnessSlug', 'testNamePattern', 'timeoutMs', 'privatePg', 'privatePgSetupTimeoutMs', 'reporterStageTrace', 'taskDeadlineAtMs', 'cleanupReserveMs', 'maxFailures', 'recheckReason']
         .some(key => (args as Record<string, unknown>)[key] !== undefined)) {
         return { data: { ok: false, error: 'mutually_exclusive_selectors' } };
       }
@@ -4976,6 +5282,58 @@ export default defineTool({
       });
     }
     const allowSiblingCheckoutFallback = rootSelection.source !== 'registered-harness';
+    const privatePg = shouldUsePrivatePg({
+      files,
+      root: rootSelection.root,
+      privatePg: args.privatePg,
+      allowSiblingCheckoutFallback,
+    });
+    if (args.privatePgSetupTimeoutMs !== undefined && !privatePg) {
+      return { data: { ok: false, error: 'private_pg_setup_budget_requires_private_pg' } };
+    }
+    const privatePgSetupTimeoutMs = privatePg
+      ? args.privatePgSetupTimeoutMs ?? DEFAULT_PRIVATE_PG_SETUP_TIMEOUT_MS : undefined;
+    // A long owned-PG bootstrap cannot safely outlive this foreground handler:
+    // the public default hands detected runs to the durable runner before that
+    // bootstrap begins. Explicit false retains the caller's foreground choice.
+    const background = args.background ?? (privatePg && !args.securityQualification && !args.remeasureEvidence);
+    if (privatePg) {
+      try {
+        deadline = testRunDeadline(args.timeoutMs ?? DEFAULT_TIMEOUT_MS, {
+          now: handlerStartedAtMs,
+          taskDeadlineAtMs: args.taskDeadlineAtMs,
+          cleanupReserveMs: args.cleanupReserveMs,
+          setupTimeoutMs: privatePgSetupTimeoutMs,
+        });
+      } catch (error) {
+        return { data: { ok: false, error: 'invalid_test_deadline', message: String(error) } };
+      }
+      if ((deadline.effectiveSetupTimeoutMs ?? 0) < 1000) {
+        return { data: { ok: false, error: 'private_pg_setup_budget_unavailable', deadline,
+          hint: 'the absolute task deadline cannot preserve both private-PG setup and the requested test-execution budget' } };
+      }
+    }
+    if (background) {
+      if (!deadline) {
+        try {
+          deadline = testRunDeadline(args.timeoutMs ?? DEFAULT_TIMEOUT_MS, {
+            now: handlerStartedAtMs,
+            taskDeadlineAtMs: args.taskDeadlineAtMs,
+            cleanupReserveMs: args.cleanupReserveMs,
+            ...(privatePg ? { setupTimeoutMs: privatePgSetupTimeoutMs } : {}),
+          });
+        } catch (error) {
+          return { data: { ok: false, error: 'invalid_test_deadline', message: String(error) } };
+        }
+      }
+      const detectedDeadlineRefusal = deadlineRefusal();
+      if (detectedDeadlineRefusal) return detectedDeadlineRefusal;
+      try { selectedCore = selectDetachedTestingCore(); }
+      catch (error) {
+        if (error instanceof TestingCoreRefusal) return { data: { ok: false, error: error.code, message: error.message } };
+        throw error;
+      }
+    }
     // EI-18776865728050036 — same clamp as build:typecheck, for the same reason: this tool is
     // dispatched FOREGROUND over an MCP transport that hard-caps a call at ~55s (EI-6073), so a
     // suite slower than that had the call killed before the core's `error:'timeout'` branch could
@@ -4990,7 +5348,7 @@ export default defineTool({
     const harnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
     const runId = randomUUID();
     const launchResult = (data: Record<string, unknown>) => {
-      if (!args.background) return { data };
+      if (!background) return { data };
       setTestingRunPhaseDuration(phaseTimingsMs, 'totalHandlerMs', handlerStartedAt);
       const timings = { ...phaseTimingsMs };
       ctx.metadata?.({ testingRun: {
@@ -5082,8 +5440,8 @@ export default defineTool({
     const loopRefusal = await loopLaunchRefusal({
       workspaceId: ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : null,
       workItemId: attemptWorkItemId,
-      background: args.background === true,
-      timeoutMs: requestedTimeoutMs ?? DEFAULT_TIMEOUT_MS,
+      background,
+      timeoutMs: (requestedTimeoutMs ?? DEFAULT_TIMEOUT_MS) + (privatePgSetupTimeoutMs ?? 0),
     });
     setTestingRunPhaseDuration(phaseTimingsMs, 'admissionGateMs', admissionStartedAt);
     if (loopRefusal) return launchResult({ ...loopRefusal, runId, root: rootSelection.root });
@@ -5111,7 +5469,7 @@ export default defineTool({
       }
     }
     setTestingRunPhaseDuration(phaseTimingsMs, 'preparationMs', preparationStartedAt);
-    if (args.background) {
+    if (background) {
       const preparedDeadlineRefusal = deadlineRefusal();
       if (preparedDeadlineRefusal) return launchResult({
         ...preparedDeadlineRefusal.data,
@@ -5127,11 +5485,13 @@ export default defineTool({
       const start = await startRunDurable(buildDetachedTestRunRequest({
         root: rootSelection.root, files: selected.files, groups, deadline: deadline!, originRunId: runId,
         background: true, timeoutMs: requestedTimeoutMs ?? DEFAULT_TIMEOUT_MS,
+        selectedCore,
         ...(ctx.workspaceId && ctx.workspaceId !== '*' ? { workspaceId: ctx.workspaceId } : {}),
         ...(harnessSlug ? { harnessSlug } : {}),
         ...(attemptWorkItemId ? { workItemId: attemptWorkItemId } : {}),
         ...(args.testNamePattern !== undefined ? { testNamePattern: args.testNamePattern } : {}),
-        ...(args.privatePg !== undefined ? { privatePg: args.privatePg } : {}),
+        privatePg,
+        ...(privatePgSetupTimeoutMs !== undefined ? { privatePgSetupTimeoutMs } : {}),
         ...(args.reporterStageTrace ? { reporterStageTrace: true } : {}),
         ...(args.maxFailures !== undefined ? { maxFailures: args.maxFailures } : {}),
         allowSiblingCheckoutFallback,
@@ -5164,7 +5524,8 @@ export default defineTool({
       ...(args.maxFailures !== undefined ? { maxFailures: args.maxFailures } : {}),
       ...(args.testNamePattern !== undefined ? { testNamePattern: args.testNamePattern } : {}),
       ...(args.reporterStageTrace ? { reporterStageTrace: true } : {}),
-      ...(args.privatePg !== undefined ? { privatePg: args.privatePg } : {}),
+      privatePg,
+      ...(privatePgSetupTimeoutMs !== undefined ? { privatePgSetupTimeoutMs } : {}),
       allowSiblingCheckoutFallback,
       phaseTimings: phaseTimingsMs,
       ...(args.securityQualification ? { allowDetachedRecovery: false } : {}),

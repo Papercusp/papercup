@@ -17,7 +17,7 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/coordination/tools/inbox-condition-lifecycle.test.ts
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const M = vi.hoisted(() => ({
   readInbox: vi.fn(async () => [] as unknown[]),
@@ -25,6 +25,9 @@ const M = vi.hoisted(() => ({
   claims: vi.fn(async (): Promise<Array<{ workItemId: string }>> => []),
   fleets: vi.fn(async () => new Map<string, { fleetSlug: string }>()),
   latestConditionEnvelope: vi.fn(async (_key: string) => null as Record<string, unknown> | null),
+  replayRows: vi.fn(async (_ids: readonly string[]) => new Map<string, Record<string, unknown>>()),
+  proofs: {} as Record<string, { fingerprint: string; emittedAt: number }>,
+  sql: vi.fn(async () => []),
 }));
 
 vi.mock("../identity", async (importOriginal) => ({
@@ -42,6 +45,16 @@ vi.mock("../actor-identity", () => ({
 vi.mock("../messages", () => ({
   readInbox: M.readInbox,
   drainAndDeliverUserMailbox: vi.fn(async () => {}),
+  getMessagesByIds: M.replayRows,
+  mergeInboxEntries: (...lists: Array<Array<{ msg_id: string }>>) =>
+    [...new Map(lists.flat().map(row => [row.msg_id, row])).values()],
+}));
+vi.mock('@papercusp/db-org', async original => ({ ...await original<typeof import('@papercusp/db-org')>(),
+  getOrgPg: () => ({ sql: M.sql }) }));
+vi.mock('../../../memory/session-epoch-ledger', async original => ({
+  ...await original<typeof import('../../../memory/session-epoch-ledger')>(),
+  currentSessionEpoch: async () => 0,
+  provenSystemNoticeEmissions: async () => M.proofs,
 }));
 vi.mock("./conditions", () => ({ readLatestConditionEnvelope: M.latestConditionEnvelope }));
 vi.mock("../presence", () => ({
@@ -65,7 +78,8 @@ vi.mock("../presence-snapshot", () => ({
   consumePresenceRebootstrap: async () => null,
 }));
 vi.mock("../../../coord-schema", () => ({
-  renderInjection: (rows: Array<Record<string, unknown>>) => rows.map(row => row.summary).join('\n'),
+  renderInjection: (rows: Array<Record<string, unknown>>, options?: { maxLines?: number }) =>
+    rows.length ? '[coord]\n' + rows.slice(-(options?.maxLines ?? rows.length)).map(row => row.summary).join('\n') : '',
 }));
 vi.mock("../../../cache", () => ({
   cachedRead: async (
@@ -76,6 +90,9 @@ vi.mock("../../../cache", () => ({
 }));
 
 import tool, { annotateResolvedConditions } from "./inbox";
+import { systemNoticeIdentity, systemNoticeReplayState } from '../inbox-visibility';
+import { withMemoryEmissionReceipt } from '../../../memory/session-epoch-ledger';
+import { configureReadCursorStore, InMemoryReadCursorStore, resetReadCursorStore } from '../read-cursors';
 
 const ctx = (ownerId = "owner-a"): never =>
   ({ ownerId, workspaceId: "ws", metadata: vi.fn(), log: vi.fn(), progress: vi.fn() }) as never;
@@ -117,15 +134,68 @@ const resolution = (ts: string, key: string) => ({
 });
 
 beforeEach(() => {
+  configureReadCursorStore(new InMemoryReadCursorStore());
   vi.clearAllMocks();
   M.readInbox.mockImplementation(async () => []);
   M.getPresence.mockImplementation(async () => null);
   M.claims.mockImplementation(async () => []);
   M.fleets.mockImplementation(async () => new Map());
   M.latestConditionEnvelope.mockImplementation(async () => null);
+  M.replayRows.mockImplementation(async () => new Map());
+  M.proofs = {};
 });
+afterEach(() => resetReadCursorStore());
 
 describe('native notice scope preserves the public inbox view', () => {
+  it('recovers an omitted notice by exact ID after the timestamp advances and collects only its final visible line', async () => {
+    const retained = alarm('2026-10-13T00:00:00Z', 'pending', { auto: true });
+    const replay = systemNoticeReplayState([retained], {}, Date.now());
+    M.replayRows.mockResolvedValue(new Map([[retained.msg_id, retained]]));
+    const run = () => tool.handler({ __systemNoticeState: replay,
+      __deliveryFloorTs: '2026-10-13T01:00:00Z' } as never, ctx());
+    const response = await withMemoryEmissionReceipt(M.sql as never, 'owner-a', [], run);
+    const body = JSON.parse((response as { content: Array<{ text: string }> }).content[0]!.text);
+    expect(M.replayRows).toHaveBeenCalledWith([retained.msg_id]);
+    expect(body.injection).toContain(retained.summary);
+    expect(body.__systemNoticeState.candidates).toEqual(replay.candidates);
+    expect(response._meta?.['papercusp/memoryEmission']).toMatchObject({ owner: 'owner-a', fragments: [
+      { kind: 'notice', id: systemNoticeIdentity(retained)!.key, port: 'coord-inbox',
+        sourceFingerprint: systemNoticeIdentity(retained)!.fingerprint },
+    ] });
+    // Downstream shaping can omit that line: the enclosing receipt must then
+    // prepare nothing, so the saved selection remains replayable next time.
+    const omitted = await withMemoryEmissionReceipt(M.sql as never, 'owner-a', [], async () => {
+      await run(); return { content: [{ type: 'text', text: 'Other context only' }] };
+    });
+    expect(omitted._meta?.['papercusp/memoryEmission']).toBeUndefined();
+  });
+
+  it('suppresses proven repeats before the visible window so an older dropped notice can progress', async () => {
+    const older = alarm('2026-10-13T00:00:00Z', 'older', { auto: true });
+    const newer = alarm('2026-10-13T00:01:00Z', 'newer', { auto: true });
+    const identity = systemNoticeIdentity(newer)!;
+    M.proofs = { [identity.key]: { fingerprint: identity.fingerprint, emittedAt: Date.now() } };
+    M.readInbox.mockResolvedValue([older, newer]);
+    const response = await withMemoryEmissionReceipt(M.sql as never, 'owner-a', [], () =>
+      tool.handler({ __systemNoticeState: {}, limit: 1 } as never, ctx()));
+    const body = JSON.parse((response as { content: Array<{ text: string }> }).content[0]!.text);
+    expect(body.injection).toContain(older.summary);
+    expect(body.injection).not.toContain(newer.summary);
+    expect(body.entries).toHaveLength(1); // public VIEW still follows its bound
+  });
+
+  it('retires a retained alarm after an external resolution and rejects nonbroadcast replay rows', async () => {
+    const retained = alarm('2026-10-13T00:00:00Z', 'pending', { auto: true });
+    M.latestConditionEnvelope.mockResolvedValue(resolution('2026-10-13T00:01:00Z', 'pending'));
+    M.replayRows.mockResolvedValue(new Map([[retained.msg_id, retained], ['foreign', {
+      ...retained, msg_id: 'foreign', to: ['another-owner'], summary: 'foreign secret',
+    }]]));
+    const body = await callInbox({ __systemNoticeState: systemNoticeReplayState([retained], {}, Date.now()) });
+    expect(body.injection).not.toContain(retained.summary);
+    expect(body.injection).not.toContain('foreign secret');
+    expect(body).toMatchObject({ __systemNoticeState: { candidates: [] } });
+  });
+
   it('filters unrelated injections using live claims while retaining VIEW entries', async () => {
     const rows = [alarm('2026-10-13T00:00:00Z', 'compaction:other', { auto: true }),
       alarm('2026-10-13T00:01:00Z', 'work-item:WI-123', { auto: true }),

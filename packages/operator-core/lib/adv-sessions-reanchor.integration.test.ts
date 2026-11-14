@@ -46,6 +46,7 @@ import { refreshControlAnchorAfterMutation, requestSessionIdentityActivation } f
 import { acknowledgeActivation, normalizeSessionActivation, prepareActivation } from './session-activation';
 import { readActiveOperationWorkerClaimBinding } from './blueprint/operation-worker-binding';
 import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
+import { savedOriginalMemberLaunchSpec } from './agent-tools/fleet_registry/saved-launch-spec';
 import { resolveIdentityArtifact } from './capability-envelope/identity-grants-port';
 import { dispatchProjectedTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { controlAnchorKernelResolver, setStaleArtifactConverger } from './projected-tool-deps';
@@ -122,6 +123,130 @@ describe('baseline fixture teardown', () => {
 });
 beforeEach(async () => {
   await admin`TRUNCATE harness_shared.adv_sessions`;
+});
+
+describe('retained original member source joins (real PG)', () => {
+  async function historicalSourceFixture() {
+    const owner = `su-historical-${randomUUID()}`;
+    const fleet = `historical-${randomUUID()}`;
+    const transactionId = randomUUID();
+    const id = await seedAdv({ coordOwnerId: owner, sessionId: FRESH_ID, ended: true });
+    const compile = (revision: string) => compileAgentSpecification({
+      source: { id: 'original-launch', workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } } },
+      prompt: { role: 'su', text: `Retained ${revision} prompt.` }, inputClosure: [],
+      mutableState: { ref: 'launch-state-v1', revision, value: {
+        schemaVersion: 1, principal: { kind: 'su', role: 'su', profile: 'engineer' },
+        policy: { mcp: 'superuser', contextSize: 'trimmed', personaTier: 'fleet' }, stack: [],
+      } },
+    });
+    const originalState = 'b'.repeat(64);
+    const currentState = 'c'.repeat(64);
+    const original = compile(originalState);
+    const current = compile(currentState);
+    const currentSpec = { v: 1, workspaceId: WS, harnessSlug: 'papercusp', principalId: 'system:superuser',
+      fleet: { slug: fleet }, model: 'current-is-not-original', specificationRevision: current.specificationRevision,
+      stateRevision: currentState, specificationArtifact: current, stack: [],
+      identityHistory: [{ specificationRevision: original.specificationRevision, stateRevision: originalState,
+        specificationArtifact: original, stack: [], selectedIdentity: null }] };
+    await admin`UPDATE harness_shared.adv_sessions SET agent='codex',
+      first_seen_at='2026-11-01T10:00:01Z', launch_spec=${JSON.stringify(currentSpec)}::text::jsonb,
+      launch_argv='["psu","--account=current"]'::jsonb WHERE id=${id}`;
+    const transaction = { version: 1, transactionId, launcherOwnerId: 'su-original-launcher',
+      requestedMemberIds: [owner], openedMemberIds: [owner], verifiedMemberIds: [owner],
+      requestedMembers: [{ index: 0, ownerId: owner, agent: 'codex', model: 'gpt-6.1-sol:xhigh',
+        account: 'auto', carry: 'warm', headless: true }] };
+    await admin`INSERT INTO harness_shared.agent_fleets
+      (workspace_id,fleet_slug,owner,created_at,updated_at,last_launch_transaction)
+      VALUES (${WS},${fleet},'su-original-launcher',1,1,${JSON.stringify(transaction)}::text::jsonb)`;
+    for (const [native, source, at, specificationRevision, stateRevision] of [
+      [DEAD_ID, 'launch', '2026-11-01T10:00:02Z', original.specificationRevision, originalState],
+      [FRESH_ID, 'reanchor', '2026-11-01T10:05:00Z', current.specificationRevision, currentState],
+    ]) {
+      await admin`INSERT INTO harness_shared.session_identity_activation_events
+        (workspace_id,owner_id,actor_id,principal_id,session_id,adv_session_id,native_session_id,
+         transition_id,control_generation,phase,source,specification_revision,state_revision,stack_refs,recorded_at)
+        VALUES (${WS},${owner},${owner},'system:superuser',${owner},${id},${native},${randomUUID()},
+          1,'applied',${source},${specificationRevision},${stateRevision},'[]'::jsonb,${at}::timestamptz)`;
+    }
+    const metadata = { launchOutcome: { fleet, transactionId } };
+    const args = { name: `  ${fleet.toUpperCase()}  `, plan: 'historical-fixture-plan', count: 1,
+      agent: 'codex', account: 'auto', carry: 'warm', headless: true, members: [{ model: 'gpt-6.1-sol:xhigh' }] };
+    const [invocation] = await admin<{ id: string }[]>`INSERT INTO harness_shared.tool_invocations
+      (workspace_id,harness_slug,plugin_name,tool_name,role,spawn_id,window_key,status,
+       coord_owner_id,call_origin,invoked_at,duration_ms,args_json,metadata_json)
+      VALUES (${WS},'papercusp','core','fleet:launch-on-plan','operator',${randomUUID()},'test','ok',
+        'su-original-launcher','agent','2026-11-01T10:00:03Z',3000,
+        ${JSON.stringify(args)}::text::jsonb,${JSON.stringify(metadata)}::text::jsonb)
+      RETURNING id::text`;
+    const read = () => readAdvSessionLaunchRecordByOwner(owner, WS,
+      { advSessionId: id, sessionId: FRESH_ID, fleetSlug: fleet });
+    const binding = { ownerId: owner, advSessionId: id, sessionId: FRESH_ID, harnessSlug: 'papercusp' };
+    return { owner, fleet, transactionId, id, invocationId: invocation.id, read, currentSpec, binding };
+  }
+
+  it('joins the exact original invocation and ordered native spans without changing stored history', async () => {
+    const f = await historicalSourceFixture();
+    const record = await f.read();
+    expect(record).toMatchObject({
+      launchSpec: f.currentSpec,
+      originalMemberHistoricalSource: { workspaceId: WS, fleetSlug: f.fleet, advSessionId: f.id,
+        ownerId: f.owner, originalSessionId: DEAD_ID, currentSessionId: FRESH_ID,
+        invocation: { id: f.invocationId, actor: 'su-original-launcher', harnessSlug: 'papercusp' },
+        originalApplied: { actorId: f.owner, principalId: 'system:superuser', sessionId: f.owner, stack: [] },
+        currentApplied: { actorId: f.owner, principalId: 'system:superuser', sessionId: f.owner, stack: [] },
+        transaction: { transactionId: f.transactionId } },
+    });
+    expect(record).not.toBeNull();
+    expect(savedOriginalMemberLaunchSpec(record!, f.binding, WS, f.fleet)).toMatchObject({
+      ok: true, config: { plan: 'historical-fixture-plan', account: 'auto', model: 'gpt-6.1-sol',
+        effort: 'xhigh', carry: 'warm', headless: true }, saved: { member: { profile: 'engineer', stack: [] } },
+    });
+    const [stored] = await admin`SELECT launch_spec FROM harness_shared.adv_sessions WHERE id=${f.id}`;
+    expect(stored.launch_spec).toEqual(f.currentSpec);
+    expect(await readAdvSessionLaunchRecordByOwner(f.owner, WS,
+      { advSessionId: f.id, sessionId: FRESH_ID })).not.toHaveProperty('originalMemberHistoricalSource');
+  });
+
+  it('refuses a different original request fleet after a passing real-PG reader/resolver control', async () => {
+    const f = await historicalSourceFixture();
+    const original = await f.read();
+    expect(original).not.toBeNull();
+    expect(savedOriginalMemberLaunchSpec(original!, f.binding, WS, f.fleet)).toMatchObject({ ok: true });
+    await admin`UPDATE harness_shared.tool_invocations SET args_json=jsonb_set(args_json,
+      '{name}', to_jsonb('other-fleet'::text)) WHERE id=${f.invocationId}::bigint`;
+    const changed = await f.read();
+    expect(changed?.originalMemberHistoricalSource).toBeDefined();
+    expect(savedOriginalMemberLaunchSpec(changed!, f.binding, WS, f.fleet)).toMatchObject({
+      ok: false, message: 'Original launch request does not describe this complete local single fleet epoch.',
+    });
+    const [stored] = await admin`SELECT launch_spec FROM harness_shared.adv_sessions WHERE id=${f.id}`;
+    expect(stored.launch_spec).toEqual(f.currentSpec);
+  });
+
+  it.each(['wrong-transaction', 'later-invocation', 'missing-original', 'newer-writer', 'ambiguous-invocation'])(
+    'refuses %s with a matching positive control', async (change) => {
+      const f = await historicalSourceFixture();
+      expect((await f.read())?.originalMemberHistoricalSource).toBeDefined();
+      if (change === 'wrong-transaction') await admin`UPDATE harness_shared.tool_invocations
+        SET metadata_json='{}'::jsonb WHERE id=${f.invocationId}::bigint`;
+      if (change === 'later-invocation') await admin`UPDATE harness_shared.tool_invocations
+        SET invoked_at='2026-11-01T11:00:00Z' WHERE id=${f.invocationId}::bigint`;
+      if (change === 'missing-original') await admin`DELETE FROM harness_shared.session_identity_activation_events
+        WHERE workspace_id=${WS} AND owner_id=${f.owner} AND native_session_id=${DEAD_ID}`;
+      if (change === 'newer-writer') await admin`UPDATE harness_shared.session_identity_activation_events
+        SET native_session_id='other-native' WHERE workspace_id=${WS} AND owner_id=${f.owner}
+          AND native_session_id=${FRESH_ID}`;
+      if (change === 'ambiguous-invocation') await admin`INSERT INTO harness_shared.tool_invocations
+        (workspace_id,harness_slug,plugin_name,tool_name,role,spawn_id,window_key,status,
+         coord_owner_id,call_origin,invoked_at,duration_ms,args_json,metadata_json)
+        SELECT workspace_id,harness_slug,plugin_name,tool_name,role,spawn_id,window_key,status,
+          coord_owner_id,call_origin,invoked_at,duration_ms,args_json,metadata_json
+          FROM harness_shared.tool_invocations WHERE id=${f.invocationId}::bigint`;
+      expect((await f.read())?.originalMemberHistoricalSource).toBeUndefined();
+      const [stored] = await admin`SELECT launch_spec FROM harness_shared.adv_sessions WHERE id=${f.id}`;
+      expect(stored.launch_spec).toEqual(f.currentSpec);
+    },
+  );
 });
 
 describe('exact native incarnation ownership (get-feedback D-006, real PG)', () => {

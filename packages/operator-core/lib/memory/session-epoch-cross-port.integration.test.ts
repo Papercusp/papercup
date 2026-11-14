@@ -14,7 +14,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,10 +24,16 @@ import type { MemoryEntry } from './backend';
 import { sessionAllowsAmbientContext, setSessionConfinementResolver } from '../capability-envelope/session-confinement-port';
 import { ledgerDir, openDeliveryLedger } from '../../../../apps/operator/scripts/hooks/inject/delivery-ledger.mjs';
 import { nativeProcessTraceEnv } from '../../../../scripts/lib/native-process-trace-env.mjs';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { UdsMcpTransport } from '@papercusp/tooldef-mcp';
 import { DELIVERY_MATRIX_FAULTS, deliveryMatrixCellKey, deliveryMatrixPopulation, deliveryTerminalOracle,
-  validateDeliveryMatrix, type DeliveryMatrixCell } from './injection-delivery-coverage';
+  validateDeliveryMatrix, attributeFinalContextTranscript, sampleFinalDeliveredContext,
+  joinFinalContextNativeEmissions, type DeliveryMatrixCell, type FinalContextAttemptSnapshot } from './injection-delivery-coverage';
+import { contextSourceVersion } from './temporal-render';
+import { activeWorkspaceId } from '../workspace-registry';
 
 const h = vi.hoisted(() => ({ sql: null as unknown, entries: [] as MemoryEntry[],
+  canonicalEntries: null as MemoryEntry[] | null,
   compactPadding: '',
   corpus: null as Awaited<ReturnType<typeof import('./corpus-recall-io').recallCorpusContext>> | null }));
 
@@ -36,16 +42,27 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: h.sql }),
 }));
-vi.mock('./backend', () => ({
-  getMemoryBackend: () => ({
+vi.mock('./backend', () => {
+  // Receipt preparation re-reads the selected source from the same backend.
+  // Keep this fixture's retrieval and scoped authority reads consistent;
+  // a new backend per lookup correctly fails production revalidation.
+  const backend = {
     available: async () => ({ ok: true }),
     search: async () => h.entries,
-  }),
-}));
+    listPage: async ({ scope, ids, offset = 0, limit = 8 }: {
+      scope: string; ids?: string[]; offset?: number; limit?: number;
+    }) => {
+      const entries = (h.canonicalEntries ?? h.entries).filter(entry => entry.scope === scope && ids?.includes(entry.id));
+      return { entries: entries.slice(offset, offset + limit), total: entries.length };
+    },
+  };
+  return { getMemoryBackend: () => backend };
+});
 // This suite owns the memory/receipt ledgers, not external corpus retrieval.
 // Keep that unrelated leg empty and healthy; otherwise its five-second wall
 // emits a degradation notice even when the tested memory dedup is correct.
-vi.mock('./corpus-recall-io', () => ({
+vi.mock('./corpus-recall-io', async original => ({
+  ...await original<typeof import('./corpus-recall-io')>(),
   recallCorpusContext: async () => h.corpus ?? ({ heading: 'Related context', outcome: 'ok', lines: [], dropped: [],
     embedderAvailable: true, candidateCount: 0, retrievalDepth: 0, rerank: 'nothing-to-reorder', legs: null }),
 }));
@@ -55,9 +72,14 @@ vi.mock('./workspace-scope-recall', () => ({
   isMemoryWorkspaceScopedRecallOn: async () => false,
   keepUserPoolHitForWorkspace: () => true,
 }));
+// These authenticated hosts exercise activity delivery and PG confirmation.
+// Initialize prelude retrieval has its own suite and must not start unrelated
+// memory/index enrichment or a late deadline loser in this fixture.
+vi.mock('./mcp-prelude', () => ({ buildMcpPrelude: async () => null }));
 // Deterministic carry/retrieval inputs; the recovery endpoint, compact epoch
 // transition, launch renderer, generated native hook and PG stores stay real.
-vi.mock('../carry-brief', () => ({
+vi.mock('../carry-brief', async original => ({
+  ...await original<typeof import('../carry-brief')>(),
   buildCarryBrief: async () => ({ heldItems: [{ id: 'WI-compact', title: 'zephyrrepair approval', harness: 'papercusp' }],
     fleet: null, awaits: [], facts: [] }),
   renderCarryBriefText: () => 'Carry brief\n' + h.compactPadding,
@@ -65,24 +87,51 @@ vi.mock('../carry-brief', () => ({
 vi.mock('../auth', async original => ({ ...await original<typeof import('../auth')>(),
   getSessionUserOrDefault: async () => ({ id: 'u-test' }),
 }));
+vi.mock('../agent-identities/sync-hook-rules', async original => ({
+  ...await original<typeof import('../agent-identities/sync-hook-rules')>(),
+  evaluateHookContextSink: async () => ({ text: 'IDENTITY COMPACTION\n' + h.compactPadding, result: null }),
+}));
 vi.mock('./compact-reprime', async original => {
   const actual = await original<typeof import('./compact-reprime')>();
   return { ...actual, buildCompactReprimeBlock: (input: Parameters<typeof actual.buildCompactReprimeBlock>[0]) =>
     actual.buildCompactReprimeBlock(input, { retireFlagFn: async () => false }) };
 });
+// Reuse the transport matrix's bounded catalogue seam. The production host,
+// credential verifier, activity handler and PG stores below remain real.
+vi.mock('../agent-tools/index', () => {
+  throw new Error('The receipt integration must not initialize the full application catalogue');
+});
+vi.mock('../agent-tools/operator-tool-catalogue', () => ({
+  loadOperatorToolCatalogue: async () => {
+    await Promise.all([
+      import('../agent-tools/pre-prompt-registry-config'),
+      import('../agent-tools/activity/report'),
+    ]);
+  },
+}));
 
 const { buildMemoryContextBlock, prepareMemoryContextBlock } = await import('./injection');
 const { bumpSessionEpoch, memoryFragmentOffer, stageMemoryEmission, confirmMemoryEmission,
   withMemoryEmissionReceipt } = await import('./session-epoch-ledger');
 const { buildLaunchMemoryBlock, resolveLaunchProfile } = await import('./launch-profile');
 const { selectCorpusLines, renderCorpusBlock } = await import('./corpus-recall');
-const { captureNativeMcp } = await import('./fixtures/native-mcp-export');
+const { captureNativeMcp, nativeMcpTranscriptLocators, sha256 } = await import('./fixtures/native-mcp-export');
 const { resetReadCursorStore } = await import('../agent-tools/coordination/read-cursors');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 const { RECOVER_HOOK_SOURCE, RECOVER_HOOK, RECOVER_INTENT } = await import('../interactive-claude-config');
 const { default: recoveryEndpoints } = await import('../endpoint-route/routes/agent-mcp/session-recovery-brief');
+const { default: identityEndpoints } = await import('../endpoint-route/routes/agent-mcp/identity-hook-sinks');
 
 const SID = `sid-cross-port-${Date.now()}`;
+
+// These fresh fixture sessions have no confirmed source baseline. The staged
+// host row retains source authority and its CAS baseline; native receipts carry
+// only the public manifest, so compare each boundary against its own contract.
+function initialStagedFragment(offer: Record<string, unknown>): Record<string, unknown> {
+  const { rendered: _rendered, ...fragment } = offer;
+  return { ...fragment, ...(fragment.sourceFingerprint !== undefined
+    ? { previousSourceFingerprint: null } : {}) };
+}
 
 /**
  * The stamp is fire-and-forget — poll the real table until it lands.
@@ -112,15 +161,73 @@ async function waitForStamps(sql: (s: TemplateStringsArray, ...v: unknown[]) => 
   throw new Error(`stamps for ${SID} never reached ${n} after ${(maxAttempts * intervalMs) / 1000}s`);
 }
 
+/** A private credential and the real authenticated listener, never a live
+ * operator connection. The native fixture forwards its local canary call to
+ * this host's actual activity:report and returns that response unchanged. */
+async function withAuthenticatedActivityHost<T>(owner: string, agent: string,
+  run: (client: Client, generation: string) => Promise<T>): Promise<T> {
+  const { AGENT_MCP_AUTH_META, startAgentMcpServer } = await import('../endpoint-route/routes/transport/_mcp-uds');
+  const { registerMcpHost, mcpHostServerOptions, tryBuildSpawnContext, pinVerifiedMcpRequest } =
+    await import('../endpoint-route/routes/transport/_mcp-host');
+  const { coordScopeWorkspace } = await import('../agent-tools/coordination/log');
+  const home = mkdtempSync(join(tmpdir(), 'r8-authenticated-host-'));
+  const previousHome = process.env.PAPERCUSP_HOME;
+  const bearer = randomUUID();
+  writeFileSync(join(home, 'superuser-token'), bearer, { mode: 0o600 });
+  process.env.PAPERCUSP_HOME = home;
+  let listener: Awaited<ReturnType<typeof startAgentMcpServer>> | undefined;
+  const clients: Client[] = [];
+  try {
+    listener = await startAgentMcpServer({ port: 3070, host: {
+      register: registerMcpHost, options: mcpHostServerOptions(),
+      verify: tryBuildSpawnContext, pin: pinVerifiedMcpRequest,
+    } });
+    const endpoint = listener.endpoint;
+    const connect = async (token: string) => {
+      const client = new Client({ name: 'r8-pg-native-host', version: '1' });
+      clients.push(client);
+      const wire = new UdsMcpTransport({ path: endpoint.socketPath });
+      const send = wire.send.bind(wire);
+      wire.send = message => send('method' in message && message.method === 'initialize'
+        ? { ...message, params: { ...message.params, _meta: { [AGENT_MCP_AUTH_META]: {
+          version: 1, operatorId: endpoint.operatorId, generation: endpoint.generation,
+          url: `http://127.0.0.1:3070/api/mcp?superuser=1&workspace=${encodeURIComponent(coordScopeWorkspace())}`
+            + `&client=${encodeURIComponent(owner)}&agent=${agent}&tools=activity:report`,
+          headers: { authorization: `Bearer ${token}` },
+        } } } } : message);
+      await client.connect(wire);
+      return client;
+    };
+    await expect(connect('invalid-fixture-bearer')).rejects.toThrow('uds_auth_failed');
+    const client = await connect(bearer);
+    const listing = await client.listTools();
+    const generation = listing.tools.find(tool => tool.name === 'activity:report')?._meta?.['papercusp/servingGeneration'];
+    expect(typeof generation).toBe('string');
+    return await run(client, generation as string);
+  } finally {
+    try { await Promise.all(clients.map(client => client.close())); }
+    finally {
+      try { await listener?.close(); }
+      finally {
+        if (previousHome === undefined) delete process.env.PAPERCUSP_HOME;
+        else process.env.PAPERCUSP_HOME = previousHome;
+        rmSync(home, { recursive: true, force: true });
+      }
+    }
+  }
+}
+
 async function runReceiptDispatcher(root: string, client: 'codex' | 'claude' | 'omp',
-  port: 'turn-start' | 'mid-turn', env: NodeJS.ProcessEnv,
+  port: 'turn-start' | 'mid-turn' | 'compaction', env: NodeJS.ProcessEnv,
   output: 'complete' | 'closed' | 'partial' = 'complete') {
-  const event = port === 'turn-start' ? { prompt: 'receipt delivery' }
+  const event = port === 'compaction' ? { source: 'compact', session_id: 'native-compact' }
+    : port === 'turn-start' ? { prompt: 'receipt delivery' }
     : client === 'codex' ? { tool_name: 'Grep', tool_input: { pattern: 'receipt' }, tool_response: '' }
     : client === 'claude' ? { tool_calls: [{ tool_name: 'Grep', tool_input: { pattern: 'receipt' }, tool_response: '' }] }
     : { message: { content: [{ type: 'toolCall', id: 'call-1', name: 'Grep', arguments: { pattern: 'receipt' } }] },
       toolResults: [{ toolCallId: 'call-1', toolName: 'Grep', content: [{ type: 'text', text: '' }] }] };
-  const nativeEvent = port === 'turn-start' ? (client === 'omp' ? 'before_agent_start' : 'UserPromptSubmit')
+  const nativeEvent = port === 'compaction' ? 'SessionStart'
+    : port === 'turn-start' ? (client === 'omp' ? 'before_agent_start' : 'UserPromptSubmit')
     : client === 'codex' ? 'PostToolUse' : client === 'claude' ? 'PostToolBatch' : 'turn_end';
   const startedAtMs = Date.now();
   // A hook is an isolated native leaf, not another Vitest worker. Inherited
@@ -159,9 +266,34 @@ describe('cross-port session-epoch dedup (real PG — P-004a)', () => {
   let dispatcherRoot: string;
   const joinedCells = new Map<string, DeliveryMatrixCell>();
 
+  async function corpusPlanFixture(owner: string, text: string, workspaceId = 'ws-test'): Promise<NonNullable<typeof h.corpus>> {
+    const slug = `receipt-${owner}`;
+    const [row] = await db.adminSql<{ title: string; content: string; updated_at: Date }[]>`
+      INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,title,content,status)
+      VALUES (${workspaceId},'papercusp',${slug},'Receipt recovery',${text},'active')
+      RETURNING title,content,updated_at`;
+    // Retrieval may be deterministic, but receipt preparation must re-read the
+    // same canonical full source through production authority validation.
+    // The isolated database lifecycle removes these rows after the suite.
+    const version = contextSourceVersion({ namespace: `corpus:plan:${workspaceId}`, ref: `plan:papercusp:${slug}`,
+      fullText: `${row!.title}\n${row!.content}`, revision: null, updatedAt: row!.updated_at.toISOString(),
+      validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null } });
+    const selected = selectCorpusLines({ queryText: 'zephyrrepair', budgetChars: 3000,
+      hits: [{ source: 'plan', sourceId: `papercusp:${slug}`, excerpt: text,
+        meta: { contextUnit: text, contextSourceVersion: JSON.stringify(version) }, score: 0.95 }] });
+    expect(selected.lines).toHaveLength(1);
+    expect(selected.lines[0]!.sourceVersion).toEqual(version);
+    return { ...selected, block: renderCorpusBlock(selected.lines), outcome: 'ok', embedderAvailable: true,
+      candidateCount: 1, legs: null, retrievalDepth: 1, rerank: 'nothing-to-reorder' };
+  }
+
   beforeAll(async () => {
     setSessionConfinementResolver(() => null);
     db = await createOrgTestDb();
+    // Exercise the additive source-version migration in this isolated fixture
+    // before arming it for boot auto-apply. Once armed, fixture boot applies it.
+    const versionDraft = new URL('../../../../libs/papercusp/libs/db/sql/1627-context-source-version-ledgers.sql.DRAFT', import.meta.url);
+    if (existsSync(versionDraft)) await db.adminSql.unsafe(readFileSync(versionDraft, 'utf8'));
     h.sql = db.adminSql;
     // Execute current hook bytes outside the repository child loader's HEAD
     // substitution boundary, retaining the canonical source capture in CI.
@@ -187,6 +319,203 @@ describe('cross-port session-epoch dedup (real PG — P-004a)', () => {
     if (dispatcherRoot) rmSync(dispatcherRoot, { recursive: true, force: true });
     await db?.cleanup();
   });
+
+  // R-8 joins authenticated host/activity dispatch, the real inbox/PG cursor
+  // and the maintained installed-client stdout capture. Generation/glance are
+  // fixed inputs; the local canary is forwarded to the actual activity tool.
+  // This remains an isolated current-source journey, not deployed evidence.
+  for (const client of ['codex', 'claude', 'omp'] as const)
+    for (const fault of ['omitted-carrier', 'partial-stdout'] as const)
+      it(`context reliability R-8: native activity notice ${client} ${fault} quiet replay`, async ({ task }) => {
+        const bundleModule = await import('../agent-tools/activity/hook-bundle');
+        const { buildActivityHookBundle } = bundleModule;
+        const { default: inboxTool } = await import('../agent-tools/coordination/tools/inbox');
+        const { ackAndRead, stage } = await import('../agent-tools/coordination/read-cursors');
+        const { coordLog, coordScopeWorkspace } = await import('../agent-tools/coordination/log');
+        const { systemNoticeIdentity } = await import('../agent-tools/coordination/inbox-visibility');
+        const { provenSystemNoticeEmissions } = await import('./session-epoch-ledger');
+        const { AMBIENT_PUSH_WINDOW_MS } = await import('../ambient-push');
+        const owner = `su-notice-${randomUUID()}`;
+        const generation = `r8-${owner}:1`;
+        const summary = `zephyrrepair notice ${owner} — preserve approval ☃`;
+        const notice = { msg_id: randomUUID(), ts: new Date().toISOString(),
+          from: 'system-watchdog', to: ['*'], kind: 'message' as const, auto: true, category: 'severe-event',
+          condition_key: `r8:${owner}`, severity: 'warning', state_version: 1,
+          summary, body: summary, expects: 'none' as const };
+        const identity = systemNoticeIdentity(notice)!;
+        expect(identity).not.toBeNull();
+        const ctx = { isSuperuser: true, uiClientId: owner, clientId: owner,
+          workspaceId: coordScopeWorkspace(), principal: { slug: 'system:operator', workspaceId: coordScopeWorkspace() },
+          metadata: vi.fn(), log: vi.fn(), progress: vi.fn() } as never;
+        const folds: Array<{ injection: string; committedFloor: unknown; replay: unknown }> = [];
+        let nowOverride: number | undefined;
+        let seenGeneration: string | null = null;
+        const fold = async (
+          request: Parameters<typeof buildActivityHookBundle>[1] = { generation: seenGeneration, glance_stale: false },
+          context: Parameters<typeof buildActivityHookBundle>[2] = ctx,
+        ) => {
+          const bundle = await buildActivityHookBundle(owner, request, context, {
+            generation: async () => generation,
+            glance: async () => ({}),
+            readWatermark: async () => ({}),
+            readInboxCursor: id => ackAndRead(id, 'inbox'),
+            stageInboxCursor: (id, next) => stage(id, 'inbox', next),
+            now: () => new Date(nowOverride ?? Date.now()),
+            inbox: async (floor, context, replay) => {
+              const result = await inboxTool.handler({ __deliveryFloorTs: floor,
+                __systemNoticeState: replay ?? {} } as never, context) as { content: Array<{ text: string }> };
+              const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+              folds.push({ injection: String(payload.injection ?? ''), committedFloor: floor,
+                replay: payload.__systemNoticeState });
+              return payload;
+            },
+          });
+          expect(bundle.complete).toBe(true);
+          seenGeneration = bundle.generation;
+          return bundle;
+        };
+        const floors = () => provenSystemNoticeEmissions(db.adminSql as never, owner, 0, [identity.key]);
+        const captures: Array<{ diagnosticsPath: string; stdoutReceipts: unknown; stdoutDelivery: unknown }> = [];
+        const savedEntries = h.entries;
+        h.entries = [];
+        let dateNow: ReturnType<typeof vi.spyOn> | undefined;
+        let omitCarrier = false;
+        const authOwners: string[] = [];
+        const bundleSpy = vi.spyOn(bundleModule, 'buildActivityHookBundle').mockImplementation(async (id, request, context) => {
+          expect(id).toBe(owner);
+          authOwners.push(id);
+          const bundle = await fold(request, context);
+          return omitCarrier ? { ...bundle, surfaces: { ...bundle.surfaces,
+            inbox: { ...bundle.surfaces?.inbox, injection: '' } } } : bundle;
+        });
+        try {
+          await coordLog.appendLine('messages', notice.from, notice);
+          await withAuthenticatedActivityHost(owner, client, async (host, servingGeneration) => {
+          const report = async (receipt: unknown = { version: 1, owner: 'forged-recipient', confirmations: [] },
+            reportOwner = owner) => host.callTool({ name: 'activity:report',
+            arguments: { owner: reportOwner, agent: client, kind: 'lifecycle', summary: 'R8 native proof',
+              hook_bundle: { generation: seenGeneration, glance_stale: false } },
+            _meta: { 'papercusp/servingGeneration': servingGeneration, 'papercusp/memoryReceipt': receipt } });
+          const foreign = await report(undefined, `su-foreign-${randomUUID()}`);
+          expect(foreign.isError).toBe(true);
+          expect(authOwners).toEqual([]);
+          // Collection followed by carrier omission cannot manufacture a floor.
+          if (fault === 'omitted-carrier') {
+            omitCarrier = true;
+            const omitted = await report();
+            expect(omitted._meta?.['papercusp/memoryEmission']).toBeUndefined();
+            expect(await floors()).toEqual({});
+            omitCarrier = false;
+          }
+          const runNative = async (partial: boolean) => {
+            let diagnosticsPath = '';
+            let captured: Awaited<ReturnType<typeof captureNativeMcp>> | undefined;
+            let failure: string | undefined;
+            try { captured = await captureNativeMcp(client,
+              [{ name: 'receipt_canary', description: 'Local activity notice receipt observation.' }], summary, [], {
+                stdioReceipt: 'memory', stdioPort: 'orient', stdioOwner: owner,
+                stdioConfirm: true,
+                receiptAdapter: client === 'omp' ? 'omp-rpc' : 'ptool-stdio',
+                ...(partial ? { stdioFault: 'partial-stdout' as const } : {}),
+                onDiagnostics: path => {
+                  diagnosticsPath = path;
+                  Object.assign(task.meta, { nativeNoticeDiagnostics: path });
+                },
+                mcpResult: async (method, result, request) => {
+                  const receipt = (request.params as { _meta?: Record<string, unknown> } | undefined)?._meta?.['papercusp/memoryReceipt'] as
+                    { confirmations?: unknown } | undefined;
+                  if (method !== 'tools/call') {
+                    if (Array.isArray(receipt?.confirmations) && receipt.confirmations.length) await report(receipt);
+                    return result;
+                  }
+                  const response = await report(receipt);
+                  expect(response.isError).not.toBe(true);
+                  if ((request.params as { name?: string })?.name === 'receipt_confirmation'
+                      || (Array.isArray(receipt?.confirmations) && receipt.confirmations.length)) return response;
+                  expect(response.content).toEqual(expect.arrayContaining([
+                    expect.objectContaining({ type: 'text', text: expect.stringContaining(summary) }),
+                  ]));
+                  return { ...response, ...(partial ? { content: [...response.content as object[],
+                    { type: 'text', text: 'x'.repeat(512 * 1024) }] } : {}) };
+                },
+              }); } catch (error) {
+                if (!partial) throw error;
+                failure = String(error);
+              }
+            if (partial) {
+              // An interrupted installed host can exit or time out. Neither
+              // outcome alone proves partial delivery: require the exact native
+              // request, nonempty OS prefix, closed pipe and absent receipt.
+              const diagnostics = JSON.parse(readFileSync(diagnosticsPath, 'utf8'));
+              expect(diagnostics.pipeProbe).toMatchObject({ cut: true, closed: true,
+                targetMethod: 'tools/call', forwardedBytes: 1024 });
+              expect(diagnostics.pipeProbe.targetRequest.method).toBe('tools/call');
+              expect(diagnostics.pipeProbe.consumedBytes).toBeGreaterThanOrEqual(1024);
+              expect(diagnostics.pipeProbe.consumedBytes).toBeLessThan(512 * 1024);
+              expect(diagnostics.stdoutDelivery.confirmations).toEqual([]);
+              if (client === 'omp') expect(diagnostics.pipeProbe.recorded).toBe(false);
+              Object.assign(task.meta, { nativeNoticePartial: { diagnosticsPath, failure,
+                pipeProbe: diagnostics.pipeProbe, stdoutDelivery: diagnostics.stdoutDelivery } });
+              return;
+            }
+            expect(captured).toBeDefined();
+            const confirmation = JSON.parse(readFileSync(diagnosticsPath, 'utf8')).mcpRequests
+              .find((request: { method: string; params?: { _meta?: Record<string, unknown> } }) => {
+                const proof = request.params?._meta?.['papercusp/memoryReceipt'] as
+                  { confirmations?: unknown[] } | undefined;
+                return request.method === 'tools/call' && Array.isArray(proof?.confirmations)
+                  && proof.confirmations.length > 0;
+              });
+            expect(confirmation?.params?._meta?.['papercusp/memoryReceipt']?.confirmations)
+              .toEqual(expect.arrayContaining([expect.objectContaining({
+                fragments: expect.arrayContaining([expect.objectContaining({ kind: 'notice', id: identity.key })]),
+              })]));
+            captures.push({ diagnosticsPath: captured!.diagnosticsPath,
+              stdoutReceipts: captured!.stdoutReceipts, stdoutDelivery: captured!.stdoutDelivery });
+            return captured;
+          };
+          if (fault === 'partial-stdout') {
+            await runNative(true);
+            expect(await floors()).toEqual({});
+          }
+          const captured = (await runNative(false))!;
+          expect(captured.stdoutReceipts?.some(row => row.memoryFragments.some(fragment =>
+            (fragment as { kind?: string }).kind === 'notice'))).toBe(true);
+          const proven = (await floors())[identity.key];
+          expect(proven).toMatchObject({ fingerprint: identity.fingerprint, emittedAt: expect.any(Number) });
+          // ACK-on-arrival has advanced past the original row. Exact retained
+          // IDs, rather than a repeated producer event, recover it when due.
+          const cursors = await db.adminSql<{ committed: { since_ts?: string }; pending: unknown }[]>`
+            SELECT committed, pending FROM harness_shared.coord_read_cursors
+             WHERE workspace_id = ${coordScopeWorkspace()} AND owner_id = ${owner} AND surface = 'inbox'`;
+          expect(cursors[0]?.committed.since_ts).toBe(notice.ts);
+          const quiet = await report();
+          expect(JSON.stringify(quiet.content)).not.toContain(summary);
+          expect(quiet._meta?.['papercusp/memoryEmission']).toBeUndefined();
+          // Only parent selection uses the deterministic due clock; a future
+          // synthetic time is never offered as a native stdout confirmation.
+          nowOverride = proven!.emittedAt + AMBIENT_PUSH_WINDOW_MS;
+          dateNow = vi.spyOn(Date, 'now').mockReturnValue(nowOverride);
+          const due = await report();
+          expect(due.content).toEqual(expect.arrayContaining([
+            expect.objectContaining({ type: 'text', text: expect.stringContaining(summary) }),
+          ]));
+          expect(due._meta?.['papercusp/memoryEmission']).toBeDefined();
+          expect(await floors()).toEqual({ [identity.key]: proven });
+          Object.assign(task.meta, { nativeNoticeReplay: { client, fault, owner, generation, notice,
+            identity, folds, captures, proven, dueAt: nowOverride,
+            stores: 'real PostgreSQL event log, inbox cursor, emission reservation and notice floor',
+            clockScope: 'due selection only; native emission timestamp comes from stdout receipt',
+            authenticatedMcpHost: 'production authenticated UDS listener, real on-disk private bearer and activity:report',
+            authOwners, nativeIngress: 'fixture canary forwarded to activity:report with native receipt metadata',
+            deployedRuntime: 'UNKNOWN' } });
+          });
+        } finally {
+          bundleSpy.mockRestore();
+          dateNow?.mockRestore();
+          h.entries = savedEntries;
+        }
+      }, 90_000);
 
   it('context reliability joined harness: isolates dispatcher from parent Node preloads', async ({ task }) => {
     const home = mkdtempSync(join(tmpdir(), 'receipt-dispatcher-env-'));
@@ -242,7 +571,8 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
             const id = source === 'memory' ? randomUUID() : `WI-${randomUUID()}`;
             const rendered = '- Full approval condition ☃' + (fault === 'partial-stdout' ? 'x'.repeat(512 * 1024) : '');
             const offer = memoryFragmentOffer(source, id, 0, sink, rendered);
-            const { rendered: _text, ...fragment } = offer;
+            const { rendered: _text, ...manifest } = offer;
+            const fragment = { ...manifest, kind: source };
             const token = `receipt-${randomUUID()}`;
             const requests: Array<{ port: string; confirmations: unknown[]; inserted: number }> = [];
             const errors: unknown[] = [];
@@ -408,22 +738,19 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
             }
           }, 45_000);
 
-  for (const client of ['codex', 'claude'] as const)
+  for (const client of ['codex', 'claude', 'omp'] as const)
     for (const source of ['memory', 'corpus'] as const)
-      for (const port of ['initialize', 'orient', 'claim', 'create'] as const)
+      for (const port of client === 'omp' ? ['orient', 'claim', 'create'] as const
+        : ['initialize', 'orient', 'claim', 'create'] as const)
         for (const fault of ['duplicate-commit', 'partial-stdout', 'abandon-expiry', 'retry',
           'lost-response', 'deadline', 'overlapping-ports'] as const)
         it(`context reliability R-1: production launch ${client} ${source} ${port} ${fault === 'duplicate-commit' ? '' : fault + ' '}receipt join`, async ({ task }) => {
           const owner = `su-launch-${randomUUID()}`;
+          const adapter = client === 'omp' ? 'omp-rpc' : 'ptool-stdio';
           const text = 'Apply zephyrrepair recovery.\nOnly after explicit final approval ☃.';
           const savedEntries = h.entries;
           h.entries = source === 'memory' ? [{ id: randomUUID(), text, scope: 'u-test', score: 0.95 }] : [];
-          const selected = selectCorpusLines({ queryText: 'zephyrrepair', budgetChars: 3000,
-            hits: [{ source: 'plan', sourceId: `launch:${owner}`, excerpt: text,
-              meta: { contextUnit: text }, score: 0.95 }] });
-          h.corpus = source === 'corpus' ? { ...selected, block: renderCorpusBlock(selected.lines),
-            outcome: 'ok', embedderAvailable: true, candidateCount: 1, legs: null,
-            retrievalDepth: 1, rerank: 'nothing-to-reorder' } : null;
+          h.corpus = source === 'corpus' ? await corpusPlanFixture(owner, text) : null;
           const profile = resolveLaunchProfile({ claimedItemTitles: ['zephyrrepair recovery', 'zephyrrepair approval'] });
           const input = { profile, userId: 'u-test', workspaceId: 'ws-test',
             session: { sessionId: owner, port } };
@@ -435,16 +762,18 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
           let diagnosticsPath = '', failure: string | undefined;
           const echoedConfirmations: Array<{ token?: string }> = [];
           const nativeAttempts: Array<{ port: typeof port; rendered: string; diagnosticsPath: string;
-            offers: NonNullable<typeof offered>[] }> = [];
+            offers: NonNullable<typeof offered>[]; preparation: { preparedAt: string; fragments: unknown[]; committed: unknown } | null }> = [];
           let releaseOverlap!: () => void;
           const overlapReady = new Promise<void>(resolve => { releaseOverlap = resolve; });
           let overlapPrepared = 0;
           try {
             const runNative = (partial: boolean, nativePort: typeof port = port) => {
-              const attempt: typeof nativeAttempts[number] = { port: nativePort, rendered: '', diagnosticsPath: '', offers: [] };
+              const attempt: typeof nativeAttempts[number] = { port: nativePort, rendered: '', diagnosticsPath: '', offers: [], preparation: null };
               nativeAttempts.push(attempt);
               return captureNativeMcp(client, [{ name: 'receipt_canary', description: 'Local launch receipt observation.' }],
               text, [], { stdioReceipt: source, stdioPort: nativePort, stdioOwner: owner,
+                receiptAdapter: adapter,
+                ...(fault === 'duplicate-commit' && nativePort === 'orient' ? { retainNativeTranscript: true } : {}),
                 ...(partial ? { stdioFault: 'partial-stdout' as const } : {}),
                 ...(fault === 'lost-response' || fault === 'deadline' ? { stdioFault: fault } : {}),
                 onDiagnostics: path => { diagnosticsPath = path; attempt.diagnosticsPath = path;
@@ -456,7 +785,8 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
                   // The same production response wrapper handles preparation
                   // and any next-request receipts; no fabricated fragment offer.
                   return withMemoryEmissionReceipt(db.adminSql as never, owner, confirmations, async () => {
-                    if (method !== (nativePort === 'initialize' ? 'initialize' : 'tools/call')) return result;
+                    if (method !== (nativePort === 'initialize' ? 'initialize' : 'tools/call')
+                        || (request.params as { name?: string })?.name === 'receipt_confirmation') return result;
                     attempt.rendered = await buildLaunchMemoryBlock({ ...input, session: { sessionId: owner, port: nativePort } }) ?? '';
                     rendered = attempt.rendered;
                     expect(attempt.rendered).toContain('Only after explicit final approval ☃.');
@@ -475,12 +805,16 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
                       // This observer runs inside the actual native request,
                       // before the fixture can write its HTTP response or the
                       // production stdio adapter can emit a single byte.
-                      const { rendered: _text, ...fragment } = offer.fragments[0]!;
-                      const pending = await db.adminSql<{ fragments: unknown[]; committed: unknown }[]>`
-                        SELECT pending -> 'fragments' AS fragments, committed
+                      const { rendered: _text, sourceVersion: _hostSource, ...fragment } = offer.fragments[0]!;
+                      const pending = await db.adminSql<{ preparedAt: string; fragments: unknown[]; committed: unknown }[]>`
+                        SELECT pending ->> 'preparedAt' AS "preparedAt", pending -> 'fragments' AS fragments, committed
                         FROM harness_shared.coord_read_cursors
                         WHERE owner_id = ${owner} AND surface = ${'memory-emission:' + offer.token}`;
-                      expect(pending).toEqual([{ fragments: [fragment], committed: null }]);
+                      expect(pending, JSON.stringify({ owner, token: offer.token, pending }))
+                        .toMatchObject([{ fragments: [initialStagedFragment(offer.fragments[0]!)], committed: null }]);
+                      expect(pending).toHaveLength(1);
+                      expect(Number(pending[0]!.preparedAt)).toBeGreaterThan(0);
+                      attempt.preparation = pending[0]!;
                       expect(await surfaced()).toEqual([]);
                       if (fault === 'duplicate-commit') {
                         expect(await buildLaunchMemoryBlock({ ...input, session: { sessionId: owner, port: 'mid-turn' } }))
@@ -527,16 +861,24 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
               Object.assign(task.meta, { nativeTransportFault: { failure, diagnostics, attempt } });
               expect(attempt.offers.length).toBeGreaterThan(0);
               expect(diagnostics.transportFaults.length).toBe(attempt.offers.length);
-              expect(diagnostics.stdoutDelivery).toEqual({ adapter: 'ptool-stdio', owner, confirmations: [] });
+              expect(diagnostics.stdoutDelivery).toEqual({ adapter, owner, confirmations: [] });
               expect(echoedConfirmations).toEqual([]);
               expect(await surfaced()).toEqual([]);
               for (const observation of diagnostics.transportFaults) {
                 expect(observation).toMatchObject({ method: port === 'initialize' ? 'initialize' : 'tools/call',
                   fault, closedBeforeCleanup: true, writableEnded: false });
+                 if (client === 'omp' && fault === 'deadline') {
+                   expect(observation).toMatchObject({ cancelledByClient: true,
+                     cancellationReason: expect.stringContaining('TimeoutError') });
+                   expect(diagnostics.mcpRequests).toContainEqual({ jsonrpc: '2.0',
+                     method: 'notifications/cancelled', params: {
+                       requestId: observation.requestId, reason: observation.cancellationReason,
+                     } });
+                 }
                 expect(observation.elapsedMs).toBeGreaterThanOrEqual(fault === 'deadline' ? 8000 : 0);
                 const offer = attempt.offers.find(row => row.token === observation.preparedToken)!;
                 expect(offer?.owner).toBe(owner);
-                const { rendered: fragmentText, ...fragment } = offer.fragments[0]!;
+                const { rendered: fragmentText, sourceVersion: _hostSource, ...fragment } = offer.fragments[0]!;
                 expect(attempt.rendered).toContain(fragmentText);
                 expect(fragment).toMatchObject({ kind: source, epoch: 0, port,
                   bodySha256: createHash('sha256').update(fragmentText as string).digest('hex'),
@@ -544,13 +886,14 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
                 const pending = await db.adminSql<{ fragments: unknown[]; committed: unknown }[]>`
                   SELECT pending -> 'fragments' AS fragments, committed FROM harness_shared.coord_read_cursors
                   WHERE owner_id = ${owner} AND surface = ${'memory-emission:' + offer.token}`;
-                expect(pending).toEqual([{ fragments: [fragment], committed: null }]);
+                expect(pending, JSON.stringify({ owner, token: offer.token, pending }))
+                  .toEqual([{ fragments: [initialStagedFragment(offer.fragments[0]!)], committed: null }]);
               }
               expect(await buildLaunchMemoryBlock({ ...input, session: { sessionId: owner, port: 'mid-turn' } }))
                 .toContain('Only after explicit final approval ☃.');
               expect(await surfaced()).toEqual([]);
               const offer = attempt.offers[0]!;
-              const { rendered: _text, ...fragment } = offer.fragments[0]!;
+              const { rendered: _text, sourceVersion: _hostSource, ...fragment } = offer.fragments[0]!;
               const cell: DeliveryMatrixCell = { client, sink: port, source, fault,
                 selector: task.name, evidenceRefs: [`vitest:${task.name}#nativeTransportFault`],
                 terminalOracle: 'complete-stdout', state: 'prepared', verdict: 'passed', suppressionWrites: 0,
@@ -561,7 +904,8 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
               return;
             }
             if (fault === 'overlapping-ports') {
-              const otherPort = port === 'initialize' ? 'orient' : 'initialize';
+              const otherPort = client === 'omp' ? port === 'orient' ? 'claim' : 'orient'
+                : port === 'initialize' ? 'orient' : 'initialize';
               const captures = await Promise.all([runNative(false), runNative(false, otherPort)]);
               expect(overlapPrepared).toBe(2);
               expect(nativeAttempts.map(attempt => attempt.offers.length)).toEqual([1, 1]);
@@ -570,13 +914,13 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
                 expect(capture).not.toBeNull();
                 const attempt = nativeAttempts[index]!;
                 const offer = attempt.offers[0]!;
-                const { rendered: fragmentText, ...fragment } = offer.fragments[0]!;
+                const { rendered: fragmentText, sourceVersion: _hostSource, ...fragment } = offer.fragments[0]!;
                 expect(attempt.rendered).toContain(fragmentText);
                 expect(fragment).toMatchObject({ kind: source, epoch: 0, port: attempt.port,
                   bodySha256: createHash('sha256').update(fragmentText as string).digest('hex'),
                   bodyBytes: Buffer.byteLength(fragmentText as string) });
                 const proof = { token: offer.token, fragments: [fragment] };
-                expect(capture!.stdoutDelivery).toEqual({ adapter: 'ptool-stdio', owner, confirmations: [proof] });
+                expect(capture!.stdoutDelivery).toEqual({ adapter, owner, confirmations: [proof] });
                 expect(capture!.stdoutReceipts).toHaveLength(1);
                 expect(capture!.stdoutReceipts![0]).toMatchObject({ stage: 'stdout-emitted', owner,
                   token: offer.token, memoryFragments: [fragment] });
@@ -600,7 +944,7 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
                 selector: task.name, evidenceRefs: [`vitest:${task.name}#nativeOverlappingPorts`],
                 terminalOracle: 'complete-stdout', state: 'emitted', verdict: 'passed', suppressionWrites: 1,
                 attempt: { id: owner, recipient: owner, workspace: 'isolated-org-fixture', epoch: 0, token: proof.token, fragment },
-                proof: { event: 'complete-stdout', adapter: 'ptool-stdio', receiptRef: `vitest:${task.name}#nativeOverlappingPorts`,
+                proof: { event: 'complete-stdout', adapter, receiptRef: `vitest:${task.name}#nativeOverlappingPorts`,
                   attemptId: owner, recipient: owner, workspace: 'isolated-org-fixture', epoch: 0, token: proof.token,
                   client, sink: port, payloadSha256: receipt.payloadSha256, payloadBytes: receipt.payloadBytes, fragment } };
               joinedCells.set(deliveryMatrixCellKey(cell), cell);
@@ -616,7 +960,7 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
               expect(diagnostics.pipeProbe).toMatchObject({ cut: true, closed: true, forwardedBytes: 1024,
                 targetMethod: port === 'initialize' ? 'initialize' : 'tools/call' });
               expect(diagnostics.pipeProbe.consumedBytes).toBeGreaterThanOrEqual(1024);
-              expect(diagnostics.stdoutDelivery).toEqual({ adapter: 'ptool-stdio', owner, confirmations: [] });
+              expect(diagnostics.stdoutDelivery).toEqual({ adapter, owner, confirmations: [] });
               expect(offered?.fragments).toHaveLength(1);
               expect(await surfaced()).toEqual([]);
               expect(echoedConfirmations).toEqual([]);
@@ -629,7 +973,7 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
             if (fault === 'partial-stdout') Object.assign(task.meta, { nativePartialFailure: failure });
             expect(offered?.owner).toBe(owner);
             expect(offered?.fragments).toHaveLength(1);
-            const { rendered: emittedFragment, ...fragment } = offered!.fragments[0]!;
+            const { rendered: emittedFragment, sourceVersion: _hostSource, ...fragment } = offered!.fragments[0]!;
             expect(typeof emittedFragment).toBe('string');
             expect(rendered).toContain(emittedFragment);
             expect(fragment).toMatchObject({ kind: source, epoch: 0, port,
@@ -647,9 +991,14 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
               expect(pipe.targetRequest.method).toBe(pipe.targetMethod);
               expect(pipe.consumedBytes).toBeGreaterThanOrEqual(1024);
               expect(pipe.consumedBytes).toBeLessThan(512 * 1024);
-              expect(pipe.prefix).toContain('Only after explicit final approval');
+              if (client === 'omp') {
+                expect(pipe.prefix).toContain('"type":"tool_execution_end"');
+                expect(pipe.prefix).toContain('"toolName":"mcp__papercusp_su_receipt_canary"');
+                expect(pipe.targetRequest.params._meta.threadId).toBe(diagnostics.nativeSessionId);
+                expect(pipe.recorded).toBe(false);
+              } else expect(pipe.prefix).toContain('Only after explicit final approval');
               expect(JSON.stringify(diagnostics.requests)).not.toContain('FINAL_CONDITION');
-              expect(diagnostics.stdoutDelivery).toEqual({ adapter: 'ptool-stdio', owner, confirmations: [] });
+              expect(diagnostics.stdoutDelivery).toEqual({ adapter, owner, confirmations: [] });
               expect(echoedConfirmations).toEqual([]);
               expect(await surfaced()).toEqual([]);
               const retained = await db.adminSql<{ pending: { fragments: unknown[] }; committed: unknown }[]>`
@@ -657,7 +1006,8 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
                  WHERE owner_id = ${owner} AND surface = ${'memory-emission:' + offered!.token}
               `;
               expect(retained).toHaveLength(1);
-              expect(retained[0]!.pending.fragments).toEqual([fragment]);
+              expect(retained[0]!.pending.fragments, JSON.stringify(retained))
+                .toEqual([initialStagedFragment(offered!.fragments[0]!)]);
               expect(retained[0]!.committed).toBeNull();
               expect(await buildLaunchMemoryBlock({ ...input, session: { sessionId: owner, port: 'mid-turn' } }))
                 .toContain('Only after explicit final approval ☃.');
@@ -679,13 +1029,59 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
             const visible = port === 'initialize' ? rendered : JSON.stringify({ [port]: rendered });
             expect(JSON.stringify(capture.request)).toContain(JSON.stringify(visible).slice(1, -1));
             const proof = { token: offered!.token, fragments: [fragment] };
-            expect(capture.stdoutDelivery).toEqual({ adapter: 'ptool-stdio', owner, confirmations: [proof] });
+            expect(capture.stdoutDelivery).toEqual({ adapter, owner, confirmations: [proof] });
             expect(capture.stdoutReceipts).toHaveLength(1);
             const receipt = capture.stdoutReceipts![0]!;
             expect(receipt).toMatchObject({ stage: 'stdout-emitted', owner, token: proof.token,
               memoryFragments: [fragment] });
             expect(receipt.payloadSha256).toMatch(/^[a-f0-9]{64}$/);
             expect(receipt.payloadBytes).toBeGreaterThanOrEqual(Number(fragment.bodyBytes));
+            if (fault === 'duplicate-commit' && port === 'orient') {
+              const native = capture.nativeTranscript!;
+              expect(native).toBeDefined();
+              expect(sha256(readFileSync(native.path))).toBe(native.sourceSha256);
+              const preparation = nativeAttempts[0]!.preparation!;
+              expect(preparation).toBeDefined();
+              expect(preparation.fragments).toEqual([initialStagedFragment(offered!.fragments[0]!)]);
+              const capturedAt = new Date().toISOString();
+              const diagnostics = JSON.parse(readFileSync(capture.diagnosticsPath, 'utf8'));
+              const attempt = { sourceStoreId: JSON.stringify(['coord_read_cursors', owner, 'memory-emission:' + proof.token]),
+                attemptId: proof.token, attemptSchemaVersion: 'memory-emission-v2', recordVersion: 0,
+                createdAt: new Date(Number(preparation.preparedAt)).toISOString(), visibleAt: capturedAt,
+                client, sink: port, recipient: owner, workspace: input.workspaceId, epoch: Number(fragment.epoch),
+                nativeSessionId: native.nativeSessionId,
+                context: { attemptId: proof.token, sessionId: owner, epoch: Number(fragment.epoch), port,
+                  block: visible, fragments: [] } };
+              const snapshot: FinalContextAttemptSnapshot = { schemaVersion: 'final-attempt-source-v1',
+                snapshotId: capture.diagnosticsPath, sourceSchemaSha256: sha256(readFileSync(new URL('./session-epoch-ledger.ts', import.meta.url))),
+                capturedAt, measuredAt: capturedAt, runtimeGeneration: capture.clientVersion,
+                environmentSha256: sha256(JSON.stringify(diagnostics.invocation.environment)),
+                configurationSha256: sha256(JSON.stringify(diagnostics.invocation.argv)), attempts: [attempt], receipts: [] };
+              const locators = nativeMcpTranscriptLocators(capture, attempt, visible);
+              expect(locators).toHaveLength(1);
+              const bound = { ...native, client, recipient: owner, workspace: input.workspaceId, epoch: attempt.epoch };
+              const attribution = attributeFinalContextTranscript(snapshot, bound, locators);
+              expect(attribution.attributions).toMatchObject([{ status: 'observed', unknown: [], observedSha256: sha256(visible) }]);
+              expect(attributeFinalContextTranscript(snapshot, { ...bound, recipient: 'foreign' }, locators)
+                .attributions[0]!.status).toBe('UNKNOWN');
+              expect(attributeFinalContextTranscript(snapshot, bound, [{ ...locators[0]!, callId: 'foreign' }])
+                .attributions[0]!.status).toBe('UNKNOWN');
+              const terminal = joinFinalContextNativeEmissions(snapshot, bound, locators, capture.stdoutEmissions ?? []);
+              if (client === 'omp' || client === 'claude') {
+                expect(terminal.joins).toMatchObject([{ status: 'joined', unknown: [] }]);
+                expect(terminal.snapshot.receipts).toHaveLength(1);
+              } else {
+                expect(terminal.joins[0]!.status).toBe('UNKNOWN');
+                expect(terminal.snapshot.receipts).toEqual([]);
+              }
+              const sample = sampleFinalDeliveredContext(terminal.snapshot);
+              expect(sample).toMatchObject({ attempted: 1, usefulSuccesses: 0, usefulUnknown: 1 });
+              if (client === 'omp' || client === 'claude') expect(sample.attempts[0]!.assessment.unknown).not.toContain('terminal-receipt-unmatched');
+              Object.assign(task.meta, { productionLaunchNativeAttribution: { preparation, offered,
+                native, receipt, snapshot, locators, attribution, terminal, sample,
+                scope: 'actual PostgreSQL preparation + installed native stdout receipt + physical client JSONL; scripted local provider',
+                terminalSamplerJoin: client === 'omp' || client === 'claude' ? 'joined' : 'UNKNOWN', semanticLabels: 'UNKNOWN', taskBenefit: 'UNKNOWN', shipment: 'UNKNOWN' } });
+            }
             if (fault === 'abandon-expiry') {
               expect(await surfaced()).toEqual([]);
               expect(await confirmMemoryEmission(db.adminSql as never, owner, proof as never)).toBe(0);
@@ -720,7 +1116,7 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
               terminalOracle: 'complete-stdout', state: 'emitted', verdict: 'passed', suppressionWrites: 1,
               attempt: { id: owner, recipient: owner, workspace: 'isolated-org-fixture', epoch: 0,
                 token: proof.token, fragment: matrixFragment },
-              proof: { event: 'complete-stdout', adapter: 'ptool-stdio', receiptRef: `vitest:${task.name}#nativeStdoutReceipt`,
+              proof: { event: 'complete-stdout', adapter, receiptRef: `vitest:${task.name}#nativeStdoutReceipt`,
                 attemptId: owner, recipient: owner, workspace: 'isolated-org-fixture', epoch: 0,
                 token: proof.token, client, sink: port, payloadSha256: receipt.payloadSha256,
                 payloadBytes: receipt.payloadBytes, fragment: matrixFragment } };
@@ -739,9 +1135,10 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
           } finally { h.entries = savedEntries; h.corpus = null; }
         }, 60_000);
 
-  for (const source of ['memory', 'corpus'] as const)
-    for (const output of ['complete', 'closed', 'partial', 'lost-response', 'deadline', 'retry', 'abandon-expiry', 'overlapping-ports'] as const)
-      it(`context reliability R-1: production compact ${source} ${output} endpoint hook PostgreSQL join`, async ({ task }) => {
+  for (const client of ['claude', 'codex'] as const)
+    for (const source of ['memory', 'corpus'] as const)
+      for (const output of ['complete', 'closed', 'partial', 'lost-response', 'deadline', 'retry', 'abandon-expiry', 'overlapping-ports'] as const)
+      it(`context reliability R-1: production ${client === 'codex' ? 'Codex ' : ''}compact ${source} ${output} endpoint hook PostgreSQL join`, async ({ task }) => {
         const owner = `su-compact-${randomUUID()}`;
         const home = mkdtempSync(join(tmpdir(), 'compact-pg-'));
         const hooks = join(home, 'hooks', 'inject');
@@ -752,19 +1149,32 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
         writeFileSync(join(home, RECOVER_INTENT), JSON.stringify({ sid: owner }));
         const savedEntries = h.entries;
         const text = 'Apply zephyrrepair recovery.\nOnly after explicit final approval ☃.';
+        // Both real compact endpoints fall back to this workspace when the
+        // native request omits one. Seed and later recall in that same scope.
+        const workspaceId = activeWorkspaceId();
         h.entries = source === 'memory' ? [{ id: randomUUID(), text, scope: 'u-test', score: 0.95 }] : [];
-        const selected = selectCorpusLines({ queryText: 'zephyrrepair', budgetChars: 3000,
-          hits: [{ source: 'plan', sourceId: `compact:${owner}`, excerpt: text, meta: { contextUnit: text }, score: 0.95 }] });
-        h.corpus = source === 'corpus' ? { ...selected, block: renderCorpusBlock(selected.lines), outcome: 'ok',
-          embedderAvailable: true, candidateCount: 1, legs: null, retrievalDepth: 1, rerank: 'nothing-to-reorder' } : null;
+        h.corpus = source === 'corpus' ? await corpusPlanFixture(owner, text, workspaceId) : null;
+        const compactFixtureScope = { workspaceId,
+          sourceNamespace: h.corpus?.lines[0]?.sourceVersion?.namespace ?? null };
+        Object.assign(task.meta, { compactFixtureScope });
+        if (h.corpus) {
+          const { revalidateKnowledgeSourceVersions } = await import('../agent-tools/search/knowledge-sources');
+          const version = h.corpus.lines[0]!.sourceVersion!;
+          const current = await revalidateKnowledgeSourceVersions({ sql: db.adminSql, workspaceId,
+            previous: [version], audience: { harnessSlugs: ['papercusp'] }, allowed: new Set(['plan']) });
+          Object.assign(task.meta, { compactCanonicalSourcePreflight: { version, current } });
+          expect(current, JSON.stringify(compactFixtureScope)).toEqual([version]);
+        }
         h.compactPadding = ['closed', 'partial', 'retry'].includes(output) ? 'x'.repeat(512 * 1024) : '';
         const profile = resolveLaunchProfile({ claimedItemTitles: ['zephyrrepair approval'] });
-        const launchInput = { profile, workspaceId: 'ws-test', userId: 'u-test',
+        const launchInput = { profile, workspaceId, userId: 'u-test',
           session: { sessionId: owner, port: 'turn-start' } };
         const surfaced = () => source === 'memory'
           ? db.adminSql<{ port: string; epoch: number }[]>`SELECT port, epoch FROM harness_shared.memory_session_surfaced WHERE session_id = ${owner}`
           : db.adminSql<{ port: string; epoch: number }[]>`SELECT port, epoch FROM harness_shared.corpus_session_surfaced WHERE session_id = ${owner}`;
         const responses: Array<Record<string, any>> = [];
+        const endpointDiagnostics: Array<Record<string, unknown>> = [];
+        Object.assign(task.meta, { compactEndpointDiagnostics: endpointDiagnostics });
         const errors: string[] = [];
         const transport: Array<{ fault: string; elapsedMs: number; ended: boolean }> = [];
         const pendingFor = (token: string) => db.adminSql<{ fragments: unknown[] }[]>`
@@ -796,17 +1206,42 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
               res.end(JSON.stringify({ text: response.content[0].text, deliveryToken: offer!.token, memoryFragmentOffers: offer!.fragments }));
               return;
             }
-            expect(req.url).toContain('memoryReceiptMode=1');
-            const response = await recoveryEndpoints[0].handler(new Request(`http://localhost${req.url}`),
-              { principal: null, input: undefined, params: {}, log: () => {}, signal: new AbortController().signal });
-            const body = await response.json(); responses.push(body);
+            const context = { principal: null, input: undefined, params: {}, log: () => {}, signal: new AbortController().signal };
+            const diagnostic: Record<string, unknown> = { url: req.url, fallbackWorkspaceId: activeWorkspaceId(),
+              fixtureWorkspaceId: workspaceId, sourceNamespace: h.corpus?.lines[0]?.sourceVersion?.namespace ?? null };
+            endpointDiagnostics.push(diagnostic);
+            let response: Response;
+            if (client === 'codex') {
+              const chunks: Buffer[] = [];
+              for await (const chunk of req) chunks.push(Buffer.from(chunk));
+              const payload = Buffer.concat(chunks).toString();
+              Object.assign(diagnostic, { request: JSON.parse(payload), requestWorkspace: JSON.parse(payload).workspace ?? null });
+              expect(JSON.parse(payload)).toMatchObject({ owner, client, source: 'compact', memoryReceiptMode: true });
+              const endpoint = identityEndpoints.find(route => route.path === '/agent-mcp/compaction-context')!;
+              response = await endpoint.handler(new Request(`http://localhost${req.url}`, { method: 'POST', body: payload }), context);
+            } else {
+              Object.assign(diagnostic, { requestWorkspace: new URL(`http://localhost${req.url}`).searchParams.get('workspace') });
+              expect(req.url).toContain('memoryReceiptMode=1');
+              response = await recoveryEndpoints[0].handler(new Request(`http://localhost${req.url}`), context);
+            }
+            const wireBody = await response.json();
+            Object.assign(diagnostic, { status: response.status, response: wireBody });
+            // Normalize only the saved assertion view; each actual adapter
+            // receives its production endpoint's unchanged wire response.
+            const body = client === 'codex' ? { ...wireBody,
+              _meta: { 'papercusp/memoryEmission': { owner, token: wireBody.deliveryToken, fragments: wireBody.memoryFragmentOffers } } }
+              : wireBody;
+            responses.push(body);
             const offer = body._meta?.['papercusp/memoryEmission'];
             if (output === 'complete') {
+              expect(offer, JSON.stringify(diagnostic)).toMatchObject({ owner,
+                fragments: [expect.objectContaining({ kind: source, epoch: 1, port: 'compact' })] });
               const { rendered: _rendered, ...fragment } = offer.fragments[0];
               const pending = await pendingFor(offer.token);
-              expect(pending).toEqual([{ fragments: [fragment] }]);
+              expect(pending, JSON.stringify(pending))
+                .toEqual([{ fragments: [initialStagedFragment(offer.fragments[0]) ] }]);
               expect(await surfaced()).toEqual([]);
-              const cell: DeliveryMatrixCell = { client: 'claude', sink: 'compact-reprime', source, fault: 'prepare',
+              const cell: DeliveryMatrixCell = { client, sink: 'compact-reprime', source, fault: 'prepare',
                 selector: task.name, evidenceRefs: [`vitest:${task.name}#compactPreparation`],
                 terminalOracle: 'complete-stdout', state: 'prepared', verdict: 'passed', suppressionWrites: 0,
                 attempt: { id: owner, recipient: owner, workspace: 'isolated-org-fixture', epoch: fragment.epoch,
@@ -823,9 +1258,9 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
               const startedAt = Date.now();
               res.once('close', () => transport.push({ fault: output, elapsedMs: Date.now() - startedAt, ended: res.writableEnded }));
               if (output === 'lost-response') req.socket.destroy();
-              return; // deadline: the generated hook's real 4.5s abort closes this response
+              return; // Real client deadline closes this response: Codex 2.5s, generated Claude hook 4.5s.
             }
-            res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(body));
+            res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(wireBody));
           })().catch(error => { errors.push(String(error)); res.destroy(); });
         });
         await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -835,6 +1270,10 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
           PAPERCUSP_HOME: home, PAPERCUSP_SID: owner, PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${address.port}`,
           PSU_RECOVER_TEST_CHAIN: JSON.stringify([['sh', '-c', 'hook'], ['claude', '--system-prompt-file', '/fixture/playbook']]) };
         const run = async (pipe: 'complete' | 'closed' | 'partial' = 'complete') => {
+          if (client === 'codex') {
+            const result = await runReceiptDispatcher(dispatcherRoot, client, 'compaction', env, pipe);
+            return { ...result, consumedBytes: result.partialBytes };
+          }
           const child = spawn(process.execPath, [join(home, RECOVER_HOOK)], { env, cwd: home, stdio: ['pipe', 'pipe', 'pipe'] });
           const stdout: Buffer[] = [], stderr: Buffer[] = [];
           let consumedBytes = 0;
@@ -864,14 +1303,14 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
             expect(await buildLaunchMemoryBlock(launchInput)).toContain('Only after explicit final approval ☃.');
             const offer = responses[0]._meta['papercusp/memoryEmission'];
             const { rendered: _rendered, ...fragment } = offer.fragments[0];
-            expect(await pendingFor(offer.token)).toEqual([{ fragments: [fragment] }]);
+            expect(await pendingFor(offer.token)).toEqual([{ fragments: [initialStagedFragment(offer.fragments[0])] }]);
             Object.assign(task.meta, { compactFailedRetry: { failed, offer, pending: await pendingFor(offer.token), suppressionWrites: 0 } });
             h.compactPadding = '';
           }
           const [result, other] = output === 'overlapping-ports'
             ? await Promise.all([run(), (async () => {
               await compactPrepared;
-              return runReceiptDispatcher(dispatcherRoot, 'claude', 'turn-start', env);
+              return runReceiptDispatcher(dispatcherRoot, client, 'turn-start', env);
             })()])
             : [await run(output === 'closed' || output === 'partial' ? output : 'complete'), undefined];
           Object.assign(task.meta, { compactNativeTerminal: result, compactEndpointErrors: errors, compactTransport: transport });
@@ -894,13 +1333,13 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
             if (output === 'lost-response' || output === 'deadline') {
               expect(result.stdout).not.toContain('Only after explicit final approval ☃.');
               expect(transport).toEqual([expect.objectContaining({ fault: output, ended: false })]);
-              if (output === 'deadline') expect(transport[0].elapsedMs).toBeGreaterThan(4000);
+              if (output === 'deadline') expect(transport[0].elapsedMs).toBeGreaterThan(client === 'codex' ? 2000 : 4000);
             }
             const { rendered: _rendered, ...fragment } = offer.fragments[0];
-            expect(await pendingFor(offer.token)).toEqual([{ fragments: [fragment] }]);
+            expect(await pendingFor(offer.token)).toEqual([{ fragments: [initialStagedFragment(offer.fragments[0])] }]);
             expect(await buildLaunchMemoryBlock(launchInput)).toContain('Only after explicit final approval ☃.');
           } else {
-            const { rendered, ...fragment } = offer.fragments[0];
+            const { rendered, sourceVersion: _hostSource, ...fragment } = offer.fragments[0];
             expect(result.stdout).not.toContain('papercusp/memoryEmission');
             expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toContain(rendered);
             const compactProof = { token: offer.token, fragments: [fragment] };
@@ -909,7 +1348,7 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
               expect(other.signal, other.stderr).toBeNull(); expect(other.code, other.stderr).toBe(0);
               expect(other.stdout).toContain('Only after explicit final approval ☃.');
               expect(proofs).toHaveLength(2);
-              const { rendered: _otherRendered, ...otherFragment } = otherOffers[0].fragments[0];
+              const { rendered: _otherRendered, sourceVersion: _otherHostSource, ...otherFragment } = otherOffers[0].fragments[0];
               expect(proofs).toEqual(expect.arrayContaining([compactProof, { token: otherOffers[0].token, fragments: [otherFragment] }]));
               Object.assign(task.meta, { compactOverlap: { other, otherOffers, proofs, preparedBeforeEitherOutput: overlapPrepared } });
             } else expect(proofs).toEqual([compactProof]);
@@ -920,7 +1359,10 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
             if (output === 'abandon-expiry') {
               await db.adminSql`UPDATE harness_shared.coord_read_cursors SET pending = jsonb_set(pending, '{expiresAt}', '1'::jsonb)
                 WHERE owner_id = ${owner} AND surface = ${'memory-emission:' + offer.token}`;
-              expect(await pendingFor(offer.token)).toEqual([{ fragments: [fragment] }]);
+              const pending = await pendingFor(offer.token);
+              Object.assign(task.meta, { compactExpiredPending: pending });
+              expect(pending, JSON.stringify(pending))
+                .toEqual([{ fragments: [initialStagedFragment(offer.fragments[0])] }]);
             }
             await withMemoryEmissionReceipt(db.adminSql as never, owner, [compactProof], async () => ({ content: [] }));
             if (other) await withMemoryEmissionReceipt(db.adminSql as never, owner, proofs, async () => ({ content: [] }));
@@ -935,25 +1377,25 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
           if (output !== 'closed') {
             const { rendered: _fragmentText, ...fragment } = offer.fragments[0];
             const sink = 'compact-reprime' as const;
-            const cell: DeliveryMatrixCell = { client: 'claude', sink, source,
+            const cell: DeliveryMatrixCell = { client, sink, source,
               fault: output === 'complete' ? 'duplicate-commit' : output === 'partial' ? 'partial-stdout' : output,
               selector: task.name, evidenceRefs: [`vitest:${task.name}#compactEndpointJoin`],
               terminalOracle: 'complete-stdout', state: emitted ? 'emitted' : output === 'partial' ? 'partial' : output === 'abandon-expiry' ? 'abandoned' : 'prepared',
               verdict: 'passed', suppressionWrites: emitted ? 1 : 0,
               attempt: { id: owner, recipient: owner, workspace: 'isolated-org-fixture', epoch,
                 token: offer.token, fragment },
-              ...(emitted ? { proof: { event: 'complete-stdout' as const, adapter: 'claude-session-start',
+              ...(emitted ? { proof: { event: 'complete-stdout' as const, adapter: `${client}-session-start`,
                 receiptRef: `vitest:${task.name}#compactImmutableReceipt`, attemptId: owner, recipient: owner,
-                workspace: 'isolated-org-fixture', epoch, token: offer.token, client: 'claude', sink,
+                workspace: 'isolated-org-fixture', epoch, token: offer.token, client, sink,
                 payloadSha256: createHash('sha256').update(result.stdout).digest('hex'),
                 payloadBytes: Buffer.byteLength(result.stdout), fragment } } : {}) };
             joinedCells.set(deliveryMatrixCellKey(cell), cell);
             Object.assign(task.meta, { deliveryMatrixCell: cell });
           }
-          Object.assign(task.meta, { compactEndpointJoin: { source, output, offer, proofs,
-            generatedHookSha256: createHash('sha256').update(RECOVER_HOOK_SOURCE).digest('hex'),
+          Object.assign(task.meta, { compactEndpointJoin: { client, source, output, offer, proofs,
+            ...(client === 'claude' ? { generatedHookSha256: createHash('sha256').update(RECOVER_HOOK_SOURCE).digest('hex') } : {}),
             ledgerSourceSha256: createHash('sha256').update(ledgerSource).digest('hex'),
-            evidencePlane: 'real compact endpoint + generated SessionStart subprocess + production PostgreSQL',
+            evidencePlane: `real compact endpoint + ${client === 'claude' ? 'generated SessionStart' : 'Codex dispatcher'} subprocess + production PostgreSQL`,
             retrieval: 'deterministic fixture', clientHostConsumption: 'UNKNOWN', deployedRuntime: 'UNKNOWN',
             backendConfirmation: 'explicit saved native receipt replay' } });
         } finally {
@@ -962,6 +1404,216 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
           rmSync(home, { recursive: true, force: true });
         }
       }, 45_000);
+
+  for (const source of ['memory', 'corpus'] as const)
+    for (const output of ['complete', 'closed', 'partial'] as const)
+      it(`context reliability R-1: Codex compact ${source} ${output} real endpoint PostgreSQL join`, async ({ task }) => {
+        const owner = `su-codex-compact-${randomUUID()}`;
+        const home = mkdtempSync(join(tmpdir(), 'codex-compact-pg-'));
+        const savedEntries = h.entries;
+        const text = 'Apply zephyrrepair recovery.\nOnly after explicit final approval ☃.';
+        h.entries = source === 'memory' ? [{ id: randomUUID(), text, scope: 'u-test', score: 0.95 }] : [];
+        const selected = selectCorpusLines({ queryText: 'zephyrrepair', budgetChars: 3000,
+          hits: [{ source: 'plan', sourceId: `codex-compact:${owner}`, excerpt: text, meta: { contextUnit: text }, score: 0.95 }] });
+        h.corpus = source === 'corpus' ? { ...selected, block: renderCorpusBlock(selected.lines), outcome: 'ok',
+          embedderAvailable: true, candidateCount: 1, legs: null, retrievalDepth: 1, rerank: 'nothing-to-reorder' } : null;
+        h.compactPadding = output === 'partial' ? 'x'.repeat(512 * 1024) : '';
+        const errors: string[] = [], responses: Array<Record<string, any>> = [];
+        const endpoint = identityEndpoints.find(route => route.path === '/agent-mcp/compaction-context')!;
+        const server = createServer((req, res) => {
+          void (async () => {
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) chunks.push(Buffer.from(chunk));
+            const payload = Buffer.concat(chunks).toString();
+            expect(JSON.parse(payload)).toMatchObject({ owner, client: 'codex', source: 'compact', memoryReceiptMode: true });
+            const response = await endpoint.handler(new Request(`http://localhost${req.url}`, { method: 'POST', body: payload }),
+              { principal: null, input: undefined, params: {}, log: () => {}, signal: new AbortController().signal });
+            const body = await response.json(); responses.push(body);
+            res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(body));
+          })().catch(error => { errors.push(String(error)); res.destroy(); });
+        });
+        await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+        const address = server.address();
+        if (!address || typeof address === 'string') throw new Error('Missing Codex compact fixture address');
+        const env = { PATH: process.env.PATH, HOME: home, PAPERCUSP_HOME: home, PAPERCUSP_SID: owner,
+          PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${address.port}` };
+        const surfaced = () => source === 'memory'
+          ? db.adminSql<{ port: string; epoch: number }[]>`SELECT port, epoch FROM harness_shared.memory_session_surfaced WHERE session_id = ${owner}`
+          : db.adminSql<{ port: string; epoch: number }[]>`SELECT port, epoch FROM harness_shared.corpus_session_surfaced WHERE session_id = ${owner}`;
+        try {
+          const result = await runReceiptDispatcher(dispatcherRoot, 'codex', 'compaction', env, output);
+          expect(result.signal, result.stderr).toBeNull(); expect(result.code, result.stderr).toBe(0);
+          expect(errors).toEqual([]); expect(responses).toHaveLength(1);
+          const body = responses[0];
+          expect(body.text).toContain('IDENTITY COMPACTION');
+          expect(body.text).toContain('Only after explicit final approval ☃.');
+          expect(body.deliveryToken).toBeTypeOf('string');
+          expect(body.memoryFragmentOffers).toEqual([expect.objectContaining({ kind: source, epoch: 1, port: 'compact' })]);
+          const { rendered: _rendered, ...fragment } = body.memoryFragmentOffers[0];
+          expect(await surfaced()).toEqual([]);
+          const pending = await db.adminSql`SELECT pending -> 'fragments' AS fragments FROM harness_shared.coord_read_cursors
+            WHERE owner_id = ${owner} AND surface = ${'memory-emission:' + body.deliveryToken}`;
+          expect(pending, JSON.stringify(pending))
+            .toEqual([{ fragments: [initialStagedFragment(body.memoryFragmentOffers[0])] }]);
+          const proofs = openDeliveryLedger(owner, env, 'compact')!.confirmedMemoryDeliveries();
+          if (output === 'complete') {
+            expect(result.stdout).toContain('Only after explicit final approval ☃.');
+            const { sourceVersion: _hostSource, ...nativeFragment } = fragment;
+            const compactProof = { token: body.deliveryToken, fragments: [nativeFragment] };
+            expect(proofs).toEqual([compactProof]);
+            const receiptPath = join(ledgerDir(env), `${owner}.compact.emissions`,
+              createHash('sha256').update(body.deliveryToken).digest('hex') + '.json');
+            const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+            expect(receipt).toMatchObject({ owner, stage: 'stdout-emitted', memoryFragments: [nativeFragment],
+              payloadSha256: createHash('sha256').update(result.stdout).digest('hex'), payloadBytes: Buffer.byteLength(result.stdout) });
+            Object.assign(task.meta, { codexCompactImmutableReceipt: receipt });
+            // Explicit replay establishes the PG join; installed-host consumption remains unmeasured.
+            await withMemoryEmissionReceipt(db.adminSql as never, owner, proofs, async () => ({ content: [] }));
+            expect(await surfaced()).toEqual([{ port: 'compact', epoch: 1 }]);
+            expect(await confirmMemoryEmission(db.adminSql as never, owner, compactProof)).toBe(0);
+          } else {
+            expect(proofs).toEqual([]);
+            if (output === 'partial') {
+              expect(result.partialBytes).toBeGreaterThan(0);
+              expect(result.partialBytes).toBeLessThan(Buffer.byteLength(body.text));
+            }
+          }
+          const eligible = await buildLaunchMemoryBlock({ profile: resolveLaunchProfile({ claimedItemTitles: ['zephyrrepair approval'] }),
+            workspaceId: 'ws-test', userId: 'u-test', session: { sessionId: owner, port: 'turn-start' } });
+          if (output === 'complete') expect(eligible).toBeNull();
+          else { expect(eligible).toContain('Only after explicit final approval ☃.'); expect(await surfaced()).toEqual([]); }
+          Object.assign(task.meta, { codexCompactEndpointJoin: { source, output, body, proofs, result,
+            evidencePlane: 'real Codex compact endpoint + dispatcher subprocess + production PostgreSQL',
+            identityAndRetrieval: 'deterministic fixture', clientHostConsumption: 'UNKNOWN',
+            backendConfirmation: output === 'complete' ? 'explicit saved stdout receipt replay' : 'none' } });
+        } finally {
+          h.entries = savedEntries; h.corpus = null; h.compactPadding = '';
+          server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
+          rmSync(home, { recursive: true, force: true });
+        }
+      }, 45_000);
+
+  for (const kind of ['memory', 'corpus'] as const)
+    it(`context reliability R-2: same-source-revision cross-port ${kind}`, async ({ task }) => {
+      const savedEntries = h.entries, savedCorpus = h.corpus;
+      const owner = `r2-cross-port-${randomUUID()}`;
+      const text = 'zephyrrepair requires independent approval before execution';
+      try {
+        h.entries = kind === 'memory' ? [{ id: randomUUID(), text, scope: 'u-test', score: 0.95 }] : [];
+        h.corpus = kind === 'corpus' ? await corpusPlanFixture(owner, text) : null;
+        const prepare = (port: string) => prepareMemoryContextBlock({ userId: 'u-test',
+          workspaceId: 'ws-test', harnessSlugs: ['papercusp'], queryContext: 'zephyrrepair approval',
+          budgetChars: 3000, session: { sessionId: owner, port } });
+        const rows = () => kind === 'memory'
+          ? db.adminSql`SELECT epoch, port, source_fingerprint FROM harness_shared.memory_session_surfaced WHERE session_id = ${owner} ORDER BY epoch`
+          : db.adminSql`SELECT epoch, port, source_fingerprint FROM harness_shared.corpus_session_surfaced WHERE session_id = ${owner} ORDER BY epoch`;
+        const manifest = ({ rendered: _text, sourceVersion: _source, revalidateSource: _read, ...row }:
+          ReturnType<typeof memoryFragmentOffer>) => row;
+        const first = await prepare('turn-start');
+        expect(first?.text).toContain(text);
+        expect(first?.fragments).toHaveLength(1);
+        const fragment = first!.fragments[0]!;
+        expect(fragment).toMatchObject({ kind, epoch: 0, port: 'turn-start',
+          sourceFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) });
+        expect(fragment.revalidateSource).toBeTypeOf('function');
+        await stageMemoryEmission(db.adminSql as never, owner, 'initial', first!.fragments);
+        expect(await rows()).toEqual([]);
+        // A prepared response does not consume the revision on another port.
+        expect((await prepare('orient'))?.fragments[0]?.sourceFingerprint).toBe(fragment.sourceFingerprint);
+        expect(await confirmMemoryEmission(db.adminSql as never, owner, {
+          token: 'initial', fragments: first!.fragments.map(manifest) })).toBe(1);
+        for (const port of ['orient', 'mid-turn', 'initialize']) expect(await prepare(port)).toBeNull();
+        const initialRows = await rows();
+        expect(initialRows).toEqual([{ epoch: 0, port: 'turn-start', source_fingerprint: fragment.sourceFingerprint }]);
+        // Exercise the actual epoch transition rather than supplying epoch+1.
+        expect(await bumpSessionEpoch(db.adminSql as never, owner)).toBe(1);
+        const next = await prepare('compact');
+        expect(next?.text).toContain(text);
+        expect(next?.fragments).toHaveLength(1);
+        expect(next!.fragments[0]).toMatchObject({ kind, epoch: 1, port: 'compact',
+          sourceFingerprint: fragment.sourceFingerprint });
+        await stageMemoryEmission(db.adminSql as never, owner, 'reprime', next!.fragments);
+        expect(await confirmMemoryEmission(db.adminSql as never, owner, {
+          token: 'reprime', fragments: next!.fragments.map(manifest) })).toBe(1);
+        expect(await prepare('mid-turn')).toBeNull();
+        const finalRows = await rows();
+        expect(finalRows).toEqual([...initialRows,
+          { epoch: 1, port: 'compact', source_fingerprint: fragment.sourceFingerprint }]);
+        Object.assign(task.meta, { sourceRevisionCrossPort: { kind, selector: task.name,
+          sourceVersion: fragment.sourceVersion, initialRows, finalRows,
+          suppressedPorts: ['orient', 'mid-turn', 'initialize'], epochTransition: 'bumpSessionEpoch',
+          evidencePlane: 'production-builder-and-postgresql-with-fixture-retrieval-and-supplied-receipts',
+          nativeEmission: 'UNKNOWN', clientCompaction: 'UNKNOWN' } });
+      } finally { h.entries = savedEntries; h.corpus = savedCorpus; }
+    }, 120_000);
+
+  for (const kind of ['memory', 'corpus'] as const) for (const change of ['update', 'retraction'] as const)
+    it(`context reliability R-2: canonical ${kind} ${change} without a retrieval hit`, async ({ task }) => {
+      const savedEntries = h.entries, savedCorpus = h.corpus, savedCanonical = h.canonicalEntries;
+      const owner = `r2-lifecycle-${randomUUID()}`;
+      const text = 'zephyrrepair private guidance requires approval before execution';
+      const revised = 'zephyrrepair private guidance requires independent approval before execution';
+      try {
+        const entry = { id: randomUUID(), text, scope: 'u-test', score: 0.95,
+          metadata: { revision: 'r1', validity: { status: 'current' } } };
+        h.entries = kind === 'memory' ? [entry] : [];
+        h.canonicalEntries = null;
+        h.corpus = kind === 'corpus' ? await corpusPlanFixture(owner, text) : null;
+        const prepare = (port: string) => prepareMemoryContextBlock({ userId: 'u-test',
+          workspaceId: 'ws-test', harnessSlugs: ['papercusp'], queryContext: 'zephyrrepair approval',
+          budgetChars: 3000, session: { sessionId: owner, port } });
+        const rows = () => kind === 'memory'
+          ? db.adminSql`SELECT source_fingerprint, source_version FROM harness_shared.memory_session_surfaced WHERE session_id = ${owner}`
+          : db.adminSql`SELECT source_fingerprint, source_version FROM harness_shared.corpus_session_surfaced WHERE session_id = ${owner}`;
+        const makeDue = () => kind === 'memory'
+          ? db.adminSql`UPDATE harness_shared.memory_session_surfaced SET source_checked_at = now() - interval '2 minutes' WHERE session_id = ${owner}`
+          : db.adminSql`UPDATE harness_shared.corpus_session_surfaced SET source_checked_at = now() - interval '2 minutes' WHERE session_id = ${owner}`;
+        const manifest = ({ rendered: _text, sourceVersion: _source, revalidateSource: _read, ...row }:
+          ReturnType<typeof memoryFragmentOffer>) => row;
+        const initial = await prepare('turn-start');
+        expect(initial?.fragments).toHaveLength(1);
+        const previous = initial!.fragments[0]!;
+        await stageMemoryEmission(db.adminSql as never, owner, 'initial', initial!.fragments);
+        expect(await confirmMemoryEmission(db.adminSql as never, owner, {
+          token: 'initial', fragments: initial!.fragments.map(manifest) })).toBe(1);
+        const before = await rows();
+        // Keep the canonical authority available after removing every search hit.
+        h.entries = [];
+        h.corpus = null;
+        if (kind === 'memory') h.canonicalEntries = [{ ...entry, text: revised,
+          metadata: { revision: 'r2', validity: { status: change === 'update' ? 'current' : 'retracted' } } }];
+        else await db.adminSql`UPDATE harness_shared.harness_plans
+          SET content = ${revised}, archived = ${change === 'retraction'}, updated_at = updated_at + interval '1 second'
+          WHERE workspace_id = 'ws-test' AND harness_slug = 'papercusp' AND plan_slug = ${`receipt-${owner}`}`;
+        await expect(stageMemoryEmission(db.adminSql as never, owner, 'stale', initial!.fragments))
+          .rejects.toThrow('Memory emission source changed or is unavailable');
+        await makeDue();
+        const changed = await prepare('mid-turn');
+        expect(changed?.text).toContain(change === 'update' ? 'replace-earlier-version' : 'withdraw-earlier-version');
+        expect(changed?.text).not.toContain('private guidance');
+        expect(changed?.fragments).toHaveLength(1);
+        const current = changed!.fragments[0]!;
+        expect(current).toMatchObject({ kind, id: previous.id, epoch: 0, port: 'mid-turn',
+          sourceVersion: { namespace: previous.sourceVersion!.namespace,
+            validity: { status: change === 'update' ? 'current' : 'retracted' } } });
+        expect(current.sourceFingerprint).not.toBe(previous.sourceFingerprint);
+        expect(await rows()).toEqual(before);
+        await stageMemoryEmission(db.adminSql as never, owner, 'changed', changed!.fragments);
+        expect(await rows()).toEqual(before);
+        expect(await confirmMemoryEmission(db.adminSql as never, owner, {
+          token: 'changed', fragments: changed!.fragments.map(manifest) })).toBe(1);
+        const after = await rows();
+        expect(after).toEqual([{ source_fingerprint: current.sourceFingerprint, source_version: current.sourceVersion }]);
+        await makeDue();
+        expect(await prepare('orient')).toBeNull();
+        Object.assign(task.meta, { sourceRevisionLifecycle: { kind, change, selector: task.name,
+          previous: previous.sourceVersion, current: current.sourceVersion, before, after,
+          retrievalHits: 0, stalePreparationRejected: true, preparationWrites: 0, confirmationWrites: 1,
+          evidencePlane: 'production-builder-and-postgresql-with-fixture-memory-backend-and-supplied-receipts',
+          corpusAuthority: kind === 'corpus' ? 'canonical-postgresql-plan-row' : 'not-applicable',
+          nativeEmission: 'UNKNOWN' } });
+      } finally { h.entries = savedEntries; h.corpus = savedCorpus; h.canonicalEntries = savedCanonical; }
+    }, 120_000);
 
   it('lost preparation stays eligible; proven final emission suppresses another port; a new epoch re-primes', async () => {
     // A unit/integration worker does not boot the host's authoritative policy
@@ -1107,7 +1759,7 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
       terminalOracle: deliveryTerminalOracle(coordinate), state: 'UNKNOWN' as const,
       verdict: 'UNKNOWN' as const, suppressionWrites: 0,
     });
-    expect(joinedCells.size).toBe(240);
+    expect(joinedCells.size).toBe(304);
     expect(cells).toHaveLength(432);
     // Structural fixture identity only; acceptance binds separately retained
     // plan/rubric/spec/runtime identities and independent evidence later.
@@ -1117,7 +1769,7 @@ throw new Error('DISPATCHER_PARENT_PRELOAD_MUST_NOT_REACH_CHILD');`);
         runtimeGeneration: 'isolated-postgresql-dispatcher-fixture' }, cells };
     const result = validateDeliveryMatrix(manifest);
     expect(result).toMatchObject({ closed: true, valid: true, acceptanceReady: false, errors: [] });
-    expect(result.unknown).toHaveLength(192);
+    expect(result.unknown).toHaveLength(128);
     Object.assign(task.meta, { deliveryMatrixCensus: { manifest, result,
       identityKind: 'structural fixture only; independent acceptance and shipment not asserted' } });
   });

@@ -209,14 +209,15 @@ describe('diffAmendedCriteriaAgainstRequirements', () => {
     ]);
   });
 
-  it('does not compare acceptance metadata the plan block leaves to the seeder', () => {
+  it('detects a runtime binding introduced into a block that previously omitted it', () => {
     const criteria = inSyncCriteria();
-    // The fixture block never states evidenceRuntime, so the seeder (not the plan) owns it.
-    criteria[0]!.evidenceRuntime = 'staging';
+    criteria[0]!.evidenceRuntime = 'staging-operator';
     const drift = diffAmendedCriteriaAgainstRequirements({
       requirementBars: bars(), nextCriteria: criteria, changedBars: ['R-1'],
     });
-    expect(drift.inSync).toBe(true);
+    expect(drift.entries).toEqual([
+      { barKey: 'R-1', changedByAmendment: true, kind: 'text-differs', fields: ['evidenceRuntime'] },
+    ]);
   });
 
   it('compares check structurally: key order and file order are not drift', () => {
@@ -263,6 +264,48 @@ describe('diffAmendedCriteriaAgainstRequirements', () => {
 // WI-10006835: the apply re-renders the changed BARs' explicit blocks. Each case round-trips through
 // the REAL parser and the drift diff, so "in sync after apply" is measured, not restated.
 describe('rerenderAmendedRequirementBlocks', () => {
+  it.each([
+    { prior: undefined, next: ['live'] },
+    { prior: ['tree'], next: ['tree', 'live'] },
+  ])('detects and round-trips additional evidence planes: %j', ({ prior, next }) => {
+    const content = planContent.replace(JSON.stringify(sections), JSON.stringify({
+      ...sections, acceptance: { ...sections.acceptance, ...(prior ? { requiredEvidencePlanes: prior } : {}) },
+    }));
+    const parsed = parseRequirementBars(content);
+    if (!parsed.ok) throw new Error(JSON.stringify(parsed.problems));
+    const previous = inSyncCriteria();
+    if (prior) previous[0]!.requiredEvidencePlanes = prior;
+    const criteria = inSyncCriteria();
+    criteria[0]!.requiredEvidencePlanes = next;
+    const changedBars = amendedRequirementBarKeys(previous, criteria);
+    expect(changedBars).toEqual(['R-1']);
+    expect(diffAmendedCriteriaAgainstRequirements({ requirementBars: parsed.bars, nextCriteria: criteria, changedBars }).entries)
+      .toEqual([{ barKey: 'R-1', changedByAmendment: true, kind: 'text-differs', fields: ['requiredEvidencePlanes'] }]);
+    const rendered = rerenderAmendedRequirementBlocks(content, { nextCriteria: criteria, changedBars });
+    const after = parseRequirementBars(rendered.content);
+    if (!after.ok) throw new Error(JSON.stringify(after.problems));
+    expect(after.bars[0]!.criterion?.requiredEvidencePlanes).toEqual([...next].sort());
+    expect(diffAmendedCriteriaAgainstRequirements({ requirementBars: after.bars, nextCriteria: criteria, changedBars }).inSync).toBe(true);
+    expect(rerenderAmendedRequirementBlocks(rendered.content, { nextCriteria: criteria, changedBars }))
+      .toEqual({ content: rendered.content, rerendered: [] });
+  });
+
+  it('round-trips introduced runtime bindings and removes retired non-derived metadata', () => {
+    const criteria = inSyncCriteria();
+    Object.assign(criteria[0]!, { evidenceRuntime: 'staging-operator', requiredEvidencePlanes: ['live'] });
+    const rendered = rerenderAmendedRequirementBlocks(planContent, { nextCriteria: criteria, changedBars: ['R-1'] });
+    const parsed = parseRequirementBars(rendered.content);
+    if (!parsed.ok) throw new Error(JSON.stringify(parsed.problems));
+    expect(parsed.bars[0]!.criterion).toMatchObject({ evidenceRuntime: 'staging-operator', requiredEvidencePlanes: ['live'] });
+    expect(diffAmendedCriteriaAgainstRequirements({ requirementBars: parsed.bars, nextCriteria: criteria, changedBars: ['R-1'] }).inSync).toBe(true);
+    const retired = rerenderAmendedRequirementBlocks(rendered.content, { nextCriteria: inSyncCriteria(), changedBars: ['R-1'] });
+    const after = parseRequirementBars(retired.content);
+    if (!after.ok) throw new Error(JSON.stringify(after.problems));
+    expect(after.bars[0]!.criterion).not.toHaveProperty('evidenceRuntime');
+    expect(after.bars[0]!.criterion).not.toHaveProperty('requiredEvidencePlanes');
+    expect(diffAmendedCriteriaAgainstRequirements({ requirementBars: after.bars, nextCriteria: inSyncCriteria(), changedBars: ['R-1'] }).inSync).toBe(true);
+  });
+
   it('keeps the explicit block and map plane consistent while preserving discharge edges', () => {
     const content = planContent + [
       '## Design', '### Bar-to-work map for this plan',

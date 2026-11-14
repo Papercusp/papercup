@@ -19,6 +19,7 @@ import runTool, {
 } from './run';
 import { REPO_ROOT } from '../docs/_repo-paths';
 import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
+import { TEST_RUN_READER_CONTRACT_ENV } from '@papercusp/test-config/execution-details';
 
 /**
  * `files` became OPTIONAL when `changedPaths` was added, which made `testing:run {}`
@@ -292,6 +293,8 @@ describe('testing:run selector arbitration', () => {
 
   it('boots detached test workers in test mode without changing a production host', async () => {
     vi.stubEnv('NODE_ENV', 'production');
+    const originalReader = JSON.stringify({ schemaVersion: 1, fields: ['schemaVersion'] });
+    vi.stubEnv(TEST_RUN_READER_CONTRACT_ENV, originalReader);
     const artifactDirs: string[] = [];
     try {
       const now = Date.now();
@@ -310,6 +313,7 @@ describe('testing:run selector arbitration', () => {
       ];
       for (const request of requests) {
         expect(request.env).toMatchObject({ NODE_ENV: 'test',
+          [TEST_RUN_READER_CONTRACT_ENV]: originalReader,
           PAPERCUSP_TEST_RUN_HARNESS: scoped.harnessSlug, PAPERCUSP_WORKSPACE_ID: scoped.workspaceId });
       }
       expect(process.env.NODE_ENV).toBe('production');
