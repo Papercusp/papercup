@@ -960,6 +960,20 @@ export default defineTool({
             import('../coordination/identity'),
           ]);
           const ownerId = resolveAgentIdentity(ctx).ownerId;
+          // WI-6554700010048902: a fleet leader starting a plan whose ready row a
+          // live member of its own fleet already holds is starting its own lane.
+          // An unreadable roster degrades to the caller-held rule alone.
+          let teamAssignees: string[] = [];
+          try {
+            const { getClaimSpecRecord } = await import('../../scheduler/claim-spec-store');
+            const callerFleet = (await getClaimSpecRecord({ cupId: ownerId, workspaceId: startWorkspaceId })).fleetSlug;
+            if (callerFleet) {
+              const { listFleetControlMembers } = await import('../coordination/audience-host');
+              teamAssignees = (await listFleetControlMembers(callerFleet)).filter((id) => id && id !== ownerId);
+            }
+          } catch {
+            teamAssignees = [];
+          }
           admission = await preflightExactPlanAdmission({
             workspaceId: startWorkspaceId,
             harnessSlug,
@@ -971,6 +985,7 @@ export default defineTool({
             // successful start, not a floor-gated admission failure; fleet launch
             // keeps the stricter unclaimed-row requirement.
             allowCallerHeld: true,
+            teamAssignees,
           });
 
           // The exact-plan oracle measures plan readiness; it is not a replacement

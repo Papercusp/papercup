@@ -253,6 +253,13 @@ export function evaluateExactPlanAdmission(args: {
   /** Allow plans:start to report success when this caller already owns every ready row. */
   assignee?: string;
   allowCallerHeld?: boolean;
+  /**
+   * Live members of the caller's own fleet (WI-6554700010048902). With
+   * `allowCallerHeld`, a ready row one of them already holds is the caller's
+   * progressing lane — a leader starting the plan its member is mid-way through
+   * — not a floor-gated refusal. Ignored for seat-sized fleet launches.
+   */
+  teamAssignees?: readonly string[];
   /** Explicit narrowing supplied by a caller; omitted means derive from active rows. */
   claimKinds?: readonly string[];
   /** Omitted means the whole plan; [] means ad-hoc lanes claim no plan items. */
@@ -359,9 +366,17 @@ export function evaluateExactPlanAdmission(args: {
         .sort((a, b) => a.planItemId.localeCompare(b.planItemId) || a.workItemId.localeCompare(b.workItemId))
     : [];
   const resolvedById = new Map(resolved.items.map((item) => [item.id, item]));
+  // The caller's lane holders: the caller plus the live members of its own fleet
+  // (WI-6554700010048902). Only the plans:start path (allowCallerHeld, no seat
+  // target) uses them; a fleet launch still needs rows NEW members can claim.
+  const laneHolderIds = new Set<string>(
+    args.assignee ? [args.assignee, ...(args.teamAssignees ?? []).filter(Boolean)] : [],
+  );
+  const heldByCallerLane = (holder: string | null | undefined): boolean =>
+    Boolean(holder) && laneHolderIds.has(holder as string);
   const callerOwnedActivePlanItemIds = new Set(
     activePromotedRows.flatMap((row) => {
-      if (!args.allowCallerHeld || args.requestedSeats != null || !args.assignee || row.assignee !== args.assignee) {
+      if (!args.allowCallerHeld || args.requestedSeats != null || !args.assignee || !heldByCallerLane(row.assignee)) {
         return [];
       }
       return provenanceIds(row).filter((planItemId) => {
@@ -413,6 +428,13 @@ export function evaluateExactPlanAdmission(args: {
     }
   }
   const callerOwnsActiveLane = callerOwnedActivePlanItemIds.size > 0;
+  const teamHolders = [...new Set(activePromotedRows
+    .filter((row) => row.assignee && row.assignee !== args.assignee && heldByCallerLane(row.assignee) &&
+      provenanceIds(row).some((id) => callerOwnedActivePlanItemIds.has(id)))
+    .map((row) => row.assignee as string))].sort();
+  const teamHeldNote = teamHolders.length
+    ? ` Lane(s) held by live member(s) of the caller's fleet count as the caller's: ${teamHolders.join(', ')}.`
+    : '';
   // `readClaimSpecLaneHealth` deliberately excludes taken rows from claimable. That is
   // correct for a new fleet, but plans:start is also called by the agent that may already
   // own an actionable row or be actively progressing a WIP lane. In that case a zero
@@ -424,7 +446,7 @@ export function evaluateExactPlanAdmission(args: {
     Boolean(args.assignee) &&
     parallelism.readyItemIds.length > 0 &&
     parallelism.readyItemIds.every((planItemId) =>
-      blockingRows.some((row) => row.planItemId === planItemId && row.holder === args.assignee),
+      blockingRows.some((row) => row.planItemId === planItemId && heldByCallerLane(row.holder)),
     );
   const base = {
     plan: args.planSlug,
@@ -542,9 +564,9 @@ export function evaluateExactPlanAdmission(args: {
       callerHoldsAllReadyRows
         ? 'Exact-plan admission is ready: the caller already holds all ' +
             blockingRows.length +
-            ' actionable ready row(s); no additional claimable row is required.'
+            ' actionable ready row(s); no additional claimable row is required.' + teamHeldNote
         : `Exact-plan admission is ready: the caller already owns ${callerOwnedActivePlanItemIds.size} active non-final lane(s); ` +
-            'no additional claimable row is required for those lanes.',
+            'no additional claimable row is required for those lanes.' + teamHeldNote,
     );
   }
   if (args.laneHealth.effective.claimable === 0) {
@@ -685,6 +707,8 @@ export async function preflightExactPlanAdmission(args: {
   requestedSeats?: number;
   /** Allow plans:start to report success when this caller already holds every ready row. */
   allowCallerHeld?: boolean;
+  /** Live members of the caller's fleet whose held rows count as the caller's lane (plans:start only). */
+  teamAssignees?: readonly string[];
   /** Omitted means the whole plan; [] is an explicit ad-hoc-only launch. */
   planItemIds?: readonly string[];
 }): Promise<ExactPlanAdmission> {
@@ -758,6 +782,7 @@ export async function preflightExactPlanAdmission(args: {
     requestedSeats: args.requestedSeats,
     assignee: args.claimant,
     allowCallerHeld: args.allowCallerHeld,
+    teamAssignees: args.teamAssignees,
     claimKinds: args.claimKinds,
   });
   if (callerCensusUnavailable) return { ...structural, ready: false, status: 'refused',
@@ -807,6 +832,7 @@ export async function preflightExactPlanAdmission(args: {
     requestedSeats: args.requestedSeats,
     assignee: args.claimant,
     allowCallerHeld: args.allowCallerHeld,
+    teamAssignees: args.teamAssignees,
     claimKinds: effectiveClaimKinds,
   });
 }

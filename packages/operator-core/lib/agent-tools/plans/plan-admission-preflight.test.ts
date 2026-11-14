@@ -523,6 +523,29 @@ describe('evaluateExactPlanAdmission', () => {
     expect(evaluateExactPlanAdmission(held)).toMatchObject({ ready: true });
   });
 
+  it("WI-6554700010048902: admits plans:start when a live member of the caller's fleet holds the sole ready row", () => {
+    const common = {
+      planSlug: 'plan-a',
+      planItems: [item('P-001')],
+      workItems: [{ id: 'F-1', family: 'feature' as const, sourcePlanItemIds: ['P-001'], payload: null,
+        assignee: 'member-1', state: 'open' as const }],
+      laneHealth: lane({ issueReachable: false, feature: 0, featureMatchedByFilter: 1,
+        featureExcluded: { claimFloors: 1, taken: 1, stopTheLine: 1 } }),
+      assignee: 'leader', allowCallerHeld: true,
+    };
+    // Without the roster the leader sees the member's claim as a floor-gated lane (the observed refusal).
+    expect(evaluateExactPlanAdmission(common)).toMatchObject({ ready: false, reason: 'floor-gated' });
+    const teamed = evaluateExactPlanAdmission({ ...common, teamAssignees: ['member-1'] });
+    expect(teamed).toMatchObject({ ready: true, reason: 'ready' });
+    expect(teamed.message).toContain("live member(s) of the caller's fleet count as the caller's: member-1");
+    // A holder outside the caller's fleet is still a competing claim.
+    expect(evaluateExactPlanAdmission({ ...common, teamAssignees: ['someone-else'] }))
+      .toMatchObject({ ready: false, reason: 'floor-gated' });
+    // A seat-sized fleet launch still needs rows NEW members can claim.
+    expect(evaluateExactPlanAdmission({ ...common, teamAssignees: ['member-1'], requestedSeats: 1 }))
+      .toMatchObject({ ready: false });
+  });
+
   it('names the exact-plan filter when it matches no rows instead of blaming claim floors', () => {
     const verdict = evaluateExactPlanAdmission({
       planSlug: 'plan-a',
