@@ -112,6 +112,8 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     // lookup reads PG; keep the fixture hermetic by making the drained bee's own row
     // the owner's latest. The successor-row election is covered in wake-executor.test.ts.
     getLatestSessionForOwner: (async () => beeSessionRow) as never,
+    // Known lifecycle state: this drained session has no managed shutdown/release latch.
+    getSessionLifecycle: async () => null,
     findPty: (() => null) as never,
     write: (() => true) as never,
     spawnManagedPty: (() => ({ id: 'pty-x' })) as never,
