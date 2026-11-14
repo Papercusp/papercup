@@ -9,10 +9,16 @@ import { join } from 'node:path';
 // namespaces aren't spy-able, so mock the module with a holder set in
 // beforeEach (vi.mock is hoisted above the imports).
 const h = vi.hoisted(() => ({ home: '' }));
+const servingIdentity = vi.hoisted(() => ({
+  value: { host: '', processId: null as string | null, buildSha: null as string | null },
+}));
 vi.mock('node:os', async (orig) => {
   const actual = await orig<typeof import('node:os')>();
   return { ...actual, homedir: () => h.home || actual.tmpdir() };
 });
+vi.mock('./serving-host-identity', () => ({
+  getServingHostIdentity: () => servingIdentity.value,
+}));
 
 import {
   writeEndpointIpcDiscovery,
@@ -22,10 +28,14 @@ import {
   readAgentMcpDiscoveryForPort,
   agentMcpOperatorId,
 } from './endpoint-ipc-discovery';
+import { moduleRepoRoot } from './module-repo-root';
+import { _resetServingBuildForTest } from './serving-build';
 
 const savedPapercuspHome = process.env.PAPERCUSP_HOME;
 beforeEach(async () => {
   h.home = await mkdtemp(join(tmpdir(), 'ipc-disc-'));
+  servingIdentity.value = { host: '', processId: null, buildSha: null };
+  _resetServingBuildForTest();
   // Every case below except the isolation block assumes the default ~/.papercusp root.
   delete process.env.PAPERCUSP_HOME;
 });
@@ -213,11 +223,20 @@ describe('per-port discovery (EI-190)', () => {
   });
 
   it('writes BOTH the per-port file and the legacy singleton, identical payloads with the port', async () => {
+    const savedServingBuild = process.env.PAPERCUSP_SERVING_BUILD;
     process.env.PAPERCUSP_HONO_PORT = '3170';
+    process.env.PAPERCUSP_SERVING_BUILD = 'staging';
     const savedBackgroundWorkers = process.env.PAPERCUSP_BACKGROUND_WORKERS;
     const savedVitest = process.env.VITEST;
+    const expectedBuildSha = 'a'.repeat(40);
+    const expectedProcessId = 'linux:fixture:3170';
     process.env.PAPERCUSP_BACKGROUND_WORKERS = '1';
     delete process.env.VITEST;
+    servingIdentity.value = {
+      host: 'port-3170',
+      processId: expectedProcessId,
+      buildSha: expectedBuildSha,
+    };
     try {
       await writeEndpointIpcDiscovery('/tmp/sockets/eipc-test.sock');
 
@@ -230,12 +249,23 @@ describe('per-port discovery (EI-190)', () => {
         port: 3170,
         processRole: 'bg-host',
       });
+      expect(perPort.executionTarget).toEqual({
+        environment: 'staging',
+        buildSha: expectedBuildSha,
+        installRoot: moduleRepoRoot(import.meta.url),
+      });
+      expect(perPort.executionProcessId).toBe(expectedProcessId);
+      expect(singleton.executionTarget).toEqual(perPort.executionTarget);
       expect((await readEndpointIpcDiscovery())?.processRole).toBe('bg-host');
+      expect((await readEndpointIpcDiscovery())?.executionTarget).toEqual(perPort.executionTarget);
     } finally {
+      _resetServingBuildForTest();
       if (savedBackgroundWorkers === undefined) delete process.env.PAPERCUSP_BACKGROUND_WORKERS;
       else process.env.PAPERCUSP_BACKGROUND_WORKERS = savedBackgroundWorkers;
       if (savedVitest === undefined) delete process.env.VITEST;
       else process.env.VITEST = savedVitest;
+      if (savedServingBuild === undefined) delete process.env.PAPERCUSP_SERVING_BUILD;
+      else process.env.PAPERCUSP_SERVING_BUILD = savedServingBuild;
     }
   });
 
