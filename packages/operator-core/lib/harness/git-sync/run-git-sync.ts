@@ -50,7 +50,7 @@ import { scanProcForOpenFile } from './proc-open-file-scan';
 import { projectDirForSlug } from '../../operator-notes';
 import { gitSidecarEnabled, isSidecarInfrastructureFault, noteSidecarFallback, runGitStdinViaSpawnerSidecar, runGitViaSpawnerSidecar, type SidecarDiagnosticTags } from '../../fleet/git-via-sidecar';
 import { gitSubcommandOf } from '../../fleet/sidecar-read-only-git';
-import { gitReplayIsSafe, isSidecarPostDispatchFault, sidecarPostDispatchUnknownResult } from '../../fleet/sidecar-dispatch-fault';
+import { gitReplayIsSafe, isReplayableSidecarFaultResult, isSidecarPostDispatchFault, sidecarPostDispatchUnknownResult } from '../../fleet/sidecar-dispatch-fault';
 import { runGitStdinLocal, type RunGitStdin } from '../../sync/pot-git/storage';
 import {
   detectContentOffenders,
@@ -544,7 +544,11 @@ const runGitBoundedUnchecked = async (
         diagnosticTags,
       });
       options.onProgress?.();
-      return result;
+      // EI-28741165248989781: a RESOLVED sidecar fault is the transport's answer, not
+      // Git's. A replay-safe read re-runs locally, exactly as a thrown pre-dispatch
+      // fault does below; a mutation keeps the fault result (gitSyncPreDispatchError).
+      if (options.signal?.aborted || !isReplayableSidecarFaultResult(effectiveArgs, result)) return result;
+      noteSidecarFallback('git-sync', new Error(result.stderr));
     } catch (e) {
       // Was a console.warn PER CALL — the opposite failure from warn-once, and
       // just as unhelpful: a sustained outage buries the log without ever
@@ -1738,6 +1742,12 @@ export interface GitSyncLockHolding {
 export type GitSyncSkippedPath =
   | { scope: string; path: string; owner: string; intent: string; heldSince?: string }
   | { scope: string; path: string; reason: 'migration-reservation'; detail: string }
+  | {
+      scope: string;
+      path: string;
+      reason: 'attribution-child-sync';
+      detail: string;
+    }
   | {
       scope: string;
       path: string;
@@ -10599,13 +10609,14 @@ async function runGitSyncPass(
         if (declarationRepair.status === 'blocked') {
           log(`[git-sync] ${repo}: early superproject commit deferred because generated declaration repair is blocked — pointer-bump will retry`);
         } else {
-          const earlyMigrationPaths = migrationPaths(await dirtyFiles(runGitForTiming, repo));
+          const earlyDirtyPaths = await dirtyFiles(runGitForTiming, repo);
+          const earlyMigrationPaths = migrationPaths(earlyDirtyPaths);
           // A root source with edit attribution is not "ordinary" early work: it may
           // depend on a child gitlink or be covered by the child's migration fence.
           // Leave it dirty until child sync succeeds and the final pointer-bump pass
           // can enforce those cross-repo ordering and reservation checks.
           const earlyAttribution = attributionMapForRepo(roster, '', repo);
-          const earlyAttributedPaths = [...earlyAttribution.keys()];
+          const earlyAttributedPaths = [...earlyAttribution.keys()].filter((path) => earlyDirtyPaths.includes(path));
           let earlyMigrationFenceExcludedPaths: string[] = [];
           if (repoO.migrationReservationChecker) {
             const potentialMigrationRefusals = await censusSubmoduleMigrationReservations(
@@ -10638,7 +10649,7 @@ async function runGitSyncPass(
                   );
                 }
               }
-              const earlyRootDirtyPaths = (await dirtyFiles(runGitForTiming, repo)).filter(
+              const earlyRootDirtyPaths = earlyDirtyPaths.filter(
                 (path) => !subPaths.some((subPath) => path === subPath || path.startsWith(`${subPath}/`)),
               );
               earlyMigrationFenceExcludedPaths = migrationDependencyFenceSkips(
@@ -10650,14 +10661,17 @@ async function runGitSyncPass(
               ).map((entry) => entry.path);
             }
           }
-          const earlyExcludedPaths = [...new Set([
+          const earlyOtherExcludedPaths = [...new Set([
             ...rootProtectedPaths,
             ...subPaths,
             ...nestedPotPaths,
             ...earlyMigrationPaths,
-            ...earlyAttributedPaths,
             ...earlyMigrationFenceExcludedPaths,
             ...(declarationRepair.status === 'deferred' ? declarationRepair.atomicPaths : []),
+          ])];
+          const earlyExcludedPaths = [...new Set([
+            ...earlyOtherExcludedPaths,
+            ...earlyAttributedPaths,
           ])];
           if (declarationRepair.status === 'deferred') {
             log(
@@ -10685,10 +10699,26 @@ async function runGitSyncPass(
             yieldIfRequested: yieldEarlySuperproject,
             onPublished: (sha) => earlyLocalCommits.push({ sha, committedAtMs: Date.now() }),
           });
+          const committedSkippedPaths = committed.skippedPaths ?? [];
+          const pathIsCoveredBy = (path: string, excludedPath: string): boolean =>
+            path === excludedPath || path.startsWith(`${excludedPath}/`);
+          const earlyAttributionDeferrals: GitSyncSkippedPath[] = earlyAttributedPaths
+            .filter((path) => !earlyOtherExcludedPaths.some((excluded) => pathIsCoveredBy(path, excluded)))
+            .filter((path) => !committedSkippedPaths.some((skipped) =>
+              skipped.scope === 'superproject' && pathIsCoveredBy(path, skipped.path)))
+            .map((path) => ({
+              scope: 'superproject',
+              path,
+              reason: 'attribution-child-sync',
+              detail:
+                'This attributed superproject source was held out of the early root commit until child synchronization and the final pointer-bump complete cross-repo ordering and migration checks.',
+            }));
+          const earlySkippedPaths = [...committedSkippedPaths, ...earlyAttributionDeferrals];
           recordSetupStep('early-root-commit');
           const earlyHeadAfter = committed.committedLocal ? await headSha(runGitForTiming, repo) : undefined;
           out.earlyRootCommit = {
             ...committed,
+            ...(earlySkippedPaths.length > 0 ? { skippedPaths: earlySkippedPaths } : {}),
             localCommits: earlyLocalCommits,
             ...(earlyHeadAfter
               ? {
@@ -11559,10 +11589,13 @@ async function runGitSyncPass(
   // Older in-flight checkpoints predate the skipped-path census. Replay must
   // reconstruct those phase outputs as an empty census rather than throwing or
   // turning a clean replay into an error.
+  // A completed later root census supersedes early deferrals too. Keep them when
+  // the final pass is incomplete; otherwise a path committed by the final pointer
+  // phase would remain falsely marked as deferred in the settled snapshot.
   const skippedPaths = [...new Map([
     ...(sub.skippedPaths ?? []),
     ...(supr.skippedPaths ?? []),
-    ...(earlyRootCommit?.skippedPaths ?? []),
+    ...(priorRootFindings?.skippedPaths ?? []),
   ].map((entry) => [JSON.stringify(entry), entry])).values()];
   const dirtyPathCount = (sub.dirtyPathCount ?? 0) + (supr.dirtyPathCount ?? 0) + (earlyRootCommit?.dirtyPathCount ?? 0);
   const committedCount = (sub.committedCount ?? 0) + (supr.committedCount ?? 0) + (earlyRootCommit?.committedCount ?? 0);

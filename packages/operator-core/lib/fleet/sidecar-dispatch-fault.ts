@@ -86,7 +86,47 @@ export function gitSubcommandOf(args: readonly string[]): string {
  * an unknown outcome so the caller re-reads repository state instead.
  */
 export function gitReplayIsSafe(args: readonly string[]): boolean {
-  return GIT_REPLAY_SAFE_SUBCOMMANDS.has(gitSubcommandOf(args));
+  const subcommand = gitSubcommandOf(args);
+  if (GIT_REPLAY_SAFE_SUBCOMMANDS.has(subcommand)) return true;
+  // `submodule` reads or writes by VERB: only `status` (also the bare form) is a pure
+  // read; update/sync/add/foreach/absorbgitdirs can all write (EI-28741165248989781).
+  return subcommand === 'submodule' && (gitSubmoduleVerbOf(args) ?? 'status') === 'status';
+}
+
+/** The verb after `submodule` (`git submodule --quiet status` → `status`), or null when bare. */
+function gitSubmoduleVerbOf(args: readonly string[]): string | null {
+  let seen = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (!seen && (a === '-c' || a === '-C')) {
+      i++;
+      continue;
+    }
+    if (a.startsWith('-')) continue;
+    if (seen) return a;
+    seen = true;
+  }
+  return null;
+}
+
+/**
+ * A resolved sidecar result that is the transport's own failure, not Git's answer:
+ * admission refused, could not spawn, forkserver lost, or an execution whose outcome
+ * never arrived. Git never exits -1 itself.
+ *
+ * Callers may re-run such a command locally ONLY when {@link gitReplayIsSafe}: the
+ * post-dispatch forms are terminal for a mutation (its sidecar copy may have run),
+ * but a read has nothing to double-apply. Before EI-28741165248989781 git-sync
+ * returned these results as Git's answer, so `submodule status --recursive` "failed"
+ * on every sidecar hiccup and discovery fell back to top-level .gitmodules paths.
+ */
+export function isReplayableSidecarFaultResult(
+  args: readonly string[],
+  result: { code: number; stderr: string },
+): boolean {
+  return result.code === -1
+    && /^(?:Error: )?(?:spawner sidecar |forkserver |sidecar execution outcome unavailable)/.test(result.stderr)
+    && gitReplayIsSafe(args);
 }
 
 /**
