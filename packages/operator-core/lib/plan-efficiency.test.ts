@@ -5,7 +5,9 @@
  * plan-efficiency.integration.test.ts.
  */
 import { describe, expect, it } from 'vitest';
-import { PLAN_EFFICIENCY_CATEGORIES, categorizePlanToolCall, foldPlanCallGroups } from './plan-efficiency';
+import { PLAN_EFFICIENCY_CATEGORIES, categorizePlanToolCall, foldPlanCallGroups,
+  summarizeWorkflowStepUsage, unionWorkflowStepIntervals, type WorkflowStepSource,
+  type WorkflowStepUsageRow } from './plan-efficiency';
 
 describe('categorizePlanToolCall', () => {
   it.each([
@@ -61,5 +63,146 @@ describe('foldPlanCallGroups', () => {
     expect(folded.failedTotal).toBe(4);
     expect(folded.failedByClass).toEqual({ invalid_input: 3, error: 1 });
     expect(folded.droppedCalls).toBe(3);
+  });
+});
+
+describe('selected-step usage population (not a causal spend claim)', () => {
+  const start = Date.parse('2026-10-21T10:00:00Z');
+  const source: WorkflowStepSource = {
+    workspaceId: 'ws', harnessSlug: 'papercusp',
+    subject: { kind: 'work-item', ref: 'WI-step', windowStart: new Date(start).toISOString(),
+      windowEnd: new Date(start + 60_000).toISOString() },
+    workItemIds: ['WI-step'], nativeSessionIds: ['native'], ownerIds: ['owner'], sharedSessionIds: [],
+    predicate: 'canonical fixture source predicate', fingerprint: 'a'.repeat(64), complete: true,
+    expectedRequests: { state: 'known', keys: ['request-a'], sourceRef: 'closed-native-fixture' },
+  };
+  const row = (patch: Partial<WorkflowStepUsageRow> = {}): WorkflowStepUsageRow => ({
+    id: 'row-a', workspace_id: 'ws', harness_slug: 'papercusp', session_id: 'native', run_id: null,
+    usage_event_key: 'request-a', event_ts: start + 1000,
+    input_tokens: 100, output_tokens: 20, cache_read_tokens: 10, cache_creation_tokens: 0,
+    cost_usd: 0.25, cost_source: 'estimated', usage_provenance: { grain: 'request' }, ...patch,
+  });
+  const measure = (rows: WorkflowStepUsageRow[], patch: Partial<WorkflowStepSource> = {},
+    ledger = { totalRecords: rows.length as number | null, limit: 100, complete: true }) =>
+    summarizeWorkflowStepUsage({ source: { ...source, ...patch }, rows, ledger });
+
+  it('measures request deltas and keeps observed zero, unknowns, estimates and attribution distinct', () => {
+    const result = measure([row(), row({ id: 'provider', usage_event_key: 'provider', cost_usd: 0,
+      input_tokens: null, output_tokens: 0, cost_source: 'provider' })]);
+    expect(result.totals.inputTokens).toEqual({ value: 100, observedRecords: 1, missingRecords: 1 });
+    expect(result.totals.providerReportedUsd.value).toBe(0);
+    expect(result.totals.estimatedListUsd.value).toBe(0.25);
+    expect(result.totals.outputTokens.value).toBe(20);
+    expect(result.population.selectedUniqueRequests).toBe(2);
+    expect(result.partitions['unallocated-shared']).toHaveLength(2);
+    expect(result.partitions.included).toHaveLength(0);
+    expect(result).toMatchObject({ exactStepSpendUsd: null, exactStepSpendKnown: false,
+      efficiency: 'unknown', intrinsicStepValue: 'not-inferred' });
+    expect(measure([]).totals.estimatedListUsd.value).toBeNull();
+    expect(measure([row({ input_tokens: null })]).totals.inputTokens.value).toBeNull();
+  });
+
+  it.each([
+    ['foreign-workspace', { workspace_id: 'elsewhere' }],
+    ['foreign-or-missing-harness', { harness_slug: 'elsewhere' }],
+    ['foreign-or-missing-harness', { harness_slug: null }],
+    ['foreign-session', { session_id: 'foreign' }],
+    ['outside-event-window', { event_ts: start - 1 }],
+    ['outside-event-window', { event_ts: start + 60_000 }],
+  ] as const)('excludes %s before additive facts: %j', (reason, patch) => {
+    const result = measure([row(patch)]);
+    expect(result.partitions.excluded[0].reason).toBe(reason);
+    expect(result.totals.estimatedListUsd.value).toBeNull();
+    expect(result.population.missingExpectedRequestKeys).toEqual(['request-a']);
+  });
+
+  it('retains shared and unallocated observations without calling them step spend', () => {
+    const result = measure([row()], { sharedSessionIds: ['native'] });
+    expect(result.partitions['unallocated-shared'][0].reason).toBe('shared-native-context');
+    expect(result.totals.estimatedListUsd.value).toBe(0.25);
+    expect(result.exactStepSpendKnown).toBe(false);
+    const ownerOnly = measure([row({ session_id: null, usage_provenance: { grain: 'request', sessionOwnerId: 'owner' } })]);
+    expect(ownerOnly.population.selectedUniqueRequests).toBe(1);
+    expect(ownerOnly.partitions['unallocated-shared'][0].reason).toContain('unavailable');
+  });
+
+  it('does not sum duplicate events or pick a favorable conflicting observation', () => {
+    const duplicate = row({ id: 'copy' });
+    const result = measure([row(), duplicate]);
+    expect(result.partitions.duplicate.map(r => r.rowId)).toEqual(['copy']);
+    expect(result.population).toMatchObject({ observedRecords: 2, observedUniqueKeys: 1, selectedUniqueRequests: 1 });
+    expect(result.totals.inputTokens.value).toBe(100);
+    const conflict = row({ id: 'conflict', input_tokens: 101 });
+    for (const rows of [[row(), conflict], [conflict, row()]]) {
+      const bad = measure(rows);
+      expect(bad.partitions.conflicting).toHaveLength(2);
+      expect(bad.totals.inputTokens.value).toBeNull();
+      expect(bad.population.missingExpectedRequestKeys).toEqual(['request-a']);
+      expect(bad.gaps).toContain('conflicting-request-observations');
+    }
+  });
+
+  it.each([
+    { event_ts: null }, { event_ts: 'not-time' }, { usage_event_key: null },
+    { usage_provenance: { grain: 'cumulative' } }, { usage_provenance: { grain: 'file-model-delta' } },
+    { usage_provenance: {} },
+  ])('never treats missing original time or cumulative/unknown grain as request deltas: %j', patch => {
+    const result = measure([row(patch)]);
+    expect(result.partitions['missing-time-unknown-grain']).toHaveLength(1);
+    expect(result.totals.inputTokens.value).toBeNull();
+    expect(result.exactStepSpendKnown).toBe(false);
+  });
+
+  it('retains provider and estimate lower bounds and failed-call cost as incurred', () => {
+    const result = measure([row({ usage_provenance: { grain: 'request', outcome: 'failed', costBound: 'lower' } }),
+      row({ id: 'p', usage_event_key: 'p', cost_source: 'provider', cost_usd: 0.5 })]);
+    expect(result.totals).toMatchObject({ failedRequestRecords: 1, lowerBoundCostRecords: 1,
+      providerReportedUsd: { value: 0.5 }, estimatedListUsd: { value: 0.25 } });
+    expect(result.intrinsicStepValue).toBe('not-inferred');
+    expect(result.gaps).toContain('complete-provider-charge-census-unavailable');
+  });
+
+  it('partitions every observed row once and keeps missing expected requests and overflow separate', () => {
+    const rows = [row(), row({ id: 'copy' }), row({ id: 'foreign', session_id: 'foreign' }),
+      row({ id: 'unknown', usage_event_key: 'unknown', event_ts: null })];
+    const result = measure(rows, { expectedRequests: { state: 'known', keys: ['request-a', 'missing'], sourceRef: 'source' } },
+      { totalRecords: 10, limit: 4, complete: false });
+    expect(Object.values(result.partitions).flat().map(r => r.rowId).sort()).toEqual(rows.map(r => r.id).sort());
+    expect(result.population.missingExpectedRequestKeys).toEqual(['missing']);
+    expect(result.population.truncatedResidueRecords).toBe(6);
+    expect(result.population.query.complete).toBe(false);
+    expect(result.gaps).toContain('ledger-read-incomplete');
+    expect(measure([row()], {}, { totalRecords: 1000, limit: 1, complete: true }).population.query.complete).toBe(false);
+  });
+
+  it('preserves failed reads, unknown denominator and invalid numeric data without invented zero', () => {
+    const result = summarizeWorkflowStepUsage({ source: { ...source, complete: false,
+      expectedRequests: { state: 'unknown', reason: 'native frontier unavailable' } }, rows: [],
+      ledger: { totalRecords: null, limit: 10, complete: false, error: 'read failed' } });
+    expect(result.population).toMatchObject({ expectedUniqueRequests: null, truncatedResidueRecords: null });
+    expect(result.gaps).toContain('ledger-read-failed');
+    expect(result.totals.inputTokens.value).toBeNull();
+    for (const value of [-1, Infinity, 'NaN', '', ' ', '1.5', Number.MAX_SAFE_INTEGER + 1]) {
+      expect(measure([row({ input_tokens: value })]).totals.inputTokens.value).toBeNull();
+    }
+    const overflow = measure([row({ input_tokens: Number.MAX_SAFE_INTEGER }),
+      row({ id: 'overflow', usage_event_key: 'another', input_tokens: 1 })]);
+    expect(overflow.totals.inputTokens.value).toBeNull();
+    expect(overflow.gaps).toContain('token-sum-overflow');
+    expect(measure([row({ input_tokens: Infinity })]).observations).toMatchObject([
+      { input_tokens: { nonFiniteNumber: 'Infinity' } },
+    ]);
+  });
+
+  it('unions overlapping tool intervals while other time categories remain unknown', () => {
+    expect(unionWorkflowStepIntervals([[0, 100], [50, 200], [300, 350]])).toBe(250);
+    expect(unionWorkflowStepIntervals([[100, 100]])).toBe(0);
+    expect(unionWorkflowStepIntervals([])).toBeNull();
+    expect(unionWorkflowStepIntervals([[2, 1]])).toBeNull();
+    const result = summarizeWorkflowStepUsage({ source, rows: [row()],
+      ledger: { totalRecords: 1, limit: 10, complete: true }, toolIntervals: [[0, 100], [50, 200]] });
+    expect(result.time).toMatchObject({ observedToolIntervalUnionMs: 200, activeEffortMs: null,
+      queueingMs: null, ownerPauseMs: null, attributableElapsedMs: null });
+    expect(result.efficiency).toBe('unknown');
   });
 });
