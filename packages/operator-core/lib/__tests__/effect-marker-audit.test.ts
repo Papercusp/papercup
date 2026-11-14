@@ -136,6 +136,8 @@ const REVIEWED_PURE: Record<string, string> = {
   'dev:code_run_adoption': 'adoption statistics over tool_invocations',
   'dev:orient_dedup_rate': 'a measured rate over existing rows',
   'release:trace': 'reads release trace truth (workspace-global read)',
+  'release:change-trail': 'joins existing Git provenance and stored work-item/test rows; performs no release operation',
+  'checkpoint:state_snapshot': 'reads caller-harness checkpoint authority via readHarnessCheckpointState; records no checkpoint',
   'dev:resolve_owner': 'resolves an owner id to a label',
   'testing:run-status': 'polls a run snapshot; starting a run is testing:run',
   'flags:attest': 'asks processes what a flag resolves to; read-only probes',

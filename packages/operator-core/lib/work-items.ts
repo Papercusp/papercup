@@ -2992,7 +2992,12 @@ export async function searchWorkItemDuplicateCandidates(
   if (requiredSeedMatches < 1)
     return { complete: false, items: [], reason: 'insufficient-indexable-terms' };
 
-  const seedQuery = seedTokens.join(' | ');
+  if (requiredSeedMatches > seedTokens.length) return { complete: true, items: [] };
+  // EI-28715095781460073: pigeonhole prefilter. A row matching >= k of n seed terms must
+  // match >= 1 of ANY n-k+1 of them, so OR-ing only the n-k+1 longest terms is exactly
+  // complete while shrinking the bitmap candidate set the per-row count has to visit.
+  const prefilterTokens = seedTokens.slice(0, seedTokens.length - requiredSeedMatches + 1);
+  const seedQuery = prefilterTokens.join(' | ');
   const issueWorkspace = issuesScopeWorkspace();
   const featureWorkspace = activeWorkspaceId();
   const rows = await sql<Array<{
@@ -3005,6 +3010,13 @@ export async function searchWorkItemDuplicateCandidates(
     WITH seed AS MATERIALIZED (
       SELECT to_tsquery('english', ${seedQuery}) AS query
     ),
+    -- EI-28715095781460073: each seed term's lexemes, computed once. A term matches a row
+    -- iff ALL its lexemes are in the row's tsvector (plainto_tsquery's AND semantics), so
+    -- the per-row count detoasts _search ONCE instead of once per term (O(rows x terms)).
+    seed_terms AS MATERIALIZED (
+      SELECT ARRAY(SELECT lexeme FROM unnest(to_tsvector('english', seed_term.token))) AS lexemes
+        FROM unnest(${seedTokens}::text[]) AS seed_term(token)
+    ),
     candidates AS MATERIALIZED (
       SELECT wi.feature_id AS id, wi.title, wi.summary, wi.status AS state,
              CASE WHEN wi.harness_slug IS NULL OR wi.harness_slug = ''
@@ -3012,10 +3024,11 @@ export async function searchWorkItemDuplicateCandidates(
                   THEN NULL ELSE wi.harness_slug END AS harness
         FROM harness_shared.work_items wi
         CROSS JOIN seed
+        CROSS JOIN LATERAL (SELECT tsvector_to_array(wi._search) AS lexemes OFFSET 0) row_terms
         CROSS JOIN LATERAL (
           SELECT count(*)::integer AS matched
-            FROM unnest(${seedTokens}::text[]) AS seed_term(token)
-           WHERE wi._search @@ plainto_tsquery('english', seed_term.token)
+            FROM seed_terms
+           WHERE seed_terms.lexemes <@ row_terms.lexemes
         ) seed_matches
        WHERE wi.workspace_id = ${issueWorkspace}
          AND wi.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
@@ -3030,10 +3043,11 @@ export async function searchWorkItemDuplicateCandidates(
         -- work_items relation for feature-family rows as well.
         FROM harness_shared.work_items w
         CROSS JOIN seed
+        CROSS JOIN LATERAL (SELECT tsvector_to_array(w._search) AS lexemes OFFSET 0) row_terms
         CROSS JOIN LATERAL (
           SELECT count(*)::integer AS matched
-            FROM unnest(${seedTokens}::text[]) AS seed_term(token)
-           WHERE w._search @@ plainto_tsquery('english', seed_term.token)
+            FROM seed_terms
+           WHERE seed_terms.lexemes <@ row_terms.lexemes
         ) seed_matches
        WHERE w.workspace_id = ${featureWorkspace}
          AND ${featureFamilyKindClause(sql, featureWorkspace)}
@@ -7925,7 +7939,7 @@ export function observationLaneExclusionSql(
   // Issue-family callers run in a `FROM … work_items wi` context by default. The
   // other callers pass the alias whose payload they are evaluating. Keep this a
   // closed literal union: the value is trusted SQL structure, never user input.
-  payloadCol: 'wi.payload' | 'payload' | 'ei.payload' = 'wi.payload',
+  payloadCol: 'wi.payload' | 'payload' | 'ei.payload' | 'w.payload' = 'wi.payload',
 ) {
   // WI-524804: read the STORED generated column, NOT `payload ->> 'lane'`. Migration 721
   // (WI-6934) added `lane text GENERATED ALWAYS AS (payload ->> 'lane') STORED` expressly so

@@ -25,7 +25,8 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql: {} }),
 }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
-vi.mock('../issues-engineer', () => ({
+vi.mock('../issues-engineer', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../issues-engineer')>()),
   resolveIssuesScopeWorkspace: () => 'ws-test',
 }));
 vi.mock('./learning-observations-read', async (importOriginal) => ({

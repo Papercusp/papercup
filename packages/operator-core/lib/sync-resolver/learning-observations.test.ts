@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const listIssues = vi.fn();
 const countIssues = vi.fn();
-vi.mock('../issues-engineer', () => ({
+vi.mock('../issues-engineer', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../issues-engineer')>()),
   listIssues: (...args: unknown[]) => listIssues(...args),
   countIssues: (...args: unknown[]) => countIssues(...args),
 }));

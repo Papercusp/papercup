@@ -1,8 +1,9 @@
 /**
  * Git-store ref/log integrity — the pure half of the WI-39371 recurrence guard.
  *
- * Git treats EVERY regular file under a store's `refs/` as a ref and every file
- * under `logs/` as a reflog. Write anything else there and the repo silently
+ * Git treats loose ref files under a store's `refs/` as refs and their files
+ * under `logs/` as reflogs. Transaction `.lock` files are separate metadata.
+ * Write anything else into a ref or reflog and the repo silently
  * becomes unclonable: `git clone` dies with "'refs/remotes/origin/…' has a null
  * OID" and `git fsck` reports "invalid sha1 pointer 0000…". That is not
  * hypothetical here — on 2026-08-15 an ad-hoc pre-push-guard install wrote its
@@ -61,6 +62,8 @@ export function isValidGitStoreFile(
  */
 export function gitStoreFileKind(pathInsideStore: string): GitStoreFileKind | null {
   const p = pathInsideStore.replaceAll('\\', '/');
+  // Git reserves this suffix for a transaction, whose lock can still be empty.
+  if (p.endsWith('.lock')) return null;
   if (/(^|\/)logs\//.test(p)) return 'log';
   if (/(^|\/)refs\//.test(p)) return 'ref';
   return null;

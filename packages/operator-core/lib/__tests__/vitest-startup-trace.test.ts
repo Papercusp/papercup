@@ -1727,8 +1727,11 @@ describe('focused runner startup tracing', () => {
   it('retains complete pinned engine ranges beyond the event bound and authenticates their attachment', () => {
     const dir = mkdtempSync(join(tmpdir(), 'native-engine-ranges-'));
     const out = join(dir, 'sources.json'), main = join(dir, 'main.mjs');
+    // V8 best-effort coverage can omit one-shot straight-line callee counters.
+    // Warm each call site so the late-range assertion has a positive entry
+    // control, while untouched_suffix remains the zero-entry control.
     const source = Array.from({ length: 2000 }, (_, index) =>
-      `function retained_${index}() { return ${index}; } retained_${index}();`).join('\n') +
+      `function retained_${index}() { return ${index}; } for (let call = 0; call < 16; call++) retained_${index}();`).join('\n') +
       '\nfunction untouched_suffix() { return 7; } console.log("complete");';
     writeFileSync(main, source);
     try {

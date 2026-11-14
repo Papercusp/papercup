@@ -94,6 +94,94 @@ export function prepareTestingCore({ root, compilerPath, argv, phase }: {
         ancestors: any;
     };
 }>;
+/** WI-6554700010048604: a LIVE shared tree cannot hold the producing interval.
+ * Any peer's create, rename or remove in a probed directory changes that
+ * directory's mtime, and the census binds every directory because only that
+ * binding detects a transient failed-probe candidate (create+remove). So compile
+ * from a private, closure-only COPY instead, not a relaxed census: the witness then
+ * binds an immutable population nobody else can write, and its census is the
+ * closure rather than the whole tree (whose node_modules alone is ~20 GB).
+ * Discovery is untrusted: it only chooses what to copy. prepareTestingCore then
+ * re-establishes full custody over the copy, and the bwrap namespace mounts only
+ * the copy, so a resolution the copy cannot satisfy fails rather than reaching
+ * the live tree. The copy is a SUBSET of the live tree, so a candidate the copy
+ * holds was also present live, earlier in no probe order than the live choice.
+ * The snapshot directory is named by its own manifest digest. The witness binds
+ * absolute roots (the resolver namespace mounts, the rewritten entry argv), so a
+ * per-run random directory would change the witness and the artifact bytes on
+ * every prepare. One closure always compiles at one path, so prepares are
+ * reproducible, and concurrent prepares of one closure share one copy. */
+export function materializeTestingCoreSnapshot({ root, compilerPath, argv, snapshotParent }: {
+    root: any;
+    compilerPath: any;
+    argv: any;
+    snapshotParent?: string | undefined;
+}): {
+    workdir: string;
+    liveRoot: any;
+    root: string;
+    argv: any;
+    files: number;
+    links: number;
+    closureSha256: string;
+};
+/** Digest of a snapshot's WHOLE tree: every directory, file and link. A reused
+ * snapshot must match entry for entry, because an extra file can change
+ * resolution as surely as a changed one. */
+export function testingCoreSnapshotManifestSha256(dir: any): string;
+/** The receipt names its snapshot root, and the shell verifies it again after
+ * compiling the parent, so a snapshot outlives this call. It is reclaimed by age. */
+export function collectStaleTestingCoreSnapshots(snapshotParent?: string, now?: number): void;
+export function prepareTestingCoreFromSnapshot({ root, compilerPath, argv, snapshotParent, phase }: {
+    root: any;
+    compilerPath: any;
+    argv: any;
+    snapshotParent?: string | undefined;
+    phase?: ((_name: any, operation: any) => Promise<any>) | undefined;
+}): Promise<{
+    snapshot: {
+        liveRoot: any;
+        workdir: string;
+        closureSha256: string;
+        files: number;
+        links: number;
+    };
+    schemaVersion: string;
+    root: any;
+    output: any;
+    witness: {
+        schemaVersion: number;
+        sourceSha256: string;
+        artifactSha256: string;
+    };
+    input: {
+        profile: {
+            absWorkingDir: any;
+            entryPoints: never[];
+            write: boolean;
+        };
+        toolchain: {
+            node: string;
+            platform: NodeJS.Platform;
+            arch: NodeJS.Architecture;
+            files: {
+                role: string;
+                sha256: string;
+            }[];
+        };
+        resolverNamespace?: any;
+        schemaVersion: number;
+        sources: any[];
+        resolutionPopulation: any;
+        enclosingMetadata: any;
+    };
+    interval: {
+        toolchain: any[];
+        resolverNamespace?: any;
+        rows: any;
+        ancestors: any;
+    };
+}>;
 /** Read ORIGINAL identities from the producing receipt, never take a new
  * endpoint census and call it an interval. The independent receipt digest and
  * worker witness are retained by the shell before compiling its parent. */

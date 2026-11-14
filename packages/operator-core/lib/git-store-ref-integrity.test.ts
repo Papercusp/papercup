@@ -133,6 +133,22 @@ describe('git-store ref/log content predicate', () => {
     expect(gitStoreFileKind('packed-refs')).toBeNull();
     expect(gitStoreFileKind('config')).toBeNull();
   });
+
+  it('keeps Git transaction locks out of the ref/log content population', () => {
+    for (const path of [
+      'refs/remotes/origin/staging.lock',
+      'logs/refs/heads/staging.lock',
+      'modules/libs/sse/refs/heads/staging.lock',
+      'modules/libs/sse/logs/HEAD.lock',
+      'modules\\libs\\sse\\refs\\heads\\staging.lock',
+    ]) {
+      expect(gitStoreFileKind(path), path).toBeNull();
+    }
+    // A real ref with a similar name still owes the full content invariant.
+    expect(gitStoreFileKind('refs/heads/release.locked')).toBe('ref');
+    expect(isValidGitStoreFile('ref', '')).toBe(false);
+    expect(isValidGitStoreFile('ref', '#!/bin/sh\nexit 1\n')).toBe(false);
+  });
 });
 
 describe('this checkout\'s git store has no corrupted refs or reflogs (WI-39371)', () => {

@@ -435,7 +435,9 @@ describe('applyAllowlist: drift is advisory, and content-keying does not over-su
         /\{\s*at:\s*(["'])((?:\\[\s\S]|(?!\1)[\s\S])*)\1,\s*code:\s*(["'])((?:\\[\s\S]|(?!\3)[\s\S])*)\3,?\s*\}/g,
       ),
     ];
-    expect(entries.length).toBeGreaterThanOrEqual(20);
+    // Fixed call sites shrink ALLOW. Calibrate against emptiness, then require
+    // complete at/code pairing for every remaining entry below.
+    expect(entries.length).toBeGreaterThan(0);
     // Count the `at:` keys independently: a hand-added entry that omits `code` (or spells it
     // differently) is invisible to the pair regex above, and this is what catches that.
     expect(entries.length).toBe([...block.matchAll(/\bat:\s*["']/g)].length);

@@ -426,6 +426,8 @@ describe('D-023 rank 1 (session:request-compaction no_live_pty_host, 1931): reti
     let claimed = 0;
     const raw: ExecuteWakeDeps = {
       findPsuHost: tb.findPsuHostDep(),
+      // This case exercises the retirement fence after a successful custody read.
+      getSessionLifecycle: async () => null,
       getSession: async () => ({
         pid: null, endedAt: null, retiredAt: '2026-10-15T20:01:25.851Z', retiredBy: 'fleet:kill:pc-admin-coord-ui',
         agent: 'codex', sessionId: 'native-retired-codex', coordOwnerId: s.ownerId, cwd: s.cwd,

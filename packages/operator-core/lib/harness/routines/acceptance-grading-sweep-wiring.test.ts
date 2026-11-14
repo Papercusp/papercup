@@ -24,6 +24,7 @@ const HERE = __dirname;
 const ACTION_FILE = join(HERE, 'acceptance-grading-sweep-action.ts');
 const SEED_FILE = join(HERE, 'seed-acceptance-grading-sweep-routine.ts');
 const REGISTER_FILE = join(HERE, 'register-system-actions.ts');
+const DISPATCH_FILE = join(HERE, '../../acceptance-grading-sweep-dispatch.ts');
 
 const ACTION_NAME = 'acceptance-grading-sweep';
 const TARGET_ROLE = `system:${ACTION_NAME}`;
@@ -135,7 +136,7 @@ describe('the production escalation lookup follows the canonical work-item schem
 describe('the sweep asks the gate for recruitment readiness, never shipment permission', () => {
   it('uses the explicit grading-recruitment mode', () => {
     const src = read(ACTION_FILE);
-    expect(src).toContain('evaluatePlanAcceptanceGate(planSlug, { gradingRecruitment: true })');
+    expect(src).toContain('evaluatePlanAcceptanceGate(planSlug, { gradingRecruitment: true, harnessSlug: row.harnessSlug! })');
   });
 });
 
@@ -217,14 +218,13 @@ describe('R4 at the wiring layer — the routine cannot reach a grading surface'
   // an independent grader" escalation against a fully-graded plan. That would
   // trade one silent bug for a louder one.
   it("counts the 'settled' skip as a dispatch SUCCESS, not a failure", () => {
-    const okExpr = /const ok =([\s\S]*?);/.exec(read(ACTION_FILE))?.[1] ?? '';
+    expect(read(ACTION_FILE)).toContain('await enqueueAcceptanceGradingDispatch(input)');
+    const okExpr = /if\s*\(\s*!\[([\s\S]*?)\]\.includes\(result\.state\)\)/.exec(read(DISPATCH_FILE))?.[1] ?? '';
     // CALIBRATION FIRST: the three states that were always successes must be
     // found, so a failure on 'settled' below means "it is absent from the
     // allowlist" rather than "the matcher read nothing" — an empty match would
     // otherwise fail every assertion identically and say nothing about the cause.
-    expect(okExpr).toContain("life.state === 'assigned'");
-    expect(okExpr).toContain("life.state === 'launched'");
-    expect(okExpr).toContain("life.state === 'deduped'");
-    expect(okExpr).toContain("life.state === 'settled'");
+    expect([...okExpr.matchAll(/'([^']+)'/g)].map(match => match[1]))
+      .toEqual(['assigned', 'launched', 'deduped', 'settled']);
   });
 });

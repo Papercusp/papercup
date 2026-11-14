@@ -96,6 +96,14 @@ export interface TierDeclaration {
  */
 export const DECLARED_COORD_TIERS: ReadonlyMap<string, TierDeclaration> = new Map<string, TierDeclaration>([
   [
+    'coord:judge-coupling-edge',
+    {
+      tier: 'schema-refusal',
+      evidence:
+        'judgeShadowEdge in code-intelligence/coupling-shadow-window.ts refuses judge_in_implementer_lineage, edge_not_in_window and edge_has_implementer_endpoint before writing an audit judgment. The scorer uses the same windowEdges population, so accepted judgments satisfy its independence and membership contract. coupling-shadow-window.test.ts exercises all three refusals.',
+    },
+  ],
+  [
     'coord:dispatch',
     {
       tier: 'see-also',
