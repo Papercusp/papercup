@@ -5,7 +5,7 @@ describe('lintAcceptanceCriterionMethods', () => {
   it('finds the narrow shell-shaped method markers', () => {
     const findings = lintAcceptanceCriterionMethods([
       { key: 'npm', method: 'Run npm run measure:launch-cost -- --since 2026-09-08.' },
-      { key: 'proc', method: 'Read /proc/<pid>/environ for the running proxy.' },
+      { key: 'proc', method: 'Read /proc/123/environ for the running proxy.' },
       { key: 'pgrep', method: 'Use pgrep -f the proxy pattern.' },
       { key: 'inline', method: 'Inspect `cat /tmp/measurement.json` and compare the output.' },
     ]);
@@ -38,20 +38,20 @@ describe('lintAcceptanceCriterionMethods', () => {
   it.each([
     'The existing liveness writer uses Linux boot ID plus /proc start ticks.',
     'Inspect source/test evidence for Linux boot ID plus /proc start ticks.',
-    'The source reads /proc/<pid>/stat to derive start ticks.',
+    'The source reads /proc/123/stat to derive start ticks.',
     'Use state:read to inspect the liveness identity derived from /proc.',
   ])('does not treat a proc source citation as a shell instruction: %s', (method) => {
     expect(lintAcceptanceCriterionMethods([{ key: 'r-6', method }])).toEqual([]);
   });
 
   it.each([
-    'Read /proc/<pid>/environ for the running proxy.',
-    '1. Read `/proc/<pid>/stat` and compare the start ticks.',
-    'Manually inspect /proc/<pid>/stat.',
-    'Read state:read first, then read /proc/<pid>/stat.',
-    'Use /proc/<pid>/stat to read start ticks directly.',
+    'Read /proc/123/environ for the running proxy.',
+    '1. Read `/proc/123/stat` and compare the start ticks.',
+    'Manually inspect /proc/123/stat.',
+    'Read state:read first, then read /proc/123/stat.',
+    'Use /proc/123/stat to read start ticks directly.',
     'Run cat /proc/sys/kernel/random/boot_id and compare the output.',
-    'Use sed -n 1p /proc/<pid>/stat and compare the start ticks.',
+    'Use sed -n 1p /proc/123/stat and compare the start ticks.',
     'Inspect `cat /proc/sys/kernel/random/boot_id` and compare the output.',
   ])('retains the proc advisory for direct native actions: %s', (method) => {
     expect(lintAcceptanceCriterionMethods([{ key: 'native', method }]))
