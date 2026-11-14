@@ -24,7 +24,7 @@ const task = {
   workspaceId: WS, class: 'agent-session', detail: { consultAnswer: {
     conversationId: CONV, answeringOwnerId: OWNER, sourceOwnerId: EXPERT, operation: 'fork',
   } },
-} as TaskRow;
+} as unknown as TaskRow;
 
 beforeAll(async () => {
   db = await createFreshTestDb({ prefix: 'consult-reaper' });

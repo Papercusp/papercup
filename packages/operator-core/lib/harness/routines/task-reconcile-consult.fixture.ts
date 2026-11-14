@@ -27,7 +27,7 @@ const sql = getOrgPg().sql;
 const conversationId = 'conv-private-reaper-followup';
 const task = { workspaceId, class: 'agent-session', detail: { consultAnswer: {
   conversationId, answeringOwnerId: 'su-private-answerer', sourceOwnerId: 'su-private-expert', operation: 'fork',
-} } } as TaskRow;
+} } } as unknown as TaskRow;
 
 try {
   const [server] = await sql`SELECT inet_server_port() AS port`;
