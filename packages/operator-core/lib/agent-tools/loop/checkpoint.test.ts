@@ -710,6 +710,37 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
     ).toEqual({ guaranteed: true, reason: null });
   });
 
+  it('keeps a measured current-fire execution live despite stale delivery and turn timestamps', () => {
+    const fire = '2026-10-03T05:00:00.000Z';
+    expect(classifyLoopNextWake(loop({
+      currentExecutionInFlight: true,
+      parked: true,
+      nextFireAt: null,
+      lastFiredAt: fire,
+      lastWakeStatus: 'parked',
+      lastWakeError: 'eligible cold loop wake has no injectable psu host',
+    }))).toEqual({ guaranteed: true, reason: null });
+
+    expect(classifyLoopNextWake(loop({
+      currentExecutionInFlight: true,
+      parked: true,
+      nextFireAt: null,
+      lastWakeStatus: 'delivered',
+      lastFiredAt: fire,
+      lastLoopTurnAt: '2026-10-03T05:00:00.001Z',
+    }))).toEqual({ guaranteed: true, reason: null });
+
+    expect(classifyLoopNextWake(loop({
+      currentExecutionInFlight: true,
+      parked: true,
+      nextFireAt: null,
+      lastWakeStatus: 'delivered',
+      lastDeliveryOutcome: 'loop-delivered-wake-no-loop-turn',
+      lastFiredAt: fire,
+      lastLoopTurnAt: null,
+    }))).toEqual({ guaranteed: true, reason: null });
+  });
+
   // P-013 / RSR-P-013-C (review-system-rework-reduction-2026-09-23), EI-24023838400909760:
   // a cold loop re-armed and was told rewakeGuaranteed:true while its previous fire had
   // parked "no injectable psu host"; the next fire parked identically and the session went

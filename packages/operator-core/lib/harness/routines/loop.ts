@@ -1162,6 +1162,8 @@ export interface LoopStatus {
   firesSinceArm: number;
   /** True while the loop's turn is in flight (parked at next_fire_at='infinity'). */
   parked: boolean;
+  /** True when measured host state ties a running execution to this loop's latest fire. */
+  currentExecutionInFlight?: boolean;
   /** Next scheduled fire (ISO), or null when parked / unset. */
   nextFireAt: string | null;
   /** ISO of the last DELIVERED fire, or null if the loop has never fired. Same EI-16202
@@ -2300,6 +2302,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     fireCount,
     firesSinceArm,
     parked,
+    currentExecutionInFlight,
     nextFireAt: nextFireAtIso,
     lastFiredAt: r.last_fired_at ? new Date(r.last_fired_at).toISOString() : null,
     armedAt: r.armed_at ? new Date(r.armed_at).toISOString() : null,
