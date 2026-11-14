@@ -1180,6 +1180,13 @@ export const FLAGS = {
   // `hiveGit.mode` setting is flipped to 'bridged' (the owner-set per-hive activation);
   // this flag is the fleet-wide kill-switch, not the activation surface.
   GITHUB_BRIDGE: "papercusp-github-bridge",
+  // p2p-v1-core-release-2026-11-13 P-001 (R-7): the P2P v1 RELEASE BUILD profile. ON only in
+  // the distributed v1 build (set by env PAPERCUSP_FLAG_PAPERCUSP_P2P_V1_RELEASE_BUILD=1 at
+  // launch): every commerce money-movement root named in p2p/v1-core/v1-scope-contract.ts
+  // refuses to load, so the whole derived commerce population refuses too. Read
+  // synchronously at module load via resolveFlagFromEnv, so an /admin/features override
+  // does not reach already-loaded modules. OFF everywhere else (dev fleet, hosted public).
+  P2P_V1_RELEASE_BUILD: "papercusp-p2p-v1-release-build",
   // p2p-work-distribution-2026-07-02 P-002/P-005: the P2P work-sharing surface —
   // the /settings/p2p page (host opt-in, peers capability matrix, GLOBAL
   // kill-switch) + the foreign-work admission contract Phase-1 consumers read.
@@ -3226,6 +3233,10 @@ export const DARK_FLAGS: ReadonlyMap<
   [FLAGS.PLUGIN_INVOCATION_POLICY, {
     case: "owner-authority",
     reason: "app-security-runtime-boundaries-and-defense-in-depth-2026-10-31 P-002/P-019: security authorization cutover. Enabling denies installed plugin calls without an independently bound host PDP and current exact resource approvals. Keep OFF during implementation; under Avi's standing AUTO authorization, enable in P-019 only after host binding, independently precommitted population qualification and required acceptance. OFF retains legacy dispatch and makes no security guarantee. This is a pending security rollout, not a finished feature; WI-6554700010044290 tracks the binding and qualification work.",
+  }],
+  [FLAGS.P2P_V1_RELEASE_BUILD, {
+    case: "cutover",
+    reason: "p2p-v1-core-release-2026-11-13 P-001 / D-001: build PROFILE switch, not a feature. ON makes every commerce money-movement root refuse to load (R-7), so flipping it on the dev fleet or the hosted public operator would disable live commerce for everyone. It is set only in the distributed v1 build's launch env; it stays OFF in the shared registry by design.",
   }],
   [FLAGS.STUCK_WORK_NOTICES, {
     case: "cutover",
