@@ -4071,7 +4071,14 @@ describe('unified work_items surface (real PG)', () => {
     expect(onlyFeatures.items.every((w) => w.family === 'feature')).toBe(true);
   });
 
-  it('fulltext duplicate screening stays complete past feature-family candidate crowding', async () => {
+  it('fulltext duplicate screening stays complete past feature-family crowding with the production view shape', async () => {
+    const featureViewColumns = await db.sql<{ column_name: string }[]>`
+      SELECT column_name
+        FROM information_schema.columns
+       WHERE table_schema = 'harness_shared'
+         AND table_name = 'harness_features_consolidated'`;
+    expect(featureViewColumns.some(({ column_name }) => column_name === 'lane')).toBe(false);
+
     const query = 'alpha bravo charlie delta echo foxtrot golf hotel india juliet';
     for (let i = 0; i < 80; i += 1) {
       const noise = Array.from({ length: 11 }, (_, j) => 'noise' + i + 'extra' + j).join(' ');

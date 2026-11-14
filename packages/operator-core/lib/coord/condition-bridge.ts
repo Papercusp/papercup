@@ -89,8 +89,9 @@ export function resolveConditionHarness(
     const detail = suffix.slice(sep + 1).trim();
     return head && detail ? head : null;
   }
-  // A suffix carrying further ':' segments is not a bare slug — don't guess.
-  return suffix && !suffix.includes(':') ? suffix : ambientHarness?.trim() || null;
+  // A suffix carrying further ':' segments is not a bare slug — don't guess. Nor is one with
+  // '/': that is a submodule install slug (`<harness>/<path>`), never a harness (WI-6554700010048637).
+  return suffix && !suffix.includes(':') && !suffix.includes('/') ? suffix : ambientHarness?.trim() || null;
 }
 
 /** PURE. Is this status settled? Derived from the shared SSOT, never re-listed. */

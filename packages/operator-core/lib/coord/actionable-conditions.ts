@@ -169,6 +169,11 @@ export const ACTIONABLE_CONDITIONS: readonly ActionableCondition[] = [
   { prefix: 'main-behind-staging:', harnessFrom: 'suffix', severity: 'major', assignTo: 'live-gate-owner' },
   { prefix: 'release-trigger-freeze:', harnessFrom: 'suffix', severity: 'major' },
   { prefix: 'release-trigger-fire-stale:', harnessFrom: 'suffix', severity: 'major' },
+  // WI-6554700010048637: the git-sync stall watchdog broadcasts ONE alarm per harness
+  // (`git-sync-stall:<harness>`), so this mints one incident per harness. It starts minor; the
+  // watchdog's stall-duration ladder raises it while the stall lasts. Whichever host sweeps next
+  // sends the recovery, so the death of the emitting process is not evidence of recovery.
+  { prefix: 'git-sync-stall:', harnessFrom: 'suffix', severity: 'minor', lifecycleOwnedBySource: true },
   { prefix: 'single-primary:', harnessFrom: 'ambient', severity: 'critical' },
   // github-bridge divergence has a separate agent-actionable lane for known
   // local remedies (for example restoring a workflow file when the remote

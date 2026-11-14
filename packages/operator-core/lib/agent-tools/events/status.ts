@@ -366,7 +366,7 @@ export default defineTool({
     `Inspect the await-event surface: your active wake awaits, standing event-key inject subscriptions, trees, and recent wakes, or pass an exact event key for its declaration generations, expected condition, waiter registrations, wake outcomes, and a deterministic watermark/resync verdict. Add condition:'specific' to an exact event read for the canonical strict condition verdict and same-process runtime/workspace provenance instead of history. Exact-key waiter rows are under event_inspection.waiters; generic and await_id responses use active_awaits. Exact-key history is a bounded recent window; history_window reports omitted rows. Optionally include the fleet-wide wake meter. Evidence-only judges may inspect only their own awaits and recent wakes; exact-key inspection and the fleet-wide meter are unavailable. ${EVENTS_SCOPE_NOTE}`,
   guidance: {
     when: 'Checking what will reach or wake you (active wake awaits plus standing event-key inject subscriptions), whether a wake fired and via which channel, or whether the fleet is wake-storming (meter: true). For exact event-key reads, inspect event_inspection.waiters; active_awaits belongs to generic or await_id reads.',
-    notWhen: `Reading your message stream — that is coord:inbox. Following an area — topics:feed. ${EVENTS_SCOPE_NOTE}`,
+    notWhen: 'Reading your message stream — that is coord:inbox. Following an area — topics:feed.',
     seeAlso: [
       'events:cancel (cancel an await you found here)',
       'events:unsubscribe (cancel a standing event-key inject subscription you found here)',
@@ -521,7 +521,7 @@ export default defineTool({
                   : null;
               const stewardWorkItemId = stewardTarget?.ref
                 ? await (await import('../../coord/condition-bridge')).findConditionKeyHolder(stewardTarget.ref, {
-                    workspaceId: identity.workspaceId,
+                    workspaceId: identity.workspaceId ?? undefined,
                   })
                 : null;
               return declaredGateRecoveryPayload(result, null, stewardWorkItemId);

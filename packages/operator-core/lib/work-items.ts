@@ -3025,7 +3025,10 @@ export async function searchWorkItemDuplicateCandidates(
          AND seed_matches.matched >= ${requiredSeedMatches}
       UNION ALL
       SELECT w.feature_id AS id, w.title, w.summary, w.status AS state, w.harness_slug AS harness
-        FROM harness_shared.harness_features_consolidated w
+        -- The compatibility view intentionally omits the generated "lane" column;
+        -- observationLaneExclusionSql reads that stored column, so query the canonical
+        -- work_items relation for feature-family rows as well.
+        FROM harness_shared.work_items w
         CROSS JOIN seed
         CROSS JOIN LATERAL (
           SELECT count(*)::integer AS matched

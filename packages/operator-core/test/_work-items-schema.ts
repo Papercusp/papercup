@@ -293,8 +293,27 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
        AND b ->> 'capability' = 'live-dependency'
   $$;
   DROP VIEW IF EXISTS harness_shared.harness_features_consolidated;
-  CREATE VIEW harness_shared.harness_features_consolidated AS
-    SELECT * FROM harness_shared.work_items WHERE item_kind NOT IN ('bug', 'change', 'task');
+  -- The production compatibility view has an explicit projection and does not
+  -- expose the generated "lane" column. A SELECT * fixture accidentally widened
+  -- it whenever the base table gained columns, masking callers that referenced
+  -- lane through this view. Keep the broad test projection while matching that
+  -- important production boundary.
+  DO $hfc_view$
+  DECLARE
+    feature_projection text;
+  BEGIN
+    SELECT string_agg(format('wi.%I', attname), ', ' ORDER BY attnum)
+      INTO feature_projection
+      FROM pg_attribute
+     WHERE attrelid = 'harness_shared.work_items'::regclass
+       AND attnum > 0
+       AND NOT attisdropped
+       AND attname <> 'lane';
+    EXECUTE format(
+      'CREATE VIEW harness_shared.harness_features_consolidated AS SELECT %s FROM harness_shared.work_items wi WHERE wi.item_kind NOT IN (''bug'', ''change'', ''task'')',
+      feature_projection
+    );
+  END $hfc_view$;
   DO $eidrop$ BEGIN
     -- Drop engineer_issues whether it is a leftover TABLE (mig 131) or a prior VIEW
     -- (idempotent re-application): DROP TABLE IF EXISTS errors on a view and vice-versa,
