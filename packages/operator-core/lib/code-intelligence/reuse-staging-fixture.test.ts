@@ -7,7 +7,8 @@ import { runStagingReuseFixture, assertReuseStagingRuntime, type ReuseStagingOpt
   type ReuseStagingPorts } from './reuse-staging-fixture';
 import { nativeCliCall } from './native-cli.fixture';
 import * as registry from '../harness-registry';
-import { runNativeReuseJourney, privateReuseHarnessRegistration, createControlledReusePlan } from './__fixtures__/reuse-api-journey';
+import { runNativeReuseJourney, privateReuseHarnessRegistration, createControlledReusePlan,
+  addControlledReusePlanCandidate } from './__fixtures__/reuse-api-journey';
 import { ensureDatedSlug } from '../agent-tools/plans/new';
 import { cleanupReuseFixture, type ReuseFixtureIdentity, type ReuseFixtureLifecyclePorts } from './reuse-fixture-lifecycle';
 
@@ -112,14 +113,23 @@ it('binds the prepared dated plan across midnight using the canonical plan write
   const marker = JSON.parse(await readFile(join(fixture.root, '.reuse-fixture-owner.json'), 'utf8'));
   const journal = JSON.parse(await readFile(join(fixture.evidenceRoot, 'lifecycle.json'), 'utf8'));
   expect(marker.planSlug).toBe(slug); expect(journal.planSlug).toBe(slug);
-  const call = vi.fn(async (name: string, args: Record<string, any>) => name === 'plans:new'
-    ? { ok: true, slug: ensureDatedSlug(args.slug, '2026-10-26') }
-    : { results: [{ ok: true, itemId: 'P-001' }] });
+  const fingerprint = `v1:${'a'.repeat(64)}`;
+  const call = vi.fn(async (name: string, args: Record<string, any>) => {
+    if (name === 'plans:new') return { ok: true, slug: ensureDatedSlug(args.slug, '2026-10-26') };
+    if (name === 'plans:get') return { version: 1, contentHash: 'saved-plan-hash' };
+    if (name === 'work_items:get') return { results: [{ ok: true, adoptionSnapshot: { fingerprint } }] };
+    return args.adoptExistingWorkItem
+      ? { results: [{ ok: true, itemId: 'P-001' }] }
+      : { results: [{ ok: false, error: 'duplicate_plan_item' }] };
+  });
   const harnessSlug = `r-${fixture.token.slice(0, 8)}`;
-  await expect(createControlledReusePlan(call, harnessSlug, slug, 'a.ts')).resolves.toMatchObject({ planItem: 'P-001' });
+  await expect(createControlledReusePlan(call, harnessSlug, slug, 'a.ts', 'WI-owned')).resolves.toMatchObject({ planItem: 'P-001' });
   expect(call.mock.calls.map(([name, args]) => ({ name, slug: args.slug, harness: args.harness }))).toEqual([
-    { name: 'plans:new', slug, harness: harnessSlug }, { name: 'plans:add-item', slug, harness: harnessSlug },
+    { name: 'plans:new', slug, harness: harnessSlug }, { name: 'plans:get', slug, harness: harnessSlug },
+    { name: 'work_items:get', slug: undefined, harness: harnessSlug }, { name: 'plans:add-item', slug, harness: harnessSlug },
   ]);
+  expect(call.mock.calls.at(-1)?.[1].adoptExistingWorkItem).toEqual({ id: 'WI-owned', expectedPlanVersion: 1,
+    expectedPlanHash: 'saved-plan-hash', expectedAdoptionFingerprint: fingerprint });
   const fx = { ...harness(), journey: vi.fn(async () => {}) };
   await expect(runStagingReuseFixture({ ...options, prepared: { ...options.prepared, planSlug: slug } }, fx))
     .rejects.toThrow('ownership mismatch');
@@ -129,10 +139,39 @@ it('binds the prepared dated plan across midnight using the canonical plan write
 it('refuses a canonicalized or missing plan response before adding anchors', async () => {
   for (const response of [{ ok: true, slug: 'unexpected-2026-10-26' }, { ok: true }]) {
     const call = vi.fn(async () => response);
-    await expect(createControlledReusePlan(call, 'r-fixture', 'r-fixture-2026-10-25', 'a.ts'))
+    await expect(createControlledReusePlan(call, 'r-fixture', 'r-fixture-2026-10-25', 'a.ts', 'WI-owned'))
       .rejects.toThrow('plan identity changed');
     expect(call).toHaveBeenCalledTimes(1);
   }
+});
+
+it('reads fresh plan and candidate identities for each treatment candidate', async () => {
+  let version = 1;
+  const call = vi.fn(async (name: string, args: Record<string, any>) => {
+    if (name === 'plans:get') return { version, contentHash: `hash-${version}` };
+    if (name === 'work_items:get') return { results: [{ ok: true,
+      adoptionSnapshot: { fingerprint: `v1:${(args.id === 'WI-one' ? 'a' : 'b').repeat(64)}` } }] };
+    expect(args.adoptExistingWorkItem.expectedPlanVersion).toBe(version);
+    expect(args.adoptExistingWorkItem.expectedPlanHash).toBe(`hash-${version}`);
+    return { results: [{ ok: true, itemId: `P-00${version++}` }] };
+  });
+  await addControlledReusePlanCandidate(call, 'r-fixture', 'r-fixture-2026-10-25', 'a.ts', 'WI-one');
+  await addControlledReusePlanCandidate(call, 'r-fixture', 'r-fixture-2026-10-25', 'a.ts', 'WI-two', 1);
+  const writes = call.mock.calls.filter(([name]) => name === 'plans:add-item').map(([, args]) => args);
+  expect(writes.map(args => args.adoptExistingWorkItem)).toEqual([
+    { id: 'WI-one', expectedPlanVersion: 1, expectedPlanHash: 'hash-1', expectedAdoptionFingerprint: `v1:${'a'.repeat(64)}` },
+    { id: 'WI-two', expectedPlanVersion: 2, expectedPlanHash: 'hash-2', expectedAdoptionFingerprint: `v1:${'b'.repeat(64)}` },
+  ]);
+  expect(writes.map(args => args.text)).toEqual(['Inspect a.ts', 'Inspect a.ts candidate 2']);
+});
+
+it.each(['plan', 'candidate'])('refuses a missing %s preimage before adopting a candidate', async missing => {
+  const call = vi.fn(async (name: string) => name === 'plans:get'
+    ? missing === 'plan' ? {} : { version: 1, contentHash: 'hash' }
+    : { results: [{ ok: true }] });
+  await expect(addControlledReusePlanCandidate(call, 'r-fixture', 'r-fixture-2026-10-25', 'a.ts', 'WI-owned'))
+    .rejects.toThrow(missing === 'plan' ? 'current CAS identity' : 'coherent adoption snapshot');
+  expect(call.mock.calls.some(([name]) => name === 'plans:add-item')).toBe(false);
 });
 
 it('consumes the frozen identity once and refuses repeat execution before shared writes', async () => {

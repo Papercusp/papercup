@@ -25,7 +25,7 @@ export interface ManagedReuseJourney {
 /** Preserve the pre-admitted canonical identity before any follow-up mutation. */
 export async function createControlledReusePlan(
   call: (name: string, args: Record<string, unknown>) => Promise<Record<string, any>>,
-  harness: string, planSlug: string, targetPath: string,
+  harness: string, planSlug: string, targetPath: string, candidate: string,
 ) {
   const planned = await call('plans:new', { harness, slug: planSlug,
     title: 'Controlled CLI R20 fixture',
@@ -33,8 +33,28 @@ export async function createControlledReusePlan(
     projection: { pick: ['ok', 'results[].ok', 'results[].slug', 'slug'] } });
   assert.notEqual(planned.ok, false, JSON.stringify(planned));
   assert.equal(planned.slug, planSlug, 'Controlled plan identity changed: ' + JSON.stringify(planned));
+  return addControlledReusePlanCandidate(call, harness, planSlug, targetPath, candidate);
+}
+
+/** Plan authoring now creates its work node. Adopt the owned candidate instead
+ * of adding a node and then trying to mint a second work item for that lane. */
+export async function addControlledReusePlanCandidate(
+  call: (name: string, args: Record<string, unknown>) => Promise<Record<string, any>>,
+  harness: string, planSlug: string, targetPath: string, candidate: string, attempt = 0,
+) {
+  const plan = await call('plans:get', { harness, slug: planSlug, heading: 'Phase 1 — Fixture',
+    projection: { pick: ['version', 'contentHash'] } });
+  assert(Number.isSafeInteger(plan.version) && plan.version >= 0 && typeof plan.contentHash === 'string'
+    && plan.contentHash.length > 0, 'Controlled plan needs a current CAS identity: ' + JSON.stringify(plan));
+  const snapshot = await call('work_items:get', { harness, id: candidate, adoptionSnapshot: true,
+    projection: { pick: ['results[].ok', 'results[].adoptionSnapshot'] } });
+  const fingerprint = snapshot.results?.[0]?.adoptionSnapshot?.fingerprint;
+  assert(snapshot.results?.[0]?.ok === true && /^v1:[a-f0-9]{64}$/.test(fingerprint ?? ''),
+    'Controlled candidate needs a coherent adoption snapshot: ' + JSON.stringify(snapshot));
   const added = await call('plans:add-item', { harness, slug: planSlug, phase: 'Phase 1 — Fixture',
-    text: `Inspect ${targetPath}`, importance: 'normal',
+    text: `Inspect ${targetPath}${attempt ? ` candidate ${attempt + 1}` : ''}`, importance: 'normal',
+    adoptExistingWorkItem: { id: candidate, expectedPlanVersion: plan.version,
+      expectedPlanHash: plan.contentHash, expectedAdoptionFingerprint: fingerprint },
     projection: { pick: ['ok', 'results[].ok', 'results[].itemId'] } });
   assert.equal(added.results?.[0]?.ok, true, JSON.stringify(added));
   const planItem = added.results?.[0]?.itemId;
@@ -208,47 +228,34 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
   // D029: sparse authored context only; never shorten the returned task brief.
   const planSlug = managed?.planSlug ?? `${claimOnly ? 'r' : 'p010'}-${new Date().toISOString().slice(0, 10)}`;
   let planItem: string | undefined;
-  if (claimOnly) {
-    const createdPlan = await createControlledReusePlan(call, harness, planSlug, targetPath);
-    planItem = createdPlan.planItem;
-    const added = createdPlan.added;
-    // Read the same indexed boundary that work_items:create validates, before
-    // spending the rest of the native journey on an unusable anchor.
-    const { getPlanItemRow } = await import('../../agent-tools/plans/source.ts');
-    const persisted = await getPlanItemRow(planSlug, { workspaceId: workspace, harnessSlug: harness });
-    assert(persisted?.items.some(item => item.id === planItem),
-      'Controlled plan anchor must survive persisted index readback: ' + JSON.stringify({
-        workspace, planSlug, planItem, added, persisted,
-      }));
-  }
   const expectedProviders = ['clones', 'cochange', 'provenance', 'sql', 'coverage'];
   const cohortCandidates: { id: string; cohorts: Record<string, string> }[] = [];
   let id: string | undefined;
   // Explicit controlled-treatment selection: retain actual persisted identities,
   // never override the production selector or mislabel held-out advice as failure.
   for (let attempt = 0; attempt < (claimOnly ? 16 : 1); attempt++) {
-    if (claimOnly && attempt > 0) {
-      const added = await call('plans:add-item', { harness, slug: planSlug, phase: 'Phase 1 — Fixture',
-        text: `Inspect ${targetPath} candidate ${attempt + 1}`, importance: 'normal',
-        projection: { pick: ['results[].ok', 'results[].itemId'] } });
-      planItem = added.results?.[0]?.itemId;
-      assert.equal(added.results?.[0]?.ok, true, JSON.stringify(added));
-      const { getPlanItemRow } = await import('../../agent-tools/plans/source.ts');
-      const persisted = await getPlanItemRow(planSlug, { workspaceId: workspace, harnessSlug: harness });
-      assert(planItem && persisted?.items.some(item => item.id === planItem), 'Candidate anchor must persist');
-    }
     const created = await call('work_items:create', { harness, kind: 'change',
       title: claimOnly ? `Controlled R20 candidate ${attempt + 1}` : 'Private native P010 completion consequences',
-      ...(managed ? { state: 'open' } : { assign_to: 'self', state: 'wip' }),
+      assign_to: 'self', state: 'wip',
       changeKinds: ['logic'], changeKindReason: 'Private source fixture validated through an actual complete test population.',
-      ...(claimOnly ? { force: true, plan_item: { slug: planSlug, item: planItem! } } : {}),
+      ...(claimOnly ? { force: true } : {}),
       payload: { paths: [targetPath] }, projection: { pick: ['results[].id', 'results[].item.id'] } });
     const candidate = created.results?.[0]?.id ?? created.results?.[0]?.item?.id;
     assert(candidate, JSON.stringify(created));
-    // On staging, creation is deliberately unclaimed. Journal the exact id
-    // before the later fallible claim can create an owned lease.
+    // Adoption requires custody. Create-and-claim is atomic; journal the exact
+    // receipt before any later fallible plan operation can leave a held row.
     if (managed) await managed.trackClaim(candidate);
     if (!claimOnly) { id = candidate; break; }
+    const { planItem: anchor, added } = attempt === 0
+      ? await createControlledReusePlan(call, harness, planSlug, targetPath, candidate)
+      : await addControlledReusePlanCandidate(call, harness, planSlug, targetPath, candidate, attempt);
+    planItem = anchor;
+    const { getPlanItemRow } = await import('../../agent-tools/plans/source.ts');
+    const persisted = await getPlanItemRow(planSlug, { workspaceId: workspace, harnessSlug: harness });
+    assert(persisted?.items.some(item => item.id === planItem),
+      'Controlled plan anchor must survive persisted index readback: ' + JSON.stringify({
+        workspace, planSlug, planItem, added, persisted,
+      }));
     const { reuseHoldout } = await import('../reuse-measurement.ts');
     const cohorts = Object.fromEntries(expectedProviders.map(provider =>
       [provider, reuseHoldout(candidate, provider) ? 'holdout' : 'treatment']));
