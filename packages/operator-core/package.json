@@ -237,6 +237,7 @@
     "@papercusp/template-kit": "*",
     "@papercusp/testing-shell": "*",
     "@papercusp/tooldef": "*",
+    "@papercusp/tooldef-http": "*",
     "@papercusp/tauri-release-kit": "*",
     "@papercusp/tooldef-mcp": "*",
     "@papercusp/ui-primitives": "*",
