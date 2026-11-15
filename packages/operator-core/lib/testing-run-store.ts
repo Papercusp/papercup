@@ -2734,7 +2734,9 @@ async function withholdUnverifiedVitestPass(
       task = lookup.kind === 'found' ? lookup.task : null;
       const rootBoundFiles = rootBoundRequestedFilesFromValue(task?.detached_report_artifacts);
       const coverageRequestedFiles = requestedFilesForCoverage(rootBoundFiles, requestedFiles);
-      if (hasExactPassedFileCoverage(coverageRequestedFiles, recovery.files, task?.cwd, rootBoundFiles)) {
+      // hasExactPassedFileCoverage already returns false for null; the explicit
+      // guard narrows the type for provisionalVerdictFromLedger below.
+      if (coverageRequestedFiles && hasExactPassedFileCoverage(coverageRequestedFiles, recovery.files, task?.cwd, rootBoundFiles)) {
         provisionalVerdict = provisionalVerdictFromLedger(
           coverageRequestedFiles, recovery, task?.cwd, rootBoundFiles,
         );
