@@ -2888,9 +2888,12 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         for (const path of Object.values(temporarySources)) rmSync(path, { force: true });
         expect(returnedRefLine).toBeDefined();
         const returnedRef = JSON.parse(returnedRefLine!.slice('VERIFIER_TASK_EVIDENCE '.length)) as {
-          taskId: string; manifestPath: string;
+          taskId: string; manifestPath: string; manifestSha256: string;
         };
-        expect(returnedRef).toEqual({ taskId, manifestPath: expectedManifestPath });
+        expect(returnedRef).toEqual({
+          taskId, manifestPath: expectedManifestPath,
+          manifestSha256: createHash('sha256').update(readFileSync(expectedManifestPath)).digest('hex'),
+        });
         const manifest = JSON.parse(readFileSync(returnedRef.manifestPath, 'utf8')) as {
           artifacts: Record<string, { path: string; sizeBytes: number; sha256: string }>;
         };

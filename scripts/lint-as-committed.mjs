@@ -125,9 +125,19 @@ import { expandWorkspaces } from './assert-workspace-links.mjs';
 import { normalizeDependencyWorkspaceDirs, verifyRetainedDependencies } from './lib/committed-dependency-verification.mjs';
 
 export function requireDurableTestRunSink(environment = process.env) {
-  if (typeof environment.PAPERCUSP_TEST_RUNS_DB_URL !== 'string' ||
-      !environment.PAPERCUSP_TEST_RUNS_DB_URL.trim()) {
+  const sink = environment.PAPERCUSP_TEST_RUNS_DB_URL;
+  if (typeof sink !== 'string' || !sink.trim()) {
     throw new Error('PAPERCUSP_TEST_RUNS_DB_URL is required for durable test:file reporter receipts');
+  }
+  // Match the maintained test:file/private-PG preflight before extracting a
+  // clone or copying dependencies. process.env can turn an absent assigned
+  // value into the nonblank string "undefined"; presence alone is insufficient.
+  try {
+    const url = new URL(sink.trim());
+    if (url.protocol !== 'postgres:' && url.protocol !== 'postgresql:') throw new Error('unsupported protocol');
+  } catch {
+    // Never include a caller's DSN: it may contain credentials.
+    throw new Error('PAPERCUSP_TEST_RUNS_DB_URL must be a valid PostgreSQL URL');
   }
 }
 
