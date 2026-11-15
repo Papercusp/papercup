@@ -2792,6 +2792,113 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       source.includes("This is a one-shot, read-only CLI.") &&
       !/\bdetached\s*:\s*true/.test(stripCommentsAndStrings(source)),
   },
+  {
+    path: "scripts/backup/resume-retained-state.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/backup/resume-retained-state.mjs: a directly invoked restore-resume CLI that refuses to run unless admitTaskDeadline yields a managed child cutoff. Its one counted start is pg_restore --jobs=2 into the stopped private PG18 cluster this attempt already owns. The child is awaited and writes only to the attempt log; `detached: true` gives it its own process group so the cutoff, storage-reserve and signal paths can kill the whole group (TERM, then KILL after 10 s). Its pg_ctl, pg_isready and archive-TOC reads share a 30-second timeout and 32 MiB output cap, and its finally block stops the cluster. The cost belongs to the deadline-carrying door that invoked it.",
+    matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+      source.includes("if (admission.childCutoffEpochMs === null) reject('managed execution deadline required');") &&
+      source.includes("child = spawn(join(bin, 'pg_restore'), ['--exit-on-error', '--jobs=2', '--verbose', '--use-list', list,") &&
+      source.includes("{ detached: true, stdio: ['ignore', fd.fd, fd.fd], env: { ...env, LC_ALL: 'C' } });") &&
+      source.includes("if (child?.pid) { try { process.kill(-child.pid, 'SIGTERM'); } catch (e) { if (e.code !== 'ESRCH') throw e; } }") &&
+      source.includes("{ timeout: 30_000, maxBuffer: 32 * 1024 * 1024, env: { ...env, LC_ALL: 'C' } });") &&
+      source.includes("if (await status() === 'running') await fast('pg_ctl', ['-D', dataDir, 'stop', '-m', 'fast', '-w', '-t', '30']);"),
+  },
+  {
+    path: "scripts/lib/committed-dependency-verification.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/lib/committed-dependency-verification.mjs: its only start is the promisified execFile census helper, called once in source. Every census runs under GNU timeout with the caller's remaining deadline (TERM, then KILL 1 s later), so timeout owns and ends the census process group, including find and sort. Output is capped at 4 MiB, the call is awaited, and an exhausted deadline returns Incomplete instead of starting anything. It re-verifies an existing retained dependency copy for lint-as-committed and leaves no worker or resident queue.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 0 &&
+        source.includes("import { execFile } from 'node:child_process';") &&
+        source.includes("const run = promisify(execFile);") &&
+        source.includes("if (remaining <= 0) throw new Incomplete();") &&
+        source.includes("const result = await run('timeout', ['--signal=TERM', '--kill-after=1s',") &&
+        source.includes("{ encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, env: environment });") &&
+        (code.match(/\brun\s*\(/g) ?? []).length === 1 &&
+        !/\b(?:spawn|spawnSync|execFileSync|execSync|fork)\s*\(/.test(code) &&
+        !/\bdetached\b/.test(code);
+    },
+  },
+  {
+    path: "scripts/lib/mutation-probe-inner-runner.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "upstream",
+    reason:
+      "P-016 reviewed upstream disposition for scripts/lib/mutation-probe-inner-runner.mjs: the pinned mutation-probe bootstrap. One start is its synchronous local git metadata/blob reader (8 MiB output cap). The other is exactly one child, the committed scripts/test-files.mjs router; any other runner path or an empty test list is refused. The child inherits stdio and receives forwarded SIGINT/SIGTERM. That router owns governed test admission (runGovernedTestProcess) and scripts/mutation-probe.sh owns the outer probe task, so a receipt here would count the same test twice.",
+    matchesSource: (source) => resourceStartCallCount(source) === 2 &&
+      source.includes("const TEST_FILES_ENTRY = 'scripts/test-files.mjs';") &&
+      source.includes("return execFileSync('git', ['-C', root, ...args], {") &&
+      source.includes("maxBuffer: 8 * 1024 * 1024,") &&
+      source.includes("throw new Error('only the committed scripts/test-files.mjs router is supported');") &&
+      source.includes("const child = spawn(process.execPath, [runnerPath, ...args], {") &&
+      source.includes("const forwardSignal = (signal) => { if (child.pid) child.kill(signal); };") &&
+      !/\bdetached\s*:\s*true/.test(stripCommentsAndStrings(source)),
+  },
+  {
+    path: "scripts/lib/testing-core-witness.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "upstream",
+    reason:
+      "P-016 reviewed upstream disposition for scripts/lib/testing-core-witness.mjs: the producing-build custody library for the shared testing-core compiler, called by bundle-host-common.sh and source-preview.mjs inside their own tasks. Four of its eight counted sites are bounded probes: the bwrap namespace check and esbuild --version (10 s each), the syntax/ASCII check of the final bytes (30 s) and the discovery build (120 s). The other four are the direct, fd-backed and namespaced forms of one pinned esbuild --service child plus the require shim that forwards to them; the shim asserts the service launches at most once, and on Linux it runs in a bwrap user/PID/network namespace with --die-with-parent. It starts no resident worker or queue; the calling build door owns the cost.",
+    matchesSource: (source) => resourceStartCallCount(source) === 8 &&
+      source.includes("launcher.physical, '--version'], { stdio: 'ignore', timeout: 10_000 });") &&
+      source.includes("const argv = ['--unshare-user', '--unshare-pid', '--unshare-net', '--die-with-parent', '--new-session',") &&
+      source.includes("const version = spawnSync(binary.physical, ['--version'], { encoding: 'utf8', timeout: 10_000 });") &&
+      source.includes("assert.deepEqual(args, ['--service=0.25.0', '--ping'], 'Testing core compiler service argv differs');") &&
+      source.includes("assert.equal(launches++, 0, 'Testing core compiler must use one owned native service');") &&
+      source.includes("temporary, '--check'], { encoding: 'utf8', timeout: 30_000 });") &&
+      source.includes("`--outfile=${join(scratch, 'discovery.mjs')}`, `--metafile=${meta}`], { cwd: root, encoding: 'utf8', timeout: 120_000 });") &&
+      !/\bdetached\s*:\s*true/.test(stripCommentsAndStrings(source)),
+  },
+  {
+    path: "scripts/lib/vitest-host-preflight.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/lib/vitest-host-preflight.mjs: the Vitest host preflight that decides admit, skip or refuse before any test worker exists. Its three starts are synchronous: two local git reads of a committed blob (10-second timeout, 4 MiB cap, inherited GIT_DIR-style overrides removed) and one bash probe that sources dependency-generation.sh to select the prerequisite generation (20-second timeout, 64 KiB cap). It skips the probe when an immutable install marker exists and leaves no worker or queue.",
+    matchesSource: (source) => resourceStartCallCount(source) === 3 &&
+      source.includes("const options = { env, timeout: 10_000, maxBuffer: 4 * 1024 * 1024,") &&
+      source.includes("const top = execFileSync('git', ['-C', dirname(absolute), 'rev-parse', '--show-toplevel'], options).toString().trim();") &&
+      source.includes("return execFileSync('git', ['-C', top, 'show', `HEAD:") &&
+      source.includes("const probe = readers.probe ?? ((sourceRoot, environment) => spawnSync('bash', ['-c',") &&
+      source.includes("{ env: environment, encoding: 'utf8', timeout: 20_000, maxBuffer: 64 * 1024 }));") &&
+      !/\bdetached\s*:\s*true/.test(stripCommentsAndStrings(source)),
+  },
+  {
+    path: "scripts/verifier-source-preflight.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/verifier-source-preflight.mjs: the source preflight that verify-tauri-headless.sh and source-preview.mjs run before a verifier starts. Its two starts are synchronous local git object reads: one wrapper for rev-parse, ls-tree and cat-file with a 128 MiB output cap, and one exit-status-only probe with ignored stdio. Neither contacts a remote; a missing gitlink commit is refused with a fetch instruction rather than fetched. It starts no worker, service or queue.",
+    matchesSource: (source) => resourceStartCallCount(source) === 2 &&
+      source.includes("return execFileSync('git', ['-C', repo, ...rootArgs], {") &&
+      source.includes("encoding: 'utf8', maxBuffer: 128 * 1024 * 1024,") &&
+      source.includes("return spawnSync('git', ['-C', repo, ...args], { stdio: 'ignore' }).status === 0;") &&
+      !/\bdetached\s*:\s*true/.test(stripCommentsAndStrings(source)),
+  },
+  {
+    path: "scripts/lib/budgeted-task-scheduler.mjs",
+    code: "hidden-or-static-capacity",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for scripts/lib/budgeted-task-scheduler.mjs: both static-capacity matches are native proof-packet fsync telemetry, not admission ceilings. `maxConcurrent: 1` reports the width of the synchronous custody path, which syncs one object at a time and refuses packets above 128 objects. `maxConcurrent = 0` initialises the async path's observed-maximum counter. The async path fsyncs an already written packet with at most NATIVE_PROOF_SYNC_CONCURRENCY (8) in-task workers, never more than the object count; it runs inside the task that wrote the packet and starts no process.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return (code.match(new RegExp(STATIC_CAP.source, "gi")) ?? []).length === 2 &&
+        !HIDDEN_SEMAPHORE.test(code) &&
+        source.includes("completed: index + 1, total: prepared.syncNames.length, maxConcurrent: 1,") &&
+        source.includes("let next = 0, completed = 0, active = 0, maxConcurrent = 0, failed = false, failure;") &&
+        source.includes("maxConcurrent = Math.max(maxConcurrent, active);") &&
+        source.includes("const NATIVE_PROOF_SYNC_CONCURRENCY = 8;") &&
+        source.includes("const workerCount = Math.min(NATIVE_PROOF_SYNC_CONCURRENCY, prepared.syncNames.length);");
+    },
+  },
 ]);
 
 // Supplemental reviewed rows join the shared scanner registry. Rows with explicit
