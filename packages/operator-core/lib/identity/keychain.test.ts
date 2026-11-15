@@ -17,6 +17,7 @@ import { join } from 'node:path';
 
 let TMP_HOME: string;
 let origHome: string | undefined;
+let origPapercuspHome: string | undefined;
 let origIdentityDir: string | undefined;
 let origSeedRealHostname: string | undefined;
 let origIdentityMode: string | undefined;
@@ -32,12 +33,15 @@ beforeEach(() => {
   vi.resetModules();
   TMP_HOME = mkdtempSync(join(tmpdir(), 'pc-keychain-'));
   origHome = process.env.HOME;
+  origPapercuspHome = process.env.PAPERCUSP_HOME;
   origIdentityDir = process.env.PAPERCUSP_IDENTITY_DIR;
   origSeedRealHostname = process.env.PAPERCUSP_SEED_REAL_HOSTNAME;
   origIdentityMode = process.env.PAPERCUSP_IDENTITY_MODE;
   origEnvOperatorId = process.env.PAPERCUSP_ENV_OPERATOR_ID;
   origRequestOnly = process.env.PAPERCUSP_REQUEST_ONLY;
   process.env.HOME = TMP_HOME; // os.homedir() honors $HOME on POSIX -> default identity dir = $HOME/.papercusp/identity
+  // papercuspPath honors this pin before HOME, including inherited workspace roots.
+  process.env.PAPERCUSP_HOME = join(TMP_HOME, '.papercusp');
   delete process.env.PAPERCUSP_IDENTITY_DIR;
   delete process.env.PAPERCUSP_SEED_REAL_HOSTNAME;
   delete process.env.PAPERCUSP_IDENTITY_MODE;
@@ -82,6 +86,8 @@ beforeEach(() => {
 afterEach(() => {
   if (origHome === undefined) delete process.env.HOME;
   else process.env.HOME = origHome;
+  if (origPapercuspHome === undefined) delete process.env.PAPERCUSP_HOME;
+  else process.env.PAPERCUSP_HOME = origPapercuspHome;
   if (origIdentityDir === undefined) delete process.env.PAPERCUSP_IDENTITY_DIR;
   else process.env.PAPERCUSP_IDENTITY_DIR = origIdentityDir;
   if (origSeedRealHostname === undefined) delete process.env.PAPERCUSP_SEED_REAL_HOSTNAME;
@@ -109,6 +115,18 @@ const encPath = (id: string) =>
   join(TMP_HOME, '.papercusp', 'identity', 'keypair-' + id.replace(/[^a-zA-Z0-9_-]/g, '_') + '.enc');
 
 describe('keychain (encrypted-file fallback)', () => {
+  it('keeps the fixture home pin and encrypted identity files inside its synthetic HOME', async () => {
+    expect(process.env.PAPERCUSP_HOME).toBe(join(TMP_HOME, '.papercusp'));
+    const { identityDir, keychainStore, keychainLoad } = await loadKeychain();
+    expect(identityDir()).toBe(join(TMP_HOME, '.papercusp', 'identity'));
+
+    const id = 'fixture:home-isolation';
+    const der = Buffer.from('synthetic-fixture-key-material');
+    await keychainStore(id, der);
+    expect(existsSync(encPath(id))).toBe(true);
+    expect(await keychainLoad(id)).toEqual({ kind: 'ok', value: der });
+  });
+
   it('recognizes every request-only marker and keeps ordinary primary writes enabled', async () => {
     const { identityWritesAllowed, isRequestOnlyIdentityProcess } = await loadKeychain();
     expect(identityWritesAllowed({})).toBe(true);
