@@ -1,37 +1,38 @@
 # Gating
 URL: /internal/docs/endpoint-system/gating
 
-The ordered gates every tool call runs through — signature, default-deny, roles, capabilities, capability-envelope, RBAC, harness, quota, resource authorization, declarative preconditions, timeout — and the error codes they emit.
+The complete default dispatch stack, from kernel preflight through authorization, preconditions, entity and premise checks, decorators, final kernel enforcement and invocation; signature verification runs before it.
 
 ## The gates, in order
 
 Every projected tool call runs through `tryBuildSpawnContext` → `dispatchProjectedTool` and faces these gates in order. The first one that fails short-circuits with the matching error code. The dispatch-stack gates are defined once in `DEFAULT_DISPATCH_STACK` (`libs/generic/tooldef/src/dispatch-stack.ts`); signature verification runs earlier, in `tryBuildSpawnContext`.
 
+Signature verification is outside the stack. The complete ordered default stack, including decorators and the handler, is:
+
+```text
+kernel-preflight
+default-deny
+role-allowlist
+capability-check
+capability-envelope
+role-requirement
+harness-check
+quota
+authorize
+preconditions
+entity-check
+premises
+timeout
+idle-watchdog
+replay-buffer
+ctx-bindings
+kernel-enforce
+invoke
 ```
-┌────────────────────────────────────────────────┐
-│ 0. Signature verification (per-spawn)           │  → request_rejected: spawn_sig_<reason>
-├────────────────────────────────────────────────┤
-│ 1. Default-deny (opt-in; off by default)        │  → ungated (403)
-├────────────────────────────────────────────────┤
-│ 2. Role allowlist (agent role vs tool.roles)    │  → role_not_allowed (403)
-├────────────────────────────────────────────────┤
-│ 3. Capability check (principal capabilities)    │  → unauthorized (401) | missing_capability (403)
-├────────────────────────────────────────────────┤
-│ 4. Capability envelope (per-role "may at all")  │  → capability_denied (enforce mode only)
-├────────────────────────────────────────────────┤
-│ 5. RBAC role requirement (tool.requireRoles)    │  → missing_role (403)
-├────────────────────────────────────────────────┤
-│ 6. Harness-required gate                        │  → harness_required (400)
-├────────────────────────────────────────────────┤
-│ 7. Per-window quota                             │  → quota_exceeded (429)
-├────────────────────────────────────────────────┤
-│ 8. Resource authorization (tool.authorize)      │  → authorization_denied (403)
-├────────────────────────────────────────────────┤
-│ 9. Declarative preconditions (tool.requires)    │  → precondition_failed (412)
-├────────────────────────────────────────────────┤
-│ 10. Per-tool timeout (during execution)         │  → timeout (504)
-└────────────────────────────────────────────────┘
-```
+
+`kernel-preflight` checks ownership, activation and revocation before other dispatch steps. `entity-check` validates entity references after authorization and preconditions. `premises` resolves supplied premises and rejects unconfirmed premises for irreversible calls. After timeout, watchdog, replay and context decoration, `kernel-enforce` checks policy again immediately before `invoke`. These two kernel checks bracket admission and invocation; default-deny runs after preflight.
+
+The numbered gate labels below retain their explanatory grouping; they are not an exhaustive enumeration of dispatch steps. `packages/operator-core/lib/doc-claims/p011-sampled-source-conformance.test.ts` derives the actual order from `DEFAULT_DISPATCH_STACK` and compares it with the list above.
 
 If every gate passes, the function runs. Whatever it returns or throws is recorded with one of the post-execution statuses (`ok`, `error`, `timeout`).
 

@@ -179,6 +179,35 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     expect((await status(x.lock_id)).status).toBe('held');
   });
 
+  it.skipIf(!live)('readResourceQueue exposes the pending exclusive owner and queued timestamp', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+
+    const holder = await acq(ws, 'exclusive-holder', TEST_RESOURCE, 'exclusive');
+    expect(holder.ok).toBe(true);
+    if (!holder.ok) return;
+
+    const queued = await acq(ws, 'queued-writer', TEST_RESOURCE, 'exclusive', 60, true);
+    expect(queued.ok).toBe(false);
+    if (queued.ok) return;
+    expect(queued.reason).toBe('held_exclusive');
+
+    const newcomer = await acq(ws, 'new-shared', TEST_RESOURCE, 'shared');
+    expect(newcomer.ok).toBe(false);
+    if (newcomer.ok) return;
+    expect(newcomer.reason).toBe('exclusive_pending');
+
+    const snapshot = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: TEST_RESOURCE });
+    expect(snapshot.queue).toHaveLength(1);
+    expect(snapshot.queue[0]).toMatchObject({
+      owner: 'queued-writer',
+      owner_label: 'res:queued-writer',
+      reason: 'integration test',
+    });
+    expect(snapshot.queue[0]?.queued_ts).toBeInstanceOf(Date);
+    expect(snapshot.queue[0]?.queued_ts.getTime()).toBeLessThanOrEqual(Date.now());
+  });
+
   it.skipIf(!live)('EI-23229103052811419: an incumbent shared holder can renew while an exclusive drain is pending', async () => {
     await ensureBootstrap();
     const ws = uniqueWs();

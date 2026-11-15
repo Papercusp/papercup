@@ -1,0 +1,47 @@
+# A decision or body write on a started plan voids its execution start
+URL: /internal/docs/agent-insights/plan-write-on-a-started-plan-voids-its-execution-start
+
+plans:add-decision or a body edit on a STARTED plan clears its execution start: members' writes are then refused plan_not_started until plans:start is re-run, and that re-run can itself be refused until the acceptance-rubric pin and audits are repaired. Check before you record a ruling on a running plan; batch the writes; know the repair order.
+
+## What
+
+A write to a plan that has already been started (`plans:start`) voids the start. Recording a decision is such a write.
+
+Measured on 2026-11-14 02:56Z (EI-28730885514747573, plan `oddsmith-current-platform-update-and-ship-2026-11-13`, operator build d740fc3802):
+
+* `plans:add-decision` moved the plan revision 31 to 33 and `harness_plans.version` 30 to 31.
+* It wrote `execution_start_invalidation { reason: 'plan_body_changed', changedFields: [] }` and set `execution_start_revision_seq` to NULL.
+* Every fleet member's next write on the plan was refused with `plan_not_started`.
+* `plans:start` then refused with `acceptance_bar_contract_not_ready` / `bar_snapshot_rubric_unresolved`: the acceptance rubric row (`acceptance-<slug>`) still pinned `template_data.barContract.subjectPlanRevision` to the old version.
+* The same plan failed the same way after a body edit at 00:42Z.
+
+Seen again the same night in fleet `main-greening-fable-1114`:
+
+* `staging-main-safe-changes-and-recovery-2026-11-07`: after decision D-023 the plan's execution start was void and `plans:start` had to be re-run (reported 03:22Z).
+* `main-greening-progress-safe-lifetime-2026-11-05`: after two decisions and a discovery refresh, `plans:start` refused `activation_audit_stale` (04:16Z). Which of those writes staled the audit was not determined.
+
+## Why it matters
+
+The standing rule is to record a cross-lane ruling as a plan Decision the moment it forms. On a started plan that write stops the plan: nobody on it can write until someone re-runs `plans:start`, and the re-run may need several repairs first. A leader who records one ruling on each of N running plans can halt N plans at once, and the members discover it only through refusals.
+
+It also makes discovery findings stale when they cite plan text or source that changed after the last audit, so `plans:audit { phase: 'discovery' }` may need to run again before the start.
+
+## How to apply
+
+1. Before `plans:add-decision` or `plans:set-content`, read whether the plan is started: `execution_start_revision_seq` on its `harness_plans` row is non-null when it is.
+2. If the ruling only confirms a choice inside constraints the plan already records, do not add a decision. Put the reason where it is consumed: the rubric amendment text and the work item. Send the member a pointer to that record.
+3. If a decision is needed on a started plan, tell the plan's members first, then batch every pending plan write (decisions, body, discovery notes) into one window.
+4. Repair in the order the refusals name. The order observed on 2026-11-14:
+   1. `plans:audit { phase: 'discovery' }` when a finding went stale.
+   2. `plans:audit { phase: 'activation' }` when `plans:start` says `activation_audit_stale`.
+   3. The acceptance rubric: its bar contract must reference the new plan revision (`rubrics:amend`; any rubric edit voids vetting and independent grading, so batch rubric edits too).
+   4. A current spec-quality scorecard whose grading audit has passed. A card minted on one operator build does not satisfy a start on the other; mint it on the build that will run `plans:start`.
+   5. `plans:start`.
+5. Run the lifecycle calls on one build end to end. On 2026-11-14 the discovery audit phase existed only on staging: `node scripts/mcp-call.mjs <tool> '<json>' --port 3170 --client "$PAPERCUSP_SID" --harness papercusp`.
+6. After the re-start, confirm a member's write succeeds before you report the plan as running.
+
+## Evidence and limits
+
+* EI-28730885514747573 holds the measured values quoted above and the proposed product fix (a decision append should not invalidate a started plan, or should re-start it atomically).
+* Workspace fact `guard-rail:plan-decision-edit-voids-execution-start-20261114` carries the short form.
+* Not determined: whether every kind of plan write voids the start, or only those that change the body revision; the recovery order above is what was observed, not a specification.

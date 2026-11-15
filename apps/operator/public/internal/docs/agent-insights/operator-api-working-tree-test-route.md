@@ -1,0 +1,56 @@
+# Testing an operator-API change before it is committed: the working-tree route
+URL: /internal/docs/agent-insights/operator-api-working-tree-test-route
+
+`:3170` serves only committed staging, so an uncommitted or git-sync-held edit is invisible there. `node scripts/operator-api-working-tree.mjs -- <cmd>` bundles the Hono host from the working tree under a snapshot-commit label (fenced against peer edits mid-build), boots it on private ports against a disposable PG, runs your assertion and tears it down. Evidence: the WORKING_TREE_OPERATOR_API_RECEIPT line. Limit: bundle-host.sh's own Node helpers run their committed version (an edited one silently runs HEAD; an untracked one fails).
+
+## What
+
+`:3170` (staging) serves only **committed** local `staging`. An edit that is still uncommitted, or that git-sync is holding back, is invisible there. Under load git-sync can take tens of minutes to sweep a file (on 2026-11-14 one auto-commit run held `git-sync:papercusp` from 16:09:55Z to after 16:46Z). Until this route existed, an operator-API acceptance test could not start until a commit landed.
+
+The **`operator-api-working-tree`** test class removes that wait. It bundles the Hono host from the current working tree, uncommitted edits included, and boots that host on private ports. Your assertion then runs against it:
+
+```bash
+node scripts/operator-api-working-tree.mjs                  # built-in MCP probe: tools/list + coord:whoami
+node scripts/operator-api-working-tree.mjs -- <your command> # your assertion; its exit code is the route's
+```
+
+Your command receives `PAPERCUSP_OPERATOR_URL`, `PAPERCUSP_OPERATOR_MCP_URL` and `PAPERCUSP_OPERATOR_BEARER`. The host runs on auto-picked ports against a disposable migrated PG and a private workspace (`scripts/with-test-pg.mjs --isolated-runtime=operator-api`), with background workers and DBOS off. Everything is torn down after your command exits.
+
+## How the build label stays honest
+
+A bundle built from a dirty tree used to report `<sha>+dirty` as its source. The host maps that to an unknown build (`build-info.ts`), and the MCP surface then refuses every call with `serving_generation_unknown: build-sha-unknown`. The route therefore builds with `PAPERCUSP_BUNDLE_SNAPSHOT_DIRTY=1`, which makes two changes:
+
+* **Snapshot label.** `bundle_host_snapshot_commit` (in `apps/operator/bin/bundle-host-common.sh`) writes the working tree as a git commit object. Nothing moves `HEAD` or the index. The bundle reports that commit's sha as its source, so the build has a real identity.
+* **Post-build fence.** Peers keep editing the shared tree while esbuild runs. `bundle-host.sh` therefore mints the label right before each esbuild run. It then runs `apps/operator/bin/bundle-host-snapshot-fence.ts`, which compares every esbuild metafile input with its blob in the snapshot commit, including inputs inside submodules. Ignored files and `node_modules` are skipped. If an input moved, the bundle is rebuilt under a fresh label. The result is published as `<bundle>.snapshot-fence.json` beside the bundle, and the receipt carries it as `sourceSnapshot { sha, checked, skipped }`.
+
+A verifier export (it has `.verifier-source.json` and no `.git`) never takes this path.
+
+## Why it matters
+
+* **No commit, no staging sync, no shared database.** You can verify an operator-API change while it is still in the working tree, and your probe cannot write to live state.
+* **Discoverable from the pipeline tool.** The class is registered in `packages/operator-core/lib/serving-runtimes.ts`. `dev:pipeline_position { path, testClass: 'operator-api-working-tree' }` returns it under `currentBuildTestRoute`, with `runtime: null`. It describes no long-lived serving runtime, because the host exists only for the length of the run.
+* **It is not final-release evidence.** It proves the working tree's behaviour. Promotion and shipment still need the exact shipped artifact (`final-release` class).
+
+## How to apply
+
+1. Make the edit and run the focused unit tests.
+2. Run `node scripts/operator-api-working-tree.mjs -- <assertion>`. Do not wait for `:3170` to pick the change up.
+3. Treat the `WORKING_TREE_OPERATOR_API_RECEIPT` line as the evidence. It records the bundle sha256, the private `/api/health` identity, the source snapshot and fence counts, the caller (or probe) exit code and host teardown. Park that line on the work-item. Evidence files go under `.papercusp/scratch/operator-api-working-tree-*` (override with `WORKING_TREE_OPERATOR_API_EVIDENCE_DIR`).
+4. If the receipt is missing, the run measured nothing. Do not treat that as a pass.
+
+## The one limit: the builder's own Node helpers run committed source
+
+The operator source you are testing can be uncommitted, because esbuild reads it straight from the working tree. **The build tooling's Node helpers are different.** `bundle-host.sh` runs them through `scripts/lib/committed-source-loader.mjs` (`COMMITTED_NODE`), which loads each module by its git state:
+
+* **Committed**: the bytes match `HEAD`, so they run as written.
+* **Edited (ESM)**: the `HEAD` blob runs instead, **silently**. Your edit to that helper is simply not exercised. This is the easy one to miss.
+* **Untracked, or edited CommonJS**: loading throws and the build fails. Observed 2026-11-14: `Error: COMMITTED_SOURCE refused apps/operator/bin/bundle-host-snapshot-fence.ts: it has no committed version`. The route then reports `Private operator builder exited 1/null; see operator-api-build.log`.
+
+So a change to a helper that `bundle-host.sh` itself executes (under `apps/operator/bin/` or `scripts/lib/`) is tested by this route only once git-sync has committed it. Wait for that commit, then re-run. An `Edit`/`Write` file is held from the sweep until your turn ends, so a long turn delays the commit. Ending the turn with a guaranteed wake, or `git-sync:run`, releases it. Do not route around the loader: it stops held restricted writes from running inside the unrestricted build.
+
+Prerequisites: the local embedded-PG and migration assets. The fixture invokes `apps/operator/bin/bundle-host.sh` itself.
+
+## Regression guards
+
+* `packages/operator-core/lib/working-tree-operator-api.integration.test.ts` runs a caller through the CLI and asserts five things. The caller reached `papercusp-operator` on the receipt's private port. That port is none of the live operator ports. The workspace is a disposable `test-runtime-*` one. The fence receipt names the served sha, checked more than zero inputs and recorded no mismatches. The receipt records a bundle sha256, caller exit 0 and `hostStopped: true`.
+* `apps/operator/bin/bundle-host-snapshot-commit.test.ts` covers the snapshot label and the fence: a clean tree, a moved input, an error.

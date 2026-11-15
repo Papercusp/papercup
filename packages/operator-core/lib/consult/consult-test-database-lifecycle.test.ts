@@ -9,9 +9,10 @@ const integrationSources = readdirSync(consultDir)
   .map((name) => ({ name, source: readFileSync(join(consultDir, name), 'utf8') }));
 
 const FRESH_DATABASE_CALL = /\bcreateFreshTestDb\s*\(/g;
-// Matches `<name>[: <type>] = await createFreshTestDb(`; group 1 is the owning name.
+// Matches `<name>[: <type>] = await ...createFreshTestDb(` in the same statement;
+// wrappers such as observeScorerSetup preserve the binding that owns the result.
 // A type annotation stays on its line, so a commented `Note:` cannot become the name.
-const FRESH_DATABASE_BINDING = /(?<![\w$])([A-Za-z_$][\w$]*)\s*(?::[^=;\n]+)?=\s*await\s+createFreshTestDb\s*\(/g;
+const FRESH_DATABASE_BINDING = /(?<![\w$])([A-Za-z_$][\w$]*)\s*(?::[^=;\n]+)?=\s*await\b[^;]*?\bcreateFreshTestDb\s*\(/g;
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -60,9 +61,16 @@ describe('consult PostgreSQL fixture ownership', () => {
       `beforeAll(async () => { privateDb = await createFreshTestDb({ prefix: 'probe' }); });`,
       `afterAll(async () => { await sql.end(); ${drop} });`,
     ].join('\n');
+    const wrappedFixture = (drop: string) => [
+      'let privateDb;',
+      `beforeAll(async () => { privateDb = await observeScorerSetup('probe', () => createFreshTestDb({ prefix: 'probe' })); });`,
+      `afterAll(async () => { ${drop} });`,
+    ].join('\n');
 
     expect(dropsEveryOwnedFreshDatabase(fixture('await privateDb?.drop();'))).toBe(true);
     expect(dropsEveryOwnedFreshDatabase(fixture('await privateDb.drop();'))).toBe(true);
+    expect(dropsEveryOwnedFreshDatabase(wrappedFixture('await privateDb?.drop();'))).toBe(true);
+    expect(dropsEveryOwnedFreshDatabase(wrappedFixture('await sibling_privateDb?.drop();'))).toBe(false);
     expect(dropsEveryOwnedFreshDatabase([
       '// Note: a colon in a comment must not become the owning name.',
       `const fixtureDb: MigratedTestDb = await createFreshTestDb({ prefix: 'probe' });`,

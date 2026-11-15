@@ -1,0 +1,42 @@
+# tools/list is a listing, not an authority check: never apply incarnation fences to it
+URL: /internal/docs/agent-insights/tools-list-is-listing-not-authority-incarnation-fences
+
+Why resumed/carry-respawned psu Claude sessions came up with ZERO papercusp tools (server connected): _mcp-host.ts applied the native-session incarnation fences (DB foreign / live-host mismatch / verifier unavailable) to tools/list, which Claude fetches once per connection. Fix: listingOnly skips those fences for listings; tools/call still re-fences every call.
+
+## What
+
+A resumed or carry-respawned psu Claude session could start with **every** `mcp__papercusp-su__*` tool missing (`No such tool available: mcp__papercusp-su__code_run`, ...), even though `/mcp` showed the server connected. A manual `/mcp` reconnect fixed it each time.
+
+Root cause: `tryBuildUnboundSpawnContext` in `packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts` runs three **incarnation fences** on any request that carries a native-session id:
+
+1. the DB binding is classified `foreign`;
+2. the owner's live psu host discovery record names a **different** `nativeSessionId` (`findLiveHost`);
+3. the native-session verifier throws (`superuser_native_session_verifier_unavailable`).
+
+Those fences exist to stop a stale incarnation from **acting** as the owner. They were also applied to `tools/list`. **Claude Code fetches `tools/list` ONCE per MCP connection and never re-fetches**, so one refused listing leaves the session toolless for its whole lifetime. A carry successor's first connect routinely lands inside a short binding-lag window, where the host record still names the predecessor's id.
+
+Measured instance: su-5d156330, with refusals at 22:32:07-11Z (2026-11-13). Those landed inside the 22:31:52 to 22:32:14 window where host observations still carried the predecessor id, and the session healed only after the host's `/mcp` reconnect at 22:32:30.
+
+## Why it matters
+
+* Listing grants no authority. It is a role-filtered catalog of names. Every `tools/call` re-runs the same fences on its own request, so fencing the listing adds no security. It only turns a transient mismatch, which would clear on its own, into a permanent outage for that connection.
+* The symptom (zero tools, server connected) looks like a client or transport problem. People reach for reconnect scripts and respawns instead of the server.
+
+## How to apply
+
+* `tryBuildSpawnContext(extra, { listingOnly: true })` is the listing door. `resolveVisibleToolListings` uses it for both `tools/list` and `prompts/list` (slash listings). With `listingOnly`, a fenced or unverified binding **lists**, but it is never audited as verified (`nativeSessionAudit` / `verifiedAdvSessionId` stay unset).
+* **Never pass `listingOnly` from a path that authorizes or dispatches.** `tools/call`, `prompts/get` and `resources/read` must keep the full fences.
+* Any new fence on caller identity or incarnation: ask "does this gate ACTING or LISTING?" Gate acting at call time. A listing-time refusal is only correct when the caller is not authenticated at all (for example a non-loopback `?superuser=1`, which still fails with `mcp_auth_failed`).
+* Refusal reason strings are unchanged (`superuser_foreign_native_session`, `superuser_native_session_verifier_unavailable`): hooks, `scripts/mcp-call.mjs` and ptool may match them. WI-6554700010048107 tracks splitting the live-host branch into its own reason, with a matcher audit first.
+
+## Guard
+
+`mcp-handler-gating-matrix.test.ts` pins both halves:
+
+* *lists tools across a live-host incarnation mismatch while tools/call stays fenced*;
+* *lists tools for a DB-foreign native session while tools/call stays fenced*;
+* *lists tools when the native-session verifier is unavailable, while tools/call stays fail-closed*.
+
+Each asserts a non-empty listing **and** a refused call for the same request extra.
+
+Tracked as WI-6554700010048023 / EI-26293204832971893.

@@ -247,6 +247,13 @@ describe('gitSyncMissedIntervalsAlarmActive', () => {
     expect(gitSyncMissedIntervalsAlarmActive(routineFreshness, 'error', null)).toBe(false);
     expect(gitSyncMissedIntervalsAlarmActive(routineFreshness, 'skipped', 'no_path')).toBe(false);
     expect(
+      gitSyncMissedIntervalsAlarmActive(
+        { ...routineFreshness, missed_intervals: 3 },
+        'skipped',
+        'exclusive_pending: owner=system:dev-restart:restart-7; age_ms=180000',
+      ),
+    ).toBe(true);
+    expect(
       gitSyncMissedIntervalsAlarmActive({
         ...routineFreshness,
         missed_intervals: 3,

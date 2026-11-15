@@ -14,6 +14,8 @@ The scout-routed backlog corpus is now a view. Hand-deriving its predicate has t
 
 Corpus 1 is `triage_routed_items` filtered by `non_terminal AND non_observation`, **plus `workspace_id` and `harness_slug`**.
 
+The numerical measurements below describe the dated 2026-08-22 triage cohort, not a current backlog census.
+
 ## The three traps
 
 Each of these returns a number that looks entirely reasonable. None of them errors.
@@ -57,8 +59,12 @@ Measured: 39% of this corpus is remote-authored. Two consequences worth internal
 1. **Report an actionable (local) denominator separately from the total.** A burn-down over the whole corpus misreads a partition boundary as unfinished work.
 2. **Remote items are not immortal** — they drain on their authoring peer's schedule. They cannot be *scheduled* from here, which is a different and weaker claim than "stuck forever".
 
-Nothing on the read side tells you an item is remote before you try to write it, so a batch state change across a cluster can half-apply: check `origin` first.
+Read `work_items:get { id, harness }` before attempting a write and inspect `results[].workItem.origin`. The canonical item read exposes `origin`; this is distinct from the `work_items:burn_down` cohort projection described above. A missing or clipped field is unknown, not proof that an item is local. Batch state changes across mixed-origin clusters can half-apply, so resolve each item's origin and authoring authority first.
 
 ## Measuring drain: separate the cause
 
 Ordinary fleet work drains this corpus continuously even when the idea faucet is paused. Measured 2026-08-22: **482 background closes vs 5 triage-caused** — so a burn-down against a live denominator would credit a triage effort with \~99% drain it did not cause. Materialise a stamped baseline and attribute exits by cause; `triage_burndown` does both.
+
+## Source-conformance guard
+
+`packages/operator-core/lib/doc-claims/p011-sampled-source-conformance.test.ts` rejects the obsolete blanket assertion that no read surface exposes origin and preserves the separate cohort-projection limitation. The current item reader is `packages/operator-core/lib/agent-tools/work_items/get.ts`.
