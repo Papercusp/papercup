@@ -65,13 +65,53 @@ import { EXTERNAL_SCHEDULES } from '../../../../packages/operator-core/lib/sched
 let execFileAsyncMemo = null;
 const execFileAsync = (...args) => (execFileAsyncMemo ??= promisify(execFile))(...args);
 
-async function runCommand(command, args, options = {}) {
+/**
+ * Run a command and capture stdout. `options.stdin`, when given, is WRITTEN to the child's
+ * stdin and the stream is closed.
+ *
+ * ⚠ `execFile` has NO stdin/input option — only the *Sync variants accept `input`. Passing
+ * `stdin` straight through (what this did until WI-6554700010049436) is silently ignored: a
+ * child that reads stdin (`ptool … --json -`) then waits for input that never arrives until
+ * `timeout` kills it. That made every committed hot-path restart request fail as a reasonless
+ * `ptool_failed` — zero successes in the watchdog's whole log — while the injected-`sh` unit
+ * tests, which only assert that the option was PASSED, stayed green. Exported so a test can
+ * run this real path against a child that echoes its stdin.
+ */
+export async function runCommand(command, args, options = {}) {
+  const { stdin, ...execOptions } = options;
   try {
-    const { stdout } = await execFileAsync(command, args, options);
+    const pending = execFileAsync(command, args, execOptions);
+    if (stdin !== undefined && stdin !== null) {
+      const childStdin = pending?.child?.stdin;
+      if (!childStdin) {
+        pending?.child?.kill?.();
+        pending?.catch?.(() => {});
+        return { err: new Error('runCommand: stdin was requested but the child has no stdin stream'), stdout: '' };
+      }
+      // The child may exit before reading (EPIPE); the exec result reports that, not this stream.
+      childStdin.on('error', () => {});
+      childStdin.end(String(stdin));
+    }
+    const { stdout } = await pending;
     return { err: null, stdout: String(stdout ?? '') };
   } catch (error) {
     return { err: error, stdout: String(error?.stdout ?? '') };
   }
+}
+
+/**
+ * Say WHY a command failed, ahead of its message. `execFile`'s message is
+ * `Command failed: <full command line>`, which fills a truncated log detail with the command
+ * and none of the cause — a timeout kill and a non-zero exit then read identically.
+ */
+export function describeCommandFailure(error, timeoutMs) {
+  if (!error || typeof error !== 'object') return '';
+  if (error.killed === true) {
+    const budget = Number.isFinite(timeoutMs) ? ` after ${timeoutMs}ms` : '';
+    return `timed out${budget} and was killed (${error.signal ?? 'signal unknown'})`;
+  }
+  if (typeof error.code === 'number') return `exit ${error.code}`;
+  return '';
 }
 
 const PORT = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_PORT) || 9071;
@@ -501,7 +541,14 @@ export async function requestMcpProxyHotPathRestart(latestCommitHash, deps = {})
   // judge it before collapsing the error to a reasonless 'ptool_failed'.
   const body = parsePtoolJson(run.stdout);
   if (run.err && body?.ok !== false) {
-    return { ok: false, restarted: false, coalesced: false, code: 'ptool_failed', error: run.err.message };
+    return {
+      ok: false,
+      restarted: false,
+      coalesced: false,
+      code: 'ptool_failed',
+      error: run.err.message,
+      cause: describeCommandFailure(run.err, HOT_PATH_PTOOL_TIMEOUT_MS),
+    };
   }
   if (!body || body.ok !== true) {
     return { ok: false, restarted: false, coalesced: false, code: body?.reason ?? 'ptool_result_unknown', body };
@@ -552,7 +599,8 @@ async function maybeActivateMcpProxyHotPathCode() {
     const outcome = await requestMcpProxyHotPathRestart(state.latestCommitHash);
     settleRestartAttempt(outcome);
     restartReserved = false;
-    const failureDetail = restartFailureDetail(outcome.error);
+    // Cause first: the exec message is the full command line and would fill the detail alone.
+    const failureDetail = restartFailureDetail([outcome.cause, outcome.error].filter(Boolean).join(' — '));
     log(
       outcome.ok
         ? `committed mcp-proxy hot-path activation via dev:restart: ${outcome.code} (commit ${state.latestCommitHash.slice(0, 12)})`

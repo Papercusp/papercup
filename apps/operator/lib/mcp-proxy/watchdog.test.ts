@@ -26,6 +26,8 @@ let evaluateMcpProxyHotPathActivation: Watchdog['evaluateMcpProxyHotPathActivati
 let shouldCheckMcpProxyHotPathActivation: Watchdog['shouldCheckMcpProxyHotPathActivation'];
 let readMcpProxyHotPathState: Watchdog['readMcpProxyHotPathState'];
 let requestMcpProxyHotPathRestart: Watchdog['requestMcpProxyHotPathRestart'];
+let runCommand: Watchdog['runCommand'];
+let describeCommandFailure: Watchdog['describeCommandFailure'];
 beforeAll(async () => {
   ({
     shouldRestart,
@@ -46,6 +48,8 @@ beforeAll(async () => {
     shouldCheckMcpProxyHotPathActivation,
     readMcpProxyHotPathState,
     requestMcpProxyHotPathRestart,
+    runCommand,
+    describeCommandFailure,
   } = await import('./watchdog.mjs'));
 });
 
@@ -214,6 +218,70 @@ describe('mcp-proxy watchdog — committed hot-path activation (EI-2264723281798
         sh: async () => ({ err: new Error('Command failed: exit 5'), stdout: JSON.stringify({ ok: false, reason: 'gate_collision' }) }),
       }),
     ).resolves.toMatchObject({ ok: false, restarted: false, code: 'gate_collision' });
+  });
+
+  // WI-6554700010049436: the restart arguments were passed as a `stdin` OPTION to
+  // promisify(execFile), which has no such option. ptool then waited on stdin until the
+  // watchdog's timeout killed it, so no hot-path restart ever succeeded — while the tests
+  // above stayed green because they only assert that the injected `sh` RECEIVED the option.
+  // These three run the real spawn path.
+  it('delivers stdin to a real child process instead of leaving it waiting', async () => {
+    const echoStdin =
+      "process.stdin.setEncoding('utf8');let d='';process.stdin.on('data',(c)=>{d+=c;});process.stdin.on('end',()=>{process.stdout.write(d);});";
+    const payload = JSON.stringify({ target: 'mcp-proxy', confirm: true });
+    const result = await runCommand(process.execPath, ['-e', echoStdin], { stdin: payload, timeout: 25_000 });
+    expect(result.err).toBeNull();
+    expect(result.stdout).toBe(payload);
+  }, 30_000);
+
+  it('sends the restart arguments through the default spawn path, not only the injected seam', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-proxy-watchdog-ptool-'));
+    try {
+      // A stand-in ptool: reads `--json -` from stdin and answers like dev:restart. With stdin
+      // dropped it never answers, and this test times out instead of passing.
+      const script = join(dir, 'fake-ptool.mjs');
+      writeFileSync(
+        script,
+        [
+          "let d = '';",
+          "process.stdin.setEncoding('utf8');",
+          "process.stdin.on('data', (c) => { d += c; });",
+          "process.stdin.on('end', () => {",
+          '  const args = JSON.parse(d);',
+          '  process.stdout.write(JSON.stringify({ ok: true, restarted: true, target: args.target, confirm: args.confirm, argv: process.argv.slice(2) }));',
+          '});',
+        ].join('\n'),
+      );
+      const outcome = await requestMcpProxyHotPathRestart('abcdef1234567890', { ptoolScript: script });
+      expect(outcome).toMatchObject({
+        ok: true,
+        restarted: true,
+        code: 'restarted',
+        body: { target: 'mcp-proxy', confirm: true, argv: ['dev:restart', '--json', '-'] },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('names a timeout kill instead of a reasonless ptool_failed', async () => {
+    const killed = Object.assign(new Error('Command failed: node ptool.mjs dev:restart --json -'), {
+      killed: true,
+      signal: 'SIGTERM',
+    });
+    await expect(
+      requestMcpProxyHotPathRestart('abc', { sh: async () => ({ err: killed, stdout: '' }) }),
+    ).resolves.toMatchObject({
+      ok: false,
+      code: 'ptool_failed',
+      cause: expect.stringMatching(/^timed out after \d+ms and was killed \(SIGTERM\)$/),
+    });
+    expect(describeCommandFailure(Object.assign(new Error('x'), { code: 5 }), 1000)).toBe('exit 5');
+    expect(describeCommandFailure(new Error('x'), 1000)).toBe('');
+    expect(describeCommandFailure(undefined, 1000)).toBe('');
   });
 
   it('keeps activation in the existing poll cadence before liveness probing', async () => {
