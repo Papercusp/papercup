@@ -15,6 +15,9 @@ describe('served Portal installed-computer consent', () => {
     const portal = process.env.PAPERCUSP_PORTAL_SOURCE_ROOT;
     expect(portal, 'PAPERCUSP_PORTAL_SOURCE_ROOT must name the maintained Portal checkout').toBeTruthy();
     const root = fileURLToPath(new URL('../../../..', import.meta.url));
+    // Refuse a mixed native import cohort before hashing the large Portal
+    // artifact or provisioning its private database.
+    await assertInstalledRuntimeSource(root);
     await installedPortalSource(portal);
     const release = process.env.PAPERCUSP_TEST_PORTAL_RELEASE_ROOT;
     await installedPortalRelease(portal!, release);
@@ -26,7 +29,6 @@ describe('served Portal installed-computer consent', () => {
     expect(workspaceId, 'Maintained Portal reporter requires the caller ledger workspace').toBeTruthy();
     const kasmvncRoot = process.env.PAPERCUSP_TEST_KASMVNC_ROOT;
     await installedDesktopBinaries(kasmvncRoot);
-    await assertInstalledRuntimeSource(root);
     const artifacts = await mkdtemp(join(tmpdir(), 'installed-portal-served-'));
     const evidence = join(artifacts, 'runtime');
     const log = createWriteStream(join(artifacts, 'wrapper.log'), { mode: 0o600 });

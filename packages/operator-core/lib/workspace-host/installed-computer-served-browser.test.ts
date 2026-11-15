@@ -1,8 +1,18 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
+import { readFile } from 'node:fs/promises';
 import { createServer, type RequestListener, type Server } from 'node:http';
-import { afterEach, describe, expect, it } from 'vitest';
-import { installedDesktopBinaries, installedHostFixtureScope, installedPortalSource, validateInstalledPortalRelease, waitForPortalDocument } from './installed-computer-served-browser.fixture';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { assertInstalledRuntimeSource, installedDesktopBinaries, installedHostFixtureScope, installedPortalSource, validateInstalledPortalRelease, waitForPortalDocument } from './installed-computer-served-browser.fixture';
+
+vi.mock('node:child_process', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
+});
+vi.mock('node:fs/promises', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, readFile: vi.fn(actual.readFile) };
+});
 
 let child: ChildProcess | undefined, server: Server | undefined;
 afterEach(async () => {
@@ -22,6 +32,25 @@ async function start(handler: RequestListener) {
 }
 
 describe('served Portal prerequisite and document readiness', () => {
+  it('accepts a committed runtime dependency cohort', async () => {
+    await vi.mocked(execFileSync).withImplementation(() => Buffer.from('committed'), async () => {
+      await vi.mocked(readFile).withImplementation(async () => Buffer.from('committed'), async () => {
+        await expect(assertInstalledRuntimeSource('/private/repo')).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  it.each(['packages/operator-core/lib/rubrics.ts',
+    'packages/operator-core/lib/agent-tools/scorecards/emit.ts'])(
+    'refuses an unpublished import-cohort member before runtime work: %s', async provider => {
+      await vi.mocked(execFileSync).withImplementation(() => Buffer.from('committed'), async () => {
+        await vi.mocked(readFile).withImplementation(async path =>
+          Buffer.from(String(path).endsWith(provider) ? 'unpublished export change' : 'committed'), async () => {
+          await expect(assertInstalledRuntimeSource('/private/repo')).rejects.toThrow(provider);
+        });
+      });
+    });
+
   it('refuses stale, foreign and unidentified Portal artifacts before starting a runtime', () => {
     const digest = 'a'.repeat(64), portal = '/tmp/private-portal', root = '/tmp/releases/build-one';
     const identity = { schemaVersion: 2, buildId: 'build', release: 'build-one', sourceRoot: portal,

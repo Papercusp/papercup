@@ -142,6 +142,12 @@ export async function installedPortalRelease(portal: string, source?: string) {
  * private-PG boot when the intended rig/transport would be replaced or denied. */
 export async function assertInstalledRuntimeSource(repo: string) {
   const paths = [
+    // The hosted handler loads scorecard tools before either operator starts.
+    // Keep the provider and consumer in the same committed-source preflight:
+    // a committed consumer can otherwise load an older provider from HEAD.
+    'apps/operator/bin/hosted-handler.ts',
+    'packages/operator-core/lib/rubrics.ts',
+    'packages/operator-core/lib/agent-tools/scorecards/emit.ts',
     'packages/operator-core/lib/workspace-host/machine-first-browser-runtime.fixture.ts',
     'packages/operator-core/lib/workspace-host/installed-computer-served-browser.fixture.ts',
     'packages/operator-core/lib/workspace-host/byoc-sealed-channel.ts',
