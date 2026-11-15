@@ -5,9 +5,25 @@
  * the case's own traffic and leaves a receipt. The requirement assertions
  * themselves (R-1..R-9) live in P-005's suite, not here.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { pollUntil } from '../../sync/hyperbee/__tests__/_hive-substrate-rig';
 import { createMultiPeerHarness, harnessAfterEach, type MultiPeerHarness } from './_multi-peer-harness';
+
+// Each peer boots inside its own cell scope (runWithCellSql in the harness). Route every
+// getOrgPg() to the current peer's throwaway database, and refuse any call made outside a
+// peer's scope instead of falling back to the live Postgres target.
+vi.mock('@papercusp/db-org', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
+  const { currentCellSql } = await import('../../shared-pot-loop/cell-scope');
+  return {
+    ...actual,
+    getOrgPg: () => {
+      const sql = currentCellSql();
+      if (!sql) throw new Error('getOrgPg outside a harness peer scope: boot and drive peers through the harness');
+      return { sql };
+    },
+  };
+});
 
 afterEach(harnessAfterEach);
 
