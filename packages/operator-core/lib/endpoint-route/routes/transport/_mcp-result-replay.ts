@@ -281,7 +281,9 @@ export async function lookupStoredMcpResult(
   let rows: Array<{ result: unknown; is_error: boolean; tool_name: string }>;
   try {
     rows = await withAcquisitionDeadline(
-      ({ disarm, expired }) => sql.begin(async (tx) => {
+      // The explicit return type keeps postgres' UnwrapPromiseArray from mapping the
+      // `[] | RowList` union into a non-array object type.
+      ({ disarm, expired }) => sql.begin(async (tx): Promise<typeof rows> => {
         // A late connection must roll back without issuing even the setup query.
         if (expired()) throw new Error('MCP replay acquisition expired before transaction setup');
         await tx`SELECT set_config('statement_timeout', ${statementTimeoutSetting}, true)`;

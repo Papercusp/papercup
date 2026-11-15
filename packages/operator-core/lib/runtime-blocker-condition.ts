@@ -81,7 +81,10 @@ Promise<BlockerEvidenceMeasurement> {
   const parsed = storedBindingSchema.safeParse(blocker.runtimeConditionBinding);
   if (!parsed.success) return unknown('runtime alias needs an audited source/schema binding before resolution');
   const binding = parsed.data;
-  if ('kind' in binding && binding.kind === 'git-file-publication') {
+  // Only the publication variant carries `kind` (the serving schema is strict), so the
+  // `in` test alone is exact. TS does not narrow the false branch of
+  // `'kind' in b && b.kind === …`, which left the serving fields below typed as the union.
+  if ('kind' in binding) {
     if (blocker.ref !== `git-sync:file-acceptance:${binding.filePath}`) return unknown('publication binding does not match its original alias');
     return readGitFilePublicationCondition(binding, root);
   }

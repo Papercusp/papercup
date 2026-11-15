@@ -62,10 +62,16 @@ export type RuntimeSourceImage = {
   manifestSha256: string;
 };
 
+/** The dependency receipt's generated declaration widens `kind` to string; admit only the closure kinds. */
+function closureKind(kind: string): VerifierSourceFile['kind'] {
+  requireValue(kind === 'file' || kind === 'symlink', 'invalid_closure_population');
+  return kind;
+}
+
 function population(source: SourceReceipt, dependencies: DependencyReceipt,
   generated?: RuntimeGeneratedInputs): VerifierSourceFile[] {
-  const rows = [...source.files, ...dependencies.trees.flatMap(tree => tree.files.map(file =>
-    ({ ...file, path: tree.path + '/' + file.path }))), ...(generated?.files ?? [])];
+  const rows: VerifierSourceFile[] = [...source.files, ...dependencies.trees.flatMap(tree => tree.files.map(file =>
+    ({ ...file, path: tree.path + '/' + file.path, kind: closureKind(file.kind) }))), ...(generated?.files ?? [])];
   const seen = new Map<string, VerifierSourceFile>();
   for (const row of rows) {
     requireValue(row.path && !row.path.includes('\\') && !row.path.includes('\0') &&

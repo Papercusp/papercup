@@ -123,7 +123,9 @@ async function findBuildStrandedPendingCard(
   const pending = ((await listScorecards({ rubricRef, subjectRef: subject.ref, limit: 100 })) ?? []).filter(
     (card) =>
       card.gradingAudit?.state === 'pending' &&
-      card.auditTarget?.current !== false &&
+      // listScorecards rows carry no read-time `auditTarget` (only readScorecard builds it),
+      // so the former `auditTarget?.current !== false` test was always true. Superseded and
+      // retracted cards are excluded below; stale/diagnostic currentness is not applied here.
       card.subject?.ref === subject.ref &&
       (card.subject?.kind ?? null) === (subject.kind ?? null) &&
       card.supersededBy == null &&

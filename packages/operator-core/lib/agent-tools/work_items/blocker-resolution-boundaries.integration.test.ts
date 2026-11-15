@@ -255,7 +255,7 @@ describe('catalogued work-item completion evidence', () => {
     const event = `work-item:done:${review.id}`;
     const eventRef = { kind: 'event' as const, ref: event };
     const waiter = await registerAwait({ subscriberId: OWNER, eventKey: event, policy: 'notify', timeoutSec: 60 });
-    const read = createBlockerEvidenceReader({ ownerId: OWNER, sessionId: OWNER, workspaceId: 'default',
+    const read = createBlockerEvidenceReader({ ownerId: OWNER, workspaceId: 'default',
       harnessSlug: HARNESS, role: 'su', root: null, workItemId: 'WI-original', blockers: [] });
 
     expect(await read(eventRef)).toMatchObject({ status: 'available', condition: 'pending' });

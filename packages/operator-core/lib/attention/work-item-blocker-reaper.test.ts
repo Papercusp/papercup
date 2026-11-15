@@ -181,7 +181,8 @@ describe('sweepWorkItemBlockerDefaults', () => {
     // actual return, with no blanket cast over the whole fixture.
     const inspect = vi.spyOn(eventStore, 'inspectEventKey').mockResolvedValue({
       announcements: announced
-        ? [{ firedAt, firedReason: 'event', supersededAt: null, cancelledAt: null, expiresTs: null } as AwaitRow]
+        ? [{ firedAt, firedReason: 'event', supersededAt: null, cancelledAt: null, expiresTs: null,
+          expectedCondition: { kind: 'predicate', predicate: { ready: true } }, firedPayload: { ready: true } } as AwaitRow]
         : [],
       waiters: [], deliveries: [], composedRoot: null,
       fireLatch: { lastFiredAt: firedAt } as KeyFireRow,
@@ -683,6 +684,14 @@ describe('backfillUnprovableWaitRecheckDates (P-006)', () => {
     const stamped = readExternalBlockers(payloads['WI-A'])[0]!;
     expect(Date.parse(stamped.recheckAt!)).toBeLessThanOrEqual(NOW.getTime());
     expect(stamped.status).toBe('active');
+  });
+
+  it('leaves exact plan-route predicates to their canonical decision reader', async () => {
+    const gate = row({ kind: 'gate', ref: 'plan-route:route-plan:D-001' });
+    const { deps, writes, classify } = backfillDeps({ 'WI-A': { externalBlockers: [gate] } });
+    expect(await backfillUnprovableWaitRecheckDates({ now: NOW, deps })).toMatchObject({ examined: 0, stamped: 0 });
+    expect(classify).not.toHaveBeenCalled();
+    expect(writes).toEqual([]);
   });
 
   it('is idempotent: a second run finds nothing left to stamp', async () => {

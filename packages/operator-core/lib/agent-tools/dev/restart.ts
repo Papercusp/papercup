@@ -3044,7 +3044,10 @@ export default defineTool({
         ttlSec: MAX_DRAIN_SEC + 90,
         reason: `dev:restart ${target} keeps its serving API alive through the terminal receipt`,
       },
-      runRestart,
+      // guardResource passes its FenceToken as the first argument; runRestart's first
+      // parameter is `installReadLeaseHeld`, so passing it directly would skip the
+      // bg-host install read lease. Call it exactly as the unguarded path does.
+      () => runRestart(),
     );
     if (servingLease.acquired) return servingLease.result;
     return json({

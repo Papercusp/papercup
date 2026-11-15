@@ -7,6 +7,7 @@ import { createBlockerEvidenceReader, preflightBlockerDecision } from './blocker
 import { prepareBlockerDecision } from './blocker-resolution-decision';
 import { activeExternalBlockers } from './external-blockers';
 import type { UnresolvedDepBlocker } from './work-items';
+import type { PlanRow } from './agent-tools/plans/source';
 
 const mocks = vi.hoisted(() => ({ item: vi.fn(), presence: vi.fn(), cell: vi.fn(), event: vi.fn(),
   doc: vi.fn(), session: vi.fn(), test: vi.fn(), deps: vi.fn(async (): Promise<UnresolvedDepBlocker[]> => []),
@@ -101,6 +102,126 @@ describe('canonical blocker evidence readers', () => {
     expect((await read({ kind: 'source', ref: '/etc/passwd' })).status).toBe('absent');
     expect((await read({ kind: 'source', ref: '../../../../etc/passwd' })).status).toBe('absent');
     expect((await read({ kind: 'source', ref: 'package.json:99999999' })).status).toBe('absent');
+  });
+});
+
+describe('canonical plan-route conditions', () => {
+  const route = { kind: 'event' as const, ref: 'plan-route:route-plan:D-001' };
+  const citation = { kind: 'doc' as const, ref: 'plan:route-plan#D-004' };
+  const gate = { kind: 'gate' as const, ref: route.ref, status: 'active' as const,
+    capability: 'live-dependency' as const, capabilitySource: 'explicit' as const,
+    summary: 'Obtain a route override', createdBy: 'su-original',
+    createdAt: '2026-09-26T12:00:00Z', updatedAt: '2026-09-26T12:00:00Z' };
+  const content = (body = 'Supersedes D-001. Use the portfolio fleet.', date = '2026-11-07') =>
+    `## Decisions\n\n### D-001 — SELF route\nDate: 2026-09-07\nImplement it yourself; no new fleet or builder fan-out.\n\n### D-004 — Fleet route override\nDate: ${date}\n${body}\n`;
+  const plan = (body = content(), patch: Partial<Pick<PlanRow, 'workspaceId' | 'harnessSlug' | 'planSlug' | 'content'>> = {}):
+    Pick<PlanRow, 'workspaceId' | 'harnessSlug' | 'planSlug' | 'content'> =>
+    ({ workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug, planSlug: 'route-plan', content: body, ...patch });
+  const subject = () => ({ id: 'WI-1', harness: ctx.harnessSlug, state: 'blocked', assignee: ctx.ownerId,
+    takenAt: '2026-11-14T00:00:00Z', payload: { externalBlockers: [gate], keep: 'unchanged' } });
+  const context = () => ({ ...ctx, custodianId: ctx.ownerId, blockers: [gate], evidenceRefs: [citation] });
+  const decision = () => ({ schemaVersion: 1 as const, idempotencyKey: 'route-override', disposition: 'self_resolve' as const,
+    symptom: 'Historical route gate', evidenceRefs: [route, citation],
+    investigation: [{ action: 'Read canonical route override', outcome: 'Later decision supersedes original route', evidenceRefs: [citation] }],
+    attempts: [], verification: { outcome: 'Exact route restriction superseded', evidenceRefs: [route] } });
+  beforeEach(() => {
+    vi.clearAllMocks(); mocks.workspace.mockReturnValue(ctx.workspaceId); mocks.deps.mockResolvedValue([]);
+    mocks.item.mockResolvedValue(subject());
+    mocks.nodes.mockResolvedValue([{ id: 'P-004', featureId: 'WI-1', planSlug: 'route-plan' }]);
+    mocks.plan.mockResolvedValue(plan());
+    mocks.event.mockResolvedValue({ authoritative: true, verdict: 'reachable', basis: 'fired' });
+  });
+  it('measures a cited later canonical override without treating an event fire as authority', async () => {
+    expect(await createBlockerEvidenceReader(context())(route)).toMatchObject({ status: 'available', condition: 'satisfied' });
+    expect(mocks.event).not.toHaveBeenCalled();
+    expect(await createBlockerEvidenceReader(context())(citation)).toEqual({ status: 'available' });
+    const item = subject(); const before = structuredClone(item);
+    expect(await preflightBlockerDecision(item, decision(), { ...ctx, sessionId: ctx.ownerId },
+      { effect: { setBlocker: { clear: true } } })).toMatchObject({ ok: true });
+    expect(item).toEqual(before);
+  });
+  it('recognizes the canonical portfolio restriction supersession clause', async () => {
+    mocks.plan.mockResolvedValue(plan(content('It supersedes earlier authoring-only or solo/no-implementation-fanout route restrictions for this portfolio only.')));
+    expect(await createBlockerEvidenceReader(context())(route)).toMatchObject({ status: 'available', condition: 'satisfied' });
+  });
+  it.each([
+    ['earlier', content(undefined, '2026-09-01')],
+    ['same date', content(undefined, '2026-09-26')],
+    ['undated', content().replace('Date: 2026-11-07', '')],
+    ['unrelated', content('Supersedes D-002. Use the portfolio fleet.')],
+    ['negative', content('This decision does not supersede D-001.')],
+    ['hypothetical', content('If approved, this decision supersedes D-001.')],
+    ['conditional', content('Supersedes D-001 only after a future approval.')],
+    ['fenced example', content('Example only:\n```text\nSupersedes D-001.\n```')],
+    ['future', content(undefined, '2099-11-07')],
+    ['ambiguous', content() + '\n### D-004 — Duplicate override\nDate: 2026-11-08\nSupersedes D-001.\n'],
+    ['withdrawn', content() + '\n### D-005 — Withdraw route override\nDate: 2026-11-08\nWithdraw D-004.\n'],
+    ['missing original', content().replace('### D-001', '### D-002')],
+  ])('retains a %s override', async (_label, body) => {
+    mocks.plan.mockResolvedValue(plan(body));
+    expect(await createBlockerEvidenceReader(context())(route)).toMatchObject({ status: 'unknown' });
+  });
+  it.each([
+    ['missing citation', []], ['wrong plan', [{ ...citation, ref: 'plan:other-plan#D-004' }]],
+    ['wrong decision', [{ ...citation, ref: 'plan:route-plan#D-009' }]],
+  ])('requires the %s to resolve exactly', async (_label, evidenceRefs) => {
+    expect(await createBlockerEvidenceReader({ ...context(), evidenceRefs })(route)).toMatchObject({ status: 'unknown' });
+  });
+  it('refuses changed gate, tenant, plan binding, custody and failed readers', async () => {
+    for (const patch of [{ assignee: 'su-b' }, { harness: 'other' }, { id: 'WI-other' }, { state: 'done' },
+      { payload: { externalBlockers: [{ ...gate, createdAt: '2026-09-27T00:00:00Z' }] } }]) {
+      mocks.item.mockResolvedValue({ ...subject(), ...patch });
+      expect(await createBlockerEvidenceReader(context())(route)).toMatchObject({ status: 'unknown' });
+    }
+    mocks.item.mockResolvedValue(subject()); mocks.workspace.mockReturnValueOnce('other');
+    expect(await createBlockerEvidenceReader(context())(route)).toMatchObject({ status: 'unknown' });
+    mocks.nodes.mockResolvedValue([{ id: 'P-004', featureId: 'WI-other', planSlug: 'route-plan' }]);
+    expect(await createBlockerEvidenceReader(context())(route)).toMatchObject({ status: 'unknown' });
+    mocks.nodes.mockResolvedValue([{ id: 'P-004', featureId: 'WI-1', planSlug: 'route-plan' }]);
+    mocks.item.mockResolvedValueOnce(subject()).mockResolvedValueOnce({ ...subject(), takenAt: '2026-11-14T01:00:00Z' });
+    expect(await createBlockerEvidenceReader(context())(route)).toMatchObject({ status: 'unknown' });
+    mocks.item.mockResolvedValue(subject()); mocks.plan.mockRejectedValueOnce(new Error('reader unavailable'));
+    expect(await createBlockerEvidenceReader(context())(route)).toMatchObject({ status: 'unknown' });
+    for (const patch of [{ workspaceId: 'other' }, { harnessSlug: 'other' }, { planSlug: 'other' }]) {
+      mocks.plan.mockResolvedValue(plan(content(), patch));
+      expect(await createBlockerEvidenceReader(context())(route)).toMatchObject({ status: 'unknown' });
+    }
+  });
+  it('allows only an accountable plain release of an unmeasured route, preserving the gate', async () => {
+    mocks.plan.mockResolvedValue(plan(content('No replacement route is approved.')));
+    const item = subject(); const before = structuredClone(item);
+    const remedy = { kind: 'source' as const, ref: 'package.json' };
+    const input = { schemaVersion: 1 as const, idempotencyKey: 'route-defer', disposition: 'defer' as const,
+      symptom: 'No route measurement', evidenceRefs: [route, remedy],
+      investigation: [{ action: 'Inspect exact route gate', outcome: 'Still unmeasured', evidenceRefs: [route] }],
+      attempts: [{ action: 'Inspect maintained implementation', outcome: 'Repair retained', evidenceRefs: [remedy] }],
+      deferral: { reason: 'technical-limit' as const, responsibleParty: ctx.ownerId, reasonEvidenceRefs: [route],
+        nextAction: 'Repair the canonical route measurement', recheckRef: { kind: 'work-item' as const, ref: 'harness-a#WI-2' } } };
+    mocks.item.mockImplementation(async id => id === 'WI-1' ? subject()
+      : { id: 'WI-2', harness: ctx.harnessSlug, state: 'open', assignee: ctx.ownerId });
+    const boundary = { ...ctx, sessionId: ctx.ownerId };
+    const effect = { release: true, claimHold: null, claimHoldRelease: null, reason: null, force: false };
+    const options = { effect, releasePayload: { patch: {}, unset: [] } };
+    expect(await preflightBlockerDecision(item, input, boundary, options)).toMatchObject({ ok: true });
+    expect(item).toEqual(before);
+    for (const changed of [{ ...options, effect: { ...effect, claimHold: false } },
+      { ...options, requireResolution: true }, { ...options, releasePayload: { patch: { changed: true }, unset: [] } },
+      { ...options, effect: { state: 'wip' } }]) {
+      expect(await preflightBlockerDecision(item, input, boundary, changed)).toMatchObject({ ok: false });
+    }
+    mocks.item.mockImplementation(async id => id === 'WI-1' ? subject()
+      : { id: 'WI-2', harness: ctx.harnessSlug, state: 'open', assignee: 'su-b' });
+    expect(await preflightBlockerDecision(item, input, boundary, options)).toMatchObject({ ok: false });
+    expect(await preflightBlockerDecision(item, decision(), boundary, options)).toMatchObject({ ok: false });
+  });
+  it('keeps unrelated pending and unreadable conditions outside route clearance', async () => {
+    const other = { ...gate, kind: 'human' as const, capability: 'product-decision' as const, ref: 'human-action' };
+    const item = { ...subject(), payload: { externalBlockers: [gate, other] } };
+    expect(await preflightBlockerDecision(item, decision(), { ...ctx, sessionId: ctx.ownerId },
+      { effect: { setBlocker: { clear: true } } })).toMatchObject({ ok: false });
+    for (const ref of ['plan:route-plan#D-009', 'plan:route-plan', 'plan:route-plan#D-004:extra']) {
+      expect(await createBlockerEvidenceReader(context())({ kind: 'doc', ref })).toMatchObject({ status: 'absent' });
+    }
   });
 });
 

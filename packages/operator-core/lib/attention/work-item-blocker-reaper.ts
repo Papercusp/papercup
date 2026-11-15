@@ -651,9 +651,10 @@ export const UNPROVABLE_WAIT_BACKFILL_ACTOR = 'system:unprovable-wait-backfill';
 /**
  * `plan-lane:<plan>#<item>` gate rows are the plan-item lane's own marker, written and cleared
  * by the plan reconcile (plan-items/reconcile-linked-work-items.ts), never by an event — they
- * are not an agent's event wait, so the backfill leaves them alone.
+ * are not an agent's event wait, so the backfill leaves them alone. Exact
+ * plan-route predicates likewise belong to the canonical decision reader.
  */
-const PLAN_LANE_REF_RE = /^plan-lane:/;
+const PLAN_LANE_REF_RE = /^plan-lane:|^plan-route:[A-Za-z0-9_.-]+:D-\d{3,}$/;
 
 export interface UnprovableWaitBackfillDeps {
   /** Non-terminal items carrying an active event/gate row with no recheckAt (plan-lane excluded). */
@@ -694,7 +695,7 @@ export const defaultUnprovableWaitBackfillDeps: UnprovableWaitBackfillDeps = {
          AND EXISTS (
                SELECT 1 FROM jsonb_array_elements(w.payload->'externalBlockers') b
                 WHERE b->>'status' = 'active' AND b->>'kind' IN ('event', 'gate')
-                  AND b->>'recheckAt' IS NULL AND b->>'ref' !~ '^plan-lane:')
+                  AND b->>'recheckAt' IS NULL AND b->>'ref' !~ '^(plan-lane:|plan-route:[A-Za-z0-9_.-]+:D-[0-9]{3,}$)')
        ORDER BY w.feature_id
        LIMIT ${limit}
     `;

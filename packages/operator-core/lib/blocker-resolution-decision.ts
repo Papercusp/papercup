@@ -294,6 +294,7 @@ export type BlockerEvidenceMeasurement =
   /** A stored condition with no measuring adapter is not a pending/available
    * predicate. Only an accountable plain-release deferral may retain it. */
   | { status: 'unmeasured-runtime'; ref: string; scope: UnmeasuredRuntimeScope; detail: string }
+  | { status: 'unmeasured-plan-route'; ref: string; scope: UnmeasuredRuntimeScope; detail: string }
   | {
     status: 'available';
     condition?: 'satisfied' | 'pending';
@@ -366,7 +367,8 @@ export async function validateBlockerDecisionEvidence(
   const scope = context.unmeasuredRuntimeDeferral;
   for (const [key, ref] of entries) {
     const value = measured.get(key)!;
-    if (value.status === 'unmeasured-runtime' && scope && ref.kind === 'runtime' &&
+    if (((value.status === 'unmeasured-runtime' && ref.kind === 'runtime') ||
+         (value.status === 'unmeasured-plan-route' && ref.kind === 'event' && /^plan-route:[A-Za-z0-9_.-]+:D-\d{3,}$/.test(ref.ref))) && scope &&
         obligations.has(key) && value.ref === ref.ref && input.disposition === 'defer' &&
         input.deferral.reason === 'technical-limit' && input.deferral.responsibleParty === context.ownerId &&
         scope.custodianId === context.ownerId && scope.workItemId === context.workItemId &&
@@ -391,6 +393,7 @@ export async function validateBlockerDecisionEvidence(
     }
     const recheck = measured.get(evidenceKey(recheckRef));
     const pendingSettlement = recheckRef.kind === 'event' && recheck?.status === 'available' &&
+      ![...retainedRuntime].some(key => measured.get(key)?.status === 'unmeasured-plan-route') &&
       recheckRef.ref === `work-item:settled:${recheck.canonicalWorkItemId}` &&
       Number.isSafeInteger(recheck.pendingCommitSettlement?.generation) &&
       (recheck.pendingCommitSettlement?.generation ?? 0) > 0 &&

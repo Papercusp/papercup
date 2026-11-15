@@ -53,7 +53,7 @@ async function inspectReceiptReviewer(
     return await inspectFreshAmendmentReviewer({
       workspaceId,
       previewPostRef,
-      ...(typeof review.reviewEvidencePost === 'string' ? { reviewEvidencePost: review.reviewEvidencePost } : {}),
+      ...(typeof review?.reviewEvidencePost === 'string' ? { reviewEvidencePost: review.reviewEvidencePost } : {}),
       reviewer,
     });
   } catch {

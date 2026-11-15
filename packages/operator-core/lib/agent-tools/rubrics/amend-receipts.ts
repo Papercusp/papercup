@@ -360,7 +360,7 @@ export async function trackAmendRun(
   }, { sql, workspaceId, correlationId, processTag: `rubrics-amend:p${executor.pid}` });
   let result: Record<string, unknown>;
   try {
-    result = await run(onPhase, reclaimed.length > 0 ? previewedReviewReclaim : undefined);
+    result = await run(onPhase, reclaimed.length > 0 ? previewedReviewReclaim ?? undefined : undefined);
   } catch (error) {
     closeProgress();
     const message = error instanceof Error ? error.message : String(error);

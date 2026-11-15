@@ -201,7 +201,9 @@ export default defineTool({
     .passthrough(),
   async handler(args, ctx) {
     const subjectStamp = releaseTraceSubjectStamp(ctx);
-    if ('harnessMismatch' in subjectStamp) {
+    // Truthiness, not `in`: the inferred union normalizes the match branch to
+    // `harnessMismatch?: undefined`, so `in` cannot narrow the property's type.
+    if (subjectStamp.harnessMismatch) {
       return {
         data: {
           ok: false,

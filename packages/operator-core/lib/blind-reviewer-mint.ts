@@ -624,7 +624,9 @@ export async function resumeBlindGapReviewer(
       // retry, while retaining the provider's explicit cooldown. Permit a later
       // wake of this same, verified live binding only after that window expires.
       const delayedRateLimit = failure?.code === 'api_error_429' && hasRetryAfter;
-      if (hasRetryAfter) {
+      // `hasRetryAfter` implies `failure` (retryAfterMs came from it), but the
+      // aliased condition narrows only `retryAfterMs`; name `failure` explicitly.
+      if (failure && hasRetryAfter) {
         const nowMs = Date.now();
         const retryAtMs = failure.atMs + retryAfterMs;
         if (!Number.isFinite(failure.atMs) || failure.atMs <= 0 || failure.atMs > nowMs || !Number.isFinite(retryAtMs)) {
