@@ -27,6 +27,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   return { ...actual, getOrgPg: () => ({ sql: vi.fn(async () => []) }) };
 });
 vi.mock('../../consult/get-feedback-core', () => ({
+  HARD_BLOCKED_EXPIRY_MS: 30 * 60_000,
   getFeedbackCore: h.getFeedbackCore,
   acceptFeedbackRequestCore: h.acceptFeedbackRequestCore,
   continueFeedbackRequestCore: h.continueFeedbackRequestCore,
@@ -35,6 +36,7 @@ vi.mock('../../consult/get-feedback-core', () => ({
 vi.mock('../../consult/relevance-router', () => ({
   DEFAULT_RECENCY_HALF_LIFE_DAYS: 7,
   expertiseSubject: () => null,
+  isToolSubject: (subject: string) => /^[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*$/i.test(subject),
   routeConsult: h.routeConsult,
 }));
 vi.mock('../search/embedder', () => ({
@@ -162,9 +164,25 @@ describe('consult:get_feedback requester interest handle (P-024)', () => {
       eventKeys: ['consult:reply:consult-1'],
       boundTo: { kind: 'consult-request', ref: 'consult-1' },
       note: 'hard-blocked consult requester auto-arm for consult-1',
+      timeoutSec: 30 * 60,
     });
     expect(out.interest_watch).toEqual(handle);
   });
+
+  it.each(['no_qualified_responder', 'no_launchable_responder', 'served_from_archive', 'closed'])(
+    'retires the automatic reply interest on a terminal %s retry', async state => {
+      h.acceptFeedbackRequestCore.mockResolvedValueOnce({
+        ok: true, verdict: 'accepted', state, pending: false,
+        conversation_id: 'consult-1', thread_id: 'thread-1', request_key: 'same-key',
+        latency_contract: 'hard-blocked', park_key: 'consult:reply:consult-1',
+      });
+      await call('hard-blocked');
+      expect(h.reconcileInterestEventAwaits).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        eventKeys: [], boundTo: { kind: 'consult-request', ref: 'consult-1' },
+      }));
+      expect(h.continueFeedbackRequestCore).not.toHaveBeenCalled();
+    },
+  );
 
   it('does not arm or return a requester watch for proceed-mode consults', async () => {
     h.getFeedbackCore.mockResolvedValue(routed('proceed'));
@@ -383,7 +401,9 @@ describe('consult:get_feedback requester guidance', () => {
     expect((tool as any).guidance.chaining).toContain('read the reply');
     expect((tool as any).guidance.chaining).toContain('apply relevant findings to your project decision');
     expect((tool as any).guidance.chaining).toContain('Receipt or silence does not prove usefulness');
-    expect((tool as any).guidance.chaining).toContain('retrieval-only');
+    expect((tool as any).guidance.chaining).toContain(
+      'With allow_dispatch:false, retrieval-only returns candidates but no answer session',
+    );
     expect((tool as any).guidance.chaining).not.toContain('consult:reconcile');
     expect((tool as any).guidance.notWhen).toContain('Do not consult to meet a quota');
   });

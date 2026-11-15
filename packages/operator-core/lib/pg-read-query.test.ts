@@ -10,6 +10,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
+import * as dbOrg from '@papercusp/db-org';
 // Enrolled in tsconfig.declarations.json — typed, so no @ts-expect-error directive
 // (one here would be TS2578 "unused"). Used by the AUTO-BAR-R-001-P-002 guard below
 // so its tree scan cannot match detection tokens that live inside string literals.
@@ -520,6 +521,48 @@ describe('boundedPgReadTxn — bounded internal loop reads', () => {
       vi.useRealTimers();
     }
   });
+
+  it.each(['org-admin', 'org-admin-priority'] as const)(
+    'attributes the selected %s handle without borrowing another pool\'s retry evidence',
+    async (poolLabel) => {
+      vi.useFakeTimers();
+      dbOrg.resetAcquireRegistryForTest();
+      const unrelatedPool = poolLabel === 'org-admin' ? 'org-admin-priority' : 'org-admin';
+      const success = dbOrg.beginAcquire(unrelatedPool);
+      success.acquired();
+      success.release();
+      const unrelatedTicket = dbOrg.beginAcquire(unrelatedPool);
+      unrelatedTicket.acquired();
+      const begin = vi.fn(() => new Promise<never>(() => {}));
+      const getHandle = vi.spyOn(dbOrg, 'getOrgPg').mockReturnValue({
+        sql: { begin }, poolLabel,
+      } as unknown as ReturnType<typeof dbOrg.getOrgPg>);
+      try {
+        const callback = vi.fn(async () => 'never');
+        const caught = boundedPgReadTxn(callback, { timeoutMs: 100, acquireTimeoutMs: 100 }).then(
+          () => { throw new Error('expected an acquisition deadline'); },
+          (error: Error & { boundedPgReadTxn?: PgReadTxnTimeoutContext }) => error,
+        );
+        await vi.advanceTimersByTimeAsync(10_000);
+        const error = await caught;
+        expect(error.boundedPgReadTxn).toMatchObject({
+          phase: 'acquire',
+          acquirePool: poolLabel,
+          acquireSnapshot: { pool: poolLabel, totalAcquired: 0, held: 0 },
+          acquireTicketSnapshot: { pool: poolLabel, active: 1 },
+        });
+        expect(error.message).toContain(`acquirePool=${poolLabel}`);
+        expect(begin).toHaveBeenCalledTimes(1);
+        expect(callback).not.toHaveBeenCalled();
+        expect(getHandle).toHaveBeenCalledTimes(1);
+      } finally {
+        getHandle.mockRestore();
+        unrelatedTicket.release();
+        dbOrg.resetAcquireRegistryForTest();
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it('keeps injected-client acquisition deadlines unmeasured by default', async () => {
     vi.useFakeTimers();

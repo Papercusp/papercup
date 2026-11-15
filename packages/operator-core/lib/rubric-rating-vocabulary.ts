@@ -6,7 +6,8 @@
  * grader to emit a different value (`Grade \`partial\`` on a
  * `healthy/degraded/broken/unknown` rubric). This module finds only explicit
  * grade/rating directives; ordinary prose that merely mentions a possible state
- * remains valid.
+ * remains valid. Structured rating bands share their scale/order rule with
+ * ledger grading so an invalid band is rejected before the rubric is saved.
  */
 
 export type RubricRatingInstructionField = 'method' | 'replication';
@@ -16,6 +17,30 @@ export interface RubricRatingVocabularyCriterion {
   method?: string;
   replication?: string;
   ratingScale?: readonly string[];
+  check?: { kind: string; ratingBands?: readonly { rating: string }[] };
+}
+
+/** Shared by rubric authoring and ledger grading: bands name ordered intermediate levels. */
+export function invalidRubricRatingBands(
+  bands: readonly { rating: string }[] | undefined,
+  scale: readonly string[],
+  bindingId: string,
+): string | null {
+  const levels = scale.filter((level) => level !== 'unknown');
+  const seen = new Set<string>();
+  let previousIndex = 0;
+  for (const band of bands ?? []) {
+    const index = levels.indexOf(band.rating);
+    if (index <= 0 || index >= levels.length - 1 || seen.has(band.rating)) {
+      return `rating band '${band.rating}' must name a unique intermediate level in the criterion's best-to-worst rating scale`;
+    }
+    if (index <= previousIndex) {
+      return `rating bands for '${bindingId}' must be listed in the criterion's best-to-worst rating-scale order`;
+    }
+    seen.add(band.rating);
+    previousIndex = index;
+  }
+  return null;
 }
 
 export interface RubricRatingInstruction {
@@ -387,14 +412,26 @@ export function validateRubricRatingVocabulary(
 /**
  * Throw the authoring-time teaching error used by rubrics:propose/amend.
  *
- * This is a thin assertion over the pure result above; callers that need a
- * non-throwing report should use validateRubricRatingVocabulary directly.
+ * Checks structured bands as well as explicit prose instructions. Callers
+ * inspecting prose alone can use validateRubricRatingVocabulary directly.
  */
 export function assertRubricRatingVocabulary(
   criteria: ReadonlyArray<RubricRatingVocabularyCriterion>,
   rubricRatingScale: readonly string[],
   opts: { rubricId?: string } = {},
 ): void {
+  for (const criterion of criteria) {
+    const check = criterion.check;
+    if (check?.kind !== 'probe' && check?.kind !== 'instrument') continue;
+    const scale = criterion.ratingScale?.length ? criterion.ratingScale : rubricRatingScale;
+    const invalidBands = invalidRubricRatingBands(check.ratingBands, scale, criterion.key);
+    if (invalidBands) {
+      throw new Error(
+        `invalid_args: proposeRubric: rubric '${opts.rubricId ?? '(unnamed)'}' ` +
+        `criterion '${criterion.key}' has invalid ratingBands: ${invalidBands}.`,
+      );
+    }
+  }
   const validation = validateRubricRatingVocabulary(criteria, rubricRatingScale);
   if (validation.ok) return;
 

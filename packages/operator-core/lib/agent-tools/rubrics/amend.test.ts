@@ -1585,6 +1585,56 @@ describe('rubrics:amend receipts (RSR-P-008-C)', () => {
     expect(row.result_json).toEqual(result);
   });
 
+  it.each([
+    ['failed', 'unknown'],
+    ['failed', 'reclaimable'],
+    ['failed', 'later-post'],
+    ['previewed', 'unknown'],
+    ['previewed', 'reclaimable'],
+    ['previewed', 'later-post'],
+  ])('reports kickoff-unverified health without replaying or rewriting custody (%s, %s)', async (receiptState, healthState) => {
+    const idempotencyKey = 'blocked-reviewer-health-status';
+    const result = {
+      ok: receiptState === 'previewed',
+      dryRun: true,
+      review: {
+        state: 'no-eligible-reviewer',
+        previewPostRef: 'thread-post:42',
+        reviewEvidencePost: 'thread-post:50',
+        freshReviewer: {
+          state: 'blocked', reason: 'kickoff-unverified',
+          taskId: 'reviewer-1', ownerId: 'reviewer-owner', nativeRef: 'unknown',
+          launcherId: 'system:acceptance-bar-amendment-review', idempotencyKey: 'retained-reviewer-launch',
+        },
+      },
+    };
+    const row = {
+      idempotency_key: idempotencyKey, rubric_ref: 'acceptance-example', state: receiptState,
+      started_at: new Date(), finished_at: new Date(), result_json: result,
+      error: receiptState === 'failed' ? 'kickoff-unverified' : null,
+    };
+    receiptDb.rows.set('ws-amend-test:acceptance-example:' + idempotencyKey, row);
+    const before = JSON.stringify(row);
+    const health = { state: healthState, taskId: 'reviewer-1',
+      ...(healthState === 'reclaimable' ? { reason: 'task-ended' } : {}) };
+    reviewMocks.inspectFreshAmendmentReviewer.mockResolvedValue(health);
+
+    const status = await statusBody({ rubricRef: 'acceptance-example', idempotencyKey });
+
+    expect(status).toMatchObject({ state: receiptState, source: 'receipt', result, freshReviewerHealth: health });
+    expect(reviewMocks.inspectFreshAmendmentReviewer).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: 'ws-amend-test', previewPostRef: 'thread-post:42',
+      reviewEvidencePost: 'thread-post:50', reviewer: result.review.freshReviewer,
+    });
+    expect(JSON.stringify(row)).toBe(before);
+    expect(reviewMocks.openAcceptanceBarAmendmentReview).not.toHaveBeenCalled();
+    expect(rubricsMocks.amendRubric).not.toHaveBeenCalled();
+    if (healthState === 'reclaimable') {
+      expect(status.note).toContain('retained preview');
+      expect(status.note).not.toContain('retry rubrics:amend');
+    }
+  });
+
   beforeEach(() => {
     receiptDb.rows.clear();
     rubricsMocks.findAmendmentDecisionByKey.mockResolvedValue(null);

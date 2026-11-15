@@ -15,6 +15,23 @@ function deps(active: any[] = []): InterestAutoArmDeps {
 }
 
 describe('reconcileInterestEventAwaits', () => {
+  it('replaces an unbounded automatic interest with a deadline without renewing an existing deadline', async () => {
+    const boundTo = { kind: 'consult-request', ref: 'consult-1' } as const;
+    const eventKey = 'consult:reply:consult-1';
+    const d = deps([{ id: 1, eventKey, policy: 'wake', once: true, wakeHandle: {}, boundTo, expiresTs: null }]);
+    await reconcileInterestEventAwaits({ ownerId: 'requester', eventKeys: [eventKey], boundTo,
+      note: 'consult', timeoutSec: 1800 }, d);
+    expect(d.cancel).toHaveBeenCalledExactlyOnceWith({ awaitId: 1, subscriberId: 'requester' });
+    expect(d.register).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ timeoutSec: 1800, timeoutBehavior: 'wake' }));
+    const bounded = { id: 2, eventKey, policy: 'wake', once: true, wakeHandle: {}, boundTo,
+      expiresTs: '2030-01-01T00:30:00Z' };
+    const second = deps([bounded]);
+    await reconcileInterestEventAwaits({ ownerId: 'requester', eventKeys: [eventKey], boundTo,
+      note: 'consult', timeoutSec: 1800 }, second);
+    expect(second.cancel).not.toHaveBeenCalled();
+    expect(second.register).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['unfiltered', null],
     ['filtered', { result: { equals: 'ready' } }],

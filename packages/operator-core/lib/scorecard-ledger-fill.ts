@@ -38,6 +38,7 @@ import {
 import { evaluateContinuityPredicate, type ContinuityPredicate } from './continuity-probes';
 import { getRegisteredInstrument, isManualInstrumentKey } from './rubric-instrument-registry';
 import { measurementProvenanceStatus } from './measurement-provenance';
+import { invalidRubricRatingBands } from './rubric-rating-vocabulary';
 
 export interface LedgerFillCriterion {
   key: string;
@@ -260,23 +261,9 @@ export function ledgerRatingLevel(verdict: 'pass' | 'fail', scale: readonly stri
 }
 
 function invalidRatingBands(bindings: readonly LedgerCheckBinding[], scale: readonly string[]): string | null {
-  const levels = scale.filter((level) => level !== 'unknown');
   for (const binding of bindings) {
-    const bands = binding.ratingBands;
-    if (!bands?.length) continue;
-    const seen = new Set<string>();
-    let previousIndex = 0;
-    for (const band of bands) {
-      const index = levels.indexOf(band.rating);
-      if (index <= 0 || index >= levels.length - 1 || seen.has(band.rating)) {
-        return `rating band '${band.rating}' must name a unique intermediate level in the criterion's best-to-worst rating scale`;
-      }
-      if (index <= previousIndex) {
-        return `rating bands for '${binding.id}' must be listed in the criterion's best-to-worst rating-scale order`;
-      }
-      seen.add(band.rating);
-      previousIndex = index;
-    }
+    const invalid = invalidRubricRatingBands(binding.ratingBands, scale, binding.id);
+    if (invalid) return invalid;
   }
   return null;
 }

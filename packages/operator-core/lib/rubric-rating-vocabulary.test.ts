@@ -7,6 +7,7 @@ import {
 } from './rubric-rating-vocabulary';
 import { canonicalScorecardRating } from './harness/improvements/observation-types';
 import { proposeRubric, type ProposeRubricCriterion } from './rubrics';
+import { fillRatingsFromLedger } from './scorecard-ledger-fill';
 
 const criterion = (over: Partial<ProposeRubricCriterion> & { key: string }): ProposeRubricCriterion => {
   const { key, title, model, method, driftMarkers, ...rest } = over;
@@ -375,6 +376,70 @@ describe('rubric rating-vocabulary validation (WI-835208)', () => {
         ratingScale: ['healthy', 'degraded', 'broken', 'unknown'],
       }),
     ).rejects.toThrow(/off-scale rating instructions.*partial/);
+  });
+
+  it('rubrics:propose rejects an off-scale structured rating band before any store access', async () => {
+    await expect(proposeRubric({
+      rubricId: 'rating-band-authoring',
+      characteristic: 'rating-vocabulary',
+      title: 'Rating band authoring',
+      ratingScale: ['healthy', 'degraded', 'broken', 'unknown'],
+      criteria: [criterion({
+        key: 'latency',
+        check: {
+          kind: 'instrument', instrumentKey: 'latency',
+          expect: { op: 'lte', value: 100 },
+          ratingBands: [{ rating: 'near', expect: { op: 'lte', value: 150 } }],
+        },
+      })],
+    })).rejects.toThrow(/criterion 'latency'.*rating band 'near'.*intermediate level/);
+  });
+
+  describe('structured bands agree at authoring and ledger grading', () => {
+    const scale = ['healthy', 'degraded', 'poor', 'broken', 'unknown'];
+    const checkedCriterion = (ratings: string[], ratingScale?: string[]) => ({
+      key: 'latency',
+      ...(ratingScale ? { ratingScale } : {}),
+      check: {
+        kind: 'probe',
+        probe: { kind: 'tool', tool: 'status:read', args: {} },
+        ratingBands: ratings.map((rating, index) => ({
+          rating, expect: { op: 'lte', value: 150 + index * 50 },
+        })),
+      },
+    });
+
+    it.each([
+      ['near'], ['healthy'], ['broken'], ['unknown'], ['degraded', 'degraded'], ['poor', 'degraded'],
+    ])('rejects invalid band sequence %j in both paths', (...ratings) => {
+      const candidate = checkedCriterion(ratings);
+      expect(() => assertRubricRatingVocabulary([candidate], scale)).toThrow(/invalid ratingBands/);
+      expect(fillRatingsFromLedger({
+        criteria: [candidate], rubricRatingScale: scale, latest: new Map(), callerRatings: undefined,
+      })).toMatchObject({ ok: false, error: 'ledger_rating_bands_invalid', criterionKeys: ['latency'] });
+    });
+
+    it.each([[], ['degraded'], ['degraded', 'poor']])('accepts ordered intermediate bands %j', (...ratings) => {
+      const candidate = checkedCriterion(ratings);
+      expect(() => assertRubricRatingVocabulary([candidate], scale)).not.toThrow();
+      expect(fillRatingsFromLedger({
+        criteria: [candidate], rubricRatingScale: scale, latest: new Map(), callerRatings: undefined,
+      })).toMatchObject({ ok: true });
+    });
+
+    it('uses the criterion override instead of the rubric scale in both paths', () => {
+      const override = ['excellent', 'near', 'bad', 'unknown'];
+      const valid = checkedCriterion(['near'], override);
+      expect(() => assertRubricRatingVocabulary([valid], scale)).not.toThrow();
+      expect(fillRatingsFromLedger({
+        criteria: [valid], rubricRatingScale: scale, latest: new Map(), callerRatings: undefined,
+      })).toMatchObject({ ok: true });
+      const invalid = checkedCriterion(['degraded'], override);
+      expect(() => assertRubricRatingVocabulary([invalid], scale)).toThrow(/rating band 'degraded'/);
+      expect(fillRatingsFromLedger({
+        criteria: [invalid], rubricRatingScale: scale, latest: new Map(), callerRatings: undefined,
+      })).toMatchObject({ ok: false, error: 'ledger_rating_bands_invalid' });
+    });
   });
 
   // A rating scale routinely carries its definition inline. The authoring

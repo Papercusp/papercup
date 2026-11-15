@@ -41,7 +41,9 @@ describe('plan-execution guard with plan-less held work (WI-6554700010049338)', 
     expect(result).toMatchObject({ code: 'plan_execution_not_ready', planSlug: unstarted.planSlug,
       blockers: ['plan_not_started'] });
     expect(result?.reason).toContain('You also hold WI-adhoc-item');
-    expect(result?.reason).toContain('declared_goal_refs');
+    expect(result?.reason).toContain('facts:assert');
+    expect(result?.reason).toContain('"key":"goal.override"');
+    expect(result?.reason).not.toContain('declared_goal_refs');
   });
 
   it('fails closed when no goal attributes the write, or the goal read times out', async () => {

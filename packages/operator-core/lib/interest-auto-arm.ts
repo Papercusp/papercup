@@ -55,6 +55,8 @@ export async function reconcileInterestEventAwaits(
     eventKeys: readonly string[];
     boundTo: LifecycleBinding;
     note: string;
+    /** Lifecycle deadline for automatic interests; explicit waits retain their own policy. */
+    timeoutSec?: number;
   },
   deps: InterestAutoArmDeps = defaultDeps,
 ): Promise<InterestAutoArmHandle> {
@@ -89,7 +91,8 @@ export async function reconcileInterestEventAwaits(
       continue;
     }
     const keep = candidates.find(
-      (row) => row.policy === 'wake' && row.once === true && (handle == null || row.wakeHandle != null),
+      (row) => row.policy === 'wake' && row.once === true && (handle == null || row.wakeHandle != null) &&
+        (input.timeoutSec === undefined || row.expiresTs != null),
     );
     for (const row of candidates) {
       if (row !== keep) await deps.cancel({ awaitId: row.id, subscriberId: input.ownerId });
@@ -105,7 +108,7 @@ export async function reconcileInterestEventAwaits(
       note: `${input.note}: ${key}`,
       wakeHandle: handle,
       timeoutBehavior: 'wake',
-      timeoutSec: null,
+      timeoutSec: input.timeoutSec ?? null,
       once: true,
       boundTo: input.boundTo,
       // Recheck in the registration transaction: an explicit wait may have

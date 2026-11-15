@@ -3762,8 +3762,11 @@ export async function boundedPgReadTxn<T>(
     100,
     Math.min(DEFAULT_TX_ACQUIRE_DEADLINE_MS, Math.trunc(opts.acquireTimeoutMs ?? PG_READ_TXN_DEFAULT_ACQUIRE_TIMEOUT_MS)),
   );
-  const sql = opts.client ?? getOrgPg().sql;
-  const acquirePool = opts.acquirePool ?? (opts.client ? undefined : 'org-admin');
+  // getOrgPg can select the reserved priority handle for this async scope.
+  // Retry decisions and diagnostics must use that handle's registry identity.
+  const handle = opts.client ? undefined : getOrgPg();
+  const sql = opts.client ?? handle!.sql;
+  const acquirePool = opts.acquirePool ?? handle?.poolLabel;
   const callDeadlineMs = acquireTimeoutMs + timeoutMs + PG_READ_QUERY_CALL_OVERHEAD_MS;
   // EI-22696820908231308: checkpoint verify-reads used this seam immediately
   // after a committed write, but unlike boundedOrgTxn the read path surfaced the

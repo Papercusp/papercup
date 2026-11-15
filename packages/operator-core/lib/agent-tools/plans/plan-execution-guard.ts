@@ -451,8 +451,9 @@ export function otherHeldWorkRemedy(bindings: readonly ExecutionPlanBinding[], r
   const refs = [...new Set(bindings.filter(binding => binding.source === 'work-item' && binding.sourceRef &&
     (binding.unbound || binding.planSlug !== refusedPlanSlug)).map(binding => binding.sourceRef!))].sort();
   if (!refs.length) return '';
-  return ` You also hold ${refs.join(', ')}. If this write is for one of them, make it your declared goal `
-    + `(coord:declare-intent { intent, declared_goal_refs: ['<id>'] }) and retry; writes for '${refusedPlanSlug}' stay refused until it starts.`;
+  const override = JSON.stringify({ scope: 'owner', key: 'goal.override', body: '<id>', ttlSec: 3600 });
+  return ` You also hold ${refs.join(', ')}. If this write is for one of them, select that held item as your execution goal `
+    + `(facts:assert ${override}) and retry; writes for '${refusedPlanSlug}' stay refused until it starts.`;
 }
 
 function uniquePlanBindings(bindings: readonly ExecutionPlanBinding[]): ExecutionPlanBinding[] {

@@ -31,7 +31,8 @@ async function inspectReceiptReviewer(
   const reviewer = review?.freshReviewer && typeof review.freshReviewer === 'object' && !Array.isArray(review.freshReviewer)
     ? review.freshReviewer as Record<string, unknown>
     : undefined;
-  if (reviewer?.state !== 'launched') return undefined;
+  const blockedKickoff = reviewer?.state === 'blocked' && reviewer.reason === 'kickoff-unverified';
+  if (reviewer?.state !== 'launched' && !blockedKickoff) return undefined;
 
   const taskId = typeof reviewer.taskId === 'string' ? reviewer.taskId : undefined;
   const previewPostRef = typeof review?.previewPostRef === 'string' ? review.previewPostRef : undefined;
@@ -77,7 +78,7 @@ export default defineTool({
   // @not-a-cell This keyed receipt and Decision lookup has one read door; no other resolver derives its per-key status.
   profile: 'engineer',
   description:
-    'Poll a rubrics:amend receipt: running, orphaned (executor restarted and reclaimable now), committed (apply result), previewed (dry-run result), failed, or not_found. Review-bearing previews keep their key and thread/conversation references after the full preview is compacted. A launched fresh reviewer includes a current freshReviewerHealth read; its stored state=launched remains the launch-time fact. not_found does not prove a requestReview or reviewPreviewPost dry-run had no external side effects.',
+    'Poll a rubrics:amend receipt: running, orphaned (executor restarted and reclaimable now), committed (apply result), previewed (dry-run result), failed, or not_found. Review-bearing previews keep their key and thread/conversation references after the full preview is compacted. Launched and kickoff-unverified fresh reviewers include a current freshReviewerHealth read; their stored state remains the original receipt fact. not_found does not prove a requestReview or reviewPreviewPost dry-run had no external side effects.',
   guidance: {
     when: 'A rubrics:amend returned { pending:true, receipt } and you need its outcome.',
     notWhen: 'You have no receipt — read the rubric with rubrics:get instead.',
@@ -142,13 +143,24 @@ export default defineTool({
     }
     if (receipt) {
       const freshReviewerHealth = await inspectReceiptReviewer(receipt.result);
+      const review = receipt.result?.review as {
+        state?: unknown;
+        freshReviewer?: { state?: unknown };
+      } | undefined;
+      // Only this preview shape takes the custody-checked recovery branch in
+      // trackAmendRun. A failed or kickoff-unverified receipt must not imply it.
+      const rechecksCustodyOnRetry = receipt.state === 'previewed'
+        && receipt.result?.ok === true && receipt.result.dryRun === true
+        && review?.state === 'no-eligible-reviewer' && review.freshReviewer?.state === 'launched';
       const notes = [
         ...(receipt.result?.receiptCompacted === true
           ? ['The full preview payload was compacted; use result.preview.approvalRef and result.review for the retained thread and conversation references.']
           : []),
         ...(freshReviewerHealth?.state === 'reclaimable'
           ? ['Fresh reviewer health is reclaimable (' + (freshReviewerHealth.reason ?? 'no reply was observed') +
-            '); retry rubrics:amend with the same idempotency key and original arguments. The retry rechecks the retained reviewer and thread before replacement.']
+            (rechecksCustodyOnRetry
+              ? '); retry rubrics:amend with the same idempotency key and original arguments. The retry rechecks the retained reviewer and thread before replacement.'
+              : '); retain the existing receipt and retained preview for canonical reviewer recovery. This health read does not establish that replaying requestReview or launching a replacement is safe.')]
           : freshReviewerHealth
             ? ['freshReviewer.state is the launch-time fact; freshReviewerHealth is the current task, transcript, liveness, and thread read.']
             : []),

@@ -271,7 +271,14 @@ const argsSchema = z
       .boolean()
       .optional()
       .describe(
-        'Read current execution blockers with the SAME canonical start-proof and live-policy checks the mutation guard enforces. Opt-in, uncached, and read-only; startStatus is a lifecycle label and does not establish execution authority. A failed lookup reports ready:null and status:unknown.',
+        'Read continuation blockers with the SAME canonical start-proof and live-policy checks the mutation guard enforces. This does not preview a new todo-to-wip plan-item start; use planItemStartReadiness for that item-specific gate. Opt-in, uncached, and read-only; startStatus is a lifecycle label and does not establish execution authority. A failed lookup reports ready:null and status:unknown.',
+      ),
+    planItemStartReadiness: z
+      .object({ itemId: z.string().regex(/^P-\d{3,}$/) })
+      .strict()
+      .optional()
+      .describe(
+        'Read-only preview of the live plan-item todo-to-wip start gate used by plan_items:claim and coord:declare-intent. Requires one current plan slug and a P-NNN itemId. It does not grant execution authority; executionReadiness remains continuation-scoped.',
       ),
     efficiency: z
       .boolean()
@@ -289,9 +296,13 @@ const argsSchema = z
   .refine((v) => v.discoveryAudit === undefined || (!!v.slug && !v.slugs?.length && v.revision === undefined), {
     message: 'discoveryAudit requires one slug, without slugs or revision.',
   })
+  .refine((v) => v.planItemStartReadiness === undefined || (!!v.slug && !v.slugs?.length && v.revision === undefined), {
+    message: 'planItemStartReadiness requires one current plan slug, without slugs or revision.',
+  })
   .refine((v) => v.revision === undefined || !(
     v.includeEnrichments || v.includeHistory || v.priorAttemptRefs?.length ||
-    v.shipReadiness || v.activationReadiness || v.executionReadiness || v.operationalBrief || v.efficiency || v.current?.length
+    v.shipReadiness || v.activationReadiness || v.executionReadiness || v.planItemStartReadiness ||
+    v.operationalBrief || v.efficiency || v.current?.length
   ), {
     message: 'revision reads immutable content only; live enrichments, history and readiness options require a separate current read.',
   });
@@ -1681,6 +1692,85 @@ export default defineTool({
             ready: null,
             unavailableReason: 'execution_readiness_unavailable',
             message: `Execution readiness could not be read (${error instanceof Error ? error.message : String(error)}).`,
+          };
+        }
+      }
+    }
+    if (args.planItemStartReadiness) {
+      const startResults = env.results as Array<Record<string, unknown>>;
+      const { itemId } = args.planItemStartReadiness;
+      const previewScope = { scope: 'new-plan-item-start' as const, itemId, toStatus: 'wip' as const };
+      for (const [index, cachedResult] of startResults.entries()) {
+        const result: Record<string, unknown> = { ...cachedResult };
+        startResults[index] = result;
+        if (cachedResult.ok !== true || typeof cachedResult.slug !== 'string' ||
+          typeof cachedResult.harness !== 'string') {
+          result.planItemStartReadiness = {
+            ...previewScope,
+            status: 'unknown',
+            ready: null,
+            unavailableReason: 'plan_unavailable',
+            message: 'The current plan could not be read for an item-start preview.',
+          };
+          continue;
+        }
+
+        const items = cachedResult.items;
+        if (!Array.isArray(items)) {
+          result.planItemStartReadiness = {
+            ...previewScope,
+            status: 'unknown',
+            ready: null,
+            unavailableReason: 'plan_items_unavailable',
+            message: 'The current plan item list was unavailable for an item-start preview.',
+          };
+          continue;
+        }
+        const itemExists = items.some((item) => item && typeof item === 'object' && !Array.isArray(item) &&
+          (item as Record<string, unknown>).id === itemId);
+        if (!itemExists) {
+          result.planItemStartReadiness = {
+            ...previewScope,
+            status: 'unknown',
+            ready: null,
+            unavailableReason: 'plan_item_not_found',
+            message: 'Plan item ' + itemId + ' was not found in this plan.',
+          };
+          continue;
+        }
+
+        const planResult = result as typeof result & { slug: string; harness: string };
+        try {
+          const { checkDraftItemStartGateLive } = await import('./draft-item-start-gate');
+          const startScope = await resolvePlanScope({ ...opts, harnessSlug: planResult.harness });
+          const refusal = await checkDraftItemStartGateLive({
+            workspaceId: startScope.workspaceId,
+            harnessSlug: startScope.harnessSlug,
+            slug: planResult.slug,
+            itemId,
+            toStatus: 'wip',
+          });
+          result.planItemStartReadiness = refusal
+            ? {
+                ...previewScope,
+                status: 'blocked',
+                ready: false,
+                blockers: [refusal.gateCode ?? refusal.error],
+                refusal: {
+                  error: refusal.error,
+                  gateCode: refusal.gateCode,
+                  hint: refusal.hint,
+                },
+              }
+            : { ...previewScope, status: 'ready', ready: true, blockers: [] };
+        } catch (error) {
+          result.planItemStartReadiness = {
+            ...previewScope,
+            status: 'unknown',
+            ready: null,
+            unavailableReason: 'plan_item_start_readiness_unavailable',
+            message: 'Plan item start readiness could not be read (' +
+              (error instanceof Error ? error.message : String(error)) + ').',
           };
         }
       }
