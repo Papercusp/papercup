@@ -2023,7 +2023,7 @@ export default defineTool({
       .min(1)
       .optional()
       .describe(
-        'Plan slug (filename without .md) the members should work — must already exist. OPTIONAL (P-003): omit it to launch a PURE CLAIM-SPEC fleet (members self-pull by `claimKinds`, no plan lane). When omitted, `claimKinds` is REQUIRED so the members have a lane to drain.',
+        'Existing plan slug, without .md. P-003: omit for a pure claim-spec fleet whose members self-pull by `claimKinds`; then `claimKinds` is required.',
       ),
     harness: z
       .string()
@@ -2032,16 +2032,16 @@ export default defineTool({
         "Harness the plan belongs to. Defaults to the session's harness scope; required when the session is unscoped.",
       ),
     directors: PAIRED_ROLE_ARGS.optional().describe(
-      "type:'paired' ONLY (D-009): the DIRECTOR half of every pair — the session that decomposes the plan item into milestones, issues one directive at a time, verifies each from the ledger, and closes the milestone work items. Give it the strongest model you are willing to pay for (D-006): its job is judgement, and it never loads file bodies so it stays cheap per turn. Each knob here is independent of `implementers`. Passing this on a type:'single' fleet is rejected.",
+      "Paired fleets only (D-009): directors decompose plan items into milestones, issue one directive at a time, verify ledger evidence and close milestone work items. D-006: prefer the strongest affordable model for judgement; directors do not load file bodies. Settings are independent of `implementers`; rejected with type:'single'.",
     ),
     implementers: PAIRED_ROLE_ARGS.optional().describe(
-      "type:'paired' ONLY (D-009): the IMPLEMENTER half of every pair — the session that edits, tests and reports, and cannot self-direct (it is parked between directives and tool-denied from completing work items or arming loops). May be a CHEAPER tier than the director (D-006), and a different model FAMILY is preferred so the pair's errors decorrelate. Passing this on a type:'single' fleet is rejected.",
+      "Paired fleets only (D-009): implementers edit, test and report. They park between directives and cannot self-direct, complete work items or arm loops. D-006: a cheaper tier is allowed; prefer a different model family to reduce correlated errors. Rejected with type:'single'.",
     ),
     type: z
       .enum(['single', 'paired'])
       .optional()
       .describe(
-        "Fleet TYPE (D-008), which also SELECTS THE OPTION SHAPE this call accepts (D-009). 'single' (default) is today's fleet, unchanged: N independent members configured by the FLAT knobs (agent/model/count/headless/account/carry/…). 'paired' launches N director↔implementer pairs and takes those same knobs as two per-role groups instead — `directors:{…}` and `implementers:{…}` — so a top-tier visible director can sit beside cheaper headless implementers. The shapes do not merge: passing per-role groups with type 'single', or flat per-member knobs with type 'paired', is REJECTED with invalid_args naming the expected shape, never coerced (a flat value broadcast to both roles is how you end up with a fleet of directors running the implementer's model).",
+        "Fleet type (D-008) selects the argument shape (D-009). Default 'single': N independent members use flat agent/model/count/headless/account/carry knobs. 'paired': N director↔implementer pairs use independent `directors` and `implementers` groups for member settings. Per-role groups on 'single', or flat per-member knobs on 'paired', return invalid_args naming the expected shape; values are never broadcast or coerced between roles.",
       ),
     agent: z
       .enum(['claude', 'omp', 'codex'])
@@ -2061,56 +2061,56 @@ export default defineTool({
       .enum(['local', 'remote'])
       .optional()
       .describe(
-        "Where members run (default 'local': this machine, exactly as before). 'remote' places members on the OTHER machines that delegated agent_slot seats to this fleet OR to its pot (P-005: fleet-scoped and pot-scoped federated seat-offers are pooled together): `count` is spread round-robin across those machines — 1 per machine first, so count 2 across 2 machines lands 1 member on EACH — publishing one SIGNED spawn-request per target (the fleet:request_remote_spawn chain, which stays the single-target/explicit-pick door). ASYNC: members arrive only after each host's owner-authority accept-delegated-seats gate admits the request, AND — for a pot-scoped target — that host's audience check for the pot ('trusted-members'|'whole-pot') passes (a gate-off host, or an audience refusal, lets/leaves the request to expire after 60 min); watch arrivals via fleet:status / coord:presence, refusals via p2p:trace. Each machine's delegated slot pins the member's model+effort+account and the host owns the window shape, so agent/model/account/seat/headless/carry/display/per-member-brief args are REFUSED with 'remote'; `launchContext` still applies (sent as brief text, ≤8000 chars).",
+        "Default 'local': this machine. 'remote' pools other machines' fleet/pot agent_slot offers (P-005), spreads `count` round-robin, and signs one fleet:request_remote_spawn request per target. Arrival is async: each host must admit via its owner-authority accept-delegated-seats gate; pot targets also require its trusted-members/whole-pot audience check. Refused/unaccepted requests expire after 60 min. Read arrivals via fleet:status/coord:presence, refusals via p2p:trace. Slots pin model+effort+account; hosts own window/carry shape. Remote refuses agent/model/account/seat/headless/carry/display/per-member-brief args; `launchContext` is sent as brief text (≤8000 chars).",
       ),
     hive: z
       .string()
       .optional()
       .describe(
-        "placement:'remote' on a MULTI-hive workspace: which shared hive's federated seat-offers to place onto (mirror of resource:delegate's `hive`). Defaults to the single shared hive, else to `harness` when that names a shared hive; otherwise the call refuses and lists the candidates.",
+        "Remote placement's shared hive, matching resource:delegate's `hive`. Defaults to the sole shared hive, else `harness` if shared; ambiguity refuses with candidate hives.",
       ),
     headless: z
       .boolean()
       .optional()
       .describe(
-        "Launch the members HEADLESS — background su sessions with NO desktop window (default false = visible terminals). Same su members (NOT cups), same leader-led contract, they register presence + count toward the fleet, auto-start on the plan, and stay injectable for warm loop:arm wakes; they just have no window and log to a file you can tail. EI-9748 FIXED (2026-07-11, live): on a systemd-managed Linux host (the normal case), each headless member is spawned via `systemd-run --user --scope`, which places it in a transient scope that is a SIBLING of the operator API's own service in the systemd --user cgroup tree — NOT a descendant — so `systemctl --user restart` of papercusp-dev-api/papercusp-staging-api (KillMode=control-group) cannot reap it; a headless member now survives those restarts just like a visible one. RESIDUAL CAVEAT: on a host with no `systemd-run` on PATH (macOS, a bare/non-systemd container), the spawn falls back to a plain detached child that DOES still share the operator process's cgroup and CAN be silently SIGTERM-killed by a restart of that service — a killed member's log says so. Headless is safe to prefer by default on Linux dev hosts; on a non-systemd host, prefer visible for anything that must survive hours unattended, or check on the fleet more often. Orthogonal to `carry`.",
+        "Background su members without windows, with file logs; default false uses visible terminals. They retain fleet presence, leadership, plan kickoff and warm loop:arm wakes; `carry` is independent. EI-9748: Linux `systemd-run --user --scope` creates a sibling scope, so operator-service restarts cannot reap members. Without systemd-run (macOS/non-systemd hosts), detached children share the operator cgroup and may be killed on restart; prefer visible sessions for long unattended work there or check the fleet more often.",
       ),
     leader: z
       .enum(['caller', 'spawn'])
       .optional()
       .describe(
-        "WHO LEADS the fleet (generic default 'caller' — you become leader, the historical behavior). Under GOAL context omission defaults to 'spawn' and explicit 'caller' is refused: a GOAL portfolio steward must never lead its plan fleet. 'spawn' launches a FRESH agent to lead it and leaves you out of the fleet entirely. Replaces the two-hop relay (launch an agent, brief it to call this tool itself) with one call. The spawned leader's coord identity is PRE-PINNED, so the fleet row names its real leader from the first write and there is never a window where you are recorded as leading. It is opened BEFORE any member, and if it fails to open the whole launch ABORTS with zero members — members draining a queue with no leader watching is worse than no fleet. Goal-context leaders and members bind their distinct launch-role profiles; explicit top-level/per-member choices still win.",
+        "Default 'caller': you lead. GOAL context defaults to 'spawn' and refuses explicit 'caller': portfolio stewards cannot lead their plan fleets. 'spawn' opens a fresh leader, leaves you outside the fleet and pins its coord identity before the first write. Leader opens before members; failure aborts with zero members. GOAL leaders/members use distinct launch-role profiles; explicit top-level/per-member choices win.",
       ),
     confirmRouteSwitch: z
       .boolean()
       .optional()
       .describe(
-        "Explicitly authorize moving the CALLER from its currently registered fleet into a different target fleet. Without this bit, a caller-led launch (`leader:'caller'`, the default) is refused before mutation when the caller already belongs to another fleet; use `leader:'spawn'` instead when the current fleet must keep its supervisor. This is an audit guard, not a convenience retry flag — read the refusal's currentFleet/targetFleet first.",
+        "Authorize moving the caller from its registered fleet to another. Without it, leader:'caller' refuses cross-fleet moves before mutation. Read currentFleet/targetFleet in the refusal before authorizing; use leader:'spawn' to retain the current fleet's supervisor.",
       ),
     carry: z
       .enum(['warm', 'cold'])
       .optional()
       .describe(
-        "Auto-mode carry for EVERY member (default 'warm'), INDEPENDENT of `headless`: 'warm' = each loop:arm wake resumes the SAME live context (fast, remembers the thread); 'cold' = each wake starts a FRESH context reconstructed from the member's last checkpoint (cheaper long-run, survives compaction, but the carry-note is the ONLY memory). Threads into the member baseline so a cold member arms `loop:arm { carry:'cold' }` and treats its checkpoint as load-bearing. ANNOUNCE the choice to the owner per the persona spawn-disclosure rule (alongside account + model).",
+        "Auto-mode carry for every member, independent of `headless`. Default 'warm' resumes live context on each loop:arm wake. 'cold' rebuilds fresh context from the last checkpoint: cheaper long-run and survives compaction, but the carry-note is its only memory. The member baseline sets loop:arm carry explicitly. Announce carry with account/model per the persona spawn-disclosure rule.",
       ),
     supervise: z
       .boolean()
       .optional()
       .describe(
-        'Per-fleet governor grant: new homogeneous fleets default to supervise:true, so missing members are automatically replaced from the saved launch recipe while FLEET_HEADCOUNT_GOVERNOR is ON. Pass false to opt out. On an existing fleet, omission preserves its stored grant. An explicit undeliverable grant (paired/heterogeneous launch, or an existing fleet with no ENABLED headcount row) is reported on the result as `superviseGrant`, never silently dropped.',
+        'New homogeneous fleets default true: while FLEET_HEADCOUNT_GOVERNOR is ON, replace missing members from the saved recipe. False opts out; omission on existing fleets preserves the stored grant. Undeliverable explicit grants (paired/heterogeneous, or existing fleets without an enabled headcount row) return `superviseGrant` diagnostics.',
       ),
     overrideCapacityClamp: z
       .boolean()
       .optional()
       .describe(
-        "Treat the inference-pool capacity signal as a RECOMMENDATION, not a cap: launch all `count` members even when capacity would clamp them (including a pool reading healthyAccounts:0, which otherwise suppresses a gateway-routed launch to ZERO). The recommendation is still computed and reported (capacityClamp.recommendedOpenCount / overridden). Use when you believe the pool signal is STALE — but prefer FIXING the signal first: `accounts:probe-capacity` (store projection) and `POST /admin/readmit` (the gateway's in-memory exhaustion) are the real remedies. Default false.",
+        "Default false. True bypasses the inference-pool capacity clamp, including healthyAccounts:0 suppression; the recommendation remains in capacityClamp.recommendedOpenCount/overridden. Use for a stale signal; prefer repairing it via accounts:probe-capacity (store projection) or POST /admin/readmit (gateway exhaustion).",
       ),
     // --- optional psu launch flags threaded onto EVERY member (EI-5765 / owner request) ---
     account: z
       .string()
       .optional()
       .describe(
-        'psu --account routing for EVERY member (account-routing-3-options) — one of three: a POOL ACCOUNT ID (from accounts:list / gateway:status) → pin every member to it via the inference gateway (isolate/concentrate the fleet\'s load; no failover); "auto" → route through the gateway, which auto-selects an available account + fails over; "default" → skip the gateway, use the system / CLI-login credential. OMIT defaults to "default" on every platform; gateway routing is never selected implicitly. (For a multi-account spread, launch in batches with different account ids.) ANNOUNCE the choice to the owner per the persona spawn-disclosure rule.',
+        'psu --account for every member (account-routing-3-options): pool ID from accounts:list/gateway:status pins a gateway account without failover; "auto" selects an available gateway account with failover; "default" uses system/CLI-login credentials, bypassing the gateway. Omission is "default" on every platform. Spread accounts by launching separate batches. Announce the choice per the persona spawn-disclosure rule.',
       ),
     workspace: z
       .string()
@@ -2181,26 +2181,26 @@ export default defineTool({
       .string()
       .optional()
       .describe(
-        "psu --launch-context: PATH to a brief/markdown file injected as EVERY member's launch context (shared) — or, if the value contains a newline or is too long to plausibly be a filename, the brief TEXT itself (composed straight into the generated launch-context file; no read attempted). Use `perMemberLaunchContext` instead when different members need DISTINCT briefs.",
+        "psu --launch-context shared brief path. A newline or implausible filename length makes the value inline text instead, without a file read. Use `perMemberLaunchContext` for distinct briefs.",
       ),
     perMemberLaunchContext: z
       .array(z.string())
       .optional()
       .describe(
-        'Per-member brief paths, index-aligned to member number (entry 0 → member 1, …) — each member gets its OWN composed context. Fewer entries than members opened ⇒ the rest fall back to `launchContext`/baseline, never an error.',
+        'Brief paths by member index (0 → member 1). Missing entries fall back to `launchContext`/baseline.',
       ),
     members: z
       .array(memberSpecSchema)
       .optional()
       .describe(
-        'DECLARATIVE per-member config, index-aligned to member number (entry 0 → member 1, …). Each set field OVERRIDES the fleet-wide arg for THAT member only; an unset field falls through to the fleet arg, then the system default. Fewer entries than members opened ⇒ the rest use the flat fleet-wide args, never an error. This generalizes `perMemberLaunchContext` (brief-only) to every setting — use it to run one fleet where members differ in model/effort/account/limit/lane.',
+        'Per-member overrides by index (0 → member 1), including model/effort/account/limit/lane. Unset fields and missing entries fall through to fleet-wide args, then system defaults. Generalizes the brief-only `perMemberLaunchContext`.',
       ),
     profile: z.string().optional().describe('psu --profile: launch profile name for each member.'),
     contextSize: z
       .enum(['trimmed', 'steward'])
       .optional()
       .describe(
-        "psu --context-size for EVERY member. 'trimmed' seeds the growable core tool surface; 'steward' (WI-2140338, explicit opt-in) adds the steward verb families for goal-holder/steward lanes. Both stay growable — tools:find/tools:invoke retain reachability to the full catalog.",
+        "psu --context-size: 'trimmed' seeds core tools; explicit 'steward' (WI-2140338) adds goal-holder/steward families. Both retain full-catalog reach through tools:find/tools:invoke.",
       ),
     compactionLimit: z
       .number()
@@ -2220,13 +2220,13 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        "psu --allow-subagents (default OFF): opt every member's su session back IN to its own built-in subagent-launch (Task/Agent) tool. Subagents are DENIED BY DEFAULT for every psu launch (owner mandate 2026-07-02), so members CANNOT fan out unless this is true.",
+        "psu --allow-subagents: enable members' built-in Task/Agent launch tools. Default OFF; the 2026-07-02 owner mandate denies subagent fan-out unless explicitly enabled.",
       ),
     fromSeats: z
       .boolean()
       .optional()
       .describe(
-        "P-005 launch-from-seats (agent-allocation-framework): spawn members that CONSUME the fleet's delegated agent_slot seats (resource:delegate / the /res Agent-seats group). The slot pins model+effort+account (D-002/D-003) — so `model`/`account` must be OMITTED — and the seat COUNT cap is enforced (count > free seats is refused; the N+1th spawn is refused at boot too). Implied by `seat`.",
+        "P-005 (agent-allocation-framework): consume fleet-delegated agent_slot seats (resource:delegate, /res Agent-seats). Slots pin model+effort+account (D-002/D-003), so omit `model`/`account`. Count above free seats refuses; boot also enforces the cap. Implied by `seat`.",
       ),
     seat: z
       .string()
@@ -2244,7 +2244,7 @@ export default defineTool({
       .string()
       .optional()
       .describe(
-        "WI-4272 (demo/recording): open EVERY member terminal on this X display (e.g. ':110' — a computer:provision_desktop sandbox stage being recorded) instead of the owner's desktop seat. Linux only; requires a DISPLAY-honoring emulator (xterm/alacritty/kitty/wezterm) and the display's X socket to be alive (loud-fail otherwise). Ignored for `headless: true` (headless members have no window). Omit for normal visible-desktop use.",
+        "WI-4272: Linux X display for visible member terminals (e.g. ':110' from computer:provision_desktop). Requires a live X socket and DISPLAY-honoring emulator (xterm/alacritty/kitty/wezterm), else refuses. Ignored when headless; omission uses the owner's desktop seat.",
       ),
     claimKinds: z
       .array(z.enum(['feature', 'chunk', ...ISSUE_FAMILY_ROUTE_KINDS]))
@@ -2252,24 +2252,19 @@ export default defineTool({
       .max(5)
       .optional()
       .describe(
-        "EI-7671: restrict every member's scheduler:get_next self-pull to these work-item kinds — e.g. " +
-          '["bug","change"] for a bugs-only backlog-drain fleet. Sets a FLEET-level claim spec ' +
-          'BEFORE any member terminal opens, closing the boot-race where members start pulling under the ' +
-          'empty-filter DEFAULT_CLAIM_SPEC (which admits every kind, including feature/chunk) before the ' +
-          "leader gets around to calling scheduler:set_claim_spec by hand. A member's own later per-bee " +
-          'spec still overrides this fleet default. Omit to leave scheduling exactly as before (no spec set).',
+        'EI-7671: restrict scheduler:get_next self-pull by kind, e.g. ["bug","change"]. Sets the fleet claim spec before members open, preventing unscoped boot-time pulls. Later per-bee specs override it. Omission sets no kind spec.',
       ),
     confirmClaimCollapse: z
       .boolean()
       .optional()
       .describe(
-        "P-010 pool-collapse override: a `claimKinds` fleet is REFUSED at launch (BEFORE any terminal opens) when its kind-scoped claim spec matches 0 rows of a nonempty claimable pool — the silent bug-drain starvation shape (WI-5212/EI-11300). Pass true ONLY after reading the refusal's reported counts and confirming the empty lane is intended (e.g. a pre-staged fleet whose items are not promoted yet). Ignored when no `claimKinds` is given.",
+        "P-010 (WI-5212/EI-11300): before opening terminals, refuse a `claimKinds` spec matching zero rows in a nonempty claimable pool. True overrides only after reading refusal counts and confirming the empty lane is intended, e.g. awaiting item promotion. Ignored without `claimKinds`.",
       ),
     confirmKickoffMismatch: z
       .boolean()
       .optional()
       .describe(
-        'EI-18862608742257943 override: the launch is REFUSED (BEFORE any terminal opens, LOCAL placement only) when a WI-/EI- id referenced in `launchContext` / `perMemberLaunchContext` / `members[].brief` does not match the fleet claim spec this launch is about to apply — a member kicked off with "your only job is WI-xxxx" that cannot then claim WI-xxxx (assignee stays NULL, presence shows it holding nothing, the death-resilience net never engages). Pass true to launch anyway (e.g. the brief only MENTIONS the id for context, or you will widen the spec by hand right after); otherwise fix the claimKinds/plan scope or drop the id from the brief.',
+        'EI-18862608742257943: local launches refuse before terminals open if WI-/EI- IDs in `launchContext`/`perMemberLaunchContext`/`members[].brief` fall outside the applied claim spec. True overrides, e.g. IDs are context-only or the spec will be widened immediately. Otherwise fix claimKinds/plan scope or remove the IDs.',
       ),
   }),
   async handler(args, ctx) {
