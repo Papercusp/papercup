@@ -9,6 +9,8 @@ import { censusSpawnArgs, interpretRestrictedHoldPreflight } from './restricted-
 import { admitTaskDeadline, readTaskDeadlineEpochMs } from './task-deadline.mjs';
 import { verifierTaskBudget } from './verify-tauri-deadline.mjs';
 import { isolatedRuntimeEnv } from './isolation-child-env.mjs';
+import { buildGovernedProcessDemand, createGovernedProcessDemandSampler,
+  runGovernedTestProcess } from './governed-test-process.mjs';
 
 // Sequential parent readiness commands (deadline, identity, types, census),
 // PostgreSQL init/start/stop/start, and portal setup precede the native rig.
@@ -229,47 +231,65 @@ export function preflightNativeVerifier(repoRoot, env, spawn = spawnSync) {
  * @param {string} repoRoot
  * @param {NodeJS.ProcessEnv} env
  * @param {(env: NodeJS.ProcessEnv) => Promise<T>} check
+ * @param {{ executionApi?: any, spawnProcess?: typeof spawn,
+ *   createSampler?: typeof createGovernedProcessDemandSampler }} [deps]
  * @returns {Promise<T>}
  */
-export async function withNativeVerifierTypeService(repoRoot, env, check) {
+export async function withNativeVerifierTypeService(repoRoot, env, check, deps = {}) {
   const root = realpathSync(repoRoot);
-  // A systemd-escaped checkout path can exceed the Unix socket path limit.
-  const directory = mkdtempSync('/tmp/pc-native-tsc-');
-  const childEnv = { ...env, PAPERCUSP_TSC_SERVICE: '1', PAPERCUSP_TSC_SERVICE_REQUIRED: '1',
-    PAPERCUSP_TSC_SERVICE_ROOT: root, PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE: '',
-    PAPERCUSP_TSC_SERVICE_SOCKET: join(directory, 'service.sock') };
-  const child = spawn(process.execPath, [join(root, 'scripts/tsc-service/server.mjs')], {
-    cwd: root, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  let output = '';
-  const capture = chunk => { output = (output + chunk.toString()).slice(-8192); };
-  child.stdout.on('data', capture);
-  child.stderr.on('data', capture);
-  const closed = new Promise(resolve => child.once('close', resolve));
-  try {
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`Native TypeScript service startup timed out: ${output}`)), 15_000);
-      const ready = () => {
-        if (!output.includes('listening on ')) return;
-        clearTimeout(timer);
-        child.stdout.off('data', ready);
-        resolve(undefined);
-      };
-      child.stdout.on('data', ready);
-      child.once('error', error => { clearTimeout(timer); reject(error); });
-      child.once('exit', (code, signal) => {
-        clearTimeout(timer);
-        reject(new Error(`Native TypeScript service exited code=${code} signal=${signal}: ${output}`));
+  const demand = buildGovernedProcessDemand();
+  let actualDemand;
+  return runGovernedTestProcess({
+    env, workspaceId: env.PAPERCUSP_WORKSPACE_ID ?? env.PAPERCUSP_WORKSPACE,
+    namespace: 'native-verifier-type-service', owner: `native-verifier-types:${process.pid}`,
+    payloadRef: 'scripts/lib/verify-tauri-native-env.mjs', demand,
+    timeoutMs: nativeTypecheckTimeoutMs, executionApi: deps.executionApi,
+    measureActualDemand: () => actualDemand,
+  }, async (_admissionContext, governedEnv) => {
+    // A systemd-escaped checkout path can exceed the Unix socket path limit.
+    const directory = mkdtempSync('/tmp/pc-native-tsc-');
+    const sampler = (deps.createSampler ?? createGovernedProcessDemandSampler)(demand);
+    const childEnv = { ...governedEnv, PAPERCUSP_TSC_SERVICE: '1', PAPERCUSP_TSC_SERVICE_REQUIRED: '1',
+      PAPERCUSP_TSC_SERVICE_ROOT: root, PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE: '',
+      PAPERCUSP_TSC_SERVICE_SOCKET: join(directory, 'service.sock') };
+    try {
+      const child = (deps.spawnProcess ?? spawn)(process.execPath, [join(root, 'scripts/tsc-service/server.mjs')], {
+        cwd: root, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'],
       });
-    });
-    return await check(childEnv);
-  } finally {
-    if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
-    const kill = setTimeout(() => child.kill('SIGKILL'), 10_000);
-    await closed;
-    clearTimeout(kill);
-    rmSync(directory, { recursive: true, force: true });
-  }
+      sampler.attach(child.pid);
+      let output = '';
+      const capture = chunk => { output = (output + chunk.toString()).slice(-8192); };
+      child.stdout.on('data', capture);
+      child.stderr.on('data', capture);
+      const closed = new Promise(resolve => child.once('close', resolve));
+      try {
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error(`Native TypeScript service startup timed out: ${output}`)), 15_000);
+          const ready = () => {
+            if (!output.includes('listening on ')) return;
+            clearTimeout(timer);
+            child.stdout.off('data', ready);
+            resolve(undefined);
+          };
+          child.stdout.on('data', ready);
+          child.once('error', error => { clearTimeout(timer); reject(error); });
+          child.once('exit', (code, signal) => {
+            clearTimeout(timer);
+            reject(new Error(`Native TypeScript service exited code=${code} signal=${signal}: ${output}`));
+          });
+        });
+        return await check(childEnv);
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+        const kill = setTimeout(() => child.kill('SIGKILL'), 10_000);
+        await closed;
+        clearTimeout(kill);
+      }
+    } finally {
+      actualDemand = sampler.stop();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 }
 
 if (isCliEntry(import.meta.url)) {

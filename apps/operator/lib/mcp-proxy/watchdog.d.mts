@@ -37,6 +37,41 @@ export function livenessProbeUrl(port?: number): string;
 /** Runtime files loaded by the proxy service from the integration working tree. */
 export const MCP_PROXY_COMMITTED_HOT_PATHS: readonly string[];
 
+export interface McpProxyHotPathTarget {
+  target: string;
+  unit: string;
+}
+export const MCP_PROXY_HOT_PATH_TARGETS: readonly McpProxyHotPathTarget[];
+
+export interface McpProxyRestartController {
+  admit(reason: string, unit?: string): boolean;
+  settle(outcome: { restarted?: boolean; coalesced?: boolean }, unit?: string): void;
+}
+export function createMcpProxyRestartController(deps?: {
+  now?: () => number;
+  log?: (message: string) => void;
+  debounceMs?: number;
+  maxRestartsPerHour?: number;
+}): McpProxyRestartController;
+
+export function createMcpProxyHotPathActivator(deps?: {
+  targets?: readonly McpProxyHotPathTarget[];
+  readState?: () => ReturnType<typeof readMcpProxyHotPathState>;
+  readActiveForSec?: (unit: string) => Promise<number | null>;
+  requestRestart?: (sha: string, target: string) => Promise<{
+    ok: boolean;
+    restarted: boolean;
+    coalesced?: boolean;
+    code: string;
+    cause?: string;
+    error?: string;
+  }>;
+  admitRestart?: McpProxyRestartController['admit'];
+  settleRestartAttempt?: McpProxyRestartController['settle'];
+  now?: () => number;
+  log?: (message: string) => void;
+}): () => Promise<Array<{ target: string; restartRequested: boolean; code: string }>>;
+
 export type MpcProxyHotPathActivationCode =
   | 'activate'
   | 'generation_unknown'
@@ -120,6 +155,7 @@ export function readMcpProxyHotPathState(deps?: {
 export function requestMcpProxyHotPathRestart(
   latestCommitHash: string,
   deps?: {
+    target?: string;
     ptoolScript?: string;
     sh?: (
       command: string,
@@ -134,6 +170,7 @@ export function requestMcpProxyHotPathRestart(
   code: MpcProxyHotPathActivationCode | string;
   body?: unknown;
   error?: string;
+  cause?: string;
 }>;
 
 export function shouldRestart(

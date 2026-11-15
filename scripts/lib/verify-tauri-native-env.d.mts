@@ -43,9 +43,15 @@ export function preflightNativeVerifier(repoRoot: any, env: any, spawn?: typeof 
  * @param {string} repoRoot
  * @param {NodeJS.ProcessEnv} env
  * @param {(env: NodeJS.ProcessEnv) => Promise<T>} check
+ * @param {{ executionApi?: any, spawnProcess?: typeof spawn,
+ *   createSampler?: typeof createGovernedProcessDemandSampler }} [deps]
  * @returns {Promise<T>}
  */
-export function withNativeVerifierTypeService<T>(repoRoot: string, env: NodeJS.ProcessEnv, check: (env: NodeJS.ProcessEnv) => Promise<T>): Promise<T>;
+export function withNativeVerifierTypeService<T>(repoRoot: string, env: NodeJS.ProcessEnv, check: (env: NodeJS.ProcessEnv) => Promise<T>, deps?: {
+    executionApi?: any;
+    spawnProcess?: typeof spawn;
+    createSampler?: typeof createGovernedProcessDemandSampler;
+}): Promise<T>;
 export const desktopPortalNativeTiming: Readonly<{
     prepareEstimateMs: any;
     nativeTimeoutMs: number;
@@ -54,3 +60,5 @@ export const desktopPortalNativeTiming: Readonly<{
     cleanupTimeoutMs: 60000;
 }>;
 import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { createGovernedProcessDemandSampler } from './governed-test-process.mjs';

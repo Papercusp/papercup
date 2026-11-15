@@ -4,12 +4,12 @@
 // This module takes every pass/fail decision on that row so the evidence run only collects output.
 //
 // R-17 passes when, for BOTH routines (sync-batch-delta-check, sync-batch-lint-guards):
-//   - at least 276 five-minute slots were recorded in the 24h window (the routine kept recording; H1),
-//   - no recorded slot lacks a cause (unaccounted_slots = 0),
+//   - all 288 complete five-minute buckets in the preceding 24h were recorded (H1),
+//   - no expected bucket is absent or lacks a cause (unaccounted_slots = 0),
 //   - coverage is >= 95% OR a fresh coverage-low alarm is open (low_without_current_alarm = 0; H2).
 // The probe's own `accounted` column must agree with that recomputation; a disagreement is a failure, not a pass.
 
-export const R17_MIN_SLOTS = 276;
+export const R17_MIN_SLOTS = 288;
 export const R17_TARGET_RATIO = 0.95;
 export const R17_ROUTINES = 2;
 export const R17_COLUMNS = ['routines', 'min_slots', 'min_ratio', 'unaccounted_slots', 'low_without_current_alarm', 'accounted'];
@@ -41,8 +41,8 @@ export function judgeR17(row) {
     },
     {
       id: 'slot-floor',
-      passed: row.min_slots >= R17_MIN_SLOTS,
-      evidence: `min_slots=${row.min_slots} (floor ${R17_MIN_SLOTS})`,
+      passed: row.min_slots === R17_MIN_SLOTS,
+      evidence: `min_slots=${row.min_slots} (complete lattice ${R17_MIN_SLOTS})`,
     },
     {
       id: 'every-slot-accounted',

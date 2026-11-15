@@ -76,12 +76,14 @@ interface ServerIdentity { database: string; port: number; started: string }
  * coverage-low alarm is both open on the routine and fresh on its non-terminal work-item.
  */
 function recompute(nowMs: number, routines: RoutineRow[], alarms: AlarmRow[]): R17Row {
+  const endMs = Math.floor(nowMs / COVERAGE_EXPECTED_INTERVAL_MS) * COVERAGE_EXPECTED_INTERVAL_MS;
+  const expectedSlots = WINDOW_MS / COVERAGE_EXPECTED_INTERVAL_MS;
   const per = routines.map(({ name, metadata }) => {
     const cov = metadata?.sync_delta?.coverage ?? metadata?.sync_lint_guards?.coverage ?? {};
     const bySlot = new Map<number, { evaluated: boolean; accounted: boolean }>();
     for (const tick of Array.isArray(cov.ticks) ? cov.ticks : []) {
       const atMs = Number(tick?.atMs);
-      if (!Number.isFinite(atMs) || atMs <= nowMs - WINDOW_MS || atMs > nowMs) continue;
+      if (!Number.isFinite(atMs) || atMs < endMs - WINDOW_MS || atMs >= endMs) continue;
       const key = Math.floor(atMs / COVERAGE_EXPECTED_INTERVAL_MS);
       const prior = bySlot.get(key);
       // Each opportunity needs a judgment/cause once, independently of duplicate record order.
@@ -90,12 +92,13 @@ function recompute(nowMs: number, routines: RoutineRow[], alarms: AlarmRow[]): R
     }
     const slots = bySlot.size;
     const evaluated = [...bySlot.values()].filter(slot => slot.evaluated).length;
-    const unaccounted = [...bySlot.values()].filter(slot => !slot.accounted).length;
+    // Missing buckets are unaccounted even when no tick exists to group.
+    const unaccounted = expectedSlots - slots + [...bySlot.values()].filter(slot => !slot.accounted).length;
     const alarmOpen = Object.hasOwn(cov, 'alarmOpenSinceMs');
     const alarmFresh = alarms.some(alarm => alarm.condition_key === ALARM_CONDITION[name]
       && !TERMINAL.has(alarm.status) && alarm.last_seen !== null
       && Date.parse(alarm.last_seen) > nowMs - ALARM_FRESH_MS);
-    return { slots, unaccounted, ratio: slots > 0 ? evaluated / slots : 0, alarmed: alarmOpen && alarmFresh };
+    return { slots, unaccounted, ratio: evaluated / expectedSlots, alarmed: alarmOpen && alarmFresh };
   });
   return {
     routines: per.length,
@@ -103,7 +106,7 @@ function recompute(nowMs: number, routines: RoutineRow[], alarms: AlarmRow[]): R
     min_ratio: per.length ? Math.min(...per.map(p => p.ratio)) : 0,
     unaccounted_slots: per.reduce((sum, p) => sum + p.unaccounted, 0),
     low_without_current_alarm: per.filter(p => p.ratio < R17_TARGET_RATIO && !p.alarmed).length,
-    accounted: per.length === 2 && per.every(p => p.slots >= R17_MIN_SLOTS && p.unaccounted === 0
+    accounted: per.length === 2 && per.every(p => p.slots === expectedSlots && p.unaccounted === 0
       && (p.ratio >= R17_TARGET_RATIO || p.alarmed)) ? 1 : 0,
   };
 }
@@ -117,30 +120,36 @@ const recent = FIXTURE_NOW - COVERAGE_EXPECTED_INTERVAL_MS;
 const distinct = (evaluated = true) => Array.from({ length: R17_MIN_SLOTS }, (_, i) =>
   tick(recent - i * COVERAGE_EXPECTED_INTERVAL_MS, evaluated));
 const fixtures = [
-  { name: 'duplicate ticks in one slot count once', ticks: [tick(recent), tick(recent + 1)], slots: 1, ratio: 1 },
-  { name: 'ticks in separate slots count separately', ticks: [tick(recent - 1), tick(recent)], slots: 2, ratio: 1 },
-  { name: 'duplicates cannot manufacture the 276-slot floor',
-    ticks: Array.from({ length: R17_MIN_SLOTS }, (_, i) => tick(recent + i)), slots: 1, ratio: 1 },
-  { name: '276 distinct slots satisfy the unchanged floor', ticks: distinct(), slots: R17_MIN_SLOTS, ratio: 1, accounted: 1 },
+  { name: 'duplicate ticks in one slot count once', ticks: [tick(recent), tick(recent + 1)], slots: 1, ratio: 1 / 288 },
+  { name: 'ticks in separate slots count separately', ticks: [tick(recent - 1), tick(recent)], slots: 2, ratio: 2 / 288 },
+  { name: 'duplicates cannot manufacture the complete 288-bucket lattice',
+    ticks: Array.from({ length: R17_MIN_SLOTS }, (_, i) => tick(recent + i)), slots: 1, ratio: 1 / 288 },
+  { name: '287 distinct buckets leave one missing even with fresh alarms',
+    ticks: distinct(false).slice(1), slots: 287, ratio: 0, alarm: true },
+  { name: 'all 288 complete buckets satisfy the lattice', ticks: distinct(), slots: 288, ratio: 1, accounted: 1 },
+  { name: 'a 289th duplicate does not replace a missing interior bucket',
+    ticks: [...distinct().filter((_, i) => i !== 144), tick(recent + 1), tick(recent + 2)], slots: 287, ratio: 287 / 288 },
+  { name: 'all buckets plus a duplicate still count 288',
+    ticks: [...distinct(), tick(recent + 1)], slots: 288, ratio: 1, accounted: 1 },
   { name: 'evaluated duplicates cannot inflate the coverage ratio',
     ticks: [...Array.from({ length: 20 }, (_, i) => tick(recent + i)), tick(recent - COVERAGE_EXPECTED_INTERVAL_MS, false)],
-    slots: 2, ratio: 0.5, low: 2 },
-  { name: 'a judged duplicate credits its slot once', ticks: [tick(recent, false), tick(recent + 1)], slots: 1, ratio: 1 },
+    slots: 2, ratio: 1 / 288, low: 2 },
+  { name: 'a judged duplicate credits its slot once', ticks: [tick(recent, false), tick(recent + 1)], slots: 1, ratio: 1 / 288 },
   { name: 'mixed-status duplicates account for their slot with a nonempty cause',
-    ticks: [{ atMs: recent, evaluated: true }, { ...tick(recent + 1), status: 'red' }], slots: 1, ratio: 1 },
+    ticks: [{ atMs: recent, evaluated: true }, { ...tick(recent + 1), status: 'red' }], slots: 1, ratio: 1 / 288 },
   { name: 'mixed-status duplicates account for their slot in either record order',
-    ticks: [{ ...tick(recent + 1), status: 'red' }, { atMs: recent, evaluated: true }], slots: 1, ratio: 1 },
+    ticks: [{ ...tick(recent + 1), status: 'red' }, { atMs: recent, evaluated: true }], slots: 1, ratio: 1 / 288 },
   { name: 'duplicates without any cause leave their slot unaccounted',
     ticks: [{ atMs: recent, evaluated: true }, { atMs: recent + 1, evaluated: true, status: '' }],
-    slots: 1, ratio: 1, unaccounted: 2 },
+    slots: 1, ratio: 1 / 288, unaccounted: 2 },
   { name: 'a cause in another slot cannot account for an empty slot',
     ticks: [{ atMs: recent, evaluated: true }, tick(recent - COVERAGE_EXPECTED_INTERVAL_MS)],
-    slots: 2, ratio: 1, unaccounted: 2 },
-  { name: 'the 24h window excludes its lower bound and future ticks, and includes now',
+    slots: 2, ratio: 2 / 288, unaccounted: 2 },
+  { name: 'the complete window includes its lower bound and excludes the current bucket and future ticks',
     ticks: [tick(FIXTURE_NOW - WINDOW_MS - 1), tick(FIXTURE_NOW - WINDOW_MS), tick(FIXTURE_NOW), tick(FIXTURE_NOW + 1)],
-    slots: 1, ratio: 1 },
+    slots: 1, ratio: 1 / 288 },
   { name: 'empty histories retain both routine identities', ticks: [], slots: 0, ratio: 0, low: 2 },
-  { name: 'fresh alarms still account for low coverage at the unchanged floor',
+  { name: 'fresh alarms still account for low coverage across the full lattice',
     ticks: distinct(false), slots: R17_MIN_SLOTS, ratio: 0, alarm: true, accounted: 1 },
 ];
 
@@ -158,7 +167,8 @@ function fixtureAlarms(alarm = false): AlarmRow[] {
 }
 function expectedFixture(fixture: typeof fixtures[number]): R17Row {
   return { routines: 2, min_slots: fixture.slots, min_ratio: fixture.ratio,
-    unaccounted_slots: fixture.unaccounted ?? 0, low_without_current_alarm: fixture.low ?? 0,
+    unaccounted_slots: 2 * (288 - fixture.slots) + (fixture.unaccounted ?? 0),
+    low_without_current_alarm: fixture.low ?? (fixture.ratio < R17_TARGET_RATIO && !fixture.alarm ? 2 : 0),
     accounted: fixture.accounted ?? 0 };
 }
 
@@ -280,7 +290,7 @@ describe.skipIf(!LIVE)('LIVE: sync-batch slot accounting on the operator databas
   });
 
   it('the recomputation is sensitive: a probe whose window drifts to 12h disagrees with it', () => {
-    // 276 five-minute slots cannot fit in 12h, so a passing live row guarantees a real difference.
+    // 288 five-minute buckets cannot fit in 12h, so a passing live row guarantees a real difference.
     expect(parseR17Row(driftedLine).min_slots).toBeLessThan(recomputed.min_slots);
     expect(judgeR17(parseR17Row(driftedLine)).passed).toBe(false);
   });
