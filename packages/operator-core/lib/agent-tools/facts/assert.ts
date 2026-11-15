@@ -119,12 +119,12 @@ const FACT_RECHECK_SCHEMA = z
       .string()
       .min(1)
       .max(FACT_RECHECK_FIELD_MAX_CHARS)
-      .describe('The concrete query/tool/measurement a future reader can run to verify the fact again.'),
+      .describe('Concrete query/tool/measurement to verify this fact again.'),
     falsifier: z
       .string()
       .min(1)
       .max(FACT_RECHECK_FIELD_MAX_CHARS)
-      .describe('The concrete result or observation that means this fact is false and must be retracted or corrected.'),
+      .describe('Concrete observation disproving the fact, requiring correction/retraction.'),
     exec: z
       .object({
         command: z.string().min(1).max(FACT_RECHECK_FIELD_MAX_CHARS),
@@ -139,7 +139,7 @@ const FACT_RECHECK_SCHEMA = z
                 'Expected a compact scope tag: lowercase letters, digits, :, ., _, or -; max 64 characters. Put file paths in command/evidence, not scope.',
               )
               .describe(
-                'Compact guard-rail scope tag (lowercase letters, digits, :, ., _, or -; max 64 characters). File paths belong in command/evidence, not scope.',
+                'Guard-rail tag: lowercase letters/digits/:/./_/-; max64 chars. File paths go in command/evidence, not scope.',
               ),
           )
           .min(1)
@@ -148,13 +148,13 @@ const FACT_RECHECK_SCHEMA = z
       .strict()
       .optional()
       .describe(
-        'Optional executable form of probe for a guard rail: a bash command whose exit code (and stdout literal) means the fact HOLDS. Harness preflights whose scope tags overlap `scope` (e.g. ["p505"]) run it and fail fast when it breaks.',
+        'Executable guard-rail probe: bash exit code + optional stdout literal mean HOLDS. Harness preflights with overlapping scope tags (e.g. ["p505"]) run it and fail fast on failure.',
       ),
   })
   .strict()
   .optional()
   .describe(
-    `P-010: paired re-verification contract. Supply BOTH probe and falsifier (max ${FACT_RECHECK_FIELD_MAX_CHARS} chars each). The pair folds verbatim beside the fact so a future reader knows how to test it and what result disproves it. Omission remains compatible but the success receipt warns loudly that the fact has no recheck contract.`,
+    `Recheck contract: BOTH probe and falsifier (max ${FACT_RECHECK_FIELD_MAX_CHARS} chars each), folded verbatim beside the fact. Omission stays compatible; success warns of the missing contract.`,
   );
 
 /**
@@ -175,7 +175,7 @@ const FACT_MEASUREMENT_SCHEMA = z
   .strict()
   .optional()
   .describe(
-    'Compatibility input alias for the persisted/read `measurement` object. It is normalized to the canonical top-level subjectVolatile/measuredAt fields; if both forms are supplied, their values must agree.',
+    'Read-shaped alias for top-level subjectVolatile/measuredAt; supplying both forms requires equal values.',
   );
 
 export function normalizeMeasurementInput(input: {
@@ -581,14 +581,14 @@ export default defineTool({
     promotedFrom: promotedFromSchema.optional(),
     scope: z.enum(FACT_SCOPES).describe('workspace (global, no ref) | role | owner | harness | work_item'),
     scopeRef: z.string().max(120).optional().describe('Required for every scope except workspace: role name / ownerId / harness slug / WI id.'),
-    scope_ref: z.string().max(120).optional().describe('Alias for scopeRef (EI-7371) — prefer scopeRef; accepted so a snake_case call still resolves the ref instead of silently dropping it.'),
+    scope_ref: z.string().max(120).optional().describe('Alias for scopeRef; prefer scopeRef.'),
     ref: z.string().max(120).optional().describe('Alias for scopeRef (EI-7371) — prefer scopeRef.'),
     harness: z
       .string()
       .max(120)
       .optional()
       .describe(
-        'Alias for scopeRef when scope:"harness" (EI-7371) — prefer scopeRef. For shareable:true, also pass a concrete harness here when the caller context is not already harness-scoped.',
+        'scope:"harness" alias for scopeRef (preferred). For shareable:true, supply a concrete harness unless already harness-scoped.',
       ),
     key: z.string().min(1).max(120).describe('Stable slug — upsert + retract target (e.g. "wi-1439-owner-residue").'),
     supersedes: z
@@ -596,7 +596,7 @@ export default defineTool({
       .max(FACT_MAX_SUPERSEDES)
       .optional()
       .describe(
-        `Retire up to ${FACT_MAX_SUPERSEDES} overlapping sibling fact keys in the SAME workspace/scope/ref while asserting this replacement. Keys are trimmed and deduplicated; the asserted key itself is refused because same-key corrections already append a version. Only CURRENT local matches are soft-retracted, atomically with this write, and the receipt reports the keys actually retired. Missing, wrong-scope, and already-retired keys are unchanged and omitted from that receipt.`,
+        `Atomically soft-retract up to ${FACT_MAX_SUPERSEDES} current local sibling keys in the SAME workspace/scope/ref. Trimmed/deduplicated; self-key refuses (same-key updates already version). The receipt reports the keys actually retired; missing/wrong-scope/already-retired keys stay unchanged and unlisted.`,
       ),
     // Transport ceiling 4000 ≫ the stored cap: the store TRUNCATES to FACT_BODY_MAX_CHARS
     // (code-run-self-state-adoption-2026-07-03 P-007 — the hard zod reject cost the WHOLE
@@ -628,27 +628,27 @@ export default defineTool({
       .min(1)
       .max(4000)
       .describe(
-        `REFUSED ABOVE ${FACT_BODY_MAX_CHARS} CHARS — size your write to this, not the 4000 schema ceiling (4000 is transport headroom only, so the refusal can measure your exact overage and preview the tail that would be cut). An over-cap body is NOT silently clipped: NO WRITE HAPPENS and the error names how many chars to cut — either shorten it, or re-call with acceptTruncation:true to force the clipped write through. Front-load the operative clause; write tight, not documents.`,
+        `REFUSED ABOVE ${FACT_BODY_MAX_CHARS} CHARS; 4000 is transport headroom only. Over-cap bodies are NOT silently clipped: NO WRITE HAPPENS. Refusal names the overage and previews the tail; shorten or explicitly acceptTruncation:true for a clipped write. Front-load the operative clause.`,
       ),
-    sourceRef: z.string().max(200).optional().describe('Anchor that proved it. A TYPED ref — msg:<id>, wi:<id>/WI-/EI- id, session_turn:<source>:<session>:<idx>, or "owner-turn" (the human turn you are answering) — is PLATFORM-VERIFIED at assert time and folds with the verified verbatim quote; anything else (plan slug, prose) stays a plain anchor.'),
+    sourceRef: z.string().max(200).optional().describe('Evidence anchor. Typed msg:<id>, wi:<id>/WI-/EI- id, session_turn:<source>:<session>:<idx>, or owner-turn (current human turn) is platform-verified and folds with its verbatim quote. Other refs (plan slug/prose) stay plain anchors.'),
     slot: z
       .enum(['dead-end', 'wall', 'guard-rail'])
       .optional()
       .describe(
-        "Typed slots normalize key prefixes: dead-end = failed approach, rendered ⛔ DEAD END, finite TTL default90d; wall = OWNER-GATED blocker, rendered ⚠ WALL, finite TTL default90d/max90d with loud watchdog escalation on unretracted lapse (absence NEVER means resolved); guard-rail = settled do-not-repeat instruction, rendered 🛡️ GUARD RAIL, permanent by default, exempt from cap eviction and included in never-drop folds. State the failed approach/reason or blocking condition/remedy; anchor evidence with sourceRef.",
+        "Normalizes key prefix: dead-end=failed approach (⛔ DEAD END, default90d finite TTL); wall=OWNER-GATED blocker (⚠ WALL, default/max90d, watchdog escalates unretracted lapse; absence NEVER means resolved); guard-rail=settled instruction (🛡️ GUARD RAIL, default permanent, cap-exempt, never-drop fold). State approach/reason or condition/remedy; sourceRef anchors evidence.",
       ),
-    audienceScope: z.string().max(160).optional().describe('Restrict WHO receives this fact in folds (v1 grammar: "fleet:<slug>") — it then folds ONLY into orients of that fleet\'s members. Omit = every reader of the scope. Orthogonal to `scope` (what the fact is about). facts:list still shows it to everyone (delivery relevance, not secrecy).'),
+    audienceScope: z.string().max(160).optional().describe('Fold audience: fleet:<slug> restricts delivery to that fleet; omitted=all scope readers. Independent of subject `scope`; facts:list remains visible to everyone, so this grants no secrecy.'),
     confidence: z
       .enum(FACT_CONFIDENCE_LEVELS)
       .optional()
       .describe(
-        "Evidence strength: verified = directly confirmed/replicated; provisional = single observation, unreplicated; suspected = hunch/second-hand hedge. Never strengthen a peer's confidence. Omit for legacy unbadged. Without ttlSec, provisional/suspected grants a short TTL; an ordinary write still needs an explicit ttlSec or another documented lifetime rule.",
+        "verified=confirmed/replicated; provisional=single unreplicated observation; suspected=hunch/second-hand. Never strengthen peer confidence. Omitted=legacy unbadged. Without ttlSec, provisional/suspected grants a short TTL; an ordinary write still needs an explicit ttlSec or another lifetime rule.",
       ),
     subjectVolatile: z
       .boolean()
       .optional()
       .describe(
-        'Mark the asserted values as a snapshot of a subject that may still be changing. The ONE hard refusal in this group: when true, measuredAt is required (never defaulted to now() — that would stamp a sample of unknown age as fresh). Supplying measuredAt alone is accepted and the store infers subjectVolatile:true. The fold renders a SNAPSHOT marker, and the TTL is CLAMPED to 15 minutes rather than refused.',
+        'Moving-subject snapshot. The ONE hard refusal: when true, measuredAt is required, never defaulted to now(). Supplying measuredAt alone is accepted; the store infers subjectVolatile:true. Folds render SNAPSHOT; TTL is CLAMPED to 15 minutes, never refused.',
       ),
     measurement: FACT_MEASUREMENT_SCHEMA,
     measuredAt: z
@@ -656,7 +656,7 @@ export default defineTool({
       .max(80)
       .optional()
       .describe(
-        'ISO timestamp at which a snapshot was sampled. Required with subjectVolatile:true; supplying measuredAt alone is accepted and the store infers subjectVolatile:true, the SNAPSHOT marker, and the 15-minute TTL. Omit it for durable invariant conclusions.',
+        'ISO sample timestamp; required with subjectVolatile:true. Supplying measuredAt alone is accepted; store infers subjectVolatile:true, SNAPSHOT and 15-minute TTL. Omit for durable invariants.',
       ),
     dependsOn: z
       .array(
@@ -665,25 +665,25 @@ export default defineTool({
           z.object({
             cell: z.string().min(1).max(200),
             target: z.enum(['measurement', 'assessment', 'material']).optional()
-              .describe('The comparison lens; omitted inherits declared materiality, otherwise measurement. Assessment and validity qualifiers are retained for every target.'),
+              .describe('Comparison lens; default inherits materiality, else measurement. Every target retains assessment/validity qualifiers.'),
             as: z
               .string()
               .max(200)
               .optional()
-              .describe('The SUBJECT, for a cell whose callerRelativity is "parameter" — same meaning as state:read { as }.'),
+              .describe('Subject for a parameter-relative cell, as in state:read { as }.'),
           }),
         ]),
       )
       .max(FACT_MAX_DEPENDENCIES)
       .optional()
       .describe(
-        `P-008: the CELL ids this fact rests on (max ${FACT_MAX_DEPENDENCIES}) — either a bare id ("deploy.3070.sha") or { cell, as } when the cell is caller-relative ({ cell: "git.pipelinePosition", as: "packages/operator-core/lib/x.ts" }). Each is READ AND DIGESTED NOW, so a later reader is told mechanically that "the cell you relied on changed from X to Y" instead of guessing from the fact's age. This is what makes an assumption auto-invalidate (D-007) — without it, an assumption is just a conclusion with a weaker badge. A cell that cannot be read is recorded as such and never later reported fresh; it never blocks the write. Run state:read { } to see the cells you may declare. "file:<repo path>" anchors the fact to that file's blob: reads report it stale when the file changes, and ttlSec may be omitted.`,
+        `Up to ${FACT_MAX_DEPENDENCIES} cell ids or { cell, as } for caller-relative subjects, e.g. {cell:"git.pipelinePosition",as:"packages/operator-core/lib/x.ts"}. Read/digested now; later changes automatically mark the fact stale. Unreadable cells are recorded, never reported fresh, and do not block writes. List cells: state:read {}. "file:<repo path>" pins a blob: changes mark stale and ttlSec may be omitted.`,
       ),
     claim: z
       .record(z.string(), z.unknown())
       .optional()
       .describe(
-        'P-008: an optional TYPED restatement of what this fact asserts, e.g. { subject: "cell:gate.greenCheckpoint.verdict", assertion: "unrelated-to-my-change" }. `body` stays the prose humans read. ⚠ NOTHING READS THIS TODAY — the contradiction detector it was built for was retired (WI-6545 / D-103) after 3 of 2,217 facts ever carried a claim. Stored faithfully if you pass it; omit it unless you have your own reason.',
+        'Typed claim restatement; `body` remains human prose. Stored but currently unread: the contradiction detector was retired (WI-6545/D-103). Omit unless needed by your own consumer.',
       ),
     enforcement: z
       .object({
@@ -693,7 +693,7 @@ export default defineTool({
       })
       .optional()
       .describe(
-        "P-018: HOW this convention is enforced (kind:'convention' only) — 'structural' (impossible to do wrong; no agent decision involved), 'gate' (refused at a chokepoint), or 'detector' (measured, never silently tolerated). gate/detector REQUIRE floor (a rate in (0,1]) + reviewBy: D-016 — \"a detector without a floor is prose exhortation in a costume\". 'structural' takes neither. There is deliberately no 'prompt' tier: a convention carried only by documentation omits this and reads as untiered.",
+        "kind:'convention' only: structural=impossible to violate, no agent choice involved; gate=chokepoint refusal; detector=measured, never silently tolerated. Gate/detector require floor (rate in (0,1])+reviewBy; structural takes neither. No prompt tier: documentation-only conventions omit this and remain untiered.",
       ),
     ttlSec: z
       .number()
@@ -702,54 +702,26 @@ export default defineTool({
       .max(90 * 24 * 3600)
       .optional()
       .describe(
-        `TTL seconds (max 90d). ⚠ THERE IS NO DEFAULT: every assert must declare a lifetime, and a call ` +
-          `that declares none is REFUSED (the old silent 7d default was removed — it was being applied to ` +
-          `facts nobody had chosen a lifetime for, which then expired unread). Pass this for a bounded fact, ` +
-          `or permanent:true for a standing one. You do NOT need either if the fact already implies a ` +
-          `lifetime: kind:'convention' is permanent on its own, a wall:/dead-end:/guard-rail: slot carries its ` +
-          `own durable default, and confidence:'provisional'|'suspected' already means a short TTL. ` +
-          `⚠ CONDITIONAL MAX: a volatile fact's ttlSec is CLAMPED, never refused (D-011) — anything over ` +
-          `${FACT_VOLATILE_MAX_TTL_SEC}s (15 minutes) is shortened to it and disclosed back as ttlClampedFrom.`,
+        `ttlSec in seconds (max90d), NO DEFAULT: undeclared lifetime is REFUSED. Use ttlSec for bounded facts or eligible permanent:true. Neither needed for implicit lifetimes: kind:'convention' is permanent; wall:/dead-end:/guard-rail: slots carry defaults; provisional/suspected confidence means short TTL. Volatile ttlSec is CLAMPED, never refused, to ${FACT_VOLATILE_MAX_TTL_SEC}s (15min), reported as ttlClampedFrom.`,
       )
       .meta({ 'x-papercusp-call-constraint': FACT_VOLATILE_TTL_CALL_CONSTRAINT }),
     permanent: z
       .boolean()
       .optional()
       .describe(
-        `Declare this fact PERMANENT (no expiry) — the semantic alternative to ttlSec, and the way to say ` +
-          `"this should never lapse" without inventing a large number. ACCEPTED ONLY for a fact that is exempt ` +
-          `from the per-scope cap: kind:'convention', or a key under '${WALL_KEY_PREFIX}' / ` +
-          `'${DEAD_END_KEY_PREFIX}' / '${GUARD_RAIL_KEY_PREFIX}'. Everywhere else it is REFUSED, and that is ` +
-          `deliberate rather than a restriction to work around: the ordinary cap refuses at its ceiling ` +
-          `instead of evicting an incumbent, so an ` +
-          `unbounded ordinary row could hold a slot forever and cause later ordinary writes to be refused. ` +
-          `Choose by WHAT THE ROW IS, not by how durable it feels: ` +
-          `a standing rule or decision is kind:'convention' and permanent by that fact alone; a finding about ` +
-          `current code SHOULD expire, so give it a ttlSec and a recheck. Refused for a volatile measurement — ` +
-          `a snapshot of a moving subject is never a standing fact.`,
+        `No expiry; accepted ONLY for cap-exempt kind:'convention' or '${WALL_KEY_PREFIX}'/'${DEAD_END_KEY_PREFIX}'/'${GUARD_RAIL_KEY_PREFIX}' keys. The ordinary cap refuses at its ceiling instead of evicting an incumbent; permanent ordinary rows could occupy a slot forever. Choose by claim meaning: standing rules/decisions are conventions (already permanent); current-code findings need ttlSec+recheck. Volatile measurements refuse permanent:true.`,
       ),
     dryRun: z
       .boolean()
       .optional()
       .describe(
-        'Compute what this assert WOULD cost and write NOTHING: which fact the per-scope cap would evict ' +
-          '(key, owner, confidence, remaining TTL), where your row would land in the victim ranking, and ' +
-          'whether the key you are replacing already exists. Use it before asserting into a scope you know ' +
-          'is busy, and before RESTORING an evicted fact — a restore is itself a write and can displace a ' +
-          'third party. Ordinary at-cap writes are refused before write when the predicted victim is another author\'s ' +
-          'verified fact; conventions and typed safety slots take no cap seat. FORECAST, NOT A RESERVATION: a peer ' +
-          'asserting first changes the victim.',
+        'Write NOTHING; forecast cap victim (key/owner/confidence/remaining TTL), new-row ranking and existing replacement key. Use before busy-scope assertions/restores that may displace peers. Ordinary at-cap writes are refused before write for another author\'s verified fact; conventions and typed safety slots take no cap seat. Forecast, not reservation: intervening writes can change it.',
       ),
     acceptTruncation: z
       .boolean()
       .optional()
       .describe(
-        `Explicit opt-in to force the write through when body exceeds the ${FACT_BODY_MAX_CHARS}-char cap. WITHOUT this, an ` +
-          `over-cap body is REFUSED (no write happens) — the error names the overage and previews the exact tail that would be ` +
-          `cut, so you can re-write it tight instead of losing it silently (EI-18685042986450096: the old truncate-and-report-` +
-          `after behavior dropped the operative clause of a fact 3x, once removing a rule's verdict sentence entirely). Pass ` +
-          `true only when you deliberately want the clipped write to land anyway (P-007: a write is never rejected outright — ` +
-          `this is the one way to still get the old lossy-but-never-lost behavior).`,
+        `Explicitly accept a clipped write above ${FACT_BODY_MAX_CHARS} chars. Otherwise REFUSED with no write, overage and tail preview; never silently clipped. Prefer shortening; true deliberately accepts the loss.`,
       ),
     };
     const kindDescription =
