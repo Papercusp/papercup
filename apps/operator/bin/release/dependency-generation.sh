@@ -522,10 +522,17 @@ dependency_generation_configure_workspace_dirs() {
     # The root lock owns private trees even when their package is no longer a
     # manifest workspace. Keep those install obligations without admitting the
     # package's independent lockfile into this selected dependency scope.
-    root_install_dirs="$("${DEPENDENCY_GENERATION_NODE:-node}" --input-type=module - "$root" <<'NODE'
+    root_install_dirs="$("${DEPENDENCY_GENERATION_NODE:-node}" --input-type=module - "$root" \
+      "$(dirname "${BASH_SOURCE[0]}")/../../../../scripts/assert-workspace-links.mjs" <<'NODE'
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 const root = process.argv[2], dirs = new Set();
+const { expandWorkspaces } = await import(pathToFileURL(resolve(process.argv[3])));
+const manifest = join(root, 'package.json');
+const workspaces = new Set(existsSync(manifest)
+  ? expandWorkspaces(JSON.parse(readFileSync(manifest, 'utf8')).workspaces ?? [], root)
+  : []);
 for (const name of ['npm-shrinkwrap.json', 'package-lock.json']) {
   const file = join(root, name);
   if (!existsSync(file)) continue;
@@ -537,7 +544,9 @@ for (const name of ['npm-shrinkwrap.json', 'package-lock.json']) {
     const dir = key.slice(0, split);
     if (dir.split('/').some(part => !part || part === '.' || part === '..') || /[\\\x00-\x1f]/.test(dir))
       throw new Error('invalid root-lock install directory: ' + dir);
-    dirs.add(dir);
+    // Declared workspaces enter only through the explicit selected closure.
+    // Keep private installs owned by the root lock outside that registry.
+    if (!workspaces.has(dir)) dirs.add(dir);
   }
 }
 console.log([...dirs].sort().join('\n'));
@@ -4912,11 +4921,19 @@ dependency_generation_main() {
       # WI-10004151: publishing from the live tree could only ever miss this key.
       dependency_generation_log \
         "exact ref $ensure_ref inputs $exact_input differ from the live tree's $live_input; building from the ref's own lockfiles"
+      dependency_generation_prepare_exact_ref_root \
+        "$integration_root" "$ensure_ref" "$exact_input" "$generation_root" || return $?
+      build_root="$DEPENDENCY_GENERATION_EXACT_SCRATCH"
     fi
-    dependency_generation_prepare_exact_ref_root \
-      "$integration_root" "$ensure_ref" "$exact_input" "$generation_root" || return $?
-    build_root="$DEPENDENCY_GENERATION_EXACT_SCRATCH"
-    if [ -n "$DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT" ] && [ -z "$DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT" ]; then
+    # Equal immutable/live input keys can use the live manifest bracket and
+    # pre-copy lock snapshot below. Hardlinking into a scratch root changes
+    # directory inodes, inventing a different generation for the same install
+    # and hiding live lockfile drift from the post-build input check.
+    # A sourced caller may have donor state left by an earlier invocation.
+    # Only this call's staged exact-ref build can authorize that shortcut.
+    if [ "$live_input" != "$exact_input" ] \
+      && [ -n "$DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT" ] \
+      && [ -z "$DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT" ]; then
       dependency_generation_select_input_fingerprint "$DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT" "$generation_root" || return $?
       DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT="$(dependency_generation_read_field "$DEPENDENCY_GENERATION_PATH/.papercusp-dependency-generation" closure)"
       dependency_generation_acquire_selector_lease \
