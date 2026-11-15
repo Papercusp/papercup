@@ -408,7 +408,7 @@ describe('startRun', () => {
     const expected = { schemaVersion: 1, sourceSha256,
       artifactSha256: createHash('sha256').update(source).digest('hex') };
     let transport: { release(): void } | undefined;
-    let request: ReturnType<typeof buildDetachedTestRunRequest> | undefined;
+    let request: Awaited<ReturnType<typeof buildDetachedTestRunRequest>> | undefined;
     const enrolment = {
       taskId: 'task-compiled-core-handoff', confined,
       scopeUnit: confined ? 'pc-task-compiled-core-handoff.scope' : null,
@@ -424,7 +424,7 @@ describe('startRun', () => {
     try {
       await writeFile(core, source);
       await writeFile(join(root, 'origin.mjs'), 'export const origin = "retained-core-origin";');
-      request = buildDetachedTestRunRequest({ root, files: ['feature.test.ts'],
+      request = await buildDetachedTestRunRequest({ root, files: ['feature.test.ts'],
         deadline: testRunDeadline(120_000), workItemId: 'WI-compiled-core-handoff',
         compiledCore: { moduleUrl: pathToFileURL(core).href, expected } });
       const transferPath = join(dirname(request.detachedReportArtifacts![0]!.reportPath), 'testing-core.retained.mjs');

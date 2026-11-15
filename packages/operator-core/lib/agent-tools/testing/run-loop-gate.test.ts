@@ -107,15 +107,15 @@ async function stagedCore(source = coreSource('A')) {
     privatePg: true, reporterStageTrace: true, maxFailures: 7, timeoutMs: 120_000,
     testNamePattern: 'preserved pattern', allowSiblingCheckoutFallback: false,
     compiledCore: { moduleUrl: pathToFileURL(core).href, expected } };
-  const request = () => {
-    const result = buildDetachedTestRunRequest(options);
+  const request = async () => {
+    const result = await buildDetachedTestRunRequest(options);
     roots.push(...(result.detachedReportArtifacts ?? []).map(artifact => join(artifact.reportPath, '..')));
     return result;
   };
   return { root, core, source, options, expected, request };
 }
 
-function runCompiled(request: ReturnType<typeof buildDetachedTestRunRequest>, extraPreload?: string) {
+function runCompiled(request: Awaited<ReturnType<typeof buildDetachedTestRunRequest>>, extraPreload?: string) {
   const result = spawnSync(request.command, request.args, {
     cwd: request.cwd, encoding: 'utf8', timeout: 10_000,
     env: { ...process.env, ...request.env, PAPERCUSP_TEST_RUN_GROUP: 'compiled-run',
@@ -128,7 +128,7 @@ function runCompiled(request: ReturnType<typeof buildDetachedTestRunRequest>, ex
 
 it('runs an independently staged compiled core with plain Node and exact replay/report identity', async () => {
   const f = await stagedCore();
-  const request = f.request();
+  const request = await f.request();
   expect(request.args).not.toContain('tsx');
   const result = runCompiled(request);
   expect(result.status, result.stderr).toBe(0);
@@ -151,7 +151,7 @@ it('runs an independently staged compiled core with plain Node and exact replay/
 it.each(['unchanged', 'swap', 'restore'] as const)(
   'loads retained A through an outer native observer despite candidate %s', async mode => {
     const f = await stagedCore();
-    const request = f.request();
+    const request = await f.request();
     const observer = join(f.root, 'observer.mjs'), receipt = join(f.root, 'observed.json');
     const replacement = coreSource('B'); // Deliberately exports the SAME source witness.
     await writeFile(observer, `
@@ -180,19 +180,19 @@ it.each(['unchanged', 'swap', 'restore'] as const)(
 
 it('distinguishes a source witness mismatch from an artifact mismatch or missing/invalid expectation', async () => {
   const f = await stagedCore(coreSource('A', 'b'.repeat(64)));
-  const mismatch = runCompiled(f.request());
+  const mismatch = runCompiled(await f.request());
   expect(mismatch.status).toBe(1);
   expect(mismatch.parsed).toMatchObject({ error: 'testing_core_source_mismatch', failedPhase: 'core-witness' });
   await writeFile(f.core, coreSource('B'));
-  expect(f.request).toThrowError(expect.objectContaining({ code: 'testing_core_artifact_mismatch' }));
-  expect(() => buildDetachedTestRunRequest({ ...f.options, compiledCore: {
+  await expect(f.request()).rejects.toThrowError(expect.objectContaining({ code: 'testing_core_artifact_mismatch' }));
+  await expect(buildDetachedTestRunRequest({ ...f.options, compiledCore: {
     moduleUrl: pathToFileURL(f.core).href, expected: undefined,
-  } })).toThrowError(expect.objectContaining({ code: 'testing_core_missing_witness' }));
-  expect(() => buildDetachedTestRunRequest({ ...f.options, compiledCore: {
+  } })).rejects.toThrowError(expect.objectContaining({ code: 'testing_core_missing_witness' }));
+  await expect(buildDetachedTestRunRequest({ ...f.options, compiledCore: {
     moduleUrl: pathToFileURL(f.core).href, expected: { schemaVersion: 1 },
-  } })).toThrowError(expect.objectContaining({ code: 'testing_core_invalid_witness' }));
+  } })).rejects.toThrowError(expect.objectContaining({ code: 'testing_core_invalid_witness' }));
   await rm(f.core);
-  expect(f.request).toThrowError(expect.objectContaining({ code: 'testing_core_missing_artifact' }));
+  await expect(f.request()).rejects.toThrowError(expect.objectContaining({ code: 'testing_core_missing_artifact' }));
 });
 
 it.each([
@@ -209,7 +209,7 @@ it.each([
   ].join('\n'));
   // stagedCore independently hashes each loadable artifact, so refusal must
   // come from its loaded source export rather than the artifact/import guard.
-  const result = runCompiled(f.request());
+  const result = runCompiled(await f.request());
   const phases = result.stderr.split('\n').map(line => {
     try { return JSON.parse(line); } catch { return null; }
   }).filter(row => row?.schemaVersion === 'testing-run-bootstrap-v1');
@@ -248,7 +248,7 @@ it('keeps the one-shot transfer preload out of test descendants', async () => {
       return { ok: true, child };
     }
   `);
-  const result = runCompiled(f.request());
+  const result = runCompiled(await f.request());
   expect(result.status, result.stderr).toBe(0);
   expect(result.parsed).toEqual({ ok: true, child: 'child-ok' });
 });

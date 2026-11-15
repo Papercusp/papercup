@@ -28,6 +28,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+import { TEST_RUN_READER_CONTRACT_ENV, testRunExecutionDetailsReaderContract } from '@papercusp/test-config/execution-details';
 import { getOrgPg, _resetForTests } from '@papercusp/db-org';
 import { createOrgTestDb, type OrgTestDb } from '../../../../test/_org-test-db';
 import { _resetHarnessAdminUrlCacheForTests } from '../../../embedded-pg-discovery';
@@ -1408,7 +1409,7 @@ describe('shouldIngestVitestLedgerInProcess', () => {
 
     expect(resolveAdminTestRunsReporterPath(externalRoot)).toBe(reporterPath);
     expect(shouldIngestVitestLedgerInProcess(externalRoot)).toBe(false);
-    expect(buildDetachedTestRunRequest({ root: externalRoot, files: ['packages/x/real.test.ts'] }).args).toContain(
+    expect((await buildDetachedTestRunRequest({ root: externalRoot, files: ['packages/x/real.test.ts'] })).args).toContain(
       `--reporter=${reporterPath}`,
     );
   });
@@ -1439,11 +1440,11 @@ describe('shouldIngestVitestLedgerInProcess', () => {
 
       expect(resolveAdminTestRunsReporterPath(root)).toBeUndefined();
       expect(shouldIngestVitestLedgerInProcess(root)).toBe(true);
-      expect(buildDetachedTestRunRequest({ root, files: ['packages/x/real.test.ts'] }).args)
+      expect((await buildDetachedTestRunRequest({ root, files: ['packages/x/real.test.ts'] })).args)
         .not.toContain(`--reporter=${reporter}`);
-      expect(buildDetachedMixedTestRunRequest({
+      expect((await buildDetachedMixedTestRunRequest({
         groups: [{ root, files: ['packages/x/real.test.ts'] }],
-      }).args.join(' ')).not.toContain(`--reporter=${reporter}`);
+      })).args.join(' ')).not.toContain(`--reporter=${reporter}`);
     },
   );
 });
@@ -2918,8 +2919,8 @@ describe('testing:run (integration)', () => {
     })).toEqual(readback.idsByFile);
   });
 
-  it('builds a fresh store-backed router request with both the admin ledger reporter and retained JSON', () => {
-    const request = buildDetachedTestRunRequest({
+  it('builds a fresh store-backed router request with both the admin ledger reporter and retained JSON', async () => {
+    const request = await buildDetachedTestRunRequest({
       root: REPO_ROOT,
       files: ['packages/example.test.ts'],
       testNamePattern: 'suite > --focused test',
@@ -2949,6 +2950,7 @@ describe('testing:run (integration)', () => {
     expect(request.detachedReportArtifacts?.[0]?.reportPath).toContain('papercusp-testing-run-detached-');
     expect(request.env).toEqual({
       NODE_ENV: 'test',
+      [TEST_RUN_READER_CONTRACT_ENV]: process.env[TEST_RUN_READER_CONTRACT_ENV] ?? testRunExecutionDetailsReaderContract(),
       PAPERCUSP_TEST_FILE_TIMEOUT_MS: '900000',
       PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
       PAPERCUSP_WORKSPACE_ID: 'papercusp-workspace',
@@ -2957,11 +2959,11 @@ describe('testing:run (integration)', () => {
     expect(request).not.toHaveProperty('workItemId');
   });
 
-  it('stores the foreground origin on the detached task, outside its deadline replay payload', () => {
+  it('stores the foreground origin on the detached task, outside its deadline replay payload', async () => {
     const originRunId = 'foreground-origin-deadline';
     const startedAtMs = Date.now();
     const taskDeadlineAtMs = startedAtMs + 120_000;
-    const request = buildDetachedTestRunRequest({
+    const request = await buildDetachedTestRunRequest({
       root: REPO_ROOT,
       files: ['packages/example.test.ts'],
       timeoutMs: 60_000,
@@ -2981,8 +2983,8 @@ describe('testing:run (integration)', () => {
     expect(request.env?.PAPERCUSP_TEST_REPORTER_STAGE_TRACE).toBe('1');
   });
 
-  it('carries the verified work-item onto the detached request (expensive-verification-loops P-001)', () => {
-    const single = buildDetachedTestRunRequest({
+  it('carries the verified work-item onto the detached request (expensive-verification-loops P-001)', async () => {
+    const single = await buildDetachedTestRunRequest({
       root: REPO_ROOT,
       files: ['packages/example.test.ts'],
       workItemId: 'WI-10003898',
@@ -2991,7 +2993,7 @@ describe('testing:run (integration)', () => {
     expect(single.workItemId).toBe('WI-10003898');
     expect(single.originRunId).toBe('foreground-origin-2');
 
-    const mixed = buildDetachedMixedTestRunRequest({
+    const mixed = await buildDetachedMixedTestRunRequest({
       groups: [{ root: REPO_ROOT, files: ['packages/example.test.ts'] }],
       workItemId: 'WI-10003898',
       originRunId: 'foreground-origin-3',
@@ -3004,8 +3006,8 @@ describe('testing:run (integration)', () => {
     expect(mixed.requestedFiles).toEqual(['packages/example.test.ts']);
   });
 
-  it('uses parent-side JSON ledger ingestion for a single detached integration file', () => {
-    const request = buildDetachedTestRunRequest({
+  it('uses parent-side JSON ledger ingestion for a single detached integration file', async () => {
+    const request = await buildDetachedTestRunRequest({
       root: REPO_ROOT,
       files: ['packages/operator-core/lib/sync-resolver/goals.integration.test.ts'],
       workspaceId: 'papercusp-workspace',
@@ -3035,14 +3037,14 @@ describe('testing:run (integration)', () => {
     expect(request.args.some((arg) => arg.includes('admin-test-runs-reporter'))).toBe(false);
   });
 
-  it('persists the detached router budget and leaves time for its terminal report', () => {
+  it('persists the detached router budget and leaves time for its terminal report', async () => {
     const foregroundTimeoutMs = 45_000;
-    const request = buildDetachedTestRunRequest({
+    const request = await buildDetachedTestRunRequest({
       root: REPO_ROOT,
       files: ['packages/example.test.ts'],
       timeoutMs: foregroundTimeoutMs,
     });
-    const mixedRequest = buildDetachedMixedTestRunRequest({
+    const mixedRequest = await buildDetachedMixedTestRunRequest({
       groups: [{ root: REPO_ROOT, files: ['packages/example.test.ts'] }],
       timeoutMs: foregroundTimeoutMs,
     });
@@ -3059,14 +3061,14 @@ describe('testing:run (integration)', () => {
     expect(mixedRequest.runtimeMaxSec).toBeGreaterThan(Math.ceil(foregroundTimeoutMs / 1000));
   });
 
-  it('carries the full requested router budget into detached recovery', () => {
+  it('carries the full requested router budget into detached recovery', async () => {
     const timeoutMs = 1_200_000;
-    const request = buildDetachedTestRunRequest({
+    const request = await buildDetachedTestRunRequest({
       root: REPO_ROOT,
       files: ['packages/example.test.ts'],
       timeoutMs,
     });
-    const mixedRequest = buildDetachedMixedTestRunRequest({
+    const mixedRequest = await buildDetachedMixedTestRunRequest({
       groups: [{ root: REPO_ROOT, files: ['packages/example.test.ts'] }],
       timeoutMs,
     });
@@ -3091,7 +3093,7 @@ describe('testing:run (integration)', () => {
     );
     await writeFile(join(root, 'packages', 'integration', 'vitest.integration.config.ts'), 'export default {}.\n');
     const files = ['packages/unit/src/unit.test.ts', 'packages/integration/src/integration.integration.test.ts'];
-    const request = buildDetachedMixedTestRunRequest({ groups: [
+    const request = await buildDetachedMixedTestRunRequest({ groups: [
       { root: REPO_ROOT, files: ['packages/managed.test.ts'] },
       { root, files },
     ] });

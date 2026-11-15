@@ -378,7 +378,7 @@ it('R5 keeps the replay cutoff fixed after preparation and refuses an exhausted 
   let now = 10_000;
   vi.spyOn(Date, 'now').mockImplementation(() => now);
   const root = await makeTestRoot(true);
-  const request = buildDetachedTestRunRequest({ root, files: ['feature.test.ts'],
+  const request = await buildDetachedTestRunRequest({ root, files: ['feature.test.ts'],
     timeoutMs: 45_000, deadline: callerDeadline });
   expect(request.env).toMatchObject({ PAPERCUSP_TEST_TASK_DEADLINE_AT_MS: '46000',
     PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS: '36000', PAPERCUSP_TEST_CLEANUP_RESERVE_MS: '10000' });
@@ -408,7 +408,7 @@ it('R5 writes both checkout reports at the paths retained by caller-bound detach
   vi.spyOn(Date, 'now').mockReturnValue(10_000);
   const groups = await Promise.all([makeTestRoot(true), makeTestRoot(true)])
     .then(checkouts => checkouts.map(root => ({ root, files: ['feature.test.ts'] })));
-  const request = buildDetachedMixedTestRunRequest({ groups, deadline: callerDeadline, timeoutMs: 45_000 });
+  const request = await buildDetachedMixedTestRunRequest({ groups, deadline: callerDeadline, timeoutMs: 45_000 });
   const artifacts = request.detachedReportArtifacts!;
   expect(artifacts.map(artifact => artifact.root)).toEqual(groups.map(group => group.root));
   const reportDirectories = Object.fromEntries(artifacts.map(artifact => [artifact.root, dirname(artifact.reportPath)]));
@@ -486,7 +486,7 @@ it('direct background core preserves dirty source hashes and one router launch t
   await writeFile(join(root, 'feature.test.ts'), source);
   phases.snapshot.mockResolvedValue({ commit: 'fixture-head', porcelain: ' M feature.test.ts' });
   const deadline = runArtifacts.testRunDeadline(60_000);
-  const request = buildDetachedTestRunRequest({ root, files: ['feature.test.ts'],
+  const request = await buildDetachedTestRunRequest({ root, files: ['feature.test.ts'],
     timeoutMs: 60_000, deadline, background: true });
   const sink = dirname(request.detachedReportArtifacts![0]!.reportPath);
   roots.push(sink);

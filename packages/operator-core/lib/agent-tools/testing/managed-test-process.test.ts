@@ -280,7 +280,7 @@ it('keeps the detached core in its serving checkout while preserving an external
   const root = await mkdtemp(join(tmpdir(), 'papercusp-external-background-'));
   directories.push(root);
   const file = 'dirty.integration.test.ts';
-  const request = buildDetachedTestRunRequest({ root, files: [file], background: true,
+  const request = await buildDetachedTestRunRequest({ root, files: [file], background: true,
     deadline: testRunDeadline(60_000), workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' });
   for (const report of request.detachedReportArtifacts ?? []) directories.push(dirname(report.reportPath));
   // The worker imports cwd-based platform helpers before it spawns the test.

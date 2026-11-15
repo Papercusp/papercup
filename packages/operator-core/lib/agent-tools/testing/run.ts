@@ -72,17 +72,14 @@ import {
   appendFileSync,
   closeSync,
   existsSync,
-  fstatSync,
-  mkdtempSync,
   openSync,
   readFileSync,
   readdirSync,
   realpathSync,
   statSync,
-  writeFileSync,
   type Dirent,
 } from 'node:fs';
-import { cp, open, readdir, readFile } from 'node:fs/promises';
+import { cp, mkdtemp, open, readdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -553,7 +550,7 @@ export function compiledTestingCoreNodeOptions(options: string): string {
 }
 
 /** The producing parent supplies an independent expectation, never a boot-time tree hash. */
-function selectDetachedTestingCore(staged?: { moduleUrl: string; expected: unknown }): DetachedTestingCore {
+async function retainDetachedTestingCore(staged?: { moduleUrl: string; expected: unknown }): Promise<DetachedTestingCore> {
   const bundled = typeof __PAPERCUSP_BUNDLED_SIDECAR__ !== 'undefined' && __PAPERCUSP_BUNDLED_SIDECAR__;
   if (!bundled && !staged) return {
     moduleUrl: pathToFileURL(join(REPO_ROOT, 'packages/operator-core/lib/agent-tools/testing/run.ts')).href,
@@ -576,22 +573,36 @@ function selectDetachedTestingCore(staged?: { moduleUrl: string; expected: unkno
   const nodeOptions = compiledTestingCoreNodeOptions(process.env.NODE_OPTIONS ?? '');
   const moduleUrl = staged?.moduleUrl ?? new URL('./testing-core.worker.mjs', import.meta.url).href;
   let bytes: Buffer;
+  const digest = createHash('sha256');
   try {
-    const fd = openSync(fileURLToPath(moduleUrl), 'r');
+    const handle = await open(fileURLToPath(moduleUrl), 'r');
     try {
-      const before = fstatSync(fd, { bigint: true });
-      bytes = readFileSync(fd);
-      const after = fstatSync(fd, { bigint: true });
-      if (!before.isFile() || ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].some(key =>
+      const before = await handle.stat({ bigint: true });
+      if (!before.isFile() || !Number.isSafeInteger(Number(before.size))) {
+        throw new TestingCoreRefusal('testing_core_artifact_mismatch', 'The testing core is not a retainable regular file.');
+      }
+      bytes = Buffer.allocUnsafe(Number(before.size));
+      // Bound one read/hash turn, never the artifact. Retain the complete source
+      // on the same descriptor so a path swap cannot change what we evaluate.
+      for (let offset = 0; offset < bytes.length;) {
+        const { bytesRead } = await handle.read(bytes, offset, Math.min(4 * 1024 * 1024, bytes.length - offset), offset);
+        if (bytesRead === 0) {
+          throw new TestingCoreRefusal('testing_core_artifact_mismatch', 'The testing core ended before all expected bytes were retained.');
+        }
+        digest.update(bytes.subarray(offset, offset + bytesRead));
+        offset += bytesRead;
+      }
+      const after = await handle.stat({ bigint: true });
+      if (['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].some(key =>
         before[key as keyof typeof before] !== after[key as keyof typeof after])) {
         throw new TestingCoreRefusal('testing_core_artifact_mismatch', 'The testing core changed while being retained.');
       }
-    } finally { closeSync(fd); }
+    } finally { await handle.close(); }
   } catch (error) {
     if (error instanceof TestingCoreRefusal) throw error;
     throw new TestingCoreRefusal('testing_core_missing_artifact', `Cannot retain the required testing core: ${String(error)}`);
   }
-  if (createHash('sha256').update(bytes).digest('hex') !== witness.artifactSha256) {
+  if (digest.digest('hex') !== witness.artifactSha256) {
     throw new TestingCoreRefusal('testing_core_artifact_mismatch', 'The required testing core differs from its producing host.');
   }
   return { moduleUrl, compiled: { witness: witness as TestingCoreWitness, bytes, nodeOptions } };
@@ -711,7 +722,7 @@ export function buildDetachedTestRunBootstrapScript(opts: {
  * result surface, while the router remains the source of truth for owning
  * config discovery and zero-match refusal.
  */
-export function buildDetachedTestRunRequest(opts: {
+export async function buildDetachedTestRunRequest(opts: {
   root: string;
   files: string[];
   testNamePattern?: string;
@@ -740,14 +751,14 @@ export function buildDetachedTestRunRequest(opts: {
   compiledCore?: { moduleUrl: string; expected: unknown };
   /** Retained by the background handler before provenance, child or report effects. */
   selectedCore?: DetachedTestingCore;
-}): SpawnRequest {
+}): Promise<SpawnRequest> {
   if (opts.deadline) {
-    const core = opts.selectedCore ?? selectDetachedTestingCore(opts.compiledCore);
+    const core = opts.selectedCore ?? await retainDetachedTestingCore(opts.compiledCore);
     // Re-enter the maintained core, rather than the bare router: only the core
     // enforces the absolute child cutoff and owns cleanup after confirmed exit.
     // The store still owns the detached lifecycle and run-group/ledger identity.
-    const reportArtifacts = (opts.groups ?? [{ root: opts.root, files: opts.files }]).map(group => {
-      const directory = mkdtempSync(join(ensurePapercuspTmpdir() ?? tmpdir(), 'testing-run-replay-'));
+    const reportArtifacts = await Promise.all((opts.groups ?? [{ root: opts.root, files: opts.files }]).map(async group => {
+      const directory = await mkdtemp(join(ensurePapercuspTmpdir() ?? tmpdir(), 'testing-run-replay-'));
       return {
         reportPath: join(directory, 'report.json'),
         failureDetailsPath: join(directory, TEST_FAILURE_DETAILS_FILENAME),
@@ -758,14 +769,14 @@ export function buildDetachedTestRunRequest(opts: {
         ...(opts.harnessSlug && opts.harnessSlug !== '*' && opts.workspaceId && opts.workspaceId !== '*'
           ? { scope: { harnessSlug: opts.harnessSlug, workspaceId: opts.workspaceId } } : {}),
       };
-    });
+    }));
     const reportDirectories = Object.fromEntries(reportArtifacts.map(artifact => [resolve(artifact.root), dirname(artifact.reportPath)]));
     let coreModuleUrl = core.moduleUrl;
     let compiledCore: { witness: TestingCoreWitness; guardKey: string } | undefined;
     let nodeOptions: string | undefined;
     if (core.compiled) {
       const transferPath = join(dirname(reportArtifacts[0]!.reportPath), 'testing-core.retained.mjs');
-      writeFileSync(transferPath, core.compiled.bytes, { flag: 'wx', mode: 0o600 });
+      await writeFile(transferPath, core.compiled.bytes, { flag: 'wx', mode: 0o600 });
       const guardKey = 'papercusp.testing-core.' + randomUUID();
       const url = new URL(core.moduleUrl);
       url.searchParams.set('papercusp-testing-core', randomUUID());
@@ -909,7 +920,7 @@ export function buildDetachedTestRunRequest(opts: {
  * status becomes the whole operation's terminal status. Every command is
  * attempted even when an earlier checkout exits non-zero.
  */
-export function buildDetachedMixedTestRunRequest(opts: {
+export async function buildDetachedMixedTestRunRequest(opts: {
   groups: TestFileCheckoutGroup[];
   testNamePattern?: string;
   workspaceId?: string;
@@ -923,7 +934,7 @@ export function buildDetachedMixedTestRunRequest(opts: {
   workItemId?: string;
   /** The foreground testing:run ID whose timeout created this detached recovery. */
   originRunId?: string;
-}): SpawnRequest {
+}): Promise<SpawnRequest> {
   if (opts.deadline) return buildDetachedTestRunRequest({
     ...opts,
     groups: opts.groups,
@@ -4261,7 +4272,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
           };
         }
         const detachedStart = await startRunDurable(
-          buildDetachedMixedTestRunRequest({
+          await buildDetachedMixedTestRunRequest({
             groups,
             originRunId: runId,
             ...(opts.testNamePattern !== undefined ? { testNamePattern: opts.testNamePattern } : {}),
@@ -4655,7 +4666,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
       const detachedStart =
         detachedEnabled
           ? await startRunDurable(
-              buildDetachedTestRunRequest({
+              await buildDetachedTestRunRequest({
                 root,
                 files: pathResolution.files,
                 originRunId: runId,
@@ -5356,7 +5367,7 @@ export default defineTool({
       }
       const detectedDeadlineRefusal = deadlineRefusal();
       if (detectedDeadlineRefusal) return detectedDeadlineRefusal;
-      try { selectedCore = selectDetachedTestingCore(); }
+      try { selectedCore = await retainDetachedTestingCore(); }
       catch (error) {
         if (error instanceof TestingCoreRefusal) return { data: { ok: false, error: error.code, message: error.message } };
         throw error;
@@ -5510,7 +5521,7 @@ export default defineTool({
         error: selected.reason ? 'managed_app_path_unresolved' : 'ambiguous_workspace_path' } };
       const groups = groupTestFilesByCheckout(selected.files, rootSelection.root);
       const handoffStartedAt = performance.now();
-      const start = await startRunDurable(buildDetachedTestRunRequest({
+      const start = await startRunDurable(await buildDetachedTestRunRequest({
         root: rootSelection.root, files: selected.files, groups, deadline: deadline!, originRunId: runId,
         background: true, timeoutMs: requestedTimeoutMs ?? DEFAULT_TIMEOUT_MS,
         selectedCore,

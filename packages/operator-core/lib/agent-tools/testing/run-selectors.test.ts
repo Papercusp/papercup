@@ -172,15 +172,15 @@ describe('testing:run selector arbitration', () => {
     expect(testEvidenceRecoveryRunId(originRunId, { error: undefined, detachedRunId })).toBe(originRunId);
   });
 
-  it('retains exact ledger file identities in every detached request before the runner starts', () => {
+  it('retains exact ledger file identities in every detached request before the runner starts', async () => {
     // A zero-exit child and matching ledger cannot recover a verified PASS when
     // the durable request lost its requested-file population (EI-28022013442930187).
     const expected = ['apps/operator/bin/host-handler-http.test.ts', 'packages/operator-core/lib/testing-run-store.test.ts'];
     const files = [join(REPO_ROOT, expected[0]!), `./${expected[1]}`];
-    const single = buildDetachedTestRunRequest({ root: REPO_ROOT, files, timeoutMs: 90_000 });
-    const focused = buildDetachedTestRunRequest({ root: REPO_ROOT, files,
+    const single = await buildDetachedTestRunRequest({ root: REPO_ROOT, files, timeoutMs: 90_000 });
+    const focused = await buildDetachedTestRunRequest({ root: REPO_ROOT, files,
       testNamePattern: 'focused proof', timeoutMs: 90_000 });
-    const mixed = buildDetachedMixedTestRunRequest({ groups: [
+    const mixed = await buildDetachedMixedTestRunRequest({ groups: [
       { root: REPO_ROOT, files: [files[0]!] },
       { root: REPO_ROOT, files: [files[1]!] },
     ], timeoutMs: 90_000 });
@@ -204,7 +204,7 @@ describe('testing:run selector arbitration', () => {
       { root: submoduleRoot, files: ['src/dispatch-stack.test.ts'] },
     ];
     const now = Date.now();
-    const request = buildDetachedMixedTestRunRequest({
+    const request = await buildDetachedMixedTestRunRequest({
       groups,
       harnessSlug: 'papercusp',
       workspaceId: 'papercusp-workspace',
@@ -225,21 +225,21 @@ describe('testing:run selector arbitration', () => {
     }
   });
 
-  it('keeps detached timeout recovery locally adoptable and preserves its explicit harness scope', () => {
+  it('keeps detached timeout recovery locally adoptable and preserves its explicit harness scope', async () => {
     const files = ['agent-credentials.test.ts'];
-    const single = buildDetachedTestRunRequest({
+    const single = await buildDetachedTestRunRequest({
       root: REPO_ROOT,
       files,
       harnessSlug: 'papercusp',
       workspaceId: 'papercusp-workspace',
       timeoutMs: 90_000,
     });
-    const unscoped = buildDetachedTestRunRequest({
+    const unscoped = await buildDetachedTestRunRequest({
       root: REPO_ROOT,
       files,
       timeoutMs: 90_000,
     });
-    const focused = buildDetachedTestRunRequest({
+    const focused = await buildDetachedTestRunRequest({
       root: REPO_ROOT,
       files,
       testNamePattern: 'focused proof',
@@ -247,7 +247,7 @@ describe('testing:run selector arbitration', () => {
       workspaceId: 'papercusp-workspace',
       timeoutMs: 90_000,
     });
-    const mixed = buildDetachedMixedTestRunRequest({
+    const mixed = await buildDetachedMixedTestRunRequest({
       groups: [{ root: REPO_ROOT, files }],
       harnessSlug: 'papercusp',
       workspaceId: 'papercusp-workspace',
@@ -292,12 +292,12 @@ describe('testing:run selector arbitration', () => {
     ]);
   });
 
-  it('keeps throwaway PG and the durable test-ledger sink in detached recovery', () => {
+  it('keeps throwaway PG and the durable test-ledger sink in detached recovery', async () => {
     const previousSink = process.env.PAPERCUSP_TEST_RUNS_DB_URL;
     const ledgerSink = 'postgresql://127.0.0.1/detached-private-ledger';
     try {
       process.env.PAPERCUSP_TEST_RUNS_DB_URL = ledgerSink;
-      const request = buildDetachedTestRunRequest({
+      const request = await buildDetachedTestRunRequest({
         root: REPO_ROOT,
         files: ['packages/operator-core/lib/omp-managed-tools.native.integration.test.ts'],
         timeoutMs: 900_000,
@@ -329,14 +329,14 @@ describe('testing:run selector arbitration', () => {
       const now = Date.now();
       const scoped = { root: REPO_ROOT, files: ['agent-credentials.test.ts'],
         harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' };
-      const callerBound = buildDetachedTestRunRequest({ ...scoped, deadline: {
+      const callerBound = await buildDetachedTestRunRequest({ ...scoped, deadline: {
         startedAtMs: now, taskDeadlineAtMs: now + 60_000,
         childCutoffAtMs: now + 55_000, cleanupReserveMs: 5_000,
       } });
       artifactDirs.push(...(callerBound.detachedReportArtifacts ?? []).map(artifact => dirname(artifact.reportPath)));
       const requests = [
-        buildDetachedTestRunRequest(scoped),
-        buildDetachedMixedTestRunRequest({ groups: [{ root: REPO_ROOT, files: scoped.files }],
+        await buildDetachedTestRunRequest(scoped),
+        await buildDetachedMixedTestRunRequest({ groups: [{ root: REPO_ROOT, files: scoped.files }],
           harnessSlug: scoped.harnessSlug, workspaceId: scoped.workspaceId }),
         callerBound,
       ];
@@ -352,8 +352,8 @@ describe('testing:run selector arbitration', () => {
     }
   });
 
-  it('retains a JSON recovery report beside the admin reporter for ordinary multi-file runs', () => {
-    const request = buildDetachedTestRunRequest({
+  it('retains a JSON recovery report beside the admin reporter for ordinary multi-file runs', async () => {
+    const request = await buildDetachedTestRunRequest({
       root: REPO_ROOT,
       files: ['packages/operator-core/lib/testing-run-store.test.ts', 'apps/operator/lib/verify-tauri-headless-env.test.ts'],
       harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace',
