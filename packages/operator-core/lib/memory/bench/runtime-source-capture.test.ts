@@ -65,7 +65,7 @@ describe('worker detach protocol evidence', () => {
         },
       };
       const originalOnce = process.once.bind(process);
-      const constructor = vi.spyOn(inspector, 'Session').mockImplementation(function () { return session; } as never);
+      const constructor = vi.spyOn(inspector, 'Session').mockImplementation(function () { return session; } as unknown as typeof inspector.Session);
       const once = vi.spyOn(process, 'once').mockImplementation(((event: string, listener: (...args: any[]) => void) => {
         if (event === 'exit') { finish = listener; return process; }
         return originalOnce(event, listener);
@@ -119,7 +119,7 @@ describe('worker detach protocol evidence', () => {
       // Drive the recorder's actual protocol handler, not a manufactured receipt.
       // Capture only its own exit hook; never emit process.exit in the test runner.
       const originalOnce = process.once.bind(process);
-      const constructor = vi.spyOn(inspector, 'Session').mockImplementation(function () { return session; } as never);
+      const constructor = vi.spyOn(inspector, 'Session').mockImplementation(function () { return session; } as unknown as typeof inspector.Session);
       const once = vi.spyOn(process, 'once').mockImplementation(((event: string, listener: (...args: any[]) => void) => {
         if (event === 'exit') { finish = listener; return process; }
         return originalOnce(event, listener);

@@ -86,7 +86,7 @@ function deferClientConnect(immediates: Array<() => void>): void {
   vi.spyOn(globalThis, 'setImmediate').mockImplementation(((_callback: (...args: unknown[]) => void, ...args: unknown[]) => {
     immediates.push(() => _callback(...args));
     return {} as NodeJS.Immediate;
-  }) as never);
+  }) as typeof setImmediate);
 }
 
 let server: net.Server;
