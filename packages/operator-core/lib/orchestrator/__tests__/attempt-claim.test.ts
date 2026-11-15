@@ -12,7 +12,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { attemptClaimWithAudit } from '../attempt-claim';
 import { ClaimValidationError, type ClaimOwnLog } from '../feature-claim';
-import type { PeerLogOp } from '../../sync/hyperbee/peer-log';
+import type { HeldOwnLogAppender, PeerLogOp } from '../../sync/hyperbee/peer-log';
 
 const recordCalls: Array<Record<string, unknown>> = [];
 
@@ -43,6 +43,22 @@ class FakeOwnLog implements ClaimOwnLog {
   async append(op: PeerLogOp): Promise<void> {
     this.ops.push(op);
   }
+  // claimFeature allocates the seq and appends under the append hold, through the held appender.
+  async withAppendsHeld<T>(fn: (log: HeldOwnLogAppender) => Promise<T>): Promise<T> {
+    return fn({ appendBatch: async ops => { this.ops.push(...ops); } });
+  }
+}
+
+/** An own log whose held append fails — the claim's own write throws, not validation. */
+function brokenOwnLog(message: string): ClaimOwnLog {
+  return {
+    keyHex: 'aa'.repeat(32),
+    get length() { return 0; },
+    async append() { throw new Error(`unexpected unheld append: ${message}`); },
+    async withAppendsHeld<T>(fn: (log: HeldOwnLogAppender) => Promise<T>): Promise<T> {
+      return fn({ appendBatch: async () => { throw new Error(message); } });
+    },
+  };
 }
 
 describe('attemptClaimWithAudit', () => {
@@ -93,11 +109,7 @@ describe('attemptClaimWithAudit', () => {
   });
 
   it('non-validation claim throw audits as error before re-throwing', async () => {
-    const broken: ClaimOwnLog = {
-      keyHex: 'aa'.repeat(32),
-      get length() { return 0; },
-      async append() { throw new Error('own-log append failed'); },
-    };
+    const broken = brokenOwnLog('own-log append failed');
     await expect(
       attemptClaimWithAudit(broken, {
         workspaceId: 'w', harnessSlug: 'sheets', feature_id: 'F-1',
@@ -115,11 +127,7 @@ describe('attemptClaimWithAudit', () => {
   it('non-validation throw with audit ALSO failing: re-throws the original claim error', async () => {
     const audit = await import('../claim-audit');
     vi.mocked(audit.recordClaimAttempt).mockRejectedValueOnce(new Error('PG down too'));
-    const broken: ClaimOwnLog = {
-      keyHex: 'aa'.repeat(32),
-      get length() { return 0; },
-      async append() { throw new Error('original claim error'); },
-    };
+    const broken = brokenOwnLog('original claim error');
     await expect(
       attemptClaimWithAudit(broken, {
         workspaceId: 'w', harnessSlug: 'sheets', feature_id: 'F-1',
@@ -130,11 +138,7 @@ describe('attemptClaimWithAudit', () => {
 
   it('long error message truncated to 500 chars in audit detail', async () => {
     const longMsg = 'x'.repeat(2000);
-    const broken: ClaimOwnLog = {
-      keyHex: 'aa'.repeat(32),
-      get length() { return 0; },
-      async append() { throw new Error(longMsg); },
-    };
+    const broken = brokenOwnLog(longMsg);
     await expect(
       attemptClaimWithAudit(broken, {
         workspaceId: 'w', harnessSlug: 'sheets', feature_id: 'F-1',
