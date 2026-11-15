@@ -43,6 +43,8 @@ export interface RuntimeExecutableMemoryObservation {
   samples: {codeIndex: string; address: string; bytes: Buffer}[];
 }
 export function observeRuntimeProcessIdentity(processId: number): RuntimeObservedProcessIdentity;
+/** Liveness of a previously pinned identity; accepts daemonized tracers. */
+export function isRuntimeProcessAlive(identity: RuntimeObservedProcessIdentity): boolean;
 export function observeRuntimeTracerIdentity(identity: RuntimeObservedProcessIdentity,
   expectedExecutable: string): RuntimeObservedProcessIdentity;
 export function observeRuntimeExecutableMemory(identity: RuntimeObservedProcessIdentity,

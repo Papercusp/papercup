@@ -1928,7 +1928,7 @@ export function gatewayPinEnv(account: string, provider?: string, ownerId?: stri
  * account. So never emit '' / null / `default` on a path whose intent is "the machine's own login":
  * emit `system`. (That is why the picker's default row carries `system`.)
  */
-export function accountRoutingMode(value: any): "default" | "auto" | "pin";
+export function accountRoutingMode(value: any): "pin" | "default" | "auto";
 /**
  * Return whether raw Codex auth.json content contains a usable ChatGPT access
  * token. Pure and secret-free: this only parses the shape needed by the Codex
@@ -2630,7 +2630,7 @@ export function preflightWindowGuard({ personaBytes, contextSize, model, agent, 
     agent?: string | undefined;
     budget?: null | undefined;
 }): {
-    level: "ok" | "refuse" | "warn";
+    level: "warn" | "ok" | "refuse";
     pct: number;
     estTokens: number;
     window: number;
@@ -2682,7 +2682,7 @@ export function runLaunchPreflight({ promptFile, contextSize, model, agent, budg
     budget?: null | undefined;
     force: any;
 }): {
-    level: "ok" | "refuse" | "warn";
+    level: "warn" | "ok" | "refuse";
     pct: number;
     estTokens: number;
     window: number;
@@ -4592,12 +4592,22 @@ export function isCodexHomeLaunchReady(codexHome: string | null | undefined, exp
  * say "not ready" and the failing condition was unknowable once the home was
  * gone (WI-10006770). Each returned reason names exactly one check.
  *
+ * `authorityOnly` skips the hook-COMPLETENESS checks (lifecycle, owner
+ * provenance, turn journal) and keeps every structural and AUTHORITY check
+ * (prompt, config, restricted role MCP profile, owner in config, diagnostics
+ * and hooks). Completeness tracks the launcher's own revision, so an operator
+ * running an older build writes homes that predate it (EI-27691317094132381).
+ * A fresh role launch warns on those instead of refusing; resume stays strict.
+ *
  * @param {string | null | undefined} codexHome
  * @param {string | null} [expectedOwner]
  * @param {string | null} [recordedRole]
+ * @param {{ authorityOnly?: boolean }} [options]
  * @returns {string | null}
  */
-export function codexHomeLaunchReadiness(codexHome: string | null | undefined, expectedOwner?: string | null, recordedRole?: string | null): string | null;
+export function codexHomeLaunchReadiness(codexHome: string | null | undefined, expectedOwner?: string | null, recordedRole?: string | null, { authorityOnly }?: {
+    authorityOnly?: boolean;
+}): string | null;
 /**
  * Codex's MCP server URL is stored in CODEX_HOME/config.toml, while a fork
  * deliberately has a fresh PAPERCUSP_SID and reuses the source CODEX_HOME to
