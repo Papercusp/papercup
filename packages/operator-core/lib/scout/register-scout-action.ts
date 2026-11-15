@@ -252,7 +252,7 @@ async function withArchiveResolveTimeout<T>(promise: Promise<T>, timeoutMs: numb
  * creator + the per-cycle archive, runs one budgeted cycle, then flushes any
  * buffered scout seeds to the archive (P-012).
  */
-export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, workspaceId, budget, cycleId, scoutConfig, revisionRequests, signal, deadlineMs, onPhase, admitLlmCall, deferDispatch }) => {
+export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, workspaceId, budget, cycleId, scoutConfig, revisionRequests, signal, deadlineMs, onPhase, admitLlmCall, deferDispatch, skipCorpusRead }) => {
   if (deferDispatch && revisionRequests?.length)
     throw new Error('Deferred-dispatch evaluation cannot mutate existing drafts through revision requests');
   onPhase?.('runner-bootstrap');
@@ -483,7 +483,7 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
   });
   try {
     onPhase?.('run-cycle');
-    const result = await runScoutCycle(deps);
+    const result = await runScoutCycle({ ...deps, ...(skipCorpusRead ? { skipCorpusRead: true } : {}) });
     // EI-13119: attach the ideate leg's per-slot outcomes so the scheduler persists
     // them on the 'ran' tick detail (a no-ideas streak becomes ledger-diagnosable).
     return {

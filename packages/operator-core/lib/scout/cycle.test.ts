@@ -326,6 +326,27 @@ describe('runScoutCycle — early exits', () => {
     expect(r.provenance.length).toBeGreaterThan(0);
   });
 
+  it('generation preflight skips the corpus read and returns an empty zero-cost digest', async () => {
+    const { deps } = makeDeps({ limits: { maxCostUsd: 0 } });
+    const readCorpus = vi.fn(deps.readCorpus);
+    deps.readCorpus = readCorpus;
+    deps.skipCorpusRead = true;
+
+    const r = await runScoutCycle(deps);
+
+    expect(readCorpus).not.toHaveBeenCalled();
+    expect(r.digest).toEqual({
+      recurringFriction: [],
+      timeTokenSinks: [],
+      chronicDeferrals: [],
+      capabilityGaps: [],
+    });
+    expect(r.stop).toBe('budget-exhausted');
+    expect(r.calls).toHaveLength(0);
+    expect(r.costUsd).toBe(0);
+    expect(r.overBudget).toBe(false);
+  });
+
   it('a zero cap still refuses to spend at all — budget-exhausted, $0, overBudget false (EI-305)', async () => {
     // The read-only digest (including observation consumption stamps) still runs;
     // a 0 cap halts before the first costed step, so overBudget remains false.

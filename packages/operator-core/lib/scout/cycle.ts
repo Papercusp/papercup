@@ -150,6 +150,8 @@ export interface ScoutCycleDeps extends ScoutCyclePorts {
    * Absent ⇒ no bound imposed (host default), i.e. pre-WI-4475 behavior.
    */
   deadlineMs?: number;
+  /** Generation preflight already refused paid work, so skip the potentially slow corpus read. */
+  skipCorpusRead?: boolean;
 }
 
 /**
@@ -378,13 +380,18 @@ export async function runScoutCycle(deps: ScoutCycleDeps): Promise<ScoutCycleRes
 
   // 1. Corpus synthesis (P-003) — the grounded substrate. No LLM cost attributed
   //    to the cycle (the digest reader owns its own budget upstream).
-  markPhase('read-corpus');
-  const digest = await deps.readCorpus();
+  let digest: CorpusDigest;
+  if (deps.skipCorpusRead) {
+    digest = { recurringFriction: [], timeTokenSinks: [], chronicDeferrals: [], capabilityGaps: [] };
+  } else {
+    markPhase('read-corpus');
+    digest = await deps.readCorpus();
+  }
 
   // EI-305: a zero cap means NO spend — halt before the first costed step.
   // (The between-steps gate below uses strict `spent > cap`, which a
   // 0-spent/0-cap start would pass.)
-  if (deps.limits?.maxCostUsd != null && deps.limits.maxCostUsd <= 0) {
+  if (deps.skipCorpusRead || (deps.limits?.maxCostUsd != null && deps.limits.maxCostUsd <= 0)) {
     return finish('budget-exhausted', { digest });
   }
 

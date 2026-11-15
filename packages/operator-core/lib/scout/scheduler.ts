@@ -198,6 +198,8 @@ export interface ScoutFireGate {
 export interface ScoutTickDeps {
   /** Read live cadence signals (idle ratio, friction count, last-run epoch ms). */
   readCadenceState: () => Promise<ScoutCadenceState>;
+  /** Skip corpus synthesis when generation preflight has already refused paid work. */
+  skipCorpusRead?: boolean;
   /** Run one Scout cycle under the resolved budget (cb4b9's runScoutCycle, adapted).
    *  When `revisionRequests` is present (the cycle-start coord:inbox read found
    *  plan-keyed reviewer feedback) the runner targets a REVISION of those draft
@@ -205,6 +207,7 @@ export interface ScoutTickDeps {
   runCycle: (ctx: {
     budget: Required<ScoutBudget>;
     cycleId: string;
+    skipCorpusRead?: boolean;
     revisionRequests?: ScoutRevisionRequest[];
     signal?: AbortSignal;
     /** WI-4475 — absolute epoch-ms deadline this cycle will be killed at, so the runner can
@@ -486,6 +489,7 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
         deps.runCycle({
           budget,
           cycleId,
+          ...(deps.skipCorpusRead ? { skipCorpusRead: true } : {}),
           ...(revisionRequests.length > 0 ? { revisionRequests } : {}),
           signal,
           deadlineMs,

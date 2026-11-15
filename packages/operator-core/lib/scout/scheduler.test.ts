@@ -85,6 +85,16 @@ describe('runScoutTick (P-008)', () => {
     expect(gated.calls.ticks[0]).toMatchObject({ status: 'gated', detail: { budgetProvenance: { supplied: budget } } });
     expect(gated.calls.ranBudget).toBeUndefined();
   });
+  it('forwards the generation-preflight corpus-skip signal to the cycle runner', async () => {
+    const runCycle = vi.fn(async () => fakeCycle());
+    const { deps } = makeDeps({ runCycle });
+    deps.skipCorpusRead = true;
+
+    await runScoutTick(deps);
+
+    expect(runCycle).toHaveBeenCalledWith(expect.objectContaining({ skipCorpusRead: true }));
+  });
+
   it('withholds when the cadence gate says no-fire (no cycle, no fire-record)', async () => {
     const { deps, calls } = makeDeps({ state: { idleRatio: 0, frictionSignals: 0, lastRunAtMs: NOW - 60_000 } });
     const r = await runScoutTick(deps, { cadence: { minIntervalSec: 3600 } });

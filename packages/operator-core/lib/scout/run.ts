@@ -61,6 +61,7 @@ export type ScoutCycleRunner = (ctx: {
   workspaceId: string;
   budget: Required<ScoutBudget>;
   cycleId: string;
+  skipCorpusRead?: boolean;
   /** Per-blueprint Scout tuning resolved from the blueprint `scout` block (P-009,
    *  domain-generic-hive-architecture-2026-06-18). Omitted ⇒ the runner uses
    *  DEFAULT_SCOUT_CONFIG (behavior-neutral). */
@@ -143,12 +144,13 @@ export const productionDepsBuilder: ScoutTickDepsBuilder = (input, runCycle) => 
       models: { ...scoutConfig.models },
       lensRoster: [...scoutConfig.lenses],
     },
-    runCycle: ({ budget, cycleId, revisionRequests, signal, deadlineMs, onPhase }) =>
+    runCycle: ({ budget, cycleId, revisionRequests, signal, deadlineMs, onPhase, skipCorpusRead }) =>
       runCycle({
         harnessSlug: input.installSlug,
         workspaceId: input.workspaceId,
         budget,
         cycleId,
+        ...(skipCorpusRead ? { skipCorpusRead: true } : {}),
         scoutConfig,
         ...(revisionRequests ? { revisionRequests } : {}),
         ...(signal ? { signal } : {}),
@@ -465,34 +467,37 @@ export async function runScoutCycleTick(input: ScoutCycleInput, deps: ScoutCycle
   }
 
   const preflightDetail = preflight.skip ? preflight.detail : undefined;
-  const governedTickDeps = tickDeps.recordTick
-    ? {
-        ...tickDeps,
-        recordTick: (record: ScoutTickRecord) => {
-          const generationSkippedCycle = Boolean(preflightDetail) && record.status === 'ran';
-          return tickDeps.recordTick!({
-            ...record,
-            ...(generationSkippedCycle ? { status: 'gated' as const, gate: GENERATION_PREFLIGHT_GATE } : {}),
-            detail: {
-              ...(record.detail ?? {}),
-              ...(admissionPressure ? { admissionThrottle: admissionPressure } : {}),
-              ...(generationSkippedCycle && preflightDetail
-                ? {
-                    ...preflightDetail,
-                    paidGenerationSkipped: true,
-                    readOnlyCycleRan: true,
-                    budgetProvenance: {
-                      schemaVersion: 1,
-                      supplied: cfg.budget ?? null,
-                      resolved: resolveScoutBudget(governedBudget),
-                    },
-                  }
-                : {}),
-            },
-          });
-        },
-      }
-    : tickDeps;
+  const governedTickDeps = {
+    ...tickDeps,
+    ...(preflight.skip ? { skipCorpusRead: true } : {}),
+    ...(tickDeps.recordTick
+      ? {
+          recordTick: (record: ScoutTickRecord) => {
+            const generationSkippedCycle = Boolean(preflightDetail) && record.status === 'ran';
+            return tickDeps.recordTick!({
+              ...record,
+              ...(generationSkippedCycle ? { status: 'gated' as const, gate: GENERATION_PREFLIGHT_GATE } : {}),
+              detail: {
+                ...(record.detail ?? {}),
+                ...(admissionPressure ? { admissionThrottle: admissionPressure } : {}),
+                ...(generationSkippedCycle && preflightDetail
+                  ? {
+                      ...preflightDetail,
+                      paidGenerationSkipped: true,
+                      readOnlyCycleRan: true,
+                      budgetProvenance: {
+                        schemaVersion: 1,
+                        supplied: cfg.budget ?? null,
+                        resolved: resolveScoutBudget(governedBudget),
+                      },
+                    }
+                  : {}),
+              },
+            });
+          },
+        }
+      : {}),
+  };
 
   const result = await runScoutTick(governedTickDeps, {
     ...(cfg.cadence ? { cadence: cfg.cadence } : {}),

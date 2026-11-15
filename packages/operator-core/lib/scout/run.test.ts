@@ -289,6 +289,7 @@ describe('runScoutCycleTick — gates + governor mirror', () => {
     expect(res).toMatchObject({ fired: true, reason: 'generation-preflight', cycleId: 'c-preflight', costUsd: 0 });
     expect(sched.runScoutTick).toHaveBeenCalledTimes(1);
     expect(sched.runScoutTick.mock.calls[0]?.[1]?.budget).toMatchObject({ maxCostUsd: 0, maxIdeators: 1 });
+    expect(sched.runScoutTick.mock.calls[0]?.[0]?.skipCorpusRead).toBe(true);
     expect(recordGovernor.mock.calls[0][0]).toMatchObject({ fired: null });
     expect(recordTick).toHaveBeenCalledWith(expect.objectContaining({
       status: 'gated',
