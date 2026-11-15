@@ -401,6 +401,9 @@ export default defineTool({
             claimant: ownerId,
             specId: `plans-start-${slug}`,
             planItems: read ? (read.row.items.length ? planItemsForRow(read.row) : read.parsed.items) : undefined,
+            // EI-28724198520380406: promotion reuses migration-1601 parked nodes;
+            // start lifts those parks right after promotion instead of refusing.
+            migrationParks: 'lift-at-promotion',
           });
           if (!laneHealthPreflight || laneHealthPreflight.effective.claimable == null) {
             const message = laneHealthPreflight
@@ -880,6 +883,34 @@ export default defineTool({
           promotionError = (error as Error).message;
         }
 
+        // EI-28724198520380406: promotion REUSES a migration-1601 parked node for a
+        // plan line, and a parked node is not coverage, so every plan with such a
+        // node deadlocked on promotion-lag. Lift exactly the started plan's
+        // actionable-line parks through the audited durable-park reconcile. Any row
+        // that does not settle is reported; the authoritative admission check below
+        // then refuses on it (no silent partial start).
+        let migrationParkLift: Awaited<ReturnType<
+          typeof import('./plan-admission-preflight').liftMigrationParkedCoverage
+        >> | null = null;
+        let migrationParkLiftError: string | null = null;
+        if (promotion && !promotionError && read) {
+          try {
+            const [{ liftMigrationParkedCoverage }, { resolveAgentIdentity }] = await Promise.all([
+              import('./plan-admission-preflight'),
+              import('../coordination/identity'),
+            ]);
+            migrationParkLift = await liftMigrationParkedCoverage({
+              workspaceId: startWorkspaceId,
+              harnessSlug,
+              planSlug: slug,
+              planItems: read.row.items.length ? planItemsForRow(read.row) : read.parsed.items,
+              actor: resolveAgentIdentity(ctx).ownerId,
+            });
+          } catch (error) {
+            migrationParkLiftError = error instanceof Error ? error.message : String(error);
+          }
+        }
+
         // EI-21594810094177772: plans:start promotes plan items into work-items,
         // but previously left the source plan without the generated `## Promoted`
         // block. That made a successful start lint-red until a separate
@@ -1060,6 +1091,8 @@ export default defineTool({
             ...(activationAudit ? { activationAudit } : {}),
             promotion,
             ...(promotionError ? { promotionError } : {}),
+            ...(migrationParkLift?.rows.length ? { migrationParkLift } : {}),
+            ...(migrationParkLiftError ? { migrationParkLiftError } : {}),
             ...(promotedBlock ? { promotedBlock } : {}),
             ...(promotedBlockError ? { promotedBlockError } : {}),
             admission,
@@ -1091,6 +1124,8 @@ export default defineTool({
             ...(activationAudit ? { activationAudit } : {}),
             promotion,
             ...(promotionError ? { promotionError } : {}),
+            ...(migrationParkLift?.rows.length ? { migrationParkLift } : {}),
+            ...(migrationParkLiftError ? { migrationParkLiftError } : {}),
             ...(promotedBlock ? { promotedBlock } : {}),
             ...(promotedBlockError ? { promotedBlockError } : {}),
             admission,
@@ -1119,7 +1154,9 @@ export default defineTool({
           return { ok: false as const, slug, harnessSlug, error: 'plan_start_authority_unavailable',
             message: `${promotionMessage}${promotedBlockMessage} Start authority was not issued: ${error instanceof Error ? error.message : String(error)}`,
             autoApproved, promotion, admission, claimSpecBinding, promotedBlock,
-            ...(promotionError ? { promotionError } : {}), ...(promotedBlockError ? { promotedBlockError } : {}),
+            ...(promotionError ? { promotionError } : {}),
+            ...(migrationParkLift?.rows.length ? { migrationParkLift } : {}),
+            ...(migrationParkLiftError ? { migrationParkLiftError } : {}), ...(promotedBlockError ? { promotedBlockError } : {}),
             executionStartIssued: false, earlierSideEffectsMayHaveCommitted: true };
         }
 
@@ -1142,6 +1179,8 @@ export default defineTool({
           admission,
           claimSpecBinding,
           ...(promotionError ? { promotionError } : {}),
+            ...(migrationParkLift?.rows.length ? { migrationParkLift } : {}),
+            ...(migrationParkLiftError ? { migrationParkLiftError } : {}),
           ...(promotedBlock ? { promotedBlock } : {}),
           ...(promotedBlockError ? { promotedBlockError } : {}),
           ...(specQuality ? { specQuality } : {}), ...(barCritique ? { barCritique } : {}),

@@ -45,6 +45,7 @@ import {
   buildExactPlanClaimSpec,
   deriveExactPlanClaimKinds,
   evaluateExactPlanAdmission,
+  liftMigrationParkedCoverage,
   preflightExactPlanLaneHealth,
   preflightExactPlanAdmission,
 } from './plan-admission-preflight';
@@ -1283,10 +1284,17 @@ describe('preflightExactPlanLaneHealth', () => {
     const before = structuredClone(parked);
     await expect(preflightExactPlanLaneHealth(startArgs)).rejects.toMatchObject({
       name: 'PlanPromotionParkError', rows: [{ planItemId: 'P-001', workItemId: 'WI-parked' }],
-      message: expect.stringContaining('P-008 / D-011'),
+      message: expect.stringContaining('plans:start lifts these migration parks'),
     });
     expect(parked).toEqual(before);
     expect(mocks.readClaimSpecLaneHealth).not.toHaveBeenCalled();
+  });
+
+  it('does not refuse parked-only coverage in plans:start lift-at-promotion mode', async () => {
+    mocks.listWorkItems.mockResolvedValue([parked]);
+    await expect(preflightExactPlanLaneHealth({ ...startArgs, migrationParks: 'lift-at-promotion' }))
+      .resolves.toMatchObject({ effective: { claimable: 0 } });
+    expect(mocks.readClaimSpecLaneHealth).toHaveBeenCalledOnce();
   });
 
   it.each(['first-start', 'execution-child', 'released-park', 'settled-park', 'blocked-item'])(
@@ -1308,6 +1316,74 @@ describe('preflightExactPlanLaneHealth', () => {
     mocks.listWorkItems.mockResolvedValue(Array(2000).fill(parked));
     await expect(preflightExactPlanLaneHealth(startArgs)).rejects.toThrow('source cap');
     expect(mocks.readClaimSpecLaneHealth).not.toHaveBeenCalled();
+  });
+
+  describe('liftMigrationParkedCoverage (EI-28724198520380406)', () => {
+  const parked = { id: 'WI-parked', family: 'feature', state: 'open', sourcePlanItemIds: ['P-001'],
+    payload: { _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes' } };
+  const liftArgs = { workspaceId: 'ws-1', harnessSlug: 'papercusp', planSlug: 'plan-a', actor: 'su-test',
+    planItems: [item('P-001')] };
+  function fakePark(outcome = 'cleared') {
+    return {
+      readDurableParkControlRow: vi.fn(async ({ id }: { id: string }) =>
+        ({ id, state: 'open', takenBy: null, payload: { _claimHold: true } })),
+      durableParkFingerprint: vi.fn((row: { payload: unknown }) => `fp:${JSON.stringify(row.payload)}`),
+      runWorkItemDurableParkReconciliation: vi.fn(async (opts: { decisions: Array<{ id: string }>; runId?: string }) => ({
+        runId: opts.runId, artifactPath: 'audit/x.json',
+        rows: opts.decisions.map(d => ({ id: d.id, outcome })),
+      })),
+    };
+  }
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('lifts the park on an actionable line through the reconcile with CAS fingerprint + evidence', async () => {
+    mocks.listWorkItems.mockReset().mockResolvedValue([parked]);
+    const park = fakePark();
+    const res = await liftMigrationParkedCoverage({ ...liftArgs, deps: { durablePark: park as never } });
+    expect(park.runWorkItemDurableParkReconciliation).toHaveBeenCalledOnce();
+    const call = park.runWorkItemDurableParkReconciliation.mock.calls[0]![0] as unknown as {
+      actor: string; runId: string; decisions: Array<Record<string, string>> };
+    expect(call.actor).toBe('su-test');
+    expect(call.runId).toMatch(/^work-item-durable-park-audit:plans-start:[0-9a-f]{32}$/);
+    expect(call.decisions).toEqual([{ id: 'WI-parked', expectedParkFingerprint: 'fp:{"_claimHold":true}',
+      reasonCode: 'condition-satisfied', evidence: expect.stringContaining('P-001') }]);
+    expect(res).toMatchObject({ rows: [{ workItemId: 'WI-parked', planItemIds: ['P-001'], outcome: 'cleared' }],
+      unsettled: [], artifactPath: 'audit/x.json' });
+  });
+
+  it('keeps blocked / non-actionable lines parked (no reconcile at all)', async () => {
+    mocks.listWorkItems.mockReset().mockResolvedValue([parked]);
+    const park = fakePark();
+    const res = await liftMigrationParkedCoverage({ ...liftArgs, planItems: [item('P-001', 'blocked')],
+      deps: { durablePark: park as never } });
+    expect(park.readDurableParkControlRow).not.toHaveBeenCalled();
+    expect(park.runWorkItemDurableParkReconciliation).not.toHaveBeenCalled();
+    expect(res).toEqual({ rows: [], unsettled: [], runId: null, artifactPath: null });
+  });
+
+  it('reports a park the reconcile did not clear as unsettled instead of claiming success', async () => {
+    mocks.listWorkItems.mockReset().mockResolvedValue([parked]);
+    const res = await liftMigrationParkedCoverage({ ...liftArgs, deps: { durablePark: fakePark('stale-fingerprint') as never } });
+    expect(res.unsettled).toEqual([{ workItemId: 'WI-parked', planItemIds: ['P-001'], outcome: 'stale-fingerprint' }]);
+  });
+
+  it('sends one decision per node even when the node covers several actionable lines', async () => {
+    mocks.listWorkItems.mockReset().mockResolvedValue([{ ...parked, sourcePlanItemIds: ['P-001', 'P-002'] }]);
+    const park = fakePark();
+    const res = await liftMigrationParkedCoverage({ ...liftArgs, planItems: [item('P-001'), item('P-002')],
+      deps: { durablePark: park as never } });
+    const call = park.runWorkItemDurableParkReconciliation.mock.calls[0]![0] as unknown as { decisions: unknown[] };
+    expect(call.decisions).toHaveLength(1);
+    expect(res.rows).toEqual([{ workItemId: 'WI-parked', planItemIds: ['P-001', 'P-002'], outcome: 'cleared' }]);
+  });
+
+  it('reports a node the control read cannot find as missing, without reconciling it', async () => {
+    mocks.listWorkItems.mockReset().mockResolvedValue([parked]);
+    const park = { ...fakePark(), readDurableParkControlRow: vi.fn(async () => null) };
+    const res = await liftMigrationParkedCoverage({ ...liftArgs, deps: { durablePark: park as never } });
+    expect(park.runWorkItemDurableParkReconciliation).not.toHaveBeenCalled();
+    expect(res.unsettled).toEqual([{ workItemId: 'WI-parked', planItemIds: ['P-001'], outcome: 'missing' }]);
+  });
   });
 
   it('reads the broad exact-plan lane without requiring promoted-row coverage', async () => {

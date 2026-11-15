@@ -1,4 +1,5 @@
 /** Shared exact-plan admission gate for plans:start and fleet:launch-on-plan. */
+import { createHash } from 'node:crypto';
 import { resolveEffectiveStatusForItems, type PlanItem } from '@papercusp/plan-parser';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, type ClaimSpec } from '../../scheduler/claim-spec';
 import type { ClaimSpecRecord } from '../../scheduler/claim-spec-store';
@@ -619,15 +620,134 @@ export interface ExactPlanLaneHealthPreflightArgs {
   claimKinds?: readonly string[];
   /** Start's already-read snapshot; check existing migration parks before writes. */
   planItems?: PlanItem[];
+  /**
+   * What to do with actionable lines whose only coverage is a migration-1601
+   * parked node. `refuse` (default) throws PlanPromotionParkError. `lift-at-promotion`
+   * is plans:start's mode: it promotes and then lifts exactly those parks through
+   * the durable-park reconcile (liftMigrationParkedCoverage), so the census here
+   * must not refuse the start (EI-28724198520380406).
+   */
+  migrationParks?: 'refuse' | 'lift-at-promotion';
 }
+
+export const MIGRATION_PLAN_LINE_PARK_BY = 'migration:plan-line-work-item-nodes';
 
 export class PlanPromotionParkError extends Error {
   constructor(readonly rows: Array<{ planItemId: string; workItemId: string }>) {
     super('Actionable plan items have only migration-parked coverage: ' +
       rows.map(row => `${row.planItemId} (${row.workItemId})`).join(', ') +
-      '. Preserve the holds; resolve one-work-graph-structured-holds-2026-10-26 P-008 / D-011 before plans:start.');
+      '. plans:start lifts these migration parks through the audited durable-park reconcile when it promotes the plan; ' +
+      'run plans:start rather than clearing them by hand.');
     this.name = 'PlanPromotionParkError';
   }
+}
+
+export interface MigrationParkedCoverageRow { planItemId: string; workItemId: string }
+
+/**
+ * Actionable plan lines whose only coverage is an open migration-1601 parked node.
+ * A parked node is not coverage (admission skips it), and promotion REUSES it rather
+ * than minting a new row, so promotion alone cannot repair the lane.
+ */
+export async function readMigrationParkedCoverage(args: {
+  workspaceId: string;
+  harnessSlug: string;
+  planSlug: string;
+  planItems: PlanItem[];
+}): Promise<MigrationParkedCoverageRow[]> {
+  const workItems = await runWithWorkspaceIfConcrete(args.workspaceId, () => listWorkItems({
+    harness: args.harnessSlug, sourcePlanSlug: args.planSlug,
+    includeChildren: true, limit: WORK_ITEMS_MAX_LIMIT,
+  }));
+  if (workItems.length >= WORK_ITEMS_MAX_LIMIT) {
+    throw new Error('The pre-promotion row census hit its source cap; migration-hold coverage is unknown.');
+  }
+  const structural = evaluateExactPlanAdmission({
+    planSlug: args.planSlug, planItems: args.planItems, workItems, laneHealth: null,
+  });
+  const missing = new Set(structural.promotion.missingActionableItemIds);
+  return workItems.filter(item => !isSettledWorkItemState(item.state) &&
+    isClaimHoldParked(item.payload) &&
+    record(item.payload).claim_hold_by === MIGRATION_PLAN_LINE_PARK_BY)
+    .flatMap(item => provenanceIds(item).filter(id => missing.has(id))
+      .map(planItemId => ({ planItemId, workItemId: item.id })));
+}
+
+export interface MigrationParkLiftRow {
+  workItemId: string;
+  planItemIds: string[];
+  outcome: string;
+}
+
+export interface MigrationParkLiftResult {
+  rows: MigrationParkLiftRow[];
+  /** Rows whose park is still in place (any outcome other than cleared / already-cleared). */
+  unsettled: MigrationParkLiftRow[];
+  runId: string | null;
+  artifactPath: string | null;
+}
+
+type DurableParkModule = typeof import('../../work-items-durable-park-audit');
+
+/**
+ * plans:start's post-promotion lift of migration-1601 parks on the started plan's
+ * actionable lines. Each decision is fingerprinted from the reconciler's own control
+ * read (CAS-exact), cleared as `condition-satisfied` with inspectable evidence, and
+ * recorded as an admission_runs audit row by the reconciler. Blocked / non-actionable
+ * lines are never selected, so their parks stay. Settled-but-unlifted rows are
+ * returned, not thrown: the authoritative post-promotion admission check refuses on them.
+ */
+export async function liftMigrationParkedCoverage(args: {
+  workspaceId: string;
+  harnessSlug: string;
+  planSlug: string;
+  planItems: PlanItem[];
+  actor: string;
+  deps?: {
+    readCoverage?: typeof readMigrationParkedCoverage;
+    durablePark?: Pick<DurableParkModule,
+      'readDurableParkControlRow' | 'durableParkFingerprint' | 'runWorkItemDurableParkReconciliation'>;
+  };
+}): Promise<MigrationParkLiftResult> {
+  const coverage = await (args.deps?.readCoverage ?? readMigrationParkedCoverage)(args);
+  if (!coverage.length) return { rows: [], unsettled: [], runId: null, artifactPath: null };
+  const byNode = new Map<string, string[]>();
+  for (const row of coverage) byNode.set(row.workItemId, [...(byNode.get(row.workItemId) ?? []), row.planItemId]);
+  const park = args.deps?.durablePark ?? await import('../../work-items-durable-park-audit');
+  const rows: MigrationParkLiftRow[] = [];
+  const decisions: Array<{ id: string; expectedParkFingerprint: string; reasonCode: 'condition-satisfied'; evidence: string }> = [];
+  for (const [workItemId, planItemIds] of byNode) {
+    const control = await park.readDurableParkControlRow({
+      workspaceId: args.workspaceId, harnessSlug: args.harnessSlug, id: workItemId,
+    });
+    if (!control) { rows.push({ workItemId, planItemIds, outcome: 'missing' }); continue; }
+    decisions.push({
+      id: workItemId,
+      expectedParkFingerprint: park.durableParkFingerprint(control),
+      reasonCode: 'condition-satisfied',
+      evidence: `plans:start ${args.planSlug} promoted actionable plan line(s) ${planItemIds.join(', ')} onto ${workItemId}; ` +
+        'the migration-1601 park rationale (a plan line is not self-selectable until its plan is promoted, ' +
+        'one-work-graph-structured-holds-2026-10-26#D-011) no longer holds for this line.',
+    });
+  }
+  let runId: string | null = null;
+  let artifactPath: string | null = null;
+  if (decisions.length) {
+    runId = 'work-item-durable-park-audit:plans-start:' + createHash('sha256')
+      .update(JSON.stringify({ w: args.workspaceId, h: args.harnessSlug, a: args.actor, decisions }))
+      .digest('hex').slice(0, 32);
+    const result = await park.runWorkItemDurableParkReconciliation({
+      workspaceId: args.workspaceId, harnessSlug: args.harnessSlug, actor: args.actor, decisions, runId,
+    });
+    artifactPath = result.artifactPath;
+    const outcomes = new Map(result.rows.map(r => [r.id, r.outcome]));
+    for (const decision of decisions) {
+      rows.push({ workItemId: decision.id, planItemIds: byNode.get(decision.id) ?? [],
+        outcome: outcomes.get(decision.id) ?? 'missing' });
+    }
+  }
+  const unsettled = rows.filter(r => r.outcome !== 'cleared' && r.outcome !== 'already-cleared');
+  return { rows, unsettled, runId, artifactPath };
 }
 
 /**
@@ -642,26 +762,14 @@ export class PlanPromotionParkError extends Error {
 export async function preflightExactPlanLaneHealth(
   args: ExactPlanLaneHealthPreflightArgs,
 ): Promise<FleetLaneHealth | null> {
-  if (args.planItems) {
-    const workItems = await runWithWorkspaceIfConcrete(args.workspaceId, () => listWorkItems({
-      harness: args.harnessSlug, sourcePlanSlug: args.planSlug,
-      includeChildren: true, limit: WORK_ITEMS_MAX_LIMIT,
-    }));
-    if (workItems.length >= WORK_ITEMS_MAX_LIMIT) {
-      throw new Error('The pre-promotion row census hit its source cap; migration-hold coverage is unknown.');
-    }
+  if (args.planItems && (args.migrationParks ?? 'refuse') === 'refuse') {
     // Reuse admission's actionable DAG and execution-child coverage. Empty
     // first-start coverage is expected; an existing parked conversion node is
     // different: promotion reuses it, so it cannot repair this missing lane.
-    const structural = evaluateExactPlanAdmission({
-      planSlug: args.planSlug, planItems: args.planItems, workItems, laneHealth: null,
+    const parked = await readMigrationParkedCoverage({
+      workspaceId: args.workspaceId, harnessSlug: args.harnessSlug,
+      planSlug: args.planSlug, planItems: args.planItems,
     });
-    const missing = new Set(structural.promotion.missingActionableItemIds);
-    const parked = workItems.filter(item => !isSettledWorkItemState(item.state) &&
-      isClaimHoldParked(item.payload) &&
-      record(item.payload).claim_hold_by === 'migration:plan-line-work-item-nodes')
-      .flatMap(item => provenanceIds(item).filter(id => missing.has(id))
-        .map(planItemId => ({ planItemId, workItemId: item.id })));
     if (parked.length) throw new PlanPromotionParkError(parked);
   }
   const built = buildExactPlanClaimSpec(args.specId, args.planSlug, args.claimKinds);
