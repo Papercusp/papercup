@@ -290,11 +290,21 @@ describe('release:cut — children never block the operator event loop (WI-10005
 
   it('closes the child stdin, so a child that reads stdin sees EOF instead of hanging', async () => {
     await useRealExecFile();
-    const out = await runFileAsync(
-      process.execPath,
-      ['-e', 'process.stdin.resume(); process.stdin.on("end", () => process.stdout.write("eof"))'],
-      { timeout: 10_000 },
-    );
+    // The child itself decides "hang": it reports `hang` only after five re-armed timer turns
+    // with no EOF. Each re-armed turn runs in a later event-loop iteration, so at least four
+    // poll phases pass without the EOF arriving. Before this, a 10s kill on the whole child also
+    // counted Node's startup time. At load ~240 on 128 cores, startup alone overran that window
+    // and the test failed with `Command failed` (EI-28806690221208372). Startup time is now not
+    // part of the verdict. A child whose stdin stays open still ends, in about a second, with `hang`.
+    const child = [
+      'let turns = 0, timer;',
+      'const tick = () => { if (++turns >= 5) process.stdout.write("hang", () => process.exit(0));',
+      '  else timer = setTimeout(tick, 200); };',
+      'timer = setTimeout(tick, 200);',
+      'process.stdin.resume();',
+      'process.stdin.on("end", () => { clearTimeout(timer); process.stdout.write("eof"); });',
+    ].join('\n');
+    const out = await runFileAsync(process.execPath, ['-e', child]);
     expect(out).toBe('eof');
   });
 
