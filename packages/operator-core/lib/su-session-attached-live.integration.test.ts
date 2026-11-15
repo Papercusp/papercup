@@ -547,7 +547,7 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1' && process.en
       || (backend === 'claude' ? 'sonnet' : CODEX_SAFE_DEFAULT_MODEL);
     const account = process.env.PAPERCUSP_ATTACHED_TEST_ACCOUNT?.trim() || 'auto';
     let stage = 'launch';
-    let host: ReturnType<typeof getRegisteredSuSessionHost>;
+    let host: ReturnType<typeof getRegisteredSuSessionHost> | undefined;
     let taskId: string | undefined;
     let subscription: AsyncGenerator<ParsedSseEvent, void, unknown> | undefined;
     let client: AbortController | undefined;

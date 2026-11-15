@@ -1134,7 +1134,7 @@ describe('sampling heap profiler (WI-1088 round 2 — the capture that cannot lo
     let observer = new Session();
     observer.connect();
     const post = (method: string) => new Promise<{ profile?: unknown }>((resolve, reject) => {
-      observer.post(method, (error, result) => error ? reject(error) : resolve(result));
+      observer.post(method, (error, result) => error ? reject(error) : resolve(result ?? {}));
     });
     try {
       expect(await ensureHeapSampling((line) => lines.push(line))).toBe(true);

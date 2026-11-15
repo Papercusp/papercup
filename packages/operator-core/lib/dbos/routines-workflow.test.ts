@@ -971,7 +971,7 @@ describe('routinesTickImpl — the starvation bound reaches the zero-credit hold
     const census = row('rt_census', 'system:sql-read-census', 51);
     vi.mocked(listDueCronRoutines).mockResolvedValueOnce([census]);
     vi.mocked(claimDueRoutine).mockResolvedValueOnce(true);
-    const fire = vi.fn(async () => undefined);
+    const fire = vi.fn(async (..._args: unknown[]) => ({ workflowID: 'wf-rt_census' }));
     state.startWorkflow.mockReturnValueOnce(fire);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {

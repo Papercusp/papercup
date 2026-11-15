@@ -514,7 +514,9 @@ describe('installer leg — validateComponents', () => {
     expect(bun).toMatchObject({ kind: 'program', verdict: 'weak-copyleft', hits: paths.length * 2 });
     expect(bun?.license).toContain('LGPL-2.0');
     expect(bun?.license).toContain('LGPL-2.1');
-    const notices = renderThirdPartyNotices({}, { installerComponents: [bun] });
+    const notices = renderThirdPartyNotices({}, {
+      installerComponents: bun ? [{ ...bun, obligations: bun.obligations ?? undefined }] : [],
+    });
     expect(notices).toContain('Bun runtime');
     expect(notices).toContain('relinking');
     expect(notices).toContain('corresponding source');
@@ -553,7 +555,9 @@ describe('installer leg — validateComponents', () => {
     expect(git).toMatchObject({ kind: 'program', license: 'GPL-2.0-only', verdict: 'aggregate', hits: gitPaths.length * 2 });
     expect(pcre).toMatchObject({ kind: 'library', verdict: 'permissive', hits: 2 });
     expect(pcre?.license).toContain('PCRE2-exception');
-    const notices = renderThirdPartyNotices({}, { installerComponents: [git, pcre] });
+    const notices = renderThirdPartyNotices({}, {
+      installerComponents: [git, pcre].flatMap((c) => c ? [{ ...c, obligations: c.obligations ?? undefined }] : []),
+    });
     expect(notices).toContain('at least three years');
     expect(notices).toContain('Homebrew patches');
     expect(notices).toContain('JIT/SLJIT notices');

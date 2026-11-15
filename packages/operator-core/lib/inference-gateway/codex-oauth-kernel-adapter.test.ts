@@ -924,7 +924,7 @@ describe('codex OAuth kernel adapter — a transient pool-wide pause holds inste
   });
 
   it('prefers an untried serviceable sibling over both the pool fallback and waiting on the failed account', async () => {
-    const seen: string[] = [];
+    const seen: Array<string | undefined> = [];
     const transientRecovery = vi.fn(() => ({ accountId: 'pro-a', recoverAt: Date.now() + 100 }));
     const { options } = harness(async (_url, init) => {
       seen.push(init.diagnosticAccountId);

@@ -26,6 +26,11 @@ vi.mock('./operator-app-root', async original => ({
 }));
 afterEach(() => { vi.restoreAllMocks(); vi.resetAllMocks(); });
 
+type PluginHostState = Awaited<ReturnType<typeof getPluginHost>>;
+const hostState = (loaded: PluginHostState['loaded']): PluginHostState => ({
+  loaded, loadErrors: [], initialized: new Set(), registries: new Map(), grants: new Map(), wasmHandles: new Map(),
+});
+
 function fixture() {
   const installation = { version: '1.0.0', path: '/installed/fixture', source: 'global' as const };
   const request = { toolName: 'fixture:read', input: { principal: 'forged' },
@@ -61,7 +66,7 @@ describe('production installed executor', () => {
         capabilities: ['secrets:read:ALLOWED'],
       }],
     } satisfies Awaited<ReturnType<typeof getPluginHost>>['loaded'][number];
-    mockResolvedTyped(vi.mocked(getPluginHost), { loaded: [loaded], loadErrors: [] });
+    mockResolvedTyped(vi.mocked(getPluginHost), hostState([loaded]));
     vi.mocked(locatePluginEntry).mockResolvedValue('/installed/fixture/dist/index.cjs');
     vi.mocked(resolveOperatorAppRootFromModuleDir).mockReturnValue('/installed/apps/operator');
     vi.mocked(snapshotInstalledHandlerFiles).mockReturnValue([{ path: '/handler/entry.cjs',
@@ -104,14 +109,14 @@ describe('production installed executor', () => {
   it.each(['missing', 'ambiguous', 'version', 'path', 'source', 'runtime', 'tool', 'entry'] as const)(
     'refuses %s installation binding without runtime admission or guest execution', async axis => {
       const f = productionFixture();
-      if (axis === 'missing') mockResolvedTyped(vi.mocked(getPluginHost), { loaded: [], loadErrors: [] });
+      if (axis === 'missing') mockResolvedTyped(vi.mocked(getPluginHost), hostState([]));
       else if (axis === 'ambiguous') {
-        mockResolvedTyped(vi.mocked(getPluginHost), { loaded: [f.loaded, f.loaded], loadErrors: [] });
+        mockResolvedTyped(vi.mocked(getPluginHost), hostState([f.loaded, f.loaded]));
       }
       else if (axis === 'version') f.loaded.plugin.version = '2.0.0';
       else if (axis === 'path') f.loaded.path = '/other';
       else if (axis === 'source') Object.assign(f.loaded, { source: 'project' });
-      else if (axis === 'runtime') f.loaded.runtime.kind = 'daemon';
+      else if (axis === 'runtime') Object.assign(f.loaded.runtime, { kind: 'daemon' });
       else if (axis === 'tool') f.loaded.toolDefinitions[0]!.name = 'other';
       else vi.mocked(locatePluginEntry).mockResolvedValue(null);
       await expect(executeInstalledPluginHandler(f.request)).rejects.toThrow(/installed/);

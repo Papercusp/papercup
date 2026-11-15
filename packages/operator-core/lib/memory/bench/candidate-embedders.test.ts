@@ -24,7 +24,7 @@ describe('retained native and Python array parity', () => {
   afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
   function fixture() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'retained-parity-')); roots.push(root);
-    const vector = (index: number) => Array.from({ length: 768 }, (_, i) => i === index ? 1 : 0);
+    const vector = (index: number): number[] => Array.from({ length: 768 }, (_, i) => i === index ? 1 : 0);
     const pin = (name: string, value: unknown) => {
       const file = path.join(root, name); fs.writeFileSync(file, JSON.stringify(value));
       const bytes = fs.readFileSync(file);
