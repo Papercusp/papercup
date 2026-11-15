@@ -9,6 +9,7 @@
  * rows share one cached build and assert the same artifact.
  */
 import { createHash } from 'node:crypto';
+import { readFileSync, readdirSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Vitest executes this config from packages/operator-core, while production
@@ -38,15 +39,22 @@ vi.mock('./papercusp-root', async (importOriginal) => ({
 import { buildLaunchSpec, type LaunchSpec } from './role-launch-spec';
 import { setSessionConfinementResolver } from './capability-envelope/session-confinement-port';
 
-const AGENTS = ['claude', 'codex', 'omp'] as const;
+// Client overlay files are the renderer's maintained client registry. A newly
+// supported client must join the census without changing a hand-written roster.
+const AGENTS = readdirSync(`${repoRoot}/apps/operator/prompts`)
+  .map((name) => /^papercusp-su\.([^.]+)\.md$/.exec(name)?.[1])
+  .filter((agent): agent is string => agent !== undefined)
+  .sort();
 const TIERS = ['full', 'fleet'] as const;
 const POSTURES = [null, 'member', 'leader'] as const;
+const plannerPracticePath = `${harnessRoot}/blueprints/su.specialist-planner/prompts/practice.md`;
 const ROLES = [
   { name: 'implementer', addendum: null, modes: [] as string[] },
-  { name: 'planner', addendum: '## You are a PLANNER\nOutput is the PLAN, not code.', modes: [] as string[] },
+  { name: 'planner', addendum: readFileSync(plannerPracticePath, 'utf8'), modes: [] as string[] },
   { name: 'reviewer', addendum: null, modes: ['grade', 'test'] },
 ] as const;
 const CARRIES = ['warm', 'cold'] as const;
+const VISIBILITIES = ['visible', 'headless'] as const;
 
 type CensusCase = {
   agent: typeof AGENTS[number];
@@ -54,20 +62,22 @@ type CensusCase = {
   posture: typeof POSTURES[number];
   role: typeof ROLES[number];
   carry: typeof CARRIES[number];
+  visibility: typeof VISIBILITIES[number];
 };
 
 const CASES: CensusCase[] = AGENTS.flatMap((agent) =>
   TIERS.flatMap((tier) =>
     POSTURES.flatMap((posture) =>
-      ROLES.flatMap((role) => CARRIES.map((carry) => ({ agent, tier, posture, role, carry }))),
+      ROLES.flatMap((role) => CARRIES.flatMap((carry) =>
+        VISIBILITIES.map((visibility) => ({ agent, tier, posture, role, carry, visibility })))),
     ),
   ),
 );
 
 const builds = new Map<string, Promise<LaunchSpec>>();
 function buildFor(c: CensusCase): Promise<LaunchSpec> {
-  // Carry has no prompt-compilation branch. Reusing this promise is the positive
-  // assertion that warm/cold compile the same launch artifact for a given route.
+  // Carry and terminal visibility have no prompt-compilation branch. Both launch
+  // transports consume this same maintained buildLaunchSpec artifact.
   const key = JSON.stringify([c.agent, c.tier, c.posture, c.role.name]);
   let built = builds.get(key);
   if (!built) {
@@ -103,14 +113,16 @@ describe('P-001 lossless-data rule — buildLaunchSpec launch-context census', (
   afterEach(() => setSessionConfinementResolver(undefined));
 
   it('enumerates the complete client × tier × posture × role × carry population', () => {
-    expect(CASES).toHaveLength(3 * 2 * 3 * 3 * 2);
-    expect(new Set(CASES.map((c) => JSON.stringify([c.agent, c.tier, c.posture, c.role.name, c.carry]))).size)
+    expect(AGENTS).toEqual(expect.arrayContaining(['claude', 'codex', 'omp']));
+    expect(CASES).toHaveLength(AGENTS.length * TIERS.length * POSTURES.length * ROLES.length * CARRIES.length * VISIBILITIES.length);
+    expect(new Set(CASES.map((c) => JSON.stringify([c.agent, c.tier, c.posture, c.role.name, c.carry, c.visibility]))).size)
       .toBe(CASES.length);
   });
 
-  it.each(CASES)(
-    '$agent/$tier/$posture/$role.name/$carry carries the complete rule through buildLaunchSpec',
-    async (c) => {
+  // One native case per route keeps the confinement fixture's lifecycle intact
+  // and reports every route independently, including when a sibling fails.
+  describe.each(CASES)('$agent/$tier/$posture/$role.name/$carry/$visibility', (c) => {
+    it('lossless rule reaches the complete active role client and fleet launch census', async () => {
       const spec = await buildFor(c);
       expect(spec.personaTier).toBe(c.tier);
       expect(spec.promptFile).toBe(suSource);
@@ -119,14 +131,28 @@ describe('P-001 lossless-data rule — buildLaunchSpec launch-context census', (
       expect(spec.promptText).toContain('- **Reviewing:** a reviewer, grader or tester treats a silent cut');
       expect(spec.promptText).toContain('N-1, N and N+1');
       expect(spec.promptText).toContain('Repeated batches make durable, fair progress across restarts');
-      if (c.role.name === 'planner') expect(spec.promptText).toContain('## You are a PLANNER');
+      if (c.role.name === 'planner') {
+        expect(spec.promptText).toContain('## You are a PLANNER');
+        expect(spec.promptText).toContain('A silent cap is a plan defect');
+      }
       if (c.role.name === 'reviewer') {
         expect(spec.promptText).toContain('## GRADE mode');
         expect(spec.promptText).toContain('## TEST mode');
       }
-      const sibling = await buildFor({ ...c, carry: c.carry === 'warm' ? 'cold' : 'warm' });
-      expect(createHash('sha256').update(spec.promptText).digest('hex'))
-        .toBe(createHash('sha256').update(sibling.promptText).digest('hex'));
-    },
-  );
+      const fingerprint = createHash('sha256').update(spec.promptText).digest('hex');
+      for (const sibling of [
+        { ...c, carry: c.carry === 'warm' ? 'cold' as const : 'warm' as const },
+        { ...c, visibility: c.visibility === 'visible' ? 'headless' as const : 'visible' as const },
+      ]) {
+        expect(fingerprint).toBe(createHash('sha256').update((await buildFor(sibling)).promptText).digest('hex'));
+      }
+      // The native runner retains stdout: record every route's full fingerprint.
+      console.info('LOSSLESS_LAUNCH_CENSUS', JSON.stringify({
+        source: { path: suSource, sha256: createHash('sha256').update(readFileSync(suSource)).digest('hex') },
+        planner: { path: plannerPracticePath, sha256: createHash('sha256').update(readFileSync(plannerPracticePath)).digest('hex') },
+        rendered: { ...c, role: c.role.name, fingerprint },
+        excluded: [{ roles: ['mug', 'kettle', 'cup'], disposition: 'retired autonomous tier; outside supported SU launch routes' }],
+      }));
+    });
+  });
 });
