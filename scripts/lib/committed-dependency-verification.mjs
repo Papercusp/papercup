@@ -113,10 +113,13 @@ async function command(helper, args, script, deadline, environment = process.env
   }
 }
 
-async function selectGeneration(helper, donor, destination, deadline, environment) {
-  const text = await command(helper, [donor, destination, String(process.pid)], [
+async function selectGeneration(helper, donor, destination, deadline, environment, workspaceDirs) {
+  const text = await command(helper, [donor, destination, String(process.pid), ...workspaceDirs], [
     'generation_root="$(dependency_generation_resolve_root "$2" "" 1)"',
-    'dependency_generation_select_inputs "$3" "$generation_root"',
+    'dependency_generation_configure_workspace_dirs "$3" "${@:5}"',
+    'input="$(dependency_generation_verification_input_fingerprint "$3")"',
+    'closure=""; if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then closure="$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT"; fi',
+    'dependency_generation_select_input_fingerprint "$input" "$generation_root" "$DEPENDENCY_GENERATION_SCOPE_MODE" "$closure"',
     'dependency_generation_acquire_selector_lease "$generation_root" "$DEPENDENCY_GENERATION_ID" "$4" "$DEPENDENCY_GENERATION_TOKEN"',
     'trap dependency_generation_release_selector_lease ERR',
     'printf "%s\\n" "$generation_root" "$DEPENDENCY_GENERATION_TREE" "$DEPENDENCY_GENERATION_SELECTOR_LEASE" "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_TOKEN"',
@@ -141,14 +144,14 @@ async function census(helper, donor, destination, scratch, deadline, generation,
     }
   };
   const sourceInputCommands = generation ? [
-    // The generation contains dependency trees, not package/lock files. Reuse
-    // the publisher's exact-input selector and revalidate its immutable token.
-    'dependency_generation_select_inputs "$3" "$4"',
-    '[ "$DEPENDENCY_GENERATION_ID" = "$5" ] && [ "$DEPENDENCY_GENERATION_TOKEN" = "$6" ] && [ "$DEPENDENCY_GENERATION_TREE" = "$2" ]',
-    // The immutable selector above proves full candidate inputs. Use the same
-    // scoped key as the destination after validating that selector and token.
+    // Revalidate the same scoped selector, publication and immutable token used
+    // during selection. Generations contain trees, not source lockfiles.
     'dependency_generation_configure_workspace_dirs "$3" "${@:7}"',
-    'dependency_generation_verification_input_fingerprint "$3"',
+    'input="$(dependency_generation_verification_input_fingerprint "$3")"',
+    'closure=""; if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then closure="$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT"; fi',
+    'dependency_generation_select_input_fingerprint "$input" "$4" "$DEPENDENCY_GENERATION_SCOPE_MODE" "$closure"',
+    '[ "$DEPENDENCY_GENERATION_ID" = "$5" ] && [ "$DEPENDENCY_GENERATION_TOKEN" = "$6" ] && [ "$DEPENDENCY_GENERATION_TREE" = "$2" ]',
+    'printf "%s\\n" "$input"',
   ] : [
     'dependency_generation_configure_workspace_dirs "$2" "${@:7}"',
     'dependency_generation_verification_input_fingerprint "$2"',
@@ -387,7 +390,7 @@ export async function verifyRetainedDependencies(donor, destination, options, co
   let generation;
   try {
     if (options.generation) {
-      generation = await selectGeneration(context.materializer, donor, destination, deadline, context.environment);
+      generation = await selectGeneration(context.materializer, donor, destination, deadline, context.environment, workspaceDirs);
       donor = realpathSync(generation.tree);
       if (within(donor, destination) || within(destination, donor)) fail('dependency roots overlap');
       privateDirectory(checkpoint, [donor, destination]);
