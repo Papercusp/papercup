@@ -59,6 +59,7 @@ import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { runGovernedOperation } from '../../resource-governor/execution';
 import { loadHarnessRegistry, type HarnessRegistry } from '../../harness-registry';
+import { mapWithConcurrency } from '../../gym/concurrency';
 import {
   executeCutReclaim,
   gatherCutReclaimPlan,
@@ -832,14 +833,20 @@ export async function resolveCutRoot(
     'registered-worktree-discovery',
     async () => {
       const found = new Map<string, CutWorktree>();
-      for (const project of projects) {
+      // Bound in-flight probes, not registry coverage. Preserve registry order
+      // when merging duplicate worktrees, regardless of probe completion order.
+      const listings = await mapWithConcurrency(projects, 8, async (project) => {
         try {
-          for (const worktree of await listWorktrees(project.path)) {
-            if (worktree.prunable) continue;
-            found.set(canonical(worktree.path), worktree);
-          }
+          return await listWorktrees(project.path);
         } catch {
           // A repo-less/non-Git registered project is not a valid cut-root carrier.
+          return [];
+        }
+      });
+      for (const listing of listings) {
+        for (const worktree of listing) {
+          if (worktree.prunable) continue;
+          found.set(canonical(worktree.path), worktree);
         }
       }
       return found;

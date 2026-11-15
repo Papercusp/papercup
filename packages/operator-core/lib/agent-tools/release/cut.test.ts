@@ -382,6 +382,44 @@ describe('release:cut — constrained root selector', () => {
     });
   });
 
+  it.each([7, 8, 9, 25])('discovers the final registered root across %i projects with bounded parallel probes', async (count) => {
+    for (const reverse of [false, true]) {
+      const projects = Array.from({ length: count }, (_, i) => ({ slug: `project-${i}`, path: `/registered/project-${i}` }));
+      if (reverse) projects.reverse();
+      const target = projects[projects.length - 1]!.path;
+      let release!: () => void;
+      const barrier = new Promise<void>((resolve) => { release = resolve; });
+      let active = 0;
+      let peak = 0;
+      const checked: string[] = [];
+      const pending = resolveCutRoot(target, {
+        loadRegistry: async () => ({ projects }),
+        listWorktrees: async (root) => {
+          checked.push(root);
+          active += 1;
+          peak = Math.max(peak, active);
+          try {
+            await barrier;
+            return [{ path: root, prunable: false }];
+          } finally {
+            active -= 1;
+          }
+        },
+        status: () => '',
+        canonicalPath: (root) => root,
+      });
+      try {
+        await vi.waitFor(() => expect(checked).toHaveLength(Math.min(8, count)));
+      } finally {
+        release();
+      }
+      await expect(pending).resolves.toMatchObject({ ok: true, worktreeRoot: target });
+      expect(new Set(checked)).toEqual(new Set(projects.map((project) => project.path)));
+      expect(peak).toBe(Math.min(8, count));
+      expect(active).toBe(0);
+    }
+  });
+
   it('rejects prunable worktrees and paths outside registered worktrees', async () => {
     const deps = {
       loadRegistry: async () => ({ projects: [{ slug: 'isolated', path: worktreeRoot }] }),

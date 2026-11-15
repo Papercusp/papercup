@@ -58,6 +58,47 @@ describe('independent release source clone authority', () => {
   it('admits the exact clean detached clone with independently materialized gitlink pins', async () => {
     await expect(verify()).resolves.toEqual({ ok: true, path: clone });
   });
+
+  it('checks every batch and nested pin while bounding concurrent repository proofs', async () => {
+    const names = [...Array.from({ length: 15 }, (_, i) => `module-${String(i).padStart(2, '0')}`), 'z-last'];
+    const original = path.join(source, 'papercusp-desktop');
+    for (const name of names) git(base, 'clone', '-q', '--no-hardlinks', original, path.join(source, name));
+    const deepSource = path.join(source, 'z-last', 'deep');
+    git(base, 'clone', '-q', '--no-hardlinks', original, deepSource);
+    commit(path.join(source, 'z-last'));
+    sha = commit(source);
+    git(clone, 'fetch', '-q', 'origin');
+    git(clone, 'checkout', '-q', '--detach', sha);
+    for (const name of names) {
+      const destination = path.join(clone, name);
+      git(base, 'clone', '-q', '--no-hardlinks', path.join(source, name), destination);
+      git(destination, 'checkout', '-q', '--detach', git(path.join(source, name), 'rev-parse', 'HEAD'));
+    }
+    const deepClone = path.join(clone, 'z-last', 'deep');
+    git(base, 'clone', '-q', '--no-hardlinks', deepSource, deepClone);
+    git(deepClone, 'checkout', '-q', '--detach', git(deepSource, 'rev-parse', 'HEAD'));
+    const phases: ReleaseCutPhaseTiming[] = [];
+    const check = () => verifyCutSourceClone(clone, [{ path: source }], sha, {
+      readOnly: true,
+      onPhase: (event) => phases.push(event),
+    });
+    await expect(check()).resolves.toEqual({ ok: true, path: clone });
+    const final = () => [...phases].reverse().find((event) => event.phase === 'source-clone-gitlink-verification' && event.stage === 'finish');
+    expect(final()).toMatchObject({
+      outcome: 'fulfilled',
+      metrics: { repositoryCount: 19, gitlinkCount: 18, peakRepositories: 8 },
+    });
+
+    // The decisive mismatch is beneath the last sibling, after three worker
+    // batches. Read-only status must also reject it despite allowing dirt.
+    writeFileSync(path.join(deepClone, 'payload'), 'unapproved nested source\n');
+    commit(deepClone);
+    await expect(check()).resolves.toMatchObject({ ok: false, reason: expect.stringContaining('pin') });
+    expect(final()).toMatchObject({
+      outcome: 'rejected',
+      metrics: { repositoryCount: 19, gitlinkCount: 18, peakRepositories: 8 },
+    });
+  });
   it('reports path-free governor, gitlink, and per-command timing metrics', async () => {
     const phases: ReleaseCutPhaseTiming[] = [];
 

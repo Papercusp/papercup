@@ -5,6 +5,7 @@ import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
 import { runGovernedOperation } from '../../resource-governor/execution';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { mapWithConcurrency } from '../../gym/concurrency';
 
 // Promisified lazily on first call, never at module scope (EI-10161): an eager
 // promisify(execFile) throws at import time under a narrow node:child_process test mock.
@@ -150,6 +151,8 @@ async function verifyCutSourceCloneAdmitted(
   let repositoryCount = 0;
   let gitlinkCount = 0;
   let gitCallCount = 0;
+  let activeRepositories = 0;
+  let peakRepositories = 0;
   const gitTimings = new Map<string, { count: number; totalMs: number; maxMs: number }>();
   const trackedGit = async (candidate: string, ...args: string[]): Promise<string> => {
     if (!options.onPhase) return git(candidate, ...args);
@@ -178,7 +181,9 @@ async function verifyCutSourceCloneAdmitted(
     }
   };
   const gitMetrics = (): Record<string, number> => {
-    const metrics: Record<string, number> = { repositoryCount, gitlinkCount, gitCallCount };
+    const metrics: Record<string, number> = {
+      repositoryCount, gitlinkCount, gitCallCount, peakRepositories,
+    };
     for (const [command, timing] of gitTimings) {
       const prefix = 'git_' + command.replace(/[^a-zA-Z0-9]+/g, '_').toLowerCase() + '_';
       metrics[prefix + 'count'] = timing.count;
@@ -220,7 +225,9 @@ async function verifyCutSourceCloneAdmitted(
       metrics: { registeredProjectCount: projects.length },
     });
 
-    async function verifyRepo(candidate: string, authority: string, pin: string): Promise<void> {
+    type Repository = { candidate: string; authority: string; pin: string };
+    async function verifyRepo({ candidate, authority, pin }: Repository): Promise<Repository[]> {
+      const children: Repository[] = [];
       repositoryCount += 1;
       if (candidate !== root) {
         const childCommon = (await trackedGit(candidate, 'rev-parse', '--path-format=absolute', '--git-common-dir')).trim();
@@ -230,10 +237,12 @@ async function verifyCutSourceCloneAdmitted(
         }
       }
       if ((await trackedGit(candidate, 'rev-parse', 'HEAD')).trim() !== pin) throw new Error(`HEAD differs from pin at ${candidate}`);
-      const [actualCommit, expectedCommit] = await Promise.all([
+      const [actualCommit, expectedCommit] = await Promise.allSettled([
         trackedGit(candidate, 'cat-file', 'commit', pin), trackedGit(authority, 'cat-file', 'commit', pin),
       ]);
-      if (actualCommit !== expectedCommit) throw new Error(`registered commit differs at ${candidate}`);
+      if (actualCommit.status === 'rejected') throw actualCommit.reason;
+      if (expectedCommit.status === 'rejected') throw expectedCommit.reason;
+      if (actualCommit.value !== expectedCommit.value) throw new Error(`registered commit differs at ${candidate}`);
       // Read-only inspection retains the existing dirty-artifact contract. For
       // a retry, only root/desktop residue is deferred to resolveCutRoot's exact
       // release-owned residue validator; every other submodule must be clean.
@@ -251,13 +260,33 @@ async function verifyCutSourceCloneAdmitted(
         const child = path.join(candidate, relative);
         if (await realpath(child) !== child || !within(root, child)) throw new Error('gitlink escapes clone');
         if (!(await lstat(path.join(child, '.git'))).isDirectory()) throw new Error(`gitlink is not an independent materialized repository: ${relative}`);
-        await verifyRepo(child, path.join(authority, relative), match[1]);
+        children.push({ candidate: child, authority: path.join(authority, relative), pin: match[1] });
       }
+      return children;
     }
     graphStartedAt = performance.now();
     emitPhase(options.onPhase, { phase: 'source-clone-gitlink-verification', stage: 'start' });
     try {
-      await verifyRepo(root, canonicalOrigin, sourceSha);
+      let pending: Repository[] = [{ candidate: root, authority: canonicalOrigin, pin: sourceSha }];
+      while (pending.length > 0) {
+        // Every repository at every depth is checked. The width limits work
+        // in flight; it never limits the graph. Drain siblings before refusing
+        // so a failed proof cannot leave children running after its lease ends.
+        const results = await mapWithConcurrency(pending, 8, async (repository) => {
+          activeRepositories += 1;
+          peakRepositories = Math.max(peakRepositories, activeRepositories);
+          try {
+            return { ok: true as const, children: await verifyRepo(repository) };
+          } catch (error) {
+            return { ok: false as const, error };
+          } finally {
+            activeRepositories -= 1;
+          }
+        });
+        const failure = results.find((result) => !result.ok);
+        if (failure && !failure.ok) throw failure.error;
+        pending = results.flatMap((result) => result.ok ? result.children : []);
+      }
       outcome = 'fulfilled';
     } finally {
       graphFinished = true;
