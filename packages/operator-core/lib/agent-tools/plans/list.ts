@@ -210,6 +210,9 @@ const argsSchema = z.object({
     .describe(
       'Skip per-plan effective-status resolution — omit itemCounts + maxImportance for a smaller, cheaper result (keeps slug/title/status/derivedLifecycle/updated/created/owner/template/nextAction/harness). Use for a fast directory scan.',
     ),
+  output: z.enum(['full', 'directory']).optional().describe(
+    'directory returns only slug, harness, title, stored status, updated and nextAction. Skips item payloads and lifecycle reads unless a lifecycle filter or groupBy needs them; intended for launchers that resolve selected plan details separately.',
+  ),
   groupBy: z
     .enum([...GROUP_BY_KEYS] as [GroupByKey, ...GroupByKey[]])
     .optional()
@@ -306,6 +309,11 @@ export function derivePlanTriggerSources(
   if (row.hasExternalTrigger === true) sources.push('external');
   if (row.hasInputSchema === true || row.template != null) sources.push('manual');
   return sources;
+}
+
+function directoryRow(row: Pick<ListRow, 'slug' | 'harness' | 'title' | 'status' | 'updated' | 'nextAction'>) {
+  const { slug, harness, title, status, updated, nextAction } = row;
+  return { slug, harness, title, status, updated, nextAction };
 }
 
 /** Most → least urgent rank, per IMPORTANCE_LEVELS order. */
@@ -548,6 +556,8 @@ export default defineTool({
     // P-005 aggregate path: `aggregateOnly` is only meaningful with a dimension.
     const groupBy = args.groupBy;
     const aggregateOnly = args.aggregateOnly === true && !!groupBy;
+    const directoryOutput = args.output === 'directory';
+    const directoryFastPath = directoryOutput && !args.lifecycle && !args.lifecycleDisposition && !groupBy;
     // A counts-only read skips the (expensive) per-plan effective-status pass unless
     // the dimension itself needs it. The derived lifecycle is computed in every mode,
     // so lifecycle filters/groups no longer force compact off.
@@ -623,6 +633,7 @@ export default defineTool({
       compact,
       groupBy: groupBy ?? null,
       aggregateOnly,
+      output: args.output ?? 'full',
       workspaceWide: args.workspaceWide === true,
       harnesses: [...perHarness].sort(),
     };
@@ -653,6 +664,7 @@ export default defineTool({
               workspaceId,
               includeArchived,
               includeInstances,
+              ...(directoryFastPath ? { includeItems: false } : {}),
               ...(args.template ? { template: args.template } : {}),
               ...(args.templateSlug ? { templateSlug: args.templateSlug } : {}),
               ...sourceFilters,
@@ -672,6 +684,7 @@ export default defineTool({
                   harnessSlug,
                   includeArchived,
                   includeInstances,
+                  ...(directoryFastPath ? { includeItems: false } : {}),
                   ...(args.template ? { template: args.template } : {}),
                   ...(args.templateSlug ? { templateSlug: args.templateSlug } : {}),
                   ...sourceFilters,
@@ -717,6 +730,32 @@ export default defineTool({
           }
           return readBatches;
         });
+
+        if (directoryFastPath) {
+          // A launcher consumes metadata, not an item graph or a derived verdict.
+          // Keep its complete catalog, workspace/harness identity, and ordinary
+          // filter/order/limit semantics while avoiding those unused reads.
+          const seen = new Set<string>();
+          const rows = batches.flatMap(({ harnessSlug, rows }) => rows.flatMap(row => {
+            const status = row.status ?? 'draft';
+            if (row.isLegacy && !includeLegacy) return [];
+            if (args.status && status !== args.status) return [];
+            if (!includeFinished && (status === 'shipped' || status === 'superseded')) return [];
+            const key = JSON.stringify([harnessSlug, row.planSlug]);
+            if (seen.has(key)) return [];
+            seen.add(key);
+            return [{ slug: row.planSlug, harness: harnessSlug, title: row.title, status,
+              updated: isoOrNull(row.updatedAt) ?? row.updated ?? null,
+              created: row.created, nextAction: row.nowNext }];
+          }));
+          if (args.order === 'updated') rows.sort((a, b) => (b.updated ?? '').localeCompare(a.updated ?? ''));
+          else if (args.order === 'created') rows.sort((a, b) => (b.created ?? '').localeCompare(a.created ?? ''));
+          else if (args.order === 'slug') rows.sort((a, b) => a.slug.localeCompare(b.slug));
+          const truncated = Boolean(args.limit && rows.length > args.limit);
+          const limited = args.limit ? rows.slice(0, args.limit) : rows;
+          return { plans: limited.map(directoryRow), groups: null,
+            harnessCount: batches.length, batchUnknown, truncated };
+        }
 
         type AugmentedRow = ListRow & {
           startStatus: 'started' | 'paused' | 'done' | null;
@@ -927,6 +966,7 @@ export default defineTool({
     // returned (limit capped the window) — never silently omitted, so a caller
     // that relied on a bare `limit` to mean "no more than N, but I got them all"
     // can tell the two apart instead of mistaking a capped window for complete.
-    return { data: { plans, ...(groups ? { groups } : {}), ...(truncated ? { truncated } : {}) } };
+    return { data: { plans: directoryOutput ? plans.map(directoryRow) : plans,
+      ...(groups ? { groups } : {}), ...(truncated ? { truncated } : {}) } };
   },
 });

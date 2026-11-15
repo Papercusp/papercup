@@ -26,6 +26,7 @@ const M = vi.hoisted(() => ({
   getPlanContentsBySlugs: vi.fn(async () => new Map<string, string>()),
   resolveHarnessPlansDir: vi.fn(async (slug: string) => ({ harnessSlug: slug })),
   ctxToPlanSourceOpts: vi.fn(async () => ({ harnessSlug: "papercup" })),
+  lifecycleSignals: vi.fn(async () => ({ activity: new Map(), acceptance: new Map() })),
 }));
 
 vi.mock("./source", async (orig) => {
@@ -39,6 +40,10 @@ vi.mock("./source", async (orig) => {
   };
 });
 vi.mock("./_ctx-opts", () => ({ ctxToPlanSourceOpts: M.ctxToPlanSourceOpts }));
+vi.mock("./list-derived-lifecycle", async (orig) => ({
+  ...await orig<typeof import("./list-derived-lifecycle")>(),
+  readPlanListLifecycleSignals: M.lifecycleSignals,
+}));
 vi.mock("../../issue-blocks-merge", async (orig) => {
   const actual = await orig<typeof import("../../issue-blocks-merge")>();
   return {
@@ -102,6 +107,52 @@ beforeEach(async () => {
   resetCachedReadStatsForTests();
   __setCachedReadEnabledForTests(false); // isolate the fetch/filter contract from caching
   M.listPlanIndexRows.mockClear();
+  M.listPlanIndexRowsForWorkspace.mockReset();
+  M.lifecycleSignals.mockClear();
+});
+
+describe("plans:list directory output", () => {
+  it("keeps the complete workspace catalog and only reads metadata", async () => {
+    const rows = [makeRow("same", "active"),
+      { ...makeRow("same", "shipped"), harnessSlug: "another", nowNext: "Review shipping" }];
+    M.listPlanIndexRowsForWorkspace.mockResolvedValue(rows);
+    const { obj } = ctx();
+    const result = await tool.handler({ output: "directory", workspaceWide: true } as never, obj) as {
+      data: { plans: unknown[] };
+    };
+    expect(result.data.plans).toEqual([
+      { slug: "same", harness: "papercup", title: "same", status: "active",
+        updated: "2026-08-01T00:00:00.000Z", nextAction: null },
+      { slug: "same", harness: "another", title: "same", status: "shipped",
+        updated: "2026-08-01T00:00:00.000Z", nextAction: "Review shipping" },
+    ]);
+    expect(M.listPlanIndexRowsForWorkspace).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: "ws-status-limit", includeItems: false,
+    }));
+    expect(M.lifecycleSignals).not.toHaveBeenCalled();
+  });
+
+  it("applies status and legacy filters before the global limit", async () => {
+    M.listPlanIndexRows.mockResolvedValue([
+      makeRow("finished", "shipped"), makeRow("legacy", "draft", true),
+      makeRow("b", "active"), makeRow("a", "active"),
+    ]);
+    const result = await run({ output: "directory", includeLegacy: false, includeFinished: false,
+      status: "active", order: "slug", limit: 1 });
+    expect(result.plans.map(row => row.slug)).toEqual(["a"]);
+    expect(result.truncated).toBe(true);
+    expect(M.listPlanIndexRows).toHaveBeenCalledWith(expect.objectContaining({ includeItems: false }));
+    expect(M.listPlanIndexRows.mock.calls[0][0].limit).toBeUndefined();
+    expect(M.lifecycleSignals).not.toHaveBeenCalled();
+  });
+
+  it("still derives lifecycle when the directory is filtered by it", async () => {
+    M.listPlanIndexRows.mockResolvedValue([makeRow("empty", "active")]);
+    const result = await run({ output: "directory", lifecycle: "no-items" });
+    expect(result.plans.map(row => row.slug)).toEqual(["empty"]);
+    expect(M.lifecycleSignals).toHaveBeenCalled();
+    expect(M.listPlanIndexRows.mock.calls[0][0]).not.toHaveProperty("includeItems", false);
+  });
 });
 
 describe("plans:list — status + limit combined (EI-19932192274787948)", () => {
