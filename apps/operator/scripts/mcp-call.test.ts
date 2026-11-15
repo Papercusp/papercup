@@ -537,9 +537,11 @@ describe('mcp-call connection refusal diagnostics', () => {
       retryDelayMs: 10,
       sleepImpl: async (ms: number) => { nowMs += ms; },
       now: () => nowMs,
-      onRetry: ({ attempt, delayMs, remainingMs }: { attempt: number; delayMs: number; remainingMs: number }) => {
+      onRetry: ({ attempt, delayMs, remainingMs, error }: {
+        attempt: number; delayMs: number; remainingMs: number; error: unknown;
+      }) => {
         retryMessages.push(buildConnectionRetryDiagnostic({
-          port: '3170', attempt, delayMs, remainingMs,
+          port: '3170', attempt, delayMs, remainingMs, error,
         }));
       },
     });
