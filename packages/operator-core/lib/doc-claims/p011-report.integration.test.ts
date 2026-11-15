@@ -1,10 +1,11 @@
 /**
- * P011 report-native mechanical reconciliation of the actual dated report.
+ * P011 report-native reconciliation of the identity-redacted dated report copy.
  * Reuses docs/evidence artifacts and the maintained doc-claims test family.
  * Recounts the retained complete candidate population without running measure.py.
  * Original selected-claim judgments are observations, not independent semantic
  * acceptance. These tests confer no BAR credit, coherent freeze or shipment proof.
  */
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -14,6 +15,9 @@ import { describe, expect, it } from 'vitest';
 interface Sample { id: string; cls: string; outcome: string; finding: string; limits: string }
 interface Artifact {
   reportId: string; bodySha256: string; body_md: string; seed: string; sampleHash: string;
+  publicBodySha256: string;
+  bodyRepresentation: { kind: string; serializer: string; originalReportPath: string;
+    originalSourcePath: string; hashMeaning: string };
   sourceArtifacts: Record<string, { path: string; sha256: string }>;
   sourceVector: { registry_snapshot: string; registry_captured_at: string;
     file_manifest_sha256: string; entry_manifest_sha256: string; files: number;
@@ -131,10 +135,16 @@ function omitRow(body: string, heading: string, predicate: (row: string[]) => bo
 }
 
 describe('P011 actual report mechanical integration and causal report controls', () => {
-  it('pins the actual immutable report and complete measured candidate population', () => {
+  it('pins the immutable original reference, public copy and complete measured candidate population', () => {
     expect(artifact.reportId).toBe('rpt_120bd45f-696a-485e-b576-aeb904308ad5');
     expect(artifact.bodySha256).toBe('5f3a484fe1b0f0cbaaa42fb73763129af69581b327eebf9aae87b56111ad1029');
-    expect(hash(artifact.body_md)).toBe(artifact.bodySha256);
+    expect(artifact.bodyRepresentation.kind).toBe('identity-redacted-public-copy');
+    expect(artifact.bodyRepresentation.originalReportPath).toBe(`/reports?sel=${artifact.reportId}`);
+    expect(artifact.bodyRepresentation.originalSourcePath).toBe('.papercusp/scratch/p011-census-20261115/report.md');
+    expect(artifact.bodyRepresentation.hashMeaning).toContain('bodySha256 identifies the immutable original report');
+    expect(artifact.publicBodySha256).toBe('3947a507b15a008c1917c81e6a54a34d8da3a71c7459a4986e6264921841e922');
+    expect(hash(artifact.body_md)).toBe(artifact.publicBodySha256);
+    expect(artifact.publicBodySha256).not.toBe(artifact.bodySha256);
     expect(hash(compressed)).toBe(artifact.population.compressedSha256);
     expect(hash(bytes)).toBe(artifact.population.uncompressedSha256);
     expect(population).toHaveLength(artifact.population.count);
@@ -142,6 +152,15 @@ describe('P011 actual report mechanical integration and causal report controls',
     expect(selected).toEqual(artifact.sample.map(row => row.id));
     expect(artifact.sample).toHaveLength(50);
     expect(violations(artifact.body_md)).toEqual([]);
+  });
+
+  it('keeps the entire public evidence artifact clean under the sanctioned identity serializer', () => {
+    expect(artifact.bodyRepresentation.serializer)
+      .toBe('scripts/lib/identity-leak-patterns.mjs#serializeIdentitySafeJson');
+    const serialized = execFileSync(process.execPath,
+      [resolve(root, 'scripts/lib/identity-leak-patterns.mjs'), '--serialize-json'],
+      { input: JSON.stringify(artifact), encoding: 'utf8' });
+    expect(JSON.parse(serialized)).toEqual(artifact);
   });
 
   it.each(classes)('rejects an altered class count: %s', cls => {

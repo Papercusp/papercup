@@ -1,0 +1,661 @@
+{
+  "reportId": "rpt_120bd45f-696a-485e-b576-aeb904308ad5",
+  "bodySha256": "5f3a484fe1b0f0cbaaa42fb73763129af69581b327eebf9aae87b56111ad1029",
+  "body_md": "# Papercusp documentation corpus: source-identified counts and 50-entry sample — 2026-11-15\n\nOriginal P-011 · language-neutral-code-documentation-integration-2026-11-12 · WI-6554700010047696\n\nThree sampled entries contain a confirmed source contradiction, including one of four sampled fresh-badged documents. The named materialization contains 35,037 text/source file envelopes across 40 first-party repositories. The 50-entry class-balanced sample covers all 15 nonempty eligible declared classes. This is the count/sample report required before the P-016 constructor; independent report proof and acceptance are still open.\n\n## What the sample establishes\n\nEvery selected id has a disposition: **21 source-consistent selected claims, 3 contradicted entries, 12 explicitly historical entries, 6 without an applicable documentation claim, and 8 unresolved entries**. “Consistent” means the named claim agrees with the code read; it does not certify every assertion in a long document. “Contradicted” means at least one concrete current-source conflict was found. Historical measurements remain historical.\n\nThe confirmed stale-entry lower bound is **3/50 (6%) of the selected entries**. Among the **24 entries with an assessed selected current-source claim**, the contradiction rate is **3/24 (12.5%)**. These are sample measurements, not an estimate that 6% or 12.5% of the entire corpus is stale. Equal class allocation, mixed unit sizes, historical material and unresolved entries preclude that extrapolation.\n\nThe fresh-badged class has 4 sampled entries: 2 source-consistent claims, 1 contradiction, 1 unresolved. Its measured stale lower bound is **1/4 (25%) of this sample**, not a population rate. The badge was recorded separately from semantic judgment.\n\n## Source vector and scope\n\nRegistry capture: `2026-11-15T14:24:46.561351+00:00`; PostgreSQL named materialization snapshot `1185430322:1185474073:1185430322,1185473720,1185474021,1185474029,1185474060`; database `papercusp`; workspace `papercusp-workspace`; harness `papercusp`.\n\nFile-manifest SHA-256: `2223e9e6e3bbda320417d134d4bee3294a8c8ccba4f9ad5aa40f2eec063052de`. Candidate-entry-manifest SHA-256: `59a74a0acd92b7a865d8b4fde3fb1a6303c4ab41e03b35a2dc5fbb69f7a1aff8`. Instrument: `p011-measurement-v2`; TypeScript compiler scanner `6.0.3`. Provider read errors: `0`.\n\nThe registry provider reads harness_docs, harness_doc_parts, harness-scoped code-note facts, harness_prompt_overrides, blueprint projection metadata and saved prompts. The repository provider reuses the maintained git ls-files boundary: tracked files plus nonignored untracked files in the superproject and all 39 declared first-party submodules. Origins, actual working HEADs and tree ids are retained below; no branch switch, commit, migration or product write was performed. Per-file SHA-256 covers the working bytes, including untracked bytes.\n\nThese are representation/candidate counts at their natural grains. A document parent, its prose parts, a generated copy, a source-file envelope and comments inside a file are different representations. Their sum is **not** a count of unique logical documents. Canonical registry file projections are aliases; 1,099 paired HTML/Markdown delivered twins are recorded as aliases rather than counted a second time as documentation entries.\n\n## Counts and per-class sample results\n\n| Declared class | Recorded representations | Eligible | Sample | Consistent claim | Contradicted | Historical | No applicable unit | Unresolved |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|\n| registry-code-note | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |\n| registry-composed-parent | 1 | 1 | 1 | 0 | 0 | 0 | 0 | 1 |\n| registry-composed-part | 342 | 338 | 4 | 3 | 0 | 1 | 0 | 0 |\n| registry-fresh-document | 33 | 30 | 4 | 2 | 1 | 0 | 0 | 1 |\n| registry-other-document | 1146 | 1078 | 4 | 1 | 1 | 0 | 0 | 2 |\n| registry-prompt-override | 1 | 1 | 1 | 1 | 0 | 0 | 0 | 0 |\n| registry-saved-prompt | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |\n| repo-delivered-projection | 3144 | 3144 | 4 | 1 | 1 | 1 | 1 | 0 |\n| repo-guide-document | 227 | 227 | 4 | 4 | 0 | 0 | 0 | 0 |\n| repo-history-document | 28 | 28 | 4 | 0 | 0 | 4 | 0 | 0 |\n| repo-native-source-envelope | 5074 | 5074 | 4 | 0 | 0 | 0 | 4 | 0 |\n| repo-other-document | 816 | 816 | 4 | 0 | 0 | 4 | 0 | 0 |\n| repo-prompt-source | 203 | 203 | 4 | 1 | 0 | 0 | 0 | 3 |\n| repo-rust-doc-candidate | 3704 | 3704 | 3 | 2 | 0 | 0 | 0 | 1 |\n| repo-typescript-doc-candidate | 97577 | 97577 | 3 | 3 | 0 | 0 | 0 | 0 |\n| repo-unsupported-source-envelope | 2618 | 2618 | 3 | 1 | 0 | 2 | 0 | 0 |\n| repo-untracked-text | 20 | 20 | 3 | 2 | 0 | 0 | 1 | 0 |\n\nRegistry details: 1,180 document rows, including 1 composed parent; 342 parts, including 4 tombstones; 1 code-note fact, already retracted; 1 nonempty worker override; 2 saved prompts with empty bodies; 0 blueprint projection rows in the stated harness/null scope. Retired rows, tombstones, retracted facts and empty bodies remain counted but are ineligible for the current-claim sample. Of 32 active fresh-badged document rows, 30 have nonempty bodies eligible under this policy.\n\n## Six proposed pilot strata\n\n| Unit kind / language | Source-matched candidates | Existence observation |\n|---|---:|---|\n| authored:rust | 39 | Candidate references/groups observed; eligibility not certified. |\n| authored:typescript | 958 | Candidate references/groups observed; eligibility not certified. |\n| composed:rust | 0 | No typed source-language anchor in this provider snapshot; pilot eligibility unresolved. |\n| composed:typescript | 0 | No typed source-language anchor in this provider snapshot; pilot eligibility unresolved. |\n| native:rust | 3704 | Candidate references/groups observed; eligibility not certified. |\n| native:typescript | 97577 | Candidate references/groups observed; eligibility not certified. |\n\nAuthored and composed language counts resolve anchor_paths and subject_ref.globs against actual source paths in the named file manifest. Composed parts inherit the composed parent’s recorded anchors. Native TypeScript-family counts are compiler-scanned /** comment candidates (including JS-family files); Rust counts are contiguous /// or //! lexical groups. These are candidate-existence counts, not certified declaration associations, complete Rust block-comment counts or an approved pilot selection.\n\nBoth composed strata have zero metadata-linked candidates. This does **not** prove composed prose never mentions these languages. P-009/P-012 must preserve both zero/unresolved fields. They cannot fabricate bindings, silently omit a required stratum, claim an owner exception or replace the prior independent pilot-selection approval. Genuine eligible source associations or a target-specific explicit owner scope decision are required before that pilot can proceed.\n\n## Deterministic sampling procedure\n\nSeed: `papercusp:P-011:2026-11-15:class-balanced:v1`.\n\nWithin each class, filter eligible entries, compute SHA-256(seed + NUL + stable scoped id), and sort by that digest. Visit classes in sorted class-name order, taking one next ranked entry per class per round until 50 entries are selected, or all eligible entries if fewer. This allocates at least one sample to every nonempty eligible class. Here 15 such classes require 15 minimum slots, below the target of 50; the final allocation is in the table. No manual replacement was made after semantic review.\n\nOrdered sample identity SHA-256: `e32317379ad91c5c50eca383cd34937f80a3c1792e7fbc4cacf5e439b12ab26a`. The saved sample contains exactly 50 distinct ids. All 13 separately fetched registry sample bodies matched the captured body MD5. All sampled file SHA-256 values still matched at the validation read, and all 6 native selected byte ranges exactly reproduced the saved comment bytes.\n\nThe measurement artifact records source bytes, field-level metadata, each sampled id, explicit judgment scope, evidence file hashes and unresolved limits. Its self-recount reconciles all 114,937 distinct mixed-grain measurement ids, class totals, eligibility and sample slots; it is **not** the required outside-lineage recount/acceptance receipt.\n\n## Confirmed contradictions and correction ownership\n\nCorrections are filed and assigned to this session in **WI-6554700010049486**. No correction is claimed complete.\n\n1. `doc:agent-insights/git-sync-turn-scoped-commit-hold.mdx`: the prose describes the 60-minute cap per edit and says never-journaling editors remain held until the cap or session end. Current `packages/operator-core/lib/personal-vault/git-sync-hold.ts::readTurnHoldings` uses the turn’s oldest edit for a whole-turn cap and requires a journaled turn; never-journaling editors are excluded. The current code’s SQL and explanatory contract agree.\n2. `doc:agent-insights/reading-the-loop-routed-triage-corpus.mdx` (**fresh**): its blanket claim that no read-side surface identifies origin before a write is contradicted by the canonical `work_items:get` read of P-011, which returned `workItem.origin: local` before claim. Historical August census measurements are not being retracted.\n3. `file:apps/operator/public/internal/docs/endpoint-system/gating.md`: the page identifies its order as DEFAULT_DISPATCH_STACK but omits `kernel-preflight`. Current `libs/generic/tooldef/src/dispatch-stack.ts` places kernelPreflightStep first. The canonical source page also omits the kernel description. The same follow-up records a nearby stale native “Runs first” default-deny comment and the unresolved social guide’s missing platform-registry anchor.\n\nThe observed detector gap is semantic drift: retained anchors or a freshness badge did not establish that these particular assertions still matched the writer. The follow-up requires canonical docs:author corrections, source/mirror verification and a recurrence guard in the maintained test framework.\n\n## Exact sample and recorded judgments\n\n| # | Class | Exact scoped id | Outcome | Evidence and limits |\n|---:|---|---|---|---|\n| 1 | registry-composed-parent | `doc:claude-md` | unresolved | Composed parent is a 91,554-character projection of many parts. Four sampled child parts cannot establish the parent's universal correctness. No whole-parent semantic verdict. Sources: `scripts/project-doc-parts.mjs` |\n| 2 | registry-composed-part | `part:claude-md#long-jobs-background-them-at-ei-2001777993706028#evidence` | historical | Explicitly dated 2026-08-10 process-measurement correction; retained as evidence, not a current process observation. Historical measurement not rerun. |\n| 3 | registry-fresh-document | `doc:security/hosted-workspace-reverse-connector.mdx` | consistent | Migration 1009 defines generation-bound connectors/tickets and FORCE RLS; current handler/client files implement the named connector surfaces. Source consistency only; hosted topology, rotation and actual transport not exercised. Sources: `libs/papercusp/libs/db/sql/1009-hosted-workspace-reverse-connectors.sql`, `packages/operator-core/lib/endpoint-route/hosted-workspace-connector.ts`, `packages/operator-core/lib/workspace-host/hosted-connector-client.ts` |\n| 4 | registry-other-document | `doc:agent-insights/git-sync-turn-scoped-commit-hold.mdx` | contradicted | Doc describes per-edit 60-minute hold and says never-journaling editors wait until cap/session end. readTurnHoldings applies a whole-turn oldest-edit cap and requires a journaled turn. Two concrete semantic contradictions; other doc assertions not certified. Sources: `packages/operator-core/lib/personal-vault/git-sync-hold.ts` |\n| 5 | registry-prompt-override | `override:worker` | consistent | Worker override's implementation/typecheck workflow names the maintained scripts/lint-tsc.mjs route; it is preserved as a normative prompt, not a new platform mechanism. Normative instructions and named route checked; no worker launch. Sources: `scripts/lint-tsc.mjs` |\n| 6 | repo-delivered-projection | `file:papercusp-desktop/src-tauri/env-sidecars/staging/db-sql/194-scout-routed-ideas.sql` | consistent | Delivered migration 194 is byte-identical to the canonical migration source; schema/commentary correspondence retained. Projection source match; no migration applied. Sources: `libs/papercusp/libs/db/sql/194-scout-routed-ideas.sql` |\n| 7 | repo-guide-document | `file:infra/phone-app/README.md` | consistent | README's 7890/7891/7892, SIP 5070/RTP range and Redis db3 agree with maintained LiveKit templates. Configuration claims only; no live phone/network assertion. Sources: `infra/phone-app/livekit-server.yaml.tmpl`, `infra/phone-app/livekit-sip.yaml.tmpl` |\n| 8 | repo-history-document | `file:docs/plans/LIVE-1-rig-runbook-2026-07-02.md` | historical | Dated July 2 live-drill runbook and then-current machine/precondition snapshot. Not treated as a present machine or gate verdict. |\n| 9 | repo-native-source-envelope | `file:apps/operator/scripts/psu-launcher-archive-restore-origin.test.ts` | not-applicable | Native source envelope contains tests without a compiler-scanned JSDoc unit. No source behavior/test pass is inferred from absence of a selected comment. |\n| 10 | repo-other-document | `file:docs/evidence/green-main-native-receipt-progress-20261014.md` | historical | Dated October 14 receipt progress explicitly says current-local and unshipped. Historical test counts not rerun or presented as current proof. |\n| 11 | repo-prompt-source | `file:apps/operator/prompts/papercup.persona.md` | unresolved | Large normative Papercup persona covers multiple runtimes and behavior contracts. No complete current-source/behavior comparison of this 25,730-character persona. |\n| 12 | repo-rust-doc-candidate | `apps/tui/src/ui.rs:2434` | consistent | ui.rs defines SURFACE_B_MIN_WIDTH=160 and SURFACE_B_MIN_HEIGHT=24; comment accurately names the compact threshold. Static threshold claim; complete rendering journey not executed. Sources: `apps/tui/src/ui.rs`, `apps/tui/PUBLIC_RELEASE_UX.md` |\n| 13 | repo-typescript-doc-candidate | `packages/operator-core/lib/doc-claims/fetch-superuser-gate-claim.ts:3467` | consistent | FetchGateClaimVerdict.tokenPathsNamed is populated from regex matches in the original prose, preserving matched token text. Exact field-comment claim checked. Sources: `packages/operator-core/lib/doc-claims/fetch-superuser-gate-claim.ts` |\n| 14 | repo-unsupported-source-envelope | `file:papercusp-desktop/bin/lib/streak-escalation.selftest.sh` | consistent | Shell selftest reads/extracts the shipped gate's _streak_scan/check_streak_escalation functions and stubs filing. Unsupported-language manual source check; selftest not run. Sources: `papercusp-desktop/bin/live-federation-gate.sh` |\n| 15 | repo-untracked-text | `file:packages/operator-core/lib/workspace-host/sodium-browser.test.ts` | not-applicable | Untracked test source has no selected prose/documentation claim. Untracked inclusion verified; test outcome unmeasured. |\n| 16 | registry-composed-part | `part:claude-md#conditions-reactions-and-live-data-shared-systems` | consistent | The composed reuse rule's named rules export exists; proc/coord guidance also points at existing shared surfaces. Named sampled reuse claims; no all-surface conformance assertion. Sources: `libs/generic/rules/src/index.ts`, `scripts/proc-guard.mjs` |\n| 17 | registry-fresh-document | `doc:agent-insights/progress-marker-null-sentinel-collision.mdx` | consistent | formatTaskOutcomeFields uses settled ? none : pending; returned status/signal fields implement the documented distinction. Current source check; historical incident not reproduced. Sources: `scripts/lib/task-progress-line.mjs` |\n| 18 | registry-other-document | `doc:testing/social-platform-acceptance.mdx` | unresolved | Social acceptance runbook mixes source contracts, dated verification, credential walls and live delivery assumptions. Its named platform-registry.ts anchor does not resolve at the recorded canonical path. No complete present-day assessment or outbound delivery attempted. |\n| 19 | repo-delivered-projection | `file:papercusp-desktop/src-tauri/env-sidecars/staging/spa/assets/profile-pref-yUIpVmSm.js` | not-applicable | Generated minified profile preference JavaScript contains no documentation unit. Delivered artifact represented; behavior not judged. |\n| 20 | repo-guide-document | `file:docs/mockups/README.md` | consistent | All five local mockup/spec references resolve, and the document is explicitly a design-board orientation rather than shipped-UI proof. Link/design artifact claim only; no live UI verdict. Sources: `docs/mockups/pui-public-release-ux.ir.json`, `docs/mockups/pui-agent-cockpit.html`, `docs/mockups/portal-work-plans-inbox.html`, `docs/mockups/portal-work-plans-inbox.ir.json` |\n| 21 | repo-history-document | `file:docs/plans/p2p-parity-lanes-LEADER-HANDOFF-2026-07-10.md` | historical | Leader handoff explicitly labels itself a stale July 10 snapshot and instructs revalidation. No carried leadership, claims, state or commands treated as current. |\n| 22 | repo-native-source-envelope | `file:packages/operator-core/lib/release/checkpoint-eligibility-snapshot.test.ts` | not-applicable | Native test source envelope has no compiler-scanned JSDoc unit. No test execution or behavioral verdict. |\n| 23 | repo-other-document | `file:apps/operator/docs/agent-briefs/BRIEF-promote-policy-restart-dogfood-2026-06-07.md` | historical | June 7 agent brief describes a dated cross-repo dogfood assignment. Not active authorization or a present source contract. |\n| 24 | repo-prompt-source | `file:libs/papercusp/packages/harness/blueprints/base/prompts/migration-verifier.md` | consistent | Migration blueprint declares migration-verifier and knobs.verifyCmd with per-site/overall verification role, matching the prompt's core duty. Legacy CLI examples not executed; role duty only. Sources: `libs/papercusp/packages/harness/blueprints/migration/blueprint.yaml` |\n| 25 | repo-rust-doc-candidate | `apps/tui/src/http.rs:4633` | consistent | RendezvousFailure immediately follows the Rust doc group and enumerates classified failure reasons. Exact nearby enum meaning checked. Sources: `apps/tui/src/http.rs` |\n| 26 | repo-typescript-doc-candidate | `packages/operator-core/lib/acceptance-seat-succession.ts:3310` | consistent | resolveAcceptanceSeatBasis reads work_items, taken_by and source-plan/payload plan and acceptanceDrainPlan predicates, matching the JSDoc. Static SQL claim checked; no seat transfer. Sources: `packages/operator-core/lib/acceptance-seat-succession.ts` |\n| 27 | repo-unsupported-source-envelope | `file:libs/papercusp/libs/db/sql/864-migrate-legacy-human-parks-to-agent-review.sql` | historical | Migration 864 explains its fixed historical cohort and rerun guards, not the current backlog. Historical cohort numbers not remeasured or applied. |\n| 28 | repo-untracked-text | `file:packages/operator-core/lib/subscription-lifecycle.test.ts` | consistent | Untracked subscription test's header names the pure recipient predicate and automatic fields; current module exports those implementations. Header/source correspondence; tests not run. Sources: `packages/operator-core/lib/subscription-lifecycle.ts` |\n| 29 | registry-composed-part | `part:claude-md#long-jobs-background-them-at-there-is-a-purpose#evidence` | consistent | proc-guard has ancestor exclusion and explicit host visibility failure handling, matching the retained process-probe rule. Source rule only; no current process census. Sources: `scripts/proc-guard.mjs` |\n| 30 | registry-fresh-document | `doc:harness/steer-and-chat.mdx` | unresolved | Fresh-badged steering guide combines current surfaces and legacy retirement/owner-gate/Mug discussion. Several core claims match source; complete guide accuracy remains unjudged. Sources: `packages/operator-core/lib/agent-tools/turn/interrupt.ts`, `packages/operator-core/lib/agent-tools/coordination/tools/send.ts` |\n| 31 | registry-other-document | `doc:agent-insights/consult-provider-context-wall-preflight.mdx` | consistent | Transcript analyzer tracks synthetic provider context errors, compact boundaries and model-output recovery; dispatch has a first-reply rejection guard. Source behavior only; no provider/fork request launched. Sources: `packages/operator-core/lib/claude-resume-tool-references.mjs`, `packages/operator-core/lib/consult/consult-dispatch.ts` |\n| 32 | repo-delivered-projection | `file:apps/operator/public/internal/docs/agent-insights/pot-mug-fresh-per-wake.md` | historical | Delivered page prominently marks Mug-specific conclusion superseded/retired and preserves the historical wake-path map. No blanket-currentness of old wake plumbing asserted. |\n| 33 | repo-guide-document | `file:libs/generic/rules/README.md` | consistent | RulesEngine and evaluateOperatorTest exports match README's generic pure rules engine API. Core API check; examples not executed. Sources: `libs/generic/rules/src/index.ts`, `libs/generic/rules/src/engine.ts` |\n| 34 | repo-history-document | `file:docs/plans/BRIEF-p2p-fleet-lanes-2026-07-02.md` | historical | July 2 fleet launch brief is a historical assignment with then-current test baseline. Not an active instruction or current error count. |\n| 35 | repo-native-source-envelope | `file:packages/operator-core/lib/voice-credentials.test.ts` | not-applicable | Native test source envelope has no compiler-scanned JSDoc unit. No test execution or behavior inference. |\n| 36 | repo-other-document | `file:.papercusp/worker-log-EI-6256.md` | historical | Worker log describes a past EI-6256 incident and historical needs-human outcome. No current liveness or blocker conclusion. |\n| 37 | repo-prompt-source | `file:apps/operator/prompts/tutorial/ch1/01-server-gui-tutorial.md` | unresolved | Tutorial's broad GUI-is-inspection/terminal-is-direction guidance needs current product acceptance and policy comparison. Neither declared stale nor accepted from file existence. |\n| 38 | repo-rust-doc-candidate | `apps/tui/src/census.rs:2568` | unresolved | Rust census comment universally promises no clipping and room for every body; constants alone cannot verify that rendered property. W=200/H=50 observed; render coverage not run. Sources: `apps/tui/src/census.rs` |\n| 39 | repo-typescript-doc-candidate | `packages/operator-core/lib/inference-gateway/admission-state-model.ts:4955` | consistent | Gateway observation expiresAtMs is nullable and null is retained as no self-expiry in the expiry aggregation. Exact field semantics; no gateway control mutation. Sources: `packages/operator-core/lib/inference-gateway/admission-state-model.ts` |\n| 40 | repo-unsupported-source-envelope | `file:libs/papercusp/libs/db/sql/110-harness-gym-control-plane.sql` | historical | Migration 110's control-plane design comments accompany its original table definitions. Historical architecture, not today's deployment state. |\n| 41 | repo-untracked-text | `file:packages/operator-core/lib/code-intelligence/documentation-contract.integration.test.ts` | consistent | Integration test imports real TypeScript and firstPartyCallers and constructs actual source-byte identities; header correctly disclaims adapter certification. Same-session authored test; no independent review or new run credit. Sources: `packages/operator-core/lib/code-intelligence/documentation-contract.integration.test.ts` |\n| 42 | registry-composed-part | `part:claude-md#tests-after-editing-name-the-files-do-not-use-mi` | consistent | lint-tsc supports explicit --files scope and describes --mine as dirty-in-tree inference, matching this rule. Source check only; compiler not rerun. Sources: `scripts/lint-tsc.mjs` |\n| 43 | registry-fresh-document | `doc:agent-insights/reading-the-loop-routed-triage-corpus.mdx` | contradicted | Fresh-badged doc says no read-side surface identifies origin before a write. Canonical work_items:get returned workItem.origin=local before this session claimed P-011. Specific obsolete absence claim; historical census numbers not challenged. Sources: `packages/operator-core/lib/agent-tools/work_items/get.ts` |\n| 44 | registry-other-document | `doc:agent-insights/operator-core-route-handler-unit-tests.mdx` | unresolved | Route-testing guide's universal partial-mock/import/default/header statements need the complete maintained reproductions. Not accepted merely because referenced tests exist. Sources: `packages/operator-core/lib/superuser-token.ts` |\n| 45 | repo-delivered-projection | `file:apps/operator/public/internal/docs/endpoint-system/gating.md` | contradicted | Delivered gate page calls its order the exact DEFAULT_DISPATCH_STACK but omits kernel-preflight, which is the first current array entry. Canonical source page also lacks the kernel description; source and projection need correction. Sources: `libs/generic/tooldef/src/dispatch-stack.ts` |\n| 46 | repo-guide-document | `file:libs/papercusp/plugins/slack-notifier/README.md` | consistent | Slack reference plugin's runNotify performs one fetch with AbortSignal, returns an error for non-OK status and has no retry loop; timeoutSec is 10. Read-only source check; no Slack message or network call sent. Sources: `libs/papercusp/plugins/slack-notifier/index.ts` |\n| 47 | repo-history-document | `file:docs/plans/DESIGN-P-108-results-channel-2026-07-02.md` | historical | July 2 results-channel design clearly says PROPOSAL awaiting ratification. Rejected/alternative designs not interpreted as shipped behavior. |\n| 48 | repo-native-source-envelope | `file:apps/operator/scripts/__tests__/tutorial-video.test.ts` | not-applicable | Native test source envelope has no compiler-scanned JSDoc unit. No test execution/acceptance inferred. |\n| 49 | repo-other-document | `file:docs/evidence/bm25-hybrid-recall-2026-10-11-r18-nodump.md` | historical | October 11 BM25 report names its source commit, sample fingerprint and historical pass/fail measurements. Original observations retained; not a fresh latency or acceptance result. |\n| 50 | repo-prompt-source | `file:apps/operator/prompts/tutorial/ch5/07-comb.md` | unresolved | Tutorial knowledge-pack overview needs a complete current install/export/review/rollback source check. Plumbing existence alone is insufficient for all workflow claims. |\n\n## Limits and pending acceptance\n\n- This is a named multi-provider materialization, not a globally atomic frozen edition. The registry snapshot is retained as data; file identities are per-read working hashes. Repository heads can move during a shared-tree scan. Sample bytes and metadata were checked explicitly, but a whole-source-vector pre/post stability proof has not been established. P-016 owns coherent freeze/restart/reconciliation.\n- The file provider’s declared extensions are retained in measure.py. Other extensions (6,880 file entries), ignored first-party material and delivered home-directory launch-context projections outside the repository roots are not semantically measured here. Build/vendor/VCS/scratch rules exclude 1,315 text candidates; 39 directory/symlink entries are excluded. Those bounds are provider scope, not claims of complete all-format/all-location coverage.\n- /** scanner candidates are not complete parser-certified commentary; Rust /// and //! grouping omits block doc-comment forms. Unsupported sources remain file/container envelopes. Tests, examples, archives and dated reports remain visible and are not relabeled as current operational truth.\n- Per-class allocation is deliberately balanced, not proportional; classes with one eligible entry are exhausted. A short comment and a 91k-character composed parent have different judgment costs. Eight unresolved entries remain explicit; 21 consistent results cover named claims, not full-document certification.\n- No live phone, social publication, Slack send, hosted transport, UI journey or deployment was attempted for this count/sample. The selected operator-api route was measured as staging-operator :3170, build d4b5ee03da7 containing reports/publish.ts; the corpus source is the canonical staging working tree and the shared scoped registry. This is not release-operator shipment evidence.\n- P-011 remains open for canonical independent report-native recount/judgment review, altered-count, inverted-judgment, missing-identity/limits, omitted-nonempty-class and missing-stratum-field controls, maintained run/case reconciliation, and formal R-15 evidence binding/grading. P-016’s constructor proof cannot substitute for this report contribution. No corpus import, pilot selection, validator qualification or shipment is certified.\n\n## Owner checkpoint and next work\n\nD-018 reserves the class-scope checkpoint to Avi after this result. The explicit classes and unresolved strata above are the decision input. Historical/fixture/projection representations require applicability and alias rules, not silent deletion from the denominator. The selected SELF/AUTO route continues for the mechanism; any remaining owner choice about follow-on scope/route must be resolved from actual owner authority. P-016 can now be sized from the measured grains; the remaining P-017 proof implementation is retained and mandatory. Full-corpus clean-up and independent acceptance remain in the follow-on plan, not dropped.\n\n## Retained artifact identities\n\nSource directory: `.papercusp/scratch/p011-census-20261115/` in `/home/builduser/papercupai-workspace/papercusp`.\n\n| Artifact | SHA-256 |\n|---|---|\n| `measure.py` | `47e884623e6e78e2ccb97ed930c26d7934626db6f14fac0d749696e4ef14df16` |\n| `registry.json` | `abe515aa3cad1f76abb5df8950eb27bfa408f1beee18e041a7ff7eeeaf0929ee` |\n| `inventory.json` | `782aa7570a8086b1e22f22e1333248a8401c29e9aeeda9b34c425780337783f2` |\n| `sample.json` | `9c72496060739f2b408e13063b6c3ce758732bdc70365b702c31c8abf768ada5` |\n| `review.json` | `2e3a432822ded0d15d68ebd1949d3831f050853cce712f1d4b18173b6b877e65` |\n| `recount.json` | `bdc93de2d61570e0bcc59fcba25f61f21e0ff3477b5c4dbac06bc0b95bb26790` |\n\nReproduction: read the named registry materialization and inventory first. `python3 .papercusp/scratch/p011-census-20261115/measure.py --recount` scans the **current** working tree into recount.json; use it only after preserving the original recount and only compare a fresh run when source identities match. The saved source vector, exact ids and source hashes prevent a later current-tree recount from silently replacing this historical observation.\n\n## Repository vector\n\n| Root | Actual HEAD | Tree |\n|---|---|---|\n| `.` | `8f836aba2906852c54567bf96d4a30b95ae9dfc6` | `2a985f05fe11a6c975d448416b1ca155902f32e3` |\n| `libs/agent-chat` | `9b3c74f0b7fb75a8df4dc0ebc58a836b34d5874d` | `571f5df0f50757827c333231aec684ac078fc26d` |\n| `apps/slack-asana-bug-drill` | `ad0f6958a483ed9c14d5fe7aac2a378edc1411c3` | `bd42c9ea147beaab7de3d20661bb1abeba0164e8` |\n| `libs/generic/git-graph` | `2ca138ffcae22876528a67b7207578e741d4c1d6` | `52ce4c797458eb37e025242d0a76d613674e8524` |\n| `libs/generic/papergrid` | `d9f3080f87a17df825a96dd361557fc2004d2156` | `f95840f9dab78984c438939fda34b3d8cb90a240` |\n| `libs/papercusp-db` | `500c0860e9ad723055f8a0e809e8fa627f352e50` | `35d481831806ff41826604e873cfcd3954ac6131` |\n| `libs/papercusp-shared` | `14f6b748416ff3ac124aa9d1a030ecf5439a6fae` | `3b11fcf624807f8d51431baa09ec39ed58edaed4` |\n| `libs/generic/ui-primitives` | `a8a3e11fc683f7b927b1bd44fec96ae95ff76536` | `511940e4abdc0753c0a505839e3447e4df929137` |\n| `libs/papercusp` | `945b521e673b3918b517e61809d5b0d3ab0ff69a` | `f162878413db29076c93206e3ac952f238bfdd5a` |\n| `libs/generic/sync` | `0898e212aa8b0acf2e204aed21f4c1d63b710afc` | `e1cdf8632aee253743b47c2b300692b868512c0a` |\n| `libs/generic/token-kit` | `209ee35a28f23e75b1d4d6ab498fe78b5e376fe7` | `102b6a082c8dfff9c1334245da17099a4ff155d6` |\n| `libs/generic/sse` | `4de91e64ab6eb210497826be700b51062126f924` | `dcafd9f016dab8fc5332ab8ead8cdfe90cf86c9d` |\n| `libs/generic/rerank` | `64b6d811e77cb03dea15a0f699c0bc9ebe81c4b3` | `4f37af80a2776381baa7fc18f611647b8a1fc3dd` |\n| `libs/generic/search-core` | `a5c5ed8c40122fd272ea09d9aa2d3e6ee984db24` | `293bc7567aaf597aa6e5ceacbbe001d81e660105` |\n| `libs/generic/chat-protocol` | `5ed540b4d58053e3b9add10884849df39e051a6e` | `21c5089e364c2b50377695c21c66bf95d7717d9d` |\n| `libs/generic/rrf` | `1a5b48715e2ce0ac18b406409b1ce22fc1416ae2` | `59e83f3ecb2e6dc1d3ceb0687cd63849cc319b21` |\n| `libs/generic/embedded-pg-discovery` | `398586d55e341754c67002e856de579e9cd51d35` | `528bdf177da0d93b8b970f798791de69c70c6959` |\n| `libs/generic/plan-parser` | `7ebd9b197d8be187d9c8b4815765f435fb38c97c` | `9e83d412beb8c1fcedb8e6f6e23933c2bf05b8b3` |\n| `libs/generic/rate-limit` | `f3bacd6b33a3fd5c91c2badc82b8beb0be970d03` | `ee8a201153a71b46491d5a4c639c9ffdde1aba70` |\n| `libs/generic/ipc-framing` | `d911f8a07e61a9ae497790c3834c4a6d8054fd54` | `0f6a87719987c5d43de3c73d9a147730b74a14a2` |\n| `libs/generic/ipc-endpoint-server` | `d587a42c45defd4152a548ae378418b307e2b675` | `3e590b5169e2c22609c7560e6939199fb81052f0` |\n| `libs/generic/desktop-ipc` | `7bbf355f2ab0b0f4e98fea25c3447ef8213a4941` | `588fc41d50fff8eed134107bed69db12422bbf57` |\n| `libs/generic/search` | `03c444c237d31cf72f90e51c713d9553f4acad08` | `a6557417706c0026ae9f3236b291700cb2759ad1` |\n| `libs/generic/memory` | `5ffba09b23ee59a8e5fdbf8314a9014182c53e9d` | `9140cd9227ddbdb17368de858e8729f24ba648e7` |\n| `libs/generic/tooldef` | `7505f318208fd08947a096703e33209fd27989a0` | `2a353e61f25063698fd2e353285a438f5234dace` |\n| `libs/generic/tooldef-http` | `da0e51a1bade6d3fdd99893894166e563d8c91d8` | `1c4901c0326e668a995d201c9d61f12f44b5c976` |\n| `libs/testing-shell` | `cfd6651a5bf799267d60128244acc77571170b0a` | `6168c51ba0bcad77d36b9672479b72dc00bd0b4a` |\n| `libs/test-config` | `49471b8e0fdb58e8df2057ce39c9d571b66c1d1c` | `e1ef170d5a7dfdd7b7e17730f61fe153e996b42d` |\n| `papercusp-desktop` | `4cd664a8b55dd97e3325fcff12062a092e0c9044` | `0bed77071f2181303e440cdc47d0bf4255379f9e` |\n| `libs/generic/dock-workbench` | `c7cb3e4b2411d61d724946668bceb26c68076418` | `59728f99f71328d5f42ae5d94d5e766179953880` |\n| `libs/generic/control-mutation` | `768071110fd650f271b4ddca5105ff97eb4d6796` | `7afa233e75c8eead73b3bed13d6a64c0e4018cb2` |\n| `libs/generic/prospect-contract` | `0cb518ace905679f1e1a6687968a6b405aa498f1` | `d0f7a92f10521719dc311030cb72906ad2e284a4` |\n| `libs/generic/debounce-coalesce` | `d0bf1b565ba14c5e908a00fdf8bd2f3e0c3051eb` | `979542d500093a15f198d5d50c1f32e306238ef2` |\n| `libs/generic/cache` | `df86ee8852e691e6b2e5a197c0b237b3b5479ff1` | `defba9d55c4529a63dec665f3fd9f1796942f6fc` |\n| `libs/generic/failure-detector` | `dc1586c1b2f1195ea4f527f1e431b64b26ac5481` | `f01bf87cd79933e4d60b6d4ed270c9bdc726341e` |\n| `libs/generic/rules` | `8d610199325a135105c3c9fd2eaa20e6ea438c36` | `0f3774896390676901ee7867e3b55c47583bad94` |\n| `libs/generic/tauri-release-kit` | `3b4c80aeee11ab7f2630c3bcdc59ecff3c469e9a` | `66abfac4a7d6178e91534cabe2ba9f2f5489c9e6` |\n| `libs/generic/resumable-download` | `aab0ff31cd85649f39e7fe08cf2d6f925377d8c3` | `52c96b537f6e10b4a27b11411f39001fc418329c` |\n| `libs/generic/model-pricing` | `ff6a4c544abfc27669cd0bf9badad9cb5ed2a47f` | `5b3f7bf852d936abefa7177cfa73916e3d96993b` |\n| `libs/generic/card-stack` | `40390b8a92c5fa8a5dd4c174c5533766540e29ca` | `6b2e19a489a2840762102fb5eb8f51e3e32bf830` |\n",
+  "publicBodySha256": "3947a507b15a008c1917c81e6a54a34d8da3a71c7459a4986e6264921841e922",
+  "bodyRepresentation": {
+    "kind": "identity-redacted-public-copy",
+    "serializer": "scripts/lib/identity-leak-patterns.mjs#serializeIdentitySafeJson",
+    "originalReportPath": "/reports?sel=rpt_120bd45f-696a-485e-b576-aeb904308ad5",
+    "originalSourcePath": ".papercusp/scratch/p011-census-20261115/report.md",
+    "hashMeaning": "bodySha256 identifies the immutable original report; publicBodySha256 identifies this identity-redacted body_md. Counts, sampled judgments, limitations and source identities are unchanged."
+  },
+  "scope": "Dated real P011 report/population mechanical reconciliation. Judgments are the implementer-authored original selected-claim observations; this is not independent semantic acceptance, coherent freeze, or current production/shipment proof.",
+  "sourceArtifacts": {
+    "inventory.json": {
+      "path": ".papercusp/scratch/p011-census-20261115/inventory.json",
+      "sha256": "782aa7570a8086b1e22f22e1333248a8401c29e9aeeda9b34c425780337783f2"
+    },
+    "registry.json": {
+      "path": ".papercusp/scratch/p011-census-20261115/registry.json",
+      "sha256": "abe515aa3cad1f76abb5df8950eb27bfa408f1beee18e041a7ff7eeeaf0929ee"
+    },
+    "sample.json": {
+      "path": ".papercusp/scratch/p011-census-20261115/sample.json",
+      "sha256": "9c72496060739f2b408e13063b6c3ce758732bdc70365b702c31c8abf768ada5"
+    },
+    "review.json": {
+      "path": ".papercusp/scratch/p011-census-20261115/review.json",
+      "sha256": "2e3a432822ded0d15d68ebd1949d3831f050853cce712f1d4b18173b6b877e65"
+    },
+    "recount.json": {
+      "path": ".papercusp/scratch/p011-census-20261115/recount.json",
+      "sha256": "bdc93de2d61570e0bcc59fcba25f61f21e0ff3477b5c4dbac06bc0b95bb26790"
+    },
+    "measure.py": {
+      "path": ".papercusp/scratch/p011-census-20261115/measure.py",
+      "sha256": "47e884623e6e78e2ccb97ed930c26d7934626db6f14fac0d749696e4ef14df16"
+    }
+  },
+  "sourceVector": {
+    "entry_manifest_sha256": "59a74a0acd92b7a865d8b4fde3fb1a6303c4ab41e03b35a2dc5fbb69f7a1aff8",
+    "errors": [],
+    "file_manifest_sha256": "2223e9e6e3bbda320417d134d4bee3294a8c8ccba4f9ad5aa40f2eec063052de",
+    "files": 35037,
+    "registry_captured_at": "2026-11-15T14:24:46.561351+00:00",
+    "registry_sha256": "abe515aa3cad1f76abb5df8950eb27bfa408f1beee18e041a7ff7eeeaf0929ee",
+    "registry_snapshot": "1185430322:1185474073:1185430322,1185473720,1185474021,1185474029,1185474060",
+    "repositories": [
+      {
+        "head": "8f836aba2906852c54567bf96d4a30b95ae9dfc6",
+        "origin": "https://github.com/Papercusp/papercup.git",
+        "path": ".",
+        "tree": "2a985f05fe11a6c975d448416b1ca155902f32e3"
+      },
+      {
+        "head": "9b3c74f0b7fb75a8df4dc0ebc58a836b34d5874d",
+        "origin": "git@github.com:Papercusp/agent-chat.git",
+        "path": "libs/agent-chat",
+        "tree": "571f5df0f50757827c333231aec684ac078fc26d"
+      },
+      {
+        "head": "ad0f6958a483ed9c14d5fe7aac2a378edc1411c3",
+        "origin": "https://github.com/papercupai/slack-asana-bug-drill-20261009.git",
+        "path": "apps/slack-asana-bug-drill",
+        "tree": "bd42c9ea147beaab7de3d20661bb1abeba0164e8"
+      },
+      {
+        "head": "2ca138ffcae22876528a67b7207578e741d4c1d6",
+        "origin": "git@github.com:Papercusp/git-graph.git",
+        "path": "libs/generic/git-graph",
+        "tree": "52ce4c797458eb37e025242d0a76d613674e8524"
+      },
+      {
+        "head": "d9f3080f87a17df825a96dd361557fc2004d2156",
+        "origin": "git@github.com:Papercusp/papergrid.git",
+        "path": "libs/generic/papergrid",
+        "tree": "f95840f9dab78984c438939fda34b3d8cb90a240"
+      },
+      {
+        "head": "500c0860e9ad723055f8a0e809e8fa627f352e50",
+        "origin": "git@github.com:Papercusp/papercup-db.git",
+        "path": "libs/papercusp-db",
+        "tree": "35d481831806ff41826604e873cfcd3954ac6131"
+      },
+      {
+        "head": "14f6b748416ff3ac124aa9d1a030ecf5439a6fae",
+        "origin": "git@github.com:Papercusp/papercup-shared.git",
+        "path": "libs/papercusp-shared",
+        "tree": "3b11fcf624807f8d51431baa09ec39ed58edaed4"
+      },
+      {
+        "head": "a8a3e11fc683f7b927b1bd44fec96ae95ff76536",
+        "origin": "git@github.com:Papercusp/ui-primitives.git",
+        "path": "libs/generic/ui-primitives",
+        "tree": "511940e4abdc0753c0a505839e3447e4df929137"
+      },
+      {
+        "head": "945b521e673b3918b517e61809d5b0d3ab0ff69a",
+        "origin": "git@github.com:Papercusp/papercusp.git",
+        "path": "libs/papercusp",
+        "tree": "f162878413db29076c93206e3ac952f238bfdd5a"
+      },
+      {
+        "head": "0898e212aa8b0acf2e204aed21f4c1d63b710afc",
+        "origin": "git@github.com:Papercusp/sync.git",
+        "path": "libs/generic/sync",
+        "tree": "e1cdf8632aee253743b47c2b300692b868512c0a"
+      },
+      {
+        "head": "209ee35a28f23e75b1d4d6ab498fe78b5e376fe7",
+        "origin": "git@github.com:Papercusp/token-kit.git",
+        "path": "libs/generic/token-kit",
+        "tree": "102b6a082c8dfff9c1334245da17099a4ff155d6"
+      },
+      {
+        "head": "4de91e64ab6eb210497826be700b51062126f924",
+        "origin": "git@github.com:Papercusp/sse.git",
+        "path": "libs/generic/sse",
+        "tree": "dcafd9f016dab8fc5332ab8ead8cdfe90cf86c9d"
+      },
+      {
+        "head": "64b6d811e77cb03dea15a0f699c0bc9ebe81c4b3",
+        "origin": "git@github.com:Papercusp/rerank.git",
+        "path": "libs/generic/rerank",
+        "tree": "4f37af80a2776381baa7fc18f611647b8a1fc3dd"
+      },
+      {
+        "head": "a5c5ed8c40122fd272ea09d9aa2d3e6ee984db24",
+        "origin": "git@github.com:Papercusp/search-core.git",
+        "path": "libs/generic/search-core",
+        "tree": "293bc7567aaf597aa6e5ceacbbe001d81e660105"
+      },
+      {
+        "head": "5ed540b4d58053e3b9add10884849df39e051a6e",
+        "origin": "git@github.com:Papercusp/chat-protocol.git",
+        "path": "libs/generic/chat-protocol",
+        "tree": "21c5089e364c2b50377695c21c66bf95d7717d9d"
+      },
+      {
+        "head": "1a5b48715e2ce0ac18b406409b1ce22fc1416ae2",
+        "origin": "git@github.com:Papercusp/rrf.git",
+        "path": "libs/generic/rrf",
+        "tree": "59e83f3ecb2e6dc1d3ceb0687cd63849cc319b21"
+      },
+      {
+        "head": "398586d55e341754c67002e856de579e9cd51d35",
+        "origin": "git@github.com:Papercusp/embedded-pg-discovery.git",
+        "path": "libs/generic/embedded-pg-discovery",
+        "tree": "528bdf177da0d93b8b970f798791de69c70c6959"
+      },
+      {
+        "head": "7ebd9b197d8be187d9c8b4815765f435fb38c97c",
+        "origin": "git@github.com:Papercusp/plan-parser.git",
+        "path": "libs/generic/plan-parser",
+        "tree": "9e83d412beb8c1fcedb8e6f6e23933c2bf05b8b3"
+      },
+      {
+        "head": "f3bacd6b33a3fd5c91c2badc82b8beb0be970d03",
+        "origin": "git@github.com:Papercusp/rate-limit.git",
+        "path": "libs/generic/rate-limit",
+        "tree": "ee8a201153a71b46491d5a4c639c9ffdde1aba70"
+      },
+      {
+        "head": "d911f8a07e61a9ae497790c3834c4a6d8054fd54",
+        "origin": "git@github.com:Papercusp/ipc-framing.git",
+        "path": "libs/generic/ipc-framing",
+        "tree": "0f6a87719987c5d43de3c73d9a147730b74a14a2"
+      },
+      {
+        "head": "d587a42c45defd4152a548ae378418b307e2b675",
+        "origin": "git@github.com:Papercusp/ipc-endpoint-server.git",
+        "path": "libs/generic/ipc-endpoint-server",
+        "tree": "3e590b5169e2c22609c7560e6939199fb81052f0"
+      },
+      {
+        "head": "7bbf355f2ab0b0f4e98fea25c3447ef8213a4941",
+        "origin": "git@github.com:Papercusp/desktop-ipc.git",
+        "path": "libs/generic/desktop-ipc",
+        "tree": "588fc41d50fff8eed134107bed69db12422bbf57"
+      },
+      {
+        "head": "03c444c237d31cf72f90e51c713d9553f4acad08",
+        "origin": "git@github.com:Papercusp/search.git",
+        "path": "libs/generic/search",
+        "tree": "a6557417706c0026ae9f3236b291700cb2759ad1"
+      },
+      {
+        "head": "5ffba09b23ee59a8e5fdbf8314a9014182c53e9d",
+        "origin": "git@github.com:Papercusp/memory.git",
+        "path": "libs/generic/memory",
+        "tree": "9140cd9227ddbdb17368de858e8729f24ba648e7"
+      },
+      {
+        "head": "7505f318208fd08947a096703e33209fd27989a0",
+        "origin": "git@github.com:Papercusp/tooldef.git",
+        "path": "libs/generic/tooldef",
+        "tree": "2a353e61f25063698fd2e353285a438f5234dace"
+      },
+      {
+        "head": "da0e51a1bade6d3fdd99893894166e563d8c91d8",
+        "origin": "git@github.com:Papercusp/tooldef-http.git",
+        "path": "libs/generic/tooldef-http",
+        "tree": "1c4901c0326e668a995d201c9d61f12f44b5c976"
+      },
+      {
+        "head": "cfd6651a5bf799267d60128244acc77571170b0a",
+        "origin": "git@github.com:Papercusp/testing-shell.git",
+        "path": "libs/testing-shell",
+        "tree": "6168c51ba0bcad77d36b9672479b72dc00bd0b4a"
+      },
+      {
+        "head": "49471b8e0fdb58e8df2057ce39c9d571b66c1d1c",
+        "origin": "git@github.com:Papercusp/test-config.git",
+        "path": "libs/test-config",
+        "tree": "e1ef170d5a7dfdd7b7e17730f61fe153e996b42d"
+      },
+      {
+        "head": "4cd664a8b55dd97e3325fcff12062a092e0c9044",
+        "origin": "git@github.com:Papercusp/papercusp-desktop.git",
+        "path": "papercusp-desktop",
+        "tree": "0bed77071f2181303e440cdc47d0bf4255379f9e"
+      },
+      {
+        "head": "c7cb3e4b2411d61d724946668bceb26c68076418",
+        "origin": "git@github.com:Papercusp/dock-workbench.git",
+        "path": "libs/generic/dock-workbench",
+        "tree": "59728f99f71328d5f42ae5d94d5e766179953880"
+      },
+      {
+        "head": "768071110fd650f271b4ddca5105ff97eb4d6796",
+        "origin": "git@github.com:Papercusp/control-mutation.git",
+        "path": "libs/generic/control-mutation",
+        "tree": "7afa233e75c8eead73b3bed13d6a64c0e4018cb2"
+      },
+      {
+        "head": "0cb518ace905679f1e1a6687968a6b405aa498f1",
+        "origin": "git@github.com:Papercusp/prospect-contract.git",
+        "path": "libs/generic/prospect-contract",
+        "tree": "d0f7a92f10521719dc311030cb72906ad2e284a4"
+      },
+      {
+        "head": "d0bf1b565ba14c5e908a00fdf8bd2f3e0c3051eb",
+        "origin": "git@github.com:Papercusp/debounce-coalesce.git",
+        "path": "libs/generic/debounce-coalesce",
+        "tree": "979542d500093a15f198d5d50c1f32e306238ef2"
+      },
+      {
+        "head": "df86ee8852e691e6b2e5a197c0b237b3b5479ff1",
+        "origin": "git@github.com:Papercusp/cache.git",
+        "path": "libs/generic/cache",
+        "tree": "defba9d55c4529a63dec665f3fd9f1796942f6fc"
+      },
+      {
+        "head": "dc1586c1b2f1195ea4f527f1e431b64b26ac5481",
+        "origin": "git@github.com:Papercusp/failure-detector.git",
+        "path": "libs/generic/failure-detector",
+        "tree": "f01bf87cd79933e4d60b6d4ed270c9bdc726341e"
+      },
+      {
+        "head": "8d610199325a135105c3c9fd2eaa20e6ea438c36",
+        "origin": "git@github.com:Papercusp/rules.git",
+        "path": "libs/generic/rules",
+        "tree": "0f3774896390676901ee7867e3b55c47583bad94"
+      },
+      {
+        "head": "3b4c80aeee11ab7f2630c3bcdc59ecff3c469e9a",
+        "origin": "git@github.com:Papercusp/tauri-release-kit.git",
+        "path": "libs/generic/tauri-release-kit",
+        "tree": "66abfac4a7d6178e91534cabe2ba9f2f5489c9e6"
+      },
+      {
+        "head": "aab0ff31cd85649f39e7fe08cf2d6f925377d8c3",
+        "origin": "git@github.com:Papercusp/resumable-download.git",
+        "path": "libs/generic/resumable-download",
+        "tree": "52c96b537f6e10b4a27b11411f39001fc418329c"
+      },
+      {
+        "head": "ff6a4c544abfc27669cd0bf9badad9cb5ed2a47f",
+        "origin": "git@github.com:Papercusp/model-pricing.git",
+        "path": "libs/generic/model-pricing",
+        "tree": "5b3f7bf852d936abefa7177cfa73916e3d96993b"
+      },
+      {
+        "head": "40390b8a92c5fa8a5dd4c174c5533766540e29ca",
+        "origin": "git@github.com:Papercusp/card-stack.git",
+        "path": "libs/generic/card-stack",
+        "tree": "6b2e19a489a2840762102fb5eb8f51e3e32bf830"
+      }
+    ],
+    "typescript_scanner_version": "6.0.3"
+  },
+  "seed": "papercusp:P-011:2026-11-15:class-balanced:v1",
+  "sampleHash": "e32317379ad91c5c50eca383cd34937f80a3c1792e7fbc4cacf5e439b12ab26a",
+  "sample": [
+    {
+      "id": "doc:claude-md",
+      "cls": "registry-composed-parent",
+      "outcome": "unresolved",
+      "finding": "Composed parent is a 91,554-character projection of many parts. Four sampled child parts cannot establish the parent's universal correctness.",
+      "limits": "No whole-parent semantic verdict."
+    },
+    {
+      "id": "part:claude-md#long-jobs-background-them-at-ei-2001777993706028#evidence",
+      "cls": "registry-composed-part",
+      "outcome": "historical",
+      "finding": "Explicitly dated 2026-08-10 process-measurement correction; retained as evidence, not a current process observation.",
+      "limits": "Historical measurement not rerun."
+    },
+    {
+      "id": "doc:security/hosted-workspace-reverse-connector.mdx",
+      "cls": "registry-fresh-document",
+      "outcome": "consistent",
+      "finding": "Migration 1009 defines generation-bound connectors/tickets and FORCE RLS; current handler/client files implement the named connector surfaces.",
+      "limits": "Source consistency only; hosted topology, rotation and actual transport not exercised."
+    },
+    {
+      "id": "doc:agent-insights/git-sync-turn-scoped-commit-hold.mdx",
+      "cls": "registry-other-document",
+      "outcome": "contradicted",
+      "finding": "Doc describes per-edit 60-minute hold and says never-journaling editors wait until cap/session end. readTurnHoldings applies a whole-turn oldest-edit cap and requires a journaled turn.",
+      "limits": "Two concrete semantic contradictions; other doc assertions not certified."
+    },
+    {
+      "id": "override:worker",
+      "cls": "registry-prompt-override",
+      "outcome": "consistent",
+      "finding": "Worker override's implementation/typecheck workflow names the maintained scripts/lint-tsc.mjs route; it is preserved as a normative prompt, not a new platform mechanism.",
+      "limits": "Normative instructions and named route checked; no worker launch."
+    },
+    {
+      "id": "file:papercusp-desktop/src-tauri/env-sidecars/staging/db-sql/194-scout-routed-ideas.sql",
+      "cls": "repo-delivered-projection",
+      "outcome": "consistent",
+      "finding": "Delivered migration 194 is byte-identical to the canonical migration source; schema/commentary correspondence retained.",
+      "limits": "Projection source match; no migration applied."
+    },
+    {
+      "id": "file:infra/phone-app/README.md",
+      "cls": "repo-guide-document",
+      "outcome": "consistent",
+      "finding": "README's 7890/7891/7892, SIP 5070/RTP range and Redis db3 agree with maintained LiveKit templates.",
+      "limits": "Configuration claims only; no live phone/network assertion."
+    },
+    {
+      "id": "file:docs/plans/LIVE-1-rig-runbook-2026-07-02.md",
+      "cls": "repo-history-document",
+      "outcome": "historical",
+      "finding": "Dated July 2 live-drill runbook and then-current machine/precondition snapshot.",
+      "limits": "Not treated as a present machine or gate verdict."
+    },
+    {
+      "id": "file:apps/operator/scripts/psu-launcher-archive-restore-origin.test.ts",
+      "cls": "repo-native-source-envelope",
+      "outcome": "not-applicable",
+      "finding": "Native source envelope contains tests without a compiler-scanned JSDoc unit.",
+      "limits": "No source behavior/test pass is inferred from absence of a selected comment."
+    },
+    {
+      "id": "file:docs/evidence/green-main-native-receipt-progress-20261014.md",
+      "cls": "repo-other-document",
+      "outcome": "historical",
+      "finding": "Dated October 14 receipt progress explicitly says current-local and unshipped.",
+      "limits": "Historical test counts not rerun or presented as current proof."
+    },
+    {
+      "id": "file:apps/operator/prompts/papercup.persona.md",
+      "cls": "repo-prompt-source",
+      "outcome": "unresolved",
+      "finding": "Large normative Papercup persona covers multiple runtimes and behavior contracts.",
+      "limits": "No complete current-source/behavior comparison of this 25,730-character persona."
+    },
+    {
+      "id": "apps/tui/src/ui.rs:2434",
+      "cls": "repo-rust-doc-candidate",
+      "outcome": "consistent",
+      "finding": "ui.rs defines SURFACE_B_MIN_WIDTH=160 and SURFACE_B_MIN_HEIGHT=24; comment accurately names the compact threshold.",
+      "limits": "Static threshold claim; complete rendering journey not executed."
+    },
+    {
+      "id": "packages/operator-core/lib/doc-claims/fetch-superuser-gate-claim.ts:3467",
+      "cls": "repo-typescript-doc-candidate",
+      "outcome": "consistent",
+      "finding": "FetchGateClaimVerdict.tokenPathsNamed is populated from regex matches in the original prose, preserving matched token text.",
+      "limits": "Exact field-comment claim checked."
+    },
+    {
+      "id": "file:papercusp-desktop/bin/lib/streak-escalation.selftest.sh",
+      "cls": "repo-unsupported-source-envelope",
+      "outcome": "consistent",
+      "finding": "Shell selftest reads/extracts the shipped gate's _streak_scan/check_streak_escalation functions and stubs filing.",
+      "limits": "Unsupported-language manual source check; selftest not run."
+    },
+    {
+      "id": "file:packages/operator-core/lib/workspace-host/sodium-browser.test.ts",
+      "cls": "repo-untracked-text",
+      "outcome": "not-applicable",
+      "finding": "Untracked test source has no selected prose/documentation claim.",
+      "limits": "Untracked inclusion verified; test outcome unmeasured."
+    },
+    {
+      "id": "part:claude-md#conditions-reactions-and-live-data-shared-systems",
+      "cls": "registry-composed-part",
+      "outcome": "consistent",
+      "finding": "The composed reuse rule's named rules export exists; proc/coord guidance also points at existing shared surfaces.",
+      "limits": "Named sampled reuse claims; no all-surface conformance assertion."
+    },
+    {
+      "id": "doc:agent-insights/progress-marker-null-sentinel-collision.mdx",
+      "cls": "registry-fresh-document",
+      "outcome": "consistent",
+      "finding": "formatTaskOutcomeFields uses settled ? none : pending; returned status/signal fields implement the documented distinction.",
+      "limits": "Current source check; historical incident not reproduced."
+    },
+    {
+      "id": "doc:testing/social-platform-acceptance.mdx",
+      "cls": "registry-other-document",
+      "outcome": "unresolved",
+      "finding": "Social acceptance runbook mixes source contracts, dated verification, credential walls and live delivery assumptions. Its named platform-registry.ts anchor does not resolve at the recorded canonical path.",
+      "limits": "No complete present-day assessment or outbound delivery attempted."
+    },
+    {
+      "id": "file:papercusp-desktop/src-tauri/env-sidecars/staging/spa/assets/profile-pref-yUIpVmSm.js",
+      "cls": "repo-delivered-projection",
+      "outcome": "not-applicable",
+      "finding": "Generated minified profile preference JavaScript contains no documentation unit.",
+      "limits": "Delivered artifact represented; behavior not judged."
+    },
+    {
+      "id": "file:docs/mockups/README.md",
+      "cls": "repo-guide-document",
+      "outcome": "consistent",
+      "finding": "All five local mockup/spec references resolve, and the document is explicitly a design-board orientation rather than shipped-UI proof.",
+      "limits": "Link/design artifact claim only; no live UI verdict."
+    },
+    {
+      "id": "file:docs/plans/p2p-parity-lanes-LEADER-HANDOFF-2026-07-10.md",
+      "cls": "repo-history-document",
+      "outcome": "historical",
+      "finding": "Leader handoff explicitly labels itself a stale July 10 snapshot and instructs revalidation.",
+      "limits": "No carried leadership, claims, state or commands treated as current."
+    },
+    {
+      "id": "file:packages/operator-core/lib/release/checkpoint-eligibility-snapshot.test.ts",
+      "cls": "repo-native-source-envelope",
+      "outcome": "not-applicable",
+      "finding": "Native test source envelope has no compiler-scanned JSDoc unit.",
+      "limits": "No test execution or behavioral verdict."
+    },
+    {
+      "id": "file:apps/operator/docs/agent-briefs/BRIEF-promote-policy-restart-dogfood-2026-06-07.md",
+      "cls": "repo-other-document",
+      "outcome": "historical",
+      "finding": "June 7 agent brief describes a dated cross-repo dogfood assignment.",
+      "limits": "Not active authorization or a present source contract."
+    },
+    {
+      "id": "file:libs/papercusp/packages/harness/blueprints/base/prompts/migration-verifier.md",
+      "cls": "repo-prompt-source",
+      "outcome": "consistent",
+      "finding": "Migration blueprint declares migration-verifier and knobs.verifyCmd with per-site/overall verification role, matching the prompt's core duty.",
+      "limits": "Legacy CLI examples not executed; role duty only."
+    },
+    {
+      "id": "apps/tui/src/http.rs:4633",
+      "cls": "repo-rust-doc-candidate",
+      "outcome": "consistent",
+      "finding": "RendezvousFailure immediately follows the Rust doc group and enumerates classified failure reasons.",
+      "limits": "Exact nearby enum meaning checked."
+    },
+    {
+      "id": "packages/operator-core/lib/acceptance-seat-succession.ts:3310",
+      "cls": "repo-typescript-doc-candidate",
+      "outcome": "consistent",
+      "finding": "resolveAcceptanceSeatBasis reads work_items, taken_by and source-plan/payload plan and acceptanceDrainPlan predicates, matching the JSDoc.",
+      "limits": "Static SQL claim checked; no seat transfer."
+    },
+    {
+      "id": "file:libs/papercusp/libs/db/sql/864-migrate-legacy-human-parks-to-agent-review.sql",
+      "cls": "repo-unsupported-source-envelope",
+      "outcome": "historical",
+      "finding": "Migration 864 explains its fixed historical cohort and rerun guards, not the current backlog.",
+      "limits": "Historical cohort numbers not remeasured or applied."
+    },
+    {
+      "id": "file:packages/operator-core/lib/subscription-lifecycle.test.ts",
+      "cls": "repo-untracked-text",
+      "outcome": "consistent",
+      "finding": "Untracked subscription test's header names the pure recipient predicate and automatic fields; current module exports those implementations.",
+      "limits": "Header/source correspondence; tests not run."
+    },
+    {
+      "id": "part:claude-md#long-jobs-background-them-at-there-is-a-purpose#evidence",
+      "cls": "registry-composed-part",
+      "outcome": "consistent",
+      "finding": "proc-guard has ancestor exclusion and explicit host visibility failure handling, matching the retained process-probe rule.",
+      "limits": "Source rule only; no current process census."
+    },
+    {
+      "id": "doc:harness/steer-and-chat.mdx",
+      "cls": "registry-fresh-document",
+      "outcome": "unresolved",
+      "finding": "Fresh-badged steering guide combines current surfaces and legacy retirement/owner-gate/Mug discussion.",
+      "limits": "Several core claims match source; complete guide accuracy remains unjudged."
+    },
+    {
+      "id": "doc:agent-insights/consult-provider-context-wall-preflight.mdx",
+      "cls": "registry-other-document",
+      "outcome": "consistent",
+      "finding": "Transcript analyzer tracks synthetic provider context errors, compact boundaries and model-output recovery; dispatch has a first-reply rejection guard.",
+      "limits": "Source behavior only; no provider/fork request launched."
+    },
+    {
+      "id": "file:apps/operator/public/internal/docs/agent-insights/pot-mug-fresh-per-wake.md",
+      "cls": "repo-delivered-projection",
+      "outcome": "historical",
+      "finding": "Delivered page prominently marks Mug-specific conclusion superseded/retired and preserves the historical wake-path map.",
+      "limits": "No blanket-currentness of old wake plumbing asserted."
+    },
+    {
+      "id": "file:libs/generic/rules/README.md",
+      "cls": "repo-guide-document",
+      "outcome": "consistent",
+      "finding": "RulesEngine and evaluateOperatorTest exports match README's generic pure rules engine API.",
+      "limits": "Core API check; examples not executed."
+    },
+    {
+      "id": "file:docs/plans/BRIEF-p2p-fleet-lanes-2026-07-02.md",
+      "cls": "repo-history-document",
+      "outcome": "historical",
+      "finding": "July 2 fleet launch brief is a historical assignment with then-current test baseline.",
+      "limits": "Not an active instruction or current error count."
+    },
+    {
+      "id": "file:packages/operator-core/lib/voice-credentials.test.ts",
+      "cls": "repo-native-source-envelope",
+      "outcome": "not-applicable",
+      "finding": "Native test source envelope has no compiler-scanned JSDoc unit.",
+      "limits": "No test execution or behavior inference."
+    },
+    {
+      "id": "file:.papercusp/worker-log-EI-6256.md",
+      "cls": "repo-other-document",
+      "outcome": "historical",
+      "finding": "Worker log describes a past EI-6256 incident and historical needs-human outcome.",
+      "limits": "No current liveness or blocker conclusion."
+    },
+    {
+      "id": "file:apps/operator/prompts/tutorial/ch1/01-server-gui-tutorial.md",
+      "cls": "repo-prompt-source",
+      "outcome": "unresolved",
+      "finding": "Tutorial's broad GUI-is-inspection/terminal-is-direction guidance needs current product acceptance and policy comparison.",
+      "limits": "Neither declared stale nor accepted from file existence."
+    },
+    {
+      "id": "apps/tui/src/census.rs:2568",
+      "cls": "repo-rust-doc-candidate",
+      "outcome": "unresolved",
+      "finding": "Rust census comment universally promises no clipping and room for every body; constants alone cannot verify that rendered property.",
+      "limits": "W=200/H=50 observed; render coverage not run."
+    },
+    {
+      "id": "packages/operator-core/lib/inference-gateway/admission-state-model.ts:4955",
+      "cls": "repo-typescript-doc-candidate",
+      "outcome": "consistent",
+      "finding": "Gateway observation expiresAtMs is nullable and null is retained as no self-expiry in the expiry aggregation.",
+      "limits": "Exact field semantics; no gateway control mutation."
+    },
+    {
+      "id": "file:libs/papercusp/libs/db/sql/110-harness-gym-control-plane.sql",
+      "cls": "repo-unsupported-source-envelope",
+      "outcome": "historical",
+      "finding": "Migration 110's control-plane design comments accompany its original table definitions.",
+      "limits": "Historical architecture, not today's deployment state."
+    },
+    {
+      "id": "file:packages/operator-core/lib/code-intelligence/documentation-contract.integration.test.ts",
+      "cls": "repo-untracked-text",
+      "outcome": "consistent",
+      "finding": "Integration test imports real TypeScript and firstPartyCallers and constructs actual source-byte identities; header correctly disclaims adapter certification.",
+      "limits": "Same-session authored test; no independent review or new run credit."
+    },
+    {
+      "id": "part:claude-md#tests-after-editing-name-the-files-do-not-use-mi",
+      "cls": "registry-composed-part",
+      "outcome": "consistent",
+      "finding": "lint-tsc supports explicit --files scope and describes --mine as dirty-in-tree inference, matching this rule.",
+      "limits": "Source check only; compiler not rerun."
+    },
+    {
+      "id": "doc:agent-insights/reading-the-loop-routed-triage-corpus.mdx",
+      "cls": "registry-fresh-document",
+      "outcome": "contradicted",
+      "finding": "Fresh-badged doc says no read-side surface identifies origin before a write. Canonical work_items:get returned workItem.origin=local before this session claimed P-011.",
+      "limits": "Specific obsolete absence claim; historical census numbers not challenged."
+    },
+    {
+      "id": "doc:agent-insights/operator-core-route-handler-unit-tests.mdx",
+      "cls": "registry-other-document",
+      "outcome": "unresolved",
+      "finding": "Route-testing guide's universal partial-mock/import/default/header statements need the complete maintained reproductions.",
+      "limits": "Not accepted merely because referenced tests exist."
+    },
+    {
+      "id": "file:apps/operator/public/internal/docs/endpoint-system/gating.md",
+      "cls": "repo-delivered-projection",
+      "outcome": "contradicted",
+      "finding": "Delivered gate page calls its order the exact DEFAULT_DISPATCH_STACK but omits kernel-preflight, which is the first current array entry.",
+      "limits": "Canonical source page also lacks the kernel description; source and projection need correction."
+    },
+    {
+      "id": "file:libs/papercusp/plugins/slack-notifier/README.md",
+      "cls": "repo-guide-document",
+      "outcome": "consistent",
+      "finding": "Slack reference plugin's runNotify performs one fetch with AbortSignal, returns an error for non-OK status and has no retry loop; timeoutSec is 10.",
+      "limits": "Read-only source check; no Slack message or network call sent."
+    },
+    {
+      "id": "file:docs/plans/DESIGN-P-108-results-channel-2026-07-02.md",
+      "cls": "repo-history-document",
+      "outcome": "historical",
+      "finding": "July 2 results-channel design clearly says PROPOSAL awaiting ratification.",
+      "limits": "Rejected/alternative designs not interpreted as shipped behavior."
+    },
+    {
+      "id": "file:apps/operator/scripts/__tests__/tutorial-video.test.ts",
+      "cls": "repo-native-source-envelope",
+      "outcome": "not-applicable",
+      "finding": "Native test source envelope has no compiler-scanned JSDoc unit.",
+      "limits": "No test execution/acceptance inferred."
+    },
+    {
+      "id": "file:docs/evidence/bm25-hybrid-recall-2026-10-11-r18-nodump.md",
+      "cls": "repo-other-document",
+      "outcome": "historical",
+      "finding": "October 11 BM25 report names its source commit, sample fingerprint and historical pass/fail measurements.",
+      "limits": "Original observations retained; not a fresh latency or acceptance result."
+    },
+    {
+      "id": "file:apps/operator/prompts/tutorial/ch5/07-comb.md",
+      "cls": "repo-prompt-source",
+      "outcome": "unresolved",
+      "finding": "Tutorial knowledge-pack overview needs a complete current install/export/review/rollback source check.",
+      "limits": "Plumbing existence alone is insufficient for all workflow claims."
+    }
+  ],
+  "strata": {
+    "authored:rust": 39,
+    "authored:typescript": 958,
+    "composed:rust": 0,
+    "composed:typescript": 0,
+    "native:rust": 3704,
+    "native:typescript": 97577
+  },
+  "population": {
+    "path": "docs/evidence/p011-corpus-candidates-2026-11-15.tsv.gz",
+    "compressedSha256": "4e6bab8bcbd0bd6e9114397a8ff1fa7230d11ef7f35b20edfab39c4e1942b1e6",
+    "uncompressedSha256": "6751295c9f2bb482278d0e209aceb7bddd0ac9c6f711f5bf5e3e6dcb52abf2a5",
+    "count": 114937,
+    "format": "class TAB scoped-id TAB eligible-0-or-1; one LF-terminated row per original inventory entry"
+  }
+}
