@@ -49,14 +49,11 @@ let checkRun: { ok: boolean; out: string } | undefined;
 function runCheck(): { ok: boolean; out: string } {
   if (!checkRun) {
     try {
-      // The test runner injects committed-source-loader before TSX. Use TSX's explicit ESM
-      // entry so this CommonJS-scoped script resolves .js specifiers to .ts sources without
-      // relying on Node's unsupported default-type option.
+      // The supported Node runtime executes this TypeScript ESM entry directly.
+      // Keep inherited NODE_OPTIONS so the test router's loader fence still applies.
       const out = execFileSync(
         process.execPath,
         [
-          '--import',
-          'tsx/esm',
           'scripts/gen-declarations.ts',
           '--check',
         ],
