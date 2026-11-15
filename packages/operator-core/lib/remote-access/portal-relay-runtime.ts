@@ -3,13 +3,12 @@
  *
  * It is the SAME outbound connector a Papercusp-hosted machine runs (HostedWorkspaceConnectorClient
  * + HostedWorkspaceHostSessionAdapter, built by createHostedWorkspaceHostRuntime), in a local mode:
- *   - only the app-http and app-key-mint channels are served (LOCAL_RELAY_CHANNEL_KINDS); a pty,
- *     desktop or operator-http open is refused, because each would give the portal a terminal,
- *     the screen, or loopback-trusted access to a home computer;
+ *   - app channels remain available independently. Desktop discovery and media require a
+ *     separate current local approval and the approved browser's proven Noise key;
  *   - no D-421 agent spawn transform is installed (that is ensureHostedWorkspaceHostRuntime's,
  *     for a hosted VM's customer account) and the bound workspace is NOT made current: this
  *     install's own workspace choice stays the user's;
- *   - no desktop backend.
+ *   - desktop access is confined to the approved local workspace's existing desktops.
  * App calls reach the operator with the deny-only ingress marker (D-015), so keys and scopes are
  * checked exactly as on the own-tunnel path.
  *
@@ -19,6 +18,7 @@
 import { createHash } from 'node:crypto';
 import { pinModuleState } from '@papercusp/module-singleton';
 import type { HostedWorkspaceHostRuntime } from '../workspace-host/hosted-workspace-host-runtime';
+import { currentPortalRelayDesktopGrant, readPortalRelay, type PortalRelayDesktopGrant } from './portal-relay-store';
 
 export interface PortalRelayConnectorStatus {
   readonly running: boolean;
@@ -33,6 +33,7 @@ interface RunningConnector {
   readonly runtime: HostedWorkspaceHostRuntime;
   readonly url: string;
   readonly bearerDigest: string;
+  readonly desktopGrantDigest: string;
   readonly startedAt: Date;
 }
 
@@ -42,25 +43,64 @@ const state = pinModuleState('@papercusp/operator-core.remote-access.portal-rela
 }));
 
 const digest = (value: string) => createHash('sha256').update(value, 'utf8').digest('hex');
+// PostgreSQL JSONB does not preserve object property order.
+const grantDigest = (grant: PortalRelayDesktopGrant | null) => digest(JSON.stringify(grant ? [
+  grant.version, grant.id, grant.installId, grant.portalOrigin, grant.userId, grant.organizationId,
+  grant.customerWorkspaceId, grant.localWorkspaceId, grant.browserPublicKey, grant.view, grant.control, grant.grantedAt,
+] : null));
 
 export type CreatePortalRelayRuntime = (input: {
   url: string;
   bearer: string;
   workspaceRoot: string;
+  desktopGrant?: PortalRelayDesktopGrant | null;
   onTerminal: (reason: string, detail: string) => void;
 }) => Promise<HostedWorkspaceHostRuntime>;
 
 /** Production factory: loaded lazily so a process that never links pulls none of it in. */
 export const createLocalRelayRuntime: CreatePortalRelayRuntime = async (input) => {
-  const [{ createHostedWorkspaceHostRuntime }, { LOCAL_RELAY_CHANNEL_KINDS }] = await Promise.all([
+  const [{ createHostedWorkspaceHostRuntime, createDefaultDesktopBackend }, { LOCAL_RELAY_CHANNEL_KINDS, SafeRootFileError },
+    { loadOrCreateHostedMachineNoiseKeyPair }, { linkedWorkspaceIdentity }] = await Promise.all([
     import('../workspace-host/hosted-workspace-host-runtime'),
     import('../workspace-host/hosted-session-host'),
+    import('../workspace-host/hosted-machine-noise-key'),
+    import('../endpoint-route/routes/hosted-cli/store'),
   ]);
+  const grant = input.desktopGrant ?? null;
+  // A local viewer never reconciles/reaps or creates desktops. Those lifecycles belong
+  // to the local desktop owner, whose registry and lease map this backend reuses.
+  const backend = grant ? createDefaultDesktopBackend(grant.localWorkspaceId, { reconcile: undefined }) : null;
+  const machineKey = grant ? await loadOrCreateHostedMachineNoiseKeyPair() : null;
+  const roster = async () => (await backend!.roster({ userId: grant!.userId }))
+    .filter((entry) => entry.scope === 'agent' || entry.scope === 'pot' || entry.scope === 'workspace');
+  const requireMember = async (id: string) => {
+    if (!(await roster()).some((entry) => entry.desktopSessionId === id)) throw new SafeRootFileError('desktop_session_unknown');
+  };
   return createHostedWorkspaceHostRuntime({
     url: input.url,
     bearer: input.bearer,
     workspaceRoot: input.workspaceRoot,
-    allowedChannelKinds: LOCAL_RELAY_CHANNEL_KINDS,
+    allowedChannelKinds: new Set([...LOCAL_RELAY_CHANNEL_KINDS, 'desktop-discovery', 'desktop']),
+    localDesktopAccess: {
+      browserPublicKey: grant ? Buffer.from(grant.browserPublicKey, 'base64') : null,
+      authorize: async ({ binding, userId, control }) => {
+        if (!grant || userId !== grant.userId || control && !grant.control) return false;
+        const current = currentPortalRelayDesktopGrant(await readPortalRelay());
+        const expected = linkedWorkspaceIdentity(grant.organizationId, grant.installId);
+        return !!current && grantDigest(current) === grantDigest(grant) &&
+          binding.organizationId === grant.organizationId && binding.customerWorkspaceId === grant.customerWorkspaceId &&
+          expected.customerWorkspaceId === grant.customerWorkspaceId && binding.hostId === expected.hostId;
+      },
+    },
+    loadMachineNoiseKeyPair: machineKey ? async () => machineKey : null,
+    ...(backend ? { desktop: {
+      roster,
+      lookup: async (id: string) => { await requireMember(id); return backend.lookup(id); },
+      thumbnail: async (id: string) => { await requireMember(id); return backend.thumbnail(id); },
+      dial: async (value: Parameters<typeof backend.dial>[0]) => { await requireMember(value.desktopSessionId); return backend.dial(value); },
+      heartbeat: (id: string) => backend.heartbeat(id),
+      start: async () => { throw new SafeRootFileError('desktop_start_not_allowed'); },
+    } } : {}),
     onTerminal: (reason, detail) => input.onTerminal(reason, detail),
     onWarning: (message) => console.warn(`[portal-relay] ${message}`),
   });
@@ -70,14 +110,19 @@ export function portalRelayConnectorRunning(): boolean {
   return state.current !== null;
 }
 
-/** Start the connector with this bearer and URL; a no-op when it already runs with both. */
+export function portalRelayConnectorMatchesDesktopGrant(grant: PortalRelayDesktopGrant | null): boolean {
+  return state.current?.desktopGrantDigest === grantDigest(grant);
+}
+
+/** Reconfigure on approval changes even when the app link and bearer stay the same. */
 export async function startPortalRelayConnector(
-  input: { url: string; bearer: string; workspaceRoot: string },
+  input: { url: string; bearer: string; workspaceRoot: string; desktopGrant?: PortalRelayDesktopGrant | null },
   create: CreatePortalRelayRuntime = createLocalRelayRuntime,
 ): Promise<void> {
   const bearerDigest = digest(input.bearer);
+  const desktopGrantDigest = grantDigest(input.desktopGrant ?? null);
   const current = state.current;
-  if (current && current.url === input.url && current.bearerDigest === bearerDigest) return;
+  if (current && current.url === input.url && current.bearerDigest === bearerDigest && current.desktopGrantDigest === desktopGrantDigest) return;
   stopPortalRelayConnector('relay_reconfigured');
   state.terminal = null;
   let runtime: HostedWorkspaceHostRuntime | null = null;
@@ -85,13 +130,14 @@ export async function startPortalRelayConnector(
     url: input.url,
     bearer: input.bearer,
     workspaceRoot: input.workspaceRoot,
+    desktopGrant: input.desktopGrant ?? null,
     onTerminal: (reason, detail) => {
       state.terminal = { reason, detail, at: new Date() };
       // A terminal client never dials again; forget it so the reconciler sees it stopped.
       if (state.current?.runtime === runtime) state.current = null;
     },
   });
-  state.current = { runtime, url: input.url, bearerDigest, startedAt: new Date() };
+  state.current = { runtime, url: input.url, bearerDigest, desktopGrantDigest, startedAt: new Date() };
   runtime.start();
 }
 

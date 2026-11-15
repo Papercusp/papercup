@@ -106,7 +106,7 @@ export type HostedHostTabRole = 'controller' | 'observer';
  * What a channel carries. `observer`/`controller` says WHO the viewer is; this
  * says WHAT they attached to.
  */
-export type HostedHostChannelKind = 'pty' | 'psu' | 'desktop' | 'operator-http';
+export type HostedHostChannelKind = 'pty' | 'psu' | 'desktop' | 'desktop-discovery' | 'operator-http';
 
 /**
  * What a terminal session's one process is: the customer's shell, or psu started by the host
@@ -374,6 +374,11 @@ export interface HostedWorkspaceHostOptions {
    * A relay-linked local install passes {@link LOCAL_RELAY_CHANNEL_KINDS} (D-031 #7).
    */
   allowedChannelKinds?: ReadonlySet<HostedHostOpenKind>;
+  /** Independent local approval. Installed even when no desktop access was approved. */
+  localDesktopAccess?: {
+    browserPublicKey: Buffer | null;
+    authorize(input: { binding: HostedConnectorBinding; userId: string; control: boolean }): Promise<boolean>;
+  };
   /** Independently provisioned endpoint keys. The relay never receives either secret. */
   byocSealedChannel?: {
     localKeyPair: { publicKey: Buffer; secretKey: Buffer };
@@ -499,6 +504,7 @@ type PendingUpload = {
 type Channel =
   | { kind: 'pty'; sessionKey: string; role: HostedHostTabRole }
   | { kind: 'desktop'; desktopSessionId: string; role: HostedHostTabRole }
+  | { kind: 'desktop-discovery'; userId: string; hostedSessionId: string }
   | {
       kind: 'operator-http';
       userId: string;
@@ -878,6 +884,7 @@ export class HostedWorkspaceHostSessionAdapter {
   private readonly authorityPending = new Map<string, { channelId: string;
     settle: (authority: unknown) => void }>();
   private readonly sealedChannels = new Map<string, ByocSealedChannel>();
+  private readonly desktopOutput = new Map<string, { pending: number; chain: Promise<void> }>();
   private readonly desktopChannels = new Map<string, DesktopChannel>();
   /**
    * Only channels whose dial SUCCEEDED. Kept separate from `desktopChannels` (which
@@ -1022,6 +1029,7 @@ export class HostedWorkspaceHostSessionAdapter {
     this.channels.clear();
     for (const sealed of this.sealedChannels.values()) sealed.close();
     this.sealedChannels.clear();
+    this.desktopOutput.clear();
   }
 
   /**
@@ -1061,6 +1069,7 @@ export class HostedWorkspaceHostSessionAdapter {
     this.channels.clear();
     for (const sealed of this.sealedChannels.values()) sealed.close();
     this.sealedChannels.clear();
+    this.desktopOutput.clear();
     return handoff;
   }
 
@@ -1193,7 +1202,7 @@ export class HostedWorkspaceHostSessionAdapter {
     const kind: HostedHostChannelKind | null =
       message.kind === undefined || message.kind === 'pty'
         ? 'pty'
-        : message.kind === 'psu' || message.kind === 'desktop' || message.kind === 'operator-http'
+        : message.kind === 'psu' || message.kind === 'desktop' || message.kind === 'desktop-discovery' || message.kind === 'operator-http'
           ? message.kind
           : null;
     if (!channelId || !userId || !hostedSessionId || audience !== 'workspace-operator' || !role) return;
@@ -1208,12 +1217,24 @@ export class HostedWorkspaceHostSessionAdapter {
       return;
     }
     const sealed = message.sealed === true;
+    const localDesktop = this.options.localDesktopAccess;
+    if (localDesktop && (kind !== 'desktop' && kind !== 'desktop-discovery' || !sealed)) {
+      this.options.send({ type: 'relay.close', channelId, reason: 'desktop_access_required' });
+      return;
+    }
     if (this.options.binding.hosting === 'byoc' && !sealed) {
       this.options.send({ type: 'relay.close', channelId, reason: 'byoc_plaintext_relay_refused' });
       return;
     }
     if (sealed) {
-      if (!this.openSealedChannel(channelId)) return;
+      if (!this.openSealedChannel(channelId, undefined, !!localDesktop)) return;
+    }
+
+    if (kind === 'desktop-discovery') {
+      this.channels.set(channelId, { kind, userId, hostedSessionId });
+      if (!await this.authorizeLocalDesktop(channelId)) return;
+      this.send(channelId, { type: 'desktop.discovery.ready' });
+      return;
     }
 
     if (kind === 'operator-http') {
@@ -1424,6 +1445,9 @@ export class HostedWorkspaceHostSessionAdapter {
     this.desktopChannels.set(channelId, channel);
 
     try {
+      // Reserve the channel before awaiting Noise, so handshake packets can arrive;
+      // touch no local desktop until the browser key and current approval both pass.
+      if (!await this.authorizeLocalDesktop(channelId)) return;
       const record = await backend.lookup(desktopSessionId);
       if (!record) throw new SafeRootFileError('desktop_session_unknown');
       // A person's own desktop admits only that person, in EITHER role
@@ -1438,10 +1462,11 @@ export class HostedWorkspaceHostSessionAdapter {
       }
       const endpoint = assertLoopbackDesktopEndpoint(record.endpoint);
       const grant = hostedDesktopGrant(role, record.credentials);
+      if (!await this.authorizeLocalDesktop(channelId)) return;
       const socket = await backend.dial({ desktopSessionId, endpoint, grant });
       // A detach that landed while we were dialling wins: drop the socket we just
       // opened rather than attaching it to a channel nobody is holding.
-      if (channel.closed || this.desktopChannels.get(channelId) !== channel) {
+      if (channel.closed || this.desktopChannels.get(channelId) !== channel || !await this.authorizeLocalDesktop(channelId)) {
         socket.close();
         return;
       }
@@ -1493,11 +1518,15 @@ export class HostedWorkspaceHostSessionAdapter {
    * JWT), and a resolver failure refuses the handshake. Every other channel pins the single
    * provisioned key.
    */
-  private openSealedChannel(channelId: string, deviceBinding?: DeviceChannelBinding): boolean {
+  private openSealedChannel(channelId: string, deviceBinding?: DeviceChannelBinding, localDesktop = false): boolean {
     const keys = this.options.byocSealedChannel;
     const resolve = keys?.resolveDeviceNoiseKey;
     const remoteKeyPolicy = !keys
       ? null
+      : localDesktop
+        ? this.options.localDesktopAccess?.browserPublicKey
+          ? { expectedRemotePublicKey: this.options.localDesktopAccess.browserPublicKey }
+          : null
       : deviceBinding
         ? resolve
           ? {
@@ -1543,6 +1572,15 @@ export class HostedWorkspaceHostSessionAdapter {
     if (!channel) return;
     const type = string(payload.type, 64);
     if (!type) return;
+    if ((channel.kind === 'desktop' || channel.kind === 'desktop-discovery') && !await this.authorizeLocalDesktop(channelId)) return;
+    if (channel.kind === 'desktop-discovery' && type !== 'desktop.roster' && type !== 'desktop.thumbnail') {
+      this.send(channelId, { type: 'operation.error', operation: type, code: 'channel_kind_mismatch' });
+      return;
+    }
+    if (this.options.localDesktopAccess && type === 'desktop.start') {
+      this.send(channelId, { type: 'operation.error', operation: type, code: 'channel_kind_mismatch' });
+      return;
+    }
 
     // Checked BEFORE the host-level operations below: an operator-http channel is
     // the portal backend's request pipe, and it carries only its own frames — never
@@ -1561,12 +1599,8 @@ export class HostedWorkspaceHostSessionAdapter {
     }
     if (type.startsWith('http.') || type.startsWith('mint.') || type.startsWith('token.')) return;
 
-    // HOST-level operations, answered on ANY authenticated channel.
-    //
-    // Deliberately not a third channel kind: a roster is how a viewer DISCOVERS
-    // which desktop to open, so requiring a desktop channel to ask for it is
-    // circular. The channel's only role here is to prove the caller is the
-    // already-authenticated principal — which `open()` established.
+    // Hosted sessions also discover desktops on their authenticated terminal;
+    // a local installation uses the separately approved discovery-only channel.
     if (type === 'desktop.roster' || type === 'desktop.thumbnail') {
       await this.relayHostDesktop(channelId, type, payload, this.channelIdentity(channelId, channel));
       return;
@@ -1580,6 +1614,7 @@ export class HostedWorkspaceHostSessionAdapter {
       this.relayDesktop(channelId, type, payload);
       return;
     }
+    if (channel.kind === 'desktop-discovery') return;
 
     const session = this.sessions.get(channel.sessionKey);
     if (!session || session.closed) return;
@@ -1776,7 +1811,7 @@ export class HostedWorkspaceHostSessionAdapter {
    * not by desktop, because two channels can watch one desktop.
    */
   private channelIdentity(channelId: string, channel: Channel): { userId: string; hostedSessionId: string } {
-    if (channel.kind === 'operator-http') {
+    if (channel.kind === 'operator-http' || channel.kind === 'desktop-discovery') {
       return { userId: channel.userId, hostedSessionId: channel.hostedSessionId };
     } else if (channel.kind === 'app-key-mint') {
       return { userId: 'portal-oauth', hostedSessionId: channelId };
@@ -1911,7 +1946,7 @@ export class HostedWorkspaceHostSessionAdapter {
       this.audit('operation_denied', identity, channelId, `desktop.start ${code}`);
     };
     if (!requestId) return refuse('request_id_required');
-    if (channel.kind === 'operator-http' || channel.kind === 'app-key-mint' || channel.role !== 'controller') {
+    if (channel.kind === 'operator-http' || channel.kind === 'app-key-mint' || channel.kind === 'desktop-discovery' || channel.role !== 'controller') {
       return refuse('controller_required');
     }
     const backend = this.options.desktop;
@@ -2038,6 +2073,10 @@ export class HostedWorkspaceHostSessionAdapter {
     channel.closed = true;
     this.channels.delete(channel.channelId);
     this.desktopChannels.delete(channel.channelId);
+    this.desktopOutput.delete(channel.channelId);
+    const sealed = this.sealedChannels.get(channel.channelId);
+    this.sealedChannels.delete(channel.channelId);
+    sealed?.close();
     this.attachments.delete(channel.channelId);
     for (const off of channel.teardown.splice(0)) {
       try {
@@ -2064,6 +2103,7 @@ export class HostedWorkspaceHostSessionAdapter {
 
   private detach(channelId: string | null, reason: string): void {
     if (!channelId) return;
+    this.desktopOutput.delete(channelId);
     this.cancelAuthority(channelId);
     const sealed = this.sealedChannels.get(channelId);
     if (sealed) {
@@ -2092,6 +2132,7 @@ export class HostedWorkspaceHostSessionAdapter {
       if (desktop) this.closeDesktopChannel(desktop, reason, false);
       return;
     }
+    if (channel.kind === 'desktop-discovery') return;
     const session = this.sessions.get(channel.sessionKey);
     if (!session) return;
     session.channels.delete(channelId);
@@ -2150,7 +2191,52 @@ export class HostedWorkspaceHostSessionAdapter {
     for (const channelId of session.channels) this.send(channelId, payload);
   }
 
+  /** Check current local authority, including after every asynchronous lookup/dial. */
+  private async authorizeLocalDesktop(channelId: string): Promise<boolean> {
+    const policy = this.options.localDesktopAccess;
+    if (!policy) return true;
+    const channel = this.channels.get(channelId);
+    const sealed = this.sealedChannels.get(channelId);
+    if (!channel || (channel.kind !== 'desktop' && channel.kind !== 'desktop-discovery') || !sealed || this.closed) return false;
+    try {
+      await sealed.opened;
+      const identity = this.channelIdentity(channelId, channel);
+      if (await policy.authorize({ binding: this.options.binding, userId: identity.userId,
+        control: channel.kind === 'desktop' && channel.role === 'controller' })) {
+        return !this.closed && this.channels.get(channelId) === channel && this.sealedChannels.get(channelId) === sealed;
+      }
+    } catch { /* missing or unavailable authority fails closed */ }
+    if (this.channels.get(channelId) === channel) {
+      this.options.send({ type: 'relay.close', channelId, reason: 'desktop_access_revoked' });
+      this.detach(channelId, 'desktop_access_revoked');
+    }
+    return false;
+  }
+
   private send(channelId: string, payload: unknown): void {
+    const channel = this.channels.get(channelId);
+    const type = payload && typeof payload === 'object' ? (payload as { type?: unknown }).type : null;
+    if (this.options.localDesktopAccess && (channel?.kind === 'desktop' || channel?.kind === 'desktop-discovery' ||
+        typeof type === 'string' && type.startsWith('desktop.'))) {
+      if (!channel || !payload || typeof payload !== 'object' || Array.isArray(payload)) return;
+      const sealed = this.sealedChannels.get(channelId);
+      if (!sealed) return;
+      const queue = this.desktopOutput.get(channelId) ?? { pending: 0, chain: Promise.resolve() };
+      const bytes = Buffer.byteLength(JSON.stringify(payload));
+      queue.pending += bytes;
+      if (queue.pending > 4 * HOSTED_HOST_MAX_DESKTOP_FRAME_BYTES) {
+        this.options.send({ type: 'relay.close', channelId, reason: 'desktop_backpressure' });
+        this.detach(channelId, 'desktop_backpressure');
+        return;
+      }
+      this.desktopOutput.set(channelId, queue);
+      queue.chain = queue.chain.then(async () => {
+        if (this.channels.get(channelId) === channel && await this.authorizeLocalDesktop(channelId)) {
+          await sealed.send(payload as Record<string, unknown>);
+        }
+      }).catch(() => this.detach(channelId, 'sealed_channel_failed')).finally(() => { queue.pending -= bytes; });
+      return;
+    }
     const sealed = this.sealedChannels.get(channelId);
     if (sealed && payload && typeof payload === 'object' && !Array.isArray(payload)) {
       void sealed.send(payload as Record<string, unknown>).catch(() => this.detach(channelId, 'sealed_channel_failed'));

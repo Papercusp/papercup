@@ -54,7 +54,7 @@ function fakeWorld(opts: { env?: NodeJS.ProcessEnv; owner?: boolean; otherOperat
   let running = false;
   let bound = false;
   let terminal: { reason: string; detail: string } | null = null;
-  const connectorStarts: Array<{ url: string; bearer: string }> = [];
+  const connectorStarts: Array<Parameters<PortalRelayDeps['connector']['start']>[0]> = [];
   let connectorStops = 0;
   let linkLock = Promise.resolve();
   const pollResults: Array<Awaited<ReturnType<PortalRelayPortalClient['pollToken']>>> = [];
@@ -321,7 +321,7 @@ describe('the reconciler finishes the link and runs the connector', () => {
     expect(w.secrets).toEqual({ deviceCode: null, connectorBearer: 'connector-bearer' });
 
     expect(await reconcilePortalRelay(w.deps)).toMatchObject({ action: 'started' });
-    expect(w.connectorStarts).toEqual([{ url: APPROVED.connectorUrl, bearer: 'connector-bearer' }]);
+    expect(w.connectorStarts).toEqual([{ url: APPROVED.connectorUrl, bearer: 'connector-bearer', desktopGrant: null }]);
     const starting = await portalRelayStatus(w.deps);
     expect(starting.health).toBe('starting');
     w.connectorBinds();
@@ -629,6 +629,21 @@ describe('separate local desktop consent', () => {
     expect(status.desktop.grant).toBeNull();
     expect(currentPortalRelayDesktopGrant(w.row)).toBeNull();
     expect(w.row?.installId).toBe(input.installId);
+  });
+
+  it('reconciles a grant revoked by another local operator without dropping the app link', async () => {
+    const w = await linked();
+    await approvePortalRelayDesktop(input, w.deps);
+    const deps: PortalRelayDeps = { ...w.deps, connector: { ...w.deps.connector,
+      matchesDesktopGrant: (grant) => (w.connectorStarts.at(-1)?.desktopGrant?.id ?? null) === (grant?.id ?? null) } };
+    await reconcilePortalRelay(deps);
+    expect(w.connectorStarts.at(-1)?.desktopGrant?.id).toBe(w.row!.desktopGrant!.id);
+    w.row!.desktopGrant = null; // A second process changed the shared singleton.
+    const stops = w.connectorStops;
+    expect(await reconcilePortalRelay(deps)).toMatchObject({ action: 'started' });
+    expect(w.connectorStops).toBe(stops + 1);
+    expect(w.connectorStarts.at(-1)?.desktopGrant).toBeNull();
+    expect(w.row!.state).toBe('linked'); expect(w.secrets.connectorBearer).toBe('connector-bearer');
   });
 
   it('refuses before portal approval and refuses legacy links without a proven user', async () => {

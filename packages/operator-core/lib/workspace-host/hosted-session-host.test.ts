@@ -1407,6 +1407,126 @@ describe('hosted lane teardown window vs the governor hold (P-014)', () => {
 
 // android-public-release-2026-10-01 D-013 #6: a phone's device-http channel is Noise-sealed
 // end to end; the handshake key names the device, and only that device's JWT is forwarded.
+describe('local desktop grant enforcement', () => {
+  const machineKey = SecretStream.keyPair(Buffer.alloc(32, 71));
+  const browserKey = SecretStream.keyPair(Buffer.alloc(32, 72));
+
+  function localHarness(options: { allowed?: boolean; control?: boolean; wrongKey?: boolean } = {}) {
+    let allowed = options.allowed ?? true;
+    const frames: Record<string, unknown>[] = [];
+    const sent: HostedHostOutboundEnvelope[] = [];
+    const socket = new FakeDesktopSocket();
+    const backend: HostedDesktopBackend = {
+      lookup: vi.fn(async () => ({ endpoint: { host: '127.0.0.1', port: 6901 }, credentials: desktopCredentials })),
+      dial: vi.fn(async () => socket), heartbeat: vi.fn(),
+      roster: vi.fn(async () => [{ desktopSessionId: 'desk', state: 'ready' }]),
+      thumbnail: vi.fn(async () => Buffer.from('preview')), start: vi.fn(async () => null),
+    };
+    const createPty = vi.fn(() => new FakePty());
+    const warnings = vi.fn();
+    const authorize = vi.fn(async ({ userId, control }: { userId: string; control: boolean }) =>
+      allowed && userId === 'user-1' && (!control || options.control === true));
+    let browser: ByocSealedChannel | null = null;
+    const adapter = new HostedWorkspaceHostSessionAdapter({
+      binding, workspaceRoot: '/nonexistent', desktop: backend, createPty, onWarning: warnings,
+      localDesktopAccess: { browserPublicKey: browserKey.publicKey, authorize },
+      byocSealedChannel: { localKeyPair: machineKey },
+      allowedChannelKinds: new Set(['desktop-discovery', 'desktop', 'app-http']),
+      send: (message) => {
+        sent.push(message);
+        if (message.type === 'relay') setImmediate(() => browser?.receive(message.payload as never));
+      },
+    });
+    const open = (kind = 'desktop', extra: Record<string, unknown> = {}) => adapter.accept({
+      type: 'relay.open', channelId: 'local', userId: 'user-1', hostedSessionId: 'session-1',
+      audience: 'workspace-operator', role: 'observer', kind, desktopSessionId: 'desk', sealed: true, ...extra,
+    });
+    const connect = () => {
+      browser = new ByocSealedChannel({ initiator: true, localKeyPair: options.wrongKey ? SecretStream.keyPair() : browserKey,
+        expectedRemotePublicKey: machineKey.publicKey,
+        sendPacket: (payload) => { setImmediate(() => { void adapter.accept({ type: 'relay', channelId: 'local', payload }); }); },
+        onFrame: (frame) => frames.push(frame), onError: () => {},
+      });
+      void browser.opened.catch(() => {});
+      return browser;
+    };
+    return { adapter, backend, socket, sent, frames, createPty, warnings, authorize, open, connect,
+      revoke: () => { allowed = false; }, close: () => { browser?.close(); adapter.close(); } };
+  }
+
+  it('touches no desktop before the independently pinned browser completes Noise', async () => {
+    const h = localHarness();
+    const opening = h.open();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(h.backend.lookup).not.toHaveBeenCalled();
+    expect(h.authorize).not.toHaveBeenCalled();
+    h.close();
+    await opening;
+  });
+
+  it('rejects a wrong browser key before lookup or dialing', async () => {
+    const h = localHarness({ wrongKey: true });
+    const opening = h.open(); h.connect();
+    await vi.waitFor(() => expect(h.sent).toContainEqual(expect.objectContaining({ type: 'relay.close' })));
+    expect(h.backend.lookup).not.toHaveBeenCalled(); expect(h.backend.dial).not.toHaveBeenCalled();
+    h.close(); await opening;
+  });
+
+  it.each([['desktop', { sealed: false }], ['pty', {}], ['operator-http', {}], ['psu', {}]])(
+    'refuses %s before any local operation', async (kind, extra) => {
+      const h = localHarness(); await h.open(kind, extra);
+      expect(h.backend.lookup).not.toHaveBeenCalled(); expect(h.createPty).not.toHaveBeenCalled();
+      if (kind !== 'desktop') expect(h.warnings).toHaveBeenCalledWith('channel_kind_not_allowed');
+      expect(h.sent).toContainEqual(expect.objectContaining({ type: 'relay.close' })); h.close();
+    });
+
+  it('enforces view and control separately and uses the readonly KasmVNC credential for a viewer', async () => {
+    const h = localHarness(); const opening = h.open(); const browser = h.connect();
+    await Promise.all([opening, browser.opened]);
+    await vi.waitFor(() => expect(h.frames).toContainEqual(expect.objectContaining({ type: 'desktop.ready', inputAllowed: false })));
+    expect(h.backend.dial).toHaveBeenCalledWith(expect.objectContaining({ grant: expect.objectContaining({ ...desktopCredentials.view, inputAllowed: false }) }));
+    await browser.send({ type: 'desktop.data', data: Buffer.from('RFB update request').toString('base64') });
+    await vi.waitFor(() => expect(h.socket.sent).toHaveLength(1)); h.close();
+
+    const denied = localHarness(); const takeover = denied.open('desktop', { role: 'controller' }); denied.connect();
+    await takeover; expect(denied.backend.dial).not.toHaveBeenCalled(); denied.close();
+  });
+
+  it.each(['input', 'pixels'] as const)('revocation stops active %s and closes the desktop socket', async (direction) => {
+    const h = localHarness(); const opening = h.open(); const browser = h.connect();
+    await Promise.all([opening, browser.opened]);
+    await vi.waitFor(() => expect(h.frames.some((f) => f.type === 'desktop.ready')).toBe(true));
+    const before = h.frames.length; h.revoke();
+    if (direction === 'input') await browser.send({ type: 'desktop.data', data: Buffer.from('input').toString('base64') });
+    else h.socket.emitData(Buffer.from('private pixels'));
+    await vi.waitFor(() => expect(h.socket.closed).toBe(true));
+    expect(h.socket.sent).toHaveLength(0);
+    expect(h.frames.slice(before).filter((f) => f.type === 'desktop.data')).toHaveLength(0);
+    h.close();
+  });
+
+  it('offers only roster and thumbnail on discovery, never terminal/file/start operations', async () => {
+    const h = localHarness(); const opening = h.open('desktop-discovery'); const browser = h.connect();
+    await Promise.all([opening, browser.opened]);
+    await browser.send({ type: 'desktop.roster', requestId: 'roster' });
+    await vi.waitFor(() => expect(h.frames.some((f) => f.type === 'desktop.roster.result')).toBe(true));
+    for (const type of ['desktop.start', 'pty.input', 'file.list', 'http.request', 'desktop.data']) await browser.send({ type, requestId: type });
+    await vi.waitFor(() => expect(h.frames.filter((f) => f.type === 'operation.error')).toHaveLength(5));
+    expect(h.backend.start).not.toHaveBeenCalled(); expect(h.backend.dial).not.toHaveBeenCalled(); expect(h.createPty).not.toHaveBeenCalled();
+    h.close();
+  });
+
+  it('withholds a thumbnail whose grant was revoked while capture was in flight', async () => {
+    const h = localHarness(); let finish!: (image: Buffer) => void;
+    vi.mocked(h.backend.thumbnail).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const opening = h.open('desktop-discovery'); const browser = h.connect(); await Promise.all([opening, browser.opened]);
+    await browser.send({ type: 'desktop.thumbnail', requestId: 'preview', desktopSessionId: 'desk' });
+    await vi.waitFor(() => expect(h.backend.thumbnail).toHaveBeenCalled()); h.revoke(); finish(Buffer.from('private capture'));
+    await vi.waitFor(() => expect(h.sent).toContainEqual(expect.objectContaining({ type: 'relay.close', reason: 'desktop_access_revoked' })));
+    expect(h.frames.some((f) => f.type === 'desktop.thumbnail.result')).toBe(false); h.close();
+  });
+});
+
 describe('sealed device-http channel (D-013 #6)', () => {
   const jwtFor = (sub: string) =>
     `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ sub })).toString('base64url')}.c2ln`;

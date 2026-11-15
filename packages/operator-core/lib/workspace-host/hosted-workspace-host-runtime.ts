@@ -111,6 +111,7 @@ export interface HostedWorkspaceHostRuntimeOptions {
    * machine (all kinds); a relay-linked local install passes LOCAL_RELAY_CHANNEL_KINDS (D-031 #7).
    */
   allowedChannelKinds?: HostedWorkspaceHostOptions['allowedChannelKinds'];
+  localDesktopAccess?: HostedWorkspaceHostOptions['localDesktopAccess'];
   /**
    * D-013 #6: the machine's static Noise key pair for sealed phone channels (the key the pair
    * QR advertises). Default: the persisted hosted-machine key. Pass `null` to serve no sealed
@@ -338,6 +339,7 @@ export function createHostedWorkspaceHostRuntime(
         ...(options.desktop ? { desktop: options.desktop } : {}),
         ...(options.createPty ? { createPty: options.createPty } : {}),
         ...(options.allowedChannelKinds ? { allowedChannelKinds: options.allowedChannelKinds } : {}),
+        ...(options.localDesktopAccess ? { localDesktopAccess: options.localDesktopAccess } : {}),
         ...(machineNoiseKeyPair
           ? {
             byocSealedChannel: {

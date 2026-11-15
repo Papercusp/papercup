@@ -25,6 +25,7 @@ import {
   portalRelayConnectorRunning,
   portalRelayConnectorStatus,
   startPortalRelayConnector,
+  portalRelayConnectorMatchesDesktopGrant,
   stopPortalRelayConnector,
   takePortalRelayTerminal,
   type PortalRelayConnectorStatus,
@@ -154,7 +155,8 @@ export interface PortalRelayDeps {
   readonly connector: {
     readonly running: () => boolean;
     readonly status: () => PortalRelayConnectorStatus;
-    readonly start: (input: { url: string; bearer: string }) => Promise<void>;
+    readonly start: (input: { url: string; bearer: string; desktopGrant?: PortalRelayDesktopGrant | null }) => Promise<void>;
+    readonly matchesDesktopGrant?: (grant: PortalRelayDesktopGrant | null) => boolean;
     readonly stop: () => void;
     /** The reason the connector ended on its own since the last call, if any. */
     readonly takeTerminal: () => { reason: string; detail: string } | null;
@@ -341,6 +343,7 @@ export function defaultPortalRelayDeps(overrides: Partial<PortalRelayDeps> = {},
       status: portalRelayConnectorStatus,
       // The relay serves no files; the root only satisfies the adapter, which refuses pty channels.
       start: (input) => startPortalRelayConnector({ ...input, workspaceRoot: dataDir(env) }),
+      matchesDesktopGrant: portalRelayConnectorMatchesDesktopGrant,
       stop: () => stopPortalRelayConnector(),
       takeTerminal: takePortalRelayTerminal,
     },
@@ -764,6 +767,11 @@ async function runLinked(row: PortalRelayRow, deps: PortalRelayDeps): Promise<Po
     }
     await deps.store.setOperatorPort(opPort);
   }
+  const desktopGrant = currentPortalRelayDesktopGrant(row);
+  if (deps.connector.running() && deps.connector.matchesDesktopGrant && !deps.connector.matchesDesktopGrant(desktopGrant)) {
+    deps.connector.stop();
+    state.lastConnectorStartAt = 0;
+  }
   if (deps.connector.running()) {
     if (row.lastError && deps.connector.status().bound) await deps.store.recordError(null);
     return { action: 'running', error: null };
@@ -775,7 +783,7 @@ async function runLinked(row: PortalRelayRow, deps: PortalRelayDeps): Promise<Po
     return { action: 'link-ended', error: null };
   }
   state.lastConnectorStartAt = deps.now();
-  await deps.connector.start({ url: row.connectorUrl, bearer: connectorBearer });
+  await deps.connector.start({ url: row.connectorUrl, bearer: connectorBearer, desktopGrant });
   return { action: 'started', error: null };
 }
 
