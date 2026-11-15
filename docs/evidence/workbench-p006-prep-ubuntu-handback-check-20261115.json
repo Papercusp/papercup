@@ -1,0 +1,223 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P-006 PREP-UBUNTU handback check: source-identity handoff and unverified installed boundary",
+  "framework": "operational",
+  "command": [
+    "npx",
+    "tsx",
+    "packages/operator-core/lib/workbench-prep-handback/run.ts"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-15T18:01:59.839Z",
+  "finishedAt": "2026-11-15T18:02:00.503Z",
+  "summary": "2/2 assertions passed for docs/handbacks/workbench-p006-prep-ubuntu.json (plan quick-access-search-launcher-2026-10-26 P-006 -> P-002, clause PREP-UBUNTU@2). Read-only Git object reads plus harness_shared.test_runs and plan_spec_clause_revisions SELECTs. Installed-candidate checks are asserted to remain unresolved; nothing installed, accepted or on main is claimed.",
+  "assertions": [
+    {
+      "id": "workbench.prep.ubuntu.source-identity-handoff",
+      "passed": true,
+      "evidence": "12/12 checks passed"
+    },
+    {
+      "id": "workbench.prep.ubuntu.unverified-installed-boundary",
+      "passed": true,
+      "evidence": "18/18 checks passed"
+    }
+  ],
+  "workItems": [
+    "WI-6554700010049420"
+  ],
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "clauses": [
+    "PREP-UBUNTU@2"
+  ],
+  "evidencePlane": "source",
+  "inputs": [
+    {
+      "path": "docs/handbacks/workbench-p006-prep-ubuntu.json",
+      "sha256": "b90c267d943fcd42f4608e3294c21fde9a68597207782c14cc37febc4e48f7ea",
+      "commit": "b9bf4ec8e26308c44ac07b4cbdf9329c57bd90a5",
+      "dirty": false,
+      "blobEqualsCommit": true
+    },
+    {
+      "path": "packages/operator-core/lib/workbench-prep-handback/check.ts",
+      "sha256": "63d6b4abc5a2808329164122dca10177e014bc9426fc1bde2b625d7d6dbb7c45",
+      "commit": "b9bf4ec8e26308c44ac07b4cbdf9329c57bd90a5",
+      "dirty": false,
+      "blobEqualsCommit": true
+    },
+    {
+      "path": "packages/operator-core/lib/workbench-prep-handback/run.ts",
+      "sha256": "07d688726cbcd62620a5d44b3fd830b83facc46ceb3bf86081765ee26b2377c1",
+      "commit": "b9bf4ec8e26308c44ac07b4cbdf9329c57bd90a5",
+      "dirty": false,
+      "blobEqualsCommit": true
+    }
+  ],
+  "allowDirty": false,
+  "checks": [
+    {
+      "id": "workbench.prep.ubuntu.source-identity-handoff",
+      "passed": true,
+      "checks": [
+        {
+          "id": "clause.pinned",
+          "passed": true,
+          "evidence": "clause PREP-UBUNTU@2 hash=6cf8dce643c1 item=P-006"
+        },
+        {
+          "id": "clause.requires-scenarios",
+          "passed": true,
+          "evidence": "requiredScenarios=[\"workbench.prep.ubuntu.contract-regressions\",\"workbench.prep.ubuntu.source-identity-handoff\",\"workbench.prep.ubuntu.unverified-installed-boundary\"]"
+        },
+        {
+          "id": "gitlink.parent-pins-child",
+          "passed": true,
+          "evidence": "d3077f596756:papercusp-desktop -> 852db7b7d8df5fee87a0cd3e56eb3ea383fdc4e3 (handback 852db7b7d8df)"
+        },
+        {
+          "id": "change.head-is-pinned-child",
+          "passed": true,
+          "evidence": "change.head=852db7b7d8df childCommit=852db7b7d8df"
+        },
+        {
+          "id": "identities.unique",
+          "passed": true,
+          "evidence": "2 distinct paths"
+        },
+        {
+          "id": "identities.equal-changed-population",
+          "passed": true,
+          "evidence": "changed(e6ab1fe9ee54..852db7b7d8df)=[native/gnome/bridge.js, test/native-workbench-gnome.test.mjs] missing=[] extra=[]"
+        },
+        {
+          "id": "blob.native/gnome/bridge.js",
+          "passed": true,
+          "evidence": "852db7b7d8df:native/gnome/bridge.js = 90312ae42fc5e49a17e8177904a0140058320783 (handback 90312ae42fc5)"
+        },
+        {
+          "id": "blob.test/native-workbench-gnome.test.mjs",
+          "passed": true,
+          "evidence": "852db7b7d8df:test/native-workbench-gnome.test.mjs = 294925fc937ddf2ce4afb16adf96f64e0151aae2 (handback 294925fc937d)"
+        },
+        {
+          "id": "regressions.present",
+          "passed": true,
+          "evidence": "3 regression run ref(s)"
+        },
+        {
+          "id": "regression.23875699",
+          "passed": true,
+          "evidence": "papercusp-desktop/test/native-workbench-gnome.test.mjs status=pass dirty=false registered=true testedChild=210c2f8e3adc testedBytesEqualHandoff=true"
+        },
+        {
+          "id": "regression.23875701",
+          "passed": true,
+          "evidence": "papercusp-desktop/test/native-workbench-gnome.test.mjs status=pass dirty=false registered=true testedChild=210c2f8e3adc testedBytesEqualHandoff=true"
+        },
+        {
+          "id": "regression.23875700",
+          "passed": true,
+          "evidence": "papercusp-desktop/test/native-workbench-gnome-live.test.mjs status=pass dirty=false registered=true testedChild=210c2f8e3adc testedBytesEqualHandoff=true"
+        }
+      ]
+    },
+    {
+      "id": "workbench.prep.ubuntu.unverified-installed-boundary",
+      "passed": true,
+      "checks": [
+        {
+          "id": "unresolved.unique",
+          "passed": true,
+          "evidence": "10 distinct checks"
+        },
+        {
+          "id": "required.source-runtime.accepted-binding",
+          "passed": true,
+          "evidence": "scope=source-runtime status=unresolved owner=P-001"
+        },
+        {
+          "id": "required.source-runtime.running-operator-contains-change",
+          "passed": true,
+          "evidence": "scope=source-runtime status=unresolved owner=P-001"
+        },
+        {
+          "id": "required.installed.candidate-artifact-identity",
+          "passed": true,
+          "evidence": "scope=installed-candidate status=unresolved owner=P-002"
+        },
+        {
+          "id": "required.installed.fresh-install-upgrade-login-restart",
+          "passed": true,
+          "evidence": "scope=installed-candidate status=unresolved owner=P-002"
+        },
+        {
+          "id": "required.installed.resident-shortcut-native-surfaces",
+          "passed": true,
+          "evidence": "scope=installed-candidate status=unresolved owner=P-002"
+        },
+        {
+          "id": "required.installed.invalid-pui-guard",
+          "passed": true,
+          "evidence": "scope=installed-candidate status=unresolved owner=P-002"
+        },
+        {
+          "id": "required.installed.helper-eof-reconnect-isolation",
+          "passed": true,
+          "evidence": "scope=installed-candidate status=unresolved owner=P-002"
+        },
+        {
+          "id": "required.installed.vendor-input-canonical-flows",
+          "passed": true,
+          "evidence": "scope=installed-candidate status=unresolved owner=P-002"
+        },
+        {
+          "id": "required.installed.d015-pui-zellij-terminal",
+          "passed": true,
+          "evidence": "scope=installed-candidate status=unresolved owner=P-002"
+        },
+        {
+          "id": "required.installed.physical-device-audio",
+          "passed": true,
+          "evidence": "scope=installed-candidate status=unresolved owner=P-002"
+        },
+        {
+          "id": "unresolved.none-marked-resolved",
+          "passed": true,
+          "evidence": "every listed check is unresolved"
+        },
+        {
+          "id": "scope.source-runtime",
+          "passed": true,
+          "evidence": "2 source-runtime check(s)"
+        },
+        {
+          "id": "scope.installed-candidate",
+          "passed": true,
+          "evidence": "8 installed-candidate check(s)"
+        },
+        {
+          "id": "claims.acceptance",
+          "passed": true,
+          "evidence": "claims.acceptance=false"
+        },
+        {
+          "id": "claims.installed",
+          "passed": true,
+          "evidence": "claims.installed=false"
+        },
+        {
+          "id": "claims.currentMain",
+          "passed": true,
+          "evidence": "claims.currentMain=false"
+        },
+        {
+          "id": "sequence.p001-p002-p003",
+          "passed": true,
+          "evidence": "sequence=[\"P-001\",\"P-002\",\"P-003\"]"
+        }
+      ]
+    }
+  ]
+}
