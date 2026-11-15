@@ -12,7 +12,9 @@ import {
   measureRuntimeEnvironment,
 } from '../../remote-runtime-identity';
 import { findBoxIdentityPaths, redactIdentityLeaks } from '../../../../../scripts/lib/identity-leak-patterns.mjs';
-import { createImplementationReadiness, sealImplementationAcceptance } from '../../harness/improvements/agent-review-policy';
+import { createImplementationReadiness, sealImplementationAcceptance, agentReviewCorrectionRevision,
+  agentReviewCorrectionRequestHash } from '../../harness/improvements/agent-review-policy';
+import { agentReviewEvidenceHandoff } from '../improvements/agent-review';
 import { applyResultProjection, parseProjection } from '../../result-projection';
 import {
   MAX_RECORDED_PASSED_CASES,
@@ -103,16 +105,34 @@ describe('native served reviewer correction evidence', () => {
       bundleSha256: 'b'.repeat(64), manifestSha256: 'c'.repeat(64),
       sourceSha256: '1'.repeat(64), sourceSetSha256: '2'.repeat(64), runtimeFingerprint: '3'.repeat(64),
       sourceBlobs: Object.fromEntries(REVIEWER_CORRECTION_SOURCE_PATHS.map(path => [path, 'd'.repeat(40)])) };
-    const state: any = { item: { kind: 'change', title: 'Original', summary: 'Original report', taken_by: null,
+    const state: any = { item: { id: 'EI-123456789', harness: ctx.harnessSlug, family: 'issue',
+      kind: 'change', title: 'Original', summary: 'Original report', state: 'open', assignee: null,
+      takenAt: null, assignedBy: null, createdBy: null, origin: 'local', auditVerdict: null, definition: null,
       payload: { _ei: {}, agentReview: { correctionHistory: [], correctionReceipts: [] },
+        futureProvenance: { retained: 'opaque source data' },
         implementationReadiness: { status: 'unknown' } } },
-      ledger: { idea_id: 'idea-fixture', title: 'Original', human_grade: 2,
-        human_feedback: 'Original critique', graded_by: 'prior', graded_at: 'prior-time' } };
+      ledger: { workspace_id: ctx.workspaceId, idea_id: 'idea-fixture', routed_ref: 'wi:EI-123456789',
+        target_hive: ctx.harnessSlug, source_hive: null, rail: 'improvement', origin: 'agent-review',
+        title: 'Original', human_grade: 2, human_feedback: 'Original critique',
+        graded_by: 'prior', graded_at: '2026-11-15T00:00:00.123456Z' } };
     const rows: any[] = [];
     const mutations = { selfGradeApplied: false, omitGradeWrite: false, alterReplay: false,
-      missingAuth: false, missingInvocation: false, changingWitness: false, forgedActor: false, omitSeal: false };
+      missingAuth: false, missingInvocation: false, changingWitness: false, forgedActor: false, omitSeal: false,
+      wrongRevision: false, wrongRequestHash: false, omitDefinition: false, omitFullPayload: false,
+      missingEvidence: false, lostEvidenceAfterCleanup: false, corruptEvidence: false,
+      omittedItemField: null as string | null, omittedLedgerField: null as string | null,
+      omittedHandoffField: null as string | null };
     let witnessReads = 0;
-    const cleanup = vi.fn(async () => {});
+    let cleaned = false;
+    const artifacts = new Map<string, string>();
+    const cleanup = vi.fn(async () => { cleaned = true; });
+    const revision = () => mutations.wrongRevision ? 'correction-v1:' + 'e'.repeat(64)
+      : agentReviewCorrectionRevision({ workspaceId: ctx.workspaceId, harness: ctx.harnessSlug, ...state });
+    const handoff = () => {
+      const result: any = agentReviewEvidenceHandoff(state.item);
+      if (mutations.omittedHandoffField) delete result[mutations.omittedHandoffField];
+      return structuredClone(result);
+    };
     const closes: ReturnType<typeof vi.fn>[] = [];
     const deps: ReviewerCorrectionScenarioDeps = {
       witness: vi.fn(async () => ({ ...structuredClone(host),
@@ -129,9 +149,9 @@ describe('native served reviewer correction evidence', () => {
             status: 'ok', args_json: structuredClone(args) });
           if (name === 'improvements:agent-review') {
             if (args.mode === 'correction-base') return { available: true, round: state.item.payload.agentReview.round,
-              correctionRevision: 'correction-v1:' + String(state.item.payload.agentReview.round).repeat(64),
-              reviewHandoff: { filingIdentity: { submittedBy: state.item.payload.agentReview.submittedBy } } };
-            if (args.mode === 'claim') { state.item.taken_by = actor; return { claimed: true, ledgerIdeaId: 'idea-fixture' }; }
+              correctionRevision: revision(), reviewHandoff: handoff() };
+            if (args.mode === 'claim') { state.item.assignee = actor; return { claimed: true,
+              ledgerIdeaId: 'idea-fixture', reviewHandoff: handoff() }; }
             const review = state.item.payload.agentReview;
             const stored = review.correctionReceipts.find((receipt: any) => receipt.requestKey === args.requestKey);
             if (stored) {
@@ -147,14 +167,19 @@ describe('native served reviewer correction evidence', () => {
             const beforeRound = review.round;
             review.round++;
             review.materialAuthors = [...new Set([...(review.materialAuthors ?? []), actor])];
-            review.correctionHistory.push({ actor, priorVerdict: { human_grade: state.ledger.human_grade } });
-            const receipt = { requestKey: args.requestKey, requestHash: '4'.repeat(64), beforeRound,
-              afterRound: review.round, beforeRevision: args.correctionRevision,
-              afterRevision: 'correction-v1:' + String(review.round).repeat(64) };
-            review.correctionReceipts.push(receipt);
+            review.correctionContext = [...(review.correctionContext ?? []), ...correction.notes];
+            review.correctionHistory.push({ actor, classification: 'material', priorVerdict: structuredClone(state.ledger) });
             Object.assign(state.ledger, { title: state.item.title, human_grade: null,
               human_feedback: null, graded_by: null, graded_at: null });
-            state.item.taken_by = null; review.status = 'pending';
+            state.item.assignee = null; state.item.takenAt = null; review.status = 'pending';
+            const receipt = { schemaVersion: 1, workspaceId: ctx.workspaceId, harness: ctx.harnessSlug,
+              itemId: state.item.id, actor, requestKey: args.requestKey,
+              requestHash: mutations.wrongRequestHash ? '4'.repeat(64) : agentReviewCorrectionRequestHash({
+                id: args.id, harness: ctx.harnessSlug, workspaceId: ctx.workspaceId, actor,
+                requestKey: args.requestKey, expectedRound: args.expectedRound,
+                correctionRevision: args.correctionRevision, correction }), beforeRound,
+              afterRound: review.round, beforeRevision: args.correctionRevision, afterRevision: revision() };
+            review.correctionReceipts.push(receipt);
             return { corrected: true, receipt: structuredClone(receipt) };
           }
           if (name === 'blender:grade-idea') {
@@ -162,7 +187,7 @@ describe('native served reviewer correction evidence', () => {
             if (!mutations.omitGradeWrite) {
               Object.assign(state.ledger, { human_grade: args.grade, graded_by: actor });
               state.item.payload.agentReview.status = args.grade === 5 ? 'approved' : 'revision-requested';
-              state.item.taken_by = null;
+              state.item.assignee = null;
               if (args.grade === 5) {
                 const review = state.item.payload.agentReview;
                 const sealed = sealImplementationAcceptance({
@@ -180,18 +205,35 @@ describe('native served reviewer correction evidence', () => {
           throw new Error('unexpected public operation ' + name);
         } };
       },
-      async seed(_nonce, author, reviewer) {
+      async seed(nonce, author, reviewer) {
         state.item.payload._ei.created_by = author;
-        Object.assign(state.item.payload.agentReview, { submittedBy: author, round: 2, status: 'pending' });
-        state.item.taken_by = reviewer; state.ledger.created_by = author;
+        state.item.createdBy = author;
+        state.item.payload.reportContext = { sessionId: author, turnRef: `session_turn:codex:${nonce}:0`,
+          evidenceRefs: [`conversation:reviewer-correction-${nonce}`] };
+        Object.assign(state.item.payload.agentReview, { submittedBy: author, ledgerIdeaId: 'idea-fixture', round: 2, status: 'pending' });
+        state.item.assignee = reviewer; state.ledger.created_by = author;
         return { id: 'EI-123456789', ideaId: 'idea-fixture' };
       },
-      read: vi.fn(async () => structuredClone(state)),
+      read: vi.fn(async () => {
+        const observed = structuredClone(state);
+        if (mutations.omittedItemField) delete observed.item[mutations.omittedItemField];
+        if (mutations.omittedLedgerField) delete observed.ledger[mutations.omittedLedgerField];
+        if (mutations.omitDefinition) delete observed.item.definition;
+        if (mutations.omitFullPayload) delete observed.item.payload.futureProvenance;
+        return observed;
+      }),
       invocations: vi.fn(async () => mutations.missingInvocation ? [] : structuredClone(rows)
         .map(row => mutations.missingAuth ? { ...row, principal_auth_method: null } : row)),
       cleanup,
+      saveEvidence: vi.fn(async content => {
+        const sha256 = createHash('sha256').update(content).digest('hex');
+        artifacts.set(sha256, content);
+        return { sha256, relPath: `immutable/sha256/${sha256}.json` };
+      }),
+      loadEvidence: vi.fn(async sha256 => mutations.missingEvidence || (mutations.lostEvidenceAfterCleanup && cleaned)
+        ? null : mutations.corruptEvidence ? 'corrupt evidence' : artifacts.get(sha256) ?? null),
     };
-    return { ctx, host, state, deps, cleanup, closes, mutations };
+    return { ctx, host, state, deps, cleanup, closes, mutations, artifacts };
   }
 
   it('records served correction, distinct eligible grade, source witnesses and immutable historical replay', async () => {
@@ -202,7 +244,8 @@ describe('native served reviewer correction evidence', () => {
       'reviewer-correction:runtime-contained', 'reviewer-correction:round-and-revisions',
       'reviewer-correction:original-attribution', 'reviewer-correction:correction-authorship',
       'reviewer-correction:independent-grade-and-seal', 'reviewer-correction:item-ledger-readback',
-      'reviewer-correction:retry-no-duplicate', 'reviewer-correction:private-cleanup' ]);
+      'reviewer-correction:retry-no-duplicate', 'reviewer-correction:complete-snapshots-and-hashes',
+      'reviewer-correction:public-handoff', 'reviewer-correction:durable-receipts', 'reviewer-correction:private-cleanup' ]);
     expect(JSON.parse(result.assertions[0]!.evidence)).toEqual(f.host);
     expect(JSON.parse(result.summary)).toMatchObject({ sourceSetSha256: f.host.sourceSetSha256,
       sourceSha256: f.host.sourceSha256, runtimeFingerprint: f.host.runtimeFingerprint,
@@ -210,16 +253,49 @@ describe('native served reviewer correction evidence', () => {
     expect(result.summary.length).toBeLessThanOrEqual(1800);
     expect(result.assertions.every(check => check.evidence.length <= 2000)).toBe(true);
     expect(f.cleanup).toHaveBeenCalledOnce();
+    expect(f.deps.loadEvidence).toHaveBeenCalledTimes(2);
+    const retained = JSON.parse([...f.artifacts.values()][0]!);
+    expect(retained.snapshots.initial.item.payload.futureProvenance).toEqual({ retained: 'opaque source data' });
+    expect(retained.snapshots.initial.ledger.graded_at).toBe('2026-11-15T00:00:00.123456Z');
+    expect(retained.receipts.replay).toEqual(retained.receipts.first);
+    expect(retained.receipts.later).toEqual(retained.snapshots.sealed.item.payload.agentReview.correctionReceipts[1]);
+    expect(retained.requests.first.actor).toBe(retained.receipts.first.actor);
+    expect(JSON.parse(result.summary).receiptRef).toMatch(/^immutable\/sha256\/[a-f0-9]{64}\.json#receipts\.later$/);
     expect(f.closes.every(close => close.mock.calls.length === 1)).toBe(true);
   });
 
   it.each(['selfGradeApplied', 'omitGradeWrite', 'alterReplay', 'missingAuth', 'missingInvocation',
-    'changingWitness', 'forgedActor', 'omitSeal'] as const)('refuses a false pass when %s', async fault => {
+    'changingWitness', 'forgedActor', 'omitSeal', 'wrongRevision', 'wrongRequestHash',
+    'omitDefinition', 'omitFullPayload', 'missingEvidence', 'lostEvidenceAfterCleanup', 'corruptEvidence'] as const)(
+    'refuses a false pass when %s', async fault => {
     const f = fixture(); f.mutations[fault] = true;
     await expect(measureReviewerOwnedCorrection(f.ctx, f.deps)).rejects.toThrow();
     expect(f.closes.every(close => close.mock.calls.length === 1)).toBe(true);
     if (fault !== 'forgedActor') expect(f.cleanup).toHaveBeenCalledOnce();
   });
+
+  it.each(['id', 'family', 'kind', 'title', 'summary', 'state', 'assignee', 'takenAt', 'assignedBy',
+    'createdBy', 'origin', 'auditVerdict', 'payload'])('rejects omitted canonical item field %s', async field => {
+    const f = fixture(); f.mutations.omittedItemField = field;
+    await expect(measureReviewerOwnedCorrection(f.ctx, f.deps)).rejects.toThrow();
+    expect(f.cleanup).toHaveBeenCalledOnce();
+  });
+
+  it.each(['workspace_id', 'idea_id', 'routed_ref', 'target_hive', 'source_hive', 'rail', 'origin', 'created_by',
+    'title', 'human_grade', 'human_feedback', 'graded_by', 'graded_at'])(
+    'rejects omitted canonical ledger field %s', async field => {
+      const f = fixture(); f.mutations.omittedLedgerField = field;
+      await expect(measureReviewerOwnedCorrection(f.ctx, f.deps)).rejects.toThrow();
+      expect(f.cleanup).toHaveBeenCalledOnce();
+    });
+
+  it.each(['filingIdentity', 'source', 'sessionRefs', 'turnRefs', 'evidenceRefs', 'reportContext',
+    'correctionHistory', 'contextOutcomes', 'gaps', 'investigation'])(
+    'rejects omitted public handoff field %s', async field => {
+      const f = fixture(); f.mutations.omittedHandoffField = field;
+      await expect(measureReviewerOwnedCorrection(f.ctx, f.deps)).rejects.toThrow();
+      expect(f.cleanup).toHaveBeenCalledOnce();
+    });
 
   it.each(['processId', 'buildSha', 'bundleSha256', 'manifestSha256', 'sourceBlobs',
     'sourceSha256', 'sourceSetSha256', 'runtimeFingerprint'] as const)(

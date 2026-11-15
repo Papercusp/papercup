@@ -24,6 +24,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { canonicalJson } from '@papercusp/hash-chain';
 import { getOrgPg } from '@papercusp/db-org';
+import { boundedOrgTxn } from '../../pg-bounded-txn';
 import {
   parseTestRunExecutionDetails,
   isRecordedCaseTitle,
@@ -46,6 +47,7 @@ import {
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { redactSensitiveValue } from '../../sensitive-text';
 import { harnessArg, harnessRequiredResult, resolveConcreteHarnessSlug } from '../_harness-scope';
+import type { AgentReviewCorrectionItem, AgentReviewCorrectionLedger } from '../../harness/improvements/agent-review-policy';
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 export const MAX_OPERATIONAL_EVIDENCE_BYTES = 256 * 1024;
@@ -1075,11 +1077,62 @@ export const REVIEWER_CORRECTION_SOURCE_PATHS = [
   'packages/operator-core/lib/agent-tools/testing/record-run.ts',
 ] as const;
 
-type CorrectionObservation = {
-  item: { kind: string; title: string; summary: string; taken_by: string | null; payload: Record<string, any> };
-  ledger: { idea_id: string; title: string; created_by: string; human_grade: number | null;
-    human_feedback: string | null; graded_by: string | null; graded_at: unknown };
-};
+type CorrectionObservation = { item: AgentReviewCorrectionItem; ledger: AgentReviewCorrectionLedger };
+
+// Deliberately independent of the production correction hash/projection helpers:
+// a copied server digest cannot serve as its own verification oracle.
+function observedCorrectionRevision(workspaceId: string, harness: string, observation: CorrectionObservation): string {
+  const { item, ledger } = observation;
+  assert.equal(item.harness, harness); assert.equal(ledger.workspace_id, workspaceId);
+  assert.equal(ledger.routed_ref, `wi:${item.id}`);
+  assert.equal(ledger.target_hive ?? ledger.source_hive, harness);
+  const projected: Record<string, unknown> = {};
+  for (const key of ['id', 'family', 'kind', 'title', 'summary', 'state', 'assignee', 'takenAt',
+    'assignedBy', 'createdBy', 'origin', 'auditVerdict', 'payload'] as const) {
+    assert.ok(Object.hasOwn(item, key) && item[key] !== undefined, `canonical item field missing: ${key}`);
+    projected[key] = item[key];
+  }
+  for (const key of ['workspace_id', 'idea_id', 'routed_ref', 'target_hive', 'source_hive', 'rail',
+    'origin', 'created_by', 'title', 'human_grade', 'human_feedback', 'graded_by', 'graded_at'] as const) {
+    assert.ok(Object.hasOwn(ledger, key) && ledger[key] !== undefined, `canonical ledger field missing: ${key}`);
+  }
+  const payload = item.payload as Record<string, any>;
+  assert.ok(payload && payload.agentReview);
+  assert.equal(payload.agentReview.ledgerIdeaId, ledger.idea_id);
+  const { correctionReceipts: _receipts, ...review } = payload.agentReview;
+  projected.payload = { ...payload, agentReview: review };
+  projected.definition = Object.hasOwn(item, 'definition') ? { present: true, value: item.definition } : { present: false };
+  const gradeAuthority = Object.fromEntries(['workspace_id', 'idea_id', 'routed_ref', 'target_hive', 'source_hive',
+    'rail', 'origin', 'created_by', 'title', 'human_grade', 'human_feedback', 'graded_by', 'graded_at']
+    .map(key => [key, ledger[key as keyof AgentReviewCorrectionLedger]]));
+  return 'correction-v1:' + createHash('sha256').update(canonicalJson({ schemaVersion: 1,
+    workspaceId, harness, item: projected, ledger: gradeAuthority })).digest('hex');
+}
+
+function assertCorrectionHandoff(handoff: any, observation: CorrectionObservation) {
+  const item = observation.item;
+  const payload = item.payload as Record<string, any>;
+  assert.deepEqual(Object.keys(handoff).sort(), ['filingIdentity', 'source', 'sessionRefs', 'turnRefs', 'evidenceRefs',
+    'reportContext', 'correctionHistory', 'contextOutcomes', 'gaps', 'investigation'].sort());
+  assert.equal(handoff.filingIdentity.createdBy, item.createdBy);
+  assert.equal(handoff.filingIdentity.submittedBy, payload.agentReview.submittedBy);
+  assert.deepEqual(handoff.source, { itemId: item.id, harness: item.harness, kind: item.kind,
+    title: item.title, summary: item.summary });
+  assert.deepEqual(handoff.reportContext, payload.reportContext);
+  assert.ok(handoff.sessionRefs.includes(payload.reportContext.sessionId));
+  assert.ok(handoff.turnRefs.includes(payload.reportContext.turnRef));
+  assert.ok(handoff.evidenceRefs.includes(payload.reportContext.evidenceRefs[0]));
+  assert.deepEqual(handoff.correctionHistory, payload.agentReview.correctionHistory ?? []);
+  assert.deepEqual(handoff.contextOutcomes, payload.agentReview.correctionContext ?? []);
+  assert.equal(handoff.gaps.transcript, 'recorded-reference-unread');
+  assert.deepEqual(handoff.gaps.unresolved, handoff.contextOutcomes.filter((note: any) => note.outcome !== 'available'));
+  assert.deepEqual(handoff.gaps.consultation, handoff.contextOutcomes.filter((note: any) => note.kind === 'consultation'));
+  assert.match(handoff.investigation.transcript, /sessions:read/);
+  assert.match(handoff.investigation.consultation, /consult:get_feedback/);
+  assert.match(handoff.investigation.correction, /do not prove reproduction/);
+  assert.deepEqual(handoff.investigation.history, { tool: 'work_items:get',
+    args: { id: item.id, harness: item.harness, detail: true } });
+}
 type CorrectionInvocation = { id: string; tool_name: string; coord_owner_id: string;
   serving_host: string; serving_process_id: string; serving_build_sha: string;
   principal_auth_method: string | null; principal_kind: string | null; principal_trust: string | null;
@@ -1095,6 +1148,8 @@ export interface ReviewerCorrectionScenarioDeps {
   seed: (nonce: string, author: string, reviewer: string) => Promise<{ id: string; ideaId: string }>;
   read: (id: string, ideaId: string) => Promise<CorrectionObservation>;
   invocations: (actors: string[]) => Promise<CorrectionInvocation[]>;
+  saveEvidence: (content: string) => Promise<{ sha256: string; relPath: string }>;
+  loadEvidence: (sha256: string) => Promise<string | null>;
   cleanup: (nonce: string, id: string, ideaId: string) => Promise<void>;
 }
 
@@ -1104,9 +1159,9 @@ export async function invokeReviewerCorrectionPublicTool(
   call: (args: Record<string, unknown>) => Promise<CallToolResult>,
 ) {
   const pick = name === 'improvements:agent-review'
-    ? args.mode === 'claim' ? ['claimed', 'ledgerIdeaId', 'reason']
+    ? args.mode === 'claim' ? ['claimed', 'ledgerIdeaId', 'reviewHandoff', 'reason']
       : args.mode === 'correction-base'
-        ? ['available', 'round', 'correctionRevision', 'reviewHandoff.filingIdentity.submittedBy', 'reason']
+        ? ['available', 'round', 'correctionRevision', 'reviewHandoff', 'reason']
         : ['corrected', 'replayed', 'receipt', 'reason']
     : name === 'blender:grade-idea' ? ['applied', 'reason']
       : ['ownerId', 'source', 'workspaceId'];
@@ -1152,10 +1207,12 @@ export async function cleanupReviewerCorrectionFixture(ctx: RecordContext, nonce
  * reads and removes nonce-owned fixtures. No lifecycle or grade handler is imported. */
 async function reviewerCorrectionScenarioDeps(ctx: RecordContext): Promise<ReviewerCorrectionScenarioDeps> {
   const [{ connectAgentMcp }, { readSuperuserToken }, { getServingHostIdentity },
-    { runtimeObservabilityHealth }, { createIssue, issuesScopeWorkspace }, { recordRoutedIdea }, policy] = await Promise.all([
+    { runtimeObservabilityHealth }, { createIssue, issuesScopeWorkspace }, { recordRoutedIdea }, policy,
+    { getWorkItem }, { saveImmutableTextArtifact, loadImmutableTextArtifact }] = await Promise.all([
     import('../../agent-mcp-client'), import('../../superuser-token'), import('../../serving-host-identity'),
     import('../../observability/runtime'), import('../../issues-engineer'), import('../../scout/routed-ledger'),
     import('../../harness/improvements/agent-review-policy'),
+    import('../../work-items'), import('../../text-artifacts'),
   ]);
   const workspace = ctx.workspaceId!;
   const harness = resolveConcreteHarnessSlug(undefined, ctx)!;
@@ -1213,6 +1270,9 @@ async function reviewerCorrectionScenarioDeps(ctx: RecordContext): Promise<Revie
         title: 'Disposable reviewer correction control', body: 'Original private fixture report.',
         createdBy: author, assignee: reviewer, signalOrigin: 'drill',
         payload: { reviewerCorrectionFixture: nonce,
+          reportContext: { sessionId: author, turnRef: `session_turn:codex:${nonce}:0`,
+            evidenceRefs: [`conversation:reviewer-correction-${nonce}`],
+            note: 'Synthetic fixture references; originating transcript and consultation are unavailable.' },
           agentReview: { status: 'pending', submittedBy: author, ledgerIdeaId: ideaId, round: 2 },
           implementationReadiness: policy.createImplementationReadiness({ status: 'unknown',
             source: 'agent-review', reason: 'awaiting-agent-review' }) } });
@@ -1232,14 +1292,25 @@ async function reviewerCorrectionScenarioDeps(ctx: RecordContext): Promise<Revie
       }
     },
     async read(id, ideaId) {
-      const items = await sql`SELECT item_kind AS kind, title, summary, taken_by, payload FROM harness_shared.work_items
-        WHERE workspace_id=${workspace} AND harness_slug=${harness} AND feature_id=${id}`;
-      const ledger = await sql`SELECT idea_id,title,created_by,human_grade,human_feedback,graded_by,graded_at
-        FROM harness_shared.scout_routed_ideas WHERE workspace_id=${workspace}
-          AND harness_slug=${harness} AND idea_id=${ideaId} AND routed_ref=${`wi:${id}`}`;
-      assert.equal(items.length, 1); assert.equal(ledger.length, 1);
-      return { item: items[0], ledger: ledger[0] } as unknown as CorrectionObservation;
+      return boundedOrgTxn(async tx => {
+        const rows = await tx`SELECT payload FROM harness_shared.work_items
+          WHERE workspace_id=${workspace} AND harness_slug=${harness} AND feature_id=${id} FOR SHARE`;
+        const item = await getWorkItem(id, harness, {}, tx);
+        assert.equal(rows.length, 1); assert.ok(item);
+        // Match the canonical writer's full payload, including private provenance
+        // and unknown future keys omitted by compatibility views.
+        item.payload = rows[0]!.payload;
+        const ledger = await tx<AgentReviewCorrectionLedger[]>`SELECT workspace_id,idea_id,routed_ref,
+          target_hive,source_hive,rail,origin,created_by,title,human_grade,human_feedback,graded_by,
+          to_char(graded_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS graded_at
+          FROM harness_shared.scout_routed_ideas WHERE workspace_id=${workspace}
+            AND (idea_id=${ideaId} OR routed_ref=${`wi:${id}`}) FOR SHARE`;
+        assert.equal(ledger.length, 1);
+        return { item, ledger: ledger[0]! };
+      }, { phase: 'reviewer-correction:canonical-readback' });
     },
+    saveEvidence: content => saveImmutableTextArtifact(harness, content),
+    loadEvidence: sha256 => loadImmutableTextArtifact(harness, sha256),
     async invocations(actors) {
       // The invocation writer flushes asynchronously. Bound convergence on these
       // exact actors; never infer receipt presence from a successful HTTP response.
@@ -1268,7 +1339,8 @@ export async function measureReviewerOwnedCorrection(ctx: RecordContext, deps: R
   for (const value of [before.sourceSha256, before.sourceSetSha256, before.runtimeFingerprint]) assert.match(value, /^[a-f0-9]{64}$/);
   assert.deepEqual(Object.keys(before.sourceBlobs).sort(), [...REVIEWER_CORRECTION_SOURCE_PATHS].sort());
   for (const path of REVIEWER_CORRECTION_SOURCE_PATHS) assert.match(before.sourceBlobs[path] ?? '', /^[a-f0-9]{40}$/);
-  const nonce = randomUUID();
+  const nonce: string = randomUUID();
+  const harness = resolveConcreteHarnessSlug(undefined, ctx)!;
   const clients: Awaited<ReturnType<ReviewerCorrectionScenarioDeps['open']>>[] = [];
   let fixture: Awaited<ReturnType<ReviewerCorrectionScenarioDeps['seed']>> | undefined;
   let scenarioError: unknown;
@@ -1292,10 +1364,13 @@ export async function measureReviewerOwnedCorrection(ctx: RecordContext, deps: R
     assert.match(id, /^EI-[0-9]+$/);
     const base = await reviewer!.invoke('improvements:agent-review', { mode: 'correction-base', id });
     assert.equal(base.available, true);
-    assert.equal(base.reviewHandoff.filingIdentity.submittedBy, actors[0]);
+    assertCorrectionHandoff(base.reviewHandoff, initial);
+    assert.equal(base.correctionRevision, observedCorrectionRevision(ctx.workspaceId!, harness, initial));
     const request = { mode: 'correct', id, requestKey: nonce, expectedRound: base.round,
       correctionRevision: base.correctionRevision, correction: { classification: 'material',
-        notes: [{ kind: 'transcript', outcome: 'missing', text: 'Disposable fixture has no originating transcript.' }],
+        notes: [{ kind: 'transcript', outcome: 'missing', text: 'Disposable fixture has no originating transcript.' },
+          { kind: 'evidence', outcome: 'unknown', text: 'Synthetic evidence reference is not reproduction proof.' },
+          { kind: 'consultation', outcome: 'unavailable', text: 'Synthetic fixture has no prior consultation.' }],
         changes: { title: 'Corrected disposable report', summary: 'Measured correction through the public MCP door.',
           acceptance: { problem: 'Disposable report needs reviewer-owned correction.',
             evidence: ['This native run measures the served correction and its canonical readbacks.'],
@@ -1305,18 +1380,52 @@ export async function measureReviewerOwnedCorrection(ctx: RecordContext, deps: R
     const first = await reviewer!.invoke('improvements:agent-review', request);
     assert.equal(first.corrected, true);
     const corrected = await deps.read(id, ideaId);
+    const typedRequest = (value: typeof request) => ({ id, harness, workspaceId: ctx.workspaceId,
+      actor: actors[1], requestKey: value.requestKey, expectedRound: value.expectedRound,
+      correctionRevision: value.correctionRevision, correction: value.correction });
+    const verifyReceipt = (value: typeof request, result: any, before: CorrectionObservation, after: CorrectionObservation) => {
+      assert.deepEqual({ schemaVersion: result.schemaVersion, workspaceId: result.workspaceId,
+        harness: result.harness, itemId: result.itemId, actor: result.actor, requestKey: result.requestKey },
+      { schemaVersion: 1, workspaceId: ctx.workspaceId, harness, itemId: id, actor: actors[1], requestKey: value.requestKey });
+      assert.equal(result.requestHash, createHash('sha256').update(canonicalJson(typedRequest(value))).digest('hex'));
+      assert.equal(result.beforeRevision, observedCorrectionRevision(ctx.workspaceId!, harness, before));
+      assert.equal(result.afterRevision, observedCorrectionRevision(ctx.workspaceId!, harness, after));
+      const oldPayload = before.item.payload as Record<string, any>;
+      const newPayload = after.item.payload as Record<string, any>;
+      assert.equal(result.beforeRound, oldPayload.agentReview.round);
+      assert.equal(result.afterRound, newPayload.agentReview.round);
+      assert.equal(result.afterRound, result.beforeRound + 1);
+      for (const field of ['id', 'family', 'kind', 'harness', 'state', 'assignedBy', 'createdBy', 'origin', 'auditVerdict', 'definition'] as const) {
+        assert.equal(Object.hasOwn(after.item, field), Object.hasOwn(before.item, field));
+        assert.deepEqual(after.item[field], before.item[field], `correction changed protected item field: ${field}`);
+      }
+      assert.equal(after.item.assignee, null); assert.equal(after.item.takenAt, null);
+      for (const field of ['workspace_id', 'idea_id', 'routed_ref', 'target_hive', 'source_hive', 'rail', 'origin', 'created_by'] as const) {
+        assert.deepEqual(after.ledger[field], before.ledger[field], `correction changed protected ledger field: ${field}`);
+      }
+      const { agentReview: oldReview, implementationReadiness: _oldReadiness, ...oldOther } = oldPayload;
+      const { agentReview: newReview, implementationReadiness: _newReadiness, ...newOther } = newPayload;
+      assert.deepEqual(newOther, oldOther, 'correction changed unrelated full payload');
+      assert.deepEqual(newReview.correctionHistory.slice(0, -1), oldReview.correctionHistory ?? []);
+      assert.deepEqual(newReview.correctionHistory.at(-1).priorVerdict, before.ledger);
+      assert.deepEqual(newReview.correctionContext, [...(oldReview.correctionContext ?? []), ...value.correction.notes]);
+      assert.deepEqual(newReview.correctionReceipts, [...(oldReview.correctionReceipts ?? []), result]);
+    };
+    verifyReceipt(request, first.receipt, initial, corrected);
     assert.equal(corrected.item.title, request.correction.changes.title);
     assert.equal(corrected.item.summary, request.correction.changes.summary);
-    assert.equal(corrected.item.payload._ei.created_by, actors[0]);
-    assert.equal(corrected.item.payload.agentReview.submittedBy, actors[0]);
+    const correctedPayload = corrected.item.payload as Record<string, any>;
+    assert.equal(corrected.item.createdBy, actors[0]);
+    assert.equal(correctedPayload._ei.created_by, actors[0]);
+    assert.equal(correctedPayload.agentReview.submittedBy, actors[0]);
     assert.equal(corrected.ledger.created_by, initial.ledger.created_by);
     assert.equal(corrected.ledger.title, corrected.item.title);
     assert.deepEqual([corrected.ledger.human_grade, corrected.ledger.human_feedback,
       corrected.ledger.graded_by, corrected.ledger.graded_at], [null, null, null, null]);
-    assert.deepEqual(corrected.item.payload.agentReview.materialAuthors, [actors[1]]);
-    assert.equal(corrected.item.payload.agentReview.correctionHistory[0].priorVerdict.human_grade, 2);
-    assert.deepEqual(corrected.item.payload.agentReview.correctionReceipts, [first.receipt]);
-    assert.equal(corrected.item.payload.implementationReadiness.status, 'unknown');
+    assert.deepEqual(correctedPayload.agentReview.materialAuthors, [actors[1]]);
+    assert.equal(correctedPayload.agentReview.correctionHistory[0].priorVerdict.human_grade, 2);
+    assert.deepEqual(correctedPayload.agentReview.correctionReceipts, [first.receipt]);
+    assert.equal(correctedPayload.implementationReadiness.status, 'unknown');
     assert.equal(first.receipt.beforeRound, base.round);
     assert.equal(first.receipt.beforeRevision, base.correctionRevision);
     assert.ok(first.receipt.afterRound > first.receipt.beforeRound);
@@ -1326,36 +1435,43 @@ export async function measureReviewerOwnedCorrection(ctx: RecordContext, deps: R
     assert.equal(selfGrade.applied, false, 'material author must remain ineligible');
     const claimed = await grader!.invoke('improvements:agent-review', { mode: 'claim', id });
     assert.equal(claimed.claimed, true, 'independent public review claim must succeed'); assert.equal(claimed.ledgerIdeaId, ideaId);
+    assertCorrectionHandoff(claimed.reviewHandoff, corrected);
     const grade = await grader!.invoke('blender:grade-idea', {
       ideaId, grade: 2, feedback: 'Content revision: add the missing fixture diagnosis.' });
     assert.equal(grade.applied, true);
     const graded = await deps.read(id, ideaId);
     assert.equal(graded.ledger.graded_by, actors[2]); assert.equal(graded.ledger.human_grade, 2);
-    assert.equal(graded.item.payload.agentReview.status, 'revision-requested');
+    assert.equal((graded.item.payload as Record<string, any>).agentReview.status, 'revision-requested');
     const laterBase = await reviewer!.invoke('improvements:agent-review', { mode: 'correction-base', id });
-    const later = await reviewer!.invoke('improvements:agent-review', { ...request,
+    assertCorrectionHandoff(laterBase.reviewHandoff, graded);
+    assert.equal(laterBase.correctionRevision, observedCorrectionRevision(ctx.workspaceId!, harness, graded));
+    const laterRequest = { ...request,
       requestKey: nonce + '-later', expectedRound: laterBase.round, correctionRevision: laterBase.correctionRevision,
       correction: { ...request.correction, changes: { ...request.correction.changes,
-        summary: 'Later material correction preserves historical receipts.' } } });
+        summary: 'Later material correction preserves historical receipts.' } } };
+    const later = await reviewer!.invoke('improvements:agent-review', laterRequest);
     assert.equal(later.corrected, true);
     const beforeReplay = await deps.read(id, ideaId);
+    verifyReceipt(laterRequest, later.receipt, graded, beforeReplay);
     const replay = await reviewer!.invoke('improvements:agent-review', request);
     assert.equal(replay.replayed, true); assert.deepEqual(replay.receipt, first.receipt);
-    assert.deepEqual(await deps.read(id, ideaId), beforeReplay, 'historical replay must be read-only');
+    const afterReplay = await deps.read(id, ideaId);
+    assert.deepEqual(afterReplay, beforeReplay, 'historical replay must be read-only');
     assert.equal((await grader!.invoke('improvements:agent-review', { mode: 'claim', id })).claimed, true);
     const approved = await grader!.invoke('blender:grade-idea', { ideaId, grade: 5,
       feedback: 'The private fixture correction and proposal are complete on the measured current build.' });
     assert.equal(approved.applied, true);
     const sealed = await deps.read(id, ideaId);
     assert.equal(sealed.ledger.human_grade, 5); assert.equal(sealed.ledger.graded_by, actors[2]);
-    assert.equal(sealed.item.payload.agentReview.status, 'approved');
-    assert.equal(sealed.item.payload.implementationReadiness.status, 'ready');
+    const sealedPayload = sealed.item.payload as Record<string, any>;
+    assert.equal(sealedPayload.agentReview.status, 'approved');
+    assert.equal(sealedPayload.implementationReadiness.status, 'ready');
     const { evaluateImplementationAcceptance } = await import('../../harness/improvements/agent-review-policy');
     const acceptance = evaluateImplementationAcceptance(sealed.item.payload, sealed.item);
     assert.equal(acceptance.state, 'qualifying', 'a bare ready flag is insufficient');
     assert.deepEqual(acceptance.contract?.authority, { kind: 'agent-review', reviewer: actors[2],
       submittedBy: actors[0], round: later.receipt.afterRound });
-    assert.deepEqual(sealed.item.payload.agentReview.correctionReceipts[1], later.receipt);
+    assert.deepEqual(sealedPayload.agentReview.correctionReceipts[1], later.receipt);
     assert.deepEqual(await deps.witness(), before, 'process and loaded source must remain stable');
     const invocations = await deps.invocations(actors);
     const receipt = (actor: string, tool: string, predicate: (args: Record<string, any>) => boolean) => {
@@ -1376,11 +1492,22 @@ export async function measureReviewerOwnedCorrection(ctx: RecordContext, deps: R
     const approvalRefs = receipt(actors[2]!, 'blender:grade-idea', args => args.ideaId === ideaId && args.grade === 5);
     const laterRefs = receipt(actors[1]!, 'improvements:agent-review', args => args.mode === 'correct' && args.requestKey === nonce + '-later');
     assert.equal(approvalRefs.length, 1); assert.equal(laterRefs.length, 1);
+    const evidence = JSON.stringify({ schemaVersion: 1, kind: 'reviewer-correction-evidence',
+      workspaceId: ctx.workspaceId, harness, nonce, runtime: before,
+      snapshots: { initial, corrected, graded, beforeReplay, afterReplay, sealed },
+      requests: { first: typedRequest(request), later: typedRequest(laterRequest) },
+      receipts: { first: first.receipt, later: later.receipt, replay: replay.receipt },
+      handoffs: { original: base.reviewHandoff, corrected: claimed.reviewHandoff, graded: laterBase.reviewHandoff }, invocations });
+    const saved = await deps.saveEvidence(evidence);
+    assert.equal(saved.sha256, createHash('sha256').update(evidence).digest('hex'));
+    assert.equal(saved.relPath, `immutable/sha256/${saved.sha256}.json`);
+    assert.equal(await deps.loadEvidence(saved.sha256), evidence, 'complete evidence must persist before cleanup');
     const ownFixture = fixture; fixture = undefined;
     await deps.cleanup(nonce, ownFixture.id, ownFixture.ideaId);
+    assert.equal(await deps.loadEvidence(saved.sha256), evidence, 'complete evidence must remain retrievable after cleanup');
     const summary = JSON.stringify({ schemaVersion: 1, workspaceId: ctx.workspaceId,
       harness: resolveConcreteHarnessSlug(undefined, ctx), itemRef: id, ideaRef: ideaId,
-      receiptRef: `work_items:${id}#agentReview.correctionReceipts:${later.receipt.requestKey}`,
+      receiptRef: `${saved.relPath}#receipts.later`,
       requestHash: later.receipt.requestHash, correctionAuthor: actors[1], approver: actors[2],
       beforeRevision: later.receipt.beforeRevision, afterRevision: later.receipt.afterRevision,
       beforeRound: later.receipt.beforeRound, afterRound: later.receipt.afterRound,
@@ -1401,6 +1528,9 @@ export async function measureReviewerOwnedCorrection(ctx: RecordContext, deps: R
       { id: 'reviewer-correction:item-ledger-readback', passed: true, evidence: `Canonical item ${id} and idea ${ideaId}; final grade5 and qualifying source-bound seal.` },
       { id: 'reviewer-correction:retry-no-duplicate', passed: true, evidence: JSON.stringify({ invocations: corrections,
         initialReceipt: first.receipt.requestHash, laterReceipt: later.receipt.requestHash, canonicalReadbackUnchanged: true }) },
+      { id: 'reviewer-correction:complete-snapshots-and-hashes', passed: true, evidence: `${harness}:${saved.relPath}#snapshots; independently verified correction-v1 and authenticated request hashes.` },
+      { id: 'reviewer-correction:public-handoff', passed: true, evidence: `${harness}:${saved.relPath}#handoffs; source references, ten fields, typed unknowns and investigation guidance verified.` },
+      { id: 'reviewer-correction:durable-receipts', passed: true, evidence: `${harness}:${saved.relPath}#receipts; complete original/later/replay receipts retrieved after cleanup.` },
       { id: 'reviewer-correction:private-cleanup', passed: true, evidence: `Verified removal of nonce-owned fixture ${id} and its exact routed idea ${ideaId}.` },
     ] };
   } catch (error) {
