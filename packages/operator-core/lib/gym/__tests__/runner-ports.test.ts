@@ -5,7 +5,9 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createGymRunnerPorts, parseVitestOracleResults, type GymRunnerPortsConfig } from '../runner-ports';
+import { PC_EXECUTED_INPUTS_DIR_ENV } from '@papercusp/test-config/vitest-config';
+import { createGymRunnerPorts, oracleEnv, parseVitestOracleResults, withoutInheritedPreloads,
+  type GymRunnerPortsConfig } from '../runner-ports';
 import type { Sql } from 'postgres';
 
 /** A no-op tagged-template + `.unsafe()`/`.json()` sql fake (teardown + principal-seed paths). */
@@ -178,6 +180,7 @@ describe('createGymRunnerPorts', () => {
 
   it('measures real Git and Vitest oracle artifacts across an implementation change', async () => {
     const clonePath = mkdtempSync(join(tmpdir(), 'gym-oracle-real-'));
+    const inputsDir = mkdtempSync(join(tmpdir(), 'gym-oracle-inputs-'));
     const vitestDir = dirname(fileURLToPath(import.meta.resolve('vitest/package.json')));
     const reporterPath = join(dirname(fileURLToPath(import.meta.resolve('@papercusp/test-config/vitest-config'))), 'executed-source-map-reporter.ts');
     const implementation = 'export const answer = 42;\n';
@@ -205,10 +208,16 @@ describe('createGymRunnerPorts', () => {
       } }));
       const configHelper = 'export const workers = 1;\n';
       writeFileSync(join(clonePath, 'config-helper.mjs'), configHelper);
+      // Arm worker inputs capture the way executedSourceMapConfig
+      // (libs/test-config/src/vitest-config.ts) arms it: a handoff directory plus the
+      // setup file. Without it the reporter has no final worker module imports and
+      // every module reads worker-module-imports-unavailable.
+      const inputsCaptureSetup = join(dirname(reporterPath), 'executed-inputs-capture-setup.ts');
       writeFileSync(join(clonePath, 'vitest.config.mjs'), `import { workers } from './config-helper.mjs';
         import { allow } from 'runner-support';
+        process.env.${PC_EXECUTED_INPUTS_DIR_ENV} = ${JSON.stringify(inputsDir)};
         export default { test: {
-        include: ['oracle.test.mjs'], pool: 'forks', maxWorkers: workers, fileParallelism: !allow,
+        include: ['oracle.test.mjs'], setupFiles: [${JSON.stringify(inputsCaptureSetup)}], pool: 'forks', maxWorkers: workers, fileParallelism: !allow,
         experimental: { importDurations: { limit: 1000000 } },
         reporters: ['json', ${JSON.stringify(reporterPath)}], outputFile: process.argv.find(a => a.startsWith('--outputFile='))?.slice(13),
       } };\n`);
@@ -386,8 +395,14 @@ describe('createGymRunnerPorts', () => {
           { path: 'config-helper.mjs', sha256: digest('export const workers = 2;'), currentSha256: digest('export const workers = 2;') },
         ]) },
       } });
-    } finally { rmSync(clonePath, { recursive: true, force: true }); }
-  }, 30_000);
+    } finally {
+      rmSync(clonePath, { recursive: true, force: true });
+      rmSync(inputsDir, { recursive: true, force: true });
+    }
+    // Several real oracle runs, each with worker inputs capture armed as production
+    // configs arm it: measured 42.7s alone on the shared host (2026-11-15), so 30s
+    // cut the run short once the capture reached every assertion.
+  }, 120_000);
 
   it.each([false, true])('retains intermediate loader audit verbatim and cleans its file (command failure=%s)', async failure => {
     const clonePath = mkdtempSync(join(tmpdir(), 'gym-loader-audit-'));
@@ -616,5 +631,27 @@ describe('createGymRunnerPorts', () => {
     const p = createGymRunnerPorts(cfg().config);
     expect(typeof p.now()).toBe('number');
     await expect(p.sleep(1)).resolves.toBeUndefined();
+  });
+});
+
+// A router's preload inherited into the oracle made the clone's command process
+// read status 'unknown' with every original-load hash null.
+describe('oracleEnv keeps parent instrumentation out of the clone', () => {
+  it('drops every inherited preload form and keeps other Node flags', () => {
+    expect(withoutInheritedPreloads(['--max-old-space-size=4096',
+      '--import="file:///parent/scripts/lib/vitest-startup-trace.mjs"', '--expose-gc',
+      '--require ./hook.cjs', '-r ./other.cjs', "--loader 'tsx'", '--experimental-loader=x.mjs'].join(' ')))
+      .toBe('--max-old-space-size=4096 --expose-gc');
+    expect(withoutInheritedPreloads(undefined)).toBe('');
+  });
+
+  it('appends only the clone preloads and drops the parent inputs handoff directory', () => {
+    const env = oracleEnv({ NODE_OPTIONS: '--expose-gc --import=file:///parent/trace.mjs',
+      [PC_EXECUTED_INPUTS_DIR_ENV]: '/parent/inputs', KEEP: 'yes' },
+    { PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'gym-oracle' }, ['--import=file:///clone/capture.ts']);
+    expect(env.NODE_OPTIONS).toBe('--expose-gc --import=file:///clone/capture.ts');
+    expect(env).not.toHaveProperty(PC_EXECUTED_INPUTS_DIR_ENV);
+    expect(env).toMatchObject({ KEEP: 'yes', PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'gym-oracle' });
+    expect(oracleEnv({}, {}, []).NODE_OPTIONS).toBe('');
   });
 });

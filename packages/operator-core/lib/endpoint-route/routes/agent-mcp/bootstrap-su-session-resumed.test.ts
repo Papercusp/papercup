@@ -126,7 +126,8 @@ describe('POST bootstrap-su/session-resumed — atomic resume claim', () => {
     const afterExit = action === 'complete-return';
     const res = await postResumed({ assumeHost: { request, afterExit, action } });
     expect(res.status).toBe(200);
-    expect(assumeInspectMock).toHaveBeenCalledWith(request, afterExit, action);
+    // The route forwards assumeHost.startup as the 4th argument; these actions send none.
+    expect(assumeInspectMock).toHaveBeenCalledWith(request, afterExit, action, undefined);
     expect(acquireResumeMock).not.toHaveBeenCalled();
     expect(claimResumeMock).not.toHaveBeenCalled();
   });

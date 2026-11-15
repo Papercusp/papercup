@@ -33,6 +33,32 @@ const rmP = promisify(rmCb);
 
 const SAFE_SLUG = /^[a-z0-9]+$/;
 
+// Node flags that load code before the entrypoint: the same forms
+// libs/test-config/src/executed-config-load-capture.ts parses out of NODE_OPTIONS.
+const NODE_PRELOAD_OPTION = /(?:^|\s)(?:--import|--(?:experimental-)?loader|--require|-r)(?:=|\s+)(?:"[^"]*"|'[^']*'|[^\s]+)/g;
+
+/** Drop preload flags from inherited NODE_OPTIONS; other Node flags (heap size, gc) carry over. */
+export function withoutInheritedPreloads(nodeOptions: string | undefined): string {
+  return (nodeOptions ?? '').replace(NODE_PRELOAD_OPTION, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * The oracle measures processes of the CLONE. The parent's own instrumentation (a
+ * router's startup-trace preload, a parent capture hook, the parent's inputs-capture
+ * handoff directory) belongs to a different tree. Inherited, a foreign preload makes
+ * the clone's loader chain unmeasurable, so every original-load hash reads unknown,
+ * and an inherited handoff directory routes the clone's worker records into the
+ * parent run. `PC_EXECUTED_INPUTS_DIR` is test-config's PC_EXECUTED_INPUTS_DIR_ENV;
+ * runner-ports.test.ts pins the name against that export.
+ */
+export function oracleEnv(parent: NodeJS.ProcessEnv, overrides: Record<string, string>,
+  preloads: readonly string[]): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...parent, ...overrides,
+    NODE_OPTIONS: [withoutInheritedPreloads(parent.NODE_OPTIONS), ...preloads].filter(Boolean).join(' ') };
+  delete env.PC_EXECUTED_INPUTS_DIR;
+  return env;
+}
+
 /** Parse one Vitest JSON report into the per-test evidence the gym signal core consumes. */
 export function parseVitestOracleResults(jsonText: string): TestResult[] {
   let parsed: { testResults?: Array<{ name?: string; status?: string; assertionResults?: Array<{ status?: string; fullName?: string; title?: string }> }> };
@@ -311,14 +337,14 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
         await execCapture(
           command[0], command.slice(1),
           { cwd: clonePath, timeout: 120_000, maxBuffer: 16 * 1024 * 1024,
-            env: { ...process.env, PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'gym-oracle',
+            env: oracleEnv(process.env, { PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'gym-oracle',
               // The router's existing loader emits intermediate return receipts.
               // Preserve them separately from final worker/module observations.
               PAPERCUSP_COMMITTED_SOURCE_AUDIT: loaderReportPath,
               ...(hasConfigLoadCapture ? { PC_EXECUTED_SOURCE_MAP_PRELOAD: '1',
-                PC_EXECUTED_SOURCE_MAP_ROOT: clonePath,
-                NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(configLoadCapture).href}` } : {}),
-              PC_EXECUTED_SOURCE_MAP_OUT: sourceReportPath, PC_EXECUTED_SOURCE_MAP_NO_PERSIST: '1' } },
+                PC_EXECUTED_SOURCE_MAP_ROOT: clonePath } : {}),
+              PC_EXECUTED_SOURCE_MAP_OUT: sourceReportPath, PC_EXECUTED_SOURCE_MAP_NO_PERSIST: '1' },
+            hasConfigLoadCapture ? [`--import=${pathToFileURL(configLoadCapture).href}`] : []) },
         );
         exitCode = 0;
       } catch (error) {
