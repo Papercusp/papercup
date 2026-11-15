@@ -1322,8 +1322,13 @@ export function linkNodeModulesShadow(sharedNm, cloneNm, repoRoot, workRoot, wor
   return stats;
 }
 
-/** Runtime prerequisites belong to the pinned package, never the shared dist/assets. */
-export function prepareWorkspaceExports(workRoot, workspacePaths, { prepareAssets = false, sourceRoot } = {}) {
+/**
+ * Runtime prerequisites belong to the pinned package, never the shared dist/assets.
+ * @param {{ prepareAssets?: boolean, sourceRoot?: string, workspaceDirs?: string[] }} [options]
+ */
+export function prepareWorkspaceExports(workRoot, workspacePaths, options = {}) {
+  const { prepareAssets = false, sourceRoot, workspaceDirs = [] } = options;
+  const assetRoots = new Set(normalizeDependencyWorkspaceDirs(workspaceDirs).map(path => resolve(workRoot, path)));
   for (const packageRoot of workspacePaths) {
     const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
     const targets = new Set();
@@ -1354,7 +1359,10 @@ export function prepareWorkspaceExports(workRoot, workspacePaths, { prepareAsset
     }
     const missing = () => concrete.filter((target) => !existsSync(join(packageRoot, target)));
     const needsBuild = missing().length > 0;
-    const assetLifecycle = prepareAssets && /\bsetup-[a-z0-9-]+-runtime\b/.test(manifest.scripts?.postinstall ?? '');
+    // Root workspace links can include apps outside the copied dependency
+    // scope. Their assets need package-local dependencies we did not select.
+    const assetLifecycle = prepareAssets && (!assetRoots.size || assetRoots.has(resolve(packageRoot))) &&
+      /\bsetup-[a-z0-9-]+-runtime\b/.test(manifest.scripts?.postinstall ?? '');
     if (!needsBuild && !assetLifecycle) continue;
     if (assetLifecycle && sourceRoot) {
       const setup = join(packageRoot, 'scripts/setup-porcupine-runtime.sh');
@@ -1938,7 +1946,9 @@ async function main() {
           // Exclude the private install before a pinned build checks cleanliness.
           writeLinkExcludes(workRoot, planLinkExcludes(paths, submodules.map((s) => s.path)));
           try {
-            prepareWorkspaceExports(workRoot, workspacePaths, { prepareAssets: args.any, sourceRoot: repoRoot });
+            prepareWorkspaceExports(workRoot, workspacePaths, {
+              prepareAssets: args.any, sourceRoot: repoRoot, workspaceDirs: args.workspaceDirs,
+            });
           } catch (err) {
             prerequisiteError = err;
             throw err;

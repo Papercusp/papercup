@@ -357,9 +357,14 @@ export function linkNodeModulesShadow(sharedNm: any, cloneNm: any, repoRoot: any
     remapped: number;
     fallback: number;
 };
-/** Runtime prerequisites belong to the pinned package, never the shared dist/assets. */
-export function prepareWorkspaceExports(workRoot: any, workspacePaths: any, { prepareAssets, sourceRoot }?: {
-    prepareAssets?: boolean | undefined;
+/**
+ * Runtime prerequisites belong to the pinned package, never the shared dist/assets.
+ * @param {{ prepareAssets?: boolean, sourceRoot?: string, workspaceDirs?: string[] }} [options]
+ */
+export function prepareWorkspaceExports(workRoot: any, workspacePaths: any, options?: {
+    prepareAssets?: boolean;
+    sourceRoot?: string;
+    workspaceDirs?: string[];
 }): void;
 /**
  * Overall verdict. Nonzero if ANY lint failed OR could not be run.
