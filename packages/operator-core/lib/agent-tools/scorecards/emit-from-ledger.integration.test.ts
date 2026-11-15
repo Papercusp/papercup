@@ -100,7 +100,7 @@ const sql = (): Sql => db.adminSql as unknown as Sql;
 
 /** Live probe dispatch must never happen for a ledger-owned criterion. */
 const dispatched: string[] = [];
-const dispatchTool = async (name: string): Promise<unknown> => {
+const dispatchTool = async (name: string): Promise<never> => {
   dispatched.push(name);
   throw new Error(`fromLedger must not re-run a ledger-owned probe live (dispatched ${name})`);
 };
