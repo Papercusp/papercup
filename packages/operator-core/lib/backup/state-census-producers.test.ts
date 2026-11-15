@@ -2586,7 +2586,8 @@ describe('secret census producer adapters', () => {
         await writeFile(unknown, 'unproven sibling');
         if (condition === 'forged-bindings') {
           records[0].sourceBindings![0].files.push({ path: '../unknown-sibling.log', kind: 'file', executable: false, sha256: 'a'.repeat(64) });
-          records[0].sourceOperations = { status: 'supported', operations: [{ kind: 'hardlink-copy', source, destination: f.container }] };
+          records[0].sourceOperations = { status: 'supported', version: 'shell-quote:source-operations-v1',
+            operations: [{ kind: 'hardlink-copy', source, destination: f.container }] };
         }
         if (condition === 'copied-record') records = [{ ...records[0] }];
         if (condition === 'changed-command') records[0].toolInput = records[0].toolInput.replace(destination, f.container);

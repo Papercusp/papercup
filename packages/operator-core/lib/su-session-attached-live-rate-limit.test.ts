@@ -20,7 +20,8 @@ const session: SuSessionIdentity<'claude'> = {
 };
 
 describe('native pending import diagnostics', () => {
-  const node = (evaluated = false) => ({ evaluated, promise: Promise.resolve(),
+  const node = (evaluated = false): { evaluated: boolean; promise: Promise<void> | undefined;
+    imports: Set<string>; importers: Set<string> } => ({ evaluated, promise: Promise.resolve(),
     imports: new Set(['dependency.ts']), importers: new Set(['parent.ts']) });
 
   it('preserves unavailable and malformed worker evidence instead of reporting zero pending imports', () => {

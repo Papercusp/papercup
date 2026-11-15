@@ -29,8 +29,9 @@ async function measure(rows: ReturnType<typeof freshRows>, verified = runIds) {
     SELECT * FROM jsonb_to_recordset($1::jsonb) AS r(id text,created_ts bigint,
       status text,build_sha text,run_id text,workspace_id text,source text,measures jsonb)
   ), pin AS (`).replace('harness_shared.desktop_perf_runs r', 'fixture r');
-  const result = await db.adminSql.unsafe(query, [JSON.stringify(rows)]);
-  return result[0] as { budget_pct: number | null; attempt_n: number; distinct_run_n: number };
+  const result = await db.adminSql.unsafe<{ budget_pct: number | null; attempt_n: number; distinct_run_n: number }[]>(
+    query, [JSON.stringify(rows)]);
+  return result[0];
 }
 
 describe('native performance rubric cohort SQL (EI-27708341940284820)', () => {

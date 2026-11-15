@@ -344,6 +344,10 @@ async function prepareEndpointReceipt(client: typeof DELIVERY_MATRIX_CLIENTS[num
     text: result.text, offers: result.memoryFragmentOffers };
 }
 
+// The JS delivery ledger declares object[]; narrow with a runtime check instead of a cast.
+const isMemoryEmissionConfirmation = (row: object): row is MemoryEmissionConfirmation =>
+  'token' in row && typeof row.token === 'string' && 'fragments' in row && Array.isArray(row.fragments);
+
 async function acknowledgeWithoutQuery(client: typeof DELIVERY_MATRIX_CLIENTS[number], owner: string, proofs?: MemoryEmissionConfirmation[]) {
   const buildsBefore = vi.mocked(injection.prepareMemoryContextBlock).mock.calls.length;
   const response = await endpoint.handler(new Request('http://localhost/agent-mcp/mid-turn-context', { method: 'POST',
@@ -375,7 +379,7 @@ it('context reliability R-1 late construction: ' + client + ' ' + source, async 
       outcome: 'ok', embedderAvailable: true, candidateCount: 1, legs: null, retrievalDepth: 1, rerank: 'nothing-to-reorder' });
   }
   const ledger = openDeliveryLedger(owner, { PAPERCUSP_HOME: home }, 'mid-turn')!;
-  const request = { ...digest(client, nativeFixture(client, 'search')), owner, client,
+  const request = { ...digest(client, nativeFixture(client, 'search')), owner, client, cwd: home,
     workspace: 'query-fixture-ws', harness: 'query-fixture-harness', memoryReceiptMode: true };
   let releaseBuild!: () => void;
   let markStarted!: () => void;
@@ -470,7 +474,7 @@ it('context reliability R-1 late construction: ' + client + ' ' + source, async 
     const payload = { codex, claude, omp }[client].render('mid-turn', replay.text, {}) + '\n';
     ledger.offer(replay.deliveryToken, { payload, client, memoryFragmentOffers: replay.memoryFragmentOffers });
     expect(ledger.commit()).toBe(true); // Serializer/receipt fixture, not OS emission proof.
-    const proofs = ledger.confirmedMemoryDeliveries();
+    const proofs = ledger.confirmedMemoryDeliveries().filter(isMemoryEmissionConfirmation);
     expect(proofs).toHaveLength(1);
     await acknowledgeWithoutQuery(client, owner, proofs);
     expect(services.writes).toHaveBeenCalledOnce();
