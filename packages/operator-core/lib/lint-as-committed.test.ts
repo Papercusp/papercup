@@ -2671,12 +2671,14 @@ fs.writeFileSync('public/runtime-ready', asset);
     }
   }, 60_000);
 
-  it.each(['valid', 'corrupt-selector', 'different-bytes', 'live-donor-hardlink-churn'] as const)
+  it.each(['valid', 'corrupt-selector', 'different-bytes', 'live-donor-hardlink-churn',
+    'selected-wrong-scope'] as const)
     ('resumes against a leased exact-input generation without source lockfiles using its supplied environment (%s)', async variant => {
       const f = retainedFixture();
       const helper = join(repoRoot, 'apps/operator/bin/release/dependency-generation.sh');
       const store = join(f.parent, 'generations');
       const priorStore = process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT;
+      const selected = variant.startsWith('selected-');
       const makeWritable = (path: string) => {
         if (!existsSync(path) || lstatSync(path).isSymbolicLink() || !statSync(path).isDirectory()) return;
         chmodSync(path, 0o700);
@@ -2717,6 +2719,20 @@ fs.writeFileSync('public/runtime-ready', asset);
         const generation = join(store, identity);
         expect(existsSync(join(generation, 'tree/package.json'))).toBe(false);
         expect(existsSync(join(generation, 'tree/package-lock.json'))).toBe(false);
+        if (variant === 'selected-wrong-scope') {
+          // A native selector cannot authorize a full publication as selected.
+          const scopedInput = spawnSync('bash', ['-c',
+            'set -euo pipefail\nsource "$1"\n' +
+            'dependency_generation_verifier_selector_key "$2"', '--', helper, f.workRoot], {
+            env: currentRunnerEnvironment(), encoding: 'utf8', timeout: 10_000,
+          });
+          expect(scopedInput.status, scopedInput.stderr).toBe(0);
+          const input = scopedInput.stdout.trim();
+          expect(input).toMatch(/^native-[a-f0-9]{64}$/);
+          const selectors = join(store, '.inputs');
+          const original = readFileSync(join(selectors, readdirSync(selectors)[0]), 'utf8');
+          writeFileSync(join(selectors, input), original.replace(/^input=.*$/m, 'input=' + input));
+        }
         // The caller's resolved store must survive a different process default,
         // including when verification resumes without copying dependencies.
         process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = join(f.parent, 'unselected-generations');
@@ -2739,14 +2755,17 @@ fs.writeFileSync('public/runtime-ready', asset);
         const inode = statSync(retained).ino;
         const options = (maxBatches = 64) => ({
           environment: { ...process.env, PAPERCUSP_DEPENDENCY_GENERATION_ROOT: store },
+          workspaceDirs: selected ? ['libs/runtime'] : [],
           resumeVerification: { ...f.options(maxBatches).resumeVerification, generation: true },
         });
         const leases = () => existsSync(join(store, '.leases')) ? readdirSync(join(store, '.leases')) : [];
-        if (variant === 'corrupt-selector') {
-          const selector = join(store, '.inputs', readdirSync(join(store, '.inputs'))[0]);
-          writeFileSync(selector, readFileSync(selector, 'utf8').replace(/^token=.*$/m, 'token=v3:' + '0'.repeat(64)));
+        if (variant === 'corrupt-selector' || variant === 'selected-wrong-scope') {
+          if (variant === 'corrupt-selector') {
+            const selector = join(store, '.inputs', readdirSync(join(store, '.inputs'))[0]);
+            writeFileSync(selector, readFileSync(selector, 'utf8').replace(/^token=.*$/m, 'token=v3:' + '0'.repeat(64)));
+          }
           await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, options()))
-            .rejects.toThrow(/census failed/);
+            .rejects.toThrow(variant === 'selected-wrong-scope' ? /invalid publication token/ : /census failed/);
         } else if (variant === 'different-bytes') {
           writeFileSync(retained, 'PAYLOAD-V1');
           await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, options()))
@@ -2767,7 +2786,8 @@ fs.writeFileSync('public/runtime-ready', asset);
         }
         expect(leases()).toEqual([]);
         expect(statSync(retained).ino).toBe(inode);
-        if (variant === 'corrupt-selector' || variant === 'different-bytes') expectUnpreparedRetainedMarker(f);
+        if (variant === 'corrupt-selector' || variant === 'different-bytes' || variant === 'selected-wrong-scope')
+          expectUnpreparedRetainedMarker(f);
       } finally {
         if (priorStore === undefined) delete process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT;
         else process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = priorStore;

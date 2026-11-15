@@ -1901,9 +1901,9 @@ describe('withFsMutex fairness (FIFO ticket queue)', () => {
       const queueDir = join(dir, name + '.queue');
       let queueReads = 0;
       const io = {
-        readdir: async (path: string, options?: unknown) => {
+        readdir: async (path: string, options: { withFileTypes: true }) => {
           if (path === queueDir) queueReads += 1;
-          return readdir(path, options as never);
+          return readdir(path, options);
         },
       };
       waiter = withFsMutex(name, async () => 'waiter', {

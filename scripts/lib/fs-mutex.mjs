@@ -35,7 +35,7 @@ import {
 } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 
-/** @typedef {{ opendir?: typeof opendir, symlink?: typeof symlink, readFile?: (path: string, encoding: 'utf8') => Promise<string>, writeFile?: typeof writeFile, rm?: typeof rm, processIdentity?: (pid: number) => ({ tgid?: number, startTicks?: string, bootId?: string, kthread?: boolean } | null) }} FsMutexIo */
+/** @typedef {{ opendir?: typeof opendir, readdir?: (path: string, options: { withFileTypes: true }) => Promise<Array<{ name: string, isDirectory: () => boolean }>>, symlink?: typeof symlink, readFile?: (path: string, encoding: 'utf8') => Promise<string>, writeFile?: typeof writeFile, rm?: typeof rm, processIdentity?: (pid: number) => ({ tgid?: number, startTicks?: string, bootId?: string, kthread?: boolean } | null) }} FsMutexIo */
 /** @typedef {{ cancel: () => Promise<void> }} FsMutexContinuationTicket */
 const continuationTicketStates = new WeakMap();
 
@@ -1509,7 +1509,7 @@ export async function withFsMutexBudget(name, fn, opts) {
  * @template T
  * @param {string} name
  * @param {() => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
+ * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, intent?: Record<string, string | number | boolean>, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutexRead(name, fn, opts = {}) {
