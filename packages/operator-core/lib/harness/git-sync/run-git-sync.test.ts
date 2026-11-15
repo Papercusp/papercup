@@ -4825,6 +4825,93 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
+  it.each([
+    ['missing', 'provider', null, false],
+    ['exact', 'provider', 'provider.ts', true],
+    ['alternate extension', 'provider', 'provider.js', true],
+    ['directory index', 'provider', 'provider/index.ts', true],
+    ['literal metacharacter', 'provider[1]', 'provider1.ts', false],
+  ] as const)('EI-28794194913200592: bounds HEAD resolution queries for a %s module without changing quarantine', async (_label, moduleName, committedPath, resolves) => {
+    const provider = `${moduleName}.ts`;
+    if (committedPath) {
+      mkdirSync(dirname(join(repo, committedPath)), { recursive: true });
+      writeFileSync(join(repo, committedPath), 'export const committed = true;\n');
+      git(repo, 'add', committedPath);
+      git(repo, 'commit', '--no-verify', '-m', 'seed HEAD resolution candidate');
+      git(repo, 'push', 'origin', 'HEAD:main');
+    }
+    writeFileSync(join(repo, provider), 'export const changed = true; // BROKEN\n');
+    writeFileSync(join(repo, 'consumer.ts'), `import './${moduleName}';\nexport const ready = true;\n`);
+    writeFileSync(join(repo, 'good.txt'), 'unrelated work\n');
+    const detector: ContentDetector = {
+      ...brokenDetector, glob: '**/*.ts', matches: file => file === provider,
+    };
+    const candidateProbes: string[][] = [];
+    const measuredRunGit: RunGit = async (args, cwd, options) => {
+      if ((args[0] === 'cat-file' && args[1] === '-e' && args[2]?.startsWith('HEAD:provider')) ||
+          (args[0] === 'ls-tree' && args.includes(`:(literal)${provider}`))) {
+        candidateProbes.push([...args]);
+      }
+      return directRunGit(args, cwd, options);
+    };
+
+    const out = await runGitSync('test', {
+      repoPath: repo, runGit: measuredRunGit, config: cfg, contentDetectors: [detector],
+    });
+
+    expect(out.status).toBe('synced');
+    expect(out.contentErrors.some(row => row.file === provider)).toBe(true);
+    expect(out.contentErrors.some(row => row.file === 'consumer.ts')).toBe(!resolves);
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main').split('\n').includes('consumer.ts')).toBe(resolves);
+    expect(git(originDir, 'show', 'main:good.txt')).toBe('unrelated work');
+    // A missing or late alternate candidate must not launch one process for each
+    // possible suffix on every guard pass. Keep this consumer-level check on the
+    // actual Git calls, alongside the published-tree/quarantine assertions above.
+    expect(candidateProbes.length).toBeGreaterThan(0);
+    expect(candidateProbes.filter(args => args[0] !== 'ls-tree')).toHaveLength(0);
+    expect(candidateProbes.length).toBeLessThanOrEqual(2);
+  });
+
+  it.each(['throw', 'nonzero', 'incomplete output'] as const)(
+    'EI-28794194913200592: retains quarantine when the HEAD lookup returns %s', async failure => {
+      writeFileSync(join(repo, 'provider.ts'), 'export const committed = true;\n');
+      git(repo, 'add', 'provider.ts');
+      git(repo, 'commit', '--no-verify', '-m', 'seed provider before failed probe');
+      git(repo, 'push', 'origin', 'HEAD:main');
+      writeFileSync(join(repo, 'provider.ts'), 'export const changed = true; // BROKEN\n');
+      writeFileSync(join(repo, 'consumer.ts'), "import './provider';\nexport const ready = true;\n");
+      writeFileSync(join(repo, 'good.txt'), 'unrelated work\n');
+      const detector: ContentDetector = {
+        ...brokenDetector, glob: '**/provider.ts', matches: file => file === 'provider.ts',
+      };
+      let probes = 0;
+      const logs: string[] = [];
+      const failedRunGit: RunGit = async (args, cwd, options) => {
+        if (args[0] === 'ls-tree' && args.includes(':(literal)provider.ts')) {
+          probes++;
+          if (failure === 'throw') throw new Error('measured HEAD lookup failure');
+          return failure === 'nonzero'
+            ? { code: 1, stdout: '', stderr: 'measured HEAD lookup failure' }
+            : { code: 0, stdout: 'provider.ts', stderr: '' };
+        }
+        return directRunGit(args, cwd, options);
+      };
+
+      const out = await runGitSync('test', {
+        repoPath: repo, runGit: failedRunGit, config: cfg, contentDetectors: [detector],
+        log: message => logs.push(message),
+      });
+
+      expect(out.status).toBe('synced');
+      expect(probes).toBeGreaterThan(0);
+      expect(out.contentErrors.some(row => row.file === 'consumer.ts')).toBe(true);
+      expect(logs.some(message => message.includes('HEAD probe failed for provider.ts'))).toBe(true);
+      expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main').split('\n')).not.toContain('consumer.ts');
+      expect(git(originDir, 'show', 'main:provider.ts')).toBe('export const committed = true;');
+      expect(git(originDir, 'show', 'main:good.txt')).toBe('unrelated work');
+    },
+  );
+
   it('EI-19932544083689229: once the subject is fixed, the previously-held-back importer commits too (self-heal, no residual quarantine)', async () => {
     writeFileSync(join(repo, 'watchdog.md'), 'this is BROKEN\n');
     writeFileSync(join(repo, 'watchdog.test.ts'), `import './watchdog.md';\nit('ok', () => {});\n`);
