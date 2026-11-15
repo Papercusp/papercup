@@ -1209,6 +1209,96 @@ dependency_generation_select_prevalidated() {
   DEPENDENCY_GENERATION_TOKEN="$current_token"
 }
 
+# WI-6554700010049444: a generation captured from a tree whose native addons were
+# compiled for a different Node ABI (better-sqlite3 built under Node 26, ABI 147)
+# is content-valid by every marker/token/snapshot check, yet no Node 25 consumer
+# can ever load it. Indexing it froze the committed-input selector on a
+# generation that every green-checkpoint preparation then rejected after a
+# 20-minute materialization. Load each runtime-critical addon from the immutable
+# tree itself, under the Node that will consume it, and report the first loader
+# error instead of discarding it. The addon set mirrors setup-release-checkout.sh's
+# native_addon_load_check and native-addon-preflight.ts (PAPERCUSP_PREFLIGHT_ADDONS).
+# An addon absent from the tree is not this check's concern (fixtures, scoped trees).
+#
+# A load check proves only that the addon matches the Node that RAN the check. The
+# incident publisher ran with a Node 26 first on PATH, so every check it made —
+# including dependency-lock-tree-audit.mjs's — loaded the ABI 147 binary cleanly.
+# So the probing Node must itself be the pinned major (.nvmrc beside this script;
+# DEPENDENCY_GENERATION_PINNED_NODE_MAJOR overrides) before its verdict counts.
+dependency_generation_pinned_node_major() {
+  local pin="${DEPENDENCY_GENERATION_PINNED_NODE_MAJOR:-}" nvmrc
+  if [ -z "$pin" ]; then
+    nvmrc="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." 2>/dev/null && pwd)/.nvmrc"
+    [ -f "$nvmrc" ] && pin="$(tr -d '[:space:]v' < "$nvmrc")"
+  fi
+  pin="${pin%%.*}"
+  [[ "$pin" =~ ^[0-9]+$ ]] && printf '%s\n' "$pin"
+  return 0
+}
+
+dependency_generation_native_addons_load() {
+  local tree="$1" label="${2:-$1}" node="${DEPENDENCY_GENERATION_NODE:-node}" addon err abi first pinned running
+  local -a addons=()
+  [ -d "$tree/node_modules" ] || return 0
+  pinned="$(dependency_generation_pinned_node_major)"
+  IFS=',' read -ra addons <<< "${PAPERCUSP_PREFLIGHT_ADDONS:-better-sqlite3}"
+  for addon in "${addons[@]}"; do
+    addon="${addon//[[:space:]]/}"
+    [ -n "$addon" ] && [ -d "$tree/node_modules/$addon" ] || continue
+    if [ -n "$pinned" ]; then
+      running="$("$node" -p 'process.versions.node.split(".")[0]' 2>/dev/null || printf '?')"
+      if [ "$running" != "$pinned" ]; then
+        dependency_generation_log \
+          "native addon '$addon' in $label was checked under Node $running, not the pinned Node $pinned (.nvmrc); a load under another Node says nothing about its consumers"
+        return 74
+      fi
+    fi
+    # The JS stays indented so no body line opens with `}` (sed extraction).
+    if err="$(cd "$tree" && "$node" -e '
+      const name = process.argv[1];
+      const loaded = require(name);
+      if (name === "better-sqlite3") {
+        const db = new loaded(":memory:");
+        try { db.prepare("SELECT 1").get(); } finally { db.close(); }
+      }
+    ' "$addon" 2>&1 >/dev/null)"; then
+      continue
+    fi
+    abi="$("$node" -p 'process.versions.modules' 2>/dev/null || printf '?')"
+    first="$(printf '%s\n' "$err" | grep -m1 -E 'NODE_MODULE_VERSION|Error' || true)"
+    [ -n "$first" ] || first="$(printf '%s\n' "$err" | head -n 1)"
+    dependency_generation_log \
+      "native addon '$addon' in $label will not load under Node ABI $abi: ${first:-no loader output}"
+    return 74
+  done
+}
+
+# Probe an IMMUTABLE generation tree without running its package code in place.
+# Loading an addon executes its JS and init, which may write beside itself; in
+# a shared published generation that write is drift every consumer inherits.
+# Only the addon package directories are copied; NODE_PATH resolves the rest.
+dependency_generation_native_addons_load_isolated() {
+  local tree="$1" probe addon rc=0
+  local -a addons=()
+  [ -d "$tree/node_modules" ] || return 0
+  probe="$(mktemp -d)" || return 1
+  IFS=',' read -ra addons <<< "${PAPERCUSP_PREFLIGHT_ADDONS:-better-sqlite3}"
+  for addon in "${addons[@]}"; do
+    addon="${addon//[[:space:]]/}"
+    [ -n "$addon" ] && [ -d "$tree/node_modules/$addon" ] || continue
+    if ! mkdir -p "$probe/node_modules/$(dirname "$addon")" \
+      || ! cp -RL "$tree/node_modules/$addon" "$probe/node_modules/$addon"; then
+      dependency_generation_log "could not stage native addon '$addon' from $tree for an isolated load probe"
+      rm -rf -- "$probe"
+      return 1
+    fi
+  done
+  NODE_PATH="$tree/node_modules${NODE_PATH:+:$NODE_PATH}" \
+    dependency_generation_native_addons_load "$probe" "$tree" || rc=$?
+  rm -rf -- "$probe"
+  return "$rc"
+}
+
 dependency_generation_publish_input_selector() {
   local generation_root="$1" input_fingerprint="$2"
   local selector_dir selector tmp token rc=0
@@ -1216,6 +1306,13 @@ dependency_generation_publish_input_selector() {
     # Keep selected dependency and native source selectors separate from the
     # full-release input namespace. Both retain the selected marker/token check.
     [[ "$input_fingerprint" =~ ^(native|scoped)-[a-f0-9]{64}$ ]] || return 0
+  fi
+  # A selector is a promise that its consumers can prepare from this generation.
+  # Never make that promise for a generation whose native addons cannot load.
+  if ! dependency_generation_native_addons_load_isolated "$DEPENDENCY_GENERATION_PATH/tree"; then
+    dependency_generation_log \
+      "FATAL: refusing to index dependency inputs $input_fingerprint as $DEPENDENCY_GENERATION_ID: its native addons are not proven loadable under the pinned Node (.nvmrc); reinstall and republish under the pinned Node"
+    return 74
   fi
   selector_dir="$generation_root/.inputs"
   selector="$selector_dir/$input_fingerprint"
@@ -4343,6 +4440,7 @@ dependency_generation_ensure_verifier_ref() (
   # Dependency-only consumers retain their existing selector and corruption
   # checks. A corrupt publication is never treated as a native cache miss.
   input="$(dependency_generation_verification_input_fingerprint "$source_root")" || return $?
+  dependency_key="$(dependency_generation_verification_selector_key "$source_root")" || return $?
   key="$(dependency_generation_verifier_selector_key "$source_root")" || return $?
   # The nested ordinary builder can fail after staging exact-ref inputs.
   # This subshell must own cleanup before selection: its scratch pointer is
@@ -4359,8 +4457,9 @@ dependency_generation_ensure_verifier_ref() (
       dependency_generation_log 'FATAL: native required dependency inputs differ from the exact source'
       return 74
     }
-    if [ -f "$generation_root/.inputs/$input" ]; then
-      dependency_generation_select_input_fingerprint "$input" "$generation_root" || return $?
+    if [ -f "$generation_root/.inputs/$dependency_key" ]; then
+      dependency_generation_select_input_fingerprint "$dependency_key" "$generation_root" \
+        "$DEPENDENCY_GENERATION_SCOPE_MODE" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" || return $?
     else
       dependency_generation_audit_lock_tree "$integration_root" "$source_root" || return $?
       dependency_generation_ensure "$integration_root" "$generation_root" || return $?
@@ -4390,6 +4489,12 @@ dependency_generation_ensure_verifier_ref() (
     # the qualified native identity; this does not publish a native selector.
     dependency_generation_retain_ensured_ref "$generation_root" "$integration_root" \
       "$retain_as" "$DEPENDENCY_GENERATION_ID" "$ref" || return $?
+    # The audited dependency stage is reusable even while its native closure
+    # still needs rebuilding. Index only the dependency scope here; the native
+    # selector remains unpublished until the rebuilt closure verifies below.
+    if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then
+      dependency_generation_publish_input_selector "$generation_root" "$dependency_key" || return $?
+    fi
     # Native rebuilds mutate independent copies, unlike the install-equivalent
     # hardlink path. Keep those copies beside their immutable donor so the
     # existing strict CoW materializer can avoid two cross-filesystem copies.
@@ -4437,9 +4542,7 @@ dependency_generation_ensure_verifier_ref() (
   fi
   DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT="$(dependency_generation_read_field "$DEPENDENCY_GENERATION_PATH/.papercusp-dependency-generation" closure)"
   if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then
-    # The valid-closure fast path calls ensure directly, bypassing main's
-    # dependency index. Publish the same scoped key after native verification.
-    dependency_key="$(dependency_generation_verification_selector_key "$source_root")" || return $?
+    # Advance the dependency index to the verified native publication too.
     dependency_generation_publish_input_selector "$generation_root" "$dependency_key" || return $?
   fi
   dependency_generation_publish_input_selector "$generation_root" "$key" || return $?
@@ -4678,8 +4781,10 @@ dependency_generation_main() {
       predict_verdict=refused
       if [ "$live_input" = "$exact_input" ]; then
         predict_verdict=live-match
-        if [ -f "$generation_root/.inputs/$exact_input" ]; then
-          dependency_generation_select_input_fingerprint "$exact_input" "$generation_root" || return $?
+        local dependency_key="scoped-$exact_input"
+        if [ -f "$generation_root/.inputs/$dependency_key" ]; then
+          dependency_generation_select_input_fingerprint "$dependency_key" "$generation_root" \
+            "$DEPENDENCY_GENERATION_SCOPE_MODE" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" || return $?
           predict_verdict=prewarmed
         fi
       fi
@@ -4780,6 +4885,17 @@ dependency_generation_main() {
       # not a cache miss to hide by republishing a replacement.
       dependency_generation_select_input_fingerprint \
         "$exact_input" "$generation_root" || return $?
+      # WI-6554700010049444 (Fix #4): a selector promises its consumers can
+      # prepare. Reporting reused=true for a generation whose native addons do
+      # not load only defers a deterministic failure to every queued
+      # preparation, so refuse here. Automatic supersede needs the Node ABI in
+      # the generation identity (EI-28861111300853043); until then a rebuild
+      # would collide with this same immutable identity.
+      if ! dependency_generation_native_addons_load_isolated "$DEPENDENCY_GENERATION_PATH/tree"; then
+        dependency_generation_log \
+          "FATAL: existing selector for inputs $exact_input targets $DEPENDENCY_GENERATION_ID, whose native addons do not load under the pinned Node (.nvmrc); refusing reused=true. Republish a native-complete generation for these inputs under the pinned Node"
+        return 74
+      fi
       dependency_generation_audit_selected_ref "$integration_root" "$ensure_ref" || return $?
       dependency_generation_retain_ensured_ref "$generation_root" "$integration_root" \
         "$retain_as" "$DEPENDENCY_GENERATION_ID" "$ensure_ref" || return $?
