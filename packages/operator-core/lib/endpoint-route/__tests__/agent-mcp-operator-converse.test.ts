@@ -31,6 +31,12 @@ let humanFacingRole: 'operator' | 'papercup' = 'operator';
 vi.mock('../../voice-prefs', () => ({
   loadVoicePrefs: vi.fn(async () => ({ humanFacingRole })),
 }));
+// Owner turns resolve their canonical conversation before opening the stream.
+// Keep this route fixture isolated from the real conversation store.
+vi.mock('../../operator-conversations', () => ({
+  getOrCreateActiveConversation: vi.fn(async () => ({ id: 'conversation-test' })),
+  getConversationById: vi.fn(async () => null),
+}));
 vi.mock('../telemetry', () => ({
   recordRouteInvocation: vi.fn(async () => {}),
 }));
@@ -73,6 +79,7 @@ import {
 } from '@papercusp/agent-mcp';
 import { registerAllRoutes } from '../register';
 import { UI_CONTEXT_MAX_CHARS } from '../../chat-context-sections';
+import { getOrCreateActiveConversation } from '../../operator-conversations';
 
 let app: Hono;
 
@@ -81,6 +88,7 @@ beforeEach(() => {
   registerAllRoutes(app);
   humanFacingRole = 'operator';
   lookupByMcpName.mockClear();
+  vi.mocked(getOrCreateActiveConversation).mockClear();
 });
 afterEach(() => _resetStateChannelForTests());
 
@@ -93,6 +101,8 @@ function post(body: object) {
 }
 
 async function collectEvents(res: Response, timeoutMs: number): Promise<string[]> {
+  expect(res.status).toBe(200);
+  expect(res.headers.get('content-type')).toContain('text/event-stream');
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buf = '';
@@ -121,6 +131,8 @@ async function collectEvents(res: Response, timeoutMs: number): Promise<string[]
 /** Same reader loop as collectEvents, but keeps every named event (not just
  *  state-snapshot) — used by the run-meta assertions below. */
 async function collectAllEvents(res: Response, timeoutMs: number): Promise<string[]> {
+  expect(res.status).toBe(200);
+  expect(res.headers.get('content-type')).toContain('text/event-stream');
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buf = '';
@@ -239,6 +251,9 @@ describe('POST /api/agent-mcp/operator-converse — run-meta (WI-5023)', () => {
     expect(runMeta).toBeDefined();
     const payload = JSON.parse(runMeta!.split('data: ')[1]);
     expect(typeof payload.runId).toBe('string');
+    expect(payload.conversationId).toBe('conversation-test');
+    expect(payload.turnPersistence).toBe(1);
+    expect(getOrCreateActiveConversation).toHaveBeenCalledWith('ws-test');
     expect(payload.runId.length).toBeGreaterThan(0);
   });
 

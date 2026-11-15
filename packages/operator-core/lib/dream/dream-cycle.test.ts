@@ -733,6 +733,22 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
     expect(h.d.review).not.toHaveBeenCalled();
   });
 
+  it('settles a gateway-confirmed pre-dispatch refusal as known zero spend', async () => {
+    const h = harness();
+    h.llm.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('codex account became unavailable during pacing'), { costUsd: 0 });
+    });
+
+    const result = await runDreamCycle(h.input, h.d);
+    const call = dreamCapabilityRun(h.row(dreamRunId('cycle-1', 0)))!.calls.find(c => c.phase === 'generation');
+
+    expect(result).toMatchObject({ accepted: 0, costUsd: 0, runs: [{ status: 'error' }] });
+    expect(call).toMatchObject({
+      status: 'settled',
+      usage: { costUsd: 0, inputTokens: 0, outputTokens: 0 },
+    });
+  });
+
   it('AUTO-REQ-M-002-P-005-counterexamples: failed controls retain successful sibling cost and unknown reservations', async () => {
     const h = harness();
     h.llm.mockImplementation(async (input) => {

@@ -2062,6 +2062,35 @@ describe('P-013 / D-007 — convergence rounds + the owner-visible off switch', 
     expect(parseFrozenRepairConvergence({ ...stored, truncatedByLimit: 'yes' })).toBeNull();
   });
 
+  it.each([49, 50, 51])('lossless canonical evidence: retains %i complete failures across reordered restarts', count => {
+    const failures = Array.from({ length: count }, (_, i) => `lib/boundary-${i}.test.ts`);
+    for (const ordered of [failures, [...failures].reverse()]) {
+      let queue = createFrozenCandidateRepairQueue({ candidate: C, base: BASE, failingTests: ordered,
+        nowMs: T0, failureFrontierCompleteness: 'complete' });
+      const history: string[][] = [];
+      for (let round = 0; round < 4; round += 1) {
+        const expected = [...ordered.slice(round), ...ordered.slice(0, round)];
+        if (round > 0) {
+          queue = markFrozenRepairVerificationRed({ ...queue, phase: 'ready-to-verify',
+            attempts: round, fixerSpawnId: 'boundary-fixer' }, {
+            repairHead: C, failingTests: expected, nowMs: T0 + round * 1_000,
+            failureFrontierCompleteness: 'complete',
+          });
+        }
+        const restored = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(queue)));
+        expect(restored).not.toBeNull();
+        expect(restored!.failingTests).toEqual(expected);
+        expect(restored!.selectiveCoverageBlocked).not.toBe(true);
+        history.push(expected);
+        expect(restored!.convergenceRounds?.map(entry => entry.failingTests)).toEqual(history);
+        queue = restored!;
+      }
+      expect(summarizeFrozenRepairConvergence(queue, T0 + 5_000)).toMatchObject({
+        failingFirst: count, failingNow: count, shrinkTotal: 0, truncatedByLimit: false,
+      });
+    }
+  });
+
   it('lossless canonical evidence: persists 75 to 60 complete failures and measures the exact shrink', () => {
     const failures = Array.from({ length: 75 }, (_, i) => `lib/lossless-${i}.test.ts`);
     const sharedPrefix = `lib/${'dir/'.repeat(140)}`;

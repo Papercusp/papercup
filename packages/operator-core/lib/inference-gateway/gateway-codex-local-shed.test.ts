@@ -86,6 +86,10 @@ describe('gateway-local codex 429 (pacing shed) is a resumable stall, not a retr
     const result = await send({ [OWNER_HEADER]: 'su-local-shed-owner' });
 
     expect(result.status, result.body).toBe(429);
+    expect(JSON.parse(result.body).error).toMatchObject({
+      type: 'rate_limit_error',
+      code: 'admission-timeout',
+    });
     expect(fetchImpl).not.toHaveBeenCalled();
     // (1) never the client-retry-burning literal 1s
     const retryAfter = Number(result.headers.get('retry-after'));

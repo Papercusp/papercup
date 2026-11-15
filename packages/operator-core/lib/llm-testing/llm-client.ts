@@ -253,11 +253,14 @@ async function llmCallViaCodexGateway(
       ...(gatewayRoutedAccountId ? { gatewayRoutedAccountId } : {}),
     });
     const refusal = raw && typeof raw === 'object' ? raw as { gateway?: unknown; error?: { code?: unknown } } : null;
-    if (refusal?.gateway === true &&
-        ((res.status === 422 && refusal.error?.code === 'output_token_limit_unsupported') ||
-         (res.status === 400 && refusal.error?.code === 'output_token_limit_invalid'))) {
-      // The gateway refused before inference. This is a known zero, unlike
-      // missing usage on a request that may already have reached the provider.
+    const knownNoSpend =
+      (res.status === 422 && refusal?.error?.code === 'output_token_limit_unsupported') ||
+      (res.status === 400 && refusal?.error?.code === 'output_token_limit_invalid') ||
+      (res.status === 429 &&
+        (refusal?.error?.code === 'admission-timeout' || refusal?.error?.code === 'account-unavailable'));
+    if (refusal?.gateway === true && knownNoSpend) {
+      // These gateway refusals happen before provider inference. Keep generic
+      // upstream 429s unknown because their request may already have incurred cost.
       Object.assign(failure, { costUsd: 0 });
     }
     throw failure;

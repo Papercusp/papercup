@@ -375,10 +375,13 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
         try {
           value = await abortable(execute, signal);
         } catch (error) {
+          const knownZeroCost =
+            reservedUsd === 0 ||
+            (error instanceof Error && (error as Error & { costUsd?: unknown }).costUsd === 0);
           latest = await deps.settleCall({
             runId,
             callId,
-            usage: reservedUsd === 0 ? { model, costUsd: 0, inputTokens: 0, outputTokens: 0 } : null,
+            usage: knownZeroCost ? { model, costUsd: 0, inputTokens: 0, outputTokens: 0 } : null,
             error: error instanceof Error ? error.message : String(error),
           });
           throw error;

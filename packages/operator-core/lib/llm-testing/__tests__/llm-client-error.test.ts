@@ -277,6 +277,26 @@ describe('llmCall backend selection', () => {
     } finally { vi.unstubAllGlobals(); }
   });
 
+  it.each(['admission-timeout', 'account-unavailable'] as const)(
+    'marks local Codex %s refusals as known zero while leaving an upstream 429 unknown',
+    async code => {
+      const fetchMock = vi.fn(async () => new Response(JSON.stringify({ gateway: true,
+        error: { code, message: 'local Codex admission refused before provider dispatch' } }), { status: 429 }));
+      vi.stubGlobal('fetch', fetchMock);
+      try {
+        const { llmCall } = await import('../llm-client');
+        const opts = { model: 'gpt-6.1-sol', messages: [{ role: 'user' as const, content: 'fixture' }] };
+        const local = await llmCall(opts).catch(error => error);
+        expect(local).toMatchObject({ costUsd: 0 });
+
+        fetchMock.mockImplementationOnce(async () => new Response(JSON.stringify({ gateway: true,
+          error: { code: 'rate_limit_exceeded', message: 'upstream 429 after possible provider dispatch' } }), { status: 429 }));
+        const upstream = await llmCall(opts).catch(error => error);
+        expect(upstream).not.toHaveProperty('costUsd');
+      } finally { vi.unstubAllGlobals(); }
+    },
+  );
+
   it('threads a required Anthropic output limit and preserves the frozen judge policy', async () => {
     const { llmCall } = await import('../llm-client');
     lastRunAgentChatOpts = undefined;
