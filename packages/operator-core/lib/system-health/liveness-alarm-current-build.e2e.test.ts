@@ -5,16 +5,19 @@ import { join, resolve } from 'node:path';
 import { expect, it, type TestContext } from 'vitest';
 import { AGENT_STRANDED_ALARM_THRESHOLD } from './agent-strand-census';
 import type { LivenessAlarmHttpSubject } from '../../test/liveness-alarm-http-controls';
+import { preparePrivateOperatorApiBundle } from '../../test/private-http-workspace-preflight';
 import {
   captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof,
 } from '../../test/isolated-integration-proof';
 
 const root = resolve(import.meta.dirname, '../../../..');
-const options = isolatedWorkerOptions(480_000);
+const preparationMs = 420_000;
+const options = isolatedWorkerOptions(480_000, process.env, 480_000, {}, preparationMs);
 
 // R-12 needs a real request worker and durable ledger, independently of the unit
 // alarm seam. Reuse the maintained private operator profile and lifetime proof.
 async function verifyAlarm(subject: LivenessAlarmHttpSubject, context?: TestContext) {
+  let preparedApi!: Awaited<ReturnType<typeof preparePrivateOperatorApiBundle>>;
   const runId = await recordIsolatedIntegrationProof({
     root,
     filePath: 'packages/operator-core/lib/system-health/liveness-alarm-current-build.e2e.test.ts',
@@ -39,6 +42,13 @@ async function verifyAlarm(subject: LivenessAlarmHttpSubject, context?: TestCont
       'packages/operator-core/lib/agent-tools/coordination/escalations.ts',
       'packages/operator-core/lib/build-info.ts',
     ],
+    prepare: async evidenceDir => {
+      preparedApi = await preparePrivateOperatorApiBundle(root, evidenceDir, { builder: {
+        timeoutMs: 240_000, maxMs: preparationMs,
+        env: { ...process.env, PAPERCUSP_BUNDLE_SNAPSHOT_DIRTY: '1' },
+        onProgress: progress => console.info('LIVENESS_ALARM_HTTP_PHASE bundle-progress ' + JSON.stringify(progress)),
+      } });
+    },
     execute: async (observe, evidenceDir) => {
       await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
       await mkdir(join(evidenceDir, 'tmp'));
@@ -49,7 +59,7 @@ async function verifyAlarm(subject: LivenessAlarmHttpSubject, context?: TestCont
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
         process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/liveness-alarm-http-fixture.ts'),
-        `--alarm-subject=${subject}`],
+        `--alarm-subject=${subject}`, `--prepared-api-sha=${preparedApi.sha256}`],
       { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);
       const events: Array<Record<string, unknown>> = [];

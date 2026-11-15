@@ -2431,7 +2431,10 @@ export function preparePrivateOperatorApiBundle(root: string, evidenceDir: strin
     const sourceSha = options && 'sourceSha' in options ? options.sourceSha : undefined;
     if (sourceSha !== undefined) {
       assert.match(sourceSha, /^[a-f0-9]{7,64}$/, 'Prepared source SHA must be attributable');
-      assert.equal(privateMcpSourceSha(root), sourceSha,
+      // Re-check with the same source resolution inputs as the builder. A dirty
+      // snapshot pin is not interchangeable with a HEAD+dirty fallback.
+      const verificationEnv = options && 'builder' in options ? options.builder.env ?? process.env : process.env;
+      assert.equal(privateMcpSourceSha(root, verificationEnv), sourceSha,
         'Private operator source changed between its pin and completed bundle preparation');
     }
     const preparedReceipt = sourceSha === undefined ? receipt : { ...receipt, sourceSha };

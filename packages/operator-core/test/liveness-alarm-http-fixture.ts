@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { readProcessIdentity } from '../lib/process-identity';
-import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
+import { resolvePreparedPrivateApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
 import { writeSharedSnapshot } from '../lib/derived-reads/shared-snapshot';
 import { createPrivateHealthSnapshot } from './private-http-workspace-preflight';
 import { AGENT_STRANDED_ALARM_THRESHOLD, AGENT_WEDGED_ALARM_THRESHOLD,
@@ -16,7 +16,10 @@ import { coordinationStatus, infraStatus } from '../lib/system-health/thresholds
 import { readOperatorState, updateOperatorState } from '../lib/operator-state-pg';
 import type { FlapState } from '../lib/system-health/liveness-alarm';
 import type { CoordinationHealth, InfraHealth, SystemHealth } from '../lib/system-health/types';
+import { parseLivenessAlarmHttpControls } from './liveness-alarm-http-controls';
 
+// Validate before main's allocation/cleanup scope: even a failed selector must not open PG.
+const { subject: signal } = parseLivenessAlarmHttpControls(process.argv.slice(2));
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
 async function stopHost() {
@@ -35,9 +38,6 @@ async function stopHost() {
 
 async function main() {
   const e = process.env;
-  const requested = e.LIVENESS_ALARM_HTTP_SUBJECT;
-  const signal = ['agents-stranded', 'hosted-control-plane-degraded', 'hosted-reverse-connector-lost',
-    'platform-lifecycle-budget-exceeded', 'population-acceptance'].includes(requested ?? '') ? requested! : 'agents-wedged';
   const strandedSubject = signal === 'agents-stranded';
   const populationSubject = signal === 'population-acceptance';
   const hostedSubject = signal !== 'agents-wedged' && !strandedSubject && !populationSubject;
@@ -70,13 +70,10 @@ async function main() {
   const fingerprint = () => Object.fromEntries(sources.map(path => [path,
     createHash('sha256').update(readFileSync(join(root, path))).digest('hex')]));
   const sourceBefore = fingerprint();
-  console.log('LIVENESS_ALARM_HTTP_PHASE bundle-start');
-  // The outer execution budget is 480s. Reserve 60s for startup and assertions;
-  // only distinct successful build steps can extend the original 240s checkpoint.
-  const { path: bundle } = await buildPrivateOperatorApiBundle(root, evidenceDir, {
-    timeoutMs: 240_000, maxMs: 420_000,
-    onProgress: progress => console.log('LIVENESS_ALARM_HTTP_PHASE bundle-progress ' + JSON.stringify(progress)),
-  });
+  // Reuse only this run's original prepared artifact; the maintained resolver
+  // checks its bytes against the digest transported through the scrubbed child.
+  const bundle = resolvePreparedPrivateApiBundle(process.argv.slice(2), evidenceDir);
+  assert.ok(bundle, 'liveness fixture requires its original prepared API');
   const bytes = readFileSync(bundle);
   assert.ok(bytes.includes(Buffer.from('system-health/liveness-alarm.ts')), 'alarm missing from executed artifact');
   assert.ok(bytes.includes(Buffer.from('agentStrandObservation')), 'runtime observation missing from executed artifact');
@@ -98,8 +95,8 @@ async function main() {
     host.stderr!.on('data', chunk => process.stderr.write(chunk));
     hostIdentity = readProcessIdentity(host.pid!);
     assert.ok(hostIdentity, 'private host kernel identity required');
-    const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, hostIdentity, environment: hostEnv });
-    assert.ok(health.sha, 'loaded bundle identity is required');
+    const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, hostIdentity,
+      environment: hostEnv, requireBuildIdentity: true });
     return { pid: host.pid!, identity: hostIdentity, health };
   }
   const { sql } = getOrgPg();

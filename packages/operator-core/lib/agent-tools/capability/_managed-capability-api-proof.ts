@@ -6,6 +6,9 @@ import { expect } from 'vitest';
 import { captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerReceipt } from '../../../test/isolated-integration-proof';
 import type { recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
 import { preparePrivateOperatorApiBundle, privateMcpSourceSha } from '../../../test/private-http-workspace-preflight';
+import type { AdmissionContext } from '../../resource-governor/admission';
+import { buildGovernedProcessDemand, classifyGovernedTestProcessOutcome,
+  createGovernedProcessDemandSampler, runGovernedTestProcess } from '../../../../../scripts/lib/governed-test-process.mjs';
 
 export function managedCapabilityApiProofOptions(
   filePath: `packages/operator-core/lib/agent-tools/capability/managed-capability-api.${'integration' | 'e2e'}.test.ts`
@@ -23,7 +26,11 @@ export function managedCapabilityApiProofOptions(
       'packages/operator-core/lib/agent-tools/capability/__fixtures__/managed-api-result.ts'],
     retainedArtifacts: ['phases/execute/worker.log', 'phases/execute/managed-api-proof.json'],
     prepare: async evidenceDir => {
-      const buildEnv: NodeJS.ProcessEnv = { ...process.env, VITEST: 'true' };
+      const buildEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+        VITEST: 'true',
+        PAPERCUSP_BUNDLE_SNAPSHOT_DIRTY: '1',
+      };
       const sourceSha = privateMcpSourceSha(root, buildEnv);
       prepared = await preparePrivateOperatorApiBundle(root, evidenceDir, {
         sourceSha,
@@ -37,17 +44,32 @@ export function managedCapabilityApiProofOptions(
       for (const key of ['PC_EXECUTED_SOURCE_MAP_OUT', 'PC_EXECUTED_SOURCE_MAP_RESULT',
         'PC_EXECUTED_SOURCE_MAP_WORKSPACE', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
         'PAPERCUSP_TEST_RUNS_DB_URL']) delete childEnv[key];
-      const child = fork(resolve(root, 'scripts/with-test-pg.mjs'), [
-        '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx',
-        resolve(__dirname, '__fixtures__/managed-api-client.mts'),
-        '--prepared-api-sha=' + prepared.sha256, '--prepared-receipt-sha=' + prepared.receiptSha256,
-        ...(scenario === 'offline-recovery' ? ['--offline-recovery-only'] : []),
-      ], { cwd: root, env: childEnv, detached: true, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
-      observe(child);
+      const demand = buildGovernedProcessDemand({ fileCount: 1 });
+      const sampler = createGovernedProcessDemandSampler(demand);
       let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
-      try { result = await captureIsolatedWorker(child, evidenceDir,
-        isolatedTestFileWorkerOptions(childEnv, 1, {}, 'runtime')); }
-      finally { await rm(resolve(evidenceDir, 'node_modules')); }
+      try {
+        result = await runGovernedTestProcess({
+          env: childEnv, owner: 'managed-capability-api-proof', namespace: 'managed-capability-api-proof',
+          payloadRef: filePath, demand,
+          timeoutMs: isolatedTestFileWorkerOptions(childEnv, 1, {}, 'runtime').testTimeoutMs,
+          settle: (outcome: Awaited<ReturnType<typeof captureIsolatedWorker>>) =>
+            classifyGovernedTestProcessOutcome({ ...outcome, actualDemand: sampler.stop() }),
+        }, async (_context: AdmissionContext, governedEnv: NodeJS.ProcessEnv) => {
+          const child = fork(resolve(root, 'scripts/with-test-pg.mjs'), [
+            '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx',
+            resolve(__dirname, '__fixtures__/managed-api-client.mts'),
+            '--prepared-api-sha=' + prepared.sha256, '--prepared-receipt-sha=' + prepared.receiptSha256,
+            ...(scenario === 'offline-recovery' ? ['--offline-recovery-only'] : []),
+          ], { cwd: root, env: governedEnv, detached: true, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+          sampler.attach(child.pid);
+          observe(child);
+          return captureIsolatedWorker(child, evidenceDir,
+            isolatedTestFileWorkerOptions(governedEnv, 1, {}, 'runtime'));
+        });
+      } finally {
+        sampler.stop();
+        await rm(resolve(evidenceDir, 'node_modules'));
+      }
       expect(result.code, result.output).toBe(0);
       const cleanup = isolatedWorkerReceipt(result.output, 'MANAGED_API_CLEANUP');
       expect(cleanup, result.output).toBeDefined();
