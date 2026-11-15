@@ -27,7 +27,7 @@ import {
   type BashStatus,
   type BashJob,
 } from './bash-jobs';
-import { parseJobLogEndMarker } from '../../task-manager/job-log-terminal';
+import { parseJobLogEndMarker, readJobLogTerminal } from '../../task-manager/job-log-terminal';
 import { backgroundTypecheckVerdict } from './background-typecheck-verdict';
 import { capturedExitMismatch } from './captured-exit-verdict';
 import { coresBetween, readCgroupCpuSample, MIN_SAMPLE_GAP_MS } from './cgroup-cpu';
@@ -1255,6 +1255,25 @@ export default defineTool({
         // Preserve the conservative miss path; a failed lookup does not prove
         // that the task or its payload is absent.
       }
+    }
+    // A retained worker-local entry can miss the runner's file sink and close
+    // callback just as a registry miss can. Do not let its stale running/empty
+    // snapshot hide durable terminal evidence. Reuse the recovery path below:
+    // it already reconciles ledger exits, authenticates live runner markers,
+    // and keeps a positively live task running when output copies an old marker.
+    if (job?.status === 'running') {
+      if (!attachedLedgerRow && job.taskId) {
+        const row = await getTask(job.taskId).catch(() => null);
+        if (
+          row?.class === 'bash-job' &&
+          (!workspaceId || row.workspaceId === workspaceId) &&
+          row.detail.bashJobId === bashId
+        ) attachedLedgerRow = row;
+      }
+      if (
+        (attachedLedgerRow && isTerminalState(attachedLedgerRow.state)) ||
+        readJobLogTerminal(attachedLedgerRow?.logPath ?? job.logPath)
+      ) job = undefined;
     }
     if (!job) {
       const unresolvedJobAdvice =
