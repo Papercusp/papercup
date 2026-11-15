@@ -1291,6 +1291,30 @@ node_modules_tree_fingerprint() {
   dependency_generation_tree_fingerprint "$1"
 }
 
+# EI-28858151006267833: `cp -al` shares every inode with the integration tree,
+# and npm rewrites a hidden lockfile (`node_modules/.package-lock.json`) IN
+# PLACE: truncate + write keeps the inode. Package directories are safe to share
+# because npm replaces them by rename, but the hidden lockfile is not. One
+# `npm install` in the integration tree at 2026-11-15T12:39:49Z rewrote the
+# lockfile of every hardlinked staging generation 40s after its bundle-freshness
+# stamp, and each generation then refused every restart with
+# "installed-dependency mismatch" (exit 78). Give each hidden lockfile in the
+# copied tree its own inode holding the bytes it had at link time. The copy
+# goes to a sibling temp name first and replaces the link by rename, so the
+# path is never missing or half-written.
+detach_hidden_lockfile_links() {
+  local tree="$1" lockfile copy
+  [ -d "$tree" ] || return 0
+  while IFS= read -r -d '' lockfile; do
+    copy="${lockfile}.detach.$$"
+    if ! cp -p -- "$lockfile" "$copy" || ! mv -f -- "$copy" "$lockfile"; then
+      rm -f -- "$copy"
+      echo "[setup-release] FATAL: could not give $lockfile its own inode; refusing a dependency tree that an integration-tree npm write would silently rewrite" >&2
+      return 1
+    fi
+  done < <(find "$tree" -name .package-lock.json -type f -links +1 -print0)
+}
+
 # ATOMIC refresh of ONE node_modules dir (infra-fail-fast — the 2026-06-25 all-pages
 # connection-refused outage). The integration source is copied (hardlinks by default,
 # independent files in `copy` mode) into a SIBLING temp dir FIRST, then swapped into
@@ -1332,7 +1356,11 @@ sync_one_node_modules() {
   mkdir -p "$(dirname "$dest")"
   dependency_generation_reap_dead_siblings "$dest"   # and dead runs' (WI-10004825)
   case "${NODE_MODULES_COPY_MODE:-hardlink}" in
-    hardlink) cp -al "$src" "$tmp" ;;  # fast; source and destination share file data
+    hardlink)
+      cp -al "$src" "$tmp"  # fast; source and destination share file data
+      # ...except the hidden lockfile, which npm rewrites in place (above).
+      detach_hidden_lockfile_links "$tmp" || { rm -rf -- "$tmp"; return 1; }
+      ;;
     copy)
       if [ -n "${PINNED_DEPENDENCY_GENERATION_ID:-}" ]; then
         # EI-24341465306631575: a tree this checkout ALREADY materialized from the
@@ -1590,7 +1618,15 @@ validate_dependencies_only_input() {
     return 1
   fi
   dependency_generation_select_prevalidated "$DEPENDENCY_GENERATION_ROOT" \
-    "$PINNED_DEPENDENCY_GENERATION_ID" "$(dependency_generation_read_field "$selector" token)"
+    "$PINNED_DEPENDENCY_GENERATION_ID" "$(dependency_generation_read_field "$selector" token)" || return $?
+  # WI-6554700010049444: dependencies-only cannot rebuild an addon, so an
+  # unloadable one is fatal. Check the immutable generation tree now, before the
+  # materialization this function gates, rather than after copying it (the old
+  # order spent ~20 minutes per queued wrapper on a deterministic failure).
+  if ! dependency_generation_native_addons_load_isolated "$DEPENDENCY_GENERATION_TREE"; then
+    log "FATAL: dependencies-only generation $PINNED_DEPENDENCY_GENERATION_ID for target inputs $input has native addons that will not load under this Node; publish a native-complete generation for these inputs before preparation"
+    return 1
+  fi
 }
 
 # Reuse the publisher's copy-normalized records, including its cache exclusions.
