@@ -77,6 +77,7 @@ describe('installed computer browser authority', () => {
       }
       send(data: string) { wire.push(data); queueMicrotask(() => host.receive(JSON.parse(data) as ByocSealedPacket)); }
       close(code = 1000, reason = '') {
+        if (code !== 1000 && (code < 3000 || code > 4999)) throw new DOMException('Invalid browser close code', 'InvalidAccessError');
         if (this.readyState === 3) return;
         this.readyState = 3; this.dispatchEvent(new CloseEvent('close', { code, reason }));
       }

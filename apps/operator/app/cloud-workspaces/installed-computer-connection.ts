@@ -40,7 +40,10 @@ export async function installedBrowserKey(storage: Storage = localStorage) {
     seed = storage.getItem(key);
   }
   if (!canonicalBrowserNoiseKey(seed)) throw new Error('The saved browser identity is invalid. Clear the connection identity and approve this browser again.');
-  return SecretStream.keyPair(Buffer.from(seed, 'base64'));
+  const pair = SecretStream.keyPair(Buffer.from(seed, 'base64'));
+  // SecretStream uses b4a, which returns plain Uint8Array keys in browsers.
+  // Keep encoding identical to Node before these keys enter grants or Noise.
+  return { publicKey: Buffer.from(pair.publicKey), secretKey: Buffer.from(pair.secretKey) };
 }
 
 export function readInstalledComputerApproval(value: unknown, request: InstalledComputerRequest,
@@ -100,10 +103,14 @@ export async function installedComputerSocket(url: string, approval: InstalledCo
   let bound: string | null = null;
   const pending: Record<string, unknown>[] = [];
   const emit = (frame: unknown) => channel.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(frame) }));
-  const fail = () => {
+  const fail = (error?: unknown) => {
     if (failed) return;
     failed = true; opened = false; clearTimeout(deadline);
-    channel.dispatchEvent(new Event('error')); socket.close(1008, 'desktop_identity_verification_failed');
+    channel.dispatchEvent(new ErrorEvent('error', {
+      message: error instanceof Error ? error.message : 'Desktop identity verification failed.', error,
+    }));
+    // Browser callers may send only 1000 or application codes 3000–4999.
+    socket.close(4008, 'desktop_identity_verification_failed');
   };
   const deadline = setTimeout(fail, 15_000);
   socket.addEventListener('open', () => {

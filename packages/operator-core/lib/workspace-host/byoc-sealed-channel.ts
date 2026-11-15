@@ -88,7 +88,10 @@ class RelayPacketDuplex extends Duplex {
   private readonly inboundTypes = new WeakMap<Buffer, string | null>();
 
   constructor(private readonly emitPacket: (packet: Buffer, contentType: string | null) => void) {
-    super();
+    // The readable side carries one byte view per relay packet. Byte-mode
+    // streams may copy foreign Buffer implementations or coalesce buffered
+    // chunks, losing the WeakMap's per-packet policy label in browser builds.
+    super({ readableObjectMode: true });
   }
 
   override emit(event: string | symbol, ...args: unknown[]): boolean {
@@ -242,7 +245,7 @@ export class ByocSealedChannel {
       this.fail(new Error('sealed channel content type mismatch'));
       return;
     }
-    this.receiveBuffer += data.toString('utf8');
+    this.receiveBuffer += Buffer.from(data).toString('utf8');
     this.receiveBufferType = chunkType;
     while (true) {
       const newline = this.receiveBuffer.indexOf('\n');
