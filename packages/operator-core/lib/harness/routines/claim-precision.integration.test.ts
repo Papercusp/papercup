@@ -219,7 +219,8 @@ describe('claimDueRoutine — timestamp precision (WI-40883)', () => {
     // claim and clear. Exercise that order against real PG, without timer sleeps.
     await expect(claimDueRoutine(rootSql as any, stale as any)).resolves.toBe(true);
     await clearUnclaimableRoutine(rootSql, 'late-alarm');
-    await recordUnclaimableRoutine(rootSql, stale as any, verdict);
+    // EI-28861389479532095: false means the tick must not log UNCLAIMABLE for this lost claim.
+    await expect(recordUnclaimableRoutine(rootSql, stale as any, verdict)).resolves.toBe(false);
 
     const [row] = await rootSql`
       SELECT metadata, next_fire_at, last_fired_at
@@ -239,7 +240,7 @@ describe('claimDueRoutine — timestamp precision (WI-40883)', () => {
     const verdict = classifyClaimSkip(current as any, Date.now());
     if (verdict.state !== 'unclaimable') throw new Error('expected overdue fixture');
 
-    await recordUnclaimableRoutine(rootSql, current as any, verdict);
+    await expect(recordUnclaimableRoutine(rootSql, current as any, verdict)).resolves.toBe(true);
     const [row] = await rootSql`SELECT metadata FROM harness_shared.routines WHERE id = 'current-alarm'`;
     expect(row.metadata.retained).toBe('other-health');
     expect(row.metadata.unclaimable.reason).toBe(verdict.reason);

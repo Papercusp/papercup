@@ -23,6 +23,8 @@ import {
   admitStarvedZeroCreditStart,
   createStarvedZeroCreditBudget,
   isStarvedPastBound,
+  refundStarvedZeroCreditStart,
+  STARVED_LOST_CLAIM_REFUNDS_PER_TICK,
   POOL_SHED_STARVATION_BOUND_MS,
 } from './routines-queue-classification';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
@@ -391,6 +393,21 @@ describe('admitStarvedZeroCreditStart — the bound reaches the zero-credit hold
     expect(admitStarvedZeroCreditStart(starved, now, createStarvedZeroCreditBudget(0))).toBe(false);
     expect(createStarvedZeroCreditBudget(2.9).left).toBe(2);
     expect(createStarvedZeroCreditBudget(-3).left).toBe(0);
+  });
+
+  it('refunds a lost-claim unit at most refundsLeft times (EI-28861389479532095)', () => {
+    const budget = createStarvedZeroCreditBudget(1, 2);
+    expect(admitStarvedZeroCreditStart(starved, now, budget)).toBe(true);
+    expect(budget.left).toBe(0);
+    expect(refundStarvedZeroCreditStart(budget)).toBe(true);
+    expect(admitStarvedZeroCreditStart(alsoStarved, now, budget)).toBe(true);
+    expect(refundStarvedZeroCreditStart(budget)).toBe(true);
+    expect(admitStarvedZeroCreditStart(alsoStarved, now, budget)).toBe(true);
+    // Refunds exhausted: the unit stays spent.
+    expect(refundStarvedZeroCreditStart(budget)).toBe(false);
+    expect(budget.left).toBe(0);
+    expect(createStarvedZeroCreditBudget().refundsLeft).toBe(STARVED_LOST_CLAIM_REFUNDS_PER_TICK);
+    expect(createStarvedZeroCreditBudget(1, -1).refundsLeft).toBe(0);
   });
 
   it('composes with the shed: the routine admitUnderPoolShed admits is the one the zero-credit budget starts', () => {

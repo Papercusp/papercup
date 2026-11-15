@@ -32,6 +32,8 @@ const state = vi.hoisted(() => ({
   stepNames: [] as string[],
   poolShedFixture: false,
   dispatchCredits: null as number | null,
+  /** EI-28861389479532095: whether the fenced unclaimable stamp matches the live row. */
+  unclaimableStampMatches: false,
   executeLoopRebaseOperation: false,
   slowLoopRebaseMs: 0,
   probe: { rawMs: 3000, admissionMs: 2500, discountMs: 500 },
@@ -110,6 +112,11 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
         vi.fn(async (strings: unknown, ...values: unknown[]) => {
           state.sqlCalls.push({ text: Array.isArray(strings) ? strings.join('?') : String(strings), values });
           if (String(strings).includes('SELECT name FROM harness_shared.routines')) return [{ name: 'legacy-routine-name' }];
+          // The fenced unclaimable stamp (recordUnclaimableRoutine): values = [patch, id, …].
+          if (String(strings).includes('RETURNING id')
+            && String(strings).includes('date_trunc(\'milliseconds\', last_fired_at)')) {
+            return state.unclaimableStampMatches ? [{ id: values[1] }] : [];
+          }
           return { count: 0 };
         }),
         { begin: vi.fn() },
@@ -210,6 +217,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.poolShedFixture = false;
   state.dispatchCredits = null;
+  state.unclaimableStampMatches = false;
   state.executeLoopRebaseOperation = false;
   state.slowLoopRebaseMs = 0;
   state.dbosStarted = true;
@@ -963,6 +971,92 @@ describe('routinesTickImpl — the starvation bound reaches the zero-credit hold
       expect(startedIds()).toEqual([`${ROUTINES_QUEUE}:routine:promoter`, `${ROUTINES_QUEUE}:routine:next`]);
       expect(vi.mocked(claimDueRoutine).mock.calls.map(([, routine]) => routine.id)).toEqual(['lost', 'promoter', 'next']);
     } finally { warn.mockRestore(); }
+  });
+
+  // EI-28861389479532095: a lost claim on a long-overdue SNAPSHOT is usually a peer that already
+  // advanced the live row. UNCLAIMABLE is logged only when the live-fenced stamp matched.
+  describe('logs UNCLAIMABLE only when the live row is still the stuck slot (EI-28861389479532095)', () => {
+    const lostOverdueTick = async (liveRowUnchanged: boolean) => {
+      state.unclaimableStampMatches = liveRowUnchanged;
+      // One queue credit from the faked dispatch epoch (same fixture as the neighbouring tests).
+      state.poolShedFixture = true;
+      state.dispatchCredits = 1;
+      vi.mocked(poolPressure).mockResolvedValueOnce('ok');
+      vi.mocked(listDueCronRoutines).mockResolvedValueOnce([row('lost', 'system:cross-hive-outbox-drain', 51)]);
+      vi.mocked(claimDueRoutine).mockResolvedValueOnce(false);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await state.scheduledTick!();
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const stamps = state.sqlCalls.filter(c => c.text.includes('RETURNING id') && c.text.includes("date_trunc('milliseconds', last_fired_at)"));
+        return { stamps: stamps.length, alarms: warn.mock.calls.filter(([l]) => String(l).includes('UNCLAIMABLE ROUTINE')).length };
+      } finally { warn.mockRestore(); }
+    };
+
+    it('stays silent when the live row moved (the stamp matched nothing)', async () => {
+      expect(await lostOverdueTick(false)).toEqual({ stamps: 1, alarms: 0 });
+    });
+
+    it('alarms when the live row is unchanged (the stamp matched it)', async () => {
+      expect(await lostOverdueTick(true)).toEqual({ stamps: 1, alarms: 1 });
+    });
+  });
+
+  // EI-28861389479532095: the escape unit was spent BEFORE the claim, so a claim a peer tick won
+  // wasted the tick's only escape. Concurrent ticks walk the same oldest-first order and collide.
+  describe('refunds the escape on a lost starved claim (EI-28861389479532095)', () => {
+    const starved = () => [55, 50, 45, 40, 35].map((overdue, i) => {
+      const r = row(`s${i + 1}`, 'system:cross-hive-outbox-drain', overdue);
+      r.actionLastFiredAt = new Date(Date.now() - 1_000);
+      return r;
+    });
+    const runTick = async (losing: ReadonlySet<string>, pressure: 'ok' | 'critical' = 'ok') => {
+      state.poolShedFixture = true;
+      // A critical epoch grants non-critical queues zero credit (pinned above), so the critical
+      // case runs with no queue credit at all; the escape is then the only way a starved row starts.
+      state.dispatchCredits = pressure === 'critical' ? null : 1;
+      vi.mocked(poolPressure).mockResolvedValueOnce(pressure);
+      const promoter = row('promoter', 'system:work-item-admission-promoter', 28);
+      vi.mocked(listDueCronRoutines).mockResolvedValueOnce([...starved(), promoter]);
+      vi.mocked(claimDueRoutine).mockReset().mockImplementation(async (_sql, r) => !losing.has(r.id));
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await state.scheduledTick!();
+        return {
+          started: startedIds(),
+          claims: vi.mocked(claimDueRoutine).mock.calls.map(([, r]) => r.id),
+          startingLogs: warn.mock.calls.filter(([l]) => String(l).includes('starvation bound: starting')).map(([l]) => String(l)),
+        };
+      } finally { warn.mockRestore(); }
+    };
+
+    it('serves the NEXT starved row after a lost claim, and still starts only one escape', async () => {
+      const { started, claims, startingLogs } = await runTick(new Set(['s1']));
+      expect(started).toEqual([`${ROUTINES_QUEUE}:routine:promoter`, `${ROUTINES_QUEUE}:routine:s2`]);
+      expect(claims).toEqual(['promoter', 's1', 's2']);
+      // The "starting" line names only the row that actually started, never the lost one.
+      expect(startingLogs).toHaveLength(1);
+      expect(startingLogs[0]).toContain('starting s2 ');
+    });
+
+    it('reaches the next starved row under a critical shed too (the precomputed pick no longer blocks it)', async () => {
+      const { started, claims } = await runTick(new Set(['s1']), 'critical');
+      expect(claims).toContain('s1');
+      expect(started).toContain(`${ROUTINES_QUEUE}:routine:s2`);
+      expect(started.filter((id) => /:routine:s\d$/.test(id))).toHaveLength(1);
+    });
+
+    it('bounds refunds: 3 lost claims then a win starts the 4th (N-1)', async () => {
+      const { started, claims } = await runTick(new Set(['s1', 's2', 's3']));
+      expect(claims).toEqual(['promoter', 's1', 's2', 's3', 's4']);
+      expect(started).toEqual([`${ROUTINES_QUEUE}:routine:promoter`, `${ROUTINES_QUEUE}:routine:s4`]);
+    });
+
+    it('bounds refunds: 4 lost claims exhaust them and the 5th row is not tried (N, N+1)', async () => {
+      const { started, claims } = await runTick(new Set(['s1', 's2', 's3', 's4']));
+      expect(claims).toEqual(['promoter', 's1', 's2', 's3', 's4']);
+      expect(started).toEqual([`${ROUTINES_QUEUE}:routine:promoter`]);
+    });
   });
 
   it('prebinds the scheduled census to its canonical due slot while retaining scheduler provenance', async () => {

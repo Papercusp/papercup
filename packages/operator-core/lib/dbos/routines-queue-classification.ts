@@ -277,15 +277,40 @@ export function isStarvedPastBound(
   return dueAtMs !== undefined && Number.isFinite(dueAtMs) && nowMs - dueAtMs >= boundMs;
 }
 
+/**
+ * EI-28861389479532095: how many times one tick may hand a spent escape unit back after its
+ * claim was lost. Bounds the extra single-row claim attempts a tick makes under pool pressure.
+ */
+export const STARVED_LOST_CLAIM_REFUNDS_PER_TICK = 3;
+
 /** Per-tick budget for starved routines that may start despite zero queue credit. */
 export interface StarvedZeroCreditBudget {
   left: number;
+  /** Remaining refunds for escape units spent on a claim another tick won. */
+  refundsLeft: number;
 }
 
 export function createStarvedZeroCreditBudget(
   perTick: number = POOL_SHED_STARVED_FIRES_PER_TICK,
+  refunds: number = STARVED_LOST_CLAIM_REFUNDS_PER_TICK,
 ): StarvedZeroCreditBudget {
-  return { left: Math.max(0, Math.floor(perTick)) };
+  return { left: Math.max(0, Math.floor(perTick)), refundsLeft: Math.max(0, Math.floor(refunds)) };
+}
+
+/**
+ * EI-28861389479532095: hand back the unit admitStarvedZeroCreditStart spent when the claim that
+ * followed was LOST. A lost claim starts nothing, because another tick won the row or it was
+ * rescheduled. Keeping the unit spent wasted the tick's only escape. Concurrent ticks walk the
+ * same oldest-first order, so they collide on the same row. Measured 2026-11-15 over 90 min:
+ * 79 escape "starting" lines and 23 lost claims flagged UNCLAIMABLE, and every flagged row had
+ * in fact been claimed by a peer. A refund lets the walk serve the NEXT starved row instead.
+ * Bounded by `refundsLeft`. Successful escape starts per tick stay at most the original budget.
+ */
+export function refundStarvedZeroCreditStart(budget: StarvedZeroCreditBudget): boolean {
+  if (budget.refundsLeft <= 0) return false;
+  budget.refundsLeft -= 1;
+  budget.left += 1;
+  return true;
 }
 
 /**

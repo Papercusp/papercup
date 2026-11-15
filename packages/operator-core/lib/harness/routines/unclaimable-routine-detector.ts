@@ -101,12 +101,17 @@ export function classifyClaimSkip(
  * stamp after the winner has claimed and cleared its alarm; matching only the id would then
  * resurrect obsolete evidence. Use the same millisecond floor as claimDueRoutine because
  * the snapshot has round-tripped through JS Date while PG may retain microseconds.
+ *
+ * Returns true only when the fenced UPDATE matched, so the live row is still the same stuck
+ * slot (EI-28861389479532095). The tick classifies its tick-start snapshot, and a claim lost
+ * to a peer executor or a `routines:set` leaves that snapshot looking long overdue. The caller
+ * logs UNCLAIMABLE only on true, which keeps the alarm on the live row, not the stale snapshot.
  */
 export async function recordUnclaimableRoutine(
   sql: any,
   routine: ClaimSkipInput,
   verdict: Extract<ClaimSkipVerdict, { state: 'unclaimable' }>,
-): Promise<void> {
+): Promise<boolean> {
   try {
     const patch = JSON.stringify({
       unclaimable: {
@@ -116,7 +121,7 @@ export async function recordUnclaimableRoutine(
         reason: verdict.reason,
       },
     });
-    await sql`
+    const rows = await sql`
       UPDATE harness_shared.routines
          SET metadata = COALESCE(metadata, '{}'::jsonb) || ${patch}::text::jsonb
        WHERE id = ${routine.id}
@@ -125,9 +130,12 @@ export async function recordUnclaimableRoutine(
                IS NOT DISTINCT FROM ${routine.nextFireAt}::timestamptz
          AND date_trunc('milliseconds', last_fired_at)
                IS NOT DISTINCT FROM ${routine.lastFiredAt}::timestamptz
+      RETURNING id
     `;
+    return Array.isArray(rows) && rows.length > 0;
   } catch {
-    // Intentionally swallowed — see the doc comment above.
+    // Intentionally swallowed — see the doc comment above. An unconfirmed stamp never alarms.
+    return false;
   }
 }
 

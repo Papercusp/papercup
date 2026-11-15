@@ -45,6 +45,7 @@ import {
   admitUnderPoolShed,
   admitStarvedZeroCreditStart,
   createStarvedZeroCreditBudget,
+  refundStarvedZeroCreditStart,
   isStarvedPastBound,
   POOL_SHED_STARVATION_BOUND_MS,
 } from './routines-queue-classification';
@@ -1400,27 +1401,20 @@ async function routinesTickImpl(): Promise<void> {
     if (!starvationPass && poolCritical && !shouldFireUnderPoolShed(r.targetRole)) continue;
     // Leave withheld rows due, including one-shots. Check again after queueing.
     if (!await routineBackgroundActivityAllowed(r)) continue;
-    if (shedAdmitted && !shedAdmitted.has(r)) continue;
-    if (starvationPass && poolCritical && !shouldFireUnderPoolShed(r.targetRole)) {
-      const overdueMin = r.nextFireAt ? Math.round((shedNowMs - r.nextFireAt.getTime()) / 60_000) : null;
-      console.warn(
-        `[routines-tick] pool shed: firing STARVED routine ${r.id} (${r.targetRole}, install=${r.installSlug ?? 'none'}) ` +
-          `overdue ${overdueMin}min past the ${POOL_SHED_STARVATION_BOUND_MS / 60_000}min starvation bound (EI-27084758447422793)`,
-      );
-    }
+    // EI-28861389479532095: the starvation pass is bounded by the zero-credit budget below and
+    // walks the same oldest-first order admitUnderPoolShed used. Requiring the precomputed shed
+    // pick here stopped a refunded unit from reaching the next starved row whenever the pick was
+    // lost to a peer tick or withheld above.
+    if (!starvationPass && shedAdmitted && !shedAdmitted.has(r)) continue;
     const queueName = queueForRoutine(r.targetRole, r.installSlug);
     // EI-224330 stage 2: admission is checked BEFORE claim, from the epoch's
     // previous-cohort feedback and actual durable occupancy. A withheld row has
     // not advanced next_fire_at, so it remains due for the next feedback epoch.
     const remainingStarts = remainingStartsByQueue.get(queueName) ?? 0;
     if (starvationPass && remainingStarts > 0) continue;
+    let starvedEscape = false;
     if (remainingStarts <= 0 && starvationPass && admitStarvedZeroCreditStart(r, shedNowMs, starvedZeroCredit)) {
-      const overdueMin = r.nextFireAt ? Math.round((shedNowMs - r.nextFireAt.getTime()) / 60_000) : null;
-      console.warn(
-        `[routines-tick] starvation bound: starting ${r.id} (${r.targetRole}, install=${r.installSlug ?? 'none'}) ` +
-          `on ${queueName} despite zero queue credit — overdue ${overdueMin}min, pool=${dispatchEpoch.pressure} ` +
-          `(WI-6554700010030059)`,
-      );
+      starvedEscape = true;
     } else if (remainingStarts <= 0) {
       const admission = queueAdmission.get(queueName);
       if (!loggedWithheldQueues.has(queueName)) {
@@ -1438,6 +1432,23 @@ async function routinesTickImpl(): Promise<void> {
 
     attempted.add(r.id);
     const claimed = await DBOS.runStep(() => claimDueRoutine(sql, r), { name: 'claim-routine' });
+    // EI-28861389479532095: a lost claim started nothing, so the escape unit goes back and the
+    // walk tries the next starved row (bounded by the budget's refunds).
+    if (!claimed && starvedEscape) refundStarvedZeroCreditStart(starvedZeroCredit);
+    if (claimed && starvedEscape) {
+      const overdueMin = r.nextFireAt ? Math.round((shedNowMs - r.nextFireAt.getTime()) / 60_000) : null;
+      if (poolCritical) {
+        console.warn(
+          `[routines-tick] pool shed: firing STARVED routine ${r.id} (${r.targetRole}, install=${r.installSlug ?? 'none'}) ` +
+            `overdue ${overdueMin}min past the ${POOL_SHED_STARVATION_BOUND_MS / 60_000}min starvation bound (EI-27084758447422793)`,
+        );
+      }
+      console.warn(
+        `[routines-tick] starvation bound: starting ${r.id} (${r.targetRole}, install=${r.installSlug ?? 'none'}) ` +
+          `on ${queueName} despite zero queue credit — overdue ${overdueMin}min, pool=${dispatchEpoch.pressure} ` +
+          `(WI-6554700010030059)`,
+      );
+    }
     if (!claimed) {
       // WI-40883: a bare `continue` here is what let 11 routines sit unclaimable and silent —
       // one of them green-checkpoint for three pots, dark ~36h. Losing a claim IS normal (two
@@ -1458,14 +1469,19 @@ async function routinesTickImpl(): Promise<void> {
           Date.now(),
         );
         if (verdict.state === 'unclaimable') {
-          console.warn(`[routines-tick] UNCLAIMABLE ROUTINE — ${verdict.reason}`);
+          // EI-28861389479532095: the verdict judges the tick-start snapshot. A claim lost to a
+          // peer executor or a `routines:set` leaves that snapshot long overdue while the live
+          // row has moved on. The stamp's UPDATE is fenced on the live next_fire_at and
+          // last_fired_at, so alarm only when it matched: the live row is still the stuck slot.
           void recordUnclaimableRoutine(sql, {
             id: r.id,
             name: r.name,
             installSlug: r.installSlug,
             nextFireAt: r.nextFireAt ?? null,
             lastFiredAt: r.lastFiredAt ?? null,
-          }, verdict);
+          }, verdict).then(stamped => {
+            if (stamped) console.warn(`[routines-tick] UNCLAIMABLE ROUTINE — ${verdict.reason}`);
+          });
         }
       } catch (e) {
         console.warn(`[routines-tick] claim-skip classifier failed for '${r.name}' (non-fatal): ${String(e)}`);
