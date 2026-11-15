@@ -16371,7 +16371,7 @@
           "POST"
         ]
       },
-      "description": "Claim a specific or the next peer-review item in one concrete harness, resubmit a revision-requested item, or adopt one whose submitter is provably gone. Review grades still go through blender:grade-idea; this door only owns reviewer pickup and submitter resubmission.",
+      "description": "Claim peer-review work, read its exact correction base, or correct it as its assigned reviewer without the original filer participating. Material authors require a separate independent grader. Also supports legacy resubmit and orphan adoption; blender:grade-idea remains the grade authority.",
       "capabilities": [
         "work_items:write"
       ],

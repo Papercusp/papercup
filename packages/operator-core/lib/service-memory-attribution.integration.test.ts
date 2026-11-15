@@ -1833,7 +1833,8 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         expect(result.diagnostics.buildSteps.state).toBe('retained');
         rmSync(directory, { recursive: true, force: true });
         const stepReceipt = result.diagnostics.buildSteps;
-        expect(readFileSync(resolve(root, stepReceipt.path!), 'utf8')).toBe(steps);
+        if (!('path' in stepReceipt)) throw new Error(`build steps were not retained: ${JSON.stringify(stepReceipt)}`);
+        expect(readFileSync(resolve(root, stepReceipt.path), 'utf8')).toBe(steps);
         expect(stepReceipt.sha256).toBe(createHash('sha256').update(steps).digest('hex'));
         expect(stepReceipt.bytes).toBe(Buffer.byteLength(steps));
         expect(readFileSync(resolve(root, result.log.path), 'utf8')).toContain('build failed');
@@ -2971,7 +2972,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       } else {
         const build = runBuildWithLog('bash', [resolve(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle], {
           cwd: resolve(root, 'apps/operator'), env: process.env, timeout: 120_000,
-        }, join(directory, 'build.log'), bundle);
+        }, join(bundleRoot, 'build.log'), bundle);
         expect(build.status, build.failure).toBe(0);
       }
       const bundleHash = createHash('sha256').update(readFileSync(bundle)).digest('hex');

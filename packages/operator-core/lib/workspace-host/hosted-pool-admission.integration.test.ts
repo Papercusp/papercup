@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { WorkspaceHostDesiredSpec } from '@papercusp/deployment-driver';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import type { AdmitHostedLifecycleJobInput, HostedPoolObservation } from './hosted-lifecycle-store';
+import type { StartWorkspaceHostLifecycleInput } from '../dbos/workspace-host-provision-workflow';
 import { Governor } from '../resource-governor/admission';
 import { PgAdmissionLedgerQueueStore } from '../resource-governor/admission-ledger-store';
 import { WorkItemAdmissionQueueDriver } from '../resource-governor/queue';
@@ -460,9 +461,10 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
 
   it('P539 recovers a lost idle-stop enqueue using the original admission and operation identity', async () => {
     const { ws, binding, measuredAt } = await idleRequest();
-    const startLifecycle = vi.fn(async (request: { operationId: string; hostId: string }) => ({
-      status: 'accepted' as const, operationId: request.operationId, hostId: request.hostId,
-    })).mockRejectedValueOnce(new Error('fixture:workflow-enqueue-unavailable'));
+    const startLifecycle = vi.fn(async (request: StartWorkspaceHostLifecycleInput) => {
+      if (!request.operationId) throw new Error('fixture: lifecycle request carried no operationId');
+      return { status: 'accepted' as const, operationId: request.operationId, hostId: request.hostId };
+    }).mockRejectedValueOnce(new Error('fixture:workflow-enqueue-unavailable'));
     const first = await reconcileHostedPoolDemand(ws, { startLifecycle });
     expect(first).toEqual({ considered: 1, enqueued: [], held: [{
       hostId: binding.hostId, reason: 'fixture:workflow-enqueue-unavailable',
@@ -508,9 +510,10 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     const { ws, binding } = await idleRequest();
     const reserve = createHostedPoolAgentReservations(binding, db.adminSql as any);
     await reserve('reserve', 'pending-idle-agent');
-    const startLifecycle = vi.fn(async (request: { operationId: string; hostId: string }) => ({
-      status: 'accepted' as const, operationId: request.operationId, hostId: request.hostId,
-    }));
+    const startLifecycle = vi.fn(async (request: StartWorkspaceHostLifecycleInput) => {
+      if (!request.operationId) throw new Error('fixture: lifecycle request carried no operationId');
+      return { status: 'accepted' as const, operationId: request.operationId, hostId: request.hostId };
+    });
     expect(await reconcileHostedPoolDemand(ws, { startLifecycle })).toEqual({
       considered: 1, enqueued: [], held: [{ hostId: binding.hostId, reason: 'hosted_pool_idle_active_work' }],
     });
