@@ -753,6 +753,14 @@ async function isProvenWorkspaceScratchRoot(dir: string, name: string): Promise<
   }
 }
 
+/** The sweep steps that take a workspace's exclusive scratch-data lease. */
+export type ScratchGcDataLeaseOperation =
+  | 'retention-gc'
+  | 'retention-gc-state'
+  | 'marker-backfill'
+  | 'dead-workspace-gc'
+  | 'quota-eviction';
+
 /** Why a provably-dead workspace root was kept this sweep. */
 export type DeadWorkspaceDeferral =
   | 'recent-write'
@@ -830,6 +838,17 @@ export interface ScratchGcSummary {
   pinAdmissionDeferred?: Array<{ workspaceId: string; path: string; reason: 'retention-mutex-busy' }>;
   /** Busy-pin deferrals this sweep resolved by waiting as a queued retention-pin waiter. */
   pinQueuedAdmissions?: number;
+  /**
+   * WI-6554700010049099: a workspace whose exclusive scratch-data lease stayed held past the
+   * fs-mutex wait (a long quota eviction, say). That workspace's step is kept for a later sweep
+   * and the rest of the sweep continues; `continuationCursor` names the earliest unfinished
+   * retention position, so resuming from it revisits everything this sweep skipped.
+   */
+  dataLeaseDeferred?: Array<{
+    workspaceId: string;
+    path: string | null;
+    operation: ScratchGcDataLeaseOperation;
+  }>;
   /** Protected filesystem paths retained after permission-denied removal attempts. */
   unreclaimablePaths: Array<{
     workspaceId: string;
@@ -982,9 +1001,21 @@ async function runScratchGcWithPinAdmission(pinAdmission: ScratchGcPinAdmission,
   let continuationCursor = opts.cursor;
   // A busy-pin deferral ends the sweep early; hand back the last completed position so the
   // caller resumes there instead of reading a cursor-less early return as a finished scan.
+  /** Earliest retention position a data-lease deferral left unfinished (WI-6554700010049099). */
+  let dataLeaseResumeCursor: ScratchGcContinuationCursor | undefined;
   const pinDeferredSummary = (): ScratchGcSummary => {
-    summary.continuationCursor = continuationCursor;
+    summary.continuationCursor = dataLeaseResumeCursor ?? continuationCursor;
     return summary;
+  };
+  /**
+   * A workspace data-lease wait that timed out defers that workspace's step instead of failing
+   * the whole sweep. Returns false for any other error, which the caller rethrows.
+   */
+  const deferDataLease = (error: unknown, workspaceId: string, path: string | null,
+    operation: ScratchGcDataLeaseOperation): boolean => {
+    if (!isFsMutexTimeout(error)) return false;
+    (summary.dataLeaseDeferred ??= []).push({ workspaceId, path, operation });
+    return true;
   };
   const budget = opts.maxDurationMs == null
     ? undefined
@@ -1168,6 +1199,15 @@ async function runScratchGcWithPinAdmission(pinAdmission: ScratchGcPinAdmission,
           });
         }, leaseWaitPolicy()), leaseWaitPolicy());
       } catch (error) {
+        if (deferDataLease(error, workspaceId, candidate.dir, 'retention-gc')) {
+          // Every later candidate in this workspace needs the same exclusive lease, so keep
+          // the workspace for a later sweep and go on to the next one. The resume cursor
+          // stays at the earliest unfinished position so nothing skipped here is lost.
+          dataLeaseResumeCursor ??= lastCompletedCursor;
+          continuationCursor = lastCompletedCursor;
+          retentionComplete = false;
+          break;
+        }
         if (error !== leaseBusy) throw error;
         // A lease is busy while the admission is held: hand the pin back, retry leases-first.
         await releasePinHold();
@@ -1201,11 +1241,18 @@ async function runScratchGcWithPinAdmission(pinAdmission: ScratchGcPinAdmission,
       lastCompletedCursor = candidateCursor;
     }
     if (removed) {
-      await withScratchWorkspaceDataMutex(workspaceId, 'retention-gc-state', () =>
-        withScratchWorkspaceMutex(workspaceId, 'retention-gc-state', async () => {
-          await removeSharedScratchQuotaState(workspaceId);
-          invalidateLocalScratchUsage(workspaceId);
-        }));
+      try {
+        await withScratchWorkspaceDataMutex(workspaceId, 'retention-gc-state', () =>
+          withScratchWorkspaceMutex(workspaceId, 'retention-gc-state', async () => {
+            await removeSharedScratchQuotaState(workspaceId);
+            invalidateLocalScratchUsage(workspaceId);
+          }));
+      } catch (error) {
+        if (!deferDataLease(error, workspaceId, null, 'retention-gc-state')) throw error;
+        // The shared quota state could not be cleared; drop this host's cached view so the
+        // next quota read re-measures instead of charging the runs just removed.
+        invalidateLocalScratchUsage(workspaceId);
+      }
     }
     if (summary.pinAdmissionDeferred?.length) return pinDeferredSummary();
     if (budget?.truncated) {
@@ -1236,15 +1283,21 @@ async function runScratchGcWithPinAdmission(pinAdmission: ScratchGcPinAdmission,
       } catch {
         continue; // an id with no valid scratch shape has no scratch root
       }
-      const wrote = await withScratchWorkspaceDataMutex(workspaceId, 'marker-backfill', () =>
-        withScratchWorkspaceMutex(workspaceId, 'marker-backfill', async () => {
-        const wroteMarker = await writeMarkerIfAbsent(wsRoot, workspaceId);
-        if (wroteMarker) {
-          await removeSharedScratchQuotaState(workspaceId);
-          invalidateLocalScratchUsage(workspaceId);
-        }
-        return wroteMarker;
-      }));
+      let wrote: boolean;
+      try {
+        wrote = await withScratchWorkspaceDataMutex(workspaceId, 'marker-backfill', () =>
+          withScratchWorkspaceMutex(workspaceId, 'marker-backfill', async () => {
+          const wroteMarker = await writeMarkerIfAbsent(wsRoot, workspaceId);
+          if (wroteMarker) {
+            await removeSharedScratchQuotaState(workspaceId);
+            invalidateLocalScratchUsage(workspaceId);
+          }
+          return wroteMarker;
+        }));
+      } catch (error) {
+        if (!deferDataLease(error, workspaceId, wsRoot, 'marker-backfill')) throw error;
+        continue;
+      }
       if (wrote) summary.markersWritten += 1;
     }
   }
@@ -1355,6 +1408,8 @@ async function runScratchGcWithPinAdmission(pinAdmission: ScratchGcPinAdmission,
         summary.deadWorkspaceBytes += currentTree.bytes;
       }, leaseWaitPolicy()), leaseWaitPolicy());
       } catch (error) {
+        // Keep this root for a later sweep; the rest of the dead roots are independent.
+        if (deferDataLease(error, c.workspaceId, c.dir, 'dead-workspace-gc')) continue;
         if (error !== leaseBusy) throw error;
         await releasePinHold();
         if (await retryDeadCandidate(candidateIndex, false)) {
@@ -1377,7 +1432,13 @@ async function runScratchGcWithPinAdmission(pinAdmission: ScratchGcPinAdmission,
   // Step 3: per-workspace quota check + FIFO eviction by mtime.
   if (opts.enforceQuota !== false && !dryRun && !scratchGcBudgetExpired(budget)) {
     for (const workspaceId of opts.workspaceRegistry) {
-      const reclaimed = await evictWorkspaceQuotaWithLock(workspaceId, () => WORKSPACE_QUOTA_BYTES);
+      let reclaimed: { evictions: number; bytes: number };
+      try {
+        reclaimed = await evictWorkspaceQuotaWithLock(workspaceId, () => WORKSPACE_QUOTA_BYTES);
+      } catch (error) {
+        if (!deferDataLease(error, workspaceId, null, 'quota-eviction')) throw error;
+        continue;
+      }
       summary.quotaEvictions += reclaimed.evictions;
       summary.quotaEvictedBytes += reclaimed.bytes;
     }
@@ -1385,7 +1446,9 @@ async function runScratchGcWithPinAdmission(pinAdmission: ScratchGcPinAdmission,
 
   if (budget?.truncated) {
     summary.truncated = true;
-    summary.continuationCursor = continuationCursor;
+    summary.continuationCursor = dataLeaseResumeCursor ?? continuationCursor;
+  } else if (dataLeaseResumeCursor) {
+    summary.continuationCursor = dataLeaseResumeCursor;
   }
 
   return summary;

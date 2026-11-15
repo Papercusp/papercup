@@ -533,6 +533,53 @@ describe('runScratchGc — retention', () => {
 });
 
 /**
+ * WI-6554700010049099: the daily sweep waited 180s for one workspace's exclusive data lease
+ * (a long quota eviction held it), timed out, and the whole DBOS step failed. A held lease now
+ * defers only that workspace's steps; the rest of the sweep runs, and the returned cursor
+ * resumes the deferred workspace.
+ */
+describe('runScratchGc — a held workspace data lease defers only that workspace (WI-6554700010049099)', () => {
+  let prevTimeout: string | undefined;
+  beforeEach(() => {
+    prevTimeout = process.env.PAPERCUSP_FS_MUTEX_TIMEOUT_MS;
+    process.env.PAPERCUSP_FS_MUTEX_TIMEOUT_MS = '400';
+  });
+  afterEach(() => {
+    if (prevTimeout === undefined) delete process.env.PAPERCUSP_FS_MUTEX_TIMEOUT_MS;
+    else process.env.PAPERCUSP_FS_MUTEX_TIMEOUT_MS = prevTimeout;
+  });
+  const dataLeaseName = (workspaceId: string): string =>
+    'papercusp-scratch-data-' +
+    createHash('sha256').update(resolve(scratchRootForWorkspace(workspaceId))).digest('hex').slice(0, 40);
+
+  it('keeps the held workspace, reclaims the others, and resumes the held one from the cursor', async () => {
+    const held = makeRunDir('ws-A', 'demo:tool', UUID(900), 100, RETENTION_MS + 3000);
+    const heldLater = makeRunDir('ws-A', 'demo:tool', UUID(902), 100, RETENTION_MS + 2000);
+    const other = makeRunDir('ws-B', 'demo:tool', UUID(901), 100, RETENTION_MS + 3000);
+
+    let first!: Awaited<ReturnType<typeof runScratchGc>>;
+    await withFsMutex(dataLeaseName('ws-A'), async () => {
+      first = await runScratchGc({ workspaceRegistry: ['ws-A', 'ws-B'] });
+    }, { timeoutMs: 5_000 });
+
+    expect(existsSync(held)).toBe(true);
+    expect(existsSync(heldLater)).toBe(true);
+    expect(existsSync(other)).toBe(false);
+    expect(first.retentionEvictions).toBe(1);
+    expect(first.dataLeaseDeferred?.length).toBeGreaterThan(0);
+    expect(first.dataLeaseDeferred!.every((d) => d.workspaceId === 'ws-A')).toBe(true);
+    expect(first.dataLeaseDeferred!.map((d) => d.operation)).toContain('retention-gc');
+    expect(first.continuationCursor).toMatchObject({ phase: 'retention', workspaceId: 'ws-A' });
+
+    const resumed = await runScratchGc({ workspaceRegistry: ['ws-A', 'ws-B'], cursor: first.continuationCursor });
+    expect(resumed.continuationError).toBeUndefined();
+    expect(resumed.dataLeaseDeferred).toBeUndefined();
+    expect(existsSync(held)).toBe(false);
+    expect(existsSync(heldLater)).toBe(false);
+  });
+});
+
+/**
  * WI-10004532: the sweep schedule used to be described by a hand-maintained
  * `GC_INTERVAL_MS = 1h` that nothing read, while the real DBOS crontab was daily. That
  * mismatch made a working GC look broken ("thousands of run dirs older than 24h"). These pin

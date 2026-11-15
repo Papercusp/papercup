@@ -73,6 +73,8 @@ export interface PruneResult {
   note?: string;
   /** Scratch: eligible paths kept because the retention-pin writer stayed busy; the result is partial. */
   pinAdmissionDeferred?: number;
+  /** Scratch: workspace steps kept because that workspace's data lease stayed held; the result is partial. */
+  dataLeaseDeferred?: number;
   /** PG: a per-call row/time ceiling was hit and eligible rows still remain;
    *  replay to continue (see {@link continuation}). */
   partial?: boolean;
@@ -472,7 +474,13 @@ async function pruneScratch(cat: DiskStorageCategory, req: PruneRequest): Promis
   if (pinDeferred > 0) {
     notes.push(`retention-pin writer stayed busy past the admission wait; ${pinDeferred} eligible scratch path${pinDeferred === 1 ? ' was' : 's were'} kept and the sweep stopped early — this result is partial, pass continuation.cursor with the same prune arguments to resume`);
   }
-  const partial = Boolean(gc.truncated) || pinDeferred > 0;
+  // WI-6554700010049099: a workspace data lease held past the wait defers that workspace's step.
+  const leaseDeferred = gc.dataLeaseDeferred?.length ?? 0;
+  if (leaseDeferred > 0) {
+    const workspaces = [...new Set(gc.dataLeaseDeferred!.map((d) => d.workspaceId))].join(', ');
+    notes.push(`a workspace scratch-data lease stayed held past the wait (${workspaces}); ${leaseDeferred} step${leaseDeferred === 1 ? ' was' : 's were'} kept for a later sweep — this result is partial, pass continuation.cursor with the same prune arguments to resume`);
+  }
+  const partial = Boolean(gc.truncated) || pinDeferred > 0 || leaseDeferred > 0;
   return {
     ok: true,
     categoryId: cat.id,
@@ -482,6 +490,7 @@ async function pruneScratch(cat: DiskStorageCategory, req: PruneRequest): Promis
     reclaimEstimated: Boolean(partial && req.dryRun),
     vacuumed: false,
     ...(pinDeferred > 0 ? { pinAdmissionDeferred: pinDeferred } : {}),
+    ...(leaseDeferred > 0 ? { dataLeaseDeferred: leaseDeferred } : {}),
     ...(partial
       ? {
           partial: true,
