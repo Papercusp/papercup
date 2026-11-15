@@ -15,6 +15,7 @@ import {
   type SubscribeInput,
   type SubscriptionRow,
   type SubscriptionTargetKind,
+  type SubscriptionReason,
   type ThreadableStore,
   type ThreadPostRow,
   type ThreadRow,
@@ -88,10 +89,19 @@ export class InMemoryEntitySubscriptionStore implements SubscribableStore {
       (r) => !r.cancelled && r.subscriber_id === input.subscriber_id &&
         r.target_kind === input.target_kind && r.target_ref === input.target_ref,
     );
+    const reason = input.reason ?? 'explicit';
     if (active) {
-      active.delivery_mode = mode;
-      active.expires_ts = input.expires_ts ?? null;
-      if (input.follow_blockers !== undefined) active.follow_blockers = input.follow_blockers;
+      // P-002 parity with the PG store: a contextual re-subscribe only adds its
+      // reason and refreshes the epoch; a direct one replaces mode/TTL/blockers.
+      const held = active.reasons ?? ['explicit'];
+      if (reason === 'context') {
+        active.context_epoch = Math.max(active.context_epoch ?? input.context_epoch ?? 0, input.context_epoch ?? 0);
+      } else {
+        active.delivery_mode = mode;
+        active.expires_ts = input.expires_ts ?? null;
+        if (input.follow_blockers !== undefined) active.follow_blockers = input.follow_blockers;
+      }
+      active.reasons = [...new Set([...held, reason])].sort();
       return stripCancelled(active);
     }
     const row: SubMem = {
@@ -103,16 +113,30 @@ export class InMemoryEntitySubscriptionStore implements SubscribableStore {
       created_ts: input.created_ts,
       expires_ts: input.expires_ts ?? null,
       follow_blockers: input.follow_blockers ?? false,
+      reasons: [reason],
+      context_epoch: reason === 'context' ? (input.context_epoch ?? null) : null,
       cancelled: false,
     };
     this.rows.push(row);
     return stripCancelled(row);
   }
 
-  async unsubscribe(subscriberId: string, targetKind: SubscriptionTargetKind, targetRef: string): Promise<void> {
+  /** P-002: release one reason; without `reason`, the subscriber's own explicit
+   *  release ends its explicit and contextual reasons. Cancelled when none remain. */
+  async unsubscribe(
+    subscriberId: string,
+    targetKind: SubscriptionTargetKind,
+    targetRef: string,
+    reason?: SubscriptionReason,
+  ): Promise<void> {
+    const release: SubscriptionReason[] = reason ? [reason] : ['explicit', 'context'];
     for (const r of this.rows) {
       if (!r.cancelled && r.subscriber_id === subscriberId && r.target_kind === targetKind && r.target_ref === targetRef) {
-        r.cancelled = true;
+        const held = r.reasons ?? ['explicit'];
+        if (!held.some((h) => release.includes(h))) continue;
+        const remaining = held.filter((h) => !release.includes(h));
+        if (remaining.length === 0) r.cancelled = true;
+        else r.reasons = remaining;
       }
     }
   }
