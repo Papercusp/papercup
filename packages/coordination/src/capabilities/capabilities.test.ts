@@ -5,6 +5,15 @@
  * fan-out core over the in-memory trio.
  */
 
+import { expect, it } from 'vitest';
+import {
+  isResolvedSubscriberLive as substrateIsResolvedSubscriberLive,
+  resolvedSubscriberTarget as substrateResolvedSubscriberTarget,
+} from '@papercusp/pubsub-substrate/capabilities';
+import {
+  isResolvedSubscriberLive,
+  resolvedSubscriberTarget,
+} from '@papercusp/coordination/capabilities';
 import {
   describeLinkableStoreConformance,
   describeResolveObjectSubscribers,
@@ -19,6 +28,11 @@ import {
   InMemoryThreadStore,
   InMemoryTopicStore,
 } from './memory-stores';
+
+it('exposes delivery-time subscription helpers through the public capabilities entrypoint', () => {
+  expect(resolvedSubscriberTarget).toBe(substrateResolvedSubscriberTarget);
+  expect(isResolvedSubscriberLive).toBe(substrateIsResolvedSubscriberLive);
+});
 
 describeTopicStoreConformance('InMemoryTopicStore', () => new InMemoryTopicStore());
 describeSubscribableStoreConformance('InMemoryEntitySubscriptionStore', () => new InMemoryEntitySubscriptionStore());
