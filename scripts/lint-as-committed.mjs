@@ -382,12 +382,27 @@ export function committedWorkRootDependencyDonor(workRoot, { sourceObjects = fal
   return root;
 }
 
-function independentDependencyRelativeTarget(sourceRoot, path, target) {
-  const rel = relative(sourceRoot, target);
-  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-    throw new Error(`dependency symlink escapes its snapshot: ${relative(sourceRoot, path)}`);
+const independentDependencyIo = { readdirSync, readlinkSync, relative, resolve, dirname, join, sep, isAbsolute };
+
+function independentDependencyRelativeTarget(sourceRoot, path, target, io) {
+  const rel = io.relative(sourceRoot, target);
+  if (rel === '..' || rel.startsWith(`..${io.sep}`) || io.isAbsolute(rel)) {
+    throw new Error(`dependency symlink escapes its snapshot: ${io.relative(sourceRoot, path)}`);
   }
   return rel;
+}
+
+// Explicit IO keeps this worker independent of module-loader closure bindings.
+function preflightIndependentDependencyGraph(sourceRoot, paths, io) {
+  const visit = directory => {
+    for (const entry of io.readdirSync(directory, { withFileTypes: true })) {
+      const path = io.join(directory, entry.name);
+      if (entry.isSymbolicLink()) {
+        independentDependencyRelativeTarget(sourceRoot, path, io.resolve(io.dirname(path), io.readlinkSync(path)), io);
+      } else if (entry.isDirectory()) visit(path);
+    }
+  };
+  for (const path of paths) visit(io.join(sourceRoot, path));
 }
 
 /**
@@ -396,15 +411,7 @@ function independentDependencyRelativeTarget(sourceRoot, path, target) {
  * @param {string[]} paths
  */
 export function preflightIndependentDependencyLinks(sourceRoot, paths) {
-  const visit = directory => {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      const path = join(directory, entry.name);
-      if (entry.isSymbolicLink()) {
-        independentDependencyRelativeTarget(sourceRoot, path, resolve(dirname(path), readlinkSync(path)));
-      } else if (entry.isDirectory()) visit(path);
-    }
-  };
-  for (const path of paths) visit(join(sourceRoot, path));
+  preflightIndependentDependencyGraph(sourceRoot, paths, independentDependencyIo);
 }
 
 /**
@@ -471,7 +478,7 @@ export async function materializeIndependentDependencies(repoRoot, workRoot, opt
           const target = alreadyMapped && (linkedTarget === workRoot || linkedTarget.startsWith(workRoot + sep))
             ? join(sourceRoot, relative(workRoot, linkedTarget)) : linkedTarget;
           const mapped = cloneWorkspaceTarget(target, sourceRoot, workRoot);
-          const rel = independentDependencyRelativeTarget(sourceRoot, original, target);
+          const rel = independentDependencyRelativeTarget(sourceRoot, original, target, independentDependencyIo);
           if (mapped) {
             if (!existsSync(join(mapped, 'package.json'))) {
               throw new Error(`dependency workspace is absent at the committed ref: ${rel}`);
@@ -574,8 +581,13 @@ fi
 `, 'committed-dependencies', materializer, donor, workRoot, useGeneration ? 'generation' : 'donor', ...workspaceDirs], {
       encoding: 'utf8', env: { ...environment, DEPENDENCY_GENERATION_ALLOW_HARDLINK: '0',
         LINT_AS_COMMITTED_NODE: process.execPath,
-        LINT_AS_COMMITTED_LINK_PREFLIGHT: 'import { preflightIndependentDependencyLinks } from ' + JSON.stringify(import.meta.url) + ';'
-          + 'try { preflightIndependentDependencyLinks(process.argv[1], process.argv[2].split("\\n").filter(Boolean)); }'
+        // Send the already-loaded implementation. Re-importing this file can
+        // select another revision through a child source loader and mix two
+        // versions of the materializer in a single verification.
+        LINT_AS_COMMITTED_LINK_PREFLIGHT: 'import * as fs from "node:fs"; import * as path from "node:path";'
+          + 'const io = {...fs, ...path};'
+          + independentDependencyRelativeTarget.toString() + ';' + preflightIndependentDependencyGraph.toString() + ';'
+          + 'try { preflightIndependentDependencyGraph(process.argv[1], process.argv[2].split("\\n").filter(Boolean), io); }'
           + 'catch (error) { console.log("COMMITTED_DEPENDENCY_PREFLIGHT_ERROR " + JSON.stringify(error.message)); process.exitCode = 74; }',
       },
       stdio: ['ignore', 'pipe', 'inherit'],

@@ -438,6 +438,16 @@ const ALLOWLIST: Record<string, Classification> = {
     status: 'exempt',
     reason: 'topic subscriptions are cheaply re-established (declare-intent / topics:subscribe re-fires each orient) — a rebind losing one means a missed notification window, not a stranded claim/resource. Worth a future rebind surface if this proves to bite in practice; filed as a follow-up, not a confirmed incident.',
   },
+  // Migration 1638 (shared-reference-system-2026-11-13 P-002, D-029 §4). The UNDO record
+  // of the legacy-subscription cleanup: one row per cancelled coord_entity_subscriptions
+  // row, written before the cancel (subscription-lifecycle.ts runLegacySubscriptionCleanup).
+  'coord_entity_subscription_cleanup_snapshots.subscriber_id': {
+    status: 'exempt',
+    reason:
+      'an append-only cleanup SNAPSHOT (the pre-cancel copy of a subscription row the P-002 legacy cleanup ' +
+      'ended), keyed by cleanup_run + subscription_id — provenance for audit/restore, not a live subscription, ' +
+      'claim or presence-tied reader. Rebinding would rewrite whose row was cancelled.',
+  },
   'event_wake_deliveries.subscriber_id': {
     status: 'exempt',
     reason: 'a delivery-history LOG row (what was sent to whom) — not a live subscription or claim.',

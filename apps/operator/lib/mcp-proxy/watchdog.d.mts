@@ -179,6 +179,19 @@ export function recordRestartOutcome(
 /** Single-line, bounded diagnostic detail for an activation failure. */
 export function restartFailureDetail(error?: unknown): string;
 
+/**
+ * The real spawn path behind every `sh` seam. `options.stdin` is written to the child's stdin
+ * and the stream closed — `execFile` itself has no stdin option (WI-6554700010049436).
+ */
+export function runCommand(
+  command: string,
+  args: string[],
+  options?: MpcProxyHotPathShellOptions,
+): Promise<MpcProxyHotPathShellResult>;
+
+/** Why a command failed (timeout kill / exit code), or '' when the error carries neither. */
+export function describeCommandFailure(error?: unknown, timeoutMs?: number): string;
+
 export function classifyProbeResult(result?: {
   networkError?: unknown;
   status?: number;

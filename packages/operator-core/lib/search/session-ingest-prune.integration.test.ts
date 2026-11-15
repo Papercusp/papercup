@@ -108,6 +108,50 @@ describe('pruneSessionTurnsOnce (real migrated PostgreSQL)', () => {
     expect(report.turns.exhausted).toBe(false);
   });
 
+  /** Record an activation audit citing `refs` (EI-28854179946782151). Replica role
+   * skips the plan-revision FK so the fixture needs no plan graph; the CHECKs on
+   * activation rows still apply, so every activation column is supplied. */
+  async function activationAuditCiting(refs: string[]) {
+    const refOrigins = Object.fromEntries(refs.map((r) => [r, { verdict: 'owner-typed' }]));
+    await db.adminSql.begin(async (tx) => {
+      await tx`SET LOCAL session_replication_role = replica`;
+      await tx`
+        INSERT INTO harness_shared.plan_audits
+          (workspace_id, harness_slug, plan_slug, audit_seq, created_by, audit_kind, activation,
+           audited_plan_revision_id, audited_plan_revision_seq, audited_plan_content_hash)
+        VALUES ('ws-prune', 'h-prune', 'p-prune', 1, 'test', 'activation',
+                ${tx.json({ itemProvenanceCheck: { version: 1, refOrigins } })}, 1, 1, ${'a'.repeat(64)})`;
+    });
+  }
+
+  it('keeps past-window turns that an activation audit cites, and says how many it held', async () => {
+    await db.adminSql`DELETE FROM harness_shared.plan_audits WHERE plan_slug = 'p-prune'`;
+    await turns('owner:with:colons', 3, 50, 50); // turn_idx 1..3, all past the window
+    await turns('late-cited', 2, 50, 1);         // tail-pass population, turn 2 cited
+    await turns('fresh', 1, 1, 1);
+    await activationAuditCiting([
+      'session_turn:claude:owner:with:colons:2', // session id containing ':' (parseTurnRef semantics)
+      'session_turn:claude:late-cited:2',
+      'session_turn:claude:fresh:1',             // cited but inside the window: not "held"
+      'session_turn:claude:gone:9',              // cited, never indexed: must not error
+      'order:1072',                              // non-turn refs are ignored
+    ]);
+
+    const report = await pruneSessionTurnsOnce({ batchRows: 1 });
+
+    const left = await db.adminSql<{ session_id: string; turn_idx: number }[]>`
+      SELECT session_id, turn_idx FROM harness_shared.session_turns ORDER BY session_id, turn_idx`;
+    expect(left).toEqual([
+      { session_id: 'fresh', turn_idx: 1 },
+      { session_id: 'late-cited', turn_idx: 2 },
+      { session_id: 'owner:with:colons', turn_idx: 2 },
+    ]);
+    expect(report.deleted).toBe(3); // owner:with:colons 1+3, late-cited 1
+    expect(report.turns.exhausted).toBe(false);
+    expect(report.auditCited).toEqual({ citedRefs: 4, heldPastWindow: 2 });
+    await db.adminSql`DELETE FROM harness_shared.plan_audits WHERE plan_slug = 'p-prune'`;
+  });
+
   it('reports exhausted when the budget runs out with rows still past the window, and a later run finishes', async () => {
     await parts('old', 6, 20, 20);
     await turns('old', 3, 50, 50);

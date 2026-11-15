@@ -506,7 +506,8 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
         source.includes("assert.ok(prepared, 'Native child must be bundled from the verified source before the test starts')") &&
         source.includes("assert.equal(prepared.bundle, bundle,") &&
         source.includes("digest('hex'), prepared.sha256,") &&
-        source.includes("cwd: sourceRoot, env, timeout: 300_000, maxBuffer: 4 * 1024 * 1024,") &&
+        source.includes("assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 300_000,") &&
+        source.includes("cwd: sourceRoot, env, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024,") &&
         source.includes("return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {") &&
         source.includes("if (!error) { resolve({ stdout, stderr }); return; }") &&
         source.includes("assert.equal(env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1'") &&
@@ -1966,13 +1967,6 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed semantic disposition for scripts/lib/stale-swap-leftovers.mjs: its `pending` array is a depth-first directory-walk worklist consumed to completion within a single synchronous scan of a finite tree, not a resident resource queue; it holds no work across calls and starts no independent resident work.",
   },
   {
-    path: "scripts/lib/tracked-files.mjs",
-    code: "unbounded-resident-queue",
-    disposition: "semantic",
-    reason:
-      "P-016 reviewed semantic disposition for scripts/lib/tracked-files.mjs: its `pending` directory-walk worklist in the filesystem fallback is consumed within one synchronous enumeration and is hard-bounded by FALLBACK_MAX_ENTRIES (it throws rather than continue past the bound), so it is finite traversal state, not a resident resource queue, and starts no independent resident work.",
-  },
-  {
     path: "scripts/check-vacuous-negative-assertions.mjs",
     code: "unbounded-resident-queue",
     disposition: "semantic",
@@ -2285,6 +2279,31 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       source.includes("runPhase(ctx)"),
   },
   {
+    path: "scripts/tauri-surface-verify-report-sharing.mts",
+    code: "resource-start-outside-admission",
+    disposition: "upstream",
+    reason:
+      "P-016 reviewed upstream disposition for tauri-surface-verify-report-sharing.mts: its one synchronous child is the maintained test:file router for the single report-sharing native e2e file. The router owns its execution watchdog and source-receipt finalization, the enrolled native verifier task supplies the outer deadline (a second spawnSync timeout killed npm mid-finalization, EI-28071068503449846), and publication requires the isolated verifier state. It starts no service and leaves no queue.",
+    matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+      source.includes("execFileSync('npm', ['run', 'test:file', '--',") &&
+      source.includes("'packages/operator-core/lib/report-sharing-native.e2e.test.ts', ...selection],") &&
+      source.includes("{ cwd: sourceRoot, env, stdio: 'inherit' });") &&
+      source.includes("assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1', 'Use the isolated native verifier for fixture writes');") &&
+      !/\bdetached\s*:\s*true/.test(stripCommentsAndStrings(source)),
+  },
+  {
+    path: "scripts/lib/process-identity.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/lib/process-identity.mjs: its two starts are darwin-only `ps -o <field>= -p <pid>` reads (Linux reads /proc). Both share a 5-second timeout and 64 KiB output cap, and any failure returns the documented null. They read the state of one existing process and start no worker or queue.",
+    matchesSource: (source) => resourceStartCallCount(source) === 2 &&
+      source.includes("const PS_READ_OPTIONS = Object.freeze({ encoding: 'utf8', timeout: 5_000, maxBuffer: 64 * 1024 });") &&
+      source.includes("execFileSync('ps', ['-o', 'pgid=', '-p', String(pid)], PS_READ_OPTIONS)") &&
+      source.includes("execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], PS_READ_OPTIONS)") &&
+      !/\bdetached\s*:\s*true/.test(stripCommentsAndStrings(source)),
+  },
+  {
     path: "scripts/pg-url.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",
@@ -2592,7 +2611,7 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       source.includes("class: 'test-run', title: 'Frozen qualification command'") &&
       source.includes("launchedBy: 'green-checkpoint:qualification'") &&
       source.includes("requireConfinement: true, requireRegistration: true") &&
-      source.includes("deadlineEpochMs: options.deadlineEpochMs") &&
+      source.includes("...(deadlineEpochMs === null ? {} : { deadlineEpochMs })") &&
       source.includes("await bounded(managed.waitForCompletion());"),
   },
   {
@@ -2676,7 +2695,8 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     reason:
       "P-016 reviewed bypass disposition for runtime-compatibility.mjs: its two child sites are a synchronous runtime identity probe and an isolated semantic probe. The identity read has a 30-second timeout and 16 KiB output cap; the child probe has a validated 1–60 second deadline, a 1 MiB output ceiling, process-group kill, and terminal close handling.",
     matchesSource: (source) => resourceStartCallCount(source) === 2 &&
-      source.includes("execFileSync(executable, ['--input-type=module', '-e', RUNTIME_PROBE], {") &&
+      source.includes("const probeArguments = [...execArgv, '--input-type=module', '-e', RUNTIME_PROBE];") &&
+      source.includes("execFileSync(executable, probeArguments, {") &&
       source.includes("timeout: 30_000, maxBuffer: 16_384") &&
       source.includes("const child = spawn(resolved, ['--input-type=module', '-e', CHILD, nonce, capabilityId, probePath ?? ''], {") &&
       source.includes("timeoutMs > 60_000") &&
@@ -2839,7 +2859,7 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
         source.includes("const head = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], {") &&
         source.includes("encoding: 'utf8', timeout: 10_000, maxBuffer: 1024,") &&
         source.includes("promptGitBlob: execFileSync('git', ['-C', root, 'hash-object', IDOP_P001_PROMPT_REL], {") &&
-        source.includes("if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url))") &&
+        source.includes("if (isCliEntry(import.meta.url)) {") &&
         source.includes("{ flag: 'wx' }") &&
         !/\bdetached\s*:\s*true/.test(code) &&
         !hasCalledResourceStartAlias(code);
@@ -2920,8 +2940,9 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
         source.includes("assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '0');") &&
         source.includes("assert.equal(process.env.PAPERCUSP_DBOS_ROUTINES, '0');") &&
         source.includes("const host = spawn(process.execPath, [bundle], { env: hostEnv, stdio: ['ignore', 'pipe', 'pipe'] });") &&
-        source.includes("try { await waitForPrivateOperator({ host, base, evidenceDir, environment: hostEnv, hostIdentity }); }") &&
-        source.includes("catch (error) { await stopPrivateOperatorHost(host); throw error; }") &&
+        source.includes("const health = await waitForPrivateOperator({ host, base, evidenceDir, environment: hostEnv, hostIdentity,") &&
+        source.includes("try { await stopPrivateOperatorHost(host); } catch (cleanupError) { cleanupErrors.push(cleanupError); }") &&
+        source.includes("'Managed API source identity failed and early cleanup was incomplete');") &&
         source.includes("async () => { await stopPrivateOperatorHost(host);") &&
         source.includes("pageServer.close(() => resolve())") &&
         source.includes("await finishManagedApiTeardown({ hasProof: !!proof, rowCount: rows.length, cleanupErrors, close: [") &&

@@ -68,6 +68,10 @@ export function linuxPgrpFromProcStat(stat) {
  * Read the process-group id of `pid`. Any read or parse failure returns null, so a
  * caller that would signal the whole group falls back to the single pid.
  */
+/** Darwin `ps` reads are bounded; a timeout throws, which the callers' catch
+ * turns into the documented null ("could not determine"). */
+const PS_READ_OPTIONS = Object.freeze({ encoding: 'utf8', timeout: 5_000, maxBuffer: 64 * 1024 });
+
 /** @param {number} pid @returns {number | null} */
 export function readProcessGroupId(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return null;
@@ -76,7 +80,7 @@ export function readProcessGroupId(pid) {
       return linuxPgrpFromProcStat(readFileSync(`/proc/${pid}/stat`, 'utf8'));
     }
     if (process.platform === 'darwin') {
-      const raw = execFileSync('ps', ['-o', 'pgid=', '-p', String(pid)], { encoding: 'utf8' }).trim();
+      const raw = execFileSync('ps', ['-o', 'pgid=', '-p', String(pid)], PS_READ_OPTIONS).trim();
       if (!/^\d+$/.test(raw)) return null;
       const n = Number(raw);
       return Number.isInteger(n) && n > 0 ? n : null;
@@ -135,7 +139,7 @@ export function readProcessIdentity(pid) {
     }
     if (process.platform === 'darwin') {
       const started = normalizePsStartTime(
-        execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8' }),
+        execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], PS_READ_OPTIONS),
       );
       return started ? `darwin:${started}` : null;
     }

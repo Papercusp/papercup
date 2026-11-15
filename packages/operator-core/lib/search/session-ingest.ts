@@ -3556,6 +3556,42 @@ export interface SessionTurnsPruneReport {
   partsDeleted: number;
   turns: PrunePassesReport;
   parts: PrunePassesReport;
+  /** Retention exemption made explicit (EI-28854179946782151): `citedRefs` =
+   * distinct turn refs that activation audits cite; `heldPastWindow` = indexed
+   * turns past the window the prune KEPT because an audit cites them. */
+  auditCited: { citedRefs: number; heldPastWindow: number };
+}
+
+/** Turns cited as evidence by activation audits (plan_audits.activation ->
+ * itemProvenanceCheck.refOrigins). An activation replay re-resolves every cited
+ * ref live from session_turns (fetchSourceTurns), so pruning a cited turn
+ * silently voids that plan's owner-turn evidence (EI-28854179946782151: two
+ * 2026-09-30 owner sessions aged past 45 d and audit #44's own citations then
+ * refused item_provenance_missing). The regex mirrors parseTurnRef
+ * (agent-tools/sessions/_shared.ts): first `:` ends the source kind, the last
+ * `:` starts the turn index, so a session id may itself contain `:`. */
+export async function loadAuditCitedTurns(): Promise<{
+  kinds: string[];
+  sessions: string[];
+  idxs: number[];
+}> {
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ source_kind: string; session_id: string; turn_idx: number }>>`
+    SELECT DISTINCT m[1] AS source_kind, m[2] AS session_id, m[3]::int AS turn_idx
+      FROM harness_shared.plan_audits a
+     CROSS JOIN LATERAL jsonb_object_keys(
+             CASE WHEN jsonb_typeof(a.activation -> 'itemProvenanceCheck' -> 'refOrigins') = 'object'
+                  THEN a.activation -> 'itemProvenanceCheck' -> 'refOrigins'
+                  ELSE '{}'::jsonb END) AS k(ref)
+     CROSS JOIN LATERAL regexp_match(k.ref, '^session_turn:([^:]+):(.+):([0-9]{1,9})$') AS m
+     WHERE a.audit_kind = 'activation'
+       AND m IS NOT NULL
+  `;
+  return {
+    kinds: rows.map((r) => r.source_kind),
+    sessions: rows.map((r) => r.session_id),
+    idxs: rows.map((r) => Number(r.turn_idx)),
+  };
 }
 
 export interface PruneSessionTurnsOptions {
@@ -3620,27 +3656,48 @@ export async function pruneSessionTurnsOnce(
     budgetMs: options.budgetMs ?? PRUNE_TABLE_BUDGET_MS,
     now: options.now ?? Date.now,
   };
+  // Loaded once per run, not per batch: the held set changes only when a new
+  // activation audit is recorded, and re-scanning plan_audits per batch would
+  // multiply the prune's cost by its batch count.
+  const held = await loadAuditCitedTurns();
   const turns = await prunePastWindow(
     async (limit) => (await sql`
       DELETE FROM harness_shared.session_turns
        WHERE ctid IN (
-         SELECT ctid FROM harness_shared.session_turns
-          WHERE ingested_at < now() - make_interval(days => ${RETENTION_DAYS})
-            AND COALESCE(ts, ingested_at) < now() - make_interval(days => ${RETENTION_DAYS})
-          ORDER BY ingested_at
+         SELECT t.ctid FROM harness_shared.session_turns t
+          WHERE t.ingested_at < now() - make_interval(days => ${RETENTION_DAYS})
+            AND COALESCE(t.ts, t.ingested_at) < now() - make_interval(days => ${RETENTION_DAYS})
+            AND NOT EXISTS (
+              SELECT 1 FROM unnest(${held.kinds}::text[], ${held.sessions}::text[], ${held.idxs}::int[])
+                AS h(source_kind, session_id, turn_idx)
+               WHERE h.source_kind = t.source_kind AND h.session_id = t.session_id AND h.turn_idx = t.turn_idx)
+          ORDER BY t.ingested_at
           LIMIT ${limit}
        )
     `).count ?? 0,
     async (limit) => (await sql`
       DELETE FROM harness_shared.session_turns
        WHERE ctid IN (
-         SELECT ctid FROM harness_shared.session_turns
-          WHERE COALESCE(ts, ingested_at) < now() - make_interval(days => ${RETENTION_DAYS})
+         SELECT t.ctid FROM harness_shared.session_turns t
+          WHERE COALESCE(t.ts, t.ingested_at) < now() - make_interval(days => ${RETENTION_DAYS})
+            AND NOT EXISTS (
+              SELECT 1 FROM unnest(${held.kinds}::text[], ${held.sessions}::text[], ${held.idxs}::int[])
+                AS h(source_kind, session_id, turn_idx)
+               WHERE h.source_kind = t.source_kind AND h.session_id = t.session_id AND h.turn_idx = t.turn_idx)
           LIMIT ${limit}
        )
     `).count ?? 0,
     opts,
   );
+  const [heldRow] = await sql<Array<{ n: number }>>`
+    SELECT count(*)::int AS n
+      FROM harness_shared.session_turns t
+      JOIN unnest(${held.kinds}::text[], ${held.sessions}::text[], ${held.idxs}::int[])
+        AS h(source_kind, session_id, turn_idx)
+        ON h.source_kind = t.source_kind AND h.session_id = t.session_id AND h.turn_idx = t.turn_idx
+     WHERE COALESCE(t.ts, t.ingested_at) < now() - make_interval(days => ${RETENTION_DAYS})
+  `;
+  const auditCited = { citedRefs: held.kinds.length, heldPastWindow: heldRow?.n ?? 0 };
   // Bookkeeping rows for files idle past the window are dead weight.
   await sql`
     DELETE FROM harness_shared.session_ingest_state
@@ -3683,7 +3740,7 @@ export async function pruneSessionTurnsOnce(
     `).count ?? 0,
     opts,
   );
-  return { deleted: turns.deleted, partsDeleted: parts.deleted, turns, parts };
+  return { deleted: turns.deleted, partsDeleted: parts.deleted, turns, parts, auditCited };
 }
 
 /* ------------------------------------------------------------------ */

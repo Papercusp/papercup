@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 997,
+  "count": 998,
   "tools": [
     {
       "name": "ablation:report",
@@ -23430,6 +23430,36 @@
         "when": "A plan is refused with blind_review_missing or blind_review_gap_undispositioned, or you were asked to blind-review a plan you have not read.",
         "notWhen": "Reading the plan (plans:get). A reviewer who already read the plan, its specs, rubric or evidence: its post will not count.",
         "chaining": "author: op 'mint' { howToRun }. If the exact reviewer session ends, the recruiter uses op 'resume' to recover it in place. reviewer: op 'brief' → run the product → op 'post' { activationAuditSeq, outcome, gaps }. Use inconclusive when product access or verification is incomplete. author: op 'dispose' { dispositions } → the drain moves the plan to awaiting-acceptance."
+      }
+    },
+    {
+      "name": "plans:census",
+      "http": {
+        "path": "/api/agent-tools/plans/census",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the plan-portfolio census: nine measures of the open plans (created vs shipped, held and blocked items, idle and unshipped plans, plan size, decisions, near-twin pairs), the workable items only the plan-line hold blocks, and whether a baseline and a final run share one definition. `record` writes a labelled run to the results ledger.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Re-reading the portfolio measures, or recording the baseline or final run of a before/after comparison.",
+        "notWhen": "Counting plans by status or day — plans:list { groupBy, aggregateOnly }.",
+        "chaining": "plans:census { record:\"baseline\" } before the work → { record:\"final\" } after it; pairing.lacking is empty when both runs share one definition."
       }
     },
     {

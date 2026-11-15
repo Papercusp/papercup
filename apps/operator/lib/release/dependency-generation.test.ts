@@ -6188,3 +6188,140 @@ describe('P-022: --check-headroom probes the host dependency-copy lock before se
     expect(result.stderr).toContain('DEPENDENCY_GENERATION_COPY_LOCK state=busy held=unknown');
   });
 });
+
+// WI-6554700010049444: a generation whose better-sqlite3 was compiled for another
+// Node ABI passed every marker/token check, was indexed by the committed-input
+// selector, and then failed every green-checkpoint preparation ~20 minutes later.
+describe('WI-6554700010049444: native addons must load before a selector is indexed', () => {
+  const ABI_ERROR =
+    "The module 'better_sqlite3.node' was compiled against a different Node.js version using NODE_MODULE_VERSION 147.";
+  const BROKEN_ADDON = `throw new Error(${JSON.stringify(ABI_ERROR)});\n`;
+  const LOADABLE_ADDON = [
+    'module.exports = class Database {',
+    '  prepare() { return { get: () => ({ ok: 1 }) }; }',
+    '  close() {}',
+    '};',
+    '',
+  ].join('\n');
+
+  function addonTree(addon?: string): string {
+    const tree = mkdtempSync(join(tmpdir(), 'native-addon-tree-'));
+    roots.push(tree);
+    if (addon !== undefined) {
+      mkdirSync(join(tree, 'node_modules/better-sqlite3'), { recursive: true });
+      writeFileSync(join(tree, 'node_modules/better-sqlite3/index.js'), addon);
+    }
+    return tree;
+  }
+
+  const RUNNING_MAJOR = process.versions.node.split('.')[0];
+  const OTHER_MAJOR = String(Number(RUNNING_MAJOR) + 1);
+  const PINNED_HERE = { DEPENDENCY_GENERATION_PINNED_NODE_MAJOR: RUNNING_MAJOR };
+
+  function loadAddons(tree: string, env: NodeJS.ProcessEnv = PINNED_HERE) {
+    return spawnSync('bash', ['-c', 'source "$SCRIPT"; dependency_generation_native_addons_load "$TREE"'], {
+      encoding: 'utf8',
+      env: { ...process.env, SCRIPT, TREE: tree, ...env },
+    });
+  }
+
+  it('refuses a loadable addon when the probing Node is not the pinned major (the incident shape)', () => {
+    const result = loadAddons(addonTree(LOADABLE_ADDON), { DEPENDENCY_GENERATION_PINNED_NODE_MAJOR: OTHER_MAJOR });
+    expect(result.status, result.stderr).toBe(74);
+    expect(result.stderr).toContain(`checked under Node ${RUNNING_MAJOR}, not the pinned Node ${OTHER_MAJOR} (.nvmrc)`);
+    // No addon present: nothing to prove, so the pin is not consulted.
+    expect(loadAddons(addonTree(), { DEPENDENCY_GENERATION_PINNED_NODE_MAJOR: OTHER_MAJOR }).status).toBe(0);
+  });
+
+  it('reads the pin from the repository .nvmrc when no override is set', () => {
+    const pin = readFileSync(join(SCRIPT, '../../../../../.nvmrc'), 'utf8').trim().replace(/^v/, '').split('.')[0];
+    const result = spawnSync('bash', ['-c', 'source "$SCRIPT"; dependency_generation_pinned_node_major'], {
+      encoding: 'utf8',
+      env: { ...process.env, SCRIPT, DEPENDENCY_GENERATION_PINNED_NODE_MAJOR: '' },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe(pin);
+  });
+
+  it('reports the loader error and exits 74 when an addon was built for another ABI', () => {
+    const result = loadAddons(addonTree(BROKEN_ADDON));
+    expect(result.status, result.stderr).toBe(74);
+    expect(result.stderr).toContain("native addon 'better-sqlite3'");
+    expect(result.stderr).toContain(`will not load under Node ABI ${process.versions.modules}`);
+    expect(result.stderr).toContain('NODE_MODULE_VERSION 147');
+  });
+
+  it('accepts a loadable addon, an absent addon and a tree without node_modules', () => {
+    for (const tree of [addonTree(LOADABLE_ADDON), addonTree()]) {
+      const result = loadAddons(tree);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).toBe('');
+    }
+    const noAddon = addonTree();
+    mkdirSync(join(noAddon, 'node_modules/unrelated'), { recursive: true });
+    expect(loadAddons(noAddon).status).toBe(0);
+  });
+
+  it('checks every addon named by PAPERCUSP_PREFLIGHT_ADDONS, not only the first', () => {
+    const tree = addonTree(LOADABLE_ADDON);
+    mkdirSync(join(tree, 'node_modules/second-addon'), { recursive: true });
+    writeFileSync(join(tree, 'node_modules/second-addon/index.js'), BROKEN_ADDON);
+    const result = loadAddons(tree, { PAPERCUSP_PREFLIGHT_ADDONS: 'better-sqlite3, second-addon' });
+    expect(result.status, result.stderr).toBe(74);
+    expect(result.stderr).toContain("native addon 'second-addon'");
+  });
+
+  function integrationWithAddon(addon: string): string {
+    const integration = makeIntegration();
+    mkdirSync(join(integration, 'node_modules/better-sqlite3'), { recursive: true });
+    writeFileSync(join(integration, 'node_modules/better-sqlite3/index.js'), addon);
+    lockFixturePackage(integration, 'node_modules/better-sqlite3');
+    commitFixture(integration, 'installed with a native addon');
+    return integration;
+  }
+
+  function selectors(integration: string): string[] {
+    const dir = join(integration, '.papercusp/dependency-generations/.inputs');
+    return existsSync(dir) ? readdirSync(dir).filter((name) => !name.startsWith('.')) : [];
+  }
+
+  // The incident: the addon loads under the publishing Node (so the source lock-tree
+  // audit passes) but that Node is not the pinned one. No selector may be written.
+  it('refuses to index a generation published under a non-pinned Node, and writes no selector', () => {
+    const integration = integrationWithAddon(LOADABLE_ADDON);
+    const result = publish(integration, { DEPENDENCY_GENERATION_PINNED_NODE_MAJOR: OTHER_MAJOR });
+    expect(result.status, result.stderr).toBe(74);
+    expect(result.stderr).toContain('FATAL: refusing to index dependency inputs');
+    expect(result.stderr).toContain(`not the pinned Node ${OTHER_MAJOR}`);
+    expect(selectors(integration)).toEqual([]);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('indexes the same install under the pinned Node (positive control)', () => {
+    const integration = integrationWithAddon(LOADABLE_ADDON);
+    const result = publish(integration, PINNED_HERE);
+    expect(result.status, result.stderr).toBe(0);
+    expect(selectors(integration)).toEqual([publishedInputFingerprint(result.stdout)]);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  // Fix #4: an EXISTING selector whose generation cannot be prepared must not be
+  // reported as a reusable hit — that is what let N queued preparations repeat
+  // the same deterministic failure.
+  it('refuses reused=true for an existing selector whose addons do not load under the pinned Node', () => {
+    const integration = integrationWithAddon(LOADABLE_ADDON);
+    const first = ensureRef(integration, 'HEAD', PINNED_HERE);
+    expect(first.status, first.stderr).toBe(0);
+    expect(selectors(integration)).toHaveLength(1);
+
+    const refused = ensureRef(integration, 'HEAD', { DEPENDENCY_GENERATION_PINNED_NODE_MAJOR: OTHER_MAJOR });
+    expect(refused.status, refused.stderr).toBe(74);
+    expect(refused.stderr).toContain('FATAL: existing selector for inputs');
+    expect(refused.stderr).toContain('refusing reused=true');
+    expect(refused.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+
+    // Positive control: the same selector is a valid hit under the pinned Node.
+    const hit = ensureRef(integration, 'HEAD', PINNED_HERE);
+    expect(hit.status, hit.stderr).toBe(0);
+    expect(hit.stdout).toContain('reused=true');
+    expect(publishedIdentity(hit.stdout)).toBe(publishedIdentity(first.stdout));
+  }, NATIVE_SHELL_TIMEOUT_MS);
+});

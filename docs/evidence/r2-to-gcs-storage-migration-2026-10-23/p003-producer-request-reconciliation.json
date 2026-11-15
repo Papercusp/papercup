@@ -171,8 +171,11 @@
         "sourcePolicyWaived": false,
         "newBuildOrReceiptMutation": false,
         "cloudSpendAddedUsd": 0,
-        "sourceQualificationDependency": "EI-28280477757151195",
-        "remaining": "Production authority, ORIGINAL custody restrictions, preserved freezes and writer exclusion remain required, followed by exact-source full-platform, signature, provenance, install, upgrade, rollback and independent migration acceptance. Existing maintained 90-pass assertion proof is retained without rerunning it."
+        "sourceLockRepair": "EI-28280477757151195",
+        "productionPolicyFollowup": "identity-definitions-own-policy-2026-10-17#P-005 / WI-6554700010017393",
+        "productionPolicyFollowupIsReleasePrerequisite": false,
+        "scopeCorrection": "The inherited whole-policy wait was too broad. Current migration requirement R-3 does not require identity P-005. slack-asana-reproduced-bug-fix-pr-workflow-2026-10-08#D-086 decouples the SQL lock repair from full P-005; qualify actual release effects through the current effective-authority evaluator. The broader production-policy follow-up remains separate and grants no synthesized permissive snapshots.",
+        "remaining": "Exact-source full-platform, signature, provenance, registry, install, upgrade, rollback, private updater, actual publication and independent migration acceptance remain required under R-3/R-6 and the current authority checks. Existing maintained 90-pass assertion proof is retained without rerunning it; original request uncertainty and artifact-custody limits are unchanged."
       }
     }
   ]
