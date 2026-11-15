@@ -465,14 +465,16 @@ dependency_generation_reap_dead_siblings() {
 # configured by repeated --workspace-dir arguments and always retains the root
 # node_modules tree in addition to these package-local trees.
 DEPENDENCY_GENERATION_WORKSPACE_DIRS=()
+DEPENDENCY_GENERATION_ROOT_INSTALL_DIRS=()
 DEPENDENCY_GENERATION_SCOPE_MODE='full'
 DEPENDENCY_GENERATION_SCOPE_RECORD=''
 DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT=''
 
 dependency_generation_configure_workspace_dirs() {
-  local root="$1" raw resolved
+  local root="$1" raw resolved root_install_dirs
   shift
   DEPENDENCY_GENERATION_WORKSPACE_DIRS=()
+  DEPENDENCY_GENERATION_ROOT_INSTALL_DIRS=()
   if [ "$#" -eq 0 ]; then
     DEPENDENCY_GENERATION_SCOPE_MODE='full'
     DEPENDENCY_GENERATION_SCOPE_RECORD='scope=full'
@@ -504,6 +506,35 @@ dependency_generation_configure_workspace_dirs() {
       DEPENDENCY_GENERATION_WORKSPACE_DIRS+=("$raw")
       DEPENDENCY_GENERATION_SCOPE_RECORD+=$'\n'"workspace_dir=$raw"
     done < <(printf '%s\n' "$@" | LC_ALL=C sort -u)
+    # The root lock owns private trees even when their package is no longer a
+    # manifest workspace. Keep those install obligations without admitting the
+    # package's independent lockfile into this selected dependency scope.
+    root_install_dirs="$("${DEPENDENCY_GENERATION_NODE:-node}" --input-type=module - "$root" <<'NODE'
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+const root = process.argv[2], dirs = new Set();
+for (const name of ['npm-shrinkwrap.json', 'package-lock.json']) {
+  const file = join(root, name);
+  if (!existsSync(file)) continue;
+  const lock = JSON.parse(readFileSync(file, 'utf8'));
+  for (const key of Object.keys(lock.packages ?? {})) {
+    if (key.startsWith('node_modules/')) continue;
+    const split = key.indexOf('/node_modules/');
+    if (split < 0) continue;
+    const dir = key.slice(0, split);
+    if (dir.split('/').some(part => !part || part === '.' || part === '..') || /[\\\x00-\x1f]/.test(dir))
+      throw new Error('invalid root-lock install directory: ' + dir);
+    dirs.add(dir);
+  }
+}
+console.log([...dirs].sort().join('\n'));
+NODE
+    )" || return $?
+    while IFS= read -r raw; do
+      [ -n "$raw" ] || continue
+      DEPENDENCY_GENERATION_ROOT_INSTALL_DIRS+=("$raw")
+      DEPENDENCY_GENERATION_SCOPE_RECORD+=$'\n'"root_install_dir=$raw"
+    done <<< "$root_install_dirs"
   fi
   DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT="$(
     printf '%s\n' "$DEPENDENCY_GENERATION_SCOPE_RECORD" | dependency_generation_sha256
@@ -599,14 +630,14 @@ dependency_generation_enumerate_node_modules() (
   if [ "${DEPENDENCY_GENERATION_SCOPE_MODE:-full}" = 'selected' ]; then
     {
       { [ -d "$root/node_modules" ] || [ -L "$root/node_modules" ]; } && printf '%s\n' "$root/node_modules"
-      for dir in "${DEPENDENCY_GENERATION_WORKSPACE_DIRS[@]}"; do
+      for dir in "${DEPENDENCY_GENERATION_WORKSPACE_DIRS[@]}" "${DEPENDENCY_GENERATION_ROOT_INSTALL_DIRS[@]}"; do
         case "$dir" in .next|.next/*|*/.next|*/.next/*|apps/operator/dist-verify|apps/operator/dist-verify/*) continue ;; esac
         if { [ -d "$root/$dir/node_modules" ] || [ -L "$root/$dir/node_modules" ]; } \
           && ! dependency_generation_is_foreign_checkout "$root" "$root/$dir/node_modules"; then
           printf '%s\n' "$root/$dir/node_modules"
         fi
       done
-    } | dependency_generation_filter_install_trees "$root" || return $?
+    } | LC_ALL=C sort -u | dependency_generation_filter_install_trees "$root" || return $?
     return 0
   fi
   # -mindepth 1: the name patterns below must never prune the starting root
