@@ -6,6 +6,7 @@
  * SUCCESS never fires it; a projection without the hook still drops cleanly.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { encodeHlc } from '@papercusp/locks-core';
 import { applyOpVia, type TableProjection, type ProvenanceContext } from './projection';
 import type { OpEnvelope } from './op-envelope-types';
 
@@ -17,6 +18,7 @@ interface Row {
 function proj(over: Partial<TableProjection<Row>> = {}): TableProjection<Row> {
   return {
     tableTag: 'test-tag',
+    mergeRule: 'lww',
     composeKey: () => 'k',
     decodeValue: (raw) => (raw && typeof raw === 'object' && (raw as Record<string, unknown>).good === true ? { ok: true } : null),
     writeToPg: async () => {},
@@ -31,6 +33,7 @@ const remotePut = (value: unknown): OpEnvelope => ({
   hbKey: 'k',
   value,
   ts: 1,
+  hlc: encodeHlc({ ms: 1, count: 0 }),
   sourceLogKeyHex: 'remote-source-key',
 });
 const applyOpts = { ownLogKeyHex: 'my-own-key' };
@@ -58,12 +61,12 @@ describe('applyOpVia fires onRefusedOp on decode-null', () => {
   });
 
   it('is FAIL-SOFT — a throwing hook does not break apply (still returns false)', async () => {
-    const p = proj({
-      onRefusedOp: () => {
-        throw new Error('counter exploded');
-      },
+    const onRefusedOp = vi.fn(() => {
+      throw new Error('counter exploded');
     });
+    const p = proj({ onRefusedOp });
     await expect(applyOpVia(() => p as TableProjection<unknown>, remotePut({ bad: true }), applyOpts)).resolves.toBe(false);
+    expect(onRefusedOp).toHaveBeenCalledTimes(1);
   });
 
   it('a projection WITHOUT the hook still drops a declined op cleanly', async () => {
@@ -76,7 +79,7 @@ describe('applyOpVia fires onRefusedOp on decode-null', () => {
     const p = proj({ deleteFromPg });
     await expect(applyOpVia(() => p as TableProjection<unknown>,
       { ...remotePut(undefined), type: 'del' }, applyOpts)).resolves.toBe(false);
-    expect(deleteFromPg).toHaveBeenCalledWith('k', 1, undefined,
+    expect(deleteFromPg).toHaveBeenCalledWith('k', 1, encodeHlc({ ms: 1, count: 0 }),
       expect.objectContaining({ origin: 'remote', authorPubkey: 'remote-source-key' }));
   });
 
