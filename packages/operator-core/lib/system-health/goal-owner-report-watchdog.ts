@@ -201,8 +201,19 @@ export const GOAL_OWNER_REPORT_STANDING_MEASURED_FAILURE_SILENCE_MS = 67 * 60_00
  * escalations since 2026-09-01 (three in total, all standing), and no
  * goal-mode-e2e card measured an outcome-goal silence near 4h, so nothing
  * contradicts WI-39348's 2.5h-healthy / 5h-failure basis.
+ *
+ * Re-litigated 2026-11-15 (WI-6554700010048802, was 2026-11-01): both floors stand,
+ * on THIN evidence — say so rather than claim fresh support. Since 2026-10-01 only
+ * one work-on-everything-stewardship-health card exists (2026-10-10) and it carries
+ * no owner-steering-and-reporting rating at payload.ratings, so no new graded PASS
+ * cadence or FAIL silence moves either bound. coord_event_log holds zero escalation
+ * rows whose `from` matches goal-owner-report% since 2026-10-01 — and zero all-time,
+ * which contradicts the 2026-10-01 note's "three in total", so that count was read
+ * from a different store or identity; the next review must locate it before citing
+ * escalation counts. Nothing measured contradicts the 48min-healthy / 67min-failure
+ * standing basis or WI-39348's outcome basis.
  */
-export const GOAL_OWNER_REPORT_REVIEW_BY = '2026-11-01';
+export const GOAL_OWNER_REPORT_REVIEW_BY = '2026-12-15';
 
 /** True when `reviewBy` (an ISO date) is strictly before `now`. Exported for the
  *  guard test so the comparison the test runs is the one shipped here. */

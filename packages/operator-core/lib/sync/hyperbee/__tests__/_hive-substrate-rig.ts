@@ -23,6 +23,7 @@ import { expect } from 'vitest';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { unsafeFederatedPotScope } from '../../../federated-pot-scope';
+import { fedTombstonesDdl } from '../../../../test/_pg-helpers';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { moduleRepoRoot } from '../../../module-repo-root';
@@ -199,10 +200,7 @@ export async function setupHivePeerSchema(sql: postgres.Sql): Promise<void> {
  * no tombstone in the rig, while inbound deletes do (the projection writes them).
  */
 async function createFedTombstonesTable(sql: postgres.Sql): Promise<void> {
-  const migration = readFileSync(resolve(SQL_DIR, '1636-fed-tombstones-hive-settings.sql'), 'utf8');
-  const create = migration.match(/CREATE TABLE IF NOT EXISTS harness_shared\.fed_tombstones \([\s\S]*?\n\);/);
-  if (!create) throw new Error('hive substrate rig: fed_tombstones CREATE TABLE not found in migration 1636');
-  await sql.unsafe(create[0]);
+  await sql.unsafe(fedTombstonesDdl());
 }
 
 /**

@@ -435,3 +435,129 @@ export const _DEFAULT_CORESTORE_CACHE_BLOCKS_FOR_TESTS = DEFAULT_CORESTORE_CACHE
 
 /** Test seam for the PID-reuse safety boundary above. */
 export const _lockHolderIsProvablyStaleForTests = lockHolderIsProvablyStale;
+
+// ── Per-connection serve gate (v1 R-5, WI-6554700010049344) ───────────────────
+//
+// `store.replicate(socket)` serves every core in the store to any peer that knows
+// a core's key: it attaches open cores eagerly, attaches stored cores lazily when
+// the remote opens their discovery key, and re-attaches on download. A revoked
+// device already knows the hive's log keys, so key secrecy cannot stop it, and the
+// swarm firewall cannot either: the transport key is one per box, shared by every
+// hive on it, and a restarted or modified client can come back under a new one.
+// The gate below makes the store fail closed PER CONNECTION: a core is attached to
+// a connection only while the predicate allows that connection. Boot allows a
+// connection once its announce names an admitted, non-revoked device.
+
+/**
+ * Whether this store may serve its cores on one connection. The argument is the
+ * connection's shared Protomux (`socket.userData`), the same object the announce
+ * channel hands to `onAnnounce` as `ctx.muxer`.
+ */
+export type ServeGatePredicate = (muxer: object) => boolean;
+
+export interface StoreServeGate {
+  /** Attach every open core to `muxer` now that the predicate allows it. Idempotent. */
+  open(muxer: object): void;
+  /** Detach every core from `muxer` and close the live channels on it. Idempotent. */
+  close(muxer: object): void;
+  /** Stop gating this store; it serves every connection again. */
+  release(): void;
+}
+
+interface GatedCore {
+  replicator: {
+    attached(muxer: object): boolean;
+    attachTo(muxer: object): void;
+    detachFrom(muxer: object): void;
+    peers: Array<{ protomux?: object; channel?: { close(): void } }>;
+  };
+}
+
+interface CorestoreServeInternals {
+  cores: Iterable<GatedCore>;
+  streamTracker: {
+    records: Array<{ stream: { noiseStream: { userData: object } } }>;
+    attachAll(core: GatedCore): void;
+  };
+  _shouldReplicate(core: GatedCore, muxer: object): boolean;
+  _attachMaybe(muxer: object, discoveryKey: Uint8Array): Promise<void>;
+}
+
+interface ServeGateState {
+  allow: ServeGatePredicate | null;
+  shouldReplicate(core: GatedCore, muxer: object): boolean;
+}
+
+const SERVE_GATE_STATE = Symbol.for('@papercusp/hyperbee.store-serve-gate');
+
+function detachFromMuxer(s: CorestoreServeInternals, muxer: object): void {
+  for (const core of s.cores) {
+    core.replicator.detachFrom(muxer);
+    for (const peer of [...core.replicator.peers]) {
+      if (peer.protomux === muxer) peer.channel?.close();
+    }
+  }
+}
+
+/**
+ * Gate every attach site of a corestore 7 store behind `allow`. Patches the store
+ * instance once; a later install on the same store replaces the predicate. Throws
+ * when the attach sites are missing, so a corestore upgrade that moves them fails
+ * loudly instead of silently serving every connection again.
+ */
+export function installStoreServeGate(store: Corestore, allow: ServeGatePredicate): StoreServeGate {
+  const s = store as unknown as CorestoreServeInternals & { [SERVE_GATE_STATE]?: ServeGateState };
+  const tracker = s.streamTracker;
+  if (
+    typeof s._shouldReplicate !== 'function' ||
+    typeof s._attachMaybe !== 'function' ||
+    !tracker ||
+    typeof tracker.attachAll !== 'function' ||
+    !Array.isArray(tracker.records) ||
+    s.cores == null
+  ) {
+    throw new Error(
+      'installStoreServeGate: corestore internals changed (expected the corestore 7 attach sites ' +
+        '_shouldReplicate, _attachMaybe and streamTracker.attachAll); refusing to replicate without a serve gate',
+    );
+  }
+  let state = s[SERVE_GATE_STATE];
+  if (!state) {
+    const created: ServeGateState = { allow: null, shouldReplicate: s._shouldReplicate.bind(s) };
+    const originalAttachMaybe = s._attachMaybe.bind(s);
+    const allowed = (muxer: object): boolean => created.allow === null || created.allow(muxer);
+    s._shouldReplicate = (core, muxer) => allowed(muxer) && created.shouldReplicate(core, muxer);
+    s._attachMaybe = async (muxer, discoveryKey) => {
+      if (!allowed(muxer)) return;
+      await originalAttachMaybe(muxer, discoveryKey);
+      // The original awaits before attaching; a revoke can land in between.
+      if (!allowed(muxer)) detachFromMuxer(s, muxer);
+    };
+    tracker.attachAll = (core) => {
+      for (const record of tracker.records) {
+        const muxer = record.stream.noiseStream.userData;
+        if (allowed(muxer) && !core.replicator.attached(muxer)) core.replicator.attachTo(muxer);
+      }
+    };
+    Object.defineProperty(s, SERVE_GATE_STATE, { value: created, enumerable: false, configurable: true });
+    state = created;
+  }
+  const own = state;
+  own.allow = allow;
+  const replicatedOn = (muxer: object): boolean =>
+    tracker.records.some((record) => record.stream.noiseStream.userData === muxer);
+  return {
+    open(muxer) {
+      if (own.allow !== allow || !allow(muxer) || !replicatedOn(muxer)) return;
+      for (const core of s.cores) {
+        if (own.shouldReplicate(core, muxer)) core.replicator.attachTo(muxer);
+      }
+    },
+    close(muxer) {
+      detachFromMuxer(s, muxer);
+    },
+    release() {
+      if (own.allow === allow) own.allow = null;
+    },
+  };
+}

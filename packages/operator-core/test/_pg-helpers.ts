@@ -710,6 +710,20 @@ export const FED_ORDER_KEY_DDL = `
 `;
 
 /**
+ * `harness_shared.fed_tombstones` (migration 1636, WI-6554700010049343): the newest
+ * federated delete per row key, which the hive-settings projection consults so an older
+ * put cannot resurrect a deleted row. The CREATE TABLE is extracted from the migration
+ * file itself, so a hand-provisioned DB cannot drift from the real shape. Only the
+ * table is returned; the migration's capture-function replacement is not included.
+ */
+export function fedTombstonesDdl(): string {
+  const migration = readFileSync(resolve(SQL_DIR, '1636-fed-tombstones-hive-settings.sql'), 'utf8');
+  const create = migration.match(/CREATE TABLE IF NOT EXISTS harness_shared\.fed_tombstones \([\s\S]*?\n\);/);
+  if (!create) throw new Error('_pg-helpers: fed_tombstones CREATE TABLE not found in migration 1636');
+  return create[0];
+}
+
+/**
  * ⚠ THIS DOES NOT RUN REAL MIGRATIONS. It provisions a genuinely EMPTY database
  * (`CREATE SCHEMA harness_shared` + the fed-order-key fns + the ambient
  * `fallback_observations` sink only) — every other table your

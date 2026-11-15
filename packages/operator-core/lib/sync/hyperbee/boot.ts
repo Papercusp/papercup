@@ -40,6 +40,7 @@ import {
   getHarnessScopedStore,
   closeHarnessScopedStore,
   harnessStorePath,
+  installStoreServeGate,
   type HarnessStoreOpts,
 } from './corestore';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
@@ -1819,6 +1820,55 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // device can never use a supersession claim to block someone else's log.
   const supersededLogs = new Map<string, string>();
 
+  // v1 R-5 (WI-6554700010049344): this hive's store serves its cores on a
+  // connection only while that connection's announce names an admitted,
+  // non-revoked device. Without it `store.replicate(socket)` served every core to
+  // any peer that knew a key, so a revoked device kept receiving new log blocks.
+  // A connection is bound to the device its first signature-valid announce names
+  // (see onAnnounceWithConnection); the gate re-reads `revoked` and the admitted
+  // set on every attach, and the hooks below open or close live connections when
+  // a device is admitted or loses admission.
+  const muxerDevice = new WeakMap<object, string>();
+  const deviceMuxers = new Map<string, Set<object>>();
+  function serveAllowedForDevice(devicePubkey: string): boolean {
+    return !revoked.has(devicePubkey) && pubkeyToLogKeys.has(devicePubkey);
+  }
+  const serveGate = installStoreServeGate(store, (muxer) => {
+    const devicePubkey = muxerDevice.get(muxer);
+    return devicePubkey !== undefined && serveAllowedForDevice(devicePubkey);
+  });
+  function bindServeMuxer(muxer: object, devicePubkey: string): void {
+    const bound = muxerDevice.get(muxer);
+    if (bound !== undefined && bound !== devicePubkey) {
+      // One connection, one remote: a second device on it is refused, never rebound.
+      recordBootEvent(opts.workspaceId, opts.harnessSlug, 'announce_rejected', 'connection-device-mismatch');
+      return;
+    }
+    if (bound === undefined) {
+      muxerDevice.set(muxer, devicePubkey);
+      let muxers = deviceMuxers.get(devicePubkey);
+      if (!muxers) {
+        muxers = new Set<object>();
+        deviceMuxers.set(devicePubkey, muxers);
+      }
+      muxers.add(muxer);
+      const noiseStream = (muxer as { stream?: { once?(event: 'close', fn: () => void): void } }).stream;
+      noiseStream?.once?.('close', () => {
+        const live = deviceMuxers.get(devicePubkey);
+        live?.delete(muxer);
+        if (live && live.size === 0) deviceMuxers.delete(devicePubkey);
+      });
+    }
+    if (serveAllowedForDevice(devicePubkey)) serveGate.open(muxer);
+  }
+  function openServeForDevice(devicePubkey: string): void {
+    if (!serveAllowedForDevice(devicePubkey)) return;
+    for (const muxer of deviceMuxers.get(devicePubkey) ?? []) serveGate.open(muxer);
+  }
+  function closeServeForDevice(devicePubkey: string): void {
+    for (const muxer of deviceMuxers.get(devicePubkey) ?? []) serveGate.close(muxer);
+  }
+
   function trackDeviceLog(devicePubkey: string, logKey: string): void {
     let logKeys = pubkeyToLogKeys.get(devicePubkey);
     if (!logKeys) {
@@ -1826,13 +1876,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       pubkeyToLogKeys.set(devicePubkey, logKeys);
     }
     logKeys.add(logKey);
+    openServeForDevice(devicePubkey);
   }
 
   function untrackDeviceLog(devicePubkey: string, logKey: string): void {
     const logKeys = pubkeyToLogKeys.get(devicePubkey);
     if (!logKeys) return;
     logKeys.delete(logKey);
-    if (logKeys.size === 0) pubkeyToLogKeys.delete(devicePubkey);
+    if (logKeys.size === 0) {
+      pubkeyToLogKeys.delete(devicePubkey);
+      closeServeForDevice(devicePubkey);
+    }
   }
 
   /**
@@ -2082,6 +2136,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // New revocation discovered from PG.
         revoked.add(pk);
         revokedViaRefresh.add(pk);
+        closeServeForDevice(pk);
         // Drop from the pending-retry set — a revoked peer must never be retried.
         purgePendingForDevice(pk);
         // If the device is currently admitted, drop every log it announced.
@@ -5210,6 +5265,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   async function revoke(devicePubkey: string): Promise<void> {
     // (a) Block future admits + re-announces (decider checks `revoked` first).
     revoked.add(devicePubkey);
+    // (a1) Stop serving this hive's cores on the device's live connections now;
+    // the serve gate refuses every later attach because `revoked` holds it.
+    closeServeForDevice(devicePubkey);
     // WI-193 (G8): a LIVE revoke is authoritative — evict from the refresh-sourced
     // provenance set (in case this pubkey was ALREADY refresh-tracked) so a later
     // published-list refresh can never silently reconcile this revoke away.
@@ -5528,6 +5586,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     ctx?: AnnounceConnectionContext,
   ): Promise<AdmissionResult> {
     const decision = await onAnnounce(frame);
+    // R-5 serve gate: a signature-valid announce (admitted, or pending a channel-2
+    // check) identifies this connection's device. The gate serves the connection
+    // only once that device is admitted and not revoked.
+    if (ctx?.muxer && (decision.admit || decision.reason === 'pending')) {
+      bindServeMuxer(ctx.muxer, frame.device_pubkey);
+    }
     if (decision.admit && ctx && scopeFederation) {
       const identity = admittedIdentities.get(frame.log_core_key);
       if (!identity?.channel2Verified) {
@@ -6425,6 +6489,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     },
     async close() {
       stopped = true;
+      serveGate.release();
       replicationProgressOwner.clear();
       repairQueue.length = 0;
       // WI-10002836: a compaction still QUEUED for a fold slot must not hold close() hostage.

@@ -9,7 +9,7 @@
 
 import { vi } from 'vitest';
 import type { BootedHarnessHandle, LocalWriteOp } from '../boot';
-import type { OwnLog, PeerLogOp } from '../peer-log';
+import type { HeldOwnLogAppender, OwnLog, PeerLogOp } from '../peer-log';
 import type { AdmittedLog } from '../read-merge';
 import type { AdmissionResult } from '../read-admission';
 import type { SignedAnnounce } from '../announce';
@@ -49,6 +49,12 @@ export function makeFakeBootedHandle(opts: {
     },
     async get(i: number): Promise<PeerLogOp | null> {
       return ops[i] ?? null;
+    },
+    // The real own log serializes the claim path's seq-allocate + append behind this
+    // hold (peer-log.ts withAppendsHeld); claimFeature refuses an own log without it.
+    // In-memory there is nothing to wait behind, so the holder appends directly.
+    async withAppendsHeld<T>(fn: (log: HeldOwnLogAppender) => Promise<T>): Promise<T> {
+      return fn({ appendBatch: async (batch: PeerLogOp[]) => { ops.push(...batch); } });
     },
   };
   const admitted = new Map<string, AdmittedLog>([[keyHex, ownLog]]);

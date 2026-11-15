@@ -1,7 +1,13 @@
 // @vitest-environment node
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { randomBytes } from 'node:crypto';
+import { Cache } from '@papercusp/cache';
+import * as flagServer from '@papercusp/flags/server';
+import { __setCachedReadEnabledForTests } from '../cache/cached-read';
+import { installOperatorCache, resetOperatorCacheForTests, _refreshCacheLayerForTests } from '../cache/instance';
+import { installL2StoreForTests, _refreshL2FlagForTests, __resetL2StateForTests } from '../cache/l2-tier';
+import type { PgL2Store } from '../cache/pg-l2-store';
 import {
   composeCompanionSummary,
   type CompanionListSummary,
@@ -211,6 +217,105 @@ afterAll(async () => {
 });
 
 describe('workItems.byHarness + workItems.summary real-PG contract', () => {
+  it('coalesces production readers, shares JSON through L2, and invalidates their exact dependencies', async () => {
+    let now = 0;
+    // Flag policy is not under test. Keep both initialization and cleanup away
+    // from the live flag backend while the reader uses its real throwaway PG.
+    const flagRead = vi.spyOn(flagServer, 'getFlag').mockResolvedValue(true);
+    // Successful L2 get/set operations enqueue telemetry too. Its persistence
+    // is outside this reader fixture, as in the cache tier's own tests.
+    vi.spyOn(await import('../degradation/fallback-observations'), 'observeFallback').mockReturnValue(true);
+    const stored = new Map<string, { value: unknown; tags: readonly string[]; expiresAt: number }>();
+    // Independent worker L1s exercise the existing JSON L2 seam. PgL2Store
+    // persistence and cross-process notifications have their own PG suites.
+    const store = {
+      get: async (workspace: string, key: string) => {
+        const row = stored.get(`${workspace}|${key}`);
+        return row && row.expiresAt > now ? row : undefined;
+      },
+      set: async (workspace: string, key: string, value: unknown,
+        options: { tags: readonly string[]; hardTtlMs: number }) => {
+        stored.set(`${workspace}|${key}`, {
+          value: JSON.parse(JSON.stringify(value)), tags: options.tags,
+          expiresAt: now + options.hardTtlMs,
+        });
+      },
+      invalidateByTags: async (workspace: string, tags: readonly string[]) => {
+        for (const [key, row] of stored) {
+          if (key.startsWith(`${workspace}|`) && row.tags.some(tag => tags.includes(tag))) stored.delete(key);
+        }
+      },
+    };
+    const worker = () => {
+      const cache = new Cache({ clock: () => now });
+      installOperatorCache(cache);
+      return cache;
+    };
+    const id = rowFor(DEEP).id;
+    const predicate = (args: WorkItemsListWireArgs = {}) => buildWorkItemsPredicate(
+      normalizeWorkItemsListArgs({ harnessSlug, filters: { id }, limit: 1, ...args }));
+    const page = (connection = sql, options = {}) =>
+      readWorkItemsPageFromStore(connection, workspaceId, predicate(), options);
+    const summary = (connection = sql, args: WorkItemsListWireArgs = {}) =>
+      readWorkItemsSummaryFromStore(connection, workspaceId, predicate(args));
+    const noSql = (() => { throw new Error('warm shared cache must not issue SQL'); }) as unknown as Sql;
+    const firstWorker = worker();
+    __setCachedReadEnabledForTests(true);
+    installL2StoreForTests(store as unknown as PgL2Store);
+    try {
+      await _refreshCacheLayerForTests();
+      await _refreshL2FlagForTests();
+      const pages = await Promise.all(Array.from({ length: 7 }, () => page()));
+      expect(pages[0]?.rows[0]?.id).toBe(id);
+      expect(firstWorker.stats.singleFlightJoins).toBe(6);
+      const summaries = await Promise.all(Array.from({ length: 7 }, () => summary()));
+      expect(firstWorker.stats.singleFlightJoins).toBe(12);
+      expect(stored.size).toBe(2);
+
+      // A cold worker reuses the JSON built by another worker. Navigation does
+      // not change the companion summary's semantic predicate.
+      let currentWorker = worker();
+      expect(await page(noSql)).toEqual(JSON.parse(JSON.stringify(pages[0])));
+      expect(await summary(noSql, { limit: 25, cursor: encodeWorkItemsCursor({ updatedTs: BASE_TS, id }) }))
+        .toEqual(summaries[0]);
+      expect((await page(sql, { includeDetails: true })).rows[0]?.summary).toBe('mobile detail description');
+      expect((await readWorkItemsPageFromStore(sql, `${workspaceId}-foreign`, predicate())).rows).toEqual([]);
+      expect((await readWorkItemsPageFromStore(sql, workspaceId,
+        predicate({ filters: { id: rowFor(DEEP - 1).id } }))).rows[0]?.id).toBe(rowFor(DEEP - 1).id);
+
+      const invalidate = async (tag: string) => {
+        currentWorker.invalidateByTags(workspaceId, [tag]);
+        await store.invalidateByTags(workspaceId, [tag]);
+      };
+      await sql`UPDATE harness_shared.spawned_agents SET child_role = 'validator'
+        WHERE spawn_id = ${`p4-spawn-${token}`}`;
+      await invalidate('spawned_agents');
+      expect((await page()).rows[0]?.spineRole).toBe('validator');
+      expect(await summary()).toContainEqual(expect.objectContaining({ kind: 'facet', facet: 'stage', value: 'validator', count: 1 }));
+      await sql`UPDATE harness_shared.work_items SET title = 'cache-refreshed-title'
+        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND feature_id = ${id}`;
+      await invalidate('work_items');
+      expect((await page()).rows[0]?.title).toBe('cache-refreshed-title');
+      await invalidate('work_item_deps');
+      await expect(page(noSql)).rejects.toThrow('warm shared cache must not issue SQL');
+      await page();
+      now = 2_001;
+      currentWorker = worker();
+      await expect(page(noSql)).rejects.toThrow('warm shared cache must not issue SQL');
+      expect((await page()).rows[0]?.title).toBe('cache-refreshed-title');
+    } finally {
+      __setCachedReadEnabledForTests(false);
+      resetOperatorCacheForTests();
+      __resetL2StateForTests();
+      flagRead.mockRestore();
+      vi.restoreAllMocks();
+      await sql`UPDATE harness_shared.work_items SET title = 'deep-only-match'
+        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND feature_id = ${id}`;
+      await sql`UPDATE harness_shared.spawned_agents SET child_role = 'reviewer'
+        WHERE spawn_id = ${`p4-spawn-${token}`}`;
+    }
+  }, 30_000);
+
   it('keeps non-work records out of queue pages, fair slices, counts and facets', async () => {
     const queueHarness = `${harnessSlug}-nature`;
     const contactId = 'PER-8bb3f65b4bfceccd6673b885';

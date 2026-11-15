@@ -636,6 +636,24 @@ export async function readWorkItemsPageFromStore(
   // fields only for bounded page keys, leaving the desktop's lean default intact.
   options: { includeDetails?: boolean } = {},
 ): Promise<BoundedListPage<WorkItemsListRow>> {
+  const { cachedRead } = await import('../cache/cached-read');
+  // Reuse the operator cache's single-flight, JSON L2 and table-tag invalidation.
+  // A short hard TTL bounds age even if an invalidation listener is absent.
+  return cachedRead({ workspaceId }, {
+    tool: 'sync:workItems.byHarness',
+    key: { ...predicate.args, includeDetails: options.includeDetails === true },
+    tags: ['work_items', 'spawned_agents', 'work_item_deps'],
+    hardTtlMs: 1_000,
+    l2: true,
+  }, () => readUncachedWorkItemsPageFromStore(sql, workspaceId, predicate, options));
+}
+
+async function readUncachedWorkItemsPageFromStore(
+  sql: OrgSql,
+  workspaceId: string,
+  predicate: WorkItemsCompiledPredicate,
+  options: { includeDetails?: boolean },
+): Promise<BoundedListPage<WorkItemsListRow>> {
   const args = predicate.args;
   if (args.fairStates.length > 0) {
     const rows = await withNamedQueryDiagnosticLeg('work-items-page', () =>
@@ -670,6 +688,23 @@ interface WorkItemsAggregateDbRow {
 }
 
 export async function readWorkItemsSummaryFromStore(
+  sql: OrgSql,
+  workspaceId: string,
+  predicate: WorkItemsCompiledPredicate,
+): Promise<readonly CompanionSummaryAggregateRow[]> {
+  const { cachedRead } = await import('../cache/cached-read');
+  const { harnessSlug, harnessSlugs, q, filters } = predicate.args;
+  return cachedRead({ workspaceId }, {
+    tool: 'sync:workItems.summary',
+    // Pagination and fair-slice settings never change corpus aggregates.
+    key: { harnessSlug, harnessSlugs, q, filters },
+    tags: ['work_items', 'spawned_agents'],
+    hardTtlMs: 1_000,
+    l2: true,
+  }, () => readUncachedWorkItemsSummaryFromStore(sql, workspaceId, predicate));
+}
+
+async function readUncachedWorkItemsSummaryFromStore(
   sql: OrgSql,
   workspaceId: string,
   predicate: WorkItemsCompiledPredicate,

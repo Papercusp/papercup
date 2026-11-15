@@ -107,7 +107,8 @@ describe('attemptDistributedClaim', () => {
     _setHandleForTests(
       'ws-1',
       'papercup',
-      makeFakeBootedHandle({ workspaceId: 'ws-1', harnessSlug: 'papercup', keyHex: '1234' }).handle,
+      // claimFeature accepts only a 64-char lowercase hex own-log key.
+      makeFakeBootedHandle({ workspaceId: 'ws-1', harnessSlug: 'papercup', keyHex: 'bc'.repeat(32) }).handle,
     );
     const r = await attemptDistributedClaim({
       workspaceId: 'ws-1',
@@ -118,7 +119,7 @@ describe('attemptDistributedClaim', () => {
     });
     expect(r.reason).toBe('attempted');
     if (r.reason === 'attempted') {
-      expect(r.my_pubkey).toBe('1234');
+      expect(r.my_pubkey).toBe('bc'.repeat(32));
     }
   });
 });
