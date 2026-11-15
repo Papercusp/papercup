@@ -1,5 +1,5 @@
 import { hermeticSpawnEnv } from './__tests__/hermetic-spawn-env';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,6 +14,145 @@ const { nativeVerifierEnv, preflightNativeVerifier, desktopPortalNativeTiming,
   verifyDesktopPortalCandidateSpa, withNativeVerifierTypeService } = await import(pathToFileURL(helper).href);
 const { requestTscService } = await import(pathToFileURL(resolve(root, 'scripts/lib/tsc-service.mjs')).href);
 const { admitTaskDeadline } = await import(pathToFileURL(resolve(root, 'scripts/lib/task-deadline.mjs')).href);
+const { admissionContextFromEnvironment, governedExecutionLeaseTtlForTimeout } = await import(
+  '../../../packages/operator-core/lib/resource-governor/execution');
+
+describe('native verifier governed type service', () => {
+  const context = { contractVersion: 1 as const, requestId: 'native-request', rootRequestId: 'native-request',
+    parentRequestId: null, receiptId: 'native-receipt', leaseId: 'native-lease',
+    idempotencyKey: 'native-verifier-test', admissionClass: 'process', priority: 50,
+    demand: { cpuWeight: 1 }, depth: 0, createdAtMs: 1, decisionGeneration: 1 };
+
+  function fixture() {
+    const source = mkdtempSync(join(tmpdir(), 'native-types-governed-'));
+    mkdirSync(join(source, 'scripts/tsc-service'), { recursive: true });
+    writeFileSync(join(source, 'scripts/tsc-service/server.mjs'), `
+      import { writeFileSync } from 'node:fs';
+      writeFileSync('observed.json', process.env.PAPERCUSP_ADMISSION_CONTEXT);
+      console.log('listening on private native test socket');
+      setInterval(() => {}, 1000);
+    `);
+    const events: string[] = [];
+    const measured = { cpuWeight: 0.25, memoryBytes: 123456, diskBytes: 0, fileDescriptors: 7 };
+    const sampler = { attach: vi.fn(), sample: vi.fn(), stop: vi.fn(() => {
+      events.push('measured');
+      return measured;
+    }) };
+    let socket = '';
+    const spawnProcess = vi.fn((...args: Parameters<typeof spawn>) => {
+      events.push('spawn');
+      socket = args[2]!.env!.PAPERCUSP_TSC_SERVICE_SOCKET!;
+      const child = spawn(...args);
+      child.once('close', () => events.push('closed'));
+      return child;
+    });
+    const release = vi.fn();
+    const cancel = vi.fn();
+    const runGovernedOperation = vi.fn(async (input, run) => {
+      events.push('admitted');
+      try {
+        const result = await run(context);
+        release(await input.measureActualDemand());
+        events.push('released');
+        return result;
+      } catch (error) {
+        cancel(error);
+        events.push('cancelled');
+        throw error;
+      }
+    });
+    const executionApi = { admissionContextFromEnvironment, governedExecutionLeaseTtlForTimeout, runGovernedOperation };
+    const env = { ...hermeticSpawnEnv(), PAPERCUSP_WORKSPACE_ID: 'native-workspace',
+      PAPERCUSP_ADMISSION_CONTEXT: undefined };
+    return { source, events, measured, sampler, spawnProcess, release, cancel, runGovernedOperation, env,
+      deps: { executionApi, spawnProcess, createSampler: () => sampler }, socket: () => socket,
+      cleanup: () => rmSync(source, { recursive: true, force: true }) };
+  }
+
+  it('admits before spawn, propagates the typed receipt to both children and releases measured cost after close', async () => {
+    const f = fixture();
+    try {
+      const result = await withNativeVerifierTypeService(f.source, f.env, async (env: NodeJS.ProcessEnv) => {
+        expect(f.release).not.toHaveBeenCalled();
+        expect(JSON.parse(readFileSync(join(f.source, 'observed.json'), 'utf8'))).toEqual(context);
+        const checkerContext = JSON.parse(execFileSync(process.execPath, ['-e',
+          'console.log(process.env.PAPERCUSP_ADMISSION_CONTEXT)'], { env, encoding: 'utf8' }));
+        expect(checkerContext).toEqual(context);
+        expect(f.env.PAPERCUSP_ADMISSION_CONTEXT).toBeUndefined();
+        return 42;
+      }, f.deps);
+      expect(result).toBe(42);
+      expect(f.runGovernedOperation).toHaveBeenCalledOnce();
+      expect(f.runGovernedOperation.mock.calls[0][0]).toMatchObject({ workspaceId: 'native-workspace',
+        namespace: 'native-verifier-type-service', admissionClass: 'process', leaseTtlMs: 155000,
+        payloadRef: 'scripts/lib/verify-tauri-native-env.mjs', demand: { memoryBytes: 1024 ** 3 } });
+      expect(f.release).toHaveBeenCalledExactlyOnceWith(f.measured);
+      expect(f.cancel).not.toHaveBeenCalled();
+      expect(f.sampler.attach).toHaveBeenCalledExactlyOnceWith(expect.any(Number));
+      expect(f.sampler.stop).toHaveBeenCalledOnce();
+      expect(f.events).toEqual(['admitted', 'spawn', 'closed', 'measured', 'released']);
+      expect(() => lstatSync(resolve(f.socket(), '..'))).toThrow();
+    } finally { f.cleanup(); }
+  });
+
+  it('forwards an inherited receipt without admitting or settling it a second time', async () => {
+    const f = fixture();
+    try {
+      await withNativeVerifierTypeService(f.source, { ...f.env,
+        PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(context) }, async (env: NodeJS.ProcessEnv) => {
+        expect(admissionContextFromEnvironment(env.PAPERCUSP_ADMISSION_CONTEXT)).toEqual(context);
+        expect(JSON.parse(readFileSync(join(f.source, 'observed.json'), 'utf8'))).toEqual(context);
+      }, f.deps);
+      expect(f.runGovernedOperation).not.toHaveBeenCalled();
+      expect(f.release).not.toHaveBeenCalled();
+      expect(f.cancel).not.toHaveBeenCalled();
+      expect(f.events).toEqual(['spawn', 'closed', 'measured']);
+    } finally { f.cleanup(); }
+  });
+
+  it('refuses admission before allocating a service or invoking the check', async () => {
+    const f = fixture();
+    const check = vi.fn();
+    f.runGovernedOperation.mockRejectedValueOnce(new Error('native admission refused'));
+    try {
+      await expect(withNativeVerifierTypeService(f.source, f.env, check, f.deps))
+        .rejects.toThrow('native admission refused');
+      expect(f.spawnProcess).not.toHaveBeenCalled();
+      expect(f.sampler.attach).not.toHaveBeenCalled();
+      expect(f.sampler.stop).not.toHaveBeenCalled();
+      expect(check).not.toHaveBeenCalled();
+    } finally { f.cleanup(); }
+  });
+
+  it.each(['spawn', 'startup', 'check'])('cancels on %s failure after cleaning up the owned process and sampler', async failure => {
+    const f = fixture();
+    const error = new Error('native check failed');
+    const check = vi.fn(async () => { if (failure === 'check') throw error; });
+    if (failure === 'spawn') f.spawnProcess.mockImplementationOnce(() => { throw error; });
+    if (failure === 'startup') writeFileSync(join(f.source, 'scripts/tsc-service/server.mjs'), 'process.exit(7);');
+    try {
+      await expect(withNativeVerifierTypeService(f.source, f.env, check, f.deps)).rejects
+        .toThrow(failure === 'startup' ? 'Native TypeScript service exited code=7' : error.message);
+      expect(f.release).not.toHaveBeenCalled();
+      expect(f.cancel).toHaveBeenCalledOnce();
+      expect(f.sampler.stop).toHaveBeenCalledOnce();
+      expect(f.events.at(-1)).toBe('cancelled');
+      if (failure !== 'spawn') {
+        expect(f.events.indexOf('closed')).toBeLessThan(f.events.indexOf('cancelled'));
+        expect(() => lstatSync(resolve(f.socket(), '..'))).toThrow();
+      }
+      if (failure !== 'check') expect(check).not.toHaveBeenCalled();
+    } finally { f.cleanup(); }
+  });
+
+  it('has no native verifier lint exemption and the canonical detector accepts its maintained admission seam', async () => {
+    const { scanInventory, BYPASS_REGISTRY } = await import(pathToFileURL(
+      join(root, 'scripts/check-resource-governor-enforcement.mjs')).href);
+    const path = 'scripts/lib/verify-tauri-native-env.mjs';
+    expect(BYPASS_REGISTRY.has(`${path}::resource-start-outside-admission`)).toBe(false);
+    expect(scanInventory([[path, readFileSync(helper, 'utf8')]], { migrations: ['P-016'] })).toEqual([]);
+  });
+});
 
 describe('real native verifier process boundary', () => {
   it('checks the selected source through an owned service and removes its socket after a failed check', async () => {
