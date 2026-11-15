@@ -4282,6 +4282,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       };
       const plans = Array.isArray(r?.plans) ? r.plans : [];
       if (plans.length === 0) return plans;
+      if ((args as { output?: unknown } | undefined)?.output === 'directory') return plans;
       // B1 (shared-hive-collaboration P-001): enrich rows with resolved owner +
       // last-editor identity for the ownership badges. Additive + best-effort.
       const badges = await traceNamedQueryStage('plans-list-attribution-flag', async () => {

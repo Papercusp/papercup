@@ -4853,10 +4853,15 @@ async function listScorecardsAtLimit(
            : tx`NOT EXISTS (
          SELECT 1
            FROM harness_shared.engineer_issues AS superseder
-          WHERE superseder.workspace_id = scorecard.workspace_id
+          WHERE (superseder.workspace_id = scorecard.workspace_id) IS TRUE -- keep the whole-workspace index out of per-card BitmapAnds
             AND superseder.payload -> 'observation' ->> 'supersedes' = scorecard.issue_id
             AND (superseder.payload -> 'observation' ->> 'rubricRef' = scorecard.payload -> 'observation' ->> 'rubricRef') IS TRUE -- IS TRUE: not an equivalence-class qual (WI-6554700010018130)
             AND superseder.payload -> 'observation' ->> 'sourceHive' IS NOT DISTINCT FROM scorecard.payload -> 'observation' ->> 'sourceHive'
+         -- Keep this selective per-card probe correlated. With the outer row
+         -- estimate near one, flattening EXISTS can choose a nested-loop anti
+         -- join that rescans the whole issue population for every scorecard.
+         -- Reuse the barrier in specQualitySupersederSql (WI-6554700010049082).
+         LIMIT 1 OFFSET 0
        )`
        }
        AND ${

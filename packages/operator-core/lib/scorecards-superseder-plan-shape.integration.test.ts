@@ -43,6 +43,7 @@ import type { OrgTestDb } from '../test/_org-test-db';
 
 const PROBE_INDEX = 'work_items_obs_supersedes_rubric_probe_idx';
 const PRIMARY_INDEX = 'work_items_scorecard_created_keyset_idx';
+const SPEC_SERIES_INDEX = 'work_items_obs_spec_quality_series_idx';
 const RUBRIC_WIDE_INDEX = 'work_items_obs_rubric_ref_v2_idx';
 const SUPERSEDES_INDEX = 'work_items_obs_supersedes_v2_idx';
 const RUBRIC = 'test-superseder-plan-shape';
@@ -123,7 +124,17 @@ const captured: { query: string; params: unknown[] }[] = [];
 /** Run the production-shaped read once and return the superseder-excluding statement it sent. */
 async function captureListScorecards(rubricRef: string | undefined, limit: number, sourceHive: string | null = SOURCE_HIVE) {
   captured.length = 0;
-  const rows = await listScorecards({ rubricRef, sourceHive: sourceHive ?? undefined, limit });
+  let rows;
+  try {
+    rows = await listScorecards({ rubricRef, sourceHive: sourceHive ?? undefined, limit });
+  } catch (error) {
+    const statement = captured.find((c) => /AS superseder/.test(c.query));
+    if (statement) {
+      const plan = await db.adminSql.unsafe(`EXPLAIN (FORMAT JSON) ${statement.query}`, statement.params as never[]);
+      console.error('listScorecards failed; exact SQL and planner diagnostics', JSON.stringify({ statement, plan }));
+    }
+    throw error;
+  }
   const statement = captured.find(
     (c) => /NOT EXISTS/.test(c.query) && /AS superseder/.test(c.query) && /ORDER BY scorecard\.created_at DESC/.test(c.query),
   );
@@ -157,6 +168,15 @@ async function explainUnder(statement: { query: string; params: unknown[] }, set
 
 beforeAll(async () => {
   db = await createOrgTestDb();
+  console.info('scorecard migration fixture', JSON.stringify({ database: db.dbName, disposable: true }));
+  for (const index of [PROBE_INDEX, PRIMARY_INDEX, SPEC_SERIES_INDEX]) {
+    const [state] = await db.adminSql`
+      SELECT i.indisvalid, i.indisready, pg_get_indexdef(i.indexrelid) AS definition
+        FROM pg_index i
+       WHERE i.indexrelid = to_regclass(${'harness_shared.' + index})`;
+    expect(state, `migrated fixture is missing ${index}`).toBeDefined();
+    expect(state!.indisvalid && state!.indisready, `${index}: ${JSON.stringify(state)}`).toBe(true);
+  }
   const ws = issuesScopeWorkspace();
   const card = (rubricRef: string) =>
     JSON.stringify({
@@ -212,15 +232,6 @@ beforeAll(async () => {
            ${BASE_MS}::bigint + (${OTHER_ROWS}::int + g) * 1000::bigint + 700, ${BASE_MS}::bigint + (${OTHER_ROWS}::int + g) * 1000::bigint + 700,
            jsonb_set(${card(OTHER_RUBRIC)}::text::jsonb, '{observation,supersedes}', to_jsonb('EI-psp-o-' || lpad(g::text, 5, '0')))
       FROM generate_series(1, ${OTHER_SUPERSEDERS}) AS g`;
-  // WI-6554700010049082: the primary scan must skip ordinary issues using the
-  // ordered scorecard population. Keep the whole fixture below ANALYZE's
-  // 30,000-row sample so the existing superseder cases remain deterministic.
-  await db.adminSql`
-    INSERT INTO harness_shared.work_items
-      (workspace_id, harness_slug, feature_id, item_kind, status, admission, title, summary, created_ts, updated_ts, payload)
-    SELECT ${ws}, 'papercusp', 'EI-psp-plain-' || lpad(g::text, 5, '0'), 'change', 'done', 'admitted', 'ordinary issue ' || g, '',
-           ${BASE_MS}::bigint + g * 1000::bigint + 900, ${BASE_MS}::bigint + g * 1000::bigint + 900, '{}'::jsonb
-      FROM generate_series(1, 12000) AS g`;
   await db.adminSql`ANALYZE harness_shared.work_items`;
 
   traced = postgres(db.adminDsn, {
@@ -289,15 +300,55 @@ describe('listScorecards superseder probe plan shape (migration 1631)', () => {
   );
 });
 
-describe('listScorecards primary scan (WI-6554700010049082 / migration 1633)', () => {
+describe('listScorecards primary scan and full probes (WI-6554700010049082 / migrations 1633-1634)', () => {
+  beforeAll(async () => {
+    // Isolate this population from migration 1631's existing probe fixture.
+    // Both populations stay below ANALYZE's full 30,000-row sample.
+    const ws = issuesScopeWorkspace();
+    await db.adminSql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, admission, title, summary, created_ts, updated_ts, payload)
+      SELECT ${ws}, 'papercusp', 'EI-psp-plain-' || lpad(g::text, 5, '0'), 'change', 'done', 'admitted', 'ordinary issue ' || g, '',
+             ${BASE_MS}::bigint + g * 1000::bigint + 900, ${BASE_MS}::bigint + g * 1000::bigint + 900, '{}'::jsonb
+        FROM generate_series(1, 12000) AS g`;
+    // Sixteen hashes per plan across 100 series exercise the full production
+    // spec-quality probe. Ordinary rubrics alone miss its per-row BitmapAnd.
+    await db.adminSql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, admission, title, summary, created_ts, updated_ts, payload)
+      SELECT ${ws}, 'papercusp', 'EI-psp-spec-' || lpad(g::text, 5, '0'), 'change', 'done', 'admitted', 'spec quality ' || g, '',
+             ${BASE_MS}::bigint + (6000 + g) * 1000::bigint, ${BASE_MS}::bigint + (6000 + g) * 1000::bigint,
+             jsonb_build_object('observation', jsonb_build_object(
+               'rubricRef', 'spec-quality', 'sourceHive', ${SOURCE_HIVE}::text,
+               'subject', jsonb_build_object('kind', 'plan', 'ref',
+                 'spec-set:activation:' || lpad(g::text, 64, '0') || ':' || lpad(((g - 1) % 100)::text, 16, '0')),
+               'ratings', jsonb_build_object('plan-shape', jsonb_build_object('rating', 'pass', 'evidence', 'seeded spec series'))))
+        FROM generate_series(1, 1600) AS g`;
+    await db.adminSql`ANALYZE harness_shared.work_items`;
+  });
+
+  afterAll(async () => {
+    await db.adminSql`DELETE FROM harness_shared.work_items
+      WHERE workspace_id = ${issuesScopeWorkspace()}
+        AND (feature_id LIKE 'EI-psp-plain-%' OR feature_id LIKE 'EI-psp-spec-%')`;
+    await db.adminSql`ANALYZE harness_shared.work_items`;
+  });
+
   it.each([undefined, RUBRIC, SMALL_RUBRIC])('uses an indexed primary scan for rubric %s', async (rubricRef) => {
     const { statement } = await captureListScorecards(rubricRef, rubricRef ? 25 : 501, rubricRef ? SOURCE_HIVE : null);
     const nodes = await explain(db.adminSql, statement);
     const primary = nodes.filter((node) => node['Relation Name'] === 'work_items' && node.Alias === 'work_items');
     expect(primary, `missing primary scan: ${describePlan(nodes)}`).toHaveLength(1);
     expect(primary[0]!['Node Type'], `primary scan: ${describePlan(nodes)}`).not.toBe('Seq Scan');
+    expect(
+      nodes.filter((node) => node['Relation Name'] === 'work_items' && node['Node Type'] === 'Seq Scan'),
+      `the superseder probe must not repeatedly scan the issue population: ${describePlan(nodes)}`,
+    ).toHaveLength(0);
     if (!rubricRef) {
       expect(primary[0]!['Index Name'], `default list: ${describePlan(nodes)}`).toBe(PRIMARY_INDEX);
+      expect(usesIndex(nodes, SPEC_SERIES_INDEX), `spec-quality probe: ${describePlan(nodes)}`).toBe(true);
+      expect(rubricWideBitmapAnds(nodes), `full-query rubric-wide BitmapAnd: ${describePlan(nodes)}`).toHaveLength(0);
+      console.info('full production scorecard statement', JSON.stringify(statement));
     }
   });
 
@@ -308,6 +359,17 @@ describe('listScorecards primary scan (WI-6554700010049082 / migration 1633)', (
     expect(usesIndex(withIndex, PRIMARY_INDEX), describePlan(withIndex)).toBe(true);
     expect(usesIndex(withoutIndex, PRIMARY_INDEX), describePlan(withoutIndex)).toBe(false);
     const [idx] = await db.adminSql`SELECT to_regclass(${'harness_shared.' + PRIMARY_INDEX}) AS r`;
+    expect(idx!.r).not.toBeNull();
+  });
+
+  it('the full spec-quality probe reaches its series index, and cannot after it is dropped', async () => {
+    const { rows, statement } = await captureListScorecards('spec-quality', 500);
+    expect(rows).toHaveLength(100);
+    const withIndex = await explain(db.adminSql, statement);
+    const withoutIndex = await explainUnder(statement, [], SPEC_SERIES_INDEX);
+    expect(usesIndex(withIndex, SPEC_SERIES_INDEX), describePlan(withIndex)).toBe(true);
+    expect(usesIndex(withoutIndex, SPEC_SERIES_INDEX), describePlan(withoutIndex)).toBe(false);
+    const [idx] = await db.adminSql`SELECT to_regclass(${'harness_shared.' + SPEC_SERIES_INDEX}) AS r`;
     expect(idx!.r).not.toBeNull();
   });
 });

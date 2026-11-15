@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { parsePlan } from '@papercusp/plan-parser';
 import type { CellReadEnv } from './cell-read';
 import type { ExternalBlockerRecord } from './external-blockers';
 import { activeWorkspaceId } from './workspace-registry';
@@ -149,6 +150,7 @@ export async function preflightBlockerDecision(
       : undefined;
     const readEvidence = createBlockerEvidenceReader({ ...context, harnessSlug: item.harness,
       workItemId: item.id, custodianId: item.assignee, blockers,
+      evidenceRefs: prepared.record.decision.evidenceRefs,
       retainedReservationRelease: prepared.record.decision.disposition === 'defer' ? plainReleaseScope : undefined });
     const checked = await validateBlockerDecisionEvidence(prepared.record.decision, {
       ownerId: context.ownerId, workItemId: item.id, obligationRefs, relatedConditionRefs,
@@ -170,12 +172,95 @@ export interface BlockerEvidenceContext extends CellReadEnv {
   blockers: readonly ExternalBlockerRecord[];
   /** Canonical pre-write subject custody, never request-supplied. */
   custodianId?: string | null;
+  /** Citations select canonical decisions; their prose never supplies a verdict. */
+  evidenceRefs?: readonly BlockerEvidenceRef[];
   /** Host-only plain-release deferral: the writer preserves this custodian's
    * reservation and every blocker while releasing only the inactive assignment. */
   retainedReservationRelease?: UnmeasuredRuntimeScope;
 }
 const absent = (detail: string): BlockerEvidenceMeasurement => ({ status: 'absent', detail });
 const unknown = (detail: string): BlockerEvidenceMeasurement => ({ status: 'unknown', detail });
+
+/** Legacy route gates measure canonical supersession, never an event fire or
+ * an agent's assertion. Keep the accepted affirmative clauses narrow: merely
+ * mentioning, proposing or negating an override grants no authority. */
+async function readPlanRouteCondition(ref: string, context: BlockerEvidenceContext): Promise<BlockerEvidenceMeasurement> {
+  const match = /^plan-route:([A-Za-z0-9_.-]+):(D-\d{3,})$/.exec(ref);
+  const gates = context.blockers.filter(blocker => blocker.ref === ref && blocker.kind === 'gate' &&
+    blocker.status === 'active' && blocker.capability === 'live-dependency');
+  if (!match || gates.length !== 1 || !context.workspaceId || !context.harnessSlug ||
+      !context.workItemId || !context.ownerId || context.custodianId !== context.ownerId ||
+      activeWorkspaceId() !== context.workspaceId) return unknown('exact canonical route gate and authenticated custody required');
+  const gate = gates[0];
+  const createdAt = Date.parse(gate.createdAt);
+  if (!Number.isFinite(createdAt)) return unknown('canonical route gate date is unavailable');
+  const { getWorkItem } = await import('./work-items');
+  const { activeExternalBlockers } = await import('./external-blockers');
+  const current = await getWorkItem(context.workItemId, context.harnessSlug);
+  const matchesSubject = (item: typeof current) => item && item.id === context.workItemId &&
+    item.harness === context.harnessSlug && item.assignee === context.ownerId &&
+    ['blocked', 'open', 'todo', 'wip'].includes(item.state) &&
+    isDeepStrictEqual(activeExternalBlockers(item.payload).filter(blocker => blocker.ref === ref), [gate]);
+  if (!matchesSubject(current)) return unknown('canonical route custody or gate changed');
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { readPlanLineNodes } = await import('./agent-tools/plans/plan-line-graph');
+  const { getPlanRow } = await import('./agent-tools/plans/source');
+  const scope = { workspaceId: context.workspaceId, harnessSlug: context.harnessSlug, slug: match[1] };
+  const [plan, nodes] = await Promise.all([
+    getPlanRow(match[1], scope), readPlanLineNodes(getOrgPg().sql, scope),
+  ]);
+  if (!plan || plan.workspaceId !== context.workspaceId || plan.harnessSlug !== context.harnessSlug ||
+      plan.planSlug !== match[1] || nodes.filter(node => node.featureId === context.workItemId && node.planSlug === match[1]).length !== 1) {
+    return unknown('exact canonical route plan and work-item binding required');
+  }
+  // The optional derived decisions index is not selected on every source path.
+  const parsed = parsePlan(plan.content);
+  const decisions = parsed.decisions;
+  // Repeated headings are retained as prose by the parser. Its notice is
+  // intentional for display, but that ambiguity cannot authorize a route.
+  if (parsed.parseWarnings.some(warning => /decision/i.test(warning)) ||
+      parsed.parseNotices.some(notice => /already-declared decision id/.test(notice)) ||
+      new Set(decisions.map(decision => decision.id)).size !== decisions.length) return unknown('ambiguous canonical decisions');
+  const original = decisions.find(decision => decision.id === match[2]);
+  if (!original || !/\bSELF\b|\bsolo\b|\bno (?:new )?fleet\b|authoring-only|no-implementation-fanout/i.test(
+    `${original.title}\n${original.body}`)) return unknown('original route restriction is unavailable');
+  const citations = new Set((context.evidenceRefs ?? []).filter(citation => citation.kind === 'doc')
+    .map(citation => citation.ref.replace(/^doc:/, '')));
+  const clauses = (body: string) => {
+    let fence: string | undefined;
+    return body.split('\n').filter(line => {
+      const marker = /^\s*(`{3,}|~{3,})/.exec(line)?.[1];
+      if (marker) {
+        if (!fence) fence = marker;
+        else if (marker[0] === fence[0] && marker.length >= fence.length) fence = undefined;
+        return false;
+      }
+      return !fence;
+    }).flatMap(line => line.split(/(?<=[.!?])\s+/)).map(clause => clause.trim().replace(/[.!?]$/, ''));
+  };
+  const supersedes = (body: string) => clauses(body).some(clause =>
+    new RegExp(`^(?:(?:it|this decision)\\s+)?supersedes\\s+${match[2]}$`, 'i').test(clause) ||
+    /^(?:it|this decision) supersedes earlier authoring-only or solo\/no-implementation-fanout route restrictions for this portfolio only$/i.test(clause));
+  const replacement = decisions.find(decision => {
+    const date = decision.date ? Date.parse(decision.date) : NaN;
+    if (decision.id === original.id || !Number.isFinite(date) || date <= createdAt || date > Date.now() ||
+        !citations.has(`plan:${match[1]}#${decision.id}`) || !supersedes(decision.body)) return false;
+    return !decisions.some(later => later.id !== decision.id && later.date && Date.parse(later.date) >= date &&
+      new RegExp(`\\b${decision.id}\\b`).test(later.body) && /\b(?:withdraw|revoke|supersed)\w*/i.test(`${later.title}\n${later.body}`));
+  });
+  const latest = await getWorkItem(context.workItemId, context.harnessSlug);
+  if (!matchesSubject(latest) || latest?.takenAt !== current?.takenAt) return unknown('route custody changed during measurement');
+  if (replacement) return { status: 'available', condition: 'satisfied', reachable: true,
+    subjectWorkItemId: context.workItemId,
+    conditionIdentity: JSON.stringify(['plan-route', context.workspaceId, context.harnessSlug, context.workItemId, ref]) };
+  const release = context.retainedReservationRelease;
+  if (release && release.workspaceId === context.workspaceId && release.harnessSlug === context.harnessSlug &&
+      release.workItemId === context.workItemId && release.custodianId === context.ownerId) {
+    return { status: 'unmeasured-plan-route', ref, scope: release,
+      detail: 'Canonical legacy route remains unmeasured; plain release retains every blocker and reservation' };
+  }
+  return unknown('a cited canonical later route supersession is required');
+}
 
 function readGitText(cwd: string, args: string[], signal?: AbortSignal): Promise<string | null> {
   return new Promise(resolveText => {
@@ -410,6 +495,7 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
             condition: isDeepStrictEqual(actual, expected) ? 'satisfied' : 'pending' };
         }
         case 'event': {
+          if (ref.ref.startsWith('plan-route:')) return await readPlanRouteCondition(ref.ref, context);
           if (ref.ref.startsWith('grading-audit:') || ref.ref.startsWith('scorecard:grading-audit:')) {
             return await readGradingAuditCondition(ref.ref, context, loadAuditHeader);
           }
@@ -570,6 +656,22 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
         }
         case 'doc': {
           if (!context.harnessSlug) return unknown('canonical document harness is required');
+          const raw = ref.ref.replace(/^doc:/, '');
+          if (raw.startsWith('plan:')) {
+            const match = /^plan:([A-Za-z0-9_.-]+)#(D-\d{3,})$/.exec(raw);
+            if (!match) return absent('expected plan:SLUG#D-NNN');
+            if (!context.workspaceId || activeWorkspaceId() !== context.workspaceId) return unknown('plan document tenant context mismatch');
+            const { getPlanRow } = await import('./agent-tools/plans/source');
+            const plan = await getPlanRow(match[1], { workspaceId: context.workspaceId, harnessSlug: context.harnessSlug });
+            if (!plan || plan.workspaceId !== context.workspaceId || plan.harnessSlug !== context.harnessSlug || plan.planSlug !== match[1]) {
+              return unknown('canonical cited plan is unavailable');
+            }
+            const parsed = parsePlan(plan.content);
+            if (parsed.parseWarnings.some(warning => /decision/i.test(warning)) ||
+                parsed.parseNotices.some(notice => /already-declared decision id/.test(notice))) return unknown('ambiguous canonical plan decision');
+            return parsed.decisions.filter(decision => decision.id === match[2]).length === 1
+              ? { status: 'available' } : absent('exact canonical plan decision not found');
+          }
           const { getAuthoredDocContent } = await import('./harness/docs/doc-record');
           return await getAuthoredDocContent(context.harnessSlug, ref.ref.replace(/^doc:/, ''), context.workspaceId)
             ? { status: 'available' } : absent('canonical authored document not found');

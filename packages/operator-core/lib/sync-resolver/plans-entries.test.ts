@@ -7,6 +7,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const callPlansRead = vi.fn();
+const getFlag = vi.fn(async (..._args: unknown[]) => false);
 vi.mock('../agent-tools/plans/read-dispatch', () => ({
   callPlansRead: (...a: unknown[]) => callPlansRead(...a),
   callPlansReadRaw: vi.fn(),
@@ -17,7 +18,7 @@ vi.mock('../agent-tools/plans/read-dispatch', () => ({
 // is a SEPARATE concern behind the papercusp-plan-attribution-badges flag and
 // has its own test (plan-attribution.test.ts) — keep it OFF here so plans.list /
 // plans.get assert the pure unwrapped shape.
-vi.mock('@papercusp/flags/server', () => ({ getFlag: async () => false }));
+vi.mock('@papercusp/flags/server', () => ({ getFlag: (...args: unknown[]) => getFlag(...args) }));
 
 import { resolveNamedQueryV2 } from '.';
 import {
@@ -25,9 +26,16 @@ import {
   withNamedQueryDiagnosticContext,
 } from '../agent-tools/db-diagnostic-correlation-wiring';
 
-beforeEach(() => callPlansRead.mockReset());
+beforeEach(() => { callPlansRead.mockReset(); getFlag.mockClear(); });
 
 describe('plans.* resolvers — verb dispatch + envelope unwrap', () => {
+  it('uses canonical directory rows without requesting unused attribution', async () => {
+    const plans = [{ slug: 'a', harness: 'one', title: 'A', status: 'active', updated: null, nextAction: null }];
+    callPlansRead.mockResolvedValue({ plans });
+    expect(await resolveNamedQueryV2('plans.list', { output: 'directory', workspaceWide: true })).toEqual(plans);
+    expect(callPlansRead).toHaveBeenCalledWith('list', { output: 'directory', workspaceWide: true });
+    expect(getFlag).not.toHaveBeenCalled();
+  });
   it('retains the pending canonical boundary and complete populated list in request diagnostics', async () => {
     const plans = Array.from({ length: 2_500 }, (_, i) => ({ slug: `plan-${i}` }));
     let pending: ReturnType<typeof namedQueryStageTimings>;
