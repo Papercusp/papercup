@@ -204,7 +204,12 @@ export default defineTool({
     // always printed its cwd; capability:git printing none is what let the wrong-tree
     // reading above look like a normal empty result. (EI-20881501070735530)
     const header = `git ${argv.join(' ')} · exit ${r.code ?? 'null'} · cwd ${cwd}${truncated ? ` · spilled → ${logPath}` : ''}`;
-    const body = output || `(no output)${emptyPathspecNote(argv, r.code, output, cwd)}`;
+    // EI-28855828694549373: an empty result over a pathspec is only ambiguous when
+    // git does not know the pathspec. Probe that with `ls-files --error-unmatch` in
+    // the SAME cwd and global options (-C / --git-dir), so a clean
+    // `git diff --exit-code <sha> -- <tracked paths>` no longer warns.
+    const body = output || `(no output)${await resolveEmptyPathspecNote(argv, r.code, output, cwd, (probeArgv) =>
+      runGit(probeArgv, cwd, ctx.stateDir, ctx.signal, sandboxPolicy.enabled, sandboxPolicy.required))}`;
     return {
       content: [{ type: 'text' as const, text: `${header}\n${body}` }],
       isError: r.code === null,
@@ -227,12 +232,30 @@ export default defineTool({
  *
  * Exported for unit testing.
  */
-export function emptyPathspecNote(argv: string[], code: number | null, output: string, cwd: string): string {
+export function emptyPathspecNote(
+  argv: string[],
+  code: number | null,
+  output: string,
+  cwd: string,
+  /** Pathspecs `ls-files --error-unmatch` reported as unknown. `[]` = every
+   *  pathspec is tracked, so the empty result IS the answer (no note).
+   *  `undefined` = the probe did not run or was inconclusive. */
+  unmatched?: string[],
+): string {
   if (code !== 0 || output.trim() !== '') return '';
   const sep = argv.indexOf('--');
   if (sep === -1) return '';
   const pathspecs = argv.slice(sep + 1);
   if (pathspecs.length === 0) return '';
+  if (unmatched !== undefined) {
+    if (unmatched.length === 0) return '';
+    return (
+      `\n⚠ pathspec matched nothing in ${cwd} — git ls-files --error-unmatch does not know: ` +
+      `${unmatched.join(' ')}. The empty result is therefore not evidence of absence (a typo, an ` +
+      `untracked path, a path only on another branch, or a path inside a git SUBMODULE queried ` +
+      `from the superproject — run it with cwd set to the submodule). Re-check with a positive control.`
+    );
+  }
   return (
     `\n⚠ pathspec matched nothing in ${cwd} — git prints nothing and exits 0 for BOTH ` +
     `"no commits touch this path" and "this path does not exist here", so this is not ` +
@@ -240,6 +263,65 @@ export function emptyPathspecNote(argv: string[], code: number | null, output: s
     `control (the same query for a path you know is tracked), and note that a path inside ` +
     `a git SUBMODULE never matches from the superproject — run it with cwd set to the submodule.`
   );
+}
+
+/** Global git options whose value is the NEXT argv element. */
+const GIT_GLOBAL_OPTS_WITH_VALUE = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--config-env']);
+
+/**
+ * Build the `ls-files --error-unmatch` probe for an argv's `--` pathspecs, keeping
+ * the global options before the subcommand (`-C <dir>`, `--git-dir=…`) so the probe
+ * resolves pathspecs against the same repository as the original command.
+ * Returns null when there is no explicit pathspec. Exported for unit testing.
+ */
+export function pathspecProbeArgv(argv: string[]): { argv: string[]; pathspecs: string[] } | null {
+  const sep = argv.indexOf('--');
+  if (sep === -1) return null;
+  const pathspecs = argv.slice(sep + 1);
+  if (pathspecs.length === 0) return null;
+  let i = 0;
+  while (i < sep) {
+    const a = argv[i]!;
+    if (GIT_GLOBAL_OPTS_WITH_VALUE.has(a)) { i += 2; continue; }
+    if (a.startsWith('-')) { i += 1; continue; }
+    break; // the subcommand
+  }
+  return { argv: [...argv.slice(0, Math.min(i, sep)), 'ls-files', '--error-unmatch', '--', ...pathspecs], pathspecs };
+}
+
+/**
+ * Interpret the probe: exit 0 → every pathspec is tracked (`[]`); exit 1 with
+ * `error: pathspec '<p>' did not match` lines → those pathspecs; anything else →
+ * `undefined` (inconclusive, so the caller keeps the generic ambiguity note).
+ */
+export function unmatchedPathspecs(code: number | null, output: string, pathspecs: string[]): string[] | undefined {
+  if (code === 0) return [];
+  if (code !== 1) return undefined;
+  const named = new Set<string>();
+  for (const m of output.matchAll(/pathspec '(.+?)' did not match any file\(s\) known to git/g)) named.add(m[1]!);
+  const hit = pathspecs.filter((p) => named.has(p));
+  return hit.length > 0 ? hit : undefined;
+}
+
+/** emptyPathspecNote, after probing which pathspecs git actually does not know. */
+export async function resolveEmptyPathspecNote(
+  argv: string[],
+  code: number | null,
+  output: string,
+  cwd: string,
+  run: (probeArgv: string[]) => Promise<{ code: number | null; output: string }>,
+): Promise<string> {
+  if (code !== 0 || output.trim() !== '') return '';
+  const probe = pathspecProbeArgv(argv);
+  if (!probe) return '';
+  let unmatched: string[] | undefined;
+  try {
+    const p = await run(probe.argv);
+    unmatched = unmatchedPathspecs(p.code, p.output, probe.pathspecs);
+  } catch {
+    unmatched = undefined;
+  }
+  return emptyPathspecNote(argv, code, output, cwd, unmatched);
 }
 
 /** Exported for direct unit testing (mirrors bash-jobs.ts's runForeground export) —

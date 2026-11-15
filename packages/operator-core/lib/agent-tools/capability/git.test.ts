@@ -14,7 +14,8 @@ import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { capabilityBwrapWorks } from './exec-sandbox';
-import capabilityGit, { createScratchClone, emptyPathspecNote, runGit, runGitReadOnlyEvidence } from './git';
+import capabilityGit, { createScratchClone, emptyPathspecNote, pathspecProbeArgv, resolveEmptyPathspecNote, runGit,
+  runGitReadOnlyEvidence, unmatchedPathspecs } from './git';
 import { createScratchClone as createLocalScratchClone, estimateScratchGitTimeout, runLocalGit,
   SCRATCH_GIT_BASE_TIMEOUT_MS, SCRATCH_GIT_MAX_TIMEOUT_MS } from '../../scratch-git-clone';
 
@@ -535,6 +536,63 @@ describe('emptyPathspecNote — the empty-at-exit-0 pathspec ambiguity', () => {
   it('names the submodule case — the one where the path exists but can never match', () => {
     expect(emptyPathspecNote(['log', '--', 'libs/papercusp-shared/package.json'], 0, '', CWD))
       .toContain('SUBMODULE');
+  });
+
+  // EI-28855828694549373: a clean `git diff --exit-code <sha> -- <tracked>` warned.
+  it('does NOT fire when the probe found every pathspec tracked', () => {
+    expect(emptyPathspecNote(['diff', '--exit-code', 'abc', '--', 'src/a.ts'], 0, '', CWD, [])).toBe('');
+  });
+
+  it('names ONLY the pathspecs the probe found unknown', () => {
+    const note = emptyPathspecNote(['log', '--', 'src/known.ts', 'src/gone.ts'], 0, '', CWD, ['src/gone.ts']);
+    expect(note).toContain('pathspec matched nothing');
+    expect(note).toContain('src/gone.ts');
+    expect(note).not.toContain('src/known.ts');
+    expect(note).toContain('SUBMODULE');
+  });
+
+  it('pathspecProbeArgv keeps -C / --git-dir global options and drops the subcommand', () => {
+    expect(pathspecProbeArgv(['-C', 'sub', 'diff', '--exit-code', 'abc', '--', 'x.ts'])?.argv)
+      .toEqual(['-C', 'sub', 'ls-files', '--error-unmatch', '--', 'x.ts']);
+    expect(pathspecProbeArgv(['--git-dir=.g', 'log', '-3', '--', 'a', 'b'])?.argv)
+      .toEqual(['--git-dir=.g', 'ls-files', '--error-unmatch', '--', 'a', 'b']);
+    expect(pathspecProbeArgv(['log', '--'])).toBeNull();
+    expect(pathspecProbeArgv(['diff', '--stat'])).toBeNull();
+  });
+
+  it('unmatchedPathspecs: exit 0 = all tracked, exit 1 = named, other = inconclusive', () => {
+    expect(unmatchedPathspecs(0, '', ['a'])).toEqual([]);
+    expect(unmatchedPathspecs(1, "error: pathspec 'b' did not match any file(s) known to git\nDid you forget to 'git add'?\n", ['a', 'b']))
+      .toEqual(['b']);
+    expect(unmatchedPathspecs(128, 'fatal: not a git repository', ['a'])).toBeUndefined();
+    expect(unmatchedPathspecs(1, 'something else', ['a'])).toBeUndefined();
+  });
+
+  it('real git: clean diff over tracked paths is silent via cwd AND -C; an unknown path is named', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'cap-git-pathspec-'));
+    cleanup.push(repo);
+    git(repo, ['init', '-q']);
+    mkdirSync(join(repo, 'src'));
+    writeFileSync(join(repo, 'src', 'a.ts'), 'export const a = 1;\n');
+    git(repo, ['add', '.']);
+    git(repo, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init']);
+    const sha = git(repo, ['rev-parse', 'HEAD']);
+    const run = (cwd: string) => (argv: string[]) => runGit(argv, cwd, STATE, never);
+
+    const viaCwd = ['diff', '--exit-code', sha, '--', 'src/a.ts'];
+    const r1 = await runGit(viaCwd, repo, STATE, never);
+    expect(r1).toMatchObject({ code: 0, output: '' });
+    expect(await resolveEmptyPathspecNote(viaCwd, r1.code, r1.output, repo, run(repo))).toBe('');
+
+    const viaC = ['-C', repo, 'diff', '--exit-code', sha, '--', 'src/a.ts'];
+    const r2 = await runGit(viaC, STATE, STATE, never);
+    expect(r2).toMatchObject({ code: 0, output: '' });
+    expect(await resolveEmptyPathspecNote(viaC, r2.code, r2.output, STATE, run(STATE))).toBe('');
+
+    const missing = ['log', '--', 'src/a.ts', 'src/missing.ts'];
+    const note = await resolveEmptyPathspecNote(missing, 0, '', repo, run(repo));
+    expect(note).toContain('src/missing.ts');
+    expect(note).not.toContain('src/a.ts');
   });
 });
 

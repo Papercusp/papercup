@@ -51,6 +51,8 @@ import {
   foldFactsWithCensus,
   countLiveFacts,
   listFacts,
+  listFactsPage,
+  FACTS_RETAINED_FOLD_LIMIT,
   foldDeadEndFacts,
   foldNeverDropFacts,
   NEVER_DROP_KEY_PREFIXES,
@@ -393,7 +395,7 @@ describe('context reliability R-8: task-ranked standing facts', () => {
     expect((await foldFacts(selectors, opts, db.sql)).map((fact) => fact.key)).toEqual(['noise']);
   });
 
-  it('retains every live protected fact outside the ordinary limit, including a proven convention', async () => {
+  it('reserves independent slots for live safety facts and conventions', async () => {
     for (const key of ['dead-end:old', 'wall:review-due', 'guard-rail:old']) {
       await assertFact({ ...base, key, body: key }, db.sql);
     }
@@ -431,6 +433,71 @@ describe('context reliability R-8: task-ranked standing facts', () => {
       sourceProvenance: { kind: 'work-item', verified: false, verifiedAt: new Date().toISOString() } }, db.sql);
     const facts = await foldFacts(selectors, { ...opts, taskContext: { workItemRefs: ['WI-202'] } }, db.sql);
     expect(facts.map((fact) => fact.key)).toEqual(['grounded']);
+  });
+});
+
+describe('EI-28763886046924909: bounded retained facts with lossless recovery', () => {
+  const N = FACTS_RETAINED_FOLD_LIMIT;
+  it.each([N - 1, N, N + 1])('bounds each class over %i identities and follows every recovery page', async (count) => {
+    const scopeRef = `retained-boundary-${count}`;
+    const selector = { scope: 'owner' as const, scopeRef };
+    const seeds = ['guard-rail', 'convention', 'ordinary'].flatMap((prefix) =>
+      Array.from({ length: count }, (_, i) => ({ key: `${prefix}:${String(i).padStart(3, '0')}`,
+        kind: prefix === 'convention' ? 'convention' : null })));
+    // Reverse insertion order: neither pagination nor admission may depend on it.
+    await db.sql`
+      INSERT INTO harness_shared.agent_facts (workspace_id, scope, scope_ref, key, body, kind, created_by, expires_at)
+      SELECT ${WS}, 'owner', ${scopeRef}, seed.key, seed.key, seed.kind, 'su-int', now() + interval '1 hour'
+        FROM jsonb_to_recordset(${JSON.stringify([...seeds].reverse())}::jsonb) AS seed(key text, kind text)`;
+    const folded = await foldFactsWithCensus([selector], {
+      workspaceId: WS, limitPerSelector: N, taskContext: {},
+    }, db.sql);
+    expect(folded.facts).toHaveLength(3 * Math.min(N, count));
+    expect(folded.census[0]).toMatchObject({
+      total: seeds.length, shown: folded.facts.length, truncated: count > N,
+      retained: { neverDrop: Math.min(N, count), conventions: Math.min(N, count), limitPerClass: N },
+    });
+    const recovered: string[] = [];
+    let cursor: string | undefined;
+    do {
+      // Serialize/reload the token on every page, as a cold successor does.
+      const page = await listFactsPage(selector, { workspaceId: WS, limit: 4,
+        ...(cursor ? { cursor: JSON.parse(JSON.stringify(cursor)) } : {}) }, db.sql);
+      expect(page.facts.length).toBeLessThanOrEqual(4);
+      recovered.push(...page.facts.map((fact) => fact.key));
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    expect(recovered).toEqual(seeds.map((seed) => seed.key).sort());
+    expect(new Set(recovered).size).toBe(seeds.length);
+    // At N+1 the decisive fact omitted from the brief still reaches its consumer.
+    for (const fact of seeds) expect(recovered).toContain(fact.key);
+  });
+
+  it('keeps making progress after updates, handles identical keys from different hives, and resyncs new earlier identities', async () => {
+    const scopeRef = 'retained-restart';
+    const selector = { scope: 'owner' as const, scopeRef };
+    for (const key of ['same', 'z-last', 'a-first', 'middle']) {
+      await assertFact({ ...selector, key, body: key, workspaceId: WS, createdBy: 'su-int', ttlSec: 3600 }, db.sql);
+    }
+    await db.sql`INSERT INTO harness_shared.agent_facts (workspace_id, scope, scope_ref, key, body, source_hive, created_by, expires_at)
+      VALUES (${WS}, 'owner', ${scopeRef}, 'same', 'foreign version', 'peer', 'su-int', now() + interval '1 hour')`;
+    const first = await listFactsPage(selector, { workspaceId: WS, limit: 2 }, db.sql);
+    expect(first.facts.map((fact) => fact.key)).toEqual(['a-first', 'middle']);
+    await assertFact({ ...selector, key: 'z-last', body: 'corrected while traversing', workspaceId: WS, createdBy: 'su-int', ttlSec: 3600 }, db.sql);
+    await assertFact({ ...selector, key: 'a-arrived', body: 'new earlier identity', workspaceId: WS, createdBy: 'su-int', ttlSec: 3600 }, db.sql);
+    const second = await listFactsPage(selector, { workspaceId: WS, limit: 2, cursor: first.nextCursor! }, db.sql);
+    expect(second.facts.map((fact) => fact.key)).toEqual(['same', 'same']);
+    const third = await listFactsPage(selector, { workspaceId: WS, limit: 2, cursor: second.nextCursor! }, db.sql);
+    expect(third.facts.map((fact) => fact.body)).toEqual(['corrected while traversing']);
+    expect(third.nextCursor).toBeNull();
+    const resync = await listFactsPage(selector, { workspaceId: WS, limit: 2 }, db.sql);
+    expect(resync.facts.map((fact) => fact.key)).toEqual(['a-arrived', 'a-first']);
+    await expect(listFactsPage({ ...selector, scopeRef: 'different' }, { workspaceId: WS, limit: 2, cursor: first.nextCursor! }, db.sql))
+      .rejects.toThrow('different workspace/scope');
+    await expect(listFactsPage(selector, { workspaceId: 'different', limit: 2, cursor: first.nextCursor! }, db.sql))
+      .rejects.toThrow('different workspace/scope');
+    await expect(listFactsPage(selector, { workspaceId: WS, limit: 2, cursor: 'malformed' }, db.sql))
+      .rejects.toThrow('invalid cursor');
   });
 });
 

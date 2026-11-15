@@ -593,8 +593,13 @@ defineTestDomain({
       ] },
     // The operator sync delta codec (createSyncDeltaCodec) — the sync delta seam.
     // Lives under apps/operator/providers; was gate-run but not registry-globbed
-    // (invisible in the Tests tab) until wired here (orphan-test audit).
-    { id: 'sync-delta', label: 'Sync delta codec', globs: ['apps/operator/providers/**/*.test.ts'] },
+    // (invisible in the Tests tab) until wired here (orphan-test audit). The .tsx
+    // glob covers the React provider suites (HarnessSyncProvider.machine-isolation,
+    // EI-28854640289519520), which vitest's default include already collects.
+    { id: 'sync-delta', label: 'Sync delta codec', globs: [
+        'apps/operator/providers/**/*.test.ts',
+        'apps/operator/providers/**/*.test.tsx',
+      ] },
   ],
 });
 
@@ -1182,8 +1187,11 @@ defineTestDomain({
         'libs/test-config/src/**/*.test.ts',
         'libs/testing-shell/src/**/*.test.ts',
         'libs/testing-shell/src/**/*.test.tsx',
-        // The standalone publish worker (Cloudflare).
+        // The standalone publish worker (Cloudflare), plus its operator scripts
+        // (verify-archive, EI-28854640289519520) — collected by the package's
+        // default vitest include.
         'apps/papercusp-publish/src/**/*.test.ts',
+        'apps/papercusp-publish/scripts/**/*.test.ts',
         // The slack-asana bug-drill fixture app: a SUBMODULE materialized from the
         // papercusp-app template (listing.json ref 'papercusp-app'), and an npm
         // workspace via the root `apps/*` glob. Its own vitest (package

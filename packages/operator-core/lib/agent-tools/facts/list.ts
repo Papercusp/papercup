@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { InvalidInputError } from '@papercusp/tooldef';
 import {
-  listFacts,
+  listFactsPage,
   countLiveFacts,
   factVersions,
   listFactEvictionDisclosures,
@@ -72,7 +72,7 @@ export const FACTS_LIST_MAX_LIMIT = FACTS_LIST_DEFAULT_LIMIT;
  * happens the response still says so via `truncatedByLimit` + `note_truncated`
  * (WI-38910), which is what keeps a short page honest — but the remedy offered
  * there must never be "pass all:true", because above this ceiling that is a
- * dead end. Narrow by `key`/scope instead.
+ * dead end. Follow `nextCursor` to enumerate the remaining identities.
  */
 export const FACTS_LIST_ALL_LIMIT = 200;
 
@@ -341,8 +341,9 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        `Widen the page to at most ${FACTS_LIST_ALL_LIMIT} rows instead of the result-door-safe ${FACTS_LIST_MAX_LIMIT}-row page. ⚠ This is a PAGE ceiling, NOT the enforced per-scope cap (${FACTS_PER_SCOPE_CAP}) — a scope can hold more live facts than this returns, so all:true is not a guarantee of completeness. Check \`truncatedByLimit\`/\`total\` in the response before treating the result as the whole population; above ${FACTS_LIST_ALL_LIMIT} narrow by \`key\` or scope rather than re-requesting all:true. Large results may spill to the result-door scratch cursor; use projection or key for a smaller read. Orthogonal to full:true, which controls body excerpts.`,
+        `Widen one page to ${FACTS_LIST_ALL_LIMIT} rows. This is a page bound, not a census; follow nextCursor until null. Orthogonal to full:true.`,
       ),
+    cursor: z.string().optional().describe('Opaque nextCursor from a previous page of this scope. Omit to restart a live identity-ordered scan.'),
     key: z
       .string()
       .max(200)
@@ -358,6 +359,9 @@ export default defineTool({
       ),
   })),
   async handler(args, ctx) {
+    if (args.cursor !== undefined && (args.key !== undefined || args.versions === true)) {
+      throw new InvalidInputError('facts:list — cursor cannot be combined with key or versions');
+    }
     // EI-7517: default an omitted scopeRef from the caller's context (owner = me,
     // harness = this harness, role = my role) so `facts:list { scope: 'owner' }`
     // lists YOUR facts without having to pass your own id — symmetry with assert.
@@ -472,12 +476,13 @@ export default defineTool({
         },
       };
     }
-    // code-intel-epoch-carry P-005: facts:list is the explicit read, so it shows
-    // code notes; only the general standing-facts folds exclude them (R-9).
-    const facts = await listFacts(
+    // The explicit recovery scan includes code notes and keeps immutable identity
+    // order across updates. A cursor binds the selector, not process-local state.
+    const page = await listFactsPage(
       { scope: args.scope, scopeRef: scopeRef ?? null },
-      { limit: factsListEffectiveLimit(args.limit, args.all === true), includeCodeNotes: true },
+      { limit: factsListEffectiveLimit(args.limit, args.all === true), ...(args.cursor !== undefined ? { cursor: args.cursor } : {}) },
     );
+    const facts = page.facts;
     // EI-10947: flag facts whose source work-item has CLOSED — facts:list is where an
     // agent goes "hunting a stale fact to retract" (see guidance), so this is exactly
     // where the answer belongs. Fail-soft: unmarked on any lookup error.
@@ -540,30 +545,26 @@ export default defineTool({
     } catch {
       // silent — this is a supplementary signal, not a hard dependency of the list read
     }
-    const truncatedByLimit = census.total !== undefined && census.total > rows.length;
+    const truncatedByLimit = page.nextCursor !== null || args.cursor !== undefined ||
+      (census.total !== undefined && census.total > rows.length);
     return {
       data: {
         ok: true,
         count: rows.length,
+        nextCursor: page.nextCursor,
+        ...(page.nextCursor !== null ? { next: { tool: 'facts:list', args: {
+          scope: args.scope, ...(scopeRef ? { scopeRef } : {}), cursor: page.nextCursor,
+          ...(args.full === true ? { full: true } : {}),
+        } } } : {}),
+        scan: 'Live identity order (key, source hive). Follow nextCursor until null; restart without cursor to recover insertions before the cursor.',
         ...census,
         ...(truncatedByLimit
           ? {
               truncatedByLimit: true,
               note_truncated:
-                `Showing ${rows.length} of ${census.total} live facts in this scope — ` +
-                `\`count\` is the PAGE SIZE, not the census. The page is the ${rows.length} most ` +
-                `recently updated. Pass \`key\` to check one specific fact (the read to make ` +
-                `before asserting, so you amend the existing row instead of racing it), or ` +
-                `narrow the scope. ` +
-                ((census.total ?? 0) > FACTS_LIST_ALL_LIMIT
-                  ? `⚠ This scope holds ${census.total} live facts, MORE than the ` +
-                    `${FACTS_LIST_ALL_LIMIT}-row ceiling \`all:true\` can return — so all:true ` +
-                    `would still truncate and is NOT a way to enumerate this population. ` +
-                    `Narrow by \`key\` or scope instead. `
-                  : `To enumerate the complete population, pass \`all:true\`; large ` +
-                    `responses may spill to the result-door scratch cursor. `) +
-                `The ordinary page is capped at ${FACTS_LIST_MAX_LIMIT} to stay inside the ` +
-                `result door.`,
+                `This page contains ${rows.length} facts; the scope census is ${census.total ?? 'unknown'}. ` +
+                '`count` is the PAGE SIZE. Follow nextCursor until null, or use key for an exact fact. ' +
+                `all:true widens only one page to ${FACTS_LIST_ALL_LIMIT} rows.`,
             }
           : {}),
         ...(limitDisclosure ?? {}),

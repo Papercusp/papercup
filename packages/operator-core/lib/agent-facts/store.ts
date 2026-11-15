@@ -434,6 +434,8 @@ export const FACTS_PER_SCOPE_CAP = 5000;
 export const FACTS_VOLATILE_PER_SCOPE_CAP = 125;
 /** Fold budget: max facts per scope-selector in one fold read. */
 export const FACTS_FOLD_LIMIT = 12;
+/** Each retained class has its own brief budget; storage retention is unchanged. */
+export const FACTS_RETAINED_FOLD_LIMIT = 12;
 
 /**
  * P-015 (deterministic-context-carry) dead-end slot key prefix — the canonical
@@ -3348,6 +3350,8 @@ export interface FactFoldCensus {
   total: number;
   /** `total > shown` — the reader is holding a SAMPLE, not a census. */
   truncated: boolean;
+  /** Task-ranked folds reserve independent, bounded slots for retained classes. */
+  retained?: { neverDrop: number; conventions: number; limitPerClass: number };
 }
 
 /**
@@ -3409,10 +3413,11 @@ export async function foldFactsWithCensus(
     .map((path) => `${FACT_FILE_ANCHOR_PREFIX}${path}`))];
   // The validity/audience predicate stays below, BEFORE both ranking and census.
   // Protection changes admission, never the authority or liveness of a fact.
-  const protectedFact = task
-    ? sql`(key LIKE ANY(${NEVER_DROP_KEY_PREFIXES.map((prefix) => `${prefix}%`)})
-           OR (coalesce(kind = 'convention', false) AND measurement->'subjectVolatile' IS DISTINCT FROM 'true'::jsonb))`
-    : sql`false`;
+  const factClass = task
+    ? sql`CASE WHEN key LIKE ANY(${NEVER_DROP_KEY_PREFIXES.map((prefix) => `${prefix}%`)}) THEN 2
+           WHEN coalesce(kind = 'convention', false) AND measurement->'subjectVolatile' IS DISTINCT FROM 'true'::jsonb THEN 1
+           ELSE 0 END`
+    : sql`0`;
   const relevance = task
     ? sql`(CASE WHEN scope = 'work_item' AND scope_ref = ANY(${taskRefs}) THEN 1 ELSE 0 END
            + CASE WHEN source_ref = ANY(${taskSources}) THEN 1 ELSE 0 END
@@ -3430,7 +3435,7 @@ export async function foldFactsWithCensus(
   for (const sel of selectors) {
     const ref = sel.scope === 'workspace' ? '' : (sel.scopeRef ?? '').trim();
     if (sel.scope !== 'workspace' && !ref) continue; // an unset optional dimension folds nothing
-    const rows = await sql<(AgentFactRow & { fold_total: string })[]>`
+    const rows = await sql<(AgentFactRow & { fold_total: string; fold_class: number })[]>`
       WITH eligible AS (
       SELECT id, scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
              -- P-002: settled_by rides the FOLD specifically. An undecidable whose exit
@@ -3447,7 +3452,7 @@ export async function foldFactsWithCensus(
              -- tell a reader that 483 of 495 facts were dropped, and "### Standing
              -- facts" reads as the corpus rather than the newest 12 of it.
              count(*) OVER () AS fold_total,
-             ${protectedFact} AS fold_protected, ${relevance} AS fold_relevance
+             ${factClass} AS fold_class, ${relevance} AS fold_relevance
         FROM harness_shared.agent_facts
        WHERE ${liveFactPredicate(sql, ws, sel.scope, ref, keyPrefixes, audiences, opts.includeCodeNotes)}
          AND ${
@@ -3459,12 +3464,12 @@ export async function foldFactsWithCensus(
              : sql`TRUE`
          }
       ), ranked AS (
-        SELECT *, row_number() OVER (PARTITION BY fold_protected ORDER BY ${order}) AS fold_rank
+        SELECT *, row_number() OVER (PARTITION BY fold_class ORDER BY ${order}) AS fold_rank
           FROM eligible
       )
       SELECT * FROM ranked
-       WHERE ${task ? sql`fold_protected OR fold_rank <= ${limit}` : sql`fold_rank <= ${limit}`}
-       ORDER BY fold_protected DESC, ${order}`;
+       WHERE fold_rank <= CASE WHEN fold_class = 0 THEN ${limit} ELSE ${FACTS_RETAINED_FOLD_LIMIT} END
+       ORDER BY fold_class DESC, ${order}`;
     out.push(...rows.map(rowToFact));
     // No rows ⇒ no window row to read ⇒ the population is genuinely 0, which is
     // the one reading a caller IS entitled to treat as a census.
@@ -3475,6 +3480,13 @@ export async function foldFactsWithCensus(
       shown: rows.length,
       total,
       truncated: total > rows.length,
+      ...(task && rows.some((row) => row.fold_class > 0) ? {
+        retained: {
+          neverDrop: rows.filter((row) => row.fold_class === 2).length,
+          conventions: rows.filter((row) => row.fold_class === 1).length,
+          limitPerClass: FACTS_RETAINED_FOLD_LIMIT,
+        },
+      } : {}),
     });
   }
   return { facts: out, census };
@@ -3683,6 +3695,53 @@ export async function listFacts(
     },
     inject,
   );
+}
+
+/** Explicit recovery pages use immutable identity order, so refreshing a fact
+ * cannot move an unread identity behind the cursor. The opaque cursor binds the
+ * workspace and selector and survives process restarts. Inserts before the cursor
+ * are recovered by restarting the scan without a cursor; this is a live scan,
+ * not a historical snapshot. No source rows are evicted or truncated. */
+export async function listFactsPage(
+  sel: FactSelector,
+  opts: { workspaceId?: string; limit: number; cursor?: string } ,
+  inject?: Sql,
+): Promise<{ facts: AgentFact[]; nextCursor: string | null }> {
+  const sql = sqlOf(inject);
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const ref = sel.scope === 'workspace' ? '' : (sel.scopeRef ?? '').trim();
+  if (!Number.isSafeInteger(opts.limit) || opts.limit < 1) throw new InvalidInputError('facts:list — invalid page limit');
+  if (sel.scope !== 'workspace' && !ref) throw new InvalidInputError('facts:list — scope reference required');
+  let after: { key: string; hive: string } | undefined;
+  if (opts.cursor !== undefined) {
+    try {
+      const value: unknown = JSON.parse(Buffer.from(opts.cursor, 'base64url').toString('utf8'));
+      if (!Array.isArray(value) || value.length !== 6 || value[0] !== 1 || value[1] !== ws ||
+          value[2] !== sel.scope || value[3] !== ref || typeof value[4] !== 'string' || typeof value[5] !== 'string') {
+        throw new Error('cursor selector mismatch');
+      }
+      after = { key: value[4], hive: value[5] };
+    } catch {
+      throw new InvalidInputError('facts:list — invalid cursor or different workspace/scope; restart without cursor');
+    }
+  }
+  const rows = await sql<(AgentFactRow & { source_hive: string | null })[]>`
+    SELECT *, updated_at::text AS updated_at, expires_at::text AS expires_at
+      FROM harness_shared.agent_facts
+     WHERE ${liveFactPredicate(sql, ws, sel.scope, ref, [], 'all', true)}
+       AND ${after
+         ? sql`(key COLLATE "C", coalesce(source_hive, '') COLLATE "C") > (${after.key}, ${after.hive})`
+         : sql`TRUE`}
+     ORDER BY key COLLATE "C", coalesce(source_hive, '') COLLATE "C"
+     LIMIT ${opts.limit + 1}`;
+  const page = rows.slice(0, opts.limit);
+  const last = page.at(-1);
+  return {
+    facts: page.map(rowToFact),
+    nextCursor: rows.length > opts.limit && last
+      ? Buffer.from(JSON.stringify([1, ws, sel.scope, ref, last.key, last.source_hive ?? ''])).toString('base64url')
+      : null,
+  };
 }
 
 /** Default lookback window for {@link listFactEvictionDisclosures}. Bounded so the

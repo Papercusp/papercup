@@ -37,12 +37,13 @@ import type { AgentFact } from '../../agent-facts/store';
 
 const listFactsSpy = vi.hoisted(() => vi.fn<() => Promise<AgentFact[]>>());
 const countLiveFactsSpy = vi.hoisted(() => vi.fn<() => Promise<number>>());
+const listFactsPageSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../agent-facts/store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../agent-facts/store')>();
   // Spread the real module: the tool also imports FACT_SCOPES / isPermanentFactExpiry
   // from here, and the shaping under test should run against the real helpers.
-  return { ...actual, listFacts: listFactsSpy, countLiveFacts: countLiveFactsSpy };
+  return { ...actual, listFactsPage: listFactsPageSpy, countLiveFacts: countLiveFactsSpy };
 });
 // EI-10947 annotator: pure pass-through here so the shaping is what is measured.
 vi.mock('./stale-source', () => ({ markStaleSourceFacts: async (f: AgentFact[]) => f }));
@@ -83,6 +84,10 @@ async function listWorkspace(args: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   listFactsSpy.mockReset();
+  listFactsPageSpy.mockReset();
+  listFactsPageSpy.mockImplementation(async (...args: unknown[]) => ({
+    facts: await (listFactsSpy as (...args: unknown[]) => Promise<AgentFact[]>)(...args), nextCursor: null,
+  }));
   countLiveFactsSpy.mockReset();
 });
 
@@ -131,7 +136,7 @@ describe('facts:list distinguishes the page from the census (WI-38910)', () => {
       { scope: 'workspace', scopeRef: null },
       // facts:list is an EXPLICIT read, so it includes `code-note:*` facts that
       // the ambient fold excludes (code-intel-epoch-carry P-005).
-      { limit: FACTS_LIST_ALL_LIMIT, includeCodeNotes: true },
+      { limit: FACTS_LIST_ALL_LIMIT },
     );
   });
 
@@ -194,15 +199,15 @@ describe('facts:list distinguishes the page from the census (WI-38910)', () => {
     const note = String(data.note_truncated ?? '');
 
     expect(data.truncatedByLimit).toBe(true);
-    // It must say the population outruns the ceiling, naming both numbers.
+    // Widening a single page never replaces a continuation.
     expect(note).toContain('513');
     expect(note).toContain(String(FACTS_LIST_ALL_LIMIT));
-    expect(note).toContain('NOT a way to enumerate');
+    expect(note).toContain('Follow nextCursor until null');
     // ...and must NOT send the caller back to the remedy that just failed.
     expect(note).not.toContain('To enumerate the complete population');
   });
 
-  it('still offers all:true when the whole scope genuinely fits inside it', async () => {
+  it('offers the same cursor recovery when the scope fits inside a wider page', async () => {
     listFactsSpy.mockResolvedValue(page(4));
     countLiveFactsSpy.mockResolvedValue(FACTS_LIST_ALL_LIMIT - 1);
 
@@ -210,7 +215,38 @@ describe('facts:list distinguishes the page from the census (WI-38910)', () => {
     const note = String(data.note_truncated ?? '');
 
     expect(data.truncatedByLimit).toBe(true);
-    expect(note).toContain('To enumerate the complete population');
+    expect(note).toContain('Follow nextCursor until null');
     expect(note).not.toContain('NOT a way to enumerate');
+  });
+
+  it.each([FACTS_LIST_MAX_LIMIT - 1, FACTS_LIST_MAX_LIMIT, FACTS_LIST_MAX_LIMIT + 1, FACTS_LIST_MAX_LIMIT * 7 + 1])(
+    'a facts:list consumer recovers %i rows by following the returned call', async (count) => {
+      const population = page(count);
+      countLiveFactsSpy.mockResolvedValue(count);
+      listFactsPageSpy.mockImplementation(async (_selector: unknown, opts: { limit: number; cursor?: string }) => {
+        const offset = Number(opts.cursor ?? 0);
+        return { facts: population.slice(offset, offset + opts.limit),
+          nextCursor: offset + opts.limit < count ? String(offset + opts.limit) : null };
+      });
+      const recovered: string[] = [];
+      let args: Record<string, unknown> = {};
+      for (;;) {
+        const data = await listWorkspace(args);
+        recovered.push(...(data.facts as Array<{ key: string }>).map((fact) => fact.key));
+        expect(Number(data.count)).toBeLessThanOrEqual(FACTS_LIST_MAX_LIMIT);
+        if (data.nextCursor === null) break;
+        const next = data.next as { tool: string; args: Record<string, unknown> };
+        expect(next.tool).toBe('facts:list');
+        expect(next.args.cursor).toBe(data.nextCursor);
+        args = JSON.parse(JSON.stringify(next.args));
+      }
+      expect(recovered).toEqual(population.map((fact) => fact.key));
+    },
+  );
+
+  it('rejects combining a continuation with an exact-key or history read', async () => {
+    await expect(listWorkspace({ cursor: 'opaque', key: 'k-1' })).rejects.toThrow('cannot be combined');
+    await expect(listWorkspace({ cursor: 'opaque', versions: true })).rejects.toThrow('cannot be combined');
+    expect(listFactsPageSpy).not.toHaveBeenCalled();
   });
 });

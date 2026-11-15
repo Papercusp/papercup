@@ -539,7 +539,10 @@ export interface OrientResult {
    *  `factsTruncated` alone reads as "24 exist", against a true population of 861. */
   factsFoldTruncated?: {
     limitPerSelector: number;
-    scopes: Array<{ scope: string; scopeRef: string | null; shown: number; total: number }>;
+    retainedLimitPerClass?: number;
+    scopes: Array<{ scope: string; scopeRef: string | null; shown: number; total: number; omitted: number;
+      retained?: { neverDrop: number; conventions: number; limitPerClass: number };
+      recovery: { tool: 'facts:list'; args: { scope: string; scopeRef?: string; full: true } } }>;
     reason: string;
   };
   /** EI-19485000346355077: present iff one of this fold's selectors (workspace /
@@ -1927,6 +1930,7 @@ export async function composeOrient(
         NEVER_DROP_KEY_PREFIXES,
         listFactEvictionDisclosures,
         FACTS_FOLD_LIMIT,
+        FACTS_RETAINED_FOLD_LIMIT,
       } = await import('../../../agent-facts/store');
       // Reuse the already-read, self-marked assignment. Trimmed assignments
       // render `doing` as "<id> <title>"; full assignments retain its object.
@@ -1993,17 +1997,23 @@ export async function composeOrient(
       if (truncatedScopes.length > 0) {
         result.factsFoldTruncated = {
           limitPerSelector: FACTS_FOLD_LIMIT,
+          retainedLimitPerClass: FACTS_RETAINED_FOLD_LIMIT,
           scopes: truncatedScopes.map((c) => ({
             scope: c.scope,
             scopeRef: c.scopeRef,
             shown: c.shown,
             total: c.total,
+            omitted: c.total - c.shown,
+            ...(c.retained ? { retained: c.retained } : {}),
+            recovery: { tool: 'facts:list' as const, args: {
+              scope: c.scope, ...(c.scopeRef ? { scopeRef: c.scopeRef } : {}), full: true as const,
+            } },
           })),
           reason:
             (taskContext
-              ? 'The facts fold ranks ordinary facts by declared task/file scope and provenance before applying the per-selector ordinary limit; live never-drop facts and durable conventions are retained separately. '
+              ? 'The facts fold ranks by declared task/file scope and provenance. Ordinary facts, never-drop facts and durable conventions each have independent per-selector bounds. '
               : 'The facts fold returns the most-recently-updated facts per scope, capped per selector. ') +
-            'These scopes hold more than were returned, so `facts` is a SAMPLE, not a census. Absence here is not evidence a fact was never asserted. Read a scope in full with facts:list { scope, scopeRef }, which reports its own total.',
+            'These scopes hold more than were returned, so `facts` is a SAMPLE, not a census. Absence is not evidence a fact was never asserted. Use each recovery call and follow facts:list nextCursor until null; omit cursor to restart the live scan.',
         };
       }
       // P-002 / D-001: withhold queen-loop steering facts (pauseNewWork/maxBees) from

@@ -62,6 +62,12 @@ export function committedWorkRootDependencyDonor(workRoot: any, { sourceObjects,
     workspaceDirs?: never[] | undefined;
 }): string;
 /**
+ * Check the existing lexical containment rule before copying dependency bytes.
+ * @param {string} sourceRoot
+ * @param {string[]} paths
+ */
+export function preflightIndependentDependencyLinks(sourceRoot: string, paths: string[]): void;
+/**
  * Prefer an exact-input immutable generation, leased across materialization.
  * This permits independent CoW snapshots on the temporary filesystem even when
  * the mutable install is on another device. Small/unpublished installs retain

@@ -382,6 +382,31 @@ export function committedWorkRootDependencyDonor(workRoot, { sourceObjects = fal
   return root;
 }
 
+function independentDependencyRelativeTarget(sourceRoot, path, target) {
+  const rel = relative(sourceRoot, target);
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new Error(`dependency symlink escapes its snapshot: ${relative(sourceRoot, path)}`);
+  }
+  return rel;
+}
+
+/**
+ * Check the existing lexical containment rule before copying dependency bytes.
+ * @param {string} sourceRoot
+ * @param {string[]} paths
+ */
+export function preflightIndependentDependencyLinks(sourceRoot, paths) {
+  const visit = directory => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isSymbolicLink()) {
+        independentDependencyRelativeTarget(sourceRoot, path, resolve(dirname(path), readlinkSync(path)));
+      } else if (entry.isDirectory()) visit(path);
+    }
+  };
+  for (const path of paths) visit(join(sourceRoot, path));
+}
+
 /**
  * Prefer an exact-input immutable generation, leased across materialization.
  * This permits independent CoW snapshots on the temporary filesystem even when
@@ -446,10 +471,7 @@ export async function materializeIndependentDependencies(repoRoot, workRoot, opt
           const target = alreadyMapped && (linkedTarget === workRoot || linkedTarget.startsWith(workRoot + sep))
             ? join(sourceRoot, relative(workRoot, linkedTarget)) : linkedTarget;
           const mapped = cloneWorkspaceTarget(target, sourceRoot, workRoot);
-          const rel = relative(sourceRoot, target);
-          if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-            throw new Error(`dependency symlink escapes its snapshot: ${relative(workRoot, path)}`);
-          }
+          const rel = independentDependencyRelativeTarget(sourceRoot, original, target);
           if (mapped) {
             if (!existsSync(join(mapped, 'package.json'))) {
               throw new Error(`dependency workspace is absent at the committed ref: ${rel}`);
@@ -508,7 +530,8 @@ else
   fi
   sources="$(dependency_generation_enumerate_node_modules "$2")"
 fi
-printf '%s\\n' "$source_root"
+copy_sources=()
+copy_paths=()
 while IFS= read -r source; do
   [ -n "$source" ] || continue
   if [ "$4" = generation ]; then
@@ -527,12 +550,21 @@ while IFS= read -r source; do
   fi
   [ -d "$3/$(dirname "$rel")" ] || continue
   [ ! -L "$source" ] || { echo "dependency root must be physical: $source" >&2; exit 1; }
+  copy_sources+=("$source")
+  copy_paths+=("$rel")
+done <<< "$sources"
+"$LINT_AS_COMMITTED_NODE" --input-type=module -e "$LINT_AS_COMMITTED_LINK_PREFLIGHT" \\
+  "$source_root" "$(printf '%s\\n' "\${copy_paths[@]}")"
+printf '%s\\n' "$source_root"
+for index in "\${!copy_sources[@]}"; do
+  source="\${copy_sources[$index]}"
+  rel="\${copy_paths[$index]}"
   copy_started=$SECONDS
   printf 'COMMITTED_DEPENDENCY_COPY state=started mode=%s path=%q\\n' "$4" "$rel" >&2
   dependency_generation_materialize_tree "$source" "$3/$rel" verifier
   printf 'COMMITTED_DEPENDENCY_COPY state=complete mode=%s path=%q elapsedSec=%s\\n' "$4" "$rel" "$((SECONDS - copy_started))" >&2
   printf '%s\\n' "$rel"
-done <<< "$sources"
+done
 if [ "$4" = donor ] && [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then
   [ "$(dependency_generation_verification_input_fingerprint "$2")" = "$expected_inputs" ] &&
     [ "$(dependency_generation_verification_input_fingerprint "$3")" = "$expected_inputs" ] || {
@@ -540,13 +572,20 @@ if [ "$4" = donor ] && [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then
     }
 fi
 `, 'committed-dependencies', materializer, donor, workRoot, useGeneration ? 'generation' : 'donor', ...workspaceDirs], {
-      encoding: 'utf8', env: { ...environment, DEPENDENCY_GENERATION_ALLOW_HARDLINK: '0' },
+      encoding: 'utf8', env: { ...environment, DEPENDENCY_GENERATION_ALLOW_HARDLINK: '0',
+        LINT_AS_COMMITTED_NODE: process.execPath,
+        LINT_AS_COMMITTED_LINK_PREFLIGHT: 'import { preflightIndependentDependencyLinks } from ' + JSON.stringify(import.meta.url) + ';'
+          + 'try { preflightIndependentDependencyLinks(process.argv[1], process.argv[2].split("\\n").filter(Boolean)); }'
+          + 'catch (error) { console.log("COMMITTED_DEPENDENCY_PREFLIGHT_ERROR " + JSON.stringify(error.message)); process.exitCode = 74; }',
+      },
       stdio: ['ignore', 'pipe', 'inherit'],
     });
     // Only an absent exact-input selector is a miss. Corruption or lease failure
     // must not silently fall back to mutable dependencies.
     if (useGeneration && result.status === 75 && !result.error) return null;
     if (result.error || result.status !== 0) {
+      const preflightError = result.stdout?.split('\n').find(line => line.startsWith('COMMITTED_DEPENDENCY_PREFLIGHT_ERROR '));
+      if (preflightError) throw new Error(JSON.parse(preflightError.slice('COMMITTED_DEPENDENCY_PREFLIGHT_ERROR '.length)));
       throw new Error(`independent dependency materialization failed (${result.error?.message ?? `exit ${result.status}, signal ${result.signal}`})`);
     }
     const [sourceRoot, ...paths] = (result.stdout ?? '').trim().split('\n').filter(Boolean);

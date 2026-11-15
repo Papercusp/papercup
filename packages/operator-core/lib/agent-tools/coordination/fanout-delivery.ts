@@ -102,9 +102,14 @@ export async function deliverInject(
   sub: ResolvedSubscriber,
   ev: InjectEvent,
   sink: InjectSink = coordLog,
+  isLive?: DeliveryLivenessGuard,
 ): Promise<boolean> {
   if (!shouldDeliver(sub.delivery_mode, ev, sub.subscriber_id)) return false;
   try {
+    // P-002 / R-8: the subscriber was resolved earlier; its context may have
+    // ended since. Re-check right before the write so a subscription cancelled
+    // in that window is never delivered to. A failed check is not delivery.
+    if (isLive && !(await isLive(sub))) return false;
     await sink.appendLine('messages', sub.subscriber_id, buildInjectEnvelope(sub, ev));
     return true;
   } catch {
@@ -112,15 +117,19 @@ export async function deliverInject(
   }
 }
 
+/** Delivery-time liveness re-check for one resolved subscriber (P-002 / R-8). */
+export type DeliveryLivenessGuard = (sub: ResolvedSubscriber) => Promise<boolean>;
+
 /** Fan one event out to many resolved subscribers. Returns the count delivered. */
 export async function deliverInjectMany(
   subscribers: ResolvedSubscriber[],
   ev: InjectEvent,
   sink: InjectSink = coordLog,
+  isLive?: DeliveryLivenessGuard,
 ): Promise<number> {
   let n = 0;
   for (const sub of subscribers) {
-    if (await deliverInject(sub, ev, sink)) n += 1;
+    if (await deliverInject(sub, ev, sink, isLive)) n += 1;
   }
   return n;
 }

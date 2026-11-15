@@ -3831,6 +3831,25 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
   // ── P-007 (coord-authority-hardening): facts fold — recipient audience filter
   // + provenance-hydrated src projection ──
   describe('P-007 facts fold: audience filter + provenance-hydrated src', () => {
+    it('after compaction discloses retained-class bounds and an executable scope recovery call', async () => {
+      const { FACTS_FOLD_LIMIT, FACTS_RETAINED_FOLD_LIMIT } = await import('../../../agent-facts/store');
+      foldFactsWithCensusMock.mockResolvedValueOnce({ facts: [], census: [{
+        scope: 'workspace', scopeRef: null, shown: 3 * FACTS_FOLD_LIMIT,
+        total: 3 * (FACTS_FOLD_LIMIT + 1), truncated: true,
+        retained: { neverDrop: FACTS_RETAINED_FOLD_LIMIT, conventions: FACTS_RETAINED_FOLD_LIMIT,
+          limitPerClass: FACTS_RETAINED_FOLD_LIMIT },
+      }] });
+      const { call } = fakeCall({ ...CORE });
+      const result = await composeOrient({ afterCompaction: true, currentFiles: ['lib/a.ts'] }, call, 'me');
+      expect(result.factsFoldTruncated).toMatchObject({
+        limitPerSelector: FACTS_FOLD_LIMIT, retainedLimitPerClass: FACTS_RETAINED_FOLD_LIMIT,
+        scopes: [{ scope: 'workspace', omitted: 3, retained: {
+          neverDrop: FACTS_RETAINED_FOLD_LIMIT, conventions: FACTS_RETAINED_FOLD_LIMIT,
+        }, recovery: { tool: 'facts:list', args: { scope: 'workspace', full: true } } }],
+      });
+      expect(result.factsFoldTruncated?.reason).toContain('nextCursor until null');
+    });
+
     const FLEET_CTX = {
       'coord:whoami': () => ({ fleetSlug: 'backend' }),
       'coord:catch-up': () => ({ total: 0, rows: [] }),
