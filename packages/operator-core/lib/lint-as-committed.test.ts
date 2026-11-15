@@ -2526,7 +2526,7 @@ console.log('WRITER_RELEASED elapsedMs=' + (performance.now() - startedAt));`;
   }, 60_000);
 
   it.each(['valid', 'corrupt-selector', 'different-bytes'] as const)
-    ('resumes against a leased exact-input generation without source lockfiles (%s)', async variant => {
+    ('resumes against a leased exact-input generation without source lockfiles using its supplied environment (%s)', async variant => {
       const f = retainedFixture();
       const helper = join(repoRoot, 'apps/operator/bin/release/dependency-generation.sh');
       const store = join(f.parent, 'generations');
@@ -2571,14 +2571,17 @@ console.log('WRITER_RELEASED elapsedMs=' + (performance.now() - startedAt));`;
         const generation = join(store, identity);
         expect(existsSync(join(generation, 'tree/package.json'))).toBe(false);
         expect(existsSync(join(generation, 'tree/package-lock.json'))).toBe(false);
-        process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = store;
+        // The caller's resolved store must survive a different process default,
+        // including when verification resumes without copying dependencies.
+        process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = join(f.parent, 'unselected-generations');
         // No mutable install may supply the comparison after publication.
         rmSync(join(f.root, 'node_modules'), { recursive: true });
         const retained = join(f.workRoot, 'node_modules/payload/alpha.txt');
         const inode = statSync(retained).ino;
-        const options = (maxBatches = 64) => ({ resumeVerification: {
-          ...f.options(maxBatches).resumeVerification, generation: true,
-        } });
+        const options = (maxBatches = 64) => ({
+          environment: { ...process.env, PAPERCUSP_DEPENDENCY_GENERATION_ROOT: store },
+          resumeVerification: { ...f.options(maxBatches).resumeVerification, generation: true },
+        });
         const leases = () => existsSync(join(store, '.leases')) ? readdirSync(join(store, '.leases')) : [];
         if (variant === 'corrupt-selector') {
           const selector = join(store, '.inputs', readdirSync(join(store, '.inputs'))[0]);
