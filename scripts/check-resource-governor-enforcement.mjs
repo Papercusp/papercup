@@ -2504,24 +2504,6 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     },
   },
   {
-    path: "scripts/bench-work-items-get.ts",
-    code: "resource-start-outside-admission",
-    disposition: "bypass",
-    reason:
-      "P-016 reviewed bypass disposition for scripts/bench-work-items-get.ts: this one-shot staging cohort measures attributed mcp-call startup and authoritative summary reads. It accepts 1–10 item ids and 1–10 repeats, executes calls sequentially (at most 100), and bounds each child to 35s and 1MiB output; it creates no independently managed serving capacity.",
-    matchesSource: (source) => {
-      const code = stripCommentsAndStrings(source);
-      return resourceStartCallCount(source) === 0 &&
-        source.includes("let execMemo: typeof execFile.__promisify__ | null = null;") &&
-        source.includes("const exec = ((...args: unknown[]) =>") &&
-        source.includes("Reflect.apply((execMemo ??= promisify(execFile)), undefined, args)") &&
-        [...code.matchAll(/(?<![\w$.])exec\s*\(/g)].length === 1 &&
-        source.includes("timeout: 35_000, maxBuffer: 1024 * 1024") &&
-        source.includes("input.ids.length > 10") && source.includes("input.repeats > 10") &&
-        source.includes("if (port !== '3170')");
-    },
-  },
-  {
     path: "scripts/lib/git-index-fault.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",
@@ -2706,25 +2688,6 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       source.includes("clearTimeout(timer);"),
   },
   {
-    path: "scripts/lib/verify-tauri-native-env.mjs",
-    code: "resource-start-outside-admission",
-    disposition: "bypass",
-    reason:
-      "P-016 reviewed bypass disposition for verify-tauri-native-env.mjs: its two synchronous Git source-pin reads each have a 30-second deadline and 16 KiB output cap; the census preflight is bounded at 120 seconds, and the exact-checkout TypeScript verifier service and command have startup/stop deadlines plus a 120-second checker timeout and 8 MiB output cap.",
-    matchesSource: (source) => resourceStartCallCount(source) === 5 &&
-      source.includes("execFileSync('git', ['rev-parse', env.VERIFY_TAURI_SOURCE_REF || 'HEAD']") &&
-      source.includes("cwd: repoRoot, encoding: 'utf8', timeout: 30_000, maxBuffer: 16_384,") &&
-      source.includes("execFileSync('git', ['rev-parse', 'HEAD']") &&
-      source.includes("cwd: source, encoding: 'utf8', timeout: 30_000, maxBuffer: 16_384,") &&
-      source.includes("preflightNativeVerifier(repoRoot, env, spawn = spawnSync)") &&
-      source.includes("timeout: 120_000, maxBuffer: 1024 * 1024") &&
-      source.includes("const child = spawn(process.execPath, [join(root, 'scripts/tsc-service/server.mjs')],") &&
-      source.includes("Native TypeScript service startup timed out") &&
-      source.includes("setTimeout(() => child.kill('SIGKILL'), 10_000)") &&
-      source.includes("timeout: 120_000, maxBuffer: 8 * 1024 * 1024") &&
-      source.includes("await child;"),
-  },
-  {
     path: "scripts/lib/workspace-host-gcs-publication.mjs",
     code: "resource-start-outside-admission",
     disposition: "upstream",
@@ -2905,6 +2868,21 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
 // P-016 reviewed provenance also enter the P-016 exact-lane census.
 const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
   {
+    path: "packages/operator-core/lib/agent-tools/plans/evidence-measurement-pin.ts",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "parentPublicationPending returns a call-local result over the finite measured repository population. It starts no work and retains nothing after return. The source pin requires the complete sorted return and sole queue-shaped write; another queue writer invalidates this disposition.",
+    matchesSource: (source) => {
+      const writers = [...stripCommentsAndStrings(source).matchAll(RESIDENT_QUEUE)];
+      return writers.length === 1 && writers[0][1] === "pending" &&
+        source.includes("export function parentPublicationPending(") &&
+        source.includes("const pending: ParentPublicationPending[] = [];") &&
+        source.includes("for (const repo of pin.repos)") &&
+        source.includes("return pending.sort((a, b) =>");
+    },
+  },
+  {
     path: "packages/operator-core/lib/llm-testing/tool-delivery-clean-cohort.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",
@@ -3030,45 +3008,6 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
     },
   },
   {
-    path: "packages/operator-core/lib/agent-tools/capability/__fixtures__/managed-api-client.mts",
-    code: "resource-start-outside-admission",
-    disposition: "bypass",
-    reason:
-      "P-014 reviewed parent-owned test-process start. The canonical managed-capability integration file runs under test-files' runGovernedTestFileProcess/runGovernedTestProcess receipt and passes its admission environment through with-test-pg into this test-only fixture. The fixture starts one non-detached private operator host, waits for readiness, then observes its exact process identity gone and closes its loopback page server in teardown before the admitted file worker exits. This adds no independent serving service or resident queue; its lifecycle is covered by the parent test-file admission.",
-    matchesSource: (source) => {
-      const code = stripCommentsAndStrings(source);
-      const caller = readFileSync(new URL("../packages/operator-core/lib/agent-tools/capability/managed-capability-api.integration.test.ts", import.meta.url), "utf8");
-      const testRunner = readFileSync(new URL("./test-files.mjs", import.meta.url), "utf8");
-      const pgWrapper = readFileSync(new URL("./with-test-pg.mjs", import.meta.url), "utf8");
-      const privateHostEnv = readFileSync(new URL("../packages/operator-core/test/private-http-workspace-preflight.ts", import.meta.url), "utf8");
-      const governedRunner = readFileSync(new URL("./lib/governed-test-process.mjs", import.meta.url), "utf8");
-      return resourceStartCallCount(source) === 1 &&
-        source.includes("assert(workspace?.startsWith('test-runtime-'), 'Disposable runtime identity required')") &&
-        source.includes("assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '0');") &&
-        source.includes("assert.equal(process.env.PAPERCUSP_DBOS_ROUTINES, '0');") &&
-        source.includes("const host = spawn(process.execPath, [bundle], { env: hostEnv, stdio: ['ignore', 'pipe', 'pipe'] });") &&
-        source.includes("const health = await waitForPrivateOperator({ host, base, evidenceDir, environment: hostEnv, hostIdentity,") &&
-        source.includes("try { await stopPrivateOperatorHost(host); } catch (cleanupError) { cleanupErrors.push(cleanupError); }") &&
-        source.includes("'Managed API source identity failed and early cleanup was incomplete');") &&
-        source.includes("async () => { await stopPrivateOperatorHost(host);") &&
-        source.includes("pageServer.close(() => resolve())") &&
-        source.includes("await finishManagedApiTeardown({ hasProof: !!proof, rowCount: rows.length, cleanupErrors, close: [") &&
-        !/\bdetached\s*:\s*true/.test(code) &&
-        !hasCalledResourceStartAlias(code) &&
-        caller.includes("filePath: 'packages/operator-core/lib/agent-tools/capability/managed-capability-api.integration.test.ts'") &&
-        caller.includes("'packages/operator-core/lib/agent-tools/capability/__fixtures__/managed-api-client.mts'") &&
-        caller.includes("resolve(__dirname, '__fixtures__/managed-api-client.mts')") &&
-        caller.includes("captureIsolatedWorker(child, evidenceDir, isolatedTestFileWorkerOptions(childEnv, 1))") &&
-        testRunner.includes("return runGovernedTestFileProcess(governedProcessImpl, governedOptions, runChild") &&
-        testRunner.includes("const childEnv = startupTraceEnv(governedEnv ?? env);") &&
-        testRunner.includes("env: childEnv,") &&
-        testRunner.includes("child.once('close', (status, signal) => {") &&
-        pgWrapper.includes("...childEnv,") &&
-        privateHostEnv.includes("return { ...env, NODE_OPTIONS: kept.join(' ') }") &&
-        governedRunner.includes("return await api.runGovernedOperation(operation, (context) => {");
-    },
-  },
-  {
     path: "packages/operator-core/lib/agent-tools/plans/tree-instruments.ts",
     code: "unbounded-resident-queue",
     disposition: "semantic",
@@ -3098,14 +3037,14 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
     reason:
       "The pending Map correlates unfinished strace records by thread while parsing one already-retained trace string. Duplicate starts, unmatched resumes, and leftovers fail closed; the map is discarded when this parser returns and starts no work.",
     matchesSource: (source) => {
-      const start = source.indexOf("export function bindRuntimeModelOpens(");
+      const start = source.indexOf("function parseRuntimeFileTrace(text)");
       if (start < 0) return false;
       const nextExport = source.indexOf("\nexport function ", start + 1);
       const section = source.slice(start, nextExport < 0 ? source.length : nextExport);
-      const code = stripCommentsAndStrings(section, "runtime-file-opens.mjs");
+      const code = stripCommentsAndStrings(source, "runtime-file-opens.mjs");
       const writers = [...code.matchAll(RESIDENT_QUEUE)];
       return section.includes("const pending = new Map(), lines = [], edges = [];") &&
-        section.includes("pending.set(tid, { call: call.slice(0, -16), atMs });") &&
+        section.includes("pending.set(tid, {call:call.slice(0, -16), startedAtNs, startPrecision});") &&
         section.includes("pending.delete(tid);") &&
         section.includes("if (pending.size) throw new Error('incomplete strace capture');") &&
         writers.length === 1 && writers[0][1] === "pending";
@@ -3119,18 +3058,18 @@ const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
       "Each worker's pending Map is protocol-response correlation for the bounded enable/breakpoint/resume handshake. Responses and transport errors delete entries; source capture holds the worker paused until reads settle, and the process terminal receipt exposes any leftover request. This diagnostic census does not queue independent resident work.",
     matchesSource: (source) => {
       const start = source.indexOf("export function startRuntimeSourceCapture(");
-      const end = source.indexOf("\nif (process.env.PAPERCUSP_RUNTIME_SOURCE_CAPTURE)", start);
+      const end = source.indexOf("\nif (isMainThread && process.env.PAPERCUSP_RUNTIME_SOURCE_CAPTURE)", start);
       if (start < 0 || end < 0) return false;
       const section = source.slice(start, end);
-      const code = stripCommentsAndStrings(section, "runtime-source-capture.mjs");
+      const code = stripCommentsAndStrings(source, "runtime-source-capture.mjs");
       const writers = [...code.matchAll(RESIDENT_QUEUE)];
       return section.includes("pending: new Map(), nextId: 0, live: true") &&
-        section.includes("target.pending.set(requestId, callback);") &&
+        section.includes("target.pending.set(requestId, { method, callback });") &&
         section.includes("child.pending.get(message.id)") &&
         section.includes("child.pending.delete(message.id);") &&
         section.includes("target.pending.delete(requestId)") &&
         section.includes("target.sourcePending = (target.sourcePending ?? 0) + 1;") &&
-        section.includes("if (!target.paused || target.sourcePending || !target.live) return;") &&
+        section.includes("if (!target.paused || target.sourcePending || !target.live || target.waitingForDisconnect) return;") &&
         section.includes("target.pending.size + (target.sourcePending ?? 0)") &&
         writers.length === 1 && writers[0][1] === "target.pending";
     },

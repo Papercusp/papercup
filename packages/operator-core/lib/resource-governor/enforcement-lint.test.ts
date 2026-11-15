@@ -112,6 +112,34 @@ describe('resource governor enforcement lint', () => {
     ).not.toContain('resource-start-outside-admission');
   });
 
+  it.each([
+    ['packages/operator-core/lib/agent-tools/plans/evidence-measurement-pin.ts', 'return pending.sort', 'return [...pending].sort'],
+    ['packages/operator-core/lib/memory/bench/runtime-file-opens.mjs', 'pending.delete(tid);', 'void tid;'],
+    ['packages/operator-core/lib/memory/bench/runtime-source-capture.mjs', 'child.pending.delete(message.id);', 'void message.id;'],
+  ])('pins finite publication and capture state without exempting a new queue: %s', (path, lifecycle, replacement) => {
+    const source = readFileSync(ROOT + path, 'utf8');
+    const finding = `${path}:unbounded-resident-queue`;
+    expect(inspectGovernorSource(source), path).toContain('unbounded-resident-queue');
+    expect(scanInventory([[path, source]], { validateRegistry: true }), path).toEqual([]);
+    expect(source, path).toContain(lifecycle);
+    expect(scanInventory([[path, source.replace(lifecycle, replacement)]]), path)
+      .toContain(finding);
+    expect(scanInventory([[path, source + '\npendingQueue.push(work);']]), path)
+      .toContain(finding);
+  });
+
+  it('pins the bounded runtime page-size probe without exempting another process start', () => {
+    const path = 'packages/operator-core/lib/memory/bench/runtime-file-opens.mjs';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const finding = `${path}:resource-start-outside-admission`;
+    expect(scanInventory([[path, source]], { validateRegistry: true })).toEqual([]);
+    expect(source).toContain('timeout:5000');
+    expect(scanInventory([[path, source.replace('timeout:5000', 'timeout:0')]]))
+      .toContain(finding);
+    expect(scanInventory([[path, source + '\nspawn("worker", []);']]))
+      .toContain(finding);
+  });
+
   it('does not treat record-proxy request-limit admit as governor admission or a resource start', () => {
     const path = 'scripts/agent-capacity/record-proxy.ts';
     const source = readFileSync(ROOT + path, 'utf8');
@@ -608,7 +636,6 @@ describe('resource governor enforcement lint', () => {
       ['scripts/lib/runtime-compatibility-census.mjs', 'resource-start-outside-admission', true],
       ['scripts/lib/runtime-compatibility-probes.mjs', 'resource-start-outside-admission', true],
       ['scripts/lib/runtime-compatibility.mjs', 'resource-start-outside-admission', true],
-      ['scripts/lib/verify-tauri-native-env.mjs', 'resource-start-outside-admission', true],
       ['scripts/lib/workspace-host-gcs-publication.mjs', 'resource-start-outside-admission', true],
       ['scripts/verify-engineering-evidence-release.mjs', 'resource-start-outside-admission', true],
       ['scripts/verify-engineering-evidence-tauri.mjs', 'resource-start-outside-admission', true],
@@ -630,8 +657,6 @@ describe('resource governor enforcement lint', () => {
       ['scripts/check-code-health.ts', 'timeout: 30_000'],
       ['scripts/check-new-clones.mts', 'timeout: 30_000'],
       ['scripts/lib/runtime-compatibility-census.mjs', 'timeout: 120_000'],
-      ['scripts/lib/verify-tauri-native-env.mjs', "cwd: repoRoot, encoding: 'utf8', timeout: 30_000, maxBuffer: 16_384"],
-      ['scripts/lib/verify-tauri-native-env.mjs', "cwd: source, encoding: 'utf8', timeout: 30_000, maxBuffer: 16_384"],
       ['scripts/verify-fleet-capacity-recovery.mts', 'timeout: 30_000'],
     ];
     for (const [path, timeoutPin] of timeoutPins) {
