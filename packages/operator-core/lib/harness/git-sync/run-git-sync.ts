@@ -3461,15 +3461,28 @@ async function recoverIndexLockContention(
 
 type GitRefLockName = `refs/heads/${string}.lock` | `refs/remotes/${string}.lock`;
 
+/** Per-worktree locks of a LINKED worktree, addressed from the common directory
+ * (`$commondir/worktrees/<name>/…`). A process killed inside a sibling worktree
+ * strands these where no command run in this checkout ever meets them
+ * (WI-6554700010049067). */
+type GitWorktreeLockName = `worktrees/${string}/HEAD.lock` | `worktrees/${string}/index.lock`;
+
 type GitMetadataLockName = 'config.lock' | 'shallow.lock' | 'objects/maintenance.lock' | 'HEAD.lock'
   | 'packed-refs.lock' | 'gc.pid.lock' | 'gc.log.lock'
-  | GitRefLockName;
+  | GitRefLockName | GitWorktreeLockName;
 
 /** Repository-wide locks: they live in the COMMON directory, which differs from
- * the git dir inside a linked worktree (refs, packed-refs, gc bookkeeping). */
+ * the git dir inside a linked worktree (refs, packed-refs, gc bookkeeping, and
+ * linked worktrees' own per-worktree directories). */
 function metadataLockUsesCommonDir(lockName: string): boolean {
-  return lockName.startsWith('refs/') || lockName === 'packed-refs.lock'
+  return lockName.startsWith('refs/') || lockName.startsWith('worktrees/') || lockName === 'packed-refs.lock'
     || lockName === 'gc.pid.lock' || lockName === 'gc.log.lock';
+}
+
+/** `worktrees/<name>/{HEAD,index}.lock` with a single, non-traversing name component. */
+function isWorktreeLockName(lockName: string): boolean {
+  const m = /^worktrees\/([^/\\\0]+)\/(?:HEAD|index)\.lock$/.exec(lockName);
+  return m !== null && m[1] !== '.' && m[1] !== '..';
 }
 
 interface ClearStaleConfigLockDeps {
@@ -3509,6 +3522,7 @@ export async function clearStaleHolderlessEmptyGitLock(
       || /[\\\0]/.test(lockName) || ref.split('/').some((part) => !part || part === '.' || part === '..')) return false;
     if ((await runGit(['check-ref-format', ref], repoPath)).code !== 0) return false;
   }
+  if (lockName.startsWith('worktrees/') && !isWorktreeLockName(lockName)) return false;
   // Refs, packed-refs and gc bookkeeping live in the common directory,
   // including in a Git worktree.
   const gd = await runGit(metadataLockUsesCommonDir(lockName)
@@ -3616,12 +3630,27 @@ interface GitLockDirent {
   isFile(): boolean;
 }
 
+/** Why the sweep left an over-age lock in place. */
+export type KeptStaleGitLockReason = 'nonempty' | 'open' | 'unknown-holder' | 'changed-or-unremovable';
+
+/** A lock already past the sweep's age floor that the sweep still KEPT. The sweep
+ * will never clear it on a later tick either, so it needs an operator
+ * (WI-6554700010049067); before, this case reached only the journal. */
+export interface KeptStaleGitMetadataLock {
+  name: GitMetadataLockName;
+  path: string;
+  ageMs: number;
+  reason: KeptStaleGitLockReason;
+}
+
 export interface SweepStaleGitMetadataLocksResult {
   /** Locks this sweep actually unlinked. */
   cleared: GitMetadataLockName[];
   /** Locks that exist but were left in place (fresh, nonempty, open, unknown holder, or changed). */
   kept: GitMetadataLockName[];
-  /** Ref directories that could not be listed — their locks were NOT inspected this tick. */
+  /** The subset of `kept` already older than the age floor, with age and reason. */
+  keptStale: KeptStaleGitMetadataLock[];
+  /** Directories that could not be listed — their locks were NOT inspected this tick. */
   unlistedDirs: string[];
 }
 
@@ -3661,6 +3690,33 @@ async function listRefLockNames(
   return { names: names.sort(), unlistedDirs };
 }
 
+/** `HEAD.lock` and `index.lock` of every LINKED worktree under
+ * `$commondir/worktrees`, except the worktree being swept: its HEAD.lock is
+ * already a fixed name and its index.lock keeps clearStaleIndexLock's own path.
+ * An unreadable `worktrees` directory is reported, never silently skipped. */
+async function listWorktreeLockNames(
+  commonDir: string,
+  gitDir: string,
+  readDirents: (dir: string) => Promise<GitLockDirent[]>,
+): Promise<{ names: GitWorktreeLockName[]; unlistedDirs: string[] }> {
+  let entries: GitLockDirent[];
+  try {
+    entries = await readDirents(join(commonDir, 'worktrees'));
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException | undefined)?.code;
+    return { names: [], unlistedDirs: code === 'ENOENT' || code === 'ENOTDIR' ? [] : ['worktrees'] };
+  }
+  const names: GitWorktreeLockName[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || join(commonDir, 'worktrees', entry.name) === gitDir) continue;
+    for (const lock of ['HEAD.lock', 'index.lock'] as const) {
+      const name = `worktrees/${entry.name}/${lock}` as GitWorktreeLockName;
+      if (isWorktreeLockName(name)) names.push(name);
+    }
+  }
+  return { names: names.sort(), unlistedDirs: [] };
+}
+
 /** Tick-start sweep of stranded Git-directory locks (WI-6554700010048970).
  *
  * Applies the SAME proof as every metadata-lock reclaim — zero bytes, older than
@@ -3676,9 +3732,12 @@ export async function sweepStaleGitMetadataLocks(
   deps: ClearStaleConfigLockDeps & { readDirents?: (dir: string) => Promise<GitLockDirent[]> } = {},
 ): Promise<SweepStaleGitMetadataLocksResult> {
   const inspectLock = deps.inspectLock ?? inspectGitLockFile;
+  const isOpen = deps.isOpen ?? defaultOpenFileCheck;
   const unlinkFile = deps.unlinkFile ?? unlink;
+  const now = deps.now ?? Date.now;
+  const staleMs = deps.staleMs ?? STALE_MAINTENANCE_LOCK_MS;
   const readDirents = deps.readDirents ?? ((dir: string) => readdir(dir, { withFileTypes: true }));
-  const result: SweepStaleGitMetadataLocksResult = { cleared: [], kept: [], unlistedDirs: [] };
+  const result: SweepStaleGitMetadataLocksResult = { cleared: [], kept: [], keptStale: [], unlistedDirs: [] };
 
   const dirs = await runGit(['rev-parse', '--absolute-git-dir', '--path-format=absolute', '--git-common-dir'], repoPath);
   if (dirs.code !== 0) return result;
@@ -3687,27 +3746,52 @@ export async function sweepStaleGitMetadataLocks(
   const commonDir = commonDirLine || gitDir;
 
   const refLocks = await listRefLockNames(commonDir, readDirents);
-  result.unlistedDirs = refLocks.unlistedDirs;
-  const candidates: GitMetadataLockName[] = [...SWEPT_GIT_METADATA_LOCKS, ...refLocks.names];
+  const worktreeLocks = await listWorktreeLockNames(commonDir, gitDir, readDirents);
+  result.unlistedDirs = [...refLocks.unlistedDirs, ...worktreeLocks.unlistedDirs];
+  const candidates: GitMetadataLockName[] = [...SWEPT_GIT_METADATA_LOCKS, ...refLocks.names, ...worktreeLocks.names];
   for (const lockName of candidates) {
     const lockPath = join(metadataLockUsesCommonDir(lockName) ? commonDir : gitDir, lockName);
     // Cheap existence check first: the reclaim helper spends a git call per lock.
-    if ((await inspectLock(lockPath)) === null) continue;
+    const snapshot = await inspectLock(lockPath);
+    if (snapshot === null) continue;
     let unlinked = false;
-    await clearStaleHolderlessEmptyGitLock(runGit, repoPath, lockName, log, {
+    // undefined = the helper never reached the holder probe.
+    let holder: boolean | null | undefined;
+    const gone = await clearStaleHolderlessEmptyGitLock(runGit, repoPath, lockName, log, {
       ...deps,
-      staleMs: deps.staleMs ?? STALE_MAINTENANCE_LOCK_MS,
+      staleMs,
+      isOpen: async (p) => (holder = await isOpen(p)),
       unlinkFile: async (p) => {
         await unlinkFile(p);
         unlinked = true;
       },
     });
-    (unlinked ? result.cleared : result.kept).push(lockName);
+    if (unlinked) {
+      result.cleared.push(lockName);
+      continue;
+    }
+    // Vanished between the existence check and the helper's own inspection.
+    if (gone) continue;
+    result.kept.push(lockName);
+    const ageMs = now() - snapshot.mtimeMs;
+    if (ageMs < staleMs) continue;
+    const reason: KeptStaleGitLockReason = snapshot.size !== 0 ? 'nonempty'
+      : holder === true ? 'open'
+      : holder === null ? 'unknown-holder'
+      : 'changed-or-unremovable';
+    result.keptStale.push({ name: lockName, path: lockPath, ageMs, reason });
   }
 
   if (result.cleared.length > 0) {
     log(
       `[git-sync] ${repoPath}: tick-start sweep cleared ${result.cleared.length} stranded Git lock(s): ${result.cleared.join(', ')} (WI-6554700010048970)`,
+    );
+  }
+  if (result.keptStale.length > 0) {
+    log(
+      `[git-sync] ${repoPath}: tick-start sweep KEPT ${result.keptStale.length} over-age Git lock(s) it cannot prove orphaned — needs an operator: ` +
+        result.keptStale.map((k) => `${k.name} (${Math.round(k.ageMs / 60_000)}m, ${k.reason})`).join(', ') +
+        ' (WI-6554700010049067)',
     );
   }
   if (result.unlistedDirs.length > 0) {
