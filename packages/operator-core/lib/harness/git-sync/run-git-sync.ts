@@ -2426,6 +2426,10 @@ export interface RunGitSyncOpts {
    *  scan), whose answer depends on host process-table speed. `null` means unknown,
    *  and unknown always preserves the lock. */
   isGitLockOpen?: (path: string) => Promise<boolean | null>;
+  /** WI-6554700010049067: receives each repo's tick-start metadata-lock sweep verdict
+   *  so the caller can raise a condition for locks that need an operator. Best-effort:
+   *  a throw is logged and never fails the sync. */
+  onGitMetadataLockSweep?: GitMetadataLockSweepReporter;
   /** WI-39922: pre-superproject-commit repair for the tracked tool catalog.
    *  Defaults to the conditional, bounded, fail-soft regenerator above. */
   toolCatalogRegenerator?: ToolCatalogRegenerator;
@@ -3643,6 +3647,14 @@ export interface KeptStaleGitMetadataLock {
   reason: KeptStaleGitLockReason;
 }
 
+/** WI-6554700010049067: receives one repo's tick-start sweep verdict — the over-age
+ *  locks it KEPT because it could not prove them orphaned. An empty list means the
+ *  sweep ran and kept nothing over-age; a sweep that threw reports nothing. */
+export type GitMetadataLockSweepReporter = (
+  repoPath: string,
+  keptStale: readonly KeptStaleGitMetadataLock[],
+) => void | Promise<void>;
+
 export interface SweepStaleGitMetadataLocksResult {
   /** Locks this sweep actually unlinked. */
   cleared: GitMetadataLockName[];
@@ -3800,6 +3812,31 @@ export async function sweepStaleGitMetadataLocks(
     );
   }
   return result;
+}
+
+/** Run the tick-start sweep, then hand its kept-stale verdict to `report`
+ *  (WI-6554700010049067). Both halves are best-effort and logged separately: neither
+ *  fails the sync, and a sweep that threw reports nothing because it measured nothing. */
+export async function sweepAndReportGitMetadataLocks(
+  runGit: RunGit,
+  repoPath: string,
+  log: (m: string) => void,
+  report: GitMetadataLockSweepReporter | undefined,
+  deps: Parameters<typeof sweepStaleGitMetadataLocks>[3] = {},
+): Promise<void> {
+  let sweep: SweepStaleGitMetadataLocksResult;
+  try {
+    sweep = await sweepStaleGitMetadataLocks(runGit, repoPath, log, deps);
+  } catch (e) {
+    log(`[git-sync] ${repoPath}: Git metadata lock sweep failed: ${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
+  if (!report) return;
+  try {
+    await report(repoPath, sweep.keptStale);
+  } catch (e) {
+    log(`[git-sync] ${repoPath}: kept-stale Git lock report failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 /** A crash-left `index-pack` file is safe to consider only after this age floor. */
@@ -8096,6 +8133,8 @@ interface CommitRepoOpts {
   isTempPackOpen?: (path: string) => Promise<boolean | null>;
   /** Test seam: holder probe for the stale `objects/maintenance.lock` guard. */
   isGitLockOpen?: (path: string) => Promise<boolean | null>;
+  /** WI-6554700010049067: see {@link RunGitSyncOpts.onGitMetadataLockSweep}. */
+  onGitMetadataLockSweep?: GitMetadataLockSweepReporter;
   /** Caller-supplied protected paths in THIS repo's relative coordinate space. */
   excludePaths: string[];
   /**
@@ -8245,7 +8284,7 @@ function migrationReservationSkips(
  * reconcile, and push. */
 type ReconcileRepoOpts = Pick<
   CommitRepoOpts,
-  'remote' | 'defaultBranch' | 'log' | 'staleTempPackMs' | 'isTempPackOpen' | 'isGitLockOpen'
+  'remote' | 'defaultBranch' | 'log' | 'staleTempPackMs' | 'isTempPackOpen' | 'isGitLockOpen' | 'onGitMetadataLockSweep'
 > & {
   doPush: boolean;
   /** Disable Git's commit-graph ancestry fast path when this repo merges submodule gitlinks. */
@@ -9899,11 +9938,9 @@ async function reconcileAndPushOneRepo(
   }
   // WI-6554700010048970: packed-refs / gc / ref locks that git-sync never writes
   // itself, so its reactive recovery never meets them. Same best-effort contract.
-  try {
-    await sweepStaleGitMetadataLocks(runGit, repoPath, o.log, o.isGitLockOpen ? { isOpen: o.isGitLockOpen } : {});
-  } catch (e) {
-    o.log(`[git-sync] ${repoPath}: Git metadata lock sweep failed: ${e instanceof Error ? e.message : String(e)}`);
-  }
+  await sweepAndReportGitMetadataLocks(
+    runGit, repoPath, o.log, o.onGitMetadataLockSweep, o.isGitLockOpen ? { isOpen: o.isGitLockOpen } : {},
+  );
   const zeroByteLooseObjects = await findZeroByteLooseObjects(runGit, repoPath);
   if (zeroByteLooseObjects.length > 0) {
     return {
@@ -10409,6 +10446,7 @@ async function runGitSyncPass(
     staleTempPackMs: opts.staleTempPackMs ?? STALE_TEMP_PACK_MS,
     isTempPackOpen: opts.isTempPackOpen,
     isGitLockOpen: opts.isGitLockOpen,
+    onGitMetadataLockSweep: opts.onGitMetadataLockSweep,
     diffSubjects: opts.diffSubjects ?? true,
     migrationReservationChecker: opts.migrationReservationChecker,
     loadMigrationFenceRoster: opts.loadMigrationFenceRoster ? loadMigrationFenceRosterForTick : undefined,
@@ -11707,11 +11745,9 @@ async function runGitSyncPass(
     } catch (e) {
       log(`[git-sync] ${repo}: objects/maintenance.lock check failed: ${e instanceof Error ? e.message : String(e)}`);
     }
-    try {
-      await sweepStaleGitMetadataLocks(runGit, repo, log, opts.isGitLockOpen ? { isOpen: opts.isGitLockOpen } : {});
-    } catch (e) {
-      log(`[git-sync] ${repo}: Git metadata lock sweep failed: ${e instanceof Error ? e.message : String(e)}`);
-    }
+    await sweepAndReportGitMetadataLocks(
+      runGit, repo, log, opts.onGitMetadataLockSweep, opts.isGitLockOpen ? { isOpen: opts.isGitLockOpen } : {},
+    );
     // EI-20232774599730947: a bridged/p2p-only member is truly commit-only at
     // this layer. GitHub ingress + admission and the P2P worktree bridge own
     // remote-to-worktree flow; fetching/merging origin here is both redundant

@@ -735,6 +735,14 @@ export interface DispatchPendingGradingAuditsDeps {
    */
   recertifyStranded?: (call: StrandedRecertifyCall, ctx: GradingAuditLaunchContext) => Promise<Record<string, unknown>>;
   listScorecards?: typeof listScorecards;
+  /**
+   * EI-28807248043284989: read the harness the target card's own work item is stored
+   * under. The auditor launches with `workItem: issueId`, and the operation-worker
+   * binding refuses a launch whose harness does not hold that work item, so the launch
+   * harness is the card's, not the caller's (a spec-quality card for an oddsmith-hive
+   * plan lives in papercusp). Returns null when the row is absent or ambiguous.
+   */
+  readCardHarness?: (workspaceId: string, issueId: string) => Promise<string | null>;
   /** Current evaluator build used to preflight pinned spec-test-adequacy recipes. */
   getEvaluatorBuild?: () => BuildInfo;
   /** Retain an exact, confined endpoint before allowing a build-bound launch. */
@@ -2256,6 +2264,15 @@ function gradingAuditSuppressionForOwnerSet(
  * retired target. capability:launch-agent's stable idempotency key makes a
  * retry of the same completion or emit safe.
  */
+/** EI-28807248043284989: the storage harness of one scorecard work item, or null. */
+async function readScorecardStorageHarness(workspaceId: string, issueId: string): Promise<string | null> {
+  const rows = await getOrgPg().sql<{ harness_slug: string | null }[]>`
+    SELECT harness_slug FROM harness_shared.work_items
+     WHERE workspace_id = ${workspaceId} AND feature_id = ${issueId}
+     LIMIT 2`;
+  return rows.length === 1 ? rows[0]!.harness_slug?.trim() || null : null;
+}
+
 export async function dispatchPendingGradingAudits(
   input: DispatchPendingGradingAuditsInput,
   deps: DispatchPendingGradingAuditsDeps = {},
@@ -2281,6 +2298,7 @@ export async function dispatchPendingGradingAudits(
   const release = deps.release ?? releasePendingGradingAudit;
   const readTasks = deps.listTasks ?? listTasks;
   const readTask = deps.getTask ?? getTask;
+  const readCardHarness = deps.readCardHarness ?? readScorecardStorageHarness;
   const listNativeSessionsByTranscriptHandles = deps.listNativeSessionsByTranscriptHandles ??
     ((sessionIds: readonly string[]) => advSessionsByTranscriptHandles({ sessionIds }));
   const resolveSessionTranscript = deps.findSessionTranscript ?? findSessionTranscript;
@@ -2829,7 +2847,21 @@ export async function dispatchPendingGradingAudits(
     const replayBasisFingerprint = card.gradingAudit
       ? gradingAuditReplayBasisFingerprint(issueId, card.gradingAudit, reservationSnapshot)
       : undefined;
-    const harness = input.harness?.trim();
+    // EI-28807248043284989: launch in the harness that stores the card's work item.
+    // The caller's harness is the subject plan's (for example oddsmith-hive), while
+    // spec-quality and meta cards are stored in papercusp; launching there made the
+    // operation-worker binding refuse every audit before a process was spawned. The
+    // subject plan's harness still reaches the auditor through the card's rerun recipe.
+    let cardHarness: string | null = null;
+    if (workspaceId) {
+      try {
+        cardHarness = await readCardHarness(workspaceId, issueId);
+      } catch (error) {
+        console.warn(`[grading-integrity] card harness read failed for ${issueId}; using the caller harness: ${
+          error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    const harness = cardHarness ?? input.harness?.trim();
     // EI-23414612968722239: `role:'judge'` is a HARNESS-SCOPED persona — launch-agent
     // refuses it outright ("no harness resolved") when no harness accompanies it, so the
     // auditor never spawns, the stamp sticks at 'pending', and every acceptance rubric it

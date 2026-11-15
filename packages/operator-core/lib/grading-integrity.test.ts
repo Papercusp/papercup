@@ -220,6 +220,7 @@ function deps() {
     discoveryAdmission,
     resolveSpecQualityPlanSubject,
     listScorecards,
+    readCardHarness: vi.fn(async (_workspaceId: string, _issueId: string): Promise<string | null> => null),
     cancelSuperseded,
     getEvaluatorBuild,
     ensureRuntime,
@@ -752,6 +753,37 @@ describe('dispatchPendingGradingAudits', () => {
     const launchInput = d.launch.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
     expect(launchInput.workItem).toBe(issueId);
     expect(launchInput.brief).toContain('Originating completion reference: "F-101"');
+  });
+
+  it("launches the auditor in the card's own harness, not the caller's plan harness (EI-28807248043284989)", async () => {
+    const d = deps();
+    const issueId = 'EI-cross-harness-card';
+    d.listScorecards.mockResolvedValue([card(issueId)]);
+    d.readCardHarness.mockResolvedValue('papercusp');
+
+    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx, harness: 'oddsmith-hive' }, d);
+
+    expect(result.receipts).toEqual([expect.objectContaining({ issueId, state: 'launched' })]);
+    expect(d.readCardHarness).toHaveBeenCalledWith('ws-test', issueId);
+    const launchInput = d.launch.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
+    expect(launchInput.harness).toBe('papercusp');
+    expect(launchInput.workItem).toBe(issueId);
+  });
+
+  it('keeps the caller harness when the card harness cannot be read (EI-28807248043284989)', async () => {
+    const d = deps();
+    const issueId = 'EI-unreadable-card-harness';
+    d.listScorecards.mockResolvedValue([card(issueId)]);
+    d.readCardHarness.mockRejectedValue(new Error('read failed'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await dispatchPendingGradingAudits({ targetIds: [issueId], ctx, harness: 'oddsmith-hive' }, d);
+    } finally {
+      warn.mockRestore();
+    }
+
+    const launchInput = d.launch.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
+    expect(launchInput.harness).toBe('oddsmith-hive');
   });
 
   it('cancels the pending lease and retires its live auditor when the target was superseded', async () => {

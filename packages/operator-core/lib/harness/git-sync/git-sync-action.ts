@@ -296,6 +296,7 @@ import {
   type StrandedSubmodule,
   type AttributionTally,
 } from './run-git-sync';
+import { reportKeptStaleGitLocks } from './kept-stale-lock-condition';
 import {
   createLockDomainIdentity,
   mapLiveLockHoldingsForRepo,
@@ -4582,6 +4583,8 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         } : {}),
         repoPath,
         config: cfg,
+        // WI-6554700010049067: an over-age lock the sweep cannot prove orphaned is a condition, not just a log line.
+        onGitMetadataLockSweep: (repoPath, keptStale) => reportKeptStaleGitLocks(slug, repoPath, keptStale),
         onRootCommit: ({ sha, committedAtMs }) => {
           emitGitSyncCommittedEvent(sha, { scope: { installSlug: slug, workspaceId } }, committedAtMs);
         },

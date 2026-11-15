@@ -59,7 +59,7 @@ export const CompletionVerifiedHowSchema = z
   .string()
   .min(1)
   .describe(
-    "HOW it was verified — a non-empty label. Prefer 'unit' | 'integration' | 'live-drove-ui' | 'live-service' | 'manual' | 'already-passing' for queryable coarse modes; concise free-text labels are also accepted. `live-service` means a real running process/service was restarted or probed without driving UI. Put detailed evidence in `testsRun` / `testResult`.",
+    "Prefer 'unit' | 'integration' | 'live-drove-ui' | 'live-service' | 'manual' | 'already-passing'; concise free-text labels also accepted. `live-service`: restarted/probed a real process/service without UI. Detailed evidence: `testsRun` / `testResult`.",
   );
 
 /**
@@ -268,23 +268,23 @@ export const CompletionCoverageSchema = z
   population: z
     .array(z.string().min(1))
     .min(1)
-    .describe('The complete, uniquely named population. Copy each entry verbatim into exactly one status bucket.'),
+    .describe('Uniquely named population; copy each entry verbatim into exactly one status bucket.'),
   checked: z
     .array(z.string().min(1))
     .optional()
-    .describe('Population entries verified as checked; entries must be copied verbatim and appear at most once.'),
+    .describe('Verified population entries, copied verbatim without duplicates.'),
   notChecked: z
     .array(z.string().min(1))
     .optional()
-    .describe('Population entries not verified; entries must be copied verbatim and appear at most once.'),
+    .describe('Unverified population entries, copied verbatim without duplicates.'),
   notApplicable: z
     .array(z.string().min(1))
     .optional()
-    .describe('Population entries that do not apply; entries must be copied verbatim and appear at most once.'),
+    .describe('Inapplicable population entries, copied verbatim without duplicates.'),
   residue: z
     .array(z.string().min(1))
     .optional()
-    .describe("A separate residue list, never a partition bucket; for universal closes it must be present and may be empty. Use [] or ['none'] for zero residue."),
+    .describe("Separate list, never a partition bucket. Universal closes require it; [] or ['none'] means zero residue."),
     }),
   )
   .describe(`${COMPLETION_COVERAGE_CONTRACT} Omitted status buckets mean empty buckets.`);
@@ -650,7 +650,7 @@ export const RootCauseVerificationSchema = z
       .trim()
       .min(1)
       .optional()
-      .describe('Exact procedure used to distinguish the two hypotheses; required on new successful defect closes.'),
+      .describe('Exact procedure distinguishing the hypotheses.'),
     predictedObservations: z
       .object({
         hypothesis: z.string().trim().min(1),
@@ -658,19 +658,19 @@ export const RootCauseVerificationSchema = z
       })
       .strict()
       .optional()
-      .describe('The observation predicted under each hypothesis; required on new successful defect closes.'),
+      .describe('Observation predicted under each hypothesis.'),
     actualObservation: z
       .string()
       .trim()
       .min(1)
       .optional()
-      .describe('What the distinguishing procedure actually observed; required on new successful defect closes.'),
+      .describe('What the distinguishing procedure actually observed.'),
     evidenceRefs: z
       .array(z.string().trim().min(1).max(2_000))
       .min(1)
       .max(50)
       .optional()
-      .describe('Durable references supporting the procedure and actual observation; required on new successful defect closes.'),
+      .describe('Durable references supporting the procedure and observation.'),
   })
   .strict()
   .meta({
@@ -752,15 +752,14 @@ export const CompletionVerificationEvidenceSchema = z.object({
    * Evidence sufficiency (`completionAuthority`) is a separate dimension.
    */
   workOutcome: CompletionWorkOutcomeSchema.optional().describe(
-    'Result required on new successful closes: pass `completion.verification.workOutcome` to `work_items:complete`. Structured duplicate/discard dispositions can derive it; historical omissions remain unknown. `work_items:completion_stats` counts this path independently of authority.',
+    'New successful closes require `completion.verification.workOutcome` at `work_items:complete`; duplicate/discard dispositions may derive it. Historical omissions stay unknown. `work_items:completion_stats` counts it independently of authority.',
   ),
   /** Whether this completion added or changed tests. */
   addedTests: z
     .boolean()
     .optional()
     .describe(
-      'A boolean FLAG — did this completion add or change tests? true/false, NOT a description of ' +
-      'what was added (put that prose in `testsRun` / `testResult`).',
+      'Whether tests were added/changed; put details in `testsRun` / `testResult`.',
     ),
   /** Enumerated population + per-entry status for universal verification claims (WI-37960). */
   coverage: CompletionCoverageSchema.optional().meta({
@@ -1193,8 +1192,7 @@ export const CompletionRecordSchema = z.object({
     .boolean()
     .optional()
     .describe(
-      'A boolean FLAG — did this completion add or change tests? true/false, NOT a description of ' +
-        'what was added (put that prose in `testsRun` / `testResult`).',
+      'Whether tests were added/changed; put details in `testsRun` / `testResult`.',
     ),
   /**
    * Arm-B pilot self-review (plan `directed-pair-work-items-2026-08-25`, D-020/D-021).

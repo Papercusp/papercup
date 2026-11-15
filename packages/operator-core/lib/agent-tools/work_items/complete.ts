@@ -497,23 +497,23 @@ const completionSpec = z
     // behind), `verifiedHow`'s label list and the residue rule (each field's own
     // `.describe()` owns those), the rootCauseVerification key list (its own subschema),
     // and a second copy of the object example (COMPLETION_STRING_REJECTION ends with it).
-    'Structured completion record; its fields and types are published in this schema. ' +
+    'Structured completion record. ' +
       // The three wrong-key literals are spelled in full ON PURPOSE: complete.test.ts
       // asserts each one, and they are what a caller greps for after a strict-key refusal.
-      '`completion` owns `testsRun`, `testResult`, `verifiedHow`, and `filesChanged`; `completion.verification` ' +
-      'is for structured coverage. The single-item call also accepts those fields at the argument root as ' +
-      'legacy aliases. Do not put test/typecheck/diff details under the strict `completion.verification`; keep ' +
+      '`completion` owns `testsRun`, `testResult`, `verifiedHow`, and `filesChanged`; the ' +
+      'single-item call also accepts those fields at the argument root as legacy aliases. ' +
+      '`completion.verification` holds structured coverage; never `verification.tests`, ' +
+      '`verification.typecheck`, or `verification.diff`. Keep ' +
       '`deferred`/`coordNotes` at completion level, not inside `verification`. ' +
       // The two live-mode ARTIFACT requirements are enforced at close time and are stated
       // nowhere else; `verifiedHow`'s own describe defines the labels but not these floors.
-      "For a terminal close, `verifiedHow:'live-drove-ui'` requires a real artifact citation in " +
-      '`summary`, `testsRun`, `testResult`, or `filesChanged` — DESKTOP: a screenshot/capture image ' +
-      'path retained outside session scratch, or a recorded `tauri-agent-tools` capture/screenshot/check invocation; WEB: the deployed ' +
-      'URL with its HTTP status, or a recorded browser-driver run (playwright/puppeteer/verdict) naming ' +
-      "the http(s) target it drove. `verifiedHow:'live-service'` requires `testsRun`/`testResult` to " +
-      'jointly name the concrete service/unit/process and a falsifiable runtime observation (`MainPID`, ' +
-      '`NRestarts`, `ActiveState`, or an HTTP status). Use ' +
-      "'unit'/'manual'/'integration' when no live artifact or runtime process was inspected. " +
+      "Terminal `verifiedHow:'live-drove-ui'` requires a real artifact citation in " +
+      '`summary`/`testsRun`/`testResult`/`filesChanged`: DESKTOP screenshot/capture image path retained ' +
+      'outside session scratch or recorded `tauri-agent-tools` capture/screenshot/check invocation; WEB ' +
+      'deployed URL + HTTP status or recorded playwright/puppeteer/verdict run naming its http(s) target. ' +
+      "Terminal `verifiedHow:'live-service'`: `testsRun`/`testResult` must jointly name the concrete service/unit/process " +
+      'and a falsifiable runtime observation (`MainPID`, `NRestarts`, `ActiveState`, or HTTP status). ' +
+      "Without live artifact/process inspection, use 'unit'/'manual'/'integration'. " +
       // observation-and-recall-surface-honesty-2026-08-16 P-001: coordNotes is the second
       // input to checkpoint-harvest, so it carries the same first-line-is-the-title rule as
       // loop:checkpoint { insight }. Shared constant, never re-worded here — the guard test
