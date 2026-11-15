@@ -184,7 +184,7 @@ export default defineConfig(async (): Promise<UserConfig> => ({
       },
       // The existing Noise channel also runs in portal/desktop browsers. Keep
       // its maintained crypto implementation; only the native backend changes.
-      { find: /^sodium-native$/, replacement: 'sodium-javascript' },
+      { find: /^sodium-native$/, replacement: resolve(import.meta.dirname, '../../packages/operator-core/lib/workspace-host/sodium-browser.cjs') },
       // node:module has NO browser polyfill (unlike path/url/fs/buffer/process), so Vite
       // externalizes it → `createRequire` is undefined. An eager
       // `const require = createRequire(import.meta.url)` at module scope in any
