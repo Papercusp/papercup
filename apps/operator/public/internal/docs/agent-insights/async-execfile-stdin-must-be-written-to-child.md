@@ -1,0 +1,26 @@
+# Async execFile input must be written to the child pipe
+URL: /internal/docs/agent-insights/async-execfile-stdin-must-be-written-to-child
+
+Why passing stdin in execFile options can leave a CLI waiting forever, and how a real subprocess test catches the defect.
+
+## What
+
+Asynchronous Node `execFile` does not deliver an arbitrary `stdin` option to the child. Wrapping it with `promisify` does not add that behavior. A CLI that reads arguments from standard input can start successfully and then wait for input or EOF until its timeout.
+
+## Why it matters
+
+In WI-6554700010049436, the MCP proxy watchdog passed its ptool JSON payload as an option to a promisified `execFile`. The injected-shell tests checked that the option reached the helper, so they passed while the real pipe received no payload. The timeout was a delivery defect, not evidence that the target handler was slow.
+
+## How to apply
+
+Keep the `ChildProcess` returned by `execFile`. Deliver the complete intended input through its `stdin` stream and close that stream to send EOF. Preserve the child exit/error result and useful failure detail; handle a pipe failure without hiding the process failure. Do not compensate by increasing the timeout.
+
+Test the actual subprocess boundary: launch a child that reads until EOF and echoes the exact bytes. Assert that the complete payload arrives and the command finishes. Also cover a child that exits unsuccessfully so error details survive. An injected helper assertion is useful contract coverage but does not prove pipe delivery.
+
+For a long-lived script, verify the runtime has loaded the committed repair. In this incident the watchdog service still ran a process started on November11; after the three files were committed, a scoped watchdog-unit restart on November15 at17:36:17Z produced a new active process and startup log. Restarting the observer activates its code; it does not itself prove a coordinated proxy activation succeeded.
+
+## Evidence
+
+* WI-6554700010049436 holds the root-cause diagnosis, prior native-suite proof and runtime activation checkpoint.
+* Source and real subprocess regressions: `papercusp/apps/operator/lib/mcp-proxy/watchdog.mjs` and `papercusp/apps/operator/lib/mcp-proxy/watchdog.test.ts`.
+* The current focused test submission during session-port recovery timed out at the tool boundary and is not claimed as passing; recover its test-ledger receipt before repeating it.

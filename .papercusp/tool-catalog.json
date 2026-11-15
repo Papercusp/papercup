@@ -30667,7 +30667,7 @@
           "POST"
         ]
       },
-      "description": "Poll a rubrics:amend receipt: running, orphaned (executor restarted and reclaimable now), committed (apply result), previewed (dry-run result), failed, or not_found. Review-bearing previews keep their key and thread/conversation references after the full preview is compacted. A launched fresh reviewer includes a current freshReviewerHealth read; its stored state=launched remains the launch-time fact. not_found does not prove a requestReview or reviewPreviewPost dry-run had no external side effects.",
+      "description": "Poll a rubrics:amend receipt: running, orphaned (executor restarted and reclaimable now), committed (apply result), previewed (dry-run result), failed, or not_found. Review-bearing previews keep their key and thread/conversation references after the full preview is compacted. Launched and kickoff-unverified fresh reviewers include a current freshReviewerHealth read; their stored state remains the original receipt fact. not_found does not prove a requestReview or reviewPreviewPost dry-run had no external side effects.",
       "capabilities": [
         "coord:read"
       ],
