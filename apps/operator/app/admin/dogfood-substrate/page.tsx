@@ -17,7 +17,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { term } from '@papercusp/operator-core/lib/lexicon';
-import { listBootedHandles } from '@papercusp/operator-core/lib/sync/hyperbee/boot-all';
+import { getBootedHarness, listBootedHandles } from '@papercusp/operator-core/lib/sync/hyperbee/boot-all';
 import { listBootstrapProgress } from '@papercusp/operator-core/lib/sync/hyperbee/bootstrap-progress';
 import { listBootHistory } from '@papercusp/operator-core/lib/sync/hyperbee/boot-history';
 import { loadClaimAttemptStats } from '@papercusp/operator-core/lib/orchestrator/load-claim-attempts';
@@ -106,6 +106,13 @@ export default async function DogfoodSubstratePage() {
   for (const snap of listBootstrapProgress()) {
     progressBySlug.set(`${snap.workspaceId}::${snap.harnessSlug}`, snap);
   }
+  await Promise.all(booted.map(async (h) => {
+    const handle = getBootedHarness(h.workspaceId, h.harnessSlug);
+    const progress = handle ? await handle.joinProgress() : null;
+    const key = `${h.workspaceId}::${h.harnessSlug}`;
+    if (progress) progressBySlug.set(key, progress);
+    else progressBySlug.delete(key);
+  }));
 
   const topStatus = !enabled ? 'disabled' : booted.length > 0 ? 'booted' : 'booting';
   const hint = !enabled
@@ -206,11 +213,10 @@ export default async function DogfoodSubstratePage() {
                 <div style={GRID_CELL} role="gridcell">
                   {progress ? (
                     <BootstrapProgressIndicator
-                      totalOps={Math.max(
-                        progress.highestSeen,
-                        progress.mergedOps,
-                      )}
+                      totalOps={progress.targetFrontier}
                       mergedOps={progress.mergedOps}
+                      joinState={progress.joinState}
+                      caughtUp={progress.caughtUp}
                     />
                   ) : (
                     <span style={{ color: 'var(--fg-dim, #888)' }}>—</span>

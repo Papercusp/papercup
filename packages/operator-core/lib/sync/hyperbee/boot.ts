@@ -151,6 +151,7 @@ import {
 } from './projections/register-all';
 import { createPlanPartsRecomposeBatch } from './projections/harness-plan-parts';
 import { startBootstrapProgressPoller } from './bootstrap-progress-poller';
+import type { BootstrapProgressSnapshot } from './bootstrap-progress';
 import { recordBootEvent, type BootHistoryKind } from './boot-history';
 import { resolveSeedLogAdmissions, validateSeedReplicaForAdmission } from './seed-log-admission';
 import { SEED_EXCLUDED_TABLES } from './seed-excluded-tables';
@@ -437,6 +438,8 @@ export interface BootHarnessOpts {
    * timer and drive `mergeNow()` by hand. Default 1000.
    */
   mergePollMs?: number;
+  /** Test seam: virtual clock for join observations only; network/apply deadlines keep their real clock. */
+  joinProgressNow?: () => number;
   /**
    * WI-10002836 test seam: minimum spacing (ms) between snapshot progress rows,
    * shared by own compaction and on-demand release head snapshots.
@@ -478,6 +481,8 @@ export interface BootHarnessOpts {
    * the serialized merge pass is blocked. Production callers leave undefined.
    */
   allowReplicationLivenessTimerInTest?: boolean;
+  /** Test seam: drive serialized merge passes while an integration test holds an apply. */
+  allowMergePollTimerInTest?: boolean;
   /**
    * WI-183: how long (ms) an admitted remote log may show zero live
    * replicator peers, after having previously shown at least one, before
@@ -896,6 +901,8 @@ export interface BootedHarnessHandle {
    *  with the number of ops applied. Idempotent + safe to call concurrently
    *  (it serializes internally). */
   mergeNow(): Promise<number>;
+  /** Join state for this handle, independent of other peers sharing its slug. */
+  joinProgress(): BootstrapProgressSnapshot | null | Promise<BootstrapProgressSnapshot | null>;
   /**
    * P-019 (D-012) — append ONE fresh head `__snapshot__` to the own log, NOW, and
    * resolve with what landed. Serviced inside the serialized merge block, so it can
@@ -4614,14 +4621,35 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     }
   }
 
-  // P-066 bootstrap-progress tracker. Polls ownLog.length each second;
-  // feeds the BootstrapProgressIndicator via /api/harness/:slug/
-  // bootstrap-progress. Cheap; idempotent across reboots (keys by
-  // (workspaceId, slug)).
+  // Measure applied remote positions against the writers' known high water.
+  // A seeded snapshot position is not usable until all its chunks have applied.
   const progressPoller = startBootstrapProgressPoller({
     workspaceId: opts.workspaceId,
     harnessSlug: opts.harnessSlug,
-    readLength: () => ownLog.length,
+    now: opts.joinProgressNow,
+    readProgress: () => {
+      let appliedFrontier = 0;
+      let targetFrontier = 0;
+      let remoteCount = 0;
+      let headApplied = pendingPeers.size === 0 && !deferralBuffersHold();
+      for (const log of admitted.values()) {
+        if (log.keyHex === ownLog.keyHex) continue;
+        remoteCount += 1;
+        const position = mergeCursor.positions.get(log.keyHex);
+        const target = livenessKnownLength(log);
+        appliedFrontier += position ?? 0;
+        targetFrontier += target;
+        const seed = mergeCursor.snapshotScans?.get(log.keyHex)?.set?.seed;
+        const headEnd = seed ? seed.seedIndex + seed.chunkCount : Math.min(target, 1);
+        if (position === undefined || position < headEnd ||
+            mergeCursor.snapshotSeedPending?.has(log.keyHex) || mergeCursor.pgSeedPending?.has(log.keyHex)) {
+          headApplied = false;
+        }
+      }
+      const readyForCompletion = remoteCount > 0 && headApplied &&
+        (mergeCursor.pendingApplies?.size ?? 0) === 0 && (mergeCursor.applyFailures?.size ?? 0) === 0;
+      return { headApplied: remoteCount > 0 && headApplied, appliedFrontier, targetFrontier, readyForCompletion };
+    },
   });
 
   // Initial backfill merge + a polled fallback. On-remote-append merges
@@ -4693,7 +4721,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           async () => {
             await mergeNow();
           },
-          { category: 'lifecycle', instanced: true },
+          { category: 'lifecycle', instanced: true, allowInTest: opts.allowMergePollTimerInTest },
         )
       : null;
   const livenessTimer =
@@ -6320,6 +6348,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       : {}),
     admitted,
     mergeNow,
+    joinProgress: () => {
+      progressPoller.pollOnce();
+      return progressPoller.snapshot();
+    },
     produceHeadSnapshotNow,
     compactOwnLogNow,
     onAnnounce: onAnnounceWithConnection,

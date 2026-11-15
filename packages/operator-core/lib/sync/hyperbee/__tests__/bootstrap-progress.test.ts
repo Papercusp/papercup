@@ -92,6 +92,15 @@ describe('bootstrap-progress tracker', () => {
     expect(getBootstrapProgress('ws-1', 'papercup')!.caughtUp).toBe(true);
   });
 
+  it('a completed join is still complete when its writer advances, but is not currently caught up', () => {
+    recordJoinProgress('ws', 'h', { nowMs: 0, headApplied: true, appliedFrontier: 5, targetFrontier: 5 });
+    expect(getBootstrapProgress('ws', 'h')?.caughtUp).toBe(true);
+    recordJoinProgress('ws', 'h', { nowMs: 1, headApplied: true, appliedFrontier: 5, targetFrontier: 6 });
+    expect(getBootstrapProgress('ws', 'h')).toMatchObject({ joinState: 'complete', caughtUp: false });
+    recordJoinProgress('ws', 'h', { nowMs: 2, headApplied: true, appliedFrontier: 6, targetFrontier: 6, readyForCompletion: false });
+    expect(getBootstrapProgress('ws', 'h')?.caughtUp).toBe(false);
+  });
+
   it('keys (workspaceId, harnessSlug) independently', () => {
     _setNowForTests(() => 1_000);
     recordMergedOps('ws-1', 'a', 1);

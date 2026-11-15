@@ -9,7 +9,7 @@
  *     mark-drained UPDATE persists a pending fan-out retry;
  *   - a pre-1632 outbox (42703) falls back to the plain stamp instead of stalling;
  *   - retryPendingFanouts re-runs due fan-outs independently of federation, clears on
- *     success, backs off on failure and gives up loudly at the attempt cap;
+ *     success, backs off on failure and keeps retrying beyond the finding threshold;
  *   - GC never deletes a row whose fan-out retry is pending.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -197,7 +197,7 @@ describe('P-003 retryPendingFanouts', () => {
     const r = await retryPendingFanouts(fakeHandle(), pg, { fanout, now: NOW });
 
     expect(fanout).toHaveBeenCalledWith({ id: 7, table_name: 'work_items', op: 'put', key: 'wi-7', row: { id: 'wi-7' } });
-    expect(r).toEqual({ retried: 1, succeeded: 1, rescheduled: 0, gaveUp: 0 });
+    expect(r).toEqual({ retried: 1, succeeded: 1, rescheduled: 0, reachedThreshold: 0 });
     const clear = calls.find((c) => /SET fanout_retry_at = NULL/.test(c.sql));
     expect(clear?.sql).toContain('fanout_last_error = NULL');
   });
@@ -210,12 +210,12 @@ describe('P-003 retryPendingFanouts', () => {
 
     const r = await retryPendingFanouts(fakeHandle(), pg, { fanout, now: NOW });
 
-    expect(r).toEqual({ retried: 1, succeeded: 0, rescheduled: 1, gaveUp: 0 });
+    expect(r).toEqual({ retried: 1, succeeded: 0, rescheduled: 1, reachedThreshold: 0 });
     const upd = calls.find((c) => /UPDATE harness_shared\.substrate_outbox/.test(c.sql));
     expect(upd!.values).toEqual([NOW + fanoutRetryDelayMs(3), 3, 'still failing', 7]);
   });
 
-  it('gives up loudly at the attempt cap and keeps the last error', async () => {
+  it('reports the failure threshold and keeps the delivery scheduled', async () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { pg, calls } = fakePg({ due: [dueRow(FANOUT_MAX_ATTEMPTS - 1)] });
     const fanout = vi.fn(async () => {
@@ -224,10 +224,29 @@ describe('P-003 retryPendingFanouts', () => {
 
     const r = await retryPendingFanouts(fakeHandle(), pg, { fanout, now: NOW });
 
-    expect(r).toEqual({ retried: 1, succeeded: 0, rescheduled: 0, gaveUp: 1 });
-    const upd = calls.find((c) => /SET fanout_retry_at = NULL/.test(c.sql));
-    expect(upd!.values).toEqual([FANOUT_MAX_ATTEMPTS, 'permanent', 7]);
-    expect(errSpy.mock.calls.some((c) => String(c[0]).includes('GAVE UP'))).toBe(true);
+    expect(r).toEqual({ retried: 1, succeeded: 0, rescheduled: 1, reachedThreshold: 1 });
+    const upd = calls.find((c) => /SET fanout_retry_at =/.test(c.sql));
+    expect(upd!.values).toEqual([NOW + fanoutRetryDelayMs(FANOUT_MAX_ATTEMPTS), FANOUT_MAX_ATTEMPTS, 'permanent', 7]);
+    expect(errSpy.mock.calls.some((c) => String(c[0]).includes('keeps retrying'))).toBe(true);
+  });
+
+  it('continues beyond the threshold and can recover on a later sweep', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const failing = fakePg({ due: [dueRow(FANOUT_MAX_ATTEMPTS + 3)] });
+    const failed = await retryPendingFanouts(fakeHandle(), failing.pg, {
+      fanout: async () => { throw new Error('still unavailable'); }, now: NOW,
+    });
+    expect(failed).toEqual({ retried: 1, succeeded: 0, rescheduled: 1, reachedThreshold: 0 });
+    expect(failing.calls.find((c) => /SET fanout_retry_at =/.test(c.sql))!.values)
+      .toEqual([NOW + FANOUT_RETRY_MAX_DELAY_MS, FANOUT_MAX_ATTEMPTS + 4, 'still unavailable', 7]);
+    expect(errSpy).not.toHaveBeenCalled();
+
+    const recovering = fakePg({ due: [dueRow(FANOUT_MAX_ATTEMPTS + 4)] });
+    const recovered = await retryPendingFanouts(fakeHandle(), recovering.pg, {
+      fanout: async () => undefined, now: NOW + FANOUT_RETRY_MAX_DELAY_MS,
+    });
+    expect(recovered).toEqual({ retried: 1, succeeded: 1, rescheduled: 0, reachedThreshold: 0 });
+    expect(recovering.calls.find((c) => /SET fanout_retry_at = NULL/.test(c.sql))!.values).toEqual([7]);
   });
 
   it('returns zeros on a pre-1632 outbox instead of throwing', async () => {
@@ -238,7 +257,7 @@ describe('P-003 retryPendingFanouts', () => {
 
     const r = await retryPendingFanouts(fakeHandle(), pg, { fanout: vi.fn(async () => undefined), now: NOW });
 
-    expect(r).toEqual({ retried: 0, succeeded: 0, rescheduled: 0, gaveUp: 0 });
+    expect(r).toEqual({ retried: 0, succeeded: 0, rescheduled: 0, reachedThreshold: 0 });
   });
 
   it('a retry-state write failure is logged and the remaining due rows are still processed', async () => {

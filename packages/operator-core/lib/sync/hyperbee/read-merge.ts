@@ -4639,6 +4639,17 @@ async function mergeIncrementalPass(
       }
       // P-002 step 2: bound the batch's size (subtransactions) and age (row locks).
       if (batch?.due && !(await settleBatch(pos))) break;
+      // P-004: progress readers must see the committed prefix even when this pass
+      // waits inside its next read/apply. Keep an open batch behind its first op;
+      // completed autocommit applies (and committed batches) can advance now.
+      // This is in-memory publication only: PG saves retain the cadence below.
+      if (!batch?.holdsTransaction) resolveSkips();
+      const committedThrough = batch && batch.startPos >= 0 ? Math.min(pos, batch.startPos) : pos;
+      const committedPosition = effectivePos(committedThrough);
+      cursor.positions.set(log.keyHex, committedPosition);
+      if (firstDeferredPos < 0 && previousFailure && committedPosition > previousFailure.position) {
+        cursor.applyFailures?.delete(log.keyHex);
+      }
       // WI-2105 REV fix (persist-after-apply): checkpoint the cursor at the
       // persist cadence. ops [from, pos) have all applied (each apply awaited a
       // projection commit), so next-to-read = pos — persisting `pos` never

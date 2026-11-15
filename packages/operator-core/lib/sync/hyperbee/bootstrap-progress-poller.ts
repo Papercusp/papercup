@@ -15,16 +15,15 @@
  * close() should call stop() to prevent leaks across reboots.
  */
 
-import { recordJoinProgress, type BootstrapProgressSnapshot } from './bootstrap-progress';
+import { clearBootstrapProgress, recordJoinProgress, type BootstrapProgressSnapshot } from './bootstrap-progress';
 import { createJoinProgressTracker, type JoinProgressSample } from './join-progress';
 
 export interface PollerOpts {
   workspaceId: string;
   harnessSlug: string;
   /**
-   * Length getter for the substrate's local op count (Model B own-log
-   * length). Called every tick; throwing or returning a non-finite value
-   * skips the tick. Stage 4: `() => ownLog.length`.
+   * Read the applied remote frontier, known target and head materialization.
+   * An invalid or unreadable sample makes current progress unavailable.
    */
   readProgress: () => Omit<JoinProgressSample, 'nowMs'>;
   now?: () => number;
@@ -52,25 +51,29 @@ export function startBootstrapProgressPoller(
   const clearI = opts.clearIntervalImpl ?? clearInterval;
   const instance = createJoinProgressTracker();
   let current: BootstrapProgressSnapshot | null = null;
+  let stopped = false;
 
   function tick(): void {
+    if (stopped) return;
     try {
       current = recordJoinProgress(opts.workspaceId, opts.harnessSlug, {
         ...opts.readProgress(), nowMs: (opts.now ?? Date.now)(),
       }, instance);
     } catch {
-      // An unreadable sample cannot replace the last measured progress.
+      current = null;
+      clearBootstrapProgress(opts.workspaceId, opts.harnessSlug, instance);
     }
   }
 
   // record initial state right away
   tick();
   const timer = setI(tick, intervalMs);
-  let stopped = false;
   return {
     stop(): void {
       if (stopped) return;
       stopped = true;
+      current = null;
+      clearBootstrapProgress(opts.workspaceId, opts.harnessSlug, instance);
       try {
         clearI(timer as never);
       } catch {

@@ -10,6 +10,9 @@ function snap(opts: Partial<BootstrapProgressSnapshot> = {}): BootstrapProgressS
     highestSeen: 0,
     lastChangeMs: 0,
     caughtUp: false,
+    joinState: 'joining',
+    targetFrontier: 0,
+    headApplied: false,
     ...opts,
   };
 }

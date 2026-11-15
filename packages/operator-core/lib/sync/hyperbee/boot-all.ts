@@ -68,6 +68,7 @@ import { backgroundWorkersEnabled } from '../../background-workers';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { getOwnLogForkState } from './own-log-fork-guard';
 import { observeFallback } from '../../degradation/fallback-observations';
+import { JOIN_TIMEOUTS_MS } from './join-progress';
 
 /**
  * THE SUBSTRATE BOOT REGISTRY — pinned to the realm, not to this module record.
@@ -1019,7 +1020,7 @@ export async function bootSingleHarness(
   // incl. papercusp-workspace::papercusp — the P-059 outage). Until timeout
   // CANCELLATION is implemented, make the budget operator-tunable.
   const envBootTimeout = Number(process.env.PAPERCUSP_SUBSTRATE_BOOT_TIMEOUT_MS);
-  const timeoutMs = opts.timeoutMs ?? (Number.isFinite(envBootTimeout) && envBootTimeout > 0 ? envBootTimeout : 30_000);
+  const timeoutMs = opts.timeoutMs ?? (Number.isFinite(envBootTimeout) && envBootTimeout > 0 ? envBootTimeout : JOIN_TIMEOUTS_MS.substrateBootMs);
   // EI-13317/WI-5481 rig-isolation follow-up: the connected_never_replicated
   // (zombie-socket) DETECTION grace (replication-liveness.ts's
   // DEFAULT_LIVENESS_GRACE_MS) defaults to 180s — structurally larger than

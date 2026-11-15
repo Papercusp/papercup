@@ -56,6 +56,7 @@ import {
   type JoinStepState,
 } from './join-steps';
 import { buildCloneUrl, cleanCloneUrl, redactToken } from './clone-url';
+import { JOIN_TIMEOUTS_MS } from '../sync/hyperbee/join-progress';
 
 // Lazy promisify — import-safe in the operator-vite SPA bundle (node:util is
 // browser-stubbed; a top-level promisify() call crashes at import → blank page).
@@ -815,7 +816,7 @@ export async function joinSharedHarness(opts: JoinOptions): Promise<JoinState> {
       const r = await stepAwaitAdmissionMerge({
         workspaceId: activeWorkspaceId(),
         harnessSlug: opts.slug,
-        timeoutMs: opts.awaitAdmissionTimeoutMs ?? 30_000,
+        timeoutMs: opts.awaitAdmissionTimeoutMs ?? JOIN_TIMEOUTS_MS.admissionWaitMs,
         pollMs: opts.awaitAdmissionPollMs ?? 1_000,
         readAdmittedCountFn: opts.readAdmittedCountFn,
         isBootedFn: opts.isBootedFn,

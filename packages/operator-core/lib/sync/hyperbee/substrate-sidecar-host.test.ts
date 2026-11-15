@@ -115,6 +115,9 @@ describe('substrate sidecar host — store relocation (P-001)', () => {
     expect(r.ownLogKey).toMatch(/^[0-9a-f]{64}$/);
     expect(r.ownLogLength).toBe(0);
     expect(host.storeCount()).toBe(1);
+    expect(await host.methods['substrate:getMergeStatus']({ storeId: r.storeId })).toMatchObject({
+      joinProgress: { joinState: 'joining', caughtUp: false, headApplied: false, targetFrontier: 0 },
+    });
   });
 
   it('bootHarness is idempotent per (workspace, harness) — same storeId', async () => {

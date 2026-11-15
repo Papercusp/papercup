@@ -50,7 +50,11 @@
  * GitHub-binding stand-in, decided by the harness roster.
  */
 import createTestnet from 'hyperdht/testnet.js';
+import { randomBytes } from 'node:crypto';
 import type postgres from 'postgres';
+import type { EpochKey } from '../../sync/hyperbee/hive-epoch-crypto';
+import type { EpochKeyProvider } from '../../sync/hyperbee/hive-epoch-serving';
+import { EpochKeyUnavailableError } from '../../sync/hyperbee/hive-epoch-key-provider';
 import { closeHarnessStore } from '../../sync/hyperbee/corestore';
 import { drainRefusesOutboxTable } from '../../sync/hyperbee/feature-issue-op-keys';
 import type { OpEnvelope } from '../../sync/hyperbee/op-envelope-types';
@@ -59,6 +63,7 @@ import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { runWithCellSql } from '../../shared-pot-loop/cell-scope';
 import {
   bootHivePeer,
+  buildHivePeerRekeyDeps,
   cleanups,
   HIVE_SLUG,
   makeIdentity,
@@ -159,6 +164,8 @@ export interface HarnessPeer {
   readonly identity: ReturnType<typeof makeIdentity>;
   /** The peer's own durable database (survives a restart). */
   readonly db: FreshPgDb;
+  /** This peer's fixture grant, retained across its restarts; never reads host credentials. */
+  readonly epochKeyProvider: EpochKeyProvider;
   /** The peer's persistent storage directory (set at first boot). */
   root: string | null;
   /** The live instance, or null while stopped. */
@@ -344,9 +351,19 @@ export interface MultiPeerHarness {
  */
 export async function createMultiPeerHarness(
   names: string[],
-  opts: { swarmTiming?: SwarmTimingOverride; run?: RunLedger } = {},
+  opts: {
+    swarmTiming?: SwarmTimingOverride;
+    run?: RunLedger;
+    joinProgressNow?: () => number;
+    mergePollMs?: number;
+    /** Hold the actual projection apply, without inventing another delivery fault kind. */
+    beforeApply?: (peer: string, op: OpEnvelope) => Promise<void>;
+  } = {},
 ): Promise<MultiPeerHarness> {
   const swarmTiming = opts.swarmTiming ?? HARNESS_SWARM_TIMING;
+  // One fresh epoch per harness; each peer receives its own copy as a fixture grant.
+  // Distribution/rotation is covered by the epoch suites, not this core protocol rig.
+  const epochKey = randomBytes(32);
   const testnet = await createTestnet(3);
   cleanups.push(async () => {
     try {
@@ -432,6 +449,7 @@ export async function createMultiPeerHarness(
           record('delay', p.name, { op: opIdentity(op), from: src ?? null, heldCount: p.held.length });
           return true;
         }
+        await opts.beforeApply?.(p.name, op);
         return deliver(p, { op, inner });
       };
   }
@@ -491,6 +509,7 @@ export async function createMultiPeerHarness(
     // The incarnation advances BEFORE boot: ops and admission checks that arrive while
     // the instance is still booting belong to the new instance, not the destroyed one.
     p.incarnation += 1;
+    const rekeyDeps = await buildHivePeerRekeyDeps(p.epochKeyProvider);
     const booted = await runWithCellSql(p.db.sql, () => bootHivePeer({
       testnetBootstrap: testnet.bootstrap,
       rootPrefix: `v1core-${p.name}-`,
@@ -514,6 +533,16 @@ export async function createMultiPeerHarness(
       wrapSwarm: wrapSwarmFor(p),
       wrapApply: wrapApplyFor(p),
       loadRevoked: async () => new Set(revokedPubkeys),
+      rekeyDeps,
+      joinProgressNow: opts.joinProgressNow,
+      mergePollMs: opts.mergePollMs,
+      // This fixture captures only Hive members/settings, so its receipt census
+      // is empty. Snapshot crypto still uses this peer's real isolated grant.
+      loadOwnCompactionGovernorReceiptKeys: async () => [],
+      loadOwnCompactionEnvelopeKeys: async () => ({
+        potId: HIVE_SLUG,
+        keys: [{ epoch: 1, key: await p.epochKeyProvider.keyForEpoch(HIVE_SLUG, 1) }],
+      }),
     }));
     // Every later call on this peer (merge, drain, revoke, close) runs in its own
     // cell scope too, whoever makes it: the harness, P-005's suite or the test body.
@@ -535,11 +564,18 @@ export async function createMultiPeerHarness(
     await db.sql.unsafe(STAMP_OP_HLC_DDL);
     await seedHive(db.sql);
     await seedHiveRegistry(db.sql);
+    const grantedKey = Uint8Array.from(epochKey) as EpochKey;
     const p: HarnessPeer = {
       name,
       userId,
       identity: makeIdentity(name, userId, `kc-${name}`),
       db,
+      epochKeyProvider: {
+        keyForEpoch: async (potId, epoch) => {
+          if (potId !== HIVE_SLUG || epoch !== 1) throw new EpochKeyUnavailableError(potId, epoch);
+          return grantedKey;
+        },
+      },
       root: null,
       current: null,
       incarnation: 0,

@@ -81,6 +81,7 @@ export function makeFakeBootedHandle(opts: {
     },
     admitted,
     mergeNow: vi.fn(async () => 0),
+    joinProgress: vi.fn(() => null),
     // P-019 (D-012). Deliberately reports `appended: false` rather than faking a
     // landed snapshot: no test using this fixture exercises the real producer, and a
     // fixture that claims a snapshot exists would let a sparse-cut assertion pass

@@ -6,8 +6,16 @@
  * themselves (R-1..R-9) live in P-005's suite, not here.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { HIVE_SLUG, pollUntil, WORKSPACE_ID } from '../../sync/hyperbee/__tests__/_hive-substrate-rig';
+import { buildHivePeerRekeyDeps, HIVE_SLUG, pollUntil, WORKSPACE_ID } from '../../sync/hyperbee/__tests__/_hive-substrate-rig';
+import type { OpEnvelope } from '../../sync/hyperbee/op-envelope-types';
+import { resolveLocalGithubIdentity } from '../../identity/resolve-local-github-identity';
 import { createMultiPeerHarness, harnessAfterEach, type MultiPeerHarness } from './_multi-peer-harness';
+
+vi.mock('../../identity/resolve-local-github-identity', () => ({
+  resolveLocalGithubIdentity: vi.fn(async () => {
+    throw new Error('isolated multi-peer fixture must not read host GitHub identity');
+  }),
+}));
 
 // Each peer boots inside its own cell scope (runWithCellSql in the harness). Route every
 // getOrgPg() to the current peer's throwaway database, and refuse any call made outside a
@@ -46,6 +54,25 @@ describe('v1-core multi-peer harness (P-002)', () => {
     'three peers replicate a multi-key fixture and settle to zero pending work',
     async () => {
       const h = await createMultiPeerHarness(['a', 'b', 'c']);
+      expect(resolveLocalGithubIdentity).not.toHaveBeenCalled();
+      const aKey = await h.peer('a').epochKeyProvider.keyForEpoch(HIVE_SLUG, 1);
+      const bKey = await h.peer('b').epochKeyProvider.keyForEpoch(HIVE_SLUG, 1);
+      expect(bKey).toEqual(aKey);
+      expect(bKey).not.toBe(aKey);
+      await expect(h.peer('b').epochKeyProvider.keyForEpoch(HIVE_SLUG, 2)).rejects.toThrow(/epoch/);
+      const sender = await buildHivePeerRekeyDeps(h.peer('a').epochKeyProvider);
+      const receiver = await buildHivePeerRekeyDeps(h.peer('b').epochKeyProvider);
+      const plain = {
+        type: 'put' as const, table: 'harness-features', hbKey: 'fixture-key',
+        value: { title: 'secret' }, ts: 1, schema_version: 1,
+      };
+      const encrypted = await sender.epochEncrypt.encryptOp(plain);
+      expect(encrypted?.epoch).toBe(1);
+      expect(encrypted?.value).not.toEqual(plain.value);
+      const applied = vi.fn(async () => true);
+      await expect(receiver.epochGate(applied)({ ...plain, ...encrypted } as OpEnvelope)).resolves.toBe(true);
+      expect(applied).toHaveBeenCalledWith(expect.objectContaining({ value: plain.value }));
+      expect(await receiver.hasEpochKey(HIVE_SLUG, 2)).toBe(false);
       await h.writeSetting('a', 'k1', 'one');
       await h.writeSetting('b', 'k2', { n: 2 });
       await h.writeSetting('a', 'k1', 'one-changed');

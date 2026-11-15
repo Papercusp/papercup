@@ -34,6 +34,7 @@ import type { BootedAnnounceIdentity, BootedHarnessHandle, LocalWriteOp, OwnComp
 import type { OwnLog, PeerLogOp } from './peer-log';
 import type { ProduceSnapshotResult } from './log-snapshot';
 import type { AdmittedLog } from './read-merge';
+import type { BootstrapProgressSnapshot } from './bootstrap-progress';
 import type { SwarmHandle } from './swarm';
 import type { SignedAnnounce } from './announce';
 import type { AdmissionResult } from './read-admission';
@@ -266,6 +267,14 @@ export class RemoteBootedHarnessHandle implements BootedHarnessHandle {
       storeId: this.storeId,
     });
     return r?.mergedOps ?? 0;
+  }
+
+  /** Read the relocated handle's measurements through the existing status RPC. */
+  async joinProgress(): Promise<BootstrapProgressSnapshot | null> {
+    const result = await this.client.call<{ joinProgress?: BootstrapProgressSnapshot | null }>(
+      'substrate:getMergeStatus', { storeId: this.storeId },
+    );
+    return result?.joinProgress ?? null;
   }
 
   /**

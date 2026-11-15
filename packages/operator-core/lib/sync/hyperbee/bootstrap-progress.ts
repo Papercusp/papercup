@@ -89,13 +89,20 @@ export function recordJoinProgress(
     mergedOps: progress.appliedFrontier,
     highestSeen: progress.highestApplied,
     lastChangeMs: progress.lastAdvanceAtMs,
-    caughtUp: progress.state === 'complete',
+    caughtUp: progress.state === 'complete' && sample.headApplied &&
+      sample.appliedFrontier >= sample.targetFrontier && sample.readyForCompletion !== false,
     joinState: progress.state,
     targetFrontier: progress.targetFrontier,
     headApplied: progress.headApplied,
   };
   tracker.set(k, { tracker: instance, snapshot });
   return { ...snapshot };
+}
+
+/** Remove only this handle's current view; a sibling handle may have published newer data. */
+export function clearBootstrapProgress(workspaceId: string, harnessSlug: string, owner: JoinProgressTracker): void {
+  const k = key(workspaceId, harnessSlug);
+  if (tracker.get(k)?.tracker === owner) tracker.delete(k);
 }
 
 /**

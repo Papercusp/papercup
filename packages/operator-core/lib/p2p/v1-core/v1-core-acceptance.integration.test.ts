@@ -30,6 +30,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { Sql } from 'postgres';
 import { HIVE_SLUG, pollUntil, WORKSPACE_ID } from '../../sync/hyperbee/__tests__/_hive-substrate-rig';
 import { assertReplicationRule, replicationRuleFor } from '../../sync/hyperbee/merge-rules';
+import { DEFAULT_JOIN_STALL_AFTER_MS, JOIN_TIMEOUTS_MS, longestJoinTimeoutMs } from '../../sync/hyperbee/join-progress';
 import {
   createMultiPeerHarness,
   harnessAfterEach,
@@ -291,6 +292,131 @@ describe("R-1: a joiner receives the hive's existing rows", () => {
     },
     MP_TIMEOUT_MS,
   );
+});
+
+/** Real head snapshot followed by individually held tail applies. The virtual clock
+ * belongs only to join progress, so advancing it cannot expire a wire/PG operation. */
+async function slowBackfillJoin() {
+  let now = 0;
+  let open = false;
+  const waiting: Array<() => void> = [];
+  const h = await createMultiPeerHarness(['a'], {
+    run: RUN,
+    joinProgressNow: () => now,
+    mergePollMs: 10,
+    beforeApply: async (peer, op) => {
+      if (peer === 'b' && op.hbKey?.includes('r9-backfill-') && !open) {
+        await new Promise<void>((resolve) => waiting.push(resolve));
+      }
+    },
+  });
+  const releaseAll = () => {
+    open = true;
+    for (const release of waiting.splice(0)) release();
+  };
+  try {
+    for (let i = 0; i < 16; i += 1) await h.writeSetting('a', 'r9-current', i);
+    await h.writeSetting('a', 'r9-stable', 'readable from the head');
+    await h.settle();
+    const headRows = (await h.dump('a')).settings;
+    const snapshot = await h.live('a').handle.produceHeadSnapshotNow();
+    expect(snapshot.appended).toBe(true);
+    expect(snapshot.rowCount).toBe(headRows.length);
+    expect(snapshot.rowCount).toBeLessThan(snapshot.coversUpTo);
+    const tailCount = 8;
+    for (let i = 0; i < tailCount; i += 1) await h.writeSetting('a', `r9-backfill-${i}`, i);
+    await h.live('a').drain();
+    await h.addPeer('b');
+    const held = await pollUntil(async () => waiting.length > 0 || undefined, { timeoutMs: 60_000, intervalMs: 10 });
+    if (!held) {
+      throw new Error(`R-9 tail never reached its apply throttle: ${JSON.stringify({
+        progress: await h.live('b').handle.joinProgress(),
+        pending: await h.pendingWork(), arrivals: h.arrivals, admissionChecks: h.admissionChecks,
+      })}`);
+    }
+    return {
+      h, headRows, tailCount, waiting, releaseAll,
+      advance: (ms: number) => { now += ms; return now; },
+    };
+  } catch (error) {
+    releaseAll();
+    throw error;
+  }
+}
+
+describe('R-9: progress-based join from a small head snapshot', () => {
+  const expectedTimerWarning = /^\[scheduled-registry\] hyperbee-merge-poll (?:tick still running after \d+ms \(\d+ fire\(s\) skipped by the re-entrancy guard, interval 10ms\)|long tick finished after \d+ms \(\d+ fire\(s\) skipped while it ran, interval 10ms\))$/;
+  let timerWarnings: string[];
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    timerWarnings = [];
+    const realWarn = console.warn.bind(console);
+    warn = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      if (args.length === 1 && expectedTimerWarning.test(String(args[0]))) timerWarnings.push(String(args[0]));
+      else realWarn(...args);
+    });
+  });
+  afterEach(async () => {
+    try {
+      // Keep the exact warning assertion active through the held pass's teardown.
+      await harnessAfterEach();
+      expect(timerWarnings.some((warning) => warning.includes('re-entrancy guard'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('R-9: head rows stay readable while every tail advance passes every join deadline without failure', async () => {
+    const run = await slowBackfillJoin();
+    const { h, headRows, tailCount, waiting } = run;
+    try {
+      const handle = h.live('b').handle;
+      let progress = (await handle.joinProgress())!;
+      const readableHead = (await h.dump('b')).settings;
+      const headDiagnostic = JSON.stringify({ progress, readableHead, expectedHead: headRows, pending: await h.pendingWork() });
+      expect(readableHead, headDiagnostic).toEqual(headRows);
+      expect(progress.joinState, headDiagnostic).toBe('usable');
+      expect(progress.mergedOps).toBeLessThan(progress.targetFrontier);
+      expect(await pollUntil(async () => timerWarnings.length > 0 || undefined, { timeoutMs: 60_000, intervalMs: 10 })).toBe(true);
+      // The old overwritten values were summarized, rather than replayed before usability.
+      expect(h.arrivals.filter((arrival) => arrival.receiver === 'b' && arrival.op.includes('r9-current'))).toHaveLength(1);
+      for (let i = 0; i < tailCount; i += 1) {
+        expect(await pollUntil(async () => waiting.length > 0 || undefined, { timeoutMs: 60_000, intervalMs: 10 })).toBe(true);
+        const before = progress.mergedOps;
+        const virtualNow = run.advance(longestJoinTimeoutMs() + 1);
+        for (const deadline of Object.values(JOIN_TIMEOUTS_MS)) expect(virtualNow).toBeGreaterThan(deadline);
+        waiting.shift()!();
+        const advanced = await pollUntil(async () => {
+          const sample = await handle.joinProgress();
+          return sample && sample.mergedOps > before ? sample : undefined;
+        }, { timeoutMs: 60_000, intervalMs: 10 });
+        expect(advanced).toBeTruthy();
+        progress = advanced!;
+        expect(progress.joinState).not.toBe('failed');
+        expect((await h.dump('b')).settings.filter((row) => !row.key.startsWith('r9-backfill-'))).toEqual(headRows);
+      }
+      expect(progress.joinState).toBe('complete');
+      expect(progress.caughtUp).toBe(true);
+      expect((await h.dump('b')).settings).toEqual((await h.dump('a')).settings);
+    } finally {
+      run.releaseAll();
+    }
+  }, MP_TIMEOUT_MS);
+
+  it('R-9 control: a frozen applied frontier reports stalled, then recovers when backfill resumes', async () => {
+    const run = await slowBackfillJoin();
+    try {
+      const handle = run.h.live('b').handle;
+      const before = (await handle.joinProgress())!;
+      run.advance(DEFAULT_JOIN_STALL_AFTER_MS + 1);
+      expect(await handle.joinProgress()).toMatchObject({ joinState: 'failed', caughtUp: false, mergedOps: before.mergedOps });
+      run.releaseAll();
+      await run.h.settle();
+      expect(await handle.joinProgress()).toMatchObject({ joinState: 'complete', caughtUp: true });
+    } finally {
+      run.releaseAll();
+    }
+  }, MP_TIMEOUT_MS);
 });
 
 describe('R-3: a peer offline during writes catches up to the final row set', () => {

@@ -111,6 +111,31 @@ describe('startBootstrapProgressPoller', () => {
     expect(getBootstrapProgress('ws-1', 'papercup')).toBeNull();
     poller.stop();
   });
+  it('an unreadable measurement clears a previous complete view and a closed handle cannot republish it', () => {
+    let readable = true;
+    const poller = startBootstrapProgressPoller({
+      workspaceId: 'ws', harnessSlug: 'h',
+      readProgress: () => {
+        if (!readable) throw new Error('store unavailable');
+        return { headApplied: true, appliedFrontier: 1, targetFrontier: 1 };
+      },
+      setIntervalImpl: ((() => 0) as unknown as typeof setInterval),
+      clearIntervalImpl: (() => {}) as unknown as typeof clearInterval,
+    });
+    expect(poller.snapshot()?.caughtUp).toBe(true);
+    readable = false;
+    poller.pollOnce();
+    expect(poller.snapshot()).toBeNull();
+    expect(getBootstrapProgress('ws', 'h')).toBeNull();
+    readable = true;
+    poller.pollOnce();
+    expect(poller.snapshot()?.caughtUp).toBe(true);
+    poller.stop();
+    poller.pollOnce();
+    expect(poller.snapshot()).toBeNull();
+    expect(getBootstrapProgress('ws', 'h')).toBeNull();
+  });
+
   it('keeps separate handle state for the same workspace/slug and never completes before admission', () => {
     let now = 0;
     let applied = 1;

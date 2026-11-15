@@ -168,6 +168,18 @@ describe('RemoteBootedHarnessHandle (P-001)', () => {
     expect(calls[0].params).toMatchObject({ storeId: 'store-1' });
   });
 
+  it('reads join progress from the existing merge-status RPC and leaves absent measurements unknown', async () => {
+    const progress = {
+      workspaceId: 'ws', harnessSlug: 'h', mergedOps: 3, highestSeen: 3,
+      lastChangeMs: 1, caughtUp: false, joinState: 'usable', targetFrontier: 10, headApplied: true,
+    };
+    const { client, calls } = makeClient((method) => method === 'substrate:getMergeStatus' ? { joinProgress: progress } : undefined);
+    const h = makeHandle(client);
+    await expect(h.joinProgress()).resolves.toEqual(progress);
+    expect(calls[0]).toMatchObject({ method: 'substrate:getMergeStatus', params: { storeId: 'store-1' } });
+    await expect(makeHandle(makeClient(() => ({})).client).joinProgress()).resolves.toBeNull();
+  });
+
   it('revoke + rekey route to their IPC methods', async () => {
     const { client, calls } = makeClient();
     const h = makeHandle(client);

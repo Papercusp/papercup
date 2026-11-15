@@ -30,7 +30,7 @@ import { moduleRepoRoot } from '../../../module-repo-root';
 import type postgres from 'postgres';
 import createTestnet from 'hyperdht/testnet.js';
 import Hyperswarm from 'hyperswarm';
-import { bootHarnessSubstrate, type BootedHarnessHandle } from '../boot';
+import { bootHarnessSubstrate, type BootedHarnessHandle, type BootHarnessOpts } from '../boot';
 import { type HyperswarmLike } from '../swarm';
 import type { OpEnvelope } from '../op-envelope-types';
 import { _resetBootHistoryForTests } from '../boot-history';
@@ -41,6 +41,11 @@ import { buildHiveMembersProjection } from '../projections/hive-members';
 import { buildHiveSettingsProjection } from '../projections/hive-settings';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { drainCleanupsBounded } from './_cleanup-bounded';
+import type { HiveRekeyBootDeps } from '../hive-epoch-boot-deps';
+import { resolveHiveEpochCrypto, type EpochKeyProvider } from '../hive-epoch-serving';
+import { buildEpochDecryptGate, buildEpochEncryptCapability, buildEpochKeyResolver } from '../hive-epoch-op-gate';
+import { PendingEpochContent } from '../pending-epoch-content';
+import { EpochKeyUnavailableError } from '../hive-epoch-key-provider';
 
 const REPO_ROOT = moduleRepoRoot(import.meta.url);
 const SQL_DIR = resolve(REPO_ROOT, 'libs/papercusp/libs/db/sql');
@@ -434,6 +439,30 @@ export interface HivePeer {
 /** Real-apply sink for one peer, as the substrate calls it. */
 export type HivePeerApply = (op: OpEnvelope) => Promise<boolean>;
 
+/** Real crypto/gates over an isolated peer's granted epoch-1 key, without host identity or keychain I/O. */
+export async function buildHivePeerRekeyDeps(provider: EpochKeyProvider): Promise<HiveRekeyBootDeps> {
+  const crypto = await resolveHiveEpochCrypto(true);
+  const resolveKey = buildEpochKeyResolver({ crypto, provider, isOwner: async () => false });
+  const pending = new PendingEpochContent();
+  return {
+    potHomeSlug: HIVE_SLUG,
+    pending,
+    epochGate: buildEpochDecryptGate({ crypto, resolveKey, potId: HIVE_SLUG, pending }),
+    epochEncrypt: buildEpochEncryptCapability({
+      crypto, resolveKey, potId: HIVE_SLUG, getCurrentEpoch: async () => 1,
+    }),
+    hasEpochKey: async (potId, epoch) => {
+      try {
+        await provider.keyForEpoch(potId, epoch);
+        return true;
+      } catch (error) {
+        if (error instanceof EpochKeyUnavailableError) return false;
+        throw error;
+      }
+    },
+  };
+}
+
 /**
  * Boot one real substrate peer of the rig's Hive. The optional seams below exist
  * for the p2p v1-core multi-peer harness (p2p-v1-core-release-2026-11-13 P-002);
@@ -456,7 +485,11 @@ export async function bootHivePeer(opts: {
   wrapApply?: (inner: HivePeerApply, ctx: { readonly ownLogKeyHex: string }) => HivePeerApply;
   /** Revoked device-pubkey source. Default: nothing is revoked. */
   loadRevoked?: () => Promise<Set<string>>;
-}): Promise<HivePeer> {
+  /** Isolated re-key dependencies; omitted callers retain the production boot composition. */
+  rekeyDeps?: HiveRekeyBootDeps;
+  joinProgressNow?: () => number;
+  mergePollMs?: number;
+} & Pick<BootHarnessOpts, 'loadOwnCompactionGovernorReceiptKeys' | 'loadOwnCompactionEnvelopeKeys'>): Promise<HivePeer> {
   const root = opts.root ?? makeWorkspaceRoot(opts.rootPrefix);
   const rawSwarm = makeSwarm(opts.testnetBootstrap) as HyperswarmLike & { connections: Set<unknown> };
   let handle: BootedHarnessHandle | undefined;
@@ -477,11 +510,16 @@ export async function bootHivePeer(opts: {
       }
       return apply(op);
     },
-    mergePollMs: 0,
+    mergePollMs: opts.mergePollMs ?? 0,
+    allowMergePollTimerInTest: opts.mergePollMs !== undefined && opts.mergePollMs > 0,
+    loadOwnCompactionGovernorReceiptKeys: opts.loadOwnCompactionGovernorReceiptKeys,
+    loadOwnCompactionEnvelopeKeys: opts.loadOwnCompactionEnvelopeKeys,
+    joinProgressNow: opts.joinProgressNow,
     pendingRetryMs: 0,
     reverifyIntervalMs: 0,
     loadRevokedOverride: opts.loadRevoked ?? (async () => new Set()),
     announceIdentityOverride: opts.identity.override,
+    rekeyDepsOverride: opts.rekeyDeps,
     swarmRefreshMs: opts.swarmTiming?.refreshMs,
     swarmFastWindowMs: opts.swarmTiming?.fastWindowMs,
     swarmSlowRefreshMs: opts.swarmTiming?.slowRefreshMs,
@@ -491,7 +529,11 @@ export async function bootHivePeer(opts: {
     await handle?.close();
     await closeHarnessStore({ workspaceRoot: root, harnessSlug: HIVE_SLUG });
   });
-  return { handle, pg: opts.pg, identity: opts.identity, drain: () => drainOutboxOnce(handle!, opts.pg), rawSwarm, root };
+  return {
+    handle, pg: opts.pg, identity: opts.identity,
+    drain: () => drainOutboxOnce(handle!, opts.pg, { epochEncrypt: opts.rekeyDeps?.epochEncrypt }),
+    rawSwarm, root,
+  };
 }
 
 /** Insert the Hive identity row (FK parent for hive_members) into a peer's DB. */

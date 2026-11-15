@@ -52,6 +52,8 @@ export interface JoinProgressSample {
   appliedFrontier: number;
   /** Ops the remote writers are known to hold, summed over the same logs. */
   targetFrontier: number;
+  /** False while admission, snapshot seeding or deferred materialization is unresolved. */
+  readyForCompletion?: boolean;
 }
 
 export interface JoinProgressSnapshot {
@@ -110,7 +112,8 @@ export function createJoinProgressTracker(opts: { stallAfterMs?: number } = {}):
     let state: JoinState;
     let completedAtMs = prev?.completedAtMs ?? null;
     let failedAtMs: number | null = null;
-    if (prev?.state === 'complete' || (headApplied && sample.appliedFrontier >= sample.targetFrontier)) {
+    if (prev?.state === 'complete' ||
+        (headApplied && sample.appliedFrontier >= sample.targetFrontier && sample.readyForCompletion !== false)) {
       state = 'complete';
       completedAtMs ??= nowMs;
     } else if (!advanced && nowMs - lastAdvanceAtMs > stallAfterMs) {

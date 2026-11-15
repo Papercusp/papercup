@@ -171,6 +171,42 @@ afterEach(() => {
 const NO_AGE_BOUND = { maxMs: 60_000 };
 
 describe('P-002 step 2: batched fold commits', () => {
+  it.each([1, 10])('publishes only committed progress while a later apply is held (batch size %i)', async (maxOps) => {
+    const db = new FakeDb();
+    const cursor = createMergeCursor();
+    const write = sink(db);
+    let entered!: () => void;
+    const nextApply = new Promise<void>((resolve) => { entered = resolve; });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const persist = vi.fn();
+    const pass = mergeAdmittedLogsIncremental([memLog('A', [put('a', 1, 1), put('b', 2, 2), put('c', 3, 3)])], cursor, {
+      applyImpl: async (op) => {
+        if (op.hbKey === 'c') {
+          entered();
+          await held;
+        }
+        return write(op);
+      },
+      batchApply: { maxOps, ...NO_AGE_BOUND },
+      getTimeoutMs: 0,
+      applyTimeoutMs: 0,
+      onCursorAdvance: persist,
+    });
+    try {
+      await nextApply;
+      expect([...db.committed.keys()]).toEqual(maxOps === 1 ? ['a', 'b'] : []);
+      expect(cursor.positions.get('A')).toBe(maxOps === 1 ? 2 : 0);
+      expect(persist).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await pass;
+    }
+    expect([...db.committed.keys()]).toEqual(['a', 'b', 'c']);
+    expect(cursor.positions.get('A')).toBe(3);
+    expect(persist).toHaveBeenCalledTimes(1);
+  });
+
   it('leaves the same rows, cursor and winners as the serial fold, including LWW losers', async () => {
     // 40 keys, 3 versions each, written newest-first for every third key so the
     // older versions are LWW losers that must be skipped inside a batch too.

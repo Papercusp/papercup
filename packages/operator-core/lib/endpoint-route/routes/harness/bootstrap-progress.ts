@@ -16,6 +16,7 @@
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getBootstrapProgress } from '../../../sync/hyperbee/bootstrap-progress';
+import { getBootedHarness } from '../../../sync/hyperbee/boot-all';
 
 const get = defineTool({
   method: 'GET',
@@ -24,7 +25,8 @@ const get = defineTool({
   async handler(_req, ctx) {
     const slug = ctx.params.slug as string;
     const workspaceId = activeWorkspaceId();
-    const progress = getBootstrapProgress(workspaceId, slug);
+    const handle = getBootedHarness(workspaceId, slug);
+    const progress = handle ? await handle.joinProgress() : getBootstrapProgress(workspaceId, slug);
     return Response.json({ progress });
   },
 });

@@ -20,6 +20,7 @@
  */
 
 import type { CSSProperties, ReactNode } from 'react';
+import type { JoinState } from '@papercusp/operator-core/lib/sync/hyperbee/join-progress';
 
 const PILL_BASE: CSSProperties = {
   display: 'inline-flex',
@@ -73,6 +74,10 @@ export interface BootstrapProgressIndicatorProps {
   totalOps: number;
   /** Ops merged so far. */
   mergedOps: number;
+  /** Authoritative join state when supplied by the substrate progress endpoint. */
+  joinState?: JoinState;
+  /** Current frontier/materialization verdict; join completion itself is historical. */
+  caughtUp?: boolean;
   /** Show the small dismiss x to suppress the indicator. */
   onDismiss?: () => void;
 }
@@ -80,12 +85,18 @@ export interface BootstrapProgressIndicatorProps {
 export function BootstrapProgressIndicator(
   props: BootstrapProgressIndicatorProps,
 ): ReactNode {
-  const { totalOps, mergedOps, onDismiss } = props;
+  const { totalOps, mergedOps, onDismiss, joinState } = props;
 
-  if (totalOps === 0) return null;
+  if (totalOps === 0 && !joinState) return null;
 
-  const caughtUp = mergedOps >= totalOps && totalOps > 0;
+  const caughtUp = props.caughtUp ?? (joinState
+    ? joinState === 'complete' && mergedOps >= totalOps
+    : mergedOps >= totalOps && totalOps > 0);
   const pct = totalOps > 0 ? Math.min(100, (mergedOps / totalOps) * 100) : 0;
+
+  if (joinState === 'failed') {
+    return <span style={SYNCING_PILL} data-testid="bootstrap-progress-indicator" data-state="failed">Sync stalled</span>;
+  }
 
   if (caughtUp) {
     return (
@@ -123,7 +134,7 @@ export function BootstrapProgressIndicator(
         }
       `}</style>
       <span style={SPINNER} />
-      Syncing {mergedOps}/{totalOps}
+      {joinState === 'joining' ? 'Joining' : `Syncing ${mergedOps}/${totalOps}`}
       {onDismiss ? (
         <button
           type="button"

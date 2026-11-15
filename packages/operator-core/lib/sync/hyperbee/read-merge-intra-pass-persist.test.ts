@@ -76,6 +76,42 @@ afterEach(() => {
   resetCursorPersistWarnThrottleForTests();
 });
 
+describe('P-004 — committed progress during an unfinished pass', () => {
+  it('exposes committed rows before the next apply resolves without persisting each operation', async () => {
+    const cursor = createMergeCursor();
+    const committed = new Set<string>();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const nextApply = new Promise<void>((resolve) => { entered = resolve; });
+    const persist = vi.fn();
+    const pass = mergeAdmittedLogsIncremental([memLog('A', [put(0), put(1)])], cursor, {
+      applyImpl: async (op) => {
+        if (op.hbKey === 'k1') {
+          entered();
+          await held;
+        }
+        committed.add(op.hbKey!);
+        return true;
+      },
+      getTimeoutMs: 0,
+      applyTimeoutMs: 0,
+      onCursorAdvance: persist,
+    });
+    try {
+      await nextApply;
+      expect([...committed]).toEqual(['k0']);
+      expect(cursor.positions.get('A')).toBe(1);
+      expect(persist).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await pass;
+    }
+    expect(cursor.positions.get('A')).toBe(2);
+    expect(persist).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('WI-10002474 — intra-pass cursor persist with a previous-pass failure', () => {
   it('a previous-pass failure the pass has applied past is cleared BEFORE the intra-pass persist', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

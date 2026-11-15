@@ -77,6 +77,26 @@ describe('BootstrapProgressIndicator — P-066', () => {
     expect(onDismiss).toHaveBeenCalledOnce();
   });
 
+  it('an unresolved head cannot render up to date from matching counts', () => {
+    render(<BootstrapProgressIndicator totalOps={10} mergedOps={10} joinState="joining" />);
+    expect(screen.getByTestId('bootstrap-progress-indicator').getAttribute('data-state')).toBe('syncing');
+    expect(screen.getByText('Joining')).toBeTruthy();
+  });
+
+  it('does not call a completed join up to date while new content or materialization is pending', () => {
+    const { rerender } = render(<BootstrapProgressIndicator totalOps={11} mergedOps={10} joinState="complete" />);
+    expect(screen.getByTestId('bootstrap-progress-indicator').getAttribute('data-state')).toBe('syncing');
+    rerender(<BootstrapProgressIndicator totalOps={10} mergedOps={10} joinState="complete" caughtUp={false} />);
+    expect(screen.getByTestId('bootstrap-progress-indicator').getAttribute('data-state')).toBe('syncing');
+  });
+
+  it('shows a stalled join and an admitted empty completion', () => {
+    const { rerender } = render(<BootstrapProgressIndicator totalOps={10} mergedOps={3} joinState="failed" />);
+    expect(screen.getByText('Sync stalled')).toBeTruthy();
+    rerender(<BootstrapProgressIndicator totalOps={0} mergedOps={0} joinState="complete" />);
+    expect(screen.getByTestId('bootstrap-progress-indicator').getAttribute('data-state')).toBe('caught-up');
+  });
+
   it('tooltip includes percentage', () => {
     render(<BootstrapProgressIndicator totalOps={10} mergedOps={3} />);
     const el = screen.getByTestId('bootstrap-progress-indicator');

@@ -65,6 +65,13 @@ describe('join-progress', () => {
     expect(t.observe({ nowMs: T0 + 10_000, headApplied: true, appliedFrontier: 10, targetFrontier: 30 }).state).toBe('complete');
   });
 
+  it('an applied head cannot complete while admission or materialization is unresolved', () => {
+    const t = createJoinProgressTracker();
+    t.observe({ nowMs: T0, headApplied: true, appliedFrontier: 1, targetFrontier: 2 });
+    expect(t.observe({ nowMs: T0 + 1, headApplied: false, appliedFrontier: 2, targetFrontier: 2, readyForCompletion: false }).state).toBe('usable');
+    expect(t.observe({ nowMs: T0 + 2, headApplied: true, appliedFrontier: 2, targetFrontier: 2, readyForCompletion: true }).state).toBe('complete');
+  });
+
   it('an empty hive completes as soon as the head is applied', () => {
     const t = createJoinProgressTracker();
     expect(t.observe({ nowMs: T0, headApplied: true, appliedFrontier: 0, targetFrontier: 0 }).state).toBe('complete');

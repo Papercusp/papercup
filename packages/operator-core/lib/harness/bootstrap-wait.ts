@@ -21,6 +21,7 @@
  */
 
 import type { BootstrapProgressSnapshot } from '../sync/hyperbee/bootstrap-progress';
+import { JOIN_TIMEOUTS_MS } from '../sync/hyperbee/join-progress';
 
 export interface WaitForBootstrapOpts {
   workspaceId: string;
@@ -51,7 +52,7 @@ export interface WaitForBootstrapResult {
   substrateInactive: boolean;
 }
 
-export const DEFAULT_BOOTSTRAP_TIMEOUT_MS = 120_000;
+export const DEFAULT_BOOTSTRAP_TIMEOUT_MS = JOIN_TIMEOUTS_MS.bootstrapWaitMs;
 export const DEFAULT_BOOTSTRAP_POLL_MS = 1_000;
 
 export async function waitForHyperbeeBootstrap(

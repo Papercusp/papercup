@@ -651,7 +651,7 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
     const mergedOps = await rec.booted.mergeNow();
     return { mergedOps, durationMs: Date.now() - started };
   }
-  function handleGetMergeStatus(params: unknown): unknown {
+  async function handleGetMergeStatus(params: unknown): Promise<unknown> {
     const p = params as { storeId: string };
     const rec = requireRecord(p.storeId);
     return {
@@ -660,6 +660,7 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
       totalOpsProcessed: null,
       admittedPeerCount: rec.booted?.admitted.size ?? 0,
       nextMergeIn: 1000,
+      joinProgress: rec.booted ? await rec.booted.joinProgress() : null,
     };
   }
   function handleGetAdmittedLogs(params: unknown): unknown {
