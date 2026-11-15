@@ -562,6 +562,13 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     // owner it disarmed. No spawn, no dispatch, no wake: a fire cannot bill turns.
     why: 'Disarms turns-stalled loop routines and broadcasts an inject-only fleet notice — no spawn/dispatch/wake',
   },
+  'system:stuck-work-waiting-check': {
+    spend: 'llm',
+    // stuck-work/waiting-check-adapters.ts notifies each flagged non-human recipient via
+    // wakeRecipients(..., { requiredWake: true }). A required wake resumes a parked
+    // session, so a single fire can directly bill a model turn.
+    why: 'Wakes the responsible agent of a stuck wait (requiredWake), which can bill a model turn',
+  },
   'system:sweep-wedged-pty-hosts': {
     spend: 'none',
     // Reads local discovery files + bounded ledger tails and, at most, writes ONE
