@@ -248,6 +248,19 @@ dependency_generation_verification_input_fingerprint() {
   } | dependency_generation_sha256
 }
 
+# Dependency verification reuses the input index, with selected graphs in a
+# distinct namespace. Native keys attest an additional source/build closure and
+# are never a substitute for this exact dependency scope (or vice versa).
+dependency_generation_verification_selector_key() {
+  local input
+  input="$(dependency_generation_verification_input_fingerprint "$1")" || return $?
+  if [ "${DEPENDENCY_GENERATION_SCOPE_MODE:-full}" = selected ]; then
+    printf 'scoped-%s\n' "$input"
+  else
+    printf '%s\n' "$input"
+  fi
+}
+
 # Filter only the admission view. Callers still measure/extract the complete
 # source input manifest, including independent apps, before applying this scope.
 dependency_generation_verification_manifest() {
@@ -1200,8 +1213,9 @@ dependency_generation_publish_input_selector() {
   local generation_root="$1" input_fingerprint="$2"
   local selector_dir selector tmp token rc=0
   if [ "${DEPENDENCY_GENERATION_SCOPE_MODE:-full}" != full ]; then
-    # Selected publications may only receive a native source-bound selector.
-    [[ "$input_fingerprint" =~ ^native-[a-f0-9]{64}$ ]] || return 0
+    # Keep selected dependency and native source selectors separate from the
+    # full-release input namespace. Both retain the selected marker/token check.
+    [[ "$input_fingerprint" =~ ^(native|scoped)-[a-f0-9]{64}$ ]] || return 0
   fi
   selector_dir="$generation_root/.inputs"
   selector="$selector_dir/$input_fingerprint"
@@ -4305,7 +4319,7 @@ dependency_generation_prepare_exact_ref_root() {
 dependency_generation_ensure_verifier_ref() (
   local integration_root="$1" ref="$2" source_root="$3" generation_root="$4" retain_as="$5"
   local helper="${DEPENDENCY_GENERATION_VERIFIER_HELPER:-$(dirname "${BASH_SOURCE[0]}")/dependency-generation-verifier.mjs}"
-  local parent scratch native_source nm rel input key indexed='' rc=0
+  local parent scratch native_source nm rel input key dependency_key indexed='' rc=0
   shift 5
   local workspace_args=() workspace
   source_root="$(cd "$source_root" && pwd -P)" || return 1
@@ -4422,6 +4436,12 @@ dependency_generation_ensure_verifier_ref() (
     DEPENDENCY_GENERATION_REUSED=true
   fi
   DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT="$(dependency_generation_read_field "$DEPENDENCY_GENERATION_PATH/.papercusp-dependency-generation" closure)"
+  if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then
+    # The valid-closure fast path calls ensure directly, bypassing main's
+    # dependency index. Publish the same scoped key after native verification.
+    dependency_key="$(dependency_generation_verification_selector_key "$source_root")" || return $?
+    dependency_generation_publish_input_selector "$generation_root" "$dependency_key" || return $?
+  fi
   dependency_generation_publish_input_selector "$generation_root" "$key" || return $?
   DEPENDENCY_GENERATION_INPUT_FINGERPRINT="$input"
   dependency_generation_retain_ensured_ref "$generation_root" "$integration_root" \
@@ -4804,6 +4824,8 @@ dependency_generation_main() {
     "$build_root" "${workspace_dirs[@]}" || return $?
   if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = 'full' ]; then
     input_before="$(dependency_generation_input_fingerprint "$build_root")" || return 1
+  else
+    input_before="$(dependency_generation_verification_selector_key "$build_root")" || return 1
   fi
   dependency_generation_ensure "$build_root" "$generation_root" || return $?
   # Lease the immutable identity BEFORE exposing an input selector. A competing
@@ -4852,7 +4874,20 @@ dependency_generation_main() {
       return "$retention_rc"
     }
   else
-    DEPENDENCY_GENERATION_INPUT_FINGERPRINT='unindexed'
+    input_after="$(dependency_generation_verification_selector_key "$build_root")" || {
+      dependency_generation_release_selector_lease
+      return 1
+    }
+    if [ "$input_after" != "$input_before" ]; then
+      dependency_generation_release_selector_lease
+      dependency_generation_log 'FATAL: selected dependency inputs changed during generation prewarm'
+      return 74
+    fi
+    dependency_generation_publish_input_selector "$generation_root" "$input_before" || {
+      retention_rc=$?
+      dependency_generation_release_selector_lease
+      return "$retention_rc"
+    }
   fi
   dependency_generation_apply_retention "$generation_root" "$integration_root" || {
     retention_rc=$?
