@@ -68,6 +68,22 @@ export function targetRefToObject(targetRef: string): ObjectRef {
 // Subscribable
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Why a subscriber follows a target. One (subscriber, target) subscription carries
+ * every reason that currently holds it, and each reason ends independently: the
+ * subscription is cancelled only when its last reason is released.
+ *
+ *   context   — the target was delivered into the subscriber's current context;
+ *               ends with that context (session end, liveness-oracle end, context
+ *               replacement) or its own explicit release.
+ *   explicit  — the subscriber asked to follow it; ends only by its own release.
+ *   held_item — the subscriber holds the work item; ends only by its own release.
+ *   blocker   — a generated one-hop blocker follow (WI-4119, `derived_from`).
+ */
+export type SubscriptionReason = 'context' | 'explicit' | 'held_item' | 'blocker';
+
+export const SUBSCRIPTION_REASONS: readonly SubscriptionReason[] = ['context', 'explicit', 'held_item', 'blocker'];
+
 export interface SubscriptionRow {
   id: number;
   subscriber_id: string;
@@ -82,6 +98,10 @@ export interface SubscriptionRow {
   follow_blockers?: boolean;
   /** WI-4119: non-null only for a generated blocker subscription. */
   derived_from?: ObjectRef | null;
+  /** Every reason currently holding this subscription (never empty while active). */
+  reasons?: SubscriptionReason[];
+  /** The subscriber's context epoch that last added the `context` reason. */
+  context_epoch?: number | null;
 }
 
 export interface SubscribeInput {
@@ -95,14 +115,25 @@ export interface SubscribeInput {
   expires_ts?: string | null;
   /** WI-4119: opt a direct work-item subscription into one-hop blocker follows. */
   follow_blockers?: boolean;
+  /** Why this subscription is made. Defaults to 'explicit'. */
+  reason?: Exclude<SubscriptionReason, 'blocker'>;
+  /** For reason 'context': the subscriber's context epoch that holds the target. */
+  context_epoch?: number | null;
 }
 
 export interface SubscribableStore {
   /** Register (or update the mode/TTL of) a subscription. Idempotent on
-   *  (subscriber, target): a re-subscribe updates delivery_mode + expires_ts. */
+   *  (subscriber, target): a re-subscribe updates delivery_mode + expires_ts
+   *  and adds its reason to the reasons already holding the subscription. */
   subscribe(input: SubscribeInput): Promise<SubscriptionRow>;
-  /** Soft-cancel one subscription (idempotent). */
-  unsubscribe(subscriberId: string, targetKind: SubscriptionTargetKind, targetRef: string): Promise<void>;
+  /** Release one reason of one subscription (idempotent; default 'explicit').
+   *  The subscription is cancelled only when no reason remains. */
+  unsubscribe(
+    subscriberId: string,
+    targetKind: SubscriptionTargetKind,
+    targetRef: string,
+    reason?: SubscriptionReason,
+  ): Promise<void>;
   /** Every active subscription of one subscriber. */
   listSubscriptions(subscriberId: string): Promise<SubscriptionRow[]>;
   /** Every active subscriber of one target (the fan-out's hot path). */
@@ -279,4 +310,35 @@ export async function resolveObjectSubscribers(
   }
 
   return [...out.values()];
+}
+
+/**
+ * The subscription row a {@link ResolvedSubscriber} was resolved through: a
+ * direct match lives at ('object', objectToTargetRef(object)); a topic match at
+ * ('topic', <canonical slug>), which is what `via` carries.
+ */
+export function resolvedSubscriberTarget(
+  object: ObjectRef,
+  sub: ResolvedSubscriber,
+): { targetKind: SubscriptionTargetKind; targetRef: string } {
+  return sub.via === 'object'
+    ? { targetKind: 'object', targetRef: objectToTargetRef(object) }
+    : { targetKind: 'topic', targetRef: sub.via };
+}
+
+/**
+ * Re-check, at delivery time, that the subscription a subscriber was resolved
+ * through is still live (shared-reference-system P-002, R-8). Resolution and
+ * delivery are separate steps, so a subscriber's context can end between them;
+ * a fan-out calls this immediately before writing so a subscription cancelled
+ * in that window is never delivered to.
+ */
+export async function isResolvedSubscriberLive(
+  subscriptions: Pick<SubscribableStore, 'listTargetSubscribers'>,
+  object: ObjectRef,
+  sub: ResolvedSubscriber,
+): Promise<boolean> {
+  const { targetKind, targetRef } = resolvedSubscriberTarget(object, sub);
+  const rows = await subscriptions.listTargetSubscribers(targetKind, targetRef);
+  return rows.some((row) => row.subscriber_id === sub.subscriber_id);
 }

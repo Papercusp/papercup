@@ -18,6 +18,7 @@ export type {
   TaggableStore,
   DeliveryMode,
   SubscriptionTargetKind,
+  SubscriptionReason,
   SubscriptionRow,
   SubscribeInput,
   SubscribableStore,
@@ -39,6 +40,8 @@ export {
   targetRefToObject,
   mergeResolved,
   resolveObjectSubscribers,
+  resolvedSubscriberTarget,
+  isResolvedSubscriberLive,
 } from './types';
 
 export {
