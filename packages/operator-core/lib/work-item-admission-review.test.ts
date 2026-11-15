@@ -91,7 +91,10 @@ const makeValidRequest = (sequence: number, featureId: string) => {
   return { ...unsigned, signature };
 };
 
-const makeReviewSql = (candidates: Candidate[], selectedIds: readonly string[]) => {
+const makeReviewSql = (
+  candidates: Candidate[], selectedIds: readonly string[],
+  placements: Array<{ agent_id: string; fleet_slug: string }> = [],
+) => {
   const writes: Array<{ query: string; values: unknown[] }> = [];
   let clock = 1_800_000_000_000;
   const sql = Object.assign(vi.fn(async (parts: TemplateStringsArray, ...values: unknown[]) => {
@@ -116,7 +119,7 @@ const makeReviewSql = (candidates: Candidate[], selectedIds: readonly string[]) 
       return [{ value_b64: 'dW5pdC1yZXZpZXcta2V5' }];
     }
     if (query.startsWith('SELECT id FROM harness_shared.routines')) return [{ id: 'rt-test-reviewer' }];
-    if (query.startsWith('SELECT DISTINCT agent_id, fleet_slug FROM harness_shared.fleet_assignment')) return [];
+    if (query.startsWith('SELECT DISTINCT agent_id, fleet_slug FROM harness_shared.fleet_assignment')) return placements;
     if (query.startsWith('UPDATE harness_shared.work_items') &&
         query.includes('_admissionReviewReceipt')) {
       const candidate = candidates.find(row => values.includes(row.feature_id));
@@ -302,6 +305,91 @@ describe('signed admission review recovery', () => {
     expect(receiptWrite).toBeDefined();
     expect(receiptWrite!.values).toContain(featureId);
     expect(mocks.readVerifiedRecoveryTarget).toHaveBeenCalledWith(scope, sql);
+  });
+
+  it('reviews the current leader\'s exact unplaced original without reserving execution', async () => {
+    const request = makeValidRequest(43, featureId);
+    const candidates: Candidate[] = [
+      { feature_id: featureId, request, attemptedAtMs: null, receiptId: null },
+      { feature_id: neighborId, request: { version: 1 }, attemptedAtMs: null, receiptId: null },
+    ];
+    prepare(candidates, []);
+    mocks.latestFleetMembership.mockResolvedValue({ fleetRole: 'leader', fleetSlug: 'fleet-review' });
+    const { sql, writes } = makeReviewSql(candidates, [featureId]);
+
+    const result = await runAdmissionReviews(
+      { workspaceId, harnessSlug, runId: 'unplaced-leader-review', targetItemIds: [featureId] },
+      sql, vi.fn() as never,
+    );
+
+    expect(result.reviewedItemId).toBe(featureId);
+    expect(mocks.runPromoter).toHaveBeenCalledTimes(1);
+    expect(candidates[0]!.receiptId).toBe(request.requestId);
+    expect(candidates[1]!.attemptedAtMs).toBeNull();
+    expect(candidates[1]!.receiptId).toBeNull();
+    expect(writes.some(write => /taken_by|_admissionRecovery/.test(write.query))).toBe(false);
+  });
+
+  it.each([null, 'member'])('refuses an unplaced reviewer with membership %s', async fleetRole => {
+    const request = makeValidRequest(44, featureId);
+    const candidates: Candidate[] = [{ feature_id: featureId, request, attemptedAtMs: null, receiptId: null }];
+    prepare(candidates, []);
+    mocks.latestFleetMembership.mockResolvedValue(fleetRole ? { fleetRole, fleetSlug: 'fleet-review' } : null);
+    const { sql } = makeReviewSql(candidates, [featureId]);
+
+    const result = await runAdmissionReviews(
+      { workspaceId, harnessSlug, runId: 'unplaced-member-review', targetItemIds: [featureId] },
+      sql, vi.fn() as never,
+    );
+
+    expect(result.reviewedItemId).toBeUndefined();
+    expect(mocks.runPromoter).not.toHaveBeenCalled();
+    expect(candidates[0]!.receiptId).toBeNull();
+  });
+
+  it.each([
+    [{ agent_id: 'su-other', fleet_slug: 'other-fleet' }],
+    [{ agent_id: 'su-other', fleet_slug: 'fleet-review' }, { agent_id: 'su-neighbor', fleet_slug: 'fleet-review' }],
+  ])('preserves foreign or ambiguous existing placement %#', async (...placements) => {
+    const request = makeValidRequest(45, featureId);
+    const candidates: Candidate[] = [{ feature_id: featureId, request, attemptedAtMs: null, receiptId: null }];
+    prepare(candidates, []);
+    mocks.latestFleetMembership.mockResolvedValue({ fleetRole: 'leader', fleetSlug: 'fleet-review' });
+    const { sql } = makeReviewSql(candidates, [featureId], placements);
+
+    const result = await runAdmissionReviews(
+      { workspaceId, harnessSlug, runId: 'placed-leader-review', targetItemIds: [featureId] },
+      sql, vi.fn() as never,
+    );
+
+    expect(result.reviewedItemId).toBeUndefined();
+    expect(result.guardRefusals[0]!.detail).toContain('exact same-fleet placement unknown or ambiguous');
+    expect(mocks.runPromoter).not.toHaveBeenCalled();
+    expect(candidates[0]!.receiptId).toBeNull();
+  });
+
+  it('renews unplaced leader authority before persisting a review', async () => {
+    const request = makeValidRequest(46, featureId);
+    const candidates: Candidate[] = [{ feature_id: featureId, request, attemptedAtMs: null, receiptId: null }];
+    prepare(candidates, []);
+    const membership = { fleetRole: 'leader', fleetSlug: 'fleet-review' };
+    mocks.latestFleetMembership.mockImplementation(async () => membership);
+    mocks.runPromoter.mockImplementationOnce(async (...args) => {
+      const input = args[0] as ReviewPromoterInput;
+      membership.fleetRole = 'member';
+      await input.reviewOnly.beforeWrite(input.sql);
+      await input.reviewOnly.afterWrite(input.sql);
+      return { reviewedItemId: input.reviewOnly.itemId };
+    });
+    const { sql } = makeReviewSql(candidates, [featureId]);
+
+    await expect(runAdmissionReviews(
+      { workspaceId, harnessSlug, runId: 'unplaced-leader-revoked', targetItemIds: [featureId] },
+      sql, vi.fn() as never,
+    )).rejects.toThrow('review requester is neither current custodian nor canonical fleet leader');
+
+    expect(mocks.runPromoter).toHaveBeenCalledTimes(1);
+    expect(candidates[0]!.receiptId).toBeNull();
   });
 
   it.each([1, 3])('reviews a changed dependency after %i unrelated protected components in the same pass', async (heldCount) => {

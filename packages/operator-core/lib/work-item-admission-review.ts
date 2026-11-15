@@ -116,6 +116,11 @@ async function authorize(sql: Sql, scope: AdmissionRecoveryScope, request: Revie
       if (rows.length > 0) {
         const sameFleetRows = rows.filter(row => row.fleet_slug === membership.fleetSlug);
         placedTarget = sameFleetRows.length === 1 ? sameFleetRows[0]!.agent_id : null;
+      } else if (!placedTarget && !item.assignee) {
+        // The signed, exact-item review request is the current leader's
+        // review-only self-placement. It neither reserves nor assigns an
+        // executor; leadership and review-write policy are renewed on replay.
+        placedTarget = request.caller;
       }
       if (!placedTarget) throw new AdmissionAuthorityRefused('exact same-fleet placement unknown or ambiguous');
       const target = await latestFleetMembership(scope.workspaceId, placedTarget, sql);
