@@ -2025,8 +2025,8 @@ async function evictWorkspaceQuotaLocked(
       // Only selected FIFO candidates were measured. Do not mislabel that partial set as a
       // complete per-run index; later recovery can reuse the aggregate while it remains fresh.
       invalidateRunSizeIndex(entry);
-      // The aggregate itself measured the whole workspace, so this pass settles a writer's
-      // recovery attempt (EI-26817459316222367) even though the per-run index stays partial.
+      // Record that the aggregate has had its pass at this generation. The next writer
+      // recovery measures the tree instead of repeating this pass (EI-26817459316222367).
       if (!entry.refreshDeferred) entry.aggregateRecoveryGeneration = entry.writeGeneration;
     } else {
       entry.runBytesByPath = runBytesByPath;
@@ -3098,7 +3098,12 @@ export async function writeWithScratchQuota(
               const writeGeneration = entry.writeGeneration;
               if (
                 entry.refreshDeferred ||
-                [...entry.writes.values()].some((write) => write.reserved)
+                [...entry.writes.values()].some((write) => write.reserved) ||
+                // A trusted-aggregate pass at this generation already failed to reach the
+                // target. Trusting the same aggregate again would repeat that pass forever
+                // (EI-26817459316222367), and the aggregate may overstate usage that another
+                // process already reclaimed. Measure the tree before any refusal.
+                entry.aggregateRecoveryGeneration === writeGeneration
               ) {
                 refreshRequired = true;
                 return;
@@ -3411,12 +3416,11 @@ export async function writeWithScratchQuota(
           await waitForUsageRefresh(refreshWaitOwner ? 'refreshWaitMs' : 'quotaWaitMs');
           continue;
         }
-        // A recovery settles on a complete measurement: a valid per-run index, or a validated
-        // trusted aggregate with no write since (EI-26817459316222367). Either way a second pass
-        // on the same measurement cannot reclaim more, so refuse rather than loop.
-        const recoveryMeasuredCompletely = entry.runBytesValid
-          || entry.aggregateRecoveryGeneration === entry.writeGeneration;
-        if (quotaRecoveryAttempted && recoveryMeasuredCompletely && !entry.refreshDeferred) {
+        // Refuse only on a complete measurement: a valid per-run index. A failed trusted-aggregate
+        // pass leaves the index partial, so the next recovery re-measures the tree instead of
+        // trusting the same aggregate again (EI-26817459316222367); that refresh either fits the
+        // write or validates the index, and this branch then refuses rather than loops.
+        if (quotaRecoveryAttempted && entry.runBytesValid && !entry.refreshDeferred) {
           throw lastQuotaRefusal ?? new ScratchQuotaError(
             `scratch reservation: workspace ${opts.workspaceId} remains over quota after recovery`,
           );

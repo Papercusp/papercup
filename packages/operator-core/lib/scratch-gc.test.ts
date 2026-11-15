@@ -2353,9 +2353,11 @@ describe('deferred scratch quota recovery', () => {
           fileStatErrors: 0,
           runListingMs: expect.any(Number),
           runsListed: 1,
-          selectedRunSizingMs: 0,
+          // The fresh aggregate is trusted and there is no per-run index, so recovery sizes
+          // only the selected FIFO candidate (EI-26817459316222367); that sizing is the walk below.
+          selectedRunSizingMs: expect.any(Number),
           runsConsidered: 1,
-          fallbackRunSizes: 0,
+          fallbackRunSizes: 1,
           deletionMs: expect.any(Number),
           deleteAttempts: 1,
           runsDeleted: 1,
@@ -2387,9 +2389,17 @@ describe('deferred scratch quota recovery', () => {
     }
   });
 
-  it('emits bounded progress every five seconds while a quota recovery phase is pending', async () => {
+  // A stale aggregate makes the recovery run a usage refresh inside it, so both are active; a
+  // fresh one is trusted, and the recovery's first root read is FIFO run listing
+  // (EI-26817459316222367). Both must report.
+  it.each([
+    { path: 'usage refresh', measuredAgeMs: USAGE_REFRESH_MS + 1, recoveryActive: true, refreshActive: true },
+    { path: 'trusted-aggregate recovery', measuredAgeMs: 0, recoveryActive: true, refreshActive: false },
+  ])('emits bounded progress every five seconds while a quota recovery phase is pending ($path)', async ({
+    measuredAgeMs, recoveryActive, refreshActive,
+  }) => {
     makeSparseRun('ws-Q', UUID(1), WORKSPACE_QUOTA_BYTES + 1024);
-    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES + 1024);
+    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES + 1024, Date.now() - measuredAgeMs);
     const readdirMock = vi.mocked(readdirAsync);
     const originalRead = readdirMock.getMockImplementation()!;
     const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
@@ -2420,33 +2430,30 @@ describe('deferred scratch quota recovery', () => {
       await vi.advanceTimersByTimeAsync(15_000);
       const progressRows = timings.filter((row) => row.progress);
       expect(progressRows).toHaveLength(3);
+      const pendingOperation = {
+        sizeWalkMs: expect.any(Number),
+        sizeWalkDirectories: expect.any(Number),
+        sizeWalkEntries: expect.any(Number),
+        readdirOperations: expect.any(Number),
+        currentOperationKind: 'readdir',
+        currentOperationPath: relative(scratchRoot(), scratchRootForWorkspace('ws-Q')),
+        currentOperationElapsedMs: expect.any(Number),
+      };
       for (const row of progressRows) {
         expect(row.progress).toMatchObject({
           phase: 'quota-recovery',
           bytes: 16,
           pendingWrites: 1,
-          recoveryActive: false,
-          refreshActive: true,
-          quotaRecoveryDiagnostics: {
-            sizeWalkMs: expect.any(Number),
-            sizeWalkDirectories: expect.any(Number),
-            sizeWalkEntries: expect.any(Number),
-            readdirOperations: expect.any(Number),
-            currentOperationKind: 'readdir',
-            currentOperationPath: relative(scratchRoot(), scratchRootForWorkspace('ws-Q')),
-            currentOperationElapsedMs: expect.any(Number),
-          },
-          usageRefreshDiagnostics: {
-            sizeWalkMs: expect.any(Number),
-            sizeWalkDirectories: expect.any(Number),
-            sizeWalkEntries: expect.any(Number),
-            readdirOperations: expect.any(Number),
-            currentOperationKind: 'readdir',
-            currentOperationPath: relative(scratchRoot(), scratchRootForWorkspace('ws-Q')),
-            currentOperationElapsedMs: expect.any(Number),
-          },
+          recoveryActive,
+          refreshActive,
+          quotaRecoveryDiagnostics: pendingOperation,
         });
-        expect(row.progress?.quotaRecoveryDiagnostics?.sizeWalkDirectories).toBeGreaterThan(0);
+        if (refreshActive) {
+          expect(row.progress?.usageRefreshDiagnostics).toMatchObject(pendingOperation);
+          expect(row.progress?.quotaRecoveryDiagnostics?.sizeWalkDirectories).toBeGreaterThan(0);
+        } else {
+          expect(row.progress?.usageRefreshDiagnostics).toBeUndefined();
+        }
         expect(row.progress?.quotaRecoveryDiagnostics?.readdirOperations).toBeGreaterThan(0);
       }
       expect(JSON.stringify(progressRows)).not.toContain(scratchRootForWorkspace('ws-Q'));
@@ -2956,8 +2963,9 @@ describe('deferred scratch quota recovery', () => {
     expect(existsSync(old)).toBe(false);
     expect(scratchRmCallCount()).toBe(1);
     expect(oldDataStatsAtFirstWrite).toBe(1);
-    // One shared usage walk plus FIFO discovery. Waiting callers do not trigger another walk.
-    expect(vi.mocked(readdirAsync).mock.calls.filter(([path]) => path === scratchRootForWorkspace('ws-Q'))).toHaveLength(2);
+    // The fresh aggregate is trusted, so the one shared recovery does FIFO
+    // discovery without a usage walk. Waiting callers add no root read.
+    expect(vi.mocked(readdirAsync).mock.calls.filter(([path]) => path === scratchRootForWorkspace('ws-Q'))).toHaveLength(1);
     expect(vi.mocked(readdirSync)).not.toHaveBeenCalled();
     expect(vi.mocked(statSync)).not.toHaveBeenCalled();
     await refreshScratchUsage('ws-Q');
