@@ -75,11 +75,12 @@ export function committedWorkRootDependencyDonor(workRoot: any, { sourceObjects,
  * verifying the entire snapshot; existing roots are never replaced or trusted.
  * workspaceDirs selects package-local dependency roots plus the root install.
  * Its normalized scope is retained with every journal and prepared witness.
- * @param {{ workspaceDirs?: string[], prepareWorkspace?: (snapshot: { paths: string[], workspacePaths: Set<string> }) => void,
+ * @param {{ environment?: Record<string, string | undefined>, workspaceDirs?: string[], prepareWorkspace?: (snapshot: { paths: string[], workspacePaths: Set<string> }) => void,
  * resumeVerification?: { checkpointDir: string, generation?: boolean, materializeMissing?: boolean, maxBatches?: number, maxDurationMs?: number, batchSize?: number } }} [options]
  * @returns {Promise<{ paths: string[], workspacePaths: Set<string> } | { status: 'incomplete', progress: object }>}
  */
 export function materializeIndependentDependencies(repoRoot: any, workRoot: any, options?: {
+    environment?: Record<string, string | undefined>;
     workspaceDirs?: string[];
     prepareWorkspace?: (snapshot: {
         paths: string[];
