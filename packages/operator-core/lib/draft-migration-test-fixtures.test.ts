@@ -89,6 +89,36 @@ const ALLOWED_TEST_LOADED_DRAFTS: Record<string, AllowedDraft> = {
     reason:
       'Issue-receiver extension of 1466 (report-plan D033): "DRAFT ONLY: disposable migrated-PG verification; no live schema rollout", and 1466 must precede it in any approved rollout.',
   },
+  '1511': {
+    kind: 'parked',
+    owner: 'WI-6554700010049299',
+    reason:
+      'Audited hosted reads require the deletion-freeze migration 1513; the header forbids independent production arming. The owner must resolve the paired arm-or-retire decision before either draft ships.',
+  },
+  '1513': {
+    kind: 'parked',
+    owner: 'WI-6554700010049299',
+    reason:
+      'Deletion-freeze migration is explicitly scratch-DB-only and a prerequisite of 1511. The original P010 item is terminal; the open follow-up owns paired rollout authorization or retirement.',
+  },
+  '1571': {
+    kind: 'contract-phase',
+    owner: 'WI-6554700010020422',
+    reason:
+      'Author-qualified claim keys remain an inactive contract-phase draft until legacy conflict-target writers are upgraded. The open concurrent-write implementation owns that prerequisite and governed arming.',
+  },
+  '1578': {
+    kind: 'parked',
+    owner: 'WI-6554700010028590',
+    reason:
+      'Disposable reviewer runtime custody remains draft under the open broker P-001 implementation. Its isolated integration tests cover the pending schema; the implementation owner must arm or retire it.',
+  },
+  '1593': {
+    kind: 'parked',
+    owner: 'WI-6554700010049300',
+    reason:
+      'Occurrence covering-index rollout requires a concurrent prebuild on a large live ledger before transactional application. The original metric item is terminal; the open follow-up owns safe arming or retirement.',
+  },
 };
 
 interface DraftScan {
