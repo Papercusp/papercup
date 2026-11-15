@@ -1873,7 +1873,7 @@ fs.appendFileSync(${JSON.stringify(received)}, JSON.stringify({ root: process.cw
     }
   }, 90_000);
 
-  it.each(['valid', 'corrupt'] as const)('consumes a %s exact-input generation without borrowing its source', async variant => {
+  it.each(['valid', 'corrupt', 'selected-valid', 'selected-corrupt'] as const)('consumes a %s exact-input generation without borrowing its source', async variant => {
     const parent = mkdtempSync(join(tmpdir(), 'lac-generation-custody-'));
     const store = join(parent, 'generations');
     const f = fixture('node build.cjs');
@@ -1881,6 +1881,7 @@ fs.appendFileSync(${JSON.stringify(received)}, JSON.stringify({ root: process.cw
     const helper = join(repoRoot, 'apps/operator/bin/release/dependency-generation.sh');
     const priorStore = process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT;
     const priorMutexRoot = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    const workspaceDirs = variant.startsWith('selected-') ? ['libs/runtime'] : [];
     const diagnostics = vi.spyOn(console, 'error').mockImplementation(() => {});
     const phases = () => diagnostics.mock.calls
       .filter(([line]) => typeof line === 'string' && line.startsWith('COMMITTED_DEPENDENCY_PHASE '))
@@ -1902,7 +1903,8 @@ fs.appendFileSync(${JSON.stringify(received)}, JSON.stringify({ root: process.cw
           'node_modules/@fixture/runtime': { resolved: 'libs/runtime', link: true },
         } }),
       }, f.head);
-      const published = spawnSync('bash', [helper, '--integration', f.root, '--generation-root', store], {
+      const published = spawnSync('bash', [helper, '--integration', f.root, '--generation-root', store,
+        ...workspaceDirs.flatMap(path => ['--workspace-dir', path])], {
         env: currentRunnerEnvironment(), encoding: 'utf8', timeout: 30000,
       });
       const publicationDiagnostic = JSON.stringify({ error: published.error?.message,
@@ -1916,10 +1918,10 @@ fs.appendFileSync(${JSON.stringify(received)}, JSON.stringify({ root: process.cw
       const marker = { sha: head, sourceRepoRoot: f.root };
       writeFileSync(markerPath, JSON.stringify(marker));
       process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = store;
-      if (variant === 'corrupt') {
+      if (variant.endsWith('corrupt')) {
         const selector = join(store, '.inputs', readdirSync(join(store, '.inputs'))[0]);
         writeFileSync(selector, readFileSync(selector, 'utf8').replace(/^token=.*$/m, 'token=v3:' + '0'.repeat(64)));
-        await expect(mod.materializeIndependentDependencies(f.root, workRoot)).rejects.toThrow(/independent dependency materialization failed/);
+        await expect(mod.materializeIndependentDependencies(f.root, workRoot, { workspaceDirs })).rejects.toThrow(/independent dependency materialization failed/);
         expect(phases()).toEqual([
           { phase: 'generation-selection-and-copy', state: 'started', elapsedMs: expect.any(Number) },
           { phase: 'generation-selection-and-copy', state: 'failed', elapsedMs: expect.any(Number) },
@@ -1930,7 +1932,7 @@ fs.appendFileSync(${JSON.stringify(received)}, JSON.stringify({ root: process.cw
       }
       // A mutable donor cannot supply these bytes or even be enumerated now.
       rmSync(join(f.root, 'node_modules'), { recursive: true });
-      const prepared = await mod.materializeIndependentDependencies(f.root, workRoot);
+      const prepared = await mod.materializeIndependentDependencies(f.root, workRoot, { workspaceDirs });
       expect(phases().map(({ phase, state }) => [phase, state])).toEqual([
         ['generation-selection-and-copy', 'started'],
         ['repair-links', 'started'], ['repair-links', 'complete'],
@@ -2178,6 +2180,31 @@ console.log('WRITER_RELEASED elapsedMs=' + (performance.now() - startedAt));`;
     return { ...f, parent, workRoot, markerPath, marker, checkpointDir, options, cleanup, diagnostics };
   }
 
+  it('resolves the persistent generation store through a selected source reader', () => {
+    const f = retainedFixture();
+    const store = join(f.parent, 'persistent-store');
+    const override = join(f.parent, 'explicit-store');
+    try {
+      writeFileSync(f.markerPath, JSON.stringify({
+        ...f.marker,
+        dependencyMode: 'independent-copy-v1',
+        dependencyScope: { mode: 'selected', workspaceDirs: ['libs/runtime'] },
+      }));
+      mkdirSync(join(f.root, '.papercusp'), { recursive: true });
+      writeFileSync(join(f.root, '.papercusp/dependency-generation-root'), store + '\n');
+
+      // Config belongs to the original source; this selected reader cannot
+      // satisfy an unscoped physical dependency-donor request.
+      expect(() => mod.committedWorkRootDependencyDonor(f.workRoot)).toThrow('donor scope does not cover');
+      expect(mod.lintAsCommittedChildEnv({}, f.workRoot).PAPERCUSP_DEPENDENCY_GENERATION_ROOT).toBe(store);
+      expect(mod.lintAsCommittedChildEnv({ PAPERCUSP_DEPENDENCY_GENERATION_ROOT: override }, f.workRoot)
+        .PAPERCUSP_DEPENDENCY_GENERATION_ROOT).toBe(override);
+      rmSync(join(f.root, '.papercusp/dependency-generation-root'));
+      expect(mod.lintAsCommittedChildEnv({}, f.workRoot).PAPERCUSP_DEPENDENCY_GENERATION_ROOT)
+        .toBe(join(f.root, '.papercusp/dependency-generations'));
+    } finally { f.cleanup(); }
+  });
+
   function expectUnpreparedRetainedMarker(f: ReturnType<typeof retainedFixture>) {
     const marker = JSON.parse(readFileSync(f.markerPath, 'utf8'));
     expect(marker).toMatchObject(f.marker);
@@ -2258,6 +2285,58 @@ console.log('WRITER_RELEASED elapsedMs=' + (performance.now() - startedAt));`;
       expectUnpreparedRetainedMarker(f);
     } finally { stat.mockRestore(); f.cleanup(); }
   }, 60_000);
+
+  it('keeps nested CLI Git objects readable after its disposable source reader is retired', () => {
+    const f = fixture('node build.cjs');
+    const subPath = 'libs/child';
+    const subRoot = join(f.root, subPath);
+    mkdirSync(subRoot, { recursive: true });
+    gitFixture(subRoot, ['init', '--quiet', '--initial-branch=staging']);
+    const subPin = snapshot(subRoot, { 'pinned.cjs': 'module.exports = "pinned-child";\n' });
+    gitFixture(f.root, ['update-index', '--add', '--cacheinfo', '160000', subPin, subPath]);
+    snapshot(f.root, {
+      '.gitmodules': `[submodule "child"]\n path = ${subPath}\n url = ./${subPath}\n`,
+    }, f.head);
+    const env = commandEnvironment();
+    env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = join(env.TMPDIR!, 'generations');
+    const roots: string[] = [];
+    const prepare = (cwd: string) => {
+      const result = spawnSync(process.execPath, [scriptPath,
+        '--materialize-only', '--workspace-dir=libs/runtime'], {
+        cwd, env, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL',
+      });
+      const output = result.stdout + result.stderr;
+      const root = output.match(/Committed source prepared at (.+); no lint or test was run\./)?.[1];
+      if (root) roots.push(root);
+      expect(result.status, output).toBe(0);
+      expect(root, output).toBeTruthy();
+      return root!;
+    };
+    try {
+      const reader = prepare(f.root);
+      const nested = prepare(reader);
+      rmSync(reader, { recursive: true, force: true });
+      // HEAD's hex value alone survives a missing alternate. Reading a pinned
+      // blob proves the nested checkout still has its actual Git objects.
+      const blob = spawnSync('git', ['show', 'HEAD:libs/runtime/source.cjs'], {
+        cwd: nested, encoding: 'utf8', timeout: 5000,
+      });
+      expect(blob.status, blob.stderr).toBe(0);
+      expect(blob.stdout).toBe('module.exports = "pinned-source";\n');
+      const childBlob = spawnSync('git', ['show', 'HEAD:pinned.cjs'], {
+        cwd: join(nested, subPath), encoding: 'utf8', timeout: 5000,
+      });
+      expect(childBlob.status, childBlob.stderr).toBe(0);
+      expect(childBlob.stdout).toBe('module.exports = "pinned-child";\n');
+      expect(realpathSync(readFileSync(join(nested, '.git/objects/info/alternates'), 'utf8').trim()))
+        .toBe(realpathSync(join(f.root, '.git/objects')));
+      expect(JSON.parse(readFileSync(join(nested, mod.OWNER_MARKER), 'utf8')).sourceRepoRoot)
+        .toBe(realpathSync(f.root));
+    } finally {
+      for (const root of roots) rmSync(root, { recursive: true, force: true });
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  }, 75_000);
 
   it('materializes selected dependency scope through the maintained CLI', () => {
     const f = fixture('node build.cjs');
@@ -2672,7 +2751,7 @@ fs.writeFileSync('public/runtime-ready', asset);
   }, 60_000);
 
   it.each(['valid', 'corrupt-selector', 'different-bytes', 'live-donor-hardlink-churn',
-    'selected-wrong-scope'] as const)
+    'selected-valid', 'selected-wrong-scope', 'selected-corrupt-selector'] as const)
     ('resumes against a leased exact-input generation without source lockfiles using its supplied environment (%s)', async variant => {
       const f = retainedFixture();
       const helper = join(repoRoot, 'apps/operator/bin/release/dependency-generation.sh');
@@ -2709,7 +2788,8 @@ fs.writeFileSync('public/runtime-ready', asset);
         gitFixture(f.workRoot, ['checkout', '--detach', '--quiet', head]);
         f.marker.sha = head;
         writeFileSync(f.markerPath, JSON.stringify(f.marker));
-        const published = spawnSync('bash', [helper, '--integration', f.root, '--generation-root', store], {
+        const publishScope = selected && variant !== 'selected-wrong-scope' ? ['--workspace-dir', 'libs/runtime'] : [];
+        const published = spawnSync('bash', [helper, '--integration', f.root, '--generation-root', store, ...publishScope], {
           env: currentRunnerEnvironment(), encoding: 'utf8', timeout: 30_000,
         });
         const publicationDiagnostic = JSON.stringify({ error: published.error?.message,
@@ -2720,15 +2800,16 @@ fs.writeFileSync('public/runtime-ready', asset);
         expect(existsSync(join(generation, 'tree/package.json'))).toBe(false);
         expect(existsSync(join(generation, 'tree/package-lock.json'))).toBe(false);
         if (variant === 'selected-wrong-scope') {
-          // A native selector cannot authorize a full publication as selected.
+          // Even an aliased scoped key cannot authorize a full publication.
           const scopedInput = spawnSync('bash', ['-c',
             'set -euo pipefail\nsource "$1"\n' +
-            'dependency_generation_verifier_selector_key "$2"', '--', helper, f.workRoot], {
+            'dependency_generation_configure_workspace_dirs "$2" libs/runtime\n' +
+            'dependency_generation_verification_selector_key "$2"', '--', helper, f.workRoot], {
             env: currentRunnerEnvironment(), encoding: 'utf8', timeout: 10_000,
           });
           expect(scopedInput.status, scopedInput.stderr).toBe(0);
           const input = scopedInput.stdout.trim();
-          expect(input).toMatch(/^native-[a-f0-9]{64}$/);
+          expect(input).toMatch(/^scoped-[a-f0-9]{64}$/);
           const selectors = join(store, '.inputs');
           const original = readFileSync(join(selectors, readdirSync(selectors)[0]), 'utf8');
           writeFileSync(join(selectors, input), original.replace(/^input=.*$/m, 'input=' + input));
@@ -2759,8 +2840,8 @@ fs.writeFileSync('public/runtime-ready', asset);
           resumeVerification: { ...f.options(maxBatches).resumeVerification, generation: true },
         });
         const leases = () => existsSync(join(store, '.leases')) ? readdirSync(join(store, '.leases')) : [];
-        if (variant === 'corrupt-selector' || variant === 'selected-wrong-scope') {
-          if (variant === 'corrupt-selector') {
+        if (variant === 'corrupt-selector' || variant === 'selected-corrupt-selector' || variant === 'selected-wrong-scope') {
+          if (variant === 'corrupt-selector' || variant === 'selected-corrupt-selector') {
             const selector = join(store, '.inputs', readdirSync(join(store, '.inputs'))[0]);
             writeFileSync(selector, readFileSync(selector, 'utf8').replace(/^token=.*$/m, 'token=v3:' + '0'.repeat(64)));
           }
@@ -2786,7 +2867,7 @@ fs.writeFileSync('public/runtime-ready', asset);
         }
         expect(leases()).toEqual([]);
         expect(statSync(retained).ino).toBe(inode);
-        if (variant === 'corrupt-selector' || variant === 'different-bytes' || variant === 'selected-wrong-scope')
+        if (variant === 'corrupt-selector' || variant === 'selected-corrupt-selector' || variant === 'different-bytes' || variant === 'selected-wrong-scope')
           expectUnpreparedRetainedMarker(f);
       } finally {
         if (priorStore === undefined) delete process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT;
