@@ -38,7 +38,7 @@ import {
   type StoredOrderPrefetch,
   type ProjectionLookup,
 } from './projection';
-import { mergeRuleFor, operationGroupKey } from './merge-rules';
+import { operationGroupKey, replicationRuleFor } from './merge-rules';
 import { encodeHlc } from '@papercusp/locks-core';
 import { createConcurrencyGate, type ConcurrencyGate } from '@papercusp/sync';
 import { pinModuleState } from '@papercusp/module-singleton';
@@ -356,7 +356,10 @@ export async function mergeAdmittedLogs(logs: AdmittedLog[], opts?: MergeOpts): 
       if (env.type === 'put') governancePuts.push(env);
       return;
     }
-    const groupKey = operationGroupKey(env, mergeRuleFor(env.table ?? '', lookup(env.table ?? '')?.mergeRule));
+    const rule = replicationRuleFor(env.table ?? '', lookup(env.table ?? '')?.mergeRule);
+    // P-003 fail-closed: a table with no rule in the v1 simple set never enters the fold.
+    if (rule === undefined) return;
+    const groupKey = operationGroupKey(env, rule);
     const prev = winners.get(groupKey);
     winners.set(groupKey, prev ? lwwPick(prev, env) : env);
   };
@@ -4107,8 +4110,10 @@ async function mergeIncrementalPass(
 ): Promise<IncrementalMergeResult> {
   const apply = opts?.applyImpl ?? applyHyperbeeOpToPg;
   const lookup = opts?.projectionLookup ?? getProjection;
+  // P-003: an unreplicated table's op keeps its own event address (never an LWW winner);
+  // applyHyperbeeOpToPg then refuses it.
   const groupKeyFor = (env: OpEnvelope) => operationGroupKey(env,
-    mergeRuleFor(env.table ?? '', lookup(env.table ?? '')?.mergeRule));
+    replicationRuleFor(env.table ?? '', lookup(env.table ?? '')?.mergeRule));
   const getTimeoutMs = opts?.getTimeoutMs ?? DEFAULT_GET_TIMEOUT_MS;
   const applyTimeoutMs = opts?.applyTimeoutMs ?? MERGE_APPLY_TIMEOUT_MS;
   const budget = opts?.maxOpsPerPass ?? DEFAULT_MAX_OPS_PER_AUTHOR;

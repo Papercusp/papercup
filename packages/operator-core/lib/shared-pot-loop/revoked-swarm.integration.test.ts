@@ -12,10 +12,12 @@
  *  1. NO ZOMBIE FEDERATION — B's post-revocation writes (its zombie pipeline
  *     completing the item) NEVER reach A's PG; the views diverge BY DESIGN
  *     (B's sovereignty over its own DB is not A's problem).
- *  2. FEDERATION ASYMMETRY at the log layer (P-007, shared-hive-rekey-2026-06-19):
- *     revocation is one-sided here — A's writes still reach B (B never revoked A).
- *     This rig models federation at the PG/CDC layer with NO epoch crypto, so it
- *     faithfully witnesses only that log-layer asymmetry. The RE-KEY content
+ *  2. NO POST-REVOCATION READS at the log layer (v1 R-5, p2p-v1-core-release-2026-11-13):
+ *     A's writes after the revocation no longer reach B, although B never revoked A.
+ *     The per-connection serve gate in corestore.ts (installStoreServeGate) stops A's
+ *     store from serving its cores to B's connection once B is revoked. Until that
+ *     gate existed this rig witnessed the opposite (A's writes still reached B). The
+ *     rig still has NO epoch crypto, so it witnesses only this transport cut. The RE-KEY content
  *     read-cut (C-001 read-plane revocation: member-remove advances the hive epoch
  *     and A's post-boundary content is encrypted to the REMAINING members only, so
  *     the revoked peer reads ciphertext it cannot decrypt) runs the REAL crypto
@@ -104,10 +106,12 @@ describe('P-011 — revoked-swarm-mid-run (hermetic rung)', () => {
       expect(bView.get('F-601')).toBe('passed'); // B's own DB — its sovereignty
       expect(aView.get('F-601'), "the revoked swarm's completion must NOT reach the Hive").not.toBe('passed');
 
-      // ── 2. FEDERATION ASYMMETRY at the log layer (this hermetic rig's faithful,
-      //    crypto-free behavior). Revocation is ONE-SIDED here: A stopped reading B
-      //    (step 1), but B never revoked A, so A's post-revocation writes STILL
-      //    federate to B. This rig models federation at the PG/CDC layer with NO
+      // ── 2. NO POST-REVOCATION READS at the log layer (v1 R-5). B never revoked A,
+      //    yet A's post-revocation writes do NOT reach B: A's per-connection serve
+      //    gate (corestore.ts installStoreServeGate) stops serving A's cores to B's
+      //    connection once B is revoked. B keeps the row as it stood before the
+      //    revocation. (Before that gate this rig asserted the opposite.) This rig
+      //    models federation with NO
       //    epoch crypto, so it cannot — and must not — witness the RE-KEY content
       //    read-cut (P-007: A encrypting post-boundary content to the REMAINING
       //    members only, so the revoked peer reads ciphertext it cannot decrypt).
@@ -128,8 +132,8 @@ describe('P-011 — revoked-swarm-mid-run (hermetic rung)', () => {
       );
       expect(
         bF602,
-        "log-layer asymmetry: the revoking side's writes still federate to the revoked peer (the crypto read-cut is witnessed by the real-crypto epoch tests, not this rig)",
-      ).toBe('passed');
+        "R-5 serve gate: the revoking side's post-revocation completion must not reach the revoked peer; B keeps the pre-revocation row",
+      ).toBe('open');
 
       // ── 3. Authority MEMBERSHIP ENFORCEMENT (EI-284, flipped from the filed
       //    gap): the revoked swarm's lease RPC is REFUSED on caller standing —

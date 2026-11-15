@@ -52,6 +52,7 @@
 import createTestnet from 'hyperdht/testnet.js';
 import type postgres from 'postgres';
 import { closeHarnessStore } from '../../sync/hyperbee/corestore';
+import { drainRefusesOutboxTable } from '../../sync/hyperbee/feature-issue-op-keys';
 import type { OpEnvelope } from '../../sync/hyperbee/op-envelope-types';
 import type { HyperswarmLike } from '../../sync/hyperbee/swarm';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
@@ -174,7 +175,15 @@ export interface PendingWork {
   total: number;
   /** Peer pairs currently partitioned; their mutual lag is excluded from `total`. */
   partitionedPairs: string[];
-  perPeer: Record<string, { held: number; undrained: number; lagBehind: Record<string, number> }>;
+  /**
+   * `undrained` counts only rows the drain will take. `refusedUndrained` counts rows the
+   * drain leaves undrained by design (P-003: unmapped, or no v1 simple rule); they are
+   * reported here and excluded from `total`, because no amount of settling drains them.
+   */
+  perPeer: Record<
+    string,
+    { held: number; undrained: number; refusedUndrained: number; lagBehind: Record<string, number> }
+  >;
 }
 
 export interface RevocationFrontier {
@@ -708,12 +717,20 @@ export async function createMultiPeerHarness(
     return lag;
   }
 
-  async function undrained(p: HarnessPeer): Promise<number> {
-    const [row] = await p.db.sql<Array<{ n: number }>>`
-      SELECT count(*)::int AS n FROM harness_shared.substrate_outbox
+  // Rows the drain refuses stay undrained on purpose (P-003 fail-closed), so counting
+  // them as pending would make settle() wait forever. Split by the drain's own predicate.
+  async function undrained(p: HarnessPeer): Promise<{ drainable: number; refused: number }> {
+    const rows = await p.db.sql<Array<{ table_name: string; n: number }>>`
+      SELECT table_name, count(*)::int AS n FROM harness_shared.substrate_outbox
        WHERE workspace_id = ${WORKSPACE_ID} AND harness_slug = ${HIVE_SLUG} AND drained_at IS NULL
+       GROUP BY table_name
     `;
-    return row?.n ?? 0;
+    const out = { drainable: 0, refused: 0 };
+    for (const r of rows) {
+      if (drainRefusesOutboxTable(r.table_name)) out.refused += r.n;
+      else out.drainable += r.n;
+    }
+    return out;
   }
 
   async function pendingWork(): Promise<PendingWork> {
@@ -722,7 +739,13 @@ export async function createMultiPeerHarness(
     for (const p of peers.values()) {
       if (!p.current) continue;
       const lagBehind = await lagOf(p);
-      const entry = { held: p.held.length, undrained: await undrained(p), lagBehind };
+      const outbox = await undrained(p);
+      const entry = {
+        held: p.held.length,
+        undrained: outbox.drainable,
+        refusedUndrained: outbox.refused,
+        lagBehind,
+      };
       perPeer[p.name] = entry;
       total += entry.held + entry.undrained + Object.values(lagBehind).reduce((s, n) => s + n, 0);
     }

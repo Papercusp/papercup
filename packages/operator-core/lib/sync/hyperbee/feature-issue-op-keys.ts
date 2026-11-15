@@ -28,6 +28,7 @@
 import type { LocalWriteOp } from './boot';
 import { redactExternalIngest } from './external-ingest-envelope';
 import { CURRENT_SCHEMA_VERSION } from './schema-version';
+import { replicationRuleFor } from './merge-rules';
 import type { HarnessFeatureRow } from './projections/harness-features';
 import type { HarnessPlanRow } from './projections/harness-plans';
 import type { HiveSettingRow } from './projections/hive-settings';
@@ -1157,16 +1158,52 @@ export class UnknownOutboxTableError extends Error {
 }
 
 /**
+ * P-003: thrown when a mapped `table_name`'s table tag has no merge rule in the v1
+ * simple set. It extends {@link UnknownOutboxTableError} so the drain takes the same
+ * skip path: the row stays undrained and nothing is appended to the own log.
+ */
+export class UnreplicatedOutboxTableError extends UnknownOutboxTableError {
+  readonly tableTag: string;
+  constructor(tableName: string, tableTag: string) {
+    super(tableName);
+    this.message = `outboxRowToLocalWriteOp: table '${tableName}' (tag '${tableTag}') has no v1 replication rule`;
+    this.name = 'UnreplicatedOutboxTableError';
+    this.tableTag = tableTag;
+  }
+}
+
+/**
+ * P-003 (p2p-v1-core-release-2026-11-13): the ONE rule for "the drain refuses rows of
+ * this outbox table". Returns the error the drain's skip path catches, or `null` when
+ * the table maps to a tag with a rule in the v1 simple set. Refused rows stay undrained
+ * on purpose, so every quiescence check (the multi-peer harness's settle, a stall
+ * detector) must exclude them through this same function, never a second copy of it.
+ */
+export function outboxTableRefusal(tableName: string): UnknownOutboxTableError | null {
+  const tag = TABLE_NAME_TO_TABLE_TAG[tableName];
+  if (!tag) return new UnknownOutboxTableError(tableName);
+  if (replicationRuleFor(tag) === undefined) return new UnreplicatedOutboxTableError(tableName, tag);
+  return null;
+}
+
+/** True when the drain leaves rows of `tableName` undrained by design (see {@link outboxTableRefusal}). */
+export function drainRefusesOutboxTable(tableName: string): boolean {
+  return outboxTableRefusal(tableName) !== null;
+}
+
+/**
  * Map one `substrate_outbox` row to the `LocalWriteOp` the drain appends to the
  * own log. Throws `UnknownOutboxTableError` on an unmapped `table_name` (the drain
  * skips that class — see the class doc). For a `del`, `value` is undefined (the
  * projection's delete path needs only `hbKey`).
  */
 export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
-  const table = TABLE_NAME_TO_TABLE_TAG[outboxRow.table_name];
-  if (!table) {
-    throw new UnknownOutboxTableError(outboxRow.table_name);
-  }
+  // P-003 (p2p-v1-core-release-2026-11-13) fail-closed at the capture seam: an unmapped
+  // table, or a captured table without a rule in the v1 simple set, produces no
+  // replication operation. The shared predicate keeps settle checks in step with this.
+  const refusal = outboxTableRefusal(outboxRow.table_name);
+  if (refusal) throw refusal;
+  const table = TABLE_NAME_TO_TABLE_TAG[outboxRow.table_name] as string;
 
   const ts = typeof outboxRow.ts === 'number' ? outboxRow.ts : Number(outboxRow.ts);
 

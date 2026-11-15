@@ -22,7 +22,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import type { OpEnvelope } from './op-envelope-types';
 import { observeMergedOp } from './clobber-events';
 import { observeRemoteHlc, isValidOpHlc } from './hlc-stamp';
-import { mergeRuleFor, type MergeRule } from './merge-rules';
+import { assertReplicationRule, mergeRuleFor, replicationRuleFor, type MergeRule } from './merge-rules';
 import { encodeHlc, type HlcClock } from '@papercusp/locks-core';
 
 /**
@@ -421,8 +421,8 @@ export function buildSupersedablePut(lookup: ProjectionLookup): SupersedablePut 
 const registry = new Map<string, TableProjection<unknown>>();
 
 export function registerProjection<Row>(p: TableProjection<Row>): void {
-  const mergeRule = mergeRuleFor(p.tableTag, p.mergeRule);
-  if (!mergeRule) throw new Error(`Missing merge rule for replicated table ${p.tableTag}`);
+  // P-003: a missing rule or one outside the v1 simple set is refused, never registered.
+  assertReplicationRule(p.tableTag, p.mergeRule);
   registry.set(p.tableTag, p as TableProjection<unknown>);
 }
 
@@ -589,7 +589,7 @@ export async function applyOpVia(
   if (!op.table) return false;
   const p = lookup(op.table);
   if (!p) return false;
-  const mergeRule = mergeRuleFor(p.tableTag, p.mergeRule);
+  const mergeRule = replicationRuleFor(p.tableTag, p.mergeRule);
   if (!mergeRule) return false;
   if (mergeRule === 'append-only' && op.type === 'del') return false;
   if (applyOpts?.ownLogKeyHex !== undefined && op.sourceLogKeyHex !== applyOpts.ownLogKeyHex

@@ -19,12 +19,11 @@
  *      content DOES cross (so the negative is the sig gate, not a dead transport).
  *      This lifts the `announce.test.ts` unit sig-checks onto the real wire.
  *
- *   C-001 READ-AFTER-REVOCATION (the headline privacy finding) — revocation is a
- *      WRITE-plane control. After an owner A revokes member B, A stops ACCEPTING
- *      B's writes (covered by the revocation suite), but A keeps SERVING its
- *      cores to B (replication is unconditional for any topic peer — swarm.ts:329)
- *      and B keeps ADMITTING A's log (B never revoked A), so B keeps READING A's
- *      new content. This test demonstrates that gap at the substrate grain. NB:
+ *   C-001 READ-AFTER-REVOCATION (the headline privacy finding) — originally
+ *      revocation was a WRITE-plane control only: A stopped ACCEPTING B's writes
+ *      but kept SERVING its cores to B, so B kept READING A's new content. The v1
+ *      R-5 serve gate (WI-6554700010049344) closes A's serve path for a revoked
+ *      device; this test now pins the CUT at the substrate grain. NB (historical):
  *      `lib/shared-pot-loop/revoked-swarm.integration.test.ts` step 2 already
  *      asserts this same behavior as *intended asymmetry* ("the revoking side's
  *      writes still federate to the revoked peer") — so closing the read path is
@@ -326,8 +325,8 @@ describe('threat #4 — forged-signature announce never federates (over the wire
 // ════════════════════════════════════════════════════════════════════════════
 // C-001 — Read-after-revocation: a removed member keeps READING the hive.
 // ════════════════════════════════════════════════════════════════════════════
-describe('C-001 — revocation is write-plane only: a revoked member keeps reading new content', () => {
-  it("after owner A revokes member B, A's NEW content STILL reaches B (B keeps reading — the privacy gap)", async () => {
+describe('C-001 — revocation cuts the read path: a revoked member stops receiving new content', () => {
+  it("after owner A revokes member B, A's NEW content no longer reaches B (the v1 R-5 serve gate closes the gap)", async () => {
     const testnet = await makeTestnet();
     const idA = makeIdentityOverride('owner', 42, 'kc-owner'); // the hive owner
     const idB = makeIdentityOverride('member', 7, 'kc-member'); // the member to remove
@@ -369,9 +368,10 @@ describe('C-001 — revocation is write-plane only: a revoked member keeps readi
     expect(baseline, 'B (a member) should read A’s content — the read path is real').toBeTruthy();
 
     // THE REVOCATION: A removes B. This drops B's log from A's admitted set (A
-    // stops ACCEPTING B's writes) and refuses B's re-announce — but it does NOT
-    // evict B's connection, stop A serving its cores to B, or change B's own
-    // admission of A. (swarm.ts:329 replicates unconditionally to any topic peer.)
+    // stops ACCEPTING B's writes), refuses B's re-announce, and — since v1 R-5
+    // (WI-6554700010049344, corestore.ts installStoreServeGate / boot.ts) —
+    // closes A's per-connection serve gate for B's device, so A stops SERVING
+    // its cores to B.
     await peerA.handle.revoke(idB.devicePubkey);
 
     // A writes NEW content AFTER removing B.
@@ -385,21 +385,22 @@ describe('C-001 — revocation is write-plane only: a revoked member keeps readi
       writerPubkey: idA.devicePubkey,
     });
 
-    // THE GAP: B STILL receives A's post-removal content. (A green pass here =
-    // the read-revocation gap is open; a fix — replication gated on admission,
-    // or connection-level device eviction, or re-key on removal — flips it red.
-    // See findings-C.md C-001 for the product decision + fix options.)
+    // THE CUT: B must NOT receive A's post-removal content. The baseline above is
+    // the positive control (the same transport delivered the member-time write),
+    // so an absence over this window is the serve gate, not a dead transport. If
+    // the gate regresses to unconditional replication, this read arrives and the
+    // test fails. See findings-C.md C-001.
     const afterRemoval = await pollUntil(
       async () => {
         await peerB.handle.mergeNow();
         return peerB.apply.mock.calls.find((c) => c[0].hbKey === 'F-after-removal')?.[0];
       },
-      { timeoutMs: 25_000, intervalMs: 250 },
+      { timeoutMs: 10_000, intervalMs: 250 },
     );
     expect(
       afterRemoval,
-      'C-001: a revoked member STILL reads the owner’s new content — revocation does not cut off reading',
-    ).toBeTruthy();
+      'C-001: a revoked member must not read the owner’s post-revocation content',
+    ).toBeUndefined();
   }, 60_000);
 });
 

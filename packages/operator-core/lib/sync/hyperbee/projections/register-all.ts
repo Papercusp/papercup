@@ -31,7 +31,7 @@ import {
   type SupersedablePut,
 } from '../projection';
 import type { OpEnvelope } from '../op-envelope-types';
-import { mergeRuleFor } from '../merge-rules';
+import { assertReplicationRule } from '../merge-rules';
 import type { FeatureClaimsProjectionOpts } from './feature-claims';
 import type { PendingMembershipContent } from '../pending-membership-content';
 import { bumpFederationRefusedOp } from '../federation-refused-op-counter';
@@ -540,8 +540,7 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     // (not auth records) and share the same home-scope as the fleet directory.
     hh(buildFleetLeaderLeaseProjection(hiveScoped)),
   ].map(p => {
-    const mergeRule = mergeRuleFor(p.tableTag);
-    if (!mergeRule) throw new Error(`Missing merge rule for replicated table ${p.tableTag}`);
+    const mergeRule = assertReplicationRule(p.tableTag);
     return { ...p, mergeRule };
   }) as TableProjection<unknown>[];
 }

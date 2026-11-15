@@ -6,7 +6,7 @@
  * themselves (R-1..R-9) live in P-005's suite, not here.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { pollUntil } from '../../sync/hyperbee/__tests__/_hive-substrate-rig';
+import { HIVE_SLUG, pollUntil, WORKSPACE_ID } from '../../sync/hyperbee/__tests__/_hive-substrate-rig';
 import { createMultiPeerHarness, harnessAfterEach, type MultiPeerHarness } from './_multi-peer-harness';
 
 // Each peer boots inside its own cell scope (runWithCellSql in the harness). Route every
@@ -168,6 +168,42 @@ describe('v1-core multi-peer harness (P-002)', () => {
       expect(h.receiptsOf('revoke-during-sync')).toHaveLength(1);
       await h.settle();
       expect((await h.pendingWork()).total).toBe(0);
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'a row the drain refuses by design does not block settle and is reported as refused',
+    async () => {
+      const h = await createMultiPeerHarness(['a', 'b']);
+      await h.settle();
+      const a = h.live('a');
+      const realWarn = console.warn.bind(console);
+      const warn = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+        if (!String(args[0]).startsWith('[outbox-drain] skipping outbox rows')) realWarn(...args);
+      });
+      try {
+        // An outbox row for a table this build has no mapper for: the drain skips it and
+        // leaves it undrained on purpose (the same skip path as a P-003 no-rule table).
+        await a.pg`INSERT INTO harness_shared.substrate_outbox (workspace_id, harness_slug, table_name, op, key, row, ts)
+                   VALUES (${WORKSPACE_ID}, ${HIVE_SLUG}, 'mph_refused_table', 'put', 'mph-refused-row', '{}'::jsonb, ${Date.now()})`;
+        await h.writeSetting('a', 'after-refused', 'replicates');
+        await h.settle();
+        const pending = await h.pendingWork();
+        expect(pending.total).toBe(0);
+        expect(pending.perPeer.a).toMatchObject({ undrained: 0, refusedUndrained: 1 });
+        const [row] = await a.pg<Array<{ drained: boolean }>>`
+          SELECT drained_at IS NOT NULL AS drained FROM harness_shared.substrate_outbox WHERE key = 'mph-refused-row'`;
+        expect(row?.drained).toBe(false);
+        expect((await h.dump('b')).settings).toEqual([{ key: 'after-refused', value: 'replicates' }]);
+        expect(warn.mock.calls.map((c) => String(c[0]))).toContain(
+          "[outbox-drain] skipping outbox rows for unmapped table 'mph_refused_table' " +
+            '(forward-compat: this build has no projection for it; a newer build will federate them). ' +
+            'Rows stay undrained.',
+        );
+      } finally {
+        warn.mockRestore();
+      }
     },
     CASE_TIMEOUT_MS,
   );

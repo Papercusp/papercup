@@ -18,11 +18,18 @@
  * Until P-004 delivers the product's join-complete state, `settle()` (every live peer holds
  * every other live peer's full own log and nothing is pending) stands in for it.
  *
- * Later plan items extend this file with R-6 (P-003) and R-9 (P-004).
+ * R-2 and R-6 (P-003, fail-closed merge rules) run on the same harness. R-2 checks the
+ * conflict winner against the rule read from the merge-rule registry and the clocks the
+ * envelopes carried, never against what the projection reports. R-6 withdraws or replaces
+ * the declared rule of two tables the rig really captures (see `ruleOverride`), so the
+ * capture seam, the drain and the second peer are all the production code paths.
+ *
+ * A later plan item extends this file with R-9 (P-004).
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import { pollUntil } from '../../sync/hyperbee/__tests__/_hive-substrate-rig';
+import { HIVE_SLUG, pollUntil, WORKSPACE_ID } from '../../sync/hyperbee/__tests__/_hive-substrate-rig';
+import { assertReplicationRule, replicationRuleFor } from '../../sync/hyperbee/merge-rules';
 import {
   createMultiPeerHarness,
   harnessAfterEach,
@@ -57,6 +64,26 @@ vi.mock('@papercusp/db-org', async () => {
       if (!cellSql) throw new Error('getOrgPg outside a harness peer scope: boot and drive peers through the harness');
       return { sql: cellSql };
     },
+  };
+});
+
+// R-6 fixtures: a table tag listed here replicates as if it were undeclared (no census
+// entry, no declared rule) or as if it declared the given rule. Every other tag, and every
+// tag outside the R-6 case, resolves through the real registry unchanged.
+const ruleOverride = vi.hoisted(() => new Map<string, 'undeclared' | { declared: unknown }>());
+vi.mock('../../sync/hyperbee/merge-rules', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../sync/hyperbee/merge-rules')>();
+  const resolve = (table: string, declared: unknown): [string, unknown] => {
+    const o = ruleOverride.get(table);
+    if (o === undefined) return [table, declared];
+    if (o === 'undeclared') return [`${table}#r6-undeclared`, undefined];
+    return [table, o.declared];
+  };
+  return {
+    ...actual,
+    replicationRuleFor: (table: string, declared?: unknown) => actual.replicationRuleFor(...resolve(table, declared)),
+    assertReplicationRule: (table: string, declared?: unknown) =>
+      actual.assertReplicationRule(...resolve(table, declared)),
   };
 });
 
@@ -452,6 +479,192 @@ describe('R-5: a revoked device never reads rows committed after the revocation'
       ).toEqual([]);
       expect(keysOf((await h.dump('b')).settings)).not.toContain('after-frontier');
       expect(h.live('b').handle.admitted.get(aKey)?.length ?? 0).toBeLessThanOrEqual(frontier.ownLogLengths.a!);
+    },
+    MP_TIMEOUT_MS,
+  );
+});
+
+/** An HLC string as the comparable pair the clock orders by (wall ms, then counter). */
+function hlcPair(op: string): [number, number] {
+  const [ms, counter] = op.slice(op.lastIndexOf('@') + 1).split(':');
+  return [Number.parseInt(ms ?? '', 10), Number.parseInt(counter ?? '0', 10)];
+}
+
+describe('R-2: concurrent offline writes converge after reconnect', () => {
+  it(
+    'R-2: partitioned writers with a same-key conflict hold identical rows and the LWW winner after skew, reorder and duplicate',
+    async () => {
+      const h = await hive(['a', 'b']);
+      await h.settle();
+      const caseStart = h.receipts.length;
+      h.partition(['a'], ['b']);
+      // a's clock runs 120s ahead, so a's conflicting write carries the higher clock even
+      // though b writes the same key later in wall-clock time.
+      await h.skewClock('a', 120_000);
+      await h.writeSetting('a', 'r2-conflict', 'from-a-clock-ahead');
+      await h.writeSetting('a', 'r2-a-one', 'a1');
+      await h.writeSetting('a', 'r2-a-two', 'a2');
+      await h.writeSetting('b', 'r2-b-one', 'b1');
+      await h.writeSetting('b', 'r2-conflict', 'from-b-later-wall-clock');
+      for (const p of ['a', 'b']) {
+        await h.live(p).drain();
+        await h.live(p).handle.mergeNow();
+      }
+      expect(keysOf((await h.dump('b')).settings)).not.toContain('r2-a-one');
+      expect(keysOf((await h.dump('a')).settings)).not.toContain('r2-b-one');
+
+      h.setDeliveryFaults('b', { hold: true, reorder: true, duplicate: true });
+      h.heal();
+      await waitForHeld(h, 'b', ['a'], 3);
+      await h.flush('b');
+      h.setDeliveryFaults('b', { hold: false, reorder: false, duplicate: false });
+      await h.settle();
+      expect((await h.pendingWork()).total).toBe(0);
+
+      const rowsA = (await h.dump('a')).settings;
+      expect((await h.dump('b')).settings).toEqual(rowsA);
+      for (const k of ['r2-a-one', 'r2-a-two', 'r2-b-one', 'r2-conflict']) expect(keysOf(rowsA)).toContain(k);
+
+      // The declared rule, read from the registry, selects the higher clock. The two clocks
+      // are the ones the conflicting envelopes carried to the other peer's apply seam.
+      expect(replicationRuleFor('hive-settings-by-key')).toBe('lww');
+      const conflict = (from: string) => h.arrivals.find((x) => x.from === from && x.op.includes('r2-conflict@'));
+      const fromA = conflict('a');
+      const fromB = conflict('b');
+      expect(fromA, 'a conflicting op from a never reached b').toBeDefined();
+      expect(fromB, 'a conflicting op from b never reached a').toBeDefined();
+      const [aMs, aCounter] = hlcPair(fromA!.op);
+      const [bMs, bCounter] = hlcPair(fromB!.op);
+      expect(Number.isFinite(aMs) && Number.isFinite(bMs)).toBe(true);
+      const aWins = aMs > bMs || (aMs === bMs && aCounter > bCounter);
+      // The case is only discriminating when the clock winner is not the last wall-clock writer.
+      expect(aWins, `a@${fromA!.op} vs b@${fromB!.op}`).toBe(true);
+      expect(rowsA).toContainEqual({ key: 'r2-conflict', value: 'from-a-clock-ahead' });
+
+      // Each configured fault left a receipt on an envelope this case sent.
+      const mine = h.receipts.slice(caseStart);
+      const ofCase = (op: unknown) => typeof op === 'string' && op.includes('r2-');
+      const same = (x: unknown, y: unknown) => JSON.stringify(x) === JSON.stringify(y);
+      expect(mine.some((r) => r.kind === 'partition')).toBe(true);
+      expect(
+        mine.some(
+          (r) =>
+            r.kind === 'heal' &&
+            ((r.detail.undeliveredAtHeal as Array<{ receiver: string; missing: number }> | undefined) ?? []).some(
+              (u) => u.receiver === 'b' && u.missing > 0,
+            ),
+        ),
+      ).toBe(true);
+      expect(
+        mine.some((r) => {
+          if (r.kind !== 'reorder' || r.peer !== 'b') return false;
+          const arrival = r.detail.arrivalOrder as string[];
+          const delivery = r.detail.deliveryOrder as string[];
+          return arrival.length >= 2 && arrival.some(ofCase) && same(delivery, [...arrival].reverse()) && !same(delivery, arrival);
+        }),
+        'no reorder receipt on b for this case',
+      ).toBe(true);
+      expect(
+        mine.some((r) => r.kind === 'duplicate' && r.peer === 'b' && ofCase(r.detail.op)),
+        'no duplicate receipt on b for this case',
+      ).toBe(true);
+      expect(
+        mine.some(
+          (r) =>
+            r.kind === 'clock-skew' &&
+            r.peer === 'b' &&
+            r.detail.from === 'a' &&
+            (r.detail.aheadMs as number) > 0 &&
+            ofCase(r.detail.op),
+        ),
+        'no clock-skew receipt on b for an op of this case',
+      ).toBe(true);
+    },
+    MP_TIMEOUT_MS,
+  );
+});
+
+describe('R-6: a table without a declared v1 merge rule is not replicated', () => {
+  afterEach(() => ruleOverride.clear());
+
+  it(
+    'R-6: the simple-rule table replicates; the undeclared and the non-simple table produce no op and no row on b',
+    async () => {
+      // Boot first, under the real census. Registration refuses a projection whose static
+      // rule is missing or non-simple (boot fails loudly, asserted just below), so a peer
+      // booted under these overrides never starts. What R-6 measures is the run-time
+      // case: a captured table whose rule is absent or outside the simple set when its
+      // rows reach the capture, fold and apply seams.
+      const h = await hive(['a', 'b']);
+      await h.settle();
+
+      // The rig's real capture triggers capture both consolidated tables. Withdraw the
+      // `issues` rule (an undeclared table) and have `features-by-id` declare `max`.
+      ruleOverride.set('issues', 'undeclared');
+      ruleOverride.set('features-by-id', { declared: 'max' });
+      expect(replicationRuleFor('hive-settings-by-key')).toBe('lww');
+      expect(replicationRuleFor('issues')).toBeUndefined();
+      expect(replicationRuleFor('features-by-id')).toBeUndefined();
+      // The registration form refuses both declarations with their reasons.
+      expect(() => assertReplicationRule('issues')).toThrow(/Missing merge rule/);
+      // SPEC-P003: the non-simple declaration is rejected, not narrowed to a default.
+      expect(() => assertReplicationRule('features-by-id')).toThrow(/outside the v1 simple rule set/);
+
+      const a = h.live('a');
+      const keys = ['r6-non-simple-row', 'r6-undeclared-row'];
+      const ownLogBefore = a.handle.ownLog.length;
+      // The drain refuses each table once, loudly, naming the reason. Spy from before the
+      // writes: any drain pass that reaches the rows (ours or a background one) logs it.
+      // Any other warning still reaches the real console.warn (and fails the test).
+      const realWarn = console.warn.bind(console);
+      const warn = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+        if (!String(args[0]).startsWith('[outbox-drain] skipping outbox rows')) realWarn(...args);
+      });
+      await a.pg`INSERT INTO harness_shared.harness_issues_consolidated (workspace_id, harness_slug, issue_id)
+                 VALUES (${WORKSPACE_ID}, ${HIVE_SLUG}, 'r6-undeclared-row')`;
+      await a.pg`INSERT INTO harness_shared.harness_features_consolidated (workspace_id, harness_slug, feature_id)
+                 VALUES (${WORKSPACE_ID}, ${HIVE_SLUG}, 'r6-non-simple-row')`;
+      const outbox = () =>
+        a.pg<Array<{ table_name: string; key: string; drained: boolean }>>`
+          SELECT table_name, key, drained_at IS NOT NULL AS drained FROM harness_shared.substrate_outbox
+           WHERE workspace_id = ${WORKSPACE_ID} AND harness_slug = ${HIVE_SLUG} AND key IN ${a.pg(keys)}
+           ORDER BY key`;
+      // Not vacuous: both writes were captured, inside the drain's own scope.
+      expect((await outbox()).map((r) => [r.table_name, r.key])).toEqual([
+        ['harness_features_consolidated', 'r6-non-simple-row'],
+        ['harness_issues_consolidated', 'r6-undeclared-row'],
+      ]);
+      await a.drain();
+      await a.drain();
+      // Zero operations at the capture seam: nothing appended, both rows left undrained.
+      expect(a.handle.ownLog.length).toBe(ownLogBefore);
+      expect((await outbox()).map((r) => r.drained)).toEqual([false, false]);
+      const refusals = warn.mock.calls
+        .map((c) => String(c[0]))
+        .filter((m) => m.startsWith('[outbox-drain] skipping outbox rows'))
+        .sort();
+      warn.mockRestore();
+      expect(refusals).toEqual([
+        "[outbox-drain] skipping outbox rows for table 'harness_features_consolidated' (tag 'features-by-id'): " +
+          'it has no merge rule in the v1 simple set, so it does not replicate (fail-closed). Rows stay undrained.',
+        "[outbox-drain] skipping outbox rows for table 'harness_issues_consolidated' (tag 'issues'): " +
+          'it has no merge rule in the v1 simple set, so it does not replicate (fail-closed). Rows stay undrained.',
+      ]);
+
+      // Control: the simple table, written after them, still replicates to b.
+      await h.writeSetting('a', 'r6-simple', 'replicates');
+      await h.settle();
+      expect(a.handle.ownLog.length).toBeGreaterThan(ownLogBefore);
+      expect((await h.dump('b')).settings).toContainEqual({ key: 'r6-simple', value: 'replicates' });
+
+      // Zero rows on the second peer, and no op for either row reached b's apply seam.
+      const b = h.live('b');
+      const [issues] = await b.pg<Array<{ n: number }>>`
+        SELECT count(*)::int AS n FROM harness_shared.harness_issues_consolidated WHERE issue_id = 'r6-undeclared-row'`;
+      const [features] = await b.pg<Array<{ n: number }>>`
+        SELECT count(*)::int AS n FROM harness_shared.harness_features_consolidated WHERE feature_id = 'r6-non-simple-row'`;
+      expect([issues?.n, features?.n]).toEqual([0, 0]);
+      expect(h.arrivals.filter((x) => keys.some((k) => x.op.includes(k)))).toEqual([]);
     },
     MP_TIMEOUT_MS,
   );
