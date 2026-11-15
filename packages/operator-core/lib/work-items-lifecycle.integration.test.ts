@@ -261,6 +261,12 @@ beforeAll(async () => {
   await db.sql.unsafe(WORK_ITEM_CLAIMS_DDL);
   await db.sql.unsafe(CARRY_NOTES_DDL);
   await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
+  // Await admission reads routines before the later held-open suite runs.
+  await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.routines (
+    id text PRIMARY KEY, workspace_id text NOT NULL, name text NOT NULL,
+    active boolean NOT NULL DEFAULT true, reschedule_interval_sec integer, target_owner_id text,
+    payload_template jsonb, updated_at timestamptz NOT NULL DEFAULT now(),
+    metadata jsonb NOT NULL DEFAULT '{}'::jsonb)`);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(WATCHDOG_TICKS_DDL).simple();
   // Seed a pre-1214 terminal item with an existing waiter. The migration must
@@ -2208,10 +2214,6 @@ describe('P-006 held-open guard — non-holder terminal transitions refuse', () 
     await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.spawned_agents (
       spawn_id text PRIMARY KEY, session_owner text, run_id text, status text NOT NULL,
       heartbeat_at timestamptz, finished_at timestamptz, cancelled_at timestamptz)`);
-    await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.routines (
-      id text PRIMARY KEY, workspace_id text NOT NULL, name text NOT NULL,
-      active boolean NOT NULL DEFAULT true, reschedule_interval_sec integer, target_owner_id text,
-      updated_at timestamptz NOT NULL DEFAULT now(), metadata jsonb NOT NULL DEFAULT '{}'::jsonb)`);
     await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.agent_activity (
       id BIGSERIAL PRIMARY KEY, owner_id text NOT NULL, kind text NOT NULL, summary text,
       created_at timestamptz NOT NULL DEFAULT now())`);

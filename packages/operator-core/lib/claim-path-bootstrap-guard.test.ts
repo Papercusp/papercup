@@ -186,6 +186,33 @@ describe('claim-path fixture bootstrap guard (WI-10005130)', () => {
     expect(results.filter((r) => r.releaseWakeGaps.length).map((r) => ({ file: r.rel, gaps: r.releaseWakeGaps }))).toEqual([]);
   });
 
+  it('provisions lifecycle await admission before nested suites (EI-28800936460012998)', () => {
+    const file = path.join(HERE, 'work-items-lifecycle.integration.test.ts');
+    const raw = readFileSync(file, 'utf8');
+    const initialSchema = (source: string): string => {
+      const commentless = stripCommentsOnly(source, file) as string;
+      const firstSuite = commentless.search(/^\s*describe(?:\.\w+)*\s*\(/m);
+      const bootstrap = firstSuite < 0 ? commentless : commentless.slice(0, firstSuite);
+      return bootstrap.match(/CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+harness_shared\.routines\s*\([\s\S]*?\)\s*`/i)?.[0] ?? '';
+    };
+    const schema = initialSchema(raw);
+    for (const column of ['workspace_id', 'target_owner_id', 'active', 'payload_template']) {
+      expect(schema, `shared setup must provision routines.${column} before registerAwait`).toMatch(
+        new RegExp(`\\b${column}\\s+(?:text|boolean|jsonb)\\b`),
+      );
+    }
+    // In-memory mutations prove that later suite setup, comments, and an
+    // incomplete projection cannot hide the missing fresh-await dependency.
+    const withoutBootstrap = raw.replace(schema, 'SELECT 1`');
+    const comment = schema.split('\n').map((line) => `// ${line}`).join('\n');
+    expect(initialSchema(`${withoutBootstrap}\n${comment}`)).toBe('');
+    const laterSuite = '\ndescribe("later", () => { beforeAll(async () => { await db.sql.unsafe(`'
+      + schema + '); }); });';
+    expect(initialSchema(withoutBootstrap + laterSuite)).toBe('');
+    expect(initialSchema(raw.replace('payload_template jsonb', 'unrelated jsonb')))
+      .not.toMatch(/\bpayload_template\s+jsonb\b/);
+  });
+
   it('detects removal of each release-await substrate without accepting comments as provisioning', () => {
     const file = path.join(HERE, 'work-items-release-request.integration.test.ts');
     const raw = readFileSync(file, 'utf8');
