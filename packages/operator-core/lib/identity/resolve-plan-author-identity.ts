@@ -25,6 +25,7 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { traceNamedQueryStage } from '../agent-tools/db-diagnostic-correlation-wiring';
 import type { DeviceAttestationEntry } from '../harness/contributor-row-types';
 
 export type PlanAuthorInputKind = 'email' | 'authorId' | 'pubkey';
@@ -248,11 +249,11 @@ export async function resolvePlanAuthorIdentities(
   let index: IdentityIndex;
   try {
     const sql = pg(opts?.sql);
-    const memberRows = (await sql.unsafe(
+    const memberRows = (await traceNamedQueryStage('plans-attribution-members', () => sql.unsafe(
       `SELECT github_user_id, github_username, display_name, avatar_url, device_attestations
          FROM harness_shared.pot_members WHERE workspace_id = $1`,
       [workspaceId],
-    )) as unknown as HiveMemberIndexRow[];
+    ), { pgPool: 'org-admin' })) as unknown as HiveMemberIndexRow[];
     const members = memberRows.map((r) => ({
       githubUserId: Number(r.github_user_id),
       githubUsername: r.github_username,
@@ -267,10 +268,10 @@ export async function resolvePlanAuthorIdentities(
       .map((i) => i.value.trim());
     let users: Array<{ id: string; username: string; displayName: string | null }> = [];
     if (userIds.length > 0) {
-      const userRows = (await sql.unsafe(
+      const userRows = (await traceNamedQueryStage('plans-attribution-users', () => sql.unsafe(
         `SELECT id, username, display_name FROM harness_shared.users WHERE id = ANY($1::uuid[])`,
         [userIds],
-      )) as unknown as Array<{ id: string; username: string; display_name: string | null }>;
+      ), { pgPool: 'org-admin' })) as unknown as Array<{ id: string; username: string; display_name: string | null }>;
       users = userRows.map((u) => ({ id: u.id, username: u.username, displayName: u.display_name }));
     }
     index = buildIdentityIndex(members, users);

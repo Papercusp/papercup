@@ -25,6 +25,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { createReadDeadline } from './read-deadline';
+import { traceNamedQueryStage } from '../agent-tools/db-diagnostic-correlation-wiring';
 import { activeWorkspaceId } from '../workspace-registry';
 import { resolveWorkspaceForHarness } from '../harness/workspace-for-harness';
 import {
@@ -92,7 +93,7 @@ async function latestRevisionAuthors(
   // DISTINCT ON over every matching revision scanned and sorted the whole
   // history on each UI poll. The existing (workspace, harness, plan, seq)
   // unique index can instead stop at the first revision for each exact pair.
-  const rows = (await sql.unsafe(
+  const rows = (await traceNamedQueryStage('plans-attribution-revisions', () => sql.unsafe(
     `SELECT revision.harness_slug, revision.plan_slug, revision.author_id, revision.author_kind
        FROM unnest($2::text[], $3::text[]) AS requested(harness_slug, plan_slug)
        CROSS JOIN LATERAL (
@@ -105,7 +106,7 @@ async function latestRevisionAuthors(
           LIMIT 1
        ) AS revision`,
     [workspaceId, refs.map(ref => ref.harnessSlug), refs.map(ref => ref.planSlug)],
-  )) as unknown as LatestRevisionRow[];
+  ), { pgPool: 'org-admin' })) as unknown as LatestRevisionRow[];
   for (const r of rows) {
     out.set(`${r.harness_slug}:${r.plan_slug}`, {
       authorId: r.author_id,

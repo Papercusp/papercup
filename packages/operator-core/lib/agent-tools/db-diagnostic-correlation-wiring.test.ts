@@ -95,6 +95,20 @@ describe('db diagnostic correlation wiring', () => {
     });
   });
 
+  it.each([undefined, null, 7])('does not join a non-object result (%s) to an unrelated record', async value => {
+    installDbDiagnosticCorrelationWiring();
+    const hooks = createPgDiagnosticHooks('org-admin');
+    await withNamedQueryDiagnosticContext('plans.list', async () => {
+      await traceNamedQueryStage('plans-attribution-revisions', async () => {
+        hooks.onresult({ connectionId: 1, queryId: 1, backendPid: null, query: 'select 1',
+          rowCount: 0, wireBytes: 0, elapsedMs: 123, status: 'ok', context: hooks.onquerycontext() });
+        return value;
+      }, { pgPool: 'org-admin' });
+      expect(namedQueryStageTimings()?.stages[0].database)
+        .toEqual({ pool: 'org-admin', status: 'not-retained' });
+    });
+  });
+
   it('discloses the bounded stage window while continuing every business read', async () => {
     await withNamedQueryDiagnosticContext('goals.detail', async () => {
       const results = await Promise.all(Array.from({ length: 35 }, (_, index) =>

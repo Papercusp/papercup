@@ -9,6 +9,7 @@
 
 import {
   pgDiagnosticIdentity,
+  pgResultDiagnosticSnapshot,
   recordPgDiagnosticResponse,
   setPgDiagnosticContextResolver,
   type PgDiagnosticQueryLeg,
@@ -45,6 +46,7 @@ type NamedQueryStage = 'goal-list-sql' | 'goal-list-portfolio' | 'goal-list-pack
   'plans-list-output-parse' | 'plans-list-ui-projection' | 'plans-list-cache-read' |
   'plans-list-index-read' | 'plans-list-blocked-overlay-read' | 'plans-list-lifecycle-read' |
   'plans-list-gap-content-read' | 'plans-list-attribution-flag' | 'plans-list-attribution' |
+  'plans-attribution-revisions' | 'plans-attribution-members' | 'plans-attribution-users' |
   'attention-import' | 'attention-read' | 'attention-scope' | 'attention-aggregate' | 'attention-plans' | 'attention-escalations' |
   'attention-messages' | 'attention-smoke' | 'attention-reports' | 'attention-improvements' |
   'attention-approvals' | 'attention-questions' | 'attention-scout' | 'attention-needs-human' |
@@ -59,6 +61,13 @@ interface NamedQueryStageTiming {
   startedAt: number;
   elapsedMs: number | null;
   outcome: 'pending' | 'fulfilled' | 'rejected';
+  database?: {
+    pool: string;
+    status: 'exact-result' | 'not-retained';
+    queryId?: number;
+    elapsedMs?: number | null;
+    preBuildMs?: number | null;
+  };
 }
 
 const REQUEST_CONTEXT = pinModuleState(
@@ -101,7 +110,11 @@ export function withNamedQueryDiagnosticLeg<T>(queryLeg: PgDiagnosticQueryLeg, f
 }
 
 /** Retain pending boundaries too: a timeout must name work that never settled. */
-export async function traceNamedQueryStage<T>(stage: NamedQueryStage, run: () => PromiseLike<T>): Promise<T> {
+export async function traceNamedQueryStage<T>(
+  stage: NamedQueryStage,
+  run: () => PromiseLike<T>,
+  options?: { pgPool: string },
+): Promise<T> {
   const context = REQUEST_CONTEXT.getStore();
   if (!context) return await run();
   if (context.diagnostics.stages.length >= 32) {
@@ -113,6 +126,25 @@ export async function traceNamedQueryStage<T>(stage: NamedQueryStage, run: () =>
   try {
     const value = await run();
     timing.outcome = 'fulfilled';
+    if (options) {
+      // Capture at fulfillment, before unrelated queries can evict this result.
+      // Match the exact decoded object AND request; timing/row-count similarity
+      // cannot establish which query supplied a resolver's data.
+      timing.database = { pool: options.pgPool, status: 'not-retained' };
+      try {
+        const result = value !== null && typeof value === 'object' &&
+          pgResultDiagnosticSnapshot(options.pgPool, 32, { includeObjectRefs: true })
+          .results.find(record => record.objectRefs?.decodedResult?.deref() === value &&
+            record.correlation?.requestId === context.requestId &&
+            record.source.processInstanceId === context.processInstanceId);
+        if (result) timing.database = {
+          pool: options.pgPool, status: 'exact-result', queryId: result.queryId,
+          elapsedMs: result.elapsedMs, preBuildMs: result.preBuildMs,
+        };
+      } catch {
+        // Diagnostics must not turn a successful business query into a failure.
+      }
+    }
     return value;
   } catch (error) {
     timing.outcome = 'rejected';
@@ -126,7 +158,8 @@ export async function traceNamedQueryStage<T>(stage: NamedQueryStage, run: () =>
 export function namedQueryStageTimings(): {
   requestId: string | undefined;
   omittedStages: number;
-  stages: Array<{ stage: NamedQueryStage; elapsedMs: number; outcome: NamedQueryStageTiming['outcome'] }>;
+  stages: Array<{ stage: NamedQueryStage; elapsedMs: number; outcome: NamedQueryStageTiming['outcome'];
+    database?: NamedQueryStageTiming['database'] }>;
 } | null {
   const context = REQUEST_CONTEXT.getStore();
   if (!context?.diagnostics.stages.length) return null;
@@ -134,6 +167,7 @@ export function namedQueryStageTimings(): {
     stage: timing.stage,
     elapsedMs: Math.round(timing.elapsedMs ?? Math.max(0, performance.now() - timing.startedAt)),
     outcome: timing.outcome,
+    ...(timing.database ? { database: { ...timing.database } } : {}),
   })) };
 }
 
