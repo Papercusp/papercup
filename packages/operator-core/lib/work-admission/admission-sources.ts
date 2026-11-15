@@ -34,8 +34,11 @@ import type { ReportContextInput } from '../harness/improvements/report-context'
 export type AdmissionDb = postgres.Sql | postgres.TransactionSql;
 
 /** Built-in source kinds. `record` ships with P-020; the chat kinds ship with P-021. */
-export type BuiltinAdmissionSourceKind = 'record' | 'chat-message' | 'chat-thread';
+export type BuiltinAdmissionSourceKind = 'record' | 'chat-message' | 'chat-thread' | 'work-item';
 export type AdmissionSourceKind = BuiltinAdmissionSourceKind | (string & {});
+
+/** Local work eligible for explicit adoption and standing-PR correlation. */
+export const EXISTING_WORK_KINDS = ['bug', 'change'] as const;
 
 /**
  * Who admitted: a person promoting by hand, or a per-data-source rule.
@@ -79,6 +82,8 @@ export interface AdmissionSourceIdentity {
 }
 
 export interface ResolvedAdmissionSource {
+  /** Verified local work to attribute in place, without minting or changing its lifecycle. */
+  existingWorkItem?: { id: string; harness: string; kind: (typeof EXISTING_WORK_KINDS)[number] };
   /** The data source the item came from, or null for a source with none. */
   dataSourceId: string | null;
   /** Stable provider identity. Unique per (workspace, kind) and stable across re-ingest. */
