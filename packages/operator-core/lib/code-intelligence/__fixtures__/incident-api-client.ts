@@ -521,7 +521,8 @@ async function runNativeTaskBriefJourney({ call, workspace, root, owner }: {
   const closed = await call('work_items:complete', { id, harness: workspace, state: 'done', assumptions: 'none',
     completion: { summary: 'Updated the private target and verified its actual native assertion.',
       testsRun: 'node --test target.test.ts', testResult: '1 passed, 0 failed',
-      verifiedHow: 'Native node:test process exited 0 in the private harness.', filesChanged: [paths[0]] },
+      verifiedHow: 'Native node:test process exited 0 in the private harness.', filesChanged: [paths[0]],
+      verification: { workOutcome: 'introduced-change' } },
     projection: { pick: ['ok', 'results[].ok', 'results[].error', 'results[].stateWarning',
       'results[].completionBrief', 'results[].workItem.state', 'results[].finish.complete'] } });
   const receipt = closed.results?.[0];

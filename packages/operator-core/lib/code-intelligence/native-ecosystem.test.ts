@@ -361,17 +361,23 @@ describe('native CLI fixture runtime and deadline guards', () => {
     `;
     const clocks: { elapsedMs: number; remainingMs: number }[] = [];
     let output: string;
+    let result: Awaited<ReturnType<typeof nativeFixtureProcess>> | undefined;
+    let failure: unknown;
     try {
-      const result = await nativeFixtureProcess(process.execPath, ['-e', script], {
+      result = await nativeFixtureProcess(process.execPath, ['-e', script], {
         cwd: process.cwd(), timeoutMs: 750, onOutput: (_text, timing) => clocks.push(timing),
       });
-      expect(timedOut).toBe(false);
-      expect(result.code).toBe(19);
-      output = result.output;
-    } catch (error) {
-      expect(timedOut).toBe(true);
-      output = String(error);
+    } catch (error) { failure = error; }
+    if (timedOut) {
+      expect(failure).toBeInstanceOf(Error);
+      output = String(failure);
       expect(output).toContain('Private fixture deadline 750ms exceeded');
+    } else {
+      // Keep the original timeout/process failure; catching assertion errors
+      // above hid it behind an unrelated expectation about the test parameter.
+      if (failure) throw failure;
+      expect(result?.code).toBe(19);
+      output = result!.output;
     }
     const line = output.split('\n').find(row => row.startsWith('NATIVE_FIXTURE_TIMING='))!;
     const timing = JSON.parse(line.slice('NATIVE_FIXTURE_TIMING='.length));

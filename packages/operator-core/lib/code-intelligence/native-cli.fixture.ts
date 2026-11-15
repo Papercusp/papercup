@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { decideWatchdogExpiry } from '../../../../scripts/lib/batch-watchdog.mjs';
+// @ts-ignore -- share the maintained JS unit-test boundary with private operator builds.
 import { isolatedRuntimeEnv } from '../../../../scripts/lib/isolation-child-env.mjs';
 import { moduleRepoRoot } from '../module-repo-root';
 import { resolveAgentMcpBaseUrl } from '../mcp-base-url';

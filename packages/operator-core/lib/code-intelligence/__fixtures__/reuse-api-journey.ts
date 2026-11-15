@@ -481,7 +481,8 @@ export async function runNativeReuseJourney({ call, workspace, root: privateRoot
   const closed = await call('work_items:complete', { id, harness: workspace, state: 'done', assumptions: 'none',
     completion: { summary: 'Changed the private aggregate and planted a copy; verified the positive branch and writer.',
       testsRun: 'testing:run src/target.test.ts with complete per-file V8 coverage', testResult: '1 passed, 0 failed',
-      verifiedHow: 'Actual native CLI test and completion on private current source.', filesChanged: ['src/target.ts'] },
+      verifiedHow: 'Actual native CLI test and completion on private current source.', filesChanged: ['src/target.ts'],
+      verification: { workOutcome: 'introduced-change' } },
     projection: { pick: ['ok', 'results[].ok', 'results[].error', 'results[].completionBrief', 'results[].workItem.state'] } });
   const receipt = closed.results?.[0];
   assert.equal(receipt?.ok, true, JSON.stringify(closed));
