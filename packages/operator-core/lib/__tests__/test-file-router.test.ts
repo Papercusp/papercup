@@ -1124,6 +1124,30 @@ describe('test-files router', () => {
     expect(route.requested).toBe('test/build-windows-identity.test.js');
   });
 
+  it('resolves a package-relative desktop Node test from the admission population', () => {
+    const route = discoverTestRoute('test/check-page-links.test.js');
+    expect(route.runner).toBe('node');
+    expect(route.cwd).toBe(resolve(REPO_ROOT, 'papercusp-desktop'));
+    expect(route.config).toBeNull();
+    expect(route.requested).toBe('test/check-page-links.test.js');
+  });
+
+  it('refuses ambiguous package-relative tests across workspace and registered Node roots', () => {
+    const root = mkdtempSync(join(tmpdir(), 'test-file-router-node-ambiguity-'));
+    try {
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ workspaces: ['packages/*'] }));
+      for (const pkg of ['papercusp-desktop', 'packages/peer']) {
+        mkdirSync(join(root, pkg, 'test'), { recursive: true });
+        writeFileSync(join(root, pkg, 'package.json'), JSON.stringify({ name: basename(pkg) }));
+        writeFileSync(join(root, pkg, 'test', 'shared.test.js'), '');
+      }
+      expect(() => discoverTestRoute('test/shared.test.js', root))
+        .toThrow(/ambiguous across workspaces/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('routes root maintenance .test.mjs suites to Node:test', () => {
     for (const file of ['scripts/npm-install-safe.test.mjs', 'scripts/cpu-profile.test.mjs']) {
       const route = discoverTestRoute(file);

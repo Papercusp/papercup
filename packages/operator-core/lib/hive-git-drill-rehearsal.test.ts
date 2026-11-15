@@ -15,6 +15,7 @@
  */
 import { afterAll, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   copyFileSync,
   existsSync,
@@ -30,6 +31,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { candidateArtifactDigest, P521_JOURNEYS } from '../../../apps/operator/lib/release/p521-local-precheck.mts';
 
 function repoRoot(): string {
   let dir = dirname(fileURLToPath(import.meta.url));
@@ -72,6 +74,7 @@ function cleanEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
     'HIVE_GIT_PHYSICAL_PHASES',
     'HIVE_GIT_PHYSICAL_EXECUTE',
     'HIVE_GIT_PHYSICAL_PLAN',
+    'P521_LOCAL_PRECHECKS_FILE',
     'REQUIRE_ZERO_SKIPS',
     'SAME_BOX_VM_HOME',
     'SAME_BOX_VM_PORT',
@@ -731,6 +734,32 @@ describe('the real probe and scenario apply the profile on the one path they sha
     const rig = stubRig();
     const run = join(scratch, `probe-run-${seq++}`);
     mkdirSync(run, { recursive: true });
+    // Reach the profile refusal through the real local admission gate with fixture bytes.
+    const installer = join(run, 'candidate.deb');
+    writeFileSync(installer, 'same-box rehearsal installer fixture');
+    const installerSha256 = createHash('sha256').update(readFileSync(installer)).digest('hex');
+    const artifacts = [{ name: 'candidate.deb', sha256: installerSha256 }];
+    const subject = { artifactDigest: candidateArtifactDigest(artifacts), installerSha256 };
+    const now = Date.now();
+    const bundle = join(run, 'prechecks.json');
+    writeFileSync(bundle, JSON.stringify({
+      candidate: { artifacts },
+      artifactDir: run,
+      precheckSubject: subject,
+      bytePaths: { installer },
+      localPrechecks: P521_JOURNEYS.map(({ key, localPrecheck }) => ({
+        journey: key,
+        check: localPrecheck,
+        verdict: 'pass',
+        subject,
+        startedAt: new Date(now - 10_000).toISOString(),
+        finishedAt: new Date(now - 9_000).toISOString(),
+        command: ['fixture-local-precheck'],
+        evidence: [{ ref: installer, kind: 'local-precheck' }],
+        exitCode: 0,
+        skipped: false,
+      })),
+    }));
     const r = spawnSync('bash', [probePath, join(run, 'hive-git-physical-evidence.json'), join(run, 'trust.json')], {
       encoding: 'utf8',
       env: cleanEnv({
@@ -739,6 +768,7 @@ describe('the real probe and scenario apply the profile on the one path they sha
         HIVE_GIT_PHYSICAL_PHASES: 'D,E',
         HIVE_GIT_PHYSICAL_PLAN: 'p2p-git-live-activation-2026-07-09', // what the drill exports
         PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: 'stub-task',
+        P521_LOCAL_PRECHECKS_FILE: bundle,
       }),
       timeout: 60_000,
     });

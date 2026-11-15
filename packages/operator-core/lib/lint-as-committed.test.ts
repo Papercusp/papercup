@@ -41,6 +41,7 @@ import {
   readdirSync,
   readlinkSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   statSync,
@@ -2221,6 +2222,43 @@ console.log('WRITER_RELEASED elapsedMs=' + (performance.now() - startedAt));`;
     } finally { stat.mockRestore(); f.cleanup(); }
   }, 60_000);
 
+  it('refuses donor ctime churn from another install reader without publishing a prepared copy', async () => {
+    const f = retainedFixture();
+    const target = join(f.root, 'node_modules/alpha.txt');
+    const original = statSync(target, { bigint: true });
+    const { withFsMutexRead } = await import(pathToFileURL(join(repoRoot, 'scripts/lib/fs-mutex.mjs')).href);
+    const { installLockNameForRoot } = await import(pathToFileURL(join(repoRoot, 'scripts/lib/install-lock-name.mjs')).href);
+    const handle = await openFile(target, 'r');
+    const prototype = Object.getPrototypeOf(handle);
+    await handle.close();
+    const originalStat = prototype.stat;
+    let linked = false;
+    const stat = vi.spyOn(prototype, 'stat').mockImplementation(async function (this: { fd: number }, options) {
+      if (!linked && readlinkSync('/proc/self/fd/' + this.fd) === target) {
+        await withFsMutexRead(installLockNameForRoot(f.root), async () => {
+          linkSync(target, join(f.parent, 'reader-snapshot.txt'));
+          linked = true;
+        });
+      }
+      return originalStat.call(this, options);
+    });
+    const build = vi.fn();
+    try {
+      await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, {
+        ...f.options(), prepareWorkspace: build,
+      })).rejects.toMatchObject({
+        code: 'DEPENDENCY_METADATA_CHANGED',
+        dependencyMetadata: { side: 'donor', phase: 'before-hash', path: 'node_modules/alpha.txt',
+          differences: { ctimeNs: { expected: String(original.ctimeNs), actual: expect.any(String) } } },
+      });
+      expect(linked).toBe(true);
+      expect(statSync(target, { bigint: true }).mtimeNs).toBe(original.mtimeNs);
+      expect(readFileSync(target)).toEqual(readFileSync(join(f.workRoot, 'node_modules/alpha.txt')));
+      expect(build).not.toHaveBeenCalled();
+      expectUnpreparedRetainedMarker(f);
+    } finally { stat.mockRestore(); f.cleanup(); }
+  }, 60_000);
+
   it('materializes selected dependency scope through the maintained CLI', () => {
     const f = fixture('node build.cjs');
     let preparedRoot: string | undefined;
@@ -2311,7 +2349,69 @@ console.log('WRITER_RELEASED elapsedMs=' + (performance.now() - startedAt));`;
       });
       expect(paused.status).toBe('incomplete');
       await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, f.options()))
-        .rejects.toThrow('journal binding changed');
+        .rejects.toMatchObject({ code: 'DEPENDENCY_JOURNAL_BINDING_CHANGED',
+          dependencyJournalBinding: { diagnosticStatus: 'available', changes: {
+            scope: { previous: expect.stringMatching(/^[a-f0-9]{64}$/), current: expect.stringMatching(/^[a-f0-9]{64}$/) },
+          } } });
+      expectUnpreparedRetainedMarker(f);
+    } finally { f.cleanup(); }
+  }, 60_000);
+
+  it.each(['sourceCommit', 'materializer', 'inputs', 'trees', 'semantic'] as const)
+    ('explains retained journal binding drift in %s without replacing saved proof', async component => {
+      const f = retainedFixture();
+      const { verifyRetainedDependencies } = await import(resolve(repoRoot, 'scripts/lib/committed-dependency-verification.mjs'));
+      const materializer = join(f.parent, 'materializer.sh');
+      writeFileSync(materializer, 'source ' + JSON.stringify(join(repoRoot, 'apps/operator/bin/release/dependency-generation.sh')) + '\n');
+      const context = { sourceCommit: f.head, materializer, verifySource: vi.fn() };
+      const verify = () => verifyRetainedDependencies(f.root, f.workRoot, f.options(1).resumeVerification, context);
+      try {
+        expect((await verify()).status).toBe('incomplete');
+        const manifestPath = join(f.checkpointDir, 'manifest.json');
+        const before = readFileSync(manifestPath);
+        const manifest = JSON.parse(before.toString()).data;
+        expect(manifest.bindingComponents.verifierFingerprint).toMatch(/^[a-f0-9]{64}$/);
+        const batchPath = join(f.checkpointDir, 'batch-00000000.json');
+        const batchBefore = readFileSync(batchPath);
+        if (component === 'sourceCommit') context.sourceCommit = 'different-source';
+        if (component === 'materializer') writeFileSync(materializer, readFileSync(materializer, 'utf8') + '# changed helper\n');
+        if (component === 'inputs') for (const root of [f.root, f.workRoot])
+          writeFileSync(join(root, 'package-lock.json'), '{"lockfileVersion":3,"packages":{}}\n');
+        if (component === 'trees') {
+          const saved = join(f.parent, 'old-dependencies');
+          renameSync(join(f.workRoot, 'node_modules'), saved);
+          cpSync(saved, join(f.workRoot, 'node_modules'), { recursive: true, verbatimSymlinks: true });
+        }
+        if (component === 'semantic') for (const root of [f.root, f.workRoot])
+          writeFileSync(join(root, 'node_modules/alpha.txt'), 'longer matching payload');
+        await expect(verify()).rejects.toMatchObject({
+          code: 'DEPENDENCY_JOURNAL_BINDING_CHANGED',
+          dependencyJournalBinding: { previousBinding: manifest.binding,
+            currentBinding: expect.stringMatching(/^[a-f0-9]{64}$/), diagnosticStatus: 'available',
+            changes: { [component]: { previous: manifest.bindingComponents[component], current: expect.stringMatching(/^[a-f0-9]{64}$/) } } },
+        });
+        expect(readFileSync(manifestPath)).toEqual(before);
+        expect(readFileSync(batchPath)).toEqual(batchBefore);
+        expectUnpreparedRetainedMarker(f);
+      } finally { f.cleanup(); }
+    }, 60_000);
+
+  it('keeps legacy aggregate-only journals fail-closed with explicit unavailable diagnostics', async () => {
+    const f = retainedFixture();
+    try {
+      expect((await mod.materializeIndependentDependencies(f.root, f.workRoot, {
+        ...f.options(1), workspaceDirs: ['libs/runtime'],
+      })).status).toBe('incomplete');
+      const manifestPath = join(f.checkpointDir, 'manifest.json');
+      const entry = JSON.parse(readFileSync(manifestPath, 'utf8'));
+      delete entry.data.bindingComponents;
+      entry.sha256 = createHash('sha256').update(JSON.stringify(entry.data)).digest('hex');
+      writeFileSync(manifestPath, JSON.stringify(entry));
+      const before = readFileSync(manifestPath);
+      await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, f.options()))
+        .rejects.toMatchObject({ code: 'DEPENDENCY_JOURNAL_BINDING_CHANGED',
+          dependencyJournalBinding: { diagnosticStatus: 'unavailable-legacy-or-invalid-components', changes: null } });
+      expect(readFileSync(manifestPath)).toEqual(before);
       expectUnpreparedRetainedMarker(f);
     } finally { f.cleanup(); }
   }, 60_000);
@@ -2525,7 +2625,7 @@ console.log('WRITER_RELEASED elapsedMs=' + (performance.now() - startedAt));`;
     }
   }, 60_000);
 
-  it.each(['valid', 'corrupt-selector', 'different-bytes'] as const)
+  it.each(['valid', 'corrupt-selector', 'different-bytes', 'live-donor-hardlink-churn'] as const)
     ('resumes against a leased exact-input generation without source lockfiles using its supplied environment (%s)', async variant => {
       const f = retainedFixture();
       const helper = join(repoRoot, 'apps/operator/bin/release/dependency-generation.sh');
@@ -2574,8 +2674,21 @@ console.log('WRITER_RELEASED elapsedMs=' + (performance.now() - startedAt));`;
         // The caller's resolved store must survive a different process default,
         // including when verification resumes without copying dependencies.
         process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = join(f.parent, 'unselected-generations');
-        // No mutable install may supply the comparison after publication.
-        rmSync(join(f.root, 'node_modules'), { recursive: true });
+        // The generation owns independent bytes. A separate install reader can
+        // change the mutable donor's ctime without changing this proof source.
+        const livePayload = join(f.root, 'node_modules/payload/alpha.txt');
+        const immutablePayload = join(generation, 'tree/node_modules/payload/alpha.txt');
+        const generationStat = statSync(immutablePayload, { bigint: true });
+        if (variant === 'live-donor-hardlink-churn') {
+          const donorStat = statSync(livePayload, { bigint: true });
+          expect(generationStat.ino).not.toBe(donorStat.ino);
+          linkSync(livePayload, join(f.parent, 'live-reader-snapshot.txt'));
+          expect(statSync(livePayload, { bigint: true }).ctimeNs).not.toBe(donorStat.ctimeNs);
+          expect(statSync(immutablePayload, { bigint: true }).ctimeNs).toBe(generationStat.ctimeNs);
+        } else {
+          // No mutable install may supply the comparison after publication.
+          rmSync(join(f.root, 'node_modules'), { recursive: true });
+        }
         const retained = join(f.workRoot, 'node_modules/payload/alpha.txt');
         const inode = statSync(retained).ino;
         const options = (maxBatches = 64) => ({
@@ -2608,7 +2721,7 @@ console.log('WRITER_RELEASED elapsedMs=' + (performance.now() - startedAt));`;
         }
         expect(leases()).toEqual([]);
         expect(statSync(retained).ino).toBe(inode);
-        if (variant !== 'valid') expectUnpreparedRetainedMarker(f);
+        if (variant === 'corrupt-selector' || variant === 'different-bytes') expectUnpreparedRetainedMarker(f);
       } finally {
         if (priorStore === undefined) delete process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT;
         else process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = priorStore;

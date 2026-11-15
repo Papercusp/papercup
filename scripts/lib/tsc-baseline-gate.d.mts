@@ -931,13 +931,14 @@ export function discoverSiblingTypecheckGates(root: string, { exclude }?: {
  * `lint:tsc:orchestrator` rather than the broader `lint:tsc:papercusp-libs` fan-out that also
  * contains it — the narrower gate is the faster, more attributable answer.
  *
- * @param {{npmScript: string, prefixes: string[]}[]} gates
+ * @param {{npmScript: string, prefixes: string[], loadableExtensions?: () => string[] | null}[]} gates
  * @param {string} file Repo-relative path.
  * @returns {{npmScript: string, prefix: string} | null}
  */
 export function gateCoveringFile(gates: {
     npmScript: string;
     prefixes: string[];
+    loadableExtensions?: () => string[] | null;
 }[], file: string): {
     npmScript: string;
     prefix: string;

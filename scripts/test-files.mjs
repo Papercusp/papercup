@@ -310,7 +310,13 @@ function resolveRequestedTestFile(file, root) {
   const direct = resolve(root, file);
   if (existsSync(direct) || isAbsolute(file) || file.split(/[\\/]/).includes('..')) return direct;
 
-  const candidateRoots = [...new Set([...workspaceDirs(root), ...nestedRepositoryRoots(root)])];
+  // Explicit runner routes can belong to packages outside npm workspaces. Their
+  // package-relative file names must resolve before choosing the declared runner.
+  const registeredRoots = [...NON_WORKSPACE_VITEST_ROUTES, ...NON_WORKSPACE_NODE_ROUTES]
+    .map((route) => resolve(root, route.cwd));
+  const candidateRoots = [...new Set([
+    ...workspaceDirs(root), ...nestedRepositoryRoots(root), ...registeredRoots,
+  ])];
   const candidates = candidateRoots
     .map((dir) => resolve(dir, file))
     .filter((candidate) => isWithinRoot(candidate, root) && existsSync(candidate))
