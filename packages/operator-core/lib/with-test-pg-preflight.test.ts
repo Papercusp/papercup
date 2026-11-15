@@ -32,6 +32,28 @@ function preflightChildScript(entry: string, hook: string, argv: string[]): stri
     phase('entry-import-complete');`;
 }
 
+describe('private preflight startup diagnostics', () => {
+  it('retains separate phase records when loader registration fails', () => {
+    const entry = join(root, 'scripts/with-test-pg.mjs');
+    const script = preflightChildScript(entry,
+      "throw new Error('PREFLIGHT_LOADER_REGISTRATION_FAILURE');", [process.execPath, entry]);
+    const startedAt = performance.now();
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: root, encoding: 'utf8', timeout: 10_000,
+    });
+    const diagnostic = childDiagnostic(result, startedAt);
+    expect(result.status, diagnostic).toBe(1);
+    expect(result.signal, diagnostic).toBeNull();
+    expect(result.stderr, diagnostic).toContain('PREFLIGHT_LOADER_REGISTRATION_FAILURE');
+    const phases = result.stderr.split('\n')
+      .filter(line => line.startsWith('PREFLIGHT_STARTUP '))
+      .map(line => JSON.parse(line.slice('PREFLIGHT_STARTUP '.length)));
+    expect(phases.map(row => row.stage), diagnostic).toEqual([
+      'evaluation-entered', 'loader-registration-start',
+    ]);
+  });
+});
+
 describe('private runtime inherited environment', () => {
   it('keeps the source-map reporter armed with the launcher evidence allowlist while stripping ambient authority', () => {
     const input = {
