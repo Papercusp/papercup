@@ -9,6 +9,7 @@ import {
   getBootstrapProgress,
   listBootstrapProgress,
   recordMergedOps,
+  recordJoinProgress,
 } from '../bootstrap-progress';
 
 afterEach(() => {
@@ -68,27 +69,26 @@ describe('bootstrap-progress tracker', () => {
     recordMergedOps('ws-1', 'papercup', 5);
     t = 10_000;
     expect(
-      getBootstrapProgress('ws-1', 'papercup', { idleMs: 30_000 })!.caughtUp,
+      getBootstrapProgress('ws-1', 'papercup')!.caughtUp,
     ).toBe(false);
   });
 
-  it('caughtUp=true after idleMs elapsed since last change', () => {
+  it('idle time never establishes completion from a count-only observation', () => {
     let t = 1_000;
     _setNowForTests(() => t);
     recordMergedOps('ws-1', 'papercup', 5);
     t = 1_000 + 30_000;
     expect(
-      getBootstrapProgress('ws-1', 'papercup', { idleMs: 30_000 })!.caughtUp,
-    ).toBe(true);
+      getBootstrapProgress('ws-1', 'papercup')!.caughtUp,
+    ).toBe(false);
   });
 
-  it('caughtUp uses default idle (30s) when not passed', () => {
+  it('completion follows the applied head and target without an idle wait', () => {
     let t = 1_000;
     _setNowForTests(() => t);
-    recordMergedOps('ws-1', 'papercup', 5);
-    t = 1_000 + 29_999;
+    recordJoinProgress('ws-1', 'papercup', { nowMs: t, headApplied: false, appliedFrontier: 5, targetFrontier: 5 });
     expect(getBootstrapProgress('ws-1', 'papercup')!.caughtUp).toBe(false);
-    t = 1_000 + 30_000;
+    recordJoinProgress('ws-1', 'papercup', { nowMs: t, headApplied: true, appliedFrontier: 5, targetFrontier: 5 });
     expect(getBootstrapProgress('ws-1', 'papercup')!.caughtUp).toBe(true);
   });
 
@@ -117,12 +117,12 @@ describe('bootstrap-progress tracker', () => {
     expect(listBootstrapProgress()).toEqual([]);
   });
 
-  it('listBootstrapProgress threads idleMs through', () => {
+  it('the reader exposes target lag and recovery', () => {
     let t = 1_000;
     _setNowForTests(() => t);
-    recordMergedOps('ws-1', 'a', 5);
-    t = 1_500;
-    const list = listBootstrapProgress({ idleMs: 100 });
-    expect(list[0]?.caughtUp).toBe(true);
+    recordJoinProgress('ws-1', 'a', { nowMs: t, headApplied: true, appliedFrontier: 5, targetFrontier: 6 });
+    expect(listBootstrapProgress()[0]).toMatchObject({ caughtUp: false, joinState: 'usable', targetFrontier: 6 });
+    recordJoinProgress('ws-1', 'a', { nowMs: t + 1, headApplied: true, appliedFrontier: 6, targetFrontier: 6 });
+    expect(listBootstrapProgress()[0]).toMatchObject({ caughtUp: true, joinState: 'complete' });
   });
 });

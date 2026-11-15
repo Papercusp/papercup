@@ -4,9 +4,8 @@
  * Plan: papercusp-dogfood-v5-2026-05-23 (Q-6 resolution).
  *
  * Tracks per-(workspaceId, harnessSlug) substrate-merge progress so
- * the BootstrapProgressIndicator can show "Syncing N/M" until merge
- * activity goes quiet for an idle threshold (default 30s), at which
- * point the harness counts as caught up.
+ * the BootstrapProgressIndicator can show applied versus known target progress.
+ * Completion requires the applied head and frontier; idle time is never proof.
  *
  * Pure logic + a module-level Map. No PG, no FS. The substrate boot
  * code is expected to call `recordMergedOps` whenever a new op is
@@ -18,6 +17,8 @@
  * tracker is fully testable on its own.
  */
 
+import { createJoinProgressTracker, type JoinProgressSample, type JoinProgressTracker, type JoinState } from './join-progress';
+
 export interface BootstrapProgressSnapshot {
   workspaceId: string;
   harnessSlug: string;
@@ -27,21 +28,19 @@ export interface BootstrapProgressSnapshot {
   highestSeen: number;
   /** Epoch ms of the last recordMergedOps call. */
   lastChangeMs: number;
-  /** True when no progress for `idleMs`. */
+  /** True only when the join head and target frontier have been applied. */
   caughtUp: boolean;
+  joinState: JoinState;
+  targetFrontier: number;
+  headApplied: boolean;
 }
 
 interface Entry {
-  workspaceId: string;
-  harnessSlug: string;
-  mergedOps: number;
-  highestSeen: number;
-  lastChangeMs: number;
+  tracker: JoinProgressTracker;
+  snapshot: BootstrapProgressSnapshot;
 }
 
 const tracker: Map<string, Entry> = new Map();
-
-const DEFAULT_IDLE_MS = 30_000;
 
 function key(workspaceId: string, harnessSlug: string): string {
   return `${workspaceId}::${harnessSlug}`;
@@ -69,28 +68,34 @@ export function recordMergedOps(
   harnessSlug: string,
   mergedOps: number,
 ): void {
-  const k = key(workspaceId, harnessSlug);
-  const now = _nowImpl();
-  const prev = tracker.get(k);
-  if (!prev) {
-    tracker.set(k, {
-      workspaceId,
-      harnessSlug,
-      mergedOps,
-      highestSeen: mergedOps,
-      lastChangeMs: now,
-    });
-    return;
-  }
-  // Only bump lastChangeMs when the count actually grows.
-  const grew = mergedOps > prev.mergedOps;
-  tracker.set(k, {
-    workspaceId,
-    harnessSlug,
-    mergedOps,
-    highestSeen: Math.max(prev.highestSeen, mergedOps),
-    lastChangeMs: grew ? now : prev.lastChangeMs,
+  // Count-only legacy callers cannot establish that a remote head has applied.
+  recordJoinProgress(workspaceId, harnessSlug, {
+    nowMs: _nowImpl(), headApplied: false, appliedFrontier: mergedOps, targetFrontier: mergedOps,
   });
+}
+
+/** The optional owner belongs to one booted handle, even when peers share a slug. */
+export function recordJoinProgress(
+  workspaceId: string,
+  harnessSlug: string,
+  sample: JoinProgressSample,
+  owner?: JoinProgressTracker,
+): BootstrapProgressSnapshot {
+  const k = key(workspaceId, harnessSlug);
+  const instance = owner ?? tracker.get(k)?.tracker ?? createJoinProgressTracker();
+  const progress = instance.observe(sample);
+  const snapshot: BootstrapProgressSnapshot = {
+    workspaceId, harnessSlug,
+    mergedOps: progress.appliedFrontier,
+    highestSeen: progress.highestApplied,
+    lastChangeMs: progress.lastAdvanceAtMs,
+    caughtUp: progress.state === 'complete',
+    joinState: progress.state,
+    targetFrontier: progress.targetFrontier,
+    headApplied: progress.headApplied,
+  };
+  tracker.set(k, { tracker: instance, snapshot });
+  return { ...snapshot };
 }
 
 /**
@@ -100,31 +105,12 @@ export function recordMergedOps(
 export function getBootstrapProgress(
   workspaceId: string,
   harnessSlug: string,
-  opts: { idleMs?: number } = {},
 ): BootstrapProgressSnapshot | null {
-  const idleMs = opts.idleMs ?? DEFAULT_IDLE_MS;
   const entry = tracker.get(key(workspaceId, harnessSlug));
-  if (!entry) return null;
-  const now = _nowImpl();
-  const caughtUp = now - entry.lastChangeMs >= idleMs;
-  return {
-    workspaceId: entry.workspaceId,
-    harnessSlug: entry.harnessSlug,
-    mergedOps: entry.mergedOps,
-    highestSeen: entry.highestSeen,
-    lastChangeMs: entry.lastChangeMs,
-    caughtUp,
-  };
+  return entry ? { ...entry.snapshot } : null;
 }
 
 /** Snapshot of every tracked harness. Used by the admin diagnostic page. */
-export function listBootstrapProgress(
-  opts: { idleMs?: number } = {},
-): BootstrapProgressSnapshot[] {
-  const out: BootstrapProgressSnapshot[] = [];
-  for (const e of tracker.values()) {
-    const snap = getBootstrapProgress(e.workspaceId, e.harnessSlug, opts);
-    if (snap) out.push(snap);
-  }
-  return out;
+export function listBootstrapProgress(): BootstrapProgressSnapshot[] {
+  return [...tracker.values()].map((entry) => ({ ...entry.snapshot }));
 }

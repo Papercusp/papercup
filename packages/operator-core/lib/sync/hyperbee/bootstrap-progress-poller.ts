@@ -15,7 +15,8 @@
  * close() should call stop() to prevent leaks across reboots.
  */
 
-import { recordMergedOps } from './bootstrap-progress';
+import { recordJoinProgress, type BootstrapProgressSnapshot } from './bootstrap-progress';
+import { createJoinProgressTracker, type JoinProgressSample } from './join-progress';
 
 export interface PollerOpts {
   workspaceId: string;
@@ -25,7 +26,8 @@ export interface PollerOpts {
    * length). Called every tick; throwing or returning a non-finite value
    * skips the tick. Stage 4: `() => ownLog.length`.
    */
-  readLength: () => number;
+  readProgress: () => Omit<JoinProgressSample, 'nowMs'>;
+  now?: () => number;
   /** Poll interval in ms. Default 1000. Test seam. */
   intervalMs?: number;
   /** Setter for tests; defaults to setInterval. */
@@ -39,16 +41,7 @@ export interface PollerHandle {
   stop(): void;
   /** Force one tick now (test seam). */
   pollOnce(): void;
-}
-
-function readLengthSafely(readLength: () => number): number | null {
-  try {
-    const v = readLength();
-    if (typeof v === 'number' && Number.isFinite(v)) return v;
-    return null;
-  } catch {
-    return null;
-  }
+  snapshot(): BootstrapProgressSnapshot | null;
 }
 
 export function startBootstrapProgressPoller(
@@ -57,11 +50,16 @@ export function startBootstrapProgressPoller(
   const intervalMs = opts.intervalMs ?? 1000;
   const setI = opts.setIntervalImpl ?? setInterval;
   const clearI = opts.clearIntervalImpl ?? clearInterval;
+  const instance = createJoinProgressTracker();
+  let current: BootstrapProgressSnapshot | null = null;
 
   function tick(): void {
-    const len = readLengthSafely(opts.readLength);
-    if (len !== null) {
-      recordMergedOps(opts.workspaceId, opts.harnessSlug, len);
+    try {
+      current = recordJoinProgress(opts.workspaceId, opts.harnessSlug, {
+        ...opts.readProgress(), nowMs: (opts.now ?? Date.now)(),
+      }, instance);
+    } catch {
+      // An unreadable sample cannot replace the last measured progress.
     }
   }
 
@@ -82,5 +80,6 @@ export function startBootstrapProgressPoller(
     pollOnce(): void {
       tick();
     },
+    snapshot: () => current ? { ...current } : null,
   };
 }

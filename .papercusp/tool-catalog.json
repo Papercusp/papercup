@@ -36740,7 +36740,7 @@
           "POST"
         ]
       },
-      "description": "Read typed links for one OR many work-items, in either direction (limit per item: default 20, max 100). Each page reports total/returned/omitted and an executable next handle; follow it until truncated:false. Cursors survive restarts; changed sources return stale_cursor with a restart handle. Tags are excluded; emptyIds identifies checked items with zero matching links. coverage measures selected IDs separately from edge completeness. Failures stay in results.",
+      "description": "Read typed links for one OR many work-items, in either direction (limit per item: default 20, max 100). Pages report total, offset, returned, omitted (remaining after this page) and executable next; follow until truncated:false. Cursors survive restarts; source changes return stale_cursor with restart. Tags are excluded; emptyIds names checked zero-link items. coverage measures selected IDs separately. Failures stay in results.",
       "capabilities": [
         "work_items:read"
       ],
