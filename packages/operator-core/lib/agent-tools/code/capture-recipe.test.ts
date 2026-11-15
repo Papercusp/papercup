@@ -19,9 +19,15 @@ import {
   captureRecipe,
 } from './capture-recipe';
 import type { CodeRecipeRow, UpsertCodeRecipeInput } from '../../code-recipes-store';
+import type { SimilarRecipe } from '../../code-recipes-search';
 
+/** The slice of a searchSimilarRecipes hit that capture-recipe reads. */
+type SimilarRecipeFixture = Pick<SimilarRecipe, 'id' | 'similarity' | 'toolsUsed'> & {
+  matchingEvidence?: Pick<NonNullable<SimilarRecipe['matchingEvidence']>, 'domain'>;
+};
 const captureStore = vi.hoisted(() => ({ rows: new Map<string, CodeRecipeRow>(),
-  record: vi.fn(async () => {}), structural: vi.fn(async () => null), similar: vi.fn(async () => []) }));
+  record: vi.fn(async () => {}), structural: vi.fn(async () => null),
+  similar: vi.fn(async (): Promise<SimilarRecipeFixture[]> => []) }));
 vi.mock('../../code-recipes-store', async original => ({
   ...(await original<Record<string, unknown>>()),
   getRecipe: async (_sql: unknown, id: string) => captureStore.rows.get(id) ?? null,
@@ -293,7 +299,7 @@ describe('P008 capture target revision guard', () => {
     captureStore.rows.set('stale-neighbor', { id: 'stale-neighbor', title: 'Old candidate', script: 'return 2;',
       status: 'active', bindingSchema: null, capabilityManifest: null } as CodeRecipeRow);
     captureStore.similar.mockResolvedValueOnce([{ id: 'stale-neighbor', similarity: 1, toolsUsed: [],
-      matchingEvidence: { domain: { verdict: 'equivalent', basis: 'exact-source-and-contract' } } }] as never);
+      matchingEvidence: { domain: { verdict: 'equivalent', basis: 'exact-source-and-contract' } } }]);
     const result = await captureRecipe({ sql: {} as never, embed: async () => null, resolveHive: async () => null }, {
       script: 'return 1;', title: 'P008 current source', workspaceId: 'p008-guard', harness: 'alpha',
       ownerId: 'agent-a', role: 'operator', tools: [],
