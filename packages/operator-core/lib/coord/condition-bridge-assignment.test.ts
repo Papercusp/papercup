@@ -28,9 +28,9 @@ const h = vi.hoisted(() => ({
   claimWins: true,
 }));
 
-vi.mock('@papercusp/db-org', () => ({
-  getOrgPg: () => ({
-    sql: (strings: TemplateStringsArray, ...values: unknown[]) => {
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => {
+    const sql = (strings: TemplateStringsArray, ...values: unknown[]) => {
       const text = strings.join('?');
       if (/SET condition_key = NULL/.test(text)) return Promise.resolve([]);
       if (/SELECT taken_by/.test(text)) return Promise.resolve(h.incumbentRows);
@@ -39,8 +39,10 @@ vi.mock('@papercusp/db-org', () => ({
         return Promise.resolve(h.claimWins ? [{ feature_id: String(values[1]) }] : []);
       }
       throw new Error(`unexpected SQL in condition-bridge-assignment.test: ${text.slice(0, 120)}`);
-    },
-  }),
+    };
+    // Production org clients are transaction-capable (WI-40234).
+    return { sql: Object.assign(sql, { begin: async (fn: (tx: typeof sql) => unknown) => fn(sql) }) };
+  },
 }));
 vi.mock('../work-items', () => ({
   claimWorkItem: h.claimWorkItem,

@@ -23,6 +23,8 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   sql.unsafe = sql;
   sql.json = (v: unknown) => v;
   sql.array = (v: unknown) => v;
+  // Production org clients are transaction-capable (WI-40234).
+  sql.begin = async (fn: (tx: unknown) => unknown) => fn(sql);
   return { ...(await importOriginal<Record<string, unknown>>()), getOrgPg: () => ({ sql }) };
 });
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'papercusp-workspace' }));

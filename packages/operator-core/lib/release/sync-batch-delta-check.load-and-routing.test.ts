@@ -26,13 +26,15 @@ const captured = vi.hoisted(() => ({
   operationalRuns: [] as Array<Record<string, unknown>>,
 }));
 
-vi.mock('@papercusp/db-org', () => ({
-  getOrgPg: () => ({
-    sql: (strings: TemplateStringsArray, ...values: unknown[]) => {
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => {
+    const sql = (strings: TemplateStringsArray, ...values: unknown[]) => {
       captured.sqlCalls.push({ text: strings.join('$?'), values });
       return Promise.resolve(captured.sqlRows);
-    },
-  }),
+    };
+    // Production org clients are transaction-capable (WI-40234).
+    return { sql: Object.assign(sql, { begin: async (fn: (tx: typeof sql) => unknown) => fn(sql) }) };
+  },
 }));
 
 vi.mock('../agent-tools/work_items/_create-core', () => ({

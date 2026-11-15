@@ -86,7 +86,8 @@ vi.mock('@papercusp/db-org', async orig => {
   const isIdentifier = (value: unknown): value is Identifier =>
     typeof value === 'object' && value !== null && identifierKey in value;
   return { ...await orig<typeof import('@papercusp/db-org')>(),
-    getOrgPg: () => ({ sql: (parts: TemplateStringsArray | string, ...values: unknown[]) => {
+    getOrgPg: () => {
+      const sql = (parts: TemplateStringsArray | string, ...values: unknown[]) => {
       // postgres.sql(name) is synchronous; only tagged queries return rows.
       if (typeof parts === 'string') return { [identifierKey]: parts };
       const query = parts.reduce((text, part, index) =>
@@ -96,7 +97,10 @@ vi.mock('@papercusp/db-org', async orig => {
         return Promise.resolve(services.writes(query, values) ?? [{}]);
       }
       return Promise.resolve([]);
-    } }),
+      };
+      // Production org clients are transaction-capable (WI-40234).
+      return { sql: Object.assign(sql, { begin: async (fn: (tx: typeof sql) => unknown) => fn(sql) }) };
+    },
   };
 });
 vi.mock('./backend', () => {

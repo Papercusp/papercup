@@ -9,10 +9,13 @@ const { sqlTag, state } = vi.hoisted(() => {
     state.calls.push({ text: Array.from(parts).join(' ? '), values });
     return state.rows;
   });
+  // Production org clients are transaction-capable (WI-40234).
+  (sqlTag as unknown as { begin: (fn: (tx: unknown) => unknown) => unknown }).begin = async (fn: (tx: unknown) => unknown) =>
+    fn(sqlTag);
   return { sqlTag, state };
 });
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: sqlTag }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: sqlTag }) }));
 
 import { CACHE_L2_EXPIRY_SWEEP_BATCH_SIZE, PgL2Store } from './pg-l2-store';
 
