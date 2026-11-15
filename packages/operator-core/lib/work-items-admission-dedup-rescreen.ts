@@ -58,6 +58,28 @@ export const DEFAULT_DEDUP_RESCREEN_CONCURRENCY = 3;
 /** Wall budget for the whole re-screen pass, so the must-never-starve admit step that
  *  follows is never delayed by a slow embedder or a loaded database. */
 export const DEFAULT_DEDUP_RESCREEN_WALL_BUDGET_MS = 45_000;
+/**
+ * EI-28804090332254161 — consecutive leg-down screens that trip the per-pass breaker.
+ *
+ * The degraded backstop (ADMISSION_DEGRADED_RESCREEN_ATTEMPTS) counts attempts, and before
+ * this breaker an attempt existed only once a real screen had run. A screen whose legs are
+ * down is the SLOWEST kind: it waits out every leg's resolve-null budget. So the attempt
+ * counter advanced at screen throughput, which collapses exactly when the backstop is needed.
+ * Measured 2026-11-14 in papercusp-workspace: both legs answered `unavailable` on roughly
+ * 85% of creates from >= 03:00Z. Every pass from 19:22Z to 22:52Z spent ~43s of its 45s budget
+ * on 24-42 screens, and every one came back degraded. That is ~65 attempts/h against ~50 new
+ * degraded rows/h needing 3 attempts each, so 505 rows sat pending with no bound and a row's
+ * attempt 2 never came.
+ *
+ * Once this many screens IN A ROW come back degraded (or the screen threw), the pass has
+ * measured that the legs are down. The rest of the selected batch is stamped with a
+ * `screened:false` attempt that carries those row ids as evidence, without screening. The
+ * row's coverage legs are left as last measured; nothing is fabricated per row. Attempts then
+ * accrue at the cooldown rate, so the designed '>= ~2h of retries' bound holds during an
+ * outage. A clean or candidate-bearing screen resets the run. The breaker never carries across
+ * passes: every pass opens with real screens, so a recovered leg is noticed on the next tick.
+ */
+export const DEFAULT_DEDUP_RESCREEN_LEG_DOWN_THRESHOLD = 6;
 export const DEDUP_RESCREEN_ACTOR = 'admission-fail-open:dedup-rescreen';
 
 export interface DedupRescreenRow {
@@ -77,7 +99,16 @@ export interface DedupRescreenVerdict {
 
 export type DedupRescreenScreen = (row: DedupRescreenRow) => Promise<DedupRescreenVerdict>;
 
+/** The measurement that tripped a pass's leg-down breaker (EI-28804090332254161). */
+export interface DedupRescreenLegDownTrip {
+  /** Consecutive degraded/errored screens that tripped it. */
+  afterConsecutive: number;
+  /** Exactly those screened rows' ids, in completion order: the evidence the legs were down. */
+  evidence: string[];
+}
+
 export interface DedupRescreenSummary {
+  /** Rows actually SCREENED this pass (leg-down stamps are counted in `legDownSkipped`). */
   attempted: number;
   /** Coverage restored and no twin found: admitted by the same fail-open run. */
   clean: string[];
@@ -91,13 +122,17 @@ export interface DedupRescreenSummary {
   errored: string[];
   /** True when the wall budget stopped the pass before the batch was exhausted. */
   budgetExhausted: boolean;
+  /** Set when this pass measured the legs down; `null` when every screen ran. */
+  legDownTrip: DedupRescreenLegDownTrip | null;
+  /** Rows stamped with a `screened:false` attempt after the breaker tripped. */
+  legDownSkipped: string[];
 }
 
 interface PriorCoverage {
   lexical?: unknown;
   semantic?: unknown;
   degraded?: unknown;
-  rescreen?: { attempts?: unknown; prior?: unknown } | null;
+  rescreen?: { attempts?: unknown; legDownAttempts?: unknown; prior?: unknown } | null;
 }
 
 /** Method for a semantic-guard candidate, mirroring the create path's stamp mapping in
@@ -144,7 +179,16 @@ export async function screenWorkItemForDuplicates(row: DedupRescreenRow): Promis
 }
 
 function priorAttempts(prior: PriorCoverage | null): number {
-  const n = Number(prior?.rescreen?.attempts ?? 0);
+  return nonNegativeInt(prior?.rescreen?.attempts);
+}
+
+/** How many of the row's recorded attempts were leg-down stamps, not real screens. */
+function priorLegDownAttempts(prior: PriorCoverage | null): number {
+  return nonNegativeInt(prior?.rescreen?.legDownAttempts);
+}
+
+function nonNegativeInt(value: unknown): number {
+  const n = Number(value ?? 0);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
@@ -180,6 +224,9 @@ export async function rescreenDegradedPendingRows(opts: {
   wallBudgetMs?: number;
   /** Screens in flight at once (default DEFAULT_DEDUP_RESCREEN_CONCURRENCY). */
   concurrency?: number;
+  /** Consecutive degraded/errored screens that trip the per-pass leg-down breaker
+   *  (default DEFAULT_DEDUP_RESCREEN_LEG_DOWN_THRESHOLD). */
+  legDownThreshold?: number;
   now?: () => number;
 }): Promise<DedupRescreenSummary> {
   const sql = opts.sql ?? getOrgPg().sql;
@@ -214,31 +261,43 @@ export async function rescreenDegradedPendingRows(opts: {
     raceSkipped: [],
     errored: [],
     budgetExhausted: false,
+    legDownTrip: null,
+    legDownSkipped: [],
   };
-  type RowOutcome = 'clean' | 'candidates' | 'degraded' | 'error' | 'race';
-  const rescreenOne = async (row: (typeof rows)[number]): Promise<RowOutcome> => {
+  type RowOutcome = 'clean' | 'candidates' | 'degraded' | 'error' | 'write-error' | 'race' | 'leg-down';
+  const rescreenOne = async (row: (typeof rows)[number], legDown: DedupRescreenLegDownTrip | null): Promise<RowOutcome> => {
     const prior = row.coverage && typeof row.coverage === 'object' ? row.coverage : null;
     const attempts = priorAttempts(prior) + 1;
+    const legDownAttempts = priorLegDownAttempts(prior) + (legDown ? 1 : 0);
     let verdict: DedupRescreenVerdict | null = null;
-    try {
-      verdict = await opts.screen({ id: row.feature_id, harness: row.harness_slug, title: row.title ?? '', summary: row.summary });
-    } catch {
-      verdict = null;
+    if (!legDown) {
+      try {
+        verdict = await opts.screen({ id: row.feature_id, harness: row.harness_slug, title: row.title ?? '', summary: row.summary });
+      } catch {
+        verdict = null;
+      }
     }
     // A feature-family row filed under the goal gate legitimately skipped the lexical leg
     // (_create-core.ts P-004); keep that leg out of its verdict rather than newly requiring it.
     const lexicalRequired = prior?.lexical !== 'skipped';
-    const lexical = verdict ? (lexicalRequired ? verdict.lexical : 'skipped') : 'unavailable';
-    const semantic = verdict ? verdict.semantic : 'unavailable';
-    const degraded = (lexicalRequired && lexical !== 'ok') || semantic !== 'ok';
+    // Not screened (leg-down stamp): the legs stay as last MEASURED on this row, never invented.
+    const lastMeasured = (leg: unknown) => (typeof leg === 'string' ? leg : 'unavailable');
+    const lexical = legDown
+      ? lastMeasured(prior?.lexical)
+      : verdict ? (lexicalRequired ? verdict.lexical : 'skipped') : 'unavailable';
+    const semantic = legDown ? lastMeasured(prior?.semantic) : verdict ? verdict.semantic : 'unavailable';
+    // A leg-down row was selected as degraded and was not re-measured, so it stays degraded.
+    const degraded = legDown ? true : (lexicalRequired && lexical !== 'ok') || semantic !== 'ok';
     const candidates = verdict?.candidates ?? [];
-    const outcome: 'clean' | 'candidates' | 'degraded' | 'error' = !verdict
-      ? 'error'
-      : candidates.length > 0
-        ? 'candidates'
-        : degraded
-          ? 'degraded'
-          : 'clean';
+    const outcome: 'clean' | 'candidates' | 'degraded' | 'error' = legDown
+      ? 'degraded'
+      : !verdict
+        ? 'error'
+        : candidates.length > 0
+          ? 'candidates'
+          : degraded
+            ? 'degraded'
+            : 'clean';
     const atMs = now();
     const patch: Record<string, unknown> = {
       dedupCoverage: {
@@ -252,6 +311,11 @@ export async function rescreenDegradedPendingRows(opts: {
           runId: opts.runId,
           attempts,
           outcome,
+          // EI-28804090332254161: whether THIS attempt ran a screen, and how many of the row's
+          // attempts were leg-down stamps, so an audit can tell measured retries from waits.
+          screened: !legDown,
+          legDownAttempts,
+          ...(legDown ? { legDown } : {}),
           prior: originalCoverage(prior),
         },
       },
@@ -272,11 +336,17 @@ export async function rescreenDegradedPendingRows(opts: {
          RETURNING feature_id`;
     } catch {
       // Unstamped, so the next run picks the row up again. Throwing here would reject the
-      // pool while sibling screens kept writing after this function had returned.
-      return 'error';
+      // pool while sibling screens kept writing after this function had returned. A write
+      // failure says nothing about the legs, so it never feeds the leg-down breaker.
+      return 'write-error';
     }
-    return written.length === 0 ? 'race' : outcome;
+    if (written.length === 0) return 'race';
+    return legDown ? 'leg-down' : outcome;
   };
+
+  // EI-28804090332254161: the per-pass leg-down breaker (DEFAULT_DEDUP_RESCREEN_LEG_DOWN_THRESHOLD).
+  const legDownThreshold = Math.max(1, Math.floor(opts.legDownThreshold ?? DEFAULT_DEDUP_RESCREEN_LEG_DOWN_THRESHOLD));
+  const consecutiveLegDown: string[] = [];
 
   // WI-6554700010018182: overlap screens; the deadline is checked before each one STARTS,
   // so the wall budget still bounds the pass. Outcomes come back in selection order.
@@ -285,13 +355,24 @@ export async function rescreenDegradedPendingRows(opts: {
     opts.concurrency ?? DEFAULT_DEDUP_RESCREEN_CONCURRENCY,
     async (row): Promise<RowOutcome | null> => {
       if (now() >= deadline) return null;
+      if (summary.legDownTrip) return rescreenOne(row, summary.legDownTrip);
       summary.attempted += 1;
-      return rescreenOne(row);
+      const outcome = await rescreenOne(row, null);
+      if (outcome === 'degraded' || outcome === 'error') {
+        consecutiveLegDown.push(row.feature_id);
+        if (!summary.legDownTrip && consecutiveLegDown.length >= legDownThreshold) {
+          summary.legDownTrip = { afterConsecutive: consecutiveLegDown.length, evidence: [...consecutiveLegDown] };
+        }
+      } else if (outcome === 'clean' || outcome === 'candidates') {
+        consecutiveLegDown.length = 0;
+      }
+      return outcome;
     },
   );
   for (const [i, outcome] of outcomes.entries()) {
     const id = rows[i]!.feature_id;
     if (outcome === null) summary.budgetExhausted = true;
+    else if (outcome === 'leg-down') summary.legDownSkipped.push(id);
     else if (outcome === 'race') summary.raceSkipped.push(id);
     else if (outcome === 'clean') summary.clean.push(id);
     else if (outcome === 'candidates') summary.candidatesFound.push(id);

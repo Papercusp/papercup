@@ -9,9 +9,11 @@ import { readProcessIdentity } from './process-identity';
 import { reapStrandedAdmissionRuns } from './admission-runs-reaper';
 import {
   DEFAULT_DEDUP_RESCREEN_CONCURRENCY,
+  DEFAULT_DEDUP_RESCREEN_LEG_DOWN_THRESHOLD,
   DEFAULT_DEDUP_RESCREEN_WALL_BUDGET_MS,
   rescreenDegradedPendingRows,
   type DedupRescreenRow,
+  type DedupRescreenSummary,
   type DedupRescreenVerdict,
 } from './work-items-admission-dedup-rescreen';
 import { flushFallbackObservations, observeFallback } from './degradation/fallback-observations';
@@ -4992,6 +4994,70 @@ describe('degraded-row dedup re-screen in the fail-open runner (WI-6554700010018
       SELECT detail -> 'dedupRescreen' AS rescreen FROM harness_shared.admission_runs
        WHERE workspace_id = ${WS} AND id = 'fail-open-rescreen-outcomes'`;
     expect(run!.rescreen).toMatchObject({ attempted: 3, clean: ['WI-rs-clean'] });
+  });
+
+  it('trips the leg-down breaker after consecutive degraded screens, stamps the rest unscreened, and lets the backstop admit (EI-28804090332254161)', async () => {
+    const ids = Array.from({ length: 12 }, (_, i) => `WI-ld-${String(i).padStart(2, '0')}`);
+    for (const [i, id] of ids.entries()) {
+      await seedItem({ id, createdAtMs: OLD - 60_000 + i, vector: null, payload: { dedupCoverage: ORIGINAL } });
+    }
+    // Two leg-down-era attempts already recorded long ago: sorts LAST (oldest rescreen after the
+    // never-rescreened rows), so it can only be reached by a leg-down stamp, never a screen.
+    await seedItem({
+      id: 'WI-ld-third', createdAtMs: OLD - 120_000, vector: null,
+      payload: { dedupCoverage: { ...ORIGINAL, rescreen: { atMs: NOW - 5 * 60 * 60_000, attempts: 2, outcome: 'degraded', prior: ORIGINAL } } },
+    });
+    const screen = screenWith(Object.fromEntries([...ids, 'WI-ld-third'].map((id) => [id, stillDown])));
+
+    const result = await failOpenAt(NOW, screen, 'fail-open-leg-down');
+    const summary = result.dedupRescreen as DedupRescreenSummary;
+
+    // The breaker trips on exactly the default threshold of consecutive degraded screens...
+    expect(summary.legDownTrip?.afterConsecutive).toBe(DEFAULT_DEDUP_RESCREEN_LEG_DOWN_THRESHOLD);
+    expect(summary.legDownTrip?.evidence).toHaveLength(DEFAULT_DEDUP_RESCREEN_LEG_DOWN_THRESHOLD);
+    // ...screens already in flight finish, and every other selected row is stamped, not screened.
+    const screened = screen.mock.calls.map(([row]) => row.id);
+    expect(screened.length).toBeGreaterThanOrEqual(DEFAULT_DEDUP_RESCREEN_LEG_DOWN_THRESHOLD);
+    expect(screened.length).toBeLessThan(ids.length);
+    expect(screened).not.toContain('WI-ld-third');
+    expect(summary.attempted).toBe(screened.length);
+    expect(summary.legDownSkipped.length + summary.stillDegraded.length).toBe(ids.length + 1);
+    expect(summary.legDownSkipped).toContain('WI-ld-third');
+    expect(summary.budgetExhausted).toBe(false);
+
+    // A skipped row records an honest unscreened attempt; its legs stay as last measured.
+    const skippedId = summary.legDownSkipped.find((id) => id !== 'WI-ld-third')!;
+    const skipped = await readRow(skippedId);
+    expect(skipped.admission).toBe('pending');
+    expect(skipped.payload.dedupCoverage).toMatchObject({
+      lexical: ORIGINAL.lexical, semantic: ORIGINAL.semantic, degraded: true,
+      rescreen: { attempts: 1, outcome: 'degraded', screened: false, legDownAttempts: 1, legDown: summary.legDownTrip, prior: ORIGINAL },
+    });
+    const real = await readRow(screened[0]!);
+    expect(real.payload.dedupCoverage.rescreen).toMatchObject({ attempts: 1, screened: true, legDownAttempts: 0 });
+
+    // The third attempt reaches ADMISSION_DEGRADED_RESCREEN_ATTEMPTS, so the SAME run admits the
+    // row `unreviewed`: the backstop is bounded by the cooldown clock, not by screen throughput.
+    const third = await readRow('WI-ld-third');
+    expect(third.payload.dedupCoverage.rescreen).toMatchObject({ attempts: 3, screened: false, legDownAttempts: 1 });
+    expect(third.admission).toBe('unreviewed');
+    expect(result.autoPromoted).toContain('WI-ld-third');
+  });
+
+  it('does not trip the leg-down breaker when a healthy screen breaks the run of degraded ones', async () => {
+    const ids = Array.from({ length: 10 }, (_, i) => `WI-lr-${String(i).padStart(2, '0')}`);
+    for (const [i, id] of ids.entries()) {
+      await seedItem({ id, createdAtMs: OLD - 60_000 + i, vector: null, payload: { dedupCoverage: ORIGINAL } });
+    }
+    // Every third row screens clean, so no run of degraded screens reaches the threshold.
+    const screen = screenWith(Object.fromEntries(ids.map((id, i) => [id, i % 3 === 2 ? clean : stillDown])));
+
+    const summary = (await failOpenAt(NOW, screen, 'fail-open-leg-recovering')).dedupRescreen as DedupRescreenSummary;
+
+    expect(summary.legDownTrip).toBeNull();
+    expect(summary.legDownSkipped).toEqual([]);
+    expect(screen.mock.calls).toHaveLength(ids.length);
+    expect(summary.attempted).toBe(ids.length);
   });
 
   it('cools a still-degraded row down for two ticks, then retries it and keeps the ORIGINAL coverage as prior', async () => {
