@@ -268,14 +268,25 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
         { listTasks, labelPrefix: acceptanceGraderLabelPrefix },
       ),
 
-    /** An OPEN item holding this condition key means the stall already has an owner. */
-    escalationExists: async (planSlug) => {
-      const key = acceptanceGradingStallConditionKey(planSlug);
-      const rows = await sql<Array<{ n: number }>>`
-        SELECT count(*)::int AS n
-          FROM harness_shared.work_items
-         WHERE payload #>> '{_conditionUpsert,conditionKey}' = ${key}
-           AND NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as unknown as string[]}::text[]))`;
+    /** An OPEN item holding this indexed, scoped condition key owns the stall. */
+    escalationExists: async (row) => {
+      const key = acceptanceGradingStallConditionKey(row.planSlug);
+      const terminalStates = ANY_FAMILY_TERMINAL_STATES as unknown as string[];
+      const rows = row.harnessSlug === null
+        ? await sql<Array<{ n: number }>>`
+            SELECT count(*)::int AS n
+              FROM harness_shared.work_items
+             WHERE workspace_id = ${row.workspaceId}
+               AND harness_slug IS NULL
+               AND condition_key = ${key}
+               AND NOT (status = ANY(${terminalStates}::text[]))`
+        : await sql<Array<{ n: number }>>`
+            SELECT count(*)::int AS n
+              FROM harness_shared.work_items
+             WHERE workspace_id = ${row.workspaceId}
+               AND harness_slug = ${row.harnessSlug}
+               AND condition_key = ${key}
+               AND NOT (status = ANY(${terminalStates}::text[]))`;
       return (rows[0]?.n ?? 0) > 0;
     },
 

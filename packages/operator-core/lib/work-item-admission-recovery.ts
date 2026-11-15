@@ -4,7 +4,8 @@ import postgres from 'postgres';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { z } from 'zod';
-import { getHarnessAdminUrl } from './embedded-pg-discovery';
+import { getHarnessAdminUrlWithSource } from './embedded-pg-discovery';
+import { getResolvedBuild } from './build-info';
 import { getPresence } from './agent-tools/coordination/presence';
 import {
   authorizeWorkItemDispatch,
@@ -93,13 +94,14 @@ function admissionRecoveryLockKey(scope: AdmissionRecoveryScope): string {
 }
 
 /** Session locks must bypass getOrgPg's PgBouncer transaction pool. */
-function createAdmissionRecoveryLockSql(): postgres.Sql {
-  return postgres(getHarnessAdminUrl(), {
+function createAdmissionRecoveryLockSql(): { sql: postgres.Sql; source: string } {
+  const { url, source } = getHarnessAdminUrlWithSource();
+  return { source, sql: postgres(url, {
     onnotice: () => {},
     max: 1,
     idle_timeout: 0,
     connection: { application_name: 'pcusp:admission-recovery-lock:p' + process.pid },
-  });
+  }) };
 }
 
 interface RecoveryItem {
@@ -555,39 +557,65 @@ export async function requestAdmissionRecovery(
 /** Serialize the ordinary/recovery choice without holding a transaction across
  * model I/O. A later workflow can resume a stranded slot's original run id. */
 export async function withAdmissionPromoterLock<T>(
-  scope: Pick<AdmissionRecoveryScope, 'workspaceId' | 'harnessSlug'>,
+  scope: Pick<AdmissionRecoveryScope, 'workspaceId' | 'harnessSlug'> & { runId?: string },
   lockSql: Sql | undefined,
   action: () => Promise<T>,
 ): Promise<T | null> {
-  const client = lockSql ?? createAdmissionRecoveryLockSql();
+  const owned = lockSql ? null : createAdmissionRecoveryLockSql();
+  const client = lockSql ?? owned!.sql;
   const key = JSON.stringify(['admission-promoter-slot', scope.workspaceId, scope.harnessSlug]);
+  const startedAt = new Date().toISOString();
+  const started = performance.now();
+  type Backend = { pid: number; address: string | null; port: number | null; database: string };
+  const annotate = (error: unknown, phase: 'reserve' | 'lock' | 'action', backend: Backend | 'unobserved') => {
+    // Driver-parsed host/port are the configured target, never proof of a backend.
+    // Do not copy a DSN, user, password, query string, or signed recovery payload.
+    const context = {
+      phase, source: owned?.source ?? 'injected',
+      configured: client.options ? { host: client.options.host, port: client.options.port } : null,
+      backend, workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug,
+      runId: scope.runId ?? null, processId: process.pid, runtime: getResolvedBuild(),
+      startedAt, elapsedMs: Math.max(0, performance.now() - started),
+    };
+    const detail = error instanceof Error ? error.message : String(error);
+    const annotated = new Error(
+      `work-item-admission-promoter lock-client phase=${phase}: ${detail}; admissionLock=${JSON.stringify(context)}`,
+    );
+    if (error instanceof Error) {
+      annotated.name = error.name;
+      Object.setPrototypeOf(annotated, Object.getPrototypeOf(error));
+      if (error.stack) annotated.stack = error.stack.replace(error.message, annotated.message);
+    }
+    if (error !== null && typeof error === 'object') {
+      const code = Reflect.get(error, 'code');
+      if (code !== undefined) Object.defineProperty(annotated, 'code', {
+        value: code, configurable: true, enumerable: true, writable: true,
+      });
+    }
+    Object.defineProperties(annotated, {
+      cause: { value: error, configurable: true },
+      admissionLock: { value: context, configurable: true, enumerable: true },
+    });
+    return annotated;
+  };
   try {
     const reserved = await client.reserve().catch((error: unknown) => {
-      const detail = error instanceof Error ? error.message : String(error);
-      const annotated = new Error(
-        `work-item-admission-promoter lock-client phase=reserve: ${detail}`,
-      );
-      if (error instanceof Error) {
-        annotated.name = error.name;
-        Object.setPrototypeOf(annotated, Object.getPrototypeOf(error));
-        if (error.stack) annotated.stack = error.stack.replace(error.message, annotated.message);
-      }
-      if (error !== null && typeof error === 'object') {
-        const code = Reflect.get(error, 'code');
-        if (code !== undefined) Object.defineProperty(annotated, 'code', {
-          value: code, configurable: true, enumerable: true, writable: true,
-        });
-      }
-      Object.defineProperty(annotated, 'cause', { value: error, configurable: true });
-      throw annotated;
+      throw annotate(error, 'reserve', 'unobserved');
     });
     let locked = false;
     try {
-      const [row] = await reserved<{ locked: boolean }[]>`
-        SELECT pg_try_advisory_lock(hashtextextended(${key}, 0)) AS locked`;
+      const [row] = await reserved<({ locked: boolean } & Backend)[]>`
+        SELECT pg_try_advisory_lock(hashtextextended(${key}, 0)) AS locked,
+          pg_backend_pid() AS pid, inet_server_addr()::text AS address,
+          inet_server_port() AS port, current_database() AS database`
+        .catch((error: unknown) => { throw annotate(error, 'lock', 'unobserved'); });
       locked = row?.locked === true;
-      if (!locked) return null;
-      return await action();
+      if (!row || !locked) return null;
+      return await action().catch((error: unknown) => {
+        throw annotate(error, 'action', {
+          pid: row.pid, address: row.address, port: row.port, database: row.database,
+        });
+      });
     } finally {
       try {
         if (locked) await reserved`SELECT pg_advisory_unlock(hashtextextended(${key}, 0))`;
@@ -757,7 +785,7 @@ export async function runAdmissionRecoveries(
   const queued = new Set(rows.filter((row) => row.queued).map((row) => row.feature_id));
 
   const ownsLockSql = deps.lockSql === undefined;
-  const lockSql = deps.lockSql ?? createAdmissionRecoveryLockSql();
+  const lockSql = deps.lockSql ?? createAdmissionRecoveryLockSql().sql;
   try {
     for (const row of rows) {
       const exact = { ...recoveryScope, workItemId: row.feature_id };

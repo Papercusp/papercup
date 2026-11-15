@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 
-const builtInKinds = ['record', 'chat-message', 'chat-thread'] as const;
+const builtInKinds = ['record', 'chat-message', 'chat-thread', 'work-item'] as const;
 
 afterEach(async () => {
   vi.resetModules();
@@ -13,12 +13,15 @@ it('reuses process-wide built-in resolvers when source modules are re-evaluated'
   vi.resetModules();
   const firstRecordModule = await import('./record-source');
   const firstChatModule = await import('../data-sources/chat-admission-sources');
+  const firstWorkModule = await import('./existing-work-source');
 
   vi.resetModules();
   const secondRecordModule = await import('./record-source');
   const secondChatModule = await import('../data-sources/chat-admission-sources');
+  const secondWorkModule = await import('./existing-work-source');
 
   expect(secondRecordModule.recordAdmissionSource).toBe(firstRecordModule.recordAdmissionSource);
   expect(secondChatModule.chatMessageAdmissionSource).toBe(firstChatModule.chatMessageAdmissionSource);
   expect(secondChatModule.chatThreadAdmissionSource).toBe(firstChatModule.chatThreadAdmissionSource);
+  expect(secondWorkModule.existingWorkAdmissionSource).toBe(firstWorkModule.existingWorkAdmissionSource);
 });

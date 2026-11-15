@@ -43,12 +43,15 @@ export {
   targetRefToObject,
   mergeResolved,
   resolveObjectSubscribers,
+  resolvedSubscriberTarget,
+  isResolvedSubscriberLive,
 } from './types';
 
 export { LinkBackedTaggable } from './taggable';
 
 export {
   type PgCapabilityStoreOptions,
+  type SubscriptionEndCause,
   ensureCoordCapabilityTables,
   PgTopicStore,
   PgEntitySubscriptionStore,

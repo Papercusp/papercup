@@ -55,6 +55,7 @@ import { lazyFlagRefresh } from './lazy-flag-refresh';
 import { systemDistinctId } from './flag-distinct-id';
 import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { coordScopeWorkspace } from './agent-tools/coordination/log';
+import { automaticSubscriptionFields } from './subscription-lifecycle';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { boundedOrgTxn, withOrgTxnTimeoutPhase } from './pg-bounded-txn';
 import { applyBlockerDecisionMutation, BlockerDecisionMutationConflict, type BlockerDecisionMutation } from './blocker-resolution-persistence';
@@ -1281,6 +1282,11 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
     typeof input.directiveRef === 'number' && Number.isInteger(input.directiveRef) && input.directiveRef > 0
       ? input.directiveRef
       : null;
+  // P-002: classify the creator BEFORE the transaction (the predicate may read the
+  // agent-session registry and the epoch ledger on the org pool).
+  const creatorFollow = input.createdBy
+    ? await automaticSubscriptionFields(input.createdBy, 'context')
+    : null;
   const issue = await boundedOrgTxn(async (tx) => {
     const stamp = inputPayload.plan_item as Record<string, unknown> | undefined;
     const selectionPlan = typeof stamp?.plan_slug === 'string' ? stamp.plan_slug : sourcePlanSlug;
@@ -1347,7 +1353,9 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
         });
       }
     }
-    if (input.createdBy) {
+    // shared-reference-system-2026-11-13 P-002: contextual creator follow; a
+    // machine identity is never auto-subscribed (EI-28704054499880447).
+    if (input.createdBy && creatorFollow?.subscribe) {
       const txSubs = new PgEntitySubscriptionStore({ ...coordOpts, getSql: () => tx });
       await txSubs.subscribe({
         subscriber_id: input.createdBy,
@@ -1355,6 +1363,8 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
         target_ref: `${ISSUE_KIND}:${inserted.id}`,
         delivery_mode: 'full',
         created_ts: created,
+        reason: creatorFollow.reason,
+        context_epoch: creatorFollow.context_epoch,
       });
     }
     return inserted;
@@ -3518,14 +3528,20 @@ export async function claimIssue(
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);
   const publish = async () => {
-  // The claimer follows the issue.
-  await subs.subscribe({
-    subscriber_id: assignee,
-    target_kind: 'object',
-    target_ref: `${ISSUE_KIND}:${id}`,
-    delivery_mode: 'full',
-    created_ts: nowIso(),
-  });
+  // The claimer follows the issue while it holds it (reason 'held_item', ended by
+  // the release). A machine identity is never auto-subscribed (P-002,
+  // EI-28704054499880447: system:operator/s-… claimers took 99% of notify rows).
+  const holderFollow = await automaticSubscriptionFields(assignee, 'held_item');
+  if (holderFollow.subscribe) {
+    await subs.subscribe({
+      subscriber_id: assignee,
+      target_kind: 'object',
+      target_ref: `${ISSUE_KIND}:${id}`,
+      delivery_mode: 'full',
+      created_ts: nowIso(),
+      reason: holderFollow.reason,
+    });
+  }
   // WI-2142171: notify ONLY when the claim actually changed the holder (see the pre-read
   // above). A re-claim by the current holder is a no-op for every subscriber — and for the
   // claimer itself, whose own action it is, `deliver` already excludes the actor. The test
@@ -3697,6 +3713,14 @@ export async function releaseIssue(
   // same cached goal as the unified release path. Compare before clearing so a
   // delayed release cannot erase a newer goal claimed by this owner.
   if (formerAssignee) clearGoalClaimedIfMatches(formerAssignee, id);
+  // shared-reference-system-2026-11-13 P-002 / R-39: releasing the item is the
+  // explicit release of its held-item follow. Only that reason goes; an explicit
+  // or contextual follow by the same agent keeps the subscription alive.
+  if (formerAssignee) {
+    await subs.unsubscribe(formerAssignee, 'object', `${ISSUE_KIND}:${id}`, 'held_item').catch((e) => {
+      console.warn(`[issues-engineer] held-item release for ${formerAssignee} on ${id} failed: ${e instanceof Error ? e.message : e}`);
+    });
+  }
   // EI-6480: harness-agnostic (issue ids are globally unique), flag-gated, best-effort lease
   // cleanup so the released issue is IMMEDIATELY re-claimable, not lease-poisoned until TTL.
   // Covers every voluntary release path (work_items:release + the improvement resolve-core

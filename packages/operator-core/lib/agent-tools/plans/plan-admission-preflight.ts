@@ -645,7 +645,8 @@ export class PlanPromotionParkError extends Error {
 export interface MigrationParkedCoverageRow { planItemId: string; workItemId: string }
 
 /**
- * Actionable plan lines whose only coverage is an open migration-1601 parked node.
+ * Actionable lines, or exact completed-dependency lines with a generated gate,
+ * whose only coverage is a migration-1601 parked node.
  * A parked node is not coverage (admission skips it), and promotion REUSES it rather
  * than minting a new row, so promotion alone cannot repair the lane.
  */
@@ -654,6 +655,7 @@ export async function readMigrationParkedCoverage(args: {
   harnessSlug: string;
   planSlug: string;
   planItems: PlanItem[];
+  actor?: string;
 }): Promise<MigrationParkedCoverageRow[]> {
   const workItems = await runWithWorkspaceIfConcrete(args.workspaceId, () => listWorkItems({
     harness: args.harnessSlug, sourcePlanSlug: args.planSlug,
@@ -666,10 +668,54 @@ export async function readMigrationParkedCoverage(args: {
     planSlug: args.planSlug, planItems: args.planItems, workItems, laneHealth: null,
   });
   const missing = new Set(structural.promotion.missingActionableItemIds);
+  // A generated dependency gate keeps the stored blocked token sticky. Requiring
+  // an actionable token before lifting its migration park deadlocks set-status,
+  // whose evidence reader correctly refuses that independent park (WI9366).
+  // This only removes migration control; the normal status transition must still
+  // prove the dependency and clear the generated lane gate separately.
+  const graph = resolveEffectiveStatusForItems(args.planItems);
+  const completeGraph = new Set(args.planItems.map(item => item.id)).size === args.planItems.length &&
+    graph.missingRefs.length === 0 && graph.cycleMembers.length === 0;
+  const dependencyReady = new Set(completeGraph ? graph.items.filter(item =>
+    item.storedStatus === 'blocked' && item.blockedBy.length > 0 &&
+    item.unresolvedBlockers.length === 0 && !item.needsHuman).map(item => item.id) : []);
+  let nodes: Awaited<ReturnType<typeof import('./plan-line-graph').readPlanLineNodes>> = [];
+  if (args.actor && dependencyReady.size) {
+    const [{ readPlanLineNodes }, { getOrgPg }] = await Promise.all([
+      import('./plan-line-graph'), import('@papercusp/db-org'),
+    ]);
+    nodes = await readPlanLineNodes(getOrgPg().sql, {
+      workspaceId: args.workspaceId, harnessSlug: args.harnessSlug, slug: args.planSlug,
+    });
+  }
+  const canonicalGraph = nodes.length === args.planItems.length &&
+    new Set(nodes.map(node => node.id)).size === nodes.length && args.planItems.every(item => {
+      const node = nodes.find(node => node.id === item.id);
+      return node && node.planSlug === args.planSlug && node.status === item.storedStatus &&
+        node.blockedBy.length === item.blockedBy.length &&
+        node.blockedBy.every(id => item.blockedBy.includes(id));
+    });
+  const canRecoverDependency = (row: AdmissionWorkItem, id: string): boolean => {
+    if (!args.actor || !canonicalGraph || !dependencyReady.has(id) ||
+        (row.assignee != null && row.assignee !== args.actor)) return false;
+    const payload = record(row.payload);
+    if (payload.held_open_by != null ||
+        !['open', 'todo', 'wip'].includes(String(payload.planLaneParkedFrom))) return false;
+    const node = nodes.find(node => node.id === id);
+    if (!node || node.featureId !== row.id || node.ownerGateMarker) return false;
+    const raw = payload.externalBlockers;
+    const blockers = readExternalBlockers(payload);
+    if (!Array.isArray(raw) || raw.length !== blockers.length) return false;
+    const active = blockers.filter(blocker => blocker.status === 'active');
+    return active.length === 1 && active[0].kind === 'gate' &&
+      active[0].capability === 'live-dependency' &&
+      active[0].createdBy === 'system:plan-item-lane-sync' &&
+      active[0].ref === `plan-lane:${args.planSlug}#${id}`;
+  };
   return workItems.filter(item => !isSettledWorkItemState(item.state) &&
     isClaimHoldParked(item.payload) &&
     record(item.payload).claim_hold_by === MIGRATION_PLAN_LINE_PARK_BY)
-    .flatMap(item => provenanceIds(item).filter(id => missing.has(id))
+    .flatMap(item => provenanceIds(item).filter(id => missing.has(id) || canRecoverDependency(item, id))
       .map(planItemId => ({ planItemId, workItemId: item.id })));
 }
 
@@ -693,8 +739,9 @@ type DurableParkModule = typeof import('../../work-items-durable-park-audit');
  * plans:start's post-promotion lift of migration-1601 parks on the started plan's
  * actionable lines. Each decision is fingerprinted from the reconciler's own control
  * read (CAS-exact), cleared as `condition-satisfied` with inspectable evidence, and
- * recorded as an admission_runs audit row by the reconciler. Blocked / non-actionable
- * lines are never selected, so their parks stay. Settled-but-unlifted rows are
+ * recorded as an admission_runs audit row by the reconciler. A sticky blocked line
+ * is eligible only with exact canonical completed-dependency/generated-gate proof;
+ * other blocked / non-actionable lines keep their parks. Settled-but-unlifted rows are
  * returned, not thrown: the authoritative post-promotion admission check refuses on them.
  */
 export async function liftMigrationParkedCoverage(args: {
@@ -721,11 +768,18 @@ export async function liftMigrationParkedCoverage(args: {
       workspaceId: args.workspaceId, harnessSlug: args.harnessSlug, id: workItemId,
     });
     if (!control) { rows.push({ workItemId, planItemIds, outcome: 'missing' }); continue; }
+    const payload = record(control.payload);
+    if (isSettledWorkItemState(control.state) || !isClaimHoldParked(payload) ||
+        payload.claim_hold_by !== MIGRATION_PLAN_LINE_PARK_BY) {
+      rows.push({ workItemId, planItemIds, outcome: 'condition-changed' });
+      continue;
+    }
     decisions.push({
       id: workItemId,
       expectedParkFingerprint: park.durableParkFingerprint(control),
       reasonCode: 'condition-satisfied',
-      evidence: `plans:start ${args.planSlug} promoted actionable plan line(s) ${planItemIds.join(', ')} onto ${workItemId}; ` +
+      evidence: `plans:start ${args.planSlug} verified promoted plan line(s) ${planItemIds.join(', ')} onto ${workItemId} ` +
+        '(actionable or exact dependency-derived gate with completed prerequisites); ' +
         'the migration-1601 park rationale (a plan line is not self-selectable until its plan is promoted, ' +
         'one-work-graph-structured-holds-2026-10-26#D-011) no longer holds for this line.',
     });

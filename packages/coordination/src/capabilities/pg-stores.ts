@@ -22,6 +22,7 @@ import {
   type ObjectRef,
   type SubscribableStore,
   type SubscribeInput,
+  type SubscriptionReason,
   type SubscriptionRow,
   type SubscriptionTargetKind,
   type ThreadableStore,
@@ -111,6 +112,10 @@ export async function ensureCoordCapabilityTables(sql: Sql): Promise<void> {
   await sql`ALTER TABLE harness_shared.coord_entity_subscriptions ADD COLUMN IF NOT EXISTS follow_blockers boolean NOT NULL DEFAULT FALSE`;
   await sql`ALTER TABLE harness_shared.coord_entity_subscriptions ADD COLUMN IF NOT EXISTS derived_from_kind text`;
   await sql`ALTER TABLE harness_shared.coord_entity_subscriptions ADD COLUMN IF NOT EXISTS derived_from_ref text`;
+  // Migration 1638 (P-002): per-reason lifecycle columns.
+  await sql`ALTER TABLE harness_shared.coord_entity_subscriptions ADD COLUMN IF NOT EXISTS reasons text[] DEFAULT ARRAY['explicit']::text[]`;
+  await sql`ALTER TABLE harness_shared.coord_entity_subscriptions ADD COLUMN IF NOT EXISTS context_epoch bigint`;
+  await sql`ALTER TABLE harness_shared.coord_entity_subscriptions ADD COLUMN IF NOT EXISTS cancel_reason text`;
   await sql`
     CREATE UNIQUE INDEX IF NOT EXISTS coord_entity_subscriptions_active_uq
       ON harness_shared.coord_entity_subscriptions (workspace_id, subscriber_id, target_kind, target_ref)
@@ -296,9 +301,14 @@ interface SubRowDb {
   follow_blockers: boolean | null;
   derived_from_kind: string | null;
   derived_from_ref: string | null;
+  /** Absent on pre-1638 tables; NULL on legacy rows (reason not recorded). */
+  reasons?: string[] | null;
+  context_epoch?: string | number | null;
 }
 function toSubRow(r: SubRowDb): SubscriptionRow {
   return {
+    ...(Array.isArray(r.reasons) ? { reasons: r.reasons as SubscriptionReason[] } : {}),
+    ...(r.context_epoch != null ? { context_epoch: Number(r.context_epoch) } : {}),
     id: Number(r.id),
     subscriber_id: r.subscriber_id,
     target_kind: r.target_kind as SubscriptionTargetKind,
@@ -313,6 +323,19 @@ function toSubRow(r: SubRowDb): SubscriptionRow {
   };
 }
 
+/** P-002: why a contextual subscription ended (stored in `cancel_reason`). */
+export type SubscriptionEndCause = 'session-end' | 'session-ended-oracle' | 'context-replaced';
+
+/** P-002: the reasons a row (alias `s`) effectively holds. A legacy NULL row
+ *  reads as {explicit}. A generated blocker row written by a pre-P-002 release
+ *  got the column default {explicit}, so a derived row without 'blocker' reads as
+ *  {blocker} plus any contextual reason added since. */
+const EFFECTIVE_REASONS_SQL = `(CASE
+  WHEN s.derived_from_kind IS NOT NULL AND NOT ('blocker' = ANY (COALESCE(s.reasons, ARRAY[]::text[])))
+    THEN ARRAY['blocker']::text[] || CASE WHEN 'context' = ANY (COALESCE(s.reasons, ARRAY[]::text[]))
+                                          THEN ARRAY['context']::text[] ELSE ARRAY[]::text[] END
+  ELSE COALESCE(s.reasons, ARRAY['explicit']::text[]) END)`;
+
 export class PgEntitySubscriptionStore implements SubscribableStore {
   constructor(private readonly opts: PgCapabilityStoreOptions) {}
   /** The workspace scope NOW (F-C1): the per-call resolver when set + non-empty,
@@ -325,18 +348,40 @@ export class PgEntitySubscriptionStore implements SubscribableStore {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     const mode: DeliveryMode = input.delivery_mode ?? 'full';
+    const reason = input.reason ?? 'explicit';
+    const contextEpoch = reason === 'context' ? (input.context_epoch ?? null) : null;
+    // P-002: one row per (subscriber, target) carries every reason holding it. A
+    // contextual re-subscribe only adds its reason and refreshes the epoch; it never
+    // overwrites the delivery mode, TTL or blocker settings a direct follow chose.
+    // A direct (explicit / held_item) subscribe keeps the WI-4119 rule that a direct
+    // follow replaces a generated blocker follow. A legacy NULL reasons reads as
+    // {explicit}.
     const rows = await sql<SubRowDb[]>`
-      INSERT INTO harness_shared.coord_entity_subscriptions
+      INSERT INTO harness_shared.coord_entity_subscriptions AS sub
         (workspace_id, subscriber_id, target_kind, target_ref, delivery_mode, expires_ts, created_at,
-         follow_blockers, derived_from_kind, derived_from_ref)
+         follow_blockers, derived_from_kind, derived_from_ref, reasons, context_epoch)
       VALUES (${this.ws}, ${input.subscriber_id}, ${input.target_kind}, ${input.target_ref},
-              ${mode}, ${input.expires_ts ?? null}, ${input.created_ts}, ${input.follow_blockers ?? false}, NULL, NULL)
+              ${mode}, ${input.expires_ts ?? null}, ${input.created_ts}, ${input.follow_blockers ?? false}, NULL, NULL,
+              ARRAY[${reason}]::text[], ${contextEpoch})
       ON CONFLICT (workspace_id, subscriber_id, target_kind, target_ref) WHERE cancelled_at IS NULL
-      DO UPDATE SET delivery_mode = EXCLUDED.delivery_mode, expires_ts = EXCLUDED.expires_ts,
-                    follow_blockers = EXCLUDED.follow_blockers,
-                    derived_from_kind = NULL, derived_from_ref = NULL
+      DO UPDATE SET
+        delivery_mode = CASE WHEN ${reason} = 'context' THEN sub.delivery_mode ELSE EXCLUDED.delivery_mode END,
+        expires_ts = CASE WHEN ${reason} = 'context' THEN sub.expires_ts ELSE EXCLUDED.expires_ts END,
+        follow_blockers = CASE WHEN ${reason} = 'context' THEN sub.follow_blockers ELSE EXCLUDED.follow_blockers END,
+        derived_from_kind = CASE WHEN ${reason} = 'context' THEN sub.derived_from_kind ELSE NULL END,
+        derived_from_ref = CASE WHEN ${reason} = 'context' THEN sub.derived_from_ref ELSE NULL END,
+        reasons = (
+          SELECT array_agg(DISTINCT r ORDER BY r)
+            FROM unnest(
+              CASE WHEN ${reason} = 'context'
+                   THEN COALESCE(sub.reasons, ARRAY['explicit']::text[])
+                   ELSE array_remove(COALESCE(sub.reasons, ARRAY['explicit']::text[]), 'blocker')
+              END || ARRAY[${reason}]::text[]) AS r),
+        context_epoch = CASE WHEN ${reason} = 'context'
+                             THEN GREATEST(COALESCE(sub.context_epoch, EXCLUDED.context_epoch), EXCLUDED.context_epoch)
+                             ELSE sub.context_epoch END
       RETURNING id, subscriber_id, target_kind, target_ref, delivery_mode, created_at, expires_ts,
-                follow_blockers, derived_from_kind, derived_from_ref`;
+                follow_blockers, derived_from_kind, derived_from_ref, reasons, context_epoch`;
     return toSubRow(rows[0]);
   }
 
@@ -353,60 +398,140 @@ export class PgEntitySubscriptionStore implements SubscribableStore {
     await sql`
       INSERT INTO harness_shared.coord_entity_subscriptions
         (workspace_id, subscriber_id, target_kind, target_ref, delivery_mode, created_at,
-         follow_blockers, derived_from_kind, derived_from_ref)
+         follow_blockers, derived_from_kind, derived_from_ref, reasons)
       VALUES (${this.ws}, ${input.subscriber_id}, 'object', ${`${input.target.kind}:${input.target.ref}`},
               ${input.delivery_mode ?? 'full'}, ${input.created_ts}, FALSE,
-              ${input.derived_from.kind}, ${input.derived_from.ref})
+              ${input.derived_from.kind}, ${input.derived_from.ref}, ARRAY['blocker']::text[])
       ON CONFLICT (workspace_id, subscriber_id, target_kind, target_ref) WHERE cancelled_at IS NULL
       DO NOTHING`;
   }
 
   /** Remove generated follows created by one dependent→blocker edge. */
   async unsubscribeDerivedForEdge(derivedFrom: ObjectRef, target: ObjectRef): Promise<void> {
-    await this.opts.ensureSchema();
-    const sql = this.opts.getSql();
-    await sql`
-      UPDATE harness_shared.coord_entity_subscriptions
-         SET cancelled_at = now()
-       WHERE workspace_id = ${this.ws} AND target_kind = 'object'
-         AND target_ref = ${`${target.kind}:${target.ref}`}
-         AND derived_from_kind = ${derivedFrom.kind} AND derived_from_ref = ${derivedFrom.ref}
-         AND cancelled_at IS NULL`;
+    await this.releaseReasons(
+      `s.workspace_id = $1 AND s.target_kind = 'object' AND s.target_ref = $2
+       AND s.derived_from_kind = $3 AND s.derived_from_ref = $4`,
+      [this.ws, `${target.kind}:${target.ref}`, derivedFrom.kind, derivedFrom.ref],
+      ['blocker'], 'release:blocker',
+    );
   }
 
   /** Remove every generated blocker follow owned by one direct subscription. */
   async unsubscribeDerivedForDependent(subscriberId: string, derivedFrom: ObjectRef): Promise<void> {
-    await this.opts.ensureSchema();
-    const sql = this.opts.getSql();
-    await sql`
-      UPDATE harness_shared.coord_entity_subscriptions
-         SET cancelled_at = now()
-       WHERE workspace_id = ${this.ws} AND subscriber_id = ${subscriberId}
-         AND derived_from_kind = ${derivedFrom.kind} AND derived_from_ref = ${derivedFrom.ref}
-         AND cancelled_at IS NULL`;
+    await this.releaseReasons(
+      `s.workspace_id = $1 AND s.subscriber_id = $2
+       AND s.derived_from_kind = $3 AND s.derived_from_ref = $4`,
+      [this.ws, subscriberId, derivedFrom.kind, derivedFrom.ref],
+      ['blocker'], 'release:blocker',
+    );
   }
 
   /** Remove every generated follow whose blocker just settled. */
   async unsubscribeDerivedForTarget(target: ObjectRef): Promise<void> {
-    await this.opts.ensureSchema();
-    const sql = this.opts.getSql();
-    await sql`
-      UPDATE harness_shared.coord_entity_subscriptions
-         SET cancelled_at = now()
-       WHERE workspace_id = ${this.ws} AND target_kind = 'object'
-         AND target_ref = ${`${target.kind}:${target.ref}`}
-         AND derived_from_kind IS NOT NULL AND cancelled_at IS NULL`;
+    await this.releaseReasons(
+      `s.workspace_id = $1 AND s.target_kind = 'object' AND s.target_ref = $2
+       AND s.derived_from_kind IS NOT NULL`,
+      [this.ws, `${target.kind}:${target.ref}`],
+      ['blocker'], 'release:blocker',
+    );
   }
 
-  async unsubscribe(subscriberId: string, targetKind: SubscriptionTargetKind, targetRef: string): Promise<void> {
+  /** P-002: release one reason of one subscription. Without `reason` this is the
+   *  subscriber's own explicit release, which ends both its explicit follow and
+   *  its contextual subscription (R-8, R-39); held-item and blocker reasons are
+   *  released only by their own owners. The row is cancelled when no reason remains. */
+  async unsubscribe(
+    subscriberId: string,
+    targetKind: SubscriptionTargetKind,
+    targetRef: string,
+    reason?: SubscriptionReason,
+  ): Promise<void> {
+    await this.releaseReasons(
+      `s.workspace_id = $1 AND s.subscriber_id = $2 AND s.target_kind = $3 AND s.target_ref = $4`,
+      [this.ws, subscriberId, targetKind, targetRef],
+      reason ? [reason] : ['explicit', 'context'],
+      `release:${reason ?? 'explicit'}`,
+    );
+  }
+
+  /** P-002 (R-8): end one subscriber's contextual subscriptions. Without
+   *  `beforeEpoch` every contextual subscription ends (session end); with it only
+   *  those added before that context epoch end (context replacement). Explicit,
+   *  held-item and blocker reasons survive (R-39). */
+  async endContexts(input: {
+    subscriberId: string;
+    beforeEpoch?: number;
+    cause: SubscriptionEndCause;
+  }): Promise<{ released: number; cancelled: number }> {
+    const epochFilter = input.beforeEpoch == null
+      ? ''
+      : ' AND (s.context_epoch IS NULL OR s.context_epoch < $3)';
+    return this.releaseReasons(
+      `s.workspace_id = $1 AND s.subscriber_id = $2 AND 'context' = ANY (s.reasons)${epochFilter}`,
+      input.beforeEpoch == null
+        ? [this.ws, input.subscriberId]
+        : [this.ws, input.subscriberId, input.beforeEpoch],
+      ['context'], input.cause,
+    );
+  }
+
+  /** One keyset page of the distinct subscribers that hold an active `context`
+   *  reason, ordered by subscriber id and strictly after `after`. Callers page
+   *  until a short page so every such subscriber is judged on every sweep. */
+  async listContextSubscribers(input: { after?: string; limit: number }): Promise<string[]> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
-    await sql`
-      UPDATE harness_shared.coord_entity_subscriptions
-         SET cancelled_at = now()
-       WHERE workspace_id = ${this.ws} AND subscriber_id = ${subscriberId}
-         AND target_kind = ${targetKind} AND target_ref = ${targetRef}
-         AND cancelled_at IS NULL`;
+    const limit = Math.max(1, Math.floor(input.limit));
+    const rows = await sql<{ subscriber_id: string }[]>`
+      SELECT DISTINCT s.subscriber_id
+        FROM harness_shared.coord_entity_subscriptions AS s
+       WHERE s.workspace_id = ${this.ws} AND s.cancelled_at IS NULL
+         AND 'context' = ANY (s.reasons) AND s.subscriber_id > ${input.after ?? ''}
+       ORDER BY s.subscriber_id
+       LIMIT ${limit}`;
+    return rows.map((r) => r.subscriber_id);
+  }
+
+  /** Remove `release` from every active row matched by `whereSql` (positional
+   *  params, row alias `s`). A row is cancelled with `cause` only when no reason
+   *  remains; otherwise it keeps its remaining reasons and stays active. */
+  private async releaseReasons(
+    whereSql: string,
+    whereParams: readonly (string | number)[],
+    release: readonly SubscriptionReason[],
+    cause: string,
+  ): Promise<{ released: number; cancelled: number }> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    const rel = `$${whereParams.length + 1}::text[]`;
+    const causeParam = `$${whereParams.length + 2}`;
+    const left = 'cardinality(cand.remaining) = 0';
+    const rows = await sql.unsafe<{ cancelled: boolean }[]>(
+      `WITH cand AS (
+         SELECT s.id,
+                ARRAY(SELECT r FROM unnest(${EFFECTIVE_REASONS_SQL}) AS r
+                       WHERE r <> ALL (${rel}) ORDER BY r) AS remaining
+           FROM harness_shared.coord_entity_subscriptions AS s
+          WHERE s.cancelled_at IS NULL AND (${whereSql})
+            AND (${EFFECTIVE_REASONS_SQL}) && ${rel}
+          FOR UPDATE OF s
+       )
+       UPDATE harness_shared.coord_entity_subscriptions AS sub
+          SET cancelled_at = CASE WHEN ${left} THEN now() ELSE NULL END,
+              cancel_reason = CASE WHEN ${left} THEN ${causeParam} ELSE sub.cancel_reason END,
+              reasons = CASE WHEN ${left} THEN sub.reasons ELSE cand.remaining END,
+              context_epoch = CASE WHEN ${left} OR 'context' = ANY (cand.remaining)
+                                   THEN sub.context_epoch ELSE NULL END,
+              derived_from_kind = CASE WHEN ${left} OR 'blocker' = ANY (cand.remaining)
+                                       THEN sub.derived_from_kind ELSE NULL END,
+              derived_from_ref = CASE WHEN ${left} OR 'blocker' = ANY (cand.remaining)
+                                      THEN sub.derived_from_ref ELSE NULL END
+         FROM cand
+        WHERE sub.id = cand.id
+       RETURNING ${left} AS cancelled`,
+      [...whereParams, [...release], cause] as never[],
+    );
+    return { released: rows.length, cancelled: rows.filter((r) => r.cancelled).length };
   }
 
   async listSubscriptions(subscriberId: string): Promise<SubscriptionRow[]> {
@@ -420,7 +545,9 @@ export class PgEntitySubscriptionStore implements SubscribableStore {
       SELECT id, subscriber_id, target_kind, target_ref, delivery_mode, created_at, expires_ts,
              COALESCE((to_jsonb(sub)->>'follow_blockers')::boolean, FALSE) AS follow_blockers,
              to_jsonb(sub)->>'derived_from_kind' AS derived_from_kind,
-             to_jsonb(sub)->>'derived_from_ref' AS derived_from_ref
+             to_jsonb(sub)->>'derived_from_ref' AS derived_from_ref,
+             to_jsonb(sub)->'reasons' AS reasons,
+             to_jsonb(sub)->>'context_epoch' AS context_epoch
         FROM harness_shared.coord_entity_subscriptions AS sub
        WHERE workspace_id = ${this.ws} AND subscriber_id = ${subscriberId}
          AND cancelled_at IS NULL AND (expires_ts IS NULL OR expires_ts > now())
@@ -435,7 +562,9 @@ export class PgEntitySubscriptionStore implements SubscribableStore {
       SELECT id, subscriber_id, target_kind, target_ref, delivery_mode, created_at, expires_ts,
              COALESCE((to_jsonb(sub)->>'follow_blockers')::boolean, FALSE) AS follow_blockers,
              to_jsonb(sub)->>'derived_from_kind' AS derived_from_kind,
-             to_jsonb(sub)->>'derived_from_ref' AS derived_from_ref
+             to_jsonb(sub)->>'derived_from_ref' AS derived_from_ref,
+             to_jsonb(sub)->'reasons' AS reasons,
+             to_jsonb(sub)->>'context_epoch' AS context_epoch
         FROM harness_shared.coord_entity_subscriptions AS sub
        WHERE workspace_id = ${this.ws} AND target_kind = ${targetKind} AND target_ref = ${targetRef}
          AND cancelled_at IS NULL AND (expires_ts IS NULL OR expires_ts > now())

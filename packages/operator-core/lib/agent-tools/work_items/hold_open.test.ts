@@ -244,6 +244,16 @@ describe('work_items:hold_open clear+reconcile — evidence-based durable-park s
     expect(out).toMatchObject({ dryRun: true, outcome: 'assigned', wouldClear: false, takenBy: 'someone-live' });
   });
 
+  it('previews the same current-custodian migration clear that the apply path admits', async () => {
+    readDurableParkControlRow.mockResolvedValue({ id: 'WI-9', state: 'blocked', takenBy: 'me', payload: {
+      _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes',
+    } });
+    const out = await call({ id: 'WI-9', clear: true,
+      reconcile: { reasonCode: 'condition-satisfied', evidence: EVIDENCE } });
+    expect(out).toMatchObject({ dryRun: true, outcome: 'cleared', wouldClear: true, takenBy: 'me' });
+    expect(runWorkItemDurableParkReconciliation).not.toHaveBeenCalled();
+  });
+
   it('clears a PEER\'s park with evidence + fingerprint and NO force — via the reconciler, never setWorkItemClaimHold', async () => {
     const fp = fpOf(PARK);
     runWorkItemDurableParkReconciliation.mockResolvedValue(reconcileResult({

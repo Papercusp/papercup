@@ -169,7 +169,7 @@ export type AdmitResult =
        * existing — this source was already admitted;
        * covered  — a covering source (e.g. the thread a message sits in) was already admitted.
        */
-      reason: 'admitted' | 'folded' | 'existing' | 'covered';
+      reason: 'admitted' | 'folded' | 'adopted' | 'existing' | 'covered';
       workItemId: string;
       admission: AdmissionRow;
       linkedRecord?: string | null;
@@ -180,6 +180,7 @@ interface AdmissionDbRow {
   id: string;
   workspace_id: string;
   work_item_id: string;
+  harness_slug: string;
   data_source_id: string | null;
   source_kind: string;
   source_key: string;
@@ -280,6 +281,21 @@ export async function admitWorkItem(input: AdmitInput, deps: AdmitDeps = {}): Pr
 
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey(input.workspaceId, kindRaw, resolved.sourceKey)}, 0))`;
 
+    const adopted = resolved.existingWorkItem;
+    if (adopted) {
+      if (kindRaw !== 'work-item' || input.admitter.via !== 'person' || resolved.dataSourceId
+        || (input.kind && input.kind !== adopted.kind) || input.title) {
+        return refusal('existing_work_invalid', 'Existing work is attributed in place, without kind or title overrides.');
+      }
+      const prior = await tx<AdmissionDbRow[]>`
+        SELECT * FROM harness_shared.work_admissions
+         WHERE workspace_id = ${input.workspaceId} AND work_item_id = ${adopted.id}`;
+      if (prior.some(row => row.source_kind !== kindRaw || row.source_key !== resolved.sourceKey
+        || row.harness_slug !== input.harness || row.source_ref?.forkRemote !== resolved.sourceRef.forkRemote)) {
+        return refusal('existing_work_attribution_conflict', 'The work item already has a different source or repository attribution.');
+      }
+    }
+
     const identities: AdmissionSourceIdentity[] = [{ kind: kindRaw, key: resolved.sourceKey }, ...(resolved.coveredBy ?? [])];
     const kinds = identities.map((i) => String(i.kind));
     const keys = identities.map((i) => i.key);
@@ -291,6 +307,9 @@ export async function admitWorkItem(input: AdmitInput, deps: AdmitDeps = {}): Pr
     if (existing.length > 0) {
       const own = existing.find((r) => r.source_kind === kindRaw && r.source_key === resolved.sourceKey);
       const hit = own ?? existing[0]!;
+      if (adopted && (hit.work_item_id !== adopted.id || hit.harness_slug !== input.harness)) {
+        return refusal('existing_work_attribution_conflict', 'The local source identity is already attributed to another item or target.');
+      }
       return { ok: true as const, reason: own ? ('existing' as const) : ('covered' as const), workItemId: hit.work_item_id, admission: toAdmissionRow(hit) };
     }
 
@@ -308,8 +327,11 @@ export async function admitWorkItem(input: AdmitInput, deps: AdmitDeps = {}): Pr
       .filter(Boolean)
       .join('\n\n');
     let workItemId: string | null;
-    let reason: 'admitted' | 'folded' = 'admitted';
-    if (workKind === 'bug') {
+    let reason: 'admitted' | 'folded' | 'adopted' = 'admitted';
+    if (adopted) {
+      workItemId = adopted.id;
+      reason = 'adopted';
+    } else if (workKind === 'bug') {
       const capture = deps.captureBug ?? defaultCaptureImprovement;
       const intake = await capture(
         admissionBugCapture({
@@ -358,7 +380,7 @@ export async function admitWorkItem(input: AdmitInput, deps: AdmitDeps = {}): Pr
     // A folded source did not write the bug it landed on, so it must never re-sync that bug's
     // title, description or assignee from its own text: it keeps attribution and the link only.
     const fieldAuthority =
-      reason === 'folded' ? FOLDED_FIELD_AUTHORITY : (resolved.fieldAuthority ?? DEFAULT_FIELD_AUTHORITY);
+      reason === 'folded' || reason === 'adopted' ? FOLDED_FIELD_AUTHORITY : (resolved.fieldAuthority ?? DEFAULT_FIELD_AUTHORITY);
     const [row] = await tx<AdmissionDbRow[]>`
       INSERT INTO harness_shared.work_admissions
         (workspace_id, work_item_id, harness_slug, data_source_id, source_kind, source_key, source_ref,
@@ -368,7 +390,7 @@ export async function admitWorkItem(input: AdmitInput, deps: AdmitDeps = {}): Pr
          ${resolved.sourceKey}, ${tx.json(resolved.sourceRef as never)},
          ${tx.json({ external: [...fieldAuthority.external], papercusp: [...fieldAuthority.papercusp] } as never)},
          ${input.admitter.via}, ${by}, ${input.admitter.via === 'rule' ? input.admitter.ruleId : null},
-         ${reason === 'folded' ? 'folded' : 'created'})
+         ${reason === 'folded' || reason === 'adopted' ? 'folded' : 'created'})
       RETURNING *`;
     return { ok: true as const, reason, workItemId, admission: toAdmissionRow(row!), linkedRecord };
   })) as AdmitResult;

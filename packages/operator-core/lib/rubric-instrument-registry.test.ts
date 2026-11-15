@@ -14,6 +14,8 @@ import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
 import { RATCHET_METRICS_INSTRUMENT_KEY } from './release/ratchet-metrics';
 import { SILENT_HALT_STRANDED_INSTRUMENT_KEY } from './system-health/silent-halt-instrument';
+import { PLAN_PORTFOLIO_INSTRUMENT_KEYS } from './plan-portfolio/census-instruments';
+import { FINAL_CONTEXT_SAMPLE_INSTRUMENT } from './memory/final-context-measurement';
 import { CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY } from './code-intelligence/code-intel-unknown-rate-probe';
 import { CODE_INTEL_LIVENESS_INSTRUMENT_KEY } from './code-intelligence/push-leg-liveness';
 import { COUPLING_SHADOW_WINDOW_INSTRUMENT_KEY } from './code-intelligence/coupling-shadow-window';
@@ -287,6 +289,10 @@ describe('the registry seed set', () => {
       STRAGGLER_DISPOSITIONS_INSTRUMENT_KEY,
       ...Object.values(CLEANUP_OUTCOME_INSTRUMENT_KEYS),
       LEAD_SOURCE_OBSERVATIONS_INSTRUMENT_KEY,
+      FINAL_CONTEXT_SAMPLE_INSTRUMENT,
+      'plan-portfolio:census',
+      'plan-portfolio:held-only-workable-items',
+      'plan-portfolio:measures-without-paired-runs',
     ];
     expect(platformComputedInstrumentKeys().sort()).toEqual([...expected].sort());
     for (const key of expected) expect(instrumentRegistry().get(key)?.evaluator, key).toBe('platform');
@@ -366,6 +372,21 @@ describe('the registry seed set', () => {
             expect(instrument.rescore?.unit).toBe('count');
             expect(instrument.rescore?.scope).toBe('harness');
             expect(await instrument.rescore!.resolve(window)).toEqual({ verdict: 'unknown', detail: 'Exact workspace and harness required.' });
+          } else if (key === FINAL_CONTEXT_SAMPLE_INSTRUMENT) {
+            // One daily sample per immutable final-context source subject.
+            expect(instrument.rescore?.windowMs).toBe(24 * 60 * 60_000);
+            expect(instrument.rescore?.unit).toBe('count');
+            expect(instrument.rescore?.scope).toBe('subject');
+            expect(await instrument.rescore!.resolve(window)).toEqual({
+              verdict: 'unknown', detail: 'Exact immutable source subject and harness required.',
+            });
+          } else if (Object.values(PLAN_PORTFOLIO_INSTRUMENT_KEYS).some(k => k === key)) {
+            // plan-portfolio-flow-and-weight P-001: one daily point-in-time read, papercusp harness only.
+            expect(instrument.rescore?.windowMs).toBe(24 * 60 * 60_000);
+            expect(instrument.rescore?.unit).toBe('count');
+            expect(instrument.rescore?.scope).toBe('harness');
+            expect(await instrument.rescore!.resolve({ ...window, workspaceId: ' ' })).toEqual({ verdict: 'unknown', detail: 'Exact workspace required.' });
+            expect(await instrument.rescore!.resolve({ ...window, harnessSlug: 'not-the-recorded-harness' })).toMatchObject({ verdict: 'unknown' });
           } else if (key === FLEET_PRODUCTIVITY_KEY || key === FLEET_COMMS_KEY) {
             expect(instrument.rescore?.windowMs).toBe(7 * 24 * 60 * 60_000);
             expect(instrument.rescore?.unit).toBe('count');

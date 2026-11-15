@@ -13,6 +13,7 @@ import {
 } from '../../remote-runtime-identity';
 import { findBoxIdentityPaths, redactIdentityLeaks } from '../../../../../scripts/lib/identity-leak-patterns.mjs';
 import { createImplementationReadiness, sealImplementationAcceptance } from '../../harness/improvements/agent-review-policy';
+import { applyResultProjection, parseProjection } from '../../result-projection';
 import {
   MAX_RECORDED_PASSED_CASES,
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
@@ -31,6 +32,7 @@ import {
   executeSyncBatchCoverageAccounting,
   executeReviewerOwnedCorrection,
   measureReviewerOwnedCorrection,
+  invokeReviewerCorrectionPublicTool,
   REVIEWER_CORRECTION_SOURCE_PATHS,
   type ReviewerCorrectionScenarioDeps,
   inspectPlanTerminalCensus,
@@ -66,6 +68,35 @@ const EVIDENCE: CommittedOperationalEvidence = {
 };
 
 describe('native served reviewer correction evidence', () => {
+  it.each([false, true])('keeps an oversized public claim readable through dispatch (structured=%s)', async structured => {
+    const full = { claimed: true, ledgerIdeaId: 'idea-fixture', workItem: { summary: 'context'.repeat(2000) } };
+    expect(JSON.stringify(full).length).toBeGreaterThan(9000);
+    const result = await invokeReviewerCorrectionPublicTool('improvements:agent-review', { mode: 'claim', id: 'EI-fixture' },
+      async args => {
+        const projection = parseProjection(args.projection);
+        if (!projection.ok) throw new Error('native projection must pass dispatch validation');
+        const projected = applyResultProjection({
+          content: [{ type: 'text' as const, text: JSON.stringify(full) }],
+          ...(structured ? { structuredContent: full } : {}),
+        }, projection.spec, { toolName: 'improvements:agent-review', effect: 'write' });
+        // The optional reason is absent on success. Its warning precedes the
+        // JSON body, so reading content[0] would lose this successful receipt.
+        expect(projected.content[0].text).toContain('reason');
+        expect(JSON.stringify(projected)).not.toContain(full.workItem.summary);
+        return projected;
+      });
+    expect(result).toEqual({ claimed: true, ledgerIdeaId: 'idea-fixture' });
+  });
+
+  it.each([
+    { schemaVersion: 'papercusp.output-envelope/v1', content: [{ kind: 'reference', uri: 'papercusp://scratch/fixture' }] },
+    { claimed: true, _partial: true },
+  ])('refuses an unresolved or incomplete public receipt instead of inferring success: %j', async body => {
+    await expect(invokeReviewerCorrectionPublicTool('improvements:agent-review', { mode: 'claim' },
+      async () => ({ content: [{ type: 'text', text: JSON.stringify(body) }] })))
+      .rejects.toThrow(/improvements:agent-review: (unresolved|incomplete) public receipt/);
+  });
+
   function fixture() {
     const ctx = { workspaceId: 'workspace-test', harnessSlug: 'papercusp' };
     const host = { host: 'port-3170', processId: 'linux:boot:123', buildSha: 'a'.repeat(40),

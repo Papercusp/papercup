@@ -7,11 +7,22 @@ const mocks = vi.hoisted(() => ({
   planItemsForRow: vi.fn(),
   listWorkItems: vi.fn(),
   readClaimSpecLaneHealth: vi.fn(),
+  readPlanLineNodes: vi.fn(),
+  sql: vi.fn(() => { throw new Error('unit SQL must be mocked at the reader seam'); }),
+}));
+
+vi.mock('@papercusp/db-org', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getOrgPg: () => ({ sql: mocks.sql }),
 }));
 
 vi.mock('./source', () => ({
   getPlanRow: (...args: unknown[]) => mocks.getPlanRow(...args),
   planItemsForRow: (...args: unknown[]) => mocks.planItemsForRow(...args),
+}));
+
+vi.mock('./plan-line-graph', () => ({
+  readPlanLineNodes: (...args: unknown[]) => mocks.readPlanLineNodes(...args),
 }));
 
 vi.mock('../../work-items', async (importOriginal) => ({
@@ -1326,7 +1337,8 @@ describe('preflightExactPlanLaneHealth', () => {
   function fakePark(outcome = 'cleared') {
     return {
       readDurableParkControlRow: vi.fn(async ({ id }: { id: string }) =>
-        ({ id, state: 'open', takenBy: null, payload: { _claimHold: true } })),
+        ({ id, state: 'open', takenBy: null,
+          payload: { _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes' } })),
       durableParkFingerprint: vi.fn((row: { payload: unknown }) => `fp:${JSON.stringify(row.payload)}`),
       runWorkItemDurableParkReconciliation: vi.fn(async (opts: { decisions: Array<{ id: string }>; runId?: string }) => ({
         runId: opts.runId, artifactPath: 'audit/x.json',
@@ -1345,7 +1357,8 @@ describe('preflightExactPlanLaneHealth', () => {
       actor: string; runId: string; decisions: Array<Record<string, string>> };
     expect(call.actor).toBe('su-test');
     expect(call.runId).toMatch(/^work-item-durable-park-audit:plans-start:[0-9a-f]{32}$/);
-    expect(call.decisions).toEqual([{ id: 'WI-parked', expectedParkFingerprint: 'fp:{"_claimHold":true}',
+    expect(call.decisions).toEqual([{ id: 'WI-parked',
+      expectedParkFingerprint: 'fp:{"_claimHold":true,"claim_hold_by":"migration:plan-line-work-item-nodes"}',
       reasonCode: 'condition-satisfied', evidence: expect.stringContaining('P-001') }]);
     expect(res).toMatchObject({ rows: [{ workItemId: 'WI-parked', planItemIds: ['P-001'], outcome: 'cleared' }],
       unsettled: [], artifactPath: 'audit/x.json' });
@@ -1361,10 +1374,96 @@ describe('preflightExactPlanLaneHealth', () => {
     expect(res).toEqual({ rows: [], unsettled: [], runId: null, artifactPath: null });
   });
 
+  describe('completed dependency with a generated lane gate (WI9366)', () => {
+    const gate = { kind: 'gate', ref: 'plan-lane:plan-a#P-002', status: 'active',
+      capability: 'live-dependency', capabilitySource: 'explicit',
+      createdBy: 'system:plan-item-lane-sync', summary: 'Dependency gate',
+      createdAt: '2026-11-15T08:00:00Z', updatedAt: '2026-11-15T08:00:00Z' };
+    const planItems = () => [item('P-001', 'done'), item('P-002', 'blocked', ['P-001'])];
+    const dependencyPark = () => ({ id: 'WI-dependent', family: 'issue', state: 'blocked',
+      sourcePlanSlug: 'plan-a', sourcePlanItemIds: ['P-002'], assignee: 'su-test' as string | null,
+      payload: { _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes',
+        planLaneParkedFrom: 'open', externalBlockers: [gate] } as Record<string, unknown> });
+    const nodes = () => [
+      { id: 'P-001', featureId: 'WI-prerequisite', planSlug: 'plan-a', status: 'done', blockedBy: [] },
+      { id: 'P-002', featureId: 'WI-dependent', planSlug: 'plan-a', status: 'blocked', blockedBy: ['P-001'] },
+    ];
+    beforeEach(() => { mocks.readPlanLineNodes.mockReset().mockResolvedValue(nodes()); });
+
+    it.each(['su-test', null])('reconciles the exact dependency-derived node held by %s without clearing its sticky status', async assignee => {
+      const current = { ...dependencyPark(), assignee };
+      const before = structuredClone(current);
+      mocks.listWorkItems.mockReset().mockResolvedValue([current]);
+      const park = { ...fakePark(), readDurableParkControlRow: vi.fn(async () =>
+        ({ id: current.id, state: current.state, takenBy: assignee, payload: current.payload })) };
+
+      const result = await liftMigrationParkedCoverage({ ...liftArgs, planItems: planItems(),
+        deps: { durablePark: park as never } });
+
+      expect(result).toMatchObject({ rows: [{ workItemId: current.id, planItemIds: ['P-002'], outcome: 'cleared' }],
+        unsettled: [] });
+      expect(park.runWorkItemDurableParkReconciliation).toHaveBeenCalledWith(expect.objectContaining({
+        actor: 'su-test', decisions: [expect.objectContaining({ id: current.id, reasonCode: 'condition-satisfied' })],
+      }));
+      expect(mocks.readPlanLineNodes).toHaveBeenCalledWith(mocks.sql,
+        { workspaceId: 'ws-1', harnessSlug: 'papercusp', slug: 'plan-a' });
+      expect(current).toEqual(before);
+      expect(planItems()[1].storedStatus).toBe('blocked');
+    });
+
+    it.each(['pending prerequisite', 'missing prerequisite', 'cycle', 'duplicate plan id',
+      'independent park', 'peer claim', 'peer lease', 'missing provenance', 'foreign gate',
+      'ambiguous gates', 'independent gate', 'malformed blockers', 'missing node',
+      'wrong node', 'ambiguous nodes', 'owner gate', 'changed canonical dependency'])(
+      'preserves %s instead of treating promotion as release authority', async scenario => {
+        const current = dependencyPark();
+        const graph = planItems();
+        const canonical = nodes();
+        if (scenario === 'pending prerequisite') graph[0].storedStatus = 'wip';
+        if (scenario === 'missing prerequisite') graph.splice(0, 1);
+        if (scenario === 'cycle') graph[0].blockedBy = ['P-002'];
+        if (scenario === 'duplicate plan id') graph.push({ ...graph[1] });
+        if (scenario === 'independent park') current.payload.claim_hold_by = 'su-owner';
+        if (scenario === 'peer claim') current.assignee = 'su-other';
+        if (scenario === 'peer lease') current.payload.held_open_by = 'su-other';
+        if (scenario === 'missing provenance') delete current.payload.planLaneParkedFrom;
+        if (scenario === 'foreign gate') current.payload.externalBlockers = [{ ...gate, createdBy: 'su-other' }];
+        if (scenario === 'ambiguous gates') current.payload.externalBlockers = [gate, gate];
+        if (scenario === 'independent gate') current.payload.externalBlockers = [gate, { ...gate, ref: 'external:owner' }];
+        if (scenario === 'malformed blockers') current.payload.externalBlockers = [gate, { invalid: true }];
+        if (scenario === 'missing node') canonical.splice(1, 1);
+        if (scenario === 'wrong node') canonical[1].featureId = 'WI-other';
+        if (scenario === 'ambiguous nodes') canonical.push({ ...canonical[1] });
+        if (scenario === 'owner gate') Object.assign(canonical[1], { ownerGateMarker: 'owner approval' });
+        if (scenario === 'changed canonical dependency') canonical[1].blockedBy = [];
+        mocks.listWorkItems.mockReset().mockResolvedValue([current]);
+        mocks.readPlanLineNodes.mockResolvedValue(canonical);
+        const park = fakePark();
+
+        const result = await liftMigrationParkedCoverage({ ...liftArgs, planItems: graph,
+          deps: { durablePark: park as never } });
+
+        expect(park.runWorkItemDurableParkReconciliation).not.toHaveBeenCalled();
+        expect(result.rows).toEqual([]);
+      },
+    );
+  });
+
   it('reports a park the reconcile did not clear as unsettled instead of claiming success', async () => {
     mocks.listWorkItems.mockReset().mockResolvedValue([parked]);
     const res = await liftMigrationParkedCoverage({ ...liftArgs, deps: { durablePark: fakePark('stale-fingerprint') as never } });
     expect(res.unsettled).toEqual([{ workItemId: 'WI-parked', planItemIds: ['P-001'], outcome: 'stale-fingerprint' }]);
+  });
+
+  it('preserves an owner park installed after the migration coverage census', async () => {
+    mocks.listWorkItems.mockReset().mockResolvedValue([parked]);
+    const park = { ...fakePark(), readDurableParkControlRow: vi.fn(async () => ({
+      id: parked.id, state: 'open', takenBy: null,
+      payload: { _claimHold: true, claim_hold_by: 'su-owner', claim_hold_reason: 'owner decision pending' },
+    })) };
+    const result = await liftMigrationParkedCoverage({ ...liftArgs, deps: { durablePark: park as never } });
+    expect(park.runWorkItemDurableParkReconciliation).not.toHaveBeenCalled();
+    expect(result.unsettled).toEqual([{ workItemId: parked.id, planItemIds: ['P-001'], outcome: 'condition-changed' }]);
   });
 
   it('sends one decision per node even when the node covers several actionable lines', async () => {

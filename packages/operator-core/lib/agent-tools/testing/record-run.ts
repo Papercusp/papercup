@@ -1098,6 +1098,29 @@ export interface ReviewerCorrectionScenarioDeps {
   cleanup: (nonce: string, id: string, ideaId: string) => Promise<void>;
 }
 
+/** Keep public receipts bounded; the full item and ledger are read separately. */
+export async function invokeReviewerCorrectionPublicTool(
+  name: string, args: Record<string, unknown>,
+  call: (args: Record<string, unknown>) => Promise<CallToolResult>,
+) {
+  const pick = name === 'improvements:agent-review'
+    ? args.mode === 'claim' ? ['claimed', 'ledgerIdeaId', 'reason']
+      : args.mode === 'correction-base'
+        ? ['available', 'round', 'correctionRevision', 'reviewHandoff.filingIdentity.submittedBy', 'reason']
+        : ['corrected', 'replayed', 'receipt', 'reason']
+    : name === 'blender:grade-idea' ? ['applied', 'reason']
+      : ['ownerId', 'source', 'workspaceId'];
+  const result = await call({ ...args, projection: { pick } });
+  if (result.isError) throw new Error(`${name}: ` + result.content.filter(part => part.type === 'text')
+    .map(part => part.text).join('\n'));
+  const block = result.content.find(part => part.type === 'text' && part.text.trim().startsWith('{'));
+  const output = result.structuredContent ?? (block?.type === 'text' ? JSON.parse(block.text) : null);
+  assert.ok(output && typeof output === 'object' && !Array.isArray(output), `${name}: structured public receipt required`);
+  assert.notEqual(output.schemaVersion, 'papercusp.output-envelope/v1', `${name}: unresolved public receipt envelope`);
+  assert.notEqual(output._partial, true, `${name}: incomplete public receipt`);
+  return output;
+}
+
 /** Remove only this native check's nonce-owned data from the canonical stores. */
 export async function cleanupReviewerCorrectionFixture(ctx: RecordContext, nonce: string, id: string, ideaId: string) {
   const workspace = ctx.workspaceId!;
@@ -1178,14 +1201,8 @@ async function reviewerCorrectionScenarioDeps(ctx: RecordContext): Promise<Revie
       try { if (!invalidBearer) await client.listTools(); }
       catch (error) { await client.close(); throw error; }
       return { close: () => client.close(), async invoke(name, args) {
-        const result = await client.callTool({ name, arguments: args }, undefined, { timeout: 30_000 }) as CallToolResult;
-        if (result.isError) throw new Error(result.content.filter(part => part.type === 'text')
-          .map(part => part.text).join('\n'));
-        const structured = result.structuredContent;
-        if (structured) return structured;
-        const block = result.content.find(part => part.type === 'text' && part.text.trim().startsWith('{'));
-        assert.ok(block && block.type === 'text', 'structured public dispatch receipt required');
-        return JSON.parse(block.text);
+        return invokeReviewerCorrectionPublicTool(name, args, async projected =>
+          await client.callTool({ name, arguments: projected }, undefined, { timeout: 30_000 }) as CallToolResult);
       } };
     },
     async seed(nonce, author, reviewer) {
@@ -1308,7 +1325,7 @@ export async function measureReviewerOwnedCorrection(ctx: RecordContext, deps: R
     const selfGrade = await reviewer!.invoke('blender:grade-idea', { ideaId, grade: 5 });
     assert.equal(selfGrade.applied, false, 'material author must remain ineligible');
     const claimed = await grader!.invoke('improvements:agent-review', { mode: 'claim', id });
-    assert.equal(claimed.claimed, true); assert.equal(claimed.ledgerIdeaId, ideaId);
+    assert.equal(claimed.claimed, true, 'independent public review claim must succeed'); assert.equal(claimed.ledgerIdeaId, ideaId);
     const grade = await grader!.invoke('blender:grade-idea', {
       ideaId, grade: 2, feedback: 'Content revision: add the missing fixture diagnosis.' });
     assert.equal(grade.applied, true);

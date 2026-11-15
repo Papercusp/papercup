@@ -55,6 +55,9 @@ import {
   type ScorecardGradingAuditCurrentness,
   type ScorecardRow,
 } from './scorecards';
+// One definition of which cards carry read-time evidence-binding currentness, shared with
+// scorecards:emit's pending-audit gate and certify-spec-clauses (EI-28807501130212029).
+import { scorecardCitesSpecEvidenceBindings } from './scorecard-pending-audit-currentness';
 import {
   parseGradingAuditReservationSnapshot,
   type ScorecardGradingAuditReservationSnapshot,
@@ -2073,14 +2076,6 @@ function currentPendingScorecard(card: ScorecardRow): boolean {
   );
 }
 
-function hasCitedSpecEvidenceBindings(card: ScorecardRow): boolean {
-  const recipe = card.rerunRecipe;
-  // Newer recipes pin immutable row ids. Legacy recipes pin the same rows by
-  // their exact args.current tuples; both need a read-time currentness check.
-  return recipe?.evaluator === 'plans:evaluate-spec-test-adequacy' &&
-    Boolean(recipe.selection.bindingIds?.length || recipe.args.current?.length);
-}
-
 function gradingAuditReservationSnapshot(
   card: ScorecardRow,
   evidence?: ScorecardEvidenceRow,
@@ -2412,7 +2407,7 @@ export async function dispatchPendingGradingAudits(
   const evidenceCandidates = cards
     .filter((card) =>
       card.gradingAudit?.state === 'pending' &&
-      hasCitedSpecEvidenceBindings(card) &&
+      scorecardCitesSpecEvidenceBindings(card) &&
       !card.supersededBy &&
       !card.retracted,
     )
@@ -2523,9 +2518,13 @@ export async function dispatchPendingGradingAudits(
     !pausedOwners.has(card.createdBy ?? '') &&
     (explicitTargetIds.length === 0 || explicitTargetIds.includes(card.issueId)) &&
     (recordedEvaluatorBuildForRecipe(card.rerunRecipe) || card.gradedGeneration) &&
-    (!hasCitedSpecEvidenceBindings(card) || evidenceById.get(card.issueId)?.auditTarget.current === true))
+    (!scorecardCitesSpecEvidenceBindings(card) || evidenceById.get(card.issueId)?.auditTarget.current === true))
     .sort(oldestFirst).slice(0, GRADING_AUDIT_DISPATCH_LIMIT);
-  await mapWithConcurrency(runtimeCandidates, GRADING_AUDIT_DISPATCH_CONCURRENCY, async card => {
+  const runtimeCandidatesById = new Map(runtimeCandidates.map(card => [card.issueId, card] as const));
+  // Prepare only this target's endpoint inside its dispatch slot. A slow
+  // historical runtime must not hold every other card's terminal recovery
+  // behind a batch-wide readiness barrier.
+  const prepareRuntime = async (card: ScorecardRow) => {
     const build = recordedEvaluatorBuildForRecipe(card.rerunRecipe) ?? liveEvaluatorBuild;
     try {
       if (!workspaceId) throw new Error('Exact audit runtime requires a concrete workspace');
@@ -2546,11 +2545,11 @@ export async function dispatchPendingGradingAudits(
       runtimeFailures.set(card.issueId, { reason: error instanceof Error ? error.message : String(error),
         ...(error instanceof GradingAuditRuntimeReadinessError ? { runtimeReadiness: error.diagnostic } : {}) });
     }
-  });
+  };
   const pendingCards = cards.filter((card) => {
     if (evaluatorBuildDriftIds.has(card.issueId)) return false;
     if (!currentPendingScorecard(card)) return false;
-    if (!hasCitedSpecEvidenceBindings(card)) return true;
+    if (!scorecardCitesSpecEvidenceBindings(card)) return true;
     return evidenceById.get(card.issueId)?.auditTarget.current === true;
   });
   const pendingById = new Map(pendingCards.map((card) => [card.issueId, card] as const));
@@ -4122,6 +4121,13 @@ export async function dispatchPendingGradingAudits(
   };
 
   const dispatchTarget = async (issueId: string): Promise<PendingGradingAuditDispatchReceipt> => {
+    const runtimeCandidate = runtimeCandidatesById.get(issueId);
+    if (runtimeCandidate) {
+      await prepareRuntime(runtimeCandidate);
+      // The exact endpoint, not this host's build, authorizes an old evaluator.
+      // Keep failed/unknown readiness on the existing refusal path.
+      if (!evaluatorBuildDriftIds.has(issueId)) pendingById.set(issueId, runtimeCandidate);
+    }
     const card = pendingById.get(issueId);
     if (card?.rubricRef !== 'spec-quality') return dispatchReadyTarget(issueId);
     const { resolveSpecQualityPlanSubject } = await import('./agent-tools/plans/spec-quality');

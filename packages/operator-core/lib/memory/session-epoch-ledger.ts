@@ -400,6 +400,17 @@ export async function bumpSessionEpoch(sql: SqlTag, sessionId: string): Promise<
       RETURNING epoch
     `) as unknown as { epoch: number }[];
     const epoch = rows.length > 0 ? Number(rows[0].epoch) : null;
+    // shared-reference-system-2026-11-13 P-002: a new epoch IS a context
+    // replacement, so every contextual subscription the earlier context added
+    // ends here (explicit, held-item and blocker follows survive, R-39). Dynamic
+    // import keeps this memory module free of a static coordination dependency;
+    // the helper is fail-soft, so a subscription fault never fails the bump.
+    if (epoch != null) {
+      await import('../subscription-lifecycle')
+        .then(({ endSubscriberContexts }) =>
+          endSubscriberContexts(sessionId, 'context-replaced', { beforeEpoch: epoch }))
+        .catch(() => null);
+    }
     // Coarse age sweep — the ONLY ledger GC (superseded epochs stay readable
     // for forensics until they age out; see the function doc).
     await sql`

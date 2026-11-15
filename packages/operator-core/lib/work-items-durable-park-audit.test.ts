@@ -562,6 +562,38 @@ describe('durable park evidence matrix and reconciliation CAS', () => {
     ).toBe('already-cleared');
   });
 
+  it('clears a verified migration park for its current custodian while retaining its claim and lane gate', () => {
+    const current = { id: 'WI-dependent', state: 'blocked', takenBy: 'su-test', payload: {
+      _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes',
+      planLaneParkedFrom: 'open', externalBlockers: [{ ref: 'plan-lane:plan-a#P-002', status: 'active' }],
+    } };
+    const before = structuredClone(current);
+    const decision = { id: current.id, expectedParkFingerprint: durableParkFingerprint(current),
+      reasonCode: 'condition-satisfied' as const, evidence: 'plans:start verified the canonical completed dependency' };
+
+    const result = planDurableParkClear(current, decision, 'su-test');
+
+    expect(result).toMatchObject({ outcome: 'cleared', takenBy: 'su-test', preservedLease: false,
+      nextPayload: { planLaneParkedFrom: 'open', externalBlockers: current.payload.externalBlockers } });
+    expect(current).toEqual(before);
+  });
+
+  it.each(['foreign custodian', 'missing actor', 'independent park', 'peer lease', 'different reason'])(
+    'keeps an assigned %s protected during migration reconciliation', scenario => {
+      const current = { id: 'WI-dependent', state: 'blocked', takenBy: 'su-test', payload: {
+        _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes',
+      } as Record<string, unknown> };
+      if (scenario === 'independent park') current.payload.claim_hold_by = 'su-owner';
+      if (scenario === 'peer lease') current.payload.held_open_by = 'su-other';
+      const actor = scenario === 'foreign custodian' ? 'su-other' : scenario === 'missing actor' ? undefined : 'su-test';
+      const decision = { id: current.id, expectedParkFingerprint: durableParkFingerprint(current),
+        reasonCode: scenario === 'different reason' ? 'operator-directed' as const : 'condition-satisfied' as const,
+        evidence: 'a reason alone must not widen assigned-row authority' };
+
+      expect(planDurableParkClear(current, decision, actor)).toMatchObject({ outcome: 'assigned', nextPayload: null });
+    },
+  );
+
   it('retains a pause on its task-completion evidence but permits an explicit audited owner disposition', () => {
     const payload = { ...parkedPayload, claim_hold_release: {
       condition: 'WI-10003058 reaches terminal done, ending this system-wide pause.',

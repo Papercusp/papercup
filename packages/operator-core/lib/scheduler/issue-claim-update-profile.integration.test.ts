@@ -387,5 +387,15 @@ describe('scheduler issue-claim revision 23 selector vs update profile', () => {
     }
     if (claimError !== undefined) throw claimError;
     expect(claimed?.workItem.id).toBe(CANDIDATE_ID);
+    // WI-6554700010049349 regression guard: each claim UPDATE does ~13ms of real work. With JIT
+    // left on, a stock-config PG spent ~12s per UPDATE compiling the ~1.5M-cost composed
+    // predicate, so measure the statement directly instead of relying on the 15s claim ladder.
+    const updateMs = phases.flatMap((p) =>
+      p.step === 'candidate-issue-claim-update' && p.elapsedMs !== undefined ? [p.elapsedMs] : []);
+    expect(updateMs.length).toBeGreaterThan(0);
+    expect(
+      Math.max(...updateMs),
+      `claim UPDATE elapsed ${JSON.stringify(updateMs)}ms; is SET LOCAL jit = off still first in claimNextIssueWorkItem?`,
+    ).toBeLessThan(3_000);
   }, 240_000);
 });

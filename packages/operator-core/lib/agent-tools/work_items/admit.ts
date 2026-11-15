@@ -36,6 +36,7 @@ import '../../work-admission/record-source';
 // P-021: registers the 'chat-message' and 'chat-thread' admission resolvers (D-030), so a person
 // can promote a stored chat message or thread. Rules admit records only (migration 1468).
 import '../../data-sources/chat-admission-sources';
+import '../../work-admission/existing-work-source';
 
 const OPS = ['admit', 'write-back', 'transition', 'rules-set', 'rules-list', 'rules-disable', 'rules-apply'] as const;
 
@@ -50,10 +51,10 @@ export default defineTool({
   name: 'work_items:admit',
   profile: 'engineer',
   description:
-    "Admit ingested data into work (D-004). op 'admit' turns a source (e.g. { kind:'record', recordId }) into one linked, attributed work item, idempotent per source. 'write-back' posts a note to the admitted item's source; 'transition' moves it to toCategory. 'rules-*' manage per-data-source rules that admit matching records on ingest.",
+    "Admit ingested data into work (D-004), or attribute existing local bugs/changes with source:{kind:'work-item',workItemId,workItemHarness,forkRemote} to a review-mode target harness. Existing work keeps its identity, fields and lifecycle. Admissions are idempotent per source. 'write-back' and 'transition' act on provider sources. 'rules-*' manage automatic data-source admission.",
   guidance: {
-    when: 'A person promotes an ingested ticket, message or thread into work, writes a note back to its source, or sets a rule that admits matching records automatically.',
-    notWhen: 'Filing work that has no data source (work_items:create), or editing an admitted item (title/description belong to the source; update it there).',
+    when: 'Promoting stored data, explicitly attributing existing local bug/change work to its review repository, or managing source write-back and automatic admission rules.',
+    notWhen: 'Creating new local work (work_items:create), changing completion or claim authority, or authorizing paths from a PR diff.',
     chaining:
       "work_items:admit { op:'rules-set', rule:{ dataSourceId, title, preset:'delegated-to-papercusp' }, harness } admits matching held records now and new ones on sync; 'rules-apply' re-runs it.",
   },

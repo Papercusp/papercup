@@ -60,7 +60,7 @@ function fakeDeps(rows: ObservedPlanRow[], over: Partial<AcceptanceGradingSweepD
     },
     evaluateGate: async () => ({ satisfied: false, code: 'acceptance_ungraded' }),
     observeGrader: async () => ({ live: false, lastDispatchMs: null }),
-    escalationExists: async (slug) => minted.has(slug),
+    escalationExists: async (row) => minted.has(row.planSlug),
     dispatchGrader: async () => ({ ok: true, state: 'assigned' }),
     mintEscalation: async (r) => {
       // Faithful to upsertConditionWorkItem: the unique index means a second mint

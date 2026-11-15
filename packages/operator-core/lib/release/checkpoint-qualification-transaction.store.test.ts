@@ -33,6 +33,7 @@ import {
   retargetPreSuiteAttemptToOwningRepairHead,
   recoverStoredQualificationHistoricalPreSuiteError,
   settleQualificationTransaction,
+  settleUnreachableBlockedQualification,
   waitQualificationTransaction,
   waitStoredQualification,
   recordQualificationExecutorIdentityBlock,
@@ -592,6 +593,52 @@ describe('beginStoredQualification terminal repair-queue reconciliation', () => 
       expect(result).toMatchObject({ status: 'conflict', repairQueueReconciliation: { status: 'blocked', reason } });
       expect(statements.some((statement) => statement.text.includes('UPDATE harness_shared.routines'))).toBe(false);
     }
+  });
+
+  // D-028 condition 1 (staging-main-safe-changes-and-recovery-2026-11-07#D-028, WI-6554700010048992):
+  // settling a runner-free attempt whose only blocker has no clear path must hand the frozen repair
+  // queue to the successor exactly like any other terminal handoff. The queue is never retired and
+  // its repair state (phase, candidate, repairHead, attempts, admissions, rounds) is never rewritten.
+  // The successor begin may write only the ownership re-stamp and the queue's CAS version.
+  // The queue shape mirrors the live papercusp row measured 2026-11-15T11:5xZ: awaiting-fixer,
+  // origin = the settled attempt, no fixer assigned.
+  it('D-028: an unreachable-blocker settle hands the frozen queue to the successor without retiring or rewriting it', async () => {
+    const fence = { attemptId: 'attempt-1', candidate: 'candidate-1', repairHead: 'repair-1' };
+    const begun = beginQualificationTransaction(null, { ...fence, nowMs: 100 }).transaction;
+    const blocked = recordQualificationExecutorIdentityBlock(begun, { ...fence, shaSource: 'dirty', nowMs: 150 });
+    expect(blocked).toMatchObject({ status: 'updated', transaction: { phase: 'waiting', currentPhysicalRunner: null } });
+    const settled = settleUnreachableBlockedQualification(blocked.transaction, {
+      attemptId: 'attempt-1', reason: 'D-028 unreachable executor-identity blocker', actor: 'gate-custodian', nowMs: 200,
+    });
+    expect(settled).toMatchObject({
+      status: 'updated',
+      transaction: { phase: 'terminal', blockers: [], outcome: { kind: 'code-inconclusive', reason: 'unreachable-blocker-settled' } },
+    });
+
+    const queue = markFrozenCandidateVerificationRed(safeQueue(), { failingTests: ['broken.test.ts'], nowMs: 160 });
+    expect(queue).toMatchObject({ phase: 'awaiting-fixer', fixerSpawnId: null, qualificationAttemptId: 'attempt-1' });
+    const { statements } = transactionHarness({ qualificationTransaction: settled.transaction, repair_queue: queue });
+
+    const result = await beginStoredQualification(target, successor, { reconcileTerminalRepairQueueForSuccessor: true });
+
+    expect(result).toMatchObject({
+      status: 'updated',
+      transaction: { attemptId: 'attempt-2', previousAttemptId: 'attempt-1' },
+      repairQueueReconciliation: { status: 'preserved', reason: 'awaiting-unassigned-fixer', candidate: 'candidate-1' },
+    });
+    const updates = statements.filter((statement) => statement.text.includes('UPDATE harness_shared.routines'));
+    expect(updates).toHaveLength(1);
+    const [update] = updates;
+    // Never retired: no key removal of repair_queue, no deletion of gate state.
+    expect(update!.text).not.toContain("- 'repair_queue'");
+    expect(update!.text).not.toMatch(/#-\s*'\{repair_queue/);
+    // Never rewritten: the only repair_queue paths set are the ownership re-stamp and its CAS version.
+    const queuePaths = [...update!.text.matchAll(/'\{repair_queue,([^}]+)\}'/g)].map((match) => match[1]).sort();
+    expect(queuePaths).toEqual(['qualificationAttemptId', 'updatedAtMs']);
+    // The write CASes on the exact predecessor queue, so a concurrent queue change cannot be clobbered.
+    expect(update!.text).toContain("metadata->'repair_queue' =");
+    expect(update!.values).toContain(JSON.stringify(queue));
+    expect(update!.values).toContain(JSON.stringify('attempt-2'));
   });
 
   // WI-10007398: an UNASSIGNED awaiting-fixer queue is not started — no fixer owns it, and only

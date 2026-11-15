@@ -256,7 +256,7 @@ export default defineTool({
           expectedParkFingerprint: rc.expectedParkFingerprint ?? observedParkFingerprint,
           reasonCode: rc.reasonCode,
           evidence: rc.evidence,
-        });
+        }, ident.ownerId);
         return ok({
           ok: true,
           dryRun: true,

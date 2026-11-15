@@ -57,7 +57,7 @@ export interface AcceptanceGradingSweepDeps {
   /** Liveness + last-dispatch for this plan's grader, from the task ledger. */
   observeGrader(row: ObservedPlanRow): Promise<GraderObservation>;
   /** Whether an escalation work-item already owns this condition. */
-  escalationExists(planSlug: string): Promise<boolean>;
+  escalationExists(row: ObservedPlanRow): Promise<boolean>;
   /** Re-dispatch: resolveAcceptanceGrader in production. Idempotent by construction. */
   dispatchGrader(row: ObservedPlanRow): Promise<{ ok: boolean; state?: string; error?: string }>;
   /** Mint exactly one claimable owner. Backed by the condition-key unique index. */
@@ -174,7 +174,7 @@ export async function runAcceptanceGradingSweep(
       const [gate, grader, escalated] = await Promise.all([
         observe('gate', () => deps.evaluateGate(row.planSlug, row)),
         observe('grader', () => deps.observeGrader(row)),
-        observe('escalation', () => deps.escalationExists(row.planSlug)),
+        observe('escalation', () => deps.escalationExists(row)),
       ]);
       byPlan.set(row.planSlug, row);
       candidates.push({

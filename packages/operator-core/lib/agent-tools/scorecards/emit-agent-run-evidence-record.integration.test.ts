@@ -53,9 +53,21 @@ vi.mock('../../grading-integrity', async (importOriginal) => {
 });
 
 // The grading host's generation reads host/deploy state a throwaway DB does not model.
+// Audit-required filings refuse an unknown generation (emit.ts
+// grading_audit_generation_unavailable, covered in emit.grading-audit.test.ts), so
+// these positive controls stamp an attributable one.
 vi.mock('../../scout/generation-watermark', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../scout/generation-watermark')>();
-  return { ...actual, readRunningGeneration: async () => null };
+  return {
+    ...actual,
+    readRunningGeneration: async () => ({
+      deployedSha: 'a'.repeat(40),
+      hostStartedAt: null,
+      bootHeadSha: null,
+      scoutCodeHash: null,
+      staleHost: null,
+    }),
+  };
 });
 
 const { emitScorecard } = await import('./emit');

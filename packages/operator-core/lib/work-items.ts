@@ -160,6 +160,7 @@ import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
 import { createHash } from 'node:crypto';
 import { clearGoalClaimedIfMatches, noteGoalClaimed, readAgentStateStamp } from './agent-state-stamp';
 import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
+import { automaticSubscriptionFields } from './subscription-lifecycle';
 import { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES } from './harness/improvements/auto-close-sources';
 import {
   agentReviewPendingAdmissionSql,
@@ -3654,13 +3655,21 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     // claim-spec SQL reads — the coord tag store alone is invisible to it.
     await mirrorTopicTagToClaimTags(wi, topic);
   }
-  if (input.createdBy) {
+  // shared-reference-system-2026-11-13 P-002: the creator follows the item for as
+  // long as its context does (reason 'context'); a machine identity is never
+  // auto-subscribed (EI-28704054499880447).
+  const creatorFollow = input.createdBy
+    ? await automaticSubscriptionFields(input.createdBy, 'context')
+    : null;
+  if (input.createdBy && creatorFollow?.subscribe) {
     await subs.subscribe({
       subscriber_id: input.createdBy,
       target_kind: 'object',
       target_ref: `${FEATURE_KIND}:${workItemObjectRef(wi).ref}`,
       delivery_mode: 'full',
       created_ts: nowIso(),
+      reason: creatorFollow.reason,
+      context_epoch: creatorFollow.context_epoch,
     });
   }
   if (assignTo) wi.interestWatch = await armWorkItemHolderInterests(wi, assignTo);
@@ -10169,6 +10178,14 @@ export async function claimNextIssueWorkItem(
   const claimed = await measureResolutionStep('candidate-issue-claim-transaction', () => withPgContentionRetry(
     () => boundedOrgTxn(
       async (tx) => {
+      // WI-6554700010049349: JIT is off for this claim transaction. The composed claim
+      // predicate below estimates ~1.5M cost, above every default jit_*_above_cost, so on a
+      // stock-config PG each UPDATE spent ~12s compiling 533 functions (EXPLAIN ANALYZE: JIT
+      // Optimization 6553ms + Emission 5549ms) for ~13ms of real work and exhausted the 15s
+      // claim ladder. Same per-statement rule as papercusp-performance-audit-2026-10-12#D-002.
+      // In boundedOrgTxn's nested savepoint path SET LOCAL outlives the savepoint; that only
+      // keeps JIT off for the rest of the dispatcher's transaction, which is harmless.
+      await tx`SET LOCAL jit = off`;
       // Cross-family priority comparison (EI-21288979130080074): an issue may jump ahead of
       // the feature-family ladder only when it has an explicit priority and no eligible
       // feature with an equal-or-better (lower) feature_order exists. Build the feature side

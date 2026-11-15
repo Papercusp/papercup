@@ -43,7 +43,8 @@ import {
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
-import { runWorkItemDurableParkAudit } from './work-items-durable-park-audit';
+import { durableParkFingerprint, runWorkItemDurableParkAudit,
+  runWorkItemDurableParkReconciliation } from './work-items-durable-park-audit';
 import { buildDurableParkReleaseContract } from './durable-park-release-contract';
 import { readEventConditionReachability } from './external-condition-reachability';
 import { recordKeyFire, registerAnnouncement, settleProvingFire } from './events/await/store';
@@ -113,9 +114,12 @@ beforeAll(async () => {
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(`CREATE TABLE harness_shared.admission_runs (
     id text PRIMARY KEY, workspace_id text NOT NULL, harness_slug text NOT NULL, run_kind text NOT NULL,
-    started_at timestamptz, finished_at timestamptz, batch_size integer, held integer,
+    started_at timestamptz, finished_at timestamptz, batch_size integer, held integer, promoted integer,
     model_id text, tokens_in bigint, tokens_out bigint, latency_ms integer, detail jsonb
   )`);
+  await db.sql.unsafe(`CREATE TABLE harness_shared.audit_log (
+    id text PRIMARY KEY, ts bigint, actor text, action text, subject text,
+    details jsonb, workspace_id text)`);
   await db.sql.unsafe(`
     CREATE TABLE harness_shared.operator_secrets (name text PRIMARY KEY, value_b64 text);
     CREATE TABLE harness_shared.routines (
@@ -140,7 +144,8 @@ beforeEach(async () => {
   // harness_features_consolidated is a VIEW over work_items (see _work-items-schema.ts) —
   // TRUNCATE only works on real tables, and truncating work_items already clears the view.
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps, harness_shared.watchdog_ticks,
-    harness_shared.admission_runs, harness_shared.event_awaits, harness_shared.event_key_fires`;
+    harness_shared.admission_runs, harness_shared.event_awaits, harness_shared.event_key_fires,
+    harness_shared.audit_log`;
   h.activeWs = 'default';
   setFlagOverridesForTest({
     [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true,
@@ -150,6 +155,58 @@ beforeEach(async () => {
 afterEach(() => {
   h.activeWs = 'default';
   setFlagOverridesForTest({});
+});
+
+describe('current-custodian migration reconciliation (WI9366)', () => {
+  const actor = 'su-migration-custodian';
+  const migrationPayload = () => ({ _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes',
+    claim_hold_reason: 'Plan-line transition park', planLaneParkedFrom: 'open',
+    externalBlockers: [{ ref: 'plan-lane:fixture#P-002', kind: 'gate', status: 'active' }],
+  });
+  const reconcile = (id: string, takenBy: string, payload: Record<string, unknown>, fingerprint?: string) =>
+    runWorkItemDurableParkReconciliation({ workspaceId: WS, harnessSlug: H, actor, sql: db.sql,
+      runId: `fixture-migration-reconcile-${id}`, saveArtifact: async () => {},
+      decisions: [{ id, expectedParkFingerprint: fingerprint ?? durableParkFingerprint({ state: 'blocked', takenBy, payload }),
+        reasonCode: 'condition-satisfied', evidence: 'plans:start verified exact promoted dependency-derived coverage' }],
+    });
+
+  it('persists the owned clear and its receipt once without dropping the claim or generated lane gate', async () => {
+    const id = 'WI-own-migration';
+    const payload = migrationPayload();
+    await seedIssue(id, { status: 'blocked', takenBy: actor, payload });
+
+    const result = await reconcile(id, actor, payload);
+
+    expect(result).toMatchObject({ cleared: 1, unchanged: 0,
+      rows: [{ id, outcome: 'cleared', takenBy: actor }] });
+    const [current] = await db.sql`SELECT status, taken_by, payload FROM harness_shared.work_items WHERE feature_id=${id}`;
+    expect(current).toEqual({ status: 'blocked', taken_by: actor,
+      payload: { planLaneParkedFrom: 'open', externalBlockers: payload.externalBlockers } });
+    expect(await reconcile(id, actor, payload)).toEqual(result);
+    const receipts = await db.sql`SELECT actor, details FROM harness_shared.audit_log WHERE subject=${id}`;
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({ actor, details: { reasonCode: 'condition-satisfied',
+      expectedParkFingerprint: durableParkFingerprint({ state: 'blocked', takenBy: actor, payload }) } });
+  });
+
+  it.each(['peer claim', 'owner park', 'peer lease', 'stale fingerprint'])(
+    'preserves %s in the transaction and emits no clear receipt', async scenario => {
+      const id = 'WI-protected-migration';
+      const payload: Record<string, unknown> = migrationPayload();
+      const takenBy = scenario === 'peer claim' ? 'su-other' : actor;
+      if (scenario === 'owner park') payload.claim_hold_by = 'su-owner';
+      if (scenario === 'peer lease') payload.held_open_by = 'su-other';
+      await seedIssue(id, { status: 'blocked', takenBy, payload });
+
+      const result = await reconcile(id, takenBy, payload, scenario === 'stale fingerprint' ? '0'.repeat(64) : undefined);
+
+      expect(result).toMatchObject({ cleared: 0, unchanged: 1,
+        rows: [{ id, outcome: scenario === 'stale fingerprint' ? 'stale-fingerprint' : 'assigned' }] });
+      const [current] = await db.sql`SELECT status, taken_by, payload FROM harness_shared.work_items WHERE feature_id=${id}`;
+      expect(current).toEqual({ status: 'blocked', taken_by: takenBy, payload });
+      expect(await db.sql`SELECT id FROM harness_shared.audit_log WHERE subject=${id}`).toHaveLength(0);
+    },
+  );
 });
 
 describe('setWorkItemClaimHold (WI-2797)', () => {

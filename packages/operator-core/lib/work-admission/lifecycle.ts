@@ -38,7 +38,7 @@ import {
 import { activeExternalBlockers, applyExternalBlockerUpdate } from '../external-blockers';
 import { isTicketStatusCategory, type TicketStatusCategory } from '../data-sources/ticket-vocabulary';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
-import type { AdmissionDb } from './admission-sources';
+import { EXISTING_WORK_KINDS, type AdmissionDb } from './admission-sources';
 import {
   ADMISSION_WRITE_BACK_MAX,
   transitionAdmission as defaultTransitionAdmission,
@@ -193,7 +193,7 @@ async function readStandingPrAdmissionRows(
       input.workItemHarness ?? first.admission_harness_slug,
       { id: first.feature_id, workspaceId: input.workspaceId });
     const row = rows.find(candidate => candidate.harness_slug === physical);
-    if (!row || row.item_kind !== 'bug' || !COMPLETED_STATES.has(row.status)
+    if (!row || !EXISTING_WORK_KINDS.includes(row.item_kind as 'bug' | 'change') || !COMPLETED_STATES.has(row.status)
       || row.authority !== 'committed' || !row.matches_expected_payload) continue;
     selected.set(JSON.stringify([row.feature_id, row.harness_slug]), {
       feature_id: row.feature_id, harness_slug: row.harness_slug, payload: row.payload,
@@ -274,7 +274,8 @@ export async function resolveAdmissionStandingPrPaths(
     const workItemIds: string[] = [];
     for (const row of rows) {
       const receipt = standingPrOf(row.payload);
-      if (!receipt || receipt.url !== input.url || receipt.number !== input.number || receipt.testedSha !== input.testedSha) continue;
+      if (!receipt || receipt.url !== input.url || receipt.number !== input.number
+        || receipt.testedSha !== input.testedSha || receipt.targetSha !== input.targetSha) continue;
       const inspected = await inspectAdmissionStandingPrPaths(row, input, deps);
       if (inspected.kind === 'unverified') {
         return { ok: false, reason: `work item ${row.feature_id}: ${inspected.reason}` };
@@ -331,7 +332,7 @@ export async function correlateAdmissionStandingPr(
       UPDATE harness_shared.work_items
          SET payload = payload || ${sql.json({ standingPr: receipt })}, updated_ts = ${Date.now()}
        WHERE workspace_id = ${input.workspaceId} AND feature_id = ${row.feature_id}
-         AND harness_slug = ${row.harness_slug} AND item_kind = 'bug'
+         AND harness_slug = ${row.harness_slug} AND item_kind = ANY(${[...EXISTING_WORK_KINDS]}::text[])
          AND status = ANY(${[...COMPLETED_STATES]}::text[]) AND authority = 'committed'
          AND payload IS NOT DISTINCT FROM ${sql.json(row.payload)}
        RETURNING feature_id`;
@@ -384,7 +385,7 @@ function lateStandingPrReconciler(sql: AdmissionDb, workspaceId: string, deps: S
     const [row] = await sql<{ status: string; authority: string; payload: Record<string, JSONValue> }[]>`
       SELECT status, authority, payload FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId} AND feature_id = ${workItemId} AND harness_slug = ${physical}
-         AND item_kind = 'bug' AND authority = 'committed' AND status = ANY(${[...COMPLETED_STATES]}::text[])`;
+         AND item_kind = ANY(${[...EXISTING_WORK_KINDS]}::text[]) AND authority = 'committed' AND status = ANY(${[...COMPLETED_STATES]}::text[])`;
     if (!row) return false;
     // A tested receipt names its PR: only that PR's verified merge can complete it.
     const tested = standingPrOf(row.payload);

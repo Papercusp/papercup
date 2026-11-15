@@ -35,6 +35,7 @@ import {
 import { writeWatermark } from '../coordination/watermarks';
 import { isWorkspaceContended } from '../locks/contention-retry';
 import { releaseAllWorkItemLeasesForOwner } from '../../work-item-lease-release';
+import { endSubscriberContexts } from '../../subscription-lifecycle';
 import { consumeRespawnExpected } from '../../carry-respawn-marker';
 import { isWakeResumeTurn, recentContextResetWake } from '../../session-reset-continuation';
 import {
@@ -683,6 +684,10 @@ export default defineTool({
               `[activity:report] session-end lease release for ${owner} failed: ${e instanceof Error ? e.message : e}`,
             );
           }
+          // shared-reference-system-2026-11-13 P-002 / R-8: a terminal session end
+          // ends every contextual subscription of `owner`. Explicit, held-item and
+          // blocker follows survive it (R-39). Fail-soft inside the helper.
+          await endSubscriberContexts(owner, 'session-end');
         }
       }
     } else if (args.kind !== 'lifecycle') {

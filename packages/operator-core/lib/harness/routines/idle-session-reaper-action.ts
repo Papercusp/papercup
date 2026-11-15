@@ -152,6 +152,35 @@ registerSystemAction('idle-session-reaper', async (ctx: SystemActionCtx) => {
     );
   }
 
+  // Slice 1c (shared-reference-system-2026-11-13 P-002 / R-8) — end the
+  // contextual subscriptions of every subscriber the liveness oracle reports
+  // ended: the backstop for a session that died without a clean SessionEnd
+  // (SIGKILL, closed terminal, host crash). Pages every context subscriber to
+  // exhaustion; explicit, held-item and blocker follows survive (R-39).
+  try {
+    const { sweepEndedSubscriberContexts, cleanupLegacyDeadSubscriptions } = await import('../../subscription-lifecycle');
+    // D-002 / EI-28704054499880447: snapshot-then-cancel the legacy (pre-P-002)
+    // rows of long-ended sessions and ephemeral operator principals, bounded per
+    // tick; cancelled rows leave the predicate, so later ticks finish the rest.
+    const lc = await cleanupLegacyDeadSubscriptions({ dryRun });
+    if (lc.cancelled > 0) {
+      console.log(
+        `[idle-session-reaper] legacy subscription cleanup: ${lc.dryRun ? 'WOULD cancel' : 'snapshotted + cancelled'} ${lc.cancelled} ` +
+          `row(s) in ${lc.batches} batch(es) ${JSON.stringify(lc.byCause)}${lc.more ? ' — more remain for the next tick' : ''}`,
+      );
+    }
+    const sc = await sweepEndedSubscriberContexts({ dryRun });
+    if (sc.scanned > 0) {
+      console.log(
+        `[idle-session-reaper] context-subscription sweep: scanned ${sc.scanned} subscriber(s) in ${sc.pages} page(s) → ` +
+          `${sc.ended} ended → ${sc.dryRun ? 'WOULD release' : `released the context reason on ${sc.released}, cancelled ${sc.cancelled}`}` +
+          (sc.unjudged ? `; ${sc.unjudged} unjudged (verdict read failed, retried next run)` : ''),
+      );
+    }
+  } catch (e) {
+    console.warn(`[idle-session-reaper] context-subscription sweep failed: ${e instanceof Error ? e.message : e}`);
+  }
+
   // Slice 4 — RECLAIM-LANE (fleet-dispatch-wake-clarity P-004): GC the dangling
   // inbox-wake awaits of DEAD sessions so a coordinator's coord:presence /
   // fetchWakeability stops showing them as `wakeable`/`parked` dispatch targets

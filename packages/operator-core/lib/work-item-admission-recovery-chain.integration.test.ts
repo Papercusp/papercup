@@ -226,6 +226,7 @@ beforeAll(async () => {
       '568-coord-entity-subscriptions-allow-event-kind.sql',
       '602-work-item-follow-blockers.sql',
       '1257-coord-entity-subscriptions-allow-muted.sql',
+      '1638-subscription-reasons-lifecycle.sql',
     ],
     runtimeTables: ['harness_shared.coord_entity_subscriptions'],
     knownInapplicable: [
@@ -1484,6 +1485,59 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     expect(h.claim).toHaveBeenCalledTimes(1);
     expect(h.wake).toHaveBeenCalledTimes(1);
   });
+
+  it.each(['allowed', 'revoked'] as const)(
+    'retries the exact request on the next tick after a reserve timeout with current authority %s', async (authority) => {
+      const original = await create();
+      const first = await request(original.id);
+      const before = await row(original.id);
+      const timeout = Object.assign(new Error('write CONNECT_TIMEOUT localhost:5432'), { code: 'CONNECT_TIMEOUT' });
+      const reserve = vi.fn().mockRejectedValue(timeout);
+      const failedRunId = `reserve-failure-${++run}`;
+      await expect(runAdmissionPromoterWithRecovery({
+        ...scope, runId: failedRunId, batchSize: 10, recentTerminalDays: 30, model: undefined,
+      }, {
+        sql: db.sql, lockSql: { reserve } as unknown as Sql,
+        llmCall: h.model, authorize: authorizeAdmissionRecovery, dispatch,
+      })).rejects.toMatchObject({
+        code: 'CONNECT_TIMEOUT', cause: timeout,
+        admissionLock: { phase: 'reserve', runId: failedRunId, backend: 'unobserved' },
+      });
+      expect(reserve).toHaveBeenCalledOnce();
+      expect(await row(original.id)).toEqual(before);
+      expect(before.payload._admissionRecovery).toMatchObject({
+        requestId: first.request.requestId, state: 'queued', stage: 'queued', pickupConfirmed: false,
+      });
+      const [routine] = await db.sql`SELECT active, next_fire_at <= now() AS due
+        FROM harness_shared.routines WHERE id = 'original-promoter'`;
+      expect(routine).toEqual({ active: true, due: true });
+      expect(h.model).not.toHaveBeenCalled();
+      expect(h.claim).not.toHaveBeenCalled();
+      expect(h.wake).not.toHaveBeenCalled();
+
+      h.denied = authority === 'revoked';
+      await tick();
+      const after = await row(original.id);
+      // Mutable delivery fields may advance; immutable signed instructions may not.
+      for (const key of ['requestId', 'caller', 'target', 'routineId', 'requestedAt', 'signature', 'authority', 'note', 'body']) {
+        expect(after.payload._admissionRecovery[key]).toEqual(before.payload._admissionRecovery[key]);
+      }
+      if (authority === 'revoked') {
+        expect(after).toMatchObject({ admission: 'pending', taken_by: null,
+          payload: { _admissionRecovery: { state: 'held', stage: 'authorize',
+            pickupConfirmed: false, reason: expect.stringContaining('restrictive reviewer override') } } });
+        expect(h.claim).not.toHaveBeenCalled();
+        expect(h.wake).not.toHaveBeenCalled();
+      } else {
+        expect(after).toMatchObject({ admission: 'admitted', taken_by: reviewerOwnerId,
+          payload: { _admissionRecovery: { state: 'delivered', stage: 'await-pickup', pickupConfirmed: false } } });
+        expect(h.claim).toHaveBeenCalledTimes(1);
+        expect(h.wake).toHaveBeenCalledTimes(1);
+        expect(await pickup(original.id)).toMatchObject({ ok: true, claimed: true });
+        expect((await row(original.id)).payload._admissionRecovery.pickupConfirmed).toBe(false);
+      }
+    },
+  );
 
   it('holds an expired proof and a payload-spoofed role without a handler invocation', async () => {
     const original = await create();

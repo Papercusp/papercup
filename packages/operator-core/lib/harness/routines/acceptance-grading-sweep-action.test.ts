@@ -5,6 +5,7 @@ import { mockReturnTyped } from '../../testing/typed-mock';
 const h = vi.hoisted(() => ({
   handlers: new Map<string, (ctx: SystemActionCtx) => Promise<unknown>>(),
   reconcile: vi.fn(), runSweep: vi.fn(),
+  sql: vi.fn(), conditionKey: vi.fn(),
   pinSweep: vi.fn(),
   resolveGrader: vi.fn(),
   enqueue: vi.fn(),
@@ -22,7 +23,7 @@ vi.mock('./system-actions', () => ({
 }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: vi.fn() }),
+  getOrgPg: () => ({ sql: h.sql }),
 }));
 vi.mock('../../agent-tools/plans/rubric-template', () => ({ RUBRIC_TEMPLATE_NAME: 'rubric' }));
 vi.mock('../../plan-acceptance-gate', () => ({ evaluatePlanAcceptanceGate: vi.fn() }));
@@ -37,7 +38,7 @@ vi.mock('../../grading-integrity', () => ({ reconcilePendingGradingAudits: h.rec
 vi.mock('../../task-manager/store', () => ({ listTasks: vi.fn() }));
 vi.mock('../../coord/condition-upsert', () => ({ upsertConditionWorkItem: vi.fn() }));
 vi.mock('../../acceptance-grading-sweep-run', () => ({
-  acceptanceGradingEscalationBody: vi.fn(), acceptanceGradingStallConditionKey: vi.fn(), runAcceptanceGradingSweep: h.runSweep,
+  acceptanceGradingEscalationBody: vi.fn(), acceptanceGradingStallConditionKey: h.conditionKey, runAcceptanceGradingSweep: h.runSweep,
 }));
 vi.mock('../../acceptance-grading-sweep-observe', () => ({ observeAcceptanceGrader: vi.fn() }));
 vi.mock('../../acceptance-bar-pin-sweep', () => ({ runAcceptanceBarPinSweep: h.pinSweep }));
@@ -63,12 +64,49 @@ beforeEach(() => {
     { issueId: 'EI-audit', state: 'routed', conversationId: 'audit-conversation' },
   ] });
   h.runSweep.mockReset().mockResolvedValue(undefined);
+  h.sql.mockReset().mockResolvedValue([{ n: 1 }]);
+  h.conditionKey.mockReset().mockImplementation((planSlug: string) => 'acceptance-grading-stall:' + planSlug);
   h.enqueue.mockReset().mockResolvedValue({ workflowId: 'admitted' });
   h.pinSweep.mockReset().mockResolvedValue({ scanned: 0, reconciled: 0, held: {}, scopeSkipped: 0, errors: [], nextCursor: null });
 });
 afterEach(() => vi.useRealTimers());
 
 describe('registered acceptance sweep audit entrypoint', () => {
+  it('checks escalations through the indexed workspace, harness, and condition key', async () => {
+    type EscalationRow = {
+      planSlug: string;
+      harnessSlug: string | null;
+      rubricRef: string | null;
+      gradeableSinceMs: number | null;
+      workspaceId: string;
+    };
+    const rows: EscalationRow[] = [
+      { planSlug: 'slow-plan', harnessSlug: 'papercusp', rubricRef: null, gradeableSinceMs: 123, workspaceId: 'ws-sweep' },
+      { planSlug: 'legacy-plan', harnessSlug: null, rubricRef: null, gradeableSinceMs: 456, workspaceId: 'ws-sweep' },
+    ];
+    h.runSweep.mockImplementation(async (deps: { escalationExists: (row: EscalationRow) => Promise<boolean> }) => {
+      for (const row of rows) expect(await deps.escalationExists(row)).toBe(true);
+    });
+
+    await h.handlers.get('acceptance-grading-sweep')!({ workspaceId: 'ws-sweep' } as SystemActionCtx);
+
+    expect(h.sql).toHaveBeenCalledTimes(2);
+    const queries = h.sql.mock.calls.map(([template]) => (template as TemplateStringsArray).join('?'));
+    expect(queries[0]).toContain('workspace_id = ?');
+    expect(queries[0]).toContain('harness_slug = ?');
+    expect(queries[0]).toContain('condition_key = ?');
+    expect(queries[1]).toContain('workspace_id = ?');
+    expect(queries[1]).toContain('harness_slug IS NULL');
+    expect(queries[1]).toContain('condition_key = ?');
+    expect(queries.every(query => !query.includes('payload #>>'))).toBe(true);
+    expect(h.sql.mock.calls[0]?.slice(1)).toEqual(expect.arrayContaining([
+      'ws-sweep', 'papercusp', 'acceptance-grading-stall:slow-plan',
+    ]));
+    expect(h.sql.mock.calls[1]?.slice(1)).toEqual(expect.arrayContaining([
+      'ws-sweep', 'acceptance-grading-stall:legacy-plan',
+    ]));
+  });
+
   it('releases a slow repair at its deadline and joins it on the next tick', async () => {
     vi.useFakeTimers();
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});

@@ -64,6 +64,9 @@ import {
   SILENT_HALT_STRANDED_INSTRUMENT_KEY, SILENT_HALT_STRANDED_WINDOW_MS, measureSilentHaltStranded,
 } from './system-health/silent-halt-instrument';
 import {
+  PLAN_PORTFOLIO_INSTRUMENT_KEYS, isPlanPortfolioInstrumentKey, planPortfolioRescore,
+} from './plan-portfolio/census-instruments';
+import {
   NATIVE_ADOPTION_INSTRUMENT_KEYS, measureNativeAdoptionWindow,
   nativeAdoptionCriterionForInstrument, rateNativeAdoption,
   NATIVE_PUSH_INSTRUMENT_KEYS, measureNativePushOutcomesWindow, nativePushCriterionForInstrument, rateNativePushOutcomes,
@@ -846,6 +849,8 @@ export function platformComputedInstrumentKeys(): string[] {
     STRAGGLER_DISPOSITIONS_INSTRUMENT_KEY,
     // code-cleanup-campaigns-2026-10-26 P-008: the campaign outcome rubric's three metrics.
     ...Object.values(CLEANUP_OUTCOME_INSTRUMENT_KEYS),
+    // plan-portfolio-flow-and-weight-2026-11-13 P-001: the census and the R-4 / R-6 bar counts.
+    ...Object.values(PLAN_PORTFOLIO_INSTRUMENT_KEYS),
   ];
 }
 
@@ -884,6 +889,7 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
         : key === LEG_OUTCOMES_INSTRUMENT_KEY ? { rescore: codeIntelLegOutcomesRescore() }
         : key === COUPLING_SHADOW_WINDOW_INSTRUMENT_KEY ? { rescore: codeIntelCouplingShadowRescore() }
         : key === STRAGGLER_DISPOSITIONS_INSTRUMENT_KEY ? { rescore: codeIntelStragglerDispositionsRescore() }
+        : isPlanPortfolioInstrumentKey(key) ? { rescore: planPortfolioRescore(key) }
         : cleanupMetric ? { rescore: cleanupOutcomeRescore(cleanupMetric) } : reuseMetric ? { rescore: {
         windowMs: 28 * 86_400_000, unit: reuseMetric === 'redundancy' || reuseMetric === 'providerOutcomes' ? 'count' as const : '%' as const,
         scope: 'harness' as const,

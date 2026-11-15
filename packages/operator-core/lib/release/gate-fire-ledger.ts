@@ -173,6 +173,9 @@ const GATE_OUTCOME_CLASS_BY_STATUS: Record<string, GateOutcomeClass> = {
   // A release-fixer DISPATCH diagnostic row, not a tick outcome — it rides the
   // green_checkpoint kind but records fixer routing, so it must not read as a verdict.
   'release-fixer-skipped-stale': 'skip',
+  // D-028 (WI-6554700010048992): the audit row of an operator's unreachable-blocker settle on
+  // one stored attempt. Nothing was judged and no fire ran, so it must not read as a verdict.
+  'qualification-unreachable-blocker-settled': 'skip',
 };
 
 /**
@@ -194,6 +197,8 @@ export const NON_TERMINAL_GATE_OUTCOME_STATUSES = [
   'release-fixer-skipped-scope',
   'release-fixer-skipped-stale',
   'release-fixer-skipped-no-measured-failures',
+  // D-028: an operator action on a stored attempt, not a tick outcome.
+  'qualification-unreachable-blocker-settled',
 ] as const;
 
 export function isTerminalGateOutcomeStatus(status: string): boolean {

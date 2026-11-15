@@ -499,6 +499,7 @@ export interface DurableParkClearPlan extends DurableParkReconcileRowResult {
 export function planDurableParkClear(
   row: { id: string; state: string; takenBy: string | null; payload: unknown },
   decision: DurableParkReconcileDecision,
+  actor?: string,
 ): DurableParkClearPlan {
   const payload = record(row.payload);
   const observedParkFingerprint = durableParkFingerprint({
@@ -520,7 +521,10 @@ export function planDurableParkClear(
   const provenance = readWorkItemClaimHoldProvenance(payload);
   if (!provenance.parked) return result('already-cleared', !!provenance.heldOpen);
   if (String(payload._claimHold) !== 'true') return result('not-durable-park', !!provenance.heldOpen);
-  if (textOrNull(row.takenBy)) return result('assigned', !!provenance.heldOpen);
+  const ownMigrationPark = actor && row.takenBy === actor &&
+    provenance.parked.by === 'migration:plan-line-work-item-nodes' &&
+    decision.reasonCode === 'condition-satisfied' && !provenance.heldOpen;
+  if (textOrNull(row.takenBy) && !ownMigrationPark) return result('assigned', !!provenance.heldOpen);
   if (decision.expectedParkFingerprint !== observedParkFingerprint) {
     return result('stale-fingerprint', !!provenance.heldOpen);
   }
@@ -1266,8 +1270,9 @@ function reconcileInputSha256(input: {
 
 /**
  * Apply explicit, evidence-backed durable-park dispositions through a predicate CAS.
- * A coexisting liveness lease survives intact; an assignment, state/control drift, or
- * missing fingerprint converts that row to a report-only outcome.
+ * A coexisting liveness lease survives intact. Assigned rows remain report-only
+ * except a condition-satisfied migration park held by this exact actor without a
+ * separate lease. State/control drift or a missing fingerprint never clears a row.
  */
 export async function runWorkItemDurableParkReconciliation(opts: {
   workspaceId: string;
@@ -1376,6 +1381,7 @@ export async function runWorkItemDurableParkReconciliation(opts: {
         const plan = planDurableParkClear(
           { id: row.id, state: row.state, takenBy: row.taken_by, payload: row.payload },
           decision,
+          opts.actor,
         );
         const { nextPayload, ...outcome } = plan;
         if (plan.outcome !== 'cleared' || !nextPayload) return outcome;
@@ -1397,7 +1403,7 @@ export async function runWorkItemDurableParkReconciliation(opts: {
              AND harness_slug = ${opts.harnessSlug}
              AND feature_id = ${decision.id}
              AND status = ${row.state}
-             AND taken_by IS NULL
+             AND taken_by IS NOT DISTINCT FROM ${textOrNull(row.taken_by)}
              AND COALESCE(payload, '{}'::jsonb) ->> '_claimHold' = 'true'
              AND (COALESCE(payload, '{}'::jsonb) ->> 'claim_hold_by')
                    IS NOT DISTINCT FROM ${textOrNull(priorPayload.claim_hold_by)}
@@ -1434,6 +1440,7 @@ export async function runWorkItemDurableParkReconciliation(opts: {
               payload: raced[0].payload,
             },
             decision,
+            opts.actor,
           );
           const { nextPayload: _ignored, ...retryOutcome } = retryPlan;
           return retryOutcome;

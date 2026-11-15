@@ -4330,3 +4330,60 @@ export async function cancelStoredQualification(
     return { status: 'unreadable', error: error instanceof Error ? error.message : String(error) };
   }
 }
+
+/**
+ * D-028 condition 2: the `green_checkpoint` pipeline status of the audit row an
+ * unreachable-blocker settle commits. It is an operator action on one attempt, not a
+ * fire outcome, so gate-fire-ledger lists it as non-terminal (it can never satisfy a fire).
+ */
+export const QUALIFICATION_UNREACHABLE_BLOCKER_SETTLED_STATUS = 'qualification-unreachable-blocker-settled';
+
+export type StoredUnreachableBlockerSettlement = StoredQualificationMutation & {
+  /** The exact stored blockers the settle cleared; present only on `updated`. */
+  settledBlockers?: readonly QualificationBlocker[];
+};
+
+/**
+ * D-028(b), store half (WI-6554700010048992). Runs the pure
+ * settleUnreachableBlockedQualification under the routine row lock and commits its audit
+ * row (attempt, blockers, actor, reason) in the SAME transaction, so a settle can never
+ * land unaudited and an audit row can never describe a settle that rolled back.
+ *
+ * The repair queue is deliberately absent from this write: no successorInput is passed,
+ * so mutateStoredQualification updates only the qualification key. The next begin hands
+ * the queue to its successor through the ordinary terminal reconciliation (condition 1,
+ * pinned in checkpoint-qualification-transaction.store.test.ts).
+ */
+export function settleStoredUnreachableBlockedQualification(
+  target: GateVerdictTarget,
+  input: SettleUnreachableBlockedQualificationInput,
+): Promise<StoredUnreachableBlockerSettlement> {
+  let settledBlockers: QualificationBlocker[] = [];
+  // persistTerminalEvent reads this object after `change` returns, inside the same
+  // transaction, so filling `detail` from the locked row below is what the audit row records.
+  const terminalEvent: { status: string; detail: Record<string, unknown> } = {
+    status: QUALIFICATION_UNREACHABLE_BLOCKER_SETTLED_STATUS,
+    detail: {},
+  };
+  return mutateStoredQualification(target, (current) => {
+    if (!current) return { status: 'unreadable', error: 'missing attempt' };
+    const transition = settleUnreachableBlockedQualification(current, input);
+    if (transition.status === 'updated') {
+      settledBlockers = current.blockers.map(blocker => ({ ...blocker, clearEvents: [...blocker.clearEvents] }));
+      terminalEvent.detail = {
+        action: 'unreachable-blocker-settled',
+        actor: input.actor.trim(),
+        reason: input.reason.trim(),
+        blockers: settledBlockers,
+        blockerCodes: settledBlockers.map(blocker => blocker.code),
+        phaseBefore: current.phase,
+        candidate: current.candidate,
+        repairHead: current.repairHead,
+        outcome: transition.transaction.outcome,
+        evidenceRefs: [...(input.evidenceRefs ?? [])],
+      };
+    }
+    return transition;
+  }, { terminalEvent }).then(result =>
+    result.status === 'updated' ? { ...result, settledBlockers } : result);
+}
