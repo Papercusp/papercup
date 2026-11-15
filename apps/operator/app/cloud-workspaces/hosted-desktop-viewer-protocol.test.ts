@@ -11,6 +11,23 @@ import {
 
 const TICKET = `ht_${"a".repeat(43)}`;
 
+describe("desktop roster continuation", () => {
+  const page = {
+    type: "desktop.roster.result", requestId: "page-1", desktops: [], hostId: "host-1",
+    generation: "generation-1", cursor: null, nextCursor: "next-64", hasMore: true, remaining: 1,
+  };
+  it("retains machine, generation and continuation metadata", () => {
+    expect(parseHostedDesktopProtocolMessage(page)).toMatchObject({
+      kind: "roster", page: { hostId: "host-1", generation: "generation-1", cursor: null, nextCursor: "next-64", hasMore: true, remaining: 1 },
+    });
+  });
+  it.each([{ hasMore: false }, { remaining: 0 }, { nextCursor: null }, { cursor: 3 }, { hostId: "" }])("refuses inconsistent or incomplete pagination %j", (change) => {
+    expect(parseHostedDesktopProtocolMessage({ ...page, ...change })).toEqual({
+      kind: "error", operation: "desktop.roster", requestId: "page-1", code: "roster_invalid_page",
+    });
+  });
+});
+
 type FakeSocketEvent = {
   data?: unknown;
   code?: number;

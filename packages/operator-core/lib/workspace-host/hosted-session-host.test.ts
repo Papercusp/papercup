@@ -1139,14 +1139,14 @@ describe('HostedWorkspaceHostSessionAdapter — desktop roster and thumbnails (P
     expect(sent).toContainEqual({
       type: 'relay',
       channelId: 'term-1',
-      payload: {
+      payload: expect.objectContaining({
         type: 'desktop.roster.result',
         requestId: 'req-1',
         desktops: [
           { desktopSessionId: 'desktop-1', state: 'ready', displayNumber: 99 },
           { desktopSessionId: 'desktop-2', state: 'frozen' },
         ],
-      },
+      }),
     });
     expect(audit.mock.calls.map((call) => (call[0] as { action: string }).action)).toContain('desktop_roster');
   });
@@ -1198,7 +1198,50 @@ describe('HostedWorkspaceHostSessionAdapter — desktop roster and thumbnails (P
     expect(auditActions()).toContain('operation_denied');
   });
 
-  it('bounds the roster and requires a requestId and a desktopSessionId', async () => {
+  it.each([63, 64, 65, 193])('continues a %i-desktop roster without losing identities when the source order changes', async (count) => {
+    const many = Array.from({ length: count }, (_, i) => ({ desktopSessionId: `desktop-${String(i).padStart(4, '0')}`, state: 'ready' }));
+    const host = desktopHarness({ roster: many });
+    await host.openDesktop('paged', 'observer');
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    let generation: string | undefined;
+    do {
+      many.reverse();
+      await host.relay('paged', { type: 'desktop.roster', requestId: 'pages', ...(cursor ? { cursor } : {}) });
+      const page = host.payloads('paged').at(-1) as {
+        type: string; desktops: Array<{ desktopSessionId: string }>; generation: string;
+        hostId: string; nextCursor: string | null; hasMore: boolean; remaining: number;
+      };
+      expect(page.type).toBe('desktop.roster.result');
+      expect(page.desktops.length).toBeLessThanOrEqual(64);
+      expect(page.hostId).toBe(binding.hostId);
+      if (generation) expect(page.generation).toBe(generation);
+      generation = page.generation;
+      seen.push(...page.desktops.map((entry) => entry.desktopSessionId));
+      expect(page.remaining).toBe(count - seen.length);
+      expect(page.hasMore).toBe(page.nextCursor !== null);
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(seen).toEqual([...many].map((entry) => entry.desktopSessionId).sort());
+    expect(new Set(seen).size).toBe(count);
+  });
+
+  it('requires explicit resync when roster membership changes or a cursor is invalid', async () => {
+    const many = Array.from({ length: 65 }, (_, i) => ({ desktopSessionId: `desktop-${i}`, state: 'ready' }));
+    const host = desktopHarness({ roster: many });
+    await host.openDesktop('paged', 'observer');
+    await host.relay('paged', { type: 'desktop.roster', requestId: 'first' });
+    const { nextCursor } = host.payloads('paged').at(-1) as { nextCursor: string };
+    many.push({ desktopSessionId: 'new-desktop', state: 'ready' });
+    for (const cursor of [nextCursor, 'broken', `${'0'.repeat(64)}:64`]) {
+      await host.relay('paged', { type: 'desktop.roster', requestId: 'stale', cursor });
+      expect(host.payloads('paged').at(-1)).toMatchObject({ type: 'operation.error', code: 'roster_resync_required' });
+    }
+    await host.relay('paged', { type: 'desktop.roster', requestId: 'fresh' });
+    expect(host.payloads('paged').at(-1)).toMatchObject({ type: 'desktop.roster.result', remaining: 2 });
+  });
+
+  it('bounds each roster page and requires a requestId and a desktopSessionId', async () => {
     const many = Array.from({ length: 100 }, (_, index) => ({
       desktopSessionId: `desktop-${index}`,
       state: 'ready',

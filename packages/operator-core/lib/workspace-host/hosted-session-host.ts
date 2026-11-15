@@ -87,7 +87,7 @@ export const HOSTED_HOST_MAX_DESKTOP_FRAME_BYTES = 256 * 1024;
  * megabytes per tile per poll is the failure mode this cap exists to prevent.
  */
 export const HOSTED_HOST_MAX_THUMBNAIL_BYTES = 512 * 1024;
-/** Roster entries served in one reply — a host serving more is misconfigured. */
+/** Roster entries per page. Larger inventories continue on the same roster protocol. */
 export const HOSTED_HOST_MAX_ROSTER_ENTRIES = 64;
 /**
  * What `channelIdentity` answers for a channel whose principal it cannot resolve.
@@ -1822,9 +1822,28 @@ export class HostedWorkspaceHostSessionAdapter {
     const viewer: HostedDesktopViewer = { userId: identity.userId === UNKNOWN_IDENTITY ? null : identity.userId };
     try {
       if (type === 'desktop.roster') {
-        const desktops = (await backend.roster(viewer)).slice(0, HOSTED_HOST_MAX_ROSTER_ENTRIES);
-        this.send(channelId, { type: 'desktop.roster.result', requestId, desktops });
-        this.audit('desktop_roster', identity, channelId, `count=${desktops.length}`);
+        const roster = [...await backend.roster(viewer)].sort((a, b) => a.desktopSessionId < b.desktopSessionId ? -1 : a.desktopSessionId > b.desktopSessionId ? 1 : 0);
+        // Heartbeats and live claim labels may change between pages; membership/state and
+        // connector identity determine the generation. Source order never determines a page.
+        const generation = createHash('sha256').update(JSON.stringify([
+          this.options.binding, viewer.userId, roster.map((entry) => [entry.desktopSessionId, entry.state]),
+        ])).digest('hex');
+        const cursor = payload.cursor === undefined ? null : string(payload.cursor, 100);
+        const match = cursor?.match(/^([a-f0-9]{64}):(\d+)$/);
+        const offset = match ? Number(match[2]) : 0;
+        if ((payload.cursor !== undefined && (!match || match[1] !== generation)) ||
+            !Number.isSafeInteger(offset) || offset < 0 || offset > roster.length || offset % HOSTED_HOST_MAX_ROSTER_ENTRIES !== 0) {
+          this.send(channelId, { type: 'operation.error', requestId, operation: type, code: 'roster_resync_required' });
+          return;
+        }
+        const desktops = roster.slice(offset, offset + HOSTED_HOST_MAX_ROSTER_ENTRIES);
+        const remaining = roster.length - offset - desktops.length;
+        const nextCursor = remaining > 0 ? `${generation}:${offset + desktops.length}` : null;
+        this.send(channelId, {
+          type: 'desktop.roster.result', requestId, desktops,
+          hostId: this.options.binding.hostId, generation, cursor, nextCursor, hasMore: remaining > 0, remaining,
+        });
+        this.audit('desktop_roster', identity, channelId, `count=${desktops.length} remaining=${remaining}`);
         return;
       }
       const desktopSessionId = string(payload.desktopSessionId);

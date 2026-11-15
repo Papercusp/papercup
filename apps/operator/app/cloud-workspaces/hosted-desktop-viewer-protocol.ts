@@ -45,6 +45,15 @@ export interface HostedDesktopThumbnailResult {
   bytes?: number;
 }
 
+export interface HostedDesktopRosterPage {
+  hostId: string;
+  generation: string;
+  cursor: string | null;
+  nextCursor: string | null;
+  hasMore: boolean;
+  remaining: number;
+}
+
 export type HostedDesktopProtocolEvent =
   | {
       kind: "ready";
@@ -52,7 +61,7 @@ export type HostedDesktopProtocolEvent =
       inputAllowed: boolean;
     }
   | { kind: "data"; data: Uint8Array }
-  | { kind: "roster"; requestId: string; desktops: HostedDesktopRosterEntry[] }
+  | { kind: "roster"; requestId: string; desktops: HostedDesktopRosterEntry[]; page?: HostedDesktopRosterPage }
   | { kind: "started"; requestId: string; desktop: HostedDesktopRosterEntry }
   | {
       kind: "thumbnail";
@@ -216,6 +225,24 @@ export function parseHostedDesktopProtocolMessage(
   if (type === "desktop.roster.result") {
     const requestId = nonEmptyString(payload.requestId);
     if (!requestId) return null;
+    if (payload.generation !== undefined || payload.hasMore !== undefined) {
+      const hostId = nonEmptyString(payload.hostId);
+      const generation = nonEmptyString(payload.generation);
+      const remaining = safeInteger(payload.remaining);
+      const cursor = payload.cursor === null ? null : nonEmptyString(payload.cursor);
+      const nextCursor = payload.nextCursor === null ? null : nonEmptyString(payload.nextCursor);
+      if (!hostId || !generation || remaining === null || remaining < 0 ||
+          typeof payload.hasMore !== "boolean" ||
+          (payload.cursor !== null && cursor === null) ||
+          (payload.nextCursor !== null && nextCursor === null) ||
+          payload.hasMore !== (nextCursor !== null) || payload.hasMore !== (remaining > 0)) {
+        return { kind: "error", operation: "desktop.roster", requestId, code: "roster_invalid_page" };
+      }
+      return {
+        kind: "roster", requestId, desktops: roster(payload.desktops),
+        page: { hostId, generation, cursor, nextCursor, hasMore: payload.hasMore, remaining },
+      };
+    }
     return { kind: "roster", requestId, desktops: roster(payload.desktops) };
   }
 

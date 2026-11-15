@@ -210,6 +210,11 @@ export function HostedWorkspaceSession({
   const pendingDesktopRequestsRef = useRef(
     new Map<string, HostedDesktopOperation>(),
   );
+  const rosterReadRef = useRef<{
+    requestId: string; generation: string | null; cursor: string | null;
+    entries: Map<string, HostedDesktopRosterEntry>; cursors: Set<string>; resyncs: number;
+  } | null>(null);
+  const rosterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const connectEpochRef = useRef(0);
   const uploadRef = useRef<HTMLInputElement | null>(null);
   /**
@@ -279,7 +284,27 @@ export function HostedWorkspaceSession({
     }
   }, []);
 
-  const requestDesktopRoster = useCallback(() => {
+  const clearRosterRead = useCallback(() => {
+    if (rosterReadRef.current) pendingDesktopRequestsRef.current.delete(rosterReadRef.current.requestId);
+    rosterReadRef.current = null;
+    if (rosterTimerRef.current) clearTimeout(rosterTimerRef.current);
+    rosterTimerRef.current = null;
+  }, []);
+
+  const finishRosterRead = useCallback((code?: string) => {
+    clearRosterRead();
+    if (code) callbackRefs.current.onDesktopQueryStateChange?.("error", "roster", code);
+    else callbackRefs.current.onDesktopQueryStateChange?.("ready", "roster");
+  }, [clearRosterRead]);
+
+  const armRosterDeadline = useCallback(() => {
+    if (rosterTimerRef.current) clearTimeout(rosterTimerRef.current);
+    rosterTimerRef.current = setTimeout(() => finishRosterRead("roster_timeout"), 15_000);
+  }, [finishRosterRead]);
+
+  const requestDesktopRoster = useCallback((resyncs = 0) => {
+    // Periodic refresh must not continually replace an unfinished multi-page read.
+    if (rosterReadRef.current) return true;
     const requestIdValue = requestId("desktop-roster");
     if (!send({ type: "desktop.roster", requestId: requestIdValue })) {
       callbackRefs.current.onDesktopQueryStateChange?.(
@@ -290,9 +315,14 @@ export function HostedWorkspaceSession({
       return false;
     }
     pendingDesktopRequestsRef.current.set(requestIdValue, "roster");
+    rosterReadRef.current = {
+      requestId: requestIdValue, generation: null, cursor: null,
+      entries: new Map(), cursors: new Set(), resyncs,
+    };
+    armRosterDeadline();
     callbackRefs.current.onDesktopQueryStateChange?.("loading", "roster");
     return true;
-  }, [send]);
+  }, [armRosterDeadline, send]);
 
   const requestDesktopThumbnail = useCallback(
     (desktopSessionId: string) => {
@@ -376,6 +406,7 @@ export function HostedWorkspaceSession({
     socketRef.current = null;
     pendingListPathsRef.current.clear();
     pendingDesktopRequestsRef.current.clear();
+    clearRosterRead();
     if (startTimerRef.current) clearTimeout(startTimerRef.current);
     startTimerRef.current = null;
     callbackRefs.current.onDesktopBridgeChange?.(null);
@@ -400,7 +431,7 @@ export function HostedWorkspaceSession({
     terminalRef.current = null;
     fitRef.current = null;
     roleRef.current = null;
-  }, []);
+  }, [clearRosterRead]);
 
   useEffect(() => () => dispose(true), [dispose]);
 
@@ -501,9 +532,41 @@ export function HostedWorkspaceSession({
        * viewer, per D-017. */
       const desktopEvent = parseHostedDesktopProtocolMessage(value);
       if (desktopEvent?.kind === "roster") {
-        pendingDesktopRequestsRef.current.delete(desktopEvent.requestId);
-        callbackRefs.current.onDesktopRosterChange?.(desktopEvent.desktops);
-        callbackRefs.current.onDesktopQueryStateChange?.("ready", "roster");
+        const read = rosterReadRef.current;
+        if (!read || read.requestId !== desktopEvent.requestId) return;
+        const page = desktopEvent.page;
+        if (page && page.hostId !== hostId) {
+          finishRosterRead("roster_wrong_machine");
+          return;
+        }
+        if (page && page.cursor !== read.cursor) return; // duplicate or superseded page
+        if (page && read.generation !== null && read.generation !== page.generation) {
+          finishRosterRead("roster_resync_required");
+          if (read.resyncs < 3) requestDesktopRoster(read.resyncs + 1);
+          return;
+        }
+        if (!page && read.generation !== null) {
+          finishRosterRead("roster_invalid_page");
+          return;
+        }
+        if (page) read.generation = page.generation;
+        for (const entry of desktopEvent.desktops) read.entries.set(entry.desktopSessionId, entry);
+        callbackRefs.current.onDesktopRosterChange?.([...read.entries.values()]);
+        if (page?.hasMore && page.nextCursor) {
+          if (read.cursors.has(page.nextCursor)) {
+            finishRosterRead("roster_cursor_repeated");
+            return;
+          }
+          read.cursors.add(page.nextCursor);
+          read.cursor = page.nextCursor;
+          if (!send({ type: "desktop.roster", requestId: read.requestId, cursor: page.nextCursor })) {
+            finishRosterRead("relay_unavailable");
+            return;
+          }
+          armRosterDeadline();
+          return;
+        }
+        finishRosterRead();
         return;
       }
       if (desktopEvent?.kind === "thumbnail") {
@@ -530,6 +593,15 @@ export function HostedWorkspaceSession({
           (desktopEvent.requestId !== undefined &&
             pendingDesktopRequestsRef.current.has(desktopEvent.requestId)))
       ) {
+        if (desktopEvent.operation === "desktop.roster") {
+          const read = rosterReadRef.current;
+          if (!read || read.requestId !== desktopEvent.requestId) return;
+          finishRosterRead(desktopEvent.code);
+          if (desktopEvent.code === "roster_resync_required" && read.resyncs < 3) {
+            requestDesktopRoster(read.resyncs + 1);
+          }
+          return;
+        }
         if (desktopEvent.requestId) {
           pendingDesktopRequestsRef.current.delete(desktopEvent.requestId);
         }
@@ -602,6 +674,7 @@ export function HostedWorkspaceSession({
           `\r\n\u001b[33m[process exited: ${event.code}, signal ${event.signal}]\u001b[0m`,
         );
         pendingDesktopRequestsRef.current.clear();
+        clearRosterRead();
         callbackRefs.current.onDesktopBridgeChange?.(null);
         callbackRefs.current.onDesktopQueryStateChange?.("idle");
         setStatus("closed");
@@ -662,7 +735,7 @@ export function HostedWorkspaceSession({
         }
       }
     },
-    [desktopBridge, listFiles, requestDesktopRoster],
+    [armRosterDeadline, clearRosterRead, desktopBridge, finishRosterRead, hostId, listFiles, requestDesktopRoster, send],
   );
 
   const connect = useCallback(async () => {
@@ -752,6 +825,7 @@ export function HostedWorkspaceSession({
         ticketWorkspaceRef.current = null;
         callbackRefs.current.onWorkspaceBound?.(null);
         pendingDesktopRequestsRef.current.clear();
+        clearRosterRead();
         callbackRefs.current.onDesktopBridgeChange?.(null);
         callbackRefs.current.onDesktopQueryStateChange?.("idle");
         setStatus((current) => (current === "error" ? current : "closed"));
@@ -772,6 +846,7 @@ export function HostedWorkspaceSession({
         )
           return;
         pendingDesktopRequestsRef.current.clear();
+        clearRosterRead();
         callbackRefs.current.onDesktopBridgeChange?.(null);
         callbackRefs.current.onDesktopQueryStateChange?.("idle");
         setError("The workspace relay connection failed.");
@@ -788,7 +863,7 @@ export function HostedWorkspaceSession({
       setError(cause instanceof Error ? cause.message : String(cause));
       setStatus("error");
     }
-  }, [dispose, handleMessage, hostId, initializeTerminal, routeLabel]);
+  }, [clearRosterRead, dispose, handleMessage, hostId, initializeTerminal, routeLabel]);
 
   const disconnect = useCallback(() => {
     dispose(true);

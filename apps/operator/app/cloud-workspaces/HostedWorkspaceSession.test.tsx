@@ -1190,7 +1190,7 @@ describe("HostedWorkspaceSession", () => {
     socket.emit("message", {
       data: JSON.stringify({
         type: "desktop.roster.result",
-        requestId: "roster-1",
+        requestId: JSON.parse(String(socket.send.mock.calls.find((call) => JSON.parse(String(call[0])).type === "desktop.roster")![0])).requestId,
         desktops: [
           {
             desktopSessionId: "desktop-1",
@@ -1237,6 +1237,52 @@ describe("HostedWorkspaceSession", () => {
         bytes: 2,
       }),
     );
+  });
+
+  it("follows roster continuation, ignores duplicate pages and reports ready only after exhaustion", async () => {
+    const onDesktopRosterChange = vi.fn();
+    const onDesktopQueryStateChange = vi.fn();
+    render(<HostedWorkspaceSession hostId="host-1" routeLabel="workspace-relay" workspaceName="research-control"
+      onDesktopRosterChange={onDesktopRosterChange} onDesktopQueryStateChange={onDesktopQueryStateChange} />);
+    const socket = await connected();
+    await ready(socket);
+    await waitFor(() => expect(socket.send.mock.calls.some((call) => JSON.parse(String(call[0])).type === "desktop.roster")).toBe(true));
+    const request = socket.send.mock.calls.map((call) => JSON.parse(String(call[0]))).find((message) => message.type === "desktop.roster");
+    const first = {
+      type: "desktop.roster.result", requestId: request.requestId,
+      desktops: Array.from({ length: 64 }, (_, i) => ({ desktopSessionId: `d-${i}`, state: "ready" })),
+      hostId: "host-1", generation: "stable", cursor: null, nextCursor: "stable:64", hasMore: true, remaining: 1,
+    };
+    act(() => socket.emit("message", { data: JSON.stringify(first) }));
+    expect(onDesktopQueryStateChange).not.toHaveBeenCalledWith("ready", "roster");
+    expect(JSON.parse(String(socket.send.mock.calls.at(-1)![0]))).toMatchObject({ type: "desktop.roster", cursor: "stable:64" });
+    const calls = socket.send.mock.calls.length;
+    act(() => socket.emit("message", { data: JSON.stringify(first) }));
+    expect(socket.send.mock.calls).toHaveLength(calls);
+    act(() => socket.emit("message", { data: JSON.stringify({ ...first, cursor: "stable:64", nextCursor: null,
+      hasMore: false, remaining: 0, desktops: [{ desktopSessionId: "d-63", state: "ready" }, { desktopSessionId: "d-64", state: "ready" }] }) }));
+    expect(onDesktopRosterChange.mock.calls.at(-1)![0]).toHaveLength(65);
+    expect(onDesktopQueryStateChange).toHaveBeenCalledWith("ready", "roster");
+  });
+
+  it("restarts a stale roster cursor and rejects a response from another machine", async () => {
+    const onDesktopRosterChange = vi.fn();
+    const onDesktopQueryStateChange = vi.fn();
+    render(<HostedWorkspaceSession hostId="host-1" routeLabel="workspace-relay" workspaceName="research-control"
+      onDesktopRosterChange={onDesktopRosterChange} onDesktopQueryStateChange={onDesktopQueryStateChange} />);
+    const socket = await connected();
+    await ready(socket);
+    const requests = () => socket.send.mock.calls.map((call) => JSON.parse(String(call[0]))).filter((message) => message.type === "desktop.roster");
+    await waitFor(() => expect(requests().length).toBeGreaterThan(0));
+    const firstId = requests().at(-1).requestId;
+    act(() => socket.emit("message", { data: JSON.stringify({ type: "operation.error", operation: "desktop.roster", requestId: firstId, code: "roster_resync_required" }) }));
+    const secondId = requests().at(-1).requestId;
+    expect(secondId).not.toBe(firstId);
+    act(() => socket.emit("message", { data: JSON.stringify({ type: "desktop.roster.result", requestId: firstId, desktops: [{ desktopSessionId: "stale", state: "ready" }] }) }));
+    expect(onDesktopRosterChange).not.toHaveBeenCalled();
+    act(() => socket.emit("message", { data: JSON.stringify({ type: "desktop.roster.result", requestId: secondId, desktops: [], hostId: "other-host", generation: "g", cursor: null, nextCursor: null, hasMore: false, remaining: 0 }) }));
+    expect(onDesktopQueryStateChange).toHaveBeenCalledWith("error", "roster", "roster_wrong_machine");
+    expect(onDesktopRosterChange).not.toHaveBeenCalled();
   });
 
   it("refuses an oversized upload to a host that never advertised chunking, instead of sending the frame that kills the session", async () => {
