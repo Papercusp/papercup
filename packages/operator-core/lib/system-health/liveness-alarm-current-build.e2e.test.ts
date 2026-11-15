@@ -4,6 +4,7 @@ import { mkdir, rm, symlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { expect, it, type TestContext } from 'vitest';
 import { AGENT_STRANDED_ALARM_THRESHOLD } from './agent-strand-census';
+import type { LivenessAlarmHttpSubject } from '../../test/liveness-alarm-http-controls';
 import {
   captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof,
 } from '../../test/isolated-integration-proof';
@@ -13,13 +14,13 @@ const options = isolatedWorkerOptions(480_000);
 
 // R-12 needs a real request worker and durable ledger, independently of the unit
 // alarm seam. Reuse the maintained private operator profile and lifetime proof.
-async function verifyAlarm(subject: 'agents-wedged' | 'agents-stranded' | 'hosted-control-plane-degraded' |
-  'hosted-reverse-connector-lost' | 'platform-lifecycle-budget-exceeded' | 'population-acceptance', context?: TestContext) {
+async function verifyAlarm(subject: LivenessAlarmHttpSubject, context?: TestContext) {
   const runId = await recordIsolatedIntegrationProof({
     root,
     filePath: 'packages/operator-core/lib/system-health/liveness-alarm-current-build.e2e.test.ts',
     sourcePaths: [
       'packages/operator-core/test/liveness-alarm-http-fixture.ts',
+      'packages/operator-core/test/liveness-alarm-http-controls.ts',
       'packages/operator-core/test/private-http-workspace-preflight.ts',
       'packages/operator-core/test/isolated-integration-proof.ts',
       'scripts/with-test-pg.mjs',
@@ -42,12 +43,13 @@ async function verifyAlarm(subject: 'agents-wedged' | 'agents-stranded' | 'hoste
       await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
       await mkdir(join(evidenceDir, 'tmp'));
       const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
-        LIVENESS_ALARM_HTTP_EVIDENCE_DIR: evidenceDir, LIVENESS_ALARM_HTTP_SUBJECT: subject,
+        LIVENESS_ALARM_HTTP_EVIDENCE_DIR: evidenceDir,
         TMPDIR: process.env.TMPDIR ?? join(evidenceDir, 'tmp') };
       delete env.PC_HEAVY_PREEMPT_READY_FILE;
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/liveness-alarm-http-fixture.ts')],
+        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/liveness-alarm-http-fixture.ts'),
+        `--alarm-subject=${subject}`],
       { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);
       const events: Array<Record<string, unknown>> = [];
