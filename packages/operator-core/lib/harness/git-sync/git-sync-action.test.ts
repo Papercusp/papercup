@@ -242,6 +242,7 @@ const workspaceTxnCalls: Array<{
   options?: { leaseRenewal?: boolean; resources?: readonly string[] };
 }> = [];
 let workspaceTxnFailure: Error | null = null;
+let workspaceTxnAfterCommit: ((owner: string, result: unknown) => Promise<void>) | null = null;
 // EI-22078335832051825: the session half of the dead-holder reclaim. Mocked so
 // no test here reaches the presence store / liveness oracle; the adapter's own
 // rails are pinned in locks/ended-session-owners.test.ts. Default: nobody is
@@ -261,7 +262,12 @@ vi.mock('../../agent-tools/locks/in-workspace-txn', () => ({
   inWorkspaceTxn: (coordinationDomain: string, owner: string, fn: (tx: unknown) => unknown, options?: { leaseRenewal?: boolean }) => {
     workspaceTxnCalls.push({ coordinationDomain, owner, ...(options ? { options } : {}) });
     if (workspaceTxnFailure) return Promise.reject(workspaceTxnFailure);
-    return fn(fakeTx);
+    const result = fn(fakeTx);
+    if (!workspaceTxnAfterCommit) return result;
+    return Promise.resolve(result).then(async value => {
+      await workspaceTxnAfterCommit?.(owner, value);
+      return value;
+    });
   },
 }));
 
@@ -729,6 +735,7 @@ import {
   isResolverInFlight,
   acquireWithContentionRetry,
   GitSyncActionTimeoutError,
+  createGitSyncActionLivenessGuard,
   parseGitSyncOwnerPid,
   formatOwnHeadPublishedLine,
   formatOwnHeadPublishSkipLine,
@@ -749,7 +756,7 @@ import { endedSessionOwners } from '../../agent-tools/locks/ended-session-owners
 import { intentToSubject, DEFAULT_GIT_SYNC_SUBJECT } from './git-sync-attribution';
 
 const endedSessionOwnersMock = vi.mocked(endedSessionOwners);
-import type { OwnHeadPublishTickOutcome } from '../../sync/pot-git/own-head-publish';
+import { runOwnHeadPublishTick, type OwnHeadPublishTickOutcome } from '../../sync/pot-git/own-head-publish';
 import type { GitServingRequest, GitServingState } from '../../sync/pot-git/serving-capability';
 
 describe('WI-10000734 omitted serving-handle recovery', () => {
@@ -1158,6 +1165,7 @@ beforeEach(() => {
   releaseTrace.length = 0;
   workspaceTxnCalls.length = 0;
   workspaceTxnFailure = null;
+  workspaceTxnAfterCommit = null;
   readResourceQueueMock.mockReset();
   readResourceQueueMock.mockResolvedValue({ holders: [], draining: false, queue: [] });
   clearResourceExclusiveQueueMock.mockReset();
@@ -2308,6 +2316,46 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('reports the pending exclusive owner and age on an exclusive_pending skip', async () => {
+    const queuedAt = new Date(Date.now() - 120_000);
+    const waiter = {
+      ticket_id: 'ticket-dev-restart',
+      resource: 'git-sync',
+      owner: 'system:dev-restart:restart-7',
+      owner_label: 'dev:restart',
+      reason: 'restart staging server',
+      ttl_sec: 1800,
+      queued_ts: queuedAt,
+      expires_ts: new Date(Date.now() + 1_800_000),
+    };
+    readResourceQueueMock.mockImplementation(async (_tx, rawOptions) => {
+      const { resource } = rawOptions as { resource: string };
+      return {
+        holders: [],
+        draining: false,
+        queue: resource === 'git-sync' ? [waiter] : [],
+      };
+    });
+    tryAcquireResourceMock.mockImplementation(async (_tx, rawOptions) => {
+      const options = rawOptions as { resource: string; mode: string };
+      return options.resource === 'git-sync' && options.mode === 'shared'
+        ? { ok: false, reason: 'exclusive_pending', holders: [] }
+        : { ok: true };
+    });
+
+    await action(ctx);
+    expect(routinePatches()).toEqual([
+      expect.objectContaining({
+        last_status: 'skipped',
+        last_skip_reason: expect.stringContaining('owner=' + waiter.owner),
+      }),
+    ]);
+    const persistedSkip = routinePatches()[0] as { last_skip_reason: string };
+    expect(persistedSkip.last_skip_reason).toContain('age_ms=');
+    expect(persistedSkip.last_skip_reason).toContain('queue_position=1');
+    expect(persistedSkip.last_skip_reason).toContain('queue_count=1');
   });
 
   it('SKIPS the tick when a peer holds a lock (back-pressure) — releasing the partial acquisitions', async () => {
@@ -3560,6 +3608,64 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     }
   });
 
+  it('EI-28794194913200592: protects a committed lease before acquisition returns', async () => {
+    let firstOwner: string | null = null;
+    let holder: Record<string, unknown> | null = null;
+    let committed!: () => void;
+    const committedPromise = new Promise<void>(resolve => { committed = resolve; });
+    let finishAcquisition!: () => void;
+    const acquisitionReturn = new Promise<void>(resolve => { finishAcquisition = resolve; });
+    tryAcquireResourceMock.mockImplementation(async (_tx, opts) => {
+      const owner = opts.owner as string;
+      if (holder && holder.owner !== owner) {
+        return { ok: false, reason: 'held_exclusive', holders: [holder] };
+      }
+      firstOwner ??= owner;
+      holder = {
+        owner, mode: 'exclusive', lock_id: 'committed-live-lease',
+        owner_label: 'git-sync:papercup', reason: 'auto-commit papercup',
+        acquired_ts: new Date(), expires_ts: new Date(Date.now() + 600_000), fence_seq: 1,
+      };
+      return { ok: true, lock_id: holder.lock_id };
+    });
+    tryReleaseResourceMock.mockImplementation(async (_tx, opts) => {
+      if (holder?.owner === opts.owner) holder = null;
+      return { ok: true, released: 1 };
+    });
+    releaseAllResourcesForOwnerMock.mockImplementation(async (_tx, _domain, owner) => {
+      if (holder?.owner === owner) holder = null;
+      return { released: 1, releasedExclusiveResources: [], exclusiveResources: [], waiters: {} };
+    });
+    // A successful COMMIT makes the row visible before beginSuLockTransaction
+    // finishes its post-commit notifications and returns the acquire result.
+    workspaceTxnAfterCommit = async (owner, result) => {
+      if (owner === firstOwner && (result as { ok?: boolean })?.ok) {
+        committed();
+        await acquisitionReturn;
+      }
+    };
+    const firstOperation = vi.fn(async () => 'first');
+    const secondOperation = vi.fn(async () => 'second');
+    const first = runWithGitSyncPerInstallLease('papercup', 'ws-42', firstOperation);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      await committedPromise;
+      expect(firstOperation).not.toHaveBeenCalled();
+      const second = await runWithGitSyncPerInstallLease('papercup', 'ws-42', secondOperation);
+      expect(second).toMatchObject({ state: 'skipped', reason: 'held_exclusive' });
+      expect(secondOperation).not.toHaveBeenCalled();
+      expect(tryReleaseResourceMock).not.toHaveBeenCalledWith(
+        expect.anything(), expect.objectContaining({ owner: firstOwner }),
+      );
+    } finally {
+      finishAcquisition();
+      await first;
+      workspaceTxnAfterCommit = null;
+      error.mockRestore();
+    }
+    expect(firstOperation).toHaveBeenCalledOnce();
+  });
+
   it('gives overlapping cron/manual fires distinct owners so the second fire backs off', async () => {
     let firstRunStarted!: () => void;
     const firstRunStartedPromise = new Promise<void>((resolve) => {
@@ -4115,6 +4221,55 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       else process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS = savedIdle;
       if (savedHard === undefined) delete process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS;
       else process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS = savedHard;
+    }
+  });
+
+  it.each(['idle', 'hard'] as const)('WI-6554700010049464: own-head progress refreshes idle while retaining the %s deadline', async (kind) => {
+    vi.useFakeTimers();
+    const guard = createGitSyncActionLivenessGuard({
+      idleTimeoutMs: 25, hardTimeoutMs: 110, onTimeout: () => {},
+    });
+    let started!: () => void;
+    const start = new Promise<void>(resolve => { started = resolve; });
+    let finish!: (result: { code: number; stdout: string; stderr: string }) => void;
+    let gitProgress!: () => void;
+    const rawGit: typeof import('../../sync/pot-git/storage').defaultRunGit = async (_args, _cwd, options) => {
+      expect(options?.signal).toBe(guard.signal);
+      gitProgress = options!.onProgress!;
+      started();
+      return new Promise(resolve => { finish = resolve; });
+    };
+    const running = guard.run(() => runOwnHeadPublishTick({
+      potHomeSlug: 'isolated-progress', repoKey: 'isolated-progress', worktreePath: repoDir,
+      branch: 'staging', devicePubkeyBase64: 'unused-before-head', runGit: rawGit,
+      signal: guard.signal, onProgress: () => guard.touch(),
+    }), 'git-sync:own-head-publish');
+    const settled = running.then(value => ({ value, error: null }), error => ({ value: null, error }));
+    try {
+      await start;
+      for (let commandOutput = 0; commandOutput < 4; commandOutput += 1) {
+        await vi.advanceTimersByTimeAsync(20);
+        gitProgress();
+        expect(guard.signal.aborted).toBe(false);
+      }
+      // 80ms of measured work exceeds the 25ms idle budget. Stopping output
+      // must still time out; continued output must not postpone the hard bound.
+      if (kind === 'hard') {
+        await vi.advanceTimersByTimeAsync(20);
+        gitProgress();
+        await vi.advanceTimersByTimeAsync(15);
+      } else {
+        await vi.advanceTimersByTimeAsync(30);
+      }
+      expect((await settled).error).toMatchObject({
+        phase: 'git-sync:own-head-publish', timeoutKind: kind,
+      });
+      expect(guard.signal.aborted).toBe(true);
+    } finally {
+      finish?.({ code: 0, stdout: '', stderr: '' });
+      guard.stop();
+      await settled;
+      vi.useRealTimers();
     }
   });
 

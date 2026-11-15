@@ -87,6 +87,9 @@ export interface PublishGuardInput {
   toOid: string;
   caps?: PublishGuardCaps;
   runGit?: RunGit;
+  /** Observed subprocess activity and completed scan work, never a timer heartbeat. */
+  onProgress?: () => void;
+  signal?: AbortSignal;
   /**
    * WI-5591: workspace whose runtime secrets-guard path exemptions
    * (harness_shared.secrets_guard_path_exemptions, migration 644) should be
@@ -241,7 +244,10 @@ export async function checkPublishGuard(input: PublishGuardInput): Promise<Publi
       ['cat-file', '--batch-check=%(objectname) %(objecttype) %(objectsize)', '--buffer'],
       input.repoPath,
       entries.map((e) => e.oid).join('\n') + '\n',
+      { onProgress: input.onProgress, signal: input.signal },
     );
+    input.signal?.throwIfAborted();
+    input.onProgress?.();
     if (batch.code !== 0) return refuse('error', `cat-file --batch-check failed: ${batch.stderr.trim()}`);
     const pathByOid = new Map(entries.map((e) => [e.oid, e.path] as const));
     const blobs: BlobEntry[] = [];
@@ -296,6 +302,7 @@ export async function checkPublishGuard(input: PublishGuardInput): Promise<Publi
       blobs,
       input.repoPath,
       caps.scanChunkBytes,
+      { onProgress: input.onProgress, signal: input.signal },
     );
     if (scanError) return refuse('error', scanError);
     res.secretFindings = findings;

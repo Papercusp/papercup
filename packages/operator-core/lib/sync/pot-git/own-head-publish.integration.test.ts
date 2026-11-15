@@ -115,6 +115,52 @@ describe('own-head publish (G-2a: worktree head → own namespace, guarded)', ()
     expect(type).toBe('commit');
   });
 
+  it('refreshes progress between silent Git commands and forwards cancellation through publication', async () => {
+    const key = 'progress-ohp';
+    const progressWorktree = join(root, 'progress-worktree');
+    await git(['init', '-q', '-b', BRANCH, progressWorktree], root);
+    const sha = await commitFile(progressWorktree, 'progress.txt', 'completed work\n', 'progress');
+    const controller = new AbortController();
+    let progress = 0;
+    const observed: number[] = [];
+    const runGit: typeof defaultRunGit = async (args, cwd, options) => {
+      expect(options?.signal).toBe(controller.signal);
+      expect(options?.onProgress).toBeTypeOf('function');
+      observed.push(progress);
+      // Suppress output callbacks to prove completed silent commands also count.
+      return defaultRunGit(args, cwd, { ...options, onProgress: undefined });
+    };
+    const outcome = await runOwnHeadPublishTick({
+      potHomeSlug: HIVE, repoKey: key, worktreePath: progressWorktree,
+      branch: BRANCH, devicePubkeyBase64: dev, runGit,
+      signal: controller.signal, onProgress: () => { progress += 1; },
+    });
+
+    expect(outcome.errors).toEqual([]);
+    expect(outcome.publishedSha).toBe(sha);
+    expect(observed.length).toBeGreaterThan(3);
+    expect(observed.every((count, index) => index === 0 || count > observed[index - 1]!)).toBe(true);
+    expect(await readNamespaceRef(hiveGitRepoPath(HIVE, key), dev, `refs/heads/${BRANCH}`)).toBe(sha);
+  });
+
+  it('does not publish after cancellation during object transfer', async () => {
+    const key = 'cancelled-ohp';
+    const controller = new AbortController();
+    const reason = new Error('own-head idle deadline');
+    const runGit: typeof defaultRunGit = async (args, cwd, options) => {
+      const result = await defaultRunGit(args, cwd, options);
+      if (args[0] === 'fetch') controller.abort(reason);
+      return result;
+    };
+
+    await expect(runOwnHeadPublishTick({
+      potHomeSlug: HIVE, repoKey: key, worktreePath: worktree,
+      branch: BRANCH, devicePubkeyBase64: dev, runGit,
+      signal: controller.signal,
+    })).rejects.toBe(reason);
+    expect(await readNamespaceRef(hiveGitRepoPath(HIVE, key), dev, `refs/heads/${BRANCH}`)).toBeNull();
+  });
+
   it('diagnoses a zero-byte bare-store object before transfer and preserves it for recovery', async () => {
     const key = 'corrupt-ohp';
     const corruptWorktree = join(root, 'corrupt-worktree');

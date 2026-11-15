@@ -109,6 +109,38 @@ describe('scanTextBlobsChunked: scan-verdict memo', () => {
     expect(getBlobScanCacheStats()).toMatchObject({ misses: 3, hits: 15, size: 3 });
   });
 
+  it('reports completed scan work across chunks and still judges the last blob', async () => {
+    const blobs = [blob('a.ts', 'a\n'), blob('b.ts', 'b\n'), blob('last.env', LEAK_A)];
+    const completed: number[] = [];
+    const result = await scanTextBlobsChunked(blobs, REPO, 1, {
+      onProgress: () => completed.push(scanCalls()),
+    });
+
+    expect(rules(result.findings)).toEqual([['last.env', 'aws-access-key-id']]);
+    expect(git.calls.flatMap(call => call.oids)).toEqual(blobs.map(b => b.oid));
+    expect(completed).toContain(1);
+    expect(completed).toContain(2);
+    expect(completed.at(-1)).toBe(3);
+  });
+
+  it('stops a cancelled scan before judging or reading the next chunk', async () => {
+    const blobs = [blob('a.ts', 'a\n'), blob('last.env', LEAK_A)];
+    const controller = new AbortController();
+    const reason = new Error('publish hard deadline');
+
+    await expect(scanTextBlobsChunked(blobs, REPO, 1, {
+      signal: controller.signal,
+      onProgress: () => {
+        if (scanCalls() === 1) controller.abort(reason);
+      },
+    })).rejects.toBe(reason);
+    expect(scanCalls()).toBe(1);
+    expect(git.calls.flatMap(call => call.oids)).toEqual([blobs[0].oid]);
+    // An aborted pass must not memoize the unjudged suffix as clean.
+    const recovered = await scanTextBlobsChunked(blobs, REPO, 1);
+    expect(rules(recovered.findings)).toEqual([['last.env', 'aws-access-key-id']]);
+  });
+
   it('re-judging nested prefixes (resolveIncrementalPublishSha binary search) reads nothing new; a grown range reads only the new blob', async () => {
     const blobs = [blob('a.ts', 'a\n'), blob('b.ts', 'b\n'), blob('c.ts', 'c\n'), blob('d.ts', 'd\n')];
     await scanTextBlobsChunked(blobs, REPO, BIG);

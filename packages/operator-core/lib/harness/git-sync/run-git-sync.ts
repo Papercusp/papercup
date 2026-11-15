@@ -5450,11 +5450,20 @@ export async function guardStagedIndexBeforeCommit(opts: {
   notePostStage(changedTrackedModulesOutsideIndex, 'changed tracked module outside this commit\'s index');
   notePostStage(absentFromIndex, 'untracked and absent from this commit');
   const unresolvableExclusions = new Set<string>([...gitlinkGuard.paths, ...packageClosure.paths]);
-  const importerOffenders = importerDependencies.length > 0
-    ? await detectQuarantineImporters({
+  const importersByPath = new Map<string, ContentOffender>();
+  const providersByPath = new Map<string, ContentOffender>();
+  // EI-28861729591925660: a reverse provider hold changes the tree the forward
+  // guard just judged. Alternate both directions until no provider is newly held;
+  // otherwise an importer of its new export can commit without that export.
+  // Each repeated pass adds a staged provider to the held set, so the complete
+  // finite staged population bounds the work without cutting off the closure.
+  while (true) {
+    const dependencies = [...new Set([...importerDependencies, ...providersByPath.keys()])];
+    const importerPass = dependencies.length > 0
+      ? await detectQuarantineImporters({
         readText: opts.readText,
         dirtyFiles: staged,
-        alreadyQuarantined: importerDependencies,
+        alreadyQuarantined: dependencies,
         // WI-6554700010008578: the guard consults this seam ONLY for side-effect-only edges
         // (`import './x';`), which name no export, so an old provider at HEAD satisfies them.
         // A tracked provider excluded from this commit (another group's change, a late lock,
@@ -5473,37 +5482,51 @@ export async function guardStagedIndexBeforeCommit(opts: {
         exclusionReasonFor: (path) => postStageReasons.get(path),
         log,
       })
-    : [];
+      : [];
+    for (const offender of importerPass) importersByPath.set(offender.file, offender);
+    const providerPass = await detectStagedProvidersOfHeldImporters({
+      stagedFiles: staged,
+      heldImporters: [...new Set([
+        ...excludedDependencies, ...importersByPath.keys(), ...providersByPath.keys(),
+      ])],
+      readHeadText: async (path) => {
+        const result = await runGit(['show', `HEAD:${path}`], repoPath);
+        return result.code === 0 ? result.stdout : null;
+      },
+      readHeadTexts: runGitStdin
+        ? (paths) => readHeadTextsFromGit(runGit, runGitStdin, repoPath, paths, log)
+        : undefined,
+      readIndexText: async (path) => {
+        const result = await runGit(['show', `:${path}`], repoPath);
+        return result.code === 0 ? result.stdout : null;
+      },
+      readIndexTexts: runGitStdin
+        ? (paths) => readStagedIndexTextsFromGit({
+            runGit,
+            runGitStdin,
+            repoPath,
+            paths,
+            log,
+            logLabel: 'quarantine-provider-guard',
+          })
+        : undefined,
+      log,
+    });
+    let addedProvider = false;
+    for (const offender of providerPass) {
+      if (providersByPath.has(offender.file)) continue;
+      providersByPath.set(offender.file, offender);
+      notePostStage([offender.file], offender.error);
+      addedProvider = true;
+    }
+    if (!addedProvider) break;
+  }
+  const importerOffenders = [...importersByPath.values()];
   const importers = importerOffenders.map((offender) => offender.file).filter((file) => stagedSet.has(file));
   for (const offender of importerOffenders) {
     if (stagedSet.has(offender.file)) log(`[git-sync] ${scope}: post-stage guard: ${offender.file} ${offender.error}`);
   }
-  const providerOffenders = await detectStagedProvidersOfHeldImporters({
-    stagedFiles: staged,
-    heldImporters: [...new Set([...excludedDependencies, ...importers])],
-    readHeadText: async (path) => {
-      const result = await runGit(['show', `HEAD:${path}`], repoPath);
-      return result.code === 0 ? result.stdout : null;
-    },
-    readHeadTexts: runGitStdin
-      ? (paths) => readHeadTextsFromGit(runGit, runGitStdin, repoPath, paths, log)
-      : undefined,
-    readIndexText: async (path) => {
-      const result = await runGit(['show', `:${path}`], repoPath);
-      return result.code === 0 ? result.stdout : null;
-    },
-    readIndexTexts: runGitStdin
-      ? (paths) => readStagedIndexTextsFromGit({
-          runGit,
-          runGitStdin,
-          repoPath,
-          paths,
-          log,
-          logLabel: 'quarantine-provider-guard',
-        })
-      : undefined,
-    log,
-  });
+  const providerOffenders = [...providersByPath.values()];
   const heldProviders = providerOffenders.map((offender) => offender.file).filter((file) => stagedSet.has(file));
   for (const offender of providerOffenders) {
     if (stagedSet.has(offender.file)) log(`[git-sync] ${scope}: post-stage guard: ${offender.file} ${offender.error}`);

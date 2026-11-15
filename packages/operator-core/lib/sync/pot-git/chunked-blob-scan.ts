@@ -19,7 +19,7 @@
  */
 import { pinModuleState } from '@papercusp/module-singleton';
 import { createTimeSlice } from '../../event-loop-lag-monitor';
-import { defaultRunGitStdin } from './storage';
+import { defaultRunGitStdin, type RunGitOptions } from './storage';
 import { type SecretFinding, scanForSecrets } from './secrets-guard';
 
 /**
@@ -80,6 +80,7 @@ export function partitionBlobsForScan(blobs: readonly BlobEntry[], chunkBytes: n
 export async function readTextBlobs(
   group: readonly BlobEntry[],
   repoPath: string,
+  progress?: Pick<RunGitOptions, 'onProgress' | 'signal'>,
 ): Promise<{
   files: { oid: string; path: string; content: string }[];
   /** Blobs git returned but that are BINARY (contain NUL). Reported so the
@@ -97,6 +98,7 @@ export async function readTextBlobs(
     ['cat-file', '--batch', '--buffer'],
     repoPath,
     group.map((b) => b.oid).join('\n') + '\n',
+    progress,
   );
   // Fail-CLOSED: an unreadable batch means part of the range went unjudged.
   // (A single `missing` object inside an otherwise good batch is tolerated
@@ -239,6 +241,7 @@ export async function scanTextBlobsChunked(
   blobs: readonly BlobEntry[],
   repoPath: string,
   chunkBytes: number,
+  progress?: Pick<RunGitOptions, 'onProgress' | 'signal'>,
 ): Promise<{ findings: SecretFinding[]; error: string | null }> {
   const named = blobs.filter((b) => b.path);
   // This call's verdicts, held locally so a range larger than the memo bound
@@ -264,8 +267,11 @@ export async function scanTextBlobsChunked(
   // a slice is spent. Verdicts are per file, so this changes no result or order.
   const slice = createTimeSlice();
   for (const group of partitionBlobsForScan(pending, chunkBytes)) {
-    const { files, binaryOids, error } = await readTextBlobs(group, repoPath);
+    progress?.signal?.throwIfAborted();
+    const { files, binaryOids, error } = await readTextBlobs(group, repoPath, progress);
+    progress?.signal?.throwIfAborted();
     if (error) return { findings: [], error };
+    progress?.onProgress?.();
     blobScanState.stats.misses += group.length;
     const binary = new Set(binaryOids);
     for (const b of group) {
@@ -277,6 +283,7 @@ export async function scanTextBlobsChunked(
     }
     for (const f of files) {
       await slice.maybeYield();
+      progress?.signal?.throwIfAborted();
       blobScanState.stats.scannedBytes += f.content.length;
       // Per file, so each verdict is attributable to exactly one (oid, path).
       // Still `scanForSecrets` (never the raw per-line scanner): it applies the
@@ -286,6 +293,7 @@ export async function scanTextBlobsChunked(
       const key = verdictKey(repoPath, f);
       verdictByKey.set(key, found);
       rememberVerdict(key, found);
+      progress?.onProgress?.();
     }
   }
 

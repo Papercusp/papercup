@@ -446,7 +446,7 @@ interface GitSyncActionLivenessGuard {
  * Promise.race: it removes its abort listener and ignores a late promise
  * settlement, so a stale setup await cannot resume the pipeline after cleanup.
  */
-function createGitSyncActionLivenessGuard(opts: {
+export function createGitSyncActionLivenessGuard(opts: {
   idleTimeoutMs: number;
   hardTimeoutMs: number;
   /** Install slug carried into the timeout error message (EI-28696436611358092). */
@@ -1045,6 +1045,8 @@ interface AcquireOutcome {
   blockedReason?: string;
   /** JSON-safe live holders returned by the resource-lock refusal. */
   holders?: GitSyncLockHolderSnapshot[];
+  /** Queue diagnostics captured for an exclusive-pending refusal. */
+  pendingExclusiveQueue?: GitSyncPendingExclusiveQueueSnapshot;
 }
 
 /**
@@ -1289,6 +1291,11 @@ async function acquireLocks(
   owner: string,
 ): Promise<AcquireOutcome> {
   const perSlug = gitSyncResourceName(slug);
+  // A resource transaction can commit before its response reaches this caller.
+  // Reserve the fire before the first await so a concurrent fire cannot reclaim
+  // that live lease as an orphan during the response-delivery gap. Every terminal
+  // failure below and the successful caller's cleanup remove it via releaseAll.
+  gitSyncLockState.inFlight.add(owner);
   for (const { resource, mode } of resources) {
     const acquireOne = () =>
       acquireWithContentionRetry(() =>
@@ -1405,6 +1412,50 @@ async function acquireLocks(
         ...(contended ? { blockedOn: resource, blockedReason: 'lock_contended' } : {}),
       };
     }
+    let pendingExclusiveQueue: GitSyncPendingExclusiveQueueSnapshot | undefined;
+    if (!r.ok && r.reason === 'exclusive_pending') {
+      try {
+        const { queue } = await inWorkspaceTxn(
+          cd,
+          owner,
+          (tx) => readResourceQueue(tx, { coordinationDomain: cd, resource }),
+          { resources: [resource] },
+        );
+        const observedAtMs = Date.now();
+        const observedAt = new Date(observedAtMs).toISOString();
+        if (!queue) {
+          pendingExclusiveQueue = { status: 'unavailable', observedAt, reason: 'queue-read-failed' };
+        } else {
+          pendingExclusiveQueue = {
+            status: 'available',
+            observedAt,
+            count: queue.length,
+            omittedCount: 0,
+            waiters: queue.map((entry, index) => {
+              const queuedAtMs = entry.queued_ts.getTime();
+              return {
+                ticketId: entry.ticket_id,
+                resource: entry.resource,
+                owner: entry.owner,
+                ownerLabel: entry.owner_label,
+                reason: entry.reason,
+                queuedAt: entry.queued_ts.toISOString(),
+                ageMs: Number.isFinite(queuedAtMs) ? Math.max(0, observedAtMs - queuedAtMs) : null,
+                expiresAt: entry.expires_ts.toISOString(),
+                queuePosition: index + 1,
+              };
+            }),
+          };
+        }
+      } catch {
+        // Diagnostics must not turn the already-safe skip into a different lock verdict.
+        pendingExclusiveQueue = {
+          status: 'unavailable',
+          observedAt: new Date().toISOString(),
+          reason: 'queue-read-failed',
+        };
+      }
+    }
     if (!r.ok) {
       // A peer holds it (or an extra name is unregistered) — skip this tick,
       // retry next. This fire has no wait loop and is terminal now. Cancel any
@@ -1436,15 +1487,51 @@ async function acquireLocks(
         blockedOn: resource,
         blockedReason: r.reason,
         holders: snapshotGitSyncLockHolders(r.holders ?? []),
+        ...(pendingExclusiveQueue ? { pendingExclusiveQueue } : {}),
       };
     }
-    // Mark this fire's owner live BEFORE the next resource is attempted: from
-    // here on, a row naming it is legitimately held and must never be read as
-    // an orphan (by a concurrent fire in this process, or by our own retry).
-    gitSyncLockState.inFlight.add(owner);
     acquired.push({ resource, mode, lockId: r.lock_id });
   }
   return { state: 'acquired' };
+}
+
+type GitSyncPendingExclusiveQueueWaiter = {
+  ticketId: string;
+  resource: string;
+  owner: string;
+  ownerLabel: string | null;
+  reason: string;
+  queuedAt: string;
+  ageMs: number | null;
+  expiresAt: string;
+  queuePosition: number;
+};
+
+type GitSyncPendingExclusiveQueueSnapshot =
+  | {
+      status: 'available';
+      observedAt: string;
+      count: number;
+      omittedCount: 0;
+      waiters: GitSyncPendingExclusiveQueueWaiter[];
+    }
+  | { status: 'unavailable'; observedAt: string; reason: 'queue-read-failed' };
+
+function formatGitSyncSkipReason(
+  reason: string,
+  pendingExclusiveQueue?: GitSyncPendingExclusiveQueueSnapshot,
+): string {
+  if (reason !== 'exclusive_pending') return reason;
+  if (!pendingExclusiveQueue || pendingExclusiveQueue.status === 'unavailable') {
+    return 'exclusive_pending: queue_snapshot_unavailable';
+  }
+  const oldest = pendingExclusiveQueue.waiters[0];
+  if (!oldest) return 'exclusive_pending: queue_snapshot_empty';
+  return 'exclusive_pending: owner=' + oldest.owner +
+    '; age_ms=' + (oldest.ageMs === null ? 'unknown' : oldest.ageMs) +
+    '; queued_at=' + oldest.queuedAt +
+    '; queue_position=' + oldest.queuePosition +
+    '; queue_count=' + pendingExclusiveQueue.count;
 }
 
 export type GitSyncPerInstallLeaseResult<T> =
@@ -1454,6 +1541,7 @@ export type GitSyncPerInstallLeaseResult<T> =
       reason: string;
       blockedOn?: string;
       holders?: GitSyncLockHolderSnapshot[];
+      pendingExclusiveQueue?: GitSyncPendingExclusiveQueueSnapshot;
     }
   | {
       /** WI-10006972: the operation started, then refused a write because this
@@ -1526,6 +1614,9 @@ export async function runWithGitSyncPerInstallLease<T>(
       reason: lease.blockedReason ?? (lease.state === 'contended' ? 'lock_contended' : 'lock_infra_unavailable'),
       ...(lease.blockedOn ? { blockedOn: lease.blockedOn } : {}),
       ...(lease.holders ? { holders: lease.holders } : {}),
+      ...(lease.state === 'held' && lease.pendingExclusiveQueue
+        ? { pendingExclusiveQueue: lease.pendingExclusiveQueue }
+        : {}),
     };
   }
 
@@ -3981,6 +4072,8 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   const lock = await acquireLocks(cd, slug, resources, acquired, lockOwner);
   if (lock.state === 'held' || lock.state === 'contended') {
     const reason = lock.blockedReason ?? (lock.state === 'contended' ? 'lock_contended' : 'lock_held');
+    const pendingExclusiveQueue = lock.state === 'held' ? lock.pendingExclusiveQueue : undefined;
+    const durableSkipReason = formatGitSyncSkipReason(reason, pendingExclusiveQueue);
     if (lock.state === 'contended') {
       console.log(`[git-sync] ${slug}: lock contention persisted on ${lock.blockedOn} — skipping this tick`);
     } else if (lock.blockedReason === 'unknown_resource') {
@@ -4013,7 +4106,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       await patchRoutineMetadata(slug, workspaceId, {
         last_status: 'skipped',
         local_sync_status: 'skipped',
-        last_skip_reason: `replay_abandoned:${reason}`,
+        last_skip_reason: 'replay_abandoned:' + durableSkipReason,
         last_skipped_at: Date.now(),
         // last_skipped_paths is left alone: see SKIP_TICK_KEEPS_SWEEP_EXCLUSIONS.
       });
@@ -4023,6 +4116,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         replayAbandoned: true,
         ...(lock.blockedOn ? { blockedOn: lock.blockedOn } : {}),
         ...(lock.holders ? { holders: lock.holders } : {}),
+        ...(pendingExclusiveQueue ? { pendingExclusiveQueue } : {}),
       };
     }
     // A held_exclusive refusal means the peer's resource row is still live. The
@@ -4046,7 +4140,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     await patchRoutineMetadata(slug, workspaceId, {
       last_status: 'skipped',
       local_sync_status: 'skipped',
-      last_skip_reason: reason,
+      last_skip_reason: durableSkipReason,
       last_skipped_at: skippedAt,
       // SKIP_TICK_KEEPS_SWEEP_EXCLUSIONS (WI-6554700010008496): a skipped tick ran no
       // sweep, so it must not touch `last_skipped_paths`. That field is the per-path record of
@@ -4060,6 +4154,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       reason,
       ...(lock.blockedOn ? { blockedOn: lock.blockedOn } : {}),
       ...(lock.holders ? { holders: lock.holders } : {}),
+      ...(pendingExclusiveQueue ? { pendingExclusiveQueue } : {}),
     };
   }
   // Keep the resource lease alive from the moment it is acquired. Setup has
@@ -5266,7 +5361,10 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // Own checkpoint so a resumed fire never re-publishes past it.
     if (gate.hiveGitMode) {
       await guardedPostLegs('git-sync:own-head-publish', () =>
-        runCheckpointedStep('git-sync:own-head-publish', () => runOwnHeadPublishLeg(slug, workspaceId, cfg.branch)),
+        runCheckpointedStep('git-sync:own-head-publish', () => runOwnHeadPublishLeg(slug, workspaceId, cfg.branch, {
+          signal: postLegsLiveness.signal,
+          onProgress: () => postLegsLiveness.touch(),
+        })),
       );
     }
 
@@ -6129,7 +6227,12 @@ async function recordOwnHeadPublishSkip(
   await persistOwnHeadPublishSkip(slug, workspaceId, reason, detail);
 }
 
-async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: string | undefined): Promise<void> {
+async function runOwnHeadPublishLeg(
+  slug: string,
+  workspaceId: string,
+  branch: string | undefined,
+  progress: { signal?: AbortSignal; onProgress?: () => void } = {},
+): Promise<void> {
   try {
     let entry: ProjectEntry | undefined;
     try {
@@ -6186,6 +6289,7 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
     const priorUnshallow = unshallowRows[0]?.state ?? null;
 
     const outcome = await runOwnHeadPublishTick({
+      ...progress,
       potHomeSlug,
       repoKey,
       worktreePath: entry.path,

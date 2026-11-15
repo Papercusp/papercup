@@ -2854,6 +2854,92 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain', '--', exporterPath, importerPath)).toBe('');
   });
 
+  it('EI-28861729591925660: a reverse-held provider also holds its new-symbol importer', async () => {
+    const heldPath = 'start.ts';
+    const oldConsumer = 'old-consumer.ts';
+    const newConsumer = 'new-consumer.ts';
+    const provider = 'provider.ts';
+    writeFileSync(join(repo, heldPath), 'export const start = 1;\n');
+    writeFileSync(join(repo, provider), 'export const oldValue = 1;\n');
+    writeFileSync(join(repo, oldConsumer), "import { oldValue } from './provider';\nexport const old = oldValue;\n");
+    writeFileSync(join(repo, newConsumer), 'export const fresh = 1;\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'seed provider and both consumers');
+    git(repo, 'push', 'origin', 'main');
+
+    writeFileSync(join(repo, heldPath), 'export const start = 2;\n');
+    writeFileSync(join(repo, oldConsumer), "import { start } from './start';\nexport const old = start;\n");
+    writeFileSync(join(repo, provider), 'export const newValue = 2;\n');
+    writeFileSync(join(repo, newConsumer), "import { newValue } from './provider';\nexport const fresh = newValue;\n");
+    writeFileSync(join(repo, 'control.ts'), 'export const control = true;\n');
+
+    const first = await runGitSync('test', {
+      repoPath: repo, runGit: directRunGit, config: cfg,
+      liveLockHoldings: [{ path: heldPath, owner: 'su-peer', intent: 'editing source' }],
+    });
+    expect(first.status).toBe('synced');
+    // The forward guard holds old-consumer; its HEAD still consumes oldValue,
+    // so the reverse guard must hold provider. That newly held provider must
+    // then infect new-consumer before the index is allowed to commit.
+    expect(git(originDir, 'show', `main:${provider}`)).toBe('export const oldValue = 1;');
+    expect(git(originDir, 'show', `main:${newConsumer}`)).toBe('export const fresh = 1;');
+    expect(git(originDir, 'show', 'main:control.ts')).toBe('export const control = true;');
+
+    const second = await runGitSync('test', { repoPath: repo, runGit: directRunGit, config: cfg });
+    expect(second.status).toBe('synced');
+    expect(git(originDir, 'show', `main:${provider}`)).toContain('newValue');
+    expect(git(originDir, 'show', `main:${newConsumer}`)).toContain('newValue');
+    expect(git(repo, 'status', '--porcelain', '--', heldPath, oldConsumer, newConsumer, provider)).toBe('');
+  });
+
+  it.each([{ depth: 2, reverse: false }, { depth: 3, reverse: true }, { depth: 7, reverse: false }])(
+    'EI-28861729591925660: closes alternating holds across $depth providers (reverse order: $reverse)',
+    async ({ depth, reverse }) => {
+      const root = 'root.ts';
+      const providers = Array.from({ length: depth }, (_, i) => `provider-${reverse ? depth - i : i}.ts`);
+      const consumers = Array.from({ length: depth }, (_, i) => `consumer-${reverse ? depth - i : i}.ts`);
+      const tail = 'tail.ts';
+      writeFileSync(join(repo, root), 'export const start = 1;\n');
+      for (let i = 0; i < depth; i++) {
+        writeFileSync(join(repo, providers[i]!), 'export const oldValue = 1;\n');
+        writeFileSync(join(repo, consumers[i]!), `import { oldValue } from './${providers[i]!.slice(0, -3)}';\nexport const value = oldValue;\n`);
+      }
+      writeFileSync(join(repo, tail), 'export const value = 1;\n');
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '--no-verify', '-m', 'seed alternating provider and consumer chain');
+
+      writeFileSync(join(repo, root), 'export const start = 2;\n');
+      for (let i = 0; i < depth; i++) {
+        writeFileSync(join(repo, providers[i]!), 'export const newValue = 2;\n');
+        writeFileSync(join(repo, consumers[i]!), i === 0
+          ? "import { start } from './root';\nexport const value = start;\n"
+          : `import { newValue } from './${providers[i - 1]!.slice(0, -3)}';\nexport const value = newValue;\n`);
+      }
+      writeFileSync(join(repo, tail), `import { newValue } from './${providers.at(-1)!.slice(0, -3)}';\nexport const value = newValue;\n`);
+      writeFileSync(join(repo, 'control.ts'), 'export const control = true;\n');
+      git(repo, 'add', '-A');
+      const options = {
+        runGit: directRunGit, repoPath: repo, scope: 'superproject',
+        readText: async (path: string) => {
+          try { return readFileSync(join(repo, path), 'utf8'); } catch { return null; }
+        },
+        log: () => {},
+      };
+      const result = await guardStagedIndexBeforeCommit({ ...options, excludedDependencies: [root] });
+      if (!result.ok) throw new Error(result.error);
+      const chain = [root, ...providers, ...consumers, tail];
+      expect(result.unstaged.sort()).toEqual([...chain].sort());
+      expect(git(repo, 'diff', '--cached', '--name-only')).toBe('control.ts');
+
+      // Releasing the root hold allows every member to enter the next commit.
+      git(repo, 'add', '-A');
+      const recovered = await guardStagedIndexBeforeCommit(options);
+      if (!recovered.ok) throw new Error(recovered.error);
+      expect(recovered.unstaged).toEqual([]);
+      expect(git(repo, 'diff', '--cached', '--name-only').split('\n').sort()).toEqual([...chain, 'control.ts'].sort());
+    },
+  );
+
   it('WI-6554700010008411: a staged export removal stays with a quarantined importer whose HEAD still imports it', async () => {
     const excludedPath = 'start.ts';
     const importerPath = 'audit.ts';

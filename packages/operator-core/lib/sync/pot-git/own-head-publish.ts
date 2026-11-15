@@ -147,6 +147,10 @@ export interface OwnHeadPublishTickInput {
    */
   genesisBaselineSha?: string | null;
   runGit?: RunGit;
+  /** Actual Git output/completion and scanned blobs refresh the caller's idle deadline. */
+  onProgress?: () => void;
+  /** Stop further publication after the caller's idle or hard deadline expires. */
+  signal?: AbortSignal;
   /** WI-5591: workspace whose runtime secrets-guard path exemptions to
    *  consult (see publish-guard.ts's PublishGuardInput.workspaceId). Omitted
    *  ⇒ no runtime exemptions consulted (only static FIXTURE_FILES applies). */
@@ -350,7 +354,23 @@ export interface OwnHeadPublishTickOutcome {
 export async function runOwnHeadPublishTick(
   input: OwnHeadPublishTickInput,
 ): Promise<OwnHeadPublishTickOutcome> {
-  const runGit = input.runGit ?? defaultRunGit;
+  const rawRunGit = input.runGit ?? defaultRunGit;
+  const runGit: RunGit = input.onProgress || input.signal
+    ? async (args, cwd, options) => {
+        input.signal?.throwIfAborted();
+        const result = await rawRunGit(args, cwd, {
+          ...options,
+          signal: input.signal ?? options?.signal,
+          onProgress: () => {
+            options?.onProgress?.();
+            input.onProgress?.();
+          },
+        });
+        input.signal?.throwIfAborted();
+        input.onProgress?.();
+        return result;
+      }
+    : rawRunGit;
   const errors: string[] = [];
   // WI-2142873: set to 'ok' once a shallow worktree was unshallowed this tick,
   // so every later outcome reports it and the caller clears its backoff.
@@ -513,6 +533,8 @@ export async function runOwnHeadPublishTick(
       toOid: headSha,
       caps: input.publishGuardCaps,
       runGit,
+      onProgress: input.onProgress,
+      signal: input.signal,
       workspaceId: input.workspaceId,
       // WI-10003528: skip content another device (or a remote) already exposed,
       // on EVERY publish, not only genesis — otherwise a device draining from
