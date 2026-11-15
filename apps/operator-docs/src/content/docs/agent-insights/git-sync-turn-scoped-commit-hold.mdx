@@ -5,7 +5,7 @@
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "git-sync holds files edited during an unfinished turn"
-description: "git-sync automatically leaves out every file a live session edited (Edit/Write/apply_patch) during its current turn, and commits those files together once the turn ends, the session ends, or 60 minutes pass after the edit. Covers the release rules, the Bash-write and stale-Codex-home gaps, holding across turns with locks:acquire, and where to read the hold (routines:list, dev:pipeline_position)."
+description: "git-sync holds current-turn native edits for editors with a recorded turn end, releasing the whole turn on turn end, session end or 60 minutes after its oldest edit. Never-journaling editors and new owners' first turns are not automatically held."
 type: Insight
 discovered: 2026-10-11
 tags: ["git-sync", "locks", "commit", "turn-hold"]
@@ -15,6 +15,9 @@ documents:
   - "packages/operator-core/lib/harness/git-sync/git-sync-action.ts"
 plans:
   - "git-sync-turn-scoped-commit-hold-2026-10-11"
+promotedFrom:
+  - kind: work-item
+    ref: WI-6554700010049486
 ---
 
 # git-sync holds files edited during an unfinished turn
@@ -30,7 +33,7 @@ Two records already exist for every session:
 * every native edit (`Edit`, `Write`, `apply_patch`) writes a row to `harness_shared.edit_attribution_ledger` when the edit hook grants its lock, just before the edit;
 * every client records each turn end in `harness_shared.session_turn_journal`. The hold reads every client's rows alike (Claude, Codex and OMP); it does not care which client wrote them.
 
-On each tick, git-sync's commit census (`readGitSyncCensusStrict` in `packages/operator-core/lib/personal-vault/git-sync-hold.ts`) adds a turn-holds leg (`readTurnHoldings`). It returns every path whose newest native edit is newer than its editor's last recorded turn end. git-sync leaves those paths out of the commit exactly as it leaves out a live lock. The rest of the tree is committed as usual.
+On each tick, git-sync's commit census (`readGitSyncCensusStrict` in `packages/operator-core/lib/personal-vault/git-sync-hold.ts`) adds a turn-holds leg (`readTurnHoldings`). It returns paths edited after an editor's last recorded turn end only when that editor has journaled at least one turn end, has not positively ended every recorded session, and the turn's oldest edit has not reached the cap. git-sync leaves those paths out of the commit exactly as it leaves out a live lock. The rest of the tree is committed as usual.
 
 The turn end is the journal row's `turn_ts` (the turn's final assistant message), falling back to the row's `created_at`. That choice errs toward holding longer, never shorter: the journal insert can land after the next turn's first edit, but `turn_ts` cannot.
 
@@ -42,14 +45,14 @@ A held file is committed, together with the rest of that turn's edits, on the fi
 
 1. **The editor's turn ends.** This is the normal case.
 2. **The editor's session ends.** git-sync needs positive evidence for this: the owner has `adv_sessions` rows and none is still open. An owner with no session row at all is treated as live, so only the cap below releases it.
-3. **60 minutes pass since the edit** (`TURN_HOLD_MAX_AGE_MS`, plan decision D-001). This caps the delay for a crashed session or a client that never records turn ends.
+3. **60 minutes pass since the oldest edit in the current turn** (`TURN_HOLD_MAX_AGE_MS`, plan decision D-005). The cap is per turn: once any edit after the recorded turn end reaches the cap, all of that owner's turn edits are released together. A later edit does not restart this cap.
 
 `locks:release` does **not** lift a turn hold: there is no lock to release. git-sync's skipped-path diagnostics and `dev:pipeline_position` therefore stop telling the holder to release a lock.
 
 ## Known gaps
 
 * **A file written through Bash is not held on its own.** `sed -i`, heredocs, `>` redirects and scripts write no `edit_attribution_ledger` row, so the turn-holds leg sees nothing to hold. There is one exception. If that file imports a file that IS held, git-sync's live-lock importer guard (`detectQuarantineImporters`, called from `run-git-sync.ts`) leaves it out too. It reports that file as a content error (`live-lock exclusion`) in `outcome.contentErrors`, **not** in `skippedPaths`, so look there when you check whether it was held. Any other Bash-written file is committed on the next tick. The project guide already forbids editing tracked files that way; this is one more reason.
-* **Codex sessions whose hooks predate turn-end recording** (WI-6554700010008402). Their `hooks.json` has no Stop hook, so they never write a turn end. Their edits stay held until the 60-minute cap or the session ending. The hold lasts too long in that case, never too short.
+* **Codex sessions whose hooks predate turn-end recording** (WI-6554700010008402). An editor that has never journaled a turn end is not held by this mechanism: `readTurnHoldings` requires a non-null recorded turn end. A brand-new owner's first turn is also unheld until its first turn end is journaled. Explicit edit locks and importer exclusions still apply independently. Keep client turn-end recording installed; the automatic hold cannot protect an editor it cannot release.
 
 ## Holding a change across several turns
 
@@ -74,3 +77,7 @@ The runtime kill-switch is the feature flag `papercusp-git-sync-turn-hold` (`FLA
 * `packages/operator-core/lib/personal-vault/git-sync-turn-hold.integration.test.ts`: a real database and a real git repo. A mid-turn two-file edit is held, then committed in one commit after the turn ends. Turn ends recorded by Claude, Codex and OMP all release the hold. A dirty importer of a held file is held too. The session-end and 60-minute releases are covered.
 * `packages/operator-core/lib/harness/git-sync/git-sync-action.test.ts` (the turn-hold describe block): with the flag ON a path edited mid-turn reaches `runGitSync` as a held path; with it OFF the census has no turn-holds leg; and an unreadable turn-hold read skips the tick and commits nothing.
 * `packages/operator-core/lib/agent-tools/routines/routines.test.ts` and `packages/operator-core/lib/git-pipeline-position.test.ts`: the two read surfaces.
+
+## Source-conformance guard
+
+`packages/operator-core/lib/doc-claims/p011-sampled-source-conformance.test.ts` checks the current prose against the turn-cap and journaling contract, including controls that restore the obsolete per-edit and never-journaling claims. The runtime behavior remains covered by the integration tests above.
