@@ -205,8 +205,8 @@ export function isBackgroundTestCommand(command: string): boolean {
 export const CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV = 'PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID';
 /** Reserved child-env marker for commands launched through capability:bash's
  * ordinary, response-waiting seam. The command is a durable job and survives a
- * response-window yield, but its separate execution deadline or caller abort
- * can still terminate the whole process tree. Mutation probes use this marker
+ * response-window yield or request cancellation, but its separate execution
+ * deadline or explicit kill can still terminate the whole process tree. Mutation probes use this marker
  * to refuse in-tree mutations before touching a tracked file. The handler owns
  * the marker; callers cannot forge or clear it through command environment
  * input. */
@@ -3254,9 +3254,10 @@ export type BashJobResponseDisposition = 'terminal' | 'yielded';
  * owned independently by {@link startBackground}; reaching this timer never
  * signals the job and therefore cannot restart, orphan, or kill it.
  *
- * A caller abort is different: it deliberately stops this SAME job through the
- * existing whole-tree kill path, then waits for the child close notification so
- * a returned terminal result does not race its cleanup.
+ * Once launched, the durable job owns its lifetime. The request signal describes
+ * only the response observer (including transport timeouts), so cancellation
+ * detaches streaming and yields the SAME handle without signalling the child.
+ * Stopping execution requires the explicit kill path or its own deadline.
  */
 export function waitForJobResponse(
   job: BashJob,
@@ -3270,12 +3271,8 @@ export function waitForJobResponse(
 
   return new Promise<BashJobResponseDisposition>((resolvePromise) => {
     let settled = false;
-    let aborting = false;
-    let abortFallback: ReturnType<typeof setTimeout> | null = null;
-
     const cleanup = (): void => {
       clearTimeout(responseTimer);
-      if (abortFallback) clearTimeout(abortFallback);
       signal.removeEventListener('abort', onAbort);
       job.child.removeListener('close', onTerminal);
       job.child.removeListener('error', onTerminal);
@@ -3288,26 +3285,13 @@ export function waitForJobResponse(
       resolvePromise(disposition);
     };
     const onTerminal = (): void => finish('terminal');
-    const onAbort = (): void => {
-      if (aborting) return;
-      aborting = true;
-      job.responseStream = undefined;
-      killJob(job, 'caller aborted the response request');
-      if (job.endedAt !== null) {
-        finish('terminal');
-        return;
-      }
-      // killJob escalates to SIGKILL after two seconds. This outer guard keeps a
-      // pathological child from retaining a cancelled tool request forever.
-      abortFallback = setTimeout(() => finish('terminal'), 5_000);
-    };
+    const onAbort = (): void => finish(job.endedAt === null ? 'yielded' : 'terminal');
 
     job.child.once('close', onTerminal);
     job.child.once('error', onTerminal);
     signal.addEventListener('abort', onAbort, { once: true });
     const responseTimer = setTimeout(
       () => {
-        if (aborting) return;
         finish(job.endedAt === null ? 'yielded' : 'terminal');
       },
       Math.max(0, responseWindowMs),

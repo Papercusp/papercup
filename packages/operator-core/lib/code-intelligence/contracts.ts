@@ -17,6 +17,9 @@
  * is one-indexed BY CONSTRUCTION so the type name itself carries the contract.
  */
 
+import { z } from 'zod';
+import type { DocStatus } from '../harness/docs/doc-record';
+
 /** Backends that can answer a code-intelligence question in this repo. */
 export type CodeIntelBackend =
   | 'gitnexus'
@@ -207,6 +210,215 @@ export interface CodeIntelSourceFile {
   readonly representation: 'full-source' | 'reexport-stub';
 }
 
+const commentaryText = z.string().min(1).refine(value => value.trim().length > 0);
+const commentaryHash = z.string().regex(/^[a-f0-9]{64}$/);
+const commentaryOffset = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+const commentaryPath = commentaryText.refine(path => !path.startsWith('/') && !/^[A-Za-z]:\//.test(path)
+  && !path.includes('\\') && !path.split('/').some(part => part === '..' || part === '.' || !part));
+const commentarySourceFile = z.object({
+  path: commentaryPath, contentHash: commentaryHash, language: commentaryText,
+  representation: z.enum(['full-source', 'reexport-stub']),
+}).strict();
+const commentaryAlgorithm = z.object({ id: commentaryText, version: commentaryText }).strict();
+
+/**
+ * A home identifies the existing writable authority, never a second prose store.
+ * Source comments stay in source, authored docs in harness_docs, and composed
+ * prose in harness_doc_parts. Raw text below is an immutable extraction snapshot.
+ * A source path/range is a locator; the binding UUID below is the durable identity.
+ */
+export const codeIntelCommentaryCanonicalHomeSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('source-comment'), repositoryId: commentaryText.nullable(), path: commentaryPath }).strict(),
+  z.object({ kind: z.literal('authored-doc'), docId: commentaryText }).strict(),
+  z.object({ kind: z.literal('composed-part'), docId: commentaryText, partKey: commentaryText }).strict(),
+]);
+export type CodeIntelCommentaryCanonicalHome = z.infer<typeof codeIntelCommentaryCanonicalHomeSchema>;
+
+const commentaryCanonicalRevision = z.discriminatedUnion('kind', [
+  // Deliberately excludes the observed file hash, path and position. A unique
+  // current re-resolution may preserve this subject across a move or trivia edit.
+  z.object({ kind: z.literal('source-comment'), commentDigest: commentaryHash }).strict(),
+  z.object({ kind: z.literal('authored-doc'), docId: commentaryText,
+    revision: commentaryText, digest: commentaryHash }).strict(),
+  z.object({ kind: z.literal('composed-part'), docId: commentaryText, partKey: commentaryText,
+    revision: commentaryText, digest: commentaryHash }).strict(),
+]);
+const commentaryLocator = z.object({
+  container: commentaryText.nullable(), kind: commentaryText,
+  name: commentaryText.nullable(), signatureSelector: commentaryText.nullable(),
+}).strict();
+
+/** Complete semantic review tuple; an unmeasured component means a null subject. */
+export const codeIntelCommentaryReviewSubjectSchema = z.object({
+  canonicalRevision: commentaryCanonicalRevision,
+  declaration: commentaryLocator.extend({ repositoryId: commentaryText, language: commentaryText }),
+  signatureDigest: commentaryHash,
+  body: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('present'), digest: commentaryHash }).strict(),
+    z.object({ kind: z.literal('absent'), reason: commentaryText }).strict(),
+  ]),
+  commentDigest: commentaryHash,
+  dependencySnapshotDigest: commentaryHash,
+  adapter: commentaryAlgorithm,
+  normalization: commentaryAlgorithm,
+}).strict().superRefine((subject, ctx) => {
+  if (subject.canonicalRevision.kind === 'source-comment'
+    && subject.canonicalRevision.commentDigest !== subject.commentDigest)
+    ctx.addIssue({ code: 'custom', path: ['canonicalRevision', 'commentDigest'],
+      message: 'A native canonical revision uses the normalized comment digest.' });
+});
+export type CodeIntelCommentaryReviewSubject = z.infer<typeof codeIntelCommentaryReviewSubjectSchema>;
+
+const commentaryRange = z.object({
+  encoding: z.literal('utf8-bytes'),
+  startByte0: commentaryOffset, endByte0: commentaryOffset,
+  startLine1: commentaryOffset.min(1), endLine1: commentaryOffset.min(1),
+  /** Exact source slice, including delimiters/attributes and native decoration. */
+  raw: z.string().min(1),
+}).strict();
+const commentarySite = z.object({
+  path: commentaryPath, line1: commentaryOffset.min(1).nullable(), kind: commentaryText.nullable(),
+  name: commentaryText.nullable().optional(), detail: z.string().nullable().optional(),
+}).strict();
+const commentaryReviewStatus: z.ZodType<DocStatus> = z.enum(['fresh', 'stale', 'review', 'untracked', 'unknown']);
+const commentaryUnit = z.object({
+  canonicalHome: codeIntelCommentaryCanonicalHomeSchema,
+  locator: commentaryLocator,
+  /** Native form labels belong to the adapter, not a TypeScript-only core enum. */
+  form: commentaryText,
+  association: z.object({
+    status: z.enum(['attached', 'unassociated', 'ambiguous', 'unsupported', 'unknown']),
+    reason: commentaryText.nullable(),
+  }).strict(),
+  declaration: z.object({ site: commentarySite, contentHash: commentaryHash,
+    versionedSymbolId: commentaryText.nullable() }).strict().nullable(),
+  ranges: z.array(commentaryRange).readonly(),
+  sections: z.array(z.object({ kind: commentaryText, name: commentaryText.nullable(),
+    text: z.string(), rangeIndices: z.array(commentaryOffset).readonly() }).strict()).readonly(),
+  references: z.array(z.object({ kind: commentaryText, target: commentaryText,
+    rangeIndices: z.array(commentaryOffset).readonly() }).strict()).readonly(),
+  // Reuse the maintained JSON validator: extensions carry native data, never
+  // compiler nodes, callbacks or a second public AST contract.
+  nativeExtensions: z.record(z.string(), z.json()),
+  currentSubject: codeIntelCommentaryReviewSubjectSchema.nullable(),
+  review: z.object({
+    status: commentaryReviewStatus,
+    binding: z.object({ id: z.string().uuid(), revision: commentaryOffset }).strict().nullable(),
+    approvedSubject: codeIntelCommentaryReviewSubjectSchema.nullable(),
+    evidenceRefs: z.array(commentaryText).readonly(),
+    reviewedSource: commentarySourceFile.nullable(),
+    /** Corroborates equivalence; does not manufacture another reviewer decision. */
+    currentResolutionRef: commentaryText.nullable(),
+  }).strict(),
+}).strict();
+export type CodeIntelCommentaryUnit = z.infer<typeof commentaryUnit>;
+
+/**
+ * One observed source and adapter. Multiple observations join the existing
+ * answer below; omission on a legacy answer remains unmeasured.
+ *
+ * This validates transport structure and internal consistency. Certification,
+ * source corroboration and review references are resolved by their existing
+ * domain readers; parsing this shape does not grant review or execution authority.
+ */
+export const codeIntelCommentarySchema = z.object({
+  schemaVersion: z.literal(1),
+  source: z.object({ repositoryId: commentaryText.nullable(),
+    identityKind: z.enum(['registry', 'local-root', 'unknown']),
+    file: commentarySourceFile, byteLength: commentaryOffset }).strict().nullable(),
+  adapter: z.object({ id: commentaryText, version: commentaryText,
+    parser: commentaryAlgorithm, normalization: commentaryAlgorithm,
+    certifiedForms: z.array(commentaryText).readonly() }).strict().nullable(),
+  outcome: z.enum(['found', 'none-in-certified-scope', 'incomplete', 'unsupported', 'unknown']),
+  sourceCompleteness: z.literal('unverified'),
+  units: z.array(commentaryUnit).readonly(),
+  reasons: z.array(commentaryText).readonly(),
+}).strict().superRefine((value, ctx) => {
+  const issue = (path: (string | number)[], message: string) => ctx.addIssue({ code: 'custom', path, message });
+  const measured = value.source?.file.representation === 'full-source'
+    && value.source.identityKind !== 'unknown' && value.source.repositoryId !== null && value.adapter !== null;
+  if ((value.outcome === 'found' || value.outcome === 'none-in-certified-scope') && !measured)
+    issue(['outcome'], 'A scoped result requires observed full source and adapter provenance.');
+  if (value.outcome === 'found' && value.units.length === 0)
+    issue(['units'], 'A found result must contain a unit.');
+  if (value.outcome === 'none-in-certified-scope'
+    && (value.units.length !== 0 || !value.adapter?.certifiedForms.length))
+    issue(['outcome'], 'An empty result is scoped to explicitly certified forms.');
+  if (['incomplete', 'unsupported', 'unknown'].includes(value.outcome) && !value.reasons.length)
+    issue(['reasons'], 'An adverse or unmeasured result must retain its reason.');
+  if (value.units.length && (!value.source || !value.adapter))
+    issue(['units'], 'Extracted units require source and adapter provenance.');
+  for (const [index, unit] of value.units.entries()) {
+    const at = (...path: (string | number)[]) => ['units', index, ...path];
+    const source = value.source;
+    const adapter = value.adapter;
+    if (unit.canonicalHome.kind === 'source-comment') {
+      if (!unit.ranges.length) issue(at('ranges'), 'A source comment retains its exact raw ranges.');
+      if (source && (unit.canonicalHome.path !== source.file.path
+        || unit.canonicalHome.repositoryId !== source.repositoryId))
+        issue(at('canonicalHome'), 'The source authority must match the observed source.');
+    }
+    for (const [i, range] of unit.ranges.entries()) {
+      if (range.endByte0 <= range.startByte0 || range.endLine1 < range.startLine1
+        || range.endByte0 - range.startByte0 !== new TextEncoder().encode(range.raw).length
+        || (source && range.endByte0 > source.byteLength)
+        || (i > 0 && range.startByte0 < unit.ranges[i - 1]!.endByte0))
+        issue(at('ranges', i), 'Ranges are ordered, nonoverlapping, half-open UTF-8 byte slices.');
+    }
+    for (const family of ['sections', 'references'] as const)
+      for (const [i, part] of unit[family].entries())
+        if (part.rangeIndices.some(position => position >= unit.ranges.length))
+          issue(at(family, i, 'rangeIndices'), 'The range reference must identify a retained source slice.');
+    if (unit.association.status === 'attached') {
+      if (!unit.declaration) issue(at('declaration'), 'Attachment requires one resolved declaration.');
+      if (value.outcome === 'found' && !adapter?.certifiedForms.includes(unit.form))
+        issue(at('form'), 'The found form must be certified by this adapter.');
+    } else {
+      if (unit.declaration || !unit.association.reason)
+        issue(at('association'), 'Unresolved association retains a reason, not a fabricated declaration.');
+      if (unit.currentSubject)
+        issue(at('currentSubject'), 'An unresolved declaration cannot identify a current review subject.');
+      if (value.outcome === 'found') issue(at('association'), 'An unresolved unit makes the result incomplete.');
+    }
+    if (unit.declaration && source) {
+      const expected = versionedSymbolIdentity(source.repositoryId, unit.declaration.site, source.file);
+      if (unit.declaration.site.path !== source.file.path || unit.declaration.contentHash !== source.file.contentHash
+        || unit.declaration.versionedSymbolId !== expected || expected === null)
+        issue(at('declaration'), 'Declaration identity must name this exact observed source version.');
+    }
+    const subject = unit.currentSubject;
+    if (subject && source && adapter) {
+      if (subject.declaration.repositoryId !== source.repositoryId || subject.declaration.language !== source.file.language
+        || subject.declaration.kind !== unit.locator.kind || subject.declaration.name !== unit.locator.name
+        || subject.declaration.container !== unit.locator.container
+        || subject.declaration.signatureSelector !== unit.locator.signatureSelector
+        || JSON.stringify(subject.adapter) !== JSON.stringify({ id: adapter.id, version: adapter.version })
+        || JSON.stringify(subject.normalization) !== JSON.stringify(adapter.normalization))
+        issue(at('currentSubject'), 'The current subject must use the observed declaration and algorithms.');
+      const home = unit.canonicalHome;
+      const revision = subject.canonicalRevision;
+      if (home.kind !== revision.kind
+        || (home.kind === 'authored-doc' && revision.kind === 'authored-doc' && home.docId !== revision.docId)
+        || (home.kind === 'composed-part' && revision.kind === 'composed-part'
+          && (home.docId !== revision.docId || home.partKey !== revision.partKey)))
+        issue(at('currentSubject', 'canonicalRevision'), 'The revision must belong to the canonical unit.');
+    }
+    if (unit.review.status === 'fresh') {
+      if (unit.association.status !== 'attached' || !adapter?.certifiedForms.includes(unit.form)
+        || !unit.review.binding || unit.review.binding.revision < 1 || !unit.review.evidenceRefs.length
+        || unit.review.reviewedSource?.representation !== 'full-source' || !subject || !unit.review.approvedSubject
+        || JSON.stringify(subject) !== JSON.stringify(unit.review.approvedSubject))
+        issue(at('review'), 'Freshness requires the exact approved subject and retained review references.');
+      if (source && unit.review.reviewedSource
+        && (source.file.path !== unit.review.reviewedSource.path
+          || source.file.contentHash !== unit.review.reviewedSource.contentHash)
+        && !unit.review.currentResolutionRef)
+        issue(at('review', 'currentResolutionRef'), 'A changed source observation requires explicit re-resolution evidence.');
+    }
+  }
+});
+export type CodeIntelCommentary = z.infer<typeof codeIntelCommentarySchema>;
+
 /** Context joins source relationships without adding duplicate semantic query tools. */
 export type CodeIntelRelationshipKind = CodeIntelIntent | 'imports' | 'inheritance' | 'members'
   | 'field-read' | 'field-write' | 'overrides';
@@ -297,6 +509,8 @@ export interface CodeIntelAnswer {
   readonly freshness: Freshness;
   /** Omission on a legacy backend is unmeasured; never fill hashes from a later disk read. */
   readonly evidence?: CodeIntelSourceEvidence;
+  /** Per-source commentary observations; absence on old producers is unmeasured. */
+  readonly commentary?: readonly CodeIntelCommentary[];
   readonly traversal?: CodeIntelTraversal;
   /** Retrieval/grouping suggestions over a captured compiler scope, never execution proof. */
   readonly discovery?: {

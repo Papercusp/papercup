@@ -9,7 +9,19 @@
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { Sql } from 'postgres';
+import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
+
+const h = vi.hoisted(() => ({ sql: null as unknown as Sql }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: h.sql }),
+}));
+vi.mock('../../workspace-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../workspace-registry')>()),
+  activeWorkspaceId: () => 'papercusp-workspace',
+}));
 
 vi.mock('./exec-sandbox', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./exec-sandbox')>()),
@@ -23,8 +35,10 @@ vi.mock('./exec-sandbox', async (importOriginal) => ({
 import bashTool from './bash';
 import bashOutputTool from './bash_output';
 import bashKillTool from './bash_kill';
-import { __resetBashJobs, getJob, killJob } from './bash-jobs';
+import { __resetBashJobs, getJob, killJob, TIMEOUT_SIGTERM_GRACE_MS } from './bash-jobs';
+import * as bashJobs from './bash-jobs';
 import { getTask } from '../../task-manager/store';
+import { setAutoPumpEnabledForTests } from '../../events/await/engine';
 
 type Result = {
   content: Array<{ text: string }>;
@@ -35,6 +49,11 @@ const bash = bashTool as unknown as Tool;
 const bashOutput = bashOutputTool as unknown as Tool;
 const bashKill = bashKillTool as unknown as Tool;
 const STATE = mkdtempSync(join(tmpdir(), 'cap-bash-yield-integration-'));
+const starts = vi.spyOn(bashJobs, 'startBackground');
+// A deadline marks intent before whole-tree close. Teardown must include the
+// runner's actual escalation grace, just like the terminal-response assertion.
+const CLEANUP_MS = TIMEOUT_SIGTERM_GRACE_MS + 5_000;
+let db: OrgTestDb;
 
 function ctx(signal = new AbortController().signal) {
   return {
@@ -52,7 +71,35 @@ function payload(result: Result): Record<string, unknown> {
   return JSON.parse(result.content[0]!.text) as Record<string, unknown>;
 }
 
-afterEach(() => __resetBashJobs());
+beforeAll(async () => {
+  // Enrollment and recovery use the real ledger in a migrated throwaway DB.
+  // Never fall through to the operator's live org-admin connection.
+  db = await createOrgTestDb();
+  h.sql = db.adminSql;
+  setAutoPumpEnabledForTests(false);
+}, 120_000);
+
+afterEach(async () => {
+  try {
+    for (const result of starts.mock.results) {
+      if (result.type !== 'return') continue;
+      const job = result.value;
+      killJob(job, 'integration fixture cleanup');
+      await expect.poll(() => job.endedAt, { timeout: CLEANUP_MS }).not.toBeNull();
+      await expect.poll(async () => (await getTask(job.taskId!))?.endedAt, { timeout: 5_000 })
+        .toBeTruthy();
+    }
+  } finally {
+    starts.mockClear();
+    __resetBashJobs();
+  }
+}, CLEANUP_MS * 2 + 1_000);
+
+afterAll(async () => {
+  starts.mockRestore();
+  await db?.cleanup();
+  setAutoPumpEnabledForTests(true);
+});
 
 describe('capability:bash start-once response yield — integration', () => {
   it('returns terminal output for a command completing within its response window', async () => {
@@ -143,10 +190,12 @@ describe('capability:bash start-once response yield — integration', () => {
     }
   });
 
+  const EXECUTION_MS = 1_000;
+  const DEADLINE_RESPONSE_MS = EXECUTION_MS + TIMEOUT_SIGTERM_GRACE_MS + 10_000;
   it('reports the execution deadline separately from a response-window yield', async () => {
     const controller = new AbortController();
     const result = await bash.handler(
-      { command: 'exec sleep 30', timeout: 300, yield_after_ms: 5_000 },
+      { command: 'exec sleep 30', timeout: EXECUTION_MS, yield_after_ms: DEADLINE_RESPONSE_MS },
       ctx(controller.signal),
     );
     const job = getJob(String(result._meta?.shellExecution?.bash_id));
@@ -163,36 +212,55 @@ describe('capability:bash start-once response yield — integration', () => {
     } finally {
       if (job) killJob(job);
     }
-  });
+  }, DEADLINE_RESPONSE_MS + 10_000);
 
-  it('reports caller abort separately from execution and response deadlines', async () => {
+  it('preserves a confined task and recoverable output when its response request times out', async () => {
     const ready = join(STATE, `abort-ready-${crypto.randomUUID()}`);
+    const barrier = `${ready}.release`;
+    const marker = `${ready}.invocations`;
     const controller = new AbortController();
     const response = bash.handler(
       {
-        command: `printf ready > ${JSON.stringify(ready)}; exec sleep 30`,
+        command: `printf 'entered\\n' >> ${JSON.stringify(marker)}; printf ready > ${JSON.stringify(ready)}; ` +
+          `while [ ! -e ${JSON.stringify(barrier)} ]; do sleep 0.02; done; ` +
+          `printf 'finished\\n' >> ${JSON.stringify(marker)}; printf AFTER-RESPONSE-TIMEOUT`,
         timeout: 30_000,
         yield_after_ms: 10_000,
+        require_task_confinement: true,
       },
       ctx(controller.signal),
     );
+    let job: ReturnType<typeof getJob>;
     try {
       // Abort only after the command itself ran: a preflight cancellation
-      // cannot masquerade as stopping the admitted, running command.
+      // cannot masquerade as survival of an admitted, running command.
       await expect.poll(() => existsSync(ready), { timeout: 5_000 }).toBe(true);
-      controller.abort();
-      const result = await response;
-      expect(result._meta?.shellExecution).toMatchObject({
-        status: 'killed', running: false, yielded: false,
+      controller.abort(new DOMException('Response timed out', 'TimeoutError'));
+      const launch = payload(await response);
+      expect(launch).toMatchObject({
+        status: 'running', running: true, yielded: true, task_id: expect.any(String),
       });
-      const job = getJob(String(result._meta?.shellExecution?.bash_id));
-      expect(job).toBeDefined();
-      expect(job?.killReason).toBe('caller aborted the response request');
+      job = getJob(String(launch.bash_id));
+      expect(job?.scopeUnit).toEqual(expect.any(String));
+      expect(job?.killReason).toBeUndefined();
       expect(job?.deadlineReason).toBeUndefined();
-      expect(job?.endedAt).not.toBeNull();
+      expect(job?.endedAt).toBeNull();
+      const carried = { task_id: launch.task_id };
+      expect(payload(await bashOutput.handler(carried, ctx())))
+        .toMatchObject({ task_id: launch.task_id, status: 'running' });
+      writeFileSync(barrier, 'release');
+      await expect.poll(async () => payload(await bashOutput.handler(carried, ctx())), { timeout: 5_000 })
+        .toMatchObject({ status: 'completed', exit_code: 0 });
+      await expect.poll(async () => (await getTask(String(launch.task_id)))?.state, { timeout: 5_000 })
+        .toBe('exited');
+      expect(getJob(String(launch.bash_id))).toBe(job);
+      expect(readFileSync(marker, 'utf8').trim().split('\n')).toEqual(['entered', 'finished']);
+      expect(readFileSync(String(launch.log_path), 'utf8')).toContain('AFTER-RESPONSE-TIMEOUT');
     } finally {
+      writeFileSync(barrier, 'release');
       controller.abort();
       await response;
+      if (job) killJob(job);
     }
   }, 20_000);
 

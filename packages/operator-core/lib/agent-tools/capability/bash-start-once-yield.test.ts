@@ -326,14 +326,14 @@ describe('capability:bash — start once and yield the same durable job (P-002)'
     }
   });
 
-  it('treats caller abort as cancellation of that same whole process tree', async () => {
-    const orphanMarker = join(STATE, `abort-orphan-${crypto.randomUUID()}.txt`);
+  it('detaches the aborted response while the same process tree finishes', async () => {
+    const finishedMarker = join(STATE, `abort-finished-${crypto.randomUUID()}.txt`);
     const releaseMarker = join(STATE, `abort-release-${crypto.randomUUID()}.txt`);
     const emitted: string[] = [];
     const controller = new AbortController();
     const resultPromise = bash.handler(
       {
-        command: `(printf 'CHILD-READY\\n'; while test ! -e ${JSON.stringify(releaseMarker)}; do sleep 0.02; done; printf orphan > ${JSON.stringify(orphanMarker)}) & wait`,
+        command: `(printf 'CHILD-READY\\n'; while test ! -e ${JSON.stringify(releaseMarker)}; do sleep 0.02; done; printf finished > ${JSON.stringify(finishedMarker)}; printf CHILD-FINISHED) & wait`,
         timeout: 5_000,
         yield_after_ms: 10_000,
       },
@@ -346,14 +346,19 @@ describe('capability:bash — start once and yield the same durable job (P-002)'
 
     const result = await resultPromise;
     const seen = unwrapToolResult(result as never) as Record<string, unknown>;
-    expect(seen.status).toBe('killed');
-    expect(seen.running).toBe(false);
+    expect(seen).toMatchObject({ status: 'running', running: true, yielded: true });
     expect(typeof seen.bash_id).toBe('string');
-    expect(getJob(String(seen.bash_id))?.status).toBe('killed');
+    const job = getJob(String(seen.bash_id));
+    expect(job?.status).toBe('running');
+    const emittedAtAbort = emitted.join('');
 
-    // Release any survivor: a detached child would now write the orphan marker.
+    // Only effects after the response abort prove that the owned child survived.
     writeFileSync(releaseMarker, 'release');
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(existsSync(orphanMarker)).toBe(false);
+    const terminal = await readUntilTerminal(String(seen.bash_id));
+    expect(terminal.payload).toMatchObject({ status: 'completed', exit_code: 0 });
+    expect(terminal.output).toContain('CHILD-FINISHED');
+    expect(readFileSync(finishedMarker, 'utf8')).toBe('finished');
+    expect(getJob(String(seen.bash_id))).toBe(job);
+    expect(emitted.join('')).toBe(emittedAtAbort);
   });
 });

@@ -9,7 +9,8 @@
  * Ordinary calls start one durable job and stream while waiting. Fast commands
  * return terminal output; a command that exceeds the bounded response window
  * returns that SAME job's `bash_id`/`task_id` without killing or restarting it.
- * `timeout` remains the independent execution deadline. Explicit background
+ * Response-request cancellation also detaches the observer without stopping
+ * an admitted job. `timeout` remains the independent execution deadline. Explicit background
  * mode returns the handles immediately; read
  * incremental output with `capability:bash_output` and stop it with
  * `processes:kill` — the way a 5-minute build is run without holding one
@@ -520,7 +521,8 @@ export default defineTool({
       .describe(
         `Ordinary-call RESPONSE window in ms (default ${FOREGROUND_TIMEOUT_CEILING_MS}, max ${FOREGROUND_TIMEOUT_CEILING_MS}). ` +
           `If the command is still running when this window ends, the call returns its original durable bash_id/task_id and ` +
-          `the job continues until completion, explicit kill/abort, or the separate timeout execution deadline. ` +
+          `the job continues until completion, explicit kill, or the separate timeout execution deadline. ` +
+          `Cancelling the response request after launch also preserves the job; use processes:kill to stop execution. ` +
           `This never restarts or duplicates the command. Ignored with run_in_background:true, which yields immediately.`,
       ),
     run_in_background: z
@@ -823,8 +825,8 @@ export default defineTool({
       PAPERCUSP_TEST_RUN_WORK_ITEM: provenance.workItemId ?? '',
       PAPERCUSP_TEST_RUN_GROUP: provenance.workItemId ? randomUUID() : '',
       // The marker is owned by this handler, not by caller-provided env. An
-      // ordinary call survives a response yield, but its execution deadline or
-      // caller abort still kills the entire process tree, so mutation probes
+      // ordinary call survives a response yield or request cancellation, but
+      // its execution deadline or explicit kill still stops the tree, so mutation probes
       // must refuse --in-tree before they touch a tracked file. Explicit
       // background jobs clear both names as before.
       [CAPABILITY_BASH_FOREGROUND_ENV]: args.run_in_background ? '' : '1',

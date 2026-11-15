@@ -1257,26 +1257,63 @@ describe('background jobs', () => {
       }
     });
 
-    it('persists caller abort intent through the durable close', async () => {
-      const ledger = mockEnrolledTask('caller-abort-reason-task');
+    it.each([false, true])('preserves the enrolled job when the response is aborted (already aborted: %s)', async (alreadyAborted) => {
+      const ledger = mockEnrolledTask('response-abort-survivor');
+      const barrier = join(STATE, `response-abort-${crypto.randomUUID()}`);
       let job: ReturnType<typeof startBackground> | undefined;
       try {
-        job = startBackground({ command: 'sleep 30', cwd: STATE, stateDir: STATE }, 60_000);
+        job = startBackground({
+          command: `while [ ! -e ${JSON.stringify(barrier)} ]; do sleep 0.02; done; printf AFTER-ABORT`,
+          cwd: STATE, stateDir: STATE, onChunk: vi.fn(),
+        }, 60_000);
+        const deadline = job.deadlineAt;
         const controller = new AbortController();
+        if (alreadyAborted) controller.abort(new DOMException('Response timed out', 'TimeoutError'));
         const response = waitForJobResponse(job, controller.signal, 30_000);
         controller.abort();
-        await expect(response).resolves.toBe('terminal');
+        await expect(response).resolves.toBe('yielded');
+
+        expect(job).toMatchObject({ status: 'running', endedAt: null, taskId: 'response-abort-survivor', deadlineAt: deadline });
+        expect(job.killReason).toBeUndefined();
+        expect(job.responseStream).toBeUndefined();
+        expect(ledger.finish).not.toHaveBeenCalled();
+        writeFileSync(barrier, 'release');
+        await expect.poll(() => job?.endedAt, { timeout: 5_000 }).not.toBeNull();
+        expect(snapshotJobResult(job)).toMatchObject({ status: 'completed', exitCode: 0, output: 'AFTER-ABORT' });
 
         expect(ledger.finish).toHaveBeenCalledWith(
-          expect.objectContaining({ taskId: 'caller-abort-reason-task' }),
-          expect.objectContaining({ state: 'killed', exitReason: 'caller aborted the response request' }),
+          expect.objectContaining({ taskId: 'response-abort-survivor' }),
+          expect.objectContaining({ state: 'exited', exitCode: 0, exitReason: null }),
           expect.any(Object),
         );
       } finally {
+        writeFileSync(barrier, 'release');
         if (job?.status === 'running') {
           killJob(job, 'test cleanup');
           await waitForStatus(job.id);
         }
+        ledger.restore();
+      }
+    });
+
+    it('still enforces the execution deadline after detaching an aborted response', async () => {
+      const ledger = mockEnrolledTask('response-abort-deadline');
+      const job = startBackground({ command: 'exec sleep 30', cwd: STATE, stateDir: STATE }, 300);
+      try {
+        const controller = new AbortController();
+        const response = waitForJobResponse(job, controller.signal, 30_000);
+        controller.abort();
+        await expect(response).resolves.toBe('yielded');
+        await expect.poll(() => job.endedAt, { timeout: 5_000 }).not.toBeNull();
+        expect(job.status).toBe('timed_out');
+        expect(job.killReason).toBeUndefined();
+        expect(ledger.finish).toHaveBeenCalledWith(
+          expect.objectContaining({ taskId: 'response-abort-deadline' }),
+          expect.objectContaining({ state: 'timed_out', exitReason: 'exceeded 300ms timeout' }),
+          expect.any(Object),
+        );
+      } finally {
+        if (job.status === 'running') killJob(job, 'test cleanup');
         ledger.restore();
       }
     });
