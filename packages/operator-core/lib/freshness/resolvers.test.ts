@@ -12,11 +12,18 @@ vi.mock('../harness-registry', async (importOriginal) => {
   return { ...actual, loadHarnessRegistry: h.loadHarnessRegistry };
 });
 
-const { resolveCurrentTokens, resolveFileTokensWithProvenance, findFileInSiblingCheckouts, describeUnresolvedFileDep } = await import('./resolvers');
+const {
+  resolveCurrentTokens,
+  resolveFileTokensWithProvenance,
+  findFileInSiblingCheckouts,
+  repoQualifiedFilePathExists,
+  describeUnresolvedFileDep,
+} = await import('./resolvers');
 
 let tempRoot: string | undefined;
 let canonicalRoot: string | undefined;
 const priorIntegrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+const priorWorkspaceRoot = process.env.PAPERCUSP_WORKSPACE_ROOT;
 
 afterEach(async () => {
   h.loadHarnessRegistry.mockReset();
@@ -26,6 +33,8 @@ afterEach(async () => {
   canonicalRoot = undefined;
   if (priorIntegrationRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
   else process.env.PAPERCUSP_INTEGRATION_ROOT = priorIntegrationRoot;
+  if (priorWorkspaceRoot === undefined) delete process.env.PAPERCUSP_WORKSPACE_ROOT;
+  else process.env.PAPERCUSP_WORKSPACE_ROOT = priorWorkspaceRoot;
 });
 
 async function makeCanonicalRoot(): Promise<string> {
@@ -189,6 +198,27 @@ describe('sibling-checkout hint for an unresolvable file: dep (EI-22169368425533
     const hit = findFileInSiblingCheckouts('packages/ui/src/shell.tsx', { workspaceRoot });
 
     expect(hit).toBe('portal');
+  });
+
+  it('accepts current and sibling checkout-qualified paths, but not an arbitrary workspace directory', async () => {
+    workspaceRoot = await mkdtemp(join(tmpdir(), 'freshness-qualified-workspace-'));
+    for (const checkout of ['papercusp', 'portal']) {
+      await mkdir(join(workspaceRoot, checkout, '.git'), { recursive: true });
+      await mkdir(join(workspaceRoot, checkout, 'src'), { recursive: true });
+      await writeFile(join(workspaceRoot, checkout, 'src', 'owner.ts'), 'export {};');
+    }
+    await mkdir(join(workspaceRoot, 'scratch', 'src'), { recursive: true });
+    await writeFile(join(workspaceRoot, 'scratch', 'src', 'owner.ts'), 'not a checkout');
+
+    expect(repoQualifiedFilePathExists('papercusp/src/owner.ts', { workspaceRoot })).toBe(true);
+    expect(repoQualifiedFilePathExists('portal/src/owner.ts', { workspaceRoot })).toBe(true);
+    expect(repoQualifiedFilePathExists('scratch/src/owner.ts', { workspaceRoot })).toBe(false);
+  });
+
+  it('rejects escaping and absolute checkout-qualified paths', async () => {
+    workspaceRoot = await mkdtemp(join(tmpdir(), 'freshness-qualified-workspace-'));
+    expect(repoQualifiedFilePathExists('../portal/src/owner.ts', { workspaceRoot })).toBe(false);
+    expect(repoQualifiedFilePathExists('/portal/src/owner.ts', { workspaceRoot })).toBe(false);
   });
 
   it('returns null when no sibling checkout has the ref either', async () => {

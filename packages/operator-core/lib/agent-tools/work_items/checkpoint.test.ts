@@ -39,6 +39,7 @@ const commentWorkItem = vi.fn();
 const readSuccessfulActionInvocations = vi.hoisted(() => vi.fn());
 const readSuccessfulReadProofs = vi.hoisted(() => vi.fn());
 const resolveCurrentTokens = vi.hoisted(() => vi.fn());
+const repoQualifiedFilePathExists = vi.hoisted(() => vi.fn(() => false));
 const readFrozenRepairMarker = vi.hoisted(() => vi.fn());
 const postLearnedAtLevel = vi.hoisted(() => vi.fn());
 const unresolvedPlanDecisionRefs = vi.hoisted(() => vi.fn());
@@ -62,7 +63,7 @@ vi.mock('../../carry-surface-read-proof', async () => {
 });
 vi.mock('../../freshness/resolvers', async () => {
   const actual = await vi.importActual<typeof import('../../freshness/resolvers')>('../../freshness/resolvers');
-  return { ...actual, resolveCurrentTokens };
+  return { ...actual, resolveCurrentTokens, repoQualifiedFilePathExists };
 });
 vi.mock('../../release/frozen-repair-edit-marker', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../release/frozen-repair-edit-marker')>()),
@@ -5667,6 +5668,27 @@ describe('work_items:checkpoint — prose path continuity lint (EI-2238651493968
       workspaceId: 'default',
       harness: 'papercup',
     }, { allowDirectories: true });
+  });
+
+  it('does not flag a checkout-qualified current or sibling repository path that exists', async () => {
+    const current = 'papercusp/packages/operator-core/lib/freshness/resolvers.ts';
+    const sibling = 'portal/packages/ui/src/shell.tsx';
+    const body = `The resolver is in ${current}; its consumer is in ${sibling}.`;
+    resolveCurrentTokens.mockResolvedValue(new Map([
+      [`file:${current}`, null],
+      [`file:${sibling}`, null],
+    ]));
+    repoQualifiedFilePathExists.mockImplementation((path: string) => path === current || path === sibling);
+    getWorkItem.mockResolvedValue({ id: 'WI-PROSE-QUALIFIED', harness: 'papercusp' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-PROSE-QUALIFIED', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result.prosePathLint).toBeUndefined();
+    expect(repoQualifiedFilePathExists).toHaveBeenCalledWith(current, { allowDirectories: true });
+    expect(repoQualifiedFilePathExists).toHaveBeenCalledWith(sibling, { allowDirectories: true });
   });
 
   it('excludes paths preserved only from the prior checkpoint while checking current prose', async () => {

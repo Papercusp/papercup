@@ -90,6 +90,8 @@ export interface PushFact {
   citedPaths: readonly string[];
   suggestedCall?: string;
   sourceHashes?: readonly PushProofSource[];
+  /** Complete semantic input retained beside its digest identity in the push/skip ledger. */
+  sourceRecord?: NotesWithheldSource;
   /** A self-contained one-line note, rendered without the snapshot header. */
   bare?: boolean;
 }
@@ -107,6 +109,7 @@ interface PushSkip {
   chars: number;
   budgetLeft: number;
   site: 'request-budget' | 'turn-budget' | 'wall' | 'push-cap';
+  sourceRecord?: NotesWithheldSource;
 }
 /** Measured attribution supplied by the incident caller. Static reach alone is
  * never upgraded to a change or work-item claim; callers must provide these
@@ -827,6 +830,11 @@ export interface WithheldNote {
   /** `changed` = an anchored file's content moved; `unverifiable` = it could not be hashed now. */
   reason: 'changed' | 'unverifiable';
 }
+export interface NotesWithheldSource {
+  schema: 'notes-withheld-v1';
+  path: string;
+  notes: readonly Pick<WithheldNote, 'key' | 'reason'>[];
+}
 export const NOTES_FACTS_PER_PATH = 2;
 export const NOTE_BODY_PUSH_CHARS = 360;
 
@@ -845,10 +853,15 @@ export const snapshotNotesLeg: PushLeg = input => {
     }
     const withheld = context.withheld.filter(entry => entry.path === path);
     if (withheld.length) {
-      const keys = [...new Set(withheld.map(entry => entry.key))];
-      facts.push({ leg: 'notes', subject: `notes-withheld:${path}:${keys.join(',')}`.slice(0, 1000), citedPaths: [path],
+      const notes = [...new Map(withheld.map(entry => [JSON.stringify([entry.key, entry.reason]),
+        { key: entry.key, reason: entry.reason }])).entries()]
+        .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, entry]) => entry);
+      const sourceRecord: NotesWithheldSource = { schema: 'notes-withheld-v1', path, notes };
+      const keys = [...new Set(notes.map(entry => entry.key))];
+      const subject = `notes-withheld:${createHash('sha256').update(JSON.stringify(sourceRecord)).digest('hex')}`;
+      facts.push({ leg: 'notes', subject, sourceRecord, citedPaths: [path],
         text: `${keys.length} code note(s) on ${path} withheld because the code changed since they were written`
-          + ` (or could not be re-hashed): ${keys.slice(0, 4).join(', ')}${keys.length > 4 ? ', …' : ''}.`
+          + ` (or could not be re-hashed): ${keys.slice(0, 4).join(', ')}${keys.length > 4 ? `, ${keys.length - 4} more (ledger source_record)` : ''}.`
           + ' Re-verify against the current file, then re-assert the note or facts:retract it.' });
     }
   }
@@ -1304,11 +1317,11 @@ async function recordPushSkips(tx: Sql, input: PushInput, epoch: number, turn: s
   if (typeof (tx as Sql & Partial<Pick<TransactionSql, 'savepoint'>>).savepoint !== 'function') return;
   try {
     await (tx as unknown as TransactionSql).savepoint(sp => sp`INSERT INTO harness_shared.code_intel_push_skips
-      (workspace_id, owner_id, epoch, turn_id, leg, subject, chars, budget_left, site, client)
-      SELECT ${input.workspace}, ${input.owner}, ${epoch}, ${turn}, s.leg, s.subject, s.chars, s.budget_left, s.site, ${input.client ?? null}
+      (workspace_id, owner_id, epoch, turn_id, leg, subject, chars, budget_left, site, client, source_record)
+      SELECT ${input.workspace}, ${input.owner}, ${epoch}, ${turn}, s.leg, s.subject, s.chars, s.budget_left, s.site, ${input.client ?? null}, s.source_record::jsonb
       FROM unnest(${skips.map(s => s.leg)}::text[], ${skips.map(s => s.subject)}::text[],
-        ${skips.map(s => s.chars)}::int[], ${skips.map(s => s.budgetLeft)}::int[], ${skips.map(s => s.site)}::text[])
-        AS s(leg, subject, chars, budget_left, site)
+        ${skips.map(s => s.chars)}::int[], ${skips.map(s => s.budgetLeft)}::int[], ${skips.map(s => s.site)}::text[], ${skips.map(s => s.sourceRecord ? JSON.stringify(s.sourceRecord) : null)}::text[])
+        AS s(leg, subject, chars, budget_left, site, source_record)
       WHERE NOT EXISTS (SELECT 1 FROM harness_shared.code_intel_pushes p
         WHERE p.workspace_id = ${input.workspace} AND p.owner_id = ${input.owner} AND p.epoch = ${epoch}
           AND p.leg = s.leg AND p.subject = s.subject)
@@ -1342,7 +1355,7 @@ export async function commitPushFacts(input: PushInput, snapshot: PushSnapshot, 
     // CODE_INTEL_PUSH_MAX_CHARS pushes fill exactly CODE_INTEL_PUSH_TURN_CHARS (R-5 D-009).
     const skips: PushSkip[] = [
       ...dropped.map(fact => ({ leg: fact.leg, subject: fact.subject, chars: formatPushFact(fact, snapshot).length,
-        budgetLeft, site: 'push-cap' as const })),
+        budgetLeft, site: 'push-cap' as const, sourceRecord: fact.sourceRecord })),
       ...notRun.map(leg => ({ leg, subject: `leg-not-run:${leg}`, chars: 0, budgetLeft, site: 'wall' as const })),
     ];
     const text: string[] = [];
@@ -1357,13 +1370,15 @@ export async function commitPushFacts(input: PushInput, snapshot: PushSnapshot, 
         // The production caller's request share is the whole turn, so a request-budget
         // skip comes only from a caller that passes a smaller share.
         skips.push({ leg: fact.leg, subject: fact.subject, chars, budgetLeft: Math.max(0, left),
-          site: chars > CODE_INTEL_PUSH_MAX_CHARS ? 'push-cap' : chars > turnLeft ? 'turn-budget' : 'request-budget' });
+          site: chars > CODE_INTEL_PUSH_MAX_CHARS ? 'push-cap' : chars > turnLeft ? 'turn-budget' : 'request-budget',
+          sourceRecord: fact.sourceRecord });
         continue;
       }
       const inserted = await tx<{ id: number }[]>`INSERT INTO harness_shared.code_intel_pushes
-        (workspace_id, owner_id, epoch, turn_id, leg, subject, snapshot_commit, snapshot_generated_at, cited_paths, suggested_call, chars, client)
+        (workspace_id, owner_id, epoch, turn_id, leg, subject, snapshot_commit, snapshot_generated_at, cited_paths, suggested_call, chars, client, source_record)
         VALUES (${input.workspace}, ${input.owner}, ${epoch}, ${turn}, ${fact.leg}, ${fact.subject}, ${snapshot.commit},
-          ${snapshot.generatedAt}::timestamptz, ${[...fact.citedPaths]}::text[], ${fact.suggestedCall ?? null}, ${chars}, ${input.client ?? null})
+          ${snapshot.generatedAt}::timestamptz, ${[...fact.citedPaths]}::text[], ${fact.suggestedCall ?? null}, ${chars}, ${input.client ?? null},
+          ${fact.sourceRecord ? JSON.stringify(fact.sourceRecord) : null}::jsonb)
         ON CONFLICT (workspace_id, owner_id, epoch, leg, subject) DO NOTHING RETURNING id`;
       if (inserted.length) { text.push(block); requestLeft -= chars; turnLeft -= chars; }
     }

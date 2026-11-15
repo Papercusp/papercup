@@ -147,7 +147,7 @@ import {
 } from '../../work-item-checkpoint';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { dependsOnSpec } from '../../freshness/tool-schema';
-import { resolveCurrentTokens } from '../../freshness/resolvers';
+import { repoQualifiedFilePathExists, resolveCurrentTokens } from '../../freshness/resolvers';
 import {
   commentWorkItem,
   markFeatureProgress,
@@ -351,6 +351,7 @@ async function unresolvedProsePathsInCheckpoint(
     const deps = paths.map((path) => `file:${path}`);
     const tokens = await resolveCurrentTokens(deps, ctx, { allowDirectories: true });
     let missing = paths.filter((path) => tokens.get(`file:${path}`) === null);
+    missing = missing.filter((path) => !repoQualifiedFilePathExists(path, { allowDirectories: true }));
     if (missing.length === 0) return undefined;
 
     // TypeScript and JavaScript prose commonly uses extensionless module paths.
@@ -368,7 +369,11 @@ async function unresolvedProsePathsInCheckpoint(
       const suffixedTokens = await resolveCurrentTokens(suffixedDeps, ctx);
       const modulePathsThatResolve = new Set(
         extensionless.filter((path) =>
-          suffixes.some((suffix) => suffixedTokens.get('file:' + path + suffix) != null),
+          suffixes.some(
+            (suffix) =>
+              suffixedTokens.get('file:' + path + suffix) != null ||
+              repoQualifiedFilePathExists(path + suffix),
+          ),
         ),
       );
       missing = missing.filter((path) => !modulePathsThatResolve.has(path));

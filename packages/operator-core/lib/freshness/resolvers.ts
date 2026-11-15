@@ -284,6 +284,33 @@ export function findFileInSiblingCheckouts(ref: string, opts: { workspaceRoot?: 
 }
 
 /**
+ * Check an explicitly checkout-qualified citation (`<checkout>/<path>`) against
+ * the shared workspace root. This is intentionally separate from `file:` token
+ * resolution: dependency batches must retain their one-source-tree provenance,
+ * while narrative handoffs may cite both the current and sibling checkouts.
+ */
+export function repoQualifiedFilePathExists(
+  ref: string,
+  opts: { workspaceRoot?: string; allowDirectories?: boolean } = {},
+): boolean {
+  if (isAbsolute(ref) || normalize(ref).startsWith('..')) return false;
+  const normalizedRef = normalize(ref);
+  const [checkout, ...rest] = normalizedRef.split(sep);
+  if (!checkout || rest.length === 0) return false;
+
+  const workspaceRoot = resolve(opts.workspaceRoot ?? resolveHostWorkspaceRoot());
+  const checkoutRoot = containedFilePath(workspaceRoot, checkout);
+  const full = containedFilePath(workspaceRoot, normalizedRef);
+  if (!checkoutRoot || !full || !existsSync(join(checkoutRoot, '.git'))) return false;
+  try {
+    const stat = statSync(full);
+    return stat.isFile() || Boolean(opts.allowDirectories && stat.isDirectory());
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Compose the `depsWarnings` line for one unresolvable `file:` dependency,
  * enriched with the sibling-checkout hint above when it finds a hit — turning
  * "could not be resolved" (a dead end indistinguishable from a typo or a

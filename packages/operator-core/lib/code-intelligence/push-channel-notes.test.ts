@@ -55,6 +55,46 @@ const note = (key: string, cells: Array<{ path: string; digest?: string }>, body
     ...(c.digest ? { digest: c.digest, observed: c.digest } : { unknown: 'absent' }) })),
 } as unknown as AgentFact);
 
+describe('EI-28839855241414904: withheld note identity boundary', () => {
+  it.each([999, 1000, 1001])('distinguishes complete records of legacy subject length %i', async length => {
+    const path = 'lib/target.ts';
+    const keys: string[] = [];
+    let remaining = length - `notes-withheld:${path}:`.length;
+    while (remaining > 40) {
+      keys.push(`code-note:${keys.length}:`.padEnd(40, 'x'));
+      remaining -= 41;
+    }
+    keys.push(`code-note:last:`.padEnd(remaining - 1, 'x') + 'a');
+    expect(`notes-withheld:${path}:${keys.join(',')}`).toHaveLength(length);
+    const changed = [...keys.slice(0, -1), keys.at(-1)!.slice(0, -1) + 'b'];
+    const build = async (values: string[]) => (await snapshotNotesLeg({ ...input(path),
+      notesContext: { fresh: [], withheld: values.map(key => ({ key, path, reason: 'changed' as const })) },
+    }, snapshot()))[0]!;
+    const first = await build(keys);
+    const second = await build(changed);
+    expect(first.subject).not.toBe(second.subject);
+    expect(first.subject).toMatch(/^notes-withheld:[a-f0-9]{64}$/);
+    expect(first.sourceRecord?.path).toBe(path);
+    expect(first.sourceRecord?.notes.map(entry => entry.key).sort()).toEqual([...keys].sort());
+    expect((await build([...keys].reverse())).subject).toBe(first.subject);
+    expect((await build([...keys, ...keys])).subject).toBe(first.subject);
+  });
+
+  it('preserves long paths and distinguishes comma-containing keys without ambiguous joins', async () => {
+    const build = async (path: string, keys: string[]) => (await snapshotNotesLeg({ ...input(path),
+      notesContext: { fresh: [], withheld: keys.map(key => ({ key, path, reason: 'changed' as const })) },
+    }, snapshot()))[0]!;
+    const prefix = 'nested/'.repeat(150);
+    const first = await build(prefix + 'a.ts', ['code-note:a']);
+    const second = await build(prefix + 'b.ts', ['code-note:a']);
+    expect(first.subject).not.toBe(second.subject);
+    expect(first.sourceRecord?.path).toBe(prefix + 'a.ts');
+    const joined = await build('lib/target.ts', ['code-note:a,code-note:b', 'code-note:c']);
+    const split = await build('lib/target.ts', ['code-note:a', 'code-note:b,code-note:c']);
+    expect(joined.subject).not.toBe(split.subject);
+  });
+});
+
 async function tokenOf(path: string): Promise<string> {
   const tokens = await resolveCurrentTokens([`file:${path}`], { workspaceId: 'ws-notes', harness: 'papercusp', repoRoot: root });
   const token = tokens.get(`file:${path}`);

@@ -42,8 +42,69 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
     const sql = await readFile(new URL('../../../../libs/papercusp/libs/db/sql/1519-code-intel-pushes.sql', import.meta.url), 'utf8');
     await db.adminSql.unsafe(sql);
     await db.adminSql.unsafe(await readFile(new URL('../../../../libs/papercusp/libs/db/sql/1544-code-intel-push-skips.sql', import.meta.url), 'utf8'));
+    await db.adminSql.unsafe(await readFile(new URL('../../../../libs/papercusp/libs/db/sql/1637-code-intel-note-source-record.sql', import.meta.url), 'utf8'));
   }, 120_000);
   afterAll(async () => { await db?.cleanup(); });
+
+  it.each([999, 1000, 1001])('recovers complete withheld-note records and dedupes after restart at boundary %i', async length => {
+    const workspace = `withheld-source-${length}`;
+    const path = 'target.ts';
+    const keys: string[] = [];
+    let remaining = length - `notes-withheld:${path}:`.length;
+    while (remaining > 40) {
+      keys.push(`code-note:${keys.length}:`.padEnd(20, 'x'));
+      remaining -= 21;
+    }
+    keys.push('code-note:last:'.padEnd(remaining - 1, 'x') + 'a');
+    expect(`notes-withheld:${path}:${keys.join(',')}`).toHaveLength(length);
+    const changed = [...keys.slice(0, -1), keys.at(-1)!.slice(0, -1) + 'b'];
+    const build = async (values: string[], notePath = path) => (await snapshotNotesLeg({ ...input, workspace,
+      calls: [{ tool: 'Read', toolInput: { file_path: notePath } }],
+      notesContext: { fresh: [], withheld: values.map(key => ({ key, path: notePath, reason: 'changed' as const })) },
+    }, snapshot()))[0]!;
+    const first = await build(keys);
+    const second = await build(changed);
+    expect(formatPushFact(first, snapshot()).length).toBeLessThanOrEqual(CODE_INTEL_PUSH_MAX_CHARS);
+    expect(await deliver([first], workspace)).not.toBe('');
+    await db.adminSql`DELETE FROM harness_shared.identity_hook_turns WHERE workspace_id = ${workspace}`;
+    expect(await deliver([await build([...keys].reverse())], workspace)).toBe('');
+    expect(await deliver([second], workspace)).not.toBe('');
+    const rows = await db.adminSql`SELECT subject, source_record FROM harness_shared.code_intel_pushes
+      WHERE workspace_id = ${workspace} ORDER BY id`;
+    expect(rows.map(row => row.subject)).toEqual([first.subject, second.subject]);
+    expect(rows.map(row => row.source_record)).toEqual([first.sourceRecord, second.sourceRecord]);
+    const recovered = await db.adminSql`SELECT source_record FROM harness_shared.code_intel_pushes
+      WHERE workspace_id = ${workspace} AND subject = ${second.subject}`;
+    expect(recovered[0]!.source_record.notes.map((entry: { key: string }) => entry.key).sort()).toEqual([...changed].sort());
+    const skipped = await build([...keys, 'code-note:budget-withheld']);
+    expect(await deliver([skipped], workspace, 0)).toBe('');
+    const skippedRows = await db.adminSql`SELECT source_record FROM harness_shared.code_intel_push_skips
+      WHERE workspace_id = ${workspace} AND subject = ${skipped.subject}`;
+    expect(skippedRows.map(row => row.source_record)).toEqual([skipped.sourceRecord]);
+    await db.adminSql`DELETE FROM harness_shared.identity_hook_turns WHERE workspace_id = ${workspace}`;
+    expect(await deliver([skipped], workspace)).not.toBe('');
+    expect(await deliver([await build([...keys, 'code-note:budget-withheld'].reverse())], workspace)).toBe('');
+    for (let batch = 0; batch < 6; batch++) {
+      await db.adminSql`DELETE FROM harness_shared.identity_hook_turns WHERE workspace_id = ${workspace}`;
+      const next = await build([...keys, `code-note:batch-${batch}`]);
+      expect(await deliver([next], workspace)).not.toBe('');
+      const persisted = await db.adminSql`SELECT source_record FROM harness_shared.code_intel_pushes
+        WHERE workspace_id = ${workspace} AND subject = ${next.subject}`;
+      expect(persisted.map(row => row.source_record)).toEqual([next.sourceRecord]);
+    }
+    const longPath = 'nested/'.repeat(150) + 'target.ts';
+    const oversized = await build(keys, longPath);
+    expect(await deliver([oversized], workspace)).toBe('');
+    const overCap = await db.adminSql`SELECT source_record FROM harness_shared.code_intel_push_skips
+      WHERE workspace_id = ${workspace} AND subject = ${oversized.subject} AND site = 'push-cap'`;
+    expect(overCap.map(row => row.source_record)).toEqual([oversized.sourceRecord]);
+    const preDropped = await build([...keys, 'code-note:pre-dropped']);
+    await commitPushFacts({ ...input, workspace }, snapshot(), [], CODE_INTEL_PUSH_TURN_CHARS,
+      new AbortController().signal, [preDropped]);
+    const dropped = await db.adminSql`SELECT source_record FROM harness_shared.code_intel_push_skips
+      WHERE workspace_id = ${workspace} AND subject = ${preDropped.subject} AND site = 'push-cap'`;
+    expect(dropped.map(row => row.source_record)).toEqual([preDropped.sourceRecord]);
+  });
 
   it('WI-6554700010020557: folds first-touch notes through the workspace app transaction', async () => {
     const workspace = 'push-notes-app-fold';
