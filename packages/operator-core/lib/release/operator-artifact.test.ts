@@ -290,8 +290,13 @@ describe('operator release artifact provenance', () => {
   // and launches fresh runtime processes against its private parent manifest.
   const sourceRoot = resolve(import.meta.dirname, '../../../..');
   const sourceLoader = createRequire(import.meta.url).resolve('tsx');
-  type BootBuild = Awaited<ReturnType<typeof import('esbuild').build>>;
-  let bootBundle: { bytes: Uint8Array; metafile: NonNullable<BootBuild['metafile']> };
+  const timedPhase = <T>(phase: string, operation: () => T): T => {
+    const started = performance.now();
+    try { return operation(); }
+    finally { process.stderr.write('BOOT_PARENT_PHASE ' + JSON.stringify({ phase,
+      durationMs: Math.round(performance.now() - started) }) + '\n'); }
+  };
+  let bootBundle: { bytes: Uint8Array; members: Record<string, string> };
   beforeAll(async () => {
     const runtimePath = join(sourceRoot, 'packages/operator-core/lib/observability/runtime.ts');
     const { build } = await import('esbuild');
@@ -321,19 +326,24 @@ describe('operator release artifact provenance', () => {
           initialized: health.initialized, artifact: health.artifact, pid: process.pid }));
         await shutdownRuntimeObservability();
       ` } });
-    bootBundle = { bytes: result.outputFiles![0]!.contents, metafile: result.metafile! };
     process.stderr.write('BOOT_PARENT_PHASE ' + JSON.stringify({ phase: 'suite-bundle',
       durationMs: Math.round(performance.now() - started) }) + '\n');
+    // Capture the independent source measurement with the immutable build.
+    // Re-reading it per case adds fixture work and could relabel these same
+    // bundle bytes if the shared source tree changes between controls.
+    const members = timedPhase('suite-source-members', () => Object.fromEntries(Object.keys(result.metafile!.inputs)
+      .filter(path => !path.includes('node_modules/') && !path.endsWith('boot-parent-runtime-boundary.ts'))
+      .sort().map(path => {
+        const bytes = readFileSync(join(sourceRoot, path));
+        return [path, createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')];
+      })));
+    expect(Object.keys(members)).toContain('packages/operator-core/lib/observability/runtime.ts');
+    bootBundle = { bytes: result.outputFiles![0]!.contents, members: Object.freeze(members) };
   }, 30_000);
 
   async function compiledBootRuntime() {
-    const f = fixture();
-    const timedPhase = <T>(phase: string, operation: () => T): T => {
-      const started = performance.now();
-      try { return operation(); }
-      finally { process.stderr.write('BOOT_PARENT_PHASE ' + JSON.stringify({ phase,
-        durationMs: Math.round(performance.now() - started) }) + '\n'); }
-    };
+    const setupStarted = performance.now();
+    const f = timedPhase('fixture', fixture);
     // This is a source-level runtime fixture. Reuse the maintained worker's tsx
     // route for external local TypeScript; single-file ESM bundling can hoist
     // those imports even when their configuration readers are never called.
@@ -355,19 +365,16 @@ describe('operator release artifact provenance', () => {
     expect(syntax.status, syntax.stderr).toBe(0);
     // Independent compiler input and output measurement for this source-level
     // boot-boundary fixture. This does not claim full BG service/dependency closure.
-    const members = Object.fromEntries(Object.keys(bootBundle.metafile.inputs)
-      .filter(path => !path.includes('node_modules/') && !path.endsWith('boot-parent-runtime-boundary.ts'))
-      .sort().map(path => {
-        const bytes = readFileSync(join(sourceRoot, path));
-        return [path, createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')];
-      }));
-    expect(Object.keys(members)).toContain('packages/operator-core/lib/observability/runtime.ts');
-    const bundleSha256 = createHash('sha256').update(readFileSync(f.entry)).digest('hex');
-    writeFileSync(f.entry + '.artifact-' + bundleSha256 + '.json', JSON.stringify({ schemaVersion: 1,
-      sourceSha: f.sourceSha, entry: 'apps/operator/dist-host/hono-host.mjs', bundleSha256, sourceBlobs: members }));
-    const parent = inheritedParent(f), bytes = JSON.stringify({ schemaVersion: 1, sourceBlobs: members });
-    Object.assign(parent.acceptedManifest!, { members, sha256: createHash('sha256').update(bytes).digest('hex') });
-    writeFileSync(parent.acceptedManifest!.path, bytes);
+    const { members } = bootBundle;
+    const { bundleSha256, parent } = timedPhase('parent-manifest', () => {
+      const bundleSha256 = createHash('sha256').update(readFileSync(f.entry)).digest('hex');
+      writeFileSync(f.entry + '.artifact-' + bundleSha256 + '.json', JSON.stringify({ schemaVersion: 1,
+        sourceSha: f.sourceSha, entry: 'apps/operator/dist-host/hono-host.mjs', bundleSha256, sourceBlobs: members }));
+      const parent = inheritedParent(f), bytes = JSON.stringify({ schemaVersion: 1, sourceBlobs: members });
+      Object.assign(parent.acceptedManifest!, { members, sha256: createHash('sha256').update(bytes).digest('hex') });
+      writeFileSync(parent.acceptedManifest!.path, bytes);
+      return { bundleSha256, parent };
+    });
     const boot = (input: typeof parent, legacy = false) => {
       const configPath = join(dirname(f.entry), 'boot-parent-config.json');
       writeFileSync(configPath, JSON.stringify({ parent: input, legacy }));
@@ -388,25 +395,31 @@ describe('operator release artifact provenance', () => {
       expect(line, child.stdout + child.stderr).toBeTruthy();
       return JSON.parse(line!.slice('BOOT_PARENT_BOUNDARY '.length));
     };
-    return { f, parent, boot, bundleSha256, members };
+    process.stderr.write('BOOT_PARENT_PHASE ' + JSON.stringify({ phase: 'setup-total',
+      durationMs: Math.round(performance.now() - setupStarted) }) + '\n');
+    return { f, parent, boot, bundleSha256, members, timedPhase };
   }
 
   it('withholds fresh-process runtime initialization for an unknown parent and refuses later parent relabeling', async () => {
-    const { f, parent, boot, bundleSha256, members } = await compiledBootRuntime();
-    expect(boot(parent)).toMatchObject({ ready: true, error: null, initialized: true,
+    const { f, parent, boot, bundleSha256, members, timedPhase } = await compiledBootRuntime();
+    const checkBoot = (phase: string, input: typeof parent, expected: object, legacy = false) => {
+      const actual = boot(input, legacy);
+      timedPhase('assert-' + phase, () => expect(actual).toMatchObject(expected));
+    };
+    checkBoot('parent', parent, { ready: true, error: null, initialized: true,
       artifact: { status: 'measured', sourceSha: f.sourceSha, bundleSha256, sourceBlobs: members } });
     const fullOutput = structuredClone(parent);
     fullOutput.acceptedManifest!.authorityKind = 'full-output';
-    expect(boot(fullOutput)).toMatchObject({ ready: true, error: null, initialized: true,
+    checkBoot('full-output', fullOutput, { ready: true, error: null, initialized: true,
       artifact: { status: 'measured', sourceSha: f.sourceSha, bundleSha256, sourceBlobs: members } });
     const sourceOnly = structuredClone(fullOutput);
     sourceOnly.acceptedManifest!.authorityKind = 'source-only';
-    expect(boot(sourceOnly)).toMatchObject({ ready: false,
+    checkBoot('source-only', sourceOnly, { ready: false,
       error: expect.stringContaining('BG boot parent artifact unqualified'), initialized: false, artifact: null });
-    expect(boot({ ...parent, acceptedManifest: null })).toMatchObject({ ready: false,
+    checkBoot('absent-parent', { ...parent, acceptedManifest: null }, { ready: false,
       error: expect.stringContaining('BG boot parent artifact unqualified'), initialized: false, artifact: null });
-    expect(boot(parent, true)).toMatchObject({ ready: false,
-      error: expect.stringContaining('BG boot parent expectation changed') });
+    checkBoot('relabel', parent, { ready: false,
+      error: expect.stringContaining('BG boot parent expectation changed') }, true);
   }, 30_000);
 
   // Reuse the real compiled initialization boundary, rather than assigning the
