@@ -6271,6 +6271,75 @@ describe('WI-6554700010049444: native addons must load before a selector is inde
     expect(result.stderr).toContain("native addon 'second-addon'");
   });
 
+  // Loading an addon runs its package code in the tree being probed. Against a
+  // shared, immutable generation that is a write into every consumer's tree, so
+  // generation trees are probed through a staged copy of the addon directories.
+  function loadIsolated(tree: string, env: NodeJS.ProcessEnv = PINNED_HERE) {
+    const scratch = mkdtempSync(join(tmpdir(), 'native-probe-scratch-'));
+    roots.push(scratch);
+    const result = spawnSync('bash', ['-c', 'source "$SCRIPT"; dependency_generation_native_addons_load_isolated "$TREE"'], {
+      encoding: 'utf8',
+      env: { ...process.env, SCRIPT, TREE: tree, TMPDIR: scratch, ...env },
+    });
+    return { result, leftovers: readdirSync(scratch) };
+  }
+
+  const SIDE_EFFECT = 'probe-wrote-here';
+  // Writes beside itself on load, and needs a sibling package that is NOT
+  // staged: it must resolve from the real tree through NODE_PATH.
+  const WRITING_ADDON = [
+    `require('fs').writeFileSync(require('path').join(__dirname, ${JSON.stringify(SIDE_EFFECT)}), 'x');`,
+    "require('addon-helper');",
+    LOADABLE_ADDON,
+  ].join('\n');
+
+  function writingAddonTree(): string {
+    const tree = addonTree(WRITING_ADDON);
+    mkdirSync(join(tree, 'node_modules/addon-helper'), { recursive: true });
+    writeFileSync(join(tree, 'node_modules/addon-helper/index.js'), 'module.exports = 1;\n');
+    return tree;
+  }
+
+  it('probes a staged copy, so addon code never writes into the generation tree', () => {
+    const tree = writingAddonTree();
+    const { result, leftovers } = loadIsolated(tree);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(existsSync(join(tree, 'node_modules/better-sqlite3', SIDE_EFFECT))).toBe(false);
+    expect(leftovers, 'the staged probe copy must be removed').toEqual([]);
+
+    // Positive control: the same addon probed IN PLACE does write into the tree,
+    // so the negative above is not vacuous.
+    const inPlace = writingAddonTree();
+    expect(loadAddons(inPlace).status).toBe(0);
+    expect(existsSync(join(inPlace, 'node_modules/better-sqlite3', SIDE_EFFECT))).toBe(true);
+  });
+
+  it('reports an unloadable addon against the real tree and still removes the staged copy', () => {
+    const tree = addonTree(BROKEN_ADDON);
+    const { result, leftovers } = loadIsolated(tree);
+    expect(result.status, result.stderr).toBe(74);
+    expect(result.stderr).toContain(`native addon 'better-sqlite3' in ${tree} will not load`);
+    expect(result.stderr).toContain('NODE_MODULE_VERSION 147');
+    expect(leftovers).toEqual([]);
+
+    const wrongNode = loadIsolated(addonTree(LOADABLE_ADDON), { DEPENDENCY_GENERATION_PINNED_NODE_MAJOR: OTHER_MAJOR });
+    expect(wrongNode.result.status, wrongNode.result.stderr).toBe(74);
+    expect(wrongNode.result.stderr).toContain(`not the pinned Node ${OTHER_MAJOR}`);
+    expect(wrongNode.leftovers).toEqual([]);
+  });
+
+  it('accepts a loadable addon, a tree without node_modules and one without the addon', () => {
+    for (const tree of [addonTree(), addonTree(LOADABLE_ADDON)]) {
+      const { result, leftovers } = loadIsolated(tree);
+      expect(result.status, result.stderr).toBe(0);
+      expect(leftovers).toEqual([]);
+    }
+    const noAddon = addonTree();
+    mkdirSync(join(noAddon, 'node_modules/unrelated'), { recursive: true });
+    expect(loadIsolated(noAddon).result.status).toBe(0);
+  });
+
   function integrationWithAddon(addon: string): string {
     const integration = makeIntegration();
     mkdirSync(join(integration, 'node_modules/better-sqlite3'), { recursive: true });

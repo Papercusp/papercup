@@ -206,7 +206,7 @@ describe('WI-6554700010049444: dependencies-only refuses an unloadable generatio
         'log() { printf "%s\\n" "$*"; }',
         'dependency_generation_input_fingerprint_ref() { printf "%s\\n" "$TARGET_INPUT"; }',
         'dependency_generation_select_prevalidated() { printf "select=%s token=%s\\n" "$2" "$3"; }',
-        'dependency_generation_native_addons_load() { printf "native-check=%s\\n" "$1"; return "$LOAD_RC"; }',
+        'dependency_generation_native_addons_load_isolated() { printf "native-check=%s\\n" "$1"; return "$LOAD_RC"; }',
         'rc=0; validate_dependencies_only_input || rc=$?',
         'printf "rc=%s\\n" "$rc"',
       ].join('\n')], { encoding: 'utf8', timeout: 10_000, env: { ...process.env,
@@ -223,8 +223,8 @@ describe('WI-6554700010049444: dependencies-only refuses an unloadable generatio
         expect(result.stdout).not.toContain('native-check=');
         return;
       }
-      // The selector was validated first, then the load check ran on the
-      // immutable generation tree (never on the release checkout).
+      // The selector was validated first, then the isolated load check ran
+      // against the immutable generation tree (never on the release checkout).
       expect(result.stdout).toContain(`select=${identity} token=v3:${'c'.repeat(64)}`);
       expect(result.stdout).toContain(`native-check=${join(generationPath, 'tree')}`);
       expect(result.stdout.indexOf('select=')).toBeLessThan(result.stdout.indexOf('native-check='));
@@ -243,7 +243,13 @@ describe('WI-6554700010049444: dependencies-only refuses an unloadable generatio
     const flow = source.indexOf('\n  validate_dependencies_only_input\n  if pinned_dependency_generation_reuse_safe; then');
     expect(flow, 'the main flow must gate materialization on validate_dependencies_only_input').toBeGreaterThan(0);
     const fn = source.slice(source.indexOf('\nvalidate_dependencies_only_input() {'));
-    expect(fn.slice(0, fn.indexOf('\n}\n'))).toContain('dependency_generation_native_addons_load "$DEPENDENCY_GENERATION_TREE"');
+    const body = fn.slice(0, fn.indexOf('\n}\n'));
+    expect(body).toContain('dependency_generation_native_addons_load_isolated "$DEPENDENCY_GENERATION_TREE"');
+    // Loading an addon runs its package code. An in-place probe of the shared,
+    // immutable generation lets that code write into every consumer's tree.
+    expect(body, 'the generation tree must never be probed in place').not.toMatch(
+      /dependency_generation_native_addons_load\s+"\$DEPENDENCY_GENERATION_TREE"/,
+    );
   });
 });
 
