@@ -98,25 +98,38 @@ function makeFixture(opts: { ids: string[]; busyPorts?: string[] }): Fixture {
     run: (env = {}) => {
       // An inherited override would mask the script's own default.
       const { TESTCONTAINER_IDLE_MAX_SECS: _inherited, ...inherited } = process.env;
-      return execFileSync('bash', [SCRIPT], {
-        encoding: 'utf8',
-        timeout: 15_000,
-        env: {
-          ...inherited,
-          PATH: `${bin}:${process.env.PATH}`,
-          FIXTURE_LOG: log,
-          FIXTURE_ROOT: root,
-          PAPERCUSP_RELEASE_RETENTION_ROOT: join(root, 'pins'),
-          PAPERCUSP_FS_MUTEX_LOCK_DIR: join(root, 'mutex'),
-          FIXTURE_TC_IDS: opts.ids.join(' '),
-          FIXTURE_BUSY_PORTS: (opts.busyPorts ?? []).join(' '),
-          PAPERCUSP_TESTCONTAINERS_LAST_USED_DIR: markers,
-          DRY_RUN: '0',
-          SKIP_IMAGES: '1',
-          RECLAIM_MIN_FREE_PCT: '101',
-          ...env,
-        },
-      });
+      try {
+        return execFileSync('timeout', ['--signal=TERM', '--kill-after=1s', '15s', 'bash', '-x', SCRIPT], {
+          encoding: 'utf8',
+          // The command still has 15 s; the parent leaves time to reap its group.
+          timeout: 17_000,
+          env: {
+            ...inherited,
+            // Timestamp shell progress; failed child output preserves the last
+            // completed step without changing the script's command deadline.
+            PS4: '+$EPOCHREALTIME ${BASH_SOURCE}:${LINENO}: ',
+            PATH: `${bin}:${process.env.PATH}`,
+            FIXTURE_LOG: log,
+            FIXTURE_ROOT: root,
+            PAPERCUSP_RELEASE_RETENTION_ROOT: join(root, 'pins'),
+            PAPERCUSP_FS_MUTEX_LOCK_DIR: join(root, 'mutex'),
+            FIXTURE_TC_IDS: opts.ids.join(' '),
+            FIXTURE_BUSY_PORTS: (opts.busyPorts ?? []).join(' '),
+            PAPERCUSP_TESTCONTAINERS_LAST_USED_DIR: markers,
+            DRY_RUN: '0',
+            SKIP_IMAGES: '1',
+            RECLAIM_MIN_FREE_PCT: '101',
+            ...env,
+          },
+        });
+      } catch (error) {
+        const failure = error as { status?: number | null; signal?: string | null; code?: string;
+          stdout?: string | Buffer; stderr?: string | Buffer; message?: string };
+        throw new Error('reclaim fixture failed: status=' + failure.status + ', signal=' + failure.signal
+          + ', code=' + failure.code + ': ' + failure.message
+          + '\nstdout:\n' + (failure.stdout?.toString() ?? '')
+          + '\nstderr:\n' + (failure.stderr?.toString() ?? ''), { cause: error });
+      }
     },
     mark: (id, ageSecs) => {
       mkdirSync(markers, { recursive: true });
@@ -131,6 +144,18 @@ function makeFixture(opts: { ids: string[]; busyPorts?: string[] }): Fixture {
 
 const removed = (calls: string[]) =>
   calls.filter((c) => c.startsWith('docker rm ')).map((c) => c.split(' ').pop());
+
+function fixturePathWithout(f: Fixture, omitted: 'ss' | 'du'): string {
+  const tools = join(f.root, 'without-' + omitted); mkdirSync(tools);
+  for (const name of ['bash', 'node', 'python3', 'git', 'dirname', 'date', 'tail', 'tr',
+    'timeout', 'grep', 'sed', 'sort', 'mkdir', 'stat', 'touch', 'rm', 'wc', 'du']) {
+    if (name !== omitted) symlinkSync(execFileSync('which', [name], { encoding: 'utf8' }).trim(), join(tools, name));
+  }
+  for (const name of ['docker', 'podman', 'sudo', 'df', 'ss']) {
+    if (name !== omitted) symlinkSync(join(f.root, 'bin', name), join(tools, name));
+  }
+  return tools;
+}
 
 describe('WI-6554700010009309 — docker reclaim removes only leaked testcontainers', () => {
   it('asks docker ONLY for containers labelled org.testcontainers=true', () => {
@@ -254,20 +279,34 @@ describe('WI-6554700010009309 — docker reclaim removes only leaked testcontain
   it('reports an absent ss instrument as incomplete and retains containers', () => {
     const f = makeFixture({ ids: [IDLE_ID] });
     f.mark(IDLE_ID, 2 * DAY_SECS);
-    const tools = join(f.root, 'without-ss'); mkdirSync(tools);
+    const tools = fixturePathWithout(f, 'ss');
     // A real PATH with only the needed executables makes command -v ss fail;
     // no production skip knob or replacement shell classifier is involved.
-    for (const name of ['bash', 'node', 'python3', 'git', 'dirname', 'date', 'tail', 'tr',
-      'timeout', 'grep', 'sed', 'sort', 'mkdir', 'stat', 'touch', 'rm', 'wc']) {
-      symlinkSync(execFileSync('which', [name], { encoding: 'utf8' }).trim(), join(tools, name));
-    }
-    for (const name of ['docker', 'podman', 'sudo', 'df']) symlinkSync(join(f.root, 'bin', name), join(tools, name));
+    expect(execFileSync('bash', ['-c', 'command -v du'], { encoding: 'utf8', env: { ...process.env, PATH: tools } }).trim())
+      .toBe(join(tools, 'du'));
+    expect(existsSync(join(tools, 'ss'))).toBe(false);
     const out = f.run({ PATH: tools });
     expect(out).toContain('ss not found');
     expect(removed(f.calls())).toEqual([]);
     const line = out.split('\n').find(line => line.startsWith('[docker-reclaim] store-receipt '))!;
     expect(JSON.parse(line.slice('[docker-reclaim] store-receipt '.length)))
       .toMatchObject({ status: 'native-failed', nativeFailures: 1, complete: false });
+  });
+
+  it('preserves the failed census receipt when a required fixture tool is absent', () => {
+    const f = makeFixture({ ids: [] });
+    const tools = fixturePathWithout(f, 'du');
+    let message = '';
+    try { f.run({ PATH: tools, SKIP_TESTCONTAINERS: '1' }); }
+    catch (error) { message = (error as Error).message; }
+    expect(message).toContain('status=1');
+    const prefix = '[docker-reclaim] store-receipt ';
+    const line = message.split('\n').find(value => value.startsWith(prefix));
+    expect(line, 'child failure must retain its structured census receipt').toBeDefined();
+    expect(JSON.parse(line!.slice(prefix.length))).toMatchObject({
+      status: 'measurement-failed', measurementComplete: false, complete: false,
+      error: expect.stringContaining('du'),
+    });
   });
 
   it('never consumes partial volume discovery after a native failure', () => {

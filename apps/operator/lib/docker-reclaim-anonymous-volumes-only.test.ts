@@ -40,7 +40,7 @@
  * mutated COPY outside the tree (CLAUDE.md mutation-probe tier 2) — never by
  * mutating the shared tree, where the git-sync sweep can commit the mutant.
  */
-import { existsSync, readFileSync, statSync, lstatSync, linkSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, lstatSync, linkSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, watch } from 'node:fs';
 import { execFile, execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
@@ -56,7 +56,9 @@ const SCRIPT = process.env.PROBE_SCRIPT
 const REAL_PYTHON = execFileSync('bash', ['-c', 'command -v python3'], { encoding: 'utf8' }).trim();
 const REAL_DU = execFileSync('bash', ['-c', 'command -v du'], { encoding: 'utf8' }).trim();
 const src = readFileSync(SCRIPT, 'utf8');
-const censusSource = src.match(/const census = String\.raw\x60([\s\S]*?)\x60;/)?.[1];
+const censusMatch = src.match(/const census = String\.raw\x60([\s\S]*?)\x60;/);
+if (!censusMatch) throw new Error('no embedded allocation census found in reclaim script');
+const censusSource = censusMatch[1];
   // The census owns a 30 s budget; leave enough outer time for its structured
   // timeout receipt to reach the assertion and ledger.
   const fixtureTimeoutMs = 40_000;
@@ -181,7 +183,18 @@ describe('Podman stores use the existing guarded image policy', () => {
     for (const name of ['docker', 'rootless', 'rootful']) mkdirSync(join(root, 'stores', name), { recursive: true });
     executable('docker', '[[ "${DOCKER_UP:-0}" == 1 ]] || exit 1\nif [[ "$1" == info ]]; then [[ "$*" != *--format* ]] || echo "$FIXTURE_ROOT/stores/docker"; exit 0; fi\nprintf "docker %s\\n" "$*" >>"$FIXTURE_LOG"\n');
     executable('sudo', '[[ "$1" == "-n" ]] && shift\nexport STORE=rootful\nexec "$@"\n');
-    executable('podman', 'if [[ "$1" == "info" ]]; then [[ "$*" != *--format* ]] || echo "${FIXTURE_ALIAS:-$FIXTURE_ROOT/stores/${STORE:-rootless}}"; exit "${PODMAN_DOWN:-0}"; fi\nif [[ "$1" == "unshare" ]]; then printf "podman unshare python3\\n" >>"$FIXTURE_UNSHARE_LOG"; shift; export FIXTURE_PODMAN_UNSHARE=1; exec "$@"; fi\nprintf "%s %s\\n" "${STORE:-rootless}" "$*" >>"$FIXTURE_LOG"\nif [[ -n "${FIXTURE_PAUSE:-}" && "${STORE:-rootless}" == rootless ]]; then touch "$FIXTURE_PAUSE"; while [[ ! -e "$FIXTURE_PAUSE.continue" ]]; do sleep 0.01; done; fi\nexit "${FIXTURE_NATIVE_EXIT:-0}"\n');
+    executable('podman', [
+      'if [[ "$1" == "info" ]]; then',
+      '  if [[ "${STORE:-rootless}" == rootless && -n "${FIXTURE_DISCOVERY_DELAY_SECS:-}" && ! -e "$FIXTURE_ROOT/discovery-delayed" ]]; then',
+      '    touch "$FIXTURE_ROOT/discovery-delayed"; sleep "$FIXTURE_DISCOVERY_DELAY_SECS"',
+      '  fi',
+      '  [[ "$*" != *--format* ]] || echo "${FIXTURE_ALIAS:-$FIXTURE_ROOT/stores/${STORE:-rootless}}"; exit "${PODMAN_DOWN:-0}"',
+      'fi',
+      'if [[ "$1" == "unshare" ]]; then printf "podman unshare python3\\n" >>"$FIXTURE_UNSHARE_LOG"; shift; export FIXTURE_PODMAN_UNSHARE=1; exec "$@"; fi',
+      'printf "%s %s\\n" "${STORE:-rootless}" "$*" >>"$FIXTURE_LOG"',
+      'if [[ -n "${FIXTURE_PAUSE:-}" && "${STORE:-rootless}" == rootless ]]; then touch "$FIXTURE_PAUSE"; while [[ ! -e "$FIXTURE_PAUSE.continue" ]]; do sleep 0.01; done; fi',
+      'exit "${FIXTURE_NATIVE_EXIT:-0}"',
+    ].join('\n') + '\n');
     executable('df', 'if [[ "$*" == *--output=avail* ]]; then if [[ -n "$FIXTURE_AVAILABLE_AFTER" && -f "$FIXTURE_DF_COUNTER" ]]; then echo "$FIXTURE_AVAILABLE_AFTER"; else value="$FIXTURE_AVAILABLE"; [[ -n "$value" ]] || value=100000000000; echo "$value"; touch "$FIXTURE_DF_COUNTER"; fi; else echo 100000000000; fi\n');
     const env = { ...process.env, PATH: root + ':' + process.env.PATH, FIXTURE_ROOT: root, FIXTURE_LOG: log,
       PAPERCUSP_RELEASE_RETENTION_ROOT: join(root, 'pins'), PAPERCUSP_FS_MUTEX_LOCK_DIR: join(root, 'mutex'),
@@ -189,7 +202,7 @@ describe('Podman stores use the existing guarded image policy', () => {
       FIXTURE_REAL_PYTHON: REAL_PYTHON, FIXTURE_UNSHARE_LOG: unshareLog,
       FIXTURE_REAL_DU: REAL_DU, FIXTURE_DU_LOG: duLog, FIXTURE_DU_COUNTER: duCounter,
       PAPERCUSP_FS_MUTEX_TIMEOUT_MS: '2000', DRY_RUN: '0', SKIP_IMAGES: '0', SKIP_TESTCONTAINERS: '1',
-      FIXTURE_ALIAS: '', IMAGE_MAX_AGE: '168h', RECLAIM_MIN_FREE_PCT: '101' };
+      FIXTURE_ALIAS: '', FIXTURE_DISCOVERY_DELAY_SECS: '', IMAGE_MAX_AGE: '168h', RECLAIM_MIN_FREE_PCT: '101' };
     const installFailedCensus = () => executable('python3',
       'if [[ "$1" == "-c" ]]; then echo \'{"complete":false,"permissionDenied":false,"error":"filesystem boundary"}\'; exit 0; fi\nexit 97\n');
     const installNamespaceAwareCensus = () => executable('python3',
@@ -365,26 +378,50 @@ describe('Podman stores use the existing guarded image policy', () => {
     expect(result.output).toContain('returning failure for systemd health visibility');
   });
 
-  it('holds the shared pin mutex until the native prune command finishes', async () => {
+  const verifyPinMutex = async (discoveryDelaySecs = '') => {
     const f = fixture(); const pause = join(f.root, 'pruning');
-    const running = promisify(execFile)('bash', [SCRIPT], { env: { ...f.env, FIXTURE_PAUSE: pause }, timeout: 10_000 });
+    // Watch before spawning so a fast marker cannot race registration. Readiness
+    // shares the child's existing 10 s lifetime instead of a separate 3 s guess.
+    const watcher = watch(f.root);
+    const ready = new Promise<void>((resolveReady, reject) => {
+      watcher.on('change', () => { if (existsSync(pause)) resolveReady(); });
+      watcher.once('error', reject);
+    });
+    const running = promisify(execFile)('timeout', ['--signal=TERM', '--kill-after=1s', '10s', 'bash', SCRIPT], {
+      env: { ...f.env, FIXTURE_PAUSE: pause, FIXTURE_DISCOVERY_DELAY_SECS: discoveryDelaySecs }, timeout: 12_000,
+    }).catch(error => {
+      throw new Error('reclaim fixture failed: status=' + error.code + ', signal=' + error.signal
+        + '\nstdout:\n' + (error.stdout ?? '') + '\nstderr:\n' + (error.stderr ?? ''), { cause: error });
+    });
+    const exitedBeforeReady = running.then(({ stdout, stderr }) => {
+      throw new Error('reclaim fixture exited before reaching its prune pause\nstdout:\n' + stdout + '\nstderr:\n' + stderr);
+    });
     let entered = false;
     let writer: Promise<unknown> | undefined;
     try {
-      await vi.waitFor(() => expect(existsSync(pause)).toBe(true), { timeout: 3000 });
+      await Promise.race([ready, exitedBeforeReady]);
       vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', f.env.PAPERCUSP_FS_MUTEX_LOCK_DIR);
       writer = withFsMutex('papercusp-disk-retention', async () => { entered = true; },
         { timeoutMs: 5000, retryMs: 10 });
       await new Promise(resolve => setTimeout(resolve, 100));
       expect(entered).toBe(false);
     } finally {
+      watcher.close();
       writeFileSync(pause + '.continue', '');
-      await running;
-      await writer;
+      const settled = await Promise.allSettled([running, ...(writer ? [writer] : [])]);
       vi.unstubAllEnvs();
       rmSync(f.root, { recursive: true, force: true });
+      for (const result of settled) if (result.status === 'rejected') throw result.reason;
     }
     expect(entered).toBe(true);
+  };
+
+  it('holds the shared pin mutex until the native prune command finishes', async () => {
+    await verifyPinMutex();
+  });
+
+  it('waits for prune readiness after discovery exceeds the former three-second probe', async () => {
+    await verifyPinMutex('3.1');
   });
 
   it('collects only old unused images in both Podman stores even when Docker is unavailable', () => {
