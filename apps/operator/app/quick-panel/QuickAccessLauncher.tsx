@@ -129,9 +129,9 @@ export default function QuickAccessLauncher({ queryPrefix = '' }: { queryPrefix?
   const scope = state[`${queryPrefix}lascope`] as (typeof QUICK_SCOPES)[number];
   const selectedKey = state[`${queryPrefix}lasel`] as string;
   const debounced = useDebouncedValue(query, 200);
-  // Read lightweight workspace metadata; resolve only the selected item graph.
+  // Read only the six launcher fields; resolve the selected item graph separately.
   const plans = useSyncQuery<QuickPlan>({ queryName: 'plans.list',
-    args: { workspaceWide: true, compact: true, includeFinished: true, includeArchived: false, order: 'updated' } });
+    args: { workspaceWide: true, output: 'directory', includeFinished: true, includeArchived: false, order: 'updated' } });
   const roster = useSyncQuery<{ active?: QuickAgent[] }>({ queryName: 'advRoster.list', args: advRosterArgs(workspaceId) });
   const reports = useSyncQuery<QuickReport>({ queryName: 'reports.list',
     args: { limit: 50, ...(debounced.trim() ? { query: debounced.trim() } : {}) }, enabled: reportsEnabled });

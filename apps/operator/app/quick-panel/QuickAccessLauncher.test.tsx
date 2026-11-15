@@ -62,7 +62,7 @@ describe('Quick Access launcher', () => {
     mount();
     expect(screen.getByText('1 of 2 tasks complete')).toBeTruthy();
     expect(mocks.queries).toHaveBeenCalledWith(expect.objectContaining({ queryName: 'plans.list',
-      args: expect.objectContaining({ workspaceWide: true, compact: true }) }));
+      args: expect.objectContaining({ workspaceWide: true, output: 'directory' }) }));
     expect(mocks.queries).toHaveBeenCalledWith(expect.objectContaining({ queryName: 'advRoster.list',
       args: { workspaceId: 'workspace-one', endedLimit: 50 } }));
     expect(mocks.queries).toHaveBeenCalledWith(expect.objectContaining({ queryName: 'planSessions.list',
