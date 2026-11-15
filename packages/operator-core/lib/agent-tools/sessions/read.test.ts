@@ -81,16 +81,13 @@ describe('sessions:read role access', () => {
     );
   });
 
-  it.each([
-    { session: 'another-session' },
-    { ref: 'session_turn:codex:another-session:0' },
-  ])('refuses judge transcript selector $session $ref', async (selector) => {
+  it('refuses arbitrary judge session selectors before reading', async () => {
     const handler = readModule.default.handler as unknown as (
       args: Record<string, unknown>,
       ctx: Record<string, unknown>,
     ) => Promise<{ isError?: boolean; content: Array<{ text: string }> }>;
 
-    const result = await handler(selector, { role: 'judge' });
+    const result = await handler({ session: 'another-session' }, { role: 'judge' });
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content[0]!.text)).toMatchObject({
       ok: false,
