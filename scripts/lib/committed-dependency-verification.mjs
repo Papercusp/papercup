@@ -119,9 +119,9 @@ async function selectGeneration(helper, donor, destination, deadline, environmen
     'dependency_generation_configure_workspace_dirs "$3" "${@:5}"',
     'input="$(dependency_generation_verification_input_fingerprint "$3")"',
     'closure=""; if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then closure="$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT"; fi',
-    // Selected publications expose only the native, source-bound index. The
-    // scoped dependency fingerprint still binds the subsequent byte census.
-    'selector="$input"; if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then selector="$(dependency_generation_verifier_selector_key "$3")"; fi',
+    // The dependency key binds precisely this scope. Native source selectors
+    // remain separate and cannot authorize a different dependency closure.
+    'selector="$(dependency_generation_verification_selector_key "$3")"',
     'dependency_generation_select_input_fingerprint "$selector" "$generation_root" "$DEPENDENCY_GENERATION_SCOPE_MODE" "$closure"',
     'dependency_generation_acquire_selector_lease "$generation_root" "$DEPENDENCY_GENERATION_ID" "$4" "$DEPENDENCY_GENERATION_TOKEN"',
     'trap dependency_generation_release_selector_lease ERR',
@@ -152,7 +152,7 @@ async function census(helper, donor, destination, scratch, deadline, generation,
     'dependency_generation_configure_workspace_dirs "$3" "${@:7}"',
     'input="$(dependency_generation_verification_input_fingerprint "$3")"',
     'closure=""; if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then closure="$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT"; fi',
-    'selector="$input"; if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then selector="$(dependency_generation_verifier_selector_key "$3")"; fi',
+    'selector="$(dependency_generation_verification_selector_key "$3")"',
     'dependency_generation_select_input_fingerprint "$selector" "$4" "$DEPENDENCY_GENERATION_SCOPE_MODE" "$closure"',
     '[ "$DEPENDENCY_GENERATION_ID" = "$5" ] && [ "$DEPENDENCY_GENERATION_TOKEN" = "$6" ] && [ "$DEPENDENCY_GENERATION_TREE" = "$2" ]',
     'printf "%s\\n" "$input"',

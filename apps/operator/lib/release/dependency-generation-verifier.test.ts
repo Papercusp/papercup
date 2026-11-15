@@ -227,8 +227,11 @@ describe('bounded independent verifier copy', () => {
     const reused = f.shell(f.generationScript, args);
     expect(reused.status, reused.stderr).toBe(0);
     expect(reused.stdout).toContain('reused=true');
-    const selector = readdirSync(join(f.store, '.inputs')).find(name => name.startsWith('native-'))!;
-    expect(readdirSync(join(f.store, '.inputs')).filter(name => !name.startsWith('native-'))).toEqual([]);
+    const selectors = readdirSync(join(f.store, '.inputs')).sort();
+    expect(selectors).toEqual([
+      expect.stringMatching(/^native-[a-f0-9]{64}$/), expect.stringMatching(/^scoped-[a-f0-9]{64}$/),
+    ]);
+    const selector = selectors.find(name => name.startsWith('native-'))!;
     const release = f.shell('-c', ['set -euo pipefail; source "$1"; dependency_generation_select_input_fingerprint "$2" "$3"',
       '_', f.generationScript, selector, f.store]);
     expect(release.status).toBe(74);
@@ -239,34 +242,68 @@ describe('bounded independent verifier copy', () => {
     expect(materialized.status, materialized.stderr.slice(-1800)).toBe(0);
     expect(existsSync(join(f.dest, 'papercusp-desktop/node_modules/.bin/tauri'))).toBe(true);
     expect(readFileSync(join(f.dest, 'packages/cli/dist/cli.cjs'), 'utf8')).toContain('frozen-workspace');
-    // Exercise the real selected publisher and its native-only index. A plain
-    // --integration publication deliberately cannot provide this selector.
-    expect(existsSync(join(generation, 'tree/package-lock.json'))).toBe(false);
-    const options = { checkpointDir: join(f.root, 'retained-verification'),
-      generation: true, batchSize: 6, maxDurationMs: 30_000 };
-    const context = { materializer: f.generationScript, environment: f.env,
-      workspaceDirs: ['packages/cli', 'papercusp-desktop'], sourceCommit: ref,
-      verifySource: () => checkSource(f.dest, ref) };
-    const diagnostics = vi.spyOn(console, 'error').mockImplementation((line, ...extra) => {
-      expect(extra).toEqual([]);
-      expect(line).toEqual(expect.stringMatching(/^COMMITTED_DEPENDENCY_VERIFICATION /));
-    });
-    try {
-      const paused = await verifyRetainedDependencies(f.donor, f.dest, { ...options, maxBatches: 1 }, context);
-      const pausedEvidence = JSON.stringify(paused);
-      expect(paused.status, pausedEvidence).toBe('incomplete');
-      expect(paused.progress.hashedFiles, pausedEvidence).toBeGreaterThan(0);
-      expect(readdirSync(join(f.store, '.leases'))).toEqual([]);
-      const complete = await verifyRetainedDependencies(f.donor, f.dest, options, context);
-      expect(complete.status).toBe('complete');
-      expect(complete.progress.reusedBatches).toBeGreaterThan(0);
-      expect(readdirSync(join(f.store, '.leases'))).toEqual([]);
-    } finally { diagnostics.mockRestore(); }
     const selectorPath = join(f.store, '.inputs', selector);
     writeFileSync(selectorPath, readFileSync(selectorPath, 'utf8').replace(/token=.*/, 'token=corrupt'));
     const corrupt = f.shell(f.generationScript, args);
     expect(corrupt.status).not.toBe(0);
     expect(corrupt.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+  }, 90_000);
+
+  it('resumes retained byte verification from the real selected native publication', async () => {
+    const started = Date.now();
+    const phase = (name: string) => process.stderr.write('RETAINED_GENERATION_PHASE ' +
+      JSON.stringify({ phase: name, elapsedMs: Date.now() - started }) + '\n');
+    phase('fixture');
+    // The native publisher derives its closure from declared workspaces. A
+    // fixture without this manifest includes only the desktop in that closure.
+    const f = fixture('packages/cli', true);
+    expect(JSON.parse(readFileSync(join(f.dest, 'package.json'), 'utf8')).workspaces)
+      .toEqual(['packages/*', 'apps/*', '!apps/independent']);
+    const ref = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.dest, encoding: 'utf8' }).trim();
+    phase('publish');
+    const published = f.shell(f.generationScript, ['--integration', f.donor, '--generation-root', f.store,
+      '--ensure-ref', ref, '--verifier-source', f.dest,
+      '--workspace-dir', 'packages/cli', '--workspace-dir', 'papercusp-desktop']);
+    expect(published.status, published.stderr).toBe(0);
+    const generation = f.publishedPath(published.stdout);
+    expect(published.stdout).toContain('scope=selected');
+    expect(existsSync(join(generation, 'tree/package-lock.json'))).toBe(false);
+    expect(readdirSync(join(f.store, '.inputs')).sort()).toEqual([
+      expect.stringMatching(/^native-[a-f0-9]{64}$/), expect.stringMatching(/^scoped-[a-f0-9]{64}$/),
+    ]);
+    phase('materialize');
+    const materialized = f.shell(f.snapshotHelper, ['snapshot-generation-locked', f.donor, f.dest, 'copy']);
+    expect(materialized.status, materialized.stderr).toBe(0);
+    for (const path of ['node_modules/pkg/index.js', 'papercusp-desktop/node_modules/@tauri-apps/cli/tauri.js']) {
+      expect(readFileSync(join(f.dest, path))).toEqual(readFileSync(join(generation, 'tree', path)));
+      expect(statSync(join(f.dest, path)).ino).not.toBe(statSync(join(generation, 'tree', path)).ino);
+    }
+    const options = { checkpointDir: join(f.root, 'retained-verification'),
+      generation: true, batchSize: 6, maxDurationMs: 30_000 };
+    const context = { materializer: f.generationScript, environment: f.env,
+      workspaceDirs: ['packages/cli', 'papercusp-desktop'], sourceCommit: ref,
+      verifySource: () => checkSource(f.dest, ref) };
+    const leases = () => existsSync(join(f.store, '.leases')) ? readdirSync(join(f.store, '.leases')) : [];
+    const diagnostics = vi.spyOn(console, 'error').mockImplementation((line, ...extra) => {
+      expect(extra).toEqual([]);
+      expect(line).toEqual(expect.stringMatching(/^COMMITTED_DEPENDENCY_VERIFICATION /));
+      process.stderr.write(String(line) + '\n');
+    });
+    try {
+      phase('verify-paused');
+      const paused = await verifyRetainedDependencies(f.donor, f.dest, { ...options, maxBatches: 1 }, context);
+      const pausedEvidence = JSON.stringify(paused);
+      expect(paused.status, pausedEvidence).toBe('incomplete');
+      expect(paused.progress.hashedFiles, pausedEvidence).toBeGreaterThan(0);
+      expect(leases()).toEqual([]);
+      phase('verify-resumed');
+      const complete = await verifyRetainedDependencies(f.donor, f.dest, options, context);
+      const completeEvidence = JSON.stringify(complete);
+      expect(complete.status, completeEvidence).toBe('complete');
+      expect(complete.progress.reusedBatches, completeEvidence).toBeGreaterThan(0);
+      expect(leases()).toEqual([]);
+      phase('complete');
+    } finally { diagnostics.mockRestore(); }
   }, 90_000);
 
   it.each([true, false])('retains root-lock private trees outside manifest workspaces (installed=%s)', installed => {
