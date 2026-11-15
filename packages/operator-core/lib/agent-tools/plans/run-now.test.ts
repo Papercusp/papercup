@@ -30,6 +30,7 @@ vi.mock('../_harness-scope', async (orig) => ({
   harnessScopedCtx: (_h: string, ctx: unknown) => ctx,
 }));
 vi.mock('../../harness/routines/plan-run-action', () => ({ runScheduledPlanFire: vi.fn() }));
+vi.mock('../../plan-audits', () => ({ withCurrentDiscovery: vi.fn(async () => ({ ok: true })) }));
 vi.mock('../../acceptance-bar-lifecycle-evaluator', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../acceptance-bar-lifecycle-evaluator')>()),
   readAndEvaluateAcceptanceBarLifecycle: vi.fn(async () => ({ satisfied: true })),
@@ -41,8 +42,9 @@ vi.mock('../../plan-types/pins', async (original) => ({
   withPinnedPlanTypes: <T>(_scope: unknown, fn: () => Promise<T>) => fn(),
 }));
 
-import { getPlanRow } from './source';
+import { getPlanRow, type PlanRow, type PlanSchedule } from './source';
 import { runScheduledPlanFire } from '../../harness/routines/plan-run-action';
+import { readAndEvaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
 import { configurePlanAdmissionPolicySource } from './plan-admission-gate';
 // P-004 admission: checkPlanStartable now ends in checkPlanAdmission, whose default
 // policy source reads the pot's governance section through hive-federation →
@@ -57,22 +59,76 @@ type Out = { content: { text: string }[]; isError?: boolean };
 const call = (slug = 'p1') => tool.handler({ harness: 'web', slug } as never, {} as never) as Promise<Out>;
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
 
+const planRow = (overrides: Partial<PlanRow> = {}): PlanRow => ({
+  workspaceId: 'default', harnessSlug: 'web', planSlug: 'p1', content: '',
+  contentHash: 'fixture', version: 1, title: null, status: 'draft',
+  created: null, updated: null, owner: null, initiative: null, template: null,
+  templateData: null, inputSchema: null, outputSchema: null,
+  supersedes: [], supersededBy: null, opStatus: null, opStartedAt: null,
+  opUpdatedAt: null, currentWave: null, opPriority: null,
+  archived: false, isLegacy: false, updatedAt: '2026-11-15T00:00:00.000Z',
+  items: [], decisions: [], nowState: null, nowNext: null, nowNote: null,
+  promotePolicy: null, forcedPast: null, schedule: null, scheduleActive: false,
+  scheduledAt: null, expiresAt: null, tzid: null, templateSlug: null, runSeq: null,
+  ...overrides,
+});
+
 beforeEach(() => {
+  vi.clearAllMocks();
   getRow.mockReset();
   fire.mockReset();
 });
 
 describe('plans:run-now handler', () => {
   it('returns not_found for an unknown plan and does not fire', async () => {
-    getRow.mockResolvedValue(null as never);
+    getRow.mockResolvedValue(null);
     const out = await call();
     expect(out.isError).toBe(true);
     expect(body(out)).toMatchObject({ error: 'not_found', slug: 'p1' });
     expect(fire).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { kind: 'rrule', action: { system: 'rubric-rescore', input: { rubricRef: 'reliability' } } },
+    { kind: 'rrule', operation: { harnessSlug: 'other', operationId: 'measure' } },
+  ] satisfies PlanSchedule[])('redirects a carrier schedule to its routine before judging implementation acceptance: %j', async (schedule) => {
+    getRow.mockResolvedValue(planRow({ schedule }));
+    const out = await call();
+    expect(out.isError).toBe(true);
+    expect(body(out)).toEqual({
+      ok: false,
+      error: 'schedule_target_requires_routine_fire',
+      slug: 'p1',
+      detail: expect.any(String),
+      recovery: [
+        { tool: 'plans:arm-schedule', args: { harness: 'web', slug: 'p1' } },
+        { tool: 'routines:fire', args: { installSlug: 'web', name: 'plan-schedule-p1' } },
+      ],
+    });
+    expect(readAndEvaluateAcceptanceBarLifecycle).not.toHaveBeenCalled();
+    expect(fire).not.toHaveBeenCalled();
+  });
+
+  it('does not re-arm an already active measurement schedule in its recovery', async () => {
+    getRow.mockResolvedValue(planRow({
+      schedule: { kind: 'rrule', action: { system: 'rubric-rescore' } }, scheduleActive: true,
+    }));
+    expect(body(await call()).recovery).toEqual([
+      { tool: 'routines:fire', args: { installSlug: 'web', name: 'plan-schedule-p1' } },
+    ]);
+    expect(fire).not.toHaveBeenCalled();
+  });
+
+  it('keeps an implementation run subject to its acceptance check', async () => {
+    getRow.mockResolvedValue(planRow());
+    vi.mocked(readAndEvaluateAcceptanceBarLifecycle).mockRejectedValueOnce(new Error('acceptance check reached'));
+    await expect(call()).rejects.toThrow('acceptance check reached');
+    expect(readAndEvaluateAcceptanceBarLifecycle).toHaveBeenCalledWith('p1', 'pre-start', expect.any(Object));
+    expect(fire).not.toHaveBeenCalled();
+  });
+
   it('fires a manual run with the plan install/workspace and returns the run', async () => {
-    getRow.mockResolvedValue({ harnessSlug: 'web', workspaceId: 'default' } as never);
+    getRow.mockResolvedValue(planRow());
     fire.mockResolvedValue({ started: true, runId: 5, instanceSlug: 'p1-run-5' } as never);
     const out = await call();
     expect(out.isError).toBeUndefined();
@@ -83,7 +139,7 @@ describe('plans:run-now handler', () => {
   });
 
   it('maps a typed fire refusal to an isError result without losing its diagnosis', async () => {
-    getRow.mockResolvedValue({ harnessSlug: 'web', workspaceId: 'default' } as never);
+    getRow.mockResolvedValue(planRow());
     fire.mockResolvedValue({
       started: false,
       instanceSlug: '',

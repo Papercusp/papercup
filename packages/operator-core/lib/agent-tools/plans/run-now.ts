@@ -16,6 +16,7 @@ import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { getPlanRow } from './source';
 import { checkPlanStartable, planGateRefusalContent } from './plan-start-gate';
 import { runScheduledPlanFire } from '../../harness/routines/plan-run-action';
+import { planScheduleRoutineName } from '../../harness/routines/materialize-plan-schedule';
 
 const argsSchema = z.object({
   harness: harnessArg,
@@ -31,11 +32,11 @@ const argsSchema = z.object({
 export default defineTool({
   name: 'plans:run-now',
   description:
-    'Fire one run of a scheduled plan immediately (a manual run), independent of its cadence — mints an instance plan + plan_runs row + run-scoped work items, like a scheduled fire.',
+    'Fire one implementation-plan run immediately, independent of its cadence — mints an instance plan + plan_runs row + run-scoped work items. System-action and blueprint-operation schedules return the exact routines:fire recovery instead.',
   guidance: {
     when: 'Manually triggering a run of a scheduled plan now — testing the schedule, or an out-of-band run.',
     notWhen:
-      'Changing the cadence (plans:set-schedule). Launching a plan as an interactive chat session (plans:launch).',
+      'System-action or blueprint-operation schedules: arm with plans:arm-schedule, then use routines:fire. Changing cadence (plans:set-schedule). Interactive agent launches (plans:launch).',
     chaining: 'plans:set-schedule (author) → plans:run-now (fire one) → plans:runs (inspect the runs).',
     seeAlso: [
       'plans:runs (list past / active runs)',
@@ -55,6 +56,33 @@ export default defineTool({
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not_found', slug: args.slug }) }],
         isError: true,
+      };
+    }
+    // These schedules execute their saved target directly; they never clone this
+    // carrier plan. Sending them through the implementation gate invents a BAR
+    // obligation and, if that gate passes, would execute the wrong kind of run.
+    if (plan.schedule?.action || plan.schedule?.operation) {
+      return {
+        isError: true,
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: false,
+            error: 'schedule_target_requires_routine_fire',
+            slug: args.slug,
+            detail: 'This schedule executes its saved action or operation, not a plan instance. Fire its materialized routine; arm the schedule first if it is inactive.',
+            recovery: [
+              ...(!plan.scheduleActive ? [{
+                tool: 'plans:arm-schedule',
+                args: { harness: plan.harnessSlug, slug: args.slug },
+              }] : []),
+              {
+                tool: 'routines:fire',
+                args: { installSlug: plan.harnessSlug, name: planScheduleRoutineName(args.slug) },
+              },
+            ],
+          }),
+        }],
       };
     }
     // P-006 start gate — with any per-invocation overrides merged in FIRST, so what is
