@@ -59,6 +59,7 @@ import {
   assessMainBehindStaging,
 } from './git-pipeline-position';
 import { assessGateOwnership } from './coord/gate-ownership';
+import { readHarnessCheckpointState } from './release/harness-checkpoint-state';
 import { CRITICAL_CLAIM_PROGRESS_LEASE_MS } from './agent-tools/work_items/release-force-guard';
 import {
   assessFreezeDisposition,
@@ -187,6 +188,9 @@ const GATE_OWNERSHIP_CELLS = BUILTIN_CELLS.filter(
 );
 const LSP_ADMISSION_CELLS = BUILTIN_CELLS.filter(
   (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'lsp:admission_snapshot',
+);
+const HARNESS_CHECKPOINT_CELLS = BUILTIN_CELLS.filter(
+  (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'checkpoint:state_snapshot',
 );
 const VERIFICATION_HEALTH_CELLS = BUILTIN_CELLS.filter(
   (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'plans:verification-health',
@@ -593,6 +597,25 @@ const RUN = (over: Partial<RunStatusReading> | null) =>
         },
     RUN_NOW,
   );
+
+type HarnessCheckpointPayload = { checkpoint: Awaited<ReturnType<typeof readHarnessCheckpointState>> };
+const harnessCheckpointPayloads: Record<string, HarnessCheckpointPayload> = {};
+beforeAll(async () => {
+  const ctx = { workspaceId: 'test-checkpoint', harnessSlug: 'test-harness' };
+  const inputs = [
+    ['recorded', ctx, async () => ({})],
+    ['no-checkpoint', ctx, async () => undefined],
+    ['unscoped', {}, async () => ({})],
+    ['read-failed', ctx, async () => { throw new Error('checkpoint metadata read failed'); }],
+    ['malformed', ctx, async () => null],
+  ] as const;
+  for (const [label, scope, read] of inputs) {
+    harnessCheckpointPayloads[label] = { checkpoint: await readHarnessCheckpointState(scope, read, 1_000) };
+  }
+  CONTROLS['gate.harnessCheckpoint'] = inputs.map(([label]) => ({
+    label, expect: harnessCheckpointPayloads[label]!.checkpoint.assessment,
+  }));
+});
 
 const CONTROLS: Record<string, readonly Control[]> = {
   'gate.greenCheckpoint.convergence': [
@@ -1283,6 +1306,7 @@ const CONTROLS: Record<string, readonly Control[]> = {
  * to CONTROLS; the partition test below proves the alignment rather than assuming it.
  */
 const EXPECTED: Record<string, readonly (string | null)[]> = {
+  'gate.harnessCheckpoint': ['recorded', 'no-checkpoint', 'unscoped', 'unavailable', 'unavailable'],
   // P-004 truth table. Zero automated attempts is a dispatch fact, not proof that no manual
   // measurement happened. `no-attempts` applies only while the recorded rounds have no trend;
   // once a manual lineage establishes one, the convergence result takes precedence.
@@ -1478,7 +1502,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
   // they must stay hardcoded so adding a cell forces an author through this file — but the
   // TITLE must not carry a second copy of them.
   it('registers every built-in cell and routes every one to a resolver family', () => {
-    expect(BUILTIN_CELLS).toHaveLength(33);
+    expect(BUILTIN_CELLS).toHaveLength(34);
     expect(
       PIPELINE_CELLS.length +
         GOAL_CELLS.length +
@@ -1492,6 +1516,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
         DIRECTIVE_CELLS.length +
         GATE_OWNERSHIP_CELLS.length +
         LSP_ADMISSION_CELLS.length +
+        HARNESS_CHECKPOINT_CELLS.length +
         VERIFICATION_HEALTH_CELLS.length +
         WORK_BUG_INFLOW_CELLS.length,
     ).toBe(BUILTIN_CELLS.length);
@@ -1507,6 +1532,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
     expect(DIRECTIVE_CELLS).toHaveLength(1);
     expect(GATE_OWNERSHIP_CELLS).toHaveLength(1);
     expect(LSP_ADMISSION_CELLS).toHaveLength(3);
+    expect(HARNESS_CHECKPOINT_CELLS).toHaveLength(1);
     expect(VERIFICATION_HEALTH_CELLS).toHaveLength(1);
     expect(WORK_BUG_INFLOW_CELLS).toHaveLength(1);
   });
@@ -1619,6 +1645,22 @@ describe('P-004: every declared assessment path exists in a LIVE resolver payloa
       }
     },
     20_000,
+  );
+
+  it.each(HARNESS_CHECKPOINT_CELLS.map((c) => [c.cell, c] as const))(
+    '%s — assessment and evidence paths survive scoped, missing, unscoped and failed reads',
+    (_id, spec) => {
+      for (const payload of Object.values(harnessCheckpointPayloads)) {
+        expect(missingAssessmentPaths(spec, payload)).toEqual([]);
+        expect(pathExists(payload, spec.unknownHoist!).exists).toBe(true);
+        expect(Object.keys(spec.assessment!.codes)).toContain(pathExists(payload, spec.assessment!.path).value);
+      }
+      expect(harnessCheckpointPayloads.recorded!.checkpoint.target).toEqual({
+        workspaceId: 'test-checkpoint', installSlug: 'test-harness',
+      });
+      expect(harnessCheckpointPayloads['read-failed']!.checkpoint.unknown).toContain('checkpoint-record-read-failed');
+      expect(harnessCheckpointPayloads.malformed!.checkpoint.unknown).toContain('checkpoint-metadata-malformed');
+    },
   );
 
   it.each(LSP_ADMISSION_CELLS.map((c) => [c.cell, c] as const))(
@@ -1773,6 +1815,13 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
    */
   const PAIRS: ReadonlyArray<readonly [string, string, string | (() => string), string | (() => string), string]> = [
     // [cell, decisive field, code when the field is "positive", code when negated, note]
+    [
+      'gate.harnessCheckpoint',
+      'checkpoint metadata row exists',
+      () => harnessCheckpointPayloads.recorded!.checkpoint.assessment,
+      () => harnessCheckpointPayloads['no-checkpoint']!.checkpoint.assessment,
+      'a missing routine must not read as recorded checkpoint authority',
+    ],
     [
       'git.pipelinePosition',
       'serving.startedSinceCodeChange',
@@ -2372,6 +2421,7 @@ describe('P-012: every hoisted count/list travels with its measured-ness flag', 
         [c.cell, c, () => livePipelinePayload(c.callerRelativity.kind === 'parameter' ? PIPELINE_SUBJECT : undefined)] as const,
     ),
     ...COVERAGE_CELLS.map((c) => [c.cell, c, liveCoveragePayload] as const),
+    ...HARNESS_CHECKPOINT_CELLS.map((c) => [c.cell, c, async () => harnessCheckpointPayloads.recorded] as const),
     ...HOST_MEMORY_CELLS.map((c) => [c.cell, c, liveHostMemoryPayload] as const),
     ...GOVERNOR_CELLS.map((c) => [c.cell, c, liveGovernorPayload] as const),
     ...LSP_ADMISSION_CELLS.map((c) => [c.cell, c, async () =>
