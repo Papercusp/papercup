@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MANAGED_CAPABILITY_DISPOSITIONS } from '@papercusp/orchestrator/managed-capability-contract';
+import { MANAGED_CAPABILITY_DISPOSITIONS, type ManagedCapabilityFamilyId } from '@papercusp/orchestrator/managed-capability-contract';
 import { declareRealClientMatrix } from '@papercusp/orchestrator/managed-capability-matrix';
 import { getRegisteredInstrument } from './rubric-instrument-registry';
 import type { listSpecEvidence } from './agent-tools/plans/spec-evidence-store';
@@ -88,6 +88,30 @@ describe('inventory comparison reads canonical spec and case evidence', () => {
     expect(report.baselineEvidenceRefs).toEqual(['git:baseline']);
     expect(report.unknownReasons).toContain('installed-client-receipt-qualification-required');
     expect(report.missingDetectors).toContain('packages/operator-core/lib/agent-tools/capability/managed-capability-api.e2e.test.ts');
+  });
+
+  it('retains historical acceptance gaps in the production inventory without claiming missing native observations passed', async () => {
+    // The live R-13 comparison caught these removals before a qualified control pair existed.
+    const historicalGaps = new Map<ManagedCapabilityFamilyId, string[]>([
+      ['shell-ssh-interpreters', ['shell-start-once-response-yield']],
+      ['jobs-output-stop-pty', ['pty-resize-completion-reattach', 'job-response-deadline-continuity']],
+      ['script-orchestration-kernels', ['kernel-state-media-contract']],
+      ['edit-write-patch-notebook', ['patch-notebook-adapters']],
+    ]);
+    const report = await measureManagedCapabilityInventory({ workspaceId: 'workspace', harnessSlug: 'papercusp' }, {
+      evidence: vi.fn().mockResolvedValue([]), clauses: vi.fn().mockResolvedValue([]),
+      versions: async () => ({}), artifacts: async () => new Map(), now: NOW,
+      baseline: async () => ({
+        inventory: MANAGED_CAPABILITY_DISPOSITIONS.map(disposition => ({ family: disposition.family,
+          gapIds: [...new Set([...disposition.gaps.map(gap => gap.id), ...(historicalGaps.get(disposition.family) ?? [])])],
+        })),
+        refs: ['fixture:retained-historical-acceptance-gaps'],
+      }),
+    });
+    expect(report.integrityIssues).toEqual([]);
+    expect(report.coverage.checked).toEqual([]);
+    expect(report.coverage.notChecked).toEqual(report.coverage.population);
+    expect(report.verdict).toBe('unknown');
   });
 
   it('registers a runnable subject-scoped reader and refuses a different subject before any probe', async () => {
