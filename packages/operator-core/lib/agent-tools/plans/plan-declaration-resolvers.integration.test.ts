@@ -4,7 +4,7 @@ import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { DISCLOSURE_LEDGER_FIXTURE_DDL } from '../../../test/_disclosure-ledger-fixture';
 import { resolveDiscoveryAuditContext } from './plan-declaration-resolvers';
-import { fetchSourceTurns, type TurnSql } from '../../activation-item-provenance';
+import { fetchSourceTurns } from '../../activation-item-provenance';
 import { resolveSessionTurnRefs } from '../sessions/_shared';
 import type { ArchivedTurn } from '../../session-archive-read';
 
@@ -57,7 +57,7 @@ describe('canonical discovery source resolution', () => {
     const first = (await context()).evidence[0]!;
     expect(first).toMatchObject({ ref, state: 'current', usable: true, fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) });
     expect(first.reason).toContain('origin unknown');
-    expect((await fetchSourceTurns(sql as unknown as TurnSql, workspaceId, [ref])).get(ref)?.verdict).toBe('unknown');
+    expect((await fetchSourceTurns(sql, workspaceId, [ref])).get(ref)?.verdict).toBe('unknown');
     await sql`UPDATE harness_shared.session_turns SET text='Changed source observation' WHERE workspace_id=${workspaceId}`;
     expect((await context()).evidence[0]?.fingerprint).not.toBe(first.fingerprint);
     const [stored] = await sql`SELECT turn_origin_verdict FROM harness_shared.session_turns WHERE workspace_id=${workspaceId}`;
@@ -83,7 +83,7 @@ describe('canonical discovery source resolution', () => {
     }] });
     expect((await context()).evidence[0]).toMatchObject({ ref, state: 'current', usable: true,
       reason: expect.stringContaining('agent-injected') });
-    expect(await fetchSourceTurns(sql as unknown as TurnSql, workspaceId, [ref])).toEqual(new Map());
+    expect(await fetchSourceTurns(sql, workspaceId, [ref])).toEqual(new Map());
     readArchive.mockResolvedValue(null);
     expect((await context()).evidence[0]).toMatchObject({ state: 'unknown', usable: false, fingerprint: null });
   });

@@ -319,6 +319,7 @@ const getClaimSpecMock = vi.fn();
 vi.mock('../../../scheduler/claim-spec-store', () => ({
   setClaimSpec: (...args: unknown[]) => setClaimSpecMock(...args),
   getClaimSpec: (...args: unknown[]) => getClaimSpecMock(...args),
+  getClaimSpecRecord: async () => ({ source: 'default' }),
   fleetSpecBeeKey: (slug: string) => `fleet:${slug}`,
   resolveClaimSpecWorkspace: (ws: string | null | undefined) => (ws && ws !== '*' ? ws : undefined),
 }));
@@ -3259,6 +3260,7 @@ describe('fleet:launch-on-plan handler — EI-8985 per-member launch-context bri
     fs.mkdirSync(tmpDir, { recursive: true });
     fs.writeFileSync(`${tmpDir}/member-1.md`, 'You specifically own the auth migration.');
     fs.writeFileSync(`${tmpDir}/member-2.md`, 'You specifically own the UI polish pass.');
+    getClaimSpecMock.mockResolvedValue(DEFAULT_CLAIM_SPEC);
   });
 
   it('gives each listed member its OWN composed context, index-aligned', async () => {
@@ -3525,9 +3527,14 @@ describe('fleet:launch-on-plan handler — P-004 validation + per-member disclos
     expect(payload.resolvedMembers).toBeNull();
   });
 
-  it('WARNS that a per-member claimKinds is not applied at launch (only the fleet claim spec is)', async () => {
+  it('installs a per-member lane before the first process opens (EI-28871639998898482)', async () => {
+    setClaimSpecMock.mockClear();
+    getClaimSpecMock.mockResolvedValue(DEFAULT_CLAIM_SPEC);
     let call = 0;
-    spawnConsoleMock.mockImplementation(() => ({ status: 'ok', terminal: `term-${++call}`, pid: 100 + call }));
+    spawnConsoleMock.mockImplementation(() => {
+      expect(setClaimSpecMock.mock.calls.some(([args]) => !args.cupId.startsWith('fleet:') && args.ifAbsent)).toBe(true);
+      return { status: 'ok', terminal: `term-${++call}`, pid: 100 + call };
+    });
     const res = await invokeLaunchHandler(
       {
         name: 'Lane Fleet',
@@ -3540,8 +3547,35 @@ describe('fleet:launch-on-plan handler — P-004 validation + per-member disclos
     );
     const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
-    expect(payload.message).toMatch(/per-member `claimKinds` is NOT applied at launch/);
-    expect(payload.message).toContain('scheduler:set_claim_spec');
+    expect(payload.message).toContain('initialized before kickoff');
+    expect(setClaimSpecMock.mock.calls.filter(([args]) => !args.cupId.startsWith('fleet:'))).toHaveLength(1);
+  });
+
+  it('opens no process if a dedicated member policy cannot be stored', async () => {
+    getClaimSpecMock.mockResolvedValue(DEFAULT_CLAIM_SPEC);
+    setClaimSpecMock.mockImplementation(async (args) => args.cupId.startsWith('fleet:')
+      ? { ok: true, revision: 1 }
+      : { ok: false, errors: ['injected member policy write failure'] });
+    const res = await invokeLaunchHandler({
+      name: 'Refused Dedicated Lane', plan: 'my-plan', harness: 'papercusp', count: 1,
+      members: [{ claimFilter: { field: 'plan', op: '=', value: 'my-plan' } }],
+    } as never, {} as never);
+    expect((res as any).isError).toBe(true);
+    expect((res as any).content[0].text).toContain('injected member policy write failure');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    setClaimSpecMock.mockResolvedValue({ ok: true, revision: 1 });
+  });
+
+  it('refuses a planless dedicated brief with no typed lane before opening any process', async () => {
+    const res = await invokeLaunchHandler({
+      name: 'Ambiguous Dedicated Brief', harness: 'papercusp', claimKinds: ['bug'], count: 1,
+      members: [{ brief: 'Work only on the alpha plan.' }],
+    } as never, {} as never);
+    expect((res as any).isError).toBe(true);
+    expect((res as any).content[0].text).toContain('claimFilter is required');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 });
 

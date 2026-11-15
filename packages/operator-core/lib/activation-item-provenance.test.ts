@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
+import type postgres from 'postgres';
 import type { HitTurnOriginVerdict } from './agent-tools/sessions/turn-origin';
 import {
   fetchOrderSourceTurns,
@@ -13,6 +14,11 @@ import {
   type TurnSql,
 } from './activation-item-provenance';
 import { buildBlindReviewBrief } from './blind-review-brief';
+
+it('accepts native pooled and transaction clients for source-turn queries', () => {
+  expectTypeOf<postgres.Sql>().toMatchTypeOf<TurnSql>();
+  expectTypeOf<postgres.TransactionSql>().toMatchTypeOf<TurnSql>();
+});
 
 const OWNER = 'session_turn:claude:s1:0';
 const OWNER_DIALOG = 'session_turn:claude:s1:4';

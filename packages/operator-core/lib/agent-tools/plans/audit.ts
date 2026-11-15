@@ -81,7 +81,6 @@ import {
   fetchOrderSourceTurns,
   itemProvenanceMissingProblems,
   parseOrderSourceRef,
-  type TurnSql,
 } from '../../activation-item-provenance';
 import { persistDerivedDraftClauses } from '../../derive-draft-spec-clauses';
 import { detectUnderReadFromSource } from '../../activation-under-read';
@@ -792,7 +791,7 @@ export default defineTool({
       // Consequently ctx.tx is intentionally absent at runtime; resolve the
       // canonical session refs through the same org SQL surface as the writer.
       const { sql } = getOrgPg();
-      const orderTurns = await fetchOrderSourceTurns(sql as unknown as TurnSql, workspaceId, orderRefs);
+      const orderTurns = await fetchOrderSourceTurns(sql, workspaceId, orderRefs);
       const resolutions: Array<{
         ref: string;
         ok: boolean;
@@ -841,7 +840,7 @@ export default defineTool({
               exists: previousAudit != null,
               check: previousAudit?.activation?.itemProvenanceCheck ?? null,
             },
-            lookupOrigins: dbRefOriginLookup(sql as Parameters<typeof dbRefOriginLookup>[0], workspaceId),
+            lookupOrigins: dbRefOriginLookup(sql, workspaceId),
           })
         : null;
       if (provenance && provenance.problems.length > 0) {

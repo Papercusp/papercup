@@ -32,6 +32,7 @@
  */
 
 import { parsePlan } from '@papercusp/plan-parser';
+import type postgres from 'postgres';
 import {
   classifyHitTurnOrigin,
   TURN_ORIGIN_HEAD_CHARS,
@@ -290,8 +291,12 @@ export type RefOriginLookup = (refs: readonly string[]) => Promise<Map<string, H
  * getOrgPg (the same reason audit.ts's under-read query uses it).
  */
 export type TurnSql = {
-  <T>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T>;
-  array?: (values: unknown[]) => unknown;
+  // Match the native tag's row and parameter constraints so both pooled and
+  // transaction clients fit without casts; simple test doubles only need a Promise.
+  <T extends readonly postgres.MaybeRow[] = postgres.Row[]>(
+    strings: TemplateStringsArray, ...values: readonly postgres.ParameterOrFragment<never>[]
+  ): Promise<T>;
+  array?: postgres.Sql['array'];
 };
 
 /** One cited turn as read from the corpus: its speaker, the first `chars` characters of
@@ -349,7 +354,7 @@ export async function fetchOrderSourceTurns(
     .map((ref) => ({ ref, id: parseOrderSourceRef(ref) }))
     .filter((entry): entry is { ref: string; id: number } => entry.id != null);
   if (keyed.length === 0) return out;
-  const wrap = (values: unknown[]) => (sql.array ? sql.array(values) : values);
+  const wrap = (values: (string | number)[]) => (sql.array ? sql.array(values) : values);
   const width = Math.max(chars, TURN_ORIGIN_HEAD_CHARS);
   const rows = await sql<Array<{
     id: string | number; verbatim_head: string | null; verbatim_tail?: string | null; captured_by_hook: boolean | null;
@@ -409,7 +414,7 @@ export async function fetchSourceTurns(
     .map((ref) => ({ ref, parsed: parseTurnRef(ref) }))
     .filter((entry): entry is { ref: string; parsed: NonNullable<ReturnType<typeof parseTurnRef>> } => entry.parsed != null);
   if (keyed.length === 0) return out;
-  const wrap = (values: unknown[]) => (sql.array ? sql.array(values) : values);
+  const wrap = (values: (string | number)[]) => (sql.array ? sql.array(values) : values);
   const width = Math.max(chars, TURN_ORIGIN_HEAD_CHARS);
   const rows = await sql<
     Array<{

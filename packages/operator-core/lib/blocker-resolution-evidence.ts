@@ -181,6 +181,54 @@ export interface BlockerEvidenceContext extends CellReadEnv {
 const absent = (detail: string): BlockerEvidenceMeasurement => ({ status: 'absent', detail });
 const unknown = (detail: string): BlockerEvidenceMeasurement => ({ status: 'unknown', detail });
 
+/** A pinned rubric gate measures current independent vetting, never an event fire. */
+async function readRubricGateCondition(ref: string, context: BlockerEvidenceContext): Promise<BlockerEvidenceMeasurement> {
+  const match = /^rubric:([^@]+)@([1-9][0-9]*)$/.exec(ref);
+  if (!match || !Number.isSafeInteger(Number(match[2]))) return absent('exact rubric revision is required');
+  const gates = context.blockers.filter(blocker => blocker.kind === 'gate' && blocker.ref === ref && blocker.status === 'active');
+  if (gates.length !== 1) return absent('exact canonical active rubric gate is required');
+  const { activeWorkspaceId } = await import('./workspace-registry');
+  if (!context.workspaceId || activeWorkspaceId() !== context.workspaceId || !context.harnessSlug ||
+      !context.ownerId || context.custodianId !== context.ownerId) return unknown('canonical rubric tenant and current custodian are required');
+  const { readRubricWithoutSeeding } = await import('./rubrics');
+  const read = (id = match[1]) => readRubricWithoutSeeding(id, { workspaceId: context.workspaceId! });
+  const current = await read();
+  if (current.kind !== 'found') return unknown('canonical rubric revision is unavailable');
+  const rubric = current.rubric;
+  if (rubric.rubricId !== match[1] || rubric.workspaceId !== context.workspaceId || rubric.kind !== 'acceptance' ||
+      rubric.subjectHarnessSlug !== context.harnessSlug || rubric.revision !== Number(match[2]) ||
+      !rubric.criteriaHash || rubric.readCompat?.strippedKeys.length || !rubric.criteria.length) {
+    return unknown('rubric scope, revision or complete criteria identity does not match the gate');
+  }
+  const { getAcceptanceRubricVettingStatus } = await import('./acceptance-rubric-vetting');
+  const { listScorecards } = await import('./scorecards');
+  const vetting = await getAcceptanceRubricVettingStatus(rubric, { listScorecards,
+    getRubric: async id => {
+      const entry = await read(id);
+      if (entry.kind === 'read-failed' || entry.kind === 'ambiguous') throw new Error('rubric vetting dependency is unavailable');
+      return entry.kind === 'found' ? entry.rubric : null;
+    } });
+  // Vetting has asynchronous readers. Fence a concurrent rubric amendment before
+  // returning clearance, including an unchanged revision with changed criteria.
+  const after = await read();
+  if (after.kind !== 'found' || after.rubric.rubricId !== rubric.rubricId ||
+      after.rubric.workspaceId !== rubric.workspaceId || after.rubric.kind !== rubric.kind ||
+      after.rubric.subjectHarnessSlug !== rubric.subjectHarnessSlug || after.rubric.revision !== rubric.revision ||
+      after.rubric.criteriaHash !== rubric.criteriaHash || after.rubric.readCompat?.strippedKeys.length ||
+      activeWorkspaceId() !== context.workspaceId || !vetting.required ||
+      vetting.currentRevision !== rubric.revision || vetting.currentCriteriaHash !== rubric.criteriaHash) {
+    return unknown('current rubric vetting identity changed or could not be measured');
+  }
+  const measurement = { status: 'available' as const, reachable: true,
+    conditionIdentity: JSON.stringify(['rubric-vetting', context.workspaceId, context.harnessSlug,
+      rubric.rubricId, rubric.revision, rubric.criteriaHash]) };
+  if (!vetting.satisfied || vetting.state !== 'vetted') return { ...measurement, condition: 'pending' };
+  if (vetting.attestedRevision !== rubric.revision || vetting.attestedCriteriaHash !== rubric.criteriaHash) {
+    return unknown('independent vetting does not attest the exact current rubric');
+  }
+  return { ...measurement, condition: 'satisfied' };
+}
+
 /** Legacy route gates measure canonical supersession, never an event fire or
  * an agent's assertion. Keep the accepted affirmative clauses narrow: merely
  * mentioning, proposing or negating an override grants no authority. */
@@ -525,6 +573,7 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
             condition: isDeepStrictEqual(actual, expected) ? 'satisfied' : 'pending' };
         }
         case 'event': {
+          if (ref.ref.startsWith('rubric:')) return await readRubricGateCondition(ref.ref, context);
           if (ref.ref.startsWith('plan-route:')) return await readPlanRouteCondition(ref.ref, context);
           if (ref.ref.startsWith('grading-audit:') || ref.ref.startsWith('scorecard:grading-audit:')) {
             return await readGradingAuditCondition(ref.ref, context, loadAuditHeader);

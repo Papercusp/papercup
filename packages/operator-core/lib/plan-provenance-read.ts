@@ -24,7 +24,6 @@ import {
   type ItemProvenanceLabel,
   type ItemProvenanceUnresolvedReason,
   type SourceTurn,
-  type TurnSql,
 } from './activation-item-provenance';
 import type { HitTurnOriginVerdict } from './agent-tools/sessions/turn-origin';
 import type { ActivationAuditMapping, AuditedPlanRevision, PlanAudit } from './plan-audits';
@@ -234,7 +233,7 @@ export async function resolvePlanProvenance(args: PlanProvenanceArgs): Promise<P
        AND plan_slug = ${args.planSlug}
      ORDER BY seq DESC
      LIMIT 1`;
-  const turns = await fetchSourceTurns(sql as unknown as TurnSql, scope.workspaceId, provenanceSourceRefs(audit), PROVENANCE_QUOTE_CHARS);
+  const turns = await fetchSourceTurns(sql, scope.workspaceId, provenanceSourceRefs(audit), PROVENANCE_QUOTE_CHARS);
   return [
     buildPlanProvenance({
       planSlug: args.planSlug,

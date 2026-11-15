@@ -231,6 +231,53 @@ describe('discovery uses existing revision and audit authorities', () => {
     const [{ count }] = await fx.admin`SELECT count(*)::int AS count FROM harness_shared.plan_audits WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
     expect(count).toBe(1);
   });
+  it.each([
+    { before: 'proposed', after: 'existing', initiallyReady: false, finallyReady: true },
+    { before: 'existing', after: 'proposed', initiallyReady: true, finallyReady: false },
+  ] as const)('records changed readiness from $before to $after instead of reusing a contradictory receipt', async ({ before, after, initiallyReady, finallyReady }) => {
+    await revision(draft.replace('## Discovery', '- **P-002** `todo` Preserve the second helper\n\n## Discovery'));
+    let change: 'proposed' | 'existing' = before;
+    const measured = async (): Promise<DiscoveryAuditContext> => ({ ...await context(),
+      targets: [{ ref: 'P-001', change: 'proposed' }, { ref: 'P-002', change }] });
+    const first = await recordCurrentDiscoveryAudit(input(), { context: measured });
+    expect(first).toMatchObject({ ok: true, reused: false,
+      audit: { discovery: { readiness: { ready: initiallyReady } } } });
+    if (!first.ok || !('audit' in first) || !first.audit) throw new Error('Missing initial Discovery receipt');
+    change = after;
+    const preview = await recordCurrentDiscoveryAudit({ ...input(), dryRun: true }, { context: measured });
+    expect(preview).toMatchObject({ ok: true, preview: true, discovery: { readiness: { ready: finallyReady } } });
+    expect(preview).not.toHaveProperty('audit');
+    let accepted = 0;
+    // Fresh readiness alone cannot supply the missing persisted finalization.
+    expect(await withCurrentDiscovery(input(), async () => ++accepted, { context: measured }))
+      .toMatchObject({ ok: false, error: 'discovery_not_ready' });
+    const second = await recordCurrentDiscoveryAudit(input(), { context: measured });
+    expect(second).toMatchObject({ ok: true, reused: false,
+      discovery: { readiness: { ready: finallyReady } }, audit: { discovery: { readiness: { ready: finallyReady } } } });
+    if (!second.ok || !('audit' in second) || !second.audit) throw new Error('Missing updated Discovery receipt');
+    expect(second.discovery.requestKey).toBe(first.discovery.requestKey);
+    expect(second.audit.auditSeq).toBeGreaterThan(first.audit.auditSeq);
+    expect(await recordCurrentDiscoveryAudit(input(), { context: measured })).toMatchObject({ ok: true, reused: true,
+      audit: { auditSeq: second.audit.auditSeq } });
+    const result = await withCurrentDiscovery(input(), async () => ++accepted, { context: measured });
+    expect(result).toMatchObject(finallyReady ? { ok: true, result: 1 } : { ok: false, error: 'discovery_not_ready' });
+    expect(accepted).toBe(finallyReady ? 1 : 0);
+    const [{ count }] = await fx.admin`SELECT count(*)::int AS count FROM harness_shared.plan_audits
+      WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
+    expect(count).toBe(2);
+  });
+  it('refuses readiness moving between measurements even when the request key stays unchanged', async () => {
+    await revision(draft.replace('## Discovery', '- **P-002** `todo` Preserve the second helper\n\n## Discovery'));
+    let calls = 0;
+    const moving = async (): Promise<DiscoveryAuditContext> => ({ ...await context(), targets: [
+      { ref: 'P-001', change: 'proposed' }, { ref: 'P-002', change: ++calls === 1 ? 'existing' : 'proposed' },
+    ] });
+    expect(await recordCurrentDiscoveryAudit(input(), { context: moving }))
+      .toMatchObject({ ok: false, error: 'discovery_subject_moved' });
+    const [{ count }] = await fx.admin`SELECT count(*)::int AS count FROM harness_shared.plan_audits
+      WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
+    expect(count).toBe(0);
+  });
   it('refuses moved evidence at the accepting boundary with zero audit effects', async () => {
     let calls = 0;
     const moving = async () => { const value = await context(); value.evidence[0]!.fingerprint = String(++calls); return value; };

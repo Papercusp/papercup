@@ -5766,6 +5766,48 @@ describe('template_data persistence boundary — the set-template-data door', ()
     });
   });
 
+  it.each([63, 64, 65])('screens a complete implementer population of %i with one lineage read per candidate', async (count) => {
+    const seeded = await seedBarContract(`approver-candidate-closure-${count}`);
+    const identities = await import('./acceptance-author-identity');
+    const implementers = Array.from({ length: count }, (_, index) => `su-population-${count}-${index}`);
+    const tail = implementers.at(-1)!;
+    const sibling = `su-population-${count}-sibling`;
+    const descendant = `su-population-${count}-descendant`;
+    const parent = `su-population-${count}-parent`;
+    for (const [owner, launcher] of [[tail, parent], [sibling, parent], [descendant, tail]]) {
+      await db.adminSql`INSERT INTO harness_shared.adv_sessions
+        (workspace_id, mode, coord_owner_id, launch_spec)
+        VALUES (${seeded.workspaceId}, 'console', ${owner!},
+          ${db.adminSql.json({ launchedBy: launcher! })})`;
+    }
+    const population = vi.spyOn(identities, 'resolvePlanImplementerIdentities');
+    const closure = vi.spyOn(identities, 'acceptanceLineageClosure');
+    try {
+      for (const order of [implementers, [...implementers].reverse()]) {
+        population.mockResolvedValue(order);
+        closure.mockClear();
+        const screen = await rubrics.resolveAcceptanceBarApproverScreen({ rubricId: seeded.rubricSlug });
+        const verdicts = await Promise.all([screen.check(sibling), screen.check(sibling)]);
+        expect(verdicts).toEqual([
+          expect.objectContaining({ eligible: true, reason: 'eligible' }),
+          expect.objectContaining({ eligible: true, reason: 'eligible' }),
+        ]);
+        expect(closure).toHaveBeenCalledTimes(1);
+        expect(closure.mock.calls[0]![0]).toBe(sibling);
+        // The decisive identity is beyond 64 entries in one ordering; sharing
+        // its parent must not reject the sibling above.
+        expect(await screen.check(descendant)).toMatchObject({
+          eligible: false, reason: 'related_to_plan_implementer', eligibleWithUnrelatedApplier: false,
+        });
+        expect(closure).toHaveBeenCalledTimes(2);
+        expect(closure.mock.calls[1]![0]).toBe(descendant);
+      }
+    } finally {
+      population.mockRestore();
+      closure.mockRestore();
+    }
+  });
+
   it('attributes a failed shared screening query to each candidate and refuses routing', async () => {
     const seeded = await seedBarContract('approver-screen-query-failure');
     const screen = await rubrics.resolveAcceptanceBarApproverScreen({ rubricId: seeded.rubricSlug });
@@ -5786,7 +5828,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
         expect(refusal.message).toContain(`rubric=${seeded.rubricSlug}`);
         expect(refusal.message).toContain(`subjectPlan=${seeded.subject}`);
         expect(refusal.message).toContain(`candidate=${ownerId}`);
-        expect(refusal.message).toContain(`populationIdentity=${closure.mock.calls[0]![0]}`);
+        expect(refusal.message).toContain('populationIdentity=su-test');
         expect(refusal.message).toContain('query=acceptanceLineageClosure; code=57014');
       }
       // Failure is shared, never retried once for every routed candidate.

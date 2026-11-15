@@ -12,7 +12,7 @@ import type { PlanRow } from './agent-tools/plans/source';
 const mocks = vi.hoisted(() => ({ item: vi.fn(), presence: vi.fn(), cell: vi.fn(), event: vi.fn(),
   doc: vi.fn(), session: vi.fn(), test: vi.fn(), deps: vi.fn(async (): Promise<UnresolvedDepBlocker[]> => []),
   workspace: vi.fn(() => 'workspace-a'), hoist: vi.fn((): string | null => null), runtime: vi.fn(),
-  hold: vi.fn(), parked: vi.fn(), nodes: vi.fn(), plan: vi.fn(), scorecard: vi.fn() }));
+  hold: vi.fn(), parked: vi.fn(), nodes: vi.fn(), plan: vi.fn(), scorecard: vi.fn(), rubric: vi.fn(), vetting: vi.fn() }));
 vi.mock('./runtime-blocker-condition', () => ({ readRuntimeBlockerCondition: mocks.runtime }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: mocks.workspace }));
 vi.mock('./work-items', () => ({ getWorkItem: mocks.item, readUnresolvedDepBlockers: mocks.deps,
@@ -29,7 +29,9 @@ vi.mock('./external-condition-reachability', () => ({ readEventConditionReachabi
 vi.mock('./harness/docs/doc-record', () => ({ getAuthoredDocContent: mocks.doc }));
 vi.mock('./session-brief', () => ({ getSessionBrief: mocks.session }));
 vi.mock('./testing-run-store', () => ({ readHarnessTestRunEvidence: mocks.test }));
-vi.mock('./scorecards', () => ({ readScorecardRecipeHeader: mocks.scorecard }));
+vi.mock('./scorecards', () => ({ readScorecardRecipeHeader: mocks.scorecard, listScorecards: vi.fn() }));
+vi.mock('./rubrics', () => ({ readRubricWithoutSeeding: mocks.rubric }));
+vi.mock('./acceptance-rubric-vetting', () => ({ getAcceptanceRubricVettingStatus: mocks.vetting }));
 
 const ctx = { ownerId: 'su-a', workItemId: 'WI-1', workspaceId: 'workspace-a', harnessSlug: 'harness-a',
   role: 'bee', root: process.cwd(), blockers: [] };
@@ -102,6 +104,83 @@ describe('canonical blocker evidence readers', () => {
     expect((await read({ kind: 'source', ref: '/etc/passwd' })).status).toBe('absent');
     expect((await read({ kind: 'source', ref: '../../../../etc/passwd' })).status).toBe('absent');
     expect((await read({ kind: 'source', ref: 'package.json:99999999' })).status).toBe('absent');
+  });
+});
+
+describe('canonical pinned rubric conditions', () => {
+  const ref = { kind: 'event' as const, ref: 'rubric:acceptance-plan@4' };
+  const gate = { kind: 'gate' as const, ref: ref.ref, status: 'active' as const,
+    capability: 'live-dependency' as const, capabilitySource: 'explicit' as const,
+    summary: 'Vet the current acceptance rubric', createdBy: 'su-original',
+    createdAt: '2026-11-15T12:00:00Z', updatedAt: '2026-11-15T12:00:00Z' };
+  const rubric = () => ({ rubricId: 'acceptance-plan', workspaceId: ctx.workspaceId, kind: 'acceptance',
+    subjectHarnessSlug: ctx.harnessSlug, revision: 4, criteriaHash: 'a'.repeat(64), criteria: [{ key: 'r-1' }] });
+  const vetted = () => ({ required: true, satisfied: true, state: 'vetted', currentRevision: 4,
+    currentCriteriaHash: 'a'.repeat(64), attestedRevision: 4, attestedCriteriaHash: 'a'.repeat(64) });
+  const context = () => ({ ...ctx, custodianId: ctx.ownerId, blockers: [gate] });
+  beforeEach(() => {
+    vi.clearAllMocks(); mocks.workspace.mockReturnValue(ctx.workspaceId);
+    mocks.rubric.mockReset().mockImplementation(async () => ({ kind: 'found', rubric: rubric() }));
+    mocks.vetting.mockReset().mockResolvedValue(vetted());
+  });
+  it('measures exact current independent vetting without querying event reachability', async () => {
+    expect(await createBlockerEvidenceReader(context())(ref)).toMatchObject({ status: 'available', condition: 'satisfied',
+      conditionIdentity: JSON.stringify(['rubric-vetting', ctx.workspaceId, ctx.harnessSlug, 'acceptance-plan', 4, 'a'.repeat(64)]) });
+    expect(mocks.rubric).toHaveBeenCalledTimes(2);
+    expect(mocks.rubric).toHaveBeenCalledWith('acceptance-plan', { workspaceId: ctx.workspaceId });
+    expect(mocks.event).not.toHaveBeenCalled();
+  });
+  it.each(['unvetted', 'pending'])('retains a current %s rubric as pending', async state => {
+    mocks.vetting.mockResolvedValue({ ...vetted(), satisfied: false, state });
+    expect(await createBlockerEvidenceReader(context())(ref)).toMatchObject({ status: 'available', condition: 'pending' });
+  });
+  it('resolves vetting dependencies through the scoped non-seeding rubric reader', async () => {
+    mocks.vetting.mockImplementation(async (_rubric, deps) => {
+      expect(await deps.getRubric('meta-acceptance-rubric')).toEqual(rubric());
+      return vetted();
+    });
+    expect(await createBlockerEvidenceReader(context())(ref)).toMatchObject({ condition: 'satisfied' });
+    expect(mocks.rubric).toHaveBeenCalledWith('meta-acceptance-rubric', { workspaceId: ctx.workspaceId });
+  });
+  it.each(['workspace', 'harness', 'revision', 'hash', 'compatibility', 'empty criteria'])
+  ('fails closed on a mismatched rubric %s', async fault => {
+    const r = { ...rubric(), ...(fault === 'workspace' ? { workspaceId: 'other' } :
+      fault === 'harness' ? { subjectHarnessSlug: 'other' } : fault === 'revision' ? { revision: 5 } :
+      fault === 'hash' ? { criteriaHash: '' } : fault === 'compatibility' ? { readCompat: { strippedKeys: ['future'] } } :
+      { criteria: [] }) };
+    mocks.rubric.mockResolvedValue({ kind: 'found', rubric: r });
+    expect(await createBlockerEvidenceReader(context())(ref)).toMatchObject({ status: 'unknown' });
+    expect(mocks.vetting).not.toHaveBeenCalled();
+  });
+  it.each(['missing', 'read-failed', 'ambiguous'])('does not clear an unavailable rubric (%s)', async kind => {
+    mocks.rubric.mockResolvedValue({ kind });
+    expect(await createBlockerEvidenceReader(context())(ref)).toMatchObject({ status: 'unknown' });
+  });
+  it.each(['currentRevision', 'currentCriteriaHash', 'attestedRevision', 'attestedCriteriaHash', 'required'])
+  ('requires exact current vetting %s', async field => {
+    mocks.vetting.mockResolvedValue({ ...vetted(), [field]: field === 'required' ? false : field.includes('Revision') ? 3 : 'b'.repeat(64) });
+    expect(await createBlockerEvidenceReader(context())(ref)).toMatchObject({ status: 'unknown' });
+  });
+  it.each(['revision', 'criteriaHash'])('fences a concurrent amendment of %s', async field => {
+    mocks.rubric.mockResolvedValueOnce({ kind: 'found', rubric: rubric() }).mockResolvedValue({ kind: 'found',
+      rubric: { ...rubric(), [field]: field === 'revision' ? 5 : 'b'.repeat(64) } });
+    expect(await createBlockerEvidenceReader(context())(ref)).toMatchObject({ status: 'unknown' });
+  });
+  it('requires current custody, the active tenant and one exact active canonical gate', async () => {
+    for (const c of [{ ...context(), custodianId: 'su-other' }, { ...context(), blockers: [] },
+      { ...context(), blockers: [gate, gate] }]) {
+      expect((await createBlockerEvidenceReader(c)(ref)).status).not.toBe('available');
+    }
+    mocks.workspace.mockReturnValue('other');
+    expect(await createBlockerEvidenceReader(context())(ref)).toMatchObject({ status: 'unknown' });
+    expect(mocks.rubric).not.toHaveBeenCalled();
+  });
+  it('keeps malformed references and thrown readers from proving clearance', async () => {
+    for (const invalid of ['rubric:acceptance-plan', 'rubric:acceptance-plan@0', 'rubric:acceptance-plan@9007199254740992']) {
+      expect((await createBlockerEvidenceReader(context())({ ...ref, ref: invalid })).status).not.toBe('available');
+    }
+    mocks.rubric.mockRejectedValue(new Error('reader unavailable'));
+    expect(await createBlockerEvidenceReader(context())(ref)).toMatchObject({ status: 'unknown' });
   });
 });
 

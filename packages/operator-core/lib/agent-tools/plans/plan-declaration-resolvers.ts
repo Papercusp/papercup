@@ -343,7 +343,7 @@ export async function defaultLibraryCheckDeps(options: DefaultReuseResolverOptio
   const { repoRoot, sql, workspaceId } = options;
   const manifests = repoRoot ? await readWorkspaceManifests(repoRoot).catch(() => null) : null;
   const packages = manifests ? indexDeclaredPackages(manifests) : null;
-  const lookupOrigins = sql && workspaceId ? dbRefOriginLookup(sql as Parameters<typeof dbRefOriginLookup>[0], workspaceId) : null;
+  const lookupOrigins = sql && workspaceId ? dbRefOriginLookup(sql, workspaceId) : null;
   return {
     packages,
     ownerTurns: lookupOrigins

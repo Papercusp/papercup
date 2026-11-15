@@ -527,7 +527,7 @@ export async function loadBlindReviewBrief(
   if (!facts?.activation) return null;
   const mappings = facts.activation.activation?.mappings ?? [];
   const refs = [...new Set(mappings.flatMap((m) => m.sourceRefs ?? []))];
-  const turns = await fetchSourceTurns(sql as never, input.workspaceId, refs, BRIEF_TURN_CHARS);
+  const turns = await fetchSourceTurns(sql, input.workspaceId, refs, BRIEF_TURN_CHARS);
   const discoveries = await loadBlindReviewDiscoveries({
     workspaceId: input.workspaceId, harnessSlug: facts.plan.harness_slug,
     planCreatedAt: facts.plan.created_at,

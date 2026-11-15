@@ -2997,7 +2997,8 @@ async function currentDiscoveryInTransaction(input: CurrentDiscoveryInput, execu
       SELECT version, content_hash FROM harness_shared.harness_plans
        WHERE workspace_id=${input.workspaceId} AND harness_slug=${input.harnessSlug} AND plan_slug=${input.planSlug}`;
     if (!current || current.version !== plan.version || current.content_hash !== plan.content_hash ||
-      confirmed.requestKey !== discovery.requestKey) return { ok: false as const, error: 'discovery_subject_moved',
+      confirmed.requestKey !== discovery.requestKey ||
+      canonicalJson(confirmed.readiness) !== canonicalJson(discovery.readiness)) return { ok: false as const, error: 'discovery_subject_moved',
       previousIdentity: { plan: plan.content_hash, evidence: discovery.requestKey },
       currentIdentity: { plan: current?.content_hash ?? null, evidence: confirmed.requestKey },
       nextAction: 'Reconcile the changed plan or evidence; retry discovery against the current revision.' };
@@ -3015,7 +3016,11 @@ export async function recordCurrentDiscoveryAudit(input: CurrentDiscoveryInput, 
     const [prior] = await executor<PlanAuditRow[]>`
       SELECT * FROM harness_shared.plan_audits WHERE workspace_id=${input.workspaceId}
         AND harness_slug=${input.harnessSlug} AND plan_slug=${input.planSlug} AND audit_kind='discovery'
-        AND discovery->>'requestKey'=${discovery.requestKey} ORDER BY audit_seq DESC LIMIT 1`;
+        AND discovery->>'requestKey'=${discovery.requestKey}
+        -- Target change classification can alter readiness without changing the
+        -- request key. Reuse only a receipt of the actual current assessment.
+        AND discovery->'readiness'=${JSON.stringify(discovery.readiness)}::text::jsonb
+        ORDER BY audit_seq DESC LIMIT 1`;
     if (prior && !input.dryRun) return { ok: true as const, reused: true, audit: rowToAudit(prior), discovery, auditedPlanRevision };
     if (input.dryRun) return { ok: true as const, preview: true, dryRun: true, discovery, auditedPlanRevision,
       // A normal read keeps the finalized stage only for this exact current
