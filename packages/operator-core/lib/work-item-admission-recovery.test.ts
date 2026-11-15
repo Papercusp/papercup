@@ -1,7 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import postgres from 'postgres';
 
 const io = vi.hoisted(() => ({
   presence: vi.fn(), modes: vi.fn(), policy: vi.fn(), gate: vi.fn(), fleet: vi.fn(), state: vi.fn(),
+  pgTarget: vi.fn(), build: vi.fn(),
+}));
+vi.mock('postgres', async (original) => {
+  const actual = await original<typeof import('postgres')>();
+  return { ...actual, default: vi.fn(actual.default) };
+});
+vi.mock('./embedded-pg-discovery', () => ({
+  getHarnessAdminUrl: () => io.pgTarget().url,
+  getHarnessAdminUrlWithSource: io.pgTarget,
+}));
+vi.mock('./build-info', async (original) => ({
+  ...await original<typeof import('./build-info')>(), getResolvedBuild: io.build,
 }));
 vi.mock('./agent-tools/coordination/presence', () => ({ getPresence: io.presence }));
 vi.mock('./modes/store', () => ({ getModes: io.modes }));
@@ -30,6 +43,11 @@ beforeEach(() => {
   io.gate.mockResolvedValue({ allowed: true });
   io.fleet.mockResolvedValue({ allowed: true });
   io.state.mockResolvedValue(null);
+  io.pgTarget.mockReturnValue({
+    url: 'postgresql://private-user:private-password@private-db:6543/private-db?application_name=private-query',
+    source: 'operator-env-file',
+  });
+  io.build.mockReturnValue({ sha: 'test-build', shaSource: 'baked', version: 'test-version' });
 });
 
 describe('production recovery authorization (real policy composition, mocked store I/O)', () => {
@@ -101,6 +119,58 @@ describe('production recovery authorization (real policy composition, mocked sto
 });
 
 describe('admission promoter lock attribution', () => {
+  it('retains the default client target and run without publishing its credentials or claiming a backend', async () => {
+    const timeout = Object.assign(new Error('write CONNECT_TIMEOUT private-db:6543'), { code: 'CONNECT_TIMEOUT' });
+    const client = {
+      options: { host: ['private-db'], port: [6543] },
+      reserve: vi.fn().mockRejectedValue(timeout),
+      end: vi.fn().mockResolvedValue(undefined),
+    };
+    vi.mocked(postgres).mockReturnValueOnce(client as never);
+    const action = vi.fn(async () => 'screened');
+    const failure = await withAdmissionPromoterLock({
+      workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, runId: 'exact-promoter-run',
+    }, undefined, action).catch((error: unknown) => error) as Error & { admissionLock?: unknown; cause?: unknown };
+
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure.cause).toBe(timeout);
+    expect(failure.admissionLock).toEqual({
+      phase: 'reserve', source: 'operator-env-file',
+      configured: { host: ['private-db'], port: [6543] }, backend: 'unobserved',
+      workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug,
+      runId: 'exact-promoter-run', processId: process.pid,
+      runtime: { sha: 'test-build', shaSource: 'baked', version: 'test-version' },
+      startedAt: expect.any(String), elapsedMs: expect.any(Number),
+    });
+    expect(failure.message).toContain('exact-promoter-run');
+    for (const secret of ['private-user', 'private-password', 'private-query', 'postgresql://']) {
+      expect(failure.message).not.toContain(secret);
+      expect(JSON.stringify(failure.admissionLock)).not.toContain(secret);
+    }
+    expect(action).not.toHaveBeenCalled();
+    expect(client.end).toHaveBeenCalledWith({ timeout: 5 });
+  });
+
+  it('joins an action failure to the same reserved backend that acquired the session lock', async () => {
+    const backend = { pid: 321, address: '127.0.0.1', port: 6543, database: 'private-db' };
+    const reserved = Object.assign(vi.fn().mockResolvedValueOnce([{ locked: true, ...backend }])
+      .mockResolvedValueOnce([]), { release: vi.fn() });
+    const client = {
+      options: { host: ['private-db'], port: [6543] },
+      reserve: vi.fn().mockResolvedValue(reserved), end: vi.fn().mockResolvedValue(undefined),
+    };
+    vi.mocked(postgres).mockReturnValueOnce(client as never);
+    const actionError = new Error('screening failed');
+    await expect(withAdmissionPromoterLock(scope, undefined, async () => { throw actionError; }))
+      .rejects.toMatchObject({
+        cause: actionError,
+        admissionLock: { phase: 'action', backend, runtime: { sha: 'test-build', shaSource: 'baked' } },
+      });
+    expect(reserved).toHaveBeenCalledTimes(2);
+    expect(reserved.release).toHaveBeenCalledOnce();
+    expect(client.end).toHaveBeenCalledOnce();
+  });
+
   it('identifies a lock-client reserve timeout and preserves the driver error code', async () => {
     const timeout = Object.assign(new Error('write CONNECT_TIMEOUT localhost:5432'), {
       code: 'CONNECT_TIMEOUT',
