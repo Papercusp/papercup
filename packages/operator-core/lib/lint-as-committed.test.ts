@@ -2287,6 +2287,52 @@ console.log('WRITER_RELEASED elapsedMs=' + (performance.now() - startedAt));`;
     }
   }, 40_000);
 
+  it.each(['selected-library', 'selected-app', 'full'] as const)
+    ('respects asset lifecycle scope through the maintained CLI (%s)', scope => {
+      const f = fixture('node build.cjs');
+      const app = 'apps/asset-app';
+      let preparedRoot: string | undefined;
+      const manifest = JSON.parse(readFileSync(join(f.root, 'package.json'), 'utf8'));
+      snapshot(f.root, {
+        'package.json': JSON.stringify({ ...manifest, workspaces: ['libs/runtime', app] }),
+        [app + '/package.json']: JSON.stringify({ name: '@fixture/asset-app',
+          scripts: { postinstall: 'node scripts/setup-fixture-runtime.cjs' } }),
+        [app + '/.gitignore']: 'public/\n',
+        [app + '/scripts/setup-fixture-runtime.cjs']: `
+const fs = require('node:fs');
+const asset = require('asset-bits');
+fs.mkdirSync('public', { recursive: true });
+fs.writeFileSync('public/runtime-ready', asset);
+`,
+      }, f.head);
+      symlinkSync('../../' + app, join(f.root, 'node_modules/@fixture/asset-app'));
+      mkdirSync(join(f.root, app, 'node_modules/asset-bits'), { recursive: true });
+      writeFileSync(join(f.root, app, 'node_modules/asset-bits/index.js'), 'module.exports = "pinned-asset";');
+      const selection = scope === 'full' ? [] : ['--workspace-dir=' + (scope === 'selected-app' ? app : 'libs/runtime')];
+      try {
+        const result = spawnSync(process.execPath, [scriptPath, 'lint:probe', '--any', '--keep', ...selection], {
+          cwd: f.root, env: commandEnvironment(), encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL',
+        });
+        const output = result.stdout + result.stderr;
+        preparedRoot = output.match(/--keep: extracted tree left at (\S+)/)?.[1];
+        expect(result.status, output).toBe(0);
+        expect(preparedRoot, output).toBeTruthy();
+        expect(output).toContain('CLONE_PREREQUISITES_OK');
+        const assetPath = join(preparedRoot!, app, 'public/runtime-ready');
+        if (scope === 'selected-library') {
+          expect(existsSync(join(preparedRoot!, app, 'node_modules'))).toBe(false);
+          expect(existsSync(assetPath)).toBe(false);
+          expect(output).not.toContain('preparing pinned runtime assets: @fixture/asset-app');
+        } else {
+          expect(readFileSync(assetPath, 'utf8')).toBe('pinned-asset');
+          expect(output).toContain('preparing pinned runtime assets: @fixture/asset-app');
+        }
+      } finally {
+        if (preparedRoot) rmSync(preparedRoot, { recursive: true, force: true });
+        rmSync(f.root, { recursive: true, force: true });
+      }
+    }, 40_000);
+
   it.each(['copy', 'resume'] as const)('prepares only selected workspace dependencies with durable scope (%s)', async mode => {
     const f = retainedFixture();
     const selected = 'libs/runtime/node_modules/leaf/index.cjs';
