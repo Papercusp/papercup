@@ -1,4 +1,5 @@
 import { fork, type ChildProcess } from 'node:child_process';
+import { createTextCollector } from '../child-output';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -34,7 +35,7 @@ afterAll(async () => {
 }, 120_000);
 
 function launch(action: 'raise' | 'reconcile' | 'restart' | 'idle-watch', intervalMs = 60_000, workspace = WS) {
-  const env = { ...process.env, HARNESS_DATABASE_URL: db.adminDsn,
+  const env: NodeJS.ProcessEnv = { ...process.env, HARNESS_DATABASE_URL: db.adminDsn,
     HARNESS_ADMIN_DATABASE_URL: db.adminDsn, PAPERCUSP_PGBOUNCER: '0', PAPERCUSP_WORKSPACE_ID: workspace };
   delete env.VITEST_WORKER_ID;
   delete env.VITEST_POOL_ID;
@@ -45,7 +46,10 @@ function launch(action: 'raise' | 'reconcile' | 'restart' | 'idle-watch', interv
   children.add(child);
   let diagnostics = '';
   child.stdout?.on('data', () => {});
-  child.stderr?.on('data', chunk => { diagnostics = (diagnostics + String(chunk)).slice(-4000); });
+  createTextCollector(child.stderr, {
+    retainText: false,
+    onDecodedText: text => { diagnostics = (diagnostics + text).slice(-4000); },
+  });
   child.on('message', value => {
     if (value && typeof value === 'object' && 'kind' in value && value.kind === 'phase')
       phase('child-phase', { action, pid: child.pid, detail: value });
