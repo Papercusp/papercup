@@ -55,10 +55,12 @@ export async function readHostedPoolCosts(input: HostedUsageRead, source?: Hoste
     gaps: ['pool-source-unconfigured'], tenants: [] };
   if (!source) return absent;
   const snapshot = await source(input);
+  // Validate the runtime shape without narrowing the readonly source contract
+  // to Array.isArray's mutable any[], which erases invoice element types.
   if (!snapshot || snapshot.scope.controlWorkspaceId !== input.scope.controlWorkspaceId
       || snapshot.scope.organizationId !== input.scope.organizationId
       || snapshot.scope.customerWorkspaceId !== input.scope.customerWorkspaceId
-      || snapshot.month !== input.month || !Array.isArray(snapshot.bills)) throw new Error('pool usage scope mismatch');
+      || snapshot.month !== input.month || !Array.isArray(snapshot.bills as unknown)) throw new Error('pool usage scope mismatch');
   const census = snapshot.source;
   if (!census || typeof census.complete !== 'boolean' || !id(census.evidenceRef)
       || !Number.isSafeInteger(census.observedAtMs) || census.observedAtMs < 0
@@ -67,7 +69,7 @@ export async function readHostedPoolCosts(input: HostedUsageRead, source?: Hoste
   if (!census.complete) gaps.add('incomplete-pool-source');
   if (census.observedAtMs > input.asOfMs || input.asOfMs - census.observedAtMs > census.maximumAgeMs) gaps.add('pool-source-not-current');
   const workspaces = new Set<string>();
-  if (!Array.isArray(snapshot.workspaces)) throw new Error('missing pool workspace bindings');
+  if (!Array.isArray(snapshot.workspaces as unknown)) throw new Error('missing pool workspace bindings');
   for (const workspace of snapshot.workspaces) {
     if (workspace.controlWorkspaceId !== input.scope.controlWorkspaceId || workspace.organizationId !== input.scope.organizationId
         || !id(workspace.customerWorkspaceId) || workspaces.has(workspace.customerWorkspaceId)) throw new Error('pool workspace scope mismatch');
