@@ -46,12 +46,28 @@ describe('rubric template schema', () => {
   it('admits six complete repeated probe groups and mixed 32-consumer declarations within 24 operations', () => {
     const probe = (n: number) => ({ kind: 'sql', sql: `SELECT ${n} AS n`, schemaRevision: 'live', expect: { path: '$.rows[0].n', op: 'eq', value: n } });
     const criterion = (key: string, check: unknown) => ({ ...minimalCriterion, key, check });
-    const repeated = Array.from({ length: 6 }, (_, i) => criterion(`c${i}`, { kind: 'tests', files: ['lib/a.test.ts'], all: Array.from({ length: 5 }, (_, n) => probe(n)) }));
+    const repeated = Array.from({ length: 6 }, (_, i) => criterion(`c${i}`, { kind: 'tests', files: ['lib/a.test.ts'], all: Array.from({ length: 9 }, (_, n) => probe(n)) }));
     expect(rubricTemplateDataAuthoringSchema.safeParse({ ...minimalData, criteria: repeated }).success).toBe(true);
     const standalone = Array.from({ length: 24 }, (_, n) => criterion(`p${n}`, { kind: 'probe', probe: probe(n) }));
     const group = criterion('group', { kind: 'tests', files: ['lib/a.test.ts'], all: Array.from({ length: 8 }, (_, n) => probe(n)) });
     expect(rubricTemplateDataAuthoringSchema.safeParse({ ...minimalData, criteria: [...standalone, group] }).success).toBe(true);
     expect(rubricTemplateDataAuthoringSchema.safeParse({ ...minimalData, criteria: [...standalone, group, criterion('extra', { kind: 'probe', probe: probe(24) })] }).success).toBe(false);
+  });
+
+  it.each(['tests', 'probe'] as const)('admits a complete %s conjunction through 24 probes and refuses 25', (kind) => {
+    const check = (count: number) => ({ kind,
+      ...(kind === 'tests' ? { files: ['lib/a.test.ts'] } : {}),
+      all: Array.from({ length: count }, (_, n) => ({ kind: 'sql', sql: `SELECT ${n} AS n`,
+        schemaRevision: 'live', expect: { path: '$.rows[0].n', op: 'eq', value: n } })),
+    });
+    for (const count of [9, 24]) {
+      expect(rubricCriterionCheckSchema.safeParse(check(count)).success).toBe(true);
+      expect(rubricTemplateDataAuthoringSchema.safeParse({ ...minimalData,
+        criteria: [{ ...minimalCriterion, check: check(count) }] }).success).toBe(true);
+    }
+    expect(rubricCriterionCheckSchema.safeParse(check(25)).success).toBe(false);
+    expect(rubricTemplateDataAuthoringSchema.safeParse({ ...minimalData,
+      criteria: [{ ...minimalCriterion, check: check(25) }] }).success).toBe(false);
   });
 
   it('normalizes shape defaults and object order without dropping identity fields', () => {

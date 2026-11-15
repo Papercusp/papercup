@@ -19,7 +19,7 @@
  */
 import { z } from 'zod';
 import { canonicalJson } from '@papercusp/hash-chain';
-import { CONTINUITY_PROBE_MAX_PER_WAKE, RUBRIC_PROBE_MAX_PER_EMIT, SQL_PROBE_DEFAULT_MAX_ROWS } from '../limits';
+import { RUBRIC_PROBE_MAX_PER_EMIT, SQL_PROBE_DEFAULT_MAX_ROWS } from '../limits';
 import { normalizeRequirementSections } from '../../requirement-contract';
 import { leadingScaleLabel } from '../../rubric-rating-vocabulary';
 import { SERVING_RUNTIME_IDS, RUNTIME_VINTAGE_EVIDENCE_RUNTIME_RE, type RuntimeVintageEvidenceRuntimeId } from '../../serving-runtimes';
@@ -218,7 +218,7 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('tests'),
-      all: z.array(z.unknown()).min(1).max(CONTINUITY_PROBE_MAX_PER_WAKE).optional()
+      all: z.array(z.unknown()).min(1).max(RUBRIC_PROBE_MAX_PER_EMIT).optional()
         .describe('Additional independently validated read-only probes. Every probe AND the named tests must pass; files and case selectors remain required.'),
       files: z
         .array(z.string().min(1))
@@ -358,7 +358,7 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
         .describe(
           'Typed ContinuityProbe {kind:"tool"|"state-cell",schemaRevision,expect,...}; proposal/scorecard writers validate the live contract before storage or execution.',
         ),
-      all: z.array(z.unknown()).min(1).max(CONTINUITY_PROBE_MAX_PER_WAKE).optional()
+      all: z.array(z.unknown()).min(1).max(RUBRIC_PROBE_MAX_PER_EMIT).optional()
         .describe('ALL of these independently validated read-only probes must pass; mutually exclusive with probe.'),
       unit: z
         .string()
