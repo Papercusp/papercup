@@ -1,0 +1,617 @@
+/**
+ * _multi-peer-harness.ts — the in-process multi-peer acceptance harness for the
+ * p2p v1 core (plan p2p-v1-core-release-2026-11-13, item P-002).
+ *
+ * WHAT IT IS. N real substrate peers of ONE hive in ONE process: each peer is a
+ * real `bootHarnessSubstrate` over its own persistent corestore directory, a real
+ * Hyperswarm/Noise connection over a loopback testnet DHT, real capture triggers
+ * into its own throwaway Postgres, the real outbox drain, the real read-merge, and
+ * the real LWW-guarded projections. It is built on the two-peer hive rig
+ * (`sync/hyperbee/__tests__/_hive-substrate-rig.ts`) — schema, identities and the
+ * peer boot are reused from there, not copied.
+ *
+ * FAULTS. Every fault leaves a receipt in `harness.receipts`, so a test can prove a
+ * configured fault actually acted on that case's traffic (R-2's falsifier):
+ *   - partition   — a connection filter on each peer's real swarm refuses sockets
+ *                   between the two sides and drops the live ones. Heal lifts the
+ *                   filter; the substrate's own self-heal loop re-peers.
+ *   - delay       — the receiving peer holds incoming ops at the apply seam until
+ *                   `flush`; later ops can overtake them.
+ *   - reorder     — a flush delivers the held batch in reverse arrival order.
+ *   - duplicate   — each delivered op is applied twice.
+ *   - clock-skew  — a peer's hybrid logical clock is pushed ahead, so every op it
+ *                   captures afterwards carries the skewed HLC; receivers record a
+ *                   receipt when such an op reaches their apply seam.
+ *   - revoke-during-sync — the other peers revoke a device while it still has
+ *                   replication work in flight; refused if nothing is in flight.
+ *   - restart     — the peer instance and all in-memory state are destroyed and a
+ *                   fresh instance is built from the same storage directory.
+ *
+ * WHY THE APPLY SEAM. Hypercore logs are signed and indexed, so the wire cannot
+ * reorder or duplicate ops within one log; what a receiving peer's state machine
+ * actually sees reordered or repeated is the stream of ops handed to its
+ * projections (logs merged in arbitrary interleavings, re-folds after restart,
+ * late downloads). Faults are therefore injected exactly there.
+ *
+ * SETTLE. `settle()` drives drain → merge → flush on every live peer until a round
+ * changes nothing and every live, non-revoked peer holds every other such peer's
+ * full own log. It is bounded by progress (rounds without change), not by a fixed
+ * time window, and on failure it throws the per-peer pending breakdown.
+ *
+ * NOT YET MODELLED (tracked by later plan items): the product's join-complete
+ * state (P-004) and fail-closed merge rules (P-003). Admission is the rig's
+ * GitHub-binding stand-in, decided by the harness roster.
+ */
+import createTestnet from 'hyperdht/testnet.js';
+import type postgres from 'postgres';
+import { closeHarnessStore } from '../../sync/hyperbee/corestore';
+import type { OpEnvelope } from '../../sync/hyperbee/op-envelope-types';
+import type { HyperswarmLike } from '../../sync/hyperbee/swarm';
+import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import {
+  bootHivePeer,
+  cleanups,
+  HIVE_SLUG,
+  makeIdentity,
+  seedHive,
+  setupHivePeerSchema,
+  WORKSPACE_ID,
+  type HivePeer,
+  type HivePeerApply,
+  type SwarmTimingOverride,
+} from '../../sync/hyperbee/__tests__/_hive-substrate-rig';
+
+export { rigAfterEach as harnessAfterEach } from '../../sync/hyperbee/__tests__/_hive-substrate-rig';
+
+export type FaultKind =
+  | 'partition'
+  | 'heal'
+  | 'delay'
+  | 'reorder'
+  | 'duplicate'
+  | 'clock-skew'
+  | 'revoke-during-sync'
+  | 'restart';
+
+export interface FaultReceipt {
+  kind: FaultKind;
+  /** The peer the fault acted on (the receiver for delivery faults). */
+  peer: string;
+  at: number;
+  detail: Record<string, unknown>;
+}
+
+export interface DeliveryFaults {
+  /** Hold incoming ops until `flush` (delay). */
+  hold: boolean;
+  /** Deliver a flushed batch in reverse arrival order. */
+  reorder: boolean;
+  /** Apply every delivered op twice. */
+  duplicate: boolean;
+}
+
+const NO_FAULTS: DeliveryFaults = { hold: false, reorder: false, duplicate: false };
+
+/** Fast self-heal cadence (the WI-1534 integration timings) so a healed partition
+ *  re-peers in well under a second. */
+export const HARNESS_SWARM_TIMING: SwarmTimingOverride = {
+  refreshMs: 40,
+  fastWindowMs: 250,
+  slowRefreshMs: 60_000,
+  stalledMaxRefreshMs: 500,
+};
+
+interface HeldOp {
+  op: OpEnvelope;
+  inner: HivePeerApply;
+}
+
+export interface HarnessPeer {
+  readonly name: string;
+  readonly userId: number;
+  readonly identity: ReturnType<typeof makeIdentity>;
+  /** The peer's own durable database (survives a restart). */
+  readonly db: FreshPgDb;
+  /** The peer's persistent storage directory (set at first boot). */
+  root: string | null;
+  /** The live instance, or null while stopped. */
+  current: HivePeer | null;
+  /** How many times this peer has been booted (1 after the first boot). */
+  incarnation: number;
+  faults: DeliveryFaults;
+  held: HeldOp[];
+  /** This peer's HLC skew in ms (0 = none). */
+  skewMs: number;
+}
+
+export interface PendingWork {
+  total: number;
+  /** Peer pairs currently partitioned; their mutual lag is excluded from `total`. */
+  partitionedPairs: string[];
+  perPeer: Record<string, { held: number; undrained: number; lagBehind: Record<string, number> }>;
+}
+
+export interface RevocationFrontier {
+  target: string;
+  devicePubkey: string;
+  at: number;
+  /** Each non-revoked peer's own-log length when the revocation was committed. */
+  ownLogLengths: Record<string, number>;
+  /** The target's pending work at the moment of revocation (always > 0). */
+  pendingAtRevocation: number;
+}
+
+export interface CanonicalDump {
+  settings: Array<{ key: string; value: unknown }>;
+  memberUserIds: number[];
+}
+
+function keyHex(k: unknown): string | null {
+  if (!k) return null;
+  if (typeof k === 'string') return k;
+  if (k instanceof Uint8Array) return Buffer.from(k).toString('hex');
+  return null;
+}
+
+function hlcMs(hlc: string | undefined): number | null {
+  if (!hlc) return null;
+  const ms = Number.parseInt(hlc.split(':')[0] ?? '', 10);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function opIdentity(op: OpEnvelope): string {
+  return `${op.table ?? '?'}:${op.hbKey ?? op.key ?? '?'}@${op.hlc ?? op.ts ?? '?'}`;
+}
+
+/**
+ * Production capture stamps `op_hlc` at capture time (mig 314 onward); the rig's
+ * archive-102 generic capture predates that. Stamp it at outbox insert so every
+ * captured op carries this peer's HLC, the clock a skew acts on.
+ */
+const STAMP_OP_HLC_DDL = `
+  CREATE OR REPLACE FUNCTION harness_shared.harness_stamp_op_hlc() RETURNS trigger
+    LANGUAGE plpgsql AS $fn$
+  BEGIN
+    IF NEW.op_hlc IS NULL THEN NEW.op_hlc := harness_shared.hlc_now(); END IF;
+    RETURN NEW;
+  END;
+  $fn$;
+  DROP TRIGGER IF EXISTS harness_stamp_op_hlc ON harness_shared.substrate_outbox;
+  CREATE TRIGGER harness_stamp_op_hlc BEFORE INSERT ON harness_shared.substrate_outbox
+    FOR EACH ROW EXECUTE FUNCTION harness_shared.harness_stamp_op_hlc();
+`;
+
+export interface MultiPeerHarness {
+  readonly peers: Map<string, HarnessPeer>;
+  readonly receipts: FaultReceipt[];
+  peer(name: string): HarnessPeer;
+  live(name: string): HivePeer;
+  /** Add a peer to the roster and boot it into the hive (a join). */
+  addPeer(name: string): Promise<HarnessPeer>;
+  stop(name: string): Promise<void>;
+  start(name: string): Promise<HivePeer>;
+  /** Destroy the instance and all in-memory state, then boot fresh from storage. */
+  restart(name: string): Promise<HivePeer>;
+  writeSetting(name: string, key: string, value: unknown): Promise<void>;
+  deleteSetting(name: string, key: string): Promise<void>;
+  dump(name: string): Promise<CanonicalDump>;
+  setDeliveryFaults(name: string, faults: Partial<DeliveryFaults>): void;
+  flush(name: string): Promise<number>;
+  skewClock(name: string, skewMs: number): Promise<void>;
+  partition(sideA: string[], sideB: string[]): void;
+  heal(): void;
+  isPartitioned(a: string, b: string): boolean;
+  revokeDuringSync(target: string): Promise<RevocationFrontier>;
+  isRevoked(name: string): boolean;
+  pendingWork(): Promise<PendingWork>;
+  settle(opts?: { maxIdleRounds?: number; intervalMs?: number }): Promise<{ rounds: number }>;
+  receiptsOf(kind: FaultKind): FaultReceipt[];
+}
+
+/**
+ * Create a harness with `names` peers booted and mutually admitted. Register
+ * `harnessAfterEach` as the test file's afterEach.
+ */
+export async function createMultiPeerHarness(
+  names: string[],
+  opts: { swarmTiming?: SwarmTimingOverride } = {},
+): Promise<MultiPeerHarness> {
+  const swarmTiming = opts.swarmTiming ?? HARNESS_SWARM_TIMING;
+  const testnet = await createTestnet(3);
+  cleanups.push(async () => {
+    try {
+      await testnet.destroy();
+    } catch {
+      /* ignore */
+    }
+  });
+
+  const peers = new Map<string, HarnessPeer>();
+  const receipts: FaultReceipt[] = [];
+  /** github user ids admitted to the hive (the admission stand-in). */
+  const roster = new Set<number>();
+  /** Revoked device pubkeys, shared by every peer and every incarnation. */
+  const revokedPubkeys = new Set<string>();
+  const revokedNames = new Set<string>();
+  /** Unordered peer-name pairs currently partitioned ("a|b", sorted). */
+  const blockedPairs = new Set<string>();
+  /** Swarm public key (hex) → peer name, refreshed at every boot. */
+  const swarmKeyToName = new Map<string, string>();
+  /** Own-log key (hex) → peer name. Stable across restarts (same storage). */
+  const logKeyToName = new Map<string, string>();
+  let nextUserId = 101;
+
+  const record = (kind: FaultKind, peer: string, detail: Record<string, unknown>) => {
+    receipts.push({ kind, peer, at: Date.now(), detail });
+  };
+  const pairKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+  const isPartitioned = (a: string, b: string) => blockedPairs.has(pairKey(a, b));
+
+  function peer(name: string): HarnessPeer {
+    const p = peers.get(name);
+    if (!p) throw new Error(`multi-peer harness: no peer named ${name}`);
+    return p;
+  }
+  function live(name: string): HivePeer {
+    const p = peer(name);
+    if (!p.current) throw new Error(`multi-peer harness: peer ${name} is stopped`);
+    return p.current;
+  }
+
+  /** Deliver one op through the real projection, twice when duplicate is on. */
+  async function deliver(p: HarnessPeer, item: HeldOp): Promise<boolean> {
+    const first = await item.inner(item.op);
+    if (p.faults.duplicate) {
+      const second = await item.inner(item.op);
+      record('duplicate', p.name, { op: opIdentity(item.op), firstApplied: first, secondApplied: second });
+    }
+    return first;
+  }
+
+  function wrapApplyFor(p: HarnessPeer) {
+    return (inner: HivePeerApply): HivePeerApply =>
+      async (op) => {
+        const src = op.sourceLogKeyHex ? logKeyToName.get(op.sourceLogKeyHex) : undefined;
+        const srcPeer = src ? peers.get(src) : undefined;
+        const ms = hlcMs(op.hlc);
+        if (srcPeer && srcPeer.name !== p.name && srcPeer.skewMs > 0 && ms !== null) {
+          const aheadMs = ms - Date.now();
+          if (aheadMs >= srcPeer.skewMs / 2) {
+            record('clock-skew', p.name, { op: opIdentity(op), from: srcPeer.name, skewMs: srcPeer.skewMs, aheadMs });
+          }
+        }
+        if (p.faults.hold) {
+          p.held.push({ op, inner });
+          record('delay', p.name, { op: opIdentity(op), from: src ?? null, heldCount: p.held.length });
+          return true;
+        }
+        return deliver(p, { op, inner });
+      };
+  }
+
+  function wrapSwarmFor(p: HarnessPeer) {
+    return (raw: HyperswarmLike & { connections: Set<unknown> }): HyperswarmLike =>
+      new Proxy(raw, {
+        get(target, prop, receiver) {
+          if (prop === 'on') {
+            return (event: string, listener: (socket: unknown, info?: unknown) => void) => {
+              if (event !== 'connection') return (target.on as (e: string, l: unknown) => unknown)(event, listener);
+              return target.on('connection', (socket: unknown, info?: unknown) => {
+                const remoteKey =
+                  keyHex((info as { publicKey?: unknown } | undefined)?.publicKey) ??
+                  keyHex((socket as { remotePublicKey?: unknown } | undefined)?.remotePublicKey);
+                const remote = remoteKey ? swarmKeyToName.get(remoteKey) : undefined;
+                if (remote && isPartitioned(p.name, remote)) {
+                  (socket as { destroy?: () => void }).destroy?.();
+                  record('partition', p.name, { refusedConnectionFrom: remote });
+                  return;
+                }
+                listener(socket, info);
+              });
+            };
+          }
+          const value = Reflect.get(target, prop, receiver);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+  }
+
+  async function boot(p: HarnessPeer): Promise<HivePeer> {
+    const hp = await bootHivePeer({
+      testnetBootstrap: testnet.bootstrap,
+      rootPrefix: `v1core-${p.name}-`,
+      identity: p.identity,
+      pg: p.db.sql,
+      verify: (uid) => (roster.has(uid) ? 'verified' : 'fail'),
+      swarmTiming,
+      root: p.root ?? undefined,
+      wrapSwarm: wrapSwarmFor(p),
+      wrapApply: wrapApplyFor(p),
+      loadRevoked: async () => new Set(revokedPubkeys),
+    });
+    p.root = hp.root;
+    p.current = hp;
+    p.incarnation += 1;
+    const swarmKey = keyHex((hp.rawSwarm as unknown as { keyPair?: { publicKey?: unknown } }).keyPair?.publicKey);
+    if (swarmKey) swarmKeyToName.set(swarmKey, p.name);
+    logKeyToName.set(hp.handle.ownLog.keyHex, p.name);
+    return hp;
+  }
+
+  async function addPeer(name: string): Promise<HarnessPeer> {
+    if (peers.has(name)) throw new Error(`multi-peer harness: duplicate peer ${name}`);
+    const userId = nextUserId++;
+    const db = await createFreshPgDb(`v1core_${name}`);
+    cleanups.push(() => db.cleanup());
+    await setupHivePeerSchema(db.sql);
+    await db.sql.unsafe(STAMP_OP_HLC_DDL);
+    await seedHive(db.sql);
+    const p: HarnessPeer = {
+      name,
+      userId,
+      identity: makeIdentity(name, userId, `kc-${name}`),
+      db,
+      root: null,
+      current: null,
+      incarnation: 0,
+      faults: { ...NO_FAULTS },
+      held: [],
+      skewMs: 0,
+    };
+    peers.set(name, p);
+    roster.add(userId);
+    await boot(p);
+    return p;
+  }
+
+  async function flush(name: string): Promise<number> {
+    const p = peer(name);
+    const batch = p.held.splice(0);
+    if (batch.length === 0) return 0;
+    const order = p.faults.reorder ? [...batch].reverse() : batch;
+    if (p.faults.reorder && batch.length > 1) {
+      record('reorder', p.name, {
+        arrivalOrder: batch.map((h) => opIdentity(h.op)),
+        deliveryOrder: order.map((h) => opIdentity(h.op)),
+      });
+    }
+    for (const item of order) await deliver(p, item);
+    return batch.length;
+  }
+
+  async function stop(name: string): Promise<void> {
+    const p = peer(name);
+    const hp = p.current;
+    if (!hp) return;
+    // Ops already handed to the delivery seam complete before shutdown, so a
+    // restart never loses an op the merge cursor already counted as applied.
+    await flush(name);
+    p.current = null;
+    await hp.handle.close();
+    await closeHarnessStore({ workspaceRoot: hp.root, harnessSlug: HIVE_SLUG });
+    try {
+      await (hp.rawSwarm as unknown as { destroy(): Promise<void> }).destroy();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function restart(name: string): Promise<HivePeer> {
+    const p = peer(name);
+    const before = p.current ? p.current.handle.ownLog.keyHex : null;
+    await stop(name);
+    const hp = await boot(p);
+    record('restart', name, {
+      incarnation: p.incarnation,
+      ownLogKeyBefore: before,
+      ownLogKeyAfter: hp.handle.ownLog.keyHex,
+      root: hp.root,
+    });
+    return hp;
+  }
+
+  async function writeSetting(name: string, key: string, value: unknown): Promise<void> {
+    const p = peer(name);
+    const now = Date.now();
+    const v = JSON.stringify(value);
+    await p.db.sql`
+      INSERT INTO harness_shared.pot_settings (workspace_id, harness_slug, setting_key, value, created_at, updated_at)
+      VALUES (${WORKSPACE_ID}, ${HIVE_SLUG}, ${key}, ${v}, ${now}, ${now})
+      ON CONFLICT (workspace_id, harness_slug, setting_key)
+      DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at, origin = 'local'
+    `;
+    await live(name).drain();
+  }
+
+  async function deleteSetting(name: string, key: string): Promise<void> {
+    const p = peer(name);
+    await p.db.sql`
+      DELETE FROM harness_shared.pot_settings
+       WHERE workspace_id = ${WORKSPACE_ID} AND harness_slug = ${HIVE_SLUG} AND setting_key = ${key}
+    `;
+    await live(name).drain();
+  }
+
+  async function dump(name: string): Promise<CanonicalDump> {
+    const sql: postgres.Sql = peer(name).db.sql;
+    const settings = await sql<Array<{ setting_key: string; value: string | null }>>`
+      SELECT setting_key, value FROM harness_shared.pot_settings
+       WHERE workspace_id = ${WORKSPACE_ID} AND harness_slug = ${HIVE_SLUG}
+       ORDER BY setting_key
+    `;
+    const members = await sql<Array<{ github_user_id: number }>>`
+      SELECT github_user_id FROM harness_shared.pot_members
+       WHERE workspace_id = ${WORKSPACE_ID} AND pot_home_slug = ${HIVE_SLUG}
+       ORDER BY github_user_id
+    `;
+    return {
+      settings: settings.map((r) => ({ key: r.setting_key, value: r.value == null ? null : JSON.parse(r.value) })),
+      memberUserIds: members.map((r) => Number(r.github_user_id)),
+    };
+  }
+
+  function setDeliveryFaults(name: string, faults: Partial<DeliveryFaults>): void {
+    const p = peer(name);
+    p.faults = { ...p.faults, ...faults };
+  }
+
+  async function skewClock(name: string, skewMs: number): Promise<void> {
+    if (!(skewMs > 0)) throw new Error('multi-peer harness: skewMs must be positive');
+    const p = peer(name);
+    p.skewMs = skewMs;
+    const target = Date.now() + skewMs;
+    await p.db.sql`
+      UPDATE harness_shared.hlc_clock SET last_ms = GREATEST(last_ms, ${target}::bigint), last_count = 0 WHERE id = 1
+    `;
+    record('clock-skew', name, { configuredSkewMs: skewMs, clockAdvancedTo: target });
+  }
+
+  function partition(sideA: string[], sideB: string[]): void {
+    let socketsDropped = 0;
+    for (const a of sideA) for (const b of sideB) if (a !== b) blockedPairs.add(pairKey(a, b));
+    for (const p of peers.values()) {
+      const hp = p.current;
+      if (!hp) continue;
+      for (const conn of [...hp.rawSwarm.connections]) {
+        const remote = swarmKeyToName.get(keyHex((conn as { remotePublicKey?: unknown }).remotePublicKey) ?? '');
+        if (remote && isPartitioned(p.name, remote)) {
+          (conn as { destroy?: () => void }).destroy?.();
+          socketsDropped += 1;
+        }
+      }
+    }
+    record('partition', sideA.join(','), { sideA, sideB, socketsDropped });
+  }
+
+  function heal(): void {
+    const pairs = [...blockedPairs];
+    blockedPairs.clear();
+    record('heal', '*', { pairs });
+  }
+
+  async function lagOf(p: HarnessPeer): Promise<Record<string, number>> {
+    const lag: Record<string, number> = {};
+    const hp = p.current;
+    if (!hp || revokedNames.has(p.name)) return lag;
+    for (const other of peers.values()) {
+      if (other.name === p.name || !other.current || revokedNames.has(other.name)) continue;
+      // A partitioned pair cannot converge until heal; it is reported in
+      // `PendingWork.partitionedPairs` instead of counting as pending work.
+      if (isPartitioned(p.name, other.name)) continue;
+      const want = other.current.handle.ownLog.length;
+      if (want === 0) continue;
+      const have = hp.handle.admitted.get(other.current.handle.ownLog.keyHex)?.length ?? 0;
+      if (have < want) lag[other.name] = want - have;
+    }
+    return lag;
+  }
+
+  async function undrained(p: HarnessPeer): Promise<number> {
+    const [row] = await p.db.sql<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM harness_shared.substrate_outbox
+       WHERE workspace_id = ${WORKSPACE_ID} AND harness_slug = ${HIVE_SLUG} AND drained_at IS NULL
+    `;
+    return row?.n ?? 0;
+  }
+
+  async function pendingWork(): Promise<PendingWork> {
+    const perPeer: PendingWork['perPeer'] = {};
+    let total = 0;
+    for (const p of peers.values()) {
+      if (!p.current) continue;
+      const lagBehind = await lagOf(p);
+      const entry = { held: p.held.length, undrained: await undrained(p), lagBehind };
+      perPeer[p.name] = entry;
+      total += entry.held + entry.undrained + Object.values(lagBehind).reduce((s, n) => s + n, 0);
+    }
+    return { total, partitionedPairs: [...blockedPairs], perPeer };
+  }
+
+  async function revokeDuringSync(target: string): Promise<RevocationFrontier> {
+    const t = peer(target);
+    if (!t.current) throw new Error(`multi-peer harness: cannot revoke stopped peer ${target}`);
+    const lag = await lagOf(t);
+    const pendingAtRevocation = t.held.length + Object.values(lag).reduce((s, n) => s + n, 0);
+    if (pendingAtRevocation === 0) {
+      throw new Error(
+        `multi-peer harness: revoke-during-sync needs replication work in flight on ${target}; ` +
+          'hold its delivery or write on another peer first',
+      );
+    }
+    const devicePubkey = t.identity.devicePubkey;
+    revokedPubkeys.add(devicePubkey);
+    revokedNames.add(target);
+    roster.delete(t.userId);
+    const ownLogLengths: Record<string, number> = {};
+    for (const p of peers.values()) {
+      if (p.name === target || !p.current) continue;
+      await p.current.handle.revoke(devicePubkey);
+      ownLogLengths[p.name] = p.current.handle.ownLog.length;
+    }
+    const frontier: RevocationFrontier = { target, devicePubkey, at: Date.now(), ownLogLengths, pendingAtRevocation };
+    record('revoke-during-sync', target, { ...frontier });
+    return frontier;
+  }
+
+  async function settle(o: { maxIdleRounds?: number; intervalMs?: number } = {}): Promise<{ rounds: number }> {
+    const maxIdleRounds = o.maxIdleRounds ?? 400;
+    const intervalMs = o.intervalMs ?? 50;
+    let idle = 0;
+    let rounds = 0;
+    let lastSignature = '';
+    for (;;) {
+      rounds += 1;
+      let moved = 0;
+      for (const p of peers.values()) if (p.current) moved += await p.current.drain();
+      for (const p of peers.values()) if (p.current) moved += await p.current.handle.mergeNow();
+      for (const p of peers.values()) if (p.current) moved += await flush(p.name);
+      const pending = await pendingWork();
+      if (moved === 0 && pending.total === 0) return { rounds };
+      const signature = JSON.stringify(pending.perPeer);
+      if (moved === 0 && signature === lastSignature) {
+        idle += 1;
+        if (idle >= maxIdleRounds) {
+          throw new Error(
+            `multi-peer harness: settle made no progress for ${idle} rounds; pending ${JSON.stringify(pending)}`,
+          );
+        }
+      } else {
+        idle = 0;
+      }
+      lastSignature = signature;
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+  }
+
+  const harness: MultiPeerHarness = {
+    peers,
+    receipts,
+    peer,
+    live,
+    addPeer,
+    stop,
+    start: async (name) => {
+      const p = peer(name);
+      if (p.current) return p.current;
+      return boot(p);
+    },
+    restart,
+    writeSetting,
+    deleteSetting,
+    dump,
+    setDeliveryFaults,
+    flush,
+    skewClock,
+    partition,
+    heal,
+    isPartitioned,
+    revokeDuringSync,
+    isRevoked: (name) => revokedNames.has(name),
+    pendingWork,
+    settle,
+    receiptsOf: (kind) => receipts.filter((r) => r.kind === kind),
+  };
+
+  for (const name of names) await addPeer(name);
+  return harness;
+}

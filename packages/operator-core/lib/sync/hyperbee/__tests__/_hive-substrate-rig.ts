@@ -390,37 +390,59 @@ export interface HivePeer {
    *  e.g. to force a real socket disconnect via `[...rawSwarm.connections]`,
    *  simulating a network partition without any owner-side write). */
   rawSwarm: HyperswarmLike & { connections: Set<unknown> };
+  /** The persistent storage directory this peer's corestore lives in. A peer
+   *  re-booted with `root` set to this value is a restart from the same storage. */
+  root: string;
 }
 
-async function bootHivePeer(opts: {
+/** Real-apply sink for one peer, as the substrate calls it. */
+export type HivePeerApply = (op: OpEnvelope) => Promise<boolean>;
+
+/**
+ * Boot one real substrate peer of the rig's Hive. The optional seams below exist
+ * for the p2p v1-core multi-peer harness (p2p-v1-core-release-2026-11-13 P-002);
+ * omitting all of them is byte-identical to the original two-peer rig.
+ */
+export async function bootHivePeer(opts: {
   testnetBootstrap: unknown;
   rootPrefix: string;
   identity: ReturnType<typeof makeIdentity>;
   pg: postgres.Sql;
   verify: (userId: number) => 'verified' | 'pending' | 'fail';
   swarmTiming?: SwarmTimingOverride;
+  /** Re-use an existing storage directory (a restart) instead of minting one. */
+  root?: string;
+  /** Wrap the raw Hyperswarm before the substrate sees it (fault injection). */
+  wrapSwarm?: (raw: HyperswarmLike & { connections: Set<unknown> }) => HyperswarmLike;
+  /** Wrap the real projection apply (fault injection at the delivery seam). */
+  wrapApply?: (inner: HivePeerApply, ctx: { readonly ownLogKeyHex: string }) => HivePeerApply;
+  /** Revoked device-pubkey source. Default: nothing is revoked. */
+  loadRevoked?: () => Promise<Set<string>>;
 }): Promise<HivePeer> {
-  const root = makeWorkspaceRoot(opts.rootPrefix);
+  const root = opts.root ?? makeWorkspaceRoot(opts.rootPrefix);
   const rawSwarm = makeSwarm(opts.testnetBootstrap) as HyperswarmLike & { connections: Set<unknown> };
   let handle: BootedHarnessHandle | undefined;
-  let apply: ((op: OpEnvelope) => Promise<boolean>) | undefined;
+  let apply: HivePeerApply | undefined;
   handle = await bootHarnessSubstrate({
     workspaceRoot: root,
     workspaceId: WORKSPACE_ID,
     harnessSlug: HIVE_SLUG,
     swarmBinding: BINDING,
-    swarmOverride: rawSwarm,
+    swarmOverride: opts.wrapSwarm ? opts.wrapSwarm(rawSwarm) : rawSwarm,
     verifyBindingOverride: async (_pk, _login, userId) => opts.verify(userId),
     // ctx, not `handle`: a merge pass can run before bootHarnessSubstrate returns
     // (a rejoining peer already holds admitted logs) — WI-6554700010008561.
     applyOverride: (op, ctx) => {
-      apply ??= buildHivePeerApply(opts.pg, ctx.ownLogKeyHex);
+      if (!apply) {
+        const inner = buildHivePeerApply(opts.pg, ctx.ownLogKeyHex);
+        apply = opts.wrapApply ? opts.wrapApply(inner, ctx) : inner;
+      }
       return apply(op);
     },
     mergePollMs: 0,
     pendingRetryMs: 0,
     reverifyIntervalMs: 0,
-    loadRevokedOverride: async () => new Set(),
+    loadRevokedOverride: opts.loadRevoked ?? (async () => new Set()),
     announceIdentityOverride: opts.identity.override,
     swarmRefreshMs: opts.swarmTiming?.refreshMs,
     swarmFastWindowMs: opts.swarmTiming?.fastWindowMs,
@@ -431,7 +453,7 @@ async function bootHivePeer(opts: {
     await handle?.close();
     await closeHarnessStore({ workspaceRoot: root, harnessSlug: HIVE_SLUG });
   });
-  return { handle, pg: opts.pg, identity: opts.identity, drain: () => drainOutboxOnce(handle!, opts.pg), rawSwarm };
+  return { handle, pg: opts.pg, identity: opts.identity, drain: () => drainOutboxOnce(handle!, opts.pg), rawSwarm, root };
 }
 
 /** Insert the Hive identity row (FK parent for hive_members) into a peer's DB. */
