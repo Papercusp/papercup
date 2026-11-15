@@ -178,7 +178,11 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 const root = process.argv[2];
+// The checkout's helper, exactly as the snapshot compile runs it: a script-snapshot launch runs
+// this file from a private temp copy, so never resolve the helper beside it.
+const snapshotHelper = resolve(root, 'apps/operator/bin/bundle-host-snapshot-esbuild.mjs');
 const manifest = resolve(root, 'packages/operator-core/lib/retained-replay-sources.json');
 const implementation = resolve(root, 'packages/operator-core/lib/retained-replay-identity.ts');
 // Historical exact-source targets can predate replay identity entirely. They
@@ -192,14 +196,25 @@ if (!existsSync(manifest) && !existsSync(implementation)) {
 if (!existsSync(manifest) || !existsSync(implementation)) {
   throw new Error(`retained replay identity is partial: need both ${manifest} and ${implementation}`);
 }
+// A snapshot-labelled compile reads the label's blobs (WI-6554700010048234): attest those bytes.
+// Resolve them through the compile's own gitlink-aware index: a manifest path inside a submodule
+// (libs/test-config/...) is invisible to a superproject `git show <snapshot>:<path>`.
+const snapshot = process.env.BUNDLE_HOST_SNAPSHOT_SOURCE_SHA;
+let blobIndex;
+if (snapshot) {
+  const { snapshotBlobIndex } = await import(pathToFileURL(snapshotHelper).href);
+  blobIndex = snapshotBlobIndex(resolve(root), snapshot); // index keys are absolute paths
+}
+const bytes = path => {
+  if (!blobIndex) return readFileSync(resolve(root, path));
+  const entry = blobIndex.get(resolve(root, path));
+  if (!entry) throw new Error(`retained replay source ${path} is not in snapshot ${snapshot}`);
+  return execFileSync('git', ['-C', entry.repo, 'cat-file', 'blob', entry.blob], { maxBuffer: 64 * 1024 * 1024 });
+};
 // Data only: the builder must not execute working-tree TypeScript under its
 // committed-source loader. The regression compares this with the runtime reader.
-const files = JSON.parse(readFileSync(manifest, 'utf8'));
-// A snapshot-labelled compile reads the label's blobs (WI-6554700010048234): attest those bytes.
-const snapshot = process.env.BUNDLE_HOST_SNAPSHOT_SOURCE_SHA;
-const bytes = path => snapshot
-  ? execFileSync('git', ['-C', root, 'show', `${snapshot}:${path}`], { maxBuffer: 64 * 1024 * 1024 })
-  : readFileSync(resolve(root, path));
+// The bundle bakes the snapshot's manifest, so the file LIST comes from the same bytes.
+const files = JSON.parse(bytes('packages/operator-core/lib/retained-replay-sources.json').toString('utf8'));
 const sources = files.map(path => [path, createHash('sha256').update(bytes(path)).digest('hex')]);
 const identity = createHash('sha256').update(JSON.stringify({ version: 1, sources })).digest('hex');
 process.stdout.write('--define:__PAPERCUSP_RETAINED_REPLAY_SOURCE_SHA256__=' +

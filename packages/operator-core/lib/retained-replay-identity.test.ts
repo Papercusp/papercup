@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import {
+  copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync,
+} from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
@@ -55,6 +57,73 @@ describe('retained replay source identity', () => {
       writeFileSync(join(copy, 'packages/operator-core/lib/retained-replay-sources.json'), '["missing-source.ts"]');
       expect(define().status).not.toBe(0);
     } finally { rmSync(copy, { recursive: true, force: true }); }
+  });
+
+  // WI-6554700010048234: the working-tree route compiles from a snapshot commit. The real
+  // manifest names libs/test-config/... sources, which live in a submodule a superproject
+  // `git show <snapshot>:<path>` cannot see, so every host compile refused (exit 78).
+  it('a snapshot-labelled compile attests the snapshot blobs and manifest, including submodule sources', () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'retained-replay-snapshot-')));
+    const config = join(dir, 'gitconfig');
+    writeFileSync(config, '[user]\n\tname = t\n\temail = t@example.invalid\n[protocol "file"]\n\tallow = always\n'
+      + '[commit]\n\tgpgsign = false\n');
+    const env = { PATH: process.env.PATH, HOME: dir, GIT_CONFIG_GLOBAL: config, GIT_CONFIG_NOSYSTEM: '1' };
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, env, encoding: 'utf8' }).trim();
+    const put = (base: string, path: string, body: string) => {
+      mkdirSync(dirname(join(base, path)), { recursive: true });
+      writeFileSync(join(base, path), body);
+    };
+    const sha = (body: string) => createHash('sha256').update(body).digest('hex');
+    const digest = (sources: [string, string][]) =>
+      `--define:__PAPERCUSP_RETAINED_REPLAY_SOURCE_SHA256__=${JSON.stringify(sha(JSON.stringify({ version: 1, sources })))}`;
+    const manifestPath = 'packages/operator-core/lib/retained-replay-sources.json';
+    const inner = 'libs/inner/src/inner.ts';
+    const sub = join(dir, 'sub-src'), sup = join(dir, 'sup');
+    const define = (snapshot?: string) => spawnSync('bash', ['-c',
+      'set -euo pipefail\nsource "$1"\nbundle_host_replay_identity_define "$2"',
+      'snapshot-replay-test', common, sup], {
+      encoding: 'utf8', timeout: 20_000,
+      env: { ...env, ...(snapshot ? { BUNDLE_HOST_SNAPSHOT_SOURCE_SHA: snapshot } : {}) },
+    });
+    try {
+      git(dir, 'init', '-q', '-b', 'main', sub);
+      put(sub, 'src/inner.ts', 'export const inner = 1;\n');
+      git(sub, 'add', '-A');
+      git(sub, 'commit', '-q', '-m', 'sub');
+      git(dir, 'init', '-q', '-b', 'main', sup);
+      put(sup, identityPath, '// replay identity exists in this target\n');
+      put(sup, manifestPath, JSON.stringify(['top.ts', inner]));
+      put(sup, 'top.ts', 'export const top = 1;\n');
+      git(sup, 'add', '-A');
+      git(sup, 'commit', '-q', '-m', 'sup');
+      git(sup, 'submodule', 'add', '-q', sub, 'libs/inner');
+      git(sup, 'commit', '-q', '-m', 'submodule');
+      const snapshot = git(sup, 'rev-parse', 'HEAD');
+      // The real gitlink-aware index the compile uses (a symlink keeps its imports resolving).
+      const helper = 'apps/operator/bin/bundle-host-snapshot-esbuild.mjs';
+      mkdirSync(dirname(join(sup, helper)), { recursive: true });
+      symlinkSync(join(root, helper), join(sup, helper));
+      const pinned = digest([['top.ts', sha('export const top = 1;\n')], [inner, sha('export const inner = 1;\n')]]);
+
+      // The shared tree moves on after the snapshot: the attestation must follow the snapshot.
+      put(sup, 'top.ts', 'export const top = 2;\n');
+      put(sup, inner, 'export const inner = 2;\n');
+      const snap = define(snapshot);
+      expect(snap.status, snap.stderr).toBe(0);
+      expect(snap.stdout).toBe(pinned);
+      const live = define();
+      expect(live.status, live.stderr).toBe(0);
+      expect(live.stdout).toBe(digest([['top.ts', sha('export const top = 2;\n')], [inner, sha('export const inner = 2;\n')]]));
+
+      // The manifest LIST is snapshot bytes too: a disk-only entry is not attested.
+      put(sup, manifestPath, JSON.stringify(['top.ts', inner, 'ghost.ts']));
+      expect(define(snapshot).stdout).toBe(pinned);
+      // A snapshot whose manifest names a file it does not contain fails closed.
+      git(sup, 'commit', '-q', '-m', 'ghost', '--', manifestPath);
+      const ghost = define(git(sup, 'rev-parse', 'HEAD'));
+      expect(ghost.status).not.toBe(0);
+      expect(ghost.stderr).toContain('ghost.ts is not in snapshot');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   it('is byte-bound and relocation-independent, including evaluator, parser, redaction and dependency changes', () => {
