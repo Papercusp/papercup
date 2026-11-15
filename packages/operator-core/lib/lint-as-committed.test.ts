@@ -326,6 +326,34 @@ describe('committed reporter database route', () => {
     }, null, receiptFile).PAPERCUSP_LINT_AS_COMMITTED_PREPARED_ROOT_RECEIPT).toBeUndefined();
   });
 
+  it.each(['undefined', 'null', 'postgres://[invalid', 'https://ledger.invalid/must-not-leak'])
+    ('rejects a malformed reporter sink without exposing it: %s', sink => {
+      expect(() => mod.requireDurableTestRunSink({ PAPERCUSP_TEST_RUNS_DB_URL: sink }))
+        .toThrow(/^PAPERCUSP_TEST_RUNS_DB_URL must be a valid PostgreSQL URL$/);
+    });
+
+  it.each(['postgres://ledger.invalid/proof', ' postgresql://ledger.invalid/proof '])
+    ('accepts a PostgreSQL reporter sink: %s', sink => {
+      expect(() => mod.requireDurableTestRunSink({ PAPERCUSP_TEST_RUNS_DB_URL: sink })).not.toThrow();
+    });
+
+  it('rejects malformed reporter sinks before Git or clone preparation', () => {
+    const root = mkdtempSync(join(tmpdir(), 'committed-invalid-ledger-'));
+    try {
+      const run = spawnSync(process.execPath, [scriptPath, '--any', 'test:file'], {
+        cwd: root,
+        env: currentRunnerEnvironment({ PAPERCUSP_TEST_RUNS_DB_URL: 'undefined' }),
+        encoding: 'utf8', timeout: 15_000,
+      });
+      expect(run.error).toBeUndefined();
+      expect(run.status).toBe(2);
+      expect(run.stderr).toContain('PAPERCUSP_TEST_RUNS_DB_URL must be a valid PostgreSQL URL');
+      expect(run.stderr).not.toContain('not inside a git repository');
+      expect(run.stdout).not.toContain('lint-as-committed: ref');
+      expect(readdirSync(root)).toEqual([]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('carries the persistent generation store into nested committed verifiers', () => {
     const original = mkdtempSync(join(tmpdir(), 'committed-generation-route-'));
     const store = join(original, 'persistent-store');
