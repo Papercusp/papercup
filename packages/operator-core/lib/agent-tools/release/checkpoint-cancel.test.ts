@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   checkpointUnitForRoot: vi.fn(),
   terminateActiveCheckpointUnit: vi.fn(),
   cancelStoredQualification: vi.fn(),
+  settleStoredUnreachableBlockedQualification: vi.fn(),
 }));
 
 vi.mock('../coordination/identity', async (importOriginal) => ({
@@ -45,6 +46,7 @@ vi.mock('../../release-checkpoint-launch', async (importOriginal) => ({
 vi.mock('../../release/checkpoint-qualification-transaction', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../release/checkpoint-qualification-transaction')>()),
   cancelStoredQualification: mocks.cancelStoredQualification,
+  settleStoredUnreachableBlockedQualification: mocks.settleStoredUnreachableBlockedQualification,
 }));
 
 import { lookupByMcpName } from '@papercusp/tooldef';
@@ -126,7 +128,12 @@ describe('release:checkpoint-cancel handler', () => {
   it('requires the exact attempt and canonical unit in its published schema', async () => {
     const tool = await loadTool();
     expect(tool.args.safeParse({ attemptId: ATTEMPT, unit: UNIT }).success).toBe(true);
-    expect(tool.args.safeParse({ attemptId: ATTEMPT }).success).toBe(false);
+    // D-028: the unit is optional in the SCHEMA because the unreachable-blocker settle takes
+    // none. A cancel without one is still refused, by the handler (`unit_required` below).
+    expect(tool.args.safeParse({ attemptId: ATTEMPT }).success).toBe(true);
+    expect(tool.args.safeParse({ attemptId: ATTEMPT, settleUnreachableBlocker: true }).success).toBe(true);
+    expect(tool.args.safeParse({ attemptId: ATTEMPT, settleUnreachableBlocker: 'yes' }).success).toBe(false);
+    expect(tool.args.safeParse({ unit: UNIT }).success).toBe(false);
     expect(tool.args.safeParse({ attemptId: ATTEMPT, unit: 'other-unit.service' }).success).toBe(false);
     expect(tool.args.safeParse({ attemptId: ATTEMPT, unit: UNIT, reason: 'unsafe candidate' }).success).toBe(true);
     // WI-6554700010042670: a scheduled run's recorded scope is accepted; other scopes are not.
@@ -243,5 +250,161 @@ describe('release:checkpoint-cancel handler', () => {
       reason: 'stop_failed',
       error: 'systemd kill exited 4',
     });
+  });
+
+  it('refuses a cancel that names no unit, before reading or signalling anything', async () => {
+    const tool = await loadTool();
+
+    expect(body(await tool.handler({ attemptId: ATTEMPT } as never, CTX))).toMatchObject({
+      ok: false,
+      cancelled: false,
+      refused: true,
+      reason: 'unit_required',
+      attempt_id: ATTEMPT,
+    });
+    expect(mocks.cancelStoredQualification).not.toHaveBeenCalled();
+    expect(mocks.settleStoredUnreachableBlockedQualification).not.toHaveBeenCalled();
+    expect(mocks.terminateActiveCheckpointUnit).not.toHaveBeenCalled();
+  });
+});
+
+// D-028 (staging-main-safe-changes-and-recovery-2026-11-07#D-028, WI-6554700010048992): the one
+// narrow settle for a RUNNER-FREE attempt held only by a stored blocker with no production
+// clear path. It must never signal a unit, never touch the cancel path, and must attribute the
+// settle to the VERIFIED caller rather than anything the caller supplies.
+describe('release:checkpoint-cancel settleUnreachableBlocker (D-028)', () => {
+  const BLOCKER = { code: 'executor-build-identity-unavailable', clearEvents: [] };
+
+  it('settles through the store with the verified actor and never signals a unit', async () => {
+    const tool = await loadTool();
+    mocks.settleStoredUnreachableBlockedQualification.mockResolvedValueOnce({
+      status: 'updated',
+      transaction: { outcome: { kind: 'code-inconclusive', reason: 'unreachable-blocker-settled' } },
+      settledBlockers: [BLOCKER],
+    });
+
+    const result = body(await tool.handler({
+      attemptId: ATTEMPT,
+      settleUnreachableBlocker: true,
+      reason: 'executor identity blocker has no clear path',
+      actor: 'spoofed-caller',
+    } as never, CTX));
+
+    expect(result).toMatchObject({
+      ok: true,
+      cancelled: true,
+      settled: 'unreachable-blocker',
+      attempt_id: ATTEMPT,
+      actor: 'su-test',
+      blockers: ['executor-build-identity-unavailable'],
+      outcome: { kind: 'code-inconclusive', reason: 'unreachable-blocker-settled' },
+      repair_queue: 'preserved',
+      audit_event: 'qualification-unreachable-blocker-settled',
+    });
+    expect(mocks.settleStoredUnreachableBlockedQualification).toHaveBeenCalledWith(
+      { workspaceId: 'ws-1', installSlug: 'papercusp' },
+      {
+        attemptId: ATTEMPT,
+        reason: 'executor identity blocker has no clear path',
+        actor: 'su-test',
+        evidenceRefs: ['tool:release:checkpoint-cancel:settle-unreachable-blocker'],
+      },
+    );
+    expect(mocks.terminateActiveCheckpointUnit).not.toHaveBeenCalled();
+    expect(mocks.cancelStoredQualification).not.toHaveBeenCalled();
+  });
+
+  it('refuses a settle that names a unit, since a named unit means a runner may exist', async () => {
+    const tool = await loadTool();
+
+    expect(body(await tool.handler({
+      attemptId: ATTEMPT,
+      unit: SCHEDULED_SCOPE,
+      settleUnreachableBlocker: true,
+      reason: 'should not settle',
+    } as never, CTX))).toMatchObject({
+      ok: false,
+      cancelled: false,
+      refused: true,
+      reason: 'settle_takes_no_unit',
+      unit: SCHEDULED_SCOPE,
+    });
+    expect(mocks.settleStoredUnreachableBlockedQualification).not.toHaveBeenCalled();
+    expect(mocks.cancelStoredQualification).not.toHaveBeenCalled();
+    expect(mocks.terminateActiveCheckpointUnit).not.toHaveBeenCalled();
+  });
+
+  it('passes an absent reason through so the store refuses it, and maps that refusal', async () => {
+    const tool = await loadTool();
+    mocks.settleStoredUnreachableBlockedQualification.mockResolvedValueOnce({
+      status: 'conflict',
+      transaction: {},
+      refusalReason: 'reason-and-actor-required',
+    });
+
+    expect(body(await tool.handler({ attemptId: ATTEMPT, settleUnreachableBlocker: true } as never, CTX)))
+      .toMatchObject({ ok: false, refused: true, reason: 'settle_reason_and_actor_required' });
+    expect(mocks.settleStoredUnreachableBlockedQualification).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ reason: '', actor: 'su-test' }),
+    );
+  });
+
+  it.each([
+    ['runner-held', 'settle_runner_held', /exact unit/],
+    ['child-scope-custody-held', 'settle_child_scope_custody_held', /child scope/],
+    ['blocker-has-clear-path', 'settle_blocker_has_clear_path', /QUALIFICATION_BLOCKERS_WITHOUT_CLEAR_PATH/],
+    ['no-stored-blocker', 'settle_no_stored_blocker', /no stored blocker/],
+    ['attempt-mismatch', 'settle_attempt_mismatch', /no longer names this attempt/],
+  ])('maps the store refusal %s to %s with its next step', async (refusalReason, reason, note) => {
+    const tool = await loadTool();
+    mocks.settleStoredUnreachableBlockedQualification.mockResolvedValueOnce({
+      status: 'conflict',
+      transaction: {},
+      refusalReason,
+    });
+
+    const result = body(await tool.handler({
+      attemptId: ATTEMPT,
+      settleUnreachableBlocker: true,
+      reason: 'settle it',
+    } as never, CTX));
+
+    expect(result).toMatchObject({ ok: false, cancelled: false, refused: true, reason, attempt_id: ATTEMPT });
+    expect(String(result.note)).toMatch(note);
+    expect(mocks.terminateActiveCheckpointUnit).not.toHaveBeenCalled();
+  });
+
+  it('reports an already-terminal attempt without settling it again', async () => {
+    const tool = await loadTool();
+    mocks.settleStoredUnreachableBlockedQualification.mockResolvedValueOnce({
+      status: 'terminal',
+      transaction: { outcome: { kind: 'code-inconclusive', reason: 'earlier' } },
+    });
+
+    expect(body(await tool.handler({
+      attemptId: ATTEMPT,
+      settleUnreachableBlocker: true,
+      reason: 'settle it',
+    } as never, CTX))).toMatchObject({
+      ok: false,
+      refused: true,
+      reason: 'qualification_terminal',
+      outcome: { kind: 'code-inconclusive', reason: 'earlier' },
+    });
+  });
+
+  it('fails closed without a verified caller and never reaches the store', async () => {
+    const tool = await loadTool();
+    mocks.resolveAgentIdentity.mockImplementationOnce(() => {
+      throw new Error('missing identity');
+    });
+
+    expect(body(await tool.handler({
+      attemptId: ATTEMPT,
+      settleUnreachableBlocker: true,
+      reason: 'settle it',
+    } as never, CTX))).toMatchObject({ ok: false, refused: true, reason: 'authentication_required' });
+    expect(mocks.settleStoredUnreachableBlockedQualification).not.toHaveBeenCalled();
   });
 });

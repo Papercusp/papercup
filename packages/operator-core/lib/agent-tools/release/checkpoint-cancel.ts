@@ -7,6 +7,12 @@
  * attempt id and the exact systemd unit recorded on that attempt before it will invoke
  * the protected SIGTERM path. The qualification row and the repair queue are updated
  * independently: only the former is settled, and the queue is never retired here.
+ *
+ * D-028 (staging-main-safe-changes-and-recovery-2026-11-07#D-028, WI-6554700010048992):
+ * `settleUnreachableBlocker:true` with NO unit is the one narrow exception. It settles a
+ * RUNNER-FREE attempt whose only obstacle is a stored blocker no production path can clear
+ * (QUALIFICATION_BLOCKERS_WITHOUT_CLEAR_PATH), signals nothing, and commits an audit row
+ * naming the attempt, the blockers and the caller. Every other attempt is refused.
  */
 
 import { z } from 'zod';
@@ -21,7 +27,10 @@ import {
 } from '../../release-checkpoint-launch';
 import {
   cancelStoredQualification,
+  QUALIFICATION_UNREACHABLE_BLOCKER_SETTLED_STATUS,
+  settleStoredUnreachableBlockedQualification,
   type StoredQualificationCancellation,
+  type StoredUnreachableBlockerSettlement,
 } from '../../release/checkpoint-qualification-transaction';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { LIMITS, softText } from '../limits';
@@ -94,6 +103,56 @@ function renderCancellation(
   });
 }
 
+/** Refusal reasons from settleUnreachableBlockedQualification, with the next step for each. */
+const SETTLE_REFUSAL_NOTES: Record<string, string> = {
+  'attempt-mismatch': 'the stored qualification no longer names this attempt id. Re-read the current attempt before retrying.',
+  'runner-held': 'this attempt has a recorded runner. Cancel it by its exact unit instead (release:checkpoint-cancel { attemptId, unit }).',
+  'child-scope-custody-held': 'a child scope of this attempt is still held, so its runner may be alive.',
+  'no-stored-blocker': 'the attempt carries no stored blocker, so there is nothing unreachable to settle.',
+  'blocker-has-clear-path': 'at least one stored blocker has a production clear path. Clear it through that path; this settle is only for blockers in QUALIFICATION_BLOCKERS_WITHOUT_CLEAR_PATH.',
+  'reason-and-actor-required': 'a non-empty reason and a verified caller are both required.',
+  'pending-head-queue-mismatch': 'the attempt\'s pending repair head disagrees with the frozen queue head. Resolve that first.',
+};
+
+function renderUnreachableBlockerSettlement(
+  result: StoredUnreachableBlockerSettlement,
+  args: { attemptId: string; actor: string },
+) {
+  if (result.status === 'updated') {
+    return json({
+      ok: true,
+      cancelled: true,
+      settled: 'unreachable-blocker',
+      attempt_id: args.attemptId,
+      actor: args.actor,
+      blockers: (result.settledBlockers ?? []).map(blocker => blocker.code),
+      outcome: result.transaction.outcome,
+      repair_queue: 'preserved',
+      audit_event: QUALIFICATION_UNREACHABLE_BLOCKER_SETTLED_STATUS,
+      note: 'The runner-free attempt was terminally settled as code-inconclusive and the audit row was committed in the same transaction. No unit was signalled and the frozen repair queue was not changed; the next scheduled fire hands it to a successor attempt.',
+    });
+  }
+  if (result.status === 'terminal') {
+    return refused('qualification_terminal', {
+      attempt_id: args.attemptId,
+      outcome: result.transaction.outcome,
+      note: 'NOT settled: this exact logical attempt already has a terminal outcome.',
+    });
+  }
+  if (result.status === 'conflict') {
+    const refusal = result.refusalReason ?? 'conflict';
+    return refused(`settle_${refusal.replace(/-/g, '_')}`, {
+      attempt_id: args.attemptId,
+      note: `NOT settled: ${SETTLE_REFUSAL_NOTES[refusal] ?? 'the stored qualification changed under the settle. Re-read it before retrying.'}`,
+    });
+  }
+  return refused(`qualification_${result.status}`, {
+    attempt_id: args.attemptId,
+    error: 'error' in result ? result.error : undefined,
+    note: 'NOT settled: the qualification transaction could not be read safely.',
+  });
+}
+
 export default defineTool({
   name: 'release:checkpoint-cancel',
   profile: 'engineer',
@@ -112,14 +171,20 @@ export default defineTool({
     unit: z
       .string()
       .regex(/^(?:papercup-green-checkpoint-manual-[a-z0-9-]+\.service|papercusp-checkpoint-[a-z0-9-]+\.scope)$/)
-      .describe('the exact systemd user unit recorded on that attempt: the manual .service, or a scheduled run\'s papercusp-checkpoint-<id>.scope'),
+      .optional()
+      .describe('the exact systemd user unit recorded on that attempt: the manual .service, or a scheduled run\'s papercusp-checkpoint-<id>.scope. Required unless settleUnreachableBlocker is true; forbidden with it'),
+    settleUnreachableBlocker: z
+      .boolean()
+      .optional()
+      .describe('D-028: settle a RUNNER-FREE attempt whose only stored blockers have no production clear path. Takes no unit, needs a reason, signals nothing'),
     reason: softText(LIMITS.SHORT_TITLE)
       .optional()
       .describe('why this known-unsafe runner is being cancelled; stored as the terminal code-inconclusive reason'),
   }),
   async handler(args, ctx) {
+    let actor: string;
     try {
-      resolveAgentIdentity(ctx);
+      actor = resolveAgentIdentity(ctx).ownerId;
     } catch {
       return refused('authentication_required', {
         note: 'A verified caller identity is required before a protected checkpoint unit can be signalled.',
@@ -134,6 +199,36 @@ export default defineTool({
 
     const workspaceId = concreteWorkspace(ctx);
     const installSlug = operatorHomeHarnessSlug();
+
+    if (args.settleUnreachableBlocker === true) {
+      // A settle signals nothing, so naming a unit can only mean the caller thinks a runner
+      // exists. That is exactly the case the settle must never touch: refuse instead of guessing.
+      if (args.unit !== undefined) {
+        return refused('settle_takes_no_unit', {
+          attempt_id: args.attemptId,
+          unit: args.unit,
+          note: 'NOT settled: settleUnreachableBlocker is only for a runner-free attempt. Cancel a recorded runner by its exact unit without settleUnreachableBlocker.',
+        });
+      }
+      const settlement = await settleStoredUnreachableBlockedQualification(
+        { workspaceId, installSlug },
+        {
+          attemptId: args.attemptId,
+          reason: args.reason ?? '',
+          actor,
+          evidenceRefs: ['tool:release:checkpoint-cancel:settle-unreachable-blocker'],
+        },
+      );
+      return renderUnreachableBlockerSettlement(settlement, { attemptId: args.attemptId, actor });
+    }
+    if (args.unit === undefined) {
+      return refused('unit_required', {
+        attempt_id: args.attemptId,
+        note: 'NOT cancelled: name the exact recorded unit, or pass settleUnreachableBlocker:true for a runner-free attempt held only by an unclearable stored blocker.',
+      });
+    }
+    const unit = args.unit;
+
     const routing = await resolveCheckpointRouting({ installSlug, workspaceId }, integrationRoot());
     if (routing.skip) {
       return refused('checkpoint_routing_skip', {
@@ -147,11 +242,11 @@ export default defineTool({
     // WI-6554700010042670: a SCHEDULED run lives in a per-run scope named for its runner, so it has
     // no canonical per-root name to compare against. Exactness still holds: the store's CAS below
     // only signals when the attempt's recorded runner unit equals this exact scope.
-    const scheduledScope = args.unit.endsWith('.scope');
-    if (!scheduledScope && args.unit !== expectedUnit) {
+    const scheduledScope = unit.endsWith('.scope');
+    if (!scheduledScope && unit !== expectedUnit) {
       return refused('unit_mismatch', {
         attempt_id: args.attemptId,
-        unit: args.unit,
+        unit,
         note: 'NOT cancelled: the requested unit is not the canonical unit for this operator-home checkpoint target.',
       });
     }
@@ -160,12 +255,12 @@ export default defineTool({
       { workspaceId, installSlug },
       {
         attemptId: args.attemptId,
-        unit: args.unit,
+        unit,
         reason: args.reason,
         evidenceRefs: ['tool:release:checkpoint-cancel'],
       },
-      () => terminateActiveCheckpointUnit(scheduledScope ? args.unit : baseUnit(args.unit)),
+      () => terminateActiveCheckpointUnit(scheduledScope ? unit : baseUnit(unit)),
     );
-    return renderCancellation(result, args);
+    return renderCancellation(result, { attemptId: args.attemptId, unit });
   },
 });
