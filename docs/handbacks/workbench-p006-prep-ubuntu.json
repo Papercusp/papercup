@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "kind": "workbench-prep-handback",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "fromItem": "P-006",
+  "toItem": "P-002",
+  "clause": {
+    "specId": "PREP-UBUNTU",
+    "revision": 2,
+    "contentHash": "6cf8dce643c1f0a213de78f80c8b9e58ed05fb25692aa3fcf54c08546dc896e7"
+  },
+  "source": {
+    "parentCommit": "d3077f596756279a66efb550a5707744c48b14bd",
+    "submodulePath": "papercusp-desktop",
+    "childCommit": "852db7b7d8df5fee87a0cd3e56eb3ea383fdc4e3",
+    "change": {
+      "base": "e6ab1fe9ee54a9bf72064b3159bcfca944cfcbe8",
+      "head": "852db7b7d8df5fee87a0cd3e56eb3ea383fdc4e3"
+    },
+    "identities": [
+      { "path": "native/gnome/bridge.js", "blob": "90312ae42fc5e49a17e8177904a0140058320783" },
+      { "path": "test/native-workbench-gnome.test.mjs", "blob": "294925fc937ddf2ce4afb16adf96f64e0151aae2" }
+    ]
+  },
+  "regressions": [
+    { "testRunId": 23875699, "filePath": "papercusp-desktop/test/native-workbench-gnome.test.mjs" },
+    { "testRunId": 23875701, "filePath": "papercusp-desktop/test/native-workbench-gnome.test.mjs" },
+    { "testRunId": 23875700, "filePath": "papercusp-desktop/test/native-workbench-gnome-live.test.mjs" }
+  ],
+  "unresolvedChecks": [
+    {
+      "id": "source-runtime.accepted-binding",
+      "scope": "source-runtime",
+      "status": "unresolved",
+      "owner": "P-001",
+      "detail": "The shared typed search/ACL/Inbox/chat/account/goal contracts and the accepted source/runtime binding remain P-001's lane; P-002 stays blocked by P-001."
+    },
+    {
+      "id": "source-runtime.running-operator-contains-change",
+      "scope": "source-runtime",
+      "status": "unresolved",
+      "owner": "P-001",
+      "detail": "The single dev:pipeline_position sourceRuntimeOnly read did not show this change in the running :3070 or :3170 operator. No source tuple or runtime owner was taken over."
+    },
+    {
+      "id": "installed.candidate-artifact-identity",
+      "scope": "installed-candidate",
+      "status": "unresolved",
+      "owner": "P-002",
+      "detail": "Identify the exact Ubuntu candidate artifact and the GNOME bundle/PUI source, and capture the exact artifact, source and runtime identities with the installed evidence."
+    },
+    {
+      "id": "installed.fresh-install-upgrade-login-restart",
+      "scope": "installed-candidate",
+      "status": "unresolved",
+      "owner": "P-002",
+      "detail": "Exercise fresh install, upgrade and login/restart on that candidate artifact."
+    },
+    {
+      "id": "installed.resident-shortcut-native-surfaces",
+      "scope": "installed-candidate",
+      "status": "unresolved",
+      "owner": "P-002",
+      "detail": "Verify the resident shortcut opens each requested native surface with the selected canonical workspace/environment."
+    },
+    {
+      "id": "installed.invalid-pui-guard",
+      "scope": "installed-candidate",
+      "status": "unresolved",
+      "owner": "P-002",
+      "detail": "Exercise the new invalid-PUI guard both before helper startup and while a healthy helper is serving reads and streams."
+    },
+    {
+      "id": "installed.helper-eof-reconnect-isolation",
+      "scope": "installed-candidate",
+      "status": "unresolved",
+      "owner": "P-002",
+      "detail": "Verify helper EOF/disconnect, reconnect and per-environment isolation with the resident lifecycle preserved."
+    },
+    {
+      "id": "installed.vendor-input-canonical-flows",
+      "scope": "installed-candidate",
+      "status": "unresolved",
+      "owner": "P-002",
+      "detail": "Verify real vendor input and the canonical psu/Inbox/chat/account/goal flows, including cancellation and failure isolation."
+    },
+    {
+      "id": "installed.d015-pui-zellij-terminal",
+      "scope": "installed-candidate",
+      "status": "unresolved",
+      "owner": "P-002",
+      "detail": "Verify the D-015 PUI/Zellij terminal workspace on the installed host."
+    },
+    {
+      "id": "installed.physical-device-audio",
+      "scope": "installed-candidate",
+      "status": "unresolved",
+      "owner": "P-002",
+      "detail": "Record the physical-device audio check separately: the saved source suite skipped its opt-in case."
+    }
+  ],
+  "claims": { "acceptance": false, "installed": false, "currentMain": false },
+  "sequence": ["P-001", "P-002", "P-003"],
+  "sourcePosts": [1229390, 1229372, 1229329]
+}
