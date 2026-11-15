@@ -41,8 +41,8 @@ export function carryRowTextSchema(
   if (options.min !== undefined) schema = schema.min(options.min);
   const hardMax = softMax * CARRY_CAP_HARD_MULTIPLE;
   return schema.max(hardMax).meta({ 'x-soft-maxLength': softMax }).describe(
-    `${description} Soft cap: ${softMax} chars; longer values are accepted and truncated with a reported repair. ` +
-      `Hard input backstop: ${hardMax} chars; larger values are rejected.`,
+    `${description} Soft cap: ${softMax} chars; longer input is truncated with a reported repair. ` +
+      `Hard input backstop: ${hardMax} chars; larger input is rejected.`,
   );
 }
 
@@ -51,10 +51,9 @@ export const CARRY_ROW_ID_SCHEMA = z
   .max(CARRY_ROW_ID_MAX)
   .optional()
   .describe(
-    "Stable id for this row (e.g. 'gate-green'), independent of wording. Lets you RE-WORD the claim without " +
-      'losing its evidence/age, and is what rowsMode:\'merge\' upserts on. ' +
-      `Maximum: ${CARRY_ROW_ID_MAX} characters; longer ids are rejected so distinct ids cannot alias after storage normalization. ` +
-      'Omitted ⇒ identity is the claim text.',
+    "Stable row id (e.g. 'gate-green'); rowsMode:'merge' upserts by id, preserving evidence/age when wording changes. " +
+      `Maximum: ${CARRY_ROW_ID_MAX} characters; longer ids are rejected to prevent storage aliases. ` +
+      'Omitted ⇒ claim text is the identity.',
   );
 
 /**

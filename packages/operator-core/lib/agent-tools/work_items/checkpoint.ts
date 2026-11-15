@@ -1109,7 +1109,7 @@ function checksSpec() {
             // respectively; the SHARED normalizer in ../../carry-note owns both semantics.
             falsifier: carryRowTextSchema(
               CARRY_ROW_SOFT_CAPS.falsifier,
-              'Result that would mean this claim is FALSE (as facts:assert `falsifier`). A probe says how to look; this says what refutes it.',
+              'Result that refutes the claim (as facts:assert `falsifier`); `recheck` says how to probe.',
             ).optional(),
             sampleAdequate: z
               .boolean()
@@ -1117,14 +1117,12 @@ function checksSpec() {
               .describe('`false` = probed, but the sample could not discriminate the claim from its negation; renders ? not ✓.'),
             verified: carryRowTextSchema(
               CARRY_ROW_SOFT_CAPS.verified,
-              'The EVIDENCE STRING (what you actually observed). For compatibility, boolean `true`/`false` ' +
-                'is normalized before validation: `true` without evidence and `false` both remain ? PREDICTED. ' +
-                'Presence of an evidence string renders the row ✓ VERIFIED; omission renders ? PREDICTED, ' +
-                'telling a successor to run `recheck` before relying on the claim.',
+              'Observed EVIDENCE STRING ⇒ ✓ VERIFIED; omitted ⇒ ? PREDICTED, requiring `recheck`. ' +
+                'Compatibility booleans normalize before validation; false or true without evidence stays PREDICTED.',
             ).optional(),
             observed: carryRowTextSchema(
               CARRY_ROW_SOFT_CAPS.observed,
-              'Observed context that does not affirm the claim. It renders on a ? PREDICTED row so the context survives without acquiring verification authority.',
+              'Context that does not affirm the claim; retained on a ? PREDICTED row without verification authority.',
             ).optional(),
             // EI-22575327388783364: completion records call this evidence field
             // `testResult`. Publish the compatibility spelling because clients may
@@ -1132,14 +1130,14 @@ function checksSpec() {
             // canonical `verified`.
             testResult: carryRowTextSchema(
               CARRY_ROW_SOFT_CAPS.verified,
-              'Compatibility alias for completion-style `testResult`; normalized to the canonical `verified` evidence string before storage. Prefer `verified`.',
+              'Alias for completion-style `testResult`, normalized to `verified` before storage; prefer `verified`.',
             ).optional(),
             ok: z
               .boolean()
               .optional()
               .describe(
-                'Compatibility alias for boolean check results: `{ ok: true|false }` is normalized to the `verified` evidence slot before storage. ' +
-                  'A bare true or false remains PREDICTED; pair true with `evidence` to render VERIFIED. Prefer the canonical `verified` evidence string.',
+                'Boolean result alias: bare true/false stays PREDICTED; true with `evidence` becomes VERIFIED. ' +
+                  'Normalizes to the `verified` evidence slot; prefer its canonical string.',
               ),
             // EI-21234745917984459 — the SAME class as the `id` gap above, one field over.
             // `contested` was already supported end to end: CARRY_ROW_SOFT_CAPS.contested
@@ -1153,13 +1151,13 @@ function checksSpec() {
             // implicit where the sibling is explicit.
             contested: carryRowTextSchema(
               CARRY_ROW_SOFT_CAPS.contested,
-              'Evidence that was supplied as verification but contradicts it (for example, "STILL RUNNING"). ' +
-                'Rendered with ⚠ CONTESTED and never upgraded to VERIFIED; re-check before relying on the claim.',
+              'Contradictory evidence (e.g. "STILL RUNNING"): ⚠ CONTESTED, never VERIFIED; re-check before relying on it.',
             ).optional(),
             probe: continuityProbeSchema
               .optional()
               .describe(
-                'Optional schema-versioned, read-only executable probe. Validated against the live tool/cell contract before any checkpoint bytes persist; use `schemaRevision:"live"` as a writer-only shorthand for the current target revision; persisted probes retain the concrete revision; `recheck` remains the human explanation.',
+                'Read-only executable probe, validated against the live tool/cell contract before persistence. ' +
+                  '`schemaRevision:"live"` resolves to the current concrete revision on write; `recheck` is the human explanation.',
               ),
             // EI-21631530729522909: the preprocessor above lifts these
             // flattened executable-probe fields into `probe`. They must still
@@ -1198,27 +1196,18 @@ function checksSpec() {
     )
     .optional()
     .describe(
-      '`checks` is a sibling of `checkpoint`, never nested inside it: use root-level `checks` beside `checkpoint` ' +
-        'for a single write, or `items[n].checks` beside `items[n].checkpoint` in a batch. Carried CHECKS — claims about EXTERNAL state paired with the probe that falsifies them, rendered as a ' +
-        '`## Checks` section every time this checkpoint is re-injected. Put hash/id/timestamp/state expectations ' +
-        'HERE rather than in checkpoint prose, so the probe travels with the claim and a successor can tell an ' +
-        'ASSERTED claim from a VERIFIED one. Carry-forward semantics: OMITTED preserves the existing rows (a ' +
-        "plain rewrite never silently drops them) and [] preserves them. With `append: true` or `rowsMode:'merge'` a supplied list is " +
-        `UNIONED onto the carried set (supplied wins on matching claim text), but capped at ` +
-        `${CARRY_NOTE_MAX_CHECKS}: an unconfirmed checks-only overflow refuses atomically before it can drop rows; ` +
-        '`confirmRetire:true` cannot authorize cap eviction. A body-bearing ' +
-        'append/merge still stores the body and every carried row, admits supplied rows only into vacant slots, and ' +
-        'returns `checksNotRetained`/`checksNotRetainedRows` for supplied rows that did not fit. Retire stale rows with ' +
-        'a plain replace first, or append without `checks` to leave the carried set untouched. ' +
-        "WITHOUT append, `rowsMode:'merge'` (the default) unions the supplied list with the carried set; use explicit " +
-        "`rowsMode:'replace'` plus exact `retireIds` to close individual carried rows. Without retireIds, omitted rows survive. A supplied " +
-        "row whose claim text matches a stored one inherits that row's recheck/verified/contested/sinceMs when " +
-        'you omit them, so re-sending a claim never loses its evidence. Supplying `verified` clears an inherited ' +
-        '`contested` and vice versa — they are two renderings of ONE evidence slot, not independent fields — and ' +
-        'under merge, use `replaces` with the carried row id or exact old claim to re-word an id-less row at the cap ' +
-        'without treating it as a new addition. Unmatched refs are reported and treated as additions. ' +
-        'evidence that contradicts itself (for example "STILL RUNNING") is auto-downgraded to ⚠ CONTESTED rather ' +
-        'than rendering as ✓ VERIFIED. Rows dropped come back as `checksDropped`; additive-cap refusals also include the exact stored rows as `checksDroppedRows` with sanitized ids. A bare string row is accepted as shorthand for `{ claim: <that string> }`.',
+      'Use root-level `checks` beside `checkpoint`, or `items[n].checks` beside `items[n].checkpoint`; never nest checks in the body. ' +
+        'External-state claims and falsifying probes render under `## Checks` on re-injection; put hash/id/timestamp/state expectations here. ' +
+        'Omission and [] preserve rows. Append or default merge unions supplied rows; supplied values win on matching claims. ' +
+        `Cap ${CARRY_NOTE_MAX_CHECKS}: unconfirmed checks-only overflow refuses atomically; confirmRetire cannot authorize eviction. ` +
+        'Body-bearing append/merge saves the body and every carried row, fills vacant slots, and reports overflow as ' +
+        '`checksNotRetained`/`checksNotRetainedRows`. Retire stale rows with a plain replace first, or append without checks. ' +
+        "Retirement requires explicit `rowsMode:'replace'` and exact `retireIds`; otherwise omitted rows survive. " +
+        'Matching claims inherit omitted recheck/verified/contested/sinceMs. verified and contested share one evidence slot: ' +
+        'supplying either clears the inherited other. Contradictory verification (e.g. "STILL RUNNING") becomes ⚠ CONTESTED. ' +
+        'Under merge, `replaces` accepts a carried id or exact old claim to re-word an id-less row at cap; unmatched refs are reported additions. ' +
+        'Dropped rows return as `checksDropped`; additive-cap refusals include exact stored `checksDroppedRows` with sanitized ids. ' +
+        'A string row is shorthand for `{ claim: <that string> }`.',
     );
 }
 

@@ -689,7 +689,7 @@ export default defineTool({
                 ).optional(),
                 falsifier: carryRowTextSchema(
                   CARRY_ROW_SOFT_CAPS.falsifier,
-                  'Result that would mean this claim is FALSE (as facts:assert `falsifier`). A probe says how to look; this says what refutes it.',
+                  'Result that refutes the claim (as facts:assert `falsifier`); `recheck` says how to probe.',
                 ).optional(),
                 sampleAdequate: z
                   .boolean()
@@ -697,28 +697,23 @@ export default defineTool({
                   .describe('`false` = probed, but the sample could not discriminate the claim from its negation; renders ? not ✓.'),
                 verified: carryRowTextSchema(
                   CARRY_ROW_SOFT_CAPS.verified,
-                  'The EVIDENCE STRING itself (max 300 chars) — e.g. "Verified 15:14Z: 30/30 passed, tree clean". ' +
-                    'NOT a boolean (`true`/`false` is rejected) and NOT `{status, evidence}` — this ONE string field ' +
-                    'carries both the verified/PREDICTED flag and its justification: presence of `verified` (however ' +
-                    'short) renders the row VERIFIED; omitting it entirely renders PREDICTED. There is no separate ' +
-                    'boolean flag to set.',
+                  'Observed EVIDENCE STRING ⇒ VERIFIED; omission ⇒ PREDICTED. Prefer this canonical string. ' +
+                    'Compatibility booleans or {status, evidence} normalize before validation; evidence-free booleans remain PREDICTED.',
                 ).optional(),
                 observed: carryRowTextSchema(
                   CARRY_ROW_SOFT_CAPS.observed,
-                  'Observed context that does not affirm the claim. It renders on a ? PREDICTED row so the context survives without acquiring verification authority.',
+                  'Context that does not affirm the claim; retained on a ? PREDICTED row without verification authority.',
                 ).optional(),
                 ok: z
                   .boolean()
                   .optional()
                   .describe(
-                    'Compatibility alias for boolean check results: `{ ok: true|false }` is normalized to the `verified` evidence slot before storage. ' +
-                      'A bare true or false remains PREDICTED; pair true with `evidence` to render VERIFIED. Prefer the canonical `verified` evidence string.',
+                    'Boolean result alias: bare true/false stays PREDICTED; true with `evidence` becomes VERIFIED. ' +
+                      'Normalizes to the `verified` evidence slot; prefer its canonical string.',
                   ),
                 contested: carryRowTextSchema(
                   CARRY_ROW_SOFT_CAPS.contested,
-                  'Evidence that was supplied as verification but contradicts the claim (for example, a green claim ' +
-                    'with "STILL RUNNING"). Rendered with ⚠ CONTESTED and never upgraded to VERIFIED; re-check before ' +
-                    'relying on the claim.',
+                  'Contradictory evidence (e.g. a green claim with "STILL RUNNING"): ⚠ CONTESTED, never VERIFIED; re-check before relying on it.',
                 ).optional(),
                 probe: continuityProbeSchema
                   .optional()
@@ -758,7 +753,7 @@ export default defineTool({
                 // work_items:checkpoint surface.
                 testResult: carryRowTextSchema(
                   CARRY_ROW_SOFT_CAPS.verified,
-                  'Compatibility alias for completion-style `testResult`; normalized to the canonical `verified` evidence string before storage. Prefer `verified`.',
+                  'Alias for completion-style `testResult`, normalized to `verified` before storage; prefer `verified`.',
                 ).optional(),
                 // EI-21922421392042550: the preprocessor above lifts these flattened
                 // executable-probe fields into `probe` (normalizeFlattenedContinuityProbeRow,
@@ -798,22 +793,16 @@ export default defineTool({
         )
         .optional()
         .describe(
-          'Durable storage is capped at 12 check rows. This input accepts up to 48 rows as a hard validation/normalization ' +
-            'ceiling; an accepted array size is not a persistence promise. Carried CHECKS are claims about EXTERNAL STATE ' +
-            'as {claim, recheck, verified?, contested?} rows (compact claim strings ' +
-            'are accepted and mapped to {claim}; the non-owner analog ' +
-            'of walls; renders a ## Checks section every wake). `verified` is a STRING (evidence, ≤300 chars), never ' +
-            'a boolean — a claim OMITTING `verified` renders PREDICTED, a successor must run its recheck before ' +
-            'relying on it. There is no caller-supplied `sinceMs` field here: that timestamp is server-owned carry metadata, ' +
-            'inherited for existing claims and stamped for new claims. Do not copy `sinceMs` from work_items:checkpoint rows. ' +
-            'If its evidence contains STILL RUNNING, pending, outstanding, in-flight, unverified, or ' +
-            'awaiting while the claim asserts a completed/healthy state, the writer downgrades it to `contested` and ' +
-            'reports the repair; when the claim itself asserts that unresolved state, the evidence remains VERIFIED. ' +
-            'Use `contested` to force an explicit warning; contested rows render ⚠ and require a re-check. ' +
-            'Put hash/id/timestamp expectations HERE, never in Left prose. Same carry-forward ' +
-            'semantics as walls: omitted rows and [] preserve the carried set under either rowsMode. ' +
-            'Retire individual rows with retireIds; confirmRetire never authorizes omission or cap eviction. ' +
-            'An overflow refuses the row write and saves the narrative with prior rows intact, including legacy over-cap rows.',
+          'Durable storage is capped at 12 check rows. Input accepts up to 48 rows as a hard validation/normalization ceiling, ' +
+            'not a persistence promise. External-state {claim, recheck, verified?, contested?} rows render under ## Checks every wake; ' +
+            'strings alias {claim}. Put hash/id/timestamp expectations here, never in Left prose. ' +
+            'Canonical verified is an evidence STRING (≤300 chars); omission is PREDICTED, requiring recheck before reliance. ' +
+            'sinceMs is server-owned: inherited for existing claims and stamped for new ones; do not copy it from work_items:checkpoint. ' +
+            'Evidence saying STILL RUNNING, pending, outstanding, in-flight, unverified or awaiting contradicts a completed/healthy claim: ' +
+            'the writer reports a downgrade to contested. Evidence supporting an unresolved-state claim stays VERIFIED. ' +
+            'Explicit contested renders ⚠ and requires recheck. Omission and [] preserve rows under either rowsMode; ' +
+            'retireIds closes individual rows. confirmRetire never authorizes omission or cap eviction. ' +
+            'Overflow refuses the row write but saves narrative and prior rows, including legacy over-cap rows.',
         ),
       dependsOn: dependsOnSpec('carry-note'),
       rowsMode: z
