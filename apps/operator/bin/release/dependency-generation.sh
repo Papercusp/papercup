@@ -4371,6 +4371,11 @@ dependency_generation_ensure_verifier_ref() (
       dependency_generation_log 'FATAL: --verifier-source must precede dependency materialization'
       return 74
     }
+    # Preserve the completed dependency stage if the independent native rebuild
+    # fails or is interrupted. Success advances this same requested ref pin to
+    # the qualified native identity; this does not publish a native selector.
+    dependency_generation_retain_ensured_ref "$generation_root" "$integration_root" \
+      "$retain_as" "$DEPENDENCY_GENERATION_ID" "$ref" || return $?
     # Native rebuilds mutate independent copies, unlike the install-equivalent
     # hardlink path. Keep those copies beside their immutable donor so the
     # existing strict CoW materializer can avoid two cross-filesystem copies.
