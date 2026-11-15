@@ -13,8 +13,8 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 337
-  corpus-blocks: 269
+  corpus-parts: 338
+  corpus-blocks: 270
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
 
@@ -3414,6 +3414,11 @@ not by field name** — the invariant is that the same fixture at `limit:N` and
 `limit:N*100` returns equal aggregates (`burn_down.test.ts`, WI-37381). Anchoring a
 check to the spelling of a flag is the form-blind mistake documented under
 shared-lib singletons above.
+
+## Engineering discipline
+
+**Lossless data: bound the work, never the truth.** Any cap, `LIMIT`, page size, queue eviction or text cut over real data must preserve the complete source, signal omissions, and expose a recovery path that consumers actually follow. Repeated batches must make durable, fair progress across restarts; never slice an identity or semantic record. Plans and reviews require N-1/N/N+1, multi-batch, permutation and restart-fairness coverage with the decisive item after the boundary. Raising a cap is not a fix.
+
 
 ## Prompts are auto-generated — edit the source, never the rendered output
 
