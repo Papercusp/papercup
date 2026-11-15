@@ -89,6 +89,7 @@ function putOp(fleetSlug: string, sourceLogKeyHex: string, writerPubkey?: string
     hbKey: `${OWNER}/${fleetSlug}`,
     value: wireRow(fleetSlug),
     ts: 1_783_165_541_000,
+    hlc: '001783165541000:00000',
     schema_version: 1,
     sourceLogKeyHex,
     ...(writerPubkey !== undefined ? { writerPubkey } : {}),

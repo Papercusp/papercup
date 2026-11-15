@@ -337,9 +337,9 @@ describe('Model B substrate — two peers on one box', () => {
     // BOTH claims applied as SEPARATE rows — append-only, NOT LWW-clobbered.
     expect(claimOps).toHaveLength(2);
 
-    // Distinct `<feature_id>/<seq>` keys: A claimed at seq 1, B at seq 0.
+    // Claim keys include the author log, so even equal cross-peer sequences cannot collide.
     const claimKeys = claimOps.map((env) => env.hbKey).sort();
-    expect(claimKeys).toEqual([`${FEATURE}/0`, `${FEATURE}/1`]);
+    expect(claimKeys).toEqual([`${FEATURE}/${ownA.keyHex}/1`, `${FEATURE}/${ownB.keyHex}/0`].sort());
 
     // Each row carries its own claimer (distinct pubkeys), same feature — the
     // append-only audit history; "current holder" is a separate read, not a key winner.

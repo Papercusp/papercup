@@ -518,13 +518,21 @@ describe('threat #6 — applyOpVia rejects poisoned ops gracefully (no throw, no
     return { lookup, written };
   }
 
-  it('a battery of hostile op envelopes is each DROPPED (false) and NEVER reaches the writer or throws', async () => {
+  it('hostile envelopes do not throw, and malformed shapes never reach the writer', async () => {
     const { lookup, written } = makeProbeProjection();
 
     // 256 KiB string payload — a poisoning op trying to balloon memory / a row.
     const hugePayload = 'x'.repeat(256 * 1024);
 
     const hostile: Array<{ name: string; op: OpEnvelope }> = [
+      {
+        name: 'remote op without HLC',
+        op: { type: 'put', table: FEATURE_TAG, hbKey: 'F-missing-hlc', value: { feature_id: 'F-missing-hlc' }, hlc: undefined },
+      },
+      {
+        name: 'remote op with malformed HLC',
+        op: { type: 'put', table: FEATURE_TAG, hbKey: 'F-bad-hlc', value: { feature_id: 'F-bad-hlc' }, hlc: '100:0' },
+      },
       {
         name: 'unknown op type',
         op: { type: 'garbage' as never, table: FEATURE_TAG, hbKey: 'F-x', value: { feature_id: 'F-x' } },
@@ -576,7 +584,9 @@ describe('threat #6 — applyOpVia rejects poisoned ops gracefully (no throw, no
       // The robustness contract: applyOpVia must NEVER throw on hostile input.
       await expect(
         (async () => {
-          result = await applyOpVia(lookup, op, { ownLogKeyHex: 'ownkey' });
+          // Supply the valid remote clock required to reach the shape/decode guards.
+          // Explicit missing/malformed HLC cases above override this positive control.
+          result = await applyOpVia(lookup, { hlc: '000000000000100:00000', ...op }, { ownLogKeyHex: 'ownkey' });
         })(),
         `applyOpVia threw on a hostile op (${name}) — a poisoning op must be handled, not crash`,
       ).resolves.toBeUndefined();

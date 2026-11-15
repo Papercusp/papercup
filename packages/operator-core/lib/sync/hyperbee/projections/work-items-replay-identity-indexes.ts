@@ -63,6 +63,12 @@ export const WORK_ITEMS_UNIQUE_INDEX_REPLAY_POLICY: Readonly<Record<string, Work
     reason:
       'the engineer-issues projection never writes condition_key and no trigger derives it, while the index covers only non-null values',
   },
+  work_items_plan_line_node_uniq: {
+    kind: 'unreachable',
+    reason:
+      'neither engineer-issues nor harness-features writes plan_line_id; replay inserts leave it NULL outside the index predicate, ' +
+      'and resident-row updates preserve the locally assigned plan-line binding',
+  },
 };
 
 export function coalescedReplayIdentityIndexes(): string[] {

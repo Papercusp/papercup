@@ -208,7 +208,7 @@ describe('substrate sidecar host — store relocation (P-001)', () => {
     expect(op1).toMatchObject({ hbKey: 'k-2' });
   });
 
-  it('appendOp { raw } appends a fully-formed PeerLogOp verbatim (no HLC stamp)', async () => {
+  it('appendOp { raw } preserves a fully-formed PeerLogOp HLC and epoch', async () => {
     const host = makeHost();
     const { workspaceRoot, storagePath } = tempWorkspace('reloc-raw-');
     const boot = (await host.methods['substrate:bootHarness']({
@@ -226,14 +226,14 @@ describe('substrate sidecar host — store relocation (P-001)', () => {
       schema_version: 1,
       author_pubkey: 'devkeyA',
       epoch: 8,
-      // no hlc — the append-only claim path never carries one
+      hlc: '000000000000200:00000',
     };
     const r = (await host.methods['substrate:appendOp']({ storeId: boot.storeId, op: rawOp, raw: true })) as {
       ok: boolean;
       hlc: string | null;
     };
     expect(r.ok).toBe(true);
-    expect(r.hlc).toBeNull();
+    expect(r.hlc).toBe(rawOp.hlc);
 
     await host.closeAll();
     const verifyStore = new Corestore(storagePath);
@@ -247,7 +247,7 @@ describe('substrate sidecar host — store relocation (P-001)', () => {
       author_pubkey: 'devkeyA',
       epoch: 8,
     });
-    expect(op0.hlc).toBeUndefined();
+    expect(op0.hlc).toBe(rawOp.hlc);
   });
 
   it('getOwnLogOp reads bootHarness own-log entries without requiring an openStore Corestore handle', async () => {

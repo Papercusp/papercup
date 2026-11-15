@@ -55,6 +55,7 @@ function settingsOp(over: Record<string, unknown> = {}): OpEnvelope {
     hbKey: 'theme',
     value: { harness_slug: HOME, setting_key: 'theme', value: '"dark"', ...over },
     ts: 100,
+    hlc: '000000000000100:00000',
     writerPubkey: 'peer-hex',
     sourceLogKeyHex: REMOTE_LOG,
   };
