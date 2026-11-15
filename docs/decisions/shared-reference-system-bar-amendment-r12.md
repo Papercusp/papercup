@@ -1,7 +1,8 @@
 # Shared reference system — acceptance bar amendment, revision 12
 
 Rubric: `shared-reference-system-acceptance`. Plan: `shared-reference-system-2026-11-13`.
-Prior bar set: `1f96cbe96dff…` (revision 11). Next bar set: `0d069c26af77…` (dry run, 2026-11-14).
+Prior bar set: `1f96cbe96dff…` (revision 11). Applied bar set: `e37b891e8172…` (revision 12, receipt `srs-acceptance-rev12b-20261115-apply1`, committed 2026-11-15T02:46Z; plan revision 87 → 88).
+Outside-lineage pre-apply review: approved in `thread-post:1230056` (consult `conv-mwh85em8-0000-af9894feb75549089cc7c55b66ef2863`) over preview `thread-post:1230046`, source hash `sha256:99694bf4…6308`. The reviewer found all six changed bars (R-3, R-4, R-12, R-13, R-19, R-32) to be net strengthenings. Grader note from that review: for R-3/R-4, confirm the reported operative limit N matches the real transport and result-door limit.
 
 ## Source critiques
 
