@@ -66,6 +66,12 @@ import { FALLBACK_RETENTION_MS } from '../degradation/fallback-observations';
 import { SESSION_TURN_PART_RETENTION_DAYS, SESSION_TURN_RETENTION_DAYS } from '../search/session-retention';
 import { CENSUS_RETENTION_DAYS, type CensusDeviceView } from './disk-consumer-census';
 import { samplePgTableSizes, recordPgTableSizeSample } from './pg-table-growth';
+import {
+  comparableCensusWindowDays,
+  detectUnenforcedClassGrowth,
+  formatUnenforcedClassGrowthToast,
+  type UnenforcedClassGrowthWarning,
+} from './unenforced-class-growth';
 
 const GIB = 1024 ** 3;
 const TOAST_RING_BUFFER = 2000;
@@ -1011,15 +1017,53 @@ async function defaultReadDiskCensus(): Promise<readonly CensusDeviceView[]> {
   return result.devices.filter(d => (HEADROOM_DEVICES as readonly string[]).includes(d.device));
 }
 
+/** Result of the unenforced-class leg: warnings that were detected AND notified,
+ *  plus every input it could not measure. An empty `unenforcedClassGrowth` beside a
+ *  non-empty `unenforcedClassUnknown` is UNKNOWN, never an all-clear. */
+export interface UnenforcedClassGrowthResult {
+  unenforcedClassGrowth: UnenforcedClassGrowthWarning[];
+  unenforcedClassUnknown: string[];
+}
+
+/**
+ * Protected retention classes that nothing can shrink (durable-disk-and-checkpoint-
+ * recovery-2026-10-09 P-002). Registration hides them from the undeclared legs, and the
+ * whole-volume projection above only speaks once a volume is below its floor or FULL
+ * within 7 days, so one such class could grow a volume down to its floor unnamed. This
+ * leg warns when a class alone would take a volume below its floor inside the
+ * UNENFORCED_CLASS_HORIZON_DAYS horizon. It sends its OWN toast with no headroom
+ * observation: `assessNativeDiskHeadroomAlarm` re-derives the headroom notification
+ * byte-for-byte, so folding these lines into it would fail native acceptance.
+ */
+async function runUnenforcedClassGrowthLeg(
+  devices: readonly CensusDeviceView[],
+  emitToast: NonNullable<GrowthAlarmDeps['emitToast']>,
+): Promise<UnenforcedClassGrowthResult> {
+  const unmeasured = devices.length
+    ? devices.filter((d) => comparableCensusWindowDays(d) === null).map((d) => d.device)
+    : ['census unavailable'];
+  try {
+    const warnings = detectUnenforcedClassGrowth(devices, { floors: DISK_HEADROOM_FLOORS });
+    if (warnings.length) await emitToast(formatUnenforcedClassGrowthToast(warnings));
+    return { unenforcedClassGrowth: warnings, unenforcedClassUnknown: unmeasured };
+  } catch (err) {
+    console.warn(
+      `[storage-growth-alarm] unenforced-class growth projection skipped (UNKNOWN, non-fatal): ${(err as Error)?.message ?? String(err)}`,
+    );
+    return { unenforcedClassGrowth: [], unenforcedClassUnknown: ['unenforced-class projection failed'] };
+  }
+}
+
 /** Cheap persisted-history leg, also used by the existing 30-minute disk alarm. */
 export async function runDiskHeadroomAlarmOnce(deps: Pick<GrowthAlarmDeps, 'readDiskCensus' | 'emitToast'> = {}): Promise<{
   diskHeadroom: DiskHeadroomBreach[]; diskGrowth: DiskGrowthWarning[]; diskProjectionUnknown: string[];
-}> {
+} & UnenforcedClassGrowthResult> {
   try {
     const devices = await (deps.readDiskCensus ?? defaultReadDiskCensus)();
+    const emitToast = deps.emitToast ?? defaultEmitToast;
     const diskHeadroom = detectDiskHeadroom(devices), diskGrowth = detectDiskGrowthWarnings(devices);
     const diskProjectionUnknown = devices.filter(d => diskGrowthRate(d) === null).map(d => d.device);
-    if (diskHeadroom.length || diskGrowth.length) await (deps.emitToast ?? defaultEmitToast)(
+    if (diskHeadroom.length || diskGrowth.length) await emitToast(
       formatDiskHeadroomToast(diskHeadroom, diskGrowth), {
         schemaVersion: 1, observedAt: new Date().toISOString(),
         runtime: { host: hostname(), pid: process.pid,
@@ -1027,10 +1071,17 @@ export async function runDiskHeadroomAlarmOnce(deps: Pick<GrowthAlarmDeps, 'read
         floors: DISK_HEADROOM_FLOORS, horizonDays: DISK_GROWTH_HORIZON_DAYS,
         devices, breaches: diskHeadroom, growth: diskGrowth, projectionUnknown: diskProjectionUnknown,
       });
-    return { diskHeadroom, diskGrowth, diskProjectionUnknown: devices.length ? diskProjectionUnknown : ['census unavailable'] };
+    // After the headroom notification, so its native-acceptance receipt is written
+    // first; this leg's own failure is UNKNOWN and never hides the result above.
+    const unenforced = await runUnenforcedClassGrowthLeg(devices, emitToast);
+    return {
+      diskHeadroom, diskGrowth, diskProjectionUnknown: devices.length ? diskProjectionUnknown : ['census unavailable'],
+      ...unenforced,
+    };
   } catch (err) {
     console.warn(`[storage-growth-alarm] disk headroom projection skipped (UNKNOWN, non-fatal): ${(err as Error)?.message ?? String(err)}`);
-    return { diskHeadroom: [], diskGrowth: [], diskProjectionUnknown: ['census read failed'] };
+    return { diskHeadroom: [], diskGrowth: [], diskProjectionUnknown: ['census read failed'],
+      unenforcedClassGrowth: [], unenforcedClassUnknown: ['census read failed'] };
   }
 }
 
@@ -1049,6 +1100,8 @@ export async function runStorageGrowthAlarmOnce(deps: GrowthAlarmDeps = {}): Pro
   diskHeadroom: DiskHeadroomBreach[];
   diskGrowth: DiskGrowthWarning[];
   diskProjectionUnknown: string[];
+  unenforcedClassGrowth: UnenforcedClassGrowthWarning[];
+  unenforcedClassUnknown: string[];
 }> {
   const computeUsage = deps.computeUsage ?? (() => computeStorageUsage({ sizesOnly: true }));
   const emitToast = deps.emitToast ?? defaultEmitToast;

@@ -41,6 +41,8 @@ import {
 import type { DiskEntry, DiskRootChildScan } from './disk';
 import type { StorageUsageRow } from './usage';
 import type { CensusDeviceView } from './disk-consumer-census';
+import { homedir } from 'node:os';
+import { formatUnenforcedClassGrowthToast } from './unenforced-class-growth';
 
 const GIB = 1024 ** 3;
 
@@ -204,6 +206,82 @@ describe('disk durable headroom (P-011 / R-9)', () => {
       emitToast: async () => { throw new Error('notification refused'); } });
     expect(result.diskGrowth).toEqual([]);
     expect(result.diskProjectionUnknown).toEqual(['census read failed']);
+  });
+});
+
+describe('unenforced-class growth leg (durable-disk-and-checkpoint-recovery P-002)', () => {
+  // The real policy's workspace Hyperbee store: protected, and no retention job can shrink it.
+  const store = `${homedir()}/.papercusp-workspaces/some-workspace/.papercusp/some-harness/hyperbee`;
+  type Toast = { level: string; message: string; description: string };
+  /** Root volume 50e9 above its 250e9 floor; the store grows 5e9 over exactly one day, so it
+   *  reaches the floor in 10 days. The volume itself is 60 days from full and above its floor,
+   *  so both headroom detectors stay quiet: only this leg can name the store. */
+  const root = (over: Partial<CensusDeviceView> = {}): CensusDeviceView => ({
+    device: '/', complete: true, stale: false, sizeBytes: 2e12, availBytes: 300e9,
+    sampledAt: '2026-10-16T12:00:00Z', baselineAt: '2026-10-15T12:00:00Z',
+    baselineSizeBytes: 2e12, baselineAvailBytes: 305e9,
+    consumers: [{ consumer: store, kind: 'dir', depth: 1, bytes: 200e9, baselineBytes: 195e9, growth24hBytes: 5e9 }],
+    ...over,
+  });
+  /** 200e9 free: below the root floor (a headroom breach) and already past the class floor. */
+  const belowFloor = () => root({ availBytes: 200e9, baselineAvailBytes: 205e9 });
+
+  it('names a protected class heading for its floor in its own toast, never as a headroom receipt', async () => {
+    const emitToast = vi.fn(async (_toast: Toast, _observation?: unknown) => {});
+    const result = await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => [root()], emitToast });
+    expect(result.diskHeadroom).toEqual([]);
+    expect(result.diskGrowth).toEqual([]);
+    expect(result.unenforcedClassGrowth.map((w) => [w.classId, w.device, w.daysToFloor])).toEqual([['hyperbee-store', '/', 10]]);
+    expect(result.unenforcedClassUnknown).toEqual([]);
+    // One argument only: an observation would be persisted as native headroom evidence.
+    expect(emitToast.mock.calls).toEqual([[formatUnenforcedClassGrowthToast(result.unenforcedClassGrowth)]]);
+  });
+
+  it('keeps the headroom notification byte-exact and sends the protected-class warning after it', async () => {
+    const emitToast = vi.fn(async (_toast: Toast, _observation?: unknown) => {});
+    const result = await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => [belowFloor()], emitToast });
+    expect(result.diskHeadroom.map((b) => b.kind)).toEqual(['root-floor']);
+    expect(result.unenforcedClassGrowth.map((w) => [w.classId, w.daysToFloor])).toEqual([['hyperbee-store', 0]]);
+    const calls = emitToast.mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[0]![0]).toEqual(formatDiskHeadroomToast(result.diskHeadroom, result.diskGrowth));
+    expect(calls[0]![1]).toMatchObject({ schemaVersion: 1, breaches: result.diskHeadroom, growth: result.diskGrowth,
+      projectionUnknown: [] });
+    expect(calls[1]).toEqual([formatUnenforcedClassGrowthToast(result.unenforcedClassGrowth)]);
+  });
+
+  it('reports a refused protected-class notification as UNKNOWN without hiding the headroom result', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // The headroom toast (it carries an observation) persists; the protected-class toast is refused.
+    const emitToast = vi.fn(async (_toast: Toast, observation?: unknown) => {
+      if (!observation) throw new Error('notification refused');
+    });
+    const result = await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => [belowFloor()], emitToast });
+    expect(result.diskHeadroom).toHaveLength(1);
+    expect(result.diskProjectionUnknown).toEqual([]);
+    expect(result.unenforcedClassGrowth).toEqual([]);
+    expect(result.unenforcedClassUnknown).toEqual(['unenforced-class projection failed']);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('unenforced-class growth projection skipped (UNKNOWN'));
+  });
+
+  it('names each device it could not measure, and an absent or unreadable census, as UNKNOWN', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const run = (readDiskCensus: () => Promise<readonly CensusDeviceView[]>) =>
+      runDiskHeadroomAlarmOnce({ readDiskCensus, emitToast: vi.fn(async () => {}) });
+    expect((await run(async () => [root(), root({ device: '/mnt/data', stale: true })])).unenforcedClassUnknown)
+      .toEqual(['/mnt/data']);
+    expect((await run(async () => [])).unenforcedClassUnknown).toEqual(['census unavailable']);
+    expect((await run(async () => { throw new Error('read failed'); })).unenforcedClassUnknown)
+      .toEqual(['census read failed']);
+  });
+
+  it('carries the protected-class result through the full alarm pass', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await runStorageGrowthAlarmOnce({ computeUsage: async () => { throw new Error('category unavailable'); },
+      listTableSizes: async () => [], listDiskRootChildren: emptyDiskScan, countExemptSubsets: async () => [],
+      readRetentionAges: healthyRetentionAges, readDiskCensus: async () => [root()], emitToast: vi.fn(async () => {}) });
+    expect(result.unenforcedClassGrowth.map((w) => w.classId)).toEqual(['hyperbee-store']);
+    expect(result.unenforcedClassUnknown).toEqual([]);
   });
 });
 
