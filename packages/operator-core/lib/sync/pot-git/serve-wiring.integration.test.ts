@@ -46,13 +46,22 @@ import { _resetForTests } from '@papercusp/db-org';
 // eslint-disable-next-line import/no-relative-packages -- clears the env-URL cache getOrgPg() memoizes (not re-exported from the index) — same pattern as _baseline-coord-fixture.ts
 import { _resetUrlCacheForTests } from '../../../../../libs/papercusp/libs/db/src/connection';
 import { insertHiveIfAbsent } from '../../hive-store';
-import { defaultRunGit, ensurePotGitRepo } from './storage';
-import { fetchOverDuplex } from './fetch-transport';
+import { defaultRunGit, ensurePotGitRepo, readNamespaceRef, writeNamespaceRef } from './storage';
+import { fetchOverDuplex, serveUploadPack } from './fetch-transport';
 import { wireHiveGitServe, openHiveGitFetchDuplex, _testing as serveTesting } from './serve-wiring';
 import { scopeRepoWireKey } from './scope-repo';
 import { setPotGitMode, getPotGitMode } from '../../harness/git-sync/hive-git-mode';
 import { addRevokedHivePubkeys, upsertHiveMember } from '../../hive-membership-store';
 import { loadRevokedHivePubkeysForLocalPot, unsafeFederatedPotScope } from '../../federated-pot-scope';
+import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
+import { __resetCommsTierGate, __setCommsTierGateDeps, resolveAuthorCommsTier } from '../hyperbee/comms-tier-gate';
+import { buildSigrefs } from './sigrefs';
+import { buildRefAnnouncement, handleRefAnnouncement } from './ref-announce';
+import type { SignedSnapshotFloor } from './signed-context';
+import { hiveEffectFixture } from './hive-effect-authority.fixture';
+import { runIntegratorTick } from './integrator-tick';
+import { WORK_REF, readStaging } from './integrator';
+import { listIntegrationRequests } from './integration-requests';
 
 const WORKSPACE_ID = `ws-serve-wiring-${randomUUID().slice(0, 8)}`;
 const HIVE = `hive-serve-wiring-${randomUUID().slice(0, 8)}`;
@@ -449,22 +458,14 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
    * written by the same writer substrate:revoke_contributor uses (addRevokedHivePubkeys) and read
    * back through the exact lookup the gate uses, so this pins the real row, not a stub.
    */
-  it('WI-10006827 + WI-10006832: the main repo is refused, fast and named, to a revoked, an unattested and an unverified peer; an attested device is served', async () => {
+  it('WI-10004393 + WI-10006827 + WI-10006832: the same connected device fetches before revocation and is refused afterward; a surviving member still fetches', async () => {
     const REVOKED = Buffer.alloc(32, 11).toString('base64');
     const MEMBER = Buffer.alloc(32, 12).toString('base64');
     const STRANGER = Buffer.alloc(32, 14).toString('base64');
     await db.adminSql`INSERT INTO harness_shared.pot_members (workspace_id, pot_home_slug, github_user_id, github_username)
       VALUES (${WORKSPACE_ID}, ${HIVE}, 4242, 'owner-under-test') ON CONFLICT DO NOTHING`;
-    await addRevokedHivePubkeys(
-      WORKSPACE_ID,
-      unsafeFederatedPotScope(HIVE, 'test fixture: this hive home is its own federated scope'),
-      4242,
-      [REVOKED],
-    );
-    // Positive control on the fixture: the gate's own lookup sees the revocation.
-    expect(await loadRevokedHivePubkeysForLocalPot(WORKSPACE_ID, HIVE)).toContain(REVOKED);
-    // MEMBER is attested through the real writer. REVOKED is offered too, and the writer drops it
-    // because it is revoked, which is why the revoked refusal below is not an attestation gap.
+    // Both devices are attested before revocation. The positive fetch below must succeed
+    // for the exact device whose access is later removed, without resetting the server or caches.
     await upsertHiveMember({
       workspaceId: WORKSPACE_ID,
       potHomeSlug: unsafeFederatedPotScope(HIVE, HIVE_SCOPE_REASON),
@@ -473,7 +474,7 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
       deviceAttestations: [attestation(MEMBER), attestation(REVOKED)],
     });
 
-    const fetchAs = async (peer: string | undefined, tag: string) => {
+    const connectAs = async (peer: string | undefined, tag: string) => {
       const sock = join(root, `revoke-${tag}.sock`);
       const srv = createServer({ allowHalfOpen: true }, (srvConn) => {
         srvConn.on('error', () => {});
@@ -492,34 +493,197 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
       s.on('error', () => {});
       const noise = new SecretStream(true, s);
       await noise.opened;
-      try {
+      const fetch = async (tag: string) => {
         const duplex = await openHiveGitFetchDuplex(noise, TOPIC, { repoKey: 'repo-1' });
         const t0 = Date.now();
         const res = await fetchOverDuplex(clientRepo, duplex, [`+refs/heads/work:refs/heads/revoke-${tag}`], {
           timeoutMs: 15_000,
         });
         return { res, elapsedMs: Date.now() - t0 };
-      } finally {
-        try {
-          s.destroy();
-        } catch {
-          /* ignore */
-        }
+      };
+      const close = async () => {
+        s.destroy();
         await new Promise<void>((r) => srv.close(() => r()));
+      };
+      return { fetch, close };
+    };
+    const fetchAs = async (peer: string | undefined, tag: string) => {
+      const connection = await connectAs(peer, tag);
+      try {
+        return await connection.fetch(tag);
+      } finally {
+        await connection.close();
       }
     };
 
-    const refused = await fetchAs(REVOKED, 'revoked');
-    expectFastNamedRefusal(refused.res, refused.elapsedMs, /serve refused: revoked-device/);
-    // WI-10006832: a socket that never proved a device (a client that skipped the signed hello).
-    const unverified = await fetchAs(undefined, 'unverified');
-    expectFastNamedRefusal(unverified.res, unverified.elapsedMs, /serve refused: unverified-peer/);
-    // WI-10006832: a verified device that no member of this pot attests.
-    const stranger = await fetchAs(STRANGER, 'stranger');
-    expectFastNamedRefusal(stranger.res, stranger.elapsedMs, /serve refused: unknown-device/);
-    // Control: the same wiring, the same repo, an attested device that is not revoked, is served.
-    const served = await fetchAs(MEMBER, 'member');
-    expect(served.res.code, served.res.stderr).toBe(0);
+    const revokedConnection = await connectAs(REVOKED, 'same-device');
+    try {
+      const before = await revokedConnection.fetch('before-revoke');
+      expect(before.res.code, before.res.stderr).toBe(0);
+      const beforeRef = await defaultRunGit(['rev-parse', '--verify', 'refs/heads/revoke-before-revoke'], clientRepo);
+      expect(beforeRef.code, beforeRef.stderr).toBe(0);
+      expect(beforeRef.stdout.trim()).toBe(sha);
+
+      await addRevokedHivePubkeys(
+        WORKSPACE_ID,
+        unsafeFederatedPotScope(HIVE, 'test fixture: this hive home is its own federated scope'),
+        4242,
+        [REVOKED],
+      );
+      // Positive control on the fixture: the gate's own lookup sees the revocation.
+      expect(await loadRevokedHivePubkeysForLocalPot(WORKSPACE_ID, HIVE)).toContain(REVOKED);
+
+      // The post-revoke fetch targets a fresh commit, so an already mirrored object cannot
+      // masquerade as continued access. A surviving device must still fetch this same head.
+      const afterSha = await mintCommit(serverRepo, 'work after device revocation');
+      const updated = await defaultRunGit(['update-ref', 'refs/heads/work', afterSha], serverRepo);
+      expect(updated.code, updated.stderr).toBe(0);
+
+      const refused = await revokedConnection.fetch('revoked');
+      expectFastNamedRefusal(refused.res, refused.elapsedMs, /serve refused: revoked-device/);
+      const deniedRef = await defaultRunGit(['rev-parse', '--verify', 'refs/heads/revoke-revoked'], clientRepo);
+      expect(deniedRef.code).not.toBe(0);
+      const deniedObject = await defaultRunGit(['cat-file', '-e', afterSha], clientRepo);
+      expect(deniedObject.code).not.toBe(0);
+      const reconnected = await fetchAs(REVOKED, 'revoked-reconnect');
+      expectFastNamedRefusal(reconnected.res, reconnected.elapsedMs, /serve refused: revoked-device/);
+      // WI-10006832: a socket that never proved a device (a client that skipped the signed hello).
+      const unverified = await fetchAs(undefined, 'unverified');
+      expectFastNamedRefusal(unverified.res, unverified.elapsedMs, /serve refused: unverified-peer/);
+      // WI-10006832: a verified device that no member of this pot attests.
+      const stranger = await fetchAs(STRANGER, 'stranger');
+      expectFastNamedRefusal(stranger.res, stranger.elapsedMs, /serve refused: unknown-device/);
+      // Control: the same wiring, the same repo, an attested device that is not revoked, is served.
+      const served = await fetchAs(MEMBER, 'member');
+      expect(served.res.code, served.res.stderr).toBe(0);
+      const survivingRef = await defaultRunGit(['rev-parse', '--verify', 'refs/heads/revoke-member'], clientRepo);
+      expect(survivingRef.code, survivingRef.stderr).toBe(0);
+      expect(survivingRef.stdout.trim()).toBe(afterSha);
+    } finally {
+      await revokedConnection.close();
+    }
+  });
+
+  it('WI-10004393: a fresh signed head from a revoked warm-trust device may mirror but cannot advance staging; its surviving device still can', async () => {
+    const device = () => {
+      const { privateKeyDer, pubkeyBase64 } = generateEd25519KeypairDer();
+      return { pubkeyBase64, sign: async (bytes: Buffer) => signWithPrivateKeyDer(privateKeyDer, bytes) };
+    };
+    const removed = device();
+    const survivor = device();
+    const integrator = device();
+    const repoKey = 'revoke-push';
+    const owner = hiveEffectFixture(repoKey);
+    const remote = await ensurePotGitRepo(HIVE, 'revoke-push-remote');
+    const mirror = await ensurePotGitRepo(HIVE, repoKey);
+    // Both devices belong to the SAME member: revoking one must not revoke its sibling.
+    await upsertHiveMember({
+      workspaceId: WORKSPACE_ID,
+      potHomeSlug: unsafeFederatedPotScope(HIVE, HIVE_SCOPE_REASON),
+      githubUserId: 4343,
+      githubUsername: 'push-under-test',
+      deviceAttestations: [attestation(removed.pubkeyBase64), attestation(survivor.pubkeyBase64)],
+    });
+    // Only the policy decision is supplied. Device identity/revocation use the real PG reader.
+    __setCommsTierGateDeps({ effectiveCommsTier: async () => ({ tier: 'steer', source: 'override' }) });
+    const resolveTier = async (devicePubkey: string) => (await resolveAuthorCommsTier({
+      workspaceId: WORKSPACE_ID, potHomeSlug: HIVE, devicePubkey, nowMs: 1000,
+    })).tier;
+    const sockets = new Set<Socket>();
+    const socketPath = join(root, 'revoke-push.sock');
+    const uploadServer = createServer({ allowHalfOpen: true }, (socket) => {
+      sockets.add(socket);
+      socket.on('error', () => {});
+      socket.once('close', () => sockets.delete(socket));
+      void serveUploadPack(remote, socket);
+    });
+    await new Promise<void>((resolve) => uploadServer.listen(socketPath, resolve));
+    const accepted: Record<string, SignedSnapshotFloor> = {};
+    const members = [removed.pubkeyBase64, survivor.pubkeyBase64];
+    const publishAndReceive = async (sender: ReturnType<typeof device>, head: string) => {
+      await writeNamespaceRef(remote, sender.pubkeyBase64, WORK_REF, head);
+      await buildSigrefs(remote, sender.pubkeyBase64, sender.sign, { nowMs: 1000, context: owner.context });
+      const announcement = await buildRefAnnouncement(remote, sender.pubkeyBase64, sender.sign, {
+        nowMs: 1000, context: owner.context,
+      });
+      const received = await handleRefAnnouncement(mirror, announcement, {
+        // Deliberately retain the attestation roster, as the production caller can do.
+        allowedDevices: members,
+        expectedContext: owner.context,
+        replayFloor: accepted[sender.pubkeyBase64] ?? null,
+        nowMs: 1000,
+        openStream: () => new Promise<Socket>((resolve, reject) => {
+          const socket = connect({ path: socketPath, allowHalfOpen: true });
+          sockets.add(socket);
+          socket.once('close', () => sockets.delete(socket));
+          socket.on('error', reject);
+          socket.once('connect', () => resolve(socket));
+        }),
+      });
+      expect(received.action).toBe('fetched');
+      if (received.action !== 'fetched' || !received.sigrefs.accepted || !received.sigrefsOid) {
+        throw new Error(`expected a verified mirrored snapshot: ${JSON.stringify(received)}`);
+      }
+      expect(received.mismatches).toEqual([]);
+      accepted[sender.pubkeyBase64] = {
+        ...owner.context, version: received.sigrefs.snapshot.version, sigrefs_oid: received.sigrefsOid,
+      };
+      expect(await readNamespaceRef(mirror, sender.pubkeyBase64, WORK_REF)).toBe(head);
+    };
+    const tick = (priorSeq: number) => runIntegratorTick({
+      potHomeSlug: HIVE, workspaceId: WORKSPACE_ID, repoKey,
+      memberDevicePubkeysBase64: members, integratorDevicePubkeyBase64: integrator.pubkeyBase64,
+      epoch: 1, priorSeq, context: owner.context, authority: owner.authority,
+      acceptedSnapshots: accepted, sign: integrator.sign, resolveTier,
+      deps: { isIntegrator: async () => true, sql: db.adminSql },
+    });
+    const childCommit = async (message: string, parent: string) => {
+      const tree = await defaultRunGit(['rev-parse', `${parent}^{tree}`], remote);
+      expect(tree.code, tree.stderr).toBe(0);
+      const result = await defaultRunGit([
+        '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit-tree', tree.stdout.trim(), '-p', parent, '-m', message,
+      ], remote);
+      expect(result.code, result.stderr).toBe(0);
+      return result.stdout.trim();
+    };
+    try {
+      const before = await mintCommit(remote, 'push before revocation');
+      await publishAndReceive(removed, before);
+      const control = await tick(0);
+      expect(control.errors).toEqual([]);
+      expect(control.gated).toEqual({ integrated: 1, queued: 0, errors: 0 });
+      expect(await readStaging(mirror, integrator.pubkeyBase64)).toBe(before);
+      expect(control.announcement?.staging_sha).toBe(before);
+
+      await addRevokedHivePubkeys(
+        WORKSPACE_ID, unsafeFederatedPotScope(HIVE, HIVE_SCOPE_REASON), 4343, [removed.pubkeyBase64],
+      );
+      expect(await loadRevokedHivePubkeysForLocalPot(WORKSPACE_ID, HIVE)).toContain(removed.pubkeyBase64);
+      // No cache reset or time advance: the same member's steer policy is still warm.
+      const deniedHead = await childCommit('fresh push after revocation', before);
+      await publishAndReceive(removed, deniedHead);
+      const denied = await tick(1);
+      expect(denied.errors).toEqual([]);
+      expect(denied.gated).toEqual({ integrated: 0, queued: 1, errors: 0 });
+      expect(await readStaging(mirror, integrator.pubkeyBase64)).toBe(before);
+      expect(denied.announcement).toBeNull();
+      const queued = await listIntegrationRequests({ workspaceId: WORKSPACE_ID, potSlug: HIVE, repoKey }, db.adminSql);
+      expect(queued).toEqual([expect.objectContaining({
+        devicePubkey: removed.pubkeyBase64, headSha: deniedHead, state: 'pending', reason: 'below-steer-tier',
+      })]);
+
+      const survivorHead = await childCommit('surviving device push', before);
+      await publishAndReceive(survivor, survivorHead);
+      const surviving = await tick(1);
+      expect(surviving.errors).toEqual([]);
+      expect(surviving.gated).toEqual({ integrated: 1, queued: 1, errors: 0 });
+      expect(await readStaging(mirror, integrator.pubkeyBase64)).toBe(survivorHead);
+      expect(surviving.announcement?.staging_sha).toBe(survivorHead);
+    } finally {
+      __resetCommsTierGate();
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => uploadServer.close(() => resolve()));
+    }
   });
 
   it('EI-18752434722211671: a peer that never opens AND never closes the channel fails soft instead of hanging forever', async () => {
