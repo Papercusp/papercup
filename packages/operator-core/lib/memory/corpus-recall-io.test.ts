@@ -472,7 +472,7 @@ describe('recallCorpusContext — the contract handed to the search engine', () 
         } | undefined;
       };
       for (let i = 0; i < 20; i++) {
-        options.sourceCallInstrumentation?.('partial-' + i, 'lexical').finish('timed-out');
+        options.sourceCallInstrumentation?.('partial-' + i, 'lexical')?.finish('timed-out');
       }
       finishSources();
       return await new Promise<never>(() => {});
