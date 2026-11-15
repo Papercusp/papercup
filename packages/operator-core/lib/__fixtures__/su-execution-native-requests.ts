@@ -4,7 +4,8 @@
 export const SU_EXEC_REQUEST_BASELINE = {
   revision: 5,
   source: 'packages/operator-core/lib/__fixtures__/su-execution-parity.ts',
-  sha256: '4da11ce827b4982fc31763dc69724055401227c1300ae0e683443a5d026d0f05',
+  // Fork qualification routes were added; the native request population is unchanged.
+  sha256: '2914f8b71f49c8b0e43e4cc259a1e5b9bf85bd1a02cfc69e47d0887da690618f',
 } as const;
 
 const unit = 'packages/operator-core/lib/su-session-native-cards.test.ts';
