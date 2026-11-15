@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, vi, afterAll } from 'vitest';
 import { EventEmitter } from 'node:events';
+import type { SpawnOptions } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -858,9 +859,9 @@ describe('control wire protocol (v1)', () => {
       gated: true,
     });
   });
-  it('reset/recycle with no data → gated verb with an empty carry (bare reset)', () => {
-    expect(decodeControl(encodeControl({ mode: 'reset' }))).toEqual({ mode: 'reset', data: '', gated: true });
-    expect(decodeControl(encodeControl({ mode: 'recycle' }))).toEqual({ mode: 'recycle', data: '', gated: true });
+  it('reset/recycle with empty data → gated verb with an empty carry (bare reset)', () => {
+    expect(decodeControl(encodeControl({ mode: 'reset', data: '' }))).toEqual({ mode: 'reset', data: '', gated: true });
+    expect(decodeControl(encodeControl({ mode: 'recycle', data: '' }))).toEqual({ mode: 'recycle', data: '', gated: true });
   });
   it('compact envelope → GATED verb carrying the carry-note (data) + the /compact focus (WI-1804)', () => {
     // The operator's injectIntoHost sends focus as a distinct envelope field; decode it back.
@@ -1175,7 +1176,7 @@ describe('makeDeliveryDedup (EI-19311270129974785)', () => {
       const d = makeDeliveryDedup({
         ttlMs: 100,
         now: () => now,
-        hasDurableNativeTurnStart: (id) => receipts.has(id),
+        hasDurableNativeTurnStart: (id?: string) => id !== undefined && receipts.has(id),
       });
       d.markPending(confirmedId);
       d.markNativeTurnStarted(confirmedId);
@@ -2515,7 +2516,7 @@ describe('fireSessionCompactedEvent (event-await P-103 — the detached emit bri
   const okChild = () => ({ on: () => {}, unref: () => {} });
 
   it('spawns the detached tsx emit CLI with owner + focus + successor native id', () => {
-    const spawnFn = vi.fn(() => okChild());
+    const spawnFn = vi.fn((_command: string, _args: string[], _options: SpawnOptions) => okChild());
     const child = fireSessionCompactedEvent('su-94b69', 'keep the plan', {
       spawnFn,
       existsFn: () => true,
@@ -2551,7 +2552,7 @@ describe('fireSessionCompactedEvent (event-await P-103 — the detached emit bri
   });
 
   it('coerces a null/undefined focus to an empty-string argv (never passes "undefined")', () => {
-    const spawnFn = vi.fn(() => okChild());
+    const spawnFn = vi.fn((_command: string, _args: string[], _options: SpawnOptions) => okChild());
     fireSessionCompactedEvent('su-x', undefined, { spawnFn, existsFn: () => true, entry: '/e.ts' });
     expect(spawnFn.mock.calls[0][1]).toEqual(['tsx', '/e.ts', 'su-x', '', '']);
   });
