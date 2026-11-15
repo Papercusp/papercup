@@ -836,7 +836,7 @@ describe('native qualification preparation before the production suite', () => {
   });
 
   it.each(['fresh', 'banked-file', 'banked-step', 'banked-all-files', 'invalidated-file'])(
-    'independently maps each original npm step while retaining command and post obligations: %s', async scenario => {
+    'keeps each original npm step when retained proofs lack current context measurements: %s', async scenario => {
     const { deps, input, selection, transaction } = setup();
     const root = mkdtempSync(join(tmpdir(), 'checkpoint-native-channels-'));
     try {
@@ -879,15 +879,14 @@ describe('native qualification preparation before the production suite', () => {
       Object.assign(transaction.continuation, { receipts });
       expect(await prepareCheckpointQualificationNativeRun(input, deps)).toMatchObject({ status: 'ready',
         checkpoint: { continuation: { manifest, receipts } } });
+      // A legacy retained receipt is still part of the bank, but cannot omit
+      // execution without its original AND independently measured current context.
       const expectedTasks = new Map([
-        ['ws :: test:step:0', { workspaceName: 'ws', selectedSpecifications: steps[0]!.discovery[0]!.selectedSpecifications
-          .filter(spec => scenario !== 'banked-file' || spec.testFile !== 'a.test.ts'),
-          supersedesCompletionIds: scenario === 'invalidated-file' ? { 'test:a.test.ts': 'prior-pass' } : {} }],
+        ['ws :: test:step:0', { workspaceName: 'ws', selectedSpecifications: steps[0]!.discovery[0]!.selectedSpecifications,
+          supersedesCompletionIds: scenario === 'fresh' ? {} : { 'test:a.test.ts': 'prior-pass' } }],
         ['ws :: test:step:1', { workspaceName: 'ws', selectedSpecifications: steps[1]!.discovery[0]!.selectedSpecifications,
-          supersedesCompletionIds: {} }],
+          supersedesCompletionIds: scenario === 'banked-all-files' ? { 'test:b.test.ts': 'prior-second-pass' } : {} }],
       ]);
-      if (scenario === 'banked-step' || scenario === 'banked-all-files') expectedTasks.delete('ws :: test:step:0');
-      if (scenario === 'banked-all-files') expectedTasks.delete('ws :: test:step:1');
       expect(deps.observe).toHaveBeenCalledWith(expect.objectContaining({ tasks: expectedTasks }));
       expect(manifest.units.some((unit: { id: string }) => unit.id === 'chain:ws :: test')).toBe(true);
       expect(manifest.units.some((unit: { kind: string }) => unit.kind === 'post-suite')).toBe(true);
@@ -895,7 +894,8 @@ describe('native qualification preparation before the production suite', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('narrows a native producer to unfinished files while exporting the full bank for the child', async () => {
+  it.each(['legacy', 'complete', 'incomplete'])(
+    'reruns a retained %s proof without current context measurements while exporting the full bank', async kind => {
     const { deps, input, selection, transaction } = setup();
     const second = { ...selection.tasks[0]!.selectedSpecifications[0], testFile: 'b.test.ts' };
     selection.tasks[0]!.files.push('b.test.ts');
@@ -903,16 +903,36 @@ describe('native qualification preparation before the production suite', () => {
     const manifest = preparePartialContinuationManifest({ root: input.root, selection,
       tasks: selection.taskInventory, postSuite: postSuiteContinuationPopulation() }).manifest!;
     transaction.continuation.manifest = manifest;
-    Object.assign(transaction.continuation, { receipts: [{ unitId: 'test:a.test.ts', completionId: 'prior-pass',
+    const receipt = { unitId: 'test:a.test.ts', completionId: 'prior-pass',
       state: 'pass', observedAtMs: 1, worktreeDirty: false, observedCount: 1, firstAttemptVerdict: 'pass',
       proof: { recordedSha: input.candidate, executedModules: ['a.test.ts'], readPaths: [],
-        inputsCaptured: true, opaqueReasons: [], runContext: progress.runContext, runnerIdentity: progress.runnerIdentity } }] });
+        inputsCaptured: true, opaqueReasons: [], runContext: progress.runContext, runnerIdentity: progress.runnerIdentity } };
+    Object.assign(transaction.continuation, { receipts: [receipt] });
+    // Synthetic contract pins, never production measurements. Even a complete
+    // original proof cannot supply the current producer's comparison by itself.
+    const context = createProofContextIdentity(Object.fromEntries(PROOF_CONTEXT_COMPONENTS
+      .map(key => [key, kind === 'incomplete' && key === 'source' ? null : 'c'.repeat(64)])) as
+        Record<(typeof PROOF_CONTEXT_COMPONENTS)[number], string | null>)!;
+    if (kind !== 'legacy') Object.assign(receipt.proof, { proofContext: context });
+    const checkpoint = { root: input.root, taskKey: progress.taskKey, continuation: transaction.continuation };
+    const expected = { ...progress, root: input.root, manifest, sourceCommit: input.candidate };
+    expect(evaluatePartialTaskContinuation(checkpoint, expected)).toMatchObject({
+      reused: [], run: expect.arrayContaining(['test:a.test.ts', 'test:b.test.ts']),
+      invalidated: expect.arrayContaining([{ id: 'test:a.test.ts', reason: 'proof-context-unmeasured' }]),
+    });
+    // The positive control distinguishes missing current measurements from an
+    // unrelated source/runner/receipt defect. Only a complete comparison can bank it.
+    expect(evaluatePartialTaskContinuation(checkpoint, { ...expected,
+      proofContexts: { [receipt.unitId]: { after: context, reach: [] } } })).toMatchObject({
+      reused: kind === 'complete' ? ['test:a.test.ts'] : [],
+    });
     const result = await prepareCheckpointQualificationNativeRun(input, deps);
     expect(result).toMatchObject({ status: 'ready', checkpoint: {
       selectedFiles: ['a.test.ts', 'b.test.ts'], continuation: { manifest,
         receipts: [expect.objectContaining({ completionId: 'prior-pass' })] } } });
     expect(deps.observe).toHaveBeenCalledWith(expect.objectContaining({ tasks: new Map([['ws :: test',
-      { workspaceName: 'ws', selectedSpecifications: [second], supersedesCompletionIds: {} }]]) }));
+      { workspaceName: 'ws', selectedSpecifications: selection.tasks[0]!.selectedSpecifications,
+        supersedesCompletionIds: { 'test:a.test.ts': 'prior-pass' } }]]) }));
     expect(selection.tasks[0]!.files).toEqual(['a.test.ts', 'b.test.ts']);
   });
 
