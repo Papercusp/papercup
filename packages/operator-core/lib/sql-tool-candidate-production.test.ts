@@ -7,6 +7,7 @@ import { readPinnedModuleState } from '@papercusp/module-singleton';
 import './agent-tools/operator-tool-catalogue';
 import type { ProjectedTool } from '@papercusp/agent-mcp';
 import { projectedToolRegistryRevision } from '@papercusp/agent-mcp';
+import type { SearchCorpusOptions } from './agent-opportunities/search-reformulation';
 import { productionSqlRecommendationInput, readLoadedSqlToolCatalog, readCurrentSqlToolCatalog, readSqlCoverageAudits } from './sql-tool-candidate-production';
 import { fingerprintSqlIntent } from './bash-substitution/sql-intent-fingerprint';
 import { aggregateSqlDemand, observeSqlDemand } from './bash-substitution/sql-intent-corpus';
@@ -176,6 +177,8 @@ it('keeps bounded, unavailable and incomplete source evidence out of positive co
 
 /** Canonical reader unit controls. Real invocation production is exercised by
  * the maintained runtime suite; these rows alone never prove live coverage. */
+type CoverageOutput = NonNullable<Awaited<ReturnType<SearchCorpusOptions['readOutput']>>>;
+
 function coverageFixture() {
   if (shape.status !== 'supported') throw new Error('expected supported shape');
   const rows = [{ id: 'synthetic-job' }], sqlArgs = { sql: query }, toolArgs = { limit: 5 };
@@ -215,10 +218,12 @@ function coverageFixture() {
   const catalog = { ref: 'fixture-registry', buildRef: 'fixture-generation', coverage: 'complete' as const,
     tools: [{ name: 'fixture:jobs', contractRef: 'target-contract', sourceFingerprint: 'd'.repeat(64),
       args: { safeParse: (value: unknown) => ({ success: JSON.stringify(value) === JSON.stringify(toolArgs) }) } } ] };
-  const output = vi.fn(async () => ({ callId: 'fixture', provider: 'ledger' as const,
-    namespace: 'operator-dispatch', complete: true, body: { rows, rowCount: 1, truncated: false } }));
+  const outputValue = (over: Partial<CoverageOutput> = {}): CoverageOutput => ({ callId: 'fixture',
+    provider: 'ledger', namespace: 'operator-dispatch', complete: true,
+    body: { rows, rowCount: 1, truncated: false }, ...over });
+  const output = vi.fn<SearchCorpusOptions['readOutput']>(async () => outputValue());
   const read = () => readSqlCoverageAudits(opts, shape, [catalog], { readOutput: output });
-  return { rows, run, cases, invocations, ledger, opts, output, read, hint, catalog };
+  return { rows, run, cases, invocations, ledger, opts, output, outputValue, read, hint, catalog };
 }
 
 it('joins exact passing run/case and both independently written executions with authorized retained bytes', async () => {
@@ -257,10 +262,10 @@ it('rejects forged/replayed invocation custody, mismatched args, stale contracts
     (f: ReturnType<typeof coverageFixture>) => { f.invocations[1]!.args_json = { limit: 99 }; },
     (f: ReturnType<typeof coverageFixture>) => { f.invocations[0]!.args_json = { sql: 'SELECT state FROM jobs' }; },
     (f: ReturnType<typeof coverageFixture>) => { f.catalog.tools[0]!.contractRef = 'new-contract'; },
-    (f: ReturnType<typeof coverageFixture>) => { f.output.mockResolvedValue(null as never); },
-    (f: ReturnType<typeof coverageFixture>) => { f.output.mockResolvedValue({ complete: false } as never); },
-    (f: ReturnType<typeof coverageFixture>) => { f.output.mockResolvedValue({ complete: true,
-      body: { rows: f.rows, truncated: true } } as never); },
+    (f: ReturnType<typeof coverageFixture>) => { f.output.mockResolvedValue(null); },
+    (f: ReturnType<typeof coverageFixture>) => { f.output.mockResolvedValue(f.outputValue({ complete: false })); },
+    (f: ReturnType<typeof coverageFixture>) => { f.output.mockResolvedValue(f.outputValue({
+      body: { rows: f.rows, truncated: true } })); },
   ]) {
     const f = coverageFixture(); change(f); expect(await f.read()).toEqual([]);
   }
@@ -275,11 +280,11 @@ it('renews proof source authority after IO and refuses output/ledger mutation or
       body: { rows: revoked.rows, rowCount: 1, truncated: false } };
   });
   expect(await revoked.read()).toEqual([]);
-  const moved = coverageFixture(); moved.ledger.mockImplementationOnce(async () => [moved.run] as never)
-    .mockImplementationOnce(async () => moved.cases as never).mockImplementationOnce(async () => structuredClone(moved.invocations) as never)
-    .mockImplementationOnce(async () => [] as never);
+  const moved = coverageFixture(); moved.ledger.mockImplementationOnce(async () => [moved.run])
+    .mockImplementationOnce(async () => moved.cases).mockImplementationOnce(async () => structuredClone(moved.invocations))
+    .mockImplementationOnce(async () => []);
   expect(await moved.read()).toEqual([]);
-  const oversized = coverageFixture(); oversized.ledger.mockResolvedValue(Array(33).fill(oversized.run) as never);
+  const oversized = coverageFixture(); oversized.ledger.mockResolvedValue(Array<typeof oversized.run>(33).fill(oversized.run));
   expect(await oversized.read()).toEqual([]);
 });
 
