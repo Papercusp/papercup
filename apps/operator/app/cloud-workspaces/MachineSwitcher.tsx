@@ -7,6 +7,7 @@ import { getBrowserMachineId, setBrowserMachineId } from "@papercusp/operator-co
 import { navigateClient } from "@papercusp/operator-core/lib/client-navigation";
 import { Select } from "@/app/harness/Select";
 import { Tooltip } from "@/app/harness/Tooltip";
+import { InstalledComputerLauncher } from "./InstalledComputerLauncher";
 import { LOCAL_DESKTOP_HOST } from "./local-desktop-protocol";
 import type { CloudWorkspacesControlRow, WorkspaceHostControlRow } from "./workspace-view-model";
 import { desktopMachineSelection, preferredDesktopWorkspace } from "./workspace-view-model";
@@ -104,7 +105,7 @@ export function MachineSwitcherView({ localMode, value, rows, loading, error, on
       onChange={(hostId) => {
         if (options.some((option) => option.value === hostId) && !(missing && hostId === selected)) onSelect(hostId);
       }} />
-    <MachineConnectionHelp />
+    {localMode ? <MachineConnectionHelp /> : <InstalledComputerLauncher />}
     <a href={connectHref}>Manage machines</a>
     {machines.find(row => row.id === selected)?.linkedInstallation
       ? <span role="status">Desktop access is checked separately for this browser.</span> : null}

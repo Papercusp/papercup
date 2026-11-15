@@ -16,6 +16,7 @@ import type {
   HostedDesktopViewerMode,
 } from "./hosted-desktop-viewer-protocol";
 import { formatTimestamp } from "./workspace-view-model";
+import type { WorkspaceHostControlRow } from "./workspace-view-model";
 import { DesktopGrid } from "@/app/_components/desktop-grid/DesktopGrid";
 import type { DesktopGridTile } from "@/app/_components/desktop-grid/desktop-grid-model";
 import styles from "./hosted-workspace-session.module.css";
@@ -64,6 +65,7 @@ export function myDesktopErrorMessage(code: string): string {
 }
 
 export interface HostedDesktopWorkspaceProps {
+  linkedInstallation?: WorkspaceHostControlRow['linkedInstallation'];
   hostName: string;
   workspaceId: string | null;
   hostId: string;
@@ -134,6 +136,7 @@ export function hostedDesktopTile(
 
 /** D-062: one large desktop, with authenticated discovery and activity alongside. */
 export function HostedDesktopWorkspace({
+  linkedInstallation,
   hostName,
   workspaceId,
   hostId,
@@ -276,6 +279,7 @@ export function HostedDesktopWorkspace({
           {selectedDesktop && selectedEntry && workspaceId && routeLabel ? (
             <div className={styles.desktopViewerMount}>
               <HostedDesktopViewer
+                linkedInstallation={linkedInstallation}
                 key={selectedDesktop.desktopSessionId}
                 workspaceId={workspaceId}
                 hostId={hostId}
@@ -392,6 +396,7 @@ export function HostedDesktopWorkspace({
           renderLive={(tile) =>
             workspaceId && routeLabel ? (
               <HostedDesktopViewer
+                linkedInstallation={linkedInstallation}
                 key={`pin:${tile.desktopSessionId}`}
                 workspaceId={workspaceId}
                 hostId={hostId}

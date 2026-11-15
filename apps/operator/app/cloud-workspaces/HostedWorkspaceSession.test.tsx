@@ -74,6 +74,10 @@ const M = vi.hoisted(() => {
 });
 
 vi.mock("@xterm/xterm", () => ({ Terminal: M.FakeTerminal }));
+vi.mock('./installed-computer-connection', () => ({
+  installedComputerApproval: vi.fn(async () => ({ grant: { control: false } })),
+  installedComputerSocket: vi.fn(async (url: string) => new M.FakeSocket(url)),
+}));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: M.FakeFitAddon }));
 vi.mock("@xterm/addon-web-links", () => ({
   WebLinksAddon: M.FakeWebLinksAddon,
@@ -170,6 +174,25 @@ async function connected() {
 }
 
 describe("tutorial host binding receipts", () => {
+  it('uses linked discovery without initializing a terminal, listing files or creating a desktop', async () => {
+    const onBound = vi.fn(); const onBridge = vi.fn();
+    render(<HostedWorkspaceSession hostId="host-1" routeLabel="route-1" workspaceName="Linked computer"
+      linkedInstallation={{ installId: 'install-1', customerWorkspaceId: 'ws-1', connection: 'online' }}
+      onWorkspaceBound={onBound} onDesktopBridgeChange={onBridge} />);
+    const socket = await connected();
+    expect(M.terminals).toHaveLength(0);
+    expect(new URL(socket.url).searchParams.get('kind')).toBe('desktop-discovery');
+    act(() => socket.emit('message', { data: JSON.stringify({ type: 'session.bound', protocol: 'papercusp-hosted-workspace-session.v1',
+      kind: 'desktop-discovery', channelId: 'channel', role: 'observer', binding: { generation: 1, hostedSessionId: 'session' } }) }));
+    expect(onBound.mock.calls.filter(([id]) => id !== null)).toEqual([]);
+    act(() => socket.emit('message', { data: JSON.stringify({ type: 'desktop.discovery.ready' }) }));
+    await waitFor(() => expect(onBridge.mock.calls.some(([bridge]) => bridge !== null)).toBe(true));
+    const bridge = onBridge.mock.calls.findLast(([value]) => value !== null)![0];
+    expect(bridge.requestStart()).toBe(false);
+    expect(socket.send.mock.calls.map(([raw]) => JSON.parse(raw).type)).toEqual(['desktop.roster']);
+    expect(onBound).toHaveBeenCalledWith('ws-1');
+    expect(screen.queryByText('Claim control')).toBeNull();
+  });
   it.each(["ticket pending", "connected"] as const)("isolates the selected machine when the previous connection is %s", async (previousState) => {
     const workspace = (id: string): WorkspaceHostControlRow => ({
       kind: "workspace", id, name: id, connectionId: `connection-${id}`,

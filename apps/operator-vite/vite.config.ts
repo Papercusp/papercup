@@ -179,9 +179,12 @@ export default defineConfig(async (): Promise<UserConfig> => ({
       // during its scan. Shim them out — the SPA never runs substrate code.
       // (compact-encoding/protomux/b4a are pure-JS browser-safe — NOT shimmed.)
       {
-        find: /^(corestore|hyperswarm|hyperdht|hyperbee|hypercore|hypercore-crypto|sodium-universal|sodium-native|sodium-secretstream|udx-native|dht-rpc|blind-relay)(?:\/.*)?$/,
+        find: /^(corestore|hyperswarm|hyperdht|hyperbee|hypercore|udx-native|dht-rpc|blind-relay)(?:\/.*)?$/,
         replacement: resolve(import.meta.dirname, 'src/shims/substrate-browser.ts'),
       },
+      // The existing Noise channel also runs in portal/desktop browsers. Keep
+      // its maintained crypto implementation; only the native backend changes.
+      { find: /^sodium-native$/, replacement: 'sodium-javascript' },
       // node:module has NO browser polyfill (unlike path/url/fs/buffer/process), so Vite
       // externalizes it → `createRequire` is undefined. An eager
       // `const require = createRequire(import.meta.url)` at module scope in any

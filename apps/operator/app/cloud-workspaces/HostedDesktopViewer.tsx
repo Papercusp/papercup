@@ -21,6 +21,7 @@ import {
 import { readHostedWorkspaceTicket, readHostedWorkspaceSocketOrigin } from "./hosted-workspace-session-protocol";
 import { kasmvncRfbClass } from "./kasmvnc-rfb";
 import styles from "./hosted-workspace-session.module.css";
+import type { WorkspaceHostControlRow } from './workspace-view-model';
 
 export type HostedDesktopViewerState =
   | "idle"
@@ -50,6 +51,7 @@ function responseError(value: unknown, fallback: string): string {
 }
 
 export interface HostedDesktopViewerProps {
+  linkedInstallation?: WorkspaceHostControlRow['linkedInstallation'];
   workspaceId: string;
   hostId: string;
   routeLabel: string;
@@ -62,6 +64,7 @@ export interface HostedDesktopViewerProps {
 }
 
 export function HostedDesktopViewer({
+  linkedInstallation,
   workspaceId,
   hostId,
   routeLabel,
@@ -129,6 +132,10 @@ export function HostedDesktopViewer({
     updateState("ticketing");
 
     try {
+      const installed = linkedInstallation ? await import('./installed-computer-connection') : null;
+      const approval = installed && linkedInstallation
+        ? await installed.installedComputerApproval(linkedInstallation, workspaceId) : null;
+      if (mode === 'takeover' && approval && !approval.grant.control) throw new Error('Approve keyboard and mouse control in the local app first.');
       const response = await fetch(
         `/api/hosted/workspaces/${encodeURIComponent(workspaceId)}/connectors/session-ticket`,
         {
@@ -153,14 +160,14 @@ export function HostedDesktopViewer({
       if (epoch !== epochRef.current || !stageRef.current) return;
 
       updateState("connecting");
-      const socket = new WebSocket(
-        buildHostedDesktopSocketUrl(
+      const socketUrl = buildHostedDesktopSocketUrl(
           readHostedWorkspaceSocketOrigin(payload, window.location.origin),
           ticket,
           desktopSessionId,
           mode,
-        ),
-      );
+        );
+      const socket = installed && approval ? await installed.installedComputerSocket(socketUrl, approval) : new WebSocket(socketUrl);
+      if (epoch !== epochRef.current) { socket.close(1000, 'superseded'); return; }
       socketRef.current = socket;
       const channel = new HostedDesktopRelayChannel(socket);
       channelRef.current = channel;
@@ -246,6 +253,7 @@ export function HostedDesktopViewer({
     updateInputAllowed,
     updateState,
     workspaceId,
+    linkedInstallation,
   ]);
 
   useEffect(() => {

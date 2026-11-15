@@ -83,6 +83,7 @@ export interface HostedWorkspaceDesktopBridge {
 export type HostedDesktopOperation = "roster" | "thumbnail" | "start";
 
 export interface HostedWorkspaceSessionProps {
+  linkedInstallation?: WorkspaceHostControlRow['linkedInstallation'];
   hostId: string;
   routeLabel: string;
   workspaceName: string;
@@ -173,6 +174,7 @@ function downloadFile(path: string, data: string): void {
 }
 
 export function HostedWorkspaceSession({
+  linkedInstallation,
   hostId,
   routeLabel,
   workspaceName,
@@ -274,6 +276,8 @@ export function HostedWorkspaceSession({
   }, [path]);
 
   const send = useCallback((payload: unknown): boolean => {
+    if (linkedInstallation && (!payload || typeof payload !== 'object' ||
+        !['desktop.roster', 'desktop.thumbnail'].includes(String((payload as { type?: unknown }).type)))) return false;
     const socket = socketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) return false;
     try {
@@ -282,7 +286,7 @@ export function HostedWorkspaceSession({
     } catch {
       return false;
     }
-  }, []);
+  }, [linkedInstallation]);
 
   const clearRosterRead = useCallback(() => {
     if (rosterReadRef.current) pendingDesktopRequestsRef.current.delete(rosterReadRef.current.requestId);
@@ -351,6 +355,7 @@ export function HostedWorkspaceSession({
   );
 
   const requestDesktopStart = useCallback((options?: { personal?: boolean }) => {
+    if (linkedInstallation) return false;
     if (roleRef.current !== "controller") return false;
     const requestIdValue = requestId("desktop-start");
     if (
@@ -380,7 +385,7 @@ export function HostedWorkspaceSession({
       );
     }, DESKTOP_START_TIMEOUT_MS);
     return true;
-  }, [send]);
+  }, [send, linkedInstallation]);
 
   const desktopBridge = useMemo<HostedWorkspaceDesktopBridge>(
     () => ({
@@ -411,7 +416,7 @@ export function HostedWorkspaceSession({
     startTimerRef.current = null;
     callbackRefs.current.onDesktopBridgeChange?.(null);
     callbackRefs.current.onDesktopQueryStateChange?.("idle");
-    if (socket && notify && socket.readyState === WebSocket.OPEN) {
+    if (!linkedInstallation && socket && notify && socket.readyState === WebSocket.OPEN) {
       try {
         socket.send(JSON.stringify({ type: "session.detach" }));
       } catch {
@@ -431,7 +436,7 @@ export function HostedWorkspaceSession({
     terminalRef.current = null;
     fitRef.current = null;
     roleRef.current = null;
-  }, [clearRosterRead]);
+  }, [clearRosterRead, linkedInstallation]);
 
   useEffect(() => () => dispose(true), [dispose]);
 
@@ -629,11 +634,19 @@ export function HostedWorkspaceSession({
         return;
       }
 
+      if (linkedInstallation && value && typeof value === 'object' &&
+          (value as { type?: unknown }).type === 'desktop.discovery.ready') {
+        if (ticketWorkspaceRef.current) callbackRefs.current.onWorkspaceBound?.(ticketWorkspaceRef.current);
+        setRole('observer'); setStatus('live');
+        setNotice('Desktop discovery authorized. Select a desktop to verify its media connection.');
+        requestDesktopRoster();
+        return;
+      }
       const event = parseHostedWorkspaceProtocolMessage(value);
       if (!event) return;
 
       if (event.kind === "bound") {
-        if (ticketWorkspaceRef.current) callbackRefs.current.onWorkspaceBound?.(ticketWorkspaceRef.current);
+        if (!linkedInstallation && ticketWorkspaceRef.current) callbackRefs.current.onWorkspaceBound?.(ticketWorkspaceRef.current);
         setRole(event.role);
         setMeta((current) => ({
           ...current,
@@ -743,7 +756,7 @@ export function HostedWorkspaceSession({
         }
       }
     },
-    [armRosterDeadline, clearRosterRead, desktopBridge, finishRosterRead, hostId, listFiles, requestDesktopRoster, send],
+    [armRosterDeadline, clearRosterRead, desktopBridge, finishRosterRead, hostId, listFiles, requestDesktopRoster, send, linkedInstallation],
   );
 
   const connect = useCallback(async () => {
@@ -758,7 +771,7 @@ export function HostedWorkspaceSession({
     setPreview(null);
 
     try {
-      await initializeTerminal();
+      if (!linkedInstallation) await initializeTerminal();
       const sessionResponse = await fetch("/api/hosted/auth/session", {
         cache: "no-store",
       });
@@ -773,6 +786,10 @@ export function HostedWorkspaceSession({
         );
       }
       callbackRefs.current.onWorkspaceIdChange?.(workspaceId);
+
+      const installed = linkedInstallation ? await import('./installed-computer-connection') : null;
+      const approval = installed && linkedInstallation
+        ? await installed.installedComputerApproval(linkedInstallation, workspaceId) : null;
 
       const ticketResponse = await fetch(
         `/api/hosted/workspaces/${encodeURIComponent(workspaceId)}/connectors/session-ticket`,
@@ -802,9 +819,11 @@ export function HostedWorkspaceSession({
       ticketWorkspaceRef.current = workspaceId;
       setStatus("connecting");
       setNotice("Opening the generation-bound workspace relay…");
-      const socket = new WebSocket(
-        buildHostedWorkspaceSocketUrl(readHostedWorkspaceSocketOrigin(ticketPayload, window.location.origin), ticket),
-      );
+      const socketUrl = new URL(buildHostedWorkspaceSocketUrl(readHostedWorkspaceSocketOrigin(ticketPayload, window.location.origin), ticket));
+      if (linkedInstallation) socketUrl.searchParams.set('kind', 'desktop-discovery');
+      const socket = installed && approval ? await installed.installedComputerSocket(socketUrl.toString(), approval)
+        : new WebSocket(socketUrl.toString());
+      if (epoch !== connectEpochRef.current) { socket.close(1000, 'superseded'); return; }
       const socketEpoch = epoch;
       socketRef.current = socket;
       socket.addEventListener("message", (event) => {
@@ -871,7 +890,7 @@ export function HostedWorkspaceSession({
       setError(cause instanceof Error ? cause.message : String(cause));
       setStatus("error");
     }
-  }, [clearRosterRead, dispose, handleMessage, hostId, initializeTerminal, routeLabel]);
+  }, [clearRosterRead, dispose, handleMessage, hostId, initializeTerminal, routeLabel, linkedInstallation]);
 
   const disconnect = useCallback(() => {
     dispose(true);
@@ -1096,6 +1115,14 @@ export function HostedWorkspaceSession({
         sourceRef: `hosted-session:${meta.hostedSessionId}`,
       })
     : null;
+
+  if (linkedInstallation) return <section aria-label={`Installed computer ${workspaceName}`}>
+    <p role="status">{status} · {notice}</p>
+    {error ? <p role="alert">{error}</p> : null}
+    {live || status === 'connecting'
+      ? <Button onClick={disconnect}>Detach</Button>
+      : <Button disabled={status === 'ticketing'} onClick={() => void connect()}>{status === 'closed' ? 'Reconnect' : 'Connect'}</Button>}
+  </section>;
 
   return (
     <section

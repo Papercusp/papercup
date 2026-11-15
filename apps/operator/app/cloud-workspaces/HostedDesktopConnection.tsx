@@ -108,11 +108,11 @@ function DesktopConnection({
   // D-405: a new machine runs no desktop until someone opens one. Opening this
   // page IS that ask, so an empty roster starts the workspace desktop and opens it.
   useEffect(() => {
-    if (!showDesktop || !bridge || rosterState !== "ready" || roster.length > 0) return;
+    if (workspace.linkedInstallation || !showDesktop || !bridge || rosterState !== "ready" || roster.length > 0) return;
     if (startRequested.current) return;
     setPersonalStart(false);
     startRequested.current = bridge.requestStart();
-  }, [showDesktop, bridge, roster, rosterState]);
+  }, [showDesktop, bridge, roster, rosterState, workspace.linkedInstallation]);
   const { setSelection } = grid;
   const onDesktopStarted = useCallback(
     (desktop: HostedDesktopRosterEntry) => {
@@ -218,8 +218,9 @@ function DesktopConnection({
           workspaceId={workspaceId}
           hostId={workspace.id}
           routeLabel={routeLabel}
+          linkedInstallation={workspace.linkedInstallation}
           bridge={bridge}
-          onOpenMyDesktop={onOpenMyDesktop}
+          onOpenMyDesktop={workspace.linkedInstallation ? undefined : onOpenMyDesktop}
           personalStart={personalStart}
           roster={roster}
           rosterState={rosterState}
@@ -239,6 +240,7 @@ function DesktopConnection({
       )}
       {routeLabel && (
         <HostedWorkspaceSession
+          linkedInstallation={workspace.linkedInstallation}
           hostId={workspace.id}
           routeLabel={routeLabel}
           workspaceName={workspace.name}

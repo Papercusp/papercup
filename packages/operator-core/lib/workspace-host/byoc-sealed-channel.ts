@@ -8,9 +8,14 @@
  * mismatch is terminal, so a relay cannot relabel ciphertext into another
  * allowlisted operation.
  */
-import { timingSafeEqual } from 'node:crypto';
+import { Buffer as BrowserBuffer } from 'buffer';
 import SecretStream from '@hyperswarm/secret-stream';
-import { Duplex } from 'node:stream';
+import { Duplex } from 'readable-stream';
+
+type Buffer = BrowserBuffer;
+// Use the stream runtime's native buffers in Node. In a browser, the maintained
+// buffer package supplies the same byte API without importing a Node builtin.
+const Buffer = globalThis.Buffer ?? BrowserBuffer;
 
 export const BYOC_SEALED_PROTOCOL = 'papercusp-byoc-noise-xx.v1' as const;
 
@@ -38,8 +43,14 @@ export interface ByocSealedChannelOptions {
   onError?: (error: Error) => void;
 }
 
+function byteBuffer(value: unknown): value is Buffer {
+  // Browser buffers and Node buffers may coexist in a bundled test/worker.
+  // Both are real byte views; constructor identity is not wire authority.
+  return ArrayBuffer.isView(value) && Object.prototype.toString.call(value) === '[object Uint8Array]';
+}
+
 function canonicalKey(value: Buffer, name: string): Buffer {
-  if (!Buffer.isBuffer(value) || value.length !== 32) {
+  if (!byteBuffer(value) || value.length !== 32) {
     throw new Error(`${name} must be a 32-byte Noise public key`);
   }
   return Buffer.from(value);
@@ -81,7 +92,7 @@ class RelayPacketDuplex extends Duplex {
   }
 
   override emit(event: string | symbol, ...args: unknown[]): boolean {
-    if (event !== 'data' || !Buffer.isBuffer(args[0])) return super.emit(event, ...args);
+    if (event !== 'data' || !byteBuffer(args[0])) return super.emit(event, ...args);
     const previous = this.inboundType;
     this.inboundType = this.inboundTypes.get(args[0]) ?? null;
     try {
@@ -140,7 +151,7 @@ export class ByocSealedChannel {
       ? null
       : canonicalKey(options.expectedRemotePublicKey, 'expected remote public key');
     canonicalKey(options.localKeyPair.publicKey, 'local public key');
-    if (!Buffer.isBuffer(options.localKeyPair.secretKey) || options.localKeyPair.secretKey.length !== 64) {
+    if (!byteBuffer(options.localKeyPair.secretKey) || options.localKeyPair.secretKey.length !== 64) {
       throw new Error('local Noise secret key must be 64 bytes');
     }
     this.raw = new RelayPacketDuplex((packet, contentType) => {
@@ -159,7 +170,7 @@ export class ByocSealedChannel {
     // 'data' emit; stamp it there, because its own 'data' event is delivered later.
     const push = this.noise.push.bind(this.noise);
     this.noise.push = (chunk: Buffer | null) => {
-      if (Buffer.isBuffer(chunk)) this.plaintextTypes.set(chunk, this.raw.inboundType);
+      if (byteBuffer(chunk)) this.plaintextTypes.set(chunk, this.raw.inboundType);
       return push(chunk);
     };
     this.noise.on('data', (data: Buffer) => this.acceptPlaintext(data));
@@ -173,7 +184,7 @@ export class ByocSealedChannel {
       const remote = ok && this.noise.remotePublicKey ? Buffer.from(this.noise.remotePublicKey) : null;
       if (!remote || remote.length !== 32) throw new Error('BYOC sealed channel remote key mismatch');
       const accepted = this.expectedRemotePublicKey
-        ? timingSafeEqual(remote, this.expectedRemotePublicKey)
+        ? remote.equals(this.expectedRemotePublicKey)
         : await verify!(remote).catch(() => false);
       if (!accepted) throw new Error('BYOC sealed channel remote key mismatch');
       if (this.closed) throw new Error('BYOC sealed channel is closed');
