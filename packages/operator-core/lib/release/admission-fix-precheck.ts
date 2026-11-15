@@ -42,6 +42,7 @@ export { dependencyGenerationInfraCode, DEPENDENCY_GENERATION_INFRA_EXITS,
   type DependencyGenerationInfraCode } from './checkpoint-log-tags';
 // Reuse the focused runner's maintained assertion-summary parser.
 import { testsExecutedFrom } from '../../../../scripts/lib/vitest-summary.mjs';
+import { createProgressAwareWatchdog } from '../../../../scripts/lib/batch-watchdog.mjs';
 
 export const ADMISSION_PRECHECK_REFUSALS = Object.freeze([
   'admission-does-not-fix',
@@ -682,7 +683,7 @@ export interface CheckpointTreeRunnerOptions {
   checkpointRoot: string;
   /** Registered harness for test-ledger attribution; never inferred from a checkout path. */
   testRunHarness?: string;
-  /** Per-file wall-clock budget (default 10 min). */
+  /** Initial per-file checkpoint (default 10 min); advancing tests may extend it. */
   perFileTimeoutMs?: number;
   /**
    * WI-6554700010030140: files measured at once (default 1 = strictly serial). Above 1, no new
@@ -724,8 +725,10 @@ export interface CheckpointTreeRunnerOptions {
 
 export interface ExecOptions {
   cwd: string;
-  /** Hard wall-clock ceiling — a runaway backstop, not a progress budget. */
+  /** Initial deadline; a hard ceiling unless progressWatchdog is supplied. */
   timeoutMs: number;
+  /** Opt in for test execution only; preparation retains its hard ceiling. */
+  progressWatchdog?: { stallWindowMs: number; extensionMs: number };
   /**
    * Kill when the child emits NO output for this long (WI-10006014). A progressing setup
    * keeps logging (one line per materialized tree, growth-only copy progress), so this is
@@ -803,6 +806,41 @@ export const EXEC_OUTPUT_TAIL_CHARS = 224_000;
  */
 export const EXEC_STDIO_CLOSE_GRACE_MS = 2_000;
 
+/**
+ * Router heartbeats describe captured child output. Their elapsed time alone is
+ * not progress: only a growing byte counter can extend the execution deadline.
+ * Keep channels separate so partial stdout cannot complete a stderr record.
+ */
+export function createExecOutputProgressTracker(): (channel: 'stdout' | 'stderr', chunk: string) => boolean {
+  const remainders = { stdout: '', stderr: '' };
+  const captured = new Map<string, number>();
+  return (channel, chunk) => {
+    const combined = remainders[channel] + chunk;
+    const end = combined.lastIndexOf('\n');
+    remainders[channel] = combined.slice(end + 1).slice(-16_384);
+    if (end < 0) return false;
+    let advanced = false;
+    for (const raw of combined.slice(0, end).split(/\r?\n/)) {
+      const line = raw.replace(/\u001b\[[0-9;]*m/g, '').trim();
+      if (!line) continue;
+      if (line.startsWith('TEST_FILE_PROGRESS ') || line.startsWith('TEST_FILE_LIST_PROGRESS ')) {
+        const match = /^TEST_FILE_(LIST_)?PROGRESS\b.*?\bcwd=("(?:\\.|[^"\\])*").*?\bcapturedBytes=(\d+)\b/.exec(line);
+        if (!match) continue;
+        const bytes = Number(match[3]);
+        if (!Number.isSafeInteger(bytes)) continue;
+        const key = channel + ':' + (match[1] ?? '') + match[2];
+        if (bytes > (captured.get(key) ?? 0)) {
+          captured.set(key, bytes);
+          advanced = true;
+        }
+      } else if (!line.startsWith('TEST_FILE_PROCESS_DIAGNOSTIC ')) {
+        advanced = true;
+      }
+    }
+    return advanced;
+  };
+}
+
 /** Signal the child's whole process group (it leads one: spawned detached). */
 function signalGroup(child: { pid?: number; kill: (sig: NodeJS.Signals) => boolean }, sig: NodeJS.Signals): void {
   if (child.pid) {
@@ -843,6 +881,7 @@ export const defaultExec: NonNullable<CheckpointTreeRunnerOptions['exec']> = (ar
     let settled = false;
     let graceTimer: NodeJS.Timeout | null = null;
     let idleTimer: NodeJS.Timeout | null = null;
+    const noteOutputProgress = createExecOutputProgressTracker();
     const kill = () => {
       signalGroup(child, 'SIGTERM');
       setTimeout(() => signalGroup(child, 'SIGKILL'), 5_000).unref();
@@ -856,23 +895,24 @@ export const defaultExec: NonNullable<CheckpointTreeRunnerOptions['exec']> = (ar
         kill();
       }, opts.idleTimeoutMs);
     };
-    const collect = (buf: Buffer) => {
+    const collect = (channel: 'stdout' | 'stderr') => (buf: Buffer) => {
       const s = buf.toString('utf8');
       capture.push(s);
       logStream?.write(s);
       armIdle();
+      if (noteOutputProgress(channel, s)) watchdog.noteProgress();
       try {
         opts.onOutput?.();
       } catch (err) {
         logStream?.write(`\n[admission-precheck-exec] output callback failed: ${err instanceof Error ? err.message : String(err)}\n`);
       }
     };
-    child.stdout?.on('data', collect);
-    child.stderr?.on('data', collect);
+    child.stdout?.on('data', collect('stdout'));
+    child.stderr?.on('data', collect('stderr'));
     const finish = (r: Omit<ExecResult, 'durationMs' | 'timedOut' | 'idleTimedOut'>) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      watchdog.stop();
       if (graceTimer) clearTimeout(graceTimer);
       if (idleTimer) clearTimeout(idleTimer);
       const durationMs = Date.now() - startedAt;
@@ -882,10 +922,16 @@ export const defaultExec: NonNullable<CheckpointTreeRunnerOptions['exec']> = (ar
       );
       resolve({ ...r, timedOut, ...(idleTimedOut ? { idleTimedOut } : {}), durationMs });
     };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      kill();
-    }, opts.timeoutMs);
+    const watchdog = createProgressAwareWatchdog({
+      timeoutMs: opts.timeoutMs,
+      maxMs: opts.progressWatchdog ? null : opts.timeoutMs,
+      ...opts.progressWatchdog,
+      onExtend: () => logStream?.write('\n[admission-precheck-exec] watchdog-extended: child output advanced\n'),
+      onKill: () => {
+        timedOut = true;
+        kill();
+      },
+    });
     armIdle();
     child.on('error', (err) => {
       finish({ exitCode: null, signal: null, output: `${capture.text()}\n${err.message}` });
@@ -895,7 +941,7 @@ export const defaultExec: NonNullable<CheckpointTreeRunnerOptions['exec']> = (ar
       // these watchdogs armed can turn a successful exit into a timeout during
       // that cleanup, and descendant output must not start another idle window.
       directExited = true;
-      clearTimeout(timer);
+      watchdog.stop();
       if (idleTimer) clearTimeout(idleTimer);
       // The direct child is gone. Normally 'close' follows at once; if a grandchild still holds
       // the pipes, kill the leftover group and resolve on the exit status instead of hanging.
@@ -1446,6 +1492,7 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
           const r = await execWithProgress(argv, {
             cwd: precheckRoot,
             timeoutMs: perFileTimeoutMs,
+            progressWatchdog: { stallWindowMs: perFileTimeoutMs / 2, extensionMs: perFileTimeoutMs / 2 },
             env: fileEnvironment,
             logFile,
           }, progressFor(file));

@@ -1171,13 +1171,19 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
 
   it('every per-file run appends to the same durable log as setup', async () => {
     const logFiles: Array<string | undefined> = [];
+    const policies: Array<ExecOptions['progressWatchdog']> = [];
     const exec = vi.fn(async (_argv: readonly string[], opts: ExecOptions) => {
       logFiles.push(opts.logFile);
+      policies.push(opts.progressWatchdog);
       return { exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 } as ExecResult;
     });
     const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, logDir: '/tmp/l', runLockHeld: () => ({ held: false, elapsedSec: null }) });
     await runner({ commit: C, files: ['lib/a.test.ts', 'lib/b.test.ts'] });
     expect(logFiles).toHaveLength(3);
+    expect(policies).toEqual([undefined,
+      { stallWindowMs: 300_000, extensionMs: 300_000 },
+      { stallWindowMs: 300_000, extensionMs: 300_000 },
+    ]);
     expect(new Set(logFiles).size).toBe(1);
     expect(logFiles[0]).toMatch(/^\/tmp\/l\/admission-precheck-/);
   });

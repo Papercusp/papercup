@@ -7,6 +7,7 @@ import { setTimeout as realSetTimeout } from 'node:timers/promises';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createHeadTailCapture,
+  createExecOutputProgressTracker,
   defaultExec,
   EXEC_OUTPUT_HEAD_CHARS,
   EXEC_OUTPUT_TAIL_CHARS,
@@ -127,7 +128,7 @@ describe('admission pre-check defaultExec subtree handling', () => {
     expect(await stillAliveAfterKill(grandchild), 'the timeout kills the whole group').toBe(false);
   }, 15_000);
 
-  it.each(['wall', 'idle', 'idle-after-output'] as const)(
+  it.each(['wall', 'idle', 'idle-after-output', 'progress'] as const)(
     'preserves a direct-child exit while stdio cleanup crosses the %s deadline', async (watchdog) => {
       const dir = mkdtempSync(path.join(os.tmpdir(), 'precheck-exit-grace-'));
       const pidFile = path.join(dir, 'direct.pid');
@@ -166,7 +167,9 @@ describe('admission pre-check defaultExec subtree handling', () => {
           child.once('message', () => process.stdout.write('HOLDER=' + child.pid + String.fromCharCode(10)));
         `, pidFile], {
           cwd: process.cwd(), timeoutMs: 10_000,
-          ...(watchdog === 'wall' ? {} : { idleTimeoutMs: 1_000 }),
+          ...(watchdog === 'progress'
+            ? { progressWatchdog: { stallWindowMs: 1_000, extensionMs: 1_000 } }
+            : watchdog === 'wall' ? {} : { idleTimeoutMs: 1_000 }),
           onOutput: () => { const resolve = notify; notify = undefined; resolve?.(); },
         });
         // The transparent witness resolves AFTER the executor's exit handlers
@@ -233,19 +236,21 @@ describe('admission pre-check defaultExec output, idle watchdog and durable log 
     expect(r.output.length).toBeLessThan(EXEC_OUTPUT_HEAD_CHARS + EXEC_OUTPUT_TAIL_CHARS + 200);
   }, 15_000);
 
-  it('the idle watchdog kills a child that stops printing, and says so', async () => {
+  it.each(['idle', 'execution-progress'] as const)('the %s watchdog kills a child that stops printing', async (mode) => {
     const r = await defaultExec(['bash', '-c', 'echo started; sleep 30'], {
       cwd: process.cwd(),
-      timeoutMs: 20_000,
+      timeoutMs: mode === 'idle' ? 20_000 : 500,
       // idle-window-ok: this case WANTS the idle window to fire; a slow child boot only makes it fire sooner.
-      idleTimeoutMs: 500,
+      ...(mode === 'idle'
+        ? { idleTimeoutMs: 500 }
+        : { progressWatchdog: { stallWindowMs: 250, extensionMs: 250 } }),
     });
     expect(r.timedOut).toBe(true);
-    expect(r.idleTimedOut).toBe(true);
+    expect(r.idleTimedOut).toBe(mode === 'idle' ? true : undefined);
     expect(r.durationMs).toBeLessThan(EXEC_STDIO_CLOSE_GRACE_MS + 6_000);
   }, 15_000);
 
-  it('a child that keeps printing outlives the idle window (progress resets it)', async () => {
+  it.each(['idle', 'execution-progress'] as const)('a child that keeps printing outlives the initial %s window', async (mode) => {
     // EI-25204110947684935: real sleep gaps do not prove the child kept printing inside
     // the idle window. Control the parent's clock and acknowledge each real output chunk
     // before advancing it; the child boots without consuming any virtual idle time.
@@ -271,8 +276,10 @@ describe('admission pre-check defaultExec output, idle watchdog and durable log 
         process.stdout.write('ready\\n');
       `, pidFile], {
         cwd: process.cwd(),
-        timeoutMs: 20_000,
-        idleTimeoutMs: PROGRESS_IDLE_WINDOW_MS,
+        timeoutMs: mode === 'idle' ? 20_000 : PROGRESS_IDLE_WINDOW_MS,
+        ...(mode === 'idle'
+          ? { idleTimeoutMs: PROGRESS_IDLE_WINDOW_MS }
+          : { progressWatchdog: { stallWindowMs: PROGRESS_IDLE_WINDOW_MS / 2, extensionMs: PROGRESS_IDLE_WINDOW_MS / 2 } }),
         onOutput: () => { const resolve = notify; notify = undefined; resolve?.(); },
       });
       const prematureExit = pending.then((result) => {
@@ -332,5 +339,25 @@ describe('admission pre-check defaultExec output, idle watchdog and durable log 
     expect(t.startsWith('<0><1')).toBe(true);
     expect(t.endsWith('<98><99>')).toBe(true);
     expect(t).toMatch(/chars elided/);
+  });
+
+  it('extends only for growing router output, not repeated or malformed heartbeat diagnostics', () => {
+    const note = createExecOutputProgressTracker();
+    expect(note('stderr', 'TEST_FILE_PRO')).toBe(false);
+    expect(note('stderr', 'GRESS state=running cwd="apps/operator" elapsedMs=580135 capturedBytes=247547\n')).toBe(true);
+    expect(note('stderr', 'TEST_FILE_PROGRESS state=running cwd="apps/operator" elapsedMs=586012 capturedBytes=248490\n')).toBe(true);
+    expect(note('stderr', 'TEST_FILE_PROGRESS state=running cwd="apps/operator" elapsedMs=900000 capturedBytes=248490\n')).toBe(false);
+    expect(note('stderr', 'TEST_FILE_PROGRESS state=running cwd="apps/operator" elapsedMs=999999 capturedBytes=1\n')).toBe(false);
+    expect(note('stderr', 'TEST_FILE_PROGRESS invalid heartbeat\n')).toBe(false);
+    expect(note('stderr', 'TEST_FILE_PROCESS_DIAGNOSTIC {"elapsedMs":999999}\n')).toBe(false);
+    expect(note('stdout', 'TEST_FILE_LIST_PROGRESS state=running cwd="apps/operator" capturedBytes=12\n')).toBe(true);
+    expect(note('stdout', 'a new assertion finished\n')).toBe(true);
+  });
+
+  it('does not join a partial diagnostic across stdout and stderr', () => {
+    const note = createExecOutputProgressTracker();
+    expect(note('stdout', 'TEST_FILE_PROGRESS state=running cwd="apps/operator" capturedBytes=')).toBe(false);
+    expect(note('stderr', 'TEST_FILE_PROGRESS state=running cwd="apps/operator" capturedBytes=0\n')).toBe(false);
+    expect(note('stdout', '0\n')).toBe(false);
   });
 });
