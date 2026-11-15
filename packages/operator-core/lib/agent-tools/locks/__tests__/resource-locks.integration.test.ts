@@ -198,14 +198,16 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     expect(newcomer.reason).toBe('exclusive_pending');
 
     const snapshot = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: TEST_RESOURCE });
-    expect(snapshot.queue).toHaveLength(1);
-    expect(snapshot.queue[0]).toMatchObject({
+    expect(snapshot.queue).toBeDefined();
+    const queue = snapshot.queue ?? [];
+    expect(queue).toHaveLength(1);
+    expect(queue[0]).toMatchObject({
       owner: 'queued-writer',
       owner_label: 'res:queued-writer',
       reason: 'integration test',
     });
-    expect(snapshot.queue[0]?.queued_ts).toBeInstanceOf(Date);
-    expect(snapshot.queue[0]?.queued_ts.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(queue[0]?.queued_ts).toBeInstanceOf(Date);
+    expect(queue[0]?.queued_ts.getTime()).toBeLessThanOrEqual(Date.now());
   });
 
   it.skipIf(!live)('EI-23229103052811419: an incumbent shared holder can renew while an exclusive drain is pending', async () => {
