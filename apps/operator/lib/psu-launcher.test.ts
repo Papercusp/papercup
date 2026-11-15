@@ -5691,6 +5691,77 @@ describe("psu-launcher arg parsing", () => {
     }
   };
 
+  it.each(["auto", "named-pin", "inherited-auto"])(
+    "chooseResumeAccount: %s reports a failed account-options read without inventing gateway state",
+    async (route) => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response("account options unauthorized", { status: 401 }),
+      );
+      try {
+        await expect(
+          chooseResumeAccount(
+            {
+              agent: "codex",
+              workspaceId: "ws1",
+              coordOwnerId: "su-resume-options-failure",
+              launchArgv: ["psu", "--no-picker", "--account=auto"],
+            },
+            { account: route === "inherited-auto" ? null : route, picker: false },
+          ),
+        ).rejects.toMatchObject({
+          message: "The operator account options are unavailable. Refusing to fall back to the default system login.",
+          cause: expect.any(Error),
+        });
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    },
+  );
+
+  it.each([
+    undefined,
+    { gatewayOn: "true", pool: ["codex-main"] },
+    { gatewayOn: true, pool: "codex-main" },
+  ])("chooseResumeAccount: malformed account options are unavailable, not a measured empty pool (%j)", async (accounts) => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ accounts }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    try {
+      await expect(
+        chooseResumeAccount(
+          { agent: "codex", workspaceId: "ws1", coordOwnerId: "su-resume-malformed-options" },
+          { account: "auto", picker: false },
+        ),
+      ).rejects.toMatchObject({
+        message: "The operator account options are unavailable. Refusing to fall back to the default system login.",
+        cause: expect.any(Error),
+      });
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it.each([
+    { gatewayOn: false, pool: ["codex-main"] },
+    { gatewayOn: true, pool: [] },
+  ])("chooseResumeAccount: measured unavailable gateway options keep the gateway refusal (%j)", async (accounts) => {
+    await expect(
+      withAccountChoices(accounts, () =>
+        chooseResumeAccount(
+          { agent: "codex", workspaceId: "ws1", coordOwnerId: "su-resume-measured-gateway" },
+          { account: "auto", picker: false },
+        ),
+      ),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining("inference gateway off / no pool"),
+    });
+  });
+
   it("chooseResumeAccount: explicit auto fails closed when the gateway route is unavailable", async () => {
     await expect(
       withAccountChoices(
