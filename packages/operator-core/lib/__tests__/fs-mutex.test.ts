@@ -1563,6 +1563,7 @@ describe('withFsMutex fairness (FIFO ticket queue)', () => {
     const waiting = new Promise<void>(resolve => { reportWaiting = resolve; });
     try {
       await withFsMutex('holder-waiters', async held => {
+        if (!held) throw new Error('withFsMutex did not pass its holder context');
         await expect(held.hasWaiters()).resolves.toBe(false);
         waiter = withFsMutex('holder-waiters', async () => 'acquired after release', {
           timeoutMs: 5_000, retryMs: 5, onWaiting: reportWaiting,
@@ -1572,6 +1573,7 @@ describe('withFsMutex fairness (FIFO ticket queue)', () => {
       }, { timeoutMs: 5_000, retryMs: 5 });
       await expect(waiter).resolves.toBe('acquired after release');
       await withFsMutex('holder-waiters', async held => {
+        if (!held) throw new Error('withFsMutex did not pass its holder context');
         await expect(held.hasWaiters()).resolves.toBe(false);
       }, { timeoutMs: 5_000, retryMs: 5 });
     } finally {
