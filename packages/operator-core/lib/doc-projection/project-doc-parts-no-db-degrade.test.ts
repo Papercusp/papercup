@@ -1,8 +1,13 @@
-import { execFileSync } from 'node:child_process';
-import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
+// @ts-expect-error — native .mjs CLI intentionally has no declaration file.
+import { CANDIDATE_ARTIFACTS } from '../../../../scripts/project-doc-parts.mjs';
 
 /**
  * EI-20272515693397454 — the no-DB degrade on `scripts/project-doc-parts.mjs`.
@@ -49,9 +54,10 @@ const UNREACHABLE_PG = 'postgres://nobody:nobody@127.0.0.1:59999/papercusp_no_su
 function runProjector(
   args: string[],
   extraEnv: NodeJS.ProcessEnv = {},
+  entry: string[] = [SCRIPT],
 ): { status: number; output: string } {
   try {
-    const stdout = execFileSync(process.execPath, [SCRIPT, ...args], {
+    const stdout = execFileSync(process.execPath, [...entry, ...args], {
       cwd: ROOT,
       env: {
         ...process.env,
@@ -165,4 +171,173 @@ describe('project-doc-parts — the no-DB degrade is CHECK-ONLY', () => {
     expect(output).toContain('ECONNREFUSED');
     expect(output).toContain('HARNESS_ADMIN_DATABASE_URL');
   });
+});
+
+const OLD_PIPE_BUFFER = 1024 * 1024;
+const FAILED_TAIL = '\nFAIL decisive assertion beyond the old buffer Ω\n';
+const PASSED_TAIL = '\nTest Files 1 passed\nTests 1 passed\n';
+const CHILD_OUTPUT_PREFIX = 'DOC_PART_CHILD_OUTPUT ';
+type ChildOutput = {
+  pid: number | null;
+  status: number | null;
+  signal: string | null;
+  error: { code: string | null; message: string } | null;
+  stdout: { path: string; bytes: number };
+  stderr: { path: string; bytes: number };
+};
+
+function outputBytes(bytes: number, status: number): Buffer {
+  const begin = Buffer.from('BEGIN_NATIVE_CHILD\n');
+  const end = Buffer.from(status === 0 ? PASSED_TAIL : FAILED_TAIL);
+  return Buffer.concat([begin, Buffer.alloc(bytes - begin.length - end.length, 'x'), end]);
+}
+
+function emitter(root: string): string {
+  const path = join(root, 'emitter.mjs');
+  writeFileSync(path, `
+    import { writeSync } from 'node:fs';
+    const [bytes, status, stream, signal] = process.argv.slice(2);
+    const begin = Buffer.from('BEGIN_NATIVE_CHILD\\n');
+    const end = Buffer.from(Number(status) === 0 ? ${JSON.stringify(PASSED_TAIL)} : ${JSON.stringify(FAILED_TAIL)});
+    const data = Buffer.concat([begin, Buffer.alloc(Number(bytes) - begin.length - end.length, 'x'), end]);
+    const fd = stream === 'stderr' ? 2 : 1;
+    // Many writes exercise recovery across chunk boundaries, including UTF-8.
+    for (let at = 0; at < data.length;) {
+      const written = writeSync(fd, data, at, Math.min(8191, data.length - at));
+      if (!written) throw new Error('fixture write made no progress');
+      at += written;
+    }
+    writeSync(fd === 1 ? 2 : 1, 'COMPANION_STREAM Ω\\n');
+    if (signal) process.kill(process.pid, signal);
+    else process.exitCode = Number(status);
+  `);
+  return path;
+}
+
+function guardFixture(root: string, bytes: number, status: number, stream: string, signal = '', missing = false) {
+  const fixture = emitter(root);
+  const wrapper = `
+    import assert from 'node:assert/strict';
+    import { spawnSync } from 'node:child_process';
+    import { verifyDocClaims } from ${JSON.stringify(pathToFileURL(SCRIPT).href)};
+    const config = JSON.parse(process.argv[1]);
+    const passed = verifyDocClaims({
+      env: { ...process.env, PAPERCUSP_SKIP_DOC_CLAIMS_VERIFY: '0' },
+      logRoot: config.logs,
+      spawn(command, args, options) {
+        assert.equal(command, 'npx');
+        assert.deepEqual(args, ['vitest', 'run', '--root', 'packages/operator-core',
+          '--config', 'vitest.config.ts', 'lib/doc-claims/']);
+        return spawnSync(config.missing ? config.fixture + '.missing' : process.execPath,
+          [config.fixture, String(config.bytes), String(config.status), config.stream, config.signal], options);
+      },
+    });
+    console.log('GUARD_RESULT ' + JSON.stringify({ passed }));
+    process.exitCode = passed ? 0 : 1;
+  `;
+  const result = runProjector([JSON.stringify({ fixture, bytes, status, stream, signal, missing,
+    logs: join(root, 'logs') })], {}, ['--input-type=module', '-e', wrapper]);
+  const line = result.output.split('\n').find(value => value.startsWith(CHILD_OUTPUT_PREFIX));
+  expect(line, result.output).toBeDefined();
+  return { ...result, record: JSON.parse(line!.slice(CHILD_OUTPUT_PREFIX.length)) as ChildOutput, fixture };
+}
+
+describe('project-doc-parts — native lossless child output', () => {
+  it.each(['stdout', 'stderr'])('retains %s at N-1, N and N+1 with a nonzero child exit', stream => {
+    const root = mkdtempSync(join(tmpdir(), 'projector-output-'));
+    try {
+      for (const bytes of [OLD_PIPE_BUFFER - 1, OLD_PIPE_BUFFER, OLD_PIPE_BUFFER + 1]) {
+        const result = guardFixture(root, bytes, 17, stream);
+        expect(result.status, result.output).toBe(1);
+        expect(result.record.status).toBe(17);
+        expect(result.record.error).toBeNull();
+        expect(result.record.signal).toBeNull();
+        expect(result.record.pid).toBeGreaterThan(0);
+        const primary = stream === 'stdout' ? result.record.stdout : result.record.stderr;
+        const companion = stream === 'stdout' ? result.record.stderr : result.record.stdout;
+        const recovered = readFileSync(primary.path);
+        expect(primary.bytes).toBe(bytes);
+        expect(recovered.equals(outputBytes(bytes, 17))).toBe(true);
+        expect(readFileSync(companion.path, 'utf8')).toBe('COMPANION_STREAM Ω\n');
+        expect(result.output).toContain('doc-claims guards FAILED');
+        expect(result.output).toContain('FAIL decisive assertion');
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 120_000);
+
+  it('recovers a decisive final assertion after the old buffer where native pipes fail', () => {
+    const root = mkdtempSync(join(tmpdir(), 'projector-output-control-'));
+    try {
+      const bytes = OLD_PIPE_BUFFER * 2 + 4096;
+      const result = guardFixture(root, bytes, 17, 'stdout');
+      const baseline = spawnSync(process.execPath, [result.fixture, String(bytes), '17', 'stdout', ''],
+        { encoding: 'utf8', timeout: 30_000 });
+      expect(baseline.error && 'code' in baseline.error ? baseline.error.code : null).toBe('ENOBUFS');
+      expect(result.status, result.output).toBe(1);
+      expect(result.record.status).toBe(17);
+      const recovered = readFileSync(result.record.stdout.path);
+      expect(recovered.equals(outputBytes(bytes, 17))).toBe(true);
+      expect(recovered.indexOf(Buffer.from(FAILED_TAIL))).toBeGreaterThan(OLD_PIPE_BUFFER);
+      expect(result.output).toContain('FAIL decisive assertion beyond the old buffer');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 60_000);
+
+  it('keeps passing, signaled and unstarted children distinct with readable log references', () => {
+    const root = mkdtempSync(join(tmpdir(), 'projector-output-outcomes-'));
+    try {
+      const passed = guardFixture(root, OLD_PIPE_BUFFER + 1, 0, 'stdout');
+      expect(passed.status, passed.output).toBe(0);
+      expect(readFileSync(passed.record.stdout.path).equals(outputBytes(OLD_PIPE_BUFFER + 1, 0))).toBe(true);
+      const signaled = guardFixture(root, OLD_PIPE_BUFFER + 1, 17, 'stderr', 'SIGTERM');
+      expect(signaled.status).toBe(1);
+      expect(signaled.record.status).toBeNull();
+      expect(signaled.record.signal).toBe('SIGTERM');
+      expect(readFileSync(signaled.record.stderr.path).equals(outputBytes(OLD_PIPE_BUFFER + 1, 17))).toBe(true);
+      const missing = guardFixture(root, 1024, 17, 'stdout', '', true);
+      expect(missing.status).toBe(1);
+      expect(missing.record.error?.code).toBe('ENOENT');
+      expect(readFileSync(missing.record.stdout.path).length).toBe(0);
+      expect(missing.output).toContain('verification did NOT complete');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 120_000);
+
+  it('hashes complete committed artifacts beyond the pipe boundary through the native CLI seam', () => {
+    const root = mkdtempSync(join(tmpdir(), 'projector-committed-output-'));
+    try {
+      const content = outputBytes(OLD_PIPE_BUFFER * 2 + 4096, 17);
+      expect(CANDIDATE_ARTIFACTS.length).toBe(3);
+      for (const artifact of CANDIDATE_ARTIFACTS as Array<{ path: string }>) {
+        const path = join(root, artifact.path);
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, content);
+      }
+      execFileSync('git', ['init', '-q', root]);
+      execFileSync('git', ['-C', root, 'add', '.']);
+      execFileSync('git', ['-C', root, '-c', 'user.name=Native fixture', '-c',
+        'user.email=native-fixture@example.invalid', 'commit', '-qm', 'native artifact fixture']);
+      const commit = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+      const wrapper = `
+        import { readCommittedCandidateArtifacts } from ${JSON.stringify(pathToFileURL(SCRIPT).href)};
+        const config = JSON.parse(process.argv[1]);
+        const result = readCommittedCandidateArtifacts(config);
+        console.log('ARTIFACT_RESULT ' + JSON.stringify(result));
+        process.exitCode = result.ok ? 0 : 1;
+      `;
+      const result = runProjector([JSON.stringify({ root, commit, logRoot: join(root, 'logs') })], {},
+        ['--input-type=module', '-e', wrapper]);
+      expect(result.status, result.output).toBe(0);
+      const line = result.output.split('\n').find(value => value.startsWith('ARTIFACT_RESULT '));
+      expect(line).toBeDefined();
+      const observed = JSON.parse(line!.slice('ARTIFACT_RESULT '.length));
+      expect(observed.artifacts).toHaveLength(3);
+      for (const artifact of observed.artifacts) {
+        expect(artifact.bytes).toBe(content.length);
+        expect(artifact.sha256).toBe(createHash('sha256').update(content).digest('hex'));
+      }
+      const records = result.output.split('\n').filter(value => value.startsWith(CHILD_OUTPUT_PREFIX))
+        .map(value => JSON.parse(value.slice(CHILD_OUTPUT_PREFIX.length)) as ChildOutput);
+      expect(records).toHaveLength(3);
+      for (const record of records) expect(readFileSync(record.stdout.path).equals(content)).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 60_000);
 });

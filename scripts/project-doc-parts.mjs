@@ -23,14 +23,57 @@
  * Hence: the output physically cannot exceed the budget. It degrades by dropping the
  * lowest-priority parts and leaving a POINTER to them, and it reports what it cut.
  */
-import { readFileSync, writeFileSync, existsSync, lstatSync, unlinkSync, readlinkSync, symlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, lstatSync, unlinkSync, readlinkSync, symlinkSync, mkdirSync, mkdtempSync, openSync, closeSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { homedir } from 'node:os';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { connectScriptPg } from './lib/pg-url.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const CHILD_LOG_ROOT = resolve(homedir(), '.papercusp', 'test-artifacts', 'doc-part-projector');
+
+/** Keep the existing synchronous child runner, with the maintained regular-file
+ * stdio pattern instead of maxBuffer-limited pipes. Logs survive failure and
+ * summaries; their exact paths and byte counts are always published. */
+function runProjectionChild(command, args, { run = spawnSync, logRoot = CHILD_LOG_ROOT, ...options }) {
+  mkdirSync(logRoot, { recursive: true });
+  const directory = mkdtempSync(resolve(logRoot, 'child-'));
+  const stdoutPath = resolve(directory, 'stdout.log');
+  const stderrPath = resolve(directory, 'stderr.log');
+  const descriptors = [];
+  let result;
+  try {
+    const stdoutFd = openSync(stdoutPath, 'wx', 0o600);
+    descriptors.push(stdoutFd);
+    const stderrFd = openSync(stderrPath, 'wx', 0o600);
+    descriptors.push(stderrFd);
+    try {
+      result = run(command, args, { ...options, stdio: ['ignore', stdoutFd, stderrFd] }) ?? {};
+    } catch (error) {
+      result = { status: null, signal: null, error };
+    }
+  } finally {
+    for (const fd of descriptors) closeSync(fd);
+  }
+  // Preserve the existing injectable spawn-compatible seam as well: an injected
+  // runner may return output instead of writing the supplied descriptors.
+  if (result.stdout != null) writeFileSync(stdoutPath, result.stdout);
+  if (result.stderr != null) writeFileSync(stderrPath, result.stderr);
+  const outputLogs = {
+    stdout: { path: stdoutPath, bytes: statSync(stdoutPath).size },
+    stderr: { path: stderrPath, bytes: statSync(stderrPath).size },
+  };
+  console.log(`DOC_PART_CHILD_OUTPUT ${JSON.stringify({
+    requestedCommand: command, requestedArgs: args, cwd: options.cwd,
+    pid: result.pid ?? null, status: result.status ?? null, signal: result.signal ?? null,
+    error: result.error ? { code: result.error.code ?? null, message: result.error.message } : null,
+    ...outputLogs,
+  })}`);
+  return { ...result, outputLogs,
+    stdout: readFileSync(stdoutPath, 'utf8'), stderr: readFileSync(stderrPath, 'utf8') };
+}
 
 export const WORKSPACE_ID = process.env.PAPERCUSP_WORKSPACE_ID ?? 'papercusp-workspace';
 export const HARNESS_SLUG = process.env.PAPERCUSP_HARNESS_SLUG ?? 'papercusp';
@@ -1142,6 +1185,7 @@ export function readCommittedCandidateArtifacts({
   commit,
   root = ROOT,
   runGit = spawnSync,
+  logRoot = CHILD_LOG_ROOT,
 } = {}) {
   const candidate = typeof commit === 'string' ? commit.trim() : '';
   if (!candidate) {
@@ -1153,10 +1197,10 @@ export function readCommittedCandidateArtifacts({
     const ref = `${candidate}:${artifact.path}`;
     let result;
     try {
-      result = runGit(
+      result = runProjectionChild(
         'git',
         ['show', '--format=', '--no-ext-diff', '--end-of-options', ref],
-        { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+        { cwd: root, encoding: 'utf8', run: runGit, logRoot },
       );
     } catch (error) {
       return {
@@ -1767,19 +1811,24 @@ export function rollBackWrittenFiles(written) {
  * quietly — an unrun guard suite and a green one are the same silence, which is the precise
  * failure this function exists to end.
  */
-function verifyDocClaims() {
-  if (process.env.PAPERCUSP_SKIP_DOC_CLAIMS_VERIFY === '1') {
+export function verifyDocClaims({ spawn = spawnSync, root = ROOT, env = process.env, logRoot = CHILD_LOG_ROOT } = {}) {
+  if (env.PAPERCUSP_SKIP_DOC_CLAIMS_VERIFY === '1') {
     console.log('\n  ⚠ doc-claims verification SKIPPED (PAPERCUSP_SKIP_DOC_CLAIMS_VERIFY=1) — NOT verified.');
     return true;
   }
   console.log('\n  running doc-claims guards against the regenerated corpus…');
-  const res = spawnSync(
-    'npx',
-    ['vitest', 'run', '--root', 'packages/operator-core', '--config', 'vitest.config.ts', 'lib/doc-claims/'],
-    { cwd: ROOT, encoding: 'utf8', env: { ...process.env, PAPERCUSP_SKIP_DOC_CLAIMS_VERIFY: '1' } },
-  );
+  let res;
+  try {
+    res = runProjectionChild(
+      'npx',
+      ['vitest', 'run', '--root', 'packages/operator-core', '--config', 'vitest.config.ts', 'lib/doc-claims/'],
+      { cwd: root, encoding: 'utf8', env: { ...env, PAPERCUSP_SKIP_DOC_CLAIMS_VERIFY: '1' }, run: spawn, logRoot },
+    );
+  } catch (error) {
+    res = { status: null, error };
+  }
   if (res.error || typeof res.status !== 'number') {
-    console.error(`  ✗ doc-claims guards could NOT be run (${res.error?.message ?? 'no exit status'}).`);
+    console.error(`  ✗ doc-claims verification did NOT complete (${res.error?.message ?? res.signal ?? 'no exit status'}).`);
     console.error('    Treating as NOT VERIFIED. Re-run `npx vitest run --root packages/operator-core --config vitest.config.ts lib/doc-claims/`');
     console.error('    by hand, or pass --no-verify if you are deliberately projecting a mid-repair corpus.');
     return false;
