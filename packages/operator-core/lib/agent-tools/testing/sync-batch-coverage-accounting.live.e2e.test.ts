@@ -1,7 +1,7 @@
 /**
  * LIVE end-to-end proof for green-main-ratchet-convergence-2026-10-17 AUTO-BAR-R-17-P-009
  * (rubric rev 12, #D-036..#D-039): both sync-batch routines kept recording five-minute slots,
- * every recorded slot carries a cause, and low coverage carries a fresh open alarm.
+ * all 288 complete expected buckets carry a cause, and low coverage carries a fresh open alarm.
  *
  * Drives the real native check behind `testing:record-run { syncBatchCoverageAccounting: {} }`
  * (`executeSyncBatchCoverageAccounting`: the committed probe and four negative controls, read in
@@ -72,7 +72,7 @@ interface ServerIdentity { database: string; port: number; started: string }
 
 /**
  * The probe's six-field row, recomputed from the raw records without its SQL: per routine, the
- * distinct five-minute slots inside the 24h window, how many were evaluated, how many carry no cause, and whether a
+ * complete five-minute buckets preceding the current bucket, including absent/empty buckets, and whether a
  * coverage-low alarm is both open on the routine and fresh on its non-terminal work-item.
  */
 function recompute(nowMs: number, routines: RoutineRow[], alarms: AlarmRow[]): R17Row {
@@ -131,6 +131,20 @@ const fixtures = [
     ticks: [...distinct().filter((_, i) => i !== 144), tick(recent + 1), tick(recent + 2)], slots: 287, ratio: 287 / 288 },
   { name: 'all buckets plus a duplicate still count 288',
     ticks: [...distinct(), tick(recent + 1)], slots: 288, ratio: 1, accounted: 1 },
+  { name: 'a complete lattice has the same result in reverse record order',
+    ticks: distinct().reverse(), slots: 288, ratio: 1, accounted: 1 },
+  { name: 'an empty cause in the oldest bucket fails even with every bucket present',
+    ticks: [...distinct().slice(0, -1), { atMs: FIXTURE_NOW - WINDOW_MS, evaluated: true }],
+    slots: 288, ratio: 1, unaccounted: 2 },
+  { name: 'current and expired ticks cannot replace a missing completed bucket',
+    ticks: [...distinct().slice(1), tick(FIXTURE_NOW), tick(FIXTURE_NOW - WINDOW_MS - 1)],
+    slots: 287, ratio: 287 / 288 },
+  { name: 'a mid-bucket clock excludes all ticks in its unfinished bucket',
+    nowMs: FIXTURE_NOW + 12345, ticks: [...distinct(), tick(FIXTURE_NOW + 1)],
+    slots: 288, ratio: 1, accounted: 1 },
+  { name: 'the next snapshot advances the lattice and admits the newly completed bucket',
+    nowMs: FIXTURE_NOW + COVERAGE_EXPECTED_INTERVAL_MS,
+    ticks: [...distinct(), tick(FIXTURE_NOW)], slots: 288, ratio: 1, accounted: 1 },
   { name: 'evaluated duplicates cannot inflate the coverage ratio',
     ticks: [...Array.from({ length: 20 }, (_, i) => tick(recent + i)), tick(recent - COVERAGE_EXPECTED_INTERVAL_MS, false)],
     slots: 2, ratio: 1 / 288, low: 2 },
@@ -174,7 +188,7 @@ function expectedFixture(fixture: typeof fixtures[number]): R17Row {
 
 describe('R17 distinct five-minute slots: independent recomputation', () => {
   it.each(fixtures)('$name', fixture => {
-    expect(recompute(FIXTURE_NOW, fixtureRows(fixture.ticks, fixture.alarm), fixtureAlarms(fixture.alarm)))
+    expect(recompute(fixture.nowMs ?? FIXTURE_NOW, fixtureRows(fixture.ticks, fixture.alarm), fixtureAlarms(fixture.alarm)))
       .toEqual(expectedFixture(fixture));
   });
 });
@@ -193,10 +207,10 @@ describe.skipIf(!LIVE)('R17 distinct five-minute slots: committed SQL on read-on
       await client.end();
     }
   });
-  it.each(fixtures)('$name', async fixture => {
+  async function queryFixture(name: string, fixture: typeof fixtures[number]): Promise<R17Row> {
     // Execute the committed SQL unchanged apart from its input relations and clock.
     // JSON parameters feed a read-only fixture; no live routine or alarm row is written.
-    const probe = readFileSync(resolve(ROOT, PROBE), 'utf8')
+    const probe = readFileSync(resolve(ROOT, PROBE.replace('probe.sql', `${name}.sql`)), 'utf8')
       .replaceAll('harness_shared.routines',
         'jsonb_to_recordset($1::jsonb) AS fixture_routines(workspace_id text, name text, metadata jsonb)')
       .replaceAll('harness_shared.work_items w',
@@ -208,9 +222,20 @@ describe.skipIf(!LIVE)('R17 distinct five-minute slots: committed SQL on read-on
     }));
     // Foreign workspace/routine rows must never contribute slots or satisfy an alarm.
     const foreign = routines.map(row => ({ ...row, workspace_id: 'foreign-workspace' }));
-    const [row] = (await client.query(probe, [JSON.stringify([...routines, ...foreign]), JSON.stringify(alarms), FIXTURE_NOW])).rows;
-    expect(parseR17Row(line(row))).toEqual(expectedFixture(fixture));
+    const [row] = (await client.query(probe,
+      [JSON.stringify([...routines, ...foreign]), JSON.stringify(alarms), fixture.nowMs ?? FIXTURE_NOW])).rows;
+    return parseR17Row(line(row));
+  }
+  it.each(fixtures)('$name', async fixture => {
+    expect(await queryFixture('probe', fixture)).toEqual(expectedFixture(fixture));
   });
+  it.each(['control-noalarm', 'control-stale', 'control-terminal', 'control-floor'])(
+    '%s rejects a complete low-coverage lattice that the probe accepts', async name => {
+      const fixture = { name: 'low coverage with fresh alarms', ticks: distinct(false), slots: 288,
+        ratio: 0, alarm: true, accounted: 1 };
+      expect(judgeR17(await queryFixture('probe', fixture)).passed).toBe(true);
+      expect(judgeR17(await queryFixture(name, fixture)).passed).toBe(false);
+    });
 });
 
 describe.skipIf(!LIVE)('LIVE: sync-batch slot accounting on the operator database (AUTO-BAR-R-17-P-009)', () => {

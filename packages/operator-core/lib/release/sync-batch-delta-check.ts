@@ -908,9 +908,10 @@ export interface SyncDeltaCoverage {
   alarmRefreshedAtMs?: number;
 }
 
-/** Coverage history kept on the cursor: 24h, bounded so the row cannot grow. */
+/** Original ticks for the complete preceding 24h of schedule buckets and the
+ *  current bucket. Retention follows time, never an arbitrary record count:
+ *  duplicate original records must not evict a different required bucket. */
 export const COVERAGE_RETENTION_MS = 24 * 60 * 60_000;
-export const COVERAGE_MAX_TICKS = 400;
 /** The durable sync-delta routine fires every five minutes. Coverage fills
  *  opportunities that passed while an earlier invocation was still running. */
 export const COVERAGE_EXPECTED_INTERVAL_MS = 5 * 60_000;
@@ -995,8 +996,9 @@ export function recordCoverageTick(
   prior: SyncDeltaCoverage | undefined,
   tick: CoverageTick,
 ): SyncDeltaCoverage {
-  const cutoff = tick.atMs - COVERAGE_RETENTION_MS;
-  const ticks = [...(prior?.ticks ?? []).filter((t) => t.atMs >= cutoff), tick].slice(-COVERAGE_MAX_TICKS);
+  const cutoff = Math.floor(tick.atMs / COVERAGE_EXPECTED_INTERVAL_MS) * COVERAGE_EXPECTED_INTERVAL_MS
+    - COVERAGE_RETENTION_MS;
+  const ticks = [...(prior?.ticks ?? []).filter((t) => t.atMs >= cutoff), tick];
   return {
     ...(prior?.alarmOpenSinceMs !== undefined ? { alarmOpenSinceMs: prior.alarmOpenSinceMs } : {}),
     ...(prior?.alarmRefreshedAtMs !== undefined ? { alarmRefreshedAtMs: prior.alarmRefreshedAtMs } : {}),
@@ -1031,14 +1033,13 @@ export function recordCoverageOpportunities(
     return recordCoverageTick(prior, tick);
   }
 
-  const cutoff = observedUntilMs - COVERAGE_RETENTION_MS;
+  const cutoff = Math.floor(observedUntilMs / intervalMs) * intervalMs - COVERAGE_RETENTION_MS;
   const missed: CoverageTick[] = [];
   // Schedule opportunities use epoch-aligned buckets, as the acceptance reader does.
   // Rounding elapsed time loses a bucket when invocation timestamps drift across its edges.
   const appendMissed = (firstSlot: number, endSlot: number): void => {
     const first = Math.max(
       firstSlot,
-      endSlot - COVERAGE_MAX_TICKS,
       Math.ceil(cutoff / intervalMs),
     );
     for (let slot = first; slot < endSlot; slot += 1) {

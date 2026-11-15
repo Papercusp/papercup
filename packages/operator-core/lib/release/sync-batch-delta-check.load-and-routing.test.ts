@@ -79,6 +79,7 @@ import {
   COVERAGE_ALARM_WINDOW_MS,
   COVERAGE_EXPECTED_INTERVAL_MS,
   COVERAGE_JUDGE_DEADLINE_MS,
+  COVERAGE_RETENTION_MS,
   SYNC_DELTA_RUN_BUDGET_MS,
   SYNC_DELTA_TIMEOUTS_MS,
   REDUCED_BUDGET,
@@ -433,6 +434,48 @@ describe('coverage record + alarm (R-2)', () => {
     const old = { atMs: NOW - 25 * 60 * 60_000, evaluated: true, status: 'green' as const };
     const next = recordCoverageTick({ ticks: [old] }, { atMs: NOW, evaluated: false, status: 'skipped' });
     expect(next.ticks).toEqual([{ atMs: NOW, evaluated: false, status: 'skipped' }]);
+  });
+
+  it.each(['tick', 'opportunities'])('%s retains the oldest complete bucket until the bucket expires', mode => {
+    const interval = COVERAGE_EXPECTED_INTERVAL_MS;
+    const anchor = Date.UTC(2026, 10, 15, 12);
+    const originals: CoverageTick[] = Array.from({ length: 288 }, (_, i) => ({
+      atMs: anchor - COVERAGE_RETENTION_MS + i * interval + 1000,
+      evaluated: true, status: 'green',
+    }));
+    const current: CoverageTick = { atMs: anchor + interval - 1, evaluated: false, status: 'skipped' };
+    const coverage = mode === 'tick' ? recordCoverageTick({ ticks: originals }, current)
+      : recordCoverageOpportunities({ ticks: originals }, current, current.atMs);
+    expect(coverage.ticks).toEqual([...originals, current]);
+    const later: CoverageTick = { ...current, atMs: anchor + interval };
+    const expired = recordCoverageTick(coverage, later);
+    expect(expired.ticks).not.toContain(originals[0]);
+    expect(expired.ticks).toContain(originals[1]);
+  });
+
+  it.each([399, 400, 401])('preserves every relevant original record at %i ticks', count => {
+    const atMs = Date.UTC(2026, 10, 15, 12);
+    const originals: CoverageTick[] = Array.from({ length: count }, (_, i) => ({
+      atMs: atMs - COVERAGE_EXPECTED_INTERVAL_MS + i,
+      evaluated: true, status: 'green', reason: `original-${i}`,
+    }));
+    const current: CoverageTick = { atMs, evaluated: false, status: 'skipped' };
+    expect(recordCoverageTick({ ticks: originals }, current).ticks).toEqual([...originals, current]);
+  });
+
+  it('preserves duplicate original records across many appends and serialized restarts', () => {
+    const anchor = Date.UTC(2026, 10, 15, 12);
+    let coverage = { ticks: [] as CoverageTick[] };
+    const originals: CoverageTick[] = [];
+    for (let i = 0; i < 801; i += 1) {
+      const tick: CoverageTick = { atMs: anchor + i, evaluated: true, status: 'green', reason: `original-${i}` };
+      originals.push(tick);
+      coverage = recordCoverageTick(coverage, tick);
+      if (i % 100 === 0) coverage = JSON.parse(JSON.stringify(coverage));
+    }
+    expect(coverage.ticks).toEqual(originals);
+    expect(recordCoverageTick({ ticks: [...originals].reverse() }, originals[800]!).ticks)
+      .toEqual([...originals].reverse().concat(originals[800]!));
   });
 
   it('too few samples is NOT an alarm (ratio null), never a false low', () => {
