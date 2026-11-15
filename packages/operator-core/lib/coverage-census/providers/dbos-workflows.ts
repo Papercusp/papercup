@@ -30,7 +30,11 @@ export function createDbosSecurityObserver() {
       installed.add(sdk);
     },
     capture(launched: boolean) {
-      const surfaces = [...methods.values()].map(row => ({ ...row, attrs: { ...row.attrs, executorLaunched: launched } }));
+      // `attrs` is optional on ObservedSurface, so a bare spread types as a union whose
+      // `{ executorLaunched }` member has no index signature. Every row here was built
+      // by install() with attrs, so annotate the rebuilt row as always carrying them.
+      const surfaces = [...methods.values()].map((row): ObservedSurface & { attrs: Record<string, unknown> } =>
+        ({ ...row, attrs: { ...row.attrs, executorLaunched: launched } }));
       const unresolved = ['dbos-registration-source-and-adapter-reconciliation-unverified'];
       if (!launched) unresolved.push('dbos-executor-not-launched');
       if (!surfaces.length) unresolved.push('dbos-installed-registration-set-empty');
@@ -39,7 +43,7 @@ export function createDbosSecurityObserver() {
         const key = JSON.stringify([row.kind, row.surfaceId]);
         if (seen.has(key)) unresolved.push('dbos-installed-registration-duplicate:' + key);
         seen.add(key);
-        if (!row.attrs.loadedFunctionSha256) unresolved.push('dbos-loaded-function-unavailable:' + key);
+        if (!row.attrs['loadedFunctionSha256']) unresolved.push('dbos-loaded-function-unavailable:' + key);
       }
       return { surfaces, unresolved, closureAccepted: false as const };
     },
