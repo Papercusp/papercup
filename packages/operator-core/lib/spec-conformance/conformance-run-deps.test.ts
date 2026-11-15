@@ -532,9 +532,29 @@ describe('conformance test-run evidence', () => {
       const result = await deps.evaluateCheck({ barKey: 'R-1', role: 'done-when', checkId: 'R-1',
         check: { kind: 'tests', files: [file], all: [probe] } });
       expect(result).toMatchObject({ kind: 'tests', verdict });
+      if (verdict === 'error') {
+        expect(result?.detail).toContain('R-1');
+        expect(result?.detail).toContain('unavailable');
+      }
       expect(evaluateProbes).toHaveBeenCalledOnce();
       expect(evaluateProbes.mock.calls[0]![0]).toMatchObject({ criteria: [{ key: 'R-1', check: { kind: 'probe', all: [probe] } }] });
     } finally { build.mockRestore(); }
+  });
+
+  it.each([
+    ['probe_invalid', "probe[0]: the configured tool excludes the independent judge role"],
+    ['probe_run_failed', 'read-only probe timed out before producing a measurement'],
+  ])('preserves standalone probe refusal %s and its diagnostic', async (error, detail) => {
+    const criterionKey = 'R-17:done-when';
+    const evaluateProbes = vi.fn().mockResolvedValue({ ok: false, error, criterionKey, detail });
+    const deps = productionConformanceDeps({ workspaceId: 'workspace', harnessSlug: 'papercusp', planSlug: PLAN, evaluateProbes });
+    const result = await deps.evaluateCheck({ barKey: 'R-17', role: 'done-when', checkId: criterionKey,
+      check: { kind: 'probe', probe: { kind: 'tool', tool: 'state:read', args: {}, schemaRevision: 'fixture',
+        expect: { path: '$.value', op: 'eq', value: true } } } });
+    expect(result).toMatchObject({ kind: 'probe', verdict: 'error', value: null });
+    expect(result?.detail).toContain(error);
+    expect(result?.detail).toContain(criterionKey);
+    expect(result?.detail).toContain(detail);
   });
 
   it('passes the caller tracker from the production adapter to its test-ledger reader', async () => {

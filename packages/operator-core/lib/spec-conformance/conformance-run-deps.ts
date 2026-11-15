@@ -497,7 +497,8 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
           ratings: { [request.checkId]: { rating: 'unknown' } },
           dispatchTool: rescoreProbeDispatcher(input.harnessSlug, input.dispatchTool, input.workspaceId),
         });
-        if (!evaluation.ok) return { ...tests, verdict: 'error', detail: `tests conjunction probe unjudged: ${evaluation.error}` };
+        if (!evaluation.ok) return { ...tests, verdict: 'error',
+          detail: `tests conjunction probe unjudged: ${evaluation.error}; criterion ${evaluation.criterionKey}; ${evaluation.detail}` };
         const probes = foldResults('probe', probeCheckResults(request.checkId, evaluation.checkRuns, [criterion]), nowIso());
         return { ...tests, verdict: foldVerdicts([tests.verdict, probes.verdict]),
           detail: [tests.detail, `additional probes: ${probes.verdict}`, probes.detail].filter(Boolean).join('; ') };
@@ -532,7 +533,8 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
           dispatchTool: rescoreProbeDispatcher(input.harnessSlug, input.dispatchTool, input.workspaceId),
         });
         if (!evaluation.ok) {
-          return { kind: 'probe', verdict: 'error', value: null, unit: null, measuredAt: nowIso(), detail: `probe unjudged: ${evaluation.error}` };
+          return { kind: 'probe', verdict: 'error', value: null, unit: null, measuredAt: nowIso(),
+            detail: `probe unjudged: ${evaluation.error}; criterion ${evaluation.criterionKey}; ${evaluation.detail}` };
         }
         return foldResults('probe', probeCheckResults(request.checkId, evaluation.checkRuns, [criterion]), nowIso());
       }
