@@ -611,6 +611,11 @@ export function buildBoundedTimelineResponse(
   };
 }
 
+export const timelineDateBoundsSchema = z.object({
+  since: z.string().datetime({ offset: true }).max(40).optional().describe('ISO lower bound (default: 24h ago).'),
+  until: z.string().datetime({ offset: true }).max(40).optional().describe('ISO upper bound (default: now).'),
+});
+
 export default defineTool({
   name: 'sessions:timeline',
   needsWorkspaceTx: true,
@@ -649,8 +654,7 @@ export default defineTool({
       .min(1)
       .max(120)
       .describe("Agent ownerId, a short handle that uniquely matches a current live owner, or 'self'. Use the full ownerId for historical or ended sessions."),
-    since: z.string().max(40).optional().describe('ISO lower bound (default: 24h ago).'),
-    until: z.string().max(40).optional().describe('ISO upper bound (default: now).'),
+    ...timelineDateBoundsSchema.shape,
     limit: z
       .number()
       .int()

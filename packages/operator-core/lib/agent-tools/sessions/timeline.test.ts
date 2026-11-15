@@ -4,9 +4,20 @@ import {
   buildBoundedTimelineResponse,
   groupRepeatedTimelineEntries,
   SESSION_TIMELINE_RESPONSE_BUDGET_CHARS,
+  timelineDateBoundsSchema,
   timelineResultSchema,
   type TimelineEntry,
 } from './timeline';
+
+describe('sessions:timeline timestamp bounds', () => {
+  it('rejects relative date strings before timestamp casts while accepting ISO offsets', () => {
+    for (const bound of ['since', 'until'] as const) {
+      expect(timelineDateBoundsSchema.safeParse({ [bound]: '-3 minutes' }).success).toBe(false);
+      expect(timelineDateBoundsSchema.safeParse({ [bound]: '30m' }).success).toBe(false);
+      expect(timelineDateBoundsSchema.safeParse({ [bound]: '2026-11-15T00:00:00-05:00' }).success).toBe(true);
+    }
+  });
+});
 
 describe('sessions:timeline audit grouping', () => {
   it('collapses identical machinery while preserving newest-first order and oldest timestamp', () => {
