@@ -1056,6 +1056,11 @@ The fix pattern, both halves: pin the census fetch independently of the caller's
 (`truncatedByLimit`) so a floor is never read as a total. **Guard it behaviourally,
 not by field name** 
 
+## Engineering discipline
+
+**Lossless data: bound the work, never the truth.** Any cap, `LIMIT`, page size, queue eviction or text cut over real data must preserve the complete source, signal omissions, and expose a recovery path that consumers actually follow. Repeated batches must make durable, fair progress across restarts; never slice an identity or semantic record. Plans and reviews require N-1/N/N+1, multi-batch, permutation and restart-fairness coverage with the decisive item after the boundary. Raising a cap is not a fix.
+
+
 ## Prompts are auto-generated — edit the source, never the rendered output
 
 Every agent-facing prompt is assembled at launch/spawn from sources: chat-surface
