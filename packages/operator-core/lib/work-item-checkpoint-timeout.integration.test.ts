@@ -202,7 +202,7 @@ describe('work-item checkpoint store — real PG statement timeout', () => {
       workItemId: secondId,
       completedWorkItemIds: [firstId],
     });
-    const waitSnapshot = (caught as CheckpointSnapshotFailureError).waitSnapshot;
+    const waitSnapshot = (caught as InstanceType<typeof CheckpointSnapshotFailureError>).waitSnapshot;
     expect(waitSnapshot).toMatchObject({
       status: 'sampled',
       waitEvent: 'PgSleep',

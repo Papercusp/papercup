@@ -15,7 +15,7 @@ import { dirname, resolve } from 'node:path';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { FLAGS, FLAG_DEFAULTS, type FlagKey } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
-import { validateClaimSpec, type ClaimSpec } from './claim-spec';
+import { validateClaimSpec, type ClaimSpec, type FilterNode } from './claim-spec';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../../../../');
@@ -99,7 +99,7 @@ const excludedIds = [
   'EI-27072885052499278', 'EI-27075802791778412', 'WI-10006055',
   'WI-6554700010019833',
 ];
-const specFilter = {
+const specFilter: FilterNode = {
   all: [
     {
       all: [{

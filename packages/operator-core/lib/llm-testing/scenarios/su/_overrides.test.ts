@@ -68,7 +68,7 @@ describe('SU S04 virtual design workspace', () => {
     expect(writes.hits.map((hit: { tool: string }) => hit.tool)).toEqual([
       'capability:edit', 'capability:write', 'code:run',
     ]);
-    expect(SU_S04_DESIGN_FIRST.asserts?.map((assertion) => assertion.name))
+    expect(SU_S04_DESIGN_FIRST.asserts?.map((assertion) => ('name' in assertion ? assertion.name : undefined)))
       .toContain('reaches-for-design-system');
   });
 });

@@ -135,7 +135,7 @@ describe('routeOpenDirectives', () => {
         if (leg === boundary) { enter(); await paused; }
       };
       const deps = fakeDeps({ [GONE]: 'ended', [LEADER]: 'live' }, {
-        sessionStates: vi.fn(async ids => {
+        sessionStates: vi.fn(async (ids: readonly string[]) => {
           await pause(ids.includes(GONE) ? 'addressees' : 'related');
           return new Map<string, SessionState>(ids.map(id => [id, id === GONE ? 'ended' : 'live']));
         }),

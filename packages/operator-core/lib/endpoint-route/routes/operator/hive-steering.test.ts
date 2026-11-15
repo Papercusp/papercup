@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   read: vi.fn(), pot: vi.fn(), canonical: vi.fn(), home: vi.fn(), workspace: vi.fn(),
 }));
-vi.mock('@papercusp/agent-mcp', () => ({ defineTool: (tool: unknown) => tool }));
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()), defineTool: (tool: unknown) => tool }));
 vi.mock('../../../owner-steering', () => ({
   getOwnerSteering: mocks.read,
   DEFAULT_OWNER_STEERING: { directive: null, pauseNewWork: false, pausedUntil: null },
@@ -16,7 +16,7 @@ import route from './hive-steering';
 
 const clear = { directive: null, pauseNewWork: false, pausedUntil: null };
 async function read(query = '?workspace=ws-a&hive=local-a') {
-  return route.handler(new Request(`http://localhost/api/operator/hive-steering${query}`));
+  return route.handler(new Request(`http://localhost/api/operator/hive-steering${query}`), {} as never);
 }
 beforeEach(() => {
   vi.resetAllMocks();

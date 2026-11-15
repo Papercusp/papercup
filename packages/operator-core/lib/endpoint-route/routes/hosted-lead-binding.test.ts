@@ -75,7 +75,7 @@ describe('hosted lead binding browser routes', () => {
     const f = fixture();
     mockResolvedOnceTyped(vi.mocked(f.service.read), null);
     expect((await f.routes[1]!.handler(f.request(1), context)).status).toBe(404);
-    f.service.redeem.mockRejectedValueOnce(new Error('secret-token SQL user-b'));
+    vi.mocked(f.service.redeem).mockRejectedValueOnce(new Error('secret-token SQL user-b'));
     const response = await f.routes[0]!.handler(f.request(0), context);
     expect(response.status).toBe(503); expect(await response.text()).not.toMatch(/secret-token|SQL|user-b/);
   });
