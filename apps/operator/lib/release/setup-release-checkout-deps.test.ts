@@ -178,6 +178,75 @@ describe('frozen dependency-only generation selection', () => {
   );
 });
 
+describe('WI-6554700010049444: dependencies-only refuses an unloadable generation before materializing it', () => {
+  // Runs the shipped validate_dependencies_only_input with only its two
+  // side-effecting collaborators stubbed: the prevalidated select (a token check
+  // against a real generation) and the native load check, whose real behaviour is
+  // covered in dependency-generation.test.ts. This pins the WIRING: a failed load
+  // is FATAL here, at the selector check, not after the tree has been copied.
+  it.each([
+    ['loadable', '0', 0],
+    ['unloadable', '74', 1],
+    ['not-dependencies-only', '74', 0],
+  ] as const)('%s generation', (mode, loadRc, expectedStatus) => {
+    const fixture = mkdtempSync(join(tmpdir(), 'deps-only-native-'));
+    try {
+      const input = 'a'.repeat(64);
+      const identity = `v1-${'b'.repeat(64)}`;
+      const generationPath = join(fixture, 'generations', identity);
+      mkdirSync(join(fixture, '.inputs'));
+      mkdirSync(join(generationPath, 'tree'), { recursive: true });
+      writeFileSync(join(fixture, '.inputs', input),
+        `input=${input}\nidentity=${identity}\ntoken=v3:${'c'.repeat(64)}\n`);
+      writeFileSync(join(generationPath, '.papercusp-dependency-generation'), 'scope=full\n');
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail',
+        'source "$GENERATION_SCRIPT"',
+        'source <(sed -n "/^validate_dependencies_only_input()/,/^}/p" "$SETUP_SCRIPT")',
+        'log() { printf "%s\\n" "$*"; }',
+        'dependency_generation_input_fingerprint_ref() { printf "%s\\n" "$TARGET_INPUT"; }',
+        'dependency_generation_select_prevalidated() { printf "select=%s token=%s\\n" "$2" "$3"; }',
+        'dependency_generation_native_addons_load() { printf "native-check=%s\\n" "$1"; return "$LOAD_RC"; }',
+        'rc=0; validate_dependencies_only_input || rc=$?',
+        'printf "rc=%s\\n" "$rc"',
+      ].join('\n')], { encoding: 'utf8', timeout: 10_000, env: { ...process.env,
+        GENERATION_SCRIPT: DEPENDENCY_GENERATION_SCRIPT, SETUP_SCRIPT: SCRIPT_PATH,
+        DEPENDENCIES_ONLY: mode === 'not-dependencies-only' ? '0' : '1',
+        DEPENDENCY_GENERATION_ROOT: fixture, RELEASE_ROOT: fixture, TARGET_SHA: 'HEAD',
+        TARGET_INPUT: input, PINNED_DEPENDENCY_GENERATION_ID: identity,
+        DEPENDENCY_GENERATION_PATH: generationPath,
+        DEPENDENCY_GENERATION_TREE: join(generationPath, 'tree'), LOAD_RC: loadRc,
+      } });
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(result.stdout).toContain(`rc=${expectedStatus}`);
+      if (mode === 'not-dependencies-only') {
+        expect(result.stdout).not.toContain('native-check=');
+        return;
+      }
+      // The selector was validated first, then the load check ran on the
+      // immutable generation tree (never on the release checkout).
+      expect(result.stdout).toContain(`select=${identity} token=v3:${'c'.repeat(64)}`);
+      expect(result.stdout).toContain(`native-check=${join(generationPath, 'tree')}`);
+      expect(result.stdout.indexOf('select=')).toBeLessThan(result.stdout.indexOf('native-check='));
+      if (mode === 'unloadable') {
+        expect(result.stdout).toContain(
+          `FATAL: dependencies-only generation ${identity} for target inputs ${input} has native addons that will not load`,
+        );
+      } else {
+        expect(result.stdout).not.toContain('FATAL');
+      }
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+
+  it('runs the dependencies-only check before the reuse/materialization decision', () => {
+    const source = readFileSync(SCRIPT_PATH, 'utf8');
+    const flow = source.indexOf('\n  validate_dependencies_only_input\n  if pinned_dependency_generation_reuse_safe; then');
+    expect(flow, 'the main flow must gate materialization on validate_dependencies_only_input').toBeGreaterThan(0);
+    const fn = source.slice(source.indexOf('\nvalidate_dependencies_only_input() {'));
+    expect(fn.slice(0, fn.indexOf('\n}\n'))).toContain('dependency_generation_native_addons_load "$DEPENDENCY_GENERATION_TREE"');
+  });
+});
+
 function spawnFailureDetails(
   phase: string,
   elapsedMs: number,
@@ -1209,7 +1278,7 @@ describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modu
       'set -euo pipefail',
       'log() { :; }',
       'source "$GENERATION_SCRIPT"',
-      'source <(sed -n "/^pinned_generation_tree_current()/,/^}/p; /^node_modules_tree_fingerprint()/,/^}/p; /^sync_one_node_modules()/,/^}/p" "$SETUP_SCRIPT")',
+      'source <(sed -n "/^pinned_generation_tree_current()/,/^}/p; /^node_modules_tree_fingerprint()/,/^}/p; /^detach_hidden_lockfile_links()/,/^}/p; /^sync_one_node_modules()/,/^}/p" "$SETUP_SCRIPT")',
       ...(opts.stubMaterializeToNoop ? ['dependency_generation_materialize_tree() { return 0; }'] : []),
       ...(opts.stubIndependentFailure ? ['dependency_generation_copy_independent() { mkdir -p "$2"; touch "$2/partial"; return 1; }'] : []),
       'sync_one_node_modules "$SRC" "$DEST"',
@@ -3701,5 +3770,129 @@ describe('extract_submodule_source (P-008) — object-sourced candidate integrit
 
     expect(r.status).toBe(0);
     expect(r.stdout).toContain("rsync'ing integration HEAD");
+  });
+});
+
+/**
+ * EI-28858151006267833: hardlink mode (`cp -al`) used to share EVERY inode with
+ * the integration tree, including `node_modules/.package-lock.json`, which npm
+ * rewrites in place. One integration-tree install rewrote the hidden lockfile
+ * of every staging generation after its bundle-freshness stamp, so :3170
+ * refused every restart ("installed-dependency mismatch", exit 78). These tests
+ * run the shipped functions, extracted from the real script.
+ */
+describe('setup-release-checkout.sh hardlink copy — hidden lockfile gets its own inode', () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'nm-detach-'));
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function runShipped(body: string, env: Record<string, string>) {
+    const wrapper = [
+      'set -euo pipefail',
+      'log() { printf "[setup-release] %s\\n" "$*"; }',
+      'dependency_generation_reap_dead_siblings() { :; }',
+      'source <(sed -n "/^detach_hidden_lockfile_links()/,/^}/p; /^sync_one_node_modules()/,/^}/p" "$SETUP_SCRIPT")',
+      body,
+    ].join('\n');
+    const r = spawnSync('bash', ['-c', wrapper], {
+      env: { ...process.env, SETUP_SCRIPT: SCRIPT_PATH, ...env },
+      encoding: 'utf8',
+    });
+    return { status: r.status, stdout: String(r.stdout ?? ''), stderr: String(r.stderr ?? '') };
+  }
+
+  // An integration node_modules with a root hidden lockfile, a package, and a
+  // nested install root carrying its own hidden lockfile.
+  function integrationTree(): string {
+    const src = join(root, 'integration/node_modules');
+    mkdirSync(join(src, 'pkg/node_modules'), { recursive: true });
+    writeFileSync(join(src, '.package-lock.json'), '{"lock":"root-v1"}');
+    writeFileSync(join(src, 'pkg/package.json'), '{"name":"pkg"}');
+    writeFileSync(join(src, 'pkg/node_modules/.package-lock.json'), '{"lock":"nested-v1"}');
+    return src;
+  }
+
+  it('keeps an integration-tree in-place lockfile rewrite out of the hardlinked copy', () => {
+    const src = integrationTree();
+    const dest = join(root, 'release/node_modules');
+    mkdirSync(dirname(dest), { recursive: true });
+
+    const r = runShipped('sync_one_node_modules "$SRC" "$DEST"', {
+      SRC: src,
+      DEST: dest,
+      NODE_MODULES_COPY_MODE: 'hardlink',
+    });
+    expect(r.status, r.stderr).toBe(0);
+
+    for (const rel of ['.package-lock.json', 'pkg/node_modules/.package-lock.json']) {
+      expect(statSync(join(dest, rel)).ino).not.toBe(statSync(join(src, rel)).ino);
+      expect(statSync(join(dest, rel)).nlink).toBe(1);
+    }
+    // Package files still share data: hardlink mode stays a cheap copy.
+    expect(statSync(join(dest, 'pkg/package.json')).ino).toBe(statSync(join(src, 'pkg/package.json')).ino);
+    expect(readFileSync(join(dest, '.package-lock.json'), 'utf8')).toBe('{"lock":"root-v1"}');
+
+    // npm's write pattern: truncate and rewrite the SAME inode.
+    const inoBefore = statSync(join(src, '.package-lock.json')).ino;
+    writeFileSync(join(src, '.package-lock.json'), '{"lock":"root-v2"}');
+    writeFileSync(join(src, 'pkg/node_modules/.package-lock.json'), '{"lock":"nested-v2"}');
+    expect(statSync(join(src, '.package-lock.json')).ino).toBe(inoBefore);
+
+    expect(readFileSync(join(dest, '.package-lock.json'), 'utf8')).toBe('{"lock":"root-v1"}');
+    expect(readFileSync(join(dest, 'pkg/node_modules/.package-lock.json'), 'utf8')).toBe(
+      '{"lock":"nested-v1"}',
+    );
+    expect(readdirSync(dest).some((name) => name.includes('.detach.'))).toBe(false);
+  });
+
+  it('preserves the mode and leaves an already-independent lockfile untouched', () => {
+    const tree = join(root, 'tree');
+    mkdirSync(tree);
+    const linked = join(tree, '.package-lock.json');
+    const outside = join(root, 'outside-lock.json');
+    writeFileSync(outside, '{"lock":"shared"}');
+    chmodSync(outside, 0o444);
+    spawnSync('ln', [outside, linked]);
+    mkdirSync(join(tree, 'solo'));
+    const solo = join(tree, 'solo/.package-lock.json');
+    writeFileSync(solo, '{"lock":"solo"}');
+    const soloIno = statSync(solo).ino;
+
+    const r = runShipped('detach_hidden_lockfile_links "$TREE"', { TREE: tree });
+
+    expect(r.status, r.stderr).toBe(0);
+    expect(statSync(linked).ino).not.toBe(statSync(outside).ino);
+    expect(statSync(linked).mode & 0o777).toBe(0o444);
+    expect(readFileSync(linked, 'utf8')).toBe('{"lock":"shared"}');
+    expect(statSync(outside).nlink).toBe(1);
+    expect(statSync(solo).ino).toBe(soloIno);
+  });
+
+  it('fails loudly, without leaving a temp copy, when the lockfile cannot get its own inode', () => {
+    const tree = join(root, 'tree');
+    mkdirSync(tree);
+    const outside = join(root, 'outside-lock.json');
+    writeFileSync(outside, '{"lock":"shared"}');
+    spawnSync('ln', [outside, join(tree, '.package-lock.json')]);
+    chmodSync(tree, 0o555);
+    try {
+      const r = runShipped('detach_hidden_lockfile_links "$TREE"', { TREE: tree });
+
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toContain('could not give');
+      expect(readdirSync(tree)).toEqual(['.package-lock.json']);
+      expect(statSync(outside).nlink).toBe(2);
+    } finally {
+      chmodSync(tree, 0o755);
+    }
+  });
+
+  it('is a no-op for a missing tree', () => {
+    const r = runShipped('detach_hidden_lockfile_links "$TREE"', { TREE: join(root, 'absent') });
+    expect(r.status, r.stderr).toBe(0);
   });
 });
