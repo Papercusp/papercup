@@ -43,7 +43,7 @@ export function classify(packages: any, exceptions?: {}): {
 /** Validate the exceptions file shape; a malformed entry must not silently admit anything. */
 export function validateExceptions(file: any): string[];
 /** 'model' | 'native' | null for one file, from its path and its first four bytes. */
-export function payloadKindOf(relPath: any, head: any): "model" | "native" | null;
+export function payloadKindOf(relPath: any, head: any): "native" | "model" | null;
 /** A path glob → RegExp over '/'-separated relative paths: `**` spans dirs, `*` and `?` do not. */
 export function globToRegExp(glob: any): RegExp;
 /** The node_modules/<pkg> (or node_modules/@scope/pkg) directory containing a path, if any. */
@@ -165,7 +165,7 @@ export function collectThirdPartyNotices(root: any, { ecosystems }?: {
     undetermined: string[];
     rowsByEco: {};
 };
-export function main(argv?: string[], root?: string): 0 | 1 | 2;
+export function main(argv?: string[], root?: string): 1 | 0 | 2;
 export const ROOT: string;
 export const EXCEPTIONS_PATH: string;
 export const TIER: Readonly<{
