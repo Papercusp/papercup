@@ -978,7 +978,7 @@ export default defineTool({
     const disposition = await waitForJobResponse(job, ctx.signal, Math.max(0, responseDeadlineAtMs - Date.now()));
     const r = snapshotJobResult(job);
 
-    if (disposition === 'yielded') {
+    if (disposition !== 'terminal') {
       const bufferingStage = detectBufferingLastStage(command);
       const bufferingNote = bufferingStage ? formatBufferingPipelineAdvice(bufferingStage, 'launch') : '';
       const selfRedirectAtLaunch = detectSelfOutputRedirect(command);
@@ -1001,13 +1001,14 @@ export default defineTool({
         log_path: job.logPath,
         ...(rtkApplied ? { rtk: RTK_RESULT_NOTE } : {}),
         response_window_ms: responseWindowMs,
+        response_cause: disposition,
         timeout_ms: job.timeoutMs,
         deadline: job.deadlineAt ? new Date(job.deadlineAt).toISOString() : undefined,
         ...(r.reason ? { reason: r.reason } : {}),
         ...(integrationEntries.length > 0 ? { integration_env: integrationEnvView } : {}),
         ...(processNotice ? { process_table_notice: processNotice } : {}),
         advice:
-          `Response window elapsed; the original shell ${
+          `${disposition === 'caller_abort' ? 'Caller aborted the response request' : 'Response window elapsed'}; the original shell ${
             r.status === 'running' ? 'is still running' : `has status ${r.status} and is finishing whole-tree cleanup`
           }. Preserve durable task_id "${job.taskId}" across carry. ` +
           `Read output: capability:bash_output { task_id: "${job.taskId}" } ` +

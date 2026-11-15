@@ -125,7 +125,7 @@ describe('capability:bash start-once response yield — integration', () => {
     ));
     const job = getJob(String(launch.bash_id));
     try {
-      expect(launch).toMatchObject({ status: 'running', yielded: true });
+      expect(launch).toMatchObject({ status: 'running', yielded: true, response_cause: 'response_deadline' });
       expect(launch.bash_id).toEqual(expect.any(String));
       expect(launch.task_id).toEqual(expect.any(String));
       expect(job).toMatchObject({
@@ -239,6 +239,7 @@ describe('capability:bash start-once response yield — integration', () => {
       const launch = payload(await response);
       expect(launch).toMatchObject({
         status: 'running', running: true, yielded: true, task_id: expect.any(String),
+        response_cause: 'response_deadline',
       });
       job = getJob(String(launch.bash_id));
       expect(job?.scopeUnit).toEqual(expect.any(String));
@@ -256,6 +257,56 @@ describe('capability:bash start-once response yield — integration', () => {
       expect(getJob(String(launch.bash_id))).toBe(job);
       expect(readFileSync(marker, 'utf8').trim().split('\n')).toEqual(['entered', 'finished']);
       expect(readFileSync(String(launch.log_path), 'utf8')).toContain('AFTER-RESPONSE-TIMEOUT');
+    } finally {
+      writeFileSync(barrier, 'release');
+      controller.abort();
+      await response;
+      if (job) killJob(job);
+    }
+  }, 20_000);
+
+  it('reports caller abort separately from execution and response deadlines', async () => {
+    const ready = join(STATE, `caller-abort-${crypto.randomUUID()}`);
+    const barrier = `${ready}.release`;
+    const marker = `${ready}.invocations`;
+    const controller = new AbortController();
+    const response = bash.handler(
+      {
+        command: `printf 'entered\\n' >> ${JSON.stringify(marker)}; printf ready > ${JSON.stringify(ready)}; ` +
+          `while [ ! -e ${JSON.stringify(barrier)} ]; do sleep 0.02; done; ` +
+          `printf 'finished\\n' >> ${JSON.stringify(marker)}; printf AFTER-CALLER-ABORT`,
+        timeout: 30_000,
+        yield_after_ms: 10_000,
+        require_task_confinement: true,
+      },
+      ctx(controller.signal),
+    );
+    let job: ReturnType<typeof getJob>;
+    try {
+      await expect.poll(() => existsSync(ready), { timeout: 5_000 }).toBe(true);
+      controller.abort(new DOMException('Caller cancelled observation', 'AbortError'));
+      const launch = payload(await response);
+      expect(launch).toMatchObject({
+        status: 'running', running: true, yielded: true, task_id: expect.any(String),
+        response_cause: 'caller_abort',
+      });
+      expect(launch.advice).toContain('Caller aborted the response request');
+      job = getJob(String(launch.bash_id));
+      expect(job?.scopeUnit).toEqual(expect.any(String));
+      expect(job?.killReason).toBeUndefined();
+      expect(job?.deadlineReason).toBeUndefined();
+      expect(job?.endedAt).toBeNull();
+      const carried = { task_id: launch.task_id };
+      expect(payload(await bashOutput.handler(carried, ctx())))
+        .toMatchObject({ task_id: launch.task_id, status: 'running' });
+      writeFileSync(barrier, 'release');
+      await expect.poll(async () => payload(await bashOutput.handler(carried, ctx())), { timeout: 5_000 })
+        .toMatchObject({ status: 'completed', exit_code: 0 });
+      await expect.poll(async () => (await getTask(String(launch.task_id)))?.state, { timeout: 5_000 })
+        .toBe('exited');
+      expect(getJob(String(launch.bash_id))).toBe(job);
+      expect(readFileSync(marker, 'utf8').trim().split('\n')).toEqual(['entered', 'finished']);
+      expect(readFileSync(String(launch.log_path), 'utf8')).toContain('AFTER-CALLER-ABORT');
     } finally {
       writeFileSync(barrier, 'release');
       controller.abort();

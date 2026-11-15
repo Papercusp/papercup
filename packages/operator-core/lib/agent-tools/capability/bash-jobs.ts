@@ -3247,7 +3247,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   return job;
 }
 
-export type BashJobResponseDisposition = 'terminal' | 'yielded';
+export type BashJobResponseDisposition = 'terminal' | 'response_deadline' | 'caller_abort';
 
 /**
  * Wait only for the caller-facing response window. The execution deadline is
@@ -3285,14 +3285,18 @@ export function waitForJobResponse(
       resolvePromise(disposition);
     };
     const onTerminal = (): void => finish('terminal');
-    const onAbort = (): void => finish(job.endedAt === null ? 'yielded' : 'terminal');
+    const onAbort = (): void => finish(
+      job.endedAt !== null
+        ? 'terminal'
+        : signal.reason?.name === 'TimeoutError' ? 'response_deadline' : 'caller_abort',
+    );
 
     job.child.once('close', onTerminal);
     job.child.once('error', onTerminal);
     signal.addEventListener('abort', onAbort, { once: true });
     const responseTimer = setTimeout(
       () => {
-        finish(job.endedAt === null ? 'yielded' : 'terminal');
+        finish(job.endedAt === null ? 'response_deadline' : 'terminal');
       },
       Math.max(0, responseWindowMs),
     );

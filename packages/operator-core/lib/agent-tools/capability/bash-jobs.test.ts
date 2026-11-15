@@ -1257,7 +1257,12 @@ describe('background jobs', () => {
       }
     });
 
-    it.each([false, true])('preserves the enrolled job when the response is aborted (already aborted: %s)', async (alreadyAborted) => {
+    it.each([
+      { alreadyAborted: false, reason: 'AbortError', disposition: 'caller_abort' },
+      { alreadyAborted: true, reason: 'AbortError', disposition: 'caller_abort' },
+      { alreadyAborted: false, reason: 'TimeoutError', disposition: 'response_deadline' },
+      { alreadyAborted: true, reason: 'TimeoutError', disposition: 'response_deadline' },
+    ])('preserves the enrolled job on $reason (already aborted: $alreadyAborted)', async ({ alreadyAborted, reason, disposition }) => {
       const ledger = mockEnrolledTask('response-abort-survivor');
       const barrier = join(STATE, `response-abort-${crypto.randomUUID()}`);
       let job: ReturnType<typeof startBackground> | undefined;
@@ -1268,10 +1273,11 @@ describe('background jobs', () => {
         }, 60_000);
         const deadline = job.deadlineAt;
         const controller = new AbortController();
-        if (alreadyAborted) controller.abort(new DOMException('Response timed out', 'TimeoutError'));
+        const abortReason = new DOMException('Response observer stopped', reason);
+        if (alreadyAborted) controller.abort(abortReason);
         const response = waitForJobResponse(job, controller.signal, 30_000);
-        controller.abort();
-        await expect(response).resolves.toBe('yielded');
+        controller.abort(abortReason);
+        await expect(response).resolves.toBe(disposition);
 
         expect(job).toMatchObject({ status: 'running', endedAt: null, taskId: 'response-abort-survivor', deadlineAt: deadline });
         expect(job.killReason).toBeUndefined();
@@ -1303,7 +1309,7 @@ describe('background jobs', () => {
         const controller = new AbortController();
         const response = waitForJobResponse(job, controller.signal, 30_000);
         controller.abort();
-        await expect(response).resolves.toBe('yielded');
+        await expect(response).resolves.toBe('caller_abort');
         await expect.poll(() => job.endedAt, { timeout: 5_000 }).not.toBeNull();
         expect(job.status).toBe('timed_out');
         expect(job.killReason).toBeUndefined();
@@ -1314,6 +1320,24 @@ describe('background jobs', () => {
         );
       } finally {
         if (job.status === 'running') killJob(job, 'test cleanup');
+        ledger.restore();
+      }
+    });
+
+    it('retains the response deadline disposition when the caller aborts after the timer wins', async () => {
+      const ledger = mockEnrolledTask('response-deadline-winner');
+      const job = startBackground({ command: 'exec sleep 30', cwd: STATE, stateDir: STATE }, 60_000);
+      try {
+        const controller = new AbortController();
+        const disposition = await waitForJobResponse(job, controller.signal, 0);
+        controller.abort();
+        expect(disposition).toBe('response_deadline');
+        expect(job).toMatchObject({ status: 'running', endedAt: null });
+        expect(job.killReason).toBeUndefined();
+        expect(ledger.finish).not.toHaveBeenCalled();
+      } finally {
+        killJob(job, 'test cleanup');
+        await waitForStatus(job.id);
         ledger.restore();
       }
     });

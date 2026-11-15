@@ -133,7 +133,7 @@ function identityRunnerMarker(identity: {
     `invocation=${value.invocationId} nonce=${value.nonce}\n`;
 }
 
-async function readWithActiveRunnerMarker(identity: Parameters<typeof identityRunnerMarker>[0] = {}) {
+async function readWithActiveRunnerMarker(identity: Parameters<typeof identityRunnerMarker>[0] = {}, cached = false) {
   const stateDir = mkdtempSync(join(tmpdir(), 'bash-active-runner-marker-'));
   const logPath = join(stateDir, 'terminal.log');
   const fakeBin = join(stateDir, 'bin');
@@ -155,7 +155,7 @@ async function readWithActiveRunnerMarker(identity: Parameters<typeof identityRu
     logPath,
     detail: { bashJobId: LIVE_RUNNER_BASH_JOB_ID, runnerMarkerNonceHash: LIVE_RUNNER_NONCE_HASH },
   }));
-  jobs.getJob.mockReturnValue(null);
+  jobs.getJob.mockReturnValue(cached ? { ...liveJob(), taskId: LIVE_RUNNER_TASK_ID, logPath } : null);
   const previousPath = process.env.PATH;
   process.env.PATH = `${fakeBin}:${previousPath ?? ''}`;
   try {
@@ -252,6 +252,61 @@ describe('capability:bash_output — durable task attachment', () => {
       running: true,
       output: 'still working\n',
     });
+  });
+
+  it.each([
+    ['task_id', 'ledger'],
+    ['bash_id', 'ledger'],
+    ['task_id', 'log'],
+    ['bash_id', 'log'],
+  ] as const)('reconciles a stale running map through %s with terminal %s evidence', async (handle, evidence) => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'bash-stale-running-map-'));
+    const logPath = join(stateDir, 'durable.log');
+    const status = evidence === 'ledger' ? 'completed' : 'failed';
+    const exitCode = evidence === 'ledger' ? 0 : 1;
+    const log = `durable output after the worker changed\n${formatJobLogEndMarker(status, exitCode, Date.now())}`;
+    try {
+      writeFileSync(logPath, log);
+      const row = taskRow({
+        state: evidence === 'ledger' ? 'exited' : 'running',
+        exitCode: evidence === 'ledger' ? exitCode : null,
+        pid: null,
+        processIdentity: null,
+        cgroupPath: null,
+        scopeUnit: null,
+        logPath,
+      });
+      store.getTask.mockResolvedValue(row);
+      store.getTaskByBashJobId.mockResolvedValue(row);
+      const args = handle === 'task_id' ? { task_id: row.taskId } : { bash_id: 'bash-carry-1' };
+
+      // The same durable evidence must win whether the worker lost its map or
+      // retained a stale entry whose output callbacks never observed the sink.
+      jobs.getJob.mockReturnValue(null);
+      const recovered = await bashOutput.handler(args, ctx('ws-current', stateDir));
+      const expected = {
+        status,
+        exit_code: exitCode,
+        running: false,
+        total_bytes: Buffer.byteLength(log),
+        log_path: logPath,
+        output: log,
+        [evidence === 'ledger' ? 'recovered_from_ledger' : 'recovered_from_log_marker']: true,
+      };
+      expect(JSON.parse(recovered.content[0]!.text)).toMatchObject(expected);
+
+      const staleJob = { ...liveJob(), buffer: '', totalBytes: 0, logPath: join(stateDir, 'obsolete-local.log') };
+      jobs.getJob.mockReturnValue(staleJob);
+      jobs.readJobOutput.mockReturnValue('');
+      const result = await bashOutput.handler(args, ctx('ws-current', stateDir));
+
+      expect(JSON.parse(result.content[0]!.text)).toMatchObject(expected);
+      expect(result.isError).toBe(recovered.isError);
+      expect(jobs.readJobOutput).not.toHaveBeenCalled();
+      expect(jobs.startBackground).not.toHaveBeenCalled();
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 
   it('reattaches when the durable task_id is supplied through bash_id after a registry reset', async () => {
@@ -357,7 +412,7 @@ describe('capability:bash_output — durable task attachment', () => {
     expect(jobs.startBackground).not.toHaveBeenCalled();
   });
 
-  it('keeps a confirmed-live task running when its output contains an earlier JOB END marker', async () => {
+  it.each([false, true])('keeps a confirmed-live task running with an earlier JOB END (cached map: %s)', async (cached) => {
     const stateDir = mkdtempSync(join(tmpdir(), 'bash-live-stale-end-marker-'));
     const logPath = join(stateDir, 'live.log');
     try {
@@ -371,7 +426,7 @@ describe('capability:bash_output — durable task attachment', () => {
           logPath,
         }),
       );
-      jobs.getJob.mockReturnValue(null);
+      jobs.getJob.mockReturnValue(cached ? { ...liveJob(), logPath } : null);
 
       const result = await bashOutput.handler({ task_id: 'task-carry-1' }, ctx('ws-current', stateDir));
       const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
@@ -430,8 +485,8 @@ describe('capability:bash_output — durable task attachment', () => {
     }
   });
 
-  it('reconciles a failed runner JOB END while the exact systemd service is still active', async () => {
-    const { result, payload, logPath } = await readWithActiveRunnerMarker();
+  it.each([false, true])('reconciles a failed runner JOB END while its service is active (cached map: %s)', async (cached) => {
+    const { result, payload, logPath } = await readWithActiveRunnerMarker({}, cached);
 
     expect(result.isError).toBe(true);
     expect(payload).toMatchObject({
@@ -468,13 +523,15 @@ describe('capability:bash_output — durable task attachment', () => {
     ['systemd invocation', { invocationId: 'previous-invocation' }],
     ['nonce hash', { nonce: 'b'.repeat(64) }],
   ])('keeps the active task running when the runner marker %s does not match', async (_field, identity) => {
-    const { result, payload } = await readWithActiveRunnerMarker(identity);
+    for (const cached of [false, true]) {
+      const { result, payload } = await readWithActiveRunnerMarker(identity, cached);
 
-    expect(result.isError).toBeUndefined();
-    expect(payload).toMatchObject({ status: 'running', running: true, recovered_from_scope: true });
-    expect(payload).not.toHaveProperty('recovered_from_live_runner_marker');
-    expect(store.closeTask).not.toHaveBeenCalled();
-    expect(jobs.startBackground).not.toHaveBeenCalled();
+      expect(result.isError).toBeUndefined();
+      expect(payload).toMatchObject({ status: 'running', running: true, recovered_from_scope: true });
+      expect(payload).not.toHaveProperty('recovered_from_live_runner_marker');
+      expect(store.closeTask).not.toHaveBeenCalled();
+      expect(jobs.startBackground).not.toHaveBeenCalled();
+    }
   });
 
   // EI-22185525501280167: the exact reported shape — systemd CONFIRMS the job's
