@@ -2,7 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
   readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildInputs, checkSource, buildWorkspace as buildWorkspaceWithPhaseLogs, captureClosure, copyDependencyTree } from '../../bin/release/dependency-generation-verifier.mjs';
 import { nativeVerifierEnv } from '../../../../scripts/lib/verify-tauri-native-env.mjs';
@@ -83,7 +83,7 @@ function installTsxRuntime(f: ReturnType<typeof fixture>) {
   writeFileSync(rootManifestPath, `${JSON.stringify(rootManifest, null, 2)}\n`);
   writeFileSync(fixtureLockPath, `${JSON.stringify(fixtureLock)}\n`);
 }
-function fixture(workspace = 'packages/cli', independentApp = false) {
+function fixture(workspace = 'packages/cli', independentApp = false, rootPrivateTree = false) {
   const root = mkdtempSync(join(tmpdir(), 'native-generation-closure-')); roots.push(root);
   const donor = join(root, 'source'), dest = join(root, 'selected'), store = join(root, 'store');
   // Freeze the current implementation as committed fixture tooling. The
@@ -116,7 +116,13 @@ function fixture(workspace = 'packages/cli', independentApp = false) {
   write(donor, 'package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
     '': { name: 'native-generation-fixture' },
     'node_modules/pkg': { version: '1.0.0' },
+    ...(rootPrivateTree ? {
+      'libs/former-workspace': { name: 'former-workspace', version: '1.0.0' },
+      'libs/former-workspace/node_modules/private': { version: '2.0.0' },
+    } : {}),
   } }));
+  if (rootPrivateTree) write(donor, 'libs/former-workspace/package.json',
+    '{"name":"former-workspace","version":"1.0.0","dependencies":{"private":"2.0.0"}}');
   if (independentApp) {
     write(donor, 'package.json', JSON.stringify({ name: 'native-generation-fixture', private: true,
       workspaces: ['packages/*', 'apps/*', '!apps/independent'] }));
@@ -158,6 +164,8 @@ fs.mkdirSync('dist');fs.copyFileSync('src/cli.cjs','dist/cli.cjs');
   write(dest, '.verifier-source.json', JSON.stringify({ files: [{ path: workspace + '/package.json' }] }));
   write(donor, 'node_modules/pkg/package.json', '{"name":"pkg","version":"1.0.0"}');
   write(donor, 'node_modules/pkg/index.js', 'published dependency');
+  if (rootPrivateTree) write(donor, 'libs/former-workspace/node_modules/private/package.json',
+    '{"name":"private","version":"2.0.0"}');
   mkdirSync(join(donor, 'node_modules/.bin'));
   symlinkSync('../../' + workspace + '/dist/cli.cjs', join(donor, 'node_modules/.bin/probe'));
   write(donor, 'papercusp-desktop/node_modules/@tauri-apps/cli/package.json', '{"name":"@tauri-apps/cli","version":"2.0.0"}');
@@ -170,16 +178,30 @@ fs.mkdirSync('dist');fs.copyFileSync('src/cli.cjs','dist/cli.cjs');
     DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(root, 'copy.lock'), DEPENDENCY_GENERATION_FORCE_COPY: '1' };
   const shell = (file: string, args: string[], extra = {}) => spawnSync('bash', [file, ...args],
     { env: { ...env, ...extra }, encoding: 'utf8', timeout: 90_000 });
+  const privatePath = (path: string) => {
+    const suffix = relative(root, path);
+    expect(isAbsolute(suffix) || suffix === '..' || suffix.startsWith(`..${sep}`),
+      `fixture path escaped its temporary root: ${path}`).toBe(false);
+    return join(root, suffix);
+  };
+  const publishedPath = (stdout: string) => privatePath(stdout.match(/\bpath=([^\n]+)$/m)![1]!);
   const publish = () => {
     const result = shell(generationScript, ['--integration', donor, '--generation-root', store]);
     expect(result.status, result.stderr).toBe(0);
-    return result.stdout.match(/\bpath=([^\n]+)$/m)![1]!;
+    return publishedPath(result.stdout);
   };
-  return { root, donor, dest, store, env, shell, publish, snapshotHelper, generationScript };
+  return { root, donor, dest, store, env, shell, publish, privatePath, publishedPath, snapshotHelper, generationScript };
 }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe('bounded independent verifier copy', () => {
+  it('keeps published paths within the private fixture and rejects an escaped path', () => {
+    const f = fixture();
+    const generation = join(f.store, 'published');
+    expect(f.publishedPath(`DEPENDENCY_GENERATION_RESULT path=${generation}\n`)).toBe(generation);
+    expect(() => f.privatePath(resolve(f.root, '..', 'escaped'))).toThrow('fixture path escaped');
+  });
+
   it('admits the exact native scope despite an unrelated app lock mismatch, retaining its source proof', () => {
     const f = fixture('packages/cli', true);
     write(f.donor, 'apps/independent/package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
@@ -221,6 +243,29 @@ describe('bounded independent verifier copy', () => {
     const corrupt = f.shell(f.generationScript, args);
     expect(corrupt.status).not.toBe(0);
     expect(corrupt.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+  }, 90_000);
+
+  it.each([true, false])('retains root-lock private trees outside manifest workspaces (installed=%s)', installed => {
+    const f = fixture('packages/cli', true, true);
+    const dependency = 'libs/former-workspace/node_modules/private/package.json';
+    if (!installed) rmSync(join(f.donor, dependency));
+    const ref = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.dest, encoding: 'utf8' }).trim();
+    const result = f.shell(f.generationScript, ['--integration', f.donor, '--generation-root', f.store,
+      '--ensure-ref', ref, '--verifier-source', f.dest,
+      '--workspace-dir', 'packages/cli', '--workspace-dir', 'papercusp-desktop']);
+    if (!installed) {
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('LOCK_TREE_DEFECT');
+      expect(result.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+      return;
+    }
+    expect(result.status, result.stderr.slice(-1800)).toBe(0);
+    const generation = f.publishedPath(result.stdout);
+    expect(JSON.parse(readFileSync(join(generation, 'tree', dependency), 'utf8')).version).toBe('2.0.0');
+    expect(existsSync(join(generation, 'tree/apps/independent/node_modules'))).toBe(false);
+    const materialized = f.shell(f.snapshotHelper, ['snapshot-generation-locked', f.donor, f.dest, 'copy']);
+    expect(materialized.status, materialized.stderr.slice(-1800)).toBe(0);
+    expect(JSON.parse(readFileSync(join(f.dest, dependency), 'utf8')).version).toBe('2.0.0');
   }, 90_000);
 
   it.each(['root-lock', 'required-lock', 'installed-required', 'source-tamper', 'escaping-scope', 'narrowed-scope'])(
@@ -637,7 +682,7 @@ describe('D012 native generation closure', () => {
     });
     expect(reused.status, reused.stderr).toBe(0);
     expect(reused.stdout).toContain('reused=true');
-    const after = reused.stdout.match(/\bpath=([^\n]+)$/m)![1]!;
+    const after = f.publishedPath(reused.stdout);
     expect(after).not.toBe(before);
     const closure = JSON.parse(readFileSync(join(after, '.verifier-closure.json'), 'utf8'));
     expect(closure.complete).toBe(true);
@@ -649,6 +694,64 @@ describe('D012 native generation closure', () => {
       .toContain('managed-client-source-A');
     expect(existsSync(join(archive, 'node_modules'))).toBe(false);
     expect(existsSync(join(archive, workspace, 'dist'))).toBe(false);
+  }, 120_000);
+
+  it('retains the ordinary stage across a failed native rebuild and resumes after pruning', () => {
+    const f = fixture('packages/cli', true);
+    write(f.dest, 'packages/cli/src/cli.cjs', 'console.log("resumed-native-build");\n');
+    execFileSync('git', ['add', 'packages/cli/src/cli.cjs'], { cwd: f.dest });
+    execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '-qm', 'native source awaiting rebuild'], { cwd: f.dest });
+    const ref = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.dest, encoding: 'utf8' }).trim();
+    execFileSync('git', ['fetch', f.dest, ref], { cwd: f.donor });
+    const failBuild = join(f.root, 'fail-native-build');
+    const node = join(f.root, 'node-with-build-failure');
+    writeFileSync(failBuild, 'fail once');
+    writeFileSync(node, [
+      '#!/bin/bash',
+      'if [ "${2:-}" = build-closure ] && [ -f "$FAIL_NATIVE_BUILD" ]; then',
+      '  echo "injected-native-build-failure" >&2; exit 23',
+      'fi',
+      'exec "$REAL_NODE" "$@"',
+    ].join('\n'));
+    chmodSync(node, 0o755);
+    const args = ['--integration', f.donor, '--generation-root', f.store,
+      '--ensure-ref', ref, '--verifier-source', f.dest, '--retain-as', 'resumable-native-test',
+      '--workspace-dir', 'packages/cli', '--workspace-dir', 'papercusp-desktop'];
+    const env = { DEPENDENCY_GENERATION_NODE: node, REAL_NODE: process.execPath, FAIL_NATIVE_BUILD: failBuild };
+    const failed = f.shell(f.generationScript, args, env);
+    expect(failed.stderr).toContain('rebuilding verifier workspace closure');
+    expect(failed.status, failed.stderr).toBe(23);
+    expect(failed.stderr).toContain('injected-native-build-failure');
+    expect(failed.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+    expect(existsSync(join(f.store, '.leases')) ? readdirSync(join(f.store, '.leases')) : []).toEqual([]);
+    const selectors = existsSync(join(f.store, '.inputs')) ? readdirSync(join(f.store, '.inputs')) : [];
+    expect(selectors.some(name => name.startsWith('native-'))).toBe(false);
+    const published = readdirSync(f.store).filter(name => /^v1-[a-f0-9]{64}$/.test(name));
+    expect(published).toHaveLength(1);
+    const ordinary = join(f.store, published[0]!);
+    const prune = join(f.root, 'prune-without-recency.sh');
+    writeFileSync(prune, [
+      'set -euo pipefail',
+      'source "$GENERATION_SCRIPT"',
+      'dependency_generation_apply_retention "$STORE" "$DONOR" 0',
+    ].join('\n'));
+    const swept = f.shell(prune, [], { GENERATION_SCRIPT: f.generationScript, STORE: f.store, DONOR: f.donor });
+    expect(swept.status, swept.stderr).toBe(0);
+    expect(existsSync(ordinary), 'completed ordinary stage must survive without recency or process leases').toBe(true);
+    const pins = readdirSync(join(f.store, '.pins'));
+    expect(pins).toHaveLength(1);
+    const pin = join(f.store, '.pins', pins[0]!);
+    expect(readFileSync(pin, 'utf8')).toContain(`identity=${ordinary.split('/').pop()}\n`);
+    rmSync(failBuild);
+    const resumed = f.shell(f.generationScript, args, env);
+    expect(resumed.status, resumed.stderr).toBe(0);
+    expect(resumed.stderr).not.toContain(`building ${ordinary.split('/').pop()} from`);
+    const native = f.publishedPath(resumed.stdout);
+    expect(native).not.toBe(ordinary);
+    expect(readFileSync(join(native, 'tree/packages/cli/dist/cli.cjs'), 'utf8')).toContain('resumed-native-build');
+    expect(readdirSync(join(f.store, '.pins'))).toEqual(pins);
+    expect(readFileSync(pin, 'utf8')).toContain(`identity=${native.split('/').pop()}\n`);
   }, 120_000);
 
   it('keeps the native publication leased through exact-input selection and ref pinning', () => {
