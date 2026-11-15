@@ -1277,11 +1277,12 @@ function isCanonicalReviewPtoolCommand(command, env) {
     }
     if (tool === 'plans:edit') return !hasInvokeProjection && isCanonicalPlanEditArgs(toolArgs);
     if (tool === 'plans:audit') return !hasInvokeProjection && isCanonicalPlanAuditArgs(toolArgs);
-    if (idempotencyKey !== null) return false;
+    if (idempotencyKey !== null && !CANONICAL_UNVERDICTED_PTOOL_CONTROLS.includes(tool)) return false;
     if (tool === 'events:await') return isCanonicalGradingAuditAwait(toolArgs);
     // The pinned mcp-call verb has already passed its narrower evidence-read allowlist above.
     // Keep that decision authoritative here so the two-stage checks cannot drift apart.
-    return (pinned !== null && pinned[2] === tool) || CANONICAL_UNVERDICTED_PTOOL_VERBS.includes(tool);
+    return (pinned !== null && pinned[2] === tool) || CANONICAL_UNVERDICTED_PTOOL_VERBS.includes(tool) ||
+      CANONICAL_UNVERDICTED_PTOOL_CONTROLS.includes(tool);
   } catch {
     return false;
   }
@@ -1289,14 +1290,25 @@ function isCanonicalReviewPtoolCommand(command, env) {
 
 /**
  * Typed ptool verbs admitted without a server verdict. The fail-closed deny
- * below names this same list, so its suggested retry cannot drift from what the
+ * below names these same lists, so its suggested retry cannot drift from what the
  * guard actually admits (EI-28788424262267205).
  */
 const CANONICAL_UNVERDICTED_PTOOL_VERBS = Object.freeze([
   'facts:list', 'tools:find', 'testing:runs', 'dev:pg_query', 'plans:get', 'plans:items', 'plans:evaluate-spec-quality', 'work_items:get', 'events:status', 'reports:get',
   'rubrics:get', 'scorecards:get', 'capability:read',
   'conversations:get', 'coord:inbox', 'coord:read', 'docs:get', 'docs:search',
+  'dev:pipeline_position', 'locks:queue', 'loop:status',
   'consult:reply', 'consult:decline']);
+
+// These are canonical readiness/coordination operations, matching the server's
+// readinessControlPtoolTools policy. They still require the authenticated
+// operator's role, custody and input checks; an actual server denial still wins.
+// Same-session compaction preserves the existing authority rather than starting
+// an implementation worker. Inert retry keys must remain usable after timeouts.
+const CANONICAL_UNVERDICTED_PTOOL_CONTROLS = Object.freeze([
+  'coord:send', 'coord:declare-intent', 'work_items:checkpoint', 'work_items:comment',
+  'work_items:release', 'work_items:link', 'loop:checkpoint', 'session:request-compaction',
+]);
 
 /** Stages where no HTTP answer arrived at all. An HTTP status is the server
  * speaking and is never retried in search of a more permissive answer. */
@@ -1394,8 +1406,9 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
         // A blocked shell caller needs a retry that works while the operator is
         // slow, not only "restore access": name the typed read form admitted above.
         const readOnlyRetry = SHELL_PRE_TOOL_NAMES.has(authorizationToolName(partial.tool))
-          ? " A read-only operator call needs no verdict in the typed form ptool <read-verb> --json - <<'JSON' " +
-            '<args> JSON, where <read-verb> is one of: ' + CANONICAL_UNVERDICTED_PTOOL_VERBS.join(', ') + '.'
+          ? " A canonical coordination/control or read call needs no native execution verdict in the typed form ptool <verb> --json - <<'JSON' " +
+            '<args> JSON, where <verb> is one of: ' +
+            [...CANONICAL_UNVERDICTED_PTOOL_VERBS, ...CANONICAL_UNVERDICTED_PTOOL_CONTROLS].join(', ') + '.'
           : '';
         return adapter.render('pre-tool',
           'plan_execution_not_ready: execution-authority lookup failed; no server verdict was received. ' +
