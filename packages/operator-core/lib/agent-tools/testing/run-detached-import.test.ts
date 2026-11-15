@@ -12,6 +12,18 @@ it('replays the leaf test core from a host bundle without rebinding its occupied
   const directory = await mkdtemp(join(tmpdir(), 'testing-run-bundled-recovery-'));
   const bundle = join(directory, 'hono-host.mjs');
   const require = createRequire(join(root, 'package.json'));
+  // Reuse the exact host side effect for the positive control without loading
+  // the tool's unrelated dependency graph a second time just to bind a port.
+  const hostBootstrap = `
+import { createServer as createRecoveryTestHost } from 'node:net';
+const recoveryTestHost = createRecoveryTestHost();
+await new Promise((resolve, reject) => {
+  recoveryTestHost.once('error', reject);
+  recoveryTestHost.listen(Number(process.env.TEST_RECOVERY_HOST_PORT || 0), '127.0.0.1', resolve);
+});
+process.env.TEST_RECOVERY_HOST_PORT = String(recoveryTestHost.address().port);
+globalThis.recoveryTestHost = recoveryTestHost;
+`;
   try {
     // Compile the real tool into a host-shaped entrypoint while keeping its
     // dependencies external. Its import.meta.url now names this server bundle.
@@ -37,37 +49,44 @@ it('replays the leaf test core from a host bundle without rebinding its occupied
           });
         },
       }],
-      footer: { js: `
-import { createServer as createRecoveryTestHost } from 'node:net';
-const recoveryTestHost = createRecoveryTestHost();
-await new Promise((resolve, reject) => {
-  recoveryTestHost.once('error', reject);
-  recoveryTestHost.listen(Number(process.env.TEST_RECOVERY_HOST_PORT || 0), '127.0.0.1', resolve);
-});
-process.env.TEST_RECOVERY_HOST_PORT = String(recoveryTestHost.address().port);
-globalThis.recoveryTestHost = recoveryTestHost;
-` },
+      footer: { js: hostBootstrap },
     });
     const parent = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { dirname } from 'node:path';
+const deadlineAtMs = Date.now() + 50000;
+const trace = phase => process.stderr.write('RECOVERY_PHASE ' + phase + '\\n');
+trace('host-import-start');
 const { buildDetachedTestRunRequest } = await import(${JSON.stringify(pathToFileURL(bundle).href)});
+trace('host-import-complete');
+const run = (phase, command, args, options) => new Promise(resolve => {
+  trace(phase + '-start');
+  execFile(command, args, { ...options, timeout: Math.max(1, deadlineAtMs - Date.now()) }, (error, stdout, stderr) => {
+    trace(phase + '-complete');
+    resolve({ status: typeof error?.code === 'number' ? error.code : error ? null : 0,
+      stdout, stderr, error: error && typeof error.code !== 'number' ? error.message : undefined });
+  });
+});
 try {
-  const request = buildDetachedTestRunRequest({
+  const request = await buildDetachedTestRunRequest({
     root: ${JSON.stringify(root)}, files: ['unused.test.ts'],
     deadline: { startedAtMs: 0, taskDeadlineAtMs: 1, childCutoffAtMs: 0, cleanupReserveMs: 1 },
   });
   try {
-    const control = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e',
-      'await import(' + ${JSON.stringify(JSON.stringify(pathToFileURL(bundle).href))} + ');'], {
-      cwd: request.cwd, env: process.env, encoding: 'utf8', timeout: 45000,
-    });
-    const child = spawnSync(request.command, request.args, {
-      cwd: request.cwd, env: { ...process.env, ...request.env }, encoding: 'utf8', timeout: 45000,
-    });
+    // The independent collision control and leaf worker share one absolute
+    // budget. Serial 45s children previously hid the second phase behind a
+    // 55s parent timeout, leaving only an opaque ETIMEDOUT assertion.
+    const [control, child] = await Promise.all([
+      run('host-control', process.execPath, ['--input-type=module', '-e', ${JSON.stringify(hostBootstrap)}], {
+        cwd: request.cwd, env: process.env, encoding: 'utf8',
+      }),
+      run('leaf-core', request.command, request.args, {
+        cwd: request.cwd, env: { ...process.env, ...request.env }, encoding: 'utf8',
+      }),
+    ]);
     console.log('RECOVERY_RESULT ' + JSON.stringify({ status: child.status, stdout: child.stdout, stderr: child.stderr,
-      error: child.error?.message, hostStillListening: globalThis.recoveryTestHost.listening,
-      controlStatus: control.status, controlStderr: control.stderr, controlError: control.error?.message }));
+      error: child.error, hostStillListening: globalThis.recoveryTestHost.listening,
+      controlStatus: control.status, controlStderr: control.stderr, controlError: control.error }));
   } finally {
     const { rmSync } = await import('node:fs');
     for (const artifact of request.detachedReportArtifacts ?? [])
