@@ -244,13 +244,23 @@ dependency_generation_verification_input_fingerprint() {
   manifest="$(dependency_generation_input_manifest "$root")" || return $?
   {
     printf 'schema\t1\n%s\n' "$DEPENDENCY_GENERATION_SCOPE_RECORD"
-    printf '%s\n' "$manifest" | awk -F '\t' \
+    printf '%s\n' "$manifest" | dependency_generation_verification_manifest
+  } | dependency_generation_sha256
+}
+
+# Filter only the admission view. Callers still measure/extract the complete
+# source input manifest, including independent apps, before applying this scope.
+dependency_generation_verification_manifest() {
+  if [ "${DEPENDENCY_GENERATION_SCOPE_MODE:-full}" = full ]; then
+    cat
+  else
+    awk -F '\t' \
       -v dirs="$(printf '%s\n' "${DEPENDENCY_GENERATION_WORKSPACE_DIRS[@]}")" '
       BEGIN { n = split(dirs, selected, "\n") }
       $1 == "package-lock.json" || $1 == "npm-shrinkwrap.json" || index($1, "patches/") == 1 { print; next }
       { for (i = 1; i <= n; i++) if (index($1, selected[i] "/") == 1) { print; break } }
     '
-  } | dependency_generation_sha256
+  fi
 }
 
 # Derive the same cheap dependency-input key from an immutable Git commit without
@@ -1106,7 +1116,9 @@ dependency_generation_selector_token() {
 # dependency_generation_select path below.
 dependency_generation_select_prevalidated() {
   local generation_root="$1" identity="$2" expected_token="$3"
+  local expected_scope="${4:-full}" expected_closure="${5:-}"
   local generation marker source scope snapshot current_token
+  case "$expected_scope" in full) ;; selected) [ -n "$expected_closure" ] || return 74 ;; *) return 74 ;; esac
   if [[ ! "$identity" =~ ^v1-[0-9a-f]{64}$ ]]; then
     dependency_generation_log "FATAL: invalid dependency-generation identity: $identity"
     return 2
@@ -1118,7 +1130,7 @@ dependency_generation_select_prevalidated() {
   generation="$generation_root/$identity"
   case "$expected_token" in
     v2:*|v3:*)
-      if ! dependency_generation_publication_is_valid "$generation" "$identity" '' 'full'; then
+      if ! dependency_generation_publication_is_valid "$generation" "$identity" "$expected_closure" "$expected_scope"; then
         dependency_generation_log \
           "FATAL: prewarmed dependency generation $identity has an invalid publication token"
         return 74
@@ -1140,7 +1152,8 @@ dependency_generation_select_prevalidated() {
   snapshot="$(dependency_generation_read_field "$marker" snapshot)"
   if [ "$(dependency_generation_read_field "$marker" identity)" != "$identity" ] \
     || [ -z "$source" ] || [ "$identity" != "v1-$source" ] \
-    || [ "$scope" != 'full' ] || [ -z "$snapshot" ]; then
+    || [ "$scope" != "$expected_scope" ] || [ -z "$snapshot" ] \
+    || { [ -n "$expected_closure" ] && [ "$(dependency_generation_read_field "$marker" closure)" != "$expected_closure" ]; }; then
     dependency_generation_log "FATAL: prewarmed dependency generation $identity has an invalid immutable marker"
     return 74
   fi
@@ -1155,7 +1168,10 @@ dependency_generation_select_prevalidated() {
 dependency_generation_publish_input_selector() {
   local generation_root="$1" input_fingerprint="$2"
   local selector_dir selector tmp token rc=0
-  [ "${DEPENDENCY_GENERATION_SCOPE_MODE:-full}" = 'full' ] || return 0
+  if [ "${DEPENDENCY_GENERATION_SCOPE_MODE:-full}" != full ]; then
+    # Selected publications may only receive a native source-bound selector.
+    [[ "$input_fingerprint" =~ ^native-[a-f0-9]{64}$ ]] || return 0
+  fi
   selector_dir="$generation_root/.inputs"
   selector="$selector_dir/$input_fingerprint"
   tmp="$selector_dir/.${input_fingerprint}.tmp.$$"
@@ -1164,7 +1180,7 @@ dependency_generation_publish_input_selector() {
   if dependency_generation_has_publication_contract "$DEPENDENCY_GENERATION_PATH"; then
     if ! dependency_generation_publication_is_valid \
       "$DEPENDENCY_GENERATION_PATH" "$DEPENDENCY_GENERATION_ID" \
-      "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" 'full'; then
+      "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" "${DEPENDENCY_GENERATION_SCOPE_MODE:-full}"; then
       dependency_generation_log \
         "FATAL: refusing to index invalid dependency publication $DEPENDENCY_GENERATION_ID"
       rc=74
@@ -1193,6 +1209,7 @@ dependency_generation_publish_input_selector() {
 
 dependency_generation_select_input_fingerprint() {
   local input_fingerprint="$1" generation_root="$2"
+  local expected_scope="${3:-full}" expected_closure="${4:-}"
   local selector schema recorded_input identity token
   selector="$generation_root/.inputs/$input_fingerprint"
   if [ ! -f "$selector" ]; then
@@ -1208,7 +1225,8 @@ dependency_generation_select_input_fingerprint() {
     dependency_generation_log "FATAL: invalid prewarmed dependency selector for $input_fingerprint"
     return 74
   fi
-  dependency_generation_select_prevalidated "$generation_root" "$identity" "$token" || return $?
+  dependency_generation_select_prevalidated "$generation_root" "$identity" "$token" \
+    "$expected_scope" "$expected_closure" || return $?
   DEPENDENCY_GENERATION_INPUT_FINGERPRINT="$input_fingerprint"
 }
 
@@ -1225,15 +1243,53 @@ dependency_generation_verifier_selector_key() {
   printf 'native-%s\n' "$fingerprint"
 }
 
+dependency_generation_native_workspace_dirs() {
+  local root="$1" ref="${2:-}" expander
+  expander="$(dirname "${BASH_SOURCE[0]}")/../../../../scripts/assert-workspace-links.mjs"
+  "${DEPENDENCY_GENERATION_NODE:-node}" --input-type=module - "$expander" "$root" "$ref" <<'NODE'
+import { readFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [expander, root, ref] = process.argv.slice(2);
+const { expandWorkspaces } = await import(pathToFileURL(resolve(expander)));
+const manifest = JSON.parse(ref
+  ? execFileSync('git', ['-C', root, 'show', ref + ':package.json'], { encoding: 'utf8' })
+  : readFileSync(join(root, 'package.json'), 'utf8'));
+if (!existsSync(join(root, 'papercusp-desktop/package.json'))) throw new Error('native desktop workspace missing');
+console.log([...new Set([...expandWorkspaces(manifest.workspaces ?? [], root), 'papercusp-desktop'])].sort().join('\n'));
+NODE
+}
+
+dependency_generation_configure_native_workspaces() {
+  local root="$1" dirs dir selected=()
+  dirs="$(dependency_generation_native_workspace_dirs "$root")" || return $?
+  while IFS= read -r dir; do
+    [ -z "$dir" ] || selected+=("$dir")
+  done <<< "$dirs"
+  [ "${#selected[@]}" -gt 0 ] || return 74
+  dependency_generation_configure_workspace_dirs "$root" "${selected[@]}"
+}
+
 # Reuse the selector/lease/token/GC machinery. Legacy dependency selectors
 # still require the caller's native closure check; a corrupt native selector
 # must never fall back to a different generation with the same locks.
 dependency_generation_select_verifier_inputs() {
-  local input_root="$1" generation_root="$2" input key
+  local input_root="$1" generation_root="$2" input key identity
   input="$(dependency_generation_input_fingerprint "$input_root")" || return $?
   key="$(dependency_generation_verifier_selector_key "$input_root")" || return $?
   [ -f "$generation_root/.inputs/$key" ] || key="$input"
-  dependency_generation_select_input_fingerprint "$key" "$generation_root" || return $?
+  dependency_generation_configure_workspace_dirs "$input_root" || return $?
+  if [[ "$key" = native-* ]]; then
+    identity="$(dependency_generation_read_field "$generation_root/.inputs/$key" identity)"
+    [[ "$identity" =~ ^v1-[a-f0-9]{64}$ ]] || return 74
+    if [ "$(dependency_generation_read_field "$generation_root/$identity/.papercusp-dependency-generation" scope)" = selected ]; then
+      dependency_generation_configure_native_workspaces "$input_root" || return $?
+      input="$(dependency_generation_verification_input_fingerprint "$input_root")" || return $?
+    fi
+  fi
+  dependency_generation_select_input_fingerprint "$key" "$generation_root" \
+    "$DEPENDENCY_GENERATION_SCOPE_MODE" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" || return $?
   DEPENDENCY_GENERATION_SELECTOR_KEY="$key"
   DEPENDENCY_GENERATION_INPUT_FINGERPRINT="$input"
 }
@@ -3431,7 +3487,8 @@ dependency_generation_audit_lock_tree() {
   local tree="$1" lock_root="$2" manifest_file rc=0 output line nm trees
   local helper="${DEPENDENCY_GENERATION_LOCK_TREE_AUDIT:-$(dirname "${BASH_SOURCE[0]}")/dependency-lock-tree-audit.mjs}"
   manifest_file="$(mktemp)" || return 1
-  dependency_generation_input_manifest "$lock_root" > "$manifest_file" || {
+  dependency_generation_input_manifest "$lock_root" \
+    | dependency_generation_verification_manifest > "$manifest_file" || {
     rm -f -- "$manifest_file"
     return 1
   }
@@ -4209,8 +4266,8 @@ dependency_generation_prepare_exact_ref_root() {
   printf '%s\n' "$scratch"
 }
 
-# Native assets bind more than the lock/patch selector. Reuse the ordinary
-# exact-ref publisher for dependencies, then validate the generated closure
+# Native assets bind more than the lock/patch selector. Reuse the existing
+# publisher (full or selected scope), then validate the generated closure
 # against the selected source before reporting a native-compatible hit. A miss
 # rebuilds in an owned exact-ref scratch using leased, independent dependency
 # copies. The caller's source, donor and existing immutable generation stay intact.
@@ -4218,15 +4275,29 @@ dependency_generation_ensure_verifier_ref() (
   local integration_root="$1" ref="$2" source_root="$3" generation_root="$4" retain_as="$5"
   local helper="${DEPENDENCY_GENERATION_VERIFIER_HELPER:-$(dirname "${BASH_SOURCE[0]}")/dependency-generation-verifier.mjs}"
   local parent scratch native_source nm rel input key indexed='' rc=0
+  shift 5
+  local workspace_args=() workspace
   source_root="$(cd "$source_root" && pwd -P)" || return 1
   [ "$source_root" != "$integration_root" ] || {
     dependency_generation_log 'FATAL: --verifier-source requires an independent frozen checkout'
     return 74
   }
   "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" check-source "$source_root" "$ref" || return $?
+  dependency_generation_configure_workspace_dirs "$source_root" "$@" || return $?
+  if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then
+    local requested_closure="$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT"
+    dependency_generation_configure_native_workspaces "$source_root" || return $?
+    [ "$requested_closure" = "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" ] || {
+      dependency_generation_log 'FATAL: native workspace selection must cover the canonical native closure'
+      return 74
+    }
+  fi
+  for workspace in "${DEPENDENCY_GENERATION_WORKSPACE_DIRS[@]}"; do
+    workspace_args+=(--workspace-dir "$workspace")
+  done
   # Dependency-only consumers retain their existing selector and corruption
   # checks. A corrupt publication is never treated as a native cache miss.
-  input="$(dependency_generation_input_fingerprint "$source_root")" || return $?
+  input="$(dependency_generation_verification_input_fingerprint "$source_root")" || return $?
   key="$(dependency_generation_verifier_selector_key "$source_root")" || return $?
   # The nested ordinary builder can fail after staging exact-ref inputs.
   # This subshell must own cleanup before selection: its scratch pointer is
@@ -4235,12 +4306,30 @@ dependency_generation_ensure_verifier_ref() (
   if [ -f "$generation_root/.inputs/$key" ]; then
     dependency_generation_select_verifier_inputs "$source_root" "$generation_root" || return $?
     indexed=1
+  elif [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then
+    # Never publish a different required install under the selected source's
+    # identity. Independent app inputs remain in check-source and the native
+    # key, but cannot veto this root + explicitly selected dependency graph.
+    [ "$(dependency_generation_verification_input_fingerprint "$integration_root")" = "$input" ] || {
+      dependency_generation_log 'FATAL: native required dependency inputs differ from the exact source'
+      return 74
+    }
+    if [ -f "$generation_root/.inputs/$input" ]; then
+      dependency_generation_select_input_fingerprint "$input" "$generation_root" || return $?
+    else
+      dependency_generation_audit_lock_tree "$integration_root" "$source_root" || return $?
+      dependency_generation_ensure "$integration_root" "$generation_root" || return $?
+    fi
+    DEPENDENCY_GENERATION_TOKEN="$(dependency_generation_selector_token "$DEPENDENCY_GENERATION_PATH")" || return $?
   else
     dependency_generation_main --integration "$integration_root" --generation-root "$generation_root" \
       --ensure-ref "$ref" >/dev/null || return $?
   fi
   dependency_generation_acquire_selector_lease "$generation_root" "$DEPENDENCY_GENERATION_ID" \
     "${BASHPID:-$$}" "$DEPENDENCY_GENERATION_TOKEN" || return $?
+  if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then
+    dependency_generation_audit_lock_tree "$DEPENDENCY_GENERATION_TREE" "$source_root" || return $?
+  fi
   "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" verify "$DEPENDENCY_GENERATION_PATH" "$source_root" || rc=$?
   if [ "$rc" -ne 0 ]; then
     [ -z "$indexed" ] || return "$rc"
@@ -4283,12 +4372,13 @@ dependency_generation_ensure_verifier_ref() (
     # Bridge publication through native verification/ref pinning with the
     # existing controller-owned selector lease, including competing retention.
     dependency_generation_main --integration "$native_source" --generation-root "$generation_root" \
-      --lease-owner-pid "${BASHPID:-$$}" >/dev/null || return $?
+      --lease-owner-pid "${BASHPID:-$$}" "${workspace_args[@]}" >/dev/null || return $?
     # Another source with the same lock inputs can replace the ordinary
     # selector after publication. Consume our leased identity and token;
     # the shared selector is not authority for this exact source closure.
     dependency_generation_select_prevalidated "$generation_root" \
-      "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_TOKEN" || return $?
+      "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_TOKEN" \
+      "$DEPENDENCY_GENERATION_SCOPE_MODE" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" || return $?
     # The nested publisher's lease remains held for the enclosing EXIT trap.
     "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" verify "$DEPENDENCY_GENERATION_PATH" "$source_root" || return $?
     DEPENDENCY_GENERATION_REUSED=false
@@ -4300,9 +4390,9 @@ dependency_generation_ensure_verifier_ref() (
   DEPENDENCY_GENERATION_INPUT_FINGERPRINT="$input"
   dependency_generation_retain_ensured_ref "$generation_root" "$integration_root" \
     "$retain_as" "$DEPENDENCY_GENERATION_ID" "$ref" || return $?
-  printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s input=%s scope=full reused=%s token=%s path=%s\n' \
+  printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s input=%s scope=%s reused=%s token=%s path=%s\n' \
     "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
-    "$DEPENDENCY_GENERATION_INPUT_FINGERPRINT" "$DEPENDENCY_GENERATION_REUSED" \
+    "$DEPENDENCY_GENERATION_INPUT_FINGERPRINT" "$DEPENDENCY_GENERATION_SCOPE_MODE" "$DEPENDENCY_GENERATION_REUSED" \
     "$DEPENDENCY_GENERATION_TOKEN" "$DEPENDENCY_GENERATION_PATH"
 )
 
@@ -4334,16 +4424,14 @@ dependency_generation_main() {
     esac
   done
   [ -z "$verifier_source" ] || {
-    [ -n "$ensure_ref" ] && [ -z "$select_inputs_from$fingerprint_ref$lease_owner_pid$prune_only$check_headroom$predict_ref$remember_store$retired_store$skip_recorded_stores" ] \
-      && [ "${#workspace_dirs[@]}" -eq 0 ] || {
-      dependency_generation_log '--verifier-source requires only --ensure-ref (and optional --retain-as)'
+    [ -n "$ensure_ref" ] && [ -z "$select_inputs_from$fingerprint_ref$lease_owner_pid$prune_only$check_headroom$predict_ref$remember_store$retired_store$skip_recorded_stores" ] || {
+      dependency_generation_log '--verifier-source requires --ensure-ref (optional --retain-as and --workspace-dir)'
       return 2
     }
   }
   [ -z "$predict_ref" ] || {
-    [ -z "$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid$prune_only$check_headroom" ] \
-      && [ "${#workspace_dirs[@]}" -eq 0 ] || {
-      dependency_generation_log '--predict-ref cannot be combined with another mode or --workspace-dir'
+    [ -z "$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid$prune_only$check_headroom" ] || {
+      dependency_generation_log '--predict-ref cannot be combined with another mode'
       return 2
     }
   }
@@ -4486,10 +4574,8 @@ dependency_generation_main() {
     dependency_generation_log '--select-inputs-from, --ensure-ref, and --fingerprint-ref are mutually exclusive'
     return 2
   fi
-  if [ -n "$lease_owner_pid" ] && {
-    [ -n "$ensure_ref$fingerprint_ref" ] || [ "${#workspace_dirs[@]}" -gt 0 ];
-  }; then
-    dependency_generation_log '--lease-owner-pid requires selection or full publication'
+  if [ -n "$lease_owner_pid" ] && [ -n "$ensure_ref$fingerprint_ref" ]; then
+    dependency_generation_log '--lease-owner-pid requires selection or publication'
     return 2
   fi
   if [ -n "$fingerprint_ref" ]; then
@@ -4520,6 +4606,32 @@ dependency_generation_main() {
       dependency_generation_log "FATAL: --predict-ref is not a commit: $predict_ref"
       return 74
     }
+    if [ "${#workspace_dirs[@]}" -gt 0 ]; then
+      # Native scoped preflight: retain the complete exact-ref census. A
+      # required-input mismatch is refused; no install-equivalence shortcut or
+      # full-release selector can substitute for the selected graph.
+      dependency_generation_configure_workspace_dirs "$integration_root" "${workspace_dirs[@]}" || return $?
+      local ref_manifest
+      ref_manifest="$(dependency_generation_input_manifest_ref "$integration_root" "$predict_ref" | LC_ALL=C sort)" || return $?
+      exact_input="$(
+        { printf 'schema\t1\n%s\n' "$DEPENDENCY_GENERATION_SCOPE_RECORD"
+          printf '%s\n' "$ref_manifest" | dependency_generation_verification_manifest
+        } | dependency_generation_sha256
+      )" || return $?
+      live_input="$(dependency_generation_verification_input_fingerprint "$integration_root")" || return $?
+      predict_verdict=refused
+      if [ "$live_input" = "$exact_input" ]; then
+        predict_verdict=live-match
+        if [ -f "$generation_root/.inputs/$exact_input" ]; then
+          dependency_generation_select_input_fingerprint "$exact_input" "$generation_root" || return $?
+          predict_verdict=prewarmed
+        fi
+      fi
+      printf 'DEPENDENCY_GENERATION_PREDICTION schema=1 ref=%s input=%s live=%s verdict=%s links=0\n' \
+        "$predict_ref" "$exact_input" "$live_input" "$predict_verdict"
+      [ "$predict_verdict" != refused ] || printf '%s\n' 'DEPENDENCY_GENERATION_PREDICTION_REASON native required dependency inputs differ from the exact source'
+      return 0
+    fi
     exact_input="$(
       dependency_generation_input_fingerprint_ref "$integration_root" "$predict_ref"
     )" || return $?
@@ -4590,7 +4702,7 @@ dependency_generation_main() {
     return 0
   fi
   if [ -n "$ensure_ref" ]; then
-    [ "${#workspace_dirs[@]}" -eq 0 ] || {
+    [ "${#workspace_dirs[@]}" -eq 0 ] || [ -n "$verifier_source" ] || {
       dependency_generation_log '--ensure-ref cannot publish a workspace-scoped generation'
       return 2
     }
@@ -4600,7 +4712,7 @@ dependency_generation_main() {
     }
     if [ -n "$verifier_source" ]; then
       dependency_generation_ensure_verifier_ref "$integration_root" "$ensure_ref" \
-        "$verifier_source" "$generation_root" "$retain_as"
+        "$verifier_source" "$generation_root" "$retain_as" "${workspace_dirs[@]}"
       return $?
     fi
     exact_input="$(
