@@ -15,7 +15,7 @@ import { HostedWorkspaceSessionBroker } from '../endpoint-route/hosted-workspace
 import type { HostedConnectorBinding, HostedConnectorTicketBinding } from '../endpoint-route/hosted-workspace-connector';
 
 describe('installed computer production browser transport', () => {
-  it('proves pinned Noise, full roster continuation, reload identity and fail-closed transport in Chromium', async () => {
+  it('proves pinned Noise, permuted roster recovery, reload identity and fail-closed transport in Chromium', async () => {
     const root = fileURLToPath(new URL('../../../..', import.meta.url));
     const bundle = await build({
       absWorkingDir: root, bundle: true, write: false, platform: 'browser', format: 'iife',
@@ -73,7 +73,7 @@ describe('installed computer production browser transport', () => {
       const context = await browser.newContext();
       page = await context.newPage();
       page.on('pageerror', error => pageErrors.push(error.message));
-      host.send({ type: 'start', url: socketUrl + '?peer=host', count: 193 });
+      host.send({ type: 'start', url: socketUrl + '?peer=host', count: 193, permute: true });
       await vi.waitFor(() => expect(messages.some(message => message.type === 'bound'), hostErrors).toBe(true), { timeout: 15_000 });
       expect(host.pid).not.toBe(process.pid);
       await page.goto(origin);
@@ -109,32 +109,99 @@ describe('installed computer production browser transport', () => {
       await page.waitForFunction('fixtureFrames.some(frame => frame.type === "desktop.discovery.ready") || fixtureErrors.length > 0 || fixtureSocket.readyState === 3');
       expect(await page.evaluate('fixtureErrors')).toEqual([]);
       expect(await page.evaluate('fixtureFrames.some(frame => frame.type === "desktop.discovery.ready")')).toBe(true);
+      type RosterResponse = { type: string; requestId: string; hostId: string; generation: string;
+        desktops: Array<{ desktopSessionId: string; state: string; owner: string; name: string }>;
+        cursor: string | null; nextCursor: string | null; hasMore: boolean; remaining: number; code?: string };
+      let requestIndex = 0;
+      const roster = async (cursor?: string | null) => {
+        const request = { type: 'desktop.roster', requestId: `browser-${requestIndex++}`, ...(cursor ? { cursor } : {}) };
+        await page!.evaluate(`fixtureSocket.send(${JSON.stringify(JSON.stringify(request))})`);
+        await page!.waitForFunction(`fixtureFrames.some(frame => frame.requestId === ${JSON.stringify(request.requestId)})`);
+        return await page!.evaluate(`fixtureFrames.find(frame => frame.requestId === ${JSON.stringify(request.requestId)})`) as RosterResponse;
+      };
+      const inventory = async (count: number) => {
+        const requestId = `inventory-${requestIndex++}`;
+        host.send({ type: 'inventory', count, requestId });
+        await vi.waitFor(() => expect(messages.some(message => message.type === 'inventory-updated'
+          && message.requestId === requestId && message.count === count)).toBe(true));
+      };
+      const expectedIds = (count: number) => Array.from({ length: count }, (_, index) => `desktop-${String(index).padStart(4, '0')}`);
       const listed: string[] = [];
       let cursor: string | null | undefined;
-      let generation: unknown;
+      let generation: string | undefined;
+      let resumeCursor: string | null = null;
       for (let index = 0; index < 4; index++) {
         phase = `roster-page-${index}`;
-        const request = { type: 'desktop.roster', requestId: `browser-${index}`, ...(cursor ? { cursor } : {}) };
-        await page.evaluate(`fixtureSocket.send(${JSON.stringify(JSON.stringify(request))})`);
-        await page.waitForFunction(`fixtureFrames.some(frame => frame.requestId === ${JSON.stringify(request.requestId)})`);
-        const result = await page.evaluate(`fixtureFrames.find(frame => frame.requestId === ${JSON.stringify(request.requestId)})`) as {
-          desktops: Array<{ desktopSessionId: string }>; nextCursor: string | null; generation: unknown; hasMore: boolean;
-        };
+        const result = await roster(cursor);
+        expect(result.type).toBe('desktop.roster.result');
+        expect(result.hostId).toBe(binding.hostId);
         if (generation === undefined) generation = result.generation;
         expect(result.generation).toBe(generation);
         expect(result.desktops.length).toBeLessThanOrEqual(64);
+        expect(result.desktops).toEqual(expectedIds(193).slice(index * 64, (index + 1) * 64).map((desktopSessionId, offset) => {
+          const number = index * 64 + offset;
+          return { desktopSessionId, state: 'ready', scope: 'agent', owner: `test-agent-${number}`, name: `PRIVATE_ROSTER_MARKER_${number}` };
+        }));
+        // Repeating a page read must return the exact identities and cursor even
+        // though the separate provider has permuted its input in the meantime.
+        const duplicate = await roster(cursor);
+        expect({ ...duplicate, requestId: result.requestId }).toEqual(result);
         listed.push(...result.desktops.map(desktop => desktop.desktopSessionId));
         cursor = result.nextCursor;
+        if (index === 0) resumeCursor = cursor;
         expect(result.hasMore).toBe(Boolean(cursor));
+        expect(result.remaining).toBe(193 - listed.length);
       }
-      expect(listed).toEqual(Array.from({ length: 193 }, (_, index) => `desktop-${String(index).padStart(4, '0')}`));
+      expect(listed).toEqual(expectedIds(193));
+      expect(new Set(listed).size).toBe(193);
+      expect(new Set(messages.filter(message => message.type === 'roster-read').map(message => message.first)).size).toBeGreaterThan(1);
       expect(cursor).toBeNull();
       expect(packets.join('\n')).not.toContain('PRIVATE_ROSTER_MARKER_');
+      phase = 'changed-generation-refusal';
+      await inventory(194);
+      const stale = await roster(resumeCursor);
+      expect(stale).toMatchObject({ type: 'operation.error', code: 'roster_resync_required' });
+      expect(stale).not.toHaveProperty('desktops');
+      phase = 'stable-generation-resync';
+      const recovered: string[] = [];
+      let recoveredGeneration: string | undefined;
+      cursor = null;
+      do {
+        const result = await roster(cursor);
+        expect(result.type).toBe('desktop.roster.result');
+        if (!recoveredGeneration) recoveredGeneration = result.generation;
+        expect(result.generation).toBe(recoveredGeneration);
+        expect(result.generation).not.toBe(generation);
+        expect(result.hostId).toBe(binding.hostId);
+        recovered.push(...result.desktops.map(desktop => desktop.desktopSessionId));
+        cursor = result.nextCursor;
+        expect(result.remaining).toBe(194 - recovered.length);
+        expect(recovered.length).toBeLessThanOrEqual(194);
+      } while (cursor);
+      expect(recovered).toEqual(expectedIds(194));
+      await inventory(193);
       await page.evaluate('fixtureSocket.close()');
       phase = 'reload';
       await page.reload();
       await page.waitForFunction('!!globalThis.installedComputerTest');
       expect(await connect()).toBe(publicKey);
+      phase = 'resume-after-reload';
+      const resumed = await roster(resumeCursor);
+      expect(resumed.type).toBe('desktop.roster.result');
+      expect(resumed.generation).toBe(generation);
+      expect(resumed.desktops.map(desktop => desktop.desktopSessionId)).toEqual(expectedIds(193).slice(64, 128));
+      phase = 'host-disconnect';
+      host.send({ type: 'disconnect', requestId: 'browser-disconnect' });
+      await vi.waitFor(() => expect(messages.some(message => message.type === 'disconnected'
+        && message.requestId === 'browser-disconnect')).toBe(true));
+      await page.waitForFunction('fixtureSocket.readyState === 3');
+      const priorBindings = messages.filter(message => message.type === 'bound').length;
+      host.send({ type: 'start', url: socketUrl + '?peer=host', count: 193, permute: true });
+      await vi.waitFor(() => expect(messages.filter(message => message.type === 'bound')).toHaveLength(priorBindings + 1), { timeout: 15_000 });
+      phase = 'resume-after-host-reconnect';
+      expect(await connect()).toBe(publicKey);
+      const reconnected = await roster(resumeCursor);
+      expect({ ...reconnected, requestId: resumed.requestId }).toEqual(resumed);
       await page.evaluate('fixtureSocket.close()');
       const wrongKey = SecretStream.keyPair(Buffer.alloc(32, 83)).publicKey.toString('base64');
       phase = 'wrong-pin-refusal';
