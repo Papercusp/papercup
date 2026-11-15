@@ -18,7 +18,7 @@
  * a pending card as auditable.
  */
 import { mapWithConcurrency } from './gym/concurrency';
-import { readScorecardRecipeHeader, type ScorecardRow } from './scorecards';
+import { listScorecards, readScorecardRecipeHeader, type ScorecardListCursor, type ScorecardRow } from './scorecards';
 
 /** Matches the grading-integrity dispatcher's per-pass evidence-read width. */
 const PENDING_CURRENTNESS_READ_CONCURRENCY = 4;
@@ -84,4 +84,41 @@ export async function withoutStaleAuditTargetPendingCards<T extends ScorecardRow
     }
   });
   return cards.filter((_, index) => keep[index]);
+}
+
+/**
+ * Read the complete pending-blocker population. A full history page is never an
+ * exhaustion verdict: follow the existing immutable keyset until a short page.
+ * Each new invocation starts a fresh scan, so no retained cursor can starve an
+ * older blocker or hide a changed audit target. A broken continuation refuses
+ * the decision instead of returning an incomplete population.
+ */
+export async function listPendingSubjectBlockers(
+  rubricRef: string,
+  subject: { kind?: string | null; ref: string },
+  excludeIssueId?: string,
+): Promise<ScorecardRow[]> {
+  const pageSize = 100;
+  const pending: ScorecardRow[] = [];
+  let before: ScorecardListCursor | undefined;
+  for (;;) {
+    const page = await listScorecards({
+      rubricRef,
+      subjectRef: subject.ref,
+      limit: pageSize,
+      ...(before ? { before } : {}),
+    });
+    pending.push(...await withoutStaleAuditTargetPendingCards(page.filter(
+      (card) => isListedPendingSubjectBlocker(card, subject) && card.issueId !== excludeIssueId,
+    )));
+    if (page.length < pageSize) return pending;
+    const tail = page[page.length - 1]!;
+    if (!tail.createdAt || !Number.isFinite(Date.parse(tail.createdAt)) || !tail.issueId) {
+      throw new Error('Pending scorecard history has no valid continuation identity');
+    }
+    if (before?.createdAt === tail.createdAt && before.issueId === tail.issueId) {
+      throw new Error('Pending scorecard history continuation did not advance');
+    }
+    before = { createdAt: tail.createdAt, issueId: tail.issueId };
+  }
 }

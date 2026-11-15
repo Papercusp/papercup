@@ -17,7 +17,8 @@ import { runInNewContext } from 'node:vm';
 import { z } from 'zod';
 import { addresseeArg } from '../_addressee-arg';
 import { defineTool } from '@papercusp/agent-mcp';
-import { nestedProjectionContext } from '../../result-projection/nested-dispatch';
+import { applyNestedProjection, nestedProjectionContext } from '../../result-projection/nested-dispatch';
+import { applyResultDoorAsync } from '../../result-door';
 import devServiceHealth from '../dev/service_health';
 import launchAgent from '../capability/launch-agent';
 import activityToolLog from '../activity/tool-log';
@@ -162,6 +163,7 @@ async function callHandler(args: Record<string, unknown>, ctx: Record<string, un
       tool: string;
       description: string | null;
       argSchema: string | null;
+      argSchemaJson?: unknown;
       returns: string | null;
       returnsSource: 'registered-output-schema' | 'authored-tool-guidance' | null;
       via: string;
@@ -1785,6 +1787,52 @@ describe('handler — graceful degrade + result shape', () => {
     const out = await callHandler(args, { ...materialized });
     expect(() => JSON.parse(out.hits[0]?.argSchema ?? '')).not.toThrow();
     expect(out.hits[0]?.argSchema).toContain('"properties"');
+  });
+
+  it.each([-1, 0, 1])('recovers a field after the schema budget boundary (%i bytes) before scratch I/O', async (delta) => {
+    const name = `test:structured-schema-recovery-${delta + 1}`;
+    const makeSchema = (padding: number) => z.object({
+      prefix: z.string().describe('x'.repeat(padding)),
+      decisive: z.object({ id: z.string() }),
+    });
+    // Projected callable schemas omit the JSON-Schema document declaration.
+    const { $schema: _draft, ...callableSchema } = z.toJSONSchema(makeSchema(0));
+    const overhead = Buffer.byteLength(JSON.stringify(callableSchema));
+    const argsSchema = makeSchema(DISCOVERY_RESULT_MAX_BYTES + delta - overhead);
+    defineTool({ name, description: 'Structured schema recovery fixture', capability: 'agent_tools:read',
+      args: argsSchema, async handler() { return { data: {} }; } });
+    const args = { query: name, limit: 1 };
+    const projection = { pick: ['hits[].tool', 'hits[].argSchemaJson.properties.decisive'] };
+    const ctx = nestedProjectionContext({ contextTier: 'trimmed' } as never, args, projection);
+    const { schemaByTool } = buildCorpus();
+    const completeSchema = schemaByTool.get(name) as { properties: Record<string, unknown> };
+    expect(Buffer.byteLength(JSON.stringify(completeSchema))).toBe(DISCOVERY_RESULT_MAX_BYTES + delta);
+
+    const source = await callHandler(args, { ...ctx });
+    expect(source.hits[0]?.argSchemaJson).toEqual(completeSchema);
+    const projected = applyNestedProjection(source, projection);
+    expect(projected.hits).toEqual([{
+      tool: name,
+      argSchemaJson: { properties: { decisive: completeSchema.properties.decisive } },
+    }]);
+    const input = { content: [{ type: 'text' as const, text: JSON.stringify(projected) }] };
+    const onScratchWriteTiming = vi.fn();
+    const doored = await applyResultDoorAsync(input, {
+      toolName: 'tools:find', workspaceId: 'ws-test', onScratchWriteTiming,
+    });
+    expect(doored).toEqual(input);
+    expect(onScratchWriteTiming).not.toHaveBeenCalled();
+
+    // A second pick recovers a different field from the same complete source.
+    const recovery = { pick: ['hits[].argSchemaJson.properties.prefix.type'] };
+    const recoveredSource = await callHandler(args, {
+      ...nestedProjectionContext({} as never, args, recovery),
+    });
+    expect(applyNestedProjection(recoveredSource, recovery).hits[0]?.argSchemaJson).toEqual({
+      properties: { prefix: { type: 'string' } },
+    });
+    const ordinary = await callHandler(args);
+    expect(ordinary.hits[0]).not.toHaveProperty('argSchemaJson');
   });
 
   it('returns a full schema when an explicit full payload tier exceeds the inline result budget', async () => {

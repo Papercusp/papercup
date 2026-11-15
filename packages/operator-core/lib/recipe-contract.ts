@@ -215,6 +215,16 @@ export interface RecipeContractDiagnostic {
   liftsWhen?: string;
   path?: string;
   capability?: string;
+  /** Complete preflight findings, so fixing one field does not require another run. */
+  issues?: Array<{
+    code: RecipeContractDiagnosticCode;
+    message: string;
+    path?: string;
+    tool?: string;
+    kind?: string;
+    position?: { line: number; column: number };
+    callPosition?: { line: number; column: number };
+  }>;
 }
 
 export interface RecipeContractFailure {

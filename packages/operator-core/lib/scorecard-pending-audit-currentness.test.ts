@@ -3,13 +3,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // EI-28807501130212029: listScorecards rows carry no read-time auditTarget, so the
 // pending-audit gate's evidence-binding half must come from the recipe-header read.
 const readScorecardRecipeHeader = vi.fn();
+const listScorecards = vi.fn();
 vi.mock('./scorecards', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./scorecards')>()),
   readScorecardRecipeHeader: (...args: unknown[]) => readScorecardRecipeHeader(...args),
+  listScorecards: (...args: unknown[]) => listScorecards(...args),
 }));
 
 import {
   isListedPendingSubjectBlocker,
+  listPendingSubjectBlockers,
   scorecardCitesSpecEvidenceBindings,
   withoutStaleAuditTargetPendingCards,
 } from './scorecard-pending-audit-currentness';
@@ -39,6 +42,8 @@ const header = (issueId: string, current: boolean | null) => ({
 beforeEach(() => {
   readScorecardRecipeHeader.mockReset();
   readScorecardRecipeHeader.mockResolvedValue({ kind: 'not_found' });
+  listScorecards.mockReset();
+  listScorecards.mockResolvedValue([]);
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -129,5 +134,67 @@ describe('withoutStaleAuditTargetPendingCards', () => {
     // EI-8 is in the stale set but cites no bindings, so it is never read and stays.
     expect(kept.map((c) => c.issueId)).toEqual(['EI-0', 'EI-2', 'EI-3', 'EI-5', 'EI-6', 'EI-7', 'EI-8']);
     expect(readScorecardRecipeHeader).toHaveBeenCalledTimes(6);
+  });
+});
+
+describe('listPendingSubjectBlockers', () => {
+  const history = (size: number, reverse = false) => {
+    const ids = Array.from({ length: size }, (_, index) => `EI-${index}`);
+    if (reverse) ids.reverse();
+    return ids.map((id, index) => ({
+      ...citingBindings(id),
+      createdAt: new Date(Date.UTC(2026, 10, 15) - index * 1000).toISOString(),
+    }));
+  };
+  const serve = (rows: ScorecardRow[]) => {
+    listScorecards.mockImplementation(async (filter: {
+      before?: { createdAt: string; issueId: string }; limit: number;
+    }) => {
+      const start = filter.before
+        ? rows.findIndex((row) => row.issueId === filter.before!.issueId && row.createdAt === filter.before!.createdAt) + 1
+        : 0;
+      return rows.slice(start, start + filter.limit);
+    });
+  };
+
+  it.each([99, 100, 101, 305].flatMap((size) => [false, true].map((reverse) => [size, reverse] as const)))(
+    'keeps the decisive blocker across complete pages (size=%i, reverse=%s)',
+    async (size, reverse) => {
+      serve(history(size, reverse));
+      readScorecardRecipeHeader.mockImplementation(async (id: string) => header(id, id === 'EI-0'));
+
+      const pending = await listPendingSubjectBlockers('spec-test-adequacy', SUBJECT);
+
+      expect(pending.map((row) => row.issueId)).toEqual(['EI-0']);
+      expect(listScorecards.mock.calls.every(([filter]) =>
+        filter.rubricRef === 'spec-test-adequacy' && filter.subjectRef === SUBJECT.ref)).toBe(true);
+    },
+  );
+
+  it('starts fresh after a complete scan instead of retaining a cursor or stale currentness', async () => {
+    serve(history(305));
+    let current = 'EI-304';
+    readScorecardRecipeHeader.mockImplementation(async (id: string) => header(id, id === current));
+    expect((await listPendingSubjectBlockers('spec-test-adequacy', SUBJECT)).map((row) => row.issueId)).toEqual(['EI-304']);
+
+    current = 'EI-0';
+    expect((await listPendingSubjectBlockers('spec-test-adequacy', SUBJECT)).map((row) => row.issueId)).toEqual(['EI-0']);
+  });
+
+  it('propagates a later-page failure instead of returning a partial decision', async () => {
+    listScorecards.mockResolvedValueOnce(history(100)).mockRejectedValueOnce(new Error('history unavailable'));
+    await expect(listPendingSubjectBlockers('spec-test-adequacy', SUBJECT)).rejects.toThrow('history unavailable');
+  });
+
+  it('refuses a non-advancing continuation', async () => {
+    listScorecards.mockResolvedValue(history(100));
+    await expect(listPendingSubjectBlockers('spec-test-adequacy', SUBJECT)).rejects.toThrow('did not advance');
+  });
+
+  it('refuses an incomplete continuation identity without truncating it', async () => {
+    const rows = history(100);
+    rows[99]!.createdAt = '';
+    listScorecards.mockResolvedValue(rows);
+    await expect(listPendingSubjectBlockers('spec-test-adequacy', SUBJECT)).rejects.toThrow('valid continuation identity');
   });
 });

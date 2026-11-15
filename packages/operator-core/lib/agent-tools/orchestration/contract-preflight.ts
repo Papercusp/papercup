@@ -13,6 +13,7 @@ import {
 import {
   deriveLegacyForegroundManifest,
   preflightRecipeContract,
+  validateRecipeBindings,
   projectedToolName,
   toolRequirementFor,
   type CapabilityManifestV1,
@@ -269,14 +270,28 @@ export async function inspectScriptContract(input: {
     surface.allowed,
   );
   if (!schema.ok) {
+    const code = input.manifest === undefined ? 'script_invalid' : 'recipe_schema_stale';
+    const issues: NonNullable<RecipeContractFailure['error']['issues']> = schema.issues.map((issue) => ({
+      ...issue,
+      code,
+    }));
+    // Binding validation is pure and independent of script-schema validation.
+    // Report it in the same refusal; never dispatch a nested tool to discover it.
+    const bindings = validateRecipeBindings({
+      schema: input.script.bindingSchema,
+      bindings: input.bindings,
+      lifecycle: input.lifecycle ?? 'foreground',
+    });
+    if (!bindings.ok) issues.push(bindings.error);
     return {
       ok: false,
       phase: 'preflight',
       executed: false,
       error: {
-        code: input.manifest === undefined ? 'script_invalid' : 'recipe_schema_stale',
+        code,
         message: schema.issues[0]?.message ?? 'script does not match the current tool catalog',
         path: schema.issues[0]?.path ?? 'script.source',
+        issues,
       },
     };
   }

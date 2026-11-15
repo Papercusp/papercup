@@ -823,6 +823,28 @@ describe('applyResultDoor', () => {
   });
 
   it.each([
+    { toolName: 'work_items:links' },
+    { toolName: 'tools:invoke', nestedTargetToolName: 'work_items:links' },
+  ])('keeps link-page completeness and executable continuation through $toolName', (route) => {
+    const nextCursor = 'cursor-identity-'.repeat(20);
+    const next = { tool: 'work_items:links', args: { id: 'EI-1', direction: 'in', limit: 20, harness: 'papercusp', cursor: nextCursor } };
+    const source = { ok: true, emptyIds: ['EI-empty'],
+      results: [{ ok: true, id: 'EI-1', direction: 'in', total: 21, offset: 0, returned: 20, omitted: 1,
+        truncated: true, nextCursor, next,
+        links: Array.from({ length: 20 }, (_, i) => ({ rel: 'blocks', src: { kind: 'issue', ref: `EI-${i}-${'x'.repeat(800)}` } })),
+      }], coverage: { selectedCount: 2, checkedCount: 2, complete: true, linkedCount: 1 } };
+    const out = applyResultDoor({ content: [{ type: 'text', text: JSON.stringify(source) }] },
+      { ...route, workspaceId: 'ws-1', runId: RUN_ID });
+    const body = boundedBody(out) as any;
+    expect(body.results[0]).toMatchObject({ id: 'EI-1', total: 21, offset: 0, returned: 20, omitted: 1, truncated: true, nextCursor, next });
+    expect(body.emptyIds).toEqual(['EI-empty']);
+    expect(body.coverage).toEqual(source.coverage);
+    const cursor = body._projection.cursor;
+    const reference = scratchReference.parseScratchReference(readFileSync(cursor.args.file_path));
+    expect(JSON.parse(reference!.payload.subarray(cursor.bodyOffsetInPayload ?? 0).toString('utf8'))).toEqual(source);
+  });
+
+  it.each([
     { toolName: 'work_items:get' },
     { toolName: 'tools:invoke', nestedTargetToolName: 'work_items:get' },
   ])('reconciles requested-ID receipts through $toolName after a narrow caller pick', (route) => {

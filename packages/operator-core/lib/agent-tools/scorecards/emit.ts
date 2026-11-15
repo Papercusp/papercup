@@ -93,7 +93,7 @@ import {
   type ScorecardInstrumentSnapshot,
   type ScorecardReleaseGateSnapshot,
 } from '../../scorecards';
-import { isListedPendingSubjectBlocker, withoutStaleAuditTargetPendingCards } from '../../scorecard-pending-audit-currentness';
+import { listPendingSubjectBlockers } from '../../scorecard-pending-audit-currentness';
 import { revParseAsync } from '../../release/judged-sha-containment';
 import { scorecardEvaluateArgs, scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema,
   pendingDeliveryReviewRefusal, evaluateScorecard, scorecardComparisonReasons } from './evaluate';
@@ -3945,11 +3945,7 @@ export async function emitScorecard(
       const gatedSubject = args.subject;
       // EI-28807501130212029: a pending card whose cited proof was retracted is no longer an
       // audit target, so it must not block; list rows cannot say so, hence the header re-read.
-      const pendingSameSubject = await withoutStaleAuditTargetPendingCards(
-        (await listScorecards({ rubricRef: args.rubricRef, subjectRef: gatedSubject.ref, limit: 100 })).filter(
-          (card) => isListedPendingSubjectBlocker(card, gatedSubject) && card.issueId !== effectiveSupersedes,
-        ),
-      );
+      const pendingSameSubject = await listPendingSubjectBlockers(args.rubricRef, gatedSubject, effectiveSupersedes);
       // WI-10005211: a grading-integrity revision re-opens every settled audit
       // (reservePendingGradingAudit), so a windowed grader's whole back-catalogue
       // turns pending at once and each old card blocked the author's next card

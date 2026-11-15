@@ -64,6 +64,7 @@ import {
 import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import { parseProjection } from '../../result-projection/parse';
 import { withInlinedSchemaRefs } from '../schema-ref-inline';
 import { readServingGeneration } from '../../serving-generation';
 import { assertServingBuild, getServingBuild } from '../../serving-build';
@@ -1212,6 +1213,8 @@ export interface DiscoveryResultHit {
   tool: string;
   description: string | null;
   argSchema: string | null;
+  /** Full structured schema, materialized only for an explicit projection pick. */
+  argSchemaJson?: unknown;
   returns: string | null;
   returnsSource?: 'registered-output-schema' | 'authored-tool-guidance' | null;
   via: string;
@@ -1617,7 +1620,9 @@ export default defineTool({
     returns:
       '{ query, count, semantic: "on"|"warming"|"lexical-only", semanticWarning?: "query-embedding-timeout"|"query-embedding-failed"|"query-embedding-invalid-vector"|"embedding-width-mismatch", registry: { source, revision }, servingGeneration (the exact operator generation that produced these schemas; the MCP transport checks its tools/list metadata independently—do not pass it as a tools:invoke argument), activated (were the hits added to YOUR live tool surface), hits: [{ tool, description, argSchema, returns (registered output schemas outrank authored fallback), returnsSource:"registered-output-schema"|"authored-tool-guidance"|null, via }], omittedTools? (explicit names missing from hits because of ranking/result limits), howToCall }. ' +
       'Each hit carries that tool\'s ARG schema AND its resolved RESPONSE shape (registered output schemas outrank authored prose), so you can write a code:run batch over a tool without calling it once just to learn its field names. ' +
-      'Exact colon-form tool names in a query are prioritized. If `omittedTools` is present, query each listed name individually. ALWAYS read `activated` + `howToCall` rather than assuming a direct call resolves.',
+      'Exact colon-form tool names in a query are prioritized. If `omittedTools` is present, query each listed name individually. ' +
+      'For exact schema fields without a large spill, use limit:1 and projection.pick:["hits[].tool","hits[].argSchemaJson.properties.<field>"]; argSchemaJson is the complete structured schema and supports nested picks. ' +
+      'ALWAYS read `activated` + `howToCall` rather than assuming a direct call resolves.',
     seeAlso: [
       'agent_tools:list (full permission-annotated dump)',
       'meta:define-tool (define a new tool if none exists)',
@@ -1794,6 +1799,13 @@ export default defineTool({
     // must not turn a compact discovery schema into an unrequested raw schema.
     const fullArgSchemaRequested =
       ctx.payloadTierOverride === 'full' && ctx.sourceMaterialization?.promotedToFull !== true;
+    // The legacy schema is a string: projection cannot select fields inside it.
+    // Materialize the JSON form only when explicitly selected, then let the
+    // existing projection reduce it BEFORE the result door touches scratch I/O.
+    const projection = parseProjection(ctx.sourceProjection);
+    const structuredArgSchemaRequested = projection.ok && (projection.spec?.pick?.some((path) =>
+      path === 'hits[].argSchemaJson' || path.startsWith('hits[].argSchemaJson.'),
+    ) ?? false);
 
     // Report the query's actual semantic outcome, not only index readiness.
     // A timed-out, failed, malformed, or width-mismatched query used lexical
@@ -1805,6 +1817,7 @@ export default defineTool({
         ? JSON.stringify(schemaByTool.get(h.tool)) ?? h.argSchema
         : compactSchemaForResult(schemaByTool.get(h.tool), { includeNestedDescriptions: false }) ??
           boundedText(h.argSchema, DISCOVERY_SCHEMA_MAX_CHARS),
+      ...(structuredArgSchemaRequested ? { argSchemaJson: schemaByTool.get(h.tool) ?? null } : {}),
       returns: returnsByTool.get(h.tool) ?? null,
       returnsSource: returnSourcesByTool.get(h.tool) ?? null,
       via: h.via,
@@ -1812,7 +1825,7 @@ export default defineTool({
     let projectedHits = hits.map((h) => projectHit(h, fullArgSchemaRequested));
 
     const hasToolsInvokeHit = projectedHits.some((hit) => hit.tool === 'tools:invoke');
-    const exactNameRecoveryNote = ' If an `argSchema` contains …, it is incomplete. Re-run `tools:find` with the dispatch-level `payloadTier:"full"` to receive the complete accepted argument schema; repeating the same bounded query may return the same clipped schema.' + (exactNames.length > 0
+    const exactNameRecoveryNote = ' If an `argSchema` contains …, it is incomplete. Re-run with limit:1 and projection:{pick:["hits[].argSchemaJson.properties.<field>"]} for exact fields, or dispatch-level payloadTier:"full" for the entire schema; repeating a compact query returns the same clipped schema.' + (exactNames.length > 0
       ? ' Exact names are prioritized; if `omittedTools` is present, query each listed name individually.'
       : '');
     const generationBindingInstruction = servingGeneration
@@ -1840,7 +1853,7 @@ export default defineTool({
       howToCall: activatedHowToCall,
       totalMatches: hits.length,
     };
-    const activationHits = fullArgSchemaRequested
+    const activationHits = fullArgSchemaRequested || structuredArgSchemaRequested
       ? projectedHits
       : boundDiscoveryHits(activationBase, projectedHits, exactNames).hits;
 
@@ -1859,7 +1872,7 @@ export default defineTool({
     }
 
     const howToCall = activated ? activatedHowToCall : inactiveHowToCall;
-    const bounded = fullArgSchemaRequested
+    const bounded = fullArgSchemaRequested || structuredArgSchemaRequested
       ? {
           hits: projectedHits,
           truncated: exactNames.some((name) => !projectedHits.some((hit) => hit.tool.toLowerCase() === name)),
@@ -1879,7 +1892,7 @@ export default defineTool({
           projectedHits,
           exactNames,
         );
-    const noHitFits = !fullArgSchemaRequested && hits.length > 0 && bounded.hits.length === 0;
+    const noHitFits = !fullArgSchemaRequested && !structuredArgSchemaRequested && hits.length > 0 && bounded.hits.length === 0;
     const budgetNote = noHitFits
       ? ' No matching schema fit the response budget; retry with a narrower query.'
       : '';

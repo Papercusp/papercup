@@ -10,6 +10,7 @@
  * the canonical blocking reader. Keeping that dispatch here prevents an issue
  * read from silently querying the legacy DEFAULT_COORD_WORKSPACE partition.
  */
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { PgLinkStore, type LinkRow, type ObjectRef } from '@papercusp/coordination/capabilities';
@@ -22,6 +23,32 @@ import { mergeIds, runBulk, bulkContent } from '../_bulk';
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
+
+const cursorSchema = z.object({
+  v: z.literal(1),
+  scope: z.string().regex(/^[a-f0-9]{64}$/),
+  snapshot: z.string().regex(/^[a-f0-9]{64}$/),
+  offset: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+}).strict();
+
+function fingerprint(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+function decodeCursor(token: string): z.infer<typeof cursorSchema> | null {
+  try {
+    const bytes = Buffer.from(token, 'base64url');
+    if (bytes.toString('base64url') !== token) return null;
+    return cursorSchema.parse(JSON.parse(bytes.toString('utf8')));
+  } catch {
+    return null;
+  }
+}
+
+function linkKey(link: WorkItemLink): string {
+  const endpoint = link.src ?? link.dst!;
+  return JSON.stringify([link.rel, endpoint.kind, endpoint.ref, link.satisfaction ?? null]);
+}
 
 /** The compact relation shape returned by this read surface. */
 export interface WorkItemLink {
@@ -66,11 +93,11 @@ export default defineTool({
   skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   description:
-    'Read typed links for one OR many work-items. `direction:"out"` returns what each item points to; `direction:"in"` returns what points to each item. Pass `id` or `ids`, with a shared per-item `limit` (default 20, max 100). Topic-tag edges are omitted. Successful items with no links are omitted from `results`; `coverage` reports selected, checked, and link-bearing counts, plus whether every selected item was checked. Failures stay in `results`.',
+    'Read typed links for one OR many work-items, in either direction (limit per item: default 20, max 100). Pages report total, offset, returned, omitted (remaining after this page) and executable next; follow until truncated:false. Cursors survive restarts; source changes return stale_cursor with restart. Tags are excluded; emptyIds names checked zero-link items. coverage measures selected IDs separately. Failures stay in results.',
   guidance: {
     when: 'You need the structured relations recorded by work_items:link, including blockers, duplicates, fixes, and descriptive edges. Use direction:"out" for the item’s targets or direction:"in" for references to the item; pass ids:[…] for several items.',
     notWhen: 'For topic tags use work_items:tag or work_items:get { detail:true }; tags are intentionally omitted from this relation read.',
-    chaining: 'work_items:get → work_items:links { id, direction:"out" | "in" } → work_items:get { ids:[…] } for selected linked work-items.',
+    chaining: 'work_items:get → work_items:links { id, direction:"out" | "in" } → follow each result.next.tool/args until truncated:false (or restart after stale_cursor) → work_items:get for the recovered linked items. Recover any outer result-door spill before treating a page as complete.',
   },
   args: z
     .object({
@@ -88,9 +115,13 @@ export default defineTool({
         .default(DEFAULT_LIMIT)
         .describe(`maximum links returned for EACH item (default ${DEFAULT_LIMIT}, max ${MAX_LIMIT})`),
       harness: z.string().max(80).optional().describe('caller harness scope for resolving feature-family ids'),
+      cursor: z.string().min(1).optional().describe('Opaque nextCursor from this item/direction. Resume one item per call using its next handle; source changes require the returned restart handle.'),
     })
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
       message: 'pass `id` (one) or `ids` (many)',
+    })
+    .refine((a) => !a.cursor || mergeIds(a.id, a.ids).length === 1, {
+      message: 'a cursor resumes exactly one item; follow each item\'s next handle separately',
     }),
   async handler(args) {
     const ids = mergeIds(args.id, args.ids);
@@ -108,11 +139,44 @@ export default defineTool({
         // both readers still merge canonical work_item_deps for `blocks`.
         const reader = ref.kind === 'issue' ? issueBlockingLinks : blockingEdgeReader;
         const rows = await readLinks(reader, ref, direction);
-        const links = rows
+        // Order complete projected records, not the store's incidental row order.
+        // The fingerprint binds an offset to this exact source, so insertions,
+        // deletions and changed satisfaction never silently skip an edge.
+        const matching = rows
           .filter((row) => row.rel !== 'tagged')
-          .slice(0, limit)
-          .map((row) => projectWorkItemLink(row, direction));
-        return { ok: true as const, id, direction, links };
+          .map((row) => projectWorkItemLink(row, direction))
+          .map((link) => ({ link, key: linkKey(link) }))
+          .sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
+          .map(({ link }) => link);
+        const scope = fingerprint([coordScopeWorkspace(), ref.kind, ref.ref, direction]);
+        const snapshot = fingerprint(matching.map(linkKey));
+        const restart = {
+          tool: 'work_items:links' as const,
+          args: { id, direction, limit, ...(args.harness ? { harness: args.harness } : {}) },
+        };
+        const cursor = args.cursor ? decodeCursor(args.cursor) : null;
+        if (args.cursor && (!cursor || cursor.scope !== scope)) {
+          return { ok: false as const, id, error: 'invalid_cursor',
+            message: 'Use this item, direction and workspace\'s exact nextCursor.', restart };
+        }
+        if (cursor && cursor.snapshot !== snapshot) {
+          return { ok: false as const, id, error: 'stale_cursor',
+            message: 'The matching links changed. Restart and replace the prior partial source.', restart };
+        }
+        if (cursor && cursor.offset >= matching.length) {
+          return { ok: false as const, id, error: 'invalid_cursor',
+            message: 'The cursor is outside this source. Restart the read.', restart };
+        }
+        const offset = cursor?.offset ?? 0;
+        const links = matching.slice(offset, offset + limit);
+        const end = offset + links.length;
+        const omitted = matching.length - end;
+        const nextCursor = omitted > 0
+          ? Buffer.from(JSON.stringify({ v: 1, scope, snapshot, offset: end })).toString('base64url')
+          : null;
+        return { ok: true as const, id, direction, links,
+          total: matching.length, offset, returned: links.length, omitted, truncated: omitted > 0,
+          nextCursor, next: nextCursor ? { ...restart, args: { ...restart.args, cursor: nextCursor } } : null };
       },
       { keyOf: (id) => ({ id }) },
     );
@@ -130,6 +194,9 @@ export default defineTool({
     return bulkContent({
       ...env,
       results,
+      // Empty successes stay compact without making them indistinguishable
+      // from failed or unmeasured IDs. These are exact, complete identities.
+      emptyIds: env.results.flatMap((result) => result.ok && 'total' in result && result.total === 0 ? [result.id] : []),
       coverage: {
         selectedCount: ids.length,
         checkedCount: env.results.length,

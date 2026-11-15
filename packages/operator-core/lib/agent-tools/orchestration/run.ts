@@ -359,11 +359,12 @@ function preflightError(
   message: string,
   args: OrchestrationSourceArgs,
   ctx?: Pick<UnifiedToolContext, 'metadata'>,
+  details?: unknown,
 ): ToolResult {
   const envelope = buildOutputEnvelope({
     summary: '',
     state: 'error',
-    error: { code, message },
+    error: { code, message, ...(details === undefined ? {} : { details }) },
     metrics: {
       backend: 'server',
       phase: 'preflight',
@@ -407,7 +408,7 @@ export async function runServerScriptAdapter(
     lifecycle: args.execution?.lifecycle,
     ctx,
   });
-  if (!checked.ok) return preflightError(checked.error.code, checked.error.message, args, ctx);
+  if (!checked.ok) return preflightError(checked.error.code, checked.error.message, args, ctx, checked.error);
 
   if (args.inspectionPin) {
     const durable = args.execution?.durability === 'durable';

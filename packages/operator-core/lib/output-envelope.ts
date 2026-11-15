@@ -79,6 +79,8 @@ export interface OutputEnvelopeError {
   code: string;
   message: string;
   retryable?: boolean;
+  /** Structured diagnostic evidence preserved by adapters without reducing it to prose. */
+  details?: unknown;
 }
 
 /**

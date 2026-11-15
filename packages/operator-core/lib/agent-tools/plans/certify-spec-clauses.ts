@@ -31,8 +31,7 @@ import { guardResource } from '../locks/resource-lock-guard';
 import evaluatorTool, { argsSchema as evaluatorArgsSchema } from './evaluate-spec-test-adequacy';
 import { PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
 import { emitScorecardForToolContext, scorecardEmitArgs, SCORECARD_EMIT_TIMEOUT_SEC } from '../scorecards/emit';
-import { listScorecards } from '../../scorecards';
-import { isListedPendingSubjectBlocker, withoutStaleAuditTargetPendingCards } from '../../scorecard-pending-audit-currentness';
+import { listPendingSubjectBlockers } from '../../scorecard-pending-audit-currentness';
 import { getBuildInfo } from '../../build-info';
 import { GRADING_AUDIT_RESERVATION_TTL_MS } from '../../grading-integrity';
 import { getWorkItem } from '../../work-items';
@@ -124,11 +123,7 @@ async function findBuildStrandedPendingCard(
   // The same blocker set emit's grading_audit_required gate uses. A card whose cited proof
   // was retracted no longer blocks the clause, so it must not make the stranded card look
   // ambiguous; list rows cannot say so, hence the header re-read (EI-28807501130212029).
-  const pending = await withoutStaleAuditTargetPendingCards(
-    ((await listScorecards({ rubricRef, subjectRef: subject.ref, limit: 100 })) ?? []).filter(
-      (card) => isListedPendingSubjectBlocker(card, subject),
-    ),
-  );
+  const pending = await listPendingSubjectBlockers(rubricRef, subject);
   if (pending.length !== 1) return null;
   const card = pending[0]!;
   const recorded = card.rerunRecipe?.evaluatorBuild;

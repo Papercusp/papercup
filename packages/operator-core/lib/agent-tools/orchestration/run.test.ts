@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
 import { z } from 'zod';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
-import { durableRuntimeTools, type ToolResult } from '@papercusp/tooldef';
+import { durableRuntimeTools, type ToolResult, type ProjectedTool } from '@papercusp/tooldef';
 import { DEFAULT_OUTPUT_SUMMARY_BUDGET_CHARS } from '../../output-envelope';
 import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
 import orchestrateRunTool, {
@@ -14,7 +14,7 @@ import orchestrateRunTool, {
 import '../testing/run';
 import type { SavedRecipeAdapter } from './saved-recipe-adapter';
 import { inspectOrchestration } from './inspect';
-import { inspectScriptContract, orchestrationCallerSurface } from './contract-preflight';
+import { inspectScriptContract, orchestrationCallerSurface, type OrchestrationCallerSurface } from './contract-preflight';
 import { inspectDurability } from './durability-inspection';
 
 function codeResult(payload: Record<string, unknown>, media: ToolResult['content'] = []): ToolResult {
@@ -30,6 +30,54 @@ function envelope(result: ToolResult) {
 }
 
 describe('orchestrate:run server-script adapter', () => {
+  it.each([1, 2, 3, 33])('returns all %i schema findings and the binding refusal before executing', async (count) => {
+    const fn = vi.fn();
+    const fields = Array.from({ length: count }, (_, index) => `field${index}`);
+    const tool: ProjectedTool = {
+      pluginName: 'test', description: 'preflight diagnostic fixture',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      outputJsonSchema: {
+        type: 'object', required: [],
+        properties: Object.fromEntries(fields.map((field) => [field, { type: 'string' }])),
+      },
+      capabilities: [], expose: { mcp: { name: 'fixture:read' } }, fn: fn as never,
+    };
+    const surface: OrchestrationCallerSurface = {
+      tools: [tool], allowed: new Set(['fixture:read']),
+      catalog: {
+        projectedTools: new Set(['fixture:read']), allowedTools: new Set(['fixture:read']),
+        availableCapabilities: new Set(), allowedCapabilities: new Set(), topology: { hostSame: true },
+      },
+    };
+    const script = {
+      source: `const r = await tools.fixture.read({}); return [${fields.map((field) => `r.${field}`).join(',')}];`,
+      bindingSchema: {
+        version: 1 as const, additionalProperties: false as const,
+        properties: { candidates: { type: 'json' as const, lifetime: { kind: 'stable' as const } } },
+      },
+    };
+    const inspected = await inspectScriptContract({
+      script, surface, ctx: {} as UnifiedToolContext,
+      bindings: { values: { candidates: [{ o: 'su-12345678-1234-1234-1234-123456789abc' }] } },
+    });
+    expect(inspected).toMatchObject({ ok: false, phase: 'preflight', executed: false });
+    if (inspected.ok) throw new Error('unsafe script passed preflight');
+    expect(inspected.error.issues).toHaveLength(count + 1);
+    expect(inspected.error.issues?.map((issue) => issue.path)).toEqual([
+      ...fields.map((field) => `result.${field}`), 'bindings.values.candidates[0].o',
+    ]);
+    expect(inspected.error.issues?.at(-1)?.code).toBe('binding_ephemeral_persisted');
+    expect(inspected.error.issues?.[0]?.position?.line).toBe(1);
+
+    const runCode = vi.fn<ServerScriptRunDeps['runCode']>();
+    const result = await runServerScriptAdapter({ script }, {} as UnifiedToolContext, {
+      runCode, inspectScript: async () => inspected,
+    });
+    expect(envelope(result).error.details).toEqual(inspected.error);
+    expect(runCode).not.toHaveBeenCalled();
+    expect(fn).not.toHaveBeenCalled();
+  });
+
   it('checks an inspect pin before executing a fresh script', async () => {
     const ctx = {} as UnifiedToolContext;
     const source = 'return "pinned";';

@@ -4376,12 +4376,23 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
             'event_inspection.wake_outcomes',
           ]
         : []),
-      ...(opts.toolName === 'work_items:links'
+      ...(opts.toolName === 'work_items:links' ||
+        (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'work_items:links')
         ? [
             'coverage.selectedCount',
             'coverage.checkedCount',
             'coverage.complete',
             'coverage.linkedCount',
+            'emptyIds',
+            'results[].id',
+            'results[].total',
+            'results[].offset',
+            'results[].returned',
+            'results[].omitted',
+            'results[].truncated',
+            'results[].nextCursor',
+            'results[].next',
+            'results[].restart',
           ]
         : []),
       // work_items:get reports the selected/checked source set before its own
