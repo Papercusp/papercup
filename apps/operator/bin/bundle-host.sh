@@ -24,8 +24,8 @@
 #   apps/operator/bin/bundle-host.sh --bg-transaction <original.json> <sha256> <entry> <outfile> <profile> --publish-qualified-output-only
 #     entry    default bin/hono-host.ts   (relative to apps/operator)
 #     outfile  default dist-host/hono-host.mjs
-#     profile  default development (source comments); release compacts whitespace
-#              and syntax while preserving workflow/step/class names
+#     profile  default development (compact whitespace, retain identifiers);
+#              release also compacts syntax, preserving workflow/step/class names
 #
 # Consumers:
 #   - papercup-bg-host.service drop-in 95-bundled-entry.conf: ExecStartPre runs

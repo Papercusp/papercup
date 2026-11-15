@@ -15,7 +15,7 @@
  * committed), so neither can silently regress into the other.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -25,6 +25,36 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const COMMON_SCRIPT = join(REPO_ROOT, 'apps/operator/bin/bundle-host-common.sh');
 const HELPER = 'scripts/lib/testing-core-witness.mjs';
 const WARN_TAG = 'WARN(WI-6554700010048115)';
+
+describe('host profile compaction', () => {
+  it.each(['development', 'release'])('%s compacts emitted text while preserving workflow and class names', profile => {
+    const source = readFileSync(COMMON_SCRIPT, 'utf8');
+    const start = source.indexOf('bundle_host_select_profile() {');
+    const end = source.indexOf('\n}\n', start);
+    const releaseArgs = source.match(/^HOST_RELEASE_COMPACTION_ARGS=.*$/m)?.[0];
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(releaseArgs).toBeTruthy();
+    const args = execFileSync('bash', ['-c', [
+      'set -euo pipefail', releaseArgs!, source.slice(start, end + 2),
+      'bundle_host_select_profile "$1"', 'printf "%s\\n" "${HOST_MINIFY_ARGS[@]}"',
+    ].join('\n'), 'host-profile', profile], { encoding: 'utf8' }).trim().split('\n');
+    expect(args).toEqual(profile === 'development'
+      ? ['--minify-whitespace'] : ['--minify-whitespace', '--minify-syntax']);
+    const input = [
+      '// whitespace and comments do not belong in each resident host copy'.repeat(12),
+      'function NamedWorkflow( input ) { return input + 1; }',
+      'class NamedWorker { run( input ) { return NamedWorkflow(input); } }',
+      'console.log(JSON.stringify([NamedWorkflow.name, NamedWorker.name, new NamedWorker().run(4)]));',
+    ].join('\n');
+    const compiled = execFileSync(join(REPO_ROOT, 'node_modules/.bin/esbuild'),
+      [...args, '--loader=js', '--target=node22'], { input, encoding: 'utf8' });
+    expect(Buffer.byteLength(compiled)).toBeLessThan(Buffer.byteLength(input));
+    const observed = JSON.parse(execFileSync(process.execPath,
+      ['--input-type=module', '-e', compiled], { encoding: 'utf8' }));
+    expect(observed).toEqual(['NamedWorkflow', 'NamedWorker', 5]);
+  });
+});
 
 /** The testing-core prepare/verify functions plus the constant they compare against. */
 function testingCoreSlice(): string {

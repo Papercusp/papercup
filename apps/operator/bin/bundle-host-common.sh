@@ -433,7 +433,9 @@ bundle_host_verify_testing_core() { # <repo root>
 bundle_host_select_profile() {
   HOST_MINIFY_ARGS=()
   case "${1:-development}" in
-    development) ;;
+    # Resident source text costs memory in every host. Preserve identifiers and
+    # leave syntax rewrites to the release profile.
+    development) HOST_MINIFY_ARGS=(--minify-whitespace) ;;
     release) HOST_MINIFY_ARGS=("${HOST_RELEASE_COMPACTION_ARGS[@]}") ;;
     *) echo "ERROR: host bundle profile must be development or release" >&2; return 78 ;;
   esac
