@@ -12,6 +12,8 @@ import {
   PORTAL_RELAY_RESTART_BACKOFF_MS,
   PortalRelayError,
   acceptPortalRelayNotice,
+  approvePortalRelayDesktop,
+  revokePortalRelayDesktop,
   assertPortalRelayConsent,
   beginPortalRelayLink,
   cancelPortalRelayLink,
@@ -28,7 +30,7 @@ import {
   type PortalRelayPortalClient,
 } from './relay-opt-in';
 import { PORTAL_RELAY_NOTICE as PORTAL_ROUTE_NOTICE } from '../endpoint-route/routes/hosted-cli';
-import type { PortalRelayRow, PortalRelaySecrets } from './portal-relay-store';
+import { currentPortalRelayDesktopGrant, type PortalRelayRow, type PortalRelaySecrets } from './portal-relay-store';
 
 const PORTAL = 'https://portal.example.com';
 const APP_BASE = `${PORTAL}/api/workspaces/cw-1`;
@@ -41,6 +43,7 @@ function emptyRow(installId: string, portalOrigin: string): MutableRow {
     userCode: null, verificationUri: null, grantExpiresAt: null, pollIntervalSec: null, organizationId: null,
     customerWorkspaceId: null, appBaseUrl: null, connectorUrl: null, operatorPort: null, linkedAt: null,
     lastError: null, lastErrorAt: null, updatedAt: new Date(0),
+    linkedUserId: null, desktopGrant: null,
   };
 }
 
@@ -53,6 +56,7 @@ function fakeWorld(opts: { env?: NodeJS.ProcessEnv; owner?: boolean; otherOperat
   let terminal: { reason: string; detail: string } | null = null;
   const connectorStarts: Array<{ url: string; bearer: string }> = [];
   let connectorStops = 0;
+  let linkLock = Promise.resolve();
   const pollResults: Array<Awaited<ReturnType<PortalRelayPortalClient['pollToken']>>> = [];
   const portal = {
     requestCode: vi.fn(async (_origin: string, _input: { installId: string; installLabel: string }) => ({
@@ -70,6 +74,17 @@ function fakeWorld(opts: { env?: NodeJS.ProcessEnv; owner?: boolean; otherOperat
   };
   const deps: PortalRelayDeps = {
     store: {
+      async withLinkLock(run) {
+        const previous = linkLock;
+        let release!: () => void;
+        linkLock = new Promise<void>((resolve) => { release = resolve; });
+        await previous;
+        try {
+          return await run(deps.store);
+        } finally {
+          release();
+        }
+      },
       read: async () => (row ? { ...row } : null),
       readSecrets: async () => ({ ...secrets }),
       ensureRow: async ({ installId, portalOrigin }) => {
@@ -90,6 +105,7 @@ function fakeWorld(opts: { env?: NodeJS.ProcessEnv; owner?: boolean; otherOperat
         Object.assign(r, {
           state: 'linking', userCode: t.userCode, verificationUri: t.verificationUri, grantExpiresAt: t.grantExpiresAt,
           pollIntervalSec: t.pollIntervalSec, lastError: null, lastErrorAt: null,
+          linkedUserId: null, desktopGrant: null,
         });
         secrets = { deviceCode: t.deviceCode, connectorBearer: null };
       },
@@ -99,6 +115,7 @@ function fakeWorld(opts: { env?: NodeJS.ProcessEnv; owner?: boolean; otherOperat
           state: 'linked', userCode: null, verificationUri: null, grantExpiresAt: null, pollIntervalSec: null,
           organizationId: t.organizationId, customerWorkspaceId: t.customerWorkspaceId, appBaseUrl: t.appBaseUrl,
           connectorUrl: t.connectorUrl, operatorPort: t.operatorPort, linkedAt: new Date(now), lastError: null,
+          linkedUserId: t.userId, desktopGrant: null,
         });
         secrets = { deviceCode: null, connectorBearer: t.connectorBearer };
       },
@@ -108,6 +125,7 @@ function fakeWorld(opts: { env?: NodeJS.ProcessEnv; owner?: boolean; otherOperat
           state: 'off', userCode: null, verificationUri: null, grantExpiresAt: null, pollIntervalSec: null,
           organizationId: null, customerWorkspaceId: null, appBaseUrl: null, connectorUrl: null, linkedAt: null,
           lastError: error, lastErrorAt: error ? new Date(now) : null,
+          linkedUserId: null, desktopGrant: null,
         });
         secrets = { deviceCode: null, connectorBearer: null };
       },
@@ -119,6 +137,13 @@ function fakeWorld(opts: { env?: NodeJS.ProcessEnv; owner?: boolean; otherOperat
       setOperatorPort: async (port) => {
         requireRow().operatorPort = port;
       },
+      saveDesktopGrant: async (grant) => {
+        const r = requireRow();
+        if (!currentPortalRelayDesktopGrant({ ...r, desktopGrant: grant })) return false;
+        r.desktopGrant = grant;
+        return true;
+      },
+      clearDesktopGrant: async () => { if (row) row.desktopGrant = null; },
     },
     portal,
     connector: {
@@ -145,6 +170,8 @@ function fakeWorld(opts: { env?: NodeJS.ProcessEnv; owner?: boolean; otherOperat
     installLabel: () => 'my-laptop',
     newInstallId: () => 'inst-0123456789abcdef01234567',
     now: () => now,
+    localWorkspaceExists: async (id) => id === 'local-workspace',
+    machineNoisePublicKey: async () => Buffer.alloc(32, 7).toString('base64'),
     notifyChanged: vi.fn(),
   };
   return {
@@ -164,6 +191,7 @@ function fakeWorld(opts: { env?: NodeJS.ProcessEnv; owner?: boolean; otherOperat
 
 const APPROVED = {
   status: 'approved' as const,
+  userId: 'portal-user-1',
   organizationId: 'org-1',
   customerWorkspaceId: 'cw-1',
   enrollmentTicket: 'ticket-1',
@@ -455,9 +483,117 @@ describe('user actions after linking', () => {
     expect(out).toMatchObject({ portalUnlinked: false, state: 'off' });
   });
 
-  it('connecting again while linked is refused', async () => {
+  it('connecting again reuses the saved identity and bearer without enrolling again', async () => {
     const w = await linkedWorld();
-    await expect(beginPortalRelayLink({}, w.deps)).rejects.toMatchObject({ code: 'already_linked' });
+    const before = { ...w.row };
+    const calls = w.portal.requestCode.mock.calls.length;
+    const status = await beginPortalRelayLink({ portalOrigin: PORTAL }, w.deps);
+    expect(status.state).toBe('linked');
+    expect(w.row).toEqual(before);
+    expect(w.secrets.connectorBearer).toBe('connector-bearer');
+    expect(w.portal.requestCode).toHaveBeenCalledTimes(calls);
+    expect(w.portal.register).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses an unexpired pending code across repeated and concurrent requests', async () => {
+    const w = fakeWorld();
+    await acceptPortalRelayNotice({ noticeVersion: PORTAL_RELAY_NOTICE_VERSION }, w.deps);
+    const statuses = await Promise.all(Array.from({ length: 8 }, () => beginPortalRelayLink({ portalOrigin: PORTAL }, w.deps)));
+    expect(w.portal.requestCode).toHaveBeenCalledTimes(1);
+    for (const status of statuses) expect(status.pending).toEqual(statuses[0]!.pending);
+    expect(w.row?.installId).toBe('inst-0123456789abcdef01234567');
+    expect(w.secrets.deviceCode).toBe('pdc_device');
+  });
+
+  it.each(['expired', 'missing-code', 'incomplete'] as const)('replaces an unusable %s grant while keeping the install identity', async (reason) => {
+    const w = fakeWorld();
+    await acceptPortalRelayNotice({ noticeVersion: PORTAL_RELAY_NOTICE_VERSION }, w.deps);
+    await beginPortalRelayLink({ portalOrigin: PORTAL }, w.deps);
+    if (reason === 'expired') w.advance(600_000);
+    if (reason === 'missing-code') w.secrets.deviceCode = null;
+    if (reason === 'incomplete') w.row!.verificationUri = null;
+    await beginPortalRelayLink({ portalOrigin: PORTAL }, w.deps);
+    expect(w.portal.requestCode).toHaveBeenCalledTimes(2);
+    expect(w.portal.requestCode.mock.calls[1]![1].installId).toBe(w.row!.installId);
+    expect(w.row?.state).toBe('linking');
+  });
+
+  it.each(['linking', 'linked'] as const)('refuses a changed portal for a %s install without returning the other portal link', async (phase) => {
+    const w = phase === 'linked' ? await linkedWorld() : fakeWorld();
+    if (phase === 'linking') {
+      await acceptPortalRelayNotice({ noticeVersion: PORTAL_RELAY_NOTICE_VERSION }, w.deps);
+      await beginPortalRelayLink({ portalOrigin: PORTAL }, w.deps);
+    }
+    const calls = w.portal.requestCode.mock.calls.length;
+    await expect(beginPortalRelayLink({ portalOrigin: 'https://different.example.com' }, w.deps))
+      .rejects.toMatchObject({ code: 'portal_origin_conflict' });
+    expect(w.row?.portalOrigin).toBe(PORTAL);
+    expect(w.portal.requestCode).toHaveBeenCalledTimes(calls);
+  });
+
+  it('rechecks consent after waiting for the link lock', async () => {
+    const w = fakeWorld();
+    await acceptPortalRelayNotice({ noticeVersion: PORTAL_RELAY_NOTICE_VERSION }, w.deps);
+    let entered!: () => void;
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const held = w.deps.store.withLinkLock(async () => {
+      entered();
+      await gate;
+      w.row!.consentNoticeVersion = PORTAL_RELAY_NOTICE_VERSION - 1;
+    });
+    await ready;
+    const begin = beginPortalRelayLink({}, w.deps);
+    const refused = expect(begin).rejects.toMatchObject({ code: 'consent_required' });
+    release();
+    await Promise.all([held, refused]);
+    expect(w.portal.requestCode).not.toHaveBeenCalled();
+  });
+
+  it('releases the lock after a portal error so another attempt can succeed', async () => {
+    const w = fakeWorld();
+    await acceptPortalRelayNotice({ noticeVersion: PORTAL_RELAY_NOTICE_VERSION }, w.deps);
+    w.portal.requestCode.mockRejectedValueOnce(new Error('offline'));
+    await expect(beginPortalRelayLink({}, w.deps)).rejects.toThrow('offline');
+    expect((await beginPortalRelayLink({}, w.deps)).state).toBe('linking');
+  });
+
+  it('cancel waits for an in-flight start and clears the grant it created', async () => {
+    const w = fakeWorld();
+    await acceptPortalRelayNotice({ noticeVersion: PORTAL_RELAY_NOTICE_VERSION }, w.deps);
+    const code = await w.portal.requestCode(PORTAL, { installId: 'unused', installLabel: 'unused' });
+    let entered!: () => void;
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    w.portal.requestCode.mockImplementationOnce(async () => { entered(); await gate; return code; });
+    const begin = beginPortalRelayLink({}, w.deps);
+    await ready;
+    const cancel = cancelPortalRelayLink(w.deps);
+    release();
+    await Promise.all([begin, cancel]);
+    expect(w.row?.state).toBe('off');
+    expect(w.secrets.deviceCode).toBeNull();
+  });
+
+  it('disconnect cannot be undone by an approval poll already in flight', async () => {
+    const w = fakeWorld();
+    await acceptPortalRelayNotice({ noticeVersion: PORTAL_RELAY_NOTICE_VERSION }, w.deps);
+    await beginPortalRelayLink({ portalOrigin: PORTAL }, w.deps);
+    let entered!: () => void;
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    w.portal.pollToken.mockImplementationOnce(async () => { entered(); await gate; return APPROVED; });
+    const poll = reconcilePortalRelay(w.deps);
+    await ready;
+    const disconnect = disconnectPortalRelay(w.deps);
+    release();
+    await Promise.all([poll, disconnect]);
+    expect(w.row?.state).toBe('off');
+    expect(w.secrets.connectorBearer).toBeNull();
+    expect(w.portal.unlink).toHaveBeenCalledWith(PORTAL, 'connector-bearer');
   });
 
   it('cancel stops a pending link', async () => {
@@ -467,6 +603,123 @@ describe('user actions after linking', () => {
     const out = await cancelPortalRelayLink(w.deps);
     expect(out.state).toBe('off');
     expect(w.secrets.deviceCode).toBeNull();
+  });
+});
+
+describe('separate local desktop consent', () => {
+  const browserPublicKey = Buffer.alloc(32, 3).toString('base64');
+  const input = {
+    noticeVersion: 1, installId: 'inst-0123456789abcdef01234567', portalOrigin: PORTAL,
+    userId: 'portal-user-1', organizationId: 'org-1', customerWorkspaceId: 'cw-1',
+    localWorkspaceId: 'local-workspace', browserPublicKey, view: true as const, control: false,
+  };
+  async function linked() {
+    const w = fakeWorld();
+    await acceptPortalRelayNotice({ noticeVersion: PORTAL_RELAY_NOTICE_VERSION }, w.deps);
+    await beginPortalRelayLink({ portalOrigin: PORTAL }, w.deps);
+    w.pollResults.push(APPROVED);
+    await reconcilePortalRelay(w.deps);
+    return w;
+  }
+
+  it('app/link approval alone grants no desktop access; the account comes from the approved token', async () => {
+    const w = await linked();
+    const status = await portalRelayStatus(w.deps);
+    expect(status.linked?.userId).toBe('portal-user-1');
+    expect(status.desktop.grant).toBeNull();
+    expect(currentPortalRelayDesktopGrant(w.row)).toBeNull();
+    expect(w.row?.installId).toBe(input.installId);
+  });
+
+  it('refuses before portal approval and refuses legacy links without a proven user', async () => {
+    const w = fakeWorld();
+    await expect(approvePortalRelayDesktop(input, w.deps)).rejects.toMatchObject({ code: 'consent_required' });
+    await acceptPortalRelayNotice({ noticeVersion: PORTAL_RELAY_NOTICE_VERSION }, w.deps);
+    await beginPortalRelayLink({ portalOrigin: PORTAL }, w.deps);
+    await expect(approvePortalRelayDesktop(input, w.deps)).rejects.toMatchObject({ code: 'desktop_binding_changed' });
+    const old = await linked();
+    old.row!.linkedUserId = null;
+    await expect(approvePortalRelayDesktop(input, old.deps)).rejects.toMatchObject({ code: 'desktop_binding_changed' });
+  });
+
+  it.each(['installId', 'portalOrigin', 'userId', 'organizationId', 'customerWorkspaceId'] as const)('refuses stale/foreign %s without recording a grant', async (field) => {
+    const w = await linked();
+    await expect(approvePortalRelayDesktop({ ...input, [field]: 'foreign' }, w.deps)).rejects.toMatchObject({ code: 'desktop_binding_changed' });
+    expect(w.row?.desktopGrant).toBeNull();
+  });
+
+  it.each([
+    { control: 'yes' }, { view: false }, { noticeVersion: 0 }, { browserPublicKey: 'not-a-key' },
+    { browserPublicKey: Buffer.alloc(31).toString('base64') }, { localWorkspaceId: 'portal-workspace' },
+  ])('refuses invalid scope/key/workspace %j', async (patch) => {
+    const w = await linked();
+    await expect(approvePortalRelayDesktop({ ...input, ...patch } as never, w.deps)).rejects.toMatchObject({ code: 'desktop_grant_invalid' });
+    expect(w.row?.desktopGrant).toBeNull();
+  });
+
+  it('records view separately from control, returns only the machine public key and reuses same-scope consent', async () => {
+    const w = await linked();
+    const result = await approvePortalRelayDesktop(input, w.deps);
+    const { noticeVersion: _notice, ...binding } = input;
+    expect(result.desktop.grant).toMatchObject({ ...binding, version: 1, view: true, control: false });
+    expect(result.machinePublicKey).toBe(Buffer.alloc(32, 7).toString('base64'));
+    expect(JSON.stringify(result)).not.toContain('connector-bearer');
+    expect(JSON.stringify(result)).not.toContain('pdc_device');
+    const stops = w.connectorStops;
+    const again = await approvePortalRelayDesktop(input, w.deps);
+    expect(again.desktop.grant).toEqual(result.desktop.grant);
+    expect(w.connectorStops).toBe(stops);
+    const controlled = await approvePortalRelayDesktop({ ...input, control: true }, w.deps);
+    expect(controlled.desktop.grant?.control).toBe(true);
+    expect(controlled.desktop.grant?.id).not.toBe(result.desktop.grant?.id);
+    expect(w.connectorStops).toBe(stops + 1);
+  });
+
+  it('revokes desktop access, closes channels immediately and retains app link identity and credential', async () => {
+    const w = await linked();
+    await approvePortalRelayDesktop({ ...input, control: true }, w.deps);
+    await reconcilePortalRelay(w.deps);
+    w.connectorBinds();
+    const stops = w.connectorStops;
+    const result = await revokePortalRelayDesktop(w.deps);
+    expect(result.desktop.grant).toBeNull();
+    expect(result.state).toBe('linked');
+    expect(result.linked?.userId).toBe(input.userId);
+    expect(w.secrets.connectorBearer).toBe('connector-bearer');
+    expect(w.connectorStops).toBe(stops + 1);
+    expect(w.portal.unlink).not.toHaveBeenCalled();
+    expect((await reconcilePortalRelay(w.deps)).action).toBe('started');
+    expect(w.row?.desktopGrant).toBeNull();
+  });
+
+  it('rechecks stored binding and current notice; unlink clears the separate grant', async () => {
+    const w = await linked();
+    await approvePortalRelayDesktop(input, w.deps);
+    const original = { ...w.row! };
+    for (const patch of [
+      { installId: 'other' }, { portalOrigin: 'https://other.example' }, { linkedUserId: 'other' },
+      { organizationId: 'other' }, { customerWorkspaceId: 'other' }, { state: 'off' },
+      { consentNoticeVersion: 0 }, { desktopGrant: { ...original.desktopGrant!, browserPublicKey: 'bad' } },
+    ]) expect(currentPortalRelayDesktopGrant({ ...original, ...patch } as PortalRelayRow)).toBeNull();
+    await disconnectPortalRelay(w.deps);
+    expect(w.row?.desktopGrant).toBeNull();
+    expect(w.row?.linkedUserId).toBeNull();
+  });
+
+  it('does not infer live health from saved credentials in a process that cannot see the connector', async () => {
+    const w = await linked();
+    expect((await portalRelayStatus({ ...w.deps, isConnectorOwner: () => false })).health).toBe('starting');
+  });
+
+  it('the real token client refuses approval without the approving account identity', async () => {
+    const body = { ok: true, ...APPROVED } as Record<string, unknown>;
+    delete body.userId;
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(body)));
+    try {
+      await expect(fetchPortalRelayClient.pollToken(PORTAL, 'code')).rejects.toMatchObject({ code: 'portal_refused' });
+      body.userId = APPROVED.userId;
+      expect(await fetchPortalRelayClient.pollToken(PORTAL, 'code')).toMatchObject({ status: 'approved', userId: APPROVED.userId });
+    } finally { vi.unstubAllGlobals(); }
   });
 });
 

@@ -16,7 +16,7 @@
  *   portal-relay-store.ts    — the install's single remote_access_portal_relay row
  *   portal-relay-runtime.ts  — the connector in local mode (app channels only)
  */
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { hostname as osHostname } from 'node:os';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
@@ -36,17 +36,24 @@ import {
   readPortalRelaySecrets,
   recordPortalRelayConsent,
   recordPortalRelayError,
+  savePortalRelayDesktopGrant,
+  clearPortalRelayDesktopGrant,
+  currentPortalRelayDesktopGrant,
+  PORTAL_RELAY_DESKTOP_NOTICE_VERSION,
   savePortalRelayLinked,
   savePortalRelayLinking,
   setPortalRelayOff,
   setPortalRelayOperatorPort,
+  withPortalRelayLinkLock,
   type PortalRelayRow,
   type PortalRelaySecrets,
   type PortalRelayState,
   type PortalRelayStoreOptions,
   type SavePortalRelayLinked,
   type SavePortalRelayLinking,
+  type PortalRelayDesktopGrant,
 } from './portal-relay-store';
+import { canonicalNoisePublicKey, loadOrCreateHostedMachineNoiseKeyPair, noisePublicKeyBase64 } from '../workspace-host/hosted-machine-noise-key';
 
 export { PORTAL_RELAY_NOTICE, PORTAL_RELAY_NOTICE_VERSION };
 
@@ -54,6 +61,7 @@ export const DEFAULT_PORTAL_ORIGIN = 'https://app.papercusp.com';
 export const PORTAL_RELAY_RECONCILE_INTERVAL_MS = 5_000;
 /** Minimum spacing between connector restarts after it stops on its own. */
 export const PORTAL_RELAY_RESTART_BACKOFF_MS = 30_000;
+export const PORTAL_RELAY_DESKTOP_NOTICE = 'Allow this approved browser and portal account to view agent sandbox desktops in the selected local workspace. Control is a separate choice and permits keyboard and pointer input. This grants no terminal, files or general operator access. Desktop content is encrypted between this computer and the approved browser. You can revoke desktop access here at any time.';
 
 export class PortalRelayError extends Error {
   constructor(
@@ -62,6 +70,9 @@ export class PortalRelayError extends Error {
       | 'notice_outdated'
       | 'hosted_machine'
       | 'already_linked'
+      | 'portal_origin_conflict'
+      | 'desktop_grant_invalid'
+      | 'desktop_binding_changed'
       | 'invalid_portal_origin'
       | 'portal_unavailable'
       | 'portal_refused',
@@ -111,6 +122,7 @@ export interface PortalRelayPortalClient {
     | { status: 'pending' | 'slow_down' | 'denied' | 'expired' | 'invalid' }
     | {
         status: 'approved';
+        userId: string;
         organizationId: string;
         customerWorkspaceId: string;
         enrollmentTicket: string;
@@ -125,6 +137,7 @@ export interface PortalRelayPortalClient {
 
 export interface PortalRelayDeps {
   readonly store: {
+    withLinkLock<T>(run: (store: PortalRelayDeps['store']) => Promise<T>): Promise<T>;
     read(): Promise<PortalRelayRow | null>;
     readSecrets(): Promise<PortalRelaySecrets>;
     ensureRow(input: { installId: string; portalOrigin: string }): Promise<void>;
@@ -134,6 +147,8 @@ export interface PortalRelayDeps {
     setOff(error: string | null): Promise<void>;
     recordError(message: string | null): Promise<void>;
     setOperatorPort(port: number): Promise<void>;
+    saveDesktopGrant(grant: PortalRelayDesktopGrant): Promise<boolean>;
+    clearDesktopGrant(): Promise<void>;
   };
   readonly portal: PortalRelayPortalClient;
   readonly connector: {
@@ -151,6 +166,8 @@ export interface PortalRelayDeps {
   readonly installLabel: () => string;
   readonly newInstallId: () => string;
   readonly now: () => number;
+  readonly localWorkspaceExists: (workspaceId: string) => Promise<boolean>;
+  readonly machineNoisePublicKey: () => Promise<string>;
   /** Tell an open Remote access screen to re-read (every workspace's view; the relay is install-wide). Never throws. */
   readonly notifyChanged: () => void;
 }
@@ -245,6 +262,7 @@ export const fetchPortalRelayClient: PortalRelayPortalClient = {
     });
     if (status === 200 && body.ok === true) {
       const fields = {
+        userId: text(body.userId),
         organizationId: text(body.organizationId),
         customerWorkspaceId: text(body.customerWorkspaceId),
         enrollmentTicket: text(body.enrollmentTicket),
@@ -316,17 +334,7 @@ function dataDir(env: NodeJS.ProcessEnv): string {
 export function defaultPortalRelayDeps(overrides: Partial<PortalRelayDeps> = {}, storeOpts?: PortalRelayStoreOptions): PortalRelayDeps {
   const env = overrides.env ?? process.env;
   return {
-    store: {
-      read: () => readPortalRelay(storeOpts),
-      readSecrets: () => readPortalRelaySecrets(storeOpts),
-      ensureRow: (input) => ensurePortalRelayRow(input, storeOpts),
-      recordConsent: (input) => recordPortalRelayConsent(input, storeOpts),
-      saveLinking: (t) => savePortalRelayLinking(t, storeOpts),
-      saveLinked: (t) => savePortalRelayLinked(t, storeOpts),
-      setOff: (error) => setPortalRelayOff(error, storeOpts),
-      recordError: (message) => recordPortalRelayError(message, storeOpts),
-      setOperatorPort: (port) => setPortalRelayOperatorPort(port, storeOpts),
-    },
+    store: createPortalRelayStore(storeOpts),
     portal: fetchPortalRelayClient,
     connector: {
       running: portalRelayConnectorRunning,
@@ -342,9 +350,32 @@ export function defaultPortalRelayDeps(overrides: Partial<PortalRelayDeps> = {},
     installLabel: () => osHostname(),
     newInstallId: () => `inst-${randomBytes(12).toString('hex')}`,
     now: () => Date.now(),
+    localWorkspaceExists: async (id) => !!(await import('../workspace-registry')).workspaceById(id),
+    machineNoisePublicKey: async () => noisePublicKeyBase64((await loadOrCreateHostedMachineNoiseKeyPair()).publicKey),
     notifyChanged: defaultNotifyChanged,
     ...overrides,
   };
+}
+
+function createPortalRelayStore(opts?: PortalRelayStoreOptions): PortalRelayDeps['store'] {
+  return {
+    withLinkLock: (run) => withPortalRelayLinkLock((txOpts) => run(createPortalRelayStore(txOpts)), opts),
+    read: () => readPortalRelay(opts),
+    readSecrets: () => readPortalRelaySecrets(opts),
+    ensureRow: (input) => ensurePortalRelayRow(input, opts),
+    recordConsent: (input) => recordPortalRelayConsent(input, opts),
+    saveLinking: (t) => savePortalRelayLinking(t, opts),
+    saveLinked: (t) => savePortalRelayLinked(t, opts),
+    setOff: (error) => setPortalRelayOff(error, opts),
+    recordError: (message) => recordPortalRelayError(message, opts),
+    setOperatorPort: (port) => setPortalRelayOperatorPort(port, opts),
+    saveDesktopGrant: (grant) => savePortalRelayDesktopGrant(grant, opts),
+    clearDesktopGrant: () => clearPortalRelayDesktopGrant(opts),
+  };
+}
+
+function withRelayLinkLock<T>(deps: PortalRelayDeps, run: (locked: PortalRelayDeps) => Promise<T>): Promise<T> {
+  return deps.store.withLinkLock((store) => run({ ...deps, store }));
 }
 
 // ── status ─────────────────────────────────────────────────────────────────────────────────────
@@ -360,6 +391,7 @@ export interface PortalRelayStatus {
   readonly consent: { readonly agreed: boolean; readonly version: number | null; readonly at: string | null };
   readonly pending: { readonly userCode: string; readonly verificationUri: string; readonly expiresAt: string | null } | null;
   readonly linked: {
+    readonly userId: string | null;
     readonly organizationId: string | null;
     readonly customerWorkspaceId: string | null;
     readonly appBaseUrl: string | null;
@@ -367,6 +399,10 @@ export interface PortalRelayStatus {
     readonly mcpUrl: string | null;
     readonly linkedAt: string | null;
   } | null;
+  readonly desktop: {
+    readonly notice: { readonly version: number; readonly text: string };
+    readonly grant: PortalRelayDesktopGrant | null;
+  };
   /** Connector state when this process runs it; null when another process does. */
   readonly connector: PortalRelayConnectorStatus | null;
   readonly health: 'off' | 'linking' | 'starting' | 'up' | 'down';
@@ -395,7 +431,7 @@ export async function portalRelayStatus(deps: PortalRelayDeps = defaultPortalRel
   if (state === 'off') health = 'off';
   else if (state === 'linking') health = 'linking';
   else if (connector) health = connector.bound ? 'up' : connector.running ? 'starting' : 'down';
-  else health = row?.lastError ? 'down' : 'up';
+  else health = row?.lastError ? 'down' : 'starting';
   const agreed = !!row && row.consentedAt !== null && row.consentNoticeVersion === PORTAL_RELAY_NOTICE_VERSION;
   return {
     state,
@@ -412,6 +448,7 @@ export async function portalRelayStatus(deps: PortalRelayDeps = defaultPortalRel
     linked:
       state === 'linked' && row
         ? {
+            userId: row.linkedUserId,
             organizationId: row.organizationId,
             customerWorkspaceId: row.customerWorkspaceId,
             appBaseUrl: row.appBaseUrl,
@@ -419,6 +456,10 @@ export async function portalRelayStatus(deps: PortalRelayDeps = defaultPortalRel
             linkedAt: iso(row.linkedAt),
           }
         : null,
+    desktop: {
+      notice: { version: PORTAL_RELAY_DESKTOP_NOTICE_VERSION, text: PORTAL_RELAY_DESKTOP_NOTICE },
+      grant: currentPortalRelayDesktopGrant(row),
+    },
     connector,
     health,
     lastError: row?.lastError ?? null,
@@ -462,10 +503,13 @@ export async function acceptPortalRelayNotice(
   if (input.noticeVersion !== PORTAL_RELAY_NOTICE_VERSION) {
     throw new PortalRelayError('notice_outdated', 'The relay notice has changed; read the current one and agree again');
   }
-  await ensureRow(deps);
-  await deps.store.recordConsent({ noticeVersion: PORTAL_RELAY_NOTICE_VERSION, by: input.by ?? null });
+  const status = await withRelayLinkLock(deps, async (locked) => {
+    await ensureRow(locked);
+    await locked.store.recordConsent({ noticeVersion: PORTAL_RELAY_NOTICE_VERSION, by: input.by ?? null });
+    return portalRelayStatus(locked);
+  });
   deps.notifyChanged();
-  return portalRelayStatus(deps);
+  return status;
 }
 
 /**
@@ -477,32 +521,50 @@ export async function beginPortalRelayLink(
   deps: PortalRelayDeps = defaultPortalRelayDeps(),
 ): Promise<PortalRelayStatus> {
   refuseOnHostedMachine(deps);
-  const current = await deps.store.read();
-  if (current?.state === 'linked') throw new PortalRelayError('already_linked', 'This computer is already connected to the Papercusp relay');
-  // R-20: consent before anything leaves this computer.
-  assertPortalRelayConsent(current);
-  const row = await ensureRow(deps, input.portalOrigin);
-  const code = await deps.portal.requestCode(row.portalOrigin, { installId: row.installId, installLabel: deps.installLabel().slice(0, 120) });
-  await deps.store.saveLinking({
-    userCode: code.userCode,
-    verificationUri: code.verificationUriComplete,
-    deviceCode: code.deviceCode,
-    grantExpiresAt: new Date(deps.now() + code.expiresIn * 1000),
-    pollIntervalSec: Math.max(1, Math.round(code.interval)),
+  let changed = false;
+  const status = await withRelayLinkLock(deps, async (locked) => {
+    const current = await locked.store.read();
+    // Re-read consent after taking the cross-process lock, including on a reused link.
+    assertPortalRelayConsent(current);
+    if (current && current.state !== 'off' && input.portalOrigin && normalizePortalOrigin(input.portalOrigin) !== current.portalOrigin) {
+      throw new PortalRelayError('portal_origin_conflict', 'Disconnect this computer before connecting it to a different portal');
+    }
+    if (current?.state === 'linked') return portalRelayStatus(locked);
+    if (current?.state === 'linking' && current.userCode && current.verificationUri &&
+        current.grantExpiresAt && new Date(current.grantExpiresAt).getTime() > locked.now() &&
+        (await locked.store.readSecrets()).deviceCode) {
+      return portalRelayStatus(locked);
+    }
+    const row = await ensureRow(locked, input.portalOrigin);
+    const code = await locked.portal.requestCode(row.portalOrigin, { installId: row.installId, installLabel: locked.installLabel().slice(0, 120) });
+    await locked.store.saveLinking({
+      userCode: code.userCode,
+      verificationUri: code.verificationUriComplete,
+      deviceCode: code.deviceCode,
+      grantExpiresAt: new Date(locked.now() + code.expiresIn * 1000),
+      pollIntervalSec: Math.max(1, Math.round(code.interval)),
+    });
+    state.lastPollAt = 0;
+    changed = true;
+    return portalRelayStatus(locked);
   });
-  state.lastPollAt = 0;
-  deps.notifyChanged();
-  return portalRelayStatus(deps);
+  if (changed) deps.notifyChanged();
+  return status;
 }
 
 /** Stop linking before it finishes. */
 export async function cancelPortalRelayLink(deps: PortalRelayDeps = defaultPortalRelayDeps()): Promise<PortalRelayStatus> {
-  const row = await deps.store.read();
-  if (row?.state === 'linking') {
-    await deps.store.setOff(null);
-    deps.notifyChanged();
-  }
-  return portalRelayStatus(deps);
+  let changed = false;
+  const status = await withRelayLinkLock(deps, async (locked) => {
+    const row = await locked.store.read();
+    if (row?.state === 'linking') {
+      await locked.store.setOff(null);
+      changed = true;
+    }
+    return portalRelayStatus(locked);
+  });
+  if (changed) deps.notifyChanged();
+  return status;
 }
 
 /**
@@ -510,6 +572,12 @@ export async function cancelPortalRelayLink(deps: PortalRelayDeps = defaultPorta
  * from this side), stop the connector here at once, and turn the relay off.
  */
 export async function disconnectPortalRelay(deps: PortalRelayDeps = defaultPortalRelayDeps()): Promise<PortalRelayStatus & { portalUnlinked: boolean }> {
+  const result = await withRelayLinkLock(deps, disconnectLockedPortalRelay);
+  if (result.changed) deps.notifyChanged();
+  return result.status;
+}
+
+async function disconnectLockedPortalRelay(deps: PortalRelayDeps): Promise<{ status: PortalRelayStatus & { portalUnlinked: boolean }; changed: boolean }> {
   const row = await deps.store.read();
   let portalUnlinked = false;
   if (row?.state === 'linked') {
@@ -526,9 +594,81 @@ export async function disconnectPortalRelay(deps: PortalRelayDeps = defaultPorta
   deps.connector.stop();
   if (row && row.state !== 'off') {
     await deps.store.setOff(null);
-    deps.notifyChanged();
   }
-  return { ...(await portalRelayStatus(deps)), portalUnlinked };
+  return { status: { ...(await portalRelayStatus(deps)), portalUnlinked }, changed: !!row && row.state !== 'off' };
+}
+
+export interface PortalRelayDesktopApproval {
+  readonly noticeVersion: number;
+  readonly installId: string;
+  readonly portalOrigin: string;
+  readonly userId: string;
+  readonly organizationId: string;
+  readonly customerWorkspaceId: string;
+  readonly localWorkspaceId: string;
+  readonly browserPublicKey: string;
+  readonly view: true;
+  readonly control: boolean;
+}
+
+/** Only the local same-origin control calls this, after displaying the actual linked account. */
+export async function approvePortalRelayDesktop(
+  input: PortalRelayDesktopApproval,
+  deps: PortalRelayDeps = defaultPortalRelayDeps(),
+): Promise<PortalRelayStatus & { machinePublicKey: string }> {
+  refuseOnHostedMachine(deps);
+  if (input.noticeVersion !== PORTAL_RELAY_DESKTOP_NOTICE_VERSION || input.view !== true ||
+      typeof input.control !== 'boolean' || !canonicalNoisePublicKey(input.browserPublicKey) ||
+      typeof input.localWorkspaceId !== 'string' || !input.localWorkspaceId.trim() ||
+      !await deps.localWorkspaceExists(input.localWorkspaceId)) {
+    throw new PortalRelayError('desktop_grant_invalid', 'Choose a local workspace, a valid browser key and the current desktop permissions');
+  }
+  let changed = false;
+  const result = await withRelayLinkLock(deps, async (locked) => {
+    const row = await locked.store.read();
+    assertPortalRelayConsent(row);
+    if (!row || row.state !== 'linked' || !row.linkedUserId ||
+        input.userId !== row.linkedUserId || input.installId !== row.installId ||
+        input.portalOrigin !== row.portalOrigin || input.organizationId !== row.organizationId ||
+        input.customerWorkspaceId !== row.customerWorkspaceId) {
+      throw new PortalRelayError('desktop_binding_changed', 'The linked account or computer changed. Confirm its current identity before granting desktop access');
+    }
+    const machinePublicKey = await locked.machineNoisePublicKey();
+    if (!canonicalNoisePublicKey(machinePublicKey)) throw new Error('invalid_machine_noise_key');
+    const existing = currentPortalRelayDesktopGrant(row);
+    if (existing && existing.browserPublicKey === input.browserPublicKey &&
+        existing.localWorkspaceId === input.localWorkspaceId && existing.control === input.control) {
+      return { ...await portalRelayStatus(locked), machinePublicKey };
+    }
+    const grant: PortalRelayDesktopGrant = {
+      version: 1, id: randomUUID(), installId: row.installId, portalOrigin: row.portalOrigin,
+      userId: row.linkedUserId, organizationId: row.organizationId!, customerWorkspaceId: row.customerWorkspaceId!,
+      localWorkspaceId: input.localWorkspaceId, browserPublicKey: input.browserPublicKey,
+      view: true, control: input.control, grantedAt: new Date(locked.now()).toISOString(),
+    };
+    if (!await locked.store.saveDesktopGrant(grant)) {
+      throw new PortalRelayError('desktop_binding_changed', 'The link changed while recording desktop consent');
+    }
+    // Close old channels before the new key/scope can be used. Reconciliation restarts once.
+    locked.connector.stop();
+    state.lastConnectorStartAt = 0;
+    changed = true;
+    return { ...await portalRelayStatus(locked), machinePublicKey };
+  });
+  if (changed) deps.notifyChanged();
+  return result;
+}
+
+/** Drop only desktop authority. The existing app relay remains approved. */
+export async function revokePortalRelayDesktop(deps: PortalRelayDeps = defaultPortalRelayDeps()): Promise<PortalRelayStatus> {
+  const result = await withRelayLinkLock(deps, async (locked) => {
+    await locked.store.clearDesktopGrant();
+    locked.connector.stop();
+    state.lastConnectorStartAt = 0;
+    return portalRelayStatus(locked);
+  });
+  deps.notifyChanged();
+  return result;
 }
 
 // ── reconciler ─────────────────────────────────────────────────────────────────────────────────
@@ -594,6 +734,7 @@ async function pollLink(row: PortalRelayRow, deps: PortalRelayDeps): Promise<Por
     case 'approved': {
       const { bearer } = await deps.portal.register(result.registerUrl, result.enrollmentTicket);
       await deps.store.saveLinked({
+        userId: result.userId,
         organizationId: result.organizationId,
         customerWorkspaceId: result.customerWorkspaceId,
         appBaseUrl: result.appBaseUrl,
@@ -668,6 +809,10 @@ async function reconcileStep(deps: PortalRelayDeps): Promise<PortalRelayReconcil
     return { action: 'hosted-machine', error: null };
   }
   if (!deps.isConnectorOwner()) return { action: 'not-owner', error: null };
+  return withRelayLinkLock(deps, reconcileLockedStep);
+}
+
+async function reconcileLockedStep(deps: PortalRelayDeps): Promise<PortalRelayReconcileResult> {
   const row = await deps.store.read();
   if (!row || row.state === 'off') {
     if (deps.connector.running()) {

@@ -7,11 +7,31 @@
  * Admin connection (install-level config, not workspace data); `sql` is injectable for tests.
  * Shaped like own-tunnel/store.ts (P-009), the other route an install can use.
  */
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { getDbEncryptionKey } from '../db-encryption';
+import { canonicalNoisePublicKey } from '../workspace-host/hosted-machine-noise-key';
+import { PORTAL_RELAY_NOTICE_VERSION } from './relay-notice';
 
 export type PortalRelayState = 'off' | 'linking' | 'linked';
+
+export const PORTAL_RELAY_DESKTOP_NOTICE_VERSION = 1;
+
+/** Local approval, independent of the app relay's notice and connector credential. */
+export interface PortalRelayDesktopGrant {
+  readonly version: 1;
+  readonly id: string;
+  readonly installId: string;
+  readonly portalOrigin: string;
+  readonly userId: string;
+  readonly organizationId: string;
+  readonly customerWorkspaceId: string;
+  readonly localWorkspaceId: string;
+  readonly browserPublicKey: string;
+  readonly view: true;
+  readonly control: boolean;
+  readonly grantedAt: string;
+}
 
 export interface PortalRelayRow {
   readonly installId: string;
@@ -25,6 +45,8 @@ export interface PortalRelayRow {
   readonly grantExpiresAt: Date | null;
   readonly pollIntervalSec: number | null;
   readonly organizationId: string | null;
+  readonly linkedUserId: string | null;
+  readonly desktopGrant: PortalRelayDesktopGrant | null;
   readonly customerWorkspaceId: string | null;
   readonly appBaseUrl: string | null;
   readonly connectorUrl: string | null;
@@ -40,13 +62,47 @@ export interface PortalRelaySecrets {
   readonly connectorBearer: string | null;
 }
 
+/** Check persisted authority on every use; a saved connector never implies desktop access. */
+export function currentPortalRelayDesktopGrant(row: PortalRelayRow | null): PortalRelayDesktopGrant | null {
+  const grant = row?.desktopGrant;
+  if (!row || row.state !== 'linked' || !row.consentedAt || row.consentNoticeVersion !== PORTAL_RELAY_NOTICE_VERSION ||
+      !grant || typeof grant !== 'object' || Array.isArray(grant) ||
+      grant.version !== PORTAL_RELAY_DESKTOP_NOTICE_VERSION || typeof grant.id !== 'string' || !grant.id ||
+      grant.view !== true || typeof grant.control !== 'boolean' ||
+      typeof grant.localWorkspaceId !== 'string' || !grant.localWorkspaceId.trim() ||
+      !canonicalNoisePublicKey(grant.browserPublicKey) ||
+      typeof grant.grantedAt !== 'string' || !Number.isFinite(Date.parse(grant.grantedAt)) ||
+      !row.linkedUserId || grant.userId !== row.linkedUserId ||
+      !row.organizationId || grant.organizationId !== row.organizationId ||
+      !row.customerWorkspaceId || grant.customerWorkspaceId !== row.customerWorkspaceId ||
+      grant.installId !== row.installId || grant.portalOrigin !== row.portalOrigin) return null;
+  return grant;
+}
+
 export interface PortalRelayStoreOptions {
-  readonly sql?: Sql;
+  readonly sql?: Sql | TransactionSql;
   readonly encryptionKey?: string;
 }
 
 function ctx(opts: PortalRelayStoreOptions = {}) {
   return { sql: opts.sql ?? getOrgPg().sql, key: opts.encryptionKey ?? getDbEncryptionKey() };
+}
+
+/**
+ * Serialize the install-wide link lifecycle across operator processes. Every operation in
+ * `run` must use the supplied options so it stays on the connection holding the lock (even
+ * with a one-connection pool). The transaction releases the lock on success or failure.
+ */
+export async function withPortalRelayLinkLock<T>(
+  run: (opts: PortalRelayStoreOptions) => Promise<T>,
+  opts: PortalRelayStoreOptions = {},
+): Promise<T> {
+  const { sql } = ctx(opts);
+  if ('begin' in sql) {
+    return sql.begin((tx) => withPortalRelayLinkLock(run, { ...opts, sql: tx })) as Promise<T>;
+  }
+  await sql`SELECT pg_advisory_xact_lock(hashtextextended('remote_access_portal_relay:link', 0))`;
+  return run({ ...opts, sql });
 }
 
 export async function readPortalRelay(opts?: PortalRelayStoreOptions): Promise<PortalRelayRow | null> {
@@ -56,7 +112,8 @@ export async function readPortalRelay(opts?: PortalRelayStoreOptions): Promise<P
            consent_notice_version AS "consentNoticeVersion", consented_at AS "consentedAt",
            consented_by AS "consentedBy", user_code AS "userCode", verification_uri AS "verificationUri",
            grant_expires_at AS "grantExpiresAt", poll_interval_sec AS "pollIntervalSec",
-           organization_id AS "organizationId", customer_workspace_id AS "customerWorkspaceId",
+           organization_id AS "organizationId", linked_user_id AS "linkedUserId", desktop_grant AS "desktopGrant",
+           customer_workspace_id AS "customerWorkspaceId",
            app_base_url AS "appBaseUrl", connector_url AS "connectorUrl", operator_port AS "operatorPort",
            linked_at AS "linkedAt", last_error AS "lastError", last_error_at AS "lastErrorAt",
            updated_at AS "updatedAt"
@@ -124,12 +181,14 @@ export async function savePortalRelayLinking(t: SavePortalRelayLinking, opts?: P
        SET state = 'linking', user_code = ${t.userCode}, verification_uri = ${t.verificationUri},
            device_code_ct = pgp_sym_encrypt(${t.deviceCode}, ${key}), grant_expires_at = ${t.grantExpiresAt},
            poll_interval_sec = ${t.pollIntervalSec},
-           organization_id = NULL, customer_workspace_id = NULL, app_base_url = NULL, connector_url = NULL,
+           organization_id = NULL, linked_user_id = NULL, desktop_grant = NULL,
+           customer_workspace_id = NULL, app_base_url = NULL, connector_url = NULL,
            connector_bearer_ct = NULL, linked_at = NULL, last_error = NULL, last_error_at = NULL, updated_at = now()
      WHERE singleton`;
 }
 
 export interface SavePortalRelayLinked {
+  readonly userId: string;
   readonly organizationId: string;
   readonly customerWorkspaceId: string;
   readonly appBaseUrl: string;
@@ -145,7 +204,8 @@ export async function savePortalRelayLinked(t: SavePortalRelayLinked, opts?: Por
     UPDATE harness_shared.remote_access_portal_relay
        SET state = 'linked', user_code = NULL, verification_uri = NULL, device_code_ct = NULL,
            grant_expires_at = NULL, poll_interval_sec = NULL,
-           organization_id = ${t.organizationId}, customer_workspace_id = ${t.customerWorkspaceId},
+           organization_id = ${t.organizationId}, linked_user_id = ${t.userId}, desktop_grant = NULL,
+           customer_workspace_id = ${t.customerWorkspaceId},
            app_base_url = ${t.appBaseUrl}, connector_url = ${t.connectorUrl},
            connector_bearer_ct = pgp_sym_encrypt(${t.connectorBearer}, ${key}),
            operator_port = ${t.operatorPort}, linked_at = now(),
@@ -164,7 +224,8 @@ export async function setPortalRelayOff(error: string | null, opts?: PortalRelay
     UPDATE harness_shared.remote_access_portal_relay
        SET state = 'off', user_code = NULL, verification_uri = NULL, device_code_ct = NULL,
            grant_expires_at = NULL, poll_interval_sec = NULL,
-           organization_id = NULL, customer_workspace_id = NULL, app_base_url = NULL, connector_url = NULL,
+           organization_id = NULL, linked_user_id = NULL, desktop_grant = NULL,
+           customer_workspace_id = NULL, app_base_url = NULL, connector_url = NULL,
            connector_bearer_ct = NULL, linked_at = NULL,
            last_error = ${error ? error.slice(0, 2000) : null}, last_error_at = ${error ? sql`now()` : null},
            updated_at = now()
@@ -178,6 +239,24 @@ export async function recordPortalRelayError(message: string | null, opts?: Port
        SET last_error = ${message ? message.slice(0, 2000) : null},
            last_error_at = ${message ? sql`now()` : null}, updated_at = now()
      WHERE singleton`;
+}
+
+/** CAS the exact approved account/install. Call inside withPortalRelayLinkLock. */
+export async function savePortalRelayDesktopGrant(grant: PortalRelayDesktopGrant, opts?: PortalRelayStoreOptions): Promise<boolean> {
+  const { sql } = ctx(opts);
+  const rows = await sql`
+    UPDATE harness_shared.remote_access_portal_relay
+       SET desktop_grant = ${sql.json({ ...grant })}, updated_at = now()
+     WHERE singleton AND state = 'linked' AND install_id = ${grant.installId}
+       AND portal_origin = ${grant.portalOrigin} AND linked_user_id = ${grant.userId}
+       AND organization_id = ${grant.organizationId} AND customer_workspace_id = ${grant.customerWorkspaceId}
+    RETURNING 1`;
+  return rows.length > 0;
+}
+
+export async function clearPortalRelayDesktopGrant(opts?: PortalRelayStoreOptions): Promise<void> {
+  const { sql } = ctx(opts);
+  await sql`UPDATE harness_shared.remote_access_portal_relay SET desktop_grant = NULL, updated_at = now() WHERE singleton`;
 }
 
 /** Move the connector to the operator on `port` (the desktop's port hint changed between launches). */
