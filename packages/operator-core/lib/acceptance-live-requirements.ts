@@ -141,10 +141,20 @@ const VERIFICATION_FIELDS = ['method', 'check', 'replication'] as const;
 /** A criterion's promise: its meaning projection with the whole check removed. */
 function promiseProjection(criterion: LiveVerificationFields): Record<string, unknown> {
   const { check: _check, ...promise }: Record<string, unknown> = verificationNeutralCriterion(criterion);
-  // Requirement headings consume their final period as Markdown syntax, while
-  // stored rubric titles can retain it. Compare the same label in both forms
-  // without changing the persisted title or accepting a different promise.
-  if (typeof promise.title === 'string') promise.title = promise.title.trim().replace(/\.$/, '');
+  // Requirement headings (`**R-1 — Label.**`) consume both the bar key with its
+  // dash separator and the final period as Markdown syntax, while stored rubric
+  // titles can retain either. Compare the same label in both forms without
+  // changing the persisted title or accepting a different promise: only a prefix
+  // naming THIS criterion's own bar key is syntax (WI-6554700010049108).
+  if (typeof promise.title === 'string') {
+    let title = promise.title.trim().replace(/\.$/, '');
+    const barKey = typeof promise.barKey === 'string' ? promise.barKey.trim() : '';
+    if (barKey) {
+      const escapedKey = barKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      title = title.replace(new RegExp('^' + escapedKey + '\\s+[—–-]\\s+'), '');
+    }
+    promise.title = title;
+  }
   return promise;
 }
 

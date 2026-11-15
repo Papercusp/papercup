@@ -337,6 +337,46 @@ describe('readLiveAcceptanceCriteria (the acceptance read)', () => {
     });
   });
 
+  // WI-6554700010049108: the heading `**R-1 — Live view.**` consumes the bar key and its dash
+  // as syntax, so a stored title that restates its OWN key is the same label, not a new promise.
+  it('overlays named cases when a stored title restates its own bar key prefix', async () => {
+    const seeded = parseRequirementBars(fixturePlan(requirementBlock()));
+    if (!seeded.ok) throw new Error('fixture must parse');
+    const withTitle = (title: (bar: { barKey: string; title: string }) => string) =>
+      seeded.bars.map((bar) => ({ ...bar.criterion!, barKey: bar.barKey, title: title(bar) }));
+    const block = JSON.parse(requirementBlock({ file: NEW_TEST }));
+    const check = {
+      kind: 'tests', files: [NEW_TEST],
+      cases: [{ file: NEW_TEST, testName: 'the required named case' }],
+    };
+    block.verification.check = check;
+    const edited = fixturePlan(JSON.stringify(block));
+    const read = (criteria: ReturnType<typeof withTitle>, content = edited) => readLiveAcceptanceCriteria(
+      { kind: 'acceptance', subjectPlan: 'live-view-fixture', criteria },
+      { readSubjectPlanContent: async () => ({ content }), parseRequirementBars: realParser },
+    );
+
+    for (const separator of ['—', '–', '-']) {
+      const prefixed = withTitle((bar) => `${bar.barKey} ${separator} ${bar.title}.`);
+      const live = await read(prefixed);
+      expect(live.criteria[0]!.check).toEqual(check);
+      expect(live.criteria[0]!.title).toBe(`R-1 ${separator} Live view.`);
+      expect(live.status).toMatchObject({ live: ['R-1'], changed: ['R-1'], kept: [] });
+    }
+
+    // Only the criterion's OWN key is syntax: a prefix naming another bar is a different label.
+    const otherKey = withTitle((bar) => `R-2 — ${bar.title}`);
+    const foreign = await read(otherKey);
+    expect(foreign.criteria[0]!.check).toEqual(otherKey[0]!.check);
+    expect(foreign.status).toMatchObject({ live: [], kept: [{ barKey: 'R-1', reason: 'meaning-changed' }] });
+
+    // A prefixed title over a genuinely renamed heading still reads as a changed promise.
+    const prefixed = withTitle((bar) => `${bar.barKey} — ${bar.title}`);
+    const renamed = await read(prefixed, edited.replace('**R-1 — Live view.**', '**R-1 — Changed view.**'));
+    expect(renamed.criteria[0]!.check).toEqual(prefixed[0]!.check);
+    expect(renamed.status).toMatchObject({ live: [], kept: [{ barKey: 'R-1', reason: 'meaning-changed' }] });
+  });
+
   it('falls back to the stored criteria, naming why, when the subject plan cannot be read', async () => {
     const criteria = [{ barKey: 'R-1', check: { kind: 'tests', files: [OLD_TEST] } }];
     const unreadable = await readLiveAcceptanceCriteria(
