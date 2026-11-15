@@ -21,6 +21,11 @@ import { DESKTOP_PERF_BUDGETS } from "@papercusp/operator-core/lib/system-health
 
 const NAME = PERF_INTERACTIONS.planPopupOpen;
 const START = `${NAME}:start`;
+const startupWindow: Window & {
+  __papercuspServerConnectionRestored?: boolean;
+  __papercuspServerConnectionRequired?: string;
+  __papercuspBootError?: string;
+} = window;
 
 function resetTimeline(): void {
   performance.clearMarks?.();
@@ -93,9 +98,9 @@ describe('native startup to usable content', () => {
     window.sessionStorage.clear();
     Object.defineProperty(window, '__papercuspStartupOrigin', { configurable: true,
       value: { startedAtEpochMs: 8000, pid: 42, primaryWindow: true } });
-    window.__papercuspServerConnectionRestored = true;
-    delete window.__papercuspServerConnectionRequired;
-    delete window.__papercuspBootError;
+    startupWindow.__papercuspServerConnectionRestored = true;
+    delete startupWindow.__papercuspServerConnectionRequired;
+    delete startupWindow.__papercuspBootError;
     measure = vi.fn();
     vi.stubGlobal('performance', { timeOrigin: 10000, now: () => 250,
       mark: vi.fn(), measure });
@@ -104,9 +109,9 @@ describe('native startup to usable content', () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     Reflect.deleteProperty(window, '__papercuspStartupOrigin');
-    delete window.__papercuspServerConnectionRestored;
-    delete window.__papercuspServerConnectionRequired;
-    delete window.__papercuspBootError;
+    delete startupWindow.__papercuspServerConnectionRestored;
+    delete startupWindow.__papercuspServerConnectionRequired;
+    delete startupWindow.__papercuspBootError;
     window.sessionStorage.clear();
   });
 
@@ -126,16 +131,16 @@ describe('native startup to usable content', () => {
   });
 
   it('does not report before attachment or while a boot error blocks input', () => {
-    window.__papercuspServerConnectionRestored = false;
+    startupWindow.__papercuspServerConnectionRestored = false;
     expect(endStartupUsable()).toBeNull();
-    window.__papercuspServerConnectionRestored = true;
-    window.__papercuspBootError = 'connection lost';
+    startupWindow.__papercuspServerConnectionRestored = true;
+    startupWindow.__papercuspBootError = 'connection lost';
     expect(endStartupUsable()).toBeNull();
-    delete window.__papercuspBootError;
-    window.__papercuspServerConnectionRequired = 'server unavailable';
+    delete startupWindow.__papercuspBootError;
+    startupWindow.__papercuspServerConnectionRequired = 'server unavailable';
     expect(endStartupUsable()).toBeNull();
     expect(measure).not.toHaveBeenCalled();
-    delete window.__papercuspServerConnectionRequired;
+    delete startupWindow.__papercuspServerConnectionRequired;
     expect(endStartupUsable()).toBe(2250);
   });
 

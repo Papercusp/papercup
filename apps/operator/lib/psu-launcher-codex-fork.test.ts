@@ -46,9 +46,10 @@ it.each([
     return bootstrap();
   });
   const launchResume = vi.fn();
+  const account = { id: null, forward: 'auto', env: {}, notice: null };
   await launchTrackedFork(source, { ownerId: 'su-child', headless: true,
     model: selection.model, modelSource: selection.modelSource },
-  { id: null, forward: 'auto', env: {}, notice: null }, selection.resolved, { api, launchResume });
+  account, selection.resolved, { api, launchResume });
   expect(api).toHaveBeenCalledOnce();
   expect(launchResume).toHaveBeenCalledOnce();
 });
