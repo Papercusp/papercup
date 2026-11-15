@@ -84,7 +84,7 @@ describe('wake resume — C5 identity + C1 cross-agent isolation (EI-153)', () =
 
   function resumeDepsRaw(s: TestSession, over: Partial<ExecuteWakeDeps>): ExecuteWakeDeps {
     return {
-      findPsuHost: tb.findPsuHostDep(),
+      getSessionLifecycle: async () => null, findPsuHost: tb.findPsuHostDep(),
       // no live socket → falls to the resume rung
       getSession: async () =>
         ({
@@ -229,7 +229,7 @@ describe('wake resume — C5 identity + C1 cross-agent isolation (EI-153)', () =
       return { ...deps, ...tb.ownerElectionDeps(deps) };
     };
     const codexDepsRaw = (s: TestSession): ExecuteWakeDeps => ({
-      findPsuHost: tb.findPsuHostDep(),
+      getSessionLifecycle: async () => null, findPsuHost: tb.findPsuHostDep(),
       getSession: async () =>
         ({
           pid: null,
@@ -284,7 +284,7 @@ describe('wake resume — C5 identity + C1 cross-agent isolation (EI-153)', () =
     // findLiveHost + injectIntoHost — and B's socket receives NOTHING.
     const out = await executeWake(
       makeDelivery({ subscriberId: a.ownerId, wakeHandle: null }),
-      { findPsuHost: tb.findPsuHostDep(), presence: async () => null },
+      { getSessionLifecycle: async () => null, findPsuHost: tb.findPsuHostDep(), presence: async () => null },
     );
     expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
     expect(hostA.received).toHaveLength(1);
@@ -300,7 +300,7 @@ describe('wake resume — C5 identity + C1 cross-agent isolation (EI-153)', () =
 
     const out = await executeWake(
       makeDelivery({ subscriberId: a.ownerId, wakeHandle: null }),
-      { findPsuHost: tb.findPsuHostDep(), presence: async () => null, sendCoordMessage },
+      { getSessionLifecycle: async () => null, findPsuHost: tb.findPsuHostDep(), presence: async () => null, sendCoordMessage },
     );
     // No socket for A, no presence → degrades to a coord inbox notification
     // for A (P-001), NEVER onto B's socket.
