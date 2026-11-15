@@ -193,7 +193,7 @@ export function withFsMutexBudget<T>(name: string, fn: (workers: number) => Prom
  * @template T
  * @param {string} name
  * @param {() => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
+ * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, intent?: Record<string, string | number | boolean>, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export function withFsMutexRead<T>(name: string, fn: () => Promise<T>, opts?: {
@@ -202,6 +202,7 @@ export function withFsMutexRead<T>(name: string, fn: () => Promise<T>, opts?: {
     timeoutMs?: number;
     staleMs?: number;
     retryMs?: number;
+    intent?: Record<string, string | number | boolean>;
     onWaiting?: (info: {
         owner: string;
         elapsedMs: number;
@@ -263,6 +264,12 @@ export function peekFsMutexSync(name: string, options?: {
 export const PACKAGE_CACHE_MUTEX_NAME: "package-manager-cache";
 export type FsMutexIo = {
     opendir?: typeof opendir;
+    readdir?: (path: string, options: {
+        withFileTypes: true;
+    }) => Promise<Array<{
+        name: string;
+        isDirectory: () => boolean;
+    }>>;
     symlink?: typeof symlink;
     readFile?: (path: string, encoding: "utf8") => Promise<string>;
     writeFile?: typeof writeFile;

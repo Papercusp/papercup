@@ -920,7 +920,8 @@ export function PortalDesktopGrant({ workspaceId, relay, busy, run }: {
   const linked = relay.linked;
   const grant = relay.desktop?.grant;
   useEffect(() => { setView(false); setControl(false); setReceipt(null); },
-    [code, relay.installId, relay.portalOrigin, linked?.userId, linked?.organizationId, linked?.customerWorkspaceId, workspaceId]);
+    [code, relay.installId, relay.portalOrigin, linked?.userId, linked?.organizationId, linked?.customerWorkspaceId,
+      relay.desktop?.notice.version, relay.desktop?.notice.text, workspaceId]);
   const matching = request !== null && request.portalOrigin === relay.portalOrigin;
   const identityReady = !!(relay.installId && linked?.userId && linked.organizationId && linked.customerWorkspaceId);
   return <section aria-label="Desktop access" data-testid="portal-desktop-grant" style={{ marginTop: 16 }}>

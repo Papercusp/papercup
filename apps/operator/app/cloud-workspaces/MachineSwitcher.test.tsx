@@ -28,6 +28,16 @@ const rows = [
 ] as WorkspaceHostControlRow[];
 
 describe("persistent machine selection", () => {
+  it("lists authorized linked computers by app-link status without claiming desktop authority", () => {
+    const linked = { ...rows[0], id: "linked-one", name: "Existing laptop", linkedInstallation: {
+      installId: "install-one", customerWorkspaceId: "lw-one", connection: "unknown" as const,
+    } };
+    render(<MachineSwitcherView localMode={false} value="linked-one" rows={[linked]}
+      loading={false} error={null} onSelect={vi.fn()} />);
+    expect(screen.getByRole("option", { name: "Existing laptop — app link unknown" })).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain("checked separately");
+    expect(screen.queryByText(/desktop connected/i)).toBeNull();
+  });
   it.each([true, false])("binds the visible default to request routing (localMode=%s) without moving apps", async (localMode) => {
     query.mockReturnValue({ data: rows, loading: false, error: null });
     const update = vi.fn();

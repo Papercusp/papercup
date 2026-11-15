@@ -129,6 +129,8 @@ export interface WorkspaceHostLogRow {
 
 export interface WorkspaceHostControlRow {
   kind: "workspace";
+  /** Existing local install; the connector proves app reachability, never desktop consent. */
+  linkedInstallation?: { installId: string; customerWorkspaceId: string; connection: "online" | "offline" | "unknown" };
   id: string;
   name: string;
   connectionId: string;

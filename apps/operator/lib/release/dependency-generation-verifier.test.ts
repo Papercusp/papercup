@@ -243,7 +243,7 @@ describe('bounded independent verifier copy', () => {
     // --integration publication deliberately cannot provide this selector.
     expect(existsSync(join(generation, 'tree/package-lock.json'))).toBe(false);
     const options = { checkpointDir: join(f.root, 'retained-verification'),
-      generation: true, batchSize: 1, maxDurationMs: 30_000 };
+      generation: true, batchSize: 6, maxDurationMs: 30_000 };
     const context = { materializer: f.generationScript, environment: f.env,
       workspaceDirs: ['packages/cli', 'papercusp-desktop'], sourceCommit: ref,
       verifySource: () => checkSource(f.dest, ref) };
@@ -253,8 +253,9 @@ describe('bounded independent verifier copy', () => {
     });
     try {
       const paused = await verifyRetainedDependencies(f.donor, f.dest, { ...options, maxBatches: 1 }, context);
-      expect(paused.status).toBe('incomplete');
-      expect(paused.progress.hashedFiles).toBeGreaterThan(0);
+      const pausedEvidence = JSON.stringify(paused);
+      expect(paused.status, pausedEvidence).toBe('incomplete');
+      expect(paused.progress.hashedFiles, pausedEvidence).toBeGreaterThan(0);
       expect(readdirSync(join(f.store, '.leases'))).toEqual([]);
       const complete = await verifyRetainedDependencies(f.donor, f.dest, options, context);
       expect(complete.status).toBe('complete');

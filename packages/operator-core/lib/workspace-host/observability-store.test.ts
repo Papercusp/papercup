@@ -52,6 +52,38 @@ beforeEach(() => {
 });
 
 describe('workspace-host observability store', () => {
+  it('includes existing linked installs without provisioned-host or lifecycle authority and separates app liveness', async () => {
+    H.rows.set('FROM harness_shared.customer_workspaces', [{ id: 'lw-one', workspace_host_id: 'linked-one', display_name: 'My computer', linked_install_id: 'install-one' }]);
+    const connector = { host_id: 'linked-one', customer_workspace_id: 'lw-one', route_label: 'lw-one',
+      state: 'active', transport: 'websocket', generation: 5, heartbeat_at: new Date().toISOString(), credential_hash: 'PRIVATE' };
+    H.rows.set('FROM papercusp_auth.hosted_workspace_connectors connector', [connector]);
+    const result = await readWorkspaceHostControl('ws-1');
+    expect(result).toEqual([expect.objectContaining({ id: 'linked-one', name: 'My computer', target: 'linked', capabilities: {},
+      linkedInstallation: { installId: 'install-one', customerWorkspaceId: 'lw-one', connection: 'online' },
+      tunnel: { connector: { routeLabel: 'lw-one', transport: 'websocket' } },
+    })]);
+    expect(JSON.stringify(result)).not.toContain('PRIVATE');
+    const directory = H.queries.find(row => row.sql.includes('FROM harness_shared.customer_workspaces'))!;
+    expect(directory.sql).toContain("kind = 'linked' AND state <> 'deleted'");
+    expect(directory.values).toEqual(['ws-1']);
+    H.rows.set('FROM papercusp_auth.hosted_workspace_connectors connector', [{ ...connector, heartbeat_at: '2000-01-01T00:00:00Z' }]);
+    expect((await readWorkspaceHostControl('ws-1'))[0]).toMatchObject({ linkedInstallation: { connection: 'offline' } });
+    H.connectorUnavailable = true;
+    expect((await readWorkspaceHostControl('ws-1'))[0]).toMatchObject({ linkedInstallation: { connection: 'unknown' } });
+  });
+
+  it('keeps the caller tenant transaction and refuses another workspace or ambiguous linked connector binding', async () => {
+    H.rows.set('FROM harness_shared.customer_workspaces', [{ id: 'lw-one', workspace_host_id: 'linked-one', display_name: 'My computer', linked_install_id: 'install-one' }]);
+    H.rows.set('FROM papercusp_auth.hosted_workspace_connectors connector', [{ host_id: 'linked-one', customer_workspace_id: 'other-workspace',
+      route_label: 'lw-one', state: 'active', heartbeat_at: new Date().toISOString() }]);
+    const rows = await readWorkspaceHostControl('ws-1', fakeTx as never);
+    expect(H.withWorkspace).not.toHaveBeenCalled();
+    expect(rows[0]).toMatchObject({ hostedConnector: undefined, linkedInstallation: { customerWorkspaceId: 'lw-one', connection: 'offline' } });
+    const connector = { host_id: 'linked-one', customer_workspace_id: 'lw-one', route_label: 'lw-one', state: 'active', heartbeat_at: new Date().toISOString() };
+    H.rows.set('FROM papercusp_auth.hosted_workspace_connectors connector', [connector, connector]);
+    expect((await readWorkspaceHostControl('ws-1', fakeTx as never))[0]).toMatchObject({ hostedConnector: undefined });
+  });
+
   it('projects only scoped connector identity and heartbeat, with unknown on ambiguity or authority failure', async () => {
     H.rows.set('FROM harness_shared.workspace_hosts', [{
       id: 'host-1', name: 'research', target: 'gcp', observed_state: 'running',

@@ -21,7 +21,8 @@ export function installedPortalOrigin(value: unknown): string | null {
 }
 
 export function encodeInstalledComputerRequest(request: InstalledComputerRequest): string {
-  return btoa(JSON.stringify(request));
+  return btoa(JSON.stringify({ version: request.version, requestId: request.requestId,
+    portalOrigin: request.portalOrigin, browserPublicKey: request.browserPublicKey }));
 }
 
 export function readInstalledComputerRequest(code: string): InstalledComputerRequest | null {

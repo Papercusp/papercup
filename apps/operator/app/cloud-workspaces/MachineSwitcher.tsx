@@ -92,7 +92,8 @@ export function MachineSwitcherView({ localMode, value, rows, loading, error, on
   const selected = value ?? (localMode ? LOCAL_DESKTOP_HOST : preferredDesktopWorkspace(machines)?.id ?? "");
   const options = [
     ...(localMode ? [{ value: LOCAL_DESKTOP_HOST, label: "This computer" }] : []),
-    ...machines.map((row) => ({ value: row.id, label: `${row.name} — ${row.observedState}` })),
+    ...machines.map((row) => ({ value: row.id, label: row.linkedInstallation
+      ? `${row.name} — app link ${row.linkedInstallation.connection}` : `${row.name} — ${row.observedState}` })),
   ];
   const missing = selected !== "" && !options.some((option) => option.value === selected);
   if (missing) options.push({ value: selected, label: "Machine unavailable" });
@@ -105,6 +106,8 @@ export function MachineSwitcherView({ localMode, value, rows, loading, error, on
       }} />
     <MachineConnectionHelp />
     <a href={connectHref}>Manage machines</a>
+    {machines.find(row => row.id === selected)?.linkedInstallation
+      ? <span role="status">Desktop access is checked separately for this browser.</span> : null}
     {error ? <span role="alert">Machines unavailable: {error}</span> : null}
     {missing && !error ? <span role="status">Choose another machine</span> : null}
   </span>;

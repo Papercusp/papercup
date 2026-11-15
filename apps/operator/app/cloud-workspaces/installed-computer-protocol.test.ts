@@ -24,4 +24,9 @@ describe('installed computer public handoff', () => {
     for (const code of ['not-base64', 'x'.repeat(4097), btoa('null')]) expect(readInstalledComputerRequest(code)).toBeNull();
     expect(readInstalledComputerRequest(encodeInstalledComputerRequest(request))).toEqual(request);
   });
+  it('never serializes extra credential fields attached to a key object', () => {
+    const encoded = encodeInstalledComputerRequest({ ...request, secretKey: 'PRIVATE', bearer: 'PRIVATE' } as typeof request);
+    expect(atob(encoded)).not.toContain('PRIVATE');
+    expect(JSON.parse(atob(encoded))).toEqual(request);
+  });
 });

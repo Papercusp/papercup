@@ -1968,6 +1968,18 @@ function capabilities(state: string, hasSnapshot = false): Record<string, boolea
 
 export async function readWorkspaceHostControl(workspaceId: string, tx?: Sql): Promise<unknown[]> {
   return inWorkspace(workspaceId, tx, async (query) => {
+    // Linked installations already have tenant-scoped customer-workspace identities,
+    // but deliberately have no provisioned workspace_hosts row. Read their public
+    // routing identity through the same tenant transaction as the cloud inventory.
+    type LinkedRow = { id: string; workspace_host_id: string; display_name: string; linked_install_id: string };
+    const readLinked = async (sql: Sql) => await sql<LinkedRow[]>`
+      SELECT id, workspace_host_id, display_name, linked_install_id
+      FROM harness_shared.customer_workspaces
+      WHERE workspace_id = ${workspaceId} AND kind = 'linked' AND state <> 'deleted'
+      ORDER BY display_name, id
+    `;
+    const linked = tx ? await readLinked(query) : await withWorkspace(workspaceId, readLinked,
+      { bypassRlsForAdmin: true, statementTimeoutMs: 2_000, lockTimeoutMs: 500 });
     const connections = await query<ConnectionDbRow[]>`
       SELECT id, target, label, credential_ref, provider_config, status, status_detail, last_validated_at,
              authenticated_identity, scopes, regions, sizes, images, networks, disk_price_per_gib_month
@@ -2056,7 +2068,9 @@ export async function readWorkspaceHostControl(workspaceId: string, tx?: Sql): P
       generation: number; heartbeat_at: Date | string | null;
     };
     let connectors: ConnectorRow[] = [];
-    if (hosts.length) {
+    let connectorReadAvailable = false;
+    const hostIds = [...hosts.map(host => host.id), ...linked.map(row => row.workspace_host_id)];
+    if (hostIds.length) {
       try {
         const read = async (sql: Sql) => await sql<ConnectorRow[]>`
           SELECT connector.host_id, connector.customer_workspace_id, connector.route_label,
@@ -2068,8 +2082,8 @@ export async function readWorkspaceHostControl(workspaceId: string, tx?: Sql): P
            AND customer.id = connector.customer_workspace_id
            AND customer.workspace_host_id = connector.host_id
           WHERE connector.control_workspace_id = ${workspaceId}
-            AND connector.host_id = ANY(${hosts.map(host => host.id)}::text[])
-            AND customer.kind = 'hosted' AND customer.state <> 'deleted'
+            AND connector.host_id = ANY(${hostIds}::text[])
+            AND customer.kind IN ('hosted', 'linked') AND customer.state <> 'deleted'
         `;
         // A tenant transaction deliberately cannot read the service-only
         // connector ledger. Roll back that optional read independently: merely
@@ -2081,6 +2095,7 @@ export async function readWorkspaceHostControl(workspaceId: string, tx?: Sql): P
             : await read(tx)
           : await withWorkspace(workspaceId, read,
             { bypassRlsForAdmin: true, statementTimeoutMs: 2_000, lockTimeoutMs: 500 });
+        connectorReadAvailable = true;
       } catch { /* Unavailable authority remains unknown, never a cached live result. */ }
     }
 
@@ -2243,7 +2258,34 @@ export async function readWorkspaceHostControl(workspaceId: string, tx?: Sql): P
           : undefined,
       };
     });
-    return [...connectionRows, ...hostRows];
+    const linkedRows = linked.filter(row => !hosts.some(host => host.id === row.workspace_host_id)).map(row => {
+      // linkedWorkspaceIdentity's persisted customer id is also its route label.
+      // Neither the browser nor an arbitrary connector may substitute a binding.
+      const bindings = connectors.filter(connector => connector.host_id === row.workspace_host_id &&
+        connector.customer_workspace_id === row.id && connector.route_label === row.id);
+      const connector = bindings.length === 1 ? bindings[0] : undefined;
+      const heartbeat = connector ? iso(connector.heartbeat_at) : undefined;
+      const fresh = !!heartbeat && Date.parse(heartbeat) >= Date.now() - HOSTED_CONNECTOR_LIVENESS_FRESH_MS &&
+        Date.parse(heartbeat) <= Date.now() + 30_000;
+      const connection = !connectorReadAvailable ? 'unknown' : connector?.state === 'active' && fresh ? 'online' : 'offline';
+      return {
+        kind: 'workspace' as const, id: row.workspace_host_id, name: row.display_name,
+        connectionId: '', target: 'linked', scopeLabel: 'Installed computer',
+        region: '', size: '', image: '', diskGiB: 0, network: '',
+        desiredState: 'running', observedState: connection === 'online' ? 'running' : 'degraded',
+        recoverability: { kind: 'none', label: 'Managed by this installation' },
+        // A linked machine cannot be provisioned, started, destroyed or given shell access.
+        capabilities: {}, resources: [],
+        linkedInstallation: { installId: row.linked_install_id, customerWorkspaceId: row.id, connection },
+        tunnel: { connector: { routeLabel: row.id, transport: 'websocket' } },
+        hostedConnector: connector ? {
+          customerWorkspaceId: row.id, routeLabel: row.id, state: connector.state, transport: connector.transport,
+          generation: Number(connector.generation), lastSeenAt: heartbeat ?? null,
+          liveUntil: heartbeat ? Date.parse(heartbeat) + HOSTED_CONNECTOR_LIVENESS_FRESH_MS : null,
+        } : undefined,
+      };
+    });
+    return [...connectionRows, ...hostRows, ...linkedRows];
   });
 }
 
