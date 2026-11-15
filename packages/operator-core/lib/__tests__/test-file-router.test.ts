@@ -1124,6 +1124,15 @@ describe('test-files router', () => {
     expect(route.requested).toBe('test/build-windows-identity.test.js');
   });
 
+  it('surfaces the declared per-file layer on native Node routes (EI-28821566028028635)', () => {
+    expect(discoverTestRoute('papercusp-desktop/test/native-workbench-gnome.test.mjs'))
+      .toMatchObject({ runner: 'node', requested: 'test/native-workbench-gnome.test.mjs', testLayer: 'integration' });
+    // Same cwd group, different file: each route keeps its own layer.
+    expect(discoverTestRoute('papercusp-desktop/test/build-windows-identity.test.js'))
+      .toMatchObject({ runner: 'node', testLayer: 'unit' });
+    expect(discoverTestRoute('scripts/npm-install-safe.test.mjs')).toMatchObject({ runner: 'node', testLayer: 'unit' });
+  });
+
   it('resolves a package-relative desktop Node test from the admission population', () => {
     const route = discoverTestRoute('test/check-page-links.test.js');
     expect(route.runner).toBe('node');

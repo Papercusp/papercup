@@ -16,7 +16,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, unlinkSync, watch as watchFile, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { readVerifierSourceReceiptSync } from '@papercusp/test-config/verifier-source';
-import { REGISTERED_VITEST_FILE_PROJECTS } from '@papercusp/test-config/execution-details';
+import { REGISTERED_VITEST_FILE_PROJECTS, registeredNodeTestFileLayer } from '@papercusp/test-config/execution-details';
 import { readMutationInvocationDescriptor } from '@papercusp/test-config/mutation-descriptor';
 import { spawn, spawnSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -457,7 +457,10 @@ function nonWorkspaceNodeRoute(rootRelative, absolute, root) {
   if (!match) return null;
   const cwd = resolve(root, match.cwd);
   if (!existsSync(resolve(cwd, 'package.json'))) return null;
+  // Per-file layer from the same explicit declaration the node:test ledger recorder stamps
+  // (EI-28821566028028635). A group never carries a layer, so a mixed group stays per-file.
   return { runner: 'node', cwd, config: null, absolute, requested: relative(cwd, absolute),
+    testLayer: registeredNodeTestFileLayer(normalized),
     ...(match.nodeArgs ? { nodeArgs: match.nodeArgs } : {}) };
 }
 
