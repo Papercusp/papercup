@@ -113,8 +113,9 @@ describe('papercup-bg-host and Linux gateway-authority file contracts', () => {
     const environmentLines = serviceLines.filter((line) => line.startsWith('Environment='));
 
     // WI-10006398: bundle-host.sh runs from a frozen snapshot, with the checkout pinned.
+    // WI-6554700010048963: the bundle step alone opts into the fenced snapshot label.
     expect(execLines).toEqual([
-      `ExecStartPre=${SNAPSHOT_LAUNCHER_UNIT_PATH} ${BUNDLE_HOST_UNIT_PATH}`,
+      `ExecStartPre=/usr/bin/env PAPERCUSP_BUNDLE_SNAPSHOT_DIRTY=1 ${SNAPSHOT_LAUNCHER_UNIT_PATH} ${BUNDLE_HOST_UNIT_PATH}`,
       'ExecStart=',
       'ExecStart=/usr/bin/bash -c "set -a; [ -f .env.local ] && . ./.env.local; PAPERCUSP_GOOGLE_PUBSUB_SERVICE_ACCOUNT_PATH=$${PAPERCUSP_GOOGLE_PUBSUB_SERVICE_ACCOUNT_PATH:-$$GOOGLE_APPLICATION_CREDENTIALS}; unset GOOGLE_APPLICATION_CREDENTIALS; set +a; exec env \\',
     ]);
@@ -168,7 +169,18 @@ describe('papercup-bg-host and Linux gateway-authority file contracts', () => {
     // leg of green-checkpoint, freezing main fleet-wide. %h is already the convention in
     // this directory (llm-test-nightly.service, marketplace-api.service).
     expect(dropIn).not.toMatch(/\/home\/[a-z]/i);
-    expect(dropIn).toContain('ExecStartPre=%h/');
+    expect(dropIn).toMatch(/^ExecStartPre=\/usr\/bin\/env PAPERCUSP_BUNDLE_SNAPSHOT_DIRTY=1 %h\//m);
+  });
+
+  it('scopes the snapshot-label opt-in to the bundle step only, marked TEMPORARY (WI-6554700010048963)', () => {
+    // A null bundle label skips every scheduled green-checkpoint fire as
+    // executor-build-identity-unavailable. The opt-in must not leak into the runtime env.
+    const lines = dropIn.split('\n').map((line) => line.trim());
+    const optIn = lines.filter((line) => line.includes('PAPERCUSP_BUNDLE_SNAPSHOT_DIRTY=1') && !line.startsWith('#'));
+    expect(optIn).toHaveLength(1);
+    expect(optIn[0]).toMatch(/^ExecStartPre=\/usr\/bin\/env PAPERCUSP_BUNDLE_SNAPSHOT_DIRTY=1 /);
+    expect(lines.some((line) => line.startsWith('Environment=') && line.includes('PAPERCUSP_BUNDLE_SNAPSHOT_DIRTY'))).toBe(false);
+    expect(dropIn).toMatch(/TEMPORARY \(WI-6554700010048963, until bg-host-committed-generation P-002\)/);
   });
 
   it('documents the canonical symlink installation without restarting services', () => {

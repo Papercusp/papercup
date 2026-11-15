@@ -645,6 +645,14 @@ function adoptSharedScratchUsage(
     && !entry.refreshDeferred
     && entry.bytes === bytes
     && entry.sharedUpdatedAt === updatedAt;
+  // Re-adopting the exact aggregate a settled recovery measured changes nothing that recovery
+  // knew, so it still settles the writer's attempt (EI-26817459316222367). Dropping it here is
+  // what made a writer re-run an unreclaimable pass on every reservation read.
+  const aggregateRecoveryGeneration = !entry.refreshDeferred
+    && entry.bytes === bytes
+    && entry.sharedUpdatedAt === updatedAt
+    ? entry.aggregateRecoveryGeneration
+    : null;
   entry.bytes = bytes;
   entry.measuredAt = Date.now();
   entry.refreshDeferred = false;
@@ -652,6 +660,7 @@ function adoptSharedScratchUsage(
   if (!preserveRunIndex) {
     invalidateRunSizeIndex(entry);
   }
+  entry.aggregateRecoveryGeneration = aggregateRecoveryGeneration;
   return entry;
 }
 
@@ -1588,6 +1597,14 @@ interface ScratchUsageEntry {
    * instead of "cause unknown" (WI-6554700010029261: one 16 GB read-only run held 3.3x quota).
    */
   largestUnreclaimable: { path: string; bytes: number; code: string; observedAt: number } | null;
+  /**
+   * writeGeneration at which the last quota recovery finished on a validated trusted aggregate
+   * with no overlapping write (EI-26817459316222367). That aggregate is a complete measurement
+   * even though the per-run index is not, so it settles a writer's recovery attempt exactly as a
+   * valid index does. Without it a writer whose recovery could not reclaim (EACCES/EPERM/EROFS)
+   * re-ran the same pass on the same still-fresh aggregate until its caller timed out.
+   */
+  aggregateRecoveryGeneration: number | null;
 }
 
 /** Per-process cached usage per workspace (WI-10004513). Pinned so a split module record can't
@@ -1606,7 +1623,7 @@ function usageEntry(workspaceId: string): ScratchUsageEntry {
       recovering: null, maintenanceEpoch: 0, writes: new Map(),
       writeGeneration: 0, refreshDeferred: false, runBytesByPath: new Map(),
       runMtimeByPath: new Map(), runBytesValid: false,
-      sharedUpdatedAt: null, largestUnreclaimable: null,
+      sharedUpdatedAt: null, largestUnreclaimable: null, aggregateRecoveryGeneration: null,
     };
     usageState.byWorkspace.set(workspaceId, entry);
   } else {
@@ -1621,6 +1638,7 @@ function usageEntry(workspaceId: string): ScratchUsageEntry {
     entry.runMtimeByPath ??= new Map();
     entry.runBytesValid ??= false;
     entry.sharedUpdatedAt ??= null;
+    entry.aggregateRecoveryGeneration ??= null;
   }
   return entry;
 }
@@ -1629,6 +1647,7 @@ function invalidateRunSizeIndex(entry: ScratchUsageEntry): void {
   entry.runBytesByPath.clear();
   entry.runMtimeByPath.clear();
   entry.runBytesValid = false;
+  entry.aggregateRecoveryGeneration = null;
 }
 
 function scratchRunDirForFile(workspaceId: string, filePath: string): string | null {
@@ -2006,6 +2025,9 @@ async function evictWorkspaceQuotaLocked(
       // Only selected FIFO candidates were measured. Do not mislabel that partial set as a
       // complete per-run index; later recovery can reuse the aggregate while it remains fresh.
       invalidateRunSizeIndex(entry);
+      // The aggregate itself measured the whole workspace, so this pass settles a writer's
+      // recovery attempt (EI-26817459316222367) even though the per-run index stays partial.
+      if (!entry.refreshDeferred) entry.aggregateRecoveryGeneration = entry.writeGeneration;
     } else {
       entry.runBytesByPath = runBytesByPath;
       entry.runMtimeByPath.clear();
@@ -3389,7 +3411,12 @@ export async function writeWithScratchQuota(
           await waitForUsageRefresh(refreshWaitOwner ? 'refreshWaitMs' : 'quotaWaitMs');
           continue;
         }
-        if (quotaRecoveryAttempted && entry.runBytesValid && !entry.refreshDeferred) {
+        // A recovery settles on a complete measurement: a valid per-run index, or a validated
+        // trusted aggregate with no write since (EI-26817459316222367). Either way a second pass
+        // on the same measurement cannot reclaim more, so refuse rather than loop.
+        const recoveryMeasuredCompletely = entry.runBytesValid
+          || entry.aggregateRecoveryGeneration === entry.writeGeneration;
+        if (quotaRecoveryAttempted && recoveryMeasuredCompletely && !entry.refreshDeferred) {
           throw lastQuotaRefusal ?? new ScratchQuotaError(
             `scratch reservation: workspace ${opts.workspaceId} remains over quota after recovery`,
           );

@@ -734,6 +734,15 @@ fi
 # The subshell may have re-minted the label; the spawner define and the freshness stamp below use it.
 if [[ -s "$SOURCE_SHA_FILE" ]]; then
   bundle_host_set_source_sha "$(<"$SOURCE_SHA_FILE")"
+  # WI-6554700010048963 (D1) — TEMPORARY until bg-host-committed-generation P-002. The sibling
+  # bundles (runtime workers, the standalone spawner) compile below, OUTSIDE the fenced loop, so
+  # they used to read the live shared tree under a label minted minutes earlier. Serve their
+  # tracked inputs from the SAME snapshot label so one label names every published artifact; the
+  # spawner is fenced against it after its build.
+  snapshot_label="$(<"$SOURCE_SHA_FILE")"
+  if (( SNAPSHOT_FENCE == 1 )) && [[ -n "$snapshot_label" && "$snapshot_label" != *+dirty ]]; then
+    export BUNDLE_HOST_SNAPSHOT_SOURCE_SHA="$snapshot_label"
+  fi
 fi
 cat "$BUILD_LOG"
 if [[ $bundle_rc -ne 0 ]]; then
@@ -1019,7 +1028,12 @@ fi
 case "${ENTRY##*/}" in
   hono-host.ts|serve.ts)
     SPAWNER_BUILD_LOG="$OUTDIR/spawner-sidecar.mjs.build-error.log"
-    if ! bundle_host_spawner "$REPO_ROOT" "$OUTDIR" "${HOST_MINIFY_ARGS[@]}" "${BUNDLED_SOURCE_SHA_DEFINE[@]}" "${HOST_EXTERNALS[@]}" >"$SPAWNER_BUILD_LOG" 2>&1; then
+    # WI-6554700010048963 (D1): with the snapshot label exported above, bundle_host_esbuild serves
+    # the spawner's tracked inputs from the label and records what it served here; the fence below
+    # compares that receipt (not the moving live tree) with the label.
+    SPAWNER_SERVED_RECEIPT="$OUTDIR/spawner-sidecar.mjs.snapshot-served.json"
+    rm -f "$SPAWNER_SERVED_RECEIPT"
+    if ! BUNDLE_HOST_SNAPSHOT_SERVED_RECEIPT="$SPAWNER_SERVED_RECEIPT" bundle_host_spawner "$REPO_ROOT" "$OUTDIR" "${HOST_MINIFY_ARGS[@]}" "${BUNDLED_SOURCE_SHA_DEFINE[@]}" "${HOST_EXTERNALS[@]}" >"$SPAWNER_BUILD_LOG" 2>&1; then
       cat "$SPAWNER_BUILD_LOG"
       "${COMMITTED_NODE[@]}" "$HELPER_DIR/write-bundle-stale-marker.mjs" \
         "$STALE_MARKER" "bin/spawner-sidecar.ts" "$OUTDIR/spawner-sidecar.mjs" "$SPAWNER_BUILD_LOG" || true
@@ -1031,6 +1045,27 @@ case "${ENTRY##*/}" in
       exit 1
     fi
     cat "$SPAWNER_BUILD_LOG"
+    # WI-6554700010048963 (D1) sibling-bundle fence: every repo input the spawner read must equal
+    # the label's bytes before the label is stamped onto it. Exit 75 = inputs moved; a rebuild under
+    # the same label would read the same blobs, so any refusal is final: mark the spawner stale and
+    # take the same availability-over-freshness exit as a failed spawner build.
+    if [[ -n "${BUNDLE_HOST_SNAPSHOT_SOURCE_SHA:-}" ]]; then
+      spawner_fence_rc=0
+      node "$HELPER_DIR/bundle-host-snapshot-fence.ts" "$REPO_ROOT" "$BUNDLE_HOST_SNAPSHOT_SOURCE_SHA" \
+        "$OUTDIR/spawner-sidecar.mjs.meta.json" "$OUTDIR/spawner-sidecar.mjs.snapshot-fence.json" \
+        "$SPAWNER_SERVED_RECEIPT" || spawner_fence_rc=$?
+      if (( spawner_fence_rc != 0 )); then
+        rm -f "$OUTDIR/spawner-sidecar.mjs.snapshot-fence.json"
+        "${COMMITTED_NODE[@]}" "$HELPER_DIR/write-bundle-stale-marker.mjs" \
+          "$STALE_MARKER" "bin/spawner-sidecar.ts" "$OUTDIR/spawner-sidecar.mjs" "$SPAWNER_BUILD_LOG" || true
+        echo "ERROR: snapshot fence refused the standalone spawner against label $BUNDLE_HOST_SNAPSHOT_SOURCE_SHA (rc=$spawner_fence_rc, WI-6554700010048963)."
+        if [[ "${PAPERCUSP_BUNDLE_ALLOW_STALE_START:-0}" == "1" && -s "$OUTFILE" ]]; then
+          echo "WARNING: supervisor starts with that spawner marked stale; this is not a fresh release."
+          exit 0
+        fi
+        exit 1
+      fi
+    fi
     ;;
 esac
 
