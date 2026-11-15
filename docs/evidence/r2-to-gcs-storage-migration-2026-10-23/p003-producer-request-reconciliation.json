@@ -81,5 +81,99 @@
     "durableFixStatus": "One-off ledger reconciliation only; automatic terminal-evidence ingestion remains tracked separately",
     "durableFixIssue": "EI-27012912988975360",
     "remaining": "Qualified signed migration GUI/Server pair with original provenance and eligible release source, retained-byte production delivery, independent migration acceptance, then D090/D086 trial sequence"
-  }
+  },
+  "continuationReconciliations": [
+    {
+      "date": "2026-11-15",
+      "scope": "November requests only; the October requests and interpretation above remain historical evidence",
+      "workItemComment": 1230980,
+      "sourceSha": "744b960bd1192e118f6cc2852e8b47827c149040",
+      "version": "0.0.33",
+      "channel": "alpha",
+      "method": [
+        "Read original tasks with the maintained task-manager getTask reader",
+        "Verify work-item, immutable operation, source and saved request/input identities",
+        "Recompute each original inputIdentity hash",
+        "Run inspectReleaseTaskStage with the exact retained inputIdentity and an appendTaskReleaseReceipt adapter that throws on writes",
+        "Recover the predecessor's unknown receipts and rehash every evidence log they reference"
+      ],
+      "writesAttempted": 0,
+      "unknownSettlementAlreadyRecordedAt": [
+        "2026-11-15T12:41:57.152Z",
+        "2026-11-15T12:41:57.172Z"
+      ],
+      "requests": [
+        {
+          "taskId": "0mw57xh4t1dlu0dcqxj",
+          "operationId": "b33f1523-eccb-415d-805a-dca5121fb706",
+          "requestIdentity": "c723a9d3-0b6c-45c6-8575-80de1c4c4ccb",
+          "inputHash": "bf71142867b0c4350b6ce2cad8d674669653de3ebafe81d4f7868dd5d1ba336c",
+          "executionReadback": { "state": "exited", "exitCode": 1 },
+          "releaseReadback": { "cursor": 2, "stage": "release.build.linux", "state": "unknown", "action": "reconcile", "attempt": 1 }
+        },
+        {
+          "taskId": "0mw4fhw591njv29ct5o",
+          "operationId": "e1ea8eea-6dd7-4f0c-9de7-9256cd141069",
+          "requestIdentity": "c10cb272-aca9-4f38-9cba-badedf4eccf2",
+          "inputHash": "617039b551b21c8315717504367d3cfd1eee4c2f3ecf9ee536a78c52c25560d5",
+          "executionReadback": { "state": "exited", "exitCode": 1 },
+          "releaseReadback": { "cursor": 2, "stage": "release.build.linux", "state": "unknown", "action": "reconcile", "attempt": 1 }
+        }
+      ],
+      "retainedEvidence": [
+        {
+          "taskId": "0mwht1tca1vrnfyyk1j",
+          "path": ".papercusp/scratch/bash-d212979c-201.log",
+          "sha256": "7072c885cf38a4a6601649b6e9a9e8002c774e7f840bad1a6943518ff7c562b6",
+          "hashReadbackMatched": true,
+          "observedExitCode": 0
+        },
+        {
+          "taskId": "0mwhtdj2k1moj6591pm",
+          "path": ".papercusp/scratch/bash-8d8c5760-059.log",
+          "sha256": "24c8a8bb4aea9fcdf4acd2fd98d7b0d818063723b53933133d294b22863a2d50",
+          "hashReadbackMatched": true,
+          "observedExitCode": 0
+        },
+        {
+          "taskId": "0mwhtn44m1u7tzmq1jq",
+          "path": ".papercusp/scratch/bash-a93c1663-5fc.log",
+          "sha256": "bcde6b7b578dbb91464f7acf600ad458bdf2636028134e9addbe38aae127734b",
+          "hashReadbackMatched": true,
+          "observedExitCode": 0,
+          "qualification": "Limited root-local path census only; does not establish artifact absence"
+        }
+      ],
+      "artifactCustody": {
+        "checked": [
+          "Configured base Cargo release/bundle tree, recursively",
+          "Every current immediate Cargo slot release/bundle tree, recursively: dev4, dev2, dev3, pid1600302",
+          "Configured base Cargo Linux Debian archive, recursively",
+          "Root-scoped cut marker paths for both retained source roots, whole-cut and Linux variants, with and without operation identity",
+          "Version 0.0.33 alpha latest manifest in the maintained temporary handoff location",
+          "Version 0.0.33 retention lease filenames and matching deletion-audit entries in the maintained retention root"
+        ],
+        "observed": "No 0.0.33 artifact or qualifying provenance found in the checked output trees; checked handoff markers, latest manifest and version lease were absent",
+        "notChecked": [
+          "Other target roots or historical removed Cargo slots",
+          "macOS and Windows output trees",
+          "Other archives, object stores or external custody locations",
+          "Unattributed logs outside the checked root and operation marker paths"
+        ],
+        "recovery": "Retain unknown requests. Follow an original producer output binding, retained artifact inventory or newly supplied custody reference before deciding artifact commitment or confirmed absence.",
+        "globalAbsenceEstablished": false,
+        "qualified": false
+      },
+      "interpretation": {
+        "retryAuthorization": false,
+        "successfulBuildClaim": false,
+        "shipped": false,
+        "sourcePolicyWaived": false,
+        "newBuildOrReceiptMutation": false,
+        "cloudSpendAddedUsd": 0,
+        "sourceQualificationDependency": "EI-28280477757151195",
+        "remaining": "Production authority, ORIGINAL custody restrictions, preserved freezes and writer exclusion remain required, followed by exact-source full-platform, signature, provenance, install, upgrade, rollback and independent migration acceptance. Existing maintained 90-pass assertion proof is retained without rerunning it."
+      }
+    }
+  ]
 }
