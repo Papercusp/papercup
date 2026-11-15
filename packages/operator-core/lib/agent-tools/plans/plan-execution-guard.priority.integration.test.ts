@@ -44,7 +44,9 @@ afterAll(async () => {
 describe('native plan authority read queue reproduction (EI-27691198286861651)', () => {
   it('can miss the native wall in the priority client queue while an ordinary read succeeds', async () => {
     const ordinary = getOrgPg().sql;
-    const nativeWallMs = specFor('pre-tool').timeoutMs;
+    const preTool = specFor('pre-tool');
+    if (!preTool) throw new Error('pre-tool port spec missing from hooks/inject/ports.mjs');
+    const nativeWallMs = preTool.timeoutMs;
     const input = { ownerId: 'guard-queue-fixture', workspaceId: 'private-fixture',
       toolName: 'Write', args: { file_path: 'fixture.ts', content: 'fixture' } };
 

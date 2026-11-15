@@ -75,7 +75,7 @@ it('persists pending fallback observations before closing the plan fixture clien
     fixture = await setupPlanPgFixture({ isolated: true });
     const admin = fixture.admin;
     const failedBefore = fallbackObservationCounters().failed;
-    let persisted: unknown[] = [];
+    let persisted: readonly unknown[] = [];
     const end = admin.end.bind(admin);
     vi.spyOn(admin, 'end').mockImplementation(async options => {
       persisted = await admin`

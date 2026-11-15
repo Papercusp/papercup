@@ -18,6 +18,7 @@ import setClaimSpecTool, {
 } from './set_claim_spec';
 import { DEFAULT_CLAIM_SPEC, type ClaimSpec } from '../../scheduler/claim-spec';
 import type { ClaimFloorAttribution } from '../../work-items';
+import type { ToolResponse, UnifiedToolContext } from '@papercusp/tooldef';
 
 const wakeClaimableAwaitersForSubscribers = vi.hoisted(() => vi.fn());
 const listFleetMembers = vi.hoisted(() => vi.fn());
@@ -270,10 +271,13 @@ describe('scheduler:set_claim_spec appendIds', () => {
     listFleetMembers.mockResolvedValueOnce(['su-member']);
     wakeClaimableAwaitersForSubscribers.mockResolvedValueOnce(1);
 
-    const result = await setClaimSpecTool.handler(
+    // The handler reads only these ctx fields; the response is narrowed to the
+    // ToolResponse arm this success path returns.
+    const appendCtx = { isSuperuser: true, uiClientId: 'su-append', workspaceId: 'ws-test' } as UnifiedToolContext;
+    const result = (await setClaimSpecTool.handler(
       { fleet: 'append-fleet', appendIds: ['EI-pending'], harness: 'papercup' },
-      { isSuperuser: true, uiClientId: 'su-append', workspaceId: 'ws-test' },
-    );
+      appendCtx,
+    )) as ToolResponse<Record<string, unknown> & { warning?: string }>;
 
     expect(result.data).toMatchObject({
       ok: true,
@@ -815,7 +819,7 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
       scopeHolder: 'su-member',
       scopeStatus: 'open',
     };
-    const explain = vi.fn(async () => [filedGrace]);
+    const explain = vi.fn(async (_harness: string, _ids: readonly string[], _opts?: { assignee?: string; scopeHeldBy?: readonly string[] }) => [filedGrace]);
     const result = await previewClaimSpecAdmission({
       ...args,
       resolveFleetMembers: async () => ['su-member'],
@@ -829,7 +833,7 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
       alreadyHeldIds: [held.id],
       floored: [],
     });
-    expect(explain.mock.calls[1][2]).toMatchObject({ assignee: 'su-member', scopeHeldBy: ['su-member'] });
+    expect(explain.mock.calls[1]?.[2]).toMatchObject({ assignee: 'su-member', scopeHeldBy: ['su-member'] });
   });
 
   it('does not treat a blocked row held by the target as scope-admissible', async () => {

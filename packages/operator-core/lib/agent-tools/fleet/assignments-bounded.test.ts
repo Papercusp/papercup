@@ -539,7 +539,7 @@ describe('fleet:assignments bounded handler reads', () => {
       () => true,
       () => false,
     );
-    coverage.resolve(new Map());
+    coverage.resolve(new Map<string, never>());
 
     const result = await pending;
     expect(decorationsStarted).toBe(true);

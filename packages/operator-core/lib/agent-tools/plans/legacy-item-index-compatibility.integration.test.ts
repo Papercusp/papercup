@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Sql } from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { hashPlanContent } from './content-hash';
 import { deriveIndexFromContent } from './derive-index';
@@ -109,7 +110,7 @@ describe('old writer JSON item index compatibility', () => {
     expect(persisted.items).toEqual(oldIndex);
     expect(persisted.content).toBe(body);
     const directItems = await db.sql.begin((tx) =>
-      readPlanLineItems(tx, { ...scope, slug: 'old-writer' }, persisted),
+      readPlanLineItems(tx as unknown as Sql, { ...scope, slug: 'old-writer' }, persisted),
     );
 
     const plan = await getPlanRow('old-writer', scope);

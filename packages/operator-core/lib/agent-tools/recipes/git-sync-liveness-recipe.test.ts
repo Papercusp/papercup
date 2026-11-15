@@ -114,7 +114,7 @@ describe('saved git-sync liveness recipe', () => {
     const result = await run.result;
     expect(result.ok).toBe(true);
     expect(result.fieldMisses ?? []).toEqual([]);
-    expect(result.result.logWindow).toMatchObject({
+    expect((result.result as { logWindow: unknown }).logWindow).toMatchObject({
       backend: null,
       matched: null,
       collapsed: null,

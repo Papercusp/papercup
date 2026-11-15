@@ -237,7 +237,7 @@ describe('benchmark native planning — maintained plan handlers', () => {
     // A frozen-only pass must not hide an accidental blanket removal of advice.
     setSessionConfinementResolver(() => null);
     reuse.mockResolvedValue(undefined);
-    research.mockResolvedValue({ anchors: [], manualEntry: true });
+    research.mockResolvedValue({ anchors: [], sourceRefs: [], manualEntry: true });
     const control = await callNew({ ...create, slug: `${boundary.scratchPrefix}control-2026-11-02` });
     expect(control.d.ok, brief(control)).toBe(true);
     expect(control.payload?.error, brief(control)).toBeUndefined();

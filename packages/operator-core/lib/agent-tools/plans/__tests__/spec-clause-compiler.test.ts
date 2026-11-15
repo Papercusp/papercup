@@ -316,7 +316,7 @@ describe('compileSpecClauses', () => {
     const behavior = 'Qualification custody remains held for every enumerated mutation while any enrolled managed scope is live or unknown, regardless of DBOS age or absent completed-step output, under the retained explicit operator and scoped-operation authorities';
     const result = compileSpecClauses(
       plan('  - **[VAL-demo-completed-step]**', '    - **Verify:** ' + behavior),
-      { enrichments: { 'VAL-demo-completed-step': { behaviorClass: 'state', lifecycleStatus: 'active' } } },
+      { enrichments: { 'VAL-demo-completed-step': { behaviorClass: 'lifecycle', lifecycleStatus: 'active' } } },
     );
 
     expect(specBehaviorNonAtomicReason(behavior)).toBeNull();
