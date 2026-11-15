@@ -181,9 +181,7 @@ export const changeKindsArg = () =>
     .min(1)
     .max(CHANGE_KINDS.length)
     .describe(
-      'The kind(s) of change this work makes, from the bundled catalog: ' +
-        CHANGE_KINDS.join(', ') +
-        '. A successful close must carry each kind\'s proof. Re-declaring later keeps the earlier declaration in history.',
+      'Change kinds; a successful close requires each kind\'s proof. Re-declarations preserve history.',
     );
 
 export const changeKindReasonArg = () =>
@@ -192,7 +190,7 @@ export const changeKindReasonArg = () =>
     .trim()
     .min(1)
     .max(1000)
-    .describe('Why the declared kinds changed or were first declared late. Stored with the declaration.');
+    .describe('Stored reason for changed kinds or a late first declaration.');
 
 // ── Per-kind proof carried by a close (P-002 / R-2, R-6) ──
 //
@@ -208,8 +206,8 @@ const nonEmpty = () => z.string().trim().min(1).max(4000);
 const testResultPhaseSchema = z
   .object({
     phase: z.enum(['baseline', 'current']),
-    testsRun: nonEmpty().describe('The command or probe for this phase.'),
-    testResult: nonEmpty().describe('The observed result for this phase.'),
+    testsRun: nonEmpty().describe('Phase command/probe.'),
+    testResult: nonEmpty().describe('Observed phase result.'),
   })
   .strict();
 
@@ -228,61 +226,61 @@ export const ChangeKindEvidenceSchema = z
   .object({
     kind: z.enum(CHANGE_KINDS),
     summary: nonEmpty().optional(),
-    testsRun: nonEmpty().optional().describe('The command or probe run for this kind.'),
-    testResult: nonEmpty().optional().describe('The current run result. Use testResultPhases when retaining baseline results.'),
+    testsRun: nonEmpty().optional().describe('Command/probe for this kind.'),
+    testResult: nonEmpty().optional().describe('Current result; retain baselines in testResultPhases.'),
     testResultPhases: testResultPhasesSchema
       .optional()
       .describe(
-        'Structured test history: at least one baseline phase and exactly one current phase. Only the current phase proves passing behavior; historical baseline failures remain visible without being treated as current failures.',
+        'At least one baseline and exactly one current phase. Only current proves passing behavior; baseline failures are historical.',
       ),
     artifacts: z
       .array(nonEmpty())
       .max(50)
       .optional()
-      .describe('ui: retained artifact paths or URLs from the real-app run (screenshot, capture, DOM snapshot).'),
+      .describe('ui: retained real-app artifacts (screenshot/capture/DOM paths or URLs).'),
     build: nonEmpty()
       .optional()
       .describe(
-        'ui/service: the build the run or call used, proving it contained this change — its commit/build sha ' +
-          '(for example from /api/health) or a VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS check.',
+        'ui/service: prove the run/call build contained this change with its commit/build sha ' +
+          '(e.g. /api/health) or VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS.',
       ),
     states: z
       .array(z.object({ name: nonEmpty(), evidence: nonEmpty() }).strict())
       .max(50)
       .optional()
-      .describe('ui: every user-visible state you changed, each with where the run covered it.'),
+      .describe('ui: every changed user-visible state and its run evidence.'),
     distinguishingChecks: z
       .array(
         z
           .object({
-            assertion: nonEmpty().describe('What the check asserted.'),
-            expected: nonEmpty().describe('The value the right result produces.'),
-            plausibleWrong: nonEmpty().describe('The value a plausible wrong result would produce instead.'),
+            assertion: nonEmpty().describe('Assertion.'),
+            expected: nonEmpty().describe('Correct result value.'),
+            plausibleWrong: nonEmpty().describe('Plausible wrong result value.'),
           })
           .strict(),
       )
       .max(20)
       .optional()
-      .describe('ui: at least one check whose expected value tells the right result apart from a plausible wrong one.'),
-    database: nonEmpty().optional().describe('migration: the disposable database the migration was applied to.'),
-    runtime: nonEmpty().optional().describe('background-job: the isolated runtime the job ran in.'),
+      .describe('ui: at least one check distinguishing correct from plausible wrong results.'),
+    database: nonEmpty().optional().describe('migration: disposable database used.'),
+    runtime: nonEmpty().optional().describe('background-job: isolated runtime used.'),
     readBack: nonEmpty()
       .optional()
-      .describe('config: the effective value read back from its consumer. docs: the document read back from where readers get it.'),
-    landingCommit: nonEmpty().optional().describe('refactor: the sha of the commit that landed the refactor.'),
+      .describe('config: effective value read back from its consumer. docs: document read back at its delivery surface.'),
+    landingCommit: nonEmpty().optional().describe('refactor: landing commit sha.'),
     beforeRuns: z
       .array(z.number().int().positive())
       .max(200)
       .optional()
-      .describe("refactor: test_runs row ids for the covering test files at the landing change's parent."),
+      .describe("refactor: covering test_runs ids at the landing parent."),
     afterRuns: z
       .array(z.number().int().positive())
       .max(200)
       .optional()
-      .describe('refactor: test_runs row ids for exactly the same test files at the landing change.'),
-    finding: nonEmpty().optional().describe('refactor: the targeted finding (for example a clone-family key) that must be absent on re-scan.'),
-    typecheck: nonEmpty().optional().describe('refactor: the lint:tsc result for the changed files (for example "LINT_TSC_RESULT status=clean").'),
-    behaviouralStrands: nonEmpty().optional().describe('refactor: the lint:behavioural-strands result (exit 0, no strands).'),
+      .describe('refactor: test_runs ids for exactly the same files at landing.'),
+    finding: nonEmpty().optional().describe('refactor: targeted finding absent on re-scan (e.g. clone-family key).'),
+    typecheck: nonEmpty().optional().describe('refactor: changed-file lint:tsc result (LINT_TSC_RESULT status=clean).'),
+    behaviouralStrands: nonEmpty().optional().describe('refactor: lint:behavioural-strands result (exit 0, no strands).'),
   })
   .strict();
 
@@ -294,6 +292,5 @@ export const kindEvidenceArg = () =>
     .min(1)
     .max(CHANGE_KINDS.length)
     .describe(
-      'Proof per declared change kind: one { kind, ... } entry each. Required when more than one kind is declared; ' +
-        'a single-kind close may use the root summary/testsRun/testResult instead.',
+      'Multi-kind: one { kind, ... } proof per declared kind. Single-kind may use root summary/testsRun/testResult.',
     );

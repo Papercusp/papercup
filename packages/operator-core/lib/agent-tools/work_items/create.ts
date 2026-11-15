@@ -104,7 +104,7 @@ const stateOnCreate = z
       "a work-item cannot be CREATED in state 'blocked' — a blocked item must name its blocker. Create it (open), then: work_items:set_blocker { id, kind, capability, ref, summary, nextVerb } for an external event/gate/runtime/human blocker (it parks the item), or work_items:link { id: '<blocker-id>', target_id: '<new-id>', rel: 'blocks' } for another work-item, or plans:set-status for a plan item.",
   })
   .describe(
-    "initial lifecycle state (EI-10897) — e.g. 'wip' to open an ad-hoc unit you are starting RIGHT NOW (pair with assign_to:'self'). Defaults to the kind's normal entry state (todo). Terminal states and 'blocked' are rejected: complete the item instead, or create it then name its blocker with work_items:set_blocker.",
+    "Initial state; default kind entry (todo). Use wip with assign_to:'self' to start now. Terminal/blocked rejected: use work_items:complete or create then work_items:set_blocker.",
   );
 
 /**
@@ -121,14 +121,14 @@ const directiveRefArg = z
   .positive()
   .optional()
   .describe(
-    'owner-directive provenance: the orders id this work-item is being created to carry out (harness_shared.owner_directives.id). Late-binding and one-directional — the directive is never written back. Omit for ordinary work; a directive with zero linked work-items is healthy, not degenerate.',
+    'Orders id this work carries out (harness_shared.owner_directives.id). Late-bound; never writes the directive. Omit for ordinary work; zero linked work-items is valid.',
   );
 
 const linkSpec = z.object({
-  rel: z.enum(LINK_RELS).describe('the relationship: blocks | relates | duplicates | fixes | investigates | about | caused-by | revises'),
+  rel: z.enum(LINK_RELS).describe('Relationship from the new item to the target.'),
   target_id: z.string().max(120).optional().describe('a target work-item id'),
-  target_kind: z.string().max(40).optional().describe('explicit coord ObjectRef kind (e.g. plan_item, event) — use with target_ref'),
-  target_ref: z.string().max(160).optional().describe('explicit coord ObjectRef ref — use with target_kind'),
+  target_kind: z.string().max(40).optional().describe('Coord ObjectRef kind (plan_item, event); pair with target_ref.'),
+  target_ref: z.string().max(160).optional().describe('Coord ObjectRef ref; pair with target_kind.'),
   target_harness: z.string().max(80).optional().describe('harness for a feature target_id (disambiguation)'),
   satisfaction: z.enum(['settled', 'success']).optional().describe('blocks-only outcome requirement; omitted defaults to settled'),
 }).meta({ id: 'work-items-create-link-v1' });
@@ -251,26 +251,26 @@ function createAdmissionSubject(spec: CreateOneWorkItemArgs): ClaimSpecSubject {
 
 /** One per-item create spec — the same per-item shape as the single-call fields. */
 const itemSpec = z.object({
-  definition: WorkItemDefinitionSchema.optional().describe('Structured acceptance criteria, scope, verification target and first unit; independent of body headings.'),
+  definition: WorkItemDefinitionSchema.optional().describe('Acceptance, scope, verification target, first unit; independent of body headings.'),
   // Built-in kind OR a workspace-registered generic-kind datatype (P-001) — validated
   // per item in createOneWorkItem; an unregistered kind is rejected there as `unknown_kind`.
-  kind: z.string().min(1).max(80).describe("built-in kind (feature, bug, change, task); 'chunk' is deprecated (historical rows remain readable) OR a workspace-registered generic-kind datatype (declared via meta:define-datatype)"),
+  kind: z.string().min(1).max(80).describe('feature/bug/change/task or workspace generic-kind from meta:define-datatype. chunk deprecated; historical rows readable.'),
   title: hardText(LIMITS.SHORT_TITLE),
   summary: hardText(8000).optional().describe('body / summary text'),
   // WI-4492: `body` is an ACCEPTED ALIAS for `summary` (the SAME field). work_items:update
   // names it `body`, so a caller who learned that name used to have it silently dropped here.
-  body: hardText(8000).optional().describe('alias for `summary` — the item body text (work_items:update names it `body`). Pass either; both-with-different-values is rejected (WI-4492).'),
-  harness: z.string().max(80).optional().describe('harness slug — required for feature/chunk; sets scope for bug/change. Falls back to the batch `harness` default.'),
+  body: hardText(8000).optional().describe('summary alias (work_items:update uses body). Different values for both rejected.'),
+  harness: z.string().max(80).optional().describe('Required for feature/chunk; bug/change scope. Defaults to batch harness.'),
   pot: potArg,
   severity: z.enum(['critical', 'major', 'minor', 'nit']).optional().describe('issue-family (bug/change) only'),
   parent: z.string().max(80).optional().describe('parent work-item id (feature-family; required-shape for a chunk)'),
   topics: z.array(z.string().min(1)).max(8).optional().describe('topic slugs to tag (topics:list)'),
   payload: z.record(z.string(), z.unknown()).optional().describe('kind-specific data (feature-family)'),
-  routing_intent: z.enum(ROUTING_GATE_INTENTS).optional().describe('explicit papercusp-way routing intent. Body/summary prose is never classified. schedule-recurrence also requires cadence.'),
-  cadence: hardText(200).optional().describe('explicit cadence for routing_intent=schedule-recurrence, e.g. "daily at 09:00" or a cron expression'),
-  urgent: z.boolean().optional().describe('URGENT enqueue: wake the brain immediately (floor-debounced). Reserve for a production fire.'),
-  force: z.boolean().optional().describe('Override the dupe guards (EI-316 mirror, semantic cosine, exact identity) for this item.'),
-  assign_to: z.string().max(120).optional().describe('Atomically CLAIM this item for this agent id in the SAME create (B-LOOP-4) — pass a concrete ownerId, or the literal "self" to resolve to the caller. Overrides assign_all_to_self for this item.'),
+  routing_intent: z.enum(ROUTING_GATE_INTENTS).optional().describe('Explicit papercusp-way intent; body/summary never classified. schedule-recurrence requires cadence.'),
+  cadence: hardText(200).optional().describe('schedule-recurrence cadence: e.g. daily at 09:00 or cron.'),
+  urgent: z.boolean().optional().describe('Wake brain immediately (floor-debounced); production fires only.'),
+  force: z.boolean().optional().describe('Override mirror, semantic cosine and exact-identity dupe guards for this item.'),
+  assign_to: z.string().max(120).optional().describe('Atomically claim at create for ownerId or "self" (caller). Overrides assign_all_to_self.'),
   changeKinds: changeKindsArg().optional(), // change-kind-declared-proof P-001: recorded only when the item is claimed (assign_to)
   changeKindReason: changeKindReasonArg().optional(),
   // EI-10897: the su persona itself documents `work_items:create { title, assign_to:'self',
@@ -282,10 +282,10 @@ const itemSpec = z.object({
   plan_item: z
     .object({ slug: z.string().min(1), item: z.string().min(1) })
     .optional()
-    .describe('Plan item this work-item IMPLEMENTS ({ slug, item:"P-003" }): writes a work→plan_item coverage edge so it rolls up into that item; completing the item can auto-resolve it as residue. A bug merely DISCOVERED while working an item is NOT implementing it — file it unlinked (EI-19460536530145188).'),
-  links: z.array(linkSpec).max(20).optional().describe('inline typed links (WI-3956) written from the new item to targets on create — e.g. [{ rel:"investigates", target_id:"EI-9250" }]. Best-effort: a bad target is skipped, never fails the create.'),
-  conditionKey: hardText(200).optional().describe('recurring-detector filing identity (WI-39604): an OPEN item already holding this key is refreshed and returned (see conditionUpsert on the result) instead of a sibling being filed — single-host system filers only.'),
-  conditionReplay: z.literal('include-terminal').optional().describe('For immutable revision identities: reuse the original conditionKey filing after closure too, without reopening or rewriting its disposition. Requires conditionKey and a concrete workspace. Omit for recurring alarms.'),
+    .describe('Implemented plan item {slug,item:"P-003"}; adds work→plan_item coverage/rollup and enables residue auto-resolution on completion. Discovered bugs go unlinked.'),
+  links: z.array(linkSpec).max(20).optional().describe('Links from new item to targets at create. Best-effort: bad targets skipped; create still succeeds.'),
+  conditionKey: hardText(200).optional().describe('Single-host system filers only: refresh/return existing OPEN item with this identity (result.conditionUpsert), avoiding a sibling.'),
+  conditionReplay: z.literal('include-terminal').optional().describe('Immutable revision identities only: reuse closed conditionKey filing without reopening/rewriting disposition. Requires conditionKey and concrete workspace; omit for recurring alarms.'),
   directiveRef: directiveRefArg,
 })
   // WI-4492: strict — an unknown field name is a LOUD error naming it, never a silent drop
@@ -380,42 +380,42 @@ export default defineTool({
   args: z
     .object({
       // ── single-create shorthand (n=1) ──
-      definition: WorkItemDefinitionSchema.optional().describe('Structured acceptance criteria, scope, verification target and first unit.'),
+      definition: WorkItemDefinitionSchema.optional().describe('Acceptance criteria, scope, verification target and first unit.'),
       // Built-in kind OR a workspace-registered generic-kind datatype — validated in
       // createOneWorkItem (P-001). Relaxed from z.enum so a registered kind passes; an
       // unregistered one is rejected there with `unknown_kind` (was a zod enum error).
-      kind: z.string().min(1).max(80).optional().describe("built-in kind (feature, bug, change, task); 'chunk' is deprecated (historical rows remain readable) OR a workspace-registered generic-kind datatype (declared via meta:define-datatype)"),
+      kind: z.string().min(1).max(80).optional().describe('feature/bug/change/task or workspace generic-kind from meta:define-datatype. chunk deprecated; historical rows readable.'),
       title: hardText(LIMITS.SHORT_TITLE).optional(),
       summary: hardText(8000).optional().describe('body / summary text'),
-      body: hardText(8000).optional().describe('alias for `summary` — the item body text (work_items:update names it `body`). Pass either; both-with-different-values is rejected (WI-4492).'),
-      harness: z.string().max(80).optional().describe('harness slug — required for feature; sets scope for bug/change. Also the DEFAULT harness for items that omit one.'),
+      body: hardText(8000).optional().describe('summary alias (work_items:update uses body). Different values for both rejected.'),
+      harness: z.string().max(80).optional().describe('Required for feature; bug/change scope. Default for items omitting harness.'),
       pot: potArg,
       severity: z.enum(['critical', 'major', 'minor', 'nit']).optional().describe('issue-family (bug/change) only'),
       parent: z.string().max(80).optional().describe('parent work-item id (historical feature-family compatibility)'),
       topics: z.array(z.string().min(1)).max(8).optional().describe('topic slugs to tag (topics:list)'),
       payload: z.record(z.string(), z.unknown()).optional().describe('kind-specific data (feature-family)'),
-      routing_intent: z.enum(ROUTING_GATE_INTENTS).optional().describe('explicit papercusp-way routing intent. Body/summary prose is never classified. schedule-recurrence also requires cadence.'),
-      cadence: hardText(200).optional().describe('explicit cadence for routing_intent=schedule-recurrence, e.g. "daily at 09:00" or a cron expression'),
-      urgent: z.boolean().optional().describe('URGENT enqueue: wake the brain immediately (floor-debounced). Reserve for a production fire, not routine filing.'),
-      force: z.boolean().optional().describe('Override the dupe guards (EI-316 mirror, semantic cosine, exact identity).'),
-      assign_to: z.string().max(120).optional().describe('Atomically CLAIM the new item for this agent id in the SAME create (B-LOOP-4) — pass a concrete ownerId, or the literal "self" to resolve to the caller. Omit ⇒ unclaimed.'),
+      routing_intent: z.enum(ROUTING_GATE_INTENTS).optional().describe('Explicit papercusp-way intent; body/summary never classified. schedule-recurrence requires cadence.'),
+      cadence: hardText(200).optional().describe('schedule-recurrence cadence: e.g. daily at 09:00 or cron.'),
+      urgent: z.boolean().optional().describe('Wake brain immediately (floor-debounced); production fires only.'),
+      force: z.boolean().optional().describe('Override mirror, semantic cosine and exact-identity dupe guards.'),
+      assign_to: z.string().max(120).optional().describe('Atomically claim at create for ownerId or "self" (caller). Omit for unclaimed.'),
       changeKinds: changeKindsArg().optional(), // change-kind-declared-proof P-001: recorded only when the item is claimed (assign_to)
       changeKindReason: changeKindReasonArg().optional(),
       state: stateOnCreate.optional(), // EI-10897
       plan_item: z
         .object({ slug: z.string().min(1), item: z.string().min(1) })
         .optional()
-        .describe('Plan item this work-item IMPLEMENTS ({ slug, item:"P-003" }): writes a work→plan_item coverage edge so it rolls up into that item; completing the item can auto-resolve it as residue. A bug merely DISCOVERED while working an item is NOT implementing it — file it unlinked (EI-19460536530145188).'),
-      links: z.array(linkSpec).max(20).optional().describe('inline typed links (WI-3956) written from the new item to targets on create — e.g. [{ rel:"investigates", target_id:"EI-9250" }]. Best-effort: a bad target is skipped, never fails the create.'),
-      conditionKey: hardText(200).optional().describe('recurring-detector filing identity (WI-39604): an OPEN item already holding this key is refreshed and returned (see conditionUpsert on the result) instead of a sibling being filed — single-host system filers only.'),
+        .describe('Implemented plan item {slug,item:"P-003"}; adds work→plan_item coverage/rollup and enables residue auto-resolution on completion. Discovered bugs go unlinked.'),
+      links: z.array(linkSpec).max(20).optional().describe('Links from new item to targets at create. Best-effort: bad targets skipped; create still succeeds.'),
+      conditionKey: hardText(200).optional().describe('Single-host system filers only: refresh/return existing OPEN item with this identity (result.conditionUpsert), avoiding a sibling.'),
       directiveRef: directiveRefArg,
       // ── bulk-create (n≥1) ──
-      items: z.array(itemSpec).min(1).max(100).optional().describe('create many work-items at once — each is a full create spec.'),
-      assign_all_to_self: z.boolean().optional().describe('Claim every created item for YOU (your ownerId) — unless an item carries its own assign_to.'),
+      items: z.array(itemSpec).min(1).max(100).optional().describe('Batch create; each item is a full create spec.'),
+      assign_all_to_self: z.boolean().optional().describe('Claim every item for caller; per-item assign_to overrides.'),
       // batch-level routing default for all items
-      workspace: z.string().max(120).optional().describe('target workspace id — defaults to the request workspace (MCP ?workspace=). EI-728 routing for the inline create / every item.'),
+      workspace: z.string().max(120).optional().describe('Target workspace id for single/batch create; defaults to request workspace (MCP ?workspace=).'),
       phone_producer: z.object({ roomName: z.string().trim().min(1).max(200).regex(/^[^\u0000-\u001f\u007f]+$/) }).strict()
-        .optional().describe('Admit a Phone voice producer from the configured authenticated host. Room selector only; host records supply identity and canonical binding. Exclusive with ordinary create metadata.'),
+        .optional().describe('Phone voice producer from configured authenticated host. Room selector only; host supplies identity/binding. Exclusive with ordinary create metadata.'),
     })
     // WI-4492: strict so an unknown field name (e.g. a stripped `body`) is a LOUD error.
     .strict()
