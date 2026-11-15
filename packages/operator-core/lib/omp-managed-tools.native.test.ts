@@ -84,7 +84,7 @@ export default function(pi) {
       cwd: home, encoding: 'utf8', timeout: 25_000, maxBuffer: 2 * 1024 * 1024,
       env: { PATH: process.env.PATH, LANG: process.env.LANG ?? 'C.UTF-8', HOME: home,
         XDG_CONFIG_HOME: join(home, '.config'), XDG_DATA_HOME: join(home, '.local', 'share'),
-        PI_CODING_AGENT_DIR: home, PI_CONFIG_DIR: home,
+        PI_CODING_AGENT_DIR: home, PI_CONFIG_DIR: home, PI_DEBUG_STARTUP: '1',
         PAPERCUSP_NATIVE_TOOL_CENSUS_FILE: resultPath, PAPERCUSP_NATIVE_TOOL_PHASE_FILE: phasesPath },
     });
     // Retain startup and command evidence even when the first census fails.
@@ -92,6 +92,7 @@ export default function(pi) {
       status: result.status, signal: result.signal, error: result.error?.message ?? null,
       phases: existsSync(phasesPath) ? readFileSync(phasesPath, 'utf8') : null,
       nativeFilesBefore, nativeFilesAfter: homes.nativeFiles(),
+      startupMarkers: result.stderr.split('\n').filter(line => line.startsWith('[startup] ')),
       stdoutTail: result.stdout.slice(-1500), stderrTail: result.stderr.slice(-1500) };
     diagnostics.push(diagnostic);
     console.info('OMP_NATIVE_CENSUS_COMMAND ' + JSON.stringify(diagnostic));
