@@ -83,7 +83,7 @@ function installTsxRuntime(f: ReturnType<typeof fixture>) {
   writeFileSync(rootManifestPath, `${JSON.stringify(rootManifest, null, 2)}\n`);
   writeFileSync(fixtureLockPath, `${JSON.stringify(fixtureLock)}\n`);
 }
-function fixture(workspace = 'packages/cli') {
+function fixture(workspace = 'packages/cli', independentApp = false) {
   const root = mkdtempSync(join(tmpdir(), 'native-generation-closure-')); roots.push(root);
   const donor = join(root, 'source'), dest = join(root, 'selected'), store = join(root, 'store');
   // Freeze the current implementation as committed fixture tooling. The
@@ -103,6 +103,7 @@ function fixture(workspace = 'packages/cli') {
   write(tooling, cliEntry, readFileSync(join(repo, cliEntry), 'utf8'));
   const sourceVerifier = 'libs/test-config/src/verifier-source.ts';
   write(tooling, sourceVerifier, readFileSync(join(repo, sourceVerifier), 'utf8'));
+  write(tooling, 'scripts/assert-workspace-links.mjs', readFileSync(join(repo, 'scripts/assert-workspace-links.mjs'), 'utf8'));
   write(tooling, 'papercusp-desktop/bin/lib/pinned-deps.sh', readFileSync(helper, 'utf8'));
   execFileSync('git', ['init', '-q'], { cwd: tooling });
   execFileSync('git', ['add', '.'], { cwd: tooling });
@@ -116,6 +117,14 @@ function fixture(workspace = 'packages/cli') {
     '': { name: 'native-generation-fixture' },
     'node_modules/pkg': { version: '1.0.0' },
   } }));
+  if (independentApp) {
+    write(donor, 'package.json', JSON.stringify({ name: 'native-generation-fixture', private: true,
+      workspaces: ['packages/*', 'apps/*', '!apps/independent'] }));
+    write(donor, 'apps/independent/package.json', '{"name":"independent","private":true}');
+    write(donor, 'apps/independent/package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
+      'node_modules/other': { version: '1.0.0' },
+    } }));
+  }
   write(donor, workspace + '/package.json', '{"name":"probe","bin":{"probe":"dist/cli.cjs"},"scripts":{"build":"node build.cjs"}}');
   write(donor, workspace + '/src/cli.cjs', 'console.log("frozen-workspace");\n');
   write(donor, workspace + '/build.cjs', `
@@ -137,6 +146,7 @@ fs.mkdirSync('dist');fs.copyFileSync('src/cli.cjs','dist/cli.cjs');
   // runVerifierCommand freezes its invoked-source tree from the donor commit,
   // so runtime imports must be present in this source tree as well as tooling.
   cpSync(join(tooling, 'libs'), join(donor, 'libs'), { recursive: true });
+  write(donor, 'scripts/assert-workspace-links.mjs', readFileSync(join(tooling, 'scripts/assert-workspace-links.mjs'), 'utf8'));
   write(donor, sourceVerifier, readFileSync(join(tooling, sourceVerifier), 'utf8'));
   write(donor, cliEntry, readFileSync(join(tooling, cliEntry), 'utf8'));
   write(donor, 'papercusp-desktop/bin/lib/pinned-deps.sh', readFileSync(snapshotHelper, 'utf8'));
@@ -170,6 +180,72 @@ fs.mkdirSync('dist');fs.copyFileSync('src/cli.cjs','dist/cli.cjs');
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe('bounded independent verifier copy', () => {
+  it('admits the exact native scope despite an unrelated app lock mismatch, retaining its source proof', () => {
+    const f = fixture('packages/cli', true);
+    write(f.donor, 'apps/independent/package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
+      'node_modules/other': { version: '2.0.0' },
+    } }));
+    write(f.donor, 'apps/independent/node_modules/other/package.json', '{"name":"other","version":"2.0.0"}');
+    const ref = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.dest, encoding: 'utf8' }).trim();
+    const scope = ['--workspace-dir', 'packages/cli', '--workspace-dir', 'papercusp-desktop'];
+    const prediction = f.shell(f.generationScript, ['--integration', f.donor, '--generation-root', f.store,
+      '--predict-ref', ref, ...scope]);
+    expect(prediction.status, prediction.stderr).toBe(0);
+    expect(prediction.stdout).toContain('verdict=live-match');
+    const args = ['--integration', f.donor, '--generation-root', f.store,
+      '--ensure-ref', ref, '--verifier-source', f.dest, ...scope];
+    const result = f.shell(f.generationScript, args);
+    expect(result.status, result.stderr.slice(-1800)).toBe(0);
+    expect(result.stdout).toContain('scope=selected');
+    expect(buildInputs(f.dest).some((row: { path: string }) => row.path === 'apps/independent/package-lock.json')).toBe(true);
+    expect(() => checkSource(f.dest, ref)).not.toThrow();
+    const generation = result.stdout.match(/\bpath=([^\n]+)$/m)![1]!;
+    expect(existsSync(join(generation, 'tree/apps/independent/node_modules'))).toBe(false);
+    const reused = f.shell(f.generationScript, args);
+    expect(reused.status, reused.stderr).toBe(0);
+    expect(reused.stdout).toContain('reused=true');
+    const selector = readdirSync(join(f.store, '.inputs')).find(name => name.startsWith('native-'))!;
+    expect(readdirSync(join(f.store, '.inputs')).filter(name => !name.startsWith('native-'))).toEqual([]);
+    const release = f.shell('-c', ['set -euo pipefail; source "$1"; dependency_generation_select_input_fingerprint "$2" "$3"',
+      '_', f.generationScript, selector, f.store]);
+    expect(release.status).toBe(74);
+    expect(release.stderr).toContain('invalid publication token');
+    const preflight = f.shell(f.snapshotHelper, ['preflight-generation', f.donor, f.dest]);
+    expect(preflight.status, preflight.stderr.slice(-1800)).toBe(0);
+    const materialized = f.shell(f.snapshotHelper, ['snapshot-generation-locked', f.donor, f.dest, 'copy']);
+    expect(materialized.status, materialized.stderr.slice(-1800)).toBe(0);
+    expect(existsSync(join(f.dest, 'papercusp-desktop/node_modules/.bin/tauri'))).toBe(true);
+    expect(readFileSync(join(f.dest, 'packages/cli/dist/cli.cjs'), 'utf8')).toContain('frozen-workspace');
+    const selectorPath = join(f.store, '.inputs', selector);
+    writeFileSync(selectorPath, readFileSync(selectorPath, 'utf8').replace(/token=.*/, 'token=corrupt'));
+    const corrupt = f.shell(f.generationScript, args);
+    expect(corrupt.status).not.toBe(0);
+    expect(corrupt.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+  }, 90_000);
+
+  it.each(['root-lock', 'required-lock', 'installed-required', 'source-tamper', 'escaping-scope', 'narrowed-scope'])(
+    'refuses %s on the scoped native route', defect => {
+      const f = fixture('packages/cli', true);
+      const ref = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.dest, encoding: 'utf8' }).trim();
+      const scope = ['--workspace-dir', 'packages/cli', '--workspace-dir', 'papercusp-desktop'];
+      if (defect === 'root-lock') write(f.donor, 'package-lock.json', '{"lockfileVersion":3,"packages":{}}');
+      if (defect === 'required-lock') write(f.donor, 'papercusp-desktop/package-lock.json', '{"lockfileVersion":3,"packages":{}}');
+      if (defect === 'installed-required') write(f.donor, 'node_modules/pkg/package.json', '{"name":"pkg","version":"9.0.0"}');
+      if (defect === 'source-tamper') write(f.dest, 'apps/independent/package-lock.json', '{}');
+      if (defect === 'escaping-scope') scope.push('--workspace-dir', '../');
+      if (defect === 'narrowed-scope') scope.splice(0, 2);
+      const result = f.shell(f.generationScript, ['--integration', f.donor, '--generation-root', f.store,
+        '--ensure-ref', ref, '--verifier-source', f.dest, ...scope]);
+      expect(result.status).not.toBe(0);
+      expect(result.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+      const expected = defect === 'root-lock' || defect === 'required-lock'
+        ? 'native required dependency inputs differ'
+        : defect === 'installed-required' ? 'LOCK_TREE_DEFECT'
+          : defect === 'source-tamper' ? 'dirty-verifier-source'
+            : defect === 'narrowed-scope' ? 'canonical native closure' : 'invalid repo-relative --workspace-dir';
+      expect(result.stderr).toContain(expected);
+    }, 90_000);
+
   it('preserves cross-package aliases, executable files and literal symlinks without borrowing source inodes', async () => {
     const parent = mkdtempSync(join(tmpdir(), 'verifier-copy-')); roots.push(parent);
     const source = join(parent, 'source'), dest = join(parent, 'copy');

@@ -2467,17 +2467,26 @@ snapshot_verifier_pinned_deps() {
         pinned_deps="$4"
         snapshot_root="$5"
         mode="$6"
+        shift 6
         if [ -n "$source_ref" ]; then
           bash "$generation_script" --integration "$donor" --ensure-ref "$source_ref" \
-            --verifier-source "$snapshot_root" --retain-as native-verifier
+            --verifier-source "$snapshot_root" --retain-as native-verifier "$@"
         else
           bash "$generation_script" --integration "$donor" --retain-input-as native-verifier
         fi
         bash "$pinned_deps" snapshot-generation-locked "$donor" "$snapshot_root" "$mode"
       '
+      local workspace_dirs workspace_args=() workspace
+      if [ -n "$generation_source_ref" ]; then
+        workspace_dirs="$(verifier_dependency_workspaces "$snapshot_root" "$snapshot_root")" || return $?
+        while IFS= read -r workspace; do
+          [ -z "$workspace" ] || workspace_args+=(--workspace-dir "$workspace")
+        done <<< "$workspace_dirs"
+        [ "${#workspace_args[@]}" -gt 0 ] || return 74
+      fi
       bash "$snapshot_root/scripts/pc-heavy.sh" -- bash -c "$generation_copy_command" \
         _ "$generation_script" "$REPO_DIR" "$generation_source_ref" \
-        "$pinned_deps_copy" "$snapshot_root" "$mode"
+        "$pinned_deps_copy" "$snapshot_root" "$mode" "${workspace_args[@]}"
       return $?
     fi
     # The existing heavy-command wrapper admits the copy's memory reserve;
@@ -2597,14 +2606,31 @@ preflight_verifier_runtime_assets() {
     "$REPO_DIR/apps/operator/public/porcupine/porcupine_params.pv"
 }
 
+verifier_dependency_workspaces() {
+  # Use the existing npm workspace expansion (including negative globs), plus
+  # the desktop's separate install. The full source receipt remains unchanged.
+  # Prediction uses the selected commit's manifest; publication revalidates
+  # these directories against its independently frozen source.
+  (
+    source "$1/apps/operator/bin/release/dependency-generation.sh" || return $?
+    dependency_generation_native_workspace_dirs "$2" "${3:-}"
+  )
+}
+
 preflight_verifier_dependencies() {
   local source_repo="$1" prediction prediction_rc=0 line verdict="" headers=0
+  local workspace_dirs workspace_args=() workspace
+  workspace_dirs="$(verifier_dependency_workspaces "$source_repo" "$REPO_DIR" "$VERIFY_TAURI_SOURCE_REF")" || return $?
+  while IFS= read -r workspace; do
+    [ -z "$workspace" ] || workspace_args+=(--workspace-dir "$workspace")
+  done <<< "$workspace_dirs"
+  [ "${#workspace_args[@]}" -gt 0 ] || return 74
   local header_pattern='^DEPENDENCY_GENERATION_PREDICTION schema=1 ref=([a-f0-9]{40,64}) input=([a-f0-9]{64}) live=([a-f0-9]{64}) verdict=([a-z-]+) links=([0-9]+)$'
   # Prediction is read-only and exits zero even for a refused verdict. Reuse
   # its exact-ref admission before measuring, allocating or exporting source.
   # The later ensure-ref remains the race guard and immutable publication step.
   prediction="$(bash "$source_repo/apps/operator/bin/release/dependency-generation.sh" \
-    --integration "$REPO_DIR" --predict-ref "$VERIFY_TAURI_SOURCE_REF")" || prediction_rc=$?
+    --integration "$REPO_DIR" --predict-ref "$VERIFY_TAURI_SOURCE_REF" "${workspace_args[@]}")" || prediction_rc=$?
   printf '%s\n' "$prediction"
   [ "$prediction_rc" -eq 0 ] || return "$prediction_rc"
   while IFS= read -r line; do
