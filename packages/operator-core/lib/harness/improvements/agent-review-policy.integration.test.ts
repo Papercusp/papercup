@@ -502,6 +502,22 @@ describe('verifier-conflict SQL twins agree with the JS predicates (P-007 / D-02
       claimant: 'su-sub',
     },
     { id: 'closer', payload: {}, terminalOwner: 'su-closer', claimant: 'su-closer' },
+    ...['su-material-a', 'su-material-b', 'su-independent', 'su-clarifier'].map(claimant => ({
+      id: `correction lineage ${claimant}`, terminalOwner: null, claimant,
+      payload: { agentReview: { materialAuthors: ['su-material-a'], correctionHistory: [
+        { actor: 'su-material-a', classification: 'material' },
+        { actor: 'su-material-b', classification: 'material' },
+        { actor: 'su-clarifier', classification: 'clarification' },
+      ] } },
+    })),
+    ...[null, 'su-author', [null], [' ']].map(materialAuthors => ({
+      id: `malformed correction authors ${JSON.stringify(materialAuthors)}`, terminalOwner: null,
+      claimant: 'su-independent', payload: { agentReview: { materialAuthors } },
+    })),
+    ...[null, {}, [null], [{ actor: 'su-author', classification: 'unknown' }]].map(correctionHistory => ({
+      id: `malformed correction history ${JSON.stringify(correctionHistory)}`, terminalOwner: null,
+      claimant: 'su-independent', payload: { agentReview: { correctionHistory } },
+    })),
   ];
 
   it.each(cases)('$id: SQL twins match JS and are never NULL', async ({ payload, terminalOwner, claimant }) => {
