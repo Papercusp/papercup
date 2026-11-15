@@ -99,12 +99,18 @@ const TRIGGER_EVENT = '(?:insert|update(?:\\s+of\\s+' + TRIGGER_COLUMNS + ')?|de
 const STATIC_TRIGGER_WHEN = '\\s+when\\s*\\(\\s*(?:new|old)\\.[a-z_][a-z0-9_$]*\\s*' +
   '(?:=|<>|!=|not\\s+like|like|is(?:\\s+not)?\\s+distinct\\s+from)\\s*' +
   "(?:'(?:''|[^'])*'|null|true|false|[0-9]+)\\s*\\)";
+// PostgreSQL trigger arguments are literal constants only (string, numeric or
+// simple name), handed to the function as TG_ARGV; no call or expression is
+// accepted, so an argument list adds no executable footprint. Migration 1636
+// passes ('setting_key', 'tombstone') to capture_substrate_outbox.
+const TRIGGER_ARGUMENT = "(?:'(?:''|[^'])*'|[a-z_][a-z0-9_$]*|[0-9]+(?:\\.[0-9]+)?)";
+const TRIGGER_ARGUMENTS = '(?:' + TRIGGER_ARGUMENT + '(?:\\s*,\\s*' + TRIGGER_ARGUMENT + ')*)?';
 const STATIC_TRIGGER_ACTION = new RegExp(
   '^(create\\s+(?:or\\s+replace\\s+)?(?:constraint\\s+)?trigger\\s+' + SQL_IDENTIFIER +
   '\\s+(?:before|after|instead\\s+of)\\s+' + TRIGGER_EVENT + '(?:\\s+or\\s+' + TRIGGER_EVENT + ')*' +
   '\\s+on\\s+' + SQL_IDENTIFIER + '(?:\\s+for\\s+(?:each\\s+)?(?:row|statement))?' +
   '(?:' + STATIC_TRIGGER_WHEN + ')?\\s+)' +
-  'execute(\\s+(?:function|procedure)\\s+' + SQL_IDENTIFIER + '\\s*\\(\\s*\\))$',
+  'execute(\\s+(?:function|procedure)\\s+' + SQL_IDENTIFIER + '\\s*\\(\\s*' + TRIGGER_ARGUMENTS + '\\s*\\))$',
 );
 
 /** CREATE TRIGGER declares a future action; it does not execute dynamic SQL.

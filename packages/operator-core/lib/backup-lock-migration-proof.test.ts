@@ -211,6 +211,37 @@ describe('findBackupLockConflicts', () => {
     ]);
   });
 
+  it('proves migration 1636’s trigger with literal TG_ARGV arguments safe without hiding its target', () => {
+    const file = '1636-fed-tombstones-hive-settings.sql';
+    const sqlText = readFileSync(
+      new URL(`../../../libs/papercusp/libs/db/sql/${file}`, import.meta.url),
+      'utf8',
+    );
+    expect(findBackupLockConflicts([{ file, sqlText }], ['session_turns', 'tool_invocations'])).toEqual([]);
+    expect(findBackupLockConflicts([{ file, sqlText }], ['pot_settings'])).toEqual([
+      { file, subject: 'pot_settings', reason: 'names-locked-relation' },
+    ]);
+  });
+
+  it.each([
+    "('setting_key', 'tombstone')",
+    "(setting_key, 42, 1.5, 'it''s')",
+  ])('accepts constant trigger arguments %s as a static action', (args) => {
+    const sql = `CREATE TRIGGER t AFTER INSERT OR DELETE ON harness_shared.pot_settings
+      FOR EACH ROW EXECUTE FUNCTION harness_shared.capture_substrate_outbox${args};`;
+    expect(findBackupLockConflicts(pending(sql), ['session_turns'])).toEqual([]);
+  });
+
+  it.each([
+    '(now())',
+    "('a' || 'b')",
+    "('a'); EXECUTE prepared_change",
+  ])('keeps a trigger action with non-constant arguments %s fail-closed', (args) => {
+    const sql = `CREATE TRIGGER t AFTER INSERT ON harness_shared.pot_settings
+      FOR EACH ROW EXECUTE FUNCTION harness_shared.f${args};`;
+    expect(findBackupLockConflicts(pending(sql), []).map((c) => c.subject)).toContain('EXECUTE (dynamic SQL)');
+  });
+
   it.each(['data_sources', 'admission_rules', 'work_admissions'])('still blocks a static trigger on backup-held %s', (table) => {
     expect(findBackupLockConflicts(pending(ticketTriggers()), [table])).toEqual([
       { file: '1228-x.sql', subject: table, reason: 'names-locked-relation' },

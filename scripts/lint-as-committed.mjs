@@ -153,7 +153,9 @@ export function lintAsCommittedChildEnv(environment = process.env, repoRoot = nu
       'source "$1"; dependency_generation_resolve_root "$2" "" 1',
       'committed-generation-route',
       fileURLToPath(new URL('../apps/operator/bin/release/dependency-generation.sh', import.meta.url)),
-      committedWorkRootDependencyDonor(repoRoot)], {
+      // Configuration follows source provenance, independent of the selected
+      // reader's physical dependency coverage.
+      committedWorkRootDependencyDonor(repoRoot, { sourceObjects: true })], {
       env: child, encoding: 'utf8', timeout: 10000,
     });
     const store = selected.stdout?.trim();
@@ -482,14 +484,17 @@ source "$1"
 source_root="$2"
 dependency_generation_configure_workspace_dirs "$3" "\${@:5}"
 expected_inputs=''
+expected_closure=''
 if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then
   expected_inputs="$(dependency_generation_verification_input_fingerprint "$3")"
+  expected_closure="$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT"
 fi
 if [ "$4" = generation ]; then
   generation_root="$(dependency_generation_resolve_root "$2" '' 1)"
-  input="$(dependency_generation_input_fingerprint "$3")"
+  input="$(dependency_generation_verification_selector_key "$3")"
   [ -f "$generation_root/.inputs/$input" ] || exit 75
-  dependency_generation_select_inputs "$3" "$generation_root"
+  dependency_generation_select_input_fingerprint "$input" "$generation_root" \\
+    "$DEPENDENCY_GENERATION_SCOPE_MODE" "$expected_closure"
   dependency_generation_acquire_selector_lease "$generation_root" "$DEPENDENCY_GENERATION_ID" "$$" "$DEPENDENCY_GENERATION_TOKEN"
   trap 'dependency_generation_release_selector_lease' EXIT
   source_root="$DEPENDENCY_GENERATION_TREE"
@@ -511,7 +516,7 @@ while IFS= read -r source; do
     case "$rel" in /*|../*|*/../*|*/..|..) exit 74 ;; esac
     if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ] && [ "$rel" != node_modules ]; then
       selected=0
-      for workspace in "\${DEPENDENCY_GENERATION_WORKSPACE_DIRS[@]}"; do
+      for workspace in "\${DEPENDENCY_GENERATION_WORKSPACE_DIRS[@]}" "\${DEPENDENCY_GENERATION_ROOT_INSTALL_DIRS[@]}"; do
         [ "$rel" != "$workspace/node_modules" ] || selected=1
       done
       [ "$selected" = 1 ] || continue
@@ -1798,12 +1803,15 @@ async function main() {
     // It must be a real repo, not just the right bytes: these lints enumerate their
     // inputs with `git ls-files`. See the header for the archive/tar attempt that died
     // on exactly this.
+    // Private dependencies belong to the selected reader; borrowed Git objects
+    // must outlive that disposable reader, including its submodule object stores.
+    const sourceObjectRoot = committedWorkRootDependencyDonor(repoRoot, { sourceObjects: true });
     const t0 = Date.now();
-    const clone = spawnSync('git', ['clone', '--local', '--shared', '--no-checkout', '--quiet', repoRoot, workRoot], {
+    const clone = spawnSync('git', ['clone', '--local', '--shared', '--no-checkout', '--quiet', sourceObjectRoot, workRoot], {
       encoding: 'utf8',
     });
     if (clone.status !== 0) {
-      console.error(`lint-as-committed: failed to clone ${repoRoot}:\n${clone.stderr || clone.stdout}`);
+      console.error(`lint-as-committed: failed to clone ${sourceObjectRoot}:\n${clone.stderr || clone.stdout}`);
       await bail(2);
     }
     // Git owns the index and path-collision checks while its workers extract
@@ -1819,7 +1827,7 @@ async function main() {
       await bail(2);
     }
     try {
-      writeFileSync(join(workRoot, OWNER_MARKER), JSON.stringify({ pid: process.pid, keep: args.keep, createdAtMs: Date.now(), sha, sourceRepoRoot: repoRoot }));
+      writeFileSync(join(workRoot, OWNER_MARKER), JSON.stringify({ pid: process.pid, keep: args.keep, createdAtMs: Date.now(), sha, sourceRepoRoot: sourceObjectRoot }));
     } catch {
       /* best-effort: an unmarked tree still ages out by mtime */
     }
@@ -1889,7 +1897,7 @@ async function main() {
           await bail(2);
         }
 
-        const subLocal = join(repoRoot, sub.path);
+        const subLocal = join(sourceObjectRoot, sub.path);
         const subWork = join(workRoot, sub.path);
         const subClone = spawnSync('git', ['clone', '--local', '--shared', '--no-checkout', '--quiet', subLocal, subWork], {
           encoding: 'utf8',
