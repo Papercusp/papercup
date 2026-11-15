@@ -1,6 +1,10 @@
 /** R-2 public bundle proof. LIVE=1 additionally exercises an owned harmless
  * secret Gist and actual Pages with a fresh anonymous browser, then deletes it. */
-import {test,expect} from '@playwright/test';
+import {test,expect} from './_egress';
+
+// The reader fetches its report from GitHub's Gist API (routed to a fixture below).
+// Keep the egress audit active for every other foreign origin, including trackers.
+test.use({egressAllowedOrigins:['https://api.github.com']});
 import {createServer,type Server} from 'node:http';
 import {randomUUID} from 'node:crypto';
 import {readFile,writeFile} from 'node:fs/promises';

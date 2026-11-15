@@ -187,7 +187,31 @@ export async function setupHivePeerSchema(sql: postgres.Sql): Promise<void> {
   ]) {
     await sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, m), 'utf8')));
   }
+  await createPotPolicyTable(sql);
   await applyPot557RenameAndFixups(sql);
+}
+
+/**
+ * Every merge pass reads the owner-signed Hive policy (boot.ts stage 'hive-policy'),
+ * and a failed read leaves the pass unapplied, so without this table no op ever merges.
+ * The table shape is taken from migration 317 itself, then renamed as 557 does. 317's
+ * stamp and capture triggers need migrations 214/314, which this rig does not apply;
+ * the rig never writes a policy, and an empty table reads as a permissive null policy.
+ */
+async function createPotPolicyTable(sql: postgres.Sql): Promise<void> {
+  const migration = readFileSync(resolve(SQL_DIR, '317-hive-policy.sql'), 'utf8');
+  const create = migration.match(/CREATE TABLE IF NOT EXISTS harness_shared\.hive_policy \([\s\S]*?\n\);/);
+  if (!create) throw new Error('rig: 317-hive-policy.sql no longer has its hive_policy CREATE TABLE block');
+  await sql.unsafe(`
+    DO $$ BEGIN
+      IF to_regclass('harness_shared.pot_policy') IS NULL THEN
+        ${create[0]}
+        ALTER TABLE harness_shared.hive_policy RENAME TO pot_policy;
+        ALTER TABLE harness_shared.pot_policy
+          ADD CONSTRAINT pot_policy_pkey PRIMARY KEY (workspace_id, harness_slug);
+      END IF;
+    END $$;
+  `);
 }
 
 /**

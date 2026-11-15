@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './_egress';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { createReadStream } from 'node:fs';

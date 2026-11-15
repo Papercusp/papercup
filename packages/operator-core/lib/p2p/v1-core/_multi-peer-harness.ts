@@ -48,6 +48,7 @@ import { closeHarnessStore } from '../../sync/hyperbee/corestore';
 import type { OpEnvelope } from '../../sync/hyperbee/op-envelope-types';
 import type { HyperswarmLike } from '../../sync/hyperbee/swarm';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { runWithCellSql } from '../../shared-pot-loop/cell-scope';
 import {
   bootHivePeer,
   cleanups,
@@ -161,6 +162,32 @@ function hlcMs(hlc: string | undefined): number | null {
 
 function opIdentity(op: OpEnvelope): string {
   return `${op.table ?? '?'}:${op.hbKey ?? op.key ?? '?'}@${op.hlc ?? op.ts ?? '?'}`;
+}
+
+/**
+ * Return `target` with every method call run inside `sql`'s cell scope. A peer's
+ * merge pass, drain and revoke reach getOrgPg(); a call made from the test body
+ * after boot is outside the boot scope, so without this the strict db-org mock
+ * refuses it (and production code would fall back to the live Postgres target).
+ * AsyncLocalStorage.run passes a synchronous return value through unchanged, so
+ * sync methods keep their sync result. Properties are returned as-is.
+ */
+function bindToCell<T extends object>(sql: postgres.Sql, target: T): T {
+  return new Proxy(target, {
+    get(t, prop) {
+      const value: unknown = Reflect.get(t, prop);
+      if (typeof value !== 'function') return value;
+      return (...args: unknown[]) =>
+        runWithCellSql(sql, () => (value as (...a: unknown[]) => Promise<unknown>).apply(t, args));
+    },
+  });
+}
+
+/** A peer whose own methods and handle methods all run in that peer's cell scope. */
+function scopePeerToCell(sql: postgres.Sql, hp: HivePeer): HivePeer {
+  const handle = bindToCell(sql, hp.handle);
+  const drain = () => runWithCellSql(sql, () => hp.drain());
+  return { ...hp, handle, drain };
 }
 
 /**
@@ -316,8 +343,29 @@ export async function createMultiPeerHarness(
       });
   }
 
+  /**
+   * Register the hive in a peer's own database. Boot resolves the hive scope through
+   * loadHarnessRegistry (hive-federation.ts potHomeSlugForHarness); without a row the
+   * re-key boot dependencies fail closed and the peer never starts.
+   */
+  async function seedHiveRegistry(sql: postgres.Sql): Promise<void> {
+    await sql.unsafe(
+      'CREATE TABLE IF NOT EXISTS harness_shared.harness_registry (workspace_id text PRIMARY KEY, payload jsonb NOT NULL)',
+    );
+    const payload = { projects: [{ slug: HIVE_SLUG, harness_kind: 'hive' }] };
+    await sql`
+      INSERT INTO harness_shared.harness_registry (workspace_id, payload)
+      VALUES (${WORKSPACE_ID}, ${sql.json(payload)})
+      ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload
+    `;
+  }
+
   async function boot(p: HarnessPeer): Promise<HivePeer> {
-    const hp = await bootHivePeer({
+    // Boot inside this peer's own cell scope. bootHarnessSubstrate reaches getOrgPg()
+    // during boot (buildHiveRekeyBootDeps -> potHomeSlugForHarness), and the suite's
+    // db-org mock routes that call to the current cell's throwaway database. Outside a
+    // cell scope the mock throws, so no peer can touch the live Postgres target.
+    const booted = await runWithCellSql(p.db.sql, () => bootHivePeer({
       testnetBootstrap: testnet.bootstrap,
       rootPrefix: `v1core-${p.name}-`,
       identity: p.identity,
@@ -328,7 +376,10 @@ export async function createMultiPeerHarness(
       wrapSwarm: wrapSwarmFor(p),
       wrapApply: wrapApplyFor(p),
       loadRevoked: async () => new Set(revokedPubkeys),
-    });
+    }));
+    // Every later call on this peer (merge, drain, revoke, close) runs in its own
+    // cell scope too, whoever makes it: the harness, P-005's suite or the test body.
+    const hp = scopePeerToCell(p.db.sql, booted);
     p.root = hp.root;
     p.current = hp;
     p.incarnation += 1;
@@ -346,6 +397,7 @@ export async function createMultiPeerHarness(
     await setupHivePeerSchema(db.sql);
     await db.sql.unsafe(STAMP_OP_HLC_DDL);
     await seedHive(db.sql);
+    await seedHiveRegistry(db.sql);
     const p: HarnessPeer = {
       name,
       userId,

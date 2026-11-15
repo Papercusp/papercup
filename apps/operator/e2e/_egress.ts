@@ -76,6 +76,7 @@ import { test as base, expect, type Locator, type Page } from '@playwright/test'
 import { writeFile } from 'node:fs/promises';
 import {
   classifyEgress,
+  egressControlUrl,
   EGRESS_CONTROL_PARAM,
   type EgressReport,
   type EgressSensorState,
@@ -341,23 +342,25 @@ export const test = base.extend<EgressFixtureOptions & EgressFixtures>({
       }
 
       // ---- teardown: prove the sensor was alive, then judge ------------------
-      // The control must be issued from the PAGE: context.request.* is a
-      // Node-side fetch that never emits a page 'request' event, so using it
-      // would leave the sensor permanently unproven — a false SENSOR FAILURE on
-      // every test.
-      const controlUrl = `${baseURL ?? 'http://localhost:3055'}/favicon.ico?${EGRESS_CONTROL_PARAM}=1`;
+      // The context request listener is the sensor. Prove it with a browser page,
+      // not context.request (which bypasses that listener). A separate page keeps
+      // the app's CSP intact: a strict public viewer may forbid even local fetches.
+      let controlPage: Page | undefined;
       try {
-        await page.evaluate(
-          (u) => fetch(u, { cache: 'no-store' }).catch(() => undefined),
-          controlUrl,
-        );
-        // The event is delivered asynchronously; give it a beat to arrive rather
-        // than racing teardown and reporting a spurious sensor failure.
-        await page.waitForTimeout(50);
+        const target = egressControlUrl(page.url()) ?? egressControlUrl(baseURL);
+        if (!target) throw new Error('no HTTP document or configured base URL for sensor control');
+        const controlUrl = `${target}?${EGRESS_CONTROL_PARAM}=1`;
+        controlPage = await context.newPage();
+        await Promise.all([
+          context.waitForEvent('request', { predicate: request => request.url() === controlUrl, timeout: 5000 }),
+          controlPage.goto(controlUrl, { waitUntil: 'commit', timeout: 5000 }).catch(() => undefined),
+        ]);
       } catch (err) {
         blindTo.push(
           `control request could not be issued (${err instanceof Error ? err.message : String(err)})`,
         );
+      } finally {
+        await controlPage?.close();
       }
       state.controlObserved = observed.some((o) => o.name.includes(EGRESS_CONTROL_PARAM));
 

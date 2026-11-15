@@ -147,14 +147,19 @@ describe('hive-members projection — writeToPg / deleteFromPg (real PG)', () =>
     }
   });
 
-  it('LWW: a newer fed_ts wins, an older one is dropped', async () => {
+  it('LWW scalars keep the newer clock while sets retain older authenticated contributions', async () => {
     await seedHive();
     const p = proj();
-    await p.writeToPg(memberRow({ github_user_id: 7, revoked_pubkeys: ['old'] }), { ts: 200, origin: 'remote', authorPubkey: 'peer' });
-    await p.writeToPg(memberRow({ github_user_id: 7, revoked_pubkeys: ['stale'] }), { ts: 100, origin: 'remote', authorPubkey: 'peer' }); // older
-    expect((await getHiveMember(WS, HIVE, 7, db.sql))?.revokedPubkeys).toEqual(['old']); // newer held
-    await p.writeToPg(memberRow({ github_user_id: 7, revoked_pubkeys: ['new'] }), { ts: 300, origin: 'remote', authorPubkey: 'peer' }); // newer
-    expect((await getHiveMember(WS, HIVE, 7, db.sql))?.revokedPubkeys).toEqual(['new']);
+    await p.writeToPg(memberRow({ github_username: 'current', revoked_pubkeys: ['old'] }), { ts: 200, origin: 'remote', authorPubkey: 'peer' });
+    await p.writeToPg(memberRow({ github_username: 'stale', device_attestations: [dev('pk-b')], revoked_pubkeys: ['stale'] }), { ts: 100, origin: 'remote', authorPubkey: 'peer' });
+    const merged = await getHiveMember(WS, HIVE, 7, db.sql);
+    expect(merged?.githubUsername).toBe('current');
+    expect(merged?.revokedPubkeys).toEqual(['old', 'stale']);
+    expect(merged?.deviceAttestations.map(d => d.device_pubkey).sort()).toEqual(['pk-a', 'pk-b']);
+    await p.writeToPg(memberRow({ github_username: 'newest', revoked_pubkeys: ['new'] }), { ts: 300, origin: 'remote', authorPubkey: 'peer' });
+    const newest = await getHiveMember(WS, HIVE, 7, db.sql);
+    expect(newest?.githubUsername).toBe('newest');
+    expect(newest?.revokedPubkeys).toEqual(['new', 'old', 'stale']);
   });
 
   it('deleteFromPg removes by github_user_id (ts-guarded)', async () => {
