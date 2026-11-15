@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import { judgeSamples, runSummaryCohort, validateSummary, mcpIdentityFixture, identityPreparation, identityPreparationProbe, identityRuntimePreparation, IdentityPreparationError, isolatedIdentityRuntimeContract, identityProcessGroupCensus, identityLoadedHealth, identitySelectedSource, identityExecutableFingerprint, identityFileMappings, identityMappedFileFingerprints, type IdentityRuntime, type Sample, type McpIdentityFixture } from './bench-work-items-get';
 import { AgentMcpConnectionError } from '../packages/operator-core/lib/agent-mcp-client';
@@ -14,12 +14,91 @@ import { join } from 'node:path';
 import { verifierSourceFiles } from '../packages/operator-core/lib/verifier-source';
 import { identityWorkloadFixture } from './bench-work-items-get';
 import { perfProtocolHash } from '../packages/operator-core/lib/system-health/perf-workload-protocol';
+import { runBenchmarkProcess, execBenchmarkCommand } from './bench-work-items-get';
+import { Governor } from '../packages/operator-core/lib/resource-governor/admission';
+import { WorkItemAdmissionQueueDriver } from '../packages/operator-core/lib/resource-governor/queue';
+import { MemoryAdmissionQueueStore } from '../packages/operator-core/lib/resource-governor/memory-admission-queue-store';
+import { admissionContextFromEnvironment, withGovernedExecution } from '../packages/operator-core/lib/resource-governor/execution';
 // @ts-expect-error -- The maintained CLI preflight is JavaScript without declarations.
 import { assertPrivateIntegrationEvidence } from './test-files.mjs';
 
 const identity: McpIdentityFixture = { ownerId: 'su-fixture', ownerLabel: 'Fixture', source: 'test', workspaceId: 'test-workspace',
   userId: null, fleetSlug: null, fleetRole: null, inbox_wake_key: 'coord:inbox-wake:su-fixture' };
 const identityFixture = () => mcpIdentityFixture(identity, 'superuser=1&client=su-fixture&workspace=test-workspace&format=json');
+
+describe('benchmark child admission lifecycle', () => {
+  function fixture() {
+    const store = new MemoryAdmissionQueueStore();
+    const driver = new WorkItemAdmissionQueueDriver(store,{namespace:'benchmark-native-test'});
+    const governor = new Governor(driver);
+    let key = '';
+    const actualDemand = {cpuWeight:.25,memoryBytes:123456,diskBytes:789,fileDescriptors:5};
+    const sampler = {attach:vi.fn(),sample:vi.fn(),stop:vi.fn(()=>actualDemand)};
+    const executionApi = {admissionContextFromEnvironment,
+      runGovernedOperation:vi.fn(async (operation:any, run:any) => {
+        key = operation.idempotencyKey;
+        return withGovernedExecution(operation,operation,{governor,driver},run);
+      })};
+    return {store,actualDemand,sampler,executionApi,
+      env:{PAPERCUSP_WORKSPACE:'benchmark-test',PAPERCUSP_SID:'su-benchmark-test'},
+      options:{executionApi,samplerFactory:()=>sampler},
+      current:()=>store.find('benchmark-native-test',key)};
+  }
+  it('keeps the durable receipt running through cleanup and releases measured cost afterwards', async () => {
+    const f=fixture();
+    let entered!:()=>void, finish!:()=>void;
+    const started=new Promise<void>(resolve=>{entered=resolve;});
+    const lifetime=new Promise<void>(resolve=>{finish=resolve;});
+    let inherited:ReturnType<typeof admissionContextFromEnvironment>;
+    const pending=runBenchmarkProcess(f.env,async (env,attach)=>{
+      inherited=admissionContextFromEnvironment(env.PAPERCUSP_ADMISSION_CONTEXT);
+      attach(123);
+      entered();
+      await lifetime;
+      return 'cleaned-up';
+    },f.options);
+    await started;
+    const running=await f.current();
+    expect(running?.record.state).toBe('running');
+    expect(running?.record.lease).toBeDefined();
+    expect(inherited?.receiptId).toBe(running?.receiptId);
+    expect(f.sampler.stop).not.toHaveBeenCalled();
+    finish();
+    await expect(pending).resolves.toBe('cleaned-up');
+    expect((await f.current())?.record).toMatchObject({state:'completed',actualDemand:f.actualDemand});
+    expect((await f.current())?.record.lease).toBeUndefined();
+    expect(f.sampler.stop).toHaveBeenCalledTimes(1);
+  });
+  it('does not launch after persistence refusal', async () => {
+    const f=fixture(), launch=vi.fn();
+    f.store.fail=true;
+    await expect(runBenchmarkProcess(f.env,launch,f.options)).rejects.toThrow();
+    expect(launch).not.toHaveBeenCalled();
+    expect(f.sampler.stop).not.toHaveBeenCalled();
+  });
+  it('cancels the receipt and stops sampling when child startup or cleanup fails', async () => {
+    const f=fixture();
+    await expect(runBenchmarkProcess(f.env,async()=>{throw new Error('child failed');},f.options))
+      .rejects.toThrow('child failed');
+    expect((await f.current())?.record.state).toBe('cancelled');
+    expect((await f.current())?.record.lease).toBeUndefined();
+    expect(f.sampler.stop).toHaveBeenCalledTimes(1);
+  });
+  it('forwards the admitted context through a real command without another receipt', async () => {
+    const f=fixture();
+    const result=await runBenchmarkProcess(f.env,async env=>{
+      const command=await execBenchmarkCommand(process.execPath,['-e',
+        'process.stdout.write(process.env.PAPERCUSP_ADMISSION_CONTEXT)'],{env,timeout:5000,maxBuffer:16384});
+      const context=admissionContextFromEnvironment(command.stdout);
+      expect(context?.receiptId).toBe((await f.current())?.receiptId);
+      expect((await f.current())?.record.state).toBe('running');
+      return command;
+    },f.options);
+    expect(result.stderr).toBe('');
+    expect(f.executionApi.runGovernedOperation).toHaveBeenCalledTimes(1);
+    expect((await f.current())?.record.state).toBe('completed');
+  });
+});
 
 describe('identity-only fixture export', () => {
   it('reproduces exact schedule bytes across fresh fixtures and retains the response oracle', () => {

@@ -618,6 +618,21 @@ function perGroupOutputPath(p, groupIndex, groupCount) {
     : `${p}.${groupIndex}.json`;
 }
 
+/** Vitest inherits native profiler flags into project workers, but omits root
+ * CLI execArgv from project overrides. Forward only these diagnostics before
+ * the Node entrypoint; leave other options on their existing capture paths. */
+export function vitestProfilerNodeArgs(vitestArgs) {
+  const args = [];
+  for (let i = 0; i < vitestArgs.length; i++) {
+    const arg = vitestArgs[i];
+    const value = arg === '--execArgv' ? vitestArgs[++i]
+      : arg.startsWith('--execArgv=') ? arg.slice('--execArgv='.length) : undefined;
+    if (typeof value === 'string' &&
+        /^(?:--(?:cpu|heap)-prof(?:-(?:dir|name|interval))?|--diagnostic-dir)(?:=|$)/.test(value)) args.push(value);
+  }
+  return args;
+}
+
 export function perGroupVitestArgs(vitestArgs, groupIndex, groupCount) {
   if (groupCount <= 1 || groupIndex === 0) return vitestArgs;
   const out = [];
@@ -4228,7 +4243,7 @@ export async function main(
     const timeoutMs = testFileListTimeoutMs(process.env);
     if (!ensurePreemptReady()) return TEST_FILE_EXIT_TEMPFAIL;
     const result = await runCapturedTestProcessImpl(process.execPath,
-      [fileURLToPath(import.meta.url), '--startup-only-child', ...configArgs, ...exact, ...vitestArgs],
+      [...vitestProfilerNodeArgs(vitestArgs), fileURLToPath(import.meta.url), '--startup-only-child', ...configArgs, ...exact, ...vitestArgs],
       { cwd: group.cwd, env: process.env, files: exact, timeoutMs, watchdogMaxMs: timeoutMs });
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
@@ -4634,7 +4649,7 @@ export async function main(
     const runTimeoutMs = testFileRunTimeoutMs(process.env, exact.length);
     const result = await runCapturedTestProcessImpl(
       process.execPath,
-      [vitestCli, 'run', ...configArgs, ...exact, ...groupVitestArgs],
+      [...vitestProfilerNodeArgs(groupVitestArgs), vitestCli, 'run', ...configArgs, ...exact, ...groupVitestArgs],
       {
         cwd: group.cwd,
         env: groupChildEnv,
@@ -4716,7 +4731,7 @@ export async function main(
     // for a run that produced no verdict at all. A reaped group is NOT MEASURED, never `failed`;
     // skip the classifier entirely rather than run it against a killed process's exit state.
     proofCustody?.observe(`group-${groupIndex}`, result, process.execPath,
-      [vitestCli, 'run', ...configArgs, ...exact, ...groupVitestArgs]);
+      [...vitestProfilerNodeArgs(groupVitestArgs), vitestCli, 'run', ...configArgs, ...exact, ...groupVitestArgs]);
     const groupFailed = result.timedOut ? false : vitestRunFailed({ status: result.status, output: runOutput });
     const reportPath = outputFilePathFrom(groupVitestArgs);
     // EI-22591950423157299: the private report is removed in main()'s finally, so consume the
@@ -4776,7 +4791,7 @@ export async function main(
             detailEnv.PC_EXECUTED_SOURCE_MAP_OUT ? resolve(detailEnv.PC_EXECUTED_SOURCE_MAP_OUT) : null);
           const detailResult = await runCapturedTestProcessImpl(
             process.execPath,
-            [vitestCli, 'run', ...configArgs, file, ...withoutOutputFileArg(vitestArgs)],
+            [...vitestProfilerNodeArgs(vitestArgs), vitestCli, 'run', ...configArgs, file, ...withoutOutputFileArg(vitestArgs)],
             {
               cwd: group.cwd,
               env: detailEnv,
@@ -4787,7 +4802,7 @@ export async function main(
           );
           if (detailResult.stdout) process.stdout.write(detailResult.stdout);
           if (detailId) proofCustody.observe(detailId, detailResult, process.execPath,
-            [vitestCli, 'run', ...configArgs, file, ...withoutOutputFileArg(vitestArgs)]);
+            [...vitestProfilerNodeArgs(vitestArgs), vitestCli, 'run', ...configArgs, file, ...withoutOutputFileArg(vitestArgs)]);
           if (detailResult.stderr) process.stderr.write(detailResult.stderr);
           printTestFinalizationError(detailResult);
           if (detailResult.timedOut) {

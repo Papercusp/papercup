@@ -1,4 +1,4 @@
-import { describe, expect, it, onTestFailed } from 'vitest';
+import { describe, expect, it, onTestFailed, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,7 +6,100 @@ import {spawn, spawnSync} from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { bindRuntimeJitDump, bindRuntimeJitMemory, bindRuntimeModelOpens, bindRuntimeProcessTree,
   bindRuntimeExecEntry, observeRuntimeExecEntry, observeRuntimeTracerIdentity,
-  observeRuntimeExecutableMemory, observeRuntimeProcessIdentity, observeRuntimePageSize, runtimeFileTraceArguments } from './runtime-file-opens.mjs';
+  observeRuntimeExecutableMemory, observeRuntimeProcessIdentity, isRuntimeProcessAlive,
+  observeRuntimePageSize, runtimeFileTraceArguments } from './runtime-file-opens.mjs';
+
+describe('pinned runtime process liveness', () => {
+  const identity={processId:12,parentProcessId:1,startTimeTicks:'50',executable:'/usr/bin/strace'};
+  function stat(state='T', ticks='50', parent=1) {
+    const fields=[state,String(parent),...Array(17).fill('0'),ticks];
+    return '12 (strace ) worker) '+fields.join(' ');
+  }
+  function fixture() {
+    const read=vi.spyOn(fs,'readFileSync').mockReturnValue(stat());
+    const link=vi.spyOn(fs,'readlinkSync').mockReturnValue(identity.executable);
+    return {read,link,restore:()=>{read.mockRestore();link.mockRestore();}};
+  }
+  it.each(['R','S','T','t'])('observes a pinned non-child in state %s without granting direct-child custody', state=>{
+    const f=fixture();f.read.mockReturnValue(stat(state));
+    try {
+      expect(isRuntimeProcessAlive(identity)).toBe(true);
+      expect(()=>observeRuntimeProcessIdentity(identity.processId)).toThrow('not the observer direct child');
+    } finally {f.restore();}
+  });
+  it.each(['Z','X'])('treats terminal state %s as dead before reading its executable', state=>{
+    const f=fixture();f.read.mockReturnValue(stat(state));
+    try {expect(isRuntimeProcessAlive(identity)).toBe(false);expect(f.link).not.toHaveBeenCalled();}
+    finally {f.restore();}
+  });
+  it.each(['recycled-pid','different-parent','different-executable','recycled-during-read','exited-during-read'])(
+    'rejects %s instead of signalling a different process', variant=>{
+      const f=fixture();
+      if(variant==='recycled-pid')f.read.mockReturnValue(stat('T','51'));
+      if(variant==='different-parent')f.read.mockReturnValue(stat('T','50',2));
+      if(variant==='different-executable')f.link.mockReturnValue('/other/strace');
+      if(variant==='recycled-during-read')f.read.mockReturnValueOnce(stat()).mockReturnValue(stat('T','51'));
+      if(variant==='exited-during-read')f.read.mockReturnValueOnce(stat()).mockReturnValue(stat('Z'));
+      try {expect(isRuntimeProcessAlive(identity)).toBe(false);} finally {f.restore();}
+    });
+  it.each(['ENOENT','ESRCH'])('treats %s during either proc read as dead', code=>{
+    const f=fixture();const error=Object.assign(Error('gone'),{code});
+    try {
+      f.read.mockImplementationOnce(()=>{throw error;});expect(isRuntimeProcessAlive(identity)).toBe(false);
+      f.link.mockImplementationOnce(()=>{throw error;});expect(isRuntimeProcessAlive(identity)).toBe(false);
+    } finally {f.restore();}
+  });
+  it('propagates unreadable or malformed evidence instead of certifying termination',()=>{
+    const f=fixture();
+    try {
+      f.read.mockImplementationOnce(()=>{throw Object.assign(Error('denied'),{code:'EACCES'});});
+      expect(()=>isRuntimeProcessAlive(identity)).toThrow('denied');
+      f.read.mockReturnValue('not proc stat');
+      expect(()=>isRuntimeProcessAlive(identity)).toThrow('invalid proc identity');
+    } finally {f.restore();}
+  });
+});
+
+describe('kernel page size observation without a subprocess', () => {
+  function auxv(rows: Array<[bigint, bigint]>) {
+    const width = ['ia32','arm'].includes(process.arch) ? 4 : 8;
+    const bytes = Buffer.alloc(rows.length*width*2);
+    rows.flat().forEach((value, i) => {
+      if (width === 8) {
+        if (os.endianness() === 'LE') bytes.writeBigUInt64LE(value,i*width);
+        else bytes.writeBigUInt64BE(value,i*width);
+      } else if (os.endianness() === 'LE') bytes.writeUInt32LE(Number(value),i*width);
+      else bytes.writeUInt32BE(Number(value),i*width);
+    });
+    return bytes;
+  }
+  it.each([1024,4096,65536])('reads AT_PAGESZ=%s after the complete preceding population', page => {
+    const rows: Array<[bigint,bigint]> = Array.from({length:40},(_,i)=>[100n+BigInt(i),1n]);
+    const read = vi.spyOn(fs,'readFileSync').mockReturnValue(auxv([...rows,[6n,BigInt(page)],[0n,0n]]));
+    try {
+      expect(observeRuntimePageSize()).toBe(page);
+      expect(read).toHaveBeenCalledExactlyOnceWith('/proc/self/auxv');
+    } finally { read.mockRestore(); }
+  });
+  it.each(([
+    [[0n,0n]], [[6n,4096n]], [[6n,4096n],[6n,8192n],[0n,0n]],
+    [[6n,1023n],[0n,0n]], [[6n,1025n],[0n,0n]],
+    [[6n,4096n],[0n,1n]], [[6n,4096n],[0n,0n],[9n,1n]],
+  ] as Array<Array<[bigint,bigint]>>).map(rows=>({rows})))('rejects malformed or missing kernel page evidence (case %#)', ({rows}) => {
+    const read = vi.spyOn(fs,'readFileSync').mockReturnValue(auxv(rows));
+    try { expect(()=>observeRuntimePageSize()).toThrow(); }
+    finally { read.mockRestore(); }
+  });
+  it('rejects a partial auxiliary-vector record', () => {
+    const read = vi.spyOn(fs,'readFileSync').mockReturnValue(Buffer.alloc(3));
+    try { expect(()=>observeRuntimePageSize()).toThrow('auxv extent'); }
+    finally { read.mockRestore(); }
+  });
+  it('observes the running Linux process synchronously', () => {
+    const page = observeRuntimePageSize();
+    expect(Number.isSafeInteger(page) && page >= 1024 && Number.isInteger(Math.log2(page))).toBe(true);
+  });
+});
 
 describe('independent initial exec mapping snapshot', () => {
   const identity={processId:10,parentProcessId:9,startTimeTicks:'42',executable:'/program'};
@@ -208,14 +301,7 @@ describe('independent initial exec mapping snapshot', () => {
       };
       const tracerAlive=()=>{
         if(!pinned)return false;
-        try{
-          const state=fs.readFileSync('/proc/'+pinned.processId+'/stat','utf8').split(') ')[1][0];
-          if(state==='Z'||state==='X')return false;
-          return observeRuntimeProcessIdentity(pinned.processId).startTimeTicks===pinned.startTimeTicks;
-        }catch(error){
-          if(['ENOENT','ESRCH'].includes((error as NodeJS.ErrnoException).code??''))return false;
-          throw error;
-        }
+        return isRuntimeProcessAlive(pinned);
       };
       try{
         let atEntry:typeof identity|undefined;
@@ -229,6 +315,10 @@ describe('independent initial exec mapping snapshot', () => {
         process.kill(pinned!.processId,'SIGSTOP');
         await until(()=>fs.readFileSync('/proc/'+pinned!.processId+'/stat','utf8').split(') ')[1].startsWith('T '),
           'normal-exit tracer stop');
+        // Force the formerly racy liveness branch while the daemon cannot exit.
+        expect(pinned!.parentProcessId).not.toBe(process.pid);
+        expect(()=>observeRuntimeProcessIdentity(pinned!.processId)).toThrow('not the observer direct child');
+        expect(tracerAlive()).toBe(true);
         const observation=observeRuntimeExecEntry(atEntry!,pinned!);
         const binding=bindRuntimeExecEntry(observation,atEntry!,pinned!);
         if(process.env.PAPERCUSP_TEST_ARTIFACT_DIR)

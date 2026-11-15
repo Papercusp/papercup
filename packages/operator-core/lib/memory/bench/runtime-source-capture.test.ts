@@ -7,7 +7,7 @@ import inspector from 'node:inspector';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bindRuntimeSourcePopulation, startRuntimeSourceCapture, validateRuntimeSourceCapture } from './runtime-source-capture.mjs';
-import { bindRuntimeExecEntry, observeRuntimeExecEntry, bindRuntimeProcessTree, observeRuntimeExecutableMemory, observeRuntimeProcessIdentity,
+import { bindRuntimeExecEntry, observeRuntimeExecEntry, bindRuntimeProcessTree, observeRuntimeExecutableMemory, observeRuntimeProcessIdentity, isRuntimeProcessAlive,
   observeRuntimeTracerIdentity, observeRuntimePageSize, runtimeFileTraceArguments } from './runtime-file-opens.mjs';
 
 const roots: string[] = [];
@@ -434,13 +434,7 @@ describe('parsed sources joined to independent process lifetimes', () => {
       let tracer:ReturnType<typeof observeRuntimeTracerIdentity>|undefined;
       const tracerAlive=()=>{
         if(!tracer)return false;
-        try{
-          const state=fs.readFileSync('/proc/'+tracer.processId+'/stat','utf8').split(') ')[1][0];
-          return state!=='Z'&&state!=='X'&&observeRuntimeProcessIdentity(tracer.processId).startTimeTicks===tracer.startTimeTicks;
-        }catch(error){
-          if(['ENOENT','ESRCH'].includes((error as NodeJS.ErrnoException).code??''))return false;
-          throw error;
-        }
+        return isRuntimeProcessAlive(tracer);
       };
       try{
         await until(()=>{
@@ -453,6 +447,8 @@ describe('parsed sources joined to independent process lifetimes', () => {
         process.kill(tracer!.processId,'SIGSTOP');
         await until(()=>fs.readFileSync('/proc/'+tracer!.processId+'/stat','utf8').split(') ')[1].startsWith('T '),
           'source entry tracer stop');
+        expect(tracer!.parentProcessId).not.toBe(process.pid);
+        expect(tracerAlive()).toBe(true);
         const observation=observeRuntimeExecEntry(identity!,tracer!);
         const entry=bindRuntimeExecEntry(observation,identity!,tracer!);
         expect(stdout).toBe('');expect(fs.existsSync(sourcePath)).toBe(false);

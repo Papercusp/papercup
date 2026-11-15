@@ -130,6 +130,7 @@ import {
   userBusReachable,
   vitestRunFailed,
   vitestConfigLoaderPolicy,
+  vitestProfilerNodeArgs,
   warnIfInstallInFlight,
   withoutOutputFileArg,
   DEFAULT_TEST_FILE_RUN_TIMEOUT_MS,
@@ -346,6 +347,77 @@ function fixtureVitestCli(root: string) {
 }
 
 describe('installed Vitest CLI routing', () => {
+  it('forwards only native profiler diagnostics and preserves caller arguments', () => {
+    const args = ['--execArgv=--cpu-prof', '--execArgv=--cpu-prof-dir=/tmp/profile directory',
+      '--execArgv', '--cpu-prof-interval=500', '--execArgv=--heap-prof',
+      '--execArgv=--heap-prof-name=worker.heapprofile', '--execArgv=--diagnostic-dir=/tmp/diagnostics',
+      '--execArgv=--import=loader.mjs', '--execArgv=--inspect', '--execArgv=--cpu-prof-unknown', '-t', 'selected'];
+    const before = [...args];
+    expect(vitestProfilerNodeArgs(args)).toEqual(['--cpu-prof', '--cpu-prof-dir=/tmp/profile directory',
+      '--cpu-prof-interval=500', '--heap-prof', '--heap-prof-name=worker.heapprofile', '--diagnostic-dir=/tmp/diagnostics']);
+    expect(args).toEqual(before);
+    expect(vitestProfilerNodeArgs(['--execArgv'])).toEqual([]);
+  });
+
+  it('propagates profiler flags to actual project workers and writes their CPU profiles', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'router-project-profiler-'));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const observations: Array<{ pid: number; execArgv: string[] }> = [];
+    try {
+      mkdirSync(join(root, 'node_modules'));
+      symlinkSync(dirname(resolveVitestCli(REPO_ROOT)), join(root, 'node_modules/vitest'), 'dir');
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'project-profiler-fixture', type: 'module' }));
+      // Without projects root execArgv already works, hiding the propagation defect.
+      writeFileSync(join(root, 'vitest.config.mjs'), 'export default ' + JSON.stringify({ test: { projects:
+        ['first', 'second'].map(name => ({ test: { name, include: [name + '.test.ts'], pool: 'forks', maxWorkers: 1 } })),
+      } }));
+      for (const name of ['first', 'second']) {
+        writeFileSync(join(root, name + '.test.ts'), `
+          import { it, expect } from 'vitest';
+          import { writeFileSync } from 'node:fs';
+          it('observes the native profiler', () => {
+            writeFileSync(${JSON.stringify(join(root, name + '.worker.json'))},
+              JSON.stringify({ pid: process.pid, execArgv: process.execArgv }));
+            expect(process.execArgv).toContain('--cpu-prof');
+            expect(process.execArgv).toContain(${JSON.stringify('--cpu-prof-dir=' + root)});
+          });`);
+      }
+      const run = async (command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }) => {
+        const result = spawnSync(command, args, { cwd: options.cwd, env: options.env,
+          encoding: 'utf8', timeout: 45_000 });
+        expect(result.error, result.stdout + '\n' + result.stderr).toBeUndefined();
+        return { ...result, timedOut: false };
+      };
+      const status = await main(['first.test.ts', 'second.test.ts', '--',
+        '--execArgv=--cpu-prof', '--execArgv=--cpu-prof-dir=' + root], {
+        repoRoot: root,
+        createRouterProofCustodyImpl: () => null,
+        restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
+        runVitestListImpl: run,
+        runCapturedTestProcessImpl: run,
+      });
+      expect(status, [...log.mock.calls, ...error.mock.calls, ...stdout.mock.calls, ...stderr.mock.calls]
+        .flat().join('\n')).toBe(0);
+      for (const name of ['first', 'second']) {
+        const worker = JSON.parse(readFileSync(join(root, name + '.worker.json'), 'utf8'));
+        observations.push(worker);
+        expect(worker.execArgv).toContain('--cpu-prof');
+        const profiles = readdirSync(root).filter(file => file.includes('.' + worker.pid + '.0.') && file.endsWith('.cpuprofile'));
+        expect(profiles, 'missing profile from worker ' + worker.pid).toHaveLength(1);
+        const profile = JSON.parse(readFileSync(join(root, profiles[0]), 'utf8'));
+        expect(profile.nodes.length).toBeGreaterThan(0);
+        expect(profile.endTime).toBeGreaterThan(profile.startTime);
+      }
+      expect(new Set(observations.map(worker => worker.pid)).size).toBe(2);
+    } finally {
+      log.mockRestore(); error.mockRestore(); stdout.mockRestore(); stderr.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('selects the owning package installation over the repository installation', () => {
     const root = mkdtempSync(join(tmpdir(), 'router-installed-vitest-'));
     try {
@@ -3120,7 +3192,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
 
   it('wires the real Vitest run through the async seam rather than a blocking spawnSync', () => {
     const source = readFileSync(new URL('../../../../scripts/test-files.mjs', import.meta.url), 'utf8');
-    const runStart = source.search(/const result = await runCapturedTestProcessImpl\(\s*process.execPath,\s*\[vitestCli, 'run'/);
+    const runStart = source.search(/const result = await runCapturedTestProcessImpl\(\s*process.execPath,\s*\[\.\.\.vitestProfilerNodeArgs\(groupVitestArgs\),\s*vitestCli, 'run'/);
     const runEnd = source.indexOf('const runOutput =', runStart);
     expect(runStart).toBeGreaterThan(0);
     expect(runEnd).toBeGreaterThan(runStart);

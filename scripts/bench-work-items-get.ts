@@ -6,14 +6,13 @@
  * PAPERCUSP_SID and PAPERCUSP_WORKSPACE must identify the calling session.
  * Usage: npx tsx scripts/bench-work-items-get.ts --port=3170 --ids=WI-1,WI-2
  */
-import { execFile, spawn } from 'node:child_process';
+import { execFile, spawn, type ExecFileOptions } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { mkdir, open, readFile, readdir, realpath, stat, writeFile, type FileHandle } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import { isCliEntry } from '../packages/operator-core/lib/util/cli-entry';
 import { collectPerfWorkloadRun, type PerfWorkloadManifest, type PerfWorkloadRunDependencies, type PerfWorkloadRunPlan } from '../packages/operator-core/lib/system-health/perf-workload-run';
 import { perfProtocolHash } from '../packages/operator-core/lib/system-health/perf-workload-protocol';
@@ -23,11 +22,38 @@ import { readVerifierSourceReceiptSync } from '../packages/operator-core/lib/ver
 import { buildMcpCallParams, buildMcpSessionQuery, resolveMcpCallOrigin, resolveMcpRole, superuserTokenPaths } from './mcp-call.mjs';
 import { readNativeProcessTraceArtifacts } from './lib/budgeted-task-scheduler.mjs';
 import { captureConfigurationSnapshot } from '../libs/test-config/src/configuration-snapshot';
+import { buildGovernedProcessDemand, createGovernedProcessDemandSampler, runGovernedTestProcess } from './lib/governed-test-process.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-let execMemo: typeof execFile.__promisify__ | null = null;
-const exec = ((...args: unknown[]) =>
-  Reflect.apply((execMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
+/** Keep admission, lineage and measured release around the entire child lifetime,
+ * including isolated-host diagnostics and cleanup, rather than just spawn(). */
+export async function runBenchmarkProcess<T>(env: NodeJS.ProcessEnv,
+  run: (childEnv: NodeJS.ProcessEnv, attach: (pid: number | undefined) => void) => Promise<T>,
+  options: { timeoutMs?: number; executionApi?: unknown;
+    samplerFactory?: typeof createGovernedProcessDemandSampler } = {}): Promise<T> {
+  const demand = buildGovernedProcessDemand();
+  let actualDemand: ReturnType<ReturnType<typeof createGovernedProcessDemandSampler>['stop']>;
+  return runGovernedTestProcess({ env, demand, namespace: 'bench-work-items-get',
+    owner: env.PAPERCUSP_SID ?? `bench-work-items-get:${process.pid}`,
+    timeoutMs: options.timeoutMs, executionApi: options.executionApi,
+    measureActualDemand: () => actualDemand,
+  }, async (_context: unknown, childEnv: NodeJS.ProcessEnv) => {
+    const sampler = (options.samplerFactory ?? createGovernedProcessDemandSampler)(demand);
+    try { return await run(childEnv, pid => sampler.attach(pid)); }
+    finally { actualDemand = sampler.stop(); }
+  });
+}
+
+export function execBenchmarkCommand(file: string, args: string[], options: ExecFileOptions) {
+  return runBenchmarkProcess({ ...process.env, ...options.env }, (childEnv, attach) =>
+    new Promise<{ stdout: string; stderr: string }>((resolveResult, reject) => {
+      const child = execFile(file, args, { ...options, env: childEnv, encoding: 'utf8' }, (error, stdout, stderr) => {
+        if (error) reject(error);
+        else resolveResult({ stdout, stderr });
+      });
+      attach(child.pid);
+    }), { timeoutMs: options.timeout });
+}
 const SOURCE_PATHS = [
   'packages/operator-core/lib/agent-tools/work_items/get.ts',
   'packages/operator-core/lib/agent-tools/work_items/get-shape.ts',
@@ -503,7 +529,7 @@ export async function captureIdentityEnvironment(fixture: ReturnType<typeof mcpI
   const loadedHealth = identityLoadedHealth(health, runtime);
   const selectedSource = identitySelectedSource(ROOT, process.env, loadedHealth.sha);
   const bootId = (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim();
-  const mainPid = runtime.kind === 'staging' ? Number((await exec('systemctl', ['--user', 'show',
+  const mainPid = runtime.kind === 'staging' ? Number((await execBenchmarkCommand('systemctl', ['--user', 'show',
     'papercup-staging-api.service', '--property=MainPID', '--value'], { timeout: 10_000, maxBuffer: 16_384 })).stdout.trim()) : runtime.mainPid!;
   if (!Number.isSafeInteger(mainPid) || mainPid < 1) throw new Error('staging process identity unavailable');
   if (runtime.kind === 'isolated-operator-api' && (!runtime.processIdentity ||
@@ -659,8 +685,10 @@ async function runIsolatedIdentity(flags: Record<string, string>) {
       return { selectedSource, preparationDir, bundle, traceOut, hostEnv, configuration, configurationBytes, configurationPath,
         log, observeCommittedReaderLoadedSources, waitForPrivateOperator, stopPrivateOperatorHost };
     });
+  try { return await runBenchmarkProcess(hostEnv, async (admittedHostEnv, attach) => {
   const hostStartedAtMs = Date.now();
-  const host = spawn(process.execPath, [bundle.path], { cwd: ROOT, env: hostEnv, detached: true, stdio: ['ignore', log.fd, log.fd] });
+  const host = spawn(process.execPath, [bundle.path], { cwd: ROOT, env: admittedHostEnv, detached: true, stdio: ['ignore', log.fd, log.fd] });
+  attach(host.pid);
   let hostError: Error | undefined;
   host.on('error', error => { hostError = error; });
   const processIdentity = host.pid ? readProcessIdentity(host.pid) : null;
@@ -673,9 +701,9 @@ async function runIsolatedIdentity(flags: Record<string, string>) {
     await waitForPrivateOperator({ host, base: contract.origin, evidenceDir, hostIdentity: processIdentity, environment: hostEnv });
     if (hostError) throw hostError;
     console.error('IDENTITY_PRIVATE_PHASE identity-registration');
-    const child = await exec(process.execPath, [resolve(ROOT, 'scripts/mcp-call.mjs'), 'coord:whoami', '{}',
+    const child = await execBenchmarkCommand(process.execPath, [resolve(ROOT, 'scripts/mcp-call.mjs'), 'coord:whoami', '{}',
       '--client', flags['client-id'], '--workspace', contract.workspace, '--port', new URL(contract.origin).port],
-    { cwd: ROOT, timeout: 35_000, maxBuffer: 1024 * 1024 });
+    { cwd: ROOT, env: admittedHostEnv, timeout: 35_000, maxBuffer: 1024 * 1024 });
     const identity = JSON.parse(child.stdout) as McpIdentityFixture;
     if (identity.ownerId !== flags['client-id'] || identity.workspaceId !== contract.workspace) throw new Error('isolated attribution differs');
     const identityFile = resolve(evidenceDir, 'registered-identity.json');
@@ -718,10 +746,10 @@ async function runIsolatedIdentity(flags: Record<string, string>) {
           'sidecars', 'complete-runtime-closure'] };
       if (!trace.population.complete) throw new Error('isolated native trace population incomplete');
     } catch (error) { (lifecycle.failures as unknown[]).push({ stage: 'native-source-trace', diagnostic: identityFailure(error) }); process.exitCode = 1; }
-    await log.close();
     await writeFile(resolve(evidenceDir, 'lifecycle.json'), JSON.stringify(lifecycle, null, 2));
     console.error('IDENTITY_PRIVATE_PHASE stopped');
   }
+  }); } finally { await log.close(); }
 }
 
 async function main() {
@@ -746,7 +774,7 @@ async function main() {
   const result = await runSummaryCohort({ ids, repeats, call: async requested => {
     const args = { ids: requested, harness: 'papercusp', detail: false, threadLimit: 0,
       projection: { pick: PICK } };
-    const child = await exec(process.execPath, [resolve(ROOT, 'scripts/mcp-call.mjs'), 'work_items:get',
+    const child = await execBenchmarkCommand(process.execPath, [resolve(ROOT, 'scripts/mcp-call.mjs'), 'work_items:get',
       JSON.stringify(args), '--client', client, '--workspace', workspace, '--harness', 'papercusp',
       '--port', port], { cwd: ROOT, timeout: 35_000, maxBuffer: 1024 * 1024 });
     return JSON.parse(child.stdout);

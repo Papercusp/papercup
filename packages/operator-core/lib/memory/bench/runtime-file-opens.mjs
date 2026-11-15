@@ -1,19 +1,22 @@
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import { endianness } from 'node:os';
 
 const memoryRequire = (condition, message) => {
   if (!condition) throw new Error('runtime executable memory: '+message);
 };
 const memoryHash = bytes => createHash('sha256').update(bytes).digest('hex');
-function procIdentity(root, processId) {
+function procStatIdentity(root, processId) {
   const stat = fs.readFileSync(root+'/stat','utf8');
   const end = stat.lastIndexOf(')');
   const fields = stat.slice(end+2).trim().split(/\s+/);
   memoryRequire(stat.startsWith(String(processId)+' (') && end > 0
     && /^[1-9]\d*$/.test(fields[19]), 'invalid proc identity');
-  return {processId, parentProcessId:Number(fields[1]), startTimeTicks:fields[19],
-    executable:fs.readlinkSync(root+'/exe')};
+  return {processId, parentProcessId:Number(fields[1]), startTimeTicks:fields[19], state:fields[0]};
+}
+function procIdentity(root, processId) {
+  const {state, ...identity} = procStatIdentity(root,processId);
+  return {...identity, executable:fs.readlinkSync(root+'/exe')};
 }
 function sameProcess(actual, expected) {
   return actual && expected && ['processId','parentProcessId','startTimeTicks','executable']
@@ -26,6 +29,27 @@ export function observeRuntimeProcessIdentity(processId) {
   const identity = procIdentity('/proc/'+processId,processId);
   memoryRequire(identity.parentProcessId === process.pid, 'not the observer direct child');
   return identity;
+}
+/** Poll a previously pinned process, including an independently daemonized
+ * tracer. This is liveness only; it does not grant direct-child observation. */
+export function isRuntimeProcessAlive(identity) {
+  memoryRequire(identity && Number.isSafeInteger(identity.processId) && identity.processId > 0
+    && Number.isSafeInteger(identity.parentProcessId) && identity.parentProcessId >= 0
+    && /^[1-9]\d*$/.test(identity.startTimeTicks)
+    && typeof identity.executable === 'string' && identity.executable.startsWith('/'),
+  'invalid pinned process identity');
+  const root = '/proc/'+identity.processId;
+  try {
+    const before = procStatIdentity(root,identity.processId);
+    if (before.state === 'Z' || before.state === 'X') return false;
+    const executable = fs.readlinkSync(root+'/exe');
+    const after = procStatIdentity(root,identity.processId);
+    return after.state !== 'Z' && after.state !== 'X'
+      && sameProcess({...before,executable},identity) && sameProcess({...after,executable},identity);
+  } catch (error) {
+    if (['ENOENT','ESRCH'].includes(error.code)) return false;
+    throw error;
+  }
 }
 /** Pin the kernel-reported tracer before stopping it. The target cannot supply
  * this identity; the parent also selects the expected tracer executable. */
@@ -412,11 +436,28 @@ export function bindRuntimeJitMemory(bytes, witness, observation, expectedIdenti
  * Call only when parent and tracee use the same Linux kernel/page-size ABI.
  */
 export function observeRuntimePageSize() {
-  const output = execFileSync('/usr/bin/getconf', ['PAGESIZE'], {
-    encoding:'utf8', timeout:5000, maxBuffer:1024,
-    env:{PATH:'/usr/bin:/bin', LC_ALL:'C'},
-  }).trim();
-  const page = /^\d+$/.test(output) ? Number(output) : NaN;
+  // Linux AT_PAGESZ (include/uapi/linux/auxvec.h) is the kernel's own
+  // observation for this process. Read it directly rather than starting getconf.
+  const wordBytes = ['ia32','arm'].includes(process.arch) ? 4
+    : ['x64','arm64','ppc64','s390x','riscv64','loong64'].includes(process.arch) ? 8 : 0;
+  memoryRequire(process.platform === 'linux' && wordBytes > 0, 'unsupported page size ABI');
+  const bytes = fs.readFileSync('/proc/self/auxv'), stride = wordBytes*2;
+  memoryRequire(bytes.length >= stride && bytes.length % stride === 0, 'invalid page size auxv extent');
+  const read = offset => wordBytes === 8
+    ? (endianness() === 'LE' ? bytes.readBigUInt64LE(offset) : bytes.readBigUInt64BE(offset))
+    : BigInt(endianness() === 'LE' ? bytes.readUInt32LE(offset) : bytes.readUInt32BE(offset));
+  let page = NaN, terminated = false;
+  for (let offset = 0; offset < bytes.length; offset += stride) {
+    const key = read(offset), value = read(offset+wordBytes);
+    if (key === 0n) {
+      memoryRequire(value === 0n && offset+stride === bytes.length, 'invalid page size auxv terminator');
+      terminated = true;
+    } else if (key === 6n) {
+      memoryRequire(Number.isNaN(page) && value <= BigInt(Number.MAX_SAFE_INTEGER), 'invalid page size auxv value');
+      page = Number(value);
+    }
+  }
+  memoryRequire(terminated, 'unterminated page size auxv');
   if (!Number.isSafeInteger(page) || page < 1024 || !Number.isInteger(Math.log2(page)))
     throw new Error('invalid independently observed runtime page size');
   return page;
