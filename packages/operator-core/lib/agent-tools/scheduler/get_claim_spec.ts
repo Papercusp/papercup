@@ -190,7 +190,11 @@ export default defineTool({
       ? fleetSentinelCallerView({
           fleetSlug,
           callerId: ident.ownerId,
-          callerFleetRole: (await latestFleetMembership(workspaceId, ident.ownerId).catch(() => null))?.fleetRole ?? null,
+          // No resolvable workspace ⇒ the membership is unreadable ⇒ UNKNOWN (null),
+          // exactly like a failed lookup — never a guessed role.
+          callerFleetRole: workspaceId
+            ? (await latestFleetMembership(workspaceId, ident.ownerId).catch(() => null))?.fleetRole ?? null
+            : null,
           callerRecord: await getClaimSpecRecord({ cupId: ident.ownerId, workspaceId }).catch(
             () => null,
           ),
