@@ -12,6 +12,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { execFile, spawn, spawnSync } from 'node:child_process';
+import { createTextCollector } from '../child-output';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -90,8 +91,11 @@ async function removeContainer(id: string, primaryError?: unknown): Promise<void
   const watcher = spawn('docker', ['events', '--since', new Date().toISOString(), '--filter', `container=${id}`,
     '--format', '{{json .}}'], { stdio: ['ignore', 'pipe', 'pipe'] });
   let events = '', watcherError: string | null = null;
-  watcher.stdout.on('data', chunk => { events = (events + String(chunk)).slice(-12_000); });
-  watcher.stderr.on('data', chunk => { watcherError = ((watcherError ?? '') + String(chunk)).slice(-1000); });
+  const eventCapture = createTextCollector(watcher.stdout, { retainText: false,
+    onDecodedText: text => { events = (events + text).slice(-12_000); } });
+  const errorCapture = createTextCollector(watcher.stderr, { retainText: false,
+    onDecodedText: text => { watcherError = ((watcherError ?? '') + text).slice(-1000); } });
+  watcher.once('close', () => { eventCapture.text(); errorCapture.text(); });
   const watcherDone = new Promise<void>(resolve => {
     watcher.once('error', error => { watcherError = String(error); resolve(); });
     watcher.once('close', () => resolve());

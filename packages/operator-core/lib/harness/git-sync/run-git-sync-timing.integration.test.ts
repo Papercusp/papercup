@@ -169,8 +169,9 @@ it.for(['local', 'sidecar', 'instrumented-stdin'] as const)('persists real Git s
                   child.once('error', reject);
                   child.once('close', (code, signal) => resolve({ code, signal }));
                 });
+                for (const stream of [child.stdout, child.stderr]) stream.setEncoding('utf8');
                 for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => {
-                  sidecarOutput += String(chunk);
+                  sidecarOutput += chunk;
                   const line = sidecarOutput.split('\\n').find(line => line.startsWith('TIMING_SIDECAR_READY '));
                   if (line) { try { ready(JSON.parse(line.slice('TIMING_SIDECAR_READY '.length))); } catch {} }
                 });

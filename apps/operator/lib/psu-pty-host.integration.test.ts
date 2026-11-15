@@ -2537,9 +2537,9 @@ describe('hostThroughPty real round-trip', () => {
           );
           original.stdout!.setEncoding('utf8');
           original.stderr!.setEncoding('utf8');
-          original.stderr!.on('data', (data) => { stderrText += String(data); });
-          original.stdout!.on('data', (data) => {
-            stdoutText += String(data);
+          original.stderr!.on('data', (data: string) => { stderrText += data; });
+          original.stdout!.on('data', (data: string) => {
+            stdoutText += data;
             if (stdoutText.includes('READY')) {
               clearTimeout(timer);
               resolve();

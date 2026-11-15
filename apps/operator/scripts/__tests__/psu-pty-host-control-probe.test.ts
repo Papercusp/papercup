@@ -3,6 +3,7 @@ import { mkdtemp, rm, unlink, writeFile } from 'node:fs/promises';
 import { createConnection, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 import { closeControlServerForRebind, controlSocketProbeOutcome, controlSocketSelfHealAction, decodeControl } from '../psu-pty-host.mjs';
 
 describe('psu-pty-host control socket probe', () => {
@@ -61,12 +62,12 @@ describe('psu-pty-host control socket probe', () => {
       connection.once('connect', () => {
         connection.write(JSON.stringify({ v: 1, mode: 'probe', data: '', ownerId: requestedOwner }));
       });
-      let response = '';
-      connection.on('data', (data) => {
-        response += data.toString();
-        if (!response.includes('\n')) return;
+      const response = createTextCollector(connection);
+      connection.on('data', () => {
+        const text = response.peek();
+        if (!text.includes('\n')) return;
         connection.end();
-        try { resolve(JSON.parse(response.trim())); } catch (error) { reject(error); }
+        try { resolve(JSON.parse(text.trim())); } catch (error) { reject(error); }
       });
     });
 

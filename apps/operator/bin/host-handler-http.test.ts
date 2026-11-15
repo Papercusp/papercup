@@ -1,5 +1,6 @@
 import { request } from 'node:http';
 import { once } from 'node:events';
+import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAdaptorServer, serve } from '@hono/node-server';
 import { captureOperatorHttpSecurityPopulation, handler } from './host-handler';
@@ -136,10 +137,9 @@ describe('guard HTTP outer timing', () => {
       [[GUARD_ID, GUARD_ID], '/api/agent-mcp/tool-guard'], [GUARD_ID, '/api/health']] as const) {
       const req = guardRequest(port, Array.isArray(id) ? [...id] : id as string, path);
       const [res] = await once(req, 'response');
-      let body = '';
-      res.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      const body = createTextCollector(res);
       await once(res, 'end');
-      expect(body).toContain(PRIVATE_GUARD_INPUT);
+      expect(body.text()).toContain(PRIVATE_GUARD_INPUT);
     }
     expect(guardTraceRows(log)).toEqual([]);
   });

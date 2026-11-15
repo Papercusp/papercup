@@ -22,6 +22,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdir
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const SCRIPTS = resolve(__dirname, '..');
@@ -136,11 +137,10 @@ describe('setup-monaco-runtime.sh reconciles the mirror file set (WI-10004074)',
     };
     const start = () => {
       const child = spawn('bash', [join(root, 'scripts', SCRIPT)], { env });
-      let output = '';
-      child.stdout.on('data', (chunk) => { output += String(chunk); });
-      child.stderr.on('data', (chunk) => { output += String(chunk); });
+      const output = createTextCollector(child.stdout);
+      output.attach(child.stderr);
       const exited = new Promise<number | null>((resolveExit) => child.once('close', resolveExit));
-      return { child, exited, output: () => output };
+      return { child, exited, output: () => output.peek() };
     };
     const first = start();
     let second: ReturnType<typeof start> | undefined;

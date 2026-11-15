@@ -470,7 +470,12 @@ for (const client of ['codex', 'claude'] as const) for (const kind of ['memory',
     expect(evidence.receiptPort).toBe(port);
     expect(evidence.stdioFault).toBe(fault);
     expect(evidence.stdoutDelivery.confirmations).toEqual([]);
-    expect(evidence.mcpRequests.some((request: { method: string }) => request.method === 'initialize')).toBe(true);
+    const initializeDiagnostics = JSON.stringify({ diagnosticsPath, failure, invocation: evidence.invocation,
+      exitCode: evidence.exitCode, signal: evidence.signal, methods: evidence.methods,
+      versionProbe: evidence.versionProbe, stderr: evidence.stderr.slice(-2000),
+      transportFaults: evidence.transportFaults });
+    expect(evidence.mcpRequests.some((request: { method: string }) => request.method === 'initialize'),
+      initializeDiagnostics).toBe(true);
     if (port !== 'initialize') expect(JSON.stringify(evidence.requests[0])).not.toContain(canary);
     if (fault === 'absent-offer') {
       expect(failure).toBeUndefined();

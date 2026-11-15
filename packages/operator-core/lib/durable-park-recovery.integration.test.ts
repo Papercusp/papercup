@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { spawn } from 'node:child_process';
+import { createTextCollector } from './child-output';
 import { fileURLToPath } from 'node:url';
 import type { FreshPgDb } from '../test/_pg-helpers';
 import { createPublicParkTestDb } from '../test/_public-park-pg';
@@ -137,8 +138,8 @@ async function restartController(mode: 'crash' | 'recover', cut: string, success
       PARK_RESTART_SUCCESSOR: successor },
   });
   let output = '';
-  child.stdout.on('data', chunk => { output += String(chunk); });
-  child.stderr.on('data', chunk => { output += String(chunk); });
+  const capture = createTextCollector(child.stdout, { retainText: false, onDecodedText: text => { output += text; } });
+  capture.attach(child.stderr);
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, 30_000);
   try {

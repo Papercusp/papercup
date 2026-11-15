@@ -8,6 +8,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
+import { createTextCollector } from '../../child-output';
 import { codexGatewayConfigToml } from '@papercusp/orchestrator/codex-gateway-config';
 import { nativeBuilds } from '../../../../omp-plugin/build-native.mjs';
 import { resolveOnPath, wellKnownBackendBin } from '../../backend-bin-resolve.mjs';
@@ -188,12 +189,12 @@ const probe = { targetMethod: ${JSON.stringify(port === 'initialize' ? 'initiali
   pid: child.pid, targetRequest: null, consumedBytes: 0, forwardedBytes: 0, prefix: '',
   cut: false, closed: false, stderr: '', exitCode: null, signal: null };
 const save = () => writeFileSync(${JSON.stringify(probePath)}, JSON.stringify(probe), { mode: 0o600 });
-let input = '', cleanup;
+let input = Buffer.alloc(0), cleanup;
 process.stdin.on('data', chunk => {
-  input += chunk.toString('utf8');
+  input = Buffer.concat([input, chunk]);
   let newline;
-  while ((newline = input.indexOf('\n')) >= 0) {
-    const line = input.slice(0, newline); input = input.slice(newline + 1);
+  while ((newline = input.indexOf(10)) >= 0) {
+    const line = input.subarray(0, newline).toString('utf8'); input = input.subarray(newline + 1);
     if (line.trim()) {
       const request = JSON.parse(line);
       if (request.method === probe.targetMethod) probe.targetRequest = request;
@@ -204,6 +205,7 @@ process.stdin.on('data', chunk => {
 process.stdin.on('end', () => child.stdin.end());
 child.stdin.on('error', () => {});
 process.stdout.on('error', () => child.kill('SIGKILL'));
+child.stderr.setEncoding('utf8');
 child.stderr.on('data', chunk => { probe.stderr = (probe.stderr + chunk).slice(-6000); });
 child.stdout.on('data', chunk => {
   if (probe.targetRequest && !probe.cut) {
@@ -613,10 +615,12 @@ export default async function(pi) {
     child.stderr!.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-3000); });
     const running = child;
     if (client === 'omp') {
+      const stdoutCapture = createTextCollector(running.stdout, { maxChars: 3000 });
+      running.stdout!.once('close', () => { stdout = stdoutCapture.text(); });
       let buffer = Buffer.alloc(0), requested = false, endedTurns = 0, cut = false;
       running.stdout!.on('data', (chunk: Buffer) => {
         if (cut) return;
-        stdout = (stdout + chunk.toString('utf8')).slice(-3000);
+        stdout = stdoutCapture.peek();
         buffer = Buffer.concat([buffer, chunk]);
         let newline: number;
         while (buffer.length) {

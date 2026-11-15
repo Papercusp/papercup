@@ -9,6 +9,7 @@ import { createOrgTestDb } from '../../test/_org-test-db';
 import { managedSpawn, markManagedSpawnTeardown } from '../task-manager/managed-spawn';
 import { killScopeUnit } from '../task-manager/control';
 import { newTaskId, scopeUnitForTask } from '../task-manager/types';
+import { createTextCollector } from '../child-output';
 import { userManagerBusReachable } from '../systemd-scope';
 import { runQualificationCommand, type QualificationCommandOptions } from './checkpoint-qualification-command';
 import { beginQualificationTransaction, checkpointPidIdentity, observeQualificationProgress,
@@ -187,7 +188,8 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
       cwd: process.cwd(), launchedBy: 'test:qualification-quiet', runtimeMaxSec: 20,
     }, { taskId: id, workspaceId: target.workspaceId, requireConfinement: true, requireRegistration: true,
       scopeAvailable: true, spawnOptions: { env: { ...process.env, NODE_OPTIONS: '' }, stdio: ['ignore', 'pipe', 'pipe'] },
-      onSpawn(child) { child.stdout!.on('data', bytes => { output += bytes.toString(); }); } });
+      onSpawn(child) { createTextCollector(child.stdout, { retainText: false,
+            onDecodedText: text => { output += text; } }); } });
     try {
       await vi.waitFor(() => expect(existsSync(ready)).toBe(true), { timeout: 3000 });
       const { pid } = JSON.parse(readFileSync(ready, 'utf8')) as { pid: number };

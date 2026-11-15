@@ -13,6 +13,7 @@
  */
 import { spawn, spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { once } from 'node:events';
+import { createTextCollector } from './child-output';
 import type { Sql } from 'postgres';
 import { createHash } from 'node:crypto';
 import nativeFs, { chmodSync, cpSync, existsSync, fstatSync, linkSync, mkdirSync, mkdtempSync, promises as fsPromises, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -120,8 +121,11 @@ describe('BG teardown resource inventory source controls', () => {
     { detached: true, env: childEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
     const closed = once(child, 'close');
     let stdout = '', stderr = '', launchError: string | undefined;
-    child.stdout.on('data', chunk => { stdout += chunk; });
-    child.stderr.on('data', chunk => { stderr = (stderr + String(chunk)).slice(-4096); });
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => { stdout += chunk; });
+    const stderrCapture = createTextCollector(child.stderr, { retainText: false,
+      onDecodedText: text => { stderr = (stderr + text).slice(-4096); } });
+    child.stderr.once('close', () => { stderrCapture.text(); });
     child.on('error', error => { launchError = String(error); });
     const stop = async () => {
       try { process.kill(-child.pid!, 'SIGKILL'); } catch (error) {
@@ -146,7 +150,8 @@ describe('BG teardown resource inventory source controls', () => {
     { detached: true, env: childEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
     const closed = once(child, 'close');
     let stdout = '';
-    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => { stdout += chunk; });
     try {
       await vi.waitFor(() => expect(stdout.trim()).toMatch(/^\d+$/), { timeout: 5_000 });
       const latePid = Number(stdout.trim());
@@ -4440,7 +4445,8 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
           child.once('error', reject); child.once('close', (code, signal) => resolve({code,signal}));
         });
         void closed.catch(() => {});
-        child.stdout.on('data', chunk => { stdout += chunk; });
+        child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => { stdout += chunk; });
         child.stderr.on('data', chunk => { stderr += chunk; });
         const until = async (check: () => boolean, label: string) => {
           const deadline = Date.now() + 10_000;

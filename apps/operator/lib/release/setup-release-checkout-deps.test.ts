@@ -44,6 +44,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 
 // apps/operator/lib/release → apps/operator/bin/release/setup-release-checkout.sh
 /**
@@ -2780,12 +2781,11 @@ exec "$REGRESSION_REAL_GIT" "$@"
     let materializerStdout = '';
     let materializerStderr = '';
     let materializerSpawnError: Error | undefined;
-    materializer.stdout?.on('data', chunk => {
-      materializerStdout = (materializerStdout + chunk.toString()).slice(-4_000);
-    });
-    materializer.stderr?.on('data', chunk => {
-      materializerStderr = (materializerStderr + chunk.toString()).slice(-4_000);
-    });
+    const materializerOut = createTextCollector(materializer.stdout, { retainText: false,
+      onDecodedText: text => { materializerStdout = (materializerStdout + text).slice(-4_000); } });
+    const materializerErr = createTextCollector(materializer.stderr, { retainText: false,
+      onDecodedText: text => { materializerStderr = (materializerStderr + text).slice(-4_000); } });
+    materializer.once('close', () => { materializerOut.text(); materializerErr.text(); });
     materializer.on('error', error => { materializerSpawnError = error; });
     type ChildClose = { code: number | null; signal: NodeJS.Signals | null; closedAt: number };
     const materializerClosed = new Promise<ChildClose>(resolve => {
@@ -2838,12 +2838,11 @@ exec "$REGRESSION_REAL_GIT" "$@"
         REGRESSION_LEASE_OBSERVED: observed,
       } });
       setup = setupProcess;
-      setup.stdout?.on('data', chunk => {
-        setupStdout = (setupStdout + chunk.toString()).slice(-4_000);
-      });
-      setup.stderr?.on('data', chunk => {
-        setupStderr = (setupStderr + chunk.toString()).slice(-4_000);
-      });
+      const setupOut = createTextCollector(setup.stdout, { retainText: false,
+        onDecodedText: text => { setupStdout = (setupStdout + text).slice(-4_000); } });
+      const setupErr = createTextCollector(setup.stderr, { retainText: false,
+        onDecodedText: text => { setupStderr = (setupStderr + text).slice(-4_000); } });
+      setup.once('close', () => { setupOut.text(); setupErr.text(); });
       setup.on('error', error => { setupSpawnError = error; });
       setupClosed = new Promise<ChildClose>(resolve => {
         setupProcess.once('close', (code, signal) => resolve({ code, signal, closedAt: Date.now() }));

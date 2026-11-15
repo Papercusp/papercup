@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { linuxProcStateFromStat, readProcessIdentity } from '../process-identity';
 import { newTaskId, scopeUnitForTask } from '../task-manager/types';
+import { createTextCollector } from '../child-output';
 import { managedSpawn, markManagedSpawnTeardown } from '../task-manager/managed-spawn';
 import { killScopeUnit } from '../task-manager/control';
 import { buildTaskScopeArgv, userManagerBusReachable } from '../systemd-scope';
@@ -58,7 +59,8 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
       cwd: process.cwd(), launchedBy: 'test:qualification-custody', runtimeMaxSec: 20,
     }, { taskId, workspaceId: target.workspaceId, requireConfinement: true, requireRegistration: true,
       scopeAvailable: true, spawnOptions: { env: { ...process.env, NODE_OPTIONS: '' }, stdio: ['ignore', 'pipe', 'pipe'] },
-      onSpawn(child) { child.stdout!.on('data', bytes => { output += bytes.toString(); }); } });
+      onSpawn(child) { createTextCollector(child.stdout, { retainText: false,
+        onDecodedText: text => { output += text; } }); } });
     try {
       await until(() => output.includes('\n'), 5000);
       const pids = JSON.parse(output.trim()) as number[];
@@ -107,7 +109,8 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
     const stages: unknown[] = [];
     let diagnostics = '';
     controller.on('message', message => stages.push(message));
-    controller.stderr!.on('data', bytes => { diagnostics += bytes.toString(); });
+    createTextCollector(controller.stderr, { retainText: false,
+      onDecodedText: text => { diagnostics += text; } });
     try {
       await vi.waitFor(() => {
         expect(controller.exitCode, diagnostics).toBeNull();
@@ -218,6 +221,11 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
     });
     let output = '';
     let failure: unknown;
+    const policyStartedAt = Date.now();
+    let workerReadyAt: number | undefined;
+    // Measure the hung-worker bound after both real payloads are observed.
+    // systemd/client startup has its own real 10s deadline and abort signal.
+    const policyNow = () => policyStartedAt + (workerReadyAt === undefined ? 0 : Date.now() - workerReadyAt);
     try {
       try { await runQualificationCommand(process.execPath, ['-e', payload], {
         target: { workspaceId: 'test-process-bounds', installSlug: 'test-process-bounds' },
@@ -228,22 +236,21 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
         // Keep inherited startup hooks in the reproduction; the builtin-only
         // variant distinguishes startup-hook behavior without replacing it.
         cwd: process.cwd(), env: { ...process.env, ...(variant === 'builtin-only' ? { NODE_OPTIONS: '' } : {}) },
-        // Inherited hooks took longer than 750ms in the measured controls.
-        // Give that fixture the independently fixed 4s worker bound used by the
-        // stalled-process fixture; the death-before-release predicate is exact.
-        deadlineEpochMs: Date.now() + 10_000, timeoutMs: variant === 'builtin-only' ? 750 : 4000,
+        deadlineEpochMs: policyStartedAt + 10_000, signal: AbortSignal.timeout(10_000), timeoutMs: 750,
         onOutput(stream, chunk) {
           if (stream !== 'stdout') return;
           output += chunk;
           if (!pids.length && output.includes('\n')) {
             pids.push(...JSON.parse(output.trim()));
             launched = pids.map(identity);
+            if (pids.length === 2 && pids.every(running)) workerReadyAt = Date.now();
           }
         },
       }, { spawn: (cmd, args, spec, options) => managedSpawn(cmd, args, spec, { ...options, scopeAvailable: true }),
         record, kill: async (...args: Parameters<typeof killScopeUnit>) => {
           const outcome = await killScopeUnit(...args); kills.push(outcome); return outcome;
-        }, taskId: () => taskId, now: Date.now }); } catch (error) { failure = error; }
+        }, taskId: () => taskId, now: policyNow }); } catch (error) { failure = error; }
+      expect(workerReadyAt, JSON.stringify({ variant, unit, kills, launched, output })).toBeDefined();
       expect(failure).toBeInstanceOf(Error);
       expect((failure as Error).message, JSON.stringify({ variant, unit, kills, launched, releasing: pids.map(identity) }))
         .toContain('qualification-worker-timeout');
