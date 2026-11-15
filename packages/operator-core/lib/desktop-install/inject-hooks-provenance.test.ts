@@ -103,10 +103,11 @@ async function makeGitCcHookSource(
   repo: string,
   marker: string,
   committedAt: string,
+  files: readonly string[] = CC_HOOK_FILES,
 ): Promise<{ ccDir: string }> {
   const ccDir = path.join(repo, 'scripts', 'hooks', 'cc');
   await fs.mkdir(ccDir, { recursive: true });
-  for (const name of CC_HOOK_FILES) {
+  for (const name of files) {
     // EI-21974793277035753: the body must be VALID for the extension, because
     // installClaudeHooks now parse-checks each hook and refuses one that does not compile.
     // A single bash-shaped body for every file made `.mjs` hooks unparseable (`#` is not a
@@ -617,6 +618,10 @@ describe('installInjectionHooks — install provenance', () => {
     const target = CC_HOOK_FILES.find(
       (n) => n.endsWith('.sh') && n !== 'pretooluse-locks-acquire.sh',
     ) as string;
+    // Provenance assertions need only this hook. Avoid validating an unrelated
+    // full bundle in each case; bundle and syntax coverage remain separate.
+    const makeSource = (repo: string, marker: string) =>
+      makeGitCcHookSource(repo, marker, '2026-08-13T12:05:00Z', [target]);
 
     let priorEnv: string | undefined;
     beforeEach(() => {
@@ -639,7 +644,7 @@ describe('installInjectionHooks — install provenance', () => {
     it('refuses to publish one over an already-installed copy, and keeps that copy', async () => {
       const repo = path.join(root, 'cc-dirty-refuse');
       await fs.mkdir(repo, { recursive: true });
-      const src = await makeGitCcHookSource(repo, 'cc-clean', '2026-08-13T12:05:00Z');
+      const src = await makeSource(repo, 'cc-clean');
       await install(repo);
       const committedBody = await fs.readFile(path.join(ccDest(), target), 'utf8');
 
@@ -658,7 +663,7 @@ describe('installInjectionHooks — install provenance', () => {
     it('publishes it anyway under the explicit opt-in', async () => {
       const repo = path.join(root, 'cc-dirty-optin');
       await fs.mkdir(repo, { recursive: true });
-      const src = await makeGitCcHookSource(repo, 'cc-optin', '2026-08-13T12:05:00Z');
+      const src = await makeSource(repo, 'cc-optin');
       await install(repo);
 
       const edited = '#!/bin/bash\n# DELIBERATE UNCOMMITTED EDIT\n';
@@ -680,7 +685,7 @@ describe('installInjectionHooks — install provenance', () => {
       // failure the refusal exists to prevent.
       const repo = path.join(root, 'cc-dirty-first');
       await fs.mkdir(repo, { recursive: true });
-      const src = await makeGitCcHookSource(repo, 'cc-first', '2026-08-13T12:05:00Z');
+      const src = await makeSource(repo, 'cc-first');
       const edited = '#!/bin/bash\n# UNCOMMITTED ON A FRESH BOX\n';
       await fs.writeFile(path.join(src.ccDir, target), edited);
 
@@ -696,7 +701,7 @@ describe('installInjectionHooks — install provenance', () => {
     it('records the uncommitted set on the stamp, so the sha is never read as describing them', async () => {
       const repo = path.join(root, 'cc-dirty-stamp');
       await fs.mkdir(repo, { recursive: true });
-      const src = await makeGitCcHookSource(repo, 'cc-stamp', '2026-08-13T12:05:00Z');
+      const src = await makeSource(repo, 'cc-stamp');
       await fs.writeFile(path.join(src.ccDir, target), '#!/bin/bash\n# UNCOMMITTED\n');
       vi.spyOn(console, 'warn').mockImplementation(() => {});
       vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -713,7 +718,7 @@ describe('installInjectionHooks — install provenance', () => {
       // version of this one. Both directions have to be pinned.
       const repo = path.join(root, 'cc-clean-stamp');
       await fs.mkdir(repo, { recursive: true });
-      await makeGitCcHookSource(repo, 'cc-clean-stamp', '2026-08-13T12:05:00Z');
+      await makeSource(repo, 'cc-clean-stamp');
       vi.spyOn(console, 'log').mockImplementation(() => {});
       await install(repo);
 
