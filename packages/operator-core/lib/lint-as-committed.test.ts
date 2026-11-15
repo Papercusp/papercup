@@ -2006,13 +2006,41 @@ fs.appendFileSync(${JSON.stringify(received)}, JSON.stringify({ root: process.cw
         });
         expect(phases).not.toContainEqual(expect.objectContaining({ phase: 'validate-and-publish', state: 'complete' }));
         expect(JSON.parse(readFileSync(markerPath, 'utf8'))).toEqual(marker);
-        if (defect !== 'linked-root') expect(lstatSync(join(workRoot, 'node_modules')).isDirectory()).toBe(true);
+        // An escaping cache link must fail before the expensive copy. A
+        // contained missing target still reaches final graph validation.
+        if (defect === 'incomplete-copy') expect(lstatSync(join(workRoot, 'node_modules')).isDirectory()).toBe(true);
+        else expect(existsSync(join(workRoot, 'node_modules'))).toBe(false);
       } finally {
         diagnostics.mockRestore();
         rmSync(parent, { recursive: true, force: true });
         rmSync(f.root, { recursive: true, force: true });
       }
     }, 30_000);
+
+  it('preflights and remaps absolute Bun cache links contained in the donor', async () => {
+    const f = fixture('node build.cjs');
+    const parent = mkdtempSync(join(tmpdir(), 'lac-contained-bun-cache-'));
+    const workRoot = join(parent, 'snapshot');
+    const diagnostics = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      gitFixture(f.root, ['clone', '--local', '--shared', '--quiet', f.root, workRoot]);
+      writeFileSync(join(workRoot, '.git/lint-as-committed-owner.json'), JSON.stringify({ sha: f.head, sourceRepoRoot: f.root }));
+      const installed = join(f.root, 'node_modules/.bun-cache/runtime@1');
+      mkdirSync(installed, { recursive: true });
+      writeFileSync(join(installed, 'index.cjs'), 'module.exports = "contained";\n');
+      const alias = 'node_modules/.bun-cache/runtime/1';
+      mkdirSync(dirname(join(f.root, alias)), { recursive: true });
+      symlinkSync(installed, join(f.root, alias));
+      await mod.materializeIndependentDependencies(f.root, workRoot);
+      expect(realpathSync(join(workRoot, alias))).toBe(join(workRoot, 'node_modules/.bun-cache/runtime@1'));
+      expect(readFileSync(join(workRoot, alias, 'index.cjs'), 'utf8')).toContain('contained');
+      expect(readlinkSync(join(workRoot, alias))).not.toContain(f.root);
+    } finally {
+      diagnostics.mockRestore();
+      rmSync(parent, { recursive: true, force: true });
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it('releases the donor reader before the committed command while preserving independent dependency bytes', async () => {
     const f = fixture('node build.cjs');
