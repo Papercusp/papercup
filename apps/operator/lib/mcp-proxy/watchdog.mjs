@@ -336,10 +336,6 @@ let stallOnsets = [];
 let lastRateEscalationAt = 0;
 let handshakeFailingSince = 0;
 let dataFailingSince = 0;
-let lastRestart = 0; // completion time of the last actual restart
-let restartInFlight = false;
-const restartTimes = []; // epoch ms of actual restarts (rolling 1h window for the circuit breaker)
-
 let logDirEnsured = false;
 const log = (m) => {
   const line = `[mcp-proxy-watchdog ${new Date().toISOString()}] ${m}`;
@@ -354,6 +350,16 @@ const log = (m) => {
     /* durable log unavailable (perm/disk) — console.log remains the fallback; never let logging crash the watchdog */
   }
 };
+
+const restartController = createMcpProxyRestartController();
+
+// Standalone Node entrypoint: the native suite pins these pairs to the canonical
+// RESTART_TARGET_UNITS registry without loading the tool host's TypeScript graph.
+export const MCP_PROXY_HOT_PATH_TARGETS = Object.freeze([
+  Object.freeze({ target: 'mcp-proxy', unit: 'papercup-mcp-proxy.service' }),
+  Object.freeze({ target: 'mcp-proxy-staging', unit: 'papercup-mcp-proxy-staging.service' }),
+  Object.freeze({ target: 'mcp-proxy-bg-host', unit: 'papercup-mcp-proxy-bg-host.service' }),
+]);
 
 /** Pure, fail-closed activation verdict for committed proxy code (EI-22647232817982385).
  * A restart is allowed only when the current generation is known, a committed runtime
@@ -493,7 +499,7 @@ async function mcpProxyActiveForSec(deps = {}) {
     return null;
   }
   if (!Number.isFinite(uptimeSec)) return null;
-  const result = await shImpl('systemctl', ['--user', 'show', UNIT, '-p', 'ActiveEnterTimestampMonotonic', '--value'], {
+  const result = await shImpl('systemctl', ['--user', 'show', deps.unit ?? UNIT, '-p', 'ActiveEnterTimestampMonotonic', '--value'], {
     timeout: 3000,
   });
   if (result.err) return null;
@@ -522,15 +528,19 @@ function parsePtoolJson(stdout) {
 
 /** Invoke the existing coordinated restart surface; never bypass it with raw systemctl. */
 export async function requestMcpProxyHotPathRestart(latestCommitHash, deps = {}) {
+  const target = deps.target ?? 'mcp-proxy';
+  if (!MCP_PROXY_HOT_PATH_TARGETS.some((entry) => entry.target === target)) {
+    return { ok: false, restarted: false, coalesced: false, code: 'target_unknown', target };
+  }
   const shImpl = deps.sh ?? runCommand;
   const ptoolScript = deps.ptoolScript ?? PTOOL_SCRIPT;
   const shortHash = String(latestCommitHash ?? 'unknown').slice(0, 12);
   const args = {
-    target: 'mcp-proxy',
+    target,
     confirm: true,
     authorize: true,
     max_drain_sec: HOT_PATH_RESTART_DRAIN_SEC,
-    reason: `auto-activate committed mcp-proxy hot-path ${shortHash}; clean tree and known generation`,
+    reason: `auto-activate committed ${target} hot-path ${shortHash}; clean tree and known generation`,
   };
   const run = await shImpl(process.execPath, [ptoolScript, 'dev:restart', '--json', '-'], {
     stdin: JSON.stringify(args),
@@ -562,9 +572,80 @@ export async function requestMcpProxyHotPathRestart(latestCommitHash, deps = {})
   };
 }
 
+/** One outcome per configured target; a failed probe/restart cannot strand a later unit. */
+export function createMcpProxyHotPathActivator(deps = {}) {
+  const targets = deps.targets ?? MCP_PROXY_HOT_PATH_TARGETS;
+  const readState = deps.readState ?? readMcpProxyHotPathState;
+  const readActiveForSec = deps.readActiveForSec ?? ((unit) => mcpProxyActiveForSec({ unit }));
+  const requestRestart = deps.requestRestart ??
+    ((sha, target) => requestMcpProxyHotPathRestart(sha, { target }));
+  const admit = deps.admitRestart ?? admitRestart;
+  const settle = deps.settleRestartAttempt ?? settleRestartAttempt;
+  const now = deps.now ?? Date.now;
+  const writeLog = deps.log ?? log;
+  const lastDecisionKeys = new Map();
+  return async () => {
+    let state;
+    try {
+      state = await readState();
+    } catch (error) {
+      writeLog('committed mcp-proxy hot-path state FAILED CLOSED: ' + (error?.message ?? String(error)));
+      return targets.map(({ target }) => ({ target, restartRequested: false, code: 'probe_failed' }));
+    }
+    const outcomes = [];
+    // Restart requests are serialized to avoid draining all proxy routes together.
+    // Read each generation just before its decision, after any preceding restart.
+    for (const { target, unit } of targets) {
+      let restartReserved = false;
+      const prefix = 'committed mcp-proxy hot-path activation [' + target + ']';
+      try {
+        const activeForSec = await readActiveForSec(unit);
+        const verdict = evaluateMcpProxyHotPathActivation({
+          activeForSec,
+          latestCommitMs: state.latestCommitMs,
+          latestCommitHash: state.latestCommitHash,
+          nowMs: now(),
+          dirtyEntries: state.dirtyEntries,
+        });
+        const decisionKey = [state.latestCommitHash, verdict.code, verdict.dirtyCount].join(':');
+        if (verdict.code !== 'generation_current' && lastDecisionKeys.get(target) !== decisionKey) {
+          lastDecisionKeys.set(target, decisionKey);
+          const dirty = verdict.dirtySample?.length ? ' dirty=' + verdict.dirtySample.join(' | ') : '';
+          writeLog(prefix + (verdict.activate ? ' READY' : ' SUPPRESSED') + ' (' + verdict.code +
+            ') commit=' + (state.latestCommitHash?.slice(0, 12) ?? 'UNKNOWN') + dirty);
+        }
+        if (!verdict.activate) {
+          outcomes.push({ target, restartRequested: false, code: verdict.code });
+          continue;
+        }
+        const reason = target + ' committed hot-path ' + state.latestCommitHash.slice(0, 12) +
+          ' is newer than the running generation';
+        if (!admit(reason, unit)) {
+          outcomes.push({ target, restartRequested: false, code: 'restart_suppressed' });
+          continue;
+        }
+        restartReserved = true;
+        const outcome = await requestRestart(state.latestCommitHash, target);
+        settle(outcome, unit);
+        restartReserved = false;
+        const detail = restartFailureDetail([outcome.cause, outcome.error].filter(Boolean).join(' — '));
+        writeLog(outcome.ok
+          ? prefix + ' via dev:restart: ' + outcome.code
+          : prefix + ' REFUSED/FAILED by dev:restart (' + outcome.code + ')' + detail);
+        outcomes.push({ target, restartRequested: outcome.restarted === true, code: outcome.code });
+      } catch (error) {
+        if (restartReserved) settle({ restarted: false }, unit);
+        writeLog(prefix + ' probe FAILED CLOSED: ' + (error?.message ?? String(error)));
+        outcomes.push({ target, restartRequested: false, code: 'probe_failed' });
+      }
+    }
+    return outcomes;
+  };
+}
+
 let hotPathActivationCheckInFlight = false;
 let lastHotPathActivationCheckMs = 0;
-let lastHotPathActivationDecisionKey = null;
+const activateMcpProxyHotPaths = createMcpProxyHotPathActivator();
 
 async function maybeActivateMcpProxyHotPathCode() {
   const checkStartedAtMs = Date.now();
@@ -576,41 +657,8 @@ async function maybeActivateMcpProxyHotPathCode() {
   })) return { restartRequested: false, code: 'throttled_or_in_flight' };
   hotPathActivationCheckInFlight = true;
   lastHotPathActivationCheckMs = checkStartedAtMs;
-  let restartReserved = false;
   try {
-    const [activeForSec, state] = await Promise.all([mcpProxyActiveForSec(), readMcpProxyHotPathState()]);
-    const verdict = evaluateMcpProxyHotPathActivation({
-      activeForSec,
-      latestCommitMs: state.latestCommitMs,
-      latestCommitHash: state.latestCommitHash,
-      nowMs: Date.now(),
-      dirtyEntries: state.dirtyEntries,
-    });
-    const decisionKey = `${state.latestCommitHash ?? 'unknown'}:${verdict.code}:${verdict.dirtyCount ?? ''}`;
-    if (verdict.code !== 'generation_current' && decisionKey !== lastHotPathActivationDecisionKey) {
-      lastHotPathActivationDecisionKey = decisionKey;
-      const dirty = verdict.dirtySample?.length ? ` dirty=${verdict.dirtySample.join(' | ')}` : '';
-      log(`committed mcp-proxy hot-path activation ${verdict.activate ? 'READY' : 'SUPPRESSED'} (${verdict.code}) commit=${state.latestCommitHash?.slice(0, 12) ?? 'UNKNOWN'}${dirty}`);
-    }
-    if (!verdict.activate) return { restartRequested: false, code: verdict.code };
-    const reason = `committed mcp-proxy hot-path ${state.latestCommitHash.slice(0, 12)} is newer than the running generation`;
-    if (!admitRestart(reason)) return { restartRequested: false, code: 'restart_suppressed' };
-    restartReserved = true;
-    const outcome = await requestMcpProxyHotPathRestart(state.latestCommitHash);
-    settleRestartAttempt(outcome);
-    restartReserved = false;
-    // Cause first: the exec message is the full command line and would fill the detail alone.
-    const failureDetail = restartFailureDetail([outcome.cause, outcome.error].filter(Boolean).join(' — '));
-    log(
-      outcome.ok
-        ? `committed mcp-proxy hot-path activation via dev:restart: ${outcome.code} (commit ${state.latestCommitHash.slice(0, 12)})`
-        : `committed mcp-proxy hot-path activation REFUSED/FAILED by dev:restart (${outcome.code})${failureDetail} — monitoring continues`,
-    );
-    return { restartRequested: outcome.restarted === true, code: outcome.code };
-  } catch (error) {
-    if (restartReserved) settleRestartAttempt({ restarted: false });
-    log(`committed mcp-proxy hot-path activation probe FAILED CLOSED: ${error?.message ?? String(error)}`);
-    return { restartRequested: false, code: 'probe_failed' };
+    return { results: await activateMcpProxyHotPaths() };
   } finally {
     hotPathActivationCheckInFlight = false;
   }
@@ -921,42 +969,64 @@ async function probeDataPlane(port) {
   }
 }
 
-function admitRestart(reason) {
-  const now = Date.now();
-  const decision = evaluateRestartAdmission({
-    restartTimesMs: restartTimes,
-    lastRestartMs: lastRestart,
-    nowMs: now,
-    debounceMs: DEBOUNCE_MS,
-    maxRestartsPerHour: MAX_RESTARTS_PER_HR,
-    inFlight: restartInFlight,
-  });
-  restartTimes.splice(0, restartTimes.length, ...decision.recentRestartTimesMs);
-  if (decision.code === 'restart_in_flight') {
-    log(`SUPPRESS (restart already in flight): ${reason}`);
-    return false;
-  }
-  if (decision.code === 'debounce') {
-    log(`SUPPRESS (debounce ${Math.round(decision.debounceRemainingMs / 1000)}s left): ${reason}`);
-    return false;
-  }
-  if (decision.code === 'circuit_open') {
-    log(`CIRCUIT OPEN: ${decision.recentRestartTimesMs.length} actual restarts in the last hour >= cap ${MAX_RESTARTS_PER_HR} — NOT restarting (${reason}). Manual attention needed.`);
-    return false;
-  }
-  restartInFlight = true;
-  return true;
+/** The existing admission policy, scoped to the unit whose process is restarted. */
+export function createMcpProxyRestartController(deps = {}) {
+  const now = deps.now ?? Date.now;
+  const writeLog = deps.log ?? log;
+  const debounceMs = deps.debounceMs ?? DEBOUNCE_MS;
+  const maxRestartsPerHour = deps.maxRestartsPerHour ?? MAX_RESTARTS_PER_HR;
+  const states = new Map();
+  const stateFor = (unit) => {
+    const key = unit.endsWith('.service') ? unit : unit + '.service';
+    if (!states.has(key)) states.set(key, { lastRestartMs: 0, restartTimesMs: [], inFlight: false });
+    return states.get(key);
+  };
+  return {
+    admit(reason, unit = UNIT) {
+      const state = stateFor(unit);
+      const decision = evaluateRestartAdmission({
+        restartTimesMs: state.restartTimesMs,
+        lastRestartMs: state.lastRestartMs,
+        nowMs: now(),
+        debounceMs,
+        maxRestartsPerHour,
+        inFlight: state.inFlight,
+      });
+      state.restartTimesMs = decision.recentRestartTimesMs;
+      if (!decision.allowed) {
+        if (decision.code === 'restart_in_flight') {
+          writeLog('SUPPRESS (restart already in flight) [' + unit + ']: ' + reason);
+        } else if (decision.code === 'debounce') {
+          writeLog('SUPPRESS (debounce ' + Math.round(decision.debounceRemainingMs / 1000) +
+            's left) [' + unit + ']: ' + reason);
+        } else if (decision.code === 'circuit_open') {
+          writeLog('CIRCUIT OPEN: ' + decision.recentRestartTimesMs.length +
+            ' actual restarts in the last hour >= cap ' + maxRestartsPerHour +
+            ' — NOT restarting [' + unit + '] (' + reason + '). Manual attention needed.');
+        } else {
+          writeLog('SUPPRESS [' + unit + '] (' + decision.code + '): ' + reason);
+        }
+        return false;
+      }
+      state.inFlight = true;
+      return true;
+    },
+    settle(outcome, unit = UNIT) {
+      const state = stateFor(unit);
+      const next = recordRestartOutcome(state, outcome, now());
+      state.restartTimesMs = next.restartTimesMs;
+      state.lastRestartMs = next.lastRestartMs;
+      state.inFlight = false;
+    },
+  };
 }
 
-function settleRestartAttempt(outcome) {
-  const next = recordRestartOutcome(
-    { lastRestartMs: lastRestart, restartTimesMs: restartTimes },
-    outcome,
-    Date.now(),
-  );
-  restartTimes.splice(0, restartTimes.length, ...next.restartTimesMs);
-  lastRestart = next.lastRestartMs;
-  restartInFlight = false;
+function admitRestart(reason, unit = UNIT) {
+  return restartController.admit(reason, unit);
+}
+
+function settleRestartAttempt(outcome, unit = UNIT) {
+  restartController.settle(outcome, unit);
 }
 
 function restart(reason) {
@@ -1220,7 +1290,8 @@ function start() {
   );
   log(
     `committed mcp-proxy hot-path activation (EI-22647232817982385) — checks every ${HOT_PATH_ACTIVATION_CHECK_MS}ms; ` +
-      `requires a newer committed clean runtime tree and uses coordinated dev:restart with a ${HOT_PATH_RESTART_DRAIN_SEC}s call drain`,
+      `requires a newer committed clean runtime tree and uses coordinated dev:restart with a ${HOT_PATH_RESTART_DRAIN_SEC}s call drain; targets=` +
+      MCP_PROXY_HOT_PATH_TARGETS.map(({ target }) => target).join(','),
   );
   if (probeArgs.invalid) {
     // Loud at startup rather than once per 10min throttle window: every poll from here on is a

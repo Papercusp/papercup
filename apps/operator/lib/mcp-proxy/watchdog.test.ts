@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { MCP_PROXY_HOT_PATHS as SERVICE_HEALTH_MCP_PROXY_HOT_PATHS } from '../../../../packages/operator-core/lib/service-health';
+import { RESTART_TARGET_UNITS } from '../../../../packages/operator-core/lib/agent-tools/dev/restart-target-units';
 
 // The watchdog is a long-lived systemd entrypoint that starts its poll loop on import. Opt out so
 // we can unit-test the pure decision logic without launching setInterval / hitting the network.
@@ -28,6 +29,9 @@ let readMcpProxyHotPathState: Watchdog['readMcpProxyHotPathState'];
 let requestMcpProxyHotPathRestart: Watchdog['requestMcpProxyHotPathRestart'];
 let runCommand: Watchdog['runCommand'];
 let describeCommandFailure: Watchdog['describeCommandFailure'];
+let MCP_PROXY_HOT_PATH_TARGETS: Watchdog['MCP_PROXY_HOT_PATH_TARGETS'];
+let createMcpProxyHotPathActivator: Watchdog['createMcpProxyHotPathActivator'];
+let createMcpProxyRestartController: Watchdog['createMcpProxyRestartController'];
 beforeAll(async () => {
   ({
     shouldRestart,
@@ -50,7 +54,132 @@ beforeAll(async () => {
     requestMcpProxyHotPathRestart,
     runCommand,
     describeCommandFailure,
+    MCP_PROXY_HOT_PATH_TARGETS,
+    createMcpProxyHotPathActivator,
+    createMcpProxyRestartController,
   } = await import('./watchdog.mjs'));
+});
+
+describe('mcp-proxy watchdog — every registered proxy activation', () => {
+  it('pins the standalone policy to the complete canonical proxy target family', () => {
+    expect(MCP_PROXY_HOT_PATH_TARGETS).toEqual(
+      Object.entries(RESTART_TARGET_UNITS)
+        .filter(([target]) => target === 'mcp-proxy' || target.startsWith('mcp-proxy-'))
+        .map(([target, unit]) => ({ target, unit })),
+    );
+  });
+
+  it('keeps debounce, in-flight and actual-restart accounting independent per unit', () => {
+    const controller = createMcpProxyRestartController({ now: () => 1_000_000, log: () => {} });
+    const [main, staging, background] = MCP_PROXY_HOT_PATH_TARGETS;
+    expect(controller.admit('main', main.unit)).toBe(true);
+    expect(controller.admit('same main', main.unit.replace(/\.service$/, ''))).toBe(false);
+    expect(controller.admit('staging', staging.unit)).toBe(true);
+    controller.settle({ restarted: false }, staging.unit);
+    expect(controller.admit('retry staging', staging.unit)).toBe(true);
+    controller.settle({ restarted: false, coalesced: true }, staging.unit);
+    controller.settle({ restarted: true }, main.unit);
+    expect(controller.admit('debounced main', main.unit)).toBe(false);
+    expect(controller.admit('background', background.unit)).toBe(true);
+    expect(controller.admit('staging after coalesce', staging.unit)).toBe(true);
+  });
+
+  it('continues past an unknown generation and a throwing restart to the later unit', async () => {
+    const targets = MCP_PROXY_HOT_PATH_TARGETS;
+    const requested: string[] = [];
+    const controller = createMcpProxyRestartController({ now: () => 1_000_000, log: () => {} });
+    const activate = createMcpProxyHotPathActivator({
+      readState: async () => ({
+        root: '/repo', latestCommitMs: 950_000, latestCommitHash: 'abcdef', dirtyEntries: [], error: null,
+      }),
+      readActiveForSec: async (unit) => unit === targets[0].unit ? null : 100,
+      requestRestart: async (_sha, target) => {
+        requested.push(target);
+        if (target === targets[1].target) throw new Error('restart unavailable');
+        return { ok: true, restarted: true, code: 'restarted' };
+      },
+      admitRestart: controller.admit,
+      settleRestartAttempt: controller.settle,
+      now: () => 1_000_000,
+      log: () => {},
+    });
+    expect(await activate()).toEqual([
+      { target: targets[0].target, restartRequested: false, code: 'generation_unknown' },
+      { target: targets[1].target, restartRequested: false, code: 'probe_failed' },
+      { target: targets[2].target, restartRequested: true, code: 'restarted' },
+    ]);
+    expect(requested).toEqual([targets[1].target, targets[2].target]);
+  });
+
+  it('returns every target across 2/3/4-unit sweeps, permutations and recreated controllers', async () => {
+    const complete = [
+      ...MCP_PROXY_HOT_PATH_TARGETS,
+      { target: 'mcp-proxy-fixture', unit: 'papercup-mcp-proxy-fixture.service' },
+    ];
+    for (const size of [2, 3, 4]) {
+      const population = complete.slice(0, size);
+      for (const targets of [population, [...population].reverse()]) {
+        for (let processIndex = 0; processIndex < 2; processIndex++) {
+          let clock = 1_000_000;
+          let batch = 0;
+          let reads = 0;
+          const requested: string[] = [];
+          const controller = createMcpProxyRestartController({ now: () => clock, log: () => {} });
+          const activate = createMcpProxyHotPathActivator({
+            targets,
+            readState: async () => {
+              reads++;
+              return {
+                root: '/repo', latestCommitMs: clock - 10_000,
+                latestCommitHash: 'commit-' + batch, dirtyEntries: [], error: null,
+              };
+            },
+            readActiveForSec: async (unit) => batch === 0 && unit === targets[0].unit ? null : 100,
+            requestRestart: async (_sha, target) => {
+              requested.push(target);
+              return { ok: true, restarted: true, code: 'restarted' };
+            },
+            admitRestart: controller.admit,
+            settleRestartAttempt: controller.settle,
+            now: () => clock,
+            log: () => {},
+          });
+          for (batch = 0; batch < 4; batch++) {
+            const outcomes = await activate();
+            expect(outcomes.map(({ target }) => target)).toEqual(targets.map(({ target }) => target));
+            expect(outcomes.at(-1)).toEqual({
+              target: targets.at(-1)!.target, restartRequested: true, code: 'restarted',
+            });
+            clock += 300_001;
+          }
+          expect(reads).toBe(4);
+          expect(requested.filter((target) => target === targets.at(-1)!.target)).toHaveLength(4);
+          expect(requested).toHaveLength(size * 4 - 1);
+        }
+      }
+    }
+  });
+
+  it('routes every supported target through the coordinated stdin adapter and rejects unknown targets', async () => {
+    for (const { target } of MCP_PROXY_HOT_PATH_TARGETS) {
+      let payload: { target?: string; confirm?: boolean; authorize?: boolean } = {};
+      const outcome = await requestMcpProxyHotPathRestart('abcdef', {
+        target,
+        sh: async (_command, _args, options) => {
+          payload = JSON.parse(options?.stdin ?? '{}');
+          return { err: null, stdout: JSON.stringify({ ok: true, restarted: true }) };
+        },
+      });
+      expect(payload).toMatchObject({ target, confirm: true, authorize: true });
+      expect(outcome).toMatchObject({ ok: true, restarted: true });
+    }
+    let invoked = false;
+    expect(await requestMcpProxyHotPathRestart('abcdef', {
+      target: 'unknown-proxy',
+      sh: async () => { invoked = true; return { err: null, stdout: '' }; },
+    })).toMatchObject({ ok: false, code: 'target_unknown' });
+    expect(invoked).toBe(false);
+  });
 });
 
 /**
@@ -255,13 +384,15 @@ describe('mcp-proxy watchdog — committed hot-path activation (EI-2264723281798
           '});',
         ].join('\n'),
       );
-      const outcome = await requestMcpProxyHotPathRestart('abcdef1234567890', { ptoolScript: script });
-      expect(outcome).toMatchObject({
-        ok: true,
-        restarted: true,
-        code: 'restarted',
-        body: { target: 'mcp-proxy', confirm: true, argv: ['dev:restart', '--json', '-'] },
-      });
+      for (const { target } of MCP_PROXY_HOT_PATH_TARGETS) {
+        const outcome = await requestMcpProxyHotPathRestart('abcdef1234567890', { target, ptoolScript: script });
+        expect(outcome).toMatchObject({
+          ok: true,
+          restarted: true,
+          code: 'restarted',
+          body: { target, confirm: true, argv: ['dev:restart', '--json', '-'] },
+        });
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
