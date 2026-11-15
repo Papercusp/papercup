@@ -27,6 +27,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { expandWorkspaces } from '../assert-workspace-links.mjs';
 
 /** Parse JSON without letting a malformed file take down the whole doctor run. */
 function readJsonOrNull(path) {
@@ -87,12 +88,10 @@ export function rootWorkspacePatterns(repoRoot) {
  */
 export function isRootWorkspace(submodulePath, patterns) {
   const normalized = submodulePath.replace(/\/+$/, '');
-  return patterns.some((pattern) => {
-    const p = pattern.replace(/\/+$/, '');
-    if (p === normalized) return true;
-    if (p.endsWith('/*')) return dirname(normalized) === p.slice(0, -2);
-    return false;
-  });
+  // Use the link guard's matcher, with a one-directory census so this predicate
+  // never scans the filesystem. Exclusions apply to the whole workspace set.
+  return expandWorkspaces(patterns.map(pattern => pattern.replace(/\/+$/, '')),
+    '', { directories: [normalized] }).length > 0;
 }
 
 /**

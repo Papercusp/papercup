@@ -210,6 +210,33 @@ describe('isRootWorkspace', () => {
   it('is not fooled by a prefix collision', () => {
     expect(isRootWorkspace('papercusp-desktop-extra', ['papercusp-desktop'])).toBe(false);
   });
+
+  it.each([
+    ['apps/*', '!apps/slack-asana-bug-drill'],
+    ['!apps/slack-asana-bug-drill', 'apps/*'],
+    ['apps/*/', '!apps/slack-asana-bug-drill/'],
+    ['apps/*', '!apps/*-bug-drill'],
+  ])('honors workspace exclusions regardless of order: %j', (...patterns) => {
+    expect(isRootWorkspace('apps/slack-asana-bug-drill/', patterns)).toBe(false);
+    expect(isRootWorkspace('apps/operator', patterns)).toBe(true);
+  });
+
+  it('does not treat a negative pattern as an inclusion', () => {
+    expect(isRootWorkspace('apps/operator', ['!apps/other'])).toBe(false);
+  });
+
+  it('reports missing dependencies in an excluded independent app', () => {
+    makeSubmodule('apps/slack-asana-bug-drill');
+    makeSubmodule('apps/operator');
+    const problems = find(['apps/slack-asana-bug-drill', 'apps/operator'],
+      ['apps/*', '!apps/slack-asana-bug-drill']);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatchObject({
+      path: 'apps/slack-asana-bug-drill',
+      fix: 'npm run install:safe -- --repo-root apps/slack-asana-bug-drill',
+    });
+    expect(problems[0].reason).toMatch(/not an npm workspace/i);
+  });
 });
 
 describe('binShimNames', () => {
