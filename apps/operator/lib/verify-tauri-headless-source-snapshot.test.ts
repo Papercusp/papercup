@@ -62,6 +62,28 @@ function committedSnapshotSource(end = operatorSnapshotCallIdx, testStub = norma
 }
 
 describe('EI-28749412177316997 — exact-ref dependencies are admitted before source export', () => {
+  it('selects npm workspaces plus desktop while honoring independent app exclusions', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'native-workspace-boundary-'));
+    const workspaceHelper = src.match(/^verifier_dependency_workspaces\(\) \{[\s\S]*?^\}/m)?.[0] ?? '';
+    try {
+      writeFileSync(resolve(root, 'package.json'), JSON.stringify({
+        workspaces: ['packages/*', 'apps/*', '!apps/independent'],
+      }));
+      for (const dir of ['packages/cli', 'apps/operator', 'apps/independent', 'papercusp-desktop']) {
+        mkdirSync(resolve(root, dir), { recursive: true });
+        writeFileSync(resolve(root, dir, 'package.json'), '{}');
+      }
+      expect(workspaceHelper).not.toBe('');
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail', workspaceHelper, 'verifier_dependency_workspaces "$1" "$2"',
+      ].join('\n'), '_', resolve(__dirname, '../../..'), root], {
+        encoding: 'utf8', timeout: 10_000, env: hermeticSpawnEnv(),
+      });
+      expect(result.status, spawnDiagnostic(result)).toBe(0);
+      expect(result.stdout.trim().split('\n')).toEqual(['apps/operator', 'packages/cli', 'papercusp-desktop']);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   const commit = '0123456789abcdef0123456789abcdef01234567';
   const header = (verdict: string) => `DEPENDENCY_GENERATION_PREDICTION schema=1 ref=${commit} input=${'a'.repeat(64)} live=${'b'.repeat(64)} verdict=${verdict} links=0`;
   const preflight = src.match(/^preflight_verifier_dependencies\(\) \{[\s\S]*?^\}/m)?.[0] ?? '';
@@ -87,6 +109,7 @@ describe('EI-28749412177316997 — exact-ref dependencies are admitted before so
         'node() { echo "$2" >> "$WORK/order"; if [ "$2" = verifier-measure ]; then echo 4096; fi; }',
         'snapshot_verifier_pinned_deps() { echo deps >> "$WORK/order"; }',
         committedSnapshotSource(operatorSnapshotCallIdx, sourceRefNormalizationTestStub),
+        'verifier_dependency_workspaces() { printf "%s\\n" packages/cli papercusp-desktop; }',
         preflight,
         'snapshot_committed_operator_source || exit $?',
       ].join('\n')], { encoding: 'utf8', timeout: 5_000, env: {
@@ -106,7 +129,7 @@ describe('EI-28749412177316997 — exact-ref dependencies are admitted before so
     expect(preflight).not.toBe('');
     const result = run(header(verdict));
     expect(result.status, spawnDiagnostic(result)).toBe(0);
-    expect(result.args).toBe(`--integration /canonical donor --predict-ref ${commit}`);
+    expect(result.args).toBe(`--integration /canonical donor --predict-ref ${commit} --workspace-dir packages/cli --workspace-dir papercusp-desktop`);
     expect(result.order).toEqual(['verifier-inputs-check', 'predict', 'verifier-measure', 'reserve', 'allocated', 'verifier-prepare', 'verifier-verify', 'deps']);
     expect(result.allocated).toBe(true);
   });
@@ -1949,6 +1972,7 @@ describe("native copy callers preserve frozen helpers and bounded admission", ()
       const before = readFileSync(helper, "utf8");
       const result = spawnSync("bash", ["-c", [
         "set -euo pipefail", dependencySnapshotSource,
+        'verifier_dependency_workspaces() { printf "%s\\n" packages/cli papercusp-desktop; }',
         'snapshot_verifier_pinned_deps "$TEST_FROZEN" "$TEST_HELPER"',
       ].join("\n")], { encoding: "utf8", timeout: 10_000, env: {
         ...inheritedEnv,
@@ -1975,7 +1999,7 @@ describe("native copy callers preserve frozen helpers and bounded admission", ()
   it.each([0, 74])("uses the immutable generation when supported and preserves its refusal: %s", status => {
     const result = snapshot("copy", true, status);
     expect(result.status, result.diagnostic).toBe(status);
-    expect(result.order).toBe(`admission\nprewarm:--integration /canonical-donor --ensure-ref fixture-commit --verifier-source ${result.frozen} --retain-as native-verifier\nhelper:${result.helper}\ngeneration:/canonical-donor:${result.frozen}:copy\n`);
+    expect(result.order).toBe(`admission\nprewarm:--integration /canonical-donor --ensure-ref fixture-commit --verifier-source ${result.frozen} --retain-as native-verifier --workspace-dir packages/cli --workspace-dir papercusp-desktop\nhelper:${result.helper}\ngeneration:/canonical-donor:${result.frozen}:copy\n`);
   });
 
   it("prewarms the live input when no committed source ref is selected", () => {
@@ -1989,7 +2013,7 @@ describe("native copy callers preserve frozen helpers and bounded admission", ()
   it("preserves a dependency prewarm refusal before copying the generation", () => {
     const result = snapshot("copy", true, 0, undefined, 74);
     expect(result.status, result.diagnostic).toBe(74);
-    expect(result.order).toContain(`prewarm:--integration /canonical-donor --ensure-ref fixture-commit --verifier-source ${result.frozen} --retain-as native-verifier\n`);
+    expect(result.order).toContain(`prewarm:--integration /canonical-donor --ensure-ref fixture-commit --verifier-source ${result.frozen} --retain-as native-verifier --workspace-dir packages/cli --workspace-dir papercusp-desktop\n`);
     expect(result.order).not.toContain("helper:");
   });
 
@@ -1998,7 +2022,7 @@ describe("native copy callers preserve frozen helpers and bounded admission", ()
       ...hermeticSpawnEnv(), NODE_OPTIONS: failingOuterPreload,
     });
     expect(result.status, result.diagnostic).toBe(0);
-    expect(result.order).toBe(`admission\nprewarm:--integration /canonical-donor --ensure-ref fixture-commit --verifier-source ${result.frozen} --retain-as native-verifier\nhelper:${result.helper}\ngeneration:/canonical-donor:${result.frozen}:copy\n`);
+    expect(result.order).toBe(`admission\nprewarm:--integration /canonical-donor --ensure-ref fixture-commit --verifier-source ${result.frozen} --retain-as native-verifier --workspace-dir packages/cli --workspace-dir papercusp-desktop\nhelper:${result.helper}\ngeneration:/canonical-donor:${result.frozen}:copy\n`);
     expect(result.stderr).not.toContain('outer runner preload leaked');
   });
 
@@ -2032,7 +2056,7 @@ describe("native copy callers preserve frozen helpers and bounded admission", ()
     );
     const entries = (source: string) => [...source.matchAll(/'([^']+)'/g)].map(match => match[1]);
     expect(entries(preflightProfile).length).toBeGreaterThan(0);
-    for (const path of ["scripts/verifier-source-preflight.mjs", "scripts/pc-heavy.sh", "scripts/lib/budgeted-task-scheduler.mjs", "apps/operator/bin/release/dependency-generation.sh"]) {
+    for (const path of ["scripts/verifier-source-preflight.mjs", "scripts/assert-workspace-links.mjs", "scripts/pc-heavy.sh", "scripts/lib/budgeted-task-scheduler.mjs", "apps/operator/bin/release/dependency-generation.sh"]) {
       expect(entries(preflightProfile)).toContain(path);
     }
   });
