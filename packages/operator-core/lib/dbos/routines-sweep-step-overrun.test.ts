@@ -77,8 +77,14 @@ describe('routinesSweepTick step overrun logging', () => {
     expect(proxy).toContain('runSweepStepWithOverrunBudget(');
     expect(proxy).toContain('Reflect.apply(value, target, [wrappedOperation, ...stepArgs])');
     expect(pass).toMatch(/DBOS\.runStep\(/);
-    expect(pass).not.toMatch(/runLoopRebaseSweep\(sql\)/);
-    expect(pass).toContain('runLoopRebaseSweep(sql, DBOS)');
+    // Loop rebase runs in the tick's CRITICAL pass, ahead of the noncritical sweep pass, and
+    // still through the diagnostic proxy. It must not be duplicated in the noncritical pass
+    // and must never fall back to the un-proxied DBOS.
+    const rebaseCall = 'await runLoopRebaseSweep(getOrgPg().sql, timedSweepDbos)';
+    expect(tick).toContain(rebaseCall);
+    expect(tick.indexOf(rebaseCall)).toBeLessThan(tick.indexOf('await routinesSweepPassImpl(timedSweepDbos)'));
+    expect(tick).not.toMatch(/runLoopRebaseSweep\(.*,\s*DBOS\)/);
+    expect(pass).not.toMatch(/runLoopRebaseSweep\(/);
     expect(loopHelper).toContain('dbos: typeof DBOS = DBOS');
     expect(loopHelper).toContain('await dbos.runStep(');
   });
