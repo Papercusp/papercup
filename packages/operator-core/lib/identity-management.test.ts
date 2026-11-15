@@ -94,9 +94,10 @@ describe('identity management service', () => {
     try {
       for (const [componentId, slot] of [[domainId, 'domain'], [practiceId, 'practice']]) {
         const dir = join(root, '.papercusp', 'blueprints', componentId!);
-        await mkdir(dir, { recursive: true });
+        await mkdir(join(dir, 'prompts'), { recursive: true });
         await writeFile(join(dir, 'blueprint.yaml'), stringifyYaml({ id: componentId,
           extends: 'base', version: '1.0.0', slots: [{ slot }] }));
+        await writeFile(join(dir, 'prompts', `${slot}.md`), `COMPOSE ${slot}\n`);
       }
       const input = { id, repoDir: root,
         componentRefs: [`domain:${domainId}`, `practice:${practiceId}`] };
