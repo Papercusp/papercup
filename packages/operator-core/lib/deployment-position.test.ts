@@ -12,7 +12,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { gitPipelinePosition } = vi.hoisted(() => ({ gitPipelinePosition: vi.fn() }));
-vi.mock('./git-pipeline-position', () => ({ gitPipelinePosition }));
+vi.mock('./git-pipeline-position', () => ({
+  gitPipelinePosition,
+  GIT_PIPELINE_POSITION_TOTAL_BUDGET_MS: 35_000,
+}));
 
 import {
   citationDeploymentForPaths,
