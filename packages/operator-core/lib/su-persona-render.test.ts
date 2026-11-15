@@ -8,7 +8,11 @@
  * the contract both paths depend on.
  */
 import { describe, expect, it } from 'vitest';
-import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { composeSuStackSource, suSessionBinding } from '@papercusp/orchestrator/blueprint';
+import { renderSuPlaybook } from './desktop-install/papercusp-files';
 import {
   applySuPromptOverlays,
   buildSuInstructionRuntime,
@@ -29,6 +33,42 @@ const runtime = buildSuInstructionRuntime({
   workspaceId: 'ws',
   harnessSlug: 'papercusp',
   planSlug: null,
+});
+
+it('lossless rule survives every active precedence layer', async () => {
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
+  const harnessDir = join(repoRoot, 'libs/papercusp/packages/harness');
+  const baseSource = join(harnessDir, 'blueprints/base/prompts/su.md');
+  const source = readFileSync(baseSource, 'utf8');
+  const heading = '- **Lossless data — bound the work, never the truth.**';
+  const start = source.indexOf(heading);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const end = source.indexOf('\n- **', start + heading.length);
+  const rule = source.slice(start, end < 0 ? undefined : end);
+  expect(rule).toContain('  - **Planning:**');
+  expect(rule).toContain('  - **Reviewing:**');
+  for (const agent of ['claude', 'codex', 'omp']) {
+    for (const tier of ['full', 'fleet'] as const) {
+      const binding = suSessionBinding({
+        fleetRole: tier === 'fleet' ? 'member' : null,
+        modes: tier === 'fleet' ? ['auto'] : null,
+      });
+      const base = await renderSuPlaybook({
+        agent, profile: 'engineer', tier, baseSource,
+        baseText: composeSuStackSource({ harnessDir, binding }).text,
+        overlayDir: join(repoRoot, 'apps/operator/prompts'),
+        operatorAppRoot: join(repoRoot, 'apps/operator'),
+        renderWireSchemas: () => '',
+      });
+      const final = await applySuPromptOverlays({
+        basePromptText: base.text, agent, launchedBy: 'lossless-test-launcher',
+        modeSection: '', instructionRuntime: runtime,
+      });
+      expect(final.promptText, `${agent}/${tier}`).toContain(rule);
+      expect(final.promptText).toContain('## Effective instruction precedence');
+      expect(final.promptText).toContain('lossless-test-launcher');
+    }
+  }
 });
 
 describe('applySuPromptOverlays — the one canonical overlay order', () => {
