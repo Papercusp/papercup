@@ -99,11 +99,13 @@ async function makeGitHookSource(
   return { injectDir, coordHook: path.join(ompDir, 'coord-hook.ts') };
 }
 
+// Choose the hooks each provenance assertion exercises. Defaulting to the full
+// manifest silently turns single-hook cases into repeated installer/syntax work.
 async function makeGitCcHookSource(
   repo: string,
   marker: string,
   committedAt: string,
-  files: readonly string[] = CC_HOOK_FILES,
+  files: readonly string[],
 ): Promise<{ ccDir: string }> {
   const ccDir = path.join(repo, 'scripts', 'hooks', 'cc');
   await fs.mkdir(ccDir, { recursive: true });
@@ -545,7 +547,9 @@ describe('installInjectionHooks — install provenance', () => {
   it('logs and stamps the CC source unit + path-specific sha on a successful install', async () => {
     const repo = path.join(root, 'cc-checkout');
     await fs.mkdir(repo, { recursive: true });
-    const source = await makeGitCcHookSource(repo, 'cc-success', '2026-08-13T12:05:00Z');
+    const source = await makeGitCcHookSource(
+      repo, 'cc-success', '2026-08-13T12:05:00Z', ['pretooluse-locks-acquire.sh'],
+    );
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     const result = await installPapercuspFiles({
@@ -582,7 +586,7 @@ describe('installInjectionHooks — install provenance', () => {
     it('repairs drifted permissions even when the bytes are identical', async () => {
       const repo = path.join(root, 'cc-mode-drift');
       await fs.mkdir(repo, { recursive: true });
-      await makeGitCcHookSource(repo, 'cc-mode', '2026-08-13T12:05:00Z');
+      await makeGitCcHookSource(repo, 'cc-mode', '2026-08-13T12:05:00Z', [target]);
       vi.spyOn(console, 'log').mockImplementation(() => {});
       const opts = {
         home,
@@ -731,8 +735,12 @@ describe('installInjectionHooks — install provenance', () => {
     const staleRepo = path.join(root, 'cc-stale-checkout');
     await fs.mkdir(newerRepo, { recursive: true });
     await fs.mkdir(staleRepo, { recursive: true });
-    const newer = await makeGitCcHookSource(newerRepo, 'cc-newer', '2026-08-13T12:05:00Z');
-    const stale = await makeGitCcHookSource(staleRepo, 'cc-stale', '2026-08-13T12:00:00Z');
+    const newer = await makeGitCcHookSource(
+      newerRepo, 'cc-newer', '2026-08-13T12:05:00Z', ['userpromptsubmit-provenance.sh'],
+    );
+    const stale = await makeGitCcHookSource(
+      staleRepo, 'cc-stale', '2026-08-13T12:00:00Z', ['userpromptsubmit-provenance.sh'],
+    );
 
     await installPapercuspFiles({
       home,
