@@ -22,7 +22,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, onTestFailed, vi } from 'vitest';
-import { bindRuntimeExecEntry, bindRuntimeProcessTree, observeRuntimeExecEntry, observeRuntimeExecutableMemory, observeRuntimePageSize, observeRuntimeProcessIdentity,
+import { bindRuntimeExecEntry, bindRuntimeProcessTree, observeRuntimeExecEntry, observeRuntimeExecutableMemory, observeRuntimePageSize, observeRuntimeProcessIdentity, isRuntimeProcessAlive,
   observeRuntimeTracerIdentity, runtimeFileTraceArguments } from './memory/bench/runtime-file-opens.mjs';
 import {
   ROOT as SOURCE_ROOT,
@@ -4457,14 +4457,7 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
         };
         const tracerAlive = () => {
           if (!tracerIdentity) return false;
-          try {
-            const state = readFileSync('/proc/' + tracerIdentity.processId + '/stat', 'utf8').split(') ')[1][0];
-            return state !== 'Z' && state !== 'X'
-              && observeRuntimeProcessIdentity(tracerIdentity.processId).startTimeTicks === tracerIdentity.startTimeTicks;
-          } catch (error) {
-            if (['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) return false;
-            throw error;
-          }
+          return isRuntimeProcessAlive(tracerIdentity);
         };
         try {
           if (execEntry) {
@@ -4480,6 +4473,8 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
             process.kill(tracerIdentity!.processId, 'SIGSTOP'); tracerStopped = true;
             await until(() => readFileSync('/proc/' + tracerIdentity!.processId + '/stat', 'utf8')
               .split(') ')[1].startsWith('T '), 'entry tracer stop');
+            expect(tracerIdentity!.parentProcessId).not.toBe(process.pid);
+            expect(tracerAlive()).toBe(true);
             const observation = observeRuntimeExecEntry(identity!, tracerIdentity!);
             // Keep the raw kernel witness. A later selected-memory snapshot
             // cannot supply historical mapping origins at this boundary.
@@ -4525,6 +4520,7 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
           expect(()=>observeRuntimeExecutableMemory(launchIdentity,[target!])).toThrow('task is not group-stopped');
           process.kill(tracerIdentity.processId,'SIGSTOP'); tracerStopped=true;
           await waitStopped(tracerIdentity.processId,'tracer');
+          expect(tracerAlive()).toBe(true);
           const observation=observeRuntimeExecutableMemory(launchIdentity,[target!],tracerIdentity);
           memory={launchIdentity,tracerIdentity,observation};
           process.kill(tracerIdentity.processId,'SIGCONT'); tracerStopped=false;
