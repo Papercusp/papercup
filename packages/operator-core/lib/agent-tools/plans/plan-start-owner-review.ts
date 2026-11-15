@@ -14,6 +14,7 @@ import { PLAN_ADVISORY_LOCK_BUDGET_MS } from './plan-lock-key';
 import { computeSpecSetHash } from './spec-clause-compiler';
 import { listSpecClauses, type SpecClauseRevision, type SpecClauseSql } from './spec-clauses-store';
 import { barSetHashOf, clauseSemanticHash, isLiveBarCritiqueClause } from './plan-start-critique-gate';
+import { formatPlanStartProofRefusal } from './plan-start-proof-refusal';
 
 const HASH = z.string().regex(/^[a-f0-9]{64}$/);
 export const ownerSelectedReviewSchema = z.object({
@@ -205,7 +206,7 @@ export async function revalidateOwnerSelectedReviewForStart(sql: PlanRevisionSql
     const authorIds = [...planAuthorIds, ...audits.map(row => row.created_by)]
       .filter((id): id is string => typeof id === 'string' && Boolean(id.trim()));
     const review = await loadOwnerSelectedReview(scope, authorIds, sql as Sql, true);
-    if (!review?.ok) throw new Error(`plan_start_proof_refused:${review?.reason ?? 'review_receipt_missing'}`);
+    if (!review?.ok) throw new Error(formatPlanStartProofRefusal([review?.reason ?? 'review_receipt_missing']));
   }
   await sql`SELECT set_config('lock_timeout', ${settings!.lock_timeout}, true)`;
 }

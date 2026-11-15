@@ -208,15 +208,26 @@ export async function validateBarCritiquePlanOrigin(
       typeof harnessSlug !== 'string' || !harnessSlug.trim() || harnessSlug !== harnessSlug.trim()) {
     return { error: 'bar_critique_requires_plan', hint };
   }
-  const rows = await sql<{ one: number }[]>`
-    SELECT 1 AS one
+  // No LIMIT: a slug has at most one row per harness, and every row must be
+  // seen. A harness move leaves the old copy `superseded`; plans:start reads
+  // the live row, so a critique bound to the superseded copy can never count,
+  // and its discovery check would judge the wrong document (WI-6554700010049218).
+  const rows = await sql<{ harness_slug: string; status: string | null }[]>`
+    SELECT harness_slug, status
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${req.workspaceId}
-       AND harness_slug = ${harnessSlug}
        AND plan_slug = ${planSlug}
-     LIMIT 1
   `;
-  return rows.length ? null : { error: 'bar_critique_requires_plan', hint };
+  const selected = rows.find((row) => row.harness_slug === harnessSlug);
+  if (selected && selected.status !== 'superseded') return null;
+  const live = rows.filter((row) => row.status !== 'superseded').map((row) => row.harness_slug).sort();
+  const superseded = selected
+    ? ` The '${planSlug}' row in harness '${harnessSlug}' is superseded (a harness move left it behind), so its bars can never start.`
+    : '';
+  const elsewhere = live.length
+    ? ` The live '${planSlug}' row is in harness ${live.map((h) => `'${h}'`).join(', ')}: pass harness:'${live[0]}'.`
+    : '';
+  return { error: 'bar_critique_requires_plan', hint: `${hint}${superseded}${elsewhere}` };
 }
 
 /** Identities already reserved by a same-plan critique. plans:start reads the

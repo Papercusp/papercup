@@ -343,8 +343,14 @@ export function assessDiscovery(content: string, context: DiscoveryAuditContext,
       basis.evidence[ref] !== observed.evidence[ref]);
     if (!changedTargets.length && !changedEvidence.length) continue;
     finding.questions.forEach(ref => reopenedQuestions.add(ref));
+    // A whole-file source ref re-stales on ANY committed change to that file; say how to
+    // scope it to the declaration the finding relies on (WI-6554700010049338).
+    const wholeFileSources = changedEvidence.filter(ref => ref.startsWith('source:') && !ref.includes('#'));
+    const anchorHint = wholeFileSources.length ? ` ${wholeFileSources.join(', ')} ${wholeFileSources.length === 1 ? 'is' : 'are'}`
+      + ' cited as a whole file, so any committed change to it re-stales this finding; cite source:<path>#<Symbol>'
+      + ' (or #<Class.member>) to track only the declaration the finding relies on.' : '';
     blockers.push({ code: changedTargets.length ? 'discovery_change_unsupported' : 'discovery_evidence_unusable',
-      path: `findings.${finding.id}`, detail: `${finding.id}: reconcile the affected conclusion/disposition after changes to ${[...changedTargets, ...changedEvidence].join(', ')}; affected questions: ${finding.questions.join(', ') || 'no-material-unknowns basis'}.` });
+      path: `findings.${finding.id}`, detail: `${finding.id}: reconcile the affected conclusion/disposition after changes to ${[...changedTargets, ...changedEvidence].join(', ')}; affected questions: ${finding.questions.join(', ') || 'no-material-unknowns basis'}.${anchorHint}` });
   }
   const evidence = [...context.evidence].sort((a, b) => a.ref.localeCompare(b.ref));
   const removedTargets = context.targets.filter(t => t.change === 'removed').map(t => t.ref).sort();

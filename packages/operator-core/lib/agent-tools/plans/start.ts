@@ -1151,8 +1151,15 @@ export default defineTool({
           const { resolveAgentIdentity } = await import('../coordination/identity');
           executionStart = await recordPlanExecutionStart(scope, resolveAgentIdentity(ctx), expected);
         } catch (error) {
+          // Lead with the actionable inner cause, structured: buried behind the promotion summary it was
+          // lost to door timeouts/spills and read as load-transient (EI-28846208842044311).
+          const authorityError = error instanceof Error ? error.message : String(error);
+          const { parsePlanStartProofRefusal, planStartProofRepair } = await import('./plan-start-proof-refusal');
+          const proofBlockers = parsePlanStartProofRefusal(authorityError);
+          const repair = planStartProofRepair(proofBlockers);
           return { ok: false as const, slug, harnessSlug, error: 'plan_start_authority_unavailable',
-            message: `${promotionMessage}${promotedBlockMessage} Start authority was not issued: ${error instanceof Error ? error.message : String(error)}`,
+            authorityError, proofBlockers, ...(repair ? { repair } : {}),
+            message: `Start authority was not issued: ${authorityError}.${repair ? ` ${repair}` : ''} ${promotionMessage}${promotedBlockMessage}`,
             autoApproved, promotion, admission, claimSpecBinding, promotedBlock,
             ...(promotionError ? { promotionError } : {}),
             ...(migrationParkLift?.rows.length ? { migrationParkLift } : {}),

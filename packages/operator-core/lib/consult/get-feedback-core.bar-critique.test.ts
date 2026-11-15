@@ -38,7 +38,7 @@ function trippedDeps() {
   return { deps, touched };
 }
 
-type RegisteredPlan = { workspaceId: string; harnessSlug: string; planSlug: string };
+type RegisteredPlan = { workspaceId: string; harnessSlug: string; planSlug: string; status?: string };
 
 function planValidationDeps(registered: RegisteredPlan[]) {
   const touched: string[] = [];
@@ -48,9 +48,12 @@ function planValidationDeps(registered: RegisteredPlan[]) {
       return Promise.resolve([]);
     }
     touched.push('plan-lookup');
-    const [workspaceId, harnessSlug, planSlug] = values;
-    return Promise.resolve(registered.some(plan => plan.workspaceId === workspaceId &&
-      plan.harnessSlug === harnessSlug && plan.planSlug === planSlug) ? [{ one: 1 }] : []);
+    // The origin lookup reads every harness's row for the slug, so a superseded
+    // copy cannot stand in for the live plan (WI-6554700010049218).
+    const [workspaceId, planSlug] = values;
+    return Promise.resolve(registered
+      .filter(plan => plan.workspaceId === workspaceId && plan.planSlug === planSlug)
+      .map(plan => ({ harness_slug: plan.harnessSlug, status: plan.status ?? 'draft' })));
   }) as unknown as Sql;
   const deps = {
     getSql: () => sql,
@@ -149,6 +152,55 @@ describe('getFeedbackCore bar-critique origin guard (SPEC-P-007-CRITIQUE-REF, un
     expect(out.thrown).toContain(TOUCHED);
     expect(touched[0]).toBe('plan-lookup');
     expect(touched.at(-1)).toBe('route');
+  });
+
+  it('WI-6554700010049218: refuses the superseded copy left by a harness move and names the live harness', async () => {
+    const { deps, touched } = planValidationDeps([
+      { workspaceId: 'ws-unit', harnessSlug: 'oddsmith-hive', planSlug: 'moved-plan', status: 'superseded' },
+      { workspaceId: 'ws-unit', harnessSlug: 'papercusp', planSlug: 'moved-plan', status: 'draft' },
+    ]);
+    const out = await settle(getFeedbackCore(request({ policy: BAR_CRITIQUE_POLICY,
+      originTaskRef: 'moved-plan', harnessSlug: 'oddsmith-hive' }), deps));
+    expect(out.value).toMatchObject({ error: 'bar_critique_requires_plan' });
+    const hint = (out.value as { hint: string }).hint;
+    expect(hint).toContain("harness 'oddsmith-hive' is superseded");
+    expect(hint).toContain("pass harness:'papercusp'");
+    expect(touched).toEqual(['plan-lookup']);
+  });
+
+  it('WI-6554700010049218: refuses a superseded-only plan without inventing a live harness', async () => {
+    const { deps, touched } = planValidationDeps([
+      { workspaceId: 'ws-unit', harnessSlug: 'oddsmith-hive', planSlug: 'retired-plan', status: 'superseded' },
+    ]);
+    const out = await settle(getFeedbackCore(request({ policy: BAR_CRITIQUE_POLICY,
+      originTaskRef: 'retired-plan', harnessSlug: 'oddsmith-hive' }), deps));
+    expect(out.value).toMatchObject({ error: 'bar_critique_requires_plan' });
+    const hint = (out.value as { hint: string }).hint;
+    expect(hint).toContain('superseded');
+    expect(hint).not.toContain('pass harness:');
+    expect(touched).toEqual(['plan-lookup']);
+  });
+
+  it('WI-6554700010049218 control: the live row passes even when a superseded copy exists in another harness', async () => {
+    const { deps, touched } = planValidationDeps([
+      { workspaceId: 'ws-unit', harnessSlug: 'oddsmith-hive', planSlug: 'moved-plan', status: 'superseded' },
+      { workspaceId: 'ws-unit', harnessSlug: 'papercusp', planSlug: 'moved-plan', status: 'draft' },
+    ]);
+    const out = await settle(getFeedbackCore(request({ policy: BAR_CRITIQUE_POLICY,
+      originTaskRef: 'moved-plan', harnessSlug: 'papercusp' }), deps));
+    expect(out.thrown).toContain(TOUCHED);
+    expect(touched[0]).toBe('plan-lookup');
+    expect(touched.at(-1)).toBe('route');
+  });
+
+  it('SPEC-P-007-CRITIQUE-REF: a plan registered only in another harness is refused with that harness named', async () => {
+    const { deps } = planValidationDeps([
+      { workspaceId: 'ws-unit', harnessSlug: 'other-harness', planSlug: 'shared-plan' },
+    ]);
+    const out = await settle(getFeedbackCore(request({ policy: BAR_CRITIQUE_POLICY,
+      originTaskRef: 'shared-plan', harnessSlug: 'papercusp' }), deps));
+    expect(out.value).toMatchObject({ error: 'bar_critique_requires_plan' });
+    expect((out.value as { hint: string }).hint).toContain("pass harness:'other-harness'");
   });
 
   it('SPEC-P-007-CRITIQUE-REF requires a concrete harness even when the slug exists elsewhere', async () => {

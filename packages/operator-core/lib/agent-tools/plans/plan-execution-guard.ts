@@ -12,6 +12,7 @@ import type { AcceptanceBarSnapshotSource } from '../../acceptance-bar-contract-
 import type { Sql } from 'postgres';
 import { readPlanLineNodes } from './plan-line-graph';
 import { readExecutionPlanRebind } from '../fleet_registry/execution-plan-rebind';
+import { PLAN_READINESS_PENDING, READINESS_EVALUATION_BUDGET_MS, READINESS_PENDING_RETRY_AFTER_MS } from './plan-continuation-readiness';
 export { planExecutionMeaning } from './plan-execution-meaning';
 
 // The installed parser has no bundled declarations. Treat its tokens as unknown
@@ -32,12 +33,25 @@ export interface ExecutionPlanBinding {
   sourceRef?: string | null;
   canonical?: { itemId: string; lineId: string; ownerId: string; nodeVersion: string; lineVersion: string; planVersion: number; planHash: string };
   canonicalInvalid?: boolean;
+  /**
+   * WI-6554700010049338: a held work-item with no plan at all. It is a census
+   * member (so the goal selector can attribute a write to it) but is never
+   * checked itself: it binds no plan, so it grants and refuses nothing.
+   */
+  unbound?: boolean;
 }
 export interface PlanExecutionRefusal {
   code: 'plan_execution_not_ready';
   reason: string;
   planSlug?: string;
   blockers: string[];
+  /**
+   * EI-28849154189042602: set only when no verdict was reached within the admission
+   * budget (`plan_readiness_pending`). Nothing is known to be wrong with the plan; the
+   * same call should be retried after `retryAfterMs` while the evaluation finishes.
+   */
+  retryable?: true;
+  retryAfterMs?: number;
 }
 export interface PlanExecutionGuardInput {
   ownerId: string; workspaceId: string; toolName: string; args: unknown;
@@ -390,6 +404,9 @@ export async function readExecutionPlanBindings(ownerId: string, workspaceId: st
     if (row.plan_slug === null && row.plan_line_id === null) {
       if (row.source_plan_slug) bindings.push({ planSlug: row.source_plan_slug, harnessSlug: row.harness_slug,
         source: 'work-item', sourceRef: row.feature_id });
+      // Plan-less held work is visible to goal attribution (WI-6554700010049338).
+      else bindings.push({ planSlug: '', harnessSlug: row.harness_slug, source: 'work-item',
+        sourceRef: row.feature_id, unbound: true });
       continue;
     }
     const binding: ExecutionPlanBinding = { planSlug: row.plan_slug ?? '', harnessSlug: row.harness_slug,
@@ -429,9 +446,20 @@ async function readCanonicalExecutionIdentity(sql: Sql, workspaceId: string, bin
     planVersion:Number(plans[0].version),planHash:plans[0].content_hash };
 }
 
+/** Names the held items a refused write may really be for, and how to attribute it. */
+export function otherHeldWorkRemedy(bindings: readonly ExecutionPlanBinding[], refusedPlanSlug: string): string {
+  const refs = [...new Set(bindings.filter(binding => binding.source === 'work-item' && binding.sourceRef &&
+    (binding.unbound || binding.planSlug !== refusedPlanSlug)).map(binding => binding.sourceRef!))].sort();
+  if (!refs.length) return '';
+  return ` You also hold ${refs.join(', ')}. If this write is for one of them, make it your declared goal `
+    + `(coord:declare-intent { intent, declared_goal_refs: ['<id>'] }) and retry; writes for '${refusedPlanSlug}' stay refused until it starts.`;
+}
+
 function uniquePlanBindings(bindings: readonly ExecutionPlanBinding[]): ExecutionPlanBinding[] {
   const unique = new Map<string, ExecutionPlanBinding>();
   for (const binding of bindings) {
+    // Unbound held work binds no plan; only plan bindings are checked.
+    if (binding.unbound) continue;
     const key = JSON.stringify([binding.planSlug, binding.harnessSlug,
       binding.canonical || binding.canonicalInvalid ? binding.sourceRef : null]);
     unique.set(key, binding.canonical || binding.canonicalInvalid ? { ...binding }
@@ -469,7 +497,7 @@ export function selectExecutionPlanBindings(
   const selectedRefs = new Set([goal.ref, goal.corroboratedBy].filter((ref): ref is string => Boolean(ref)));
   const selectedPlanSlugs = new Set<string>();
   for (const binding of bindings) {
-    if (binding.sourceRef && selectedRefs.has(binding.sourceRef)) selectedPlanSlugs.add(binding.planSlug);
+    if (!binding.unbound && binding.sourceRef && selectedRefs.has(binding.sourceRef)) selectedPlanSlugs.add(binding.planSlug);
   }
   // A declared plan-slug override is itself a resolvable pointer. Work-item
   // overrides match their sourceRef above, while plan-item overrides match their
@@ -511,10 +539,16 @@ export async function checkExecutionPlan(binding: ExecutionPlanBinding, workspac
     return current !== null && JSON.stringify(current) === JSON.stringify(binding.canonical);
   };
   if (!await canonicalCurrent()) return ['canonical_plan_binding_stale'];
-  const { readPlanExecutionStart } = await import('./plan-execution-authority');
+  const [{ readPlanExecutionStart }, { checkContinuationReadiness, readReadinessFence }] = await Promise.all([
+    import('./plan-execution-authority'), import('./plan-continuation-readiness')]);
   const proof = await measurePlanStage('start_proof', observe, () => readPlanExecutionStart(binding, workspaceId));
   if (proof.length) return proof;
-  const blockers = await checkPlanExecutionReadiness(binding, workspaceId, observe, 'continuation');
+  // The start proof, binding identity and revision fence stay fresh on every call. Only
+  // a positive verdict for the exact fenced revision is reused (WI-6554700010049220).
+  const blockers = await measurePlanStage('readiness', observe, () => checkContinuationReadiness(binding, workspaceId, observe, {
+    readFence: (b, ws) => measurePlanStage('readiness_fence', observe, () => readReadinessFence(b, ws)),
+    evaluate: (b, ws, o) => checkPlanExecutionReadiness(b, ws, o, 'continuation'),
+  }));
   if (blockers.length) return blockers;
   return await canonicalCurrent() ? [] : ['canonical_plan_binding_stale'];
 }
@@ -655,7 +689,11 @@ export async function checkPlanExecutionGuard(input: PlanExecutionGuardInput,
     const uniqueBindings = uniquePlanBindings(allBindings);
     if (uniqueBindings.length === 0) return null;
     let resolution: ExecutionPlanGoalResolution | null = null;
-    if (namesSinglePlan(uniqueBindings)) {
+    // WI-6554700010049338: plan-less held work makes the census plural. The
+    // durable goal then decides which held item a write is for; skipping the
+    // selector here refused every write for that other item.
+    const holdsUnboundWork = allBindings.some(binding => binding.unbound);
+    if (namesSinglePlan(uniqueBindings) && !holdsUnboundWork) {
       try { input.observeTiming?.({ stage: 'goal_selector_skipped', durationMs: 0 }); }
       catch { /* diagnostics cannot change the guard verdict */ }
     } else if (deps.resolveGoal) {
@@ -682,10 +720,18 @@ export async function checkPlanExecutionGuard(input: PlanExecutionGuardInput,
         reason:'The selected work-item has an invalid canonical identity; historical lineage is not a fallback permit.'};
       const blockers = await measurePlanStage('binding', input.observeTiming,
         () => deps.checkPlan(binding, input.workspaceId, input.observeTiming));
+      if (blockers.length === 1 && blockers[0] === PLAN_READINESS_PENDING) return {
+        code: 'plan_execution_not_ready', planSlug: binding.planSlug, blockers, retryable: true,
+        retryAfterMs: READINESS_PENDING_RETRY_AFTER_MS,
+        reason: `Plan '${binding.planSlug}' readiness is still being evaluated: a cold evaluation exceeded the `
+          + `${Math.round(READINESS_EVALUATION_BUDGET_MS / 1000)}s admission budget and continues in the background. `
+          + 'Nothing is known to be wrong with the plan and this call was not performed. Retry the same call in about '
+          + `${Math.round(READINESS_PENDING_RETRY_AFTER_MS / 1000)}s; the finished evaluation then admits it (or reports the real blockers).` };
       if (blockers.length) return { code: 'plan_execution_not_ready', planSlug: binding.planSlug, blockers,
         reason: `Plan '${binding.planSlug}' is not executable (${blockers.join(', ')}). Implementation writes are refused. `
           + 'Repair the plan with plans:edit/audit and finish the standard plans:start process first. '
-          + 'Read-only research and canonical plan repair remain available; an ad-hoc item, AUTO or force does not waive activation.' };
+          + 'Read-only research and canonical plan repair remain available; an ad-hoc item, AUTO or force does not waive activation.'
+          + otherHeldWorkRemedy(allBindings, binding.planSlug) };
     }
     return null;
   } catch {

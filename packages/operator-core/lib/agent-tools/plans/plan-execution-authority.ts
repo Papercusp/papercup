@@ -8,6 +8,7 @@ import { checkPlanExecutionReadiness, type ExecutionPlanBinding } from './plan-e
 import { readPlanLineItems } from './plan-line-graph';
 import { renderPlanLines } from './plan-line-render';
 import { revalidateOwnerSelectedReviewForStart } from './plan-start-owner-review';
+import { formatPlanStartProofRefusal } from './plan-start-proof-refusal';
 export { preservePlanExecutionProgress } from './plan-execution-progress';
 
 export interface ExecutionStartScope { workspaceId: string; harnessSlug: string; planSlug: string }
@@ -76,7 +77,7 @@ export async function recordPlanExecutionStart(scope: ExecutionStartScope, ident
   let requiresOwnerSelectedReview = true;
   const blockers = await checkPlanExecutionReadiness({ planSlug: scope.planSlug, harnessSlug: scope.harnessSlug },
     scope.workspaceId, undefined, 'start', required => { requiresOwnerSelectedReview = required; });
-  if (blockers.length) throw new Error(`plan_start_proof_refused:${blockers.join(',')}`);
+  if (blockers.length) throw new Error(formatPlanStartProofRefusal(blockers));
   return withWorkspace(scope.workspaceId, async tx => {
     await acquirePlanAdvisoryLock(tx, planAdvisoryLockKey(scope.workspaceId, scope.harnessSlug, scope.planSlug));
     const row = await readExecutionSnapshot(tx, scope, true);
