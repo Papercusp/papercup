@@ -4321,6 +4321,56 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
     });
 
     describe('discoverSiblingTypecheckGates (against the REAL repo)', () => {
+      it('does not recommend the scripts gate for an mjs file outside its compiler inputs', async () => {
+        const { gates } = await discoverSiblingTypecheckGates(REPO_ROOT);
+        const file = 'scripts/lib/related-tests.mjs';
+        expect(gateCoveringFile(gates, 'scripts/gen-declarations.ts')?.npmScript)
+          .toBe('lint:tsc:scripts');
+        expect(gateCoveringFile(gates, file)).toBeNull();
+        expect(collectAutoTypecheckRoutes({
+          files: [file], suggestions: new Map(), siblingGates: gates,
+        })).toEqual({ routes: [], unknown: [file] });
+        expect(formatUncoveredFilesBanner({
+          label: 'fixture', uncovered: [file], suggestions: new Map(), fatal: true,
+          siblingGates: gates,
+        }).join('\n')).not.toContain('npm run lint:tsc:scripts');
+      });
+
+      it.each([
+        { options: { allowJs: false }, filesOnly: false, loadsJs: false },
+        { options: { allowJs: true, checkJs: true }, filesOnly: false, loadsJs: true },
+        { options: { checkJs: true }, filesOnly: false, loadsJs: true },
+        { options: { allowJs: false }, filesOnly: true, loadsJs: false },
+      ])('uses inherited compiler options for file-type routing: %j', async ({ options, filesOnly, loadsJs }) => {
+        const root = mkdtempSync(join(tmpdir(), 'tsc-gate-input-types-'));
+        try {
+          mkdirSync(join(root, 'src'));
+          symlinkSync(join(REPO_ROOT, 'node_modules'), join(root, 'node_modules'), 'dir');
+          writeFileSync(join(root, 'package.json'), JSON.stringify({
+            scripts: { 'lint:tsc:fixture': 'node gate.mjs' },
+          }));
+          writeFileSync(join(root, 'gate.mjs'),
+            "export const TSC_COMMAND = 'npx tsc -p src/tsconfig.json --noEmit';\n");
+          writeFileSync(join(root, 'tsconfig.base.json'), JSON.stringify({ compilerOptions: options }));
+          const configPath = join(root, 'src', 'tsconfig.json');
+          writeFileSync(configPath, JSON.stringify({
+            extends: '../tsconfig.base.json',
+            ...(filesOnly ? { files: ['included.ts'] } : { include: ['**/*'] }),
+          }));
+          writeFileSync(join(root, 'src', 'included.ts'), 'export const value = 1;\n');
+          writeFileSync(join(root, 'src', 'javascript.mjs'), 'export const value = 1;\n');
+          const loaded = ts.readConfigFile(configPath, ts.sys.readFile);
+          const parsed = ts.parseJsonConfigFileContent(loaded.config, ts.sys, dirname(configPath));
+          expect(parsed.fileNames.includes(join(root, 'src', 'javascript.mjs')))
+            .toBe(loadsJs);
+          const { gates } = await discoverSiblingTypecheckGates(root);
+          expect(gateCoveringFile(gates, 'src/included.ts')?.npmScript).toBe('lint:tsc:fixture');
+          expect(gateCoveringFile(gates, 'src/javascript.mjs') !== null).toBe(loadsJs);
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      });
+
       it('finds the gate that actually covers apps/operator — the file this bug was filed over', () => {
         // Deliberately measured against the real root package.json rather than a fixture: the
         // false claim was about THIS repo's real arrangement, and a fixture could not have

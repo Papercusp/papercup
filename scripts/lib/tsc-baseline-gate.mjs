@@ -2066,7 +2066,7 @@ export function coveragePrefixesFromGateModule(mod, { onCoverageError } = {}) {
  *   entirely unknown, so NO absence claim of any strength is available.
  */
 export async function discoverSiblingTypecheckGates(root, { exclude = [] } = {}) {
-  /** @type {{npmScript: string, prefixes: string[], scriptPath: string, tscCommand: string | null}[]} */
+  /** @type {{npmScript: string, prefixes: string[], scriptPath: string, tscCommand: string | null, loadableExtensions?: () => string[] | null}[]} */
   const gates = [];
   /** @type {{npmScript: string, reason: string}[]} */
   const unresolved = [];
@@ -2132,10 +2132,67 @@ export async function discoverSiblingTypecheckGates(root, { exclude = [] } = {})
       typeof mod?.TSC_COMMAND === 'string' && projectPrefixFromTscCommand(mod.TSC_COMMAND) !== null
         ? mod.TSC_COMMAND
         : null;
-    gates.push({ npmScript, prefixes, scriptPath: entry[1], tscCommand });
+    // Only interpret commands whose flags we reproduce. A CLI override of allowJs, for
+    // example, makes the config alone insufficient evidence for rejecting a file type.
+    const project = tscCommand === null ? null : serviceProjectFromTscCommand(tscCommand);
+    /** @type {string[] | null | undefined} */
+    let extensions;
+    const loadableExtensions = project === null ? undefined : () => {
+      if (extensions === undefined) extensions = loadableExtensionsForProject(root, project);
+      return extensions;
+    };
+    gates.push({ npmScript, prefixes, scriptPath: entry[1], tscCommand, loadableExtensions });
   }
 
   return { gates, unresolved, rosterReadable: true };
+}
+
+/**
+ * Ask the compiler which extensions its parsed options permit, without building a second
+ * program or walking the source tree. This is a negative filter, not membership evidence:
+ * a supported extension may still be absent from the eventual compiler program.
+ *
+ * @param {string} root
+ * @param {string} project
+ * @returns {string[] | null} null means unknown; never reject a route from missing evidence.
+ */
+function loadableExtensionsForProject(root, project) {
+  try {
+    const ts = createRequire(resolve(root, 'package.json'))('typescript');
+    const operand = project.replace(/^["']|["']$/g, '');
+    const configPath = resolve(root, /\.json$/i.test(operand) ? operand : join(operand, 'tsconfig.json'));
+    /** @type {string[] | null} */
+    let extensions = null;
+    let unreadable = false;
+    const host = {
+      ...ts.sys,
+      getCurrentDirectory: () => root,
+      readDirectory: (_path, supported) => { extensions = [...supported]; return []; },
+      onUnRecoverableConfigFileDiagnostic: () => { unreadable = true; },
+    };
+    const parsed = ts.getParsedCommandLineOfConfigFile(configPath, undefined, host);
+    // Our intentionally empty readDirectory produces TS18003 (no inputs). Other config
+    // diagnostics mean its options are not reliable enough to exclude a route.
+    if (!parsed || unreadable || parsed.errors.some((error) => error.code !== 18003)) return null;
+    if (extensions === null) {
+      // A files-only project does not call readDirectory. Reuse its resolved options with
+      // a synthetic include so the compiler supplies its own extension list in that case too.
+      ts.parseJsonConfigFileContent({ include: ['**/*'] }, host, dirname(configPath), parsed.options);
+    }
+    return extensions;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * @param {{loadableExtensions?: () => string[] | null}} gate
+ * @param {string} file
+ */
+function gateCannotLoadFile(gate, file) {
+  const extensions = gate.loadableExtensions?.();
+  return Array.isArray(extensions) && extensions.length > 0 &&
+    !extensions.some((extension) => file.toLowerCase().endsWith(extension.toLowerCase()));
 }
 
 /**
@@ -2145,7 +2202,7 @@ export async function discoverSiblingTypecheckGates(root, { exclude = [] } = {})
  * `lint:tsc:orchestrator` rather than the broader `lint:tsc:papercusp-libs` fan-out that also
  * contains it — the narrower gate is the faster, more attributable answer.
  *
- * @param {{npmScript: string, prefixes: string[]}[]} gates
+ * @param {{npmScript: string, prefixes: string[], loadableExtensions?: () => string[] | null}[]} gates
  * @param {string} file Repo-relative path.
  * @returns {{npmScript: string, prefix: string} | null}
  */
@@ -2156,9 +2213,9 @@ export function gateCoveringFile(gates, file) {
   for (const gate of gates ?? []) {
     for (const prefix of gate.prefixes ?? []) {
       if (prefix !== '' && !target.startsWith(prefix)) continue;
-      if (best === null || prefix.length > best.prefix.length) {
-        best = { npmScript: gate.npmScript, prefix };
-      }
+      if (best !== null && prefix.length <= best.prefix.length) continue;
+      if (gateCannotLoadFile(gate, target)) continue;
+      best = { npmScript: gate.npmScript, prefix };
     }
   }
   return best;
