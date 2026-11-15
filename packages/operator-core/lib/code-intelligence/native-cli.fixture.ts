@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { decideWatchdogExpiry } from '../../../../scripts/lib/batch-watchdog.mjs';
+import { isolatedRuntimeEnv } from '../../../../scripts/lib/isolation-child-env.mjs';
 import { moduleRepoRoot } from '../module-repo-root';
 import { resolveAgentMcpBaseUrl } from '../mcp-base-url';
 import { processGroupLifetime } from '../fleet/process-group-lifetime';
@@ -131,7 +132,9 @@ export async function nativeFixtureProcess(command: string, argv: string[], opti
   const journal = options.stepJournal ? bundleStepJournal(options.stepJournal, Date.now()) : undefined;
   let deadlineMs = options.timeoutMs, extensions = 0, killReason: string | null = null;
   const startedAt = performance.now();
-  const child = spawn(command, argv, { cwd: options.cwd, env: options.env,
+  // Like the maintained private operator builder, real native children must
+  // retain source/admission guards without inheriting Vitest's unit-only PG rail.
+  const child = spawn(command, argv, { cwd: options.cwd, env: isolatedRuntimeEnv(options.env ?? process.env),
     detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
   let head = '', tail = '', failureOutput = '', failureLines = 0, phaseCount = 0;
   const phases: { elapsedMs: number; line: string }[] = [];

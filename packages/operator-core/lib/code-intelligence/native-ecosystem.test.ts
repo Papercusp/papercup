@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 // The required ecosystem BAR suite exercises the maintained subsystem guards.
 import '../harness/docs/native-source-change.test';
 import '../agent-tools/plans/native-planning-advice.test';
@@ -58,6 +58,29 @@ describe('native P021 required BAR captured source bundle boundary', () => {
 });
 
 describe('native CLI fixture runtime and deadline guards', () => {
+  it.each([false, true])('keeps native child policy reads outside the unit runner while preserving guards (explicit env=%s)', async explicit => {
+    const pins = {
+      PAPERCUSP_FORBID_REAL_PG: '1', VITEST: 'true', VITEST_WORKER_ID: 'unit-worker', VITEST_POOL_ID: 'unit-pool',
+      PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE: '/unit-only/census.json',
+      HARNESS_ADMIN_DATABASE_URL: 'postgresql://private.invalid/no-connect', PAPERCUSP_TEST_FILE_TIMEOUT_MS: '731',
+    };
+    for (const [key, value] of Object.entries(pins)) vi.stubEnv(key, value);
+    const env = { ...process.env };
+    const keys = [...Object.keys(pins), 'NODE_OPTIONS', 'PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT'];
+    const expected = { PAPERCUSP_FORBID_REAL_PG: null, VITEST: null, VITEST_WORKER_ID: null,
+      VITEST_POOL_ID: null, PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE: null,
+      HARNESS_ADMIN_DATABASE_URL: pins.HARNESS_ADMIN_DATABASE_URL, PAPERCUSP_TEST_FILE_TIMEOUT_MS: '731',
+      NODE_OPTIONS: env.NODE_OPTIONS ?? null, PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT: env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT ?? null };
+    try {
+      const result = await nativeFixtureProcess(process.execPath, ['-e',
+        `require('node:assert/strict').deepEqual(Object.fromEntries(${JSON.stringify(keys)}.map(key => [key, process.env[key] ?? null])), ${JSON.stringify(expected)}); process.stdout.write('NATIVE_CHILD_POLICY_READY')`],
+      { cwd: process.cwd(), ...(explicit ? { env } : {}), timeoutMs: 10_000 });
+      expect(result.code, result.output).toBe(0);
+      expect(result.output).toContain('NATIVE_CHILD_POLICY_READY');
+      expect(env.PAPERCUSP_FORBID_REAL_PG).toBe('1');
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it.each([
     'AssertionError [ERR_ASSERTION]: installed dispatcher returned empty context',
     'AssertionError [ERR_ASSERTION]',
