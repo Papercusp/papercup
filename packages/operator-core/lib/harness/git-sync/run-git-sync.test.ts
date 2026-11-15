@@ -28,7 +28,7 @@ import {
   closeSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import {
   runGitSync,
   SOURCE_CUSTODY_REF_PREFIX,
@@ -3931,8 +3931,15 @@ describe('runGitSync (real git, no submodule)', () => {
       expect(out).toEqual({
         cleared: ['packed-refs.lock', 'gc.pid.lock', 'gc.log.lock', 'refs/heads/topic/nested.lock', 'refs/remotes/origin/staging.lock'],
         kept: ['shallow.lock', 'HEAD.lock', 'refs/heads/held.lock'],
+        // The fresh HEAD.lock is kept but NOT over-age; the other two need an operator.
+        keptStale: [
+          expect.objectContaining({ name: 'shallow.lock', reason: 'nonempty', path: join(sweepRepo, '.git', 'shallow.lock') }),
+          expect.objectContaining({ name: 'refs/heads/held.lock', reason: 'open' }),
+        ],
         unlistedDirs: [],
       });
+      for (const k of out.keptStale) expect(k.ageMs).toBeGreaterThanOrEqual(STALE_MAINTENANCE_LOCK_MS);
+      expect(logs.some((m) => m.includes('KEPT 2 over-age Git lock(s)') && m.includes('shallow.lock'))).toBe(true);
       for (const p of clearedPaths) expect(existsSync(p)).toBe(false);
       for (const p of keptPaths) expect(existsSync(p)).toBe(true);
       expect(logs.some((m) => m.includes('tick-start sweep cleared 5 stranded Git lock(s)'))).toBe(true);
@@ -3943,12 +3950,48 @@ describe('runGitSync (real git, no submodule)', () => {
       const out = await sweepStaleGitMetadataLocks(realRunGit, sweepRepo, () => {}, { isOpen: async () => null });
       expect(out.cleared).toEqual([]);
       expect(out.kept).toEqual(['packed-refs.lock']);
+      expect(out.keptStale).toEqual([expect.objectContaining({ name: 'packed-refs.lock', reason: 'unknown-holder' })]);
       expect(existsSync(lock)).toBe(true);
+    });
+
+    it("sweeps a LINKED worktree's HEAD.lock and index.lock but never the swept worktree's own entry", async () => {
+      execFileSync('git', ['-C', sweepRepo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init']);
+      const sibling = join(sweepRoot, 'sibling');
+      execFileSync('git', ['-C', sweepRepo, 'worktree', 'add', '-q', '--detach', sibling]);
+      const wtName = basename(sibling);
+      const clearedHead = lockAt(`worktrees/${wtName}/HEAD.lock`, OLD);
+      const keptIndex = lockAt(`worktrees/${wtName}/index.lock`, OLD, 'partial index');
+      const out = await sweepStaleGitMetadataLocks(realRunGit, sweepRepo, () => {}, { isOpen: async () => false });
+      expect(out.cleared).toEqual([`worktrees/${wtName}/HEAD.lock`]);
+      expect(out.keptStale).toEqual([
+        expect.objectContaining({ name: `worktrees/${wtName}/index.lock`, reason: 'nonempty', path: keptIndex }),
+      ]);
+      expect(existsSync(clearedHead)).toBe(false);
+      expect(existsSync(keptIndex)).toBe(true);
+
+      // Swept FROM the linked worktree, its own entry is skipped: its HEAD.lock is the
+      // fixed name and its index.lock keeps clearStaleIndexLock's path.
+      const fromSibling = await sweepStaleGitMetadataLocks(realRunGit, sibling, () => {}, { isOpen: async () => false });
+      expect(fromSibling.kept.some((n) => n.startsWith('worktrees/'))).toBe(false);
+      expect(existsSync(keptIndex)).toBe(true);
+    });
+
+    it('reports an unlistable worktrees directory instead of silently skipping it', async () => {
+      const out = await sweepStaleGitMetadataLocks(
+        async () => ({ code: 0, stdout: '/fake/.git\n/fake/.git\n', stderr: '' }), '/fake', () => {}, {
+          inspectLock: async () => null,
+          readDirents: async (dir) => {
+            if (dir.endsWith('/worktrees')) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+            throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+          },
+        },
+      );
+      expect(out.unlistedDirs).toEqual(['worktrees']);
     });
 
     it('is a no-op on a repo with no locks, and covers every fixed name it advertises', async () => {
       expect(await sweepStaleGitMetadataLocks(realRunGit, sweepRepo, () => {}, { isOpen: async () => false }))
-        .toEqual({ cleared: [], kept: [], unlistedDirs: [] });
+        .toEqual({ cleared: [], kept: [], keptStale: [], unlistedDirs: [] });
       for (const name of SWEPT_GIT_METADATA_LOCKS) lockAt(name, OLD);
       const out = await sweepStaleGitMetadataLocks(realRunGit, sweepRepo, () => {}, { isOpen: async () => false });
       expect(out.cleared).toEqual([...SWEPT_GIT_METADATA_LOCKS]);
