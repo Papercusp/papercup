@@ -53,6 +53,14 @@ function fixture() {
 }
 
 describe('testing core producing-build witness', () => {
+  it('reports a killed final qualifier without publishing an artifact', async () => {
+    const f = fixture();
+    f.put('apps/operator/bin/ascii-escape-bundle.mjs', 'process.kill(process.pid, "SIGKILL");');
+    await expect(prepareTestingCore(f)).rejects.toThrow(/qualification:.*status=null, signal=SIGKILL/);
+    expect(existsSync(f.outfile)).toBe(false);
+    expect(readdirSync(dirname(f.outfile))).toEqual([]);
+  });
+
   it('binds actual native compiler inputs, final bytes and a loadable plain-Node API', async () => {
     const f = fixture(), receipt = await prepareTestingCore(f);
     expect(verifyTestingCoreReceipt(receipt, receipt.witness)).toEqual(receipt.witness);

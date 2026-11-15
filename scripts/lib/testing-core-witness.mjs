@@ -381,7 +381,12 @@ export async function prepareTestingCore({ root, compilerPath, argv,
       writeFileSync(temporary, result.outputFiles[0].contents, { flag: 'wx' });
       const escaped = spawnSync(process.execPath, [join(root, 'apps/operator/bin/ascii-escape-bundle.mjs'),
         temporary, '--check'], { encoding: 'utf8', timeout: 30_000 });
-      assert.equal(escaped.status, 0, `Testing core final bytes failed syntax/ASCII qualification: ${escaped.stderr}`);
+      assert.equal(escaped.status, 0, [
+        'Testing core final bytes failed syntax/ASCII qualification:',
+        `status=${escaped.status}, signal=${escaped.signal ?? 'none'}`,
+        `error=${escaped.error?.code ?? 'none'}: ${escaped.error?.message ?? ''}`,
+        escaped.stderr,
+      ].join(' '));
       await phase('before-publication', async () => { custody.verifyInputs(); verifyPins(pins); });
       const artifactSha256 = digest(readFileSync(temporary));
       renameSync(temporary, outfile);
