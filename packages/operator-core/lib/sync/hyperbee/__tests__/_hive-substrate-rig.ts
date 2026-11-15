@@ -189,6 +189,20 @@ export async function setupHivePeerSchema(sql: postgres.Sql): Promise<void> {
   }
   await createPotPolicyTable(sql);
   await applyPot557RenameAndFixups(sql);
+  await createFedTombstonesTable(sql);
+}
+
+/**
+ * The hive-settings projection reads and writes delete tombstones (WI-6554700010049343).
+ * The table shape is taken from migration 1636 itself. Its capture-function replacement is
+ * not applied here: this rig runs the archive-102 capture function, so local deletes record
+ * no tombstone in the rig, while inbound deletes do (the projection writes them).
+ */
+async function createFedTombstonesTable(sql: postgres.Sql): Promise<void> {
+  const migration = readFileSync(resolve(SQL_DIR, '1636-fed-tombstones-hive-settings.sql'), 'utf8');
+  const create = migration.match(/CREATE TABLE IF NOT EXISTS harness_shared\.fed_tombstones \([\s\S]*?\n\);/);
+  if (!create) throw new Error('hive substrate rig: fed_tombstones CREATE TABLE not found in migration 1636');
+  await sql.unsafe(create[0]);
 }
 
 /**

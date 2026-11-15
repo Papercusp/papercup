@@ -14,7 +14,8 @@
  * configured fault actually acted on that case's traffic (R-2's falsifier):
  *   - partition   — a connection filter on each peer's real swarm refuses sockets
  *                   between the two sides and drops the live ones. Heal lifts the
- *                   filter; the substrate's own self-heal loop re-peers.
+ *                   filter (its receipt lists the own-log entries each blocked
+ *                   receiver still lacked); the substrate's own self-heal loop re-peers.
  *   - delay       — the receiving peer holds incoming ops at the apply seam until
  *                   `flush`; later ops can overtake them.
  *   - reorder     — a flush delivers the held batch in reverse arrival order.
@@ -32,6 +33,12 @@
  * actually sees reordered or repeated is the stream of ops handed to its
  * projections (logs merged in arbitrary interleavings, re-folds after restart,
  * late downloads). Faults are therefore injected exactly there.
+ *
+ * OBSERVATIONS. Besides receipts, the harness records every op reaching an apply
+ * seam (`arrivals`, before any fault acts) and every read-admission check a peer
+ * makes of a remote's member id and device key (`admissionChecks`). Give every
+ * harness of one acceptance run the same `run` ledger and its receipts are stamped
+ * with the run id and collected in one place.
  *
  * SETTLE. `settle()` drives drain → merge → flush on every live peer until a round
  * changes nothing and every live, non-revoked peer holds every other such peer's
@@ -221,6 +228,49 @@ function bindToCell<T extends object>(sql: postgres.Sql, target: T): T {
   });
 }
 
+/**
+ * Make every listener later registered on `emitter` (a peer's connection socket) run in
+ * `sql`'s cell scope. The socket's data callbacks come from native UDX code, which does
+ * not carry AsyncLocalStorage context, so an announce or replication message would
+ * otherwise run outside any peer's scope and its getOrgPg() calls (the merge pass's
+ * policy read, the roster read) would escape the peer's own database. The emitter keeps
+ * its identity (patched in place, not proxied) because corestore and protomux key state
+ * on the stream object. Removal maps the original listener to its wrapper.
+ */
+function scopeListeners(sql: postgres.Sql, emitter: unknown): void {
+  if (!emitter || typeof emitter !== 'object') return;
+  const e = emitter as Record<string, unknown>;
+  const wrappers = new WeakMap<object, (...a: unknown[]) => unknown>();
+  const wrap = (fn: unknown) => {
+    if (typeof fn !== 'function') return fn;
+    let w = wrappers.get(fn);
+    if (!w) {
+      w = function (this: unknown, ...args: unknown[]) {
+        // runWithCellSql is typed for async bodies but AsyncLocalStorage.run returns the
+        // callback's value unchanged, so a synchronous listener keeps its own return value.
+        return runWithCellSql(sql, () => (fn as (...a: unknown[]) => Promise<unknown>).apply(this, args));
+      };
+      wrappers.set(fn, w);
+    }
+    return w;
+  };
+  for (const m of ['on', 'addListener', 'once', 'prependListener', 'prependOnceListener']) {
+    const orig = e[m];
+    if (typeof orig !== 'function') continue;
+    e[m] = function (this: unknown, event: unknown, fn: unknown) {
+      return (orig as (...a: unknown[]) => unknown).call(this, event, wrap(fn));
+    };
+  }
+  for (const m of ['off', 'removeListener']) {
+    const orig = e[m];
+    if (typeof orig !== 'function') continue;
+    e[m] = function (this: unknown, event: unknown, fn: unknown) {
+      const w = typeof fn === 'function' ? wrappers.get(fn) : undefined;
+      return (orig as (...a: unknown[]) => unknown).call(this, event, w ?? fn);
+    };
+  }
+}
+
 /** A peer whose own methods and handle methods all run in that peer's cell scope. */
 function scopePeerToCell(sql: postgres.Sql, hp: HivePeer): HivePeer {
   const handle = bindToCell(sql, hp.handle);
@@ -299,6 +349,9 @@ export async function createMultiPeerHarness(
 
   const peers = new Map<string, HarnessPeer>();
   const receipts: FaultReceipt[] = [];
+  const runId = opts.run?.id ?? null;
+  const arrivals: Arrival[] = [];
+  const admissionChecks: AdmissionCheck[] = [];
   /** github user ids admitted to the hive (the admission stand-in). */
   const roster = new Set<number>();
   /** Revoked device pubkeys, shared by every peer and every incarnation. */
@@ -313,7 +366,10 @@ export async function createMultiPeerHarness(
   let nextUserId = 101;
 
   const record = (kind: FaultKind, peer: string, detail: Record<string, unknown>) => {
-    receipts.push({ kind, peer, at: Date.now(), detail });
+    const receipt: FaultReceipt = { kind, peer, at: Date.now(), detail };
+    if (runId !== null) receipt.runId = runId;
+    receipts.push(receipt);
+    opts.run?.receipts.push(receipt);
   };
   const pairKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
   const isPartitioned = (a: string, b: string) => blockedPairs.has(pairKey(a, b));
@@ -344,6 +400,17 @@ export async function createMultiPeerHarness(
       async (op) => {
         const src = op.sourceLogKeyHex ? logKeyToName.get(op.sourceLogKeyHex) : undefined;
         const srcPeer = src ? peers.get(src) : undefined;
+        // Recorded before any delivery fault acts, so a held, reordered or duplicated
+        // op still shows exactly when (and to which incarnation) it first arrived.
+        arrivals.push({
+          receiver: p.name,
+          receiverIncarnation: p.incarnation,
+          from: src ?? null,
+          op: opIdentity(op),
+          writerPubkey: op.writerPubkey ?? null,
+          sourceLogKeyHex: op.sourceLogKeyHex ?? null,
+          at: Date.now(),
+        });
         const ms = hlcMs(op.hlc);
         if (srcPeer && srcPeer.name !== p.name && srcPeer.skewMs > 0 && ms !== null) {
           const aheadMs = ms - Date.now();
@@ -366,7 +433,9 @@ export async function createMultiPeerHarness(
         get(target, prop, receiver) {
           if (prop === 'on') {
             return (event: string, listener: (socket: unknown, info?: unknown) => void) => {
-              if (event !== 'connection') return (target.on as (e: string, l: unknown) => unknown)(event, listener);
+              const scoped = (...args: unknown[]) =>
+                runWithCellSql(p.db.sql, () => (listener as (...a: unknown[]) => Promise<unknown>)(...args));
+              if (event !== 'connection') return (target.on as (e: string, l: unknown) => unknown)(event, scoped);
               return target.on('connection', (socket: unknown, info?: unknown) => {
                 const remoteKey =
                   keyHex((info as { publicKey?: unknown } | undefined)?.publicKey) ??
@@ -377,7 +446,8 @@ export async function createMultiPeerHarness(
                   record('partition', p.name, { refusedConnectionFrom: remote });
                   return;
                 }
-                listener(socket, info);
+                scopeListeners(p.db.sql, socket);
+                scoped(socket, info);
               });
             };
           }
@@ -409,12 +479,27 @@ export async function createMultiPeerHarness(
     // during boot (buildHiveRekeyBootDeps -> potHomeSlugForHarness), and the suite's
     // db-org mock routes that call to the current cell's throwaway database. Outside a
     // cell scope the mock throws, so no peer can touch the live Postgres target.
+    // The incarnation advances BEFORE boot: ops and admission checks that arrive while
+    // the instance is still booting belong to the new instance, not the destroyed one.
+    p.incarnation += 1;
     const booted = await runWithCellSql(p.db.sql, () => bootHivePeer({
       testnetBootstrap: testnet.bootstrap,
       rootPrefix: `v1core-${p.name}-`,
       identity: p.identity,
       pg: p.db.sql,
-      verify: (uid) => (roster.has(uid) ? 'verified' : 'fail'),
+      verify: (uid, pk) => {
+        const verdict = roster.has(uid) ? 'verified' : 'fail';
+        admissionChecks.push({
+          verifier: p.name,
+          verifierIncarnation: p.incarnation,
+          userId: uid,
+          devicePubkey: pk,
+          member: [...peers.values()].find((x) => x.userId === uid)?.name ?? null,
+          verdict,
+          at: Date.now(),
+        });
+        return verdict;
+      },
       swarmTiming,
       root: p.root ?? undefined,
       wrapSwarm: wrapSwarmFor(p),
@@ -426,7 +511,6 @@ export async function createMultiPeerHarness(
     const hp = scopePeerToCell(p.db.sql, booted);
     p.root = hp.root;
     p.current = hp;
-    p.incarnation += 1;
     const swarmKey = keyHex((hp.rawSwarm as unknown as { keyPair?: { publicKey?: unknown } }).keyPair?.publicKey);
     if (swarmKey) swarmKeyToName.set(swarmKey, p.name);
     logKeyToName.set(hp.handle.ownLog.keyHex, p.name);
@@ -579,10 +663,32 @@ export async function createMultiPeerHarness(
     record('partition', sideA.join(','), { sideA, sideB, socketsDropped });
   }
 
+  /** How many of `from`'s own-log entries `receiver` does not yet hold (null if either is stopped). */
+  function missingFrom(receiver: HarnessPeer, from: HarnessPeer): number | null {
+    if (!receiver.current || !from.current) return null;
+    const want = from.current.handle.ownLog.length;
+    const have = receiver.current.handle.admitted.get(from.current.handle.ownLog.keyHex)?.length ?? 0;
+    return Math.max(0, want - have);
+  }
+
   function heal(): void {
     const pairs = [...blockedPairs];
+    // What the partition was still blocking at the moment it lifts: per blocked pair and
+    // direction, the own-log entries the receiver had not received. A non-empty list is
+    // the causal proof that the partition held back a delivery (not just that it was set).
+    const undeliveredAtHeal: Array<{ receiver: string; from: string; missing: number }> = [];
+    for (const pair of pairs) {
+      const [x, y] = pair.split('|') as [string, string];
+      for (const [receiver, from] of [
+        [x, y],
+        [y, x],
+      ] as const) {
+        const missing = missingFrom(peer(receiver), peer(from));
+        if (missing) undeliveredAtHeal.push({ receiver, from, missing });
+      }
+    }
     blockedPairs.clear();
-    record('heal', '*', { pairs });
+    record('heal', '*', { pairs, undeliveredAtHeal });
   }
 
   async function lagOf(p: HarnessPeer): Promise<Record<string, number>> {
@@ -682,6 +788,9 @@ export async function createMultiPeerHarness(
   const harness: MultiPeerHarness = {
     peers,
     receipts,
+    runId,
+    arrivals,
+    admissionChecks,
     peer,
     live,
     addPeer,

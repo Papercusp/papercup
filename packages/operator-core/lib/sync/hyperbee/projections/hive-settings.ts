@@ -126,12 +126,21 @@ async function writeToPg(
   const now = Date.now();
   // workspace_id is the LOCAL projection's bound workspace. created_at is set on
   // first insert + preserved on update; only value/provenance/updated_at move.
+  // WI-6554700010049343 (mig 1636): a put older than the newest federated delete of this
+  // key loses to the delete's tombstone, so a put applied after a delete it predates (a log
+  // downloaded later, a re-fold after restart) cannot bring the row back on this peer only.
   await sql`
     INSERT INTO harness_shared.pot_settings
       (workspace_id, harness_slug, setting_key, value, author_pubkey, origin, fed_ts, fed_hlc, created_at, updated_at)
-    VALUES
-      (${opts.workspaceId}, ${row.harness_slug}, ${row.setting_key}, ${row.value},
-       ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc}, ${now}, ${now})
+    SELECT ${opts.workspaceId}, ${row.harness_slug}, ${row.setting_key}, ${row.value},
+       ${authorPubkey}, ${origin}, ${fedTs}::bigint, ${fedHlc}::text, ${now}::bigint, ${now}::bigint
+    WHERE NOT EXISTS (
+      SELECT 1 FROM harness_shared.fed_tombstones t
+       WHERE t.workspace_id = ${opts.workspaceId} AND t.harness_slug = ${row.harness_slug}
+         AND t.table_name = 'pot_settings' AND t.row_key = ${row.setting_key}
+         AND harness_shared.fed_order_key(t.fed_hlc, t.fed_ts)
+             >= harness_shared.fed_order_key(${fedHlc}::text, ${fedTs}::bigint)
+    )
     ON CONFLICT (workspace_id, harness_slug, setting_key) DO UPDATE SET
       value         = EXCLUDED.value,
       author_pubkey = EXCLUDED.author_pubkey,
@@ -144,6 +153,15 @@ async function writeToPg(
     -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,
     -- so the guard never rejects what the in-process merge fold would pick).
     WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.pot_settings.fed_hlc, harness_shared.pot_settings.fed_ts)
+  `;
+  // A put newer than the tombstone supersedes it whether or not it applied (if it lost, a
+  // still newer row is present), so the tombstone no longer decides anything.
+  await sql`
+    DELETE FROM harness_shared.fed_tombstones
+     WHERE workspace_id = ${opts.workspaceId} AND harness_slug = ${row.harness_slug}
+       AND table_name = 'pot_settings' AND row_key = ${row.setting_key}
+       AND harness_shared.fed_order_key(fed_hlc, fed_ts)
+           < harness_shared.fed_order_key(${fedHlc}::text, ${fedTs}::bigint)
   `;
 }
 
@@ -168,6 +186,19 @@ async function deleteFromPg(
         (${hlc}::text IS NULL AND ${ts}::bigint IS NULL)
         OR harness_shared.fed_order_key(${hlc}::text, ${ts}::bigint) >= harness_shared.fed_order_key(fed_hlc, fed_ts)
       )
+  `;
+  // WI-6554700010049343 (mig 1636): keep the delete's order key, so a put this delete
+  // supersedes cannot resurrect the row when it is applied later. Only the newest delete is
+  // kept. An unordered legacy del (no hlc, no ts) leaves no tombstone.
+  if (hlc === null && ts === null) return;
+  await sql`
+    INSERT INTO harness_shared.fed_tombstones AS t
+      (workspace_id, harness_slug, table_name, row_key, fed_hlc, fed_ts)
+    VALUES (${opts.workspaceId}, ${opts.harnessSlug}, 'pot_settings', ${key}, ${hlc}::text, ${ts}::bigint)
+    ON CONFLICT (workspace_id, harness_slug, table_name, row_key) DO UPDATE SET
+      fed_hlc = EXCLUDED.fed_hlc, fed_ts = EXCLUDED.fed_ts, deleted_at = now()
+    WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts)
+        > harness_shared.fed_order_key(t.fed_hlc, t.fed_ts)
   `;
 }
 
