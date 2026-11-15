@@ -164,8 +164,10 @@ it('matches the complete paperwork authority history and omission manifest in cl
     omission: { omittedRecords: 1, omittedByAuthority: { comment: 1 }, omittedRefs: [{ rawRef: 'WI-2#comment:1', authority: 'comment', scope: 'self', reason: 'budget' }], omittedRefsTruncated: false, sourceCount: 2, deduplicatedCount: 0, truncated: true },
     estimatedTokens: 250, serializedChars: 1000,
   };
+  // Keep expected literals separate from objects the consumer can mutate.
+  // Otherwise an in-place reorder changes both actual and expected decisions.
   vi.mocked(decisionsPort.getClaimTimePlanDecisions).mockResolvedValueOnce({
-    planSlug: 'task-plan', decisions, totalDecisions: 3, totalLocalDecisions: 3,
+    planSlug: 'task-plan', decisions: structuredClone(decisions), totalDecisions: 3, totalLocalDecisions: 3,
     totalAffectedDecisions: 0, affectedDecisions: 0, authorityReadFailed: false,
     omittedDecisionRefs: ['task-plan#D-001'],
   });
