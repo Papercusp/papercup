@@ -2519,18 +2519,31 @@ async function isModuleResolvableAtHead(
   relPath: string,
   log: (m: string) => void,
 ): Promise<boolean> {
-  for (const candidate of headModuleCandidates(relPath)) {
-    try {
-      const result = await runGit(['cat-file', '-e', `HEAD:${candidate}`], repoPath);
-      if (result.code === 0) return true;
-    } catch (e) {
-      // A HEAD probe is a safety refinement, not a reason to wedge git-sync. If
-      // it cannot be measured, retain the guard's conservative quarantine.
-      log(`[quarantine-import-guard] HEAD probe failed for ${relPath}: ${String(e)}`);
+  const candidates = headModuleCandidates(relPath);
+  try {
+    // Query the complete, fixed module-resolution candidate set in one process.
+    // A missing module previously paid one cat-file spawn for every suffix and
+    // index form at each guard phase, including each attributed commit group.
+    const result = await runGit(
+      ['ls-tree', '-r', '--name-only', '-z', 'HEAD', '--', ...candidates.map(path => `:(literal)${path}`)],
+      repoPath,
+    );
+    if (result.code !== 0) {
+      log(`[quarantine-import-guard] HEAD probe failed for ${relPath}: ${gitFailureDetail(result)}`);
       return false;
     }
+    if (result.stdout && !result.stdout.endsWith('\0')) {
+      log(`[quarantine-import-guard] HEAD probe failed for ${relPath}: incomplete NUL-delimited tree output`);
+      return false;
+    }
+    const wanted = new Set(candidates);
+    return result.stdout.split('\0').some(path => wanted.has(path));
+  } catch (e) {
+    // A HEAD probe is a safety refinement, not a reason to wedge git-sync. If
+    // it cannot be measured, retain the guard's conservative quarantine.
+    log(`[quarantine-import-guard] HEAD probe failed for ${relPath}: ${String(e)}`);
+    return false;
   }
-  return false;
 }
 
 /** Current branch name, or null when HEAD is detached. */
