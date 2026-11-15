@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: 'authorized-db' }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: 'authorized-db' }) }));
 vi.mock('./people', () => ({ readPersonQualificationEvidence: vi.fn() }));
 import { leadSourceObservationsRescore } from './qualification-instrument';
 import type { readPersonQualificationEvidence, PersonQualificationEvidence } from './people';

@@ -18,7 +18,7 @@ import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION } from '.
 
 // This suite invokes route handlers directly; keep route-shaped definitions but
 // skip @papercusp/agent-mcp's package-entry bootstrap of the full tool catalog.
-vi.mock('@papercusp/agent-mcp', async () => ({
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   ...await import('@papercusp/tooldef'),
   ...await import('../../../../agent-mcp/src/role-config'),
   ...await import('../../../../agent-mcp/src/gate-bypass'),

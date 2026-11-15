@@ -5,7 +5,7 @@ import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { restoreRawJsonbSerializer } from '../../../../libs/papercusp/libs/db/src/raw-serializers';
 
 const fixture = vi.hoisted(() => ({ sql: null as postgres.Sql | null, consentSince: 0 }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: fixture.sql! }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: fixture.sql! }) }));
 vi.mock('../serving-host-identity', () => ({ getServingHostIdentity: () => ({
   host: 'port-3070', processId: 'release-test-process', buildSha: 'a'.repeat(40),
 }) }));

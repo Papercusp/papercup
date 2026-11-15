@@ -13,7 +13,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({ statements: [] as string[], harnesses: [] as string[] }));
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   harnessQuery: async (slug: string, fn: (sql: unknown) => Promise<unknown>) => {
     h.harnesses.push(slug);
     const sql = async (strings: TemplateStringsArray, ...values: unknown[]) => {

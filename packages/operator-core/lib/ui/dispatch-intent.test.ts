@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { sql } = vi.hoisted(() => ({ sql: vi.fn() }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql }) }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'this-workspace' }));
 import { dispatchNativeWindowIntent, dispatchUiIntent, uniqueNativeDesktopClient } from './dispatch-intent';
 beforeEach(() => sql.mockReset());

@@ -6,7 +6,7 @@ vi.mock('./agent-tools/reports/_shared', () => ({ reportsLibraryDisabled: mocks.
 vi.mock('./report-library', () => ({ listReports: mocks.audits,
   ReportRequestConflictError: class ReportRequestConflictError extends Error {} }));
 vi.mock('./harness/improvements/capture-core', () => ({ captureImprovement: mocks.failure }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: mocks.useSql ? mocks.sql : 'fixture-sql' }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: mocks.useSql ? mocks.sql : 'fixture-sql' }) }));
 import { captureCoordReport, captureAcceptanceVerdict, captureAuditCompletion } from './report-capture';
 import { ReportRequestConflictError } from './report-library';
 const origin = { workspaceId: 'ws', ownerId: 'author', harnessSlug: 'pot', sessionRef: 'session' };

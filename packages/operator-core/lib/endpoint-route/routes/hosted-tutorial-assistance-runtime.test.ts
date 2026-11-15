@@ -11,7 +11,7 @@ const providers = vi.hoisted(() => ({
 }));
 vi.mock('./hosted-tutorial-progress', () => ({ createHostedTutorialAssistanceRoutes: providers.guarded }));
 vi.mock('../../agent-tools/operator/converse', () => ({}));
-vi.mock('@papercusp/agent-mcp', () => ({ dispatchProjectedTool: providers.dispatch, lookupByMcpName: providers.lookup }));
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()), dispatchProjectedTool: providers.dispatch, lookupByMcpName: providers.lookup }));
 vi.mock('../../voice-release-availability', () => ({ isHostedTtsEngineUnavailable: providers.unavailable }));
 vi.mock('./agent-mcp/tts-synth', () => ({ synthesize: providers.synthesize }));
 vi.mock('../../voice-prefs', () => ({ loadVoicePrefs: providers.preferences }));

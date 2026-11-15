@@ -6,7 +6,7 @@ const ports = vi.hoisted(() => ({
   confinement: vi.fn(), checkpoint: vi.fn(), custody: vi.fn(), resolve: vi.fn(), targetBody: vi.fn(),
   save: vi.fn(), processIdentity: vi.fn(), custodyFactory: vi.fn(),
 }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: ports.sql }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: ports.sql }) }));
 vi.mock('./agent-launch-core', () => ({ resolveResumeTarget: ports.resolve }));
 vi.mock('./session-assume-store', () => ({ createAssumeReceiptStore: () => ({ load: ports.load, save: ports.save }) }));
 vi.mock('./process-identity', () => ({ readProcessIdentity: ports.processIdentity }));

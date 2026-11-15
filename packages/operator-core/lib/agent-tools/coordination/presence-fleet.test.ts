@@ -9,7 +9,7 @@ import {
 } from './presence-fleet';
 import { mockOrgPgSql } from '../../testing/mock-org-pg';
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: vi.fn() }));
 
 const LAUNCH: FleetMembership = { fleetSlug: 'launch-fleet', fleetRole: 'member' };
 

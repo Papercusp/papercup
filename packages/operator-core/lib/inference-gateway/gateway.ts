@@ -6242,6 +6242,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     stageSpan?.setCacheShape(bodyBuf);
     /** The caller's native session id — what a per-owner served-route reading is bound to. */
     const nativeSessionId = nativeSessionIdFromMetaUserId(bodyMetaUserId);
+    stageSpan?.setNativeCorrelation(null, nativeSessionId);
     // Cache-affinity routing (P-002/P-003): a spawn pins its requests to one account via the
     // x-papercusp-account header so its per-credential conversation cache survives; an unknown id
     // (or no header / a single-account pool) falls back to the active account — today's behavior.

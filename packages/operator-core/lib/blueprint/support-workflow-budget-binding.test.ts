@@ -11,7 +11,7 @@ const ports = vi.hoisted(() => ({ worker: vi.fn(), accepted: vi.fn(), item: vi.f
 vi.mock('./operation-worker-binding', () => ({ readActiveOperationWorkerClaimBinding: ports.worker }));
 vi.mock('./operation-admission', () => ({ readAcceptedBlueprintDirectWorkItem: ports.accepted }));
 vi.mock('../work-items', () => ({ getWorkItem: ports.item }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: ports.sql }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: ports.sql }) }));
 vi.mock('../external-bench/current-su', () => ({ createNativeProviderAuthenticator: () => ({ authenticateProvider: ports.provider }) }));
 vi.mock('./support-workflow-operation', () => ({ supportWorkflowFromOperation: () => ({ id: 'approved-support' }) }));
 vi.mock('./support-workflow-case', () => ({ readSelectedSupportCase: ports.source }));

@@ -5,7 +5,7 @@ const fixture = vi.hoisted(() => ({
   consentSince: 0,
   sql: vi.fn(), position: vi.fn(), readProject: vi.fn(),
 }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: fixture.sql }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: fixture.sql }) }));
 vi.mock('../serving-host-identity', () => ({ getServingHostIdentity: () => fixture.host }));
 vi.mock('../git-pipeline-position', () => ({ gitPipelinePosition: fixture.position }));
 vi.mock('./runtime', () => ({ runtimeObservabilityHealth: () => fixture.health,

@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
   notifySyncInvalidate: vi.fn(),
 }));
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: {} }) }));
 vi.mock('@papercusp/testing-shell/census', () => ({ runCensus: mocks.runCensus }));
 vi.mock('./pg-store', () => ({ createPgCensusStore: () => ({}) }));
 vi.mock('./provider-registry', () => ({ censusProviders: () => [] }));

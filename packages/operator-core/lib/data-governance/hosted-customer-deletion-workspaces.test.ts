@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-vi.mock('@papercusp/db-org', () => ({ withWorkspace: vi.fn() }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), withWorkspace: vi.fn() }));
 vi.mock('../workspace-host/observability-store', () => ({ readWorkspaceHostConnection: vi.fn(), readWorkspaceHostDestroyTarget: vi.fn() }));
 import { createHostedCustomerDeletionWorkspaceAdapter } from './hosted-customer-deletion-workspaces';
 import type { HostedCustomerDeletionRequest } from './hosted-customer-deletion';

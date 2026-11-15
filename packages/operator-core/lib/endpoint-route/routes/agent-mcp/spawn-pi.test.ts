@@ -24,7 +24,7 @@ const startPiSessionMock = vi.fn(async (o: { sessionId: string; allowedTools: st
 vi.mock('@papercusp/agent-mcp/provisioning', () => ({
   startPiSession: (o: { sessionId: string; allowedTools: string[] }) => startPiSessionMock(o),
 }));
-vi.mock('@papercusp/agent-mcp', () => ({
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   defineTool: (definition: unknown) => definition,
   getCatalog: () => [
     { name: 'tasks:list', capability: 'tasks:read' },

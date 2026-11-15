@@ -76,7 +76,7 @@ vi.mock('../../../blueprint/operation-worker-binding', () => ({
   readActiveOperationWorkerClaimBinding: readiness.binding,
   readActiveOperationModelPolicy: readiness.policy,
 }));
-vi.mock('../../../adv-sessions', () => ({
+vi.mock('../../../adv-sessions', async (importOriginal) => ({ ...(await importOriginal<typeof import('../../../adv-sessions')>()),
   NATIVE_SESSION_ID_RE: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
   acquireAdvSessionResume: vi.fn(),
   finalizeAdvSessionResume: vi.fn(),

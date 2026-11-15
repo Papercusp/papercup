@@ -18,7 +18,7 @@ const { getOrgPgMock } = vi.hoisted(() => ({
   getOrgPgMock: vi.fn(() => { throw new Error('unit fixture has no default Postgres handle'); }),
 }));
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: getOrgPgMock }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: getOrgPgMock }));
 
 const mod = await import('./fallback-observations');
 const {

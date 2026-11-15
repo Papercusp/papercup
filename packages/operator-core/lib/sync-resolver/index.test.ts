@@ -12,7 +12,7 @@ describe('Learning canonical detail provider-free prerequisite', () => {
     const sql = {};
     vi.doMock('../memory/backend-selection', () => ({ currentMemoryBackendChoice: () => choice }));
     vi.doMock('../memory/backend', () => ({ getMemoryBackend: () => ({ available, get }) }));
-    vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+    vi.doMock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql }) }));
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'private-workspace' }));
     vi.doMock('../personal-vault/shared-store-seal', () => ({ unsealRowsForOwner: unseal }));
     vi.doMock('./learning-retain-read', async importOriginal => ({

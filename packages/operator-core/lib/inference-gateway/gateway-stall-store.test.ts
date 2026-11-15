@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const { sql } = vi.hoisted(() => ({ sql: vi.fn() }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql }) }));
 
 import {
   InMemoryGatewayStallStore,

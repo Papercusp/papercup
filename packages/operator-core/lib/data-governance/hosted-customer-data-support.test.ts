@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Principal } from '@papercusp/agent-mcp';
 import type { Sql } from 'postgres';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
-vi.mock('@papercusp/db-org', () => ({ withHostedServiceContext: vi.fn() }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), withHostedServiceContext: vi.fn() }));
 vi.mock('../auth/hosted/governance', () => ({ appendOrganizationAuditEvent: vi.fn() }));
 vi.mock('./hosted-customer-deletion-store', () => ({ readAdmittedHostedCustomerDeletion: vi.fn() }));
 vi.mock('./organization-data-receipts', () => ({ exportOrganizationData: vi.fn() }));

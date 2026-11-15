@@ -669,6 +669,26 @@ describe('GatewayRequestTelemetry', () => {
       sessionId: null, threadId: null, turnId: null, windowId: null });
   });
 
+  it('retains a Claude session without inventing a native turn or window', () => {
+    const telemetry = new GatewayRequestTelemetry();
+    const span = telemetry.begin({ ownerId: 'su-native', provider: 'claude', protocol: 'anthropic-messages' });
+    span.setNativeCorrelation(null, nativeIds.session_id);
+    expect(span.finish('shed', 429)?.nativeCorrelation).toEqual({ status: 'session-only',
+      sessionId: nativeIds.session_id, threadId: null, turnId: null, windowId: null });
+  });
+
+  it.each([undefined, null, 'invalid', ' ' + nativeIds.session_id, nativeIds.session_id + 'x'])(
+    'clears stale Claude session evidence for invalid or absent input %s', sessionId => {
+      const telemetry = new GatewayRequestTelemetry();
+      const span = telemetry.begin({ provider: 'claude', protocol: 'anthropic-messages' });
+      span.setNativeCorrelation(null, nativeIds.session_id);
+      span.setNativeCorrelation(null, sessionId);
+      expect(span.finish('shed', 429)?.nativeCorrelation).toEqual({
+        status: sessionId === null ? 'missing' : 'invalid',
+        sessionId: null, threadId: null, turnId: null, windowId: null,
+      });
+    });
+
   it('does not infer native identity from owner or equate a native turn with one request', () => {
     const telemetry = new GatewayRequestTelemetry();
     const absent = telemetry.begin({ ownerId: 'su-native', provider: 'codex', protocol: 'openai-responses' });

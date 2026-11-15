@@ -27,7 +27,7 @@ import type { OutlinePayload } from '@papercusp/docs-engine';
 // These tests exercise the docs handlers, not agent-mcp's tool registration.
 // Keep the large package barrel out of the warm-up import graph so a handler
 // regression cannot be hidden behind an unrelated package bootstrap timeout.
-vi.mock('@papercusp/agent-mcp', () => ({
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   defineTool: (tool: unknown) => tool,
   SU_ROLES: [],
 }));

@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql, coldRoot: '', replicaRoot: '', rolloutEnabled: true }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }) }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: async () => h.rolloutEnabled }));
 // Simulate the separate device boundary while retaining real files, fsync and
 // PostgreSQL transactions. Physical mount acceptance remains a live check.

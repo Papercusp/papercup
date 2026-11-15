@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const dispatchPendingTriggerRuns = vi.fn();
 const sql = { name: 'sql-fixture' };
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql }),
 }));
 vi.mock('../../external-triggers/binding-engine', () => ({

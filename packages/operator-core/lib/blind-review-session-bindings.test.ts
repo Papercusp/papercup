@@ -17,7 +17,7 @@ const readConfinementMock = vi.hoisted(() => vi.fn());
 const readDeclaredConfinementMock = vi.hoisted(() => vi.fn());
 const retireRuntimeMock = vi.hoisted(() => vi.fn(async (_input: unknown, _deps: unknown) => ({ cutoff: 0, released: 0, pending: 0 })));
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: sqlMock }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: sqlMock }) }));
 vi.mock('./pg-read-query', () => ({ boundedPgReadTxn: vi.fn() }));
 vi.mock('./blind-review-runtime-recovery', () => ({ retireRuntimeNamespacesForBinding: retireRuntimeMock }));
 vi.mock('./capability-envelope/session-confinement-store', () => ({

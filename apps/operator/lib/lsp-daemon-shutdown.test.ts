@@ -10,7 +10,7 @@ import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 
 const resources = vi.hoisted(() => ({ clients: vi.fn(), database: vi.fn() }));
 vi.mock('@papercusp/operator-core/lib/code-intelligence/lsp-adapter', () => ({ shutdownAllLspClients: resources.clients }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: { end: resources.database } }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: { end: resources.database } }) }));
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.clearAllMocks(); });
 

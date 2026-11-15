@@ -86,7 +86,7 @@ export interface GatewayCacheFingerprint {
  * A native turn may generate multiple HTTP requests; this is NOT a unique
  * charged-request identity or proof of an authenticated native session. */
 export interface GatewayNativeCorrelation {
-  status: 'unobserved' | 'missing' | 'invalid' | 'oversized' | 'observed';
+  status: 'unobserved' | 'missing' | 'invalid' | 'oversized' | 'observed' | 'session-only';
   sessionId: string | null;
   threadId: string | null;
   turnId: string | null;
@@ -1159,11 +1159,21 @@ export class GatewayRequestSpan {
     this.cacheRouting = decision;
   }
 
-  /** Reuse the object already parsed at the Codex forwarding boundary. This
-   * never parses/stringifies the full request, so even a body beyond the 2MiB
-   * fingerprint ceiling can carry a bounded correlation observation. */
-  setNativeCorrelation(body: unknown): void {
+  /** Reuse the parsed Codex metadata or the Claude session id already read by
+   * the gateway. A Claude session does not establish a native turn or window.
+   * This never parses/stringifies the full request. */
+  setNativeCorrelation(body: unknown, claudeSessionId?: string | null): void {
     if (this.finished) return;
+    if (this.provider === 'claude' && this.protocol === 'anthropic-messages') {
+      if (typeof claudeSessionId === 'string' &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(claudeSessionId)) {
+        this.nativeCorrelation = { ...emptyNativeCorrelation('session-only'),
+          sessionId: claudeSessionId.toLowerCase() };
+      } else {
+        this.nativeCorrelation = emptyNativeCorrelation(claudeSessionId === null ? 'missing' : 'invalid');
+      }
+      return;
+    }
     this.nativeCorrelation = this.provider === 'codex' && this.protocol === 'openai-responses'
       ? readGatewayNativeCorrelation(body) : emptyNativeCorrelation('invalid');
   }

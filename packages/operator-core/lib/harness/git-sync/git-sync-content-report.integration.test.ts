@@ -6,7 +6,7 @@ import { createFreshTestDb } from '@papercusp/test-config/pg';
 import type { ScopedContentError } from './run-git-sync';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }) }));
 import { gitSyncContentEscalationBody, gitSyncContentSignature, persistGitSyncContentReport } from './git-sync-content-report';
 
 let db: Awaited<ReturnType<typeof createFreshTestDb>>;

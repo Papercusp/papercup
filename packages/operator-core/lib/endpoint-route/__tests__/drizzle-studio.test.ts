@@ -18,7 +18,7 @@ vi.mock('node:net', () => ({
     });
   },
 }));
-vi.mock('@papercusp/agent-mcp', () => ({ defineTool: (definition: unknown) => definition }));
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()), defineTool: (definition: unknown) => definition }));
 vi.mock('../../embedded-pg-discovery', () => ({ getHarnessAdminUrl: () => 'postgres://fixture' }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'workspace-fixture' }));
 vi.mock('../../resource-governor/execution', async (importOriginal) => ({

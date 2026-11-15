@@ -6,7 +6,7 @@ const fixture = vi.hoisted(() => ({
 }));
 
 // Exercise the real shared collector, with unrelated machine/PG probes isolated.
-vi.mock('@papercusp/agent-mcp', () => ({ defineTool: (definition: unknown) => definition }));
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()), defineTool: (definition: unknown) => definition }));
 vi.mock('../../../operator-state-pg', () => ({ readOperatorState: fixture.readState }));
 vi.mock('../../../credentials', () => ({ readCredentials: async () => ({}) }));
 vi.mock('../../../device-store', () => ({ listDevices: async () => [] }));

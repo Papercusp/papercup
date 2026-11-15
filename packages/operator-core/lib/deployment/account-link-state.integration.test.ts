@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 
 const h = vi.hoisted(() => ({ sql: null as Sql | null, workspace: 'link-test' }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql! }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql! }) }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => h.workspace }));
 vi.mock('../db-encryption', () => ({ ENCRYPTED_TABLES: new Set(), getDbEncryptionKey: () => 'unused' }));
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));

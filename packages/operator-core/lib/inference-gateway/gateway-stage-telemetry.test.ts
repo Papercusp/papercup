@@ -278,6 +278,7 @@ async function recentTimeline(port: number) {
 }
 
 it.each([false, true])('classifies a pre-upstream local 429 as shedding, not an upstream rejection (hard pin %s)', async hardPin => {
+  const nativeSessionId = '01a0cf6d-3062-7782-b6c3-c9c43179b7cc';
   let upstreamCalls = 0;
   upstream = http.createServer((_req, res) => {
     upstreamCalls++;
@@ -302,13 +303,16 @@ it.each([false, true])('classifies a pre-upstream local 429 as shedding, not an 
       'x-papercusp-owner': 'su-local-shed',
       ...(hardPin ? { 'x-papercusp-account': 'paced-telemetry', 'x-papercusp-account-pin': 'hard' } : {}),
     },
-    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'fixture' }] }),
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'fixture' }],
+      metadata: { user_id: JSON.stringify({ session_id: nativeSessionId }) } }),
   });
   expect(response.status).toBe(429);
   await response.text();
   const { stages, timeline } = await recentTimeline(port);
   expect(upstreamCalls).toBe(0);
   expect(timeline).toMatchObject({ ownerId: 'su-local-shed', attempts: 0, finalStatus: 429, outcome: 'shed' });
+  expect(timeline.nativeCorrelation).toEqual({ status: 'session-only', sessionId: nativeSessionId,
+    threadId: null, turnId: null, windowId: null });
   expect(timeline.upstreamWrites.calls).toEqual([]);
   expect(stages.outcomes['upstream-429']).toBe(0);
   expect(stages.outcomes.shed).toBe(1);
@@ -316,6 +320,9 @@ it.each([false, true])('classifies a pre-upstream local 429 as shedding, not an 
   expect(report.ledger.sheds).toBe(1);
   expect(report.ledger.upstream429).toBe(0);
   expect(report.stageTelemetry.recent[0].outcome).toBe('shed');
+  expect(report.requestOutcomes.rows).toHaveLength(1);
+  expect(report.requestOutcomes.rows[0]).toMatchObject({ outcomeClass: 'shed', attempts: 0,
+    nativeSessionId, nativeThreadId: null, nativeTurnId: null, nativeWindowId: null });
 });
 
 it.each(['downstream-cancel', 'upstream-timeout'] as const)(

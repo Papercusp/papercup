@@ -700,6 +700,31 @@ describe('original-item durable admission recovery', () => {
     });
   });
 
+  it('lets the same caller retarget a held, never-delivered request; refuses another caller (EI-28843135732228325)', async () => {
+    const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    const d = deps({ dispatch: vi.fn(async () => ({
+      ok: false, wake: null, warning: 'no assignment landed',
+      target: { requested: 'reviewer', ownerId: 'reviewer', present: true, sessionState: 'parked', wakeable: true },
+      assignment: {
+        ok: false, targetAgent: 'reviewer', requested: [scope.workItemId], actionable: [], assigned: [], retained: [],
+        skipped: [{ workItemId: scope.workItemId, code: 'dependency_blocked' as const,
+          reason: 'target has 1/1 active claim slots (0 available)' }], failed: [], executionWorkItemIds: [],
+      },
+    })) });
+    await runAdmissionRecoveries(scope, d, db.sql);
+    expect((await current()).payload._admissionRecovery).toMatchObject({ state: 'held', target: 'reviewer' });
+
+    await expect(requestAdmissionRecovery({ ...input, caller: 'intruder', target: 'other' }, { authorize }, db.sql))
+      .rejects.toThrow('belongs to requester');
+    const retargeted = await requestAdmissionRecovery({ ...input, target: 'other' }, { authorize }, db.sql);
+    expect(retargeted.request).toMatchObject({
+      requestId: first.request.requestId, caller: 'requester', target: 'other', state: 'queued', stage: 'queued',
+    });
+    expect((await current()).payload._admissionRecovery).toMatchObject({ target: 'other', state: 'queued' });
+    // The retargeted request is queued again, so its binding is fixed until the routine holds or delivers it.
+    await expect(requestAdmissionRecovery(input, { authorize }, db.sql)).rejects.toThrow('only a held request can be retargeted');
+  });
+
   it('refuses changed target, cross-scope identity, remote origin, and peer holds', async () => {
     await requestAdmissionRecovery(input, { authorize }, db.sql);
     await expect(requestAdmissionRecovery({ ...input, target: 'other' }, { authorize }, db.sql)).rejects.toThrow('belongs to');

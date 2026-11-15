@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import type { StripeBillingClient } from '../auth/hosted/billing/stripe-billing-client';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
-vi.mock('@papercusp/db-org', () => ({ withHostedServiceContext: vi.fn(), withWorkspace: vi.fn() }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), withHostedServiceContext: vi.fn(), withWorkspace: vi.fn() }));
 vi.mock('../workspace-host/observability-store', () => ({ readWorkspaceHostConnection: vi.fn(), readWorkspaceHostDestroyTarget: vi.fn() }));
 vi.mock('../auth/hosted/governance', () => ({ appendOrganizationAuditEvent: vi.fn() }));
 vi.mock('./hosted-customer-deletion-store', () => ({ authorizeHostedCustomerDeletion: vi.fn(),

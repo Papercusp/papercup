@@ -14,7 +14,7 @@ vi.mock('../observability/runtime', () => ({ captureRuntimeSecurityCensus: h.cap
 // Runtime custody must load and work even when source-only scanning cannot load.
 // In particular, a relocated host bundle has no sibling source checkout.
 vi.mock('./security-source-census', () => { throw Error('runtime-custody-loaded-source-scanner'); });
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: async () =>
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: async () =>
   h.keyAvailable ? [{ value_b64: h.secret.toString('base64') }] : [] }) }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-security' }));
 vi.mock('../acceptance-author-identity', () => ({ areAcceptanceLineageRelated: h.related }));

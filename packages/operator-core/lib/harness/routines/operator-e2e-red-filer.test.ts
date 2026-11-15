@@ -12,7 +12,7 @@ vi.mock('../../task-manager/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../task-manager/store')>()),
   listTasks: vi.fn(async () => []),
 }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: vi.fn() }));
 vi.mock('../../agent-tools/work_items/_create-core', () => ({ createOneWorkItem: vi.fn() }));
 vi.mock('../../work-items', () => ({ claimWorkItem: vi.fn() }));
 vi.mock('../improvements/watchdog', () => ({

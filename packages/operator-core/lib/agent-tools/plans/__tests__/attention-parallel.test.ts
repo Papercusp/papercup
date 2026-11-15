@@ -15,7 +15,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const M = vi.hoisted(() => ({
   listPlanIndexRows: vi.fn(async () => [] as unknown[]),
   ctxToPlanSourceOpts: vi.fn(async () => ({})),
-  planItemsToAttention: vi.fn(() => [] as unknown[]),
+  // Parameters mirror the real signature so the L206 pass-through to the actual
+  // implementation typechecks; the return stays loose for the hand-built fixtures.
+  planItemsToAttention: vi.fn(
+    (..._args: Parameters<typeof import('../../../attention/sources').planItemsToAttention>) => [] as unknown[],
+  ),
   ownerAttentionSourcesFor: vi.fn(() => [
     'needs-human-work-items',
     'owner-walls',

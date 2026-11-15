@@ -495,8 +495,19 @@ export async function requestAdmissionRecovery(
     // fresh authorization path may re-sign them with the current key.
     const parsed = requestSchema.safeParse(rawPrevious);
     const previous = parsed.success ? parsed.data : null;
-    if (previous && (previous.caller !== input.caller || previous.target !== input.target)) {
+    if (previous && previous.caller !== input.caller) {
       throw new AdmissionRecoveryRefused(`existing recovery belongs to ${previous.caller} for ${previous.target}`);
+    }
+    // EI-28843135732228325: a HELD request never delivered a wake or landed an
+    // assignment (the routine stopped before or at assign), so its target binding
+    // grants nothing. Without this, a held request bound to a member that left or
+    // has no claim slot wedged the item forever. The same caller may retarget it;
+    // the new target is re-authorized above and below, and the item is re-screened.
+    // A queued or delivered request keeps its binding: the routine or the target owns it.
+    if (previous && previous.target !== input.target && previous.state !== 'held') {
+      throw new AdmissionRecoveryRefused(
+        `existing recovery belongs to ${previous.caller} for ${previous.target} (${previous.state}); only a held request can be retargeted`,
+      );
     }
     if (!locked) {
       if (!previous) throw new AdmissionRecoveryRefused('original-item recovery is being registered; retry this same item');

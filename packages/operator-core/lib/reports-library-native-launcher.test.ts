@@ -16,7 +16,7 @@ vi.mock('node:child_process', () => ({ execFileSync: seams.execute, execFile: se
 vi.mock('../../../libs/generic/tauri-verify/src/bridge-client', () => ({ bridgeEval: seams.authenticate }));
 vi.mock('./runtime-vintage', () => ({ reportRuntimeVintage: seams.reportRuntime,
   listRuntimeVintage: async () => [], measureRuntimeVintageEnvironment: () => 'measured-native' }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: { end: seams.end } }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: { end: seams.end } }) }));
 import { checkNativeLedger, nativeChildEnvironment, nativeTestDatabaseEnvironment, runNativeChild, runNativeE2e } from '../../../scripts/tauri-surface-verify-reports.mts';
 import { verifierSourceFiles } from './verifier-source';
 

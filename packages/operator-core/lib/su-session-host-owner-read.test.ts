@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readSuSessionHostOwner } from './su-session-persistence';
 
 const db = vi.hoisted(() => ({ sql: vi.fn() }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: db.sql }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: db.sql }) }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'workspace-default' }));
 const owner = { pid: 11, hostId: 'host', nonce: 'nonce', recordedAt: '2026-10-08T00:00:00Z' };
 

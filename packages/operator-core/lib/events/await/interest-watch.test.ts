@@ -11,7 +11,7 @@ const lifecycle = vi.hoisted(() => ({
   importing: vi.fn(),
   sql: vi.fn(),
 }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: lifecycle.sql }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: lifecycle.sql }) }));
 vi.mock('@papercusp/coordination/event-log', () => ({ DEFAULT_COORD_WORKSPACE: 'private-lifecycle' }));
 vi.mock('./engine', async () => {
   lifecycle.importing();

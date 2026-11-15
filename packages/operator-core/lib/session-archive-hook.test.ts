@@ -23,7 +23,7 @@ import {
 import { archiveSession, type ArchiveFileRow, type ArchiveStampRow, type SessionArchiveStore } from './session-archive';
 import type { ProtectedSessionIdentity } from './session-dir-gc';
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: vi.fn() }));
 
 const SID = 'cccccccc-1111-2222-3333-444444444444';
 

@@ -11,7 +11,7 @@ vi.mock('@dbos-inc/dbos-sdk', () => ({ DBOS: {
   listWorkflowSteps: sdk.steps, launch: sdk.launch,
 } }));
 vi.mock('../dbos/primary-dbos-client', () => ({ getPrimaryDbosClient: sdk.client }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => { throw new Error('unexpected default DB'); } }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => { throw new Error('unexpected default DB'); } }));
 
 let opts: MonitoredRunReadOptions;
 beforeEach(() => {

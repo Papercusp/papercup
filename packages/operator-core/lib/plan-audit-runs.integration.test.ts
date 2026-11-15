@@ -5,7 +5,7 @@ import postgres from 'postgres';
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 const h = vi.hoisted(() => ({ sql: undefined as unknown }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }) }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'audit-integration' }));
 vi.mock('./harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'audit-harness' }));
 vi.mock('./text-artifacts', () => ({ saveTextArtifact: vi.fn() }));

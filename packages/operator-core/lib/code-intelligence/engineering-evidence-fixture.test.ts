@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({
   direct: vi.fn(), canonical: vi.fn(), writeState: vi.fn(),
 }));
 vi.mock('node:fs/promises', () => ({ mkdtemp: mocks.mkdtemp, mkdir: mocks.mkdir, writeFile: mocks.writeFile, rm: mocks.rm }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: mocks.canonical }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: mocks.canonical }) }));
 vi.mock('../agent-tools/plans/__tests__/_pg-tool-fixture', () => ({ setupPlanPgFixture: mocks.setup, seedPlan: vi.fn() }));
 vi.mock('../agent-tools/plans/source', () => ({ deriveIndexFromContent: vi.fn() }));
 vi.mock('../agent-tools/plans/plan-index-rows', () => ({ writePlanIndexRows: vi.fn() }));

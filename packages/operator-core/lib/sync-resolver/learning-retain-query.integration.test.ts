@@ -200,7 +200,7 @@ describe('learning.retain banked plans — migrated Postgres schema', () => {
       const backend = vi.fn(() => { throw new Error('provider client must not initialize for a canonical detail read'); });
       vi.doMock('../memory/backend-selection', () => ({ currentMemoryBackendChoice: () => choice }));
       vi.doMock('../memory/backend', () => ({ getMemoryBackend: backend }));
-      vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: tx }) }));
+      vi.doMock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: tx }) }));
       vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'retain-provider-free-workspace' }));
       try {
         const detail = (id: string) => resolveNamedQueryV2('learning.retainDetail', {

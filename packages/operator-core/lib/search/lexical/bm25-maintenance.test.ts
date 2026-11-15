@@ -5,7 +5,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 const dedicated = vi.hoisted(() => ({ create: vi.fn() }));
-vi.mock('@papercusp/db-org', () => ({ createDedicatedOrgPg: dedicated.create }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), createDedicatedOrgPg: dedicated.create }));
 import {
   estimateBm25LiveBytes,
   formatBm25MaintenanceReport,

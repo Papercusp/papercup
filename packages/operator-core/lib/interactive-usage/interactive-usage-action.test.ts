@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@papercusp/scheduled-registry', () => ({ managedSetInterval: mocks.managedSetInterval }));
 vi.mock('../harness/routines/system-actions', () => ({ registerSystemAction: mocks.registerSystemAction }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: mocks.getOrgPg }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: mocks.getOrgPg }));
 vi.mock('./ingest-claude-transcripts', () => ({ ingestInteractiveUsage: mocks.ingestInteractiveUsage }));
 vi.mock('./reprice-usage-samples', () => ({ repriceUsageSamples: mocks.repriceUsageSamples }));
 

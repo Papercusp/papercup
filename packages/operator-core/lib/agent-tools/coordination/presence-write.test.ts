@@ -22,7 +22,7 @@ const mocks = vi.hoisted(() => ({
   }),
 }));
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: vi.fn() }),
 }));
 
@@ -72,7 +72,7 @@ vi.mock('../../work-scope-policy', () => ({
   reconcilePresencePot: (...args: unknown[]) => mocks.reconcilePresencePot(...args),
 }));
 
-vi.mock('../../adv-sessions', () => ({
+vi.mock('../../adv-sessions', async (importOriginal) => ({ ...(await importOriginal<typeof import('../../adv-sessions')>()),
   reactivateAdvSessionByOwner: (...args: unknown[]) => mocks.reactivateAdvSession(...args),
 }));
 

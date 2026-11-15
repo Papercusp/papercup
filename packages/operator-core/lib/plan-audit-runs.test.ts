@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 const h = vi.hoisted(() => ({ save: vi.fn(), engine: vi.fn(), publish: vi.fn(), sql: vi.fn() }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }) }));
 vi.mock('./text-artifacts', () => ({ saveTextArtifact: h.save }));
 vi.mock('./report-library', () => ({ publishReport: h.publish }));
 vi.mock('./unshipped-plans-audit', () => ({ runUnshippedPlansAudit: h.engine }));

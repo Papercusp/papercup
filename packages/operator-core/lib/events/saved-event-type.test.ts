@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 
 const h = vi.hoisted(() => ({ get: vi.fn(), claim: vi.fn(), sql: vi.fn() }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }) }));
 vi.mock('../event-key-registry-store', () => ({ getEventKey: h.get, claimEventKey: h.claim }));
 import { readSavedEventCatalog, saveEventType, validateSavedEventPayload } from './saved-event-type';
 

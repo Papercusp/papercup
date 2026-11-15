@@ -10,7 +10,7 @@ vi.mock('./managed-tick-alarm-recovery', () => ({
 }));
 vi.mock('../device-operator-actions', () => ({ workspaceBackgroundActivityAllowed: vi.fn() }));
 vi.mock('../startup-activity', () => ({ recordStartupActivityHistory: vi.fn(async () => {}) }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: 'scoped-test-sql' }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: 'scoped-test-sql' }) }));
 
 afterEach(() => {
   resetScheduledRegistry();

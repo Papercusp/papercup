@@ -10,7 +10,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const fill = vi.fn();
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   withWorkspace: async (_scope: string, read: (sql: () => Promise<unknown[]>) => unknown) => read(async () => []),
 }));
 vi.mock('../harness-core', () => ({

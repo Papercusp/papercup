@@ -6,7 +6,7 @@ const fixture = vi.hoisted(() => ({
   migrate: vi.fn(async () => ({ ok: true })),
   gate: vi.fn(async () => ({ ok: true })),
 }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: { end: fixture.adminEnd } }),
   getOrgPgApp: () => ({ sql: { end: fixture.appEnd } }),
 }));

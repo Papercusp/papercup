@@ -20,7 +20,7 @@ const h = vi.hoisted(() => ({
   record: vi.fn(), reanchor: vi.fn(), bind: vi.fn(), end: vi.fn(), ingest: vi.fn(),
   managed: vi.fn(), kill: vi.fn(), host: vi.fn(), begin: vi.fn(), verifySession: vi.fn(), get: vi.fn(), sandbox: vi.fn(), common: vi.fn(),
 }));
-vi.mock('../adv-sessions', () => ({ recordAdvSession: h.record, reanchorAdvSessionNativeId: h.reanchor, markAdvSessionEnded: h.end }));
+vi.mock('../adv-sessions', async (importOriginal) => ({ ...(await importOriginal<typeof import('../adv-sessions')>()), recordAdvSession: h.record, reanchorAdvSessionNativeId: h.reanchor, markAdvSessionEnded: h.end }));
 vi.mock('../task-manager/store', () => ({ bindLiveAgentSessionTasksToNativeSession: h.bind }));
 vi.mock('../task-manager/managed-spawn', () => ({ managedSpawn: h.managed }));
 vi.mock('../agent-chat-stream', () => ({ runAgentChat: h.run }));

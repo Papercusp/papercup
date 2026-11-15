@@ -1,5 +1,5 @@
 import {beforeEach,describe,expect,it,vi} from 'vitest';
-vi.mock('@papercusp/db-org',()=>({getOrgPg:()=>({sql:'database'})}));
+vi.mock('@papercusp/db-org',async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()),getOrgPg:()=>({sql:'database'})}));
 vi.mock('../../../workspace-registry',()=>({activeWorkspaceId:()=> 'bound-workspace'}));
 vi.mock('../../../report-library',()=>({getReport:vi.fn()}));
 vi.mock('../../../report-sharing-store',()=>({postgresReportShareStore:()=> 'store'}));

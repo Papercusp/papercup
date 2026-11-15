@@ -5,7 +5,7 @@ const h = vi.hoisted(() => ({
   configure: vi.fn(), preserve: vi.fn(), validRepo: vi.fn(),
 }));
 vi.mock('@papercusp/locks', () => ({ configureLocks: h.configure }));
-vi.mock('@papercusp/db-org', () => ({ setAdminPoolStatementTimeoutProvider: vi.fn() }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), setAdminPoolStatementTimeoutProvider: vi.fn() }));
 vi.mock('@papercusp/db-org/acquire-registry', () => ({ beginAcquire: vi.fn(), recordPoolMax: vi.fn() }));
 vi.mock('../../embedded-pg-discovery', () => ({ getHarnessAdminUrl: () => 'postgresql://fixture/unused' }));
 vi.mock('../../txn-timeouts-config', () => ({

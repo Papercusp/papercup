@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const calls = vi.hoisted(() => ({ schedules: vi.fn(), startup: vi.fn() }));
-vi.mock('@papercusp/agent-mcp', () => ({ defineTool: (definition: unknown) => definition, SU_ROLES: ['su'] }));
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()), defineTool: (definition: unknown) => definition, SU_ROLES: ['su'] }));
 vi.mock('../../schedule-inventory', () => ({
   SCHEDULE_SOURCES: ['dbos', 'routines', 'in-process', 'managed', 'external-process'],
   collectScheduleInventory: calls.schedules,

@@ -5,7 +5,7 @@ const h = vi.hoisted(() => ({
   existsSync: vi.fn(),
   readFileSync: vi.fn(),
 }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }) }));
 vi.mock('node:fs', () => ({ existsSync: h.existsSync, readFileSync: h.readFileSync }));
 vi.mock('./papercusp-root', () => ({ papercuspPath: () => '/fixture' }));
 
