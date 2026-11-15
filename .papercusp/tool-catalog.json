@@ -25081,7 +25081,7 @@
           "POST"
         ]
       },
-      "description": "Fire one run of a scheduled plan immediately (a manual run), independent of its cadence — mints an instance plan + plan_runs row + run-scoped work items, like a scheduled fire.",
+      "description": "Fire one implementation-plan run immediately, independent of its cadence — mints an instance plan + plan_runs row + run-scoped work items. System-action and blueprint-operation schedules return the exact routines:fire recovery instead.",
       "capabilities": [
         "plans:write"
       ],
@@ -25099,7 +25099,7 @@
       ],
       "guidance": {
         "when": "Manually triggering a run of a scheduled plan now — testing the schedule, or an out-of-band run.",
-        "notWhen": "Changing the cadence (plans:set-schedule). Launching a plan as an interactive chat session (plans:launch).",
+        "notWhen": "System-action or blueprint-operation schedules: arm with plans:arm-schedule, then use routines:fire. Changing cadence (plans:set-schedule). Interactive agent launches (plans:launch).",
         "chaining": "plans:set-schedule (author) → plans:run-now (fire one) → plans:runs (inspect the runs)."
       }
     },
