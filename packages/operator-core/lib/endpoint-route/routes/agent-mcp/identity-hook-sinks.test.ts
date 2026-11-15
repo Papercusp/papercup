@@ -199,6 +199,30 @@ describe('compactionSinkDue (D-024 §3)', () => {
 });
 
 describe('POST /agent-mcp/tool-guard', () => {
+  it('computes a hedged duplicate request once and gives both copies its verdict (EI-28856216485629340)', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    readAppliedWornRulesMock.mockImplementation(async () => { await gate; return noRmRules(); });
+    const guardRequestId = randomUUID();
+    const body = { owner: 'builder', workspace: 'ws', guardRequestId, ...call('rm -rf /') };
+    const first = post('/agent-mcp/tool-guard', body);
+    await vi.waitFor(() => expect(readAppliedWornRulesMock).toHaveBeenCalledTimes(1));
+    const second = post('/agent-mcp/tool-guard', body);
+    // A different call that reuses the id must not inherit the first verdict.
+    const reused = post('/agent-mcp/tool-guard', { ...body, ...call('ls') });
+    await vi.waitFor(() => expect(readAppliedWornRulesMock).toHaveBeenCalledTimes(2));
+    for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+    release();
+    const [a, b, c] = await Promise.all([first, second, reused]);
+    expect(a).toEqual({ ok: true, text: 'Refused by identity safe-coder rule no-rm: no recursive deletes' });
+    expect(b).toEqual(a);
+    expect(c).toEqual({ ok: true, text: '' });
+    expect(readAppliedWornRulesMock).toHaveBeenCalledTimes(2);
+    // A settled verdict is not cached: the same id later is computed afresh.
+    expect(await post('/agent-mcp/tool-guard', body)).toEqual(a);
+    expect(readAppliedWornRulesMock).toHaveBeenCalledTimes(3);
+  });
+
   it('keeps plan and identity reads inside the reserved database scope', async () => {
     let inPriorityScope = false;
     priorityOrgPgMock.mockImplementationOnce(async (run) => {

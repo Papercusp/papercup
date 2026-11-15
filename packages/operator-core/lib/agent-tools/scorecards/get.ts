@@ -189,6 +189,28 @@ const scorecardSubjectRubricCurrentnessSchema = z.object({
   currentCriteriaHash: z.string().nullable(),
 }).passthrough();
 
+const sha256HexSchema = z.string().regex(/^[a-f0-9]{64}$/);
+/** per-requirement-acceptance-grading-2026-11-14 R-1: one rated criterion's grading record. */
+const criterionGradeSchema = z.object({
+  barHash: sha256HexSchema,
+  methodHash: sha256HexSchema,
+  gradeKey: sha256HexSchema,
+  proof: z.array(z.object({
+    id: z.number().int(),
+    specId: z.string(),
+    specRevision: z.number().int(),
+    specFingerprint: z.string(),
+    bindingFingerprint: z.string().nullable(),
+    fingerprints: z.object({
+      sourceFingerprint: z.string(),
+      testFingerprint: z.string().nullable(),
+      fixtureFingerprint: z.string().nullable(),
+      rubricFingerprint: z.string().nullable(),
+      environmentFingerprint: z.string().nullable(),
+    }),
+  })),
+});
+
 const scorecardRubricCurrentnessSchema = z.object({
   state: z.enum(['current', 'stale', 'unknown']),
   reason: z.enum([
@@ -300,8 +322,8 @@ const scorecardEvidenceSchema = z.object({
   rubricRevision: z.number().optional(),
   rubricMeaningRevision: z.number().optional(),
   criteriaHash: z.string().optional(),
-  criterionHashes: z.record(z.string(), z.string()).optional()
-    .describe('Emit-time barHash of each rated criterion, keyed by criterion key (acceptance cards only; absent = whole-rubric rule).'),
+  criterionGrades: z.record(z.string(), criterionGradeSchema).optional()
+    .describe('Emit-time grade key and proof binding of each rated criterion (acceptance cards only; absent = whole-rubric rule).'),
   rerunRecipe: z.record(z.string(), z.unknown()).optional(),
   rubricCurrentness: scorecardRubricCurrentnessSchema,
   evidenceFingerprint: z.string().optional(),

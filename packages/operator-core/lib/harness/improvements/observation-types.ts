@@ -4,6 +4,7 @@ import { leadingScaleLabel } from '../../rubric-rating-vocabulary';
 import { parseRecordedMeasurementProvenance, type RecordedMeasurementProvenance } from '@papercusp/test-config/execution-details';
 import { measurementProvenanceStatus } from '../../measurement-provenance';
 import { specQualityRerunRecipeSchema, type SpecQualityRerunRecipe } from '../../agent-tools/plans/spec-quality-identity';
+import type { CriterionGrade, CriterionGradeProof } from '../../rubrics';
 
 /**
  * observation-types.ts — the canonical structured-observation v2 shape
@@ -548,12 +549,13 @@ export interface StructuredObservation {
    */
   criteriaHash?: string;
   /**
-   * per-requirement-acceptance-grading-2026-11-14 R-1: the server-derived barHash
-   * of EVERY criterion this card rates, keyed by criterion key, at emit time. Set
-   * only on acceptance-rubric cards, and only as a complete map — absent means the
-   * card is judged by the whole-rubric rule (`rubricRevision`/`criteriaHash`).
+   * per-requirement-acceptance-grading-2026-11-14 R-1: the grading record of EVERY
+   * criterion this card rates, keyed by criterion key, at emit time — its grade key
+   * (barHash bound to the method hash) and the proof rows it was graded against. Set
+   * only on acceptance-rubric cards, server-side, and only as a complete map — absent
+   * means the card is judged by the whole-rubric rule (`rubricRevision`/`criteriaHash`).
    */
-  criterionHashes?: Record<string, string>;
+  criterionGrades?: Record<string, CriterionGrade>;
   /** Identity of a rubric named as the SUBJECT of this scorecard, distinct from rubricRef. */
   subjectRubricIdentity?: {
     rubricRef: string;
@@ -1413,20 +1415,64 @@ function asLedgerResult(v: unknown): ObservationLedgerResult | null {
     ...(provenance ? { provenance } : {}), provenanceStatus: measurementProvenanceStatus(provenance) };
 }
 
+const SHA256_HEX = /^[a-f0-9]{64}$/;
+
+function asNullableString(v: unknown): string | null | undefined {
+  if (v === null) return null;
+  return typeof v === 'string' ? v : undefined;
+}
+
+function asCriterionGradeProof(v: unknown): CriterionGradeProof | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
+  const r = v as Record<string, unknown>;
+  const f = r.fingerprints;
+  if (!f || typeof f !== 'object' || Array.isArray(f)) return undefined;
+  const fp = f as Record<string, unknown>;
+  if (!Number.isSafeInteger(r.id) || typeof r.specId !== 'string' || !r.specId.trim()) return undefined;
+  if (!Number.isSafeInteger(r.specRevision) || typeof r.specFingerprint !== 'string' || !r.specFingerprint) return undefined;
+  if (typeof fp.sourceFingerprint !== 'string' || !fp.sourceFingerprint) return undefined;
+  const bindingFingerprint = asNullableString(r.bindingFingerprint);
+  const nullable = [fp.testFingerprint, fp.fixtureFingerprint, fp.rubricFingerprint, fp.environmentFingerprint]
+    .map(asNullableString);
+  if (bindingFingerprint === undefined || nullable.some((value) => value === undefined)) return undefined;
+  const [testFingerprint, fixtureFingerprint, rubricFingerprint, environmentFingerprint] = nullable as (string | null)[];
+  return {
+    id: r.id as number,
+    specId: r.specId,
+    specRevision: r.specRevision as number,
+    specFingerprint: r.specFingerprint,
+    bindingFingerprint,
+    fingerprints: { sourceFingerprint: fp.sourceFingerprint, testFingerprint, fixtureFingerprint, rubricFingerprint, environmentFingerprint },
+  };
+}
+
 /**
- * Read a card's per-criterion hash map whole or not at all. A malformed entry
- * drops the WHOLE map rather than the entry: a partial map would let a reader
- * judge part of the card per requirement and silently fall back for the rest, so
- * an unreadable map degrades the card to the whole-rubric rule instead.
+ * Read a card's per-criterion grade records whole or not at all
+ * (per-requirement-acceptance-grading-2026-11-14 R-1). A malformed entry drops the
+ * WHOLE map rather than the entry: a partial map would let a reader judge part of the
+ * card per requirement and silently fall back for the rest, so an unreadable map
+ * degrades the card to the whole-rubric rule instead. Values are returned exactly as
+ * stored; nothing is derived or back-filled here.
  */
-function asCriterionHashes(v: unknown): Record<string, string> | undefined {
+function asCriterionGrades(v: unknown): Record<string, CriterionGrade> | undefined {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
   const entries = Object.entries(v as Record<string, unknown>);
   if (entries.length === 0) return undefined;
-  const out: Record<string, string> = {};
-  for (const [key, hash] of entries) {
-    if (!key.trim() || typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash)) return undefined;
-    out[key] = hash;
+  const out: Record<string, CriterionGrade> = {};
+  for (const [key, raw] of entries) {
+    if (!key.trim() || !raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+    const g = raw as Record<string, unknown>;
+    if (typeof g.barHash !== 'string' || !SHA256_HEX.test(g.barHash)) return undefined;
+    if (typeof g.methodHash !== 'string' || !SHA256_HEX.test(g.methodHash)) return undefined;
+    if (typeof g.gradeKey !== 'string' || !SHA256_HEX.test(g.gradeKey)) return undefined;
+    if (!Array.isArray(g.proof)) return undefined;
+    const proof: CriterionGradeProof[] = [];
+    for (const row of g.proof) {
+      const parsed = asCriterionGradeProof(row);
+      if (!parsed) return undefined;
+      proof.push(parsed);
+    }
+    out[key] = { barHash: g.barHash, methodHash: g.methodHash, gradeKey: g.gradeKey, proof };
   }
   return out;
 }
@@ -1454,8 +1500,8 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   if (typeof o.criteriaHash === 'string' && o.criteriaHash.trim()) {
     out.criteriaHash = o.criteriaHash;
   }
-  const criterionHashes = asCriterionHashes(o.criterionHashes);
-  if (criterionHashes) out.criterionHashes = criterionHashes;
+  const criterionGrades = asCriterionGrades(o.criterionGrades);
+  if (criterionGrades) out.criterionGrades = criterionGrades;
   if (o.subjectRubricIdentity && typeof o.subjectRubricIdentity === 'object' && !Array.isArray(o.subjectRubricIdentity)) {
     const identity = o.subjectRubricIdentity as Record<string, unknown>;
     if (typeof identity.rubricRef === 'string' && identity.rubricRef.trim()) {

@@ -664,6 +664,14 @@ export async function readAndEvaluateAcceptanceBarLifecycle(
     expectedApplicable?: boolean;
     current?: EvidenceCurrentInput[];
     harnessSlug?: string;
+    /**
+     * Receives the exact snapshot this verdict evaluates, once it is resolved. A door that
+     * must record what it gated on (scorecards:emit's per-criterion proof binding,
+     * per-requirement-acceptance-grading-2026-11-14 R-1) uses this instead of a second
+     * read that could disagree with the gate. Never part of the returned verdict, so
+     * verdicts embedded in refusals stay bounded.
+     */
+    onSnapshot?: (snapshot: AcceptanceBarContractSnapshot) => void;
   } & AcceptanceBarLifecycleOptions = {},
 ): Promise<AcceptanceBarLifecycleVerdict> {
   const snapshot = options.snapshot
@@ -674,6 +682,7 @@ export async function readAndEvaluateAcceptanceBarLifecycle(
         ...(options.proofMode === 'metadata' ? { proofMode: 'metadata' as const } : {}),
         ...(options.onRead ? { onRead: options.onRead } : {}),
       });
+  options.onSnapshot?.(snapshot);
   // Only a positively identified legacy plan may bypass the contract. A missing,
   // unavailable, ambiguous, or truncated subject read cannot establish legacy
   // status, even when a generic start door has no adoption-marker assertion.

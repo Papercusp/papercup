@@ -75,7 +75,7 @@ import { selectNarrowedLaunchSpecBody } from './capability-envelope/identity-rec
 // Type-only: the identity gate itself is reached by DYNAMIC import (see the resolver).
 import type { IdentityLaunchAuditStamp } from './capability-envelope/identity-grants-port';
 import { checkAuditModeMutationGuard } from './capability-envelope/audit-mode-guard';
-import { checkPlanExecutionGuard, isPlanImplementationCall } from './agent-tools/plans/plan-execution-guard';
+import { checkPlanExecutionGuard, isPlanImplementationCall, type PlanExecutionTimingObserver } from './agent-tools/plans/plan-execution-guard';
 import { enforceAppKeyScope } from './connected-apps/enforce';
 import { enforceInheritedPolicy } from './governance-policy/enforce';
 // Imported for its INSTALL side effect (D-017 §5): loading the store assigns the session
@@ -294,7 +294,7 @@ interface AuthorityReadFailure {
   servingProcessId: string | null;
 }
 
-type KernelAuthorityTimingName = 'controlAnchorSql' | 'identityGrantEvaluation';
+type KernelAuthorityTimingName = 'controlAnchorSql' | 'identityGrantEvaluation' | 'planExecutionGuard';
 interface KernelAuthorityTimingSample {
   calls: number;
   totalMs: number;
@@ -324,12 +324,84 @@ interface KernelAuthorityQueryTrace {
 type KernelAuthorityTimingCollector = {
   controlAnchorSql: KernelAuthorityTimingSample & { executions: KernelAuthorityQueryTrace[] };
   identityGrantEvaluation: KernelAuthorityTimingSample;
+  /**
+   * EI-28849154189042602: the plan-execution guard runs inside enforce for plan-bound
+   * implementation calls; its time (and each labelled stage, aggregated by name) was
+   * invisible here while a cold readiness rebuild consumed the dispatch deadline.
+   */
+  planExecutionGuard: KernelAuthorityTimingSample & { stages: Record<string, KernelAuthorityTimingSample> };
+  /**
+   * WI-6554700010049383: start time of each stage that has begun but not yet been
+   * recorded. A deadline abort snapshots this, so the aborted row names the stage
+   * that was still running instead of showing only the stages that finished.
+   */
+  inFlightSince: Partial<Record<KernelAuthorityTimingName, number>>;
 };
+
+const KERNEL_AUTHORITY_TIMING_NAMES: readonly KernelAuthorityTimingName[] = [
+  'controlAnchorSql', 'identityGrantEvaluation', 'planExecutionGuard',
+];
 
 function createKernelAuthorityTimingCollector(): KernelAuthorityTimingCollector {
   return {
     controlAnchorSql: { calls: 0, totalMs: 0, executions: [] },
     identityGrantEvaluation: { calls: 0, totalMs: 0 },
+    planExecutionGuard: { calls: 0, totalMs: 0, stages: {} },
+    inFlightSince: {},
+  };
+}
+
+/** Marks a stage as started (for an abort snapshot) and returns its start time. */
+function beginKernelAuthorityTiming(
+  collector: KernelAuthorityTimingCollector | undefined,
+  name: KernelAuthorityTimingName,
+): number {
+  const startedAt = performance.now();
+  if (collector) collector.inFlightSince[name] ??= startedAt;
+  return startedAt;
+}
+
+function roundTimingMs(ms: number): number {
+  return Math.round(Math.max(0, ms) * 10) / 10;
+}
+
+/**
+ * The completed stage samples, plus (for an abort snapshot) the stages still
+ * running. Null when nothing was measured.
+ */
+function kernelAuthorityTimingSnapshot(
+  collector: KernelAuthorityTimingCollector,
+  options: { includeInFlight: boolean },
+): Record<string, unknown> | null {
+  const timings: Record<string, unknown> = {};
+  for (const name of KERNEL_AUTHORITY_TIMING_NAMES) {
+    const sample = collector[name];
+    // An in-flight guard has no completed call yet but may have finished sub-stages.
+    if (sample.calls === 0 && !('stages' in sample && Object.keys(sample.stages).length)) continue;
+    timings[name] = {
+      calls: sample.calls,
+      totalMs: roundTimingMs(sample.totalMs),
+      ...('executions' in sample && sample.executions.length ? { executions: sample.executions } : {}),
+      ...('stages' in sample && Object.keys(sample.stages).length ? { stages: Object.fromEntries(
+        Object.entries(sample.stages).map(([stage, s]) => [stage, { calls: s.calls, totalMs: roundTimingMs(s.totalMs) }])) } : {}),
+    };
+  }
+  const now = performance.now();
+  const inFlight = options.includeInFlight
+    ? Object.fromEntries(Object.entries(collector.inFlightSince)
+      .map(([name, since]) => [name, { elapsedMs: roundTimingMs(now - (since ?? now)) }]))
+    : {};
+  const hasInFlight = Object.keys(inFlight).length > 0;
+  if (Object.keys(timings).length === 0 && !hasInFlight) return null;
+  return { schemaVersion: 1, ...timings, ...(hasInFlight ? { inFlight } : {}) };
+}
+
+/** Aggregates the guard's own stage samples by stage name (a finite label set). */
+function planExecutionStageObserver(collector: KernelAuthorityTimingCollector): PlanExecutionTimingObserver {
+  return ({ stage, durationMs }) => {
+    const sample = (collector.planExecutionGuard.stages[stage] ??= { calls: 0, totalMs: 0 });
+    sample.calls += 1;
+    sample.totalMs += Math.max(0, durationMs);
   };
 }
 
@@ -340,6 +412,7 @@ function recordKernelAuthorityTiming(
   queryTrace?: KernelAuthorityQueryTrace,
 ): void {
   if (!collector) return;
+  delete collector.inFlightSince[name];
   const sample = collector[name];
   sample.calls += 1;
   sample.totalMs += Math.max(0, performance.now() - startedAt);
@@ -363,18 +436,13 @@ function attachKernelAuthorityTimings(
   verdict: KernelEnforcementResult,
   collector: KernelAuthorityTimingCollector,
 ): KernelEnforcementResult {
-  const measured = Object.entries(collector).filter(([, sample]) => sample.calls > 0);
-  if (measured.length === 0) return verdict;
-  const timings = Object.fromEntries(measured.map(([name, sample]) => [name, {
-    calls: sample.calls,
-    totalMs: Math.round(sample.totalMs * 10) / 10,
-    ...('executions' in sample && sample.executions.length ? { executions: sample.executions } : {}),
-  }]));
+  const authorityTimings = kernelAuthorityTimingSnapshot(collector, { includeInFlight: false });
+  if (!authorityTimings) return verdict;
   return {
     ...verdict,
     serverAudit: {
       ...verdict.serverAudit,
-      authorityTimings: { schemaVersion: 1, ...timings },
+      authorityTimings,
     },
   };
 }
@@ -560,7 +628,7 @@ export async function readControlAnchorKernelState(
   let controlReadFailed = false;
   const authorityUnavailableSources: AuthorityUnavailableSource[] = [];
   const authorityReadFailures: AuthorityReadFailure[] = [];
-  const anchorReadStartedAt = performance.now();
+  const anchorReadStartedAt = beginKernelAuthorityTiming(timingCollector, 'controlAnchorSql');
   const anchorAcquisitionStartedAt = performance.now();
   type ReservedAnchorConnection = Awaited<ReturnType<typeof sql.reserve>>;
   let anchorConnection: ReservedAnchorConnection | null = null;
@@ -963,6 +1031,16 @@ async function healStaleArtifactFromLaunchRecord(heal: StaleArtifactHeal): Promi
 /** Live control-anchor resolver installed by the operator bootstrap. */
 export const controlAnchorKernelResolver: KernelEnforcementPort = async (request) => {
   const timingCollector = createKernelAuthorityTimingCollector();
+  // WI-6554700010049383: a deadline abort leaves this resolver running; let the
+  // dispatcher snapshot the stages measured (and still running) at abort time.
+  try {
+    request.registerPartialAudit?.(() => {
+      const authorityTimings = kernelAuthorityTimingSnapshot(timingCollector, { includeInFlight: true });
+      return authorityTimings ? { authorityTimings } : null;
+    });
+  } catch {
+    // Registration is diagnostic only; it must never change the verdict.
+  }
   const pending: { heal?: StaleArtifactHeal } = {};
   const first = await resolveControlAnchorKernelOnce(
     request, (heal) => { pending.heal = heal; }, timingCollector,
@@ -979,10 +1057,13 @@ export const controlAnchorKernelResolver: KernelEnforcementPort = async (request
       const identity = resolveAgentIdentity(request.ctx);
       if (!identity.workspaceId) return operatorKernelDenial('plan_execution_not_ready',
         'Implementation workspace is unresolved; no plan execution authority can be established.');
+      const guardStartedAt = beginKernelAuthorityTiming(timingCollector, 'planExecutionGuard');
       const refused = await checkPlanExecutionGuard({ ownerId: identity.ownerId, workspaceId: identity.workspaceId,
-        toolName: request.toolName, args: request.args });
-      if (refused) return { ...final, decision: 'deny', availability: 'available', applied: true,
-        code: refused.code, reason: refused.reason, obligations: { planExecution: refused } };
+        toolName: request.toolName, args: request.args, observeTiming: planExecutionStageObserver(timingCollector) });
+      recordKernelAuthorityTiming(timingCollector, 'planExecutionGuard', guardStartedAt);
+      // Keep the timings on a refusal too: a slow refused call is the one being diagnosed.
+      if (refused) return attachKernelAuthorityTimings({ ...final, decision: 'deny', availability: 'available', applied: true,
+        code: refused.code, reason: refused.reason, obligations: { planExecution: refused } }, timingCollector);
     } catch {
       return operatorKernelDenial('plan_execution_not_ready', 'Implementation identity is unresolved; no plan execution authority can be established.');
     }
@@ -1057,7 +1138,7 @@ async function resolveControlAnchorKernelOnce(
   // against, so every identity-bearing invocation persists a row reference (D-007).
   const ungoverned: { stamp?: IdentityLaunchAuditStamp } = {};
   if (state && Object.prototype.hasOwnProperty.call(state, 'identityLaunchRecord')) {
-    const identityReadStartedAt = performance.now();
+    const identityReadStartedAt = beginKernelAuthorityTiming(timingCollector, 'identityGrantEvaluation');
     try {
       const { checkIdentityGrantKernel } = await import('./capability-envelope/identity-grants-port');
       const grants = await checkIdentityGrantKernel(

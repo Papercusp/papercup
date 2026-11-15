@@ -140,7 +140,18 @@ vi.mock('../../scorecards', async (importOriginal) => ({
 vi.mock('../../harness/improvements/capture-core', () => ({
   captureImprovement: (...args: unknown[]) => captureImprovement(...args),
 }));
-vi.mock('../../scout/generation-watermark', () => ({ readRunningGeneration: async () => null }));
+// Audit-required filings refuse without a provable evaluator build SHA (emit.ts
+// grading_audit_generation_unavailable), so these positive controls stamp one.
+// Unknown-generation refusal is covered in emit.grading-audit.test.ts.
+vi.mock('../../scout/generation-watermark', () => ({
+  readRunningGeneration: async () => ({
+    deployedSha: 'a'.repeat(40),
+    hostStartedAt: null,
+    bootHeadSha: null,
+    scoutCodeHash: null,
+    staleHost: null,
+  }),
+}));
 vi.mock('../../issues-engineer', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../issues-engineer')>()),
   getIssue: async () => null,
@@ -564,8 +575,13 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
       specFingerprint: recipe.selection.specFingerprint,
       replaySnapshot: true,
       bindingIds: [1, 3, 4, 5],
-      current: recipe.current.fingerprints,
     });
+    // Every binding here is server-measured (asserted above), so the replay args
+    // deliberately carry no caller current[]: the public replay re-measures them
+    // (spec-test-adequacy.ts remeasureCurrent). The creation-time snapshot stays on
+    // recipe.current for the creation audit.
+    expect(recipe.args).not.toHaveProperty('current');
+    expect(recipe.current.fingerprints.length).toBeGreaterThan(0);
     expect(recipe.args.evidenceRefs).toEqual(
       recipe.selection.evidence.map(({ evidenceRef }) => evidenceRef).sort((a, b) => a.localeCompare(b)),
     );

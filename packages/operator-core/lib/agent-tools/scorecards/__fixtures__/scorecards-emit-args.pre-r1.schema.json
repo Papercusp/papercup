@@ -1,0 +1,4918 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "rubricRef": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "purpose": {
+          "description": "diagnostic records an explicitly non-accepting baseline before readiness; omitted/grading retains normal acceptance and instrument gates.",
+          "type": "string",
+          "enum": [
+            "diagnostic",
+            "grading"
+          ]
+        },
+        "barSetHash": {
+          "description": "Reviewed BAR set digest. Diagnostics retain and re-check this exact identity.",
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pendingDeliveryBarKeys": {
+          "description": "Explicit pre-publication review: named manual instrument:none deployed/live BARs must rate unknown. Defers only their delivery proof at pre-grading; final ship still requires it. Omit for ordinary grading.",
+          "minItems": 1,
+          "maxItems": 50,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          }
+        },
+        "gradingLaunch": {
+          "description": "Audit launch pin: codex/gpt-6.1-sol/xhigh, account auto; same strict profile as repair. Author/authority unchanged.",
+          "type": "object",
+          "properties": {
+            "agent": {
+              "type": "string",
+              "const": "codex"
+            },
+            "model": {
+              "type": "string",
+              "const": "gpt-6.1-sol"
+            },
+            "effort": {
+              "type": "string",
+              "const": "xhigh"
+            },
+            "account": {
+              "type": "string",
+              "const": "auto"
+            }
+          },
+          "required": [
+            "agent",
+            "model",
+            "effort",
+            "account"
+          ],
+          "additionalProperties": false
+        },
+        "interactionReviewerHandle": {
+          "description": "CRM review receipt; identifies the terminal reviewer independently of the app caller.",
+          "type": "object",
+          "properties": {
+            "workspaceId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "harnessSlug": {
+              "type": "string",
+              "minLength": 1
+            },
+            "receiptId": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "operationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "specificationRevision": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "target": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "work-item"
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "plan"
+                    },
+                    "runId": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "instanceSlug": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "runId",
+                    "instanceSlug"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "required": [
+            "workspaceId",
+            "harnessSlug",
+            "receiptId",
+            "operationId",
+            "specificationRevision",
+            "target"
+          ],
+          "additionalProperties": false
+        },
+        "rubricRevision": {
+          "description": "Reviewed rubric revision; null pins unversioned; refuse on change.",
+          "anyOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "criteriaHash": {
+          "description": "Reviewed criterion fingerprint; null pins unavailable. Refuse on change.",
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rubricMeaningRevision": {
+          "description": "Reviewed acceptance meaning epoch; null means absent. Refuse on change.",
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sourceHive": {
+          "description": "Producing/grader hive; defaults to caller. For cross-hive grading put the subject plan's hive in targetHive.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "targetHive": {
+          "description": "Subject plan/repository hive for deterministic checks. Independent of sourceHive.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "harness": {
+          "description": "Subject harness; sets targetHive. Refused if it differs.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "body": {
+          "type": "string",
+          "maxLength": 8000
+        },
+        "ratings": {
+          "description": "Complete ratings; acceptanceOf may adopt the exact independent card verbatim.",
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "rating": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidence": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidenceRef": {
+                "description": "Stable reference for the artifact or probe named by `evidence`. For a grading-integrity replay challenge, pair it with `evidenceKind` and cite a reference outside the graded card's replay selection; the guard checks selection membership, not the referenced content.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "evidenceKind": {
+                "description": "Kind or namespace for `evidenceRef` (for example `test-run`). For a grading-integrity replay challenge, both fields are required to establish that evidence is outside the graded card's replay selection.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "positiveControlRef": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "absenceClaim": {
+                "type": "boolean"
+              },
+              "unknownReason": {
+                "description": "not-assessed = you have not graded it yet; instrument-unavailable = a measurement failed",
+                "type": "string",
+                "enum": [
+                  "idle",
+                  "not-exercised",
+                  "not-assessed",
+                  "instrument-unavailable",
+                  "retention-gap",
+                  "generation-mismatch",
+                  "external-capacity",
+                  "scope-mismatch",
+                  "other"
+                ]
+              },
+              "attribution": {
+                "type": "string",
+                "enum": [
+                  "subject",
+                  "system",
+                  "instrument",
+                  "environment",
+                  "ambiguous"
+                ]
+              },
+              "nextEvidenceAction": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000
+              },
+              "suggestion": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "remediation": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 300
+              },
+              "disregard": {
+                "type": "string",
+                "minLength": 10,
+                "maxLength": 600
+              }
+            },
+            "required": [
+              "rating",
+              "evidence"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "testedSha": {
+          "description": "Actually tested SHA; required for releaseGating pass-like ratings. Must equal fresh green pin AND staging HEAD.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{7,64}$"
+        },
+        "acceptance": {
+          "description": "An author acceptance verdict's persisted card always carries complete ratings, supplied directly or adopted from the exact independent card via acceptanceOf. Independent graders omit the verdict. accept-pending-delivery means only unreachable live/deployed proof remains; it preserves its proof/blocker obligation.",
+          "type": "object",
+          "properties": {
+            "verdict": {
+              "type": "string",
+              "enum": [
+                "accept",
+                "reject",
+                "accept-pending-delivery"
+              ]
+            },
+            "reasoning": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            }
+          },
+          "required": [
+            "verdict",
+            "reasoning"
+          ],
+          "additionalProperties": false
+        },
+        "acceptanceOf": {
+          "description": "With acceptance, adopts its ratings verbatim from the exact independent card named here after checking independence, completeness and revision; source grader provenance is preserved. Omit to use the first qualifying card.",
+          "type": "string",
+          "minLength": 1
+        },
+        "instrumentSnapshots": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "verdict": {
+                "type": "string",
+                "enum": [
+                  "pass",
+                  "fail",
+                  "unknown"
+                ]
+              },
+              "measuredAt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "window": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              },
+              "value": {},
+              "evidenceRef": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "provenance": {
+                "description": "Default self-reported: caller-derived numbers; verdict comparison checks your own assertion. Only deterministic platform instruments may claim platform-computed.",
+                "type": "string",
+                "enum": [
+                  "self-reported",
+                  "platform-computed"
+                ]
+              }
+            },
+            "required": [
+              "verdict",
+              "measuredAt"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "fromLedger": {
+          "description": "Rate probe/instrument-checked criteria from their latest results-ledger rows; rate only the rest.",
+          "type": "boolean"
+        },
+        "ledgerDispositions": {
+          "description": "With fromLedger: remediation/disregard and optional evidence for calibration or subject context. Context is appended to ledger evidence; the rating and measurement stay ledger-owned.",
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "remediation": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 300
+              },
+              "disregard": {
+                "type": "string",
+                "minLength": 10,
+                "maxLength": 600
+              },
+              "suggestion": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "attribution": {
+                "type": "string",
+                "enum": [
+                  "subject",
+                  "system",
+                  "instrument",
+                  "environment",
+                  "ambiguous"
+                ]
+              },
+              "evidence": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "current": {
+          "description": "Fresh fingerprints as plans:get current; non-code outcomes require them. Omission stays unknown.",
+          "maxItems": 2000,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "planSlug": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "specId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "specRevision": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "specFingerprint": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "evidenceKind": {
+                "type": "string",
+                "enum": [
+                  "test",
+                  "fixture",
+                  "coverage-census",
+                  "mutation",
+                  "counterexample",
+                  "check",
+                  "manual",
+                  "operational",
+                  "independent-verification"
+                ]
+              },
+              "evidenceRef": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "sourceFingerprint": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "testFingerprint": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "fixtureFingerprint": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "rubricFingerprint": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "environmentFingerprint": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "evidenceKind",
+              "evidenceRef",
+              "sourceFingerprint"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "rerunRecipe": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "schemaVersion": {
+                  "type": "number",
+                  "const": 1
+                },
+                "evaluator": {
+                  "type": "string",
+                  "const": "plans:evaluate-spec-test-adequacy"
+                },
+                "evaluatorBuild": {
+                  "type": "object",
+                  "properties": {
+                    "sha": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "version": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 120
+                    }
+                  },
+                  "required": [
+                    "sha",
+                    "version"
+                  ],
+                  "additionalProperties": false
+                },
+                "evaluatorRevision": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "classRef": {
+                  "type": "string",
+                  "enum": [
+                    "plan-class-feature-ship",
+                    "plan-class-bugfix",
+                    "plan-class-migration",
+                    "plan-class-investigation",
+                    "plan-class-general"
+                  ]
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {
+                    "harness": {
+                      "description": "Concrete in-scope harness slug (e.g. papercusp); harness-scoped sessions infer it. all requires unscoped --all-workspaces. Only UNSCOPED plans:get/plans:items auto-resolve an exact slug across harnesses; scoped misses identify the owning harness, which you must then pass explicitly.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "scorecardId": {
+                      "description": "Replay a persisted spec-test-adequacy scorecard from its stored recipe and creation-time evidence. Pair with that recipe’s plan slug; do not combine with direct evaluation selectors.",
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 120
+                    },
+                    "slug": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "classRef": {
+                      "description": "Derived from the persisted subject acceptance class when omitted; a supplied value must match. Ad-hoc work items still need explicit class attestation.",
+                      "type": "string",
+                      "enum": [
+                        "plan-class-feature-ship",
+                        "plan-class-bugfix",
+                        "plan-class-migration",
+                        "plan-class-investigation",
+                        "plan-class-general"
+                      ]
+                    },
+                    "evaluatorBuild": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "version": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 120
+                        }
+                      },
+                      "required": [
+                        "sha",
+                        "version"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "workItemIds": {
+                      "minItems": 1,
+                      "maxItems": 500,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "evidenceRefs": {
+                      "minItems": 1,
+                      "maxItems": 500,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2000
+                      }
+                    },
+                    "bindingIds": {
+                      "maxItems": 500,
+                      "type": "array",
+                      "items": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "specIds": {
+                      "minItems": 1,
+                      "maxItems": 500,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "specRevision": {
+                      "description": "Immutable clause revision pin. Supply together with specFingerprint; both are required when replaySnapshot is true.",
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "specFingerprint": {
+                      "description": "Immutable clause fingerprint pin. Supply together with specRevision; both are required when replaySnapshot is true.",
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "replaySnapshot": {
+                      "description": "When true, grade the pinned immutable clause revision instead of the live one. Requires both specRevision and specFingerprint from the same immutable clause revision. Normal evaluator calls still re-measure bindings with persisted recipes; the grading auditor uses a separate internal historical replay to reproduce the card’s emission-time verdict.",
+                      "type": "boolean"
+                    },
+                    "planItemIds": {
+                      "minItems": 1,
+                      "maxItems": 200,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^P-\\d{3,}$"
+                      }
+                    },
+                    "current": {
+                      "description": "Caller-supplied fingerprints may be the canonical array or the persisted rerunRecipe.current wrapper; wrapper.supplied:false and boolean true/false omit caller fingerprints and use independent server measurement. In normal evaluator calls, matching caller values remain unknown and cannot produce freshness:pass; the internal grading-audit replay uses them only with the card’s historical cutoff to reproduce its original verdict.",
+                      "anyOf": [
+                        {
+                          "maxItems": 500,
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "planSlug": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2000
+                              },
+                              "specId": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2000
+                              },
+                              "specRevision": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "specFingerprint": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              },
+                              "evidenceKind": {
+                                "type": "string",
+                                "enum": [
+                                  "test",
+                                  "fixture",
+                                  "coverage-census",
+                                  "mutation",
+                                  "counterexample",
+                                  "check",
+                                  "manual",
+                                  "operational",
+                                  "independent-verification"
+                                ]
+                              },
+                              "evidenceRef": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2000
+                              },
+                              "sourceFingerprint": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              },
+                              "testFingerprint": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "fixtureFingerprint": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "rubricFingerprint": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "environmentFingerprint": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "evidenceKind",
+                              "evidenceRef",
+                              "sourceFingerprint"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "supplied": {
+                              "type": "boolean"
+                            },
+                            "fingerprints": {
+                              "maxItems": 500,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "planSlug": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 2000
+                                  },
+                                  "specId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 2000
+                                  },
+                                  "specRevision": {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "specFingerprint": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  "evidenceKind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "test",
+                                      "fixture",
+                                      "coverage-census",
+                                      "mutation",
+                                      "counterexample",
+                                      "check",
+                                      "manual",
+                                      "operational",
+                                      "independent-verification"
+                                    ]
+                                  },
+                                  "evidenceRef": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 2000
+                                  },
+                                  "sourceFingerprint": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  "testFingerprint": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 256
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "fixtureFingerprint": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 256
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "rubricFingerprint": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 256
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "environmentFingerprint": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 256
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "evidenceKind",
+                                  "evidenceRef",
+                                  "sourceFingerprint"
+                                ],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": [
+                            "supplied",
+                            "fingerprints"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "boolean"
+                        }
+                      ]
+                    },
+                    "includeDraft": {
+                      "type": "boolean"
+                    },
+                    "now": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "limit": {
+                      "description": "Evidence-row limit across filtered scope (not clauses), default/max1000. Reaching it refuses with evidence_selection_hit_limit and no verdict: cohort may be truncated. Omit, increase within max, or narrow selectors.",
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 1000
+                    },
+                    "detail": {
+                      "description": "Response size. Default 'summary' (or false) returns a compact verdict table plus a fullBody ref; 'full' (or true) returns the complete body (evidence text, drafts, criteria prose).",
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "summary",
+                            "full"
+                          ]
+                        },
+                        {
+                          "type": "boolean"
+                        }
+                      ]
+                    },
+                    "criteria": {
+                      "description": "Return ratings for only these criteria; verdict, wouldBlock and verdicts still cover every criterion. With detail:\"full\" it omits scorecardDraft (a partial draft cannot be emitted).",
+                      "minItems": 1,
+                      "maxItems": 9,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "traceability",
+                          "fixture-calibration",
+                          "falsifiability",
+                          "correct-layer",
+                          "oracle-independence",
+                          "execution-integrity",
+                          "freshness",
+                          "plan-class-risk-floor",
+                          "disclosed-gap"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "slug"
+                  ],
+                  "additionalProperties": false
+                },
+                "selection": {
+                  "type": "object",
+                  "properties": {
+                    "planSlug": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 120
+                    },
+                    "specId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "specRevision": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "specFingerprint": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "evidence": {
+                      "maxItems": 500,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "evidenceKind": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 120
+                          },
+                          "evidenceRef": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          }
+                        },
+                        "required": [
+                          "evidenceKind",
+                          "evidenceRef"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "bindingIds": {
+                      "maxItems": 500,
+                      "type": "array",
+                      "items": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    }
+                  },
+                  "required": [
+                    "planSlug",
+                    "specId",
+                    "specRevision",
+                    "specFingerprint",
+                    "evidence"
+                  ],
+                  "additionalProperties": false
+                },
+                "current": {
+                  "type": "object",
+                  "properties": {
+                    "supplied": {
+                      "type": "boolean"
+                    },
+                    "fingerprints": {
+                      "maxItems": 500,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "planSlug": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "specId": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "specRevision": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "specFingerprint": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 256
+                          },
+                          "evidenceKind": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 120
+                          },
+                          "evidenceRef": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "sourceFingerprint": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 256
+                          },
+                          "testFingerprint": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "fixtureFingerprint": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "rubricFingerprint": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "environmentFingerprint": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "evidenceKind",
+                          "evidenceRef",
+                          "sourceFingerprint"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "supplied",
+                    "fingerprints"
+                  ],
+                  "additionalProperties": false
+                },
+                "measurementEvidence": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "none",
+                        "measured",
+                        "partial",
+                        "unmeasured",
+                        "degraded"
+                      ]
+                    },
+                    "selectedBindings": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 2000
+                    },
+                    "measuredBindings": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 2000
+                    },
+                    "unavailableBindings": {
+                      "maxItems": 2000,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "evidenceKind": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 120
+                          },
+                          "evidenceRef": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "evidenceKind",
+                          "evidenceRef",
+                          "reason"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "withoutMeasurementBasis": {
+                      "maxItems": 2000,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "evidenceKind": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 120
+                          },
+                          "evidenceRef": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "evidenceKind",
+                          "evidenceRef"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "bindings": {
+                      "maxItems": 2000,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "bindingId": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "evidenceKind": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 120
+                          },
+                          "evidenceRef": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "measured",
+                              "unavailable",
+                              "unmeasured"
+                            ]
+                          },
+                          "measuredAtCommit": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128
+                          },
+                          "measurementFingerprint": {
+                            "type": "string",
+                            "pattern": "^sha256:[a-f0-9]{64}$"
+                          }
+                        },
+                        "required": [
+                          "bindingId",
+                          "evidenceKind",
+                          "evidenceRef",
+                          "status"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "selectedBindings",
+                    "measuredBindings",
+                    "unavailableBindings",
+                    "withoutMeasurementBasis",
+                    "bindings"
+                  ],
+                  "additionalProperties": false
+                },
+                "derivation": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "listSpecEvidence.currentness"
+                    },
+                    "classifier": {
+                      "type": "string",
+                      "const": "classifySpecEvidenceCurrentness"
+                    },
+                    "unknownWhenMissing": {
+                      "type": "boolean",
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "classifier",
+                    "unknownWhenMissing"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "schemaVersion",
+                "evaluator",
+                "classRef",
+                "args",
+                "selection",
+                "current",
+                "derivation"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "schemaVersion": {
+                  "type": "number",
+                  "const": 1
+                },
+                "evaluator": {
+                  "type": "string",
+                  "const": "plans:evaluate-spec-quality"
+                },
+                "evaluatorBuild": {
+                  "type": "object",
+                  "properties": {
+                    "sha": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "version": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "sha",
+                    "version"
+                  ],
+                  "additionalProperties": false
+                },
+                "specSetHashVersion": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {
+                    "harness": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "slug": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "classRef": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "expectedSpecSetHash": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "specSetHashVersion": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "evaluatorBuild": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "version": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "sha",
+                        "version"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "replaySnapshot": {
+                      "type": "object",
+                      "properties": {
+                        "planContentHash": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "clausesAsOf": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                        },
+                        "acceptanceRubric": {
+                          "type": "object",
+                          "properties": {
+                            "rubricId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "revision": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "criteriaHash": {
+                              "type": "string",
+                              "pattern": "^[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "rubricId",
+                            "revision",
+                            "criteriaHash"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "planContentHash",
+                        "clausesAsOf"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "harness",
+                    "slug",
+                    "classRef",
+                    "expectedSpecSetHash",
+                    "specSetHashVersion",
+                    "evaluatorBuild",
+                    "replaySnapshot"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "schemaVersion",
+                "evaluator",
+                "evaluatorBuild",
+                "specSetHashVersion",
+                "args"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "subject": {
+          "description": "observation.subject; rubric vetting uses kind:'rubric',ref:rubricId. Acceptance default=subjectPlan; explicit wins.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "agent-run",
+                "session",
+                "work-item",
+                "plan",
+                "pot",
+                "fleet",
+                "rubric",
+                "scorecard"
+              ]
+            },
+            "ref": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "windowStart": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "windowEnd": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          "required": [
+            "ref"
+          ],
+          "additionalProperties": false
+        },
+        "authorHandoffId": {
+          "description": "Existing exact-identity author obligation returned by an author-only refusal. Pickup and settlement recheck current authority.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "gradingAuditReservation": {
+          "description": "Pending audit lease from the brief; invalid lease refuses. Omit only for unreserved legacy or settled-audit corrections.",
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "reservedAt": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          "required": [
+            "key",
+            "reservedAt"
+          ],
+          "additionalProperties": false
+        },
+        "vettingUnanswered": {
+          "description": "No critique assertion; needs consult+reason, refuses existing critique. Recorded as observation.vetting.unanswered waiver, not approval.",
+          "type": "boolean"
+        },
+        "vettingUnansweredReason": {
+          "description": "Measured absent critique (ended reviewers/expired consult/zero posts), beyond 'no reply yet'.",
+          "type": "string",
+          "minLength": 24,
+          "maxLength": 500
+        },
+        "supersedes": {
+          "description": "Corrected card id. Only explicit corrections supersede prior readings; ordinary measurements and baseline regrades preserve history.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "baselineRef": {
+          "description": "Audited pre-repair baseline, preserved for comparable re-grade with same target/pinned rubric; never replaced.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "terminal": {
+          "description": "Subject ended. Otherwise violatable ratings are provisional and excluded from rubrics:trend. Finalize with terminal:true and supersedes the interim.",
+          "type": "boolean"
+        },
+        "force": {
+          "description": "File even when the canonical evidence fingerprint matches the latest scorecard.",
+          "type": "boolean"
+        },
+        "acknowledgeExisting": {
+          "description": "Required to append when complete independent cards exist at this revision. force only bypasses unchanged-evidence dedup; it never replaces acknowledgement.",
+          "type": "boolean",
+          "const": true
+        },
+        "vettingConsult": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Meta-rubric vetting consult for subject:{kind:'rubric',ref}. Rubric must exist; opening question identifies rubric/plan and has a third-party reply. Exactly one of vettingConsult/vettingWorkItem."
+        },
+        "vettingWorkItem": {
+          "not": {}
+        }
+      },
+      "required": [
+        "rubricRef",
+        "vettingConsult"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "rubricRef": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "purpose": {
+          "description": "diagnostic records an explicitly non-accepting baseline before readiness; omitted/grading retains normal acceptance and instrument gates.",
+          "type": "string",
+          "enum": [
+            "diagnostic",
+            "grading"
+          ]
+        },
+        "barSetHash": {
+          "description": "Reviewed BAR set digest. Diagnostics retain and re-check this exact identity.",
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pendingDeliveryBarKeys": {
+          "description": "Explicit pre-publication review: named manual instrument:none deployed/live BARs must rate unknown. Defers only their delivery proof at pre-grading; final ship still requires it. Omit for ordinary grading.",
+          "minItems": 1,
+          "maxItems": 50,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          }
+        },
+        "gradingLaunch": {
+          "description": "Audit launch pin: codex/gpt-6.1-sol/xhigh, account auto; same strict profile as repair. Author/authority unchanged.",
+          "type": "object",
+          "properties": {
+            "agent": {
+              "type": "string",
+              "const": "codex"
+            },
+            "model": {
+              "type": "string",
+              "const": "gpt-6.1-sol"
+            },
+            "effort": {
+              "type": "string",
+              "const": "xhigh"
+            },
+            "account": {
+              "type": "string",
+              "const": "auto"
+            }
+          },
+          "required": [
+            "agent",
+            "model",
+            "effort",
+            "account"
+          ],
+          "additionalProperties": false
+        },
+        "interactionReviewerHandle": {
+          "description": "CRM review receipt; identifies the terminal reviewer independently of the app caller.",
+          "type": "object",
+          "properties": {
+            "workspaceId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "harnessSlug": {
+              "type": "string",
+              "minLength": 1
+            },
+            "receiptId": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "operationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "specificationRevision": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "target": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "work-item"
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "plan"
+                    },
+                    "runId": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "instanceSlug": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "runId",
+                    "instanceSlug"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "required": [
+            "workspaceId",
+            "harnessSlug",
+            "receiptId",
+            "operationId",
+            "specificationRevision",
+            "target"
+          ],
+          "additionalProperties": false
+        },
+        "rubricRevision": {
+          "description": "Reviewed rubric revision; null pins unversioned; refuse on change.",
+          "anyOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "criteriaHash": {
+          "description": "Reviewed criterion fingerprint; null pins unavailable. Refuse on change.",
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rubricMeaningRevision": {
+          "description": "Reviewed acceptance meaning epoch; null means absent. Refuse on change.",
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sourceHive": {
+          "description": "Producing/grader hive; defaults to caller. For cross-hive grading put the subject plan's hive in targetHive.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "targetHive": {
+          "description": "Subject plan/repository hive for deterministic checks. Independent of sourceHive.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "harness": {
+          "description": "Subject harness; sets targetHive. Refused if it differs.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "body": {
+          "type": "string",
+          "maxLength": 8000
+        },
+        "ratings": {
+          "description": "Complete ratings; acceptanceOf may adopt the exact independent card verbatim.",
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "rating": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidence": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidenceRef": {
+                "description": "Stable reference for the artifact or probe named by `evidence`. For a grading-integrity replay challenge, pair it with `evidenceKind` and cite a reference outside the graded card's replay selection; the guard checks selection membership, not the referenced content.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "evidenceKind": {
+                "description": "Kind or namespace for `evidenceRef` (for example `test-run`). For a grading-integrity replay challenge, both fields are required to establish that evidence is outside the graded card's replay selection.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "positiveControlRef": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "absenceClaim": {
+                "type": "boolean"
+              },
+              "unknownReason": {
+                "description": "not-assessed = you have not graded it yet; instrument-unavailable = a measurement failed",
+                "type": "string",
+                "enum": [
+                  "idle",
+                  "not-exercised",
+                  "not-assessed",
+                  "instrument-unavailable",
+                  "retention-gap",
+                  "generation-mismatch",
+                  "external-capacity",
+                  "scope-mismatch",
+                  "other"
+                ]
+              },
+              "attribution": {
+                "type": "string",
+                "enum": [
+                  "subject",
+                  "system",
+                  "instrument",
+                  "environment",
+                  "ambiguous"
+                ]
+              },
+              "nextEvidenceAction": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000
+              },
+              "suggestion": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "remediation": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 300
+              },
+              "disregard": {
+                "type": "string",
+                "minLength": 10,
+                "maxLength": 600
+              }
+            },
+            "required": [
+              "rating",
+              "evidence"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "testedSha": {
+          "description": "Actually tested SHA; required for releaseGating pass-like ratings. Must equal fresh green pin AND staging HEAD.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{7,64}$"
+        },
+        "acceptance": {
+          "description": "An author acceptance verdict's persisted card always carries complete ratings, supplied directly or adopted from the exact independent card via acceptanceOf. Independent graders omit the verdict. accept-pending-delivery means only unreachable live/deployed proof remains; it preserves its proof/blocker obligation.",
+          "type": "object",
+          "properties": {
+            "verdict": {
+              "type": "string",
+              "enum": [
+                "accept",
+                "reject",
+                "accept-pending-delivery"
+              ]
+            },
+            "reasoning": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            }
+          },
+          "required": [
+            "verdict",
+            "reasoning"
+          ],
+          "additionalProperties": false
+        },
+        "acceptanceOf": {
+          "description": "With acceptance, adopts its ratings verbatim from the exact independent card named here after checking independence, completeness and revision; source grader provenance is preserved. Omit to use the first qualifying card.",
+          "type": "string",
+          "minLength": 1
+        },
+        "instrumentSnapshots": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "verdict": {
+                "type": "string",
+                "enum": [
+                  "pass",
+                  "fail",
+                  "unknown"
+                ]
+              },
+              "measuredAt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "window": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              },
+              "value": {},
+              "evidenceRef": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "provenance": {
+                "description": "Default self-reported: caller-derived numbers; verdict comparison checks your own assertion. Only deterministic platform instruments may claim platform-computed.",
+                "type": "string",
+                "enum": [
+                  "self-reported",
+                  "platform-computed"
+                ]
+              }
+            },
+            "required": [
+              "verdict",
+              "measuredAt"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "fromLedger": {
+          "description": "Rate probe/instrument-checked criteria from their latest results-ledger rows; rate only the rest.",
+          "type": "boolean"
+        },
+        "ledgerDispositions": {
+          "description": "With fromLedger: remediation/disregard and optional evidence for calibration or subject context. Context is appended to ledger evidence; the rating and measurement stay ledger-owned.",
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "remediation": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 300
+              },
+              "disregard": {
+                "type": "string",
+                "minLength": 10,
+                "maxLength": 600
+              },
+              "suggestion": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "attribution": {
+                "type": "string",
+                "enum": [
+                  "subject",
+                  "system",
+                  "instrument",
+                  "environment",
+                  "ambiguous"
+                ]
+              },
+              "evidence": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "current": {
+          "description": "Fresh fingerprints as plans:get current; non-code outcomes require them. Omission stays unknown.",
+          "maxItems": 2000,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "planSlug": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "specId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "specRevision": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "specFingerprint": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "evidenceKind": {
+                "type": "string",
+                "enum": [
+                  "test",
+                  "fixture",
+                  "coverage-census",
+                  "mutation",
+                  "counterexample",
+                  "check",
+                  "manual",
+                  "operational",
+                  "independent-verification"
+                ]
+              },
+              "evidenceRef": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "sourceFingerprint": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "testFingerprint": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "fixtureFingerprint": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "rubricFingerprint": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "environmentFingerprint": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "evidenceKind",
+              "evidenceRef",
+              "sourceFingerprint"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "rerunRecipe": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "schemaVersion": {
+                  "type": "number",
+                  "const": 1
+                },
+                "evaluator": {
+                  "type": "string",
+                  "const": "plans:evaluate-spec-test-adequacy"
+                },
+                "evaluatorBuild": {
+                  "type": "object",
+                  "properties": {
+                    "sha": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "version": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 120
+                    }
+                  },
+                  "required": [
+                    "sha",
+                    "version"
+                  ],
+                  "additionalProperties": false
+                },
+                "evaluatorRevision": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "classRef": {
+                  "type": "string",
+                  "enum": [
+                    "plan-class-feature-ship",
+                    "plan-class-bugfix",
+                    "plan-class-migration",
+                    "plan-class-investigation",
+                    "plan-class-general"
+                  ]
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {
+                    "harness": {
+                      "description": "Concrete in-scope harness slug (e.g. papercusp); harness-scoped sessions infer it. all requires unscoped --all-workspaces. Only UNSCOPED plans:get/plans:items auto-resolve an exact slug across harnesses; scoped misses identify the owning harness, which you must then pass explicitly.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "scorecardId": {
+                      "description": "Replay a persisted spec-test-adequacy scorecard from its stored recipe and creation-time evidence. Pair with that recipe’s plan slug; do not combine with direct evaluation selectors.",
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 120
+                    },
+                    "slug": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "classRef": {
+                      "description": "Derived from the persisted subject acceptance class when omitted; a supplied value must match. Ad-hoc work items still need explicit class attestation.",
+                      "type": "string",
+                      "enum": [
+                        "plan-class-feature-ship",
+                        "plan-class-bugfix",
+                        "plan-class-migration",
+                        "plan-class-investigation",
+                        "plan-class-general"
+                      ]
+                    },
+                    "evaluatorBuild": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "version": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 120
+                        }
+                      },
+                      "required": [
+                        "sha",
+                        "version"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "workItemIds": {
+                      "minItems": 1,
+                      "maxItems": 500,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "evidenceRefs": {
+                      "minItems": 1,
+                      "maxItems": 500,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2000
+                      }
+                    },
+                    "bindingIds": {
+                      "maxItems": 500,
+                      "type": "array",
+                      "items": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "specIds": {
+                      "minItems": 1,
+                      "maxItems": 500,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "specRevision": {
+                      "description": "Immutable clause revision pin. Supply together with specFingerprint; both are required when replaySnapshot is true.",
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "specFingerprint": {
+                      "description": "Immutable clause fingerprint pin. Supply together with specRevision; both are required when replaySnapshot is true.",
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "replaySnapshot": {
+                      "description": "When true, grade the pinned immutable clause revision instead of the live one. Requires both specRevision and specFingerprint from the same immutable clause revision. Normal evaluator calls still re-measure bindings with persisted recipes; the grading auditor uses a separate internal historical replay to reproduce the card’s emission-time verdict.",
+                      "type": "boolean"
+                    },
+                    "planItemIds": {
+                      "minItems": 1,
+                      "maxItems": 200,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^P-\\d{3,}$"
+                      }
+                    },
+                    "current": {
+                      "description": "Caller-supplied fingerprints may be the canonical array or the persisted rerunRecipe.current wrapper; wrapper.supplied:false and boolean true/false omit caller fingerprints and use independent server measurement. In normal evaluator calls, matching caller values remain unknown and cannot produce freshness:pass; the internal grading-audit replay uses them only with the card’s historical cutoff to reproduce its original verdict.",
+                      "anyOf": [
+                        {
+                          "maxItems": 500,
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "planSlug": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2000
+                              },
+                              "specId": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2000
+                              },
+                              "specRevision": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "specFingerprint": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              },
+                              "evidenceKind": {
+                                "type": "string",
+                                "enum": [
+                                  "test",
+                                  "fixture",
+                                  "coverage-census",
+                                  "mutation",
+                                  "counterexample",
+                                  "check",
+                                  "manual",
+                                  "operational",
+                                  "independent-verification"
+                                ]
+                              },
+                              "evidenceRef": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2000
+                              },
+                              "sourceFingerprint": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              },
+                              "testFingerprint": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "fixtureFingerprint": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "rubricFingerprint": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "environmentFingerprint": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "evidenceKind",
+                              "evidenceRef",
+                              "sourceFingerprint"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "supplied": {
+                              "type": "boolean"
+                            },
+                            "fingerprints": {
+                              "maxItems": 500,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "planSlug": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 2000
+                                  },
+                                  "specId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 2000
+                                  },
+                                  "specRevision": {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "specFingerprint": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  "evidenceKind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "test",
+                                      "fixture",
+                                      "coverage-census",
+                                      "mutation",
+                                      "counterexample",
+                                      "check",
+                                      "manual",
+                                      "operational",
+                                      "independent-verification"
+                                    ]
+                                  },
+                                  "evidenceRef": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 2000
+                                  },
+                                  "sourceFingerprint": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  "testFingerprint": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 256
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "fixtureFingerprint": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 256
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "rubricFingerprint": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 256
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "environmentFingerprint": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 256
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "evidenceKind",
+                                  "evidenceRef",
+                                  "sourceFingerprint"
+                                ],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": [
+                            "supplied",
+                            "fingerprints"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "boolean"
+                        }
+                      ]
+                    },
+                    "includeDraft": {
+                      "type": "boolean"
+                    },
+                    "now": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "limit": {
+                      "description": "Evidence-row limit across filtered scope (not clauses), default/max1000. Reaching it refuses with evidence_selection_hit_limit and no verdict: cohort may be truncated. Omit, increase within max, or narrow selectors.",
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 1000
+                    },
+                    "detail": {
+                      "description": "Response size. Default 'summary' (or false) returns a compact verdict table plus a fullBody ref; 'full' (or true) returns the complete body (evidence text, drafts, criteria prose).",
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "summary",
+                            "full"
+                          ]
+                        },
+                        {
+                          "type": "boolean"
+                        }
+                      ]
+                    },
+                    "criteria": {
+                      "description": "Return ratings for only these criteria; verdict, wouldBlock and verdicts still cover every criterion. With detail:\"full\" it omits scorecardDraft (a partial draft cannot be emitted).",
+                      "minItems": 1,
+                      "maxItems": 9,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "traceability",
+                          "fixture-calibration",
+                          "falsifiability",
+                          "correct-layer",
+                          "oracle-independence",
+                          "execution-integrity",
+                          "freshness",
+                          "plan-class-risk-floor",
+                          "disclosed-gap"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "slug"
+                  ],
+                  "additionalProperties": false
+                },
+                "selection": {
+                  "type": "object",
+                  "properties": {
+                    "planSlug": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 120
+                    },
+                    "specId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "specRevision": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "specFingerprint": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "evidence": {
+                      "maxItems": 500,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "evidenceKind": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 120
+                          },
+                          "evidenceRef": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          }
+                        },
+                        "required": [
+                          "evidenceKind",
+                          "evidenceRef"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "bindingIds": {
+                      "maxItems": 500,
+                      "type": "array",
+                      "items": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    }
+                  },
+                  "required": [
+                    "planSlug",
+                    "specId",
+                    "specRevision",
+                    "specFingerprint",
+                    "evidence"
+                  ],
+                  "additionalProperties": false
+                },
+                "current": {
+                  "type": "object",
+                  "properties": {
+                    "supplied": {
+                      "type": "boolean"
+                    },
+                    "fingerprints": {
+                      "maxItems": 500,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "planSlug": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "specId": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "specRevision": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "specFingerprint": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 256
+                          },
+                          "evidenceKind": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 120
+                          },
+                          "evidenceRef": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "sourceFingerprint": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 256
+                          },
+                          "testFingerprint": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "fixtureFingerprint": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "rubricFingerprint": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "environmentFingerprint": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "evidenceKind",
+                          "evidenceRef",
+                          "sourceFingerprint"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "supplied",
+                    "fingerprints"
+                  ],
+                  "additionalProperties": false
+                },
+                "measurementEvidence": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "none",
+                        "measured",
+                        "partial",
+                        "unmeasured",
+                        "degraded"
+                      ]
+                    },
+                    "selectedBindings": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 2000
+                    },
+                    "measuredBindings": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 2000
+                    },
+                    "unavailableBindings": {
+                      "maxItems": 2000,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "evidenceKind": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 120
+                          },
+                          "evidenceRef": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "evidenceKind",
+                          "evidenceRef",
+                          "reason"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "withoutMeasurementBasis": {
+                      "maxItems": 2000,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "evidenceKind": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 120
+                          },
+                          "evidenceRef": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "evidenceKind",
+                          "evidenceRef"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "bindings": {
+                      "maxItems": 2000,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "bindingId": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "evidenceKind": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 120
+                          },
+                          "evidenceRef": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "measured",
+                              "unavailable",
+                              "unmeasured"
+                            ]
+                          },
+                          "measuredAtCommit": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128
+                          },
+                          "measurementFingerprint": {
+                            "type": "string",
+                            "pattern": "^sha256:[a-f0-9]{64}$"
+                          }
+                        },
+                        "required": [
+                          "bindingId",
+                          "evidenceKind",
+                          "evidenceRef",
+                          "status"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "selectedBindings",
+                    "measuredBindings",
+                    "unavailableBindings",
+                    "withoutMeasurementBasis",
+                    "bindings"
+                  ],
+                  "additionalProperties": false
+                },
+                "derivation": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "listSpecEvidence.currentness"
+                    },
+                    "classifier": {
+                      "type": "string",
+                      "const": "classifySpecEvidenceCurrentness"
+                    },
+                    "unknownWhenMissing": {
+                      "type": "boolean",
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "classifier",
+                    "unknownWhenMissing"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "schemaVersion",
+                "evaluator",
+                "classRef",
+                "args",
+                "selection",
+                "current",
+                "derivation"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "schemaVersion": {
+                  "type": "number",
+                  "const": 1
+                },
+                "evaluator": {
+                  "type": "string",
+                  "const": "plans:evaluate-spec-quality"
+                },
+                "evaluatorBuild": {
+                  "type": "object",
+                  "properties": {
+                    "sha": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "version": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "sha",
+                    "version"
+                  ],
+                  "additionalProperties": false
+                },
+                "specSetHashVersion": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {
+                    "harness": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "slug": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "classRef": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "expectedSpecSetHash": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "specSetHashVersion": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "evaluatorBuild": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "version": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "sha",
+                        "version"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "replaySnapshot": {
+                      "type": "object",
+                      "properties": {
+                        "planContentHash": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "clausesAsOf": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                        },
+                        "acceptanceRubric": {
+                          "type": "object",
+                          "properties": {
+                            "rubricId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "revision": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "criteriaHash": {
+                              "type": "string",
+                              "pattern": "^[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "rubricId",
+                            "revision",
+                            "criteriaHash"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "planContentHash",
+                        "clausesAsOf"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "harness",
+                    "slug",
+                    "classRef",
+                    "expectedSpecSetHash",
+                    "specSetHashVersion",
+                    "evaluatorBuild",
+                    "replaySnapshot"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "schemaVersion",
+                "evaluator",
+                "evaluatorBuild",
+                "specSetHashVersion",
+                "args"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "subject": {
+          "description": "observation.subject; rubric vetting uses kind:'rubric',ref:rubricId. Acceptance default=subjectPlan; explicit wins.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "agent-run",
+                "session",
+                "work-item",
+                "plan",
+                "pot",
+                "fleet",
+                "rubric",
+                "scorecard"
+              ]
+            },
+            "ref": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "windowStart": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "windowEnd": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          "required": [
+            "ref"
+          ],
+          "additionalProperties": false
+        },
+        "authorHandoffId": {
+          "description": "Existing exact-identity author obligation returned by an author-only refusal. Pickup and settlement recheck current authority.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "gradingAuditReservation": {
+          "description": "Pending audit lease from the brief; invalid lease refuses. Omit only for unreserved legacy or settled-audit corrections.",
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "reservedAt": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          "required": [
+            "key",
+            "reservedAt"
+          ],
+          "additionalProperties": false
+        },
+        "vettingUnanswered": {
+          "description": "No critique assertion; needs consult+reason, refuses existing critique. Recorded as observation.vetting.unanswered waiver, not approval.",
+          "type": "boolean"
+        },
+        "vettingUnansweredReason": {
+          "description": "Measured absent critique (ended reviewers/expired consult/zero posts), beyond 'no reply yet'.",
+          "type": "string",
+          "minLength": 24,
+          "maxLength": 500
+        },
+        "supersedes": {
+          "description": "Corrected card id. Only explicit corrections supersede prior readings; ordinary measurements and baseline regrades preserve history.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "baselineRef": {
+          "description": "Audited pre-repair baseline, preserved for comparable re-grade with same target/pinned rubric; never replaced.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "terminal": {
+          "description": "Subject ended. Otherwise violatable ratings are provisional and excluded from rubrics:trend. Finalize with terminal:true and supersedes the interim.",
+          "type": "boolean"
+        },
+        "force": {
+          "description": "File even when the canonical evidence fingerprint matches the latest scorecard.",
+          "type": "boolean"
+        },
+        "acknowledgeExisting": {
+          "description": "Required to append when complete independent cards exist at this revision. force only bypasses unchanged-evidence dedup; it never replaces acknowledgement.",
+          "type": "boolean",
+          "const": true
+        },
+        "vettingConsult": {
+          "not": {}
+        },
+        "vettingWorkItem": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Meta-rubric vetting item for subject:{kind:'rubric',ref}, with third-party comment by neither emitter nor rubric author. Exactly one of vettingConsult/vettingWorkItem. vettingUnanswered is consult-only."
+        }
+      },
+      "required": [
+        "rubricRef",
+        "vettingWorkItem"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "rubricRef": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "purpose": {
+          "description": "diagnostic records an explicitly non-accepting baseline before readiness; omitted/grading retains normal acceptance and instrument gates.",
+          "type": "string",
+          "enum": [
+            "diagnostic",
+            "grading"
+          ]
+        },
+        "barSetHash": {
+          "description": "Reviewed BAR set digest. Diagnostics retain and re-check this exact identity.",
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pendingDeliveryBarKeys": {
+          "description": "Explicit pre-publication review: named manual instrument:none deployed/live BARs must rate unknown. Defers only their delivery proof at pre-grading; final ship still requires it. Omit for ordinary grading.",
+          "minItems": 1,
+          "maxItems": 50,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          }
+        },
+        "gradingLaunch": {
+          "description": "Audit launch pin: codex/gpt-6.1-sol/xhigh, account auto; same strict profile as repair. Author/authority unchanged.",
+          "type": "object",
+          "properties": {
+            "agent": {
+              "type": "string",
+              "const": "codex"
+            },
+            "model": {
+              "type": "string",
+              "const": "gpt-6.1-sol"
+            },
+            "effort": {
+              "type": "string",
+              "const": "xhigh"
+            },
+            "account": {
+              "type": "string",
+              "const": "auto"
+            }
+          },
+          "required": [
+            "agent",
+            "model",
+            "effort",
+            "account"
+          ],
+          "additionalProperties": false
+        },
+        "interactionReviewerHandle": {
+          "description": "CRM review receipt; identifies the terminal reviewer independently of the app caller.",
+          "type": "object",
+          "properties": {
+            "workspaceId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "harnessSlug": {
+              "type": "string",
+              "minLength": 1
+            },
+            "receiptId": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "operationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "specificationRevision": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "target": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "work-item"
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "plan"
+                    },
+                    "runId": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "instanceSlug": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "runId",
+                    "instanceSlug"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "required": [
+            "workspaceId",
+            "harnessSlug",
+            "receiptId",
+            "operationId",
+            "specificationRevision",
+            "target"
+          ],
+          "additionalProperties": false
+        },
+        "rubricRevision": {
+          "description": "Reviewed rubric revision; null pins unversioned; refuse on change.",
+          "anyOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "criteriaHash": {
+          "description": "Reviewed criterion fingerprint; null pins unavailable. Refuse on change.",
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rubricMeaningRevision": {
+          "description": "Reviewed acceptance meaning epoch; null means absent. Refuse on change.",
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sourceHive": {
+          "description": "Producing/grader hive; defaults to caller. For cross-hive grading put the subject plan's hive in targetHive.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "targetHive": {
+          "description": "Subject plan/repository hive for deterministic checks. Independent of sourceHive.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "harness": {
+          "description": "Subject harness; sets targetHive. Refused if it differs.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "body": {
+          "type": "string",
+          "maxLength": 8000
+        },
+        "ratings": {
+          "description": "Complete ratings; acceptanceOf may adopt the exact independent card verbatim.",
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "rating": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidence": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidenceRef": {
+                "description": "Stable reference for the artifact or probe named by `evidence`. For a grading-integrity replay challenge, pair it with `evidenceKind` and cite a reference outside the graded card's replay selection; the guard checks selection membership, not the referenced content.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "evidenceKind": {
+                "description": "Kind or namespace for `evidenceRef` (for example `test-run`). For a grading-integrity replay challenge, both fields are required to establish that evidence is outside the graded card's replay selection.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "positiveControlRef": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "absenceClaim": {
+                "type": "boolean"
+              },
+              "unknownReason": {
+                "description": "not-assessed = you have not graded it yet; instrument-unavailable = a measurement failed",
+                "type": "string",
+                "enum": [
+                  "idle",
+                  "not-exercised",
+                  "not-assessed",
+                  "instrument-unavailable",
+                  "retention-gap",
+                  "generation-mismatch",
+                  "external-capacity",
+                  "scope-mismatch",
+                  "other"
+                ]
+              },
+              "attribution": {
+                "type": "string",
+                "enum": [
+                  "subject",
+                  "system",
+                  "instrument",
+                  "environment",
+                  "ambiguous"
+                ]
+              },
+              "nextEvidenceAction": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000
+              },
+              "suggestion": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "remediation": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 300
+              },
+              "disregard": {
+                "type": "string",
+                "minLength": 10,
+                "maxLength": 600
+              }
+            },
+            "required": [
+              "rating",
+              "evidence"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "testedSha": {
+          "description": "Actually tested SHA; required for releaseGating pass-like ratings. Must equal fresh green pin AND staging HEAD.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{7,64}$"
+        },
+        "acceptance": {
+          "description": "An author acceptance verdict's persisted card always carries complete ratings, supplied directly or adopted from the exact independent card via acceptanceOf. Independent graders omit the verdict. accept-pending-delivery means only unreachable live/deployed proof remains; it preserves its proof/blocker obligation.",
+          "type": "object",
+          "properties": {
+            "verdict": {
+              "type": "string",
+              "enum": [
+                "accept",
+                "reject",
+                "accept-pending-delivery"
+              ]
+            },
+            "reasoning": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            }
+          },
+          "required": [
+            "verdict",
+            "reasoning"
+          ],
+          "additionalProperties": false
+        },
+        "acceptanceOf": {
+          "description": "With acceptance, adopts its ratings verbatim from the exact independent card named here after checking independence, completeness and revision; source grader provenance is preserved. Omit to use the first qualifying card.",
+          "type": "string",
+          "minLength": 1
+        },
+        "instrumentSnapshots": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "verdict": {
+                "type": "string",
+                "enum": [
+                  "pass",
+                  "fail",
+                  "unknown"
+                ]
+              },
+              "measuredAt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "window": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              },
+              "value": {},
+              "evidenceRef": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "provenance": {
+                "description": "Default self-reported: caller-derived numbers; verdict comparison checks your own assertion. Only deterministic platform instruments may claim platform-computed.",
+                "type": "string",
+                "enum": [
+                  "self-reported",
+                  "platform-computed"
+                ]
+              }
+            },
+            "required": [
+              "verdict",
+              "measuredAt"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "fromLedger": {
+          "description": "Rate probe/instrument-checked criteria from their latest results-ledger rows; rate only the rest.",
+          "type": "boolean"
+        },
+        "ledgerDispositions": {
+          "description": "With fromLedger: remediation/disregard and optional evidence for calibration or subject context. Context is appended to ledger evidence; the rating and measurement stay ledger-owned.",
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "remediation": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 300
+              },
+              "disregard": {
+                "type": "string",
+                "minLength": 10,
+                "maxLength": 600
+              },
+              "suggestion": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "attribution": {
+                "type": "string",
+                "enum": [
+                  "subject",
+                  "system",
+                  "instrument",
+                  "environment",
+                  "ambiguous"
+                ]
+              },
+              "evidence": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "current": {
+          "description": "Fresh fingerprints as plans:get current; non-code outcomes require them. Omission stays unknown.",
+          "maxItems": 2000,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "planSlug": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "specId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "specRevision": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "specFingerprint": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "evidenceKind": {
+                "type": "string",
+                "enum": [
+                  "test",
+                  "fixture",
+                  "coverage-census",
+                  "mutation",
+                  "counterexample",
+                  "check",
+                  "manual",
+                  "operational",
+                  "independent-verification"
+                ]
+              },
+              "evidenceRef": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "sourceFingerprint": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "testFingerprint": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "fixtureFingerprint": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "rubricFingerprint": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "environmentFingerprint": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "evidenceKind",
+              "evidenceRef",
+              "sourceFingerprint"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "rerunRecipe": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "schemaVersion": {
+                  "type": "number",
+                  "const": 1
+                },
+                "evaluator": {
+                  "type": "string",
+                  "const": "plans:evaluate-spec-test-adequacy"
+                },
+                "evaluatorBuild": {
+                  "type": "object",
+                  "properties": {
+                    "sha": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "version": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 120
+                    }
+                  },
+                  "required": [
+                    "sha",
+                    "version"
+                  ],
+                  "additionalProperties": false
+                },
+                "evaluatorRevision": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "classRef": {
+                  "type": "string",
+                  "enum": [
+                    "plan-class-feature-ship",
+                    "plan-class-bugfix",
+                    "plan-class-migration",
+                    "plan-class-investigation",
+                    "plan-class-general"
+                  ]
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {
+                    "harness": {
+                      "description": "Concrete in-scope harness slug (e.g. papercusp); harness-scoped sessions infer it. all requires unscoped --all-workspaces. Only UNSCOPED plans:get/plans:items auto-resolve an exact slug across harnesses; scoped misses identify the owning harness, which you must then pass explicitly.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "scorecardId": {
+                      "description": "Replay a persisted spec-test-adequacy scorecard from its stored recipe and creation-time evidence. Pair with that recipe’s plan slug; do not combine with direct evaluation selectors.",
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 120
+                    },
+                    "slug": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "classRef": {
+                      "description": "Derived from the persisted subject acceptance class when omitted; a supplied value must match. Ad-hoc work items still need explicit class attestation.",
+                      "type": "string",
+                      "enum": [
+                        "plan-class-feature-ship",
+                        "plan-class-bugfix",
+                        "plan-class-migration",
+                        "plan-class-investigation",
+                        "plan-class-general"
+                      ]
+                    },
+                    "evaluatorBuild": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "version": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 120
+                        }
+                      },
+                      "required": [
+                        "sha",
+                        "version"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "workItemIds": {
+                      "minItems": 1,
+                      "maxItems": 500,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "evidenceRefs": {
+                      "minItems": 1,
+                      "maxItems": 500,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2000
+                      }
+                    },
+                    "bindingIds": {
+                      "maxItems": 500,
+                      "type": "array",
+                      "items": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "specIds": {
+                      "minItems": 1,
+                      "maxItems": 500,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "specRevision": {
+                      "description": "Immutable clause revision pin. Supply together with specFingerprint; both are required when replaySnapshot is true.",
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "specFingerprint": {
+                      "description": "Immutable clause fingerprint pin. Supply together with specRevision; both are required when replaySnapshot is true.",
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "replaySnapshot": {
+                      "description": "When true, grade the pinned immutable clause revision instead of the live one. Requires both specRevision and specFingerprint from the same immutable clause revision. Normal evaluator calls still re-measure bindings with persisted recipes; the grading auditor uses a separate internal historical replay to reproduce the card’s emission-time verdict.",
+                      "type": "boolean"
+                    },
+                    "planItemIds": {
+                      "minItems": 1,
+                      "maxItems": 200,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^P-\\d{3,}$"
+                      }
+                    },
+                    "current": {
+                      "description": "Caller-supplied fingerprints may be the canonical array or the persisted rerunRecipe.current wrapper; wrapper.supplied:false and boolean true/false omit caller fingerprints and use independent server measurement. In normal evaluator calls, matching caller values remain unknown and cannot produce freshness:pass; the internal grading-audit replay uses them only with the card’s historical cutoff to reproduce its original verdict.",
+                      "anyOf": [
+                        {
+                          "maxItems": 500,
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "planSlug": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2000
+                              },
+                              "specId": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2000
+                              },
+                              "specRevision": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "specFingerprint": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              },
+                              "evidenceKind": {
+                                "type": "string",
+                                "enum": [
+                                  "test",
+                                  "fixture",
+                                  "coverage-census",
+                                  "mutation",
+                                  "counterexample",
+                                  "check",
+                                  "manual",
+                                  "operational",
+                                  "independent-verification"
+                                ]
+                              },
+                              "evidenceRef": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2000
+                              },
+                              "sourceFingerprint": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              },
+                              "testFingerprint": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "fixtureFingerprint": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "rubricFingerprint": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "environmentFingerprint": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "evidenceKind",
+                              "evidenceRef",
+                              "sourceFingerprint"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "supplied": {
+                              "type": "boolean"
+                            },
+                            "fingerprints": {
+                              "maxItems": 500,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "planSlug": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 2000
+                                  },
+                                  "specId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 2000
+                                  },
+                                  "specRevision": {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "specFingerprint": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  "evidenceKind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "test",
+                                      "fixture",
+                                      "coverage-census",
+                                      "mutation",
+                                      "counterexample",
+                                      "check",
+                                      "manual",
+                                      "operational",
+                                      "independent-verification"
+                                    ]
+                                  },
+                                  "evidenceRef": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 2000
+                                  },
+                                  "sourceFingerprint": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  },
+                                  "testFingerprint": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 256
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "fixtureFingerprint": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 256
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "rubricFingerprint": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 256
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "environmentFingerprint": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 256
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "evidenceKind",
+                                  "evidenceRef",
+                                  "sourceFingerprint"
+                                ],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": [
+                            "supplied",
+                            "fingerprints"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "boolean"
+                        }
+                      ]
+                    },
+                    "includeDraft": {
+                      "type": "boolean"
+                    },
+                    "now": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "limit": {
+                      "description": "Evidence-row limit across filtered scope (not clauses), default/max1000. Reaching it refuses with evidence_selection_hit_limit and no verdict: cohort may be truncated. Omit, increase within max, or narrow selectors.",
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 1000
+                    },
+                    "detail": {
+                      "description": "Response size. Default 'summary' (or false) returns a compact verdict table plus a fullBody ref; 'full' (or true) returns the complete body (evidence text, drafts, criteria prose).",
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "summary",
+                            "full"
+                          ]
+                        },
+                        {
+                          "type": "boolean"
+                        }
+                      ]
+                    },
+                    "criteria": {
+                      "description": "Return ratings for only these criteria; verdict, wouldBlock and verdicts still cover every criterion. With detail:\"full\" it omits scorecardDraft (a partial draft cannot be emitted).",
+                      "minItems": 1,
+                      "maxItems": 9,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "traceability",
+                          "fixture-calibration",
+                          "falsifiability",
+                          "correct-layer",
+                          "oracle-independence",
+                          "execution-integrity",
+                          "freshness",
+                          "plan-class-risk-floor",
+                          "disclosed-gap"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "slug"
+                  ],
+                  "additionalProperties": false
+                },
+                "selection": {
+                  "type": "object",
+                  "properties": {
+                    "planSlug": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 120
+                    },
+                    "specId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "specRevision": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "specFingerprint": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "evidence": {
+                      "maxItems": 500,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "evidenceKind": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 120
+                          },
+                          "evidenceRef": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          }
+                        },
+                        "required": [
+                          "evidenceKind",
+                          "evidenceRef"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "bindingIds": {
+                      "maxItems": 500,
+                      "type": "array",
+                      "items": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    }
+                  },
+                  "required": [
+                    "planSlug",
+                    "specId",
+                    "specRevision",
+                    "specFingerprint",
+                    "evidence"
+                  ],
+                  "additionalProperties": false
+                },
+                "current": {
+                  "type": "object",
+                  "properties": {
+                    "supplied": {
+                      "type": "boolean"
+                    },
+                    "fingerprints": {
+                      "maxItems": 500,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "planSlug": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "specId": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "specRevision": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "specFingerprint": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 256
+                          },
+                          "evidenceKind": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 120
+                          },
+                          "evidenceRef": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "sourceFingerprint": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 256
+                          },
+                          "testFingerprint": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "fixtureFingerprint": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "rubricFingerprint": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "environmentFingerprint": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "evidenceKind",
+                          "evidenceRef",
+                          "sourceFingerprint"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "supplied",
+                    "fingerprints"
+                  ],
+                  "additionalProperties": false
+                },
+                "measurementEvidence": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "none",
+                        "measured",
+                        "partial",
+                        "unmeasured",
+                        "degraded"
+                      ]
+                    },
+                    "selectedBindings": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 2000
+                    },
+                    "measuredBindings": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 2000
+                    },
+                    "unavailableBindings": {
+                      "maxItems": 2000,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "evidenceKind": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 120
+                          },
+                          "evidenceRef": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "evidenceKind",
+                          "evidenceRef",
+                          "reason"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "withoutMeasurementBasis": {
+                      "maxItems": 2000,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "evidenceKind": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 120
+                          },
+                          "evidenceRef": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "evidenceKind",
+                          "evidenceRef"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "bindings": {
+                      "maxItems": 2000,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "bindingId": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "evidenceKind": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 120
+                          },
+                          "evidenceRef": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "measured",
+                              "unavailable",
+                              "unmeasured"
+                            ]
+                          },
+                          "measuredAtCommit": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128
+                          },
+                          "measurementFingerprint": {
+                            "type": "string",
+                            "pattern": "^sha256:[a-f0-9]{64}$"
+                          }
+                        },
+                        "required": [
+                          "bindingId",
+                          "evidenceKind",
+                          "evidenceRef",
+                          "status"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "selectedBindings",
+                    "measuredBindings",
+                    "unavailableBindings",
+                    "withoutMeasurementBasis",
+                    "bindings"
+                  ],
+                  "additionalProperties": false
+                },
+                "derivation": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "listSpecEvidence.currentness"
+                    },
+                    "classifier": {
+                      "type": "string",
+                      "const": "classifySpecEvidenceCurrentness"
+                    },
+                    "unknownWhenMissing": {
+                      "type": "boolean",
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "classifier",
+                    "unknownWhenMissing"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "schemaVersion",
+                "evaluator",
+                "classRef",
+                "args",
+                "selection",
+                "current",
+                "derivation"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "schemaVersion": {
+                  "type": "number",
+                  "const": 1
+                },
+                "evaluator": {
+                  "type": "string",
+                  "const": "plans:evaluate-spec-quality"
+                },
+                "evaluatorBuild": {
+                  "type": "object",
+                  "properties": {
+                    "sha": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "version": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "sha",
+                    "version"
+                  ],
+                  "additionalProperties": false
+                },
+                "specSetHashVersion": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {
+                    "harness": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "slug": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "classRef": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "expectedSpecSetHash": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "specSetHashVersion": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "evaluatorBuild": {
+                      "type": "object",
+                      "properties": {
+                        "sha": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "version": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "sha",
+                        "version"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "replaySnapshot": {
+                      "type": "object",
+                      "properties": {
+                        "planContentHash": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "clausesAsOf": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                        },
+                        "acceptanceRubric": {
+                          "type": "object",
+                          "properties": {
+                            "rubricId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "revision": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "criteriaHash": {
+                              "type": "string",
+                              "pattern": "^[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "rubricId",
+                            "revision",
+                            "criteriaHash"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "planContentHash",
+                        "clausesAsOf"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "harness",
+                    "slug",
+                    "classRef",
+                    "expectedSpecSetHash",
+                    "specSetHashVersion",
+                    "evaluatorBuild",
+                    "replaySnapshot"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "schemaVersion",
+                "evaluator",
+                "evaluatorBuild",
+                "specSetHashVersion",
+                "args"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "subject": {
+          "description": "observation.subject; rubric vetting uses kind:'rubric',ref:rubricId. Acceptance default=subjectPlan; explicit wins.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "agent-run",
+                "session",
+                "work-item",
+                "plan",
+                "pot",
+                "fleet",
+                "rubric",
+                "scorecard"
+              ]
+            },
+            "ref": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "windowStart": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "windowEnd": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          "required": [
+            "ref"
+          ],
+          "additionalProperties": false
+        },
+        "authorHandoffId": {
+          "description": "Existing exact-identity author obligation returned by an author-only refusal. Pickup and settlement recheck current authority.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "gradingAuditReservation": {
+          "description": "Pending audit lease from the brief; invalid lease refuses. Omit only for unreserved legacy or settled-audit corrections.",
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "reservedAt": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          "required": [
+            "key",
+            "reservedAt"
+          ],
+          "additionalProperties": false
+        },
+        "vettingUnanswered": {
+          "description": "No critique assertion; needs consult+reason, refuses existing critique. Recorded as observation.vetting.unanswered waiver, not approval.",
+          "type": "boolean"
+        },
+        "vettingUnansweredReason": {
+          "description": "Measured absent critique (ended reviewers/expired consult/zero posts), beyond 'no reply yet'.",
+          "type": "string",
+          "minLength": 24,
+          "maxLength": 500
+        },
+        "supersedes": {
+          "description": "Corrected card id. Only explicit corrections supersede prior readings; ordinary measurements and baseline regrades preserve history.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "baselineRef": {
+          "description": "Audited pre-repair baseline, preserved for comparable re-grade with same target/pinned rubric; never replaced.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "terminal": {
+          "description": "Subject ended. Otherwise violatable ratings are provisional and excluded from rubrics:trend. Finalize with terminal:true and supersedes the interim.",
+          "type": "boolean"
+        },
+        "force": {
+          "description": "File even when the canonical evidence fingerprint matches the latest scorecard.",
+          "type": "boolean"
+        },
+        "acknowledgeExisting": {
+          "description": "Required to append when complete independent cards exist at this revision. force only bypasses unchanged-evidence dedup; it never replaces acknowledgement.",
+          "type": "boolean",
+          "const": true
+        },
+        "vettingConsult": {
+          "not": {}
+        },
+        "vettingWorkItem": {
+          "not": {}
+        }
+      },
+      "required": [
+        "rubricRef"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}

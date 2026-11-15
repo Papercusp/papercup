@@ -228,7 +228,9 @@ describe('canonical plan-route conditions', () => {
 describe('legacy grading-audit conditions', () => {
   const legacy = { kind: 'event' as const, ref: 'grading-audit:EI-target' };
   const canonical = { kind: 'event' as const, ref: 'scorecard:grading-audit:EI-target' };
-  const target = () => ({ issueId: 'EI-target', createdBy: 'su-author',
+  const target = () => ({ issueId: 'EI-target', createdBy: 'su-author', rubricRef: 'spec-quality',
+    subject: { kind: 'plan', ref: 'plan-a' }, sourceHive: 'harness-a',
+    createdAt: '2026-11-13T16:00:00Z', auditTarget: { current: true as boolean | null },
     gradingAudit: { state: 'passed', metaRubricRef: 'grading-integrity', auditIssueId: 'EI-audit',
       auditor: 'su-auditor', auditedAt: '2026-11-13T18:00:00Z', rubricRevision: 14, criteriaHash: 'audit-hash' } });
   const audit = () => ({ issueId: 'EI-audit', createdBy: 'su-auditor', rubricRef: 'grading-integrity',
@@ -257,6 +259,80 @@ describe('legacy grading-audit conditions', () => {
     mocks.event.mockResolvedValue({ authoritative: true, verdict: 'reachable', basis: 'fired' });
     expect(await createBlockerEvidenceReader(ctx)(legacy)).toMatchObject({ status: 'available', condition: 'pending' });
     expect(mocks.event).not.toHaveBeenCalled();
+  });
+  const cancelledReplacement = () => {
+    subject.gradingAudit.state = 'cancelled';
+    Object.assign(subject, { supersededBy: 'EI-successor' });
+    const replacement = { ...target(), issueId: 'EI-successor', supersedes: subject.issueId,
+      createdAt: '2026-11-14T16:00:00Z',
+      gradingAudit: { ...target().gradingAudit, auditIssueId: 'EI-successor-audit' } };
+    const replacementAudit = { ...audit(), issueId: 'EI-successor-audit',
+      subject: { kind: 'scorecard', ref: replacement.issueId } };
+    mocks.scorecard.mockImplementation(async (id: string) => {
+      const card = [subject, verdict, replacement, replacementAudit].find(card => card.issueId === id);
+      return card ? { kind: 'found', scorecard: card } : { kind: 'not_found' };
+    });
+    return { replacement, replacementAudit };
+  };
+  it('resolves a cancelled audit through its canonical independently audited replacement', async () => {
+    cancelledReplacement();
+    const read = createBlockerEvidenceReader(ctx);
+    const measured = await read(legacy);
+    expect(measured).toMatchObject({ status: 'available', condition: 'satisfied', reachable: true,
+      conditionIdentity: JSON.stringify(['scorecard-grading-audit', ctx.workspaceId, 'EI-target', 'replacement', 'EI-successor']) });
+    expect(await read(canonical)).toEqual(measured);
+    expect(mocks.scorecard).toHaveBeenCalledWith('EI-successor-audit');
+    expect(mocks.event).not.toHaveBeenCalled();
+  });
+  it.each(['pending', 'awaiting-reemit', 'failed', 'cancelled'])('retains a cancelled audit with a %s replacement', async state => {
+    const { replacement } = cancelledReplacement();
+    replacement.gradingAudit.state = state;
+    expect(await createBlockerEvidenceReader(ctx)(legacy)).toMatchObject({ condition: 'pending' });
+  });
+  it.each(['wrong subject', 'wrong rubric', 'wrong hive', 'retracted', 'provisional',
+    'stale', 'unknown currentness', 'self audit', 'wrong audit subject', 'wrong audit hash', 'older replacement'])
+  ('refuses a cancelled audit replacement with %s', async invalid => {
+    const { replacement, replacementAudit } = cancelledReplacement();
+    if (invalid === 'wrong subject') replacement.subject.ref = 'plan-other';
+    if (invalid === 'wrong rubric') replacement.rubricRef = 'other';
+    if (invalid === 'wrong hive') replacement.sourceHive = 'harness-other';
+    if (invalid === 'retracted' || invalid === 'provisional') Object.assign(replacement, { [invalid]: {} });
+    if (invalid === 'stale') replacement.auditTarget.current = false;
+    if (invalid === 'unknown currentness') replacement.auditTarget.current = null;
+    if (invalid === 'self audit') replacement.gradingAudit.auditor = replacement.createdBy;
+    if (invalid === 'wrong audit subject') replacementAudit.subject.ref = subject.issueId;
+    if (invalid === 'wrong audit hash') replacementAudit.criteriaHash = 'other';
+    if (invalid === 'older replacement') replacement.createdAt = '2026-11-12T16:00:00Z';
+    expect(await createBlockerEvidenceReader(ctx)(legacy)).toMatchObject({ status: 'unknown' });
+  });
+  it('does not replace an audit that is still pending', async () => {
+    cancelledReplacement();
+    subject.gradingAudit.state = 'pending';
+    expect(await createBlockerEvidenceReader(ctx)(legacy)).toMatchObject({ condition: 'pending' });
+    expect(mocks.scorecard).not.toHaveBeenCalledWith('EI-successor');
+  });
+  it('retains uncertainty for a missing replacement and refuses a cyclic replacement chain', async () => {
+    cancelledReplacement();
+    Object.assign(subject, { supersededBy: 'EI-missing' });
+    expect(await createBlockerEvidenceReader(ctx)(legacy)).toMatchObject({ status: 'unknown' });
+    const { replacement } = cancelledReplacement();
+    Object.assign(replacement, { supersededBy: subject.issueId });
+    expect(await createBlockerEvidenceReader(ctx)(legacy)).toMatchObject({ status: 'unknown' });
+  });
+  it('follows the complete replacement chain rather than accepting an intermediate passed audit', async () => {
+    const { replacement } = cancelledReplacement();
+    Object.assign(replacement, { supersededBy: 'EI-final' });
+    const final = { ...replacement, issueId: 'EI-final', supersedes: replacement.issueId,
+      createdAt: '2026-11-15T10:00:00Z', supersededBy: undefined,
+      gradingAudit: { ...replacement.gradingAudit, auditIssueId: 'EI-final-audit' } };
+    const finalAudit = { ...audit(), issueId: 'EI-final-audit', subject: { kind: 'scorecard', ref: final.issueId } };
+    const prior = mocks.scorecard.getMockImplementation()!;
+    mocks.scorecard.mockImplementation(async (id: string) => id === final.issueId
+      ? { kind: 'found', scorecard: final } : id === finalAudit.issueId
+        ? { kind: 'found', scorecard: finalAudit } : prior(id));
+    expect(await createBlockerEvidenceReader(ctx)(legacy)).toMatchObject({ condition: 'satisfied' });
+    final.gradingAudit.state = 'pending';
+    expect(await createBlockerEvidenceReader(ctx)(legacy)).toMatchObject({ condition: 'pending' });
   });
   it.each(['not_found', 'not_scorecard'])('refuses a %s target', async kind => {
     mocks.scorecard.mockResolvedValue({ kind });
@@ -307,6 +383,10 @@ describe('legacy grading-audit conditions', () => {
       ['EI-target'], ['EI-audit'],
     ]));
     expect(mocks.scorecard).toHaveBeenCalledTimes(4);
+    expect(item).toEqual(before);
+    cancelledReplacement();
+    expect(await preflightBlockerDecision(item, decision, { ...ctx, sessionId: ctx.ownerId },
+      { effect: { status: 'wip' } })).toMatchObject({ ok: true });
     expect(item).toEqual(before);
     subject.gradingAudit.state = 'pending';
     expect(await preflightBlockerDecision(item, decision, { ...ctx, sessionId: ctx.ownerId },

@@ -50,16 +50,18 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
   return {
     ...actual,
-    getOrgPg: () => ({
-      sql: (strings: TemplateStringsArray) => {
+    getOrgPg: () => {
+      const sql = (strings: TemplateStringsArray) => {
         const query = Array.from(strings).join(' ');
         // The SQL tag also constructs predicates; those are interpolated into the
         // SELECT, never executed as separate queries.
         if (query.trim() === 'TRUE' || query.trim() === "(template_data->>'kind' IS DISTINCT FROM 'acceptance')") return query;
         h.orgQueries.push(query);
         return Promise.resolve([]);
-      },
-    }),
+      };
+      // Production org clients are transaction-capable (WI-40234).
+      return { sql: Object.assign(sql, { begin: async (fn: (tx: typeof sql) => unknown) => fn(sql) }) };
+    },
     withWorkspace: async <T>(_workspaceId: string, fn: (tx: unknown) => Promise<T>) => {
       const tx = ((strings: TemplateStringsArray | string[], ...values: unknown[]) => {
         const sql = Array.from(strings).join(' ');
@@ -105,6 +107,7 @@ const getRubricEvidenceIdentity = vi.fn();
 const getRubricPlanRevision = vi.fn();
 const readRubricPlanRevision = vi.fn();
 const listScorecards = vi.fn();
+const readScorecardRecipeHeader = vi.fn();
 const captureImprovement = vi.fn();
 const completionGate = vi.fn();
 
@@ -134,11 +137,30 @@ vi.mock('../../rubrics', async (importOriginal) => ({
 vi.mock('../../scorecards', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../scorecards')>()),
   listScorecards: (...args: unknown[]) => listScorecards(...args),
+  readScorecardRecipeHeader: (...args: unknown[]) => readScorecardRecipeHeader(...args),
 }));
 vi.mock('../../harness/improvements/capture-core', () => ({
   captureImprovement: (...args: unknown[]) => captureImprovement(...args),
 }));
-vi.mock('../../scout/generation-watermark', () => ({ readRunningGeneration: async () => null }));
+// Audit-required filings refuse without a provable evaluator build SHA
+// (emit.ts grading_audit_generation_unavailable), so stamp a valid one here.
+vi.mock('../../scout/generation-watermark', () => ({
+  readRunningGeneration: async () => ({
+    deployedSha: 'a'.repeat(40),
+    hostStartedAt: null,
+    bootHeadSha: null,
+    scoutCodeHash: null,
+    staleHost: null,
+  }),
+}));
+// A filed card fires emit's detached post-emit audit dispatch, which takes its own
+// staging-server lease. Production keeps the certifier's lease through that nested
+// same-owner acquire (reused:true → guardResource preserves it); this file's
+// acquire mock cannot model that, and the dispatch is emit's concern, not certify's.
+vi.mock('../scorecards/repair', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../scorecards/repair')>()),
+  withScorecardAuditDispatchLease: async () => ({ acquired: true as const, value: undefined }),
+}));
 // Emit's supersede validation reads the superseded card through getIssue.
 const getIssue = vi.fn(async (_id: string): Promise<unknown> => null);
 vi.mock('../../issues-engineer', async (importOriginal) => ({
@@ -395,6 +417,7 @@ beforeEach(async () => {
   getRubricEvidenceIdentity.mockResolvedValue({ revision: 7, criteriaHash: null, meaningRevision: null });
   readRubricPlanRevision.mockResolvedValue({ ok: true, revision: 7 });
   listScorecards.mockResolvedValue([]);
+  readScorecardRecipeHeader.mockResolvedValue({ kind: 'not_found' });
   getIssue.mockImplementation(async () => null);
   let seq = 0;
   captureImprovement.mockImplementation(async () => ({ ok: true, created: true, issue: { id: `EI-CERT-${++seq}` } }));
@@ -998,32 +1021,54 @@ describe('plans:certify-spec-clauses', () => {
       expect(written?.supersedes).toBe('EI-stranded-pending');
     });
 
+    // EI-28807501130212029: a REAL listScorecards row carries the recipe's cited binding ids
+    // but no read-time auditTarget (only readScorecard computes it), so currentness must come
+    // from the recipe-header read, never from the list row.
+    const citedProofPendingCard = (subjectRef: string) => ({
+      issueId: 'EI-stale-retracted-proof',
+      createdBy: 'su-prior-grader',
+      sourceHive: 'papercusp',
+      rubricRef: 'spec-test-adequacy',
+      subject: { kind: 'plan', ref: subjectRef },
+      gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity' },
+      supersededBy: null,
+      rerunRecipe: {
+        evaluator: 'plans:evaluate-spec-test-adequacy',
+        selection: { bindingIds: [37610, 37592] },
+        args: {},
+      },
+    });
+    const headerWithAuditTargetCurrent = (current: boolean | null) =>
+      async (issueId: string) => issueId === 'EI-stale-retracted-proof'
+        ? {
+            kind: 'found',
+            scorecard: {
+              issueId,
+              auditTarget: {
+                current,
+                superseded: false,
+                supersededBy: null,
+                retracted: false,
+                subjectRubricCurrentness: null,
+                evidenceBindingCurrentness: current === false
+                  ? {
+                      state: 'stale',
+                      reason: 'cited-binding-retracted',
+                      citedBindingCount: 2,
+                      retractedBindingIds: ['37610', '37592'],
+                      unavailableBindingIds: [],
+                    }
+                  : { state: current === null ? 'unknown' : 'current', reason: 'current', citedBindingCount: 2,
+                      retractedBindingIds: [], unavailableBindingIds: [] },
+              },
+            },
+          }
+        : { kind: 'not_found' };
+
     it('ignores pending cards whose cited proof was retracted when superseding a stranded card', async () => {
       const subjectRef = specTestAdequacySubjectRef(PLAN, 'SPEC-PASS', 1);
-      const stalePendingCard = {
-        issueId: 'EI-stale-retracted-proof',
-        createdBy: 'su-prior-grader',
-        sourceHive: 'papercusp',
-        rubricRef: 'spec-test-adequacy',
-        subject: { kind: 'plan', ref: subjectRef },
-        gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity' },
-        supersededBy: null,
-        auditTarget: {
-          current: false,
-          superseded: false,
-          supersededBy: null,
-          retracted: false,
-          subjectRubricCurrentness: null,
-          evidenceBindingCurrentness: {
-            state: 'stale',
-            reason: 'cited-binding-retracted',
-            citedBindingCount: 2,
-            retractedBindingIds: ['37610', '37592'],
-            unavailableBindingIds: [],
-          },
-        },
-      };
-      await arrangeStranded(RETIRED_BUILD, {}, false, [stalePendingCard]);
+      readScorecardRecipeHeader.mockImplementation(headerWithAuditTargetCurrent(false));
+      await arrangeStranded(RETIRED_BUILD, {}, false, [citedProofPendingCard(subjectRef)]);
 
       const filed = await certify({ specIds: ['SPEC-PASS'] });
 
@@ -1036,7 +1081,24 @@ describe('plans:certify-spec-clauses', () => {
         (captureImprovement.mock.calls[0]![0] as { payloadExtra: { observation: unknown } }).payloadExtra.observation,
       );
       expect(written?.supersedes).toBe('EI-stranded-pending');
+      expect(readScorecardRecipeHeader).toHaveBeenCalledWith('EI-stale-retracted-proof');
     });
+
+    it.each([true, null])(
+      'keeps a cited-proof pending card blocking when its audit target reads current=%s',
+      async (current) => {
+        const subjectRef = specTestAdequacySubjectRef(PLAN, 'SPEC-PASS', 1);
+        readScorecardRecipeHeader.mockImplementation(headerWithAuditTargetCurrent(current));
+        await arrangeStranded(RETIRED_BUILD, {}, false, [citedProofPendingCard(subjectRef)]);
+
+        const filed = await certify({ specIds: ['SPEC-PASS'] });
+
+        // Two blocking pending cards make the stranded one ambiguous: nothing is superseded.
+        expect(filed).toMatchObject({ ok: false, counts: { filed: 0, refused: 1 }, clauses: [{ card: { status: 'refused' } }] });
+        expect(filed.clauses?.[0]).not.toHaveProperty('strandedSuperseded');
+        expect(captureImprovement).not.toHaveBeenCalled();
+      },
+    );
 
     it.each(['same-build', 'live-lease'])('keeps unchanged evidence when the pending audit has a %s', async (guard) => {
       await arrangeStranded(guard === 'same-build' ? LIVE_BUILD : RETIRED_BUILD,

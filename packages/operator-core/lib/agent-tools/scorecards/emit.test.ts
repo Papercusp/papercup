@@ -15,6 +15,104 @@ import {
 } from './emit-timeout-budget.mjs';
 import { COORD_ROLES } from '../coordination/roles';
 import { mockResolvedTyped } from '../../testing/typed-mock';
+import { z } from 'zod';
+import { scorecardEmitArgs } from './emit';
+import {
+  computeAcceptanceBarHash,
+  criterionGradeKey,
+  criterionMethodHash,
+  ratedCriterionGrades,
+  type Rubric,
+  type RubricCriterion,
+} from '../../rubrics';
+import {
+  currentProofBindingsByCriterion,
+  type AcceptanceBarContractSnapshot,
+} from '../../acceptance-bar-contract-snapshot';
+
+describe('per-criterion grade records at save (per-requirement-acceptance-grading-2026-11-14 R-1)', () => {
+  const criterion = (key: string, method: string): RubricCriterion => {
+    const base = { key, title: key, model: `${key} holds`, method, driftMarkers: `${key} fails`,
+      role: 'outcome' as const, mandatory: true, passRatings: ['healthy'] } as RubricCriterion;
+    return { ...base, barHash: computeAcceptanceBarHash(base as never) };
+  };
+  const rubricOf = (criteria: RubricCriterion[]) =>
+    ({ kind: 'acceptance', criteria, criteriaHash: 'criteria-hash-1' }) as Pick<Rubric, 'kind' | 'criteria' | 'criteriaHash'>;
+  const row = (id: number, current: boolean) => ({
+    id, workItemId: 'WI-1', specId: `SPEC-${id}`, specRevision: 2, specFingerprint: `spec-fp-${id}`,
+    current, bindingFingerprint: 'b'.repeat(64),
+    fingerprints: { sourceFingerprint: `src-${id}`, testFingerprint: `test-${id}`, fixtureFingerprint: null,
+      rubricFingerprint: null, environmentFingerprint: null },
+  });
+  type Trace = AcceptanceBarContractSnapshot['bars'][number];
+  const bar = (c: RubricCriterion, history: ReturnType<typeof row>[] | undefined, state: Trace['proof']['state'] = 'current') =>
+    ({ barKey: c.key, criterionKey: c.key, barHash: c.barHash ?? null, proof: { state, history } }) as unknown as Trace;
+  const r1 = criterion('r-1', 'Unit tests assert r-1.');
+  const r2 = criterion('r-2', 'Inspect r-2 by hand.');
+  const r3 = criterion('r-3', 'Unit tests assert r-3.');
+  const rubric = rubricOf([r1, r2, r3]);
+  // r-1 holds two current rows and one stale row; r-2 owns no execution; r-3 one current row.
+  const snapshot = { bars: [bar(r1, [row(7, true), row(5, true), row(6, false)]), bar(r2, []), bar(r3, [row(9, true)])] };
+  const rate = (...keys: string[]) => Object.fromEntries(keys.map((k) => [k, { rating: 'healthy', evidence: 'e' }]));
+
+  it('records the grade key and current proof of exactly the rated criteria, complete or partial', () => {
+    const complete = ratedCriterionGrades(rubric, 'criteria-hash-1', rate('r-1', 'r-2', 'r-3'),
+      currentProofBindingsByCriterion(snapshot));
+    expect(Object.keys(complete ?? {}).sort()).toEqual(['r-1', 'r-2', 'r-3']);
+    expect(complete?.['r-1']).toEqual({
+      barHash: r1.barHash,
+      methodHash: criterionMethodHash(r1.method),
+      gradeKey: criterionGradeKey(r1.barHash!, criterionMethodHash(r1.method)),
+      proof: [5, 7].map((id) => {
+        const { workItemId: _w, current: _c, ...kept } = row(id, true);
+        return kept;
+      }),
+    });
+    // A requirement that owns no execution records an explicit empty proof binding.
+    expect(complete?.['r-2']?.proof).toEqual([]);
+    const partial = ratedCriterionGrades(rubric, 'criteria-hash-1', rate('r-1', 'r-3'),
+      currentProofBindingsByCriterion(snapshot));
+    expect(Object.keys(partial ?? {}).sort()).toEqual(['r-1', 'r-3']);
+    expect(partial?.['r-3']?.proof.map((p) => p.id)).toEqual([9]);
+  });
+
+  it('changes the grade key on a method-only edit while the bar hash stays the same', () => {
+    const edited = criterion('r-1', 'Unit tests and a mutation probe assert r-1.');
+    expect(edited.barHash).toBe(r1.barHash);
+    const before = ratedCriterionGrades(rubric, 'criteria-hash-1', rate('r-1'), currentProofBindingsByCriterion(snapshot));
+    const after = ratedCriterionGrades(rubricOf([edited, r2, r3]), 'criteria-hash-1', rate('r-1'),
+      currentProofBindingsByCriterion({ bars: [bar(edited, [row(5, true)]), bar(r2, []), bar(r3, [])] }));
+    expect(after?.['r-1']?.barHash).toBe(before?.['r-1']?.barHash);
+    expect(after?.['r-1']?.gradeKey).not.toBe(before?.['r-1']?.gradeKey);
+  });
+
+  it('records none when the record cannot be stated in full for the pinned identity', () => {
+    const bindings = currentProofBindingsByCriterion(snapshot);
+    const ratings = rate('r-1', 'r-3');
+    expect(ratedCriterionGrades(rubric, 'criteria-hash-2', ratings, bindings)).toBeNull();
+    expect(ratedCriterionGrades(rubric, null, ratings, bindings)).toBeNull();
+    expect(ratedCriterionGrades(rubric, 'criteria-hash-1', ratings, null)).toBeNull();
+    expect(ratedCriterionGrades({ ...rubric, kind: 'standard' } as never, 'criteria-hash-1', ratings, bindings)).toBeNull();
+    // The snapshot describes another revision of r-1.
+    const otherRevision = { bars: [{ ...bar(r1, [row(5, true)]), barHash: 'e'.repeat(64) }, bar(r3, [row(9, true)])] };
+    expect(ratedCriterionGrades(rubric, 'criteria-hash-1', ratings, currentProofBindingsByCriterion(otherRevision))).toBeNull();
+    // Truncated proof, an older snapshot without history or `current`, or a rated key the snapshot lacks.
+    for (const bars of [
+      [bar(r1, [row(5, true)], 'truncated'), bar(r3, [row(9, true)])],
+      [bar(r1, undefined), bar(r3, [row(9, true)])],
+      [bar(r1, [{ ...row(5, true), current: undefined as unknown as boolean }]), bar(r3, [row(9, true)])],
+      [bar(r3, [row(9, true)])],
+    ]) {
+      expect(ratedCriterionGrades(rubric, 'criteria-hash-1', ratings, currentProofBindingsByCriterion({ bars }))).toBeNull();
+    }
+  });
+
+  it('leaves the scorecards:emit argument schema exactly as it was before this change', async () => {
+    const schema = z.toJSONSchema(scorecardEmitArgs, { io: 'input', unrepresentable: 'any' });
+    await expect(`${JSON.stringify(schema, null, 2)}\n`)
+      .toMatchFileSnapshot('./__fixtures__/scorecards-emit-args.pre-r1.schema.json');
+  });
+});
 
 const task = (taskId: string, label: string, headless = true) => ({
   taskId,

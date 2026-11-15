@@ -354,7 +354,8 @@ Promise<BlockerEvidenceMeasurement> {
  */
 /** A legacy grading-audit reservation names a scorecard predicate, not a fire.
  * Resolve both spellings against that exact tenant-scoped target and its settled
- * independent audit; superseding target cards never substitute for this gate. */
+ * independent audit. A cancelled target may follow its canonical replacement
+ * chain; pending targets still require their own audit. */
 async function readGradingAuditCondition(
   ref: string, context: BlockerEvidenceContext,
   loadHeader: () => Promise<typeof import('./scorecards').readScorecardRecipeHeader>,
@@ -370,14 +371,43 @@ async function readGradingAuditCondition(
   const readScorecardRecipeHeader = await loadHeader();
   const targetRead = await readScorecardRecipeHeader(match[1]);
   if (targetRead.kind !== 'found') return unknown('grading-audit target is unavailable');
-  const target = targetRead.scorecard;
+  let target = targetRead.scorecard;
   if (target.issueId !== match[1] || target.retracted || target.provisional) {
     return unknown('grading-audit target identity is not eligible');
   }
-  const stamp = target.gradingAudit;
-  if (!stamp || stamp.metaRubricRef !== 'grading-integrity') return unknown('canonical grading-audit stamp is unavailable');
   const measurement = { status: 'available' as const, reachable: true,
     conditionIdentity: JSON.stringify(['scorecard-grading-audit', context.workspaceId, match[1]]) };
+  if (target.gradingAudit?.metaRubricRef === 'grading-integrity' && target.gradingAudit.state === 'cancelled') {
+    if (!target.supersededBy) return { ...measurement, condition: 'pending' };
+    const original = target;
+    if (!original.subject?.ref || !original.rubricRef) return unknown('cancelled grading-audit subject is unavailable');
+    const seen = new Set([target.issueId]);
+    // No prefix/depth cap: every successor is measured, and cycles fail closed.
+    while (target.supersededBy) {
+      const nextId = target.supersededBy;
+      if (!/^EI-[A-Za-z0-9_-]+$/.test(nextId) || seen.has(nextId)) {
+        return unknown('invalid or cyclic grading-audit replacement chain');
+      }
+      seen.add(nextId);
+      const nextRead = await readScorecardRecipeHeader(nextId);
+      if (nextRead.kind !== 'found') return unknown('grading-audit replacement is unavailable');
+      const next = nextRead.scorecard;
+      const previousTime = Date.parse(target.createdAt), nextTime = Date.parse(next.createdAt);
+      if (next.issueId !== nextId || next.retracted || next.provisional ||
+          next.rubricRef !== original.rubricRef || next.sourceHive !== original.sourceHive ||
+          !isDeepStrictEqual(next.subject, original.subject) ||
+          !Number.isFinite(previousTime) || !Number.isFinite(nextTime) || nextTime <= previousTime || nextTime > Date.now()) {
+        return unknown('grading-audit replacement does not match its cancelled subject');
+      }
+      target = next;
+    }
+    if (target.auditTarget.current !== true) return unknown('grading-audit replacement currentness is unproven');
+    measurement.conditionIdentity = JSON.stringify([
+      'scorecard-grading-audit', context.workspaceId, match[1], 'replacement', target.issueId,
+    ]);
+  }
+  const stamp = target.gradingAudit;
+  if (!stamp || stamp.metaRubricRef !== 'grading-integrity') return unknown('canonical grading-audit stamp is unavailable');
   if (['pending', 'awaiting-reemit', 'failed', 'cancelled'].includes(stamp.state)) {
     return { ...measurement, condition: 'pending' };
   }

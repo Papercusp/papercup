@@ -19,6 +19,8 @@ import {
   effectiveCriterionInstrumentKey,
   getAcceptanceRubricsForPlan,
   type AcceptanceBarHashInput,
+  type CriterionGradeProof,
+  type CriterionProofBinding,
   type Rubric,
   type RubricCriterion,
 } from './rubrics';
@@ -329,6 +331,15 @@ export interface AcceptanceBarTrace {
         currentRevision?: number;
         matchesCurrentSpec: boolean;
         activeAttempt?: boolean;
+        /**
+         * per-requirement-acceptance-grading-2026-11-14 R-1: whether this row is one of the
+         * BAR's CURRENT proof rows (the population `currentEvidence` counts). The single
+         * definition a grade's proof binding is copied from. Absent on older snapshots.
+         */
+        current?: boolean;
+        /** The input fingerprints the row was bound with. Absent on older snapshots. */
+        fingerprints?: AcceptanceBarEvidenceSource['fingerprints'];
+        bindingFingerprint?: AcceptanceBarEvidenceSource['bindingFingerprint'];
       }>;
     currentEvidence: number;
     staleEvidence: number;
@@ -405,6 +416,52 @@ export function barRequiresAutomatedProof(bar: AcceptanceBarTrace): boolean {
   if (typeof bar.automatedProofRequired === 'boolean') return bar.automatedProofRequired;
   return !isNonAutomatedBehaviorClass(bar.behaviorClass) ||
     (bar.requiredTestLayers?.length ?? 0) > 0 || bar.mutationRequired === true;
+}
+
+/**
+ * per-requirement-acceptance-grading-2026-11-14 R-1: each criterion's CURRENT proof in
+ * this snapshot, keyed by criterion key, for a scorecard to record beside its rating.
+ *
+ * A criterion is LEFT OUT (so the grade record falls back to none, all-or-nothing) when its
+ * proof cannot be stated in full: the snapshot truncated its proof, its history is absent
+ * (an older snapshot shape), or a current row lacks its `current` flag or fingerprints.
+ * A criterion whose snapshot holds no current proof row maps to an explicit empty list.
+ * A criterion key traced by two BARs is left out too: the binding would be ambiguous.
+ */
+export function currentProofBindingsByCriterion(
+  snapshot: Pick<AcceptanceBarContractSnapshot, 'bars'>,
+): Map<string, CriterionProofBinding> {
+  const out = new Map<string, CriterionProofBinding>();
+  const ambiguous = new Set<string>();
+  for (const bar of snapshot.bars) {
+    if (out.has(bar.criterionKey) || ambiguous.has(bar.criterionKey)) {
+      out.delete(bar.criterionKey);
+      ambiguous.add(bar.criterionKey);
+      continue;
+    }
+    if (bar.proof.state === 'truncated' || !bar.proof.history) continue;
+    if (bar.proof.history.some((row) => typeof row.current !== 'boolean')) continue;
+    const currentRows = bar.proof.history.filter((row) => row.current === true);
+    if (currentRows.some((row) => !row.fingerprints?.sourceFingerprint)) continue;
+    const proof: CriterionGradeProof[] = currentRows
+      .map((row) => ({
+        id: row.id,
+        specId: row.specId,
+        specRevision: row.specRevision,
+        specFingerprint: row.specFingerprint,
+        bindingFingerprint: row.bindingFingerprint ?? null,
+        fingerprints: {
+          sourceFingerprint: row.fingerprints!.sourceFingerprint,
+          testFingerprint: row.fingerprints!.testFingerprint ?? null,
+          fixtureFingerprint: row.fingerprints!.fixtureFingerprint ?? null,
+          rubricFingerprint: row.fingerprints!.rubricFingerprint ?? null,
+          environmentFingerprint: row.fingerprints!.environmentFingerprint ?? null,
+        },
+      }))
+      .sort((a, b) => a.id - b.id);
+    out.set(bar.criterionKey, { barHash: bar.barHash, proof });
+  }
+  return out;
 }
 
 /** The per-clause inputs of {@link projectedAutomatedProofRequired}. */
@@ -1554,6 +1611,9 @@ export function projectAcceptanceBarContractSnapshot(
           createdAt: row.createdAt, serverMeasurement: row.serverMeasurement,
           details: row.details, currentness: row.currentness,
           activeAttempt: activeEvidence.includes(row),
+          current: currentEvidence.includes(row),
+          fingerprints: row.fingerprints,
+          bindingFingerprint: row.bindingFingerprint,
           matchesCurrentSpec: clauses.some((clause) => clause.specId === row.specId &&
             clause.revision === row.specRevision && clause.contentHash === row.specFingerprint),
         })),

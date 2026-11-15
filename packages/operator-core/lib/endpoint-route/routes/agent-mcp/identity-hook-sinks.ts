@@ -24,6 +24,8 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { createHash } from 'node:crypto';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { defineTool } from '@papercusp/agent-mcp';
 import { withPriorityOrgPg } from '@papercusp/db-org';
 import { PG_ACQUIRE_TIMING_LIMIT, pgAcquireTimingSnapshot, pgResultDiagnosticSnapshot,
@@ -225,6 +227,24 @@ export async function compactionSinkDue(
   }
 }
 
+/**
+ * In-flight verdicts by native-hook request id (EI-28856216485629340). The
+ * hook's split-wall hedge re-sends the same guardRequestId to its second
+ * origin once half its wall has passed. On staging both origins (:9171 proxy,
+ * :3170 direct) reach this one process, so under load each slow verdict was
+ * computed twice (measured 2026-11-15 12:20Z: 199 of 245 ids arrived twice in
+ * 10 min). A duplicate whose whole request matches joins the running
+ * computation; a different body under a reused id is computed on its own.
+ */
+const toolGuardInFlight = pinModuleState('@papercusp/operator-core.tool-guard-in-flight',
+  () => new Map<string, { fingerprint: string; verdict: Promise<Awaited<ReturnType<typeof toolGuardText>>> }>());
+
+function toolGuardFingerprint(ownerId: string, workspaceId: unknown,
+  body: { tool?: unknown; client?: unknown; inputTruncated?: unknown; input?: unknown }): string {
+  return createHash('sha256').update(JSON.stringify([ownerId, workspaceId, body.tool ?? null,
+    body.client ?? null, body.inputTruncated === true, body.input ?? null])).digest('hex');
+}
+
 const toolGuard = defineTool({
   method: 'POST',
   path: '/agent-mcp/tool-guard',
@@ -262,6 +282,7 @@ const toolGuard = defineTool({
     const workspaceId = await resolveWorkspace(body);
     const setupMs = performance.now() - startedAt;
     let text;
+    let joinedInFlight = false;
     let requestAcquireSnapshot: typeof pgAcquireTimingSnapshot = () => null;
     let acquisitionSnapshotRead = false;
     let acquisitionSnapshot: PgAcquireTimingSnapshot | null = null;
@@ -283,14 +304,29 @@ const toolGuard = defineTool({
           ...(body.inputTruncated === true ? { inputTruncated: true } : {}),
         },
       }, readAppliedWornRules, (phase, durationMs) => { phases[phase] = durationMs; }, observePlanTiming, observeIdentityTiming));
-      text = guardRequestId
-        ? await withPgAcquireDiagnostics('native-tool-guard', () => {
+      const compute = () => guardRequestId
+        ? withPgAcquireDiagnostics('native-tool-guard', () => {
           // Finally resumes outside this context; late callbacks may run in a
           // different request too. Retain the originating request, not its caller.
           requestAcquireSnapshot = AsyncLocalStorage.bind(pgAcquireTimingSnapshot);
           return withNamedQueryDiagnosticContext('native-tool-guard', run, guardRequestId);
         })
-        : await run();
+        : run();
+      const fingerprint = guardRequestId ? toolGuardFingerprint(ownerId, workspaceId, body) : null;
+      const inFlight = guardRequestId ? toolGuardInFlight.get(guardRequestId) : undefined;
+      if (inFlight && inFlight.fingerprint === fingerprint) {
+        // The hedge re-sent this exact request: share the running verdict.
+        joinedInFlight = true;
+        text = await inFlight.verdict;
+      } else if (guardRequestId && fingerprint && !inFlight) {
+        const entry = { fingerprint, verdict: compute() };
+        toolGuardInFlight.set(guardRequestId, entry);
+        try { text = await entry.verdict; } finally {
+          if (toolGuardInFlight.get(guardRequestId) === entry) toolGuardInFlight.delete(guardRequestId);
+        }
+      } else {
+        text = await compute();
+      }
     } finally {
       const totalMs = performance.now() - startedAt;
       if (totalMs >= 500) {
@@ -315,6 +351,7 @@ const toolGuard = defineTool({
         planMs: phases.plan === undefined ? null : Math.round(phases.plan),
         identityMs: phases.identity === undefined ? null : Math.round(phases.identity),
         aborted: req.signal.aborted,
+        ...(joinedInFlight ? { joinedInFlight: true } : {}),
         ...(Object.keys(planStages).length ? { planStages } : {}),
         ...(Object.keys(identityStages).length ? { identityStages } : {}),
         ...(guardRequestId ? { pgTimings: toolGuardPgTimings(guardRequestId),

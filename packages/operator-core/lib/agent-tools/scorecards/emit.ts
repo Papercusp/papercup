@@ -31,9 +31,13 @@ import {
   getRubricEvidenceIdentity,
   getRubricPlanRevision,
   META_ACCEPTANCE_RUBRIC_ID,
-  ratedCriterionHashes,
+  ratedCriterionGrades,
   readRubricPlanRevision,
 } from '../../rubrics';
+import {
+  currentProofBindingsByCriterion,
+  type AcceptanceBarContractSnapshot,
+} from '../../acceptance-bar-contract-snapshot';
 import { getAcceptanceRubricVettingStatus } from '../../acceptance-rubric-vetting';
 import { resolveLiveAcceptanceRubric } from '../../acceptance-live-requirements';
 import { getIssue } from '../../issues-engineer';
@@ -89,6 +93,7 @@ import {
   type ScorecardInstrumentSnapshot,
   type ScorecardReleaseGateSnapshot,
 } from '../../scorecards';
+import { isListedPendingSubjectBlocker, withoutStaleAuditTargetPendingCards } from '../../scorecard-pending-audit-currentness';
 import { revParseAsync } from '../../release/judged-sha-containment';
 import { scorecardEvaluateArgs, scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema,
   pendingDeliveryReviewRefusal, evaluateScorecard, scorecardComparisonReasons } from './evaluate';
@@ -2263,6 +2268,13 @@ export async function emitScorecard(
     // the right to issue the plan verdict away from createdBy. Keep proposedBy
     // only as a legacy fallback for rows whose original creator is unavailable.
     const implementer = rubric.createdBy ?? rubric.proposedBy ?? null;
+    // per-requirement-acceptance-grading-2026-11-14 R-1: the BAR snapshot the pre-grading
+    // gate below evaluated. The card records each rated criterion's proof binding from
+    // THIS snapshot (the proof the grade was gated on), never from a second read that
+    // could disagree with the gate. Null when no gate ran (no adopted BAR contract).
+    // A holder, not a `let`: the gate fills it from a callback, which control-flow
+    // narrowing of a `let x = null` cannot see.
+    const gradingGate: { snapshot: AcceptanceBarContractSnapshot | null } = { snapshot: null };
     if (acceptance && rubric.kind !== 'acceptance') {
       return {
         ok: false as const,
@@ -2294,6 +2306,7 @@ export async function emitScorecard(
           harnessSlug: rubric.subjectHarnessSlug,
           ...(args.current ? { current: args.current } : {}),
           ...(args.pendingDeliveryBarKeys ? { pendingDeliveryBarKeys: args.pendingDeliveryBarKeys } : {}),
+          onSnapshot: (snapshot) => { gradingGate.snapshot = snapshot; },
         });
         if (!lifecycle.satisfied) {
           return {
@@ -3929,18 +3942,13 @@ export async function emitScorecard(
     // idempotent, and a same-author changed-evidence correction has its persisted
     // supersedes edge before this pending-audit guard runs.
     if (args.subject) {
-      const pendingSameSubject = (
-        await listScorecards({ rubricRef: args.rubricRef, subjectRef: args.subject.ref, limit: 100 })
-      ).filter(
-        (card) =>
-          card.gradingAudit?.state === 'pending' &&
-          card.rubricCurrentness?.state !== 'stale' &&
-          card.subjectRubricCurrentness?.state !== 'stale' &&
-          !card.retracted &&
-          card.subject?.ref === args.subject?.ref &&
-          (card.subject?.kind ?? null) === (args.subject?.kind ?? null) &&
-          card.supersededBy == null &&
-          card.issueId !== effectiveSupersedes,
+      const gatedSubject = args.subject;
+      // EI-28807501130212029: a pending card whose cited proof was retracted is no longer an
+      // audit target, so it must not block; list rows cannot say so, hence the header re-read.
+      const pendingSameSubject = await withoutStaleAuditTargetPendingCards(
+        (await listScorecards({ rubricRef: args.rubricRef, subjectRef: gatedSubject.ref, limit: 100 })).filter(
+          (card) => isListedPendingSubjectBlocker(card, gatedSubject) && card.issueId !== effectiveSupersedes,
+        ),
       );
       // WI-10005211: a grading-integrity revision re-opens every settled audit
       // (reservePendingGradingAudit), so a windowed grader's whole back-catalogue
@@ -4297,12 +4305,19 @@ export async function emitScorecard(
             windowEnd: args.subject.windowEnd ?? null,
           })
         : null;
-    // per-requirement-acceptance-grading-2026-11-14 R-1: pin the barHash of each
-    // rated requirement beside the whole-rubric identity, server-side, so a later
-    // amendment of one requirement leaves the other requirements' ratings judgeable.
-    // Null (whole-rubric rule) unless every rated criterion has one and the rubric
-    // the ratings were validated against is the identity pinned above.
-    const criterionHashes = ratedCriterionHashes(rubric, criteriaHash, ratings);
+    // per-requirement-acceptance-grading-2026-11-14 R-1: pin each rated requirement's
+    // grading record (grade key = barHash bound to its method hash, plus the proof rows
+    // the pre-grading gate saw) beside the whole-rubric identity, server-side, so a
+    // later amendment or re-proof of one requirement leaves the other requirements'
+    // ratings judgeable. Null (whole-rubric rule) unless every rated criterion can be
+    // stated in full and the rubric the ratings were validated against is the identity
+    // pinned above. Agents pass nothing new: no argument feeds this.
+    const criterionGrades = ratedCriterionGrades(
+      rubric,
+      criteriaHash,
+      ratings,
+      gradingGate.snapshot ? currentProofBindingsByCriterion(gradingGate.snapshot) : null,
+    );
     const result = await captureImprovement({
       title: args.title ?? `Scorecard: ${rubric.title}${sourceHive ? ` — ${sourceHive}` : ''}`,
       kind: 'change',
@@ -4325,7 +4340,7 @@ export async function emitScorecard(
           ...(ledgerFillSummary ? { ledgerFilled: true } : {}),
           ...(rubricRevision != null ? { rubricRevision } : {}),
           ...(criteriaHash != null ? { criteriaHash } : {}),
-          ...(criterionHashes ? { criterionHashes } : {}),
+          ...(criterionGrades ? { criterionGrades } : {}),
           ...(rubricMeaningRevision != null ? { rubricMeaningRevision } : {}),
           ratings,
           ...(boundTestedSha ? { testedSha: boundTestedSha } : {}),

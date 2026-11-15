@@ -1442,3 +1442,57 @@ describe('scorecards:get evidence-first projection', () => {
     expect(JSON.stringify(diagnostics)).not.toContain('private query detail');
   });
 });
+
+describe('scorecards:get per-criterion grade records (per-requirement-acceptance-grading-2026-11-14 R-1)', () => {
+  const hex = (c: string) => c.repeat(64);
+  const proofRow = (id: number) => ({
+    id, specId: `AUTO-BAR-R-1-P-00${id}`, specRevision: 3, specFingerprint: `spec-fp-${id}`,
+    bindingFingerprint: hex('f'),
+    fingerprints: {
+      sourceFingerprint: `src-${id}`, testFingerprint: `test-${id}`, fixtureFingerprint: null,
+      rubricFingerprint: 'rubric-fp', environmentFingerprint: null,
+    },
+  });
+  const criterionGrades = {
+    'criterion-1': { barHash: hex('a'), methodHash: hex('b'), gradeKey: hex('c'), proof: [proofRow(1), proofRow(2)] },
+    'criterion-2': { barHash: hex('d'), methodHash: hex('e'), gradeKey: hex('1'), proof: [] },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    doorConstantsMock.mockReturnValue(BAKED_DOOR_CONSTANTS);
+    buildInfoMock.mockReturnValue({ sha: 'live-evaluator-sha', version: '1.2.3' });
+    gradingAuditRubricMock.mockResolvedValue(null);
+    readScorecardRecipeHeaderM.mockResolvedValue({ kind: 'found', scorecard: recipeHeaderOf(scorecard) as never });
+    resetResultDoorAggregatesForTests();
+  });
+
+  it('returns the stored grade key and proof binding of each rated criterion unchanged, inside the output contract', async () => {
+    readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: { ...scorecard, criterionGrades } });
+    const response = await getTool.handler({ issueId: scorecard.issueId } as never, makeDispatchContext());
+    if (!('data' in response)) throw new Error('Expected a structured scorecard response');
+    const data = response.data as { scorecard: { criterionGrades?: unknown } };
+    expect(data.scorecard.criterionGrades).toEqual(criterionGrades);
+    expect(resultContract.safeParse(response.data).success).toBe(true);
+  });
+
+  it('returns no grade records, rather than invented ones, for a card saved before this change', async () => {
+    readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard });
+    const response = await getTool.handler({ issueId: scorecard.issueId } as never, makeDispatchContext());
+    if (!('data' in response)) throw new Error('Expected a structured scorecard response');
+    expect(response.data as { scorecard: Record<string, unknown> }).not.toHaveProperty('scorecard.criterionGrades');
+  });
+
+  it('reads a stored grade map back whole, and degrades a legacy or malformed map to none', async () => {
+    const { asStructuredObservation } = await import('../../harness/improvements/observation-types');
+    expect(asStructuredObservation({ rubricRef: 'r', criterionGrades })?.criterionGrades).toEqual(criterionGrades);
+    // The pre-change field carried bar hashes only; it is never reinterpreted as grade records.
+    const legacy = asStructuredObservation({ rubricRef: 'r', criterionHashes: { 'criterion-1': hex('a') } });
+    expect(legacy).not.toHaveProperty('criterionGrades');
+    const badProof = { ...criterionGrades,
+      'criterion-2': { ...criterionGrades['criterion-2'], proof: [{ ...proofRow(3), fingerprints: undefined }] } };
+    expect(asStructuredObservation({ rubricRef: 'r', criterionGrades: badProof })).not.toHaveProperty('criterionGrades');
+    const badKey = { ...criterionGrades, 'criterion-1': { ...criterionGrades['criterion-1'], gradeKey: 'not-a-hash' } };
+    expect(asStructuredObservation({ rubricRef: 'r', criterionGrades: badKey })).not.toHaveProperty('criterionGrades');
+  });
+});

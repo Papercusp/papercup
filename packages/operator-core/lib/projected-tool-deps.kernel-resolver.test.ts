@@ -380,6 +380,32 @@ describe('control-anchor kernel resolver (D-030)', () => {
     }
   });
 
+  it('registers a partial-audit snapshot naming the in-flight authority stage (WI-6554700010049383)', async () => {
+    let resolveConnection!: (connection: typeof db.sql) => void;
+    const pendingConnection = new Promise<typeof db.sql>((resolve) => { resolveConnection = resolve; });
+    mockReturnOnceTyped(db.reserve, pendingConnection);
+    db.rows.push([anchorRow({ activation: appliedActivation() })]);
+    let snapshot: (() => Readonly<Record<string, unknown>> | null) | undefined;
+    const pendingVerdict = controlAnchorKernelResolver({
+      ...request(),
+      registerPartialAudit: (fn) => { snapshot = fn; },
+    });
+    await vi.waitFor(() => expect(db.reserve).toHaveBeenCalledOnce());
+    // What a deadline abort would persist right now: the authority read is still running.
+    expect(snapshot?.()).toMatchObject({
+      authorityTimings: { schemaVersion: 1, inFlight: { controlAnchorSql: { elapsedMs: expect.any(Number) } } },
+    });
+    resolveConnection(db.sql);
+    const verdict = await pendingVerdict;
+    expect(verdict).toMatchObject({ decision: 'allow' });
+    expect(verdict?.serverAudit?.authorityTimings).not.toHaveProperty('inFlight');
+    const settled = snapshot?.() as {
+      authorityTimings: { controlAnchorSql: { calls: number }; inFlight?: Record<string, unknown> };
+    };
+    expect(settled.authorityTimings.controlAnchorSql.calls).toBe(1);
+    expect(settled.authorityTimings.inFlight?.controlAnchorSql).toBeUndefined();
+  });
+
   it('retains bounded pool queue evidence from before and after a delayed authority acquisition', async () => {
     const baseline = acquireSnapshot('org-admin');
     const holder = beginAcquire('org-admin');

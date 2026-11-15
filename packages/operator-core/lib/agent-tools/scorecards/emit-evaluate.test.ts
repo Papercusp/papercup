@@ -115,6 +115,8 @@ vi.mock('../../acceptance-author-identity', () => ({
 }));
 
 import {
+  criterionGradeKey,
+  criterionMethodHash,
   getRubric,
   getRubricCriteriaHash,
   getRubricPlanRevision,
@@ -122,6 +124,7 @@ import {
   readRubricPlanRevision,
   readRubricWithoutSeeding,
 } from '../../rubrics';
+import type { AcceptanceBarContractSnapshot } from '../../acceptance-bar-contract-snapshot';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { getIssue, type EngineerIssue } from '../../issues-engineer';
 import { listScorecards } from '../../scorecards';
@@ -2086,8 +2089,9 @@ describe('evaluateScorecard', () => {
     const emitted = await emitScorecard({ ...request, ratings: deliveryRatings }, { createdBy: 'su-grader' });
     expect(emitted).toMatchObject({ ok: true, created: true });
     expect(captureM.mock.calls[0][0]).toMatchObject({ payloadExtra: { observation: { ratings: deliveryRatings } } });
+    // emit also hands the gate a callback that captures the evaluated BAR snapshot (R-1).
     expect(readAndEvaluateAcceptanceBarLifecycleM).toHaveBeenLastCalledWith('bar-plan', 'pre-grading', {
-      expectedApplicable: true, pendingDeliveryBarKeys: ['R-15'],
+      expectedApplicable: true, pendingDeliveryBarKeys: ['R-15'], onSnapshot: expect.any(Function),
     });
   });
 
@@ -2252,6 +2256,7 @@ describe('evaluateScorecard', () => {
     expect(readAndEvaluateAcceptanceBarLifecycleM).toHaveBeenCalledWith('bar-plan', 'pre-grading', {
       expectedApplicable: true,
       harnessSlug: 'papercusp',
+      onSnapshot: expect.any(Function),
     });
   });
 
@@ -3314,6 +3319,94 @@ describe('scorecards:emit — author acceptance by exact reference (P-003)', () 
     // reason is not evidence.
     expect(r).toMatchObject({ ok: false, code: 'acceptance_of_wrong_subject' });
     expect(captureM).not.toHaveBeenCalled();
+  });
+});
+
+// per-requirement-acceptance-grading-2026-11-14 R-1: the SAVE path records each rated
+// criterion's grade record (barHash bound to its method hash, plus the current proof rows)
+// from the snapshot the pre-grading gate evaluated — handed back through onSnapshot, never
+// from a second read. These drive the real emit → gate → captureImprovement wiring.
+describe('emitScorecard per-criterion grade records (R-1 save path)', () => {
+  const HASH_A = '1'.repeat(64);
+  const HASH_B = '2'.repeat(64);
+  const CRITERIA_HASH = 'a'.repeat(64);
+  const gradedRubric = (): Rubric => ({
+    ...BAR_ACCEPTANCE_RUBRIC,
+    criteriaHash: CRITERIA_HASH,
+    criteria: [
+      { ...RUBRIC.criteria[0], barHash: HASH_A },
+      { ...RUBRIC.criteria[1], barHash: HASH_B, method: 'measure B' },
+    ],
+  }) as Rubric;
+  const proofRow = (id: number, current: boolean, sourceFingerprint: string) => ({
+    id, specId: `SPEC-${id}`, specRevision: 3, specFingerprint: `spec:${id}`,
+    bindingFingerprint: `bind:${id}`, current,
+    fingerprints: { sourceFingerprint, testFingerprint: `test:${id}` },
+  });
+  const gatedSnapshot = (barHashB = HASH_B) => ({
+    bars: [
+      { criterionKey: 'crit-a', barHash: HASH_A,
+        proof: { state: 'complete', history: [proofRow(4, true, 'src:a'), proofRow(2, false, 'src:old')] } },
+      { criterionKey: 'crit-b', barHash: barHashB,
+        proof: { state: 'complete', history: [proofRow(5, true, 'src:b')] } },
+    ],
+  }) as unknown as AcceptanceBarContractSnapshot;
+  const gateWith = (snapshot: AcceptanceBarContractSnapshot | null) =>
+    readAndEvaluateAcceptanceBarLifecycleM.mockImplementation(
+      async (_plan: string, _phase: string, options: { onSnapshot?: (value: AcceptanceBarContractSnapshot) => void }) => {
+        if (snapshot) options.onSnapshot?.(snapshot);
+        return { phase: 'pre-grading', satisfied: true };
+      },
+    );
+  const emitGraded = async () => {
+    const result = await emitScorecard({ rubricRef: 'acceptance-rubric', ratings: RATINGS }, { createdBy: 'su-grader' });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, created: true });
+    return result;
+  };
+  const savedObservation = () =>
+    captureM.mock.calls[0]?.[0].payloadExtra?.observation as Record<string, unknown> | undefined;
+  const expectedProof = (id: number, sourceFingerprint: string) => ({
+    id, specId: `SPEC-${id}`, specRevision: 3, specFingerprint: `spec:${id}`, bindingFingerprint: `bind:${id}`,
+    fingerprints: { sourceFingerprint, testFingerprint: `test:${id}`, fixtureFingerprint: null,
+      rubricFingerprint: null, environmentFingerprint: null },
+  });
+
+  beforeEach(() => {
+    getRubricM.mockResolvedValue(gradedRubric());
+    getRubricCriteriaHashM.mockResolvedValue(CRITERIA_HASH);
+    // A pinned criteria hash needs a vetting record that attested that exact identity.
+    listM.mockResolvedValue([{ ...vettingCard(['su-critic']),
+      vetting: { consultId: 'conv-vet-1', rubricRevision: 7, criteriaHash: CRITERIA_HASH, critiquePosts: 1,
+        critics: ['su-critic'] } } as unknown as ScorecardRow]);
+  });
+
+  it('records each rated criterion\'s grade key and current proof rows from the gated snapshot', async () => {
+    gateWith(gatedSnapshot());
+    await emitGraded();
+    const methodA = criterionMethodHash('m');
+    const methodB = criterionMethodHash('measure B');
+    expect(methodA).not.toBe(methodB);
+    expect(savedObservation()?.criterionGrades).toEqual({
+      'crit-a': { barHash: HASH_A, methodHash: methodA, gradeKey: criterionGradeKey(HASH_A, methodA),
+        proof: [expectedProof(4, 'src:a')] },
+      'crit-b': { barHash: HASH_B, methodHash: methodB, gradeKey: criterionGradeKey(HASH_B, methodB),
+        proof: [expectedProof(5, 'src:b')] },
+    });
+    expect(savedObservation()).toMatchObject({ criteriaHash: CRITERIA_HASH, ratings: RATINGS });
+  });
+
+  it('keeps the whole-rubric rule (no criterionGrades) when the gate handed back no snapshot', async () => {
+    gateWith(null);
+    await emitGraded();
+    expect(savedObservation()).toMatchObject({ ratings: RATINGS });
+    expect(savedObservation()).not.toHaveProperty('criterionGrades');
+  });
+
+  it('keeps the whole-rubric rule when the gated snapshot describes another BAR revision of one criterion', async () => {
+    gateWith(gatedSnapshot('3'.repeat(64)));
+    await emitGraded();
+    expect(savedObservation()).toMatchObject({ ratings: RATINGS });
+    expect(savedObservation()).not.toHaveProperty('criterionGrades');
   });
 });
 vi.mock('../../acceptance-rubric-critique', () => ({ readCurrentAcceptanceRubricCritique: vi.fn(async () => null) }));

@@ -346,6 +346,31 @@ describe('readAndEvaluateAcceptanceBarLifecycle — authoritative applicability'
       .toMatchObject({ applicable: true, satisfied: true, codes: [] });
   });
 
+  // per-requirement-acceptance-grading-2026-11-14 R-1: scorecards:emit records each rated
+  // criterion's proof binding from the snapshot its pre-grading gate evaluated, so the
+  // callback must receive THAT snapshot (read or supplied), once, without changing the verdict.
+  it('hands onSnapshot the exact snapshot it evaluated, once, without changing the verdict', async () => {
+    const read = snapshot();
+    vi.mocked(readAcceptanceBarContractSnapshot).mockResolvedValue(read);
+    const seen: AcceptanceBarContractSnapshot[] = [];
+    const verdict = await readAndEvaluateAcceptanceBarLifecycle('plan-a', 'pre-grading', {
+      onSnapshot: (value) => { seen.push(value); },
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBe(read);
+    expect(verdict).toEqual(await readAndEvaluateAcceptanceBarLifecycle('plan-a', 'pre-grading'));
+    expect(Object.values(verdict)).not.toContain(read);
+
+    const supplied = snapshot({ contentHash: 'd'.repeat(64) });
+    await readAndEvaluateAcceptanceBarLifecycle('plan-a', 'pre-grading', {
+      snapshot: supplied,
+      onSnapshot: (value) => { seen.push(value); },
+    });
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toBe(supplied);
+    expect(readAcceptanceBarContractSnapshot).toHaveBeenCalledTimes(2);
+  });
+
   it('cannot reuse a contract-only snapshot for grading, shipping or operational realization', async () => {
     const supplied = snapshot({ proofMeasured: false });
     expect(evaluateAcceptanceBarLifecycle(supplied, 'pre-start').satisfied).toBe(true);
