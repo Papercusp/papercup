@@ -748,6 +748,18 @@ export default defineTool({
                   CARRY_ROW_SOFT_CAPS.verified,
                   'Compatibility alias for `verified` in structured verification rows; prefer `verified`.',
                 ).optional(),
+                status: z
+                  .string()
+                  .optional()
+                  .describe(
+                    'Compatibility alias for the status in `{status, evidence}` check rows; the preprocessor maps it to canonical verification semantics.',
+                  ),
+                evidence: z
+                  .string()
+                  .optional()
+                  .describe(
+                    'Compatibility alias for evidence in check rows; the preprocessor maps it to `verified`, `observed`, or `contested` according to status.',
+                  ),
                 // EI-22575327388783364: keep loop:checkpoint's published row
                 // schema in parity with the shared checks coercion and the
                 // work_items:checkpoint surface.
