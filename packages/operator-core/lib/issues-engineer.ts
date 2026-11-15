@@ -21,7 +21,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { isDeepStrictEqual } from 'node:util';
 import { assertWorkItemDefinitionUnchanged } from './work-item-definition';
-import type { OrgSql } from './work-items';
+import type { OrgSql, WorkItemClaimTransaction } from './work-items';
 import { admittedWhereSql, selfHealOwnNodeOriginIfStranded, type BornAdmission } from './work-items-admission';
 import { assertScopeWellFormed, harnessScope, harnessOfScope } from './work-item-scope';
 import {
@@ -103,6 +103,7 @@ import { CLAIM_SUBJECT_BASELINE_KEY } from './claim-subject-baseline';
 import { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES } from './harness/improvements/auto-close-sources';
 import {
   intakeStageClaimFloorSql,
+  acceptanceSourceRevisionSql,
   createImplementationReadiness,
   agentReviewPendingAdmissionSql,
   agentReviewClaimPayloadSql,
@@ -3224,8 +3225,9 @@ export async function claimIssue(
      */
     revisionAdoptionAdmission?: AgentReviewRevisionAdoptionAdmission;
   } = {},
+  transaction?: WorkItemClaimTransaction,
 ): Promise<EngineerIssue | null> {
-  const { sql } = getOrgPg();
+  const sql = transaction?.client ?? getOrgPg().sql;
   const ws = opts.workspaceId ?? issuesScopeWorkspace();
   const expectedAssignee = opts.expectedAssignee?.trim() || null;
   const leaderDispatchAdmission =
@@ -3515,6 +3517,7 @@ export async function claimIssue(
   }, { client: sql }));
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);
+  const publish = async () => {
   // The claimer follows the issue.
   await subs.subscribe({
     subscriber_id: assignee,
@@ -3532,6 +3535,9 @@ export async function claimIssue(
   if (priorAssignee !== assignee) {
     await deliver(issue, 'updated', `issue ${id} claimed by ${assignee}`, assignee);
   }
+  };
+  if (transaction) transaction.afterCommit.push(publish);
+  else await publish();
   return issue;
 }
 
@@ -4403,6 +4409,8 @@ export async function mergeIssuePayload(
     expectedBlockerResolution?: unknown;
     expectedWorkDefinition?: unknown;
     expectedCustodianId?: string | null;
+    expectedAgentReview?: unknown;
+    expectedSourceRevision?: string;
     requireNonTerminal?: boolean;
   } = {},
 ): Promise<EngineerIssue | null> {
@@ -4432,6 +4440,8 @@ export async function mergeIssuePayload(
   const fenceDefinition = Object.hasOwn(opts, 'expectedWorkDefinition');
   const expectedDefinition = JSON.stringify(opts.expectedWorkDefinition ?? null);
   const fenceCustodian = Object.hasOwn(opts, 'expectedCustodianId');
+  const fenceReview = Object.hasOwn(opts, 'expectedAgentReview');
+  const expectedReview = JSON.stringify(opts.expectedAgentReview ?? null);
   // EI-21215793636294109: write the CANONICAL base table, never the engineer_issues
   // COMPATIBILITY VIEW — a key removal is not expressible through that view. Its
   // INSTEAD OF trigger re-merges the incoming payload into the stored one
@@ -4491,6 +4501,8 @@ export async function mergeIssuePayload(
        AND (${!fenceDecision} OR COALESCE(payload->'blockerResolution', 'null'::jsonb) = ${expectedDecision}::text::jsonb)
        AND (${!fenceDefinition} OR COALESCE(payload->'workDefinition', 'null'::jsonb) = ${expectedDefinition}::text::jsonb)
        AND (${!fenceCustodian} OR taken_by IS NOT DISTINCT FROM ${opts.expectedCustodianId ?? null})
+       AND (${!fenceReview} OR COALESCE(payload->'agentReview','null'::jsonb)=${expectedReview}::text::jsonb)
+       AND (${opts.expectedSourceRevision === undefined} OR ${acceptanceSourceRevisionSql(db)}=${opts.expectedSourceRevision ?? null})
        AND (${!opts.requireNonTerminal} OR NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])))
        -- The federation stamp treats ANY payload change as a local content
        -- write. Corroboration of an imported report belongs in the occurrence

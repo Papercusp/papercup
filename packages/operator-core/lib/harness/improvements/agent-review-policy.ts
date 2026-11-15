@@ -9,10 +9,11 @@
  * the lifecycle module import this file so the status vocabulary cannot drift.
  */
 import { createHash } from 'node:crypto';
+import { canonicalJson } from '@papercusp/hash-chain';
 import { z } from 'zod';
 import type postgres from 'postgres';
 
-import type { OrgSql } from '../../work-items';
+import type { OrgSql, WorkItem } from '../../work-items';
 import { assertHoldRegistered } from '../../hold-registry';
 import { ALL_SUCCESSFUL_STATUSES, ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
 import { WORK_ITEM_PRESENTATION_STAGES, type WorkItemPresentationStage } from '../../work-item-presentation-contract';
@@ -79,6 +80,160 @@ export interface AgentReviewState {
   timing?: { round: number; enteredAt: string; decidedAt?: string };
   /** Why a `revision-requested` round was sent back; see {@link AGENT_REVIEW_REVISION_KINDS}. */
   revisionKind?: AgentReviewRevisionKind;
+  /** Correction attribution is distinct from immutable original filing provenance. */
+  correctionHistory?: AgentReviewCorrectionHistory[];
+  correctionReceipts?: AgentReviewCorrectionReceipt[];
+  correctionContext?: AgentReviewCorrectionNote[];
+  materialAuthors?: string[];
+  report?: Record<string, string>;
+}
+
+const correctionText = z.string().min(1).max(16000);
+export const agentReviewCorrectionNoteSchema = z.object({
+  kind: z.enum(['context', 'evidence', 'transcript', 'consultation']),
+  outcome: z.enum(['available', 'missing', 'inaccessible', 'unavailable', 'unknown']),
+  text: correctionText,
+  ref: z.string().min(1).max(2000).optional(),
+}).strict();
+export type AgentReviewCorrectionNote = z.infer<typeof agentReviewCorrectionNoteSchema>;
+
+// A clarification can ONLY append notes. Source/proposal/diagnosis changes require
+// the material branch; a mislabeled request is rejected, never silently coerced.
+export const agentReviewCorrectionSchema = z.discriminatedUnion('classification', [
+  z.object({
+    classification: z.literal('clarification'),
+    notes: z.array(agentReviewCorrectionNoteSchema).min(1).max(100),
+  }).strict(),
+  z.object({
+    classification: z.literal('material'),
+    notes: z.array(agentReviewCorrectionNoteSchema).max(100),
+    changes: z.object({
+      kind: z.enum(['bug', 'change', 'feature']).optional(),
+      title: z.string().min(1).max(2000).optional(),
+      summary: correctionText.optional(),
+      report: z.object({
+        diagnosis: correctionText.optional(),
+        reproduction: correctionText.optional(),
+        scope: correctionText.optional(),
+        proposedFix: correctionText.optional(),
+        uncertainty: correctionText.optional(),
+      }).strict().optional(),
+      // The existing acceptance schema is declared below. Validate it there before
+      // planning a write; keeping this leaf dependency-free avoids a schema cycle.
+      acceptance: z.unknown().optional(),
+    }).strict().refine(value => Object.keys(value).length > 0, 'A material correction must name its changes'),
+  }).strict(),
+]);
+export type AgentReviewCorrection = z.infer<typeof agentReviewCorrectionSchema>;
+export interface AgentReviewCorrectionHistory {
+  requestHash: string;
+  actor: string;
+  classification: AgentReviewCorrection['classification'];
+  round: number;
+  correction: AgentReviewCorrection;
+  priorVerdict: AgentReviewCorrectionLedger;
+  beforeSource: { kind: string; title: string; summary: string; report?: unknown; implementationReadiness?: unknown };
+}
+export interface AgentReviewCorrectionReceipt {
+  schemaVersion: 1;
+  workspaceId: string;
+  harness: string;
+  itemId: string;
+  actor: string;
+  requestKey: string;
+  requestHash: string;
+  beforeRound: number;
+  afterRound: number;
+  beforeRevision: string;
+  afterRevision: string;
+}
+
+/** Exactly the canonical WorkItem projection specified by correction-v1. */
+export type AgentReviewCorrectionItem = Pick<WorkItem,
+  'id' | 'family' | 'kind' | 'title' | 'summary' | 'state' | 'assignee' |
+  'takenAt' | 'assignedBy' | 'createdBy' | 'origin' | 'auditVerdict' | 'payload' | 'definition' | 'harness'>;
+export interface AgentReviewCorrectionLedger {
+  workspace_id: string;
+  idea_id: string;
+  routed_ref: string;
+  target_hive: string | null;
+  source_hive: string | null;
+  rail: string;
+  origin: string | null;
+  created_by: string | null;
+  title: string;
+  human_grade: number | null;
+  human_feedback: string | null;
+  graded_by: string | null;
+  /** UTC timestamp text retains PostgreSQL microseconds without Date/toJSON coercion. */
+  graded_at: string | null;
+}
+const CORRECTION_ITEM_FIELDS = ['id', 'family', 'kind', 'title', 'summary', 'state',
+  'assignee', 'takenAt', 'assignedBy', 'createdBy', 'origin', 'auditVerdict', 'payload'] as const;
+const CORRECTION_LEDGER_FIELDS = ['workspace_id', 'idea_id', 'routed_ref', 'target_hive',
+  'source_hive', 'rail', 'origin', 'created_by', 'title', 'human_grade', 'human_feedback', 'graded_by', 'graded_at'] as const;
+
+/** Reject JSON coercion, holes, accessors, hidden keys and cycles before hashing. */
+function assertCorrectionJson(value: unknown, ancestors = new Set<object>()): void {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
+  if (typeof value === 'number' && Number.isFinite(value)) return;
+  if (typeof value !== 'object' || !value || ancestors.has(value)) throw new Error('correction-non-json');
+  if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
+    throw new Error('correction-non-json');
+  }
+  ancestors.add(value);
+  const keys = Reflect.ownKeys(value).filter(key => !(Array.isArray(value) && key === 'length'));
+  if (Array.isArray(value) && (keys.length !== value.length || keys.some((key, i) => key !== String(i)))) {
+    throw new Error('correction-non-json');
+  }
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+    if (typeof key !== 'string' || !descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
+      throw new Error('correction-non-json');
+    }
+    assertCorrectionJson(descriptor.value, ancestors);
+  }
+  ancestors.delete(value);
+}
+
+export function agentReviewCorrectionRequestHash(request: unknown): string {
+  assertCorrectionJson(request);
+  return createHash('sha256').update(canonicalJson(request)).digest('hex');
+}
+
+/** Receipts alone are excluded: including the computed head would hash itself. */
+export function agentReviewCorrectionRevision(input: {
+  workspaceId: string; harness: string; item: AgentReviewCorrectionItem; ledger: AgentReviewCorrectionLedger;
+}): string {
+  const { workspaceId, harness, item, ledger } = input;
+  if (!workspaceId || !harness || item.harness !== harness || ledger.workspace_id !== workspaceId ||
+    ledger.routed_ref !== `wi:${item.id}` || (ledger.target_hive ?? ledger.source_hive) !== harness ||
+    readAgentReviewState(item.payload)?.ledgerIdeaId !== ledger.idea_id) throw new Error('correction-association-mismatch');
+  const projectedItem: Record<string, unknown> = {};
+  const projectedLedger: Record<string, unknown> = {};
+  for (const key of CORRECTION_ITEM_FIELDS) {
+    if (!Object.hasOwn(item, key)) throw new Error(`correction-projection-missing:${key}`);
+    projectedItem[key] = item[key];
+  }
+  for (const key of CORRECTION_LEDGER_FIELDS) {
+    if (!Object.hasOwn(ledger, key)) throw new Error(`correction-projection-missing:${key}`);
+    projectedLedger[key] = ledger[key];
+  }
+  projectedItem.definition = Object.hasOwn(item, 'definition')
+    ? { present: true, value: item.definition } : { present: false };
+  if (!item.payload || typeof item.payload !== 'object' || Array.isArray(item.payload)) throw new Error('correction-payload-invalid');
+  const payload = record(item.payload);
+  const review = record(payload.agentReview);
+  if (review.correctionHistory !== undefined) {
+    if (!Array.isArray(review.correctionHistory) || review.correctionHistory.some(entry => {
+      const history = record(entry);
+      return ['beforeRevision', 'afterRevision', 'correctionRevision'].some(key => Object.hasOwn(history, key));
+    })) throw new Error('correction-history-invalid');
+  }
+  const { correctionReceipts: _receipts, ...digestibleReview } = review;
+  projectedItem.payload = { ...payload, agentReview: digestibleReview };
+  return `correction-v1:${agentReviewCorrectionRequestHash({ schemaVersion: 1, workspaceId, harness,
+    item: projectedItem, ledger: projectedLedger })}`;
 }
 
 /**
@@ -1166,6 +1321,10 @@ export function readAgentReviewState(payload: unknown): AgentReviewState | null 
     submittedBy: row.submittedBy,
     ledgerIdeaId: row.ledgerIdeaId,
     round: Number(row.round),
+    // Lifecycle transitions must retain the complete correction lineage and the
+    // immutable request journal; original submittedBy remains a separate field.
+    ...Object.fromEntries(['correctionHistory', 'correctionReceipts', 'correctionContext', 'materialAuthors', 'report']
+      .filter(key => Object.hasOwn(row, key)).map(key => [key, row[key]])),
     ...(timing.round === row.round && typeof timing.enteredAt === 'string'
       ? { timing: {
           round: Number(timing.round),
@@ -1321,6 +1480,7 @@ export type VerificationCheck = (typeof VERIFICATION_CHECKS)[number];
 export type VerificationConflictRole = 'reporter' | 'implementer';
 
 export interface VerificationParties {
+  invalidCorrectionLineage?: boolean;
   readonly reporters: readonly string[];
   readonly implementers: readonly string[];
 }
@@ -1371,6 +1531,18 @@ export function readVerificationTask(payload: unknown): VerificationTask | null 
 }
 
 /** Everyone a verifier of this row must not be, read from the row itself. */
+export function materialCorrectionAuthors(payload: unknown): string[] | null {
+  const review = record(record(payload).agentReview);
+  const authors = Object.hasOwn(review, 'materialAuthors') ? review.materialAuthors : [];
+  const history = Object.hasOwn(review, 'correctionHistory') ? review.correctionHistory : [];
+  if (!Array.isArray(authors) || !Array.isArray(history) ||
+    authors.some(id => typeof id !== 'string' || !id.trim()) || history.some(entry => {
+      const row = record(entry);
+      return typeof row.actor !== 'string' || !row.actor.trim() || !['material', 'clarification'].includes(String(row.classification));
+    })) return null;
+  return distinctIds([...authors, ...history.filter(entry => entry.classification === 'material').map(entry => entry.actor)]);
+}
+
 export function verificationParties(subject: {
   createdBy?: string | null;
   terminalOwner?: string | null;
@@ -1378,13 +1550,16 @@ export function verificationParties(subject: {
 }): VerificationParties {
   const payload = record(subject.payload);
   const task = readVerificationTask(payload);
+  const authors = materialCorrectionAuthors(payload);
   return {
+    ...(authors === null ? { invalidCorrectionLineage: true } : {}),
     reporters: distinctIds([
       subject.createdBy,
       record(payload._ei).created_by,
       readAgentReviewState(payload)?.submittedBy,
       readStoredBugReproduction(payload)?.filedBy,
       ...(task?.reporters ?? []),
+      ...(authors ?? []),
     ]),
     implementers: distinctIds([subject.terminalOwner, ...(task?.implementers ?? [])]),
   };
@@ -1394,6 +1569,7 @@ export function verificationParties(subject: {
 export function verificationConflict(parties: VerificationParties, verifier: string): VerificationConflictRole | null {
   const who = verifier.trim();
   if (!who) return null;
+  if (parties.invalidCorrectionLineage) return 'reporter';
   if (parties.reporters.includes(who)) return 'reporter';
   if (parties.implementers.includes(who)) return 'implementer';
   return null;
@@ -1456,9 +1632,22 @@ export function verificationConflictSql(
 ) {
   const payload = sql`COALESCE(${sql.unsafe(columns.payload)}, '{}'::jsonb)`;
   const who = verifier.trim();
+  const review = sql`${payload} -> 'agentReview'`;
+  const authors = sql`${review} -> 'materialAuthors'`;
+  const history = sql`${review} -> 'correctionHistory'`;
   return sql`(
     ${payload} -> '_ei' ->> 'created_by' IS NOT DISTINCT FROM ${who}
     OR ${payload} -> 'agentReview' ->> 'submittedBy' IS NOT DISTINCT FROM ${who}
+    OR (COALESCE(${review} ? 'materialAuthors', false) AND jsonb_typeof(${authors}) IS DISTINCT FROM 'array')
+    OR (COALESCE(${review} ? 'correctionHistory', false) AND jsonb_typeof(${history}) IS DISTINCT FROM 'array')
+    OR EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(${authors})='array'
+      THEN ${authors} ELSE '[]'::jsonb END) a(v)
+      WHERE jsonb_typeof(a.v) IS DISTINCT FROM 'string' OR btrim(a.v #>> '{}')='' OR btrim(a.v #>> '{}')=${who})
+    OR EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(${history})='array'
+      THEN ${history} ELSE '[]'::jsonb END) h(v)
+      WHERE jsonb_typeof(h.v) IS DISTINCT FROM 'object' OR jsonb_typeof(h.v->'actor') IS DISTINCT FROM 'string'
+        OR btrim(h.v->>'actor')='' OR COALESCE(h.v->>'classification','') NOT IN ('material','clarification')
+        OR (h.v->>'classification'='material' AND btrim(h.v->>'actor')=${who}))
     OR (
       ${payload} -> 'reproduction' ->> 'schemaVersion' IS NOT DISTINCT FROM ${BUG_REPRODUCTION_SCHEMA_VERSION}
       AND ${payload} -> 'reproduction' ->> 'filedBy' IS NOT DISTINCT FROM ${who}

@@ -166,8 +166,11 @@ describe('scorecards:get evidence-first projection', () => {
     expect(() => rubricCoverageCriterionCard({ ok: false, error: 'unavailable' })).toThrow();
   });
 
-  it.each([undefined, { id: 'WI-assessment-selection', harness: 'papercusp' }])(
-    'grading system full and compact readers preserve every criterion and selected scope reference (%j)', async (assessmentWorkItem) => {
+  it.each([
+    { name: 'grading system full and compact readers preserve every criterion', assessmentWorkItem: undefined },
+    { name: 'grading system full and compact readers preserve every criterion and selected scope reference',
+      assessmentWorkItem: { id: 'WI-assessment-selection', harness: 'papercusp' } },
+  ])('$name', async ({ assessmentWorkItem }) => {
     const comparisonTime = '2026-11-01T12:01:00.001Z';
     const lastMeasurement = { testRunId: 1, value: 840, unit: 'ms', status: 'pass' as const,
       finishedAt: '2026-11-01T12:00:00Z', comparisonTime, ageMs: 60_001, freshness: 'stale' as const };

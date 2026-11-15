@@ -1298,6 +1298,21 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
     expect(JSON.stringify(shaped).length).toBeLessThanOrEqual(5_000);
   });
 
+  it.each(['trimmed', 'standard'] as const)('preserves a closed consult and recovery instruction through the %s output door', tier => {
+    const review = { state: 'review-closed', consultState: 'closed_cant_help',
+      conversationId: 'closed-review', previewPostRef: 'thread-post:42',
+      next: 'Read conversations:get; retry the retained reviewPreviewPost with a fresh idempotencyKey.' };
+    const response = { data: { ok: true, dryRun: true, review,
+      preview: { changes: Array.from({ length: 180 }, (_, index) => ({
+        barKey: `R-${index}`, detail: 'large preview detail '.repeat(100),
+      })) } } };
+    const shaped = applyPayloadTier({ toolName: 'rubrics:amend', shape: amendTool.shape,
+      response: response as never, tier, args: patchArgs }).data as Record<string, any>;
+    expect(shaped.review).toEqual(review);
+    expect(shaped._projection).toMatchObject({ truncated: true });
+    expect(JSON.stringify(shaped).length).toBeLessThanOrEqual(5_000);
+  });
+
   it.each([
     { requestReview: { workItemId: 'WI-9', harness: 'papercusp' } },
     { reviewPreviewPost: 'thread-post:42' },

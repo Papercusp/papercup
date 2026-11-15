@@ -1612,6 +1612,10 @@ export interface ScorecardRow {
   rubricMeaningRevision?: number;
   /** The graded rubric's substantive criteria/method identity at emit time. */
   criteriaHash?: string;
+  /** Emit-time barHash of every rated criterion, keyed by criterion key
+   * (per-requirement-acceptance-grading-2026-11-14 R-1). Acceptance cards only;
+   * absent means the whole-rubric rule applies to this card. */
+  criterionHashes?: Record<string, string>;
   /** Read-time comparison of the graded rubric with the live rubric identity. */
   rubricCurrentness?: ScorecardRubricCurrentness;
   /** Emit-time identity of a rubric named as the subject, distinct from rubricRef. */
@@ -1870,6 +1874,8 @@ export interface ScorecardEvidenceRow {
   rubricRevision?: number;
   rubricMeaningRevision?: number;
   criteriaHash?: string;
+  /** Emit-time barHash of every rated criterion (see ScorecardRow.criterionHashes). */
+  criterionHashes?: Record<string, string>;
   /** Read-time comparison of the graded rubric with the live rubric identity. */
   rubricCurrentness?: ScorecardRubricCurrentness;
   /** Stable identity of the exact rated evidence, when recorded at emit time. */
@@ -1987,6 +1993,7 @@ interface ScorecardEvidenceDb {
   rubric_revision: unknown;
   rubric_meaning_revision: unknown;
   criteria_hash: string | null;
+  criterion_hashes: unknown;
   evidence_fingerprint: string | null;
   source_hive: string | null;
   subject: unknown;
@@ -2228,6 +2235,7 @@ async function readScorecard(
              scorecard.payload -> 'observation' -> 'rubricRevision' AS rubric_revision,
              scorecard.payload -> 'observation' -> 'rubricMeaningRevision' AS rubric_meaning_revision,
              scorecard.payload -> 'observation' ->> 'criteriaHash' AS criteria_hash,
+             scorecard.payload -> 'observation' -> 'criterionHashes' AS criterion_hashes,
              scorecard.payload -> 'observation' ->> 'evidenceFingerprint' AS evidence_fingerprint,
              scorecard.payload -> 'observation' ->> 'sourceHive' AS source_hive,
              scorecard.payload -> 'observation' -> 'subject' AS subject,
@@ -2364,6 +2372,7 @@ async function readScorecard(
     rubricRevision: row.rubric_revision,
     rubricMeaningRevision: row.rubric_meaning_revision,
     criteriaHash: row.criteria_hash,
+    criterionHashes: row.criterion_hashes,
     evidenceFingerprint: row.evidence_fingerprint,
     sourceHive: row.source_hive,
     subject: row.subject,
@@ -2439,6 +2448,7 @@ async function readScorecard(
       ? { rubricMeaningRevision: observation.rubricMeaningRevision }
       : {}),
     ...(observation.criteriaHash ? { criteriaHash: observation.criteriaHash } : {}),
+    ...(observation.criterionHashes ? { criterionHashes: observation.criterionHashes } : {}),
     ...(observation.evidenceFingerprint ? { evidenceFingerprint: observation.evidenceFingerprint } : {}),
     ...(observation.sourceHive ? { sourceHive: observation.sourceHive } : {}),
     ...(observation.subject ? { subject: observation.subject } : {}),
@@ -5064,6 +5074,7 @@ async function listScorecardsAtLimit(
         ? { rubricMeaningRevision: observation.rubricMeaningRevision }
         : {}),
       ...(observation.criteriaHash ? { criteriaHash: observation.criteriaHash } : {}),
+      ...(observation.criterionHashes ? { criterionHashes: observation.criterionHashes } : {}),
       ...(observation.subjectRubricIdentity ? { subjectRubricIdentity: observation.subjectRubricIdentity } : {}),
       ...(subjectRubricCurrentness ? { subjectRubricCurrentness } : {}),
       ...(observation.rollup ? { rollup: observation.rollup } : {}),

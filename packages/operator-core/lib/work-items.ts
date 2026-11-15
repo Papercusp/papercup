@@ -163,6 +163,7 @@ import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
 import { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES } from './harness/improvements/auto-close-sources';
 import {
   agentReviewPendingAdmissionSql,
+  acceptanceSourceRevisionSql,
   agentReviewClaimPayloadSql,
   intakeStageClaimFloorSql,
   matchesAgentReviewClaimAdmission,
@@ -6155,6 +6156,8 @@ export async function mergeWorkItemPayload(
     /** Raw prior definition, including legacy fields; presence enables an atomic comparison. */
     expectedWorkDefinition?: unknown;
     expectedCustodianId?: string | null;
+    expectedAgentReview?: unknown;
+    expectedSourceRevision?: string;
     requireNonTerminal?: boolean;
   } = {},
 ): Promise<WorkItem | null> {
@@ -6183,6 +6186,8 @@ export async function mergeWorkItemPayload(
     const fenceDefinition = Object.hasOwn(opts, 'expectedWorkDefinition');
     const expectedDefinition = JSON.stringify(opts.expectedWorkDefinition ?? null);
     const fenceCustodian = Object.hasOwn(opts, 'expectedCustodianId');
+    const fenceReview = Object.hasOwn(opts, 'expectedAgentReview');
+    const expectedReview = JSON.stringify(opts.expectedAgentReview ?? null);
     let wrote = false;
     const definitionMutation = Object.hasOwn(patchValue, 'workDefinition') || unset.includes('workDefinition');
     const updatePayload = async (db: OrgSql) => {
@@ -6224,6 +6229,8 @@ export async function mergeWorkItemPayload(
          AND (${!fenceDecision} OR COALESCE(payload->'blockerResolution', 'null'::jsonb) = ${expectedDecision}::text::jsonb)
          AND (${!fenceDefinition} OR COALESCE(payload->'workDefinition', 'null'::jsonb) = ${expectedDefinition}::text::jsonb)
          AND (${!fenceCustodian} OR taken_by IS NOT DISTINCT FROM ${opts.expectedCustodianId ?? null})
+         AND (${!fenceReview} OR COALESCE(payload->'agentReview','null'::jsonb)=${expectedReview}::text::jsonb)
+         AND (${opts.expectedSourceRevision === undefined} OR ${acceptanceSourceRevisionSql(db)}=${opts.expectedSourceRevision ?? null})
          AND (${!opts.requireNonTerminal} OR NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])))
       RETURNING 1 AS ok`;
     };
@@ -6354,6 +6361,13 @@ export async function rebindOrphanedPlanFleetReservation(input: {
  * this same assignee (idempotent). A competing claim on a held item gets null — exactly
  * one agent wins, instead of the old last-write-wins overwrite where both "won".
  */
+/** A surrounding lifecycle may compose the existing claim writer atomically.
+ * Notifications run only after its outer transaction has committed. */
+export interface WorkItemClaimTransaction {
+  client: OrgSql;
+  afterCommit: Array<() => Promise<void>>;
+}
+
 export async function claimWorkItem(
   id: string,
   assignee: string,
@@ -6402,6 +6416,7 @@ export async function claimWorkItem(
      */
     revisionAdoptionAdmission?: AgentReviewRevisionAdoptionAdmission;
   } = {},
+  transaction?: WorkItemClaimTransaction,
 ): Promise<WorkItem | null> {
   // EI-23701433507513915: the WRITE backstop — a truncated su- owner id is never persisted as
   // `taken_by`. Every assign path funnels through here (the claim tool's `assignee`,
@@ -6435,7 +6450,8 @@ export async function claimWorkItem(
   // (claimNextIssueWorkItem, EI-6480/WI-5261's explicitActiveWorkspaceId); this
   // applies the same one-resolve-per-operation discipline to the by-id path.
   const issueWs = resolveIssuesScopeWorkspace();
-  const issue = await getIssueInWorkspace(issueWs, id);
+  const issue = await getIssueInWorkspace(issueWs, id, transaction
+    ? { client: transaction.client, baseHarnessSlug: opts.harness } : {});
   let claimed: WorkItem | null;
   let claimWorkspaceId = issueWs;
   let prior: WorkItem | null = null;
@@ -6499,10 +6515,10 @@ export async function claimWorkItem(
         : {}),
       ...(agentReviewAdmission ? { agentReviewAdmission } : {}),
       ...(revisionAdoptionAdmission ? { revisionAdoptionAdmission } : {}),
-    });
+    }, transaction);
     claimed = updated ? issueToWorkItem(updated) : null;
   } else {
-    const wi = await getFeatureWorkItemOnly(id, opts.harness);
+    const wi = await getFeatureWorkItemOnly(id, opts.harness, {}, transaction?.client);
     if (!wi) return null;
     prior = wi;
     // Mirror the issue-family refusal above. Keep the predicate in the SQL UPDATE
@@ -6518,7 +6534,7 @@ export async function claimWorkItem(
     const revisionAdoptionAdmission = matchesAgentReviewRevisionAdoptionAdmission(
       opts.revisionAdoptionAdmission, prior, assignee,
     ) ? opts.revisionAdoptionAdmission : null;
-    const { sql } = getOrgPg();
+    const sql = transaction?.client ?? getOrgPg().sql;
     const expectedAssignee = opts.expectedAssignee?.trim() || null;
     // ws scopes the P-010 trust subquery in autoPickableWhereSql (D-004 — explicit,
     // never RLS-reliant). The UPDATE itself keys on (harness_slug, feature_id) (the PK).
@@ -6645,6 +6661,7 @@ export async function claimWorkItem(
   // (events:await leg; reaction rules observe the claim tools via postInvoke).
   if (claimed) {
     const won = claimed;
+    const publish = async () => {
     const priorHolder = prior?.assignee?.trim() || null;
     const explicitTransferHolder =
       priorHolder &&
@@ -6700,6 +6717,9 @@ export async function claimWorkItem(
     // stamp in coordination/messages.ts: the next claim path anyone adds is
     // covered for free and cannot silently leave the goal unstamped.
     noteGoalClaimed(assignee, won.id);
+    };
+    if (transaction) transaction.afterCommit.push(publish);
+    else await publish();
   }
   return claimed;
 }

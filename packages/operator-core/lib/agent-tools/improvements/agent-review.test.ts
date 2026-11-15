@@ -10,8 +10,10 @@ const h = vi.hoisted(() => ({
   resubmit: vi.fn(),
   adopt: vi.fn(),
   adoptNext: vi.fn(),
+  correct: vi.fn(),
+  correctionBase: vi.fn(),
   claimSpec: vi.fn(),
-  identity: vi.fn(() => ({ ownerId: 'su-reviewer' })),
+  identity: vi.fn((): { ownerId: string; workspaceId?: string } => ({ ownerId: 'su-reviewer' })),
 }));
 
 vi.mock('../../harness/improvements/agent-review', async (importOriginal) => ({
@@ -21,11 +23,13 @@ vi.mock('../../harness/improvements/agent-review', async (importOriginal) => ({
   resubmitAgentReview: h.resubmit,
   adoptAgentReviewRevision: h.adopt,
   adoptNextAgentReviewRevision: h.adoptNext,
+  correctAgentReview: h.correct,
+  readAgentReviewCorrectionBase: h.correctionBase,
 }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: h.identity }));
 vi.mock('../../scheduler/claim-spec-store', () => ({ getClaimSpecRecord: h.claimSpec }));
 
-import tool, { agentReviewAbortCompletionReceipt } from './agent-review';
+import tool, { agentReviewAbortCompletionReceipt, agentReviewEvidenceHandoff } from './agent-review';
 
 type ToolResult = { content: Array<{ text: string }>; isError?: boolean };
 const call = (args: Record<string, unknown>, ctx: Record<string, unknown> = {}) =>
@@ -46,6 +50,58 @@ beforeEach(() => {
 });
 
 describe('improvements:agent-review public door', () => {
+  it('hands off original evidence and distinct transcript/consult gaps without claiming reproduction', () => {
+    const original = { id: 'EI-7', harness: 'papercusp', kind: 'bug', title: 'Original report',
+      summary: 'Observed once; see test_runs:42', createdBy: 'su-filer', payload: {
+        reporter: { kind: 'agent', id: 'su-filer' },
+        source: { sessionId: 'codex:source-session', ref: 'session_turn:codex:source-session:7' },
+        reportContext: { logExcerpt: 'Original reporter context' },
+        agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'idea-7', round: 3,
+          correctionContext: [
+            { kind: 'transcript', outcome: 'inaccessible', text: 'Transcript access was refused.' },
+            { kind: 'consultation', outcome: 'unavailable', text: 'No peer answered.', ref: 'conversation:consult-7' },
+            { kind: 'evidence', outcome: 'unknown', text: 'Reproduction has not been attempted.' },
+          ], correctionHistory: [] },
+      } };
+    const before = structuredClone(original);
+    const handoff = agentReviewEvidenceHandoff(original as never);
+    expect(Object.keys(handoff)).toHaveLength(10);
+    expect(handoff).toMatchObject({ filingIdentity: { createdBy: 'su-filer', submittedBy: 'su-filer' },
+      sessionRefs: ['codex:source-session'], turnRefs: ['session_turn:codex:source-session:7'],
+      reportContext: original.payload.reportContext, contextOutcomes: original.payload.agentReview.correctionContext,
+      gaps: { transcript: 'recorded-reference-unread', unresolved: original.payload.agentReview.correctionContext } });
+    expect(handoff.evidenceRefs).toEqual(expect.arrayContaining(['test_runs:42', 'conversation:consult-7']));
+    expect(handoff.investigation.transcript).toContain('sessions:read');
+    expect(handoff.investigation.consultation).toContain('consult:get_feedback');
+    expect(handoff.investigation.correction).toContain('do not prove reproduction');
+    expect(original).toEqual(before);
+    expect(agentReviewEvidenceHandoff({ ...original, payload: {} } as never).gaps.transcript)
+      .toBe('reference-not-recorded');
+  });
+
+  it('derives correction author and workspace from authentication and forwards the exact server base', async () => {
+    h.identity.mockReturnValue({ ownerId: 'su-reviewer', workspaceId: 'workspace' });
+    h.correct.mockResolvedValue({ corrected: false, reason: 'correction-base-stale' });
+    const input = { mode: 'correct', id: 'EI-7', harness: 'papercusp', requestKey: 'request-1', expectedRound: 2,
+      correctionRevision: 'correction-v1:' + 'a'.repeat(64), correction: { classification: 'clarification',
+        notes: [{ kind: 'consultation', outcome: 'unavailable', text: 'No peer answer is available yet.' }] } };
+    expect(body(await call(tool.args.parse(input)))).toMatchObject({ mode: 'correct', corrected: false });
+    const { mode: _mode, ...request } = input;
+    expect(h.correct).toHaveBeenCalledWith({ ...request, actor: 'su-reviewer', workspaceId: 'workspace' });
+    expect(tool.args.safeParse({ ...input, actor: 'su-forged' }).success).toBe(false);
+    expect(tool.args.safeParse({ ...input, workspaceId: 'other' }).success).toBe(false);
+  });
+
+  it('requires authenticated workspace and concrete harness before any correction read or write', async () => {
+    expect(body(await call({ mode: 'correction-base', id: 'EI-7', harness: 'papercusp' }))).toMatchObject({ reason: 'workspace-required' });
+    h.identity.mockReturnValue({ ownerId: 'su-reviewer', workspaceId: 'workspace' });
+    await call({ mode: 'correction-base', id: 'EI-7', harness: 'all' });
+    expect(h.correctionBase).not.toHaveBeenCalled();
+    expect(h.correct).not.toHaveBeenCalled();
+    h.correctionBase.mockResolvedValue({ available: true, round: 2, correctionRevision: 'correction-v1:' + 'b'.repeat(64) });
+    expect(body(await call({ mode: 'correction-base', id: 'EI-7', harness: 'papercusp' }))).toMatchObject({ available: true, round: 2 });
+    expect(h.correctionBase).toHaveBeenCalledWith({ id: 'EI-7', harness: 'papercusp', workspaceId: 'workspace' });
+  });
   const acceptance = {
     problem: 'An adopted revision cannot supply its missing proposal.',
     evidence: ['The current resubmit schema has no proposal input.'],
@@ -233,6 +289,8 @@ describe('improvements:agent-review public door', () => {
       },
       ledgerIdeaId: 'agent-review:WI-8',
       gradeWith: { ideaId: 'agent-review:WI-8' },
+      reviewHandoff: expect.objectContaining({ filingIdentity: expect.objectContaining({ submittedBy: 'su-filer' }),
+        source: expect.objectContaining({ itemId: 'WI-8', title: 'review me second' }) }),
     });
   });
 
@@ -260,6 +318,8 @@ describe('improvements:agent-review public door', () => {
       },
       ledgerIdeaId: 'agent-review:WI-7',
       gradeWith: { ideaId: 'agent-review:WI-7' },
+      reviewHandoff: expect.objectContaining({ filingIdentity: expect.objectContaining({ submittedBy: 'su-filer' }),
+        source: expect.objectContaining({ itemId: 'WI-7', title: 'review me' }) }),
     });
   });
 

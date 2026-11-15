@@ -337,6 +337,7 @@ const AMEND_REVIEW_PRESERVE_PATHS = [
   'receipt.progress.phaseStartedAt',
   'receipt.progress.observedAt',
   'review.state',
+  'review.consultState',
   'review.conversationId',
   'review.previewPostRef',
   'review.next',

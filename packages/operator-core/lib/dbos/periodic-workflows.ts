@@ -143,11 +143,16 @@ async function scratchGcTick(): Promise<void> {
       const unreclaimablePaths = s.unreclaimablePaths
         .map((path) => [path.phase, path.workspaceId, path.errorCode, path.path].join(':'))
         .join(',') || 'none';
+      // WI-6554700010049099: a workspace whose data lease outlived the wait is kept for the
+      // next sweep instead of failing this one; name each so a repeat is visible.
+      const dataLeaseDeferred = (s.dataLeaseDeferred ?? [])
+        .map((d) => [d.operation, d.workspaceId, d.path ?? '-'].join(':'))
+        .join(',') || 'none';
       console.log(
         `[scratch-gc] deadWorkspaces=${s.deadWorkspaces} (${s.deadWorkspaceBytes}B) ` +
           `deferred=${s.deadWorkspacesDeferred.map((d) => `${d.workspaceId}:${d.reason}`).join(',') || 'none'} ` +
           `unprovenEntries=${s.unprovenEntries} markersWritten=${s.markersWritten} ` +
-          `unreclaimablePaths=${unreclaimablePaths} ` +
+          `unreclaimablePaths=${unreclaimablePaths} dataLeaseDeferred=${dataLeaseDeferred} ` +
           `retentionEvictions=${s.retentionEvictions} quotaEvictions=${s.quotaEvictions}`,
       );
     },

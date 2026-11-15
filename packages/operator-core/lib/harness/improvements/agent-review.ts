@@ -49,10 +49,11 @@ import {
   releaseWorkItem,
   isClaimHoldParked,
   claimHoldExclusionSql,
+  admissionRecoveryExclusionSql,
   type WorkItem,
 } from '../../work-items';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { selfHealOwnNodeOriginIfStranded } from '../../work-items-admission';
+import { selfHealOwnNodeOriginIfStranded, admissionHoldExclusionSql } from '../../work-items-admission';
 import { recordRoutedIdea } from '../../scout/routed-ledger';
 import { boundedOrgTxn } from '../../pg-bounded-txn';
 import { corroborationReportersSql, VERIFICATION_SUBJECT_ID_SQL } from './corroboration';
@@ -82,6 +83,14 @@ import {
   verificationTaskConflictSql,
   verificationTaskConflict,
   readVerificationTask,
+  agentReviewCorrectionSchema,
+  agentReviewCorrectionRevision,
+  agentReviewCorrectionRequestHash,
+  type AgentReviewCorrection,
+  type AgentReviewCorrectionItem,
+  type AgentReviewCorrectionLedger,
+  type AgentReviewCorrectionReceipt,
+  materialCorrectionAuthors,
   type VerificationConflictRole,
 } from './agent-review-policy';
 import {
@@ -1343,6 +1352,217 @@ export async function resubmitAgentReview(
   return { resubmitted: true, state: next };
 }
 
+export interface CorrectAgentReviewInput {
+  id: string;
+  harness: string;
+  workspaceId: string;
+  /** Authenticated dispatch identity, never taken from a caller-supplied author. */
+  actor: string;
+  requestKey: string;
+  expectedRound: number;
+  correctionRevision: string;
+  correction: AgentReviewCorrection;
+}
+export type CorrectAgentReviewResult =
+  | { corrected: false; reason: string }
+  | { corrected: true; replayed: boolean; receipt: AgentReviewCorrectionReceipt };
+
+class CorrectionRefused extends Error {}
+
+/** Lock the exact scope and unique grade authority before reading a CAS snapshot. */
+async function lockedCorrectionSnapshot(
+  tx: Parameters<Parameters<typeof boundedOrgTxn>[0]>[0],
+  input: { id: string; harness: string; workspaceId: string },
+): Promise<{ item: WorkItem; ledger: AgentReviewCorrectionLedger }> {
+  if (activeWorkspaceId() !== input.workspaceId) throw new CorrectionRefused('workspace-mismatch');
+  const rows = await tx<{ feature_id: string; payload: Record<string, unknown> | null }[]>`
+    SELECT feature_id,payload FROM harness_shared.work_items
+     WHERE workspace_id=${input.workspaceId} AND harness_slug=${input.harness}
+       AND feature_id=${input.id} FOR UPDATE`;
+  if (rows.length !== 1) throw new CorrectionRefused('scope-not-found');
+  const item = await getWorkItem(input.id, input.harness, {}, tx);
+  if (!item || item.harness !== input.harness) throw new CorrectionRefused('scope-mismatch');
+  // The compatibility issue view can omit its private provenance envelope. The
+  // complete physical payload is part of correction-v1, including future keys.
+  item.payload = rows[0].payload;
+  const review = readAgentReviewState(item.payload);
+  if (!review) throw new CorrectionRefused('review-state-missing');
+  const ledgerRows = await tx<AgentReviewCorrectionLedger[]>`
+    SELECT workspace_id,idea_id,routed_ref,target_hive,source_hive,rail,origin,created_by,
+           title,human_grade,human_feedback,graded_by,
+           to_char(graded_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS graded_at
+      FROM harness_shared.scout_routed_ideas
+     WHERE workspace_id=${input.workspaceId}
+       AND (idea_id=${review.ledgerIdeaId} OR routed_ref=${`wi:${input.id}`})
+     ORDER BY idea_id FOR UPDATE`;
+  if (ledgerRows.length !== 1) throw new CorrectionRefused(ledgerRows.length ? 'ledger-association-ambiguous' : 'ledger-association-missing');
+  const ledger = ledgerRows[0];
+  if (ledger.idea_id !== review.ledgerIdeaId || ledger.routed_ref !== `wi:${input.id}` ||
+    (ledger.target_hive ?? ledger.source_hive) !== input.harness) throw new CorrectionRefused('ledger-association-mismatch');
+  return { item, ledger };
+}
+
+/** The base is returned by the server; a source-only acceptance hash cannot replace it. */
+export async function readAgentReviewCorrectionBase(input: {
+  id: string; harness: string; workspaceId: string;
+}): Promise<{ available: true; round: number; correctionRevision: string; item: AgentReviewCorrectionItem } |
+  { available: false; reason: string }> {
+  try {
+    return await boundedOrgTxn(async tx => {
+      const { item, ledger } = await lockedCorrectionSnapshot(tx, input);
+      const round = readAgentReviewState(item.payload)!.round;
+      return { available: true as const, round,
+        correctionRevision: agentReviewCorrectionRevision({ ...input, item, ledger }), item };
+    });
+  } catch (error) {
+    if (error instanceof CorrectionRefused) return { available: false, reason: error.message };
+    throw error;
+  }
+}
+
+/** One transaction owns source, grade invalidation, custody, lineage and receipt.
+ * The original submitter's liveness is deliberately never consulted. */
+export async function correctAgentReview(
+  input: CorrectAgentReviewInput,
+  options: { onWriteBoundary?: (boundary: 'claim' | 'ledger' | 'item' | 'receipt') => Promise<void> } = {},
+): Promise<CorrectAgentReviewResult> {
+  const parsed = agentReviewCorrectionSchema.safeParse(input.correction);
+  if (!parsed.success || !input.actor?.trim() || !input.workspaceId || !input.harness ||
+    !input.requestKey || input.requestKey.length > 200 || !Number.isSafeInteger(input.expectedRound) ||
+    input.expectedRound < 1 || !/^correction-v1:[a-f0-9]{64}$/.test(input.correctionRevision)) {
+    return { corrected: false, reason: 'correction-request-invalid' };
+  }
+  // Hash the ENTIRE typed request, including its original base, before any write.
+  const requestHash = agentReviewCorrectionRequestHash(input);
+  const correction = parsed.data;
+  const afterCommit: Array<() => Promise<void>> = [];
+  try {
+    const result = await boundedOrgTxn(async tx => {
+      let { item, ledger } = await lockedCorrectionSnapshot(tx, input);
+      const originalReview = readAgentReviewState(item.payload)!;
+      const storedReview = record(record(item.payload).agentReview);
+      for (const key of ['correctionReceipts', 'correctionHistory', 'correctionContext', 'materialAuthors']) {
+        if (storedReview[key] !== undefined && !Array.isArray(storedReview[key])) throw new CorrectionRefused('correction-history-invalid');
+      }
+      const receipts = (storedReview.correctionReceipts ?? []) as AgentReviewCorrectionReceipt[];
+      const prior = receipts.filter(receipt => receipt.workspaceId === input.workspaceId && receipt.harness === input.harness &&
+        receipt.itemId === input.id && receipt.actor === input.actor && receipt.requestKey === input.requestKey);
+      if (prior.length > 1) throw new CorrectionRefused('correction-history-invalid');
+      if (prior[0]) {
+        if (prior[0].requestHash !== requestHash) throw new CorrectionRefused('request-key-conflict');
+        return { corrected: true as const, replayed: true, receipt: prior[0] };
+      }
+      const beforeRevision = agentReviewCorrectionRevision({ ...input, item, ledger });
+      if (input.expectedRound !== originalReview.round || input.correctionRevision !== beforeRevision) throw new CorrectionRefused('correction-base-stale');
+      if (item.state !== 'open') throw new CorrectionRefused('not-open');
+      if (isClaimHoldParked(item.payload)) throw new CorrectionRefused('claim-held');
+      const [custody] = await tx<{ allowed: boolean }[]>`SELECT
+        (${claimHoldExclusionSql(tx, 'payload')} AND ${admissionRecoveryExclusionSql(tx, 'payload')}
+          AND ${admissionHoldExclusionSql(tx, 'payload')}) AS allowed
+        FROM harness_shared.work_items WHERE workspace_id=${input.workspaceId} AND harness_slug=${input.harness}
+          AND feature_id=${input.id}`;
+      if (custody?.allowed !== true) throw new CorrectionRefused('queue-held');
+      const eligibility = agentReviewEligibility(item);
+      if (!eligibility.eligible) throw new CorrectionRefused(eligibility.reason);
+      if (originalReview.submittedBy.startsWith('system:') || !ledger.created_by ||
+        (item.family === 'issue' && !item.createdBy)) throw new CorrectionRefused('original-identity-missing');
+      if (originalReview.submittedBy === input.actor || item.createdBy === input.actor || ledger.created_by === input.actor) {
+        throw new CorrectionRefused('original-author-conflict');
+      }
+      if (item.assignee && item.assignee !== input.actor) throw new CorrectionRefused('correction-held-by-other');
+      if (originalReview.status !== 'pending' && originalReview.status !== 'revision-requested') throw new CorrectionRefused('correction-not-reviewable');
+      if (originalReview.revisionKind === 'reproduction') throw new CorrectionRefused('reproduction-only-debt');
+      if (originalReview.status === 'pending' && item.assignee !== input.actor) throw new CorrectionRefused('reviewer-claim-required');
+      if (ledger.graded_by === 'owner') throw new CorrectionRefused('owner-verdict-sovereign');
+      let acceptance: ReturnType<typeof implementationAcceptanceProposalSchema.parse> | undefined;
+      if (correction.classification === 'material') {
+        if (correction.changes.kind && (correction.changes.kind === 'feature') !== (item.family === 'feature')) {
+          throw new CorrectionRefused('correction-kind-family-change');
+        }
+        if (correction.changes.acceptance !== undefined) {
+          const proposal = implementationAcceptanceProposalSchema.safeParse(correction.changes.acceptance);
+          if (!proposal.success) throw new CorrectionRefused('acceptance-proposal-invalid');
+          acceptance = proposal.data;
+        }
+      }
+      const history = originalReview.correctionHistory ?? [];
+      const authors = originalReview.materialAuthors ?? [];
+      if (authors.some(author => typeof author !== 'string' || !author.trim()) ||
+        history.some(entry => !entry || typeof entry.actor !== 'string' || !['material', 'clarification'].includes(entry.classification))) {
+        throw new CorrectionRefused('correction-history-invalid');
+      }
+      if (!item.assignee) {
+        const admission = mintAgentReviewRevisionAdoptionAdmission({ itemId: item.id, adopter: input.actor,
+          harnessSlug: input.harness, review: originalReview });
+        if (!admission) throw new CorrectionRefused('revision-claim-refused');
+        const claimed = await claimWorkItem(item.id, input.actor, { harness: input.harness,
+          revisionAdoptionAdmission: admission }, { client: tx, afterCommit });
+        if (!claimed) throw new CorrectionRefused('revision-claim-refused');
+        item = (await lockedCorrectionSnapshot(tx, input)).item;
+        await options.onWriteBoundary?.('claim');
+      }
+      const round = originalReview.round + 1;
+      const material = correction.classification === 'material';
+      const changes: Extract<AgentReviewCorrection, { classification: 'material' }>['changes'] = material ? correction.changes : {};
+      const nextReview: Record<string, unknown> = { ...record(record(item.payload).agentReview),
+        status: 'pending', round, timing: { round, enteredAt: new Date().toISOString() },
+        correctionContext: [...(originalReview.correctionContext ?? []), ...correction.notes],
+        materialAuthors: [...new Set([...authors, ...history.filter(entry => entry.classification === 'material').map(entry => entry.actor),
+          ...(material ? [input.actor] : [])])],
+        correctionHistory: [...history, { requestHash, actor: input.actor,
+          classification: correction.classification, round, correction, priorVerdict: ledger,
+          beforeSource: { kind: item.kind, title: item.title, summary: item.summary,
+            ...(Object.hasOwn(storedReview, 'report') ? { report: storedReview.report } : {}),
+            ...(Object.hasOwn(record(item.payload), 'implementationReadiness')
+              ? { implementationReadiness: record(item.payload).implementationReadiness } : {}),
+          },
+        }],
+      };
+      delete nextReview.revisionKind;
+      delete nextReview.reviewedSourceRevision;
+      if ('report' in changes && changes.report) nextReview.report = { ...record(nextReview.report), ...changes.report };
+      const nextPayload = { ...record(item.payload), agentReview: nextReview,
+        implementationReadiness: reviewImplementationReadiness(item.payload, {
+          status: 'unknown', reason: 'awaiting-agent-review', submittedBy: originalReview.submittedBy, round,
+          ...(acceptance ? { acceptance } : {}),
+        }),
+      };
+      const nextTitle = 'title' in changes ? changes.title ?? item.title : item.title;
+      const nextSummary = 'summary' in changes ? changes.summary ?? item.summary : item.summary;
+      const nextKind = 'kind' in changes ? changes.kind ?? item.kind : item.kind;
+      if (!material) nextReview.reviewedSourceRevision = acceptanceSourceRevision({ ...item, title: nextTitle, summary: nextSummary, kind: nextKind });
+      await tx`UPDATE harness_shared.scout_routed_ideas SET title=${nextTitle},
+          human_grade=NULL,human_feedback=NULL,graded_by=NULL,graded_at=NULL
+        WHERE workspace_id=${input.workspaceId} AND idea_id=${ledger.idea_id}`;
+      await options.onWriteBoundary?.('ledger');
+      await tx`UPDATE harness_shared.work_items SET title=${nextTitle},summary=${nextSummary},item_kind=${nextKind},
+          payload=${JSON.stringify(nextPayload)}::jsonb,taken_by=${material ? null : input.actor},
+          taken_at=${material ? null : item.takenAt}::timestamptz,updated_ts=${Date.now()}
+        WHERE workspace_id=${input.workspaceId} AND harness_slug=${input.harness} AND feature_id=${input.id}`;
+      await options.onWriteBoundary?.('item');
+      const after = await lockedCorrectionSnapshot(tx, input);
+      const receipt: AgentReviewCorrectionReceipt = { schemaVersion: 1, workspaceId: input.workspaceId,
+        harness: input.harness, itemId: input.id, actor: input.actor, requestKey: input.requestKey, requestHash,
+        beforeRound: originalReview.round, afterRound: round, beforeRevision,
+        afterRevision: agentReviewCorrectionRevision({ ...input, ...after }),
+      };
+      await tx`UPDATE harness_shared.work_items SET payload=jsonb_set(payload,'{agentReview,correctionReceipts}',
+          ${JSON.stringify([...receipts, receipt])}::jsonb)
+        WHERE workspace_id=${input.workspaceId} AND harness_slug=${input.harness} AND feature_id=${input.id}`;
+      await options.onWriteBoundary?.('receipt');
+      // A material author releases to a new independent reviewer. Its transient
+      // internal admission must never publish a claim that was not committed.
+      if (material) afterCommit.length = 0;
+      return { corrected: true as const, replayed: false, receipt };
+    });
+    for (const publish of afterCommit) await publish();
+    return result;
+  } catch (error) {
+    if (error instanceof CorrectionRefused) return { corrected: false, reason: error.message };
+    throw error;
+  }
+}
+
 function record(value: unknown): Record<string, unknown> {
   return value != null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -1395,6 +1615,7 @@ export interface AgentReviewGradePreflight {
   applicable: boolean;
   workItemId?: string;
   state?: AgentReviewState;
+  reviewFence?: import('../../scout/routed-ledger').GradeRoutedIdeaInput['reviewFence'];
   /** True only when an exact repeated critique needed and received explicit justification. */
   repeatJustificationAccepted?: boolean;
   refusal?:
@@ -1403,6 +1624,7 @@ export interface AgentReviewGradePreflight {
     | 'agent-review-source-revision-unbound'
     | 'agent-review-source-revision-stale'
     | 'agent-review-reviewer-mismatch'
+    | 'agent-review-author-conflict'
     | 'agent-review-repeat-feedback-justification-required';
 }
 
@@ -1481,6 +1703,10 @@ export async function preflightAgentReviewGrade(
   if (workItem!.assignee !== input.gradedBy) {
     return { applicable: true, workItemId: workItem!.id, state, refusal: 'agent-review-reviewer-mismatch' };
   }
+  const correctionAuthors = materialCorrectionAuthors(workItem!.payload);
+  if (correctionAuthors === null || correctionAuthors.includes(input.gradedBy)) {
+    return { applicable: true, workItemId: workItem!.id, state, refusal: 'agent-review-author-conflict' };
+  }
   if (acceptanceSourceRevision(workItem!) !== state.reviewedSourceRevision) {
     return { applicable: true, workItemId: workItem!.id, state, refusal: 'agent-review-source-revision-stale' };
   }
@@ -1510,6 +1736,8 @@ export async function preflightAgentReviewGrade(
     applicable: true,
     workItemId: workItem!.id,
     state,
+    reviewFence: { workspaceId: activeWorkspaceId(), harness: workItem!.harness!,
+      workItemId: workItem!.id, round: state.round, sourceRevision: state.reviewedSourceRevision },
     ...(repeatJustificationAccepted ? { repeatJustificationAccepted: true } : {}),
   };
 }
@@ -1629,6 +1857,8 @@ export async function reconcileAgentReviewGrade(
   // CAS, threw 'could not release reviewer claim' AFTER the approval payload had committed,
   // and the row stayed held until a manual `work_items:release`.
   const gradedBy = ledger.gradedBy ?? input.gradedBy;
+  const correctionAuthors = materialCorrectionAuthors(workItem.payload);
+  if (correctionAuthors === null || correctionAuthors.includes(gradedBy)) throw new Error('agent-review-author-conflict');
   if (grade <= AGENT_REVIEW_MAX_REVISION_GRADE) {
     const feedback = ledger.feedback?.trim();
     if (!feedback) throw new Error('agent-review-feedback-required');
@@ -1651,7 +1881,7 @@ export async function reconcileAgentReviewGrade(
     // oracle failure happens before any transition write. An in-band unknown retains
     // reviewer custody; the claim store accepting an id is not proof its session lives.
     const submitterIsSynthetic = current.submittedBy.startsWith('system:');
-    const revisionSubmitter = current.submittedBy === LEGACY_AGENT_REVIEW_SUBMITTER
+    const revisionSubmitter = current.correctionHistory?.length || current.submittedBy === LEGACY_AGENT_REVIEW_SUBMITTER
       ? null
       : submitterIsSynthetic
         ? await measure('resolveVerifiedSubmitterAlias', () =>
@@ -1681,6 +1911,10 @@ export async function reconcileAgentReviewGrade(
       {
         ...(workItem.harness ? { harness: workItem.harness } : {}),
         unset: ['needsHuman', 'needsOwnerAction'],
+        expectedAgentReview: record(workItem.payload).agentReview,
+        expectedSourceRevision: acceptanceSourceRevision(workItem),
+        expectedCustodianId: workItem.assignee,
+        requireNonTerminal: true,
       },
     ));
     if (!merged) throw new Error(`agent review could not persist revision state on '${workItem.id}'`);
@@ -1815,6 +2049,10 @@ export async function reconcileAgentReviewGrade(
     {
       ...(workItem.harness ? { harness: workItem.harness } : {}),
       unset: ['needsHuman', 'needsOwnerAction'],
+      expectedAgentReview: record(workItem.payload).agentReview,
+      expectedSourceRevision: acceptanceSourceRevision(workItem),
+      expectedCustodianId: workItem.assignee,
+      requireNonTerminal: true,
     },
   ));
   if (!merged) throw new Error(`agent review could not persist approval state on '${workItem.id}'`);

@@ -54,9 +54,9 @@ it('executes a subject-scoped registered instrument on the canonical conformance
     original({ ...input, resolvePlatform: resolve }));
   try {
     const result = await productionConformanceDeps({ workspaceId: 'workspace', harnessSlug: 'papercusp', planSlug: 'actual-plan' })
-      .evaluateCheck({ barKey: 'R-13', role: 'violated-when', checkId: 'R-13:inventory-claim-evidence-mismatch',
+      .evaluateCheck({ barKey: 'R-13', role: 'falsifier', checkId: 'R-13:inventory-claim-evidence-mismatch',
         check: { kind: 'instrument', instrumentKey: MANAGED_INVENTORY_EVIDENCE_INSTRUMENT } });
-    expect(result.verdict).toBe('pass');
+    expect(result?.verdict).toBe('pass');
     expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'workspace', harnessSlug: 'papercusp',
       subject: { kind: 'plan', ref: 'actual-plan' } }), expect.any(Object));
   } finally { spy.mockRestore(); }

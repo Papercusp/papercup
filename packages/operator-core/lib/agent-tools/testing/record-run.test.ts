@@ -12,6 +12,7 @@ import {
   measureRuntimeEnvironment,
 } from '../../remote-runtime-identity';
 import { findBoxIdentityPaths, redactIdentityLeaks } from '../../../../../scripts/lib/identity-leak-patterns.mjs';
+import { createImplementationReadiness, sealImplementationAcceptance } from '../../harness/improvements/agent-review-policy';
 import {
   MAX_RECORDED_PASSED_CASES,
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
@@ -28,6 +29,10 @@ import {
   executePlanTerminalCensus,
   executeGitScratchPlacement,
   executeSyncBatchCoverageAccounting,
+  executeReviewerOwnedCorrection,
+  measureReviewerOwnedCorrection,
+  REVIEWER_CORRECTION_SOURCE_PATHS,
+  type ReviewerCorrectionScenarioDeps,
   inspectPlanTerminalCensus,
   verifyOperationalCheckDefinitionAtCommit,
   recoverArchivedMutationFailures,
@@ -59,6 +64,160 @@ const EVIDENCE: CommittedOperationalEvidence = {
   sha256: 'a'.repeat(64),
   commit: 'b'.repeat(40),
 };
+
+describe('native served reviewer correction evidence', () => {
+  function fixture() {
+    const ctx = { workspaceId: 'workspace-test', harnessSlug: 'papercusp' };
+    const host = { host: 'port-3170', processId: 'linux:boot:123', buildSha: 'a'.repeat(40),
+      bundleSha256: 'b'.repeat(64), manifestSha256: 'c'.repeat(64),
+      sourceSha256: '1'.repeat(64), sourceSetSha256: '2'.repeat(64), runtimeFingerprint: '3'.repeat(64),
+      sourceBlobs: Object.fromEntries(REVIEWER_CORRECTION_SOURCE_PATHS.map(path => [path, 'd'.repeat(40)])) };
+    const state: any = { item: { kind: 'change', title: 'Original', summary: 'Original report', taken_by: null,
+      payload: { _ei: {}, agentReview: { correctionHistory: [], correctionReceipts: [] },
+        implementationReadiness: { status: 'unknown' } } },
+      ledger: { idea_id: 'idea-fixture', title: 'Original', human_grade: 2,
+        human_feedback: 'Original critique', graded_by: 'prior', graded_at: 'prior-time' } };
+    const rows: any[] = [];
+    const mutations = { selfGradeApplied: false, omitGradeWrite: false, alterReplay: false,
+      missingAuth: false, missingInvocation: false, changingWitness: false, forgedActor: false, omitSeal: false };
+    let witnessReads = 0;
+    const cleanup = vi.fn(async () => {});
+    const closes: ReturnType<typeof vi.fn>[] = [];
+    const deps: ReviewerCorrectionScenarioDeps = {
+      witness: vi.fn(async () => ({ ...structuredClone(host),
+        ...(mutations.changingWitness && witnessReads++ ? { processId: 'different-process' } : {}) })),
+      async open(actor, invalid = false) {
+        const close = vi.fn(async () => {}); closes.push(close);
+        return { close, async invoke(name, args) {
+          if (invalid) throw new Error('request_rejected: superuser_invalid_bearer');
+          if (name === 'coord:whoami') return { ownerId: mutations.forgedActor ? 'unverified' : actor,
+            source: 'omp-hook-session', workspaceId: ctx.workspaceId };
+          rows.push({ id: String(rows.length + 1), tool_name: name, coord_owner_id: actor,
+            serving_host: host.host, serving_process_id: host.processId, serving_build_sha: host.buildSha,
+            principal_auth_method: 'bearer-token', principal_kind: 'system', principal_trust: 'trusted',
+            status: 'ok', args_json: structuredClone(args) });
+          if (name === 'improvements:agent-review') {
+            if (args.mode === 'correction-base') return { available: true, round: state.item.payload.agentReview.round,
+              correctionRevision: 'correction-v1:' + String(state.item.payload.agentReview.round).repeat(64),
+              reviewHandoff: { filingIdentity: { submittedBy: state.item.payload.agentReview.submittedBy } } };
+            if (args.mode === 'claim') { state.item.taken_by = actor; return { claimed: true, ledgerIdeaId: 'idea-fixture' }; }
+            const review = state.item.payload.agentReview;
+            const stored = review.correctionReceipts.find((receipt: any) => receipt.requestKey === args.requestKey);
+            if (stored) {
+              if (mutations.alterReplay) state.item.title = 'Replay wrote source';
+              return { corrected: true, replayed: true, receipt: structuredClone(stored) };
+            }
+            const correction = args.correction as any;
+            if (correction.changes.title) state.item.title = correction.changes.title;
+            if (correction.changes.summary) state.item.summary = correction.changes.summary;
+            if (correction.changes.acceptance) state.item.payload.implementationReadiness = createImplementationReadiness({
+              status: 'unknown', source: 'agent-review', reason: 'awaiting-agent-review',
+              evidence: { acceptance: correction.changes.acceptance } });
+            const beforeRound = review.round;
+            review.round++;
+            review.materialAuthors = [...new Set([...(review.materialAuthors ?? []), actor])];
+            review.correctionHistory.push({ actor, priorVerdict: { human_grade: state.ledger.human_grade } });
+            const receipt = { requestKey: args.requestKey, requestHash: '4'.repeat(64), beforeRound,
+              afterRound: review.round, beforeRevision: args.correctionRevision,
+              afterRevision: 'correction-v1:' + String(review.round).repeat(64) };
+            review.correctionReceipts.push(receipt);
+            Object.assign(state.ledger, { title: state.item.title, human_grade: null,
+              human_feedback: null, graded_by: null, graded_at: null });
+            state.item.taken_by = null; review.status = 'pending';
+            return { corrected: true, receipt: structuredClone(receipt) };
+          }
+          if (name === 'blender:grade-idea') {
+            if (state.item.payload.agentReview.materialAuthors.includes(actor)) return { applied: mutations.selfGradeApplied };
+            if (!mutations.omitGradeWrite) {
+              Object.assign(state.ledger, { human_grade: args.grade, graded_by: actor });
+              state.item.payload.agentReview.status = args.grade === 5 ? 'approved' : 'revision-requested';
+              state.item.taken_by = null;
+              if (args.grade === 5) {
+                const review = state.item.payload.agentReview;
+                const sealed = sealImplementationAcceptance({
+                  proposal: state.item.payload.implementationReadiness.evidence.acceptance,
+                  authority: { kind: 'agent-review', reviewer: actor, submittedBy: review.submittedBy, round: review.round },
+                  reason: 'agent-review-approved (grade 5/5)', source: state.item });
+                if (!sealed.ok) throw new Error('fixture proposal must seal');
+                state.item.payload.implementationReadiness = createImplementationReadiness({
+                  status: 'ready', source: 'agent-review', reason: 'agent-review-approved',
+                  evidence: { acceptance: mutations.omitSeal ? {} : sealed.contract } });
+              }
+            }
+            return { applied: true };
+          }
+          throw new Error('unexpected public operation ' + name);
+        } };
+      },
+      async seed(_nonce, author, reviewer) {
+        state.item.payload._ei.created_by = author;
+        Object.assign(state.item.payload.agentReview, { submittedBy: author, round: 2, status: 'pending' });
+        state.item.taken_by = reviewer; state.ledger.created_by = author;
+        return { id: 'EI-123456789', ideaId: 'idea-fixture' };
+      },
+      read: vi.fn(async () => structuredClone(state)),
+      invocations: vi.fn(async () => mutations.missingInvocation ? [] : structuredClone(rows)
+        .map(row => mutations.missingAuth ? { ...row, principal_auth_method: null } : row)),
+      cleanup,
+    };
+    return { ctx, host, state, deps, cleanup, closes, mutations };
+  }
+
+  it('records served correction, distinct eligible grade, source witnesses and immutable historical replay', async () => {
+    const f = fixture();
+    const result = await measureReviewerOwnedCorrection(f.ctx, f.deps);
+    expect(result.exitCode).toBe(0);
+    expect(result.assertions.map(check => check.id)).toEqual([
+      'reviewer-correction:runtime-contained', 'reviewer-correction:round-and-revisions',
+      'reviewer-correction:original-attribution', 'reviewer-correction:correction-authorship',
+      'reviewer-correction:independent-grade-and-seal', 'reviewer-correction:item-ledger-readback',
+      'reviewer-correction:retry-no-duplicate', 'reviewer-correction:private-cleanup' ]);
+    expect(JSON.parse(result.assertions[0]!.evidence)).toEqual(f.host);
+    expect(JSON.parse(result.summary)).toMatchObject({ sourceSetSha256: f.host.sourceSetSha256,
+      sourceSha256: f.host.sourceSha256, runtimeFingerprint: f.host.runtimeFingerprint,
+      privateCleanup: true, historicalReceiptReplay: true, transport: 'served-mcp' });
+    expect(result.summary.length).toBeLessThanOrEqual(1800);
+    expect(result.assertions.every(check => check.evidence.length <= 2000)).toBe(true);
+    expect(f.cleanup).toHaveBeenCalledOnce();
+    expect(f.closes.every(close => close.mock.calls.length === 1)).toBe(true);
+  });
+
+  it.each(['selfGradeApplied', 'omitGradeWrite', 'alterReplay', 'missingAuth', 'missingInvocation',
+    'changingWitness', 'forgedActor', 'omitSeal'] as const)('refuses a false pass when %s', async fault => {
+    const f = fixture(); f.mutations[fault] = true;
+    await expect(measureReviewerOwnedCorrection(f.ctx, f.deps)).rejects.toThrow();
+    expect(f.closes.every(close => close.mock.calls.length === 1)).toBe(true);
+    if (fault !== 'forgedActor') expect(f.cleanup).toHaveBeenCalledOnce();
+  });
+
+  it.each(['processId', 'buildSha', 'bundleSha256', 'manifestSha256', 'sourceBlobs',
+    'sourceSha256', 'sourceSetSha256', 'runtimeFingerprint'] as const)(
+    'requires the complete runtime witness: %s', async key => {
+      const f = fixture();
+      if (key === 'sourceBlobs') delete f.host.sourceBlobs[REVIEWER_CORRECTION_SOURCE_PATHS[0]];
+      else (f.host as any)[key] = '';
+      await expect(measureReviewerOwnedCorrection(f.ctx, f.deps)).rejects.toThrow();
+      expect(f.cleanup).not.toHaveBeenCalled();
+    });
+
+  it('rejects an extra served source owner instead of silently omitting it', async () => {
+    const f = fixture(); f.host.sourceBlobs['unbound-owner.ts'] = 'e'.repeat(40);
+    await expect(measureReviewerOwnedCorrection(f.ctx, f.deps)).rejects.toThrow();
+    expect(f.cleanup).not.toHaveBeenCalled();
+  });
+
+  it('persists a failed native observation when the served grade did not land', async () => {
+    const f = fixture(); f.mutations.omitGradeWrite = true;
+    const persist = vi.fn(async (_params: Parameters<RecordOperationalRunDeps['persist']>[0]) => ({ written: 1, ids: [905] }));
+    const result = await executeReviewerOwnedCorrection(f.ctx, { scenario: f.deps,
+      execution: { snapshot: () => ({ commit: 'e'.repeat(40), porcelain: '' }), sourceRoot: async () => '/repo',
+        verifyDefinition: async () => true, readRuntime: async () => 'f'.repeat(64), persist } });
+    expect(result).toMatchObject({ ok: true, status: 'fail', testRunIds: [905] });
+    expect(persist.mock.calls[0]![0].rows[0]).toMatchObject({ status: 'fail',
+      execution: { operational: { command: ['reviewer-owned-correction-current-build'] }, failed: 1 } });
+    expect(f.cleanup).toHaveBeenCalledOnce();
+  });
+});
 
 describe('native Git scratch placement execution', () => {
   function fixture() {

@@ -14,9 +14,11 @@ import {
   claimAgentReview,
   claimNextAgentReview,
   resubmitAgentReview,
+  correctAgentReview,
+  readAgentReviewCorrectionBase,
   type AgentReviewClaimNextDiagnostics,
 } from '../../harness/improvements/agent-review';
-import { implementationAcceptanceProposalSchema, readAgentReviewState } from '../../harness/improvements/agent-review-policy';
+import { implementationAcceptanceProposalSchema, readAgentReviewState, agentReviewCorrectionSchema } from '../../harness/improvements/agent-review-policy';
 import type { WorkItem } from '../../work-items';
 import { asRecord, completedResultPayload } from '../abort-completion-payload';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -24,12 +26,65 @@ import { COORD_ROLES } from '../coordination/roles';
 import { harnessRequiredResult, resolveConcreteHarnessSlug } from '../_harness-scope';
 import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
 
+/** Read-only evidence handoff. Recorded references are leads, never reproduction proof. */
+export function agentReviewEvidenceHandoff(workItem: WorkItem) {
+  const payload = asRecord(workItem.payload) ?? {};
+  const review = readAgentReviewState(payload);
+  const sessionRefs = new Set<string>();
+  const turnRefs = new Set<string>();
+  const evidenceRefs = new Set<string>();
+  let truncated = false;
+  let visited = 0;
+  const visit = (value: unknown, key = '', depth = 0): void => {
+    if (++visited > 4000 || depth > 12) { truncated = true; return; }
+    if (typeof value === 'string') {
+      if (/^(sessionId|session_id|sourceSession|sourceSessionId|sessionRef)$/.test(key) && value && value !== 'self') sessionRefs.add(value);
+      if (/^(ref|refs|evidenceRef|evidenceRefs)$/.test(key) && value) evidenceRefs.add(value);
+      for (const match of value.matchAll(/session_turn:[a-z-]+:[a-zA-Z0-9_-]+:\d+/g)) turnRefs.add(match[0]);
+      for (const match of value.matchAll(/(?:test_runs|thread-post|conversation|consult|attachment):[a-zA-Z0-9_./:#-]+/g)) evidenceRefs.add(match[0]);
+    } else if (Array.isArray(value)) {
+      for (const entry of value) visit(entry, key, depth + 1);
+    } else if (value && typeof value === 'object') {
+      for (const [name, entry] of Object.entries(value)) {
+        // Receipts repeat source snapshots; the item/history is the evidence owner.
+        if (name !== 'correctionReceipts') visit(entry, name, depth + 1);
+      }
+    }
+  };
+  visit(payload);
+  visit(workItem.summary);
+  const contextOutcomes = review?.correctionContext ?? [];
+  return {
+    filingIdentity: { createdBy: workItem.createdBy, submittedBy: review?.submittedBy ?? null,
+      reporter: payload.reporter ?? null },
+    source: { itemId: workItem.id, harness: workItem.harness, kind: workItem.kind,
+      title: workItem.title, summary: workItem.summary },
+    sessionRefs: [...sessionRefs],
+    turnRefs: [...turnRefs],
+    evidenceRefs: [...evidenceRefs],
+    reportContext: payload.reportContext ?? null,
+    correctionHistory: review?.correctionHistory ?? [],
+    contextOutcomes,
+    gaps: { transcript: sessionRefs.size || turnRefs.size ? 'recorded-reference-unread' : 'reference-not-recorded',
+      consultation: contextOutcomes.filter(note => note.kind === 'consultation'),
+      unresolved: contextOutcomes.filter(note => note.outcome !== 'available'),
+      ...(truncated ? { referenceScan: 'bounded-read-full-item' } : {}) },
+    investigation: {
+      transcript: 'Use sessions:read with an exact session or session_turn reference; use sessions:search to locate an unrecorded source. Record missing or inaccessible outcomes explicitly.',
+      consultation: 'After reading the available evidence, use consult:get_feedback for a concrete unresolved question. Record the conversation reference and actual answer or unavailable outcome.',
+      history: { tool: 'work_items:get', args: { id: workItem.id, harness: workItem.harness, detail: true } },
+      correction: 'Use correction-base, then correct with typed transcript/evidence/consultation notes. References and available context do not prove reproduction; canonical grading remains required.',
+    },
+  };
+}
+
 function gradeHandoff(workItem: WorkItem | null) {
   const review = workItem ? readAgentReviewState(workItem.payload) : null;
   if (review?.status !== 'pending') return {};
   return {
     ledgerIdeaId: review.ledgerIdeaId,
     gradeWith: { ideaId: review.ledgerIdeaId },
+    reviewHandoff: agentReviewEvidenceHandoff(workItem!),
   };
 }
 
@@ -53,6 +108,16 @@ export function agentReviewAbortCompletionReceipt(
       reason: 'improvements:agent-review result did not confirm the requested mode and success envelope',
       failures: ['missing-success-envelope'],
     };
+  }
+
+  if (mode === 'correction-base') return { status: 'not-recorded', reason: 'read-only-correction-base' };
+  if (mode === 'correct') {
+    const receipt = asRecord(payload.receipt);
+    if (payload.corrected === true && receipt?.itemId === input?.id && receipt?.requestKey === input?.requestKey &&
+      typeof receipt?.afterRevision === 'string' && /^correction-v1:[a-f0-9]{64}$/.test(receipt.afterRevision)) {
+      return { status: 'recorded', effectRef: `improvements-agent-review:correct:${receipt.itemId}:${receipt.requestKey}:${receipt.afterRevision}` };
+    }
+    if (payload.corrected === false && typeof payload.reason === 'string') return { status: 'not-recorded', reason: payload.reason };
   }
 
   if (mode === 'claim' || mode === 'claim-next') {
@@ -145,13 +210,13 @@ export default defineTool({
   profile: 'engineer',
   abortCompletionReceipt: agentReviewAbortCompletionReceipt,
   description:
-    'Claim a specific or the next peer-review item in one concrete harness, resubmit a revision-requested item, or adopt one whose submitter is provably gone. Review grades still go through blender:grade-idea; this door only owns reviewer pickup and submitter resubmission.',
+    'Claim peer-review work, read its exact correction base, or correct it as its assigned reviewer without the original filer participating. Material authors require a separate independent grader. Also supports legacy resubmit and orphan adoption; blender:grade-idea remains the grade authority.',
   guidance: {
     when: "Use mode:'claim' with an id when a directed review must take one known pending item without consuming unrelated review work. Use mode:'claim-next' only to take the next pending change/feature. Then grade its routed idea with blender:grade-idea. Use mode:'resubmit' after addressing the review feedback on your own revision-requested item. Use mode:'adopt' (id) or 'adopt-next' to take a content revision whose original submitter is provably gone, then revise and resubmit it.",
     notWhen:
       'Do not use this to grade or approve — blender:grade-idea is the sole grade authority. Do not use ordinary scheduler:get_next for pending review work; that lane excludes it until approval.',
     chaining:
-      "improvements:agent-review { mode:'claim', id, harness? } (directed) OR { mode:'claim-next', harness? } (queue order) → use returned gradeWith.ideaId or ledgerIdeaId with blender:grade-idea { ideaId, grade, feedback? }; revision author fixes → improvements:agent-review { mode:'resubmit', id, acceptance?:{problem,evidence,outcome,scope,completionCheck} }. acceptance is an unsealed proposal; independent grading still owns acceptance. Never write implementationReadiness through generic update.",
+      "improvements:agent-review { mode:'claim', id, harness? } (directed) OR { mode:'claim-next', harness? } (queue order) → read reviewHandoff evidence with sessions:read/search; consult:get_feedback only for a concrete unresolved question → correction-base → correct {id,harness,requestKey,expectedRound,correctionRevision,correction}. Clarification only appends notes; material changes require a different grader. Record unavailable context as typed outcomes. Use gradeWith.ideaId with blender:grade-idea for canonical grading. Original revision authors may resubmit with an unsealed acceptance proposal. Never write implementationReadiness through generic update.",
     seeAlso: [
       'blender:grade-idea (record the peer grade and drive approval/revision)',
       'work_items:get (read the claimed work and its checkpoint)',
@@ -163,6 +228,20 @@ export default defineTool({
   skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z.discriminatedUnion('mode', [
+    z.object({
+      mode: z.literal('correction-base'),
+      id: z.string().min(1).max(80),
+      harness: z.string().min(1).max(120).optional(),
+    }).strict(),
+    z.object({
+      mode: z.literal('correct'),
+      id: z.string().min(1).max(80),
+      harness: z.string().min(1).max(120).optional(),
+      requestKey: z.string().min(1).max(200),
+      expectedRound: z.number().int().positive(),
+      correctionRevision: z.string().regex(/^correction-v1:[a-f0-9]{64}$/),
+      correction: agentReviewCorrectionSchema,
+    }).strict(),
     z.object({
       mode: z.literal('claim'),
       id: z
@@ -220,6 +299,20 @@ export default defineTool({
   ]),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
+    if (args.mode === 'correction-base' || args.mode === 'correct') {
+      const harness = resolveConcreteHarnessSlug(args.harness, ctx);
+      if (!harness) return harnessRequiredResult('improvements:agent-review');
+      if (!identity.workspaceId) return { content: [{ type: 'text' as const,
+        text: JSON.stringify({ ok: false, mode: args.mode, reason: 'workspace-required' }) }] };
+      const scope = { id: args.id, harness, workspaceId: identity.workspaceId };
+      const result = args.mode === 'correction-base'
+        ? await readAgentReviewCorrectionBase(scope)
+        : await correctAgentReview({ ...scope, actor: identity.ownerId, requestKey: args.requestKey,
+            expectedRound: args.expectedRound, correctionRevision: args.correctionRevision, correction: args.correction });
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, mode: args.mode, ...result,
+        ...(args.mode === 'correction-base' && 'item' in result
+          ? { reviewHandoff: agentReviewEvidenceHandoff(result.item as WorkItem) } : {}) }) }] };
+    }
     if (args.mode === 'claim' || args.mode === 'claim-next') {
       const harnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
       if (!harnessSlug) return harnessRequiredResult('improvements:agent-review');
@@ -285,7 +378,8 @@ export default defineTool({
             workspaceId: identity.workspaceId ?? undefined,
           });
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, mode: args.mode, ...result }) }],
+        content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, mode: args.mode, ...result,
+          ...(result.workItem ? { reviewHandoff: agentReviewEvidenceHandoff(result.workItem) } : {}) }) }],
       };
     }
 

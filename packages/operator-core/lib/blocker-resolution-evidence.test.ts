@@ -17,7 +17,7 @@ vi.mock('./runtime-blocker-condition', () => ({ readRuntimeBlockerCondition: moc
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: mocks.workspace }));
 vi.mock('./work-items', () => ({ getWorkItem: mocks.item, readUnresolvedDepBlockers: mocks.deps,
   readWorkItemClaimHoldProvenance: mocks.hold, isClaimHoldParked: mocks.parked }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: {} }) }));
 vi.mock('./agent-tools/plans/plan-line-graph', () => ({ readPlanLineNodes: mocks.nodes }));
 vi.mock('./agent-tools/plans/source', () => ({ getPlanRow: mocks.plan,
   planItemsForRow: (row: { items: unknown[] }) => row.items }));

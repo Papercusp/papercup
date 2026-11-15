@@ -18,6 +18,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
+import { acceptanceSourceRevisionSql, verificationConflictSql } from '../harness/improvements/agent-review-policy';
 import { isWorkspaceCoordinationOn, workspaceBrainScopeKey, workspaceBrainReadKeys } from '../workspace-brain-scope';
 import { observeFallback } from '../degradation/fallback-observations';
 import { dedupById, gatherCompletions, type ChangeFeedEntry } from '../curation/change-feed';
@@ -490,12 +491,20 @@ export interface GradeRoutedIdeaInput {
    * (legacy 'Queen' rows were migrated — WI-39481).
    */
   gradedBy: string;
+  /** Server preflight identity, checked under the item lock before the ledger write. */
+  reviewFence?: {
+    workspaceId: string;
+    harness: string;
+    workItemId: string;
+    round: number;
+    sourceRevision: string;
+  };
 }
 
 /** Result of {@link gradeRoutedIdea}. */
 export interface GradeRoutedIdeaResult {
   applied: boolean;
-  reason?: 'owner-grade-sovereign' | 'not-found';
+  reason?: 'owner-grade-sovereign' | 'not-found' | 'agent-review-source-revision-stale';
 }
 
 export type GradeRoutedIdeaPhase = 'writeTransaction' | 'gradeUpdate' | 'producerObservation' | 'notFoundLookup';
@@ -556,6 +565,26 @@ export async function gradeRoutedIdea(
   // 'regrade' detection for the owner-interaction capture below) — same
   // unnarrowed idea_id predicate as before, so apply semantics are unchanged.
   const updated = await measure('writeTransaction', () => withProducerLifecycleWrite(sql, async (sql) => {
+  const fence = input.reviewFence;
+  if (fence) {
+    // Match correction's item -> ledger lock order. A preflight read alone cannot
+    // authorize a late grade after a material correction has advanced the round.
+    await sql`SET LOCAL lock_timeout = '5s'`;
+    await sql`SET LOCAL statement_timeout = '15s'`;
+    const locked = await sql`
+      SELECT wi.feature_id FROM harness_shared.work_items wi
+       WHERE wi.workspace_id=${fence.workspaceId} AND wi.harness_slug=${fence.harness}
+         AND wi.feature_id=${fence.workItemId} AND wi.status='open'
+         AND wi.taken_by=${input.gradedBy}
+         AND wi.payload->'agentReview'->>'ledgerIdeaId'=${input.ideaId}
+         AND wi.payload->'agentReview'->>'status'='pending'
+         AND wi.payload->'agentReview'->>'round'=${String(fence.round)}
+         AND wi.payload->'agentReview'->>'reviewedSourceRevision'=${fence.sourceRevision}
+         AND ${acceptanceSourceRevisionSql(sql, { itemKind: 'wi.item_kind', title: 'wi.title', summary: 'wi.summary' })}=${fence.sourceRevision}
+         AND NOT ${verificationConflictSql(sql, input.gradedBy, { payload: 'wi.payload', terminalOwner: 'wi.terminal_owner' })}
+       FOR UPDATE`;
+    if (locked.length !== 1) return null;
+  }
   const rows = await measure('gradeUpdate', () => sql<
     {
       idea_id: string;
@@ -578,6 +607,14 @@ export async function gradeRoutedIdea(
              WHERE idea_id = ${input.ideaId}) prev
      WHERE t.idea_id = prev.idea_id
        AND (${input.gradedBy} = 'owner' OR t.graded_by IS DISTINCT FROM 'owner')
+       AND (${Boolean(fence)} OR (t.origin IS DISTINCT FROM 'agent-review' AND NOT EXISTS (
+         SELECT 1 FROM harness_shared.work_items wi
+          WHERE wi.workspace_id=t.workspace_id
+            AND wi.payload->'agentReview'->>'ledgerIdeaId'=t.idea_id
+            AND t.routed_ref='wi:' || wi.feature_id)))
+       AND (${!fence} OR (t.workspace_id=${fence?.workspaceId ?? null}
+         AND t.routed_ref=${fence ? `wi:${fence.workItemId}` : null}
+         AND COALESCE(t.target_hive,t.source_hive)=${fence?.harness ?? null}))
      RETURNING t.idea_id, t.workspace_id, t.lens, t.rail, t.routed_ref, t.title,
                prev.prev_grade, prev.prev_graded_by`);
   for (const row of rows) await measure('producerObservation', () => recordProducerObservation(sql, {
@@ -585,12 +622,14 @@ export async function gradeRoutedIdea(
   }));
   return rows;
   }));
+  if (updated === null) return { applied: false, reason: 'agent-review-source-revision-stale' };
   if (updated.length === 0) {
-    const exists = await measure('notFoundLookup', () => sql<{ idea_id: string }[]>`
-      SELECT idea_id FROM harness_shared.scout_routed_ideas WHERE idea_id = ${input.ideaId}`);
+    const exists = await measure('notFoundLookup', () => sql<{ idea_id: string; origin: string; graded_by: string | null }[]>`
+      SELECT idea_id,origin,graded_by FROM harness_shared.scout_routed_ideas WHERE idea_id = ${input.ideaId}`);
     return exists.length === 0
       ? { applied: false, reason: 'not-found' }
-      : { applied: false, reason: 'owner-grade-sovereign' };
+      : { applied: false, reason: (input.reviewFence || exists[0].origin === 'agent-review') && exists[0].graded_by !== 'owner'
+        ? 'agent-review-source-revision-stale' : 'owner-grade-sovereign' };
   }
   // FB-15 (P-043): an applied OWNER grade is the cleanest implicit-attention
   // signal — append it to the owner_interactions stream (same lazy

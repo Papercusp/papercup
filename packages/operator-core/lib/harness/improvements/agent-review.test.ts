@@ -7,6 +7,10 @@ import {
   isAgentReviewRevisionAdoptionAdmission,
   readAgentReviewState,
   reproductionValidationBrief,
+  agentReviewCorrectionRevision,
+  agentReviewCorrectionRequestHash,
+  agentReviewCorrectionSchema,
+  type AgentReviewCorrectionLedger,
 } from './agent-review-policy';
 import { REBIND_BLOCKING_SESSION_STATES } from '../../agent-tools/coordination/rebind-identity';
 import {
@@ -75,6 +79,99 @@ function issue(overrides: Partial<WorkItem> = {}): WorkItem {
 function cloneIssue(value: WorkItem): WorkItem {
   return { ...value, payload: { ...(value.payload as Record<string, unknown> ?? {}) } };
 }
+
+describe('reviewer correction exact base and typed materiality', () => {
+  function base() {
+    const item = issue({ assignee: 'su-reviewer', payload: { agentReview: {
+      status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'idea-7', round: 1,
+    }, context: ['original'], unknownOutcome: null } }) as WorkItem & { payload: Record<string, unknown> };
+    const ledger: AgentReviewCorrectionLedger = { workspace_id: 'workspace', idea_id: 'idea-7',
+      routed_ref: 'wi:WI-7', source_hive: 'papercusp', target_hive: null, rail: 'improvement',
+      origin: 'agent-review', created_by: 'su-filer', title: item.title,
+      human_grade: 2, human_feedback: 'Missing context', graded_by: 'su-reviewer', graded_at: '2026-11-15T00:00:00.000001Z' };
+    return { workspaceId: 'workspace', harness: 'papercusp', item, ledger };
+  }
+
+  it.each([
+    ['kind', 'bug'], ['title', 'Different title'], ['summary', 'Different body'], ['state', 'blocked'],
+    ['assignee', 'su-peer'], ['takenAt', '2026-11-15T00:00:00.000Z'], ['assignedBy', 'su-delegator'],
+    ['createdBy', 'su-original'], ['origin', 'remote'], ['auditVerdict', 'rejected'],
+    ['definition', null],
+  ])('fences canonical item member %s, including absent definition versus null', (key, value) => {
+    const before = base();
+    const revision = agentReviewCorrectionRevision(before);
+    (before.item as unknown as Record<string, unknown>)[key] = value;
+    expect(agentReviewCorrectionRevision(before)).not.toBe(revision);
+  });
+
+  it.each([
+    ['context', ['original', 'added']], ['unknownOutcome', 'unavailable'],
+    ['evidence', { ref: 'test:1', outcome: 'missing' }], ['consultation', { outcome: 'inaccessible' }],
+    ['implementationReadiness', { status: 'ready', evidence: { acceptance: { seal: 'changed', proposal: 'changed' } } }],
+    ['reporter', { id: 'other-original-author' }], ['_claimHold', true],
+    ['futurePayloadKey', { nested: [null, '', 'kept'] }],
+  ])('fences complete payload family %s', (key, value) => {
+    const before = base(); const revision = agentReviewCorrectionRevision(before);
+    before.item.payload![key] = value;
+    expect(agentReviewCorrectionRevision(before)).not.toBe(revision);
+  });
+
+  it.each([
+    ['human_grade', 5], ['human_feedback', 'Changed feedback'], ['graded_by', 'owner'], ['graded_at', '2026-11-15T00:00:00.000002Z'],
+    ['created_by', 'su-other-original'], ['title', 'Changed ledger title'], ['rail', 'plan'], ['origin', 'other'],
+  ])('fences canonical ledger member %s', (key, value) => {
+    const before = base(); const revision = agentReviewCorrectionRevision(before);
+    (before.ledger as unknown as Record<string, unknown>)[key] = value;
+    expect(agentReviewCorrectionRevision(before)).not.toBe(revision);
+  });
+
+  it('excludes only the receipt subtree and ignores response enrichments', () => {
+    const before = base(); const revision = agentReviewCorrectionRevision(before);
+    (before.item.payload!.agentReview as Record<string, unknown>).correctionReceipts = [{ afterRevision: revision }];
+    Object.assign(before.item, { responseEnrichment: undefined });
+    expect(agentReviewCorrectionRevision(before)).toBe(revision);
+    before.item.payload!.otherReceipt = { afterRevision: revision };
+    expect(agentReviewCorrectionRevision(before)).not.toBe(revision);
+  });
+
+  it('preserves text bytes, array order, absent, null and empty values', () => {
+    const before = base();
+    const revisions = [undefined, null, '', ['a', 'b'], ['b', 'a'], 'é', 'e\u0301'].map(value => {
+      if (value === undefined) delete before.item.payload!.unknownOutcome;
+      else before.item.payload!.unknownOutcome = value;
+      return agentReviewCorrectionRevision(before);
+    });
+    expect(new Set(revisions).size).toBe(revisions.length);
+    const reordered = { z: [1, 2], a: 'same' };
+    expect(agentReviewCorrectionRequestHash(reordered)).toBe(agentReviewCorrectionRequestHash({ a: 'same', z: [1, 2] }));
+  });
+
+  it.each([NaN, Infinity, undefined, new Date(), () => 1, [undefined], Array(1), { x: undefined }])(
+    'rejects non-JSON data without coercing it (%s)', value => {
+      const before = base(); before.item.payload!.bad = value;
+      expect(() => agentReviewCorrectionRevision(before)).toThrow('correction-non-json');
+    },
+  );
+
+  it('refuses incomplete projections, mismatched association and self-referential history', () => {
+    const before = base(); delete (before.ledger as Partial<AgentReviewCorrectionLedger>).graded_at;
+    expect(() => agentReviewCorrectionRevision(before)).toThrow('correction-projection-missing:graded_at');
+    const mismatched = base(); mismatched.ledger.routed_ref = 'wi:other';
+    expect(() => agentReviewCorrectionRevision(mismatched)).toThrow('correction-association-mismatch');
+    const recursive = base();
+    (recursive.item.payload!.agentReview as Record<string, unknown>).correctionHistory = [{ afterRevision: 'computed-head' }];
+    expect(() => agentReviewCorrectionRevision(recursive)).toThrow('correction-history-invalid');
+  });
+
+  it('accepts only appended notes as a clarification; source and proposal edits require material', () => {
+    const notes = [{ kind: 'transcript', outcome: 'inaccessible', text: 'Access denied; no reproduction inferred.' }];
+    expect(agentReviewCorrectionSchema.safeParse({ classification: 'clarification', notes }).success).toBe(true);
+    for (const changes of [{ summary: 'replace' }, { acceptance: {} }, { report: { diagnosis: 'replace' } }]) {
+      expect(agentReviewCorrectionSchema.safeParse({ classification: 'clarification', notes, changes }).success).toBe(false);
+      expect(agentReviewCorrectionSchema.safeParse({ classification: 'material', notes, changes }).success).toBe(true);
+    }
+  });
+});
 
 function harness(initial: WorkItem = issue()) {
   const state: {
@@ -992,6 +1089,38 @@ describe('agent-review grading lifecycle', () => {
       },
     });
   });
+
+  it.each(['su-material-a', 'su-material-b'])('excludes historical material author %s after a later clarification', async author => {
+    const h = harness({ ...pending, assignee: author, payload: { agentReview: {
+      status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 4,
+      reviewedSourceRevision: acceptanceSourceRevision(pending), materialAuthors: ['su-material-a'],
+      correctionHistory: [{ actor: 'su-material-a', classification: 'material' },
+        { actor: 'su-material-b', classification: 'material' }, { actor: 'su-clarifier', classification: 'clarification' }],
+    } } });
+    h.state.ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: 5, feedback: null, gradedBy: author };
+    expect(await preflightAgentReviewGrade({ ideaId: 'WI-7', grade: 5, gradedBy: author }, h.deps))
+      .toMatchObject({ refusal: 'agent-review-author-conflict' });
+    const before = structuredClone(h.state.issue);
+    await expect(reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: author }, h.deps))
+      .rejects.toThrow('agent-review-author-conflict');
+    expect(h.state.issue).toEqual(before);
+  });
+
+  it.each([{ sessionState: 'live' }, { sessionState: 'ended' }, null] as const)(
+    'retains correction reviewer custody for a failed grade regardless of filer liveness %s', async liveness => {
+      const h = harness({ ...pending, payload: { agentReview: {
+        status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 3,
+        correctionHistory: [{ actor: 'su-material-a', classification: 'material' }], materialAuthors: ['su-material-a'],
+      } } });
+      h.state.submitterLiveness = liveness;
+      h.state.ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: 2, feedback: 'Still missing evidence', gradedBy: 'su-reviewer' };
+      expect(await reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps))
+        .toMatchObject({ status: 'revision-requested', reviewerRetained: true, returnedToSubmitter: false });
+      expect(h.state.issue.assignee).toBe('su-reviewer');
+      expect(h.resolveSubmitterLiveness).not.toHaveBeenCalled();
+      expect(h.deliverRevision).not.toHaveBeenCalled();
+    },
+  );
 
   it('refuses unbound, stale, or non-holder grades before the ledger write seam', async () => {
     const ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: null, feedback: null, gradedBy: null };
@@ -2315,7 +2444,7 @@ describe('adoptAgentReviewRevision — discover and adopt a content revision und
   it('uses recovered synthetic provenance and verified aliases in the same read-only proof', async () => {
     const h = harness(contentRevision({ createdBy: 'su-reporter' }, { submittedBy: STRANDED_SWEEP_OWNER }));
     h.state.issue.payload = {
-      ...h.state.issue.payload,
+      ...(h.state.issue.payload as Record<string, unknown> ?? {}),
       _ei: { created_by: 'su-reporter' },
       strandedToolFailureSweep: { owner: STRANDED_SWEEP_OWNER, at: '2026-10-01T10:00:00.000Z', outcome: 'review' },
     };

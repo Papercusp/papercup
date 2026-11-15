@@ -792,6 +792,7 @@ export async function runGradeIdea(
       grade: args.grade,
       ...(feedback !== undefined ? { feedback } : {}),
       gradedBy,
+      ...(agentReviewPreflight.reviewFence ? { reviewFence: agentReviewPreflight.reviewFence } : {}),
     };
     if (!diagnostics) return deps.gradeRoutedIdea(gradeInput);
     return deps.gradeRoutedIdea(gradeInput, {
@@ -801,6 +802,10 @@ export async function runGradeIdea(
       },
     });
   });
+
+  if (result.reason === 'agent-review-source-revision-stale') {
+    return { applied: false, reason: result.reason, gradedBy, ideaId, idea: null };
+  }
 
   // Post-write read-back (PK-keyed, total). On applied=true it shows exactly
   // what was written; on owner-grade-sovereign it shows the standing owner

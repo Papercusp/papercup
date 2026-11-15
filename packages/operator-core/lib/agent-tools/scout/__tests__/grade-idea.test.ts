@@ -114,6 +114,20 @@ describe('gradeIdeaArgs validation', () => {
 });
 
 describe('runGradeIdea', () => {
+  it('forwards the server review fence and does not reconcile a stale ledger refusal', async () => {
+    const reviewFence = { workspaceId: 'ws', harness: 'papercusp', workItemId: 'WI-42',
+      round: 2, sourceRevision: 'src-v1:current' };
+    const deps = fakeDeps({
+      preflightAgentReviewGrade: vi.fn(async () => ({ applicable: true, reviewFence })),
+      gradeRoutedIdea: vi.fn(async () => ({ applied: false, reason: 'agent-review-source-revision-stale' as const })),
+    });
+    expect(await runGradeIdea({ ideaId: 'idea-1', grade: 5 }, { ownerId: 'su-reviewer' }, deps))
+      .toEqual({ applied: false, reason: 'agent-review-source-revision-stale', gradedBy: 'su-reviewer', ideaId: 'idea-1', idea: null });
+    expect(deps.gradeRoutedIdea).toHaveBeenCalledWith({ ideaId: 'idea-1', grade: 5, gradedBy: 'su-reviewer', reviewFence });
+    expect(deps.readIdeaSummary).not.toHaveBeenCalled();
+    expect(deps.reconcileAgentReviewGrade).not.toHaveBeenCalled();
+  });
+
   it('refuses a bare work-item key that collides with a historical row and returns the canonical review key', async () => {
     const deps = fakeDeps({
       findAgentReviewLedgerCollision: vi.fn(async (workItemId: string) => ({
