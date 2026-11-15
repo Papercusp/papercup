@@ -7451,7 +7451,7 @@ describe("runGreenCheckpoint", () => {
       failingTests: expect.arrayContaining(["lint:tsc"]),
     });
     expect(r.summary).toContain(
-      "Early changed-file typecheck failed before the affected-test sweep",
+      "Early changed-file typecheck failed; its red is retained while the round-one affected-test sweep measures the candidate",
     );
     expect(r.summary).not.toContain("Early non-test gate inventory");
     expect(r.summary).toContain("Affected-test sweep (P-016");
