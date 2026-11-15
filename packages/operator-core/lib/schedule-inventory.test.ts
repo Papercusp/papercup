@@ -268,7 +268,7 @@ describe('startup entrypoint census', () => {
         armedAt: 0, lastFireAt: null, lastError: null, running: false, runningSince: null,
         skippedWhileRunning: 0, fires: 0, shed: false, instanced: false, instances: 1, classification: null };
       const native = STARTUP_ACTIVITY_ENTRYPOINTS.filter(entry => !('notApplicableReason' in entry))
-        .map(entry => ({ ...scheduleStartupFeature(startupRow()), id: entry.id, origin: 'native', entrypointIds: [entry.id] }));
+        .map(entry => ({ ...scheduleStartupFeature(startupRow()), id: entry.id, origin: 'native' as const, entrypointIds: [entry.id] }));
       const snapshot = await runWithWorkspace('workspace-a', () => collectStartupActivity({ ...emptyInventory,
         getManaged: () => placement === 'local' ? [timer] : [],
         getSiblingManaged: async () => placement === 'federated'
@@ -288,7 +288,7 @@ describe('startup entrypoint census', () => {
 
   it('returns the versioned census with the actual snapshot and fails an omitted installed entry', async () => {
     const native: StartupActivityFeature[] = STARTUP_ACTIVITY_ENTRYPOINTS.filter(entry => !('notApplicableReason' in entry))
-      .map(entry => ({ ...scheduleStartupFeature(startupRow()), id: entry.id, origin: 'native', entrypointIds: [entry.id] }));
+      .map(entry => ({ ...scheduleStartupFeature(startupRow()), id: entry.id, origin: 'native' as const, entrypointIds: [entry.id] }));
     const complete = await collectStartupActivity({ ...emptyInventory, getRoutines: async () => [routine()] }, {
       native: async () => native,
       census: async features => STARTUP_ACTIVITY_ENTRYPOINTS.filter(entry => !('notApplicableReason' in entry))

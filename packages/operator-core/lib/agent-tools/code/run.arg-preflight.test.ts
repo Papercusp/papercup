@@ -90,6 +90,7 @@ import './run'; // registers code:run (after the mocks are hoisted)
 import '../improvements/capture';
 import '../plans/set-status';
 import '../work_items/claim';
+import '../loop/checkpoint';
 import '../pre-prompt-registry-config';
 
 const orchestration = (over: Record<string, unknown> = {}) => ({
@@ -150,6 +151,22 @@ describe('code:run static arg preflight (EI-19449316000499177)', () => {
 
     const result = await codeRun().fn({
       script: 'return await tools.workItems.claim({ row: "EI-24779677812251161,,papercusp" });',
+    }, mkCtx());
+
+    expect(runToolOrchestrationMock).toHaveBeenCalledTimes(1);
+    expect(payloadOf(result)).not.toMatchObject({ error: 'script_invalid' });
+  });
+
+  it('accepts loop:checkpoint status/evidence compatibility rows in real schema preflight', async () => {
+    const { validateRecipeScriptAgainstCatalog } = await vi.importActual<
+      typeof import('../recipes/recipe-schema-validation')
+    >('../recipes/recipe-schema-validation');
+    validateMock.mockImplementation(validateRecipeScriptAgainstCatalog);
+
+    expect(listAllProjectedTools().some((t) => t.expose.mcp?.name === 'loop:checkpoint')).toBe(true);
+    const result = await codeRun().fn({
+      script:
+        "await tools.loop.checkpoint({ checks: [{ claim: 'gate is green', recheck: 'state:read', status: 'verified', evidence: 'saw 30/30 pass' }] });",
     }, mkCtx());
 
     expect(runToolOrchestrationMock).toHaveBeenCalledTimes(1);
