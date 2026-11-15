@@ -1478,11 +1478,12 @@ describe('durable detached snapshot lifecycle', () => {
         if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) return options.casLost ? [] : [{ run_id: snapshot.runId }];
         return [];
       });
-      Object.assign(sql, { begin: async (run: (tx: typeof sql) => Promise<unknown>) => {
+      const transaction = async (run: (tx: typeof sql) => Promise<unknown>) => {
         const before = ledger.length;
         try { return await run(sql); }
         catch (error) { ledger.splice(before); throw error; }
-      } });
+      };
+      Object.assign(sql as unknown as object, { begin: transaction });
 
       const recovery = store.getRunAsync(snapshot.runId, sql as unknown as Sql, options.legacy || options.archivedOnly ? {
         root: '/tmp', harnessSlug: 'papercusp', workspaceId: options.wrongScope ? 'other-workspace' : 'papercusp-workspace',
@@ -1694,11 +1695,12 @@ describe('durable detached snapshot lifecycle', () => {
         if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) return [{ run_id: snapshot.runId }];
         return [];
       }) as unknown as Sql;
-      Object.assign(sql, { begin: async (run: (tx: typeof sql) => Promise<unknown>) => {
+      const transaction = async (run: (tx: typeof sql) => Promise<unknown>) => {
         const before = ledger.length;
         try { return await run(sql); }
         catch (error) { ledger.splice(before); throw error; }
-      } });
+      };
+      Object.assign(sql as unknown as object, { begin: transaction });
 
       const recovered = await store.getRunAsync(snapshot.runId, sql);
       const retainedMatches = [...(recovered?.output ?? '').matchAll(/\[detached-recovery\] retained report artifact (\{[^\n]+\})/g)];
@@ -1977,7 +1979,7 @@ describe('durable detached snapshot lifecycle', () => {
         const detail = (taskManagerMocks.begin.mock.calls[0]?.[0] as {
           detail?: Record<string, unknown>;
         } | undefined)?.detail;
-        return detail?.originRunId === values[0] && typeof detail.runId === 'string'
+        return detail?.originRunId === values[0] && typeof detail?.runId === 'string'
           ? [{ detached_run_id: detail.runId }]
           : [];
       }
@@ -2032,7 +2034,7 @@ describe('durable detached snapshot lifecycle', () => {
     );
     await vi.waitFor(() => expect(terminalSnapshotWriteFailed).toBe(true));
     expect(snapshotWriteCount).toBe(2);
-    expect(durableRow?.status).toBe('running');
+    expect((durableRow as Record<string, unknown> | null)?.status).toBe('running');
 
     taskState = 'ended_unobserved';
     store._resetTestingRunStore();
@@ -2047,7 +2049,7 @@ describe('durable detached snapshot lifecycle', () => {
     });
     expect(recovered?.output).toContain('no test verdict was observed');
     expect(perFileLedgerReads).toBeGreaterThan(0);
-    expect(durableRow?.status).toBe('error');
+    expect((durableRow as Record<string, unknown> | null)?.status).toBe('error');
   });
 
   it('retries an empty sibling read until the confirmed snapshot becomes visible', async () => {
@@ -3134,7 +3136,9 @@ describe('durable detached snapshot lifecycle', () => {
 
     const withheld = await store.getRunAsync(runId, sql);
 
-    expect(withheld).toMatchObject({ status: 'error', exitCode: 0, truncated: true });
+    expect(withheld).toMatchObject({
+      status: scenario.reason === 'ledger-read-unavailable' ? 'unknown' : 'error', exitCode: 0, truncated: true,
+    });
     const diagnostic = withheld!.output.split('\n').find(line => line.startsWith('[coverage-gate:verification] '));
     expect(JSON.parse(diagnostic!.slice('[coverage-gate:verification] '.length))).toEqual({
       reason: scenario.reason,
@@ -3259,7 +3263,7 @@ describe('durable detached snapshot lifecycle', () => {
       const initialRead = store.getRunAsync(runId, sql);
       await vi.advanceTimersByTimeAsync(1_000);
       const withheld = await initialRead;
-      expect(withheld).toMatchObject({ runId, status: 'error', exitCode: 0 });
+      expect(withheld).toMatchObject({ runId, status: 'unknown', exitCode: 0 });
       const diagnostic = withheld!.output.split('\n').find(line => line.startsWith('[coverage-gate:verification] '));
       expect(JSON.parse(diagnostic!.slice('[coverage-gate:verification] '.length))).toMatchObject({
         reason: 'ledger-read-unavailable',
@@ -3273,7 +3277,7 @@ describe('durable detached snapshot lifecycle', () => {
       expect(recovered?.output).toContain('recovered pass from exact requested-file ledger rows');
       expect(recovered?.output).not.toContain('[coverage-gate');
       expect(ledgerReads).toBeGreaterThan(1);
-      expect(updates.map(([status]) => status)).toEqual(['error', 'pass']);
+      expect(updates.map(([status]) => status)).toEqual(['unknown', 'pass']);
     } finally {
       vi.useRealTimers();
     }
@@ -3461,7 +3465,7 @@ describe('durable detached snapshot lifecycle', () => {
     }) as unknown as Sql;
 
     const withheld = await store.getRunAsync(runId, sql);
-    expect(withheld).toMatchObject({ runId, status: 'error', exitCode: 0 });
+    expect(withheld).toMatchObject({ runId, status: 'unknown', exitCode: 0 });
     const diagnostic = withheld!.output.split('\n').find(line => line.startsWith('[coverage-gate:verification] '));
     expect(JSON.parse(diagnostic!.slice('[coverage-gate:verification] '.length))).toMatchObject({
       reason: 'ledger-read-unavailable',
@@ -3473,7 +3477,7 @@ describe('durable detached snapshot lifecycle', () => {
 
     expect(recovered).toMatchObject({ runId, status: 'pass', exitCode: 0 });
     expect(recovered?.output).not.toContain('[coverage-gate]');
-    expect(updates.map(([status]) => status)).toEqual(['error', 'pass']);
+    expect(updates.map(([status]) => status)).toEqual(['unknown', 'pass']);
   });
 
   it('rechecks a withheld Vitest PASS when exact requested-file ledger rows arrive later', async () => {

@@ -25,6 +25,7 @@ const { createIssue, claimIssue } = await import('../../issues-engineer');
 const { claimWorkItem, getWorkItem, mergeWorkItemPayload, releaseWorkItem } = await import('../../work-items');
 const { adoptAgentReviewRevision, correctAgentReview, readAgentReviewCorrectionBase } = await import('./agent-review');
 const { recordRoutedIdea, gradeRoutedIdea } = await import('../../scout/routed-ledger');
+const { cleanupReviewerCorrectionFixture } = await import('../../agent-tools/testing/record-run');
 const { acceptanceSourceRevision, mintAgentReviewClaimAdmission, mintAgentReviewRevisionAdoptionAdmission,
   verificationConflict, verificationParties, readAgentReviewState, createImplementationReadiness } = await import('./agent-review-policy');
 
@@ -354,6 +355,44 @@ describe('reviewer-owned correction through real PostgreSQL and claim admission'
       expect(await snapshot(seed)).toEqual(before);
     },
   );
+});
+
+describe('native reviewer correction fixture cleanup through real PostgreSQL', () => {
+  async function seed() {
+    const nonce = tag();
+    const issue = await createIssue({ kind: 'change', title: 'Disposable reviewer correction control',
+      scope: 'harness:papercusp', createdBy: GONE,
+      payload: { reviewerCorrectionFixture: nonce } });
+    const stored = await row(issue.id);
+    const ideaId = `reviewer-correction:${nonce}`;
+    await recordRoutedIdea({ ideaId, lens: 'agent-review', rail: 'improvement', routedRef: `wi:${issue.id}`,
+      workspaceId: stored.workspace_id, harnessSlug: stored.harness_slug, title: issue.title,
+      origin: 'agent-review', createdBy: GONE });
+    return { id: issue.id, nonce, ideaId,
+      ctx: { workspaceId: stored.workspace_id, harnessSlug: stored.harness_slug } };
+  }
+
+  it('removes the canonical change fixture and its ledger while retaining another fixture', async () => {
+    const own = await seed(); const other = await seed();
+    await cleanupReviewerCorrectionFixture(own.ctx, own.nonce, own.id, own.ideaId);
+    expect(await db.adminSql`SELECT feature_id FROM harness_shared.work_items WHERE feature_id=${own.id}`).toHaveLength(0);
+    expect(await db.adminSql`SELECT idea_id FROM harness_shared.scout_routed_ideas WHERE idea_id=${own.ideaId}`).toHaveLength(0);
+    expect((await row(other.id)).payload).toMatchObject({ reviewerCorrectionFixture: other.nonce });
+    expect(await db.adminSql`SELECT idea_id FROM harness_shared.scout_routed_ideas WHERE idea_id=${other.ideaId}`).toHaveLength(1);
+    await cleanupReviewerCorrectionFixture(other.ctx, other.nonce, other.id, other.ideaId);
+  });
+
+  it.each(['nonce', 'workspace', 'harness', 'idea'] as const)('refuses a wrong %s before deleting fixture data', async (fault) => {
+    const own = await seed();
+    await expect(cleanupReviewerCorrectionFixture({ ...own.ctx,
+      ...(fault === 'workspace' ? { workspaceId: 'wrong-workspace' } : {}),
+      ...(fault === 'harness' ? { harnessSlug: 'wrong-harness' } : {}),
+    }, fault === 'nonce' ? 'wrong-nonce' : own.nonce, own.id,
+    fault === 'idea' ? 'wrong-idea' : own.ideaId)).rejects.toThrow();
+    expect((await row(own.id)).payload).toMatchObject({ reviewerCorrectionFixture: own.nonce });
+    expect(await db.adminSql`SELECT idea_id FROM harness_shared.scout_routed_ideas WHERE idea_id=${own.ideaId}`).toHaveLength(1);
+    await cleanupReviewerCorrectionFixture(own.ctx, own.nonce, own.id, own.ideaId);
+  });
 });
 
 describe('BQL D-008 revision adoption through the real claim writer', () => {

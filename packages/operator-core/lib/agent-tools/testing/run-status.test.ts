@@ -80,14 +80,14 @@ describe('testing:run-status foreground verdict (WI-6554700010018414)', () => {
 });
 
 describe('testing:run-status handler', () => {
-  it('uses exact terminal pass rows to supersede a stale error snapshot', async () => {
+  it('uses exact terminal pass rows to supersede a stale unknown snapshot', async () => {
     const runId = 'stale-run';
     const snapshot: RunSnapshot = {
       runId,
       kind: 'vitest',
       label: 'stale detached test',
       command: ['node', 'scripts/test-files.mjs'],
-      status: 'error',
+      status: 'unknown',
       exitCode: null,
       startedAt: 123,
       finishedAt: 456,
@@ -133,7 +133,7 @@ describe('testing:run-status handler', () => {
       ledgerRecovery: { runId, status: 'pass', exitCode: 0, fileCount: 1 },
     });
     expect(String((out.data.ledgerRecovery as DetachedRunLedgerRecovery).message))
-      .toContain('stale error lifecycle snapshot was superseded');
+      .toContain('stale unknown lifecycle snapshot was superseded');
     expect(ledgerRecoveryMock).toHaveBeenCalledWith(runId);
     expect(foregroundMock).not.toHaveBeenCalled();
   });
@@ -156,7 +156,9 @@ describe('testing:run-status handler', () => {
     const out = await call(snapshot.runId);
 
     expect(out.data).toEqual({ ok: true, snapshot });
-    expect(getRunMock).toHaveBeenCalledWith(snapshot.runId);
+    expect(getRunMock).toHaveBeenCalledWith(
+      snapshot.runId, undefined, undefined, undefined, expect.any(Function),
+    );
   });
 
   it('returns explicit unknown_run for an absent or evicted id', async () => {

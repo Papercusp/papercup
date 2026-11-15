@@ -1098,6 +1098,33 @@ export interface ReviewerCorrectionScenarioDeps {
   cleanup: (nonce: string, id: string, ideaId: string) => Promise<void>;
 }
 
+/** Remove only this native check's nonce-owned data from the canonical stores. */
+export async function cleanupReviewerCorrectionFixture(ctx: RecordContext, nonce: string, id: string, ideaId: string) {
+  const workspace = ctx.workspaceId!;
+  const harness = resolveConcreteHarnessSlug(undefined, ctx)!;
+  assert.equal(ideaId, `reviewer-correction:${nonce}`, 'fixture idea must belong to the same nonce');
+  const { sql } = getOrgPg();
+  await sql.begin(async tx => {
+    const owned = await tx`SELECT feature_id FROM harness_shared.work_items
+      WHERE workspace_id=${workspace} AND harness_slug=${harness} AND feature_id=${id}
+        AND item_kind='change' AND payload->>'reviewerCorrectionFixture'=${nonce} FOR UPDATE`;
+    assert.equal(owned.length, 1, 'fixture custody must be proved before cleanup');
+    await tx`DELETE FROM harness_shared.scout_routed_ideas WHERE workspace_id=${workspace}
+      AND harness_slug=${harness} AND idea_id=${ideaId} AND routed_ref=${`wi:${id}`}`;
+    // harness_features_consolidated is a compatibility projection for feature rows;
+    // createIssue writes this change fixture into the canonical work_items table.
+    await tx`DELETE FROM harness_shared.work_items WHERE workspace_id=${workspace}
+      AND harness_slug=${harness} AND feature_id=${id} AND item_kind='change'
+      AND payload->>'reviewerCorrectionFixture'=${nonce}`;
+    const remaining = await tx`SELECT feature_id FROM harness_shared.work_items
+      WHERE workspace_id=${workspace} AND harness_slug=${harness} AND feature_id=${id}`;
+    assert.equal(remaining.length, 0, 'owned fixture cleanup must be verified');
+    const remainingIdeas = await tx`SELECT idea_id FROM harness_shared.scout_routed_ideas
+      WHERE workspace_id=${workspace} AND harness_slug=${harness} AND idea_id=${ideaId}`;
+    assert.equal(remainingIdeas.length, 0, 'owned idea cleanup must be verified');
+  });
+}
+
 /** Public dispatch is the behavior under test; direct database access only seeds,
  * reads and removes nonce-owned fixtures. No lifecycle or grade handler is imported. */
 async function reviewerCorrectionScenarioDeps(ctx: RecordContext): Promise<ReviewerCorrectionScenarioDeps> {
@@ -1111,24 +1138,8 @@ async function reviewerCorrectionScenarioDeps(ctx: RecordContext): Promise<Revie
   const harness = resolveConcreteHarnessSlug(undefined, ctx)!;
   assert.equal(issuesScopeWorkspace(), workspace, 'fixture writer must share the authenticated workspace');
   const { sql } = getOrgPg();
-  const cleanup: ReviewerCorrectionScenarioDeps['cleanup'] = async (nonce, id, ideaId) => {
-    await sql.begin(async tx => {
-      const owned = await tx`SELECT feature_id FROM harness_shared.work_items
-        WHERE workspace_id=${workspace} AND harness_slug=${harness} AND feature_id=${id}
-          AND payload->>'reviewerCorrectionFixture'=${nonce} FOR UPDATE`;
-      assert.equal(owned.length, 1, 'fixture custody must be proved before cleanup');
-      await tx`DELETE FROM harness_shared.scout_routed_ideas WHERE workspace_id=${workspace}
-        AND harness_slug=${harness} AND idea_id=${ideaId} AND routed_ref=${`wi:${id}`}`;
-      await tx`DELETE FROM harness_shared.harness_features_consolidated WHERE workspace_id=${workspace}
-        AND harness_slug=${harness} AND feature_id=${id} AND payload->>'reviewerCorrectionFixture'=${nonce}`;
-      const remaining = await tx`SELECT feature_id FROM harness_shared.work_items
-        WHERE workspace_id=${workspace} AND harness_slug=${harness} AND feature_id=${id}`;
-      assert.equal(remaining.length, 0, 'owned fixture cleanup must be verified');
-      const remainingIdeas = await tx`SELECT idea_id FROM harness_shared.scout_routed_ideas
-        WHERE workspace_id=${workspace} AND harness_slug=${harness} AND idea_id=${ideaId}`;
-      assert.equal(remainingIdeas.length, 0, 'owned idea cleanup must be verified');
-    });
-  };
+  const cleanup: ReviewerCorrectionScenarioDeps['cleanup'] = (nonce, id, ideaId) =>
+    cleanupReviewerCorrectionFixture(ctx, nonce, id, ideaId);
   return {
     async witness() {
       const host = getServingHostIdentity();
@@ -1243,6 +1254,7 @@ export async function measureReviewerOwnedCorrection(ctx: RecordContext, deps: R
   const nonce = randomUUID();
   const clients: Awaited<ReturnType<ReviewerCorrectionScenarioDeps['open']>>[] = [];
   let fixture: Awaited<ReturnType<ReviewerCorrectionScenarioDeps['seed']>> | undefined;
+  let scenarioError: unknown;
   try {
     const invalid = await deps.open('su-' + randomUUID(), true); clients.push(invalid);
     await assert.rejects(() => invalid.invoke('coord:whoami', {}), /superuser_invalid_bearer/);
@@ -1374,8 +1386,17 @@ export async function measureReviewerOwnedCorrection(ctx: RecordContext, deps: R
         initialReceipt: first.receipt.requestHash, laterReceipt: later.receipt.requestHash, canonicalReadbackUnchanged: true }) },
       { id: 'reviewer-correction:private-cleanup', passed: true, evidence: `Verified removal of nonce-owned fixture ${id} and its exact routed idea ${ideaId}.` },
     ] };
+  } catch (error) {
+    scenarioError = error;
+    throw error;
   } finally {
     try { if (fixture) await deps.cleanup(nonce, fixture.id, fixture.ideaId); }
+    catch (cleanupError) {
+      if (scenarioError !== undefined) throw new AggregateError([scenarioError, cleanupError],
+        String(scenarioError instanceof Error ? scenarioError.message : scenarioError) +
+        '\nFixture cleanup also failed: ' + String(cleanupError instanceof Error ? cleanupError.message : cleanupError));
+      throw cleanupError;
+    }
     finally { await Promise.allSettled(clients.map(client => client.close())); }
   }
 }

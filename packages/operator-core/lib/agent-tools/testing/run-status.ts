@@ -66,7 +66,8 @@ export default defineTool({
       snapshotUnavailable = true;
     }
     if (snapshot) {
-      if (snapshot.kind === 'vitest' && (snapshot.status === 'running' || snapshot.status === 'error')) {
+      if (snapshot.kind === 'vitest'
+        && (snapshot.status === 'running' || snapshot.status === 'error' || snapshot.status === 'unknown')) {
         let ledgerRecovery: DetachedRunLedgerRecovery | null = null;
         try {
           ledgerRecovery = await getTestRunLedgerRecoveryAsync(args.runId);

@@ -117,7 +117,7 @@ export function isLikelySaturationArtifact(row: {
   return TIMEOUT_FAILURE_RE.test(row.outputTail ?? '');
 }
 
-export type RunStatus = 'running' | 'pass' | 'fail' | 'cancelled' | 'error';
+export type RunStatus = 'running' | 'pass' | 'fail' | 'cancelled' | 'error' | 'unknown';
 
 export interface ProvisionalTestVerdict {
   status: 'pass' | 'fail';
@@ -2696,7 +2696,7 @@ type VitestCoverageWithheldReason =
 
 function isWithheldUnverifiedVitestPass(snapshot: RunSnapshot): boolean {
   return snapshot.kind === 'vitest'
-    && snapshot.status === 'error'
+    && (snapshot.status === 'error' || snapshot.status === 'unknown')
     && snapshot.output.includes(UNVERIFIED_VITEST_PASS_NOTE);
 }
 
@@ -2773,7 +2773,7 @@ async function withholdUnverifiedVitestPass(
   // the prerequisite measured by this read. A query failure is unavailable;
   // it is never labelled a timeout without evidence from that query.
   const unverified: RunSnapshot = {
-    ...snapshot, status: 'error',
+    ...snapshot, status: reason === 'ledger-read-unavailable' ? 'unknown' : 'error',
     ...(task ? { exitCode: task.exit_code } : {}),
     ...(provisionalVerdict ? { provisionalVerdict } : {}),
     output: snapshot.output.replace(VITEST_COVERAGE_DIAGNOSTIC_RE, ''),

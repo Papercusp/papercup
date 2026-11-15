@@ -31,6 +31,7 @@ import {
 } from './runs';
 import runsTool from './runs';
 import { CRITICAL_P95_MS } from '../../event-loop-lag-monitor';
+import { readForegroundKernelVerdict } from '../../testing-run-store-foreground-kernel';
 
 const sqlMock = vi.hoisted(() => vi.fn());
 const readerRuntime = vi.hoisted(() => ({ artifact: null as Record<string, unknown> | null }));
@@ -102,7 +103,9 @@ describe('testing:runs loaded reader provenance', () => {
     });
     const result = await runsTool.handler({ testRunIds: [1] } as never, {} as never);
     expect(result).toMatchObject({ data: { count: 0, runs: [], reader: testRunReaderProvenance() } });
-    expect(runsTool.result?.safeParse((result as { data: unknown }).data).success).toBe(true);
+    const validated = await runsTool.result?.['~standard'].validate((result as { data: unknown }).data);
+    expect(validated?.issues).toBeUndefined();
+    expect(validated).toHaveProperty('value');
   });
 });
 
@@ -1350,7 +1353,9 @@ describe('testing:runs foreground verdict on an empty exact runGroup', () => {
       data?: Record<string, unknown>; content?: Array<{ text: string }>;
     };
     const data = result.data ?? JSON.parse(result.content?.[0]?.text ?? '{}');
-    expect(foregroundVerdictMock).toHaveBeenCalledWith('run-x');
+    // Current contract (runs.ts foregroundRunMetadata default): the handler reads the
+    // verdict with the kernel-verdict reader so a kernel-terminated run is not guessed.
+    expect(foregroundVerdictMock).toHaveBeenCalledWith('run-x', undefined, readForegroundKernelVerdict);
     expect(data).toMatchObject({ count: 0, notRecorded: true, foregroundRun: { verdict: 'lost' } });
   });
 

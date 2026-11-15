@@ -217,6 +217,22 @@ describe('native served reviewer correction evidence', () => {
       execution: { operational: { command: ['reviewer-owned-correction-current-build'] }, failed: 1 } });
     expect(f.cleanup).toHaveBeenCalledOnce();
   });
+
+  it('retains the original served failure and cleanup failure in the recorded observation', async () => {
+    const f = fixture();
+    f.deps.read = async () => { throw new Error('served readback failed'); };
+    f.cleanup.mockRejectedValue(new Error('nonce cleanup failed'));
+    const persist = vi.fn(async (_params: Parameters<RecordOperationalRunDeps['persist']>[0]) => ({ written: 1, ids: [906] }));
+    const result = await executeReviewerOwnedCorrection(f.ctx, { scenario: f.deps,
+      execution: { snapshot: () => ({ commit: 'e'.repeat(40), porcelain: '' }), sourceRoot: async () => '/repo',
+        verifyDefinition: async () => true, readRuntime: async () => 'f'.repeat(64), persist } });
+    expect(result).toMatchObject({ status: 'fail', testRunIds: [906] });
+    const output = persist.mock.calls[0]![0].rows[0].outputTail;
+    expect(output).toContain('served readback failed');
+    expect(output).toContain('Fixture cleanup also failed: nonce cleanup failed');
+    expect(f.cleanup).toHaveBeenCalledOnce();
+    for (const close of f.closes) expect(close).toHaveBeenCalledOnce();
+  });
 });
 
 describe('native Git scratch placement execution', () => {
