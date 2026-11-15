@@ -6,7 +6,7 @@ const io = vi.hoisted(() => ({
   pgTarget: vi.fn(), build: vi.fn(),
 }));
 vi.mock('postgres', async (original) => {
-  const actual = await original<typeof import('postgres')>();
+  const actual = await original<{ default: typeof postgres }>();
   return { ...actual, default: vi.fn(actual.default) };
 });
 vi.mock('./embedded-pg-discovery', () => ({
