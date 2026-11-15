@@ -361,8 +361,13 @@ describe('R16 repeatable existing-ledger reads', () => {
   });
   it('records hash-pinned raw metric populations, then the registered reader recomputes and rejects corrupted evidence', async () => {
     const scope = { workspaceId: fx.workspaceId, harnessSlug: 'raw-producer', windowStart: at, windowEnd: now };
-    const load = async () => ({ ...buildReuseSourcePopulation({ sources: [{ path: 'a.ts', source: 'export function a() {} a();' }],
-      addedLines: { 'a.ts': [1] }, complete: true }), sourceRefs: ['git:controlled-base', 'git:controlled-end'], base: 'controlled-base', commit: 'controlled-end' });
+    const load = async () => {
+      const population = buildReuseSourcePopulation({ sources: [{ path: 'a.ts', source: 'export function a() {} a();' }],
+        addedLines: { 'a.ts': [1] }, complete: true });
+      return { ...population, method: { ...population.method, sourcePopulationCensus: { complete: true,
+        gitlinks: { total: 0, resolved: 0 }, unresolved: [], unresolvedOmitted: 0 } },
+        sourceRefs: ['git:controlled-base', 'git:controlled-end'], base: 'controlled-base', commit: 'controlled-end' };
+    };
     await collectRecordedReuseMetrics(fx.admin, scope, load);
     expect(await measureRecordedReuseMetric(fx.admin, scope, 'redundancy')).toMatchObject({ verdict: 'pass', value: 0 });
     expect(await measureRecordedReuseMetric(fx.admin, scope, 'crossFileCalls')).toMatchObject({ verdict: 'pass', value: 0 });
@@ -373,8 +378,13 @@ describe('R16 repeatable existing-ledger reads', () => {
   });
   it('counts a recorded search-before-write positive only through a unique exact assignment', async () => {
     const scope = { workspaceId: fx.workspaceId, harnessSlug: 'assignment-producer', windowStart: at, windowEnd: now };
-    const load = async () => ({ ...buildReuseSourcePopulation({ sources: [{ path: 'a.ts', source: 'export const a=1;' }],
-      addedLines: { 'a.ts': [1] }, complete: true }), sourceRefs: ['git:assignment-baseline', 'git:assignment-end'], base: 'assignment-baseline', commit: 'assignment-end' });
+    const load = async () => {
+      const population = buildReuseSourcePopulation({ sources: [{ path: 'a.ts', source: 'export const a=1;' }],
+        addedLines: { 'a.ts': [1] }, complete: true });
+      return { ...population, method: { ...population.method, sourcePopulationCensus: { complete: true,
+        gitlinks: { total: 0, resolved: 0 }, unresolved: [], unresolvedOmitted: 0 } },
+        sourceRefs: ['git:assignment-baseline', 'git:assignment-end'], base: 'assignment-baseline', commit: 'assignment-end' };
+    };
     await fx.admin`INSERT INTO harness_shared.work_items
       (workspace_id,harness_slug,feature_id,item_kind,status,title,summary,taken_by,taken_at,created_ts,updated_ts)
       VALUES (${fx.workspaceId},'assignment-producer','WI-measurement-assignment','feature','open','fixture','fixture','assignment-owner',${at},1,1)`;

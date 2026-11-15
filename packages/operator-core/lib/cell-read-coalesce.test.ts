@@ -9,6 +9,7 @@
  * role) stay separate, as do reads that arrive after the first one settled.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 
 const dispatchReadOnlyTool = vi.fn();
 
@@ -77,9 +78,17 @@ function callerContext(
   signal = new AbortController().signal,
 ): NonNullable<CellReadEnv['callerContext']> {
   return {
-    principal: { slug: principalSlug, workspaceId: ENV.workspaceId, capabilities: new Set(capabilities) },
+    workspaceId: ENV.workspaceId,
+    harnessSlug: ENV.harnessSlug,
+    role: ENV.role,
+    uiClientId: principalSlug,
+    log: () => {},
+    progress: () => {},
+    emit: () => {},
+    principal: { kind: 'system', slug: principalSlug, authMethod: 'bearer-token', trust: 'trusted',
+      workspaceId: ENV.workspaceId, capabilities: new Set(capabilities) },
     signal,
-  } as NonNullable<CellReadEnv['callerContext']>;
+  } satisfies UnifiedToolContext;
 }
 
 beforeEach(() => {

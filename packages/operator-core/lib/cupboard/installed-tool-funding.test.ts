@@ -7,13 +7,14 @@ import type { AttachedInstalledToolFunding } from '../agent-tools/per-use-chokep
 import { INSTALLED_TOOL_FUNDING_CONFIG, productionInstalledToolFunding, productionFundedIdentityTurnHost } from './installed-tool-funding';
 import { identityPerUseOfferTerms } from './identity-per-use-offer';
 import { FundedIdentityTurnHost, type FundedIdentityTurnHostDeps } from './funded-turn-host';
-import type { AppliedIdentityRules } from '../agent-identities/sync-hook-rules';
 import type { FundedIdentityTurnBinding } from './funded-turn-store';
 import type { HostedPerUseOffer } from './metered-invocation-door-io';
 import type { FundedToolTurnBinding } from './funded-tool-turn-store';
 import { sellerReceiptAuthoritySigningBytes } from '../p2p/metered-invocation';
 
 const digest = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
+type IdentityHostDeps = NonNullable<Parameters<typeof productionFundedIdentityTurnHost>[1]>;
+type AppliedIdentityHostRules = NonNullable<Awaited<ReturnType<NonNullable<IdentityHostDeps['readApplied']>>>>;
 function fixture() {
   const session = { workspaceId: 'ws', ownerId: 'su-buyer', principalId: 'system:superuser' };
   const pairs = { payer: generateKeyPairSync('ed25519'), seller: generateKeyPairSync('ed25519') };
@@ -89,9 +90,9 @@ describe('production identity funding supplier', () => {
   function identityFixture() {
     const f = fixture(), quoted = identityPerUseOfferTerms({ identity: { id: 'paid', version: '1.0.0' } });
     if (!quoted.ok) throw new Error('invalid identity fixture');
-    const worn = { applied: { specificationRevision: 'spec', stateRevision: 'state' },
+    const worn = { applied: { specificationRevision: 'spec', stateRevision: 'state' }, harnessSlug: null,
       packagePins: [{ packageKind: 'blueprint', ref: 'paid', revision: '1.0.0', contentHash: 'a'.repeat(64) }],
-      pins: {}, sync: {}, declaredClassNeeds: null } as unknown as AppliedIdentityRules;
+      pins: {}, sync: {}, declaredClassNeeds: null } as unknown as AppliedIdentityHostRules;
     Object.assign(f.offer, { skuRef: quoted.terms.skuRef, terms: quoted.terms });
     Object.assign(f.offer, { receiptAuthority: { pubkeyBase64: f.grant.seller.pubkeyBase64,
       proof: sign(null, sellerReceiptAuthoritySigningBytes({ seller: f.offer.creatorId, offerId: f.offer.offerId,
@@ -103,8 +104,10 @@ describe('production identity funding supplier', () => {
       admissionId: 'turn', specificationRevision: 'spec', stateRevision: 'state', payer: f.grant.payer.principal,
       seller: f.grant.seller.principal, channelId: 'channel', offerId: f.offer.offerId, offer: quoted.terms,
       inferenceCeilingMicros: 4000n, expiresAtMs: f.grant.expiresAtMs };
-    const readApplied = vi.fn(async () => worn);
-    const resolveLayers = vi.fn(async () => [{ layerRef: 'blueprint:paid', identity: quoted.identity, skuRef: quoted.terms.skuRef }]);
+    const readApplied = vi.fn<NonNullable<IdentityHostDeps['readApplied']>>(async () => worn);
+    const resolveLayers = vi.fn<NonNullable<IdentityHostDeps['resolveLayers']>>(async () => [
+      { layerRef: 'blueprint:paid', identity: quoted.identity, skuRef: quoted.terms.skuRef },
+    ]);
     const createIdentityHost = vi.fn((deps: FundedIdentityTurnHostDeps) => new FundedIdentityTurnHost(deps));
     const deps = { ...f.deps, readApplied, resolveLayers, createIdentityHost };
     return { ...f, worn, binding, readApplied, resolveLayers, createIdentityHost, deps,

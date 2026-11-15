@@ -40,9 +40,13 @@ describe('reuse-measurement ledger (P-006, SPEC-P-006-C)', () => {
   it('SPEC-P-006-C: a collected metric population is written to the measurement ledger, not the delivered-push log', async () => {
     const { sql, statements } = recordingSql();
     const scope = { workspaceId: 'ws', harnessSlug: 'fixture', windowStart: '2026-10-01T00:00:00.000Z', windowEnd: '2026-10-02T00:00:00.000Z' };
-    const load = async () => ({ ...buildReuseSourcePopulation({ sources: [{ path: 'a.ts', source: 'export function a() {} a();' }],
-      addedLines: { 'a.ts': [1] }, complete: true }), sourceRefs: ['git:controlled-base', 'git:controlled-end'],
-      base: 'controlled-base', commit: 'controlled-end' });
+    const load = async () => {
+      const population = buildReuseSourcePopulation({ sources: [{ path: 'a.ts', source: 'export function a() {} a();' }],
+        addedLines: { 'a.ts': [1] }, complete: true });
+      return { ...population, method: { ...population.method, sourcePopulationCensus: { complete: true,
+        gitlinks: { total: 0, resolved: 0 }, unresolved: [], unresolvedOmitted: 0 } },
+        sourceRefs: ['git:controlled-base', 'git:controlled-end'], base: 'controlled-base', commit: 'controlled-end' };
+    };
     await collectRecordedReuseMetrics(sql, scope, load);
     const inserts = statements.filter(s => /^INSERT INTO/i.test(s));
     expect(inserts).toHaveLength(1);
