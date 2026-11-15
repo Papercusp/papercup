@@ -483,9 +483,19 @@ async function productionFailOpen(ctx: SystemActionCtx): Promise<FailOpenRunResu
   });
 }
 
-async function productionLivenessAlarm(ctx: SystemActionCtx, result: FailOpenRunResult): Promise<void> {
-  if (!result.liveness.stale) return;
-  await captureImprovement({
+function dedupRescreenFailure(result: FailOpenRunResult): string | null {
+  const screen = result.dedupRescreen;
+  if (!screen || 'skipped' in screen) return null;
+  if ('error' in screen) return `duplicate re-screen failed: ${screen.error}`;
+  if (screen.legDownTrip) {
+    return `duplicate screening outage breaker tripped after ${screen.legDownTrip.afterConsecutive} ` +
+      `consecutive failed screens; ${screen.legDownSkipped.length} rows received unscreened retry attempts`;
+  }
+  return screen.errored.length > 0 ? `${screen.errored.length} duplicate re-screen(s) threw` : null;
+}
+
+async function productionFailOpenAlarm(ctx: SystemActionCtx, result: FailOpenRunResult): Promise<void> {
+  if (result.liveness.stale) await captureImprovement({
     title: `Work-item admission promoter is stale for ${ctx.installSlug}`,
     kind: 'bug',
     severity: 'major',
@@ -498,6 +508,23 @@ async function productionLivenessAlarm(ctx: SystemActionCtx, result: FailOpenRun
     dedupScope: 'open',
     watchdogKey: `work-item-admission-promoter-liveness:${ctx.installSlug}`,
   });
+  const failure = dedupRescreenFailure(result);
+  if (failure === null) return;
+  await captureImprovement({
+    title: `Work-item admission duplicate screening is failing for ${ctx.installSlug}`,
+    kind: 'bug',
+    severity: 'major',
+    body:
+      `Fail-open run ${result.runId}: ${failure}. Promoter liveness is ` +
+      `${result.liveness.stale ? 'stale' : 'healthy'}, which does not measure duplicate-screening ` +
+      `availability. The backstop preserves coverage uncertainty and may admit retry-exhausted rows ` +
+      `as unreviewed. Inspect this run's complete detail.dedupRescreen in ` +
+      `harness_shared.admission_runs for affected row ids and breaker evidence; restore the failing ` +
+      `screening legs and verify a later run completes screening without errors or a breaker trip.`,
+    foundDuring: `${WORK_ITEM_ADMISSION_FAIL_OPEN} routine`,
+    dedupScope: 'open',
+    watchdogKey: `work-item-admission-dedup-screening:${ctx.installSlug}`,
+  });
 }
 
 export function makeWorkItemAdmissionFailOpenAction(overrides: Partial<AdmissionFailOpenActionDeps> = {}) {
@@ -505,7 +532,7 @@ export function makeWorkItemAdmissionFailOpenAction(overrides: Partial<Admission
     run: productionFailOpen,
     noModelPromote: productionNoModelPromote,
     reap: productionReap,
-    alarm: productionLivenessAlarm,
+    alarm: productionFailOpenAlarm,
     invalidate: invalidateAdmissionRuns,
     log: (message) => console.log(`[${WORK_ITEM_ADMISSION_FAIL_OPEN}] ${message}`),
     ...overrides,
@@ -538,7 +565,7 @@ export function makeWorkItemAdmissionFailOpenAction(overrides: Partial<Admission
       reapedSummary = `reaped-stranded=ERROR (${error instanceof Error ? error.message : String(error)})`;
     }
     await deps.invalidate();
-    if (result.liveness.stale) await deps.alarm(ctx, result);
+    if (result.liveness.stale || dedupRescreenFailure(result) !== null) await deps.alarm(ctx, result);
     const byHarness = Object.entries(result.autoPromotedByHarness)
       .map(([harness, ids]) => `${harness}=${ids.length}`)
       .sort()

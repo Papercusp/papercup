@@ -2494,6 +2494,82 @@ describe('work-item admission promoter (real Postgres)', () => {
     }, 90_000);
   });
 
+  describe('durable scheduled admission rotation', () => {
+    async function recordTurn(input: {
+      id: string; selected: string[]; comparisons?: string[]; legacy?: boolean; ageHours?: number;
+    }) {
+      const comparisons = input.comparisons ?? [];
+      const detail = {
+        mode: 'promoter', status: 'complete',
+        ...(input.legacy ? {} : { queueSelection: {
+          schemaVersion: 1, runScope: 'scheduled',
+          selectedItemIds: input.selected, comparisonItemIds: comparisons,
+        } }),
+        heldReasons: [...input.selected, ...comparisons].map(itemId => ({ itemId, reason: 'fixture hold' })),
+      };
+      await db.sql`INSERT INTO harness_shared.admission_runs
+        (id, workspace_id, harness_slug, run_kind, started_at, detail)
+        VALUES (${input.id}, ${WS}, ${HARNESS}, 'promoter-tick',
+          clock_timestamp() - make_interval(hours => ${input.ageHours ?? 0}::int),
+          ${JSON.stringify(detail)}::text::jsonb)`;
+    }
+
+    it.each([false, true])('retains examined turns beyond 48 hours (legacy=%s)', async legacy => {
+      await seedItem({ id: 'WI-old-held', createdAtMs: NOW - 50_000 });
+      await seedItem({ id: 'WI-unexamined-tail', createdAtMs: NOW - 10_000 });
+      await recordTurn({ id: 'expired-turn', selected: ['WI-old-held'], legacy, ageHours: 72 });
+
+      const rows = await readPendingBatch(db.sql, WS, HARNESS, 1, undefined, { demoteGuardBlocked: true });
+      expect(rows.map(row => row.id)).toEqual(['WI-unexamined-tail']);
+      // Explicit and no-model reads retain their existing FIFO priorities.
+      expect((await readPendingBatch(db.sql, WS, HARNESS, 1)).map(row => row.id)).toEqual(['WI-old-held']);
+      expect((await readPendingBatch(db.sql, WS, HARNESS, 1, undefined,
+        { demoteGuardBlocked: true, preferModelFree: true })).map(row => row.id)).toEqual(['WI-old-held']);
+    });
+
+    it.each([1, 2, 3])('does not spend comparison-only rows\' own turns (N=%s, batch=2)', async count => {
+      const comparisons = Array.from({ length: count }, (_, index) => `WI-comparison-${index}`);
+      for (const [index, id] of comparisons.entries()) {
+        await seedItem({ id, createdAtMs: NOW - 50_000 + index });
+      }
+      await seedItem({ id: 'WI-fresh-a', createdAtMs: NOW - 10_000 });
+      await seedItem({ id: 'WI-fresh-b', createdAtMs: NOW - 9_000 });
+      await recordTurn({ id: 'comparison-turn', selected: ['WI-other-input'], comparisons });
+
+      const rows = await readPendingBatch(db.sql, WS, HARNESS, 2, undefined, { demoteGuardBlocked: true });
+      expect(rows.map(row => row.id)).toEqual([...comparisons, 'WI-fresh-a', 'WI-fresh-b'].slice(0, 2));
+    });
+
+    it.each([false, true])('reaches the complete queue across bounded batches and reader restarts (reverse=%s)', async reverse => {
+      const ids = Array.from({ length: 7 }, (_, index) => `WI-fair-${index}`);
+      for (const id of reverse ? [...ids].reverse() : ids) {
+        await seedItem({ id, createdAtMs: NOW - 50_000 + ids.indexOf(id) });
+      }
+      const { default: postgres } = await import('postgres');
+      const seen: string[] = [];
+      for (let pass = 0; pass < 4; pass += 1) {
+        // A fresh connection has only durable ledger state, as after a host restart.
+        const reader = postgres(db.url, { max: 1 });
+        let selected: string[];
+        try {
+          selected = (await readPendingBatch(reader, WS, HARNESS, 2, undefined,
+            { demoteGuardBlocked: true })).map(row => row.id);
+        } finally {
+          await reader.end({ timeout: 2 });
+        }
+        const remaining = ids.filter(id => !seen.includes(id));
+        expect(selected.slice(0, remaining.length)).toEqual(remaining.slice(0, 2));
+        seen.push(...selected);
+        await recordTurn({ id: `fair-turn-${pass}`, selected,
+          comparisons: ids.filter(id => !selected.includes(id)), ageHours: 72 - pass });
+      }
+      expect(new Set(seen)).toEqual(new Set(ids));
+      expect(seen).toContain('WI-fair-6');
+      const rows = await db.sql`SELECT feature_id, admission, payload FROM harness_shared.work_items ORDER BY feature_id`;
+      expect(rows).toEqual(ids.map(feature_id => ({ feature_id, admission: 'pending', payload: {} })));
+    });
+  });
+
   it('allows a terminal canonical with applicable completion evidence', async () => {
     await seedItem({ id: 'WI-canonical', admission: 'admitted', status: 'done', createdAtMs: NOW - 20_000 });
     await db.sql`

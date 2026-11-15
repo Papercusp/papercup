@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   register: vi.fn(),
+  capture: vi.fn(async (_input: Record<string, unknown>) => undefined),
   failOpen: vi.fn(),
   reap: vi.fn(async (_sql: unknown, _input: { workspaceId: string; reaperRunId: string; nowMs: number }) => [] as unknown[]),
   // WI-10004725: the production fail-open wiring reads promoter liveness and, only when it is
@@ -22,6 +23,7 @@ vi.mock('@dbos-inc/dbos-sdk', async (original) => ({
   },
 }));
 vi.mock('./system-actions', () => ({ SYSTEM_TARGET_PREFIX: 'system:', registerSystemAction: h.register }));
+vi.mock('../improvements/capture-core', () => ({ captureImprovement: h.capture }));
 // The real getOrgPg() throws without a live operator DB; the production reaper wiring only
 // needs a handle to pass through to the (mocked) reaper, never one that is queried.
 vi.mock('@papercusp/db-org', async (orig) => ({
@@ -318,6 +320,60 @@ describe('work-item admission routine actions', () => {
     })(ctx);
     expect(alarm).not.toHaveBeenCalled();
   });
+
+  it.each(['error', 'breaker', 'row-error'] as const)(
+    'records a durable screening alarm for %s even while the promoter is healthy', async (failure) => {
+      const dedupRescreen = failure === 'error' ? { error: 'write CONNECTION_CLOSED 127.0.0.1:6432' } : {
+        attempted: 6, clean: [], candidatesFound: [], stillDegraded: [], raceSkipped: [],
+        errored: failure === 'row-error' ? ['WI-failed'] : [], budgetExhausted: false,
+        legDownTrip: failure === 'breaker' ? { afterConsecutive: 6, evidence: ['WI-witness'] } : null,
+        legDownSkipped: failure === 'breaker' ? ['WI-waiting'] : [],
+      };
+      const result = {
+        runId: 'f-screen-outage', autoPromoted: [], autoPromotedByHarness: {}, heldByScope: {},
+        scope: 'workspace' as const,
+        liveness: { stale: false, reason: 'healthy', active: true, routineExists: true,
+          lastSuccessAtMs: 1, ageMs: 1, thresholdMs: 90 },
+        dedupRescreen,
+      };
+      const invalidate = vi.fn(async () => undefined);
+      await makeWorkItemAdmissionFailOpenAction({
+        run: async () => result, noModelPromote: async () => null, invalidate, log: vi.fn(),
+      })(ctx);
+      expect(invalidate).toHaveBeenCalledOnce();
+      expect(h.capture).toHaveBeenCalledOnce();
+      expect(h.capture).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'bug', watchdogKey: 'work-item-admission-dedup-screening:papercusp',
+        body: expect.stringContaining('f-screen-outage'),
+      }));
+      const body = h.capture.mock.calls[0]![0].body as string;
+      expect(body).toContain('Promoter liveness is healthy');
+      expect(body).toContain('detail.dedupRescreen');
+      expect(body).toContain(failure === 'error' ? 'CONNECTION_CLOSED' : failure === 'breaker'
+        ? '1 rows received unscreened retry attempts' : '1 duplicate re-screen(s) threw');
+    },
+  );
+
+  it.each(['clean', 'skipped', 'absent'] as const)(
+    'does not alarm on %s screening when promoter liveness is healthy', async (state) => {
+      const dedupRescreen = state === 'absent' ? undefined : state === 'skipped' ? { skipped: true as const } : {
+        attempted: 1, clean: ['WI-clean'], candidatesFound: [], stillDegraded: [], raceSkipped: [],
+        errored: [], budgetExhausted: false, legDownTrip: null, legDownSkipped: [],
+      };
+      const alarm = vi.fn(async () => undefined);
+      await makeWorkItemAdmissionFailOpenAction({
+        run: async () => ({
+          runId: 'f-screen-clean', autoPromoted: [], autoPromotedByHarness: {}, heldByScope: {},
+          scope: 'workspace', dedupRescreen,
+          liveness: { stale: false, reason: 'healthy', active: true, routineExists: true,
+            lastSuccessAtMs: 1, ageMs: 1, thresholdMs: 90 },
+        }),
+        noModelPromote: async () => null, alarm, invalidate: async () => undefined, log: vi.fn(),
+      })(ctx);
+      expect(alarm).not.toHaveBeenCalled();
+      expect(h.capture).not.toHaveBeenCalled();
+    },
+  );
 
   // OBSERVABILITY GUARD. The work-scope policy deliberately holds an out-of-scope harness's
   // pending rows, and that hold is CORRECT. What was not correct is that it happened in

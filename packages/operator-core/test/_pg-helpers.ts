@@ -621,6 +621,7 @@ export const COORD_SUBSCRIPTION_SUBSTRATE: {
     '568-coord-entity-subscriptions-allow-event-kind.sql',
     '602-work-item-follow-blockers.sql',
     '1257-coord-entity-subscriptions-allow-muted.sql',
+    '1638-subscription-reasons-lifecycle.sql',
   ],
   runtimeTables: ['harness_shared.coord_entity_subscriptions'],
   knownInapplicable: [

@@ -439,29 +439,33 @@ describe('context reliability R-8: task-ranked standing facts', () => {
 describe('EI-28763886046924909: bounded retained facts with lossless recovery', () => {
   const N = FACTS_RETAINED_FOLD_LIMIT;
   it.each([N - 1, N, N + 1])('bounds each class over %i identities and follows every recovery page', async (count) => {
-    const scopeRef = `retained-boundary-${count}`;
-    const selector = { scope: 'owner' as const, scopeRef };
+    const workspaceId = `${WS}-retained-${count}`;
+    const selector = { scope: 'workspace' as const };
     const seeds = ['guard-rail', 'convention', 'ordinary'].flatMap((prefix) =>
       Array.from({ length: count }, (_, i) => ({ key: `${prefix}:${String(i).padStart(3, '0')}`,
         kind: prefix === 'convention' ? 'convention' : null })));
     // Reverse insertion order: neither pagination nor admission may depend on it.
     await db.sql`
       INSERT INTO harness_shared.agent_facts (workspace_id, scope, scope_ref, key, body, kind, created_by, expires_at)
-      SELECT ${WS}, 'owner', ${scopeRef}, seed.key, seed.key, seed.kind, 'su-int', now() + interval '1 hour'
+      SELECT ${workspaceId}, 'workspace', NULL, seed.key, seed.key, seed.kind, 'su-int', now() + interval '1 hour'
         FROM jsonb_to_recordset(${JSON.stringify([...seeds].reverse())}::jsonb) AS seed(key text, kind text)`;
     const folded = await foldFactsWithCensus([selector], {
-      workspaceId: WS, limitPerSelector: N, taskContext: {},
+      workspaceId, limitPerSelector: N, taskContext: {},
     }, db.sql);
     expect(folded.facts).toHaveLength(3 * Math.min(N, count));
     expect(folded.census[0]).toMatchObject({
       total: seeds.length, shown: folded.facts.length, truncated: count > N,
       retained: { neverDrop: Math.min(N, count), conventions: Math.min(N, count), limitPerClass: N },
     });
+    // Distinguish the protected-class bypass from a broken workspace selector.
+    const recency = await foldFactsWithCensus([selector], { workspaceId, limitPerSelector: N }, db.sql);
+    expect(recency.facts).toHaveLength(Math.min(N, seeds.length));
+    expect(recency.census[0]).toMatchObject({ total: seeds.length });
     const recovered: string[] = [];
     let cursor: string | undefined;
     do {
       // Serialize/reload the token on every page, as a cold successor does.
-      const page = await listFactsPage(selector, { workspaceId: WS, limit: 4,
+      const page = await listFactsPage(selector, { workspaceId, limit: 4,
         ...(cursor ? { cursor: JSON.parse(JSON.stringify(cursor)) } : {}) }, db.sql);
       expect(page.facts.length).toBeLessThanOrEqual(4);
       recovered.push(...page.facts.map((fact) => fact.key));

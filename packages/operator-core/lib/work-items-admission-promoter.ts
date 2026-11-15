@@ -2339,14 +2339,12 @@ export async function readPendingBatch(
           CASE WHEN pg_input_is_valid(wi.payload #>> '{admissionReview,lastRetryAt}', 'timestamp with time zone')
                THEN (wi.payload #>> '{admissionReview,lastRetryAt}')::timestamptz END,
           rotated.rotated_at)`;
-  // WI-6554700010029586: a JUDGED hold on a still-`pending` row also advances nothing. The hold
-  // UPDATE stamps admissionReview.lastRetryAt only for `unreviewed` rows, and keeps a pending
-  // row's write to a reason change (the no-churn rule above). It is not a prescreen rotation
-  // either. So the same oldest model-held rows led every scheduled window. Live 2026-10-26: held
-  // on 15-20 ticks each in 24h, ~210k tokens a tick, 0-1 promotions, while ~1,800 candidate
-  // rows behind them were never reviewed. Every tick already records its holds in
-  // detail.heldReasons. Reading those ids from the same run ledger rotates judged holds too,
-  // without writing to work_items.
+  // A pending hold does not advance admissionReview.lastRetryAt. Its queue turn
+  // therefore comes from the existing selected-input witness, never from holds
+  // on comparison endpoints that did not consume their own turn. Legacy runs
+  // predate that witness, so retain their held-item evidence as a fallback.
+  // Keep the complete retained history: a 48-hour horizon forgets turns before
+  // a large queue can rotate, putting old inputs ahead of its unexamined tail.
   const rows = await sql<WorkItemRow[]>`
     WITH rotated AS (
       SELECT x.rotated_id, max(ar.started_at) AS rotated_at
@@ -2356,16 +2354,20 @@ export async function readPendingBatch(
             CASE WHEN jsonb_typeof(ar.detail #> '{prescreen,rotatedIds}') = 'array'
                  THEN ar.detail #> '{prescreen,rotatedIds}' ELSE '[]'::jsonb END) AS skipped(id)
           UNION
+          SELECT selected.id FROM jsonb_array_elements_text(
+            CASE WHEN jsonb_typeof(ar.detail #> '{queueSelection,selectedItemIds}') = 'array'
+                 THEN ar.detail #> '{queueSelection,selectedItemIds}' ELSE '[]'::jsonb END) AS selected(id)
+          UNION
           SELECT judged.hold ->> 'itemId' FROM jsonb_array_elements(
             CASE WHEN jsonb_typeof(ar.detail -> 'heldReasons') = 'array'
                  THEN ar.detail -> 'heldReasons' ELSE '[]'::jsonb END) AS judged(hold)
-           WHERE jsonb_typeof(judged.hold) = 'object' AND judged.hold ->> 'itemId' IS NOT NULL
+           WHERE NOT ar.detail ? 'queueSelection'
+             AND jsonb_typeof(judged.hold) = 'object' AND judged.hold ->> 'itemId' IS NOT NULL
         ) AS x(rotated_id)
        WHERE ${rotate}
          AND ar.workspace_id = ${workspaceId}
          AND ar.harness_slug = ${harnessSlug}
          AND ar.run_kind = 'promoter-tick'
-         AND ar.started_at > now() - make_interval(hours => ${PROMOTER_ROTATION_LOOKBACK_HOURS}::int)
        GROUP BY x.rotated_id
     )
     SELECT wi.feature_id, title, summary, status, item_kind, admission, condition_key, created_ts
@@ -4291,15 +4293,6 @@ export interface PromoterPrescreen {
    */
   rotatedIds: string[];
 }
-
-/**
- * How far back the scheduled window reads the rotation ledger (`detail.prescreen.rotatedIds`
- * of `promoter-tick` runs). It must exceed one full rotation of the structurally blocked
- * population (measured 2026-10-20, papercusp: ~3,900 pending/unreviewed rows, at most 60
- * rotated per tick, ~48 model ticks a day). A row whose last rotation is older falls back to
- * its own review watermark, so a short bound degrades to a partial rotation, never a stall.
- */
-export const PROMOTER_ROTATION_LOOKBACK_HOURS = 48;
 
 /**
  * The guard verdict for ONE endpoint in every role the promoter could give it. The
