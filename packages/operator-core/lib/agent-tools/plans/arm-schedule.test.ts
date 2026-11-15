@@ -28,6 +28,7 @@ vi.mock('./source', async (orig) => ({
   getPlanRow: vi.fn(),
 }));
 vi.mock('../../harness/routines/arm-plan-schedule', () => ({ armPlanSchedule: vi.fn() }));
+vi.mock('../../plan-audits', () => ({ withCurrentDiscovery: vi.fn(async () => ({ ok: true })) }));
 vi.mock('../../acceptance-bar-lifecycle-evaluator', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../acceptance-bar-lifecycle-evaluator')>()),
   readAndEvaluateAcceptanceBarLifecycle: vi.fn(async () => ({ satisfied: true })),
@@ -48,6 +49,7 @@ import { configurePlanAdmissionPolicySource } from './plan-admission-gate';
 configurePlanAdmissionPolicySource(async () => null);
 import { getPlanRow } from './source';
 import { armPlanSchedule } from '../../harness/routines/arm-plan-schedule';
+import { readAndEvaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
 const flagM = vi.mocked(getFlag);
 const getRow = vi.mocked(getPlanRow);
 const armM = vi.mocked(armPlanSchedule);
@@ -140,6 +142,16 @@ describe('plans:arm-schedule guard chain', () => {
     const b = body(await call());
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 }, results: [{ ok: true, slug: 'p1', routineId: 'r1', nextFireAt: 't1' }] });
     expect(armM.mock.calls[0]![0]).toMatchObject({ workspaceId: 'default', harnessSlug: 'web', templateSlug: 'p1' });
+  });
+
+  it('arms an itemless measurement carrier without an implementation acceptance contract', async () => {
+    rowOverride = { status: 'draft', schedule: { rrule: 'FREQ=DAILY',
+      action: { system: 'rubric-rescore', input: { rubricRef: 'reliability' } } } };
+    expect(body(await call()).results[0]).toMatchObject({ ok: true, routineId: 'r1' });
+    expect(readAndEvaluateAcceptanceBarLifecycle).not.toHaveBeenCalled();
+    expect(armM).toHaveBeenCalledWith(expect.objectContaining({
+      schedule: rowOverride.schedule,
+    }));
   });
 
   it('arms selected slugs as a keyed batch', async () => {
