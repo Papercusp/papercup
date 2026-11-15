@@ -14,7 +14,8 @@ const h = vi.hoisted(() => ({
   })),
   workflowID: 'durable-promoter-test',
 }));
-vi.mock('@dbos-inc/dbos-sdk', () => ({
+vi.mock('@dbos-inc/dbos-sdk', async (original) => ({
+  ...await original<typeof import('@dbos-inc/dbos-sdk')>(),
   DBOS: {
     get workflowID() { return h.workflowID; },
     registerWorkflow: (workflow: unknown) => workflow,
