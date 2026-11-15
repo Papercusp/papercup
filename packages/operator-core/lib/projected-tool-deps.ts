@@ -2470,6 +2470,16 @@ const priorityKernelEnforcement: KernelEnforcementPort = request => withPriority
  *  multiple dispatchers — the impls are stateless. */
 export const PROJECTED_DEPS: DispatchProjectedDeps = {
   resolvePremises: resolveDispatchPremises,
+  executionAdapter(request) {
+    if (request.tool.execution?.adapter?.id !== 'dbos:durable-orchestration') return undefined;
+    // Keep DBOS boot/registration lazy on ordinary request-bound calls.
+    const binding = import('./dbos/durable-orchestration-workflow')
+      .then(runtime => runtime.bindDurableOrchestrationExecution(request));
+    return { id: 'dbos:durable-orchestration',
+      dispatch: async selection => (await binding).dispatch(selection),
+      verifyAdmission: async admission => (await binding).verifyAdmission(admission),
+    };
+  },
   aroundInvoke: request => {
     const handler = request.invoke;
     request = { ...request, invoke: () => {

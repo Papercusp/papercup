@@ -32,6 +32,9 @@ import {
   type ProjectedTool,
   type UnifiedToolContext,
   type WrapDispatch,
+  type ToolExecutionDispatch,
+  type ToolExecutionAdmission,
+  type ToolResult,
 } from '@papercusp/tooldef';
 import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
 import { dbosStarted, withDbosIdleTxGrace } from './bootstrap';
@@ -245,7 +248,7 @@ export interface DurableOrchestrationClient {
     duplicationPolicy: 'return-existing';
     appVersion: string;
   }, input: DurableOrchestrationInput): Promise<unknown>;
-  getWorkflow(workflowId: string): Promise<{ status: string; output?: unknown; error?: unknown } | undefined>;
+  getWorkflow(workflowId: string): Promise<{ status: string; input?: unknown[]; output?: unknown; error?: unknown } | undefined>;
   listWorkflowSteps(workflowId: string): Promise<Array<{ functionID: number; name: string; error?: unknown }> | undefined>;
   cancelWorkflow(workflowId: string): Promise<void>;
   send(destinationId: string, message: unknown, topic?: string, idempotencyKey?: string): Promise<void>;
@@ -304,6 +307,9 @@ export interface DurableOrchestrationStatus {
   status: string;
   outcome?: DurableOrchestrationOutcome;
   error?: string;
+  /** Persisted original caller, used for admission verification and reattachment. */
+  caller?: DurableOrchestrationCaller;
+  runKey?: string;
   steps: Array<{ functionId: number; name: string; failed: boolean }>;
 }
 
@@ -319,13 +325,83 @@ export async function getDurableOrchestrationStatus(
     : await client!.getWorkflow(workflowId);
   if (!workflow) return null;
   const rawSteps = (local ? await DBOS.listWorkflowSteps(workflowId) : await client!.listWorkflowSteps(workflowId)) ?? [];
-  const record = workflow as { status: string; output?: unknown; error?: unknown };
+  const record = workflow as { status: string; input?: unknown[]; output?: unknown; error?: unknown };
+  const caller = (record.input?.[0] as Partial<DurableOrchestrationInput> | undefined)?.caller;
+  const runKey = (record.input?.[0] as Partial<DurableOrchestrationInput> | undefined)?.runKey;
   return {
     workflowId,
     status: record.status,
+    ...(typeof runKey === 'string' ? { runKey } : {}),
+    ...(caller && typeof caller.ownerId === 'string' && typeof caller.workspaceId === 'string' &&
+      typeof caller.role === 'string' ? { caller: { ...caller } } : {}),
     ...(record.status === 'SUCCESS' && record.output ? { outcome: record.output as DurableOrchestrationOutcome } : {}),
     ...(record.error ? { error: record.error instanceof Error ? record.error.message : String(record.error) } : {}),
     steps: rawSteps.map((step) => ({ functionId: step.functionID, name: step.name, failed: step.error != null })),
+  };
+}
+
+/** Audited binding to the existing DBOS workflow and its persisted input/result. No new executor. */
+export const DURABLE_ORCHESTRATION_EXECUTION_ADAPTER = Object.freeze({
+  id: 'dbos:durable-orchestration', auditRef: 'unified-tool-execution-and-agent-updates-2026-11-06#D-031',
+  ownsExecution: true as const, transactionScope: 'independent' as const, outcome: 'business' as const,
+  durability: 'restart' as const, cancellation: 'owner-managed' as const, progress: 'reported' as const,
+});
+
+export function bindDurableOrchestrationExecution(
+  request: { ctx: UnifiedToolContext; invoke(): Promise<ToolResult> },
+  deps: ClientDeps = {},
+): NonNullable<ToolExecutionDispatch<ToolResult>['adapter']> {
+  const { ctx, invoke } = request;
+  const ownerId = ctx.uiClientId ?? ctx.principal?.slug ?? ctx.spawnId ?? ctx.runId;
+  const owned = (row: DurableOrchestrationStatus | null): boolean => !!row && !!ownerId &&
+    row.caller?.ownerId === ownerId && row.caller?.workspaceId === ctx.workspaceId && !!row.runKey &&
+    row.workflowId === durableOrchestrationWorkflowId(ctx.workspaceId!, row.runKey) &&
+    ['ENQUEUED', 'DELAYED', 'PENDING', 'SUCCESS', 'ERROR', 'MAX_RECOVERY_ATTEMPTS_EXCEEDED', 'CANCELLED'].includes(row.status);
+  const state = (row: DurableOrchestrationStatus | null): ToolExecutionAdmission['state'] =>
+    row?.status === 'SUCCESS' ? row.outcome?.status === 'succeeded' ? 'succeeded'
+      : row.outcome?.status === 'failed' ? 'failed' : 'running'
+      : row?.status === 'ERROR' || row?.status === 'MAX_RECOVERY_ATTEMPTS_EXCEEDED' ? 'failed'
+        : row?.status === 'CANCELLED' ? 'cancelled' : row?.status === 'PENDING' ? 'running' : 'accepted';
+  const resultHandle = (result: ToolResult): string => {
+    const structured = result.structuredContent as { workflowId?: unknown } | undefined;
+    if (typeof structured?.workflowId === 'string') return structured.workflowId;
+    const text = result.content.find(item => item.type === 'text');
+    if (!text || text.type !== 'text') return '';
+    try {
+      const envelope = JSON.parse(text.text);
+      const summary = typeof envelope.summary === 'string' ? JSON.parse(envelope.summary) : envelope;
+      return typeof summary?.durableRun?.workflowId === 'string' ? summary.durableRun.workflowId : '';
+    } catch { return ''; }
+  };
+  return {
+    id: DURABLE_ORCHESTRATION_EXECUTION_ADAPTER.id,
+    async dispatch(selection) {
+      // A presented handle is lookup-only. Missing/foreign joins never fall back to admission.
+      const originalHandle = ctx.toolExecution?.handle;
+      let result = originalHandle ? { content: [] } as ToolResult : await invoke();
+      const handle = originalHandle ?? resultHandle(result);
+      let row = handle ? await getDurableOrchestrationStatus(handle, deps) : null;
+      if (owned(row) && selection.mode !== 'async') {
+        const window = selection.mode === 'auto' ? selection.autoYieldAfterMs : selection.responseWindowMs;
+        const until = Math.min(window === null ? Infinity : Date.now() + window!,
+          selection.executionDeadlineMs ?? Infinity, ctx.transportResponseDeadlineAtMs ?? Infinity);
+        // Bounded response wait over DBOS's existing lookup. Work stays in DBOS after this returns.
+        while (row && ['ENQUEUED', 'DELAYED', 'PENDING'].includes(row.status) && Date.now() < until) {
+          await new Promise(resolve => setTimeout(resolve, Math.min(50, until - Date.now())));
+          row = await getDurableOrchestrationStatus(handle, deps);
+          if (!owned(row)) break;
+        }
+      }
+      if (owned(row) && (row!.outcome || row!.error)) result = {
+        content: [{ type: 'text', text: JSON.stringify(row!.outcome ?? { error: row!.error }) }],
+      };
+      const admission = { handle, ownerId: owned(row) ? ownerId! : '', state: state(row) };
+      return { result, admission };
+    },
+    async verifyAdmission(admission) {
+      const row = await getDurableOrchestrationStatus(admission.handle, deps);
+      return owned(row) && admission.ownerId === ownerId;
+    },
   };
 }
 

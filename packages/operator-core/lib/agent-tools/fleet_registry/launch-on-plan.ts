@@ -93,6 +93,7 @@ import {
 import { directedImplementerConfinement } from '../../capability-envelope/session-confinement';
 import { declareSessionConfinement } from '../../capability-envelope/session-confinement-store';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, formatSpecRef, type ClaimSpec } from '../../scheduler/claim-spec';
+import { seedMemberLaunchClaimSpecs } from '../../scheduler/member-launch-spec';
 import type { SpecPoolEffect } from '../../scheduler/spec-pool-preview';
 import {
   fleetSpecBeeKey,
@@ -5120,6 +5121,24 @@ export default defineTool({
       };
     };
     try {
+      const scopedMembers = requestedMemberIds.flatMap((memberOwnerId, i) => {
+        const member = memberSpecs[memberSpecIndex(i)];
+        const ownBrief = member?.brief?.trim() || member?.launchContext?.trim() || args.perMemberLaunchContext?.[memberSpecIndex(i)]?.trim();
+        const claimFilter = member?.claimFilter ?? (ownBrief && planSlug
+          ? { field: 'plan' as const, op: '=' as const, value: planSlug }
+          : undefined);
+        if (ownBrief && !claimFilter) {
+          throw new Error(`members[${memberSpecIndex(i)}].claimFilter is required for a dedicated brief without a shared plan; declare the lane before kickoff`);
+        }
+        return claimFilter || member?.claimKinds?.length
+          ? [{ ownerId: memberOwnerId, claimFilter, claimKinds: member?.claimKinds }]
+          : [];
+      });
+      if (scopedMembers.length) {
+        // Identities are already pinned. No registration or post-kickoff steer is needed.
+        const parent = await getClaimSpec({ cupId: fleetSpecBeeKey(fleetSlug), workspaceId });
+        await seedMemberLaunchClaimSpecs({ workspaceId, harness, updatedBy: ownerId, parent, members: scopedMembers });
+      }
       await persistLaunchTransaction();
     } catch (e: any) {
       try {
@@ -5128,7 +5147,7 @@ export default defineTool({
         /* compare-and-set release: a newer launch claim, if any, remains untouched */
       }
       return err(
-        `Failed to persist the fleet launch transaction before spawning (${e?.message ?? e}) — NO members were opened.`,
+        `Failed to prepare the fleet launch transaction before spawning (${e?.message ?? e}) — NO members were opened.`,
       );
     }
     // Concurrent spawns: spawnConsole is async since WI-1886 (it verifies each
@@ -5882,11 +5901,9 @@ export default defineTool({
             ` · compactionLimit=${m.compactionLimit ?? '(role default)'}${m.claimKinds ? ` · claimKinds=[${m.claimKinds.join(',')}]` : ''}`,
         );
       }
-      // Per-member claimKinds is folded but NOT applied at launch (no member cup exists yet to
-      // pin) — only the FLEET claim spec is set here. Disclose it rather than imply it took.
-      if (resolvedMembers.some((_m, i) => memberSpecs[i]?.claimKinds?.length)) {
+      if (requestedMemberIds.some((_m, i) => memberSpecs[memberSpecIndex(i)]?.claimKinds?.length || memberSpecs[memberSpecIndex(i)]?.claimFilter)) {
         lines.push(
-          '  ⚠ per-member `claimKinds` is NOT applied at launch: no member cup exists yet to pin, so launch set only the FLEET claim spec (above). To give a member its own lane, scheduler:set_claim_spec { cupId } once it registers (find the cup via coord:presence / fleet:status).',
+          '  Per-member claim lanes were initialized before kickoff, inside the fleet fence; replay preserves existing member policies.',
         );
       }
     }

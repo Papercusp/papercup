@@ -1062,6 +1062,39 @@ describe('P040 retained Codex unkeyed wake persistence (real PG)', () => {
     } finally { await f.cleanup(); }
   });
 
+  it('reports the receipt update phase on a PostgreSQL timeout and preserves the prior receipt', async () => {
+    const f = await retainedFixture();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const before = await f.read();
+      const beforeLedger = await f.ledger();
+      await admin.unsafe(`
+        CREATE FUNCTION harness_shared.timeout_launch_receipt() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION USING ERRCODE = '57014', MESSAGE = 'receipt update canceled'; END $$;
+        CREATE TRIGGER timeout_launch_receipt BEFORE UPDATE OF launch_spec ON harness_shared.adv_sessions
+          FOR EACH ROW WHEN (OLD.id = ${f.id}) EXECUTE FUNCTION harness_shared.timeout_launch_receipt();
+      `);
+      try {
+        expect(await recordSuLaunchSpec(f.id, f.owner, f.next)).toBe(false);
+        expect(warn).toHaveBeenCalledWith(
+          '[adv-sessions] recordSuLaunchSpec failed:',
+          expect.stringContaining('[phase: recordSuLaunchSpec:row-update]'),
+          { pgCode: '57014', timeoutSource: 'pg', waitSnapshot: null },
+        );
+        expect(await f.read()).toEqual(before);
+        expect(await f.ledger()).toEqual(beforeLedger);
+        expect(resolveIdentityArtifact(before.launch_spec, f.applied)).toMatchObject({
+          kind: 'governed', artifact: f.original.specificationArtifact,
+        });
+      } finally {
+        await admin.unsafe('DROP TRIGGER timeout_launch_receipt ON harness_shared.adv_sessions; DROP FUNCTION harness_shared.timeout_launch_receipt()');
+      }
+    } finally {
+      warn.mockRestore();
+      await f.cleanup();
+    }
+  });
+
   it('leaves receipt, control, liveness and replay state unchanged when the receipt writer itself fails', async () => {
     const f = await retainedFixture();
     try {

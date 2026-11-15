@@ -1,5 +1,6 @@
 /** P-005 Workflows acceptance in the maintained disposable Portal/API boundary. */
 import { fork } from 'node:child_process';
+import { rosterStopHttpControlArgs } from '../../../test/roster-stop-http-controls';
 import { rm, symlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
@@ -47,6 +48,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-workflows-private.e2e.test.ts',
       sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
+      'packages/operator-core/test/roster-stop-http-controls.ts',
         'packages/operator-core/test/portal-roster-browser-fixture.ts', 'packages/operator-core/test/portal-workflows-fixture.ts',
         'packages/operator-core/test/portal-calendar-fixture.ts', 'packages/operator-core/test/private-http-workspace-preflight.ts',
         'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/sync-resolver/index.ts',
@@ -65,7 +67,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         Object.assign(env, { PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0', ROSTER_STOP_HTTP_EVIDENCE_DIR: evidenceDir,
           ROSTER_COORD_HTTP_PROOF: '1', ROSTER_COORD_BROWSER_PROOF: '1', ROSTER_WORKFLOWS_BROWSER_PROOF: '1' });
         const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'),
+          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), ...rosterStopHttpControlArgs(env),
           '--portal-source=' + portalSource, '--prepared-api-sha=' + preparedApi.sha256],
         { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
         observe(child);

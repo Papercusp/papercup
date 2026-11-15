@@ -62,7 +62,7 @@ import {
   type ClaudeResumeTranscriptAnalysis,
 } from '../claude-resume-tool-references.mjs';
 import { buildConsoleEnvelope } from '../console-launcher';
-import { spawnHeadless, type SpawnChildExit } from '../console-spawn';
+import { reconcileKickoffProof, spawnHeadless, type KickoffProofResult, type SpawnChildExit } from '../console-spawn';
 import type { CascadeSpawnFence } from './cascade-core';
 import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
 import { hostname } from 'node:os';
@@ -349,7 +349,7 @@ export interface ConsultDispatchAttempt {
   model: string;
   /** null when the rank was unreachable before any operation could be chosen. */
   operation: DispatchOperation | null;
-  outcome: 'dispatched' | 'skipped' | 'failed';
+  outcome: 'dispatched' | 'skipped' | 'failed' | 'pending';
   reason?: DispatchSkipReason;
   accountRoute?: ConsultAccountRoute;
   accountRouteReason?: string;
@@ -389,8 +389,22 @@ export interface FirstTurnUnjudged {
   kickoffAt: string;
 }
 
+/** Original launch custody; recovery checks its receipt and never spawns. */
+export interface PendingConsultKickoff {
+  answeringOwnerId: string;
+  taskId: string | null;
+  logPath: string | null;
+  kickoffProof: KickoffProofResult;
+  rank: AllowedExpertModel;
+  operation: DispatchOperation;
+  accountRoute?: ConsultAccountRoute;
+  accountRouteReason?: string;
+}
+
 export interface ConsultDispatchResult {
   dispatched: boolean;
+  pending?: boolean;
+  pendingKickoff?: PendingConsultKickoff;
   /** Native target capacity is independent of the selected source transcript. */
   targetCapacityUnavailable?: string;
   /**
@@ -894,6 +908,12 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   injectLaunchedByArg: typeof injectLaunchedByArg;
   buildConsoleEnvelope: typeof buildConsoleEnvelope;
   spawnHeadless: typeof spawnHeadless;
+  reconcileKickoffProof: typeof reconcileKickoffProof;
+  /** Persist direct callers' original launch on the existing cascade queue. */
+  retainPendingKickoff?: (workspaceId: string, opts: {
+    responder: string; conversationId: string; summary: string; body: string;
+    evidence?: ConsultDispatchEvidenceRef[];
+  }, kickoff: PendingConsultKickoff) => Promise<boolean>;
   verifyResumeStarted: typeof verifyResumeStarted;
   fetchContextPressure: typeof fetchContextPressure;
   /** WI-10004888: the canonical transcript estimator, applied to the fork SOURCE transcript. */
@@ -1015,6 +1035,7 @@ export function dispatchRecordEntry(input: ConsultDispatchRecordInput, nowIso: s
     at: nowIso,
     sourceOwnerId: input.sourceOwnerId,
     dispatched: r.dispatched,
+    ...(r.pending ? { pending: true } : {}),
     answeringOwnerId: r.answeringOwnerId,
     operation: r.operation,
     agent: r.agent,
@@ -1857,6 +1878,7 @@ export async function dispatchConsultResponder(
      * False means this dispatch no longer owns the selected reply window. */
     onKickoff?: (kickoffAt: string, answeringOwnerId: string) => boolean | Promise<boolean>;
     spawnFence?: CascadeSpawnFence;
+    recoverKickoff?: PendingConsultKickoff;
   },
   ctx: ConsultDispatchContext,
   deps: Partial<ConsultDispatchDeps> = {},
@@ -1882,6 +1904,7 @@ export async function dispatchConsultResponder(
     injectLaunchedByArg,
     buildConsoleEnvelope,
     spawnHeadless,
+    reconcileKickoffProof,
     verifyResumeStarted,
     fetchContextPressure,
     estimateTranscriptTokens: (transcriptPath) => tokensFromFileSize(transcriptPath),
@@ -1897,7 +1920,23 @@ export async function dispatchConsultResponder(
     readCitedTurns: defaultReadCitedTurns,
     ...deps,
   };
-  const result = await walkConsultDispatch(opts, ctx, d);
+  let result: ConsultDispatchResult;
+  if (opts.recoverKickoff) {
+    const pending = opts.recoverKickoff;
+    const proof = d.reconcileKickoffProof(pending.kickoffProof);
+    const attempt = await finishAnsweringSession({ ...opts, accountRoute: pending.accountRoute,
+      accountRouteReason: pending.accountRouteReason }, d, pending.rank, pending.operation,
+      pending.answeringOwnerId, { taskId: pending.taskId, logPath: pending.logPath, kickoffProof: proof }, pending);
+    result = {
+      dispatched: attempt.record.outcome === 'dispatched',
+      ...(attempt.pendingKickoff ? { pending: true, pendingKickoff: attempt.pendingKickoff } : {}),
+      answeringOwnerId: attempt.answeringOwnerId, operation: pending.operation,
+      agent: pending.rank.agent, model: pending.rank.model, verified: attempt.verified,
+      detail: attempt.record.detail, attempts: [attempt.record],
+    };
+  } else {
+    result = await walkConsultDispatch(opts, ctx, d);
+  }
   // WI-10003197: every walk — dispatched, exhausted, or refused before any rank —
   // lands on its consult, so a failed answering session is visible without
   // searching fleet-logs. Best-effort: losing the record never costs the dispatch.
@@ -2291,9 +2330,10 @@ async function walkConsultDispatch(
           'first reply was a provider rejection; every fork replays the same ' +
           'source history, so the remaining fork ranks would fail the same way';
       }
-      if (attempt.record.outcome === 'dispatched') {
+      if (attempt.record.outcome === 'dispatched' || attempt.pendingKickoff) {
         return {
-          dispatched: true,
+          dispatched: attempt.record.outcome === 'dispatched',
+          ...(attempt.pendingKickoff ? { pending: true, pendingKickoff: attempt.pendingKickoff } : {}),
           answeringOwnerId: attempt.answeringOwnerId,
           operation,
           agent: rank.agent,
@@ -2343,9 +2383,10 @@ async function walkConsultDispatch(
       }, ctx, d, target, rank, 'brief');
       attempts.push(...replaced, attempt.record);
       if (attempt.record.reason === 'consult-closed') return give(attempt.record.detail);
-      if (attempt.record.outcome === 'dispatched') {
+      if (attempt.record.outcome === 'dispatched' || attempt.pendingKickoff) {
         return {
-          dispatched: true,
+          dispatched: attempt.record.outcome === 'dispatched',
+          ...(attempt.pendingKickoff ? { pending: true, pendingKickoff: attempt.pendingKickoff } : {}),
           answeringOwnerId: attempt.answeringOwnerId,
           operation: 'brief',
           agent: rank.agent,
@@ -2418,7 +2459,7 @@ async function launchAnsweringSession(
   target: ResumeTarget,
   rank: AllowedExpertModel,
   operation: DispatchOperation,
-): Promise<{ record: ConsultDispatchAttempt; answeringOwnerId: string | null; verified: boolean | null }> {
+): Promise<AnsweringSessionResult> {
   const base = {
     rank: rank.rank,
     agent: rank.agent,
@@ -2657,6 +2698,45 @@ async function launchAnsweringSession(
       },
     };
   }
+  return finishAnsweringSession(opts, d, rank, operation, answeringOwnerId, spawn);
+}
+
+interface AnsweringSessionResult {
+  record: ConsultDispatchAttempt;
+  answeringOwnerId: string | null;
+  verified: boolean | null;
+  pendingKickoff?: PendingConsultKickoff;
+}
+
+/** Initial and recovered launches share the positive-proof and first-turn checks. */
+async function finishAnsweringSession(
+  opts: Pick<Parameters<typeof launchAnsweringSession>[0], 'sourceOwnerId' | 'onKickoff' | 'accountRoute' | 'accountRouteReason'>,
+  d: ConsultDispatchDeps,
+  rank: AllowedExpertModel,
+  operation: DispatchOperation,
+  answeringOwnerId: string,
+  spawn: { taskId?: string | null; logPath?: string | null; kickoffProof?: KickoffProofResult;
+    childExit?: Promise<SpawnChildExit> },
+  recovering?: PendingConsultKickoff,
+): Promise<AnsweringSessionResult> {
+  const base = { rank: rank.rank, agent: rank.agent, model: rank.model, operation,
+    ...(opts.accountRouteReason ? { accountRoute: opts.accountRoute,
+      accountRouteReason: opts.accountRouteReason } : {}) };
+  const failed = (reason: DispatchSkipReason, detail: string): AnsweringSessionResult => ({
+    record: { ...base, outcome: 'failed', reason, detail }, answeringOwnerId: null, verified: null,
+  });
+  if (spawn.kickoffProof?.persisted === false && spawn.kickoffProof.reason === 'kickoff-proof-timeout') {
+    return {
+      record: { ...base, outcome: 'pending',
+        ...(spawn.logPath ? { launchLogPath: spawn.logPath } : {}),
+        detail: 'Native kickoff proof is uncertain; retained the original answering task for authenticated receipt recovery.' },
+      answeringOwnerId, verified: null,
+      pendingKickoff: { answeringOwnerId, taskId: spawn.taskId ?? null, logPath: spawn.logPath ?? null,
+        kickoffProof: spawn.kickoffProof, rank, operation,
+        ...(opts.accountRoute ? { accountRoute: opts.accountRoute } : {}),
+        ...(opts.accountRouteReason ? { accountRouteReason: opts.accountRouteReason } : {}) },
+    };
+  }
   // A detached spawn can report `ok` after the shell starts even when the
   // command never submitted the brief. Require the host's parent-visible native
   // transcript receipt before treating this rank as dispatched — an unsubmitted
@@ -2693,6 +2773,15 @@ async function launchAnsweringSession(
       refreshError = String(error).slice(0, 300);
     }
     if (!refreshed) {
+      if (recovering) {
+        // Losing the lease cannot authorize killing the winner's original
+        // task. Keep its authenticated receipt available for reconciliation.
+        return {
+          record: { ...base, outcome: 'pending',
+            detail: 'Recovered native proof could not refresh the selected slot; original task and receipt remain in custody.' },
+          answeringOwnerId, verified: null, pendingKickoff: recovering,
+        };
+      }
       let stopped: string;
       try {
         stopped = await d.stopFailedLaunch(spawn.taskId);
@@ -2984,12 +3073,15 @@ export function makeConsultReachDispatcher(
   /** Refresh a cascade reply deadline after native kickoff persistence. */
   onKickoff?: (kickoffAt: string, answeringOwnerId: string) => boolean | Promise<boolean>;
   spawnFence?: CascadeSpawnFence;
+  recoverKickoff?: PendingConsultKickoff;
 }) => Promise<{
   queued: number;
   woke: number;
   pickupConfirmed: boolean;
   answeringOwnerId: string | null;
   dispatch: ConsultDispatchResult;
+  pending?: boolean;
+  pendingKickoff?: PendingConsultKickoff;
   targetCapacityUnavailable?: string;
 }> {
   return async (opts) => {
@@ -3028,6 +3120,7 @@ export function makeConsultReachDispatcher(
         ...(opts.onAnsweringOwner ? { onAnsweringOwner: opts.onAnsweringOwner } : {}),
         ...(opts.onKickoff ? { onKickoff: opts.onKickoff } : {}),
         ...(opts.spawnFence ? { spawnFence: opts.spawnFence } : {}),
+        ...(opts.recoverKickoff ? { recoverKickoff: opts.recoverKickoff } : {}),
         // Per-rank, because a walled rank-1 can turn a fork into a conversion and
         // the two inherit history differently.
         brief: (operation) =>
@@ -3045,11 +3138,28 @@ export function makeConsultReachDispatcher(
         : ctx,
       dispatchDeps,
     );
+    if (dispatch.pendingKickoff && !opts.spawnFence && !opts.recoverKickoff) {
+      try {
+        const retain: NonNullable<ConsultDispatchDeps['retainPendingKickoff']> = deps.retainPendingKickoff ?? (async (workspaceId, delivery, kickoff) => {
+          const [{ getOrgPg }, { queueCascadeDispatch }] = await Promise.all([
+            import('@papercusp/db-org'), import('./cascade-core'),
+          ]);
+          return queueCascadeDispatch(getOrgPg().sql, workspaceId, { ...delivery, pendingKickoff: kickoff });
+        });
+        if (!(await retain(ctx.workspaceId, opts, dispatch.pendingKickoff))) {
+          dispatch.detail += ' Pending receipt custody was not saved because the selected slot changed.';
+        }
+      } catch {
+        // Storage uncertainty cannot authorize another answering process.
+        dispatch.detail += ' Pending receipt storage is unconfirmed; retain the original answering identity.';
+      }
+    }
     const pickupConfirmed = dispatch.dispatched && dispatch.verified === true;
     return {
-      queued: dispatch.dispatched ? 1 : 0,
+      queued: dispatch.dispatched || dispatch.pending ? 1 : 0,
       woke: pickupConfirmed ? 1 : 0,
       pickupConfirmed,
+      ...(dispatch.pendingKickoff ? { pending: true, pendingKickoff: dispatch.pendingKickoff } : {}),
       answeringOwnerId: dispatch.answeringOwnerId,
       ...(dispatch.targetCapacityUnavailable ? { targetCapacityUnavailable: dispatch.targetCapacityUnavailable } : {}),
       dispatch,

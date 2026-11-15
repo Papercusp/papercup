@@ -1304,7 +1304,7 @@ export function defaultCompactionLimitForWindow(window: number, opts?: { fleetMe
  * - `model-window` — the `floor((window − margin) / 1.2)` derivation bound, so
  *   "the cap keeps limit × 1.2 under the model window" is accurate.
  * - `role-cap`     — a deliberate COST cap bound well below that derivation
- *   (450k leader/solo, 250k fleet member on a 1M window). The window sentence
+ *   (450k leader/solo, 400k fleet member on a 1M window). The window sentence
  *   is FALSE here; the honest reason is spend, and a single session may still
  *   go higher via `config:set-compaction-limit` (see {@link selfSetCeilingForSpec}).
  * - `minimum`      — the window is so small that {@link MIN_COMPACTION_LIMIT_TOKENS}

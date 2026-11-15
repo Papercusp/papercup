@@ -63,6 +63,32 @@ beforeEach(() => {
 });
 
 describe('D-063 owner rebuild of native MCP targets', () => {
+  it('preserves original execution metadata and absolute deadlines across the owner relay', async () => {
+    const deadline = Date.now() + 20000;
+    const fn = vi.fn(async (_args, ctx: UnifiedToolContext) => {
+      expect(ctx.toolExecution).toEqual({ mode: 'sync', responseWindowMs: 1000 });
+      expect(ctx.executionDeadlineAtMs).toBe(deadline);
+      expect(ctx.transportResponseDeadlineAtMs).toBeNull();
+      expect(ctx.uiClientId).toBe(address.ownerId);
+      return { content: [{ type: 'text' as const, text: 'original-budgets' }] };
+    });
+    target(fn);
+    const r = { ...request(), toolExecution: { mode: 'sync', responseWindowMs: 1000 },
+      executionDeadlineAtMs: deadline, transportResponseDeadlineAtMs: null };
+    expect(await dispatchNativeMcpTargetOnOwner(JSON.parse(JSON.stringify(r)), address))
+      .toMatchObject({ content: [{ type: 'text', text: 'original-budgets' }] });
+    expect(fn).toHaveBeenCalledOnce();
+  });
+  it('rejects async or oversized strict sync after owner reconstruction before the handler', async () => {
+    const fn = vi.fn(async () => ({ content: [] }));
+    target(fn);
+    for (const toolExecution of [{ mode: 'async' }, { mode: 'sync', responseWindowMs: 20000 }]) {
+      const result = await dispatchNativeMcpTargetOnOwner({ ...request(), toolExecution,
+        executionDeadlineAtMs: Date.now() + 10000, transportResponseDeadlineAtMs: Date.now() + 5000 }, address);
+      expect(result.isError).toBe(true);
+    }
+    expect(fn).not.toHaveBeenCalled();
+  });
   it.each(['meta:threadId', 'header:x-papercusp-native-session'] as const)('retains a genuine principal only via the local exact-call registry with %s', async carrier => {
     target(vi.fn());
     const principal = { kind: 'system' as const, slug: 'system:superuser', workspaceId: address.workspaceId,

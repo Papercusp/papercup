@@ -17,6 +17,7 @@
  */
 import { hostname } from 'node:os';
 import { z } from 'zod';
+import { filterNodeSchema, type FilterNode } from './scheduler/claim-spec';
 import { FRESH_VERIFY_TIMEOUT_MS } from './agent-kickoff/launch-budgets.mjs';
 import { getOrgPg } from '@papercusp/db-org';
 import { getAdvSession, mapAdvSessionRow, type AdvSessionRow, type AdvSessionEndedBy, type AdvSessionExpectedBinding } from './adv-sessions';
@@ -950,6 +951,8 @@ export interface MemberSpec {
   brief?: string;
   /** Per-member claim-lane restriction — seeds this member's claim spec (bee-level, overrides the fleet spec). */
   claimKinds?: Array<'feature' | 'chunk' | IssueFamilyRouteKind>;
+  /** Dedicated lane, intersected with the fleet fence before the first turn. */
+  claimFilter?: FilterNode;
   headless?: boolean;
   addDir?: string[];
   allowSubagents?: boolean;
@@ -1018,6 +1021,7 @@ export const memberSpecSchema = z
       .max(5)
       .optional()
       .describe("Per-member claim lane — seeds THIS member's claim spec, overriding the fleet-level `claimKinds`."),
+    claimFilter: filterNodeSchema.optional().describe('Dedicated claim filter (for example plan=id or id=in); intersects the fleet fence before kickoff. Fleet launch only.'),
     headless: z.boolean().optional().describe('Launch this member headless (no window).'),
     addDir: z.array(z.string()).optional().describe("psu --add-dir entries for this member."),
     allowSubagents: z.boolean().optional().describe('psu --allow-subagents for this member.'),
@@ -1037,6 +1041,7 @@ export const memberSpecSchema = z
 export type FleetMemberDefaults = Omit<MemberLaunchOpts, 'fleetSlug' | 'harness' | 'plan'> & {
   carry?: 'warm' | 'cold';
   claimKinds?: Array<'feature' | 'chunk' | IssueFamilyRouteKind>;
+  claimFilter?: FilterNode;
 };
 
 /**
@@ -1069,6 +1074,7 @@ export function foldMemberSpec(
     stack: pick(spec.stack, base.stack),
     launchContext: pick(spec.launchContext, base.launchContext),
     claimKinds: pick(spec.claimKinds, base.claimKinds),
+    claimFilter: pick(spec.claimFilter, base.claimFilter),
     headless: pick(spec.headless, base.headless),
     addDir: pick(spec.addDir, base.addDir),
     allowSubagents: pick(spec.allowSubagents, base.allowSubagents),

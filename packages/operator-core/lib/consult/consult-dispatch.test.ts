@@ -18,7 +18,8 @@
  * "--fork carries --owner-id" and "a conversion carries --agent=<target>" claims
  * about the shipped launcher rather than about the fixture.
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -117,7 +118,7 @@ function makeFakes(
   opts: {
     source?: Record<string, unknown>;
     /** `exit-N`: the spawn returns, then its child exits with status N before registering. */
-    spawnStatuses?: Array<'ok' | 'error' | 'no-proof' | 'exit-2'>;
+    spawnStatuses?: Array<'ok' | 'error' | 'no-proof' | 'timeout' | 'exit-2'>;
     /** What the launch-log reader reports for a failed rank. */
     logReason?: string | null;
     /** Durable log path returned for a failed spawn. */
@@ -181,7 +182,9 @@ function makeFakes(
         child: null,
         display: null,
         kickoffProof:
-          status === 'no-proof'
+          status === 'timeout'
+            ? { persisted: false, nativeRef: null, reason: 'kickoff-proof-timeout' }
+            : status === 'no-proof'
             ? { persisted: false, nativeRef: null, reason: 'fixture-no-receipt' }
             : { persisted: true, nativeRef: '/native/answer.jsonl', reason: null },
         ...(status === 'exit-2' ? { childExit: Promise.resolve({ code: 2, signal: null }) } : {}),
@@ -599,6 +602,46 @@ describe('dispatchConsultResponder — the fork leg', () => {
     // never-ran cleanup used for missing kickoff proof.
     expect(calls.stoppedNeverRan).toEqual([null]);
     expect(calls.verify).toHaveLength(0);
+  });
+
+  it('retains a timed-out launch without trying another rank or claiming dispatch', async () => {
+    const { deps, calls } = makeFakes({}, { spawnStatuses: ['timeout', 'ok'] });
+    const onKickoff = vi.fn(async () => true);
+    const result = await dispatchConsultResponder({ ...OPTS, onKickoff }, CTX, deps);
+    expect(result).toMatchObject({ dispatched: false, pending: true, answeringOwnerId: 'su-answer-1',
+      pendingKickoff: { taskId: 'task-1', answeringOwnerId: 'su-answer-1' },
+      attempts: [{ outcome: 'pending' }] });
+    expect(calls.spawn).toHaveLength(1);
+    expect(calls.stopped).toEqual([]);
+    expect(calls.verify).toEqual([]);
+    expect(onKickoff).not.toHaveBeenCalled();
+  });
+
+  it.each([[true, true], [false, true], [true, false]] as const)('recovers the original authenticated late receipt (persisted=%s, refresh=%s)', async (persisted, refresh) => {
+    const dir = mkdtempSync(join(tmpdir(), 'consult-late-proof-'));
+    const path = join(dir, 'receipt.json');
+    const token = 'a'.repeat(48);
+    try {
+      const { deps, calls } = makeFakes({}, { spawnStatuses: ['timeout'] });
+      const initial = await dispatchConsultResponder(OPTS, CTX, deps);
+      const pending = { ...initial.pendingKickoff!, kickoffProof: {
+        persisted: false, nativeRef: null, reason: 'kickoff-proof-timeout',
+        recovery: { path, tokenHash: createHash('sha256').update(token).digest('hex') },
+      } };
+      const onKickoff = vi.fn(async () => refresh);
+      writeFileSync(path, JSON.stringify({ token, persisted,
+        nativeRef: persisted ? '/native/late.jsonl' : null,
+        reason: persisted ? null : 'kickoff-not-submitted:refused' }), { mode: 0o600 });
+      const recovered = await dispatchConsultResponder({ ...OPTS, recoverKickoff: pending, onKickoff }, CTX, deps);
+      expect(recovered.dispatched).toBe(persisted && refresh);
+      if (persisted && !refresh) expect(recovered).toMatchObject({ pending: true, answeringOwnerId: 'su-answer-1' });
+      expect(calls.spawn).toHaveLength(1);
+      expect(calls.stopped).toEqual(persisted ? [] : ['task-1']);
+      expect(calls.stoppedNeverRan).toEqual(persisted ? [] : [{ answeringOwnerId: 'su-answer-1' }]);
+      expect(onKickoff).toHaveBeenCalledTimes(persisted ? 1 : 0);
+      // The cascade must commit the result before consuming this receipt.
+      expect(existsSync(path)).toBe(true);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   it('does not run the expiry callback when the native kickoff was not persisted', async () => {
@@ -2553,6 +2596,25 @@ describe('makeConsultReachDispatcher (D-010: the seam shape survives, its meanin
     const r = await reach({ responder: 'su-expert', conversationId: 'c', summary: 's', body: 'b' });
     expect(r).toMatchObject({ queued: 1, woke: 0, pickupConfirmed: false });
   });
+
+  it.each(['saved', 'slot-changed', 'storage-failed'])(
+    'retains queued custody without claiming dispatch or pickup after timeout: %s', async storage => {
+      const retain = vi.fn(async () => {
+        if (storage === 'storage-failed') throw new Error('storage unavailable');
+        return storage === 'saved';
+      });
+      const { deps, calls } = makeFakes({ retainPendingKickoff: retain }, { spawnStatuses: ['timeout', 'ok'] });
+      const reach = makeConsultReachDispatcher(CTX, deps);
+      const result = await reach({ responder: 'su-expert', conversationId: 'c', summary: 's', body: 'b' });
+      expect(result).toMatchObject({ queued: 1, woke: 0, pickupConfirmed: false,
+        pending: true, answeringOwnerId: 'su-answer-1', dispatch: { dispatched: false } });
+      expect(calls.spawn).toHaveLength(1);
+      expect(calls.stopped).toEqual([]);
+      expect(calls.verify).toEqual([]);
+      expect(retain).toHaveBeenCalledWith(CTX.workspaceId,
+        expect.objectContaining({ conversationId: 'c', responder: 'su-expert' }),
+        expect.objectContaining({ taskId: 'task-1', answeringOwnerId: 'su-answer-1' }));
+    });
 
   it('an exhausted walk reports ZERO deliveries — which is what every caller already cascades on', async () => {
     const { deps } = makeFakes({

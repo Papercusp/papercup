@@ -619,6 +619,30 @@ describe('legacy adv_sessions fleet launch-spec fallback', () => {
     expect(result.saved).not.toHaveProperty('plan');
   });
 
+  it('recovers a standalone source after its current fleet membership is attested', () => {
+    const standalone: AdvSessionLaunchRecord = {
+      ...legacyRecord,
+      launchSpec: { ...(legacyRecord.launchSpec as Record<string, unknown>), fleet: null, harnessSlug: null },
+      launchArgv: (legacyRecord.launchArgv as string[]).filter((arg) =>
+        !arg.startsWith('--fleet=') && !arg.startsWith('--harness=')),
+    };
+    expect(savedFleetLaunchSpecFromLegacyRecord(standalone, 'ws-test', 'byoc', {
+      harness: 'papercusp', postLaunchFleet: 'byoc',
+    })).toMatchObject({ ok: true, config: {
+      harness: 'papercusp', agent: 'codex', model: 'gpt-5.6-sol',
+      account: 'default', headless: true, carry: 'warm',
+    } });
+    for (const postLaunchFleet of [undefined, 'another-fleet']) {
+      expect(savedFleetLaunchSpecFromLegacyRecord(standalone, 'ws-test', 'byoc', {
+        harness: 'papercusp', postLaunchFleet,
+      })).toMatchObject({ ok: false, message: expect.stringContaining('fleet is missing') });
+    }
+    expect(savedFleetLaunchSpecFromLegacyRecord({
+      ...standalone, launchArgv: [...standalone.launchArgv as string[], '--fleet=byoc'],
+    }, 'ws-test', 'byoc', { harness: 'papercusp', postLaunchFleet: 'byoc' }))
+      .toMatchObject({ ok: false, message: expect.stringContaining('fleet is missing') });
+  });
+
   it('fails closed when adv_sessions.agent conflicts with the legacy launch record', () => {
     expect(
       savedFleetLaunchSpecFromLegacyRecord({ ...legacyRecord, agent: 'claude' }, 'ws-test', 'byoc'),

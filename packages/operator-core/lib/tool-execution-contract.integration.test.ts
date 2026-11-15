@@ -1,13 +1,12 @@
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   defineTool, dispatchProjectedTool, dispatchWithToolExecution, listMcpProjections,
   lookupByMcpName, REQUEST_BOUND_EXECUTION, _resetCatalogForTests,
   _resetProjectionRegistryForTests,
 } from '@papercusp/tooldef';
-
 const budgets = { nowMs: 1000, executionDeadlineMs: 61000, transportResponseBudgetMs: 60000 };
-afterEach(() => { _resetCatalogForTests(); _resetProjectionRegistryForTests(); });
+afterEach(() => { vi.useRealTimers(); _resetCatalogForTests(); _resetProjectionRegistryForTests(); });
 
 function fixture() {
   const handler = vi.fn(async (args: { value: number }) => ({

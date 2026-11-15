@@ -141,7 +141,7 @@ beforeEach(() => {
   vi.mocked(setPlanSchedule).mockReset().mockResolvedValue(true);
   vi.mocked(upsertRoutine).mockClear();
   fakeSql.mockClear();
-  vi.mocked(getRubric).mockReset().mockResolvedValue({ rubricId: RUBRIC, workspaceId: 'ws-test', criteria: [] } as never);
+  vi.mocked(getRubric).mockReset().mockResolvedValue({ rubricId: RUBRIC, workspaceId: 'ws-test', criteria: [] as Rubric['criteria'] } as Rubric);
 });
 
 describe('rubric re-score: crossing alert (R-8 falsifiers 1 and 2)', () => {
@@ -426,7 +426,7 @@ describe('grading schedule freshness policy', () => {
   });
 
   it('grading schedule validates current rubric before authoring without storing an incompatible schedule', async () => {
-    vi.mocked(getRubric).mockResolvedValue({ rubricId: RUBRIC, criteria: [live] } as never);
+    vi.mocked(getRubric).mockResolvedValue({ rubricId: RUBRIC, criteria: [live] } as Rubric);
     const out = await setSchedTool.handler({ harness: 'papercusp', slug: 'private-policy',
       schedule: { ...schedule, rrule: 'FREQ=HOURLY' } } as never, {} as never) as Out;
     expect(body(out).error).toBe('rubric_rescore_schedule_incompatible');
@@ -464,7 +464,7 @@ describe('grading schedule freshness policy', () => {
     const binding = ledgerCheckBindings(live)![0]!;
     expect(judgeLedgerRow(binding, measured, Date.parse(clock) - 1)).toBe('error');
     const changed = { ...live, check: { ...live.check, maxAgeMs: 60_049 } };
-    vi.mocked(getRubric).mockResolvedValue({ rubricId: RUBRIC, criteria: [changed] } as never);
+    vi.mocked(getRubric).mockResolvedValue({ rubricId: RUBRIC, criteria: [changed] } as Rubric);
     mockResolvedTyped(vi.mocked(getPlanRow), { workspaceId: 'ws-test', harnessSlug: 'papercusp',
       planSlug: 'private-policy', schedule, scheduledAt: null, content: '', contentHash: 'private',
       version: 1, title: 'Private policy', status: 'active', created: null, updated: null, owner: null,

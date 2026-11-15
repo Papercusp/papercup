@@ -19,6 +19,7 @@
  * Schema: migration 844 (cascade_cursor + cascade_digest on consult_state).
  */
 import type { Sql } from 'postgres';
+import type { PendingConsultKickoff } from './consult-dispatch';
 import { randomUUID } from 'node:crypto';
 import { HARD_BLOCKED_EXPIRY_MS, PROCEED_EXPIRY_MS } from './get-feedback-core';
 import { qualifyingScoreOf, snapshotCandidateQualifies } from './relevance-router';
@@ -291,7 +292,9 @@ export type CascadeDispatch = (opts: {
   onKickoff?: (kickoffAt: string, answeringOwnerId: string) => boolean | Promise<boolean>;
   /** Rechecked under the consult row lock at actual process creation. */
   spawnFence?: CascadeSpawnFence;
-}) => Promise<{ woke: number; answeringOwnerId?: string | null; pending?: boolean; targetCapacityUnavailable?: string }>;
+  recoverKickoff?: PendingConsultKickoff;
+}) => Promise<{ woke: number; answeringOwnerId?: string | null; pending?: boolean;
+  pendingKickoff?: PendingConsultKickoff; targetCapacityUnavailable?: string }>;
 
 function routingWithUnavailableTarget(routing: unknown, detail?: string): Record<string, unknown> {
   const snapshot = typeof routing === 'string' ? JSON.parse(routing) : routing;
@@ -310,18 +313,35 @@ export function pendingCascadeDispatch(opts: Parameters<CascadeDispatch>[0], cur
  * already moved, so the previous responder cannot replay their disposition.
  * Only the launch copy is queued; selection and expiry remain authoritative. */
 export async function queueCascadeDispatch(
-  sql: Sql, workspaceId: string, opts: Parameters<CascadeDispatch>[0],
+  sql: Sql, workspaceId: string,
+  opts: Parameters<CascadeDispatch>[0] & { pendingKickoff?: PendingConsultKickoff },
+  now = new Date(),
 ): Promise<boolean> {
-  const pending = pendingCascadeDispatch(opts, 0);
+  const kickoff = opts.pendingKickoff;
+  const token = kickoff ? randomUUID() : null;
+  const nextCheckAt = new Date(now.getTime() + 30_000).toISOString();
+  const pending = { ...pendingCascadeDispatch(opts, 0),
+    ...(kickoff ? { leaseToken: token, leaseUntil: nextCheckAt, spawn: {
+      protocol: 1, phase: 'proof-pending', answeringOwnerId: kickoff.answeringOwnerId,
+      leaseToken: token, kickoff,
+    } } : {}) };
   const rows = await sql`
     UPDATE harness_shared.consult_state
        SET routing = jsonb_set(CASE WHEN jsonb_typeof(routing) = 'string' THEN (routing #>> '{}')::jsonb ELSE routing END, '{cascadeDispatch}',
-             ${sql.json(pending as never)}::jsonb || jsonb_build_object('cursor', cascade_cursor))
+             (CASE WHEN ${Boolean(kickoff)}::boolean
+               THEN jsonb_set(${sql.json(pending as never)}::jsonb, '{leaseUntil}',
+                 to_jsonb(LEAST(expires_at, ${nextCheckAt}::timestamptz)::text))
+               ELSE ${sql.json(pending as never)}::jsonb END) || jsonb_build_object('cursor', cascade_cursor))
      WHERE workspace_id = ${workspaceId} AND conversation_id = ${opts.conversationId}
        AND responder_id = ${opts.responder} AND closed_at IS NULL
        AND state IN ('awaiting_responder', 'active')
        AND (CASE WHEN jsonb_typeof(routing) = 'string' THEN (routing #>> '{}')::jsonb ELSE routing END)
          #>> ARRAY['selection', 'selected', cascade_cursor::text, 'ownerId'] = ${opts.responder}
+       AND (${!kickoff}::boolean OR (
+         expires_at > ${now.toISOString()}::timestamptz
+         AND COALESCE(routing->'cascadeDispatch', 'null'::jsonb) = 'null'::jsonb
+         AND routing #>> ARRAY['selection', 'selected', cascade_cursor::text, 'answeringOwnerId'] =
+           ${kickoff?.answeringOwnerId ?? null}))
     RETURNING conversation_id`;
   return rows.length > 0;
 }
@@ -341,10 +361,12 @@ export async function continueCascadeDispatchCore(
   const token = randomUUID();
   const rows = await sql<Array<{ cascade_cursor: number; expires_at: string | Date; latency_contract: string; routing: { cascadeDispatch: {
     responder: string; summary: string; body: string; evidence?: CascadeSelectionEntry['evidence']; attempts?: number;
+    spawn?: { phase?: string; kickoff?: PendingConsultKickoff };
   } } }>>`
     UPDATE harness_shared.consult_state
        SET routing = jsonb_set(
          CASE WHEN routing #>> ARRAY['selection', 'selected', cascade_cursor::text, 'answeringOwnerId'] IS NULL
+             OR routing #>> '{cascadeDispatch,spawn,phase}' = 'proof-pending'
            THEN routing
            ELSE jsonb_set(routing #- ARRAY['selection', 'selected', cascade_cursor::text, 'answeringOwnerId'],
              ARRAY['selection', 'selected', cascade_cursor::text, 'supersededReservations'],
@@ -354,9 +376,12 @@ export async function continueCascadeDispatchCore(
                  'leaseToken', routing #>> '{cascadeDispatch,leaseToken}',
                  'recoveredAt', ${now().toISOString()}::text, 'reason', 'not-entered-spawn-fence-v1')))
          END,
-         '{cascadeDispatch}', ((routing->'cascadeDispatch') - 'spawn') ||
+         '{cascadeDispatch}', (CASE WHEN routing #>> '{cascadeDispatch,spawn,phase}' = 'proof-pending'
+           THEN jsonb_set(routing->'cascadeDispatch', '{spawn,leaseToken}', to_jsonb(${token}::text))
+           ELSE (routing->'cascadeDispatch') - 'spawn' END) ||
            ${sql.json({ leaseToken: token, leaseUntil: new Date(now().getTime() + 120_000).toISOString() } as never)}::jsonb ||
            CASE WHEN routing #>> ARRAY['selection', 'selected', cascade_cursor::text, 'answeringOwnerId'] IS NOT NULL
+               AND routing #>> '{cascadeDispatch,spawn,phase}' IS DISTINCT FROM 'proof-pending'
              THEN jsonb_build_object('attempts', COALESCE((routing #>> '{cascadeDispatch,attempts}')::int, 0) + 1)
              ELSE '{}'::jsonb END)
      WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
@@ -372,6 +397,14 @@ export async function continueCascadeDispatchCore(
            AND routing #>> '{cascadeDispatch,spawn,phase}' = 'reserved'
            AND routing #>> '{cascadeDispatch,spawn,answeringOwnerId}' =
              routing #>> ARRAY['selection', 'selected', cascade_cursor::text, 'answeringOwnerId']
+           AND routing #>> '{cascadeDispatch,spawn,leaseToken}' = routing #>> '{cascadeDispatch,leaseToken}')
+         OR (routing #>> '{cascadeDispatch,spawn,protocol}' = '1'
+           AND routing #>> '{cascadeDispatch,spawn,phase}' = 'proof-pending'
+           AND expires_at > ${now().toISOString()}::timestamptz
+           AND routing #>> '{cascadeDispatch,spawn,answeringOwnerId}' =
+             routing #>> ARRAY['selection', 'selected', cascade_cursor::text, 'answeringOwnerId']
+           AND routing #>> '{cascadeDispatch,spawn,kickoff,answeringOwnerId}' =
+             routing #>> ARRAY['selection', 'selected', cascade_cursor::text, 'answeringOwnerId']
            AND routing #>> '{cascadeDispatch,spawn,leaseToken}' = routing #>> '{cascadeDispatch,leaseToken}'))
        AND COALESCE((routing #>> '{cascadeDispatch,leaseUntil}')::timestamptz, '-infinity'::timestamptz) <= ${now().toISOString()}::timestamptz
     RETURNING cascade_cursor, expires_at, latency_contract, routing`;
@@ -379,6 +412,7 @@ export async function continueCascadeDispatchCore(
   if (!row) return false;
   const routing = typeof row.routing === 'string' ? JSON.parse(row.routing) as typeof row.routing : row.routing;
   const pending = routing.cascadeDispatch;
+  const recovering = pending.spawn?.phase === 'proof-pending' ? pending.spawn.kickoff : undefined;
   const isCurrent = async () => {
     // Expiry admits a competing continuation; the token fences actual use.
     // Revalidate and renew atomically after slow preflight when no claimant
@@ -424,7 +458,9 @@ export async function continueCascadeDispatchCore(
     };
     const result = await deps.dispatch(isCurrent)({
       responder: pending.responder, conversationId, summary: pending.summary, body: pending.body,
-      spawnFence: { cursor: row.cascade_cursor, responder: pending.responder, leaseToken: token },
+      ...(recovering ? { recoverKickoff: recovering } : {
+        spawnFence: { cursor: row.cascade_cursor, responder: pending.responder, leaseToken: token },
+      }),
       ...(pending.evidence ? { evidence: pending.evidence } : {}),
       onAnsweringOwner,
       onKickoff: async (kickoffAt, answeringOwnerId) => {
@@ -446,13 +482,31 @@ export async function continueCascadeDispatchCore(
         return true;
       },
     });
-    if (result.answeringOwnerId && await isCurrent()) await onAnsweringOwner(result.answeringOwnerId);
+    if (result.answeringOwnerId && !recovering && await isCurrent()) await onAnsweringOwner(result.answeringOwnerId);
+    if (result.pendingKickoff) {
+      // Keep original custody and the private receipt correlation, never the
+      // token itself. A restart may claim reconciliation, never another spawn.
+      const nextCheckAt = new Date(Math.min(now().getTime() + 30_000,
+        new Date(expectedKickoffExpiry).getTime())).toISOString();
+      await sql`
+        UPDATE harness_shared.consult_state
+           SET routing = jsonb_set(routing, '{cascadeDispatch}', (routing->'cascadeDispatch') ||
+             ${sql.json({ leaseUntil: nextCheckAt, spawn: { protocol: 1, phase: 'proof-pending',
+               answeringOwnerId: result.pendingKickoff.answeringOwnerId, leaseToken: token,
+               kickoff: result.pendingKickoff } } as never)}::jsonb)
+         WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
+           AND closed_at IS NULL AND cascade_cursor = ${row.cascade_cursor}
+           AND routing #>> '{cascadeDispatch,leaseToken}' = ${token}
+           AND routing #>> ARRAY['selection', 'selected', cascade_cursor::text, 'answeringOwnerId'] =
+             ${result.pendingKickoff.answeringOwnerId}`;
+      return true;
+    }
     // A refusal has no answering session. Make it due now so the maintained
     // expiry path advances/settles it and emits the requester event, rather
     // than waiting a whole new TTL for a responder that cannot arrive. A
     // provider can reject its first turn AFTER kickoff refreshed that TTL:
     // compare with our latest write, while preserving a concurrent reply.
-    await sql`
+    const finished = await sql`
       UPDATE harness_shared.consult_state
          SET routing = (CASE WHEN ${result.woke === 0 && !result.answeringOwnerId}::boolean
                  AND expires_at IS NOT DISTINCT FROM ${expectedKickoffExpiry}::timestamptz
@@ -464,7 +518,13 @@ export async function continueCascadeDispatchCore(
                THEN ${now().toISOString()}::timestamptz - interval '1 millisecond' ELSE expires_at END
        WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
          AND cascade_cursor = ${row.cascade_cursor} AND closed_at IS NULL
-         AND routing #>> '{cascadeDispatch,leaseToken}' = ${token}`;
+         AND routing #>> '{cascadeDispatch,leaseToken}' = ${token}
+       RETURNING conversation_id`;
+    if (recovering && finished.length > 0) {
+      // Commit before consuming. A lost CAS leaves proof available to its winner.
+      const { reconcileKickoffProof } = await import('../console-spawn');
+      reconcileKickoffProof(recovering.kickoffProof, { consume: true });
+    }
   } catch (error) {
     const attempts = (pending.attempts ?? 0) + 1;
     await sql`
@@ -472,7 +532,7 @@ export async function continueCascadeDispatchCore(
          SET routing = jsonb_set(routing, '{cascadeDispatch}', (routing->'cascadeDispatch') ||
            ${sql.json({ leaseToken: null, leaseUntil: attempts < 3 ? new Date(now().getTime() + 30_000).toISOString() : null,
              attempts, lastError: String(error).slice(0, 500) } as never)}::jsonb ||
-           CASE WHEN routing #>> '{cascadeDispatch,spawn,phase}' = 'reserved'
+           CASE WHEN routing #>> '{cascadeDispatch,spawn,phase}' IN ('reserved', 'proof-pending')
              THEN jsonb_build_object('leaseToken', ${token}::text) ELSE '{}'::jsonb END),
              expires_at = CASE WHEN ${attempts >= 3}::boolean
                  AND ${!kickoffExpiryRefreshed}::boolean

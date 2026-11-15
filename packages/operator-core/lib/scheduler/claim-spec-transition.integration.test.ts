@@ -101,6 +101,73 @@ afterAll(async () => {
 });
 
 describe('WI-4770 fleet membership transition guard', () => {
+
+  it.each([false, true])('dedicated members FIRST pull stays in-lane, including helpers and restart (reverse=%s)', async (reverse) => {
+    const { seedMemberLaunchClaimSpecs } = await import('./member-launch-spec');
+    const rows = [
+      { id: 'WI-control', plan: 'other', at: 1 },
+      { id: 'WI-unrelated', plan: 'other', at: 2 },
+      { id: 'WI-alpha', plan: 'alpha', at: 1000 },
+      { id: 'WI-beta', plan: 'beta', at: 2000 },
+      { id: 'WI-alpha-helper', plan: null, at: 3000 },
+      { id: 'WI-forbidden', plan: 'outside-parent', at: 0 },
+    ];
+    for (const row of reverse ? [...rows].reverse() : rows) {
+      await seedFeature(row.id, row.id);
+      await db.sql`UPDATE harness_shared.work_items
+        SET source_plan_slug=${row.plan}, created_ts=${row.at},
+            item_kind=${row.id === 'WI-alpha-helper' ? 'task' : 'feature'}
+        WHERE feature_id=${row.id}`;
+    }
+    const parent: ClaimSpec = {
+      ...DEFAULT_CLAIM_SPEC,
+      specId: 'dedicated-launch-parent', revision: 1,
+      view: { filter: { field: 'id', op: 'in', value: rows.filter((row) => row.id !== 'WI-forbidden').map((row) => row.id) } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+      states: ['open'],
+    };
+    expect((await setClaimSpec({ cupId: fleetSpecBeeKey(PARENT), spec: parent }, db.sql)).ok).toBe(true);
+    // Positive control: inherited broad scope selects the unrelated sibling first.
+    await membership('su-launch-control', PARENT, 'member');
+    expect((await getNextForBee({ cupId: 'su-launch-control', workspaceId: WS, harness: H }))?.workItem.id).toBe('WI-control');
+
+    const filter = (plan: string): import('./claim-spec').FilterNode => ({ any: [
+      { field: 'plan', op: '=', value: plan },
+      { field: 'id', op: 'in', value: [`WI-${plan}-helper`, 'WI-forbidden'] },
+    ] });
+    // The launcher's real pre-spawn writer runs before member registration.
+    await seedMemberLaunchClaimSpecs({ workspaceId: WS, harness: H, updatedBy: 'leader', parent,
+      members: [
+        { ownerId: 'su-launch-alpha', claimFilter: filter('alpha'), claimKinds: ['feature'] },
+        { ownerId: 'su-launch-beta', claimFilter: filter('beta') },
+        { ownerId: 'su-launch-helper', claimFilter: filter('alpha'), claimKinds: ['task'] },
+      ],
+    }, db.sql);
+    for (const ownerId of ['su-launch-alpha', 'su-launch-beta', 'su-launch-helper']) {
+      await membership(ownerId, PARENT, 'member');
+      expect((await getClaimSpecRecord({ cupId: ownerId, workspaceId: WS }, db.sql)).source).toBe('cup');
+    }
+    expect((await getNextForBee({ cupId: 'su-launch-alpha', workspaceId: WS, harness: H }))?.workItem.id).toBe('WI-alpha');
+    expect((await getNextForBee({ cupId: 'su-launch-beta', workspaceId: WS, harness: H }))?.workItem.id).toBe('WI-beta');
+    expect((await getNextForBee({ cupId: 'su-launch-helper', workspaceId: WS, harness: H }))?.workItem.id).toBe('WI-alpha-helper');
+
+    // Respawn's maintained source=cup copy retains the lane before replacement boot.
+    const prior = await getClaimSpecRecord({ cupId: 'su-launch-alpha', workspaceId: WS }, db.sql);
+    expect((await setClaimSpec({ cupId: 'su-launch-restart', spec: prior.spec }, db.sql)).ok).toBe(true);
+    await membership('su-launch-restart', PARENT, 'member');
+    expect(await getNextForBee({ cupId: 'su-launch-restart', workspaceId: WS, harness: H })).toBeNull();
+    expect(await db.sql`SELECT feature_id, taken_by FROM harness_shared.work_items
+      WHERE feature_id IN ('WI-unrelated','WI-forbidden') ORDER BY feature_id`).toEqual([
+      { feature_id: 'WI-forbidden', taken_by: null }, { feature_id: 'WI-unrelated', taken_by: null },
+    ]);
+    // Replay must not overwrite a later member steer.
+    await seedMemberLaunchClaimSpecs({ workspaceId: WS, harness: H, updatedBy: 'retry', parent,
+      members: [{ ownerId: 'su-launch-alpha', claimFilter: filter('beta') }],
+    }, db.sql);
+    expect(await getClaimSpecRecord({ cupId: 'su-launch-alpha', workspaceId: WS }, db.sql))
+      .toMatchObject({ revision: prior.revision, spec: prior.spec, updatedBy: prior.updatedBy });
+  });
+
   it.each(['cup', 'fleet', 'inherited'] as const)(
     'P003 rejects a malformed %s policy instead of granting defaults, and repairs the same target',
     async (source) => {

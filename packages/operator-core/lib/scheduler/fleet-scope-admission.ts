@@ -297,14 +297,41 @@ export function renderFleetDependencyEscape(escape: FleetDependencyEscape): stri
   );
 }
 
+export type FleetScopeReadPhase =
+  | 'scope-imports'
+  | 'membership'
+  | 'assignment-fallback'
+  | 'claim-spec-import'
+  | 'claim-spec'
+  | 'reconciliation-imports'
+  | 'assignments'
+  | 'claim-read'
+  | 'claim-match'
+  | 'claim-release'
+  | 'leader-notify-import'
+  | 'leader-notify';
+
+function reportFleetScopeReadPhase(
+  onPhase: ((phase: FleetScopeReadPhase) => void) | undefined,
+  phase: FleetScopeReadPhase,
+): void {
+  try {
+    onPhase?.(phase);
+  } catch {
+    // Diagnostics must not change admission or claim decisions.
+  }
+}
+
 /** Resolve only MEMBER scope. Leaders supervise fleets but do not consume their member lane. */
 export async function resolveFleetScopeContext(
   ownerIdOrName: string,
   workspaceId?: string | null,
+  onPhase?: (phase: FleetScopeReadPhase) => void,
 ): Promise<FleetScopeContext | null> {
   // Lazy seams keep assignment-tool unit tests from loading the entire scheduler /
   // coord graph merely because they import a handler. The calls still reuse the
   // canonical stores; only module evaluation is deferred until admission is needed.
+  reportFleetScopeReadPhase(onPhase, 'scope-imports');
   const { latestFleetMembership } = await import('../fleet-membership-store');
   const { listFleetAssignments } = await import('../fleet/assignments');
   const ws = resolveClaimSpecWorkspace(workspaceId);
@@ -312,11 +339,13 @@ export async function resolveFleetScopeContext(
   if (!ws) return null;
   let ownerId = ownerIdOrName;
   // A failed authority read is UNKNOWN, never evidence of an unscoped caller.
+  reportFleetScopeReadPhase(onPhase, 'membership');
   let membership = await latestFleetMembership(ws, ownerId);
 
   // plan_items:assign addresses a stable agent-name. Resolve it through the
   // canonical assignment/presence view before consulting append-only membership.
   if (!membership?.fleetSlug) {
+    reportFleetScopeReadPhase(onPhase, 'assignment-fallback');
     const rows = await listFleetAssignments({ workspaceId: ws, agent: ownerIdOrName, activeOnly: true });
     const row = rows.find((r) => r.agentId && r.fleetSlug && r.fleetRole === 'member');
     if (row?.agentId) {
@@ -326,7 +355,9 @@ export async function resolveFleetScopeContext(
   }
 
   if (!membership?.fleetSlug || membership.fleetRole !== 'member') return null;
+  reportFleetScopeReadPhase(onPhase, 'claim-spec-import');
   const { getClaimSpecRecord } = await import('./claim-spec-store');
+  reportFleetScopeReadPhase(onPhase, 'claim-spec');
   const record = await getClaimSpecRecord({ cupId: ownerId, workspaceId: ws });
   return { ownerId, fleetSlug: membership.fleetSlug, fleetRole: 'member', record, workspaceId: ws };
 }
@@ -1673,11 +1704,14 @@ export async function reconcileFleetScopeClaims(args: {
   ownerId: string;
   workspaceId?: string | null;
   identity?: AgentIdentity;
+  onPhase?: (phase: FleetScopeReadPhase) => void;
 }): Promise<FleetScopeReconciliation> {
-  const scope = await resolveFleetScopeContext(args.ownerId, args.workspaceId);
+  const scope = await resolveFleetScopeContext(args.ownerId, args.workspaceId, args.onPhase);
   if (!scope) return { scope: null, quarantinedIds: [], fleetAssignmentRows: [] };
+  reportFleetScopeReadPhase(args.onPhase, 'reconciliation-imports');
   const { listFleetAssignments } = await import('../fleet/assignments');
   const { getWorkItem, releaseWorkItem } = await import('../work-items');
+  reportFleetScopeReadPhase(args.onPhase, 'assignments');
   const rows = await listFleetAssignments({
     workspaceId: resolveClaimSpecWorkspace(args.workspaceId),
     activeOnly: true,
@@ -1693,12 +1727,14 @@ export async function reconcileFleetScopeClaims(args: {
   ];
   const quarantinedIds: string[] = [];
   for (const id of ids) {
+    reportFleetScopeReadPhase(args.onPhase, 'claim-read');
     const item = await getWorkItem(id);
     // EI-18732199386440540: the reconciliation sweep MUST honour the same self-filed
     // fallout carve-out the admission seam applies. Without this the two disagree and
     // the fix is worse than useless: the member is allowed to claim the bug it filed,
     // then the next sweep quarantines that very claim and messages the leader about an
     // "out-of-scope" item the system itself just admitted.
+    reportFleetScopeReadPhase(args.onPhase, 'claim-match');
     const matches =
       item && scope.record.source !== 'default'
         ? (await itemMatchesScope(item, scope)) ||
@@ -1706,11 +1742,14 @@ export async function reconcileFleetScopeClaims(args: {
           (await leaderDispatchedAdmission(item, scope))
         : false;
     if (matches) continue;
+    reportFleetScopeReadPhase(args.onPhase, 'claim-release');
     const released = await releaseWorkItem(id, { expectedAssignee: scope.ownerId });
     if (released) quarantinedIds.push(id);
   }
   if (quarantinedIds.length > 0 && args.identity) {
+    reportFleetScopeReadPhase(args.onPhase, 'leader-notify-import');
     const { sendMessage } = await import('../agent-tools/coordination/messages');
+    reportFleetScopeReadPhase(args.onPhase, 'leader-notify');
     await sendMessage(args.identity, {
       to: [`@fleet-leader:${scope.fleetSlug}`],
       summary: `quarantined ${quarantinedIds.length} out-of-scope fleet claim(s)`,

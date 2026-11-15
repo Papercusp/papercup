@@ -510,6 +510,9 @@ export interface LegacyLaunchSpecFallbacks {
   agent?: string;
   /** Target-member pot/harness context or a concrete caller harness. */
   harness?: string;
+  /** Current membership read from the durable ledger by the recovery caller.
+   * Permits a source that originally launched outside a fleet to rejoin it. */
+  postLaunchFleet?: string;
 }
 
 const LEGACY_AGENTS = new Set<FleetHeadcountConfig['agent']>(['claude', 'omp', 'codex']);
@@ -572,7 +575,9 @@ export function savedFleetLaunchSpecFromLegacyRecord(
   const storedFleet = typeof rawFleet?.slug === 'string' && rawFleet.slug.trim()
     ? rawFleet.slug.trim()
     : null;
-  if (!recordedFleet || !storedFleet) {
+  const joinedAfterLaunch = recordedFleet === null && storedFleet === null &&
+    fallbacks.postLaunchFleet === fleetSlug;
+  if ((!recordedFleet || !storedFleet) && !joinedAfterLaunch) {
     return { ok: false, message: 'Legacy launch record fleet is missing from launch_spec or launch_argv.' };
   }
   // The member target has already established the live fleet. A legacy member
@@ -614,7 +619,7 @@ export function savedFleetLaunchSpecFromLegacyRecord(
   if (launch.workspaceId !== workspaceId) {
     return { ok: false, message: `Legacy launch_spec workspace \`${launch.workspaceId}\` does not match \`${workspaceId}\`.` };
   }
-  if (launch.fleet?.slug !== storedFleet) {
+  if ((launch.fleet?.slug ?? null) !== storedFleet) {
     return { ok: false, message: `Legacy launch_spec fleet does not match its recorded fleet \`${storedFleet}\`.` };
   }
 

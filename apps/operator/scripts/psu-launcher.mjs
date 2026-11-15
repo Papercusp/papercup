@@ -8440,11 +8440,21 @@ export function prepareCodexGatewayLaunch(env, args = []) {
   // host adoption must enforce the recorded role before every native child,
   // including launches that use the default account and need no route patch.
   const role = env.PAPERCUSP_AGENT_ROLE;
-  const roleHomeReadiness = role && role !== "su"
-    ? codexHomeLaunchReadiness(env.CODEX_HOME, env.PAPERCUSP_SID, role)
-    : null;
-  if (roleHomeReadiness)
-    throw new Error(`Codex launch requires its recorded owner and restricted role MCP profile: ${roleHomeReadiness}`);
+  if (role && role !== "su") {
+    // Authority stays fatal: owner, restricted role MCP profile, config owner.
+    const authority = codexHomeLaunchReadiness(env.CODEX_HOME, env.PAPERCUSP_SID, role, { authorityOnly: true });
+    if (authority)
+      throw new Error(`Codex launch requires its recorded owner and restricted role MCP profile: ${authority}`);
+    // Completeness (newer managed hooks) only warns. The home's writer may run
+    // an older build than this launcher; refusing here left every Codex judge
+    // unable to boot (EI-27691317094132381). The resume gate stays strict.
+    const incomplete = codexHomeLaunchReadiness(env.CODEX_HOME, env.PAPERCUSP_SID, role);
+    if (incomplete)
+      process.stderr.write(
+        `psu: warning: Codex ${role} home for ${env.PAPERCUSP_SID} is incomplete (${incomplete}); ` +
+          "launching anyway because its writer predates this launcher (EI-27691317094132381)\n",
+      );
+  }
   const mode = env[ACCOUNT_ROUTING_MODE_ENV];
   if (mode !== "auto" && mode !== "pin") return args;
   if (!env.CODEX_HOME || (mode === "pin" && !env.PAPERCUSP_ACCOUNT_ID))
@@ -16600,6 +16610,17 @@ export const SESSION_PORT_TRANSFORM_VERSION = 4;
 export function sessionPortUpgradeError(error) {
   const status = Number(error?.status ?? 0);
   const message = String(error?.message ?? error ?? "");
+  // Older operators require an archive as soon as endedAt is set, even
+  // while the exact transcript is retained on disk. Both builds can speak
+  // the same protocol, so the version handshake does not catch this skew.
+  if (status === 409 && /(?:^| — )canonical (?:Claude|codex|omp) archive not found$/.test(message)) {
+    return new Error(
+      `psu: the serving operator could not acquire the source archive (${message}). ` +
+        `An ended session may still have its exact transcript on disk; this refusal does not establish that history is lost. ` +
+        `Use an up-to-date operator with retained-transcript fallback (PAPERCUSP_OPERATOR_URL selects the operator), or update the serving operator, then retry.`,
+      { cause: error },
+    );
+  }
   // WI-6554700010011137: an operator that predates a cross-backend pair still
   // speaks the same protocol/transform, so it refuses the PAIR with a 400 —
   // "V1 targetBackend must be codex|omp" on main d740fc3802 — rather than the
@@ -17611,12 +17632,20 @@ export function isCodexHomeLaunchReady(codexHome, expectedOwner = null) {
  * say "not ready" and the failing condition was unknowable once the home was
  * gone (WI-10006770). Each returned reason names exactly one check.
  *
+ * `authorityOnly` skips the hook-COMPLETENESS checks (lifecycle, owner
+ * provenance, turn journal) and keeps every structural and AUTHORITY check
+ * (prompt, config, restricted role MCP profile, owner in config, diagnostics
+ * and hooks). Completeness tracks the launcher's own revision, so an operator
+ * running an older build writes homes that predate it (EI-27691317094132381).
+ * A fresh role launch warns on those instead of refusing; resume stays strict.
+ *
  * @param {string | null | undefined} codexHome
  * @param {string | null} [expectedOwner]
  * @param {string | null} [recordedRole]
+ * @param {{ authorityOnly?: boolean }} [options]
  * @returns {string | null}
  */
-export function codexHomeLaunchReadiness(codexHome, expectedOwner = null, recordedRole = null) {
+export function codexHomeLaunchReadiness(codexHome, expectedOwner = null, recordedRole = null, { authorityOnly = false } = {}) {
   if (!codexHome) return "no Codex home recorded";
   const read = (name) => {
     try {
@@ -17694,6 +17723,7 @@ export function codexHomeLaunchReadiness(codexHome, expectedOwner = null, record
     );
     if (hookOwners.length === 0) return "hooks.json names no session owner";
     if (!hookOwners.every((owner) => owner === expectedOwner)) return "hooks.json names a different session owner";
+    if (authorityOnly) return null;
     if (!lifecycleReady) return "hooks.json lacks the SessionStart/SessionEnd/Stop lifecycle hooks";
     // EI-28073503465008167: owner/lifecycle checks alone accept older homes
     // that cannot capture owner provenance or the turn journal. Match the

@@ -172,6 +172,7 @@ beforeAll(async () => {
       workspace_id text NOT NULL,
       harness_slug text NOT NULL DEFAULT 'papercusp',
       plan_slug text NOT NULL,
+      status text NOT NULL DEFAULT 'draft',
       template text,
       template_slug text,
       owner text,
@@ -782,6 +783,7 @@ describe('source-audit dispatcher through persisted consult routing', () => {
           // This fixture has no task-manager rows. Keep the live-task guard
           // inside the fixture instead of opening the production org database.
           listTasks: async () => [],
+          readCardHarness: async () => null,
           // The restored direct-launch defect returns a synthetic task receipt;
           // its task row is absent in this fixture, too.
           getTask: async () => null,
@@ -1025,6 +1027,7 @@ describe('source-audit dispatcher through persisted consult routing', () => {
     const dispatchDeps = {
       listScorecards: async () => [source], getRubric: async () => ({ kind: 'standard' } as Rubric),
       listTasks: async () => [],
+      readCardHarness: async () => null,
       reserve: async (_issueId: string, reservationKey: string) => ({
         status: 'claimed' as const,
         reservation: { key: reservationKey, reservedAt: SOURCE_AUDIT_RESERVED_AT },
@@ -1900,6 +1903,104 @@ describe('recoverable interactive feedback requests', () => {
     expect(selectionFromRouting((await stateRow(accepted.conversation_id)).routing)[0])
       .toMatchObject({ answeringOwnerId: 'durable-initial-answerer' });
   });
+
+  it.each(['positive', 'negative', 'unsettled', 'lost-cas', 'wrong-owner', 'expired', 'direct'] as const)(
+    'reconciles original pending kickoff custody after restart: %s', async mode => {
+      const fixture = makeDeps(routeOf([cand('late-proof-source')]));
+      const accepted = await acceptFeedbackRequestCore({ ...baseReq, requestKey: 'late-proof-' + mode }, fixture.deps);
+      if ('error' in accepted) throw new Error(accepted.error);
+      await continueFeedbackRequestCore(WS, accepted.conversation_id, {
+        getSql: () => rootSql, now: () => NOW,
+        execute: (payload, acceptedRequest) => getFeedbackCore(payload, {
+          ...fixture.deps, acceptedRequest, resumeInitialDispatch: () => {},
+        }),
+      });
+      const { createHash } = await import('node:crypto');
+      const { reconcileKickoffProof } = await import('../console-spawn');
+      const { acquireConsultSpawnLease } = await import('./consult-dispatch');
+      const dir = mkdtempSync(join(tmpdir(), 'consult-pending-pg-'));
+      const path = join(dir, 'receipt.json');
+      const token = randomBytes(24).toString('hex');
+      const kickoff = {
+        answeringOwnerId: 'late-proof-answerer', taskId: 'original-task', logPath: '/original.log',
+        kickoffProof: { persisted: false, nativeRef: null, reason: 'kickoff-proof-timeout',
+          recovery: { path, tokenHash: createHash('sha256').update(token).digest('hex') } },
+        rank: { rank: 1, agent: 'claude' as const, model: 'opus' }, operation: 'fork' as const,
+      };
+      let tick = NOW;
+      const dispatch = vi.fn(async (opts: Parameters<import('./cascade-core').CascadeDispatch>[0]) => {
+        if (!opts.recoverKickoff) {
+          await opts.onAnsweringOwner!(kickoff.answeringOwnerId, opts.spawnFence);
+          const lease = await acquireConsultSpawnLease(WS, accepted.conversation_id, rootSql,
+            { ...opts.spawnFence!, answeringOwnerId: kickoff.answeringOwnerId });
+          expect(lease).not.toBeNull();
+          await lease!.release();
+          return { woke: 0, answeringOwnerId: kickoff.answeringOwnerId, pending: true, pendingKickoff: kickoff };
+        }
+        expect(opts.recoverKickoff).toEqual(kickoff);
+        expect(opts.spawnFence).toBeUndefined();
+        const proof = reconcileKickoffProof(opts.recoverKickoff.kickoffProof);
+        if (proof.reason === 'kickoff-proof-timeout') return {
+          woke: 0, answeringOwnerId: kickoff.answeringOwnerId, pending: true, pendingKickoff: kickoff,
+        };
+        if (mode === 'lost-cas') {
+          await rootSql`UPDATE harness_shared.consult_state
+            SET routing = jsonb_set(routing, '{cascadeDispatch,leaseToken}', '"replacement"'::jsonb)
+            WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+        } else if (proof.persisted) {
+          expect(await opts.onKickoff!(tick.toISOString(), kickoff.answeringOwnerId)).toBe(true);
+        }
+        return { woke: proof.persisted ? 1 : 0, answeringOwnerId: proof.persisted ? kickoff.answeringOwnerId : null };
+      });
+      const recovery = { getSql: () => rootSql, now: () => tick, dispatch: () => dispatch };
+      try {
+        writeFileSync(path, '', { mode: 0o600 });
+        if (mode === 'direct') {
+          await rootSql`UPDATE harness_shared.consult_state
+            SET routing = jsonb_set(routing - 'cascadeDispatch', '{selection,selected,0,answeringOwnerId}',
+              to_jsonb(${kickoff.answeringOwnerId}::text))
+            WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+          const { queueCascadeDispatch } = await import('./cascade-core');
+          const delivery = { responder: 'late-proof-source', conversationId: accepted.conversation_id,
+            summary: 'direct grading', body: 'same reviewer', pendingKickoff: kickoff };
+          expect(await queueCascadeDispatch(rootSql, WS, delivery, NOW)).toBe(true);
+          expect(await queueCascadeDispatch(rootSql, WS, { ...delivery,
+            pendingKickoff: { ...kickoff, taskId: 'must-not-replace-original' } }, NOW)).toBe(false);
+        } else {
+          expect(await continueCascadeDispatchCore(WS, accepted.conversation_id, recovery)).toBe(true);
+        }
+        const initial = await stateRow(accepted.conversation_id);
+        const initialExpiry = new Date(initial.expires_at as string | Date);
+        expect(initial.routing).toMatchObject({ cascadeDispatch: { spawn: {
+          phase: 'proof-pending', kickoff,
+        } } });
+        expect(await continueCascadeDispatchCore(WS, accepted.conversation_id, recovery)).toBe(false);
+        tick = new Date(NOW.getTime() + 30_001);
+        if (mode === 'wrong-owner') {
+          await rootSql`UPDATE harness_shared.consult_state SET routing = jsonb_set(routing,
+            '{selection,selected,0,answeringOwnerId}', '"another-answerer"'::jsonb)
+            WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+        }
+        if (mode === 'expired') tick = new Date(initialExpiry.getTime() + 1);
+        if (mode !== 'unsettled') writeFileSync(path, JSON.stringify({
+          token, persisted: mode !== 'negative', nativeRef: mode === 'negative' ? null : '/native/late.jsonl',
+          reason: mode === 'negative' ? 'kickoff-not-submitted:refused' : null,
+        }), { mode: 0o600 });
+        expect(await continueCascadeDispatchCore(WS, accepted.conversation_id, recovery))
+          .toBe(mode !== 'wrong-owner' && mode !== 'expired');
+        const final = await stateRow(accepted.conversation_id);
+        expect(dispatch).toHaveBeenCalledTimes(mode === 'direct' || mode === 'wrong-owner' || mode === 'expired' ? 1 : 2);
+        expect(existsSync(path)).toBe(!['positive', 'negative', 'direct'].includes(mode));
+        if (mode === 'positive' || mode === 'negative' || mode === 'direct') expect(final.routing).not.toHaveProperty('cascadeDispatch');
+        if (mode === 'unsettled') {
+          expect(final.routing).toMatchObject({ cascadeDispatch: { spawn: { phase: 'proof-pending', kickoff } } });
+          expect(new Date(final.expires_at as string | Date).getTime()).toBe(initialExpiry.getTime());
+          expect(selectionFromRouting(final.routing)[0]).toMatchObject({ answeringOwnerId: kickoff.answeringOwnerId });
+          expect(selectionFromRouting(final.routing)[0]).not.toHaveProperty('supersededReservations');
+        }
+        if (mode === 'lost-cas') expect(final.routing).toMatchObject({ cascadeDispatch: { leaseToken: 'replacement' } });
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
 
   it('persists a native target capacity stop through deferred recovery and expiry without trying another source', async () => {
     const fixture = makeDeps(routeOf([cand('capacity-first'), cand('capacity-next')]));

@@ -10173,7 +10173,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
 
         if (failure.code === 'admission-timeout' || failure.code === 'account-unavailable') {
           sendJson(res, 429, { type: 'error', error: {
-            type: 'rate_limit_error', message: failure.message,
+            type: 'rate_limit_error', code: failure.code, message: failure.message,
           }, gateway: true }, codexLocalShedHeaders({
             source: codexCliPool, ownerId: routing.ownerId, accountId: lastAccountId,
             hardPin: routing.hardPin, attempts: attemptsSeen,
@@ -11199,7 +11199,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         if (failure.code === 'admission-timeout' || failure.code === 'account-unavailable') {
           markRequestShed(req);
           sendJson(res, 429, { type: 'error', error: {
-            type: 'rate_limit_error', message: failure.message,
+            type: 'rate_limit_error', code: failure.code, message: failure.message,
           }, gateway: true }, codexLocalShedHeaders({
             source: bearerPool, ownerId: wantOwner, accountId: lastAccountId,
             hardPin, attempts: attemptsSeen,

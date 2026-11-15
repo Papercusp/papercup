@@ -1719,6 +1719,17 @@ describe('scheduler:get_next bounds every pre-claim await (EI-20228674494907304)
     await expectPreflightTimeout('fleet-scope-reconciliation');
   });
 
+  it.each(['membership', 'claim-spec', 'assignments'])(
+    'identifies a stalled fleet reconciliation %s read without attempting a claim',
+    async (phase) => {
+      reconcileFleetScopeClaimsM.mockImplementation((args?: { onPhase?: (value: string) => void }) => {
+        args?.onPhase?.(phase);
+        return new Promise(() => {});
+      });
+      await expectPreflightTimeout(`fleet-scope-reconciliation:${phase}`);
+    },
+  );
+
   it('bounds the paused-fleet control-state read before any claim attempt', async () => {
     scopeState.scope = {
       ownerId: 'su-member',

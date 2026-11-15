@@ -1240,13 +1240,14 @@ export async function liveFleetMemberIdsDiagnosed(
 }
 
 /**
- * Session states that satisfy a launch deficit. `recorded` is authoritative
- * session-log evidence, but it is not a live runnable member: it has no live
- * presence/wake path and must not suppress a replacement terminal. `draining`
- * remains counted so an in-flight wind-down is not raced by a second launch.
+ * Session states that satisfy a launch deficit. A `parked` session has a wake
+ * path but no active turn, so it is not productive capacity and must not suppress
+ * a refill. `recorded` is authoritative session-log evidence but has no live
+ * presence/wake path. `draining` remains counted so an in-flight wind-down is
+ * not raced by a second launch.
  */
 export function isLaunchLiveSessionState(state: SessionState | null | undefined): boolean {
-  return state === 'live' || state === 'parked' || state === 'draining';
+  return state === 'live' || state === 'draining';
 }
 
 /**

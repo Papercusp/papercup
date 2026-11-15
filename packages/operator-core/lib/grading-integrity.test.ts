@@ -4502,6 +4502,74 @@ describe('dispatchPendingGradingAudits', () => {
     }
   });
 
+  it('recovers a terminal 429 without waiting for another card\'s exact runtime', async () => {
+    const d = deps();
+    const issueId = 'EI-periodic-terminal-beside-slow-runtime';
+    const ownerId = 'su-failed-periodic-auditor';
+    const sessionId = 'native-periodic-terminal';
+    const prior = { key: `grading-audit:${issueId}`, reservedAt: '2026-10-23T22:44:48.945Z' };
+    const target = card(issueId);
+    target.gradedGeneration = { deployedSha: '2222222' } as ScorecardRow['gradedGeneration'];
+    target.gradingAudit = { ...target.gradingAudit!, dispatchReservation: prior };
+    d.listScorecards.mockResolvedValue([
+      card('EI-slow-exact-runtime', {
+        gradedGeneration: { deployedSha: '2222222' } as ScorecardRow['gradedGeneration'],
+      }),
+      target,
+    ]);
+    let releaseRuntime!: () => void;
+    const runtimeReady = new Promise<void>(resolve => { releaseRuntime = resolve; });
+    d.ensureRuntime.mockImplementation(async input => {
+      if (input.issueId === 'EI-slow-exact-runtime') await runtimeReady;
+      return { taskId: 'runtime-exact', baseUrl: 'http://127.0.0.1:45187',
+        evaluatorBuild: input.evaluatorBuild, bundleSha256: 'a'.repeat(64), expiresAtSec: 4102444800 };
+    });
+    let reserved = false;
+    d.reserve.mockImplementation(async id => {
+      if (id === issueId && !reserved) {
+        reserved = true;
+        return { status: 'already-reserved' };
+      }
+      return { status: 'claimed', reservation: {
+        key: `grading-audit:${id}`, reservedAt: '2026-10-23T22:45:00.000Z',
+      } };
+    });
+    const task = { taskId: 'task-periodic-terminal', sessionId, workspaceId: 'ws-test',
+      class: 'agent-session', state: 'running', logPath: '/tmp/periodic-terminal.log',
+      detail: { label: prior.key, coordOwnerId: ownerId } } as unknown as TaskRow;
+    let retired = false;
+    d.listTasks.mockImplementation(async filter => filter?.labelPrefix === prior.key && !retired ? [task] : []);
+    const killTask = vi.fn(async (taskId: string) => {
+      retired = true;
+      return { ok: true as const, taskId, action: 'kill' as const };
+    });
+    const nativeTranscript = JSON.stringify({ type: 'assistant', sessionId, isSidechain: false,
+      isApiErrorMessage: true, apiErrorStatus: 429, message: { role: 'assistant', stop_reason: 'end_turn',
+        content: [{ type: 'text', text: 'API Error: Request rejected (429) · inference-gateway: all accounts throttled' }] } });
+    const pending = dispatchPendingGradingAudits({ ctx, harness: 'papercusp' }, {
+      ...d, killTask,
+      listNativeSessionsByTranscriptHandles: async () => [{ sessionId, coordOwnerId: ownerId, agent: 'claude' }],
+      findSessionTranscript: async () => '/tmp/periodic-terminal.jsonl',
+      readLogTail: path => path.endsWith('.jsonl') ? nativeTranscript : path.endsWith('periodic-terminal.log')
+        ? '[psu] native-turn-failed agent=claude code=api_error_429 retryable=false retryAfterMs=60000'
+        : 'healthy recovery boot',
+      terminalLogRecheckDelayMs: 0, terminalLogMaxRechecks: 0,
+    });
+    try {
+      await vi.waitFor(() => expect(d.ensureRuntime).toHaveBeenCalledWith(
+        expect.objectContaining({ issueId: 'EI-slow-exact-runtime' })));
+      await vi.waitFor(() => expect(killTask).toHaveBeenCalledExactlyOnceWith(task.taskId,
+        { includeSubtree: true, escalateAfterMs: 5_000 }));
+      await vi.waitFor(() => expect(d.launch).toHaveBeenCalledWith(
+        expect.objectContaining({ workItem: issueId, agent: 'codex' }), expect.anything()));
+    } finally {
+      releaseRuntime();
+      await pending;
+    }
+    expect((await pending).receipts).toContainEqual(expect.objectContaining({ issueId, state: 'launched',
+      terminalRecovery: expect.objectContaining({ retiredTaskIds: [task.taskId] }) }));
+  });
+
   it('recovers a fresh reserved auditor from its exact terminal native transcript during a periodic no-target sweep', async () => {
     const d = deps();
     const issueId = 'EI-periodic-reserved-terminal';

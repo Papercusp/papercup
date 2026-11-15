@@ -2126,6 +2126,7 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
   it('OAuth absorb releases the provider admission slot while waiting, then re-enters and succeeds', async () => {
     const home = await makeCodexHome('chatgpt-a');
     const cliAccounts = [{ accountId: 'chatgpt-a', home }];
+    const recoveryLogs: string[] = [];
     let calls = 0;
     const fetchImpl = vi.fn(async () => {
       calls += 1;
@@ -2164,12 +2165,16 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
       // happened). 0 makes rung (1) unreachable, so the absorb is the only rung.
       internalRetryDeadlineMs: 0,
       selfHeal: { enabled: false },
+      log: (_level, message) => recoveryLogs.push(message),
     });
     port = await gw.listen(0);
 
     const pending = postResponses(
       { model: 'gpt-5.5', input: 'absorb me', stream: true },
-      { [ACCOUNT_HEADER]: 'chatgpt-a' },
+      // A soft preference now permits the kernel's transient account recovery,
+      // which retries before the outer absorb ladder. Pin this fixture so it
+      // exercises the slot-releasing outer ladder it asserts below.
+      { [ACCOUNT_HEADER]: 'chatgpt-a', [ACCOUNT_PIN_HEADER]: 'hard' },
     );
     // A generous CEILING, not a pacing interval: both loops exit on their condition,
     // so this only bounds a genuinely broken release.
@@ -2187,6 +2192,7 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     expect(releasedWhileParked).toBe(true);
+    expect(recoveryLogs.some(message => message.includes('Codex OAuth absorb'))).toBe(true);
 
     const res = await pending;
     expect(res.status).toBe(200);

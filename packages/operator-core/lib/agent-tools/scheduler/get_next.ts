@@ -1807,6 +1807,7 @@ export default defineTool({
           ownerId: ident.ownerId,
           workspaceId: ident.workspaceId,
           identity: ident,
+          onPhase: (phase) => beginPreflightStep(`fleet-scope-reconciliation:${phase}`),
         });
         if (reconciliation.scope?.record.source === 'default') {
           return { kind: 'scoped-miss', reconciliation };

@@ -1,4 +1,5 @@
 import { fork } from 'node:child_process';
+import { rosterStopHttpControlArgs } from '../../../test/roster-stop-http-controls';
 import { rm, symlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
@@ -19,6 +20,7 @@ it(`confirmed roster stop through private HTTP and native children: ${phase}`, a
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/endpoint-route/__tests__/adv-sessions-stop.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
+      'packages/operator-core/test/roster-stop-http-controls.ts',
       'packages/operator-core/test/private-http-workspace-preflight.ts',
       'packages/operator-core/test/psu-pty-host-canary.mjs',
       'packages/operator-core/test/private-coord-receipt.ts',
@@ -38,7 +40,7 @@ it(`confirmed roster stop through private HTTP and native children: ${phase}`, a
       delete env.PC_HEAVY_PREEMPT_READY_FILE;
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'),
+        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), ...rosterStopHttpControlArgs(env),
         '--prepared-api-sha=' + preparedApi.sha256, '--prepared-receipt-sha=' + preparedApi.receiptSha256],
       { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);

@@ -400,7 +400,7 @@ describe('Codex managed child preserves its recorded role authority', () => {
     return profile;
   }
 
-  it('launches a freshly materialized restricted judge home and names the failed readiness check', async () => {
+  it('launches a fresh judge home, warns on missing newer hooks, and refuses a foreign owner', async () => {
     const owner = 'su-role-fresh-judge';
     const savedEnv = new Map([
       ['PAPERCUSP_HOME', process.env.PAPERCUSP_HOME],
@@ -449,8 +449,34 @@ describe('Codex managed child preserves its recorded role authority', () => {
       writeFileSync(hooksPath, JSON.stringify(hooks));
       const reason = 'hooks.json lacks the SessionStart/SessionEnd/Stop lifecycle hooks';
       expect(codexHomeLaunchReadiness(home.codexHome, owner, 'judge')).toBe(reason);
+      // EI-27691317094132381: an operator running an older build writes role
+      // homes without the newer managed hooks. That is completeness, not
+      // authority, so a fresh role launch proceeds and names the gap.
+      expect(codexHomeLaunchReadiness(home.codexHome, owner, 'judge', { authorityOnly: true })).toBeNull();
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        expect(prepareCodexGatewayLaunch(env, args)).toEqual(args);
+        const warned = stderr.mock.calls.map(([chunk]) => String(chunk)).join('');
+        expect(warned).toContain(`Codex judge home for ${owner} is incomplete (${reason})`);
+      } finally {
+        stderr.mockRestore();
+      }
+
+      // Authority stays fatal on the same incomplete home: another owner's
+      // MCP client, or another owner in hooks.json, is refused and named.
+      const config = readFileSync(home.configPath, 'utf8');
+      writeFileSync(home.configPath, config.replaceAll(`client=${owner}`, 'client=su-someone-else'));
+      const foreignMcp = "config.toml's restricted role MCP authority differs from the recorded role or owner";
+      expect(codexHomeLaunchReadiness(home.codexHome, owner, 'judge', { authorityOnly: true })).toBe(foreignMcp);
       expect(() => prepareCodexGatewayLaunch(env, args)).toThrow(
-        `Codex launch requires its recorded owner and restricted role MCP profile: ${reason}`,
+        `Codex launch requires its recorded owner and restricted role MCP profile: ${foreignMcp}`,
+      );
+      writeFileSync(home.configPath, config);
+      writeFileSync(hooksPath, JSON.stringify(hooks).replaceAll(`SID='${owner}'`, "SID='su-someone-else'"));
+      const foreignHooks = 'hooks.json names a different session owner';
+      expect(codexHomeLaunchReadiness(home.codexHome, owner, 'judge', { authorityOnly: true })).toBe(foreignHooks);
+      expect(() => prepareCodexGatewayLaunch(env, args)).toThrow(
+        `Codex launch requires its recorded owner and restricted role MCP profile: ${foreignHooks}`,
       );
     } finally {
       for (const [key, value] of savedEnv) {

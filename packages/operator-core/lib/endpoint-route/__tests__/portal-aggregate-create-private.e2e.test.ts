@@ -1,6 +1,7 @@
 /** P-005: catch module/provider failures before private workflow allocation. */
 import { expect, it } from 'vitest';
 import { fork } from 'node:child_process';
+import { rosterStopHttpControlArgs } from '../../../test/roster-stop-http-controls';
 import { rm, symlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
@@ -72,6 +73,7 @@ for (const [_surface, proof, expected] of [
   preparePrivateRosterSocketRoot();
   const workerSource = preparePrivateWorkerSources(root, ['scripts/with-test-pg.mjs',
     'packages/operator-core/test/roster-stop-http-fixture.ts',
+      'packages/operator-core/test/roster-stop-http-controls.ts',
     'packages/operator-core/test/portal-roster-browser-fixture.ts',
     'packages/operator-core/test/private-http-workspace-preflight.ts']);
   const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
@@ -97,6 +99,7 @@ for (const [_surface, proof, expected] of [
         ? ['phases/execute/portal-conversations-preflight.json', 'phases/execute/portal-conversations-denials.json']
         : ['phases/execute/portal-create-dock-preflight.json', 'phases/execute/portal-create-dock-persistence.json'])],
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
+      'packages/operator-core/test/roster-stop-http-controls.ts',
       'packages/operator-core/test/portal-roster-browser-fixture.ts', 'packages/operator-core/test/private-http-workspace-preflight.ts',
       'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/sync-resolver/index.ts',
       'packages/operator-core/lib/agent-tools/coordination/conversations-store.ts', 'packages/operator-core/lib/dock-layouts.ts',
@@ -113,8 +116,8 @@ for (const [_surface, proof, expected] of [
       const env = aggregateWorkerEnv(proof, evidenceDir);
       expect(env[proof]).toBe('1');
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'),
-        '--portal-source=' + portalSource, '--prepared-api-sha=' + preparedApi.sha256, '--browser-proof=' + proof],
+        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), ...rosterStopHttpControlArgs(env),
+        '--portal-source=' + portalSource, '--prepared-api-sha=' + preparedApi.sha256],
       { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);
       child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))

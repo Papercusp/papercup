@@ -17,14 +17,19 @@ it('EXEC-P003 control', async () => {
 
 it('EXEC-P003 counterexample', async () => {
   const handler = vi.fn(async () => ({ value: 7 }));
-  const detached = vi.fn(async () => ({ value: 7 }));
+  const detached = vi.fn(async () => ({ result: { value: 7 }, admission: {
+    handle: 'must-never-be-admitted', ownerId: 'original-owner', state: 'accepted' as const,
+  } }));
+  const verifyAdmission = vi.fn(async () => false);
   const result = await dispatchWithToolExecution(
     REQUEST_BOUND_EXECUTION, { mode: 'async' }, budgets,
-    { inline: handler, adapter: { id: 'unapproved-detachment', dispatch: detached } },
+    { ownerId: 'original-owner', inline: handler,
+      adapter: { id: 'unapproved-detachment', dispatch: detached, verifyAdmission } },
   );
   expect(result).toMatchObject({
     ok: false, error: 'unsupported_execution_mode', supportedModes: ['sync', 'auto'],
   });
   expect(handler).not.toHaveBeenCalled();
   expect(detached).not.toHaveBeenCalled();
+  expect(verifyAdmission).not.toHaveBeenCalled();
 });

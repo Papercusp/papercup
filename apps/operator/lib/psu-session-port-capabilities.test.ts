@@ -189,3 +189,27 @@ describe("sessionPortUpgradeError — a pair refusal that still gets through", (
     );
   });
 });
+
+describe("sessionPortUpgradeError — an operator requiring an archive for retained history", () => {
+  it.each(["Claude", "codex", "omp"])("explains the legacy %s archive refusal and preserves its cause", (backend) => {
+    const error = httpError(409,
+      `psu: POST /api/adv/sessions/port/inspect (HTTP 409) — canonical ${backend} archive not found`);
+    const mapped = sessionPortUpgradeError(error);
+    expect(mapped.message).toContain("exact transcript on disk");
+    expect(mapped.message).toContain("retained-transcript fallback");
+    expect(mapped.message).toContain("PAPERCUSP_OPERATOR_URL");
+    expect(mapped.message).toContain(error.message);
+    expect(mapped.cause).toBe(error);
+  });
+
+  it.each([
+    [409, "canonical Claude archive sha mismatch"],
+    [409, "canonical Claude archive is ambiguous"],
+    [409, "canonical Claude archive file row missing"],
+    [409, "canonical Claude archive is missing and retained exact source is unavailable"],
+    [500, "canonical Claude archive not found"],
+  ])("preserves other source failures (%s, %s)", (status, message) => {
+    const error = httpError(Number(status), String(message));
+    expect(sessionPortUpgradeError(error)).toBe(error);
+  });
+});

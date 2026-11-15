@@ -1106,6 +1106,9 @@ export default defineTool({
     // from the public zod schema, so ordinary fresh-launch behavior does not
     // change and callers cannot smuggle an unaudited recovery carry.
     let savedLaunchCarry = (args as typeof args & { __savedLaunchCarry?: 'warm' | 'cold' }).__savedLaunchCarry;
+    if (args.members?.some((member) => member.claimFilter)) {
+      return err('Per-member claimFilter requires fleet:launch-on-plan, which installs the lane before kickoff. No agent was opened.');
+    }
     const internalKickoff = (ctx as typeof ctx & {
       [INTERNAL_LOOP_FIRE_ORIGIN]?: 'loop-fire' | {
         origin: 'loop-fire'; loopFire?: { routineId: string; wakeCount: number };
@@ -2156,6 +2159,7 @@ export default defineTool({
     // launch inherits the caller's presence fleet (WI-4234). Colour + membership come
     // from the SAME slug, so they can never diverge.
     let fleetSlug: string | null = args.fleet ? fleetSlugFromName(args.fleet) : null;
+    let sourceFleetSlug: string | null = null;
     let scheme: ColorScheme | null = null;
     if (fleetSlug) {
       // An explicit fleet is also a supported way to create a fresh fleet. Ensure
@@ -2189,6 +2193,7 @@ export default defineTool({
         try {
           const membership = await latestFleetMembership(workspaceId, resumeOwnerId);
           if (membership?.fleetSlug) {
+            sourceFleetSlug = membership.fleetSlug;
             fleetSlug = membership.fleetSlug;
             if (interruptionRecovery && (membership.fleetRole === 'leader' || membership.fleetRole === 'member'))
               recoveredFleetRole = membership.fleetRole;
@@ -2266,13 +2271,18 @@ export default defineTool({
           requestedExtraArgs !== undefined && (requestedExtraArgs.length === 0 || profileArgs.length > 0)
             ? profileArgs
             : undefined;
+        const crossBackendResume = isResume && !fork &&
+          Boolean(args.agent && resumeAgent && args.agent !== resumeAgent);
         const savedLaunchSpec = await resolveSavedFleetLaunchSpec({
           workspaceId,
           fleetSlug,
           // A guarded desktop restoration may explicitly restore the original
           // session's placement/model after the fleet defaults have changed.
           // This is a per-launch delta; the fleet profile remains canonical.
-          allowDeltas: args.restoreVisible ? ['headless', 'model'] : undefined,
+          allowDeltas: [
+            ...(args.restoreVisible ? ['headless', 'model'] as const : []),
+            ...(crossBackendResume ? ['model', 'account'] as const : []),
+          ],
           requested: {
             account: args.account,
             model: args.model,
@@ -2280,7 +2290,11 @@ export default defineTool({
             extraArgs: requestedProfileExtraArgs,
           },
           memberOwnerId: originalRecoveryOwnerId ?? resumeOwnerId ?? undefined,
-          ...(originalRecoveryOwnerId ? { preferMemberRecord: true } : {}),
+          ...((originalRecoveryOwnerId || crossBackendResume) ? { preferMemberRecord: true } : {}),
+          legacyFallbacks: {
+            harness: slug ?? undefined,
+            postLaunchFleet: sourceFleetSlug ?? undefined,
+          },
           reusePath: leaderRecoveryOwnerId
             ? 'fleet leader recovery -> capability:launch-agent resume -> agent-launch-core.buildAgentLaunchCommand'
             : 'capability:launch-agent resume/successor -> agent-launch-core.buildAgentLaunchCommand',

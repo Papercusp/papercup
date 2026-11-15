@@ -240,6 +240,8 @@ import { getSessionUserOrDefault } from '../../../auth';
 import { advertisedArgsSchema } from '@papercusp/result-encoding';
 import {
   collectEntityRefs,
+  parseToolExecutionRequest,
+  type ToolExecutionRequest,
   compactInputSchema,
   summaryGuidanceDescription,
   type ResultDoorSkipReason,
@@ -3169,6 +3171,8 @@ async function buildMcpToolContext(
         ...(progressBridge.progressToken !== undefined ? { progressToken: progressBridge.progressToken } : {}),
         fullSource: projectionNeedsFullSource, structuredSource: projectionSpec?.pick !== undefined,
         sourceProjection: projectionSpec, indirect: true,
+        toolExecution: baseCtx.toolExecution, executionDeadlineAtMs: baseCtx.executionDeadlineAtMs,
+        transportResponseDeadlineAtMs: baseCtx.transportResponseDeadlineAtMs,
       }, runLocalTarget, effectiveMcpDeadlineMs(target.timeoutSec), progressBridge.onProgress),
       undefined,
       baseCtx.requestOrigin?.mcpRequestTraceId,
@@ -3970,6 +3974,9 @@ interface NativeMcpTargetRequest {
   structuredSource: boolean;
   sourceProjection?: ProjectionSpec | null;
   indirect: boolean;
+  toolExecution?: ToolExecutionRequest;
+  executionDeadlineAtMs?: number | null;
+  transportResponseDeadlineAtMs?: number | null;
 }
 
 async function currentNativeOwnerServingGeneration(): Promise<string> {
@@ -4121,6 +4128,11 @@ export async function dispatchNativeMcpTargetOnOwner(
         (typeof request.progressToken !== 'number' || !Number.isFinite(request.progressToken))) ||
       (request.idempotencyKey !== undefined && validIdempotencyKey(request.idempotencyKey) !== request.idempotencyKey))
     throw new Error('native_tool_owner_invalid_request');
+  for (const deadline of [request.executionDeadlineAtMs, request.transportResponseDeadlineAtMs]) {
+    if (deadline !== undefined && deadline !== null && !Number.isFinite(deadline))
+      throw new Error('native_tool_owner_invalid_execution_deadline');
+  }
+  const toolExecution = parseToolExecutionRequest(request.toolExecution);
   const ownerRequest = { ...request, spawn: normalizeNativeMcpOwnerSpawn(request.spawn) };
   const derived = nativeMcpToolAddress(ownerRequest.spawn);
   if (!derived || derived.workspaceId !== address.workspaceId || derived.advSessionId !== address.advSessionId ||
@@ -4139,6 +4151,9 @@ export async function dispatchNativeMcpTargetOnOwner(
   const base = await buildMcpToolContext(ownerRequest.spawn, ownerRequest.progressToken, sendNotification, target.pluginName,
     ownerRequest.requestedFormat, ownerRequest.requestedStructured, ownerRequest.requestedDelta, ownerRequest.idempotencyKey,
     undefined, address);
+  base.toolExecution = toolExecution;
+  base.executionDeadlineAtMs = request.executionDeadlineAtMs;
+  base.transportResponseDeadlineAtMs = request.transportResponseDeadlineAtMs;
   const startedAt = Date.now();
   let dispatchStarted = false;
   try {
@@ -4327,6 +4342,7 @@ export function registerMcpHost(server: McpServer): void {
             outputGroupId?: string | number;
             /** Compatibility alias used by clients that already expose a turn id. */
             turnId?: string | number;
+            'papercusp/execution'?: ToolExecutionRequest;
           };
         };
       },
@@ -4525,6 +4541,13 @@ export function registerMcpHost(server: McpServer): void {
       // superuser-mode.mdx — the bypass logic lives in
       // dispatch-projected.ts, never in dispatch().
       const projected = lookupByMcpName(toolName);
+      let toolExecution: ToolExecutionRequest;
+      try {
+        toolExecution = parseToolExecutionRequest(req.params._meta?.['papercusp/execution']);
+      } catch (error) {
+        return { isError: true, content: [{ type: 'text' as const,
+          text: 'invalid_input: ' + (error instanceof Error ? error.message : String(error)) }] };
+      }
       deadlineMs = effectiveMcpDeadlineMs(projected?.timeoutSec);
       requestDeadline?.setDurationMs(deadlineMs);
       // Share the request's absolute deadline with result-door in both fresh
@@ -5186,6 +5209,9 @@ export function registerMcpHost(server: McpServer): void {
         // Cancellation may arrive during asynchronous context construction.
         // Do not dispatch a new mutation after that already-aborted request.
         baseCtx.signal.throwIfAborted();
+        baseCtx.toolExecution = toolExecution;
+        baseCtx.executionDeadlineAtMs = callStartedAt + (projected.timeoutSec ?? 60) * 1000;
+        baseCtx.transportResponseDeadlineAtMs = deadlineAt === null ? null : deadlineAt - MCP_DEADLINE_TOOL_BUFFER_MS;
         // Replay lookup (P-046 / EI-68) — a call carrying an idempotencyKey whose
         // outcome is already stored is answered from the store WITHOUT re-running
         // the tool. Best-effort: a store outage degrades to normal execution,
@@ -5584,6 +5610,9 @@ export function registerMcpHost(server: McpServer): void {
                       idempotencyKey: idempotencyKey ?? undefined, fullSource: projectionNeedsFullSource,
                       structuredSource: projectionSpec?.pick !== undefined, sourceProjection: projectionSpec,
                       indirect: false,
+                      toolExecution: materializationCtx.toolExecution,
+                      executionDeadlineAtMs: materializationCtx.executionDeadlineAtMs,
+                      transportResponseDeadlineAtMs: materializationCtx.transportResponseDeadlineAtMs,
                       ...(progressBridge.progressToken !== undefined ? { progressToken: progressBridge.progressToken } : {}),
                     }, () => dispatchWithSynthesizedTx(projected, dispatchSpawnCtx, materializationCtx, async localCtx => {
                       if (raced.deadlineFired || (deadlineAt !== null && Date.now() >= deadlineAt)) {
@@ -6709,7 +6738,9 @@ export function registerMcpHost(server: McpServer): void {
 // A tool exceeding this returns a CLEAN JSON-RPC error to the client instead of
 // hanging to maxDuration / a silent tunnel drop. Set UNDER maxDuration (60s). 0
 // disables. Env-tunable (PAPERCUSP_MCP_DEADLINE_MS).
-const MCP_DEADLINE_MS = Number(process.env.PAPERCUSP_MCP_DEADLINE_MS) || 55_000;
+const configuredMcpDeadlineMs = Number(process.env.PAPERCUSP_MCP_DEADLINE_MS);
+const MCP_DEADLINE_MS = process.env.PAPERCUSP_MCP_DEADLINE_MS?.trim() && Number.isFinite(configuredMcpDeadlineMs)
+  ? configuredMcpDeadlineMs : 55_000;
 
 // EI-17177: some tools (chat:ask_choice, operator/architect/oracle/agent_chats
 // converse, sentinel-converse — every human-interaction tool) DECLARE a

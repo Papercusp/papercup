@@ -24,6 +24,7 @@
  */
 import {
   dispatchProjectedTool,
+  parseToolExecutionRequest,
   type ProjectedTool,
   type UnifiedToolContext,
   type DispatchProjectedDeps,
@@ -111,7 +112,15 @@ export async function dispatchProjectedToolToMcp(
   args: unknown,
   ctx: UnifiedToolContext,
   deps: DispatchProjectedDeps,
+  metadata?: Record<string, unknown>,
 ): Promise<McpToolCallResult> {
+  if (metadata?.['papercusp/execution'] !== undefined) {
+    try {
+      ctx = { ...ctx, toolExecution: parseToolExecutionRequest(metadata['papercusp/execution']) };
+    } catch (error) {
+      return { isError: true, content: [{ type: 'text', text: 'invalid_input: ' + String(error) }] };
+    }
+  }
   const r = await dispatchProjectedTool(tool, toolName, args, ctx, deps);
   if (!r.ok) {
     const failure: McpToolCallResult = {

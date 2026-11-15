@@ -1,4 +1,5 @@
 import { fork } from 'node:child_process';
+import { rosterStopHttpControlArgs } from '../../../test/roster-stop-http-controls';
 import { rm, symlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
@@ -14,6 +15,7 @@ it('authenticated private HTTP roster delivery preserves exact recipients and de
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/endpoint-route/__tests__/coord-roster-http.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
+      'packages/operator-core/test/roster-stop-http-controls.ts',
       'packages/operator-core/test/private-http-workspace-preflight.ts',
       'packages/operator-core/lib/workspace-registry.ts', 'packages/operator-core/lib/workspace-context-middleware.ts',
       'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/adv-sessions.ts',
@@ -34,7 +36,7 @@ it('authenticated private HTTP roster delivery preserves exact recipients and de
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
       delete env.ROSTER_STOP_HTTP_MUTATION;
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts')],
+        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), ...rosterStopHttpControlArgs(env)],
       { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);
       child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))

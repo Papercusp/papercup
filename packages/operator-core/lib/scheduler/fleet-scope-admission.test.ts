@@ -573,6 +573,74 @@ describe('fleet scope assignment admission (P-016)', () => {
     expect((admission as { reason: string }).reason).toMatch(/does not match active scheduler spec/);
   });
 
+  it.each(['membership', 'claim-spec', 'assignments'])(
+    'reports the %s dependency before awaiting a stalled member reconciliation read',
+    async (phase) => {
+      const membership = { fleetSlug: 'bugs', fleetRole: 'member' };
+      const record = {
+        source: 'fleet',
+        spec: DEFAULT_CLAIM_SPEC,
+        revision: 1,
+        updatedBy: 'su-leader',
+        updatedAt: 'now',
+      };
+      admissionMocks.latestFleetMembership.mockResolvedValue(membership);
+      admissionMocks.getClaimSpecRecord.mockResolvedValue(record);
+      admissionMocks.listFleetAssignments.mockResolvedValue([]);
+
+      let releaseRead!: () => void;
+      const blocked = new Promise<void>((resolve) => { releaseRead = resolve; });
+      const dependency = phase === 'membership'
+        ? admissionMocks.latestFleetMembership
+        : phase === 'claim-spec'
+          ? admissionMocks.getClaimSpecRecord
+          : admissionMocks.listFleetAssignments;
+      const value = phase === 'membership' ? membership : phase === 'claim-spec' ? record : [];
+      dependency.mockImplementationOnce(async () => {
+        await blocked;
+        return value;
+      });
+
+      let phaseStarted!: () => void;
+      const started = new Promise<void>((resolve) => { phaseStarted = resolve; });
+      const phases: string[] = [];
+      const pending = reconcileFleetScopeClaims({
+        ownerId: 'su-member',
+        workspaceId: 'papercusp-workspace',
+        onPhase: (current) => {
+          phases.push(current);
+          if (current === phase) phaseStarted();
+        },
+      });
+      await started;
+      expect(phases.at(-1)).toBe(phase);
+      expect(admissionMocks.getWorkItem).not.toHaveBeenCalled();
+      expect(admissionMocks.releaseWorkItem).not.toHaveBeenCalled();
+
+      releaseRead();
+      await expect(pending).resolves.toMatchObject({
+        scope: { ownerId: 'su-member', fleetSlug: 'bugs' },
+        quarantinedIds: [],
+      });
+    },
+  );
+
+  it('keeps member reconciliation usable when its diagnostic observer throws', async () => {
+    admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'bugs', fleetRole: 'member' });
+    admissionMocks.getClaimSpecRecord.mockResolvedValue({ source: 'fleet', spec: DEFAULT_CLAIM_SPEC });
+    admissionMocks.listFleetAssignments.mockResolvedValue([]);
+
+    await expect(reconcileFleetScopeClaims({
+      ownerId: 'su-member',
+      workspaceId: 'papercusp-workspace',
+      onPhase: () => { throw new Error('diagnostic sink unavailable'); },
+    })).resolves.toMatchObject({
+      scope: { ownerId: 'su-member', fleetSlug: 'bugs' },
+      quarantinedIds: [],
+    });
+    expect(admissionMocks.releaseWorkItem).not.toHaveBeenCalled();
+  });
+
   it('releases every incompatible pre-existing claim in one reconciliation sweep and alerts once', async () => {
     admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'bugs', fleetRole: 'member' });
     admissionMocks.getClaimSpecRecord.mockResolvedValue({

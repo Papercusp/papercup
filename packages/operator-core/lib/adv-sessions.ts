@@ -38,6 +38,14 @@ import { traceNamedQueryStage } from './agent-tools/db-diagnostic-correlation-wi
  */
 function warnUnlessMissingTable(e: unknown, label: string): void {
   if ((e as { code?: string } | undefined)?.code === '42P01') return;
+  if (e instanceof OrgTxnTimeoutError) {
+    console.warn(`[adv-sessions] ${label} failed:`, e.messageWithoutBlockerHint, {
+      pgCode: e.pgCode,
+      timeoutSource: e.timeoutSource,
+      waitSnapshot: e.waitSnapshot ?? null,
+    });
+    return;
+  }
   console.warn(`[adv-sessions] ${label} failed:`, (e as Error).message);
 }
 
@@ -2313,11 +2321,13 @@ async function recordSuLaunchSpecInTransaction(
   coordOwnerId: string | null,
   launchSpec?: unknown,
   runtimeProvenanceDir?: string,
+  onPhase?: (phase: string) => void,
 ): Promise<boolean> {
   // Prefer the exact row id; fall back to the owner's NEWEST row for the
   // interactive cohort. Lock across read/merge/write so concurrent refreshes
   // cannot discard each other's immutable receipts.
   const exactId = advSessionId != null && advSessionId > 0 ? advSessionId : null;
+  onPhase?.('recordSuLaunchSpec:row-read');
   const rows = await tx<{
     id: number;
     workspace_id: string;
@@ -2357,6 +2367,7 @@ async function recordSuLaunchSpecInTransaction(
   // Activation state belongs to the stable coord owner, but launch records are per adv-session row.
   // If this row is new, retain only the exact real applied receipt from a sibling row; never copy
   // its whole history or synthesize a receipt from the next render.
+  onPhase?.('recordSuLaunchSpec:applied-receipt-read');
   const matchingReceipts = appliedSpecificationRevision && appliedStateRevision
     ? await tx<{ receipt: unknown }[]>`
         SELECT candidate.receipt
@@ -2450,6 +2461,7 @@ async function recordSuLaunchSpecInTransaction(
   const retained = retainSuLaunchIdentityHistory(previous, next ?? row.launch_spec, row.applied);
   if (launchSpec === undefined && JSON.stringify(retained) === JSON.stringify(row.launch_spec)) return true;
   const payload = JSON.stringify(retained);
+  onPhase?.('recordSuLaunchSpec:row-update');
   const updated = await tx<{ id: number }[]>`
     UPDATE harness_shared.adv_sessions SET launch_spec = ${payload}::text::jsonb
      WHERE id = ${row.id}
@@ -2467,8 +2479,13 @@ export async function recordSuLaunchSpec(
 ): Promise<boolean> {
   if (!launchSpec) return false;
   if ((advSessionId == null || advSessionId <= 0) && !coordOwnerId) return false;
+  let phase = 'recordSuLaunchSpec:transaction';
   try {
-    return await boundedOrgTxn((tx) => recordSuLaunchSpecInTransaction(tx, advSessionId, coordOwnerId, launchSpec));
+    return await boundedOrgTxn(
+      (tx) => recordSuLaunchSpecInTransaction(tx, advSessionId, coordOwnerId, launchSpec, undefined,
+        (nextPhase) => { phase = nextPhase; }),
+      { phase: () => phase, captureWaitSnapshot: true },
+    );
   } catch (e) {
     warnUnlessMissingTable(e, 'recordSuLaunchSpec');
     return false;

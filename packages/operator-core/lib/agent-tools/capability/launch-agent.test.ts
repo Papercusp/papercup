@@ -2013,6 +2013,54 @@ describe('headless in-place resume verification', () => {
     );
   };
 
+  it.each([false, true])('ports a source that joined its fleet after launch without changing placement (%s)', async (headless) => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'joined-later', fleetRole: 'member' });
+    readAdvSessionLaunchRecordByOwnerMock.mockResolvedValue({
+      workspaceId: 'ws-test', agent: 'claude',
+      launchSpec: { v: 1, agent: 'claude', workspaceId: 'ws-test', harnessSlug: null,
+        profile: 'engineer', contextSize: 'trimmed', personaTier: null, model: null,
+        planSlug: null, launchedBy: null, autoMode: false, drainMode: false,
+        loopArmed: false, fleet: null, headless },
+      launchArgv: ['psu', '--no-picker', '--agent=claude', '--account=auto',
+        ...(headless ? ['--headless'] : [])],
+    });
+    const res = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false,
+      agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'default', headless,
+      brief: 'continue the same work on the requested backend' }, ctx);
+    expect(isError(res), textOf(res)).toBe(false);
+    const command = spawnedCommand(headless ? spawnHeadlessMock : spawnConsoleMock);
+    expect(command).toContain('--resume=sid-dead');
+    expect(command).toContain('--agent=codex');
+    expect(command).toContain('--model=gpt-6.1-sol:xhigh');
+    expect(command).toContain('--account=default');
+    expect(command).toContain('--fleet=joined-later');
+    expect(command.includes('--headless')).toBe(headless);
+    expect(command).not.toContain('--fork');
+    expect(dataOf(res)?.launch).toMatchObject({ mode: 'resume', resumedOwnerId: dead.ownerId });
+  });
+
+  it('keeps same-backend fleet profile conflicts closed after a post-launch join', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'joined-later', fleetRole: 'member' });
+    readAdvSessionLaunchRecordByOwnerMock.mockResolvedValue({
+      workspaceId: 'ws-test', agent: 'claude',
+      launchSpec: { v: 1, agent: 'claude', workspaceId: 'ws-test', harnessSlug: null,
+        profile: 'engineer', contextSize: 'trimmed', personaTier: null, model: null,
+        planSlug: null, launchedBy: null, autoMode: false, drainMode: false,
+        loopArmed: false, fleet: null },
+      launchArgv: ['psu', '--no-picker', '--agent=claude', '--account=auto'],
+    });
+    const res = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false,
+      agent: 'claude', account: 'default', brief: 'continue the same backend' }, ctx);
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('Saved launch spec conflict');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
   it('classifies a nonzero persistent child exit as an observed resume failure', async () => {
     const res = await resumeHeadless(Promise.resolve({ code: 1, signal: null }));
 

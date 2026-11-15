@@ -49,6 +49,28 @@ describe('RequestHandlerExtra extractors', () => {
 });
 
 describe('dispatchProjectedToolToMcp', () => {
+  it('consumes MCP execution metadata without modifying tool arguments', async () => {
+    const handler = vi.fn(async (args, context) => ({ content: [{ type: 'text' as const,
+      text: JSON.stringify({ args, request: context.toolExecution }) }] }));
+    const result = await dispatchProjectedToolToMcp(tool({ fn: handler }), 'fix.tool', { value: 7 }, ctx(), {}, {
+      'papercusp/execution': { mode: 'sync', responseWindowMs: 1000 },
+    });
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse((result.content[0] as { text: string }).text)).toEqual({
+      args: { value: 7 }, request: { mode: 'sync', responseWindowMs: 1000 },
+    });
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+  it.each([{ mode: 'async' }, { mode: 'invalid' }, { mode: 'sync', responseWindowMs: 60001 },
+    { mode: 'sync', executionDeadlineAtMs: Date.now() + 999999 }])(
+    'rejects invalid or unsupported MCP execution metadata before admission: %j', async request => {
+      const handler = vi.fn(async () => ({ content: [] }));
+      const result = await dispatchProjectedToolToMcp(tool({ fn: handler }), 'fix.tool', {}, ctx(), {}, {
+        'papercusp/execution': request,
+      });
+      expect(result.isError).toBe(true);
+      expect(handler).not.toHaveBeenCalled();
+    });
   it('maps a successful dispatch to { content }', async () => {
     const r = await dispatchProjectedToolToMcp(tool(), 'fix.tool', {}, ctx(), {});
     expect(r.isError).toBeUndefined();

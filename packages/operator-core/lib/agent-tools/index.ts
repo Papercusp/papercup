@@ -1380,6 +1380,8 @@ import './plans/blind-review';
 // first-class-spec-clauses-and-prior-attempt-briefs P-002 — stable clause
 // identities + immutable revisions, with exact/current/history reads.
 import './plans/get-specs';
+// plan-portfolio-flow-and-weight-2026-11-13 P-001 — the portfolio census on demand.
+import './plans/census';
 import './plans/spec-reconciliation-tool';
 import './plans/set-specs';
 // P-005 — exact many-to-many work-item/spec-revision coverage plus immutable

@@ -50,6 +50,24 @@ describe('raceDeadline (P2-5 MCP deadline)', () => {
 });
 
 describe('effectiveMcpDeadlineMs (EI-17177)', () => {
+  it.each([
+    ['0', 0], ['-1', -1], ['55000', 605000], ['700000', 700000],
+    ['', 605000], ['invalid', 605000], ['Infinity', 605000],
+  ])('loads the configured transport deadline %j without resurrecting disabled caps', async (configured, expected) => {
+    vi.stubEnv('PAPERCUSP_MCP_DEADLINE_MS', configured);
+    vi.resetModules();
+    try {
+      const loaded = await import('../_mcp-host');
+      expect(loaded.effectiveMcpDeadlineMs(600)).toBe(expected);
+      if (Number(configured) <= 0 && configured !== '') {
+        expect(loaded.effectiveMcpDeadlineMs(undefined)).toBe(Number(configured));
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
   it('falls back to the flat base deadline when the tool declares no timeoutSec', () => {
     expect(effectiveMcpDeadlineMs(undefined, 55_000)).toBe(55_000);
     expect(effectiveMcpDeadlineMs(null, 55_000)).toBe(55_000);

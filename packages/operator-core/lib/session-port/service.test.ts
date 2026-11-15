@@ -423,6 +423,47 @@ describe.each(['claude', 'codex', 'omp'] as const)('ended %s source acquisition'
   });
 });
 
+describe('ended Claude port before archive-at-death has produced a stamp', () => {
+  it('prepares the exact retained on-disk conversation through the production source readers', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'session-port-retained-'));
+    const project = join(root, 'projects', 'tracked-cwd');
+    const bytes = source('exact retained conversation before archival').bytes;
+    const archiveStore = {
+      readStamp: vi.fn(async () => null),
+      readFiles: vi.fn(),
+    };
+    try {
+      mkdirSync(project, { recursive: true });
+      writeFileSync(join(project, `${row.sessionId}.jsonl`), bytes);
+      writeFileSync(join(project, 'another-session.jsonl'), source('wrong conversation').bytes);
+      const endedRow = { ...row, endedAt: '2026-11-15T14:52:03.000Z' };
+      const stableSource = await acquireTrackedClaudeSource(endedRow, {
+        configDirForOwner: () => root,
+        archiveStore: () => archiveStore as unknown as SessionArchiveStore,
+      });
+      expect(stableSource.bytes).toEqual(bytes);
+      expect(stableSource.source).toBe('live-jsonl');
+      expect(stableSource.sha256).toBe(createHash('sha256').update(bytes).digest('hex'));
+      expect(archiveStore.readStamp).toHaveBeenCalledWith('claude', row.sessionId);
+      expect(archiveStore.readFiles).not.toHaveBeenCalled();
+
+      const inspection = inspectAcquiredSessionPort({ sourceRow: endedRow, stableSource, target });
+      const createPrepared = vi.fn(async (input: any) => ({ ...input, status: 'prepared' }) as SessionPortRow);
+      const prepared = await prepareInspectedSessionPort({
+        inspection, expectedSourceHash: stableSource.sha256, tokenKey: 'server-only-key',
+        artifactRoot: join(root, 'port-artifacts'), findExisting: async () => null, createPrepared,
+      });
+      expect(prepared.summary.fidelity).toBe('full');
+      const seed = readFileSync(createPrepared.mock.calls[0]![0].artifactPath, 'utf8');
+      expect(seed).toContain('exact retained conversation before archival');
+      expect(seed).not.toContain('wrong conversation');
+      expect(readFileSync(join(project, `${row.sessionId}.jsonl`))).toEqual(bytes);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe.each(['claude', 'codex', 'omp'] as const)('%s source acquisition diagnostics', (backend) => {
   it('retains live lookup/read and archive fallback evidence in the same recorder', async () => {
     const diagnostics = createRouteDiagnostics();

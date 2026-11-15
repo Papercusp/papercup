@@ -1,4 +1,5 @@
 import { fork } from 'node:child_process';
+import { rosterStopHttpControlArgs } from '../../../test/roster-stop-http-controls';
 import { rm, symlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
@@ -18,6 +19,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-stop-private.e2e.test.ts',
       sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
+      'packages/operator-core/test/roster-stop-http-controls.ts',
         'packages/operator-core/test/private-coord-receipt.ts', 'packages/operator-core/test/portal-roster-browser-fixture.ts',
         'packages/operator-core/test/private-http-workspace-preflight.ts', 'packages/operator-core/test/psu-pty-host-canary.mjs',
         'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/auth.ts',
@@ -31,7 +33,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         for (const key of ['PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE',
           'ROSTER_STOP_HTTP_MUTATION', 'ROSTER_COORD_HTTP_PROOF', 'ROSTER_COORD_BROWSER_PROOF']) delete env[key];
         const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), '--portal-source=' + portalSource],
+          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), ...rosterStopHttpControlArgs(env), '--portal-source=' + portalSource],
         { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
         observe(child);
         child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))

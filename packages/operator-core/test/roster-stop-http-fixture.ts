@@ -17,11 +17,11 @@ import { seedPrivateWorkflows, preflightPrivateWorkflows } from './portal-workfl
 import { seedPrivateStats, preflightPrivateStats } from './portal-stats-fixture';
 import { seedPrivateGit, preflightPrivateGit } from './portal-git-fixture';
 import { startPrivateCupboardCatalog } from './portal-cupboard-fixture';
+import { parseRosterStopHttpControls } from './roster-stop-http-controls';
 
 const root = resolve(import.meta.dirname, '../../..');
 const evidence = process.env.ROSTER_STOP_HTTP_EVIDENCE_DIR!;
-const healthCleanupProof = process.argv.includes('--health-cleanup-proof');
-const healthPublicationProof = process.argv.includes('--health-publication-proof');
+const { proofs, healthCleanupProof, healthPublicationProof, mutation } = parseRosterStopHttpControls(process.argv.slice(2));
 const socketOrigins = new Map<number, { socket: net.Socket; stack: string; createdAt: number; connectedAt: number }>();
 const originalConnect = net.Socket.prototype.connect;
 const originalWrite = net.Socket.prototype.write;
@@ -57,14 +57,8 @@ net.Socket.prototype.destroy = function(this: net.Socket, ...args: unknown[]) {
     ...socketClosures.get(this), destroyAt: Date.now(), destroyStack: new Error('Private PG socket destroy').stack });
   return Reflect.apply(originalDestroy, this, args);
 } as typeof originalDestroy;
-const requestedBrowserProof = process.argv.find(value => value.startsWith('--browser-proof='))?.slice('--browser-proof='.length);
-if (requestedBrowserProof) {
-  assert.ok(['ROSTER_CONVERSATIONS_BROWSER_PROOF', 'ROSTER_CREATE_DOCK_BROWSER_PROOF'].includes(requestedBrowserProof));
-  const proofEnvironment = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith('ROSTER_') && key.endsWith('_PROOF')));
-  writeFileSync(join(evidence, 'requested-browser-proof.json'), JSON.stringify({ requestedBrowserProof, proofEnvironment,
-    sourceSha256: createHash('sha256').update(readFileSync(import.meta.filename)).digest('hex') }, null, 2));
-  assert.equal(process.env[requestedBrowserProof], '1', 'requested browser proof must reach the original worker');
-}
+writeFileSync(join(evidence, 'requested-browser-proof.json'), JSON.stringify({ proofs,
+  sourceSha256: createHash('sha256').update(readFileSync(import.meta.filename)).digest('hex') }, null, 2));
 const workspace = process.env.PAPERCUSP_WORKSPACE_ID!;
 const base = process.env.PAPERCUSP_OPERATOR_URL!;
 assert.match(workspace, /^test-runtime-/);
@@ -74,7 +68,7 @@ assert.ok(![3070, 3170, 3271].includes(Number(new URL(base).port)));
 assert.ok(evidence);
 const preparedApiBundle = resolvePreparedPrivateApiBundle(process.argv, evidence);
 const apiBundle = preparedApiBundle ?? join(evidence, 'hono-host.mjs');
-const portalSourceRoot = !healthCleanupProof && !healthPublicationProof && (process.env.ROSTER_COORD_BROWSER_PROOF === '1' || process.env.ROSTER_STOP_BROWSER_PROOF === '1')
+const portalSourceRoot = !healthCleanupProof && !healthPublicationProof && (proofs.ROSTER_COORD_BROWSER_PROOF === '1' || proofs.ROSTER_STOP_BROWSER_PROOF === '1')
   ? preparePortalBrowserSource(process.argv) : undefined;
 // Evidence paths are intentionally long; AF_UNIX addresses are bounded by bytes.
 // Keep the mutable socket namespace short and retain its identity in the receipt.
@@ -200,9 +194,9 @@ async function coordCanary(health: unknown) {
   for (const [owner, scope] of [[selected, workspace], [neighbor, workspace], [foreign, foreignWorkspace], [stale, workspace]]) {
     const nativeId = randomUUID();
     const id = await recordAdvSession({ workspaceId: scope, mode: 'console', agent: 'codex', role: 'su', coordOwnerId: owner,
-      ...(process.env.ROSTER_HISTORY_BROWSER_PROOF === '1' ? { pid: process.pid, sessionId: nativeId } : {}) });
+      ...(proofs.ROSTER_HISTORY_BROWSER_PROOF === '1' ? { pid: process.pid, sessionId: nativeId } : {}) });
     assert.ok(id);
-    if (process.env.ROSTER_HUD_BROWSER_PROOF === '1' && owner !== stale) {
+    if (proofs.ROSTER_HUD_BROWSER_PROOF === '1' && owner !== stale) {
       const { writePresence } = await import('../lib/agent-tools/coordination/presence');
       const hudRole = owner === selected ? 'selected' : owner === neighbor ? 'neighbor' : 'foreign';
       await writePresence({ ownerId: owner, ownerLabel: `HUD ${hudRole} ${owner}`,
@@ -210,7 +204,7 @@ async function coordCanary(health: unknown) {
       { agentRole: 'su', intent: `HUD ${hudRole} ${owner}`,
         host: 'private-hud-canary', pid: process.pid, capabilityTags: [] });
     }
-    if (process.env.ROSTER_HISTORY_BROWSER_PROOF === '1') {
+    if (proofs.ROSTER_HISTORY_BROWSER_PROOF === '1') {
       const { codexHomeForSessionKey } = await import('@papercusp/orchestrator/session-launch-dirs');
       const directory = join(codexHomeForSessionKey(id), 'sessions');
       assert.ok(directory.startsWith(process.env.HOME! + '/'), 'native transcript must be inside the disposable runtime home');
@@ -245,8 +239,8 @@ async function coordCanary(health: unknown) {
   };
   const verifyReceipt = (receipt: { status: number; body: any }, expectedOwner: string, wake: boolean, summary = marker) =>
     verifyPrivateCoordReceipt(receipt, { ownerId: expectedOwner, summary, wake }, getMessageById);
-  if (process.env.ROSTER_COORD_BROWSER_PROOF === '1') {
-    if (process.env.ROSTER_HEALTH_BROWSER_PROOF === '1') {
+  if (proofs.ROSTER_COORD_BROWSER_PROOF === '1') {
+    if (proofs.ROSTER_HEALTH_BROWSER_PROOF === '1') {
       const { writeSharedSnapshot } = await import('../lib/derived-reads/shared-snapshot');
       const { recordHealthHistory } = await import('../lib/system-health/history');
       const { createWorkItem, setWorkItemState, updateExternalBlockerHistory } = await import('../lib/work-items');
@@ -320,7 +314,7 @@ async function coordCanary(health: unknown) {
       return;
     }
     let harnesses: { hive: string; selected: string; neighbor: string; foreign: string } | undefined;
-    if (process.env.ROSTER_WORK_BROWSER_PROOF === '1') {
+    if (proofs.ROSTER_WORK_BROWSER_PROOF === '1') {
       const { mutateHarnessRegistry } = await import('../lib/harness-registry');
       const stem = `private-work-${process.pid}`;
       harnesses = { hive: stem + '-hive', selected: stem + '-selected', neighbor: stem + '-neighbor', foreign: stem + '-foreign' };
@@ -339,7 +333,7 @@ async function coordCanary(health: unknown) {
       writeFileSync(join(evidence, 'portal-work-seed.json'), JSON.stringify(harnesses, null, 2));
     }
     let testingHarnesses: { selected: string; neighbor: string; foreign: string } | undefined;
-    if (process.env.ROSTER_TESTING_BROWSER_PROOF === '1') {
+    if (proofs.ROSTER_TESTING_BROWSER_PROOF === '1') {
       const { mutateHarnessRegistry } = await import('../lib/harness-registry');
       const stem = `private-testing-${process.pid}`;
       testingHarnesses = { selected: stem + '-selected', neighbor: stem + '-neighbor', foreign: stem + '-foreign' };
@@ -362,7 +356,7 @@ async function coordCanary(health: unknown) {
       writeFileSync(join(evidence, 'portal-testing-seed.json'), JSON.stringify(testingHarnesses, null, 2));
     }
     let insightsHarnesses: { selected: string; neighbor: string; foreign: string } | undefined;
-    if (process.env.ROSTER_INSIGHTS_BROWSER_PROOF === '1') {
+    if (proofs.ROSTER_INSIGHTS_BROWSER_PROOF === '1') {
       const { mutateHarnessRegistry } = await import('../lib/harness-registry');
       const stem = `private-insights-${process.pid}`;
       insightsHarnesses = { selected: stem + '-selected', neighbor: stem + '-neighbor', foreign: stem + '-selected' };
@@ -387,7 +381,7 @@ async function coordCanary(health: unknown) {
       writeFileSync(join(evidence, 'portal-insights-seed.json'), JSON.stringify(insightsHarnesses, null, 2));
     }
     let settingsHarnesses: { selected: string; neighbor: string; foreign: string } | undefined;
-    if (process.env.ROSTER_HARNESS_SETTINGS_BROWSER_PROOF === '1') {
+    if (proofs.ROSTER_HARNESS_SETTINGS_BROWSER_PROOF === '1') {
       const { mutateHarnessRegistry } = await import('../lib/harness-registry');
       const { saveProjectFiles } = await import('../lib/harness-project-files');
       const { loadBlueprintFromFile } = await import('@papercusp/orchestrator/blueprint');
@@ -411,7 +405,7 @@ async function coordCanary(health: unknown) {
       writeFileSync(join(evidence, 'portal-settings-seed.json'), JSON.stringify(settingsHarnesses, null, 2));
     }
     let brainstormHarnesses: { selected: string; neighbor: string; foreign: string } | undefined;
-    if (process.env.ROSTER_BRAINSTORM_BROWSER_PROOF === '1') {
+    if (proofs.ROSTER_BRAINSTORM_BROWSER_PROOF === '1') {
       const { mutateHarnessRegistry } = await import('../lib/harness-registry');
       const stem = `private-brainstorm-${process.pid}`;
       brainstormHarnesses = { selected: stem + '-selected', neighbor: stem + '-neighbor', foreign: stem + '-foreign' };
@@ -437,7 +431,7 @@ async function coordCanary(health: unknown) {
       writeFileSync(join(evidence, 'portal-brainstorm-seed.json'), JSON.stringify(brainstormHarnesses, null, 2));
     }
     let docs: { harness: string; selectedDoc: string; neighborDoc: string; selectedHeading: string; neighborHeading: string } | undefined;
-    if (process.env.ROSTER_DOCS_BROWSER_PROOF === '1') {
+    if (proofs.ROSTER_DOCS_BROWSER_PROOF === '1') {
       const { mutateHarnessRegistry } = await import('../lib/harness-registry');
       const { anchorManualDoc } = await import('../lib/harness/docs/manual-anchor');
       const harness = `private-docs-${process.pid}`;
@@ -458,26 +452,26 @@ async function coordCanary(health: unknown) {
       writeFileSync(join(evidence, 'portal-docs-seed.json'), JSON.stringify({ ...docs, workspace,
         readonlyRepo: root, head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim() }, null, 2));
     }
-    const projectHistorySeed = process.env.ROSTER_PROJECT_HISTORY_BROWSER_PROOF === '1'
+    const projectHistorySeed = proofs.ROSTER_PROJECT_HISTORY_BROWSER_PROOF === '1'
       ? await seedPrivateProjectHistory(workspace, evidence, root) : undefined;
     if (projectHistorySeed) await preflightPrivateProjectHistory(projectHistorySeed, base, cookie(ownSession.token), evidence);
-    const calendarSeed = process.env.ROSTER_CALENDAR_BROWSER_PROOF === '1'
+    const calendarSeed = proofs.ROSTER_CALENDAR_BROWSER_PROOF === '1'
       ? await seedPrivateCalendar(workspace, evidence) : undefined;
     if (calendarSeed) await preflightPrivateCalendar(calendarSeed, base, cookie(ownSession.token), evidence);
-    const learningSeed = process.env.ROSTER_LEARNING_BROWSER_PROOF === '1'
+    const learningSeed = proofs.ROSTER_LEARNING_BROWSER_PROOF === '1'
       ? await seedPrivateLearning(workspace, evidence) : undefined;
     if (learningSeed) await preflightPrivateLearning(learningSeed, base, cookie(ownSession.token), evidence);
-    const workflowsSeed = process.env.ROSTER_WORKFLOWS_BROWSER_PROOF === '1'
+    const workflowsSeed = proofs.ROSTER_WORKFLOWS_BROWSER_PROOF === '1'
       ? await seedPrivateWorkflows(workspace, evidence) : undefined;
     if (workflowsSeed) await preflightPrivateWorkflows(workflowsSeed, base, cookie(ownSession.token), evidence);
-    const statsSeed = process.env.ROSTER_STATS_BROWSER_PROOF === '1'
+    const statsSeed = proofs.ROSTER_STATS_BROWSER_PROOF === '1'
       ? await seedPrivateStats(workspace, evidence, portalSourceRoot!) : undefined;
     if (statsSeed) await preflightPrivateStats(statsSeed, base, cookie(ownSession.token), cookie(foreignSession.token), evidence);
-    const gitSeed = process.env.ROSTER_GIT_BROWSER_PROOF === '1'
+    const gitSeed = proofs.ROSTER_GIT_BROWSER_PROOF === '1'
       ? await seedPrivateGit(workspace, evidence, portalSourceRoot!) : undefined;
     if (gitSeed) await preflightPrivateGit(gitSeed, base, cookie(ownSession.token), cookie(foreignSession.token), evidence);
     let conversationsSeed: import('./portal-roster-browser-fixture').PrivateConversationsSeed | undefined;
-    if (process.env.ROSTER_CONVERSATIONS_BROWSER_PROOF === '1') {
+    if (proofs.ROSTER_CONVERSATIONS_BROWSER_PROOF === '1') {
       const stem = `private-conversations-${process.pid}`;
       const definitions = [
         ['threads', 'conversation', 'questionsList', 'questionDetail'],
@@ -537,7 +531,7 @@ async function coordCanary(health: unknown) {
       console.log('ROSTER_STOP_HTTP_PHASE conversations-api-preflight-ready');
     }
     let createDockPlans: import('./portal-roster-browser-fixture').PrivateCreateDockSeed | undefined;
-    if (process.env.ROSTER_CREATE_DOCK_BROWSER_PROOF === '1') {
+    if (proofs.ROSTER_CREATE_DOCK_BROWSER_PROOF === '1') {
       const { operatorHomeHarnessSlug } = await import('../lib/harness/operator-home-harness');
       const { mutateHarnessRegistry } = await import('../lib/harness-registry');
       const { resolveHarnessPlansDir } = await import('../lib/agent-tools/plans/source');
@@ -572,7 +566,7 @@ async function coordCanary(health: unknown) {
     }
     let plans: { selectedSlug: string; neighborSlug: string; selectedTitle: string; neighborTitle: string; harness: string } | undefined;
     let overviewPlans: { selectedSlug: string; neighborSlug: string; foreignSlug: string; harness: string } | undefined;
-    if (process.env.ROSTER_OVERVIEW_BROWSER_PROOF === '1') {
+    if (proofs.ROSTER_OVERVIEW_BROWSER_PROOF === '1') {
       const { operatorHomeHarnessSlug } = await import('../lib/harness/operator-home-harness');
       const harness = operatorHomeHarnessSlug();
       const stem = `private-overview-${process.pid}`;
@@ -606,7 +600,7 @@ async function coordCanary(health: unknown) {
       assert.ok(!body.rows.some(row => row.slug === overviewPlans!.foreignSlug), 'Overview API preflight must exclude foreign workspace');
       console.log('ROSTER_STOP_HTTP_PHASE overview-plan-preflight-ready');
     }
-    if (process.env.ROSTER_PLANS_BROWSER_PROOF === '1') {
+    if (proofs.ROSTER_PLANS_BROWSER_PROOF === '1') {
       const { operatorHomeHarnessSlug } = await import('../lib/harness/operator-home-harness');
       const harness = operatorHomeHarnessSlug();
       const stem = `private-plans-${process.pid}`;
@@ -626,7 +620,7 @@ async function coordCanary(health: unknown) {
       writeFileSync(join(evidence, 'portal-plans-seed.json'), JSON.stringify({ ...plans, workspace, staleAt }, null, 2));
     }
     let inbox: { selectedMessageId: string; neighborMessageId: string; selectedTitle: string; neighborTitle: string } | undefined;
-    if (process.env.ROSTER_INBOX_BROWSER_PROOF === '1') {
+    if (proofs.ROSTER_INBOX_BROWSER_PROOF === '1') {
       const { sendMessage } = await import('../lib/agent-tools/coordination/messages');
       const selectedTitle = `private-inbox-${process.pid}-selected`;
       const neighborTitle = `private-inbox-${process.pid}-neighbor`;
@@ -647,7 +641,7 @@ async function coordCanary(health: unknown) {
     }
     const { runPortalRosterBrowser } = await import('./portal-roster-browser-fixture');
     let devSeed: { selectedMarker: string; neighborMarker: string; foreignMarker: string; neighborWorkspace: string } | undefined;
-    if (process.env.ROSTER_DEV_BROWSER_PROOF === '1') {
+    if (proofs.ROSTER_DEV_BROWSER_PROOF === '1') {
       devSeed = { selectedMarker: `private-dev-${process.pid}-selected`, neighborMarker: `private-dev-${process.pid}-neighbor`,
         foreignMarker: `private-dev-${process.pid}-foreign`, neighborWorkspace: workspace + '-neighbor' };
       for (const [scope, name] of [[workspace, devSeed.selectedMarker], [devSeed.neighborWorkspace, devSeed.neighborMarker],
@@ -685,11 +679,11 @@ async function coordCanary(health: unknown) {
       cookieName: SESSION_COOKIE, ownToken: ownSession.token, foreignToken: foreignSession.token,
       ...(cupboardCatalog ? { cupboard: true, cupboardSeed: cupboardCatalog } : {}),
       ...(devSeed ? { dev: true, devSeed } : {}),
-      ...(process.env.ROSTER_SHORTCUT_BROWSER_PROOF === '1' ? { shortcuts: true } : {}),
-      ...(process.env.ROSTER_SETTINGS_BROWSER_PROOF === '1' ? { settings: true } : {}),
-      ...(process.env.ROSTER_PROMPTS_BROWSER_PROOF === '1' ? { prompts: true } : {}),
-      ...(process.env.ROSTER_HUD_BROWSER_PROOF === '1' ? { hud: true } : {}),
-      ...(process.env.ROSTER_HEALTH_BROWSER_PROOF === '1' ? { health: true } : {}),
+      ...(proofs.ROSTER_SHORTCUT_BROWSER_PROOF === '1' ? { shortcuts: true } : {}),
+      ...(proofs.ROSTER_SETTINGS_BROWSER_PROOF === '1' ? { settings: true } : {}),
+      ...(proofs.ROSTER_PROMPTS_BROWSER_PROOF === '1' ? { prompts: true } : {}),
+      ...(proofs.ROSTER_HUD_BROWSER_PROOF === '1' ? { hud: true } : {}),
+      ...(proofs.ROSTER_HEALTH_BROWSER_PROOF === '1' ? { health: true } : {}),
       ...(overviewPlans ? { overview: true, overviewPlans } : {}),
       ...(projectHistorySeed ? { projectHistory: true, projectHistorySeed } : {}),
       ...(calendarSeed ? { calendar: true, calendarSeed } : {}),
@@ -707,7 +701,7 @@ async function coordCanary(health: unknown) {
       ...(docs ? { docs } : {}),
       ...(plans ? { plans } : {}),
       ...(inbox ? { inbox } : {}),
-      ...(process.env.ROSTER_HISTORY_BROWSER_PROOF === '1' ? { history: {
+      ...(proofs.ROSTER_HISTORY_BROWSER_PROOF === '1' ? { history: {
         selectedSessionId: historySessions.get(selected)!.id, neighborSessionId: historySessions.get(neighbor)!.id,
         selectedRolloutId: historySessions.get(selected)!.rolloutId, neighborRolloutId: historySessions.get(neighbor)!.rolloutId,
         selectedMarker: historySessions.get(selected)!.marker, neighborMarker: historySessions.get(neighbor)!.marker,
@@ -754,16 +748,16 @@ async function main() {
   if (healthCleanupProof) {
     const prepared = preparePrivateHttpWorkspaces();
     assert.equal(prepared.workspace, workspace);
-    assert.equal(process.env.ROSTER_HEALTH_BROWSER_PROOF, '1');
-    assert.equal(process.env.ROSTER_COORD_BROWSER_PROOF, '1');
+    assert.equal(proofs.ROSTER_HEALTH_BROWSER_PROOF, '1');
+    assert.equal(proofs.ROSTER_COORD_BROWSER_PROOF, '1');
     await coordCanary({ cleanupProof: true });
     return;
   }
-  if (process.env.ROSTER_CUPBOARD_BROWSER_PROOF === '1') {
+  if (proofs.ROSTER_CUPBOARD_BROWSER_PROOF === '1') {
     cupboardCatalog = await startPrivateCupboardCatalog(evidence);
     process.env.PAPERCUSP_CUPBOARD_URL = cupboardCatalog.base;
   }
-  if (process.env.ROSTER_INBOX_BROWSER_PROOF === '1') {
+  if (proofs.ROSTER_INBOX_BROWSER_PROOF === '1') {
     inboxInvalidationListener = await sql.listen('sync_invalidate', payload => {
       const event = JSON.parse(payload);
       if (event.name !== 'harness_shared.coord_event_log.changed') return;
@@ -771,12 +765,12 @@ async function main() {
       writeFileSync(join(evidence, 'portal-inbox-invalidations.json'), JSON.stringify(inboxInvalidations, null, 2));
     });
   }
-  if (process.env.ROSTER_COORD_BROWSER_PROOF === '1' || process.env.ROSTER_STOP_BROWSER_PROOF === '1') {
+  if (proofs.ROSTER_COORD_BROWSER_PROOF === '1' || proofs.ROSTER_STOP_BROWSER_PROOF === '1') {
     // Use the existing static-serving seam on this private API origin. No
     // cross-origin transport, API response interception or local-mode identity.
     process.env.PAPERCUSP_SPA_DIST = join(evidence, 'portal-roster-spa');
   }
-  if (process.env.ROSTER_COORD_HTTP_PROOF === '1' || process.env.ROSTER_STOP_BROWSER_PROOF === '1') {
+  if (proofs.ROSTER_COORD_HTTP_PROOF === '1' || proofs.ROSTER_STOP_BROWSER_PROOF === '1') {
     const prepared = preparePrivateHttpWorkspaces();
     assert.equal(prepared.workspace, workspace);
     console.log('ROSTER_STOP_HTTP_PHASE registry-ready');
@@ -800,13 +794,13 @@ async function main() {
     return false;
   }, 'private API readiness', 90_000);
   console.log('ROSTER_STOP_HTTP_PHASE request-ready');
-  if (process.env.ROSTER_COORD_HTTP_PROOF === '1') {
+  if (proofs.ROSTER_COORD_HTTP_PROOF === '1') {
     await coordCanary(health);
     return;
   }
   const selected = await child('selected');
   const neighbor = await child('neighbor');
-  if (process.env.ROSTER_STOP_BROWSER_PROOF === '1') {
+  if (proofs.ROSTER_STOP_BROWSER_PROOF === '1') {
     const { signup, login, getSessionUser, SESSION_COOKIE } = await import('../lib/auth');
     const username = `stop_${process.pid}`;
     await signup(username, 'Private confirmed stop canary', null);
@@ -868,7 +862,7 @@ async function main() {
   assert.ok(currentNeighbor);
   // ECHO output must settle before exercising the existing supported idle stop.
   await Promise.all([quiet(selected), quiet(neighbor)]);
-  const misroute = process.env.ROSTER_STOP_HTTP_MUTATION === 'misroute';
+  const misroute = mutation === 'misroute';
   const accepted = await request(misroute ? { ownerId: neighbor.owner, managedSessionId: neighbor.id,
     expectedStartedAt: currentNeighbor.startedAt, confirmed: true } : valid);
   assert.equal(accepted.status, 200, JSON.stringify(accepted));

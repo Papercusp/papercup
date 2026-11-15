@@ -41,13 +41,18 @@ describe('boot budget (R-9: guaranteed working room)', () => {
     expect(r.limit).toBeLessThanOrEqual(selfSetCeilingForWindow(window, { fleetMember: false }));
   });
 
-  it('the measured fleet-member violation is real at the old default and fixed by the budget', () => {
-    const boot = 157_719;
-    const oldDefault = defaultCompactionLimitForWindow(WINDOW_1M, { fleetMember: true });
-    expect(bootHasWorkingRoom(boot, oldDefault)).toBe(false);
+  it('raises at the fleet-member working-room boundary below the default', () => {
+    const defaultLimit = defaultCompactionLimitForWindow(WINDOW_1M, { fleetMember: true });
+    const ceiling = selfSetCeilingForWindow(WINDOW_1M, { fleetMember: false });
+    const boot = Math.ceil(defaultLimit * BOOT_BUDGET_MAX_FRACTION);
+    expect(ceiling).toBeGreaterThan(defaultLimit);
+    expect(bootHasWorkingRoom(boot, defaultLimit)).toBe(false);
     const r = bootBudgetLimit({ bootTokens: boot, windowTokens: WINDOW_1M, fleetMember: true });
     expect(r.raised).toBe(true);
-    expect(r.limit).toBe(263_000);
+    expect(r.limit).toBe(bootBudgetRequiredLimit(boot));
+    expect(r.limit).toBeGreaterThan(defaultLimit);
+    expect(bootHasWorkingRoom(boot, r.limit)).toBe(true);
+    expect(r.limit).toBeLessThanOrEqual(ceiling);
   });
 
   it('does not raise when the default already leaves room', () => {
@@ -76,12 +81,15 @@ describe('boot budget (R-9: guaranteed working room)', () => {
     expect(r.satisfiable).toBe(false);
   });
 
-  it('never raises for a floor at or above the default (reducible history, e.g. a resume)', () => {
-    // Mirrors the watchdog's "high total-input floor" contract: 396k floor on a 250k member.
-    const r = bootBudgetLimit({ bootTokens: 396_171, windowTokens: WINDOW_1M, fleetMember: true });
-    expect(r.overDefault).toBe(true);
-    expect(r.raised).toBe(false);
-    expect(r.limit).toBe(r.defaultLimit);
+  it('never raises for a floor at or above the current fleet-member default', () => {
+    const defaultLimit = defaultCompactionLimitForWindow(WINDOW_1M, { fleetMember: true });
+    // Total-input floors at/above the current default may include reducible resume history.
+    for (const bootTokens of [defaultLimit, defaultLimit + 1]) {
+      const r = bootBudgetLimit({ bootTokens, windowTokens: WINDOW_1M, fleetMember: true });
+      expect(r.overDefault).toBe(true);
+      expect(r.raised).toBe(false);
+      expect(r.limit).toBe(defaultLimit);
+    }
   });
 
   it('required limit is the smallest 1k step strictly above boot / 0.6', () => {

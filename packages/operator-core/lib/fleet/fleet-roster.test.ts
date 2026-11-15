@@ -596,9 +596,9 @@ describe('isBeeRole / splitFleetRosterCounts (WI-1764 #4 member-vs-bee split)', 
     expect(splitFleetRosterCounts([])).toEqual({ members: 0, bees: 0 });
   });
 
-  it('does not count a recorded session as a live launch member', () => {
+  it('does not count parked or recorded sessions toward the live launch target', () => {
     expect(isLaunchLiveSessionState('live')).toBe(true);
-    expect(isLaunchLiveSessionState('parked')).toBe(true);
+    expect(isLaunchLiveSessionState('parked')).toBe(false);
     expect(isLaunchLiveSessionState('draining')).toBe(true);
     expect(isLaunchLiveSessionState('recorded')).toBe(false);
     expect(isLaunchLiveSessionState('ended')).toBe(false);

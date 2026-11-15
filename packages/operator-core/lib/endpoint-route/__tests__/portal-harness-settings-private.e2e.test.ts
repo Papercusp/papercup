@@ -1,6 +1,7 @@
 /** Per-harness Settings coverage in the maintained disposable Portal boundary. */
 import { expect, it } from 'vitest';
 import { fork } from 'node:child_process';
+import { rosterStopHttpControlArgs } from '../../../test/roster-stop-http-controls';
 import { rm, symlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
@@ -40,6 +41,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'phases/execute/portal-settings-initial-store.json', 'phases/execute/portal-settings-wire.json',
         'phases/execute/portal-settings-persistence.json'],
       sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
+      'packages/operator-core/test/roster-stop-http-controls.ts',
         'packages/operator-core/test/portal-roster-browser-fixture.ts', 'packages/operator-core/test/private-http-workspace-preflight.ts',
         'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/harness-registry.ts',
         'packages/operator-core/lib/harness-project-files.ts', 'packages/operator-core/lib/endpoint-route/routes/harness/spec.ts',
@@ -59,7 +61,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
           && !['ROSTER_COORD_BROWSER_PROOF', 'ROSTER_HARNESS_SETTINGS_BROWSER_PROOF'].includes(key))
           || ['PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE', 'ROSTER_STOP_HTTP_MUTATION'].includes(key)) delete env[key];
         const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'),
+          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), ...rosterStopHttpControlArgs(env),
           '--portal-source=' + portalSource, '--prepared-api-sha=' + preparedApi.sha256],
         { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
         observe(child);

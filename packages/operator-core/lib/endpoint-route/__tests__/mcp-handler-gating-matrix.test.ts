@@ -301,6 +301,9 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
     ...actual,
+    // This suite replaces PG at the boundary. Priority selection must use the
+    // same controlled boundary while the real authority gates continue to run.
+    withPriorityOrgPg: async <T>(run: () => Promise<T>): Promise<T> => run(),
     getOrgPg: () => ({
       sql: h.fakeSql,
       db: { select: () => ({ from: () => ({ where: () => ({ limit: async () => {
@@ -1453,6 +1456,46 @@ async function callTool(
   )) as CallResult;
 }
 const textOf = (r: CallResult): string => r.content.map((c) => c.text ?? '').join('');
+
+describe('P003 actual registered tools/call execution negotiation', () => {
+  it('threads metadata and original host budgets without changing business arguments or owner', async () => {
+    const started = Date.now();
+    const result = await callTool('gatingtest:scoped', { original: 7 },
+      superuserExtra('&workspace=ws-test&client=su-p003-metadata'), {
+        'papercusp/execution': { mode: 'sync', responseWindowMs: 1000 },
+      });
+    expect(result.isError, textOf(result)).not.toBe(true);
+    const call = seen.find(call => call.tool === 'gatingtest:scoped')!;
+    expect(call.args).toEqual({ original: 7 });
+    expect(call.ctx.uiClientId).toBe('su-p003-metadata');
+    expect(call.ctx.toolExecution).toEqual({ mode: 'sync', responseWindowMs: 1000 });
+    expect(call.ctx.executionDeadlineAtMs).toBeGreaterThanOrEqual(started + 60000);
+    expect(call.ctx.transportResponseDeadlineAtMs).toBeTypeOf('number');
+  });
+  it.each([{ mode: 'async' }, { mode: 'sync', responseWindowMs: 60001 }, { mode: 'unknown' }])(
+    'refuses unsupported/oversized/invalid metadata at the real entry point: %j', async request => {
+      const result = await callTool('gatingtest:scoped', {},
+        superuserExtra('&workspace=ws-test&client=su-p003-refusal'), { 'papercusp/execution': request });
+      expect(result.isError).toBe(true);
+      expect(seen.filter(call => call.tool === 'gatingtest:scoped')).toHaveLength(0);
+    });
+  it('retains declared long waits in the loaded per-invocation response budget', async () => {
+    const tool = lookupByMcpName('gatingtest:scoped')!;
+    const previous = tool.timeoutSec;
+    tool.timeoutSec = 600;
+    try {
+      const started = Date.now();
+      const result = await callTool('gatingtest:scoped', {},
+        superuserExtra('&workspace=ws-test&client=su-p003-long'), {
+          'papercusp/execution': { mode: 'sync', responseWindowMs: 590000 },
+        });
+      expect(result.isError).not.toBe(true);
+      const call = seen.find(call => call.tool === 'gatingtest:scoped')!;
+      expect(call.ctx.executionDeadlineAtMs).toBeGreaterThanOrEqual(started + 600000);
+      expect(call.ctx.transportResponseDeadlineAtMs).toBeGreaterThanOrEqual(started + 600000);
+    } finally { tool.timeoutSec = previous; }
+  });
+});
 
 function projectionRefusalText(result: CallResult): string {
   const door = result._meta?.resultDoor as { reason?: string; spillPath?: string; spillUri?: string } | undefined;
@@ -6440,6 +6483,8 @@ describe('SU workspace project authorization through real MCP handlers', () => {
     it('lets a no-selected-project fleet omission reach missing-harness validation without launching', async () => {
       const result = await invoke('fleet:launch-on-plan', {
         name: 'gating-matrix-missing-harness', plan: 'gating-matrix-plan',
+        // Avoid the unrelated visible-profile prerequisite: this case isolates harness validation.
+        headless: true,
       }, superuserExtra('&workspace=ws-test&client=su-default-compat'));
       expect(result.isError).toBe(true);
       expect(textOf(result)).toContain('No harness for the plan');
