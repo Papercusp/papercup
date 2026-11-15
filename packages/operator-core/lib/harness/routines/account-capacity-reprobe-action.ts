@@ -19,14 +19,14 @@
  * bounded to accounts already flagged full (typically a handful), and a genuinely-walled account is
  * merely re-confirmed (a 429 carries the true reset and changes nothing) — only a FALSE wall is
  * corrected. `runCapacityProbe` already records any burn-verdict transition as a fact + severe-event
- * (WI-41147 leg c), so an unwall this action performs is never silent; this action itself only logs
- * a one-line per-tick summary for local operational visibility.
+ * (WI-41147 leg c), so an unwall this action performs is never silent. Failed probes retain their
+ * account-level evidence and mark routine health degraded until a successful scheduled recheck.
  *
  * Injectable `probe` dep (mirrors dead-citation-sweep-action.ts's `run`/`file` seam) so the action is
  * unit-testable without a live account pool, gateway, or network.
  */
 import type { AccountProvider } from '../../deployment/account-pool';
-import { registerSystemAction, type SystemActionCtx } from './system-actions';
+import { registerSystemAction, type SystemActionCtx, type SystemActionResult } from './system-actions';
 
 export const ACCOUNT_CAPACITY_REPROBE = 'account-capacity-reprobe';
 
@@ -40,6 +40,8 @@ export interface AccountCapacityReprobeSummary {
   unwalled: string[];
   confirmedWalled: string[];
   failed: string[];
+  rows?: Array<{ accountId: string; status?: number; error?: string }>;
+  warning?: string;
 }
 
 export interface AccountCapacityReprobeActionDeps {
@@ -61,16 +63,35 @@ export function makeAccountCapacityReprobeAction(overrides: Partial<AccountCapac
     log: (message) => console.log(`[${ACCOUNT_CAPACITY_REPROBE}] ${message}`),
     ...overrides,
   };
-  return async (ctx: SystemActionCtx): Promise<void> => {
+  return async (ctx: SystemActionCtx): Promise<SystemActionResult> => {
+    const providers: Partial<Record<AccountProvider, AccountCapacityReprobeSummary | { error: string }>> = {};
+    const failures: string[] = [];
     for (const provider of PROVIDERS) {
       let summary: AccountCapacityReprobeSummary;
       try {
         summary = await deps.probe({ workspace: ctx.workspaceId, provider });
       } catch (err) {
-        // A probe sweep failure (e.g. the gateway is down for readmit) must not take out the OTHER
-        // provider's tick, and must not throw the whole action — there is always a next tick.
-        deps.log(`${provider}: probe FAILED — ${err instanceof Error ? err.message : String(err)}`);
+        // Preserve the other provider's tick while exposing this failure to routine health.
+        const error = err instanceof Error ? err.message : String(err);
+        providers[provider] = { error };
+        const message = `${provider}: probe FAILED — ${error}`;
+        failures.push(message);
+        deps.log(message);
         continue;
+      }
+      providers[provider] = summary;
+      for (const accountId of summary.failed) {
+        const row = summary.rows?.find((candidate) => candidate.accountId === accountId);
+        const status = row?.status === undefined ? '' : `HTTP ${row.status} — `;
+        const message = `${provider}: ${accountId}: ${status}${row?.error ?? 'probe returned no usable capacity reading'}`;
+        failures.push(message);
+        deps.log(message);
+      }
+      // A fresh projection alone does not repair the gateway's separate exclusion state.
+      if (summary.warning) {
+        const message = `${provider}: ${summary.warning}`;
+        failures.push(message);
+        deps.log(message);
       }
       if (summary.probed === 0) continue; // nothing walled for this provider right now — quiet by design
       deps.log(
@@ -79,6 +100,10 @@ export function makeAccountCapacityReprobeAction(overrides: Partial<AccountCapac
           `failed=${summary.failed.length}`,
       );
     }
+    return {
+      diagnostics: { providers },
+      ...(failures.length > 0 ? { softError: failures.join('; ').slice(0, 600) } : {}),
+    };
   };
 }
 
