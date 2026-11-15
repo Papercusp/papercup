@@ -440,7 +440,7 @@ function returnExpressionsOf(fn: ts.SignatureDeclaration): ts.Expression[] {
   const out: ts.Expression[] = [];
   const visit = (n: ts.Node): void => {
     // Do not descend into nested functions — their returns are not this one's.
-    if (n !== body && (ts.isFunctionDeclaration(n) || ts.isArrowFunction(n) || ts.isFunctionExpression(n))) {
+    if (n !== body && ts.isFunctionLike(n)) {
       return;
     }
     if (ts.isReturnStatement(n) && n.expression) out.push(n.expression);
@@ -569,8 +569,58 @@ export function scanRequiredIgnoredAssets(opts: {
     functions.set(sf, collectLocalFunctions(sf));
     return sf;
   };
-  const constsAt = (node: ts.Node) => bindings.get(node.getSourceFile())!(node);
-  const functionAt = (call: ts.CallExpression): ts.SignatureDeclaration | undefined => {
+  const constsAt = (node: ts.Node) => {
+    const base = bindings.get(node.getSourceFile())!(node);
+    if (!ts.isIdentifier(node)) return base;
+    const parameter = callbackParameterAt(node);
+    if (!parameter) return base;
+    const scoped = new Map(base);
+    // An unresolved parameter still shadows an outer variable with its name.
+    scoped.delete(node.text);
+    if (parameter.value) scoped.set(node.text, parameter.value);
+    return scoped;
+  };
+  const functionAt = (call: ts.CallExpression, depth = 0): ts.SignatureDeclaration | undefined => {
+    if (depth > 12) return undefined;
+    if (ts.isPropertyAccessExpression(call.expression)) {
+      // A fixture can return callable members. Resolve the selected member,
+      // never a temporary sibling or an unrelated method's return value.
+      const memberAt = (node: ts.Node | undefined, members: string[], hops: number): ts.Node | undefined => {
+        if (!node || hops > 12) return undefined;
+        if (ts.isAwaitExpression(node) || ts.isParenthesizedExpression(node) ||
+          ts.isAsExpression(node) || ts.isNonNullExpression(node)) {
+          return memberAt(node.expression, members, hops + 1);
+        }
+        if (ts.isIdentifier(node)) {
+          return memberAt(constsAt(node).get(node.text), members, hops + 1);
+        }
+        if (ts.isPropertyAccessExpression(node)) {
+          return memberAt(node.expression, [node.name.text, ...members], hops + 1);
+        }
+        if (ts.isCallExpression(node)) {
+          const fn = functionAt(node, hops + 1);
+          const returns = fn ? returnExpressionsOf(fn) : [];
+          // Multiple possible object shapes are not proof of private custody.
+          return returns.length === 1 ? memberAt(returns[0], members, hops + 1) : undefined;
+        }
+        if (ts.isObjectLiteralExpression(node) && members.length) {
+          for (const property of [...node.properties].reverse()) {
+            if (ts.isSpreadAssignment(property)) return memberAt(property.expression, members, hops + 1);
+            if (property.name && (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) &&
+              property.name.text === members[0]) {
+              const value = ts.isPropertyAssignment(property) ? property.initializer
+                : ts.isShorthandPropertyAssignment(property) ? property.name : property;
+              return members.length === 1 ? memberAt(value, [], hops + 1)
+                : memberAt(value, members.slice(1), hops + 1);
+            }
+          }
+          return undefined;
+        }
+        return members.length === 0 ? node : undefined;
+      };
+      const fn = memberAt(call.expression.expression, [call.expression.name.text], depth);
+      return fn && (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn) || ts.isMethodDeclaration(fn)) ? fn : undefined;
+    }
     if (!ts.isIdentifier(call.expression)) return undefined;
     const sf = call.getSourceFile(), name = call.expression.text;
     const local = functions.get(sf)?.get(name);
@@ -594,6 +644,77 @@ export function scanRequiredIgnoredAssets(opts: {
     }
     return undefined;
   };
+
+  const callbackParameters = new WeakMap<ts.Node, Map<string, ts.Expression | undefined>>();
+  function callbackParameterAt(node: ts.Identifier): { value?: ts.Expression } | undefined {
+    let owner: ts.Node | undefined = node.parent;
+    while (owner && !ts.isFunctionLike(owner)) owner = owner.parent;
+    if (!owner || !ts.isFunctionLike(owner)) return undefined;
+    const index = owner.parameters.findIndex(parameter => ts.isObjectBindingPattern(parameter.name) &&
+      parameter.name.elements.some(entry => ts.isIdentifier(entry.name) && entry.name.text === node.text));
+    if (index < 0) return undefined;
+    const pattern = owner.parameters[index].name as ts.ObjectBindingPattern;
+    const entry = pattern.elements.find(binding => ts.isIdentifier(binding.name) && binding.name.text === node.text)!;
+    const field = entry.propertyName?.getText().replace(/^['"]|['"]$/g, '') ?? node.text;
+    let cache = callbackParameters.get(owner);
+    if (!cache) callbackParameters.set(owner, cache = new Map());
+    if (cache.has(node.text)) return { value: cache.get(node.text) };
+    cache.set(node.text, undefined);
+    let wrapper: ts.Node = owner;
+    // vi.fn preserves its implementation's argument contract.
+    if (ts.isCallExpression(wrapper.parent) && ts.isPropertyAccessExpression(wrapper.parent.expression) &&
+      wrapper.parent.expression.expression.getText() === 'vi' && wrapper.parent.expression.name.text === 'fn') {
+      wrapper = wrapper.parent;
+    }
+    const declaration = wrapper.parent;
+    if (!ts.isVariableDeclaration(declaration) || !ts.isIdentifier(declaration.name)) return {};
+    const callbackName = declaration.name.text;
+    const values: (ts.Expression | undefined)[] = [];
+    const propertyValue = (object: ts.ObjectLiteralExpression, name: string): ts.Expression | undefined => {
+      for (const property of [...object.properties].reverse()) {
+        if (ts.isSpreadAssignment(property)) return undefined;
+        if (property.name && (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) && property.name.text === name) {
+          return ts.isPropertyAssignment(property) ? property.initializer
+            : ts.isShorthandPropertyAssignment(property) ? property.name : undefined;
+        }
+      }
+      return undefined;
+    };
+    const visit = (call: ts.Node): void => {
+      if (ts.isCallExpression(call)) {
+        for (let optionIndex = 0; optionIndex < call.arguments.length; optionIndex++) {
+          const options = call.arguments[optionIndex];
+          if (!ts.isObjectLiteralExpression(options)) continue;
+          for (const property of options.properties) {
+            if (!property.name || !(ts.isIdentifier(property.name) || ts.isStringLiteral(property.name))) continue;
+            const passed = propertyValue(options, property.name.text);
+            if (!passed || !ts.isIdentifier(passed) || passed.text !== callbackName ||
+              bindings.get(passed.getSourceFile())!(passed).get(callbackName) !== wrapper) continue;
+            const helper = functionAt(call);
+            const parameter = helper?.parameters[optionIndex]?.name;
+            if (!helper || !parameter || !ts.isObjectBindingPattern(parameter)) continue;
+            const callback = parameter.elements.find(binding =>
+              (binding.propertyName?.getText().replace(/^['"]|['"]$/g, '') ?? binding.name.getText()) === property.name!.getText().replace(/^['"]|['"]$/g, ''));
+            if (!callback || !ts.isIdentifier(callback.name)) continue;
+            const callbackLocal = callback.name.text;
+            const findInvocation = (invocation: ts.Node): void => {
+              if (ts.isCallExpression(invocation) && ts.isIdentifier(invocation.expression) && invocation.expression.text === callbackLocal) {
+                const argument = invocation.arguments[index];
+                values.push(argument && ts.isObjectLiteralExpression(argument) ? propertyValue(argument, field) : undefined);
+              }
+              ts.forEachChild(invocation, findInvocation);
+            };
+            findInvocation(helper);
+          }
+        }
+      }
+      ts.forEachChild(call, visit);
+    };
+    visit(node.getSourceFile());
+    const value = values.length === 1 ? values[0] : undefined;
+    cache.set(node.text, value);
+    return { value };
+  }
 
   for (const rel of opts.testFiles) {
     let src: string;

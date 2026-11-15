@@ -428,6 +428,62 @@ describe('false-positive controls — the noise that would get this guard disabl
     expect(result.violations.map(site => site.path)).toEqual(expected);
   });
 
+  it('follows returned fixture methods while keeping checkout methods and later overrides visible', () => {
+    const result = scanFixture({
+      'packages/p/methods.test.ts': `
+        import { mkdtempSync, readFileSync } from 'node:fs';
+        import { join } from 'node:path';
+        import { tmpdir } from 'node:os';
+        function fixture() {
+          const root = mkdtempSync(join(tmpdir(), 'methods-'));
+          const privatePath = () => join(root, 'generated');
+          return { privatePath, checkout() { return '/checkout'; } };
+        }
+        it('reads returned methods', () => {
+          const f = fixture();
+          readFileSync(join(f.privatePath(), 'apps/operator/dist-verify/private.mjs'));
+          readFileSync(join(f.checkout(), 'apps/operator/dist-verify/checkout.mjs'));
+          const overridden = { ...fixture(), privatePath: () => '/override' };
+          readFileSync(join(overridden.privatePath(), 'apps/operator/dist-verify/override.mjs'));
+        });
+      `,
+    }, { ignored: ['apps/operator/dist-verify'], coveredRoots: [] });
+    expect(result.required.map(site => site.path)).toEqual([
+      'apps/operator/dist-verify/checkout.mjs', 'apps/operator/dist-verify/override.mjs',
+    ]);
+    expect(result.violations).toEqual(result.required);
+  });
+
+  it('traces imported callback inputs to their own temporary tree and keeps checkout inputs blocking', () => {
+    const result = scanFixture({
+      'packages/p/helper.ts': `
+        import { mkdtempSync } from 'node:fs';
+        import { join } from 'node:path';
+        import { tmpdir } from 'node:os';
+        export function prepare({ ready }) {
+          const owned = mkdtempSync(join(tmpdir(), 'owned-'));
+          ready({ sourceRoot: join(owned, 'source') });
+        }
+        export function checkout({ ready }) { ready({ sourceRoot: '/checkout' }); }
+      `,
+      'packages/p/callback.test.ts': `
+        import { prepare, checkout } from './helper';
+        import { readFileSync } from 'node:fs';
+        import { join } from 'node:path';
+        const ready = vi.fn(({ sourceRoot }) => {
+          readFileSync(join(sourceRoot, 'apps/operator/dist-verify/private.mjs'));
+        });
+        const realReady = ({ sourceRoot }) => {
+          readFileSync(join(sourceRoot, 'apps/operator/dist-verify/checkout.mjs'));
+        };
+        prepare({ ready });
+        checkout({ ready: realReady });
+      `,
+    }, { ignored: ['apps/operator/dist-verify'], coveredRoots: [] });
+    expect(result.required.map(site => site.path)).toEqual(['apps/operator/dist-verify/checkout.mjs']);
+    expect(result.violations).toEqual(result.required);
+  });
+
   it('tolerates an explicit absence assertion without exempting positive existence or throwing reads', () => {
     const result = scanFixture({
       'packages/p/absence.test.ts': `
