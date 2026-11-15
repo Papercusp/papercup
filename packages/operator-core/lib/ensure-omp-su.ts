@@ -23,6 +23,7 @@
 import { existsSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname, basename, delimiter } from 'node:path';
+import { refreshInjectionHooks } from './desktop-install/injection-hook-refresh';
 
 function dlog(msg: string): void {
   process.stderr.write(`[ensure-omp-su] ${msg}\n`);
@@ -211,7 +212,19 @@ async function ensurePapercuspBootstrap(): Promise<void> {
 let completed: Promise<void> | null = null;
 
 export async function ensureOmpSuInstalled(): Promise<void> {
-  if (completed) return completed;
+  if (completed) {
+    await completed;
+    // EI-28781697440458020: bootstrap stays cached; executable hook freshness does not.
+    if (process.platform === 'linux') {
+      const source = resolveSourceDir();
+      if (source) {
+        const refreshed = await refreshInjectionHooks(homedir(), join(source, 'scripts', 'hooks', 'inject'));
+        if (refreshed.status === 'refreshed') dlog('refreshed changed injection hooks after cached bootstrap');
+        if (refreshed.status === 'deferred') dlog('injection hook refresh deferred; next launch will recheck');
+      }
+    }
+    return;
+  }
   completed = (async () => {
     // Only meaningful on Linux right now — omp-su wrapper is bash; the
     // server-side spawn path in console-launch.ts is Linux-only too.

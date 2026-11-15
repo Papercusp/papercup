@@ -32,6 +32,7 @@ function setPlatform(p: NodeJS.Platform): void {
 const execFileSpy = vi.fn();
 const installPapercuspFilesSpy = vi.fn(async () => ({ playbookWritten: true, extensionWritten: true }));
 const installOmpIntegrationSpy = vi.fn(async () => ({ changed: false, actions: [], reason: undefined }));
+const refreshInjectionHooksSpy = vi.fn(async () => ({ status: 'current', files: [] }));
 // Holder so a single os mock can be flipped to throw from homedir() per-test
 // after the bootstrap installer has actually run (the rejection-hold case) —
 // no per-test re-mock, so nothing leaks.
@@ -42,6 +43,7 @@ beforeEach(() => {
   execFileSpy.mockReset();
   installPapercuspFilesSpy.mockClear();
   installOmpIntegrationSpy.mockClear();
+  refreshInjectionHooksSpy.mockClear();
   homeState.throwAfterInstall = false;
   tmpHome = mkdtempSync(join(tmpdir(), 'ensure-omp-su-cache-'));
 
@@ -85,6 +87,7 @@ beforeEach(() => {
   vi.doMock('./desktop-install/omp-integration', () => ({
     installOmpIntegration: installOmpIntegrationSpy,
   }));
+  vi.doMock('./desktop-install/injection-hook-refresh', () => ({ refreshInjectionHooks: refreshInjectionHooksSpy }));
 });
 
 afterEach(() => {
@@ -95,10 +98,27 @@ afterEach(() => {
   vi.doUnmock('node:child_process');
   vi.doUnmock('./desktop-install/papercusp-files');
   vi.doUnmock('./desktop-install/omp-integration');
+  vi.doUnmock('./desktop-install/injection-hook-refresh');
   if (tmpHome) rmSync(tmpHome, { recursive: true, force: true });
 });
 
 describe('ensureOmpSuInstalled — single-flight cache', () => {
+  it('rechecks hook freshness on a later launch without repeating bootstrap', async () => {
+    setPlatform('linux');
+    const repo = join(tmpHome,'repo'), app = join(repo,'apps','operator');
+    mkdirSync(join(app,'scripts'),{recursive:true});
+    writeFileSync(join(app,'scripts','install-standalone-mcp.sh'),'#!/bin/sh\n');
+    vi.stubEnv('PAPERCUSP_REPO_ROOT',repo);
+    try {
+      const mod = await import('./ensure-omp-su');
+      await mod.ensureOmpSuInstalled();
+      await mod.ensureOmpSuInstalled();
+      expect(installPapercuspFilesSpy).toHaveBeenCalledTimes(1);
+      expect(installOmpIntegrationSpy).toHaveBeenCalledTimes(1);
+      expect(refreshInjectionHooksSpy).toHaveBeenCalledWith(tmpHome,join(app,'scripts','hooks','inject'));
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it('single-flights concurrent + repeat calls — the heavy work runs exactly once', async () => {
     setPlatform('linux');
     const mod = await import('./ensure-omp-su');
