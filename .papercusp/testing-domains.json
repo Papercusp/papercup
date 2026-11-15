@@ -1776,7 +1776,8 @@
           "id": "sync-delta",
           "label": "Sync delta codec",
           "globs": [
-            "apps/operator/providers/**/*.test.ts"
+            "apps/operator/providers/**/*.test.ts",
+            "apps/operator/providers/**/*.test.tsx"
           ]
         }
       ]
@@ -1861,6 +1862,7 @@
             "libs/testing-shell/src/**/*.test.ts",
             "libs/testing-shell/src/**/*.test.tsx",
             "apps/papercusp-publish/src/**/*.test.ts",
+            "apps/papercusp-publish/scripts/**/*.test.ts",
             "apps/slack-asana-bug-drill/**/*.test.ts"
           ],
           "runners": [
