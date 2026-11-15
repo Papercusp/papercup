@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
+import { chmodSync, closeSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync,
   readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildInputs, checkSource, buildWorkspace as buildWorkspaceWithPhaseLogs, captureClosure, copyDependencyTree } from '../../bin/release/dependency-generation-verifier.mjs';
@@ -50,6 +50,75 @@ function write(root: string, path: string, body: string) {
   mkdirSync(dirname(join(root, path)), { recursive: true });
   writeFileSync(join(root, path), body);
 }
+
+// Keep the original streams and the last executing shell operation even when
+// a deadline expires before the caller can inspect an exit status. Reuse the
+// runner's artifact directory so fixture cleanup cannot erase failed evidence.
+function fixtureShell(file: string, args: string[], env: NodeJS.ProcessEnv, evidenceRoot: string, timeoutMs = 90_000) {
+  mkdirSync(evidenceRoot, { recursive: true });
+  const directory = mkdtempSync(join(evidenceRoot, 'native-shell-'));
+  const startedAt = Date.now();
+  writeFileSync(join(directory, 'command.json'), JSON.stringify({ file, args, startedAt, timeoutMs }));
+  const startup = join(directory, 'trace.bash');
+  writeFileSync(startup, "PS4='+ ${EPOCHREALTIME} ${BASH_SOURCE:-<command>}:${LINENO}: '; set -x\n");
+  const trace = join(directory, 'trace.log');
+  const traceFd = openSync(trace, 'w');
+  process.stderr.write('NATIVE_FIXTURE_SHELL ' + JSON.stringify({ phase: 'started', directory, file, args }) + '\n');
+  let result;
+  try {
+    result = spawnSync('bash', [file, ...args], {
+      env: { ...env, BASH_ENV: startup, BASH_XTRACEFD: '3' }, encoding: 'utf8', timeout: timeoutMs,
+      stdio: ['pipe', 'pipe', 'pipe', traceFd],
+    });
+  } finally { closeSync(traceFd); }
+  const evidence = { directory, elapsedMs: Date.now() - startedAt, status: result.status, signal: result.signal,
+    error: result.error ? { ...result.error, message: result.error.message, stack: result.error.stack } : null };
+  writeFileSync(join(directory, 'stdout.log'), result.stdout ?? '');
+  writeFileSync(join(directory, 'stderr.log'), result.stderr ?? '');
+  writeFileSync(join(directory, 'result.json'), JSON.stringify(evidence));
+  process.stderr.write('NATIVE_FIXTURE_SHELL ' + JSON.stringify({ phase: 'finished', ...evidence,
+    ...(result.status === 0 ? {} : { stderrTail: result.stderr?.slice(-2000),
+      traceTail: readFileSync(trace, 'utf8').slice(-4000) }),
+  }) + '\n');
+  return { ...result, evidence };
+}
+
+describe('native fixture subprocess evidence', () => {
+  it('preserves strict bash command-string outcomes when BASH_SOURCE is unset', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-shell-evidence-')); roots.push(root);
+    const result = fixtureShell('-c', ['set -euo pipefail; printf "strict command reached"; exit 74'],
+      process.env, root, 5000);
+    expect(result.status).toBe(74);
+    expect(result.evidence).toMatchObject({ signal: null, error: null });
+    expect(readFileSync(join(result.evidence.directory, 'stdout.log'), 'utf8')).toBe('strict command reached');
+    expect(readFileSync(join(result.evidence.directory, 'stderr.log'), 'utf8')).not.toContain('unbound variable');
+    expect(readFileSync(join(result.evidence.directory, 'trace.log'), 'utf8')).toContain('exit 74');
+    expect(JSON.parse(readFileSync(join(result.evidence.directory, 'result.json'), 'utf8'))).toEqual(result.evidence);
+  });
+
+  it('preserves complete streams and shell phases from a failed command', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-shell-evidence-')); roots.push(root);
+    const marker = 'ORIGINAL_STREAM_' + 'x'.repeat(5000);
+    const result = fixtureShell('-c', ['printf "%s" "$1"; printf "failed phase" >&2; exit 7', '_', marker],
+      process.env, root, 5000);
+    expect(result.status).toBe(7);
+    expect(result.evidence).toMatchObject({ signal: null, error: null });
+    expect(readFileSync(join(result.evidence.directory, 'stdout.log'), 'utf8')).toBe(marker);
+    expect(readFileSync(join(result.evidence.directory, 'stderr.log'), 'utf8')).toBe('failed phase');
+    expect(readFileSync(join(result.evidence.directory, 'trace.log'), 'utf8')).toContain('exit 7');
+    expect(JSON.parse(readFileSync(join(result.evidence.directory, 'result.json'), 'utf8'))).toEqual(result.evidence);
+  });
+
+  it('retains the timeout error, termination signal and unfinished phase', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-shell-evidence-')); roots.push(root);
+    const result = fixtureShell('-c', ['printf "entered wait"; exec sleep 5'], process.env, root, 100);
+    expect(result.status).toBeNull();
+    expect(result.evidence).toMatchObject({ signal: 'SIGTERM', error: { code: 'ETIMEDOUT' } });
+    expect(readFileSync(join(result.evidence.directory, 'stdout.log'), 'utf8')).toBe('entered wait');
+    expect(readFileSync(join(result.evidence.directory, 'trace.log'), 'utf8')).toContain('exec sleep 5');
+    expect(JSON.parse(readFileSync(join(result.evidence.directory, 'result.json'), 'utf8'))).toEqual(result.evidence);
+  });
+});
 function installTsxRuntime(f: ReturnType<typeof fixture>) {
   const sourceLock = JSON.parse(readFileSync(join(repo, 'package-lock.json'), 'utf8'));
   const fixtureLockPath = join(f.donor, 'package-lock.json');
@@ -177,8 +246,8 @@ fs.mkdirSync('dist');fs.copyFileSync('src/cli.cjs','dist/cli.cjs');
   buildWorkspace(donor, workspace, [process.execPath, 'build.cjs']);
   const env = { ...process.env, PAPERCUSP_DEPENDENCY_GENERATION_ROOT: store,
     DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(root, 'copy.lock'), DEPENDENCY_GENERATION_FORCE_COPY: '1' };
-  const shell = (file: string, args: string[], extra = {}) => spawnSync('bash', [file, ...args],
-    { env: { ...env, ...extra }, encoding: 'utf8', timeout: 90_000 });
+  const shell = (file: string, args: string[], extra = {}) => fixtureShell(file, args, { ...env, ...extra },
+    process.env.PAPERCUSP_TEST_ARTIFACT_DIR || join(homedir(), '.papercusp', 'test-artifacts', 'native-fixture'));
   const privatePath = (path: string) => {
     const suffix = relative(root, path);
     expect(isAbsolute(suffix) || suffix === '..' || suffix.startsWith(`..${sep}`),
@@ -211,8 +280,9 @@ describe('bounded independent verifier copy', () => {
     write(f.donor, 'apps/independent/node_modules/other/package.json', '{"name":"other","version":"2.0.0"}');
     const ref = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.dest, encoding: 'utf8' }).trim();
     const scope = ['--workspace-dir', 'packages/cli', '--workspace-dir', 'papercusp-desktop'];
-    const prediction = f.shell(f.generationScript, ['--integration', f.donor, '--generation-root', f.store,
-      '--predict-ref', ref, ...scope]);
+    const predictionArgs = ['--integration', f.donor, '--generation-root', f.store,
+      '--predict-ref', ref, ...scope];
+    const prediction = f.shell(f.generationScript, predictionArgs);
     expect(prediction.status, prediction.stderr).toBe(0);
     expect(prediction.stdout).toContain('verdict=live-match');
     const args = ['--integration', f.donor, '--generation-root', f.store,
@@ -231,6 +301,9 @@ describe('bounded independent verifier copy', () => {
     expect(selectors).toEqual([
       expect.stringMatching(/^native-[a-f0-9]{64}$/), expect.stringMatching(/^scoped-[a-f0-9]{64}$/),
     ]);
+    const prewarmed = f.shell(f.generationScript, predictionArgs);
+    expect(prewarmed.status, prewarmed.stderr).toBe(0);
+    expect(prewarmed.stdout).toContain('verdict=prewarmed');
     const selector = selectors.find(name => name.startsWith('native-'))!;
     const release = f.shell('-c', ['set -euo pipefail; source "$1"; dependency_generation_select_input_fingerprint "$2" "$3"',
       '_', f.generationScript, selector, f.store]);
@@ -247,6 +320,12 @@ describe('bounded independent verifier copy', () => {
     const corrupt = f.shell(f.generationScript, args);
     expect(corrupt.status).not.toBe(0);
     expect(corrupt.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+    const dependencySelector = join(f.store, '.inputs', selectors.find(name => name.startsWith('scoped-'))!);
+    writeFileSync(dependencySelector, readFileSync(dependencySelector, 'utf8').replace(/token=.*/, 'token=corrupt'));
+    const corruptPrediction = f.shell(f.generationScript, predictionArgs);
+    expect(corruptPrediction.status).toBe(74);
+    expect(corruptPrediction.stderr).toContain('was replaced after validation');
+    expect(corruptPrediction.stdout).not.toContain('verdict=prewarmed');
   }, 90_000);
 
   it('resumes retained byte verification from the real selected native publication', async () => {
