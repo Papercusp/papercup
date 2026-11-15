@@ -228,6 +228,9 @@ describe('automatic stale-held checkpoint preservation (EI-25379632433059487)', 
     sinceIso: '2026-07-14T18:00:00Z', journalNote: 'Holder-session activity.', nowMs };
   const ref = { harness: 'papercusp', id: 'WI-1', checkpointUpdatedAtMs: 1 };
   type WriteOptions = NonNullable<Parameters<typeof import('./work-item-checkpoint').setWorkItemCheckpointWithPrior>[2]>;
+  // The locked transform's third argument (the store's transaction), derived from the real
+  // signature. The transform under test never reads it, so an opaque token stands in.
+  const checkpointTransformTx = {} as Parameters<NonNullable<WriteOptions['transform']>>[2];
 
   function lockedStore(initial: string | null) {
     const state = { note: initial };
@@ -235,7 +238,7 @@ describe('automatic stale-held checkpoint preservation (EI-25379632433059487)', 
       const priorLength = state.note?.length ?? 0;
       const blockedReason = opts.guard?.(state.note, priorLength);
       if (blockedReason) return { stored: state.note, priorLength, blockedReason };
-      state.note = (opts.transform ? opts.transform(state.note, note) : note) ?? null;
+      state.note = (opts.transform ? await opts.transform(state.note, note, checkpointTransformTx) : note) ?? null;
       return { stored: state.note, priorLength };
     });
     toolCallRowsFor.mockResolvedValue([]);

@@ -401,10 +401,13 @@ describe('roster frozen audit PG persistence', () => {
     await setWorkItemCheckpoint({ harness, workItemId: item!.id, workspaceId: scope.workspaceId },
       '## Did\nPrepared the plan fixture.\n\n## Next action\nRun the independent focused suite.', { workItem: item! });
     const content = '## Phase 1\n\n- **P-001** `todo` Run the independent suite.\n\n## Decisions\n';
+    // PlanIndexItem is an interface, which TS never treats as an index-signature JSONValue;
+    // a spread copy is the same plain data typed as an object literal, which it accepts.
+    const jsonRows = (rows: ReturnType<typeof deriveIndexFromContent>['items']) => rows.map((row) => ({ ...row }));
     const items = deriveIndexFromContent(content).items;
     await db.adminSql`INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, status, content, content_hash, version, items)
-      VALUES (${scope.workspaceId}, ${harness}, ${slug}, 'active', ${content}, md5(${content}), 1, ${db.adminSql.json(items)})`;
+      VALUES (${scope.workspaceId}, ${harness}, ${slug}, 'active', ${content}, md5(${content}), 1, ${db.adminSql.json(jsonRows(items))})`;
     const read = async () => {
       const snapshot = await buildRosterAudit({ harness, scope, asOf, expectedPopulation: 1,
         viewer: { ownerId: 'reader-a' }, agents: [{ ownerId: owner, sessionState: 'parked', awaitingEvent: false }] });
@@ -413,10 +416,10 @@ describe('roster frozen audit PG persistence', () => {
     expect(await read()).toMatchObject({ status: 'known', value: true });
     const gated = content + '\n### D-001 — Owner-gated\nDate: 2026-10-18\nRelated: P-001\nWait for an owner-attended session.\n';
     const gatedItems = deriveIndexFromContent(gated).items;
-    await db.adminSql`UPDATE harness_shared.harness_plans SET content=${gated}, items=${db.adminSql.json(gatedItems)}
+    await db.adminSql`UPDATE harness_shared.harness_plans SET content=${gated}, items=${db.adminSql.json(jsonRows(gatedItems))}
       WHERE workspace_id=${scope.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
     expect(await read()).toMatchObject({ status: 'known', value: false });
-    await db.adminSql`UPDATE harness_shared.harness_plans SET content=${content}, items=${db.adminSql.json(items)}, op_status='paused'
+    await db.adminSql`UPDATE harness_shared.harness_plans SET content=${content}, items=${db.adminSql.json(jsonRows(items))}, op_status='paused'
       WHERE workspace_id=${scope.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
     expect(await read()).toMatchObject({ status: 'unknown' });
     await db.adminSql`UPDATE harness_shared.harness_plans SET op_status='started', content='## Phase 1'

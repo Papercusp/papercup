@@ -26,6 +26,10 @@ const input = { ownerId: 'su-respawn', workspaceId: 'papercusp-workspace', sessi
   sinceIso: new Date(nowMs - 60_000).toISOString(), journalNote: null, nowMs };
 const notes = new Map<string, string | null>();
 type SnapshotOptions = NonNullable<Parameters<typeof import('./work-item-checkpoint').setWorkItemCheckpointWithPrior>[2]>;
+// The locked transform's third argument (the store's transaction), derived from the real
+// signature. The transform under test never reads it, so an opaque token stands in for the
+// transaction this mocked store never opens.
+const checkpointTransformTx = {} as Parameters<NonNullable<SnapshotOptions['transform']>>[2];
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -49,7 +53,7 @@ beforeEach(() => {
     const priorLength = prior?.length ?? 0;
     const blockedReason = opts.guard?.(prior, priorLength);
     if (blockedReason) return { stored: prior, priorLength, blockedReason };
-    const stored = opts.transform ? opts.transform(prior, note) : note ?? null;
+    const stored = opts.transform ? await opts.transform(prior, note, checkpointTransformTx) : note ?? null;
     notes.set(workItemId, stored ?? null);
     return { stored, priorLength };
   });
@@ -111,7 +115,7 @@ describe('host mechanical carry-respawn checkpoint (R-13)', () => {
       await gate;
       active -= 1;
       const prior = notes.get(workItemId) ?? null;
-      const stored = opts.transform ? opts.transform(prior, _note) : _note ?? null;
+      const stored = opts.transform ? await opts.transform(prior, _note, checkpointTransformTx) : _note ?? null;
       notes.set(workItemId, stored ?? null);
       return { stored, priorLength: prior?.length ?? 0 };
     });

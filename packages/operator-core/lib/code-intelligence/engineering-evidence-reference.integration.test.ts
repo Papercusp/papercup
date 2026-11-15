@@ -121,7 +121,10 @@ describe('canonical engineering evidence reference resolution', () => {
       parentSpanId: '3'.repeat(16), traceFlags: 1, startedAt: now - 20, endedAt: now - 10,
       outcome: 'ok', sourceFingerprint: '4'.repeat(64), buildSha: 'c'.repeat(40),
       artifactFingerprint: '5'.repeat(64), environmentFingerprint: '6'.repeat(64), workflowId: null };
-    const observation = { caseKey: 'ee.intent-exact', occurrence: 1, receipt };
+    // ExecutionBoundaryReceipt is an interface, which TS never treats as an index-signature
+    // JSONValue; a spread copy is the same plain data typed as an object literal, which it accepts.
+    const receiptJson = { ...receipt };
+    const observation = { caseKey: 'ee.intent-exact', occurrence: 1, receipt: receiptJson };
     const cases = await db`SELECT status FROM harness_shared.test_case_runs WHERE test_run_id=${runId}`;
     const details = { schemaVersion: 1, root: scope.root, filePath: 'evidence-feature.integration.test.ts',
       runGroupId: null, workspaceId: scope.workspaceId, harnessSlug: harness, testNamePattern: null,
@@ -134,7 +137,7 @@ describe('canonical engineering evidence reference resolution', () => {
       VALUES (${scope.workspaceId},${harness},'papercusp','graph:query','operator','ee-reference-fixture',
         ${receipt.callId},'ok',${receipt.buildSha},${new Date(now - 15)},
         ${db.json({ otel: { callId: receipt.callId, traceId: receipt.traceId, spanId: receipt.parentSpanId,
-          traceFlags: 1, boundaryObservations: [receipt] } })}) RETURNING id`;
+          traceFlags: 1, boundaryObservations: [receiptJson] } })}) RETURNING id`;
     await db`UPDATE harness_shared.test_runs SET started_at=${new Date(now - 30)}, finished_at=${new Date(now)},
       execution_details=${db.json(details)}
       WHERE id=${runId} AND workspace_id=${scope.workspaceId}`;

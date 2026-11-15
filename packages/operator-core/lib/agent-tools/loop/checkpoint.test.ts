@@ -118,6 +118,13 @@ let storePriorOverride: string | null | undefined;
 // exercise the checkpoint_verify_failed path overrides getLoopCarryNoteWithMeta directly
 // (see the WI-7124 describe block below).
 let lastStoredNote: string | null = null;
+// The locked transform's third argument (the store's transaction), derived from the real
+// signature for the same reason as the args below. The transforms this file drives never
+// read it, so an opaque token stands in for the transaction the mocked store never opens.
+type LoopCarryTransformTx = Parameters<
+  NonNullable<NonNullable<Parameters<typeof import('../../carry-note').setLoopCarryNoteWithPrior>[2]>['transform']>
+>[2];
+const loopCarryTransformTx = {} as LoopCarryTransformTx;
 const setLoopCarryNoteWithPrior = vi.fn(
   async (
     ref: unknown,
@@ -135,7 +142,7 @@ const setLoopCarryNoteWithPrior = vi.fn(
     const prior =
       storePriorOverride !== undefined ? storePriorOverride : (((await getLoopCarryNote()) as string | null) ?? null);
     const merged = opts?.transform
-      ? opts.transform(prior, note as string | null | undefined)
+      ? await opts.transform(prior, note as string | null | undefined, loopCarryTransformTx)
       : (note as string | null | undefined);
     const stored = await setLoopCarryNote(ref, merged);
     lastStoredNote = (stored as string | null | undefined) ?? null;
@@ -295,7 +302,11 @@ const {
 } = await import('../../carry-note');
 
 type Out = { content: { text: string }[]; isError?: boolean };
-const parse = (x: unknown) => (tool.args as { parse: (x: unknown) => unknown }).parse(x);
+// buildPrior's row params, typed FROM mergeCarryRows rather than hand-written: a narrower
+// literal drifted the moment walls grew `origin`, and red the gate from a file nobody edited.
+type CarryRowChecks = NonNullable<Parameters<typeof mergeCarryRows>[0]['checks']>;
+type CarryRowWalls = NonNullable<Parameters<typeof mergeCarryRows>[0]['walls']>;
+const parse =(x: unknown) => (tool.args as { parse: (x: unknown) => unknown }).parse(x);
 const call = (args: Record<string, unknown>, ctx: unknown = { harnessSlug: 'papercusp', workspaceId: 'ws-1' }) =>
   tool.handler(parse(args) as never, ctx as never) as Promise<Out>;
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
@@ -4031,8 +4042,8 @@ describe('loop:checkpoint — a dropped row is REPORTED, never silent (EI-194637
   // Real via importOriginal (the module mock spreads it), so the prior is built by the
   // same renderer the store persists — not a hand-written fixture that can drift.
   const buildPrior = (
-    checks: { claim: string; recheck?: string; verified?: string }[],
-    walls: { claim: string; recheck?: string }[] = [],
+    checks: CarryRowChecks,
+    walls: CarryRowWalls = [],
   ) => mergeCarryRows({ priorNote: null, baseNote: 'prior body', checks, walls, hasNoteWrite: true }).note;
 
   it('reports individually named check retirements', async () => {
@@ -4104,8 +4115,8 @@ describe('loop:checkpoint — a dropped row is REPORTED, never silent (EI-194637
  */
 describe('loop:checkpoint — replace-mode retirement is CONFIRMED, never silent (EI-21503907176334936)', () => {
   const buildPrior = (
-    checks: { claim: string; recheck?: string; verified?: string }[],
-    walls: { claim: string; recheck?: string }[] = [],
+    checks: CarryRowChecks,
+    walls: CarryRowWalls = [],
   ) => mergeCarryRows({ priorNote: null, baseNote: 'prior body', checks, walls, hasNoteWrite: true }).note;
 
   const THREE = [
@@ -4213,8 +4224,8 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
   });
 
   const buildPrior = (
-    checks: { id?: string; claim: string; recheck?: string; verified?: string }[],
-    walls: { id?: string; claim: string; recheck?: string }[] = [],
+    checks: CarryRowChecks,
+    walls: CarryRowWalls = [],
   ) => mergeCarryRows({ priorNote: null, baseNote: 'prior body', checks, walls, hasNoteWrite: true }).note;
 
   const THREE = [
