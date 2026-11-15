@@ -2,7 +2,7 @@
  * su-posture-render.test.ts — identities-v1-2026-08-30 P-013 / P-020 ACCEPTANCE,
  * measured against the P-018 baseline: the test-only union accounts for every source
  * byte while remaining illegal as a live stack, and the default/member/leader renders
- * are strict subsets with byte deltas reported.
+ * stay within the pinned baseline plus their bound posture and kernel additions, with byte deltas.
  *
  * The SUBJECT is the PINNED fixture (`__fixtures__/su-render-baseline/`) — the same frozen
  * su.md / Claude overlay / stub project guide the P-018 baseline was recorded from — so the
@@ -12,11 +12,11 @@
  * fleet-posture identity resolved through the prompt chain), then spliced by the same
  * `renderSuPlaybook`.
  *
- * STRICT SUBSET is asserted at the LINE level: every non-blank line of a posture render is a
- * line of the baseline render, except the KERNEL's two additions — the seal's precedence
- * statement (P-003) and the kernel base text `agent-base-preamble.md` (D-018 / P-032, rendered
- * on every tier since the seal; the pre-seal fixture never carried it) — AND at least one
- * baseline line is absent (the other posture's craft). Per-`## `-section byte deltas are reported (they move between
+ * SUBSET is asserted at the LINE level. Each render may contain baseline lines, its own
+ * currently bound posture document, the kernel seal and preamble, and lines added identically
+ * across all three variants. Only the bound posture document is admitted, so unbound posture
+ * craft and unexplained render output still fail. At least one baseline line is absent (the
+ * other posture's craft). Per-`## `-section byte deltas are reported (they move between
  * sections because the seal reorders kernel tiles under the seal — that is the P-003 shape,
  * not a P-020 leak), together with the whole-render byte delta and the bytes of each posture
  * document. Set `SU_RENDER_BASELINE_DUMP=<dir>` to also write the renders + tables there.
@@ -237,7 +237,7 @@ describe('P-013 / P-020 — identity variants against the P-018 baseline (pinned
     );
   });
 
-  it('default and each single-posture render are STRICT line-subsets of the union baseline (seal lines excepted), carry only their bound posture, and report byte deltas', async () => {
+  it('default and each single-posture render stay within the frozen baseline plus their bound posture and shared kernel additions, and report byte deltas', async () => {
     const baseline = await splice(baseText);
     const baselineLines = lineSet(baseline);
     const baselineMeasure = measureSuRender(baseline, baseText);
@@ -299,28 +299,27 @@ describe('P-013 / P-020 — identity variants against the P-018 baseline (pinned
       expect(postureDoc?.id ?? null).toBe(
         posture === null ? null : posture === 'member' ? 'su.fleet-member' : 'su.fleet-leader',
       );
-      const postureBytes = postureDoc
-        ? bytes(read(join(harnessDir, 'blueprints', postureDoc.id, 'prompts', 'fleet-posture.md')))
-        : 0;
+      const postureText = postureDoc
+        ? read(join(harnessDir, 'blueprints', postureDoc.id, 'prompts', 'fleet-posture.md'))
+        : '';
+      const postureBytes = bytes(postureText);
 
-      // (1) STRICT SUBSET at the line level. Admitted additions are exactly three, and each is
-      // provably not posture craft: this variant's OWN seal statement (P-003 — posture-DEPENDENT,
-      // because the seal names the bound posture document, which is why it stays per-variant),
-      // the kernel base text `agent-base-preamble.md` (D-018 / P-032, rendered on every tier since
-      // the seal; the pre-seal fixture never carried it), and the posture-independent additions
-      // derived above. Anything left over is either posture craft leaking across a variant
-      // boundary or render output no document accounts for — both genuine findings.
+      // (1) The fixture is a historical baseline, while the bound posture document is live source
+      // and may evolve independently. Admit only this variant's own posture doc, the seal and
+      // kernel preamble, and posture-independent additions shared by every variant. The wrong
+      // posture's text and unexplained renderer output remain unadmitted and fail below.
       const admittedAdditions = new Set([
         ...lineSet(composed.seal),
         ...preambleLines,
         ...postureIndependentAdditions,
+        ...lineSet(postureText),
       ]);
       const extra = [...renderedLines[variant]].filter(
         (l) => !baselineLines.has(l) && !admittedAdditions.has(l),
       );
       expect(
         extra.slice(0, 12),
-        `${variant}: ${extra.length} line(s) in the variant render that the baseline never had (first 12 shown)`,
+        `${variant}: ${extra.length} rendered line(s) have no pinned-baseline or allowed-source account (first 12 shown)`,
       ).toEqual([]);
       const missing = [...baselineLines].filter((l) => !renderedLines[variant].has(l));
       expect(missing.length, `${variant}: a STRICT subset drops at least one posture's lines`).toBeGreaterThan(0);
