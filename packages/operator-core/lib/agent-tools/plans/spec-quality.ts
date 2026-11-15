@@ -724,12 +724,23 @@ export async function resolveSpecQualityPlanSubject(workspaceId: string, subject
   if (!match || !PLAN_CLASS_RUBRIC_REFS.includes(match[1] as PlanClassRubricRef)) return null;
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
-  const rows = await sql<Array<{ plan_slug: string; harness_slug: string }>>`
-    SELECT plan_slug, harness_slug FROM harness_shared.harness_plans
+  // No LIMIT: the population is at most one row per harness for one slug hash,
+  // and every row must be seen so a superseded copy cannot hide a live collision.
+  const rows = await sql<Array<{ plan_slug: string; harness_slug: string; status: string | null }>>`
+    SELECT plan_slug, harness_slug, status FROM harness_shared.harness_plans
     WHERE workspace_id=${workspaceId}
-      AND substring(encode(sha256(convert_to(plan_slug, 'UTF8')), 'hex'), 1, 16)=${match[3]}
-    LIMIT 2`;
-  return rows.length === 1 ? { planSlug: rows[0]!.plan_slug, harnessSlug: rows[0]!.harness_slug } : null;
+      AND substring(encode(sha256(convert_to(plan_slug, 'UTF8')), 'hex'), 1, 16)=${match[3]}`;
+  return selectSpecQualitySubjectRow(rows);
+}
+
+/** A harness move leaves the old plan row `superseded`; it carries no subject
+ * authority, so the single live row is the subject (WI-6554700010049218).
+ * Two live rows for one slug hash stay ambiguous and resolve to null. */
+export function selectSpecQualitySubjectRow(
+  rows: ReadonlyArray<{ plan_slug: string; harness_slug: string; status?: string | null }>,
+): { planSlug: string; harnessSlug: string } | null {
+  const live = rows.filter((row) => row.status !== 'superseded');
+  return live.length === 1 ? { planSlug: live[0]!.plan_slug, harnessSlug: live[0]!.harness_slug } : null;
 }
 
 /**
