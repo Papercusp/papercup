@@ -92,19 +92,46 @@ export interface ContextEndStore {
   listContextSubscribers(input: { after?: string; limit: number }): Promise<string[]>;
 }
 
+/** P-003 / R-25: fail the subscriber's pending fan-out deliveries whose
+ *  subscription the context end just cancelled. Returns rows failed. */
+export type EndedContextDeliveries = (subscriberId: string, cause: SubscriptionEndCause) => Promise<number>;
+
+const defaultEndedContextDeliveries: EndedContextDeliveries = async (subscriberId, cause) => {
+  const { failEndedContextDeliveries } = await import('./sync/hyperbee/fanout-deliveries');
+  return failEndedContextDeliveries({ subscriberId, cause });
+};
+
 /** End the `context` reason of `subscriberId`'s subscriptions — all of them
  *  (session end), or with `beforeEpoch` only those added before that epoch
- *  (context replacement). Fail-soft: returns null and logs on error, because
- *  every caller is a lifecycle hook that must not fail its own work. */
+ *  (context replacement). Then (P-003, R-25) fail the subscriber's pending fan-out
+ *  deliveries whose subscription that just cancelled, so their retries stop; a
+ *  delivery whose subscription survives keeps retrying. `deliveries` defaults to
+ *  the production ledger only when `store` is the production store too, so a
+ *  caller that injects a store never writes the live ledger by accident; pass
+ *  `deliveries: null` to skip it. Fail-soft: returns null and logs on error,
+ *  because every caller is a lifecycle hook that must not fail its own work. */
 export async function endSubscriberContexts(
   subscriberId: string,
   cause: SubscriptionEndCause,
-  opts: { beforeEpoch?: number; store?: ContextEndStore } = {},
+  opts: { beforeEpoch?: number; store?: ContextEndStore; deliveries?: EndedContextDeliveries | null } = {},
 ): Promise<ContextEndResult | null> {
   if (!subscriberId?.trim()) return null;
   try {
     const store = opts.store ?? getCoordSubscriptionStore();
     const r = await store.endContexts({ subscriberId, beforeEpoch: opts.beforeEpoch, cause });
+    const deliveries = opts.deliveries === undefined ? (opts.store ? null : defaultEndedContextDeliveries) : opts.deliveries;
+    if (deliveries) {
+      // Separate statement, not the same transaction (shared-reference-system
+      // D-031): a retry write re-checks subscription liveness FOR SHARE in its
+      // own statement, so it cannot land after this cancel; this only stops
+      // retries that would otherwise end as subscription-gone.
+      try {
+        const failed = await deliveries(subscriberId, cause);
+        if (failed > 0) console.log(`[subscription-lifecycle] ${cause} for ${subscriberId}: stopped ${failed} pending fan-out delivery(ies)`);
+      } catch (e) {
+        console.warn(`[subscription-lifecycle] ${cause} for ${subscriberId}: fan-out ledger update failed: ${e instanceof Error ? e.message : e}`);
+      }
+    }
     if (r.released > 0) {
       console.log(
         `[subscription-lifecycle] ${cause} for ${subscriberId}${opts.beforeEpoch != null ? ` (before epoch ${opts.beforeEpoch})` : ''}: ` +
@@ -120,6 +147,8 @@ export async function endSubscriberContexts(
 
 export interface EndedSweepDeps {
   store?: ContextEndStore;
+  /** P-003: passed through to endSubscriberContexts (same default rule). */
+  deliveries?: EndedContextDeliveries | null;
   /** Owner ids among `ids` that the liveness oracle reports `ended`. */
   endedAmong?: (ids: readonly string[]) => Promise<Set<string>>;
   pageSize?: number;
@@ -175,7 +204,7 @@ export async function sweepEndedSubscriberContexts(
       if (!ended.has(id)) continue;
       res.ended += 1;
       if (res.dryRun) continue;
-      const r = await endSubscriberContexts(id, 'session-ended-oracle', { store });
+      const r = await endSubscriberContexts(id, 'session-ended-oracle', { store: opts.store, deliveries: opts.deliveries });
       if (r) {
         res.released += r.released;
         res.cancelled += r.cancelled;

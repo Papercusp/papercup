@@ -1644,7 +1644,11 @@ export async function waitForOperatorDrain(inp: {
     }
     if (now() - lastWarnAt >= 5_000) {
       lastWarnAt = now();
-      warn(`[cut-seed] waiting for the operator to drain ${undrained} outbox row(s)…`);
+      const fencedPending = queriedFence === null ? undrained : state.cohort_remaining;
+      warn(
+        `[cut-seed] waiting for the operator to drain ${fencedPending} fenced outbox row(s) ` +
+          `through id=${fenceId}; newer pending=${undrained - fencedPending}; total pending=${undrained}…`,
+      );
     }
     await sleep(pollMs);
   }

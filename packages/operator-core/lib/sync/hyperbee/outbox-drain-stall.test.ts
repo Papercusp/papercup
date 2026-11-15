@@ -49,7 +49,7 @@ function fakePg(
   opts: {
     stuckProbe?: () => boolean;
     orphanGroups?: () => OrphanGroup[];
-    onUpdate?: (vals: unknown[]) => void;
+    onUpdate?: (vals: unknown[]) => unknown;
   } = {},
 ) {
   const stuckProbe = opts.stuckProbe ?? (() => true);
@@ -67,7 +67,7 @@ function fakePg(
       return (stuckProbe() ? [{ '?column?': 1 }] : []) as unknown[] & { count?: number };
     }
     if (/UPDATE harness_shared\.substrate_outbox\s+SET drained_at/.test(sql)) {
-      opts.onUpdate?.(vals);
+      await opts.onUpdate?.(vals);
     }
     const r = [] as unknown[] & { count?: number };
     r.count = 0;
@@ -148,6 +148,62 @@ describe('outbox drain shutdown during an admitted pass', () => {
 });
 
 describe('outbox-drain pass watchdog (WI-2009)', () => {
+  it('retires an expired batch after its pending mark-drained finishes, while a fresh pass drains', async () => {
+    vi.useFakeTimers();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let releaseMark!: () => void;
+    const pendingMark = new Promise<void>(resolve => { releaseMark = resolve; });
+    let drain: ReturnType<typeof startOutboxDrain> | undefined;
+    try {
+      const pending = new Set([1, 2]);
+      let selects = 0;
+      let firstMark = true;
+      const pg = fakePg(() => {
+        selects += 1;
+        return [OUTBOX_ROW, { ...OUTBOX_ROW, id: 2, key: 'F-2' }]
+          .filter(row => pending.has(row.id));
+      }, {
+        stuckProbe: () => pending.size > 0,
+        onUpdate: async vals => {
+          if (firstMark) {
+            firstMark = false;
+            await pendingMark;
+          }
+          pending.delete(Number(vals[2]));
+        },
+      });
+      const append = vi.fn(async () => {});
+      drain = startOutboxDrain(fakeHandle(append), pg, {
+        pollMs: 1000, _passTimeoutMs: 5000, _backlogStallMs: 0,
+      });
+      await vi.advanceTimersByTimeAsync(10);
+      expect(selects).toBe(1);
+      expect(append).toHaveBeenCalledTimes(1);
+
+      // The first pass still owns an unresolved UPDATE. A watchdog retry must
+      // make progress without waiting for it or falsely marking its rows done.
+      await vi.advanceTimersByTimeAsync(6200);
+      expect(selects).toBeGreaterThan(1);
+      expect(pending.size).toBe(0);
+      expect(append).toHaveBeenCalledTimes(3);
+      expect(errSpy).toHaveBeenCalledWith(
+        expect.stringContaining('[outbox-drain] drain failed'), expect.anything(),
+      );
+
+      // Settling the expired UPDATE must not resume the rest of its stale
+      // SELECT batch: the retry already delivered that second row.
+      releaseMark();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(append).toHaveBeenCalledTimes(3);
+    } finally {
+      releaseMark();
+      await vi.advanceTimersByTimeAsync(10);
+      await drain?.stop();
+      errSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('a hung append times out, escalates, and the loop UN-WEDGES (next pass drains)', async () => {
     vi.useFakeTimers();
     // The drain catch path console.error's on the failed pass (by design — the loud

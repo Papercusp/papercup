@@ -32,11 +32,17 @@ import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { createConcurrencyGate, type ConcurrencyGate } from '@papercusp/sync';
 import type { BootedHarnessHandle, LocalWriteOp } from './boot';
-import { outboxRowToLocalWriteOp, UnknownOutboxTableError, type OutboxRow } from './feature-issue-op-keys';
+import {
+  outboxRowToLocalWriteOp,
+  UnknownOutboxTableError,
+  UnreplicatedOutboxTableError,
+  type OutboxRow,
+} from './feature-issue-op-keys';
 import { recordLocalWrite } from './clobber-events';
 import { shouldEncryptOpForRekey } from './hive-epoch-content-ops';
 import { isSessionClosedError } from './own-log-fork-guard';
 import { redactContentOpValueForEgress } from './content-op-egress-guard';
+import { FANOUT_MAX_ATTEMPTS, FANOUT_RETRY_BATCH, fanoutRetryDelayMs } from './fanout-deliveries';
 import {
   createStageAttempt,
   logIfStageStalls,
@@ -223,9 +229,11 @@ export const DEFAULT_POLL_MS = 5000;
  *
  * The watchdog RACES each pass against this timeout. On expiry the loop is
  * un-wedged (the pass is abandoned; a fresh pass re-attempts on the next tick)
- * — SAFE by this module's own at-least-once contract: the zombie pass finishing
- * later just re-appends rows a newer pass already delivered, which the LWW
- * merge + idempotent projections tolerate by design. The stall also escalates
+ * — SAFE by this module's own at-least-once contract: an in-flight row may
+ * finish after a retry has delivered it, which the LWW merge + idempotent
+ * projections tolerate. Expiry also aborts further batch work: the old pass
+ * finishes its in-flight bookkeeping, then leaves later rows pending for the
+ * next pass instead of duplicating an entire stale batch. The stall escalates
  * loudly (console line + durable EI via the replication-liveness EI surface) so
  * a hung drain is never silent again.
  */
@@ -526,6 +534,10 @@ export interface DrainOptions {
    *  idempotent (deterministic msg_id, mig 126), so a retry never double-delivers.
    *  Omitted → no fan-out (federation-only, the pre-Phase-2 behavior). */
   fanout?: OutboxFanoutFn;
+  /** P-003 (migration 1639): the per-subscriber retry sweep, run after the row-level
+   *  sweep on every pass that has a fan-out. Re-delivers only the ledger rows still
+   *  pending (retryPendingFanoutDeliveries). Best-effort: a failure is logged. */
+  retryFanoutDeliveries?: (signal?: AbortSignal) => Promise<unknown>;
   /** Re-key encrypt-on-capture capability (C-001). When present, the drain encrypts
    *  the payload of selected hive-CONTENT ops under the current epoch + stamps
    *  `op.epoch` before append. Omitted ⇒ no encryption (plaintext, today's path). */
@@ -600,21 +612,11 @@ interface OutboxDbRow {
  * caller's retry re-attempts. Also performs the inline 24h GC of long-drained
  * rows before reading the batch.
  */
-/** P-003: base delay before the first fan-out retry; doubles per failed attempt. */
-export const FANOUT_RETRY_BASE_MS = 30_000;
-/** P-003: cap on a single fan-out retry delay. */
-export const FANOUT_RETRY_MAX_DELAY_MS = 60 * 60_000;
-/** P-003: failed fan-out attempts (first try included) before the row is given up. */
-export const FANOUT_MAX_ATTEMPTS = 8;
-/** P-003: rows the fan-out retry sweep handles per drain pass. */
-export const FANOUT_RETRY_BATCH = 25;
+// P-003: the fan-out retry policy has ONE home, the per-subscriber delivery ledger
+// (fanout-deliveries.ts). Re-exported here so the row-level sweep below and its
+// existing importers read the same values.
+export { FANOUT_MAX_ATTEMPTS, FANOUT_RETRY_BASE_MS, FANOUT_RETRY_BATCH, FANOUT_RETRY_MAX_DELAY_MS, fanoutRetryDelayMs } from './fanout-deliveries';
 const FANOUT_ERROR_MAX_CHARS = 2_000;
-
-/** Delay before the retry that follows the given number of failed attempts. */
-export function fanoutRetryDelayMs(failedAttempts: number): number {
-  const exp = Math.max(0, failedAttempts - 1);
-  return Math.min(FANOUT_RETRY_BASE_MS * 2 ** exp, FANOUT_RETRY_MAX_DELAY_MS);
-}
 
 function pgErrorCode(e: unknown): string | undefined {
   const code = (e as { code?: unknown } | null)?.code;
@@ -678,7 +680,9 @@ export interface FanoutRetryResult {
   retried: number;
   succeeded: number;
   rescheduled: number;
-  gaveUp: number;
+  /** Rows that reached FANOUT_MAX_ATTEMPTS in this sweep. They keep retrying
+   *  (R-9: no attempt cap); the threshold is reported once, loudly. */
+  reachedThreshold: number;
 }
 
 interface FanoutRetryRow {
@@ -691,19 +695,23 @@ interface FanoutRetryRow {
 }
 
 /**
- * P-003: re-run fan-outs whose retry is due, independently of federation (their rows
- * are already drained). Success clears the retry state; failure reschedules with
- * exponential backoff until FANOUT_MAX_ATTEMPTS, then gives up loudly while keeping
- * fanout_last_error for diagnosis. Idempotent end to end: the fan-out insert dedupes
- * on a deterministic msg_id (mig 126), so a retry after a lost success never
- * double-delivers. Best-effort: per-row write failures are logged, never thrown.
+ * P-003: re-run whole fan-outs whose row-level retry is due, independently of
+ * federation (their rows are already drained). Since migration 1639 a failed
+ * delivery to one SUBSCRIBER is retried on its own from the per-subscriber ledger
+ * (retryPendingFanoutDeliveries); this row-level state now covers only a failure
+ * that left no per-subscriber record — resolving the subscribers, a timed-out
+ * fan-out, or a ledger write that itself failed. Success clears the retry state;
+ * failure reschedules with exponential backoff and never gives up (R-9): at
+ * FANOUT_MAX_ATTEMPTS it is reported once, loudly, and keeps retrying. Idempotent
+ * end to end: the insert dedupes on a deterministic msg_id (mig 126), so a re-run
+ * never double-delivers. Best-effort: per-row write failures are logged, never thrown.
  */
 export async function retryPendingFanouts(
   handle: BootedHarnessHandle,
   pg: postgres.Sql,
   opts: FanoutRetryOptions,
 ): Promise<FanoutRetryResult> {
-  const result: FanoutRetryResult = { retried: 0, succeeded: 0, rescheduled: 0, gaveUp: 0 };
+  const result: FanoutRetryResult = { retried: 0, succeeded: 0, rescheduled: 0, reachedThreshold: 0 };
   const now = opts.now ?? Date.now();
   const batch = opts.batch ?? FANOUT_RETRY_BATCH;
   const timeoutMs = opts.fanoutTimeoutMs ?? FANOUT_ROW_TIMEOUT_MS;
@@ -748,18 +756,6 @@ export async function retryPendingFanouts(
                  fanout_last_error = NULL
            WHERE id = ${r.id}`;
         result.succeeded += 1;
-      } else if (attempts >= FANOUT_MAX_ATTEMPTS) {
-        await pg`
-          UPDATE harness_shared.substrate_outbox
-             SET fanout_retry_at = NULL,
-                 fanout_attempts = ${attempts},
-                 fanout_last_error = ${failure}
-           WHERE id = ${r.id}`;
-        result.gaveUp += 1;
-        console.error(
-          `[outbox-drain] P-003 fan-out GAVE UP after ${attempts} attempts for ${r.table_name} key=${r.key} ` +
-            `(row id=${r.id}); subscribers of this change were not notified. Last error: ${failure}`,
-        );
       } else {
         await pg`
           UPDATE harness_shared.substrate_outbox
@@ -768,6 +764,13 @@ export async function retryPendingFanouts(
                  fanout_last_error = ${failure}
            WHERE id = ${r.id}`;
         result.rescheduled += 1;
+        if (attempts === FANOUT_MAX_ATTEMPTS) {
+          result.reachedThreshold += 1;
+          console.error(
+            `[outbox-drain] P-003 fan-out for ${r.table_name} key=${r.key} (row id=${r.id}) has failed ${attempts} times ` +
+              `before any subscriber could be recorded; it keeps retrying with backoff. Last error: ${failure}`,
+          );
+        }
       }
     } catch (e) {
       console.error(
@@ -980,10 +983,17 @@ export async function drainOutboxOnce(
         if (!loggedUnknownTables.has(e.tableName)) {
           loggedUnknownTables.add(e.tableName);
 
+          // P-003 (p2p-v1-core-release-2026-11-13): a mapped table whose tag has no rule
+          // in the v1 simple set is refused on purpose. Say so instead of the
+          // forward-compat text, which would send an operator looking for a newer build.
           console.warn(
-            `[outbox-drain] skipping outbox rows for unmapped table '${e.tableName}' ` +
-              `(forward-compat: this build has no projection for it; a newer build will ` +
-              `federate them). Rows stay undrained.`,
+            e instanceof UnreplicatedOutboxTableError
+              ? `[outbox-drain] skipping outbox rows for table '${e.tableName}' (tag '${e.tableTag}'): ` +
+                  `it has no merge rule in the v1 simple set, so it does not replicate (fail-closed). ` +
+                  `Rows stay undrained.`
+              : `[outbox-drain] skipping outbox rows for unmapped table '${e.tableName}' ` +
+                  `(forward-compat: this build has no projection for it; a newer build will ` +
+                  `federate them). Rows stay undrained.`,
           );
         }
         continue;
@@ -1206,6 +1216,14 @@ export async function drainOutboxOnce(
     } catch (e) {
       console.error('[outbox-drain] P-003 fan-out retry sweep failed (federation unaffected):', e instanceof Error ? e.message : String(e));
     }
+    // P-003 (1639): then re-deliver ONLY the per-subscriber ledger rows still due.
+    if (opts.retryFanoutDeliveries && !opts.signal?.aborted) {
+      try {
+        await opts.retryFanoutDeliveries(opts.signal);
+      } catch (e) {
+        console.error('[outbox-drain] P-003 per-subscriber fan-out retry failed (federation unaffected):', e instanceof Error ? e.message : String(e));
+      }
+    }
   }
 
   return drained;
@@ -1219,6 +1237,8 @@ export interface StartDrainOptions {
   batch?: number;
   /** Local subscribe→inject fan-out consumer, run per row (Phase 2). */
   fanout?: OutboxFanoutFn;
+  /** P-003: the per-subscriber fan-out retry sweep (see DrainOptions). */
+  retryFanoutDeliveries?: (signal?: AbortSignal) => Promise<unknown>;
   /** Optional event sink; PG row/hop correlation also works without a sink. */
   onDiagnosticEvent?: (event: StageDiagnosticEvent) => void | Promise<void>;
   /** Disable local per-row diagnostic attempts and PG correlation. */
@@ -1770,10 +1790,12 @@ export function startOutboxDrain(
     try {
       do {
         runAgain = false;
+        const passAbort = new AbortController();
         const drainOpts: DrainOptions = {};
-        drainOpts.signal = drainAdmissionAbort.signal;
+        drainOpts.signal = AbortSignal.any([drainAdmissionAbort.signal, passAbort.signal]);
         if (batch !== undefined) drainOpts.batch = batch;
         if (fanout !== undefined) drainOpts.fanout = fanout;
+        if (opts.retryFanoutDeliveries !== undefined) drainOpts.retryFanoutDeliveries = opts.retryFanoutDeliveries;
         if (opts.onDiagnosticEvent !== undefined) drainOpts.onDiagnosticEvent = opts.onDiagnosticEvent;
         if (opts.diagnosticsEnabled !== undefined) drainOpts.diagnosticsEnabled = opts.diagnosticsEnabled;
         // WI-40905: thread the resolver itself, not a pass-start snapshot. A
@@ -1812,7 +1834,14 @@ export function startOutboxDrain(
               }
 
               const timer = setTimeout(
-                () => reject(new DrainPassTimeoutError(wantPayload, passTimeoutMs)),
+                () => {
+                  // Retire this pass at its next cooperative boundary. An
+                  // already appended row still records drained_at, but later
+                  // rows remain pending for the retry. Keep its physical FIFO
+                  // slot until the outstanding await actually settles.
+                  passAbort.abort();
+                  reject(new DrainPassTimeoutError(wantPayload, passTimeoutMs));
+                },
                 passTimeoutMs,
               );
               timer.unref?.();

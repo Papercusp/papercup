@@ -127,6 +127,14 @@ export interface ActivityHookBundleDeps {
   }>;
   now: () => Date;
   /**
+   * shared-reference-system P-003 / R-26: deliver the owner's pending fan-out
+   * notifications (explicit / blocker / contextual follows whose earlier delivery
+   * failed) into the inbox on the FIRST input of a session — before this input's
+   * generation and inbox are read, so the same input carries them. Optional and
+   * fail-soft: absent, slow or throwing, the fold proceeds unchanged.
+   */
+  flushPendingFanout?: (ownerId: string) => Promise<unknown>;
+  /**
    * P-005 instrument sink. OPTIONAL on purpose: it defaults to the ctx-derived
    * observer inside the fold (the ctx is not reachable from the static
    * `defaultDeps`), and making it required would strand every existing
@@ -257,7 +265,32 @@ const defaultDeps: ActivityHookBundleDeps = {
   stageInboxCursor: (ownerId, next) => stageReadCursor(ownerId, INBOX_CURSOR_SURFACE, next),
   readWatermark: (ownerId) => readCoordWatermark(ownerId),
   now: () => new Date(),
+  flushPendingFanout: async (ownerId) => {
+    const { flushSubscriberFanout } = await import('../../sync/hyperbee/fanout-deliveries');
+    return flushSubscriberFanout(ownerId);
+  },
 };
+
+/** Bound on the first-input fan-out flush, so a slow ledger never delays the hook. */
+export const FIRST_INPUT_FANOUT_FLUSH_MS = 1_500;
+
+async function flushFirstInputFanout(deps: ActivityHookBundleDeps, ownerId: string): Promise<void> {
+  if (!deps.flushPendingFanout) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      deps.flushPendingFanout(ownerId).catch(() => undefined),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, FIRST_INPUT_FANOUT_FLUSH_MS);
+        if (typeof timer?.unref === 'function') timer.unref();
+      }),
+    ]);
+  } catch {
+    /* fail-soft: the retry sweep still delivers it */
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 function nonEmptyTimestamp(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
@@ -391,6 +424,13 @@ export async function buildActivityHookBundle(
   // query and no extra latency on the path being measured.
   const observe = safeObserve(deps.observe ?? coordFoldObserverFor(ctx));
   const startedMs = deps.now().getTime();
+
+  // P-003 / R-26: a session's first input (no client generation, or an explicit
+  // resync) first flushes the owner's pending fan-out deliveries into the inbox,
+  // BEFORE the generation and inbox reads below, so this input carries them.
+  if (request.generation == null || request.force_resync === true) {
+    await flushFirstInputFanout(deps, ownerId);
+  }
 
   // This timestamp ACK proves arrival only. Native notices retain exact log
   // references independently; only the final stdout receipt suppresses replay.

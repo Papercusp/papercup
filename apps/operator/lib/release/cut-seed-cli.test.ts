@@ -1245,13 +1245,20 @@ describe('waitForOperatorDrain (WI-4487 — the operator owns the log append)', 
       expect(through).toBe([null, '9007199254740993', '9007199254740993'][calls]);
       return [states[calls++]];
     }) as never;
-    let t = 0;
+    let t = 5_000;
+    const warnings: string[] = [];
     const res = await waitForOperatorDrain({
-      ...base, pg, stallMs: 1_000, now: () => t,
-      sleep: async () => { t += 600; }, warn: () => {},
+      ...base, pg, stallMs: 10_000, now: () => t,
+      sleep: async () => { t += 6_000; }, warn: (message) => { warnings.push(message); },
     });
     expect(calls).toBe(3);
     expect(res).toMatchObject({ undrained: 0, drainedThroughId: '9007199254740993', newerPending: 12 });
+    // A rising total must not hide the fixed cohort's progress or truncate its bigint identity.
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain('drain 5 fenced outbox row(s) through id=9007199254740993');
+    expect(warnings[0]).toContain('newer pending=0; total pending=5');
+    expect(warnings[1]).toContain('drain 4 fenced outbox row(s) through id=9007199254740993');
+    expect(warnings[1]).toContain('newer pending=5; total pending=9');
   });
 
   it('still refuses when the fenced rows stop draining, however much newer traffic arrives', async () => {

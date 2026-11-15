@@ -43,11 +43,13 @@ import {
   PgTaggableStore,
   PgTopicStore,
   resolveObjectSubscribers,
+  isResolvedSubscriberLive,
   type ObjectRef,
   type ResolvedSubscriber,
 } from '@papercusp/coordination/capabilities';
 import { coordScopeWorkspace } from '../../agent-tools/coordination/log';
 import { buildInjectEnvelope, shouldDeliver, type InjectEvent, type InjectSink } from '../../agent-tools/coordination/fanout-delivery';
+import { recordFanoutFailure, writeFanoutNotify, type FanoutWriteOutcome } from './fanout-deliveries';
 
 type OutboxOp = 'put' | 'del';
 
@@ -136,9 +138,30 @@ export interface OutboxFanoutRow {
 export interface FanoutDeps {
   /** Resolve direct + topic subscribers of an object (capabilities). */
   resolve: (object: ObjectRef) => Promise<ResolvedSubscriber[]>;
-  /** Idempotent delivery of one notify to one subscriber. Returns true if a row
-   *  was written (false = deduped redelivery). */
-  deliver: (outboxId: string, sub: ResolvedSubscriber, ev: InjectEvent) => Promise<boolean>;
+  /** Idempotent delivery of one notify to one subscriber. Returns true or
+   *  'written' when a row was written; false, 'duplicate' or
+   *  'subscription-gone' when nothing new was written. */
+  deliver: (outboxId: string, sub: ResolvedSubscriber, ev: InjectEvent, object: ObjectRef) => Promise<boolean | FanoutWriteOutcome>;
+  /**
+   * P-003 (D-030 #2): record one subscriber's failed delivery in the
+   * per-subscriber ledger so ONLY that delivery is retried. With it, a throwing
+   * `deliver` no longer aborts the pass: the loop records the failure and goes on
+   * to the next subscriber. Without it (legacy callers), the throw propagates.
+   */
+  recordFailure?: (outboxId: string, sub: ResolvedSubscriber, ev: InjectEvent, object: ObjectRef, error: unknown) => Promise<unknown>;
+}
+
+/** Raised after a full pass when one or more failed deliveries could not even be
+ *  recorded in the ledger. The outbox row's own retry state then covers them; the
+ *  other subscribers were still delivered in this pass. */
+export class FanoutLedgerWriteError extends Error {
+  constructor(readonly unrecorded: string[], readonly cause: unknown) {
+    super(
+      `fan-out ledger write failed for ${unrecorded.length} subscriber(s) (${unrecorded.join(', ')}): ` +
+        (cause instanceof Error ? cause.message : String(cause)),
+    );
+    this.name = 'FanoutLedgerWriteError';
+  }
 }
 
 /**
@@ -166,11 +189,30 @@ export async function runFanoutForOutboxRow(outboxRow: OutboxFanoutRow, deps: Fa
       evaluateDataCondition(mapping.isResolution, { op: outboxRow.op, key: outboxRow.key, row: outboxRow.row }),
   };
 
+  const outboxId = String(outboxRow.id);
   let delivered = 0;
+  const unrecorded: string[] = [];
+  let unrecordedCause: unknown = null;
   for (const sub of subscribers) {
     if (!shouldDeliver(sub.delivery_mode, ev, sub.subscriber_id)) continue;
-    if (await deps.deliver(String(outboxRow.id), sub, ev)) delivered += 1;
+    let outcome: boolean | FanoutWriteOutcome;
+    try {
+      outcome = await deps.deliver(outboxId, sub, ev, object);
+    } catch (e) {
+      if (!deps.recordFailure) throw e;
+      // R-9 / R-35: this subscriber's failure is its own; the rest of the pass
+      // still delivers, and only this delivery is retried later.
+      try {
+        await deps.recordFailure(outboxId, sub, ev, object, e);
+      } catch (recordError) {
+        unrecorded.push(sub.subscriber_id);
+        unrecordedCause = recordError;
+      }
+      continue;
+    }
+    if (outcome === true || outcome === 'written') delivered += 1;
   }
+  if (unrecorded.length > 0) throw new FanoutLedgerWriteError(unrecorded, unrecordedCause);
   return delivered;
 }
 
@@ -195,12 +237,21 @@ export async function insertFanoutNotify(
   outboxId: string,
   sub: ResolvedSubscriber,
   ev: InjectEvent,
+  object?: ObjectRef,
 ): Promise<boolean> {
   const msgId = `fan-${outboxId}-${sub.subscriber_id}`;
   const env = buildInjectEnvelope(sub, ev, msgId);
+  const ws = coordScopeWorkspace();
+  if (object) {
+    // P-002 / R-8: insert ONLY while the subscription the subscriber was resolved
+    // through is still live, in the SAME statement (FOR SHARE serializes with a
+    // concurrent cancel). P-003: the same statement also supersedes older pending
+    // ledger rows for this (subscriber, object) — see writeFanoutNotify.
+    return (await writeFanoutNotify({ outboxId, sub, ev, object }, { sql: pg, workspaceId: ws })) === 'written';
+  }
   const rows = await pg<{ id: string }[]>`
     INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body)
-    VALUES (${coordScopeWorkspace()}, 'messages', ${sub.subscriber_id}, ${msgId}, ${JSON.stringify(env)}::text::jsonb)
+    VALUES (${ws}, 'messages', ${sub.subscriber_id}, ${msgId}, ${JSON.stringify(env)}::text::jsonb)
     ON CONFLICT (workspace_id, msg_id) WHERE (surface = 'messages' AND (body ->> 'notify_kind') IS NOT NULL)
     DO NOTHING
     RETURNING id`;
@@ -233,17 +284,21 @@ export async function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): P
 }
 
 /**
- * The production fan-out consumer the drain calls per outbox row (and that
- * `retryPendingFanouts` re-calls for a row whose fan-out failed). Errors are NOT
- * swallowed here: they propagate so the drain can record the failure as fan-out
- * retry state (P-003) for a later retry. The idempotent insert makes a retry safe.
- * Returns count delivered.
+ * The production fan-out consumer the drain calls per outbox row. A failed
+ * delivery to ONE subscriber is recorded in the per-subscriber ledger
+ * (fanout-deliveries.ts, P-003) and retried on its own by
+ * `retryPendingFanoutDeliveries`; the other subscribers are delivered in the same
+ * pass. Only a failure that leaves no per-subscriber record — resolving the
+ * subscribers, or writing the ledger itself — propagates, so the drain keeps the
+ * outbox row's own retry state (migration 1632) and re-runs the row. The
+ * deterministic msg_id makes that re-run idempotent. Returns count delivered.
  */
 export async function fanoutOutboxRow(outboxRow: OutboxFanoutRow): Promise<number> {
-  const pg = getOrgPg().sql;
+  const pg = getOrgPg().sql as unknown as Sql;
   return runFanoutForOutboxRow(outboxRow, {
     resolve: (object) => resolveObjectSubscribers(object, { subscriptions, tags, topics }),
-    deliver: (outboxId, sub, ev) => insertFanoutNotify(pg, outboxId, sub, ev),
+    deliver: (outboxId, sub, ev, object) => writeFanoutNotify({ outboxId, sub, ev, object }, { sql: pg }),
+    recordFailure: (outboxId, sub, ev, object, error) => recordFanoutFailure({ outboxId, sub, ev, object, error }, { sql: pg }),
   });
 }
 
@@ -286,11 +341,15 @@ export async function fanoutForObject(
   return withDeadline(
     (async () => {
       try {
-        const subscribers = (
-          await resolveObjectSubscribers(object, opts.stores ?? { subscriptions, tags, topics })
-        ).filter((s) => opts.excludeId == null || s.subscriber_id !== opts.excludeId);
+        const stores = opts.stores ?? { subscriptions, tags, topics };
+        const subscribers = (await resolveObjectSubscribers(object, stores)).filter(
+          (s) => opts.excludeId == null || s.subscriber_id !== opts.excludeId,
+        );
         const { deliverInjectMany } = await import('../../agent-tools/coordination/fanout-delivery');
-        return await deliverInjectMany(subscribers, ev, opts.sink);
+        // P-002 / R-8: re-check each subscription right before its write.
+        return await deliverInjectMany(subscribers, ev, opts.sink, (sub) =>
+          isResolvedSubscriberLive(stores.subscriptions, object, sub),
+        );
       } catch {
         return 0;
       }
