@@ -396,6 +396,12 @@ bundle_host_prepare_testing_core() { # <repo root> <out dir> [parent boundary ar
   fi
   local binding define
   local -a witness_node=("${COMMITTED_NODE[@]:-node}")
+  # WI-6554700010048806: resolve the pinned compiler in THIS shell. The witnessed compile below
+  # runs inside "$(...)", a subshell, so a resolution made there is lost and every later
+  # compile paid a second npx package-cache lookup.
+  if [[ -z "${BUNDLE_HOST_BG_BUILD_CONTEXT:-}" ]]; then
+    bundle_host_prepare_esbuild "$repo_root" || return 1
+  fi
   if binding="$(BUNDLE_HOST_TESTING_CORE_PREPARE_RECEIPT="$receipt" bundle_host_esbuild "$repo_root" \
       "${worker_args[@]}")" && define="$("${witness_node[@]}" \
       "$repo_root/scripts/lib/testing-core-witness.mjs" define "$receipt" "$binding")"; then
@@ -639,7 +645,6 @@ bundle_host_workers() {
   local index=0
   BUNDLE_HOST_WORKER_FAILED_SOURCE=""
   BUNDLE_HOST_WORKER_FAILED_OUTPUT=""
-  mkdir -p "$out_dir" || return 1
   # EI-24917607035361603: never rely on the caller having created the gate's meta dir. A
   # git-sync sweep can commit a caller that sets the variable without its mkdir (candidate
   # 75e965a93682 did), and the first append below then failed the whole worker step.
@@ -648,7 +653,10 @@ bundle_host_workers() {
     return 1
   fi
   if [ -n "${BUNDLE_HOST_GATE_META_DIR:-}" ]; then
-    cp "$out_dir/testing-core.worker.mjs.meta.json" "$BUNDLE_HOST_GATE_META_DIR/testing-core.worker.mjs.meta.json" || return 1
+    cp "$out_dir/testing-core.worker.mjs.meta.json" "$BUNDLE_HOST_GATE_META_DIR/testing-core.worker.mjs.meta.json" || {
+      echo "FATAL: cannot record testing-core.worker.mjs.meta.json in $BUNDLE_HOST_GATE_META_DIR for the restricted-hold gate" >&2
+      return 1
+    }
   fi
   for source in "${sources[@]}"; do
     output="${HOST_WORKER_OUTPUTS[$index]}"

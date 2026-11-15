@@ -33,7 +33,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { join, relative, resolve } from 'node:path';
@@ -227,7 +227,21 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
   let compilerPath: string;
   let buildOutput: string;
   const recipe = join(REPO_ROOT, 'apps/operator/bin/bundle-host-common.sh');
-  const build = (extraEnv: NodeJS.ProcessEnv = {}, subject = recipe, destination = output) => spawnSync('bash', [
+  // WI-6554700010048806: a witnessed worker build takes minutes under real fleet load, not 30s.
+  // Every build() call starts with a full testing-core witness prepare. Measured 2026-11-15 with
+  // IO pressure full avg60 8-14: the whole build took 79s and 106s, and the prepare alone took 62s
+  // and 84s (snapshot copy 37.5s, discovery 13.7s, final 8.5s; package-cache lock wait 0.24s).
+  // The witness helper itself allows its native discovery compile 120s. coreutils `timeout`
+  // signals the build's whole process group when the budget expires, so no esbuild or node
+  // grandchild outlives a failed attempt; spawnSync's own timeout is only the backstop.
+  const BUILD_BUDGET_SEC = 240;
+  const BUILD_TEST_TIMEOUT_MS = (BUILD_BUDGET_SEC + 30) * 1000;
+  const budgetedBash = (args: string[], options: SpawnSyncOptionsWithStringEncoding) =>
+    spawnSync('timeout', ['--kill-after=10', String(BUILD_BUDGET_SEC), 'bash', ...args],
+      { ...options, timeout: (BUILD_BUDGET_SEC + 20) * 1000 });
+  const budgetNote = (status: number | null) => status === 124
+    ? `the ${BUILD_BUDGET_SEC}s build budget expired and timeout killed the build's process group; ` : '';
+  const build = (extraEnv: NodeJS.ProcessEnv = {}, subject = recipe, destination = output) => budgetedBash([
     '-c', 'set -euo pipefail; source "$1"; bundle_host_workers "$2" "$3" "${PAPERCUSP_EMBED_WORKER_SCRIPT:-}"; printf "\\nTESTING_CORE_BINDING %s\\n" "$BUNDLE_HOST_TESTING_CORE_BINDING"', 'worker-recipe-test', subject, REPO_ROOT, destination,
   ], {
     cwd: REPO_ROOT,
@@ -252,9 +266,9 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     const stepLog = join(output, 'bundle-host.steps.tsv');
     const steps = existsSync(stepLog) ? readFileSync(stepLog, 'utf8') : 'No bundle steps recorded';
     expect(result.error, `worker fixture signal=${result.signal}; ${result.stdout + result.stderr}\n${steps}`).toBeUndefined();
-    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(result.status, `${budgetNote(result.status)}${result.stdout + result.stderr}\n${steps}`).toBe(0);
     buildOutput = result.stdout + result.stderr;
-  }, 40_000);
+  }, BUILD_TEST_TIMEOUT_MS);
 
   afterAll(() => {
     if (output) rmSync(output, { recursive: true, force: true });
@@ -285,12 +299,12 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
       'node "$2/apps/operator/bin/ascii-escape-bundle.mjs" "$3/testing-parent.mjs" --check;',
       'bundle_host_verify_testing_core "$2";',
     ].join(' ');
-    const built = spawnSync('bash', ['-c', command, 'testing-core-parent', recipe, REPO_ROOT, output,
+    const built = budgetedBash(['-c', command, 'testing-core-parent', recipe, REPO_ROOT, output,
       JSON.stringify(binding), '--define:__PAPERCUSP_TESTING_CORE_WITNESS__=' + JSON.stringify(binding.witness)], {
       cwd: REPO_ROOT, env: { ...process.env, PATH: compilerPath,
-        PAPERCUSP_FS_MUTEX_LOCK_DIR: join(output, 'package-cache-locks') }, encoding: 'utf8', timeout: 30_000,
+        PAPERCUSP_FS_MUTEX_LOCK_DIR: join(output, 'package-cache-locks') }, encoding: 'utf8',
     });
-    expect(built.status, built.stdout + built.stderr).toBe(0);
+    expect(built.status, budgetNote(built.status) + built.stdout + built.stderr).toBe(0);
     return { parent, binding };
   }
 
@@ -319,19 +333,22 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
       'retainedGuard:request.env.NODE_OPTIONS.startsWith("--import="),missing,allocations,starts,counterWorks}));process.exit(0);',
     ].join('\n');
     const result = spawnSync(process.execPath, ['--input-type=module', '-e', script,
-      parent, join(output, 'testing-core.worker.mjs'), REPO_ROOT], { encoding: 'utf8', timeout: 20_000 });
-    expect(result.status, result.stdout + result.stderr).toBe(0);
+      parent, join(output, 'testing-core.worker.mjs'), REPO_ROOT], { encoding: 'utf8', timeout: 90_000 });
+    // WI-6554700010048806: under fleet IO pressure loading the produced core took longer than the
+    // old 20s, and spawnSync killed the child (status null) with no output.
+    expect(result.status, `signal=${result.signal}; ${result.stdout + result.stderr}`).toBe(0);
     const line = result.stdout.split('\n').find(value => value.startsWith('AUTOMATIC_TESTING_CORE '));
     expect(line, result.stdout + result.stderr).toBeTruthy();
     expect(JSON.parse(line!.slice('AUTOMATIC_TESTING_CORE '.length))).toMatchObject({
       args: ['--input-type=module', '-e'], sourceLoader: false, retainedGuard: true,
       missing: 'testing_core_missing_artifact', allocations: 0, starts: 0, counterWorks: true,
     });
-  });
+  }, BUILD_TEST_TIMEOUT_MS);
 
   it('holds the shared package-cache reader for every actual worker compiler invocation', () => {
     expect(esbuiltScriptWorkers()).toEqual(['cpu-task-worker.script.mjs']);
-    expect((buildOutput.match(/NPM_INSTALL_SAFE guarding package-cache reader:/g) ?? []).length)
+    const guarded = buildOutput.split('\n').filter(value => value.includes('NPM_INSTALL_SAFE guarding package-cache reader:'));
+    expect(guarded.length, guarded.join('\n'))
       .toBe(ESBUILD_WORKERS.length + esbuiltScriptWorkers().length + 2); // pin resolution, guest bootstrap, workers
   });
 
@@ -352,12 +369,12 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     writeFileSync(subject, original.replaceAll(guarded, 'npx --yes esbuild@0.25.0 "$source"'));
     const result = build({}, subject, join(output, 'cache-lease-control'));
     expect(result.error, `worker control signal=${result.signal}; ${result.stdout + result.stderr}`).toBeUndefined();
-    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(result.status, budgetNote(result.status) + result.stdout + result.stderr).toBe(0);
     // The separately prepared core still owns its resolution + API leases;
     // the mutated remaining worker invocations have lost theirs.
     expect((result.stdout + result.stderr).match(/NPM_INSTALL_SAFE guarding package-cache reader:/g) ?? [])
       .toHaveLength(2);
-  });
+  }, BUILD_TEST_TIMEOUT_MS);
 
   it('loads the actual produced testing core and refuses its expired cutoff before a child or packet exists', () => {
     const artifactBaseDir = join(output, 'expired-core-artifacts');
@@ -401,11 +418,14 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     const script = [
       'import {spawnSync} from "node:child_process"; import {rmSync} from "node:fs"; import {dirname} from "node:path";',
       'const parent=await import(process.argv[1]); let request;',
-      'try { const now=Date.now(); request=parent.buildDetachedTestRunRequest({root:process.argv[2],',
+      // WI-6554700010048806: the control re-imports the compiled parent, which took longer than
+      // the old 10s under fleet IO pressure (status null, no EADDRINUSE). Run it before the
+      // request's deadline starts, so a slow control cannot eat the real child's budget.
+      'try { const control=spawnSync(process.execPath,["--input-type=module","-e","await import("+JSON.stringify(process.argv[1])+");"],',
+      '{env:process.env,encoding:"utf8",timeout:60000});',
+      'const now=Date.now(); request=parent.buildDetachedTestRunRequest({root:process.argv[2],',
       'files:["unused-compiled-core-fixture.test.ts"],privatePg:false,',
       'deadline:{startedAtMs:now,taskDeadlineAtMs:now+60000,childCutoffAtMs:now+50000,cleanupReserveMs:10000}});',
-      'const control=spawnSync(process.execPath,["--input-type=module","-e","await import("+JSON.stringify(process.argv[1])+");"],',
-      '{env:process.env,encoding:"utf8",timeout:10000});',
       'const child=spawnSync(request.command,request.args,{cwd:request.cwd,env:{...process.env,...request.env},encoding:"utf8",timeout:40000});',
       'console.log("COMPILED_OCCUPIED "+JSON.stringify({args:request.args,status:child.status,stdout:child.stdout,stderr:child.stderr,',
       'error:child.error?.message,controlStatus:control.status,controlStderr:control.stderr,controlError:control.error?.message,',
@@ -414,13 +434,14 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
       'globalThis.recoveryTestHost.close()}',
     ].join('\n');
     const child = spawnSync(process.execPath, ['--input-type=module', '-e', script, host, REPO_ROOT], {
-      cwd: REPO_ROOT, env: process.env, encoding: 'utf8', timeout: 55_000,
+      cwd: REPO_ROOT, env: process.env, encoding: 'utf8', timeout: 150_000,
     });
-    expect(child.status, child.stdout + child.stderr).toBe(0);
+    expect(child.status, `signal=${child.signal}; ${child.stdout + child.stderr}`).toBe(0);
     const line = child.stdout.split('\n').find(row => row.startsWith('COMPILED_OCCUPIED '));
     expect(line, child.stdout + child.stderr).toBeTruthy();
     const observed = JSON.parse(line!.slice('COMPILED_OCCUPIED '.length));
-    expect(observed).toMatchObject({ controlStatus: 1, hostStillListening: true, status: 1 });
+    expect(observed, `controlError=${observed.controlError}; controlStderr=${observed.controlStderr}`)
+      .toMatchObject({ controlStatus: 1, hostStillListening: true, status: 1 });
     expect(observed.error).toBeUndefined();
     expect(observed.controlError).toBeUndefined();
     expect(observed.controlStderr).toContain('EADDRINUSE');
@@ -443,7 +464,7 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
       artifactSha256: binding.witness.artifactSha256,
     });
     expect(phases.at(-1)).toMatchObject({ phase: 'core-execution-complete', ok: false });
-  });
+  }, BUILD_TEST_TIMEOUT_MS);
 
   it('creates missing gate metadata and records every copied and bundled worker input', () => {
     const common = readFileSync(recipe, 'utf8');
@@ -514,7 +535,7 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     const result = build({ BUNDLE_HOST_GATE_META_DIR: join(blocked, 'meta') });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(`FATAL: cannot create the restricted-hold gate meta dir ${join(blocked, 'meta')}`);
-  });
+  }, BUILD_TEST_TIMEOUT_MS);
 
   it('names the copied source when gate bookkeeping cannot be written', () => {
     const blocked = join(output, 'gate-meta-append-blocked');
@@ -523,9 +544,12 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(`FATAL: cannot record ${join(REPO_ROOT, 'libs/generic/memory/src/local-embedder-worker.script.mjs')}`);
     expect(result.stderr).toContain(`${join(blocked, 'copied-sources.txt')} for the restricted-hold gate`);
-  });
+  }, BUILD_TEST_TIMEOUT_MS);
 
-  it('control: omitting only metadata directory creation reproduces the first-worker failure', () => {
+  // WI-6554700010048806: since 3dcc6d094b1 the recipe copies the testing-core metafile into the
+  // gate directory before the first worker, so omitting the mkdir now fails before ANY worker is
+  // published. The control still proves the mkdir is what lets the real build succeed.
+  it('control: omitting only metadata directory creation fails before publishing any worker', () => {
     const original = readFileSync(recipe, 'utf8');
     const mkdir = '! mkdir -p "$BUNDLE_HOST_GATE_META_DIR"';
     expect(original.split(mkdir)).toHaveLength(2);
@@ -534,12 +558,13 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     const destination = join(output, 'first-worker-control');
     const meta = join(output, 'absent-control-meta');
     const result = build({ BUNDLE_HOST_GATE_META_DIR: meta }, subject, destination);
-    expect(result.status).toBe(1);
-    expect(existsSync(join(destination, 'local-embedder-worker.script.mjs'))).toBe(true);
+    expect(result.status, budgetNote(result.status) + result.stdout + result.stderr).toBe(1);
+    expect(result.stderr).toContain(`FATAL: cannot record testing-core.worker.mjs.meta.json in ${meta} for the restricted-hold gate`);
+    expect(existsSync(join(destination, 'testing-core.worker.mjs'))).toBe(true);
+    expect(existsSync(join(destination, 'local-embedder-worker.script.mjs'))).toBe(false);
     expect(existsSync(join(destination, 'cpu-task-worker.script.mjs'))).toBe(false);
-    expect(result.stderr).toContain(`FATAL: cannot record ${join(REPO_ROOT, 'libs/generic/memory/src/local-embedder-worker.script.mjs')}`);
     expect(existsSync(meta)).toBe(false);
-  });
+  }, BUILD_TEST_TIMEOUT_MS);
 
   it('runs snapshot compaction in the emitted worker without a TypeScript loader', async () => {
     const worker = new Worker(join(output, 'snapshot-fold.worker.mjs'), { execArgv: [] });
@@ -602,7 +627,7 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('FATAL: missing runtime worker');
     expect(readFileSync(join(output, 'local-embedder-worker.script.mjs'), 'utf8')).toBe(before);
-  });
+  }, BUILD_TEST_TIMEOUT_MS);
 });
 
 describe('worker scripts are staged beside every bundled entry', () => {
