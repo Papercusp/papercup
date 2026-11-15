@@ -523,6 +523,9 @@
     "apps/operator/scripts/tutorial-video-contract.mjs",
     "apps/operator/scripts/hooks/inject/core.mjs",
     "apps/operator/scripts/hooks/inject/recall-query.mjs",
+    // WI-6554700010049078: plan-execution-guard.priority.integration.test.ts reads
+    // specFor('pre-tool').timeoutMs, so the port table needs a typed surface.
+    "apps/operator/scripts/hooks/inject/ports.mjs",
     // P-003: canonical grounded-query integration imports each native adapter.
     "apps/operator/scripts/hooks/inject/adapters/codex.mjs",
     "apps/operator/scripts/hooks/inject/adapters/claude.mjs",

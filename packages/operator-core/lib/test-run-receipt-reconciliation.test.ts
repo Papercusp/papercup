@@ -3,7 +3,26 @@ import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { missingTestRunReceiptPaths } from '../../../libs/test-config/src/admin-test-runs-reporter.ts';
-import { waitForTestRunReceiptUpdate } from '../../../scripts/test-files.mjs';
+
+// scripts/test-files.mjs ships no declaration file yet (residue filed on WI-6554700010049076),
+// so the router is loaded through a typed dynamic import that names the one export this
+// suite exercises. The URL specifier keeps tsc from resolving the undeclared module.
+type ReceiptWatcher = { close: () => void };
+type WaitForTestRunReceiptUpdate = <State extends { complete: boolean; retryable?: boolean }>(
+  filePath: string,
+  readState: () => State,
+  options?: {
+    timeoutMs?: number;
+    watchImpl?: (
+      directory: string,
+      options: { persistent: boolean },
+      onChange: (event: string, fileName: string | null) => void,
+    ) => ReceiptWatcher;
+  },
+) => Promise<State | { complete: false; retryable: false; error: unknown }>;
+const testFilesRouterUrl = new URL('../../../scripts/test-files.mjs', import.meta.url).href;
+const { waitForTestRunReceiptUpdate } =
+  (await import(testFilesRouterUrl)) as { waitForTestRunReceiptUpdate: WaitForTestRunReceiptUpdate };
 
 const expectedPath = 'packages/operator-core/lib/example.test.ts';
 const baseReceipt = {

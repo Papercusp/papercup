@@ -371,7 +371,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
   });
 
   it('keeps an unavailable replayed required plane unknown instead of treating it as absent', async () => {
-    listClauses.mockResolvedValue([{ ...clause('active'), requiredEvidence: ['deployed'] }] as never);
+    listClauses.mockResolvedValue([{ ...clause('active'), requiredEvidence: ['deployed'] }]);
     listEvidence.mockResolvedValue([{
       id: 91,
       workItemId: 'WI-123',

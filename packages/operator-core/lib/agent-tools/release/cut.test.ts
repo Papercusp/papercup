@@ -1021,7 +1021,7 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
   it('logs path-free root-resolution phases and child failure details', async () => {
     const privateRoot = '/tmp/private-candidate-root';
     const privateSource = '/tmp/private-registered-source';
-    registryM.mockResolvedValue({ projects: [{ slug: 'source', path: privateSource }] } as never);
+    registryM.mockResolvedValue({ projects: [{ slug: 'source', path: privateSource }] });
     mockExecFile((command, argv) => {
       if (command === 'git' && argv[2] === 'worktree') return '';
       throw new Error(`unexpected command: ${command} ${argv.join(' ')}`);

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -48,6 +48,9 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOrigin
   DEFAULT_TX_ACQUIRE_DEADLINE_MS: 45_000,
   getOrgPg: () => ({ sql: {} }),
 }));
+// The expiry wiring dynamically imports this partial mock. Preload it so the real module graph
+// behind importOriginal is not first evaluated inside a sweep's bounded waitFor.
+beforeAll(async () => { await import('@papercusp/db-org'); }, 60_000);
 vi.mock('../../consult/consult-expiry-core', () => ({ sweepExpiredConsults: seams.sweep }));
 // The real expiry adapters only need these routing constants. Loading the full
 // routing engine here bootstraps the live tool registry against the fake DB.

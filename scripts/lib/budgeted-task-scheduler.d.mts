@@ -74,6 +74,8 @@ export interface NativeCustodyManifest {
   bytesRead: number; bytesReadByFamily?: Record<'A' | 'B' | 'C' | 'D' | 'auxiliary', number>;
   objectsRead?: number; objectsReadByFamily?: Record<'A' | 'B' | 'C' | 'D' | 'auxiliary', number>;
   archiveLimits?: { segments: number; objects: number };
+  /** v3 packets count each archive object once per unique family artifact ref; absent on older packets. */
+  archiveObjectAccounting?: 'unique-family-artifact-ref-v1';
   segments?: Array<{ index: number; artifact: NativeArtifactPin; bytesRead: number; objectsRead: number;
     bytesReadByFamily: Record<'A' | 'B' | 'C' | 'D' | 'auxiliary', number>;
     objectsReadByFamily: Record<'A' | 'B' | 'C' | 'D' | 'auxiliary', number> }>;

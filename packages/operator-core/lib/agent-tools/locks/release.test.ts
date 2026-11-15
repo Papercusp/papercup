@@ -103,6 +103,17 @@ type Out = { data?: any; content?: Array<{ text: string }> };
 const call = (args: Record<string, unknown>) => tool.handler(args as never, {} as never) as Promise<Out>;
 const body = (o: Out) => (o.data ?? JSON.parse(o.content![0].text));
 
+/**
+ * Route every file-lock op through its LOCAL authority. `routeFileLockOp` is generic
+ * in its op's return type, so vi.mocked() cannot infer a concrete impl signature; ONE
+ * seam assertion here (same reason as `routeByDomain` below) replaces a per-site
+ * `as never`, which lint:mock-cast-escape ratchets against.
+ */
+const routeLocally = (async (_domain: string, op: Parameters<typeof routeFileLockOp>[1]) => ({
+  value: await op.local(),
+  via: 'local-authority',
+})) as unknown as typeof routeFileLockOp;
+
 beforeEach(() => {
   vi.clearAllMocks();
   routeM.mockImplementation(async (_domain, op) => ({
@@ -763,7 +774,7 @@ describe('explicit release preservation', () => {
   it('keeps capture-bound attribution as the last handoff record instead of writing a duplicate unbound row', async () => {
     vi.mocked(preserveReleasedEditGenerations).mockResolvedValueOnce(true);
     const rows = [{ path: 'a.ts', lock_id: 'lease', intent: 'edit', goal_ref: 'WI-A', acquired_ts: new Date() }];
-    routeM.mockImplementation(async (_domain, op) => ({ value: await op.local(), via: 'local-authority' }) as never);
+    routeM.mockImplementation(routeLocally);
     vi.mocked(tryRelease).mockImplementationOnce(async (_tx, p) => {
       await p.beforeRelease?.(rows);
       return { released: ['a.ts'], heldBefore: 1 };
@@ -776,8 +787,10 @@ describe('explicit release preservation', () => {
 
   it('runs custody on the protected selection with the caller identity', async () => {
     const rows = [{ path: 'a.ts', lock_id: 'lease', intent: 'edit', goal_ref: 'WI-A', acquired_ts: new Date() }];
-    vi.mocked(resolveAgentIdentity).mockReturnValue({ ownerId: 'me', workspaceId: 'ws-1', userId: 'user-1' } as never);
-    routeM.mockImplementation(async (_domain, op) => ({ value: await op.local(), via: 'local-authority' }) as never);
+    vi.mocked(resolveAgentIdentity).mockReturnValue(
+      { ownerId: 'me', workspaceId: 'ws-1', userId: 'user-1' } as ReturnType<typeof resolveAgentIdentity>,
+    );
+    routeM.mockImplementation(routeLocally);
     vi.mocked(tryRelease).mockImplementation(async (_tx, p) => {
       await p.beforeRelease?.(rows);
       return { released: ['a.ts'], heldBefore: 1 };

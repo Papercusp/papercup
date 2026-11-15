@@ -6,14 +6,28 @@ const state = vi.hoisted(() => ({
   cleanupFails: false,
 }));
 
-vi.mock('node:child_process', () => ({ execFileSync: vi.fn(() => 'fixture-head'), fork: vi.fn() }));
+// Partial: the real @papercusp/db-org graph (partial mock below) reads other child_process exports.
+vi.mock('node:child_process', async original => ({
+  ...await original<typeof import('node:child_process')>(),
+  execFileSync: vi.fn(() => 'fixture-head'),
+  fork: vi.fn(),
+}));
 vi.mock('node:crypto', async original => ({
   ...await original<typeof import('node:crypto')>(), randomUUID: () => 'fixture-token',
 }));
-vi.mock('node:fs', async original => ({
-  ...await original<typeof import('node:fs')>(),
-  mkdirSync: vi.fn(), readFileSync: vi.fn(), writeFileSync: vi.fn(),
-}));
+vi.mock('node:fs', async original => {
+  const actual = await original<typeof import('node:fs')>();
+  return {
+    ...actual,
+    mkdirSync: vi.fn(), writeFileSync: vi.fn(),
+    // Fixture paths read as absent; real source modules in the partial db-org graph (for example
+    // a module-scope self-digest) still read their own files.
+    readFileSync: vi.fn(((path: Parameters<typeof actual.readFileSync>[0], ...rest: unknown[]) =>
+      String(path).startsWith('/fixture/')
+        ? undefined
+        : (actual.readFileSync as (...args: unknown[]) => unknown)(path, ...rest)) as typeof actual.readFileSync),
+  };
+});
 vi.mock('node:http', () => ({ createServer: () => ({
   once: vi.fn(),
   listen: () => { throw state.primary; },

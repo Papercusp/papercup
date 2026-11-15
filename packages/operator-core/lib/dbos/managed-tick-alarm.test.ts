@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { configureScheduledRegistry, managedSetInterval, resetScheduledRegistry } from '@papercusp/scheduled-registry';
 import { installManagedTickAlarm } from './managed-tick-alarm';
 import { workspaceBackgroundActivityAllowed } from '../device-operator-actions';
@@ -11,6 +11,9 @@ vi.mock('./managed-tick-alarm-recovery', () => ({
 vi.mock('../device-operator-actions', () => ({ workspaceBackgroundActivityAllowed: vi.fn() }));
 vi.mock('../startup-activity', () => ({ recordStartupActivityHistory: vi.fn(async () => {}) }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: 'scoped-test-sql' }) }));
+// The alarm adapter dynamically imports this partial mock. Preload it so the real module graph
+// behind importOriginal is not first evaluated while fake timers bound the history write.
+beforeAll(async () => { await import('@papercusp/db-org'); }, 60_000);
 
 afterEach(() => {
   resetScheduledRegistry();
