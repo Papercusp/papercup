@@ -402,16 +402,35 @@ export async function verifyRetainedDependencies(donor, destination, options, co
         const population = await inspect(scan, donor, destination, deadline);
         progress.totalEntries = population.entries;
         const rootIdentities = { donorRoot: directoryIdentity(donor), destinationRoot: directoryIdentity(destination) };
-        const binding = digest(JSON.stringify({ schemaVersion, sourceCommit: context.sourceCommit,
+        const bindingInputs = { schemaVersion, sourceCommit: context.sourceCommit,
           verifierFingerprint, materializer: digest(readFileSync(context.materializer)), scope,
           donor, destination, ...rootIdentities,
           generation: generation ? { identity: generation.identity, token: generation.token } : null,
           inputs: scan.sourceInputs, trees: scan.trees.map(({ path, sourceIdentity, destinationIdentity }) =>
-            ({ path, sourceIdentity, destinationIdentity })), semantic: population.semantic, batchSize }));
+            ({ path, sourceIdentity, destinationIdentity })), semantic: population.semantic, batchSize };
+        // Keep the aggregate binding authoritative and byte-compatible. These
+        // component digests explain a refusal; they never authorize batch reuse.
+        const binding = digest(JSON.stringify(bindingInputs));
+        const bindingComponents = Object.fromEntries(Object.entries(bindingInputs)
+          .map(([name, value]) => [name, digest(JSON.stringify(value))]));
         const manifestPath = join(checkpoint, 'manifest.json');
         const manifest = readJournal(manifestPath);
-        if (manifest && manifest.binding !== binding) fail('journal binding changed: source, inputs or census drift');
-        if (!manifest) writeJournal(manifestPath, { schemaVersion, binding, scope });
+        if (manifest && manifest.binding !== binding) {
+          const previous = manifest.bindingComponents;
+          const available = previous && typeof previous === 'object' && !Array.isArray(previous) &&
+            Object.values(previous).every(value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value));
+          const changes = available ? Object.fromEntries(
+            [...new Set([...Object.keys(previous), ...Object.keys(bindingComponents)])].sort()
+              .filter(name => previous[name] !== bindingComponents[name])
+              .map(name => [name, { previous: previous[name] ?? null, current: bindingComponents[name] ?? null }])) : null;
+          const evidence = { previousBinding: manifest.binding, currentBinding: binding,
+            diagnosticStatus: available ? 'available' : 'unavailable-legacy-or-invalid-components', changes };
+          const error = new Error('retained dependency verification: journal binding changed: ' + JSON.stringify(evidence));
+          error.code = 'DEPENDENCY_JOURNAL_BINDING_CHANGED';
+          error.dependencyJournalBinding = evidence;
+          throw error;
+        }
+        if (!manifest) writeJournal(manifestPath, { schemaVersion, binding, scope, bindingComponents });
         progress.phase = 'hash-batches';
         let batch = [], index = 0, newBatches = 0;
         const finishBatch = async () => {
