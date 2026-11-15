@@ -397,6 +397,48 @@ describe('descriptor credential group through the real OAuth callback', () => {
     await expect(fsTokenStorage.read(PLUGIN, HARNESS)).resolves.toMatchObject({ 'slot-a': 'access-2' });
   });
 
+  it('automatically makes reconnected sources due without losing progress or stealing an active sync lease', async () => {
+    await descriptorConnect('slot-a');
+    const before = await sources(SUITE_KINDS);
+    await sql`UPDATE harness_shared.data_sources
+      SET status = 'error', last_error = 'expired credentials',
+          cursor = '{"provider":"saved-page"}'::jsonb,
+          sync_failure_count = 8, sync_next_attempt_at = now() + interval '1 hour',
+          sync_wake_requested_at = NULL,
+          sync_lease_owner = 'existing-driver', sync_lease_expires_at = now() + interval '5 minutes'
+      WHERE workspace_id = ${WS} AND provider_account_id = 'acct-1'`;
+
+    await expect(descriptorConnect('slot-a', 'acct-1')).resolves.toEqual({ connected: PLUGIN, error: null });
+    const after = await sources(SUITE_KINDS);
+    expect(after.map((row) => row.id)).toEqual(before.map((row) => row.id));
+    const rows = await sql`SELECT status, last_error, cursor, sync_failure_count,
+        sync_next_attempt_at, sync_wake_requested_at, sync_lease_owner, sync_lease_expires_at
+      FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND provider_account_id = 'acct-1'`;
+    expect(rows).toHaveLength(SUITE_KINDS.length);
+    for (const row of rows) {
+      expect(row).toMatchObject({ status: 'connected', last_error: null,
+        cursor: { provider: 'saved-page' }, sync_failure_count: 0,
+        sync_next_attempt_at: null, sync_lease_owner: 'existing-driver' });
+      expect(row.sync_wake_requested_at).toBeInstanceOf(Date);
+      expect(row.sync_lease_expires_at).toBeInstanceOf(Date);
+    }
+  });
+
+  it('requests an automatic first sync and keeps a disabled capability disabled on reconnect', async () => {
+    await descriptorConnect('slot-a');
+    const initial = await sql`SELECT sync_wake_requested_at FROM harness_shared.data_sources
+      WHERE workspace_id = ${WS} AND provider_account_id = 'acct-1'`;
+    expect(initial).toHaveLength(SUITE_KINDS.length);
+    for (const row of initial) expect(row.sync_wake_requested_at).toBeInstanceOf(Date);
+    await sql`UPDATE harness_shared.data_sources
+      SET config = '{"capabilityEnabled":false}'::jsonb, status = 'disabled'
+      WHERE workspace_id = ${WS} AND kind = 'fake-calendar'`;
+    await descriptorConnect('slot-a', 'acct-1');
+    const [disabled] = await sql`SELECT status, sync_wake_requested_at FROM harness_shared.data_sources
+      WHERE workspace_id = ${WS} AND kind = 'fake-calendar'`;
+    expect(disabled).toMatchObject({ status: 'disabled', sync_wake_requested_at: null });
+  });
+
   it('refuses a reconnect that authenticates a different account and leaves the original binding alone', async () => {
     await descriptorConnect('slot-a');
     net.account = { id: 'acct-other', name: 'Other' };

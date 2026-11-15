@@ -137,10 +137,10 @@ export async function upsertOwnedExternalTriggerSource(
   const rows = await sql<ExternalTriggerSourceRow[]>`
     INSERT INTO harness_shared.data_sources
       (workspace_id, kind, owner_user_id, provider_account_id, credential_ref, status, config, cursor,
-       destination_policy, last_connected_at, last_error, created_by)
+       destination_policy, last_connected_at, last_error, sync_wake_requested_at, created_by)
     VALUES (
       ${workspaceId}, ${kind}, ${ownerUserId}::uuid, ${providerAccountId}, ${credentialRef}, ${status},
-      ${config}::text::jsonb, ${cursor}::text::jsonb, ${destinationPolicy}::text::jsonb, now(), NULL,
+      ${config}::text::jsonb, ${cursor}::text::jsonb, ${destinationPolicy}::text::jsonb, now(), NULL, now(),
       ${input.createdBy?.trim() || null}
     )
     ON CONFLICT (workspace_id, kind, owner_user_id, provider_account_id)
@@ -164,6 +164,15 @@ export async function upsertOwnedExternalTriggerSource(
                            END,
       last_connected_at = now(),
       last_error = NULL,
+      -- Fresh consent is an explicit retry with new credentials, not a retry of the
+      -- previous failure. Keep the cursor and any live lease, but make the next
+      -- driver pass due and preserve a wake arriving during an in-flight pass.
+      sync_failure_count = 0,
+      sync_next_attempt_at = NULL,
+      sync_wake_requested_at = CASE
+                                WHEN data_sources.config @> '{"capabilityEnabled":false}'::jsonb THEN NULL
+                                ELSE now()
+                              END,
       updated_at = now()
     RETURNING id::text,
               workspace_id AS "workspaceId",
