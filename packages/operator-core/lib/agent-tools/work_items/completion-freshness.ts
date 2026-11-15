@@ -1694,6 +1694,8 @@ export async function completionTreeStamp(
 }
 
 export interface CompletionTreeStampForEvidenceProbe {
+  /** External aliases must also be classified by their observed resolved target. */
+  realPath?: (path: string) => string;
   /** Injectable path probe so repository selection stays pure in unit tests. */
   exists?: (abs: string) => boolean;
   /** Injectable checkout-root probe; production accepts real `.git` entries only. */
@@ -1966,6 +1968,7 @@ export async function completionTreeStampForEvidence(
   const groups = new Map<string, string[]>();
   const deletedGroups = new Map<string, string[]>();
   const artifactPaths: { path: string; deletion: boolean }[] = [];
+  const resolvedArtifactIdentities: CompletionTreeContentIdentity[] = [];
   const installedRuntimeCandidates = new Map<string, Map<string, string>>();
   for (const raw of declared) {
     const declaredPath = raw.trim();
@@ -1976,6 +1979,27 @@ export async function completionTreeStampForEvidence(
     const owner = ownerForPath(raw, deletion);
     const file = owner ? fileForRoot(owner, raw) : undefined;
     if (!owner || !file) {
+      // An absolute alias outside the checkout can point into managed source. Classify
+      // that resolved target through THIS resolver so persistence/settlement and the
+      // maintenance gate agree; a proof-only reclassification would leave a Git bypass.
+      if (nodePath.isAbsolute(declaredPath)) {
+        let realPath: string;
+        try { realPath = (probe.realPath ?? maintenanceRealPath)(declaredPath); } catch { return undefined; }
+        if (!nodePath.isAbsolute(realPath)) return undefined;
+        if (realPath !== nodePath.resolve(declaredPath)) {
+          const resolvedStamp = await completionTreeStampForEvidence(
+            deletion ? { filesDeleted: [realPath] } : { filesChanged: [realPath] }, candidateRoots, probe,
+          );
+          if (resolvedStamp?.contentIdentity?.length !== 1) return undefined;
+          const identity = resolvedStamp.contentIdentity[0]!;
+          if (!identity.outOfRepoArtifact) {
+            resolvedArtifactIdentities.push({ ...identity,
+              repositoryRoot: identity.repositoryRoot ?? resolvedStamp.repositoryRoot,
+              headSha: identity.headSha ?? resolvedStamp.headSha });
+            continue;
+          }
+        }
+      }
       artifactPaths.push({ path: declaredPath, deletion });
       continue;
     }
@@ -2030,7 +2054,7 @@ export async function completionTreeStampForEvidence(
   });
   if (!primaryStamp) return undefined;
 
-  const identity: CompletionTreeContentIdentity[] = classifyInstalledRuntime(primaryStamp, selectedRoot);
+  const identity: CompletionTreeContentIdentity[] = [...classifyInstalledRuntime(primaryStamp, selectedRoot), ...resolvedArtifactIdentities];
   for (const repoRoot of new Set([...groups.keys(), ...deletedGroups.keys()])) {
     if (repoRoot === selectedRoot) continue;
     const files = groups.get(repoRoot) ?? [];
@@ -2077,6 +2101,74 @@ export async function completionTreeStampForEvidence(
 }
 
 export type CompletionFreshnessVerdict = 'fresh' | 'stale' | 'unavailable' | 'not-applicable';
+
+/** A view of the existing tree-stamp classifier, never a caller-supplied exemption. */
+export interface MaintenancePathClassification {
+  external: Array<{ path: string; realPath: string }>;
+  repository: string[];
+  unknown: string[];
+}
+
+/** Resolve absent deletion targets through their nearest existing parent. */
+function maintenanceRealPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    const parent = nodePath.dirname(path);
+    if (parent === path) throw error;
+    return nodePath.join(maintenanceRealPath(parent), nodePath.basename(path));
+  }
+}
+
+/**
+ * Reuse the canonical identity resolver for both declared and resolved paths. In particular,
+ * an external-looking symlink into source remains repository work. Unreadable observations,
+ * truncated stamps and relative escapes cannot establish an external exemption.
+ */
+export async function completionMaintenancePaths(
+  evidence: CompletionVerificationEvidence,
+  repoRoots: string[],
+  stamp: CompletionTreeStamp | undefined,
+  probe: { realPath?: (path: string) => string; stamp?: typeof completionTreeStampForEvidence } = {},
+): Promise<MaintenancePathClassification> {
+  const declared = [...(evidence.filesChanged ?? []), ...(evidence.filesDeleted ?? [])];
+  const result: MaintenancePathClassification = { external: [], repository: [], unknown: [] };
+  if (!stamp?.contentIdentity || stamp.contentIdentity.length !== declared.length || new Set(declared).size !== declared.length) {
+    return { ...result, unknown: declared.length ? declared : ['no declared operation targets'] };
+  }
+  const candidates: Array<{ path: string; realPath: string }> = [];
+  for (const path of declared) {
+    if (!stamp.contentIdentity.some((entry) => entry.path === path.trim() && entry.outOfRepoArtifact === true)) {
+      result.repository.push(path);
+      continue;
+    }
+    try {
+      if (!nodePath.isAbsolute(path) || /[*?]/.test(path)) throw new Error('not an exact absolute target');
+      const realPath = (probe.realPath ?? maintenanceRealPath)(path);
+      if (!nodePath.isAbsolute(realPath)) throw new Error('unresolved target');
+      candidates.push({ path, realPath });
+    } catch {
+      result.unknown.push(path);
+    }
+  }
+  if (!candidates.length) return result;
+  // Classify each unique resolved path once; two declared aliases may share a target.
+  const resolvedPaths = [...new Set(candidates.map(({ realPath }) => realPath))];
+  const resolved = await (probe.stamp ?? completionTreeStampForEvidence)({ filesChanged: resolvedPaths }, repoRoots);
+  if (!resolved?.contentIdentity || resolved.contentIdentity.length !== resolvedPaths.length) {
+    result.unknown.push(...candidates.map(({ path }) => path));
+    return result;
+  }
+  for (const candidate of candidates) {
+    if (resolved.contentIdentity.some((entry) => entry.path === candidate.realPath && entry.outOfRepoArtifact === true)) {
+      result.external.push(candidate);
+    } else {
+      result.repository.push(candidate.path);
+    }
+  }
+  return result;
+}
 
 export interface CompletionFreshness {
   verdict: CompletionFreshnessVerdict;

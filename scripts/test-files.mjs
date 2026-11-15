@@ -4205,15 +4205,17 @@ export async function main(
         try {
           const verifierArgv = argv.filter(arg => !arg.startsWith('--budget-from=')
             && !arg.startsWith('--child-estimate-ms='));
+          // Run the maintained PG route/storage preflight before the committed
+          // source and dependency preparation. A low-headroom refusal should not
+          // pay that copy/build cost.
+          const privatePg = await preflightPrivateIntegrationPgImpl();
           return await runPrivateVerifierImpl({ repo: repoRoot, ref, receiptPath, inputs,
             ...(verifierBudget ? { budgetFrom: resolve(repoRoot, verifierBudget.budgetFrom),
               childEstimateMs: verifierBudget.childEstimateMs } : {}),
             releaseParentPrivatePg: Boolean(process.env[PRIVATE_TEST_PG_RELEASE_TOKEN_ENV]),
-            // The verifier must finish committed source/dependency preparation
-            // before this callback allocates private PG. Ordinary test children
-            // still never inherit the parent's barriers.
+            // Keep the admitted admin URL out of verifier preparation; expose it
+            // to the test child only after committed source/dependencies are ready.
             prepareChildEnv: async () => {
-              const privatePg = await preflightPrivateIntegrationPgImpl();
               return privatePg?.url ? { HARNESS_ADMIN_DATABASE_URL: privatePg.url } : {};
             },
             env: verifierEnv,

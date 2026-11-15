@@ -690,16 +690,19 @@ describe('test-files router', () => {
     ]));
   });
 
-  it('forwards the private verifier forecast and defers PG admission until dependency preparation', async () => {
+  it('preflights PG before dependency preparation and forwards the child admin URL afterward', async () => {
     const file = 'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts';
     const oldOptions = process.env.NODE_OPTIONS;
     const oldAdmission = process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
     const oldPrivatePgReleaseToken = process.env.PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN;
     const oldAdminDatabaseUrl = process.env.HARNESS_ADMIN_DATABASE_URL;
+    const oldTestPgAdminUrl = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
     const list = vi.fn(), run = vi.fn(); let receiptDir: string | undefined;
     const stages: string[] = [];
     const preflight = vi.fn(async () => {
       stages.push('pg-preflight');
+      expect(process.env.PAPERCUSP_TEST_PG_ADMIN_URL)
+        .toBe('postgresql://test_admin:test-only@127.0.0.1:54321/papercusp');
       return { url: 'postgresql://harness_admin:test-only@127.0.0.1:54321/papercusp', source: 'operator-env-file' };
     });
     const restricted = vi.fn(() => { stages.push('restricted-preflight'); return { verdict: 'admit' }; });
@@ -708,6 +711,7 @@ describe('test-files router', () => {
       process.env.NODE_OPTIONS = '--import=/repo/scripts/lib/committed-source-loader.mjs';
       process.env.PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN = 'parent-release-token';
       process.env.HARNESS_ADMIN_DATABASE_URL = 'postgresql://ambient:test-only@127.0.0.1:54321/parent';
+      process.env.PAPERCUSP_TEST_PG_ADMIN_URL = 'postgresql://test_admin:test-only@127.0.0.1:54321/papercusp';
       delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
       const frozen = vi.fn(async options => {
         stages.push('verifier-dependencies-ready');
@@ -725,7 +729,7 @@ describe('test-files router', () => {
         runPrivateVerifierImpl: frozen, runVitestListImpl: list, runCapturedTestProcessImpl: run,
       });
       expect(result, warning.mock.calls.map(([message]) => String(message)).join('\n')).toBe(7);
-      expect(stages).toEqual(['restricted-preflight', 'verifier-dependencies-ready', 'pg-preflight',
+      expect(stages).toEqual(['restricted-preflight', 'pg-preflight', 'verifier-dependencies-ready',
         'child-environment-ready']);
       expect(restricted).toHaveBeenCalledExactlyOnceWith({ repoRoot: REPO_ROOT, files: [resolve(REPO_ROOT, file)] });
       expect(list).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
@@ -746,7 +750,47 @@ describe('test-files router', () => {
       else process.env.PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN = oldPrivatePgReleaseToken;
       if (oldAdminDatabaseUrl === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;
       else process.env.HARNESS_ADMIN_DATABASE_URL = oldAdminDatabaseUrl;
+      if (oldTestPgAdminUrl === undefined) delete process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+      else process.env.PAPERCUSP_TEST_PG_ADMIN_URL = oldTestPgAdminUrl;
       warning.mockRestore(); if (receiptDir) rmSync(receiptDir, { recursive: true, force: true });
+    }
+  });
+
+  it('stops before committed-source dependency preparation when PG storage admission rejects', async () => {
+    const file = 'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts';
+    const keys = ['NODE_OPTIONS', 'PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT', 'PAPERCUSP_TEST_PG_ADMIN_URL'];
+    const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+    const stages: string[] = [];
+    const preflight = vi.fn(async () => {
+      stages.push('pg-preflight');
+      throw new Error('TEST SUBSTRATE STORAGE LOW: controlled regression');
+    });
+    const restricted = vi.fn(() => { stages.push('restricted-preflight'); return { verdict: 'admit' }; });
+    const frozen = vi.fn(), list = vi.fn(), run = vi.fn();
+    const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      process.env.NODE_OPTIONS = '--import=/repo/scripts/lib/committed-source-loader.mjs';
+      delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+      delete process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+      const result = await main([resolve(REPO_ROOT, file)], {
+        preflightPrivateIntegrationPgImpl: preflight,
+        restrictedHoldPreflightImpl: restricted,
+        runPrivateVerifierImpl: frozen,
+        runVitestListImpl: list,
+        runCapturedTestProcessImpl: run,
+      });
+      expect(result).toBe(2);
+      expect(stages).toEqual(['restricted-preflight', 'pg-preflight']);
+      expect(preflight).toHaveBeenCalledOnce();
+      expect(frozen).not.toHaveBeenCalled();
+      expect(list).not.toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('TEST SUBSTRATE STORAGE LOW'));
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+      warning.mockRestore();
     }
   });
 

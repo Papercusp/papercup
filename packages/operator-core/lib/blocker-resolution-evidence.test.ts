@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { createBlockerEvidenceReader, preflightBlockerDecision } from './blocker-resolution-evidence';
 import { prepareBlockerDecision } from './blocker-resolution-decision';
 import { activeExternalBlockers } from './external-blockers';
+import { runWithWorkspace } from './workspace-als';
 import type { UnresolvedDepBlocker } from './work-items';
 import type { PlanRow } from './agent-tools/plans/source';
 
@@ -540,7 +541,7 @@ describe('system-derived plan-lane evidence', () => {
     evidenceRefs: [ref], investigation: [{ action: 'Read canonical graph', outcome: 'Prerequisite settled', evidenceRefs: [ref] }],
     attempts: [], verification: { outcome: 'Exact dependency predicate satisfied', evidenceRefs: [ref] } });
   beforeEach(() => {
-    mocks.workspace.mockReturnValue(ctx.workspaceId);
+    mocks.workspace.mockReset().mockReturnValue(ctx.workspaceId);
     mocks.item.mockResolvedValue(subject());
     mocks.hold.mockReturnValue({ parked: null, heldOpen: null, attributed: false });
     mocks.parked.mockReturnValue(false);
@@ -714,6 +715,58 @@ describe('system-derived plan-lane evidence', () => {
       mocks.plan.mockResolvedValue(plan());
       expect(await preflightBlockerDecision(reserved(), decision(), { ...context(), sessionId: ctx.ownerId }, options))
         .toMatchObject({ ok: false });
+    });
+  });
+  describe('blocker-retaining writes on a system plan-line transition park', () => {
+    const sourceRef = { kind: 'work-item' as const, ref: 'harness-a#WI-2' };
+    const parked = () => ({ ...subject(), payload: { ...subject().payload,
+      _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes',
+      claim_hold_reason: 'Plan-line transition park', claim_hold_at: '2026-11-10T00:00:00Z',
+      plan_item: { plan_slug: 'recovery', item_id: 'P-002', harness_slug: ctx.harnessSlug } } });
+    const defer = () => ({ schemaVersion: 1 as const, idempotencyKey: 'retained-plan-line-park',
+      disposition: 'defer' as const, symptom: 'The producer remains active while the plan lane is parked',
+      evidenceRefs: [ref, sourceRef], investigation: [{ action: 'Read the exact park and producer',
+        outcome: 'The write only adds or retains blockers', evidenceRefs: [ref, sourceRef] }], attempts: [],
+      deferral: { reason: 'active-peer' as const, responsibleParty: 'su-peer', reasonEvidenceRefs: [sourceRef],
+        nextAction: 'Resume when the producer settles', recheckRef: sourceRef } });
+    const preflight = (item: ReturnType<typeof parked>, input: ReturnType<typeof defer> | ReturnType<typeof decision>,
+      options: Parameters<typeof preflightBlockerDecision>[3]) => runWithWorkspace(ctx.workspaceId,
+        () => preflightBlockerDecision(item, input, { ...context(), sessionId: ctx.ownerId }, options));
+    beforeEach(() => {
+      mocks.workspace.mockReset().mockImplementation(() => ctx.workspaceId);
+      const item = parked();
+      mocks.item.mockImplementation(async (id: string) => id === 'WI-2'
+        ? { id: 'WI-2', harness: ctx.harnessSlug, state: 'wip', assignee: 'su-peer', payload: {} }
+        : item);
+      mocks.presence.mockResolvedValue({ stale: false, workspaceId: ctx.workspaceId });
+      mocks.parked.mockReturnValue(true);
+      mocks.hold.mockReturnValue({ parked: { by: 'migration:plan-line-work-item-nodes',
+        reason: 'Plan-line transition park', at: '2026-11-10T00:00:00Z' }, heldOpen: null, attributed: true });
+    });
+    it('admits an edge-add deferral while preserving the exact park', async () => {
+      const item = parked();
+      const effect = { link: { id: 'WI-2', harness: ctx.harnessSlug, dst: { kind: 'feature', ref: item.id },
+        rel: 'blocks', remove: false, satisfaction: 'settled' } };
+      const result = await preflight(item, defer(), { effect, additionalDependencyRefs: [sourceRef.ref] });
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+    });
+    it('keeps resolving, removing and non-host-scoped writes fail-closed', async () => {
+      const item = parked();
+      expect(await preflight(item, decision(),
+        { effect: { status: 'wip' }, additionalDependencyRefs: [sourceRef.ref] })).toMatchObject({ ok: false });
+      expect(await preflight(item, defer(),
+        { effect: { status: 'wip' }, additionalDependencyRefs: [sourceRef.ref] })).toMatchObject({ ok: false });
+      for (const effect of [{ link: { remove: true } }, { link: { satisfaction: 'success' } }]) {
+        expect(await preflight(item, defer(), { effect })).toMatchObject({ ok: false });
+      }
+      expect(await preflight(item, defer(), { effect: { link: { remove: false } } })).toMatchObject({ ok: false });
+    });
+    it('admits a plain custody release without clearing the system park', async () => {
+      mocks.deps.mockResolvedValueOnce([{ ref: sourceRef.ref, kind: 'feature', satisfaction: 'settled' }]);
+      const effect = { release: true, claimHold: null, claimHoldRelease: null,
+        reason: 'Preserve plan-line transition park', force: false };
+      const result = await preflight(parked(), defer(), { effect, releasePayload: { patch: {}, unset: [] } });
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
     });
   });
   it.each(['missing', 'tenant', 'harness', 'missing-reference', 'cycle'])('rejects %s plan evidence', async fault => {

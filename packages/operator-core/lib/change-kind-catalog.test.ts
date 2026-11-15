@@ -16,7 +16,7 @@ import {
 
 describe('change-kind catalog (P-001)', () => {
   // 'refactor' joined in code-cleanup-campaigns-2026-10-26 P-004 (D-003, owner-approved).
-  it('ships the ten kinds the owner-approved plans name, each with a non-empty proof list', () => {
+  it('ships the approved kinds, each with a non-empty proof list', () => {
     expect([...CHANGE_KINDS]).toEqual([
       'ui',
       'service',
@@ -27,6 +27,7 @@ describe('change-kind catalog (P-001)', () => {
       'docs',
       'config',
       'test-only',
+      'filesystem-maintenance',
       'no-code-change',
     ]);
     for (const k of CHANGE_KINDS) {

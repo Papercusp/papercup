@@ -37,6 +37,31 @@ import { nativeProcessTraceEnv, nativeSourceRetentionLimits, validateNativeLoade
 import { assertPrivateIntegrationEvidence as assertPrivatePreparationEvidence } from '../../../scripts/test-files.mjs';
 import { RESTRICTED_HOLD_PREFLIGHT_TIMEOUT_MS } from '../../../scripts/lib/restricted-hold-preflight.mjs';
 
+export type PrivateCompletionFixtureControls = { maintenance: boolean; transport: 'palette' | 'mcp-proxy' };
+
+/** Explicit fixture controls survive the launcher scrub without admitting ambient product state. */
+export function privateCompletionFixtureArgs(controls: PrivateCompletionFixtureControls): string[] {
+  const args = [`--completion-scenario=${controls.maintenance ? 'maintenance' : 'report'}`,
+    `--completion-transport=${controls.transport}`];
+  parsePrivateCompletionFixtureControls(args);
+  return args;
+}
+
+export function parsePrivateCompletionFixtureControls(argv: readonly string[]): PrivateCompletionFixtureControls | null {
+  const controls = argv.filter(arg => arg.startsWith('--completion-'));
+  if (!controls.length) return null;
+  const scenarios = controls.filter(arg => arg.startsWith('--completion-scenario='));
+  const transports = controls.filter(arg => arg.startsWith('--completion-transport='));
+  assert.equal(controls.length, 2, 'completion fixture requires exactly one scenario and transport');
+  assert.equal(scenarios.length, 1, 'completion fixture scenario is missing, unknown or duplicated');
+  assert.equal(transports.length, 1, 'completion fixture transport is missing, unknown or duplicated');
+  const scenario = scenarios[0]!.slice('--completion-scenario='.length);
+  const transport = transports[0]!.slice('--completion-transport='.length);
+  assert.ok(scenario === 'report' || scenario === 'maintenance', 'unsupported completion fixture scenario');
+  assert.ok(transport === 'palette' || transport === 'mcp-proxy', 'unsupported completion fixture transport');
+  return { maintenance: scenario === 'maintenance', transport };
+}
+
 type CooperativeLoadedPins = { observer: string; runtime: string; configuration: string };
 type CooperativeTaskEndpoint = { id: string; atMs: number };
 

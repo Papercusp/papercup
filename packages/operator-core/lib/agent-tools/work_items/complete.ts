@@ -110,6 +110,7 @@ import {
   completionSettlementManifest,
   completionTreeStamp,
   completionTreeStampForEvidence,
+  completionMaintenancePaths,
   unresolvableContentIdentityPaths,
   unprovenContentIdentityPaths,
   describeUnprovenContentIdentity,
@@ -416,7 +417,7 @@ const CHANGE_KIND_CLOSE_DECLARATION_CALL_CONSTRAINT =
 const CHANGE_KIND_CLOSE_REASON_CALL_CONSTRAINT =
   'First close-time declaration needs this reason (why absent at create/claim/checkpoint); unexplained narrowing or a UI-file mismatch leaves the close proposed.';
 const CHANGE_KIND_PROOF_CALL_CONSTRAINT =
-  'Multi-kind close needs one `completion.kindEvidence` entry per declared kind. Required fields: ui=testsRun+testResult+artifacts+build+states+distinguishingChecks; service=testsRun+testResult+build; migration=database+testsRun+testResult; background-job=runtime+testsRun+testResult; logic/test-only=testsRun+testResult; config/docs=readBack. Single-kind may reuse root evidence when allowed; no-code-change needs empty root filesChanged/filesDeleted.';
+  'Multi-kind close needs one `completion.kindEvidence` entry per declared kind. Required fields: ui=testsRun+testResult+artifacts+build+states+distinguishingChecks; service=testsRun+testResult+build; migration=database+testsRun+testResult; background-job=runtime+testsRun+testResult; logic/test-only=testsRun+testResult; config/docs=readBack; filesystem-maintenance=maintenance.targets with exact path, realPath, identity, operation, preservation, readBack, authority and safety. Mixed maintenance/source work retains repository proof and settlement. Single-kind may reuse root evidence when allowed; no-code-change needs empty root filesChanged/filesDeleted.';
 const changeKindsCloseField = () =>
   changeKindsArg().optional().meta({ 'x-papercusp-call-constraint': CHANGE_KIND_CLOSE_DECLARATION_CALL_CONSTRAINT });
 const changeKindReasonCloseField = () =>
@@ -3070,6 +3071,12 @@ export interface FinishWorkReceipt {
   planItemReflection?: string;
   /** True when a live plan-item claim blocked the terminal reflection and must be coordinated before replay. */
   planItemClaimConflict?: boolean;
+  /** Exact readback for every linked item; scalar planItem is their aggregate. */
+  planItems?: Array<FinishPlanStamp & {
+    status: string;
+    reflection?: string;
+    claimRelease: FinishWorkReceipt['claimRelease'];
+  }>;
   /** Work-items restored after the reflected plan status cleared their dependency. */
   dependentRetry?: string[];
   claimRelease: 'not-linked' | 'released-or-absent' | 'failed';
@@ -3082,6 +3089,33 @@ function finishPlanStamp(workItem: { payload?: unknown }): FinishPlanStamp | nul
   if (!stamp?.plan_slug || !stamp.item_id || !stamp.harness_slug) return null;
   if (!/^P-\d{3,}$/.test(stamp.item_id)) return null;
   return stamp as FinishPlanStamp;
+}
+
+/** Run stamps name an execution instance; unstamped canonical nodes name source items. */
+function finishPlanStamps(workItem: {
+  payload?: unknown;
+  harness?: unknown;
+  sourcePlanSlug?: unknown;
+  sourcePlanItemIds?: unknown;
+}): FinishPlanStamp[] {
+  const stamp = finishPlanStamp(workItem);
+  if (stamp) return [stamp];
+  const ids = workItem.sourcePlanItemIds;
+  if (ids == null) return [];
+  if (!Array.isArray(ids)) throw new Error('Invalid sourcePlanItemIds: expected an array of complete P-NNN identities.');
+  if (ids.length === 0) return [];
+  if (typeof workItem.sourcePlanSlug !== 'string' || !workItem.sourcePlanSlug ||
+      typeof workItem.harness !== 'string' || !workItem.harness) {
+    throw new Error('Source plan items require both sourcePlanSlug and harness for finish reflection.');
+  }
+  const planSlug = workItem.sourcePlanSlug;
+  const harnessSlug = workItem.harness;
+  return [...new Set(ids)].map((itemId) => {
+    if (typeof itemId !== 'string' || !/^P-\d{3,}$/.test(itemId)) {
+      throw new Error(`Invalid source plan item identity: ${JSON.stringify(itemId)}; no identity was shortened or omitted.`);
+    }
+    return { plan_slug: planSlug, item_id: itemId, harness_slug: harnessSlug };
+  });
 }
 
 /**
@@ -3302,7 +3336,7 @@ export async function synchronizeFinishWork(
   const readPlanItemStatus = deps.readPlanItemStatus ?? readCommittedPlanItemStatus;
   const state = String(opts.workItem.state ?? '').toLowerCase();
   const reflected = reflectedTerminalStatus(state);
-  const stamp = finishPlanStamp(opts.workItem);
+  const stamps = finishPlanStamps(opts.workItem);
   const errors: string[] = [];
   // A first close stamps authority from the legacy/null baseline and remains an
   // idempotent finish operation. A replay that changes an existing judgement is
@@ -3341,7 +3375,11 @@ export async function synchronizeFinishWork(
   let planItemClaimConflict = false;
   let dependentRetry: string[] | undefined;
   let claimRelease: FinishWorkReceipt['claimRelease'] = 'not-linked';
-  if (stamp && reflected) {
+  const planItems: NonNullable<FinishWorkReceipt['planItems']> = [];
+  for (const stamp of reflected ? stamps : []) {
+    planItem = 'not-linked';
+    planItemReflection = undefined;
+    claimRelease = 'not-linked';
     const fireSetStatus = () => fire({
       fire: 'plans:set-status',
       args: {
@@ -3418,7 +3456,7 @@ export async function synchronizeFinishWork(
           ) {
             // `complete:false` tells the caller the saga did not converge (retry-safe).
             planItem = 'failed';
-            planItemClaimConflict = isClaimConflictReactionBody(body);
+            planItemClaimConflict ||= isClaimConflictReactionBody(body);
             errors.push(
               `plan-item reflection did not commit: ${stamp.plan_slug}#${stamp.item_id} is ` +
                 `'${committedStatus}', not '${reflected}'; plans:set-status returned ` +
@@ -3426,7 +3464,7 @@ export async function synchronizeFinishWork(
             );
           }
           if (committedStatus === reflected) {
-            dependentRetry = await retryClearedDependentWorkItems(stamp, opts.id);
+            dependentRetry = [...new Set([...(dependentRetry ?? []), ...await retryClearedDependentWorkItems(stamp, opts.id)])];
           }
         } else {
           planItem = 'failed';
@@ -3459,6 +3497,16 @@ export async function synchronizeFinishWork(
       claimRelease = 'failed';
       errors.push(`claim release failed: ${releaseResult.error ?? 'unknown error'}`);
     }
+    planItems.push({ ...stamp, status: planItem, claimRelease,
+      ...(planItemReflection ? { reflection: planItemReflection } : {}) });
+  }
+  if (planItems.length > 0) {
+    const statuses = new Set(planItems.map((item) => item.status));
+    planItem = statuses.has('failed') ? 'failed' : statuses.size === 1 ? planItems[0]!.status : 'mixed';
+    claimRelease = planItems.some((item) => item.claimRelease === 'failed') ? 'failed' : 'released-or-absent';
+    planItemReflection = planItems.length === 1 ? planItems[0]!.reflection : planItems
+      .filter((item) => item.reflection)
+      .map((item) => `${item.plan_slug}#${item.item_id}: ${item.reflection}`).join('; ') || undefined;
   }
 
   const complete =
@@ -3476,6 +3524,7 @@ export async function synchronizeFinishWork(
     completionEvidenceStored: opts.completionEvidenceStored,
     checkpointCleared,
     planItem,
+    ...(planItems.length ? { planItems } : {}),
     ...(planItemReflection ? { planItemReflection } : {}),
     ...(planItemClaimConflict ? { planItemClaimConflict: true } : {}),
     ...(dependentRetry && dependentRetry.length > 0 ? { dependentRetry } : {}),
@@ -5108,6 +5157,7 @@ async function completeOneTracked(
   // Keep this object separate from `completionEvidenceForGate`: narrative fields
   // describe the close, but must never promote an evidence-free close to `committed`.
   const completionNarrative: PersistedCompletionEvidence = {};
+  if (it.completion.kindEvidence?.length) completionNarrative.kindEvidence = it.completion.kindEvidence;
   if (it.completion.rootCauseVerification) {
     completionNarrative.rootCauseVerification = it.completion.rootCauseVerification;
   }
@@ -5678,6 +5728,11 @@ async function completeOneTracked(
         },
         repoRoot: uiRepoRoots[0] ?? null,
         harnessSlug: existing.harness ?? null,
+        resolveMaintenancePaths: async () => completionMaintenancePaths(
+          completionEvidenceForGate ?? {},
+          registeredRepoRoots ?? await completionRepoRootsForWorkspace(ctx.workspaceId, declaredCompletionPaths),
+          treeStamp,
+        ),
         // P-004 / R-4: lazily loaded, because the clone re-scan pulls in the TypeScript compiler.
         // Without a harness or repository root the resolver is omitted and a 'refactor' close is
         // refused (fail closed).
@@ -5767,25 +5822,29 @@ async function completeOneTracked(
   const planLanePreviewError = it.validateOnly && closeIntentRequested && effectiveState
     ? await workItemPlanLaneTransitionRefusal(existing, effectiveState) ?? undefined
     : undefined;
-  const planStampForPreview =
-    it.validateOnly && closeIntentRequested && effectiveState ? finishPlanStamp(existing) : null;
   const reflectedPlanStatus = effectiveState ? reflectedTerminalStatus(effectiveState) : null;
   let draftPlanStartGatePreviewError: string | undefined;
-  if (planStampForPreview && reflectedPlanStatus === 'done' && !planLanePreviewError) {
+  // Preflight both previews and real closes. Otherwise an unstamped canonical node can
+  // become terminal before its plan refuses stale discovery/activation evidence.
+  if (closeIntentRequested && reflectedPlanStatus === 'done' && !planLanePreviewError) {
     try {
-      const { checkDraftItemStartGateLive } = await import('../plans/draft-item-start-gate');
-      const refusal = await checkDraftItemStartGateLive({
-        workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
-        harnessSlug: planStampForPreview.harness_slug,
-        slug: planStampForPreview.plan_slug,
-        itemId: planStampForPreview.item_id,
-        toStatus: reflectedPlanStatus,
-      });
-      if (refusal) draftPlanStartGatePreviewError = refusal.error + ': ' + refusal.hint;
+      for (const stamp of finishPlanStamps(existing)) {
+        const { checkDraftItemStartGateLive } = await import('../plans/draft-item-start-gate');
+        const refusal = await checkDraftItemStartGateLive({
+          workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
+          harnessSlug: stamp.harness_slug,
+          slug: stamp.plan_slug,
+          itemId: stamp.item_id,
+          toStatus: reflectedPlanStatus,
+        });
+        if (refusal) {
+          draftPlanStartGatePreviewError = `${stamp.plan_slug}#${stamp.item_id}: ${refusal.error}: ${refusal.hint}`;
+          break;
+        }
+      }
     } catch (error) {
       draftPlanStartGatePreviewError =
-        'Could not evaluate the plan-item activation precondition for ' +
-        planStampForPreview.plan_slug + '#' + planStampForPreview.item_id + ': ' +
+        'Could not evaluate the plan-item activation precondition: ' +
         (error instanceof Error ? error.message : String(error));
     }
   }
@@ -5957,6 +6016,8 @@ async function completeOneTracked(
   } else if (changeKindProofError) {
     // P-002 / D-002: refuse the terminal transition, keep the completion record.
     stateError = changeKindProofError;
+  } else if (draftPlanStartGatePreviewError) {
+    stateError = draftPlanStartGatePreviewError;
   } else if (effectiveState) {
     try {
       const runtimePayload = existing.payload && typeof existing.payload === 'object' && !Array.isArray(existing.payload)

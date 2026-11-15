@@ -36,6 +36,7 @@ import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
 import type { ChangeKindsView } from './work-item-change-kinds';
 import { renderStackProofGuidance } from './change-kind-stack';
 import { missingRefactorProof, type RefactorFactsResolver } from './change-kind-refactor-proof';
+import type { MaintenancePathClassification } from './agent-tools/work_items/completion-freshness';
 
 /**
  * D-003: claims that began before this instant and carry no declaration close with a warning
@@ -79,6 +80,8 @@ export interface ChangeKindProofDeps {
    * detector re-scan). Omitted ⇒ a 'refactor' close is refused (fail closed), never waved through.
    */
   resolveRefactorFacts?: RefactorFactsResolver;
+  /** Server-side canonical path classification. Missing/failed observations refuse maintenance. */
+  resolveMaintenancePaths?: () => Promise<MaintenancePathClassification>;
 }
 
 export interface ChangeKindMissingProof {
@@ -311,6 +314,37 @@ function checkNoCodeChange(root: RootCompletionProof): string[] {
     : [`an empty filesChanged list — this close lists ${changed.length} changed or deleted path(s)`];
 }
 
+async function checkMaintenance(e: ChangeKindEvidence, singleKind: boolean, deps: ChangeKindProofDeps): Promise<string[]> {
+  const missing: string[] = [];
+  let paths: MaintenancePathClassification | undefined;
+  try { paths = await deps.resolveMaintenancePaths?.(); } catch { /* unknown fails closed below */ }
+  if (!paths || paths.unknown.length) {
+    return ['known canonical managed-checkout classification for every operation target (missing or unknown classification refuses)'];
+  }
+  if (!paths.external.length) missing.push('at least one verified external filesystem target');
+  if (paths.repository.length && singleKind) {
+    missing.push('repository change kinds and their proofs for mixed repository/external work; maintenance does not exempt source or settlement');
+  }
+  const targets = e.maintenance?.targets ?? [];
+  const usable = (value: string | undefined) => Boolean(value?.trim() && !/^(?:unknown|unverified|not[- ]measured|n\/?a|none|pending|todo)$/i.test(value.trim()));
+  for (const path of paths.external) {
+    const matching = targets.filter((target) => target.path === path.path);
+    if (matching.length !== 1) {
+      missing.push(`one maintenance target proof for ${path.path}`);
+      continue;
+    }
+    const target = matching[0]!;
+    if (target.realPath !== path.realPath) missing.push(`observed realPath for ${path.path}`);
+    for (const key of ['identity', 'operation', 'preservation', 'readBack', 'authority', 'safety'] as const) {
+      if (!usable(target[key])) missing.push(`maintenance ${key} evidence for ${path.path}`);
+    }
+  }
+  if (targets.some((target) => !paths!.external.some(({ path }) => path === target.path))) {
+    missing.push('maintenance proofs only for the declared, canonically external targets');
+  }
+  return missing;
+}
+
 /** The proof gaps for one kind. Pure apart from the injected artifact readers. */
 export async function missingProofForKind(
   kind: ChangeKind,
@@ -351,6 +385,9 @@ export async function missingProofForKind(
       break;
     case 'no-code-change':
       missing = checkNoCodeChange(root);
+      break;
+    case 'filesystem-maintenance':
+      missing = await checkMaintenance(e, singleKind, deps);
       break;
   }
   // R-3 makes the default actionable at the exact refusal point. Keep this advisory

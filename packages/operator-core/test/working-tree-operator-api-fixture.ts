@@ -22,7 +22,7 @@ import { userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, stopPrivateOperatorHost,
+import { buildPrivateOperatorApiBundle, privateOperatorApiBuildBudget, privateBundleRuntimeEnv, stopPrivateOperatorHost,
   waitForPrivateOperator } from './private-http-workspace-preflight';
 import { readProcessIdentity } from '../lib/process-identity';
 
@@ -95,7 +95,7 @@ async function main() {
     // snapshot commit as the bundle's source identity (bundle-host-common.sh),
     // so the private MCP surface has an attributable serving generation.
     const { path: bundle, sha256: bundleSha256 } = await buildPrivateOperatorApiBundle(root, evidenceDir,
-      { timeoutMs: 240_000, maxMs: 420_000, env: { ...e, PAPERCUSP_BUNDLE_SNAPSHOT_DIRTY: '1' } });
+      { ...privateOperatorApiBuildBudget(), env: { ...e, PAPERCUSP_BUNDLE_SNAPSHOT_DIRTY: '1' } });
     const hostEnv = privateBundleRuntimeEnv({ ...e });
     host = spawn(process.execPath, [bundle], { cwd: root, env: hostEnv, stdio: ['ignore', 'pipe', 'pipe'] });
     host.stdout!.on('data', chunk => process.stdout.write(chunk));

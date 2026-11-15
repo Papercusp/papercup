@@ -208,6 +208,69 @@ describe('synchronizeFinishWork plan-item reflection carries the coverage guard'
 // plan left only ONE plan_revisions row, and the losing complete still returned ok with
 // planItem:'todo'. `fire` reports dispatch success only, so plans:set-status's BODY-level
 // `{ ok:false, error:'busy' }` (plan-lock budget exhausted) read as a successful reflection.
+describe('synchronizeFinishWork canonical source-plan links (EI-28891215099029113)', () => {
+  async function finishSource(itemIds: string[], options: {
+    stamp?: typeof STAMP;
+    refuseItem?: string;
+  } = {}) {
+    const statuses = new Map(itemIds.map((id) => [id, 'todo']));
+    const fire = vi.fn(async ({ fire: verb, args }: FiredReaction) => {
+      if (verb === 'plans:set-status') {
+        if (args.item === options.refuseItem) {
+          return { ok: true as const, result: { ok: false, error: 'discovery_not_ready' } };
+        }
+        statuses.set(String(args.item), String(args.status));
+      }
+      return { ok: true as const };
+    });
+    const receipt = await synchronizeFinishWork({
+      id: 'WI-canonical',
+      workItem: {
+        state: 'done', harness: 'papercusp',
+        sourcePlanSlug: 'source-plan', sourcePlanItemIds: itemIds,
+        payload: options.stamp ? { plan_item: options.stamp } : {},
+      },
+      completionEvidenceStored: true, ctx,
+    }, {
+      fire: fire as never,
+      clearCheckpoint: vi.fn(async () => undefined) as never,
+      readPlanItemStatus: vi.fn(async (stamp: { item_id: string }) => statuses.get(stamp.item_id) ?? null),
+    });
+    return { receipt, statuses, calls: fire.mock.calls.map(([call]) => call) };
+  }
+
+  it.each([['P-001'], ['P-001', 'P-002'], ['P-003', 'P-001', 'P-002']])(
+    'reflects and releases every canonical source item in %j', async (...itemIds: string[]) => {
+      const { receipt, statuses, calls } = await finishSource(itemIds);
+      expect([...statuses.values()]).toEqual(itemIds.map(() => 'done'));
+      expect(calls.filter((call) => call.fire === 'plans:set-status').map((call) => call.args.item)).toEqual(itemIds);
+      expect(calls.filter((call) => call.fire === 'plan_items:release').map((call) => call.args.item)).toEqual(itemIds);
+      expect(receipt).toMatchObject({ complete: true, planItem: 'done', claimRelease: 'released-or-absent' });
+    },
+  );
+
+  it('retains a refusal on the last source item after earlier items converge', async () => {
+    const { receipt, statuses } = await finishSource(['P-001', 'P-002', 'P-003'], { refuseItem: 'P-003' });
+    expect(statuses.get('P-001')).toBe('done');
+    expect(statuses.get('P-003')).toBe('todo');
+    expect(receipt).toMatchObject({ complete: false, planItem: 'failed' });
+    expect(receipt.planItems?.map((item) => [item.item_id, item.status])).toEqual([
+      ['P-001', 'done'], ['P-002', 'done'], ['P-003', 'failed'],
+    ]);
+    expect(receipt.errors?.join(' ')).toContain('source-plan#P-003');
+    expect(receipt.errors?.join(' ')).toContain('discovery_not_ready');
+  });
+
+  it('keeps the run-instance stamp authoritative over source-template identities', async () => {
+    const { calls } = await finishSource(['P-001', 'P-002'], { stamp: STAMP });
+    expect(calls.filter((call) => call.fire === 'plans:set-status')).toEqual([
+      expect.objectContaining({ args: expect.objectContaining({
+        slug: STAMP.plan_slug, item: STAMP.item_id, harness: STAMP.harness_slug,
+      }) }),
+    ]);
+  });
+});
+
 describe('synchronizeFinishWork retries a body-level busy plan-lock refusal', () => {
   const busyBody = { ok: false, slug: STAMP.plan_slug, itemId: STAMP.item_id, error: 'busy', busy: [] };
 

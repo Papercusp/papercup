@@ -89,8 +89,8 @@ try {
       'sessions', '2026', '10', '22');
     const transcript = join(day, `rollout-2026-10-22T00-00-00-${nativeId}.jsonl`);
     await mkdir(day, { recursive: true });
-    // The strict verifier requires a known actual model before temporal gaps
-    // can be deferred. Establish that prerequisite through the real ingester.
+    // Start before even the first usage sample has been ingested. Completion
+    // must catch up this exact accepted transcript before judging its model.
     await recordDirectOperationModelAttestation(sql, binding.attestation, {
       requestId: randomUUID(), providerResponseId: 'private-baseline-response', backend: 'codex',
       provider: 'openai', requestedModel: 'gpt-5.6-sol', actualModel: 'gpt-5.6-sol',
@@ -104,9 +104,10 @@ try {
         last_token_usage: { input_tokens: 120, cached_input_tokens: 20,
           cache_write_input_tokens: 0, output_tokens: 17 } } } },
     ].map(record => JSON.stringify(record)).join('\n') + '\n');
-    const baseline = await ingestInteractiveUsage({ sessionIds: [nativeId] }, { sql, workspaceId });
-    assert.deepEqual(baseline.errors, []);
-    assert.equal(baseline.samples, 1);
+    const [beforeFirstClose] = await sql`SELECT count(*)::int AS samples
+      FROM harness_shared.agent_usage_samples
+      WHERE workspace_id = ${workspaceId} AND session_id = ${nativeId}`;
+    assert.equal(beforeFirstClose.samples, 0);
     await recordDirectOperationModelAttestation(sql, binding.attestation, {
       requestId: randomUUID(), providerResponseId: 'private-background-response', backend: 'codex',
       provider: 'openai', requestedModel: 'gpt-5.6-sol', actualModel: 'gpt-5.6-sol',
@@ -145,6 +146,10 @@ try {
     const close = () => setWorkItemState(itemId, 'done', { harness: harnessSlug, by: owner,
       completionAuthority: 'committed', outputPayload: output });
     await assert.rejects(close(), /unmatched request-grain/);
+    const [afterFirstClose] = await sql`SELECT count(*)::int AS samples
+      FROM harness_shared.agent_usage_samples
+      WHERE workspace_id = ${workspaceId} AND session_id = ${nativeId}`;
+    assert.equal(afterFirstClose.samples, 1, 'completion must ingest the first real transcript sample');
     assert.equal((await getWorkItem(itemId, harnessSlug))!.state, 'open');
     const retained = await retainDeferredOperationCompletion(sql, { item, ctx: original.ctx,
       state: 'done', output, completionEvidence: evidence, completionAuthority: 'committed',
@@ -243,6 +248,7 @@ try {
       workspaceId, pid: process.pid, hashes: sourceBefore, itemId, receiptId: handle.receiptId,
       invocationId: invocation.id, pendingEventId: retained.eventId, original: saved.body,
       before: { state: 'open', settlement: before }, after: { state: terminal.state, output },
+      firstUsageCatchup: { before: beforeFirstClose.samples, after: afterFirstClose.samples },
       controls, ingested: { samples: catchup.samples, errors: ingested.errors }, countsBefore, countsAfter }));
   });
 } finally {

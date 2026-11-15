@@ -7,7 +7,8 @@ import { createServer } from 'node:net';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
-import { assertPrivateManagedTaskRoute, preparePrivateOperatorApiBundle } from '../test/private-http-workspace-preflight';
+import { assertPrivateManagedTaskRoute, preparePrivateOperatorApiBundle,
+  privateCompletionFixtureArgs, parsePrivateCompletionFixtureControls } from '../test/private-http-workspace-preflight';
 import { isolatedRuntimeEvidenceKeys, isolatedRuntimeInheritedEnvironment, privatePgSeedEnvironment, privatePgCommandEnvironment } from '../../../scripts/lib/with-test-pg-env.mjs';
 import { executedSourceMapArmed } from '@papercusp/test-config/vitest-config';
 
@@ -130,6 +131,38 @@ describe('private runtime inherited environment', () => {
       environment: { LC_ALL: 'C' },
       discardedKeys: ['LC_TOKEN', 'NODE_PROVIDER_SECRET', 'PAPERCUSP_TEST_RUNS_DB_URL_COPY', 'PC_UNKNOWN_DESTINATION'],
     });
+  });
+});
+
+describe('private completion fixture controls', () => {
+  it.each([
+    { maintenance: false, transport: 'palette' as const },
+    { maintenance: true, transport: 'palette' as const },
+    { maintenance: false, transport: 'mcp-proxy' as const },
+    { maintenance: true, transport: 'mcp-proxy' as const },
+  ])('retains explicit selection after the real environment scrub: %j', controls => {
+    const argv = privateCompletionFixtureArgs(controls);
+    const { environment, discardedKeys } = isolatedRuntimeInheritedEnvironment({
+      STAGING_FIRST_HTTP_SCENARIO: 'ambient-other-scenario', STAGING_FIRST_HTTP_MAINTENANCE: '1',
+      STAGING_FIRST_HTTP_EVIDENCE_DIR: '/owned-proof', PAPERCUSP_SID: 'live-owner',
+      PAPERCUSP_OPERATOR_URL: 'https://live.invalid',
+    }, isolatedRuntimeEvidenceKeys('PAPERCUSP_TEST_OWNED_DB_DIR'));
+    expect(environment).toEqual({ STAGING_FIRST_HTTP_EVIDENCE_DIR: '/owned-proof' });
+    expect(discardedKeys).toEqual(expect.arrayContaining([
+      'STAGING_FIRST_HTTP_SCENARIO', 'STAGING_FIRST_HTTP_MAINTENANCE', 'PAPERCUSP_SID', 'PAPERCUSP_OPERATOR_URL',
+    ]));
+    expect(parsePrivateCompletionFixtureControls([...argv, '--prepared-api-sha=owned'])).toEqual(controls);
+    expect(parsePrivateCompletionFixtureControls([])).toBeNull();
+  });
+  it.each([
+    ['--completion-scenario=maintenance'], ['--completion-transport=palette'],
+    ['--completion-scenario=unknown', '--completion-transport=palette'],
+    ['--completion-scenario=maintenance', '--completion-transport=unknown'],
+    ['--completion-scenario=report', '--completion-scenario=report', '--completion-transport=palette'],
+    ['--completion-scenario=report', '--completion-transport=palette', '--completion-transport=palette'],
+    ['--completion-unknown=1', '--completion-transport=palette'],
+  ])('rejects incomplete, unknown or duplicated controls %j', (...argv) => {
+    expect(() => parsePrivateCompletionFixtureControls(argv)).toThrow(/completion fixture/);
   });
 });
 

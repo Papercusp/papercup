@@ -23,6 +23,7 @@ export const CHANGE_KINDS = [
   'docs',
   'config',
   'test-only',
+  'filesystem-maintenance',
   'no-code-change',
 ] as const;
 
@@ -112,6 +113,17 @@ export const CHANGE_KIND_CATALOG: Readonly<Record<ChangeKind, ChangeKindSpec>> =
     covers: 'Documentation, prompts read by people, comments with no behavior change.',
     proof: ['the changed document read back from where readers get it'],
     proofWeight: 1,
+  },
+  'filesystem-maintenance': {
+    kind: 'filesystem-maintenance',
+    covers: 'Operational preservation, relocation or removal of filesystem data outside managed source checkouts; grants no authority to perform the operation.',
+    proof: [
+      'actual filesChanged/filesDeleted classified by the canonical managed-checkout resolver',
+      'each external target: resolved path and measured identity, operation, preserved-copy and readback evidence',
+      'explicit operation authority and safety evidence; missing or unknown evidence refuses',
+      'mixed repository work also carries its repository kind proofs and Git settlement',
+    ],
+    proofWeight: 4,
   },
   'no-code-change': {
     kind: 'no-code-change',
@@ -267,6 +279,18 @@ export const ChangeKindEvidenceSchema = z
     readBack: nonEmpty()
       .optional()
       .describe('config: effective value read back from its consumer. docs: document read back at its delivery surface.'),
+    maintenance: z.object({
+      targets: z.array(z.object({
+        path: nonEmpty().describe('Exact external filesChanged/filesDeleted entry.'),
+        realPath: nonEmpty().describe('Observed resolved target (resolved parent plus basename after removal).'),
+        identity: nonEmpty().describe('Measured target identity, e.g. device/inode or retained manifest identity.'),
+        operation: z.enum(['copy', 'move', 'remove', 'update']),
+        preservation: nonEmpty().describe('Preserved-copy location, identity and verification evidence.'),
+        readBack: nonEmpty().describe('Observed post-operation result, including absence for removal.'),
+        authority: nonEmpty().describe('Existing authorization reference; this evidence grants no new authority.'),
+        safety: nonEmpty().describe('Safety checks performed before the operation, including irreversible effects.'),
+      }).strict()).min(1).max(60),
+    }).strict().optional().describe('filesystem-maintenance: one proof for each external changed/deleted target.'),
     landingCommit: nonEmpty().optional().describe('refactor: landing commit sha.'),
     beforeRuns: z
       .array(z.number().int().positive())

@@ -1,11 +1,13 @@
 /** EI-27984315103577037: real report-only completion on the existing private API. */
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, realpath, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { getOrgPg } from '@papercusp/db-org';
 import { getWorkItem } from '../lib/work-items';
+import { ChangeKindEvidenceSchema } from '../lib/change-kind-catalog';
 import { CompletionWorkOutcomeSchema, TERMINAL_COMPLETION_EVIDENCE_KEY,
   type CompletionRecord } from '../lib/coord-lifecycle/records';
 import { connectAgentMcp } from '../lib/agent-mcp-client';
@@ -13,7 +15,7 @@ import { readSuperuserToken } from '../lib/superuser-token';
 
 type Options = { workspace: string; harness: string; base: string;
   headers: Record<string, string>; evidenceDir: string; expectedSha: string;
-  transport?: 'palette' | 'mcp-proxy' };
+  transport?: 'palette' | 'mcp-proxy'; maintenance?: boolean };
 
 const reportBody = '# Private completion control\n\n'
   + 'This disposable report verifies publication and exact readback before a report-only work-item close.\n';
@@ -51,6 +53,7 @@ export async function measurePrivateCompletionScenario(o: Options) {
   let proxy: import('node:http').Server | undefined;
   let client: Awaited<ReturnType<typeof connectAgentMcp>>['client'] | undefined;
   const priorFailureLog = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+  let maintenanceDir: string | undefined;
   const proxyLogs: string[] = [];
   let invalidBearerRejection: string | undefined;
   try {
@@ -143,7 +146,10 @@ export async function measurePrivateCompletionScenario(o: Options) {
   const healthBefore = await health();
   const identity = await invoke('coord:whoami', {});
   assert.ok(identity.ownerId, 'use the server-qualified actor, never callerSid as authority');
-  const created = await invoke('work_items:create', createArgs);
+  const created = await invoke('work_items:create', o.maintenance ? { ...createArgs,
+    title: 'Private filesystem preservation completion control',
+    body: 'Preserve owned disposable data, remove the original only after comparison, and retain target/authority/safety proof.',
+    changeKinds: ['filesystem-maintenance'] } : createArgs);
   const item = created.results?.find((row: any) => row.ok === true);
   assert.ok(item?.id, JSON.stringify(created));
   assert.equal(item.workItem.assignee, identity.ownerId);
@@ -157,8 +163,47 @@ export async function measurePrivateCompletionScenario(o: Options) {
   assert.equal(readback.report.body_md, reportBody);
   assert.equal(readback.report.visibility, 'workspace');
   const verifiedBeforeCloseAtMs = performance.now();
-  const expectedCompletion = { ...completion,
+  const expectedCompletion: typeof completion & Pick<CompletionRecord, 'kindEvidence' | 'filesDeleted'> = { ...completion,
     summary: `Published and read back disposable report ${published.report_id}.` };
+  if (o.maintenance) {
+    maintenanceDir = await mkdtemp(join(tmpdir(), 'private-maintenance-completion-'));
+    const source = join(maintenanceDir, 'source');
+    const copy = join(maintenanceDir, 'copy');
+    await writeFile(source, 'private maintenance preserved bytes\n', { flag: 'wx' });
+    const original = await stat(source);
+    const originalRealPath = await realpath(source);
+    await copyFile(source, copy);
+    assert.deepEqual(await readFile(copy), await readFile(source));
+    await copyFile(copy, join(o.evidenceDir, 'maintenance-preserved.txt'));
+    await unlink(source);
+    await assert.rejects(stat(source), { code: 'ENOENT' });
+    const destination = await stat(copy);
+    const common = { preservation: `full bytes compared before unlink; retained copy ${join(o.evidenceDir, 'maintenance-preserved.txt')}`,
+      authority: 'isolated fixture owns these disposable paths and explicitly authorizes this copy/removal',
+      safety: 'source device/inode measured; full copy compared before unlink; paths belong only to this fixture' };
+    expectedCompletion.summary = 'Preserved disposable filesystem data and verified removal of its original.';
+    expectedCompletion.testsRun = 'copy full bytes, compare, unlink owned original, independently stat/read back targets';
+    expectedCompletion.testResult = 'copy bytes equal; original stat returned ENOENT; preserved copy read back';
+    expectedCompletion.filesChanged = [copy];
+    expectedCompletion.filesDeleted = [source];
+    expectedCompletion.verification = { workOutcome: 'introduced-change' };
+    // Apply the same normalization as the HTTP contract before asserting exact storage.
+    expectedCompletion.kindEvidence = [ChangeKindEvidenceSchema.parse({ kind: 'filesystem-maintenance', maintenance: { targets: [
+      { path: copy, realPath: await realpath(copy), identity: `device=${destination.dev} inode=${destination.ino}`,
+        operation: 'copy', readBack: (await readFile(copy)).toString(), ...common },
+      { path: source, realPath: originalRealPath, identity: `device=${original.dev} inode=${original.ino}`,
+        operation: 'remove', readBack: 'stat(source) returned ENOENT after full copy verification', ...common },
+    ] } })];
+    const incomplete = structuredClone(expectedCompletion);
+    incomplete.kindEvidence![0]!.maintenance!.targets[1]!.authority = 'unknown';
+    const refused = await invoke('work_items:complete', { id: item.id, state: 'done', assumptions: 'none', completion: incomplete });
+    const refusal = refused.results?.find((row: any) => row.id === item.id);
+    assert.equal(refusal?.ok, false, JSON.stringify(refused));
+    assert.match(refusal?.stateError ?? '', /authority evidence/);
+    const stillOpen = await getWorkItem(item.id, o.harness);
+    assert.notEqual(stillOpen?.state, 'done');
+    assert.equal(stillOpen?.assignee, identity.ownerId);
+  }
   const closeStartedAtMs = performance.now();
   const closed = await invoke('work_items:complete', { id: item.id, state: 'done',
     assumptions: 'none', completion: expectedCompletion });
@@ -177,9 +222,19 @@ export async function measurePrivateCompletionScenario(o: Options) {
   assert.equal(evidence?.summary, expectedCompletion.summary);
   // completionEvidenceFromRecord deliberately omits empty file arrays. The
   // request receipt retains the explicit [], and storage must name no paths.
-  assert.deepEqual(evidence?.filesChanged ?? [], []);
-  assert.equal(evidence?.testResult, completion.testResult);
-  assert.equal(evidence?.workOutcome, completion.verification?.workOutcome);
+  assert.deepEqual(evidence?.filesChanged ?? [], expectedCompletion.filesChanged);
+  assert.equal(evidence?.testResult, expectedCompletion.testResult);
+  assert.equal(evidence?.workOutcome, expectedCompletion.verification?.workOutcome);
+  if (o.maintenance) {
+    assert.deepEqual(evidence?.filesDeleted, expectedCompletion.filesDeleted);
+    assert.deepEqual(evidence?.kindEvidence, expectedCompletion.kindEvidence);
+    const tree = evidence?.treeStamp as { contentIdentity: Array<Record<string, unknown>> };
+    assert.deepEqual(tree.contentIdentity, [
+      { path: expectedCompletion.filesChanged![0], workingTreeBlobSha: null, headBlobSha: null, outOfRepoArtifact: true },
+      { path: expectedCompletion.filesDeleted![0], workingTreeBlobSha: null, headBlobSha: null, deletion: true, outOfRepoArtifact: true },
+    ]);
+    assert.equal(evidence?.settlementManifest, undefined, 'external contents must never gain Git-content proof');
+  }
   const completionElapsedMs = requests.at(-1)!.elapsedMs;
   let replay: { tagged: boolean; originalHandlerExecutions: number; elapsedMs: number } | undefined;
   if (client) {
@@ -209,7 +264,7 @@ export async function measurePrivateCompletionScenario(o: Options) {
     reportId: published.report_id, reportBodySha256: createHash('sha256').update(reportBody).digest('hex'),
     reportVerifiedBeforeClose: verifiedBeforeCloseAtMs <= closeStartedAtMs,
     verifiedBeforeCloseAtMs, closeStartedAtMs, closeCompletedAtMs,
-    transport, completionElapsedMs, replay, invalidBearerRejection, healthBefore, healthAfter, requests,
+    transport, maintenanceVerified: o.maintenance === true, completionElapsedMs, replay, invalidBearerRejection, healthBefore, healthAfter, requests,
     scope: transport === 'mcp-proxy'
       ? 'Current-build production MCP proxy and bearer-authenticated MCP host with private PostgreSQL; excludes historical shared-database pressure and native CLI launch.'
       : 'Current-build palette HTTP dispatch with private PostgreSQL; excludes original MCP proxy/native-auth queue.' };
@@ -218,6 +273,7 @@ export async function measurePrivateCompletionScenario(o: Options) {
     `private report-only completion exceeded the existing interactive latency budget: ${receipt.completionElapsedMs}ms`);
   return receipt;
   } finally {
+    if (maintenanceDir) await rm(maintenanceDir, { recursive: true, force: true });
     await client?.close();
     if (proxy) await new Promise<void>(done => { proxy!.close(() => done()); proxy!.closeAllConnections(); });
     if (transport === 'mcp-proxy') await writeFile(join(o.evidenceDir, 'completion-proxy.log'), proxyLogs.join('\n'));

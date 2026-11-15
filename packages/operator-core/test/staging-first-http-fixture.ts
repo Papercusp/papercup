@@ -17,6 +17,7 @@ import { readServingGeneration } from '../lib/serving-generation';
 import { assertPrivateMcpSourceIdentity, assertPrivateMcpToolsListGeneration, buildPrivateOperatorApiBundle,
   privateBundleRuntimeEnv, privateNativeDockerHost, waitForPrivateOperator, stopPrivateOperatorHost,
   qualifyCommittedReaderSource, observeCommittedReaderLoadedSources, retainCommittedReaderWorkerEnvironment,
+  parsePrivateCompletionFixtureControls,
   resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle, resolvePreparedPrivateApiSourceSha } from './private-http-workspace-preflight';
 import { captureIsolatedWorker, codexManagedToolsNativeProofOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerReceipt, retainIsolatedWorkerProgress } from './isolated-integration-proof';
 import { measurePrivateUnrelatedCheckpointScenario } from './private-unrelated-write-http-scenario';
@@ -56,6 +57,11 @@ async function stopHost(afterExit?: () => Promise<void>) {
 
 async function main() {
   const e = process.env;
+  const completionControls = parsePrivateCompletionFixtureControls(process.argv.slice(2));
+  if (completionControls) {
+    e.STAGING_FIRST_HTTP_SCENARIO = completionControls.transport === 'mcp-proxy' ? 'private-completion-mcp' : 'private-completion';
+    e.STAGING_FIRST_HTTP_MAINTENANCE = completionControls.maintenance ? '1' : '0';
+  }
   const workspace = e.PAPERCUSP_WORKSPACE_ID!;
   const base = e.PAPERCUSP_OPERATOR_URL!;
   assert.match(workspace, /^test-runtime-/);
@@ -213,6 +219,10 @@ async function main() {
   }
   const bundleBytes = readFileSync(bundle);
   assert.ok(bundleBytes.includes(Buffer.from('staging-first-activation-guard.ts')), 'guard must be in the executed bundle');
+  if (completionControls?.maintenance) {
+    assert.ok(bundleBytes.includes(Buffer.from('maintenance does not exempt source or settlement')),
+      'maintenance completion proof must be in the executed bundle');
+  }
   if (isCommittedReader) assert.ok(bundleBytes.includes(Buffer.from('committed-tree-reader.ts')),
     'committed reader must be in the executed bundle');
   const bundleSha256 = createHash('sha256').update(bundleBytes).digest('hex');
@@ -466,6 +476,7 @@ async function main() {
     const receipt = await (await import('./private-completion-http-scenario')).measurePrivateCompletionScenario({
       workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
       transport: e.STAGING_FIRST_HTTP_SCENARIO === 'private-completion-mcp' ? 'mcp-proxy' : 'palette',
+      maintenance: e.STAGING_FIRST_HTTP_MAINTENANCE === '1',
     });
     await stopHost();
     console.log('PRIVATE_COMPLETION_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));

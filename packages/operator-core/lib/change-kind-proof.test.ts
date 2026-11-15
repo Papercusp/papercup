@@ -122,6 +122,12 @@ const FULL_PROOF: Record<ChangeKind, ChangeKindEvidence> = {
   },
   docs: { kind: 'docs', readBack: 'docs:get agent-insights/change-kinds shows the new proof table' },
   'no-code-change': { kind: 'no-code-change' },
+  'filesystem-maintenance': {
+    kind: 'filesystem-maintenance',
+    maintenance: { targets: [{ path: '/data/preserved', realPath: '/data/preserved', identity: 'device 8 inode 42',
+      operation: 'move', preservation: 'manifest 123; copy at /data/backup verified equal',
+      readBack: 'destination manifest matches; original removed', authority: 'owner directive 42', safety: 'copy verified before removal' }] },
+  },
 };
 
 function expectRefused(r: ChangeKindGateResult): Extract<ChangeKindGateResult, { outcome: 'refuse' }> {
@@ -139,6 +145,55 @@ function missingFor(r: Extract<ChangeKindGateResult, { outcome: 'refuse' }>, kin
   expect(m, `no missing-proof entry for ${kind}: ${r.error}`).toBeDefined();
   return m!.missing.join(' | ');
 }
+
+describe('filesystem-maintenance proof (EI-28792178135949315)', () => {
+  const external = [{ path: '/data/preserved', realPath: '/data/preserved' }];
+  const deps: ChangeKindProofDeps = { resolveMaintenancePaths: async () => ({ external, repository: [], unknown: [] }) };
+  const maintenanceInput = (entry: ChangeKindEvidence = FULL_PROOF['filesystem-maintenance']) => input({
+    kinds: ['filesystem-maintenance'], root: { filesChanged: ['/data/preserved'] }, kindEvidence: [entry],
+  });
+
+  it.each(['identity', 'operation', 'preservation', 'readBack', 'authority', 'safety'] as const)(
+    'refuses unknown %s evidence', async (key) => {
+      const entry = structuredClone(FULL_PROOF['filesystem-maintenance']);
+      (entry.maintenance!.targets[0] as unknown as Record<string, string>)[key] = 'unknown';
+      const result = expectRefused(await evaluateChangeKindGate(maintenanceInput(entry), deps));
+      expect(missingFor(result, 'filesystem-maintenance')).toContain(`${key} evidence`);
+    },
+  );
+  it('refuses missing targets, duplicate targets, and an unobserved resolved path', async () => {
+    for (const mutation of ['missing', 'duplicate', 'wrong-realpath'] as const) {
+      const entry = structuredClone(FULL_PROOF['filesystem-maintenance']);
+      if (mutation === 'missing') delete entry.maintenance;
+      if (mutation === 'duplicate') entry.maintenance!.targets.push(entry.maintenance!.targets[0]!);
+      if (mutation === 'wrong-realpath') entry.maintenance!.targets[0]!.realPath = '/different';
+      expectRefused(await evaluateChangeKindGate(maintenanceInput(entry), deps));
+    }
+  });
+  it('refuses missing, failed or unknown classification even before cutover', async () => {
+    for (const resolver of [undefined, async () => { throw new Error('unavailable'); },
+      async () => ({ external: [], repository: [], unknown: ['/data/preserved'] })]) {
+      expectRefused(await evaluateChangeKindGate({ ...maintenanceInput(), claimStartedAt: BEFORE_CUTOVER }, {
+        resolveMaintenancePaths: resolver,
+      }));
+    }
+  });
+  it('requires repository proof for mixed work, then retains both obligations', async () => {
+    const mixed = { resolveMaintenancePaths: async () => ({ external, repository: ['src/a.ts'], unknown: [] }) };
+    expectRefused(await evaluateChangeKindGate(maintenanceInput(), mixed));
+    const both = input({ kinds: ['logic', 'filesystem-maintenance'],
+      root: { filesChanged: ['src/a.ts', '/data/preserved'] },
+      kindEvidence: [FULL_PROOF.logic, FULL_PROOF['filesystem-maintenance']] });
+    expect(await evaluateChangeKindGate(both, mixed)).toMatchObject({ outcome: 'pass' });
+    both.kindEvidence = [{ kind: 'logic' }, FULL_PROOF['filesystem-maintenance']];
+    expect(missingFor(expectRefused(await evaluateChangeKindGate(both, mixed)), 'logic')).toContain('`testResult` reporting the run passed');
+  });
+  it.each(['src/a.ts', '/repo/src/a.ts', 'repo/src/a.ts'])('does not exempt repository path %s', async (path) => {
+    const repo = { resolveMaintenancePaths: async () => ({ external: [], repository: [path], unknown: [] }) };
+    expectRefused(await evaluateChangeKindGate(maintenanceInput(), repo));
+    expectRefused(await evaluateChangeKindGate(input({ kinds: ['no-code-change'], root: { filesChanged: [path] } }), repo));
+  });
+});
 
 describe('root completion proof representations', () => {
   it.each(['logic', 'test-only'] as const)('accepts command and result arrays for %s', async (kind) => {
@@ -569,7 +624,8 @@ describe('D-003 — claims taken before the cutover close with a warning', () =>
 
 describe('R-6 — a close that owes no reason and carries every catalog proof for each declared kind lands', () => {
   it.each(CHANGE_KINDS.map((k) => [k] as const))('a single-kind %s close with its full proof passes', async (kind) => {
-    const deps = kind === 'refactor' ? PASSING_REFACTOR_DEPS : {};
+    const deps = kind === 'refactor' ? PASSING_REFACTOR_DEPS : kind === 'filesystem-maintenance'
+      ? { resolveMaintenancePaths: async () => ({ external: [{ path: '/data/preserved', realPath: '/data/preserved' }], repository: [], unknown: [] }) } : {};
     const r = await evaluateChangeKindGate(input({ kinds: [kind], kindEvidence: [FULL_PROOF[kind]] }), deps);
     expect(r).toEqual({ applicable: true, outcome: 'pass', kinds: [kind] });
   });

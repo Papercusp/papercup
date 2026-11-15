@@ -22,7 +22,7 @@ import { z } from 'zod';
 // about the stored shape without a compile error — and so no runtime import cycle
 // is created between this module and the facts substrate.
 import { COMPLETION_CLAIMS_CONTRACT, CompletionClaimSchema } from '../completion-claims';
-import { kindEvidenceArg } from '../change-kind-catalog';
+import { kindEvidenceArg, type ChangeKindEvidence } from '../change-kind-catalog';
 import type { CompletionClaimBaseline } from '../completion-claim-recheck';
 import type { ResolvedAssumption } from '../agent-facts/assumptions';
 // A leaf module with no imports of its own, so this edge cannot form a cycle.
@@ -836,6 +836,8 @@ export type CompletionVerificationEvidence = z.infer<typeof CompletionVerificati
  * They never participate in completion-authority calculation.
  */
 export type PersistedCompletionEvidence = CompletionVerificationEvidence & {
+  /** Exact per-kind proof retained after close; descriptive, never authority by itself. */
+  kindEvidence?: ChangeKindEvidence[];
   /** Host-verified non-CLI producer outcome. Canonical writers replace caller
    * assertions with the minted receipt; this field alone grants no authority. */
   externalRuntimeVerification?: {

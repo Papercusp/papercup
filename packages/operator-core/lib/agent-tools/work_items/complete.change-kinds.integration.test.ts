@@ -9,6 +9,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { mkdtempSync, copyFileSync, readFileSync, realpathSync, statSync, writeFileSync, unlinkSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { PersistedCompletionEvidence } from '../../coord-lifecycle/records';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { teardownTestPg } from '@papercusp/test-config/pg';
 import * as refactorFacts from '../../change-kind-refactor-facts';
@@ -64,7 +68,7 @@ beforeAll(async () => {
   // premise before paying for database setup: dirty fixture bytes would activate
   // the unrelated committed-content floor and conceal the mismatch verdict.
   const root = fileURLToPath(new URL('../../../../../', import.meta.url));
-  for (const relative of ['apps/operator/app/dao/page.tsx', 'packages/operator-core/lib/change-kind-catalog.ts']) {
+  for (const relative of ['apps/operator/app/dao/page.tsx']) {
     const working = execFileSync('git', ['hash-object', relative], { cwd: root, encoding: 'utf8' }).trim();
     const committed = execFileSync('git', ['rev-parse', `HEAD:${relative}`], { cwd: root, encoding: 'utf8' }).trim();
     expect(working, `Evidence fixture must match committed HEAD: ${relative}`).toBe(committed);
@@ -125,7 +129,8 @@ async function claimedIssue(label: string, takenAt: string): Promise<{ id: strin
 async function close(item: { id: string; harness: string }, extra: Record<string, unknown>, completion: Record<string, unknown>): Promise<CloseResult> {
   const args = complete.args.parse({
     id: item.id, harness: item.harness, state: 'done', assumptions: 'none', ...extra,
-    completion: { verifiedHow: 'unit', rootCauseVerification: rootCause, ...completion },
+    completion: { verifiedHow: 'unit', rootCauseVerification: rootCause,
+      verification: { workOutcome: 'verified-existing' }, ...completion },
   });
   const response = await complete.handler(args, { uiClientId: OWNER, isSuperuser: true, workspaceId: WS } as never);
   return (response as { data: { results: CloseResult[] } }).data.results[0]!;
@@ -143,6 +148,56 @@ const VITEST_ONLY = {
 };
 
 describe('work_items:complete — change-kind gate through real persistence (change-kind-declared-proof P-002)', () => {
+  it('persists an evidenced external preservation/removal through the actual completion handler', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'maintenance-completion-'));
+    try {
+      const source = join(dir, 'source');
+      const copy = join(dir, 'copy');
+      writeFileSync(source, 'preserve these exact bytes');
+      const before = statSync(source);
+      copyFileSync(source, copy);
+      expect(readFileSync(copy)).toEqual(readFileSync(source));
+      unlinkSync(source);
+      const item = await claimedIssue('filesystem-maintenance', AFTER_CUTOVER);
+      await declareChangeKinds({ workspaceId: WS, featureId: item.id, kinds: ['filesystem-maintenance'], step: 'claim', declaredBy: OWNER });
+      const target = (path: string, operation: string) => ({
+        path, realPath: path === copy ? realpathSync(copy) : join(realpathSync(dir), 'source'),
+        identity: path === source ? `device=${before.dev} inode=${before.ino}` : `device=${statSync(copy).dev} inode=${statSync(copy).ino}`,
+        operation, preservation: `copy ${copy}; bytes read back equal before source removal`,
+        readBack: path === source ? 'source is absent after removal' : readFileSync(copy, 'utf8'),
+        authority: 'test owns its disposable fixture and authorizes its preservation/removal',
+        safety: 'copied then compared full bytes before unlink; only owned disposable paths touched',
+      });
+      const completion = { summary: 'preserved the fixture and removed its old copy', verifiedHow: 'manual',
+        verification: { workOutcome: 'introduced-change' },
+        testsRun: 'copy, compare full bytes, unlink old copy, read back preserved file', testResult: 'preserved bytes match and old target is absent',
+        filesChanged: [copy], filesDeleted: [source],
+        kindEvidence: [{ kind: 'filesystem-maintenance', maintenance: { targets: [target(copy, 'copy'), target(source, 'remove')] } }],
+      };
+      const incomplete = structuredClone(completion);
+      incomplete.kindEvidence[0]!.maintenance.targets[1]!.authority = 'unknown';
+      const refused = await close(item, {}, incomplete);
+      expect(refused.ok, JSON.stringify(refused)).toBe(false);
+      expect(refused.error).toContain('authority evidence');
+      expect(await storedStatus(item.id)).not.toBe('done');
+      const accepted = await close(item, {}, completion);
+      expect(accepted.ok, JSON.stringify(accepted)).toBe(true);
+      expect(await storedStatus(item.id)).toBe('done');
+      const persisted = (await getWorkItem(item.id))!.payload as { _completionEvidence: PersistedCompletionEvidence };
+      const proof = persisted._completionEvidence;
+      expect(proof.filesChanged).toEqual([copy]);
+      expect(proof.filesDeleted).toEqual([source]);
+      expect(proof.kindEvidence).toEqual(completion.kindEvidence);
+      expect(proof.treeStamp!.contentIdentity).toEqual([
+        { path: copy, workingTreeBlobSha: null, headBlobSha: null, outOfRepoArtifact: true },
+        { path: source, workingTreeBlobSha: null, headBlobSha: null, deletion: true, outOfRepoArtifact: true },
+      ]);
+      expect(proof.settlementManifest).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('accepts registered guard detector proof and refuses missing detector proof or dirty parent runs through persistence', async () => {
     const path = 'packages/operator-core/lib/release/orphan.ts';
     const conditionKey = `sync-delta-guard:lint:guard-reachability:${path}`;

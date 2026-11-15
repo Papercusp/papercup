@@ -43,7 +43,8 @@ it('settles an admitted isolated background operation only after actual transcri
         const proof = JSON.parse(line!);
         expect(proof).toMatchObject({ synthetic: true, before: { state: 'open',
           settlement: { pending: 1, completed: 0, errors: [] } }, after: { state: 'done',
-          output: { edition: 'immutable-private-edition' } }, ingested: { errors: [] } });
+          output: { edition: 'immutable-private-edition' } },
+          firstUsageCatchup: { before: 0, after: 1 }, ingested: { errors: [] } });
         expect(proof.controls).toEqual(['actor', 'item-stamp', 'claim-stamp', 'pin', 'output-snapshot',
           'deadline', 'model-policy', 'effort-policy']);
         expect(proof.countsAfter).toEqual(proof.countsBefore);

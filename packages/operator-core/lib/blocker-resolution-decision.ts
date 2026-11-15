@@ -295,6 +295,9 @@ export type BlockerEvidenceMeasurement =
    * predicate. Only an accountable plain-release deferral may retain it. */
   | { status: 'unmeasured-runtime'; ref: string; scope: UnmeasuredRuntimeScope; detail: string }
   | { status: 'unmeasured-plan-route'; ref: string; scope: UnmeasuredRuntimeScope; detail: string }
+  /** A system-generated plan-line park is deliberately not measured through
+   * the plan graph while a host-proven write only retains or adds blockers. */
+  | { status: 'unmeasured-parked-plan-lane'; ref: string; scope: UnmeasuredRuntimeScope; detail: string }
   | {
     status: 'available';
     condition?: 'satisfied' | 'pending';
@@ -333,6 +336,9 @@ export async function validateBlockerDecisionEvidence(
     /** Host-only scope, admitted by the exact release effect and actual writer
      * payload. Never inferred from a caller's evidence or disposition alone. */
     unmeasuredRuntimeDeferral?: UnmeasuredRuntimeScope;
+    /** Host-only scope for a system plan-line park when the exact writer can
+     * only retain blockers (plain release) or add a dependency edge. */
+    unmeasuredParkedPlanLaneDeferral?: UnmeasuredRuntimeScope;
     readEvidence: (ref: BlockerEvidenceRef) => Promise<BlockerEvidenceMeasurement>;
   },
 ): Promise<{ ok: true } | BlockerDecisionProblem> {
@@ -364,6 +370,7 @@ export async function validateBlockerDecisionEvidence(
   const missing: string[] = [];
   const obligations = new Set(context.obligationRefs.map(evidenceKey));
   const retainedRuntime = new Set<string>();
+  const retainedParkedPlanLane = new Set<string>();
   const scope = context.unmeasuredRuntimeDeferral;
   for (const [key, ref] of entries) {
     const value = measured.get(key)!;
@@ -375,6 +382,16 @@ export async function validateBlockerDecisionEvidence(
         scope.workspaceId === value.scope.workspaceId && scope.harnessSlug === value.scope.harnessSlug &&
         scope.workItemId === value.scope.workItemId && scope.custodianId === value.scope.custodianId) {
       retainedRuntime.add(key);
+      continue;
+    }
+    const parkedScope = context.unmeasuredParkedPlanLaneDeferral;
+    if (value.status === 'unmeasured-parked-plan-lane' && ref.kind === 'event' &&
+        /^plan-lane:[^#]+#P-\d{3,}$/.test(ref.ref) && parkedScope && obligations.has(key) &&
+        value.ref === ref.ref && input.disposition === 'defer' &&
+        parkedScope.custodianId === context.ownerId && parkedScope.workItemId === context.workItemId &&
+        parkedScope.workspaceId === value.scope.workspaceId && parkedScope.harnessSlug === value.scope.harnessSlug &&
+        parkedScope.workItemId === value.scope.workItemId && parkedScope.custodianId === value.scope.custodianId) {
+      retainedParkedPlanLane.add(key);
       continue;
     }
     if (value.status !== 'available') missing.push(`${ref.kind}:${ref.ref}: ${value.status} (${value.detail})`);
@@ -407,10 +424,15 @@ export async function validateBlockerDecisionEvidence(
     return missing.length ? refuse(missing) : { ok: true };
   }
   const value = (ref: BlockerEvidenceRef) => measured.get(evidenceKey(ref)) as Extract<BlockerEvidenceMeasurement, { status: 'available' }>;
-  const conditionIdentities = new Set(context.obligationRefs.map(ref => value(ref).conditionIdentity).filter(Boolean));
-  const relevant = (ref: BlockerEvidenceRef) => obligations.has(evidenceKey(ref)) ||
-    (Boolean(value(ref).conditionIdentity) && conditionIdentities.has(value(ref).conditionIdentity)) ||
-    value(ref).subjectWorkItemId === context.workItemId;
+  const availableObligations = context.obligationRefs.filter(ref => !retainedParkedPlanLane.has(evidenceKey(ref)));
+  const conditionIdentities = new Set(availableObligations.map(ref => value(ref).conditionIdentity).filter(Boolean));
+  const relevant = (ref: BlockerEvidenceRef) => {
+    const key = evidenceKey(ref);
+    if (retainedParkedPlanLane.has(key)) return false;
+    return obligations.has(key) ||
+      (Boolean(value(ref).conditionIdentity) && conditionIdentities.has(value(ref).conditionIdentity)) ||
+      value(ref).subjectWorkItemId === context.workItemId;
+  };
   if (input.disposition === 'self_resolve') {
     const satisfiedRelated = relatedRefs.filter(ref => value(ref).condition === 'satisfied');
     const relatedKeys = new Set(satisfiedRelated.map(evidenceKey));

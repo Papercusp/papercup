@@ -775,6 +775,15 @@ function readCustodyManifest(pin, read) {
   return JSON.parse(Buffer.concat(chunks, offset).toString('utf8'));
 }
 
+function reporterConfirmsNoModuleResults(payload) {
+  const nativeRun = payload?.nativeRun;
+  return nativeRun?.terminalHook === 'onTestRunEnd' &&
+    nativeRun.reason === 'failed' &&
+    Array.isArray(nativeRun.reportedModulePaths) && nativeRun.reportedModulePaths.length === 0 &&
+    Array.isArray(nativeRun.files) && nativeRun.files.length === 0 &&
+    Array.isArray(nativeRun.gaps) && nativeRun.gaps.includes('no-module-results');
+}
+
 /** Publish an immutable edition; failures preserve useful bytes and explicit gaps.
  * `expected` is the independent routing contract, including conditional objects.
  * Every auxiliary object needs a role and a producer-backed applicability state. */
@@ -883,6 +892,7 @@ function prepareNativeProofPacket(directory, input) {
     const group = { id: expected.id, attempt: expected.attempt, families: [], references: [],
       referenceArtifacts: [], referenceGaps: [], auxiliary: [],
       captureComplete: observed?.captureComplete ?? null };
+    let reporterNoModuleResults = false;
     if (!observed || observed.out !== expected.out) gaps.push(`${expected.id}:group-binding-missing`);
     if (observed?.captureComplete === false) gaps.push(`${expected.id}:child-stream-capture-incomplete`);
     for (const [family, suffix] of [['A', ''], ['B', '.modules'], ['C', '.native-processes'], ['D', '.processes']]) {
@@ -912,6 +922,8 @@ function prepareNativeProofPacket(directory, input) {
           if (refs.capsules) group.referenceCapsules = refs.capsules;
           group.referenceArtifacts = refs.artifacts;
           group.referenceGaps = refs.gaps;
+          reporterNoModuleResults = reporterConfirmsNoModuleResults(payload) &&
+            refs.artifacts.length === 0 && refs.gaps.length === 0;
           for (const reason of refs.gaps) gaps.push(expected.id + ':A:' + reason);
           for (const ref of group.referenceArtifacts)
             if (ref.codeRef !== join(resolve(`${expected.out}.modules`), `${ref.sha256}.js`))
@@ -942,9 +954,17 @@ function prepareNativeProofPacket(directory, input) {
         }
         entry.state = 'produced';
       } catch (error) {
-        entry.reason = String(error?.code ?? error?.message ?? error);
-        entry.state = entry.entries.length ? 'partial' : 'unavailable';
-        gaps.push(expected.id + ':' + family + ':' + entry.reason);
+        const reporterExcludedUnproducedModules = family === 'B' && reporterNoModuleResults &&
+          group.referenceArtifacts.length === 0 && group.referenceGaps.length === 0 &&
+          entry.entries.length === 0 && error?.code === 'ENOENT' && error?.path === expected.out + '.modules';
+        if (reporterExcludedUnproducedModules) {
+          entry.state = 'not-produced';
+          entry.reason = 'no-module-results';
+        } else {
+          entry.reason = String(error?.code ?? error?.message ?? error);
+          entry.state = entry.entries.length ? 'partial' : 'unavailable';
+          gaps.push(expected.id + ':' + family + ':' + entry.reason);
+        }
       }
       progress('family-complete', { group: expected.id, family, objectsRead: budget.objects, bytesRead: budget.bytes });
     }
@@ -1284,18 +1304,26 @@ export function verifyNativeProofPacket(directory, locator, contract) {
         family.family === 'D' && !custodyProcessSourcesRequested(expected);
       if (processNotRequested && (family.state !== 'not-requested' || family.entries.length ||
           family.reason !== 'process-source-preload-not-requested')) throw new Error('custody process applicability mismatch');
-      if (family.state !== 'produced' && !processNotRequested && expected.armed && expected.runner === 'vitest' &&
-          !familyGap(family.family) && !groupGap)
+      const bNotProducedCandidate = expected.armed && expected.runner === 'vitest' &&
+        family.family === 'B' && family.state === 'not-produced' &&
+        family.reason === 'no-module-results' && family.entries.length === 0;
+      if (family.state === 'not-produced' && !bNotProducedCandidate)
+        throw new Error('custody unsupported family absence');
+      if (family.state !== 'produced' && !processNotRequested && !bNotProducedCandidate &&
+          expected.armed && expected.runner === 'vitest' && !familyGap(family.family) && !groupGap)
         throw new Error('custody unsupported family absence');
     }
     const out = group.families.find(row => row.family === 'A').entries[0];
+    let verifiedNoModuleResults = false;
     if (out && group.families.find(row => row.family === 'A').state === 'produced') {
       // Validate the exact bytes already read above; charging another read can
       // reject a correctly retained packet near the bounded capture limit.
       if (group.referenceCapsules !== undefined && (!segmented || manifest.referenceArtifactLimit === undefined))
         throw new Error('custody reference capsule encoding mismatch');
-      const refs = custodyReferences(JSON.parse(reporter.toString('utf8')), referenceArtifactLimit,
-        group.referenceCapsules !== undefined);
+      const reporterPayload = JSON.parse(reporter.toString('utf8'));
+      const refs = custodyReferences(reporterPayload, referenceArtifactLimit, group.referenceCapsules !== undefined);
+      verifiedNoModuleResults = reporterConfirmsNoModuleResults(reporterPayload) &&
+        refs.artifacts.length === 0 && refs.gaps.length === 0;
       if (JSON.stringify(refs.occurrences) !== JSON.stringify(group.references))
         throw new Error('custody reference occurrences missing');
       if (JSON.stringify(refs.capsules) !== JSON.stringify(group.referenceCapsules))
@@ -1312,6 +1340,10 @@ export function verifyNativeProofPacket(directory, locator, contract) {
         }
       }
     }
+    const unproducedB = group.families.find(row => row.family === 'B');
+    if (unproducedB.state === 'not-produced' &&
+        (!verifiedNoModuleResults || unproducedB.reason !== 'no-module-results' || unproducedB.entries.length !== 0))
+      throw new Error('custody B absence lacks reporter proof');
     expected.auxiliary.forEach((spec, index) => {
       const entry = group.auxiliary[index];
       if (JSON.stringify(spec) !== JSON.stringify(Object.fromEntries(Object.entries(entry)
