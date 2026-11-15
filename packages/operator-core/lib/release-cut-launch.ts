@@ -1470,6 +1470,10 @@ export interface PreflightDeps {
 export interface SmokeTargetProbe {
   exitCode: number | null;
   output: string;
+  /** True only when the runner stopped the child at its wall-clock budget. The result is
+   *  still UNMEASURED (exitCode null) and still fails closed; the flag lets a check say "did
+   *  not finish in time, re-run" instead of reporting a slow-but-passing guard as a failure. */
+  timedOut?: boolean;
 }
 
 /** One read-only child-process probe, described once so the synchronous runner (tests,
@@ -1500,9 +1504,13 @@ export function runProbeSpecSync(spec: ProbeSpec): SmokeTargetProbe {
     timeout: spec.timeoutMs,
     maxBuffer: spec.maxBuffer ?? PROBE_MAX_BUFFER,
   });
+  const timedOut = (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT';
   return {
     exitCode: result.status,
-    output: `${result.stdout ?? ''}${result.stderr ?? ''}${result.error ? `\n${result.error.message}` : ''}`,
+    output:
+      `${result.stdout ?? ''}${result.stderr ?? ''}${result.error ? `\n${result.error.message}` : ''}` +
+      (timedOut ? `\nprobe timed out after ${spec.timeoutMs}ms` : ''),
+    ...(timedOut ? { timedOut: true } : {}),
   };
 }
 
@@ -1516,11 +1524,11 @@ export function runProbeSpecAsync(spec: ProbeSpec): Promise<SmokeTargetProbe> {
     let overflow = false;
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const finish = (exitCode: number | null, note?: string): void => {
+    const finish = (exitCode: number | null, note?: string, timedOut = false): void => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
-      resolve({ exitCode, output: note ? `${output}\n${note}` : output });
+      resolve({ exitCode, output: note ? `${output}\n${note}` : output, ...(timedOut ? { timedOut: true } : {}) });
     };
     let child: ChildProcess;
     try {
@@ -1534,7 +1542,7 @@ export function runProbeSpecAsync(spec: ProbeSpec): Promise<SmokeTargetProbe> {
     }
     timer = setTimeout(() => {
       child.kill('SIGTERM');
-      finish(null, `probe timed out after ${spec.timeoutMs}ms`);
+      finish(null, `probe timed out after ${spec.timeoutMs}ms`, true);
     }, spec.timeoutMs);
     const onData = (chunk: Buffer): void => {
       if (overflow) return;
@@ -1553,8 +1561,25 @@ export function runProbeSpecAsync(spec: ProbeSpec): Promise<SmokeTargetProbe> {
   });
 }
 
+/** Wall-clock budget for ONE source-identity guard (WI-6554700010049095). Each guard is
+ *  CPU-bound: it enumerates ~35k tracked files and reads every one. Measured 2026-11-14 on a
+ *  release cut root at load 172–243 on 128 cores: 6.9–13.7s CPU, 11–36s wall. The old flat 30s
+ *  sat INSIDE that range, so preflight cut passing guards off mid-scan and refused the cut
+ *  (go:false). The 30s dated from the spawnSync era (EI-27109514509838099), when a probe blocked
+ *  the event loop and a 20s sentinel was the real limit. preflightCutAsync now spawns guards
+ *  without blocking, so the only ceiling is the release:cut handler deadline
+ *  (RELEASE_CUT_HANDLER_DEADLINE_MS) less headroom to assemble the result. */
+export const RELEASE_CUT_HANDLER_DEADLINE_MS = 120_000;
+export const SOURCE_IDENTITY_PROBE_TIMEOUT_MS = 90_000;
+
 export function sourceIdentityProbeSpec(scriptPath: string, workspace: string): ProbeSpec {
-  return { command: process.execPath, args: [scriptPath], cwd: workspace, timeoutMs: 30_000, maxBuffer: PROBE_MAX_BUFFER };
+  return {
+    command: process.execPath,
+    args: [scriptPath],
+    cwd: workspace,
+    timeoutMs: SOURCE_IDENTITY_PROBE_TIMEOUT_MS,
+    maxBuffer: PROBE_MAX_BUFFER,
+  };
 }
 
 function defaultRunSourceIdentityPreflight(scriptPath: string, workspace: string): SmokeTargetProbe {
@@ -1810,8 +1835,12 @@ export function preflightCut(
       ok: probe.exitCode === 0,
       detail: probe.exitCode === 0
         ? diagnostic || `${script} passed in ${workspace}`
-        : `${script} failed for selected source ${workspace} (exit ${probe.exitCode ?? 'unmeasured'}): ` +
-          (diagnostic || 'guard did not complete; source identity is not verified'),
+        : probe.timedOut
+          ? `${script} did not finish within its budget for selected source ${workspace} — UNMEASURED, ` +
+            'not a guard failure; source identity is not verified, so the cut stays refused. ' +
+            'Re-run preflight once host load allows; the guard verdict is unknown: ' + diagnostic
+          : `${script} failed for selected source ${workspace} (exit ${probe.exitCode ?? 'unmeasured'}): ` +
+            (diagnostic || 'guard did not complete; source identity is not verified'),
     });
   }
   const modelProbe = (deps.runModelCachePreflight ?? defaultRunModelCachePreflight)(root);

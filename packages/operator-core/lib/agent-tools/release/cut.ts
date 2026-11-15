@@ -71,6 +71,7 @@ import {
   readCutStatus,
   collectHandoff,
   preflightCutAsync,
+  RELEASE_CUT_HANDLER_DEADLINE_MS,
   desktopReleaseTag,
   buildCutArgv,
   desktopRoot,
@@ -1084,7 +1085,8 @@ export default defineTool({
   // diff. The measured planner is commonly 14–52s and can exceed the flat 55s MCP deadline
   // under host pressure; declare a bounded handler budget so MCP and clients wait for the
   // structured dry-run result instead of losing the response to transport teardown.
-  timeoutSec: 120,
+  // Preflight's source-identity guard budget is derived from this same constant.
+  timeoutSec: RELEASE_CUT_HANDLER_DEADLINE_MS / 1000,
   args: z.discriminatedUnion('op', [
     z.object({
       op: z.literal('preflight'),

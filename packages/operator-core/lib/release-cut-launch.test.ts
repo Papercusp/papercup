@@ -38,8 +38,12 @@ import {
   preflightCut,
   preflightCutAsync,
   runProbeSpecAsync,
+  runProbeSpecSync,
+  sourceIdentityProbeSpec,
   parseRemoteTagSha,
   SOURCE_IDENTITY_GUARDS,
+  SOURCE_IDENTITY_PROBE_TIMEOUT_MS,
+  RELEASE_CUT_HANDLER_DEADLINE_MS,
   type ProbeSpec,
   type SmokeTargetProbe,
   desktopReleaseTag,
@@ -922,7 +926,15 @@ const dependencyReady = {
 describe('Windows input readiness (EI-27527354796036349)', () => {
   const root = '/frozen/papercusp-desktop';
   const orchestratorRoot = '/current/papercusp-desktop';
-  const deps = { ...dependencyReady, home: '/home/tester', exists: () => true, isUnitActive: () => false };
+  // exists:()=>true makes the smoke-target script "present", so without a stub the mac/windows
+  // legs spawned the REAL VM smoke probe (60s budget) and the case ran ~96s under load.
+  const deps = {
+    ...dependencyReady,
+    home: '/home/tester',
+    exists: () => true,
+    isUnitActive: () => false,
+    runSmokeTargetPreflight: () => ({ exitCode: 0, output: 'fixture smoke target ready' }),
+  };
 
   it.each([1, null])('blocks on verifier exit %s before a Windows cut can launch', (exitCode) => {
     const runWindowsInputPreflight = vi.fn(() => ({ exitCode, output: 'stamp has no bunArchiveSha256' }));
@@ -1025,12 +1037,54 @@ describe('preflightCutAsync (event-loop-safe preflight, EI-27109514509838099)', 
     const r = await preflightCutAsync({}, { root }, deps, run);
     const identity = specs.filter((s) => s.command === process.execPath);
     expect(identity.map((s) => s.args[0])).toEqual(SOURCE_IDENTITY_GUARDS.map((g) => path.join(workspace, 'scripts', g)));
-    expect(identity.every((s) => s.cwd === workspace && s.timeoutMs === 30_000)).toBe(true);
+    expect(identity.every((s) => s.cwd === workspace && s.timeoutMs === SOURCE_IDENTITY_PROBE_TIMEOUT_MS)).toBe(true);
     expect(specs.filter((s) => s.command === 'bash')).toHaveLength(1);
     for (const guard of SOURCE_IDENTITY_GUARDS) {
       expect(r.checks.find((c) => c.name === `source-identity:${guard}`)).toMatchObject({ ok: true, detail: `async:${guard}` });
     }
     expect(r.checks.find((c) => c.name === 'embedding-models')).toMatchObject({ ok: true, detail: 'async:model' });
+  });
+
+  it('budgets each source-identity guard past its measured loaded wall time and inside the handler deadline (WI-6554700010049095)', () => {
+    // Measured 2026-11-14 at load ~240 on 128 cores: a PASSING guard took up to 36s wall. The old
+    // flat 30s cut it off and refused the cut. The budget must clear that with headroom, and the
+    // three guards run concurrently, so one budget must also leave room for result assembly
+    // before the release:cut handler deadline tears the response down.
+    const MEASURED_LOADED_GUARD_WALL_MS = 36_000;
+    const spec = sourceIdentityProbeSpec('/x/scripts/check-no-box-identity.mjs', '/x');
+    expect(spec.timeoutMs).toBe(SOURCE_IDENTITY_PROBE_TIMEOUT_MS);
+    expect(spec.timeoutMs).toBeGreaterThanOrEqual(2 * MEASURED_LOADED_GUARD_WALL_MS);
+    expect(spec.timeoutMs).toBeLessThanOrEqual(RELEASE_CUT_HANDLER_DEADLINE_MS - 20_000);
+  });
+
+  it('reports a timed-out guard as UNMEASURED and still refuses the cut, distinct from a failing guard', async () => {
+    const run = async (spec: ProbeSpec): Promise<SmokeTargetProbe> =>
+      spec.args[0]?.endsWith('check-no-identity-literals.mjs')
+        ? { exitCode: null, timedOut: true, output: `probe timed out after ${spec.timeoutMs}ms` }
+        : spec.args[0]?.endsWith('check-no-box-identity.mjs')
+          ? { exitCode: 1, output: 'box identity leaked' }
+          : { exitCode: 0, output: 'clean' };
+    const r = await preflightCutAsync({}, { root }, deps, run);
+    expect(r.go).toBe(false);
+    const slow = r.checks.find((c) => c.name === 'source-identity:check-no-identity-literals.mjs')!;
+    expect(slow.ok).toBe(false);
+    expect(slow.warnOnly).toBeUndefined();
+    expect(slow.detail).toMatch(/UNMEASURED, not a guard failure/);
+    expect(slow.detail).toMatch(new RegExp(`timed out after ${SOURCE_IDENTITY_PROBE_TIMEOUT_MS}ms`));
+    expect(slow.detail).not.toMatch(/ failed for selected source/);
+    const failing = r.checks.find((c) => c.name === 'source-identity:check-no-box-identity.mjs')!;
+    expect(failing.detail).toMatch(/failed for selected source .*exit 1.*box identity leaked/);
+    expect(failing.detail).not.toMatch(/UNMEASURED/);
+  });
+
+  it('runProbeSpecSync flags a budget timeout the same way the async runner does', () => {
+    const timedOut = runProbeSpecSync({ command: process.execPath, args: ['-e', 'setTimeout(() => {}, 10000)'], timeoutMs: 200 });
+    expect(timedOut.exitCode).toBeNull();
+    expect(timedOut.timedOut).toBe(true);
+    expect(timedOut.output).toMatch(/timed out after 200ms/);
+    const done = runProbeSpecSync({ command: process.execPath, args: ['-e', 'process.exit(3)'], timeoutMs: 10_000 });
+    expect(done).toMatchObject({ exitCode: 3 });
+    expect(done.timedOut).toBeUndefined();
   });
 
   it('surfaces an async probe failure as the same hard blocker the sync path reports', async () => {
@@ -1056,8 +1110,11 @@ describe('preflightCutAsync (event-loop-safe preflight, EI-27109514509838099)', 
     // spawnSync would have starved the loop for the whole 300ms child.
     expect(loop.ticks).toBeGreaterThan(10);
 
+    expect(done.timedOut).toBeUndefined();
+
     const timedOut = await runProbeSpecAsync({ command: process.execPath, args: ['-e', 'setTimeout(() => {}, 10000)'], timeoutMs: 200 });
     expect(timedOut.exitCode).toBeNull();
+    expect(timedOut.timedOut).toBe(true);
     expect(timedOut.output).toMatch(/timed out after 200ms/);
 
     const missing = await runProbeSpecAsync({ command: '/nonexistent/papercusp-probe-binary', args: [], timeoutMs: 1_000 });
