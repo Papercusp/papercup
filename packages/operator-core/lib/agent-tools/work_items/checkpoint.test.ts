@@ -12,6 +12,7 @@
  * the top level.
  */
 import { describe, it, expect, expectTypeOf, vi, beforeEach, afterAll } from 'vitest';
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 // Formatting assertions ignore the ID anchor; lifecycle tests below verify IDs.
 const withoutRowIds = (note: string | null | undefined) =>
@@ -288,6 +289,123 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(await one({ id: 'WI-5894', checkpoint: 'fresh update', append: true })).toMatchObject({ ok: true });
     expect(stored).toBe('retained prior\n\n---\nfresh update');
     expect(commentWorkItem).not.toHaveBeenCalled();
+  });
+
+  describe('EI-28877829623683008: legacy checkpoint archive recovery', () => {
+    const legacyNote = (length: number) => {
+      const decisiveRecord = 'decisive legacy evidence after the checkpoint boundary';
+      return 'p'.repeat(length - decisiveRecord.length) + decisiveRecord;
+    };
+
+    const installArchiveStore = (initial: string) => {
+      let stored: string | null = initial;
+      const archives = new Map<number, string>();
+      commentWorkItem.mockImplementation(async (_id, body: string, _author, options) => {
+        expect(options.transaction).toBe(checkpointTransaction);
+        const id = 5894 + archives.size;
+        archives.set(id, body);
+        return { id };
+      });
+      setWorkItemCheckpointWithPrior.mockImplementation(async (_ref, incoming, options) => {
+        const prior = stored;
+        const priorLength = prior?.length ?? 0;
+        const blockedReason = options.guard?.(prior, priorLength) ?? null;
+        if (blockedReason) return { stored: prior, priorLength, blockedReason };
+        const next = await options.transform(prior, incoming, checkpointTransaction);
+        stored = next;
+        return { stored, priorLength };
+      });
+      getWorkItemCheckpoint.mockImplementation(async () => stored);
+
+      // A successor follows the published pointer, verifies its digest, and
+      // continues through earlier pointers instead of treating the preview as
+      // the complete history. Each invocation above starts from stored state.
+      const recover = () => {
+        const notes: string[] = [];
+        const visited = new Set<number>();
+        let note = stored;
+        while (note !== null) {
+          notes.push(note);
+          const reference = /^Earlier full checkpoint: thread-post:([1-9][0-9]*) \(sha256:([a-f0-9]{64})\)/.exec(note);
+          if (!reference) break;
+          const id = Number(reference[1]);
+          expect(visited.has(id)).toBe(false);
+          visited.add(id);
+          const archived = archives.get(id);
+          expect(archived).toBeDefined();
+          if (archived === undefined) throw new Error('Archive recovery pointer did not resolve');
+          expect(createHash('sha256').update(archived, 'utf8').digest('hex')).toBe(reference[2]);
+          note = archived;
+        }
+        expect(visited.size).toBe(archives.size);
+        return notes;
+      };
+      return { read: () => stored, archives, recover };
+    };
+
+    const priorSizes = [
+      CHECKPOINT_BODY_CAP_CHARS - 1,
+      CHECKPOINT_BODY_CAP_CHARS,
+      CHECKPOINT_BODY_CAP_CHARS + 1,
+      44378,
+      82402,
+    ];
+
+    it.each(priorSizes)('refuses an unconfirmed overflowing append without losing the %i-character prior', async length => {
+      const prior = legacyNote(length);
+      const store = installArchiveStore(prior);
+      const result = await one({ id: 'WI-archive-boundary', checkpoint: 'complete current update', append: true });
+
+      expect(result).toMatchObject({ ok: false, errorCode: 'append_prior_body_overflow' });
+      expect(store.read()).toBe(prior);
+      expect(store.archives.size).toBe(0);
+      expect(commentWorkItem).not.toHaveBeenCalled();
+    });
+
+    it.each(priorSizes)('recovers the complete %i-character prior after confirmed compaction', async length => {
+      const prior = legacyNote(length);
+      const store = installArchiveStore(prior);
+      const fresh = 'complete current update';
+      const result = await one({
+        id: 'WI-archive-boundary', checkpoint: fresh, append: true, confirmShrink: true,
+      });
+
+      expect(result).toMatchObject({ ok: true, verified: true });
+      expect(store.read()).toContain(fresh);
+      expect(store.read()!.length).toBeLessThanOrEqual(CHECKPOINT_BODY_CAP_CHARS);
+      expect(store.recover()).toContain(prior);
+    });
+
+    it.each(['forward', 'reverse'])('recovers every update through successive invocations in %s order', async order => {
+      const prior = legacyNote(82402);
+      const store = installArchiveStore(prior);
+      const updates = Array.from({ length: 8 }, (_, index) => 'complete update ' + index + ': ' + 'u'.repeat(2000));
+      if (order === 'reverse') updates.reverse();
+      for (const update of updates) {
+        expect(await one({
+          id: 'WI-archive-chain', checkpoint: update, append: true, confirmShrink: true,
+        })).toMatchObject({ ok: true, verified: true });
+      }
+
+      const recovered = store.recover();
+      expect(recovered).toHaveLength(updates.length + 1);
+      expect(recovered).toContain(prior);
+      for (const update of updates) expect(recovered.some(note => note.includes(update))).toBe(true);
+    });
+
+    it('leaves the complete legacy checkpoint untouched when its archive cannot be saved', async () => {
+      const prior = legacyNote(82402);
+      const store = installArchiveStore(prior);
+      commentWorkItem.mockRejectedValueOnce(new Error('archive unavailable'));
+
+      const result = await one({
+        id: 'WI-archive-failure', checkpoint: 'complete current update', append: true, confirmShrink: true,
+      });
+
+      expect(result).toMatchObject({ ok: false });
+      expect(store.read()).toBe(prior);
+      expect(store.archives.size).toBe(0);
+    });
   });
 
   it('opts out of the ambient workspace transaction because the handler owns its DB scopes', () => {
