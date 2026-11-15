@@ -58,7 +58,8 @@ vi.mock('@/app/harness/ConfirmModal', () => ({
     ) : null,
 }));
 
-import RemoteAccessSettingsPage, { entryTags, type PortalRelayStatusView, type RemoteAccessEntryView } from './page';
+import RemoteAccessSettingsPage, { entryTags, PortalDesktopGrant, type PortalRelayStatusView, type RemoteAccessEntryView } from './page';
+import { encodeInstalledComputerRequest } from '../../cloud-workspaces/installed-computer-protocol';
 
 function entry(over: Partial<RemoteAccessEntryView>): RemoteAccessEntryView {
   return {
@@ -532,6 +533,69 @@ function relay(over: Partial<PortalRelayStatusView>): PortalRelayStatusView {
     ...over,
   };
 }
+
+describe('explicit local desktop consent', () => {
+  const request = { version: 1 as const, requestId: 'request-12345678', portalOrigin: 'https://papercusp.example', browserPublicKey: btoa('b'.repeat(32)) };
+  const approved = {
+    version: 1 as const, id: 'grant-1', installId: 'install-12345678', portalOrigin: request.portalOrigin,
+    userId: 'user-1', organizationId: 'org-1', customerWorkspaceId: 'linked-ws', localWorkspaceId: 'ws1',
+    browserPublicKey: request.browserPublicKey, view: true as const, control: false, grantedAt: '2026-11-15T00:00:00Z',
+  };
+  const status = () => relay({ state: 'linked', installId: approved.installId, portalOrigin: request.portalOrigin,
+    linked: { userId: approved.userId, organizationId: approved.organizationId, customerWorkspaceId: approved.customerWorkspaceId,
+      appBaseUrl: null, mcpUrl: null, linkedAt: null }, desktop: { notice: { version: 1, text: 'Separate desktop permission.' }, grant: null } });
+  const run = async (_what: string, fn: () => Promise<void>) => fn();
+
+  it('requires an explicit view choice and posts exact current identity with control off by default', async () => {
+    const relay = status();
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      posts.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+      return new Response(JSON.stringify({ ok: true, relay: { ...relay, desktop: { ...relay.desktop, grant: approved } }, machinePublicKey: btoa('m'.repeat(32)) }));
+    });
+    const opener = { postMessage: vi.fn() };
+    vi.stubGlobal('opener', opener);
+    render(<PortalDesktopGrant workspaceId="ws1" relay={relay} busy={false} run={run} />);
+    fireEvent.change(screen.getByLabelText('Portal connection code'), { target: { value: encodeInstalledComputerRequest(request) } });
+    const button = screen.getByRole('button', { name: 'Approve desktop access' }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(posts).toHaveLength(0);
+    fireEvent.click(screen.getByTestId('portal-desktop-view'));
+    expect(button.disabled).toBe(false);
+    fireEvent.click(button);
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]).toEqual({ url: '/api/remote-access/portal-relay/desktop-grant', body: {
+      noticeVersion: 1, installId: approved.installId, portalOrigin: approved.portalOrigin, userId: approved.userId,
+      organizationId: approved.organizationId, customerWorkspaceId: approved.customerWorkspaceId, localWorkspaceId: 'ws1',
+      browserPublicKey: request.browserPublicKey, view: true, control: false,
+    } });
+    await waitFor(() => expect(opener.postMessage).toHaveBeenCalledWith(expect.objectContaining({ requestId: request.requestId, grant: approved }), request.portalOrigin));
+    expect(screen.getByLabelText('Public approval code')).toBeTruthy();
+  });
+
+  it('refuses another portal and resets consent when the linked identity changes', () => {
+    const relay = status();
+    const view = render(<PortalDesktopGrant workspaceId="ws1" relay={relay} busy={false} run={run} />);
+    const input = screen.getByLabelText('Portal connection code');
+    fireEvent.change(input, { target: { value: encodeInstalledComputerRequest({ ...request, portalOrigin: 'https://other.example' }) } });
+    fireEvent.click(screen.getByTestId('portal-desktop-view'));
+    expect((screen.getByRole('button', { name: 'Approve desktop access' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole('alert').textContent).toContain('another portal');
+    fireEvent.change(input, { target: { value: encodeInstalledComputerRequest(request) } });
+    fireEvent.click(screen.getByTestId('portal-desktop-view'));
+    view.rerender(<PortalDesktopGrant workspaceId="ws2" relay={relay} busy={false} run={run} />);
+    expect(screen.getByTestId('portal-desktop-view').getAttribute('aria-checked')).toBe('false');
+    expect(posts).toHaveLength(0);
+  });
+
+  it('revokes only desktop permission and reports app and desktop status separately', async () => {
+    const relay = status(); relay.desktop!.grant = approved;
+    render(<PortalDesktopGrant workspaceId="ws1" relay={relay} busy={false} run={run} />);
+    expect(screen.getByRole('status').textContent).toContain('Approved for viewing only');
+    expect(screen.getByRole('status').textContent).not.toContain('Connected');
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke desktop access' }));
+    await waitFor(() => expect(posts).toEqual([{ url: '/api/remote-access/portal-relay/desktop-grant', body: { revoke: true } }]));
+  });
+});
 
 function withRelay(r: PortalRelayStatusView | null, portalRelayError: string | null = null) {
   H.rows = [{ ...overview(), portalRelay: r, portalRelayError }];

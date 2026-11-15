@@ -119,7 +119,10 @@ async function selectGeneration(helper, donor, destination, deadline, environmen
     'dependency_generation_configure_workspace_dirs "$3" "${@:5}"',
     'input="$(dependency_generation_verification_input_fingerprint "$3")"',
     'closure=""; if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then closure="$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT"; fi',
-    'dependency_generation_select_input_fingerprint "$input" "$generation_root" "$DEPENDENCY_GENERATION_SCOPE_MODE" "$closure"',
+    // Selected publications expose only the native, source-bound index. The
+    // scoped dependency fingerprint still binds the subsequent byte census.
+    'selector="$input"; if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then selector="$(dependency_generation_verifier_selector_key "$3")"; fi',
+    'dependency_generation_select_input_fingerprint "$selector" "$generation_root" "$DEPENDENCY_GENERATION_SCOPE_MODE" "$closure"',
     'dependency_generation_acquire_selector_lease "$generation_root" "$DEPENDENCY_GENERATION_ID" "$4" "$DEPENDENCY_GENERATION_TOKEN"',
     'trap dependency_generation_release_selector_lease ERR',
     'printf "%s\\n" "$generation_root" "$DEPENDENCY_GENERATION_TREE" "$DEPENDENCY_GENERATION_SELECTOR_LEASE" "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_TOKEN"',
@@ -149,7 +152,8 @@ async function census(helper, donor, destination, scratch, deadline, generation,
     'dependency_generation_configure_workspace_dirs "$3" "${@:7}"',
     'input="$(dependency_generation_verification_input_fingerprint "$3")"',
     'closure=""; if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then closure="$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT"; fi',
-    'dependency_generation_select_input_fingerprint "$input" "$4" "$DEPENDENCY_GENERATION_SCOPE_MODE" "$closure"',
+    'selector="$input"; if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then selector="$(dependency_generation_verifier_selector_key "$3")"; fi',
+    'dependency_generation_select_input_fingerprint "$selector" "$4" "$DEPENDENCY_GENERATION_SCOPE_MODE" "$closure"',
     '[ "$DEPENDENCY_GENERATION_ID" = "$5" ] && [ "$DEPENDENCY_GENERATION_TOKEN" = "$6" ] && [ "$DEPENDENCY_GENERATION_TREE" = "$2" ]',
     'printf "%s\\n" "$input"',
   ] : [

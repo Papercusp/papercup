@@ -38,6 +38,8 @@ import { connectionConfirmationCopy, connectionStatusCopy, normalizeBrowserSessi
 import type { CloudWorkspacesControlRow, WorkspaceHostControlRow } from '../../cloud-workspaces/workspace-view-model';
 import { useVisibleRefresh } from '@/app/_components/desktop-grid/use-visible-refresh';
 import { buildSshConnectionCommands } from './ssh-connection-commands';
+import { readInstalledComputerRequest } from '../../cloud-workspaces/installed-computer-protocol';
+import type { PortalRelayDesktopGrant } from '@papercusp/operator-core/lib/remote-access/portal-relay-store';
 
 export type EntryKind = 'mobile' | 'app' | 'service';
 
@@ -82,7 +84,10 @@ export interface PortalRelayStatusView {
   notice: { version: number; text: string };
   consent: { agreed: boolean; version: number | null; at: string | null };
   pending: { userCode: string; verificationUri: string; expiresAt: string | null } | null;
-  linked: { appBaseUrl: string | null; mcpUrl: string | null; linkedAt: string | null } | null;
+  installId?: string | null;
+  linked: { userId?: string | null; organizationId?: string | null; customerWorkspaceId?: string | null;
+    appBaseUrl: string | null; mcpUrl: string | null; linkedAt: string | null } | null;
+  desktop?: { notice: { version: number; text: string }; grant: PortalRelayDesktopGrant | null };
   health: 'off' | 'linking' | 'starting' | 'up' | 'down';
   lastError: string | null;
 }
@@ -865,6 +870,9 @@ export function PortalRelayCard(props: {
           )}
         </div>
       )}
+      {relay.state === 'linked' && relay.desktop && (
+        <PortalDesktopGrant workspaceId={workspaceId} relay={relay} busy={busy} run={run} />
+      )}
       {relay.state === 'linked' && (
         <button
           type="button"
@@ -887,6 +895,75 @@ export function PortalRelayCard(props: {
       )}
     </div>
   );
+}
+
+/** The loopback screen alone can approve desktop authority. A portal link cannot. */
+export function PortalDesktopGrant({ workspaceId, relay, busy, run }: {
+  workspaceId: string; relay: PortalRelayStatusView; busy: boolean;
+  run: (what: string, fn: () => Promise<void>) => Promise<void>;
+}) {
+  const [code, setCode] = useState('');
+  const [view, setView] = useState(false);
+  const [control, setControl] = useState(false);
+  const [receipt, setReceipt] = useState<string | null>(null);
+  useEffect(() => {
+    const read = () => {
+      const fragment = new URLSearchParams(window.location.hash.slice(1));
+      const incoming = fragment.get('portal-connect');
+      if (incoming) setCode(incoming);
+    };
+    read();
+    window.addEventListener('hashchange', read);
+    return () => window.removeEventListener('hashchange', read);
+  }, []);
+  const request = readInstalledComputerRequest(code.trim());
+  const linked = relay.linked;
+  const grant = relay.desktop?.grant;
+  useEffect(() => { setView(false); setControl(false); setReceipt(null); },
+    [code, relay.installId, relay.portalOrigin, linked?.userId, linked?.organizationId, linked?.customerWorkspaceId, workspaceId]);
+  const matching = request !== null && request.portalOrigin === relay.portalOrigin;
+  const identityReady = !!(relay.installId && linked?.userId && linked.organizationId && linked.customerWorkspaceId);
+  return <section aria-label="Desktop access" data-testid="portal-desktop-grant" style={{ marginTop: 16 }}>
+    <h4>Desktop access</h4>
+    <p role="status">{grant ? `Approved for viewing${grant.control ? ' and control' : ' only'}. A live desktop connection is verified in the portal.` : 'Desktop access is not approved. Your app link does not grant desktop access.'}</p>
+    <p>Portal: {relay.portalOrigin}<br />Account: {linked?.userId ?? 'Unavailable'}<br />Organization: {linked?.organizationId ?? 'Unavailable'}<br />This installation: {relay.installId ?? 'Unavailable'}<br />Local workspace: {workspaceId}</p>
+    <p>{relay.desktop?.notice.text}</p>
+    <label>Portal connection code
+      <TextInput aria-label="Portal connection code" value={code} onChange={event => { setCode(event.target.value); setView(false); setControl(false); setReceipt(null); }} />
+    </label>
+    <p className="pc-settings-hint">In the portal, choose Connect your computer → Open Papercusp. If it cannot open this screen, paste the public connection code here.</p>
+    {code && !matching ? <p role="alert">{request ? 'This request belongs to another portal. Connect this installation to the intended portal first.' : 'The portal connection code is invalid.'}</p> : null}
+    {request && matching ? <p>Browser key: <code>{request.browserPublicKey}</code></p> : null}
+    <label style={{ display: 'flex', gap: 8 }}>
+      <Checkbox ariaLabel="Allow this browser to view desktops" checked={view} onChange={checked => { setView(checked); if (!checked) setControl(false); }} dataTestId="portal-desktop-view" />Allow this browser to view desktops
+    </label>
+    <label style={{ display: 'flex', gap: 8 }}>
+      <Checkbox ariaLabel="Also allow keyboard and mouse control" checked={control} disabled={!view} onChange={setControl} dataTestId="portal-desktop-control" />Also allow keyboard and mouse control
+    </label>
+    <Button disabled={busy || !view || !matching || !identityReady} onClick={() => void run('Approving desktop access', async () => {
+      if (!request || !linked || !matching || !identityReady) return;
+      const result = await postJson<{ relay: PortalRelayStatusView; machinePublicKey: string }>('/api/remote-access/portal-relay/desktop-grant', {
+        noticeVersion: relay.desktop!.notice.version, installId: relay.installId, portalOrigin: relay.portalOrigin,
+        userId: linked.userId, organizationId: linked.organizationId, customerWorkspaceId: linked.customerWorkspaceId,
+        localWorkspaceId: workspaceId, browserPublicKey: request.browserPublicKey, view: true, control,
+      });
+      const approved = result.relay.desktop?.grant;
+      if (!approved || approved.browserPublicKey !== request.browserPublicKey) throw new Error('desktop_approval_receipt_missing');
+      const response = { type: 'papercusp.local-desktop-approved', version: 1, requestId: request.requestId,
+        grant: approved, machinePublicKey: result.machinePublicKey };
+      setReceipt(btoa(JSON.stringify(response)));
+      window.opener?.postMessage(response, request.portalOrigin);
+      toast.success('Desktop permission saved. Return to the portal to verify the connection.');
+    })}>Approve desktop access</Button>
+    {grant ? <Button disabled={busy} variant="ghost" onClick={() => void run('Revoking desktop access', async () => {
+      await postJson('/api/remote-access/portal-relay/desktop-grant', { revoke: true });
+      setReceipt(null); setView(false); setControl(false);
+      toast.success('Desktop access revoked. The app link remains available.');
+    })}>Revoke desktop access</Button> : null}
+    {receipt ? <label>Public approval code — paste into the portal if it did not receive this window’s response
+      <TextInput aria-label="Public approval code" value={receipt} readOnly />
+    </label> : null}
+  </section>;
 }
 
 function confirmBody(c: { action: string; entry: RemoteAccessEntryView } | null): ReactNode {

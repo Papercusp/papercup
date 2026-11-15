@@ -8,6 +8,7 @@ import { buildInputs, checkSource, buildWorkspace as buildWorkspaceWithPhaseLogs
 import { nativeVerifierEnv } from '../../../../scripts/lib/verify-tauri-native-env.mjs';
 import { bindFrozenDependencyGeneration } from '../../../../packages/operator-core/lib/dependency-generation-proof';
 import { prepareVerifierSource, runVerifierCommand, selectVerifierDependencySnapshot } from '../../../../scripts/source-preview.mjs';
+import { verifyRetainedDependencies } from '../../../../scripts/lib/committed-dependency-verification.mjs';
 
 // Imported builds intentionally report progress on stderr. Capture only this
 // operation and validate its diagnostics, leaving unexpected console errors fatal.
@@ -202,7 +203,7 @@ describe('bounded independent verifier copy', () => {
     expect(() => f.privatePath(resolve(f.root, '..', 'escaped'))).toThrow('fixture path escaped');
   });
 
-  it('admits the exact native scope despite an unrelated app lock mismatch, retaining its source proof', () => {
+  it('admits the exact native scope despite an unrelated app lock mismatch, retaining its source proof', async () => {
     const f = fixture('packages/cli', true);
     write(f.donor, 'apps/independent/package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
       'node_modules/other': { version: '2.0.0' },
@@ -238,6 +239,28 @@ describe('bounded independent verifier copy', () => {
     expect(materialized.status, materialized.stderr.slice(-1800)).toBe(0);
     expect(existsSync(join(f.dest, 'papercusp-desktop/node_modules/.bin/tauri'))).toBe(true);
     expect(readFileSync(join(f.dest, 'packages/cli/dist/cli.cjs'), 'utf8')).toContain('frozen-workspace');
+    // Exercise the real selected publisher and its native-only index. A plain
+    // --integration publication deliberately cannot provide this selector.
+    expect(existsSync(join(generation, 'tree/package-lock.json'))).toBe(false);
+    const options = { checkpointDir: join(f.root, 'retained-verification'),
+      generation: true, batchSize: 1, maxDurationMs: 30_000 };
+    const context = { materializer: f.generationScript, environment: f.env,
+      workspaceDirs: ['packages/cli', 'papercusp-desktop'], sourceCommit: ref,
+      verifySource: () => checkSource(f.dest, ref) };
+    const diagnostics = vi.spyOn(console, 'error').mockImplementation((line, ...extra) => {
+      expect(extra).toEqual([]);
+      expect(line).toEqual(expect.stringMatching(/^COMMITTED_DEPENDENCY_VERIFICATION /));
+    });
+    try {
+      const paused = await verifyRetainedDependencies(f.donor, f.dest, { ...options, maxBatches: 1 }, context);
+      expect(paused.status).toBe('incomplete');
+      expect(paused.progress.hashedFiles).toBeGreaterThan(0);
+      expect(readdirSync(join(f.store, '.leases'))).toEqual([]);
+      const complete = await verifyRetainedDependencies(f.donor, f.dest, options, context);
+      expect(complete.status).toBe('complete');
+      expect(complete.progress.reusedBatches).toBeGreaterThan(0);
+      expect(readdirSync(join(f.store, '.leases'))).toEqual([]);
+    } finally { diagnostics.mockRestore(); }
     const selectorPath = join(f.store, '.inputs', selector);
     writeFileSync(selectorPath, readFileSync(selectorPath, 'utf8').replace(/token=.*/, 'token=corrupt'));
     const corrupt = f.shell(f.generationScript, args);

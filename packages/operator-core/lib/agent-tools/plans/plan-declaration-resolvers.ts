@@ -11,7 +11,10 @@ import type { LibraryCheckDeps, ReferenceLookup, ReuseReferenceResolvers } from 
 import type { DependencyBaseline } from './plan-library-ship-check';
 import { createHash } from 'node:crypto';
 import { discoverySubjectSnapshot, type DiscoveryAuditContext, type DiscoveryAuditPayload } from '../../plan-audits';
-import { readCommittedFiles, resolveMeasurementCommit, type CommittedTreeDeps } from './committed-tree-reader';
+import ts from 'typescript';
+import { defaultBlobBatchReader, locateCommittedBlobs, readCommittedFiles, resolveMeasurementCommit,
+  type CommittedTreeDeps } from './committed-tree-reader';
+import { gitBlobId } from './evidence-measurement-pin';
 import { previewDiscoveryDeclaration } from './plan-declarations';
 import { listSpecEvidence } from './spec-evidence-store';
 import { resolveSessionTurnRefs, SESSION_TURN_REF_PREFIX } from '../sessions/_shared';
@@ -45,16 +48,32 @@ export async function resolveDiscoveryAuditContext(content: string, previous: st
   // Research capture is optional client assistance, not source authority.
   // Resolve every selected source through the existing citation boundary, then
   // measure all of them at their committed HEAD in one batch per repository.
-  const sourceLocations = new Map(await Promise.all(refs.filter(ref => ref.startsWith('source:'))
-    .map(async ref => [ref, await locateReference(options, ref.slice(7))] as const)));
-  const committedDigests = await committedSourceDigests(
-    [...sourceLocations.values()].flatMap(row => (row.location ? [row.location] : [])));
+  // A `#<Symbol>` anchor scopes the fingerprint to that declaration (WI-6554700010049338):
+  // a committed change elsewhere in a hub file no longer re-stales the finding.
+  const sourceRefs = new Map(refs.filter(ref => ref.startsWith('source:'))
+    .map(ref => [ref, parseSourceEvidenceRef(ref)] as const));
+  const sourceLocations = new Map(await Promise.all([...sourceRefs]
+    .map(async ([ref, parsed]) => [ref, await locateReference(options, parsed.path)] as const)));
+  const locatedWhere = (anchored: boolean) => [...sourceLocations].flatMap(([ref, row]) =>
+    row.location && Boolean(sourceRefs.get(ref)!.anchor) === anchored ? [row.location] : []);
+  const [committedDigests, committedTexts] = await Promise.all([
+    committedSourceDigests(locatedWhere(false)), committedSourceTexts(locatedWhere(true))]);
   for (const ref of refs.sort()) {
     const unknown = (reason: string) => evidence.push({ ref, state: 'unknown', usable: false, fingerprint: null, reason });
     if (ref.startsWith('source:')) {
+      const parsed = sourceRefs.get(ref)!;
+      if (parsed.anchorError) { unknown(parsed.anchorError); continue; }
       const located = sourceLocations.get(ref)!;
       if (!located.location) { unknown('reason' in located.lookup ? located.lookup.reason : 'Source unavailable.'); continue; }
       try {
+        if (parsed.anchor) {
+          const text = committedTexts.get(located.location.absolutePath)
+            ?? await readFile(located.location.absolutePath, 'utf8');
+          const measured = declarationFingerprint(located.location.relativePath, text, parsed.anchor);
+          if ('reason' in measured) unknown(measured.reason);
+          else evidence.push({ ref, state: 'current', usable: true, fingerprint: measured.fingerprint });
+          continue;
+        }
         const bytes = await readFile(located.location.absolutePath);
         evidence.push({ ref, state: 'current', usable: true,
           fingerprint: committedDigests.get(located.location.absolutePath) ?? createHash('sha256').update(bytes).digest('hex') });
@@ -82,7 +101,7 @@ export async function resolveDiscoveryAuditContext(content: string, previous: st
       if (!doc) { unknown('Canonical document unavailable.'); continue; }
       evidence.push({ ref, state: doc.status === 'fresh' ? 'current' : 'unknown', usable: doc.status === 'fresh',
         fingerprint: createHash('sha256').update(doc.content).digest('hex') });
-    } else unknown('Select source:<path>, session_turn:<kind>:<session>:<turn>, proof:<canonical binding id>, or doc:<canonical slug>; an invocation alone is not evidence.');
+    } else unknown('Select source:<path> (or source:<path>#<Symbol> / #<Class.member> to track one declaration), session_turn:<kind>:<session>:<turn>, proof:<canonical binding id>, or doc:<canonical slug>; an invocation alone is not evidence.');
   }
   return { targets, evidence };
 }
@@ -123,6 +142,104 @@ export async function committedSourceDigests(
     }
   }));
   return digests;
+}
+
+const SOURCE_ANCHOR_RE = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?$/;
+
+/** `source:<path>` or `source:<path>#<Name>` / `#<Class.member>`. A malformed anchor is
+ * reported, never silently widened to the whole file. */
+export function parseSourceEvidenceRef(ref: string): { path: string; anchor: string | null; anchorError?: string } {
+  const body = ref.slice('source:'.length);
+  const at = body.indexOf('#');
+  if (at < 0) return { path: body, anchor: null };
+  const anchor = body.slice(at + 1);
+  if (SOURCE_ANCHOR_RE.test(anchor)) return { path: body.slice(0, at), anchor };
+  return { path: body.slice(0, at), anchor: null,
+    anchorError: `Symbol anchor '#${anchor}' is not <Name> or <Class.member>; cite source:<path>#<Symbol>, or the whole file.` };
+}
+
+/**
+ * The committed text of each anchored source (absolutePath → utf8), measured at the same
+ * commit as committedSourceDigests. A path with no committed regular file is absent and
+ * keeps its working-tree text, which can only over-report staleness, never waive it.
+ */
+export async function committedSourceTexts(
+  locations: readonly LocatedReference[],
+  treeDeps: CommittedTreeDeps = {},
+): Promise<Map<string, string>> {
+  const texts = new Map<string, string>();
+  const readBlobs = treeDeps.readBlobs ?? defaultBlobBatchReader;
+  const byRoot = new Map<string, LocatedReference[]>();
+  for (const row of locations) byRoot.set(row.repoRoot, [...(byRoot.get(row.repoRoot) ?? []), row]);
+  await Promise.all([...byRoot].map(async ([root, rows]) => {
+    try {
+      const commit = await resolveMeasurementCommit(root, treeDeps.git);
+      if (!commit) return;
+      const located = await locateCommittedBlobs(root, commit, [...new Set(rows.map(row => row.relativePath))], treeDeps);
+      const blobsByRepo = new Map<string, Set<string>>();
+      for (const entry of located.values()) {
+        if (entry?.isFile) blobsByRepo.set(entry.repo, (blobsByRepo.get(entry.repo) ?? new Set()).add(entry.object));
+      }
+      const contents = new Map<string, Buffer>();
+      for (const [repo, blobs] of blobsByRepo) {
+        const read = await readBlobs(repo === '.' ? root : path.posix.join(root, repo), [...blobs]);
+        for (const [blob, content] of read) if (gitBlobId(content) === blob) contents.set(blob, content);
+      }
+      for (const row of rows) {
+        const entry = located.get(row.relativePath);
+        const content = entry?.isFile ? contents.get(entry.object) : undefined;
+        if (content) texts.set(row.absolutePath, content.toString('utf8'));
+      }
+    } catch {
+      // Unmeasured: this repository's anchored sources keep their working-tree text.
+    }
+  }));
+  return texts;
+}
+
+const ANCHOR_SCRIPT_KINDS: Record<string, ts.ScriptKind> = {
+  '.ts': ts.ScriptKind.TS, '.mts': ts.ScriptKind.TS, '.cts': ts.ScriptKind.TS, '.tsx': ts.ScriptKind.TSX,
+  '.js': ts.ScriptKind.JS, '.mjs': ts.ScriptKind.JS, '.cjs': ts.ScriptKind.JS, '.jsx': ts.ScriptKind.JSX,
+};
+
+function topLevelNames(statement: ts.Statement): string[] {
+  if (ts.isVariableStatement(statement)) {
+    return statement.declarationList.declarations.flatMap(d => (ts.isIdentifier(d.name) ? [d.name.text] : []));
+  }
+  if ((ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement) || ts.isInterfaceDeclaration(statement)
+    || ts.isTypeAliasDeclaration(statement) || ts.isEnumDeclaration(statement) || ts.isModuleDeclaration(statement))
+    && statement.name && ts.isIdentifier(statement.name)) return [statement.name.text];
+  return [];
+}
+
+function memberNodes(owner: ts.Statement, member: string): ts.Node[] {
+  const members: ReadonlyArray<ts.ClassElement | ts.TypeElement | ts.EnumMember> =
+    ts.isClassDeclaration(owner) || ts.isInterfaceDeclaration(owner) || ts.isEnumDeclaration(owner) ? owner.members : [];
+  return members.filter(node => node.name !== undefined && (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)
+    || ts.isNumericLiteral(node.name)) && node.name.text === member);
+}
+
+/**
+ * sha256 over the text of every parser-certified declaration the anchor names, in source
+ * order (overloads and merged declarations together): a top-level function, class,
+ * interface, type, enum, namespace or variable, or a member of a class, interface or
+ * enum. Comments outside the declaration and the rest of the file do not contribute.
+ */
+export function declarationFingerprint(fileName: string, text: string, anchor: string):
+  { fingerprint: string } | { reason: string } {
+  const kind = ANCHOR_SCRIPT_KINDS[path.extname(fileName).toLowerCase()];
+  if (kind === undefined) {
+    return { reason: `Symbol anchors are measured in TypeScript/JavaScript sources only; cite source:${fileName} as a whole file.` };
+  }
+  const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, kind);
+  const [name, member] = anchor.split('.') as [string, string | undefined];
+  const owners = source.statements.filter(statement => topLevelNames(statement).includes(name));
+  const nodes = member === undefined ? owners : owners.flatMap(owner => memberNodes(owner, member));
+  if (!nodes.length) {
+    return { reason: `${fileName} declares no ${member === undefined ? 'top-level' : 'class, interface or enum member'} `
+      + `#${anchor} at the measured commit; re-cite the declaration the finding relies on.` };
+  }
+  return { fingerprint: createHash('sha256').update(nodes.map(node => node.getText(source)).join('\n')).digest('hex') };
 }
 
 /**
