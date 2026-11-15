@@ -26,7 +26,8 @@ test('grading history shows measured age review labels and last accepted result'
   });
   await page.goto(fixture.origin);
   await expect(page.getByRole('note')).toHaveText('Controlled history fixture');
-  await expect(page.getByLabel('History view')).toHaveValue('review-history');
+  const historyView = page.getByRole('combobox', { name: 'History view', exact: true });
+  await expect(historyView).toContainText('Review history, including excluded results');
   await expect(page.getByLabel('Last accepted result')).toContainText('older-accepted');
   await page.getByRole('button', { name: /Grading history/ }).click();
   const history = page.locator('table.pc-rubric-history');
@@ -44,7 +45,9 @@ test('grading history shows measured age review labels and last accepted result'
   await expect(history).toContainText('unreviewed-history');
   await expect(history).toContainText('diagnostic-history');
   await expect(history).toContainText('stale-history');
-  await page.getByLabel('History view').selectOption('accepted');
+  await historyView.click();
+  await page.getByRole('option', { name: 'Accepted results', exact: true }).click();
+  await expect(historyView).toContainText('Accepted results');
   await expect(history).toContainText('older-accepted');
   await expect(history).not.toContainText('newer-pending');
   await expect(page.getByRole('button', { name: 'Load older scorecards' })).toHaveCount(0);
