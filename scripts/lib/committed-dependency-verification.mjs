@@ -95,7 +95,7 @@ function safeRelative(path) {
   return path;
 }
 
-async function command(helper, args, script, deadline) {
+async function command(helper, args, script, deadline, environment = process.env) {
   const run = promisify(execFile);
   const remaining = deadline - Date.now();
   if (remaining <= 0) throw new Incomplete();
@@ -105,7 +105,7 @@ async function command(helper, args, script, deadline) {
     const result = await run('timeout', ['--signal=TERM', '--kill-after=1s',
       String(remaining / 1000) + 's', 'bash', '-c',
       'set -euo pipefail\nsource "$1"\n' + script, 'retained-census', helper, ...args],
-    { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
+    { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, env: environment });
     return result.stdout;
   } catch (error) {
     if (error.code === 124 || error.code === 137) throw new Incomplete();
@@ -113,7 +113,7 @@ async function command(helper, args, script, deadline) {
   }
 }
 
-async function selectGeneration(helper, donor, destination, deadline) {
+async function selectGeneration(helper, donor, destination, deadline, environment) {
   const text = await command(helper, [donor, destination, String(process.pid)], [
     'generation_root="$(dependency_generation_resolve_root "$2" "" 1)"',
     'dependency_generation_select_inputs "$3" "$generation_root"',
@@ -121,7 +121,7 @@ async function selectGeneration(helper, donor, destination, deadline) {
     'trap dependency_generation_release_selector_lease ERR',
     'printf "%s\\n" "$generation_root" "$DEPENDENCY_GENERATION_TREE" "$DEPENDENCY_GENERATION_SELECTOR_LEASE" "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_TOKEN"',
     'trap - ERR',
-  ].join('\n'), deadline);
+  ].join('\n'), deadline, environment);
   const [root, tree, lease, identity, token, ...extra] = text.trimEnd().split('\n');
   if (extra.length || !isAbsolute(root || '') || !isAbsolute(tree || '') ||
       !isAbsolute(lease || '') || !within(join(root, '.leases'), lease) ||
@@ -387,7 +387,7 @@ export async function verifyRetainedDependencies(donor, destination, options, co
   let generation;
   try {
     if (options.generation) {
-      generation = await selectGeneration(context.materializer, donor, destination, deadline);
+      generation = await selectGeneration(context.materializer, donor, destination, deadline, context.environment);
       donor = realpathSync(generation.tree);
       if (within(donor, destination) || within(destination, donor)) fail('dependency roots overlap');
       privateDirectory(checkpoint, [donor, destination]);

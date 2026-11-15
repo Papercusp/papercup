@@ -394,12 +394,12 @@ export function committedWorkRootDependencyDonor(workRoot, { sourceObjects = fal
  * verifying the entire snapshot; existing roots are never replaced or trusted.
  * workspaceDirs selects package-local dependency roots plus the root install.
  * Its normalized scope is retained with every journal and prepared witness.
- * @param {{ workspaceDirs?: string[], prepareWorkspace?: (snapshot: { paths: string[], workspacePaths: Set<string> }) => void,
+ * @param {{ environment?: Record<string, string | undefined>, workspaceDirs?: string[], prepareWorkspace?: (snapshot: { paths: string[], workspacePaths: Set<string> }) => void,
  * resumeVerification?: { checkpointDir: string, generation?: boolean, materializeMissing?: boolean, maxBatches?: number, maxDurationMs?: number, batchSize?: number } }} [options]
  * @returns {Promise<{ paths: string[], workspacePaths: Set<string> } | { status: 'incomplete', progress: object }>}
  */
 export async function materializeIndependentDependencies(repoRoot, workRoot, options = {}) {
-  const { prepareWorkspace, resumeVerification } = options;
+  const { prepareWorkspace, resumeVerification, environment = process.env } = options;
   const workspaceDirs = normalizeDependencyWorkspaceDirs(options.workspaceDirs);
   const dependencyScope = { mode: workspaceDirs.length ? 'selected' : 'full', workspaceDirs };
   // Emit before entering synchronous setup too: a killed copier cannot return
@@ -535,7 +535,7 @@ if [ "$4" = donor ] && [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then
     }
 fi
 `, 'committed-dependencies', materializer, donor, workRoot, useGeneration ? 'generation' : 'donor', ...workspaceDirs], {
-      encoding: 'utf8', env: { ...process.env, DEPENDENCY_GENERATION_ALLOW_HARDLINK: '0' },
+      encoding: 'utf8', env: { ...environment, DEPENDENCY_GENERATION_ALLOW_HARDLINK: '0' },
       stdio: ['ignore', 'pipe', 'inherit'],
     });
     // Only an absent exact-input selector is a miss. Corruption or lease failure
@@ -558,7 +558,7 @@ fi
     };
     verifySource();
     verification = await phase('resume-verification', () => verifyRetainedDependencies(
-      donor, workRoot, resumeVerification, { sourceCommit: owner.sha, materializer, verifySource, workspaceDirs,
+      donor, workRoot, resumeVerification, { sourceCommit: owner.sha, materializer, verifySource, workspaceDirs, environment,
         retainSource: artifact => retainCommittedWorkRoot(workRoot, owner.sha, artifact) }));
     if (verification.status === 'incomplete') return verification;
     snapshot = repairSnapshot(verification.sourceRoot, verification.paths, true);
@@ -1930,6 +1930,9 @@ async function main() {
     let prerequisiteError;
     try {
       snapshot = await materializeIndependentDependencies(dependencyDonorRoot, workRoot, {
+        // The donor may be disposable; use the persistent store already
+        // resolved from the canonical source for commands and nested readers.
+        environment: childEnvironment,
         workspaceDirs: args.workspaceDirs,
         prepareWorkspace: ({ paths, workspacePaths }) => {
           // Exclude the private install before a pinned build checks cleanliness.
