@@ -122,13 +122,11 @@ describe('mcp-proxy watchdog — every registered proxy activation', () => {
         for (let processIndex = 0; processIndex < 2; processIndex++) {
           let clock = 1_000_000;
           let batch = 0;
-          let reads = 0;
           const requested: string[] = [];
           const controller = createMcpProxyRestartController({ now: () => clock, log: () => {} });
           const activate = createMcpProxyHotPathActivator({
             targets,
             readState: async () => {
-              reads++;
               return {
                 root: '/repo', latestCommitMs: clock - 10_000,
                 latestCommitHash: 'commit-' + batch, dirtyEntries: [], error: null,
@@ -152,12 +150,36 @@ describe('mcp-proxy watchdog — every registered proxy activation', () => {
             });
             clock += 300_001;
           }
-          expect(reads).toBe(4);
           expect(requested.filter((target) => target === targets.at(-1)!.target)).toHaveLength(4);
           expect(requested).toHaveLength(size * 4 - 1);
         }
       }
     }
+  });
+
+  it('rechecks cleanliness before later units after an earlier restart drains', async () => {
+    let editing = false;
+    const requested: string[] = [];
+    const controller = createMcpProxyRestartController({ now: () => 1_000_000, log: () => {} });
+    const activate = createMcpProxyHotPathActivator({
+      readState: async () => ({
+        root: '/repo', latestCommitMs: 950_000, latestCommitHash: 'abcdef',
+        dirtyEntries: editing ? ['M apps/operator/lib/mcp-proxy/proxy.ts'] : [], error: null,
+      }),
+      readActiveForSec: async () => 100,
+      requestRestart: async (_sha, target) => {
+        requested.push(target);
+        editing = true;
+        return { ok: true, restarted: true, code: 'restarted' };
+      },
+      admitRestart: controller.admit,
+      settleRestartAttempt: controller.settle,
+      now: () => 1_000_000,
+      log: () => {},
+    });
+    const outcomes = await activate();
+    expect(requested).toEqual([MCP_PROXY_HOT_PATH_TARGETS[0].target]);
+    expect(outcomes.map(({ code }) => code)).toEqual(['restarted', 'hot_paths_dirty', 'hot_paths_dirty']);
   });
 
   it('routes every supported target through the coordinated stdin adapter and rejects unknown targets', async () => {

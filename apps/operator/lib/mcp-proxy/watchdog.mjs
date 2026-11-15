@@ -585,21 +585,15 @@ export function createMcpProxyHotPathActivator(deps = {}) {
   const writeLog = deps.log ?? log;
   const lastDecisionKeys = new Map();
   return async () => {
-    let state;
-    try {
-      state = await readState();
-    } catch (error) {
-      writeLog('committed mcp-proxy hot-path state FAILED CLOSED: ' + (error?.message ?? String(error)));
-      return targets.map(({ target }) => ({ target, restartRequested: false, code: 'probe_failed' }));
-    }
     const outcomes = [];
     // Restart requests are serialized to avoid draining all proxy routes together.
-    // Read each generation just before its decision, after any preceding restart.
+    // Re-read generation AND cleanliness after each preceding restart: a peer may
+    // begin editing during that unit's call drain.
     for (const { target, unit } of targets) {
       let restartReserved = false;
       const prefix = 'committed mcp-proxy hot-path activation [' + target + ']';
       try {
-        const activeForSec = await readActiveForSec(unit);
+        const [activeForSec, state] = await Promise.all([readActiveForSec(unit), readState()]);
         const verdict = evaluateMcpProxyHotPathActivation({
           activeForSec,
           latestCommitMs: state.latestCommitMs,
