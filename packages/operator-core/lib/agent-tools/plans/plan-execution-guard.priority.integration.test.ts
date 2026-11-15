@@ -5,30 +5,26 @@ import { _resetForTests, getOrgPg, withPriorityOrgPg } from '@papercusp/db-org';
 import { pgResultDiagnosticSnapshot } from '@papercusp/db-org/acquire-registry';
 import { specFor } from '../../../../../apps/operator/scripts/hooks/inject/ports.mjs';
 import { checkPlanExecutionGuard } from './plan-execution-guard';
+import { orgTemplateKey, provisionOrgTemplate } from '../../../test/_org-test-db';
 
 let db: MigratedTestDb;
 const keys = ['HARNESS_ADMIN_DATABASE_URL', 'HARNESS_DATABASE_URL', 'PAPERCUSP_PGBOUNCER'] as const;
 const saved = Object.fromEntries(keys.map(key => [key, process.env[key]]));
 
 beforeAll(async () => {
-  db = await createFreshTestDb({ prefix: 'guardqueue' });
+  // The real migrated schema, as a template clone. This private owner has no bound plan, so
+  // the real guard must finish its fresh census before returning null. An earlier version
+  // hand-made only the census tables. When the census began reading work_items.plan_slug
+  // and plan_line_id (ac9e07ff577), that hand-made copy lacked both columns. Every census
+  // then threw, and the guard's catch reported plan_authority_unavailable
+  // (WI-6554700010049377). A clone of the head schema cannot drift that way.
+  db = await createFreshTestDb({ prefix: 'guardqueue', template: {
+    key: orgTemplateKey(), provision: provisionOrgTemplate,
+  } });
   process.env.HARNESS_ADMIN_DATABASE_URL = db.url;
   process.env.HARNESS_DATABASE_URL = db.url;
   process.env.PAPERCUSP_PGBOUNCER = '0';
   await _resetForTests();
-  // Only the durable reader's tables are needed: this private owner has no bound
-  // plan, so the real guard must finish its fresh census before returning null.
-  await getOrgPg().sql.unsafe(`
-    CREATE SCHEMA IF NOT EXISTS harness_shared;
-    CREATE TABLE IF NOT EXISTS harness_shared.session_briefs (
-      owner_id text, workspace_id text, current_plan_slug text, harness_slug text, control_state jsonb);
-    CREATE TABLE IF NOT EXISTS harness_shared.adv_sessions (
-      coord_owner_id text, workspace_id text, plan_slug text, ended_at timestamptz);
-    CREATE TABLE IF NOT EXISTS harness_shared.plan_item_claims (
-      owner text, workspace_id text, plan_slug text, harness_slug text, item_id text);
-    CREATE TABLE IF NOT EXISTS harness_shared.work_items (
-      taken_by text, workspace_id text, source_plan_slug text, harness_slug text, feature_id text, status text);
-  `);
 }, 120_000);
 
 afterAll(async () => {
@@ -56,6 +52,7 @@ describe('native plan authority read queue reproduction (EI-27691198286861651)',
       // durable binding census, with private fixture data and real acquisition.
       expect(await checkPlanExecutionGuard(input)).toBeNull();
       const held = await Promise.all(Array.from({ length: priority.options.max }, () => priority.reserve()));
+      const recordedBefore = pgResultDiagnosticSnapshot('org-admin-priority').totalRecorded;
       let settled = false;
       const pending = checkPlanExecutionGuard(input).then(result => {
         settled = true;
@@ -72,9 +69,17 @@ describe('native plan authority read queue reproduction (EI-27691198286861651)',
         await pending;
       }
       expect(await pending).toBeNull();
-      const completed = pgResultDiagnosticSnapshot('org-admin-priority').results.at(-1);
-      expect(completed).toMatchObject({ status: 'ok' });
-      expect(completed?.preBuildMs).toBeGreaterThanOrEqual(nativeWallMs);
+      // The census runs more than one query (the binding union, then held work). Only the
+      // first one waits behind the held connections. So judge every result the queued census
+      // recorded, not just the last one. Reading only the last result saw an instant
+      // follow-up query (preBuildMs 0).
+      const snapshot = pgResultDiagnosticSnapshot('org-admin-priority');
+      const added = snapshot.totalRecorded - recordedBefore;
+      expect(added).toBeGreaterThan(0);
+      expect(added).toBeLessThanOrEqual(snapshot.results.length);
+      const queued = snapshot.results.slice(-added);
+      expect(queued.map(result => result.status)).toEqual(queued.map(() => 'ok'));
+      expect(Math.max(...queued.map(result => result.preBuildMs ?? 0))).toBeGreaterThanOrEqual(nativeWallMs);
     });
   }, 15_000);
 });
