@@ -720,7 +720,7 @@ const wakeOnReplyArg = z
   .boolean()
   .optional()
   .describe(
-    "When a peer REPLIES to this message (their coord:send sets related_msg_id to this message's msg_id), wake YOU (the sender) so you re-invoke the moment the reply lands — the dual of waking the recipient. Default: ON for DIRECTED sends whose expects is ack/answer/action; OFF for expects:'none' and broadcasts (to '*'/'human'). Set true to opt a fire-and-forget message into reply wakes, or false to opt out.",
+    "Wake the sender when a reply names this msg_id in related_msg_id. Defaults ON for directed ack/answer/action sends, OFF for expects:'none' and broadcasts ('*'/'human'). Set true/false to override.",
   );
 
 const replyDeadlineSecArg = z
@@ -728,7 +728,7 @@ const replyDeadlineSecArg = z
   .positive()
   .optional()
   .describe(
-    'EI-8986: "nudge if silent" — the dual of wakeOnReply (which wakes you when a reply ARRIVES; this wakes you when one does NOT). If no reply lands within this many seconds, a periodic backstop sweep nudges you ONCE: a coord message + a fail-soft wake — never a recurring alarm. Independent of wakeOnReply — set either, both, or neither. Omit for no deadline tracking (today\'s behavior).',
+    'No reply within this many seconds: a periodic backstop sends one coord nudge and fail-soft wake, never a recurring alarm. Independent of wakeOnReply; omit for no deadline tracking.',
   );
 
 /**
@@ -796,14 +796,14 @@ const backstopArg = z
   .min(1)
   .optional()
   .describe(
-    "FF#1: name the DURABLE BACKSTOP you verified will re-dispatch a wake:'optimistic' miss. Optimistic stays silent-on-miss ONLY when you declare one; WITHOUT a backstop an optimistic miss is reported as loudly as a required miss (recipient_absent). Do NOT pass a fake or assumed backstop to silence the warning — that re-creates the dead-drop trap. No effect on wake:'required' / inject.",
+    "For wake:'optimistic', name a VERIFIED durable retry for missed wakes. Only then are misses silent; without it they report recipient_absent like required wakes. Never assume or invent a backstop. No effect on required wakes or injects.",
   );
 
 const scopeArg = z
   .enum(['hive', 'local'])
   .optional()
   .describe(
-    "Federation scope of THIS message (cross-machine-coord-parity P-001). Omitted = auto: a harness-scoped sender stamps its harness; an un-scoped (SU/operator) sender in a workspace with EXACTLY ONE shared Hive stamps that Hive's home (the message federates to the Hive's other machines); otherwise the message stays machine-local. 'hive' FORCES the shared-Hive scope — errors loudly (no_hive_scope / ambiguous_hive_scope + candidates) instead of silently staying local. 'local' keeps the message on this machine only. Every result reports `federated:` so a local-only send is never mistaken for cross-machine delivery.",
+    "Federation scope. Omitted: use the sender's harness, else the sole shared Hive's home, else machine-local. 'hive' forces shared-Hive delivery; no_hive_scope/ambiguous_hive_scope (with candidates) refuses instead of falling back. 'local' stays on this machine. Results report `federated`.",
   );
 
 const messageHarnessArg = z
@@ -820,28 +820,28 @@ const hiveArg = z
   .min(1)
   .optional()
   .describe(
-    "WI-5445: which shared Hive `scope:'hive'` means, when this workspace hosts MORE THAN ONE shared Hive (mirrors resource:offers'/fleet:request_remote_spawn's own `hive` disambiguator — see the candidates list a bare scope:'hive' returns on ambiguous_hive_scope). Validated against the workspace's actual shared-hive set — an unknown name refuses loudly. No effect on a zero/single-shared-hive workspace or a harness-scoped (ctx) sender.",
+    "Disambiguate scope:'hive' when the workspace has multiple shared Hives; use the ambiguous_hive_scope candidates. Unknown names refuse. No effect with zero/one shared Hive or a harness-scoped sender.",
   );
 
 const allHiveArg = z
   .boolean()
   .optional()
   .describe(
-    "fleet-scoped-broadcast-default: consciously claim a HIVE-WIDE broadcast. If YOU are in a fleet, a bare to:['*'] is auto-scoped to your fleet (@fleet:<slug>, leader included) so routine status doesn't flood every agent — the result reports the rewrite as `scopedBroadcast`. Set allHive:true to keep '*' literal and reach EVERY agent, for system-wide issues / urgent notices only. No effect for a non-fleeted sender or a directed send.",
+    "Set true for an intentional hive-wide '*' broadcast (system-wide issues/urgent notices). Otherwise a fleet member's '*' becomes @fleet:<slug>, including its leader; results report `scopedBroadcast`. No effect outside a fleet or on directed sends.",
   );
 
 const asAuthorityArg = z
   .literal('none')
   .optional()
   .describe(
-    "Renounce your fleet-control authority for THIS message — it is delivered UNSTAMPED, as an ordinary agent. A fleet LEADER needs this to send a hive-wide NOTICE (to:['*'] + allHive:true), which is otherwise refused as fleet_scoped_cue_allhive_contradiction: a leader may INFORM the hive, never COMMAND it. Do NOT use it to push a fleet-control cue (drain/pause/steer) past that guard. No effect for a sender holding no fleet-leader authority.",
+    "Send as an ordinary agent without a fleet-control stamp. Required for a leader's hive-wide NOTICE (to:['*'], allHive:true), else fleet_scoped_cue_allhive_contradiction. Never bypass the guard for drain/pause/steer cues. No effect without fleet-leader authority.",
   );
 
 const relayOfArg = z
   .string()
   .optional()
   .describe(
-    "Relaying someone else's directive/decision? Pass the ORIGINAL's coord msg_id — or the literal sentinel 'owner-turn' when relaying what the owner told you in your CURRENT turn (a TUI human turn has no msg_id). The platform verifies the reference SERVER-SIDE at send, stamps the provenance tier (coord-origin / owner-verified(turn)) and auto-inlines a bounded VERBATIM quote at delivery — receivers see the original's words, never your paraphrase, and neither side makes an extra call. A dangling msg_id is a loud relay_origin_not_found (nothing sent).",
+    "Relay the original coord msg_id, or 'owner-turn' for owner speech in your CURRENT turn (TUI has no msg_id). Server verification stamps coord-origin/owner-verified(turn) and delivers a bounded verbatim quote without another call. Missing msg_id: relay_origin_not_found, nothing sent.",
   );
 
 const relayQuoteArg = z
@@ -856,14 +856,14 @@ const gateRefsArg = z
   .max(3)
   .optional()
   .describe(
-    'Declaring/referencing announced gate(s)? Pass the EXACT event key(s) (≤3 — e.g. the key events:emit { announce:true } RETURNED). The platform verifies each against the announced-gates store at send and stamps its status (declared/fired/undeclared); delivery renders the exact keys UN-CLIPPED, and receivers can skip copying entirely via events:await { fromMsg: <this msg_id> }. Kills hand-typed gate-key drift — a near-miss key never rendezvouses.',
+    'Up to 3 EXACT announced-gate keys returned by events:emit { announce:true }. Server verification stamps declared/fired/undeclared; delivery keeps keys unclipped. Receivers can await via events:await { fromMsg:<this msg_id> } without copying keys.',
   );
 
 const noBodyRefsArg = z
   .boolean()
   .optional()
   .describe(
-    "P-008 body auto-refs OPT-OUT: by default, WI-/EI- ids mentioned in your summary/body auto-hydrate at delivery into a one-line live status+title+checkpoint suffix on the receiver's [coord+N] line (first 3 ids, ~150 chars each — receivers stop re-fetching cited items). Set true when that live status would MISLEAD: the ids are historical/illustrative examples, or you are deliberately quoting stale state.",
+    "Disable automatic live status/title/checkpoint suffixes for WI-/EI- ids in summary/body (first 3, ~150 chars each, on [coord+N]). Set true for historical/illustrative ids or deliberately quoted stale state, where live status would mislead.",
   );
 
 const conditionKeyArg = z
