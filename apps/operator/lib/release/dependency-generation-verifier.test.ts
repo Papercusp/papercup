@@ -805,8 +805,25 @@ describe('D012 native generation closure', () => {
     const pin = join(f.store, '.pins', pins[0]!);
     expect(readFileSync(pin, 'utf8')).toContain(`identity=${ordinary.split('/').pop()}\n`);
     rmSync(failBuild);
-    const resumed = f.shell(f.generationScript, args, env);
+    const resume = join(f.root, 'resume-without-ordinary-recapture.sh');
+    writeFileSync(resume, [
+      'set -euo pipefail',
+      'source "$GENERATION_SCRIPT"',
+      'eval "$(declare -f dependency_generation_ensure | sed \'1s/dependency_generation_ensure/original_ensure/\')"',
+      'dependency_generation_ensure() {',
+      '  if [ "$1" = "$DONOR" ]; then',
+      '    echo "ordinary-source-recapture-forbidden" >&2; return 93',
+      '  fi',
+      '  original_ensure "$@"',
+      '}',
+      'dependency_generation_main "$@"',
+    ].join('\n'));
+    const resumed = f.shell(resume, args, {
+      ...env, GENERATION_SCRIPT: f.generationScript, DONOR: f.donor,
+    });
     expect(resumed.status, resumed.stderr).toBe(0);
+    expect(resumed.stderr).not.toContain('ordinary-source-recapture-forbidden');
+    expect(selectors.filter(name => name.startsWith('scoped-'))).toHaveLength(1);
     expect(resumed.stderr).not.toContain(`building ${ordinary.split('/').pop()} from`);
     const native = f.publishedPath(resumed.stdout);
     expect(native).not.toBe(ordinary);

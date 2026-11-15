@@ -621,6 +621,10 @@ bundle_host_handler_bootstrap() { # <repo root> <out dir>
 
 bundle_host_workers() {
   local repo_root="$1" out_dir="$2" source output tmp
+  # WI-6554700010048806: create the output directory before the testing-core prepare. That
+  # prepare writes its witness receipt and compiled core into "$out_dir", so a fresh
+  # destination made the witness refuse and degrade before any worker was written.
+  mkdir -p "$out_dir" || return 1
   # Reuse the generation prepared before the parent, rather than compiling a
   # different worker after its independent expectation has already been baked.
   bundle_host_prepare_testing_core "$repo_root" "$out_dir" || return 1

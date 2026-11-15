@@ -45,6 +45,14 @@ import { decideLegacyAdoption, reserveLegacyAdoption, retainLegacyAdoptionHuman,
   validateLegacyAdoptionRequest } from '../../../blind-review-continuation-custody';
 import routes, { GOVERNANCE_POLICY_CHANGE_STATUS } from './policy';
 
+// Partial fixtures cast to the mocked functions' REAL return types instead of
+// `as never`, so a changed field type still fails here at compile time
+// (see testing/typed-mock.ts and check-mock-cast-escape.mjs).
+type StoredAction = NonNullable<Awaited<ReturnType<typeof getSensitiveAction>>>;
+type LegacyBinding = ReturnType<typeof validateLegacyAdoptionRequest>;
+type LegacyDecision = Awaited<ReturnType<typeof decideLegacyAdoption>>;
+type LegacyReservation = Awaited<ReturnType<typeof reserveLegacyAdoption>>;
+
 const [explainRoute, simulateRoute, setRoute, addExceptionRoute, prepareRoute, decideRoute, applyRoute, delegateRoute, revokeRoute, authorityRoute] =
   routes;
 
@@ -74,7 +82,7 @@ const LAYER = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(getSensitiveAction).mockResolvedValue({ requestId: 'sar-1', actionKind: 'governance-policy-change' } as never);
+  vi.mocked(getSensitiveAction).mockResolvedValue({ requestId: 'sar-1', actionKind: 'governance-policy-change' } as StoredAction);
   vi.mocked(explainGovernancePolicy).mockReset();
   vi.mocked(simulateGovernancePolicy).mockReset();
   vi.mocked(setGovernancePolicyLayer).mockReset();
@@ -86,13 +94,13 @@ describe('D011 HTTP stored adoption dispatch', () => {
     workspaceId: 'ws-active', payloadHash: 'a'.repeat(64) };
 
   beforeEach(() => {
-    vi.mocked(getSensitiveAction).mockResolvedValue(stored as never);
-    vi.mocked(validateLegacyAdoptionRequest).mockReturnValue({ bindingId: 7 } as never);
+    vi.mocked(getSensitiveAction).mockResolvedValue(stored as StoredAction);
+    vi.mocked(validateLegacyAdoptionRequest).mockReturnValue({ bindingId: 7 } as LegacyBinding);
     vi.mocked(retainLegacyAdoptionHuman).mockReset();
   });
 
   it('decide sends actual request headers and stored workspace to the adoption operation', async () => {
-    vi.mocked(decideLegacyAdoption).mockResolvedValue(stored as never);
+    vi.mocked(decideLegacyAdoption).mockResolvedValue(stored as LegacyDecision);
     const decision = { requestId: 'adopt-1', decision: 'approve', reason: 'reviewed' };
     const out = await call(decideRoute, decision, 'forged-admin', { cookie: 'actual-session=1' });
     expect(out).toMatchObject({ status: 200, body: { ok: true, op: 'decide' } });
@@ -105,7 +113,7 @@ describe('D011 HTTP stored adoption dispatch', () => {
   it('apply derives binding from stored payload and retains request credentials rather than the admin label', async () => {
     const principal = vi.fn();
     vi.mocked(retainLegacyAdoptionHuman).mockResolvedValue(principal);
-    vi.mocked(reserveLegacyAdoption).mockResolvedValue({ rootId: 9 } as never);
+    vi.mocked(reserveLegacyAdoption).mockResolvedValue({ rootId: 9 } as LegacyReservation);
     const out = await call(applyRoute, { requestId: 'adopt-1', bindingId: 999,
       workspaceId: 'forged', actor: 'user:forged' }, 'forged-admin', { cookie: 'actual-session=2' });
     expect(out).toMatchObject({ status: 200, body: { ok: true, adoption: { rootId: 9 } } });
@@ -142,7 +150,7 @@ describe('D011 HTTP stored adoption dispatch', () => {
   });
 
   it('a caller-supplied adoption discriminator cannot select the adoption executor', async () => {
-    vi.mocked(getSensitiveAction).mockResolvedValue({ ...stored, actionKind: 'governance-policy-change' } as never);
+    vi.mocked(getSensitiveAction).mockResolvedValue({ ...stored, actionKind: 'governance-policy-change' } as StoredAction);
     vi.mocked(applyGovernancePolicyChange).mockResolvedValue({ ok: true, request: {} as never,
       layer: { layerId: 'policy', version: 1 }, revision: 'policy@v1' });
     expect((await call(applyRoute, { requestId: 'adopt-1', actionKind: LEGACY_ADOPTION_ACTION })).status).toBe(200);
@@ -161,7 +169,7 @@ describe('D011 HTTP stored adoption dispatch', () => {
   });
 
   it.each([decideRoute, applyRoute])('refuses a foreign-workspace adoption before authenticating or effecting it', async route => {
-    vi.mocked(getSensitiveAction).mockResolvedValue({ ...stored, workspaceId: 'foreign' } as never);
+    vi.mocked(getSensitiveAction).mockResolvedValue({ ...stored, workspaceId: 'foreign' } as StoredAction);
     expect((await call(route, { requestId: 'adopt-1', decision: 'approve', reason: 'r' })).status).toBe(403);
     expect(decideLegacyAdoption).not.toHaveBeenCalled();
     expect(retainLegacyAdoptionHuman).not.toHaveBeenCalled();
