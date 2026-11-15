@@ -46,7 +46,7 @@ describe('condition-rail per-row executable coverage (P-017)', () => {
     const blockedBefore = readRealPgRailBlocks().blocked;
     expect(blockedBefore).toBe(0);
     const config = await import('../release-checkpoint-config');
-    await config.releaseCheckpointConfigReady;
+    await config.releaseCheckpointConfigReady();
     expect(operatorState.read).toHaveBeenCalledWith('operator_release_checkpoint_config');
     expect(config.releaseCheckpointConfig()).toEqual(config.RELEASE_CHECKPOINT_DEFAULTS);
     expect(readRealPgRailBlocks().blocked).toBe(blockedBefore);

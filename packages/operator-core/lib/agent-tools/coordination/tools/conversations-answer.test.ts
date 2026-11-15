@@ -51,7 +51,10 @@ describe('conversations:answer handler (bulk keyed-array)', () => {
 
   it('does not present an agent peer opinion as an accept-able owner answer', async () => {
     mockResolvedTyped(answerM, {
-      post: { id: 43 },
+      post: {
+        id: 43, thread_id: 'thread-owner-question', author_id: 'su-peer', body: 'CONTINUE',
+        created_ts: '2026-11-01T00:00:00.000Z',
+      },
       delivered: 1,
       author_origin: 'agent',
       owner_decision_effect: 'peer-opinion',

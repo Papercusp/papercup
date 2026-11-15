@@ -5710,7 +5710,7 @@ describe("psu-launcher arg parsing", () => {
           ),
         ).rejects.toMatchObject({
           message: "The operator account options are unavailable. Refusing to fall back to the default system login.",
-          cause: expect.any(Error),
+          cause: expect.objectContaining({ status: 401 }),
         });
         expect(fetchSpy).toHaveBeenCalledTimes(1);
       } finally {

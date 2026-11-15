@@ -53,6 +53,7 @@ import {
   clearStaleHolderlessEmptyGitLock,
   clearStaleMaintenanceLock,
   sweepStaleGitMetadataLocks,
+  sweepAndReportGitMetadataLocks,
   SWEPT_GIT_METADATA_LOCKS,
   scavengeStaleTempPacks,
   STALE_INDEX_LOCK_MS,
@@ -3952,6 +3953,32 @@ describe('runGitSync (real git, no submodule)', () => {
       expect(out.kept).toEqual(['packed-refs.lock']);
       expect(out.keptStale).toEqual([expect.objectContaining({ name: 'packed-refs.lock', reason: 'unknown-holder' })]);
       expect(existsSync(lock)).toBe(true);
+    });
+
+    it('hands the kept-stale verdict to the reporter, including an empty verdict (WI-6554700010049067)', async () => {
+      const calls: Array<[string, readonly { name: string; reason: string }[]]> = [];
+      const report = async (repoPath: string, kept: readonly { name: string; reason: string }[]) => {
+        calls.push([repoPath, kept]);
+      };
+      await sweepAndReportGitMetadataLocks(realRunGit, sweepRepo, () => {}, report, { isOpen: async () => false });
+      expect(calls).toEqual([[sweepRepo, []]]);
+      const lock = lockAt('packed-refs.lock', OLD, 'nonempty');
+      await sweepAndReportGitMetadataLocks(realRunGit, sweepRepo, () => {}, report, { isOpen: async () => false });
+      expect(calls[1]).toEqual([sweepRepo, [expect.objectContaining({ name: 'packed-refs.lock', reason: 'nonempty' })]]);
+      expect(existsSync(lock)).toBe(true);
+    });
+
+    it('logs and swallows a failing sweep or reporter, and a failed sweep reports nothing', async () => {
+      const logs: string[] = [];
+      let reported = 0;
+      const brokenGit: RunGit = async () => { throw new Error('git exploded'); };
+      await sweepAndReportGitMetadataLocks(brokenGit, sweepRepo, (m) => logs.push(m), async () => { reported++; });
+      expect(reported).toBe(0);
+      expect(logs.some((m) => m.includes('Git metadata lock sweep failed: git exploded'))).toBe(true);
+      await sweepAndReportGitMetadataLocks(realRunGit, sweepRepo, (m) => logs.push(m), async () => {
+        throw new Error('broadcast down');
+      });
+      expect(logs.some((m) => m.includes('kept-stale Git lock report failed: broadcast down'))).toBe(true);
     });
 
     it("sweeps a LINKED worktree's HEAD.lock and index.lock but never the swept worktree's own entry", async () => {

@@ -1826,7 +1826,9 @@ export class HostedWorkspaceHostSessionAdapter {
         // Heartbeats and live claim labels may change between pages; membership/state and
         // connector identity determine the generation. Source order never determines a page.
         const generation = createHash('sha256').update(JSON.stringify([
-          this.options.binding, viewer.userId, roster.map((entry) => [entry.desktopSessionId, entry.state]),
+          this.options.binding.controlPlaneWorkspaceId, this.options.binding.organizationId,
+          this.options.binding.customerWorkspaceId, this.options.binding.hostId,
+          this.options.binding.generation, viewer.userId, roster.map((entry) => [entry.desktopSessionId, entry.state]),
         ])).digest('hex');
         const cursor = payload.cursor === undefined ? null : string(payload.cursor, 100);
         const match = cursor?.match(/^([a-f0-9]{64}):(\d+)$/);

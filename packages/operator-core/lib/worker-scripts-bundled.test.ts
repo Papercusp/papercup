@@ -234,6 +234,7 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     // The pinned fixture resolves once before this build. Exercise the recipe's
     // lease calls in a private domain, so real maintenance cannot delay it.
     env: { ...process.env, PATH: compilerPath, PAPERCUSP_FS_MUTEX_LOCK_DIR: join(output, 'package-cache-locks'),
+      BUNDLE_HOST_STEP_LOG: join(destination, 'bundle-host.steps.tsv'),
       PAPERCUSP_EMBED_WORKER_SCRIPT: '', BUNDLE_HOST_GATE_META_DIR: join(destination, 'missing-gate-meta'), ...extraEnv },
     encoding: 'utf8',
     timeout: 30_000,
@@ -248,7 +249,9 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     expect(existsSync(gateMeta)).toBe(false);
     symlinkSync(join(REPO_ROOT, 'node_modules'), join(output, 'node_modules'), 'dir');
     const result = build();
-    expect(result.error, `worker fixture signal=${result.signal}; ${result.stdout + result.stderr}`).toBeUndefined();
+    const stepLog = join(output, 'bundle-host.steps.tsv');
+    const steps = existsSync(stepLog) ? readFileSync(stepLog, 'utf8') : 'No bundle steps recorded';
+    expect(result.error, `worker fixture signal=${result.signal}; ${result.stdout + result.stderr}\n${steps}`).toBeUndefined();
     expect(result.status, result.stdout + result.stderr).toBe(0);
     buildOutput = result.stdout + result.stderr;
   }, 40_000);

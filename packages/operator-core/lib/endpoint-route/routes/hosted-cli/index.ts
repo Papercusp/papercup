@@ -711,6 +711,7 @@ export function createHostedCliRoutes(deps: HostedCliRouteDependencies): Readonl
           organizationId: result.organizationId,
           organizationName: await organizationLabel(result.organizationId),
           customerWorkspaceId: linked.customerWorkspaceId,
+          userId: result.userId,
           enrollmentTicket: enrollment.ticket,
           enrollmentExpiresAt: enrollment.binding.expiresAt.toISOString(),
           registerUrl: `${origin}/api/hosted/connectors/register`,

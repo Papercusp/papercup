@@ -20,6 +20,8 @@ function routes(over: Partial<PortalRelayRouteDependencies> = {}, isLocal: (req:
     begin: vi.fn(async () => STATUS),
     cancel: vi.fn(async () => STATUS),
     disconnect: vi.fn(async () => ({ ...(STATUS as object), portalUnlinked: true }) as never),
+    approveDesktop: vi.fn(async () => ({ ...(STATUS as object), machinePublicKey: 'machine-key' }) as never),
+    revokeDesktop: vi.fn(async () => STATUS),
     reconcileSoon: vi.fn(),
     ...over,
   } satisfies PortalRelayRouteDependencies;
@@ -47,6 +49,7 @@ describe('Papercusp relay routes', () => {
       'POST /remote-access/portal-relay/cancel',
       'POST /remote-access/portal-relay/connect',
       'POST /remote-access/portal-relay/consent',
+      'POST /remote-access/portal-relay/desktop-grant',
       'POST /remote-access/portal-relay/disconnect',
     ]);
     for (const r of list as any[]) expect(r.auth).toBe('loopback');
@@ -131,5 +134,35 @@ describe('Papercusp relay routes', () => {
     expect(deps.cancel).toHaveBeenCalledTimes(1);
     expect(deps.disconnect).toHaveBeenCalledTimes(1);
     expect(deps.reconcileSoon).toHaveBeenCalledTimes(2);
+  });
+
+  it('desktop approval uses the local same-origin guard and requires explicit view/control and binding', async () => {
+    const { find, deps } = routes();
+    const call = find('POST', '/remote-access/portal-relay/desktop-grant');
+    const body = {
+      noticeVersion: 1, installId: 'install-12345678', portalOrigin: 'https://portal.example',
+      userId: 'u', organizationId: 'o', customerWorkspaceId: 'cw', localWorkspaceId: 'local',
+      browserPublicKey: Buffer.alloc(32, 1).toString('base64'), view: true, control: false,
+    };
+    expect((await call({ body, headers: { origin: 'https://portal.example', 'sec-fetch-site': 'cross-site' } })).status).toBe(403);
+    expect((await call({ body: { ...body, control: undefined } })).status).toBe(400);
+    expect((await call({ body: { ...body, userId: undefined } })).status).toBe(400);
+    expect(deps.approveDesktop).not.toHaveBeenCalled();
+    const response = await call({ body, headers: { origin: 'http://127.0.0.1:3070', 'sec-fetch-site': 'same-origin' } });
+    expect(response.status).toBe(200);
+    expect(deps.approveDesktop).toHaveBeenCalledWith(body);
+    expect(await response.json()).toMatchObject({ machinePublicKey: 'machine-key' });
+    expect((await call({ body: { revoke: true } })).status).toBe(200);
+    expect(deps.revokeDesktop).toHaveBeenCalledOnce();
+  });
+
+  it('desktop grants and revocation reject external ingress, including loopback forwarded requests', async () => {
+    const { find, deps } = routes({}, isLoopbackHost);
+    const res = await find('POST', '/remote-access/portal-relay/desktop-grant')({
+      body: { revoke: true }, headers: { host: '127.0.0.1:3070', [EXTERNAL_INGRESS_MARKER_HEADER]: '1' },
+    });
+    expect(res.status).toBe(403);
+    expect(deps.revokeDesktop).not.toHaveBeenCalled();
+    expect(deps.approveDesktop).not.toHaveBeenCalled();
   });
 });

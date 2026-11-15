@@ -2890,6 +2890,75 @@ export function cancelQualificationTransaction(
   };
 }
 
+/**
+ * D-028 (WI-6554700010048992): stored blockers that NO production path can clear.
+ * The executor-identity blocker clears only via recoverQualificationExecutorIdentity,
+ * whose verifier does not exist. ONE registry, shared by the settle below and the
+ * stranded-blocker alarm. Remove a code from it when its clear path ships.
+ */
+export const QUALIFICATION_BLOCKERS_WITHOUT_CLEAR_PATH: ReadonlySet<string> = new Set([EXECUTOR_IDENTITY_BLOCKER]);
+
+/** The stored blocker codes on `current` that no production path can clear. */
+export function qualificationBlockersWithoutClearPath(current: CheckpointQualificationTransaction): string[] {
+  return current.blockers
+    .map(blocker => blocker.code)
+    .filter(code => QUALIFICATION_BLOCKERS_WITHOUT_CLEAR_PATH.has(code));
+}
+
+export type SettleUnreachableBlockedQualificationInput = {
+  attemptId: string;
+  reason: string;
+  actor: string;
+  evidenceRefs?: readonly string[];
+  nowMs?: number;
+};
+
+/**
+ * D-028(b): terminally settle a RUNNER-FREE attempt whose only obstacle is a stored
+ * blocker no production path can clear, as `code-inconclusive`. The repair queue is not
+ * touched here; the ordinary terminal handoff carries it to the successor. Every other
+ * case is refused, exactly as cancellation refuses it.
+ */
+export function settleUnreachableBlockedQualification(
+  current: CheckpointQualificationTransaction,
+  input: SettleUnreachableBlockedQualificationInput,
+): QualificationTransition {
+  const refuse = (refusalReason: string): QualificationTransition =>
+    ({ status: 'conflict', transaction: current, refusalReason });
+  if (current.attemptId !== input.attemptId) return refuse('attempt-mismatch');
+  if (isTerminalQualificationOutcome(current.outcome) || current.phase === 'terminal')
+    return { status: 'terminal', transaction: current };
+  if (current.currentPhysicalRunner?.childScopeUnits?.length) return refuse('child-scope-custody-held');
+  if (current.currentPhysicalRunner !== null || current.phase === 'running') return refuse('runner-held');
+  const reason = input.reason.trim();
+  const actor = input.actor.trim();
+  if (!reason || !actor) return refuse('reason-and-actor-required');
+  if (current.blockers.length === 0) return refuse('no-stored-blocker');
+  if (current.blockers.some(blocker => !QUALIFICATION_BLOCKERS_WITHOUT_CLEAR_PATH.has(blocker.code)))
+    return refuse('blocker-has-clear-path');
+  const nowMs = input.nowMs ?? Date.now();
+  const codes = current.blockers.map(blocker => blocker.code);
+  const outcome: QualificationOutcome = { kind: 'code-inconclusive', reason: 'unreachable-blocker-settled' };
+  return {
+    status: 'updated',
+    transaction: {
+      ...current,
+      updatedAtMs: nowMs,
+      phase: 'terminal',
+      lastTerminalVerdictAtMs: nowMs,
+      phaseEnteredAtMs: nowMs,
+      phaseDurationsMs: completedPhaseDurations(current, 'terminal', nowMs),
+      outcome,
+      blockers: [],
+      evidenceRefs: uniqueStrings([
+        ...current.evidenceRefs,
+        ...(input.evidenceRefs ?? []),
+        ...codes.map(code => `settled-unreachable-blocker:${code}:by:${actor}`),
+      ]),
+    },
+  };
+}
+
 export type RepairQueueReconciliation = {
   status: 'none' | 'preserved' | 'blocked';
   reason:

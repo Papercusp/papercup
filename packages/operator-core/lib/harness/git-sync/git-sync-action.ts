@@ -1148,8 +1148,10 @@ function startLockHeartbeat(
   fence?: GitSyncLeaseFence,
 ): () => Promise<void> {
   let inFlight: Promise<void> | null = null;
+  let stopped = false;
 
   const refresh = async (): Promise<void> => {
+    if (stopped) return;
     // The store extends the expiry at statement time, so a refresh confirms the
     // lease as of when it was SENT, never when its result came back.
     const sentAt = Date.now();
@@ -1164,12 +1166,16 @@ function startLockHeartbeat(
         inWorkspaceTxn(cd, owner, async (tx) => {
           const refreshed: Array<{ resource: string; lockId: string; result: Awaited<ReturnType<typeof tryHeartbeatResource>> }> = [];
           for (const { resource, lockId } of resources) {
+            if (stopped) break;
             const result = await tryHeartbeatResource(tx, cd, owner, lockId, LOCK_TTL_SEC);
             refreshed.push({ resource, lockId, result });
           }
           return refreshed;
         }, { leaseRenewal: true }),
       );
+      // An abandoned pass can settle after stop returns and cleanup releases
+      // these leases. Its results belong to the finished heartbeat lifetime.
+      if (stopped) return;
       let refused = false;
       for (const { resource, lockId, result } of results) {
         if (!result.extended) {
@@ -1185,7 +1191,9 @@ function startLockHeartbeat(
       }
       if (!refused) fence?.confirm(sentAt);
     } catch (e) {
-      console.warn(`[git-sync] ${slug}: lock-set heartbeat failed: ${e instanceof Error ? e.message : String(e)}`);
+      if (!stopped) {
+        console.warn(`[git-sync] ${slug}: lock-set heartbeat failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
   };
 
@@ -1193,7 +1201,7 @@ function startLockHeartbeat(
     `git-sync-lock-heartbeat:${slug}`,
     LOCK_HEARTBEAT_INTERVAL_MS,
     () => {
-      if (inFlight) return;
+      if (stopped || inFlight) return;
       // EI-25452296370086757: bound each pass so a hung refresh cannot starve every later
       // one (and the stop function) until the fence trips a progressing fire.
       inFlight = boundLeaseRefresh(refresh(), GIT_SYNC_LEASE_REFRESH_DEADLINE_MS, () => {
@@ -1211,6 +1219,7 @@ function startLockHeartbeat(
   );
 
   return async () => {
+    stopped = true;
     timer.stop();
     if (inFlight) await inFlight;
   };

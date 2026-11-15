@@ -132,6 +132,7 @@ describe('evaluateDeclaredGateGeneration — taxonomy (R-001) and exact next ver
     ['an earlier fired generation', { fireHistory: { status: 'measured', value: { exactFired: false, familyFires: 0, priorGenerationFired: true, lastFiredAt: null } } }],
   ] as const)('missed-emitter when the key is fireable by %s but its owner is gone', (_why, over) => {
     const r = evaluateDeclaredGateGeneration(input(over as Over));
+    if (r.status !== 'classified') throw new Error(`expected a classified result, got ${r.status}`);
     expect(r.classification).toBe('missed-emitter');
     // No live owner, no repair item: the steward condition item IS the escalation.
     expect(r.escalationTarget).toEqual({ kind: 'steward-work-item', ref: 'declared-gate-recovery:42:3:missed-emitter' });

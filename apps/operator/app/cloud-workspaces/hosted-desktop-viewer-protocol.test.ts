@@ -21,10 +21,16 @@ describe("desktop roster continuation", () => {
       kind: "roster", page: { hostId: "host-1", generation: "generation-1", cursor: null, nextCursor: "next-64", hasMore: true, remaining: 1 },
     });
   });
-  it.each([{ hasMore: false }, { remaining: 0 }, { nextCursor: null }, { cursor: 3 }, { hostId: "" }])("refuses inconsistent or incomplete pagination %j", (change) => {
+  it.each([{ hasMore: false }, { remaining: 0 }, { nextCursor: null }, { cursor: 3 }, { hostId: "" },
+    { desktops: [{ state: "ready" }] }, { desktops: Array.from({ length: 65 }, (_, i) => ({ desktopSessionId: `d-${i}`, state: "ready" })) },
+  ])("refuses inconsistent or incomplete pagination %j", (change) => {
     expect(parseHostedDesktopProtocolMessage({ ...page, ...change })).toEqual({
       kind: "error", operation: "desktop.roster", requestId: "page-1", code: "roster_invalid_page",
     });
+  });
+  it("does not treat incomplete page metadata as a complete legacy roster", () => {
+    expect(parseHostedDesktopProtocolMessage({ type: page.type, requestId: page.requestId, desktops: [], hostId: "host-1" }))
+      .toMatchObject({ kind: "error", code: "roster_invalid_page" });
   });
 });
 

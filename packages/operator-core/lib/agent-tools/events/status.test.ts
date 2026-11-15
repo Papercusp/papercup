@@ -1099,7 +1099,7 @@ describe('events:status projection', () => {
       composedRoot: null,
     });
     mockResolvedOnceTyped(vi.mocked(resolveSessionStates), new Map([
-      ['su-ended', { ownerId: 'su-ended', sessionState: 'ended' }],
+      ['su-ended', { ownerId: 'su-ended', sessionState: 'ended' as const, wakeable: false, liveTurn: false, confirmLiveness: false, heartbeatFresh: false }],
     ]));
     vi.mocked(findConditionKeyHolder).mockResolvedValueOnce(stewardId);
 

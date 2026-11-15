@@ -1655,7 +1655,7 @@ export async function gitPipelineSnapshot(
   // wake tools import pipeline types transitively and must perform no DB I/O
   // merely by loading their definitions.
   const { releaseCheckpointConfig, releaseCheckpointConfigReady } = await observe('config-import', import('./release-checkpoint-config'));
-  await observe('config-ready', releaseCheckpointConfigReady);
+  await observe('config-ready', releaseCheckpointConfigReady());
   const stallConfig = releaseCheckpointConfig();
   const inRoutineStalled = deriveInRoutineGateStalled({
     consecutiveReds: measuredConsecutiveReds,

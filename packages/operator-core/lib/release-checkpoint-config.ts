@@ -37,6 +37,8 @@ let cached: Partial<ReleaseCheckpointConfig> = {};
 
 /** Effective config = sync-cached override merged over the const defaults. */
 export function releaseCheckpointConfig(): ReleaseCheckpointConfig {
+  // First use starts the override read; until it lands the const defaults apply.
+  void releaseCheckpointConfigReady();
   return { ...RELEASE_CHECKPOINT_DEFAULTS, ...cached };
 }
 
@@ -47,8 +49,16 @@ export async function refreshReleaseCheckpointConfig(): Promise<void> {
     /* keep last/empty — const defaults apply; never throw on the config path */
   }
 }
-/** The first override read; async callers can await it before using the sync cache. */
-export const releaseCheckpointConfigReady = refreshReleaseCheckpointConfig();
+let firstRead: Promise<void> | null = null;
+/**
+ * The first override read, started on FIRST USE and memoized; async callers await it before using
+ * the sync cache. Never started at import: an import-time read opens the org PG pool in every
+ * importer (CLIs such as the llm-testing scenario catalog included), and the pool's live sockets
+ * keep those processes from exiting. Guarded by capability-envelope/policy-load-graph.test.ts.
+ */
+export function releaseCheckpointConfigReady(): Promise<void> {
+  return (firstRead ??= refreshReleaseCheckpointConfig());
+}
 
 export async function readReleaseCheckpointOverride(): Promise<Partial<ReleaseCheckpointConfig>> {
   return (await readOperatorState<Partial<ReleaseCheckpointConfig>>('operator_release_checkpoint_config')) ?? {};

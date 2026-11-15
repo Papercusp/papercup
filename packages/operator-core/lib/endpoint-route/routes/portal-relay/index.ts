@@ -19,6 +19,9 @@ import {
   disconnectPortalRelay,
   portalRelayStatus,
   reconcilePortalRelay,
+  approvePortalRelayDesktop,
+  revokePortalRelayDesktop,
+  type PortalRelayDesktopApproval,
 } from '../../../remote-access/relay-opt-in';
 
 type AnyRoute = RouteDefinition<any>;
@@ -32,6 +35,8 @@ export interface PortalRelayRouteDependencies {
   readonly begin: (input: { portalOrigin?: string }) => ReturnType<typeof beginPortalRelayLink>;
   readonly cancel: () => ReturnType<typeof cancelPortalRelayLink>;
   readonly disconnect: () => ReturnType<typeof disconnectPortalRelay>;
+  readonly approveDesktop: (input: PortalRelayDesktopApproval) => ReturnType<typeof approvePortalRelayDesktop>;
+  readonly revokeDesktop: () => ReturnType<typeof revokePortalRelayDesktop>;
   /** Nudge the reconciler after a change so the screen moves without waiting for the next tick. */
   readonly reconcileSoon: () => void;
 }
@@ -72,12 +77,14 @@ const USER_FIXABLE: ReadonlySet<PortalRelayError['code']> = new Set([
   'already_linked',
   'portal_origin_conflict',
   'invalid_portal_origin',
+  'desktop_grant_invalid',
+  'desktop_binding_changed',
 ]);
 
 /** User-fixable refusal → 400 (hosted machine → 409), portal trouble → 502, anything else → 500. */
 function failure(err: unknown): Response {
   if (err instanceof PortalRelayError) {
-    if (err.code === 'hosted_machine' || err.code === 'already_linked' || err.code === 'portal_origin_conflict') return jsonError(err.code, 409, { message: err.message });
+    if (err.code === 'hosted_machine' || err.code === 'already_linked' || err.code === 'portal_origin_conflict' || err.code === 'desktop_binding_changed') return jsonError(err.code, 409, { message: err.message });
     if (USER_FIXABLE.has(err.code)) return jsonError(err.code, 400, { message: err.message });
     return jsonError(err.code, 502, { message: err.message });
   }
@@ -177,7 +184,39 @@ export function createPortalRelayRoutes(deps: PortalRelayRouteDependencies): Rea
     },
   });
 
-  return [status, consent, connect, cancel, disconnect];
+  const desktopGrant = defineTool({
+    method: 'POST',
+    path: '/remote-access/portal-relay/desktop-grant',
+    auth: 'loopback',
+    async handler(req) {
+      const denied = guard(req, true);
+      if (denied) return denied;
+      const body = await readJson(req);
+      if (!body) return jsonError('invalid_json', 400);
+      try {
+        if (body.revoke === true) {
+          const relay = await deps.revokeDesktop();
+          deps.reconcileSoon();
+          return ok({ relay });
+        }
+        const strings = ['installId', 'portalOrigin', 'userId', 'organizationId', 'customerWorkspaceId', 'localWorkspaceId', 'browserPublicKey'] as const;
+        if (typeof body.noticeVersion !== 'number' || body.view !== true || typeof body.control !== 'boolean' ||
+            strings.some((key) => typeof body[key] !== 'string' || !(body[key] as string).trim() || (body[key] as string).length > 2048)) {
+          return jsonError('invalid_request', 400);
+        }
+        const result = await deps.approveDesktop({
+          noticeVersion: body.noticeVersion, view: true, control: body.control,
+          ...Object.fromEntries(strings.map((key) => [key, body[key]])),
+        } as PortalRelayDesktopApproval);
+        deps.reconcileSoon();
+        return ok({ relay: result, machinePublicKey: result.machinePublicKey });
+      } catch (err) {
+        return failure(err);
+      }
+    },
+  });
+
+  return [status, consent, connect, cancel, disconnect, desktopGrant];
 }
 
 const routes: ReadonlyArray<AnyRoute> = createPortalRelayRoutes({
@@ -187,6 +226,8 @@ const routes: ReadonlyArray<AnyRoute> = createPortalRelayRoutes({
   begin: (input) => beginPortalRelayLink(input),
   cancel: () => cancelPortalRelayLink(),
   disconnect: () => disconnectPortalRelay(),
+  approveDesktop: (input) => approvePortalRelayDesktop(input),
+  revokeDesktop: () => revokePortalRelayDesktop(),
   reconcileSoon: () => {
     void reconcilePortalRelay();
   },

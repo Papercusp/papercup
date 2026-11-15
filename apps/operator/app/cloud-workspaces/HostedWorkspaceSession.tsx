@@ -212,7 +212,7 @@ export function HostedWorkspaceSession({
   );
   const rosterReadRef = useRef<{
     requestId: string; generation: string | null; cursor: string | null;
-    entries: Map<string, HostedDesktopRosterEntry>; cursors: Set<string>; resyncs: number;
+    entries: Map<string, HostedDesktopRosterEntry>; cursors: Set<string>; resyncs: number; expectedTotal: number | null;
   } | null>(null);
   const rosterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const connectEpochRef = useRef(0);
@@ -317,7 +317,7 @@ export function HostedWorkspaceSession({
     pendingDesktopRequestsRef.current.set(requestIdValue, "roster");
     rosterReadRef.current = {
       requestId: requestIdValue, generation: null, cursor: null,
-      entries: new Map(), cursors: new Set(), resyncs,
+      entries: new Map(), cursors: new Set(), resyncs, expectedTotal: null,
     };
     armRosterDeadline();
     callbackRefs.current.onDesktopQueryStateChange?.("loading", "roster");
@@ -551,6 +551,14 @@ export function HostedWorkspaceSession({
         }
         if (page) read.generation = page.generation;
         for (const entry of desktopEvent.desktops) read.entries.set(entry.desktopSessionId, entry);
+        if (page) {
+          const total = read.entries.size + page.remaining;
+          if (read.expectedTotal !== null && read.expectedTotal !== total) {
+            finishRosterRead("roster_incomplete");
+            return;
+          }
+          read.expectedTotal = total;
+        }
         callbackRefs.current.onDesktopRosterChange?.([...read.entries.values()]);
         if (page?.hasMore && page.nextCursor) {
           if (read.cursors.has(page.nextCursor)) {

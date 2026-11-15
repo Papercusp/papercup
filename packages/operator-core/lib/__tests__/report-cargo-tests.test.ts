@@ -136,7 +136,8 @@ describe('Cargo reporter CLI usage (EI-25299812440954833)', () => {
         expect(result.stderr).not.toContain('shared test-run reporter helpers unavailable');
         const receiptLine = result.stderr.split('\n').find((line) => line.includes('[report-cargo-tests] ledger row receipt:'));
         expect(receiptLine, result.stderr).toBeDefined();
-        const receipt = JSON.parse(receiptLine!.slice(receiptLine.indexOf('receipt:') + 'receipt:'.length).trim());
+        if (receiptLine === undefined) throw new Error(`no ledger row receipt line in stderr:\n${result.stderr}`);
+        const receipt = JSON.parse(receiptLine.slice(receiptLine.indexOf('receipt:') + 'receipt:'.length).trim());
         expect(receipt).toMatchObject({ status: 'pass', outcome: 'failed' });
         expect(receipt.filePath).toContain('fixture');
         expect(receipt.reason).toBeTruthy();

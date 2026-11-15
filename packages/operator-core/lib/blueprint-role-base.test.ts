@@ -111,8 +111,8 @@ describe('installed custom-role allowlist resolution', () => {
 
   it('keeps the capability gate independent of the canonical base role', async () => {
     const name = 'plans:publish-outputs';
-    const ctx = context();
-    ctx.principal!.capabilities.delete('plans:write');
+    const ctx = context({ principal: { slug: 'system:oddsmith-analyst', workspaceId: 'workspace-a',
+      capabilities: new Set(allowedCaps.filter(cap => cap !== 'plans:write')) } });
     const handler = vi.fn();
     const result = await dispatchProjectedTool(lookupByMcpName(name)!, name, {}, ctx, {
       resolveRoleForAllowlist: resolveInstalledRoleForAllowlist, overrideTool: handler,

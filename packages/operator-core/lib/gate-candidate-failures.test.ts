@@ -1052,11 +1052,6 @@ describe('P-003 — the named per-leg surface that replaced postSuiteMeasured', 
     // is real evidence on its own (D-005 §4): list every admitted leg as not-measured, and
     // keep a failing one outstanding until something actually measures it passing.
     const res = await read({
-      candidateSha: CANDIDATE,
-      repairHeadSha: REPAIR_HEAD,
-      root: '/repo',
-      sql: fakeSql({ filesJudged: 223, failing: [] }),
-      git: fakeGit({}),
       queueLegs,
       repairTickLegs: null,
       // deliberately no repairTickLegs snapshot
@@ -1084,14 +1079,7 @@ describe('P-003 — the named per-leg surface that replaced postSuiteMeasured', 
   });
 
   it('LOAD-BEARING: no leg measurement reads as NOT-RECORDED, never as "no legs failing"', async () => {
-    const res = await read({
-      candidateSha: CANDIDATE,
-      repairHeadSha: REPAIR_HEAD,
-      root: '/repo',
-      sql: fakeSql({ filesJudged: 223, failing: [] }),
-      git: fakeGit({}),
-      repairTickLegs: null,
-    });
+    const res = await read({ repairTickLegs: null });
     // The old `postSuiteMeasured: null` was indistinguishable from "measured, came back
     // empty" — and it resolved null forever, because no caller ever supplied it.
     expect(res.nonTestLegsMeasured).toBe('not-recorded');

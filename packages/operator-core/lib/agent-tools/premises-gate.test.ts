@@ -8,7 +8,7 @@ import { premiseFactStatus, resolveDispatchPremises, type PremiseFact } from './
 
 // Registry inspection must not start the release config's boot-time PG refresh.
 vi.mock('../release-checkpoint-config', () => ({
-  releaseCheckpointConfigReady: Promise.resolve(),
+  releaseCheckpointConfigReady: () => Promise.resolve(),
   releaseCheckpointConfig: () => ({ stallReds: 3, stallAgeMs: 21600000,
     chronicFlakeCount: 3, flakeNotifyCooldownMs: 86400000, deployBackoffMs: 3600000 }),
 }));

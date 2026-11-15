@@ -225,13 +225,15 @@ export function parseHostedDesktopProtocolMessage(
   if (type === "desktop.roster.result") {
     const requestId = nonEmptyString(payload.requestId);
     if (!requestId) return null;
-    if (payload.generation !== undefined || payload.hasMore !== undefined) {
+    if (["hostId", "generation", "cursor", "nextCursor", "hasMore", "remaining"].some((key) => key in payload)) {
       const hostId = nonEmptyString(payload.hostId);
       const generation = nonEmptyString(payload.generation);
       const remaining = safeInteger(payload.remaining);
       const cursor = payload.cursor === null ? null : nonEmptyString(payload.cursor);
       const nextCursor = payload.nextCursor === null ? null : nonEmptyString(payload.nextCursor);
+      const desktops = roster(payload.desktops);
       if (!hostId || !generation || remaining === null || remaining < 0 ||
+          !Array.isArray(payload.desktops) || desktops.length !== payload.desktops.length || desktops.length > 64 ||
           typeof payload.hasMore !== "boolean" ||
           (payload.cursor !== null && cursor === null) ||
           (payload.nextCursor !== null && nextCursor === null) ||
@@ -239,7 +241,7 @@ export function parseHostedDesktopProtocolMessage(
         return { kind: "error", operation: "desktop.roster", requestId, code: "roster_invalid_page" };
       }
       return {
-        kind: "roster", requestId, desktops: roster(payload.desktops),
+        kind: "roster", requestId, desktops,
         page: { hostId, generation, cursor, nextCursor, hasMore: payload.hasMore, remaining },
       };
     }

@@ -377,7 +377,8 @@ describe('conformance immutable dependency content', () => {
       expect(routedGit.every(([, args, options]) => args[0] === '--no-replace-objects'
         && options.env?.GIT_NO_REPLACE_OBJECTS === '1'
         && clearedGitEnv.every(key => !(key in (options.env ?? {}))))).toBe(true);
-      const batchEnvs = gitBatchSpy.mock.calls.map(([, options]) => options?.env).filter(Boolean);
+      const batchEnvs = gitBatchSpy.mock.calls.map(([, options]) => options?.env)
+        .filter((env): env is NonNullable<typeof env> => env != null);
       expect(batchEnvs.length).toBeGreaterThan(0);
       expect(batchEnvs.every(env => env.GIT_NO_REPLACE_OBJECTS === '1'
         && clearedGitEnv.every(key => !(key in env)))).toBe(true);

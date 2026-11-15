@@ -2909,6 +2909,9 @@ function launcherTurnProvenanceDir(env = process.env) {
     (scopedHome ? join(scopedHome, "turn-provenance") : papercuspPath("turn-provenance"));
 }
 
+/**
+ * @param {{ routineId: string, wakeCount: number } | null} [loopFire]
+ */
 export function tagKickoffProvenance(
   text,
   sid,
@@ -10163,14 +10166,26 @@ async function pickPlan(workspace, harness) {
  */
 /** The account-pin choices the gateway offers for a workspace (gatewayOn + pool + session-override).
  *  Live `/options` endpoint — deployed everywhere, unlike a bespoke pin endpoint (deploy-skew safe).
- *  null on any error (fail-soft → no pin). */
-async function fetchAccountChoices(workspace, agent = "claude") {
+ *  Optional reads return null on error; required reads preserve the lookup failure. */
+async function fetchAccountChoices(workspace, agent = "claude", { required = false } = {}) {
   try {
-    return (
+    const accounts = (
       (await readLaunchOptions({ workspace, agent, include: "accounts" })).accounts ??
       null
     );
-  } catch {
+    if (required && (
+      typeof accounts?.gatewayOn !== "boolean" || !Array.isArray(accounts?.pool)
+    )) {
+      throw new TypeError("Account options require a boolean gatewayOn and an array pool.");
+    }
+    return accounts;
+  } catch (cause) {
+    if (required) {
+      throw new Error(
+        "The operator account options are unavailable. Refusing to fall back to the default system login.",
+        { cause },
+      );
+    }
     return null;
   }
 }
@@ -10522,7 +10537,7 @@ export async function chooseResumeAccount(session, args) {
   const expectedProvider =
     ompModelRoute?.accountProvider ??
     (session.agent === "codex" ? "codex" : "claude");
-  const accounts = await fetchAccountChoices(session.workspaceId, accountAgent);
+  const accounts = await fetchAccountChoices(session.workspaceId, accountAgent, { required: !plan.prompt });
   if (
     !accounts?.gatewayOn ||
     !(Array.isArray(accounts.pool) && accounts.pool.length)
@@ -16249,6 +16264,9 @@ export function supportsTrackedFork(session) {
   );
 }
 
+/**
+ * @param {string | null} [model]
+ */
 export async function launchTrackedFork(
   session,
   args = {},

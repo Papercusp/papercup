@@ -1265,6 +1265,22 @@ describe("HostedWorkspaceSession", () => {
     expect(onDesktopQueryStateChange).toHaveBeenCalledWith("ready", "roster");
   });
 
+  it("reports an incomplete roster when a continuation silently omits an identity", async () => {
+    const onDesktopQueryStateChange = vi.fn();
+    render(<HostedWorkspaceSession hostId="host-1" routeLabel="workspace-relay" workspaceName="research-control"
+      onDesktopQueryStateChange={onDesktopQueryStateChange} />);
+    const socket = await connected();
+    await ready(socket);
+    const requests = () => socket.send.mock.calls.map((call) => JSON.parse(String(call[0]))).filter((message) => message.type === "desktop.roster");
+    await waitFor(() => expect(requests().length).toBeGreaterThan(0));
+    const page = { type: "desktop.roster.result", requestId: requests().at(-1).requestId, hostId: "host-1", generation: "g",
+      cursor: null, nextCursor: "g:64", hasMore: true, remaining: 1, desktops: [{ desktopSessionId: "d-1", state: "ready" }] };
+    act(() => socket.emit("message", { data: JSON.stringify(page) }));
+    act(() => socket.emit("message", { data: JSON.stringify({ ...page, cursor: "g:64", nextCursor: null, hasMore: false, remaining: 0, desktops: [] }) }));
+    expect(onDesktopQueryStateChange).toHaveBeenCalledWith("error", "roster", "roster_incomplete");
+    expect(onDesktopQueryStateChange).not.toHaveBeenCalledWith("ready", "roster");
+  });
+
   it("restarts a stale roster cursor and rejects a response from another machine", async () => {
     const onDesktopRosterChange = vi.fn();
     const onDesktopQueryStateChange = vi.fn();

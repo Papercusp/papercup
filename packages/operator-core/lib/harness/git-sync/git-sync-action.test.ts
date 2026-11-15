@@ -3947,6 +3947,69 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     }
   });
 
+  it.each(['refused', 'errored'] as const)('ignores an abandoned lease refresh settling after cleanup (%s)', async (settlement) => {
+    resetScheduledRegistry();
+    const timers: Array<{ cb: () => void; ms: number }> = [];
+    configureScheduledRegistry({
+      setIntervalImpl: (cb, ms) => {
+        timers.push({ cb, ms });
+        return { unref: () => undefined };
+      },
+      clearIntervalImpl: () => undefined,
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let finishRun: (() => void) | undefined;
+    let settleRefresh: (() => void) | undefined;
+    let running: ReturnType<typeof action> | undefined;
+    try {
+      let runStarted!: () => void;
+      const started = new Promise<void>((resolve) => { runStarted = resolve; });
+      const finish = new Promise<void>((resolve) => { finishRun = resolve; });
+      runGitSyncMock.mockImplementationOnce(async () => {
+        runStarted();
+        await finish;
+        return syncedOutcome;
+      });
+      running = action(ctx);
+      await started;
+
+      const lateRefresh = new Promise<{ extended: boolean; expires_ts: Date | null }>((resolve, reject) => {
+        settleRefresh = () => settlement === 'refused'
+          ? resolve({ extended: false, expires_ts: null })
+          : reject(new Error('late lease refresh failure'));
+      });
+      tryHeartbeatResourceMock.mockImplementationOnce(() => lateRefresh);
+      const heartbeat = timers.find((timer) => timer.ms === 60_000);
+      expect(heartbeat).toBeDefined();
+      heartbeat!.cb();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(45_000);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('lease refresh still unsettled'));
+
+      finishRun!();
+      await running;
+      expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
+      const callsAfterCleanup = tryHeartbeatResourceMock.mock.calls.length;
+      const warningsAfterCleanup = warn.mock.calls.length;
+
+      settleRefresh!();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(tryHeartbeatResourceMock).toHaveBeenCalledTimes(callsAfterCleanup);
+      expect(error.mock.calls.filter(([line]) => String(line).includes('LOST exclusive lock'))).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(warningsAfterCleanup);
+    } finally {
+      finishRun?.();
+      settleRefresh?.();
+      if (running) await running;
+      warn.mockRestore();
+      error.mockRestore();
+      vi.useRealTimers();
+      resetScheduledRegistry();
+    }
+  });
+
   it('EI-217286: bounds a stalled pre-runGitSync await, stops the heartbeat, releases leases, and ignores its late settlement', async () => {
     const savedIdle = process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS;
     const savedHard = process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS;

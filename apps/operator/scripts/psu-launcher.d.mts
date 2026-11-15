@@ -584,7 +584,13 @@ export function prepareSuLaunch(boot: any, { model, resumeSession, nativeSession
 export function prepareSuLaunchEnvironment(envelopeEnv: NodeJS.ProcessEnv, inheritedEnv?: NodeJS.ProcessEnv): {
     [x: string]: string | undefined;
 };
-export function tagKickoffProvenance(text: any, sid: any, env?: NodeJS.ProcessEnv, nowMs?: number, origin?: string, loopFire?: null): any;
+/**
+ * @param {{ routineId: string, wakeCount: number } | null} [loopFire]
+ */
+export function tagKickoffProvenance(text: any, sid: any, env?: NodeJS.ProcessEnv, nowMs?: number, origin?: string, loopFire?: {
+    routineId: string;
+    wakeCount: number;
+} | null): any;
 export function kickoffPositionalArgs(res: any, args: any): any[];
 /**
  * The free-form first-turn text for a launch, with the SPAWN-SAFE env fallback:
@@ -4216,11 +4222,14 @@ export function supportsTrackedFork(session: {
     coordOwnerId?: string | null;
     id?: number | string | null;
 }): boolean;
+/**
+ * @param {string | null} [model]
+ */
 export function launchTrackedFork(session: any, args?: {}, acct?: {
     id: null;
     env: {};
     notice: null;
-}, model?: null, deps?: {}): Promise<void>;
+}, model?: string | null, deps?: {}): Promise<void>;
 /** WI-4891: the base-model rows a resume of `agent` may offer — ONLY models that
  *  backend can launch (a resume can't switch backend). claude → the claude
  *  family; codex → the codex family; omp is model-agnostic with an open,

@@ -517,6 +517,7 @@ describe('portal relay link routes', () => {
       organizationName: 'Avi Labs',
       customerWorkspaceId: identity.customerWorkspaceId,
       enrollmentTicket: `ht_${'e'.repeat(43)}`,
+      userId: 'user-1',
       registerUrl: `${ORIGIN}/api/hosted/connectors/register`,
       connectorUrl: 'wss://app.papercusp.com/api/hosted/connectors/socket',
       appBaseUrl: `${ORIGIN}/api/workspaces/${identity.customerWorkspaceId}`,
