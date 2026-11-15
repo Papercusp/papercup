@@ -432,7 +432,9 @@ export async function bootHivePeer(opts: {
   rootPrefix: string;
   identity: ReturnType<typeof makeIdentity>;
   pg: postgres.Sql;
-  verify: (userId: number) => 'verified' | 'pending' | 'fail';
+  /** Admission verdict for a remote's presented member id; `devicePubkey` is the
+   *  device key the remote presented with it (the v1-core harness records both). */
+  verify: (userId: number, devicePubkey: string) => 'verified' | 'pending' | 'fail';
   swarmTiming?: SwarmTimingOverride;
   /** Re-use an existing storage directory (a restart) instead of minting one. */
   root?: string;
@@ -453,7 +455,7 @@ export async function bootHivePeer(opts: {
     harnessSlug: HIVE_SLUG,
     swarmBinding: BINDING,
     swarmOverride: opts.wrapSwarm ? opts.wrapSwarm(rawSwarm) : rawSwarm,
-    verifyBindingOverride: async (_pk, _login, userId) => opts.verify(userId),
+    verifyBindingOverride: async (pk, _login, userId) => opts.verify(userId, pk),
     // ctx, not `handle`: a merge pass can run before bootHarnessSubstrate returns
     // (a rejoining peer already holds admitted logs) — WI-6554700010008561.
     applyOverride: (op, ctx) => {

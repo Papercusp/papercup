@@ -192,7 +192,7 @@ describe('P-041 push-outcome summary', () => {
 });
 
 const inv = (over: Partial<NativeAdoptionInvocation> & Pick<NativeAdoptionInvocation, 'toolName'>): NativeAdoptionInvocation => ({
-  ownerId: null, role: 'operator', status: 'ok', errorCode: null, durationMs: null, invokedAt: at, ...over,
+  callOrigin: 'agent', ownerId: null, role: 'operator', status: 'ok', errorCode: null, durationMs: null, invokedAt: at, ...over,
 });
 const sh = (ownerId: string, command: string): NativeAdoptionShellCommand => ({ ownerId, command, at });
 
@@ -256,6 +256,34 @@ describe('classifyShellLookup', () => {
 
 describe('summarizeNativeAdoption', () => {
   const metrics = summarizeNativeAdoption({ window: WINDOW, invocations: INVOCATIONS, shellCommands: SHELL });
+
+  it('preserves raw rows while excluding synthetic, UI, hook and unknown origins from every invocation figure', () => {
+    const excluded = ['system', 'ui', 'hook', 'unknown', null].flatMap(callOrigin => [
+      inv({ toolName: 'graph:query', ownerId: 'system:code-intel-canary', callOrigin, status: 'error', durationMs: 99_999, followedThrough: true }),
+      inv({ toolName: 'lsp:query', ownerId: 'synthetic-success', callOrigin, durationMs: 99_999, followedThrough: true }),
+      inv({ toolName: 'gitnexus.context', ownerId: 'synthetic-substitute', callOrigin }),
+    ]);
+    for (const invocations of [[...INVOCATIONS, ...excluded], [...excluded, ...INVOCATIONS].reverse()]) {
+      const measured = summarizeNativeAdoption({ window: WINDOW, invocations, shellCommands: SHELL });
+      expect(measured.native).toEqual(metrics.native);
+      expect(measured.substitutes).toEqual(metrics.substitutes);
+      expect(measured.adoption).toEqual(metrics.adoption);
+      expect(measured.invocationPopulation).toEqual({
+        includedOrigin: 'agent', total: 22, excluded: 15,
+        excludedByOrigin: { system: 3, ui: 3, hook: 3, unknown: 3, unrecorded: 3 },
+      });
+      expect(invocations).toHaveLength(INVOCATIONS.length + excluded.length);
+    }
+  });
+
+  it('reports a synthetic-only window as no observed agent calls, with explicit exclusions', () => {
+    const measured = summarizeNativeAdoption({ window: WINDOW, invocations: [
+      inv({ toolName: 'graph:query', callOrigin: 'unknown', ownerId: 'system:code-intel-canary' }),
+    ], shellCommands: [] });
+    expect(measured.native.calls).toBe(0);
+    expect(measured.adoption.nativeCallShare).toBeNull();
+    expect(measured.invocationPopulation).toMatchObject({ total: 1, excluded: 1, excludedByOrigin: { unknown: 1 } });
+  });
 
   it('counts native volume, reach and failure classes per operation', () => {
     expect(metrics.native).toMatchObject({

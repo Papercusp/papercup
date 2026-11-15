@@ -79,7 +79,45 @@ export interface FaultReceipt {
   /** The peer the fault acted on (the receiver for delivery faults). */
   peer: string;
   at: number;
+  /** The acceptance run this receipt belongs to (set when the harness is given `run`). */
+  runId?: string;
   detail: Record<string, unknown>;
+}
+
+/**
+ * A receipt ledger shared by every harness of one acceptance run. Each harness
+ * stamps the run id on its receipts and appends them here as well as to its own
+ * `receipts`, so one run-level check can read every fault the run's cases produced.
+ */
+export interface RunLedger {
+  readonly id: string;
+  readonly receipts: FaultReceipt[];
+}
+
+/** One op reaching a peer's apply seam, recorded before any delivery fault acts on it. */
+export interface Arrival {
+  receiver: string;
+  receiverIncarnation: number;
+  /** The peer whose own log the op came from (null when the log is not a harness peer's). */
+  from: string | null;
+  op: string;
+  writerPubkey: string | null;
+  sourceLogKeyHex: string | null;
+  at: number;
+}
+
+/** One read-admission check a peer made of the member id and device key a remote presented. */
+export interface AdmissionCheck {
+  verifier: string;
+  verifierIncarnation: number;
+  /** The member id (GitHub user id) the remote presented. */
+  userId: number;
+  /** The device public key the remote presented with it. */
+  devicePubkey: string;
+  /** The harness peer that member id belongs to (null when unknown). */
+  member: string | null;
+  verdict: 'verified' | 'pending' | 'fail';
+  at: number;
 }
 
 export interface DeliveryFaults {
@@ -211,6 +249,12 @@ const STAMP_OP_HLC_DDL = `
 export interface MultiPeerHarness {
   readonly peers: Map<string, HarnessPeer>;
   readonly receipts: FaultReceipt[];
+  /** The run id stamped on every receipt (null when no `run` was given). */
+  readonly runId: string | null;
+  /** Every op that reached any peer's apply seam, in arrival order. */
+  readonly arrivals: Arrival[];
+  /** Every read-admission check any peer made of a remote, in order. */
+  readonly admissionChecks: AdmissionCheck[];
   peer(name: string): HarnessPeer;
   live(name: string): HivePeer;
   /** Add a peer to the roster and boot it into the hive (a join). */
@@ -241,7 +285,7 @@ export interface MultiPeerHarness {
  */
 export async function createMultiPeerHarness(
   names: string[],
-  opts: { swarmTiming?: SwarmTimingOverride } = {},
+  opts: { swarmTiming?: SwarmTimingOverride; run?: RunLedger } = {},
 ): Promise<MultiPeerHarness> {
   const swarmTiming = opts.swarmTiming ?? HARNESS_SWARM_TIMING;
   const testnet = await createTestnet(3);

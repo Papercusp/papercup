@@ -22,6 +22,7 @@ import {
 import { dispatchProjectedTool, type ProjectedTool } from '@papercusp/tooldef';
 import { CODE_INTEL_UNKNOWN_REASONS } from './code-intel-result-status';
 import { NATIVE_CODE_INTEL_TOOLS } from './native-adoption';
+import { classifyCallOrigin } from '../telemetry-call-origin';
 
 /** The row the real recorder would write for a case that behaved as forced. */
 function rowFor(spec: CanaryCaseSpec, callId: string): CanaryRow {
@@ -193,6 +194,12 @@ describe('runCodeIntelCanary', () => {
 });
 
 describe('canaryDispatchContext', () => {
+  it('declares synthetic traffic as system origin for the real invocation recorder', () => {
+    const ctx = canaryDispatchContext({ workspaceId: 'w', harnessSlug: 'papercusp', capabilities: [], signal: new AbortController().signal });
+    expect(classifyCallOrigin(ctx)).toEqual({ origin: 'system', source: 'declared' });
+    expect(ctx.principal?.slug).toBe(CODE_INTEL_CANARY_OWNER);
+  });
+
   // A tool that declares a capability, so the dispatch stack's capability check actually runs.
   const tool = (fn: ProjectedTool['fn']): ProjectedTool => ({
     pluginName: 'fixture',

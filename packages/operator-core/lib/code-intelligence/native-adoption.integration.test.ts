@@ -31,12 +31,12 @@ let db: OrgTestDb | undefined;
 async function seed(sql: OrgTestDb['adminSql']): Promise<void> {
   const invocation = (over: {
     workspace?: string; tool: string; owner: string; at: string; status?: string; errorCode?: string | null;
-    role?: string; durationMs?: number | null;
+    role?: string; durationMs?: number | null; origin?: string | null;
   }) => ({
     workspace_id: over.workspace ?? WS, harness_slug: 'papercusp', plugin_name: 'papercusp',
     tool_name: over.tool, role: over.role ?? 'operator', spawn_id: `spawn-${over.owner}`, window_key: 'w',
     status: over.status ?? 'ok', error_code: over.errorCode ?? null, duration_ms: over.durationMs ?? null,
-    invoked_at: t(over.at), coord_owner_id: over.owner,
+    invoked_at: t(over.at), coord_owner_id: over.owner, call_origin: over.origin === undefined ? 'agent' : over.origin,
   });
   const rows = [
     invocation({ tool: 'graph:query', owner: 'A', at: '2026-10-02T10:00:00.000Z', durationMs: 120 }),
@@ -88,6 +88,29 @@ afterAll(async () => {
 }, 30_000);
 
 describe('readNativeAdoptionWindow (real ledgers)', () => {
+  it('retains historical and newly labelled canary rows while measuring only agent calls', async () => {
+    const workspace = `${WS}-origin-regression`;
+    const sql = db!.adminSql;
+    for (const origin of ['agent', 'system', 'unknown', null]) {
+      await sql`INSERT INTO harness_shared.tool_invocations
+        (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key, status,
+         coord_owner_id, invoked_at, call_origin)
+        VALUES (${workspace}, 'papercusp', 'fixture', 'graph:query', 'operator', 'fixture', 'w',
+          ${origin === 'agent' ? 'ok' : 'error'}, ${origin === 'agent' ? 'real-agent' : 'system:code-intel-canary'},
+          '2026-10-02T10:00:00Z', ${origin})`;
+    }
+    const window = { workspaceId: workspace, windowStart: START, windowEnd: END };
+    const raw = await readNativeAdoptionWindow(window, sql);
+    expect(raw.invocations).toHaveLength(4);
+    expect(raw.invocations.map(row => row.callOrigin)).toEqual(expect.arrayContaining(['agent', 'system', 'unknown', null]));
+    const measured = await measureNativeAdoptionWindow(window, sql);
+    expect(measured.native).toMatchObject({ calls: 1, ok: 1, errored: 0, distinctAgents: 1 });
+    expect(measured.invocationPopulation).toEqual({
+      includedOrigin: 'agent', total: 4, excluded: 3, excludedByOrigin: { system: 1, unknown: 1, unrecorded: 1 },
+    });
+    expect((await readNativeAdoptionWindow(window, sql)).invocations).toHaveLength(4);
+  });
+
   it('reads only in-window, in-workspace code-intelligence invocations, with the follow-through proxy', async () => {
     const read = await readNativeAdoptionWindow({ workspaceId: WS, windowStart: START, windowEnd: END }, db!.adminSql);
     const byTool = read.invocations.map((row) => `${row.toolName}:${row.ownerId}:${String(row.followedThrough)}`).sort();

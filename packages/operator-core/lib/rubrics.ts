@@ -2067,6 +2067,48 @@ export function computeAcceptanceBarSetHash(
   return hashPlanContent(JSON.stringify(pairs));
 }
 
+const CRITERION_BAR_HASH = /^[a-f0-9]{64}$/;
+
+/**
+ * The server-derived barHash of every criterion a scorecard rates, keyed by the
+ * criterion key, as the rubric stood when the card was saved
+ * (per-requirement-acceptance-grading-2026-11-14 R-1). A reader can then tell an
+ * amendment of ONE requirement apart from an amendment of another, instead of
+ * treating every rating as stale whenever the rubric revision moves.
+ *
+ * Returns null, and the card keeps the whole-rubric currentness rule, when:
+ * - the rubric is not an acceptance rubric;
+ * - the rubric snapshot the ratings were validated against is not the identity
+ *   being pinned on the card (`pinnedCriteriaHash` differs: an amendment landed
+ *   between the two reads), because its barHashes would then describe a different
+ *   rubric than the card's own revision; or
+ * - any rated criterion lacks a valid barHash, or a criterion key repeats.
+ * All-or-nothing on purpose: a partial map would let a reader judge some ratings
+ * per requirement and silently judge the rest by a rule nobody chose.
+ */
+export function ratedCriterionHashes(
+  rubric: Pick<Rubric, 'kind' | 'criteria' | 'criteriaHash'>,
+  pinnedCriteriaHash: string | null | undefined,
+  ratings: Readonly<Record<string, unknown>>,
+): Record<string, string> | null {
+  if (rubric.kind !== 'acceptance') return null;
+  if (!pinnedCriteriaHash || rubric.criteriaHash !== pinnedCriteriaHash) return null;
+  const ratedKeys = Object.keys(ratings).sort();
+  if (ratedKeys.length === 0) return null;
+  const hashByKey = new Map<string, string>();
+  for (const criterion of rubric.criteria) {
+    if (hashByKey.has(criterion.key)) return null;
+    hashByKey.set(criterion.key, criterion.barHash?.trim() ?? '');
+  }
+  const out: Record<string, string> = {};
+  for (const key of ratedKeys) {
+    const hash = hashByKey.get(key);
+    if (!hash || !CRITERION_BAR_HASH.test(hash)) return null;
+    out[key] = hash;
+  }
+  return out;
+}
+
 /**
  * Classify an acceptance amendment from the server-owned complete BAR-set pin.
  *

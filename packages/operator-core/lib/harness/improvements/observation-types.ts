@@ -547,6 +547,13 @@ export interface StructuredObservation {
    * Absent on historical cards and whenever the hash read failed at emit time.
    */
   criteriaHash?: string;
+  /**
+   * per-requirement-acceptance-grading-2026-11-14 R-1: the server-derived barHash
+   * of EVERY criterion this card rates, keyed by criterion key, at emit time. Set
+   * only on acceptance-rubric cards, and only as a complete map — absent means the
+   * card is judged by the whole-rubric rule (`rubricRevision`/`criteriaHash`).
+   */
+  criterionHashes?: Record<string, string>;
   /** Identity of a rubric named as the SUBJECT of this scorecard, distinct from rubricRef. */
   subjectRubricIdentity?: {
     rubricRef: string;
@@ -1406,6 +1413,24 @@ function asLedgerResult(v: unknown): ObservationLedgerResult | null {
     ...(provenance ? { provenance } : {}), provenanceStatus: measurementProvenanceStatus(provenance) };
 }
 
+/**
+ * Read a card's per-criterion hash map whole or not at all. A malformed entry
+ * drops the WHOLE map rather than the entry: a partial map would let a reader
+ * judge part of the card per requirement and silently fall back for the rest, so
+ * an unreadable map degrades the card to the whole-rubric rule instead.
+ */
+function asCriterionHashes(v: unknown): Record<string, string> | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
+  const entries = Object.entries(v as Record<string, unknown>);
+  if (entries.length === 0) return undefined;
+  const out: Record<string, string> = {};
+  for (const [key, hash] of entries) {
+    if (!key.trim() || typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash)) return undefined;
+    out[key] = hash;
+  }
+  return out;
+}
+
 export function asStructuredObservation(v: unknown): StructuredObservation | undefined {
   if (!v || typeof v !== 'object') return undefined;
   const o = v as Record<string, unknown>;
@@ -1429,6 +1454,8 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   if (typeof o.criteriaHash === 'string' && o.criteriaHash.trim()) {
     out.criteriaHash = o.criteriaHash;
   }
+  const criterionHashes = asCriterionHashes(o.criterionHashes);
+  if (criterionHashes) out.criterionHashes = criterionHashes;
   if (o.subjectRubricIdentity && typeof o.subjectRubricIdentity === 'object' && !Array.isArray(o.subjectRubricIdentity)) {
     const identity = o.subjectRubricIdentity as Record<string, unknown>;
     if (typeof identity.rubricRef === 'string' && identity.rubricRef.trim()) {

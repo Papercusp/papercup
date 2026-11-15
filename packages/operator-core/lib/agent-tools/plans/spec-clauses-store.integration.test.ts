@@ -67,7 +67,9 @@ const CTX = {
 
 let db: FreshPgDb;
 
-function clause(over: Partial<SpecClauseWrite> = {}): SpecClauseWrite {
+// The helper always pins a plan slug, so callers can pass `first.planSlug` straight
+// into reads that require one (SpecClauseWrite.planSlug itself is optional).
+function clause(over: Partial<SpecClauseWrite> = {}): SpecClauseWrite & { planSlug: string } {
   return {
     harnessSlug: HARNESS,
     planSlug: 'reconnect-plan',

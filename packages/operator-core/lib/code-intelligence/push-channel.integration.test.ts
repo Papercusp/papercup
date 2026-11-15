@@ -7,6 +7,7 @@ import { codeIntelPushText, commitPushFacts, CODE_INTEL_PUSH_MAX_CHARS, CODE_INT
   readNoteAnchorStaleness, readPushNotesContext, type PushFact, type PushInput, type PushLeg, type PushLegId } from './push-channel';
 import { parsePushSnapshot, type PushSnapshot } from './push-snapshot';
 import { readPushIncidentAttribution } from './push-channel';
+import { snapshotNotesLeg, snapshotResumeLeg } from './push-channel';
 import { resolveCurrentTokens } from '../freshness/resolvers';
 import { buildSymbolSnapshot, relativeSymbolModule } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
 
@@ -307,6 +308,39 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
     expect(await deliver([fact('s-4')], workspace)).toContain(BODY);
   });
 
+  it.each([11, 12, 13])('WI-6554700010048151: accounts for later legs and every candidate after %i earlier facts', async count => {
+    const workspace = `push-candidate-boundary-${count}`;
+    const earlier: PushFact[] = Array.from({ length: count }, (_, index) => ({
+      ...fact(`grep:${index}`), leg: 'grep',
+    }));
+    const notes = vi.fn(snapshotNotesLeg);
+    const resume = vi.fn(snapshotResumeLeg);
+    // Pool setup is outside the channel's existing wall; measure its gather + commit.
+    await db.appSql`SELECT 1`;
+    await codeIntelPushText({ ...input, workspace, calls: [{ tool: 'Read', toolInput: { file_path: 'test.ts' } }] }, {
+      snapshot: async () => snapshot(), enabled: async () => true,
+      legs: () => new Map<PushLegId, PushLeg>([['grep', () => earlier], ['resume', resume], ['notes', notes]]),
+      notesContext: async () => ({ fresh: [{ key: 'code-note:after-boundary', body: 'Ready note.',
+        paths: ['test.ts'], scope: 'harness', scopeRef: 'papercusp' }], withheld: [] }),
+      resumeContext: async () => ({ entries: [{ path: 'target.ts', from: 'previous-epoch', reason: 'read' }] }),
+      commit: commitPushFacts,
+    });
+    expect(notes).toHaveBeenCalledOnce();
+    expect(resume).toHaveBeenCalledOnce();
+    const pushed = await db.adminSql<{ leg: string; subject: string }[]>`
+      SELECT leg, subject FROM harness_shared.code_intel_pushes WHERE workspace_id=${workspace}`;
+    const skipped = await db.adminSql<{ leg: string; subject: string; site: string }[]>`
+      SELECT leg, subject, site FROM harness_shared.code_intel_push_skips WHERE workspace_id=${workspace}`;
+    const identities = (rows: readonly { leg: string; subject: string }[]) => rows.map(row => `${row.leg}:${row.subject}`).sort();
+    expect(identities([...pushed, ...skipped])).toEqual(identities([...earlier,
+      { leg: 'resume', subject: 'resume:target.ts' }, { leg: 'notes', subject: 'note:code-note:after-boundary' }]));
+    // Later facts can lose to the unchanged text budget, but never disappear before commit.
+    expect(skipped).toEqual(expect.arrayContaining([
+      expect.objectContaining({ leg: 'resume', subject: 'resume:target.ts', site: 'turn-budget' }),
+      expect.objectContaining({ leg: 'notes', subject: 'note:code-note:after-boundary', site: 'turn-budget' }),
+    ]));
+  });
+
   it('WI-6554700010030085: legs the push wall stopped land as wall skips beside the facts it gathered', async () => {
     const workspace = 'push-integration-wall';
     // One fact gathered before the gather deadline, two enabled legs the wall never ran.
@@ -454,7 +488,7 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
 
     it('SPEC-P-001-FIRST-READ: a first read of a covered file records one first-touch answer for that file', async () => {
       const read = { tool: 'Read', toolInput: { file_path: join(root, 'pkg/lib/target.ts') } };
-      expect(await replay('session-read', [read])).toContain('pkg/lib/target.ts: 1 static file importers');
+      expect(await replay('session-read', [read])).toContain('pkg/lib/target.ts: 1 static file importer in this snapshot.');
       expect(await replay('session-read', [read])).toBe('');
       expect(await recorded('session-read')).toEqual([{ leg: 'first-touch', subject: 'pkg/lib/target.ts' }]);
     });
@@ -467,7 +501,7 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
         toolInput: { name: 'capability:bash', args: { cmd: 'cat lib/target.ts', cwd: join(root, 'pkg') } } })],
     ])('SPEC-P-001-FIRST-READ (WI-6554700010018441): a first read via %s records one first-touch answer', async (label, call) => {
       const owner = 'session-read-' + label.replace(/\W+/g, '-');
-      expect(await replay(owner, [call()])).toContain('pkg/lib/target.ts: 1 static file importers');
+      expect(await replay(owner, [call()])).toContain('pkg/lib/target.ts: 1 static file importer in this snapshot.');
       expect(await replay(owner, [call()])).toBe('');
       expect(await recorded(owner)).toEqual([{ leg: 'first-touch', subject: 'pkg/lib/target.ts' }]);
     });

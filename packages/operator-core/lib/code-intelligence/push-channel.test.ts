@@ -8,7 +8,7 @@ import { codeIntelPushText, CODE_INTEL_PUSH_COMMIT_RESERVE_MS, CODE_INTEL_PUSH_M
 import { corroboratePushSources, parsePushSnapshot, PUSH_SNAPSHOT_MAX_AGE_MS, type PushProofSource } from './push-snapshot';
 import { buildSymbolSnapshot, relativeSymbolModule } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
 import { dependencySnapshotPath } from './dependency-snapshot-path';
-import { readPushIncidentAttribution, readPushPriorWork, priorWorkSubject, pushLegRank, type PushInput, type PushLegId, type ReadPriorWorkContextDeps } from './push-channel';
+import { readPushIncidentAttribution, readPushPriorWork, priorWorkSubject, pushLegRank, resetParkedResumeContexts, snapshotNotesLeg, snapshotResumeLeg, type PushInput, type PushLegId, type ReadPriorWorkContextDeps } from './push-channel';
 import { priorWorkReport, type PriorWorkLedgerRow } from './change-history';
 import { classifyShellLookup } from './native-adoption';
 import { cachedLegFollowThrough, formatPushFact, LEG_FOLLOW_THROUGH_REFRESH_MS, rankPushFacts, reachedTestsText, resetLegFollowThroughCache, withCallableSuggestion, type LegFollowThrough } from './push-channel';
@@ -867,6 +867,96 @@ describe('P-002 incident leg reaches commit', () => {
     // planner may use the partial index), the second is the indexable operator.
     expect(attribution).toContain("jsonb_typeof(w.payload->'paths') = 'array'");
     expect(attribution).toMatch(/\(w\.payload->'paths'\) \?\| \$::text\[\]/);
+  });
+});
+
+describe('WI-6554700010048151 independent context legs', () => {
+  const carryInput = { ...input, calls: [{ tool: 'Read', toolInput: { file_path: 'app/use.ts' } }] };
+  it.each([
+    ['first-touch', 'resume', 'notes'],
+    ['first-touch', 'notes', 'resume'],
+    ['resume', 'first-touch', 'notes'],
+  ] as const)('delivers ready carried facts despite a stalled sibling (%s, %s, %s)', async (...order) => {
+    vi.useFakeTimers();
+    resetParkedResumeContexts();
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const d = deps();
+      const notes = vi.fn(snapshotNotesLeg);
+      const resume = vi.fn(snapshotResumeLeg);
+      const legs = { 'first-touch': () => [fact], notes, resume };
+      d.legs = () => new Map(order.map(id => [id, legs[id]]));
+      d.snapshot = async () => {
+        await new Promise(resolve => setTimeout(resolve, 110));
+        return snapshot();
+      };
+      const context: NonNullable<PushChannelDeps['context']> = async (_input, paths) => paths.includes('app/use.ts')
+        ? new Promise<FirstTouchContext>(() => {}) : { docs: null, specs: null, locks: null };
+      d.context = context;
+      d.notesContext = async () => ({ fresh: [{ key: 'code-note:ready', body: 'Ready note.',
+        paths: ['app/use.ts'], scope: 'harness', scopeRef: 'papercusp' }], withheld: [] });
+      d.resumeContext = async () => ({ entries: [{ path: 'lib/target.ts', from: 'previous-epoch', reason: 'read', epoch: 1 }] });
+
+      // Positive controls: both fixtures are eligible, and the carried file's links
+      // are ready independently of the deliberately stalled first-touch lookup.
+      expect(snapshotNotesLeg({ ...carryInput, notesContext: await d.notesContext(carryInput, ['app/use.ts']) }, snapshot())).toHaveLength(1);
+      expect(snapshotResumeLeg({ ...carryInput, resumeContext: await d.resumeContext(carryInput) }, snapshot())).toHaveLength(1);
+      expect(await context(carryInput, ['lib/target.ts'])).toEqual({ docs: null, specs: null, locks: null });
+      const response = codeIntelPushText(carryInput, d);
+      await vi.advanceTimersByTimeAsync(CODE_INTEL_PUSH_WALL_MS);
+      const text = await response;
+      expect(notes).toHaveBeenCalledOnce();
+      expect(resume).toHaveBeenCalledOnce();
+      expect(text).toContain('Ready note.');
+      expect(text).toContain('Carried from your previous epoch');
+      expect(d.commit).toHaveBeenCalledOnce();
+      expect(vi.mocked(d.commit).mock.calls[0][6]).toEqual([]);
+    } finally { resetParkedResumeContexts(); warning.mockRestore(); vi.useRealTimers(); }
+  });
+
+  it.each([11, 12, 13])('forwards every candidate and runs later legs after %i earlier facts across batches', async count => {
+    resetParkedResumeContexts();
+    try {
+      for (let batch = 0; batch < 3; batch++) {
+        const d = deps();
+        const earlier: PushFact[] = Array.from({ length: count }, (_, index) => ({ ...fact, leg: 'grep',
+          subject: `grep:${batch}:${index}`, text: `Candidate ${batch}:${index}.` }));
+        const notes = vi.fn(snapshotNotesLeg);
+        const resume = vi.fn(snapshotResumeLeg);
+        const waiting = batch % 2 ? [['notes', notes], ['resume', resume]] as const
+          : [['resume', resume], ['notes', notes]] as const;
+        d.legs = () => new Map<PushLegId, typeof snapshotNotesLeg>([['grep', () => earlier], ...waiting]);
+        d.notesContext = async () => ({ fresh: [{ key: `code-note:batch-${batch}`, body: 'Ready note.',
+          paths: ['app/use.ts'], scope: 'harness', scopeRef: 'papercusp' }], withheld: [] });
+        d.resumeContext = async () => ({ entries: [{ path: 'lib/target.ts', from: 'previous-epoch', reason: 'read' }] });
+        await codeIntelPushText(carryInput, d);
+        expect(notes).toHaveBeenCalledOnce();
+        expect(resume).toHaveBeenCalledOnce();
+        const delivered = vi.mocked(d.commit).mock.calls[0][2];
+        expect(delivered).toHaveLength(count + 2);
+        expect(delivered.map(fact => fact.subject)).toEqual(expect.arrayContaining(earlier.map(fact => fact.subject)));
+        expect(delivered.map(fact => fact.leg)).toEqual(expect.arrayContaining(['notes', 'resume']));
+      }
+    } finally { resetParkedResumeContexts(); }
+  });
+
+  it.each([-1, 0, 1])('accepts only a notes read ready before the gather deadline (offset %i)', async offset => {
+    vi.useFakeTimers();
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const d = deps();
+      d.legs = () => new Map([['notes', snapshotNotesLeg]]);
+      d.notesContext = async () => {
+        await new Promise(resolve => setTimeout(resolve,
+          CODE_INTEL_PUSH_WALL_MS - CODE_INTEL_PUSH_COMMIT_RESERVE_MS + offset));
+        return { fresh: [{ key: 'code-note:boundary', body: 'Verified before the deadline.',
+          paths: ['lib/target.ts'], scope: 'harness', scopeRef: 'papercusp' }], withheld: [] };
+      };
+      const response = codeIntelPushText(input, d);
+      await vi.advanceTimersByTimeAsync(CODE_INTEL_PUSH_WALL_MS);
+      const text = await response;
+      expect(text.includes('Verified before the deadline.')).toBe(offset < 0);
+    } finally { warning.mockRestore(); vi.useRealTimers(); }
   });
 });
 

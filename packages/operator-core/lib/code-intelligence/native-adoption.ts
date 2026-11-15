@@ -28,7 +28,7 @@ import { getOrgPg } from '@papercusp/db-org';
 // Type-only: push-channel.ts imports this module at runtime, so a value import would cycle.
 import type { PushLegId } from './push-channel';
 
-export const NATIVE_ADOPTION_VERSION = 1;
+export const NATIVE_ADOPTION_VERSION = 2;
 
 /** One instrument key per acceptance criterion (R-30 measured, R-31 good use). */
 export const NATIVE_ADOPTION_INSTRUMENT_KEYS = Object.freeze({
@@ -77,6 +77,7 @@ export const SHELL_COMMAND_MAX_CHARS = 4_000;
 
 /** What this instrument structurally cannot see — reported with every measurement. */
 export const NATIVE_ADOPTION_CANNOT_OBSERVE: readonly string[] = Object.freeze([
+  'Invocation usage includes only agent-origin calls. Other and unrecorded origins remain in the ledger and are counted in invocationPopulation.excludedByOrigin; they are not evidence of agent adoption.',
   'Lookups made by reading files directly (Read/cat/sed) without a search command are not classified as lookups.',
   'Shell commands from clients that do not report agent_activity (or report them under other tool names) are invisible.',
   'Follow-through is a proxy: a file read/edit by the same agent within 15 minutes, not proof that the file was among the returned results.',
@@ -165,6 +166,8 @@ export interface NativeAdoptionWindow {
 
 export interface NativeAdoptionInvocation {
   toolName: string;
+  /** Persisted provenance; null means the row predates origin tracking. Never infer agent use. */
+  callOrigin: string | null;
   ownerId: string | null;
   role: string | null;
   status: string | null;
@@ -195,6 +198,12 @@ export interface NativeOpStats {
 export interface NativeAdoptionMetrics {
   version: number;
   window: NativeAdoptionWindow;
+  invocationPopulation: {
+    includedOrigin: 'agent';
+    total: number;
+    excluded: number;
+    excludedByOrigin: Record<string, number>;
+  };
   native: NativeOpStats & {
     distinctOkAgents: number;
     /** refused / calls; null when there were no native calls. */
@@ -261,8 +270,16 @@ export function summarizeNativeAdoption(input: {
   shellCommands: readonly NativeAdoptionShellCommand[];
 }): NativeAdoptionMetrics {
   const nativeSet = new Set(NATIVE_CODE_INTEL_TOOLS);
-  const native = input.invocations.filter((row) => nativeSet.has(row.toolName));
-  const gitnexus = input.invocations.filter((row) => row.toolName.startsWith(GITNEXUS_DIRECT_PREFIX));
+  const relevant = input.invocations.filter((row) => nativeSet.has(row.toolName) || row.toolName.startsWith(GITNEXUS_DIRECT_PREFIX));
+  const excludedByOrigin = new Map<string, number>();
+  for (const row of relevant) {
+    if (row.callOrigin === 'agent') continue;
+    const origin = row.callOrigin ?? 'unrecorded';
+    excludedByOrigin.set(origin, (excludedByOrigin.get(origin) ?? 0) + 1);
+  }
+  const agentInvocations = relevant.filter((row) => row.callOrigin === 'agent');
+  const native = agentInvocations.filter((row) => nativeSet.has(row.toolName));
+  const gitnexus = agentInvocations.filter((row) => row.toolName.startsWith(GITNEXUS_DIRECT_PREFIX));
 
   const byOp: Record<string, NativeOpStats> = {};
   for (const op of NATIVE_CODE_INTEL_TOOLS) byOp[op] = opStats(native.filter((row) => row.toolName === op));
@@ -313,6 +330,10 @@ export function summarizeNativeAdoption(input: {
   return {
     version: NATIVE_ADOPTION_VERSION,
     window: { ...input.window },
+    invocationPopulation: {
+      includedOrigin: 'agent', total: relevant.length, excluded: relevant.length - agentInvocations.length,
+      excludedByOrigin: Object.fromEntries(excludedByOrigin),
+    },
     native: {
       ...all,
       distinctOkAgents: okOwners.size,
@@ -784,7 +805,7 @@ export async function readNativeAdoptionWindow(
   const followIntervalMs = FOLLOW_THROUGH_WINDOW_MS;
 
   const invocationRows = await sql<Array<{
-    tool_name: string; coord_owner_id: string | null; role: string | null; status: string | null;
+    tool_name: string; call_origin: string | null; coord_owner_id: string | null; role: string | null; status: string | null;
     error_code: string | null; duration_ms: number | null; invoked_at: Date | string; followed: boolean | null;
   }>>`
     WITH k AS MATERIALIZED (
@@ -792,7 +813,7 @@ export async function readNativeAdoptionWindow(
        WHERE invoked_at >= ${startIso}::timestamptz AND invoked_at < ${endIso}::timestamptz
          AND (tool_name = ANY(${nativeTools}::text[]) OR tool_name LIKE ${gitnexusLike})
     )
-    SELECT t.tool_name, t.coord_owner_id, t.role, t.status, t.error_code, t.duration_ms, t.invoked_at,
+    SELECT t.tool_name, t.call_origin, t.coord_owner_id, t.role, t.status, t.error_code, t.duration_ms, t.invoked_at,
            CASE WHEN t.tool_name = ANY(${nativeTools}::text[]) AND t.status = 'ok' AND t.coord_owner_id IS NOT NULL
              THEN EXISTS (
                SELECT 1 FROM harness_shared.agent_activity a
@@ -824,6 +845,7 @@ export async function readNativeAdoptionWindow(
   return {
     invocations: invocationRows.map((row) => ({
       toolName: row.tool_name,
+      callOrigin: row.call_origin,
       ownerId: row.coord_owner_id,
       role: row.role,
       status: row.status,

@@ -52,6 +52,7 @@ interface ReceiptRow {
   executor_host: string | null;
   executor_pid: number | null;
   executor_process_id: string | null;
+  consult_state?: string | null;
 }
 
 interface CurrentExecutorIdentity {
@@ -78,13 +79,29 @@ function currentExecutorIdentity(): CurrentExecutorIdentity {
 
 function asEntry(row: ReceiptRow): AmendReceiptEntry {
   const progress = row.state === 'running' ? row.result_json?.progress as AmendReceiptProgress | undefined : undefined;
+  const result = row.state !== 'running' && row.result_json ? row.result_json : undefined;
+  const review = result?.review as Record<string, unknown> | undefined;
+  // Routing records a launch, not whether its consult is still open. Derive the
+  // current disposition without rewriting the preview or launching a duplicate.
+  const closedReview = row.state === 'previewed' && review?.state === 'routed'
+    && ['closed_cant_help', 'declined', 'expired'].includes(row.consult_state ?? '');
+  const currentResult = closedReview ? {
+    ...result,
+    review: {
+      ...review,
+      state: 'review-closed',
+      consultState: row.consult_state,
+      next: 'Read the existing review with conversations:get using conversationId. If another review is needed, '
+        + 'repeat the same patch with the retained reviewPreviewPost and a fresh idempotencyKey; omit requestReview.',
+    },
+  } : result;
   return {
     idempotencyKey: row.idempotency_key,
     rubricRef: row.rubric_ref,
     state: row.state,
     startedAt: new Date(row.started_at).getTime(),
     ...(row.finished_at ? { finishedAt: new Date(row.finished_at).getTime() } : {}),
-    ...(row.state !== 'running' && row.result_json ? { result: row.result_json } : {}),
+    ...(currentResult ? { result: currentResult } : {}),
     ...(progress && typeof progress.phase === 'string' && Number.isFinite(progress.phaseStartedAt)
       && Number.isFinite(progress.observedAt) ? { progress } : {}),
     ...(row.error ? { error: row.error } : {}),
@@ -417,8 +434,13 @@ export async function getAmendReceipt(rubricRef: string, idempotencyKey: string)
   const { sql } = getOrgPg();
   const rows = await sql<ReceiptRow[]>`
     SELECT idempotency_key, rubric_ref, state, started_at, finished_at, result_json, error,
-           executor_host, executor_pid, executor_process_id
-      FROM harness_shared.rubric_amend_receipts
+           executor_host, executor_pid, executor_process_id,
+           CASE WHEN result_json #>> '{review,state}' = 'routed' THEN (
+             SELECT consult.state FROM harness_shared.consult_state AS consult
+              WHERE consult.workspace_id = receipt.workspace_id
+                AND consult.conversation_id = receipt.result_json #>> '{review,conversationId}'
+           ) END AS consult_state
+      FROM harness_shared.rubric_amend_receipts AS receipt
      WHERE workspace_id = ${activeWorkspaceId()}
        AND rubric_ref = ${rubricRef}
        AND idempotency_key = ${idempotencyKey.trim()}

@@ -730,11 +730,24 @@ export const FED_ORDER_KEY_DDL = `
  * `provisionRestartTestDb` (@papercusp/test-config) — those DO apply the actual
  * migration files.
  */
+/**
+ * The prefix `createFreshPgDb` hands to `createFreshTestDb`. That helper accepts only
+ * lowercase generated names (`GENERATED_TEST_DB_NAME_PATTERN`, enforced since
+ * libs/test-config a1018cd), so a camel-case tag such as `'hiveFedA'` threw
+ * `invalid owned test database name` before any SQL ran. That left 15 federation
+ * suites dead at setup (EI-28824434290519164). The prefix is only a human tag, so
+ * ASCII A-Z is folded to a-z here. Everything else (paths, quotes, length) is left
+ * for the owned-name validator to reject.
+ */
+export function freshPgDbPrefix(prefix: string): string {
+  return prefix.replace(/[A-Z]/g, (c) => c.toLowerCase());
+}
+
 export async function createFreshPgDb(
   prefix = 'eng',
   options: { onQuery?: (query: string) => void } = {},
 ): Promise<FreshPgDb> {
-  const db = await createFreshTestDb({ prefix });
+  const db = await createFreshTestDb({ prefix: freshPgDbPrefix(prefix) });
 
   const sql = postgres(db.url, {
     max: 4,

@@ -300,6 +300,8 @@ const scorecardEvidenceSchema = z.object({
   rubricRevision: z.number().optional(),
   rubricMeaningRevision: z.number().optional(),
   criteriaHash: z.string().optional(),
+  criterionHashes: z.record(z.string(), z.string()).optional()
+    .describe('Emit-time barHash of each rated criterion, keyed by criterion key (acceptance cards only; absent = whole-rubric rule).'),
   rerunRecipe: z.record(z.string(), z.unknown()).optional(),
   rubricCurrentness: scorecardRubricCurrentnessSchema,
   evidenceFingerprint: z.string().optional(),

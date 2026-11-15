@@ -231,6 +231,8 @@ export function canaryDispatchContext(input: {
     isPowerUser: false,
     principal: { slug: CODE_INTEL_CANARY_OWNER, workspaceId: input.workspaceId, capabilities: new Set(input.capabilities) },
     transport: 'in_process',
+    // Synthetic probes stay in the audit ledger but must not count as agent usage.
+    requestOrigin: { transport: 'in_process', query: { origin: 'system' } },
     signal: input.signal,
     log: () => {},
     progress: () => {},

@@ -348,7 +348,7 @@ function multiClauseAdequacyWorld() {
       }),
     });
   });
-  deps.listCards.mockImplementation(async (options) => {
+  deps.listCards.mockImplementation(async (options = {}) => {
     const requested = options.subjectRefs ?? (options.subjectRef ? [options.subjectRef] : []);
     return cards.filter((card) => requested.includes(card.subject?.ref ?? ''));
   });
@@ -437,7 +437,7 @@ describe('completion phase attribution', () => {
 
   it('falls back to exact per-subject windows when the batched scorecard page fills', async () => {
     const { deps, cards } = multiClauseAdequacyWorld();
-    deps.listCards.mockImplementation(async (options) => {
+    deps.listCards.mockImplementation(async (options = {}) => {
       if (options.subjectRefs) {
         return Array.from({ length: options.limit ?? 0 }, (_unused, index) => ({
           ...cards[0]!,
@@ -450,10 +450,10 @@ describe('completion phase attribution', () => {
     const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
     expect(result).toMatchObject({ ok: true, applicable: true, checked: ['SPEC-003-01@1', 'SPEC-003-02@1'] });
     expect(deps.listCards).toHaveBeenCalledTimes(3);
-    expect(deps.listCards.mock.calls.slice(1).map(([options]) => options.subjectRef)).toEqual(
+    expect(deps.listCards.mock.calls.slice(1).map(([options]) => options?.subjectRef)).toEqual(
       cards.map((card) => card.subject?.ref),
     );
-    expect(deps.listCards.mock.calls.slice(1).every(([options]) => options.limit === 20)).toBe(true);
+    expect(deps.listCards.mock.calls.slice(1).every(([options]) => options?.limit === 20)).toBe(true);
   });
 });
 

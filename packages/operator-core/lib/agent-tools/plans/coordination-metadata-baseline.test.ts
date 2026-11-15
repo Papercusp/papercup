@@ -52,7 +52,12 @@ vi.mock('../../plan-audits', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../plan-audits')>(),
   // The discovery lifecycle has dedicated PostgreSQL integration coverage;
   // keep this handler baseline hermetic while its plan stores are injected.
-  withCurrentDiscovery: async (_input, accept) => ({
+  withCurrentDiscovery: async <T,>(
+    _input: Parameters<typeof import('../../plan-audits').withCurrentDiscovery>[0],
+    accept: (
+      ...args: Parameters<Parameters<typeof import('../../plan-audits').withCurrentDiscovery>[1]>
+    ) => Promise<T>,
+  ) => ({
     ok: true as const,
     result: await accept({} as never, {} as never),
   }),

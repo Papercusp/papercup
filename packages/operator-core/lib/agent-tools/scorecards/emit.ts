@@ -31,6 +31,7 @@ import {
   getRubricEvidenceIdentity,
   getRubricPlanRevision,
   META_ACCEPTANCE_RUBRIC_ID,
+  ratedCriterionHashes,
   readRubricPlanRevision,
 } from '../../rubrics';
 import { getAcceptanceRubricVettingStatus } from '../../acceptance-rubric-vetting';
@@ -4296,6 +4297,12 @@ export async function emitScorecard(
             windowEnd: args.subject.windowEnd ?? null,
           })
         : null;
+    // per-requirement-acceptance-grading-2026-11-14 R-1: pin the barHash of each
+    // rated requirement beside the whole-rubric identity, server-side, so a later
+    // amendment of one requirement leaves the other requirements' ratings judgeable.
+    // Null (whole-rubric rule) unless every rated criterion has one and the rubric
+    // the ratings were validated against is the identity pinned above.
+    const criterionHashes = ratedCriterionHashes(rubric, criteriaHash, ratings);
     const result = await captureImprovement({
       title: args.title ?? `Scorecard: ${rubric.title}${sourceHive ? ` — ${sourceHive}` : ''}`,
       kind: 'change',
@@ -4318,6 +4325,7 @@ export async function emitScorecard(
           ...(ledgerFillSummary ? { ledgerFilled: true } : {}),
           ...(rubricRevision != null ? { rubricRevision } : {}),
           ...(criteriaHash != null ? { criteriaHash } : {}),
+          ...(criterionHashes ? { criterionHashes } : {}),
           ...(rubricMeaningRevision != null ? { rubricMeaningRevision } : {}),
           ratings,
           ...(boundTestedSha ? { testedSha: boundTestedSha } : {}),

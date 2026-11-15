@@ -504,9 +504,18 @@ Subject plan revision: 3 → 4
     const rubric = 'acceptance-reviewer-health-status';
     const key = 'reviewer-health-' + Date.now();
     const thread = 'reviewer-health-thread-' + Date.now();
+    const { acceptanceBarApprovalSchema } = await import('../../acceptance-bar-amendment');
+    // Health reads classify the reply against the canonical preview receipt.
+    // Validate the fixture before insertion instead of hiding a malformed preview
+    // behind the fail-closed `unknown` disposition.
+    const previewBody = JSON.stringify(acceptanceBarApprovalSchema.parse({
+      schemaVersion: 1, kind: 'acceptance-bar-amendment-approval', rubricRef: rubric,
+      subjectPlan: 'reviewer-health-plan', proposedPatchHash: 'a'.repeat(64),
+      bars: [{ barKey: 'R-1', priorBarHash: 'b'.repeat(64), nextBarHash: 'c'.repeat(64) }],
+    }));
     const [preview] = await h.sql`
       INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, origin)
-      VALUES (${ws}, ${thread}, 'applier', 'Original preview', 'local') RETURNING id`;
+      VALUES (${ws}, ${thread}, 'applier', ${previewBody}, 'local') RETURNING id`;
     const [oldReply] = await h.sql`
       INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, origin)
       VALUES (${ws}, ${thread}, 'fresh-reviewer-owner', 'Old objection', 'local') RETURNING id`;
@@ -591,6 +600,67 @@ Subject plan revision: 3 → 4
     expect(executions).toBe(1);
   });
 
+  it.each(['closed_cant_help', 'declined', 'expired'])(
+    'same-key retries and status expose a routed consult that became %s without duplicating review', async consultState => {
+      const ws = activeWorkspaceId();
+      const rubric = `acceptance-closed-consult-${consultState}`;
+      const conversationId = `receipt-closed-consult-${consultState}`;
+      const key = 'original-review';
+      const original = { ok: true, dryRun: true,
+        review: { state: 'routed', conversationId, previewPostRef: 'thread-post:990104',
+          next: `events:await consult:reply:${conversationId}` } };
+      await h.sql`INSERT INTO harness_shared.consult_state (workspace_id, conversation_id, requester_id, state)
+        VALUES (${ws}, ${conversationId}, 'applier', 'active')`;
+      const run = vi.fn(async () => original);
+      await trackAmendRun(key, rubric, run);
+      expect(await getAmendReceipt(rubric, key)).toMatchObject({ result: original });
+      await h.sql`UPDATE harness_shared.consult_state SET state = ${consultState}
+        WHERE workspace_id = ${ws} AND conversation_id = ${conversationId}`;
+      vi.resetModules();
+      const otherWorker = await import('./amend-receipts');
+      const replay = await otherWorker.trackAmendRun(key, rubric, run);
+      expect(replay).toMatchObject({ review: {
+        state: 'review-closed', consultState, conversationId, previewPostRef: original.review.previewPostRef,
+      } });
+      const next = (replay.review as Record<string, unknown>).next;
+      expect(next).toContain('conversations:get');
+      expect(next).toContain('reviewPreviewPost');
+      expect(next).toContain('fresh idempotencyKey');
+      expect(next).not.toContain('events:await');
+      const status = await amendStatusTool.handler({ rubricRef: rubric, idempotencyKey: key }, {} as never) as {
+        data: Record<string, unknown>;
+      };
+      expect(status.data).toMatchObject({ state: 'previewed', result: replay });
+      expect(run).toHaveBeenCalledTimes(1);
+      const [stored] = await h.sql`SELECT result_json FROM harness_shared.rubric_amend_receipts
+        WHERE workspace_id = ${ws} AND rubric_ref = ${rubric} AND idempotency_key = ${key}`;
+      expect(stored!.result_json).toEqual(original);
+      const replacement = { ...original, review: { ...original.review, conversationId: `${conversationId}-replacement` } };
+      const newReview = vi.fn(async () => replacement);
+      await otherWorker.trackAmendRun('explicit-new-review', rubric, newReview);
+      expect(await otherWorker.trackAmendRun('explicit-new-review', rubric, newReview)).toEqual(replacement);
+      expect(newReview).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['missing', 'foreign-workspace', 'closed_answered', 'committed'])(
+    'keeps a %s consult receipt unchanged', async control => {
+      const ws = activeWorkspaceId();
+      const rubric = `acceptance-consult-control-${control}`;
+      const conversationId = `receipt-consult-control-${control}`;
+      const result = { ok: true, ...(control === 'committed' ? {} : { dryRun: true }),
+        review: { state: 'routed', conversationId, previewPostRef: 'thread-post:990105' } };
+      if (control !== 'missing') await h.sql`
+        INSERT INTO harness_shared.consult_state (workspace_id, conversation_id, requester_id, state)
+        VALUES (${control === 'foreign-workspace' ? 'foreign-receipt-workspace' : ws}, ${conversationId},
+          'applier', ${control === 'closed_answered' ? 'closed_answered' : 'closed_cant_help'})`;
+      const run = vi.fn(async () => result);
+      await trackAmendRun('control', rubric, run);
+      expect(await trackAmendRun('control', rubric, run)).toEqual(result);
+      expect(run).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('keeps preview-only and no-review-required results replayable', async () => {
     let executions = 0;
     for (const [key, result] of [
@@ -644,12 +714,17 @@ Subject plan revision: 3 → 4
     });
     expect(status.data.result.preview).not.toHaveProperty('approval');
     expect(status.data.note).toContain('full preview payload was compacted');
+    await h.sql`INSERT INTO harness_shared.consult_state (workspace_id, conversation_id, requester_id, state)
+      VALUES (${ws}, 'conv-retained-review', 'applier', 'closed_cant_help')`;
+    const terminal = await getAmendReceipt(rubric, key);
+    expect(terminal?.result).toMatchObject({ receiptCompacted: true, preview: { approvalRef: previewPostRef },
+      review: { state: 'review-closed', consultState: 'closed_cant_help', conversationId: 'conv-retained-review', previewPostRef } });
 
     let duplicateRuns = 0;
     expect(await trackAmendRun(key, rubric, async () => {
       duplicateRuns++;
       return { ok: false, duplicate: true };
-    })).toEqual(status.data.result);
+    })).toEqual(terminal?.result);
     expect(duplicateRuns).toBe(0);
   });
 

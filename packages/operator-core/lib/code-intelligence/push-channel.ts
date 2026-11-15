@@ -1745,6 +1745,12 @@ export async function codeIntelPushText(input: PushInput, deps: PushChannelDeps 
         });
       }).catch(() => null)
       : null;
+    // Resume reads are independent of the snapshot and of every sibling leg too.
+    const resumeContext = deps.resumeContext
+      ? enabledRead.then(on => on.get('resume')
+        ? boundedResumeContext(input, (i, diagnostics) => readResumeWithLinks(i, deps, diagnostics))
+        : undefined).then(value => ({ value }), () => ({ value: undefined }))
+      : null;
     // P-006: started beside the snapshot read so it costs the wall no extra wait.
     const toolsetRead = deps.toolset
       ? deps.toolset(input).catch((): RecipientToolset => ({ status: 'unknown', reason: 'read-failed' }))
@@ -1760,12 +1766,6 @@ export async function codeIntelPushText(input: PushInput, deps: PushChannelDeps 
     const toolset = input.recipientToolset ?? UNKNOWN_TOOLSET;
     // The commit needs to know which legs were ON to record the ones the wall stopped.
     const on = await enabledRead;
-    // The resume read does not depend on any other leg, so it overlaps with them
-    // instead of adding its own wait to the 250ms wall (P-003).
-    const resumeContext = deps.resumeContext && on.get('resume')
-      ? boundedResumeContext(input, (i, diagnostics) => readResumeWithLinks(i, deps, diagnostics))
-        .then(value => ({ value }), () => ({ value: undefined }))
-      : null;
     const facts: PushFact[] = [];
     const dropped: PushFact[] = [];
     const notRun: PushLegId[] = [];
@@ -1783,11 +1783,17 @@ export async function codeIntelPushText(input: PushInput, deps: PushChannelDeps 
     // cheap, and its attribution read then overlaps the resume/notes reads already in
     // flight. Queued after them it started past the 250ms wall and never committed
     // (measured on :3170 2026-10-27, code-intel-delivery-and-outcomes-2026-10-26#P-002).
-    for (const [index, [id, leg]] of legs.entries()) {
-      if (signal.aborted || !on.get(id)) continue;
+    // WI-6554700010048151: a first-touch wait used the remaining gather window
+    // before ready resume/notes contexts were consumed. Give each leg its own input
+    // and continuation; all keep the same deadline and commit reserve. Merge below
+    // in priority order so completion timing never decides delivery precedence.
+    const gatherLeg = async (id: PushLegId, leg: PushLeg, input: PushInput) => {
+      const facts: PushFact[] = [];
+      const dropped: PushFact[] = [];
+      if (signal.aborted || !on.get(id)) return { facts, dropped };
       if (Date.now() >= gatherDeadline) {
-        notRun.push(...legs.slice(index).filter(([rest, restLeg]) => on.get(rest) && hadWork(rest, restLeg)).map(([rest]) => rest));
-        break;
+        if (hadWork(id, leg)) notRun.push(id);
+        return { facts, dropped };
       }
       try {
         if (id === 'interface' && deps.interfaceContext && interfaceSignatureEdits(input).length) {
@@ -1828,13 +1834,13 @@ export async function codeIntelPushText(input: PushInput, deps: PushChannelDeps 
           }
         }
         if (id === 'notes') {
-          if (!notesContext) continue;
+          if (!notesContext) return { facts, dropped };
           // A timed-out read delivers nothing rather than an unverified note.
           const notesResult = await byGatherDeadline(notesContext, null);
           input.notesContext = notesResult?.value ?? { fresh: [], withheld: [] };
         }
         if (id === 'resume') {
-          if (!resumeContext) continue;
+          if (!resumeContext) return { facts, dropped };
           input.resumeContext = (await byGatherDeadline(resumeContext, { value: undefined })).value ?? { entries: [] };
           // A resume carries the same source links a first touch would; they were read
           // with the context. Merge per path so this batch's first-touch links survive.
@@ -1852,24 +1858,33 @@ export async function codeIntelPushText(input: PushInput, deps: PushChannelDeps 
         }
         for (const candidate of candidates) {
           const fact = withCallableSuggestion(candidate, toolset);
-          if (id === 'first-touch' && facts.some(f => f.leg === 'interface' && f.citedPaths[0] === fact.subject)) continue;
           if (fact.leg !== id || fact.subject.length > 1000 || !fact.subject.trim() || !fact.text.trim()
             || !fact.citedPaths.every(safeSnapshotPath)) continue;
           // P-005: over the per-push cap even after formatPushFact kept only whole lines,
           // so dropped whole and recorded (site push-cap). Not source-corroborated first:
           // that check costs wall time for a fact that cannot be delivered either way.
           if (formatPushFact(fact, snapshot).length > CODE_INTEL_PUSH_MAX_CHARS) {
-            if (dropped.length < 12) dropped.push(fact);
+            dropped.push(fact);
             continue;
           }
           // Past the deadline the check reports false, so an unverified fact is never pushed.
           if (!fact.sourceHashes || await corroboratePushSources(input.root, fact.sourceHashes, gatherSignal)) facts.push(fact);
-          if (facts.length >= 12) break;
         }
       } catch (error) { console.warn(`[code-intel-push] ${id} failed:`, String(error).slice(0, 200)); }
-      gathered = facts.length;
-      if (facts.length >= 12) break;
+      gathered += facts.length;
+      return { facts, dropped };
+    };
+    const batches = await Promise.all(legs.map(([id, leg]) => gatherLeg(id, leg, { ...input })));
+    for (const batch of batches) {
+      dropped.push(...batch.dropped);
+      for (const fact of batch.facts) {
+        if (fact.leg === 'first-touch' && facts.some(f => f.leg === 'interface' && f.citedPaths[0] === fact.subject)) continue;
+        facts.push(fact);
+      }
     }
+    // The commit budgets every candidate and records each whole-fact omission;
+    // a candidate-count cutoff here silently prevented later eligible legs running.
+    gathered = facts.length;
     phase = 'commit';
     // A request whose only candidates were dropped, or whose legs the wall stopped,
     // still commits, to record the skips.

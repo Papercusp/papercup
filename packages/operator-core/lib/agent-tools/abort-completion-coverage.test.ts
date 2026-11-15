@@ -114,21 +114,22 @@ describe('late-return mutating tools declare an abortCompletionReceipt (WI-10005
     const receipt = capabilityEdit.abortCompletionReceipt;
     expect(receipt).toBeTypeOf('function');
     const attempt = { callId: 'capability-edit-call-1', toolName: 'capability:edit' };
+    const input = { file_path: '/repo/source.ts ', old_string: 'before', new_string: 'after' };
     const result = (payload: unknown) => ({
       content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
     }) as ToolResult;
 
-    expect(receipt!({}, result({ ok: true, path: '/repo/source.ts ', replacements: 1 }), attempt))
+    expect(receipt!(input, result({ ok: true, path: '/repo/source.ts ', replacements: 1 }), attempt))
       .toMatchObject({
         status: 'recorded',
         effectRef: 'capability-edit:capability-edit-call-1:/repo/source.ts ',
         diagnostics: { path: '/repo/source.ts ', replacements: 1 },
       });
-    expect(receipt!({}, result({ ok: false, reason: 'not_found' }), attempt)).toMatchObject({
+    expect(receipt!(input, result({ ok: false, reason: 'not_found' }), attempt)).toMatchObject({
       status: 'not-recorded',
       reason: 'capability:edit returned before the file replacement (not_found)',
     });
-    expect(receipt!({}, result({ ok: true, path: '/repo/source.ts' }), attempt)).toMatchObject({
+    expect(receipt!(input, result({ ok: true, path: '/repo/source.ts' }), attempt)).toMatchObject({
       status: 'recovery-incomplete',
       failures: ['missing-edit-result-identity'],
     });
