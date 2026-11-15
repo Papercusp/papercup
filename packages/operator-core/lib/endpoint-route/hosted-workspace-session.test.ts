@@ -264,6 +264,50 @@ describe('HostedWorkspaceSessionBroker', () => {
   });
 });
 
+describe('sealed desktop discovery on a linked installation', () => {
+  const packet = (contentType: string | null) => ({ type: 'sealed.packet', protocol: 'papercusp-byoc-noise-xx.v1', contentType, packet: 'Ynl0ZXM=' });
+  function connected(kind: 'desktop-discovery' | 'desktop' = 'desktop-discovery', sealed = true) {
+    const broker = new HostedWorkspaceSessionBroker({ randomId: () => 'local', pingIntervalMs: 0 });
+    const host = new FakeSocket(), browser = new FakeSocket();
+    broker.attachConnector({ ...connector, hosting: 'papercusp' }, host);
+    broker.attachBrowser(ticket(), browser, { kind, sealed, ...(kind === 'desktop' ? { desktopSessionId: 'desk' } : {}) });
+    return { broker, host, browser, close: () => { browser.close(); host.close(); broker.dispose(); } };
+  }
+  it('never degrades discovery into a terminal and requires explicit sealing', () => {
+    const h = connected();
+    expect(h.host.sent).toContainEqual(expect.objectContaining({ type: 'relay.open', kind: 'desktop-discovery', sealed: true, role: 'observer' }));
+    expect(h.browser.sent).toContainEqual(expect.objectContaining({ type: 'session.bound', kind: 'desktop-discovery' }));
+    h.close(); const unsealed = connected('desktop-discovery', false);
+    expect(unsealed.host.sent.some((v) => (v as { type: string }).type === 'relay.open')).toBe(false);
+    expect(unsealed.browser.closed).toContainEqual([4403, 'sealed_channel_required']); unsealed.close();
+  });
+  it.each(['desktop-discovery', 'desktop'] as const)('forwards only sealed %s content even on non-BYOC hosting', (kind) => {
+    const h = connected(kind); const handshake = packet(null);
+    h.browser.message(handshake);
+    expect(h.host.sent).toContainEqual({ type: 'relay', channelId: 'local', payload: handshake });
+    h.browser.message({ type: 'desktop.roster', requestId: 'plaintext' });
+    expect(h.browser.closed).toContainEqual([4403, 'byoc_plaintext_relay_refused']); h.close();
+  });
+  it('limits the discovery plane in both directions', () => {
+    const h = connected(); const read = packet('desktop.roster'); h.browser.message(read);
+    expect(h.host.sent).toContainEqual({ type: 'relay', channelId: 'local', payload: read });
+    for (const type of ['pty.input', 'file.write', 'desktop.start', 'desktop.data', 'http.request']) {
+      const denied = packet(type); h.browser.message(denied);
+      expect(h.host.sent).not.toContainEqual({ type: 'relay', channelId: 'local', payload: denied });
+    }
+    const roster = packet('desktop.roster.result'); h.host.message({ type: 'relay', channelId: 'local', payload: roster });
+    expect(h.browser.sent).toContainEqual(roster);
+    const pty = packet('pty.output'); h.host.message({ type: 'relay', channelId: 'local', payload: pty });
+    expect(h.browser.sent).not.toContainEqual(pty); expect(h.browser.closed).toContainEqual([4403, 'channel_kind_mismatch']); h.close();
+  });
+  it('refuses plaintext from the host without exposing its content', () => {
+    const h = connected(); const content = { type: 'desktop.thumbnail.result', data: 'private capture' };
+    h.host.message({ type: 'relay', channelId: 'local', payload: content });
+    expect(h.browser.sent).not.toContainEqual(content);
+    expect(h.browser.closed).toContainEqual([4403, 'sealed_host_content_required']); h.close();
+  });
+});
+
 describe('HostedWorkspaceSessionBroker — desktop channels (P-013 / D-023, D-024)', () => {
   const ids = () => {
     let n = 0;

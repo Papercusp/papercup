@@ -108,7 +108,7 @@ describe('P-001 historical faithful-part backfill', () => {
     expect(source).toMatch(/parts_backfill_offset\s+IS NULL|parts_backfill_offset\s*>\s*0/);
     expect(source).toContain('partRowsFrom(result.parts');
     expect(source).toContain(
-      "stats.partsBackfillFiles = await measure('history', () => backfillHistoricalParts(sql))",
+      "stats.partsBackfillFiles = await measure('history', () => backfillHistoricalParts(sql), 'parts')",
     );
   });
 });

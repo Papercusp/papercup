@@ -111,7 +111,7 @@ type LivenessEntry = { awaitingPong: boolean; connector: HostedConnectorBinding 
  * traffic to the workspace machine's OWN loopback operator. Its client is the
  * portal backend acting for the ticket's user; nothing ever dials a VM address.
  */
-export type HostedWorkspaceChannelKind = 'pty' | 'psu' | 'desktop' | 'operator-http' | 'app-http' | 'app-key-mint' | 'device-http';
+export type HostedWorkspaceChannelKind = 'pty' | 'psu' | 'desktop' | 'desktop-discovery' | 'operator-http' | 'app-http' | 'app-key-mint' | 'device-http';
 
 /**
  * A terminal channel: the customer's shell (`pty`), or psu started by the host (`psu`, D-002).
@@ -135,6 +135,8 @@ export const APP_KEY_MINT_CLIENT_TYPES: ReadonlySet<string> = new Set(['mint.req
 export const OPERATOR_HTTP_CLIENT_TYPES: ReadonlySet<string> = new Set(['http.request', 'http.abort']);
 /** Device upload bodies larger than an inline frame use the existing HTTP chunk labels. */
 export const DEVICE_HTTP_CLIENT_TYPES: ReadonlySet<string> = new Set([...OPERATOR_HTTP_CLIENT_TYPES, 'http.body', 'http.end']);
+const DESKTOP_DISCOVERY_CLIENT_TYPES = new Set(['desktop.roster', 'desktop.thumbnail']);
+const DESKTOP_DISCOVERY_HOST_TYPES = new Set(['desktop.discovery.ready', 'desktop.roster.result', 'desktop.thumbnail.result', 'operation.error']);
 
 /** True for any frame of the operator-http family (either direction). */
 function isOperatorHttpType(type: string): boolean {
@@ -456,6 +458,15 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
         this.closeSession(session, 4000, message.reason ?? 'host_closed', false);
         return;
       }
+      if (session.sealed && !isByocSealedPacket(message.payload)) {
+        this.closeSession(session, 4403, 'sealed_host_content_required', true);
+        return;
+      }
+      const responseType = session.sealed ? byocSealedContentType(message.payload) : payloadType(message.payload);
+      if (session.kind === 'desktop-discovery' && responseType !== null && !DESKTOP_DISCOVERY_HOST_TYPES.has(responseType)) {
+        this.closeSession(session, 4403, 'channel_kind_mismatch', true);
+        return;
+      }
       if (session.kind === 'desktop') this.auditDesktopReady(session, message.payload);
       sendJson(session.socket, message.payload);
     };
@@ -658,7 +669,14 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
       return () => {};
     }
     const kind: HostedWorkspaceChannelKind =
-      attach.kind === 'desktop' || attach.kind === 'operator-http' || attach.kind === 'psu' ? attach.kind : 'pty';
+      attach.kind === 'desktop' || attach.kind === 'desktop-discovery' || attach.kind === 'operator-http' || attach.kind === 'psu' ? attach.kind : 'pty';
+    // Local installs are linked, rather than BYOC-provisioned. Their independent
+    // browser pin still requires sealed discovery/media on the same blind relay.
+    const sealed = byoc || attach.sealed === true;
+    if (kind === 'desktop-discovery' && !sealed) {
+      socket.close(4403, 'sealed_channel_required');
+      return () => {};
+    }
     const desktopSessionId = kind === 'desktop' ? attach.desktopSessionId : undefined;
     // The host checks the same allowlist again; refusing here too means a bad argument never
     // reaches the machine, and the client learns why on the socket it opened.
@@ -698,6 +716,8 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
     const role: HostedWorkspaceTabRole =
       kind === 'desktop'
         ? (attach.desktopMode === 'takeover' ? 'controller' : 'observer')
+        : kind === 'desktop-discovery'
+          ? 'observer'
         : kind === 'operator-http'
           ? 'controller'
           : this.controllers.has(controlKey) ? 'observer' : 'controller';
@@ -713,7 +733,7 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
       controllerKey: controlKey,
       idleTimer: null,
       closed: false,
-      sealed: byoc,
+      sealed,
     };
     this.sessions.set(channelId, session);
     if (isTerminalKind(kind) && role === 'controller') this.controllers.set(controlKey, channelId);
@@ -751,12 +771,12 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
       // (or, older still, nothing), never a shell.
       ...(kind === 'desktop'
         ? { kind, desktopSessionId }
-        : kind === 'operator-http'
+        : kind === 'operator-http' || kind === 'desktop-discovery'
           ? { kind }
           : psuArgv?.ok
             ? { kind, argv: psuArgv.argv }
             : {}),
-      ...(byoc ? { sealed: true } : {}),
+      ...(sealed ? { sealed: true } : {}),
     });
     this.audit(binding, 'browser_attached', channelId, role);
 
@@ -805,6 +825,10 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
       }
       if (type === 'session.detach') {
         this.closeSession(session, 1000, 'browser_detached', true);
+        return;
+      }
+      if (session.kind === 'desktop-discovery' && !DESKTOP_DISCOVERY_CLIENT_TYPES.has(type)) {
+        sendJson(socket, { type: 'session.denied', reason: 'channel_kind_mismatch', requestType: type });
         return;
       }
       // Kind fences, both directions: an operator-http channel forwards ONLY its

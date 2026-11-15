@@ -73,10 +73,12 @@ export const HOSTED_FORBIDDEN_HOST_PATH_PREFIXES = [
  */
 export function readAttachRequest(request: Request): HostedWorkspaceAttachRequest {
   const params = new URL(request.url).searchParams;
+  const seal = params.get("sealed") === "1" ? { sealed: true } : {};
+  if (params.get("kind") === "desktop-discovery") return { kind: "desktop-discovery", ...seal };
   // D-418 / WI-10002873: the portal backend's relay to the workspace's own
   // operator. The broker echoes `kind` on `session.bound`, so a client can tell
   // this control plane honoured it rather than degrading to a PTY.
-  if (params.get("kind") === "operator-http") return { kind: "operator-http" };
+  if (params.get("kind") === "operator-http") return { kind: "operator-http", ...seal };
   // D-002: psu started by the host. `argv` is a JSON list; anything that does not parse is
   // handed on as-is so the broker REFUSES it, instead of launching psu with no arguments.
   if (params.get("kind") === "psu") {
@@ -89,12 +91,13 @@ export function readAttachRequest(request: Request): HostedWorkspaceAttachReques
         argv = raw;
       }
     }
-    return { kind: "psu", ...(argv === undefined ? {} : { argv }) };
+    return { kind: "psu", ...(argv === undefined ? {} : { argv }), ...seal };
   }
-  if (params.get("kind") !== "desktop") return {};
+  if (params.get("kind") !== "desktop") return { ...seal };
   const desktopSessionId = params.get("desktopSessionId")?.trim();
   return {
     kind: "desktop",
+    ...seal,
     ...(desktopSessionId ? { desktopSessionId } : {}),
     desktopMode: params.get("desktopMode") === "takeover" ? "takeover" : "watch",
   };

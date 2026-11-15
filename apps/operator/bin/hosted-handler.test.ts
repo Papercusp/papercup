@@ -44,6 +44,11 @@ describe("readAttachRequest", () => {
     expect(read("?kind=desktop&desktopSessionId=s1&desktopMode=takeover"))
       .toEqual({ kind: "desktop", desktopSessionId: "s1", desktopMode: "takeover" });
   });
+  it('preserves explicit sealed discovery and desktop intent for a linked installation', () => {
+    expect(read('?kind=desktop-discovery&sealed=1')).toEqual({ kind: 'desktop-discovery', sealed: true });
+    expect(read('?kind=desktop-discovery')).toEqual({ kind: 'desktop-discovery' });
+    expect(read('?kind=desktop&desktopSessionId=s1&sealed=1')).toEqual({ kind: 'desktop', desktopSessionId: 's1', desktopMode: 'watch', sealed: true });
+  });
   it("reads the D-002 psu kind with its JSON argv", () => {
     const argv = encodeURIComponent(JSON.stringify(["--agent", "codex"]));
     expect(read(`?kind=psu&argv=${argv}`)).toEqual({ kind: "psu", argv: ["--agent", "codex"] });
