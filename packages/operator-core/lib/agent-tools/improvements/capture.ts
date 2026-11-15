@@ -783,14 +783,14 @@ export default defineTool({
           .max(80)
           .optional()
           .describe(
-            "Pot scope. OMIT (recommended) → the item files under the workspace platform Pot; pass 'harness:<slug>' to scope it to a specific Pot. (An omitted/'operator'/workspace-global scope auto-homes to the platform Pot — you do NOT need to pass 'harness:papercusp' by hand.)",
+            "Pot scope: omit (recommended), 'operator', or workspace-global → workspace platform Pot. Use 'harness:<slug>' for a specific Pot; no explicit 'harness:papercusp' is needed for the default.",
           ),
         harness: z
           .string()
           .max(80)
           .optional()
           .describe(
-            "Compatibility alias for the common per-call harness spelling. `harness:'foo'` is normalized to `scope:'harness:foo'`; prefer `scope:'harness:foo'` for new calls.",
+            "Compatibility alias: `harness:'foo'` becomes `scope:'harness:foo'`. Prefer scope for new calls.",
           ),
         // EI-10943: was `z.string().max(120)` — a HARD reject. Overrunning it bounced the
         // WHOLE capture (the finding is lost, and the agent gets the entire args schema
@@ -801,8 +801,7 @@ export default defineTool({
         foundDuring: softText(LIMITS.LABEL)
           .optional()
           .describe(
-            `what you were doing when you found this (a plan slug, a task, "the X audit"). ` +
-              `Free text — truncated to ${LIMITS.LABEL} chars with a warning if longer, never rejected.`,
+            `Discovery context (plan slug/task/audit). Free text; over ${LIMITS.LABEL} chars is truncated with a warning, never rejected.`,
           ),
         paths: z
           .array(z.string().min(1).max(300))
@@ -812,14 +811,14 @@ export default defineTool({
         observedRuntime: observedRuntimeSchema
           .optional()
           .describe(
-            'explicit runtime provenance for the environment that produced the report. Caller-only form: provide sha plus optional version/endpoint/evidenceRef and omit testRunIds and query fields. Trusted test-run form: provide testRunIds plus every query field (workspaceId, harnessSlug, runGroupId, root, filePaths), all non-empty; only matching clean server-owned ledger rows can validate the target SHA. This is separate from the runtime that received this capture call.',
+            'Runtime that produced the report, separate from this call\'s receiver. Caller-only form: sha, optional version/endpoint/evidenceRef; omit testRunIds and query fields. Trusted test-run form: testRunIds plus every query field (workspaceId, harnessSlug, runGroupId, root, filePaths), all non-empty; only matching clean server-owned ledger rows validate the SHA.',
           ),
         notifyAgents: z
           .array(z.string().min(1))
           .max(8)
           .optional()
           .describe(
-            '@-mention SPECIFIC agents: ownerId prefixes / handles (resolve via coord:presence). Each is SUBSCRIBED to the captured item (gets every future update) AND pinged now, pointing at it — a DIRECTED handoff to a known owner. Distinct from the auto-topic broadcast (which reaches whoever subscribed to the area) and from claiming. Ignored for lane:observation. Use when you know exactly who should see/own this.',
+            'Known agents\' ownerId prefixes/handles (coord:presence): subscribe each to future item updates and ping now with its link. Directed handoff, separate from topic broadcast and claiming. Ignored for lane:observation.',
           ),
         force: z
           .boolean()
@@ -829,7 +828,7 @@ export default defineTool({
           .boolean()
           .optional()
           .describe(
-            'SEARCH ONLY, creates nothing: "has anyone already hit this?" — for improvement-lane captures. `lane:"observation"` skips duplicate search; its empty `possibleDuplicates` is not a verdict (read dedupCoverage/hint). Pass the symptom in title and the exact body before relying on results.',
+            'Improvement-lane SEARCH ONLY; creates nothing. Pass the symptom as title and exact body. `lane:"observation"` skips search: empty possibleDuplicates proves nothing; read dedupCoverage/hint.',
           ),
         // WI-5950. Kept SHORT on purpose: the prompt-weight budget (≤1500 soft / ≤1600 hard
         // per tool) is shared across every field, and the first draft of this description
@@ -844,7 +843,7 @@ export default defineTool({
           .max(120)
           .optional()
           .describe(
-            'Atomically CLAIM the filed item in this same capture — an ownerId, or "self". Use when you are ALREADY working the thing you are filing: an unclaimed item goes to the claimable pool, where a peer may duplicate your in-progress fix. Omit ⇒ unclaimed. Ignored for observations. Fresh change/feature filings that enter agent review release the filer claim before the response and remain unassigned until review completes.',
+            'Atomically claim with ownerId or "self" when already fixing the item, preventing duplicate work. Omit ⇒ unclaimed; ignored for observations. Fresh change/feature filings entering agent review release the filer claim before responding and stay unassigned until review completes.',
           ),
         origin: z
           .enum(['organic', 'drill', 'replay', 'shadow'])
@@ -862,7 +861,7 @@ export default defineTool({
           .enum(['improvement', 'observation'])
           .optional()
           .describe(
-            "'observation' files a PRE-IDEA turn-end reflection into the SEPARATE observation lane (D-005) — it never enters the work queue/triage/auto-implement; only Blender's corpus-digest + the Observations pane read it. Default 'improvement'.",
+            "Default 'improvement'. Pre-idea 'observation': only Blender corpus-digest/Observations pane; never work queue, triage or auto-implement.",
           ),
         conditionKey: z
           .string()
@@ -870,12 +869,12 @@ export default defineTool({
           .max(160)
           .optional()
           .describe(
-            `Stable recurring identity. ${CONDITION_KEY_RULE} For an observation, a still-OPEN prior observation carrying the SAME conditionKey has its repeatCount bumped and its title/body refreshed instead of minting a fresh row. For an ordinary improvement/bug capture, the key feeds the exact-key coalescer so repeated filings refresh one open row even when lexical or semantic search is unavailable. Where a key is ALREADY published — an OverwatchBrief anomaly line's \`[conditionKey: overwatch:escalation-aging]\` — copy that one verbatim rather than minting a variant that cannot join it. Omit for a genuinely novel/one-off reading, which re-files as before. A rubric-graded scorecard (observation.rubricRef) DEFAULTS to \`scorecard:<rubricRef>:<sourceHive>\` when you omit this (EI-19325151590626958) — pass it explicitly to override.`,
+            `Stable recurring identity. ${CONDITION_KEY_RULE} Same-key OPEN observations increment repeatCount and refresh title/body. For an ordinary improvement/bug capture, the exact-key coalescer refreshes one open row even without lexical/semantic search. For a published key, copy that one verbatim (e.g. \`[conditionKey: overwatch:escalation-aging]\`). Omit for one-off readings. Rubric scorecards default to \`scorecard:<rubricRef>:<sourceHive>\`; explicit key overrides.`,
           ),
         toolFailure: suspectedToolFailureSchema
           .optional()
           .describe(
-            'Suspected tool-call failure. A one-off is captured immediately in non-claimable probation and correlated by tool/error/schema/field/runtime; a second independent reporter or the invocation watchdog promotes the SAME row. Put legacy direct-evidence flags inside this object — toolFailure.reproduced, toolFailure.clearServerMismatch, or toolFailure.hardInternal — and do not pass them at the top level. For a caller-class refusal, those booleans alone stay in probation: pass toolFailure.directEvidence { kind, expected, actual } only when you can state the inspectable contract mismatch that makes it a tool defect.',
+            'Suspected tool-call failure: immediate non-claimable probation, correlated by tool/error/schema/field/runtime. A second independent reporter or invocation watchdog promotes the same row. Nest legacy flags here: toolFailure.reproduced, toolFailure.clearServerMismatch, toolFailure.hardInternal; do not pass them at the top level. Caller-class booleans alone stay in probation; toolFailure.directEvidence { kind, expected, actual } requires an inspectable contract mismatch proving a tool defect.',
           ),
         reproduction: z
           .object({
@@ -1049,7 +1048,7 @@ export default defineTool({
           .strict()
           .optional()
           .describe(
-            `structured fields for a lane:observation record. ${OBSERVATION_EVIDENCE_RULE} The observation object accepts structured fields only; observation.body is not a valid field, and prose belongs in the top-level body. The IDENTIFYING "what" is the title (see its rule — an observation is found again only by its title) and the whole narrative "why" is the body, which is unbounded free prose and the right home for the story. Pass rubricRef+ratings (each {rating,evidence}) to file a RUBRIC-GRADED observation — check rubrics:list first to see if a rubric fits.`,
+            `Structured lane:observation fields. ${OBSERVATION_EVIDENCE_RULE} observation.body is not a valid field; put narrative "why" in top-level body (unbounded prose). Title is the identifying "what" for rediscovery; follow its rule. Check rubrics:list for a fitting rubric, then pass rubricRef+ratings (each {rating,evidence}) for a rubric-graded observation.`,
           ),
         // ── IDEATE-pass provenance (su-ideate-learning-substrate-2026-07-10 P-002 / D-004:
         // the ONE schema bump — the full shape is declared here so the tool contract never
@@ -1063,7 +1062,7 @@ export default defineTool({
               .enum([...SU_IDEATION_LENSES] as [SuIdeationLens, ...SuIdeationLens[]])
               .optional()
               .describe(
-                "the generative stance that produced this idea — Scout's four creative lenses (analogical / first-principles / reframing / constraint-removal) + the su stances (risk-first = de-risk the riskiest assumption; user-value = backward from felt owner/user value; cost-leverage = small change, big recurring cost). Declaring it earns per-lens outcome feedback on YOUR ideas (P-004); omitted = recorded under the 'su-ideate' sentinel (no per-lens learning)",
+                "Stance: analogical / first-principles / reframing / constraint-removal; risk-first de-risks the riskiest assumption, user-value works backward from owner/user value, cost-leverage targets recurring cost with a small change. Per-lens outcome feedback; omitted ⇒ 'su-ideate' sentinel, no per-lens learning.",
               ),
             bet: z
               .string()
@@ -1082,7 +1081,7 @@ export default defineTool({
               .max(10)
               .optional()
               .describe(
-                "the digest meta-pattern refs this idea GROUNDS ON — the observation→pattern→idea→shipped arc is joined on this field, so an idea filed without it can never show up as grounded in anyone's observationsImpact. You already have the refs: they come back from blender:ideation-feedback as observationsImpact.patterns[].ref (e.g. 'wi:EI-10587'). Pass the pattern(s) your pass actually built on",
+                "Digest meta-pattern refs actually used, from blender:ideation-feedback observationsImpact.patterns[].ref (e.g. 'wi:EI-10587'). Joins observation→pattern→idea→shipped; omitted refs cannot count as grounded in observationsImpact.",
               ),
             cheapExperiment: z
               .object({
@@ -1096,13 +1095,13 @@ export default defineTool({
               })
               .optional()
               .describe(
-                'the cheap falsifiable first experiment (ScoutExperiment shape, D-006 bettable-not-clever; persisted to payload.ideation — a COMPLETE one makes the idea machine-checkably bettable and ranks it first in triage)',
+                'Cheap falsifiable first experiment (ScoutExperiment), persisted to payload.ideation. Complete experiments make the idea machine-checkably bettable and rank it first in triage.',
               ),
           })
           .strict()
           .optional()
           .describe(
-            "IDEATE-pass provenance for an su session's kind:'feature' origination — stamps the routed-idea ledger row (origin='su-ideate') with your declared lens so grade→outcome→feedback learning attributes back to it. Never a gate: purely additive, ignored for lane:observation / non-feature kinds.",
+            "Additive IDEATE provenance for su kind:'feature': stamps origin='su-ideate' and declared lens on the routed-idea ledger for grade→outcome→feedback attribution. Never a gate; ignored for observations/non-feature kinds.",
           ),
       })
       .strict()
