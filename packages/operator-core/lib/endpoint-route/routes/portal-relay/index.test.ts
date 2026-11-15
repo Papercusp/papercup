@@ -111,6 +111,7 @@ describe('Papercusp relay routes', () => {
     ['invalid_portal_origin', 400],
     ['hosted_machine', 409],
     ['already_linked', 409],
+    ['portal_origin_conflict', 409],
     ['portal_unavailable', 502],
     ['portal_refused', 502],
   ] as const)('maps a %s refusal to %i', async (code, status) => {

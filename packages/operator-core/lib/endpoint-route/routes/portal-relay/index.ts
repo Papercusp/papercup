@@ -70,13 +70,14 @@ const USER_FIXABLE: ReadonlySet<PortalRelayError['code']> = new Set([
   'notice_outdated',
   'hosted_machine',
   'already_linked',
+  'portal_origin_conflict',
   'invalid_portal_origin',
 ]);
 
 /** User-fixable refusal → 400 (hosted machine → 409), portal trouble → 502, anything else → 500. */
 function failure(err: unknown): Response {
   if (err instanceof PortalRelayError) {
-    if (err.code === 'hosted_machine' || err.code === 'already_linked') return jsonError(err.code, 409, { message: err.message });
+    if (err.code === 'hosted_machine' || err.code === 'already_linked' || err.code === 'portal_origin_conflict') return jsonError(err.code, 409, { message: err.message });
     if (USER_FIXABLE.has(err.code)) return jsonError(err.code, 400, { message: err.message });
     return jsonError(err.code, 502, { message: err.message });
   }
