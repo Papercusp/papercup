@@ -16,6 +16,7 @@ export const TAURI_VERIFIER_INPUTS = Object.freeze([
   'papercusp-desktop/package-lock.json',
   'scripts/npm-install-safe.mjs',
   'scripts/verify-tauri-headless.sh',
+  'scripts/assert-workspace-links.mjs',
   'scripts/run-operator-e2e-isolated.sh',
   'scripts/lib/operator-e2e-assertion.sh',
   'scripts/lib/verify-tauri-assertion-env.mjs',

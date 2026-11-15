@@ -31,7 +31,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import * as ts from 'typescript';
 export { compileDeclarationsIncrementally } from './lib/declaration-compiler.mts';
-import { exportParityProblems, formatProblems } from './lib/declaration-export-parity.js';
+import { exportParityProblems, formatProblems } from './lib/declaration-export-parity.ts';
 import { orphanedJsdocProblems, formatOrphanedJsdoc } from './lib/orphaned-jsdoc.ts';
 import {
   formatStaleSuppressions,
