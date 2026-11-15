@@ -67,6 +67,14 @@ export function privatePgSeedEnvironment(source = process.env) {
   }));
 }
 
+/** The setup phase ends in its supervisor; commands retain the enclosing task limits. */
+export function privatePgCommandEnvironment(source = process.env) {
+  const environment = { ...source };
+  delete environment.PAPERCUSP_TEST_PRIVATE_PG_SETUP_DEADLINE_AT_MS;
+  delete environment.PAPERCUSP_TEST_PRIVATE_PG_SETUP_TIMEOUT_MS;
+  return environment;
+}
+
 /**
  * Unknown keys are not tooling. A provider-name denylist misses both new providers
  * and application-specific queue/file destinations. Product roots and endpoints

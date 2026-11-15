@@ -38,7 +38,7 @@ import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { resolveFsMutexLockRoot } from './lib/fs-mutex.mjs';
 import { snapshotMigrationSource } from './lib/with-test-pg-migrations.mjs';
-import { isolatedRuntimeEvidenceKeys, isolatedRuntimeInheritedEnvironment } from './lib/with-test-pg-env.mjs';
+import { isolatedRuntimeEvidenceKeys, isolatedRuntimeInheritedEnvironment, privatePgCommandEnvironment } from './lib/with-test-pg-env.mjs';
 import { ensureRequiredEmbeddedExtensions } from './install-embedded-pgvector.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -858,7 +858,9 @@ if (runtimeRoot && runtimeId) {
   };
 }
 
-let childEnv = { ...process.env };
+// A nested launcher owns a new setup phase. Preserve the enclosing task bounds,
+// while dropping this supervisor's consumed setup deadline and duration.
+let childEnv = privatePgCommandEnvironment(process.env);
 if (ownedDatabaseDir) childEnv[OWNED_TEST_DB_DIR_ENV] = ownedDatabaseDir;
 // A product DSN pin outranks PAPERCUSP_PG_PORT in both connection resolvers.
 // Keeping an ambient DATABASE_URL made ordinary affected integration workers

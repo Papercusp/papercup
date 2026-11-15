@@ -8,10 +8,29 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { assertPrivateManagedTaskRoute, preparePrivateOperatorApiBundle } from '../test/private-http-workspace-preflight';
-import { isolatedRuntimeEvidenceKeys, isolatedRuntimeInheritedEnvironment, privatePgSeedEnvironment } from '../../../scripts/lib/with-test-pg-env.mjs';
+import { isolatedRuntimeEvidenceKeys, isolatedRuntimeInheritedEnvironment, privatePgSeedEnvironment, privatePgCommandEnvironment } from '../../../scripts/lib/with-test-pg-env.mjs';
 import { executedSourceMapArmed } from '@papercusp/test-config/vitest-config';
 
 const root = resolve(import.meta.dirname, '../../..');
+
+// These children deliberately stop before PG allocation. Keep their existing
+// deadlines, but distinguish a Node preload stall from loader registration or
+// the real entry's admission work when a child misses its deadline.
+function preflightChildScript(entry: string, hook: string, argv: string[]): string {
+  return `import { register } from 'node:module';
+    import { writeSync } from 'node:fs';
+    const phase = stage => writeSync(2, 'PREFLIGHT_STARTUP ' + JSON.stringify({
+      stage, elapsedMs: performance.now(), pid: process.pid,
+    }) + '\\n');
+    phase('evaluation-entered');
+    phase('loader-registration-start');
+    register(${JSON.stringify('data:text/javascript,' + encodeURIComponent(hook))});
+    phase('loader-registration-complete');
+    process.argv = ${JSON.stringify(argv)};
+    phase('entry-import-start');
+    await import(${JSON.stringify(pathToFileURL(entry).href)});
+    phase('entry-import-complete');`;
+}
 
 describe('private runtime inherited environment', () => {
   it('keeps the source-map reporter armed with the launcher evidence allowlist while stripping ambient authority', () => {
@@ -105,10 +124,8 @@ describe('required private database extensions', () => {
       if (specifier === 'async-exit-hook') throw new Error('EXTENSION_ADMISSION_REACHED');
       return next(specifier, context);
     }`;
-    const script = `import { register } from 'node:module';
-      register(${JSON.stringify('data:text/javascript,' + encodeURIComponent(hook))});
-      process.argv = [process.execPath, ${JSON.stringify(entry)}, '--', process.execPath, '-e', 'process.exit(91)'];
-      await import(${JSON.stringify(pathToFileURL(entry).href)});`;
+    const script = preflightChildScript(entry, hook,
+      [process.execPath, entry, '--', process.execPath, '-e', 'process.exit(91)']);
     const startedAt = performance.now();
     const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
       cwd: root, encoding: 'utf8', timeout: 10_000,
@@ -125,6 +142,29 @@ describe('required private database extensions', () => {
 });
 
 describe('private-PG setup budget receipt', () => {
+  it('does not hand a consumed setup phase to a nested runtime while retaining task and cleanup bounds', () => {
+    const source = {
+      PAPERCUSP_TEST_PRIVATE_PG_SETUP_TIMEOUT_MS: '120000',
+      PAPERCUSP_TEST_PRIVATE_PG_SETUP_DEADLINE_AT_MS: '1794714610157',
+      PAPERCUSP_TEST_TASK_DEADLINE_AT_MS: '1794714880157',
+      PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS: '1794714850157',
+      PAPERCUSP_TEST_CLEANUP_RESERVE_MS: '30000',
+      PAPERCUSP_TEST_FILE_TIMEOUT_MS: '240000',
+      PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://reporter.invalid/evidence',
+    };
+    const command = privatePgCommandEnvironment(source);
+    expect(command.PAPERCUSP_TEST_PRIVATE_PG_SETUP_TIMEOUT_MS).toBeUndefined();
+    expect(command.PAPERCUSP_TEST_PRIVATE_PG_SETUP_DEADLINE_AT_MS).toBeUndefined();
+    expect(command).toMatchObject({
+      PAPERCUSP_TEST_TASK_DEADLINE_AT_MS: source.PAPERCUSP_TEST_TASK_DEADLINE_AT_MS,
+      PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS: source.PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS,
+      PAPERCUSP_TEST_CLEANUP_RESERVE_MS: source.PAPERCUSP_TEST_CLEANUP_RESERVE_MS,
+      PAPERCUSP_TEST_FILE_TIMEOUT_MS: source.PAPERCUSP_TEST_FILE_TIMEOUT_MS,
+      PAPERCUSP_TEST_RUNS_DB_URL: source.PAPERCUSP_TEST_RUNS_DB_URL,
+    });
+    expect(source.PAPERCUSP_TEST_PRIVATE_PG_SETUP_DEADLINE_AT_MS).toBe('1794714610157');
+  });
+
   it('records an expired setup and refuses before allocating Postgres or starting tests', () => {
     const entry = join(root, 'scripts/with-test-pg.mjs');
     const artifactDir = mkdtempSync(join(tmpdir(), 'private-pg-setup-receipt-'));
@@ -177,11 +217,8 @@ describe('private Docker endpoint admission', () => {
       if (specifier === './install-embedded-pgvector.mjs') return { url: ${JSON.stringify(extension)}, shortCircuit: true };
       return next(specifier, context);
     }`;
-    const script = `import { register } from 'node:module';
-      register(${JSON.stringify('data:text/javascript,' + encodeURIComponent(hook))});
-      process.argv = [process.execPath, ${JSON.stringify(entry)}, '--isolated-runtime',
-        '--', '/papercusp-missing-docker-admission-child'];
-      await import(${JSON.stringify(pathToFileURL(entry).href)});`;
+    const script = preflightChildScript(entry, hook,
+      [process.execPath, entry, '--isolated-runtime', '--', '/papercusp-missing-docker-admission-child']);
     const startedAt = performance.now();
     const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
       cwd: root, encoding: 'utf8', timeout: 10_000,
@@ -220,11 +257,9 @@ describe('private proof IPC admission', () => {
       if (specifier === 'async-exit-hook') throw new Error('PROOF_ADMISSION_REACHED');
       return next(specifier, context);
     }`;
-    const script = `import { register } from 'node:module';
-      register(${JSON.stringify('data:text/javascript,' + encodeURIComponent(hook))});
-      process.argv = [process.execPath, ${JSON.stringify(entry)}, ${isolated ? "'--isolated-runtime'," : ''}
-        '--', ${JSON.stringify(executable)}, '-e', 'process.exit(91)'];
-      await import(${JSON.stringify(pathToFileURL(entry).href)});`;
+    const script = preflightChildScript(entry, hook,
+      [process.execPath, entry, ...(isolated ? ['--isolated-runtime'] : []),
+        '--', executable, '-e', 'process.exit(91)']);
     const env = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: proof ? '1' : undefined,
       PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://unused-test-ledger.invalid/test' };
     const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
@@ -359,11 +394,8 @@ describe('private managed task preflight', () => {
       if (specifier === 'async-exit-hook') throw new Error('PINNED_MANAGER_PREFLIGHT_REACHED');
       return next(specifier, context);
     }`;
-    const script = `import { register } from 'node:module';
-      register(${JSON.stringify('data:text/javascript,' + encodeURIComponent(hook))});
-      process.argv = [process.execPath, ${JSON.stringify(entry)}, ${JSON.stringify(profile)}, '--managed-tasks',
-        '--', process.execPath, '-e', 'process.exit(91)'];
-      await import(${JSON.stringify(pathToFileURL(entry).href)});`;
+    const script = preflightChildScript(entry, hook,
+      [process.execPath, entry, profile, '--managed-tasks', '--', process.execPath, '-e', 'process.exit(91)']);
     try {
       const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
         cwd: root, encoding: 'utf8', timeout: 10000,
