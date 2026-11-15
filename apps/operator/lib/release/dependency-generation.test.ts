@@ -2146,6 +2146,39 @@ describe('immutable dependency generation', () => {
     );
   });
 
+  it('uses the current install after reusing an exact-ref donor in the same shell', () => {
+    const integration = makeIntegration();
+    commitFixture(integration, 'initial installed inputs');
+    const prewarmed = publish(integration);
+    expect(prewarmed.status, prewarmed.stderr).toBe(0);
+    appendFileSync(join(integration, 'package-lock.json'), '\n');
+    const firstRef = commitFixture(integration, 'equivalent exact-ref inputs');
+    appendFileSync(join(integration, 'package-lock.json'), '\n');
+    const secondRef = commitFixture(integration, 'later live inputs');
+    const firstOut = join(dirname(integration), 'first-result');
+    const secondOut = join(dirname(integration), 'second-result');
+
+    const result = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'source "$SCRIPT"',
+      'dependency_generation_main --integration "$INTEGRATION" --ensure-ref "$FIRST_REF" > "$FIRST_OUT"',
+      'printf "root-v2\\n" > "$INTEGRATION/node_modules/pkg/index.js"',
+      'dependency_generation_main --integration "$INTEGRATION" --ensure-ref "$SECOND_REF" > "$SECOND_OUT"',
+    ].join('\n')], {
+      encoding: 'utf8',
+      env: { ...process.env, SCRIPT, INTEGRATION: integration,
+        FIRST_REF: firstRef, SECOND_REF: secondRef, FIRST_OUT: firstOut, SECOND_OUT: secondOut },
+    });
+
+    expect(result.status, String(result.stderr)).toBe(0);
+    expect(publishedIdentity(readFileSync(firstOut, 'utf8')))
+      .toBe(publishedIdentity(prewarmed.stdout));
+    const latest = readFileSync(secondOut, 'utf8');
+    expect(publishedIdentity(latest)).not.toBe(publishedIdentity(prewarmed.stdout));
+    expect(readFileSync(join(publishedPath(latest), 'tree/node_modules/pkg/index.js'), 'utf8'))
+      .toBe('root-v2\n');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('WI-313670: an unseen exact ref can bind a cache-hit generation without an unbound after-manifest', () => {
     const integration = makeIntegration();
     const candidate = commitFixture(integration, 'cache-hit candidate');
@@ -2672,8 +2705,37 @@ exec /bin/cp "$@"
     expect(selected.stderr).toContain('has an invalid publication token');
   });
 
+  it('P-007: keeps root-lock private installs outside the declared workspace registry', () => {
+    const integration = makeIntegration();
+    writeFileSync(join(integration, 'package.json'), JSON.stringify({
+      name: 'fixture', private: true, workspaces: ['packages/*'],
+    }));
+    const privateTree = 'libs/former-workspace/node_modules/private';
+    mkdirSync(join(integration, privateTree), { recursive: true });
+    lockFixturePackage(integration, privateTree);
+    writeFileSync(join(integration, privateTree, 'index.js'), 'root-private-v1\n');
+
+    const result = publish(integration, {}, undefined, ['packages/a']);
+    expect(result.status, result.stderr).toBe(0);
+    const generation = publishedPath(result.stdout);
+    expect(readFileSync(join(generation, 'tree', privateTree, 'index.js'), 'utf8'))
+      .toBe('root-private-v1\n');
+    expect(existsSync(join(generation, 'tree/packages/a/node_modules/local'))).toBe(true);
+    expect(existsSync(join(generation, 'tree/packages/b/node_modules'))).toBe(false);
+
+    writeFileSync(join(integration, privateTree, 'index.js'), 'root-private-v2\n');
+    const changed = publish(integration, {}, undefined, ['packages/a']);
+    expect(changed.status, changed.stderr).toBe(0);
+    expect(publishedIdentity(changed.stdout)).not.toBe(publishedIdentity(result.stdout));
+    expect(readFileSync(join(publishedPath(changed.stdout), 'tree', privateTree, 'index.js'), 'utf8'))
+      .toBe('root-private-v2\n');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('P-007: publishes only root plus the selected workspace closure and binds it into identity', () => {
     const integration = makeIntegration();
+    writeFileSync(join(integration, 'package.json'), JSON.stringify({
+      name: 'fixture', private: true, workspaces: ['packages/*'],
+    }));
     const full = publish(integration);
     expect(full.status, full.stderr).toBe(0);
 
