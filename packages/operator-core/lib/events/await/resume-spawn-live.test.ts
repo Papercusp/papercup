@@ -85,9 +85,10 @@ describe('maintained real-client resume smoke isolation', () => {
   });
 
   it('preserves a silent client exit separately from deadline termination', () => {
-    const options = { cwd: process.cwd(), env: process.env, timeoutMs: 500 };
+    // Exercise plain Node, without the parent's test-harness startup loader.
+    const options = { cwd: process.cwd(), env: { ...process.env, NODE_OPTIONS: undefined }, timeoutMs: 500 };
     const exit = runResumeSmokeCommand(process.execPath, ['-e', 'process.exit(7)'], options);
-    expect(exit.code).toBe(7);
+    expect(exit.code, resumeSmokeFailureDetail(exit)).toBe(7);
     expect(exit.timedOut).toBe(false);
     expect(exit.signal).toBeNull();
     expect(exit.errorCode).not.toBe('ETIMEDOUT');
