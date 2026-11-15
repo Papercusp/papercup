@@ -62,7 +62,7 @@ describe('the runner population is real, and non-empty', () => {
     // regresses this collapses to [] or ['unknown'], and the whole guard goes quietly vacuous.
     const desktop = tasks.find((t) => t.workspace === '@papercusp/desktop' && t.script === 'test');
     expect(desktop, '@papercusp/desktop :: test disappeared from the task set').toBeDefined();
-    expect(desktop!.classes).toEqual(['bash-selftests', 'node-test']);
+    expect(desktop!.classes).toEqual(['bash-selftests', 'cargo', 'node-test']);
   });
 });
 

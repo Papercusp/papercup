@@ -52,6 +52,7 @@ export const TASK_ENTRY_SCRIPTS = ['test', 'lint:el-tools', 'test:integration', 
  */
 export const STANDALONE_PACKAGE_DIRS = [
   'papercusp-desktop',
+  'libs/generic/chat-cards',
   'libs/generic/sse',
   'libs/papercusp/packages/file-claim',
   'tools/perf-test/wdio',
