@@ -1,0 +1,164 @@
+/**
+ * WI-6554700010049220: the plan continuation verdict is reused only for the exact fenced
+ * revision, so a plan-bound write does not re-run the 7-60s readiness bundle per call
+ * (the native pre-tool hook wall is 1.5s). Exercised against the REAL operator cache.
+ */
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { setFlagOverridesForTest } from '@papercusp/flags/test';
+import { resetOperatorCacheForTests, _refreshCacheLayerForTests } from '../../cache/instance';
+import { __setCachedReadEnabledForTests, resetCachedReadStatsForTests } from '../../cache/cached-read';
+import { checkContinuationReadiness, PLAN_READINESS_PENDING, resetSettledReadinessRefusalsForTests,
+  type ContinuationReadinessDeps, type ReadinessFence } from './plan-continuation-readiness';
+import type { ExecutionPlanBinding, PlanExecutionTiming } from './plan-execution-guard';
+
+const WS = 'ws-readiness';
+const binding: ExecutionPlanBinding = { planSlug: 'plan-a', harnessSlug: 'papercusp' };
+
+beforeEach(async () => {
+  resetSettledReadinessRefusalsForTests();
+  resetOperatorCacheForTests();
+  resetCachedReadStatsForTests();
+  __setCachedReadEnabledForTests(true);
+  setFlagOverridesForTest({ 'papercusp-cache-layer': true });
+  await _refreshCacheLayerForTests();
+});
+
+afterEach(async () => {
+  __setCachedReadEnabledForTests(false);
+  setFlagOverridesForTest(null);
+  await _refreshCacheLayerForTests();
+  resetOperatorCacheForTests();
+  resetCachedReadStatsForTests();
+});
+
+function harness(initial: string[] = []) {
+  const state = { fence: { harnessSlug: 'papercusp', contentHash: 'h1', startSeq: 296, inputs: '3/44:2/t1' } as ReadinessFence | null,
+    verdict: initial, calls: 0, hang: false };
+  const deps: ContinuationReadinessDeps = {
+    readFence: async () => state.fence,
+    evaluate: async () => {
+      state.calls++;
+      if (state.hang) return new Promise<string[]>(() => { /* never settles */ });
+      return [...state.verdict];
+    },
+  };
+  return { state, deps };
+}
+
+describe('continuation readiness reuse (WI-6554700010049220)', () => {
+  it('reuses a positive verdict for the same fence without running the evaluator', async () => {
+    const { state, deps } = harness();
+    const timings: PlanExecutionTiming[] = [];
+    expect(await checkContinuationReadiness(binding, WS, t => timings.push(t), deps)).toEqual([]);
+    expect(state.calls).toBe(1);
+    // A warm call must not wait on the bundle at all: an evaluator that never settles
+    // would hang this call, which is exactly the hook-wall failure being prevented.
+    state.hang = true;
+    expect(await checkContinuationReadiness(binding, WS, t => timings.push(t), deps)).toEqual([]);
+    expect(state.calls).toBe(1);
+    expect(timings.some(t => t.stage === 'readiness_reused')).toBe(true);
+  });
+
+  it('misses when the plan revision or start changes', async () => {
+    const { state, deps } = harness();
+    await checkContinuationReadiness(binding, WS, undefined, deps);
+    state.fence = { ...state.fence!, contentHash: 'h2' };
+    await checkContinuationReadiness(binding, WS, undefined, deps);
+    expect(state.calls).toBe(2);
+    state.fence = { ...state.fence!, startSeq: 297 };
+    await checkContinuationReadiness(binding, WS, undefined, deps);
+    expect(state.calls).toBe(3);
+  });
+
+  it('re-evaluates when a plan audit or spec clause lands under the same revision and start', async () => {
+    // A revocation through plan_audits / plan_spec_clauses does not void the start, so the
+    // input fingerprint is what stops a cached positive verdict from masking it.
+    const { state, deps } = harness();
+    expect(await checkContinuationReadiness(binding, WS, undefined, deps)).toEqual([]);
+    state.fence = { ...state.fence!, inputs: '4/45:2/t1' };
+    state.verdict = ['activation_audit_stale'];
+    expect(await checkContinuationReadiness(binding, WS, undefined, deps)).toEqual(['activation_audit_stale']);
+    expect(state.calls).toBe(2);
+    state.fence = { ...state.fence!, inputs: '4/45:3/t2' };
+    state.verdict = ['spec_quality_not_current'];
+    expect(await checkContinuationReadiness(binding, WS, undefined, deps)).toEqual(['spec_quality_not_current']);
+    expect(state.calls).toBe(3);
+  });
+
+  it('never caches a refusal, so a repaired plan is admitted on the next call', async () => {
+    const { state, deps } = harness(['spec_quality_not_current']);
+    expect(await checkContinuationReadiness(binding, WS, undefined, deps)).toEqual(['spec_quality_not_current']);
+    state.verdict = [];
+    expect(await checkContinuationReadiness(binding, WS, undefined, deps)).toEqual([]);
+    expect(state.calls).toBe(2);
+  });
+
+  it('shares one evaluation across concurrent callers of the same revision', async () => {
+    const { state, deps } = harness();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const slow: ContinuationReadinessDeps = { ...deps, evaluate: async (...args) => { await gate; return deps.evaluate(...args); } };
+    const calls = Array.from({ length: 5 }, () => checkContinuationReadiness(binding, WS, undefined, slow));
+    release();
+    expect(await Promise.all(calls)).toEqual([[], [], [], [], []]);
+    expect(state.calls).toBe(1);
+  });
+
+  it('does not cache when the revision fence is unreadable', async () => {
+    const { state, deps } = harness();
+    state.fence = null;
+    await checkContinuationReadiness(binding, WS, undefined, deps);
+    await checkContinuationReadiness(binding, WS, undefined, deps);
+    expect(state.calls).toBe(2);
+  });
+
+  // EI-28849154189042602: a cold rebuild past the admission budget used to run inside
+  // kernel enforce until the ~55s dispatch deadline cancelled the write with no reason.
+  it('refuses with the retryable pending verdict at the budget, then admits the retry from the warmed cache', async () => {
+    const { state, deps } = harness();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const slow: ContinuationReadinessDeps = { ...deps, budgetMs: 20,
+      evaluate: async (...args) => { await gate; return deps.evaluate(...args); } };
+    const timings: PlanExecutionTiming[] = [];
+    expect(await checkContinuationReadiness(binding, WS, t => timings.push(t), slow)).toEqual([PLAN_READINESS_PENDING]);
+    expect(timings.some(t => t.stage === 'readiness_pending')).toBe(true);
+    release();
+    await gate;
+    await new Promise(resolve => setTimeout(resolve, 5));
+    // The background build finished and stored the positive verdict; no second evaluation.
+    expect(await checkContinuationReadiness(binding, WS, undefined, slow)).toEqual([]);
+    expect(state.calls).toBe(1);
+  });
+
+  it('holds a background-settled refusal for the retrying caller once, then re-evaluates', async () => {
+    const { state, deps } = harness(['spec_quality_not_current']);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const slow: ContinuationReadinessDeps = { ...deps, budgetMs: 20,
+      evaluate: async (...args) => { await gate; return deps.evaluate(...args); } };
+    expect(await checkContinuationReadiness(binding, WS, undefined, slow)).toEqual([PLAN_READINESS_PENDING]);
+    release();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    // The real blockers reach the retry without another evaluation (fail-closed either way).
+    expect(await checkContinuationReadiness(binding, WS, undefined, slow)).toEqual(['spec_quality_not_current']);
+    expect(state.calls).toBe(1);
+    // Consumed once: a repaired plan is re-evaluated on the following call.
+    state.verdict = [];
+    expect(await checkContinuationReadiness(binding, WS, undefined, slow)).toEqual([]);
+    expect(state.calls).toBe(2);
+  });
+
+  it('answers within the budget when it is not exceeded (no pending verdict)', async () => {
+    const { state, deps } = harness();
+    expect(await checkContinuationReadiness(binding, WS, undefined, { ...deps, budgetMs: 1_000 })).toEqual([]);
+    expect(state.calls).toBe(1);
+  });
+
+  it('keeps workspaces isolated', async () => {
+    const { state, deps } = harness();
+    await checkContinuationReadiness(binding, WS, undefined, deps);
+    await checkContinuationReadiness(binding, 'ws-other', undefined, deps);
+    expect(state.calls).toBe(2);
+  });
+});
