@@ -38,10 +38,20 @@ describe('retained native CUDA allocation cause', () => {
 function control(failureCode: number, successfulFailure = false, capacity = 4096) {
   const root = mkdtempSync(join(tmpdir(), 'cuda-allocation-control-')); roots.push(root);
   const output = join(root, 'receipt.json');
+  const stubRuntime = join(root, 'libcudart-stub.so');
+  writeFileSync(stubRuntime, 'deterministic CUDA ABI test fixture\n');
   // Execute the actual maintained fixture with a deterministic CUDA ABI stub.
   // The live GPU/tool qualification remains a separate measured receipt.
   const program = `
-import ctypes as c,sys,json
+import ctypes as c,sys,json,pathlib
+# The ABI is stubbed, so its fingerprint must describe the test fixture too.
+# Never require an installed host CUDA library for this model-free unit test.
+original_resolve=pathlib.Path.resolve
+def resolve_runtime(self,*args,**kwargs):
+ if str(self)=='/usr/lib/x86_64-linux-gnu/libcudart.so.12':
+  return original_resolve(pathlib.Path(${JSON.stringify(stubRuntime)}),*args,**kwargs)
+ return original_resolve(self,*args,**kwargs)
+pathlib.Path.resolve=resolve_runtime
 allocations=[]; frees=[]
 class Function:
  def __init__(self, fn): self.fn=fn
@@ -65,16 +75,18 @@ try: exec(compile(source,sys.argv[0],'exec'),{'__file__':sys.argv[0]})
 finally: print('ABI_CALLS '+json.dumps({'allocations':allocations,'frees':frees}))
 `;
   const result = spawnSync('/usr/bin/python3', ['-I', '-S', '-c', program], { encoding: 'utf8', timeout: 10000 });
-  return { result, output };
+  return { result, output, stubRuntime };
 }
 
 describe('model-free CUDA allocator diagnostic control', () => {
   it('requires an actual allocation error beyond total capacity, retains call clocks, and frees the small control', () => {
-    const { result, output } = control(2);
+    const { result, output, stubRuntime } = control(2);
     expect(result.status, result.stderr).toBe(0);
     const receipt = JSON.parse(readFileSync(output, 'utf8'));
     expect(receipt).toMatchObject({ returnCode: 2, requestedBytes: 8192, totalBytes: 4096,
       smallAllocationBytes: 32, modelInferencePerformed: false });
+    expect(receipt.cudaRuntime).toMatchObject({ path: stubRuntime,
+      sha256: createHash('sha256').update(readFileSync(stubRuntime)).digest('hex') });
     expect(BigInt(receipt.beforeClock.monotonicAfterNs)).toBeLessThanOrEqual(BigInt(receipt.afterClock.monotonicBeforeNs));
     expect(result.stdout).toContain('PC_CUDA_ALLOCATION_CONTROL\tstart');
     expect(result.stdout).toContain('PC_CUDA_ALLOCATION_CONTROL\tend');
