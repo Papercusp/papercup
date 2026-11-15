@@ -12,6 +12,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { getWorkItem, type WorkItem } from './work-items';
 import { ISSUE_FAMILY_KINDS_SQL_LIST } from './work-nature/agent-work-predicate';
 import { bodyRefWorkItemResolver } from './agent-tools/coordination/ref-hydrate-resolve';
+import type { getConversationStatesByIds } from './agent-tools/coordination/conversations';
 import {
   buildCarryBrief,
   assessHeldItemOwnership,
@@ -53,7 +54,7 @@ import { shortCarryHash, withCarryNoteWalls } from './carry-note';
 const carryConversationMocks = vi.hoisted(() => ({
   getConversation: vi.fn(),
   getConsultStates: vi.fn(),
-  getConversationStatesByIds: vi.fn(async () => []),
+  getConversationStatesByIds: vi.fn<typeof getConversationStatesByIds>(async () => []),
 }));
 
 vi.mock('./agent-tools/coordination/conversations', () => carryConversationMocks);
@@ -98,6 +99,8 @@ function fakeIssuesSql(
     taken_by?: string | null;
     workspace_id?: string | null;
     last_progress_at?: string | number | Date | null;
+    status?: string | null;
+    payload?: Record<string, unknown> | null;
   }>,
 ) {
   const sql = ((_strings: TemplateStringsArray, ..._vals: unknown[]) => Promise.resolve(rows)) as unknown as {
@@ -636,8 +639,10 @@ describe('note-citation hydration + post-note delta (cold-carry-system-hardening
     const refs = detectCarryNoteRefs('resume EI-258', held);
     expect(refs).toEqual([fullId]);
     expect(detectCarryNoteRefs('resume EI-258 (EI-25812519922184353)', held)).toEqual([fullId]);
+    const [heldRef] = refs;
+    if (heldRef?.kind !== 'work-item') throw new Error('expected the short EI token to resolve to a work-item ref');
     const sections = renderCitedRefLivenessSections([
-      `${refs[0]!.id} [bug/blocked @su-abc]: "active runtime blocker"`,
+      `${heldRef.id} [bug/blocked @su-abc]: "active runtime blocker"`,
     ]);
     expect(sections.join('\n')).toContain('EI-25812519922184353 [bug/blocked');
     expect(sections.join('\n')).not.toContain('STALE-NOTE CONTRADICTION');
