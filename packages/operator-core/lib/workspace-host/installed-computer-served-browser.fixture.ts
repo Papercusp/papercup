@@ -1,0 +1,500 @@
+/** Served Next Portal + installed operator acceptance, inside the existing
+ * machine-first private-PG runtime. One real private display and synthetic
+ * roster entries exercise pagination; the owner's account is never paired. */
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { openSync, closeSync } from 'node:fs';
+import { access, cp, copyFile, mkdir, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { chromium, type Browser } from 'playwright-core';
+import type { HostedHandler } from '../../../../apps/operator/bin/hosted-handler';
+
+type Input = {
+  repo: string; privateRoot: string; evidence: string; control: string; config: NodeJS.ProcessEnv;
+  origin: string; certPath: string; userId: string; orgId: string; hosted: HostedHandler;
+  freePort: () => Promise<number>;
+  stage: (phase: string) => Promise<void>;
+  waitFor: <T>(name: string, probe: () => Promise<T | false>, ms?: number) => Promise<T>;
+  start: (name: string, env: NodeJS.ProcessEnv, fixture?: { preload: string; args: string[] }) => ChildProcess;
+  routePortal: (handler: (request: Request) => Promise<Response>) => void;
+};
+
+export const INSTALLED_FIXTURE_DESKTOP_NAME = 'served-0192-live';
+
+/** Election is confined to the wrapper-owned, background-disabled process.
+ * The production singleton policy remains unchanged in every normal host. */
+export function installedHostFixtureScope(env: NodeJS.ProcessEnv) {
+  const workspaceId = env.PAPERCUSP_WORKSPACE_ID ?? '';
+  assert(workspaceId.startsWith('test-runtime-') && workspaceId.endsWith('-installed')
+    && env.PAPERCUSP_SKIP_PG_DISCOVERY === '1' && env.PAPERCUSP_BACKGROUND_WORKERS === '0'
+    && env.PAPERCUSP_DBOS_ENABLE === '0', 'Installed host fixture requires isolated operator-api scope');
+  const admin = new URL(env.HARNESS_ADMIN_DATABASE_URL ?? 'file:missing');
+  const app = new URL(env.HARNESS_DATABASE_URL ?? 'file:missing');
+  assert(['127.0.0.1', 'localhost'].includes(admin.hostname) && admin.host === app.host
+    && admin.pathname === app.pathname && admin.port === env.PAPERCUSP_PG_PORT,
+  'Installed host fixture requires wrapper-owned private database');
+  const port = Number(env.PAPERCUSP_HONO_PORT);
+  assert(Number.isInteger(port) && port > 0 && port < 65536, 'Installed host fixture requires explicit operator port');
+  assert(env.PAPERCUSP_HOME, 'Installed host fixture requires private home');
+  return { workspaceId, origin: `http://127.0.0.1:${port}`, home: env.PAPERCUSP_HOME };
+}
+
+export async function installedDesktopBinaries(root?: string) {
+  const binary = (name: string) => root ? join(root, 'usr/bin', name)
+    : execFileSync('which', [name], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  const server = binary('Xkasmvnc'), passwd = binary('kasmvncpasswd');
+  await Promise.all([access(server), access(passwd)]);
+  return { server, passwd };
+}
+
+function argument(name: string) {
+  const index = process.argv.indexOf(name);
+  return index < 0 ? undefined : process.argv[index + 1];
+}
+
+/** Preloaded by the SAME serve.ts child that owns the desktop lease map.
+ * No connector or media backend is replaced. Only private owner election is
+ * explicit because the request-only wrapper disables global background work. */
+async function runInstalledHostFixture(receiptPath: string) {
+  const scope = installedHostFixtureScope(process.env);
+  const server = argument('--installed-desktop-server'), passwd = argument('--installed-desktop-passwd');
+  assert(server && passwd && process.send, 'Installed host requires media binaries and an owned IPC channel');
+  const until = Date.now() + 120_000;
+  for (;;) {
+    try {
+      if ((await fetch(`${scope.origin}/api/health`, { signal: AbortSignal.timeout(2000) })).ok) break;
+    } catch { /* serve.ts has not bound yet. */ }
+    assert(Date.now() < until, 'Installed host boot deadline before desktop provisioning');
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  const { ensureDesktop, desktopSessionIdFor, releaseDesktop } = await import('../agent-tools/computer/desktop-lease');
+  const { defaultPortalRelayDeps, reconcilePortalRelay, startPortalRelayReconciler } = await import('../remote-access/relay-opt-in');
+  const { stopPortalRelayConnector } = await import('../remote-access/portal-relay-runtime');
+  const target = { scope: 'agent' as const, ownerId: 'private-installed-fixture', name: INSTALLED_FIXTURE_DESKTOP_NAME };
+  let cleanup: Promise<unknown> | undefined;
+  const release = () => cleanup ??= (async () => { stopPortalRelayConnector(); return releaseDesktop(target); })();
+  process.on('message', message => {
+    if ((message as { type?: string })?.type !== 'installed-fixture-release') return;
+    void release().then(() => process.send?.({ type: 'installed-fixture-released' }))
+      .catch(error => { console.error(error); process.exitCode = 1; });
+  });
+  process.once('disconnect', () => { void release(); });
+  const desktop = await ensureDesktop(target, { xServer: 'kasmvnc',
+    xServerBinaryPath: server, kasmvncPasswdBinaryPath: passwd,
+    credentialDir: join(scope.home, 'installed-desktop-credentials'),
+    width: 1024, height: 768, rootColor: '#194f72', apps: [['xterm', '-title', INSTALLED_FIXTURE_DESKTOP_NAME]],
+    launchedBy: target.ownerId });
+  const desktopSessionId = desktopSessionIdFor(target);
+  assert(desktopSessionId && desktop.endpoint && desktop.isAlive?.(), 'Real installed desktop must have a live lease and registry identity');
+  const deps = defaultPortalRelayDeps({ isConnectorOwner: () => true });
+  const reconciled = await reconcilePortalRelay(deps);
+  assert(['started', 'running'].includes(reconciled.action), `Private production relay failed: ${JSON.stringify(reconciled)}`);
+  startPortalRelayReconciler(deps);
+  await writeFile(receiptPath, JSON.stringify({ pid: process.pid, workspaceId: scope.workspaceId,
+    desktopSessionId, name: target.name, display: desktop.display, xServer: desktop.xServer,
+    endpoint: desktop.endpoint, relayAction: reconciled.action }), { mode: 0o600 });
+}
+
+export async function installedPortalSource(source: string | undefined): Promise<string> {
+  assert(source, 'Pass --portal-source-root or PAPERCUSP_PORTAL_SOURCE_ROOT for the maintained Portal checkout');
+  const portal = await realpath(source);
+  await Promise.all(['app/page.tsx', 'apps', 'packages', 'pot-app-seam', 'public', 'proxy.ts',
+    'instrumentation.ts', 'next.config.mjs', 'package.json', 'node_modules/next/dist/bin/next',
+    'next-env.d.ts', 'tsconfig.json'].map(entry => access(join(portal, entry))));
+  return portal;
+}
+
+type PortalReleaseIdentity = {
+  schemaVersion: number; buildId: string; release: string; sourceRoot: string;
+  sourceRootDigest: string; publishedAt: string; buildProvenance: unknown;
+};
+
+/** Bind the artifact to the source being tested, rather than fabricating a
+ * release manifest for Next dev or silently accepting an older deployment. */
+export function validateInstalledPortalRelease(portal: string, releaseRoot: string,
+  identity: PortalReleaseIdentity, currentDigest: string) {
+  assert(identity.schemaVersion === 2 && identity.sourceRoot === portal,
+    'Installed acceptance requires a maintained release from this Portal checkout');
+  assert(identity.release === basename(releaseRoot) && /^[A-Za-z0-9._-]+$/.test(identity.release)
+    && identity.buildId.trim() && Number.isFinite(Date.parse(identity.publishedAt)),
+  'Installed acceptance requires an immutable Portal release identity');
+  assert(/^[a-f0-9]{64}$/.test(identity.sourceRootDigest) && identity.sourceRootDigest === currentDigest,
+    'Installed Portal release is stale relative to the current source');
+  assert(identity.buildProvenance, 'Installed Portal release requires maintained build provenance');
+  return { ...identity, releaseRoot, releasesDir: dirname(releaseRoot), entry: join(releaseRoot, 'standalone-entry.mjs') };
+}
+
+export async function installedPortalRelease(portal: string, source?: string) {
+  assert(source, 'Pass --portal-release-root for the maintained immutable Portal artifact');
+  const root = await realpath(source);
+  const identity = JSON.parse(await readFile(join(root, '.papercusp-release.json'), 'utf8')) as PortalReleaseIdentity;
+  const integrity = await import(pathToFileURL(join(portal, 'scripts/source-integrity.mjs')).href);
+  const fingerprint = await integrity.fingerprintReleaseSource(portal);
+  const release = validateInstalledPortalRelease(portal, root, identity, fingerprint.rootDigest);
+  await access(release.entry);
+  await integrity.assertBuildProvenance(identity.buildProvenance, root, identity.sourceRootDigest);
+  return release;
+}
+
+/** Native node children honor the committed-source loader. Refuse before
+ * private-PG boot when the intended rig/transport would be replaced or denied. */
+export async function assertInstalledRuntimeSource(repo: string) {
+  const paths = [
+    'packages/operator-core/lib/workspace-host/machine-first-browser-runtime.fixture.ts',
+    'packages/operator-core/lib/workspace-host/installed-computer-served-browser.fixture.ts',
+    'packages/operator-core/lib/workspace-host/byoc-sealed-channel.ts',
+    'packages/operator-core/lib/workspace-host/sodium-browser.cjs',
+    'apps/operator/app/cloud-workspaces/installed-computer-connection.ts',
+    'packages/operator-core/lib/remote-access/relay-opt-in.ts',
+    'packages/operator-core/lib/remote-access/portal-relay-runtime.ts',
+  ];
+  const pending: string[] = [];
+  for (const path of paths) {
+    try {
+      const committed = execFileSync('git', ['show', `HEAD:${path}`], { cwd: repo, stdio: ['ignore', 'pipe', 'ignore'] });
+      if (!committed.equals(await readFile(join(repo, path)))) pending.push(path);
+    } catch { pending.push(path); }
+  }
+  assert.deepEqual(pending, [], `Native served runtime requires maintained source sync before execution: ${pending.join(', ')}`);
+}
+
+/** A health route does not compile Next's document. Fully consume the actual
+ * entry before browser acceptance; a wrong route or dead server is terminal. */
+export async function waitForPortalDocument(child: ChildProcess, url: string, timeoutMs = 180_000) {
+  const until = Date.now() + timeoutMs;
+  let last = 'connection not ready';
+  while (Date.now() < until) {
+    assert(child.pid && child.exitCode === null && child.signalCode === null,
+      `Private Next exited (${child.exitCode ?? child.signalCode}); inspect retained log`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), until - Date.now());
+    const onExit = () => controller.abort();
+    child.once('exit', onExit); child.once('error', onExit);
+    let response: Response | undefined, html = '';
+    try {
+      response = await fetch(url, { signal: controller.signal, redirect: 'manual' });
+      html = await response.text();
+    } catch (error) {
+      last = error instanceof Error ? error.message : String(error);
+      response = undefined;
+    } finally {
+      clearTimeout(timer); child.off('exit', onExit); child.off('error', onExit);
+    }
+    assert(child.exitCode === null && child.signalCode === null,
+      `Private Next exited (${child.exitCode ?? child.signalCode}); inspect retained log`);
+    if (response) {
+      assert.equal(response.status, 200, `Portal document HTTP ${response.status}: ${html.slice(0, 300)}`);
+      assert(/<html[\s>]/i.test(html) && /<\/html>/i.test(html), 'Portal entry must be a complete HTML document');
+      return { url, status: response.status, bytes: Buffer.byteLength(html) };
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error(`Portal document readiness deadline: ${last}`);
+}
+
+export async function runInstalledComputerServedBrowser(input: Input) {
+  const { repo, privateRoot, evidence, control, origin, certPath, userId, orgId, hosted, stage, waitFor } = input;
+  await stage('installed-prerequisites');
+  const sourceArg = process.argv.indexOf('--portal-source-root');
+  const portal = await installedPortalSource(sourceArg >= 0 ? process.argv[sourceArg + 1]
+    : process.env.PAPERCUSP_PORTAL_SOURCE_ROOT);
+  const binaries = await installedDesktopBinaries(argument('--kasmvnc-root'));
+  const releaseRoot = argument('--portal-release-root');
+  const release = releaseRoot ? await installedPortalRelease(portal, releaseRoot) : undefined;
+  const portalDatabase = input.config.HARNESS_ADMIN_DATABASE_URL;
+  assert(portalDatabase && ['127.0.0.1', 'localhost'].includes(new URL(portalDatabase).hostname),
+    'Portal requires the wrapper-owned private database');
+  const { getOrgPg, withHostedServiceContext, withWorkspace } = await import('@papercusp/db-org');
+  const { PostgresHostedCliStore } = await import('../endpoint-route/routes/hosted-cli/store');
+  const cli = new PostgresHostedCliStore(withHostedServiceContext, fn => withWorkspace(control, fn), control);
+  await stage('installed-linked-identity');
+  const installId = 'inst-private-served-browser';
+  const linked = await cli.upsertLinkedWorkspace({ organizationId: orgId, installId,
+    displayName: 'Private installed computer', userId, at: new Date() });
+  const gateway = hosted.plane.components.connectorGateway!;
+  const enrollment = await gateway.enroll({ controlPlaneWorkspaceId: control, organizationId: orgId,
+    customerWorkspaceId: linked.customerWorkspaceId, hostId: linked.hostId,
+    routeLabel: linked.routeLabel, transport: 'websocket' });
+  const credential = await gateway.register(enrollment.ticket);
+  assert(credential, 'Private linked connector must enroll through the production gateway');
+  const port = await input.freePort(), guiPort = await input.freePort(), nextPort = await input.freePort();
+  const localOrigin = `http://127.0.0.1:${port}`, guiOrigin = `http://127.0.0.1:${guiPort}`;
+  const localWorkspace = `${control}-installed`, workspaces = join(privateRoot, 'installed-workspaces');
+  await mkdir(join(workspaces, localWorkspace), { recursive: true });
+  await writeFile(join(workspaces, 'registry.json'), JSON.stringify({ current: localWorkspace,
+    workspaces: [{ id: localWorkspace, name: 'Private installed workspace', createdAt: Date.now() }] }));
+  const { ensurePortalRelayRow, recordPortalRelayConsent, savePortalRelayLinked } = await import('../remote-access/portal-relay-store');
+  const { PORTAL_RELAY_NOTICE_VERSION } = await import('../remote-access/relay-notice');
+  await ensurePortalRelayRow({ installId, portalOrigin: origin });
+  await recordPortalRelayConsent({ noticeVersion: PORTAL_RELAY_NOTICE_VERSION, by: userId });
+  await savePortalRelayLinked({ userId, organizationId: orgId, customerWorkspaceId: linked.customerWorkspaceId,
+    appBaseUrl: `${origin}/apps/${linked.customerWorkspaceId}`, connectorUrl: origin.replace('https:', 'wss:') + '/api/hosted/connectors/socket',
+    connectorBearer: credential.bearer, operatorPort: port });
+  const hostReceiptPath = `${evidence}-installed-host.json`;
+  const local = input.start('installed', { ...process.env,
+    PAPERCUSP_HONO_PORT: String(port), PORT: String(port),
+    PAPERCUSP_WORKSPACE: localWorkspace, PAPERCUSP_WORKSPACE_ID: localWorkspace,
+    PAPERCUSP_WORKSPACES_ROOT: workspaces,
+    OPERATOR_E2E_BASE_URL: guiOrigin, OPERATOR_BASE_URL: guiOrigin, NODE_EXTRA_CA_CERTS: certPath }, {
+    preload: 'packages/operator-core/lib/workspace-host/installed-computer-served-browser.fixture.ts',
+    args: ['--installed-host-receipt', hostReceiptPath, '--installed-desktop-server', binaries.server,
+      '--installed-desktop-passwd', binaries.passwd],
+  });
+  assert(local.pid && local.pid !== process.pid, 'Installed operator must be a separate process');
+  await stage('installed-operator-ready');
+  await waitFor('installed operator', async () => {
+    const response = await fetch(`${localOrigin}/api/remote-access/portal-relay`);
+    return response.ok && (await response.json()).relay.state === 'linked';
+  });
+  const hostReceipt = await waitFor('installed desktop and production reconciler', async () => {
+    try { return JSON.parse(await readFile(hostReceiptPath, 'utf8')) as {
+      pid: number; workspaceId: string; desktopSessionId: string; name: string; xServer: string };
+    } catch { return false; }
+  });
+  assert.equal(hostReceipt.pid, local.pid, 'Relay and live desktop must belong to the separate installed operator');
+  assert.equal(hostReceipt.workspaceId, localWorkspace);
+  assert.equal(hostReceipt.xServer, 'kasmvnc');
+  // The adapter sorts by session id. Seed ids below the actual lease id so
+  // the live display is deterministically beyond three complete roster pages.
+  const { registerDesktopSession, markDesktopReady } = await import('../desktop/desktop-session-registry');
+  const desktopIds: string[] = [hostReceipt.desktopSessionId];
+  const realId = BigInt(`0x${hostReceipt.desktopSessionId.replace(/-/g, '')}`);
+  assert(realId > 192n, 'Fixture desktop id must leave room for inventory ids');
+  for (let index = 0; index < 192; index++) {
+    const hex = (realId - BigInt(index + 1)).toString(16).padStart(32, '0');
+    const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    const row = await registerDesktopSession({ id, workspaceId: localWorkspace, kind: 'xvfb-local', scope: 'agent',
+      scopeRef: `private-installed-agent-${index}`, name: `served-${String(index).padStart(4, '0')}`,
+      display: `:${20000 + index}`, displayGeometry: { width: 1024, height: 768 }, ownerPid: local.pid });
+    await markDesktopReady(row.id); desktopIds.push(row.id);
+  }
+  const liveRosterIndex = [...desktopIds].sort().indexOf(hostReceipt.desktopSessionId);
+  assert.equal(liveRosterIndex, 192, 'Live media acceptance must require roster continuation');
+  const session = await hosted.plane.components.sessionStore.create({ userId, organizationId: orgId,
+    workspaceId: linked.customerWorkspaceId, permissionVersion: 1, upstreamProvider: 'private-installed-browser',
+    upstreamSessionId: installId, expiresAt: new Date(Date.now() + 30 * 60_000) });
+  const { HOSTED_SESSION_COOKIE } = await import('../auth/hosted-session');
+  const project = join(privateRoot, 'installed-portal-next');
+  await mkdir(project, { recursive: true });
+  // Reuse the Portal's maintained web-host isolation pattern. Never link its
+  // .env.local: only the wrapper-owned database and private auth config enter.
+  if (!release) {
+    await cp(join(portal, 'app'), join(project, 'app'), { recursive: true });
+    for (const entry of ['apps', 'packages', 'pot-app-seam', 'public', 'proxy.ts', 'instrumentation.ts',
+      'next.config.mjs', 'package.json', 'node_modules']) await symlink(join(portal, entry), join(project, entry));
+    for (const entry of ['next-env.d.ts', 'tsconfig.json']) await copyFile(join(portal, entry), join(project, entry));
+  }
+  const fd = openSync(`${evidence}-portal-next.log`, 'w', 0o600);
+  const next = spawn(process.execPath, release ? [release.entry] : [join(portal, 'node_modules/next/dist/bin/next'),
+    'dev', '--webpack', '-H', '127.0.0.1', '-p', String(nextPort)], {
+    cwd: release?.releaseRoot ?? project, detached: true, stdio: ['ignore', fd, fd], env: { ...input.config,
+      PORT: String(nextPort), HOSTNAME: '127.0.0.1',
+      PORTAL_HOME: join(project, '.portal-home'), PORTAL_LOCAL_MODE: '0',
+      PORTAL_DATABASE_URL: portalDatabase,
+      PORTAL_HOSTED_CONTROL_PLANE_ORIGIN: origin, PORTAL_OPERATOR_ORIGIN: localOrigin,
+      NODE_EXTRA_CA_CERTS: certPath, NEXT_TELEMETRY_DISABLED: '1' },
+  });
+  // Keep spawn errors observable even if they arrive before readiness starts.
+  let nextError: Error | undefined;
+  next.on('error', error => { nextError = error; });
+  closeSync(fd);
+  let browser: Browser | undefined, gui: import('vite').ViteDevServer | undefined;
+  try {
+    await stage('installed-portal-document-ready');
+    const nextOrigin = `http://127.0.0.1:${nextPort}`;
+    assert(!nextError, nextError?.message);
+    const portalDocument = await waitForPortalDocument(next, `${nextOrigin}/?app=desktops`);
+    input.routePortal(async request => {
+      const url = new URL(request.url);
+      const headers = new Headers(request.headers); headers.delete('host');
+      return fetch(new Request(nextOrigin + url.pathname + url.search, { method: request.method, headers,
+        ...(!['GET', 'HEAD'].includes(request.method) ? { body: await request.arrayBuffer() } : {}),
+        signal: request.signal, redirect: 'manual' }));
+    });
+    const { createServer } = await import('vite');
+    process.env.PAPERCUSP_API_TARGET = localOrigin;
+    gui = await createServer({ root: join(repo, 'apps/operator-vite'),
+      configFile: join(repo, 'apps/operator-vite/vite.config.ts'), configLoader: 'runner',
+      cacheDir: join(privateRoot, 'installed-vite-cache'), server: {
+        host: '127.0.0.1', port: guiPort, strictPort: true, hmr: false, watch: null,
+        // Preserve the real browser origin through the private same-origin
+        // proxy so the production local-only consent guard executes unchanged.
+        proxy: { '/api': { target: localOrigin, ws: true, changeOrigin: false } },
+      } });
+    await stage('installed-local-gui-ready');
+    await gui.listen();
+    const guiDocument = await fetch(guiOrigin);
+    assert.equal(guiDocument.status, 200, 'Actual local operator GUI must serve its entry');
+    await guiDocument.text();
+    if (release) {
+      await stage('installed-portal-executor-fixture');
+      const storageStatePath = join(privateRoot, 'installed-portal-storage.json');
+      await writeFile(storageStatePath, JSON.stringify({ cookies: [{ name: HOSTED_SESSION_COOKIE,
+        value: hosted.plane.components.sessionCookieCodec.encode(session.id), domain: new URL(origin).hostname,
+        path: '/', expires: -1, secure: true, httpOnly: true, sameSite: 'Lax' }], origins: [] }), { mode: 0o600 });
+      const fixturePath = `${evidence}-portal-fixture.json`;
+      const stoppedOrigin = `http://127.0.0.1:${await input.freePort()}`;
+      await writeFile(fixturePath, JSON.stringify({ portalOrigin: origin, localOrigin: guiOrigin, stoppedOrigin,
+        controlWorkspaceId: control, workspaceId: linked.customerWorkspaceId, hostId: linked.hostId,
+        hostName: 'Private installed computer', installedHostPid: local.pid,
+        desktopNameAfterFirstPage: hostReceipt.name, desktopCount: desktopIds.length,
+        releasesDir: release.releasesDir, buildId: release.buildId, sourceRootDigest: release.sourceRootDigest,
+        storageStatePath }), { mode: 0o600 });
+      const { runPortalPlaywrightChecks } = await import('../rubrics-playwright-checks');
+      const previousFixture = process.env.PORTAL_LOCAL_CONNECTION_FIXTURE;
+      process.env.PORTAL_LOCAL_CONNECTION_FIXTURE = fixturePath;
+      let executor;
+      try {
+        await stage('installed-maintained-portal-playwright');
+        executor = await runPortalPlaywrightChecks({ root: portal,
+          files: ['e2e/portal-existing-local-connection.spec.ts'],
+          runId: `installed-portal-${basename(privateRoot)}-${Date.now()}`,
+          actorId: argument('--portal-actor-id'), workspaceId: argument('--portal-ledger-workspace'),
+          harnessSlug: argument('--portal-ledger-harness'), timeoutMs: 7 * 60_000 });
+      } finally {
+        if (previousFixture === undefined) delete process.env.PORTAL_LOCAL_CONNECTION_FIXTURE;
+        else process.env.PORTAL_LOCAL_CONNECTION_FIXTURE = previousFixture;
+      }
+      await writeFile(`${evidence}-portal-executor.json`, JSON.stringify(executor, null, 2));
+      assert(executor.ok && executor.passed === 2 && executor.failed === 0 && executor.skipped === 0
+        && executor.testRunIds?.length, `Maintained Portal executor failed: ${JSON.stringify(executor)}`);
+      const state = await (await fetch(`${localOrigin}/api/remote-access/portal-relay`)).json();
+      assert.equal(state.relay.desktop.grant, null, 'Portal executor must revoke its private grant');
+      assert(state.relay.linked, 'Desktop revocation must preserve the installation link');
+      const rows = await getOrgPg().sql`SELECT id FROM harness_shared.customer_workspaces
+        WHERE workspace_id=${control} AND linked_install_id=${installId} AND organization_id=${orgId}::uuid`;
+      assert.equal(rows.length, 1, 'Maintained Portal journey must reuse the linked installation');
+      return { status: 'passed', portalEngine: 'Next/Playwright', portalDocument,
+        artifact: { buildId: release.buildId, sourceRootDigest: release.sourceRootDigest, releaseRoot: release.releaseRoot },
+        executor, installedHost: hostReceipt, operatorPid: local.pid, desktopRegistryCount: desktopIds.length,
+        liveRosterIndex, linkedWorkspaceCount: rows.length, fixturePath,
+        limitations: ['One private live display plus synthetic inventory; no owner account pairing', 'Mutation/BAR proof remains separate'] };
+    }
+    browser = await chromium.launch({ channel: 'chrome', headless: true });
+    const context = await browser.newContext({ ignoreHTTPSErrors: true });
+    await context.addCookies([{ name: HOSTED_SESSION_COOKIE,
+      value: hosted.plane.components.sessionCookieCodec.encode(session.id), url: origin,
+      secure: true, httpOnly: true, sameSite: 'Lax' }]);
+    const page = await context.newPage();
+    const errors: string[] = [];
+    const wire: Array<{ type: string; contentType?: string | null }> = [];
+    page.on('websocket', socket => {
+      if (!new URL(socket.url()).pathname.includes('/hosted/')) return;
+      socket.on('framesent', event => {
+        try { const frame = JSON.parse(String(event.payload)); wire.push({ type: frame.type, contentType: frame.contentType }); }
+        catch { errors.push('Non-JSON hosted browser frame'); }
+      });
+    });
+    page.on('pageerror', error => errors.push(error.message));
+    await stage('installed-portal-browser');
+    await page.goto(`${origin}/?app=desktops&ws=${encodeURIComponent(linked.customerWorkspaceId)}&desktopHost=${encodeURIComponent(linked.hostId)}`,
+      { waitUntil: 'domcontentloaded' });
+    await page.getByRole('button', { name: 'Connect your computer', exact: true }).first().click();
+    await page.getByLabel('Papercusp app address').fill(guiOrigin);
+    const code = page.getByLabel('Public connection code');
+    await code.waitFor();
+    await page.waitForFunction(() => !!document.querySelector<HTMLTextAreaElement>('textarea[readonly]')?.value);
+    const publicCode = await code.inputValue();
+    const beforeKey = await page.evaluate(() => localStorage.getItem('papercusp.installed-computer.browser-seed.v1'));
+    assert(beforeKey, 'Real Portal must establish a persistent browser Noise identity');
+    const popupEvent = page.waitForEvent('popup');
+    await page.getByRole('button', { name: 'Open Papercusp', exact: true }).click();
+    const popup = await popupEvent;
+    await stage('installed-local-consent');
+    await popup.getByTestId('portal-desktop-grant').waitFor({ timeout: 120_000 });
+    assert.equal(await popup.getByRole('button', { name: 'Approve desktop access', exact: true }).isDisabled(), true);
+    assert.equal(await popup.getByLabel('Portal connection code', { exact: true }).inputValue(), publicCode);
+    await popup.getByRole('checkbox', { name: 'Allow this browser to view desktops', exact: true }).click();
+    assert.equal(await popup.getByRole('checkbox', { name: 'Also allow keyboard and mouse control', exact: true }).isChecked(), false);
+    const receiptResponse = popup.waitForResponse(response => response.url().endsWith('/api/remote-access/portal-relay/desktop-grant')
+      && response.request().method() === 'POST');
+    await popup.getByRole('button', { name: 'Approve desktop access', exact: true }).click();
+    const receipt = await receiptResponse;
+    assert.equal(receipt.status(), 200, await receipt.text());
+    const saved = await receipt.json();
+    assert.equal(saved.relay.desktop.grant.control, false);
+    assert.equal(saved.relay.desktop.grant.userId, userId);
+    assert.equal(saved.relay.desktop.grant.localWorkspaceId, localWorkspace);
+    await page.getByText('Approval saved.', { exact: false }).waitFor();
+    const connectAndWatch = async () => {
+      const connection = page.getByRole('region', { name: 'Installed computer Private installed computer', exact: true });
+      await connection.getByRole('button', { name: 'Connect', exact: true }).click();
+      await waitFor('installed Noise discovery channel', async () => /live/.test(await connection.getByRole('status').innerText()));
+      const grid = page.getByRole('region', { name: 'Desktop grid', exact: true });
+      await waitFor('complete 193-entry roster', async () => /193 desktops/.test(await grid.getByRole('status').innerText()));
+      await grid.getByRole('searchbox', { name: 'Filter desktops', exact: true }).fill(hostReceipt.name);
+      await grid.getByRole('button').filter({ hasText: hostReceipt.name }).first().click();
+      const viewer = page.getByRole('region', { name: `Desktop viewer for ${hostReceipt.name}`, exact: true });
+      await waitFor('live private desktop stream', async () => await viewer.getAttribute('data-state') === 'connected');
+      assert.equal(await viewer.getAttribute('data-input-allowed'), 'false');
+      await viewer.getByText('Keyboard/pointer: watch-only', { exact: true }).waitFor();
+      // Inspect the real canvas rather than mistaking an RFB handshake for a
+      // received screen. The private provisioner's blue root must be present.
+      await page.waitForFunction(name => {
+        const canvas = document.querySelector<HTMLCanvasElement>(`[aria-label="Desktop viewer for ${name}"] canvas`);
+        if (!canvas || !canvas.width || !canvas.height) return false;
+        const context = canvas.getContext('2d');
+        if (!context) return false;
+        const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        for (let i = 0; i < pixels.length; i += 4) if (pixels[i] === 25 && pixels[i + 1] === 79 && pixels[i + 2] === 114 && pixels[i + 3] === 255) return true;
+        return false;
+      }, hostReceipt.name);
+    };
+    await stage('installed-roster-media-watch-only');
+    await connectAndWatch();
+    await stage('installed-portal-reload');
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    assert.equal(await page.evaluate(() => localStorage.getItem('papercusp.installed-computer.browser-seed.v1')), beforeKey);
+    await stage('installed-roster-media-recovery');
+    await connectAndWatch();
+    await page.screenshot({ path: `${evidence}-portal.png`, fullPage: true });
+    await popup.screenshot({ path: `${evidence}-local-consent.png`, fullPage: true });
+    assert.deepEqual(errors, []);
+    assert(wire.some(frame => frame.contentType === 'desktop.roster'), 'Browser must exercise real sealed discovery');
+    assert(wire.every(frame => frame.type === 'sealed.packet'), 'No plaintext application frames may reach the relay');
+    await popup.getByRole('button', { name: 'Revoke desktop access', exact: true }).click();
+    await waitFor('desktop grant revocation', async () => {
+      const state = await (await fetch(`${localOrigin}/api/remote-access/portal-relay`)).json();
+      return state.relay.desktop.grant === null && state.relay.linked !== null;
+    });
+    const sql = getOrgPg().sql;
+    const rows = await sql`SELECT id FROM harness_shared.customer_workspaces
+      WHERE workspace_id=${control} AND linked_install_id=${installId} AND organization_id=${orgId}::uuid`;
+    assert.equal(rows.length, 1, 'Approval and reload must reuse the original linked installation');
+    return { status: 'passed', portalEngine: 'Next/Chromium', portalDocument, operatorPid: local.pid,
+      desktopRegistryCount: desktopIds.length, linkedWorkspaceCount: rows.length,
+      browserIdentitySha256: createHash('sha256').update(beforeKey).digest('hex'),
+      viewOnlyConsent: true, grantId: saved.relay.desktop.grant.id,
+      installedHost: hostReceipt, liveRosterIndex, mediaFrame: true, reloadRecovery: true, sealedWire: true,
+      limitations: ['Synthetic inventory plus one private live display; no owner account pairing', 'Mutation/BAR proof remains separate'] };
+  } finally {
+    await browser?.close(); await gui?.close();
+    if (local.connected && local.exitCode === null && local.signalCode === null) {
+      await new Promise<void>((resolve, reject) => {
+        const done = (message: unknown) => {
+          if ((message as { type?: string })?.type !== 'installed-fixture-released') return;
+          clearTimeout(timer); local.off('message', done); resolve();
+        };
+        const timer = setTimeout(() => { local.off('message', done); reject(new Error('Installed desktop release deadline')); }, 10_000);
+        local.on('message', done); local.send({ type: 'installed-fixture-release' });
+      });
+    }
+    if (next.pid) {
+      try { process.kill(-next.pid, 'SIGTERM'); } catch { /* Already exited. */ }
+      const until = Date.now() + 5000;
+      while (next.exitCode === null && next.signalCode === null && Date.now() < until)
+        await new Promise(resolve => setTimeout(resolve, 50));
+      try { process.kill(-next.pid, 'SIGKILL'); } catch { /* Whole group exited. */ }
+    }
+  }
+}
+
+const installedHostReceipt = argument('--installed-host-receipt');
+if (installedHostReceipt) {
+  void runInstalledHostFixture(installedHostReceipt).catch(error => {
+    console.error('[installed-host-fixture]', error);
+    process.exit(1);
+  });
+}

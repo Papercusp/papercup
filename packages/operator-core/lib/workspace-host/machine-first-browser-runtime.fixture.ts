@@ -29,7 +29,9 @@ assert(process.env.PAPERCUSP_SKIP_PG_DISCOVERY === '1' && control.startsWith('te
 assert(['127.0.0.1', 'localhost'].includes(admin.hostname) && admin.host === appDb.host
   && admin.pathname === appDb.pathname && admin.port === process.env.PAPERCUSP_PG_PORT,
   'Requires the wrapper-owned private database');
-const evidence = process.env.MACHINE_FIRST_RUNTIME_EVIDENCE ?? '/tmp/machine-first-two-target-runtime';
+const evidenceArg = process.argv.indexOf('--evidence');
+const evidence = evidenceArg >= 0 ? resolve(process.argv[evidenceArg + 1])
+  : process.env.MACHINE_FIRST_RUNTIME_EVIDENCE ?? '/tmp/machine-first-two-target-runtime';
 const privateRoot = join(process.env.HOME!, 'machine-first-two-targets');
 await mkdir(privateRoot, { recursive: true, mode: 0o700 });
 const containerSsh = process.env.MACHINE_FIRST_RUNTIME_CONTAINER_SSH === '1';
@@ -67,10 +69,13 @@ async function freePort() {
   await new Promise<void>(resolve => server.close(() => resolve()));
   return port;
 }
-function start(name: string, env: NodeJS.ProcessEnv) {
+function start(name: string, env: NodeJS.ProcessEnv, fixture?: { preload: string; args: string[] }) {
   const fd = openSync(`${evidence}-${name}.log`, 'w', 0o600);
-  const child = spawn(process.execPath, ['--import', 'tsx', 'apps/operator/bin/serve.ts'],
-    { cwd: repo, env: { ...env, PAPERCUSP_USE_EMBEDDED_PG: '0' }, stdio: ['ignore', fd, fd] });
+  const child = spawn(process.execPath, ['--import', 'tsx',
+    ...(fixture ? ['--import', join(repo, fixture.preload)] : []),
+    'apps/operator/bin/serve.ts', ...(fixture?.args ?? [])],
+    { cwd: repo, env: { ...env, PAPERCUSP_USE_EMBEDDED_PG: '0' },
+      stdio: fixture ? ['ignore', fd, fd, 'ipc'] : ['ignore', fd, fd] });
   closeSync(fd);
   child.on('error', () => { stopping = true; });
   children.push({ name, process: child });
@@ -92,6 +97,7 @@ async function waitFor<T>(name: string, probe: () => Promise<T | false>, ms = 12
 let server: import('node:https').Server | undefined;
 let hosted: Awaited<ReturnType<typeof import('../../../../apps/operator/bin/hosted-handler').createHostedHandlerFromEnvironment>> | undefined;
 let localGui: import('vite').ViteDevServer | undefined;
+let portalFetch: ((request: Request) => Promise<Response>) | undefined;
 try {
   await stage('source-census');
   const sourcePaths = [
@@ -132,7 +138,8 @@ try {
   await stage('hosted-handler-compose');
   hosted = await createHostedHandlerFromEnvironment(config);
   const { publicManualHostedUpgradeHeaders } = await import('../llm-testing/public-manual-hosted-fixture');
-  server = serve({ fetch: hosted.handler, port, hostname: '127.0.0.1', createServer: httpsServer,
+  server = serve({ fetch: request => portalFetch && !new URL(request.url).pathname.startsWith('/api/hosted/')
+    ? portalFetch(request) : hosted!.handler(request), port, hostname: '127.0.0.1', createServer: httpsServer,
     serverOptions: { key: await readFile(keyPath), cert: await readFile(certPath) } }) as import('node:https').Server;
   server.on('upgrade', (req, socket, head) => {
     req.headers = publicManualHostedUpgradeHeaders(req, origin);
@@ -149,6 +156,15 @@ try {
   await sql`INSERT INTO papercusp_auth.organization_memberships
     (organization_id, user_id, role, status, authority, created_via)
     VALUES (${orgId}::uuid, ${userId}::uuid, 'owner', 'active', 'papercusp', 'organization_bootstrap')`;
+  if (process.argv.includes('--installed-browser')) {
+    const { runInstalledComputerServedBrowser } = await import('./installed-computer-served-browser.fixture');
+    status.installedBrowser = await runInstalledComputerServedBrowser({
+      repo, privateRoot, evidence, control, config, origin, certPath, userId, orgId, hosted,
+      freePort, stage, waitFor, start,
+      routePortal: handler => { portalFetch = handler; },
+    });
+    status.status = 'passed';
+  } else {
   const targets: Array<{ label: string; hostId: string; workspaceId: string; organizationId: string; origin: string;
     home: string; workspaceRoot: string; pid: number | undefined }> = [];
   for (const label of ['a', 'b']) {
@@ -351,12 +367,25 @@ try {
   console.log(JSON.stringify({ status: 'ready', evidence: `${evidence}.json`, origin, localOrigin,
     targets: targets.map(({ hostId, workspaceId }) => ({ hostId, workspaceId })) }));
   if (!process.argv.includes('--smoke')) while (!stopping) await delay(500);
+  }
 } catch (error) {
   status.status = 'failed'; status.error = error instanceof Error ? error.message : 'runtime failed';
   process.exitCode = 1;
 } finally {
   clearTimeout(deadline);
   await localGui?.close();
+  // Even an early readiness failure must release the installed child's actual
+  // desktop scopes before serve.ts handles SIGTERM and exits.
+  for (const child of children) if (child.process.connected && child.process.exitCode === null && child.process.signalCode === null) {
+    await new Promise<void>(resolve => {
+      const done = (message: unknown) => {
+        if ((message as { type?: string })?.type !== 'installed-fixture-released') return;
+        clearTimeout(timer); child.process.off('message', done); resolve();
+      };
+      const timer = setTimeout(() => { child.process.off('message', done); resolve(); }, 10_000);
+      child.process.on('message', done); child.process.send({ type: 'installed-fixture-release' });
+    });
+  }
   for (const child of children) child.process.kill('SIGTERM');
   await delay(1500);
   for (const child of children) if (child.process.exitCode === null && child.process.signalCode === null)
