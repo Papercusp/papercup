@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { PassThrough, Writable } from 'node:stream';
+import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -231,7 +232,11 @@ it.each(['http', 'auto'])('carries the downstream listed generation across the r
     stderr: 'pipe',
   });
   let diagnostics = '';
-  transport.stderr?.on('data', chunk => { diagnostics += String(chunk); });
+  // Piped SDK stderr is a PassThrough, exposed as the base Stream type.
+  createTextCollector(transport.stderr as NodeJS.ReadableStream | null, {
+    retainText: false,
+    onDecodedText: text => { diagnostics += text; },
+  });
   const client = new Client({ name: 'legacy-metadata-free-client', version: '1' });
   try {
     await client.connect(transport, { timeout: 30_000 });
