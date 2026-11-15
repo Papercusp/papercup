@@ -31,7 +31,10 @@ for (const key of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'
   assert.equal(process.env[key], undefined, key + ' must not enter the private runtime');
 }
 
-const expectedSourceHashes = JSON.parse(process.env.SCORECARDS_EXPECTED_SOURCE_HASHES!) as Record<string, string>;
+// The isolated runtime deliberately filters custom environment variables.
+const sourceHashesArgument = process.argv[2];
+assert.ok(sourceHashesArgument, 'scorecards source hashes must be supplied as a JSON argument');
+const expectedSourceHashes = JSON.parse(sourceHashesArgument) as Record<string, string>;
 const sourceHashes = Object.fromEntries(Object.entries(expectedSourceHashes).map(([path, expected]) => {
   const actual = createHash('sha256').update(readFileSync(resolve(root, path))).digest('hex');
   assert.equal(actual, expected, 'source changed between parent snapshot and isolated child: ' + path);
@@ -46,7 +49,9 @@ const rubricRef = 'scorecards-list-result-door-isolated';
 const sourceHive = 'scorecards-list-result-door-isolated';
 const rowCount = 100;
 const evidenceChars = 2_000;
-const args = { rubricRef, sourceHive, limit: rowCount, detail: 'full' as const, payloadTier: 'full' as const };
+// These synthetic rows exercise history transport and carry no finalization evidence.
+const args = { rubricRef, sourceHive, historyMode: 'review-history' as const,
+  limit: rowCount, detail: 'full' as const, payloadTier: 'full' as const };
 const targetRunId = randomUUID();
 const outerRunId = randomUUID();
 const context = {
