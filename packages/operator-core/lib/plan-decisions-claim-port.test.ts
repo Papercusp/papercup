@@ -139,6 +139,39 @@ describe('getClaimTimePlanDecisions (agent-trap-guards-2026-07-26 P-003b)', () =
     expect(renderPlanDecisionsNote(r!)).not.toContain('8 MOST RECENT');
   });
 
+  it('offers exact decision reads for a task instead of requesting the whole decision history', async () => {
+    mockGetPlanRow.mockResolvedValueOnce({
+      content: PLAN_WITH_MANY_DECISIONS.replace('Body of early ruling 1.', 'P-003 must preserve the selected route.'),
+    });
+    const r = await getClaimTimePlanDecisions({ workItem: workItemWithPlan('busy-plan') });
+    const note = renderPlanDecisionsNote(r!);
+    expect(note).toContain('plans:get {"slug":"busy-plan","decisionIds":["D-001","D-006","D-007","D-008","D-009","D-010","D-011","D-012"]}');
+    expect(note).not.toContain("heading:'Decisions'");
+    expect(note).toContain('busy-plan#D-002, busy-plan#D-003, busy-plan#D-004, busy-plan#D-005');
+    expect(note).toContain('Resolve omitted authority separately');
+  });
+
+  it('keeps exact reads source-qualified when governing plans reuse a decision id', async () => {
+    mockGetPlanRow.mockResolvedValueOnce({
+      content: PLAN_WITH_DECISIONS.replace('Code removal alone', 'P-003 must preserve the selected route. Code removal alone'),
+      workspaceId: 'ws-1', harnessSlug: 'papercusp', planSlug: 'target-plan',
+    });
+    const r = await getClaimTimePlanDecisions({
+      planSlug: 'target-plan', planItemIds: ['P-003'],
+      lookupAffectedDecisions: async () => ({
+        decisions: [{ planSlug: 'parent-plan', decisionId: 'D-001',
+          title: 'Parent authority', body: 'P-003 must retain the original author.' }],
+        totalDecisions: 1,
+      }),
+      loadProvenance: async (_scope, ids) => new Map(ids.map(id => [id, { kind: 'unrecorded' as const }])),
+    });
+    const note = renderPlanDecisionsNote(r!);
+    expect(note).toMatch(/^⚠ CROSS-PLAN AUTHORITY CONFLICT\/SUPERSESSION WARNING:/);
+    expect(note).toContain('plans:get {"slug":"parent-plan","decisionIds":["D-001"]}');
+    expect(note).toContain('plans:get {"slug":"target-plan","decisionIds":["D-001","D-002"]}');
+    expect(note).not.toContain("heading:'Decisions'");
+  });
+
   it('matches the complete paperwork authority history and omission manifest in claim decisions', async () => {
     // R19 candidate oracle: literal expected values are independent of the selector.
     // A passing execution is not outside-lineage review of this exact fixture.

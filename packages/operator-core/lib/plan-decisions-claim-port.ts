@@ -356,9 +356,19 @@ export function renderPlanDecisionsNote(brief: ClaimTimePlanDecisionsBrief): str
 
   if (brief.taskLinkedDecisions) {
     const omitted = brief.totalDecisions - brief.decisions.length;
+    const decisionsByPlan = new Map<string, string[]>();
+    for (const decision of brief.decisions) {
+      const sourcePlan = decision.sourcePlanSlug ?? brief.planSlug;
+      const ids = decisionsByPlan.get(sourcePlan) ?? [];
+      if (!ids.includes(decision.id)) ids.push(decision.id);
+      decisionsByPlan.set(sourcePlan, ids);
+    }
+    const fullDecisionReads = [...decisionsByPlan].map(([slug, decisionIds]) =>
+      `plans:get ${JSON.stringify({ slug, decisionIds })}`).join('; ');
     return authorityWarning + `Showing ${brief.decisions.length} of ${brief.totalDecisions} governing decision(s), prioritized as affected-plan authority, task-linked local rulings, then recent local rulings. Recency breaks ties within each scope; excerpts do not establish absence of other restrictions. ` +
       (omitted > 0 ? `${omitted} decision(s) are NOT shown. Omitted local refs${brief.omittedDecisionRefsTruncated ? ' (bounded)' : ''}: ${(brief.omittedDecisionRefs ?? []).join(', ')}. ` : '') +
-      `Read full bodies and remaining authority: plans:get { slug:'${brief.planSlug}', heading:'Decisions' }.`;
+      `Read full surfaced decisions: ${fullDecisionReads}.` +
+      (omitted > 0 ? ' Resolve omitted authority separately before treating this window as complete for the item.' : '');
   }
 
   if (brief.totalAffectedDecisions > 0) {
