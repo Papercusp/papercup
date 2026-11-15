@@ -651,7 +651,7 @@ export default defineTool({
       },
     },
     returns:
-      "Default summary retains services, MCP handshake, effective counts, rootCause, nextVerb, compact supervision, and one shared flap-counter caveat. `details` gives the exact arguments to request a fresh complete snapshot with detail:'full', including configured/evidence and every original supervision field. With `unitsOnly:true`, the result contains only `{ ok, snapshotMode:'units-only', unitStates, unitsUnknown, scopesUnavailable, healthPhaseTimingsMs }`; this mode requires `units` and avoids unrelated snapshot probes. `healthPhaseTimingsMs` reports measured wall time for each independently awaited handler phase; absent optional phases were not requested or not entered. `dhtUniverse.warnings` flags a product host off the public DHT outside a drill. The unit fields appear when `units` is requested; read `unitsUnknown` before treating an inactive `unitStates` entry as a stopped unit. On a failed service, `wedged:true` plus `acceptQueue` means a listener exists but its event loop is blocked; `down` means no listener. PID/port/TCP liveness cannot overrule a failed probe. Missing `wedged` is unknown. Capture logs before restarting a wedged service, because restart destroys the evidence.",
+      "Common result fields include `{ ok, snapshotMode?, dhtUniverse?, healthPhaseTimingsMs, unitStates?, unitsUnknown?, scopesUnavailable? }`. Default summary retains services, MCP handshake, effective counts, rootCause, nextVerb, compact supervision, and one shared flap-counter caveat. `details` gives the exact arguments to request a fresh complete snapshot with detail:'full', including configured/evidence and every original supervision field. With `unitsOnly:true`, the result contains only `{ ok, snapshotMode:'units-only', unitStates, unitsUnknown, scopesUnavailable, healthPhaseTimingsMs }`; this mode requires `units` and avoids unrelated snapshot probes. `healthPhaseTimingsMs` reports measured wall time for each independently awaited handler phase; absent optional phases were not requested or not entered. `dhtUniverse.warnings` flags a product host off the public DHT outside a drill. The unit fields appear when `units` is requested; read `unitsUnknown` before treating an inactive `unitStates` entry as a stopped unit. On a failed service, `wedged:true` plus `acceptQueue` means a listener exists but its event loop is blocked; `down` means no listener. PID/port/TCP liveness cannot overrule a failed probe. Missing `wedged` is unknown. Capture logs before restarting a wedged service, because restart destroys the evidence.",
     seeAlso: [
       "dev:restart (restart a down service)",
       "dev:pg_health (Postgres health specifically)",
@@ -728,6 +728,8 @@ export default defineTool({
   // authored return shape machine-verifiable (EI-211111).
   result: z
     .object({
+      ok: z.boolean(),
+      snapshotMode: z.enum(['summary', 'units-only']).optional(),
       configured: z.unknown().optional(),
       effective: z.unknown().optional(),
       evidence: z.unknown().optional(),
