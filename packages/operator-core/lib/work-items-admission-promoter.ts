@@ -3931,7 +3931,7 @@ async function persistAdmissionLinks(
   }
 }
 
-type MergeEndpointRole = 'loser' | 'canonical' | 'reference' | 'promote' | 'hold';
+export type MergeEndpointRole = 'loser' | 'canonical' | 'reference' | 'promote' | 'hold';
 
 /**
  * Roles for which an overdue claimed re-review row is NOT protected by its claim
@@ -3974,7 +3974,7 @@ function applicableTerminalCompletion(snapshot: AdmissionMergeSnapshot): boolean
   return isSufficientEvidence(completionEvidence as Parameters<typeof isSufficientEvidence>[0]);
 }
 
-interface EndpointProtectionOptions {
+export interface EndpointProtectionOptions {
   /** Internal exact-subject review purpose, renewed transactionally; never merge authority. */
   admissionReview?: boolean;
   requireImplementationReadiness?: boolean;
@@ -3991,9 +3991,18 @@ interface EndpointProtectionOptions {
   readOnlyAgentParkComparison?: boolean;
   /** Signed component screening may inspect a narrowly typed human-blocked reference, never mutate it. */
   readOnlyHumanBlockerComparison?: boolean;
+  /**
+   * WI-6554700010049117: reviewed cleanup only, canonical role only. It is set solely by
+   * reviewedCleanupCanonicalProtection when isUnboundPlanTwinPair holds. The merge writer
+   * never changes the canonical's status or claim, and it spreads the canonical's prior
+   * payload, so _claimHold survives. That makes 'claimed', 'claim-held', a 'blocked' state
+   * (not needs-human) and non-human external blockers safe to look past. Every other
+   * protection still applies.
+   */
+  absorbUnboundPlanTwin?: boolean;
 }
 
-function endpointProtection(
+export function endpointProtection(
   snapshot: AdmissionMergeSnapshot,
   role: MergeEndpointRole,
   options: EndpointProtectionOptions = {},
@@ -4024,9 +4033,12 @@ function endpointProtection(
     admissionReviewCustodyEligible(snapshot);
   const readOnlyHumanBlockerComparison = role === 'reference' &&
     options.readOnlyHumanBlockerComparison === true && qualifiedHumanBlockerComparison(snapshot);
+  // WI-6554700010049117: see EndpointProtectionOptions.absorbUnboundPlanTwin.
+  const absorbTwin = role === 'canonical' && options.absorbUnboundPlanTwin === true;
   if (
     !terminalTwin &&
     snapshot.assignee &&
+    !absorbTwin &&
     !explicitReview &&
     !overdueClaimedReview &&
     !(role === 'reference' && options.readOnlyClaimedComparison)
@@ -4034,13 +4046,14 @@ function endpointProtection(
     return { reason: 'claimed', detail: `${role} ${snapshot.id} is claimed by ${snapshot.assignee}` };
   }
   if (!terminalTwin && String(payload._claimHold) === 'true' &&
+      !absorbTwin &&
       !explicitReview &&
       !(role === 'reference' && options.readOnlyAgentParkComparison && qualifiedAgentPark(snapshot))) {
     return { reason: 'claim-held', detail: `${role} ${snapshot.id} carries payload._claimHold` };
   }
   if (
     (snapshot.state === 'blocked' || snapshot.state === 'needs-human') &&
-    !(snapshot.state === 'blocked' && overdueClaimedReview)
+    !(snapshot.state === 'blocked' && (overdueClaimedReview || absorbTwin))
     && !explicitReview && !readOnlyHumanBlockerComparison
   ) {
     return { reason: 'blocked-state', detail: `${role} ${snapshot.id} is ${snapshot.state}` };
@@ -4100,6 +4113,7 @@ function endpointProtection(
   // retain their protections.
   const blockers = activeExternalBlockers(snapshot.payload).filter((blocker) =>
     !(readOnlyHumanBlockerComparison && blocker.kind === 'human') &&
+    !(absorbTwin && blocker.kind !== 'human') &&
     (!terminalTwin || blocker.kind === 'human' || blocker.capability !== 'live-dependency') &&
     !((overdueClaimedReview || explicitReview) && blocker.kind === 'runtime' && blocker.capability === 'live-dependency' &&
       blocker.capabilitySource === 'explicit' &&
@@ -4184,6 +4198,32 @@ function alreadyMergedByThisRun(snapshot: AdmissionMergeSnapshot, canonicalId: s
   if (!ALL_TERMINAL_STATUSES.has(snapshot.state)) return false;
   const merge = recordValue(recordValue(snapshot.payload).admissionMerge);
   return merge.canonicalId === canonicalId && merge.runId === runId;
+}
+
+/**
+ * WI-6554700010049117: a stale plans:start / declare-intent mint left an unbound,
+ * unclaimed twin beside the plan-line node of the same plan item. Reviewed cleanup may
+ * absorb that twin INTO the node even while an agent holds the node.
+ */
+export function isUnboundPlanTwinPair(
+  loser: AdmissionMergeSnapshot,
+  canonical: AdmissionMergeSnapshot,
+): boolean {
+  if (ALL_TERMINAL_STATUSES.has(loser.state) || ALL_TERMINAL_STATUSES.has(canonical.state)) return false;
+  if (loser.assignee || String(recordValue(loser.payload)._claimHold) === 'true') return false;
+  if (loser.planLine?.lineId || !canonical.planLine?.lineId) return false;
+  if (!loser.sourcePlanSlug || loser.sourcePlanSlug !== canonical.sourcePlanSlug) return false;
+  const canonicalItems = new Set(canonical.sourcePlanItemIds);
+  return loser.sourcePlanItemIds.some((itemId) => canonicalItems.has(itemId));
+}
+
+/** Canonical-endpoint options for one reviewed cleanup pair. Preview and persist share it. */
+export function reviewedCleanupCanonicalProtection(
+  loser: AdmissionMergeSnapshot,
+  canonical: AdmissionMergeSnapshot,
+  base: EndpointProtectionOptions,
+): EndpointProtectionOptions {
+  return isUnboundPlanTwinPair(loser, canonical) ? { ...base, absorbUnboundPlanTwin: true } : base;
 }
 
 function snapshotIdentityProblem(
@@ -4826,7 +4866,11 @@ async function buildReviewedAdmissionCleanupPreview(
     } else {
       const protectionOptions = { requireImplementationReadiness: true, reviewedEvidenceReady: true };
       const candidateProblem = endpointProtection(item, 'loser', protectionOptions);
-      const canonicalProblem = endpointProtection(canonical!, 'canonical', protectionOptions);
+      const canonicalProblem = endpointProtection(
+        canonical!,
+        'canonical',
+        reviewedCleanupCanonicalProtection(item, canonical!, protectionOptions),
+      );
       const pairProblem = candidateProblem || canonicalProblem ? null : mergePairProtection(item, canonical!);
       for (const [endpointId, problem] of [
         [proposal.itemId, candidateProblem],
@@ -5847,11 +5891,15 @@ async function persistAdmissionPlanInTransaction(
     }
     const capturedCanonical = capturedById.get(disposition.canonicalId);
     const liveCanonical = liveById.get(disposition.canonicalId);
+    // WI-6554700010049117: grant the same canonical exemption the reviewed-cleanup preview did.
+    const canonicalOptions = protectionOptions(disposition.canonicalId);
     const canonicalProblem = snapshotIdentityProblem(
       capturedCanonical,
       liveCanonical,
       'canonical',
-      protectionOptions(disposition.canonicalId),
+      input.reviewedCleanupBindings?.has(disposition.itemId) && liveLoser && liveCanonical
+        ? reviewedCleanupCanonicalProtection(liveLoser, liveCanonical, canonicalOptions)
+        : canonicalOptions,
     );
     if (canonicalProblem) {
       registerRefusal(disposition.itemId, disposition.canonicalId, canonicalProblem);

@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   admissionEndpointBlock,
   admissionPairKey,
+  endpointProtection,
+  isUnboundPlanTwinPair,
+  reviewedCleanupCanonicalProtection,
   applyClaimedReReviewHolds,
   prescreenPromoterWindow,
   type AdmissionMergeSnapshot,
@@ -553,6 +556,58 @@ describe('responsePayload', () => {
 // are residue no later tick can lift. Measured live on 2026-10-20: EI-26282407214531658 sat
 // `deferred: review-gated` behind dropped EI-24515847775093700, whose agentReview was still
 // `pending`, on every promoter tick — the pending row could never be judged or admitted.
+describe('reviewed cleanup absorbs an unbound plan twin into its plan-line node (WI-6554700010049117)', () => {
+  const planLine = (lineId: string | null) => ({
+    planSlug: 'plan-a', lineId, seq: 1, phase: null, importance: null, decisionRefs: null,
+    deliverable: null, ownerGateMarker: null, text: null,
+  });
+  const snap = (id: string, overrides: Partial<AdmissionMergeSnapshot> = {}): AdmissionMergeSnapshot => ({
+    id, workspaceId: 'ws', harnessSlug: 'h', title: `${id} title`, summary: `${id} summary`,
+    state: 'open', kind: 'change', admission: 'admitted', admittedAt: null, admittedBy: null,
+    conditionKey: null, createdAtMs: 1, updatedAtMs: 1, origin: 'local', assignee: null, payload: {},
+    completionRef: null, terminalCompletionRef: null, terminalOwner: null, terminalReason: null,
+    closedAtMs: null, completionAuthority: null, sourcePlanSlug: 'plan-a', sourcePlanItemIds: ['P-001'],
+    seeAlso: [], incomingSeeAlso: [], dependencies: [], fingerprint: id,
+    ...overrides,
+  });
+  const twin = (overrides: Partial<AdmissionMergeSnapshot> = {}) => snap('twin', overrides);
+  const node = (overrides: Partial<AdmissionMergeSnapshot> = {}) =>
+    snap('node', { planLine: planLine('line-1'), assignee: 'su-holder', payload: { _claimHold: 'true' }, ...overrides });
+  const base = { requireImplementationReadiness: true, reviewedEvidenceReady: true };
+  const canonicalProblem = (loser: AdmissionMergeSnapshot, canonical: AdmissionMergeSnapshot) =>
+    endpointProtection(canonical, 'canonical', reviewedCleanupCanonicalProtection(loser, canonical, base));
+
+  it('absorbs an unbound, unclaimed twin into a claimed, claim-held plan-line node', () => {
+    expect(isUnboundPlanTwinPair(twin(), node())).toBe(true);
+    expect(canonicalProblem(twin(), node())).toBeNull();
+    expect(canonicalProblem(twin(), node({ state: 'blocked' }))).toBeNull();
+  });
+
+  it('keeps the claim protection for every pair that is not an unbound plan twin', () => {
+    const pairs: Array<[AdmissionMergeSnapshot, AdmissionMergeSnapshot]> = [
+      [twin({ planLine: planLine('line-2') }), node()],
+      [twin({ assignee: 'su-other' }), node()],
+      [twin({ payload: { _claimHold: 'true' } }), node()],
+      [twin({ sourcePlanSlug: 'plan-b' }), node()],
+      [twin({ sourcePlanItemIds: ['P-002'] }), node()],
+      [twin({ state: 'done' }), node()],
+      [twin(), node({ planLine: planLine(null) })],
+    ];
+    for (const [loser, canonical] of pairs) {
+      expect(isUnboundPlanTwinPair(loser, canonical)).toBe(false);
+      expect(canonicalProblem(loser, canonical)?.reason).toBe('claimed');
+    }
+  });
+
+  it('keeps every other canonical protection and never exempts the loser role', () => {
+    expect(canonicalProblem(twin(), node({ state: 'needs-human' }))?.reason).toBe('blocked-state');
+    const pendingReview = { status: 'pending', submittedBy: 'su-test', ledgerIdeaId: 'idea-1', round: 1 };
+    expect(canonicalProblem(twin(), node({ payload: { _claimHold: 'true', agentReview: pendingReview } }))?.reason)
+      .toBe('review-gated');
+    expect(endpointProtection(node(), 'loser', { ...base, absorbUnboundPlanTwin: true })?.reason).toBe('claimed');
+  });
+});
+
 describe('admission endpoint protection — terminal twins', () => {
   const pendingReview = { status: 'pending', submittedBy: 'su-test', ledgerIdeaId: 'idea-1', round: 1 };
   const executionBlocker = {
