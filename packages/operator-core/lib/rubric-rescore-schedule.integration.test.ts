@@ -101,8 +101,18 @@ it('grading schedule set arm and fire revalidate current persisted policy', asyn
       }
       return { data: { rows: await h.sql.unsafe(args.sql) } };
     };
-    const fired = await runRubricRescoreAction({ workspaceId: WS,
-      triggerConfig: routine.trigger_config, payloadTemplate: { input: scheduledInput } } as never, { dispatchTool });
+    const fired = await (async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = await runRubricRescoreAction({ workspaceId: WS,
+          triggerConfig: routine.trigger_config, payloadTemplate: { input: scheduledInput } } as never, { dispatchTool });
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining(
+          '[bounded-timeout] continuity-probe:dev:pg_query failed: division by zero'));
+        return result;
+      } finally {
+        warn.mockRestore();
+      }
+    })();
     expect(fired.softError).toContain('1 of 2 probe criteria unjudged');
     const scorecard = (fired.diagnostics as { rubricRescore: { scorecardPublication: { status: string; issueId?: string } } })
       .rubricRescore.scorecardPublication;
