@@ -1644,12 +1644,21 @@ type AppliedStackDependencies = {
  * applied receipt remains a canonical refusal input, with its exact launch
  * record; it must never disappear or be replaced by the desired artifact. No
  * liveness claim or selected-library join is implied by this source adapter.
+ * Digest-only retention runs the SAME receipt resolution and hashes the SAME
+ * complete inputs, but releases their payloads after each member. The joined
+ * inventory needs only those digests and layer pins; retaining every compiled
+ * prompt and launch record would make its memory grow with their total size.
+ * This mode is inventory evidence, not a saved permission-replay snapshot.
  */
 export async function readIdopP001AppliedStackPopulation(
   workspaceId: string,
   dependencies?: AppliedStackDependencies,
+  options: { payloads: 'retained' | 'digests-only' } = { payloads: 'retained' },
 ) {
   if (!workspaceId.trim() || workspaceId !== workspaceId.trim()) throw new Error('IDOP applied stacks require a workspace');
+  if (options.payloads !== 'retained' && options.payloads !== 'digests-only') {
+    throw new Error('IDOP applied stacks require an explicit payload retention mode');
+  }
   const receiptSource = loadIdopP001RolePermissionReader({ root,
     revision: 'working-tree', testingFullAccess: 'off' });
   const { appliedOrCurrentIdentityArtifact, selectAppliedReceipt, resolveIdentityArtifact, identityWearerRole } =
@@ -1679,7 +1688,8 @@ export async function readIdopP001AppliedStackPopulation(
       const resolution = resolveIdentityArtifact(
         raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {}, anchor.applied);
       if (resolution.kind === 'stale-artifact') {
-        refused.push({ ...anchor, resolution, launchRecord, recordSha256 });
+        refused.push({ ...anchor, resolution, recordSha256,
+          ...(options.payloads === 'retained' ? { launchRecord } : {}) });
         continue;
       }
       const artifact = appliedOrCurrentIdentityArtifact(raw, anchor.applied);
@@ -1689,17 +1699,18 @@ export async function readIdopP001AppliedStackPopulation(
       if (stack !== undefined && (!Array.isArray(stack) || stack.some(ref => typeof ref !== 'string' || !ref.trim()))) {
         throw new Error(`IDOP malformed applied stack: ${anchor.ownerId}`);
       }
-      stacks.push({ ...anchor, role: identityWearerRole(raw), launchRecord, recordSha256,
+      stacks.push({ ...anchor, role: identityWearerRole(raw), recordSha256,
         explicitStack: (stack ?? []) as string[],
         artifactSha256: sha256(JSON.stringify(artifact)),
         layers: artifact.inputs.filter(input => input.kind === 'blueprint-layer')
           .map(({ ref, revision, contentHash, sourceKind }) => ({ ref, revision, contentHash, sourceKind })),
-        artifact });
+        ...(options.payloads === 'retained' ? { launchRecord, artifact } : {}) });
     }
     if (comparisonJson(anchors) !== comparisonJson(await snapshot())) {
       throw new Error('IDOP applied anchors changed during enumeration');
     }
     return { scope: 'workspace-persisted-applied-anchors' as const, workspaceId,
+      payloads: options.payloads,
       receiptSources: receiptSource.sources, receiptFunctions: receiptSource.hostFunctions,
       includesInactiveAnchors: true as const, livenessMeasured: false as const, stacks, refused };
   };

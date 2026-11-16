@@ -137,4 +137,24 @@ describe('IDOP D-043 persisted applied population (real PostgreSQL)', () => {
     expect(await readIdopP001AppliedStackPopulation('idop-population-empty'))
       .toMatchObject({ stacks: [], includesInactiveAnchors: true, livenessMeasured: false });
   });
+
+  it('keeps the real SQL applied/history selection and refusals identical with digest-only retention', async () => {
+    const workspace = 'idop-population-digests';
+    const owner = 'su-idop-population-digests';
+    await anchor(workspace, owner, { applied: pair });
+    await anchor(workspace, 'su-idop-population-digests-refused', { applied: pair });
+    await launch(workspace, owner, { role: 'judge', specificationRevision: desired.specificationRevision,
+      stateRevision: '2'.repeat(64), specificationArtifact: desired,
+      stack: ['domain:population-desired'], identityHistory: [receipt] }, true);
+    const full = await readIdopP001AppliedStackPopulation(workspace);
+    const compact = await readIdopP001AppliedStackPopulation(workspace, undefined, { payloads: 'digests-only' });
+    expect(compact).toEqual({ ...full, payloads: 'digests-only',
+      stacks: full.stacks.map(({ launchRecord: _record, artifact: _artifact, ...member }) => member),
+      refused: full.refused.map(({ launchRecord: _record, ...member }) => member) });
+    expect(compact.stacks[0]).toMatchObject({ role: 'judge', applied: pair,
+      explicitStack: ['domain:population-applied'], artifactSha256: full.stacks[0].artifactSha256 });
+    expect(compact.stacks[0]).not.toHaveProperty('artifact');
+    expect(compact.refused).toMatchObject([{ ownerId: 'su-idop-population-digests-refused',
+      resolution: { kind: 'stale-artifact', reason: 'receipt-missing' } }]);
+  });
 });
