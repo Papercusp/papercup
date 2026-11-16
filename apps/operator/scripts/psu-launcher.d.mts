@@ -1628,6 +1628,14 @@ export function applyOmpOperatorOrigin(mcpJsonText: any, operatorUrl: any): any;
  *  non-superuser server, or unparseable input is left unchanged. Pure; exported for tests. */
 export function applyOmpOperatorBearer(mcpJsonText: any, bearer: any): any;
 /**
+ * EI-28843330270014450: reconnect can consume Claude's MCP URL verbatim.
+ * Materialize the current launch environment into this owner's isolated copy,
+ * keeping the global template available for the next launch or carry-respawn.
+ */
+export function materializePsuClaudeMcpConfig(env: any, { home }?: {
+    home?: string | undefined;
+}): boolean;
+/**
  * Probe an OMP session's operator MCP endpoint without requiring auth or a
  * valid MCP request. Any HTTP response proves that a listener is serving the
  * route; connection and timeout failures are the only unavailable states.
@@ -1928,7 +1936,7 @@ export function gatewayPinEnv(account: string, provider?: string, ownerId?: stri
  * account. So never emit '' / null / `default` on a path whose intent is "the machine's own login":
  * emit `system`. (That is why the picker's default row carries `system`.)
  */
-export function accountRoutingMode(value: any): "auto" | "pin" | "default";
+export function accountRoutingMode(value: any): "pin" | "default" | "auto";
 /**
  * Return whether raw Codex auth.json content contains a usable ChatGPT access
  * token. Pure and secret-free: this only parses the shape needed by the Codex
@@ -2630,7 +2638,7 @@ export function preflightWindowGuard({ personaBytes, contextSize, model, agent, 
     agent?: string | undefined;
     budget?: null | undefined;
 }): {
-    level: "warn" | "ok" | "refuse";
+    level: "refuse" | "ok" | "warn";
     pct: number;
     estTokens: number;
     window: number;
@@ -2682,7 +2690,7 @@ export function runLaunchPreflight({ promptFile, contextSize, model, agent, budg
     budget?: null | undefined;
     force: any;
 }): {
-    level: "warn" | "ok" | "refuse";
+    level: "refuse" | "ok" | "warn";
     pct: number;
     estTokens: number;
     window: number;
