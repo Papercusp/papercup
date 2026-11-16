@@ -664,12 +664,15 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     expect(f.deps.sleep).toHaveBeenCalledTimes(1);
   });
 
-  it('stops readiness retries when the caller aborts', async () => {
+  it.each([
+    ['unknown', null],
+    ['recoverable', { status: 'unready' as const, reason: 'connection-error' as const, errorCode: 'ECONNREFUSED' }],
+  ])('stops readiness retries when the caller aborts a %s probe', async (_reason, result) => {
     const f = fixture();
     const controller = new AbortController();
     f.deps.probe = vi.fn(async () => {
       controller.abort();
-      return { status: 'unready' as const, reason: 'connection-error' as const, errorCode: 'ECONNREFUSED' };
+      return result;
     });
 
     const error = await ensureGradingAuditRuntime({ ...f.input, signal: controller.signal }, f.deps).catch(error => error);
@@ -678,6 +681,8 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     expect(error.diagnostic).toMatchObject({ attempts: 1, stopReason: 'caller-aborted' });
     expect(f.deps.probe).toHaveBeenCalledTimes(1);
     expect(f.deps.sleep).not.toHaveBeenCalled();
+    expect(f.deps.stop).not.toHaveBeenCalled();
+    expect(f.rows[0]?.state).toBe('running');
   });
 
   it('retains the last measured probe reason after the bounded startup window', async () => {

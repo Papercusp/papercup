@@ -15,7 +15,7 @@ import { killTask } from '../lib/task-manager/control';
 import { SCOPE_HANDOFF_GRACE_MS, SCOPE_HANDOFF_RECHECK_MS } from '../lib/task-manager/managed-spawn';
 import { getTask, listTasks } from '../lib/task-manager/store';
 import { isTerminalState, type TaskRow } from '../lib/task-manager/types';
-import { ensureGradingAuditRuntime, retireUnusedGradingAuditRuntimes, type GradingAuditRuntimeDeps,
+import { ensureGradingAuditRuntime, GradingAuditRuntimeReadinessError, retireUnusedGradingAuditRuntimes, type GradingAuditRuntimeDeps,
   type GradingAuditRuntimeLocator } from '../lib/release/grading-audit-runtime';
 import { readGradingAuditSourcePin } from '../lib/release/grading-audit-source-pin';
 import { archivePrivateOperatorApiBuild, assertPrivateManagedTaskRoute, preparePrivateHttpWorkspaces, preparePrivateOperatorApiBundle, privateGitCloneBundleEnv,
@@ -111,12 +111,12 @@ async function acquireReady(input: Parameters<typeof ensureGradingAuditRuntime>[
   let enrolled = expectedTaskId;
   for (;;) {
     try {
-      const binding = await ensureGradingAuditRuntime(input, deps);
+      const binding = await ensureGradingAuditRuntime({ ...input, deadlineAtMs: deadline }, deps);
       taskIds.add(binding.taskId);
       if (enrolled) assert.equal(binding.taskId, enrolled, 'readiness retry replaced the enrolled endpoint');
       return binding;
     } catch (error) {
-      if (!(error instanceof Error) || error.message !== 'Audit runtime readiness is unknown') throw error;
+      if (!(error instanceof GradingAuditRuntimeReadinessError)) throw error;
       const tasks = await listTasks({ workspaceId: workspace, labelPrefix: 'grading-audit-runtime:', limit: 200 });
       assert.equal(tasks.length, 1, 'unknown readiness must retain exactly one live endpoint');
       const task = tasks[0];
@@ -132,6 +132,23 @@ async function acquireReady(input: Parameters<typeof ensureGradingAuditRuntime>[
       await new Promise(done => setTimeout(done, 250));
     }
   }
+}
+
+async function assertBoundedUnknownReadiness(input: Parameters<typeof ensureGradingAuditRuntime>[0],
+  deps: GradingAuditRuntimeDeps) {
+  // Unknown readiness retains custody until the caller ends its request. End
+  // this injected request after one probe so it cannot wait for runtime expiry.
+  const controller = new AbortController();
+  await assert.rejects(ensureGradingAuditRuntime({ ...input, signal: controller.signal }, {
+    ...deps,
+    probe: async () => { controller.abort(); return null; },
+  }), (error: unknown) => {
+    assert.ok(error instanceof GradingAuditRuntimeReadinessError);
+    assert.equal(error.diagnostic.stopReason, 'caller-aborted');
+    assert.equal(error.diagnostic.attempts, 1);
+    assert.equal(error.diagnostic.lastProbe.reason, 'unknown');
+    return true;
+  });
 }
 
 async function main() {
@@ -214,8 +231,7 @@ async function main() {
   try {
     for (const key of targetKeys) delete process.env[key];
     process.env.PAPERCUSP_PG_PORT = '1';
-    await assert.rejects(ensureGradingAuditRuntime(input, { ...deps,
-      probe: async () => null, sleep: async () => {} }), /Audit runtime readiness is unknown/);
+    await assertBoundedUnknownReadiness(input, deps);
   } finally {
     for (const [key, value] of targetEnv) {
       if (value === undefined) delete process.env[key];
@@ -240,8 +256,7 @@ async function main() {
   const locator = task.detail.gradingAuditRuntime as { ownerRef: string; issueIds: string[] };
   assert.deepEqual(locator.issueIds.sort(), ['private-audit-a', 'private-audit-b']);
   assert.ok(readGradingAuditSourcePin(sourceRoot, locator.ownerRef));
-  await assert.rejects(ensureGradingAuditRuntime({ ...input, issueId: 'private-audit-c' },
-    { ...deps, probe: async () => null }), /Audit runtime readiness is unknown/);
+  await assertBoundedUnknownReadiness({ ...input, issueId: 'private-audit-c' }, deps);
   assert.equal(await emptyScope(first.taskId), false, 'a missed probe retired the live endpoint');
   assert.equal((await acquireReady({ ...input, issueId: 'private-audit-c', allowSeed: false }, deps,
     first.taskId)).taskId, first.taskId);
