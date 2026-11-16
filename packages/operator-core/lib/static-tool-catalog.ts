@@ -17,6 +17,7 @@
  *   capabilities.
  */
 import { existsSync, globSync, readFileSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import ts from 'typescript';
 
@@ -34,6 +35,15 @@ interface WorkspacePackage {
 interface ToolSourceSnapshot {
   readonly graphFiles: readonly string[];
   readonly fileIndex: ReadonlyMap<string, readonly string[]>;
+  readonly declarations: readonly BuiltinToolSourceDeclaration[];
+  readonly sources: readonly { path: string; sha256: string }[];
+}
+
+export interface BuiltinToolSourceDeclaration {
+  readonly name: string;
+  readonly file: string;
+  /** Unresolved is explicit; this source inventory never invents a capability. */
+  readonly capability: string | null;
 }
 
 const snapshotCache = new Map<string, ToolSourceSnapshot>();
@@ -269,6 +279,7 @@ function stringObjectConstants(
   exportedOnly: boolean,
 ): Map<string, Map<string, string>> {
   const objects = new Map<string, Map<string, string>>();
+  const constants = sameFileStringConstants(sourceFile);
   for (const statement of sourceFile.statements) {
     if (!ts.isVariableStatement(statement) || !(statement.declarationList.flags & ts.NodeFlags.Const)) continue;
     if (exportedOnly && !statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) {
@@ -280,13 +291,26 @@ function stringObjectConstants(
       if (!ts.isObjectLiteralExpression(value)) continue;
       const entries = new Map<string, string>();
       for (const property of value.properties) {
-        if (!ts.isPropertyAssignment(property)) continue;
+        if (ts.isSpreadAssignment(property)) {
+          const expression = unwrapExpression(property.expression);
+          const spread = ts.isIdentifier(expression) ? objects.get(expression.text) : undefined;
+          // An unknown spread can override every preceding property. Later
+          // explicit assignments may establish individual literals again.
+          if (!spread) entries.clear();
+          else for (const [key, literal] of spread) entries.set(key, literal);
+          continue;
+        }
+        if (!property.name || ts.isComputedPropertyName(property.name)) {
+          entries.clear();
+          continue;
+        }
         const key =
           ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name) ? property.name.text : undefined;
-        const initializer = unwrapExpression(property.initializer);
-        if (key && (ts.isStringLiteralLike(initializer) || ts.isNoSubstitutionTemplateLiteral(initializer))) {
-          entries.set(key, initializer.text);
-        }
+        if (!key) continue;
+        const literal = ts.isPropertyAssignment(property)
+          ? literalString(property.initializer, constants, objects) : undefined;
+        if (literal === undefined) entries.delete(key);
+        else entries.set(key, literal);
       }
       if (entries.size > 0) objects.set(declaration.name.text, entries);
     }
@@ -315,6 +339,7 @@ function literalObjectString(
   key: string,
   constants: ReadonlyMap<string, string>,
   objects: StringObjectConstants,
+  conservativeSpreads = false,
 ): string | undefined {
   let value: string | undefined;
   for (const property of object.properties) {
@@ -322,18 +347,23 @@ function literalObjectString(
       const expression = unwrapExpression(property.expression);
       const entries = ts.isIdentifier(expression) ? objects.get(expression.text) : undefined;
       if (entries?.has(key)) value = entries.get(key);
+      else if (conservativeSpreads) value = undefined;
     } else if (ts.isPropertyAssignment(property)) {
       const name = property.name;
       if ((ts.isIdentifier(name) || ts.isStringLiteralLike(name)) && name.text === key) {
         value = literalString(property.initializer, constants, objects);
       }
+      if (conservativeSpreads && ts.isComputedPropertyName(name)) value = undefined;
+    } else if (conservativeSpreads && property.name &&
+        (ts.isComputedPropertyName(property.name) || property.name.getText() === key)) {
+      value = undefined;
     }
   }
   return value;
 }
 
-function toolNamesIn(sourceFile: ts.SourceFile, imported: StringConstantBindings): string[] {
-  const names: string[] = [];
+function toolDeclarationsIn(sourceFile: ts.SourceFile, imported: StringConstantBindings) {
+  const declarations: Array<{ name: string; capability: string | null }> = [];
   const constants = new Map([...imported.strings, ...sameFileStringConstants(sourceFile)]);
   const objects: StringObjectConstants = new Map([
     ...imported.objects,
@@ -354,13 +384,14 @@ function toolNamesIn(sourceFile: ts.SourceFile, imported: StringConstantBindings
             ? literalString(propertyValue(mcp, 'name'), constants, objects)
             : undefined;
         const name = projected ?? literalObjectString(input, 'name', constants, objects);
-        if (name) names.push(name);
+        if (name) declarations.push({ name,
+          capability: literalObjectString(input, 'capability', constants, objects, true) ?? null });
       }
     }
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
-  return names;
+  return declarations;
 }
 
 function scriptKind(path: string): ts.ScriptKind {
@@ -472,6 +503,7 @@ function buildToolSourceSnapshot(repoRootInput: string): ToolSourceSnapshot {
   const pending = [entrypoint];
   const visited = new Set<string>();
   const fileIndex = new Map<string, string[]>();
+  const declarations: BuiltinToolSourceDeclaration[] = [];
   const constantCache = new Map<string, StringConstantBindings>();
   // Imported identity resolution and graph traversal visit the same modules.
   // Share their immutable ASTs within this build instead of reading/parsing twice.
@@ -489,7 +521,9 @@ function buildToolSourceSnapshot(repoRootInput: string): ToolSourceSnapshot {
     visited.add(file);
     const sourceFile = readSourceFile(file);
     const imported = importedStringConstantBindings(sourceFile, file, repoRoot, packages, constantCache, readSourceFile);
-    for (const name of toolNamesIn(sourceFile, imported)) {
+    for (const declaration of toolDeclarationsIn(sourceFile, imported)) {
+      const { name } = declaration;
+      declarations.push({ ...declaration, file });
       const existing = fileIndex.get(name);
       if (existing) existing.push(file);
       else fileIndex.set(name, [file]);
@@ -502,6 +536,9 @@ function buildToolSourceSnapshot(repoRootInput: string): ToolSourceSnapshot {
   const snapshot: ToolSourceSnapshot = {
     graphFiles: [...visited].sort(),
     fileIndex: new Map([...fileIndex].map(([name, files]) => [name, [...new Set(files)].sort()] as const)),
+    declarations: declarations.sort((a, b) => a.name.localeCompare(b.name) || a.file.localeCompare(b.file)),
+    sources: [...sourceFiles].map(([path, source]) => ({ path,
+      sha256: createHash('sha256').update(source.text).digest('hex') })).sort((a, b) => a.path.localeCompare(b.path)),
   };
   snapshotCache.set(repoRoot, snapshot);
   return snapshot;
@@ -535,6 +572,19 @@ export function buildBuiltinToolCatalog(repoRoot: string): Set<string> {
  */
 export function buildBuiltinToolFileIndex(repoRoot: string): Map<string, string[]> {
   return new Map([...buildToolSourceSnapshot(repoRoot).fileIndex].map(([name, files]) => [name, [...files]]));
+}
+
+/** Source-only descriptors for permission comparisons. Reuses the production
+ * graph, imported aliases and shared declarations without importing handlers.
+ * Preserve every declaration (including conflicts), and bind imported constants
+ * to the exact parsed source bytes. Refresh explicitly for a new current census.
+ * A null capability is an unresolved input, never an empty capability set.
+ */
+export function buildBuiltinToolDescriptors(repoRoot: string, options: { refresh?: boolean } = {}) {
+  if (options.refresh) snapshotCache.delete(resolve(repoRoot));
+  const snapshot = buildToolSourceSnapshot(repoRoot);
+  return { declarations: snapshot.declarations.map(row => ({ ...row })),
+    sources: snapshot.sources.map(row => ({ ...row })) };
 }
 
 export interface DistributionUnitInfo {

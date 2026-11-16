@@ -13,9 +13,90 @@ import {
   PRODUCTION_TOOL_REGISTRY_ENTRYPOINT,
   buildBuiltinToolCatalog,
   buildProductionToolSourceFiles,
+  buildBuiltinToolDescriptors,
 } from './static-tool-catalog';
 
 describe('static tool catalog derivation', () => {
+  it('retains capability descriptors through shared defaults and aliased imported constants', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'static-capability-descriptors-'));
+    const write = (path: string, text: string) => {
+      const fullPath = resolve(root, path);
+      mkdirSync(dirname(fullPath), { recursive: true });
+      writeFileSync(fullPath, text);
+    };
+    try {
+      write('package.json', JSON.stringify({ workspaces: [] }));
+      write(PRODUCTION_TOOL_REGISTRY_ENTRYPOINT,
+        "import { TOOL as N, CAP as permission } from './names';\n" +
+        "const common = { capability: 'capability:bash' } as const;\n" +
+        "defineTool({ ...common, name: N });\n" +
+        "defineTool({ name: 'fixture:override', ...common, capability: permission });\n" +
+        "defineUITool({ name: 'internal', expose: { mcp: { name: 'fixture:public' } }, capability: permission });\n");
+      write('packages/operator-core/lib/agent-tools/names.ts',
+        "export { TOOL, CAP } from './identity';\n");
+      write('packages/operator-core/lib/agent-tools/identity.ts',
+        "export const TOOL = 'fixture:shared';\nexport const CAP = 'capability:read';\n");
+      const result = buildBuiltinToolDescriptors(root);
+      expect(result.declarations.map(({ name, capability }) => ({ name, capability }))).toEqual([
+        { name: 'fixture:override', capability: 'capability:read' },
+        { name: 'fixture:public', capability: 'capability:read' },
+        { name: 'fixture:shared', capability: 'capability:bash' },
+      ]);
+      expect(result.sources.find(row => row.path.endsWith('/identity.ts'))?.sha256).toMatch(/^[a-f0-9]{64}$/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps missing, dynamic and overwritten capabilities unresolved and preserves conflicting declarations', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'static-unresolved-capability-'));
+    mkdirSync(dirname(resolve(root, PRODUCTION_TOOL_REGISTRY_ENTRYPOINT)), { recursive: true });
+    writeFileSync(resolve(root, 'package.json'), JSON.stringify({ workspaces: [] }));
+    try {
+      writeFileSync(resolve(root, PRODUCTION_TOOL_REGISTRY_ENTRYPOINT),
+        "const stale = { capability: 'capability:read', ...dynamic };\n" +
+        "defineTool({ name: 'fixture:missing' });\n" +
+        "defineTool({ name: 'fixture:dynamic', capability: compute() });\n" +
+        "defineTool({ name: 'fixture:spread', capability: 'capability:read', ...dynamic });\n" +
+        "defineTool({ ...stale, name: 'fixture:stale' });\n" +
+        "defineTool({ name: 'fixture:restored', ...dynamic, capability: 'capability:bash' });\n" +
+        "defineTool({ name: 'fixture:conflict', capability: 'capability:read' });\n" +
+        "defineTool({ name: 'fixture:conflict', capability: 'capability:bash' });\n");
+      const rows = buildBuiltinToolDescriptors(root).declarations;
+      for (const name of ['missing', 'dynamic', 'spread', 'stale']) {
+        expect(rows.find(row => row.name === `fixture:${name}`)?.capability).toBeNull();
+      }
+      expect(rows.find(row => row.name === 'fixture:restored')?.capability).toBe('capability:bash');
+      expect(rows.filter(row => row.name === 'fixture:conflict').map(row => row.capability))
+        .toEqual(['capability:read', 'capability:bash']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refreshes a current descriptor census and protects the cached source receipts from caller mutation', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'static-capability-refresh-'));
+    const entry = resolve(root, PRODUCTION_TOOL_REGISTRY_ENTRYPOINT);
+    mkdirSync(dirname(entry), { recursive: true });
+    writeFileSync(resolve(root, 'package.json'), JSON.stringify({ workspaces: [] }));
+    try {
+      writeFileSync(entry, "defineTool({ name: 'fixture:before', capability: 'capability:read' });\n");
+      const original = buildBuiltinToolDescriptors(root);
+      const digest = original.sources[0].sha256;
+      original.declarations[0].capability = null;
+      original.sources[0].sha256 = 'changed';
+      expect(buildBuiltinToolDescriptors(root).declarations[0].capability).toBe('capability:read');
+      expect(buildBuiltinToolDescriptors(root).sources[0].sha256).toBe(digest);
+      writeFileSync(entry, "defineTool({ name: 'fixture:after', capability: 'capability:bash' });\n");
+      const current = buildBuiltinToolDescriptors(root, { refresh: true });
+      expect(current.declarations[0].name).toBe('fixture:after');
+      expect(current.sources[0].sha256).not.toBe(digest);
+      expect([...buildBuiltinToolCatalog(root)]).toEqual(['fixture:after']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('resolves an imported string identity through an aliased re-export', () => {
     const root = mkdtempSync(resolve(tmpdir(), 'static-string-identity-'));
     const write = (path: string, text: string) => {
