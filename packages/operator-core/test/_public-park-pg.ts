@@ -74,7 +74,23 @@ export async function createPublicParkTestDb(label: string) {
     workspace_id text NOT NULL, scope text NOT NULL, note text, journal jsonb NOT NULL DEFAULT '[]',
     updated_ts bigint NOT NULL, deps jsonb, body_ts bigint, attested_count integer NOT NULL DEFAULT 0,
     PRIMARY KEY (workspace_id, scope))`);
-  return db;
+  return {
+    ...db,
+    async cleanup() {
+      // Real work-item writers can start a search embedder while these fixtures
+      // run. Vitest explicitly exits its fork, so the worker's beforeExit hook
+      // cannot own teardown. Drain it before closing the database it may use.
+      const { getWorkerState, shutdownLocalEmbedder } = await import(
+        '../../../libs/generic/memory/src/local-embedder-worker'
+      );
+      const before = getWorkerState();
+      try { await shutdownLocalEmbedder(); }
+      finally { await db.cleanup(); }
+      console.info('PUBLIC_PARK_RESOURCE_CLEANUP', JSON.stringify({
+        embedderBefore: before, embedderAfter: getWorkerState(),
+      }));
+    },
+  };
   } catch (error) {
     await db.cleanup();
     throw error;
