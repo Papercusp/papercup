@@ -47,6 +47,7 @@ import {
 } from './definitions';
 import { buildTypeRegistrySnapshot, type RegisteredDefinition, type TypeRegistrySnapshot } from './registry';
 import { VERIFICATION_MODULES, type VerificationModule } from './verification-modules';
+import { mergeScrutinyPolicies } from './scrutiny';
 
 /** The strictest module set: what an unresolvable type is held to. */
 export const STRICTEST_MODULES: readonly VerificationModule[] = Object.freeze([...VERIFICATION_MODULES]);
@@ -61,6 +62,7 @@ function ownContract(found: RegisteredDefinition<ItemTypeDefinition>): ItemTypeC
     ...(definition.completion ? { completion: definition.completion } : {}),
     ...(definition.criteriaTemplate ? { criteriaTemplate: definition.criteriaTemplate } : {}),
     ...(definition.rubricRef ? { rubricRef: definition.rubricRef } : {}),
+    ...(definition.scrutiny ? { scrutiny: definition.scrutiny } : {}),
   };
 }
 
@@ -69,6 +71,9 @@ function inheritContract(child: ItemTypeContract, parent: ItemTypeContract): Ite
   const completion = child.completion ?? parent.completion;
   const criteriaTemplate = child.criteriaTemplate ?? parent.criteriaTemplate;
   const rubricRef = child.rubricRef ?? parent.rubricRef;
+  const scrutiny = child.scrutiny && parent.scrutiny
+    ? mergeScrutinyPolicies(child.scrutiny, parent.scrutiny)
+    : child.scrutiny ?? parent.scrutiny;
   return {
     id: child.id,
     revision: child.revision,
@@ -76,6 +81,7 @@ function inheritContract(child: ItemTypeContract, parent: ItemTypeContract): Ite
     ...(completion ? { completion } : {}),
     ...(criteriaTemplate ? { criteriaTemplate } : {}),
     ...(rubricRef ? { rubricRef } : {}),
+    ...(scrutiny ? { scrutiny } : {}),
   };
 }
 

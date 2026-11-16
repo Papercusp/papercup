@@ -36,12 +36,22 @@ export interface NativeCustodyLocator {
 }
 export interface NativeCustodyFamily {
   family: 'A' | 'B' | 'C' | 'D'; state: string; producer: string; reason?: string;
-  entries: Array<{ original: string; artifact: NativeArtifactPin;
+  /** Complete source census; archive object counts describe packed pages. */
+  inventory?: { schemaVersion: 'native-process-inventory-v1'; namesHash: string; total: number;
+    completed: number; omittedCount: number; nextCursor: string | null };
+  entries: Array<{ original: string; artifact: NativeArtifactPin; paged?: true;
     /** An oversized OUT is reconstructed from these ordered ordinary capture objects.
      * artifact is the first part; sha256 covers the retained prefix (the whole OUT when complete). */
     chunked?: { byteLength: number; sha256: string; complete: boolean;
       parts: Array<{ offset: number; artifact: NativeArtifactPin }> } }>;
 }
+/** One bounded retained page. Verify the enclosing packet against its independent
+ * contract, then follow the family's ordered entries until omittedCount is zero. */
+export function readNativeProofInventoryPage(directory: string, pin: NativeArtifactPin): {
+  schemaVersion: 'native-process-inventory-page-v1'; sourceRoot: string; after: string | null;
+  total: number; omittedCount: number; nextCursor: string | null;
+  records: Array<{ original: string; bytes: Buffer; sha256: string; stamp: Record<string, number> }>;
+};
 export interface NativeCustodyFamilyLimit { objects: number; bytes: number; }
 export interface NativeCustodyLimits {
   objects: number; bytes: number; objectBytes: number; referenceOccurrences?: number;
@@ -64,7 +74,7 @@ export interface NativeCustodyRetainedGroup {
   protocol?: unknown;
 }
 export interface NativeCustodyManifest {
-  schemaVersion: 'native-proof-custody-v1' | 'native-proof-custody-v2' | 'native-proof-custody-v3';
+  schemaVersion: 'native-proof-custody-v1' | 'native-proof-custody-v2' | 'native-proof-custody-v3' | 'native-proof-custody-v4';
   identity: NativeCustodyIdentity; expected: NativeCustodyGroup[];
   expectedHash: string; groups: NativeCustodyRetainedGroup[]; gaps: string[]; predecessor: NativeCustodyLocator | null;
   limits: NativeCustodyLimits;
@@ -86,6 +96,8 @@ export function retainNativeProofPacket(directory: string, input: {
   identity: NativeCustodyIdentity; expected: NativeCustodyGroup[];
   observations: Array<{ id: string; out: string | null; captureComplete?: boolean }>;
   execution?: unknown; cleanup?: unknown; predecessor?: NativeCustodyLocator;
+  /** Recover missing auxiliary bytes only from this exact contract's verified predecessor. */
+  retainedAuxiliary?: { directory: string; locator: NativeCustodyLocator };
   /** Bounded diagnostic phases; observer errors never change the custody verdict. */
   onProgress?: (progress: { phase: string; elapsedMs: number; group?: string; family?: string;
     objectsRead?: number; bytesRead?: number; completed?: number; total?: number; status?: string }) => void;
@@ -98,6 +110,8 @@ export function retainNativeProofPacketAsync(directory: string, input: {
   identity: NativeCustodyIdentity; expected: NativeCustodyGroup[];
   observations?: Array<{ id: string; out: string | null; captureComplete?: boolean }>;
   execution?: unknown; cleanup?: unknown; predecessor?: NativeCustodyLocator;
+  /** Recover missing auxiliary bytes only from this exact contract's verified predecessor. */
+  retainedAuxiliary?: { directory: string; locator: NativeCustodyLocator };
   /** Reseal existing objects after contract verification; never recapture sources. */
   retainedLocator?: NativeCustodyLocator;
   /** Absolute budget inherited from the owning task, including sync operations. */

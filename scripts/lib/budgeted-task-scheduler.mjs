@@ -610,6 +610,148 @@ function custodyInventory(directory, objectLimit = custodyLimits.objects) {
     throw new Error('custody inventory changed');
   return names.sort();
 }
+// Native process events are records within bounded archive pages. Preserve the
+// full name census; no object budget is a limit on the observed population.
+function custodySourceStamp(path) {
+  const stat = lstatSync(path);
+  return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs };
+}
+function custodyProcessInventory(path) {
+  custodyDirectory(path);
+  const before = custodySourceStamp(path), names = [], handle = opendirSync(path);
+  try {
+    for (let entry; (entry = handle.readSync()) !== null;) {
+      if (!entry.isFile() || entry.isSymbolicLink()) throw new Error('custody inventory nonregular entry');
+      names.push(entry.name);
+    }
+  } finally { handle.closeSync(); }
+  if (JSON.stringify(before) !== JSON.stringify(custodySourceStamp(path))) throw new Error('custody inventory changed');
+  names.sort();
+  return { names, stamp: before, namesHash: custodyHash(names) };
+}
+function decodeCustodyInventoryPage(bytes) {
+  if (bytes.length < 4) throw new Error('custody inventory page header');
+  const length = bytes.readUInt32BE(0);
+  if (length > bytes.length - 4) throw new Error('custody inventory page header');
+  const page = JSON.parse(bytes.subarray(4, 4 + length).toString('utf8'));
+  if (page.schemaVersion !== 'native-process-inventory-page-v1' || !isAbsolute(page.sourceRoot ?? '') ||
+      !Number.isSafeInteger(page.total) || page.total < 1 || !Number.isSafeInteger(page.omittedCount) ||
+      page.omittedCount < 0 || !Array.isArray(page.records) || !page.records.length ||
+      page.records.length > custodyFamilies.C.objects || !(page.after === null || typeof page.after === 'string'))
+    throw new Error('custody inventory page population');
+  let offset = 4 + length, previous = page.after;
+  const retained = page.records.map(record => {
+    if (typeof record.name !== 'string' || !record.name || basename(record.name) !== record.name ||
+        record.name === '.' || record.name === '..' || previous !== null && record.name <= previous ||
+        !Number.isSafeInteger(record.byteLength) || record.byteLength < 0 || !comparisonDigest(record.sha256) ||
+        record.byteLength > bytes.length - offset)
+      throw new Error('custody inventory page record');
+    const content = bytes.subarray(offset, offset + record.byteLength);
+    offset += record.byteLength; previous = record.name;
+    if (createHash('sha256').update(content).digest('hex') !== record.sha256 ||
+        /^[a-f0-9]{64}\.(json|source|stream)$/.test(record.name) && record.sha256 !== record.name.slice(0, 64))
+      throw new Error('custody inventory page digest');
+    return { original: join(page.sourceRoot, record.name), bytes: content, sha256: record.sha256, stamp: record.stamp };
+  });
+  if (offset !== bytes.length || page.nextCursor !== (page.omittedCount ? previous : null))
+    throw new Error('custody inventory page continuation');
+  return { ...page, retained };
+}
+
+/** Consume one complete retained page without any producer files. Follow the
+ * ordered family entries until omittedCount is zero; nextCursor names the edge. */
+export function readNativeProofInventoryPage(directory, pin) {
+  const objects = custodyDirectory(join(custodyDirectory(directory, true), 'objects'), true);
+  if (!pin || !comparisonDigest(pin.sha256) || basename(pin.ref ?? '') !== pin.ref ||
+      !pin.ref.startsWith(pin.sha256 + '.') || !Number.isSafeInteger(pin.byteLength) || pin.byteLength < 0)
+    throw new Error('custody invalid retained pin');
+  const bytes = custodyRead(join(objects, pin.ref), Object.assign(custodyBudget(), { private: true }), 'C');
+  if (bytes.length !== pin.byteLength || createHash('sha256').update(bytes).digest('hex') !== pin.sha256)
+    throw new Error('custody retained bytes differ');
+  const { retained, ...page } = decodeCustodyInventoryPage(bytes);
+  return { ...page, records: retained };
+}
+
+function captureCustodyProcessInventory(root, path, entry, capture, progress, binding) {
+  const census = custodyProcessInventory(path), { names } = census;
+  const key = custodyHash({ binding, path, namesHash: census.namesHash, stamp: census.stamp });
+  const journal = join(root, key + '.inventory-progress.json');
+  let saved = { schemaVersion: 'native-process-inventory-progress-v1', key, pages: [] };
+  try {
+    saved = JSON.parse(custodyRead(journal, { objects: 0, bytes: 0, private: true }).toString('utf8'));
+    if (saved.schemaVersion !== 'native-process-inventory-progress-v1' || saved.key !== key || !Array.isArray(saved.pages))
+      throw new Error('custody inventory progress binding');
+  } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+  const state = entry.inventory = { schemaVersion: 'native-process-inventory-v1', namesHash: census.namesHash,
+    total: names.length, completed: 0, omittedCount: names.length, nextCursor: null };
+  let index = 0, pageIndex = 0;
+  while (index < names.length) {
+    const after = index ? names[index - 1] : null;
+    let artifact, page, resumed = false;
+    if (pageIndex < saved.pages.length) {
+      const pin = saved.pages[pageIndex];
+      page = readNativeProofInventoryPage(root, pin);
+      // Reuse captured bytes only while every source identity is unchanged.
+      // A changed input produces another edition, preserving the old edition.
+      if (page.sourceRoot !== path || page.after !== after || page.total !== names.length ||
+          page.records.some((record, n) => record.original !== join(path, names[index + n]) ||
+            JSON.stringify(custodySourceStamp(record.original)) !== JSON.stringify(record.stamp)))
+        throw new Error('custody inventory progress source changed');
+      artifact = capture(join(root, 'objects', pin.ref), 'native-inventory-page', 'C');
+      resumed = true;
+    } else {
+      const records = [], chunks = [];
+      let contentBytes = 0, recordBytes = 0, metadata;
+      while (index + records.length < names.length && records.length < custodyFamilies.C.objects) {
+        const name = names[index + records.length], original = join(path, name), stamp = custodySourceStamp(original);
+        const candidate = { name, byteLength: stamp.size, sha256: '0'.repeat(64), stamp };
+        const count = index + records.length + 1, candidateBytes = Buffer.byteLength(JSON.stringify(candidate));
+        const header = { schemaVersion: 'native-process-inventory-page-v1', sourceRoot: path, after,
+          total: names.length, omittedCount: names.length - count,
+          nextCursor: count < names.length ? name : null, records: [] };
+        const size = 4 + Buffer.byteLength(JSON.stringify(header)) + recordBytes + candidateBytes +
+          records.length + contentBytes + stamp.size;
+        if (size + 1 > custodyFamilies.C.bytes) {
+          if (!records.length) throw new Error('custody inventory record exceeds page byte budget');
+          break;
+        }
+        const bytes = custodyRead(original, custodyBudget(), 'C');
+        if (JSON.stringify(stamp) !== JSON.stringify(custodySourceStamp(original)))
+          throw new Error('custody inventory source changed');
+        candidate.sha256 = createHash('sha256').update(bytes).digest('hex');
+        records.push(candidate); chunks.push(bytes); contentBytes += bytes.length; recordBytes += candidateBytes;
+        metadata = { ...header, records };
+      }
+      const header = Buffer.from(JSON.stringify(metadata)), prefix = Buffer.alloc(4);
+      prefix.writeUInt32BE(header.length);
+      const bytes = Buffer.concat([prefix, header, ...chunks]);
+      decodeCustodyInventoryPage(bytes);
+      artifact = capture(null, 'native-inventory-page', 'C', { byteLength: bytes.length, read(budget, aggregateBudget) {
+        budget.bytes += bytes.length + 1; budget.bytesByFamily.C += bytes.length + 1;
+        aggregateBudget.bytes += bytes.length + 1; aggregateBudget.bytesByFamily.C += bytes.length + 1;
+        return bytes;
+      } });
+      // Publish durable bytes before the cursor. A crash can leave an orphan,
+      // but never a cursor that advances past an unretained record.
+      syncNativeProofPath(join(root, 'objects', artifact.ref));
+      syncNativeProofPath(join(root, 'objects'));
+      saved.pages.push(artifact);
+      const pending = journal + '.pending';
+      const fd = openSync(pending, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
+      try { writeFileSync(fd, JSON.stringify(saved)); fsyncSync(fd); } finally { closeSync(fd); }
+      renameSync(pending, journal); syncNativeProofPath(root);
+      page = metadata;
+    }
+    entry.entries.push({ original: path, artifact, paged: true });
+    index += page.records.length; pageIndex++;
+    state.completed = index; state.omittedCount = names.length - index;
+    state.nextCursor = state.omittedCount ? names[index - 1] : null;
+    progress('inventory-page', { completed: index, total: names.length,
+      omittedCount: state.omittedCount, nextCursor: state.nextCursor, resumed });
+  }
+  if (pageIndex !== saved.pages.length || JSON.stringify(census.stamp) !== JSON.stringify(custodySourceStamp(path)))
+    throw new Error('custody inventory changed');
+}
 function custodyReferences(payload, artifactLimit = custodyLimits.families.B.objects, allowCapsules = false) {
   const occurrences = [], artifacts = new Map(), gaps = new Set();
   const vectors = new Map(), locations = [];
@@ -796,6 +938,13 @@ function prepareNativeProofPacket(directory, input) {
   };
   progress('capture-start');
   custodyIdentity(input.identity); custodyPopulation(input.expected);
+  let retainedAuxiliary = null;
+  if (input.retainedAuxiliary) {
+    if (JSON.stringify(input.predecessor) !== JSON.stringify(input.retainedAuxiliary.locator))
+      throw new Error('custody predecessor recovery binding');
+    retainedAuxiliary = verifyNativeProofPacket(input.retainedAuxiliary.directory, input.retainedAuxiliary.locator,
+      { identity: input.identity, expected: input.expected });
+  }
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const root = custodyDirectory(directory, true);
   const objectRoot = join(root, 'objects');
@@ -933,6 +1082,9 @@ function prepareNativeProofPacket(directory, input) {
           group.protocol = { checkpoint: payload.completionCheckpoint ?? null,
             nativeRun: { state: payload.nativeRun?.state ?? null, reason: payload.nativeRun?.reason ?? null,
               modulePopulationMatched: payload.nativeRun?.modulePopulationMatched ?? null }, status: 'unqualified' };
+        } else if (family === 'C') {
+          captureCustodyProcessInventory(root, path, entry, capture, progress,
+            { identity: input.identity, expectedHash: custodyHash(input.expected), group: expected.id });
         } else {
           const names = custodyInventory(path);
           if (family === 'D' && names.length === 0) throw new Error('process-source-receipts-missing');
@@ -974,7 +1126,17 @@ function prepareNativeProofPacket(directory, input) {
       try {
         if (!spec.role || !['produced', 'not-requested', 'not-produced', 'not-applicable', 'unavailable'].includes(spec.state))
           throw new Error('auxiliary-declaration-missing');
-        if (spec.state === 'produced') entry.artifact = capture(spec.path, 'bytes', 'auxiliary');
+        if (spec.state === 'produced') {
+          try { entry.artifact = capture(spec.path, 'bytes', 'auxiliary'); }
+          catch (error) {
+            const previous = retainedAuxiliary?.manifest.groups.find(row => row.id === expected.id)
+              ?.auxiliary[group.auxiliary.length - 1]?.artifact;
+            if (error?.code !== 'ENOENT' || error?.path !== spec.path || !previous) throw error;
+            entry.artifact = capture(join(input.retainedAuxiliary.directory, 'objects', previous.ref), 'bytes', 'auxiliary');
+            if (entry.artifact.sha256 !== previous.sha256 || entry.artifact.byteLength !== previous.byteLength)
+              throw new Error('custody predecessor bytes changed');
+          }
+        }
         else if (!spec.reason || spec.state === 'unavailable' || spec.state === 'not-produced')
           throw new Error('auxiliary-unavailable-or-unsupported-absence');
       } catch (error) {
@@ -988,7 +1150,7 @@ function prepareNativeProofPacket(directory, input) {
   const retainedSegments = segments.map(segment => ({ index: segment.index, ...custodyAccounting(segment.budget),
     artifact: store.persist(Buffer.from(JSON.stringify({ schemaVersion: 'native-proof-segment-v1',
       index: segment.index, entries: segment.entries })), 'native-segment.json') }));
-  const manifest = { schemaVersion: 'native-proof-custody-v3', identity: input.identity,
+  const manifest = { schemaVersion: 'native-proof-custody-v4', identity: input.identity,
     expected: input.expected, expectedHash: custodyHash(input.expected), groups, limits: custodyLimits,
     // Reference census spans the archive; capture still enforces each segment's
     // family budget. Older packets omit this field and retain their old census.
@@ -1196,7 +1358,7 @@ export function verifyNativeProofPacket(directory, locator, contract) {
   // ordinary single-object bound. Legacy single-object manifests still work.
   const manifest = readCustodyManifest(locator.manifest, read);
   const legacy = manifest.schemaVersion === 'native-proof-custody-v1';
-  segmented = manifest.schemaVersion === 'native-proof-custody-v3';
+  segmented = manifest.schemaVersion === 'native-proof-custody-v3' || manifest.schemaVersion === 'native-proof-custody-v4';
   const current = manifest.schemaVersion === 'native-proof-custody-v2' || segmented;
   uniqueArchiveObjectAccounting = manifest.archiveObjectAccounting === 'unique-family-artifact-ref-v1';
   if (manifest.archiveObjectAccounting !== undefined &&
@@ -1288,6 +1450,10 @@ export function verifyNativeProofPacket(directory, locator, contract) {
     let reporter;
     for (const family of group.families) {
       if (!Array.isArray(family.entries)) throw new Error('custody inventory missing');
+      if (manifest.schemaVersion === 'native-proof-custody-v4' && family.family === 'C' &&
+          family.state === 'produced' && !family.inventory) throw new Error('custody inventory census missing');
+      let inventoryCount = 0, inventoryAfter = null;
+      const inventoryHash = createHash('sha256').update('[');
       if (family.family === 'A' && family.state === 'produced' &&
           (family.entries.length !== 1 || typeof expected.out !== 'string' || !isAbsolute(expected.out) ||
            family.entries[0]?.original !== expected.out))
@@ -1298,7 +1464,30 @@ export function verifyNativeProofPacket(directory, locator, contract) {
         const bytes = entry.chunked
           ? custodyOutBytes(entry, pin => read(pin, budget, family.family), family.state !== 'produced')
           : read(entry.artifact, budget, family.family);
+        if (entry.paged) {
+          if (manifest.schemaVersion !== 'native-proof-custody-v4' || family.family !== 'C' || !family.inventory)
+            throw new Error('custody unsupported inventory page');
+          const page = decodeCustodyInventoryPage(bytes);
+          if (page.sourceRoot !== expected.out + '.native-processes' || entry.original !== page.sourceRoot ||
+              page.after !== inventoryAfter || page.total !== family.inventory.total ||
+              page.omittedCount !== page.total - inventoryCount - page.records.length)
+            throw new Error('custody inventory page chain');
+          for (const record of page.records) {
+            inventoryHash.update((inventoryCount++ ? ',' : '') + JSON.stringify(record.name));
+            inventoryAfter = record.name;
+          }
+        } else if (family.inventory) throw new Error('custody inventory page missing');
         if (family.family === 'A' && index === 0) reporter = bytes;
+      }
+      if (family.inventory) {
+        const state = family.inventory;
+        if (state.schemaVersion !== 'native-process-inventory-v1' || family.family !== 'C' ||
+            !Number.isSafeInteger(state.total) || state.total < 0 ||
+            state.completed !== inventoryCount || state.omittedCount !== state.total - inventoryCount ||
+            state.nextCursor !== (state.omittedCount ? inventoryAfter : null) ||
+            family.state === 'produced' && (state.omittedCount !== 0 ||
+              inventoryHash.update(']').digest('hex') !== state.namesHash))
+          throw new Error('custody inventory census mismatch');
       }
       const processNotRequested = segmented && expected.armed && expected.runner === 'vitest' &&
         family.family === 'D' && !custodyProcessSourcesRequested(expected);

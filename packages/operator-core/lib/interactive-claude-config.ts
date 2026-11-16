@@ -695,8 +695,8 @@ function selfHealSettings() {
 // drop the session's papercusp-su MCP server definition — the session then runs
 // with NO coordination tools until someone notices (2026-07-12: hours of
 // checkpoints/completions queued behind a "disconnected MCP" that was really a
-// missing config entry). Re-assert it from the global ~/.claude.json when the
-// session copy lacks it. Non-destructive; fail-open.
+// missing config entry). Resolve the maintained global template using the
+// current runtime, preserving a valid local entry when that template is absent.
 function selfHealMcpConfig() {
   try {
     const path = join(dir, '.claude.json');
@@ -705,8 +705,9 @@ function selfHealMcpConfig() {
     if (!cfg || typeof cfg !== 'object') return null;
     const servers = cfg.mcpServers && typeof cfg.mcpServers === 'object' ? cfg.mcpServers : {};
     const home = process.env.HOME || '';
-    const g = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
-    const src = g && g.mcpServers ? g.mcpServers['papercusp-su'] : null;
+    const globalPath = join(home, '.claude.json');
+    const g = existsSync(globalPath) ? JSON.parse(readFileSync(globalPath, 'utf8')) : null;
+    const src = (g && g.mcpServers ? g.mcpServers['papercusp-su'] : null) || servers['papercusp-su'];
     if (!src) return null;
     const resolved = resolveClaudeMcpEntry(src, process.env);
     if (JSON.stringify(servers['papercusp-su']) === JSON.stringify(resolved)) return null;

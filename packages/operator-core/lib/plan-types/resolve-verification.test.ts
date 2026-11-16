@@ -25,6 +25,28 @@ import {
   unregisteredTypesRefusal,
 } from './resolve-verification';
 import { VERIFICATION_MODULES } from './verification-modules';
+import { scrutinyPolicyFor } from './scrutiny';
+
+describe('risk coding presets in the shared registry resolver', () => {
+  it('resolves plan defaults and explicit higher-risk items through revisioned definitions', () => {
+    const resolve = createRegistryVerificationResolver();
+    const plan = { planType: 'papercusp/coding-low' };
+    expect(resolve(plan, {}).itemTypeContract?.scrutiny).toEqual(scrutinyPolicyFor('low'));
+    const critical = resolve(plan, { deliverable: 'papercusp/code-critical' });
+    expect(critical).toMatchObject({ codeDeliverable: true, deliverable: 'code' });
+    expect(critical.itemTypeContract?.scrutiny).toEqual(scrutinyPolicyFor('critical'));
+    expect(resolve({ verificationProfile: 'coding' }, {}).itemTypeContract?.scrutiny).toBeUndefined();
+  });
+
+  it('inherits the parent obligations without allowing a child to remove specialist review', () => {
+    const parent = itemTypeRow('acme/critical-code', ['code']);
+    parent.definition = { ...parent.definition as object, scrutiny: scrutinyPolicyFor('critical') };
+    const child = itemTypeRow('acme/child-code', ['code']);
+    child.definition = { ...child.definition as object, extends: { id: parent.type_id }, scrutiny: scrutinyPolicyFor('low') };
+    const resolve = createRegistryVerificationResolver(buildTypeRegistrySnapshot({ itemTypeRows: [parent, child] }));
+    expect(resolve({}, { deliverable: child.type_id }).itemTypeContract?.scrutiny).toEqual(scrutinyPolicyFor('critical'));
+  });
+});
 
 function itemTypeRow(id: string, modules: string[], revision = 1, extra: Partial<DefinitionRow> = {}): DefinitionRow {
   return {

@@ -26,7 +26,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import ts from 'typescript';
 import { createServer, type Server } from 'node:http';
@@ -1541,6 +1541,31 @@ describe('WI-10005232: bootstrap/resume config filesystem calls stay asynchronou
  * source. The first test below closes that class for every future editor.
  */
 describe('EI-28843330270014450 recovery MCP configuration', () => {
+  it('preserves a valid local entry quietly when the global template is absent', async () => {
+    seedHome(home);
+    const dir = (await writeInteractiveClaudeConfig({ sid: 'su-local-mcp', home })).configDir;
+    rmSync(join(dir, '.claude.json'));
+    rmSync(join(home, '.claude.json'));
+    const local = JSON.stringify({ mcpServers: {
+      'papercusp-su': { type: 'http', url: 'http://127.0.0.1:1/api/mcp?client=su-local-mcp' },
+    } });
+    writeFileSync(join(dir, '.claude.json'), local);
+    const child = spawnSync(process.execPath, [join(dir, RECOVER_HOOK)], {
+      input: JSON.stringify({ source: 'startup' }),
+      env: {
+        ...process.env, HOME: home, PAPERCUSP_SID: 'su-local-mcp',
+        PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1', PAPERCUSP_PSU_PTY_DIR: dir,
+        PSU_RECOVER_TEST_CHAIN: JSON.stringify([['claude', '--system-prompt-file', '/unused']]),
+      },
+      encoding: 'utf8',
+      timeout: 20_000,
+    });
+    expect(child.status).toBe(0);
+    expect(child.stderr).toBe('');
+    expect(readFileSync(join(dir, '.claude.json'), 'utf8')).toBe(local);
+    expect(existsSync(join(home, '.claude.json'))).toBe(false);
+  });
+
   it.each(['unresolved', 'missing'])('repairs a %s entry using current runtime values without changing global config', async (state) => {
     seedHome(home);
     const source = {

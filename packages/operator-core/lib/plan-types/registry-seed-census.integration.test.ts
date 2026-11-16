@@ -32,6 +32,7 @@ import {
 } from '../plan-verification-profile';
 import { PLAN_CLASSES_BY_PROFILE, PLAN_CLASS_RUBRIC_REFS } from '../plan-class-refs';
 import { BUILTIN_CATALOG, builtinItemTypeId, type TypeCatalog } from './builtin-catalog';
+import { RISK_TIERS } from '@papercusp/plan-parser';
 import { loadTypeRegistry } from './registry';
 import { createRegistryVerificationResolver, STRICTEST_MODULES } from './resolve-verification';
 import {
@@ -250,7 +251,7 @@ describe('first-party definitions match today’s mapping (R-3 falsifier 4)', ()
       const def = BUILTIN_CATALOG.itemTypes.find((d) => d.id === `papercusp/${kind}`);
       expect(def?.modules, kind).toEqual(modulesFor(kind === 'code'));
     }
-    expect(BUILTIN_CATALOG.itemTypes).toHaveLength(DELIVERABLE_KINDS.length);
+    expect(BUILTIN_CATALOG.itemTypes).toHaveLength(DELIVERABLE_KINDS.length + RISK_TIERS.length);
   });
 
   it('each profile’s plan type has today’s default deliverable and plan classes', () => {
@@ -260,6 +261,11 @@ describe('first-party definitions match today’s mapping (R-3 falsifier 4)', ()
       expect(def?.defaultItemType.id).toBe(`papercusp/${PROFILE_DEFAULT_DELIVERABLE[profile]}`);
       expect(def?.classes).toEqual([...PLAN_CLASSES_BY_PROFILE[profile]]);
     }
-    expect(BUILTIN_CATALOG.planTypes.flatMap((d) => d.classes).sort()).toEqual([...PLAN_CLASS_RUBRIC_REFS].sort());
+    expect([...new Set(BUILTIN_CATALOG.planTypes.flatMap((d) => d.classes))].sort()).toEqual([...PLAN_CLASS_RUBRIC_REFS].sort());
+    for (const tier of RISK_TIERS) {
+      const riskPlan = BUILTIN_CATALOG.planTypes.find(d => d.id === `papercusp/coding-${tier}`);
+      expect(riskPlan?.defaultItemType.id).toBe(`papercusp/code-${tier}`);
+      expect(riskPlan?.classes).toEqual([...PLAN_CLASSES_BY_PROFILE.coding]);
+    }
   });
 });

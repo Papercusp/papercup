@@ -27,7 +27,9 @@
  * another (an `extends` parent, a pinned revision) belong to the authoring tools (P-005).
  */
 import { z } from 'zod';
+import { RISK_TIERS } from '@papercusp/plan-parser';
 import { VERIFICATION_MODULES, type VerificationModule } from './verification-modules';
+import { SCRUTINY_REVIEW_MODES, SCRUTINY_TEST_SCOPES, scrutinyPolicyIssues } from './scrutiny';
 
 export const TYPE_DEFINITION_SCHEMA_VERSION = 1 as const;
 
@@ -82,6 +84,16 @@ const completionSchema = z.union([
   z.object({ datatypeRef: z.string().min(1) }).strict(),
 ]);
 
+const scrutinySchema = z.object({
+  riskTier: z.enum(RISK_TIERS),
+  review: z.enum(SCRUTINY_REVIEW_MODES),
+  tests: z.enum(SCRUTINY_TEST_SCOPES),
+  failureEvidence: z.boolean(),
+  rolloutEvidence: z.boolean(),
+}).strict().superRefine((policy, ctx) => {
+  for (const message of scrutinyPolicyIssues(policy)) ctx.addIssue({ code: 'custom', message });
+});
+
 /** A declarative check: a named check kind plus its parameters. Never code. */
 const declarativeCheckSchema = z
   .object({
@@ -128,6 +140,8 @@ export const itemTypeDefinitionSchema = z
      * generic-core (`validateDefinitionFloor`), which can never be dropped.
      */
     modules: z.array(moduleSchema).default([FLOOR_MODULE]),
+    /** Full revisioned obligations; absent definitions retain legacy scrutiny. */
+    scrutiny: scrutinySchema.optional(),
     completion: completionSchema.optional(),
     /** Citation kinds that may verify an item of this type, e.g. code, test, artifact. */
     citations: z.array(z.string().min(1)).optional(),

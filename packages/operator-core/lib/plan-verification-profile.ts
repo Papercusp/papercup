@@ -30,6 +30,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { pinModuleState } from '@papercusp/module-singleton';
 import type { AdequacyCriterion } from './agent-tools/plans/spec-test-adequacy';
+import type { ScrutinyPolicy } from './plan-types/scrutiny';
 import {
   isDeliverableKind,
   isVerificationProfile,
@@ -284,6 +285,8 @@ export interface ItemTypeContract {
   completion?: ItemTypeCompletion;
   criteriaTemplate?: readonly ItemTypeCriterion[];
   rubricRef?: string;
+  /** Complete obligations pinned with this item-type revision. */
+  scrutiny?: ScrutinyPolicy;
 }
 
 /** The modules that apply to a deliverable: the generic core, plus code for code, plus opt-ins. */

@@ -21,12 +21,27 @@ const FIRST_PARTY_HASHES: Record<string, string> = {
   'papercusp/general': '7caa0494d37bce4d8e64c310853c03a9059edca6daf4bfa4265f4ceca77ced37',
 };
 
+// These presets were introduced after migration 1545. Keep their revision-1
+// contracts fixed without rewriting the historical legacy-pin migration.
+const RISK_PRESET_HASHES: Record<string, string> = {
+  'papercusp/code-trivial': '8d5a3e19259c2a17e414687ca42da21c9dd47d0c1f9422524ec3e22e16d91714',
+  'papercusp/code-low': '8e0c48251bba7affa027c39a367721b9b4e86b5704bd8f6a2852905cd6bedf0e',
+  'papercusp/code-moderate': '63e534fd86bfc8b61107de4ab6ea1be7e747757eb1352a2939922541bde8987b',
+  'papercusp/code-high': '66b1249deabf405fcdd3b82745c719811cd55c0553bd09748d0fc7c69f65d5fb',
+  'papercusp/code-critical': '9badc7f0d7cea06f21cd30d055acd1623df49adec343bd4851c7e6c7871f048a',
+  'papercusp/coding-trivial': 'dc3416842dc33d8059e712a05bd2c9303c8610cbe1949706c176ba2e02d5fded',
+  'papercusp/coding-low': 'a32ca7837f8535999a02c7db529d7ff848ca474d6b96dfdf70955af986ca237f',
+  'papercusp/coding-moderate': '44d03347bcf854fa94f7caabfb3507f923d583fdd76646107d06a5b61683e537',
+  'papercusp/coding-high': '7c351c4255f501781ca939d947494ef3b2bd82f62be02df61c32d7505435ad5c',
+  'papercusp/coding-critical': 'aa9f01b85d90538667a4bc701b69dee59f40286da580abc04f3830b4d7423cba',
+};
+
 describe('definition content hashes', () => {
   it('fixes every first-party revision-1 hash (edit a built-in only with a new revision)', () => {
     const actual = Object.fromEntries(
       [...BUILTIN_CATALOG.itemTypes, ...BUILTIN_CATALOG.planTypes].map((d) => [d.id, definitionContentHash(d)]),
     );
-    expect(actual).toEqual(FIRST_PARTY_HASHES);
+    expect(actual).toEqual({ ...FIRST_PARTY_HASHES, ...RISK_PRESET_HASHES });
   });
 
   it('matches the literals migration 1545 backfills into plan_type_pins', async () => {

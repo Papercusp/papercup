@@ -21,6 +21,7 @@
 // not come from it.
 import {
   DELIVERABLE_KINDS,
+  RISK_TIERS,
   VERIFICATION_PROFILES,
   type DeliverableKind,
   type VerificationProfile,
@@ -33,6 +34,7 @@ import {
   type ItemTypeDefinition,
   type PlanTypeDefinition,
 } from './definitions';
+import { scrutinyPolicyFor } from './scrutiny';
 
 export const BUILTIN_REVISION = 1 as const;
 
@@ -49,6 +51,7 @@ export function builtinKindOf(id: string): DeliverableKind | null {
   const prefix = `${FIRST_PARTY_NAMESPACE}/`;
   if (!id.startsWith(prefix)) return null;
   const kind = id.slice(prefix.length);
+  if (RISK_TIERS.some(tier => kind === `code-${tier}`)) return 'code';
   return (DELIVERABLE_KINDS as readonly string[]).includes(kind) ? (kind as DeliverableKind) : null;
 }
 
@@ -156,8 +159,33 @@ export interface TypeCatalog {
   planTypes: readonly PlanTypeDefinition[];
 }
 
+const riskItemTypes: ItemTypeDefinition[] = RISK_TIERS.map(tier => ({
+  schemaVersion: TYPE_DEFINITION_SCHEMA_VERSION,
+  id: `${FIRST_PARTY_NAMESPACE}/code-${tier}`,
+  revision: BUILTIN_REVISION,
+  title: `Code (${tier} risk)`,
+  description: `Code with a revisioned ${tier}-risk scrutiny contract. Classification must be evidenced before acceptance.`,
+  modules: ['generic-core', 'code'],
+  scrutiny: scrutinyPolicyFor(tier),
+  citations: ['code', 'test'],
+  display: { label: `Code · ${tier}` },
+}));
+
+const riskPlanTypes: PlanTypeDefinition[] = RISK_TIERS.map(tier => ({
+  ...planType('coding'),
+  id: `${FIRST_PARTY_NAMESPACE}/coding-${tier}`,
+  title: `Coding plan (${tier} risk)`,
+  description: `Coding plan defaulting to evidenced ${tier}-risk items; item overrides retain their own scrutiny.`,
+  defaultItemType: { id: `${FIRST_PARTY_NAMESPACE}/code-${tier}`, minRevision: BUILTIN_REVISION },
+  itemTypes: [
+    ...DELIVERABLE_KINDS.map(kind => ({ id: builtinItemTypeId(kind), minRevision: BUILTIN_REVISION })),
+    ...riskItemTypes.map(type => ({ id: type.id, minRevision: BUILTIN_REVISION })),
+  ],
+  display: { label: `Coding · ${tier}` },
+}));
+
 /** The first-party catalog. Frozen so no caller can mutate the shared definitions. */
 export const BUILTIN_CATALOG: TypeCatalog = Object.freeze({
-  itemTypes: Object.freeze(DELIVERABLE_KINDS.map(itemType)),
-  planTypes: Object.freeze(VERIFICATION_PROFILES.map(planType)),
+  itemTypes: Object.freeze([...DELIVERABLE_KINDS.map(itemType), ...riskItemTypes]),
+  planTypes: Object.freeze([...VERIFICATION_PROFILES.map(planType), ...riskPlanTypes]),
 });
