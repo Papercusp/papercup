@@ -384,6 +384,7 @@ function buildPinnedAmendmentReviewBrief(input: AmendmentReviewBriefInput, answe
   const signature = `approve ${input.previewPostRef}\nverified-complete-source sha256:${hash}`;
   const priorRubric = source.rubric.baseline as Record<string, unknown>;
   const nextRubric = source.rubric.candidate as Record<string, unknown>;
+  const postApplyRevision = (nextRubric.barContract as { subjectPlanRevision?: unknown } | undefined)?.subjectPlanRevision;
   const rubricFields = Object.fromEntries([...new Set([...Object.keys(priorRubric), ...Object.keys(nextRubric)])]
     .filter((key) => key !== 'criteria' && JSON.stringify(priorRubric[key]) !== JSON.stringify(nextRubric[key]))
     .map((key) => [key, { before: priorRubric[key] ?? null, after: nextRubric[key] ?? null }]));
@@ -395,7 +396,10 @@ function buildPinnedAmendmentReviewBrief(input: AmendmentReviewBriefInput, answe
     `Dependency changes (Bar-to-work map): ${JSON.stringify(source.mappingDelta)}. Other source/dependency edits remain in the complete pinned plan.`,
     `Preflight: passed; normalized candidate ${input.preview.candidateValidation.candidateHash}; generated clauses ${input.preview.candidateValidation.generatedSpecCount}.`,
     `Approval identity: ${input.previewPostRef}; candidate/source SHA-256 ${hash}; proposed patch ${input.preview.approval.proposedPatchHash}.`,
-    'Supporting material — one complete immutable copy, including the entire baseline rubric, normalized candidate, complete plan and proposed source:',
+    `Review revisions: ${JSON.stringify({ baseline: source.subjectPlan.revision,
+      postApply: Number.isSafeInteger(postApplyRevision) ? postApplyRevision : null })}`,
+    'The candidate plan pin is the prospective atomic result (baseline + 1), not a stored revision required before approval. proposedContent/proposedContentUnchanged covers the reviewed source before apply derives requirements from the candidate and appends the generated amendment Decision/date. Verify that derivation in packages/operator-core/lib/rubrics.ts; unrelated source edits still invalidate approval.',
+    'Supporting material — one complete immutable copy of the baseline rubric/plan, normalized candidate and proposed source:',
     `Prefer one authenticated full-post read: conversations:get { id:'${input.previewPostRef}' }; the complete body is results[].post.body. For a large post, a foreground code:run script can call tools.conversations.get({id:'${input.previewPostRef}'}) and inspect the entire body before returning bounded evidence. Do not use durable execution for this single read. A truncated outer excerpt is not the complete body: recover its full cursor or use the foreground script.`,
     'Verify the complete amendment-source JSON and inspect the complete baseline, candidate and subject plan on either read route. Never substitute a requester-provided hash or an excerpt for your own complete-source verification.',
     'Fallback exact paged read:',

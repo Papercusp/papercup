@@ -30,6 +30,7 @@ import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY } from './selection-policies';
 import { analyzeClaudeResumeTranscript } from '../claude-resume-tool-references.mjs';
 import {
   acceptanceBarReviewPostBody, acceptanceBarReviewSourceHash, readAcceptanceBarReviewSource,
+  type AcceptanceBarReviewSource,
 } from '../acceptance-bar-amendment';
 
 describe('P-003 compact immutable amendment packet', () => {
@@ -92,6 +93,34 @@ describe('P-003 compact immutable amendment packet', () => {
       .toThrow('acceptance_bar_review_source_incomplete');
     expect(() => readAcceptanceBarReviewSource(retained.replace('Old detector', 'Altered detector'), hash))
       .toThrow('acceptance_bar_review_source_mismatched');
+  });
+
+  it.each([false, true])('distinguishes the locked source from its atomic post-apply revision (source edit: %s)', changed => {
+    const { input, source } = packet();
+    const reviewed = structuredClone(source) as AcceptanceBarReviewSource;
+    reviewed.rubric.candidate = { ...(reviewed.rubric.candidate as Record<string, unknown>),
+      barContract: { subjectPlanRevision: 8 } };
+    if (changed) {
+      delete reviewed.subjectPlan.proposedContentUnchanged;
+      reviewed.subjectPlan.proposedContent = 'Complete source after the reviewed mapping edit';
+    }
+    input.preview.reviewSource = reviewed;
+    input.preview.approval.reviewSourceHash = acceptanceBarReviewSourceHash(reviewed);
+    const retained = acceptanceBarReviewPostBody(input.preview.approval, reviewed);
+
+    for (const answerOn of [undefined, { workItemId: 'WI-42', harness: 'papercusp' }]) {
+      const brief = buildAmendmentReviewBrief(input, answerOn);
+      const line = brief.split('\n').find(value => value.startsWith('Review revisions: '));
+      expect(line).toBeDefined();
+      expect(JSON.parse(line!.slice('Review revisions: '.length))).toEqual({ baseline: 7, postApply: 8 });
+      expect(brief).toContain('prospective atomic result');
+      expect(brief).toContain('proposedContentUnchanged');
+      expect(brief).toContain('requirements from the candidate');
+      expect(brief).toContain('generated amendment Decision');
+      expect(brief).toContain(`verified-complete-source sha256:${input.preview.approval.reviewSourceHash}`);
+      expect(acceptanceBarReviewPostBody(input.preview.approval, reviewed)).toBe(retained);
+      expect(readAcceptanceBarReviewSource(retained, input.preview.approval.reviewSourceHash!)).toEqual(reviewed);
+    }
   });
 
   it.each(['before', 'after'] as const)('does not report an equal read-only bar alias on %s as an outcome change', (side) => {
