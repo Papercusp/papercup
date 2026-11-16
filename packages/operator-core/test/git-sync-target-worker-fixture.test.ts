@@ -6,7 +6,7 @@ const state = vi.hoisted(() => ({
   cleanupFails: false,
 }));
 
-// Partial: the real @papercusp/db-org graph (partial mock below) reads other child_process exports.
+// Keep the real built-in exports while replacing fixture Git and worker launch.
 vi.mock('node:child_process', async original => ({
   ...await original<typeof import('node:child_process')>(),
   execFileSync: vi.fn(() => 'fixture-head'),
@@ -37,7 +37,7 @@ vi.mock('node:http', () => ({ createServer: () => ({
 vi.mock('@hono/node-server', () => ({ getRequestListener: () => vi.fn() }));
 vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({ Client: vi.fn() }));
 vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({ StreamableHTTPClientTransport: vi.fn() }));
-vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+vi.mock('@papercusp/db-org', () => ({
   getOrgPg: () => ({ sql: { end: vi.fn() } }), _resetForTests: vi.fn(),
 }));
 vi.mock('../../../apps/operator/bin/host-handler', () => ({ handler: vi.fn() }));
@@ -52,6 +52,13 @@ vi.mock('../lib/superuser-token', () => ({
 vi.mock('../lib/serving-host-identity', () => ({ getServingHostIdentity: vi.fn() }));
 vi.mock('../lib/process-identity', () => ({ readProcessIdentity: vi.fn() }));
 vi.mock('../lib/memory/embed-sidecar-server', () => ({ runEmbedSidecarServer: vi.fn() }));
+// These services are reached only after the request listener starts. The
+// cleanup test deliberately fails there, so importing their real platform
+// graph adds unrelated startup work before either assertion can run.
+vi.mock('../lib/harness/git-sync/git-sync-action', () => ({ registerGitSyncResource: vi.fn() }));
+vi.mock('../lib/agent-tools/locks/in-workspace-txn', () => ({ inWorkspaceTxn: vi.fn() }));
+vi.mock('../lib/events/await/store', () => ({ registerAwait: vi.fn(), listActiveAwaits: vi.fn() }));
+vi.mock('../lib/events/await/engine', () => ({ emitAwaitedEvent: vi.fn() }));
 
 beforeEach(() => {
   vi.resetModules();

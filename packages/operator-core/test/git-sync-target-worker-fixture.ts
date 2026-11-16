@@ -1,7 +1,7 @@
 /** Real HTTP/MCP and git-sync composition, always under with-test-pg isolation. */
 import assert from 'node:assert/strict';
 import { execFileSync, fork, type ChildProcess } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -28,6 +28,7 @@ assert.ok(root, 'explicit source root required for the bundled private fixture')
 const workspace = process.env.PAPERCUSP_WORKSPACE_ID!;
 const workerMode = process.argv.includes('--worker');
 const releaseScenario = process.env.FRICTION_RELEASE_CONTINUATION === '1';
+const metadataScenario = process.argv.includes('--metadata-repair');
 const privateRoot = dirname(process.env.HOME!);
 assert.match(workspace, /^test-runtime-/);
 assert.notEqual(process.env.PAPERCUSP_PG_PORT, '5432');
@@ -109,13 +110,30 @@ export async function runGitSyncTargetWorkerFixture() {
   git('init', '-b', 'staging'); git('config', 'user.name', 'Private acceptance');
   git('config', 'user.email', 'private-acceptance@example.invalid');
   writeFileSync(join(repository, 'payload.txt'), 'initial\n');
-  git('add', 'payload.txt'); git('commit', '-m', 'private fixture initial state');
+  if (metadataScenario) {
+    mkdirSync(join(repository, 'packages/member'), { recursive: true });
+    const manifest = { name: 'private-worker-metadata', version: '1.0.0', private: true,
+      workspaces: ['packages/*'] };
+    writeFileSync(join(repository, 'package.json'), JSON.stringify(manifest));
+    writeFileSync(join(repository, 'packages/member/package.json'),
+      JSON.stringify({ name: 'private-worker-member', version: '2.0.0' }));
+    writeFileSync(join(repository, 'package-lock.json'), JSON.stringify({ name: manifest.name,
+      version: manifest.version, lockfileVersion: 3, packages: { '': manifest,
+        'packages/member': { version: '1.0.0' },
+        'node_modules/private-worker-member': { resolved: 'packages/member', link: true } } }));
+  }
+  git('add', '--all'); git('commit', '-m', 'private fixture initial state');
   const remote = join(privateRoot, 'origin.git');
   git('init', '--bare', remote);
   git('remote', 'add', 'origin', remote);
   git('push', '--set-upstream', 'origin', 'staging');
   const before = git('rev-parse', 'HEAD');
   writeFileSync(join(repository, 'payload.txt'), 'measured private mutation\n');
+  const pendingLock = metadataScenario ? readFileSync(join(repository, 'package-lock.json')) : undefined;
+  const repairMetadata = pendingLock ? { base: before,
+    expectedPendingLockSha256: createHash('sha256').update(pendingLock).digest('hex'),
+    requestId: 'private-worker-metadata-repair', generation: 1, publishedLibrarySelections: [] } : undefined;
+  const mutation = { installSlug: slug, ...(repairMetadata ? { repairMetadata } : {}) };
   const otherRepository = join(privateRoot, 'non-target-repository');
   mkdirSync(otherRepository);
   const otherGit = (...args: string[]) => execFileSync('git', ['-C', otherRepository, ...args], {
@@ -165,7 +183,12 @@ export async function runGitSyncTargetWorkerFixture() {
       await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/api/mcp?${query}`),
         { requestInit: { headers: { Authorization: `Bearer ${token}` } } }), requestOptions);
       phase(`initialize-complete:${port}`);
-      await client.listTools(undefined, requestOptions);
+      const catalog = await client.listTools(undefined, requestOptions);
+      if (metadataScenario) {
+        const tool = catalog.tools.find(entry => entry.name === 'git-sync:run');
+        assert.ok(tool?.inputSchema.properties?.repairMetadata, 'loaded worker catalog must expose metadata repair');
+        assert.ok(tool.inputSchema.properties.target, 'loaded worker catalog must expose the exact target');
+      }
       phase(`catalog-complete:${port}`);
       return client;
     };
@@ -177,19 +200,20 @@ export async function runGitSyncTargetWorkerFixture() {
     phase('request-only-refused');
     const client = await connect(proxyPort);
     phase('preview-start');
-    const preview = parse(await client.callTool({ name: 'git-sync:run', arguments: { installSlug: slug, target: ready.target, dryRun: true } }, undefined, requestOptions));
+    const preview = parse(await client.callTool({ name: 'git-sync:run', arguments: { ...mutation, target: ready.target, dryRun: true } }, undefined, requestOptions));
     assert.equal(preview.fired, false);
+    if (repairMetadata) assert.deepEqual(preview.repair_metadata, repairMetadata);
     assert.equal(git('rev-parse', 'HEAD'), before);
     phase('preview-complete');
     const wrong = await fetch(`http://127.0.0.1:${proxyPort}/api/mcp`, { method: 'POST',
       signal: AbortSignal.timeout(30_000),
       headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'tools/call',
-        params: { name: 'git-sync:run', arguments: { installSlug: slug, target: { ...ready.target, buildSha: '0'.repeat(40) } } } }) });
+        params: { name: 'git-sync:run', arguments: { ...mutation, target: { ...ready.target, buildSha: '0'.repeat(40) } } } }) });
     assert.equal(wrong.status, 503);
     const principal = await fetch(`http://127.0.0.1:${proxyPort}/api/mcp`, { method: 'POST',
       signal: AbortSignal.timeout(30_000),
       headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 6, method: 'tools/call',
-        params: { name: 'tools:invoke', arguments: { name: 'git-sync:run', args: { installSlug: slug, target: ready.target }, authenticatedPrincipal: {} } } }) });
+        params: { name: 'tools:invoke', arguments: { name: 'git-sync:run', args: { ...mutation, target: ready.target }, authenticatedPrincipal: {} } } }) });
     assert.equal(principal.status, 400);
     assert.equal(git('rev-parse', 'HEAD'), before);
     let releaseContinuation: Record<string, unknown> | undefined;
@@ -197,7 +221,8 @@ export async function runGitSyncTargetWorkerFixture() {
     // Register only this disposable harness's resource. Acquisition and release
     // go through the real MCP handlers in the private runtime.
     const resource = `git-sync:${slug}`;
-    await inWorkspaceTxn(workspace, 'friction-private-setup', tx => registerGitSyncResource(tx, slug));
+    await inWorkspaceTxn(workspace, 'friction-private-setup', tx =>
+      registerGitSyncResource(tx as Parameters<typeof registerGitSyncResource>[0], slug));
     const lease = parse(await client.callTool({ name: 'locks:acquire_resource', arguments: {
       resource, mode: 'exclusive', reason: 'private release-continuation acceptance', ttl_sec: 300,
       wait: { max_drain_sec: 0 },
@@ -257,18 +282,67 @@ export async function runGitSyncTargetWorkerFixture() {
       staleReleaseRejected: true, actualReleaseConsumed: true,
       releasedAtMs: released.fired_payload.releasedAtMs, awaitId: waiting.id };
     }
+    if (repairMetadata) {
+      const stale = parse(await client.callTool({ name: 'git-sync:run', arguments: { ...mutation,
+        repairMetadata: { ...repairMetadata, expectedPendingLockSha256: '0'.repeat(64) }, target: ready.target,
+      } }, undefined, requestOptions));
+      assert.equal(stale.status, 'error', JSON.stringify(stale));
+      assert.ok(stale.outcome.errors.some((error: any) => error.message === 'generated-lock-request-pending-mismatch'), JSON.stringify(stale));
+      assert.equal(git('rev-parse', 'HEAD'), before, 'stale metadata input must not commit');
+      assert.equal(git('for-each-ref', '--format=%(refname)', 'refs/papercusp/source-custody'), '',
+        'stale metadata input must not capture a candidate');
+      assert.deepEqual(readFileSync(join(repository, 'package-lock.json')), pendingLock);
+      phase('stale-pending-refused');
+    }
     phase('mutation-start');
-    const result = parse(await client.callTool({ name: 'git-sync:run', arguments: { installSlug: slug, target: ready.target } }, undefined,
+    const result = parse(await client.callTool({ name: 'git-sync:run', arguments: { ...mutation, target: ready.target } }, undefined,
       { timeout: 60_000, maxTotalTimeout: 60_000, resetTimeoutOnProgress: false }));
     phase('mutation-returned');
     const after = git('rev-parse', 'HEAD');
     assert.equal(result.fired, true, JSON.stringify(result));
     assert.equal(result.success, true, JSON.stringify(result));
-    assert.equal(result.status, 'synced', JSON.stringify(result));
+    assert.equal(result.status, metadataScenario ? 'committed' : 'synced', JSON.stringify(result));
     assert.notEqual(after, before, JSON.stringify(result));
-    assert.equal(git('show', 'HEAD:payload.txt'), 'measured private mutation');
     assert.equal(git('rev-list', '--count', `${before}..${after}`), '1', 'one request creates exactly one expected commit');
-    assert.equal(git('--git-dir', remote, 'rev-parse', 'refs/heads/staging'), after);
+    let metadataRepair: Record<string, unknown> | undefined;
+    if (repairMetadata) {
+      const proof = result.outcome.metadataRepair;
+      assert.equal(proof.commit, after, JSON.stringify(result));
+      assert.equal(proof.base, before);
+      assert.equal(proof.publication, 'committed');
+      assert.equal(proof.remoteEgressConfirmed, false);
+      assert.deepEqual(result.outcome.pushed, []);
+      assert.deepEqual(proof.paths, ['package-lock.json']);
+      assert.equal(proof.sourceFingerprint.schemaVersion, 2);
+      assert.deepEqual(proof.sourceFingerprint.publishedLibrarySelections, []);
+      assert.equal(git('diff-tree', '--no-commit-id', '--name-only', '-r', before, after), 'package-lock.json');
+      const lock = JSON.parse(git('show', 'HEAD:package-lock.json'));
+      assert.equal(lock.packages['packages/member'].version, '2.0.0');
+      assert.deepEqual(lock.packages['node_modules/private-worker-member'], { resolved: 'packages/member', link: true });
+      assert.equal(git('show', 'HEAD:payload.txt'), 'initial');
+      assert.equal(readFileSync(join(repository, 'payload.txt'), 'utf8'), 'measured private mutation\n');
+      assert.deepEqual(readFileSync(join(repository, 'package-lock.json')), pendingLock,
+        'the metadata publication must preserve the caller pending lock');
+      assert.equal(git('--git-dir', remote, 'rev-parse', 'refs/heads/staging'), before,
+        'metadata publication must not push');
+      const replay = parse(await client.callTool({ name: 'git-sync:run', arguments: { ...mutation, target: ready.target } }, undefined,
+        { timeout: 60_000, maxTotalTimeout: 60_000, resetTimeoutOnProgress: false }));
+      assert.equal(replay.outcome.metadataRepair.publication, 'already-published', JSON.stringify(replay));
+      assert.equal(replay.outcome.metadataRepair.commit, after);
+      assert.equal(replay.outcome.committedCount, 0);
+      assert.deepEqual(replay.outcome.pushed, []);
+      assert.equal(git('rev-parse', 'HEAD'), after, 'replay must not create another commit');
+      assert.equal(git('--git-dir', remote, 'rev-parse', 'refs/heads/staging'), before);
+      assert.deepEqual(readFileSync(join(repository, 'package-lock.json')), pendingLock);
+      assert.equal(readFileSync(join(repository, 'payload.txt'), 'utf8'), 'measured private mutation\n');
+      metadataRepair = { ...proof, stalePendingRefused: true, lockMemberVersion: lock.packages['packages/member'].version,
+        pendingLockPreserved: true, unrelatedPendingPreserved: true,
+        replayPublication: replay.outcome.metadataRepair.publication, replayCommittedCount: replay.outcome.committedCount };
+      phase('metadata-repair-verified');
+    } else {
+      assert.equal(git('show', 'HEAD:payload.txt'), 'measured private mutation');
+      assert.equal(git('--git-dir', remote, 'rev-parse', 'refs/heads/staging'), after);
+    }
     assert.equal(otherGit('rev-parse', 'HEAD'), otherBefore, 'non-target ref must not move');
     assert.equal(otherGit('status', '--porcelain'), otherStatus, 'non-target dirty state must remain unchanged');
     assert.equal(readFileSync(join(otherRepository, 'payload.txt'), 'utf8'), 'non-target dirty state\n');
@@ -282,7 +356,8 @@ export async function runGitSyncTargetWorkerFixture() {
       target: ready.target, worker: { pid: ready.pid, identity: ready.identity },
       before, after, committed: true, wrongTargetDispatched: false, principalDispatched: false,
       requestOnlyRefused: true, workerStopped: true, resultStatus: result.status,
-      remoteConfirmed: true, nonTargetUnchanged: true, commits: 1,
+      remoteConfirmed: !metadataScenario, nonTargetUnchanged: true, commits: 1,
+      ...(metadataRepair ? { metadataRepair, remoteUnchanged: true } : {}),
       ...(releaseContinuation ? { releaseContinuation } : {}),
       sourceHost: getServingHostIdentity() }));
   } catch (error) {
