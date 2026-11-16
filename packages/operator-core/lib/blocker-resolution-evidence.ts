@@ -172,12 +172,16 @@ export async function preflightBlockerDecision(
     if (!prepared.ok) return prepared;
     const { activeExternalBlockers } = await import('./external-blockers');
     const blockers = [...activeExternalBlockers(item.payload)];
+    const additionalConditions: ExternalBlockerRecord[] = [];
     // Lifecycle writers validate both the stored row and their prospective
     // payload. An unchanged record is one obligation across those two views.
     // Preserve duplicates already in canonical history and any changed record:
     // those remain ambiguous conditions that the exact readers must refuse.
     for (const additional of options.additionalBlockers ?? []) {
-      if (!blockers.some(blocker => isDeepStrictEqual(blocker, additional))) blockers.push(additional);
+      if (!blockers.some(blocker => isDeepStrictEqual(blocker, additional))) {
+        blockers.push(additional);
+        additionalConditions.push(additional);
+      }
     }
     const absorbing = prepared.record.decision.disposition === 'absorb';
     if (absorbing && blockers.some(blocker => blocker.kind !== 'runtime' ||
@@ -222,7 +226,7 @@ export async function preflightBlockerDecision(
     }
     const { ALL_TERMINAL_STATUSES } = await import('./work-item-blocking');
     const custodyScope = !options.requireResolution && !options.allowAbsorption &&
-      !options.additionalBlockers?.length && !ALL_TERMINAL_STATUSES.has(item.state) &&
+      !additionalConditions.length && !ALL_TERMINAL_STATUSES.has(item.state) &&
       item.assignee === context.ownerId && context.workspaceId && item.harness
       ? { workspaceId: context.workspaceId, harnessSlug: item.harness,
           workItemId: item.id, custodianId: context.ownerId }

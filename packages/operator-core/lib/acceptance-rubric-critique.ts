@@ -50,25 +50,28 @@ type RubricReviewWorkItem = {
   updatedAt: string;
 };
 
-type RubricReviewWorkItemSearch = (
-  rubricId: string,
-  options: { semantic: false; kind: 'task'; limit: 50 },
-) => Promise<{ items: readonly RubricReviewWorkItem[] }>;
+type RubricReviewWorkItemList = (filter: {
+  q: string; kind: 'task'; includeChildren: true; includePayload: false;
+}) => Promise<readonly RubricReviewWorkItem[]>;
 
 type CritiqueDeps = {
   candidates: (rubric: Rubric) => Promise<RubricCritiqueCandidate[]>;
   consultCandidates?: (rubric: Rubric) => Promise<RubricCritiqueCandidate[]>;
-  searchReviewWorkItems?: RubricReviewWorkItemSearch;
+  listReviewWorkItems?: RubricReviewWorkItemList;
   consult: (id: string, rubric: Rubric) => Promise<{ exists: boolean; critiquePosts: number; critics: string[] }>;
   workItem: (id: string, rubric: Rubric) => Promise<{ exists: boolean; critiquePosts: number; critics: string[] }>;
 };
 
 function workItemCritiqueCandidates(items: readonly RubricReviewWorkItem[]): RubricCritiqueCandidate[] {
-  return items.map(item => ({
-    workItemId: item.id,
-    request: `${item.title}\n${item.summary ?? ''}`,
-    createdAt: item.updatedAt,
-  }));
+  return items.map(item => {
+    if (!Number.isFinite(Date.parse(item.updatedAt)))
+      throw new Error(`Unreadable acceptance rubric critique candidate: ${item.id}`);
+    return {
+      workItemId: item.id,
+      request: `${item.title}\n${item.summary ?? ''}`,
+      createdAt: item.updatedAt,
+    };
+  });
 }
 
 async function defaultCandidates(rubric: Rubric, deps: Partial<CritiqueDeps> = {}): Promise<RubricCritiqueCandidate[]> {
@@ -88,20 +91,26 @@ async function defaultCandidates(rubric: Rubric, deps: Partial<CritiqueDeps> = {
          AND source.conversation_id = cs.outcome->>'source_conversation_id'
        WHERE cs.workspace_id = ${rubric.workspaceId}
          AND cs.question ILIKE ${'%' + rubric.rubricId + '%'}
-       ORDER BY cs.updated_at DESC LIMIT 50
+       ORDER BY cs.updated_at DESC, cs.conversation_id
     `;
-    candidates = rows.flatMap(row => {
+    candidates = rows.map(row => {
       const createdAt = pgTimestampToIsoOrNull(row.updated_at);
-      return typeof row.conversation_id === 'string' && typeof row.question === 'string' && createdAt
-        ? [{ consultId: row.conversation_id, request: row.question, createdAt }] : [];
+      if (typeof row.conversation_id !== 'string' || typeof row.question !== 'string'
+        || !createdAt || !Number.isFinite(Date.parse(createdAt)))
+        throw new Error(`Unreadable acceptance rubric critique candidate: ${row.conversation_id}`);
+      return { consultId: row.conversation_id, request: row.question, createdAt };
     });
   }
-  // Pullable reviews are an existing alternate critique channel. Search their durable
-  // opening request. Search is already scoped to this rubric; don't require editorial
-  // trigger wording before the exact identity and third-party-answer checks below.
-  const searchWorkItems = deps.searchReviewWorkItems ?? (await import('./work-items')).searchWorkItems;
-  const reviews = await searchWorkItems(rubric.rubricId, { semantic: false, kind: 'task', limit: 50 });
-  candidates.push(...workItemCritiqueCandidates(reviews.items));
+  // Both populations are complete internal reads, kept off the model transport.
+  // A ranked search prefix cannot establish absence of an eligible older review.
+  // Reuse the uncapped reader, including child reviews; preserve its full summary
+  // because it holds the opening request checked below. No partial cursor survives
+  // a failed read: retries re-read both complete sources before deciding absence.
+  const listReviews = deps.listReviewWorkItems ?? (await import('./work-items')).listAllWorkItemsForFileExport;
+  const reviews = await listReviews({
+    q: rubric.rubricId, kind: 'task', includeChildren: true, includePayload: false,
+  });
+  candidates.push(...workItemCritiqueCandidates(reviews));
   return candidates;
 }
 

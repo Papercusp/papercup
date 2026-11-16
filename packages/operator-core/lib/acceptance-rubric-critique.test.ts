@@ -1,9 +1,23 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Rubric } from './rubrics';
 import {
   critiqueCoversRubric,
   readCurrentAcceptanceRubricCritique,
 } from './acceptance-rubric-critique';
+
+const discovery = vi.hoisted(() => ({
+  consultRows: [] as Array<{ conversation_id: string; question: string; updated_at: string }>,
+  workItems: [] as Array<{ id: string; title: string; summary: string; updatedAt: string }>,
+  sql: vi.fn(),
+  listAll: vi.fn(),
+}));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: discovery.sql }) }));
+vi.mock('./work-items', () => ({
+  listAllWorkItemsForFileExport: discovery.listAll,
+  searchWorkItems: async (_query: string, options: { limit: number }) => ({
+    items: discovery.workItems.slice(0, options.limit),
+  }),
+}));
 
 const rubric = {
   rubricId: 'acceptance-host-memory-right-sizing-2026-10-31',
@@ -115,7 +129,7 @@ describe('work-item critique candidate discovery', () => {
     answer: { exists: boolean; critiquePosts: number; critics: string[] },
   ) => readCurrentAcceptanceRubricCritique(gcsRubric, 4, {
     consultCandidates: async () => [],
-    searchReviewWorkItems: async () => ({ items: [review] }),
+    listReviewWorkItems: async () => [review],
     workItem: async () => answer,
   });
 
@@ -148,5 +162,57 @@ describe('work-item critique candidate discovery', () => {
     ]) {
       await expect(readWorkItemReview(originalReview, answer)).resolves.toBeNull();
     }
+  });
+});
+
+describe('complete critique discovery', () => {
+  beforeEach(() => {
+    discovery.consultRows = [];
+    discovery.workItems = [];
+    discovery.sql.mockReset().mockImplementation(async (parts: TemplateStringsArray) =>
+      /LIMIT\s+50/i.test(parts.join('')) ? discovery.consultRows.slice(0, 50) : discovery.consultRows);
+    discovery.listAll.mockReset().mockImplementation(async () => discovery.workItems);
+  });
+
+  const answer = async () => ({ exists: true, critiquePosts: 1, critics: ['su-independent'] });
+  const populations = [49, 50, 51, 351];
+
+  it.each(populations)('finds a current consult after %i candidates, including tied timestamps', async count => {
+    discovery.consultRows = Array.from({ length: count }, (_, index) => ({
+      conversation_id: `consult-${index}`,
+      question: index === count - 1 ? request : `${rubric.rubricId}@10`,
+      updated_at: '2026-11-02T07:27:57.351Z',
+    }));
+    for (const rows of [discovery.consultRows, [...discovery.consultRows].reverse()]) {
+      discovery.consultRows = rows;
+      await expect(readCurrentAcceptanceRubricCritique(rubric, 11, { consult: answer }))
+        .resolves.toMatchObject({ consultId: `consult-${count - 1}` });
+    }
+  });
+
+  it.each(populations)('finds a current work-item review after %i candidates across repeated reads', async count => {
+    discovery.workItems = Array.from({ length: count }, (_, index) => ({
+      id: `review-${index}`,
+      title: index === count - 1 ? request : `${rubric.rubricId}@10`,
+      summary: '',
+      updatedAt: '2026-11-02T07:27:57.351Z',
+    }));
+    for (const items of [discovery.workItems, [...discovery.workItems].reverse(), discovery.workItems]) {
+      discovery.workItems = items;
+      await expect(readCurrentAcceptanceRubricCritique(rubric, 11, { workItem: answer }))
+        .resolves.toMatchObject({ workItemId: `review-${count - 1}` });
+    }
+  });
+
+  it('propagates an unreadable candidate population instead of reporting no critique', async () => {
+    discovery.listAll.mockRejectedValueOnce(new Error('review population unreadable'));
+    await expect(readCurrentAcceptanceRubricCritique(rubric, 11))
+      .rejects.toThrow('review population unreadable');
+  });
+
+  it('rejects an unreadable consult record rather than silently dropping it', async () => {
+    discovery.consultRows = [{ conversation_id: 'current-review', question: request, updated_at: 'invalid' }];
+    await expect(readCurrentAcceptanceRubricCritique(rubric, 11, { consult: answer }))
+      .rejects.toThrow('Unreadable acceptance rubric critique candidate: current-review');
   });
 });

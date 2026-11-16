@@ -29,7 +29,7 @@ export function installedRuntimeNodeArgs(repo: string) {
     join(repo, 'packages/operator-core/lib/workspace-host/installed-computer-runtime-loader.mjs')];
 }
 
-/** Exercise the actual failing SPA mixed-format boundary before expensive
+/** Exercise actual SPA mixed-format and identity type-import boundaries before expensive
  * setup. The full hosted graph is exercised once by the actual runtime;
  * importing it here duplicates thousands of unrelated route/tool modules.
  * Source equality cannot detect a subsequent CommonJS transformation. */
@@ -41,6 +41,8 @@ export async function assertInstalledRuntimeLoader(repo: string,
      if (typeof host.createSpaRoutes !== 'function') throw new Error('Missing native SPA exports');
      const response = await host.createSpaRoutes().request('/');
      if (![200, 503].includes(response.status)) throw new Error('Native SPA route did not execute');
+     const identity = await import(${JSON.stringify(pathToFileURL(join(repo, 'packages/operator-core/lib/identity/two-channel-verifier.ts')).href)});
+     if (typeof identity.verifyChannel1 !== 'function') throw new Error('Missing identity verifier export');
      console.log('INSTALLED_NATIVE_LOADER_OK');
      process.exit(0);`,
   ], { cwd: repo, env: options.env ?? process.env, timeout: 30_000, maxBuffer: 1024 * 1024 });

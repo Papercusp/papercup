@@ -14039,6 +14039,14 @@ export function runWrapper(options) {
           mintParkResumeArgs(a, { agent: o.agent ?? env.PAPERCUSP_AGENT, nativeId: o.nativeId ?? null }),
         mintQuotaResumeArgs: (a, o = {}) => mintCodexQuotaResumeArgs(a, o),
         prepareChildArgs: (a) => prepareCodexGatewayLaunch(env, a),
+        // WI-6554700010050184: the materialized MCP config pins a literal native
+        // session id; re-materialize it from each child's own env so a
+        // carry/recycle successor presents ITS id, not its predecessor's.
+        prepareChildEnv: (childEnv, childArgs) => {
+          if (isClaudeWrapperBin(wrapperBin) && !childArgs.includes("--strict-mcp-config")) {
+            materializePsuClaudeMcpConfig(childEnv);
+          }
+        },
         ensureCodexHome: async (options = {}) => {
           let failure = null;
           const result = await ensureCodexHomeViaOperator(
