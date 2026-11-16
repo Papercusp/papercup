@@ -250,6 +250,7 @@ const spawnGovernedAgentProcessMock = vi.fn(
     spawnProcess({ receiptId: 'WI-governed-test', leaseId: 'lease-governed-test' }),
 );
 const getFleetHeadcountTargetMock = vi.hoisted(() => vi.fn());
+const getFleetMock = vi.hoisted(() => vi.fn());
 const createFleetIfAbsentMock = vi.hoisted(() => vi.fn());
 const getFleetSchemeMock = vi.hoisted(() => vi.fn());
 const reconcileKickoffProofMock = vi.hoisted(() => vi.fn((proof: unknown, _options?: unknown) => proof));
@@ -273,6 +274,7 @@ vi.mock('../../agent-fleets-store', () => ({
   fleetSlugFromName: (name: string) => name.toLowerCase().replace(/\s+/g, '-'),
   createFleetIfAbsent: (...args: unknown[]) => createFleetIfAbsentMock(...args),
   getFleetHeadcountTarget: (...args: unknown[]) => getFleetHeadcountTargetMock(...args),
+  getFleet: (...args: unknown[]) => getFleetMock(...args),
   getFleetScheme: (...args: unknown[]) => getFleetSchemeMock(...args),
 }));
 
@@ -493,6 +495,7 @@ beforeEach(() => {
   listFactsMock.mockResolvedValue([]);
   getLoopStatusMock.mockResolvedValue(null);
   getFleetHeadcountTargetMock.mockResolvedValue(null);
+  getFleetMock.mockReset().mockResolvedValue(null);
   createFleetIfAbsentMock.mockResolvedValue({ record: null, created: false });
   getFleetSchemeMock.mockImplementation(async (_ws: string, slug: string) =>
     slug === 'alpha-fleet' ? { name: 'royal-purple', bg: '#581c87', fg: '#f5e8ff', cursor: '#d8b4fe' } : null,
@@ -2813,6 +2816,68 @@ describe('resume + fork (D-004/D-007)', () => {
       },
     });
     expect(textOf(res)).toContain("agent's first turn");
+  });
+
+  describe('retained bridge leader successor (EI-28900390755237885)', () => {
+    beforeEach(() => {
+      findLiveHostMock.mockReturnValue(null);
+      resolveResumeTargetMock.mockResolvedValue({ ...dead, agent: 'codex',
+        model: 'gpt-6.1-sol:xhigh', account: 'auto', headless: false });
+      latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'target-fleet', fleetRole: 'leader' });
+      getFleetMock.mockResolvedValue({ fleetSlug: 'target-fleet', leaderOwnerId: dead.ownerId });
+      getFleetHeadcountTargetMock.mockResolvedValue({ workspaceId: 'ws-test', fleetSlug: 'target-fleet',
+        target: 1, config: { harness: 'papercusp', agent: 'codex', model: 'gpt-6.1-sol',
+          effort: 'high', account: 'default', headless: true, carry: 'cold' } });
+      readAdvSessionLaunchRecordByOwnerMock.mockResolvedValue({ workspaceId: 'ws-test', agent: 'codex',
+        launchSpec: { v: 1, agent: 'codex', workspaceId: 'ws-test', harnessSlug: 'papercusp',
+          fleet: { slug: 'target-fleet', role: 'leader' }, model: 'gpt-6.1-sol:xhigh' },
+        launchArgv: ['psu', '--no-picker', '--fleet=target-fleet', '--fleet-role=leader',
+          '--agent=codex', '--harness=papercusp', '--model=gpt-6.1-sol:xhigh', '--account=auto',
+          '--carry=warm', '--context-size=trimmed'] });
+      getLoopStatusMock.mockResolvedValue({ active: true, carry: 'warm' });
+    });
+
+    it.each([false, true])('preserves the visible bridge leader recipe with explicit placement=%s', async explicit => {
+      const result = await launchAgent.handler({ successor: { agentId: dead.ownerId },
+        mcpTarget: 'spawn-host', ...(explicit ? { headless: false } : {}) }, ctx);
+
+      expect(isError(result), textOf(result)).toBe(false);
+      expect(spawnConsoleMock).toHaveBeenCalledOnce();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+      const command = spawnedCommand();
+      expect(command).toContain('--owner-id=su-a1a71');
+      expect(command).toContain('--fleet=target-fleet');
+      expect(command).toContain('--fleet-role=leader');
+      expect(command).toContain('--model=gpt-6.1-sol:xhigh');
+      expect(command).toContain('--account=auto');
+      expect(command).toContain('--carry=warm');
+      expect(command).not.toContain('--headless');
+      expect(command).not.toContain('--resume=');
+      expect(buildConsoleEnvelopeMock).toHaveBeenCalledWith(expect.objectContaining({
+        agentMcpBaseUrl: expect.any(String),
+      }));
+      expect(dataOf(result)?.launch).toMatchObject({ resumedOwnerId: dead.ownerId,
+        headcountProfile: { provenance: { source: 'adv_sessions.launch_spec' } } });
+    });
+
+    it('refuses a missing retained leader recipe instead of substituting the member recipe', async () => {
+      readAdvSessionLaunchRecordByOwnerMock.mockResolvedValue(null);
+      const result = await launchAgent.handler({ successor: { agentId: dead.ownerId } }, ctx);
+      expect(isError(result), textOf(result)).toBe(true);
+      expect(textOf(result)).toContain('No retained leader launch spec');
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses a leadership change during preparation before creating a native process', async () => {
+      getFleetMock.mockResolvedValueOnce({ fleetSlug: 'target-fleet', leaderOwnerId: dead.ownerId })
+        .mockResolvedValue({ fleetSlug: 'target-fleet', leaderOwnerId: 'su-replacement' });
+      const result = await launchAgent.handler({ successor: { agentId: dead.ownerId } }, ctx);
+      expect(isError(result), textOf(result)).toBe(true);
+      expect(textOf(result)).toContain('retained fleet leadership changed');
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    });
   });
 
   // EI-27199337851073256: an operator-scope caller (harness '*') relaunching a predecessor

@@ -59,6 +59,7 @@ import {
 } from "node:path";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import { consumeKickoffPromptFile, KICKOFF_PROMPT_FILE_ENV } from "@papercusp/operator-core/lib/agent-kickoff/prompt-transport.mjs";
+import { resolveClaudeMcpEntry } from "@papercusp/operator-core/lib/claude-mcp-config.mjs";
 import { getServingHostIdentity } from "@papercusp/operator-core/lib/serving-host-identity";
 import { launchWithHostedAgentSlot } from "@papercusp/operator-core/lib/workspace-host/hosted-agent-admission-client";
 
@@ -6454,6 +6455,42 @@ export function applyOmpOperatorBearer(mcpJsonText, bearer) {
   } catch {
     return mcpJsonText;
   }
+}
+
+/**
+ * EI-28843330270014450: reconnect can consume Claude's MCP URL verbatim.
+ * Materialize the current launch environment into this owner's isolated copy,
+ * keeping the global template available for the next launch or carry-respawn.
+ */
+export function materializePsuClaudeMcpConfig(env, { home = homedir() } = {}) {
+  const owner = env?.PAPERCUSP_SID;
+  const dir = env?.CLAUDE_CONFIG_DIR;
+  if (!owner || !dir || resolvePath(dir) !== resolvePath(sessionClaudeConfigDir(owner, home))) return false;
+  const path = join(dir, ".claude.json");
+  if (!existsSync(path)) return false;
+  const sourcePath = join(home, ".claude.json");
+  let current;
+  let source;
+  try {
+    current = JSON.parse(readFileSync(path, "utf8"));
+    source = existsSync(sourcePath) ? JSON.parse(readFileSync(sourcePath, "utf8")) : current;
+  } catch {
+    throw new Error("Cannot read valid Claude MCP configuration JSON");
+  }
+  const entry = source?.mcpServers?.["papercusp-su"] ?? current?.mcpServers?.["papercusp-su"];
+  if (!entry || typeof entry.url !== "string") return false;
+  const resolved = resolveClaudeMcpEntry(entry, env);
+  if (!lstatSync(path).isSymbolicLink() &&
+      JSON.stringify(current.mcpServers?.["papercusp-su"]) === JSON.stringify(resolved)) return false;
+  current.mcpServers = { ...current.mcpServers, "papercusp-su": resolved };
+  const temp = path + "." + randomUUID() + ".tmp";
+  try {
+    writeFileSync(temp, JSON.stringify(current, null, 2) + "\n", { mode: 0o600 });
+    renameSync(temp, path); // replace the session symlink itself, never its global target
+  } finally {
+    rmSync(temp, { force: true });
+  }
+  return true;
 }
 
 /**
@@ -13717,6 +13754,15 @@ export function runWrapper(options) {
   args = applyPsuClaudeSettingsArgs(wrapperBin, args, env);
   persistDefaultClaudeAuthSettings({ wrapperBin, env });
   persistPsuClaudeSessionSettings({ wrapperBin, env });
+  try {
+    // Role launches supply their own strict MCP config and must not inherit SU.
+    if (isClaudeWrapperBin(wrapperBin) && !args.includes("--strict-mcp-config")) {
+      materializePsuClaudeMcpConfig(env);
+    }
+  } catch (error) {
+    void Promise.resolve(reportPreSpawnFailure()).catch(() => undefined);
+    throw error;
+  }
   // The GitHub Copilot MCP plugin (a Claude plugin OMP also discovers) needs
   // GITHUB_PERSONAL_ACCESS_TOKEN; unset → "Authorization header is badly formatted" (HTTP 400) on
   // every claude/omp launch. Export the gh CLI token when unset (verified it authenticates the MCP).
@@ -17626,6 +17672,38 @@ export function isCodexHomeLaunchReady(codexHome, expectedOwner = null) {
   return codexHomeLaunchReadiness(codexHome, expectedOwner) === null;
 }
 
+// Share the installed-host enrollment contract between initial readiness and
+// operator repair readback. An older serving writer can return ok:true while
+// replacing newer hooks during a carry; the next native child must not accept
+// that response as proof that provenance and synchronous journaling survived.
+function codexManagedTurnHookReadiness(codexHome, expectedOwner, hooks = undefined) {
+  const installedHome = papercuspHome({}, homedir());
+  const provenanceDir = process.env.PAPERCUSP_TURN_PROVENANCE_DIR || join(installedHome, "turn-provenance");
+  const provenancePin = "PAPERCUSP_TURN_PROVENANCE_DIR='" + provenanceDir.replaceAll("'", "'\\''") + "'";
+  const required = [
+    ["UserPromptSubmit", "userpromptsubmit-provenance.sh", provenancePin],
+    ["Stop", "stop-turn-journal.sh", "PAPERCUSP_JOURNAL_SYNC=1"],
+  ].filter(([, script]) => existsSync(join(installedHome, "hooks", "cc", script)));
+  if (required.length === 0) return null;
+  try {
+    const parsed = hooks ?? JSON.parse(readFileSync(join(codexHome, "hooks.json"), "utf8"));
+    for (const [event, script, marker] of required) {
+      const enrolled = parsed?.hooks?.[event]?.some((group) =>
+        group?.hooks?.some((hook) => {
+          const command = String(hook?.command || "");
+          return command.includes(script) &&
+            command.includes(`PAPERCUSP_SID='${expectedOwner}'`) &&
+            command.includes("PAPERCUSP_AGENT=codex") && command.includes(marker);
+        }),
+      );
+      if (!enrolled) return `hooks.json lacks the managed ${event} ${script} enrollment`;
+    }
+    return null;
+  } catch {
+    return "hooks.json could not be read for managed turn enrollment";
+  }
+}
+
 /**
  * Why a Codex home is NOT launch-ready, or `null` when it is. The boolean
  * above folds every condition into one `false`, so a resume refusal could only
@@ -17729,25 +17807,7 @@ export function codexHomeLaunchReadiness(codexHome, expectedOwner = null, record
     // that cannot capture owner provenance or the turn journal. Match the
     // canonical writer's installed-host scope and conditional enrollment;
     // a workspace PAPERCUSP_HOME must not hide installed host hooks.
-    const installedHome = papercuspHome({}, homedir());
-    const provenanceDir = process.env.PAPERCUSP_TURN_PROVENANCE_DIR || join(installedHome, "turn-provenance");
-    const provenancePin = "PAPERCUSP_TURN_PROVENANCE_DIR='" + provenanceDir.replaceAll("'", "'\\''") + "'";
-    for (const [event, script, marker] of [
-      ["UserPromptSubmit", "userpromptsubmit-provenance.sh", provenancePin],
-      ["Stop", "stop-turn-journal.sh", "PAPERCUSP_JOURNAL_SYNC=1"],
-    ]) {
-      if (!existsSync(join(installedHome, "hooks", "cc", script))) continue;
-      const enrolled = hooks?.hooks?.[event]?.some((group) =>
-        group?.hooks?.some((hook) => {
-          const command = String(hook?.command || "");
-          return command.includes(script) &&
-            command.includes(`PAPERCUSP_SID='${expectedOwner}'`) &&
-            command.includes("PAPERCUSP_AGENT=codex") && command.includes(marker);
-        }),
-      );
-      if (!enrolled) return `hooks.json lacks the managed ${event} ${script} enrollment`;
-    }
-    return null;
+    return codexManagedTurnHookReadiness(codexHome, expectedOwner, hooks);
   } catch (error) {
     return `the home could not be read (${error instanceof Error ? error.message : String(error)})`;
   }
@@ -17789,6 +17849,33 @@ export function codexForkMcpUrlForOwner(codexHome, ownerId) {
   if (url.searchParams.get("client") !== ownerId)
     throw new Error("Codex fork Papercusp SU MCP URL did not bind its fresh owner id");
   return url.toString();
+}
+
+/** Observe the same preparation after its response deadline, without ever
+ * replaying the POST. An old server's missing GET route fails closed. */
+async function observeCodexHomeRepair({ operatorUrl, owner, advSessionId, attemptId, requestHash, headers, fetchImpl, timeoutMs }) {
+  const url = new URL(operatorUrl + '/api/adv/sessions/ensure-codex-home');
+  url.search = new URLSearchParams({ owner, advSessionId: String(advSessionId),
+    repairAttemptId: attemptId, requestHash }).toString();
+  const deadline = Date.now() + 60_000;
+  do {
+    let response, receipt;
+    try {
+      response = await fetchImpl(url.href, { method: 'GET', headers,
+        signal: AbortSignal.timeout(Math.max(1, Math.min(timeoutMs, deadline - Date.now()))) });
+      if (response.ok !== true) return null;
+      receipt = await response.json();
+    } catch { return null; }
+    if (receipt?.ok !== true || receipt.owner !== owner || Number(receipt.advSessionId) !== Number(advSessionId) ||
+        receipt.repairAttemptId !== attemptId || receipt.requestHash !== requestHash) return null;
+    if (receipt.pending === false && Number.isInteger(receipt.response?.status) &&
+        receipt.response.status >= 200 && receipt.response.status <= 599 && receipt.response.body &&
+        typeof receipt.response.body === 'object')
+      return new Response(JSON.stringify(receipt.response.body), { status: receipt.response.status });
+    if (receipt.pending !== true) return null;
+    await new Promise(resolve => setTimeout(resolve, Math.min(1_000, Math.max(0, deadline - Date.now()))));
+  } while (Date.now() < deadline);
+  return null;
 }
 
 /**
@@ -17922,34 +18009,50 @@ export async function ensureCodexHomeViaOperator(
     // The proxy must be able to return its explicit not_forwarded queue refusal
     // before this request's abort deadline closes the response channel.
     const queueBudgetMs = Math.min(10_000, Math.max(1, Math.floor(timeoutMs * 0.8)));
-    const res = await traceStep('request', () => fetchImpl(
+    const requestBody = JSON.stringify({
+      owner, advSessionId,
+      requireGatewayProvider: requireGatewayProvider || (!preserveArtifact &&
+        (routeMode === 'auto' || routeMode === 'pin' || env[SCOPED_INFERENCE_GATEWAY_ENV] !== undefined)),
+      ...(model ? { model } : {}),
+      ...(typeof headless === 'boolean' ? { headless } : {}),
+      ...(preserveArtifact ? { sourcePolicy, expectedSpecificationRevision,
+        ...(routeMode ? { expectedAccountRoute: { mode: routeMode, accountId: routeMode === 'pin' ? accountId : null } } : {}) } : {}),
+    });
+    const requestHeaders = {
+      'content-type': 'application/json',
+      'x-papercusp-repair-attempt': attemptId,
+      'x-papercusp-repair-receipt': '1',
+      'x-papercusp-repair-queue-budget-ms': String(queueBudgetMs),
+      ...(tok ? { authorization: `Bearer ${tok}` } : {}),
+    };
+    let res;
+    try {
+      res = await traceStep('request', () => fetchImpl(
       resolvedOperatorUrl + "/api/adv/sessions/ensure-codex-home",
       {
         method: "POST",
         signal: AbortSignal.timeout(timeoutMs),
-        headers: {
-          "content-type": "application/json",
-          "x-papercusp-repair-attempt": attemptId,
-          "x-papercusp-repair-queue-budget-ms": String(queueBudgetMs),
-          ...(tok ? { authorization: `Bearer ${tok}` } : {}),
-        },
-        body: JSON.stringify({
-          owner,
-          advSessionId,
-          // The running native child can reload config during this request.
-          // Keep its selected provider in the canonical writer's atomic
-          // publication, before the caller restores route-specific headers.
-          requireGatewayProvider: requireGatewayProvider || (!preserveArtifact &&
-            (routeMode === "auto" || routeMode === "pin" || env[SCOPED_INFERENCE_GATEWAY_ENV] !== undefined)),
-          ...(model ? { model } : {}),
-          ...(typeof headless === "boolean" ? { headless } : {}),
-          ...(preserveArtifact ? {
-            sourcePolicy, expectedSpecificationRevision,
-            ...(routeMode ? { expectedAccountRoute: { mode: routeMode, accountId: routeMode === 'pin' ? accountId : null } } : {}),
-          } : {}),
-        }),
+        headers: requestHeaders,
+        body: requestBody,
       },
-    ));
+      ));
+    } catch (error) {
+      if (error?.name !== 'TimeoutError' && error?.name !== 'AbortError') throw error;
+      res = await traceStep('repair-observe', () => observeCodexHomeRepair({
+        operatorUrl: resolvedOperatorUrl, owner, advSessionId, attemptId,
+        requestHash: createHash('sha256').update(requestBody).digest('hex'),
+        headers: requestHeaders, fetchImpl, timeoutMs,
+      }));
+      if (!res) throw error;
+    }
+    if (res.status === 202) {
+      res = await traceStep('repair-observe', () => observeCodexHomeRepair({
+        operatorUrl: resolvedOperatorUrl, owner, advSessionId, attemptId,
+        requestHash: createHash('sha256').update(requestBody).digest('hex'),
+        headers: requestHeaders, fetchImpl, timeoutMs,
+      }));
+      if (!res) return failed('repair-receipt-unavailable');
+    }
     status = Number.isInteger(res.status) ? res.status : null;
     stage = 'response';
     if (res.ok === false) {
@@ -18000,6 +18103,11 @@ export async function ensureCodexHomeViaOperator(
           : {}),
         });
       });
+    }
+    stage = 'home-hooks';
+    const enrollmentFailure = codexManagedTurnHookReadiness(codexHome, owner);
+    if (enrollmentFailure) {
+      return failed('managed-turn-enrollment-incomplete', null, { readiness: enrollmentFailure });
     }
     if (r.repaired) {
       console.error(

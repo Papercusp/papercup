@@ -34,6 +34,7 @@ import {
   chmodSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import * as realLauncher from './psu-launcher.mjs';
 
@@ -735,6 +736,48 @@ describe('Codex managed turn enrollment', () => {
     expect(codexHomeLaunchReadiness(dir, owner)).toBeNull();
   });
 
+  it.each(['missing-provenance', 'wrong-client', 'wrong-ledger', 'missing-journal'])(
+    'rejects a successful regeneration that loses managed enrollment: %s', async (damage) => {
+      const repairLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const homesRoot = join(dir, 'carry-homes');
+      vi.stubEnv('PAPERCUSP_SU_CODEX_HOMES_DIR', homesRoot);
+      const home = join(homesRoot, 'session-42');
+      mkdirSync(home, { recursive: true });
+      const hooksPath = join(home, 'hooks.json');
+      writeFileSync(hooksPath, JSON.stringify(managedHooks(owner)));
+      const nativeHistory = join(home, 'history.jsonl');
+      writeFileSync(nativeHistory, 'retained native bytes\n');
+      const onFailure = vi.fn();
+      try {
+        const result = await ensureCodexHomeViaOperator(owner, home, 42, {
+          operatorUrl: 'http://operator', token: 'fixture', onFailure,
+          fetchImpl: async () => {
+            // A stale serving writer can replace a repaired home during carry
+            // and still report success. Validate what the next CLI will load.
+            const hooks = managedHooks(owner);
+            if (damage === 'missing-provenance') hooks.hooks.UserPromptSubmit = [];
+            if (damage === 'wrong-client') hooks.hooks.UserPromptSubmit[0].hooks[0].command =
+              hooks.hooks.UserPromptSubmit[0].hooks[0].command.replace('PAPERCUSP_AGENT=codex', 'PAPERCUSP_AGENT=claude');
+            if (damage === 'wrong-ledger') hooks.hooks.UserPromptSubmit[0].hooks[0].command =
+              hooks.hooks.UserPromptSubmit[0].hooks[0].command.replace(/PAPERCUSP_TURN_PROVENANCE_DIR='[^']*'/, "PAPERCUSP_TURN_PROVENANCE_DIR='/wrong-ledger'");
+            if (damage === 'missing-journal') hooks.hooks.Stop![0].hooks.pop();
+            writeFileSync(hooksPath, JSON.stringify(hooks));
+            return { ok: true, status: 200, json: async () => ({ ok: true, repaired: true }) };
+          },
+        });
+        expect(result).toBeNull();
+        expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({
+          stage: 'home-hooks', reason: 'managed-turn-enrollment-incomplete',
+        }));
+        expect(repairLog).not.toHaveBeenCalled();
+        expect(readFileSync(nativeHistory, 'utf8')).toBe('retained native bytes\n');
+      } finally {
+        repairLog.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
   it('uses canonical same-owner repair before resuming and preserves native history', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.stubEnv('PAPERCUSP_SU_CODEX_HOMES_DIR', join(dir, '.papercusp', 'su-codex-homes'));
@@ -926,6 +969,55 @@ describe('Codex explicit preserved artifact request', () => {
     expect(readFileSync(join(home, 'config.toml'), 'utf8')).toBe('ORIGINAL BYTES\n');
     expect(failures).toMatchObject([{ stage: 'response', reason: 'http-error', status: 402,
       diagnostic: { attemptId: attempt } }]);
+  });
+});
+
+describe('Codex home repair receipt recovery', () => {
+  it.each(['timeout', 'pending'])('reconciles a timed-out home preparation without repeating the POST (%s)', async outcome => {
+    const root = mkdtempSync(join(tmpdir(), 'codex-repair-receipt-'));
+    const home = join(root, 'session-7'), owner = 'su-repair-receipt';
+    mkdirSync(home);
+    writeFileSync(join(home, 'hooks.json'), JSON.stringify(managedHooks(owner)));
+    const methods: string[] = [];
+    let attempt = '', requestHash = '';
+    try {
+      const result = await launcher.ensureCodexHomeViaOperator(owner, home, 7, {
+        env: { PAPERCUSP_SU_CODEX_HOMES_DIR: root }, operatorUrl: 'http://operator', token: 'fixture-token',
+        fetchImpl: async (url, init) => {
+          methods.push(init.method);
+          if (init.method === 'POST') {
+            attempt = new Headers(init.headers).get('x-papercusp-repair-attempt')!;
+            requestHash = createHash('sha256').update(init.body).digest('hex');
+            if (outcome === 'pending') return Response.json({ ok: true, pending: true }, { status: 202 });
+            throw new DOMException('response lost after preparation started', 'TimeoutError');
+          }
+          const query = new URL(url).searchParams;
+          expect(query.get('repairAttemptId')).toBe(attempt);
+          expect(query.get('requestHash')).toBe(requestHash);
+          return Response.json({ ok: true, owner, advSessionId: 7, repairAttemptId: attempt, requestHash,
+            pending: false, response: { status: 200, body: { ok: true, repaired: false } } });
+        },
+      });
+      expect(result).toEqual({ ok: true, repaired: false });
+      expect(methods).toEqual(['POST', 'GET']);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('fails closed when a legacy server cannot observe the timed-out repair', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'codex-repair-legacy-'));
+    const methods: string[] = [];
+    try {
+      const result = await launcher.ensureCodexHomeViaOperator('su-repair-legacy', join(root, 'session-7'), 7, {
+        env: { PAPERCUSP_SU_CODEX_HOMES_DIR: root }, operatorUrl: 'http://operator', token: 'fixture-token',
+        fetchImpl: async (_url, init) => {
+          methods.push(init.method);
+          if (init.method === 'POST') throw new DOMException('response lost', 'TimeoutError');
+          return new Response(null, { status: 404 });
+        },
+      });
+      expect(result).toBeNull();
+      expect(methods).toEqual(['POST', 'GET']);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
 

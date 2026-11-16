@@ -56,6 +56,7 @@ import {
   applyOmpToolsAllowlist,
   applyOmpOperatorOrigin,
   applyOmpOperatorBearer,
+  materializePsuClaudeMcpConfig,
   applyOmpMcpUrlParams,
   resolveOmpOperatorUrl,
   probeOmpOperatorMcp,
@@ -3426,6 +3427,139 @@ describe("applyOmpOperatorOrigin (P-030 — member mcp.json follows the launcher
       mcpServers: { p: { url: "http://localhost:3070/api/mcp" } },
     });
     expect(applyOmpOperatorOrigin(src, "not-a-url")).toBe(src);
+  });
+});
+
+describe("materializePsuClaudeMcpConfig (EI-28843330270014450)", () => {
+  let root: string;
+  let home: string;
+  let dir: string;
+  let priorRoot: string | undefined;
+  let env: Record<string, string>;
+  const read = () => JSON.parse(readFileSync(join(dir, ".claude.json"), "utf8"));
+  const template = () => JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"));
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "psu-mcp-resolved-"));
+    home = join(root, "home");
+    dir = join(root, "sessions", "su-mcp-test");
+    priorRoot = process.env.PAPERCUSP_SESSION_CLAUDE_DIR;
+    process.env.PAPERCUSP_SESSION_CLAUDE_DIR = join(root, "sessions");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(home, ".claude.json"), JSON.stringify({
+      theme: "dark",
+      projects: { "/work": { trusted: true } },
+      mcpServers: {
+        "papercusp-su": {
+          type: "http",
+          url: "${PAPERCUSP_OPERATOR_URL:-http://127.0.0.1:9071}/api/mcp?superuser=1&client=${PAPERCUSP_SID:-bare}&workspace=${PAPERCUSP_WORKSPACE:-}&tools=${PAPERCUSP_TOOLS:-}&ctx_tier=${PAPERCUSP_CONTEXT_TIER:-}",
+          headers: { Authorization: "Bearer FIXTURE", "x-papercusp-native-session": "${PAPERCUSP_NATIVE_SESSION_ID:-}" },
+        },
+        other: { type: "http", url: "http://example.test/mcp" },
+      },
+    }));
+    symlinkSync(join(home, ".claude.json"), join(dir, ".claude.json"));
+    env = {
+      CLAUDE_CONFIG_DIR: dir,
+      PAPERCUSP_SID: "su-mcp-test",
+      PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:3170",
+      PAPERCUSP_NATIVE_SESSION_ID: "native-first",
+      PAPERCUSP_WORKSPACE: "workspace + & # complete",
+      PAPERCUSP_TOOLS: "coord:orient,work_items:get",
+      PAPERCUSP_CONTEXT_TIER: "trimmed",
+    };
+  });
+  afterEach(() => {
+    if (priorRoot === undefined) delete process.env.PAPERCUSP_SESSION_CLAUDE_DIR;
+    else process.env.PAPERCUSP_SESSION_CLAUDE_DIR = priorRoot;
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("preserves global config and unrelated session data while resolving complete identities", () => {
+    const original = readFileSync(join(home, ".claude.json"), "utf8");
+    expect(materializePsuClaudeMcpConfig(env, { home })).toBe(true);
+    const config = read();
+    const entry = config.mcpServers["papercusp-su"];
+    const url = new URL(entry.url);
+    expect(url.origin).toBe("http://127.0.0.1:3170");
+    expect(url.searchParams.get("client")).toBe(env.PAPERCUSP_SID);
+    expect(url.searchParams.get("workspace")).toBe(env.PAPERCUSP_WORKSPACE);
+    expect(url.searchParams.get("tools")).toBe(env.PAPERCUSP_TOOLS);
+    expect(url.searchParams.get("ctx_tier")).toBe("trimmed");
+    expect(entry.headers["x-papercusp-native-session"]).toBe("native-first");
+    expect(config.theme).toBe("dark");
+    expect(config.projects).toEqual({ "/work": { trusted: true } });
+    expect(config.mcpServers.other).toEqual(template().mcpServers.other);
+    expect(lstatSync(join(dir, ".claude.json")).isSymbolicLink()).toBe(false);
+    expect(statSync(join(dir, ".claude.json")).mode & 0o777).toBe(0o600);
+    expect(readFileSync(join(home, ".claude.json"), "utf8")).toBe(original);
+  });
+
+  it("refreshes origin, native identity and credentials from the template on a carry-respawn", () => {
+    materializePsuClaudeMcpConfig(env, { home });
+    const source = template();
+    source.mcpServers["papercusp-su"].headers.Authorization = "Bearer ROTATED";
+    writeFileSync(join(home, ".claude.json"), JSON.stringify(source));
+    materializePsuClaudeMcpConfig({
+      ...env, PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:9171", PAPERCUSP_NATIVE_SESSION_ID: "native-second",
+    }, { home });
+    const entry = read().mcpServers["papercusp-su"];
+    expect(new URL(entry.url).origin).toBe("http://127.0.0.1:9171");
+    expect(entry.headers).toEqual({ Authorization: "Bearer ROTATED", "x-papercusp-native-session": "native-second" });
+  });
+
+  it("honors defaults without requiring every optional environment variable", () => {
+    materializePsuClaudeMcpConfig({ CLAUDE_CONFIG_DIR: dir, PAPERCUSP_SID: env.PAPERCUSP_SID }, { home });
+    const entry = read().mcpServers["papercusp-su"];
+    expect(new URL(entry.url).origin).toBe("http://127.0.0.1:9071");
+    expect(new URL(entry.url).searchParams.get("tools")).toBe("");
+    expect(entry.headers["x-papercusp-native-session"]).toBe("");
+  });
+
+  it("rejects a missing required variable intact before changing either file", () => {
+    const source = template();
+    source.mcpServers["papercusp-su"].headers.Authorization = "Bearer ${REQUIRED_MCP_TOKEN}";
+    writeFileSync(join(home, ".claude.json"), JSON.stringify(source));
+    const original = readFileSync(join(home, ".claude.json"), "utf8");
+    expect(() => materializePsuClaudeMcpConfig(env, { home })).toThrow(/REQUIRED_MCP_TOKEN/);
+    expect(lstatSync(join(dir, ".claude.json")).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(home, ".claude.json"), "utf8")).toBe(original);
+  });
+
+  it("does not rewrite an unchanged resolved session or an unrelated config directory", () => {
+    materializePsuClaudeMcpConfig(env, { home });
+    expect(materializePsuClaudeMcpConfig(env, { home })).toBe(false);
+    expect(materializePsuClaudeMcpConfig({ ...env, CLAUDE_CONFIG_DIR: home }, { home })).toBe(false);
+  });
+
+  it("lets a reconnecting HTTP consumer use the stored URL and headers without expansion", async () => {
+    const server = createServer((request, response) => {
+      const url = new URL(request.url!, "http://localhost");
+      response.end(JSON.stringify({
+        client: url.searchParams.get("client"), workspace: url.searchParams.get("workspace"),
+        native: request.headers["x-papercusp-native-session"], authorized: request.headers.authorization === "Bearer FIXTURE",
+      }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address() as { port: number };
+      const runtime = { ...env, PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:" + address.port };
+      // The original file is unusable by a reconnect path that reads it verbatim,
+      // even though the full launch environment is available.
+      await expect(fetch(read().mcpServers["papercusp-su"].url)).rejects.toThrow();
+      materializePsuClaudeMcpConfig(runtime, { home });
+      for (let reconnect = 0; reconnect < 2; reconnect++) {
+        const entry = read().mcpServers["papercusp-su"];
+        const response = await fetch(entry.url, { headers: entry.headers });
+        expect(await response.json()).toEqual({
+          client: env.PAPERCUSP_SID, workspace: env.PAPERCUSP_WORKSPACE, native: "native-first", authorized: true,
+        });
+      }
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
   });
 });
 
