@@ -9,7 +9,7 @@ import { access, cp, copyFile, mkdir, readFile, realpath, symlink, writeFile } f
 import { basename, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { chromium, type Browser } from 'playwright-core';
+import { chromium, request as playwrightRequest, type Browser } from 'playwright-core';
 import type { HostedHandler } from '../../../../apps/operator/bin/hosted-handler';
 
 type Input = {
@@ -358,6 +358,17 @@ export async function runInstalledComputerServedBrowser(input: Input) {
     assert(!nextError, nextError?.message);
     const portalDocument = await waitForPortalDocument(next, `${nextOrigin}/?app=desktops`);
     input.routePortal(installedPortalProxy(nextOrigin));
+    // Next readiness alone cannot detect proxy framing or TLS delivery bugs.
+    // Consume the same HTTPS document the browser will receive before its run.
+    await stage('installed-proxied-portal-document-ready');
+    const documentProbe = await playwrightRequest.newContext({ ignoreHTTPSErrors: true });
+    try {
+      const response = await documentProbe.get(`${origin}/?app=desktops`, { timeout: 10_000 });
+      assert.equal(response.status(), 200, 'Proxied Portal document must be available');
+      const html = await response.text();
+      assert(/<html[\s>]/i.test(html) && /<\/html>/i.test(html),
+        'Proxied Portal entry must deliver a complete HTML document');
+    } finally { await documentProbe.dispose(); }
     const { createServer } = await import('vite');
     process.env.PAPERCUSP_API_TARGET = localOrigin;
     gui = await createServer({ root: join(repo, 'apps/operator-vite'),

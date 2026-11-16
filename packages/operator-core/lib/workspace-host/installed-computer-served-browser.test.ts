@@ -63,7 +63,7 @@ describe('served Portal prerequisite and document readiness', () => {
         'content-length': String(wire.length) });
       res.end(wire);
     });
-    const proxy = serve({ fetch: installedPortalProxy(upstream), hostname: '127.0.0.1', port: 0 });
+    const proxy = serve({ fetch: installedPortalProxy(upstream), hostname: '127.0.0.1', port: 0 }) as Server;
     await once(proxy, 'listening');
     try {
       const port = (proxy.address() as { port: number }).port;
