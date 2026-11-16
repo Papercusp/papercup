@@ -446,7 +446,33 @@ describe('mcp-proxy watchdog — committed hot-path activation (EI-2264723281798
     const livenessIndex = pollBody.indexOf('fetch(livenessProbeUrl');
     expect(activationIndex).toBeGreaterThan(-1);
     expect(activationIndex).toBeLessThan(livenessIndex);
-    expect(source).toContain('if (!admitRestart(reason)) return { restartRequested: false, code: \'restart_suppressed\' };');
+  });
+
+  it('leaves a suppressed unit untouched and continues activating later units', async () => {
+    const targets = MCP_PROXY_HOT_PATH_TARGETS;
+    const requested: string[] = [];
+    const controller = createMcpProxyRestartController({ now: () => 1_000_000, log: () => {} });
+    expect(controller.admit('existing restart', targets[0].unit)).toBe(true);
+    const activate = createMcpProxyHotPathActivator({
+      readState: async () => ({
+        root: '/repo', latestCommitMs: 950_000, latestCommitHash: 'abcdef', dirtyEntries: [], error: null,
+      }),
+      readActiveForSec: async () => 100,
+      requestRestart: async (_sha, target) => {
+        requested.push(target);
+        return { ok: true, restarted: true, code: 'restarted' };
+      },
+      admitRestart: controller.admit,
+      settleRestartAttempt: controller.settle,
+      now: () => 1_000_000,
+      log: () => {},
+    });
+    expect(await activate()).toEqual([
+      { target: targets[0].target, restartRequested: false, code: 'restart_suppressed' },
+      { target: targets[1].target, restartRequested: true, code: 'restarted' },
+      { target: targets[2].target, restartRequested: true, code: 'restarted' },
+    ]);
+    expect(requested).toEqual([targets[1].target, targets[2].target]);
   });
 });
 
