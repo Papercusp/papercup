@@ -14,7 +14,7 @@ const bundleScript = 'apps/operator/bin/bundle-host.sh';
 const options = isolatedWorkerOptions(360_000);
 let bundle: string;
 
-async function verifyPrivateWorker(context: TestContext, releaseContinuation = false) {
+async function verifyPrivateWorker(context: TestContext, releaseContinuation = false, metadataRepair = false) {
   // MCP catalog and dispatch both require an attributable serving generation.
   // Refuse before compilation or private PG, using the real bundler resolver.
   const expectedBuildSha = privateMcpSourceSha(root);
@@ -25,6 +25,8 @@ async function verifyPrivateWorker(context: TestContext, releaseContinuation = f
       'apps/operator/lib/mcp-proxy/build-routing.ts', 'apps/operator/lib/mcp-proxy/proxy.ts',
       'packages/operator-core/lib/agent-tools/git_sync/run.ts',
       'packages/operator-core/lib/harness/git-sync/git-sync-action.ts',
+      'packages/operator-core/lib/harness/git-sync/run-git-sync.ts',
+      'scripts/npm-install-safe.mjs',
       'packages/operator-core/lib/harness/git-sync/git-sync-events.ts',
       'packages/operator-core/lib/agent-tools/locks/acquire_resource.ts',
       'packages/operator-core/lib/agent-tools/locks/release_resource.ts',
@@ -48,7 +50,7 @@ async function verifyPrivateWorker(context: TestContext, releaseContinuation = f
     },
     execute: async (observe, evidenceDir) => {
       const child = spawn(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime', '--',
-        process.execPath, bundle], {
+        process.execPath, bundle, ...(metadataRepair ? ['--metadata-repair'] : [])], {
         cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FRICTION_WORKER_EVIDENCE: evidenceDir,
           FRICTION_SOURCE_ROOT: root, FRICTION_RELEASE_CONTINUATION: releaseContinuation ? '1' : '0' },
@@ -62,9 +64,20 @@ async function verifyPrivateWorker(context: TestContext, releaseContinuation = f
       const receipt = JSON.parse(line!.slice('FRICTION_WORKER_RECEIPT '.length));
       expect(receipt).toMatchObject({ committed: true, wrongTargetDispatched: false,
         principalDispatched: false, workerStopped: true, requestOnlyRefused: true,
-        resultStatus: 'synced', remoteConfirmed: true, nonTargetUnchanged: true, commits: 1 });
+        resultStatus: metadataRepair ? 'committed' : 'synced', remoteConfirmed: !metadataRepair,
+        nonTargetUnchanged: true, commits: 1 });
       expect(receipt.target.buildSha).toBe(expectedBuildSha);
       expect(receipt.workspace).toMatch(/^test-runtime-/);
+      if (metadataRepair) {
+        expect(receipt).toMatchObject({ remoteUnchanged: true, metadataRepair: {
+          publication: 'committed', remoteEgressConfirmed: false, paths: ['package-lock.json'],
+          stalePendingRefused: true, pendingLockPreserved: true, unrelatedPendingPreserved: true,
+          lockMemberVersion: '2.0.0', replayPublication: 'already-published', replayCommittedCount: 0,
+          sourceFingerprint: { schemaVersion: 2, publishedLibrarySelections: [] },
+        } });
+        expect(receipt.metadataRepair.commit).toBe(receipt.after);
+        expect(receipt.metadataRepair.base).toBe(receipt.before);
+      }
       if (releaseContinuation) {
         expect(receipt.releaseContinuation).toMatchObject({
           resource: 'git-sync:friction-private-repository', staleReleaseRejected: true, actualReleaseConsumed: true,
@@ -83,3 +96,6 @@ it('routes a real authorized git-sync mutation to the exact private worker and r
 
 it('rejects a stale release continuation, consumes the real private release and commits once with cleanup',
   context => verifyPrivateWorker(context, true), options.testTimeoutMs);
+
+it('repairs metadata on the exact private worker, refuses stale input and replays without sweeping pending work or pushing',
+  context => verifyPrivateWorker(context, false, true), options.testTimeoutMs);
