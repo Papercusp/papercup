@@ -34,7 +34,7 @@ import { factCellKey, readFactBodyCursor, type FactBodyOffer } from '../../../ag
 import { memoryFragmentOffer, type MemoryFragmentOffer } from '../../../memory/session-epoch-ledger';
 import { packContextCandidates } from '../../../context-doors';
 import { turnStartContextCandidates } from './turn-start-memory';
-import type { StoredContextPackingReceipt } from '../../../context-packing-receipts';
+import { captureContextPackingAttribution, type StoredContextPackingReceipt } from '../../../context-packing-receipts';
 
 const packingMocks = vi.hoisted(() => ({ budgetBytes: 4000, save: vi.fn(async (_scope: unknown, receipt: { attemptId: string }) =>
   ({ attemptId: receipt.attemptId, path: 'evidence/context-packing/test.json' })),
@@ -772,6 +772,48 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
 });
 
 describe('turn-start per-request outcome receipt', () => {
+  it('starts the loop marker before context-packing attribution settles', async () => {
+    isLoopFirePromptMock.mockReturnValue(true);
+    recordLoopTurnStartMock.mockResolvedValue(true);
+    const capture = vi.mocked(captureContextPackingAttribution);
+    const originalCapture = capture.getMockImplementation()!;
+    let releaseAttribution!: () => void;
+    let signalAttributionStarted!: () => void;
+    const attributionGate = new Promise<void>((resolve) => { releaseAttribution = resolve; });
+    const attributionStarted = new Promise<void>((resolve) => { signalAttributionStarted = resolve; });
+    capture.mockImplementationOnce(async (input) => {
+      signalAttributionStarted();
+      await attributionGate;
+      return originalCapture(input);
+    });
+    const pending = post({ owner: 'su-delayed-attribution', client: 'codex',
+      prompt: 'loop-fire prompt', turnStartRequestId: 'req-delayed-attribution' });
+    try {
+      await attributionStarted;
+      await vi.waitFor(() => expect(recordLoopTurnStartMock).toHaveBeenCalledWith(expect.objectContaining({
+        owner: 'su-delayed-attribution', turnStartRequestId: 'req-delayed-attribution',
+      })));
+    } finally {
+      releaseAttribution();
+      await pending;
+    }
+    expect((await pending).turnStartOutcome).toMatchObject({ loopFire: true, loopMarkerAppend: 'appended' });
+  });
+
+  it('keeps the loop marker when context-packing attribution rejects', async () => {
+    isLoopFirePromptMock.mockReturnValue(true);
+    recordLoopTurnStartMock.mockResolvedValue(true);
+    vi.mocked(captureContextPackingAttribution).mockRejectedValueOnce(new Error('attribution unavailable'));
+    const out = await post({ owner: 'su-failed-attribution', client: 'codex',
+      prompt: 'loop-fire prompt', turnStartRequestId: 'req-failed-attribution' });
+    expect(recordLoopTurnStartMock).toHaveBeenCalledWith(expect.objectContaining({
+      owner: 'su-failed-attribution', turnStartRequestId: 'req-failed-attribution',
+    }));
+    expect(out).toMatchObject({ ok: true, text: '', turnStartOutcome: {
+      loopFire: true, loopMarkerAppend: 'appended',
+    } });
+  });
+
   it('reports a failed loop marker append separately from an allowed ambient gate', async () => {
     isLoopFirePromptMock.mockReturnValue(true);
     isLoopTurnStartCandidateMock.mockImplementation(() => isLoopFirePromptMock());
@@ -1605,6 +1647,31 @@ describe('response deadline (WI-10005053)', () => {
     const { respondByMs } = buildMemoryContextBlockMock.mock.calls[0]![0] as { respondByMs?: number };
     expect(respondByMs).toBeGreaterThanOrEqual(t0 + WALL_MS - 50);
     expect(respondByMs).toBeLessThanOrEqual(t1 + WALL_MS - 50);
+  });
+
+  it.each([
+    { label: 'valid', requestId: 'req-late-hook', expected: 'req-late-hook' },
+    { label: 'absent', requestId: undefined, expected: 'unavailable' },
+    { label: 'invalid', requestId: 'unsafe\nsensitive-context', expected: 'unavailable' },
+  ])('correlates late hook responses using only a validated request id ($label)', async ({ requestId, expected }) => {
+    let clock = 1_000;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    vi.mocked(captureContextPackingAttribution).mockImplementationOnce(async () => {
+      clock += WALL_MS + 100;
+      return { observedAt: '2026-11-12T15:00:00.000Z', epoch: null,
+        epochEvidenceRef: null, nativeSession: null, unknown: [] };
+    });
+    try {
+      await post({ owner: 'sess-dl', prompt: 'private prompt must not enter diagnostics',
+        wallMs: WALL_MS, turnStartRequestId: requestId });
+      const lateWarnings = warn.mock.calls.filter(([message]: unknown[]) =>
+        typeof message === 'string' && message.includes('responded after the hook wall'));
+      expect(lateWarnings).toHaveLength(1);
+      expect(lateWarnings[0]![0]).toContain(`requestId=${expected}`);
+      expect(lateWarnings[0]![0]).toContain('elapsedMs=300 wallMs=200');
+      expect(lateWarnings[0]![0]).not.toContain('private prompt');
+      expect(lateWarnings[0]![0]).not.toContain('sensitive-context');
+    } finally { now.mockRestore(); }
   });
 
   it('a hook that declares no wall still waits for every leg (unchanged contract)', async () => {
