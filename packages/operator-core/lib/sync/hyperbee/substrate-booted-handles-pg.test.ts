@@ -9,6 +9,7 @@
  * cluster-booted-handles-sync.test.ts's PRIMARY-side conventions.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { _resetTrackerForTests, recordJoinProgress } from './bootstrap-progress';
 
 const H = vi.hoisted(() => {
   const state: {
@@ -69,6 +70,7 @@ import { GIT_SERVING_LEASE_MS, type GitServingRequest, type GitServingState } fr
 import { getManaged } from '@papercusp/scheduled-registry';
 
 beforeEach(() => {
+  _resetTrackerForTests();
   H.state.booted = [];
   H.state.relocated = [];
   H.state.row = null;
@@ -98,6 +100,7 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
         // this fixture) is meaningfully different from absent: absent means the
         // reader must report health UNOBSERVED.
         healthInputs: {
+          bootstrapProgress: [],
           replicationLiveness: [],
           ownLogForks: [],
           logStats: [],
@@ -116,6 +119,21 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
       expect(H.updateOperatorState).toHaveBeenCalledTimes(4); // stopped — no further writes
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it('preserves a populated join frontier through the existing owner publication and fallback reader', async () => {
+    H.state.booted = [{ workspaceId: 'ws1', harnessSlug: 'joining' }];
+    const progress = recordJoinProgress('ws1', 'joining', {
+      nowMs: 1_000, headApplied: true, appliedFrontier: 3, targetFrontier: 10,
+    });
+    const publisher = startBootedHandlesPgPublisher({ ownsSubstrate: true, now: () => 1_000 });
+    try {
+      const received = await getPgBootedHandlesSnapshotFallback({ now: () => 1_500 });
+      expect(received?.healthInputs?.bootstrapProgress).toEqual([progress]);
+      expect(received?.healthInputs?.bootstrapProgress?.[0]).toMatchObject({ joinState: 'usable', caughtUp: false });
+    } finally {
+      publisher.stop();
     }
   });
 
@@ -268,6 +286,7 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
         publicationId: expect.any(String),
       lastKnownAnnounceDevices: [],
       healthInputs: {
+        bootstrapProgress: [],
         replicationLiveness: [],
         ownLogForks: [],
         logStats: [],
