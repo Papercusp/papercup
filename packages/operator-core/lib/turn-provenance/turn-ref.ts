@@ -20,7 +20,9 @@
  * (../carry-surface-provenance-stamp.ts) drives this on every write.
  */
 
+import { createReadStream } from 'node:fs';
 import { open } from 'node:fs/promises';
+import { createInterface } from 'node:readline';
 import {
   resolveSelfSession,
   resolveOwnerIsolatedSessionByPrefix,
@@ -464,6 +466,11 @@ export function findClaudeQueuedCommandTurn(o: Record<string, unknown>): Recorde
 /** Parse ALL user turns (with timestamps) out of raw JSONL — including
  *  machine-injected ones; classification happens per turn, not by dropping. */
 export function parseUserTurns(jsonl: string): RecordedUserTurn[] {
+  return parseUserTurnChunk(jsonl, { awaitingStamp: null });
+}
+
+/** Streaming and whole-string reads share the same pending hook-stamp window. */
+function parseUserTurnChunk(jsonl: string, state: { awaitingStamp: RecordedUserTurn | null }): RecordedUserTurn[] {
   const out: RecordedUserTurn[] = [];
   // EI-23999888134974900: the turn the NEXT UserPromptSubmit hook stamp belongs to.
   // Claude Code writes that stamp directly after the prompt line it judged (or
@@ -472,7 +479,7 @@ export function parseUserTurns(jsonl: string): RecordedUserTurn[] {
   // followed its prompt with no assistant or tool traffic between. So the window
   // closes on an assistant line or tool_result plumbing, and a stamp arriving with
   // no open window is dropped rather than attached to an older turn.
-  let awaitingStamp: RecordedUserTurn | null = null;
+  let awaitingStamp: RecordedUserTurn | null = state.awaitingStamp;
   for (const line of jsonl.split('\n')) {
     if (!line.trim()) continue;
     let o: Record<string, unknown>;
@@ -561,6 +568,40 @@ export function parseUserTurns(jsonl: string): RecordedUserTurn[] {
     out.push(turn);
     awaitingStamp = turn;
   }
+  state.awaitingStamp = awaitingStamp;
+  return out;
+}
+
+/** A tail is a fast path, never an absence proof. Stream the already-resolved
+ * owned source on a miss, retaining only requested turns while parsing every
+ * record so adjacent provenance attachments keep their original semantics. */
+async function visitTranscriptTurns(filePath: string, visit: (turn: RecordedUserTurn) => void): Promise<void> {
+  const input = createReadStream(filePath, { encoding: 'utf8' });
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  const state = { awaitingStamp: null as RecordedUserTurn | null };
+  try {
+    for await (const line of lines) {
+      const previous = state.awaitingStamp;
+      const turns = parseUserTurnChunk(line, state);
+      // Delay delivery until the following hook-stamp window closes. This
+      // lets latest-turn selection classify the final provenance too.
+      if (previous && previous !== state.awaitingStamp) visit(previous);
+      for (const turn of turns) {
+        if (turn !== state.awaitingStamp) visit(turn);
+      }
+    }
+    if (state.awaitingStamp) visit(state.awaitingStamp);
+  } finally {
+    lines.close();
+    input.destroy();
+  }
+}
+
+async function readRequestedTurns(filePath: string, refs: readonly TurnRef[]): Promise<RecordedUserTurn[]> {
+  const out: RecordedUserTurn[] = [];
+  await visitTranscriptTurns(filePath, turn => {
+    if (refs.some(ref => tsMatches(ref.ts, turn.ts))) out.push(turn);
+  });
   return out;
 }
 
@@ -775,13 +816,13 @@ export async function verifyTurnRefs(
   // Cache of sessionPrefix -> resolved turns (or null when unresolvable), so
   // refs sharing a prefix — the common case, everything anchored to the
   // current session — only pay the IO once.
-  const turnsByPrefix = new Map<
-    string,
-    { turns: RecordedUserTurn[]; scope: Extract<TurnRefScope, 'current-session' | 'owner-chain'> } | null
-  >();
+  type OwnedTurns = { turns: RecordedUserTurn[]; filePath: string;
+    scope: Extract<TurnRefScope, 'current-session' | 'owner-chain'>;
+    recovery?: Promise<RecordedUserTurn[] | null> };
+  const turnsByPrefix = new Map<string, OwnedTurns | null>();
   async function turnsFor(
     sessionPrefix: string,
-  ): Promise<{ turns: RecordedUserTurn[]; scope: Extract<TurnRefScope, 'current-session' | 'owner-chain'> } | null> {
+  ): Promise<OwnedTurns | null> {
     if (turnsByPrefix.has(sessionPrefix)) return turnsByPrefix.get(sessionPrefix) ?? null;
     let path: string | null = null;
     let scope: Extract<TurnRefScope, 'current-session' | 'owner-chain'> = 'current-session';
@@ -803,7 +844,7 @@ export async function verifyTurnRefs(
     }
     try {
       const parsed = parseUserTurns(await readTail(path, opts.scanBytes ?? SCAN_BYTES));
-      const resolved = { turns: parsed, scope };
+      const resolved = { turns: parsed, scope, filePath: path };
       turnsByPrefix.set(sessionPrefix, resolved);
       return resolved;
     } catch {
@@ -854,7 +895,17 @@ export async function verifyTurnRefs(
       out.push(miss(r, false, allowCrossSessionFallback ? 'cross-session' : undefined));
       continue;
     }
-    const turn = resolved.turns.find((t) => tsMatches(r.ts, t.ts));
+    let turn = resolved.turns.find((t) => tsMatches(r.ts, t.ts));
+    if (!turn) {
+      resolved.recovery ??= readRequestedTurns(resolved.filePath,
+        refs.filter(ref => ref.sessionPrefix === r.sessionPrefix)).catch(() => null);
+      const recovered = await resolved.recovery;
+      if (recovered === null) {
+        out.push(miss(r, false, resolved.scope));
+        continue;
+      }
+      turn = recovered.find(t => tsMatches(r.ts, t.ts));
+    }
     if (!turn) {
       out.push(miss(r, true, resolved.scope));
       continue;
@@ -929,5 +980,20 @@ export async function resolveCurrentTurnStamp(
       origin: cls.origin,
     };
   }
-  return null;
+  // A long assistant/tool run can leave the latest real prompt before the
+  // tail too. Keep only the latest finalized non-synthetic turn while
+  // streaming the same owned source; never promote unreadable data.
+  const latest = { stamp: null as CurrentTurnStamp | null };
+  const resolvedSessionId = sessionId;
+  try {
+    await visitTranscriptTurns(filePath, turn => {
+      const cls = classifyRecordedUserTurn(turn);
+      if (cls.verdict !== 'synthetic') latest.stamp = {
+        ref: formatTurnRef(resolvedSessionId, turn.ts), verdict: cls.verdict, origin: cls.origin,
+      };
+    });
+    return latest.stamp;
+  } catch {
+    return null;
+  }
 }

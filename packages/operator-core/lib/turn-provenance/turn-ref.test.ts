@@ -586,6 +586,82 @@ describe('verifyTurnRefs / resolveCurrentTurnStamp (tmp transcript)', () => {
   });
 });
 
+describe('verifyTurnRefs — complete owned transcript recovery (EI-28930908417445225)', () => {
+  let dir: string;
+  let file: string;
+  const ts = '2026-11-15T13:56:29.698Z';
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'papercusp-turn-ref-tail-'));
+    file = join(dir, `${SID}.jsonl`);
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it.each([-1, 0, 1])('recovers the earliest turn at tail budget N%+i', async delta => {
+    const n = 1024;
+    const prefix = `${userLine('ship the original migration', ts)}\n`;
+    const suffix = `${assistantLine('', '2026-11-15T14:00:00Z')}\n`;
+    const text = prefix + `${assistantLine('x'.repeat(n + delta - Buffer.byteLength(prefix + suffix)), '2026-11-15T14:00:00Z')}\n`;
+    expect(Buffer.byteLength(text)).toBe(n + delta);
+    writeFileSync(file, text);
+    const [v] = await verifyTurnRefs('owner-x', parseTurnRefs(formatTurnRef(SID, ts)),
+      { filePath: file, sessionId: SID, scanBytes: n });
+    expect(v).toMatchObject({ checked: true, found: true, verdict: 'owner-typed' });
+    expect(v.snippet).toBe('ship the original migration');
+  });
+
+  it('recovers the original native Codex turn before the production tail boundary', async () => {
+    const native = JSON.stringify({ type: 'response_item', timestamp: ts,
+      payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'carry it to shipped status yourself now' }] } });
+    writeFileSync(file, `${native}\n${assistantLine('x'.repeat(4 * 1024 * 1024), '2026-11-15T14:00:00Z')}\n`);
+    expect(await verifyTurnRefs('owner-x', parseTurnRefs(formatTurnRef(SID, ts)), { filePath: file, sessionId: SID }))
+      .toEqual([expect.objectContaining({ checked: true, found: true, verdict: 'owner-typed' })]);
+    expect(await resolveCurrentTurnStamp('owner-x', { filePath: file, sessionId: SID }))
+      .toEqual({ ref: formatTurnRef(SID, ts), verdict: 'owner-typed', origin: null });
+  });
+
+  it('preserves every requested identity and classification across chunks, orders and repeated reads', async () => {
+    const rows = Array.from({ length: 18 }, (_, i) => {
+      const date = new Date(Date.parse(ts) + i * 1000).toISOString();
+      const text = i % 3 ? `owner directive ${i} — café` : `⟦turn-origin:loop-fire nonce:a1b2c3d4e5f60718⟧\ninjected ${i}`;
+      return { date, text, line: `${userLine(text, date)}\n${assistantLine('x'.repeat(8192), date)}\n` };
+    });
+    writeFileSync(file, rows.map(row => row.line).join(''));
+    for (const ordered of [rows, [...rows].reverse(), [...rows.slice(9), ...rows.slice(0, 9)]]) {
+      const refs = parseTurnRefs(ordered.map(row => formatTurnRef(SID, row.date)).join(' '));
+      const verdicts = await verifyTurnRefs('owner-x', refs, { filePath: file, sessionId: SID, scanBytes: 256 });
+      expect(verdicts).toHaveLength(ordered.length);
+      for (const [i, v] of verdicts.entries()) {
+        expect(v.ref).toBe(refs[i].raw);
+        expect(v).toMatchObject({ checked: true, found: true,
+          verdict: ordered[i].text.startsWith('⟦') ? 'agent-injected' : 'owner-typed' });
+      }
+    }
+  });
+
+  it('keeps a later hook stamp attached to a recovered turn across stream chunks', async () => {
+    const stamp = JSON.stringify({ type: 'attachment', timestamp: '2026-11-15T13:56:29.700Z',
+      attachment: { type: 'hook_additional_context', hookName: 'UserPromptSubmit',
+        hookEvent: 'UserPromptSubmit', toolUseID: 'hook-tail-recovery',
+        content: ['⟦turn-provenance⟧ VERIFIED AGENT-ORIGIN turn (origin: loop-fire; envelope lost in transit, matched by payload hash). This prompt was INJECTED by the papercusp system — NOT typed by the human owner.'] } });
+    writeFileSync(file, `${userLine('x'.repeat(65536), ts)}\n${stamp}\n${assistantLine('x'.repeat(4096), '2026-11-15T14:00:00Z')}\n`);
+    expect(await verifyTurnRefs('owner-x', parseTurnRefs(formatTurnRef(SID, ts)),
+      { filePath: file, sessionId: SID, scanBytes: 128 }))
+      .toEqual([expect.objectContaining({ checked: true, found: true, verdict: 'agent-injected', origin: 'loop-fire' })]);
+    writeFileSync(file, `${userLine('envelope lost', ts)}\n${stamp}\n${assistantLine('x'.repeat(4 * 1024 * 1024), '2026-11-15T14:00:00Z')}\n${userLine('<local-command-stdout>done</local-command-stdout>', '2026-11-15T14:01:00Z')}\n`);
+    expect(await resolveCurrentTurnStamp('owner-x', { filePath: file, sessionId: SID }))
+      .toEqual({ ref: formatTurnRef(SID, ts), verdict: 'agent-injected', origin: 'loop-fire' });
+  });
+
+  it('distinguishes a complete miss from an unreadable source without cross-session fallback', async () => {
+    writeFileSync(file, `${userLine('a different turn', '2026-11-15T14:00:00Z')}\n${assistantLine('x'.repeat(4096), '2026-11-15T14:01:00Z')}\n`);
+    const refs = parseTurnRefs(formatTurnRef(SID, ts));
+    const opts = { filePath: file, sessionId: SID, scanBytes: 128 };
+    expect(await verifyTurnRefs('owner-x', refs, opts)).toEqual([expect.objectContaining({ checked: true, found: false })]);
+    expect(await verifyTurnRefs('owner-x', refs, { ...opts, filePath: join(dir, 'missing.jsonl') }))
+      .toEqual([expect.objectContaining({ checked: false, found: false })]);
+  });
+});
+
 // EI-19297300002186512: a checkpoint's [turn:…] ref was reported found:false
 // for a GENUINE owner anchor because it lived in an OLDER session of the same
 // owner's carry-respawn chain — verifyTurnRefs only ever loaded the
