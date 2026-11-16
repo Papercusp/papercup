@@ -5,6 +5,8 @@
  * Existing disclosure/transcript suites cover the full handler populations.
  */
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
@@ -13,6 +15,8 @@ import { authorizePersonalAccess } from './authorization';
 import { assertDisclosurePermits, discloseDocuments } from './disclosure-ledger';
 import { createPersonalGrant, revokePersonalGrant, setPersonalVaultEnabled } from './store';
 import { loadTranscriptExclusion } from './transcript-exclusion';
+import { IDOP_P001_BASELINE_REL, loadIdopP001RolePermissionReader } from '../agent-identities/idop-p001-baseline';
+import { defaultCensusRoot } from '../agent-identities/identity-surface-census';
 
 const WS = 'idop-vault-observation-test';
 const SU = 'su-idop-vault-observation';
@@ -58,21 +62,21 @@ async function grant(role: string, expiresAt: string | null = null) {
   });
 }
 
-async function discloseSynthetic(restricted: boolean) {
+async function discloseSynthetic(restricted: boolean, disclose = discloseDocuments) {
   if (restricted) {
     await org.adminSql`
       INSERT INTO harness_shared.personal_privacy_rules
         (workspace_id, user_id, match_kind, match_value, level, created_by, updated_by)
       VALUES (${WS}, ${userId}, 'sender-domain', 'private.example', 'sender-only', 'fixture', 'fixture')`;
   }
-  return inWorkspace(tx => discloseDocuments(tx, {
+  return inWorkspace(tx => disclose(tx, {
     workspaceId: WS, userId, agentOwnerId: SU, via: 'personal:search',
     documents: [{ id: randomUUID(), source: 'gmail', participants: [SENDER], metadata: { from: SENDER } }],
   }));
 }
 
-function permits(recipients: string[]) {
-  return inWorkspace(tx => assertDisclosurePermits(tx, {
+function permits(recipients: string[], check = assertDisclosurePermits) {
+  return inWorkspace(tx => check(tx, {
     workspaceId: WS, userId, agentOwnerId: SU, recipients, sink: 'mail:send',
   }));
 }
@@ -176,5 +180,81 @@ describe('P-001 current-source after-read and transcript seams', () => {
     const peer = await loadTranscriptExclusion(org.adminSql, { selfOwnerIds: [PEER], stamps: [stamp] });
     expect(own.withholds(stamp)).toBeNull();
     expect(peer.withholds(stamp)).toBe('disclosure-window');
+  });
+});
+
+const sourceRoot = defaultCensusRoot();
+const historicalPin = JSON.parse(readFileSync(join(sourceRoot, IDOP_P001_BASELINE_REL), 'utf8')).base.commit as string;
+
+describe.each([historicalPin, 'working-tree'])('P-001 canonical old/current vault policy (%s)', revision => {
+  const reader = loadIdopP001RolePermissionReader({ root: sourceRoot, revision, testingFullAccess: 'off' });
+  const vault = reader.vault;
+
+  it('enforces standing grants, ungranted scopes, revocation and expiry against real PG', async () => {
+    const created = await grant('meeting-prep');
+    for (let use = 0; use < 2; use++) expect(await vault.authorizePersonalAccess(
+      org.adminSql, { role: 'meeting-prep' }, WS, userId, ['mail']))
+      .toMatchObject({ allowed: true, scopes: ['personal:mail'] });
+    expect(await vault.authorizePersonalAccess(org.adminSql, { role: 'meeting-prep' }, WS, userId, ['calendar']))
+      .toMatchObject({ allowed: false, reason: 'scope_not_granted' });
+    await org.adminSql`UPDATE harness_shared.personal_grants
+      SET granted_at = '1999-01-01T00:00:00Z', expires_at = '2000-01-01T00:00:00Z' WHERE id = ${created.id}`;
+    expect(await vault.authorizePersonalAccess(org.adminSql, { role: 'meeting-prep' }, WS, userId, ['mail']))
+      .toMatchObject({ allowed: false, reason: 'no_live_grant' });
+    await org.adminSql`UPDATE harness_shared.personal_grants SET expires_at = NULL WHERE id = ${created.id}`;
+    await revokePersonalGrant(org.adminSql, WS, userId, created.id);
+    expect(await vault.authorizePersonalAccess(org.adminSql, { role: 'meeting-prep' }, WS, userId, ['mail']))
+      .toMatchObject({ allowed: false, reason: 'no_live_grant' });
+  });
+
+  it('retains the su grant refusal and suppresses automatic recall before search', async () => {
+    await grant('su');
+    const context = await vault.resolvePersonalAmbientToolContext(org.adminSql, SU, WS);
+    expect(context.role).toBe('su');
+    expect(await vault.authorizePersonalAccess(org.adminSql, context, WS, userId, ['mail']))
+      .toMatchObject({ allowed: false, reason: 'coding_agent_denied' });
+    const embedQuery = vi.fn(async () => null), search = vi.fn(async () => []),
+      disclose = vi.fn(async () => ({ documents: [], disclosed: 0, withheld: 0 }));
+    expect(await vault.buildPersonalAmbientContextBlock({ ownerId: SU, userId, workspaceId: WS, query: 'synthetic marker' },
+      { sql: org.adminSql, resolveContext: vault.resolvePersonalAmbientToolContext,
+        authorize: vault.authorizePersonalAccess, embedQuery, search, disclose })).toBeNull();
+    for (const effect of [embedQuery, search, disclose]) expect(effect).not.toHaveBeenCalled();
+  });
+
+  it('admits granted non-coding recall through the same pinned reader as its negative control', async () => {
+    await grant('meeting-prep');
+    const search = vi.fn(async () => []), embedQuery = vi.fn(async () => null),
+      disclose = vi.fn(async () => ({ documents: [], disclosed: 0, withheld: 0 }));
+    const resolveContext = vi.fn(async () => ({ role: 'meeting-prep' }));
+    await vault.buildPersonalAmbientContextBlock({ ownerId: PEER, userId, workspaceId: WS, query: 'synthetic marker' },
+      { sql: org.adminSql, resolveContext, authorize: vault.authorizePersonalAccess, embedQuery, search, disclose });
+    expect(embedQuery).toHaveBeenCalledOnce();
+    expect(search).toHaveBeenCalledOnce();
+    expect(disclose).toHaveBeenCalledOnce();
+  });
+
+  it('distinguishes unlabelled delivery from a restricted su hold and enforces its reader set', async () => {
+    expect(await discloseSynthetic(false, vault.discloseDocuments)).toMatchObject({ disclosed: 0, withheld: 0 });
+    await expect(permits([OUTSIDER], vault.assertDisclosurePermits)).resolves.toBeUndefined();
+    expect(await discloseSynthetic(true, vault.discloseDocuments)).toMatchObject({ disclosed: 1, withheld: 0 });
+    await expect(permits([SENDER], vault.assertDisclosurePermits)).resolves.toBeUndefined();
+    await expect(permits([OUTSIDER], vault.assertDisclosurePermits)).rejects.toMatchObject({ code: 'disclosure_reader_set_violation' });
+  });
+
+  it('keeps recorder exemption and peer transcript exclusion tied to a real disclosure window', async () => {
+    await discloseSynthetic(true, vault.discloseDocuments);
+    // Date.parse(hostDate) across VM realms rounds to whole seconds. Pin a
+    // fractional boundary so that adapter defect cannot pass by timing luck.
+    await org.adminSql`UPDATE harness_shared.personal_disclosures
+      SET delivered_at = '2026-01-01T00:00:00.789Z' WHERE workspace_id = ${WS}`;
+    const [row] = await org.adminSql<{ delivered_at: Date }[]>`
+      SELECT delivered_at FROM harness_shared.personal_disclosures WHERE workspace_id = ${WS}`;
+    const stamp = { owner: SU, at: row.delivered_at };
+    expect(row.delivered_at.getUTCMilliseconds()).toBe(789);
+    expect((await vault.loadTranscriptExclusion(org.adminSql, { selfOwnerIds: [SU], stamps: [stamp] })).withholds(stamp)).toBeNull();
+    const exclusion = await vault.loadTranscriptExclusion(org.adminSql, { selfOwnerIds: [PEER], stamps: [stamp] });
+    expect(exclusion.withholds(stamp)).toBe('disclosure-window');
+    expect(exclusion.withholds({ ...stamp, at: row.delivered_at.toISOString() })).toBe('disclosure-window');
+    expect(reader.disabledHostPorts).toEqual(['@papercusp/db-org.getOrgPg']);
   });
 });
