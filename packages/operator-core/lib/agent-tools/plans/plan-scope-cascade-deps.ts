@@ -14,6 +14,8 @@ import { buildDurableParkReleaseContract } from '../../durable-park-release-cont
 import { planAcceptanceChangedKey } from '../../agent-obligations';
 import { withPlanLock } from './with-plan-lock';
 import { parsePlan } from './parser';
+import { readPlanBySlug } from './source';
+import { buildOrderingItems, openBuildItems } from './acceptance-after-build';
 import { buildSetNowNote, resolvePlanNow } from './now-note-store';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { sendMessage } from '../coordination/messages';
@@ -139,6 +141,11 @@ export function defaultPlanScopeCascadeDeps(ctx: unknown, actor: string): PlanSc
  */
 export function defaultBarReadinessDeps(ctx: unknown, actor: string): BarReadinessDeps {
   return {
+    async readOpenBuildItems(planSlug, harnessSlug, workspaceId) {
+      const plan = await readPlanBySlug(planSlug, { workspaceId, ...(harnessSlug ? { harnessSlug } : {}) });
+      if (!plan) throw new Error(`plan '${planSlug}' not found while reading build progress`);
+      return openBuildItems(buildOrderingItems(plan)).map(item => item.id);
+    },
     async readBarReadiness(planSlug, harnessSlug) {
       const { readAcceptanceBarContractSnapshot } = await import('../../acceptance-bar-contract-snapshot');
       const snapshot = await readAcceptanceBarContractSnapshot(planSlug, {}, harnessSlug ? { harnessSlug } : {});
@@ -164,7 +171,11 @@ export function defaultBarReadinessDeps(ctx: unknown, actor: string): BarReadine
         async (current, meta) => {
           if (current === null) return { newBody: null, value: false };
           // P-004: same as the moot-carrier stamp — note in, note out.
-          const update = barReadinessNowUpdate(resolvePlanNow(meta?.nowNote ?? null, parsePlan(current).now), reading, cause);
+          const parsed = parsePlan(current);
+          // A build item can reopen between the progress read and this lock. Never
+          // publish an acceptance block over that newer implementation state.
+          if (openBuildItems(parsed.items).length > 0) return { newBody: null, value: false };
+          const update = barReadinessNowUpdate(resolvePlanNow(meta?.nowNote ?? null, parsed.now), reading, cause);
           return update === null
             ? { newBody: null, value: false }
             : { newBody: null, nowNote: buildSetNowNote({ ...update, author: actor, eventId: null }), value: true };

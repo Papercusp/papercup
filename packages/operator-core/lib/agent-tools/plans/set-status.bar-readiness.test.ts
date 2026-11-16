@@ -70,7 +70,11 @@ const cascade = vi.hoisted(() => ({
 }));
 vi.mock('./plan-scope-cascade-deps', async (orig) => ({
   ...(await orig<typeof import('./plan-scope-cascade-deps')>()),
-  defaultBarReadinessDeps: () => ({ readBarReadiness: cascade.read, restampNow: cascade.restamp }),
+  defaultBarReadinessDeps: () => ({
+    readOpenBuildItems: async () => [],
+    readBarReadiness: cascade.read,
+    restampNow: cascade.restamp,
+  }),
 }));
 
 import { withPlanLock } from './with-plan-lock';

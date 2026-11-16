@@ -87,6 +87,7 @@ import { planDrainTransitionMutationGated } from './plan-drain-transition';
 import type { BlindReviewGateCode } from '../../blind-review-gate';
 import { reevaluateBarReadinessOnScopeWrite, type BarReadinessResult } from './plan-scope-cascade';
 import { defaultBarReadinessDeps } from './plan-scope-cascade-deps';
+import { openBuildItems } from './acceptance-after-build';
 import { attestLandedPlanItemStatus } from './plan-item-consumer-view';
 import { planItemConsumerReaderFor } from './plan-item-consumer-read';
 import { blockerDecisionInputSchema, type BlockerDecisionInput } from '../../blocker-resolution-decision';
@@ -295,6 +296,8 @@ type SetStatusValue =
       /** WI-1830: computed inside the lock (race-safe) — this →done flip left the plan with
        *  zero open items, so the fleet's lane drained. False for every non-→done flip. */
       drainedPlan: boolean;
+      /** Real last-build close, measured inside the serialized plan write. */
+      lastBuildItemClosed?: boolean;
       acceptanceCarry?: { outcome: AcceptanceDrainCarryOutcome; id: string | null };
       /** P-006: the flip drained the plan, but the blind gap review door withheld
        *  awaiting-acceptance (plan-drain-transition.ts planDrainTransitionMutationGated). */
@@ -1749,6 +1752,10 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       // parse runs only on a →done edge, so routine flips skip it.
       const drainedPlan =
         it.status === 'done' && oldStatus !== 'done' ? isPlanDrained(parsePlan(finalBody).items) : false;
+      const lastBuildItemClosed =
+        it.status === 'done' && oldStatus !== 'done' && oldStatus !== 'dropped' &&
+        openBuildItems(parsePlan(current).items).some(item => item.id === it.itemId) &&
+        openBuildItems(parsePlan(finalBody).items).length === 0;
       // P-008: capture the item text ONLY on a real →wip edge (the "picking up
       // work" signal) so the claim-time recall port can query it — no second
       // read, and no parse cost on routine flips.
@@ -1765,6 +1772,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
           itemId: it.itemId,
           importance,
           drainedPlan,
+          lastBuildItemClosed,
           ...(wipItemText ? { wipItemText } : {}),
           ...(acceptanceBlocked ? { acceptanceBlocked } : {}),
         },
@@ -2252,13 +2260,13 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     verification: it.verification,
   });
 
-  // P-031 (merged into P-030 by D-005): dropping an item is a SCOPE write — it can leave a
-  // BAR mapped only to dropped items (bar_snapshot_mapping_dropped_only). Re-read the live
-  // BAR readiness in this same call, restamp the plan's Now (which orient folds), and carry
-  // the codes on the response. Runs after the plan lock is released; never throws.
+  // Evaluate on the last build close, including work-item completion reflections that
+  // reach this same writer. Drops remain scope changes; the shared guard suppresses
+  // readiness while another build item is open. A repeated done write is not an edge.
   let barReadiness: BarReadinessResult | undefined;
   const lockScope = result.scope as typeof result.scope | undefined;
-  if (it.status === 'dropped' && result.value.oldStatus !== 'dropped' && lockScope) {
+  const dropped = it.status === 'dropped' && result.value.oldStatus !== 'dropped';
+  if ((dropped || result.value.lastBuildItemClosed) && lockScope) {
     let actor = 'system:scope-write-cascade';
     try {
       actor = resolveAgentIdentity(ctx).ownerId;
@@ -2270,7 +2278,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         workspaceId: lockScope.workspaceId,
         harnessSlug: lockScope.harnessSlug,
         planSlug: it.slug,
-        cause: 'item-dropped',
+        cause: dropped ? 'item-dropped' : 'last-build-item-closed',
       },
       defaultBarReadinessDeps(ctx, actor),
     );

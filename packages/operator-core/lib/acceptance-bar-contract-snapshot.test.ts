@@ -2585,6 +2585,7 @@ describe('scope-write cascade: dropping a BAR’s last live item (P-031 guard)',
     const result = await reevaluateBarReadinessOnScopeWrite(
       { workspaceId: 'ws-1', harnessSlug: 'papercusp', planSlug: 'plan-a', cause: 'item-dropped' },
       {
+        async readOpenBuildItems() { return []; },
         async readBarReadiness() {
           const { state, codes, nextRepair } = snapshot.readiness;
           return { state, codes: [...codes], nextRepair };

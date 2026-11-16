@@ -340,7 +340,7 @@ export async function propagatePlanScopeWrite(
   return result;
 }
 
-// ── P-031 (merged into P-030 by D-005): re-evaluate BAR readiness on EVERY scope write ──
+// ── BAR readiness after build work, including later scope changes ──
 //
 // WHY. A complete BAR can be made false by a LATER scope write: dropping the last live item
 // a BAR maps to (bar_snapshot_mapping_dropped_only), or a Decision that re-scopes the plan.
@@ -354,7 +354,7 @@ export async function propagatePlanScopeWrite(
 // removed once it is ready. orient's planNow leg folds the Now block, so the codes reach
 // every agent oriented on the plan; the write's own response carries them as `barReadiness`.
 
-export type BarReadinessWriteCause = 'item-dropped' | 'decision-added' | 'rubric-amended';
+export type BarReadinessWriteCause = 'item-dropped' | 'decision-added' | 'rubric-amended' | 'last-build-item-closed';
 
 export interface BarReadinessReading {
   /** `null` = NOT MEASURED (the read failed). Never treated as ready, never erases a banner. */
@@ -462,6 +462,8 @@ export interface BarReadinessInput {
 }
 
 export interface BarReadinessDeps {
+  /** Complete unfinished build-item identities, using the acceptance ordering policy. */
+  readOpenBuildItems(planSlug: string, harnessSlug: string | null, workspaceId: string): Promise<readonly string[]>;
   readBarReadiness(planSlug: string, harnessSlug: string | null): Promise<BarReadinessReading>;
   restampNow(
     planSlug: string,
@@ -485,14 +487,17 @@ export interface BarReadinessResult {
   nextRepair: BarReadinessReading['nextRepair'];
   /** The plan's `## Now` banner was written (stamped, replaced or cleared) by this call. */
   nowStamped: boolean;
+  /** Build progress is not an acceptance failure; no snapshot or Now write was attempted. */
+  skipped?: 'build-items-open';
+  openBuildItems?: readonly string[];
   /** Current audit notice from the follow-up write, when it advanced the plan version. */
   activationAudit?: ActivationAuditEditNotice;
   error?: string;
 }
 
 /**
- * Re-read the plan's live BAR readiness after a scope write and bring its Now banner up to
- * date. Never throws into the write that triggered it: a failed read is reported as
+ * Read readiness only after build work is finished. Scope edits during implementation
+ * leave the existing Now untouched. Never throws into the triggering write: a failed read is
  * `state: null` + `error`, and a failed stamp rides `error` beside the measured codes.
  */
 export async function reevaluateBarReadinessOnScopeWrite(
@@ -501,6 +506,19 @@ export async function reevaluateBarReadinessOnScopeWrite(
 ): Promise<BarReadinessResult> {
   let reading: BarReadinessReading;
   try {
+    const openBuildItems = await deps.readOpenBuildItems(input.planSlug, input.harnessSlug, input.workspaceId);
+    if (openBuildItems.length > 0) {
+      return {
+        slug: input.planSlug,
+        cause: input.cause,
+        state: null,
+        codes: [],
+        nextRepair: null,
+        nowStamped: false,
+        skipped: 'build-items-open',
+        openBuildItems,
+      };
+    }
     reading = await deps.readBarReadiness(input.planSlug, input.harnessSlug);
   } catch (err) {
     reading = { state: null, codes: [], nextRepair: null, error: `readiness read failed: ${errText(err)}` };

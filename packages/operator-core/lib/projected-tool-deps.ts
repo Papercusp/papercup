@@ -1353,6 +1353,7 @@ interface RecordInvocationInput {
    * (the `replayed` branch returns before dispatch).
    */
   callId?: string;
+  invocationRef?: string;
   outputRef?: string | null;
   outputSize?: number | null;
   errorMessage?: string | null;
@@ -1393,6 +1394,8 @@ interface RecordInvocationInput {
 interface TelemetryRow {
   workspaceId: string;
   params: unknown[];
+  invocationId?: string;
+  callId?: string;
   friction?: InvocationFrictionRef;
 }
 
@@ -1476,6 +1479,112 @@ INSERT INTO harness_shared.tool_invocations
           ELSE 'goal-descendant-agent'
         END
    FROM classified c RETURNING id::text`;
+
+// Advisory telemetry enriches the mandatory row; it never replaces its original
+// authority or runtime observation, and never inserts a second execution.
+const TELEMETRY_ENRICH_SQL = `UPDATE harness_shared.tool_invocations
+ SET window_key=$4, duration_ms=$5, status=$6, output_ref=$7, output_size=$8,
+     error_message=$9, args_json=$10::jsonb, event_count=$11, error_code=$12,
+     metadata_json=COALESCE(metadata_json, '{}'::jsonb) ||
+       (COALESCE($13::jsonb, '{}'::jsonb) - 'originalInvocation' - 'executionObservation' - 'responseObservation')
+ WHERE workspace_id=$1 AND id=$2::bigint
+   AND metadata_json->'originalInvocation'->>'callId'=$3
+ RETURNING id::text`;
+
+type OriginalInvocationObserver = NonNullable<DispatchProjectedDeps['invocationObserver']>;
+function originalInvocationId(ref: string): string {
+  if (!/^tool-invocation:[1-9][0-9]*$/.test(ref)) throw new Error('Invalid original invocation reference');
+  return ref.substring('tool-invocation:'.length);
+}
+
+const originalInvocationObserver: OriginalInvocationObserver = {
+  async begin(request) {
+    const { ctx, callId, selection } = request;
+    const ownerId = resolveAgentIdentity(ctx).ownerId;
+    const principal = ctx.principal;
+    const originalInvocation = {
+      schemaVersion: 'original-tool-invocation-v1', callId, ownerId,
+      workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug ?? null, role: ctx.role ?? null,
+      runId: ctx.runId ?? null, spawnId: ctx.spawnId ?? null,
+      audience: { ownerId, principal: principal ? {
+        slug: principal.slug, kind: principal.kind, workspaceId: principal.workspaceId,
+        authMethod: principal.authMethod, trust: principal.trust,
+        capabilities: [...principal.capabilities], roles: principal.roles ? [...principal.roles] : null,
+        allowedTools: principal.allowedTools ? [...principal.allowedTools] : null,
+      } : null },
+      selection: { ...selection }, startedAtMs: Date.now(),
+    };
+    // No argument/result/error bytes or raw transport headers enter the mandatory
+    // record. Existing telemetry enrichment keeps its own redaction contract.
+    const row = buildTelemetryRow({ ...request,
+      ctx: { ...ctx, requestOrigin: undefined, reactionCause: undefined, sourceMaterialization: undefined },
+      windowKey: '', durationMs: 0, status: 'ok', metadataJson: {
+        originalInvocation, executionObservation: { state: 'unknown' },
+        responseObservation: { state: 'pending', delivery: 'unknown' },
+      },
+    });
+    if (!row || !callId || !ownerId) throw new Error('Original invocation identity is unavailable');
+    row.params[12] = 'pending';
+    const { sql } = getOrgPg();
+    // Await the transaction COMMIT, not merely INSERT/RETURNING. Any uncertain
+    // begin fails before admission; it must never fall back to the lossy queue.
+    const id = await sql.begin(async tx => {
+      await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [row.workspaceId]);
+      const rows = await tx.unsafe<{ id: string }[]>(TELEMETRY_INSERT_SQL,
+        row.params as unknown as Parameters<typeof tx.unsafe>[1]);
+      if (!rows[0]?.id) throw new Error('Original invocation was not persisted');
+      return rows[0].id;
+    });
+    const ref = `tool-invocation:${id}`;
+    originalInvocationId(ref);
+    return ref;
+  },
+  async settle(request) {
+    const id = originalInvocationId(request.invocationRef);
+    const { ctx, result, refusal, error } = request;
+    const ownerId = resolveAgentIdentity(ctx).ownerId;
+    // This separate receipt comes from the generic dispatcher AFTER its owning
+    // runtime verified admission. Never read result._meta for authority.
+    const receipt = request.receipt;
+    const runtime = receipt?.schemaVersion === 'tool-execution-receipt-v1' ? receipt : undefined;
+    const observationV2 = receipt?.schemaVersion === 'tool-execution-receipt-v2' ? receipt : undefined;
+    const payload = result?.structuredContent;
+    const handlerFailed = result?.isError === true || (payload !== null && typeof payload === 'object'
+      && (payload as { ok?: unknown }).ok === false);
+    const state = refusal ? 'not-admitted' : error ? 'unknown'
+      : runtime?.state ?? observationV2?.observation.outcome
+        ?? (result ? (handlerFailed ? 'failed' : 'succeeded') : 'unknown');
+    const observedAtMs = Date.now();
+    const observation = {
+      executionObservation: { state, observedAtMs, evidenceRef: request.invocationRef,
+        ...(runtime ? { handle: runtime.handle, ownerId: runtime.ownerId,
+          terminal: runtime.terminal } : {}),
+        ...(observationV2?.lifecycle === 'independent' ? { handle: observationV2.handle,
+          ownerId: observationV2.ownerId, adapterId: observationV2.adapterId, terminal: observationV2.terminal } : {}),
+      },
+      // Producing a response is NOT acknowledgement by its recipient. A lost
+      // response remains recoverable through the original record and handle.
+      responseObservation: { state: ctx.signal?.aborted || refusal?.error === 'request_expired'
+        ? 'request-expired' : observationV2?.observation.response ?? 'produced', delivery: 'unknown', observedAtMs },
+    };
+    const { sql } = getOrgPg();
+    await sql.begin(async tx => {
+      await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [ctx.workspaceId!]);
+      const rows = await tx.unsafe<{ id: string }[]>(`UPDATE harness_shared.tool_invocations
+        SET metadata_json=metadata_json || $6::jsonb,
+            status=$7, duration_ms=GREATEST(0, EXTRACT(EPOCH FROM (clock_timestamp()-invoked_at))*1000)::integer
+        WHERE workspace_id=$1 AND id=$2::bigint AND tool_name=$3
+          AND metadata_json->'originalInvocation'->>'callId'=$4
+          AND metadata_json->'originalInvocation'->>'ownerId'=$5
+          AND metadata_json->'responseObservation'->>'state'='pending'
+        RETURNING id::text`, [ctx.workspaceId!, id, request.toolName, request.callId, ownerId,
+        // status retains the existing dispatch/quota meaning. Runtime outcome
+        // lives separately above, including accepted/running/unknown.
+        jsonbSafeStringify(observation), refusal || error || !result ? 'error' : handlerFailed ? 'refused' : 'ok']);
+      if (!rows[0]?.id) throw new Error('Original invocation settlement join is unavailable');
+    });
+  },
+};
 
 // P-020: the telemetry-buffer sizing (maxPending / debounceMs / maxBatch) is now runtime-settable
 // via telemetryBufferConfig() (canonical defaults TELEMETRY_BUFFER_DEFAULTS live in
@@ -1648,7 +1757,11 @@ export async function flushPendingTelemetry(): Promise<void> {
                 // sufficiently overlap with `unknown[]` for a direct cast, so go through
                 // `unknown` first — derived from `tx` itself so this file need not import
                 // postgres.js's ParameterOrJSON type.
-                const inserted = await tx.unsafe<{ id: string }[]>(TELEMETRY_INSERT_SQL, row.params as unknown as Parameters<typeof tx.unsafe>[1]);
+                const inserted = await tx.unsafe<{ id: string }[]>(row.invocationId ? TELEMETRY_ENRICH_SQL : TELEMETRY_INSERT_SQL,
+                  (row.invocationId ? [row.workspaceId, row.invocationId, row.callId,
+                    ...[10, 11, 12, 13, 14, 15, 16, 18, 23, 19].map(index => row.params[index])]
+                    : row.params) as unknown as Parameters<typeof tx.unsafe>[1]);
+                if (row.invocationId && !inserted?.[0]) throw new Error('Original invocation telemetry join is unavailable');
                 if (row.friction && inserted?.[0]) row.friction.id = inserted[0].id;
               }
             });
@@ -2088,6 +2201,7 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
   if (friction) deliveryMetadata.frictionCapture = 'pending';
   return {
     workspaceId: input.ctx.workspaceId,
+    ...(input.invocationRef ? { invocationId: originalInvocationId(input.invocationRef), callId: input.callId } : {}),
     ...(friction ? { friction } : {}),
     params: [
       input.ctx.workspaceId,
@@ -2469,6 +2583,7 @@ const priorityKernelEnforcement: KernelEnforcementPort = request => withPriority
 /** Shared deps singleton. Same object reference is safe to pass to
  *  multiple dispatchers — the impls are stateless. */
 export const PROJECTED_DEPS: DispatchProjectedDeps = {
+  invocationObserver: originalInvocationObserver,
   resolvePremises: resolveDispatchPremises,
   executionAdapter(request) {
     if (request.tool.execution?.adapter?.id !== 'dbos:durable-orchestration') return undefined;

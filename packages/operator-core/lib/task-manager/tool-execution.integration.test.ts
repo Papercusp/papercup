@@ -10,6 +10,7 @@ import {
   type DurableOrchestrationClient, type DurableOrchestrationInput, type DurableOrchestrationOutcome,
 } from '../dbos/durable-orchestration-workflow';
 import { effectiveMcpDeadlineMs, raceDeadline } from '../endpoint-route/routes/transport/_mcp-host';
+import * as sensitiveText from '../sensitive-text';
 
 vi.mock('../dbos/bootstrap', () => ({ dbosStarted: () => false, withDbosIdleTxGrace: (value: string) => value }));
 afterEach(() => { vi.useRealTimers(); _resetCatalogForTests(); _resetProjectionRegistryForTests(); });
@@ -19,7 +20,7 @@ function durableFixture(options: {
   terminal?: boolean; persist?: boolean; requestBound?: boolean; settleAfterMs?: number;
   yieldReplacement?: boolean; yieldAfterMs?: number; liveInteraction?: boolean;
 } = {}) {
-  const records = new Map<string, { status: string; input?: [DurableOrchestrationInput]; output?: DurableOrchestrationOutcome }>();
+  const records = new Map<string, { status: string; input?: [DurableOrchestrationInput]; output?: DurableOrchestrationOutcome; error?: unknown }>();
   const outcome: DurableOrchestrationOutcome = { status: 'succeeded', summary: 'original business result', steps: [] };
   const enqueue = vi.fn<DurableOrchestrationClient['enqueue']>(async (admission, input) => {
     if (options.persist !== false) records.set(admission.workflowID, {
@@ -39,7 +40,11 @@ function durableFixture(options: {
   const deps = { client: async () => client };
   const handler = vi.fn(async (_args: { value: number }, ctx: UnifiedToolContext) => {
     const admitted = await startDurableOrchestration({ runKey: 'original-operation', script: 'return 7',
-      caller: { ownerId: ctx.uiClientId!, workspaceId: ctx.workspaceId!, role: ctx.role! },
+      caller: { ownerId: ctx.uiClientId!, workspaceId: ctx.workspaceId!, role: ctx.role!,
+        ...(ctx.harnessSlug ? { harnessSlug: ctx.harnessSlug } : {}),
+        ...(ctx.principal ? { principal: { kind: ctx.principal.kind, slug: ctx.principal.slug,
+          workspaceId: ctx.principal.workspaceId } } : {}),
+      },
       pin: { sourceSha256: 'original-source', bindingsSha256: 'original-bindings' }, timeoutSec: 60,
     }, deps);
     return { content: [{ type: 'text' as const, text: JSON.stringify({ durableRun: admitted }) }],
@@ -74,6 +79,184 @@ function durableFixture(options: {
     } });
   return { records, outcome, enqueue, handler, tool, dispatch, deps };
 }
+
+describe('DBOS original harness scope', () => {
+  it.each([
+    ['original-harness', 'foreign-harness'],
+    ['original-harness', undefined],
+    ['original-harness', '*'],
+    [undefined, 'foreign-harness'],
+  ])('refuses original scope %s readback from %s without releasing result bytes', async (originalHarness, foreignHarness) => {
+    const runtime = durableFixture({ terminal: true });
+    const original = { harnessSlug: originalHarness };
+    const admitted = await runtime.dispatch({ mode: 'sync' }, original);
+    expect(admitted).toMatchObject({ ok: true });
+    const handle = [...runtime.records.keys()][0]!;
+    const persisted = structuredClone(runtime.records.get(handle));
+    const foreign = await runtime.dispatch({ mode: 'sync', handle }, { harnessSlug: foreignHarness });
+    expect(foreign).toMatchObject({ ok: false, error: { code: 'execution_receipt_invalid' } });
+    expect(JSON.stringify(foreign)).not.toContain('original business result');
+    expect(runtime.records.get(handle)).toEqual(persisted);
+    const recovered = await runtime.dispatch({ mode: 'sync', handle }, original);
+    expect(recovered).toMatchObject({ ok: true, result: { _meta: { toolExecution: { handle } } } });
+    expect(recovered.ok && JSON.stringify(recovered.result)).toContain('original business result');
+    expect(runtime.handler).toHaveBeenCalledOnce();
+    expect(runtime.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it('refuses a lost persisted harness join and recovers the unchanged original result when repaired', async () => {
+    const runtime = durableFixture({ terminal: true });
+    const original = { harnessSlug: 'original-harness' };
+    expect(await runtime.dispatch({ mode: 'sync' }, original)).toMatchObject({ ok: true });
+    const handle = [...runtime.records.keys()][0]!;
+    const caller = runtime.records.get(handle)!.input![0].caller;
+    delete caller.harnessSlug;
+    const orphaned = await runtime.dispatch({ mode: 'sync', handle }, original);
+    expect(orphaned).toMatchObject({ ok: false, error: { code: 'execution_receipt_invalid' } });
+    expect(JSON.stringify(orphaned)).not.toContain('original business result');
+    caller.harnessSlug = original.harnessSlug;
+    const repaired = await runtime.dispatch({ mode: 'sync', handle }, original);
+    expect(repaired.ok && JSON.stringify(repaired.result)).toContain('original business result');
+    expect(runtime.handler).toHaveBeenCalledOnce();
+    expect(runtime.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it('uses canonical unscoped normalization for an original workspace-level run', async () => {
+    const runtime = durableFixture({ terminal: true });
+    expect(await runtime.dispatch({ mode: 'sync' })).toMatchObject({ ok: true });
+    const handle = [...runtime.records.keys()][0]!;
+    expect(await runtime.dispatch({ mode: 'sync', handle }, { harnessSlug: '*' })).toMatchObject({ ok: true });
+    expect(runtime.handler).toHaveBeenCalledOnce();
+    expect(runtime.enqueue).toHaveBeenCalledOnce();
+  });
+});
+
+describe('DBOS original caller identity', () => {
+  const principal = { kind: 'system' as const, slug: 'original-principal', workspaceId: 'p003-runtime',
+    authMethod: 'process-internal' as const, trust: 'trusted' as const, capabilities: new Set(['tasks:read']) };
+
+  it.each([
+    { ...principal, slug: 'foreign-principal' },
+    { ...principal, workspaceId: 'foreign-workspace' },
+    { ...principal, kind: 'service' as const },
+    undefined,
+  ])('refuses a different or missing principal before releasing the original result (%j)', async foreignPrincipal => {
+    const runtime = durableFixture({ terminal: true });
+    expect(await runtime.dispatch({ mode: 'sync' }, { principal })).toMatchObject({ ok: true });
+    const handle = [...runtime.records.keys()][0]!;
+    const persisted = structuredClone(runtime.records.get(handle));
+    const foreign = await runtime.dispatch({ mode: 'sync', handle }, { principal: foreignPrincipal });
+    expect(foreign).toMatchObject({ ok: false, error: { code: 'execution_receipt_invalid' } });
+    expect(JSON.stringify(foreign)).not.toContain('original business result');
+    expect(runtime.records.get(handle)).toEqual(persisted);
+    const freshDispatcher = (await import('@papercusp/tooldef')).dispatchProjectedTool;
+    const recovered = await runtime.dispatch({ mode: 'sync', handle }, { principal }, freshDispatcher);
+    expect(recovered.ok && JSON.stringify(recovered.result)).toContain('original business result');
+    expect(runtime.handler).toHaveBeenCalledOnce();
+    expect(runtime.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it.each(['principal', 'role'] as const)('refuses a lost or changed persisted %s join and recovers after repair', async field => {
+    const runtime = durableFixture({ terminal: true });
+    expect(await runtime.dispatch({ mode: 'sync' }, { principal })).toMatchObject({ ok: true });
+    const handle = [...runtime.records.keys()][0]!;
+    const caller = runtime.records.get(handle)!.input![0].caller;
+    const original = structuredClone(caller);
+    if (field === 'principal') delete caller.principal;
+    else caller.role = 'worker';
+    const orphaned = await runtime.dispatch({ mode: 'sync', handle }, { principal });
+    expect(orphaned).toMatchObject({ ok: false, error: { code: 'execution_receipt_invalid' } });
+    expect(JSON.stringify(orphaned)).not.toContain('original business result');
+    Object.assign(caller, original);
+    const repaired = await runtime.dispatch({ mode: 'sync', handle }, { principal });
+    expect(repaired.ok && JSON.stringify(repaired.result)).toContain('original business result');
+    expect(runtime.handler).toHaveBeenCalledOnce();
+    expect(runtime.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it('does not grant a new principal access to a historical admission without a principal join', async () => {
+    const runtime = durableFixture({ terminal: true });
+    expect(await runtime.dispatch({ mode: 'sync' })).toMatchObject({ ok: true });
+    const handle = [...runtime.records.keys()][0]!;
+    const foreign = await runtime.dispatch({ mode: 'sync', handle }, { principal });
+    expect(foreign).toMatchObject({ ok: false, error: { code: 'execution_receipt_invalid' } });
+    expect(JSON.stringify(foreign)).not.toContain('original business result');
+    expect((await runtime.dispatch({ mode: 'sync', handle })).ok).toBe(true);
+    expect(runtime.handler).toHaveBeenCalledOnce();
+    expect(runtime.enqueue).toHaveBeenCalledOnce();
+  });
+});
+
+describe('DBOS execution result redaction', () => {
+  const secret = 'p003-sample-result-secret-917a6e42';
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
+
+  function seededRuntime() {
+    vi.stubEnv('P003_RESULT_SECRET', secret);
+    const runtime = durableFixture({ terminal: true });
+    if (runtime.outcome.status !== 'succeeded') throw new Error('Expected succeeded fixture');
+    runtime.outcome.summary = {
+      text: 'child result ' + secret,
+      accessToken: 'sample-key-directed-value',
+      credentialRef: 'credential:original-reference',
+      detail: 'x'.repeat(2001) + ':decisive-tail',
+    };
+    return runtime;
+  }
+
+  function assertProtected(result: Awaited<ReturnType<ReturnType<typeof seededRuntime>['dispatch']>>) {
+    expect(result.ok).toBe(true);
+    const bytes = JSON.stringify(result);
+    expect(bytes).not.toContain(secret);
+    expect(bytes).not.toContain('sample-key-directed-value');
+    expect(bytes).toContain('[redacted]');
+    expect(bytes).toContain('credential:original-reference');
+    expect(bytes).toContain('x'.repeat(2001) + ':decisive-tail');
+  }
+
+  it('redacts initial result and fresh-adapter readback without changing the original record or admission', async () => {
+    const runtime = seededRuntime();
+    assertProtected(await runtime.dispatch({ mode: 'sync' }));
+    const handle = [...runtime.records.keys()][0]!;
+    expect(JSON.stringify(runtime.records.get(handle)!.output)).toContain(secret);
+    const freshDispatcher = (await import('@papercusp/tooldef')).dispatchProjectedTool;
+    assertProtected(await runtime.dispatch({ mode: 'sync', handle }, {}, freshDispatcher));
+    expect(runtime.handler).toHaveBeenCalledOnce();
+    expect(runtime.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it('detects bypass of only the adapter redactor and passes the repaired readback on the same handle', async () => {
+    const runtime = seededRuntime();
+    assertProtected(await runtime.dispatch({ mode: 'sync' }));
+    const handle = [...runtime.records.keys()][0]!;
+    const bypass = vi.spyOn(sensitiveText, 'redactStructuredSensitiveValue').mockImplementation(value => value);
+    const exposed = await runtime.dispatch({ mode: 'sync', handle });
+    expect(bypass).toHaveBeenCalled();
+    expect(JSON.stringify(exposed)).toContain(secret);
+    expect(() => assertProtected(exposed)).toThrow();
+    bypass.mockRestore();
+    assertProtected(await runtime.dispatch({ mode: 'sync', handle }));
+    expect(runtime.handler).toHaveBeenCalledOnce();
+    expect(runtime.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it('redacts a detached runtime error on lookup while preserving the original runtime record', async () => {
+    vi.stubEnv('P003_RESULT_SECRET', secret);
+    const runtime = durableFixture();
+    const admitted = await runtime.dispatch({ mode: 'async' });
+    expect(admitted).toMatchObject({ ok: true, result: { _meta: { toolExecution: { terminal: false } } } });
+    const handle = [...runtime.records.keys()][0]!;
+    const row = runtime.records.get(handle)!;
+    row.status = 'ERROR'; row.error = 'child failed with ' + secret;
+    const result = await runtime.dispatch({ mode: 'sync', handle });
+    expect(result).toMatchObject({ ok: true, result: { _meta: { toolExecution: { state: 'failed', terminal: true } } } });
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(JSON.stringify(result)).toContain('[redacted]');
+    expect(row.error).toContain(secret);
+    expect(runtime.handler).toHaveBeenCalledOnce();
+    expect(runtime.enqueue).toHaveBeenCalledOnce();
+  });
+});
 
 describe('unified execution', () => {
   describe('R-22 > P-003', () => {

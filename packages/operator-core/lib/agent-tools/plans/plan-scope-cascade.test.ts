@@ -375,6 +375,7 @@ describe('BAR readiness re-evaluation on a scope write (P-031)', () => {
     const result = await reevaluateBarReadinessOnScopeWrite(
       { workspaceId: 'ws', harnessSlug: 'papercusp', planSlug: CARRIER_PLAN, cause: 'decision-added' },
       {
+        async readOpenBuildItems() { return []; },
         async readBarReadiness() {
           return blocked(['bar_snapshot_mapping_dropped_only']);
         },
@@ -393,6 +394,7 @@ describe('BAR readiness re-evaluation on a scope write (P-031)', () => {
     const failedRead = await reevaluateBarReadinessOnScopeWrite(
       { workspaceId: 'ws', harnessSlug: 'papercusp', planSlug: CARRIER_PLAN, cause: 'decision-added' },
       {
+        async readOpenBuildItems() { return []; },
         async readBarReadiness() {
           throw new Error('pool exhausted');
         },
@@ -409,6 +411,7 @@ describe('BAR readiness re-evaluation on a scope write (P-031)', () => {
     const failedStamp = await reevaluateBarReadinessOnScopeWrite(
       { workspaceId: 'ws', harnessSlug: 'papercusp', planSlug: CARRIER_PLAN, cause: 'item-dropped' },
       {
+        async readOpenBuildItems() { return []; },
         async readBarReadiness() {
           return blocked(['bar_snapshot_mapping_dropped_only']);
         },
