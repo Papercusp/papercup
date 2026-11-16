@@ -152,6 +152,11 @@ export async function preflightCurrentSuNativeEgress(evidenceDir: string,
 }
 
 /** The model-request census is produced only by the managed-carry protocol. */
+export const CURRENT_SU_RECOVERY_ALLOCATION_ARTIFACTS = [
+  'phases/execute/recovery-fact-allocation.json',
+  'phases/execute/recovery-fact-manifest.json',
+] as const;
+
 export function currentSuNativeRetainedArtifacts(managedCarry: boolean): string[] {
   return [
     'phases/prepare/operator-api-build.log', 'phases/prepare/operator-api-build-result.json',

@@ -3,13 +3,15 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
-import { currentSuNativeRetainedArtifacts } from '../../test/isolated-integration-proof';
+import { currentSuNativeRetainedArtifacts, CURRENT_SU_RECOVERY_ALLOCATION_ARTIFACTS } from '../../test/isolated-integration-proof';
 
 it.for([false, true])('retains current-su phase artifacts through pruning (managedCarry=%s)', async managedCarry => {
   const fixture = mkdtempSync(join(tmpdir(), 'current-su-retention-'));
   const evidenceRoot = join(fixture, 'isolated-integration');
   const requests = '[{"model":"private-fixture","managedCarry":true}]\n';
   const egressPreflight = '{"status":"ready","runId":"original-egress-fixture","cleanupErrors":[]}\n';
+  const allocationOriginals = ['{"currentRef":"WI-123","peerRef":"WI-124","nativeLaunches":0}\n',
+    '{"workspace":"test-runtime-retained","clock":{"epoch":"2026-01-01T00:00:00.000Z"}}\n'];
   vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(fixture, 'retention'));
   vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(fixture, 'locks'));
   // The runner also publishes at the canonical reader root. Keep that namespace
@@ -18,7 +20,8 @@ it.for([false, true])('retains current-su phase artifacts through pruning (manag
   try {
     const original = await runHarness({
       contract: { name: 'isolated-integration', phases: [{ id: 'prepare' }, { id: 'execute' }] },
-      evidenceRoot, guardRails: [], retainedArtifacts: currentSuNativeRetainedArtifacts(managedCarry),
+      evidenceRoot, guardRails: [],
+      retainedArtifacts: [...currentSuNativeRetainedArtifacts(managedCarry), ...CURRENT_SU_RECOVERY_ALLOCATION_ARTIFACTS],
       runPhase: async ({ phase, evidenceDir }) => {
         if (phase === 'prepare') {
           writeFileSync(join(evidenceDir, 'operator-api-build.log'), 'original build\n');
@@ -26,7 +29,11 @@ it.for([false, true])('retains current-su phase artifacts through pruning (manag
           writeFileSync(join(evidenceDir, 'native-egress-preflight.json'), egressPreflight);
           writeFileSync(join(evidenceDir, 'bundle-restricted-hold-inputs.json'), '[]\n');
           writeFileSync(join(evidenceDir, 'hono-host.mjs.build-steps.jsonl'), '{"event":"end"}\n');
-        } else if (managedCarry) writeFileSync(join(evidenceDir, 'native-model-requests.json'), requests);
+        } else {
+          if (managedCarry) writeFileSync(join(evidenceDir, 'native-model-requests.json'), requests);
+          for (const [index, path] of CURRENT_SU_RECOVERY_ALLOCATION_ARTIFACTS.entries())
+            writeFileSync(join(evidenceDir, path.split('/').at(-1)!), allocationOriginals[index]!);
+        }
         return { ok: true };
       },
     });
@@ -44,6 +51,8 @@ it.for([false, true])('retains current-su phase artifacts through pruning (manag
       'phases/prepare/operator-api-build.log'), 'utf8')).toBe('original build\n');
     expect(readFileSync(join(evidenceRoot, 'retained', original.runId,
       'phases/prepare/native-egress-preflight.json'), 'utf8')).toBe(egressPreflight);
+    for (const [index, path] of CURRENT_SU_RECOVERY_ALLOCATION_ARTIFACTS.entries())
+      expect(readFileSync(join(evidenceRoot, 'retained', original.runId, path), 'utf8')).toBe(allocationOriginals[index]);
   } finally {
     vi.unstubAllEnvs();
     rmSync(fixture, { recursive: true, force: true });
