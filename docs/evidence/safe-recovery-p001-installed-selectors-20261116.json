@@ -1,0 +1,677 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-001 installed startup selector observation; incomplete inventory, no recovery clearance",
+  "framework": "operational",
+  "command": [
+    "python3",
+    "-"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-16T14:55:19.866681+00:00",
+  "finishedAt": "2026-11-16T14:55:19.866681+00:00",
+  "summary": "Original read-only snapshot of configured API/background startup selectors. Shared database and controller state were observed. Plugin destinations, runtime-mutated overrides, queues/caches and transient provider destinations are not measured; this is NOT a complete deployment inventory, an isolation proof, a recovery limit, acceptance, or shipment. Times identify the single snapshot instant and assert no duration.",
+  "assertions": [
+    {
+      "id": "exact-configured-units-observed",
+      "passed": true,
+      "evidence": "All three configured runtime unit cgroups had observed Node processes; unread entries and unobservedUnits are preserved in snapshot."
+    },
+    {
+      "id": "shared-installed-database-reported",
+      "passed": true,
+      "evidence": "Each observed operator/background startup configuration with controller state selects localhost:5432/papercusp. This is a selector observation; no isolated installed database is claimed."
+    },
+    {
+      "id": "shared-controller-state-reported",
+      "passed": true,
+      "evidence": "Each observed operator/background startup configuration with controller state selects the same STATE_DIRECTORY."
+    },
+    {
+      "id": "staging-api-route-explicitly-shared",
+      "passed": true,
+      "evidence": "Maintained operator-api route explicitly declares shared database/workspace, and private test identity/data as prerequisites."
+    }
+  ],
+  "originalExecution": {
+    "tool": "capability:bash",
+    "taskId": "0mwjdxwp51ywbu0eips",
+    "bashId": "bd3916a3-406",
+    "collectorCommand": "python3 - <<'PY'\nimport pathlib,json,os,hashlib,datetime,socket\nfrom urllib.parse import urlsplit,urlunsplit\nunits=['papercusp-dev-api.service','papercusp-staging-api.service','papercusp-bg-host.service']\nkeys=['PAPERCUSP_HOME','PAPERCUSP_WORKSPACES_ROOT','PAPERCUSP_INTEGRATION_ROOT','PAPERCUSP_RELEASE_ROOT','PAPERCUSP_CHECKPOINT_ROOT','PAPERCUSP_STATE_DIRECTORY','STATE_DIRECTORY','PAPERCUSP_DUMP_ROOT','PAPERCUSP_PROMPT_ROOT','PROMPT_ROOT','XDG_CACHE_HOME','PAPERCUSP_PG_PORT','PAPERCUSP_PG_HOST','PAPERCUSP_HONO_PORT','PAPERCUSP_VINTAGE_UNIT','PAPERCUSP_BACKGROUND_WORKERS','PAPERCUSP_DBOS_ENABLE','PAPERCUSP_DBOS_ORCHESTRATOR','PAPERCUSP_DBOS_ROUTINES','PAPERCUSP_DBOS_TIMERS','PAPERCUSP_DBOS_AUTOLOOP','PAPERCUSP_ORCHESTRATOR_HARNESSES','PAPERCUSP_CLUSTER_ENABLE','HARNESS_DATABASE_URL','HARNESS_ADMIN_DATABASE_URL','DATABASE_URL','PAPERCUSP_PG_URL']\nrows=[]; unread=[]\nfor p in pathlib.Path('/proc').glob('[0-9]*'):\n try: cg=(p/'cgroup').read_text()\n except (FileNotFoundError,ProcessLookupError,PermissionError): continue\n unit=next((u for u in units if '/'+u in cg),None)\n if not unit:continue\n try:\n  argv=(p/'cmdline').read_bytes().replace(b'\\0',b' ').decode(errors='replace')\n  if not ('node' in argv or 'hono-host' in argv):continue\n  env=dict(x.split('=',1) for x in (p/'environ').read_bytes().decode(errors='replace').split('\\0') if '=' in x)\n  selectors={}\n  for k in keys:\n   if k not in env:continue\n   v=env[k]\n   if k.endswith('_URL'):\n    try:\n     q=urlsplit(v);v=urlunsplit((q.scheme,(q.hostname or '')+(':'+str(q.port) if q.port else ''),q.path,'',''))\n    except Exception:v='unparseable endpoint'\n   selectors[k]=v\n  providers=[]\n  for k,v in env.items():\n   if any(x in k for x in ['ENDPOINT','BASE_URL','SIDECAR_URL','GATEWAY_URL']) and not any(x in k for x in ['TOKEN','KEY','SECRET','PASSWORD']):\n    try:\n     q=urlsplit(v); safe=urlunsplit((q.scheme,(q.hostname or '')+(':'+str(q.port) if q.port else ''),q.path,'',''))\n    except Exception:safe='unparseable endpoint'\n    providers.append({'key':k,'destination':safe})\n  rows.append({'unit':unit,'pid':int(p.name),'cwd':os.readlink(p/'cwd'),'commandKind':'hono-host' if 'hono-host' in argv else 'node','selectors':selectors,'providerSelectors':providers,'configIdentity':hashlib.sha256(json.dumps(selectors,sort_keys=True).encode()).hexdigest()})\n except (FileNotFoundError,ProcessLookupError):unread.append({'unit':unit,'pid':int(p.name),'reason':'process-race'})\n except PermissionError:unread.append({'unit':unit,'pid':int(p.name),'reason':'permission'})\nresult={'observedAt':datetime.datetime.now(datetime.timezone.utc).isoformat(),'scope':'startup environment and loaded cwd of exact configured operator/background units; runtime-mutated env and transient external sockets not proven','units':units,'processes':rows,'unread':unread,'unobservedUnits':[u for u in units if not any(r['unit']==u for r in rows)]}\npathlib.Path('/tmp/e48-p001-installed-selectors.json').write_text(json.dumps(result,indent=2))\nprint(json.dumps(result))\nPY"
+  },
+  "snapshot": {
+    "observedAt": "2026-11-16T14:55:19.866681+00:00",
+    "scope": "startup environment and loaded cwd of exact configured operator/background units; runtime-mutated env and transient external sockets not proven",
+    "units": [
+      "papercusp-dev-api.service",
+      "papercusp-staging-api.service",
+      "papercusp-bg-host.service"
+    ],
+    "processes": [
+      {
+        "unit": "papercusp-bg-host.service",
+        "pid": 13689,
+        "cwd": "@capture-home/papercupai-workspace/papercusp/apps/operator",
+        "commandKind": "node",
+        "selectors": {
+          "PAPERCUSP_INTEGRATION_ROOT": "@capture-home/papercupai-workspace/papercusp",
+          "PAPERCUSP_RELEASE_ROOT": "@capture-home/papercupai-workspace/papercusp-release",
+          "STATE_DIRECTORY": "@capture-home/.local/state/papercusp/controller",
+          "PAPERCUSP_HONO_PORT": "3271",
+          "PAPERCUSP_BACKGROUND_WORKERS": "1",
+          "PAPERCUSP_DBOS_ENABLE": "1",
+          "PAPERCUSP_DBOS_ORCHESTRATOR": "1",
+          "PAPERCUSP_DBOS_ROUTINES": "1",
+          "PAPERCUSP_DBOS_TIMERS": "1",
+          "PAPERCUSP_DBOS_AUTOLOOP": "0",
+          "DATABASE_URL": "postgresql://localhost:5432/papercusp"
+        },
+        "providerSelectors": [
+          {
+            "key": "DATABASE_URL",
+            "destination": "postgresql://localhost:5432/papercusp"
+          },
+          {
+            "key": "PAPERCUSP_EMBED_SIDECAR_URL",
+            "destination": "http://127.0.0.1:3384"
+          },
+          {
+            "key": "ANTHROPIC_BASE_URL",
+            "destination": "http://127.0.0.1:8788"
+          }
+        ],
+        "configIdentity": "bf55c303e71536fd583dcf76fa774f4e8547cc5c1f63fd3016f5223e89c16c4c"
+      },
+      {
+        "unit": "papercusp-bg-host.service",
+        "pid": 38195,
+        "cwd": "@capture-home/.papercusp-workspaces/papercusp-workspace/.papercusp/global-plugins/google-contacts",
+        "commandKind": "node",
+        "selectors": {},
+        "providerSelectors": [],
+        "configIdentity": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      {
+        "unit": "papercusp-bg-host.service",
+        "pid": 38222,
+        "cwd": "@capture-home/.papercusp-workspaces/papercusp-workspace/.papercusp/global-plugins/google-contacts",
+        "commandKind": "node",
+        "selectors": {},
+        "providerSelectors": [],
+        "configIdentity": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      {
+        "unit": "papercusp-bg-host.service",
+        "pid": 38263,
+        "cwd": "@capture-home/.papercusp-workspaces/papercusp-workspace/.papercusp/global-plugins/google-contacts",
+        "commandKind": "node",
+        "selectors": {},
+        "providerSelectors": [],
+        "configIdentity": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      {
+        "unit": "papercusp-bg-host.service",
+        "pid": 38464,
+        "cwd": "@capture-home/.papercusp-workspaces/papercusp-workspace/.papercusp/global-plugins/slack",
+        "commandKind": "node",
+        "selectors": {},
+        "providerSelectors": [],
+        "configIdentity": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      {
+        "unit": "papercusp-bg-host.service",
+        "pid": 38493,
+        "cwd": "@capture-home/.papercusp-workspaces/papercusp-workspace/.papercusp/global-plugins/slack",
+        "commandKind": "node",
+        "selectors": {},
+        "providerSelectors": [],
+        "configIdentity": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      {
+        "unit": "papercusp-bg-host.service",
+        "pid": 38511,
+        "cwd": "@capture-home/.papercusp-workspaces/papercusp-workspace/.papercusp/global-plugins/slack",
+        "commandKind": "node",
+        "selectors": {},
+        "providerSelectors": [],
+        "configIdentity": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      {
+        "unit": "papercusp-dev-api.service",
+        "pid": 136254,
+        "cwd": "@capture-home/papercupai-workspace/papercup-release/apps/operator",
+        "commandKind": "hono-host",
+        "selectors": {
+          "PAPERCUSP_INTEGRATION_ROOT": "@capture-home/papercupai-workspace/papercusp",
+          "STATE_DIRECTORY": "@capture-home/.local/state/papercusp/controller",
+          "PAPERCUSP_BACKGROUND_WORKERS": "0",
+          "HARNESS_ADMIN_DATABASE_URL": "postgresql://localhost:5432/papercusp"
+        },
+        "providerSelectors": [
+          {
+            "key": "HARNESS_ADMIN_DATABASE_URL",
+            "destination": "postgresql://localhost:5432/papercusp"
+          },
+          {
+            "key": "PAPERCUSP_UPDATE_BASE_URL",
+            "destination": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev/HK70BNWvxXWRRRkMgl3PXqgdZyWYLsCG"
+          },
+          {
+            "key": "PAPERCUSP_EMBED_SIDECAR_URL",
+            "destination": "http://127.0.0.1:3384"
+          },
+          {
+            "key": "ANTHROPIC_BASE_URL",
+            "destination": "http://127.0.0.1:8788"
+          }
+        ],
+        "configIdentity": "efc6ce3d8bfa4fdb7de2cc2ad408e6b7cf4adb1859ab7fb615ce01cf490163c1"
+      },
+      {
+        "unit": "papercusp-dev-api.service",
+        "pid": 1316557,
+        "cwd": "@capture-home/papercupai-workspace/papercup-release/apps/operator",
+        "commandKind": "hono-host",
+        "selectors": {
+          "PAPERCUSP_INTEGRATION_ROOT": "@capture-home/papercupai-workspace/papercusp",
+          "STATE_DIRECTORY": "@capture-home/.local/state/papercusp/controller",
+          "PAPERCUSP_BACKGROUND_WORKERS": "0",
+          "HARNESS_ADMIN_DATABASE_URL": "postgresql://localhost:5432/papercusp"
+        },
+        "providerSelectors": [
+          {
+            "key": "HARNESS_ADMIN_DATABASE_URL",
+            "destination": "postgresql://localhost:5432/papercusp"
+          },
+          {
+            "key": "PAPERCUSP_UPDATE_BASE_URL",
+            "destination": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev/HK70BNWvxXWRRRkMgl3PXqgdZyWYLsCG"
+          },
+          {
+            "key": "PAPERCUSP_EMBED_SIDECAR_URL",
+            "destination": "http://127.0.0.1:3384"
+          },
+          {
+            "key": "ANTHROPIC_BASE_URL",
+            "destination": "http://127.0.0.1:8788"
+          }
+        ],
+        "configIdentity": "efc6ce3d8bfa4fdb7de2cc2ad408e6b7cf4adb1859ab7fb615ce01cf490163c1"
+      },
+      {
+        "unit": "papercusp-dev-api.service",
+        "pid": 1982813,
+        "cwd": "@capture-home/papercupai-workspace/papercup-release/apps/operator",
+        "commandKind": "hono-host",
+        "selectors": {
+          "PAPERCUSP_INTEGRATION_ROOT": "@capture-home/papercupai-workspace/papercusp",
+          "STATE_DIRECTORY": "@capture-home/.local/state/papercusp/controller",
+          "PAPERCUSP_BACKGROUND_WORKERS": "0",
+          "HARNESS_ADMIN_DATABASE_URL": "postgresql://localhost:5432/papercusp"
+        },
+        "providerSelectors": [
+          {
+            "key": "HARNESS_ADMIN_DATABASE_URL",
+            "destination": "postgresql://localhost:5432/papercusp"
+          },
+          {
+            "key": "PAPERCUSP_UPDATE_BASE_URL",
+            "destination": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev/HK70BNWvxXWRRRkMgl3PXqgdZyWYLsCG"
+          },
+          {
+            "key": "PAPERCUSP_EMBED_SIDECAR_URL",
+            "destination": "http://127.0.0.1:3384"
+          },
+          {
+            "key": "ANTHROPIC_BASE_URL",
+            "destination": "http://127.0.0.1:8788"
+          }
+        ],
+        "configIdentity": "efc6ce3d8bfa4fdb7de2cc2ad408e6b7cf4adb1859ab7fb615ce01cf490163c1"
+      },
+      {
+        "unit": "papercusp-dev-api.service",
+        "pid": 2245547,
+        "cwd": "@capture-home/papercupai-workspace/papercup-release/apps/operator",
+        "commandKind": "hono-host",
+        "selectors": {
+          "PAPERCUSP_INTEGRATION_ROOT": "@capture-home/papercupai-workspace/papercusp",
+          "STATE_DIRECTORY": "@capture-home/.local/state/papercusp/controller",
+          "PAPERCUSP_BACKGROUND_WORKERS": "0",
+          "HARNESS_ADMIN_DATABASE_URL": "postgresql://localhost:5432/papercusp"
+        },
+        "providerSelectors": [
+          {
+            "key": "HARNESS_ADMIN_DATABASE_URL",
+            "destination": "postgresql://localhost:5432/papercusp"
+          },
+          {
+            "key": "PAPERCUSP_UPDATE_BASE_URL",
+            "destination": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev/HK70BNWvxXWRRRkMgl3PXqgdZyWYLsCG"
+          },
+          {
+            "key": "PAPERCUSP_EMBED_SIDECAR_URL",
+            "destination": "http://127.0.0.1:3384"
+          },
+          {
+            "key": "ANTHROPIC_BASE_URL",
+            "destination": "http://127.0.0.1:8788"
+          }
+        ],
+        "configIdentity": "efc6ce3d8bfa4fdb7de2cc2ad408e6b7cf4adb1859ab7fb615ce01cf490163c1"
+      },
+      {
+        "unit": "papercusp-dev-api.service",
+        "pid": 2245589,
+        "cwd": "@capture-home/papercupai-workspace/papercup-release/apps/operator",
+        "commandKind": "hono-host",
+        "selectors": {
+          "PAPERCUSP_INTEGRATION_ROOT": "@capture-home/papercupai-workspace/papercusp",
+          "STATE_DIRECTORY": "@capture-home/.local/state/papercusp/controller",
+          "PAPERCUSP_BACKGROUND_WORKERS": "0",
+          "HARNESS_ADMIN_DATABASE_URL": "postgresql://localhost:5432/papercusp"
+        },
+        "providerSelectors": [
+          {
+            "key": "HARNESS_ADMIN_DATABASE_URL",
+            "destination": "postgresql://localhost:5432/papercusp"
+          },
+          {
+            "key": "PAPERCUSP_UPDATE_BASE_URL",
+            "destination": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev/HK70BNWvxXWRRRkMgl3PXqgdZyWYLsCG"
+          },
+          {
+            "key": "PAPERCUSP_EMBED_SIDECAR_URL",
+            "destination": "http://127.0.0.1:3384"
+          },
+          {
+            "key": "ANTHROPIC_BASE_URL",
+            "destination": "http://127.0.0.1:8788"
+          }
+        ],
+        "configIdentity": "efc6ce3d8bfa4fdb7de2cc2ad408e6b7cf4adb1859ab7fb615ce01cf490163c1"
+      },
+      {
+        "unit": "papercusp-staging-api.service",
+        "pid": 2628901,
+        "cwd": "@capture-home/papercupai-workspace/papercusp-staging.generations/.candidate-0b88f2ad43dd.RnJXgn/checkout/apps/operator",
+        "commandKind": "hono-host",
+        "selectors": {
+          "PAPERCUSP_INTEGRATION_ROOT": "@capture-home/papercupai-workspace/papercusp-staging.generations/.candidate-0b88f2ad43dd.RnJXgn/checkout",
+          "PAPERCUSP_RELEASE_ROOT": "@capture-home/papercupai-workspace/papercusp-release",
+          "STATE_DIRECTORY": "@capture-home/.local/state/papercusp/controller",
+          "PAPERCUSP_PROMPT_ROOT": "@capture-home/papercupai-workspace/papercusp/libs/papercusp/packages/harness",
+          "PAPERCUSP_HONO_PORT": "3170",
+          "PAPERCUSP_BACKGROUND_WORKERS": "0",
+          "PAPERCUSP_DBOS_ENABLE": "1",
+          "PAPERCUSP_DBOS_ORCHESTRATOR": "1",
+          "PAPERCUSP_DBOS_ROUTINES": "1",
+          "DATABASE_URL": "postgresql://localhost:5432/papercusp"
+        },
+        "providerSelectors": [
+          {
+            "key": "DATABASE_URL",
+            "destination": "postgresql://localhost:5432/papercusp"
+          },
+          {
+            "key": "PAPERCUSP_EMBED_SIDECAR_URL",
+            "destination": "http://127.0.0.1:3384"
+          },
+          {
+            "key": "ANTHROPIC_BASE_URL",
+            "destination": "http://127.0.0.1:8788"
+          }
+        ],
+        "configIdentity": "0d5b92c82ce2d4133d3238604a12fc269a0be754f094ea8f4b7c01b77a9d5da6"
+      },
+      {
+        "unit": "papercusp-dev-api.service",
+        "pid": 2650028,
+        "cwd": "@capture-home/papercupai-workspace/papercup-release/apps/operator",
+        "commandKind": "hono-host",
+        "selectors": {
+          "PAPERCUSP_INTEGRATION_ROOT": "@capture-home/papercupai-workspace/papercusp",
+          "STATE_DIRECTORY": "@capture-home/.local/state/papercusp/controller",
+          "PAPERCUSP_BACKGROUND_WORKERS": "0",
+          "HARNESS_ADMIN_DATABASE_URL": "postgresql://localhost:5432/papercusp"
+        },
+        "providerSelectors": [
+          {
+            "key": "HARNESS_ADMIN_DATABASE_URL",
+            "destination": "postgresql://localhost:5432/papercusp"
+          },
+          {
+            "key": "PAPERCUSP_UPDATE_BASE_URL",
+            "destination": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev/HK70BNWvxXWRRRkMgl3PXqgdZyWYLsCG"
+          },
+          {
+            "key": "PAPERCUSP_EMBED_SIDECAR_URL",
+            "destination": "http://127.0.0.1:3384"
+          },
+          {
+            "key": "ANTHROPIC_BASE_URL",
+            "destination": "http://127.0.0.1:8788"
+          }
+        ],
+        "configIdentity": "efc6ce3d8bfa4fdb7de2cc2ad408e6b7cf4adb1859ab7fb615ce01cf490163c1"
+      },
+      {
+        "unit": "papercusp-dev-api.service",
+        "pid": 2650097,
+        "cwd": "@capture-home/papercupai-workspace/papercup-release/apps/operator",
+        "commandKind": "hono-host",
+        "selectors": {
+          "PAPERCUSP_INTEGRATION_ROOT": "@capture-home/papercupai-workspace/papercusp",
+          "STATE_DIRECTORY": "@capture-home/.local/state/papercusp/controller",
+          "PAPERCUSP_BACKGROUND_WORKERS": "0",
+          "HARNESS_ADMIN_DATABASE_URL": "postgresql://localhost:5432/papercusp"
+        },
+        "providerSelectors": [
+          {
+            "key": "HARNESS_ADMIN_DATABASE_URL",
+            "destination": "postgresql://localhost:5432/papercusp"
+          },
+          {
+            "key": "PAPERCUSP_UPDATE_BASE_URL",
+            "destination": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev/HK70BNWvxXWRRRkMgl3PXqgdZyWYLsCG"
+          },
+          {
+            "key": "PAPERCUSP_EMBED_SIDECAR_URL",
+            "destination": "http://127.0.0.1:3384"
+          },
+          {
+            "key": "ANTHROPIC_BASE_URL",
+            "destination": "http://127.0.0.1:8788"
+          }
+        ],
+        "configIdentity": "efc6ce3d8bfa4fdb7de2cc2ad408e6b7cf4adb1859ab7fb615ce01cf490163c1"
+      },
+      {
+        "unit": "papercusp-dev-api.service",
+        "pid": 2650277,
+        "cwd": "@capture-home/papercupai-workspace/papercup-release/apps/operator",
+        "commandKind": "hono-host",
+        "selectors": {
+          "PAPERCUSP_INTEGRATION_ROOT": "@capture-home/papercupai-workspace/papercusp",
+          "STATE_DIRECTORY": "@capture-home/.local/state/papercusp/controller",
+          "PAPERCUSP_BACKGROUND_WORKERS": "0",
+          "HARNESS_ADMIN_DATABASE_URL": "postgresql://localhost:5432/papercusp"
+        },
+        "providerSelectors": [
+          {
+            "key": "HARNESS_ADMIN_DATABASE_URL",
+            "destination": "postgresql://localhost:5432/papercusp"
+          },
+          {
+            "key": "PAPERCUSP_UPDATE_BASE_URL",
+            "destination": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev/HK70BNWvxXWRRRkMgl3PXqgdZyWYLsCG"
+          },
+          {
+            "key": "PAPERCUSP_EMBED_SIDECAR_URL",
+            "destination": "http://127.0.0.1:3384"
+          },
+          {
+            "key": "ANTHROPIC_BASE_URL",
+            "destination": "http://127.0.0.1:8788"
+          }
+        ],
+        "configIdentity": "efc6ce3d8bfa4fdb7de2cc2ad408e6b7cf4adb1859ab7fb615ce01cf490163c1"
+      },
+      {
+        "unit": "papercusp-staging-api.service",
+        "pid": 2656834,
+        "cwd": "@capture-home/.papercusp-workspaces/papercusp-workspace/.papercusp/global-plugins/google-contacts",
+        "commandKind": "node",
+        "selectors": {},
+        "providerSelectors": [],
+        "configIdentity": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      {
+        "unit": "papercusp-staging-api.service",
+        "pid": 2656855,
+        "cwd": "@capture-home/.papercusp-workspaces/papercusp-workspace/.papercusp/global-plugins/google-contacts",
+        "commandKind": "node",
+        "selectors": {},
+        "providerSelectors": [],
+        "configIdentity": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      {
+        "unit": "papercusp-staging-api.service",
+        "pid": 2656883,
+        "cwd": "@capture-home/.papercusp-workspaces/papercusp-workspace/.papercusp/global-plugins/google-contacts",
+        "commandKind": "node",
+        "selectors": {},
+        "providerSelectors": [],
+        "configIdentity": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      {
+        "unit": "papercusp-staging-api.service",
+        "pid": 2656988,
+        "cwd": "@capture-home/.papercusp-workspaces/papercusp-workspace/.papercusp/global-plugins/slack",
+        "commandKind": "node",
+        "selectors": {},
+        "providerSelectors": [],
+        "configIdentity": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      {
+        "unit": "papercusp-staging-api.service",
+        "pid": 2656999,
+        "cwd": "@capture-home/.papercusp-workspaces/papercusp-workspace/.papercusp/global-plugins/slack",
+        "commandKind": "node",
+        "selectors": {},
+        "providerSelectors": [],
+        "configIdentity": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      {
+        "unit": "papercusp-staging-api.service",
+        "pid": 2657043,
+        "cwd": "@capture-home/.papercusp-workspaces/papercusp-workspace/.papercusp/global-plugins/slack",
+        "commandKind": "node",
+        "selectors": {},
+        "providerSelectors": [],
+        "configIdentity": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      {
+        "unit": "papercusp-staging-api.service",
+        "pid": 2673887,
+        "cwd": "@capture-home/papercupai-workspace/papercusp",
+        "commandKind": "node",
+        "selectors": {},
+        "providerSelectors": [],
+        "configIdentity": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      {
+        "unit": "papercusp-dev-api.service",
+        "pid": 2753671,
+        "cwd": "@capture-home/papercupai-workspace/papercusp",
+        "commandKind": "hono-host",
+        "selectors": {},
+        "providerSelectors": [],
+        "configIdentity": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      {
+        "unit": "papercusp-dev-api.service",
+        "pid": 3413454,
+        "cwd": "@capture-home/papercupai-workspace/papercup-release/apps/operator",
+        "commandKind": "hono-host",
+        "selectors": {
+          "PAPERCUSP_INTEGRATION_ROOT": "@capture-home/papercupai-workspace/papercusp",
+          "STATE_DIRECTORY": "@capture-home/.local/state/papercusp/controller",
+          "PAPERCUSP_BACKGROUND_WORKERS": "0",
+          "HARNESS_ADMIN_DATABASE_URL": "postgresql://localhost:5432/papercusp"
+        },
+        "providerSelectors": [
+          {
+            "key": "HARNESS_ADMIN_DATABASE_URL",
+            "destination": "postgresql://localhost:5432/papercusp"
+          },
+          {
+            "key": "PAPERCUSP_UPDATE_BASE_URL",
+            "destination": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev/HK70BNWvxXWRRRkMgl3PXqgdZyWYLsCG"
+          },
+          {
+            "key": "PAPERCUSP_EMBED_SIDECAR_URL",
+            "destination": "http://127.0.0.1:3384"
+          },
+          {
+            "key": "ANTHROPIC_BASE_URL",
+            "destination": "http://127.0.0.1:8788"
+          }
+        ],
+        "configIdentity": "efc6ce3d8bfa4fdb7de2cc2ad408e6b7cf4adb1859ab7fb615ce01cf490163c1"
+      },
+      {
+        "unit": "papercusp-dev-api.service",
+        "pid": 3677826,
+        "cwd": "@capture-home/papercupai-workspace/papercup-release/apps/operator",
+        "commandKind": "hono-host",
+        "selectors": {
+          "PAPERCUSP_INTEGRATION_ROOT": "@capture-home/papercupai-workspace/papercusp",
+          "STATE_DIRECTORY": "@capture-home/.local/state/papercusp/controller",
+          "PAPERCUSP_BACKGROUND_WORKERS": "0",
+          "HARNESS_ADMIN_DATABASE_URL": "postgresql://localhost:5432/papercusp"
+        },
+        "providerSelectors": [
+          {
+            "key": "HARNESS_ADMIN_DATABASE_URL",
+            "destination": "postgresql://localhost:5432/papercusp"
+          },
+          {
+            "key": "PAPERCUSP_UPDATE_BASE_URL",
+            "destination": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev/HK70BNWvxXWRRRkMgl3PXqgdZyWYLsCG"
+          },
+          {
+            "key": "PAPERCUSP_EMBED_SIDECAR_URL",
+            "destination": "http://127.0.0.1:3384"
+          },
+          {
+            "key": "ANTHROPIC_BASE_URL",
+            "destination": "http://127.0.0.1:8788"
+          }
+        ],
+        "configIdentity": "efc6ce3d8bfa4fdb7de2cc2ad408e6b7cf4adb1859ab7fb615ce01cf490163c1"
+      },
+      {
+        "unit": "papercusp-bg-host.service",
+        "pid": 4181734,
+        "cwd": "@capture-home/papercupai-workspace/papercusp/apps/operator",
+        "commandKind": "hono-host",
+        "selectors": {
+          "PAPERCUSP_INTEGRATION_ROOT": "@capture-home/papercupai-workspace/papercusp",
+          "PAPERCUSP_RELEASE_ROOT": "@capture-home/papercupai-workspace/papercusp-release",
+          "STATE_DIRECTORY": "@capture-home/.local/state/papercusp/controller",
+          "PAPERCUSP_HONO_PORT": "3271",
+          "PAPERCUSP_BACKGROUND_WORKERS": "1",
+          "PAPERCUSP_DBOS_ENABLE": "1",
+          "PAPERCUSP_DBOS_ORCHESTRATOR": "1",
+          "PAPERCUSP_DBOS_ROUTINES": "1",
+          "PAPERCUSP_DBOS_TIMERS": "1",
+          "PAPERCUSP_DBOS_AUTOLOOP": "0",
+          "DATABASE_URL": "postgresql://localhost:5432/papercusp"
+        },
+        "providerSelectors": [
+          {
+            "key": "DATABASE_URL",
+            "destination": "postgresql://localhost:5432/papercusp"
+          },
+          {
+            "key": "PAPERCUSP_EMBED_SIDECAR_URL",
+            "destination": "http://127.0.0.1:3384"
+          }
+        ],
+        "configIdentity": "bf55c303e71536fd583dcf76fa774f4e8547cc5c1f63fd3016f5223e89c16c4c"
+      }
+    ],
+    "unread": [],
+    "unobservedUnits": []
+  },
+  "maintainedRoute": {
+    "servingRuntimes": [
+      {
+        "runtime": "release-operator",
+        "role": "owner",
+        "buildSha": "d740fc3802",
+        "buildShaSource": "health",
+        "containsChange": false,
+        "method": "blob",
+        "instances": null,
+        "unknownReason": null
+      },
+      {
+        "runtime": "staging-operator",
+        "role": "owner",
+        "buildSha": "0b88f2ad43d",
+        "buildShaSource": "health",
+        "containsChange": true,
+        "method": "blob",
+        "instances": null,
+        "unknownReason": null,
+        "stagingSync": {
+          "consecutiveFailures": 0,
+          "failingSince": null,
+          "lastFailedAt": null,
+          "lastFailedTarget": null,
+          "lastFailedPhase": null,
+          "lastOkSha": "0b88f2ad43dd80a87acd8f709738bd2483d26030",
+          "lastOkAt": "2026-11-16T14:52:56Z"
+        }
+      }
+    ],
+    "currentBuildTestRoute": {
+      "id": "operator-api",
+      "source": "Committed local integration branch (staging by default), loaded by maintained staging sync",
+      "runtime": "staging-operator",
+      "route": "http://127.0.0.1:3170 after dev:pipeline_position containment check",
+      "routeFile": "apps/operator/scripts/systemd/papercup-staging-api.service.d/50-staging-checkout.conf",
+      "isolation": "Separate port, process and checkout; database and workspace are not isolated.",
+      "prerequisites": [
+        "Containing staging commit loaded",
+        "private test identity/data for writes"
+      ],
+      "verification": "Measured :3170 build identity plus request/response on that build.",
+      "readiness": "ready"
+    }
+  },
+  "unmeasured": [
+    {
+      "scope": "plugin subprocess destinations",
+      "disposition": "UNKNOWN; block dependent mutation/recovery pending measurement"
+    },
+    {
+      "scope": "effective runtime-mutated environment and configuration-file overrides",
+      "disposition": "UNKNOWN; startup environment alone cannot establish effective values"
+    },
+    {
+      "scope": "queue/cache roots and provider destinations absent from startup endpoint selectors",
+      "disposition": "UNKNOWN; no isolation or complete writer census asserted"
+    },
+    {
+      "scope": "installed bg-host build and disposable runtime-vintage registration",
+      "disposition": "UNKNOWN; deploys:vintage read timed out, no row absence inferred"
+    },
+    {
+      "scope": "operating/recovery limits and isolated browser journey",
+      "disposition": "NOT MEASURED by this snapshot; retain SAFE-P-001-limits/target acceptance gaps"
+    }
+  ],
+  "refs": [
+    "WI-6554700010047106",
+    "staging-main-safe-changes-and-recovery-2026-11-07#P-001",
+    "/tmp/e48-p001-installed-selectors.json",
+    "/tmp/e48-installed-route.json"
+  ],
+  "evidencePresentation": {
+    "kind": "reversible-display-alias",
+    "alias": "@capture-home",
+    "meaning": "Absolute home prefix of the capture machine; display alias only, never an executable path or a changed selector.",
+    "rawArtifact": {
+      "base": "capture-machine-current-user-home",
+      "relativePath": ".papercusp/verification/safe-recovery-p001-20261116/installed-selectors-original.json",
+      "sha256": "2520e4c1fb4c2fa49c191440e6938291645db8d7bffc97a85727ca8d9614e3a8",
+      "bytes": 30256
+    },
+    "recovery": "Read the raw artifact on the capture machine. Its exact original bytes are authoritative. To reverse this view on that machine, remove evidencePresentation and replace every @capture-home with os.homedir(); two-space JSON serialization plus a final newline must reproduce rawArtifact.sha256.",
+    "configIdentity": "Preserved hashes identify the original raw startup selectors, before display aliasing.",
+    "omission": "No records or path suffixes omitted. All unmeasured scopes and original snapshot assertions retained. This observation remains incomplete inventory and grants no recovery or acceptance clearance."
+  }
+}
