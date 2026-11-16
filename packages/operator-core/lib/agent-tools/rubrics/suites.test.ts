@@ -8,7 +8,8 @@ import type { ScorecardRow } from '../../scorecards';
 import type { withPlanLock } from '../plans/with-plan-lock';
 import { writeRubricSuite, getRubricSuite, evaluateRubricSuite, readSuiteScorecardPage,
   listSuiteRubricsPage, StaleSuiteCursorError, SUITE_PAGE_SIZE, SUITE_MAX_PAGE_SIZE,
-  SUITE_SCORECARD_PAGE_SIZE, readSuiteScorecardResult, readSuiteDefinitionPage, boundSuiteMemberResult, boundSuiteListResult, type SuiteDeps, type SuiteCursor } from '../../rubric-suites';
+  SUITE_SCORECARD_PAGE_SIZE, readSuiteScorecardResult, readSuiteDefinitionPage, boundSuiteMemberResult, boundSuiteListResult,
+  advanceRubricSuiteRun, type SuiteRunStore, type SuiteDeps, type SuiteCursor } from '../../rubric-suites';
 
 const suite = {
   purpose: 'Check the behavior promised by the original plans',
@@ -109,6 +110,88 @@ function fixture() {
   return { plans, rubrics, histories, historyCursors, deps, add, create, read, evaluate, edit };
 }
 
+/** Serializes every read/write so no process-local state survives a simulated restart. */
+function runStoreFixture() {
+  let serialized = '{}';
+  const encode = (value: unknown) => JSON.stringify(value, (_key, entry) => entry && typeof entry === 'object' && !Array.isArray(entry)
+    ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a.localeCompare(b))) : entry);
+  const key = (ref: string, scope: object) => JSON.stringify([ref, scope]);
+  const store: SuiteRunStore = {
+    create: async (ref, scope) => {
+      const rows = JSON.parse(serialized); const id = Object.keys(rows).length + 1;
+      rows[id] = { scope: key(ref, scope), value: null }; serialized = encode(rows); return id;
+    },
+    read: async (id, ref, scope) => {
+      const row = JSON.parse(serialized)[id];
+      if (!row || row.scope !== key(ref, scope)) throw new Error('plan_run_checkpoint_not_found');
+      return row.value;
+    },
+    save: async (id, ref, scope, prior, next) => {
+      const rows = JSON.parse(serialized); const row = rows[id];
+      if (!row || row.scope !== key(ref, scope) || encode(row.value) !== encode(prior)) return false;
+      row.value = next; serialized = encode(rows); return true;
+    },
+  };
+  return store;
+}
+
+describe('durable suite evaluation', () => {
+  it('resumes bounded history at N-1 N N+1 and many pages, including a decisive record after the boundary', async () => {
+    for (const count of [499, 500, 501, 1501]) {
+      const f = fixture(); const store = runStoreFixture(); f.add('one'); await f.create();
+      await f.edit({ suiteRef: 'test-suite', rescoreIntervalMs: null });
+      f.histories.set('one', Array.from({ length: count }, (_, i) => card('one', i === count - 1 ? 'broken' : 'healthy', {
+        issueId: `history-${i}`, createdBy: i === count - 1 ? 'independent' : 'author-child', createdAt: new Date(NOW - i - 1).toISOString(),
+      })));
+      let result = await advanceRubricSuiteRun('test-suite', { scope, now: NOW }, { ...f.deps }, { ...store });
+      let steps = 1;
+      while (!result.scanComplete) {
+        expect(result.go).toBe(false); expect(result.verdict).toBe('unknown'); expect(result.complete).toBe(false);
+        const next = JSON.parse(JSON.stringify(result.next));
+        result = await advanceRubricSuiteRun('test-suite', { scope, ...next }, { ...f.deps }, { ...store }); steps++;
+      }
+      expect(steps).toBe(2 * Math.ceil(count / SUITE_SCORECARD_PAGE_SIZE));
+      expect(result.verdict).toBe('fail'); expect(result.go).toBe(false);
+      expect(result.members[0].historyRead).toBe(count);
+      expect(f.historyCursors.length).toBe(steps);
+      expect(f.historyCursors.filter(c => c.before === undefined)).toHaveLength(2);
+    }
+  });
+
+  it('detects changed early evidence in the verification pass and refuses stale history or suite scope', async () => {
+    const f = fixture(); const store = runStoreFixture(); f.add('one', 'healthy'); f.add('two', 'healthy'); await f.create('verify-suite', ['one', 'two']);
+    let result = await advanceRubricSuiteRun('verify-suite', { scope, now: NOW }, f.deps, store);
+    result = await advanceRubricSuiteRun('verify-suite', { scope, runId: result.runId }, f.deps, store);
+    f.histories.set('one', [card('one', 'broken')]);
+    await expect(advanceRubricSuiteRun('verify-suite', { scope, runId: result.runId }, f.deps, store)).rejects.toBeInstanceOf(StaleSuiteCursorError);
+    await expect(advanceRubricSuiteRun('verify-suite', { scope: { ...scope, harnessSlug: 'other' }, runId: result.runId }, f.deps, store)).rejects.toThrow('plan_run_checkpoint_not_found');
+    f.plans.get('verify-suite')!.version++;
+    await expect(advanceRubricSuiteRun('verify-suite', { scope, runId: result.runId }, f.deps, store)).rejects.toBeInstanceOf(StaleSuiteCursorError);
+  });
+
+  it('serializes concurrent resumes without losing or recounting a committed history page', async () => {
+    const f = fixture(); const store = runStoreFixture(); f.add('one'); await f.create();
+    f.histories.set('one', Array.from({ length: 1001 }, (_, i) => card('one', 'healthy', {
+      issueId: `history-${i}`, createdBy: 'author', createdAt: new Date(NOW - i - 1).toISOString(),
+    })));
+    const first = await advanceRubricSuiteRun('test-suite', { scope, now: NOW }, f.deps, store);
+    const resumes = await Promise.allSettled([0, 1].map(() => advanceRubricSuiteRun('test-suite', { scope, runId: first.runId }, f.deps, store)));
+    expect(resumes.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+    expect(resumes.find(r => r.status === 'rejected')).toMatchObject({ reason: expect.objectContaining({ message: expect.stringContaining('progress_conflict') }) });
+    const resumed = await advanceRubricSuiteRun('test-suite', { scope, runId: first.runId }, f.deps, store);
+    expect(resumed.scanComplete).toBe(false);
+    expect(f.historyCursors.at(-1)?.before).toBe('history-999');
+  });
+  it('rejects completed run reads when their source evidence has changed', async () => {
+    const f = fixture(); const store = runStoreFixture(); f.add('one', 'healthy'); await f.create();
+    const first = await advanceRubricSuiteRun('test-suite', { scope, now: NOW }, f.deps, store);
+    const final = await advanceRubricSuiteRun('test-suite', { scope, runId: first.runId }, f.deps, store);
+    expect(final.go).toBe(true); expect(final.scanComplete).toBe(true);
+    f.histories.set('one', [card('one', 'broken')]);
+    await expect(advanceRubricSuiteRun('test-suite', { scope, runId: first.runId }, f.deps, store)).rejects.toBeInstanceOf(StaleSuiteCursorError);
+  });
+});
+
 describe('canonical suite operations and acceptance', () => {
   it('follows byte-bounded list summaries to exhaustion without a false complete claim', async () => {
     const f = fixture(); const refs = Array.from({ length: 101 }, (_, i) => `list-${i}`);
@@ -179,6 +262,17 @@ describe('canonical suite operations and acceptance', () => {
     const restarted = await readSuiteScorecardResult('fresh-suite', { scope, limit: 1, now: NOW }, f.deps);
     expect(restarted.verdict).toBe('fail'); f.rubrics.get('two')!.revision = (f.rubrics.get('two')!.revision ?? 0) + 1;
     await expect(readSuiteScorecardResult('fresh-suite', { scope, cursor: restarted.next! }, f.deps)).rejects.toBeInstanceOf(StaleSuiteCursorError);
+  });
+  it('keeps continuation stable when only read-time scorecard diagnostics change', async () => {
+    const f = fixture(); f.add('one', 'healthy'); f.add('two', 'healthy'); await f.create('stable-suite', ['one', 'two']);
+    const first = await readSuiteScorecardResult('stable-suite', { scope, limit: 1, now: NOW }, f.deps);
+    const stored = f.histories.get('one')![0];
+    stored.score10 = 9;
+    stored.linkedItems = [{ rel: 'relates', dst: { kind: 'work-item', ref: 'WI-later-link' } }];
+    stored.omittedActionCount = 7;
+    const next = await readSuiteScorecardResult('stable-suite', { scope, cursor: JSON.parse(JSON.stringify(first.next)) }, { ...f.deps });
+    expect(next.verdict).toBe('pass'); expect(next.members.map(m => m.rubricRef)).toEqual(['two']);
+    expect(next.snapshot.sourceFingerprint).toBe(first.snapshot.sourceFingerprint);
   });
   it('maps ratings through the release rule independently of scale order or passRatings', async () => {
     const f = fixture(); f.add('one'); await f.create();

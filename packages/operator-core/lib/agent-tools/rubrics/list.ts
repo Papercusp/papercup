@@ -17,6 +17,8 @@ import { COORD_ROLES } from '../coordination/roles';
 import { listRubricsPage } from '../../rubrics';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import type { listSuiteRubricsPage } from '../../rubric-suites';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
+import { ctxToPlanSourceOpts } from '../plans/_ctx-opts';
 
 export default defineTool({
   name: 'rubrics:list',
@@ -46,6 +48,7 @@ export default defineTool({
       status: z.enum(['proposed', 'active', 'retired']).optional().describe('filter by lifecycle status; omit for all'),
       characteristic: z.string().optional().describe('filter to one umbrella domain (e.g. "hive-coordination")'),
       suiteRef: z.string().min(1).optional().describe('Read only the canonical members of this rubric-suite plan; includes both rubric kinds unless kind is explicitly supplied.'),
+      suiteHarness: harnessArg.describe('Harness containing suiteRef. Inferred from a concrete session harness; required at operator scope. This scopes the suite plan, while rubrics remain workspace-global.'),
       suiteVersion: z.number().int().positive().optional().describe('For suite paging pass the prior snapshot version; changed membership refuses the continuation and requires resync from offset 0.'),
       kind: z
         .enum(['standard', 'acceptance', 'any'])
@@ -78,6 +81,7 @@ export default defineTool({
         });
       }
       if (val.suiteVersion !== undefined && !val.suiteRef) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['suiteVersion'], message: 'suiteVersion requires suiteRef' });
+      if (val.suiteHarness !== undefined && !val.suiteRef) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['suiteHarness'], message: 'suiteHarness requires suiteRef' });
     }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -92,7 +96,8 @@ export default defineTool({
         ...(args.suiteVersion !== undefined ? { suiteVersion: args.suiteVersion } : {}),
         ...(kind ? { kind } : {}),
       };
-      const page = args.suiteRef ? await (await import('../../rubric-suites')).listSuiteRubricsPage(args.suiteRef, filter) : await listRubricsPage(filter);
+      const suiteScope = args.suiteRef ? await ctxToPlanSourceOpts(harnessScopedCtx(args.suiteHarness, ctx)) : undefined;
+      const page = args.suiteRef ? await (await import('../../rubric-suites')).listSuiteRubricsPage(args.suiteRef, filter, suiteScope) : await listRubricsPage(filter);
       const rubrics = page.rubrics;
       const payload = {
         ok: true, count: rubrics.length, hasMore: page.hasMore, nextOffset: page.nextOffset,

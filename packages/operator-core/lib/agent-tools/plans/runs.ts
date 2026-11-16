@@ -152,6 +152,39 @@ export async function setPlanRunOutputs(
   });
 }
 
+/** A system consumer's resumable output, scoped like its backing plan. */
+export interface PlanRunCheckpointScope {
+  planSlug: string;
+  harnessSlug: string;
+  sessionId: string;
+}
+
+export async function readPlanRunCheckpoint(runId: number, scope: PlanRunCheckpointScope): Promise<Record<string, unknown> | null> {
+  return withWorkspace(activeWorkspaceId(), async tx => {
+    const rows = await tx<{ outputs: Record<string, unknown> | null }[]>`
+      SELECT outputs FROM harness_shared.plan_runs
+      WHERE id=${runId} AND plan_slug=${scope.planSlug} AND harness_slug=${scope.harnessSlug}
+        AND session_id=${scope.sessionId}`;
+    if (!rows.length) throw new Error('plan_run_checkpoint_not_found');
+    return rows[0].outputs;
+  });
+}
+
+/** Commit one processing step. Concurrent/replayed steps cannot rewind a run. */
+export async function compareAndSetPlanRunCheckpoint(runId: number, scope: PlanRunCheckpointScope,
+  prior: Record<string, unknown> | null, next: Record<string, unknown>, complete = false): Promise<boolean> {
+  return withWorkspace(activeWorkspaceId(), async tx => {
+    const rows = await tx<{ id: number }[]>`
+      UPDATE harness_shared.plan_runs
+      SET outputs=${JSON.stringify(next)}::text::jsonb, updated_at=${Date.now()}, status=${complete ? 'done' : 'idle'}
+      WHERE id=${runId} AND plan_slug=${scope.planSlug} AND harness_slug=${scope.harnessSlug}
+        AND session_id=${scope.sessionId}
+        AND ${prior === null ? tx`outputs IS NULL` : tx`outputs=${JSON.stringify(prior)}::text::jsonb`}
+      RETURNING id`;
+    return rows.length > 0;
+  });
+}
+
 /** A `running` run untouched this long is orphaned — the process that
  *  owned its turn is gone (no live turn outlives the ~10-min tool
  *  timeout). The sweep transitions it to `failed`. */

@@ -16,9 +16,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'me' }) }));
 vi.mock('../../rubrics', () => ({ listRubricsPage: vi.fn() }));
+vi.mock('../../rubric-suites', () => ({ listSuiteRubricsPage: vi.fn(), boundSuiteListResult: (payload: unknown) => payload }));
+vi.mock('../plans/_ctx-opts', () => ({ ctxToPlanSourceOpts: vi.fn(async (ctx: { workspaceId?: string; harnessSlug?: string }) => ({ workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug })) }));
 
 import { listRubricsPage } from '../../rubrics';
 import type { Rubric } from '../../rubrics';
+import { listSuiteRubricsPage } from '../../rubric-suites';
 const listPageM = vi.mocked(listRubricsPage);
 
 const listTool = (await import('./list')).default;
@@ -59,6 +62,25 @@ beforeEach(() => vi.clearAllMocks());
 describe('rubrics:list — judge read access', () => {
   it('allows the evidence-only judge role to discover rubric refs', () => {
     expect(listTool.agentRoles).toContain('judge');
+  });
+});
+
+describe('rubrics:list — canonical suite scope', () => {
+  it('passes the explicit suite harness and workspace to the canonical plan reader', async () => {
+    vi.mocked(listSuiteRubricsPage).mockResolvedValue({ rubrics: [rubric('member', 1)], hasMore: false,
+      nextOffset: null, snapshot: 1, total: 1, memberTotal: 1, returned: 1, omitted: 0,
+      unreadable: [], complete: true, resync: 'restart' });
+    await listTool.handler(listTool.args.parse({ suiteRef: 'same-slug', suiteHarness: 'other-harness' }),
+      { workspaceId: 'private-workspace', harnessSlug: 'papercusp' } as never);
+    expect(listSuiteRubricsPage).toHaveBeenLastCalledWith('same-slug', expect.any(Object),
+      { workspaceId: 'private-workspace', harnessSlug: 'other-harness' });
+    expect(listPageM).not.toHaveBeenCalled();
+  });
+  it('requires suiteRef for a suite harness and refuses unbound operator scope', async () => {
+    expect(listTool.args.safeParse({ suiteHarness: 'papercusp' }).success).toBe(false);
+    await expect(listTool.handler(listTool.args.parse({ suiteRef: 'same-slug' }),
+      { harnessSlug: '*' } as never)).rejects.toThrow(/harness/i);
+    expect(listSuiteRubricsPage).not.toHaveBeenCalled();
   });
 });
 

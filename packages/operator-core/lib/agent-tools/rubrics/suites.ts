@@ -6,7 +6,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { ctxToPlanSourceOpts } from '../plans/_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
-import { readSuiteDefinitionPage, writeRubricSuite, readSuiteScorecardResult, readSuiteScorecardPage, SUITE_MAX_PAGE_SIZE, SUITE_RESULT_PAGE_BYTES } from '../../rubric-suites';
+import { readSuiteDefinitionPage, writeRubricSuite, advanceRubricSuiteRun, readSuiteScorecardPage, SUITE_MAX_PAGE_SIZE, SUITE_RESULT_PAGE_BYTES } from '../../rubric-suites';
 
 const common = { suiteRef: z.string().min(1), harness: harnessArg };
 const cursorSchema = z.object({ suiteRef: z.string().min(1), scopeKey: z.string(), version: z.number().int().positive(), offset: z.number().int().nonnegative(), comparisonTime: z.string().datetime({ offset: true }), sourceFingerprint: z.string().optional() });
@@ -34,16 +34,18 @@ export default defineTool({
 
 export const suiteScorecardTool = defineTool({
   name: 'rubrics:suite-scorecard',
-  description: 'Read suite verdict and coverage from the complete population; member details use bounded display pages. Follow next with the same suiteRef and harness to recover every member; persist the cursor on the existing run/checkpoint. complete is false while records remain. page:true reads only a member page without an aggregate verdict.',
+  description: 'Read suite verdict with durable progress in the existing suite plan runs. Each call processes one history page. Follow next with the same suiteRef/harness until scanComplete. Pending scans are unknown/NO-GO. Finished scans verify the collected population before returning verdict/coverage and byte-bounded member details; follow next.runId/cursor for remaining details. page:true reads a member page without an aggregate verdict.',
   capability: 'coord:read', requirePrincipal: false, agentRoles: [...COORD_ROLES, 'judge'],
   args: z.object({ ...common, page: z.boolean().optional(), limit: z.number().int().positive().max(SUITE_MAX_PAGE_SIZE).optional(),
-    cursor: cursorSchema.optional() }),
+    runId: z.number().int().positive().safe().optional(), cursor: cursorSchema.optional() }).superRefine((args, ctx) => {
+      if (args.page && args.runId !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['runId'], message: 'runId is for aggregate scans; omit page:true' });
+    }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     return runWithWorkspaceIfConcrete(identity.workspaceId ?? undefined, async () => {
       const scope = await ctxToPlanSourceOpts(harnessScopedCtx(args.harness, ctx));
-      const opts = { scope, cursor: args.cursor, limit: args.limit, byteLimit: SUITE_RESULT_PAGE_BYTES - 128 };
-      const result = args.page ? await readSuiteScorecardPage(args.suiteRef, opts) : await readSuiteScorecardResult(args.suiteRef, opts);
+      const opts = { scope, runId: args.runId, cursor: args.cursor, limit: args.limit, byteLimit: SUITE_RESULT_PAGE_BYTES - 128 };
+      const result = args.page ? await readSuiteScorecardPage(args.suiteRef, opts) : await advanceRubricSuiteRun(args.suiteRef, opts);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
     });
   },
