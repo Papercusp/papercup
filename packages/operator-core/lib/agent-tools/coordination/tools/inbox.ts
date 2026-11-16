@@ -1264,7 +1264,7 @@ export default defineTool({
       .max(500)
       .optional()
       .describe(
-        `Max entries in the result window. Default inboxes rank actionable asks first; explicit sender/directed views select newest matches first. Default: what fits one result, max ${DEFAULT_INBOX_LIMIT}.`,
+        `Max entries in the result window. Default inboxes are priority-ranked (actionable asks first), so newest-first overall is not guaranteed; explicit sender/directed views select newest matches first. Default: what fits one result, max ${DEFAULT_INBOX_LIMIT}.`,
       ),
     include_ambient: z
       .boolean()
@@ -1290,7 +1290,7 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        "EI-13159: narrow to exactly the DIRECTED messages still awaiting your reply — the same unanswered-directed definition fleet:assignments' `unanswered_directed` counter and fleet:leader-brief use (a real correspondent's message, sender explicitly expects a reply, no ack/reply from you yet; excludes broadcasts, machine chatter, and reply-to-your-own-reply ping-pong). Applied after the ambient/intent/sender filters; summary.total reflects it. A lookup failure returns zero entries (never silently falls back to the unfiltered inbox) and sets summary.unanswered_lookup_failed:true.",
+        "EI-13159: only DIRECTED messages still awaiting your reply — the definition behind fleet:assignments' `unanswered_directed` and fleet:leader-brief (a real correspondent expects a reply you have not acked/sent; excludes broadcasts, machine chatter and reply ping-pong). Applied after the ambient/intent/sender filters; summary.total reflects it. A lookup failure returns zero entries (never the unfiltered inbox) and sets summary.unanswered_lookup_failed:true.",
       ),
     directed: z
       .boolean()
