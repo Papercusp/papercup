@@ -55,7 +55,8 @@ type NamedQueryStage = 'goal-list-sql' | 'goal-list-portfolio' | 'goal-list-pack
   'attention-dark-flags' | 'attention-gates' | 'attention-blocked-items' |
   'attention-decisions' | 'attention-directives' | 'attention-triage' | 'attention-authorizer' |
   'attention-directives-import' | 'attention-directives-list' | 'attention-directives-routing' |
-  'directive-route-addressees' | 'directive-route-membership' | 'directive-route-related';
+  'directive-route-addressees' | 'directive-route-membership' | 'directive-route-related' |
+  'fleet-assignments-sql' | 'fleet-assignments-ended-owners' | 'fleet-assignments-live-owners';
 interface NamedQueryStageTiming {
   stage: NamedQueryStage;
   startedAt: number;

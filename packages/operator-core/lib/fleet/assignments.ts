@@ -19,6 +19,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../workspace-id-constant';
 import { isActivelyWorked, isReclaimable, type ItemActivity } from '../item-activity';
 import { endedRecordedOwnerIds, recordedLiveOwnerIds } from '../adv-sessions';
+import { traceNamedQueryStage } from '../agent-tools/db-diagnostic-correlation-wiring';
 import { STALE_CLAIM_GRACE_MS } from '../work-items-stale-claims';
 export type { PlanItemLaneBlock } from '../scheduler/plan-item-lane-guard';
 import type { PlanItemLaneBlock } from '../scheduler/plan-item-lane-guard';
@@ -254,7 +255,7 @@ export async function listFleetAssignments(
 ): Promise<FleetAssignmentRow[]> {
   const { sql } = getOrgPg();
   const activeOnly = opts.activeOnly !== false;
-  const rows = await sql`
+  const rows = await traceNamedQueryStage('fleet-assignments-sql', async () => sql`
     SELECT * FROM harness_shared.fleet_assignment
     WHERE ${
       opts.workspaceId != null
@@ -327,7 +328,7 @@ export async function listFleetAssignments(
           : sql`TRUE`
       }
     ORDER BY source, holder_heartbeat_at DESC NULLS LAST
-  `;
+  `, { pgPool: 'org-admin' });
   const mapped = rows.map(
     (r): FleetAssignmentRow => ({
       source: r.source as FleetAssignmentSource,
@@ -376,8 +377,8 @@ export async function listFleetAssignments(
   const owners = [...new Set(mapped.filter((r) => r.agentId).map((r) => r.agentId as string))];
   if (owners.length === 0) return mapped;
   const [ended, recordedLiveRaw] = await Promise.all([
-    endedRecordedOwnerIds(owners),
-    recordedLiveOwnerIds(owners),
+    traceNamedQueryStage('fleet-assignments-ended-owners', () => endedRecordedOwnerIds(owners)),
+    traceNamedQueryStage('fleet-assignments-live-owners', () => recordedLiveOwnerIds(owners)),
   ]);
   const recordedLive = new Set([...recordedLiveRaw].filter((id) => !ended.has(id)));
   return downgradeEndedHolders(upgradeRecordedLiveHolders(mapped, recordedLive), ended);
