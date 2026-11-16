@@ -1,4 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 
 const mocks = vi.hoisted(() => ({
   rebuild: vi.fn(),
@@ -20,9 +21,17 @@ const mocks = vi.hoisted(() => ({
   resumableSessions: vi.fn(),
   archiveStamp: vi.fn(),
   resumeTarget: vi.fn(),
+  claimRepair: vi.fn(),
+  readRepair: vi.fn(),
+  finishRepair: vi.fn(),
 }));
 
 const OWNER = 'su-p006-pinned-codex';
+vi.mock('../transport/_mcp-result-replay', () => ({
+  claimPendingMcpResult: mocks.claimRepair,
+  lookupStoredMcpResult: mocks.readRepair,
+  finalizePendingMcpResult: mocks.finishRepair,
+}));
 const ADV_SESSION_ID = 900_000_000 + process.pid;
 const REVISION = 'a'.repeat(64);
 const savedRecord = {
@@ -51,8 +60,8 @@ vi.mock('../../../agent-launch-core', async (original) => ({
   ...(await original<typeof import('../../../agent-launch-core')>()),
   resolveResumeTarget: mocks.resumeTarget,
 }));
-vi.mock('../../../agent-tools/coordination/presence', async (original) => ({
-  ...(await original<typeof import('../../../agent-tools/coordination/presence')>()),
+// Keep coordination I/O at the fixture ports instead of loading its control stack.
+vi.mock('../../../agent-tools/coordination/presence', () => ({
   getPresence: mocks.presence,
   listPresence: mocks.presenceRows,
 }));
@@ -85,8 +94,7 @@ vi.mock('../../../spawn-config', async (original) => ({
   resolveProjectDir: vi.fn(async () => '/fixture/research'),
 }));
 vi.mock('../../../cupboard/identity-activation-gate-io', () => ({ admitIdentityActivation: mocks.funding }));
-vi.mock('../../../agent-tools/coordination/control-anchor', async (original) => ({
-  ...(await original<typeof import('../../../agent-tools/coordination/control-anchor')>()),
+vi.mock('../../../agent-tools/coordination/control-anchor', () => ({
   requestSessionIdentityActivation: mocks.requestActivation,
 }));
 vi.mock('../../../superuser-token', async (original) => ({
@@ -102,6 +110,7 @@ vi.mock('../../../capability-envelope/session-confinement-port', async (original
 }));
 
 let ensureCodexHome: (req: Request) => Promise<Response>;
+let ensureCodexHomeStatus: (req: Request) => Promise<Response>;
 let resumableSessions: (req: Request) => Promise<Response>;
 beforeAll(async () => {
   const routes = (await import('./sessions')).default;
@@ -110,6 +119,8 @@ beforeAll(async () => {
   const route = routes.find((entry) => entry.path === '/adv/sessions/ensure-codex-home');
   if (!route) throw new Error('ensure-codex-home route is absent');
   ensureCodexHome = route.handler as typeof ensureCodexHome;
+  ensureCodexHomeStatus = routes.find((entry) => entry.path === '/adv/sessions/ensure-codex-home'
+    && entry.method === 'GET')?.handler as typeof ensureCodexHomeStatus;
   resumableSessions = routes.find((entry) => entry.path === '/adv/sessions/resumable')!.handler as typeof resumableSessions;
 }, 45_000);
 
@@ -232,6 +243,55 @@ describe('ensure-codex-home explicit preserved artifact policy', () => {
     expect(mocks.requestActivation).not.toHaveBeenCalled();
     expect(mocks.rebuild).not.toHaveBeenCalled();
   };
+
+  it('observes a pending repair and replays its terminal receipt without repeating writes', async () => {
+    const attempt = 'cad0b405-5a83-4f66-9624-142c8477daa0';
+    const body = JSON.stringify({ owner: OWNER, advSessionId: ADV_SESSION_ID,
+      sourcePolicy: 'preserved-artifact', expectedSpecificationRevision: revision });
+    const requestHash = createHash('sha256').update(body).digest('hex');
+    let stored: any = null;
+    mocks.claimRepair.mockImplementation(async ({ result }) => {
+      if (stored) return { claimed: false, pending: stored._meta.state === 'pending', result: stored };
+      stored = result;
+      return { claimed: true, pending: true, result };
+    });
+    mocks.readRepair.mockImplementation(async () => stored);
+    mocks.finishRepair.mockImplementation(async ({ result }) => { stored = result; return true; });
+    let release!: () => void;
+    mocks.funding.mockImplementationOnce(() => new Promise(resolve => {
+      release = () => resolve({ ok: true });
+    }));
+    const request = () => new Request('http://localhost:3170/api/adv/sessions/ensure-codex-home', {
+      method: 'POST', body, headers: { 'x-papercusp-repair-attempt': attempt,
+        'x-papercusp-repair-receipt': '1' },
+    });
+    const observation = () => new Request('http://localhost:3170/api/adv/sessions/ensure-codex-home?' +
+      new URLSearchParams({ owner: OWNER, advSessionId: String(ADV_SESSION_ID),
+        repairAttemptId: attempt, requestHash }));
+    const first = ensureCodexHome(request());
+    await vi.waitFor(() => expect(mocks.funding).toHaveBeenCalledOnce());
+    try {
+      expect(ensureCodexHomeStatus).toBeTypeOf('function');
+      const pending = await ensureCodexHomeStatus(observation());
+      expect(await pending.json()).toMatchObject({ ok: true, pending: true, repairAttemptId: attempt, requestHash });
+      expect((await ensureCodexHome(request())).status).toBe(202);
+      expect(mocks.funding).toHaveBeenCalledOnce();
+    } finally { release(); }
+    const result = await first;
+    expect(result.status).toBe(200);
+    const completed = await ensureCodexHomeStatus(observation());
+    expect(await completed.json()).toMatchObject({ ok: true, pending: false,
+      response: { status: 200, body: { ok: true, reason: 'preserved-artifact' } } });
+    expect((await ensureCodexHome(request())).status).toBe(200);
+    expect(mocks.ensureHome).toHaveBeenCalledOnce();
+    expect(mocks.funding).toHaveBeenCalledOnce();
+    const conflict = new Request('http://localhost:3170/api/adv/sessions/ensure-codex-home', {
+      method: 'POST', body: body.replace('preserved-artifact', 'different-request'),
+      headers: { 'x-papercusp-repair-attempt': attempt, 'x-papercusp-repair-receipt': '1' },
+    });
+    expect((await ensureCodexHome(conflict)).status).toBe(409);
+    expect(mocks.ensureHome).toHaveBeenCalledOnce();
+  });
 
   it.each(['default', 'auto', 'pool-fixture'])('uses the real artifact verifier and saved %s route even when fresh rendering succeeds', async account => {
     mocks.sessionRow.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex', cwd: '/tmp', launchArgv: ['psu', `--account=${account}`] });

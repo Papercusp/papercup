@@ -1662,11 +1662,97 @@ const ensureClaudeConfig = defineTool({
  * `loopback` auth, matching its claude sibling: it writes under the operator
  * user's own home and is only ever called by a local launcher.
  */
+const CODEX_HOME_REPAIR_TOOL = 'adv:ensure-codex-home';
+type HomeRepairStoredResult = import('../transport/_mcp-result-replay').StoredMcpResult;
+type HomeRepairReceipt = {
+  owner: string; advSessionId: number; repairAttemptId: string; requestHash: string;
+  pending: boolean; response?: { status: number; body: unknown };
+};
+
+async function codexHomeRepairScope(owner: string, advSessionId: number) {
+  if (!/^[A-Za-z0-9._-]+$/.test(owner) || !Number.isSafeInteger(advSessionId) || advSessionId <= 0) return null;
+  const [{ readSuLaunchSpecByOwner }, { parseSuLaunchSpecRecord }] = await Promise.all([
+    import('../../../adv-sessions'), import('../../../su-persona-render'),
+  ]);
+  const [session, raw] = await Promise.all([getAdvSession(advSessionId), readSuLaunchSpecByOwner(owner, advSessionId)]);
+  if (!session || session.coordOwnerId !== owner || session.agent && session.agent !== 'codex') return null;
+  const record = parseSuLaunchSpecRecord(raw) ?? fallbackCodexLaunchSpecFromAdvSession(session, owner);
+  if (!record?.workspaceId) return null;
+  return { workspaceId: record.workspaceId, ownerKey: `codex-home-repair:${record.workspaceId}:${owner}:${advSessionId}` };
+}
+
+function codexHomeRepairReceiptResponse(stored: HomeRepairStoredResult | null, expected: HomeRepairReceipt, observe: boolean) {
+  if (!stored) return json({ ok: false, error: 'repair-receipt-unavailable' }, 404);
+  const receipt = stored.structuredContent as HomeRepairReceipt | undefined;
+  if (!receipt || receipt.requestHash !== expected.requestHash || receipt.owner !== expected.owner ||
+      receipt.advSessionId !== expected.advSessionId || receipt.repairAttemptId !== expected.repairAttemptId)
+    return json({ ok: false, error: 'repair-request-conflict' }, 409);
+  if (stored._meta?.state === 'pending') return json({ ok: true, ...receipt, pending: true }, observe ? 200 : 202);
+  if (!receipt.response || !Number.isInteger(receipt.response.status))
+    return json({ ok: false, error: 'repair-receipt-incomplete' }, 503);
+  return observe ? json({ ok: true, ...receipt, pending: false })
+    : committedRouteResponse(json(receipt.response.body, receipt.response.status));
+}
+
+/** Reuse the existing pending-result ledger. An uncertain HTTP response is
+ * observed by attempt identity; it never authorizes a second home mutation. */
+async function withCodexHomeRepairReceipt(req: Request, execute: () => Promise<Response>): Promise<Response> {
+  if (req.headers.get('x-papercusp-repair-receipt') !== '1') return execute();
+  const text = await req.clone().text();
+  let body: { owner?: unknown; advSessionId?: unknown };
+  try { body = JSON.parse(text); } catch { return json({ ok: false, error: 'invalid JSON body' }, 400); }
+  const owner = typeof body.owner === 'string' ? body.owner.trim() : '';
+  const advSessionId = Number(body.advSessionId);
+  const repairAttemptId = req.headers.get('x-papercusp-repair-attempt') ?? '';
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(repairAttemptId))
+    return json({ ok: false, error: 'valid repair attempt required' }, 400);
+  const scope = await codexHomeRepairScope(owner, advSessionId);
+  if (!scope) return json({ ok: false, error: 'repair-owner-mismatch' }, 409);
+  const receipt: HomeRepairReceipt = { owner, advSessionId, repairAttemptId,
+    requestHash: createHash('sha256').update(text).digest('hex'), pending: true };
+  const store = await import('../transport/_mcp-result-replay');
+  const key = { ...scope, idempotencyKey: repairAttemptId, toolName: CODEX_HOME_REPAIR_TOOL };
+  const claim = await store.claimPendingMcpResult({ ...key, result: { content: [],
+    structuredContent: receipt, _meta: { state: 'pending' } } });
+  if (!claim.claimed) return codexHomeRepairReceiptResponse(claim.result, receipt, false);
+  try {
+    const response = await execute();
+    const result = { ...receipt, pending: false,
+      response: { status: response.status, body: await response.clone().json() } };
+    if (!await store.finalizePendingMcpResult({ ...key, result: { content: [],
+      structuredContent: result, _meta: { state: 'complete' }, isError: !response.ok } }))
+      throw new Error('Codex home preparation receipt was not committed');
+    return committedRouteResponse(response);
+  } catch (error) {
+    await store.finalizePendingMcpResult({ ...key, result: { content: [], _meta: { state: 'complete' },
+      isError: true, structuredContent: { ...receipt, pending: false,
+        response: { status: 500, body: { ok: false, error: 'codex-home-repair-failed' } } } } });
+    throw error;
+  }
+}
+
+const ensureCodexHomeStatus = defineTool({
+  method: 'GET', path: '/adv/sessions/ensure-codex-home', auth: 'loopback',
+  async handler(req) {
+    const query = new URL(req.url).searchParams;
+    const expected: HomeRepairReceipt = { owner: query.get('owner') ?? '',
+      advSessionId: Number(query.get('advSessionId')), repairAttemptId: query.get('repairAttemptId') ?? '',
+      requestHash: query.get('requestHash') ?? '', pending: true };
+    if (!/^[0-9a-f-]{36}$/.test(expected.repairAttemptId) || !/^[0-9a-f]{64}$/.test(expected.requestHash))
+      return json({ ok: false, error: 'valid repair identity required' }, 400);
+    const scope = await codexHomeRepairScope(expected.owner, expected.advSessionId);
+    if (!scope) return json({ ok: false, error: 'repair-owner-mismatch' }, 409);
+    const { lookupStoredMcpResult } = await import('../transport/_mcp-result-replay');
+    return codexHomeRepairReceiptResponse(await lookupStoredMcpResult(scope.ownerKey, expected.repairAttemptId), expected, true);
+  },
+});
+
 const ensureCodexHome = defineTool({
   method: 'POST',
   path: '/adv/sessions/ensure-codex-home',
   auth: 'loopback',
   async handler(req, ctx) {
+    return withCodexHomeRepairReceipt(req, async () => {
     const measure = <T>(phase: string, work: () => T | PromiseLike<T>): Promise<T> =>
       ctx?.routeDiagnostics ? ctx.routeDiagnostics.measure(phase, work) : Promise.resolve().then(work);
     let body: {
@@ -2036,6 +2122,7 @@ const ensureCodexHome = defineTool({
         headers: JSON_HEADERS,
       },
     );
+    });
   },
 });
 
@@ -2660,4 +2747,4 @@ const sessionPortDelivery = defineTool({
   },
 });
 
-export default [list, focus, closeWindow, rename, alive, state, search, ended, searchTranscripts, resumable, rematerialize, rematerializeStatus, ensureClaudeConfig, ensureCodexHome, roster, markLaunched, agentDetail, onDesktopWindows, sessionPortCapabilities, sessionPortInspect, sessionPortPrepare, sessionPortStatus, sessionPortDelivery];
+export default [list, focus, closeWindow, rename, alive, state, search, ended, searchTranscripts, resumable, rematerialize, rematerializeStatus, ensureClaudeConfig, ensureCodexHome, ensureCodexHomeStatus, roster, markLaunched, agentDetail, onDesktopWindows, sessionPortCapabilities, sessionPortInspect, sessionPortPrepare, sessionPortStatus, sessionPortDelivery];
