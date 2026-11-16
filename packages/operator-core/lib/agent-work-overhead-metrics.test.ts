@@ -26,11 +26,15 @@ describe('D019 shared paired recovery outcome reader', () => {
     windowTokens: 80000, runtimeFingerprint: 'runtime-before', nativeSessionId: 'native-before',
     receiptRef: 'receipt:before', phase: 'native-emitted', packet: 'Use exact scoped recovery. é',
     tokens: { count: 8, method: 'existing-estimator-v1' }, triggerAtMs: 1000, firstCorrectActionAtMs: 1200,
+    expectation: { kind: 'action-required', oracleFingerprint: 'oracle-v5', evidenceRef: 'oracle:frozen-outcome',
+      observationWindowMs: 500 },
+    observation: { evidenceRef: 'trace:bounded-window', observedUntilMs: 1500, resultArtifact: 'correct',
+      artifactEvidenceRef: 'artifact:independent-check', saveReceiptRef: 'artifact:save', readbackReceiptRef: 'artifact:load' },
     traceComplete: true, requiredReadRefs: ['oracle:live-custody'],
     reads: [{ physicalOperationId: 'read-1', layer: 'leaf', disposition: 'required', evidenceRef: 'oracle:live-custody' }],
     checks: { evidenceRef: 'test:independent-oracle', staleContextFailures: 0, missingContextFailures: 0,
       falseCompleteSections: 0, existingBudgetPreserved: true }, ...over,
-  });
+  } as RecoveryOutcomeEpoch);
   const candidate = (over: Partial<RecoveryOutcomeEpoch> = {}) => epoch({
     runtimeFingerprint: 'runtime-after', nativeSessionId: 'native-after', receiptRef: 'receipt:after', ...over,
   });
@@ -128,6 +132,100 @@ describe('D019 shared paired recovery outcome reader', () => {
     const initial = summarizeRecoveryOutcomePair(epoch(), candidate());
     expect(summarizeRecoveryOutcomePair(epoch(), candidate({ packet: 'changed packet' })).inputFingerprint).not.toBe(initial.inputFingerprint);
     expect(rateWorkOverhead(summarizeWorkOverhead(window, session('open', 45, false))).sessionMinutes.verdict).toBe('unknown');
+  });
+  const absentArtifact = () => ({ ...epoch().observation!, resultArtifact: 'absent' as const,
+    artifactEvidenceRef: 'artifact:bounded-absence', saveReceiptRef: undefined, readbackReceiptRef: undefined });
+  const stop = (over: Partial<RecoveryOutcomeEpoch> = {}) => epoch({ fixtureId: 'F07',
+    firstCorrectActionAtMs: null,
+    expectation: { ...epoch().expectation!, kind: 'protective-stop-required' },
+    observation: absentArtifact(),
+    requiredReadRefs: ['oracle:live-custody', 'oracle:scoped-K-G'],
+    reads: [...epoch().reads, { physicalOperationId: 'read-K-G', layer: 'leaf', disposition: 'required',
+      evidenceRef: 'oracle:scoped-K-G' }], ...over });
+  const stopCandidate = (over: Partial<RecoveryOutcomeEpoch> = {}) => stop({
+    nativeSessionId: 'native-after', receiptRef: 'receipt:after', runtimeFingerprint: 'runtime-after', ...over });
+  it('keeps a fully measured baseline defect visible without failing the correct candidate', () => {
+    const result = summarizeRecoveryOutcomePair(epoch({ firstCorrectActionAtMs: null, observation: absentArtifact(),
+      checks: { ...epoch().checks, staleContextFailures: 2 } }), candidate());
+    expect(result.measurement.verdict).toBe('valid');
+    expect(result.baseline.behavior.verdict).toBe('fail');
+    expect(result.baseline.checks.staleContextFailures).toBe(2);
+    expect(result.failures).toContain('baseline:staleContextFailures');
+    expect(result.failures).toContain('baseline:missing-required-action');
+    expect(result.candidate.behavior.verdict).toBe('pass');
+    expect(result.verdict).toBe('pass');
+    expect(result.delta).toMatchObject({ tokens: 0, injectedBytes: 0, firstCorrectActionMs: null });
+    expect(result.baseline.latency.applicability).toBe('behavior-failure');
+  });
+  it('accepts proved F07 protective stops with null, explicitly inapplicable time to A', () => {
+    const result = summarizeRecoveryOutcomePair(stop(), stopCandidate());
+    expect(result.verdict).toBe('pass');
+    expect(result.measurement.verdict).toBe('valid');
+    expect(result.candidate.behavior.verdict).toBe('pass');
+    expect(result.candidate.firstCorrectActionMs).toBeNull();
+    expect(result.candidate.latency).toMatchObject({ applicability: 'expected-stop', reason: 'expected-stop/not-applicable' });
+    expect(result.candidate.requiredRecoveryReads).toBe(2);
+    expect(result.delta).toMatchObject({ firstCorrectActionMs: null, avoidableRecoveryReads: 0 });
+  });
+  it.each([
+    { observation: undefined },
+    { observation: { ...absentArtifact(), artifactEvidenceRef: '' } },
+    { observation: { ...absentArtifact(), observedUntilMs: 1499 } },
+    { traceComplete: false },
+  ])('keeps a stop without bounded no-artifact evidence unmeasured: %j', over => {
+    const result = summarizeRecoveryOutcomePair(stop(), stopCandidate(over));
+    expect(result.verdict).toBe('unknown');
+    expect(result.measurement.verdict).toBe('unknown');
+    expect(result.candidate.behavior.verdict).toBe('unknown');
+    expect(result.delta).toBeNull();
+  });
+  it('fails a complete A-required trace with no A, preserving valid measurement and null latency', () => {
+    const result = summarizeRecoveryOutcomePair(epoch(), candidate({ firstCorrectActionAtMs: null,
+      observation: absentArtifact() }));
+    expect(result.measurement.verdict).toBe('valid');
+    expect(result.verdict).toBe('fail');
+    expect(result.candidate.behavior.failures).toContain('candidate:missing-required-action');
+    expect(result.candidate.firstCorrectActionMs).toBeNull();
+    expect(result.delta?.firstCorrectActionMs).toBeNull();
+  });
+  it('keeps incomplete no-action traces and unlabelled legacy null latency unknown', () => {
+    for (const over of [
+      { firstCorrectActionAtMs: null, observation: absentArtifact(), traceComplete: false },
+      { firstCorrectActionAtMs: null, expectation: undefined, observation: undefined },
+    ]) {
+      const result = summarizeRecoveryOutcomePair(epoch(), candidate(over));
+      expect(result.verdict).toBe('unknown');
+      expect(result.measurement.verdict).toBe('unknown');
+      expect(result.delta).toBeNull();
+    }
+  });
+  it('fails unsafe A in a stop-required variant without treating A as a stop latency', () => {
+    const result = summarizeRecoveryOutcomePair(stop(), stopCandidate({ firstCorrectActionAtMs: 1200,
+      observation: epoch().observation }));
+    expect(result.verdict).toBe('fail');
+    expect(result.candidate.behavior.failures).toContain('candidate:unexpected-result-artifact');
+    expect(result.candidate.observedFirstCorrectActionAtMs).toBe(1200);
+    expect(result.candidate.firstCorrectActionMs).toBeNull();
+    expect(result.delta?.firstCorrectActionMs).toBeNull();
+  });
+  it('does not accept a correct stop that loses required recovery or custody', () => {
+    const result = summarizeRecoveryOutcomePair(stop(), stopCandidate({ reads: [] }));
+    expect(result.verdict).toBe('fail');
+    expect(result.candidate.behavior.failures).toEqual(expect.arrayContaining([
+      'candidate:missing-required-read:oracle:live-custody', 'candidate:missing-required-read:oracle:scoped-K-G',
+    ]));
+  });
+  it.each([
+    { expectation: { ...epoch().expectation!, kind: 'protective-stop-required' as const } },
+    { expectation: { ...epoch().expectation!, oracleFingerprint: 'candidate-generated-oracle' } },
+    { expectation: { ...epoch().expectation!, observationWindowMs: 1000 } },
+    { expectation: { ...epoch().expectation!, evidenceRef: '' } },
+    { observation: { ...epoch().observation!, saveReceiptRef: '' } },
+    { observation: { ...epoch().observation!, readbackReceiptRef: '' } },
+  ])('rejects missing or incompatible independent outcome/action bindings: %j', over => {
+    const result = summarizeRecoveryOutcomePair(epoch(), candidate(over));
+    expect(result.measurement.verdict).toBe('unknown');
+    expect(result.delta).toBeNull();
   });
 });
 

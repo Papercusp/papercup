@@ -306,6 +306,24 @@ export interface RecoveryOutcomeEpoch {
   triggerAtMs: number;
   firstCorrectActionAtMs: number | null;
   traceComplete: boolean;
+  /** Frozen independently before either arm. A missing legacy binding is UNKNOWN,
+   * never an inferred stop or an inferred no-action timeout. */
+  expectation?: {
+    kind: 'action-required' | 'protective-stop-required';
+    oracleFingerprint: string;
+    evidenceRef: string;
+    /** Existing producer's frozen observation bound, not a new acceptance bar. */
+    observationWindowMs: number;
+  };
+  observation?: {
+    evidenceRef: string;
+    observedUntilMs: number;
+    resultArtifact: 'correct' | 'absent' | 'incorrect' | 'unknown';
+    /** Exact independent result/readback or bounded no-artifact check. */
+    artifactEvidenceRef: string;
+    saveReceiptRef?: string;
+    readbackReceiptRef?: string;
+  };
   requiredReadRefs: readonly string[];
   reads: readonly {
     physicalOperationId: string;
@@ -329,6 +347,7 @@ export interface RecoveryOutcomeEpoch {
 // digest so malformed telemetry can return UNKNOWN without crashing or collapsing
 // NaN/Infinity into JSON null. Tag every node to avoid sentinel/value collisions.
 function recoveryFingerprintValue(value: unknown): unknown {
+  if (value === undefined) return ['undefined'];
   if (typeof value === 'number') return ['number', Object.is(value, -0) ? '-0' : String(value)];
   if (Array.isArray(value)) return ['array', value.map(recoveryFingerprintValue)];
   if (value !== null && typeof value === 'object') {
@@ -340,7 +359,7 @@ function recoveryFingerprintValue(value: unknown): unknown {
 export function summarizeRecoveryOutcomePair(baseline: RecoveryOutcomeEpoch, candidate: RecoveryOutcomeEpoch) {
   const unknown = new Set<string>();
   const failures = new Set<string>();
-  const nonblank = (v: string) => v.trim().length > 0;
+  const nonblank = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
   const count = (n: number | null): n is number => n !== null && Number.isSafeInteger(n) && n >= 0;
   const commonKeys = ['workspaceId', 'fixtureId', 'client', 'sourceDataFingerprint',
     'inputFingerprint', 'oracleFingerprint', 'windowTokens'] as const;
@@ -348,51 +367,108 @@ export function summarizeRecoveryOutcomePair(baseline: RecoveryOutcomeEpoch, can
     if (baseline[key] !== candidate[key]) unknown.add(`unpaired-${key}`);
   }
   const read = (epoch: RecoveryOutcomeEpoch, label: string) => {
+    const epochUnknown = new Set<string>(), epochFailures = new Set<string>();
+    const unmeasured = (reason: string) => {
+      const qualified = `${label}:${reason}`;
+      epochUnknown.add(qualified); unknown.add(qualified);
+    };
+    const fail = (reason: string) => {
+      const qualified = `${label}:${reason}`;
+      epochFailures.add(qualified); failures.add(qualified);
+    };
     for (const key of ['workspaceId', 'fixtureId', 'sourceDataFingerprint', 'inputFingerprint',
       'oracleFingerprint', 'runtimeFingerprint', 'nativeSessionId', 'receiptRef'] as const) {
-      if (!nonblank(epoch[key])) unknown.add(`${label}:missing-${key}`);
+      if (!nonblank(epoch[key])) unmeasured(`missing-${key}`);
     }
     if (!['codex', 'claude', 'omp'].includes(epoch.client) || !Number.isFinite(epoch.windowTokens)
-      || epoch.windowTokens <= 0) unknown.add(`${label}:invalid-client-or-window`);
-    if (epoch.phase !== 'native-emitted') unknown.add(`${label}:no-native-emission`);
-    if (!epoch.packet.length) unknown.add(`${label}:missing-injected-packet`);
-    if (!epoch.traceComplete) unknown.add(`${label}:incomplete-trace`);
+      || epoch.windowTokens <= 0) unmeasured('invalid-client-or-window');
+    if (epoch.phase !== 'native-emitted') unmeasured('no-native-emission');
+    if (!epoch.packet.length) unmeasured('missing-injected-packet');
+    if (!epoch.traceComplete) unmeasured('incomplete-trace');
     const leaves = new Map<string, RecoveryOutcomeEpoch['reads'][number]>();
     let readsQualified = true;
     for (const operation of epoch.reads) {
       if (operation.layer === 'wrapper') continue;
       if (!nonblank(operation.physicalOperationId) || !nonblank(operation.evidenceRef)
         || !['required', 'avoidable'].includes(operation.disposition)) {
-        unknown.add(`${label}:unqualified-leaf-read`);
+        unmeasured('unqualified-leaf-read');
         readsQualified = false;
         continue;
       }
       const prior = leaves.get(operation.physicalOperationId);
       if (prior && (prior.disposition !== operation.disposition || prior.evidenceRef !== operation.evidenceRef)) {
-        unknown.add(`${label}:conflicting-leaf-read`);
+        unmeasured('conflicting-leaf-read');
         readsQualified = false;
         continue;
       }
       leaves.set(operation.physicalOperationId, operation);
     }
     for (const ref of epoch.requiredReadRefs) {
-      if (!nonblank(ref)) unknown.add(`${label}:invalid-required-read-oracle`);
+      if (!nonblank(ref)) unmeasured('invalid-required-read-oracle');
       else if (![...leaves.values()].some(op => op.disposition === 'required' && op.evidenceRef === ref)) {
-        (epoch.traceComplete && readsQualified ? failures : unknown).add(`${label}:missing-required-read:${ref}`);
+        (epoch.traceComplete && readsQualified ? fail : unmeasured)(`missing-required-read:${ref}`);
       }
     }
-    if (!nonblank(epoch.checks.evidenceRef)) unknown.add(`${label}:missing-correctness-receipt`);
+    if (!nonblank(epoch.checks.evidenceRef)) unmeasured('missing-correctness-receipt');
     for (const key of ['staleContextFailures', 'missingContextFailures', 'falseCompleteSections'] as const) {
-      if (!count(epoch.checks[key])) unknown.add(`${label}:unknown-${key}`);
-      else if (epoch.checks[key]! > 0) failures.add(`${label}:${key}`);
+      if (!count(epoch.checks[key])) unmeasured(`unknown-${key}`);
+      else if (epoch.checks[key]! > 0) fail(key);
     }
-    if (epoch.checks.existingBudgetPreserved === null) unknown.add(`${label}:unknown-budget`);
-    else if (!epoch.checks.existingBudgetPreserved) failures.add(`${label}:budget-regression`);
+    if (typeof epoch.checks.existingBudgetPreserved !== 'boolean') unmeasured('unknown-budget');
+    else if (!epoch.checks.existingBudgetPreserved) fail('budget-regression');
     const validTokens = epoch.tokens !== null && count(epoch.tokens.count) && nonblank(epoch.tokens.method);
-    if (!validTokens) unknown.add(`${label}:unknown-token-measurement`);
-    const validLatency = Number.isFinite(epoch.triggerAtMs) && epoch.firstCorrectActionAtMs !== null
-      && Number.isFinite(epoch.firstCorrectActionAtMs) && epoch.firstCorrectActionAtMs >= epoch.triggerAtMs;
-    if (!validLatency) unknown.add(`${label}:unknown-correct-action-boundary`);
+    if (!validTokens) unmeasured('unknown-token-measurement');
+
+    const expectation = epoch.expectation, observation = epoch.observation;
+    const validExpectation = expectation !== undefined && nonblank(expectation.evidenceRef)
+      && expectation.oracleFingerprint === epoch.oracleFingerprint
+      && ['action-required', 'protective-stop-required'].includes(expectation.kind)
+      && Number.isFinite(expectation.observationWindowMs) && expectation.observationWindowMs > 0;
+    if (!validExpectation) unmeasured('unknown-outcome-expectation');
+    const validObservation = observation !== undefined && nonblank(observation.evidenceRef)
+      && nonblank(observation.artifactEvidenceRef) && Number.isFinite(epoch.triggerAtMs)
+      && Number.isFinite(observation.observedUntilMs) && observation.observedUntilMs >= epoch.triggerAtMs
+      && ['correct', 'absent', 'incorrect'].includes(observation.resultArtifact);
+    if (!validObservation) unmeasured('unknown-artifact-observation');
+    const boundedComplete = validExpectation && validObservation && epoch.traceComplete
+      && observation.observedUntilMs >= epoch.triggerAtMs + expectation.observationWindowMs;
+    const correctArtifact = validObservation && observation.resultArtifact === 'correct';
+    const actionReceipts = correctArtifact && nonblank(observation.saveReceiptRef) && nonblank(observation.readbackReceiptRef);
+    const validLatency = actionReceipts && epoch.traceComplete && epoch.firstCorrectActionAtMs !== null
+      && Number.isFinite(epoch.firstCorrectActionAtMs) && epoch.firstCorrectActionAtMs >= epoch.triggerAtMs
+      && epoch.firstCorrectActionAtMs <= observation.observedUntilMs;
+    if (correctArtifact && !actionReceipts) unmeasured('missing-action-save-or-readback');
+    if (correctArtifact && !validLatency) unmeasured('unknown-correct-action-boundary');
+    if (validObservation && observation.resultArtifact !== 'correct' && epoch.firstCorrectActionAtMs !== null) {
+      unmeasured('conflicting-artifact-action-boundary');
+    }
+    let latency: { applicability: 'applicable' | 'expected-stop' | 'behavior-failure' | 'unknown'; reason: string } = {
+      applicability: 'unknown', reason: 'unknown-correct-action-boundary',
+    };
+    let firstCorrectActionMs: number | null = null;
+    if (validExpectation && validObservation) {
+      if (expectation.kind === 'protective-stop-required') {
+        latency = { applicability: 'expected-stop', reason: 'expected-stop/not-applicable' };
+        if (observation.resultArtifact !== 'absent') fail('unexpected-result-artifact');
+        else if (!boundedComplete) unmeasured('incomplete-stop-observation');
+      } else if (correctArtifact) {
+        if (validLatency) {
+          if (epoch.firstCorrectActionAtMs! > epoch.triggerAtMs + expectation.observationWindowMs) {
+            fail('action-after-observation-window');
+            latency = { applicability: 'behavior-failure', reason: 'action-after-observation-window' };
+          } else {
+            firstCorrectActionMs = epoch.firstCorrectActionAtMs! - epoch.triggerAtMs;
+            latency = { applicability: 'applicable', reason: 'verified-artifact-save-and-readback' };
+          }
+        }
+      } else if (observation.resultArtifact === 'incorrect') {
+        fail('incorrect-result-artifact');
+        latency = { applicability: 'behavior-failure', reason: 'incorrect-result-artifact' };
+      } else if (boundedComplete && epoch.firstCorrectActionAtMs === null) {
+        fail('missing-required-action');
+        latency = { applicability: 'behavior-failure', reason: 'missing-required-action' };
+      } else unmeasured('unknown-correct-action-boundary');
+    }
     return {
       receiptRef: epoch.receiptRef, runtimeFingerprint: epoch.runtimeFingerprint,
       nativeSessionId: epoch.nativeSessionId,
@@ -401,7 +477,11 @@ export function summarizeRecoveryOutcomePair(baseline: RecoveryOutcomeEpoch, can
       recoveryLeafReads: leaves.size,
       avoidableRecoveryReads: [...leaves.values()].filter(op => op.disposition === 'avoidable').length,
       requiredRecoveryReads: [...leaves.values()].filter(op => op.disposition === 'required').length,
-      firstCorrectActionMs: validLatency ? epoch.firstCorrectActionAtMs! - epoch.triggerAtMs : null,
+      observedFirstCorrectActionAtMs: epoch.firstCorrectActionAtMs,
+      expectation: expectation ?? null, observation: observation ?? null,
+      firstCorrectActionMs, latency,
+      behavior: { verdict: epochFailures.size ? 'fail' as const : epochUnknown.size ? 'unknown' as const : 'pass' as const,
+        failures: [...epochFailures] },
       checks: epoch.checks,
     };
   };
@@ -412,12 +492,21 @@ export function summarizeRecoveryOutcomePair(baseline: RecoveryOutcomeEpoch, can
   if (canonicalJson([...new Set(baseline.requiredReadRefs)].sort())
     !== canonicalJson([...new Set(candidate.requiredReadRefs)].sort())) unknown.add('unpaired-required-read-oracle');
   if (before.tokens?.method !== after.tokens?.method) unknown.add('unpaired-token-method');
+  if (canonicalJson(recoveryFingerprintValue(baseline.expectation))
+    !== canonicalJson(recoveryFingerprintValue(candidate.expectation))) unknown.add('unpaired-outcome-expectation');
   // An unpaired or incompletely attributed trace cannot establish a regression.
-  if (!unknown.size && after.avoidableRecoveryReads > before.avoidableRecoveryReads) failures.add('avoidable-read-regression');
+  if (!unknown.size && after.avoidableRecoveryReads > before.avoidableRecoveryReads) {
+    failures.add('avoidable-read-regression');
+    after.behavior.failures.push('avoidable-read-regression');
+    after.behavior.verdict = 'fail';
+  }
   return {
-    version: 1,
+    version: 2,
     inputFingerprint: createHash('sha256').update(canonicalJson(recoveryFingerprintValue({ baseline, candidate }))).digest('hex'),
-    verdict: failures.size ? 'fail' as const : unknown.size ? 'unknown' as const : 'pass' as const,
+    // A baseline defect is valid evidence of that arm's behavior. Only candidate
+    // failures fail acceptance; missing bindings still preclude a passing pair.
+    verdict: after.behavior.verdict === 'fail' ? 'fail' as const : unknown.size ? 'unknown' as const : 'pass' as const,
+    measurement: { verdict: unknown.size ? 'unknown' as const : 'valid' as const, unknownReasons: [...unknown] },
     baseline: before, candidate: after,
     // Deltas are descriptive; never present unpaired/unknown observations as savings.
     delta: unknown.size ? null : {
@@ -425,7 +514,8 @@ export function summarizeRecoveryOutcomePair(baseline: RecoveryOutcomeEpoch, can
       avoidableRecoveryReads: after.avoidableRecoveryReads - before.avoidableRecoveryReads,
       injectedBytes: after.injectedBytes - before.injectedBytes,
       tokens: after.tokens!.count - before.tokens!.count,
-      firstCorrectActionMs: after.firstCorrectActionMs! - before.firstCorrectActionMs!,
+      firstCorrectActionMs: before.latency.applicability === 'applicable' && after.latency.applicability === 'applicable'
+        ? after.firstCorrectActionMs! - before.firstCorrectActionMs! : null,
     },
     unknownReasons: [...unknown], failures: [...failures],
   };
