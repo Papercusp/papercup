@@ -2023,6 +2023,25 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(runPhase).not.toHaveBeenCalled();
   });
 
+  it.each(['exit', 'signal', 'empty'] as const)(
+    'retains preflight termination and both diagnostic streams (%s)', async kind => {
+    const output = kind === 'empty' ? '' : `
+      process.stdout.write('x'.repeat(4096) + 'generation-failure-on-stdout');
+      process.stderr.write('y'.repeat(4096) + 'verifier census progress: scan=123:1 checked=257');
+    `;
+    const termination = kind === 'signal'
+      ? "process.kill(process.pid, 'SIGTERM');" : 'process.exit(73);';
+    const error = await runVerifierDependencyCommand(process.execPath, ['-e', output + termination],
+      { cwd: tmp, env: childEnv(), timeoutMs: 5000, maxMs: 10000 }).catch(error => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain(kind === 'signal'
+      ? 'exit=null signal=SIGTERM' : 'exit=73 signal=none');
+    expect(error.message).toContain(kind === 'empty'
+      ? 'stdout=<empty>; stderr=<empty>' : 'generation-failure-on-stdout; stderr=');
+    if (kind !== 'empty') expect(error.message).toContain('verifier census progress: scan=123:1 checked=257');
+    expect(error.message.length).toBeLessThan(4300);
+  });
+
   it.each(['copy', 'copy-lock', 'census'])('lets advancing %s progress cross the initial watchdog deadline', async kind => {
     const progressLine = kind === 'copy'
       ? "'copy progress: fixture written=' + (++written) + 'MiB'"
@@ -2482,7 +2501,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         env: { ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: selection !== 'automatic' ? join(parent, 'store') : '',
           GENERATION_ENSURE_MARKER: generationMarker, GENERATION_EVENT_LOG: generationEvents },
         command: [process.execPath, '-e', 'throw Error("provider must not start")'],
-      })).rejects.toThrow('verifier dependency preflight failed: snapshot reached after generation preflight');
+      })).rejects.toThrow('snapshot reached after generation preflight');
       expect(readFileSync(generationEvents, 'utf8').trim().split('\n')).toEqual(['ensure', 'preflight', 'snapshot']);
       expect(readFileSync(generationMarker, 'utf8').trim()).toBe('committed-adapter');
       expect(readFileSync(join(fixture.repo, managedClient), 'utf8')).toBe('unrelated-live-adapter\n');

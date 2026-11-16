@@ -1040,8 +1040,12 @@ export async function runVerifierDependencyCommand(command, args, { cwd, env,
     const result = await Promise.race([closed, aborted]);
     await Promise.race([lifetime.waitForExit({ timeoutMs: maxMs }), aborted]);
     if (terminationReason) throw new PreviewError(terminationReason, 2);
-    if (result.code !== 0 || result.signal)
-      throw new PreviewError(`verifier dependency preflight failed: ${stderr || stdout || result.signal || result.code}`, 2);
+    if (result.code !== 0 || result.signal) {
+      // Progress on stderr is not the failure. Preserve the exit identity and
+      // both bounded tails so it cannot hide a stdout diagnostic or a signal.
+      const tail = output => output.trim().slice(-2048) || '<empty>';
+      throw new PreviewError(`verifier dependency preflight failed: exit=${result.code ?? 'null'} signal=${result.signal ?? 'none'}; stdout=${tail(stdout)}; stderr=${tail(stderr)}`, 2);
+    }
     return stdout;
   } catch (error) {
     if (child.pid !== undefined) {
