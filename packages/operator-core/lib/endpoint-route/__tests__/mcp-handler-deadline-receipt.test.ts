@@ -169,6 +169,12 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
     ...actual,
+    // This suite replaces PG at the boundary. The kernel preflight's priority
+    // authority-read selection (withPriorityOrgPg in projected-tool-deps) must use
+    // the same controlled boundary, or every dispatched tool is denied
+    // 'Authority database could not be selected' before the deadline path runs.
+    // Same stub as mcp-handler-gating-matrix.test.ts.
+    withPriorityOrgPg: async <T>(run: () => Promise<T>): Promise<T> => run(),
     getOrgPg: () => ({ sql: h.fakeSql }),
     withWorkspace: async <T>(ws: string, fn: (tx: unknown) => Promise<T>): Promise<T> => {
       h.withWorkspaceCalls.push(ws);
