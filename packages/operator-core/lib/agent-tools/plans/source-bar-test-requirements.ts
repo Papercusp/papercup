@@ -150,7 +150,16 @@ export async function resolveSourceBarTestRequirements(
     };
   }
 
-  const matches = rubric.criteria.filter((criterion) => criterion.barKey === pin.barKey);
+  // Canonical acceptance criteria may use their key without an explicit alias.
+  // Normalize at this boundary so the shared live overlay sees the same identity.
+  const canonicalRubric = {
+    ...rubric,
+    criteria: rubric.criteria.map((criterion) => ({
+      ...criterion,
+      barKey: criterion.barKey?.trim() || criterion.key,
+    })),
+  };
+  const matches = canonicalRubric.criteria.filter((criterion) => criterion.barKey === pin.barKey);
   if (matches.length !== 1) {
     return {
       status: 'unavailable',
@@ -180,7 +189,7 @@ export async function resolveSourceBarTestRequirements(
       reason: `pinned BAR ${pin.barKey} declares a tests check without registered files`,
     };
   }
-  const liveFiles = await liveTestFiles(rubric, pin, cache, live);
+  const liveFiles = await liveTestFiles(canonicalRubric, pin, cache, live);
   if (!liveFiles || JSON.stringify({ files: liveFiles.files, cases: liveFiles.cases }) === JSON.stringify(pinnedRequirements)) {
     return { status: 'required', ...pinnedRequirements };
   }

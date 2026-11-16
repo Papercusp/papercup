@@ -46,6 +46,31 @@ describe('source BAR test requirement resolution', () => {
     expect(result).toEqual({ status: 'required', files: ['a.test.ts', 'z.test.ts'] });
   });
 
+  it.each([undefined, '  '])('resolves a canonical criterion key with BAR alias %j', async (barKey) => {
+    rubricReads.getRubric.mockResolvedValue(sourceRubric({
+      criteria: [{ ...sourceRubric().criteria[0], key: pin.barKey, barKey }],
+    }));
+    await expect(resolveSourceBarTestRequirements(pin)).resolves.toEqual({
+      status: 'required', files: ['a.test.ts', 'z.test.ts'],
+    });
+  });
+
+  it('preserves explicit alias precedence, duplicate refusal and hash checks for canonical keys', async () => {
+    const canonical = { ...sourceRubric().criteria[0], key: pin.barKey, barKey: undefined };
+    rubricReads.getRubric.mockResolvedValue(sourceRubric({ criteria: [{ ...canonical, barKey: 'OTHER-BAR' }] }));
+    await expect(resolveSourceBarTestRequirements(pin)).resolves.toMatchObject({
+      status: 'unavailable', reason: expect.stringContaining('resolves to 0 criteria'),
+    });
+    rubricReads.getRubric.mockResolvedValue(sourceRubric({ criteria: [canonical, sourceRubric().criteria[0]] }));
+    await expect(resolveSourceBarTestRequirements(pin)).resolves.toMatchObject({
+      status: 'unavailable', reason: expect.stringContaining('resolves to 2 criteria'),
+    });
+    rubricReads.getRubric.mockResolvedValue(sourceRubric({ criteria: [{ ...canonical, barHash: 'other-bar' }] }));
+    await expect(resolveSourceBarTestRequirements(pin)).resolves.toMatchObject({
+      status: 'unavailable', reason: expect.stringContaining('identity differs'),
+    });
+  });
+
   it('keeps the exact pinned required files and named cases when clause proof is conjunctive', async () => {
     const files = ['mission.test.ts', 'mission-runtime.integration.test.ts'];
     const cases = files.map(file => ({ file, testName: 'mission > preserves the original contract' }));
@@ -175,6 +200,17 @@ describe('source BAR test requirements read live requirement check.files', () =>
     expect(result).toEqual({
       status: 'required',
       files: [MOVED],
+      liveRequirement: { subjectPlan: 'live-plan-fixture', pinnedFiles: ['a.test.ts', 'z.test.ts'] },
+    });
+  });
+
+  it.each([undefined, '  '])('uses the real live overlay for a canonical key with BAR alias %j', async (barKey) => {
+    rubricReads.getRubric.mockResolvedValue({
+      ...planRubric(),
+      criteria: [{ ...sourceRubric().criteria[0], key: pin.barKey, barKey }],
+    });
+    await expect(resolveSourceBarTestRequirements(pin, new Map(), liveRead())).resolves.toEqual({
+      status: 'required', files: [MOVED],
       liveRequirement: { subjectPlan: 'live-plan-fixture', pinnedFiles: ['a.test.ts', 'z.test.ts'] },
     });
   });
