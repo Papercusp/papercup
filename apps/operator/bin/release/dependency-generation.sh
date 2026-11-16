@@ -1274,7 +1274,11 @@ dependency_generation_native_addons_load() {
       continue
     fi
     abi="$("$node" -p 'process.versions.modules' 2>/dev/null || printf '?')"
-    first="$(printf '%s\n' "$err" | grep -m1 -E 'NODE_MODULE_VERSION|Error' || true)"
+    # Node prints an ABI mismatch over several lines and names the module first,
+    # so prefer the NODE_MODULE_VERSION line: it is the one that says why
+    # (WI-6554700010049444). One line, because the log mirrors to the progress lock.
+    first="$(printf '%s\n' "$err" | grep -m1 'NODE_MODULE_VERSION' || true)"
+    [ -n "$first" ] || first="$(printf '%s\n' "$err" | grep -m1 'Error' || true)"
     [ -n "$first" ] || first="$(printf '%s\n' "$err" | head -n 1)"
     dependency_generation_log \
       "native addon '$addon' in $label will not load under Node ABI $abi: ${first:-no loader output}"
