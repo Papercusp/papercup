@@ -37,3 +37,6 @@ export const SESSION_END_MARKER = '■ session ended';
  * compare against the two markers above ignore it by construction (exact match).
  */
 export const LOOP_TURN_START_MARKER = '▷ loop-fire turn started';
+
+/** Bounded indexed-proof scan progress, never evidence that a turn started. */
+export const LOOP_TURN_START_SCAN_MARKER = 'indexed loop turn-start scan';

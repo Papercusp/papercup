@@ -25,7 +25,7 @@ import type { ActivityRecord, TelemetryStore } from '@papercusp/activity-bridge'
 import type { Sql } from 'postgres';
 import { isAbsolute } from 'node:path';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { LOOP_TURN_START_MARKER } from '../../agent-tools/activity/lifecycle-markers';
+import { LOOP_TURN_START_MARKER, LOOP_TURN_START_SCAN_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 import { classify, parseEnvelope, readLedgerRows, TURN_PROVENANCE_DIR, type LedgerRow } from '../../turn-provenance/turn-provenance';
 
 export interface LoopFireIdentity {
@@ -393,16 +393,44 @@ export async function recordIndexedLoopTurnStarts(sql: Sql, turns: IndexedNative
   for (const record of records) await store.append(record);
 }
 
+interface IndexedLoopScanPosition {
+  turnIdx: number;
+  workspaceId: string;
+}
+
+export interface IndexedLoopTurnStartRefresh {
+  inspected: number;
+  hasMore: boolean;
+  resumeBefore: IndexedLoopScanPosition | null;
+}
+
 /** Read-time refresh also repairs turns indexed before their marker producer or
- * launch receipt was available. Lock persisted rows so concurrent refreshes
- * cannot append the same marker; enrollment still uses the exact launch pin. */
+ * launch receipt was available. Reuse the activity ledger for scan progress,
+ * separate from authenticated start markers. Each transaction consumes at most
+ * 64 candidates and commits its cursor with the proof writes. The next refresh
+ * resumes below rejected candidates even after a process restart; reaching the
+ * end resets the cursor so late enrollment/launch evidence is retried. */
 export async function reconcileIndexedLoopTurnStarts(
   sql: Sql,
   input: { owner: string; sourceKind: string; sessionId: string },
-): Promise<void> {
-  if (!input.owner || !input.sessionId || !['claude', 'codex', 'omp'].includes(input.sourceKind)) return;
+): Promise<IndexedLoopTurnStartRefresh | null> {
+  if (!input.owner || !input.sessionId || !['claude', 'codex', 'omp'].includes(input.sourceKind)) return null;
   const workspaceId = activeWorkspaceId();
-  const reconcile = async (client: Sql): Promise<void> => {
+  const reconcile = async (client: Sql): Promise<IndexedLoopTurnStartRefresh> => {
+    // Serialize cursor consumption as well as proof writes. SKIP LOCKED with a
+    // moving cursor would jump over a locked candidate without inspecting it.
+    await client`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify([
+      LOOP_TURN_START_SCAN_MARKER, workspaceId, input.owner, input.sourceKind, input.sessionId,
+    ])}, 0))`;
+    const checkpoints = await client<Array<{ detail: { resumeBefore?: IndexedLoopScanPosition | null } }>>`
+      SELECT detail FROM harness_shared.agent_activity
+       WHERE workspace_id = ${workspaceId} AND owner_id = ${input.owner}
+         AND agent = ${input.sourceKind} AND session_id = ${input.sessionId}
+         AND kind = 'lifecycle' AND summary = ${LOOP_TURN_START_SCAN_MARKER}
+       ORDER BY id DESC LIMIT 1`;
+    const saved = checkpoints[0]?.detail?.resumeBefore;
+    const before = saved && Number.isSafeInteger(saved.turnIdx) && saved.turnIdx >= 0 &&
+      ['default', workspaceId].includes(saved.workspaceId) ? saved : null;
     const turns = await client<IndexedNativeLoopTurn[]>`
       SELECT st.workspace_id, st.source_kind, st.session_id, st.turn_idx, st.ts,
              st.owner, st.harness_slug, st.cwd, st.speaker, st.text, st.turn_origin
@@ -413,6 +441,8 @@ export async function reconcileIndexedLoopTurnStarts(
          AND st.owner = ${input.owner}
          AND st.speaker = 'user'
          AND st.turn_origin IN ('loop-fire', 'self-compaction')
+         AND (${before === null} OR
+           (st.turn_idx, st.workspace_id) < (${before?.turnIdx ?? 0}, ${before?.workspaceId ?? ''}))
          AND NOT EXISTS (
            SELECT 1 FROM harness_shared.agent_activity activity
             WHERE activity.workspace_id = st.workspace_id
@@ -422,12 +452,32 @@ export async function reconcileIndexedLoopTurnStarts(
                 'workspaceId', st.workspace_id, 'sourceKind', st.source_kind,
                 'sessionId', st.session_id, 'turnIdx', st.turn_idx)
          )
-       ORDER BY st.turn_idx DESC
-       LIMIT 64
-       FOR UPDATE OF st SKIP LOCKED
+       ORDER BY st.turn_idx DESC, st.workspace_id DESC
+       LIMIT 65
+       FOR UPDATE OF st
     `;
-    await recordIndexedLoopTurnStarts(client, turns);
+    // The extra candidate signals recoverable omission; its complete source
+    // remains in session_turns and is selected by the next persisted cursor.
+    const batch = turns.slice(0, 64);
+    const last = batch.at(-1);
+    const result: IndexedLoopTurnStartRefresh = {
+      inspected: batch.length,
+      hasMore: turns.length > batch.length,
+      resumeBefore: turns.length > batch.length && last
+        ? { turnIdx: last.turn_idx, workspaceId: last.workspace_id } : null,
+    };
+    await recordIndexedLoopTurnStarts(client, batch);
+    if (batch.length || before) {
+      const { createPgTelemetryStore } = await import('../../activity-pg-store');
+      await createPgTelemetryStore(client).append({
+        owner: input.owner, agent: input.sourceKind, sessionId: input.sessionId,
+        workspaceId, scope: null, kind: 'lifecycle', toolName: null, phase: null,
+        toolUseId: null, summary: LOOP_TURN_START_SCAN_MARKER, status: null,
+        detail: { schemaVersion: 1, ...result }, cwd: null,
+      });
+    }
+    return result;
   };
-  if (typeof sql.begin === 'function') await sql.begin(tx => reconcile(tx as unknown as Sql));
-  else await reconcile(sql);
+  if (typeof sql.begin === 'function') return await sql.begin(tx => reconcile(tx as unknown as Sql));
+  return await reconcile(sql);
 }
