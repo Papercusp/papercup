@@ -6,8 +6,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createServer, type RequestListener, type Server } from 'node:http';
+import { gzipSync } from 'node:zlib';
+import { serve } from '@hono/node-server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { assertInstalledRuntimeLoader, assertInstalledRuntimeSource, installedDesktopBinaries, installedHostFixtureScope, installedPortalSource, installedRuntimeNodeArgs, validateInstalledPortalRelease, waitForPortalDocument } from './installed-computer-served-browser.fixture';
+import { assertInstalledRuntimeLoader, assertInstalledRuntimeSource, installedDesktopBinaries, installedHostFixtureScope, installedPortalProxy, installedPortalSource, installedRuntimeNodeArgs, validateInstalledPortalRelease, waitForPortalDocument } from './installed-computer-served-browser.fixture';
 
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>();
@@ -51,6 +53,32 @@ async function currentNativeLoader(repo: string) {
 }
 
 describe('served Portal prerequisite and document readiness', () => {
+  it('serves a compressed upstream document through the real HTTP Portal proxy', async () => {
+    const html = '<html><body>Private Portal document</body></html>';
+    const wire = gzipSync(html);
+    const upstream = await start((req, res) => {
+      expect(req.url).toBe('/?app=desktops&ws=private');
+      expect(req.headers.cookie).toBe('private-session=fixture');
+      res.writeHead(200, { 'content-type': 'text/html', 'content-encoding': 'gzip',
+        'content-length': String(wire.length) });
+      res.end(wire);
+    });
+    const proxy = serve({ fetch: installedPortalProxy(upstream), hostname: '127.0.0.1', port: 0 });
+    await once(proxy, 'listening');
+    try {
+      const port = (proxy.address() as { port: number }).port;
+      const response = await fetch(`http://127.0.0.1:${port}/?app=desktops&ws=private`, {
+        headers: { cookie: 'private-session=fixture', 'accept-encoding': 'gzip' },
+        signal: AbortSignal.timeout(2000),
+      });
+      expect(response.headers.get('content-encoding')).toBeNull();
+      expect(await response.text()).toBe(html);
+    } finally {
+      proxy.closeAllConnections();
+      await new Promise<void>(resolve => proxy.close(() => resolve()));
+    }
+  });
+
   it('executes native TypeScript, extensionless imports, JSON and an ESM TSX dependency', async () => {
     nativeRoot = await mkdtemp(join(tmpdir(), 'installed-native-loader-'));
     await mkdir(join(nativeRoot, 'leaves'));

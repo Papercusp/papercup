@@ -164,6 +164,24 @@ export async function installedPortalRelease(portal: string, source?: string) {
   return release;
 }
 
+export function installedPortalProxy(nextOrigin: string) {
+  return async (request: Request) => {
+    const url = new URL(request.url);
+    const headers = new Headers(request.headers); headers.delete('host');
+    headers.set('accept-encoding', 'identity');
+    const response = await fetch(new Request(nextOrigin + url.pathname + url.search, { method: request.method, headers,
+      ...(!['GET', 'HEAD'].includes(request.method) ? { body: await request.arrayBuffer() } : {}),
+      signal: request.signal, redirect: 'manual' }));
+    // Fetch decodes upstream compression. The HTTP server must describe the
+    // decoded stream, including when an upstream ignores identity encoding.
+    const outgoing = new Headers(response.headers);
+    outgoing.delete('content-encoding');
+    outgoing.delete('content-length');
+    outgoing.delete('transfer-encoding');
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers: outgoing });
+  };
+}
+
 /** Native node children honor the committed-source loader. Refuse before
  * private-PG boot when the intended rig/transport would be replaced or denied. */
 export async function assertInstalledRuntimeSource(repo: string) {
@@ -339,13 +357,7 @@ export async function runInstalledComputerServedBrowser(input: Input) {
     const nextOrigin = `http://127.0.0.1:${nextPort}`;
     assert(!nextError, nextError?.message);
     const portalDocument = await waitForPortalDocument(next, `${nextOrigin}/?app=desktops`);
-    input.routePortal(async request => {
-      const url = new URL(request.url);
-      const headers = new Headers(request.headers); headers.delete('host');
-      return fetch(new Request(nextOrigin + url.pathname + url.search, { method: request.method, headers,
-        ...(!['GET', 'HEAD'].includes(request.method) ? { body: await request.arrayBuffer() } : {}),
-        signal: request.signal, redirect: 'manual' }));
-    });
+    input.routePortal(installedPortalProxy(nextOrigin));
     const { createServer } = await import('vite');
     process.env.PAPERCUSP_API_TARGET = localOrigin;
     gui = await createServer({ root: join(repo, 'apps/operator-vite'),
