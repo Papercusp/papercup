@@ -117,6 +117,21 @@ describe('reviewer correction exact base and typed materiality', () => {
   });
 
   it.each([
+    ['version', 2], ['requestId', 'replacement'], ['caller', 'su-other-leader'], ['target', 'su-other-reviewer'],
+    ['routineId', 'another-promoter'], ['signature', 'b'.repeat(64)], ['state', 'queued'], ['stage', 'assign'],
+    ['authority', { kind: 'signed-spawn', credentialSha256: 'c'.repeat(64) }],
+  ])('fences held recovery %s in the exact correction base', (key, value) => {
+    const before = base();
+    const recovery: Record<string, unknown> = { version: 3, requestId: 'original', caller: 'su-leader',
+      target: 'su-reviewer', routineId: 'promoter', signature: 'a'.repeat(64), state: 'held', stage: 'screen',
+      authority: { kind: 'signed-spawn', credentialSha256: 'd'.repeat(64) } };
+    before.item.payload!._admissionRecovery = recovery;
+    const revision = agentReviewCorrectionRevision(before);
+    recovery[key as string] = value;
+    expect(agentReviewCorrectionRevision(before)).not.toBe(revision);
+  });
+
+  it.each([
     ['human_grade', 5], ['human_feedback', 'Changed feedback'], ['graded_by', 'owner'], ['graded_at', '2026-11-15T00:00:00.000002Z'],
     ['created_by', 'su-other-original'], ['title', 'Changed ledger title'], ['rail', 'plan'], ['origin', 'other'],
   ])('fences canonical ledger member %s', (key, value) => {

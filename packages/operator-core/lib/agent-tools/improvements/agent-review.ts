@@ -227,6 +227,9 @@ export default defineTool({
   requirePrincipal: false,
   skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
+  // Raw JSON receipts also need a lossless twin for structured MCP clients.
+  // A corrected handoff can exceed the separate model-facing text budget.
+  result: z.record(z.string(), z.unknown()),
   args: z.discriminatedUnion('mode', [
     z.object({
       mode: z.literal('correction-base'),

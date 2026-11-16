@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { lookupByMcpName } from '@papercusp/agent-mcp';
-import type { ToolResult as DispatchToolResult } from '@papercusp/tooldef';
+import { dispatchProjectedTool, type ToolResult as DispatchToolResult } from '@papercusp/tooldef';
 
 const h = vi.hoisted(() => ({
   claim: vi.fn(),
@@ -50,6 +50,32 @@ beforeEach(() => {
 });
 
 describe('improvements:agent-review public door', () => {
+  it.each([false, true])('negotiates a complete structured twin of a raw public claim (structured=%s)', async structured => {
+    const workItem = { id: 'EI-7', harness: 'papercusp', kind: 'change', title: 'Corrected report',
+      summary: 'Full corrected source '.repeat(700), createdBy: 'su-filer', payload: {
+        agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'idea-7', round: 3,
+          correctionHistory: [] },
+      } };
+    h.identity.mockReturnValue({ ownerId: 'su-reviewer', workspaceId: 'workspace-test' });
+    h.claim.mockResolvedValue({ claimed: true, workItem });
+    const dispatched = await dispatchProjectedTool(lookupByMcpName('improvements:agent-review')!,
+      'improvements:agent-review', { mode: 'claim', id: workItem.id, harness: 'papercusp' }, {
+        transport: 'mcp', workspaceId: 'workspace-test', role: 'operator', runId: 'structured-review-test',
+        principal: { slug: 'system:superuser', workspaceId: 'workspace-test', capabilities: new Set(['work_items:write']) },
+        requestedStructured: structured, requestedFormat: 'json', contextTier: 'full',
+        log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(), tx: {},
+      }, {});
+    expect(dispatched.ok, JSON.stringify(dispatched.error)).toBe(true);
+    const result = dispatched.result!;
+    const first = result.content?.[0];
+    if (first?.type !== 'text') throw new Error('public claim must return JSON text');
+    const original = JSON.parse(first.text);
+    expect(JSON.stringify(original).length).toBeGreaterThan(9000);
+    expect(original.workItem).toEqual(workItem);
+    if (structured) expect(result.structuredContent).toEqual(original);
+    else expect(result.structuredContent).toBeUndefined();
+  });
+
   it('hands off original evidence and distinct transcript/consult gaps without claiming reproduction', () => {
     const original = { id: 'EI-7', harness: 'papercusp', kind: 'bug', title: 'Original report',
       summary: 'Observed once; see test_runs:42', createdBy: 'su-filer', payload: {

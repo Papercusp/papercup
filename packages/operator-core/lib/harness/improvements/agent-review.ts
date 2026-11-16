@@ -1456,12 +1456,29 @@ export async function correctAgentReview(
       if (input.expectedRound !== originalReview.round || input.correctionRevision !== beforeRevision) throw new CorrectionRefused('correction-base-stale');
       if (item.state !== 'open') throw new CorrectionRefused('not-open');
       if (isClaimHoldParked(item.payload)) throw new CorrectionRefused('claim-held');
-      const [custody] = await tx<{ allowed: boolean }[]>`SELECT
-        (${claimHoldExclusionSql(tx, 'payload')} AND ${admissionRecoveryExclusionSql(tx, 'payload')}
-          AND ${admissionHoldExclusionSql(tx, 'payload')}) AS allowed
+      const [custody] = await tx<{ allowed: boolean; recovery_allowed: boolean }[]>`SELECT
+        (${claimHoldExclusionSql(tx, 'payload')} AND ${admissionHoldExclusionSql(tx, 'payload')}) AS allowed,
+        (${admissionRecoveryExclusionSql(tx, 'payload')}) AS recovery_allowed
         FROM harness_shared.work_items WHERE workspace_id=${input.workspaceId} AND harness_slug=${input.harness}
           AND feature_id=${input.id}`;
       if (custody?.allowed !== true) throw new CorrectionRefused('queue-held');
+      if (custody.recovery_allowed !== true) {
+        // The locked item's retained reviewer may repair the prerequisite for its
+        // signed held/screen placement. This is review evidence, never execution
+        // admission: keep the reservation and every other correction gate intact.
+        if (item.assignee !== input.actor) throw new CorrectionRefused('queue-held');
+        const { AdmissionRecoveryRefused, readVerifiedAdmissionRecoveryTarget } =
+          await import('../../work-item-admission-recovery');
+        let target: string | null;
+        try {
+          target = await readVerifiedAdmissionRecoveryTarget({ workspaceId: input.workspaceId,
+            harnessSlug: input.harness, workItemId: input.id }, tx);
+        } catch (error) {
+          if (!(error instanceof AdmissionRecoveryRefused)) throw error;
+          throw new CorrectionRefused('queue-held');
+        }
+        if (target !== input.actor) throw new CorrectionRefused('queue-held');
+      }
       const eligibility = agentReviewEligibility(item);
       if (!eligibility.eligible) throw new CorrectionRefused(eligibility.reason);
       if (originalReview.submittedBy.startsWith('system:') || !ledger.created_by ||

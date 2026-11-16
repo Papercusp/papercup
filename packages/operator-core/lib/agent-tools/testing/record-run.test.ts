@@ -16,6 +16,14 @@ import { createImplementationReadiness, sealImplementationAcceptance, agentRevie
   agentReviewCorrectionRequestHash } from '../../harness/improvements/agent-review-policy';
 import { agentReviewEvidenceHandoff } from '../improvements/agent-review';
 import { applyResultProjection, parseProjection } from '../../result-projection';
+import { applyPayloadTier, serializeToolResponse } from '@papercusp/tooldef';
+import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
+import { applyResultDoor } from '../../result-door';
+
+vi.mock('../../context-doors-config', async () => {
+  const { BAKED_DOOR_CONSTANTS } = await import('../../context-doors');
+  return { getDoorConstantsSync: () => BAKED_DOOR_CONSTANTS };
+});
 import {
   MAX_RECORDED_PASSED_CASES,
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
@@ -159,6 +167,12 @@ describe('native served reviewer correction evidence', () => {
               return { corrected: true, replayed: true, receipt: structuredClone(stored) };
             }
             const correction = args.correction as any;
+            const requestHash = agentReviewCorrectionRequestHash({
+              id: args.id, harness: ctx.harnessSlug, workspaceId: ctx.workspaceId, actor,
+              requestKey: args.requestKey, expectedRound: args.expectedRound,
+              correctionRevision: args.correctionRevision, correction });
+            const beforeSource = structuredClone({ kind: state.item.kind, title: state.item.title,
+              summary: state.item.summary, implementationReadiness: state.item.payload.implementationReadiness });
             if (correction.changes.title) state.item.title = correction.changes.title;
             if (correction.changes.summary) state.item.summary = correction.changes.summary;
             if (correction.changes.acceptance) state.item.payload.implementationReadiness = createImplementationReadiness({
@@ -168,16 +182,14 @@ describe('native served reviewer correction evidence', () => {
             review.round++;
             review.materialAuthors = [...new Set([...(review.materialAuthors ?? []), actor])];
             review.correctionContext = [...(review.correctionContext ?? []), ...correction.notes];
-            review.correctionHistory.push({ actor, classification: 'material', priorVerdict: structuredClone(state.ledger) });
+            review.correctionHistory.push({ requestHash, actor, classification: 'material', round: review.round,
+              correction: structuredClone(correction), beforeSource, priorVerdict: structuredClone(state.ledger) });
             Object.assign(state.ledger, { title: state.item.title, human_grade: null,
               human_feedback: null, graded_by: null, graded_at: null });
             state.item.assignee = null; state.item.takenAt = null; review.status = 'pending';
             const receipt = { schemaVersion: 1, workspaceId: ctx.workspaceId, harness: ctx.harnessSlug,
               itemId: state.item.id, actor, requestKey: args.requestKey,
-              requestHash: mutations.wrongRequestHash ? '4'.repeat(64) : agentReviewCorrectionRequestHash({
-                id: args.id, harness: ctx.harnessSlug, workspaceId: ctx.workspaceId, actor,
-                requestKey: args.requestKey, expectedRound: args.expectedRound,
-                correctionRevision: args.correctionRevision, correction }), beforeRound,
+              requestHash: mutations.wrongRequestHash ? '4'.repeat(64) : requestHash, beforeRound,
               afterRound: review.round, beforeRevision: args.correctionRevision, afterRevision: revision() };
             review.correctionReceipts.push(receipt);
             return { corrected: true, receipt: structuredClone(receipt) };
@@ -235,6 +247,44 @@ describe('native served reviewer correction evidence', () => {
     };
     return { ctx, host, state, deps, cleanup, closes, mutations, artifacts };
   }
+
+  it.each([false, true])('requires complete corrected handoffs through the production payload and result doors (structured=%s)', async structured => {
+    const f = fixture();
+    const open = f.deps.open;
+    const scratchRoot = mkdtempSync(join(tmpdir(), 'reviewer-correction-door-'));
+    const previousScratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    process.env.PAPERCUSP_SCRATCH_ROOT = scratchRoot;
+    f.deps.open = async (...input) => {
+      const client = await open(...input);
+      return { close: client.close, invoke: (name, args) => invokeReviewerCorrectionPublicTool(name, args, async dispatched => {
+        const projection = parseProjection(dispatched.projection);
+        if (!projection.ok) throw new Error(projection.error);
+        if (!projection.spec) throw new Error('public receipt projection required');
+        const { projection: _projection, payloadTier: _tier, ...toolArgs } = dispatched;
+        const body = await client.invoke(name, toolArgs);
+        // MCP promotes a projected source to full, then removes the implicit
+        // opt-out before the result door. Only an explicit full request keeps it.
+        const shaped = applyPayloadTier({ toolName: name, effect: 'write', shape: undefined,
+          response: { data: body }, tier: 'full', explicitFullRequest: true,
+          deferHardCeilingToResultDoor: true, args: toolArgs });
+        const serialized = CallToolResultSchema.parse(serializeToolResponse(shaped,
+          { requested: 'json', defaultCompact: false, includeStructured: structured }));
+        if (dispatched.payloadTier !== 'full' && serialized._meta) delete serialized._meta.explicitFullRequest;
+        return applyResultDoor(applyResultProjection(serialized, projection.spec, { toolName: name, effect: 'write' }),
+          { toolName: name, effect: 'write', workspaceId: f.ctx.workspaceId,
+            preservePaths: projection.spec.pick });
+      }) };
+    };
+    try {
+      if (structured) expect((await measureReviewerOwnedCorrection(f.ctx, f.deps)).exitCode).toBe(0);
+      else await expect(measureReviewerOwnedCorrection(f.ctx, f.deps)).rejects.toThrow(/incomplete public receipt/);
+      expect(f.cleanup).toHaveBeenCalledOnce();
+    } finally {
+      if (previousScratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousScratchRoot;
+      rmSync(scratchRoot, { recursive: true, force: true });
+    }
+  });
 
   it('records served correction, distinct eligible grade, source witnesses and immutable historical replay', async () => {
     const f = fixture();
