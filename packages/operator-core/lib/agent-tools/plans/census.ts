@@ -16,7 +16,7 @@ import {
 import {
   CENSUS_RUN_LABELS, PLAN_PORTFOLIO_INSTRUMENT_MAX_BATCHES,
   measuresWithoutPairedRuns, readCensusRunRows, recordPlanPortfolioCensusRun,
-  type CensusRunLabel, type CensusRunRow,
+  type CensusRunLabel, type CensusRunRow, type CensusPopulationSnapshotRef, type SaveCensusPopulationSnapshot,
 } from '../../plan-portfolio/census-instruments';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
@@ -25,6 +25,7 @@ import { resolveEffectiveHarnessSlug } from './_ctx-opts';
 export interface PlanCensusDeps {
   store?: CensusPlanStore;
   now?: () => number;
+  saveSnapshot?: SaveCensusPopulationSnapshot;
   readRunRows?: (label: CensusRunLabel) => Promise<Map<string, CensusRunRow>>;
   recordResults?: (
     results: RubricCheckResult[],
@@ -45,6 +46,16 @@ function latestFinishedAt(rows: ReadonlyMap<string, CensusRunRow>): string | nul
     if (latest === null || Date.parse(row.finishedAt) > Date.parse(latest)) latest = row.finishedAt;
   }
   return latest;
+}
+
+function populationSnapshots(rows: ReadonlyMap<string, CensusRunRow>) {
+  const refs = new Map<string, CensusPopulationSnapshotRef>();
+  const missing: string[] = [];
+  for (const [id, row] of rows) {
+    if (!row.populationSnapshot) missing.push(id);
+    else refs.set(JSON.stringify(row.populationSnapshot), row.populationSnapshot);
+  }
+  return { refs: [...refs.values()], missing };
 }
 
 /**
@@ -69,7 +80,8 @@ export async function planCensus(
   const readRows = deps.readRunRows ?? ((label: CensusRunLabel) => readCensusRunRows({ label, workspaceId, measureIds }));
 
   let run: CensusRun;
-  let recorded: { label: CensusRunLabel; runGroupId: string; testRunIds: number[] } | null = null;
+  let recorded: { label: CensusRunLabel; runGroupId: string; testRunIds: number[];
+    populationSnapshot: CensusPopulationSnapshotRef } | null = null;
   if (input.record) {
     const label = input.record;
     const [baseline, existing] = await Promise.all([readRows('baseline'), readRows(label)]);
@@ -90,9 +102,10 @@ export async function planCensus(
         ...(deps.store ? { store: deps.store } : {}),
         ...(deps.now ? { now: deps.now } : {}),
         ...(deps.recordResults ? { record: deps.recordResults } : {}),
+        ...(deps.saveSnapshot ? { saveSnapshot: deps.saveSnapshot } : {}),
       });
       run = out.run;
-      recorded = { label, runGroupId: out.runGroupId, testRunIds: out.testRunIds };
+      recorded = { label, runGroupId: out.runGroupId, testRunIds: out.testRunIds, populationSnapshot: out.populationSnapshot };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!message.startsWith('census_run_incomplete')) throw error;
@@ -126,6 +139,7 @@ export async function planCensus(
     })),
     // `sample` is a labelled preview; `count` is exact.
     heldOnlyWorkableItems: run.heldOnlyWorkableItems,
+    populationSnapshots: { baseline: populationSnapshots(baseline), final: populationSnapshots(final) },
     pairing: {
       lacking: pairing.lacking, paired: pairing.paired.length,
       baselineMeasures: baseline.size, finalMeasures: final.size,

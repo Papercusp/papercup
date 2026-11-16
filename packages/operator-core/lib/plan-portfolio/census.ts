@@ -205,6 +205,8 @@ export interface CensusWorkItemRow {
 export interface CensusPlanRow {
   harnessSlug: string;
   planSlug: string;
+  /** Canonical plan revision, retained intact; null/absent means unmeasured. */
+  revision?: string | null;
   status: string;
   archived: boolean;
   template: string | null;
@@ -263,9 +265,10 @@ export function classifyWorkableItem(plan: Pick<CensusPlanRow, 'workItems'>, ite
 export const HELD_ONLY_SAMPLE_SIZE = 20;
 export const DEFAULT_CENSUS_BATCH_SIZE = 200;
 
-/** Mergeable state of a run in progress. Counters add; the three lists concatenate. */
+/** Mergeable state of a run in progress, including the complete source read so far. */
 export interface CensusPartial {
   plansRead: number;
+  sourcePlans: CensusPlanRow[];
   population: { total: number; byStatus: Record<string, number> };
   m1: { created: number; shipped: number };
   m2: { workable: number; heldByAgent: number };
@@ -320,11 +323,14 @@ export interface CensusRun {
   population: { total: number; byStatus: Record<string, number> };
   /** Workable items in ready or active plans that only the plan-line hold keeps unclaimable. */
   heldOnlyWorkableItems: { count: number; sample: string[] };
+  /** Complete scanned source, including rows excluded by the recorded measure populations. */
+  source: { plans: CensusPlanRow[]; nearTwinPairs: Array<{ a: string; b: string; similarity: number }> };
 }
 
 function emptyPartial(): CensusPartial {
   return {
     plansRead: 0,
+    sourcePlans: [],
     population: { total: 0, byStatus: {} },
     m1: { created: 0, shipped: 0 },
     m2: { workable: 0, heldByAgent: 0 },
@@ -347,6 +353,7 @@ const DAY_MS = 86_400_000;
 
 function accumulate(partial: CensusPartial, plan: CensusPlanRow, manifest: CensusManifest, runAtMs: number): void {
   partial.plansRead += 1;
+  partial.sourcePlans.push(structuredClone({ ...plan, revision: plan.revision ?? null }));
   if (inCensusPopulation(plan, DEFAULT_CENSUS_POPULATION)) {
     partial.population.total += 1;
     partial.population.byStatus[plan.status] = (partial.population.byStatus[plan.status] ?? 0) + 1;
@@ -487,6 +494,9 @@ export async function runPlanPortfolioCensus(input: {
     throw new Error('census_cursor_manifest_mismatch');
   }
   const partial = input.resume ? structuredClone(input.resume.partial) : emptyPartial();
+  if (!Array.isArray(partial.sourcePlans) || partial.sourcePlans.length !== partial.plansRead) {
+    throw new Error('census_cursor_source_missing: restart the run without resume');
+  }
   const runAtMs = input.resume ? Date.parse(input.resume.cursor.runAt) : (input.now ?? Date.now());
   if (!Number.isFinite(runAtMs)) throw new Error('census_invalid_run_instant');
   let after: CensusKey | null = input.resume ? { ...input.resume.cursor.after } : null;
@@ -527,5 +537,6 @@ export async function runPlanPortfolioCensus(input: {
     measures: readings(partial, manifest, pairs),
     population: { total: partial.population.total, byStatus: { ...partial.population.byStatus } },
     heldOnlyWorkableItems: { count: partial.m3.planLineHoldOnlyReadyOrActive, sample: [...partial.m3.sample] },
+    source: { plans: partial.sourcePlans, nearTwinPairs: structuredClone(pairs) },
   };
 }

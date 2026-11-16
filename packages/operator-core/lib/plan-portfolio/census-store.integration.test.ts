@@ -1,4 +1,5 @@
 /** P-001: exercise the production census reader and labelled ledger on migrated PostgreSQL. */
+import { createHash } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { createPgCensusPlanStore } from './census-store';
@@ -15,6 +16,22 @@ type CensusSql = NonNullable<Parameters<typeof createPgCensusPlanStore>[0]['sql'
 const sql = () => db.adminSql as unknown as CensusSql;
 const store = (workspaceId: string) => createPgCensusPlanStore({ workspaceId, sql: sql() });
 
+const saveSnapshot = (workspaceId: string) => async (content: string) => {
+  const sha256 = createHash('sha256').update(content).digest('hex');
+  const relPath = `immutable/sha256/${sha256}.json`;
+  await db.adminSql`
+    INSERT INTO harness_shared.harness_text_artifacts (workspace_id, harness_slug, rel_path, content, updated_at)
+    VALUES (${workspaceId}, 'papercusp', ${relPath}, ${content}, ${NOW})
+    ON CONFLICT (harness_slug, rel_path) DO NOTHING
+  `;
+  const rows = await db.adminSql`
+    SELECT content FROM harness_shared.harness_text_artifacts
+     WHERE workspace_id = ${workspaceId} AND harness_slug = 'papercusp' AND rel_path = ${relPath}
+  `;
+  expect(rows[0]?.content).toBe(content);
+  return { harnessSlug: 'papercusp', sha256, relPath };
+};
+
 beforeAll(async () => {
   db = await createOrgTestDb();
   // Verify fixture admission against the migrated schema before any census case.
@@ -22,6 +39,7 @@ beforeAll(async () => {
   await seedPlan('census-seed-preflight', 'check', { parked: true });
   const rows = await store('census-seed-preflight').readPlans({ after: null, limit: 1 });
   expect(rows).toHaveLength(1);
+  expect(rows[0]!.revision).toMatch(/^\d+$/);
   expect(rows[0]!.workItems).toEqual([{ planLineId: 'P-001', status: 'blocked', held: false,
     claimHold: true, claimHoldBy: PLAN_LINE_HOLD_BY, lane: null }]);
 }, 180_000);
@@ -78,6 +96,7 @@ describe('production census keyset recovery', () => {
       expect(recovered).toMatchObject({ complete: true, omitted: 0, cursor: null, plansRead: count,
         population: { total: count }, heldOnlyWorkableItems: { count: 1 } });
       expect(recovered.heldOnlyWorkableItems.sample).toEqual([`${slugs.at(-1)}#P-001`]);
+      expect(recovered.source.plans.map(plan => plan.planSlug)).toEqual(slugs);
     });
   }
 
@@ -98,6 +117,7 @@ describe('production census keyset recovery', () => {
         expect(pass).toBe(5);
         expect(run).toEqual(await runPlanPortfolioCensus({ store: store(workspace), now: NOW, batchSize: 2 }));
         expect(run.heldOnlyWorkableItems.count).toBe(1);
+        expect(run.source.plans.map(plan => plan.planSlug)).toEqual(Array.from({ length: 11 }, (_, i) => `plan-${String(i).padStart(2, '0')}`));
         return;
       }
       expect(run.resume).not.toBeNull();
@@ -123,8 +143,8 @@ describe('production census keyset recovery', () => {
 it('persists and re-reads all nine labelled measurements with matching definition fingerprints', async () => {
   const workspaceId = 'census-ledger-pair';
   await seedPlan(workspaceId, 'ledger-plan', { parked: true });
-  const baseline = await recordPlanPortfolioCensusRun({ workspaceId, label: 'baseline', now: () => NOW, sql: sql() });
-  const final = await recordPlanPortfolioCensusRun({ workspaceId, label: 'final', now: () => NOW + 1_000, sql: sql() });
+  const baseline = await recordPlanPortfolioCensusRun({ workspaceId, label: 'baseline', now: () => NOW, sql: sql(), saveSnapshot: saveSnapshot(workspaceId) });
+  const final = await recordPlanPortfolioCensusRun({ workspaceId, label: 'final', now: () => NOW + 1_000, sql: sql(), saveSnapshot: saveSnapshot(workspaceId) });
   expect(baseline.testRunIds).toHaveLength(CENSUS_MEASURE_IDS.length);
   expect(final.testRunIds).toHaveLength(CENSUS_MEASURE_IDS.length);
   expect(new Set([...baseline.testRunIds, ...final.testRunIds]).size).toBe(18);
@@ -134,6 +154,17 @@ it('persists and re-reads all nine labelled measurements with matching definitio
   const after = await read('final');
   expect([...before.keys()].sort()).toEqual([...CENSUS_MEASURE_IDS].sort());
   expect([...after.keys()].sort()).toEqual([...CENSUS_MEASURE_IDS].sort());
+  expect([...before.values()].every(row => JSON.stringify(row.populationSnapshot) === JSON.stringify(baseline.populationSnapshot))).toBe(true);
+  const retained = await db.adminSql`
+    SELECT content FROM harness_shared.harness_text_artifacts
+     WHERE workspace_id = ${workspaceId} AND harness_slug = 'papercusp' AND rel_path = ${baseline.populationSnapshot.relPath}
+  `;
+  const content = String(retained[0]?.content);
+  expect(createHash('sha256').update(content).digest('hex')).toBe(baseline.populationSnapshot.sha256);
+  const snapshot = JSON.parse(content);
+  expect(snapshot.source.plans.map((plan: { planSlug: string }) => plan.planSlug)).toEqual(['ledger-plan']);
+  expect(snapshot.source.plans[0].revision).toMatch(/^\d+$/);
+  expect(snapshot.runGroupId).toBe(baseline.runGroupId);
   expect(measuresWithoutPairedRuns({ measureIds: CENSUS_MEASURE_IDS, baseline: before, final: after }))
     .toEqual({ lacking: [], paired: [...CENSUS_MEASURE_IDS] });
   expect(await read('baseline', 'census-ledger-other')).toEqual(new Map());

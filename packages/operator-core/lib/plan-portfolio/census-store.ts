@@ -41,7 +41,7 @@ export function createPgCensusPlanStore(input: { workspaceId: string; sql?: SqlL
   return {
     async readPlans({ after, limit }: { after: CensusKey | null; limit: number }): Promise<CensusPlanRow[]> {
       const plans = (await sql`
-        SELECT harness_slug, plan_slug, status, archived, template, created_at, updated_at,
+        SELECT harness_slug, plan_slug, version, status, archived, template, created_at, updated_at,
                char_length(coalesce(content, '')) AS content_chars,
                CASE WHEN jsonb_typeof(decisions) = 'array' THEN jsonb_array_length(decisions) ELSE 0 END AS decision_count,
                position(${BAR_READINESS_NOW_MARK} in coalesce(content, '')) > 0 AS has_readiness_block,
@@ -55,7 +55,8 @@ export function createPgCensusPlanStore(input: { workspaceId: string; sql?: SqlL
          ORDER BY harness_slug COLLATE "C", plan_slug COLLATE "C"
          LIMIT ${limit}
       `) as Array<{
-        harness_slug: string; plan_slug: string; status: string | null; archived: boolean | null; template: string | null;
+        harness_slug: string; plan_slug: string; version: number | string | null;
+        status: string | null; archived: boolean | null; template: string | null;
         created_at: Date | string | null; updated_at: Date | string | null; content_chars: number | string;
         decision_count: number | string; has_readiness_block: boolean | null; has_embedding: boolean; items: unknown;
       }>;
@@ -83,6 +84,7 @@ export function createPgCensusPlanStore(input: { workspaceId: string; sql?: SqlL
       return plans.map((plan) => ({
         harnessSlug: plan.harness_slug,
         planSlug: plan.plan_slug,
+        revision: plan.version === null ? null : String(plan.version),
         status: plan.status ?? '',
         archived: plan.archived === true,
         template: plan.template,

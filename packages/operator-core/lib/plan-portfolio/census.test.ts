@@ -208,12 +208,14 @@ describe('plan-portfolio census (P-001)', () => {
       const { store, reads } = fixtureStore(population(size));
       const first = await runPlanPortfolioCensus({ store, now: NOW, batchSize: BATCH, maxBatches: 1 });
       expect([first.plansRead, first.omitted, first.complete], `size ${size}`).toEqual([size - omitted, omitted, omitted === 0]);
+      expect(first.source.plans.map(keyOf)).toEqual(reads);
       expect(first.cursor === null, `size ${size}`).toBe(omitted === 0);
       if (!first.resume) continue;
       expect(first.cursor!.after).toEqual({ harnessSlug: 'papercusp', planSlug: `p-${BATCH}` });
       const followUp = await runPlanPortfolioCensus({ store, batchSize: BATCH, resume: first.resume });
       expect(reads.slice(first.plansRead)).toEqual([`papercusp/p-${BATCH + 1}`]);
       expect([followUp.plansRead, followUp.omitted, followUp.cursor]).toEqual([size, 0, null]);
+      expect(followUp.source.plans.map(keyOf)).toEqual(population(size).map(keyOf));
     }
 
     // Three batches; the one plan that fails bar R-4 sits after the second batch boundary.
@@ -262,6 +264,8 @@ describe('plan-portfolio census (P-001)', () => {
     expect(second.runAt).toBe(whole.runAt);
     expect(values(second)).toEqual(values(whole));
     expect(second.heldOnlyWorkableItems).toEqual(whole.heldOnlyWorkableItems);
+    expect(second.source).toEqual(whole.source);
+    expect(second.source.nearTwinPairs).toEqual(pairs);
 
     // A store that hands a plan out again is refused, not counted twice.
     const repeating: CensusPlanStore = { ...store, readPlans: async () => [plans[0]!, plans[0]!] };
@@ -270,6 +274,31 @@ describe('plan-portfolio census (P-001)', () => {
     const reworded = resolveCensusManifest();
     reworded.measures[0]!.definition += ' Reworded.';
     await expect(runPlanPortfolioCensus({ store, resume: first.resume!, manifest: reworded })).rejects.toThrow('census_cursor_manifest_mismatch');
+  });
+
+  it('retains intact identities over many serialized restarts and refuses legacy source gaps', async () => {
+    const plans = Array.from({ length: 11 }, (_, i) => plan(`plan-${String(i).padStart(2, '0')}`, {
+      revision: String(i + 1), items: [{ id: 'P-001', status: 'todo', blockedBy: [] }],
+    }));
+    for (const ordered of [plans, [...plans].reverse()]) {
+      const { store, reads } = fixtureStore(ordered);
+      let run = await runPlanPortfolioCensus({ store, now: NOW, batchSize: 2, maxBatches: 1 });
+      const legacy = JSON.parse(JSON.stringify(run.resume!));
+      delete legacy.partial.sourcePlans;
+      await expect(runPlanPortfolioCensus({ store, resume: legacy })).rejects.toThrow('census_cursor_source_missing');
+      while (run.resume) {
+        expect(run.source.plans).toHaveLength(run.plansRead);
+        expect(run.omitted).toBe(plans.length - run.plansRead);
+        run = await runPlanPortfolioCensus({ store, batchSize: 2, maxBatches: 1,
+          resume: JSON.parse(JSON.stringify(run.resume)) });
+      }
+      expect(reads).toEqual(plans.map(keyOf));
+      expect(run.source.plans).toEqual(plans);
+      expect(run.source.plans.at(-1)!.revision).toBe('11');
+    }
+    const run = await runPlanPortfolioCensus({ store: fixtureStore(plans).store, now: NOW });
+    plans[0]!.items[0]!.status = 'done';
+    expect(run.source.plans[0]!.items[0]!.status).toBe('todo');
   });
 
   it('ITEM-P-001-instruments-count-failing-case: each bar instrument counts a case built to fail its bar and not the near-misses', async () => {

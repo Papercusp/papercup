@@ -55,6 +55,9 @@ export const CENSUS_RUN_PROCEDURE_KIND = 'plan-portfolio-census-measure-v1';
 export const CENSUS_RUN_LABELS = ['baseline', 'final'] as const;
 export type CensusRunLabel = (typeof CENSUS_RUN_LABELS)[number];
 
+export interface CensusPopulationSnapshotRef { harnessSlug: string; sha256: string; relPath: string }
+export type SaveCensusPopulationSnapshot = (content: string) => Promise<CensusPopulationSnapshotRef>;
+
 type SqlLike = { query(strings: TemplateStringsArray, ...values: unknown[]): PromiseLike<unknown> }['query'];
 
 export interface PlanPortfolioInstrumentResult {
@@ -134,6 +137,7 @@ export function censusRunCheckResults(input: {
   manifest: CensusManifest;
   startedAt: string;
   finishedAt: string;
+  populationSnapshot?: CensusPopulationSnapshotRef;
 }): RubricCheckResult[] {
   const { run, manifest } = input;
   if (!run.complete) throw new Error(`census_run_incomplete: ${run.omitted} plans left out`);
@@ -145,7 +149,8 @@ export function censusRunCheckResults(input: {
         kind: CENSUS_RUN_PROCEDURE_KIND, manifestVersion: run.manifestVersion,
         manifestFingerprint: run.manifestFingerprint, measure: entry,
       },
-      result: { value: reading.value, ...reading.components, runAt: run.runAt, plansRead: run.plansRead, omitted: run.omitted },
+      result: { value: reading.value, ...reading.components, runAt: run.runAt, plansRead: run.plansRead, omitted: run.omitted,
+        ...(input.populationSnapshot ? { populationSnapshot: input.populationSnapshot } : {}) },
       startedAt: input.startedAt,
       finishedAt: input.finishedAt,
     });
@@ -175,8 +180,11 @@ export async function recordPlanPortfolioCensusRun(input: {
   store?: CensusPlanStore;
   now?: () => number;
   sql?: SqlLike;
+  /** A custom SQL connection must supply a snapshot writer in that same test/data scope. */
+  saveSnapshot?: SaveCensusPopulationSnapshot;
   record?: (results: RubricCheckResult[], scope: { workspaceId: string; harnessSlug: string; runGroupId: string }) => Promise<number[]>;
-}): Promise<{ run: CensusRun; runGroupId: string; testRunIds: number[] }> {
+}): Promise<{ run: CensusRun; runGroupId: string; testRunIds: number[]; populationSnapshot: CensusPopulationSnapshotRef }> {
+  if (input.sql && !input.saveSnapshot) throw new Error('census_snapshot_writer_required_for_custom_sql');
   const now = input.now ?? Date.now;
   const manifest = resolveCensusManifest();
   const store = input.store ?? (await import('./census-store')).createPgCensusPlanStore({
@@ -184,17 +192,33 @@ export async function recordPlanPortfolioCensusRun(input: {
   });
   const started = now();
   const run = await runPlanPortfolioCensus({ store, now: started, manifest, maxBatches: PLAN_PORTFOLIO_INSTRUMENT_MAX_BATCHES });
-  const results = censusRunCheckResults({
-    run, label: input.label, manifest,
-    startedAt: new Date(started).toISOString(), finishedAt: new Date(Math.max(started, now())).toISOString(),
-  });
+  if (!run.complete) throw new Error(`census_run_incomplete: ${run.omitted} plans left out`);
   const runGroupId = randomUUID();
+  const finishedAt = new Date(Math.max(started, now())).toISOString();
+  const saveSnapshot = input.saveSnapshot ?? (async (content: string) => {
+    const { saveImmutableTextArtifact } = await import('../text-artifacts');
+    return { harnessSlug: DEFAULT_CENSUS_POPULATION.harness,
+      ...await saveImmutableTextArtifact(DEFAULT_CENSUS_POPULATION.harness, content) };
+  });
+  // Save and verify the complete source before publishing any labelled measurement.
+  // The ref belongs to the result, so definition hashes still pair across labels.
+  const populationSnapshot = await saveSnapshot(JSON.stringify({
+    schemaVersion: 1, workspaceId: input.workspaceId, harnessSlug: DEFAULT_CENSUS_POPULATION.harness,
+    runGroupId, label: input.label, runAt: run.runAt,
+    startedAt: new Date(started).toISOString(), finishedAt,
+    manifest, manifestFingerprint: run.manifestFingerprint,
+    plansRead: run.plansRead, omitted: run.omitted, source: run.source,
+  }));
+  const results = censusRunCheckResults({
+    run, label: input.label, manifest, populationSnapshot,
+    startedAt: new Date(started).toISOString(), finishedAt,
+  });
   const scope = { workspaceId: input.workspaceId, harnessSlug: DEFAULT_CENSUS_POPULATION.harness, runGroupId };
   const record = input.record ?? (async (rows, to) => {
     const { recordRubricCheckResults } = await import('../check-results-ledger');
     return input.sql ? recordRubricCheckResults(rows, to, input.sql) : recordRubricCheckResults(rows, to);
   });
-  return { run, runGroupId, testRunIds: await record(results, scope) };
+  return { run, runGroupId, populationSnapshot, testRunIds: await record(results, scope) };
 }
 
 // ── Pairing (bar R-6) ────────────────────────────────────────────────────────
@@ -204,6 +228,18 @@ export interface CensusRunRow {
   finishedAt: string;
   /** `provenance.procedure.sha256` of the recorded row: the measure's definition fingerprint. */
   definitionSha256: string | null;
+  /** Absent on legacy aggregate-only runs; never reconstruct identities from their counts. */
+  populationSnapshot?: CensusPopulationSnapshotRef | null;
+}
+
+/** Recover the complete-source reference from bounded scalar provenance, never a preview. */
+export function censusPopulationSnapshotRef(provenance: RubricCheckResult['check']['provenance']): CensusPopulationSnapshotRef | null {
+  const field = (name: string) => provenance?.diagnostics?.find(row =>
+    row.path === `$["populationSnapshot"][${JSON.stringify(name)}]`)?.value;
+  const harnessSlug = field('harnessSlug'), sha256 = field('sha256'), relPath = field('relPath');
+  if (typeof harnessSlug !== 'string' || typeof sha256 !== 'string' || typeof relPath !== 'string'
+      || !/^[a-f0-9]{64}$/.test(sha256) || relPath !== `immutable/sha256/${sha256}.json`) return null;
+  return { harnessSlug, sha256, relPath };
 }
 
 export type UnpairedReason = 'no-baseline-run' | 'no-final-run' | 'definition-fingerprints-differ' | 'final-not-after-baseline';
@@ -261,6 +297,7 @@ export async function readCensusRunRows(input: {
     out.set(id, {
       testRunId: measured.testRunId, finishedAt: measured.finishedAt,
       definitionSha256: measured.check.provenance?.procedure.sha256 ?? null,
+      populationSnapshot: censusPopulationSnapshotRef(measured.check.provenance),
     });
   }
   return out;
