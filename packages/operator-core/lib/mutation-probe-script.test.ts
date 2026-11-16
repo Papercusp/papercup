@@ -2490,6 +2490,65 @@ describe('mutation-probe.sh — copy-out overlay reaches the mutant through ever
   });
 });
 
+describe('mutation-probe.sh — actual staging runtime lease', () => {
+  function runtimeEnv(mode: string): NodeJS.ProcessEnv {
+    const bin = join(dir, 'runtime-bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'ptool'), [
+      '#!/usr/bin/env node',
+      'const fs = require("node:fs");',
+      'const tool = process.argv.slice(2).find(a => a === "locks:list" || a === "locks:heartbeat_resource");',
+      'const path = process.env.PROBE_RUNTIME_CALLS;',
+      'let calls = []; try { calls = JSON.parse(fs.readFileSync(path, "utf8")); } catch {}',
+      'calls.push(tool); fs.writeFileSync(path, JSON.stringify(calls));',
+      'const id = "11111111-1111-4111-8111-111111111111";',
+      'const mode = process.env.PROBE_RUNTIME_MODE;',
+      'const later = calls.filter(x => x === "locks:list").length > 1;',
+      'const absent = mode === "missing" || (mode === "lost" && later);',
+      'const owner = mode === "foreign" ? "peer" : "probe-session";',
+      'const changedId = mode === "replaced" && later ? "22222222-2222-4222-8222-222222222222" : id;',
+      'const expires_ts = new Date(Date.now() + (mode === "short" ? 1000 : 1200000)).toISOString();',
+      'if (tool === "locks:list") console.log(JSON.stringify({ holders: absent ? [] : [{ lock_id: changedId, resource: "staging-server", owner, mode: "shared", status: "held", expires_ts }] }));',
+      'else if (tool === "locks:heartbeat_resource") console.log(JSON.stringify({ results: [{ lock_id: id, extended: mode !== "renewal-refused", expires_ts }] }));',
+      'else process.exit(2);',
+    ].join('\n'), { mode: 0o700 });
+    return { ...process.env, PATH: bin + ':' + (process.env.PATH ?? ''),
+      PAPERCUSP_DOCUMENTATION_PROOF_MODE: 'actual', OPERATOR_E2E_BASE_URL: 'http://127.0.0.1:3170',
+      PAPERCUSP_SID: 'probe-session', PAPERCUSP_WORKSPACE: 'probe-workspace',
+      PAPERCUSP_TEST_RUN_HARNESS: 'probe-harness', MUTATION_PROBE_WINDOW_MAX_SEC: '60',
+      PROBE_RUNTIME_MODE: mode, PROBE_RUNTIME_CALLS: join(dir, 'runtime-calls'),
+      PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'never' };
+  }
+  const args = () => ['--file', subject, '--mutate', 's/beta/BROKEN/', '--relocation', 'mirror',
+    '--test', 'printf "%s\\n" "$PAPERCUSP_MUTATION_PHASE" >> "' + join(dir, 'runtime-legs') + '"; grep -q "^beta$" {}'];
+
+  it.each(['missing', 'foreign', 'renewal-refused', 'short'])('refuses %s runtime custody before baseline assertions', mode => {
+    const result = runProbeIO(args(), runtimeEnv(mode));
+    expect(result.code).toBe(2);
+    expect(result.out).toContain('reason=runtime-lease');
+    expect(existsSync(join(dir, 'runtime-legs'))).toBe(false);
+    expect(read()).toBe(ORIGINAL);
+  });
+  it.each(['lost', 'replaced'])('refuses a lease %s between phases without claiming a catch', mode => {
+    const result = runProbeIO(args(), runtimeEnv(mode));
+    expect(result.code).toBe(2);
+    expect(result.out).toContain('reason=runtime-lease');
+    expect(result.out).not.toContain('verdict=caught');
+    expect(readFileSync(join(dir, 'runtime-legs'), 'utf8').trim()).toBe('baseline');
+    expect(read()).toBe(ORIGINAL);
+  });
+  it('renews one borrowed lease across baseline, copy baseline and mutant without releasing it', () => {
+    const result = runProbeIO(args(), runtimeEnv('held'));
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('verdict=caught');
+    expect(readFileSync(join(dir, 'runtime-legs'), 'utf8').trim().split('\n')).toEqual(['baseline', 'copy-baseline', 'mutant']);
+    expect(JSON.parse(readFileSync(join(dir, 'runtime-calls'), 'utf8'))).toEqual([
+      'locks:list', 'locks:heartbeat_resource', 'locks:list', 'locks:heartbeat_resource', 'locks:list', 'locks:heartbeat_resource',
+    ]);
+    expect(read()).toBe(ORIGINAL);
+  });
+});
+
 describe('mutation-probe.sh — historical source mode', () => {
   it('uses an explicit commit, requires controls/calibration, and keeps both snapshots frozen', () => {
     const history = makeHistoricalRepo();

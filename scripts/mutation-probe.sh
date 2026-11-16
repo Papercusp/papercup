@@ -1746,17 +1746,70 @@ summarize_ledger_receipts() {
 # COPY-OUT MODE IS DELIBERATELY UNTOUCHED — it has no dirty window at all, so it
 # stays a well-behaved queued citizen and keeps whatever runtime it needs.
 GUARD_MAX_SEC=0
-if [ "$IN_TREE" -eq 1 ]; then
+# Borrow one caller-held runtime lease across every actual documentation leg.
+# Acquiring/releasing per leg would reopen the restart race between controls.
+STAGING_RUNTIME_LEASE_REQUIRED=0
+STAGING_RUNTIME_LEASE_ID=""
+if [ "${PAPERCUSP_DOCUMENTATION_PROOF_MODE:-}" = actual ] && [ -n "${OPERATOR_E2E_BASE_URL:-}" ]; then
+  STAGING_RUNTIME_LEASE_REQUIRED="$(node -e '
+    try {
+      const u = new URL(process.argv[1]);
+      process.stdout.write(["127.0.0.1", "localhost", "[::1]"].includes(u.hostname)
+        && u.port === "3170" ? "1" : "0");
+    } catch { process.exit(2); }
+  ' "$OPERATOR_E2E_BASE_URL")" || die "cannot resolve the actual documentation proof runtime"
+fi
+if [ "$IN_TREE" -eq 1 ] || [ "$STAGING_RUNTIME_LEASE_REQUIRED" -eq 1 ]; then
   GUARD_MAX_SEC="${MUTATION_PROBE_WINDOW_MAX_SEC:-600}"
   case "$GUARD_MAX_SEC" in
     ''|*[!0-9]*)
       die "MUTATION_PROBE_WINDOW_MAX_SEC must be a whole number of seconds (got: '${MUTATION_PROBE_WINDOW_MAX_SEC}'). Use 0 to disable the ceiling." ;;
   esac
   if [ "$GUARD_MAX_SEC" -gt 0 ] && ! command -v timeout >/dev/null 2>&1; then
+    [ "$STAGING_RUNTIME_LEASE_REQUIRED" -eq 0 ] || die "actual staging proof requires coreutils timeout to keep each leg inside its runtime lease"
     log "⚠️  coreutils \`timeout\` is not on PATH — the in-tree dirty window will run UNBOUNDED. Prefer copy-out mode."
     GUARD_MAX_SEC=0
   fi
 fi
+if [ "$STAGING_RUNTIME_LEASE_REQUIRED" -eq 1 ] && { [ "$GUARD_MAX_SEC" -eq 0 ] || [ "$GUARD_MAX_SEC" -gt 600 ]; }; then
+  die "actual staging proof requires MUTATION_PROBE_WINDOW_MAX_SEC between 1 and 600; every leg must finish inside the renewed 1200s runtime lease"
+fi
+
+verify_staging_runtime_lease() {
+  [ "$STAGING_RUNTIME_LEASE_REQUIRED" -eq 1 ] || return 0
+  local holders selected args renewed
+  [ -n "${PAPERCUSP_SID:-}" ] || { log "actual staging proof requires an attributed session"; return 1; }
+  holders="$(ptool_json locks:list '{"resource":"staging-server"}' '{"pick":["holders[].lock_id","holders[].resource","holders[].owner","holders[].mode","holders[].status","holders[].expires_ts"]}')" || return 1
+  selected="$(printf '%s' "$holders" | node -e '
+    let s=""; process.stdin.on("data", c => s+=c).on("end", () => {
+      try {
+        const [owner, prior] = process.argv.slice(1);
+        const held = JSON.parse(s).holders.filter(h => h.resource === "staging-server"
+          && h.owner === owner && h.mode === "shared" && h.status === "held"
+          && /^[a-f0-9-]{36}$/.test(h.lock_id) && Date.parse(h.expires_ts) > Date.now()
+          && (!prior || h.lock_id === prior));
+        if (!held.length) process.exit(1);
+        process.stdout.write(held[0].lock_id);
+      } catch { process.exit(2); }
+    });
+  ' "$PAPERCUSP_SID" "$STAGING_RUNTIME_LEASE_ID")" || {
+    log "actual staging proof requires the same self-held shared staging-server lease through every probe leg; acquire it before the probe and release it after the probe"
+    return 1
+  }
+  STAGING_RUNTIME_LEASE_ID="$selected"
+  args="$(node -e 'process.stdout.write(JSON.stringify({lock_id:process.argv[1],ttl_sec:1200}))' "$selected")" || return 1
+  renewed="$(ptool_json locks:heartbeat_resource "$args" '{"pick":["results[].lock_id","results[].extended","results[].expires_ts"]}')" || return 1
+  printf '%s' "$renewed" | node -e '
+    let s=""; process.stdin.on("data", c => s+=c).on("end", () => {
+      try {
+        const [id, duration] = process.argv.slice(1);
+        if (!(JSON.parse(s).results || []).some(r => r.lock_id === id && r.extended === true
+          && Date.parse(r.expires_ts) - Date.now() >= (Number(duration) + 60) * 1000)) process.exit(1);
+      } catch { process.exit(2); }
+    });
+  ' "$selected" "$GUARD_MAX_SEC" || { log "staging runtime lease renewal did not cover the bounded probe leg"; return 1; }
+  log "verified sustained staging-server runtime lease $selected"
+}
 
 # MUTATION DESCRIPTOR (plan mutation-probe-evidence-value-2026-10-11, P-001; field
 # set D-003). Once per invocation the probe records WHAT it tested — subject path,
@@ -2356,6 +2409,10 @@ run_guard() {
   local -a sandbox_lock_prefix=()
   local contain_stamp contain_abort_reason
   for attempt in 1 2; do
+    if ! verify_staging_runtime_lease; then
+      printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s phase=%s reason=runtime-lease\n' "$EXPECT" "${TARGET_MODE:-pre-mutation}" "$phase"
+      return 2
+    fi
     log "running $label: $cmd"
     # A retried attempt must not inherit the first attempt's receipts.
     rm -f "$(test_run_receipt_file "$phase")"
