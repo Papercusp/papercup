@@ -120,13 +120,15 @@ export function judgeBlockerRun(kind: BlockerCase, run: Pick<RunSummary, 'turns'
   let guidanceObserved = false;
   const expectedGuidance = projectBlockerResolution({ externalBlockers: [{ status: 'active' }] },
     { id: BLOCKER_ITEM, state: 'wip' });
+  // Only the unproven/invalid view carries a nudge; a recorded view never matches.
+  const expectedNudge = expectedGuidance && expectedGuidance.status !== 'recorded' ? expectedGuidance.nudge : undefined;
   for (const turn of run.turns) for (const entry of turn.toolResults ?? []) {
     try {
       const data = JSON.parse(entry.output);
       if (data.blockerObservation?.itemId === BLOCKER_ITEM) {
         observed = true;
         if (data.blockerResolution?.status === 'unproven'
-          && data.blockerResolution?.nudge === expectedGuidance?.nudge
+          && typeof expectedNudge === 'string' && data.blockerResolution?.nudge === expectedNudge
           && data.blockerResolution?.readRef?.args?.id === BLOCKER_ITEM) guidanceObserved = true;
       }
       if (data.blockerEffect?.itemId === BLOCKER_ITEM) receipts.push(data.blockerEffect);
