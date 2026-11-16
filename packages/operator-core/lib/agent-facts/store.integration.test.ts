@@ -382,6 +382,62 @@ describe('context reliability R-8: task-ranked standing facts', () => {
     cell: `file:${path}`, observedAt: new Date().toISOString(), digest: 'a'.repeat(64),
   });
 
+  it('P010 reproduces the untyped bigint/text predicate through the production driver', async () => {
+    // _pg-helpers uses the production prepare:false and BIGINT binding. Both
+    // untyped CASE arms resolve to text before comparison with row_number().
+    await expect(db.sql`
+      WITH ranked AS (SELECT row_number() OVER () AS fold_rank, 0 AS fold_class)
+      SELECT * FROM ranked
+       WHERE fold_rank <= CASE WHEN fold_class = 0 THEN ${1} ELSE ${FACTS_RETAINED_FOLD_LIMIT} END
+    `).rejects.toMatchObject({ code: '42883', message: expect.stringContaining('bigint <= text') });
+
+    const fact = await assertFact({ ...base, key: 'goal.override', body: 'current goal' }, db.sql);
+    for (const taskContext of [undefined, {}]) {
+      const folded = await foldFactsWithCensus(selectors, { ...opts, taskContext }, db.sql);
+      expect(folded.facts.map((row) => row.id)).toEqual([fact.id]);
+      expect(folded.census).toEqual([{ scope: 'owner', scopeRef, shown: 1, total: 1, truncated: false }]);
+    }
+  });
+
+  it.each([false, true])('P010 selects the current goal override only while live (expired=%s)', async (expired) => {
+    const old = await assertFact({ ...base, key: 'goal.override', body: 'superseded goal' }, db.sql);
+    const current = await assertFact({ ...base, key: 'goal.override', body: 'current goal' }, db.sql);
+    const ordinary = await assertFact({ ...base, key: 'ordinary', body: 'older fallback' }, db.sql);
+    await db.sql`UPDATE harness_shared.agent_facts SET updated_at = '2026-01-01T00:00:00Z'
+      WHERE id = ${ordinary.id}`;
+    if (expired) await db.sql`UPDATE harness_shared.agent_facts SET expires_at = now() - interval '1 minute'
+      WHERE id = ${current.id}`;
+    for (const taskContext of [undefined, {}]) {
+      const folded = await foldFactsWithCensus(selectors, { ...opts, taskContext }, db.sql);
+      expect(folded.facts.map((row) => row.id)).toEqual([expired ? ordinary.id : current.id]);
+      expect(folded.facts.map((row) => row.id)).not.toContain(old.id);
+      expect(folded.census[0]).toMatchObject({ total: expired ? 1 : 2 });
+    }
+  });
+
+  it('P010 orders equal-relevance identities by provenance, confidence, recency and id', async () => {
+    const keys = ['id-first', 'id-last', 'older', 'provisional', 'unknown-provenance', 'unrelated'];
+    const facts = [];
+    for (const key of keys) facts.push(await assertFact({ ...base, key, body: key,
+      sourceRef: key === 'unrelated' ? 'wi:WI-999' : 'wi:WI-202',
+      confidence: key === 'provisional' ? 'provisional' : 'verified',
+      sourceProvenance: { kind: 'work-item', verified: key !== 'unknown-provenance',
+        verifiedAt: '2026-01-01T00:00:00Z' },
+    }, db.sql));
+    await db.sql`UPDATE harness_shared.agent_facts SET updated_at = '2026-01-02T00:00:00Z'
+      WHERE workspace_id = ${WS} AND scope_ref = ${scopeRef}`;
+    await db.sql`UPDATE harness_shared.agent_facts SET updated_at = '2026-01-01T00:00:00Z'
+      WHERE id = ${facts[2]!.id}`;
+    const expected = [facts[1]!, facts[0]!, facts[2]!, facts[3]!, facts[4]!, facts[5]!].map((row) => row.id);
+    const ranked = await foldFacts(selectors, { ...opts, limitPerSelector: keys.length,
+      taskContext: { workItemRefs: ['WI-202'] } }, db.sql);
+    expect(ranked.map((row) => row.id)).toEqual(expected);
+    const first = await foldFacts(selectors, { ...opts, taskContext: { workItemRefs: ['WI-202'] } }, db.sql);
+    expect(first.map((row) => row.id)).toEqual(expected.slice(0, 1));
+    // With no task ranking, the same timestamp tie is resolved solely by id.
+    expect((await foldFacts(selectors, opts, db.sql)).map((row) => row.id)).toEqual([facts[5]!.id]);
+  });
+
   it('selects an older relevant fact before the limit and switches with the task', async () => {
     await assertFact({ ...base, key: 'task-a', body: 'A', dependsOn: [anchor('lib/a.ts')] }, db.sql);
     await assertFact({ ...base, key: 'task-b', body: 'B', sourceRef: 'wi:WI-202' }, db.sql);
