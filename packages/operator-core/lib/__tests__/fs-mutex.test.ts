@@ -633,6 +633,60 @@ describe('withFsMutexRead wait observations', () => {
     }
   });
 
+  it('attributes a blocked writer owner read on reader timeout without reclaiming the live lease', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reader-owner-timing-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    await ensureFsMutexLockRoot();
+    const writerDir = join(dir, 'reader-owner-timing.lock');
+    const ownerPath = join(writerDir, 'owner.json');
+    await mkdir(writerDir);
+    const owner = JSON.stringify({ pid: process.pid, host: hostname() });
+    await writeFile(ownerPath, owner);
+    let release!: () => void;
+    let reached!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const ownerReadStarted = new Promise<void>((resolve) => { reached = resolve; });
+    let delayed = false;
+    let readerEntered = false;
+    let timeout: { admissionSubphaseTimingsMs?: Record<string, number> } | undefined;
+    const pending = withFsMutexRead('reader-owner-timing', async () => { readerEntered = true; }, {
+      timeoutMs: 1,
+      retryMs: 1,
+      onTimedOut: (info) => { timeout = info; },
+      io: { readFile: async (path, encoding) => {
+        if (path === ownerPath && !delayed) {
+          delayed = true;
+          reached();
+          await gate;
+        }
+        return readFile(path, encoding);
+      } },
+    }).then(() => undefined, (error) => error);
+    try {
+      await Promise.race([ownerReadStarted, pending.then(() => {
+        throw new Error('reader did not inspect the reserved writer');
+      })]);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      release();
+      expect(await pending).toMatchObject({ code: 'ETIMEDOUT' });
+      const phases = timeout?.admissionSubphaseTimingsMs;
+      expect(phases?.['writer-check.abandoned-lock.owner-read']).toBeGreaterThanOrEqual(15);
+      expect(phases?.['writer-check']).toBeGreaterThanOrEqual(phases!['writer-check.abandoned-lock.owner-read']);
+      expect(phases).toMatchObject({
+        'writer-check.lock-stat': expect.any(Number),
+        'writer-check.abandoned-lock.process-probe': expect.any(Number),
+        'writer-check.abandoned-lock.process-identity': expect.any(Number),
+      });
+      expect(readerEntered).toBe(false);
+      expect(await readFile(ownerPath, 'utf8')).toBe(owner);
+      expect(await readdir(join(dir, 'reader-owner-timing.readers'))).toEqual([]);
+    } finally {
+      release();
+      await pending;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps the one-shot default and cleans up after a bounded timeout', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reader-default-'));
     process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;

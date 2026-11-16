@@ -409,6 +409,8 @@ export interface DiskSpaceSnapshot {
 export interface RunPruneOptions {
   /** Judge only: never removes evidence or writes retention metadata. */
   dryRun?: boolean;
+  /** Cooperative admission budget; an admitted filesystem removal finishes before yielding. */
+  signal?: AbortSignal;
   /** Called on actual mutex contention, before waiting or touching protected evidence. */
   onWaiting?: () => void;
   env?: NodeJS.ProcessEnv;
@@ -611,7 +613,9 @@ async function preserveIncompleteRunDiagnostic(evidenceRoot: string, runId: stri
 async function removeRunIfEligible(
   evidenceRoot: string, runId: string, now: number, requireTerminal: boolean,
   isPinned: (path: string) => boolean,
+  signal?: AbortSignal,
 ): Promise<boolean> {
+  signal?.throwIfAborted();
   if (await runIneligibility(evidenceRoot, runId, now, requireTerminal, isPinned)) return false;
   const runDir = path.join(evidenceRoot, runId);
   try {
@@ -630,9 +634,11 @@ async function removeRunIfEligible(
       if (incompleteResult && !(await preserveIncompleteRunDiagnostic(evidenceRoot, runId))) return false;
     }
     if (await latestRunId(evidenceRoot) === runId || await hasKeepMarker(runDir)) return false;
+    signal?.throwIfAborted();
     await rm(runDir, { recursive: true, force: true });
     return true;
   } catch {
+    signal?.throwIfAborted();
     return false;
   }
 }
@@ -640,7 +646,7 @@ async function removeRunIfEligible(
 /** Bounded, no-follow allocated-byte census shared by preview and eviction.
  * Count an inode once across the root, including retained and unknown entries;
  * those entries consume space but never become deletion candidates. */
-async function retentionRootUsage(root: string, coversPath: (path: string) => boolean): Promise<{
+async function retentionRootUsage(root: string, coversPath: (path: string) => boolean, signal?: AbortSignal): Promise<{
   bytes: number; pinnedBytes: number; runs: Map<string, { bytes: number; newest: number }>;
 }> {
   let budget = 100000;
@@ -661,8 +667,10 @@ async function retentionRootUsage(root: string, coversPath: (path: string) => bo
     return added;
   };
   const walk = async (target: string): Promise<{ bytes: number; newest: number }> => {
+    signal?.throwIfAborted();
     if (--budget < 0 || Date.now() >= deadline) throw new Error('retention byte census budget exceeded');
     const s = await lstat(target);
+    signal?.throwIfAborted();
     let bytes = allocation(target, s);
     let newest = s.mtimeMs;
     if (s.isDirectory()) for (const name of (await readdir(target)).sort()) {
@@ -672,6 +680,7 @@ async function retentionRootUsage(root: string, coversPath: (path: string) => bo
     return { bytes, newest };
   };
   const base = await lstat(root);
+  signal?.throwIfAborted();
   if (!base.isDirectory() || base.isSymbolicLink()) throw new Error('unsafe retention root');
   let bytes = allocation(root, base);
   const runs = new Map<string, { bytes: number; newest: number }>();
@@ -715,6 +724,7 @@ export async function pruneRunsWithReport(
 async function pruneRunsWithProtection(
   evidenceRoot: string, keep: number, now: number, options: RunPruneOptions, isPinned: RetentionPinPredicate,
 ): Promise<RunPruneReport> {
+  options.signal?.throwIfAborted();
   const env = options.env ?? process.env;
   const measure = options.measureDisk ?? measureDiskSpace;
   const reserve = options.reserveBytes ?? vhDiskReserveBytes;
@@ -738,7 +748,8 @@ async function pruneRunsWithProtection(
   };
   const removed = new Set<string>();
   let usage: Awaited<ReturnType<typeof retentionRootUsage>> | null = null;
-  try { usage = await retentionRootUsage(evidenceRoot, isPinned.coversPath); } catch (error) {
+  try { usage = await retentionRootUsage(evidenceRoot, isPinned.coversPath, options.signal); } catch (error) {
+    options.signal?.throwIfAborted();
     report.cap = { maxBytes, beforeBytes: null, afterBytes: null, pinnedBytes: null,
       pinnedPaths: [], overByBytes: null, pinnedOverageBytes: null, error: String(error) };
   }
@@ -752,9 +763,10 @@ async function pruneRunsWithProtection(
   }
   const refreshUsage = async () => {
     try {
-      usage = await retentionRootUsage(evidenceRoot, isPinned.coversPath);
+      usage = await retentionRootUsage(evidenceRoot, isPinned.coversPath, options.signal);
       updateRetentionCap(report.cap!, usage);
     } catch (error) {
+      options.signal?.throwIfAborted();
       usage = null;
       Object.assign(report.cap!, { afterBytes: null, overByBytes: null, pinnedBytes: null,
         pinnedOverageBytes: null, error: String(error) });
@@ -782,6 +794,7 @@ async function pruneRunsWithProtection(
     }
     const countNames = new Set(keep > 0 ? names.slice(0, Math.max(0, names.length - keep)) : []);
     for (const name of capExceeded() ? oldest : names) {
+      options.signal?.throwIfAborted();
       let reason: 'count' | 'pressure' | 'size-cap' | null = null;
       let kept = 'within-count';
       if (countNames.has(name)) {
@@ -806,9 +819,10 @@ async function pruneRunsWithProtection(
   }
   const countNames = new Set(keep > 0 ? names.slice(0, Math.max(0, names.length - keep)) : []);
   for (const name of capExceeded() ? oldest : names) {
+    options.signal?.throwIfAborted();
     const countVictim = countNames.has(name);
     if (countVictim || capExceeded()) {
-      if (await removeRunIfEligible(evidenceRoot, name, now, !countVictim, isPinned)) {
+      if (await removeRunIfEligible(evidenceRoot, name, now, !countVictim, isPinned, options.signal)) {
         removed.add(name);
         report.removed.push(name);
         await refreshUsage();
@@ -817,6 +831,7 @@ async function pruneRunsWithProtection(
   }
 
   let sample = await measure(evidenceRoot);
+  options.signal?.throwIfAborted();
   if (!sample || !Number.isFinite(sample.totalBytes) || sample.totalBytes <= 0 ||
       !Number.isFinite(sample.availableBytes) || sample.availableBytes < 0) {
     return report;
@@ -833,8 +848,9 @@ async function pruneRunsWithProtection(
 
   report.disk.status = 'unresolved';
   for (const name of names) {
+    options.signal?.throwIfAborted();
     if (removed.has(name)) continue;
-    if (!(await removeRunIfEligible(evidenceRoot, name, now, true, isPinned))) continue;
+    if (!(await removeRunIfEligible(evidenceRoot, name, now, true, isPinned, options.signal))) continue;
     removed.add(name);
     report.removed.push(name);
     await refreshUsage();
@@ -938,7 +954,8 @@ type Staleness =
  * 'walk-budget'. A child vanishing mid-walk is ignored; any other error returns 'walk-error'.
  * Either non-verdict keeps the entry.
  */
-async function stalenessOf(top: string, cutoffMs: number, budget: { left: number }): Promise<Staleness> {
+async function stalenessOf(top: string, cutoffMs: number, budget: { left: number }, signal?: AbortSignal): Promise<Staleness> {
+  signal?.throwIfAborted();
   const dirs: string[] = [];
   let st;
   try {
@@ -949,6 +966,7 @@ async function stalenessOf(top: string, cutoffMs: number, budget: { left: number
   if (st.mtimeMs >= cutoffMs) return { verdict: 'fresh', mtimeMs: st.mtimeMs };
   if (st.isDirectory()) dirs.push(top);
   for (let head = 0; head < dirs.length; head++) {
+    signal?.throwIfAborted();
     const dir = dirs[head] as string;
     let names: string[];
     try {
@@ -960,6 +978,7 @@ async function stalenessOf(top: string, cutoffMs: number, budget: { left: number
     budget.left -= names.length;
     if (budget.left < 0) return { verdict: 'walk-budget' };
     for (let i = 0; i < names.length; i += LSTAT_BATCH) {
+      signal?.throwIfAborted();
       const batch = names.slice(i, i + LSTAT_BATCH).map((n) => path.join(dir, n));
       const stats = await Promise.all(
         batch.map((p) =>
@@ -1066,6 +1085,7 @@ export async function readForeignPruneLedger(evidenceRoot: string): Promise<Fore
 }
 
 export interface ForeignPruneOptions {
+  signal?: AbortSignal;
   maxAgeHours?: number;
   now?: number;
   walkBudget?: number;
@@ -1091,6 +1111,7 @@ export async function pruneStaleForeign(evidenceRoot: string, opts: ForeignPrune
 async function pruneStaleForeignWithProtection(
   evidenceRoot: string, opts: ForeignPruneOptions, isPinned: (path: string) => boolean,
 ): Promise<ForeignPruneResult> {
+  opts.signal?.throwIfAborted();
   const {
     maxAgeHours = foreignMaxAgeHoursFromEnv(),
     now = Date.now(),
@@ -1108,6 +1129,7 @@ async function pruneStaleForeignWithProtection(
   }
   const candidates: Array<{ name: string; target: string; mtimeMs: number }> = [];
   for (const entry of entries) {
+    opts.signal?.throwIfAborted();
     const name = entry.name;
     if (RUN_DIR_RE.test(name) || RESERVED_ROOT_ENTRIES.has(name) || name.startsWith('.')) continue;
     if (!entry.isDirectory() && !entry.isFile()) continue; // symlinks, sockets, fifos: not ours to judge
@@ -1127,44 +1149,50 @@ async function pruneStaleForeignWithProtection(
   const budget = { left: walkBudget };
   const tombstones: ForeignPruneTombstone[] = [];
   const caller = process.argv[1] ? path.basename(process.argv[1]) : null;
-  for (const { name, target } of candidates) {
-    if (isPinned(target)) continue;
-    const until = cached[name];
-    // If the proving file was since deleted, trusting the proof only DELAYS removal: the safe side.
-    if (until !== undefined && until > now) {
-      nextCache[name] = until;
-      continue;
+  try {
+    for (const { name, target } of candidates) {
+      opts.signal?.throwIfAborted();
+      if (isPinned(target)) continue;
+      const until = cached[name];
+      // If the proving file was since deleted, trusting the proof only DELAYS removal: the safe side.
+      if (until !== undefined && until > now) {
+        nextCache[name] = until;
+        continue;
+      }
+      if (budget.left <= 0) {
+        result.unjudged.push({ name, reason: 'walk-budget' });
+        continue;
+      }
+      const judged = await stalenessOf(target, cutoffMs, budget, opts.signal);
+      if (judged.verdict === 'fresh') {
+        nextCache[name] = judged.mtimeMs + maxAgeMs;
+        continue;
+      }
+      if (judged.verdict !== 'stale') {
+        result.unjudged.push({ name, reason: judged.verdict });
+        continue;
+      }
+      // A writer may have reached the entry while it was being walked: re-check its own mtime.
+      const again = await lstat(target).then((s) => s.mtimeMs, () => null);
+      if (again === null || again >= cutoffMs) continue;
+      if (!dryRun) {
+        opts.signal?.throwIfAborted();
+        await rm(target, { recursive: true, force: true });
+        tombstones.push({
+          at: new Date().toISOString(),
+          name,
+          entryMtime: new Date(again).toISOString(),
+          maxAgeHours,
+          pid: process.pid,
+          caller,
+        });
+      }
+      result.removed.push(name);
     }
-    if (budget.left <= 0) {
-      result.unjudged.push({ name, reason: 'walk-budget' });
-      continue;
-    }
-    const judged = await stalenessOf(target, cutoffMs, budget);
-    if (judged.verdict === 'fresh') {
-      nextCache[name] = judged.mtimeMs + maxAgeMs;
-      continue;
-    }
-    if (judged.verdict !== 'stale') {
-      result.unjudged.push({ name, reason: judged.verdict });
-      continue;
-    }
-    // A writer may have reached the entry while it was being walked: re-check its own mtime.
-    const again = await lstat(target).then((s) => s.mtimeMs, () => null);
-    if (again === null || again >= cutoffMs) continue;
-    if (!dryRun) {
-      await rm(target, { recursive: true, force: true });
-      tombstones.push({
-        at: new Date().toISOString(),
-        name,
-        entryMtime: new Date(again).toISOString(),
-        maxAgeHours,
-        pid: process.pid,
-        caller,
-      });
-    }
-    result.removed.push(name);
+  } finally {
+    // Cancellation must not erase the receipts for removals already admitted.
+    if (!dryRun) await appendForeignPruneLedger(evidenceRoot, tombstones);
   }
-  if (!dryRun) await appendForeignPruneLedger(evidenceRoot, tombstones);
   if (!dryRun && JSON.stringify(nextCache) !== JSON.stringify(cached)) await writeFreshnessCache(evidenceRoot, nextCache);
   return result;
 }
@@ -1188,33 +1216,40 @@ export async function pruneEvidenceRoot(
   return withRetentionPinProtection(async isPinned => {
     const runRetention = await pruneRunsWithProtection(evidenceRoot, keepRunsFromEnv(env), now, { ...options, env }, isPinned);
     const foreign = await pruneStaleForeignWithProtection(evidenceRoot,
-      { maxAgeHours: foreignMaxAgeHoursFromEnv(env), now, dryRun: options.dryRun }, isPinned);
+      { maxAgeHours: foreignMaxAgeHoursFromEnv(env), now, dryRun: options.dryRun, signal: options.signal }, isPinned);
     if (!options.dryRun && foreign.removed.length > 0 && runRetention.cap) {
-      try { updateRetentionCap(runRetention.cap, await retentionRootUsage(evidenceRoot, isPinned.coversPath)); }
-      catch (error) { Object.assign(runRetention.cap, { afterBytes: null, overByBytes: null,
+      try { updateRetentionCap(runRetention.cap, await retentionRootUsage(evidenceRoot, isPinned.coversPath, options.signal)); }
+      catch (error) { options.signal?.throwIfAborted(); Object.assign(runRetention.cap, { afterBytes: null, overByBytes: null,
         pinnedBytes: null, pinnedOverageBytes: null, error: String(error) }); }
     }
     return { runs: runRetention.removed, runRetention, foreign };
   }, { dir: env.PAPERCUSP_RELEASE_RETENTION_ROOT, nowMs: now, onWaiting: options.onWaiting });
 }
 
-/** Retention is retried on every run and by the standing reclaim. A busy writer
- * must not consume the proof's deadline or turn completed phases into a failure.
- * Abort only our own contention signal; pin/read/deletion errors still propagate. */
+/** Opportunistic cleanup shares one short budget across census, repeated refreshes
+ * and foreign walks. Standing reclaim retains the full cleanup policy. Cancellation
+ * is cooperative: finish admitted removals and release the mutex before returning;
+ * never leave a detached cleanup racing the next writer. Other errors propagate. */
 export async function pruneForHarness(evidenceRoot: string, stage: 'before' | 'after'): Promise<void> {
   const busy = new Error('retention-mutex-busy');
   const onWaiting = () => { throw busy; };
+  const started = Date.now();
+  const signal = AbortSignal.timeout(1000);
+  process.stderr.write(`VH_RETENTION_START stage=${stage} evidence=${evidenceRoot}\n`);
   try {
     const report = stage === 'before'
-      ? { runRetention: await pruneRunsWithReport(evidenceRoot, undefined, undefined, { onWaiting }), foreign: null }
-      : await pruneEvidenceRoot(evidenceRoot, undefined, undefined, { onWaiting });
+      ? { runRetention: await pruneRunsWithReport(evidenceRoot, undefined, undefined, { onWaiting, signal }), foreign: null }
+      : await pruneEvidenceRoot(evidenceRoot, undefined, undefined, { onWaiting, signal });
     const line = formatRunRetentionLine(report.runRetention);
     if (line) process.stderr.write(line + '\n');
     const foreignLine = report.foreign && formatForeignPruneLine(report.foreign);
     if (foreignLine) process.stderr.write(foreignLine + '\n');
+    process.stderr.write(`VH_RETENTION_COMPLETE stage=${stage} elapsedMs=${Date.now() - started} evidence=${evidenceRoot}\n`);
   } catch (error) {
-    if (error !== busy) throw error;
-    process.stderr.write(`VH_RETENTION_DEFERRED stage=${stage} reason=retention-mutex-busy evidence=${evidenceRoot}\n`);
+    const reason = error === busy ? 'retention-mutex-busy'
+      : signal.aborted && error === signal.reason ? 'retention-budget-exhausted' : null;
+    if (!reason) throw error;
+    process.stderr.write(`VH_RETENTION_DEFERRED stage=${stage} reason=${reason} evidence=${evidenceRoot} elapsedMs=${Date.now() - started}\n`);
   }
 }
 

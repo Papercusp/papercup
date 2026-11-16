@@ -6,7 +6,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { type HarnessContract, HarnessContractError, validateContract } from './contract.js';
-import { assertEvidenceRootPlacement, formatRunRetentionLine, formatSummaryLine, loadRunResult, parseSummaryLine, pruneEvidenceRoot, pruneRuns, pruneRunsWithReport, runHarness, writeRunResult } from './runner.js';
+import { assertEvidenceRootPlacement, formatRunRetentionLine, formatSummaryLine, loadRunResult, parseSummaryLine, pruneEvidenceRoot, pruneRuns, pruneRunsWithReport, pruneStaleForeign, readForeignPruneLedger, runHarness, writeRunResult } from './runner.js';
 import { symlinkSync } from 'node:fs';
 import { planCommand, retainRunsCommand } from './cli.js';
 import { parseSelectionArgs, planSelection } from './select.js';
@@ -47,6 +47,111 @@ describe('evidence placement guard', () => {
 });
 
 describe('harness retention admission', () => {
+  it.each(['before', 'after'] as const)('yields admitted %s GC without losing the original verdict or receipts', async stage => {
+    const root = tmp();
+    const old = '20200101T000000Z-1';
+    const original = '{"original":"phase receipt"}\n';
+    vi.stubEnv('VH_KEEP_RUNS', '1');
+    mkdirSync(path.join(root, old));
+    writeFileSync(path.join(root, old, 'result.json'), JSON.stringify({ schemaVersion: 1, runId: old,
+      endedAt: '2020-01-01T00:00:00.000Z', verdict: 'pass' }));
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const throwIfAborted = AbortSignal.prototype.throwIfAborted;
+    const controllers: AbortController[] = [];
+    const probes = new Map<AbortSignal, number>();
+    const deadline = vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => {
+      const controller = new AbortController();
+      controllers.push(controller);
+      return controller.signal;
+    });
+    const check = vi.spyOn(AbortSignal.prototype, 'throwIfAborted').mockImplementation(function (this: AbortSignal) {
+      const controller = controllers[stage === 'before' ? 0 : 1];
+      // Expire only after admission and the first census read. No pending timer,
+      // discarded promise, real large tree or production GC is needed to reproduce.
+      if (controller?.signal === this) {
+        const count = (probes.get(this) ?? 0) + 1;
+        probes.set(this, count);
+        if (count === 3) controller.abort(new Error('controlled-retention-deadline'));
+      }
+      throwIfAborted.call(this);
+    });
+    try {
+      for (const passes of [true, false]) {
+        controllers.length = 0;
+        const result = await runHarness({
+          contract: { name: 'budget-retention', phases: [{ id: 'proof' }] }, evidenceRoot: root,
+          retainedArtifacts: ['phases/proof/original.json'],
+          runPhase: async ctx => {
+            writeFileSync(path.join(ctx.evidenceDir, 'original.json'), original);
+            return passes ? { ok: true } : { ok: false, reasonCode: 'original-failure' };
+          },
+        });
+        expect(result.verdict).toBe(passes ? 'pass' : 'fail');
+        expect(result.firstFailure?.reasonCode ?? null).toBe(passes ? null : 'original-failure');
+        expect(await loadRunResult(result.evidenceDir)).toEqual(result);
+        expect(readlinkSync(path.join(root, 'latest'))).toBe(result.runId);
+        expect(readFileSync(path.join(root, 'retained', result.runId, 'result.json'), 'utf8'))
+          .toBe(readFileSync(path.join(result.evidenceDir, 'result.json'), 'utf8'));
+        expect(readFileSync(path.join(root, 'retained', result.runId, 'phases/proof/original.json'), 'utf8')).toBe(original);
+        expect(controllers[stage === 'before' ? 0 : 1]?.signal.aborted).toBe(true);
+        expect(deadline).toHaveBeenCalledWith(1000);
+        expect(stderr.mock.calls.map(([line]) => String(line)).join(''))
+          .toContain(`VH_RETENTION_DEFERRED stage=${stage} reason=retention-budget-exhausted`);
+      }
+      // Deferred inline work must release admission, leaving full cleanup runnable.
+      expect(readdirSync(path.join(privateRetention, 'mutex', 'papercusp-disk-retention.queue'))).toHaveLength(0);
+      const deferred = '20190101T000000Z-1';
+      mkdirSync(path.join(root, deferred));
+      writeFileSync(path.join(root, deferred, 'result.json'), JSON.stringify({ schemaVersion: 1, runId: deferred,
+        endedAt: '2019-01-01T00:00:00.000Z', verdict: 'pass' }));
+      expect((await pruneEvidenceRoot(root)).runs).toContain(deferred);
+    } finally {
+      check.mockRestore(); deadline.mockRestore(); stderr.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('stops at an expired disk-measurement boundary without admitting pressure deletion', async () => {
+    const root = tmp();
+    const old = '20200101T000000Z-1';
+    mkdirSync(path.join(root, old));
+    writeFileSync(path.join(root, old, 'result.json'), JSON.stringify({ schemaVersion: 1, runId: old,
+      endedAt: '2020-01-01T00:00:00.000Z', verdict: 'pass' }));
+    const controller = new AbortController();
+    const expired = new Error('measurement-exhausted-budget');
+    try {
+      await expect(pruneRunsWithReport(root, 0, undefined, { signal: controller.signal,
+        measureDisk: async () => { controller.abort(expired); return { totalBytes: 1000, availableBytes: 0 }; },
+        reserveBytes: () => 100,
+      })).rejects.toBe(expired);
+      expect(existsSync(path.join(root, old, 'result.json'))).toBe(true);
+      expect((await pruneRunsWithReport(root, 0, undefined, {
+        measureDisk: async () => ({ totalBytes: 1000, availableBytes: 0 }), reserveBytes: () => 100,
+      })).removed).toEqual([old]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('retains removal receipts when a foreign sweep is cancelled between candidates', async () => {
+    const root = tmp();
+    const first = path.join(root, 'first'), second = path.join(root, 'second');
+    for (const target of [first, second]) {
+      writeFileSync(target, 'original');
+      utimesSync(target, new Date('2020-01-01'), new Date('2020-01-01'));
+    }
+    const controller = new AbortController(), expired = new Error('foreign-budget-exhausted');
+    const throwIfAborted = AbortSignal.prototype.throwIfAborted;
+    const check = vi.spyOn(AbortSignal.prototype, 'throwIfAborted').mockImplementation(function (this: AbortSignal) {
+      if (this === controller.signal && !existsSync(first)) controller.abort(expired);
+      throwIfAborted.call(this);
+    });
+    try {
+      await expect(pruneStaleForeign(root, { maxAgeHours: 1, signal: controller.signal })).rejects.toBe(expired);
+      expect(readFileSync(second, 'utf8')).toBe('original');
+      expect((await readForeignPruneLedger(root)).map(row => row.name)).toEqual(['first']);
+      expect(readdirSync(path.join(privateRetention, 'mutex', 'papercusp-disk-retention.queue'))).toHaveLength(0);
+    } finally { check.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('shell retention preflight defers a busy mutex without waiting for the lock holder', async () => {
     const root = tmp();
     try {

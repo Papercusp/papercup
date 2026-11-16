@@ -819,14 +819,14 @@ async function oldestTicketDir(ticketsDir, staleMs, retryMs, io = {},
   return head.ticketDir;
 }
 
-async function writerLockIsHeld(lockDir, staleMs, io = {}) {
+async function writerLockIsHeld(lockDir, staleMs, io = {}, measureSubphase = (_name, operation) => operation()) {
   try {
-    await stat(lockDir);
+    await measureSubphase("lock-stat", () => stat(lockDir));
   } catch (error) {
     if (error.code === "ENOENT") return false;
     throw error;
   }
-  return !(await reclaimAbandonedLock(lockDir, staleMs, io));
+  return !(await reclaimAbandonedLock(lockDir, staleMs, io, measureSubphase));
 }
 
 async function listReaderLocks(readersDir) {
@@ -1545,6 +1545,11 @@ export async function withFsMutexRead(name, fn, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? resolveFsMutexTimeoutMs();
   const staleMs =
     opts.staleMs ?? intEnv("PAPERCUSP_FS_MUTEX_STALE_MS", DEFAULT_STALE_MS);
+  // Keep the inclusive writer-check timing, and expose its existing liveness
+  // subphases so a slow owner read is distinguishable from a process probe.
+  const writerIsHeld = () => measureAdmissionSubphase("writer-check", () =>
+    writerLockIsHeld(writerDir, staleMs, io, (name, operation) =>
+      measureAdmissionSubphase(`writer-check.${name}`, operation)));
   const retryMs =
     opts.retryMs ?? intEnv("PAPERCUSP_FS_MUTEX_RETRY_MS", DEFAULT_RETRY_MS);
   const startedAt = Date.now();
@@ -1587,7 +1592,7 @@ export async function withFsMutexRead(name, fn, opts = {}) {
       // A reserved writer already prevents admission. Publishing markers on
       // every retry in that state makes its drain observe readers that will
       // never enter, and a stream of newcomers can keep that drain occupied.
-      if (!(await measureAdmissionSubphase("writer-check", () => writerLockIsHeld(writerDir, staleMs, io)))) {
+      if (!(await writerIsHeld())) {
         await mkdir(readerStagingRoot, { recursive: true });
         await mkdir(readerStagingDir);
         stagingCreated = true;
@@ -1601,7 +1606,7 @@ export async function withFsMutexRead(name, fn, opts = {}) {
         // Keep this second check: a writer can reserve after the preflight
         // but before publication. Its drain must see our marker until we
         // notice that reservation and remove it.
-        ready = !(await measureAdmissionSubphase("writer-check", () => writerLockIsHeld(writerDir, staleMs, io)));
+        ready = !(await writerIsHeld());
       }
     } catch (error) {
       if (stagingCreated)
