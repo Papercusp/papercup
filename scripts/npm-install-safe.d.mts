@@ -473,12 +473,72 @@ export function normalizeNpmArgs(argv: any): any;
  * Build the environment for npm children without changing the parent process.
  * The offline override is deliberately opt-in: ordinary installs retain an
  * explicit caller setting (including `ONNXRUNTIME_NODE_INSTALL=skip`).
+ * `nodeDir` (from createPinnedNodeDir) goes first on PATH so dependency lifecycle
+ * scripts run the pinned node; without it the caller's PATH passes through unchanged.
  */
-export function npmChildEnv({ env, offlineSafe, }?: {
+export function npmChildEnv({ env, offlineSafe, nodeDir, }?: {
     env?: NodeJS.ProcessEnv | undefined;
     offlineSafe?: boolean | undefined;
 }): {
     ONNXRUNTIME_NODE_INSTALL?: string | undefined;
+    PATH?: string | undefined;
+};
+/** Native addons (better-sqlite3) are compiled by dependency lifecycle scripts that
+ * resolve `node` through PATH — npm's node-gyp-bin wrapper runs `node node-gyp.js`
+ * and prebuild-install is `#!/usr/bin/env node` — NOT through the node running npm.
+ * A caller whose PATH reaches another Node major first (brew's Cellar/node/26.7.0 via
+ * opt/node, an nvm 22 shell, an npx `node` package) therefore configures the shared
+ * tree against that major's headers: config.gypi node_module_version 147 under a
+ * Node 25 pin (WI-6554700010049471), and once such a build links, an ABI-147
+ * better_sqlite3.node that no Node 25 consumer can load (WI-6554700010049444).
+ * `nodeDir` holds ONLY a `node` link to the pinned runtime (createPinnedNodeDir).
+ * Prepending dirname(process.execPath) instead would also put that install's npm,
+ * npx and corepack ahead of the caller's: it changes which npm runs, and it shadows
+ * the npm shim every install:safe fixture puts on PATH. */
+export function pinnedNodePath(callerPath: any, nodeDir: any): string;
+/** A private per-run directory whose only entry is `node` → execPath, for
+ * pinnedNodePath. A symlink, not a script, so a noexec tmp mount cannot break it.
+ * Returns `{ dir, cleanup }`. When the link cannot be made (for example Windows
+ * without symlink rights) it returns `{ dir: undefined, error, cleanup }` and leaves
+ * nothing behind; the caller then installs with the caller's PATH and must say so. */
+export function createPinnedNodeDir({ execPath, tmpRoot }?: {
+    execPath?: string | undefined;
+    tmpRoot?: string | undefined;
+}): {
+    dir: string;
+    cleanup: () => void;
+    error?: undefined;
+} | {
+    dir: undefined;
+    error: unknown;
+    cleanup: () => void;
+};
+/** The repo pins one Node major in .nvmrc (ABI 141 for 25). A native rebuild under any
+ * other major produces addons the pinned runtime cannot load, so refuse before npm
+ * runs instead of discovering it at load time. A missing or non-numeric .nvmrc (an
+ * alias such as `lts/*`) names no major, so it is not enforced. */
+export function assertInstallNodeMatchesPin({ repoRoot, version, execPath }: {
+    repoRoot: any;
+    version?: string | undefined;
+    execPath?: string | undefined;
+}): {
+    enforced: boolean;
+    reason: string;
+    pin?: undefined;
+    pinnedMajor?: undefined;
+    runningMajor?: undefined;
+} | {
+    enforced: boolean;
+    reason: string;
+    pin: string;
+    pinnedMajor?: undefined;
+    runningMajor?: undefined;
+} | {
+    enforced: boolean;
+    pinnedMajor: string;
+    runningMajor: string;
+    reason?: undefined;
+    pin?: undefined;
 };
 /** A development checkout must not lose its tools because NODE_ENV, npm config,
  * or .npmrc implicitly omits dev dependencies. An explicit production selection
