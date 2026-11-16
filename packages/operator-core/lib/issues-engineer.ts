@@ -1253,7 +1253,9 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
       rawSlug: harnessOfScope(scope),
       workspaceId: issuesScopeWorkspace(),
     });
-    scope = pot ? harnessScope(pot) : 'operator';
+    // A null result is the documented un-potted-workspace fallback. Preserve
+    // the validated caller scope, as the feature-family allocator does.
+    if (pot) scope = harnessScope(pot);
   }
   // EI-9267: neutralize tool-call-lookalike tags (<invoke>/<parameter>/…) in the
   // free-text title/body BEFORE they are stored — the single choke point every

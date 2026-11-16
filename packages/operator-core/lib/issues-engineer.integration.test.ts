@@ -30,6 +30,8 @@ import {
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from './../test/_work-items-schema';
 import { boundedOrgTxn } from './pg-bounded-txn';
 import { noteGoalClaimed, readAgentStateStamp, resetAgentStateStamps } from './agent-state-stamp';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -188,6 +190,10 @@ beforeAll(async () => {
     );
   `).simple();
   h.sql = db.sql;
+  await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.pots (
+    workspace_id text NOT NULL, pot_home_slug text NOT NULL,
+    PRIMARY KEY (workspace_id, pot_home_slug)
+  )`);
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(`
@@ -235,6 +241,28 @@ beforeEach(async () => {
 });
 
 describe('engineer issues surface (real PG)', () => {
+  it.for(['bug', 'change', 'task'] as const)(
+    'preserves explicit harness scope in an un-potted workspace (%s)', async kind => {
+      expect(await getFlag(FLAGS.POT_MEMBERSHIP_ENFORCEMENT, 'system')).toBe(true);
+      expect(await db.sql`SELECT 1 FROM harness_shared.pots WHERE workspace_id = ${PINNED_WS}`)
+        .toHaveLength(0);
+      const scope = 'harness:isolated-recovery';
+      const created = await issues.createIssue({ kind, title: 'Scoped recovery assignment',
+        scope, assignee: 'agA', createdBy: 'agA' });
+      expect(created.scope).toBe(scope);
+      const read = await issues.getIssue(created.id);
+      expect(read?.scope).toBe(scope);
+      expect(read?.assignee).toBe('agA');
+    },
+  );
+
+  it('preserves explicit operator scope in an un-potted workspace', async () => {
+    const created = await issues.createIssue({ kind: 'task', title: 'Global recovery assignment',
+      scope: 'operator', createdBy: 'agA' });
+    expect(created.scope).toBe('operator');
+    expect((await issues.getIssue(created.id))?.scope).toBe('operator');
+  });
+
   it('create → get round-trip; ids are globally-unique EI-<n> (collision-resistant, EI-13285)', async () => {
     const a = await issues.createIssue({
       title: 'shop freezes',

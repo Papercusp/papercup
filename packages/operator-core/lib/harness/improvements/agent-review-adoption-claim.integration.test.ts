@@ -31,6 +31,7 @@ const { createIssue, claimIssue } = await import('../../issues-engineer');
 const { claimWorkItem, getWorkItem, mergeWorkItemPayload, releaseWorkItem } = await import('../../work-items');
 const { adoptAgentReviewRevision, correctAgentReview, readAgentReviewCorrectionBase } = await import('./agent-review');
 const { recordRoutedIdea, gradeRoutedIdea } = await import('../../scout/routed-ledger');
+const { requestAdmissionRecovery } = await import('../../work-item-admission-recovery');
 const { cleanupReviewerCorrectionFixture } = await import('../../agent-tools/testing/record-run');
 const { acceptanceSourceRevision, mintAgentReviewClaimAdmission, mintAgentReviewRevisionAdoptionAdmission,
   verificationConflict, verificationParties, readAgentReviewState, createImplementationReadiness } = await import('./agent-review-policy');
@@ -44,6 +45,8 @@ beforeAll(async () => {
     .toMatchObject({ status: 'unknown', reason: 'awaiting-agent-review' });
   db = await createOrgTestDb({ adminPoolMax: 4 });
   h.sql = db.adminSql;
+  await db.adminSql`INSERT INTO harness_shared.operator_secrets (name, value_b64)
+    VALUES ('spawn-signing-key', ${Buffer.alloc(32, 42).toString('base64')}) ON CONFLICT (name) DO NOTHING`;
 }, 180_000);
 
 afterAll(async () => {
@@ -86,9 +89,9 @@ async function patchReview(id: string, review: Record<string, unknown>, takenBy:
 }
 
 /** An open bug whose round-2 CONTENT revision belongs to GONE (the adoptable class). */
-async function contentRevision(t: string, takenBy: string | null = null) {
+async function contentRevision(t: string, takenBy: string | null = null, kind: 'bug' | 'change' = 'bug') {
   const issue = await createIssue({
-    kind: 'bug',
+    kind,
     title: `export retries drop the idempotency key ${t}`,
     body: `a retried export is written twice because the retry omits the idempotency key ${t}`,
     scope: 'harness:papercusp',
@@ -133,8 +136,8 @@ async function mintFor(id: string, adopter: string) {
 }
 
 describe('reviewer-owned correction through real PostgreSQL and claim admission', () => {
-  async function fixture(holder: string | null = ADOPTER) {
-    const seed = await contentRevision(tag(), holder);
+  async function fixture(holder: string | null = ADOPTER, kind: 'bug' | 'change' = 'bug') {
+    const seed = await contentRevision(tag(), holder, kind);
     const review = readAgentReviewState((await row(seed.id)).payload)!;
     await recordRoutedIdea({ ideaId: review.ledgerIdeaId, lens: 'agent-review', rail: 'improvement',
       routedRef: `wi:${seed.id}`, harnessSlug: seed.harness, workspaceId: seed.workspace,
@@ -160,6 +163,120 @@ describe('reviewer-owned correction through real PostgreSQL and claim admission'
       WHERE workspace_id=${seed.workspace} AND routed_ref=${`wi:${seed.id}`} ORDER BY idea_id`;
     return { item: item.value, ledger: ledger.map(r => r.value) };
   }
+
+  async function heldRecovery(seed: Awaited<ReturnType<typeof fixture>>, target = ADOPTER) {
+    const routineId = `reviewer-correction-promoter:${seed.workspace}`;
+    await db.adminSql`INSERT INTO harness_shared.routines
+      (id, workspace_id, install_slug, name, target_role, trigger_kind, trigger_config)
+      VALUES (${routineId}, ${seed.workspace}, ${seed.harness}, 'work-item-admission-promoter',
+        'system:work-item-admission-promoter', 'cron', '{"cron":"*/30 * * * *"}')
+      ON CONFLICT (id) DO NOTHING`;
+    // Only the authorization seam is replaced. Scope, request schema, signing,
+    // serialization and the correction's verification all use production code.
+    const result = await requestAdmissionRecovery({ workspaceId: seed.workspace,
+      harnessSlug: seed.harness, workItemId: seed.id, caller: OTHER, target,
+      authority: { kind: 'signed-spawn', role: 'reviewer', expiresAtSec: 0, credentialSha256: 'a'.repeat(64) },
+    }, { authorize: async () => {} }, db.adminSql);
+    const recovery = { ...result.request, state: 'held', stage: 'screen', reason: 'outside-mutation-scope' };
+    await mergeWorkItemPayload(seed.id, { _admissionRecovery: recovery }, { harness: seed.harness });
+    return recovery;
+  }
+
+  it('corrects a signed held recovery only as its retained reviewer, preserving execution reservation and independent grading', async () => {
+    const seed = await fixture(ADOPTER, 'change');
+    const recovery = await heldRecovery(seed);
+    const input = await request(seed);
+    const proposal = { problem: 'A retried export duplicates its write.', evidence: ['test:export-retry'],
+      outcome: 'Retries preserve the original request key.', scope: 'Export retry writer.',
+      completionCheck: 'The maintained retry regression passes.' };
+    const correction = { ...input, correction: { ...input.correction,
+      changes: { ...input.correction.changes, acceptance: proposal } } };
+    const result = await correctAgentReview(correction);
+    expect(result, JSON.stringify(result)).toMatchObject({ corrected: true, replayed: false });
+    if (!result.corrected) return;
+    const after = await snapshot(seed);
+    expect(after.item).toMatchObject({ taken_by: null, payload: { _admissionRecovery: recovery,
+      agentReview: { status: 'pending', round: 3, submittedBy: GONE, materialAuthors: [ADOPTER] },
+      implementationReadiness: { status: 'unknown', evidence: { acceptance: proposal } } } });
+    expect(after.item.payload._admissionRecovery).toEqual(recovery);
+    expect(await correctAgentReview(correction)).toEqual({ ...result, replayed: true });
+    expect(await snapshot(seed)).toEqual(after);
+    expect(await correctAgentReview({ ...correction, expectedRound: 9 }))
+      .toEqual({ corrected: false, reason: 'request-key-conflict' });
+    expect(await snapshot(seed)).toEqual(after);
+    expect(await claimWorkItem(seed.id, ADOPTER, { harness: seed.harness })).toBeNull();
+
+    const candidate = (await getWorkItem(seed.id, seed.harness))!;
+    expect(verificationConflict(verificationParties(candidate), ADOPTER)).not.toBeNull();
+    const admission = mintAgentReviewClaimAdmission({ itemId: seed.id, reviewer: OTHER, harnessSlug: seed.harness,
+      review: readAgentReviewState(candidate.payload)!, source: candidate, parties: verificationParties(candidate) });
+    expect(admission).not.toBeNull();
+    expect(await claimWorkItem(seed.id, OTHER, { harness: seed.harness, agentReviewAdmission: admission! })).not.toBeNull();
+    const latest = (await getWorkItem(seed.id, seed.harness))!;
+    const review = readAgentReviewState(latest.payload)!;
+    const grade = { ideaId: review.ledgerIdeaId, grade: 5, gradedBy: OTHER,
+      reviewFence: { workspaceId: seed.workspace, harness: seed.harness, workItemId: seed.id,
+        round: review.round, sourceRevision: review.reviewedSourceRevision! } };
+    expect(await gradeRoutedIdea({ ...grade, gradedBy: ADOPTER })).toMatchObject({ applied: false });
+    expect(await gradeRoutedIdea(grade)).toEqual({ applied: true });
+    expect((await row(seed.id)).payload?._admissionRecovery).toEqual(recovery);
+  });
+
+  it.each(['foreign-actor', 'foreign-target', 'unclaimed', 'queued', 'wrong-stage', 'legacy', 'signature',
+    'malformed', 'claim-hold', 'legacy-claim-hold', 'admission-hold', 'owner-action', 'original-author'] as const)(
+    'refuses a held recovery correction with %s without changing source, grade, custody or reservation', async fault => {
+      const holder = fault === 'original-author' ? GONE : fault === 'foreign-target' ? OTHER : ADOPTER;
+      const seed = await fixture(holder);
+      const recovery = await heldRecovery(seed, holder);
+      const patches: Partial<Record<typeof fault, Record<string, unknown>>> = {
+        queued: { _admissionRecovery: { ...recovery, state: 'queued', stage: 'queued' } },
+        'wrong-stage': { _admissionRecovery: { ...recovery, stage: 'assign' } },
+        legacy: { _admissionRecovery: { ...recovery, version: 2, authority: undefined } },
+        signature: { _admissionRecovery: { ...recovery, signature: '0'.repeat(64) } },
+        malformed: { _admissionRecovery: { state: 'held', stage: 'screen' } },
+        'claim-hold': { _claimHold: true }, 'legacy-claim-hold': { _claimHold: 'true' },
+        'admission-hold': { admissionHold: { reason: 'current-policy' } }, 'owner-action': { needsOwnerAction: true },
+      };
+      if (patches[fault]) await mergeWorkItemPayload(seed.id, patches[fault]!, { harness: seed.harness });
+      if (fault === 'unclaimed') await db.adminSql`UPDATE harness_shared.work_items SET taken_by=NULL WHERE feature_id=${seed.id}`;
+      if (fault === 'foreign-target') await db.adminSql`UPDATE harness_shared.work_items SET taken_by=${ADOPTER} WHERE feature_id=${seed.id}`;
+      const input = { ...await request(seed), actor: fault === 'original-author' ? GONE : fault === 'foreign-actor' ? OTHER : ADOPTER };
+      const before = await snapshot(seed);
+      const reason = fault === 'claim-hold' || fault === 'legacy-claim-hold' ? 'claim-held'
+        : fault === 'owner-action' ? 'owner-capability'
+        : fault === 'original-author' ? 'original-author-conflict' : 'queue-held';
+      expect(await correctAgentReview(input)).toEqual({ corrected: false, reason });
+      expect(await snapshot(seed)).toEqual(before);
+    },
+  );
+
+  it('rejects recovery copied from another exact item and a rotated signing key', async () => {
+    const first = await fixture(); const recovery = await heldRecovery(first);
+    const second = await fixture();
+    await mergeWorkItemPayload(second.id, { _admissionRecovery: recovery }, { harness: second.harness });
+    const before = await snapshot(second);
+    expect(await correctAgentReview(await request(second))).toEqual({ corrected: false, reason: 'queue-held' });
+    expect(await snapshot(second)).toEqual(before);
+    const [key] = await db.adminSql`SELECT value_b64 FROM harness_shared.operator_secrets WHERE name='spawn-signing-key'`;
+    try {
+      const input = await request(first); const original = await snapshot(first);
+      await db.adminSql`UPDATE harness_shared.operator_secrets SET value_b64=${Buffer.alloc(32, 43).toString('base64')}
+        WHERE name='spawn-signing-key'`;
+      expect(await correctAgentReview(input)).toEqual({ corrected: false, reason: 'queue-held' });
+      expect(await snapshot(first)).toEqual(original);
+    } finally {
+      await db.adminSql`UPDATE harness_shared.operator_secrets SET value_b64=${key.value_b64} WHERE name='spawn-signing-key'`;
+    }
+  });
+
+  it.each(['replacement', 'park'] as const)('fences held recovery %s after reading the correction base', async drift => {
+    const seed = await fixture(); const recovery = await heldRecovery(seed); const input = await request(seed);
+    await mergeWorkItemPayload(seed.id, drift === 'replacement'
+      ? { _admissionRecovery: { ...recovery, target: OTHER } } : { admissionHold: true }, { harness: seed.harness });
+    const before = await snapshot(seed);
+    expect(await correctAgentReview(input)).toEqual({ corrected: false, reason: 'correction-base-stale' });
+    expect(await snapshot(seed)).toEqual(before);
+  });
 
   it.each([ADOPTER, null])('corrects content debt under custody %s without rebinding the original author', async holder => {
     const seed = await fixture(holder); const input = await request(seed); const before = await snapshot(seed);
