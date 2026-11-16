@@ -124,6 +124,9 @@ export const CURRENT_BUILD_DEFAULT_TOOLS: readonly string[] = [
   // A mixed catalog's legacy wrapper cannot validate a current nested target.
   "tools:find",
   "tools:invoke",
+  // Direct sends must use the same message contract as current discovery and
+  // invocation; pinned release handlers can retain obsolete dispatch advice.
+  "coord:send",
   "release:repair-queue",
   "release:test-downgrade",
   // Consult delivery/recovery must share the current request and reply contract.
@@ -136,10 +139,12 @@ export const CURRENT_BUILD_DEFAULT_TOOLS: readonly string[] = [
   // Native edit hooks ship with staging and must retain their full session
   // attribution proof; a pinned release may reject newer proof fields.
   "locks:release",
-  // Plan starts and their progress reflections share a database authority fence.
+  // Plan audits, content writes, starts and progress reflections share an authority fence.
   // Older release writers lack its transaction-scoped preservation marker and
   // revoke a valid start when an item is merely claimed, released or completed.
+  "plans:audit",
   "plans:start",
+  "plans:set-content",
   "plans:set-status",
   "work_items:claim",
   "work_items:release",
