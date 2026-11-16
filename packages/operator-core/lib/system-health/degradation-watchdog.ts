@@ -341,7 +341,7 @@ registerDegradationMechanism({
 });
 registerDegradationMechanism({
   mechanism: 'embed-worker',
-  description: 'Local embed requests that completed on the worker rather than retrying inference on the calling thread.',
+  description: 'Local embed requests that completed on the worker rather than failing (no calling-thread retry since EI-28961860650735669).',
 });
 
 // ── Keys ───────────────────────────────────────────────────────────────────
