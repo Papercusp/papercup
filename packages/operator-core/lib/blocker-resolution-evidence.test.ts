@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { blockerBoundaryContext, createBlockerEvidenceReader, preflightBlockerDecision } from './blocker-resolution-evidence';
-import { prepareBlockerDecision } from './blocker-resolution-decision';
+import { BLOCKER_EVIDENCE_REF_GRAMMAR, prepareBlockerDecision } from './blocker-resolution-decision';
 import { activeExternalBlockers } from './external-blockers';
 import { runWithWorkspace } from './workspace-als';
 import type { UnresolvedDepBlocker } from './work-items';
@@ -102,6 +102,13 @@ describe('canonical blocker evidence readers', () => {
     mocks.test.mockResolvedValue([{ id: 42, status: 'pass' }]);
     expect(await read({ kind: 'test', ref: 'testing:runs:group-a:42' })).toEqual({ status: 'available' });
     expect(mocks.test).toHaveBeenLastCalledWith({ workspaceId: 'workspace-a', harnessSlug: 'harness-a', runGroupId: 'group-a', testRunIds: [42] });
+    // EI-28983003176099299: the grammar's existence-only kinds (named as never
+    // satisfying in the self-resolution refusal) are exactly the kinds whose reads
+    // here and in the source test below carry no condition.
+    expect(Object.entries(BLOCKER_EVIDENCE_REF_GRAMMAR).filter(([, grammar]) => !grammar.measures)
+      .map(([kind]) => kind).sort()).toEqual(['doc', 'session', 'source', 'test']);
+    expect(await read({ kind: 'test', ref: 'testing:runs:group-a' })).toMatchObject({
+      status: 'absent', detail: `expected ${BLOCKER_EVIDENCE_REF_GRAMMAR.test.ref} in a canonical harness` });
   });
   it('resolves source paths in the canonical tree without treating files as verification', async () => {
     const read = createBlockerEvidenceReader(ctx);

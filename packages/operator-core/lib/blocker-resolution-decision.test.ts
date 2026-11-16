@@ -6,6 +6,7 @@ import {
   readBlockerResolution,
   projectBlockerResolution,
   validateBlockerDecisionEvidence,
+  BLOCKER_EVIDENCE_REF_GRAMMAR,
   type BlockerEvidenceMeasurement,
   type BlockerDecisionInput,
   type PreparedBlockerDecision,
@@ -192,6 +193,24 @@ describe('canonical blocker decision evidence', () => {
     expect((await validateBlockerDecisionEvidence(input, context(async () => satisfied))).ok).toBe(false);
     expect((await validateBlockerDecisionEvidence(input, context(async (r) => r.kind === 'test'
       ? { ...satisfied, subjectWorkItemId: 'WI-1' } : pending))).ok).toBe(false);
+  });
+  it('names every accepted verification ref format in the refusal, derived from the grammar (EI-28983003176099299)', async () => {
+    const input = resolve() as Extract<BlockerDecisionInput, { disposition: 'self_resolve' }>;
+    // The deadlocked agent cited a passing test run: the row exists but measures no condition.
+    input.verification.evidenceRefs = [{ kind: 'test', ref: 'testing:runs:group-a:42' }];
+    const result = await validateBlockerDecisionEvidence(input, context(async (r) => r.kind === 'test'
+      ? { status: 'available' } : { status: 'available', condition: 'satisfied' }));
+    expect(result).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
+    const refusal = (result as { missing: string[] }).missing.find((line) => line.startsWith('measured verification bound'));
+    expect(refusal).toBeDefined();
+    const [accepted, existenceOnly] = refusal!.split(`subjectWorkItemId ${actor.workItemId}.`);
+    expect(existenceOnly).toBeDefined();
+    for (const [kind, grammar] of Object.entries(BLOCKER_EVIDENCE_REF_GRAMMAR)) {
+      const named = `${kind} {ref: ${grammar.ref}}`;
+      expect(grammar.measures ? accepted : existenceOnly).toContain(named);
+      expect(grammar.measures ? existenceOnly : accepted).not.toContain(named);
+    }
+    expect(existenceOnly).toContain('test {ref: testing:runs:RUN_GROUP:ROW_ID}');
   });
   it('accepts a completed related condition only with measured canonical identity', async () => {
     const input = resolve() as Extract<BlockerDecisionInput, { disposition: 'self_resolve' }>;

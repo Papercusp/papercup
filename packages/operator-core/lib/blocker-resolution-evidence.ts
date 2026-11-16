@@ -7,7 +7,7 @@ import type { CellReadEnv } from './cell-read';
 import type { ExternalBlockerRecord } from './external-blockers';
 import { activeWorkspaceId } from './workspace-registry';
 import { readGitFilePublicationCondition, type GitFilePublicationBinding } from './git-file-publication-condition';
-import { hasUnresolvedBlockerObligation, prepareBlockerDecision, readBlockerResolution,
+import { BLOCKER_EVIDENCE_REF_GRAMMAR, hasUnresolvedBlockerObligation, prepareBlockerDecision, readBlockerResolution,
   validateBlockerDecisionEvidence, type BlockerEvidenceMeasurement, type BlockerEvidenceRef,
   type BlockerDecisionProblem, type PreparedBlockerDecision, type UnmeasuredRuntimeScope } from './blocker-resolution-decision';
 import type { WorkItem } from './work-items';
@@ -515,10 +515,10 @@ Promise<BlockerEvidenceMeasurement> {
 
 /** Read-only adapter over the existing work, presence, cell, event, docs and
  * test ledgers. No dispatch under a substituted role, new table or new monitor.
- * Grammar: work-item:[harness#]ID; state:CELL[#/json/pointer=JSON];
- * event keys verbatim; source:repo/path[:line]; doc:ID; session:OWNER;
- * testing:runs:RUN_GROUP:ROW_ID; authority:STORED_BLOCKER_REF.
- * Plain refs omit the kind prefix except test refs, which retain testing:runs.
+ * Grammar: BLOCKER_EVIDENCE_REF_GRAMMAR (blocker-resolution-decision.ts), the one
+ * source this reader's format refusals and the self-resolution refusal both quote.
+ * A ref may also carry its kind prefix (work-item:, state:, source:, doc:, session:,
+ * authority:); test refs always keep testing:runs.
  */
 /** A legacy grading-audit reservation names a scorecard predicate, not a fire.
  * Resolve both spellings against that exact tenant-scoped target and its settled
@@ -620,7 +620,7 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
     }
     const raw = ref.replace(/^work-item:/, '');
     const match = /^(?:([A-Za-z0-9_.-]+)#)?((?:WI|EI|F)-[A-Za-z0-9_-]+)$/.exec(raw);
-    if (!match) return absent('expected work-item:[harness#]ID');
+    if (!match) return absent(`expected work-item:${BLOCKER_EVIDENCE_REF_GRAMMAR['work-item'].ref}`);
     const harness = match[1] ?? context.harnessSlug;
     if (!harness) return unknown('canonical work-item harness is required');
     const { getWorkItem } = await import('./work-items');
@@ -936,7 +936,7 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
         }
         case 'test': {
           const match = /^testing:runs:([A-Za-z0-9_-]+):([1-9][0-9]*)$/.exec(ref.ref);
-          if (!match || !context.harnessSlug || !Number.isSafeInteger(Number(match[2]))) return absent('expected testing:runs:RUN_GROUP:ROW_ID in a canonical harness');
+          if (!match || !context.harnessSlug || !Number.isSafeInteger(Number(match[2]))) return absent(`expected ${BLOCKER_EVIDENCE_REF_GRAMMAR.test.ref} in a canonical harness`);
           const { readHarnessTestRunEvidence } = await import('./testing-run-store');
           const rows = await readHarnessTestRunEvidence({ workspaceId: context.workspaceId, harnessSlug: context.harnessSlug,
             runGroupId: match[1], testRunIds: [Number(match[2])] });

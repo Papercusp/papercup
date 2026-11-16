@@ -9,6 +9,28 @@ export const blockerEvidenceRefSchema = z.object({
   kind: z.enum(['work-item', 'event', 'state', 'runtime', 'source', 'test', 'doc', 'session', 'authority']),
   ref: text(2000),
 }).strict();
+/** EI-28983003176099299: the one blocker-evidence ref grammar. `satisfies` pins it to
+ * the schema's kind enum (a missing or extra kind is a type error); the canonical
+ * reader quotes these formats in its own format refusals, and the self-resolution
+ * refusal names them, so a caller learns the accepted shapes from the refusal.
+ * `measures`: the reader can report a condition (satisfied/pending). The other kinds
+ * only prove a record exists, which never shows that the blocked condition recovered. */
+export const BLOCKER_EVIDENCE_REF_GRAMMAR = {
+  'work-item': { ref: '[harness#]ID', measures: true },
+  event: { ref: 'EVENT_KEY verbatim, e.g. work-item:done:ID or plan-lane:SLUG#P-NNN', measures: true },
+  state: { ref: 'CELL#/json/pointer=JSON', measures: true },
+  runtime: { ref: 'RUNTIME_BLOCKER_REF of an active blocker with a condition binding', measures: true },
+  source: { ref: 'repo/path[:line]', measures: false },
+  test: { ref: 'testing:runs:RUN_GROUP:ROW_ID', measures: false },
+  doc: { ref: 'ID or plan:SLUG#D-NNN', measures: false },
+  session: { ref: 'OWNER', measures: false },
+  authority: { ref: 'STORED_BLOCKER_REF', measures: true },
+} as const satisfies Record<z.infer<typeof blockerEvidenceRefSchema>['kind'], { ref: string; measures: boolean }>;
+/** `kind {ref: FORMAT}` for each kind whose reader does (or does not) measure a condition. */
+export function blockerEvidenceRefFormats(measures: boolean): string {
+  return Object.entries(BLOCKER_EVIDENCE_REF_GRAMMAR).filter(([, grammar]) => grammar.measures === measures)
+    .map(([kind, grammar]) => `${kind} {ref: ${grammar.ref}}`).join('; ');
+}
 const evidence = (max = 16) => z.array(blockerEvidenceRefSchema).min(1).max(max);
 const investigationStepSchema = z.object({
   action: text(1000),
@@ -459,7 +481,7 @@ export async function validateBlockerDecisionEvidence(
     if (!input.verification.evidenceRefs.some((ref) => value(ref).condition === 'satisfied' &&
       (relevant(ref) || relatedKeys.has(evidenceKey(ref)) ||
         (Boolean(value(ref).conditionIdentity) && relatedIdentities.has(value(ref).conditionIdentity))))) {
-      missing.push('measured verification bound to this work item or its canonical blocker condition');
+      missing.push(`measured verification bound to this work item or its canonical blocker condition: cite in verification.evidenceRefs a ref whose canonical reader measures it satisfied — ${blockerEvidenceRefFormats(true)} — and that is an obligation of this decision, shares an obligation's conditionIdentity, or measures subjectWorkItemId ${context.workItemId}. ${blockerEvidenceRefFormats(false)} only prove a record exists and never satisfy this`);
     }
     const boundVerification = input.verification.evidenceRefs.some((ref) =>
       value(ref).condition === 'satisfied' && value(ref).subjectWorkItemId === context.workItemId);
