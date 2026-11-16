@@ -500,7 +500,13 @@ describe('P-527: snapshot chunks apply on parallel lanes', () => {
     expect(failOnce.size).toBe(0);
     expect(db.committed.has('N-37')).toBe(false);
     expect(cursor.positions.get(LOG) ?? 0).toBe(0);
-    expect(cursor.applyFailures?.get(LOG)).toMatchObject({ position: 0, kind: 'retryable', groupKey: 'notes::N-37' });
+    // An undeclared table retains the complete source event address (P-003),
+    // so its failure cannot share an assumed LWW winner key.
+    expect(cursor.applyFailures?.get(LOG)).toMatchObject({
+      position: 0,
+      kind: 'retryable',
+      groupKey: `notes::N-37::event:${JSON.stringify([LOG, '', null, 6037, 'put'])}`,
+    });
     expect(cursor.laneSerialUntil?.get(LOG)).toBe(1);
 
     db.resetOverlap();
