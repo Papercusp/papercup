@@ -101,8 +101,9 @@ vi.mock('../../workspace-registry', () => ({
 // This route imports only recordAdvSession. Spawn hydration is mocked below, so
 // importing and spreading the complete production adv-sessions module here
 // needlessly pulls its database/liveness graph into the beforeAll transform.
-vi.mock('../../adv-sessions', async (orig) => ({
-  ...(await orig<typeof import('../../adv-sessions')>()),
+vi.mock('../../adv-sessions', () => ({
+  // Pin the persisted discriminator without evaluating the lifecycle graph.
+  DISPLAY_TERMINAL_LAUNCH: 'terminal' satisfies typeof import('../../adv-sessions').DISPLAY_TERMINAL_LAUNCH,
   recordAdvSession: recordAdvSessionMock,
   recordSuLaunchSpec: recordSuLaunchSpecMock,
   adoptStartingTerminalLaunch: adoptStartingTerminalLaunchMock,
@@ -245,11 +246,11 @@ beforeEach(() => {
   releaseAgentLaunchClaimMock.mockReset().mockResolvedValue(true);
   resolveLaunchIdentityModelDefaultMock.mockReset().mockResolvedValue(null);
   recordAdvSessionMock.mockResolvedValue(7);
-  recordSuLaunchSpecMock.mockResolvedValue(true);
+  recordSuLaunchSpecMock.mockReset().mockResolvedValue(true);
   adoptStartingTerminalLaunchMock.mockReset().mockResolvedValue(true);
   ownerRowsSqlMock.mockReset().mockResolvedValue([]);
   resolveSessionStatesMock.mockReset().mockResolvedValue(new Map());
-  requestSessionIdentityActivationMock.mockResolvedValue({});
+  requestSessionIdentityActivationMock.mockReset().mockResolvedValue({});
   resolveAcceptedOperationWorkerBindingMock.mockResolvedValue(null);
   prepareSupportOperationNativeLaunchMock.mockReset().mockResolvedValue(null);
   selectAcceptedOperationWorkerModelMock.mockReset().mockReturnValue(null);
