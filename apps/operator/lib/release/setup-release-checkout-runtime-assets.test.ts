@@ -67,7 +67,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = resolve(__dirname, '../../bin/release/setup-release-checkout.sh');
 
 describe('setup-release-checkout SPA cancellation diagnostics', () => {
-  function runSpa(outcome: 'success' | 'failure' | 'interrupted') {
+  function runSpa(outcome: 'success' | 'failure' | 'interrupted', repeatFailure = false) {
     const root = mkdtempSync(join(tmpdir(), 'release-spa-diagnostics-'));
     const release = join(root, 'release');
     const bin = join(root, 'bin');
@@ -90,14 +90,16 @@ describe('setup-release-checkout SPA cancellation diagnostics', () => {
       'log() { printf "%s\\n" "$*"; }',
       'export SPA_TEST_RUNNER_PID=$$',
       body,
+      ...(repeatFailure ? ['build_release_spa || true'] : []),
       'build_release_spa',
     ].join('\n')], {
       encoding: 'utf8',
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, TMPDIR: logs,
-        RELEASE_ROOT: release, SPA_TEST_OUTCOME: outcome },
+        PAPERCUSP_HOME: join(root, 'state'), RELEASE_ROOT: release, SPA_TEST_OUTCOME: outcome },
       timeout: 30_000,
     });
-    return { root, result, logPath: result.stdout.match(/SPA build output: ([^\n]+)/)?.[1] };
+    const logPaths = [...result.stdout.matchAll(/SPA build output: ([^\n]+)/g)].map(match => match[1]);
+    return { root, result, logPath: logPaths[0], logPaths };
   }
 
   it('publishes a readable external child log before cancellation prevents failure reporting', () => {
@@ -107,6 +109,8 @@ describe('setup-release-checkout SPA cancellation diagnostics', () => {
       expect(result.stderr).not.toContain('SPA build FAILED');
       expect(logPath).toBeTruthy();
       rmSync(join(root, 'release'), { recursive: true, force: true });
+      rmSync(join(root, 'logs'), { recursive: true, force: true });
+      expect(dirname(logPath!)).toBe(join(root, 'state', 'checkpoint-logs'));
       expect(readFileSync(logPath!, 'utf8')).toContain('fixture chunk-rendering diagnostic');
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
@@ -126,6 +130,18 @@ describe('setup-release-checkout SPA cancellation diagnostics', () => {
       expect(result.status, result.stderr).toBe(0);
       expect(logPath).toBeTruthy();
       expect(existsSync(logPath!)).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('keeps both failure logs when the same shell retries the build', () => {
+    const { root, result, logPaths } = runSpa('failure', true);
+    try {
+      expect(result.status, result.stderr).toBe(1);
+      expect(logPaths).toHaveLength(2);
+      expect(new Set(logPaths).size).toBe(2);
+      for (const logPath of logPaths) {
+        expect(readFileSync(logPath!, 'utf8')).toContain('fixture chunk-rendering diagnostic');
+      }
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
