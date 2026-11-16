@@ -7,6 +7,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { nativeCliCall, nativeCliTestTimeout, nativeFixtureProcess, scopedNativeFixtureArgs } from './native-cli.fixture';
+import { copyHostBundleEvidence, diffSourceHashes, formatSourceDrift, hostBundleFailureEvidence } from './native-journey-diagnostics';
 import './scoped-contracts.e2e.test';
 import { privateReuseTestEnvironment } from './__fixtures__/reuse-api-journey';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions,
@@ -123,6 +124,16 @@ const privateJourneyTimeoutMs = hostBundleMaxMs + Math.max(180_000, nativeIsolat
 let hostHandler: { key: string; build: Promise<{ handlerPath: string; handlerHash: string }> } | undefined;
 const hostHandlerRoots: string[] = [];
 afterAll(() => { for (const dir of hostHandlerRoots.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+const NATIVE_ECOSYSTEM_TEST_FILE = 'packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts';
+
+/** A failed bundle keeps its evidence: bundle-host.sh writes esbuild's error to build-error.log
+ * inside artifactRoot, which afterAll would otherwise delete (EI-28979239714036612). */
+function retainHostBundleFailure(artifactRoot: string, handlerPath: string): string {
+  const index = hostHandlerRoots.indexOf(artifactRoot);
+  if (index >= 0) hostHandlerRoots.splice(index, 1);
+  const copied = copyHostBundleEvidence(handlerPath, process.env.PAPERCUSP_TEST_ARTIFACT_DIR);
+  return hostBundleFailureEvidence(handlerPath, copied ? [artifactRoot, copied] : [artifactRoot]);
+}
 
 function privateHostHandler(root: string, sourceKey: string) {
   if (hostHandler?.key === sourceKey) return hostHandler.build;
@@ -136,7 +147,8 @@ function privateHostHandler(root: string, sourceKey: string) {
         cwd: root, env: process.env, timeoutMs: hostBundleStallMs, maxMs: hostBundleMaxMs,
         stepJournal: `${handlerPath}.build-steps.jsonl`,
       });
-    expect(result.code, nativeFixtureFailureDiagnostic('Host bundle', result)).toBe(0);
+    const bundleEvidence = result.code === 0 ? '' : `\n${retainHostBundleFailure(artifactRoot, handlerPath)}`;
+    expect(result.code, nativeFixtureFailureDiagnostic('Host bundle', result) + bundleEvidence).toBe(0);
     return { handlerPath, handlerHash: createHash('sha256').update(readFileSync(handlerPath)).digest('hex') };
   })();
   const entry = { key: sourceKey, build };
@@ -196,7 +208,14 @@ async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-tou
     // refused by the committed-source guard.
     const { handlerPath, handlerHash } = await privateHostHandler(root, createHash('sha256')
       .update(JSON.stringify(sourcePaths.slice(0, handlerSourceCount).map(path => [path, beforeHashes[path]])))
-      .digest('hex'));
+      .digest('hex')).catch((error: unknown) => {
+        // A bundle built against a moving tree fails for reasons no product change explains.
+        const drift = formatSourceDrift(diffSourceHashes(beforeHashes, sourceHashes()),
+          { stage: 'while the host bundle was built', testFile: NATIVE_ECOSYSTEM_TEST_FILE });
+        if (!drift) throw error;
+        throw new Error(`${drift}\n\nHost bundle failure:\n${error instanceof Error ? error.message : String(error)}`,
+          { cause: error });
+      });
     // The fixture must execute exactly the bundle that was hashed when it was built.
     expect(createHash('sha256').update(readFileSync(handlerPath)).digest('hex')).toBe(handlerHash);
     let pendingStage = '';
@@ -253,7 +272,10 @@ async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-tou
     expect(line, result!.output).toBeDefined();
     const proof = JSON.parse(line!.slice(prefix.length));
     const afterHashes = sourceHashes();
-    expect(afterHashes).toEqual(beforeHashes);
+    // A concurrent edit to a hashed source is not a product verdict: name it (EI-28979239714036612).
+    const drift = formatSourceDrift(diffSourceHashes(beforeHashes, afterHashes),
+      { stage: `during the ${mode} journey`, testFile: NATIVE_ECOSYSTEM_TEST_FILE });
+    if (drift) throw new Error(drift);
     writeSync(2, `${mode === 'incident' ? 'NATIVE_P038_RUNTIME_PROOF'
       : mode === 'first-touch' ? 'NATIVE_P036_RUNTIME_PROOF'
       : mode === 'grep' ? 'NATIVE_P035_RUNTIME_PROOF' : 'NATIVE_P039_RUNTIME_PROOF'}=${JSON.stringify({ ...proof, beforeHashes, afterHashes })}\n`);
