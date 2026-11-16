@@ -6258,6 +6258,20 @@ describe('WI-6554700010049444: native addons must load before a selector is inde
   const ABI_ERROR =
     "The module 'better_sqlite3.node' was compiled against a different Node.js version using NODE_MODULE_VERSION 147.";
   const BROKEN_ADDON = `throw new Error(${JSON.stringify(ABI_ERROR)});\n`;
+  // What node really prints for a dlopen ABI mismatch: several lines, with the
+  // module line BEFORE the NODE_MODULE_VERSION lines.
+  const MULTILINE_ABI_ADDON = [
+    'const message = [',
+    `  "The module 'better_sqlite3.node'",`,
+    '  "was compiled against a different Node.js version using",',
+    '  "NODE_MODULE_VERSION 147. This version of Node.js requires",',
+    '  "NODE_MODULE_VERSION 141. Please try re-compiling or re-installing",',
+    '].join("\\n");',
+    'const failure = new Error(message);',
+    'failure.code = "ERR_DLOPEN_FAILED";',
+    'throw failure;',
+    '',
+  ].join('\n');
   const LOADABLE_ADDON = [
     'module.exports = class Database {',
     '  prepare() { return { get: () => ({ ok: 1 }) }; }',
@@ -6311,6 +6325,14 @@ describe('WI-6554700010049444: native addons must load before a selector is inde
     expect(result.stderr).toContain("native addon 'better-sqlite3'");
     expect(result.stderr).toContain(`will not load under Node ABI ${process.versions.modules}`);
     expect(result.stderr).toContain('NODE_MODULE_VERSION 147');
+  });
+
+  it('keeps the ABI in the one-line summary when the loader error spans lines', () => {
+    const result = loadAddons(addonTree(MULTILINE_ABI_ADDON));
+    expect(result.status, result.stderr).toBe(74);
+    const summary = result.stderr.split('\n').find((line) => line.includes("native addon 'better-sqlite3'"));
+    expect(summary, result.stderr).toContain('will not load under Node ABI');
+    expect(summary, result.stderr).toContain('NODE_MODULE_VERSION 147');
   });
 
   it('accepts a loadable addon, an absent addon and a tree without node_modules', () => {
