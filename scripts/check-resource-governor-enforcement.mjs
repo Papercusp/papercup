@@ -1210,6 +1210,20 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/check-env-feature-gates.mjs: this CI/guard helper subprocess is bounded and awaited (or release/control metadata), creates no independent resident queue, and must remain runnable while productive capacity is pressured.",
   },
   {
+    path: "scripts/check-fire-and-forget-classification.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/check-fire-and-forget-classification.mjs (WI-6554700010050566, dbos-durability-right-sizing-2026-10-21#D-018 --base window): its only start is gitOut, ONE synchronous `execFileSync('git', ...)` per read (rev-parse, diff --name-only, ls-tree, ls-files --stage, cat-file -e) while the guard derives the judged window across the superproject and its submodules. The guard blocks until each git child exits, detaches nothing, keeps only the captured stdout and creates no resident queue; it runs inside the lint or test:affected task that already holds its pc-heavy slot. Pinned by matchesSource to that one synchronous start: a second start in this file falls out of the exemption.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 1 &&
+        source.includes("return execFileSync('git', args, {") &&
+        !/\bdetached\s*:\s*true/.test(code) && !/\bnew\s+(?:Worker|Piscina)\s*\(/.test(code) &&
+        !hasCalledResourceStartAlias(code);
+    },
+  },
+  {
     path: "scripts/check-fixed-but-open.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",

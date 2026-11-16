@@ -13,13 +13,20 @@ export interface NotifyClassification {
 }
 export function inScope(path: string): boolean;
 export function censusSources(sources: Record<string, string>): NotifyCensus;
-/** D-018: `judged` = repo-relative paths of the change under review; null judges every file. */
-export interface ClassificationScope { judged?: Set<string> | null }
+/** D-018: `judged` = repo-relative paths of the change under review; null judges every file. Every path under a `judgedSubtrees` prefix is judged too. */
+export interface ClassificationScope { judged?: Set<string> | null; judgedSubtrees?: string[] }
 export interface ClassificationReport { errors: string[]; drift: { unclassified: string[]; stale: string[] } }
 export function classificationReport(census: NotifyCensus, records: NotifyClassification[], seedIds?: string[], options?: ClassificationScope): ClassificationReport;
 export function validateClassifications(census: NotifyCensus, records: NotifyClassification[], seedIds?: string[], options?: ClassificationScope): string[];
 export function changedSinceSeed(census: Pick<NotifyCensus, 'files'>, seedFiles: NotifyCensus['files']): Set<string>;
-export function resolveJudgedScope(argv: string[], context: { census: Pick<NotifyCensus, 'files'>; seedFiles?: NotifyCensus['files'] | null; root?: string }): { mode: 'all' | 'changed-paths' | 'seed-pin'; judged: Set<string> | null };
+/** D-018 window: paths changed since `base` (working tree), recursing into submodules; `subtrees` are submodule prefixes judged whole. Throws when `base` does not resolve. */
+export function changedSinceBase(base: string, root?: string): { baseSha: string; files: Set<string>; subtrees: string[] };
+export interface JudgedScope {
+  mode: 'all' | 'base' | 'changed-paths' | 'seed-pin';
+  judged: Set<string> | null; subtrees: string[];
+  base?: string; baseSha?: string;
+}
+export function resolveJudgedScope(argv: string[], context: { census: Pick<NotifyCensus, 'files'>; seedFiles?: NotifyCensus['files'] | null; root?: string }): JudgedScope;
 export function scanRepository(cwd?: string): NotifyCensus & { coverage: unknown; sourceDigest: string };
 export const BASELINE_SEED_SHA256: string;
 export function inlineClassifications(census: NotifyCensus): NotifyClassification[];
