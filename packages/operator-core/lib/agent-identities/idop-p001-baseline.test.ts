@@ -3,14 +3,17 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { gzipSync } from 'node:zlib';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import type { ProjectedTool, UnifiedToolContext } from '@papercusp/tooldef';
+import type { ProjectedTool, UnifiedToolContext, KernelEnforcementRequest } from '@papercusp/tooldef';
 import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { defaultCensusRoot, SU_RENDER_PARITY_BASELINE } from './identity-surface-census';
 import { IDOP_P001_BASELINE_REL, IDOP_P001_PROMPT_REL, inspectIdopP001Coverage,
   runIdopP001PermissionComparison, loadIdopP001RolePermissionReader, loadIdopP001DispatchPermissionReader,
   readIdopP001CurrentBuiltinPopulation,
   readIdopP001CurrentLibraryPopulation, readIdopP001AppliedStackPopulation,
+  captureIdopP001HostPermissionPorts,
+  inspectIdopP001AppliedStackArchive,
   IDOP_P001_ROLE_POLICY_SOURCES,
   type IdopPermissionDifference, type IdopHostPermissionPorts } from './idop-p001-baseline';
 
@@ -29,6 +32,119 @@ type Baseline = {
 const root = defaultCensusRoot();
 const baseline = JSON.parse(readFileSync(join(root, IDOP_P001_BASELINE_REL), 'utf8')) as Baseline;
 const sha256 = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
+const hostFlagAttestation = () => ({ key: 'papercusp-capability-envelope' as const,
+  resolvedValue: true, compiledDefault: true, source: 'override-store' as const,
+  backendConfigured: false, observedAtMs: 1,
+  overrideRead: { kind: 'store-load' as const, storeConfigured: true, cacheKey: 'snapshot-workspace',
+    cacheGeneration: 1, cacheLoadedAtMs: 1, cacheAgeMs: 0, ttlMs: 0, ttlRemainingMs: 0, loadError: null } });
+
+describe('IDOP D-043 immutable host authority read inputs', () => {
+  const ctx = (): UnifiedToolContext => ({ log: vi.fn(), signal: new AbortController().signal,
+    progress: vi.fn(), emit: vi.fn(), workspaceId: 'snapshot-workspace', uiClientId: 'su-original',
+    role: 'worker', isSuperuser: true, runId: 'original-run', spawnId: 'original-spawn', parentSpawnId: null });
+  const options = () => ({ workspaceId: 'snapshot-workspace', contexts: [ctx()],
+    flags: [{ key: 'papercusp-capability-envelope' as const, distinctId: 'system' }] });
+  const readers = () => ({
+    resolveConfinement: vi.fn(async () => ({ denyTools: ['secrets:*'], imposedBy: 'original-launcher', reason: 'assignment' })),
+    ensureConfinementReady: vi.fn(async () => {}),
+    audit: { resolveIdentity: vi.fn(() => ({ ownerId: 'su-original', workspaceId: 'snapshot-workspace' })),
+      readModes: vi.fn(async () => [{ mode: 'audit' }]) },
+    roleOverrides: vi.fn(() => ({ worker: { denyCapabilities: ['secrets:*'] } })),
+    protectedAdditions: vi.fn(() => ['original:*']),
+    readFlagAttestation: vi.fn(async () => hostFlagAttestation()),
+  });
+
+  it('captures once, replays original contexts and attested flags, and never re-reads live authority', async () => {
+    const source = readers();
+    const input = options();
+    const result = await captureIdopP001HostPermissionPorts(input, source);
+    expect(result.sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(source.resolveConfinement).toHaveBeenCalledWith(input.contexts[0]);
+    expect(source.readFlagAttestation).toHaveBeenCalledWith('papercusp-capability-envelope', 'system');
+    for (let arm = 0; arm < 2; arm++) {
+      expect(await result.ports.resolveConfinement(ctx())).toMatchObject({ imposedBy: 'original-launcher' });
+      expect(result.ports.audit.resolveIdentity(ctx())).toEqual({ ownerId: 'su-original', workspaceId: 'snapshot-workspace' });
+      expect(await result.ports.audit.readModes('snapshot-workspace', 'su-original')).toEqual([{ mode: 'audit' }]);
+      expect(await result.ports.getFlag('papercusp-capability-envelope', 'system')).toBe(true);
+    }
+    expect(source.ensureConfinementReady).toHaveBeenCalledTimes(1);
+    expect(source.resolveConfinement).toHaveBeenCalledTimes(1);
+    expect(source.audit.readModes).toHaveBeenCalledTimes(1);
+    expect(source.readFlagAttestation).toHaveBeenCalledTimes(1);
+    expect(result.snapshot.flags[0].attestation.source).toBe('override-store');
+  });
+
+  it('isolates caller evidence and each policy arm from mutation', async () => {
+    const input = options();
+    const result = await captureIdopP001HostPermissionPorts(input, readers());
+    input.workspaceId = 'changed-after-capture';
+    result.snapshot.contexts[0].identity.ownerId = 'other';
+    result.snapshot.flags[0].attestation.resolvedValue = false;
+    result.snapshot.protectedAdditions.push('new:*');
+    const first = await result.ports.resolveConfinement(ctx());
+    (first!.denyTools as string[]).push('new:*');
+    (result.ports.roleOverrides().worker.denyCapabilities as string[]).push('new:*');
+    expect(await result.ports.resolveConfinement(ctx())).toMatchObject({ denyTools: ['secrets:*'] });
+    expect(result.ports.audit.resolveIdentity(ctx()).ownerId).toBe('su-original');
+    expect(result.ports.roleOverrides().worker.denyCapabilities).toEqual(['secrets:*']);
+    expect(result.ports.protectedAdditions()).toEqual(['original:*']);
+    expect(await result.ports.getFlag('papercusp-capability-envelope', 'system')).toBe(true);
+  });
+
+  it('refuses uncaptured privilege, principal, original run, workspace, mode identity and flag lookups', async () => {
+    const { ports } = await captureIdopP001HostPermissionPorts(options(), readers());
+    for (const change of [{ isSuperuser: false }, { runId: 'other-run' }, { uiClientId: 'su-other' },
+      { role: 'judge' }, { workspaceId: 'foreign' }, { principal: { type: 'system', id: 'other' } }]) {
+      expect(() => ports.resolveConfinement({ ...ctx(), ...change } as UnifiedToolContext)).toThrow(/context/);
+    }
+    await expect(ports.audit.readModes('snapshot-workspace', 'su-other')).rejects.toThrow(/not captured/);
+    await expect(ports.getFlag('papercusp-capability-envelope', 'other')).rejects.toThrow(/not captured/);
+  });
+
+  it('preserves the dispatcher transaction guard without reading it and rejects a supplied transaction', async () => {
+    const original = ctx();
+    const readTransaction = vi.fn(() => { throw new Error('transaction contract guard'); });
+    Object.defineProperty(original, 'tx', { get: readTransaction });
+    const result = await captureIdopP001HostPermissionPorts({ ...options(), contexts: [original] }, readers());
+    expect(await result.ports.resolveConfinement(original)).toMatchObject({ imposedBy: 'original-launcher' });
+    expect(readTransaction).not.toHaveBeenCalled();
+    await expect(captureIdopP001HostPermissionPorts({ ...options(), contexts: [{ ...ctx(), tx: {} }] }, readers()))
+      .rejects.toThrow(/transaction/);
+  });
+
+  it.each(['unconfigured', 'store-error', 'stale-cache-fallback'])('rejects %s flag authority', async kind => {
+    const source = readers();
+    const attestation = await source.readFlagAttestation();
+    Object.assign(attestation.overrideRead, { kind, storeConfigured: kind !== 'unconfigured' });
+    source.readFlagAttestation.mockResolvedValue(attestation);
+    await expect(captureIdopP001HostPermissionPorts(options(), source)).rejects.toThrow(/flag authority/);
+  });
+
+  it('rejects mismatched flag attestations, missing identity and duplicate context inputs', async () => {
+    const source = readers();
+    const attestation = await source.readFlagAttestation();
+    Object.assign(attestation, { key: 'other' });
+    source.readFlagAttestation.mockResolvedValue(attestation);
+    await expect(captureIdopP001HostPermissionPorts(options(), source)).rejects.toThrow(/flag authority/);
+    const missing = readers();
+    missing.audit.resolveIdentity.mockReturnValue({ ownerId: '', workspaceId: 'snapshot-workspace' });
+    await expect(captureIdopP001HostPermissionPorts(options(), missing)).rejects.toThrow(/identity/);
+    await expect(captureIdopP001HostPermissionPorts({ ...options(), contexts: [ctx(), ctx()] }, readers()))
+      .rejects.toThrow(/duplicate/);
+  });
+
+  it('propagates read failures and refuses readers that mutate original caller authority', async () => {
+    const source = readers();
+    source.audit.readModes.mockRejectedValue(new Error('authority unavailable'));
+    await expect(captureIdopP001HostPermissionPorts(options(), source)).rejects.toThrow('authority unavailable');
+    const mutating = readers();
+    mutating.audit.resolveIdentity.mockImplementation((...args: unknown[]) => {
+      (args[0] as UnifiedToolContext).isSuperuser = false;
+      return { ownerId: 'su-original', workspaceId: 'snapshot-workspace' };
+    });
+    await expect(captureIdopP001HostPermissionPorts(options(), mutating)).rejects.toThrow(/mutated/);
+  });
+});
 
 describe('IDOP D-043 canonical pinned dispatch adapter', () => {
   let readers: Awaited<ReturnType<typeof loadIdopP001DispatchPermissionReader>>[];
@@ -53,6 +169,26 @@ describe('IDOP D-043 canonical pinned dispatch adapter', () => {
     audit: { resolveIdentity: vi.fn(() => ({ ownerId: 'original-owner', workspaceId: 'comparison-workspace' })),
       readModes: vi.fn(async () => []) },
     roleOverrides: vi.fn(() => ({})), protectedAdditions: vi.fn(() => []), getFlag: vi.fn(async () => true), ...over,
+  });
+
+  it.each([0, 1])('runs captured host inputs through the canonical dispatcher without live authority reads (arm %i)', async arm => {
+    const source = ports();
+    const original = context();
+    const captured = await captureIdopP001HostPermissionPorts({ workspaceId: 'comparison-workspace',
+      contexts: [original], flags: [{ key: 'papercusp-capability-envelope', distinctId: 'system' }] },
+    { ...source, readFlagAttestation: async () => hostFlagAttestation() });
+    vi.mocked(source.audit.readModes).mockRejectedValue(new Error('later host read must not run'));
+    vi.mocked(source.roleOverrides).mockImplementation(() => { throw new Error('later override read must not run'); });
+    const handler = vi.fn();
+    const gate = policies[arm].createHostEnvelopePort(captured.ports);
+    const evaluate = (capabilities: string[]) => readers[arm].evaluate(tool({ fn: handler, capabilities }),
+      'comparison:probe', {}, context(), { checkCapabilityEnvelope: gate });
+    expect(await evaluate(['secrets:read'])).toMatchObject({ allowed: false, error: { code: 'capability_denied' } });
+    expect(await evaluate(['capability:read'])).toEqual({ allowed: true });
+    expect(source.resolveConfinement).toHaveBeenCalledTimes(1);
+    expect(source.audit.readModes).toHaveBeenCalledTimes(1);
+    expect(source.getFlag).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
   });
 
   it.each([0, 1])('wires canonical host enforcement, observe mode, role overrides and protected additions into dispatch (arm %i)', async arm => {
@@ -146,6 +282,164 @@ describe('IDOP D-043 canonical pinned dispatch adapter', () => {
     for (const source of readers[1].sources) expect(source.sha256).toBe(sha256(readFileSync(join(root, source.path))));
     expect(readers[0].externalDependencies).toEqual(readers[1].externalDependencies);
     expect(readers[0].externalDependencies.map(entry => entry.name)).toEqual(['mingo', 'zod', 'zod-to-json-schema']);
+  });
+
+  const structuralRequest = (): KernelEnforcementRequest => ({ phase: 'preflight', boundary: 'dispatch',
+    toolName: 'comparison:probe', capabilities: [], args: {}, ctx: context() });
+  const structuralReader = (arm: number) => policies[arm].createStructuralKernelReader({
+    resolveIdentity: () => ({ ownerId: 'original-owner', workspaceId: 'comparison-workspace' }),
+    sameKernelRevision: readers[arm].sameKernelRevision,
+  });
+
+  const outerPorts = () => ({
+    app: {
+      loadRow: vi.fn(async () => ({ id: 'comparison-app', workspace_id: 'comparison-workspace',
+        scopes: { tools: ['comparison:probe'], capabilities: [], harnesses: ['papercusp'] },
+        revoked_at: null, paused_at: null, expires_at: null })),
+      loadAccessTokenRow: vi.fn(async () => null),
+      lookupTool: vi.fn((name: string) => ({ name, capabilities: [] })),
+      loadSpendStatus: vi.fn(async () => ({ capCents: null, spentCents: 0, windowSec: null })),
+      now: () => new Date('2026-11-16T09:00:00Z'),
+    },
+    organization: { loadChain: vi.fn(async () => ({ status: 'none' as const })),
+      now: () => new Date('2026-11-16T09:00:00Z') },
+    resolveControlAnchor: vi.fn(async () => ({ decision: 'allow' as const, availability: 'available' as const,
+      applied: true, policyRevision: 'saved-control-anchor' })),
+    structural: vi.fn(async () => ({ decision: 'deny' as const, availability: 'available' as const,
+      applied: true, code: 'structural-fixture' })),
+  });
+
+  it.each([0, 1])('runs canonical app and organization guards before the supplied inner resolver (arm %i)', async arm => {
+    const ports = outerPorts();
+    const outer = policies[arm].createOuterKernelReader(ports);
+    const request = structuralRequest();
+    expect(await outer(request)).toMatchObject({ decision: 'allow', policyRevision: 'saved-control-anchor' });
+    expect(ports.organization.loadChain).toHaveBeenCalledWith('comparison-workspace');
+    expect(ports.resolveControlAnchor).toHaveBeenCalledWith(request);
+    expect(ports.app.loadRow).not.toHaveBeenCalled();
+    expect(ports.structural).not.toHaveBeenCalled();
+    const sourceNames = policies[arm].hostFunctions.map(row => row.name);
+    expect(sourceNames).toEqual(expect.arrayContaining(['operatorKernelEnforcement', 'enforceAppKeyScope',
+      'enforceInheritedPolicy', 'workspacePolicyJudge']));
+  });
+
+  it.each([0, 1])('keeps app native, workspace and token refusals ahead of organization or inner policy (arm %i)', async arm => {
+    const ports = outerPorts();
+    const outer = policies[arm].createOuterKernelReader(ports);
+    const request = structuralRequest();
+    request.ctx.principal = { kind: 'service', slug: 'app:comparison-app', trust: 'verified', authMethod: 'bearer-token',
+      capabilities: new Set<string>(), workspaceId: 'comparison-workspace' };
+    expect(await outer({ ...request, boundary: 'shell' })).toMatchObject({ decision: 'deny', code: 'app_scope:hard_denied' });
+    expect(await outer({ ...request, ctx: { ...request.ctx, workspaceId: 'foreign' } }))
+      .toMatchObject({ decision: 'deny', code: 'app_scope:workspace_mismatch' });
+    request.ctx.principal = { ...request.ctx.principal, slug: 'app:comparison-app/missing-token' };
+    expect(await outer(request)).toMatchObject({ decision: 'deny', code: 'app_scope:key_unknown' });
+    expect(ports.organization.loadChain).not.toHaveBeenCalled();
+    expect(ports.resolveControlAnchor).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 1])('preserves inherited policy refusal and unreadable authority in both phases (arm %i)', async arm => {
+    const ports = outerPorts();
+    const outer = policies[arm].createOuterKernelReader({ ...ports, organization: {
+      now: ports.organization.now,
+      loadChain: async () => ({ status: 'ok', chain: [{ layerId: 'original-org', level: 'organization',
+        version: 1, rules: { tools: { deny: ['comparison:*'] } }, scopeRef: 'original-organization',
+        parentLayerId: null, contentHash: 'a'.repeat(64), updatedBy: 'original-admin',
+        updatedAt: '2026-11-16T08:00:00Z' }] }),
+    } });
+    for (const phase of ['preflight', 'enforce'] as const) {
+      expect(await outer({ ...structuralRequest(), phase })).toMatchObject({ decision: 'deny', policyRevision: 'original-org@v1' });
+    }
+    const unavailable = policies[arm].createOuterKernelReader({ ...ports, organization: {
+      now: ports.organization.now, loadChain: async () => { throw new Error('original authority unavailable'); },
+    } });
+    expect(await unavailable(structuralRequest())).toMatchObject({ decision: 'deny', code: 'org_policy:unavailable' });
+    expect(ports.resolveControlAnchor).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 1])('runs the allowed app path and spending cap without invoking alert writers (arm %i)', async arm => {
+    const ports = outerPorts();
+    const request = structuralRequest();
+    request.ctx.principal = { kind: 'service', slug: 'app:comparison-app', trust: 'verified', authMethod: 'bearer-token',
+      capabilities: new Set<string>(), workspaceId: 'comparison-workspace' };
+    const row = await ports.app.loadRow();
+    row.scopes.tools.push('blueprint:submit');
+    ports.app.loadRow.mockResolvedValue(row);
+    let spentCents = 99;
+    const outer = policies[arm].createOuterKernelReader({ ...ports, app: { ...ports.app,
+      loadSpendStatus: async () => ({ capCents: 100, spentCents, windowSec: null }),
+      // Extra writer fields must never leak into the comparison's read deps.
+      ...{ raiseAlert: () => { throw new Error('must not send alerts'); },
+        loadAlertedApp: () => { throw new Error('must not read alert payloads'); } },
+    } });
+    expect(await outer(request)).toMatchObject({ decision: 'allow', policyRevision: 'saved-control-anchor' });
+    expect(await outer({ ...request, toolName: 'blueprint:submit' })).toMatchObject({ decision: 'allow' });
+    const before = ports.resolveControlAnchor.mock.calls.length;
+    spentCents = 100;
+    expect(await outer({ ...request, toolName: 'blueprint:submit' }))
+      .toMatchObject({ decision: 'deny', code: 'app_scope:spend_cap_reached' });
+    expect(ports.resolveControlAnchor).toHaveBeenCalledTimes(before);
+    expect(policies[arm].disabledHostPorts).toContain('connected-apps.raiseAlert');
+  });
+
+  it.each([0, 1])('requires explicit host installation state and preserves structural fallback (arm %i)', async arm => {
+    const ports = outerPorts();
+    expect(() => policies[arm].createOuterKernelReader({ ...ports, resolveControlAnchor: undefined! }))
+      .toThrow(/explicit/);
+    expect(() => policies[arm].createOuterKernelReader({ ...ports, organization: {} as never }))
+      .toThrow(/explicit/);
+    const outer = policies[arm].createOuterKernelReader({ ...ports, organization: null, resolveControlAnchor: null });
+    expect(await outer(structuralRequest())).toMatchObject({ decision: 'deny', code: 'structural-fixture' });
+    expect(ports.organization.loadChain).not.toHaveBeenCalled();
+    expect(ports.resolveControlAnchor).not.toHaveBeenCalled();
+    expect(ports.structural).toHaveBeenCalledOnce();
+  });
+
+  it.each([0, 1])('preserves original structural ownership and explicit authority failures before privilege exemptions (arm %i)', arm => {
+    const evaluate = structuralReader(arm);
+    const request = structuralRequest();
+    request.ctx.isSuperuser = true;
+    expect(evaluate(request, { ownership: { required: true, resourceOwnerId: 'other-owner' } }))
+      .toMatchObject({ decision: 'deny', code: 'ownership' });
+    expect(evaluate(request, { ownership: { required: true, resourceOwnerId: 'original-owner' } }))
+      .toMatchObject({ decision: 'allow' });
+    expect(evaluate(request, { revoked: true })).toMatchObject({ decision: 'deny', code: 'revoked' });
+    expect(evaluate(request, { authorityUnavailable: true,
+      authorityUnavailableSources: ['control-anchor-query-failed'] }))
+      .toMatchObject({ decision: 'deny', code: 'policy-unavailable',
+        serverAudit: { authorityUnavailableSources: ['control-anchor-query-failed'] } });
+  });
+
+  it.each([0, 1])('distinguishes applied, prepared and requested revisions with its own generic source (arm %i)', arm => {
+    const evaluate = structuralReader(arm);
+    const request = structuralRequest();
+    const applied = { specificationRevision: '1'.repeat(64), stateRevision: 'opaque-original' };
+    const desired = { specificationRevision: '2'.repeat(64), stateRevision: 'opaque-next' };
+    expect(evaluate({ ...request, requestedRevision: desired }, { activation: { applied, desired } }))
+      .toMatchObject({ decision: 'deny', code: 'stale-activation' });
+    expect(evaluate({ ...request, requestedRevision: applied }, { activation: { applied, desired } }))
+      .toMatchObject({ decision: 'allow', applied: true, executionRevision: applied, revisionSource: 'applied' });
+    expect(evaluate(request, { activation: { prepared: desired } }))
+      .toMatchObject({ decision: 'allow', applied: false, executionRevision: desired, revisionSource: 'prepared' });
+    expect(evaluate(request)).toEqual({ decision: 'allow', availability: 'unavailable', applied: false });
+    expect(readers[arm].sources.some(row => row.path === 'libs/generic/tooldef/src/kernel-enforcement.ts')).toBe(true);
+    expect(policies[arm].hostFunctions.map(row => row.name)).toEqual(expect.arrayContaining([
+      'operatorKernelDenial', 'evaluateOperatorKernelRequest',
+    ]));
+  });
+
+  it.each([0, 1])('runs the structural kernel through canonical preflight with an ownership positive and negative control (arm %i)', async arm => {
+    const evaluate = structuralReader(arm);
+    const handler = vi.fn();
+    const input = tool({ fn: handler });
+    const ctx = context();
+    for (const phaseOwner of ['other-owner', 'original-owner']) {
+      const result = await readers[arm].evaluate(input, 'comparison:probe', {}, ctx, {
+        kernelEnforcement: request => evaluate(request, { ownership: { required: true, resourceOwnerId: phaseOwner } }),
+      });
+      expect(result.allowed).toBe(phaseOwner === 'original-owner');
+    }
+    expect(handler).not.toHaveBeenCalled();
   });
 
   it('runs both canonical role and argument authorization gates without invoking handlers or lifecycle ports', async () => {
@@ -384,8 +678,8 @@ describe('IDOP D-043 selected runtime library population', () => {
       expect(result).toMatchObject({ scope: 'selected-library-and-enabled-plugin-role-source',
         liveWearersIncluded: false, identities: [f.identity], roles: [f.pluginRole] });
       expect(result.pages).toEqual([
-        { after: null, scanned: 100, ids: [], nextAfter: 'source-099' },
-        { after: 'source-099', scanned: 1, ids: ['zz-installed'], nextAfter: null },
+        { after: null, scanned: 100, ids: [], unreadableIds: [], nextAfter: 'source-099' },
+        { after: 'source-099', scanned: 1, ids: ['zz-installed'], unreadableIds: [], nextAfter: null },
       ]);
       expect(harnesses).toEqual(['fixture-harness', 'fixture-harness']);
       expect(result.sources).toHaveLength(101);
@@ -408,6 +702,46 @@ describe('IDOP D-043 selected runtime library population', () => {
           }
           return page;
         } })).rejects.toThrow(/omitted or substituted/);
+      } finally { f.close(); }
+    });
+
+  it('includes an attestation refusal as an explicit negative source input', async () => {
+    const f = fixture();
+    const refusal = { id: f.installed.id, tier: f.installed.tier, sourcePath: f.installed.file,
+      error: 'attestation-missing: installed identity has no publisher attestation' };
+    try {
+      const result = await readIdopP001CurrentLibraryPopulation(f.options, { ...f.deps,
+        page: async opts => {
+          const page = await f.deps.page(opts);
+          return opts?.after ? { ...page, identities: [], count: 0, unreadable: [refusal] } : page;
+        } });
+      expect(result.identities).toEqual([]);
+      expect(result.unreadable).toEqual([refusal]);
+      expect(result.pages.at(-1)).toMatchObject({ ids: [], unreadableIds: [f.installed.id] });
+      expect(result.sources.find(source => source.id === refusal.id)?.sha256)
+        .toBe(sha256(readFileSync(f.installed.file)));
+    } finally { f.close(); }
+  });
+
+  it.each(['duplicate', 'overlap', 'substituted', 'wrong-tier', 'wrong-path', 'blank-error', 'nonidentity'])(
+    'refuses an invalid identity refusal partition: %s', async defect => {
+      const f = fixture();
+      try {
+        await expect(readIdopP001CurrentLibraryPopulation(f.options, { ...f.deps, page: async opts => {
+          const page = await f.deps.page(opts);
+          if (!opts?.after) return page;
+          const refusal = { id: f.installed.id, tier: f.installed.tier as 'installed' | 'builtin' | 'local',
+            sourcePath: f.installed.file, error: 'attestation-missing' };
+          if (defect === 'substituted') refusal.id = 'other';
+          if (defect === 'wrong-tier') refusal.tier = 'builtin';
+          if (defect === 'wrong-path') refusal.sourcePath = '/different/source.yaml';
+          if (defect === 'blank-error') refusal.error = '   ';
+          if (defect === 'nonidentity') Object.assign(refusal,
+            { id: f.sources[0].id, tier: f.sources[0].tier, sourcePath: f.sources[0].file });
+          return { ...page, identities: defect === 'overlap' ? page.identities : [],
+            count: defect === 'overlap' ? 1 : 0,
+            unreadable: defect === 'duplicate' ? [refusal, refusal] : [refusal] };
+        } })).rejects.toThrow(/incomplete or unreadable page|omitted or substituted/);
       } finally { f.close(); }
     });
 
@@ -491,12 +825,42 @@ describe('IDOP D-043 applied stack source population', () => {
       explicitStack: ['domain:applied-agent'], artifact: applied });
   });
 
-  it('refuses missing or unreadable applied artifacts instead of dropping a wearer or using desired state', async () => {
-    for (const raw of [null, { ...record, identityHistory: [] },
-      { ...record, identityHistory: [{ ...receipt, specificationArtifact: { ...applied, compilerVersion: 'tampered' } }] }]) {
-      await expect(readIdopP001AppliedStackPopulation('fixture-workspace', { ...deps(), record: async () => raw }))
-        .rejects.toThrow();
-    }
+  it.each([
+    { label: 'missing launch', raw: null, reason: 'receipt-missing' },
+    { label: 'missing applied receipt', raw: { ...record, identityHistory: [] }, reason: 'receipt-missing' },
+    { label: 'tampered applied artifact', raw: { ...record, identityHistory: [{ ...receipt,
+      specificationArtifact: { ...applied, compilerVersion: 'tampered' } }] }, reason: 'replay-failed' },
+  ])('preserves a canonical applied-artifact refusal without using desired state ($label)', async ({ raw, reason }) => {
+    const result = await readIdopP001AppliedStackPopulation('fixture-workspace', { ...deps(), record: async () => raw });
+    expect(result.stacks).toEqual([]);
+    expect(result.refused).toEqual([{ ...anchor, resolution: { kind: 'stale-artifact', reason },
+      launchRecord: raw, recordSha256: sha256(JSON.stringify(raw)) }]);
+  });
+
+  it('propagates a failed launch-record read instead of manufacturing a receipt refusal', async () => {
+    await expect(readIdopP001AppliedStackPopulation('fixture-workspace', { ...deps(),
+      record: async () => { throw new Error('authority read failed'); } })).rejects.toThrow('authority read failed');
+  });
+
+  it.each(['37b21f82cba4d206174fa104', 'native-state-v1'])(
+    'preserves an opaque nonempty applied state revision: %s', async stateRevision => {
+      const pair = { ...revision, stateRevision };
+      const reads: unknown[] = [];
+      const result = await readIdopP001AppliedStackPopulation('fixture-workspace', {
+        anchors: async () => [{ ownerId, applied: pair }],
+        record: async (...args) => {
+          reads.push(args);
+          return { ...record, identityHistory: [{ ...receipt, stateRevision }] };
+        },
+      });
+      expect(reads).toEqual([[ownerId, 'fixture-workspace', pair]]);
+      expect(result.stacks[0]).toMatchObject({ applied: pair, artifact: applied });
+    });
+
+  it.each(['', '   ', null, 123])('refuses an invalid applied state revision: %s', async stateRevision => {
+    await expect(readIdopP001AppliedStackPopulation('fixture-workspace', { ...deps(),
+      anchors: async () => [{ ownerId, applied: { ...revision, stateRevision } }] }))
+      .rejects.toThrow(/malformed applied anchor/);
   });
 
   it('refuses a removed wearer or changed applied revision during enumeration', async () => {
@@ -520,6 +884,75 @@ describe('IDOP D-043 applied stack source population', () => {
   it('represents an empty applied population without claiming runtime liveness', async () => {
     expect(await readIdopP001AppliedStackPopulation('fixture-workspace', { ...deps(), anchors: async () => [] }))
       .toMatchObject({ stacks: [], includesInactiveAnchors: true, livenessMeasured: false });
+  });
+});
+
+describe('IDOP D-043 streamed applied archive finalization', () => {
+  const manifest = { kind: 'manifest', scope: 'workspace-persisted-applied-anchors', workspaceId: 'archive-fixture',
+    includesInactiveAnchors: true, livenessMeasured: false, source: 'pinned-source.ts', sourceSha256: '1'.repeat(64),
+    startedAt: '2026-11-16T08:00:00Z', completedAt: '2026-11-16T08:01:00Z' };
+  const applied = { specificationRevision: '2'.repeat(64), stateRevision: 'opaque-applied' };
+  const rows = () => [manifest,
+    { kind: 'stack', ownerId: 'su-one', applied, recordSha256: '3'.repeat(64), artifactSha256: '4'.repeat(64) },
+    { kind: 'refused', ownerId: 'su-two', applied, recordSha256: '5'.repeat(64),
+      resolution: { kind: 'stale-artifact', reason: 'receipt-missing' } }];
+  const fixture = async (records: unknown[], run: (path: string, bytes: Buffer) => Promise<void>, corrupt = false) => {
+    const directory = mkdtempSync(join(tmpdir(), 'idop-applied-archive-'));
+    const path = join(directory, 'snapshot.jsonl.gz');
+    const bytes = gzipSync(records.map(row => JSON.stringify(row) + '\n').join(''));
+    try {
+      writeFileSync(path, corrupt ? bytes.subarray(0, bytes.length - 5) : bytes);
+      await run(path, bytes);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  };
+  const options = (path: string) => ({ path, workspaceId: 'archive-fixture', sourceSha256: '1'.repeat(64), expectedTotal: 2 });
+
+  it('verifies full gzip/JSON EOF and the disjoint readable/refused population without materializing private payloads', async () => {
+    const records = rows();
+    Object.assign(records[1], { launchRecord: { privatePayload: 'large 🦊 payload '.repeat(150_000),
+      ownerId: 'nested-must-not-count', kind: 'refused' } });
+    await fixture(records, async (path, bytes) => {
+      const result = await inspectIdopP001AppliedStackArchive(options(path));
+      expect(result).toMatchObject({ manifest, total: 2, stacks: 1, refused: 1,
+        refusalReasons: { 'receipt-missing': 1 }, outputSha256: sha256(bytes), compressedBytes: bytes.length });
+      expect(result.rows.map(row => row.ownerId)).toEqual(['su-one', 'su-two']);
+      expect(JSON.stringify(result)).not.toContain('privatePayload');
+    });
+  });
+  it('rejects a truncated gzip rather than publishing a partial successful summary', async () => {
+    await fixture(rows(), async path => {
+      await expect(inspectIdopP001AppliedStackArchive(options(path))).rejects.toThrow();
+    }, true);
+  });
+  it('rejects an independently expected but omitted population row', async () => {
+    await fixture(rows().slice(0, 2), async path => {
+      await expect(inspectIdopP001AppliedStackArchive(options(path))).rejects.toThrow(/omitted expected/);
+    });
+  });
+  it('rejects duplicate owners across readable and refused partitions', async () => {
+    const records = rows();
+    Object.assign(records[2], { ownerId: 'su-one' });
+    await fixture(records, async path => {
+      await expect(inspectIdopP001AppliedStackArchive(options(path))).rejects.toThrow(/duplicated/);
+    });
+  });
+  it('requires the exact source/workspace manifest and expected compressed digest', async () => {
+    await fixture(rows(), async path => {
+      await expect(inspectIdopP001AppliedStackArchive({ ...options(path), sourceSha256: '6'.repeat(64) }))
+        .rejects.toThrow(/manifest mismatch/);
+      await expect(inspectIdopP001AppliedStackArchive({ ...options(path), expectedOutputSha256: '7'.repeat(64) }))
+        .rejects.toThrow(/digest mismatch/);
+    });
+  });
+  it('rejects unknown or metadata-free root records instead of losing them through selection', async () => {
+    await fixture([...rows(), { unknown: 'omitted object' }], async path => {
+      await expect(inspectIdopP001AppliedStackArchive(options(path))).rejects.toThrow(/incomplete/);
+    });
+    const records = rows();
+    Object.assign(records[1], { kind: 'other' });
+    await fixture(records, async path => {
+      await expect(inspectIdopP001AppliedStackArchive(options(path))).rejects.toThrow(/population row/);
+    });
   });
 });
 

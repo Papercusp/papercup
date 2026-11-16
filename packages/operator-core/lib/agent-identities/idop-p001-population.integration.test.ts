@@ -19,7 +19,9 @@ const artifact = (id: string) => compileAgentSpecification({
 });
 const applied = artifact('population-applied');
 const desired = artifact('population-desired');
-const pair = { specificationRevision: applied.specificationRevision, stateRevision: '1'.repeat(64) };
+// Canonical activation state revisions are opaque nonempty strings. Production
+// includes the older 24-character watermark as well as newer SHA-256 values.
+const pair = { specificationRevision: applied.specificationRevision, stateRevision: '1'.repeat(24) };
 const receipt = { ...pair, stack: ['domain:population-applied'], specificationArtifact: applied };
 
 async function anchor(workspace: string, owner: string, activation: unknown) {
@@ -81,11 +83,15 @@ describe('IDOP D-043 persisted applied population (real PostgreSQL)', () => {
     expect(result.stacks[0]).toMatchObject({ ownerId: owner, applied: pair, role: 'su', artifact: applied });
   });
 
-  it('refuses a persisted applied owner without a launch row instead of omitting it', async () => {
+  it('preserves a persisted applied owner without a launch row as the canonical receipt refusal', async () => {
     const workspace = 'idop-population-missing';
-    await anchor(workspace, 'su-idop-population-missing', { applied: pair });
-    await expect(readIdopP001AppliedStackPopulation(workspace))
-      .rejects.toThrow(/applied artifact unreadable/);
+    const owner = 'su-idop-population-missing';
+    await anchor(workspace, owner, { applied: pair });
+    const result = await readIdopP001AppliedStackPopulation(workspace);
+    expect(result.stacks).toEqual([]);
+    expect(result.refused).toMatchObject([{ ownerId: owner, applied: pair,
+      resolution: { kind: 'stale-artifact', reason: 'receipt-missing' }, launchRecord: null }]);
+    expect(result.refused).toHaveLength(1);
   });
 
   it('refuses malformed persisted applied state instead of silently excluding it', async () => {
@@ -95,6 +101,21 @@ describe('IDOP D-043 persisted applied population (real PostgreSQL)', () => {
     } });
     await expect(readIdopP001AppliedStackPopulation(workspace))
       .rejects.toThrow(/malformed applied anchor/);
+  });
+
+  it('keeps a refusal beyond the first body page in the complete persisted population', async () => {
+    const workspace = 'idop-population-pages';
+    const owners = Array.from({ length: 103 }, (_, index) => `su-idop-page-${String(index).padStart(3, '0')}`);
+    for (const [index, owner] of owners.entries()) {
+      await anchor(workspace, owner, { applied: pair });
+      if (index !== 102) await launch(workspace, owner, receipt, true);
+    }
+    const result = await readIdopP001AppliedStackPopulation(workspace);
+    expect(result.stacks).toHaveLength(102);
+    expect(result.refused).toHaveLength(1);
+    expect([...result.stacks, ...result.refused].map(row => row.ownerId).sort()).toEqual(owners);
+    expect(result.refused[0]).toMatchObject({ ownerId: owners[102],
+      resolution: { kind: 'stale-artifact', reason: 'receipt-missing' }, launchRecord: null });
   });
 
   it('returns an empty population only when the requested workspace has no applied anchors', async () => {
