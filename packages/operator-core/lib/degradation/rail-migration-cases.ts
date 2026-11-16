@@ -4386,7 +4386,7 @@ RAIL_MIGRATION_CASES.push({
     const observeFallback: import('../../../../libs/generic/rerank/src/local-engine').LocalRerankOptions['observeFallback'] = (mechanism, decision) => {
       if (mechanism === 'rerank-device') observations.push(decision);
     };
-    const loaded = { tokenizer: () => ({}), model: async () => ({ logits: { dims: [1, 1], data: [0] } }) };
+    const loaded = { tokenizer: (() => ({})) as never, model: (async () => ({ logits: { dims: [1, 1], data: [0] } })) as never };
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       engine._setLoaderForTest(async (_model, _dtype, device) => { if (device === 'cuda') throw new Error('GPU unavailable'); return loaded; });
@@ -4432,10 +4432,11 @@ RAIL_MIGRATION_CASES.push({
     });
     try {
       await worker._resetRerankWorkerForTest(); worker._resetFallbackWarnForTest();
-      engine._setLoaderForTest(async () => ({ tokenizer: () => ({}), model: async () => ({ logits: { dims: [1, 1], data: [0] } }) }));
+      engine._setLoaderForTest(async () => ({ tokenizer: (() => ({})) as never, model: (async () => ({ logits: { dims: [1, 1], data: [0] } })) as never }));
       engine._setWorkerWithLoaderForTest(true);
-      await engine.scoreCrossEncoder('query', ['document'], { device: 'cpu', dtype: 'q8', observeFallback });
-      await engine.scoreCrossEncoder('query', ['document'], { device: 'cpu', dtype: 'q8', observeFallback });
+      // No inline retry (WI-6554700010050758): each failed worker call rejects.
+      await expect(engine.scoreCrossEncoder('query', ['document'], { device: 'cpu', dtype: 'q8', observeFallback })).rejects.toThrow('unavailable');
+      await expect(engine.scoreCrossEncoder('query', ['document'], { device: 'cpu', dtype: 'q8', observeFallback })).rejects.toThrow('unavailable');
       expect(observations.map((row) => row.applied)).toEqual([0, 0]);
       expect(await engine.scoreCrossEncoder('query', ['document'], { device: 'cpu', dtype: 'q8', observeFallback })).toEqual([0.75]);
       expect(observations.map((row) => row.applied)).toEqual([0, 0, 1]);

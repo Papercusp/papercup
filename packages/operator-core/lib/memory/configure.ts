@@ -28,9 +28,9 @@ import {
   LexicalLegBackend,
   Mem0Backend,
   invalidateMemoryClient,
-  dynamicImport,
   EMBEDDER_DIM_SPECS,
   resolveEmbedSidecarUrl,
+  resolveLocalEmbedEngine,
   type EmbedFn,
   type EmbedderMode,
   type ResolvedEmbedder,
@@ -55,8 +55,6 @@ import {
 import { getSessionExtractionLlm } from './session-extraction-llm';
 
 export { resolveOpenAiKey };
-
-const TRANSFORMERS_PACKAGE = '@huggingface/transformers';
 
 // ── Single-key exhaustion fallback (EI-3381) ─────────────────────────────────────────────────
 // The org's shared OpenAI embed key/quota can be drained by load OUTSIDE this process (another
@@ -174,12 +172,12 @@ export async function localAvailable(): Promise<boolean> {
   // onnxruntime native binding for nothing (EI-24688584300743328: measured in
   // every P-013 cold child with the deterministic embedder installed).
   if (hasLocalEmbedEngineOverride()) return true;
-  try {
-    await dynamicImport(TRANSFORMERS_PACKAGE);
-    return true;
-  } catch {
-    return false;
-  }
+  // WI-6554700010050711: answer by RESOLUTION from the embed worker's base,
+  // never by importing the package here. That import evaluated transformers and
+  // loaded onnxruntime-node and sharp on this (main) thread, only to answer "is
+  // it installed": one 0.1-0.9s event-loop block per process. The worker does
+  // the real import.
+  return resolveLocalEmbedEngine().status === 'resolvable';
 }
 
 /** Every embedder preference, in ONE place: the env parser, the return type,

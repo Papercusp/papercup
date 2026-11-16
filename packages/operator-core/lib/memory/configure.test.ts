@@ -665,17 +665,28 @@ describe('readEmbedderPreference — env override wiring (production seam)', () 
  * available", never "this box has transformers installed".
  */
 describe('localAvailable — must not report "not installed" for a VM-realm import failure', () => {
-  it('keeps a configured sidecar available without importing the in-process inference package', async () => {
-    const probe = vi.spyOn(memory, 'dynamicImport').mockRejectedValue(new Error('in-process package absent'));
+  it('answers by resolution and never imports the inference package (WI-6554700010050711)', async () => {
+    // The VM-realm failure the import probe used to suffer: if anything still
+    // imported to answer availability, this rejection would surface.
+    const probe = vi.spyOn(memory, 'dynamicImport')
+      .mockRejectedValue(new Error('A dynamic import callback was not specified.'));
+    const resolution = vi.spyOn(memory, 'resolveLocalEmbedEngine');
     try {
       vi.stubEnv('PAPERCUSP_EMBED_SIDECAR_URL', 'http://127.0.0.1:3384');
       await expect(localAvailable()).resolves.toBe(true);
-      expect(probe).not.toHaveBeenCalled();
+      expect(resolution).not.toHaveBeenCalled();
       vi.stubEnv('PAPERCUSP_EMBED_SIDECAR_URL', '');
+      resolution.mockReturnValueOnce({ status: 'unavailable', base: '/nowhere/x.mjs', reason: 'not resolvable' });
       await expect(localAvailable()).resolves.toBe(false);
-      expect(probe).toHaveBeenCalledOnce();
+      resolution.mockReturnValueOnce({
+        status: 'resolvable', base: '/x/x.mjs', transformersEntry: '/x/t.cjs', onnxRuntimeEntry: '/x/o.js',
+      });
+      await expect(localAvailable()).resolves.toBe(true);
+      expect(resolution).toHaveBeenCalledTimes(2);
+      expect(probe).not.toHaveBeenCalled();
     } finally {
       probe.mockRestore();
+      resolution.mockRestore();
       vi.unstubAllEnvs();
     }
   });
