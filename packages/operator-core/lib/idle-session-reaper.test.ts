@@ -4,6 +4,7 @@ import {
   planWindowUnknownProtection,
   planWorkItemLeaseReap,
   planResourceLockLeaseReap,
+  isProcessScopedLockOwner,
   reapResourceLockRows,
   reapFileLockRows,
   classifyLiveIdle,
@@ -335,6 +336,61 @@ describe('planResourceLockLeaseReap (EI-20980648124299591 — dead-owner named r
     });
     expect(plan.reap).toEqual([l]);
   });
+
+  it('never judges a process-scoped system:* owner — git-sync keeps its live fire lease at any age (EI-28958382716309611)', () => {
+    // The exact shape that was deleted mid-fire: a git-sync lease renewed for
+    // 25 minutes, whose owner no session-liveness source can ever list.
+    const gitSync = resourceLease('lock-git-sync', 'system:git-sync:2343030:a0407856', old(25 * 60_000));
+    const legacy = resourceLease('lock-system-legacy', 'system:green-checkpoint', null);
+    const plan = planResourceLockLeaseReap({
+      leases: [gitSync, legacy],
+      liveOwners: new Set(),
+      nowMs: NOW,
+    });
+    expect(plan.reap).toHaveLength(0);
+    expect(plan.keptProcessScoped).toEqual([gitSync, legacy]);
+    expect(isProcessScopedLockOwner('system:git-sync:1:u')).toBe(true);
+  });
+
+  it('still reaps a dead SESSION owner at the grace boundary (grace-1 kept, grace and grace+1 reaped)', () => {
+    const under = resourceLease('lock-under', 'su-dead', old(IDLE_SESSION_GRACE_MS - 1));
+    const at = resourceLease('lock-at', 'su-dead', old(IDLE_SESSION_GRACE_MS));
+    const over = resourceLease('lock-over', 'su-dead', old(IDLE_SESSION_GRACE_MS + 1));
+    const plan = planResourceLockLeaseReap({
+      leases: [over, under, at],
+      liveOwners: new Set(),
+      nowMs: NOW,
+    });
+    expect(plan.keptFresh).toEqual([under]);
+    expect(plan.reap).toEqual([over, at]);
+    expect(plan.keptProcessScoped).toHaveLength(0);
+  });
+
+  it('does not treat an owner that merely CONTAINS "system:" as process-scoped', () => {
+    const l = resourceLease('lock-lookalike', 'su-system:spoof', old(2 * IDLE_SESSION_GRACE_MS));
+    const plan = planResourceLockLeaseReap({ leases: [l], liveOwners: new Set(), nowMs: NOW });
+    expect(plan.reap).toEqual([l]);
+    expect(isProcessScopedLockOwner('su-system:spoof')).toBe(false);
+  });
+
+  it('never hands a process-scoped lease to releaseGroup and reports it as keptProcessScoped', async () => {
+    const gitSync = resourceLease('lock-git-sync', 'system:git-sync:1:u', old(25 * 60_000));
+    const dead = resourceLease('lock-dead', 'su-dead', old(2 * IDLE_SESSION_GRACE_MS));
+    const handed: string[] = [];
+    const res = await reapResourceLockRows({
+      leases: [gitSync, dead],
+      liveOwners: new Set(),
+      dryRun: false,
+      nowMs: NOW,
+      releaseGroup: async (group) => {
+        handed.push(...group.map((l) => l.lockId));
+        return group.map((l) => l.lockId);
+      },
+    });
+    expect(handed).toEqual(['lock-dead']);
+    expect(res.keptProcessScoped).toBe(1);
+    expect(res.scanned).toBe(2);
+  });
 });
 
 describe('reapResourceLockRows (EI-20980648124299591 — owner/domain cleanup)', () => {
@@ -367,6 +423,7 @@ describe('reapResourceLockRows (EI-20980648124299591 — owner/domain cleanup)',
       reapedIds: ['lock-dead-a', 'lock-dead-b', 'lock-dead-c'],
       keptLive: 1,
       keptFresh: 1,
+      keptProcessScoped: 0,
       failedOwners: 0,
       dryRun: false,
     });
@@ -445,9 +502,28 @@ describe('reapFileLockRows (EI-21156392600672822 — dead-owner file locks)', ()
       reapedPaths: ['a.ts', 'b.ts'],
       keptLive: 1,
       keptFresh: 1,
+      keptProcessScoped: 0,
       failedOwners: 0,
       dryRun: false,
     });
+  });
+
+  it('never releases a file lock held by a process-scoped system:* owner, at any age (EI-28958382716309611)', async () => {
+    const sys = fileLease('sys.ts', 'lock-sys', 'system:git-sync:1:u', old(25 * 60_000));
+    const dead = fileLease('dead.ts', 'lock-dead', 'su-dead', old(2 * IDLE_SESSION_GRACE_MS));
+    const releaseGroup = vi.fn(async (group: FileLockLeaseRow[]) => group.map((lease) => lease.path));
+
+    const result = await reapFileLockRows({
+      leases: [sys, dead],
+      liveOwners: new Set(),
+      nowMs: NOW,
+      dryRun: false,
+      releaseGroup,
+    });
+
+    expect(releaseGroup).toHaveBeenCalledTimes(1);
+    expect(releaseGroup.mock.calls[0][0].map((lease) => lease.path)).toEqual(['dead.ts']);
+    expect(result).toMatchObject({ scanned: 2, reaped: 1, reapedPaths: ['dead.ts'], keptProcessScoped: 1 });
   });
 
   it('dry-run reports dead paths without invoking cleanup', async () => {

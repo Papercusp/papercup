@@ -648,6 +648,24 @@ export interface ResourceLockLeaseReapPlan {
   keptLive: ResourceLockLeaseRow[];
   /** Lock was acquired within the grace floor (too new to judge) → keep. */
   keptFresh: ResourceLockLeaseRow[];
+  /**
+   * Owner is process-scoped (see {@link isProcessScopedLockOwner}) → keep, at
+   * ANY age. Session liveness can never vouch for such an owner, so judging it
+   * here deleted git-sync's live fire lease whenever a fire outlasted the grace
+   * floor (EI-28958382716309611).
+   */
+  keptProcessScoped: ResourceLockLeaseRow[];
+}
+
+/**
+ * A lock owner whose lifetime is a PROCESS, not an agent session: the
+ * `system:` namespace (git-sync's `system:git-sync:<pid>:<uuid>` fire lease,
+ * routine executors, …). No session-liveness source ever lists one, so the
+ * dead-owner backstops below must not judge it — the lease TTL its holder
+ * renews (plus the stale-holder pid-liveness release) is what bounds it.
+ */
+export function isProcessScopedLockOwner(owner: string): boolean {
+  return owner.startsWith('system:');
 }
 
 /**
@@ -655,6 +673,7 @@ export interface ResourceLockLeaseReapPlan {
  * by the same session identities as work-item leases, but live in the separate
  * `papercusp_su` database. A lock-only owner therefore needs this parallel
  * decision instead of being discovered indirectly through a work-item row.
+ * Process-scoped owners are exempt: this backstop judges SESSION liveness only.
  */
 export function planResourceLockLeaseReap(opts: {
   leases: ResourceLockLeaseRow[];
@@ -663,10 +682,12 @@ export function planResourceLockLeaseReap(opts: {
   graceMs?: number;
 }): ResourceLockLeaseReapPlan {
   const graceMs = opts.graceMs ?? IDLE_SESSION_GRACE_MS;
-  const plan: ResourceLockLeaseReapPlan = { reap: [], keptLive: [], keptFresh: [] };
+  const plan: ResourceLockLeaseReapPlan = { reap: [], keptLive: [], keptFresh: [], keptProcessScoped: [] };
   for (const lease of opts.leases) {
     if (opts.liveOwners.has(lease.owner)) {
       plan.keptLive.push(lease);
+    } else if (isProcessScopedLockOwner(lease.owner)) {
+      plan.keptProcessScoped.push(lease);
     } else if (lease.acquiredAtMs != null && opts.nowMs - lease.acquiredAtMs < graceMs) {
       plan.keptFresh.push(lease);
     } else {
@@ -685,6 +706,8 @@ export interface ResourceLockLeaseReapResult {
   reapedIds: string[];
   keptLive: number;
   keptFresh: number;
+  /** Leases held by a process-scoped owner — never judged here (EI-28958382716309611). */
+  keptProcessScoped: number;
   failedOwners: number;
   dryRun: boolean;
 }
@@ -695,6 +718,7 @@ const emptyResourceLockLeaseReapResult = (dryRun: boolean): ResourceLockLeaseRea
   reapedIds: [],
   keptLive: 0,
   keptFresh: 0,
+  keptProcessScoped: 0,
   failedOwners: 0,
   dryRun,
 });
@@ -705,6 +729,8 @@ export interface FileLockLeaseReapResult {
   reapedPaths: string[];
   keptLive: number;
   keptFresh: number;
+  /** File locks held by a process-scoped owner — never judged here (EI-28958382716309611). */
+  keptProcessScoped: number;
   failedOwners: number;
   dryRun: boolean;
 }
@@ -715,6 +741,7 @@ const emptyFileLockLeaseReapResult = (dryRun: boolean): FileLockLeaseReapResult 
   reapedPaths: [],
   keptLive: 0,
   keptFresh: 0,
+  keptProcessScoped: 0,
   failedOwners: 0,
   dryRun,
 });
@@ -747,6 +774,7 @@ export async function reapFileLockRows(opts: {
       reapedPaths: plan.reap.map((lease) => lease.resource),
       keptLive: plan.keptLive.length,
       keptFresh: plan.keptFresh.length,
+      keptProcessScoped: plan.keptProcessScoped.length,
       failedOwners: 0,
       dryRun: true,
     };
@@ -783,6 +811,7 @@ export async function reapFileLockRows(opts: {
     reapedPaths,
     keptLive: plan.keptLive.length,
     keptFresh: plan.keptFresh.length,
+    keptProcessScoped: plan.keptProcessScoped.length,
     failedOwners,
     dryRun: false,
   };
@@ -816,6 +845,7 @@ export async function reapResourceLockRows(opts: {
       reapedIds: plan.reap.map((lease) => lease.lockId),
       keptLive: plan.keptLive.length,
       keptFresh: plan.keptFresh.length,
+      keptProcessScoped: plan.keptProcessScoped.length,
       failedOwners: 0,
       dryRun: true,
     };
@@ -851,6 +881,7 @@ export async function reapResourceLockRows(opts: {
     reapedIds,
     keptLive: plan.keptLive.length,
     keptFresh: plan.keptFresh.length,
+    keptProcessScoped: plan.keptProcessScoped.length,
     failedOwners,
     dryRun: false,
   };
