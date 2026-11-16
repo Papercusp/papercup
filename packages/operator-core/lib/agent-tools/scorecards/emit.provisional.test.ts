@@ -22,14 +22,19 @@ vi.mock('../../rubrics', async (importOriginal) => {
       criteriaHash: (await getRubric(rubricId))?.criteriaHash ?? null,
       meaningRevision: null,
     }),
+    // Same closure bypass: emit pins the grading-integrity audit contract's hash.
+    getRubricCriteriaHash: async (rubricId: string) => (await getRubric(rubricId))?.criteriaHash ?? null,
   };
 });
 
 describe('scorecards:emit preserved grading baseline', () => {
   const hash = 'a'.repeat(64);
   const subject = { kind: 'pot' as const, ref: 'target' };
+  // sourceHive is part of the comparable scope (scorecardComparisonReasons): emit
+  // defaults it to ctxHarness, so a comparable baseline must carry the same hive.
   const baseline = () => ({ issueId: 'EI-baseline', rubricRef: RUBRIC.rubricId, rubricRevision: 33,
-    criteriaHash: hash, subject, createdBy: 'baseline-grader', createdAt: '2026-10-09T10:00:00Z',
+    criteriaHash: hash, subject, sourceHive: EMIT_INPUT.ctxHarness,
+    createdBy: 'baseline-grader', createdAt: '2026-10-09T10:00:00Z',
     rubricResolved: true, missingKeys: [], extraKeys: [], synthesized: false,
     rubricCurrentness: { state: 'current' }, gradingAudit: { state: 'passed' },
     gradingAuditCurrentness: { state: 'current' }, ratings: {
@@ -57,7 +62,8 @@ describe('scorecards:emit preserved grading baseline', () => {
   });
   it.each([
     { subject: undefined },
-    { subject: { kind: 'pot', ref: 'foreign' } }, { rubricRevision: 32 }, { criteriaHash: 'b'.repeat(64) },
+    { subject: { kind: 'pot', ref: 'foreign' } }, { sourceHive: 'foreign-hive' },
+    { rubricRevision: 32 }, { criteriaHash: 'b'.repeat(64) },
     { gradingAuditCurrentness: { state: 'stale' } },
     { missingKeys: ['missing'] }, { retracted: { at: '2026-10-09T11:00:00Z' } },
   ])('refuses missing, changed or unsettled baseline evidence: %j', change => {
@@ -82,8 +88,13 @@ vi.mock('../../scorecards', async (importOriginal) => {
 vi.mock('../../harness/improvements/capture-core', () => ({
   captureImprovement: (...a: unknown[]) => captureImprovement(...a),
 }));
+// A terminal standard-rubric card is audit-required, and emit refuses an
+// audit-required card without a valid evaluator build SHA
+// (grading_audit_generation_unavailable). A unit run must not resolve
+// systemd/Git/Scout state for that identity, so pin a fixed generation.
 vi.mock('../../scout/generation-watermark', () => ({
-  readRunningGeneration: async () => null,
+  readRunningGeneration: async () => ({ deployedSha: 'a'.repeat(40), hostStartedAt: null,
+    bootHeadSha: null, scoutCodeHash: null, staleHost: null }),
 }));
 vi.mock('../../issues-engineer', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../issues-engineer')>();
