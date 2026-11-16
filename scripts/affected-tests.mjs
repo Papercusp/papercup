@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { expandWorkspaces as expandRootWorkspaces } from './assert-workspace-links.mjs';
 import { expandAffectedWorkspaceNames } from './lib/affected-path-routes.mjs';
+import { expandSubmoduleChanges, formatSubmoduleExpansion } from './lib/submodule-changed-paths.mjs';
 // Find workspaces affected by a git diff and run their vitest suites.
 //
 // Usage:
@@ -1495,18 +1496,61 @@ let changedPathTotal = null;
 // because you asked" and "we ran everything because we could not tell what changed" are
 // different runs, and only the second is a bug (EI-1989's failure mode, in the log this time).
 let derivationDegraded = false;
+// EI-28973270750407333: every leg below names a changed submodule only by its gitlink path
+// (`libs/papercusp`), never by the files that changed inside it. On its own that set hid every
+// submodule source change from the consumers keyed on file paths: the workspace mapper selected
+// none of the dozen workspaces beneath `libs/papercusp` (measured: `--changed-paths
+// libs/papercusp --print-affected` printed zero AFFECTED_WS lines), and each forwardChangedPaths
+// guard dropped the bare root with its file-family predicate. The inner paths are ADDED to the
+// set; the gitlink stays, because several guards match the bare root on purpose. A submodule
+// the expansion could not read is named on stderr (SUBMODULE_EXPANSION_* lines), so its
+// omission is reported instead of silently left to the gitlink alone.
+const reportedSubmoduleExpansions = new Set();
+function submoduleChangedPaths(changed, fromRef, toRef) {
+  const commitOf = (ref) =>
+    gitTry(["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`]);
+  const from = commitOf(fromRef);
+  const to = toRef === null ? null : commitOf(toRef);
+  let lines = [];
+  let paths = [];
+  if (!from || (toRef !== null && !to)) {
+    // The diff legs already resolved these refs, so this is a git hiccup, not a bad ref:
+    // report it and keep the gitlink-only set rather than fail the run.
+    lines = [
+      `SUBMODULE_EXPANSION skipped: ${!from ? fromRef : toRef} did not resolve to a commit; ` +
+        "each changed submodule is represented by its gitlink path only",
+    ];
+  } else {
+    const expansion = expandSubmoduleChanges({ root: ROOT, changed, from, to });
+    paths = expansion.paths;
+    if (expansion.compared.length + expansion.whole.length + expansion.unexpanded.length > 0) {
+      lines = formatSubmoduleExpansion(expansion);
+    }
+  }
+  // changedFiles() runs once per consumer; print each distinct report once.
+  const report = lines.join("\n");
+  if (report && !reportedSubmoduleExpansions.has(report)) {
+    reportedSubmoduleExpansions.add(report);
+    for (const line of lines) errSync(line);
+  }
+  return paths;
+}
 function changedFiles() {
   if (rangeFrom && rangeTo) {
     // P-016: two-dot range — files changed BY the commits in (rangeFrom, rangeTo]. No
     // working-tree / untracked component: we're probing a historical commit prefix for
-    // the green-checkpoint salvage, not diffing the live tree.
+    // the green-checkpoint salvage, not diffing the live tree. A submodule in the range is
+    // read between the two pointers the range's ends record.
     const inRange = sh(
       `git diff --name-only --ignore-submodules=dirty ${rangeFrom}..${rangeTo}`,
     )
       .split("\n")
       .filter(Boolean);
-    changedPathTotal = inRange.length;
-    return inRange;
+    const deduped = [
+      ...new Set([...inRange, ...submoduleChangedPaths(inRange, rangeFrom, rangeTo)]),
+    ];
+    changedPathTotal = deduped.length;
+    return deduped;
   }
   const committed = sh(
     `git diff --name-only --ignore-submodules=dirty ${base}...HEAD`,
@@ -1520,14 +1564,29 @@ function changedFiles() {
     .split("\n")
     .filter(Boolean);
   const submoduleDirty = submoduleDirtyPaths();
+  // `<base>...HEAD` diffs from the merge base, so each submodule is read from the pointer the
+  // merge base recorded to its work tree (its commits, uncommitted edits and untracked files).
+  const windowStart = gitTry(["merge-base", "--end-of-options", base, "HEAD"]) ?? base;
+  const submoduleExpanded = submoduleChangedPaths(
+    [...committed, ...uncommitted, ...submoduleDirty],
+    windowStart,
+    null,
+  );
   changedPathLegs = {
     committed: committed.length,
     uncommitted: uncommitted.length,
     untracked: untracked.length,
     submoduleDirty: submoduleDirty.length,
+    submoduleExpanded: submoduleExpanded.length,
   };
   const deduped = [
-    ...new Set([...committed, ...uncommitted, ...untracked, ...submoduleDirty]),
+    ...new Set([
+      ...committed,
+      ...uncommitted,
+      ...untracked,
+      ...submoduleDirty,
+      ...submoduleExpanded,
+    ]),
   ];
   changedPathTotal = deduped.length;
   return deduped;

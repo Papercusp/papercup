@@ -40,6 +40,8 @@ export const SHARED_TREE_PATH_WARN = 25;
  * @property {number} [uncommitted] paths from `git diff HEAD` (working tree)
  * @property {number} [untracked] paths from `git ls-files --others --exclude-standard`
  * @property {number} [submoduleDirty] submodule roots reported dirty
+ * @property {number} [submoduleExpanded] paths inside changed submodules, recovered from their
+ *   gitlinks (the other legs name a submodule only by its gitlink path)
  */
 
 /**
@@ -114,7 +116,7 @@ export function formatDerivationMarker(summary, selection = {}) {
     `source=${summary.source}`,
     `changedPaths=${summary.total}`,
   ];
-  for (const leg of ["committed", "uncommitted", "untracked", "submoduleDirty"]) {
+  for (const leg of ["committed", "uncommitted", "untracked", "submoduleDirty", "submoduleExpanded"]) {
     if (summary.legs[leg] != null) parts.push(`${leg}=${summary.legs[leg]}`);
   }
   if (summary.base) parts.push(`base=${summary.base}`);
@@ -181,6 +183,9 @@ export function derivationBannerLines(summary, selection = {}) {
         : null,
       summary.legs.submoduleDirty != null
         ? `submodule-dirty ${summary.legs.submoduleDirty}`
+        : null,
+      summary.legs.submoduleExpanded != null
+        ? `inside changed submodules ${summary.legs.submoduleExpanded}`
         : null,
     ]
       .filter(Boolean)

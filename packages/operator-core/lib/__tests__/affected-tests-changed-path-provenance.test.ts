@@ -99,6 +99,15 @@ describe('changed-path provenance: the marker (EI-20812741760514969)', () => {
     expect(formatDerivationMarker(summarizeDerivation(LIVE_SHAPE), {})).toMatch(/committed=/);
   });
 
+  it('reports the paths recovered from inside changed submodules as their own leg (EI-28973270750407333)', () => {
+    // The other legs name a moved submodule only by its gitlink; without this leg the deduped
+    // total would exceed the sum of the legs it reports, with nothing to say why.
+    const shape = { ...LIVE_SHAPE, total: 2290, legs: { ...LIVE_SHAPE.legs, submoduleExpanded: 16 } };
+    expect(markerField(formatDerivationMarker(summarizeDerivation(shape), {}), 'submoduleExpanded')).toBe('16');
+    expect(derivationBannerLines(summarizeDerivation(shape)).join('\n')).toMatch(/inside changed submodules 16/);
+    expect(formatDerivationMarker(summarizeDerivation(LIVE_SHAPE), {})).not.toMatch(/submoduleExpanded=/);
+  });
+
   it('distinguishes "ran everything because you asked" from "because git failed"', () => {
     // Both run every workspace; only the second is a bug, and collapsing them is how the
     // EI-1989 degrade-to-everything hid in plain sight as a normal slow run.
@@ -335,6 +344,9 @@ describe('changed-path provenance: through the real CLI', () => {
 
     if (markerField(line, 'source') === 'git-status') {
       expect(markerField(line, 'base')).toBeTruthy();
+      // The git derivation always reads inside changed submodules (EI-28973270750407333), so
+      // the leg is measured on every git-status run — zero when no submodule moved.
+      expect(markerField(line, 'submoduleExpanded')).toMatch(/^\d+$/);
       const total = Number(markerField(line, 'changedPaths'));
       // Both directions are pinned: tree-sized ⇒ the banner fires; small ⇒ it must not.
       // (A clean checkout — the green-checkpoint's own — legitimately takes the second.)
