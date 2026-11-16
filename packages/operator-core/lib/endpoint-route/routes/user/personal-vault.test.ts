@@ -271,6 +271,35 @@ beforeEach(() => {
 });
 
 describe('Personal Vault owner routes', () => {
+  it.each(['serialized', 'object'])('shows current provider progress ahead of retired cursor fields (%s cursor)', async (format) => {
+    const [source] = await mocks.listSources();
+    const provider = { backfill: { status: 'complete', messages: 17 }, historyId: 'private-current-history' };
+    mocks.listSources.mockResolvedValue([{ ...source, cursor: {
+      lastSyncAt: '2026-08-23T00:00:00.000Z',
+      backfill: { status: 'pending', messages: 92449 },
+      providerSync: { lastSyncedAt: '2026-11-16T11:00:00.000Z' },
+      provider: format === 'serialized' ? JSON.stringify(provider) : provider,
+    } }]);
+    const response = await invoke('GET', '/user/personal-vault', new Request('http://localhost/user/personal-vault'));
+    const payload = await response.json();
+    expect(payload.integrations.google.sources[0]).toMatchObject({
+      lastSyncAt: '2026-11-16T11:00:00.000Z', backfill: { status: 'complete', messages: 17 },
+    });
+    expect(JSON.stringify(payload)).not.toContain('private-current-history');
+  });
+
+  it('keeps legacy status readable if a stored provider cursor is malformed', async () => {
+    const [source] = await mocks.listSources();
+    mocks.listSources.mockResolvedValue([{ ...source, cursor: {
+      lastSyncAt: '2026-08-23T00:00:00.000Z',
+      backfill: { status: 'pending', messages: 23 }, provider: '{invalid-json',
+    } }]);
+    const response = await invoke('GET', '/user/personal-vault', new Request('http://localhost/user/personal-vault'));
+    expect((await response.json()).integrations.google.sources[0]).toMatchObject({
+      lastSyncAt: '2026-08-23T00:00:00.000Z', backfill: { status: 'pending', messages: 23 },
+    });
+  });
+
   it('keeps reads public-compatible and every mutation loopback-only', () => {
     expect(route('GET', '/user/personal-vault').auth).toBe('public');
     expect(route('GET', '/user/personal-vault/grants').auth).toBe('public');

@@ -32,6 +32,7 @@ import { getDatatype, upsertDatatype } from '../datatype-registry-store';
 import { ingestExternalTriggerEvent, type IngestExternalTriggerInput } from '../external-triggers/ingestion';
 import { createProviderRegistry, providerRegistry, type ProviderRegistry } from '../integrations/provider-registry';
 import {
+  CONNECTOR_SOURCE_TURN_MS,
   connectorRecordDedupeKey,
   formatConnectorSyncLog,
   ProviderSyncFailure,
@@ -117,6 +118,9 @@ function deps(overrides: Partial<ConnectorSyncDeps> = {}): ConnectorSyncDeps {
     sinksFor: async () => [],
     hostFetchFor: () => noNetwork,
     leaseOwner: DRIVER,
+    // This suite exercises the driver and real ingestion ledger. Production
+    // recruitment/lifecycle has its own suites and resolves the host's PG pool.
+    afterSourceSynced: async () => undefined,
     ...overrides,
   };
 }
@@ -271,6 +275,69 @@ beforeEach(() => {
 });
 
 describe('connector sync driver over registered providers (R-3)', () => {
+  it.each([-1, 0, 1])('yields slow backfill at the committed time boundary (%i ms) and advances the next source', async (offset) => {
+    const slow = await createSource();
+    const fast = await createSource();
+    await org.adminSql`UPDATE harness_shared.data_sources
+      SET sync_wake_requested_at = CASE WHEN id = ${slow}::uuid
+        THEN '2026-01-01'::timestamptz ELSE '2026-01-02'::timestamptz END
+      WHERE workspace_id = ${WS} AND id IN (${slow}::uuid, ${fast}::uuid)`;
+    let clock = 0;
+    const visited: string[] = [];
+    handler = async (req) => {
+      visited.push(req.source);
+      if (req.source === fast) return page([mail('other-account')], 'fast-done', false);
+      const index = Number(req.cursor ?? 0);
+      clock += index === 0 ? CONNECTOR_SOURCE_TURN_MS + offset : CONNECTOR_SOURCE_TURN_MS;
+      return page([mail(`slow-${index}`)], String(index + 1), true);
+    };
+    const result = await runConnectorSync(org.adminSql,
+      { workspaceId: WS, harness: 'papercusp', sourceIds: [slow, fast] },
+      deps({ now: () => clock, afterSourceSynced: async () => {} }));
+    const expectedPages = offset < 0 ? 2 : 1;
+    expect(visited).toEqual([...Array<string>(expectedPages).fill(slow), fast]);
+    expect(result.sources.find((source) => source.sourceId === slow)).toMatchObject({
+      outcome: 'synced', pages: expectedPages, hasMore: true,
+    });
+    expect(await state(slow)).toMatchObject({ cursor: String(expectedPages), next_in: null, lease_owner: null });
+    expect(await ledgerKeys(fast)).toEqual(keysFor(fast, [mail('other-account')]));
+    expect(await state(fast)).toMatchObject({ cursor: 'fast-done', backfill_status: 'complete' });
+  });
+
+  it.each([true, false])('resumes every yielded page across worker restarts without starving the other account (slow first: %s)', async (slowFirst) => {
+    const slow = await createSource();
+    const fast = await createSource();
+    const records = Array.from({ length: 8 }, (_, index) => mail(`backfill-${index}`));
+    let clock = 0;
+    let batch = 0;
+    handler = async (req) => {
+      if (req.source === fast) return page([mail(`fresh-${batch}`)], `fresh-${batch}`, false);
+      const index = Number(req.cursor ?? 0);
+      clock += CONNECTOR_SOURCE_TURN_MS;
+      return page([records[index]], String(index + 1), index + 1 < records.length);
+    };
+    for (batch = 0; batch < records.length; batch += 1) {
+      await makeDue(slow);
+      await makeDue(fast);
+      const first = slowFirst ? slow : fast;
+      await org.adminSql`UPDATE harness_shared.data_sources
+        SET sync_wake_requested_at = CASE WHEN id = ${first}::uuid
+          THEN '2026-01-01'::timestamptz ELSE '2026-01-02'::timestamptz END
+        WHERE workspace_id = ${WS} AND id IN (${slow}::uuid, ${fast}::uuid)`;
+      const result = await runConnectorSync(org.adminSql,
+        { workspaceId: WS, harness: 'papercusp', sourceIds: [slow, fast] },
+        deps({ now: () => clock, leaseOwner: `restarted-driver-${batch}`, afterSourceSynced: async () => {} }));
+      expect(result.sources.map((source) => source.sourceId).sort()).toEqual([slow, fast].sort());
+      expect(result.sources.every((source) => source.outcome === 'synced')).toBe(true);
+      expect(await state(slow)).toMatchObject({ cursor: String(batch + 1), lease_owner: null });
+      expect(await ledgerKeys(fast)).toContain(connectorRecordDedupeKey(fast, mail(`fresh-${batch}`)));
+    }
+    expect(await state(slow)).toMatchObject({ backfill_status: 'complete' });
+    expect(await ledgerKeys(slow)).toEqual(keysFor(slow, records));
+    await expectExactlyOnce(slow);
+    await expectExactlyOnce(fast);
+  });
+
   it('does not lease or poll a write-only package, and resumes after same-id replacement', async () => {
     const src = await createSource();
     const before = await state(src);

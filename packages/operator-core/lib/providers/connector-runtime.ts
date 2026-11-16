@@ -85,6 +85,10 @@ export const CONNECTOR_SYNC_STATUSES = ['ready', 'connecting', 'connected', 'deg
 export const DEFAULT_CONNECTOR_LEASE_SECONDS = 300;
 export const DEFAULT_CONNECTOR_POLL_INTERVAL_SECONDS = 300;
 export const DEFAULT_CONNECTOR_MAX_PAGES = 20;
+/** Yield a long backfill at a committed page boundary within the one-minute routine cadence.
+ * One page always gets a turn; an in-flight page finishes before the budget is checked.
+ * The saved cursor and hasMore keep all remaining work due for the next fire. */
+export const CONNECTOR_SOURCE_TURN_MS = 45_000;
 /** Consecutive transient failures before a source reports `degraded`. */
 export const CONNECTOR_DEGRADED_AFTER_FAILURES = 3;
 
@@ -215,6 +219,8 @@ export interface ConnectorSyncDeps {
   /** Parameters of the provider's configured service credentials (D-018.1). */
   servicesFor?: (provider: RegisteredProvider) => Promise<ProviderServices | undefined>;
   leaseOwner?: string;
+  /** Elapsed-time clock for source scheduling; leases and persisted timestamps use the database. */
+  now?: () => number;
   /**
    * Runs after a source's pass ends `synced`. Defaults to the admission lifecycle write-back pass
    * (work-admission/lifecycle.ts, linear-asana-task-sync P-003): what the source's admitted work
@@ -807,6 +813,7 @@ async function syncSource(
     applyMembership: NonNullable<ConnectorSyncDeps['applyMembership']>;
     reconcileCoverage: NonNullable<ConnectorSyncDeps['reconcileCoverage']>;
     owner: string;
+    now: () => number;
     services?: ProviderServices;
   },
 ): Promise<ConnectorSourceOutcome> {
@@ -824,6 +831,7 @@ async function syncSource(
     hasMore: false,
   };
   const passStartedAt = new Date();
+  const turnStartedAt = deps.now();
   if (!(await acquireLease(sql, source, deps.owner, opts.leaseSeconds))) {
     return { ...outcome, outcome: 'leased-elsewhere' };
   }
@@ -868,6 +876,9 @@ async function syncSource(
       }
     }
     while (outcome.pages < opts.maxPagesPerSource) {
+      // A slow mailbox must not spend twenty slow pages ahead of another account's
+      // calendar poll. Yield only after admitting and committing a complete page.
+      if (outcome.pages > 0 && deps.now() - turnStartedAt >= CONNECTOR_SOURCE_TURN_MS) break;
       let page: ProviderSyncPage;
       try {
         page = await provider.adapter.syncPage(
@@ -1020,6 +1031,7 @@ export async function runConnectorSync(
     pollIntervalSeconds: opts.pollIntervalSeconds ?? DEFAULT_CONNECTOR_POLL_INTERVAL_SECONDS,
   };
   const owner = deps.leaseOwner ?? defaultLeaseOwner();
+  const now = deps.now ?? Date.now;
   const ingest = deps.ingest ?? ((db, input) => ingestExternalTriggerEvent(db, input));
   const sinksFor = deps.sinksFor ?? defaultSinksFor;
   const applyMembership = deps.applyMembership ?? defaultApplyMembership;
@@ -1060,7 +1072,7 @@ export async function runConnectorSync(
       servicesByProvider.set(provider.descriptor.id, await servicesFor(provider));
     }
     const services = servicesByProvider.get(provider.descriptor.id);
-    const outcome = await syncSource(sql, provider, source, resolved, { hostFetch, ingest, sinksFor, applyMembership, reconcileCoverage, owner, services });
+    const outcome = await syncSource(sql, provider, source, resolved, { hostFetch, ingest, sinksFor, applyMembership, reconcileCoverage, owner, now, services });
     if (outcome.outcome === 'synced') {
       try {
         await afterSourceSynced(sql, source);

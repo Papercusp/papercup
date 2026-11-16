@@ -213,7 +213,11 @@ async function resolveImportProvenance(
 }
 
 function safeLastSyncAt(source: OwnedExternalTriggerSourceRow): string | null {
-  const value = source.cursor.lastSyncAt ?? source.cursor.last_sync_at;
+  const progress = source.cursor.providerSync;
+  const current = progress && typeof progress === 'object' && !Array.isArray(progress)
+    ? (progress as Record<string, unknown>).lastSyncedAt : null;
+  const value = typeof current === 'string' && current.trim()
+    ? current : source.cursor.lastSyncAt ?? source.cursor.last_sync_at;
   return typeof value === 'string' && value.trim() ? value : null;
 }
 
@@ -320,7 +324,13 @@ function googleCapabilities(
  * same progress line, and a cursor without one reports nothing.
  */
 function cursorBackfillProgress(cursor: Record<string, unknown>): SafeIntegrationSource['backfill'] {
-  const raw = cursor.backfill;
+  let provider: unknown = cursor.provider;
+  if (typeof provider === 'string') {
+    try { provider = JSON.parse(provider); } catch { provider = null; }
+  }
+  const current = provider && typeof provider === 'object' && !Array.isArray(provider)
+    ? (provider as Record<string, unknown>).backfill : null;
+  const raw = current ?? cursor.backfill;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const state = raw as Record<string, unknown>;
   const status = state.status === 'complete' || state.status === 'throttled' ? state.status : 'pending';
