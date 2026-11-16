@@ -1285,7 +1285,7 @@ preflight_verifier_copy_memory() {
     const { readTaskCgroupMemoryMaxMb } = await import(process.argv[1]);
     const limit = readTaskCgroupMemoryMaxMb();
     if (!(Number.isFinite(limit) && limit > 0)) {
-      console.error("VERIFY_TAURI_COPY_MEMORY_UNBOUNDED: independent snapshots require a finite task memory.max; use a test-classified capability:bash command (isolated e2e: cd apps/operator && npm run test:e2e:isolated -- ...). If the serving operator build predates that classification, set the ceiling yourself: systemd-run --user --scope -p MemoryMax=16G -- scripts/verify-tauri-headless.sh .... require_task_confinement alone does not reserve memory.");
+      console.error("VERIFY_TAURI_COPY_MEMORY_UNBOUNDED: independent snapshots require a finite task memory.max. Launch a confined capability:bash task with a bounded admission wait; from the controlling session apply processes:limit { taskId: <returned task_id>, memoryMaxMb: 16384 }, then verify the finite memory.max before starting the verifier. Keep the payload in its managed pc-<task_id>.service; a nested systemd scope can outlive the managed timeout. require_task_confinement alone does not reserve memory.");
       process.exit(2);
     }
     console.error(`VERIFY_TAURI_COPY_MEMORY_MAX_MB=${limit}`);
@@ -2426,7 +2426,7 @@ snapshot_verifier_pinned_deps() {
       const { readTaskCgroupMemoryMaxMb } = await import(process.argv[1]);
       const limit = readTaskCgroupMemoryMaxMb();
       if (!(Number.isFinite(limit) && limit > 0)) {
-        console.error("VERIFY_TAURI_COPY_MEMORY_UNBOUNDED: independent snapshots require a finite task memory.max; use a test-classified capability:bash command (isolated e2e: cd apps/operator && npm run test:e2e:isolated -- ...). If the serving operator build predates that classification, set the ceiling yourself: systemd-run --user --scope -p MemoryMax=16G -- scripts/verify-tauri-headless.sh .... require_task_confinement alone does not reserve memory.");
+        console.error("VERIFY_TAURI_COPY_MEMORY_UNBOUNDED: independent snapshots require a finite task memory.max. Launch a confined capability:bash task with a bounded admission wait; from the controlling session apply processes:limit { taskId: <returned task_id>, memoryMaxMb: 16384 }, then verify the finite memory.max before starting the verifier. Keep the payload in its managed pc-<task_id>.service; a nested systemd scope can outlive the managed timeout. require_task_confinement alone does not reserve memory.");
         process.exit(2);
       }
       console.error(`VERIFY_TAURI_COPY_MEMORY_MAX_MB=${limit}`);

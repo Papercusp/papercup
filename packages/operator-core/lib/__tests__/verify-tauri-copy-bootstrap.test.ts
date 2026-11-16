@@ -8,6 +8,8 @@ const repo = resolve(import.meta.dirname, '../../../..');
 const source = readFileSync(process.env.VERIFY_TAURI_SOURCE_PATH || join(repo, 'scripts/verify-tauri-headless.sh'), 'utf8');
 const copyFunction = source.match(/^snapshot_verifier_pinned_deps\(\) \{[\s\S]*?^\}/m)?.[0];
 if (!copyFunction) throw new Error('Native dependency-copy admission not found');
+const memoryPreflight = source.match(/^preflight_verifier_copy_memory\(\) \{[\s\S]*?^\}/m)?.[0];
+if (!memoryPreflight) throw new Error('Native dependency-copy memory preflight not found');
 let stage: string;
 
 beforeAll(() => {
@@ -93,9 +95,9 @@ describe('native probe subprocess diagnostics', () => {
   });
 });
 
-function probe(memory: string, generation = false) {
+function probe(memory: string, generation = false, early = false) {
   const env = { ...process.env, FIXTURE_PRELOAD: join(stage, 'cgroup-fixture.mjs'),
-    NODE_PATH: '', STAGED_ROOT: stage, WORK: join(stage, 'work'), REPO_DIR: repo,
+    NODE_PATH: '', STAGED_ROOT: stage, WORK: join(stage, 'work'), REPO_DIR: early ? stage : repo,
     VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: 'copy', FIXTURE_MEMORY: memory,
     PAPERCUSP_DEPENDENCY_GENERATION_ROOT: generation ? join(stage, 'immutable-store') : '' };
   return runProbe('bash', ['-c', [
@@ -106,8 +108,9 @@ function probe(memory: string, generation = false) {
     // Only the actual payload copy is replaced. The production Node import,
     // memory measurement, rejection and shell return path all execute.
     'bash() { echo COPY_FIXTURE_ALLOCATED "$@"; }',
-    copyFunction!,
-    'snapshot_verifier_pinned_deps "$STAGED_ROOT" "$STAGED_ROOT/papercusp-desktop/bin/lib/pinned-deps.sh"',
+    early ? memoryPreflight! : copyFunction!,
+    early ? 'preflight_verifier_copy_memory'
+      : 'snapshot_verifier_pinned_deps "$STAGED_ROOT" "$STAGED_ROOT/papercusp-desktop/bin/lib/pinned-deps.sh"',
   ].join('\n')], { cwd: stage, env, encoding: 'utf8', timeout: 10_000 });
 }
 
@@ -132,14 +135,25 @@ describe('native dependency-copy bootstrap before node_modules', () => {
     expect(result.stdout).toContain('COPY_FIXTURE_ALLOCATED');
   });
 
-  it.each(['max', 'unreadable'])('refuses %s limits before allocating a copy', memory => {
-    const result = probe(memory);
+  it('admits a finite memory limit at the early preflight', () => {
+    const result = probe(String(8 * 1024 * 1024 * 1024), false, true);
+    expectProbeStatus(result, 0);
+    expect(result.stderr).toContain('VERIFY_TAURI_COPY_MEMORY_MAX_MB=8192');
+  });
+
+  it.each([
+    { memory: 'max', early: true }, { memory: 'unreadable', early: true },
+    { memory: 'max', early: false }, { memory: 'unreadable', early: false },
+  ])('refuses $memory limits before allocating a copy (early=$early)', ({ memory, early }) => {
+    const result = probe(memory, false, early);
     expectProbeStatus(result, 2);
     expect(result.stderr).toContain('VERIFY_TAURI_COPY_MEMORY_UNBOUNDED');
-    // EI-28688962230158667: a serving build that predates the verifier
-    // classification hands out no ceiling, so the refusal must name the
-    // self-service fallback rather than only the classifier route.
-    expect(result.stderr).toContain('systemd-run --user --scope -p MemoryMax=');
+    // EI-28893377451755789: an external transient scope escapes the parent
+    // managed timeout. Both refusal boundaries must keep the existing task.
+    expect(result.stderr).toContain('processes:limit');
+    expect(result.stderr).toContain('bounded admission wait');
+    expect(result.stderr).toContain('managed pc-<task_id>.service');
+    expect(result.stderr).not.toContain('systemd-run --user --scope');
     expect(result.stdout).not.toContain('COPY_FIXTURE_ALLOCATED');
   });
 });
