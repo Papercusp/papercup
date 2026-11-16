@@ -19,6 +19,9 @@ export function isolatedRuntimeEvidenceKeys(ownedTestDbDirectoryKey) {
     // product identity. Its receipt must survive runtime isolation for cleanup.
     'PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID',
     // Admission and committed-loader receipts are provenance, not product endpoints.
+    // Keep the enclosing process lease through isolation so its private children
+    // inherit the same admission instead of losing their resource custody.
+    'PAPERCUSP_ADMISSION_CONTEXT',
     'PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT',
     'PAPERCUSP_COMMITTED_SOURCE_AUDIT', 'PAPERCUSP_COMMITTED_SOURCE_NOTICES',
     'PAPERCUSP_TEST_FILE_TIMEOUT_MS',

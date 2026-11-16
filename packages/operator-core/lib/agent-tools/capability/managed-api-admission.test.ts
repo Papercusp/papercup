@@ -5,6 +5,7 @@ import { MemoryAdmissionQueueStore } from '../../resource-governor/memory-admiss
 import { WorkItemAdmissionQueueDriver } from '../../resource-governor/queue';
 import { admissionContextFromEnvironment, beginGovernedExecution, governedExecutionLeaseTtlForTimeout,
   withGovernedExecution, type GovernedOperationInput } from '../../resource-governor/execution';
+import { isolatedRuntimeEvidenceKeys, isolatedRuntimeInheritedEnvironment } from '../../../../../scripts/lib/with-test-pg-env.mjs';
 
 const ports = vi.hoisted(() => ({
   fork: vi.fn(), spawn: vi.fn(), capture: vi.fn(), symlink: vi.fn(), rm: vi.fn(), writeFile: vi.fn(),
@@ -117,6 +118,32 @@ describe('managed API proof admission', () => {
     expect(JSON.parse(ports.fork.mock.calls[0][2].env.PAPERCUSP_ADMISSION_CONTEXT)).toEqual(parent.context);
     await parent.finish(actualDemand);
     expect(d.store.records()[0].record).toMatchObject({ state: 'completed', actualDemand });
+  });
+  it('retains the same admission through the real private-runtime filter while scrubbing ambient product authority', async () => {
+    const d = governor();
+    ports.capture.mockImplementation(async () => {
+      const forwarded = ports.fork.mock.calls[0][2].env;
+      const isolated = isolatedRuntimeInheritedEnvironment({ ...forwarded,
+        PAPERCUSP_OPERATOR_URL: 'http://ambient.invalid', PAPERCUSP_SID: 'ambient-owner',
+        OPENAI_API_KEY: 'negative-control', DATABASE_URL: 'postgresql://ambient.invalid/product',
+      }, isolatedRuntimeEvidenceKeys('PAPERCUSP_TEST_OWNED_DB_DIR'));
+      expect(isolated.environment.PAPERCUSP_ADMISSION_CONTEXT).toBe(forwarded.PAPERCUSP_ADMISSION_CONTEXT);
+      expect(isolated.discardedKeys).toEqual(expect.arrayContaining([
+        'PAPERCUSP_OPERATOR_URL', 'PAPERCUSP_SID', 'OPENAI_API_KEY', 'DATABASE_URL',
+      ]));
+      for (const key of ['PAPERCUSP_OPERATOR_URL', 'PAPERCUSP_SID', 'OPENAI_API_KEY', 'DATABASE_URL']) {
+        expect(isolated.environment).not.toHaveProperty(key);
+      }
+      expect(startManagedApiHost('/prepared-api.mjs', isolated.environment).host).toBe(host);
+      const [{ receiptId, record }] = d.store.records();
+      expect(JSON.parse(ports.spawn.mock.calls[0][2].env.PAPERCUSP_ADMISSION_CONTEXT))
+        .toMatchObject({ receiptId, leaseId: record.lease!.leaseId });
+      expect(record.state).toBe('running');
+      return success;
+    });
+    await execute();
+    expect(d.store.records()).toHaveLength(1);
+    expect(d.store.records()[0].record).toMatchObject({ state: 'completed', actualDemand, lease: undefined });
   });
   it('does not fork on admission failure and removes the evidence symlink', async () => {
     const d = governor(); d.store.fail = true;
