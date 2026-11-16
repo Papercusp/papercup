@@ -164,6 +164,8 @@ describe('work_items:set_blocker decision boundary', () => {
     expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('WI-1', 'blocked', expect.objectContaining({
       by: 'su-a', blockerEvidenceContext: expect.any(Object),
       blockerDecision: expect.objectContaining({ input: decision, effect: { setBlocker: request },
+        // The event is not persisted yet; atomic validation needs the candidate too.
+        additionalBlockers: [expect.objectContaining({ ref: ref.ref, status: 'active' })],
         payloadPatch: { externalBlockers: [expect.objectContaining({ ref: ref.ref, status: 'active' })] } }),
     }));
     expect(mergeWorkItemPayload).not.toHaveBeenCalled();
