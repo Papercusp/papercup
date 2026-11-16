@@ -258,7 +258,10 @@ describe('own-head publish (G-2a: worktree head → own namespace, guarded)', ()
     expect(await listNamespaces(repoPath)).toHaveLength(0);
   });
 
-  it('an unmoved head is a free changed:false no-op', async () => {
+  it('an unmoved head retains its verified published SHA without moving the ref', async () => {
+    const repoPath = hiveGitRepoPath(HIVE, REPO_KEY);
+    const published = await readNamespaceRef(repoPath, dev, `refs/heads/${BRANCH}`);
+    expect(published).toBeTruthy();
     const out = await runOwnHeadPublishTick({
       potHomeSlug: HIVE,
       repoKey: REPO_KEY,
@@ -269,6 +272,10 @@ describe('own-head publish (G-2a: worktree head → own namespace, guarded)', ()
     expect(out.ran).toBe(true);
     expect(out.changed).toBe(false);
     expect(out.refused).toBeNull();
+    expect(out.errors).toEqual([]);
+    expect(out.headSha).toBe(published);
+    expect(out.publishedSha).toBe(published);
+    expect(await readNamespaceRef(repoPath, dev, `refs/heads/${BRANCH}`)).toBe(published);
   });
 
   it('a new commit advances the namespace ref to the new head', async () => {

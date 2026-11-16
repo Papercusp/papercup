@@ -328,7 +328,8 @@ export interface OwnHeadPublishTickOutcome {
    *  be split. It IS published (refusing it forever is the outage this
    *  replaces); named here so the health layer can raise it. */
   oversizedCommit?: string | null;
-  /** WI-5738: the sha actually written to the namespace ref this tick. */
+  /** WI-5738: the sha published to the namespace ref, including a verified
+   *  unchanged head that is already present there. */
   publishedSha?: string | null;
   /** Secret findings suppressed by a runtime path exemption this tick (WI-5591)
    *  — populated whether the publish ultimately admitted or was refused for a
@@ -416,7 +417,7 @@ export async function runOwnHeadPublishTick(
     return { ...noop(branch), ran: true, headSha };
   }
   if (priorSha === headSha) {
-    return { ran: true, changed: false, branch, headSha, priorSha, refused: null, exemptedFindings: [], ...unshallowTag(), errors };
+    return { ran: true, changed: false, branch, headSha, priorSha, publishedSha: priorSha, refused: null, exemptedFindings: [], ...unshallowTag(), errors };
   }
 
   // The checkout preflight does not inspect this separate destination ODB.
