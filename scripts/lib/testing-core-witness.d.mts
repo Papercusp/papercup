@@ -120,6 +120,7 @@ export function materializeTestingCoreSnapshot({ root, compilerPath, argv, snaps
     workdir: string;
     liveRoot: any;
     root: string;
+    compilerPath: string;
     argv: any;
     files: number;
     links: number;
