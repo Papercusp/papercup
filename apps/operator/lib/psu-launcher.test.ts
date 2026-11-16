@@ -20399,11 +20399,30 @@ describe("EI-23153687450001394: Codex home repair heals a stale runtime port", (
       `session-${advSessionId}`,
     );
     mkdirSync(codexHome, { recursive: true });
+    // `repaired: false` means the operator found this home already complete.
+    // The launcher reads back hooks.json after every repair (stage 'home-hooks').
+    // Wherever the host installs the provenance and journal hooks, that readback
+    // requires both managed enrollments for this owner. Without them the call
+    // returns null for a reason this test never exercises.
+    const owner = "su-codex-stale-port";
+    const provenanceDir =
+      process.env.PAPERCUSP_TURN_PROVENANCE_DIR ||
+      join(homedir(), ".papercusp", "turn-provenance");
+    writeFileSync(
+      join(codexHome, "hooks.json"),
+      JSON.stringify({
+        hooks: {
+          UserPromptSubmit: [{ hooks: [{ command: `PAPERCUSP_SID='${owner}' PAPERCUSP_AGENT=codex PAPERCUSP_TURN_PROVENANCE_DIR='${provenanceDir}' userpromptsubmit-provenance.sh` }] }],
+          Stop: [{ hooks: [{ command: `PAPERCUSP_SID='${owner}' PAPERCUSP_AGENT=codex PAPERCUSP_JOURNAL_SYNC=1 stop-turn-journal.sh` }] }],
+        },
+      }),
+    );
     const probed: string[] = [];
     const calls: Array<{ url: string; opts: any }> = [];
+    const failures: unknown[] = [];
     try {
       const result = await ensureCodexHomeViaOperator(
-        "su-codex-stale-port",
+        owner,
         codexHome,
         advSessionId,
         {
@@ -20415,6 +20434,9 @@ describe("EI-23153687450001394: Codex home repair heals a stale runtime port", (
             return candidate === "http://127.0.0.1:3070/api/mcp";
           },
           onRecovery: () => {},
+          onFailure: (failure: unknown) => {
+            failures.push(failure);
+          },
           fetchImpl: async (url: string, opts: any) => {
             calls.push({ url, opts });
             return { json: async () => ({ ok: true, repaired: false }) };
@@ -20423,6 +20445,8 @@ describe("EI-23153687450001394: Codex home repair heals a stale runtime port", (
         },
       );
 
+      // Check failures first, so a null result reports its stage and reason.
+      expect(failures).toEqual([]);
       expect(result).toEqual({ ok: true, repaired: false });
       expect(probed).toEqual([
         "http://127.0.0.1:3271/api/mcp",
