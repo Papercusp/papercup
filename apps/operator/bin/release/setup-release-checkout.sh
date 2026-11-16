@@ -2137,25 +2137,40 @@ rebuild_stale_native_addons() {
   node_abi="$(node -p 'process.versions.modules' 2>/dev/null || echo '?')"
   local -a _addons
   IFS=',' read -ra _addons <<< "${PAPERCUSP_PREFLIGHT_ADDONS:-better-sqlite3}"
-  local addon _result=0
+  local addon _result=0 _load_err _load_rc _why _npm_out _npm_rc
   for addon in "${_addons[@]}"; do
     addon="${addon//[[:space:]]/}"   # trim whitespace
     [ -n "$addon" ] || continue
     [ -d "$RELEASE_ROOT/node_modules/$addon" ] || continue   # not installed on this path
-    if (cd "$RELEASE_ROOT" && native_addon_load_check "$addon") >/dev/null 2>&1; then
+    # WI-6554700010049444: keep the probe's stderr and exit status. They are the
+    # only record of WHY the addon failed (e.g. NODE_MODULE_VERSION 147 vs 141);
+    # the probe's stdout is not part of the error.
+    _load_rc=0
+    _load_err="$( { cd "$RELEASE_ROOT" && native_addon_load_check "$addon"; } 2>&1 >/dev/null )" || _load_rc=$?
+    if [ "$_load_rc" -eq 0 ]; then
       continue   # loads cleanly under the runtime Node — ABI matches, nothing to do
     fi
+    _why="Loader error (exit $_load_rc): ${_load_err:-<the load probe wrote no stderr>}"
     if [ "${DEPENDENCIES_ONLY:-0}" = "1" ]; then
-      log "FATAL: dependencies-only native addon '$addon' will not load under Node ABI $node_abi; publish a native-complete generation before preparation"
+      log "FATAL: dependencies-only native addon '$addon' will not load under Node ABI $node_abi; publish a native-complete generation before preparation. $_why"
       return 1
     fi
-    log "WARN native addon '$addon' will not load under Node ABI $node_abi — rebuilding in the release checkout"
+    log "WARN native addon '$addon' will not load under Node ABI $node_abi — rebuilding in the release checkout. $_why"
     copy_up_generation_dependency_path "$RELEASE_ROOT/node_modules/$addon"
-    if (cd "$RELEASE_ROOT" && npm rebuild "$addon") >/dev/null 2>&1 \
-       && (cd "$RELEASE_ROOT" && native_addon_load_check "$addon") >/dev/null 2>&1; then
+    _npm_rc=0
+    _npm_out="$( { cd "$RELEASE_ROOT" && npm rebuild "$addon"; } 2>&1 )" || _npm_rc=$?
+    if [ "$_npm_rc" -ne 0 ]; then
+      log "ERROR native addon '$addon' STILL will not load after rebuild — npm rebuild exited $_npm_rc, so the pre-rebuild loader error still stands; the deploy-gate addon preflight will block this promotion. $_why"
+      log "npm rebuild '$addon' output: ${_npm_out:-<npm wrote no output>}"
+      _result=1
+      continue
+    fi
+    _load_rc=0
+    _load_err="$( { cd "$RELEASE_ROOT" && native_addon_load_check "$addon"; } 2>&1 >/dev/null )" || _load_rc=$?
+    if [ "$_load_rc" -eq 0 ]; then
       log "native addon '$addon' rebuilt OK for Node ABI $node_abi"
     else
-      log "ERROR native addon '$addon' STILL will not load after rebuild — the deploy-gate addon preflight will block this promotion"
+      log "ERROR native addon '$addon' STILL will not load after rebuild — the deploy-gate addon preflight will block this promotion. Loader error after rebuild (exit $_load_rc): ${_load_err:-<the load probe wrote no stderr>}"
       _result=1
     fi
   done
