@@ -54,7 +54,7 @@ export async function prepareCurrentSuRecoveryAllocation(input: { workspace: str
   for (const item of [current, peer]) {
     assert.match(item.id, /^WI-\d+$/);
     assert.equal(facts.validateFactScopeRefShape('work_item', item.id), null);
-    const read = await getWorkItem(item.id, harness, { workspaceId: workspace });
+    const read = await getWorkItem(item.id, harness);
     assert.equal(read?.id, item.id);
     assert.equal(read?.harness, harness);
     assert.equal(read?.assignee, item.assignee);
