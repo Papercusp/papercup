@@ -13,7 +13,13 @@ export interface NotifyClassification {
 }
 export function inScope(path: string): boolean;
 export function censusSources(sources: Record<string, string>): NotifyCensus;
-export function validateClassifications(census: NotifyCensus, records: NotifyClassification[], seedIds?: string[]): string[];
+/** D-018: `judged` = repo-relative paths of the change under review; null judges every file. */
+export interface ClassificationScope { judged?: Set<string> | null }
+export interface ClassificationReport { errors: string[]; drift: { unclassified: string[]; stale: string[] } }
+export function classificationReport(census: NotifyCensus, records: NotifyClassification[], seedIds?: string[], options?: ClassificationScope): ClassificationReport;
+export function validateClassifications(census: NotifyCensus, records: NotifyClassification[], seedIds?: string[], options?: ClassificationScope): string[];
+export function changedSinceSeed(census: Pick<NotifyCensus, 'files'>, seedFiles: NotifyCensus['files']): Set<string>;
+export function resolveJudgedScope(argv: string[], context: { census: Pick<NotifyCensus, 'files'>; seedFiles?: NotifyCensus['files'] | null; root?: string }): { mode: 'all' | 'changed-paths' | 'seed-pin'; judged: Set<string> | null };
 export function scanRepository(cwd?: string): NotifyCensus & { coverage: unknown; sourceDigest: string };
 export const BASELINE_SEED_SHA256: string;
 export function inlineClassifications(census: NotifyCensus): NotifyClassification[];
