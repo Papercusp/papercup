@@ -12,7 +12,8 @@ it.for([false, true])('retains current-su phase artifacts through pruning (manag
   const egressPreflight = '{"status":"ready","runId":"original-egress-fixture","cleanupErrors":[]}\n';
   const mcpPreflight = '{"status":"ready","sourceSha":"retained-source","toolsDigest":"retained-tools"}\n';
   const allocationOriginals = ['{"currentRef":"WI-123","peerRef":"WI-124","nativeLaunches":0}\n',
-    '{"workspace":"test-runtime-retained","clock":{"epoch":"2026-01-01T00:00:00.000Z"}}\n'];
+    '{"workspace":"test-runtime-retained","clock":{"epoch":"2026-01-01T00:00:00.000Z"}}\n',
+    '{"artifactTool":{"name":"artifacts:load","pages":[{"offset":0,"chars":4}]},"ttlControl":{"rowUnchangedAcrossExpiry":true}}\n'];
   vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(fixture, 'retention'));
   vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(fixture, 'locks'));
   // The runner also publishes at the canonical reader root. Keep that namespace

@@ -334,7 +334,6 @@ const turnStartMemory = defineTool({
       const workspace = (body.workspace ?? '').trim();
       const { activeWorkspaceId } = await import('../../../workspace-registry');
       const workspaceId = workspace && workspace !== '*' ? workspace : activeWorkspaceId();
-      const packingAttribution = await captureContextPackingAttribution({ workspaceId, ownerId: owner, client: body.client ?? '' });
       // EI-24791346664119438: lifecycle evidence is independent of whether this
       // request may receive ambient context. Start the marker before the ambient
       // gate so a denied context read cannot erase proof that the loop turn began.
@@ -379,6 +378,10 @@ const turnStartMemory = defineTool({
       markerOutcomePromise = Promise.race([markerWrite, markerPending])
         .then((result) => { markerOutcome = result; return result; })
         .finally(() => clearTimeout(markerTimer));
+
+      // Start lifecycle evidence before attribution: a slow or failed packing
+      // lookup must not suppress proof that the loop turn actually began.
+      const packingAttribution = await captureContextPackingAttribution({ workspaceId, ownerId: owner, client: body.client ?? '' });
 
       let ambientAllowed: boolean;
       try {
@@ -1194,7 +1197,8 @@ const turnStartMemory = defineTool({
       if (typeof body.wallMs === 'number' && Date.now() - arrivedAt > body.wallMs) {
         console.warn(
           `[turn-start] responded after the hook wall — nothing will be printed ` +
-            `(elapsedMs=${Date.now() - arrivedAt} wallMs=${body.wallMs} omitted=${omitted.join(',') || 'none'})`,
+            `(requestId=${turnStartRequestId ?? 'unavailable'} elapsedMs=${Date.now() - arrivedAt} ` +
+            `wallMs=${body.wallMs} omitted=${omitted.join(',') || 'none'})`,
         );
       }
       await markerOutcomePromise;

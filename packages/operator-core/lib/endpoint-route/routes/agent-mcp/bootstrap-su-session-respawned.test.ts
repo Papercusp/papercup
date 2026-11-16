@@ -317,6 +317,7 @@ describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)'
     expect(reanchorMock).toHaveBeenCalledWith(42, FRESH_ID, {
       childLaunchSessionId: null, phases: expect.objectContaining({ track: expect.any(Function) }),
     });
+    expect(readiness.launch).toHaveBeenCalledWith('su-resp-owner', undefined, { select: 'acceptedOperation' });
   });
 
   it('clears the PG estimate plus BOTH process-local caches for the respawned owner', async () => {

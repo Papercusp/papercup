@@ -9,6 +9,7 @@ import { directedImplementerConfinement } from './session-confinement';
 import {
   checkSessionConfinement,
   hasSessionConfinementResolver,
+  getSessionConfinementReadPorts,
   setSessionConfinementResolver,
   sessionAllowsAmbientContext,
   sessionPromptPolicy,
@@ -31,6 +32,31 @@ const SUPERUSER_CTX = {
 const PLAIN_CTX = { isSuperuser: false } as unknown as UnifiedToolContext;
 
 afterEach(() => setSessionConfinementResolver(undefined));
+
+describe('installed confinement read ports', () => {
+  it('refuses an absent installation instead of certifying no confinement', () => {
+    setSessionConfinementResolver(undefined);
+    expect(() => getSessionConfinementReadPorts()).toThrow(/unavailable/);
+  });
+  it('captures readiness and resolver from the same installation without inventing a context', async () => {
+    const calls: string[] = [];
+    const resolve = vi.fn((ctx: UnifiedToolContext) => {
+      expect(ctx).toBe(SUPERUSER_CTX); calls.push('resolve'); return CONFINEMENT;
+    });
+    setSessionConfinementResolver(resolve, { ensureReady: async () => { calls.push('ready'); } });
+    const ports = getSessionConfinementReadPorts();
+    setSessionConfinementResolver(() => null, { ensureReady: async () => { throw new Error('new installation'); } });
+    await ports.ensureConfinementReady();
+    expect(await ports.resolveConfinement(SUPERUSER_CTX)).toBe(CONFINEMENT);
+    expect(calls).toEqual(['ready', 'resolve']);
+  });
+  it('preserves readiness and authority read failures', async () => {
+    setSessionConfinementResolver(() => null, { ensureReady: async () => { throw new Error('not ready'); } });
+    await expect(getSessionConfinementReadPorts().ensureConfinementReady()).rejects.toThrow('not ready');
+    setSessionConfinementResolver(async () => { throw new Error('read failed'); });
+    await expect(getSessionConfinementReadPorts().resolveConfinement(SUPERUSER_CTX)).rejects.toThrow('read failed');
+  });
+});
 
 describe('frozen assignment managed carry host policy', () => {
   const input = { ownerId: 'su-private', workspaceId: 'bench-private' };

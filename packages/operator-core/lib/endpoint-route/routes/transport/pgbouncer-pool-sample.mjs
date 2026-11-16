@@ -11,7 +11,7 @@ import { papercuspPath } from '@papercusp/host-platform/home';
  * per-process debounce.
  */
 import { execFile } from 'node:child_process';
-import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { dirname, join } from 'node:path';
 
@@ -226,22 +226,42 @@ function formatCapture(capture) {
     `PREVIEW:\n${capture.output}`;
 }
 
-function appendBoundedLog(line) {
+function appendBoundedLog(line, captureDirectory) {
+  const retained = [];
+  let error = null;
   try {
     mkdirSync(dirname(SAMPLE_LOG_FILE), { recursive: true });
     try {
       if (statSync(SAMPLE_LOG_FILE).size + Buffer.byteLength(line, 'utf8') > MAX_LOG_BYTES) {
-        const rotated = `${SAMPLE_LOG_FILE}.1`;
-        rmSync(rotated, { force: true });
-        renameSync(SAMPLE_LOG_FILE, rotated);
+        // Old releases wrote frames only to these two logs. Move each complete
+        // source into this sample's existing capture directory before reusing its
+        // name. Unique destinations also prevent concurrent processes from
+        // replacing each other's rotated source. Rename publishes atomically;
+        // a failed preservation leaves the original in place.
+        for (const [source, name] of [
+          [`${SAMPLE_LOG_FILE}.1`, 'retained-previous.log'],
+          [SAMPLE_LOG_FILE, 'retained-current.log'],
+        ]) {
+          const path = join(captureDirectory, name);
+          try {
+            renameSync(source, path);
+            retained.push({ path, bytes: statSync(path).size, complete: true });
+          } catch (failure) {
+            if (failure.code !== 'ENOENT') throw failure;
+          }
+        }
       }
-    } catch {
-      // First write, or a concurrently rotated file. append below is still safe.
+    } catch (failure) {
+      if (failure.code !== 'ENOENT') error = `sample log retention failed: ${safeErrorText(failure)}`;
     }
+    line = retained.map((source) => `RETAINED_SUMMARY_SOURCE: ${JSON.stringify(source)}\n`).join('') + line;
+    // On preservation failure keep the old source, even beyond the display
+    // budget. The sampler reports the failure without affecting its caller.
     appendFileSync(SAMPLE_LOG_FILE, line);
-  } catch {
-    /* diagnostic logging must never affect the verifier or watchdog */
+  } catch (failure) {
+    error ??= `sample log unavailable: ${safeErrorText(failure)}`;
   }
+  return { line: error ? `RETENTION_ERROR: ${JSON.stringify(error)}\n${line}` : line, error };
 }
 
 let lastSampleAt = 0;
@@ -310,17 +330,17 @@ export async function samplePgBouncerPools(reason, {
     `pgActivityDurationMs=${activity.durationMs ?? 'unavailable'}\n` +
     `PGBOUNCER:\n${formatCapture(pool)}\n` +
     `PG_STAT_ACTIVITY:\n${formatCapture(activity)}\n\n`;
-  // Summary rotation never deletes the source or its correlation/timing record.
+  const summary = appendBoundedLog(line, captureDirectory);
+  // Keep the recovery references with the permanent per-sample summary too.
   const captureRef = join(captureDirectory, 'summary.log');
   let captureError = null;
-  try { writeFileSync(captureRef, line, { mode: 0o600 }); }
+  try { writeFileSync(captureRef, summary.line, { mode: 0o600 }); }
   catch (error) { captureError = safeErrorText(error); }
-  appendBoundedLog(line);
 
   return {
-    ok: pool.ok && !captureError,
+    ok: pool.ok && !captureError && !summary.error,
     output: pool.output,
-    error: pool.error ?? captureError,
+    error: pool.error ?? captureError ?? summary.error,
     outputSource: pool.outputSource,
     outputOmittedBytes: pool.outputOmittedBytes,
     captureRef: captureError ? null : captureRef,

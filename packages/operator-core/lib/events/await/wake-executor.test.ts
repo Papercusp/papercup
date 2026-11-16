@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import {
   codexHomeForAdvSession,
   codexWakeGatewayInputs,
+  codexGatewayHomeReady,
   executeWake,
   findCodexRolloutSessionId,
   injectOmpWakeTurnWhenReady,
@@ -275,11 +276,11 @@ describe('bounded quota recovery contract (measured-agent-productivity P-004)', 
 describe('live Codex quota gateway repair', () => {
   const ownerId = 'su-quota-gateway';
   const sessionId = 9901;
-  const fixture = (account = 'auto', launchedBy: string | null = 'su-leader') => {
+  const fixture = (account = 'auto', launchedBy: string | null = 'su-leader', interactive = false) => {
     const order: string[] = [];
     const record = session({
       id: sessionId, agent: 'codex', coordOwnerId: ownerId,
-      launchArgv: ['psu', '--agent=codex', `--account=${account}`, '--headless'],
+      launchArgv: ['psu', '--agent=codex', `--account=${account}`, ...(!interactive ? ['--headless'] : [])],
     });
     const repair = vi.fn<NonNullable<ExecuteWakeDeps['ensureCodexHomeForWake']>>(async () => {
       order.push('repair');
@@ -292,8 +293,8 @@ describe('live Codex quota gateway repair', () => {
     const common = deps({
       getSession: vi.fn(async () => record) as never,
       findPsuHost: vi.fn(() => ({
-        sock: '/tmp/quota-gateway.sock', ownerId, bridgeTty: false,
-        quotaBlocked: true, launchedBy, caps: ['quota-recovery'],
+        sock: '/tmp/quota-gateway.sock', ownerId, bridgeTty: !interactive ? false : true,
+        quotaBlocked: !interactive, launchedBy, caps: ['quota-recovery'],
       })) as never,
       ensureCodexHomeForWake: repair,
       injectPsuHostWithConfirmation: inject,
@@ -350,6 +351,74 @@ describe('live Codex quota gateway repair', () => {
     await executeWake(f.delivery, f.common);
     expect(f.order).toEqual(['repair', 'inject']);
     expect(f.inject.mock.calls[0]?.[1]).toMatchObject({ mode: 'turn' });
+  });
+
+  it.each(['auto', 'original-pinned-account'])('repairs a live interactive %s home before submitting its wake', async account => {
+    const f = fixture(account, 'su-leader', true);
+    f.common.codexGatewayHomeReady = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    expect(await executeWake(f.delivery, f.common)).toMatchObject({ kind: 'delivered' });
+    expect(f.order).toEqual(['repair', 'inject']);
+    expect(f.repair).toHaveBeenCalledWith(expect.objectContaining({
+      owner: ownerId, advSessionId: sessionId, headless: false,
+      ...codexWakeGatewayInputs(wakeAccountRouteFromArgv(f.record.launchArgv, ownerId)),
+    }));
+    expect(f.inject.mock.calls[0]?.[1]).toMatchObject({ mode: 'turn' });
+  });
+
+  it('does not rebuild a healthy live interactive gateway home', async () => {
+    const f = fixture('auto', 'su-leader', true);
+    expect(await executeWake(f.delivery, f.common)).toMatchObject({ kind: 'delivered' });
+    expect(f.order).toEqual(['inject']);
+    expect(f.repair).not.toHaveBeenCalled();
+  });
+
+  it('refuses injection when the live provider repair fails', async () => {
+    const f = fixture('auto', 'su-leader', true);
+    f.common.codexGatewayHomeReady = vi.fn(async () => false);
+    f.repair.mockResolvedValueOnce({ ok: false, reason: 'role-launch-provenance-unavailable' });
+    expect(await executeWake(f.delivery, f.common)).toMatchObject({
+      kind: 'park', reason: expect.stringContaining('role-launch-provenance-unavailable'),
+    });
+    expect(f.inject).not.toHaveBeenCalled();
+  });
+
+  it('verifies the provider after a purportedly successful repair', async () => {
+    const f = fixture('auto', 'su-leader', true);
+    f.common.codexGatewayHomeReady = vi.fn(async () => false);
+    expect(await executeWake(f.delivery, f.common)).toMatchObject({
+      kind: 'park', reason: expect.stringContaining('did not restore the configured provider'),
+    });
+    expect(f.inject).not.toHaveBeenCalled();
+  });
+
+  it('does not repair a different ADV host found under the same owner', async () => {
+    const f = fixture('auto', 'su-leader', true);
+    f.common.findPsuHost = vi.fn(async () => ({
+      ownerId, advSessionId: String(sessionId + 1), sock: '/tmp/other-host.sock', bridgeTty: true,
+    })) as never;
+    expect(await executeWake(f.delivery, f.common)).toMatchObject({
+      kind: 'park', reason: expect.stringContaining('ADV identity differs'),
+    });
+    expect(f.repair).not.toHaveBeenCalled();
+    expect(f.inject).not.toHaveBeenCalled();
+  });
+});
+
+describe('live Codex gateway configuration readiness', () => {
+  it.each([
+    ['model = "gpt-6.1-sol"\n', false],
+    ['model_provider = "papercusp-codex-gateway"\n', false],
+    ['model_provider = "papercusp-codex-gateway"\n[model_providers.papercusp-codex-gateway]\nbase_url = ""\n', false],
+    ['model_provider = "papercusp-codex-gateway"\n[model_providers."papercusp-codex-gateway"]\nbase_url = "http://localhost:8788/v1"\n', true],
+    ['malformed = [\n', false],
+  ])('checks parsed provider configuration without exposing credentials', async (config, ready) => {
+    const home = mkdtempSync(join(tmpdir(), 'live-gateway-ready-'));
+    try {
+      writeFileSync(join(home, 'config.toml'), config);
+      expect(await codexGatewayHomeReady(home)).toBe(ready);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 
@@ -559,6 +628,7 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     // Hermetic by default: the production repair helper rebuilds its launch
     // spec through PG. Dedicated Codex archive tests inject the ordering seam.
     ensureCodexHomeForWake: vi.fn(async () => ({ ok: true, repaired: false })) as never,
+    codexGatewayHomeReady: vi.fn(async () => true),
     // Hermetic by default: tests of unrelated wake behavior do not depend on
     // the runner's actual ~/.codex login.
     prepareDirectCodexWakeAuth: vi.fn(() => ({ checked: true, ready: true, reason: 'test-ready' })),

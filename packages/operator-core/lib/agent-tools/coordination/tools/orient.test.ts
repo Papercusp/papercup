@@ -34,6 +34,7 @@ import { lookupByMcpName, runToolOrchestration, type ProjectedTool, type Unified
 import { createPhaseTracker } from '@papercusp/tooldef';
 import { MCP_TRANSPORT_CAP_MS } from '../../capability/foreground-transport-cap';
 import * as fallbackObservations from '../../../degradation/fallback-observations';
+import { mockResolvedTyped } from '../../../testing/typed-mock';
 
 // Unit handler cases do not own an org PG pool. Keep the root SU receipt's
 // presence and adv-session reads at module seams; dedicated tests inject values.
@@ -995,6 +996,61 @@ describe('coord:orient args', () => {
       readGovernorStateSnapshotMock.mockResolvedValue(null);
       warnSpy.mockRestore();
       vi.useRealTimers();
+    }
+  });
+
+  it.each(['codex', 'omp'] as const)('skips Claude config discovery in the real handler for a recorded %s session', async (client) => {
+    const ownerId = 'su-orient-native-config-test';
+    const sessions = await import('../../../adv-sessions');
+    const config = await import('../../../session-config-integrity');
+    const sessionReader = vi.mocked(sessions.latestAdvSessionByCoordOwner);
+    const load = vi.spyOn(config, 'loadSessionConfigState').mockImplementation(() => {
+      throw new Error('Claude transcript discovery must not run');
+    });
+    mockResolvedTyped(sessionReader, {
+      id: 1, workspaceId: 'ws-test', planSlug: null, agent: client,
+      role: null, feature: null, mode: 'omp', terminalBin: null, pid: null,
+      windowId: null, ompThreadId: null, label: null, cwd: null,
+      coordOwnerId: ownerId, sessionId: 'native-session', display: null,
+      launchArgv: null, launchedAt: null, startedAt: '2026-11-16T00:00:00.000Z',
+      endedAt: null, exitCode: null, endedBy: null, endedSignal: null,
+    });
+    inProcessCallMock.mockReturnValue(async (name: string) => {
+      if (name === 'fleet:assignments') return {
+        ok: true, summary: { agents: 1 },
+        agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 0 }],
+      };
+      if (name === 'coord:whoami') return { fleetSlug: null };
+      throw new Error(`unexpected sub-call: ${name}`);
+    });
+    getModesMock.mockResolvedValue(null);
+    readOwnerPresenceMock.mockResolvedValue({ present: false, lastSeenAgoMs: null, activeSessions: 0 });
+    getFlagMock.mockResolvedValue(false);
+    resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
+    fetchOrientPipelineMock.mockResolvedValue(null);
+    buildCompactionRecoveryMock.mockResolvedValue({
+      selfRecall: "sessions:search { session: 'self' }",
+      coverage: { selfSession: true, control: true, heldItems: true, staleness: null },
+    });
+    readGovernorStateSnapshotMock.mockResolvedValue(null);
+    const phases = createPhaseTracker();
+    try {
+      const result = await orientTool.handler({
+        afterCompaction: true, claimableLimit: 0, inboxLimit: 0,
+        includePlanEvents: false, includeFleetCatchUp: false,
+        includeFleetHealth: false, includeRecipes: false, includePeersKnow: false,
+      } as never, {
+        uiClientId: ownerId, isSuperuser: true, workspaceId: 'ws-test', role: 'su',
+        metadata: vi.fn(), log: vi.fn(), progress: vi.fn(),
+        activateTools: vi.fn(() => false), phases,
+      } as never) as { data: Record<string, unknown> };
+      expect(result.data).toMatchObject({ ok: true });
+      expect(phases.intervals().map(interval => interval.phase)).toContain('handler:sessionConfigIntegrity');
+      expect(load).not.toHaveBeenCalled();
+      expect(result.data.configIntegrity).toBeUndefined();
+    } finally {
+      load.mockRestore();
+      sessionReader.mockResolvedValue(null);
     }
   });
 

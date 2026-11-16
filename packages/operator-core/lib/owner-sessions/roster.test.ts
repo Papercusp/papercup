@@ -65,4 +65,16 @@ describe('session roster — one read for desktop and device (P-001)', () => {
     // a parked su is still the owner's session, just idle between turns.
     expect((shared as { active: Array<{ ownerId: string }> }).active.map((a) => a.ownerId)).toEqual(['su-live', 'su-parked']);
   });
+
+  it('accepts the launcher view on the named query and projects the same workspace snapshot', async () => {
+    const desktop = await resolveNamedQueryV2('advRoster.list', { workspaceId: 'ws-a', view: 'launcher' });
+    const shared = await readSessionRoster({ workspaceId: 'ws-a', view: 'launcher' });
+    expect(desktop).toEqual([shared]);
+    expect(shared.active).toEqual([
+      expect.objectContaining({ ownerId: 'su-live', intent: 'P-001 shared modules' }),
+      expect.objectContaining({ ownerId: 'su-parked', intent: null }),
+    ]);
+    expect(shared).not.toHaveProperty('ended');
+    expect(fixture.readAdvRoster).toHaveBeenCalledWith({ workspaceId: 'ws-a', endedLimit: SESSION_ROSTER_DEFAULT_ENDED_LIMIT });
+  });
 });

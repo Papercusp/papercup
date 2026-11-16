@@ -725,54 +725,52 @@ const post = defineTool({
     }
     incompleteBootstrapSessionId = sessionId;
 
-    // A grant-bearing role identity must reach the same database-owned kernel
-    // receipt as an SU identity. Merely compiling its prompt/artifact leaves
-    // checkIdentityGrantKernel on the legacy ungoverned path. Persist before
-    // returning a launch so the first tool call can only use the current grant
-    // policy; a failed receipt is a failed launch, not an unrestricted worker.
-    if (spec.specificationArtifact?.configuration?.grants != null) {
-      const recorded = await recordSuLaunchSpec(sessionId, sid, {
-        v: 1,
+    // Every compiled role needs its launch artifact on this incarnation's row.
+    // Grants are optional configuration, not an opt-in to identity persistence:
+    // a same-owner successor is checked against its own row even when the owner
+    // already has an applied revision. Use the receipt-retaining writer before
+    // activation, preserving the compiler's policy exactly as produced.
+    const recorded = await recordSuLaunchSpec(sessionId, sid, {
+      v: 1,
+      workspaceId: workspace,
+      harnessSlug,
+      role,
+      stack: spec.stack,
+      ...(spec.mcpTarget ? { mcpTarget: spec.mcpTarget } : {}),
+      specificationRevision: spec.specificationRevision,
+      stateRevision: spec.stateRevision,
+      specificationArtifact: spec.specificationArtifact,
+      ...(spec.acceptedOperation ? { acceptedOperation: {
+        kind: 'blueprint-operation-worker',
+        workItemId: spec.acceptedOperation.workItemId,
+        operationId: spec.acceptedOperation.operationId,
+        specificationRevision: spec.acceptedOperation.specificationRevision,
+        pin: spec.acceptedOperation.pin,
+        identity: spec.acceptedOperation.identity,
+        requiredTools: spec.acceptedOperation.requiredTools,
+        ...(spec.acceptedOperation.modelPolicy ? {
+          modelPolicy: spec.acceptedOperation.modelPolicy,
+          modelSelection: spec.acceptedOperation.modelSelection,
+        } : {}),
+      } } : {}),
+    });
+    if (!recorded) {
+      return jsonRes({ status: 'error', error: 'role identity receipt was not persisted' }, 500);
+    }
+    try {
+      const { requestSessionIdentityActivation } = await import('../../../agent-tools/coordination/control-anchor');
+      await requestSessionIdentityActivation({
+        ownerId: sid,
         workspaceId: workspace,
-        harnessSlug,
-        role,
-        stack: spec.stack,
-        ...(spec.mcpTarget ? { mcpTarget: spec.mcpTarget } : {}),
-        specificationRevision: spec.specificationRevision,
-        stateRevision: spec.stateRevision,
-        specificationArtifact: spec.specificationArtifact,
-        ...(spec.acceptedOperation ? { acceptedOperation: {
-          kind: 'blueprint-operation-worker',
-          workItemId: spec.acceptedOperation.workItemId,
-          operationId: spec.acceptedOperation.operationId,
-          specificationRevision: spec.acceptedOperation.specificationRevision,
-          pin: spec.acceptedOperation.pin,
-          identity: spec.acceptedOperation.identity,
-          requiredTools: spec.acceptedOperation.requiredTools,
-          ...(spec.acceptedOperation.modelPolicy ? {
-            modelPolicy: spec.acceptedOperation.modelPolicy,
-            modelSelection: spec.acceptedOperation.modelSelection,
-          } : {}),
-        } } : {}),
+        revision: {
+          specificationRevision: spec.specificationRevision,
+          stateRevision: spec.stateRevision,
+        },
+        attribution: { actorId: sid, principalId: sid, sessionId: sid },
+        source: 'launch',
       });
-      if (!recorded) {
-        return jsonRes({ status: 'error', error: 'restricted role identity receipt was not persisted' }, 500);
-      }
-      try {
-        const { requestSessionIdentityActivation } = await import('../../../agent-tools/coordination/control-anchor');
-        await requestSessionIdentityActivation({
-          ownerId: sid,
-          workspaceId: workspace,
-          revision: {
-            specificationRevision: spec.specificationRevision,
-            stateRevision: spec.stateRevision,
-          },
-          attribution: { actorId: sid, principalId: sid, sessionId: sid },
-          source: 'launch',
-        });
-      } catch (error) {
-        return jsonRes({ status: 'error', error: `restricted role identity activation failed: ${error instanceof Error ? error.message : String(error)}` }, 500);
-      }
+    } catch (error) {
+      return jsonRes({ status: 'error', error: `role identity activation failed: ${error instanceof Error ? error.message : String(error)}` }, 500);
     }
 
     // EI-23204591840754750: role sessions use the same launcher supervisor beat

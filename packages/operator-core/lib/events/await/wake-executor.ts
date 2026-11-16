@@ -52,6 +52,9 @@ import {
 } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { parse as parseToml } from '@iarna/toml';
+import { CODEX_GATEWAY_PROVIDER_ID } from '@papercusp/orchestrator/codex-gateway-config';
 import { resolveResumedSessionOperatorBaseUrl } from '../../mcp-base-url';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
@@ -658,8 +661,8 @@ export interface EnsureCodexHomeForWakeInput {
   advSessionId: number;
   owner: string;
   codexHome: string;
-  /** Channel-2 wake resumes are detached/headless and must retain that config policy. */
-  headless: true;
+  /** Preserve the live host's display policy; Channel-2 resumes are headless. */
+  headless: boolean;
   sessionRow?: CodexRepairSessionRow | null;
   /**
    * Keep (or restore) the unpinned gateway route in the rewritten config.toml.
@@ -687,6 +690,21 @@ export function codexWakeGatewayInputs(
     return { requireGatewayProvider: false, codexGatewayAccountId: route.accountId };
   }
   return { requireGatewayProvider: false, codexGatewayAccountId: null };
+}
+
+/** Read only the managed provider configuration; never expose its credentials. */
+export async function codexGatewayHomeReady(codexHome: string): Promise<boolean> {
+  try {
+    const config = parseToml(await readFile(join(codexHome, 'config.toml'), 'utf8')) as {
+      model_provider?: unknown;
+      model_providers?: Record<string, { base_url?: unknown }>;
+    };
+    const provider = config.model_providers?.[CODEX_GATEWAY_PROVIDER_ID];
+    return config.model_provider === CODEX_GATEWAY_PROVIDER_ID &&
+      typeof provider?.base_url === 'string' && provider.base_url.trim().length > 0;
+  } catch {
+    return false;
+  }
 }
 
 /** Rebuild the Codex-specific child route after a wake; its home config and process env are separate. */
@@ -3535,6 +3553,8 @@ export interface ExecuteWakeDeps {
    *  Injected so the archive/repair ordering is testable without PG or a live
    *  launch-spec store; the default reuses the /adv route's repair inputs. */
   ensureCodexHomeForWake?: (input: EnsureCodexHomeForWakeInput) => Promise<EnsureCodexHomeForWakeResult>;
+  /** Cheap asynchronous preflight before a live gateway host accepts a wake. */
+  codexGatewayHomeReady?: typeof codexGatewayHomeReady;
   /** Restore and verify the system Codex login before a direct/default headless resume. */
   prepareDirectCodexWakeAuth?: typeof prepareDirectCodexWakeAuth;
   /** WI-3940: upper bound (ms) on each rematerialize-on-miss PG call in the
@@ -4626,6 +4646,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const rematerializeSession = deps.rematerializeSession ?? defaultRematerializeSession;
   const findArchivedSessionIdForAdv = deps.findArchivedSessionIdForAdv ?? defaultFindArchivedSessionIdForAdv;
   const ensureCodexHomeForWake = deps.ensureCodexHomeForWake ?? defaultEnsureCodexHomeForWake;
+  const gatewayHomeReady = deps.codexGatewayHomeReady ?? codexGatewayHomeReady;
   const quarantineToolReferenceSession =
     deps.quarantineToolReferenceSession ?? quarantineRepeatedClaudeToolReferenceFailures;
   const quarantineCodexOverflowSession =
@@ -5369,30 +5390,42 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // + socket present) — so inject the wake turn in place; on any miss fall
     // through to the normal channels.
     const liveAccountRoute = wakeAccountRouteFromArgv(fresh?.launchArgv, d.subscriberId);
-    // A live quota host takes Channel 1b, never the Channel 2 home-repair leg.
-    // Reusing its native argv with a stripped provider would recycle straight
-    // back into the default account's wall. Restore the persisted auto route
-    // before either warm injection or cold/recycle startup. This does not
-    // relax the independent agent-launch provenance/operation fences.
-    if (handle.agent === 'codex' && liveAccountRoute?.mode === 'auto') {
+    // Channel 1b bypasses Channel 2's home repair. A live TUI also reloads its
+    // configuration at turn/start, so missing provider state must be repaired
+    // before injection, even when the host is interactive and has no quota wall.
+    if (handle.agent === 'codex' &&
+      (liveAccountRoute?.mode === 'auto' || liveAccountRoute?.mode === 'pin')) {
       const quotaHost = await findPsuHost(d.subscriberId);
-      if (quotaHost?.ownerId === d.subscriberId && quotaHost.bridgeTty === false && quotaHost.quotaBlocked === true) {
-        const repair = await ensureCodexHomeForWake({
-          advSessionId: handle.advSessionId,
-          owner: d.subscriberId,
-          codexHome: codexHomeForAdvSession(handle.advSessionId),
-          headless: true,
-          sessionRow: fresh,
-          ...codexWakeGatewayInputs(liveAccountRoute),
-        }).catch((error: unknown) => ({
-          ok: false,
-          reason: redactSensitiveText(error instanceof Error ? error.message : String(error)),
-        }));
-        if (!repair.ok || repair.reason === 'no-launch-spec' || repair.reason === 'unsupported-agent') {
-          return {
-            kind: 'park',
-            reason: `Codex quota gateway repair could not restore the persisted auto route (${repair.reason ?? 'unknown'}); parked before native recovery`,
-          };
+      if (quotaHost?.ownerId === d.subscriberId) {
+        const codexHome = codexHomeForAdvSession(handle.advSessionId);
+        const quotaRepair = liveAccountRoute.mode === 'auto' &&
+          quotaHost.bridgeTty === false && quotaHost.quotaBlocked === true;
+        const providerRepair = !(await gatewayHomeReady(codexHome));
+        if (quotaHost.advSessionId != null && Number(quotaHost.advSessionId) !== handle.advSessionId) {
+          return { kind: 'park', reason: 'Live Codex host ADV identity differs from the wake; no home repair or injection attempted' };
+        }
+        if (quotaRepair || providerRepair) {
+          const repairLabel = quotaRepair ? 'Codex quota gateway repair' : 'Codex live gateway repair';
+          const repair = await ensureCodexHomeForWake({
+            advSessionId: handle.advSessionId,
+            owner: d.subscriberId,
+            codexHome,
+            headless: quotaHost.bridgeTty === false,
+            sessionRow: fresh,
+            ...codexWakeGatewayInputs(liveAccountRoute),
+          }).catch((error: unknown) => ({
+            ok: false,
+            reason: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+          }));
+          if (!repair.ok || repair.reason === 'no-launch-spec' || repair.reason === 'unsupported-agent') {
+            return {
+              kind: 'park',
+              reason: `${repairLabel} could not restore the persisted account route (${repair.reason ?? 'unknown'}); parked before native recovery`,
+            };
+          }
+          if (providerRepair && !(await gatewayHomeReady(codexHome))) {
+            return { kind: 'park', reason: `${repairLabel} did not restore the configured provider; parked before native wake` };
+          }
         }
       }
     }

@@ -21,6 +21,31 @@ describe('header roster projection', () => {
   });
 });
 
+describe('launcher roster projection', () => {
+  it('retains search, qualified Plan claims and focus guards without shipping heavy roster details', () => {
+    const agent = { ownerId: 'su-local', label: 'Maya', intent: 'Build launcher', agent: 'codex',
+      currentPlanSlug: 'launch', sessionState: 'parked', advSessionId: 42, windowId: 'window-42',
+      pid: 99, isLocal: true, stale: false, revoked: false,
+      claims: [{ harnessSlug: 'alpha', planSlug: 'launch', active: true, itemId: 'P-001',
+        checkpoint: 'claim detail'.repeat(1000) },
+      { harnessSlug: 'beta', planSlug: 'launch', active: false }],
+      checkpoint: 'large checkpoint'.repeat(1000), transcript: 'large transcript'.repeat(1000) };
+    const snapshot = { active: [agent, { ...agent, ownerId: 'su-remote', isLocal: false, stale: true, revoked: true }],
+      ended: [agent], pending: [agent], starting: [agent], orphanedClaims: [agent],
+      degradedFields: [{ field: 'ended', kind: 'read-failed', reason: 'unavailable' }] } as unknown as RosterSnapshot;
+    const launcher = projectAdvRoster(snapshot, 'launcher');
+    expect(launcher.active).toEqual([agent, { ...agent, ownerId: 'su-remote', isLocal: false, stale: true, revoked: true }]
+      .map(({ checkpoint: _checkpoint, transcript: _transcript, claims, ...identity }) => ({
+        ...identity, claims: claims.map(({ harnessSlug, planSlug, active }) => ({ harnessSlug, planSlug, active })),
+      })));
+    expect(launcher).toHaveProperty('degradedFields', snapshot.degradedFields);
+    expect(Object.keys(launcher).sort()).toEqual(['active', 'degradedFields']);
+    expect(JSON.stringify(launcher)).not.toMatch(/large checkpoint|large transcript|claim detail/);
+    expect(JSON.stringify(launcher).length).toBeLessThan(JSON.stringify(snapshot).length / 10);
+    expect(projectAdvRoster(snapshot, 'full')).toBe(snapshot);
+  });
+});
+
 /**
  * adv-roster-read — the read deadline on the Sessions roster fan-out (WI-39825).
  *

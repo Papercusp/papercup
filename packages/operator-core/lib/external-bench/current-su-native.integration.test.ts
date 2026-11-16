@@ -82,10 +82,10 @@ async function nativeScenario(scenario: 'current-su-native' | 'current-su-native
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--managed-tasks', '--',
         process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts'),
         '--prepared-api-sha=' + prepared!.sha256, '--prepared-receipt-sha=' + prepared!.receiptSha256,
-        '--native-docker-host=' + dockerHost],
+        '--native-docker-host=' + dockerHost, '--private-http-scenario=' + scenario],
       { cwd: root, detached: true, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
-          STAGING_FIRST_HTTP_SCENARIO: scenario, STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir,
+          STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir,
           TMPDIR: process.env.TMPDIR ?? join(evidenceDir, 'tmp') } });
       observe(child);
       child.stdout!.on('data', chunk => {
@@ -97,6 +97,7 @@ async function nativeScenario(scenario: 'current-su-native' | 'current-su-native
       finally { await rm(join(evidenceDir, 'node_modules')); }
       expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ code: 0, signal: null,
         timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
+      expect(result.output).toContain('PRIVATE_HTTP_SCENARIO_SELECTED ' + scenario);
       const line = result.output.split('\n').find(row => row.startsWith('CURRENT_SU_NATIVE_RECEIPT '));
       expect(line, result.output.slice(-4000)).toBeTruthy();
       const receipt = JSON.parse(line!.slice('CURRENT_SU_NATIVE_RECEIPT '.length));
@@ -154,10 +155,11 @@ async function privateMcpPreflightOnlyScenario(context: TestContext) {
       await mkdir(join(evidenceDir, 'tmp'));
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--managed-tasks', '--',
         process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts'),
-        '--prepared-api-sha=' + prepared!.sha256, '--prepared-receipt-sha=' + prepared!.receiptSha256],
+        '--prepared-api-sha=' + prepared!.sha256, '--prepared-receipt-sha=' + prepared!.receiptSha256,
+        '--private-http-scenario=private-mcp-preflight-only'],
       { cwd: root, detached: true, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
-          STAGING_FIRST_HTTP_SCENARIO: 'private-mcp-preflight-only',
+
           STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir,
           TMPDIR: process.env.TMPDIR ?? join(evidenceDir, 'tmp') } });
       observe(child);
@@ -166,6 +168,7 @@ async function privateMcpPreflightOnlyScenario(context: TestContext) {
       finally { await rm(join(evidenceDir, 'node_modules')); }
       expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ code: 0, signal: null,
         timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
+      expect(result.output).toContain('PRIVATE_HTTP_SCENARIO_SELECTED private-mcp-preflight-only');
       const line = result.output.split('\n').find(row => row.startsWith('PRIVATE_MCP_PREFLIGHT_ONLY_RECEIPT '));
       expect(line, result.output.slice(-4000)).toBeTruthy();
       const receipt = JSON.parse(line!.slice('PRIVATE_MCP_PREFLIGHT_ONLY_RECEIPT '.length));
@@ -220,13 +223,16 @@ it('allocates numeric recovery inputs and retains their PostgreSQL-clock manifes
     sourcePaths: ['packages/operator-core/test/current-su-native-http-scenario.ts',
       'packages/operator-core/test/staging-first-http-fixture.ts',
       'packages/operator-core/lib/agent-facts/store.ts', 'packages/operator-core/lib/work-items.ts',
-      'packages/operator-core/lib/text-artifacts.ts'],
+      'packages/operator-core/lib/text-artifacts.ts',
+      'packages/agent-mcp/src/tools/artifacts/load.ts',
+      'libs/papercusp/libs/db/src/workspace-context.ts'],
     retainedArtifacts: CURRENT_SU_RECOVERY_ALLOCATION_ARTIFACTS,
     execute: async (observe, evidenceDir) => {
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts')],
+        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts'),
+        '--current-su-recovery-allocation'],
       { cwd: root, detached: true, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-        env: { ...process.env, FORCE_COLOR: '0', STAGING_FIRST_HTTP_SCENARIO: 'current-su-native-recovery-allocation',
+        env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
           STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir } });
       observe(child);
       const result = await captureIsolatedWorker(child, evidenceDir, allocationOptions);
@@ -234,6 +240,7 @@ it('allocates numeric recovery inputs and retains their PostgreSQL-clock manifes
         timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
       const receipt = JSON.parse(readFileSync(join(evidenceDir, 'recovery-fact-allocation.json'), 'utf8'));
       const manifest = readFileSync(join(evidenceDir, 'recovery-fact-manifest.json'), 'utf8');
+      expect(result.output).toContain('CURRENT_SU_RECOVERY_ALLOCATION_SELECTED');
       expect(result.output).toContain('CURRENT_SU_RECOVERY_ALLOCATION_RECEIPT ');
       expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/), nativeLaunches: 0,
         allocation: { currentRef: expect.stringMatching(/^WI-\d+$/), peerRef: expect.stringMatching(/^WI-\d+$/),
@@ -249,6 +256,36 @@ it('allocates numeric recovery inputs and retains their PostgreSQL-clock manifes
       expect(frozen.rowGenerations.find((row: { scope: string }) => row.scope === 'work_item').scopeRef)
         .toBe(receipt.allocation.currentRef);
       expect(frozen.notExercised).toContain('native-epoch');
+      const artifactProofBytes = readFileSync(join(evidenceDir, 'recovery-fact-artifact-proof.json'), 'utf8');
+      expect(createHash('sha256').update(artifactProofBytes).digest('hex')).toBe(receipt.artifactProof.sha256);
+      const proof = JSON.parse(artifactProofBytes);
+      expect(proof).toMatchObject({ workspace: receipt.workspace, nativeLaunches: 0,
+        allocationManifestSha256: receipt.manifest.sha256,
+        artifactTool: { name: 'artifacts:load', workspaceWrapper: 'withWorkspace', maxChars: 4000,
+          reconstructedSha256: receipt.manifest.sha256, chars: manifest.length,
+          bytes: Buffer.byteLength(manifest), foreignWorkspaceRejected: true,
+          wrongHarnessRejected: true, reachableAfterControls: true },
+        factAudience: { nonmemberBodies: ['Continue the assigned task.', 'Resume the bound harness.'],
+          memberBodies: ['Continue the assigned task.', 'Excluded nonmember audience.', 'Resume the bound harness.'],
+          candidateManifestReceiver: 'not-exercised' },
+        ttlControl: { rowUnchangedAcrossExpiry: true, liveBeforeExpiry: true,
+          absentAfterExpiry: true, originalInputRestored: true } });
+      let offset = 0;
+      for (const page of proof.artifactTool.pages) {
+        expect(page.offset).toBe(offset);
+        const originalPage = manifest.slice(offset, offset + 4000);
+        expect(page.chars).toBe(originalPage.length);
+        expect(page.bytes).toBe(Buffer.byteLength(originalPage));
+        expect(page.sha256).toBe(createHash('sha256').update(originalPage).digest('hex'));
+        offset += page.chars;
+        expect(page.truncated).toBe(offset < manifest.length);
+      }
+      expect(proof.artifactTool.pages.length).toBeGreaterThan(1);
+      expect(offset).toBe(manifest.length);
+      expect(Date.parse(proof.ttlControl.buildObservedAt)).toBeLessThan(Date.parse(proof.ttlControl.expiresAt));
+      expect(Date.parse(proof.ttlControl.deliveredAt)).toBeGreaterThanOrEqual(Date.parse(proof.ttlControl.expiresAt));
+      expect(proof.ttlControl.beforeExpiry).toEqual(proof.ttlControl.afterExpiry);
+      expect(proof.notExercised).toContain('candidate-manifest-receiver');
     },
   });
   Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });

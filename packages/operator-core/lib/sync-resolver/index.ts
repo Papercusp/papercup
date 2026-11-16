@@ -2011,14 +2011,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       .object({
         workspaceId: z.string().nullable().optional(),
         endedLimit: clampedLimit(200, 50).optional(),
-        view: z.enum(['full', 'header']).optional(),
+        view: z.enum(['full', 'header', 'launcher']).optional(),
       })
       .optional(),
     resolve: async (args) => {
       const { workspaceId = null, endedLimit = 50, view = 'full' } = (args ?? {}) as {
         workspaceId?: string | null;
         endedLimit?: number;
-        view?: 'full' | 'header';
+        view?: 'full' | 'header' | 'launcher';
       };
       // BOUNDED + EXTRACTED (WI-39825). The four-leg fan-out, its shared read
       // deadline and the per-leg degradation policy now live in

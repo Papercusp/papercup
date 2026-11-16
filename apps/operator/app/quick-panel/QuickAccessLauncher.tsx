@@ -132,7 +132,8 @@ export default function QuickAccessLauncher({ queryPrefix = '' }: { queryPrefix?
   // Read only the six launcher fields; resolve the selected item graph separately.
   const plans = useSyncQuery<QuickPlan>({ queryName: 'plans.list',
     args: { workspaceWide: true, output: 'directory', includeFinished: true, includeArchived: false, order: 'updated' } });
-  const roster = useSyncQuery<{ active?: QuickAgent[] }>({ queryName: 'advRoster.list', args: advRosterArgs(workspaceId) });
+  const roster = useSyncQuery<{ active?: QuickAgent[] }>({ queryName: 'advRoster.list',
+    args: { ...advRosterArgs(workspaceId), view: 'launcher' } });
   const reports = useSyncQuery<QuickReport>({ queryName: 'reports.list',
     args: { limit: 50, ...(debounced.trim() ? { query: debounced.trim() } : {}) }, enabled: reportsEnabled });
   const agents = roster.data?.[0]?.active ?? [];

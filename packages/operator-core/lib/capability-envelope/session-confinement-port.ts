@@ -74,6 +74,21 @@ export function hasSessionConfinementResolver(): boolean {
   return state.resolver !== undefined;
 }
 
+/** Read adapters from this host's installed dispatch seam. Diagnostics must not
+ * silently substitute an unconfined host when installation is missing. Capture
+ * both functions together so a later installation cannot mix resolver epochs. */
+export function getSessionConfinementReadPorts(): {
+  resolveConfinement: SessionConfinementResolver;
+  ensureConfinementReady: () => Promise<void>;
+} {
+  const { resolver, ensureReady } = state;
+  if (!resolver) throw new Error('Session confinement policy is unavailable.');
+  return {
+    resolveConfinement: resolver,
+    ensureConfinementReady: async () => { await ensureReady?.(); },
+  };
+}
+
 /** Consult before any general carry producer. Unknown policy never becomes
  * permission to inject live workspace, transcript, plan or memory context. */
 export async function sessionCarryPolicy(input: { ownerId: string; workspaceId?: string }): Promise<

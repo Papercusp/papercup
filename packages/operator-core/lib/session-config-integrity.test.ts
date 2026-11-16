@@ -10,10 +10,11 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/session-config-integrity.test.ts
  */
-import { afterEach, beforeEach, describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import * as sessionConfigDir from './session-config-dir';
 import {
   checkSessionConfigIntegrity,
   checkSessionConfigIntegrityForClient,
@@ -137,6 +138,27 @@ describe('checkSessionConfigIntegrity', () => {
 });
 
 describe('checkSessionConfigIntegrityForClient', () => {
+  it.each(['codex', 'omp', 'another-client'])('never loads Claude configuration for recorded %s sessions', (client) => {
+    const load = vi.fn(() => { throw new Error('Claude transcript discovery must not run'); });
+    expect(checkSessionConfigIntegrityForClient(load, client)).toBeNull();
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it('loads and diagnoses a recorded Claude session once', () => {
+    const load = vi.fn(() => state({ settings: null, claudeJson: null }));
+    expect(checkSessionConfigIntegrityForClient(load, 'claude')).toMatchObject({ ok: false, mcpServerMissing: true });
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it('still loads legacy sessions to distinguish absent documents from damaged Claude configuration', () => {
+    const absent = vi.fn(() => state({ settings: null, claudeJson: null }));
+    expect(checkSessionConfigIntegrityForClient(absent, null)).toBeNull();
+    expect(absent).toHaveBeenCalledTimes(1);
+    const damaged = vi.fn(() => state());
+    expect(checkSessionConfigIntegrityForClient(damaged, undefined)?.ok).toBe(false);
+    expect(damaged).toHaveBeenCalledTimes(1);
+  });
+
   it.each(['codex', 'omp'])('skips the Claude-shaped check for recorded %s sessions', (client) => {
     expect(checkSessionConfigIntegrityForClient(state(), client)).toBeNull();
   });
@@ -329,6 +351,19 @@ describe('repairSessionConfigOnDisk', () => {
     const res = repairSessionConfigOnDisk(SID, home, 'codex');
     expect(res).toMatchObject({ repaired: false, fixed: [], wrote: [], stillBroken: [] });
     expect(res.skipped).toMatch(/non-Claude/);
+  });
+
+  it.each(['codex', 'omp'])('does not discover Claude transcripts while repairing a recorded %s session', (client) => {
+    const resolve = vi.spyOn(sessionConfigDir, 'resolveSessionConfigDir').mockImplementation(() => {
+      throw new Error('Claude transcript discovery must not run');
+    });
+    try {
+      expect(repairSessionConfigOnDisk(SID, home, client, { sessionId: 'native-session' }))
+        .toMatchObject({ repaired: false, wrote: [] });
+      expect(resolve).not.toHaveBeenCalled();
+    } finally {
+      resolve.mockRestore();
+    }
   });
 });
 

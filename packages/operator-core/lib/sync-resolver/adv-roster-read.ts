@@ -225,8 +225,28 @@ export type RosterSnapshot = Awaited<ReturnType<typeof readAdvRosterUncached>>;
 /** The closed header needs living-session and ongoing-turn counts, machines and fleet colors,
  * not session transcripts, checkpoints or ended-session history. Reuse the
  * same snapshot so the badge and its expanded roster share lifecycle truth. */
-export function projectAdvRoster(snapshot: RosterSnapshot, view: 'full' | 'header' = 'full') {
+export function projectAdvRoster(snapshot: RosterSnapshot, view: 'full' | 'header' | 'launcher' = 'full') {
   if (view === 'full') return snapshot;
+  if (view === 'launcher') return {
+    // Quick Access searches people and qualified Plan claims and focuses the
+    // exact recorded window. It never reads transcript/checkpoint/history data.
+    active: snapshot.active.map((agent) => ({
+      ownerId: agent.ownerId,
+      label: agent.label,
+      intent: agent.intent,
+      agent: agent.agent,
+      currentPlanSlug: agent.currentPlanSlug,
+      sessionState: agent.sessionState,
+      advSessionId: agent.advSessionId,
+      windowId: agent.windowId,
+      pid: agent.pid,
+      isLocal: agent.isLocal,
+      stale: agent.stale,
+      revoked: agent.revoked,
+      claims: agent.claims?.map(({ harnessSlug, planSlug, active }) => ({ harnessSlug, planSlug, active })),
+    })),
+    ...(snapshot.degradedFields ? { degradedFields: snapshot.degradedFields } : {}),
+  };
   return {
     // Keep both living and between-turn entries: the shared client predicate
     // derives running and thinking independently, just as in the full roster.

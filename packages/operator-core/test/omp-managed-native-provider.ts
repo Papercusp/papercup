@@ -10,14 +10,19 @@ export default function(pi) {
   let turn = 0;
   let control = 0;
   let readiness;
+  let readinessFailure;
   const expectedDispatcher = process.env.OMP_PROOF_MCP_DISPATCHER;
   // OMP discovers uncached MCP servers in the background. Synchronize with
   // its exact model-visible dispatcher before emitting an immediate fixture
   // turn; a guessed name or a fixed inference delay cannot prove readiness.
   pi.on('before_agent_start', async () => {
-    if (!expectedDispatcher) throw new Error('OMP proof did not declare its expected MCP dispatcher');
+    if (!expectedDispatcher) {
+      readinessFailure = new Error('OMP proof did not declare its expected MCP dispatcher');
+      throw readinessFailure;
+    }
     const startedAt = Date.now();
-    phase('before-agent-start');
+    phase('before-agent-start', { names: pi.getActiveTools(),
+      registeredNames: pi.getAllTools().map(tool => tool.name) });
     for (;;) {
       const names = pi.getActiveTools();
       const dispatcher = names.find(name => name === expectedDispatcher);
@@ -27,9 +32,11 @@ export default function(pi) {
         return;
       }
       if (Date.now() - startedAt >= 10000) {
-        phase('mcp-readiness-timeout', { expectedDispatcher, names });
-        throw new Error('OMP managed MCP dispatcher did not become active: expected ' +
+        phase('mcp-readiness-timeout', { expectedDispatcher, names,
+          registeredNames: pi.getAllTools().map(tool => tool.name) });
+        readinessFailure = new Error('OMP managed MCP dispatcher did not become active: expected ' +
           expectedDispatcher + '; actual ' + JSON.stringify(names));
+        throw readinessFailure;
       }
       await new Promise(resolve => setTimeout(resolve, 25));
     }
@@ -39,6 +46,10 @@ export default function(pi) {
     models: [{ id: 'proof', name: 'Local lifecycle proof', reasoning: false, input: ['text'],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 1024 }],
     streamSimple(model, context) {
+      // OMP catches extension-hook errors and still invokes the provider.
+      // Preserve the failed prerequisite instead of issuing unrelated tools.
+      if (readinessFailure) throw readinessFailure;
+      if (!readiness) throw new Error('OMP managed MCP readiness did not complete before inference');
       if (++turn > 6) throw new Error('Unexpected inference turn');
       phase('inference-turn', { turn });
       const surface = process.env.OMP_PROOF_SURFACE;

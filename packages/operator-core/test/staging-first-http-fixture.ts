@@ -17,7 +17,7 @@ import { readServingGeneration } from '../lib/serving-generation';
 import { assertPrivateMcpSourceIdentity, assertPrivateMcpToolsListGeneration, buildPrivateOperatorApiBundle,
   privateBundleRuntimeEnv, privateNativeDockerHost, waitForPrivateOperator, stopPrivateOperatorHost,
   qualifyCommittedReaderSource, observeCommittedReaderLoadedSources, retainCommittedReaderWorkerEnvironment,
-  parsePrivateCompletionFixtureControls,
+  parsePrivateCompletionFixtureControls, parsePrivateHttpScenario,
   resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle, resolvePreparedPrivateApiSourceSha } from './private-http-workspace-preflight';
 import { captureIsolatedWorker, codexManagedToolsNativeProofOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerReceipt, retainIsolatedWorkerProgress } from './isolated-integration-proof';
 import { measurePrivateUnrelatedCheckpointScenario } from './private-unrelated-write-http-scenario';
@@ -29,6 +29,15 @@ let retainLoadedSources: (() => void) | undefined;
 let retainHostEnvironment: (() => void) | undefined;
 const socketOrigins = new Map<number, string>();
 const originalConnect = Socket.prototype.connect;
+// Restore the explicit selector before arming scenario-specific diagnostics.
+const selectedScenario = parsePrivateHttpScenario(process.argv.slice(2));
+if (selectedScenario) {
+  process.env.STAGING_FIRST_HTTP_SCENARIO = selectedScenario;
+  console.log('PRIVATE_HTTP_SCENARIO_SELECTED ' + selectedScenario);
+  if (selectedScenario === 'current-su-native-recovery-allocation') console.log('CURRENT_SU_RECOVERY_ALLOCATION_SELECTED');
+  if (selectedScenario === 'saved-plan-lines') console.log('SAVED_PLAN_LINES_HTTP_SELECTED');
+  if (selectedScenario === 'rubric-coverage') console.log('RUBRIC_COVERAGE_HTTP_SELECTED');
+}
 // Evidence only: trace the native worker's real PG clients, including clients
 // opened by a detached exit callback after the shared pools were reset.
 if (process.env.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native')) {
@@ -58,16 +67,7 @@ async function stopHost(afterExit?: () => Promise<void>) {
 async function main() {
   const e = process.env;
   const completionControls = parsePrivateCompletionFixtureControls(process.argv.slice(2));
-  // Isolation deliberately drops scenario environment selectors. Select this
-  // verifier through argv, like the existing completion-fixture controls.
-  if (process.argv.includes('--saved-plan-lines')) {
-    e.STAGING_FIRST_HTTP_SCENARIO = 'saved-plan-lines';
-    console.log('SAVED_PLAN_LINES_HTTP_SELECTED');
-  }
-  if (process.argv.includes('--rubric-coverage')) {
-    e.STAGING_FIRST_HTTP_SCENARIO = 'rubric-coverage';
-    console.log('RUBRIC_COVERAGE_HTTP_SELECTED');
-  }
+
   if (completionControls) {
     e.STAGING_FIRST_HTTP_SCENARIO = completionControls.transport === 'mcp-proxy' ? 'private-completion-mcp' : 'private-completion';
     e.STAGING_FIRST_HTTP_MAINTENANCE = completionControls.maintenance ? '1' : '0';

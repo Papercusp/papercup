@@ -39,6 +39,29 @@ import { RESTRICTED_HOLD_PREFLIGHT_TIMEOUT_MS } from '../../../scripts/lib/restr
 
 export type PrivateCompletionFixtureControls = { maintenance: boolean; transport: 'palette' | 'mcp-proxy' };
 
+const privateHttpScenarios = ['saved-plan-lines', 'rubric-coverage', 'current-su-native-recovery-allocation',
+  'private-mcp-preflight-only', 'current-su-native', 'current-su-native-carry',
+  'current-su-native-frozen-carry-on', 'current-su-native-frozen-carry-off'] as const;
+type PrivateHttpScenario = typeof privateHttpScenarios[number];
+
+/** Carry an explicit verifier selection across the launcher's environment scrub. */
+export function parsePrivateHttpScenario(argv: readonly string[]): PrivateHttpScenario | null {
+  const legacy: Record<string, PrivateHttpScenario> = {
+    '--saved-plan-lines': 'saved-plan-lines', '--rubric-coverage': 'rubric-coverage',
+    '--current-su-recovery-allocation': 'current-su-native-recovery-allocation',
+  };
+  const selectors = argv.filter(arg => Object.hasOwn(legacy, arg) || arg.startsWith('--private-http-scenario'));
+  if (!selectors.length) return null;
+  assert.equal(selectors.length, 1, 'private HTTP scenario must be selected exactly once');
+  assert.ok(!argv.some(arg => arg.startsWith('--completion-')),
+    'private HTTP scenario conflicts with completion fixture controls');
+  const selector = selectors[0]!;
+  const scenario = legacy[selector] ?? (selector.startsWith('--private-http-scenario=')
+    ? selector.slice('--private-http-scenario='.length) : '');
+  assert.ok(privateHttpScenarios.includes(scenario as PrivateHttpScenario), 'unsupported private HTTP scenario');
+  return scenario as PrivateHttpScenario;
+}
+
 /** Explicit fixture controls survive the launcher scrub without admitting ambient product state. */
 export function privateCompletionFixtureArgs(controls: PrivateCompletionFixtureControls): string[] {
   const args = [`--completion-scenario=${controls.maintenance ? 'maintenance' : 'report'}`,

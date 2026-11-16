@@ -19,6 +19,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
+import { assertMutableTextArtifactKey } from '@papercusp/operator-core/lib/text-artifact-keys';
 import { SLUG_RE, slugRequires, resolveSlug } from './_slug-requires';
 // The bulk helpers' LEAF module — relative, NOT the '@papercusp/agent-mcp'
 // barrel (see artifacts/load.ts for why: ESM circular-init + node-moduleResolution).
@@ -77,6 +78,7 @@ export default defineTool({
           return { ok: false as const, slug: item.slug ?? null, rel_path: key, error: r.error };
         }
         const { slug } = r;
+        assertMutableTextArtifactKey(key);
         // ctx.tx, NOT getOrgPg() — RLS confines the delete to the caller's
         // workspace (audit P-012, see save.ts).
         const result = await ctx.tx`

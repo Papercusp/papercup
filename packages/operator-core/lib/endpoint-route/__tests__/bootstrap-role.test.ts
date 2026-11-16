@@ -562,6 +562,85 @@ describe('bootstrap-role', () => {
     expect(recordAdvSessionMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['omitted configuration', {}],
+    ['omitted grants', { configuration: {} }],
+    ['null grants', { configuration: { grants: null } }],
+  ])('persists and activates the same-owner Codex reviewer with %s', async (_label, artifact) => {
+    roleConsumesMock.mockReturnValue({ feature: 'none', plan: 'optional' });
+    const compose = buildRoleLaunchSpecMock.getMockImplementation()!;
+    buildRoleLaunchSpecMock.mockImplementationOnce(async (input) => ({
+      ...await compose(input), role: 'reviewer', specificationArtifact: artifact,
+    }));
+    ownerRowsSqlMock.mockResolvedValue([{ id: '21', display: 'console', has_session: true, launched: true }]);
+    resolveSessionStatesMock.mockResolvedValue(new Map([[pinnedOwner, { sessionState: 'ended' }]]));
+
+    const response = await callPost({
+      role: 'reviewer', agent: 'codex', model: 'gpt-6.1-sol:xhigh', headless: true,
+      harness_slug: 'papercup', owner_id: pinnedOwner,
+      launched_by: 'system:acceptance-bar-amendment-review',
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).envelopeEnv.PAPERCUSP_SID).toBe(pinnedOwner);
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({
+      coordOwnerId: pinnedOwner, role: 'reviewer', agent: 'codex',
+    }));
+    expect(recordSuLaunchSpecMock).toHaveBeenCalledExactlyOnceWith(7, pinnedOwner, {
+      v: 1, workspaceId: 'default', harnessSlug: 'papercup', role: 'reviewer', stack: [],
+      specificationRevision: 'a'.repeat(64), stateRevision: 'b'.repeat(64),
+      specificationArtifact: artifact,
+    });
+    expect(requestSessionIdentityActivationMock).toHaveBeenCalledExactlyOnceWith({
+      ownerId: pinnedOwner, workspaceId: 'default', source: 'launch',
+      revision: { specificationRevision: 'a'.repeat(64), stateRevision: 'b'.repeat(64) },
+      attribution: { actorId: pinnedOwner, principalId: pinnedOwner, sessionId: pinnedOwner },
+    });
+    expect(recordSuLaunchSpecMock.mock.invocationCallOrder[0]).toBeLessThan(
+      requestSessionIdentityActivationMock.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('persists a grantless artifact on the adopted starting row before activating it', async () => {
+    ownerRowsSqlMock.mockResolvedValue([{ id: '42', display: 'terminal', has_session: false, launched: true }]);
+    const response = await callPost(pinnedRequest);
+    expect(response.status).toBe(200);
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+    expect(recordSuLaunchSpecMock).toHaveBeenCalledWith(42, pinnedOwner,
+      expect.objectContaining({ specificationArtifact: {} }));
+    expect(adoptStartingTerminalLaunchMock.mock.invocationCallOrder[0]).toBeLessThan(
+      recordSuLaunchSpecMock.mock.invocationCallOrder[0],
+    );
+    expect(requestSessionIdentityActivationMock).toHaveBeenCalledOnce();
+  });
+
+  it('refuses a grantless launch if its artifact cannot be persisted', async () => {
+    recordSuLaunchSpecMock.mockResolvedValueOnce(false);
+    const response = await callPost({ ...pinnedRequest, bootstrap_idempotency_key: 'grantless-failed' });
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({ error: 'role identity receipt was not persisted' });
+    expect(requestSessionIdentityActivationMock).not.toHaveBeenCalled();
+    expect(stampPresenceAtBootMock).not.toHaveBeenCalled();
+    expect(recordAgentLaunchResultMock).not.toHaveBeenCalled();
+    expect(markAdvSessionEndedMock).toHaveBeenCalledWith(7, null, 'reconciler', { throwOnError: true });
+    expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({
+      workspaceId: 'default', idempotencyKey: 'bootstrap-role:grantless-failed',
+    });
+  });
+
+  it('refuses a grantless launch if activation fails after persistence', async () => {
+    requestSessionIdentityActivationMock.mockRejectedValueOnce(new Error('activation unavailable'));
+    const response = await callPost({ ...pinnedRequest, bootstrap_idempotency_key: 'grantless-activation-failed' });
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({ error: 'role identity activation failed: activation unavailable' });
+    expect(recordSuLaunchSpecMock).toHaveBeenCalledOnce();
+    expect(stampPresenceAtBootMock).not.toHaveBeenCalled();
+    expect(markAdvSessionEndedMock).toHaveBeenCalledWith(7, null, 'reconciler', { throwOnError: true });
+    expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({
+      workspaceId: 'default', idempotencyKey: 'bootstrap-role:grantless-activation-failed',
+    });
+  });
+
   it('persists and activates a restricted role artifact before returning its launch', async () => {
     const restrictedArtifact = { configuration: { grants: { requires: [], optional: [], suggestedProviders: {} } } };
     const acceptedOperation = {
@@ -628,7 +707,7 @@ describe('bootstrap-role', () => {
       bootstrap_idempotency_key: 'role-failed-attempt',
     });
     expect(response.status).toBe(500);
-    expect(await response.json()).toMatchObject({ error: 'restricted role identity receipt was not persisted' });
+    expect(await response.json()).toMatchObject({ error: 'role identity receipt was not persisted' });
     expect(requestSessionIdentityActivationMock).not.toHaveBeenCalled();
     expect(markAdvSessionEndedMock).toHaveBeenCalledWith(7, null, 'reconciler', { throwOnError: true });
     expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({

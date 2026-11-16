@@ -8,7 +8,8 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { assertPrivateManagedTaskRoute, preparePrivateOperatorApiBundle,
-  privateCompletionFixtureArgs, parsePrivateCompletionFixtureControls } from '../test/private-http-workspace-preflight';
+  privateCompletionFixtureArgs, parsePrivateCompletionFixtureControls,
+  parsePrivateHttpScenario } from '../test/private-http-workspace-preflight';
 import { isolatedRuntimeEvidenceKeys, isolatedRuntimeInheritedEnvironment, privatePgSeedEnvironment, privatePgCommandEnvironment } from '../../../scripts/lib/with-test-pg-env.mjs';
 import { executedSourceMapArmed } from '@papercusp/test-config/vitest-config';
 
@@ -134,6 +135,32 @@ describe('private runtime inherited environment', () => {
   });
 });
 
+describe('private HTTP scenario controls', () => {
+  it.each([
+    ['--saved-plan-lines', 'saved-plan-lines'], ['--rubric-coverage', 'rubric-coverage'],
+    ['--current-su-recovery-allocation', 'current-su-native-recovery-allocation'],
+    ...['private-mcp-preflight-only', 'current-su-native', 'current-su-native-carry',
+      'current-su-native-frozen-carry-on', 'current-su-native-frozen-carry-off']
+      .map(scenario => ['--private-http-scenario=' + scenario, scenario]),
+  ])('retains %s across the real environment scrub', (selector, scenario) => {
+    const result = isolatedRuntimeInheritedEnvironment({ STAGING_FIRST_HTTP_SCENARIO: 'ambient-other-scenario',
+      STAGING_FIRST_HTTP_EVIDENCE_DIR: '/owned-proof', PAPERCUSP_SID: 'live-owner' },
+    isolatedRuntimeEvidenceKeys('PAPERCUSP_TEST_OWNED_DB_DIR'));
+    expect(result.environment).toEqual({ STAGING_FIRST_HTTP_EVIDENCE_DIR: '/owned-proof' });
+    expect(result.discardedKeys).toContain('STAGING_FIRST_HTTP_SCENARIO');
+    expect(parsePrivateHttpScenario([selector, '--prepared-api-sha=owned'])).toBe(scenario);
+    expect(parsePrivateHttpScenario([])).toBeNull();
+  });
+  it.each([
+    ['--private-http-scenario=unknown'], ['--private-http-scenario'],
+    ['--private-http-scenario='], ['--rubric-coverage', '--rubric-coverage'],
+    ['--saved-plan-lines', '--private-http-scenario=current-su-native'],
+    ['--rubric-coverage', '--completion-scenario=report', '--completion-transport=palette'],
+  ])('rejects ambiguous or unsupported private HTTP controls %j', (...argv) => {
+    expect(() => parsePrivateHttpScenario(argv)).toThrow(/private HTTP scenario/);
+  });
+});
+
 describe('private completion fixture controls', () => {
   it.each([
     { maintenance: false, transport: 'palette' as const },
@@ -230,7 +257,8 @@ describe('private-PG setup budget receipt', () => {
       const startedAt = performance.now();
       const result = spawnSync(process.execPath, [entry, '--', process.execPath, '-e', 'process.exit(91)'], {
         cwd: root, encoding: 'utf8', timeout: 10_000,
-        env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: undefined, PAPERCUSP_TEST_RUNS_DB_URL: undefined,
+        env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: undefined,
+          PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://reporter.invalid/evidence',
           PAPERCUSP_TEST_ARTIFACT_DIR: artifactDir,
           PAPERCUSP_TEST_PRIVATE_PG_SETUP_TIMEOUT_MS: '300000',
           PAPERCUSP_TEST_PRIVATE_PG_SETUP_DEADLINE_AT_MS: '1' },

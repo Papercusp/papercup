@@ -8,7 +8,28 @@ import { ChildProcess } from 'node:child_process';
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const hostReads = vi.hoisted(() => ({
+  identity: vi.fn((ctx: { uiClientId: string; workspaceId: string }) => ({ ownerId: ctx.uiClientId, workspaceId: ctx.workspaceId })),
+  modes: vi.fn(async () => [{ mode: 'auto' }]),
+  roles: vi.fn(() => ({})), protected: vi.fn(() => []),
+  flag: vi.fn(async (key: string) => ({ key, resolvedValue: true, compiledDefault: true,
+    source: 'override-store', observedAtMs: 1, overrideRead: { storeConfigured: true, kind: 'cache-hit', loadError: null } })),
+}));
+vi.mock('../coordination/identity', async (original) => ({
+  ...(await original<typeof import('../coordination/identity')>()), resolveAgentIdentity: hostReads.identity,
+}));
+vi.mock('../../modes/store', async (original) => ({
+  ...(await original<typeof import('../../modes/store')>()), getModes: hostReads.modes,
+}));
+vi.mock('../../capability-envelope-overrides', async (original) => ({
+  ...(await original<typeof import('../../capability-envelope-overrides')>()),
+  envelopeRoleOverrides: hostReads.roles, envelopeProtectedAdditions: hostReads.protected,
+}));
+vi.mock('@papercusp/flags/server', async (original) => ({
+  ...(await original<typeof import('@papercusp/flags/server')>()), getFlagAttestation: hostReads.flag,
+}));
 
 const canonicalBackground = vi.hoisted(() => vi.fn(async () => ({ data: {
   ok: true, mode: 'background', status: 'pending', detachedRunId: 'canonical-run',
@@ -52,6 +73,9 @@ import { startBackground } from './bash-jobs';
 import { capabilityExecSandboxPolicy } from './exec-sandbox';
 import { vmCopyInspectSchema } from './vm-copy-authority';
 import { mockReturnTyped } from '../../testing/typed-mock';
+import { setSessionConfinementResolver } from '../../capability-envelope/session-confinement-port';
+import { FLAGS } from '@papercusp/flags';
+import type { UnifiedToolContext } from '@papercusp/tooldef';
 
 const BASE = '/repo';
 const OPERATOR_CORE_GATES = [{ npmScript: 'lint:tsc', prefixes: ['packages/operator-core/'] }];
@@ -91,6 +115,66 @@ function inspectCtx() {
     role: 'cup',
   } as never;
 }
+
+describe('original host envelope input capture', () => {
+  const ctx = { isSuperuser: true, uiClientId: 'su-self', workspaceId: 'self-workspace', role: 'cup',
+    log: () => {}, signal: new AbortController().signal, progress: async () => {}, emit: async () => {} } satisfies UnifiedToolContext;
+  afterEach(() => { setSessionConfinementResolver(undefined); vi.clearAllMocks(); });
+
+  it('accepts only the fixed self capture request', () => {
+    const schema = inspectTool.args;
+    expect(schema.safeParse({ check: 'host-envelope-inputs' }).success).toBe(true);
+    for (const override of [{ ctx }, { ownerId: 'foreign' }, { workspaceId: 'foreign' },
+      { command: 'env' }, { path: 'anything' }, { run_in_background: true }]) {
+      expect(schema.safeParse({ check: 'host-envelope-inputs', ...override }).success).toBe(false);
+    }
+  });
+  it('captures the actual context through installed readers and returns replayable data with host provenance', async () => {
+    const ready = vi.fn(async () => {});
+    const confinement = vi.fn(() => ({ denyTools: ['capability:bash'], reason: 'host policy', imposedBy: 'host' }));
+    setSessionConfinementResolver(confinement, { ensureReady: ready });
+    const result = await inspect.handler({ check: 'host-envelope-inputs' }, ctx);
+    expect(result.isError).not.toBe(true);
+    const body = JSON.parse(result.content[0].text);
+    expect(body).toMatchObject({ ok: true, scope: 'original-host-self-envelope-inputs',
+      provenance: { ownerId: ctx.uiClientId, workspaceId: ctx.workspaceId, pid: process.pid, cwd: process.cwd() } });
+    expect(ready).toHaveBeenCalledOnce();
+    expect(confinement).toHaveBeenCalledExactlyOnceWith(ctx);
+    expect(hostReads.modes).toHaveBeenCalledExactlyOnceWith(ctx.workspaceId, ctx.uiClientId);
+    expect(hostReads.flag.mock.calls.map(call => call[0])).toEqual([FLAGS.CAPABILITY_ENVELOPE, FLAGS.CAPABILITY_ENVELOPE_OVERRIDES]);
+    expect(body.snapshot.contexts).toHaveLength(1);
+    expect(body.snapshot.contexts[0].confinement.denyTools).toEqual(['capability:bash']);
+    const { replayIdopP001HostPermissionSnapshot } = await import('../../agent-identities/idop-p001-baseline');
+    const replay = replayIdopP001HostPermissionSnapshot(body.snapshot, body.sha256);
+    expect(await replay.ports.resolveConfinement(ctx)).toEqual(body.snapshot.contexts[0].confinement);
+    expect(startBackground).not.toHaveBeenCalled();
+    expect(canonicalBackground).not.toHaveBeenCalled();
+  }, 60_000);
+  it('refuses missing privilege, session, workspace or an identity mismatch before reading host authority', async () => {
+    for (const caller of [{ ...ctx, isSuperuser: false }, { ...ctx, uiClientId: '' }, { ...ctx, workspaceId: '' }]) {
+      const result = await inspect.handler({ check: 'host-envelope-inputs' }, caller);
+      expect(JSON.parse(result.content[0].text).reason).toBe('host-envelope-self-required');
+    }
+    hostReads.identity.mockReturnValueOnce({ ownerId: 'foreign', workspaceId: ctx.workspaceId });
+    const result = await inspect.handler({ check: 'host-envelope-inputs' }, ctx);
+    expect(JSON.parse(result.content[0].text).reason).toBe('host-envelope-self-required');
+    expect(hostReads.modes).not.toHaveBeenCalled();
+  });
+  it('refuses missing installation, failed readiness and degraded flag authority without a shell fallback', async () => {
+    const check = async () => {
+      const result = await inspect.handler({ check: 'host-envelope-inputs' }, ctx);
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content[0].text).reason).toBe('host-envelope-inputs-unavailable');
+    };
+    await check();
+    setSessionConfinementResolver(() => null, { ensureReady: async () => { throw new Error('host unavailable'); } });
+    await check();
+    setSessionConfinementResolver(() => null);
+    hostReads.flag.mockRejectedValueOnce(new Error('flag unavailable'));
+    await check();
+    expect(startBackground).not.toHaveBeenCalled();
+  }, 60_000);
+});
 
 describe('protected vm-copy inspect branch', () => {
   const request = { schemaVersion: 1, phase: 'preflight', challenge: 'c'.repeat(64), operationId: 'copy-1',

@@ -5,7 +5,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 import { eventLogPathForOwner } from '../../../apps/operator/scripts/psu-pty-host.mjs';
 import type { PapercuspUnifiedToolContext } from '../lib/agent-tools/_tool-context';
@@ -34,7 +34,7 @@ import { createCurrentSuNativeProtocol, guardedCurrentSuNativeHandler, inspectFr
 const CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST = 'current-su-native-egress-run-id';
 
 /** Real allocation/store prerequisite, independent of the native model protocol.
- * The receipt deliberately cannot certify an emitted epoch or artifact-tool paging. */
+ * Tool paging and canonical validity controls do not certify an emitted native epoch. */
 export async function prepareCurrentSuRecoveryAllocation(input: { workspace: string; evidenceDir: string }) {
   const { workspace, evidenceDir } = input;
   assert.match(workspace, /^test-runtime-/);
@@ -51,13 +51,14 @@ export async function prepareCurrentSuRecoveryAllocation(input: { workspace: str
   const peer = await createWorkItem({ kind: 'task', title: 'Recovery fixture excluded peer assignment',
     harness, workspaceId: workspace, createdBy: owner, assignee: 'fixture-peer' });
   assert.notEqual(current.id, peer.id);
-  for (const item of [current, peer]) {
+  for (const [item, expectedAssignee] of [[current, owner], [peer, 'fixture-peer']] as const) {
     assert.match(item.id, /^WI-\d+$/);
+    assert.equal(item.assignee, expectedAssignee);
     assert.equal(facts.validateFactScopeRefShape('work_item', item.id), null);
     const read = await getWorkItem(item.id, harness);
     assert.equal(read?.id, item.id);
     assert.equal(read?.harness, harness);
-    assert.equal(read?.assignee, item.assignee);
+    assert.equal(read?.assignee, expectedAssignee);
   }
   const rejectedRefs = ['WI-fixture-current', 'EI-fixture-peer'];
   for (const scopeRef of rejectedRefs) {
@@ -146,6 +147,126 @@ export async function prepareCurrentSuRecoveryAllocation(input: { workspace: str
   }
   assert.equal(await artifacts.loadImmutableTextArtifact(harness, saved.sha256), manifestBytes);
   writeFileSync(join(evidenceDir, 'recovery-fact-manifest.json'), manifestBytes);
+
+  // Exercise the real tool on the same app-role/RLS boundary as production.
+  // The allocation manifest remains the immutable pre-control input; this
+  // separate receipt records observations, rather than rewriting its oracle.
+  await import('../../agent-mcp/src/tools/artifacts/load');
+  const { lookupByMcpName } = await import('@papercusp/tooldef');
+  const loadTool = lookupByMcpName('artifacts:load');
+  assert.ok(loadTool);
+  type ArtifactPage = { ok: boolean; found: boolean; content: string | null;
+    content_offset?: number; content_total_chars?: number; content_truncated?: boolean };
+  const loadPage = (readWorkspace: string, readHarness: string, offset: number) =>
+    withWorkspace(readWorkspace, async tx => {
+      const response = await loadTool.fn({ slug: readHarness, rel_path: saved.relPath,
+        offset, max_chars: 4000 }, { log: () => {}, signal: new AbortController().signal,
+        progress: () => {}, emit: () => {}, workspaceId: readWorkspace,
+        harnessSlug: harness, role: 'operator', tx } as never);
+      const block = (response as { content: Array<{ type: string; text?: string }> })
+        .content.find(item => item.type === 'text');
+      assert.ok(block?.text);
+      const envelope = JSON.parse(block.text) as { results: ArtifactPage[] };
+      assert.equal(envelope.results.length, 1);
+      return envelope.results[0]!;
+    });
+  const pages = [];
+  let reconstructed = '';
+  for (let offset = 0; offset < manifestBytes.length;) {
+    const page = await loadPage(workspace, harness, offset);
+    assert.equal(page.ok, true);
+    assert.equal(page.found, true);
+    assert.equal(page.content_offset, offset);
+    assert.equal(page.content_total_chars, manifestBytes.length);
+    assert.ok(typeof page.content === 'string' && page.content.length > 0);
+    assert.ok(page.content.length <= 4000);
+    const nextOffset = offset + page.content.length;
+    assert.equal(page.content_truncated, nextOffset < manifestBytes.length);
+    pages.push({ offset, chars: page.content.length, bytes: Buffer.byteLength(page.content),
+      sha256: createHash('sha256').update(page.content).digest('hex'),
+      totalChars: page.content_total_chars, truncated: page.content_truncated });
+    reconstructed += page.content;
+    offset = nextOffset;
+  }
+  assert.ok(pages.length > 1, 'The actual manifest must exercise more than one artifact-tool page');
+  assert.equal(reconstructed, manifestBytes);
+  assert.equal(createHash('sha256').update(reconstructed).digest('hex'), saved.sha256);
+  const foreignRead = await loadPage(workspace + '-foreign', harness, 0);
+  const wrongHarnessRead = await loadPage(workspace, harness + '-wrong', 0);
+  for (const refused of [foreignRead, wrongHarnessRead]) {
+    assert.equal(refused.ok, true);
+    assert.equal(refused.found, false);
+    assert.equal(refused.content, null);
+  }
+
+  // Audience qualification belongs to the canonical fact selector, not to
+  // artifacts:load's role gate. Do not imply a candidate manifest receiver
+  // has been implemented merely because these store prerequisites pass.
+  const member = await facts.foldFactsWithCensus([
+    { scope: 'harness', scopeRef: harness }, { scope: 'work_item', scopeRef: current.id },
+  ], { workspaceId: workspace, limitPerSelector: 8, audiences: ['fleet:fixture-peers'],
+    taskContext: { workItemRefs: [current.id] } });
+  const memberBodies = member.facts.map(row => row.body).sort();
+  assert.deepEqual(memberBodies, ['Continue the assigned task.', 'Excluded nonmember audience.',
+    'Resume the bound harness.']);
+
+  // F04 prerequisite: declare one PG-clock build/expiry barrier before the
+  // control, observe the canonical live fold, then let ONLY the clock cross
+  // expiry. No fake timer or between-observation row mutation can pass it.
+  const guard = rowGenerations.find(row => row.workspaceId === workspace && row.scope === 'workspace'
+    && row.key === 'guard-rail:fixture');
+  assert.ok(guard);
+  const snapshot = async () => (await sql.unsafe('SELECT id::text, body, updated_at::text, ' +
+    'expires_at::text, retracted_at::text FROM harness_shared.agent_facts WHERE workspace_id=$1 AND id=$2',
+  [workspace, guard.id]))[0]!;
+  const originalGuard = await snapshot();
+  const pgNow = async () => String((await sql.unsafe("SELECT to_char(date_trunc('milliseconds', " +
+    "clock_timestamp()) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS epoch"))[0].epoch);
+  const controlEpoch = await pgNow();
+  const expiresAt = new Date(Date.parse(controlEpoch) + 2000).toISOString();
+  let buildObservedAt: string, deliveredAt: string;
+  let beforeExpiry: Awaited<ReturnType<typeof snapshot>>, afterExpiry: Awaited<ReturnType<typeof snapshot>>;
+  try {
+    await sql.unsafe('UPDATE harness_shared.agent_facts SET expires_at=$2::timestamptz ' +
+      'WHERE workspace_id=$1 AND id=$3', [workspace, expiresAt, guard.id]);
+    beforeExpiry = await snapshot();
+    const before = await facts.foldFactsWithCensus([{ scope: 'workspace' }],
+      { workspaceId: workspace, limitPerSelector: 8, audiences: [] });
+    assert.equal(before.facts.find(row => row.id === guard.id)?.body, 'Use exact scoped recovery.');
+    buildObservedAt = await pgNow();
+    assert.ok(Date.parse(buildObservedAt) < Date.parse(expiresAt), 'Build must precede the declared PG expiry');
+    await sql.unsafe('SELECT pg_sleep(GREATEST(0, EXTRACT(EPOCH FROM ' +
+      '($1::timestamptz - clock_timestamp()))) + 0.01)', [expiresAt]);
+    deliveredAt = await pgNow();
+    assert.ok(Date.parse(deliveredAt) >= Date.parse(expiresAt));
+    const after = await facts.foldFactsWithCensus([{ scope: 'workspace' }],
+      { workspaceId: workspace, limitPerSelector: 8, audiences: [] });
+    assert.equal(after.facts.some(row => row.id === guard.id), false);
+    afterExpiry = await snapshot();
+    assert.deepEqual(afterExpiry, beforeExpiry, 'Only PG time may change between build and delivery');
+  } finally {
+    // These are standalone prerequisite controls, not a paired native run.
+    // Restore the original frozen input exactly; never renew its TTL.
+    await sql.unsafe('UPDATE harness_shared.agent_facts SET expires_at=$2::timestamptz ' +
+      'WHERE workspace_id=$1 AND id=$3', [workspace, originalGuard.expires_at, guard.id]);
+  }
+  assert.deepEqual(await snapshot(), originalGuard);
+  assert.equal(await artifacts.loadImmutableTextArtifact(harness, saved.sha256), manifestBytes);
+  const artifactProof = { schemaVersion: 1, workspace, harness, owner, nativeLaunches: 0,
+    allocationManifestSha256: saved.sha256,
+    artifactTool: { name: 'artifacts:load', workspaceWrapper: 'withWorkspace', maxChars: 4000, pages,
+      reconstructedSha256: createHash('sha256').update(reconstructed).digest('hex'),
+      chars: reconstructed.length, bytes: Buffer.byteLength(reconstructed),
+      foreignWorkspaceRejected: true, wrongHarnessRejected: true, reachableAfterControls: true },
+    factAudience: { source: 'agent-facts/store.ts#foldFactsWithCensus',
+      nonmemberBodies: selected.facts.map(row => row.body).sort(), memberBodies,
+      candidateManifestReceiver: 'not-exercised' },
+    ttlControl: { source: 'PostgreSQL clock_timestamp and canonical live fact fold',
+      controlEpoch, buildObservedAt, expiresAt, deliveredAt, beforeExpiry, afterExpiry,
+      rowUnchangedAcrossExpiry: true, liveBeforeExpiry: true, absentAfterExpiry: true, originalInputRestored: true },
+    notExercised: ['native-epoch', 'paired-baseline', 'candidate-delivery', 'candidate-manifest-receiver'] };
+  const artifactProofBytes = JSON.stringify(artifactProof, null, 2) + '\n';
+  writeFileSync(join(evidenceDir, 'recovery-fact-artifact-proof.json'), artifactProofBytes);
   const receipt = { workspace, harness, nativeLaunches: 0,
     allocation: { allocator: 'work-items.ts#createWorkItem', currentRef: current.id, peerRef: peer.id,
       canonicalReadback: true, invalidAlphaRefsRejected: true },
@@ -153,7 +274,9 @@ export async function prepareCurrentSuRecoveryAllocation(input: { workspace: str
     selectedBodies: selected.facts.map(row => row.body).sort(),
     manifest: { ...saved, chars: manifestBytes.length, bytes: Buffer.byteLength(manifestBytes),
       roundTrip: true, wrongHarnessRejected: true, ordinaryOverwriteRejected: true, corruptReadRejected: true },
-    initiallyAbsent, notExercised: manifest.notExercised };
+    artifactProof: { file: 'recovery-fact-artifact-proof.json',
+      sha256: createHash('sha256').update(artifactProofBytes).digest('hex') },
+    initiallyAbsent, notExercised: artifactProof.notExercised };
   writeFileSync(join(evidenceDir, 'recovery-fact-allocation.json'), JSON.stringify(receipt, null, 2) + '\n');
   return receipt;
 }

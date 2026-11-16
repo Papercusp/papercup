@@ -64,12 +64,27 @@ describe('Quick Access launcher', () => {
     expect(mocks.queries).toHaveBeenCalledWith(expect.objectContaining({ queryName: 'plans.list',
       args: expect.objectContaining({ workspaceWide: true, output: 'directory' }) }));
     expect(mocks.queries).toHaveBeenCalledWith(expect.objectContaining({ queryName: 'advRoster.list',
-      args: { workspaceId: 'workspace-one', endedLimit: 50 } }));
+      args: { workspaceId: 'workspace-one', endedLimit: 50, view: 'launcher' } }));
     expect(mocks.queries).toHaveBeenCalledWith(expect.objectContaining({ queryName: 'planSessions.list',
       args: { planSlug: 'launch', harnessSlug: 'alpha', workspaceId: 'workspace-one' } }));
     fireEvent.click(screen.getByRole('button', { name: 'Talk to Maya' }));
     expect(await screen.findByRole('dialog', { name: 'Agent conversation' })).toBeTruthy();
     expect(within(screen.getByRole('dialog', { name: 'Agent conversation' })).getByText('su-precise')).toBeTruthy();
+  });
+  it('keeps the roster in Plans scope for qualified person search and the selected Plan preview', async () => {
+    const normal = mocks.queries.getMockImplementation()!;
+    mocks.queries.mockImplementation((opts: { queryName: string }) => opts.queryName === 'advRoster.list'
+      ? { data: [{ active: [{ ...agent, claims: [{ harnessSlug: 'alpha', planSlug: 'launch', active: true }] }] }],
+        loading: false, error: null }
+      : normal(opts));
+    mount('?lascope=plans');
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search plans, agents and reports' }), { target: { value: 'Maya' } });
+    expect(await screen.findByRole('heading', { name: 'Launch experience', level: 1 })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Talk to Maya' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Focus Maya window' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Other work/ })).toBeNull();
+    expect(mocks.queries).toHaveBeenCalledWith(expect.objectContaining({ queryName: 'advRoster.list',
+      args: { workspaceId: 'workspace-one', endedLimit: 50, view: 'launcher' } }));
   });
   it('supports scope, search, empty results and Escape clearing without changing host state', async () => {
     mount('?host=untouched');

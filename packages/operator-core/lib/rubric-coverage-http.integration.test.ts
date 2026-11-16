@@ -34,20 +34,24 @@ it('preserves fixed rubric coverage and historical ratings through private curre
       await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
       await mkdir(join(evidenceDir, 'tmp'));
       const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
-        STAGING_FIRST_HTTP_SCENARIO: 'rubric-coverage', STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir,
+        STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir,
         TMPDIR: process.env.TMPDIR ?? join(evidenceDir, 'tmp') };
       delete env.PC_HEAVY_PREEMPT_READY_FILE;
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts'),
+        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts'), '--rubric-coverage',
         '--prepared-api-sha=' + preparedApi.sha256, '--prepared-receipt-sha=' + preparedApi.receiptSha256],
       { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);
       let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
       try { result = await captureIsolatedWorker(child, evidenceDir, { ...options, signal: context.signal }); }
       finally { await rm(join(evidenceDir, 'node_modules')); }
-      expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ code: 0, signal: null,
+      const failureDetail = JSON.stringify({ code: result.code, signal: result.signal, timedOut: result.timedOut,
+        exitWaitTimedOut: result.exitWaitTimedOut, stdioDrainTimedOut: result.stdioDrainTimedOut }) +
+        '\n' + isolatedWorkerFailureDetail(result.output);
+      expect(result, failureDetail).toMatchObject({ code: 0, signal: null,
         timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
+      expect(result.output).toContain('PRIVATE_HTTP_SCENARIO_SELECTED rubric-coverage');
       const line = result.output.split('\n').find(row => row.startsWith('RUBRIC_COVERAGE_HTTP_RECEIPT '));
       expect(line, isolatedWorkerFailureDetail(result.output)).toBeTruthy();
       const receipt = JSON.parse(line!.slice('RUBRIC_COVERAGE_HTTP_RECEIPT '.length));

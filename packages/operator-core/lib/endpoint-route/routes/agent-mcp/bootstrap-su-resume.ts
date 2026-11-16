@@ -451,7 +451,7 @@ const sessionRespawned = defineTool({
         if (owner) {
           const launch = await phases.track('launchSpec', async () => {
             const { readSuLaunchSpecByOwner } = await import('../../../adv-sessions');
-            return readSuLaunchSpecByOwner(owner!);
+            return readSuLaunchSpecByOwner(owner!, undefined, { select: 'acceptedOperation' });
           }) as {
             acceptedOperation?: { kind?: string; modelPolicy?: unknown };
           } | null;

@@ -314,15 +314,18 @@ export function checkSessionConfigIntegrity(state: SessionConfigState): ConfigIn
  * Gate the Claude-only integrity detector by the authoritative recorded client.
  * A positive non-Claude identity always skips, even when a stale Claude config
  * directory happens to remain on disk. Legacy/unrecorded sessions are checked
- * only when at least one Claude-shaped session document exists.
+ * only when at least one Claude-shaped session document exists. Callers on a
+ * shared request thread pass a loader so a known non-Claude client never scans
+ * the Claude transcript tree before the detector decides to skip it.
  */
 export function checkSessionConfigIntegrityForClient(
-  state: SessionConfigState,
+  state: SessionConfigState | (() => SessionConfigState),
   client: SessionConfigClient,
 ): ConfigIntegrityVerdict | null {
   if (client != null && client !== 'claude') return null;
-  if (client == null && state.settings === null && state.claudeJson === null) return null;
-  return checkSessionConfigIntegrity(state);
+  const loaded = typeof state === 'function' ? state() : state;
+  if (client == null && loaded.settings === null && loaded.claudeJson === null) return null;
+  return checkSessionConfigIntegrity(loaded);
 }
 
 function readJson(path: string): Record<string, unknown> | null {
@@ -536,7 +539,8 @@ export function repairSessionConfigOnDisk(
   client?: SessionConfigClient,
   locator: SessionConfigLocator = {},
 ): SessionConfigRepairResult {
-  const state = loadSessionConfigState(ownerId, home, locator);
+  let loaded: SessionConfigState | undefined;
+  const load = () => loaded ??= loadSessionConfigState(ownerId, home, locator);
   const noop = (skipped: string): SessionConfigRepairResult => ({
     repaired: false,
     fixed: [],
@@ -546,10 +550,11 @@ export function repairSessionConfigOnDisk(
     skipped,
   });
 
-  const verdict = checkSessionConfigIntegrityForClient(state, client);
+  const verdict = checkSessionConfigIntegrityForClient(load, client);
   if (verdict === null) {
     return noop('not diagnosable for this client (recorded non-Claude, or a legacy session with no Claude-shaped documents)');
   }
+  const state = load();
   // WI-38349: a repair may only ever write into an OBSERVED directory. Writing to the
   // conventional path when nothing was found there does not heal anything — it
   // materializes a `su-<coordOwnerId>/` directory no process reads, while the session's

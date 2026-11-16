@@ -228,6 +228,51 @@ describe('respawn report phase attribution (real PG)', () => {
   }, 30_000);
 });
 
+describe('unchanged respawn receipts (real PG)', () => {
+  it('does not rewrite JSONB history for either no-op report, while retaining meaningful updates', async () => {
+    const owner = `su-receipt-noop-${randomUUID()}`;
+    const id = await seedAdv({ coordOwnerId: owner, sessionId: FRESH_ID });
+    const launch = {
+      workspaceId: WS, specificationRevision: 'current-spec', stateRevision: 'current-state',
+      acceptedOperation: { kind: 'blueprint-operation-worker', modelPolicy: { model: 'fixture' } },
+      padding: 'x'.repeat(65_536),
+      identityHistory: [{ stack: [], specificationRevision: 'previous-spec', stateRevision: 'previous-state',
+        specificationArtifact: { specificationRevision: 'previous-spec' }, recordedAt: '2026-01-01T00:00:00.000Z' }],
+    };
+    await admin`UPDATE harness_shared.adv_sessions SET launch_spec = ${admin.json(launch)} WHERE id = ${id}`;
+    const read = async () => (await admin<{ launch_spec: unknown }[]>`
+      SELECT launch_spec FROM harness_shared.adv_sessions WHERE id = ${id}`)[0].launch_spec;
+    const before = await read();
+    // A database guard catches the actual unwanted UPDATE, even when its JSONB
+    // value is identical. This is independent of the JS equality implementation.
+    await admin.unsafe(`CREATE FUNCTION harness_shared.reject_unchanged_reanchor_receipt() RETURNS trigger
+      LANGUAGE plpgsql AS $$ BEGIN
+        IF NEW.launch_spec IS NOT DISTINCT FROM OLD.launch_spec THEN
+          RAISE EXCEPTION 'unchanged launch receipt was rewritten';
+        END IF;
+        RETURN NEW;
+      END $$`);
+    await admin.unsafe(`CREATE TRIGGER reject_unchanged_reanchor_receipt BEFORE UPDATE OF launch_spec
+      ON harness_shared.adv_sessions FOR EACH ROW EXECUTE FUNCTION harness_shared.reject_unchanged_reanchor_receipt()`);
+    try {
+      expect(await reanchorAdvSessionNativeId(id, FRESH_ID)).toEqual({ reanchored: false, owner });
+      expect(await reanchorAdvSessionNativeIdByOwner(owner, FRESH_ID)).toEqual({ reanchored: false, owner });
+      expect(await read()).toEqual(before);
+      expect(await readSuLaunchSpecByOwner(owner, id, { select: 'acceptedOperation' }))
+        .toEqual({ acceptedOperation: launch.acceptedOperation });
+      expect(await readSuLaunchSpecByOwner(owner, id)).toEqual(before);
+      expect(await readSuLaunchSpecByOwner('missing-projected-owner', undefined, { select: 'acceptedOperation' }))
+        .toBeNull();
+      // The optimization must still persist genuine render/receipt changes.
+      expect(await recordSuLaunchSpec(id, owner, { ...launch, changed: true })).toBe(true);
+      expect(await read()).toMatchObject({ changed: true, identityHistory: launch.identityHistory });
+    } finally {
+      await admin.unsafe('DROP TRIGGER IF EXISTS reject_unchanged_reanchor_receipt ON harness_shared.adv_sessions');
+      await admin.unsafe('DROP FUNCTION IF EXISTS harness_shared.reject_unchanged_reanchor_receipt()');
+    }
+  });
+});
+
 describe('retained original member source joins (real PG)', () => {
   async function historicalSourceFixture() {
     const owner = `su-historical-${randomUUID()}`;

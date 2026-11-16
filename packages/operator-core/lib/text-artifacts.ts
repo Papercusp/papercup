@@ -30,6 +30,7 @@ const t = generated.harnessTextArtifactsInHarnessShared;
 import { loadHarnessRegistry } from './harness-registry';
 import { notifySyncInvalidate } from './sync-sse';
 import { activeWorkspaceId } from './workspace-registry';
+import { assertMutableTextArtifactKey as assertMutableKey } from './text-artifact-keys';
 
 /**
  * workspace_id stamp for operator-side writes (EI-280): this lib runs on the
@@ -52,9 +53,6 @@ function normalizeRelPath(rel: string): string {
  * Raw DB/admin compromise is outside this API guarantee; reads verify bytes anew.
  */
 const IMMUTABLE_PREFIX = 'immutable/sha256/';
-function assertMutableKey(key: string): void {
-  if (key.startsWith('immutable/')) throw new Error('text_artifact_immutable_namespace');
-}
 function immutableKey(sha256: string): string {
   if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error('text_artifact_invalid_digest');
   return `${IMMUTABLE_PREFIX}${sha256}.json`;

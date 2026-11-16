@@ -155,6 +155,7 @@ export async function preflightCurrentSuNativeEgress(evidenceDir: string,
 export const CURRENT_SU_RECOVERY_ALLOCATION_ARTIFACTS = [
   'phases/execute/recovery-fact-allocation.json',
   'phases/execute/recovery-fact-manifest.json',
+  'phases/execute/recovery-fact-artifact-proof.json',
 ] as const;
 
 export function currentSuNativeRetainedArtifacts(managedCarry: boolean): string[] {

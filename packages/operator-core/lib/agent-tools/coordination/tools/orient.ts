@@ -4364,8 +4364,14 @@ export default defineTool({
           // finds it (it records the psu-launcher, whose child is the claude CLI).
           const pidHint = await readSessionPidHint(ownerId);
           const locator = { pidHint, sessionId: advRow?.sessionId ?? null };
-          const state = loadSessionConfigState(ownerId, undefined, locator);
-          const verdict = checkSessionConfigIntegrityForClient(state, recordedClient);
+          // Resolving a Claude config may walk every historical transcript
+          // directory synchronously. Gate known non-Claude clients before that
+          // filesystem work can block unrelated requests on this operator.
+          let loadedState: ReturnType<typeof loadSessionConfigState> | undefined;
+          const loadState = () => loadedState ??= loadSessionConfigState(ownerId, undefined, locator);
+          const verdict = checkSessionConfigIntegrityForClient(loadState, recordedClient);
+          if (verdict === null) return;
+          const state = loadState();
           if (verdict?.unknown) {
             configIntegrity = {
               status: 'unknown',

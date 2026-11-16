@@ -291,6 +291,34 @@ type IdopStructuralKernelState = KernelContextState & {
   authorityReadFailures?: Array<Record<string, unknown>>;
 };
 
+function idopHostContextKey(ctx: UnifiedToolContext, workspaceId: string) {
+  const transaction = Object.getOwnPropertyDescriptor(ctx, 'tx');
+  if (ctx.workspaceId !== workspaceId || transaction && 'value' in transaction && transaction.value !== undefined) {
+    throw new Error('IDOP host snapshot context is outside its workspace or carries a transaction');
+  }
+  // Execution services are not authority. Do not consult the dispatcher's
+  // deliberately throwing transaction accessor while preserving the caller.
+  const services = new Set(['log', 'signal', 'progress', 'emit', 'phases', 'activateTools', 'dispatchTool', 'tx']);
+  const data: Record<string, unknown> = {};
+  if (Object.getOwnPropertySymbols(ctx).length) throw new Error('IDOP host snapshot context has uncaptured symbols');
+  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(ctx))) {
+    if (services.has(key)) continue;
+    if (!('value' in descriptor)) throw new Error('IDOP host snapshot context has an unreadable accessor');
+    if (descriptor.value !== undefined) data[key] = descriptor.value;
+  }
+  return comparisonJson(idopAuthorityData(data));
+}
+
+function idopHostFlagValid(input: { key: string }, attestation: FlagAttestation) {
+  return attestation?.key === input.key && typeof attestation.resolvedValue === 'boolean' &&
+    typeof attestation.compiledDefault === 'boolean' && Number.isFinite(attestation.observedAtMs) && attestation.observedAtMs >= 0 &&
+    ['release-build-lock', 'env-override', 'platform-mode-override', 'test-override',
+      'override-store', 'process-cache', 'posthog', 'compiled-default'].includes(attestation.source) &&
+    attestation.overrideRead?.storeConfigured === true &&
+    ['not-read', 'cache-hit', 'store-load'].includes(attestation.overrideRead.kind) &&
+    attestation.overrideRead.loadError === null;
+}
+
 /** Capture host READ inputs once, then replay those same bytes into both source
  * arms. Readers must come from the intended host; this helper does not boot a
  * substitute host, refresh its caches, or prove runtime/source containment.
@@ -309,26 +337,7 @@ export async function captureIdopP001HostPermissionPorts(options: {
         readers.audit?.readModes, readers.roleOverrides, readers.protectedAdditions, readers.readFlagAttestation]
         .every(reader => typeof reader === 'function')) throw new Error('IDOP host snapshot requires explicit authority readers and contexts');
   const clone = <T,>(value: T): T => JSON.parse(comparisonJson(value as ComparisonJson)) as T;
-  const contextKey = (ctx: UnifiedToolContext) => {
-    const transaction = Object.getOwnPropertyDescriptor(ctx, 'tx');
-    if (ctx.workspaceId !== workspaceId || transaction && 'value' in transaction && transaction.value !== undefined) {
-      throw new Error('IDOP host snapshot context is outside its workspace or carries a transaction');
-    }
-    // Execution services are not host-policy inputs. Keep EVERY other supplied
-    // field, including principal, privilege, original run/spawn and assignment
-    // metadata. Unknown non-JSON inputs reject rather than silently disappear.
-    // The dispatcher installs a non-enumerable, deliberately throwing tx
-    // accessor for tools without a transaction contract. Never consult it.
-    const services = new Set(['log', 'signal', 'progress', 'emit', 'phases', 'activateTools', 'dispatchTool', 'tx']);
-    const data: Record<string, unknown> = {};
-    if (Object.getOwnPropertySymbols(ctx).length) throw new Error('IDOP host snapshot context has uncaptured symbols');
-    for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(ctx))) {
-      if (services.has(key)) continue;
-      if (!('value' in descriptor)) throw new Error('IDOP host snapshot context has an unreadable accessor');
-      if (descriptor.value !== undefined) data[key] = descriptor.value;
-    }
-    return comparisonJson(idopAuthorityData(data));
-  };
+  const contextKey = (ctx: UnifiedToolContext) => idopHostContextKey(ctx, workspaceId);
   const keys = options.contexts.map(contextKey);
   const flagKey = (key: string, distinctId: string) => JSON.stringify([key, distinctId]);
   const flagKeys = options.flags.map(row => flagKey(row.key, row.distinctId));
@@ -357,13 +366,7 @@ export async function captureIdopP001HostPermissionPorts(options: {
   const flags = [];
   for (const input of options.flags) {
     const attestation = clone(await readers.readFlagAttestation(input.key, input.distinctId));
-    if (attestation.key !== input.key || typeof attestation.resolvedValue !== 'boolean' ||
-        typeof attestation.compiledDefault !== 'boolean' || !Number.isFinite(attestation.observedAtMs) || attestation.observedAtMs < 0 ||
-        !['release-build-lock', 'env-override', 'platform-mode-override', 'test-override',
-          'override-store', 'process-cache', 'posthog', 'compiled-default'].includes(attestation.source) ||
-        !attestation.overrideRead?.storeConfigured ||
-        !['not-read', 'cache-hit', 'store-load'].includes(attestation.overrideRead.kind) ||
-        attestation.overrideRead.loadError !== null) throw new Error('IDOP host snapshot flag authority is unconfigured, degraded or mismatched');
+    if (!idopHostFlagValid(input, attestation)) throw new Error('IDOP host snapshot flag authority is unconfigured, degraded or mismatched');
     flags.push({ ...input, attestation });
   }
   const roleOverrides = clone(readers.roleOverrides());
@@ -372,15 +375,72 @@ export async function captureIdopP001HostPermissionPorts(options: {
       !Array.isArray(protectedAdditions) || protectedAdditions.some(value => typeof value !== 'string' || !value.trim())) {
     throw new Error('IDOP host snapshot overrides are malformed');
   }
-  const snapshot = { scope: 'captured-host-permission-read-inputs' as const, workspaceId,
+  const snapshot = { schemaVersion: 1 as const, scope: 'captured-host-permission-read-inputs' as const, workspaceId,
     contexts, modes: [...modes].map(([key, rows]) => ({ key, rows })), roleOverrides, protectedAdditions, flags };
-  // Expose an independent evidence copy. Neither callers nor one policy arm
-  // can mutate another arm's saved authority through the returned snapshot.
   const bytes = comparisonJson(snapshot as unknown as ComparisonJson);
-  const byContext = new Map(contexts.map(row => [row.key, row]));
-  const byFlag = new Map(flags.map(row => [flagKey(row.key, row.distinctId), row.attestation]));
+  return replayIdopP001HostPermissionSnapshot(snapshot, sha256(bytes));
+}
+
+type IdopP001HostSnapshot = {
+  schemaVersion: 1; scope: 'captured-host-permission-read-inputs'; workspaceId: string;
+  contexts: Array<{ key: string; identity: ReturnType<AuditModeMutationGuardDeps['resolveIdentity']>;
+    confinement: Awaited<ReturnType<SessionConfinementResolver>> | null }>;
+  modes: Array<{ key: string; rows: Array<{ mode: string }> }>;
+  roleOverrides: ReturnType<typeof envelopeRoleOverrides>;
+  protectedAdditions: ReturnType<typeof envelopeProtectedAdditions>;
+  flags: Array<{ key: FlagAttestation['key']; distinctId: string; attestation: FlagAttestation }>;
+};
+
+/** Reload a saved original-host capture against its independently saved digest.
+ * Neither authority readers nor the comparison process's flags/caches participate.
+ * A valid digest establishes byte identity, not containing-host provenance. */
+export function replayIdopP001HostPermissionSnapshot(raw: unknown, expectedSha256: string) {
+  idopAuthorityData(raw); // reject getters/functions before canonicalization
+  const bytes = comparisonJson(raw as ComparisonJson);
+  if (!/^[a-f0-9]{64}$/.test(expectedSha256) || sha256(bytes) !== expectedSha256) {
+    throw new Error('IDOP host snapshot hash mismatch');
+  }
+  const snapshot = JSON.parse(bytes) as IdopP001HostSnapshot;
+  const fail = (): never => { throw new Error('IDOP malformed host permission snapshot'); };
+  const text = (value: unknown): value is string => typeof value === 'string' && !!value.trim() && value === value.trim();
+  if (!snapshot || snapshot.schemaVersion !== 1 || snapshot.scope !== 'captured-host-permission-read-inputs' ||
+      Object.keys(snapshot).sort().join(',') !== 'contexts,flags,modes,protectedAdditions,roleOverrides,schemaVersion,scope,workspaceId' ||
+      !text(snapshot.workspaceId) || !Array.isArray(snapshot.contexts) || !snapshot.contexts.length ||
+      !Array.isArray(snapshot.modes) || !Array.isArray(snapshot.flags) || !snapshot.roleOverrides ||
+      typeof snapshot.roleOverrides !== 'object' || Array.isArray(snapshot.roleOverrides) ||
+      !Array.isArray(snapshot.protectedAdditions) || snapshot.protectedAdditions.some(value => !text(value))) fail();
+  const workspaceId = snapshot.workspaceId;
+  const byContext = new Map<string, IdopP001HostSnapshot['contexts'][number]>();
+  const subjects = new Set<string>();
+  for (const row of snapshot.contexts) {
+    if (!row || Object.keys(row).sort().join(',') !== 'confinement,identity,key' || typeof row.key !== 'string' ||
+        byContext.has(row.key) || !text(row.identity?.ownerId) || row.identity.workspaceId !== workspaceId) fail();
+    try {
+      const data = JSON.parse(row.key) as ComparisonJson;
+      const context = idopAuthorityValue(data) as UnifiedToolContext;
+      if (idopHostContextKey(context, workspaceId) !== row.key) fail();
+    } catch { fail(); }
+    byContext.set(row.key, row);
+    subjects.add(JSON.stringify([workspaceId, row.identity.ownerId]));
+  }
+  const modes = new Map<string, IdopP001HostSnapshot['modes'][number]['rows']>();
+  for (const row of snapshot.modes) {
+    if (!row || Object.keys(row).sort().join(',') !== 'key,rows' || !subjects.has(row.key) || modes.has(row.key) ||
+        !Array.isArray(row.rows) || row.rows.some(mode => !text(mode?.mode)) ||
+        new Set(row.rows.map(mode => mode.mode)).size !== row.rows.length) fail();
+    modes.set(row.key, row.rows);
+  }
+  if (modes.size !== subjects.size) fail();
+  const flagKey = (key: string, distinctId: string) => JSON.stringify([key, distinctId]);
+  const byFlag = new Map<string, FlagAttestation>();
+  for (const row of snapshot.flags) {
+    if (!row || Object.keys(row).sort().join(',') !== 'attestation,distinctId,key' || !text(row.key) ||
+        !text(row.distinctId) || !idopHostFlagValid(row, row.attestation) || byFlag.has(flagKey(row.key, row.distinctId))) fail();
+    byFlag.set(flagKey(row.key, row.distinctId), row.attestation);
+  }
+  const clone = <T,>(value: T): T => JSON.parse(comparisonJson(value as ComparisonJson)) as T;
   const context = (ctx: UnifiedToolContext) => {
-    const row = byContext.get(contextKey(ctx));
+    const row = byContext.get(idopHostContextKey(ctx, workspaceId));
     if (!row) throw new Error('IDOP host snapshot context was not captured');
     return row;
   };
@@ -392,14 +452,14 @@ export async function captureIdopP001HostPermissionPorts(options: {
       if (!rows) throw new Error('IDOP host snapshot mode identity was not captured');
       return clone(rows);
     } },
-    roleOverrides: () => clone(roleOverrides), protectedAdditions: () => clone(protectedAdditions),
+    roleOverrides: () => clone(snapshot.roleOverrides), protectedAdditions: () => clone(snapshot.protectedAdditions),
     getFlag: async (key, distinctId) => {
       const attestation = byFlag.get(flagKey(key, distinctId));
       if (!attestation) throw new Error('IDOP host snapshot flag lookup was not captured');
       return attestation.resolvedValue;
     },
   };
-  return { snapshot: JSON.parse(bytes) as typeof snapshot, sha256: sha256(bytes), ports };
+  return { snapshot: JSON.parse(bytes) as IdopP001HostSnapshot, sha256: expectedSha256, ports };
 }
 
 /** Lossless data-only authority codec. Tagged containers cannot collide with
@@ -1621,6 +1681,83 @@ export async function readIdopP001AppliedStackPopulation(
       return records.get(ownerId);
     } });
   });
+}
+
+/** Join independently read source domains BEFORE enumerating executable cases.
+ * A selected-library refusal cannot be hidden by a builtin with the same id;
+ * persisted anchors retain readable/refused partitions and inactive wearers.
+ * This inventory proves no current liveness, host authority or policy outcome.
+ * The comparison runner must separately enumerate cases against population. */
+export function joinIdopP001ComparisonPopulation(options: {
+  builtin: ReturnType<typeof readIdopP001CurrentBuiltinPopulation>;
+  library: Awaited<ReturnType<typeof readIdopP001CurrentLibraryPopulation>>;
+  applied: Awaited<ReturnType<typeof readIdopP001AppliedStackPopulation>>;
+}) {
+  const { builtin, library, applied } = options;
+  if (builtin.scope !== 'builtin-and-local-pot-source' || builtin.liveWearersIncluded !== false ||
+      library.scope !== 'selected-library-and-enabled-plugin-role-source' || library.liveWearersIncluded !== false ||
+      !library.harnessSlug.trim() || applied.scope !== 'workspace-persisted-applied-anchors' ||
+      !applied.workspaceId.trim() || applied.includesInactiveAnchors !== true || applied.livenessMeasured !== false) {
+    throw new Error('IDOP comparison population requires explicit source scopes without liveness claims');
+  }
+  type Member = { id: string; kind: 'role' | 'identity' | 'stack'; sources: Array<{
+    origin: 'builtin' | 'library' | 'applied'; status: 'declared' | 'readable' | 'refused';
+    sha256: string; data: ComparisonJson;
+  }> };
+  const members = new Map<string, Member>();
+  const add = (kind: Member['kind'], name: string, origin: Member['sources'][number]['origin'],
+    status: Member['sources'][number]['status'], value: unknown) => {
+    if (!name?.trim() || name !== name.trim()) throw new Error('IDOP comparison population has a blank or malformed id');
+    const id = `${kind}:${name}`;
+    const member = members.get(id) ?? { id, kind, sources: [] };
+    if (member.sources.some(source => source.origin === origin)) throw new Error('IDOP comparison population has duplicate domain members');
+    const data = idopAuthorityData(value);
+    member.sources.push({ origin, status, sha256: sha256(comparisonJson(data)), data });
+    members.set(id, member);
+  };
+  for (const role of builtin.roles) add('role', role, 'builtin', 'declared', { role, sources: builtin.sources });
+  for (const role of library.roles) add('role', role.id, 'library', 'declared', role);
+  for (const identity of builtin.identities) {
+    const source = builtin.sources.filter(source => source.path === identity.path);
+    if (source.length !== 1) throw new Error('IDOP comparison builtin identity has no unique source evidence');
+    add('identity', identity.id, 'builtin', 'declared', { ...identity, source: source[0] });
+  }
+  const candidates = new Map(library.sources.filter(source => source.kind === 'identity').map(source => [source.id, source]));
+  if (candidates.size !== library.sources.filter(source => source.kind === 'identity').length) {
+    throw new Error('IDOP comparison library has duplicate identity sources');
+  }
+  const selected = new Set<string>();
+  for (const identity of [...library.identities, ...library.unreadable]) {
+    const source = candidates.get(identity.id);
+    if (!source || selected.has(identity.id) || source.file !== identity.sourcePath || source.tier !== identity.tier ||
+        'sourceId' in identity && (identity.sourceId !== source.sourceId ||
+          comparisonJson(identity.slots.map(slot => slot.slot).sort()) !== comparisonJson(source.slots))) {
+      throw new Error('IDOP comparison library omitted or substituted an identity');
+    }
+    const refused = 'error' in identity;
+    if (refused && (typeof identity.error !== 'string' || !identity.error.trim())) {
+      throw new Error('IDOP comparison library has a blank refusal');
+    }
+    selected.add(identity.id);
+    add('identity', identity.id, 'library', refused ? 'refused' : 'readable', { identity, source });
+  }
+  if (selected.size !== candidates.size) throw new Error('IDOP comparison library omitted an identity');
+  for (const row of applied.stacks) add('stack', row.ownerId, 'applied', 'readable', {
+    applied: row.applied, role: row.role, recordSha256: row.recordSha256, artifactSha256: row.artifactSha256,
+    explicitStack: row.explicitStack, layers: row.layers,
+  });
+  for (const row of applied.refused) add('stack', row.ownerId, 'applied', 'refused', {
+    applied: row.applied, recordSha256: row.recordSha256,
+    // The canonical resolver executes in its pinned VM realm. Project its
+    // fixed scalar contract; do not admit arbitrary foreign prototypes into
+    // the general authority codec or serialize away unsupported values.
+    resolution: { kind: row.resolution.kind, reason: row.resolution.reason },
+  });
+  const rows = [...members.values()].sort((a, b) => a.id.localeCompare(b.id));
+  const inventory = { scope: 'independent-source-and-persisted-anchor-comparison-domain' as const,
+    workspaceId: applied.workspaceId, harnessSlug: library.harnessSlug, livenessMeasured: false as const,
+    includesInactiveAnchors: true as const, population: rows.map(row => row.id), members: rows };
+  return { ...inventory, sha256: sha256(comparisonJson(inventory as unknown as ComparisonJson)) };
 }
 
 /** Finalize the existing manifest/stack/refused gzip evidence without loading

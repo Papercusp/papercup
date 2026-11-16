@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ompLifecycleProvider } from '../test/omp-managed-native-provider';
 
-function fixture(getActiveTools: () => string[], expectedDispatcher = 'mcp__papercusp_tools_invoke') {
+function fixture(getActiveTools: () => string[], expectedDispatcher = 'mcp__papercusp_tools_invoke',
+  getAllTools = getActiveTools) {
   vi.stubEnv('OMP_PROOF_MCP_DISPATCHER', expectedDispatcher);
   const hooks = new Map<string, () => Promise<void>>();
   type ToolCall = { type: string; id: string; name: string; arguments: Record<string, unknown> };
@@ -14,7 +15,7 @@ function fixture(getActiveTools: () => string[], expectedDispatcher = 'mcp__pape
   const extension = new Function('writeFileSync', ompLifecycleProvider
     .replace("import { writeFileSync } from 'node:fs';", '')
     .replace('export default function', 'return function'))(write);
-  extension({ getActiveTools,
+  extension({ getActiveTools, getAllTools: () => getAllTools().map(name => ({ name })),
     on: (event: string, handler: () => Promise<void>) => hooks.set(event, handler),
     registerProvider: (_name: string, value: typeof provider) => { provider = value; },
   });
@@ -61,13 +62,22 @@ describe('installed OMP fixture MCP readiness', () => {
 
   it('fails with the observed catalog when registration never completes', async () => {
     vi.useFakeTimers();
-    const { ready } = fixture(() => ['read']);
+    vi.stubEnv('OMP_PROOF_PHASE_FILE', '/owned/startup.ndjson');
+    const { ready, provider, write } = fixture(() => ['read'], 'mcp__papercusp_tools_invoke',
+      () => ['read', 'mcp__papercusp_tools_invoke']);
     const result = ready().catch(error => error);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(await result).toMatchObject({
       message: 'OMP managed MCP dispatcher did not become active: expected mcp__papercusp_tools_invoke; actual ["read"]',
     });
     expect(vi.getTimerCount()).toBe(0);
+    expect(JSON.parse(write.mock.calls.find(call => call[1].includes('mcp-readiness-timeout'))![1]))
+      .toMatchObject({ names: ['read'], registeredNames: ['read', 'mcp__papercusp_tools_invoke'] });
+    // OMP continues after a rejected extension hook. Preserve its failure and
+    // refuse to issue inference or tool calls without the prerequisite.
+    expect(() => provider.streamSimple({}, { tools: [{ name: 'read' }], messages: [] }))
+      .toThrow('OMP managed MCP dispatcher did not become active');
+    expect(write.mock.calls.some(call => call[1].includes('inference-turn'))).toBe(false);
   });
 
   it('rejects a similarly named dispatcher instead of accepting the wrong registration', async () => {
@@ -81,8 +91,15 @@ describe('installed OMP fixture MCP readiness', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('refuses to invent a dispatcher without a real device transport', () => {
+  it('refuses inference before the MCP readiness hook has completed', () => {
     const { provider } = fixture(() => ['mcp__papercusp_tools_invoke']);
+    expect(() => provider.streamSimple({}, { tools: [{ name: 'mcp__papercusp_tools_invoke' }], messages: [] }))
+      .toThrow('OMP managed MCP readiness did not complete before inference');
+  });
+
+  it('refuses to invent a dispatcher without a real device transport', async () => {
+    const { ready, provider } = fixture(() => ['mcp__papercusp_tools_invoke']);
+    await ready();
     expect(() => provider.streamSimple({}, { tools: [{ name: 'read' }], messages: [] }))
       .toThrow('OMP model catalog lacks MCP dispatch and device transport: ["read"]');
   });

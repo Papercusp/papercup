@@ -98,7 +98,10 @@ export async function measureLifecycle(url: string, token: string, policy: Capab
           expect(selected).not.toEqual(['--no-tools']);
           if (selected[0] === '--tools') expect(selected[1]!.split(',')).not.toContain(OMP_MANAGED_MCP_DISPATCHER);
         }
-        args = [...su, '-p', prompt];
+        // The retained control must use the same explicit native inventory
+        // as the admitted cut. Default code mode also exposes eval/hub and is
+        // measured separately by the installed-client census.
+        args = [...(su.length ? su : selection), '-p', prompt];
       } else if (surface === 'resume') {
         args = resumeArgsFor({ agent: 'omp', ompThreadId: transcript!, role: 'worker' }, {
           capabilityPolicy: policy, env: {},
@@ -209,9 +212,9 @@ export async function measureLifecycle(url: string, token: string, policy: Capab
 
 /** Cheap native MCP preflight before paying for private API/PG setup. */
 export async function localPreflight(evidenceDir: string) {
-  const requests: { method: string; rpc?: string; generation?: string }[] = [];
+  const requests: { method: string; at: number; repliedAt?: number; rpc?: string; generation?: string }[] = [];
   const server = createServer(async (req, res) => {
-    const request: { method: string; rpc?: string; generation?: string } = { method: req.method ?? '' };
+    const request: typeof requests[number] = { method: req.method ?? '', at: Date.now() };
     requests.push(request);
     if (req.method !== 'POST') { res.writeHead(405).end(); return; }
     if (req.headers.authorization !== 'Bearer local-only') { res.writeHead(401).end(); return; }
@@ -236,6 +239,7 @@ export async function localPreflight(evidenceDir: string) {
         ? { content: [{ type: 'text', text: 'OMP_MANAGED_OK' }] }
         : { isError: true, content: [{ type: 'text', text: 'unknown tool negative control' }] };
     res.writeHead(200, { 'content-type': 'application/json' });
+    request.repliedAt = Date.now();
     res.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }));
   });
   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
@@ -249,6 +253,13 @@ export async function localPreflight(evidenceDir: string) {
         { expectRestricted: false, evidenceDir });
       const lifecycle = await measureLifecycle(url, 'local-only', admitted, true, { evidenceDir });
       const invoked = await measureLifecycle(url, 'local-only', admitted, false, { viaInvoke: true, evidenceDir });
+      const nativeNames = (names: string[]) => names.filter(name => !name.startsWith('mcp__')).sort();
+      expect(nativeNames(retained[0]!.names), 'Retained control must measure the declared native selection')
+        .toEqual([...nativeTools].sort());
+      for (const observation of [...lifecycle, ...invoked]) {
+        expect(nativeNames(observation.names), 'Only the admitted bash tool may leave the native selection')
+          .toEqual(nativeTools.filter(name => name !== 'bash').sort());
+      }
       const calls = requests.filter(request => request.rpc === 'tools/call');
       expect(calls.length).toBeGreaterThan(0);
       expect(calls.every(request => request.generation === 'serving-generation-v1:omp-preflight')).toBe(true);

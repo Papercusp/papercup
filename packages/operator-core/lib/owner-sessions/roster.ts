@@ -16,8 +16,8 @@ export interface ReadSessionRosterOptions {
   workspaceId?: string | null;
   /** How many ended sessions to include. */
   endedLimit?: number;
-  /** `header` is the closed pill's live-count projection; `full` is the roster. */
-  view?: 'full' | 'header';
+  /** `header` serves the closed pill; `launcher` retains search and window identity. */
+  view?: 'full' | 'header' | 'launcher';
 }
 
 export const SESSION_ROSTER_DEFAULT_ENDED_LIMIT = 50;

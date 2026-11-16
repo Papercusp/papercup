@@ -18,6 +18,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
+import { assertMutableTextArtifactKey } from '@papercusp/operator-core/lib/text-artifact-keys';
 import { SLUG_RE, slugRequires, resolveSlug } from './_slug-requires';
 import { SU_WRITE_ROLES } from '../../role-config';
 // The bulk helpers' LEAF module — relative, NOT the '@papercusp/agent-mcp'
@@ -95,6 +96,7 @@ export default defineTool({
           return { ok: false as const, slug: item.slug ?? null, rel_path: key, error: r.error };
         }
         const { slug } = r;
+        assertMutableTextArtifactKey(key);
         await ctx.tx`
           INSERT INTO harness_shared.harness_text_artifacts (harness_slug, rel_path, content, updated_at, workspace_id)
           VALUES (${slug}, ${key}, ${item.content}, ${now},

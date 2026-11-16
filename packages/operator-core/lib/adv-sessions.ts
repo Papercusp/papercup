@@ -14,6 +14,7 @@
 
 import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { createDedicatedOrgPg, DbCallDeadlineError, getOrgPg, withWorkspace } from '@papercusp/db-org';
 import type { Sql, TransactionSql } from 'postgres';
 import { trackPhase, type PhaseTracker } from '@papercusp/tooldef';
@@ -2489,7 +2490,9 @@ async function recordSuLaunchSpecInTransaction(
   }
   const retained = await trackPhase(phases, 'nativeReanchor:receiptRetention', () =>
     retainSuLaunchIdentityHistory(previous, next ?? row.launch_spec, row.applied));
-  if (launchSpec === undefined && JSON.stringify(retained) === JSON.stringify(row.launch_spec)) return true;
+  // JSONB orders object keys differently from the JS receipt builder. Comparing
+  // serialized text rewrote unchanged, multi-megabyte history on every report.
+  if (launchSpec === undefined && isDeepStrictEqual(retained, row.launch_spec)) return true;
   const payload = JSON.stringify(retained);
   onPhase?.('recordSuLaunchSpec:row-update');
   const updated = await trackPhase(phases, 'nativeReanchor:receiptUpdate', async () => tx<{ id: number }[]>`
@@ -2532,15 +2535,25 @@ export async function recordSuLaunchSpec(
  * spec, or the store is unavailable — every one of which fail-softs the caller to
  * the inherited render.
  */
-export async function readSuLaunchSpecByOwner(coordOwnerId: string, advSessionId?: number): Promise<unknown | null> {
+export async function readSuLaunchSpecByOwner(
+  coordOwnerId: string,
+  advSessionId?: number,
+  opts: { select?: 'acceptedOperation' } = {},
+): Promise<unknown | null> {
   if (!coordOwnerId) return null;
   // Home repair is keyed by a concrete ADV id. Never lend the newest owner's
   // SQLite binding to an older native session; persona-only callers omit it.
   if (advSessionId !== undefined && (!Number.isSafeInteger(advSessionId) || advSessionId <= 0)) return null;
   try {
     const { sql } = getOrgPg();
+    // The respawn readiness branch needs one flag, not the persona artifact and
+    // its retained history. Project in PG so those bytes never reach the client.
+    const projection = opts.select === 'acceptedOperation'
+      ? sql`CASE WHEN launch_spec IS NULL THEN NULL
+                 ELSE jsonb_build_object('acceptedOperation', launch_spec->'acceptedOperation') END`
+      : sql`launch_spec`;
     const rows = await sql<{ launch_spec: unknown }[]>`
-      SELECT launch_spec
+      SELECT ${projection} AS launch_spec
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id = ${coordOwnerId}
          AND (${advSessionId ?? null}::bigint IS NULL OR id = ${advSessionId ?? null})
