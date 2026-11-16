@@ -85,14 +85,17 @@ type GeneratedComponent = {
   aliases: Array<{ id: string; implies: string[]; requiresSubject: boolean }>;
 };
 
-/** Read the independent registry declaration at the ORIGINAL superproject + submodule pin. */
+/** Read the original pinned registry or enumerate the CURRENT source snapshot.
+ * D-043 keeps historical evidence intact when the current population changes. */
 export function readIdopP001StackSources(root: string, superprojectCommit: string) {
-  if (!/^[a-f0-9]{40}$/.test(superprojectCommit)) throw new Error('exact original commit required');
+  const current = superprojectCommit === 'working-tree';
+  if (!current && !/^[a-f0-9]{40}$/.test(superprojectCommit)) throw new Error('exact original commit required');
   const git = (repo: string, args: string[]) => execFileSync('git', ['-C', repo, ...args], {
     encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout: 15_000,
   });
-  const gitlink = git(root, ['ls-tree', superprojectCommit, 'libs/papercusp']).trim().split(/\s+/)[2];
-  if (!gitlink || !/^[a-f0-9]{40}$/.test(gitlink)) throw new Error('original submodule pin unavailable');
+  const gitlink = current ? 'working-tree' :
+    git(root, ['ls-tree', superprojectCommit, 'libs/papercusp']).trim().split(/\s+/)[2];
+  if (!gitlink || (!current && !/^[a-f0-9]{40}$/.test(gitlink))) throw new Error('original submodule pin unavailable');
   const paths = [
     'packages/operator-core/lib/modes/registry.ts',
     'packages/operator-core/lib/modes/store.ts',
@@ -107,12 +110,13 @@ export function readIdopP001StackSources(root: string, superprojectCommit: strin
     const repoPath = nested ? path.slice('libs/papercusp/'.length) : path;
     const repo = nested ? join(root, 'libs/papercusp') : root;
     const commit = nested ? gitlink : superprojectCommit;
-    const text = git(repo, ['show', `${commit}:${repoPath}`]);
-    return { path, commit, sha256: sha256(text), currentSha256: sha256(readFileSync(join(root, path), 'utf8')), text };
+    const currentText = readFileSync(join(root, path), 'utf8');
+    const text = current ? currentText : git(repo, ['show', `${commit}:${repoPath}`]);
+    return { path, commit, sha256: sha256(text), currentSha256: sha256(currentText), text };
   });
   const catalog = sources.find(source => source.path.endsWith('mode-catalog.generated.ts'))!.text;
   const match = catalog.match(/export const BUILTIN_MODE_COMPONENTS = (\[[\s\S]*\]) as const;/);
-  if (!match) throw new Error('original generated mode catalog is not readable');
+  if (!match) throw new Error('generated mode catalog is not readable');
   const components = JSON.parse(match[1]) as GeneratedComponent[];
   const modes: CensusMode[] = components.flatMap(component => [component, ...component.aliases].map(mode => ({
     id: mode.id, axis: component.slot === 'autonomy' ? 'autonomy' as const : 'overlay' as const,

@@ -1,6 +1,7 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { MODES } from '../modes/registry';
 import { defaultCensusRoot } from './identity-surface-census';
@@ -65,11 +66,44 @@ describe('P001 independent original mode/fleet population', () => {
     expect(expanded.every(row => row.observation === 'UNOBSERVED')).toBe(true);
   });
 
-  it('fails coverage when the current independent mode registry gains an unaccounted declaration', () => {
+  it('binds comparison population to the current registry, without requiring the historical population to match', () => {
+    const current = readIdopP001StackSources(root, 'working-tree');
     const metadata = (modes: ReadonlyArray<{ id: string; axis: string; implies?: readonly string[]; requiresSubject?: boolean }>) =>
       modes.map(mode => ({ id: mode.id, axis: mode.axis, implies: [...(mode.implies ?? [])],
         requiresSubject: mode.requiresSubject === true })).sort((a, b) => a.id.localeCompare(b.id));
-    expect(metadata(MODES)).toEqual(metadata(original.modes));
+    expect(metadata(MODES)).toEqual(metadata(current.modes));
+    expect(current.superprojectCommit).toBe('working-tree');
+    expect(current.submoduleCommit).toBe('working-tree');
+    for (const source of current.sources) {
+      expect(source.commit).toBe('working-tree');
+      expect(source.sha256).toBe(createHash('sha256').update(readFileSync(join(root, source.path))).digest('hex'));
+    }
+  });
+
+  it('discovers an added current mode and its retirement without rewriting frozen observations', () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'idop-current-modes-'));
+    try {
+      for (const source of original.sources) {
+        mkdirSync(dirname(join(fixtureRoot, source.path)), { recursive: true });
+        writeFileSync(join(fixtureRoot, source.path), readFileSync(join(root, source.path)));
+      }
+      const path = join(fixtureRoot, original.sources.find(source => source.path.endsWith('mode-catalog.generated.ts'))!.path);
+      const text = readFileSync(path, 'utf8');
+      const match = text.match(/export const BUILTIN_MODE_COMPONENTS = (\[[\s\S]*\]) as const;/)!;
+      const components = JSON.parse(match[1]) as unknown[];
+      components.push({ id: 'comparison-future', slot: 'comparison-future-axis', sourceId: 'su.mode-future',
+        implies: [], requiresSubject: false, aliases: [] });
+      writeFileSync(path, text.replace(match[1], JSON.stringify(components)));
+      const expanded = readIdopP001StackSources(fixtureRoot, 'working-tree');
+      const cases = enumerateIdopP001Stacks(expanded.modes, []);
+      expect(cases.some(row => row.modes.includes('comparison-future'))).toBe(true);
+      expect(expanded.sources.find(source => source.path.endsWith('mode-catalog.generated.ts'))?.sha256)
+        .not.toBe(original.sources.find(source => source.path.endsWith('mode-catalog.generated.ts'))?.sha256);
+      writeFileSync(path, text);
+      const retired = readIdopP001StackSources(fixtureRoot, 'working-tree');
+      expect(enumerateIdopP001Stacks(retired.modes, []).some(row => row.modes.includes('comparison-future'))).toBe(false);
+      expect(original.modes.some(mode => mode.id === 'comparison-future')).toBe(false);
+    } finally { rmSync(fixtureRoot, { recursive: true, force: true }); }
   });
 
   it('replays every published state and its restrictions without promoting an unobserved candidate', () => {

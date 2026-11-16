@@ -1540,6 +1540,48 @@ describe('WI-10005232: bootstrap/resume config filesystem calls stay asynchronou
  * that ships green. Nothing in this suite's prior tests parsed the emitted
  * source. The first test below closes that class for every future editor.
  */
+describe('EI-28843330270014450 recovery MCP configuration', () => {
+  it.each(['unresolved', 'missing'])('repairs a %s entry using current runtime values without changing global config', async (state) => {
+    seedHome(home);
+    const source = {
+      mcpServers: {
+        'papercusp-su': {
+          type: 'http',
+          url: '${PAPERCUSP_OPERATOR_URL:-http://127.0.0.1:9071}/api/mcp?client=${PAPERCUSP_SID:-bare}',
+          headers: { 'x-papercusp-native-session': '${PAPERCUSP_NATIVE_SESSION_ID:-}' },
+        },
+      },
+    };
+    const globalConfig = JSON.stringify(source);
+    writeFileSync(join(home, '.claude.json'), globalConfig);
+    const dir = (await writeInteractiveClaudeConfig({ sid: 'su-mcp-recovery', home })).configDir;
+    if (state === 'missing') {
+      // Break the mirror before simulating a client rewrite that dropped MCP.
+      rmSync(join(dir, '.claude.json'));
+      writeFileSync(join(dir, '.claude.json'), JSON.stringify({ mcpServers: {}, theme: 'keep' }));
+    }
+    execFileSync(process.execPath, [join(dir, RECOVER_HOOK)], {
+      input: JSON.stringify({ source: 'startup' }),
+      env: {
+        ...process.env, HOME: home, PAPERCUSP_SID: 'su-mcp-recovery',
+        PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1', PAPERCUSP_NATIVE_SESSION_ID: 'native-recovered',
+        PAPERCUSP_PSU_PTY_DIR: dir,
+        PSU_RECOVER_TEST_CHAIN: JSON.stringify([['claude', '--system-prompt-file', '/unused']]),
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 20_000,
+    });
+    const current = JSON.parse(readFileSync(join(dir, '.claude.json'), 'utf8'));
+    const entry = current.mcpServers['papercusp-su'];
+    expect(new URL(entry.url).searchParams.get('client')).toBe('su-mcp-recovery');
+    expect(new URL(entry.url).origin).toBe('http://127.0.0.1:1');
+    expect(entry.headers['x-papercusp-native-session']).toBe('native-recovered');
+    expect(lstatSync(join(dir, '.claude.json')).isSymbolicLink()).toBe(false);
+    expect(readFileSync(join(home, '.claude.json'), 'utf8')).toBe(globalConfig);
+    if (state === 'missing') expect(current.theme).toBe('keep');
+  });
+});
+
 describe('EI-20273348458054257 recovery-banner identity claim', () => {
   it('emits a hook whose source is valid JavaScript (guards the template-escaping class)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'pc-hooksrc-'));
