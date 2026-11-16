@@ -698,9 +698,14 @@ describe("fresh candidate preparation: independent production-boundary acceptanc
   it("publishes private fixture dependencies while an unrelated inherited copy lock stays held", async () => {
     const unrelated = mkdtempSync(join(tmpdir(), "p023-unrelated-copy-"));
     const lock = join(unrelated, "copy.lock");
-    const holder = spawn("flock", ["--no-fork", "--exclusive", lock, process.execPath, "-e",
-      "process.stdout.write('COPY_LOCK_HELD\\n'); process.stdin.resume();"], {
+    const slowBootstrap = join(unrelated, "slow-node-bootstrap.cjs");
+    writeFileSync(slowBootstrap,
+      "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 6_000);\n");
+    const holder = spawn("flock", ["--no-fork", "--exclusive", lock, "/bin/sh", "-c",
+      "printf '%s\\n' COPY_LOCK_HELD; read -r release || true"], {
       stdio: ["pipe", "pipe", "pipe"],
+      // Lock readiness must not depend on inherited Node startup hooks.
+      env: { ...process.env, NODE_OPTIONS: `--require=${JSON.stringify(slowBootstrap)}` },
     });
     onTestFinished(async () => {
       const closed = new Promise<void>(resolve => holder.once("close", () => resolve()));
