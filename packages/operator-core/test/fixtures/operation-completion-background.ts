@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { promises as fs } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
@@ -219,9 +220,36 @@ try {
       }
       controls.push(name);
     }
-    // An unchanged native file must still drive the normal outer settlement;
-    // neither another LLM turn nor a fabricated usage row is required.
-    const ingested = await ingestInteractiveUsage({ sessionIds: [nativeId] }, { sql, workspaceId });
+    // Hold real filesystem discovery open. The canonical completion must finish
+    // while that unrelated scan is blocked, using the already-converged native
+    // evidence, without another worker turn or any manufactured usage rows.
+    const readdir = fs.readdir;
+    let discoveryStarted = false;
+    let enteredDiscovery!: () => void;
+    let releaseDiscovery!: () => void;
+    const discoveryEntered = new Promise<void>(resolve => { enteredDiscovery = resolve; });
+    const discoveryReleased = new Promise<void>(resolve => { releaseDiscovery = resolve; });
+    fs.readdir = ((...args: unknown[]) => {
+      if (!discoveryStarted) return Reflect.apply(readdir, fs, args);
+      enteredDiscovery();
+      return discoveryReleased.then(() => Reflect.apply(readdir, fs, args));
+    }) as typeof fs.readdir;
+    const ingest = ingestInteractiveUsage({ sessionIds: [nativeId], onProgress: progress => {
+      if (progress.phase === 'root-discovery') discoveryStarted = true;
+    } }, { sql, workspaceId });
+    let ingested!: Awaited<typeof ingest>;
+    let stateBeforeDiscovery!: string;
+    try {
+      await Promise.race([discoveryEntered, ingest.then(() => {
+        throw new Error('normal ingestion must encounter the blocked discovery');
+      })]);
+      stateBeforeDiscovery = (await getWorkItem(itemId, harnessSlug))!.state;
+      assert.equal(stateBeforeDiscovery, 'done', 'ready completion must not wait for filesystem discovery');
+    } finally {
+      releaseDiscovery();
+      fs.readdir = readdir;
+      ingested = await ingest;
+    }
     assert.deepEqual(ingested.errors, []);
     assert.equal(ingested.samples, 0);
     const terminal = (await getWorkItem(itemId, harnessSlug))!;
@@ -249,6 +277,7 @@ try {
       invocationId: invocation.id, pendingEventId: retained.eventId, original: saved.body,
       before: { state: 'open', settlement: before }, after: { state: terminal.state, output },
       firstUsageCatchup: { before: beforeFirstClose.samples, after: afterFirstClose.samples },
+      settledBeforeDiscovery: { state: stateBeforeDiscovery, discoveryBlocked: true },
       controls, ingested: { samples: catchup.samples, errors: ingested.errors }, countsBefore, countsAfter }));
   });
 } finally {

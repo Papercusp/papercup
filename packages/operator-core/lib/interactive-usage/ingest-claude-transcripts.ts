@@ -576,6 +576,29 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
     await requireHistoricalBackup(sql, ws, opts.historical.backupSnapshotId);
   }
 
+  const result: IngestResult = {
+    root: '', scannedFiles: 0, ingestedFiles: 0, samples: 0,
+    skippedUnchanged: 0, bootstrapPending: 0, totals: emptyDelta(), errors: [],
+  };
+  currentResult = result;
+  const settleCompletions = async (): Promise<void> => {
+    // Explicit adapters include the verifier's bounded catch-up. They must not
+    // recurse into settlement, and historical reconciliation cannot finalize work.
+    if (opts.adapters || opts.historical) return;
+    try {
+      const { settleDeferredOperationCompletions } = await import('../blueprint/operation-service');
+      reportProgress('completion-settlement');
+      const settled = await settleDeferredOperationCompletions(sql, ws);
+      for (const error of settled.errors) result.errors.push({ file: 'operation-completion-settlement', error });
+    } catch (error) {
+      result.errors.push({ file: 'operation-completion-settlement', error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+  // A ready completion's deadline must not wait behind unrelated root discovery
+  // and transcript scans. The same canonical verifier can catch up its own exact
+  // accepted transcript; the final pass also sees usage committed by this sweep.
+  await settleCompletions();
+
   reportProgress('root-discovery');
   // Lazy import avoids a require cycle (ingest-adapters imports this module's
   // parseTranscriptChunk for the claude adapter).
@@ -654,17 +677,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
     ];
   }
 
-  const result: IngestResult = {
-    root: adapters.map((a) => a.root).join(', '),
-    scannedFiles: 0,
-    ingestedFiles: 0,
-    samples: 0,
-    skippedUnchanged: 0,
-    bootstrapPending: 0,
-    totals: emptyDelta(),
-    errors: [],
-  };
-  currentResult = result;
+  result.root = adapters.map((a) => a.root).join(', ');
 
   reportProgress('watermark-read');
   const wmRows = await sql<Array<{ file_path: string; byte_offset: string; parser_state: TranscriptParserState }>>`
@@ -1067,18 +1080,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
   } catch (error) {
     result.errors.push({ file: 'gateway-account-attribution', error: error instanceof Error ? error.message : String(error) });
   }
-  // The normal routine is the progress driver. Explicit adapters (including
-  // verifier catch-up) are nested bounded reads and must not recursively settle.
-  if (!opts.adapters && !opts.historical) {
-    try {
-      const { settleDeferredOperationCompletions } = await import('../blueprint/operation-service');
-      reportProgress('completion-settlement');
-      const settled = await settleDeferredOperationCompletions(sql, ws);
-      for (const error of settled.errors) result.errors.push({ file: 'operation-completion-settlement', error });
-    } catch (error) {
-      result.errors.push({ file: 'operation-completion-settlement', error: error instanceof Error ? error.message : String(error) });
-    }
-  }
+  await settleCompletions();
   reportProgress('completed');
   return result;
 }
