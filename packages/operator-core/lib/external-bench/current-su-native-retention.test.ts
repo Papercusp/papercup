@@ -10,6 +10,7 @@ it.for([false, true])('retains current-su phase artifacts through pruning (manag
   const evidenceRoot = join(fixture, 'isolated-integration');
   const requests = '[{"model":"private-fixture","managedCarry":true}]\n';
   const egressPreflight = '{"status":"ready","runId":"original-egress-fixture","cleanupErrors":[]}\n';
+  const mcpPreflight = '{"status":"ready","sourceSha":"retained-source","toolsDigest":"retained-tools"}\n';
   const allocationOriginals = ['{"currentRef":"WI-123","peerRef":"WI-124","nativeLaunches":0}\n',
     '{"workspace":"test-runtime-retained","clock":{"epoch":"2026-01-01T00:00:00.000Z"}}\n'];
   vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(fixture, 'retention'));
@@ -30,6 +31,7 @@ it.for([false, true])('retains current-su phase artifacts through pruning (manag
           writeFileSync(join(evidenceDir, 'bundle-restricted-hold-inputs.json'), '[]\n');
           writeFileSync(join(evidenceDir, 'hono-host.mjs.build-steps.jsonl'), '{"event":"end"}\n');
         } else {
+          writeFileSync(join(evidenceDir, 'private-mcp-preflight.json'), mcpPreflight);
           if (managedCarry) writeFileSync(join(evidenceDir, 'native-model-requests.json'), requests);
           for (const [index, path] of CURRENT_SU_RECOVERY_ALLOCATION_ARTIFACTS.entries())
             writeFileSync(join(evidenceDir, path.split('/').at(-1)!), allocationOriginals[index]!);
@@ -51,6 +53,8 @@ it.for([false, true])('retains current-su phase artifacts through pruning (manag
       'phases/prepare/operator-api-build.log'), 'utf8')).toBe('original build\n');
     expect(readFileSync(join(evidenceRoot, 'retained', original.runId,
       'phases/prepare/native-egress-preflight.json'), 'utf8')).toBe(egressPreflight);
+    expect(readFileSync(join(evidenceRoot, 'retained', original.runId,
+      'phases/execute/private-mcp-preflight.json'), 'utf8')).toBe(mcpPreflight);
     for (const [index, path] of CURRENT_SU_RECOVERY_ALLOCATION_ARTIFACTS.entries())
       expect(readFileSync(join(evidenceRoot, 'retained', original.runId, path), 'utf8')).toBe(allocationOriginals[index]);
   } finally {
