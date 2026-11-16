@@ -34,6 +34,15 @@ vi.mock('../../rubrics', async (importOriginal) => {
     },
     getRubricPlanRevision: (...a: unknown[]) => getRubricPlanRevision(...a),
     readRubricPlanRevision: (...a: unknown[]) => readRubricPlanRevision(...a),
+    // The real identity/hash helpers close over the module-internal getRubric, so
+    // they bypass this suite's mock and attempt a real PG read (refused by the
+    // unit-test PG rail, which then warns). Route them through the mocks instead.
+    getRubricEvidenceIdentity: async (rubricId: string) => ({
+      revision: await getRubricPlanRevision(rubricId),
+      criteriaHash: (await getRubric(rubricId))?.criteriaHash ?? null,
+      meaningRevision: null,
+    }),
+    getRubricCriteriaHash: async (rubricId: string) => (await getRubric(rubricId))?.criteriaHash ?? null,
   };
 });
 vi.mock('../../scorecards', async (importOriginal) => {
