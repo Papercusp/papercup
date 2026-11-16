@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "plan": "identity-definitions-own-policy-2026-10-17",
+  "baselineRevision": "4ad5a574aa64e2f1579334706509f7c31d803e85",
+  "scopes": [
+    {
+      "id": "source-role-envelope",
+      "expectation": "R-2 preserves existing per-role ceiling values as identity maximums. D-043 requires identical tool names and argument scopes unless an exact difference is authorized by this plan. No role-envelope source difference is authorized here. This scope covers the pure role-envelope source reader only; it does not certify worn-stack, dispatch, argument, vault, kernel, layer, launch, runtime or dynamic-plugin behavior.",
+      "authorityRefs": [
+        "identity-definitions-own-policy-2026-10-17#R-2",
+        "identity-definitions-own-policy-2026-10-17#D-043"
+      ],
+      "differences": []
+    }
+  ]
+}

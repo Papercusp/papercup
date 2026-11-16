@@ -104,6 +104,20 @@ describe('deriveCodeWorkingSet (R-1: edits rank first)', () => {
     expect(parseStampedWorkingSet({ owner: 'su-1', epoch: 1, derivedAt: 'd', paths: [...scratch, 'lib/real.ts'], symbols: [] })!.paths)
       .toEqual(['lib/real.ts']);
   });
+
+  it('keeps nested edit origins distinct from the same relative file in the harness', () => {
+    const signals: WorkingSetSignals = { pushes: [], tools: [], edits: [
+      { file: 'src/main.rs', repoRoot: '/repo/root/desktop', at: 2 },
+      { file: 'src/main.rs', repoRoot: '/repo/root', at: 1 },
+      { file: 'src/foreign.rs', repoRoot: '/repo/other', at: 3 },
+      { file: 'src/ambiguous.rs', repoRoot: 'desktop', at: 4 },
+      { file: '../traversal.rs', repoRoot: '/repo/root/desktop', at: 5 },
+    ] };
+    expect(rankCodeWorkingSet(signals, { root: '/repo/root' }).files.map(file => file.path))
+      .toEqual(['desktop/src/main.rs', 'src/main.rs']);
+    // A repository origin cannot be interpreted without the harness root.
+    expect(rankCodeWorkingSet(signals).files).toEqual([]);
+  });
 });
 
 describe('deriveCodeWorkingSet (R-2: bounded)', () => {
@@ -168,6 +182,18 @@ describe('readWorkingSetSignals (blind review 35 G-1/G-2: window-bounded and har
     expect([...UNATTRIBUTED_TOOL_HARNESS_SLUGS]).toEqual(['', '*']);
     // Edit attribution was already harness-scoped; it stays so.
     expect(calls.find(c => c.text.includes('edit_attribution_ledger'))!.text).toContain('harness_slug = ?');
+  });
+
+  it('retains the edit ledger repository origin through ranking and the carry stamp', async () => {
+    const tx = (strings: TemplateStringsArray) => Promise.resolve(strings.join('').includes('edit_attribution_ledger')
+      ? [{ file: 'src/main.rs', repo_root: '/repo/root/desktop', at: 1 }] : []);
+    const sql = { begin: async (fn: (transaction: typeof tx) => Promise<unknown>) => fn(tx) };
+    const signals = await readWorkingSetSignals(query, sql as never);
+    expect(signals.edits).toEqual([{ file: 'src/main.rs', repoRoot: '/repo/root/desktop', at: 1 }]);
+    const { deps } = depsWith(signals);
+    const set = await deriveCodeWorkingSet({ workspace: 'ws', harness: 'papercusp', owner: 'su-1',
+      root: '/repo/root', now: NOW }, deps);
+    expect(stampableWorkingSet(set!).paths).toEqual(['desktop/src/main.rs']);
   });
 });
 

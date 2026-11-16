@@ -19,7 +19,7 @@
  * re-run, ranked edited > queried > read. Tier 1 of the plan: nothing here
  * carries a caller count, a definition or any other answer text.
  */
-import { isAbsolute, relative } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { safeSnapshotPath } from './push-snapshot';
 
@@ -47,7 +47,7 @@ export interface CodeWorkingSet {
 }
 
 export interface WorkingSetPushRow { leg: string; subject: string; citedPaths: readonly string[]; at: number }
-export interface WorkingSetEditRow { file: string; at: number }
+export interface WorkingSetEditRow { file: string; repoRoot?: string; at: number }
 export interface WorkingSetToolRow { tool: string; args: unknown; at: number }
 export interface WorkingSetSignals {
   pushes: readonly WorkingSetPushRow[];
@@ -80,9 +80,16 @@ export function isCodeWorkingSetPath(path: unknown): path is string {
   return safeSnapshotPath(path) && !path.split('/').some(part => part.startsWith('.') || part === 'node_modules');
 }
 
-function normalizePath(raw: unknown, root?: string): string | null {
+function normalizePath(raw: unknown, root?: string, sourceRoot?: string): string | null {
   if (typeof raw !== 'string' || !raw || raw.length > 400) return null;
   let path = raw;
+  // Edit paths are relative to their recorded lock/repository domain, which
+  // can be a nested repository rather than the item's harness root.
+  if (sourceRoot !== undefined) {
+    if (!root || !isAbsolute(sourceRoot)) return null;
+    if (!isAbsolute(path) && !safeSnapshotPath(path.replace(/^\.\//, ''))) return null;
+    path = resolve(sourceRoot, path);
+  }
   if (isAbsolute(path)) {
     if (!root) return null;
     path = relative(root, path);
@@ -103,8 +110,8 @@ function argsRecord(value: unknown): Record<string, unknown> | null {
 export function rankCodeWorkingSet(signals: WorkingSetSignals, opts: { root?: string } = {}): Pick<CodeWorkingSet, 'files' | 'symbols' | 'truncated'> {
   const files = new Map<string, { best: WorkingSetReason; hits: number; at: number }>();
   const symbols = new Map<string, { path: string | null; hits: number; at: number }>();
-  const touchFile = (raw: unknown, reason: WorkingSetReason, at: number) => {
-    const path = normalizePath(raw, opts.root);
+  const touchFile = (raw: unknown, reason: WorkingSetReason, at: number, sourceRoot?: string) => {
+    const path = normalizePath(raw, opts.root, sourceRoot);
     if (!path) return;
     const prior = files.get(path);
     if (!prior) { files.set(path, { best: reason, hits: 1, at }); return; }
@@ -134,7 +141,7 @@ export function rankCodeWorkingSet(signals: WorkingSetSignals, opts: { root?: st
     // channel SHOWED the agent, not what it worked in — carrying them would let a
     // file ride forward forever without ever being touched again.
   }
-  for (const row of signals.edits) touchFile(row.file, 'edited', Number(row.at) || 0);
+  for (const row of signals.edits) touchFile(row.file, 'edited', Number(row.at) || 0, row.repoRoot);
   for (const row of signals.tools) {
     const at = Number(row.at) || 0;
     const args = argsRecord(row.args);
@@ -193,8 +200,8 @@ export async function readWorkingSetSignals(query: WorkingSetQuery, sql: SqlLike
         AND pushed_at >= ${query.windowStart} AND pushed_at < ${query.windowEnd}
         AND leg IN ('first-touch', 'interface', 'grep')
       ORDER BY pushed_at DESC LIMIT ${ROW_LIMIT}`;
-    const edits: { file: string; at: number }[] = await tx`
-      SELECT file, (extract(epoch FROM ts) * 1000)::float8 AS at
+    const edits: { file: string; repo_root: string; at: number }[] = await tx`
+      SELECT file, repo_root, (extract(epoch FROM ts) * 1000)::float8 AS at
       FROM harness_shared.edit_attribution_ledger
       WHERE agent_id = ${query.owner} AND ts >= ${query.windowStart} AND ts < ${query.windowEnd}
         AND workspace_id = ${query.workspace} AND harness_slug = ${query.harness}
@@ -208,7 +215,7 @@ export async function readWorkingSetSignals(query: WorkingSetQuery, sql: SqlLike
       ORDER BY invoked_at DESC LIMIT ${ROW_LIMIT}`;
     return {
       pushes: pushes.map(row => ({ leg: row.leg, subject: row.subject, citedPaths: row.cited_paths ?? [], at: Number(row.at) })),
-      edits: edits.map(row => ({ file: row.file, at: Number(row.at) })),
+      edits: edits.map(row => ({ file: row.file, repoRoot: row.repo_root, at: Number(row.at) })),
       tools: tools.map(row => ({ tool: row.tool_name, args: row.args_json, at: Number(row.at) })),
     };
   });
@@ -344,7 +351,11 @@ export function stampableWorkingSet(set: CodeWorkingSet): StampedCodeWorkingSet 
  * the caller's harness (or the operator home harness for a harness-less su). */
 export async function deriveCarryWorkingSet(owner: string, workspace: string, harness: string | null): Promise<CodeWorkingSet | null> {
   const { operatorHomeHarnessSlug } = await import('../harness/operator-home-harness');
-  return deriveCodeWorkingSet({ owner, workspace, harness: harness ?? operatorHomeHarnessSlug(), which: 'current' });
+  const { resolveHarnessRepoRoot } = await import('../harness/docs/harness-repo');
+  const harnessSlug = harness ?? operatorHomeHarnessSlug();
+  const root = await resolveHarnessRepoRoot(harnessSlug);
+  if (!root) return null;
+  return deriveCodeWorkingSet({ owner, workspace, harness: harnessSlug, root, which: 'current' });
 }
 
 /** P-004: stamp the set onto each NON-TERMINAL work item this owner still holds

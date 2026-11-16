@@ -2,13 +2,13 @@ import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import { basename, dirname, resolve, join } from 'node:path';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 // Keep the subprocess fixture in this suite's compiler graph without running it
 // inside the Vitest worker (operator-core's roots include lib/**/*.ts).
 import type {} from '../test/fixtures/private-pg-confined-cleanup';
-import { observeIsolatedWorkerLifetime } from '../test/isolated-integration-proof';
+import { observeIsolatedWorkerLifetime, recordIsolatedIntegrationProof } from '../test/isolated-integration-proof';
 import { runVitestRootPreflight, RESTRICTED_HOLD_PREFLIGHT_ENV,
   RESTRICTED_HOLD_PREFLIGHT_MARKER } from '../../../scripts/lib/restricted-hold-preflight.mjs';
 
@@ -158,7 +158,11 @@ describe('disposable migrated clone feasibility', () => {
       import assert from 'node:assert/strict';
       import postgres from 'postgres';
       import { performance } from 'node:perf_hooks';
+      import { createHash } from 'node:crypto';
+      import { validateRecoveryLimits } from './apps/operator/lib/release/recovery-limits.ts';
       const observedAt = new Date().toISOString();
+      const probeStartedAtMs = Date.now();
+      const commandTimeoutMs = 180_000;
       const url = new URL(process.env.HARNESS_ADMIN_DATABASE_URL);
       assert.equal(url.port, process.env.PAPERCUSP_PG_PORT); assert.notEqual(url.port, '5432');
       assert.match(process.env.PAPERCUSP_WORKSPACE_ID, /^test-runtime-/);
@@ -169,6 +173,8 @@ describe('disposable migrated clone feasibility', () => {
       try {
        const [{data_directory:dataDir}] = await source.unsafe('SHOW data_directory'); assert.match(dataDir,/papercusp-test-pg-/);
        const [{system_identifier:systemIdentifier}] = await source.unsafe('SELECT system_identifier::text FROM pg_control_system()');
+       const [settings] = await source.unsafe("SELECT inet_server_port() AS port, current_database() AS database, current_setting('fsync') AS fsync, current_setting('synchronous_commit') AS synchronous_commit, current_setting('full_page_writes') AS full_page_writes");
+       assert.equal(settings.port, Number(url.port)); assert.equal(settings.database, originalName);
        await source.unsafe('CREATE TABLE public.safety_p001_probe (id text PRIMARY KEY, acknowledgement text NOT NULL)');
        await source.unsafe("INSERT INTO public.safety_p001_probe VALUES ('before-ack','acknowledged'),('before-lost-ack','response-lost')");
        const [{tables}] = await source.unsafe("SELECT count(*)::int AS tables FROM pg_class WHERE relkind='r' AND relnamespace NOT IN (SELECT oid FROM pg_namespace WHERE nspname LIKE 'pg_%' OR nspname='information_schema')");
@@ -180,14 +186,83 @@ describe('disposable migrated clone feasibility', () => {
        await clone.unsafe("INSERT INTO public.safety_p001_probe VALUES ('clone-only','acknowledged')");
        const check=postgres(url.href,{max:1});try{assert.equal((await check.unsafe("SELECT id FROM public.safety_p001_probe WHERE id='clone-only'")).length,0);await check.unsafe("INSERT INTO public.safety_p001_probe VALUES ('after-cut','acknowledged')");}finally{await check.end();}
        assert.equal((await clone.unsafe("SELECT id FROM public.safety_p001_probe WHERE id='after-cut'")).length,0);
-       console.log('SAFETY_P001_CLONE '+JSON.stringify({observedAt,workspace:process.env.PAPERCUSP_WORKSPACE_ID,privatePort:Number(url.port),systemIdentifier,sourceDatabase:originalName,cloneDatabase:'safety_p001_clone',tables,cloneTables,cloneMs:Math.ceil(cloneMs),totalProbeMs:Math.ceil(performance.now()-t),snapshotWrites:preserved.map(r=>r.id),lostAckPreserved:true,sourceUnaffected:true,postCutWriteAbsent:true,scope:'private fully-migrated schema plus controlled representative writes; no installed production-data/RTO guarantee'}));
+       // These bounds describe this one command and its observed copy only.
+       // Zero rollback/retention windows promise no recovery after teardown;
+       // they are not inferred production windows or an installed RTO claim.
+       const subject = { workload: 'disposable-clone-copy',
+         runtimeIdentity: JSON.stringify({workspace:process.env.PAPERCUSP_WORKSPACE_ID,workerPid:process.pid,systemIdentifier,dataDir,port:settings.port}),
+         configIdentity: createHash('sha256').update(JSON.stringify({settings,commandTimeoutMs})).digest('hex'),
+         nowMs: Date.now() };
+       const limits = { status:'SUPPORTED', workload:subject.workload,
+         runtimeIdentity:subject.runtimeIdentity, configIdentity:subject.configIdentity,
+         measuredAtMs:subject.nowMs, expiresAtMs:probeStartedAtMs+commandTimeoutMs,
+         evidenceRefs:['SAFETY_P001_CLONE:original-copy-and-write-observations'],
+         limits:{clientWindowMs:commandTimeoutMs,jobWindowMs:commandTimeoutMs,
+           rollbackWindowMs:0,retentionWindowMs:0,rtoMs:Math.ceil(cloneMs),rpoMs:0,maxLostCommittedWrites:0},
+         committedWrites:{acknowledged:'preserve',lostAcknowledgement:'preserve'} };
+       const writeWithLimits = async (record,current,id) => {
+         const verdict=validateRecoveryLimits(record,current);
+         if (!verdict.ok) return verdict.code;
+         await clone.unsafe('INSERT INTO public.safety_p001_probe VALUES ($1,$2)',[id,'acknowledged']);
+         return 'written';
+       };
+       assert.equal(await writeWithLimits(limits,subject,'limits-supported'),'written');
+       const refusals = [
+         ['absent',undefined],['unknown',{status:'UNKNOWN',workload:subject.workload,reason:'unmeasured',ownerWorkItem:'WI-6554700010047106'}],
+         ['unsupported',{status:'UNSUPPORTED',workload:subject.workload,reason:'no recovery contract',ownerWorkItem:'WI-6554700010047106'}],
+         ['wrong-workload',{...limits,workload:'another-workload'}],
+         ['wrong-runtime',{...limits,runtimeIdentity:'another-runtime'}],
+         ['wrong-config',{...limits,configIdentity:'another-config'}],
+       ];
+       for (const [code,record] of refusals)
+         assert.equal(await writeWithLimits(record,subject,'limits-refused-'+code),code);
+       // Exercise the consumer at expiry-1, expiry and expiry+1. An expired
+       // record must never reach the actual clone write, including after reuse.
+       const expiry = [];
+       for (const offset of [-1,0,1]) {
+         const result=await writeWithLimits(limits,{...subject,nowMs:limits.expiresAtMs+offset},'limits-expiry-'+offset);
+         assert.equal(result,offset<0?'written':'stale');expiry.push({offset,result});
+       }
+       const guardedWrites=await clone.unsafe("SELECT id FROM public.safety_p001_probe WHERE id LIKE 'limits-%' ORDER BY id");
+       assert.deepEqual(guardedWrites.map(row=>row.id),['limits-expiry--1','limits-supported']);
+       console.log('SAFETY_P001_CLONE '+JSON.stringify({observedAt,workspace:process.env.PAPERCUSP_WORKSPACE_ID,privatePort:Number(url.port),systemIdentifier,dataDir,workerPid:process.pid,settings,sourceDatabase:originalName,cloneDatabase:'safety_p001_clone',tables,cloneTables,cloneMs:Math.ceil(cloneMs),totalProbeMs:Math.ceil(performance.now()-t),snapshotWrites:preserved.map(r=>r.id),lostAckPreserved:true,sourceUnaffected:true,postCutWriteAbsent:true,recoveryLimits:limits,refusals:refusals.map(([code])=>code),expiry,guardedWrites:guardedWrites.map(row=>row.id),scope:'one observed private fully-migrated clone copy with controlled writes and command bounds; no installed production-data/RTO/retention guarantee'}));
       } finally {await source.end();if(clone)await clone.end();await admin.unsafe('DROP DATABASE IF EXISTS safety_p001_clone');await admin.end();}
 
     `;
-    const { stdout } = await run(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
-      '--isolated-runtime', '--', process.execPath, '--input-type=module', '-e', child], {
-      cwd: root, env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: undefined },
-      timeout: 180_000, maxBuffer: 8 * 1024 * 1024,
+    let stdout = '';
+    let lifecycle: any;
+    const runId = await recordIsolatedIntegrationProof({ root,
+      filePath:'packages/operator-core/lib/with-test-pg-provenance.integration.test.ts',
+      sourcePaths:['apps/operator/lib/release/recovery-limits.ts','scripts/lib/with-test-pg-env.mjs'],
+      retainedArtifacts:['phases/execute/worker.log','phases/execute/worker.stderr.log','phases/execute/clone.json'],
+      execute:async (observe,evidenceDir) => {
+        const worker=spawn(process.execPath,[join(root,'scripts/with-test-pg.mjs'),
+          '--isolated-runtime','--',process.execPath,'--import','tsx','--input-type=module','-e',child],{
+          cwd:root,env:{...process.env,PC_ISOLATED_RUNTIME_PROOF:'1'},
+          stdio:['ignore','pipe','pipe','ipc'],timeout:180_000,
+        });
+        observe(worker);
+        let stderr='';
+        worker.stdout.on('data',chunk=>{stdout+=chunk;});
+        worker.stderr.on('data',chunk=>{stderr+=chunk;});
+        try {
+          const result=await new Promise<{code:number|null;signal:NodeJS.Signals|null}>((done,fail)=>{
+            worker.once('error',fail);worker.once('close',(code,signal)=>done({code,signal}));
+          });
+          expect(result,stderr).toEqual({code:0,signal:null});
+          const original=stdout.split('\n').filter(line=>line.startsWith('SAFETY_P001_CLONE '));
+          expect(original).toHaveLength(1);
+          const receipt=JSON.parse(original[0].slice('SAFETY_P001_CLONE '.length));
+          lifecycle=JSON.parse(readFileSync(join(evidenceDir,'lifecycle-observation.json'),'utf8'));
+          expect(lifecycle.observationError).toBeNull();
+          expect(lifecycle.lifecycle).toMatchObject({workspace:receipt.workspace,dataDir:receipt.dataDir,
+            pgPort:receipt.privatePort,worker:{pid:receipt.workerPid}});
+          writeFileSync(join(evidenceDir,'clone.json'),JSON.stringify(receipt));
+        } finally {
+          writeFileSync(join(evidenceDir,'worker.log'),stdout);
+          writeFileSync(join(evidenceDir,'worker.stderr.log'),stderr);
+        }
+      },
     });
     const line = stdout.split('\n').find(line => line.startsWith('SAFETY_P001_CLONE '));
     expect(line).toBeDefined();
@@ -198,14 +273,20 @@ describe('disposable migrated clone feasibility', () => {
     expect(measured.cloneTables).toBe(measured.tables);
     expect(measured.cloneMs).toBeGreaterThanOrEqual(0);
     expect(measured.privatePort).not.toBe(5432);
+    expect(measured.recoveryLimits.limits).toMatchObject({rollbackWindowMs:0,retentionWindowMs:0,rpoMs:0,maxLostCommittedWrites:0});
+    expect(measured.refusals).toEqual(['absent','unknown','unsupported','wrong-workload','wrong-runtime','wrong-config']);
+    expect(measured.expiry).toEqual([{offset:-1,result:'written'},{offset:0,result:'stale'},{offset:1,result:'stale'}]);
+    expect(measured.guardedWrites).toEqual(['limits-expiry--1','limits-supported']);
     const cleanup = stdout.split('\n').filter(line => line.startsWith('[with-test-pg] cleanup '))
       .map(line => JSON.parse(line.slice('[with-test-pg] cleanup '.length)))
       .find(receipt => receipt.stage === 'complete');
     expect(cleanup).toMatchObject({ runtimeRemoved: true, pgDataRemoved: true });
     expect(existsSync(cleanup.runtimeRoot)).toBe(false);
     expect(existsSync(cleanup.dataDir)).toBe(false);
+    expect(lifecycle.ended).toMatchObject({runtimeRemoved:true,pgDataRemoved:true});
+    console.log('SAFETY_P001_CLONE_PROOF '+JSON.stringify({runId,originalLifetime:true}));
     console.log(line);
-  }, 200_000);
+  }, 240_000);
 });
 
 describe('private PostgreSQL Docker routing', () => {
