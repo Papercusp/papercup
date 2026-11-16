@@ -840,6 +840,65 @@ describe('evaluatePlanSpecQuality', () => {
     expect(result.ratings['implementation-independence'].rating).toBe('pass');
   });
 
+  describe('public recipe input contracts (EI-28898328490762732)', () => {
+    const recipeBehavior = 'Production recipe discovery returns the current bounded typed input and capability contract with exact revision/authority continuation and required issueId for safe current-caller replay without exposing secrets';
+    const evaluate = (contract: SpecClauseRevision) => evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: [contract.planItemId],
+      classRef: 'plan-class-feature-ship', clauses: [contract],
+    });
+
+    it('accepts the preserved R-9 BAR without changing its public key or projection', () => {
+      const contract = clause({
+        specId: 'AUTO-BAR-R-9-P-010', sourceValId: null, planItemId: 'P-010',
+        behavior: recipeBehavior,
+        sourceBar: { barKey: 'R-9', barHash: 'a'.repeat(64), barSetHash: 'b'.repeat(64),
+          rubricSlug: 'acceptance-quality-plan', rubricRevision: 2, evidencePlane: 'tree' },
+        falsifier: { observation: 'A required input is omitted, stale authority is accepted, the production adapter drops the schema, or compact suggestions exceed their existing budgets.' },
+      });
+      const before = structuredClone(contract);
+      const result = evaluate(contract);
+      expect(result.ratings['implementation-independence'].rating).toBe('pass');
+      expect(result.details.implementationIndependenceClauseDiagnostics).toContainEqual(
+        expect.objectContaining({ specId: contract.specId, behavior: recipeBehavior, rating: 'pass', reason: null }),
+      );
+      expect(contract).toEqual(before);
+    });
+
+    it.each([
+      'Recipe discovery returns a typed input contract with required jobRef and optional revisionToken for caller replay.',
+      'The response exposes a parameter schema with required tenantKey for caller input.',
+      'Recipe discovery returns an input schema with optional replayToken for caller replay.',
+    ])('accepts qualified input fields in behavior and observations: %s', (text) => {
+      for (const field of ['behavior', 'observation'] as const) {
+        const contract = clause(field === 'behavior'
+          ? { behavior: text }
+          : { behavior: 'Callers can inspect the recipe contract.', falsifier: { observation: text } });
+        expect(evaluate(contract).ratings['implementation-independence'].rating, field).toBe('pass');
+      }
+    });
+
+    it('recognizes the declared public input in a missing-input falsifier', () => {
+      expect(evaluate(clause({ behavior: recipeBehavior, falsifier: {
+        observation: 'A replay succeeds without issueId.',
+      } })).ratings['implementation-independence'].rating).toBe('pass');
+    });
+
+    it.each([
+      'Recipe discovery returns an input contract with required issueId; issueId evaluates the replay.',
+      'Recipe discovery returns an input contract with required issueId because function buildReplay validates it.',
+      'Recipe discovery returns an input contract with required issueId while privateReplayEngine evaluates the replay.',
+      'Recipe discovery returns an input contract with required issueId and the private field issueId validates the replay.',
+      'The input schema uses privateReplayHelper for validation.',
+    ])('retains implementation coupling beside public fields: %s', (text) => {
+      for (const field of ['behavior', 'observation'] as const) {
+        const contract = clause(field === 'behavior'
+          ? { behavior: text }
+          : { behavior: recipeBehavior, falsifier: { observation: text } });
+        expect(evaluate(contract).ratings['implementation-independence'].rating, field).toBe('fail');
+      }
+    });
+  });
+
   it('recognizes documented rubric receipt fields in falsifier observations', () => {
     const behavior = 'A diagnostic baseline remains a non-accepting immutable assessment across the grading workflow.';
     const evaluateObservation = (observation: string) => evaluatePlanSpecQuality({
@@ -1021,6 +1080,14 @@ describe('evaluatePlanSpecQuality', () => {
       behavior: 'Opening the persisted notification expands in place to show the pinned report body and owner actions.',
       expected: 'independent', actual: 'independent', passed: true,
     });
+    expect(controls).toContainEqual({
+      behavior: 'Recipe discovery returns a typed input contract with required issueId for replay.',
+      expected: 'independent', actual: 'independent', passed: true,
+    });
+    expect(controls).toContainEqual({
+      behavior: 'Recipe discovery returns a typed input contract with required issueId; issueId evaluates the replay.',
+      expected: 'coupled', actual: 'coupled', passed: true,
+    });
     expect(result.ratings['implementation-independence'].evidence).toContain('details.implementationIndependenceClauseDiagnostics');
     expect(result.ratings['implementation-independence'].evidence).toContain('details.implementationIndependenceDetectorControls');
     expect(result.ratings['implementation-independence'].evidence).toContain('explicitly qualified/quoted construct symbols');
@@ -1163,7 +1230,7 @@ describe('evaluatePlanSpecQuality', () => {
       });
 
       expect(result.ratings['implementation-independence'].rating).toBe('pass');
-      expect(result.ratings['implementation-independence'].evidence).toContain('Detector semantics revision: 2.');
+      expect(result.ratings['implementation-independence'].evidence).toContain('Detector semantics revision: 3.');
     },
   );
 
@@ -1180,12 +1247,14 @@ describe('evaluatePlanSpecQuality', () => {
     expect(result.ratings['implementation-independence'].rating).toBe('fail');
   });
 
-  it('pins detector revision 2 to representative coupled and independent verdicts', () => {
+  it('pins detector revision 3 to representative coupled and independent verdicts', () => {
     const goldenCases = [
       { behavior: 'The retrieval report includes nDCG@5 for the frozen queries and ground truth.', expected: 'pass' },
       { behavior: 'The user sees saved settings after reopening the page.', expected: 'pass' },
       { behavior: 'The function nDCG calculates the retrieval scores.', expected: 'fail' },
       { behavior: 'runSyncBatchDeltaCheck evaluates the batch under sustained load.', expected: 'fail' },
+      { behavior: 'Recipe discovery returns an input contract with required issueId for replay.', expected: 'pass' },
+      { behavior: 'Recipe discovery returns an input contract with required issueId; issueId evaluates the replay.', expected: 'fail' },
     ] as const;
 
     for (const { behavior, expected } of goldenCases) {
@@ -1195,7 +1264,7 @@ describe('evaluatePlanSpecQuality', () => {
       });
       const rating = result.ratings['implementation-independence'];
       expect(rating.rating).toBe(expected);
-      expect(rating.evidence).toContain('Detector semantics revision: 2.');
+      expect(rating.evidence).toContain('Detector semantics revision: 3.');
     }
   });
 

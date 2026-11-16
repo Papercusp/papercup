@@ -142,6 +142,26 @@ beforeEach(async () => {
     ${'---\ntitle: Draft\nstatus: draft\n---\n# Draft\n'}, 'draft-hash', NULL)`;
 });
 
+describe('binding census snapshot', () => {
+  it('captures the session lane and held unbound work in one database read', async () => {
+    await db.sql`INSERT INTO harness_shared.session_briefs (owner_id,workspace_id,current_plan_slug,harness_slug)
+      VALUES (${OWNER},${WS},'draft-feature','project')`;
+    await db.sql`INSERT INTO harness_shared.work_items (workspace_id,harness_slug,feature_id,taken_by,status)
+      VALUES (${WS},'project','EI-unbound',${OWNER},'open')`;
+    const query = vi.fn(db.sql);
+    connection.sql = query;
+    try {
+      expect(await readExecutionPlanBindings(OWNER,WS)).toEqual([
+        {planSlug:'draft-feature',harnessSlug:'project',source:'session-brief',sourceRef:'draft-feature'},
+        {planSlug:'',harnessSlug:'project',source:'work-item',sourceRef:'EI-unbound',unbound:true},
+      ]);
+      // Each additional serial read costs another native authority round trip
+      // and could observe a different rebind/claim generation.
+      expect(query).toHaveBeenCalledTimes(1);
+    } finally { connection.sql = db.sql; }
+  });
+});
+
 describe('canonical adopted repair binding', () => {
   async function seed() {
     await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,content,content_hash,status)

@@ -1514,6 +1514,23 @@ describe('preflightExactPlanLaneHealth', () => {
     );
   });
 
+  it('preserves the original diagnostic error in the pre-promotion lane read', async () => {
+    const failure = new Error('issue-family aggregate timed out');
+    mocks.readClaimSpecLaneHealth.mockImplementationOnce(async (args: { throwOnError?: boolean }) => {
+      if (args.throwOnError) throw failure;
+      return null;
+    });
+
+    await expect(preflightExactPlanLaneHealth({
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      planSlug: 'plan-a',
+      actor: 'su-test',
+      claimant: 'su-test',
+      specId: 'plans-start-plan-a-lane-health',
+    })).rejects.toBe(failure);
+  });
+
   it('names the lane-read failure cause in the lane-unknown refusal (WI-10004851)', async () => {
     mocks.readClaimSpecLaneHealth.mockRejectedValueOnce(new Error('issue-family aggregate timed out'));
     const verdict = await preflightExactPlanAdmission({

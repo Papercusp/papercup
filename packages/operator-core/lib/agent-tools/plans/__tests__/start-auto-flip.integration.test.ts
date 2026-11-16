@@ -75,8 +75,22 @@ const START_GATES = vi.hoisted(() => ({
   listCards: vi.fn(),
   afterQuality: vi.fn(),
   barCritique: vi.fn(),
+  refusalDiagnostics: vi.fn(),
 }));
 const REVISION_MOCK = vi.hoisted(() => ({ failInTransaction: false }));
+// Keep canonical quality and its request cache real. Optional post-refusal
+// diagnostics are outside this transactional fixture; start-guard.test.ts
+// separately exercises their real deadline and cancellation behavior.
+vi.mock('../get-activation-readiness', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../get-activation-readiness')>();
+  return {
+    ...actual,
+    createPlanActivationReadinessRequest: async (...args: Parameters<typeof actual.createPlanActivationReadinessRequest>) => {
+      const request = await actual.createPlanActivationReadinessRequest(...args);
+      return { ...request, collect: START_GATES.refusalDiagnostics };
+    },
+  };
+});
 // Keep the real clause/class readers and quality evaluator. Only the unrelated
 // scorecard ledger is supplied; the hook models a policy change after preflight.
 // P-007 critique enforcement is a separate start contract, so keep it out of this race fixture.
@@ -175,6 +189,7 @@ vi.mock('../../../scheduler/claim-spec-store', async (importOriginal) => {
 // kept dynamic for symmetry with the mock-then-import convention elsewhere).
 const startTool = (await import('../start')).default;
 const { setupPlanPgFixture, cleanupPlans, seedPlan } = await import('./_pg-tool-fixture');
+const { unavailableActivationReadiness } = await import('../get-activation-readiness');
 
 const HARNESS = `zzz-start-flip-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 // The baseline can still carry migration 1004's workspace+subjectPlan unique
@@ -183,10 +198,10 @@ const HARNESS = `zzz-start-flip-${Date.now()}-${Math.random().toString(36).slice
 const SLUG = `${HARNESS}-plan`;
 const WS = DEFAULT_WORKSPACE_ID;
 
-async function seedLegacyPlan(status: 'draft' | 'ready', withItem = false) {
+async function seedLegacyPlan(status: 'draft' | 'ready', withItem = false, slug = SLUG) {
   const body = withItem ? planBody(status).replace('## Decisions',
     '## Tasks\n\n- **P-001** `todo` Record baseline findings deliverable: doc\n\n## Decisions') : planBody(status);
-  await seedPlan(admin, WS, HARNESS, SLUG, body);
+  await seedPlan(admin, WS, HARNESS, slug, body.replaceAll(SLUG, slug));
   // Migration 1111 marks every INSERT as post-epoch. These approval/revision
   // fixtures deliberately represent existing legacy plans, which have no BAR
   // contract. Seed that identity in the throwaway DB; keep the real reader and
@@ -194,7 +209,7 @@ async function seedLegacyPlan(status: 'draft' | 'ready', withItem = false) {
   await admin`
     UPDATE harness_shared.harness_plans
        SET acceptance_bar_epoch = NULL, acceptance_bar_cohort = NULL
-     WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+     WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}
   `;
 }
 
@@ -288,8 +303,9 @@ async function persistedStartState() {
 }
 
 async function cleanupFixture() {
+  // This unique private harness also owns the second plan in the park-scope case.
   await admin`DELETE FROM harness_shared.work_items
-    WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
+    WHERE workspace_id=${WS} AND harness_slug=${HARNESS}`;
   // Revisions are append-only, even for the test admin. Teardown on the
   // injected throwaway database suppresses triggers on THIS transaction only:
   // no shared ALTER TABLE and no changes to the production immutability guard.
@@ -346,21 +362,32 @@ beforeEach(async () => {
   START_GATES.afterQuality.mockResolvedValue(undefined);
   START_GATES.barCritique.mockReset();
   START_GATES.barCritique.mockResolvedValue(null);
+  START_GATES.refusalDiagnostics.mockReset();
+  START_GATES.refusalDiagnostics.mockResolvedValue(unavailableActivationReadiness(
+    new Error('Optional refusal diagnostics are outside this transactional fixture.'),
+  ));
   REVISION_MOCK.failInTransaction = false;
 });
 
 describe('plans:start — draft auto-approve (P2-3)', () => {
-  it('refuses a migration park before approval and permits its lane after audited release', async () => {
+  it('audits the started plan migration-park lift and preserves another plan park (D-086)', async () => {
     await seedLegacyPlan('draft', true);
     const node = `WI-start-park-${HARNESS}`;
+    const otherSlug = `${SLUG}-other`;
+    const otherNode = `WI-start-park-other-${HARNESS}`;
+    await seedLegacyPlan('draft', true, otherSlug);
     const payload = { _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes',
       plan_item: { plan_slug: SLUG, harness_slug: HARNESS, item_id: 'P-001' } };
+    const otherPayload = { ...payload, plan_item: { ...payload.plan_item, plan_slug: otherSlug } };
     await admin`INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, item_kind, title, status, created_ts, updated_ts,
        source_plan_slug, source_plan_item_ids, plan_slug, plan_line_id, plan_deliverable, plan_line_text, plan_seq, payload)
       VALUES (${WS}, ${HARNESS}, ${node}, 'feature', 'parked first lane', 'open', 0, 0,
         ${SLUG}, ARRAY['P-001']::text[], ${SLUG}, 'P-001', 'doc', 'Record baseline findings', 1,
-        ${JSON.stringify(payload)}::text::jsonb)`;
+        ${JSON.stringify(payload)}::text::jsonb),
+        (${WS}, ${HARNESS}, ${otherNode}, 'feature', 'another plan parked lane', 'open', 0, 0,
+        ${otherSlug}, ARRAY['P-001']::text[], ${otherSlug}, 'P-001', 'doc', 'Record baseline findings', 1,
+        ${JSON.stringify(otherPayload)}::text::jsonb)`;
     const before = await persistedStartState();
     const { initialChangeScopeProblems } = await import('../initial-change-scope');
     expect(initialChangeScopeProblems({ content: before.plan.content, anchors: {} }),
@@ -378,26 +405,28 @@ describe('plans:start — draft auto-approve (P2-3)', () => {
     expect(census, JSON.stringify(census)).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: node, payload: expect.objectContaining(payload) }),
     ]));
-    const refused = await runStart();
-    expect(refused.data, JSON.stringify(refused.data)).toMatchObject({
-      ok: false, error: 'admission_refused', admissionReason: 'promotion-lag',
-    });
-    expect(refused.data.message).toContain('P-008 / D-011');
-    expect(await persistedStartState()).toEqual(before);
-    expect(START_GATES.promotion).not.toHaveBeenCalled();
-    expect(START_GATES.claimSpec).not.toHaveBeenCalled();
-    const [held] = await admin`SELECT payload FROM harness_shared.work_items
-      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND feature_id=${node}`;
-    expect(held.payload).toEqual(payload);
-
-    // Model the separate migration authority's audited release in this private
-    // database. Start itself must neither clear the park nor create a new node.
-    await admin`UPDATE harness_shared.work_items SET payload=payload - '_claimHold' - 'claim_hold_by'
-      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND feature_id=${node}`;
+    const { readDurableParkControlRow, durableParkFingerprint } = await import('../../../work-items-durable-park-audit');
+    const control = await readDurableParkControlRow({ workspaceId: WS, harnessSlug: HARNESS, id: node });
+    expect(control).not.toBeNull();
+    const expectedFingerprint = durableParkFingerprint(control!);
     const started = await runStart();
     expect(started.isError, JSON.stringify(started.data)).toBe(false);
     expect(started.data).toMatchObject({ status: 'started', autoApproved: true });
     expect(await frontmatterStatus()).toBe('ready');
+    expect(started.data.migrationParkLift).toMatchObject({
+      rows: [{ workItemId: node, planItemIds: ['P-001'], outcome: 'cleared' }], unsettled: [],
+    });
+    const runId = (started.data.migrationParkLift as import('../plan-admission-preflight').MigrationParkLiftResult).runId;
+    expect(runId).toMatch(/^work-item-durable-park-audit:plans-start:[0-9a-f]{32}$/);
+    const [audit] = await admin`SELECT detail FROM harness_shared.admission_runs
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND id=${runId}`;
+    expect(audit.detail).toMatchObject({ status: 'complete', result: { rows: [{
+      id: node, outcome: 'cleared', expectedParkFingerprint: expectedFingerprint,
+      observedParkFingerprint: expectedFingerprint,
+    }] } });
+    const [other] = await admin`SELECT payload FROM harness_shared.work_items
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND feature_id=${otherNode}`;
+    expect(other.payload).toEqual(otherPayload);
     const rows = await admin`SELECT feature_id FROM harness_shared.work_items
       WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND source_plan_slug=${SLUG}`;
     expect(rows.map(row => row.feature_id)).toEqual([node]);
@@ -407,8 +436,10 @@ describe('plans:start — draft auto-approve (P2-3)', () => {
     await seedLegacyPlan('ready');
     if (leg === 'promotion') START_GATES.promotion.mockRejectedValueOnce(new Error('promotion unavailable'));
     else START_GATES.claimSpec.mockRejectedValueOnce(new Error('binding unavailable'));
-    const { isError } = await runStart();
+    const { isError, data } = await runStart();
     expect(isError).toBe(true);
+    expect(START_GATES.refusalDiagnostics).toHaveBeenCalledTimes(1);
+    expect(data.activationReadiness).toMatchObject({ advisory: true, freshness: 'unknown' });
     const [row] = await admin`SELECT execution_start_revision_seq FROM harness_shared.harness_plans
       WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
     expect(row.execution_start_revision_seq).toBeNull();

@@ -10,7 +10,7 @@ import { withBoundedTimeout } from '../../bounded-timeout';
 import type { ResolvedGoal } from '../../agent-goal-ref';
 import type { AcceptanceBarSnapshotSource } from '../../acceptance-bar-contract-snapshot';
 import type { Sql } from 'postgres';
-import { readExecutionPlanRebind } from '../fleet_registry/execution-plan-rebind';
+import { parseExecutionPlanRebind } from '../fleet_registry/execution-plan-rebind';
 import { PLAN_READINESS_PENDING, READINESS_EVALUATION_BUDGET_MS, READINESS_PENDING_RETRY_AFTER_MS } from './plan-continuation-readiness';
 export { planExecutionMeaning } from './plan-execution-meaning';
 
@@ -364,34 +364,46 @@ export function isPlanImplementationCall(toolName: string, args: unknown): boole
 /** Read durable authority, never coord_presence or caller-supplied plan/force/purpose. */
 export async function readExecutionPlanBindings(ownerId: string, workspaceId: string): Promise<ExecutionPlanBinding[]> {
   const { sql } = getOrgPg();
-  const rebind = await readExecutionPlanRebind(sql, ownerId, workspaceId);
-  const rows = await sql<Array<{
+  type CensusRow = {
     plan_slug: string | null;
     harness_slug: string | null;
     source: ExecutionPlanBindingSource;
     source_ref: string | null;
-  }>>`
-    SELECT current_plan_slug AS plan_slug, harness_slug, 'session-brief'::text AS source,
-           current_plan_slug AS source_ref
-      FROM harness_shared.session_briefs
-     WHERE owner_id=${ownerId} AND workspace_id=${workspaceId} AND current_plan_slug IS NOT NULL
-    UNION ALL
-    SELECT control_state #>> '{scope,plan}', control_state #>> '{scope,harness}',
-           'control-state'::text, control_state #>> '{scope,plan}'
-      FROM harness_shared.session_briefs
-     WHERE owner_id=${ownerId} AND workspace_id=${workspaceId}
-       AND control_state #>> '{scope,plan}' IS NOT NULL
-    UNION ALL
-    SELECT plan_slug, NULL::text, 'active-session'::text, plan_slug
-      FROM harness_shared.adv_sessions
-     WHERE coord_owner_id=${ownerId} AND workspace_id=${workspaceId} AND plan_slug IS NOT NULL
-       AND ended_at IS NULL
-    UNION ALL
-    SELECT plan_slug, harness_slug, 'plan-item-claim'::text, plan_slug || '#' || item_id
-      FROM harness_shared.plan_item_claims
-     WHERE owner=${ownerId} AND workspace_id=${workspaceId}
-    UNION ALL
-    SELECT NULL::text, NULL::text, 'work-item'::text, NULL::text WHERE false`;
+  };
+  type HeldRow = { feature_id: string; harness_slug: string; source_plan_slug: string | null;
+    plan_slug: string | null; plan_line_id: string | null };
+  // These inputs form one authority census. A single statement both avoids
+  // three serial native-hook round trips and keeps the rebind, session lane,
+  // claims and held work on the same database snapshot. Canonical witnesses
+  // below and their final revision rechecks remain fresh.
+  const snapshots = await sql<Array<{ rebind: unknown; bindings: CensusRow[]; held: HeldRow[] }>>`
+    WITH brief AS MATERIALIZED (
+      SELECT current_plan_slug,harness_slug,control_state FROM harness_shared.session_briefs
+       WHERE owner_id=${ownerId} AND workspace_id=${workspaceId}
+    ), bindings AS (
+      SELECT current_plan_slug AS plan_slug,harness_slug,'session-brief'::text AS source,
+             current_plan_slug AS source_ref FROM brief WHERE current_plan_slug IS NOT NULL
+      UNION ALL
+      SELECT control_state #>> '{scope,plan}',control_state #>> '{scope,harness}',
+             'control-state'::text,control_state #>> '{scope,plan}' FROM brief
+       WHERE control_state #>> '{scope,plan}' IS NOT NULL
+      UNION ALL
+      SELECT plan_slug,NULL::text,'active-session'::text,plan_slug FROM harness_shared.adv_sessions
+       WHERE coord_owner_id=${ownerId} AND workspace_id=${workspaceId} AND plan_slug IS NOT NULL AND ended_at IS NULL
+      UNION ALL
+      SELECT plan_slug,harness_slug,'plan-item-claim'::text,plan_slug || '#' || item_id
+        FROM harness_shared.plan_item_claims WHERE owner=${ownerId} AND workspace_id=${workspaceId}
+    ), held AS (
+      SELECT feature_id,harness_slug,source_plan_slug,plan_slug,plan_line_id FROM harness_shared.work_items
+       WHERE workspace_id=${workspaceId} AND taken_by=${ownerId}
+         AND NOT(status=ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
+    )
+    SELECT (SELECT control_state #> '{lifecycle,executionPlanBinding}' FROM brief LIMIT 1) AS rebind,
+           COALESCE((SELECT jsonb_agg(b) FROM bindings b),'[]'::jsonb) AS bindings,
+           COALESCE((SELECT jsonb_agg(h) FROM held h),'[]'::jsonb) AS held`;
+  if (snapshots.length !== 1) throw new Error('execution_plan_snapshot_unavailable');
+  const { bindings: rows, held } = snapshots[0];
+  const rebind = parseExecutionPlanRebind(snapshots[0].rebind, ownerId);
   const displaced = new Set([rebind?.previousPlanSlug, ...(rebind?.supersededPlanSlugs ?? [])]);
   const bindings: ExecutionPlanBinding[] = rows.filter(row =>
     (!rebind || row.source !== 'active-session' || !displaced.has(row.plan_slug)) &&
@@ -404,11 +416,6 @@ export async function readExecutionPlanBindings(ownerId: string, workspaceId: st
     }));
   if (rebind?.planSlug) bindings.push({ planSlug: rebind.planSlug, harnessSlug: rebind.harness,
     source: 'session-rebind', sourceRef: rebind.workItemId });
-  const held = await sql<Array<{ feature_id: string; harness_slug: string; source_plan_slug: string | null;
-    plan_slug: string | null; plan_line_id: string | null }>>`
-    SELECT feature_id,harness_slug,source_plan_slug,plan_slug,plan_line_id FROM harness_shared.work_items
-     WHERE workspace_id=${workspaceId} AND taken_by=${ownerId}
-       AND NOT(status=ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))`;
   for (const row of held) {
     // Only truly absent canonical fields permit historical source fallback.
     if (row.plan_slug === null && row.plan_line_id === null) {

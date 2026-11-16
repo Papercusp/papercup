@@ -20,7 +20,7 @@ import { planClassAllowsAllExemptItems } from '../../plan-class-refs';
 export const SPEC_QUALITY_RUBRIC_REF = 'spec-quality';
 
 /** Increment when implementation-independence detector semantics change; prose can change independently. */
-export const IMPLEMENTATION_INDEPENDENCE_DETECTOR_REVISION = 2;
+export const IMPLEMENTATION_INDEPENDENCE_DETECTOR_REVISION = 3;
 
 export const SPEC_QUALITY_CRITERIA = [
   'stable-revision-identity',
@@ -479,6 +479,16 @@ function withoutPublicContractIdentifiers(behavior: string): string {
   text = text.replace(
     /(\b(?:response|results?|payload)\s+(?:includes?|contains?|returns?)\s+)([A-Za-z_$][A-Za-z0-9_$]*)/gi,
     (_match, prefix: string, field: string) => prefix + ' '.repeat(field.length),
+  );
+  // Discovery can return the caller's input contract rather than list response
+  // fields directly. Only required/optional field declarations in that bounded
+  // contract are public names; later uses of the same symbol remain visible.
+  text = text.replace(
+    /(\b(?:discovery|schema|response|results?|payload)\s+(?:includes?|contains?|returns?|exposes?|lists?)\s+[^.;\n]{0,160}?\b(?:input|parameter)(?:\s+and\s+capability)?\s+(?:contract|schema)\b)([^.;\n]{0,160}?)(?=\s*,?\s+(?:while|whereas|but|because|which|that|function|class|method|variable|private|implementation)\b|[.;\n]|$)/gi,
+    (_match, prefix: string, fields: string) => prefix + fields.replace(
+      /(\b(?:required|optional)\s+)([A-Za-z_$][A-Za-z0-9_$]*)\b/gi,
+      (_fieldMatch, qualifier: string, field: string) => qualifier + ' '.repeat(field.length),
+    ),
   );
   // A recorded field with a literal value describes public data, just as a
   // response field does. Require a data subject and the quoted value; mask only
@@ -1140,6 +1150,8 @@ export function evaluatePlanSpecQuality(input: {
     { behavior: 'An invitation is accepted by the existing account holder.', expected: 'independent' as const },
     { behavior: 'Reuse of an expired invitation is refused.', expected: 'independent' as const },
     { behavior: 'Reuse prior clean receipts when current; do not recreate proof just for recovery.', expected: 'independent' as const },
+    { behavior: 'Recipe discovery returns a typed input contract with required issueId for replay.', expected: 'independent' as const },
+    { behavior: 'Recipe discovery returns a typed input contract with required issueId; issueId evaluates the replay.', expected: 'coupled' as const },
   ].map((control) => {
     const actual = implementationCouplingReason(control.behavior) === null ? 'independent' as const : 'coupled' as const;
     return { ...control, actual, passed: actual === control.expected };

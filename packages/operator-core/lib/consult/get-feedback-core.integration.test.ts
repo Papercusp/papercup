@@ -1105,6 +1105,82 @@ async function stateRow(conversationId: string, ws: string = WS) {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 describe('recoverable interactive feedback requests', () => {
+  it('starts the preparation retry delay at failure after a long-running attempt', async () => {
+    const fixture = makeDeps(routeOf([cand('delayed-preparation-expert')]));
+    const request = { ...baseReq, requestKey: 'long-preparation-backoff' };
+    let clock = NOW.getTime();
+    const now = () => new Date(clock);
+    const accepted = await acceptFeedbackRequestCore(request, { ...fixture.deps, now });
+    if ('error' in accepted) throw new Error(accepted.error);
+    const failure = new Error('long-running preparation failed');
+    let executions = 0;
+    const execute = vi.fn(async () => {
+      if (executions++ === 0) clock += 90_000;
+      throw failure;
+    });
+    await expect(continueFeedbackRequestCore(WS, accepted.conversation_id, {
+      getSql: () => rootSql, now, execute,
+    })).rejects.toThrow(failure.message);
+    const failedAt = NOW.getTime() + 90_000;
+    const retryAt = failedAt + 30_000;
+    const row = await stateRow(accepted.conversation_id);
+    expect(row.updated_at instanceof Date ? row.updated_at.getTime() : Date.parse(String(row.updated_at))).toBe(failedAt);
+    expect(row.routing).toMatchObject({ request: {
+      leaseUntil: new Date(retryAt).toISOString(),
+      preparationFailures: [{ at: new Date(failedAt).toISOString(), attempt: 1, error: String(failure) }],
+    } });
+    clock = retryAt - 1;
+    expect(await continueFeedbackRequestCore(WS, accepted.conversation_id, {
+      getSql: () => rootSql, now, execute,
+    })).toBe(false);
+    expect(execute).toHaveBeenCalledOnce();
+    clock = retryAt;
+    await expect(continueFeedbackRequestCore(WS, accepted.conversation_id, {
+      getSql: () => rootSql, now, execute,
+    })).rejects.toThrow(failure.message);
+    expect(execute).toHaveBeenCalledTimes(2);
+    clock = retryAt + 1;
+    expect(await continueFeedbackRequestCore(WS, accepted.conversation_id, {
+      getSql: () => rootSql, now, execute,
+    })).toBe(false);
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('retains complete preparation errors and call sites across retry batches and recovery', async () => {
+    const fixture = makeDeps(routeOf([cand('failure-history-expert')]));
+    const request = { ...baseReq, requestKey: 'preparation-failure-history' };
+    let clock = NOW.getTime();
+    const now = () => new Date(clock);
+    const expected: Array<{ at: string; attempt: number; error: string; stack: string; code: string }> = [];
+    let conversationId = '';
+    for (const lengths of [[499, 500, 501], [501, 499, 500], [500, 501, 499], [499, 501, 500]]) {
+      const accepted = await acceptFeedbackRequestCore(request, { ...fixture.deps, now });
+      if ('error' in accepted) throw new Error(accepted.error);
+      if (conversationId) expect(accepted.conversation_id).toBe(conversationId);
+      conversationId = accepted.conversation_id;
+      for (const [index, length] of lengths.entries()) {
+        clock += 31_000;
+        const marker = ` failure-${expected.length}`;
+        const failure = Object.assign(new Error('x'.repeat(length - 'Error: '.length - marker.length) + marker),
+          { code: 'CONNECTION_CLOSED' });
+        failure.stack = `${String(failure)}\n    at preparation-origin-${expected.length}`;
+        expect(String(failure)).toHaveLength(length);
+        await expect(continueFeedbackRequestCore(WS, conversationId, {
+          getSql: () => rootSql, now, execute: async () => { throw failure; },
+        })).rejects.toBe(failure);
+        expected.push({ at: now().toISOString(), attempt: index + 1, error: String(failure),
+          stack: failure.stack, code: failure.code });
+        const row = await stateRow(conversationId);
+        expect(row.routing).toMatchObject({ request: { lastError: String(failure), preparationFailures: expected } });
+      }
+    }
+    const recovered = await acceptFeedbackRequestCore(request, { ...fixture.deps, now });
+    expect(recovered).toMatchObject({ conversation_id: conversationId, state: 'routing', pending: true });
+    const row = await stateRow(conversationId);
+    expect((row.routing as { request: { preparationFailures: unknown[] } }).request.preparationFailures).toEqual(expected);
+    expect((row.routing as { request: { recoveryHistory: unknown[] } }).request.recoveryHistory).toHaveLength(4);
+  });
+
   async function exhaustedPreparation(
     key: string, legacy = false, failure: Error = new Error('preparation storage unavailable'),
   ) {

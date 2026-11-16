@@ -378,6 +378,8 @@ interface AcceptedRequest {
   recoveryHistory?: Array<{ at: string; result: GetFeedbackResult | GetFeedbackError | null;
     attempts?: number; lastError?: string }>;
   lastError?: string;
+  /** Full failure evidence survives automatic attempts and explicit recovery. */
+  preparationFailures?: Array<{ at: string; attempt: number; error: string; stack?: string; code?: string | number }>;
 }
 
 function requestFingerprint(req: GetFeedbackRequest): string {
@@ -570,8 +572,16 @@ export async function continueFeedbackRequestCore(
       WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
         AND routing #>> '{request,leaseToken}' = ${token}`;
   } catch (error) {
+    // Preparation can outlive the retry delay. Start that delay at rejection,
+    // and stamp the failure itself rather than the earlier lease acquisition.
+    const failedAt = deps.now?.() ?? new Date();
     const attempts = (request.attempts ?? 0) + 1;
     const exhausted = attempts >= 3;
+    const errorText = String(error);
+    const errorCode = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+    const failure = { at: failedAt.toISOString(), attempt: attempts, error: errorText,
+      ...(error instanceof Error && typeof error.stack === 'string' ? { stack: error.stack } : {}),
+      ...(typeof errorCode === 'string' || typeof errorCode === 'number' ? { code: errorCode } : {}) };
     const result: GetFeedbackError = { error: 'preparation_failed', stage: 'preparation', retryable: true,
       hint: 'Consult preparation exhausted its automatic retry budget before a routing result was recorded. '
         + 'Relevance is unmeasured; this is not a no-expert finding. Retry the same request_key and payload '
@@ -579,12 +589,14 @@ export async function continueFeedbackRequestCore(
     await sql`
       UPDATE harness_shared.consult_state SET routing = jsonb_set(routing, '{request}',
         (routing->'request') || ${sql.json({ attempts, leaseToken: null,
-          leaseUntil: exhausted ? null : new Date(now.getTime() + 30_000).toISOString(),
-          lastError: String(error).slice(0, 500) } as never)} ||
+          leaseUntil: exhausted ? null : new Date(failedAt.getTime() + 30_000).toISOString(),
+          lastError: errorText } as never)} ||
+          jsonb_build_object('preparationFailures',
+            COALESCE(routing #> '{request,preparationFailures}', '[]'::jsonb) || ${sql.json([failure] as never)}) ||
           CASE WHEN state = 'routing' AND ${exhausted}
             THEN ${sql.json({ result } as never)} ELSE '{}'::jsonb END),
         state = CASE WHEN state = 'routing' AND ${exhausted} THEN 'no_qualified_responder' ELSE state END,
-        updated_at = ${now.toISOString()}::timestamptz
+        updated_at = ${failedAt.toISOString()}::timestamptz
       WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
         AND routing #>> '{request,leaseToken}' = ${token}`;
     throw error;

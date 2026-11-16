@@ -31,6 +31,7 @@ const admissionMocks = vi.hoisted(() => ({ preflight: vi.fn(), laneHealth: vi.fn
 const claimSpecMocks = vi.hoisted(() => ({ setClaimSpec: vi.fn(), getClaimSpecRecord: vi.fn() }));
 const activationMocks = vi.hoisted(() => ({ gate: vi.fn() }));
 const planLockMocks = vi.hoisted(() => ({ withPlanLock: vi.fn() }));
+const proofMocks = vi.hoisted(() => ({ record: vi.fn() }));
 
 const H = vi.hoisted(() => {
   const state: {
@@ -154,7 +155,7 @@ vi.mock('../../../acceptance-bar-contract-snapshot', async (orig) => ({
 // exercised by start-auto-flip and plan-execution-authority integration suites.
 vi.mock('../plan-execution-authority', () => ({
   readExecutionPlanRow: async () => ({ content: '', content_hash: 'unit-start' }),
-  recordPlanExecutionStart: async () => ({ seq: 1, contentHash: 'unit-start' }),
+  recordPlanExecutionStart: (...args: unknown[]) => proofMocks.record(...args),
 }));
 vi.mock('../../../plan-workitem-promotion-run', () => ({
   promotePlanItems: vi.fn(async () => ({ promoted: 0, skipped: 0, flagOff: false })),
@@ -252,7 +253,8 @@ const MAKE_CTX = () =>
     principal: { slug: 'agent-test' },
   }) as never;
 
-const run = async (args: Record<string, unknown>) => {
+const run = async (args: Record<string, unknown>, deps: Parameters<typeof dispatchProjectedTool>[4] = {},
+  context: Record<string, unknown> = {}) => {
   const input = { harness: 'papercup', ...args };
   const originalInput = structuredClone(input);
   expect(tool.args.parse(input)).toEqual(input);
@@ -266,7 +268,8 @@ const run = async (args: Record<string, unknown>) => {
     transport: 'mcp',
     requestedFormat: 'json',
     requestedStructured: true,
-  } as never, {});
+    ...context,
+  } as never, deps);
   expect(dispatched.ok).toBe(true);
   expect(dispatched.result?.isError).not.toBe(true);
   expect(input).toEqual(originalInput);
@@ -366,6 +369,8 @@ beforeEach(() => {
   barCritiqueMock.mockReset();
   barCritiqueMock.mockResolvedValue(null);
   ownerReviewMock.mockReset();
+  proofMocks.record.mockReset();
+  proofMocks.record.mockResolvedValue({ seq: 1, contentHash: 'unit-start' });
   // plans:start runs checkPlanStartable -> checkPlanAdmission, whose DEFAULT policy
   // source resolves the pot via potHomeSlugForHarness — a real-PG read this suite has
   // no database for (the rail census refused it, red-pinning every test here). Install
@@ -1043,6 +1048,92 @@ describe('plans:start terminal guard', () => {
     expect(res.data.results[0]).toMatchObject({ ok: false, error: 'plan_terminal', status });
     // The guard returns BEFORE the INSERT — no started row is created.
     expect(H.state.txCalls).toHaveLength(0);
+  });
+
+  it('keeps the actionable proof refusal in invocation metadata independently of the response', async () => {
+    proofMocks.record.mockRejectedValueOnce(new Error('plan_start_proof_refused:activation_audit_stale'));
+    let ledger: Record<string, unknown> | null | undefined;
+    await run({ slug: 'late-proof-refusal' }, {
+      recordInvocation: async input => { ledger = input.metadataJson; },
+    });
+
+    // A timed-out client can recover these fields from the invocation row
+    // without receiving or replaying the original plans:start response.
+    expect(ledger).toMatchObject({
+      refused: 'plan_start_authority_unavailable',
+      authorityError: 'plan_start_proof_refused:activation_audit_stale',
+      proofBlockers: ['activation_audit_stale'],
+      repair: expect.stringContaining('phase:"activation"'),
+      planStartOutcomes: [expect.objectContaining({
+        slug: 'late-proof-refusal',
+        error: 'plan_start_authority_unavailable',
+        executionStartIssued: false,
+        earlierSideEffectsMayHaveCommitted: true,
+      })],
+    });
+  });
+
+  it('preserves an earlier bulk refusal when a later plan starts successfully', async () => {
+    proofMocks.record.mockRejectedValueOnce(new Error('plan_start_proof_refused:activation_audit_stale'));
+    let ledger: Record<string, unknown> | null | undefined;
+    await run({ slugs: ['late-proof-refusal', 'successful-start'] }, {
+      recordInvocation: async input => { ledger = input.metadataJson; },
+    });
+    expect(ledger).toMatchObject({ planStartOutcomes: [
+      expect.objectContaining({ slug: 'late-proof-refusal', ok: false,
+        proofBlockers: ['activation_audit_stale'] }),
+      expect.objectContaining({ slug: 'successful-start', ok: true,
+        executionStart: { seq: 1, contentHash: 'unit-start' } }),
+    ] });
+  });
+
+  it('recovers the canonical proof refusal after caller cancellation during optional diagnostics', async () => {
+    proofMocks.record.mockRejectedValueOnce(new Error('plan_start_proof_refused:activation_audit_stale'));
+    const collect = vi.fn(() => new Promise<never>(() => {}));
+    const setup = vi.spyOn(activationReadiness, 'createPlanActivationReadinessRequest').mockResolvedValue({
+      quality: async () => H.state.specQuality, collect,
+      recordQuality: vi.fn(), recordCritique: vi.fn(), recordConsult: vi.fn(),
+    } as unknown as Awaited<ReturnType<typeof activationReadiness.createPlanActivationReadinessRequest>>);
+    const controller = new AbortController();
+    let ledger: Record<string, unknown> | null | undefined;
+    try {
+      const pending = run({ slug: 'cancelled-proof-refusal', consulted: true }, {
+        recordInvocation: async input => { ledger = input.metadataJson; },
+      }, { signal: controller.signal });
+      await vi.waitFor(() => expect(collect).toHaveBeenCalledTimes(1));
+      controller.abort();
+      const result = (await pending).data.results[0];
+      expect(result).toMatchObject({ ok: false, error: 'plan_start_authority_unavailable',
+        authorityError: 'plan_start_proof_refused:activation_audit_stale',
+        earlierSideEffectsMayHaveCommitted: true });
+      expect(ledger).toMatchObject({ planStartOutcomes: [expect.objectContaining({
+        slug: 'cancelled-proof-refusal', error: 'plan_start_authority_unavailable',
+        proofBlockers: ['activation_audit_stale'], executionStartIssued: false,
+      })], handlerPhases: { phases: expect.arrayContaining([
+        expect.objectContaining({ phase: 'plans:start:canonical-outcome' }),
+        expect.objectContaining({ phase: 'plans:start:execution-start' }),
+        expect.objectContaining({ phase: 'plans:start:refusal-diagnostics' }),
+      ]) } });
+      expect(proofMocks.record).toHaveBeenCalledTimes(1);
+      expect(promotePlanItemsMock).toHaveBeenCalledTimes(1);
+      expect((collect.mock.calls[0] as unknown as [AbortSignal])[0].aborted).toBe(true);
+    } finally {
+      setup.mockRestore();
+    }
+  });
+
+  it('retains thrown bulk failures beside a later successful outcome', async () => {
+    const source = await import('../source');
+    vi.mocked(source.readPlanBySlug).mockRejectedValueOnce(new Error('canonical plan read failed'));
+    let ledger: Record<string, unknown> | null | undefined;
+    const result = await run({ slugs: ['unreadable-plan', 'successful-start'], consulted: true }, {
+      recordInvocation: async input => { ledger = input.metadataJson; },
+    });
+    expect(result.data.counts).toEqual({ ok: 1, failed: 1 });
+    expect(ledger).toMatchObject({ planStartOutcomes: [
+      expect.objectContaining({ slug: 'unreadable-plan', ok: false, error: 'canonical plan read failed' }),
+      expect.objectContaining({ slug: 'successful-start', ok: true }),
+    ] });
   });
 
   it('starts a non-terminal (ready) plan — the guard lets it through to the plan row', async () => {

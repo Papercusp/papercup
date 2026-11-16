@@ -848,6 +848,9 @@ export async function preflightExactPlanLaneHealth(
     workspaceId: args.workspaceId,
     assignee: args.claimant,
     matchedBy: 'exact-plan-lane-health-preflight',
+    // The start door catches read failures and includes their cause in its
+    // refusal. Do not turn a scheduler exception into an unexplained null.
+    throwOnError: true,
   });
 }
 

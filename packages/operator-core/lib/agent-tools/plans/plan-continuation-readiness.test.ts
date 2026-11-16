@@ -9,7 +9,7 @@ import { resetOperatorCacheForTests, _refreshCacheLayerForTests } from '../../ca
 import { __setCachedReadEnabledForTests, resetCachedReadStatsForTests } from '../../cache/cached-read';
 import { checkContinuationReadiness, PLAN_READINESS_PENDING, resetSettledReadinessRefusalsForTests,
   type ContinuationReadinessDeps, type ReadinessFence } from './plan-continuation-readiness';
-import type { ExecutionPlanBinding, PlanExecutionTiming } from './plan-execution-guard';
+import { checkPlanExecutionGuard, type ExecutionPlanBinding, type PlanExecutionTiming } from './plan-execution-guard';
 
 const WS = 'ws-readiness';
 const binding: ExecutionPlanBinding = { planSlug: 'plan-a', harnessSlug: 'papercusp' };
@@ -208,6 +208,52 @@ describe('continuation readiness reuse (WI-6554700010049220)', () => {
     const { state, deps } = harness();
     expect(await checkContinuationReadiness(binding, WS, undefined, { ...deps, budgetMs: 1_000 })).toEqual([]);
     expect(state.calls).toBe(1);
+  });
+
+  it('distinguishes a held late lock refusal from a fresh missing-scorecard verdict (WI-6554700010049890)', async () => {
+    const missing = ['spec_quality_scorecard_missing'];
+    const { state, deps } = harness(missing);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const slow: ContinuationReadinessDeps = { ...deps, budgetMs: 20,
+      evaluate: async (...args) => {
+        const snapshot = await deps.evaluate(...args);
+        if (state.calls === 1) await gate;
+        return snapshot;
+      } };
+    const timings: PlanExecutionTiming[] = [];
+    const lock = () => checkPlanExecutionGuard({
+      ownerId: 'diagnostic-lock-owner', workspaceId: WS, toolName: 'locks:acquire',
+      args: { paths: ['src/diagnostic.ts'], intent: 'private diagnostic' },
+      observeTiming: timing => timings.push(timing),
+    }, {
+      readBindings: async () => [binding],
+      checkPlan: (selected, workspace, observe) => checkContinuationReadiness(selected, workspace, observe, slow),
+    });
+
+    expect(await lock()).toMatchObject({ blockers: [PLAN_READINESS_PENDING], retryable: true });
+    release();
+    // Flush the completed build and its late-refusal handoff without a timing sleep.
+    await new Promise<void>(resolve => setImmediate(resolve));
+    state.verdict = [];
+    expect(await deps.evaluate(binding, WS)).toEqual([]);
+    expect(state.calls).toBe(2);
+
+    timings.length = 0;
+    expect(await lock()).toMatchObject({ blockers: missing });
+    expect(state.calls).toBe(2); // The resumed lock did not evaluate the now-ready inputs.
+    expect(timings.some(timing => timing.stage === 'readiness_settled_refusal')).toBe(true);
+    expect(await lock()).toBeNull();
+    expect(state.calls).toBe(3);
+
+    // Positive control: the same public blocker can also come from fresh missing
+    // evidence. Its trace lacks the handoff marker and performs an evaluation.
+    state.fence = { ...state.fence!, inputs: '4/45:2/t1' };
+    state.verdict = missing;
+    timings.length = 0;
+    expect(await lock()).toMatchObject({ blockers: missing });
+    expect(state.calls).toBe(4);
+    expect(timings.some(timing => timing.stage === 'readiness_settled_refusal')).toBe(false);
   });
 
   it('keeps workspaces isolated', async () => {

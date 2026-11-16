@@ -2,6 +2,7 @@ import { getBuildInfo } from '../../build-info';
 import { recordExpertiseRoutingInvocation } from '../../endpoint-route/telemetry';
 import { CONSULT_DEFAULT_POLICY } from '../../consult/selection-policies';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import { trackPhase } from '@papercusp/tooldef';
 
 /**
  * plans:start — approve a plan and promote its items into work_items.
@@ -197,6 +198,10 @@ export default defineTool({
   args: argsSchema,
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
+    // Keep the complete canonical outcomes in the existing invocation ledger.
+    // A client can time out before diagnostics/receipt serialization finish;
+    // the response alone must not be the only copy of its actionable refusal.
+    const startOutcomes: unknown[] = [];
     const sctx = harnessScopedCtx(args.harness, ctx);
     // ⚠ WI-5125 / EI-16183 / WI-5825 class — resolved ONCE for the whole call
     // (the harness is a single arg) from the SAME authority the readers use.
@@ -206,7 +211,8 @@ export default defineTool({
     // resolvePlanWriteScope's doc comment for the three generations of this bug.
     // Never activeWorkspaceId(), never a DEFAULT_WORKSPACE_ID literal, never the
     // un-collapsed ctx slug.
-    const { workspaceId: startWorkspaceId, harnessSlug } = await resolvePlanWriteScope(sctx);
+    const { workspaceId: startWorkspaceId, harnessSlug } = await trackPhase(ctx.phases,
+      'plans:start:scope', () => resolvePlanWriteScope(sctx));
     const slugs = mergeIds(args.slug, args.slugs);
     let diagnosticDeadline: number | undefined;
     const env = await runBulk(
@@ -215,12 +221,14 @@ export default defineTool({
         let readinessRequest: Promise<Awaited<ReturnType<typeof createPlanActivationReadinessRequest>>> | undefined;
         let activationConsult: PlanActivationConsultReceipt | undefined;
         const diagnosticRequest = (planRead?: Awaited<ReturnType<typeof readPlanBySlug>>, signal?: AbortSignal) =>
-          readinessRequest ??= createPlanActivationReadinessRequest({ workspaceId: startWorkspaceId, harnessSlug,
-            planSlug: slug, requesterId: readinessRequesterIdentity(ctx).ownerId, planRead, signal });
+          readinessRequest ??= trackPhase(ctx.phases, 'plans:start:readiness-setup', () =>
+            createPlanActivationReadinessRequest({ workspaceId: startWorkspaceId, harnessSlug,
+              planSlug: slug, requesterId: readinessRequesterIdentity(ctx).ownerId, planRead, signal }));
         const attempt = async () => {
         const now = new Date().toISOString();
 
-        const read = await readPlanBySlug(slug, await ctxToPlanSourceOpts(sctx));
+        const read = await trackPhase(ctx.phases, 'plans:start:plan-read', async () =>
+          readPlanBySlug(slug, await ctxToPlanSourceOpts(sctx)));
         // WI-7259 (sibling of WI-7246): a scheduled-run snapshot copies its
         // parent plan's body verbatim, frontmatter included — reading
         // frontmatter here would gate on the PARENT's lifecycle, not this
@@ -311,7 +319,8 @@ export default defineTool({
         // plans with zero first-class clauses remain explicitly report-only.
         let specQuality: PlanSpecQualityGateVerdict | undefined;
         if (read) {
-          specQuality = await (await diagnosticRequest(read)).quality();
+          specQuality = await trackPhase(ctx.phases, 'plans:start:spec-quality', async () =>
+            (await diagnosticRequest(read)).quality());
           ctxAny.metadata?.({
             slug,
             harnessSlug,
@@ -1149,7 +1158,8 @@ export default defineTool({
           const expected = await readExecutionPlanRow(scope);
           if (!expected) throw new Error('plan_not_found');
           const { resolveAgentIdentity } = await import('../coordination/identity');
-          executionStart = await recordPlanExecutionStart(scope, resolveAgentIdentity(ctx), expected);
+          executionStart = await trackPhase(ctx.phases, 'plans:start:execution-start', () =>
+            recordPlanExecutionStart(scope, resolveAgentIdentity(ctx), expected));
         } catch (error) {
           // Lead with the actionable inner cause, structured: buried behind the promotion summary it was
           // lost to door timeouts/spills and read as load-transient (EI-28846208842044311).
@@ -1205,7 +1215,26 @@ export default defineTool({
               }),
         };
         };
-        const result = await attempt();
+        // Match runBulk's exception contract here so thrown failures are also
+        // present in the recovery ledger, including mixed-success bulk calls.
+        const result = await trackPhase(ctx.phases, 'plans:start:canonical-outcome', attempt).catch((error: unknown) => ({
+          ok: false as const,
+          slug,
+          harnessSlug,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+        startOutcomes.push(result);
+        ctxAny.metadata?.({
+          slug,
+          harnessSlug,
+          planStartOutcomes: [...startOutcomes],
+          ...(result.ok === false ? { refused: result.error } : {}),
+          ...('authorityError' in result ? {
+            authorityError: result.authorityError,
+            proofBlockers: result.proofBlockers,
+            ...(result.repair ? { repair: result.repair } : {}),
+          } : {}),
+        });
         if (result.ok !== false) return result;
         // Add information after the canonical outcome is known. Never replace
         // its primary refusal or its already committed partial-effect receipt.
@@ -1213,11 +1242,11 @@ export default defineTool({
         const remainingMs = diagnosticDeadline - Date.now();
         const fallback = unavailableActivationReadiness(new Error('Plan-start refusal diagnostic deadline exceeded.'));
         if (remainingMs <= 0) return { ...result, activationReadiness: fallback };
-        const diagnostic = await withBoundedTimeout(async signal => {
+        const diagnostic = await trackPhase(ctx.phases, 'plans:start:refusal-diagnostics', () => withBoundedTimeout(async signal => {
           const request = await diagnosticRequest(undefined, signal);
           signal.throwIfAborted();
           return request.collect(signal);
-        }, { timeoutMs: remainingMs, signal: ctx.signal, fallback, label: 'plans:start refusal diagnostics' });
+        }, { timeoutMs: remainingMs, signal: ctx.signal, fallback, label: 'plans:start refusal diagnostics' }));
         const activationReadiness = diagnostic.reason === 'error' ? unavailableActivationReadiness(diagnostic.error)
           : diagnostic.reason === 'aborted' ? unavailableActivationReadiness(new Error('Plan-start refusal diagnostics cancelled.'))
           : diagnostic.value;
@@ -1241,14 +1270,14 @@ export default defineTool({
       return bulkContent(env);
     }
     const { resolveAgentIdentity } = await import('../coordination/identity');
-    const doored = await applyResultDoorAsync(
+    const doored = await trackPhase(ctx.phases, 'plans:start:receipt', () => applyResultDoorAsync(
       { content: [{ type: 'text' as const, text: JSON.stringify(env) }] },
       {
         toolName: 'plans:start',
         workspaceId: receiptCtx.workspaceId,
         ownerId: resolveAgentIdentity(ctx).ownerId,
       },
-    );
+    ));
     // The result door shapes model-facing content and may rebuild an oversized
     // result without its structured payload. Restore the canonical response
     // after shaping so structured transports retain the full machine contract.
