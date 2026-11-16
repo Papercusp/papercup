@@ -6,7 +6,12 @@
  * Scope: tracked JS/TS product source, including initialized submodules. Tests,
  * declarations, generated bundles and documentation are explicit exclusions.
  * This is conservative syntax/call-graph evidence, never delivery/restart proof.
+ * Drift-stable (D-018): membership is judged only for the change under review
+ * (--base <ref>, the window test:affected forwards, submodules included;
+ * --files/--changed-paths/--files-from; else files changed since the seed pin);
+ * --all restores the strict whole-tree verdict. See classificationReport.
  */
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -20,7 +25,7 @@ const ts = require('typescript');
 const digest = (s) => createHash('sha256').update(s).digest('hex');
 const notificationName = (s) => /^(?:(?:notify|send|escalate)(?:$|[A-Z_])|(?:create|publish|push)Notification|(?:raise|create|emit)Escalation)/.test(s);
 // Immutable genesis population: the records may shrink; new sites declare at source.
-export const BASELINE_SEED_SHA256 = '3054ec6d5b42d3624d91f76a0553cc7005a69cda5d539bcdbe65c411cfdd3e00';
+export const BASELINE_SEED_SHA256 = '77e7ce20ccd42b772d65e4c4fef328bf8706e9cc3675d088dd96d271b2d11a84';
 const transparent = (n) => ts.isParenthesizedExpression(n) || ts.isAsExpression(n)
   || ts.isNonNullExpression(n) || ts.isTypeAssertionExpression(n) || ts.isSatisfiesExpression(n);
 
@@ -437,7 +442,23 @@ export function censusSources(sources) {
   return { schemaVersion: 1, files: [...files, ...resolutionFiles].map(([path, source]) => ({ path, sha256: digest(source) })).sort((a,b) => a.path.localeCompare(b.path)), sites: sites.sort((a, b) => a.id.localeCompare(b.id)), gaps };
 }
 
-export function validateClassifications(census, records, seedIds = []) {
+/**
+ * D-018 drift-stable scope. Census membership follows whole-program call-graph
+ * roots, so a byte-identical file can gain or lose sites when OTHER files change.
+ * Membership verdicts (unclassified, stale) are judged only for files in the change
+ * under review; a membership finding in any other file is DRIFT, reported in full
+ * but not failing. Registry integrity, coverage, the mandatory-notice safety gate
+ * and removed seed records stay global: drift cannot cause the first three, and a
+ * missing seed record for a live site is a registry edit that would otherwise drop
+ * a judgment silently (restore the seed record). `judged` is a Set of repo-relative
+ * paths, or null to judge every file (the pre-D-018 strict verdict). Every path
+ * under a `judgedSubtrees` prefix is judged too (a submodule whose base could not
+ * be compared; see changedSinceBase).
+ */
+export function classificationReport(census, records, seedIds = [], { judged = null, judgedSubtrees = [] } = {}) {
+  const isJudged = path => judged === null || !path || judged.has(path)
+    || judgedSubtrees.some(prefix => path.startsWith(`${prefix}/`));
+  const drift = { unclassified: [], stale: [] };
   const errors = census.gaps.map(g => `coverage gap: ${g.path}: ${g.message ?? g.kind}`);
   const byId = new Map();
   for (const r of records) {
@@ -450,13 +471,127 @@ export function validateClassifications(census, records, seedIds = []) {
   if (active.size !== census.sites.length) errors.push('duplicate census site ID');
   for (const s of census.sites) {
     const r = byId.get(s.id);
-    if (!r) { errors.push(`unclassified: ${s.id}`); continue; }
+    if (!r) { if (isJudged(s.path)) errors.push(`unclassified: ${s.id}`); else drift.unclassified.push(s.id); continue; }
     if (r.path !== s.path) errors.push(`path mismatch: ${s.id}`);
     if (r.classification === 'safe-to-lose' && (r.mandatory || /owner|human|escalat|grading|grader|lease.*expir|reap|approval|attention|alarm/i.test(`${s.path} ${s.expression} ${s.roots.join(' ')}`))) errors.push(`mandatory notice cannot be safe-to-lose: ${s.id}`);
   }
-  for (const id of byId.keys()) if (!active.has(id)) errors.push(`stale classification (remove it): ${id}`);
+  for (const [id, r] of byId) if (!active.has(id)) {
+    if (isJudged(r.path)) errors.push(`stale classification (remove it): ${id}`); else drift.stale.push(id);
+  }
   for (const id of seedIds) if (!byId.has(id) && active.has(id)) errors.push(`seed classification removed while site remains: ${id}`);
-  return errors;
+  return { errors, drift };
+}
+
+export function validateClassifications(census, records, seedIds = [], options = {}) {
+  return classificationReport(census, records, seedIds, options).errors;
+}
+
+/** Paths whose content differs from the registry's seed pin; new and deleted files differ. */
+export function changedSinceSeed(census, seedFiles) {
+  const pinned = new Map(seedFiles.map(f => [f.path, f.sha256]));
+  const changed = new Set(census.files.filter(f => pinned.get(f.path) !== f.sha256).map(f => f.path));
+  const present = new Set(census.files.map(f => f.path));
+  for (const path of pinned.keys()) if (!present.has(path)) changed.add(path);
+  return changed;
+}
+
+function gitOut(cwd, args) {
+  try {
+    return execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch { return null; }
+}
+const nulFields = text => (text ?? '').split('\0').filter(Boolean);
+
+/** Gitlink path -> commit in `treeish` (ls-tree), or in the index when treeish is null. */
+function gitlinksOf(cwd, treeish) {
+  const out = treeish ? gitOut(cwd, ['ls-tree', '-r', '-z', treeish]) : gitOut(cwd, ['ls-files', '--stage', '-z']);
+  const links = new Map();
+  for (const entry of nulFields(out)) {
+    const tab = entry.indexOf('\t');
+    // ls-tree: "<mode> <type> <object>"; ls-files --stage: "<mode> <object> <stage>".
+    const [mode, second, third] = entry.slice(0, tab).split(' ');
+    if (mode === '160000') links.set(entry.slice(tab + 1), treeish ? third : second);
+  }
+  return links;
+}
+
+/** An empty, uninitialized submodule directory would otherwise run git in the parent repository. */
+function ownsWorktree(dir) {
+  const top = gitOut(dir, ['rev-parse', '--show-toplevel'])?.trim();
+  try { return Boolean(top) && realpathSync(top) === realpathSync(dir); } catch { return false; }
+}
+
+/**
+ * D-018 window: every path that differs between `base` and the working tree. A
+ * superproject diff names a submodule only by its gitlink path, which no census
+ * file carries, so each submodule is diffed inside its own repository against the
+ * gitlink its parent records at the parent's base, recursively. A submodule that
+ * cannot be compared (added or removed since base, not initialized, or its base
+ * commit is not in its object store) is judged whole: its prefix is in `subtrees`.
+ * Throws when `base` does not resolve: a silently empty window would judge nothing.
+ */
+export function changedSinceBase(base, root = ROOT) {
+  const baseSha = gitOut(root, ['rev-parse', '--verify', '--quiet', '--end-of-options', `${base}^{commit}`])?.trim();
+  if (!baseSha) throw new Error(`--base ${base} does not resolve to a commit in ${root}; the judged window is unknown`);
+  const files = new Set();
+  const subtrees = [];
+  const visit = (dir, prefix, repoBase) => {
+    const diff = gitOut(dir, ['diff', '--name-only', '--no-renames', '-z', repoBase]);
+    if (diff === null) throw new Error(`git diff ${repoBase} failed in ${dir}; the judged window is unknown`);
+    const now = gitlinksOf(dir, null);
+    const then = gitlinksOf(dir, repoBase);
+    for (const path of nulFields(diff)) if (!now.has(path) && !then.has(path)) files.add(prefix + path);
+    for (const path of new Set([...now.keys(), ...then.keys()])) {
+      const sub = resolve(dir, path);
+      const subBase = then.get(path);
+      if (!now.has(path) || !subBase || !ownsWorktree(sub) || gitOut(sub, ['cat-file', '-e', `${subBase}^{commit}`]) === null) {
+        subtrees.push(prefix + path);
+        continue;
+      }
+      visit(sub, `${prefix}${path}/`, subBase);
+    }
+  };
+  visit(root, '', baseSha);
+  return { baseSha, files, subtrees: subtrees.sort() };
+}
+
+/**
+ * The change under review. --files/--changed-paths take a comma list; --files-from
+ * takes a JSON array or a newline list; --base <ref> judges every path changed since
+ * that commit, submodules included (what test:affected forwards: forwardBase, not
+ * forwardChangedPaths, whose superproject paths name a submodule change only by its
+ * gitlink). Listed paths and a base window combine as a union. --all judges every
+ * file. Otherwise the change is every path that differs from the registry's seed
+ * pin. A registry with no seed pin cannot scope, so it is strict.
+ */
+export function resolveJudgedScope(argv, { census, seedFiles, root = ROOT }) {
+  if (argv.includes('--all')) return { mode: 'all', judged: null, subtrees: [] };
+  const normalize = (p) => {
+    const path = String(p).trim();
+    return (path.startsWith(root) ? path.slice(root.length) : path).replace(/^\.?\//, '');
+  };
+  const listed = [];
+  let explicit = false;
+  let base = null;
+  for (let i = 0; i < argv.length; i++) {
+    const [flag, inline] = argv[i].split(/=(.*)/s);
+    if (flag === '--base') { base = String(inline ?? argv[++i] ?? '').trim(); continue; }
+    if (!['--files', '--changed-paths', '--files-from'].includes(flag)) continue;
+    explicit = true;
+    const value = inline ?? argv[++i] ?? '';
+    if (flag !== '--files-from') { listed.push(...value.split(',')); continue; }
+    const text = readFileSync(value, 'utf8');
+    listed.push(...(text.trimStart().startsWith('[') ? JSON.parse(text) : text.split('\n')));
+  }
+  const listedPaths = listed.map(normalize).filter(Boolean);
+  if (base !== null) {
+    if (!base) throw new Error('--base needs a commit-ish; the judged window is unknown');
+    const window = changedSinceBase(base, root);
+    return { mode: 'base', base, baseSha: window.baseSha, judged: new Set([...window.files, ...listedPaths]), subtrees: window.subtrees };
+  }
+  if (explicit) return { mode: 'changed-paths', judged: new Set(listedPaths), subtrees: [] };
+  if (!Array.isArray(seedFiles) || !seedFiles.length) return { mode: 'all', judged: null, subtrees: [] };
+  return { mode: 'seed-pin', judged: changedSinceSeed(census, seedFiles), subtrees: [] };
 }
 
 export function validateSeed(registry, expectedHash = BASELINE_SEED_SHA256) {
@@ -527,8 +662,19 @@ function main() {
     return;
   }
   const registry = JSON.parse(readFileSync(new URL('./fire-and-forget-classification.json', import.meta.url), 'utf8'));
-  const errors = [...validateSeed(registry), ...validateClassifications(census, [...registry.records, ...inlineClassifications(census)], registry.seedIds)];
-  console.log(JSON.stringify({ scope: 'classification guard; not a durable-delivery verdict', sites: census.sites.length, files: census.files.length, sourceDigest: census.sourceDigest, coverage: census.coverage, unverifiedDurable: registry.records.filter(r => r.classification === 'durable' && r.deliveryState !== 'verified').length, errors }));
+  let scope;
+  try { scope = resolveJudgedScope(process.argv.slice(2), { census, seedFiles: registry.seedFiles }); }
+  catch (e) {
+    // Fail closed: an unknown window must never pass by judging nothing.
+    console.error(`fire-and-forget classification NOT CHECKED: ${e.message}`);
+    process.exitCode = 2;
+    return;
+  }
+  const report = classificationReport(census, [...registry.records, ...inlineClassifications(census)], registry.seedIds, { judged: scope.judged, judgedSubtrees: scope.subtrees });
+  const errors = [...validateSeed(registry), ...report.errors];
+  const drift = { note: 'membership changes in files outside the judged change (D-018); reported, not failing', unclassifiedCount: report.drift.unclassified.length, staleCount: report.drift.stale.length, ...report.drift };
+  const judged = { mode: scope.mode, ...(scope.baseSha ? { base: scope.base, baseSha: scope.baseSha } : {}), files: scope.judged ? scope.judged.size : census.files.length, subtrees: scope.subtrees };
+  console.log(JSON.stringify({ scope: 'classification guard; not a durable-delivery verdict', judged, sites: census.sites.length, files: census.files.length, sourceDigest: census.sourceDigest, coverage: census.coverage, unverifiedDurable: registry.records.filter(r => r.classification === 'durable' && r.deliveryState !== 'verified').length, drift, errors }));
   process.exitCode = errors.length ? 1 : 0;
 }
 // Bundling changes import.meta.url to the host entrypoint. URL equality alone

@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import {
   censusSources, inScope, validateClassifications, inlineClassifications, validateSeed, seedClassifications,
+  classificationReport, changedSinceSeed, resolveJudgedScope,
   type NotifyCensus, type NotifyClassification,
 } from '../../../scripts/check-fire-and-forget-classification.mjs';
 
@@ -625,5 +626,99 @@ console.log(JSON.stringify({ sites: censusSources({ 'src/app.ts': 'void notifyOw
         if (record.deliveryState === 'unverified') expect(record.durablePath).toContain('UNVERIFIED requirement:');
       }
     }
+  });
+});
+
+// dbos-durability-right-sizing-2026-10-21#D-018: census membership follows whole-program
+// call-graph roots, so a byte-identical file must not flip the verdict when ANOTHER file changes.
+describe('D-018 drift-stable classification scope', () => {
+  const quiet = { 'src/a.ts': 'export function relay() { return 1; }', 'src/b.ts': "import { relay } from './a';\nvoid relay();" };
+  const loud = { ...quiet, 'src/a.ts': 'export function relay() { return notifyOwner(); }' };
+
+  it('does not fail a byte-identical file whose call-graph roots change, but still judges the changed file', () => {
+    const seed = censusSources(quiet);
+    const now = censusSources(loud);
+    expect(seed.sites).toEqual([]);
+    const drifted = now.sites.find(s => s.path === 'src/b.ts');
+    const introduced = now.sites.find(s => s.path === 'src/a.ts');
+    expect(drifted && introduced).toBeTruthy();
+    const judged = changedSinceSeed(now, seed.files);
+    expect([...judged]).toEqual(['src/a.ts']);
+    // The pre-D-018 strict verdict flips on the untouched file.
+    expect(validateClassifications(now, [])).toContain(`unclassified: ${drifted!.id}`);
+    const report = classificationReport(now, [], [], { judged });
+    expect(report.drift).toEqual({ unclassified: [drifted!.id], stale: [] });
+    // The change that introduced the notice still has to classify it at source.
+    expect(report.errors).toEqual([`unclassified: ${introduced!.id}`]);
+    expect(validateClassifications(now, [], [], { judged })).toEqual(report.errors);
+  });
+
+  it('keeps a dormant record in a byte-identical file but requires its removal from the changed file', () => {
+    const seed = censusSources(loud);
+    const records = classify(seed);
+    const seedIds = records.map(r => r.id).sort();
+    const now = censusSources(quiet);
+    expect(now.sites).toEqual([]);
+    const dormant = records.find(r => r.path === 'src/b.ts')!;
+    const removed = records.find(r => r.path === 'src/a.ts')!;
+    expect(validateClassifications(now, records, seedIds)).toContain(`stale classification (remove it): ${dormant.id}`);
+    const report = classificationReport(now, records, seedIds, { judged: changedSinceSeed(now, seed.files) });
+    expect(report.drift).toEqual({ unclassified: [], stale: [dormant.id] });
+    expect(report.errors).toEqual([`stale classification (remove it): ${removed.id}`]);
+  });
+
+  it('keeps registry integrity, coverage, mandatory-notice and removed-seed checks global', () => {
+    const c = scan('sendOwner();');
+    const [r] = classify(c);
+    const none = { judged: new Set<string>() };
+    expect(validateClassifications(c, [r, r], [], none).some(e => e.startsWith('duplicate'))).toBe(true);
+    expect(validateClassifications(c, [{ ...r, reason: '' }], [], none).some(e => e.startsWith('incomplete'))).toBe(true);
+    expect(validateClassifications(c, [{ ...r, durablePath: '' }], [], none).some(e => e.startsWith('missing durable'))).toBe(true);
+    expect(validateClassifications(c, [{ ...r, classification: 'safe-to-lose' }], [], none).some(e => e.startsWith('mandatory notice'))).toBe(true);
+    expect(validateClassifications(c, [], [r.id], none)).toEqual([`seed classification removed while site remains: ${r.id}`]);
+    expect(validateClassifications(scan('const broken = ; notifyOwner();'), [], [], none).some(e => e.startsWith('coverage gap'))).toBe(true);
+  });
+
+  it('pins the default scope to the registry seed: modified, new and deleted files are judged', () => {
+    const seedFiles = [{ path: 'a.ts', sha256: 'x' }, { path: 'b.ts', sha256: 'y' }, { path: 'gone.ts', sha256: 'z' }];
+    const census = { files: [{ path: 'a.ts', sha256: 'x' }, { path: 'b.ts', sha256: 'changed' }, { path: 'new.ts', sha256: 'n' }] };
+    expect([...changedSinceSeed(census, seedFiles)].sort()).toEqual(['b.ts', 'gone.ts', 'new.ts']);
+  });
+
+  it('takes the change under review from forwarded paths, a response file, --all or the seed pin', () => {
+    const census = { files: [{ path: 'a.ts', sha256: 'x' }, { path: 'b.ts', sha256: 'changed' }] };
+    const seedFiles = [{ path: 'a.ts', sha256: 'x' }, { path: 'b.ts', sha256: 'y' }];
+    const ctx = { census, seedFiles, root: '/repo/' };
+    expect(resolveJudgedScope(['--files=a.ts,/repo/libs/x.ts,./c.ts'], ctx)).toEqual({ mode: 'changed-paths', judged: new Set(['a.ts', 'libs/x.ts', 'c.ts']), subtrees: [] });
+    expect(resolveJudgedScope(['--changed-paths', 'a.ts'], ctx).judged).toEqual(new Set(['a.ts']));
+    expect(resolveJudgedScope(['--files='], ctx)).toEqual({ mode: 'changed-paths', judged: new Set(), subtrees: [] });
+    // An empty base is an unknown window, never "judge nothing" (git-backed cases: the integration test).
+    expect(() => resolveJudgedScope(['--base='], ctx)).toThrow(/needs a commit-ish/);
+    expect(() => resolveJudgedScope(['--base'], ctx)).toThrow(/needs a commit-ish/);
+    const dir = mkdtempSync(join(tmpdir(), 'notify-scope-'));
+    try {
+      writeFileSync(join(dir, 'files.json'), JSON.stringify(['a.ts', 'b.ts']));
+      writeFileSync(join(dir, 'files.txt'), 'a.ts\n\nb.ts\n');
+      expect(resolveJudgedScope([`--files-from=${join(dir, 'files.json')}`], ctx).judged).toEqual(new Set(['a.ts', 'b.ts']));
+      expect(resolveJudgedScope(['--files-from', join(dir, 'files.txt')], ctx).judged).toEqual(new Set(['a.ts', 'b.ts']));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    expect(resolveJudgedScope(['--all', '--files=a.ts'], ctx)).toEqual({ mode: 'all', judged: null, subtrees: [] });
+    expect(resolveJudgedScope([], ctx)).toEqual({ mode: 'seed-pin', judged: new Set(['b.ts']), subtrees: [] });
+    expect(resolveJudgedScope([], { ...ctx, seedFiles: undefined })).toEqual({ mode: 'all', judged: null, subtrees: [] });
+  });
+
+  it('judges every path under a judged subtree (a submodule whose base could not be compared)', () => {
+    const now = censusSources({ ...loud, 'libs/bus/src/c.ts': 'void notifyOwner();' });
+    const site = now.sites.find(s => s.path === 'libs/bus/src/c.ts');
+    expect(site).toBeDefined();
+    const none = classificationReport(now, [], [], { judged: new Set() });
+    expect(none.errors).toEqual([]);
+    expect(none.drift.unclassified).toContain(site!.id);
+    expect(classificationReport(now, [], [], { judged: new Set(), judgedSubtrees: ['libs/bus'] }).errors)
+      .toEqual([`unclassified: ${site!.id}`]);
+    // A prefix that is not a whole path segment does not reach into the subtree.
+    expect(classificationReport(now, [], [], { judged: new Set(), judgedSubtrees: ['libs/b'] }).errors).toEqual([]);
   });
 });

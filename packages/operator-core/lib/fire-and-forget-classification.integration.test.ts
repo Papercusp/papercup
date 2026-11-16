@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
-  scanRepository, validateClassifications,
+  classificationReport, resolveJudgedScope, scanRepository, validateClassifications,
   type NotifyCensus, type NotifyClassification,
 } from '../../../scripts/check-fire-and-forget-classification.mjs';
 
@@ -38,6 +38,21 @@ function put(root: string, path: string, source: string, tracked = true): void {
   mkdirSync(dirname(join(root, path)), { recursive: true });
   writeFileSync(join(root, path), source);
   if (tracked) git(root, 'add', '--', path);
+}
+
+function commit(root: string, message: string): string {
+  git(root, '-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', 'commit', '-qm', message);
+  return git(root, 'rev-parse', 'HEAD');
+}
+
+/** A superproject with one initialized submodule at libs/bus holding `busSource`. */
+function withSubmodule(busSource: string): { root: string; busHead: string } {
+  const bus = repo();
+  put(bus, 'src/index.ts', busSource);
+  const busHead = commit(bus, 'bus');
+  const root = repo();
+  git(root, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', bus, 'libs/bus');
+  return { root, busHead };
 }
 
 // This supplies classification judgments only. It does not certify that the
@@ -137,5 +152,85 @@ describe('notification classification over real tracked repositories', () => {
     expect(validateClassifications(census, classifications(census))).toContain(
       'coverage gap: libs/bus: unscanned-present',
     );
+  });
+});
+
+describe('D-018 --base window over real repositories', () => {
+  it('judges a file changed inside a submodule whose superproject change is only its gitlink', () => {
+    const { root } = withSubmodule('export const ready = true;');
+    put(root, 'src/stable.ts', 'void notifyOwner();');
+    const base = commit(root, 'base');
+    const sub = join(root, 'libs/bus');
+    put(sub, 'src/index.ts', 'void notifyOwner();');
+    commit(sub, 'a new site inside the submodule');
+    git(root, 'add', '--', 'libs/bus');
+    commit(root, 'bump the gitlink');
+    put(root, 'src/staged.ts', 'export const later = 1;');
+    // What a superproject path list (forwardChangedPaths) would carry: the gitlink, no file.
+    expect(git(root, 'diff', '--name-only', 'HEAD', base)).toBe('libs/bus');
+
+    const census = scanRepository(root);
+    expect(census.gaps).toEqual([]);
+    const stable = census.sites.find(s => s.path === 'src/stable.ts');
+    const added = census.sites.find(s => s.path === 'libs/bus/src/index.ts');
+    expect(stable && added).toBeTruthy();
+
+    const scope = resolveJudgedScope(['--base', base], { census, seedFiles: null, root });
+    expect(scope).toMatchObject({ mode: 'base', base, baseSha: base, subtrees: [] });
+    // The working tree is the judged side: the staged, uncommitted file is in the window.
+    expect([...scope.judged!].sort()).toEqual(['libs/bus/src/index.ts', 'src/staged.ts']);
+    const report = classificationReport(census, [], [], { judged: scope.judged, judgedSubtrees: scope.subtrees });
+    expect(report.errors).toEqual([`unclassified: ${added!.id}`]);
+    expect(report.drift).toEqual({ unclassified: [stable!.id], stale: [] });
+    // The strict verdict still sees the untouched file, and listed paths join the window.
+    expect(validateClassifications(census, [])).toContain(`unclassified: ${stable!.id}`);
+    const union = resolveJudgedScope([`--base=${base}`, '--files=src/stable.ts'], { census, seedFiles: null, root });
+    expect(classificationReport(census, [], [], { judged: union.judged }).errors.sort())
+      .toEqual([`unclassified: ${added!.id}`, `unclassified: ${stable!.id}`].sort());
+  });
+
+  it('judges a submodule whole when the gitlink its base records is not in its object store', () => {
+    const { root, busHead } = withSubmodule('void notifyOwner();');
+    put(root, 'src/app.ts', 'export const ready = true;');
+    commit(root, 'initial');
+    git(root, 'update-index', '--cacheinfo', `160000,${'f'.repeat(40)},libs/bus`);
+    const base = commit(root, 'base pins a commit the submodule never fetched');
+    git(root, 'update-index', '--cacheinfo', `160000,${busHead},libs/bus`);
+    commit(root, 'restore the gitlink');
+
+    const census = scanRepository(root);
+    const site = census.sites.find(s => s.path === 'libs/bus/src/index.ts');
+    expect(site).toBeDefined();
+    const scope = resolveJudgedScope(['--base', base], { census, seedFiles: null, root });
+    expect(scope.subtrees).toEqual(['libs/bus']);
+    expect(scope.judged!.size).toBe(0);
+    // Byte-identical, but its window is unknown, so it is judged rather than called drift.
+    expect(classificationReport(census, [], [], { judged: scope.judged, judgedSubtrees: scope.subtrees }).errors)
+      .toEqual([`unclassified: ${site!.id}`]);
+  });
+
+  it('judges an uninitialized submodule whole instead of running git in the parent repository', () => {
+    const { root } = withSubmodule('void notifyOwner();');
+    const base = commit(root, 'base');
+    const records = classifications(scanRepository(root));
+    expect(records).toHaveLength(1);
+    git(root, 'submodule', 'deinit', '-q', '-f', '--', 'libs/bus');
+
+    const census = scanRepository(root);
+    expect(census.sites).toEqual([]);
+    const scope = resolveJudgedScope(['--base', base], { census, seedFiles: null, root });
+    expect(scope.subtrees).toEqual(['libs/bus']);
+    const report = classificationReport(census, records, [], { judged: scope.judged, judgedSubtrees: scope.subtrees });
+    expect(report.errors.filter(e => e.startsWith('stale'))).toEqual([`stale classification (remove it): ${records[0].id}`]);
+    expect(report.drift.stale).toEqual([]);
+  });
+
+  it('refuses a base that does not resolve instead of judging nothing', () => {
+    const root = repo();
+    put(root, 'src/app.ts', 'void notifyOwner();');
+    commit(root, 'only');
+    const census = scanRepository(root);
+    expect(() => resolveJudgedScope(['--base', 'no-such-ref'], { census, seedFiles: null, root }))
+      .toThrow(/does not resolve to a commit/);
   });
 });
