@@ -47,11 +47,26 @@ import type { McpCallResult } from '../routes/transport/mcp-diagnostic-warnings'
 
 const h = vi.hoisted(() => {
   const unsafeCalls: Array<{ sql: string; params: unknown[] }> = [];
+  // The mandatory original-invocation observer (originalInvocationObserver in
+  // projected-tool-deps, wired as the dispatcher's invocationObserver) INSERTs
+  // the original record before admission and UPDATEs it once the tool settles.
+  // Both statements must RETURN the row id, or dispatch fails closed with
+  // execution_observation_unavailable before the tool ever runs.
+  let originalInvocationSeq = 0;
   const fakeTx = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
     unsafe: async (...args: unknown[]) => {
       const [sql, params] = args;
       if (typeof sql === 'string') {
         unsafeCalls.push({ sql, params: Array.isArray(params) ? params : [] });
+        if (sql.includes('INSERT INTO harness_shared.tool_invocations') && sql.includes('RETURNING id')) {
+          originalInvocationSeq += 1;
+          return [{ id: String(originalInvocationSeq) }];
+        }
+        if (sql.includes('UPDATE harness_shared.tool_invocations')
+          && sql.includes("metadata_json->'originalInvocation'->>'callId'")
+          && Array.isArray(params)) {
+          return [{ id: String(params[1]) }];
+        }
       }
       return [] as unknown[];
     },
@@ -1248,7 +1263,11 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
           }),
         },
       });
-      expect((settled?.scratchWriteTimings as ScratchWriteTimings).quotaRecoveryDiagnostics?.sizeWalkDirectories)
+      // Request-time recovery seeds FIFO eviction from the fresh shared aggregate set above
+      // without walking the tree (0d05b0cf114). That pass cannot reach the target in an empty
+      // sandbox, so the tree is measured by a usage refresh before the write is admitted
+      // (EI-26817459316222367). The settled trace must carry that walk's real diagnostics.
+      expect((settled?.scratchWriteTimings as ScratchWriteTimings).usageRefreshDiagnostics?.sizeWalkDirectories)
         .toBeGreaterThan(0);
       expect(existsSync(h.spillPaths[0])).toBe(true);
       const spill = parseScratchReference(readFileSync(h.spillPaths[0]));

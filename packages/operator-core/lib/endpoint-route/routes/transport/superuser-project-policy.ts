@@ -1,4 +1,4 @@
-import type { ToolResult } from '@papercusp/tooldef';
+import type { PhaseTracker, ToolResult } from '@papercusp/tooldef';
 import { collectHarnessSlugArgs } from '../../hive-harness-arg-coverage';
 import { isReservedHarnesslessRoutineHost } from '../../../harness/routines/routine-host';
 
@@ -85,6 +85,9 @@ export async function applySuperuserProjectPolicy(
   caller: Caller,
   input: Record<string, unknown>,
   clampEnabled: boolean,
+  // Request-local phase tracker. Without it, a deadline that fires during the registry
+  // lookup below reports no pending transport-scope phase and the stall is unattributed.
+  phases?: Pick<PhaseTracker, 'track' | 'addCompleted'>,
 ): Promise<PolicyResult | null> {
   if (!clampEnabled || !hasWorkspaceProjectAuthority(caller)) return null;
   let args = input;
@@ -109,7 +112,9 @@ export async function applySuperuserProjectPolicy(
       let workspace: string | null;
       try {
         if (!resolved.has(target.slug)) {
-          resolved.set(target.slug, await resolveWorkspaceForHarnessSlugIn(caller.workspaceId, target.slug));
+          const slug = target.slug;
+          const resolve = () => resolveWorkspaceForHarnessSlugIn(caller.workspaceId, slug, phases);
+          resolved.set(slug, await (phases ? phases.track('harnessWorkspaceResolution', resolve) : resolve()));
         }
         workspace = resolved.get(target.slug)!;
       } catch {

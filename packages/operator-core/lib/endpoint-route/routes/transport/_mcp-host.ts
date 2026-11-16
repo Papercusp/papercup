@@ -4660,9 +4660,9 @@ export function registerMcpHost(server: McpServer): void {
         ));
         if (!boundary.ok) return boundary.result;
         const scopedSuperuserClamp = boundary.scopedSuperuserClamp;
-        const projectPolicy = await applySuperuserProjectPolicy(
-          toolName, spawnRes.ctx, (args ?? {}) as Record<string, unknown>, scopedSuperuserClamp,
-        );
+        const projectPolicy = await transportScopePhases.track('superuserProjectPolicy', () => applySuperuserProjectPolicy(
+          toolName, spawnRes.ctx, (args ?? {}) as Record<string, unknown>, scopedSuperuserClamp, transportScopePhases,
+        ));
         if (projectPolicy) {
           if (!projectPolicy.ok) return projectPolicy.result;
           args = projectPolicy.args;
