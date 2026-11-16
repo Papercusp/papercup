@@ -566,6 +566,24 @@ describe('system-derived plan-lane evidence', () => {
     expect(await preflightBlockerDecision(subject(), decision(), { ...context(), sessionId: ctx.ownerId },
       { effect: { status: 'wip' } })).toMatchObject({ ok: true });
   });
+  it.each([
+    { patch: { blockers: [] }, missing: 'exact active system gate (found 0)' },
+    { patch: { blockers: [gate, gate] }, missing: 'exact active system gate (found 2)' },
+    { patch: { workspaceId: '' }, missing: 'authenticated workspace' },
+    { patch: { harnessSlug: null }, missing: 'canonical harness' },
+    { patch: { ownerId: '' }, missing: 'authenticated owner' },
+    { patch: { custodianId: 'su-other' }, missing: 'matching current custodian' },
+  ])('identifies the failed host prerequisite without reading or clearing the lane: $missing', async ({ patch, missing }) => {
+    mocks.item.mockClear();
+    mocks.nodes.mockClear();
+    mocks.plan.mockClear();
+    const measured = await createBlockerEvidenceReader({ ...context(), ...patch })(ref);
+    expect(measured).toMatchObject({ status: 'unknown', detail: expect.stringContaining(missing) });
+    expect(mocks.item).not.toHaveBeenCalled();
+    expect(mocks.nodes).not.toHaveBeenCalled();
+    expect(mocks.plan).not.toHaveBeenCalled();
+    expect(mocks.event).not.toHaveBeenCalled();
+  });
   it('retains a pending prerequisite and refuses self-resolution', async () => {
     const pending = plan();
     pending.items[0].storedStatus = 'wip';
@@ -652,6 +670,25 @@ describe('system-derived plan-lane evidence', () => {
     const before = structuredClone(current);
     expect(await preflightBlockerDecision(current, input, host, { effect: { setBlocker: clear } }))
       .toMatchObject({ ok: true });
+    // The lifecycle writer validates the prospective payload after the public
+    // handler. Its unchanged gate is the same obligation, even after cloning.
+    for (const additionalBlockers of [[structuredClone(gate)], [gate, structuredClone(gate)]]) {
+      const checked = await preflightBlockerDecision(current, input, host,
+        { effect: { setBlocker: clear }, additionalBlockers });
+      expect(checked, JSON.stringify(checked)).toMatchObject({ ok: true });
+    }
+    // Conflicting records and ambiguity already in canonical history must
+    // remain distinct; only exact overlap from the prospective payload folds.
+    expect(await preflightBlockerDecision(current, input, host,
+      { effect: { setBlocker: clear }, additionalBlockers: [{ ...gate, summary: 'Different condition' }] }))
+      .toMatchObject({ ok: false, missing: expect.arrayContaining([
+        expect.stringContaining('exact active system gate (found 2)'),
+      ]) });
+    const ambiguous = { ...current, payload: { ...current.payload, externalBlockers: [gate, gate, human] } };
+    expect(await preflightBlockerDecision(ambiguous, input, host, { effect: { setBlocker: clear } }))
+      .toMatchObject({ ok: false, missing: expect.arrayContaining([
+        expect.stringContaining('exact active system gate (found 2)'),
+      ]) });
     expect(current).toEqual(before);
     expect(await read()).toMatchObject({ status: 'unknown' });
     for (const change of [{ clear: false }, { ref: 'other#P-002' }, { id: 'WI-other' },

@@ -171,7 +171,14 @@ export async function preflightBlockerDecision(
     if (!prepared) return required ? boundaryProblem(['blockerDecision with investigation and evidence']) : { ok: true, ordinary: true };
     if (!prepared.ok) return prepared;
     const { activeExternalBlockers } = await import('./external-blockers');
-    const blockers = [...activeExternalBlockers(item.payload), ...(options.additionalBlockers ?? [])];
+    const blockers = [...activeExternalBlockers(item.payload)];
+    // Lifecycle writers validate both the stored row and their prospective
+    // payload. An unchanged record is one obligation across those two views.
+    // Preserve duplicates already in canonical history and any changed record:
+    // those remain ambiguous conditions that the exact readers must refuse.
+    for (const additional of options.additionalBlockers ?? []) {
+      if (!blockers.some(blocker => isDeepStrictEqual(blocker, additional))) blockers.push(additional);
+    }
     const absorbing = prepared.record.decision.disposition === 'absorb';
     if (absorbing && blockers.some(blocker => blocker.kind !== 'runtime' ||
         !blocker.ref.startsWith('plan-lane:') || blocker.createdBy !== 'system:plan-item-lane-sync')) {
@@ -686,7 +693,15 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
               blocker.capability === 'live-dependency' && blocker.createdBy === 'system:plan-item-lane-sync');
             if (!match || gates.length !== 1 || !context.workspaceId || !context.harnessSlug ||
                 !context.ownerId || context.custodianId !== context.ownerId) {
-              return unknown('exact system-derived lane and authenticated current custody required');
+              const missingContext = [
+                ...(!match ? ['canonical lane reference'] : []),
+                ...(gates.length !== 1 ? [`exact active system gate (found ${gates.length})`] : []),
+                ...(!context.workspaceId ? ['authenticated workspace'] : []),
+                ...(!context.harnessSlug ? ['canonical harness'] : []),
+                ...(!context.ownerId ? ['authenticated owner'] : []),
+                ...(context.custodianId !== context.ownerId ? ['matching current custodian'] : []),
+              ];
+              return unknown(`exact system-derived lane and authenticated current custody required: ${missingContext.join('; ')}`);
             }
             const { activeWorkspaceId } = await import('./workspace-registry');
             if (activeWorkspaceId() !== context.workspaceId) return unknown('plan-lane tenant context mismatch');
