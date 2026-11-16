@@ -60,6 +60,20 @@
       ],
       "fixtureScopeNote": "Inline receipt, policy, condition and protected-state fixtures live in the named test."
     },
+    "unit-boundaries": {
+      "testPath": "packages/operator-core/lib/durable-park-recovery.boundaries.test.ts",
+      "testCases": [
+        "independent PARK-PROGRESS boundary oracles > accepts the last permitted renewal before the absolute deadline",
+        "independent PARK-PROGRESS boundary oracles > rejects renewal limit plus one before the absolute deadline",
+        "independent PARK-PROGRESS boundary oracles > absolute deadline one millisecond before preserves the bounded recovery decision",
+        "independent PARK-PROGRESS boundary oracles > absolute deadline exact preserves the bounded recovery decision",
+        "independent PARK-PROGRESS boundary oracles > absolute deadline plus one preserves the bounded recovery decision"
+      ],
+      "fixturePaths": [
+        "packages/operator-core/lib/durable-park-recovery.boundaries.test.ts"
+      ],
+      "fixtureScopeNote": "Independent literal boundary oracles. A 120-minute absolute cap isolates the two-renewal limit; exact and plus-one absolute expiry are separate measured cases. Existing unit proof pairs retain their original test bytes."
+    },
     "pg": {
       "testPath": "packages/operator-core/lib/durable-park-recovery.integration.test.ts",
       "historicalRunId": 23782585,
@@ -623,14 +637,14 @@
       "scenarioTestCases": {
         "absolute-deadline-exact": [
           {
-            "group": "unit",
-            "caseTitle": "automatic park recovery policy prerequisite (PARK-PROGRESS) > caps a permitted extension at the absolute boundary and never consumes a third or replay count"
+            "group": "unit-boundaries",
+            "caseTitle": "independent PARK-PROGRESS boundary oracles > absolute deadline exact preserves the bounded recovery decision"
           }
         ],
         "absolute-deadline-plus-one": [
           {
-            "group": "unit",
-            "caseTitle": "automatic park recovery policy prerequisite (PARK-PROGRESS) > caps a permitted extension at the absolute boundary and never consumes a third or replay count"
+            "group": "unit-boundaries",
+            "caseTitle": "independent PARK-PROGRESS boundary oracles > absolute deadline plus one preserves the bounded recovery decision"
           }
         ],
         "irrelevant-heartbeat": [
@@ -641,8 +655,8 @@
         ],
         "last-permitted-renewal": [
           {
-            "group": "unit",
-            "caseTitle": "automatic park recovery policy prerequisite (PARK-PROGRESS) > allows exactly two extensions then expires even if useful work continues"
+            "group": "unit-boundaries",
+            "caseTitle": "independent PARK-PROGRESS boundary oracles > accepts the last permitted renewal before the absolute deadline"
           },
           {
             "group": "pg",
@@ -697,8 +711,8 @@
         ],
         "renewal-limit-plus-one": [
           {
-            "group": "unit",
-            "caseTitle": "automatic park recovery policy prerequisite (PARK-PROGRESS) > allows exactly two extensions then expires even if useful work continues"
+            "group": "unit-boundaries",
+            "caseTitle": "independent PARK-PROGRESS boundary oracles > rejects renewal limit plus one before the absolute deadline"
           },
           {
             "group": "pg",
