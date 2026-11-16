@@ -33,6 +33,10 @@ vi.mock('./storage/retention-pins', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./storage/retention-pins')>();
   return { ...actual, withUnpinnedPath: vi.fn(actual.withUnpinnedPath) };
 });
+vi.mock('../../../scripts/lib/fs-mutex.mjs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../scripts/lib/fs-mutex.mjs')>();
+  return { ...actual, withFsMutex: vi.fn(actual.withFsMutex) };
+});
 import {
   constants as fsConstants,
   mkdtempSync,
@@ -2088,6 +2092,56 @@ describe('cross-process scratch quota coordination', () => {
 });
 
 describe('deferred scratch quota recovery', () => {
+  it('lets a quota-fitting writer proceed during background candidate discovery and reconciles its new run', async () => {
+    const workspaceId = 'ws-Q';
+    const used = WORKSPACE_QUOTA_BYTES - Math.floor(SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES / 2);
+    const oldest = makeSparseRun(workspaceId, UUID(1), used - 16, 10_000);
+    const writerRun = makeRunDir(workspaceId, 'quota', UUID(2), 16);
+    const root = scratchRootForWorkspace(workspaceId);
+    _setScratchUsageForTests(workspaceId, used + statSync(join(root, WORKSPACE_SCRATCH_MARKER)).size);
+    const readdirMock = vi.mocked(readdirAsync);
+    const originalRead = readdirMock.getMockImplementation()!;
+    const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    let release!: () => void;
+    let reached!: () => void;
+    const gate = new Promise<void>((resolveGate) => { release = resolveGate; });
+    const listing = new Promise<void>((resolveReached) => { reached = resolveReached; });
+    let rootReads = 0;
+    readdirMock.mockImplementation((async (path: unknown, options: unknown) => {
+      const entries = await read(path, options);
+      // First read measures usage outside the lease. The second discovers FIFO
+      // candidates; it used to run inside the exclusive quota-eviction lease.
+      if (String(path) === root && ++rootReads === 2) {
+        reached();
+        await gate;
+      }
+      return entries as never;
+    }) as typeof readdirAsync);
+    const refresh = refreshScratchUsage(workspaceId);
+    let write: Promise<void> | undefined;
+    try {
+      await listing;
+      const lateRun = makeRunDir(workspaceId, 'late-tool', UUID(3), 16);
+      const latePath = join(lateRun, 'late.bin');
+      write = writeWithScratchQuota({ workspaceId, filePath: latePath, bytes: 8, mutexTimeoutMs: 500 },
+        () => writeFile(latePath, Buffer.alloc(8)));
+      await expect(write).resolves.toBeUndefined();
+      release();
+      await refresh;
+      await _settleScratchMaintenanceForTests();
+      expect(existsSync(oldest)).toBe(false);
+      expect(readFileSync(join(writerRun, 'data.bin'))).toHaveLength(16);
+      expect(readFileSync(join(lateRun, 'data.bin'))).toHaveLength(16);
+      expect(readFileSync(latePath)).toHaveLength(8);
+      expect(scratchUsageBytes(workspaceId)).toBe(40 + statSync(join(root, WORKSPACE_SCRATCH_MARKER)).size);
+    } finally {
+      release();
+      await Promise.allSettled([refresh, ...(write ? [write] : [])]);
+      await _settleScratchMaintenanceForTests();
+      readdirMock.mockImplementation(originalRead);
+    }
+  });
+
   it.each(['stable', 'local write', 'remote revision'] as const)(
     'discovers quota candidates outside the data lease and revalidates the listing (%s)', async (change) => {
       const workspaceId = 'ws-Q';
@@ -3755,6 +3809,66 @@ describe('deferred scratch quota recovery', () => {
       await Promise.allSettled([holder]);
     }
   });
+
+  it.each(['quota', 'data'] as const)(
+    'retains a known %s mutex owner after an unreadable notice in the same admission',
+    async (kind) => {
+      const workspaceId = 'ws-owner-notice';
+      const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
+      const digest = createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 40);
+      const mutexName = `papercusp-scratch-${kind}-${digest}`;
+      const holderTraceId = `holder-${kind}`;
+      let releaseHolder!: () => void;
+      let startedHolder!: () => void;
+      let observedNotices!: () => void;
+      const holderGate = new Promise<void>((resolve) => { releaseHolder = resolve; });
+      const holderStarted = new Promise<void>((resolve) => { startedHolder = resolve; });
+      const noticesObserved = new Promise<void>((resolve) => { observedNotices = resolve; });
+      const mutexMock = vi.mocked(withFsMutex);
+      const originalMutex = mutexMock.getMockImplementation()!;
+      // Keep real admission and cleanup; only make the diagnostic owner disappear
+      // between two notices, as can happen during a holder's handoff.
+      mutexMock.mockImplementation((name, run, options = {}) => originalMutex(name, run, {
+        ...options,
+        ...(name === mutexName && options.onWaiting ? {
+          onWaiting: (info) => {
+            options.onWaiting!({ ...info, owner: '(unreadable)' });
+            options.onWaiting!(info);
+            options.onWaiting!({ ...info, owner: '(unreadable)' });
+            observedNotices();
+          },
+        } : {}),
+      }));
+      const holder = withFsMutex(mutexName, async () => {
+        startedHolder();
+        await holderGate;
+      }, { intent: { subsystem: 'scratch-quota', operation: 'held-for-test', requestTraceId: holderTraceId } });
+      const timings: ScratchWriteTimings[] = [];
+      let waiter: Promise<void> | undefined;
+      try {
+        await holderStarted;
+        const filePath = join(makeRunDir(workspaceId, 'mutex', UUID(74), 0), 'owner-notice.bin');
+        waiter = writeWithScratchQuota({
+          workspaceId,
+          filePath,
+          bytes: 1,
+          mutexTimeoutMs: 2_000,
+          onTiming: (row) => timings.push(row),
+        }, () => writeFile(filePath, 'x'));
+        await noticesObserved;
+        releaseHolder();
+        await Promise.all([holder, waiter]);
+        const settled = timings.find((row) => !row.progress);
+        const owner = kind === 'quota' ? settled?.quotaWaitMutexOwner : settled?.dataLeaseMutexOwner;
+        expect(owner).toMatchObject({ layer: 'filesystem', requestTraceId: holderTraceId });
+        expect(readFileSync(filePath, 'utf8')).toBe('x');
+      } finally {
+        releaseHolder();
+        await Promise.allSettled([holder, ...(waiter ? [waiter] : [])]);
+        mutexMock.mockImplementation(originalMutex);
+      }
+    },
+  );
 
   it('reports the request trace ID from a filesystem scratch mutex owner', async () => {
     const workspaceId = 'ws-Q';

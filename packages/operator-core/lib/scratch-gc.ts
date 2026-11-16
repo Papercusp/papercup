@@ -2064,6 +2064,23 @@ async function evictWorkspaceQuotaWithLock(
   options: { preserveRunIndex?: boolean; expectedSharedUpdatedAt?: number | null } = {},
 ): Promise<{ used: number; evictions: number; bytes: number }> {
   const entry = usageEntry(workspaceId);
+  let discoveredRuns: Array<{ dir: string; mtimeMs: number }> | undefined;
+  if (options.preserveRunIndex && entry.runBytesValid && !entry.refreshDeferred) {
+    // The background refresh already validates its full index against the shared
+    // revision below. Like request-time recovery, discover FIFO candidates before
+    // taking the data lease so a quota-fitting payload does not wait for every stat.
+    const listingErrors = scratchQuotaReadErrorCount(diagnostics);
+    const listingStartedAt = performance.now();
+    discoveredRuns = await runDirsOf(scratchRootForWorkspace(workspaceId), diagnostics);
+    if (diagnostics) {
+      diagnostics.runListingMs += Math.max(0, performance.now() - listingStartedAt);
+      diagnostics.runsListed += discoveredRuns.length;
+    }
+    if (scratchQuotaReadErrorCount(diagnostics) > listingErrors) {
+      invalidateRunSizeIndex(entry);
+      throw incompleteScratchQuotaMeasurementError(workspaceId, diagnostics!);
+    }
+  }
   const reclaimed = await withScratchWorkspaceDataMutex(workspaceId, 'quota-eviction', async () => {
     if (options.preserveRunIndex) {
       if (!entry.runBytesValid || entry.refreshDeferred) {
@@ -2084,7 +2101,7 @@ async function evictWorkspaceQuotaWithLock(
         }
         return null;
       }
-      return evictWorkspaceQuotaLocked(workspaceId, targetBytes, true, diagnostics, now);
+      return evictWorkspaceQuotaLocked(workspaceId, targetBytes, true, diagnostics, now, undefined, discoveredRuns);
     }
 
     invalidateRunSizeIndex(entry);
@@ -2751,7 +2768,11 @@ export interface ScratchWriteMutexWaitOwner {
   startedAt?: string;
 }
 
-function scratchWriteMutexWaitOwner(owner: string): ScratchWriteMutexWaitOwner {
+/** A disappearing owner record must not erase usable evidence from this same wait. */
+function scratchWriteMutexWaitOwner(
+  owner: string,
+  previous?: ScratchWriteMutexWaitOwner,
+): ScratchWriteMutexWaitOwner {
   try {
     const parsed = JSON.parse(owner) as Record<string, unknown>;
     const layer = parsed.layer === 'process-local' ? 'process-local' : 'filesystem';
@@ -2775,7 +2796,7 @@ function scratchWriteMutexWaitOwner(owner: string): ScratchWriteMutexWaitOwner {
       ...(typeof parsed.startedAt === 'string' ? { startedAt: parsed.startedAt.slice(0, 40) } : {}),
     };
   } catch {
-    return { layer: 'unknown' };
+    return previous ?? { layer: 'unknown' };
   }
 }
 
@@ -2927,7 +2948,7 @@ export async function writeWithScratchQuota(
     let owner: ScratchWriteMutexWaitOwner | undefined;
     return {
       onWaiting: opts.onTiming ? (info: { owner: string; elapsedMs: number }) => {
-        owner = scratchWriteMutexWaitOwner(info.owner);
+        owner = scratchWriteMutexWaitOwner(info.owner, owner);
         mutexWaitOwner = owner;
         emitLockWaitProgress();
       } : undefined,
@@ -3171,7 +3192,7 @@ export async function writeWithScratchQuota(
               discoveredRuns,
             );
           }, opts.onTiming ? (info) => {
-            recoveryDataMutexWaitOwner = scratchWriteMutexWaitOwner(info.owner);
+            recoveryDataMutexWaitOwner = scratchWriteMutexWaitOwner(info.owner, recoveryDataMutexWaitOwner);
             emitActiveRecoveryProgress?.();
           } : undefined, (info) => {
             timings.quotaRecoveryDataMutexWaitMs = info.waitedMs;
