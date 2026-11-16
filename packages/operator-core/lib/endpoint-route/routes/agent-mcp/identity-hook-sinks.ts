@@ -33,7 +33,8 @@ import { PG_ACQUIRE_TIMING_LIMIT, pgAcquireTimingSnapshot, pgResultDiagnosticSna
 import { withNamedQueryDiagnosticContext } from '../../../agent-tools/db-diagnostic-correlation-wiring';
 import { tagTurnForInjection } from '../../../turn-provenance/turn-provenance';
 import type { MemoryFragmentOffer } from '../../../memory/session-epoch-ledger';
-import { checkPlanExecutionGuard, type PlanExecutionTimingObserver } from '../../../agent-tools/plans/plan-execution-guard';
+import { checkPlanExecutionGuard, type PlanExecutionRefusal, type PlanExecutionTimingObserver } from '../../../agent-tools/plans/plan-execution-guard';
+import { withBoundedTimeout } from '../../../bounded-timeout';
 import {
   evaluateHookContextSink,
   evaluateToolGuard,
@@ -187,12 +188,32 @@ export async function toolGuardText(
   let planRefused = false;
   const plan = (async () => {
     const startedAt = performance.now();
+    let timingRecorded = false;
+    const recordPlanTiming = () => {
+      if (timingRecorded) return;
+      timingRecorded = true;
+      recordTiming?.('plan', performance.now() - startedAt);
+    };
     try {
-      const refusal = await checkPlanExecutionGuard({ ownerId: input.ownerId, workspaceId: input.workspaceId,
-        toolName: input.call.tool, args: input.call.input, observeTiming: observePlanTiming, readinessDeadlineAtMs });
-      planRefused = Boolean(refusal);
-      return refusal;
-    } finally { recordTiming?.('plan', performance.now() - startedAt); }
+      // Binding and goal reads happen before readiness itself. Bound the whole
+      // authority computation so none of those reads can exhaust the client wall.
+      // Start the check now and publish immediate refusals before the speculative
+      // identity microtask; the timeout wrapper must not delay that fast path.
+      const check = checkPlanExecutionGuard({ ownerId: input.ownerId, workspaceId: input.workspaceId,
+        toolName: input.call.tool, args: input.call.input, observeTiming: observePlanTiming, readinessDeadlineAtMs })
+        .then(refusal => { planRefused = Boolean(refusal); recordPlanTiming(); return refusal; },
+          error => { recordPlanTiming(); throw error; });
+      const bounded = await withBoundedTimeout<PlanExecutionRefusal | null>(
+        check,
+        { timeoutMs: Math.max(1, readinessDeadlineAtMs - performance.now()), warn: false,
+          label: 'native-plan-execution-authority',
+          fallback: { code: 'plan_execution_not_ready', blockers: ['plan_authority_unavailable'],
+            reason: 'Native plan execution authority did not finish within the hook budget; this call was not performed. Retry after authority reads recover.' } },
+      );
+      if (bounded.reason === 'error') throw bounded.error;
+      planRefused = Boolean(bounded.value);
+      return bounded.value;
+    } finally { recordPlanTiming(); }
   })();
   // Settle the speculative read immediately, including rejection, so an early
   // plan refusal cannot leave an unhandled identity failure behind.

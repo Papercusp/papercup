@@ -141,6 +141,30 @@ describe('toolGuardText (deny-only; unreadable fails open, unevaluable fails clo
     expect(deadline).toBeLessThanOrEqual(after + 1000);
   });
 
+  it('bounds stalled authority before readiness and never upgrades its refusal from a late permit', async () => {
+    vi.useFakeTimers();
+    try {
+      let release!: (value: null) => void;
+      planExecutionGuard.mockImplementationOnce(() => new Promise<null>(resolve => { release = resolve; }));
+      const read = vi.fn(() => new Promise<WornSyncRules>(() => {}));
+      let settled = false;
+      const pending = toolGuardText(input('touch private-probe'), read).then(value => { settled = true; return value; });
+      await vi.advanceTimersByTimeAsync(999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true);
+      const refusal = 'plan_execution_not_ready: Native plan execution authority did not finish within the hook budget; this call was not performed. Retry after authority reads recover.';
+      expect(await pending).toBe(refusal);
+      expect(read).toHaveBeenCalledTimes(1);
+      release(null);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await pending).toBe(refusal);
+      // Recovery needs a new authoritative check, not the abandoned permit.
+      expect(await toolGuardText(input('touch private-probe'), async () => null)).toBe('');
+      expect(planExecutionGuard).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+
   it('fails CLOSED when a worn guard cannot see the whole input', async () => {
     // A tool no kernel rail reads, so the worn guard is the one that answers.
     const text = await toolGuardText(
@@ -153,11 +177,15 @@ describe('toolGuardText (deny-only; unreadable fails open, unevaluable fails clo
   it('overlaps independent authority reads within the native guard wall and retains identity denial', async () => {
     vi.useFakeTimers();
     try {
-      planExecutionGuard.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(null), 1100)));
-      const read = vi.fn(() => new Promise<WornSyncRules>(resolve => setTimeout(() => resolve(noRmRules()), 600)));
+      // Serial reads take 1600ms, beyond the client wall; overlapping them must
+      // still finish inside the complete authority check's 1000ms budget.
+      planExecutionGuard.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(null), 900)));
+      const read = vi.fn(() => new Promise<WornSyncRules>(resolve => setTimeout(() => resolve(noRmRules()), 700)));
       let settled = false;
       const pending = toolGuardText(input('rm -rf build'), read).then(text => { settled = true; return text; });
-      await vi.advanceTimersByTimeAsync(1100);
+      await vi.advanceTimersByTimeAsync(899);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
       expect(settled).toBe(true);
       expect(await pending).toBe('Refused by identity safe-coder rule no-rm: no recursive deletes');
       expect(read).toHaveBeenCalledTimes(1);
