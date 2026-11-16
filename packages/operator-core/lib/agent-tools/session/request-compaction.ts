@@ -464,6 +464,11 @@ export default defineTool({
       availability.reason === 'host_socket_unavailable'
     ) {
       const probeUnsupported = availability.reason === 'host_socket_probe_unsupported';
+      const probeDetail = availability.probe
+        ? ` Probe: ${availability.probe.confirmation}` +
+          (availability.probe.transportErrorCode ? `/${availability.probe.transportErrorCode}` : '') +
+          (availability.probe.reason ? ` (${availability.probe.reason})` : '') + '.'
+        : '';
       return {
         content: [{
           type: 'text' as const,
@@ -472,11 +477,16 @@ export default defineTool({
             requested: false,
             respawn: false,
             error: availability.reason,
+            hostOwnerId: identity.ownerId,
             hostSock: availability.host?.sock ?? null,
             hostPid: availability.host?.pid ?? null,
-            note: probeUnsupported
+            hostNativeSessionId: availability.host?.nativeSessionId ?? null,
+            hostCodeVersion: availability.host?.hostCodeVersion ?? null,
+            ...(availability.probe ? { probe: availability.probe } : {}),
+            note: (probeUnsupported
               ? 'This psu-pty host advertises carry-respawn but lacks the control-socket probe capability, so its listener cannot be confirmed. No carry-respawn was sent. Relaunch through a current managed psu host before relying on self-compaction.'
-              : 'The psu-pty host metadata exists, but its control-socket probe did not receive an acknowledgement. No carry-respawn was sent. Verify or relaunch the managed psu host before relying on self-compaction.',
+              : 'The psu-pty host metadata exists, but its control-socket probe did not receive an acknowledgement. No carry-respawn was sent. Verify or relaunch the managed psu host before relying on self-compaction.') +
+              ` Host ${identity.ownerId}, PID ${availability.host?.pid ?? 'unknown'}.` + probeDetail,
           }),
         }],
         isError: true,

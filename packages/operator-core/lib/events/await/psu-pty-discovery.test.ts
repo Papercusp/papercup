@@ -1007,7 +1007,9 @@ describe('selfCompactionAvailability (the shared recommend-vs-refuse predicate)'
       available: false,
       reason: 'host_socket_unavailable',
       host: { sock },
+      probe: { confirmation: 'error', transportErrorCode: 'ECONNREFUSED' },
     });
+    if (!availability.available) expect(availability.probe?.elapsedMs).toBeGreaterThanOrEqual(0);
   });
 
   it('does not send a probe to hosts that do not advertise probe support', async () => {

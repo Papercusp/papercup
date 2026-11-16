@@ -30,6 +30,9 @@ import { readLedgerRows } from '../../turn-provenance/turn-provenance';
  * and these assertions are about the note BODY, not the safety preamble.
  */
 const ADDRESS_PREFIX = addressContinuationToOwner('', 'su-caller');
+const socketProbeFailure = vi.hoisted(() => ({ value: null as null | {
+  confirmation: string; transportErrorCode: string; elapsedMs: number;
+} }));
 import { __resetRefusalMarkers } from '../../enforcement-gate-io';
 import { __resetRespawnExpectedMarkers, consumeRespawnExpected } from '../../carry-respawn-marker';
 const flushMarks = vi.hoisted(() => new Map<string, number>());
@@ -142,6 +145,8 @@ vi.mock('../../events/await/psu-pty-discovery', () => {
         return { available: false, reason: 'host_predates_carry_respawn', host };
       if (!hostSupports(host, 'control-socket-probe-v1'))
         return { available: false, reason: 'host_socket_probe_unsupported', host };
+      if (socketProbeFailure.value)
+        return { available: false, reason: 'host_socket_unavailable', host, probe: socketProbeFailure.value };
       return { available: true, reason: null, host };
     },
   };
@@ -1101,6 +1106,39 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     });
     expect(body(out).note).toContain('listener cannot be confirmed');
     expect(injectIntoHost).not.toHaveBeenCalled();
+  });
+
+  it('retains the failed socket probe and exact host identity without queuing a carry', async () => {
+    findLiveHost.mockReturnValue({
+      ...carryHost,
+      pid: 2137002,
+      nativeSessionId: 'native-probe',
+      hostCodeVersion: 'loaded-version',
+    });
+    socketProbeFailure.value = {
+      confirmation: 'error', transportErrorCode: 'ECONNREFUSED', elapsedMs: 5,
+    };
+    try {
+      const out = await call({ focus: 'x' });
+      expect(out.isError).toBe(true);
+      expect(body(out)).toMatchObject({
+        ok: false,
+        requested: false,
+        respawn: false,
+        error: 'host_socket_unavailable',
+        hostOwnerId: 'su-caller',
+        hostPid: 2137002,
+        hostNativeSessionId: 'native-probe',
+        hostCodeVersion: 'loaded-version',
+        probe: socketProbeFailure.value,
+      });
+      expect(body(out).note).toContain('ECONNREFUSED');
+      expect(body(out).note).toContain('Host su-caller, PID 2137002');
+      expect(injectIntoHost).not.toHaveBeenCalled();
+      expect(detectRespawnStorm).not.toHaveBeenCalled();
+    } finally {
+      socketProbeFailure.value = null;
+    }
   });
 
   it('an armed cold loop and verified carry-note do not prove compaction without a host', async () => {

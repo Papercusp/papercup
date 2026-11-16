@@ -51,7 +51,9 @@ import * as fsp from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 
 import type { ConsoleEnvelope } from './console-launcher';
-import { prepareKickoffEnvironment } from './agent-kickoff/prompt-transport.mjs';
+import {
+  KICKOFF_PROOF_PATH_ENV, KICKOFF_PROOF_TOKEN_ENV, prepareKickoffEnvironment, publishKickoffProofReceipt,
+} from './agent-kickoff/prompt-transport.mjs';
 import { controlPlaneTempRoot, createControlPlaneTempFile } from './control-plane-temp.mjs';
 import type { ColorScheme } from './console-color-schemes';
 // WI-37920 / P-001: plain-ESM shared module — psu-launcher.mjs (bare `node`,
@@ -1424,8 +1426,7 @@ export interface KickoffProofResult {
  * Keeping this handshake out of psu-launcher.mjs avoids another launcher-only
  * env allowlist that could silently drop the proof.
  */
-export const KICKOFF_PROOF_PATH_ENV = 'PAPERCUSP_KICKOFF_PROOF_PATH';
-export const KICKOFF_PROOF_TOKEN_ENV = 'PAPERCUSP_KICKOFF_PROOF_TOKEN';
+export { KICKOFF_PROOF_PATH_ENV, KICKOFF_PROOF_TOKEN_ENV };
 
 /** How long an opted-in parent waits for the detached host's proof receipt.
  *
@@ -3037,13 +3038,19 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
         path: retainedRequest.path,
         tokenHash: createHash('sha256').update(retainedRequest.token).digest('hex'),
       } };
-      void childExit.then(() => {
-        // Keep an authenticated late receipt for restart-safe replay. Empty or
-        // malformed placeholders have no proof to recover and can be removed.
-        let settled = false;
-        try { settled = parseKickoffProofReceipt(readFileSync(retainedRequest.path, 'utf8'), retainedRequest.token) !== null; }
-        catch { /* absent */ }
-        if (!settled) cleanupKickoffProofRequest(retainedRequest);
+      void childExit.then(({ code, signal, error }) => {
+        // Preserve a terminal refusal across operator restarts instead of
+        // deleting the only authenticated recovery path. The secure publisher
+        // leaves an existing native receipt or an unsafe replacement untouched.
+        // Full spawn errors remain in the enrolled task's exitReason; the
+        // receipt records the terminal category without copying unbounded text.
+        const diagnostic = error ? 'spawn error' : signal ? `signal ${signal}` : `exit ${code ?? 'unknown'}`;
+        publishKickoffProofReceipt({
+          persisted: false, nativeRef: null, reason: `kickoff-child-exited:${diagnostic}`,
+        }, {
+          [KICKOFF_PROOF_PATH_ENV]: retainedRequest.path,
+          [KICKOFF_PROOF_TOKEN_ENV]: retainedRequest.token,
+        });
       });
       kickoffProofRequest = null;
     } else {

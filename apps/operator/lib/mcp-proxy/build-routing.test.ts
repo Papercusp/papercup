@@ -340,11 +340,11 @@ describe("MCP proxy build routing (end to end)", () => {
 describe("current-build defaults for release repair-plane tools", () => {
   it("enumerates the full repair-plane set", () => {
     expect(CURRENT_BUILD_DEFAULT_TOOLS).toEqual([
-      "tools:find", "tools:invoke",
+      "tools:find", "tools:invoke", "coord:send",
       "release:repair-queue", "release:test-downgrade",
       "consult:get_feedback", "consult:reply", "consult:decline", "consult:close", "consult:routing-health",
       "locks:release",
-      "plans:start", "plans:set-status",
+      "plans:audit", "plans:start", "plans:set-content", "plans:set-status",
       "work_items:claim", "work_items:release", "work_items:complete", "work_items:set_state",
     ]);
   });
@@ -667,6 +667,78 @@ describe("current-build defaults for release repair-plane tools", () => {
     const other = await post(p, JSON.stringify(call("coord:presence", {})));
     expect(JSON.parse(other.body).result.servedBy).toBe("main");
     expect(seen.map(entry => entry.label)).toEqual(["staging", "staging", "staging", "main", "main"]);
+  });
+
+  it("routes coord:send consistently for direct, wrapped and script calls", () => {
+    const args = {
+      to: ["rubric-author"],
+      expects: "action",
+      summary: "Record vetting using independent review WI-50159",
+      body: [{
+        text: "Use the independent critique to record the current rubric vetting.",
+        forYouBecause: { relation: "owns", ref: "acceptance-safe-recovery" },
+      }],
+    };
+    const forms = [
+      call("coord:send", args),
+      call("coord_send", args),
+      call("tools:invoke", { name: "coord:send", args }),
+      call("code:run", { script: "return tools.coord.send({});" }),
+    ];
+    for (const form of forms) {
+      expect(applyMcpBuildSelector(buf(form), { defaultToCurrentBuild: true }))
+        .toMatchObject({ kind: "routed", build: "staging" });
+    }
+    expect(applyMcpBuildSelector(buf(call("code:run", {
+      script: "return tools.mail.send({});",
+    })), { defaultToCurrentBuild: true }).kind).toBe("none");
+  });
+
+  it("serves coord:send on staging while preserving explicit main and unrelated routes", async () => {
+    const seen: Array<{ label: string; body: string }> = [];
+    const main = await listen(stubOperator("main", seen));
+    const staging = await listen(stubOperator("staging", seen));
+    const p = await proxyFor(() => staticMcpProxyTargets("127.0.0.1", port(main), port(staging)));
+
+    for (const request of [
+      call("coord:send", { summary: "Record review WI-50159" }),
+      call("tools:invoke", { name: "coord:send", args: { summary: "Record review WI-50159" } }),
+    ]) {
+      const response = await post(p, JSON.stringify(request));
+      expect(response.status).toBe(200);
+      expect(JSON.parse(response.body).result.servedBy).toBe("staging");
+    }
+    const explicit = await post(p, JSON.stringify(call("coord:send", { build: "main" })));
+    expect(JSON.parse(explicit.body).result.servedBy).toBe("main");
+    const unrelated = await post(p, JSON.stringify(call("coord:presence", {})));
+    expect(JSON.parse(unrelated.body).result.servedBy).toBe("main");
+    expect(seen.map(entry => entry.label)).toEqual(["staging", "staging", "main", "main"]);
+    expect(JSON.parse(seen[0]!.body).params._meta[MCP_BUILD_META_KEY]).toBe("staging");
+  });
+
+  it("refuses coord:send when staging is unavailable instead of using the stale release", async () => {
+    const seen: Array<{ label: string; body: string }> = [];
+    const main = await listen(stubOperator("main", seen));
+    const stagingDown = await freePort();
+    const p = await proxyFor(() => staticMcpProxyTargets("127.0.0.1", port(main), stagingDown), 100);
+
+    const response = await post(p, JSON.stringify(call("coord:send", { summary: "Record review WI-50159" })));
+
+    expect(response.status).toBe(503);
+    expect(response.body).toContain("staging_unavailable");
+    expect(seen).toEqual([]);
+  });
+
+  it("keeps coord:send available through a proxy with only one current upstream", async () => {
+    const seen: Array<{ label: string; body: string }> = [];
+    const bgHost = await listen(stubOperator("bg-host", seen));
+    const p = await proxyFor(() => [{ host: "127.0.0.1", port: port(bgHost), source: "static" }]);
+
+    const response = await post(p, JSON.stringify(call("coord:send", { summary: "Record review WI-50159" })));
+
+    expect(response.status).toBe(200);
+    expect(seen.map(entry => entry.label)).toEqual(["bg-host"]);
+    expect(JSON.parse(seen[0]!.body).params._meta?.[MCP_BUILD_META_KEY]).toBeUndefined();
   });
 
   it("routes selector-less test-downgrade calls to staging, directly or wrapped in tools:invoke", () => {

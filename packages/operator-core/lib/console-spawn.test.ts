@@ -1089,6 +1089,88 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     }
   });
 
+  it.each([
+    { label: 'zero exit', code: 0, signal: null, error: null, diagnostic: 'exit 0' },
+    { label: 'nonzero exit', code: 2, signal: null, error: null, diagnostic: 'exit 2' },
+    { label: 'signal', code: null, signal: 'SIGTERM', error: null, diagnostic: 'signal SIGTERM' },
+    { label: 'spawn error', code: null, signal: null, error: new Error('late spawn failure'), diagnostic: 'spawn error' },
+    { label: 'large spawn error', code: null, signal: null, error: new Error('x'.repeat(20_000)), diagnostic: 'spawn error' },
+  ])('recovers an authenticated $label refusal after the parent deadline', async ({ code, signal, error, diagnostic }) => {
+    const child = fakeChild(7795);
+    spawnMock.mockImplementation(() => child);
+    let receiptPath = '';
+    let receiptToken = '';
+    try {
+      const r = await spawnHeadless({
+        envelope, label: 'late-terminal-kickoff', kickoffProof: true,
+        kickoffProofProbes: {
+          windowMs: 0,
+          readReceipt: (path, token) => { receiptPath = path; receiptToken = token; return ''; },
+        },
+        bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 },
+        ...noSystemdRun,
+      });
+      expect(r).toMatchObject({ status: 'ok', kickoffProof: { reason: 'kickoff-proof-timeout' } });
+      const retained = (r as { kickoffProof: import('./console-spawn').KickoffProofResult }).kickoffProof;
+      const serialized = JSON.stringify(retained);
+      expect(serialized).not.toContain(receiptToken);
+      if (error) child.emit('error', error);
+      else child.emit('exit', code, signal);
+      await (r as { childExit: Promise<unknown> }).childExit;
+      expect(taskEnrolment.finish).toHaveBeenCalledExactlyOnceWith(
+        taskEnrolment.complete.mock.calls[0]![0],
+        { state: signal ? 'killed' : 'exited', exitCode: code, exitReason: signal ?? error?.message ?? null },
+        { scopeCgroupPath: null },
+      );
+      const expected = { persisted: false, nativeRef: null, reason: `kickoff-child-exited:${diagnostic}` };
+      expect(reconcileKickoffProof(JSON.parse(serialized))).toEqual(expected);
+      expect(reconcileKickoffProof(JSON.parse(serialized))).toEqual(expected);
+      expect(JSON.stringify(reconcileKickoffProof(JSON.parse(serialized)))).not.toContain(receiptToken);
+      expect(taskControl.kill).not.toHaveBeenCalled();
+      expect(reconcileKickoffProof(JSON.parse(serialized), { consume: true })).toEqual(expected);
+      expect(existsSync(receiptPath)).toBe(false);
+    } finally {
+      child.emit('exit', 0, null);
+      if (receiptPath) rmSync(receiptPath, { force: true });
+    }
+  });
+
+  it.each(['insecure mode', 'symlink', 'malformed receipt'])(
+    'leaves an unsafe %s untouched after a late exit', async (failure) => {
+      const child = fakeChild(7796);
+      spawnMock.mockImplementation(() => child);
+      let receiptPath = '';
+      let target = '';
+      try {
+        const r = await spawnHeadless({
+          envelope, label: 'unsafe-late-kickoff', kickoffProof: true,
+          kickoffProofProbes: { windowMs: 0, readReceipt: (path) => { receiptPath = path; return ''; } },
+          bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 },
+          ...noSystemdRun,
+        });
+        const retained = (r as { kickoffProof: import('./console-spawn').KickoffProofResult }).kickoffProof;
+        if (failure === 'insecure mode') chmodSync(receiptPath, 0o644);
+        else if (failure === 'malformed receipt') writeFileSync(receiptPath, 'not a receipt');
+        else {
+          target = `${receiptPath}.target`;
+          writeFileSync(target, '', { mode: 0o600 });
+          rmSync(receiptPath);
+          symlinkSync(target, receiptPath);
+        }
+        const original = readFileSync(receiptPath, 'utf8');
+        child.emit('exit', 2, null);
+        await (r as { childExit: Promise<unknown> }).childExit;
+        expect(readFileSync(receiptPath, 'utf8')).toBe(original);
+        expect(reconcileKickoffProof(JSON.parse(JSON.stringify(retained)))).toEqual(retained);
+        if (target) expect(readFileSync(target, 'utf8')).toBe('');
+      } finally {
+        child.emit('exit', 0, null);
+        if (receiptPath) rmSync(receiptPath, { force: true });
+        if (target) rmSync(target, { force: true });
+      }
+    },
+  );
+
   it('retains the retired task and refusal when an unsubmitted kickoff is cleaned up', async () => {
     spawnMock.mockImplementation(() => fakeChild(7794));
     const result = await spawnHeadless({

@@ -744,6 +744,10 @@ export type SelfCompactionUnavailableReason =
 
 const SELF_COMPACTION_PROBE_TIMEOUT_MS = 750;
 
+type SelfCompactionProbeFailure = Pick<InjectHostResult, 'confirmation' | 'reason' | 'transportErrorCode'> & {
+  elapsedMs: number;
+};
+
 /** Discriminated on `available` so the AVAILABLE case narrows `host` to non-null —
  *  request-compaction's own handler consumes this and then uses the host. */
 export type SelfCompactionAvailability =
@@ -759,6 +763,8 @@ export type SelfCompactionAvailability =
       reason: SelfCompactionUnavailableReason;
       /** The resolved host, when one was found (present even when it predates carry-respawn). */
       host: PsuPtyHost | null;
+      /** Preserve the failed ACK/transport evidence; later responsiveness cannot reconstruct it. */
+      probe?: SelfCompactionProbeFailure;
     };
 
 /**
@@ -815,12 +821,23 @@ export async function selfCompactionAvailabilityAsync(
   if (!hostSupports(host, 'control-socket-probe-v1')) {
     return { available: false, reason: 'host_socket_probe_unsupported', host };
   }
+  const probeStartedAt = performance.now();
   const probe = await injectIntoHostWithConfirmation(host.sock, {
     mode: 'probe',
     data: '',
     ownerId,
   }, SELF_COMPACTION_PROBE_TIMEOUT_MS);
-  if (!probe.ok) return { available: false, reason: 'host_socket_unavailable', host };
+  if (!probe.ok) return {
+    available: false,
+    reason: 'host_socket_unavailable',
+    host,
+    probe: {
+      confirmation: probe.confirmation,
+      elapsedMs: Math.max(0, performance.now() - probeStartedAt),
+      ...(typeof probe.reason === 'string' ? { reason: probe.reason.slice(0, 300) } : {}),
+      ...(probe.transportErrorCode ? { transportErrorCode: probe.transportErrorCode.slice(0, 100) } : {}),
+    },
+  };
   return { available: true, reason: null, host };
 }
 
