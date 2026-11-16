@@ -745,7 +745,7 @@ describe('sync-staging-checkout.sh failure streak, alarm and buildable-ancestor 
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
   /** One sync run's EXIT-trap bookkeeping: `attempt` failed with `status`, or `serving` was verified. */
-  function tick(o: { tip: string; attempt?: string; phase?: string; status?: number; serving?: string; failTool?: string }) {
+  function tick(o: { tip: string; attempt?: string; phase?: string; status?: number; serving?: string; failTool?: string; cause?: string }) {
     const call = GLOBALS + [
       `STAGING_SYNC_TIP_TARGET=${o.tip}`,
       `STAGING_SYNC_ATTEMPT_TARGET=${o.attempt ?? ''}`,
@@ -754,7 +754,7 @@ describe('sync-staging-checkout.sh failure streak, alarm and buildable-ancestor 
       'STAGING_SYNC_ALARM_RESULT=',
       `record_staging_sync_outcome ${o.status ?? 1}`,
     ].join('\n');
-    return runFn(STREAK_FNS, call, { env: env(o.failTool) });
+    return runFn(STREAK_FNS, call, { env: { ...env(o.failTool), STAGING_SYNC_FAILURE_CAUSE: o.cause ?? '' } });
   }
   function env(failTool = ''): NodeJS.ProcessEnv {
     return {
@@ -779,6 +779,30 @@ describe('sync-staging-checkout.sh failure streak, alarm and buildable-ancestor 
     expect(filed.title).toMatch(/staging-sync failing since .*: 3 consecutive runs, :3170 stuck on eeeeeeeeee/);
     expect(filed.body).toContain(sha('1'));
     expect(readFileSync(stateFile('staging-sync-failure-streak'), 'utf8')).toMatch(/count=4[\s\S]*alarm=sent/);
+  });
+
+  // WI-6554700010050474: 13 headroom refusals on 2026-11-16 were recorded as
+  // phase prepare, condemning buildable tips and naming no cause in the alarm.
+  const HEADROOM_CAUSE = 'staging source preparation deferred: 43796160512 available bytes below 47146947051 required (40279831019 writer reserve + 6867116032 measured generation size) on /gen';
+  it('a headroom refusal never condemns the target and carries its one-line cause into the streak state', () => {
+    expect(tick({ tip: sha('1'), attempt: sha('1'), phase: 'headroom', cause: `${HEADROOM_CAUSE}\nsecond line` }).status).toBe(0);
+    expect(existsSync(stateFile('staging-sync-failed-targets'))).toBe(false);
+    const state = readFileSync(stateFile('staging-sync-failure-streak'), 'utf8');
+    expect(state).toContain('last_phase=headroom');
+    expect(state).toContain(`last_cause=${HEADROOM_CAUSE} second line\n`);
+    // Positive control: the same failure under phase prepare DOES condemn the target.
+    tick({ tip: sha('2'), attempt: sha('2') });
+    expect(readFileSync(stateFile('staging-sync-failed-targets'), 'utf8').trim()).toBe(sha('2'));
+  });
+
+  it('files a headroom-titled alarm whose body names the measured bytes', () => {
+    for (const c of ['1', '2', '3']) tick({ tip: sha(c), attempt: sha(c), phase: 'headroom', cause: HEADROOM_CAUSE });
+    expect(calls().map((c) => c.tool)).toEqual(['work_items:create']);
+    const filed = calls()[0].payload;
+    expect(filed.title).toMatch(/^staging-sync blocked by disk headroom since .*: 3 consecutive runs, :3170 stuck on eeeeeeeeee$/);
+    expect(filed.body).toContain(`Cause of the latest failure: ${HEADROOM_CAUSE}`);
+    expect(filed.body).toContain('not a broken commit');
+    expect(filed.body).toContain('phase headroom, exit 1');
   });
 
   it('records nothing for a deferral or a run that never attempted a target', () => {
@@ -1575,6 +1599,7 @@ describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)',
       const result = runFn(['staging_preparation_has_headroom'], [
         'log() { printf "%s\\n" "$*"; }',
         'current_commit_age_sec() { printf "%s\\n" "$TEST_AGE"; }',
+        'STAGING_SYNC_PHASE=prepare; STAGING_SYNC_FAILURE_CAUSE=; trap \'printf "PHASE=%s\\nCAUSE=%s\\n" "$STAGING_SYNC_PHASE" "$STAGING_SYNC_FAILURE_CAUSE"\' EXIT',
         'checkout_needs_advance=1; target=0123456789abcdef; served_sha=served; MAX_STALE_SEC=120; restart_required=0; STAGING_PORT=3170',
         script.slice(start, end),
       ].join('\n'), {
@@ -1587,6 +1612,9 @@ describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)',
         },
       });
       expect(result.status, result.stderr + result.stdout).toBe(status);
+      // WI-6554700010050474: a headroom refusal is its own phase, never 'prepare'.
+      expect(result.stdout).toContain('PHASE=headroom');
+      expect(result.stdout).toMatch(/CAUSE=staging source preparation deferred: \d+ available bytes below/);
       if (status === 0) {
         expect(result.stdout).toContain('serves a 119s-old build (< 120s ceiling)');
         expect(result.stdout).toContain('the next tick retries cleanup');

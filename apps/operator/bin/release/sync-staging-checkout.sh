@@ -139,7 +139,8 @@ finish_staging_sync() {
 # select_staging_fallback_target) bisects toward the newest buildable ancestor.
 STAGING_SYNC_TIP_TARGET=""     # the staging tip this tick observed
 STAGING_SYNC_ATTEMPT_TARGET="" # set once this tick commits to building/restarting a target
-STAGING_SYNC_PHASE=""          # prepare (the sha itself can fail) | restart (runtime only)
+STAGING_SYNC_PHASE=""          # prepare (the sha itself can fail) | headroom | restart (runtime only)
+STAGING_SYNC_FAILURE_CAUSE=""  # one-line operator-facing cause, carried into the streak alarm
 STAGING_SYNC_SERVING_SHA=""    # set only when :3170 is verified serving a sha
 STAGING_SYNC_ALARM_RESULT=""
 
@@ -216,13 +217,15 @@ record_staging_sync_failure() {
       printf '%s\n' "$target"; } > "$dir/staging-sync-failed-targets.tmp" &&
       mv -f "$dir/staging-sync-failed-targets.tmp" "$dir/staging-sync-failed-targets"
   fi
+  local cause="${STAGING_SYNC_FAILURE_CAUSE:-}"
+  cause="${cause//$'\n'/ }"
   log "staging-sync failure streak: $count consecutive failed run(s) since $first_at (this run: ${target:0:10}, phase $phase, exit $status)"
   if (( count >= $(staging_sync_alarm_threshold) )) && [[ "$alarm" != sent ]]; then
-    send_staging_sync_streak_alarm "$count" "$first_at" "$first_target" "$target" "$phase" "$status"
+    send_staging_sync_streak_alarm "$count" "$first_at" "$first_target" "$target" "$phase" "$status" "$cause"
     alarm="$STAGING_SYNC_ALARM_RESULT"
   fi
-  printf 'count=%s\nfirst_failed_at=%s\nfirst_target=%s\nlast_target=%s\nlast_failed_at=%s\nlast_phase=%s\nlast_exit=%s\nalarm=%s\n' \
-    "$count" "$first_at" "$first_target" "$target" "$now" "$phase" "$status" "$alarm" \
+  printf 'count=%s\nfirst_failed_at=%s\nfirst_target=%s\nlast_target=%s\nlast_failed_at=%s\nlast_phase=%s\nlast_exit=%s\nlast_cause=%s\nalarm=%s\n' \
+    "$count" "$first_at" "$first_target" "$target" "$now" "$phase" "$status" "$cause" "$alarm" \
     > "$streak.tmp" && mv -f "$streak.tmp" "$streak"
   return 0
 }
@@ -237,19 +240,24 @@ send_staging_sync_streak_alarm() {
   fi
   log "ALARM: staging-sync has failed $1 consecutive runs since $2; :3170 is not advancing"
   payload="$(STREAK_COUNT="$1" STREAK_FIRST_AT="$2" STREAK_FIRST_TARGET="$3" STREAK_TARGET="$4" \
-    STREAK_PHASE="$5" STREAK_EXIT="$6" STREAK_SERVED="${served_sha:-unknown}" \
+    STREAK_PHASE="$5" STREAK_EXIT="$6" STREAK_CAUSE="${7:-}" STREAK_SERVED="${served_sha:-unknown}" \
     STREAK_STATE_DIR="$(staging_sync_state_dir)" node -e '
       const e = process.env;
+      const headroom = e.STREAK_PHASE === "headroom";
       const body = [
         `The staging sync (papercup-staging-sync.service) has failed ${e.STREAK_COUNT} consecutive runs since ${e.STREAK_FIRST_AT}.`,
         `:3170 still serves ${e.STREAK_SERVED}. The first failed target was ${e.STREAK_FIRST_TARGET}; the latest was ${e.STREAK_TARGET} (phase ${e.STREAK_PHASE}, exit ${e.STREAK_EXIT}).`,
+        ...(e.STREAK_CAUSE ? [`Cause of the latest failure: ${e.STREAK_CAUSE}`] : []),
+        ...(headroom ? ["This is a disk-headroom refusal, not a broken commit: candidate preparation needs the writer reserve PLUS the measured generation size free on the generations filesystem, so it can refuse while the disk-space alarm only warns. Free space (scratch, retired generations) and the next tick retries; the target is not condemned."] : []),
         `Diagnose: journalctl --user -u papercup-staging-sync.service --since ${e.STREAK_FIRST_AT}; bundle failures are logged in ~/.papercusp/checkpoint-logs/staging-bundle-*.log.`,
         `Streak state: ${e.STREAK_STATE_DIR}/staging-sync-failure-streak. While the streak lasts, the sync alternates between the tip and a bisected buildable ancestor. The streak clears when :3170 serves the staging tip.`,
         `Filed once per streak by apps/operator/bin/release/sync-staging-checkout.sh (WI-6554700010048236).`,
       ].join("\n\n");
       process.stdout.write(JSON.stringify({
         kind: "bug",
-        title: `staging-sync failing since ${e.STREAK_FIRST_AT}: ${e.STREAK_COUNT} consecutive runs, :3170 stuck on ${e.STREAK_SERVED.slice(0, 10)}`,
+        title: headroom
+          ? `staging-sync blocked by disk headroom since ${e.STREAK_FIRST_AT}: ${e.STREAK_COUNT} consecutive runs, :3170 stuck on ${e.STREAK_SERVED.slice(0, 10)}`
+          : `staging-sync failing since ${e.STREAK_FIRST_AT}: ${e.STREAK_COUNT} consecutive runs, :3170 stuck on ${e.STREAK_SERVED.slice(0, 10)}`,
         body,
       }));
     ' 2>/dev/null || true)"
@@ -1858,10 +1866,17 @@ fi
 
 SYNC_ROOT="$(realpath -e "$STAGING_ROOT" 2>/dev/null || printf '%s' "$STAGING_ROOT")"
 if [ "$checkout_needs_advance" = 1 ]; then
-  if staging_preparation_has_headroom; then
+  # A headroom refusal says nothing about the commit. Record it under its own
+  # phase so the streak never adds the target to staging-sync-failed-targets
+  # (which sent the sync bisecting into ancestors), and carry the measured
+  # bytes into the alarm (WI-6554700010050474).
+  if headroom_message="$(staging_preparation_has_headroom 2>&1 >/dev/null)"; then
     :
   else
     headroom_status=$?
+    [[ -z "$headroom_message" ]] || printf '%s\n' "$headroom_message" >&2
+    STAGING_SYNC_PHASE=headroom
+    STAGING_SYNC_FAILURE_CAUSE="${headroom_message:-candidate filesystem headroom could not be verified (exit $headroom_status)}"
     if [[ "$headroom_status" -eq 75 ]]; then
       age="$(current_commit_age_sec "$served_sha")"
       if [ "$age" -lt "$MAX_STALE_SEC" ] 2>/dev/null; then
