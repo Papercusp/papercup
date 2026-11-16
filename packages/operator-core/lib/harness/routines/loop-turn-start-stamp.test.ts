@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LOOP_TURN_START_MARKER, SESSION_END_MARKER, SESSION_START_MARKER } from '../../agent-tools/activity/lifecycle-markers';
-import { indexedLoopTurnStartRecord, isLoopFirePrompt, isLoopTurnStartCandidate, loopTurnStartRecord, readLoopFireIdentityForCurrentTurn, recordLoopTurnStart, resolveLoopFireIdentityForLaunch, type IndexedNativeLoopTurn } from './loop-turn-start-stamp';
+import { indexedLoopLaunchBinding, indexedLoopTurnStartRecord, isLoopFirePrompt, isLoopTurnStartCandidate, loopTurnStartRecord, readLoopFireIdentityForCurrentTurn, recordLoopTurnStart, resolveLoopFireIdentityForLaunch, type IndexedNativeLoopTurn } from './loop-turn-start-stamp';
 import { ledgerPathForSid, LOOP_FIRE_PROVENANCE_TTL_MS, type LedgerRow } from '../../turn-provenance/turn-provenance';
 
 // EI-24791346664119438: the turn-start endpoint stamps a loop-fire turn start in real time so
@@ -25,6 +25,25 @@ describe('indexed native producer validation', () => {
     sha256: 'transit-mangled-payload-is-not-a-provenance-wall', ts: submitted - 1000,
     loopFire: { routineId: 'routine-10', wakeCount: 10 },
   };
+
+  it('uses only an exact launch receipt and the canonical legacy ledger', () => {
+    const launch = {
+      owner: 'su-native', workspace_id: 'ws-1', agent: 'codex', session_id: 'native-1',
+      omp_thread_id: null, spec_workspace: 'ws-1', provenance_dir: null,
+    };
+    expect(indexedLoopLaunchBinding(turn, [launch], 'ws-1', '/canonical/ledger'))
+      .toEqual({ dir: '/canonical/ledger', workspaceId: 'ws-1' });
+    expect(indexedLoopLaunchBinding(turn, [{ ...launch, provenance_dir: '/pinned/ledger' }], 'ws-1'))
+      .toEqual({ dir: '/pinned/ledger', workspaceId: 'ws-1' });
+    for (const change of [{ owner: 'foreign' }, { session_id: 'foreign' },
+      { workspace_id: 'foreign' }, { spec_workspace: 'foreign' }, { agent: 'claude' },
+      { provenance_dir: 'relative/ledger' }, { provenance_dir: '' }]) {
+      expect(indexedLoopLaunchBinding(turn, [{ ...launch, ...change }], 'ws-1', '/canonical/ledger'))
+        .toBeNull();
+    }
+    expect(indexedLoopLaunchBinding(turn, [], 'ws-1', '/canonical/ledger')).toBeNull();
+    expect(indexedLoopLaunchBinding(turn, [launch, launch], 'ws-1', '/canonical/ledger')).toBeNull();
+  });
 
   it.each(['claude', 'codex', 'omp'])('retains exact attribution for %s at the original submission time', source => {
     const result = indexedLoopTurnStartRecord({ ...turn, source_kind: source }, [enrollment]);

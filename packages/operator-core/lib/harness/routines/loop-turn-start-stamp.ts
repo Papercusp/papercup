@@ -327,20 +327,23 @@ export interface IndexedLoopLaunchBinding {
   provenance_dir: string | null;
 }
 
-/** An ADV launch receipt, never transcript cwd or the ingest host's environment,
- * selects the ledger. Missing/ambiguous legacy receipts remain unknown. */
+/** An ADV launch receipt selects the ledger. Legacy launches without a pin use
+ * the canonical ledger, as the real-time hook does; caller environment and cwd
+ * never select it. Missing or ambiguous launch identities remain unknown. */
 export function indexedLoopLaunchBinding(
   turn: IndexedNativeLoopTurn,
   launches: IndexedLoopLaunchBinding[],
   workspaceId: string,
+  canonicalDir: string = TURN_PROVENANCE_DIR,
 ): { dir: string; workspaceId: string } | null {
   const matches = launches.filter(row => row.owner === turn.owner &&
     row.workspace_id === workspaceId && row.spec_workspace === workspaceId &&
     row.agent === turn.source_kind &&
-    (row.agent === 'omp' ? row.omp_thread_id : row.session_id) === turn.session_id &&
-    typeof row.provenance_dir === 'string' && isAbsolute(row.provenance_dir));
+    (row.agent === 'omp' ? row.omp_thread_id : row.session_id) === turn.session_id);
   if (matches.length !== 1) return null;
-  return { dir: matches[0]!.provenance_dir!, workspaceId };
+  const dir = matches[0]!.provenance_dir ?? canonicalDir;
+  if (!isAbsolute(dir)) return null;
+  return { dir, workspaceId };
 }
 
 export async function recordIndexedLoopTurnStarts(sql: Sql, turns: IndexedNativeLoopTurn[]): Promise<void> {
@@ -352,14 +355,30 @@ export async function recordIndexedLoopTurnStarts(sql: Sql, turns: IndexedNative
   const owners = [...new Set(candidates.map(turn => turn.owner!))];
   const sessions = [...new Set(candidates.map(turn => turn.session_id))];
   const launches = await sql<IndexedLoopLaunchBinding[]>`
-    SELECT coord_owner_id AS owner, workspace_id, agent, session_id, omp_thread_id,
-           launch_spec->>'workspaceId' AS spec_workspace,
-           launch_spec->>'turnProvenanceDir' AS provenance_dir
-      FROM harness_shared.adv_sessions
-     WHERE workspace_id = ${workspaceId}
-       AND coord_owner_id = ANY(${sql.array(owners)}::text[])
-       AND (session_id = ANY(${sql.array(sessions)}::text[])
-         OR omp_thread_id = ANY(${sql.array(sessions)}::text[]))
+    SELECT a.coord_owner_id AS owner, a.workspace_id, a.agent, a.session_id, a.omp_thread_id,
+           a.launch_spec->>'workspaceId' AS spec_workspace,
+           a.launch_spec->>'turnProvenanceDir' AS provenance_dir
+      FROM harness_shared.adv_sessions a
+     WHERE a.workspace_id = ${workspaceId}
+       AND a.coord_owner_id = ANY(${sql.array(owners)}::text[])
+       AND (a.session_id = ANY(${sql.array(sessions)}::text[])
+         OR a.omp_thread_id = ANY(${sql.array(sessions)}::text[]))
+    UNION
+    -- A managed resume re-anchors the mutable ADV row to the successor. The
+    -- applied identity ledger retains the exact predecessor/native binding.
+    SELECT a.coord_owner_id AS owner, a.workspace_id, a.agent,
+           s.native_session_id AS session_id,
+           CASE WHEN a.agent = 'omp' THEN s.native_session_id ELSE a.omp_thread_id END AS omp_thread_id,
+           a.launch_spec->>'workspaceId' AS spec_workspace,
+           a.launch_spec->>'turnProvenanceDir' AS provenance_dir
+      FROM harness_shared.adv_sessions a
+      JOIN harness_shared.session_identity_activation_spans s
+        ON s.adv_session_id = a.id
+       AND s.workspace_id = a.workspace_id
+       AND s.owner_id = a.coord_owner_id
+     WHERE a.workspace_id = ${workspaceId}
+       AND a.coord_owner_id = ANY(${sql.array(owners)}::text[])
+       AND s.native_session_id = ANY(${sql.array(sessions)}::text[])
   `;
   const records = candidates.flatMap(turn => {
     const target = indexedLoopLaunchBinding(turn, launches, workspaceId);

@@ -26,7 +26,7 @@ it('binds scoped enrollment through current-build ingest and both typed completi
     import { insertTurns, ingestFileNow } from './packages/operator-core/lib/search/session-ingest.ts';
     import { getLoopStatus } from './packages/operator-core/lib/harness/routines/loop.ts';
     import { reconcileLoopRoutines } from './packages/operator-core/lib/harness/routines/reconcile-loop-routines.ts';
-    import { tagTurnForInjection, readLedgerRows, appendLedgerRow } from './packages/operator-core/lib/turn-provenance/turn-provenance.ts';
+    import { tagTurnForInjection, readLedgerRows, appendLedgerRow, TURN_PROVENANCE_DIR } from './packages/operator-core/lib/turn-provenance/turn-provenance.ts';
     const hashes = JSON.parse(process.env.LOOP_NAMESPACE_SOURCE_HASHES);
     for (const [path, expected] of Object.entries(hashes))
       assert.equal(createHash('sha256').update(readFileSync(path)).digest('hex'), expected);
@@ -39,9 +39,12 @@ it('binds scoped enrollment through current-build ingest and both typed completi
     console.log('LOOP_NAMESPACE_RUNTIME ' + JSON.stringify({ home: process.env.HOME, workspace, hashes }));
     const sql = getOrgPg().sql;
     const completed = [], rejected = [];
+    const validLabels = ['valid-a', 'valid-b', 'legacy-current', 'resumed-legacy', 'resumed-pinned'];
     async function fixture(label, ws = workspace) {
       const owner = 'su-namespace-' + label, session = 'native-' + label, routine = 'routine-' + label;
-      const dir = join(process.env.HOME, ws, label, 'turn-provenance');
+      const legacy = ['legacy-current', 'resumed-legacy'].includes(label);
+      const resumed = label.startsWith('resumed-') || label === 'foreign-history';
+      const dir = legacy ? TURN_PROVENANCE_DIR : join(process.env.HOME, ws, label, 'turn-provenance');
       const fire = new Date();
       await sql.unsafe('INSERT INTO harness_shared.routines ' +
         '(id,install_slug,name,trigger_kind,trigger_config,target_role,active,workspace_id,last_fired_at,next_fire_at,reschedule_interval_sec,target_owner_id,metadata) ' +
@@ -52,14 +55,23 @@ it('binds scoped enrollment through current-build ingest and both typed completi
         sessionId: label === 'wrong-session' ? session + '-foreign' : session });
       assert.ok(launchId);
       const spec = { v: 1, agent: 'codex', workspaceId: label === 'wrong-workspace' ? ws + '-foreign' : ws,
-        ...(label === 'missing-pin' ? {} : { turnProvenanceDir: label === 'wrong-directory' ? dir + '-foreign' : dir }) };
+        ...(label === 'missing-pin' || legacy ? {} : { turnProvenanceDir: label === 'wrong-directory' ? dir + '-foreign' : dir }) };
       assert.equal(await recordSuLaunchSpec(launchId, label === 'wrong-owner' ? owner + '-foreign' : owner, spec), true);
+      if (resumed) {
+        await sql.unsafe('INSERT INTO harness_shared.session_identity_activation_events ' +
+          '(workspace_id,owner_id,actor_id,principal_id,session_id,adv_session_id,native_session_id,' +
+          'transition_id,control_generation,phase,source,specification_revision,state_revision,recorded_at) ' +
+          "VALUES ($1,$2,$2,$2,$2,$3,$4,$4,1,'applied','reanchor',$5,'fixture',$6)",
+          [ws, label === 'foreign-history' ? owner + '-foreign' : owner, launchId, session, 'a'.repeat(64), fire]);
+        await sql.unsafe('UPDATE harness_shared.adv_sessions SET session_id=$1 WHERE id=$2',
+          [session + '-successor', launchId]);
+      }
       const tagged = await tagTurnForInjection({ sid: owner, origin: 'loop-fire', text: 'Finish the private namespace fixture.',
         dir, loopFire: { routineId: routine, wakeCount: 3 } });
       assert.equal(tagged.ledgerWritten, true);
       // A valid nonce in the ingest host's unrelated directory must never
       // compensate for an absent or mismatched target launch receipt.
-      if (!['valid-a', 'valid-b', 'rollback'].includes(label)) {
+      if (![...validLabels, 'rollback'].includes(label)) {
         const enrollment = readLedgerRows(owner, { dir })[0];
         assert.ok(enrollment);
         assert.equal(await appendLedgerRow(enrollment, { dir: hostDir }), true);
@@ -83,12 +95,13 @@ it('binds scoped enrollment through current-build ingest and both typed completi
     }
     try {
       for (const [label, ws] of [['valid-a', workspace], ['valid-b', workspace + '-b'],
-        ...['wrong-owner','wrong-session','wrong-workspace','missing-pin','wrong-directory'].map(label => [label, workspace])]) {
+        ...['legacy-current','resumed-legacy','resumed-pinned',
+          'wrong-owner','wrong-session','wrong-workspace','missing-pin','wrong-directory','foreign-history'].map(label => [label, workspace])]) {
         await runWithWorkspace(ws, async () => {
           const c = await fixture(label, ws);
           assert.equal(await insertTurns(sql, [c.user, c.reply]), 2);
           const stamps = await sql.unsafe('SELECT created_at, workspace_id, detail FROM harness_shared.agent_activity WHERE owner_id=$1', [c.owner]);
-          const valid = label.startsWith('valid-');
+          const valid = validLabels.includes(label);
           assert.equal(stamps.length, valid ? 1 : 0, label);
           const status = await getLoopStatus(c.owner, { sql });
           assert.equal(status.lastLoopTurnAt, valid ? c.reply.ts : null, label);
@@ -155,8 +168,8 @@ it('binds scoped enrollment through current-build ingest and both typed completi
   const evidenceText = result.stdout.match(/^LOOP_NAMESPACE_RESULT (.+)$/m)?.[1];
   expect(evidenceText).toBeTruthy();
   const evidence = JSON.parse(evidenceText!);
-  expect(evidence.completed).toHaveLength(2);
-  expect(evidence.rejected).toHaveLength(5);
+  expect(evidence.completed).toHaveLength(5);
+  expect(evidence.rejected).toHaveLength(6);
   expect(evidence).toMatchObject({ rollback: true, idempotent: true });
   console.log('LOOP_NAMESPACE_VERIFIED ' + JSON.stringify({ ...evidence, hashes, cleanup: true }));
 }, 200000);

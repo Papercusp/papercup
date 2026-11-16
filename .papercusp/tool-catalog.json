@@ -31128,7 +31128,7 @@
           "POST"
         ]
       },
-      "description": "Read every member verdict, coverage and worst-member suite verdict using complete outside-author-lineage scorecards. page:true returns a bounded member page with snapshot/omission counts and a portable continuation; save it on the existing run/checkpoint and follow next through exhaustion. A page never claims a combined suite verdict.",
+      "description": "Read suite verdict and coverage from the complete population; member details use bounded display pages. Follow next with the same suiteRef and harness to recover every member; persist the cursor on the existing run/checkpoint. complete is false while records remain. page:true reads only a member page without an aggregate verdict.",
       "capabilities": [
         "coord:read"
       ],
