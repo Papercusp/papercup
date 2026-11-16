@@ -752,10 +752,25 @@ function scheduledCheckpointLogDir(): string {
   return checkpointLogDirFromEnv();
 }
 
+/** A ready (successfully set up) tooling runtime is retained this long after its last use. */
+export const CHECKPOINT_TOOLING_READY_RETENTION_MINUTES = 360;
+/**
+ * A runtime with no ready marker is a failed or interrupted setup: no run can ever use it
+ * (the next run of that SHA replaces it), and each one is a ~4.7 GB worktree. It is kept only
+ * briefly so a just-failed setup can still be inspected. WI-6554700010050773.
+ */
+export const CHECKPOINT_TOOLING_FAILED_RETENTION_MINUTES = 30;
+
 /**
  * Build a committed tooling checkout for the scheduled CLI. The checkout is keyed by the
  * running host build identity, materialized only from Git objects, and shared by concurrent
  * gate runs. The integration tree remains the subject via PAPERCUSP_INTEGRATION_ROOT.
+ *
+ * Retention runs BEFORE setup and walks every runtime directory, not only the ones with a
+ * `used/` marker. WI-6554700010050773: retention used to run after a successful setup and
+ * to walk only `used/` markers, so a failing setup (which never writes `used/`) left one
+ * multi-GB worktree per build SHA behind and never reaped any of them, starving staging-sync
+ * of disk headroom.
  */
 export function buildCommittedCheckpointToolingCommand(
   sourceRoot: string,
@@ -795,6 +810,7 @@ export function buildCommittedCheckpointToolingCommand(
     'mkdir -p -- "$cache_root/runtimes" "$ready_dir" "$lock_dir" "$used_dir"',
     'ready="$ready_dir/$tooling_sha"',
     'used="$used_dir/$tooling_sha"',
+    ...checkpointToolingRetentionLines(),
     'exec 8>"$lock_dir/$tooling_sha.setup.lock"',
     'flock -x 8',
     'exec 9>"$lock_dir/$tooling_sha.runtime.lock"',
@@ -828,27 +844,77 @@ export function buildCommittedCheckpointToolingCommand(
     'touch "$used"',
     'cleanup_checkpoint_tooling_use() { touch "$used"; }',
     'trap cleanup_checkpoint_tooling_use EXIT',
-    'for old_used in "$used_dir"/*; do',
-    '  [ -f "$old_used" ] || continue',
-    '  old_sha="$(basename "$old_used")"',
-    '  [ "$old_sha" != "$tooling_sha" ] || continue',
-    '  [[ "$old_sha" =~ ^[0-9a-f]{40}$ ]] || continue',
-    '  [ -n "$(find "$old_used" -maxdepth 0 -mmin +360 -print -quit 2>/dev/null)" ] || continue',
-    '  old_root="$cache_root/runtimes/$old_sha"',
-    '  (',
-    '    flock -n -x 8 || exit 0',
-    '    flock -n -x 9 || exit 0',
-    '    [ -n "$(find "$old_used" -maxdepth 0 -mmin +360 -print -quit 2>/dev/null)" ] || exit 0',
-    '    old_status="$(git -C "$old_root" status --porcelain --untracked-files=normal 2>/dev/null || true)"',
-    '    [ -z "$old_status" ] || exit 0',
-    '    git -C "$source_root" worktree remove --force "$old_root" >/dev/null 2>&1 || exit 0',
-    '    rm -f -- "$ready_dir/$old_sha" "$old_used"',
-    '  ) 8>"$lock_dir/$old_sha.setup.lock" 9>"$lock_dir/$old_sha.runtime.lock"',
-    'done',
     'cd -- "$runtime_root"',
     cliArgv,
   ];
   return lines.join('\n');
+}
+
+/**
+ * The retention pass over every OTHER tooling SHA's runtime. It is best-effort: any failure
+ * leaves the runtime in place and never fails the gate run (`|| true`; `set -e` is inert in
+ * that context, so every step carries its own explicit guard).
+ *
+ * Per runtime, under that SHA's exclusive setup + runtime locks (taken non-blocking, so a
+ * runtime mid-setup or in use by any run is skipped):
+ *  - age = the `used/` marker's mtime when present, else the runtime directory's mtime;
+ *  - ready-marked: removed after CHECKPOINT_TOOLING_READY_RETENTION_MINUTES, and only when
+ *    clean (a dirty ready snapshot is kept as evidence);
+ *  - not ready-marked (failed/interrupted setup): removed after
+ *    CHECKPOINT_TOOLING_FAILED_RETENTION_MINUTES regardless of tree state, since a failed
+ *    setup's tree is routinely dirty and no run can use it.
+ * Orphaned `ready/` / `used/` markers whose runtime directory is gone are removed too.
+ */
+function checkpointToolingRetentionLines(): string[] {
+  return [
+    'reap_checkpoint_tooling_runtimes() {',
+    '  local old_root old_sha old_marker',
+    '  for old_root in "$cache_root/runtimes"/*; do',
+    '    [ -d "$old_root" ] && [ ! -L "$old_root" ] || continue',
+    '    old_sha="$(basename -- "$old_root")"',
+    '    [[ "$old_sha" =~ ^[0-9a-f]{40}$ ]] || continue',
+    '    [ "$old_sha" != "$tooling_sha" ] || continue',
+    '    (',
+    '      flock -n -x 8 || exit 0',
+    '      flock -n -x 9 || exit 0',
+    '      if [ "$(cat "$ready_dir/$old_sha" 2>/dev/null || true)" = "$old_sha" ]; then',
+    `        old_ready=1; old_minutes=${CHECKPOINT_TOOLING_READY_RETENTION_MINUTES}`,
+    '      else',
+    `        old_ready=0; old_minutes=${CHECKPOINT_TOOLING_FAILED_RETENTION_MINUTES}`,
+    '      fi',
+    '      old_age_ref="$used_dir/$old_sha"',
+    '      [ -f "$old_age_ref" ] || old_age_ref="$old_root"',
+    '      [ -n "$(find "$old_age_ref" -maxdepth 0 -mmin "+$old_minutes" -print -quit 2>/dev/null)" ] || exit 0',
+    '      if [ "$old_ready" = 1 ]; then',
+    '        old_status="$(git -C "$old_root" status --porcelain --untracked-files=normal 2>/dev/null || true)"',
+    '        [ -z "$old_status" ] || { echo "checkpoint tooling retention: keeping dirty ready runtime $old_sha" >&2; exit 0; }',
+    '      fi',
+    '      if [ -e "$old_root/.git" ]; then',
+    '        git -C "$source_root" worktree remove --force --force "$old_root" >/dev/null 2>&1 || rm -rf -- "$old_root"',
+    '      else',
+    '        rm -rf -- "$old_root"',
+    '      fi',
+    '      [ ! -e "$old_root" ] || { echo "checkpoint tooling retention: could not remove runtime $old_sha" >&2; exit 0; }',
+    '      rm -f -- "$ready_dir/$old_sha" "$used_dir/$old_sha"',
+    '      echo "checkpoint tooling retention: removed runtime $old_sha (ready=$old_ready)" >&2',
+    '    ) 8>"$lock_dir/$old_sha.setup.lock" 9>"$lock_dir/$old_sha.runtime.lock" || true',
+    '  done',
+    '  for old_marker in "$used_dir"/* "$ready_dir"/*; do',
+    '    [ -f "$old_marker" ] || continue',
+    '    old_sha="$(basename -- "$old_marker")"',
+    '    [[ "$old_sha" =~ ^[0-9a-f]{40}$ ]] || continue',
+    '    [ "$old_sha" != "$tooling_sha" ] || continue',
+    '    [ ! -e "$cache_root/runtimes/$old_sha" ] || continue',
+    '    (',
+    '      flock -n -x 8 || exit 0',
+    '      flock -n -x 9 || exit 0',
+    '      [ ! -e "$cache_root/runtimes/$old_sha" ] || exit 0',
+    '      rm -f -- "$old_marker"',
+    '    ) 8>"$lock_dir/$old_sha.setup.lock" 9>"$lock_dir/$old_sha.runtime.lock" || true',
+    '  done',
+    '}',
+    'reap_checkpoint_tooling_runtimes || true',
+  ];
 }
 
 function shellQuote(value: string): string {

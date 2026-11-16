@@ -34,9 +34,9 @@ import {
   waitQualificationTransaction,
 } from '../../release/checkpoint-qualification-transaction';
 import { auditDraw, formatTestReuseLine, formatTestReuseTotalLine } from '../../../../../scripts/lib/test-pass-reuse.mjs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -2384,6 +2384,126 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
         const second = run('fire_test_2');
         expect(second).toContain('committed-cli');
         expect(readFileSync(setupLog, 'utf8').trim().split('\n')).toHaveLength(2);
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
+    });
+
+    it('WI-6554700010050773: reaps failed and stale tooling runtimes BEFORE setup, even when that setup fails', () => {
+      const temp = mkdtempSync(join(tmpdir(), 'papercusp-tooling-retention-'));
+      const repoRoot = join(temp, 'source');
+      const cacheRoot = join(temp, 'cache');
+      const runtimes = join(cacheRoot, 'runtimes');
+      const readyDir = join(cacheRoot, 'ready');
+      const usedDir = join(cacheRoot, 'used');
+      const lockDir = join(cacheRoot, 'locks');
+      const git = (...args: string[]) => execFileSync(
+        'git',
+        ['-C', repoRoot, '-c', 'user.name=Test Agent', '-c', 'user.email=test@example.com', ...args],
+        { encoding: 'utf8' },
+      ).trim();
+      const hoursAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000);
+      const age = (target: string, hours: number) => utimesSync(target, hoursAgo(hours), hoursAgo(hours));
+      try {
+        mkdirSync(join(repoRoot, 'apps/operator/bin/release'), { recursive: true });
+        writeFileSync(join(repoRoot, '.gitignore'), 'node_modules/\n');
+        // Every committed setup fails, like the Node 26 dependency-generation failures that
+        // leaked one ~4.7 GB runtime per build SHA.
+        writeFileSync(
+          join(repoRoot, 'apps/operator/bin/release/setup-release-checkout.sh'),
+          '#!/usr/bin/env bash\necho "setup failed on purpose" >&2\nexit 1\n',
+        );
+        execFileSync('git', ['-C', repoRoot, 'init', '--initial-branch=main'], { encoding: 'utf8' });
+        const shas: string[] = [];
+        for (let i = 0; i < 7; i += 1) {
+          writeFileSync(join(repoRoot, 'revision.txt'), `revision ${i}\n`);
+          git('add', '.');
+          git('commit', '-m', `revision ${i}`);
+          shas.push(git('rev-parse', 'HEAD'));
+        }
+        const buildSha = shas[6]!;
+        for (const dir of [runtimes, readyDir, usedDir, lockDir]) mkdirSync(dir, { recursive: true });
+        const addRuntime = (sha: string) => {
+          const root = join(runtimes, sha);
+          git('worktree', 'add', '--quiet', '--detach', root, sha);
+          return root;
+        };
+        const markReady = (sha: string, usedHoursAgo: number) => {
+          writeFileSync(join(readyDir, sha), `${sha}\n`);
+          writeFileSync(join(usedDir, sha), '');
+          age(join(usedDir, sha), usedHoursAgo);
+        };
+
+        // Failed setup (no ready marker, no used marker), dirty with a partial install, 2h old: reaped.
+        const failedOld = addRuntime(shas[0]!);
+        writeFileSync(join(failedOld, 'partial-install.txt'), 'partial\n');
+        age(failedOld, 2);
+        // Failed setup only 5 minutes old: kept so it can still be inspected.
+        const failedYoung = addRuntime(shas[1]!);
+        age(failedYoung, 5 / 60);
+        // Ready, clean, last used 7h ago: reaped together with both markers.
+        const readyStale = addRuntime(shas[2]!);
+        markReady(shas[2]!, 7);
+        // Ready, last used 7h ago, but dirty: kept as evidence.
+        const readyDirty = addRuntime(shas[3]!);
+        writeFileSync(join(readyDirty, 'tampered.txt'), 'tampered\n');
+        markReady(shas[3]!, 7);
+        // Failed setup 2h old, but a live run holds its runtime lock: kept.
+        const failedLocked = addRuntime(shas[4]!);
+        age(failedLocked, 2);
+        // Ready and used 1h ago: kept.
+        const readyRecent = addRuntime(shas[5]!);
+        markReady(shas[5]!, 1);
+        // A used marker whose runtime directory is already gone: removed.
+        const orphanSha = 'f'.repeat(40);
+        writeFileSync(join(usedDir, orphanSha), '');
+
+        const script = buildCommittedCheckpointToolingCommand(
+          repoRoot,
+          buildSha,
+          'apps/operator/lib/release/green-checkpoint.ts',
+          [],
+          'fire_retention_1',
+          cacheRoot,
+        );
+        const result = spawnSync(
+          '/bin/bash',
+          ['-c', 'exec 7>"$HELD_LOCK"; flock -s 7; exec /bin/bash -c "$TOOLING_SCRIPT"'],
+          {
+            encoding: 'utf8',
+            env: {
+              ...process.env,
+              HELD_LOCK: join(lockDir, `${shas[4]}.runtime.lock`),
+              TOOLING_SCRIPT: script,
+            },
+          },
+        );
+
+        // The current SHA's setup failed, and the run failed with it...
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain('setup failed on purpose');
+        // ...but retention had already run.
+        expect(result.stderr).toContain(`removed runtime ${shas[0]} (ready=0)`);
+        expect(result.stderr).toContain(`removed runtime ${shas[2]} (ready=1)`);
+        expect(existsSync(failedOld)).toBe(false);
+        expect(existsSync(readyStale)).toBe(false);
+        expect(existsSync(join(readyDir, shas[2]!))).toBe(false);
+        expect(existsSync(join(usedDir, shas[2]!))).toBe(false);
+        expect(existsSync(join(usedDir, orphanSha))).toBe(false);
+
+        expect(existsSync(failedYoung)).toBe(true);
+        expect(existsSync(readyDirty)).toBe(true);
+        expect(result.stderr).toContain(`keeping dirty ready runtime ${shas[3]}`);
+        expect(existsSync(failedLocked)).toBe(true);
+        expect(existsSync(readyRecent)).toBe(true);
+        expect(existsSync(join(readyDir, shas[5]!))).toBe(true);
+
+        // Reaped runtimes are unregistered from the source repository, not just deleted.
+        const worktrees = git('worktree', 'list', '--porcelain');
+        expect(worktrees).not.toContain(failedOld);
+        expect(worktrees).not.toContain(readyStale);
+        expect(worktrees).toContain(failedYoung);
+        expect(worktrees).toContain(failedLocked);
       } finally {
         rmSync(temp, { recursive: true, force: true });
       }
