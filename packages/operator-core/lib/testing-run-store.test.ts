@@ -6,6 +6,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
+import { canonicalJson } from '@papercusp/hash-chain';
 import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
@@ -202,6 +203,197 @@ describe('worktree provenance API', () => {
     expect(store.captureWorktreeSnapshotAsync).toBeTypeOf('function');
     await expect(store.captureWorktreeSnapshotAsync('/test-checkout')).resolves.toEqual(snapshot);
     expect(worktreeSnapshotMocks.captureAsync).toHaveBeenCalledWith('/test-checkout');
+  });
+});
+
+describe('[plan:language-neutral-code-documentation-integration-2026-11-12] [R-12] canonical documentation input reader', () => {
+  const input = () => ({ runId: 'exact-run', taskId: null, startedAt: 1_700_000_000_000,
+    kind: 'node' as const, label: 'documentation input', filePath: null,
+    command: ['node', 'verify.mjs'], requestedFiles: [], cwd: '/fixture',
+    source: { commit: 'a'.repeat(40), porcelain: '' },
+    configuration: captureConfigurationSnapshot({ NODE_ENV: 'production' }),
+  });
+  const row = () => {
+    const value = input();
+    return { run_id: value.runId, kind: value.kind, label: value.label, file_path: value.filePath,
+      command: [...value.command], task_id: value.taskId, started_at: new Date(value.startedAt),
+      documentation_input: { schemaVersion: 1, input: value,
+        inputSha256: createHash('sha256').update(canonicalJson(value)).digest('hex') },
+    };
+  };
+  type Row = ReturnType<typeof row>;
+  const mutations: Array<[string, (value: Row) => void]> = [
+    ['digest', value => { value.documentation_input.inputSha256 = '0'.repeat(64); }],
+    ['run', value => { value.run_id = 'foreign-run'; }],
+    ['kind', value => { Object.assign(value, { kind: 'shell' }); }],
+    ['label', value => { value.label = 'rewritten'; }],
+    ['file', value => { Object.assign(value, { file_path: 'foreign.test.ts' }); }],
+    ['task', value => { Object.assign(value, { task_id: 'foreign-task' }); }],
+    ['start', value => { value.started_at = new Date(value.started_at.getTime() + 1); }],
+    ['command', value => { value.command.push('rewritten'); }],
+    ['command-shape', value => { Object.assign(value, { command: null }); }],
+    ['start-shape', value => { Object.assign(value, { started_at: 'not-a-date' }); }],
+    ['configuration', value => {
+      value.documentation_input.input.configuration.envSha256.NODE_ENV = '0'.repeat(64);
+      value.documentation_input.inputSha256 = createHash('sha256')
+        .update(canonicalJson(value.documentation_input.input)).digest('hex');
+    }],
+    ['schema', value => { Object.assign(value.documentation_input, { schemaVersion: 2 }); }],
+    ['shape', value => {
+      Object.assign(value.documentation_input.input, { callerPass: true });
+      value.documentation_input.inputSha256 = createHash('sha256')
+        .update(canonicalJson(value.documentation_input.input)).digest('hex');
+    }],
+    ['ordinary', value => { Object.assign(value, { documentation_input: null }); }],
+  ];
+  it.each(mutations)('[baseline] [pair:input-read-%s] reads exact committed input independently of memory', async () => {
+    const value = row();
+    const sql = vi.fn(async (_strings: TemplateStringsArray, ..._values: unknown[]) => [value]);
+    const result = await store.readDocumentationRunInput(sql, value.run_id);
+    expect(result).toEqual({ status: 'found', input: input(), inputSha256: value.documentation_input.inputSha256 });
+    expect(sql.mock.calls[0]?.[1]).toBe(value.run_id);
+    if (result.status === 'found') {
+      value.documentation_input.input.command.push('caller-mutated');
+      expect(result.input.command).toEqual(['node', 'verify.mjs']);
+    }
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+  it.each(mutations)('[falsifier] [pair:input-read-%s] rejects altered or non-documentation input', async (_name, mutate) => {
+    const value = row();
+    mutate(value);
+    await expect(store.readDocumentationRunInput(async () => [value], 'exact-run')).resolves.toEqual({ status: 'invalid' });
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+  it('[baseline] [pair:input-availability] distinguishes a missing canonical row', async () => {
+    await expect(store.readDocumentationRunInput(async () => [], 'exact-run')).resolves.toEqual({ status: 'absent' });
+  });
+  it('[falsifier] [pair:input-availability] keeps database failures unknown even with an in-memory run', async () => {
+    const snapshot = store.startRun(req());
+    await expect(store.readDocumentationRunInput(async () => { throw new Error('offline'); }, snapshot.runId))
+      .resolves.toEqual({ status: 'unavailable' });
+    await expect(store.readDocumentationRunInput(async () => null, snapshot.runId))
+      .resolves.toEqual({ status: 'unavailable' });
+  });
+});
+
+describe('[plan:language-neutral-code-documentation-integration-2026-11-12] [R-12] documentation launch preparation', () => {
+  beforeEach(() => {
+    worktreeSnapshotMocks.captureAsync.mockResolvedValue({ commit: 'candidate', porcelain: '' });
+  });
+
+  it('[baseline] [pair:admission-write] starts once after the admission transaction settles', async () => {
+    const events: string[] = [];
+    const prepared = await store.prepareDocumentationProofRun(req());
+    expect(spawnMock).not.toHaveBeenCalled();
+    let commit!: () => void;
+    const pending = prepared.start(async (input, hash) => {
+      expect(input).toBe(prepared.input);
+      expect(hash).toBe(prepared.inputSha256);
+      expect(hash).toBe(createHash('sha256').update(canonicalJson(input)).digest('hex'));
+      await new Promise<void>(resolve => { commit = resolve; });
+      events.push('committed');
+    });
+    expect(spawnMock).not.toHaveBeenCalled();
+    spawnMock.mockImplementationOnce(() => {
+      events.push('spawn');
+      lastChild = makeChild();
+      return lastChild;
+    });
+    commit();
+    const snapshot = await pending;
+    expect(snapshot.runId).toBe(prepared.input.runId);
+    expect(events).toEqual(['committed', 'spawn']);
+  });
+
+  it('[falsifier] [pair:admission-write] never starts on a failed admission and releases its preparation', async () => {
+    const prepared = await store.prepareDocumentationProofRun(req());
+    const failure = new Error('admission transaction rolled back');
+    await expect(prepared.start(async () => { throw failure; })).rejects.toBe(failure);
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(taskManagerMocks.begin.mock.results[0]!.value.releaseEnvironmentTransport).toHaveBeenCalledOnce();
+    expect(taskManagerMocks.finish).toHaveBeenCalledOnce();
+    await expect(prepared.start(async () => {})).rejects.toThrow('already consumed');
+  });
+
+  it('[baseline] [pair:replay] admits distinct preparations with distinct run identities', async () => {
+    const first = await store.prepareDocumentationProofRun(req());
+    const second = await store.prepareDocumentationProofRun(req());
+    expect(first.input.runId).not.toBe(second.input.runId);
+    expect(first.inputSha256).not.toBe(second.inputSha256);
+    const commit = vi.fn(async () => {});
+    await first.start(commit);
+    await second.start(commit);
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('[falsifier] [pair:replay] rejects concurrent and completed replays before another admission', async () => {
+    const prepared = await store.prepareDocumentationProofRun(req());
+    let commit!: () => void;
+    const pending = prepared.start(() => new Promise<void>(resolve => { commit = resolve; }));
+    const replay = vi.fn(async () => {});
+    await expect(prepared.start(replay)).rejects.toThrow('already consumed');
+    commit();
+    await pending;
+    await expect(prepared.start(replay)).rejects.toThrow('already consumed');
+    expect(replay).not.toHaveBeenCalled();
+    expect(spawnMock).toHaveBeenCalledOnce();
+  });
+
+  it('[baseline] [pair:cancellation] starts with an active signal and keeps later discard local to preparation', async () => {
+    const prepared = await store.prepareDocumentationProofRun(req());
+    const controller = new AbortController();
+    const snapshot = await prepared.start(async () => {}, controller.signal);
+    prepared.discard();
+    expect(snapshot.status).toBe('running');
+    expect(spawnMock).toHaveBeenCalledOnce();
+    expect(taskManagerMocks.finish).not.toHaveBeenCalled();
+    expect(lastChild.kill).not.toHaveBeenCalled();
+  });
+
+  it('[falsifier] [pair:cancellation] refuses a late commit after abort or explicit discard', async () => {
+    for (const cancellation of ['abort', 'discard']) {
+      const prepared = await store.prepareDocumentationProofRun(req());
+      const controller = new AbortController();
+      let commit!: () => void;
+      const pending = prepared.start(() => new Promise<void>(resolve => { commit = resolve; }), controller.signal);
+      if (cancellation === 'abort') controller.abort(new Error('admission deadline expired'));
+      else prepared.discard();
+      commit();
+      await expect(pending).rejects.toThrow(cancellation === 'abort' ? 'deadline expired' : 'discarded during admission');
+    }
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(taskManagerMocks.finish).toHaveBeenCalledTimes(2);
+  });
+
+  it('[baseline] [pair:input-mutation] records the configuration and file selection used by the child', async () => {
+    const prepared = await store.prepareDocumentationProofRun(req({
+      requestedFiles: ['first.test.ts'], env: { NODE_ENV: 'production' },
+    }));
+    await prepared.start(async () => {});
+    const environment = (spawnMock.mock.calls[0] as unknown as [unknown, unknown, { env: NodeJS.ProcessEnv }])[2].env;
+    expect(prepared.input.configuration).toEqual(captureConfigurationSnapshot(environment));
+    expect(prepared.input.requestedFiles).toEqual(['first.test.ts']);
+  });
+
+  it('[falsifier] [pair:input-mutation] freezes admission input and detaches caller data before asynchronous preparation', async () => {
+    let readSource!: (value: { commit: string; porcelain: string }) => void;
+    worktreeSnapshotMocks.captureAsync.mockImplementationOnce(() => new Promise(resolve => { readSource = resolve; }));
+    const request = req({ requestedFiles: ['first.test.ts'], env: { NODE_ENV: 'production' } });
+    const pending = store.prepareDocumentationProofRun(request);
+    request.args.push('late-argument');
+    request.requestedFiles!.push('late.test.ts');
+    request.env!.NODE_ENV = 'test';
+    readSource({ commit: 'candidate', porcelain: '' });
+    const prepared = await pending;
+    expect(Object.isFrozen(prepared.input.configuration.envSha256)).toBe(true);
+    expect(() => (prepared.input.command as string[]).push('rewrite')).toThrow();
+    expect(() => { (prepared.input.source as { commit: string }).commit = 'rewrite'; }).toThrow();
+    await prepared.start(async () => {});
+    expect(spawnMock).toHaveBeenCalledWith('npx', ['vitest', 'run'], expect.objectContaining({
+      env: expect.objectContaining({ NODE_ENV: 'production' }),
+    }));
+    expect(prepared.input.requestedFiles).toEqual(['first.test.ts']);
   });
 });
 
@@ -3278,6 +3470,147 @@ describe('durable detached snapshot lifecycle', () => {
       expect(recovered?.output).not.toContain('[coverage-gate');
       expect(ledgerReads).toBeGreaterThan(1);
       expect(updates.map(([status]) => status)).toEqual(['unknown', 'pass']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    { name: 'exact measured pass', file: 'lib/first.test.ts', processExit: 0, cancelled: false, expected: 'pass' },
+    { name: 'different requested file', file: 'lib/other.test.ts', processExit: 0, cancelled: false, expected: 'error' },
+    { name: 'failed outer task', file: 'lib/first.test.ts', processExit: 7, cancelled: false, expected: 'error' },
+    { name: 'newer cancellation', file: 'lib/first.test.ts', processExit: 0, cancelled: true, expected: 'cancelled' },
+    { name: 'newer failing ledger row', file: 'lib/first.test.ts', processExit: 0, cancelled: false, expected: 'error' },
+    { name: 'newer invalid measured proof', file: 'lib/first.test.ts', processExit: 0, cancelled: false, expected: 'error' },
+    { name: 'newer diagnostic', file: 'lib/first.test.ts', processExit: 0, cancelled: false, expected: 'unknown' },
+    { name: 'unavailable pending receipt', file: 'lib/first.test.ts', processExit: 0, cancelled: false, expected: 'pass' },
+    { name: 'task finishes after response', file: 'lib/first.test.ts', processExit: 0, cancelled: false, expected: 'pass' },
+    { name: 'fresh retry also times out', file: 'lib/first.test.ts', processExit: 0, cancelled: false, expected: 'unknown' },
+    { name: 'late query rejects', file: 'lib/first.test.ts', processExit: 0, cancelled: false, expected: 'unknown' },
+  ])('reconciles late terminal ledger evidence without another status request: $name', async (scenario) => {
+    vi.useFakeTimers();
+    try {
+      const runId = 'late-ledger-' + scenario.name;
+      const durableRow: Record<string, unknown> = {
+        run_id: runId, task_id: 'task-late-ledger', kind: 'vitest', label: 'late ledger',
+        file_path: null, command: ['node', 'scripts/test-files.mjs'], status: 'pass', exit_code: 0,
+        started_at: new Date(1_700_000_000_000), finished_at: new Date(1_700_000_010_000),
+        output: '', truncated: false,
+        task_state: scenario.name === 'task finishes after response' ? 'running' : 'exited',
+        task_exit_code: scenario.name === 'task finishes after response' ? null : scenario.processExit,
+        task_ended_at: new Date(1_700_000_010_000), task_detail: { requestedFiles: ['lib/first.test.ts'] },
+      };
+      const ledgerRows = [{
+        file_path: scenario.file, status: 'pass', finished_at: new Date(1_700_000_011_000), output_tail: null,
+        execution_details: measuredPass(scenario.file, runId),
+      }];
+      let resolveLedger!: (rows: typeof ledgerRows) => void;
+      let rejectLedger!: (error: Error) => void;
+      const ledger = new Promise<typeof ledgerRows>((resolve, reject) => {
+        resolveLedger = resolve;
+        rejectLedger = reject;
+      });
+      const updates: unknown[][] = [];
+      let ledgerReads = 0;
+      const sql = vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => {
+        const statement = strings.join(' ');
+        if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) {
+          return Promise.resolve([{ ...durableRow }]);
+        }
+        if (statement.includes('FROM harness_shared.test_runs')) {
+          ledgerReads += 1;
+          if (ledgerReads === 1) return ledger;
+          if (scenario.name === 'fresh retry also times out') return new Promise<never>(() => {});
+          return Promise.resolve(ledgerRows.map(row => ({
+            ...row,
+            status: scenario.name === 'newer failing ledger row' ? 'fail' : row.status,
+            execution_details: scenario.name === 'newer invalid measured proof' ? null : row.execution_details,
+          })));
+        }
+        if (statement.includes('FROM harness_shared.task_ledger')) {
+          return Promise.resolve([{ state: 'exited', exit_code: scenario.processExit,
+            requested_files: ['lib/first.test.ts'] }]);
+        }
+        if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+          if (scenario.name === 'unavailable pending receipt') return new Promise<never>(() => {});
+          if (durableRow.status !== values[6] || durableRow.output !== values[9]) return Promise.resolve([]);
+          updates.push(values);
+          Object.assign(durableRow, {
+            status: values[0], exit_code: values[1], finished_at: values[2], output: values[3], truncated: values[4],
+          });
+          return Promise.resolve([{ run_id: runId }]);
+        }
+        return Promise.resolve([]);
+      }) as unknown as Sql;
+
+      const initialRead = store.getRunAsync(runId, sql);
+      await vi.advanceTimersByTimeAsync(scenario.name === 'unavailable pending receipt' ? 2_000 : 1_000);
+      expect(await initialRead).toMatchObject({ runId, status: 'unknown', exitCode: 0 });
+      expect(durableRow.status).toBe(scenario.name === 'unavailable pending receipt' ? 'pass' : 'unknown');
+      if (scenario.cancelled) durableRow.status = 'cancelled';
+      if (scenario.name === 'newer diagnostic') durableRow.output = 'newer diagnostic';
+
+      // Complete the ORIGINAL query after the response deadline. It triggers
+      // one fresh verification without another getRunAsync request.
+      if (scenario.name === 'late query rejects') rejectLedger(new Error('late query failed'));
+      else resolveLedger(ledgerRows);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(durableRow.status).toBe(scenario.expected);
+      const expectedReads = scenario.name === 'unavailable pending receipt' || scenario.name === 'late query rejects' ? 1 : 2;
+      expect(ledgerReads).toBe(expectedReads);
+      expect(updates.map(([status]) => status)).toEqual(
+        scenario.name === 'unavailable pending receipt' ? []
+          : scenario.expected === 'unknown' || scenario.cancelled ? ['unknown'] : ['unknown', scenario.expected],
+      );
+      if (scenario.name === 'newer diagnostic') expect(durableRow.output).toBe('newer diagnostic');
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(ledgerReads).toBe(expectedReads);
+      expect(updates).toHaveLength(scenario.name === 'unavailable pending receipt' ? 0
+        : scenario.expected === 'unknown' || scenario.cancelled ? 1 : 2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('updates the local snapshot after late ledger verification without another status request', async () => {
+    vi.useFakeTimers();
+    try {
+      const filePath = 'lib/first.test.ts';
+      const run = store.startRun(req({ kind: 'vitest', requestedFiles: [filePath] }));
+      lastChild._emitClose(0);
+      const ledgerRows = [{
+        file_path: filePath, status: 'pass', finished_at: new Date(), output_tail: null,
+        execution_details: measuredPass(filePath, run.runId),
+      }];
+      let resolveLedger!: (rows: typeof ledgerRows) => void;
+      const ledger = new Promise<typeof ledgerRows>(resolve => { resolveLedger = resolve; });
+      let ledgerReads = 0;
+      const updates: unknown[][] = [];
+      const sql = vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => {
+        const statement = strings.join(' ');
+        if (statement.includes('FROM harness_shared.test_runs')) {
+          ledgerReads += 1;
+          return ledgerReads === 1 ? ledger : Promise.resolve(ledgerRows);
+        }
+        if (statement.includes('FROM harness_shared.task_ledger')) return Promise.resolve([
+          { state: 'exited', exit_code: 0, requested_files: [filePath] },
+        ]);
+        if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+          updates.push(values);
+          return Promise.resolve([{ run_id: run.runId }]);
+        }
+        return Promise.resolve([]);
+      }) as unknown as Sql;
+      const initialRead = store.getRunAsync(run.runId, sql);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await initialRead).toMatchObject({ status: 'unknown', exitCode: 0 });
+      expect(store.getRun(run.runId)?.status).toBe('unknown');
+
+      resolveLedger(ledgerRows);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(store.getRun(run.runId)).toMatchObject({ status: 'pass', exitCode: 0 });
+      expect(updates.map(([status]) => status)).toEqual(['unknown', 'pass']);
+      expect(ledgerReads).toBe(2);
     } finally {
       vi.useRealTimers();
     }

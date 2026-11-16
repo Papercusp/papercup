@@ -1,12 +1,141 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import { canonicalJson } from '@papercusp/hash-chain';
+import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import type { OrgTestDb } from '../test/_org-test-db';
-import { getRunAsync, TestingRunSnapshotUnavailableError, persistHarnessTestRunsWithIds } from './testing-run-store';
+import { getRunAsync, TestingRunSnapshotUnavailableError, persistHarnessTestRunsWithIds,
+  insertDocumentationRunInput, readDocumentationRunInput, persistRunSnapshot, prunePersistedRunSnapshots,
+  type DocumentationRunInput, type RunSnapshot } from './testing-run-store';
 import { executeOperationalRun } from './agent-tools/testing/record-run';
 import { parseTestRunExecutionDetails, stableRecordedRuntimeEnvironment } from '@papercusp/test-config/execution-details';
 import { configureRuntimeVintageStore, resetRuntimeVintageStore, InMemoryRuntimeVintageStore,
   reportRuntimeVintage, listRuntimeVintage, measureRuntimeVintageEnvironment } from './runtime-vintage';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
+
+describe('[plan:language-neutral-code-documentation-integration-2026-11-12] [R-12] immutable documentation input (real PG)', () => {
+  let db: OrgTestDb;
+  const storeSql = () => db.adminSql as unknown as Parameters<typeof insertDocumentationRunInput>[0];
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    // Exercise the allocator's draft in an isolated database before arming it.
+    // After arming, the normal fixture migration runner supplies this column;
+    // replay also checks that the migration remains idempotent.
+    const armed = new URL('../../../libs/papercusp/libs/db/sql/1640-documentation-run-input.sql', import.meta.url);
+    const draft = new URL(armed.href + '.DRAFT');
+    await db.adminSql.unsafe(readFileSync(existsSync(armed) ? armed : draft, 'utf8'));
+  }, 120_000);
+  afterAll(async () => { await db?.cleanup(); });
+  const input = (): DocumentationRunInput => ({
+    runId: randomUUID(), taskId: null, startedAt: 1_700_000_000_000,
+    kind: 'node', label: 'documentation input', filePath: null,
+    command: ['node', 'verify.mjs'], requestedFiles: [], cwd: '/fixture',
+    source: { commit: 'a'.repeat(40), porcelain: '' },
+    configuration: captureConfigurationSnapshot({ NODE_ENV: 'production' }),
+  });
+  const snapshot = (value: DocumentationRunInput): RunSnapshot => ({
+    runId: value.runId, kind: value.kind, label: value.label,
+    command: [...value.command], startedAt: value.startedAt,
+    status: 'running', exitCode: null, finishedAt: null, output: '', truncated: false,
+  });
+  const read = async (runId: string) => (await db.adminSql`
+    SELECT * FROM harness_shared.testing_run_snapshots WHERE run_id = ${runId}
+  `)[0];
+
+  it('[baseline] [pair:transaction] retains a canonical digest across JSONB key ordering', async () => {
+    const value = input();
+    await db.adminSql.begin(async tx => {
+      await insertDocumentationRunInput(tx as unknown as Parameters<typeof insertDocumentationRunInput>[0], value);
+    });
+    const row = await read(value.runId);
+    expect(row.documentation_input.input).toEqual(value);
+    expect(row.documentation_input.inputSha256).toBe(createHash('sha256').update(canonicalJson(value)).digest('hex'));
+    expect(createHash('sha256').update(canonicalJson(row.documentation_input.input)).digest('hex'))
+      .toBe(row.documentation_input.inputSha256);
+    await expect(readDocumentationRunInput(storeSql(), value.runId)).resolves.toEqual({ status: 'found',
+      input: value, inputSha256: row.documentation_input.inputSha256 });
+  });
+
+  it('[falsifier] [pair:transaction] leaves no input row when its owning transaction rolls back', async () => {
+    const value = input();
+    await expect(db.adminSql.begin(async tx => {
+      await insertDocumentationRunInput(tx as unknown as Parameters<typeof insertDocumentationRunInput>[0], value);
+      throw new Error('capture transaction rolled back');
+    })).rejects.toThrow('capture transaction rolled back');
+    expect(await read(value.runId)).toBeUndefined();
+    await expect(readDocumentationRunInput(storeSql(), value.runId)).resolves.toEqual({ status: 'absent' });
+  });
+
+  const mutations = [
+    ['command', `command = '["node","rewrite"]'::jsonb`],
+    ['start', "started_at = started_at + interval '1 second'"],
+    ['task', "task_id = 'different-task'"],
+    ['kind', "kind = 'shell'"],
+    ['label', "label = 'different label'"],
+    ['file', "file_path = 'different.test.ts'"],
+    ['run', "run_id = run_id || '-rewrite'"],
+    ['input', 'documentation_input = NULL'],
+  ] as const;
+  it.each(mutations)('[baseline] [pair:immutable-%s] advances lifecycle with input unchanged', async () => {
+    const value = input();
+    await insertDocumentationRunInput(storeSql(), value);
+    const before = await read(value.runId);
+    await expect(persistRunSnapshot({ ...snapshot(value), status: 'pass', exitCode: 0,
+      finishedAt: value.startedAt + 1000, output: 'observed pass' }, storeSql())).resolves.toBe(true);
+    const after = await read(value.runId);
+    expect(after).toMatchObject({ status: 'pass', output: 'observed pass', exit_code: 0 });
+    expect(after.documentation_input).toEqual(before.documentation_input);
+    expect(after.started_at).toEqual(before.started_at);
+    expect(after.command).toEqual(before.command);
+  });
+  it.each(mutations)('[falsifier] [pair:immutable-%s] rejects input reinterpretation', async (_name, mutation) => {
+    const value = input();
+    await insertDocumentationRunInput(storeSql(), value);
+    const before = await read(value.runId);
+    await expect(db.adminSql.unsafe(`UPDATE harness_shared.testing_run_snapshots SET ${mutation} WHERE run_id = $1`, [value.runId]))
+      .rejects.toMatchObject({ code: '23514' });
+    expect(await read(value.runId)).toEqual(before);
+  });
+
+  it('[baseline] [pair:late-promotion] preserves ordinary snapshot upsert behavior', async () => {
+    const value = input();
+    await expect(persistRunSnapshot(snapshot(value), storeSql())).resolves.toBe(true);
+    await expect(persistRunSnapshot({ ...snapshot(value), command: ['node', 'ordinary-update.mjs'],
+      startedAt: value.startedAt + 1000 }, storeSql())).resolves.toBe(true);
+    const row = await read(value.runId);
+    expect(row.documentation_input).toBeNull();
+    expect(row.command).toEqual(['node', 'ordinary-update.mjs']);
+  });
+  it('[falsifier] [pair:late-promotion] refuses to promote an existing ordinary row or replay an input insert', async () => {
+    const value = input();
+    await persistRunSnapshot(snapshot(value), storeSql());
+    await expect(db.adminSql`UPDATE harness_shared.testing_run_snapshots
+      SET documentation_input = ${JSON.stringify({ schemaVersion: 1, input: value, inputSha256: 'a'.repeat(64) })}::jsonb
+      WHERE run_id = ${value.runId}`).rejects.toMatchObject({ code: '23514' });
+    await expect(insertDocumentationRunInput(storeSql(), value)).rejects.toMatchObject({ code: '23505' });
+    const row = await read(value.runId);
+    expect(row.documentation_input).toBeNull();
+  });
+
+  it('[baseline] [pair:retention] prunes an expired ordinary snapshot', async () => {
+    const value = input();
+    await persistRunSnapshot({ ...snapshot(value), status: 'pass', exitCode: 0,
+      finishedAt: value.startedAt + 1000 }, storeSql());
+    expect(await read(value.runId)).toBeDefined();
+    await prunePersistedRunSnapshots(storeSql());
+    expect(await read(value.runId)).toBeUndefined();
+  });
+  it('[falsifier] [pair:retention] retains documentation input beyond transient snapshot expiry', async () => {
+    const value = input();
+    await insertDocumentationRunInput(storeSql(), value);
+    await persistRunSnapshot({ ...snapshot(value), status: 'pass', exitCode: 0,
+      finishedAt: value.startedAt + 1000 }, storeSql());
+    const before = await read(value.runId);
+    await prunePersistedRunSnapshots(storeSql());
+    expect(await read(value.runId)).toEqual(before);
+  });
+});
 
 describe('foreground evidence recovery (real PG)', () => {
   let db: OrgTestDb;

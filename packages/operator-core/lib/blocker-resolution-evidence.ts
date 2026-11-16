@@ -17,6 +17,8 @@ export interface BlockerBoundaryContext extends CellReadEnv {
   ownerId: string;
   sessionId: string;
   root: string | null;
+  /** Host closure over the original authenticated tool context, never a public argument. */
+  authorizeAuthorityClear?: (blocker: ExternalBlockerRecord, ownerTurnRef?: string) => Promise<boolean>;
 }
 type BoundaryItem = Pick<WorkItem, 'id' | 'harness' | 'state' | 'assignee' | 'payload'>;
 
@@ -30,7 +32,24 @@ export async function blockerBoundaryContext(
   const { resolveConcreteWorkspaceId } = await import('./workspace-registry');
   return { ownerId, sessionId: ownerId, workspaceId: resolveConcreteWorkspaceId(ctx.workspaceId),
     harnessSlug: harness ?? null, role: ctx.role ?? '', signal: ctx.signal,
-    root: null };
+    root: null,
+    authorizeAuthorityClear: async (blocker, ownerTurnRef) => {
+      if (blocker.kind === 'hold') {
+        const { checkHoldLift } = await import('./agent-tools/work_items/set-blocker-hold');
+        return (await checkHoldLift(blocker.hold, { ownerTurnRef, ctx })).ok;
+      }
+      if (blocker.kind !== 'human' || !ownerTurnRef) return false;
+      const { resolveDecisionProvenance } = await import('./agent-tools/plans/decision-provenance-record');
+      const result = await resolveDecisionProvenance({ kind: 'owner', turnRef: ownerTurnRef }, '', ctx);
+      if (!result.ok || result.provenance.kind !== 'owner' || result.provenance.agentId !== ownerId) return false;
+      const { parseTurnRefs } = await import('./turn-provenance/turn-ref');
+      const refs = parseTurnRefs(result.provenance.ownerTurnRef);
+      const turnAt = refs.length === 1 ? Date.parse(refs[0].ts) : NaN;
+      const createdAt = Date.parse(blocker.createdAt);
+      const updatedAt = Date.parse(blocker.updatedAt);
+      return Number.isFinite(turnAt) && Number.isFinite(createdAt) && Number.isFinite(updatedAt) &&
+        turnAt >= Math.max(createdAt, updatedAt);
+    } };
 }
 
 function boundaryProblem(missing: string[]): BlockerDecisionProblem {
@@ -43,6 +62,25 @@ const plainObject = (value: unknown): value is Record<string, unknown> => Boolea
   (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 
 type PlanLaneReopen = { planSlug: string; itemId: string; status: 'todo' | 'wip' };
+type AuthorityClear = { kind: 'human' | 'hold'; ref: string; ownerTurnRef?: string };
+
+/** Only the existing set_blocker writer can measure a prospective clearance.
+ * Resolve the same exact active identity as its public clear-only inference;
+ * an owner citation on a release, status change or another target is inert. */
+function explicitAuthorityClear(effect: unknown, item: BoundaryItem,
+  blockers: readonly ExternalBlockerRecord[]): AuthorityClear | undefined {
+  if (!plainObject(effect) || Reflect.ownKeys(effect).length !== 1 || !plainObject(effect.setBlocker)) return;
+  const request = effect.setBlocker;
+  if (request.id !== item.id || request.clear !== true ||
+      (request.harness !== undefined && request.harness !== item.harness) ||
+      (request.ownerTurnRef !== undefined && typeof request.ownerTurnRef !== 'string')) return;
+  const matches = blockers.filter(blocker => blocker.status === 'active' &&
+    (request.kind === undefined || request.kind === blocker.kind) &&
+    (request.ref === undefined || request.ref === blocker.ref));
+  if (matches.length !== 1 || (matches[0].kind !== 'human' && matches[0].kind !== 'hold')) return;
+  return { kind: matches[0].kind, ref: matches[0].ref,
+    ...(typeof request.ownerTurnRef === 'string' ? { ownerTurnRef: request.ownerTurnRef } : {}) };
+}
 
 /** The existing plans:set-status host effect is bound into the decision receipt.
  * Only its explicit blocked CAS can measure a prospective reopen. A plain state
@@ -198,6 +236,8 @@ export async function preflightBlockerDecision(
       workItemId: item.id, custodianId: item.assignee, blockers,
       evidenceRefs: prepared.record.decision.evidenceRefs,
       planLaneReopen,
+      authorityClear: custodyScope && prepared.record.decision.disposition === 'self_resolve'
+        ? explicitAuthorityClear(options.effect, item, blockers) : undefined,
       retainedReservationRelease: prepared.record.decision.disposition === 'defer' ? plainReleaseScope : undefined,
       retainedParkedPlanLaneDeferral: prepared.record.decision.disposition === 'defer' ? parkedPlanLaneScope : undefined });
     const checked = await validateBlockerDecisionEvidence(prepared.record.decision, {
@@ -221,6 +261,9 @@ export interface BlockerEvidenceContext extends CellReadEnv {
   blockers: readonly ExternalBlockerRecord[];
   /** Canonical pre-write subject custody, never request-supplied. */
   custodianId?: string | null;
+  /** Exact host-derived clear effect and authenticated policy verifier. */
+  authorityClear?: AuthorityClear;
+  authorizeAuthorityClear?: BlockerBoundaryContext['authorizeAuthorityClear'];
   /** Citations select canonical decisions; their prose never supplies a verdict. */
   evidenceRefs?: readonly BlockerEvidenceRef[];
   /** Host-only plain-release deferral: the writer preserves this custodian's
@@ -659,7 +702,25 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
               return unknown('canonical derived blocker changed or is ambiguous');
             }
             const payload = current.payload as Record<string, unknown> | null;
-            if (!payload || !['open', 'todo', 'wip'].includes(String(payload.planLaneParkedFrom))) {
+            // An external human condition can precede the derived lane park, so
+            // 'blocked' is valid history, but never plain-read clearance. Only
+            // the exact guarded reopen or authenticated clear of that same
+            // lane's human condition may reconcile it. All graph prerequisites
+            // and every independent obligation are still measured below.
+            const reopeningBlockedPark = context.planLaneReopen?.planSlug === match[1] &&
+              context.planLaneReopen.itemId === match[2];
+            const clear = context.authorityClear;
+            const laneHuman = clear?.kind === 'human' && clear.ref === `${match[1]}#${match[2]}`
+              ? activeExternalBlockers(current.payload).filter(blocker => blocker.kind === 'human' &&
+                blocker.ref === clear.ref) : [];
+            const declaredHuman = laneHuman.length === 1 ? context.blockers.filter(blocker =>
+              blocker.kind === 'human' && blocker.status === 'active' && blocker.ref === laneHuman[0].ref) : [];
+            const clearingBlockedPark = payload?.planLaneParkedFrom === 'blocked' &&
+              laneHuman.length === 1 && declaredHuman.length === 1 &&
+              isDeepStrictEqual(laneHuman[0], declaredHuman[0]) && context.authorizeAuthorityClear &&
+              await context.authorizeAuthorityClear(laneHuman[0], clear?.ownerTurnRef);
+            if (!payload || (!['open', 'todo', 'wip'].includes(String(payload.planLaneParkedFrom)) &&
+                !(payload.planLaneParkedFrom === 'blocked' && (reopeningBlockedPark || clearingBlockedPark)))) {
               return unknown('generated lane lacks actionable pre-park provenance');
             }
             const hold = readWorkItemClaimHoldProvenance(current.payload);
@@ -781,11 +842,22 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
         }
         case 'authority': {
           const raw = ref.ref.replace(/^authority:/, '');
-          const blocker = context.blockers.find((entry) => entry.ref === raw && entry.status === 'active');
+          const matches = context.blockers.filter((entry) => entry.ref === raw && entry.status === 'active');
+          if (matches.length > 1) return unknown('authority ref identifies multiple active conditions');
+          const blocker = matches[0];
           if (!blocker || !['human', 'hold'].includes(blocker.kind)) return absent('no canonical human-capability or restriction blocker');
           const { externalBlockerCapabilityPolicy } = await import('./external-blockers');
           const policy = externalBlockerCapabilityPolicy(blocker.capability);
           if (blocker.kind !== 'hold' && !policy.requiresOwnerCapability) return absent('capability is agent-resolvable');
+          const clear = context.authorityClear;
+          if (clear?.kind === blocker.kind && clear.ref === blocker.ref && context.authorizeAuthorityClear &&
+              context.workspaceId && activeWorkspaceId() === context.workspaceId &&
+              context.ownerId && context.custodianId === context.ownerId &&
+              await context.authorizeAuthorityClear(blocker, clear.ownerTurnRef)) {
+            return { status: 'available', subjectWorkItemId: context.workItemId, condition: 'satisfied',
+              conditionIdentity: JSON.stringify(['authority-clear', context.workspaceId, context.harnessSlug,
+                context.workItemId, blocker.kind, blocker.ref, blocker.updatedAt, clear.ownerTurnRef ?? null]) };
+          }
           return { status: 'available', subjectWorkItemId: context.workItemId, condition: 'pending',
             authorityDenied: true, humanAction: blocker.kind === 'human', unsafeToAttempt: true,
             responsibleParty: blocker.kind === 'hold' ? blocker.createdBy : policy.resolutionOwner };

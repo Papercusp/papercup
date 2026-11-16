@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createBlockerEvidenceReader, preflightBlockerDecision } from './blocker-resolution-evidence';
+import { blockerBoundaryContext, createBlockerEvidenceReader, preflightBlockerDecision } from './blocker-resolution-evidence';
 import { prepareBlockerDecision } from './blocker-resolution-decision';
 import { activeExternalBlockers } from './external-blockers';
 import { runWithWorkspace } from './workspace-als';
@@ -13,9 +13,13 @@ import type { PlanRow } from './agent-tools/plans/source';
 const mocks = vi.hoisted(() => ({ item: vi.fn(), presence: vi.fn(), cell: vi.fn(), event: vi.fn(),
   doc: vi.fn(), session: vi.fn(), test: vi.fn(), deps: vi.fn(async (): Promise<UnresolvedDepBlocker[]> => []),
   workspace: vi.fn(() => 'workspace-a'), hoist: vi.fn((): string | null => null), runtime: vi.fn(),
-  hold: vi.fn(), parked: vi.fn(), nodes: vi.fn(), plan: vi.fn(), scorecard: vi.fn(), rubric: vi.fn(), vetting: vi.fn() }));
+  hold: vi.fn(), parked: vi.fn(), nodes: vi.fn(), plan: vi.fn(), scorecard: vi.fn(), rubric: vi.fn(), vetting: vi.fn(),
+  ownerTurn: vi.fn(), lift: vi.fn() }));
+vi.mock('./agent-tools/plans/decision-provenance-record', () => ({ resolveDecisionProvenance: mocks.ownerTurn }));
+vi.mock('./agent-tools/work_items/set-blocker-hold', () => ({ checkHoldLift: mocks.lift }));
 vi.mock('./runtime-blocker-condition', () => ({ readRuntimeBlockerCondition: mocks.runtime }));
-vi.mock('./workspace-registry', () => ({ activeWorkspaceId: mocks.workspace }));
+vi.mock('./workspace-registry', () => ({ activeWorkspaceId: mocks.workspace,
+  resolveConcreteWorkspaceId: (id: string) => id }));
 vi.mock('./work-items', () => ({ getWorkItem: mocks.item, readUnresolvedDepBlockers: mocks.deps,
   readWorkItemClaimHoldProvenance: mocks.hold, isClaimHoldParked: mocks.parked }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...(await importOriginal<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: {} }) }));
@@ -617,6 +621,69 @@ describe('system-derived plan-lane evidence', () => {
     expect(await preflightBlockerDecision(item, decision(), { ...context(), sessionId: ctx.ownerId }, options))
       .toMatchObject({ ok: false, missing: expect.arrayContaining(['unresolved canonical condition event:fixture:external']) });
   });
+  it.each(['todo', 'wip'] as const)('reconciles an already blocked pre-park lane through its exact %s CAS', async status => {
+    const current = subject();
+    current.payload.planLaneParkedFrom = 'blocked';
+    mocks.item.mockResolvedValue(current);
+    const before = structuredClone(current);
+    expect(await read()).toMatchObject({ status: 'unknown' });
+    expect(await preflightBlockerDecision(current, decision(), { ...context(), sessionId: ctx.ownerId },
+      { effect: reopenEffect(status) })).toMatchObject({ ok: true });
+    expect(current).toEqual(before);
+    const pending = plan();
+    pending.items[0].storedStatus = 'wip';
+    mocks.plan.mockResolvedValue(pending);
+    expect(await preflightBlockerDecision(current, decision(), { ...context(), sessionId: ctx.ownerId },
+      { effect: reopenEffect(status) })).toMatchObject({ ok: false });
+  });
+  it('reconciles a blocked pre-park lane only for its exact authenticated human clearance', async () => {
+    const ownerTurnRef = '[turn:abcdef12@2026-11-16T01:00:00Z]';
+    const human = { ...gate, kind: 'human' as const, capability: 'external-service-action' as const,
+      ref: 'recovery#P-002', createdBy: 'su-other' };
+    const authority = { kind: 'authority' as const, ref: human.ref };
+    const current = { ...subject(), payload: { planLaneParkedFrom: 'blocked', externalBlockers: [gate, human] } };
+    mocks.item.mockResolvedValue(current);
+    mocks.ownerTurn.mockReset().mockResolvedValue({ ok: true, provenance: {
+      kind: 'owner', agentId: ctx.ownerId, ownerTurnRef, ownerTurnVerdict: 'owner-typed' } });
+    const host = await blockerBoundaryContext({ workspaceId: ctx.workspaceId, role: 'su' }, ctx.ownerId, ctx.harnessSlug);
+    const input = { ...decision(), evidenceRefs: [ref, authority],
+      verification: { outcome: 'Exact later owner release and settled prerequisites', evidenceRefs: [ref, authority] } };
+    const clear = { id: current.id, harness: current.harness, kind: 'human', ref: human.ref, clear: true, ownerTurnRef };
+    const before = structuredClone(current);
+    expect(await preflightBlockerDecision(current, input, host, { effect: { setBlocker: clear } }))
+      .toMatchObject({ ok: true });
+    expect(current).toEqual(before);
+    expect(await read()).toMatchObject({ status: 'unknown' });
+    for (const change of [{ clear: false }, { ref: 'other#P-002' }, { id: 'WI-other' },
+      { ownerTurnRef: undefined }]) {
+      expect(await preflightBlockerDecision(current, input, host, { effect: { setBlocker: { ...clear, ...change } } }))
+        .toMatchObject({ ok: false });
+    }
+    for (const verdict of [{ ok: false }, { ok: true, provenance: { kind: 'owner', agentId: 'su-other', ownerTurnRef } },
+      { ok: true, provenance: { kind: 'owner', agentId: ctx.ownerId, ownerTurnRef: '[turn:abcdef12@2026-09-01T01:00:00Z]' } }]) {
+      mocks.ownerTurn.mockResolvedValue(verdict);
+      expect(await preflightBlockerDecision(current, input, host, { effect: { setBlocker: clear } }))
+        .toMatchObject({ ok: false });
+    }
+  });
+  it('retains independent conditions and malformed pre-park provenance on deliberate reconciliation', async () => {
+    for (const previous of [undefined, 'done', 'needs-human', 'unknown']) {
+      const current = { ...subject(), payload: { ...subject().payload, planLaneParkedFrom: previous } };
+      mocks.item.mockResolvedValue(current);
+      expect(await preflightBlockerDecision(current, decision(), { ...context(), sessionId: ctx.ownerId },
+        { effect: reopenEffect('wip') })).toMatchObject({ ok: false });
+    }
+    const external = { ...gate, ref: 'fixture:independent', createdBy: 'su-other' };
+    const current = { ...subject(), payload: { planLaneParkedFrom: 'blocked', externalBlockers: [gate, external] } };
+    mocks.item.mockResolvedValue(current);
+    mocks.event.mockResolvedValue({ authoritative: true, verdict: 'reachable', basis: 'announced' });
+    expect(await preflightBlockerDecision(current, decision(), { ...context(), sessionId: ctx.ownerId },
+      { effect: reopenEffect('wip') })).toMatchObject({ ok: false,
+      missing: expect.arrayContaining(['unresolved canonical condition event:fixture:independent']) });
+    mocks.hold.mockReturnValue({ parked: { by: 'su-other' }, heldOpen: null, attributed: true });
+    expect(await preflightBlockerDecision(current, decision(), { ...context(), sessionId: ctx.ownerId },
+      { effect: reopenEffect('wip') })).toMatchObject({ ok: false });
+  });
   it.each([
     { plan: 'other', itemId: 'P-002', expectedStatus: 'blocked', status: 'wip' },
     { plan: 'recovery', itemId: 'P-003', expectedStatus: 'blocked', status: 'wip' },
@@ -989,6 +1056,120 @@ describe('unmeasured runtime plain public release', () => {
     const input = decision();
     expect(await preflightBlockerDecision(item, { ...input, evidenceRefs: [...input.evidenceRefs,
       { kind, ref: kind === 'test' ? 'testing:runs:unknown:42' : 'unknown' }] }, context, options)).toMatchObject({ ok: false });
+  });
+});
+
+describe('authenticated authority blocker clearance', () => {
+  const ownerTurnRef = '[turn:abcdef12@2026-11-16T01:00:00Z]';
+  const blocker = { kind: 'human' as const, capability: 'external-service-action' as const,
+    capabilitySource: 'explicit' as const, summary: 'Owner acceptance before cloud cutover',
+    ref: 'acceptance:cloud', status: 'active' as const, createdBy: 'su-b',
+    createdAt: '2026-09-07T01:00:00Z', updatedAt: '2026-09-07T01:00:00Z' };
+  const item = { id: 'WI-1', harness: 'harness-a', state: 'blocked', assignee: 'su-a',
+    payload: { externalBlockers: [blocker] } };
+  const ref = { kind: 'authority' as const, ref: blocker.ref };
+  const decision = { schemaVersion: 1 as const, idempotencyKey: 'owner-clear-1', symptom: 'Owner acceptance pending',
+    investigation: [{ action: 'Read the later owner release', outcome: 'Owner superseded the acceptance requirement', evidenceRefs: [ref] }],
+    attempts: [], evidenceRefs: [ref], disposition: 'self_resolve' as const,
+    verification: { outcome: 'Exact clear authorized by verified owner turn', evidenceRefs: [ref] } };
+  const request = { id: item.id, harness: item.harness, clear: true, kind: 'human', ref: blocker.ref, ownerTurnRef };
+  const host = { workspaceId: 'workspace-a', role: 'su' };
+  const context = () => blockerBoundaryContext(host, 'su-a', 'harness-a');
+
+  beforeEach(() => {
+    mocks.workspace.mockReturnValue('workspace-a');
+    mocks.deps.mockResolvedValue([]);
+    mocks.ownerTurn.mockReset().mockResolvedValue({ ok: true, provenance: {
+      kind: 'owner', agentId: 'su-a', ownerTurnRef, ownerTurnVerdict: 'owner-typed' } });
+    mocks.lift.mockReset().mockResolvedValue({ ok: true });
+  });
+
+  it('measures an exact human clear through the existing authenticated owner verifier', async () => {
+    expect(await createBlockerEvidenceReader({ ...ctx, custodianId: 'su-a', blockers: [blocker] })(ref))
+      .toMatchObject({ condition: 'pending', authorityDenied: true });
+    expect(await preflightBlockerDecision(item, decision, await context(), { effect: { setBlocker: request } }))
+      .toMatchObject({ ok: true });
+    expect(mocks.ownerTurn).toHaveBeenCalledWith({ kind: 'owner', turnRef: ownerTurnRef }, '', host);
+  });
+
+  it.each([{}, { ref: undefined, kind: undefined }, { kind: undefined }])('supports the public clear identity inference %j', async change => {
+    expect(await preflightBlockerDecision(item, decision, await context(), { effect: { setBlocker: { ...request, ...change } } }))
+      .toMatchObject({ ok: true });
+  });
+
+  it.each([
+    { ok: false, error: 'provenance_owner_turn_unverified' },
+    { ok: false, error: 'provenance_owner_turn_not_owner' },
+    { ok: true, provenance: { kind: 'agent', agentId: 'su-a' } },
+    { ok: true, provenance: { kind: 'owner', agentId: 'su-a', ownerTurnRef: '[turn:abcdef12@2026-09-01T01:00:00Z]' } },
+    { ok: true, provenance: { kind: 'owner', agentId: 'su-b', ownerTurnRef } },
+  ])('retains the blocker without a verified later owner release: %j', async verdict => {
+    mocks.ownerTurn.mockResolvedValue(verdict);
+    expect(await preflightBlockerDecision(item, decision, await context(), { effect: { setBlocker: request } }))
+      .toMatchObject({ ok: false });
+  });
+
+  it('fails closed when owner verification is unavailable', async () => {
+    mocks.ownerTurn.mockRejectedValue(new Error('transcript unavailable'));
+    expect(await preflightBlockerDecision(item, decision, await context(), { effect: { setBlocker: request } }))
+      .toMatchObject({ ok: false });
+  });
+
+  it.each([
+    { state: 'wip' }, { release: true }, { setBlocker: { ...request, clear: false } },
+    { setBlocker: { ...request, id: 'WI-2' } }, { setBlocker: { ...request, harness: 'harness-b' } },
+    { setBlocker: { ...request, ref: 'another-condition' } },
+    { setBlocker: { ...request, ownerTurnRef: undefined } },
+    { setBlocker: request, force: true },
+  ])('does not promote an owner citation on another lifecycle effect %j', async effect => {
+    expect(await preflightBlockerDecision(item, decision, await context(), { effect }))
+      .toMatchObject({ ok: false });
+    expect(mocks.ownerTurn).not.toHaveBeenCalled();
+  });
+
+  it('preserves independent authority conditions, custody and tenant boundaries', async () => {
+    const other = { ...blocker, ref: 'acceptance:another' };
+    expect(await preflightBlockerDecision({ ...item, payload: { externalBlockers: [blocker, other] } },
+      decision, await context(), { effect: { setBlocker: request } })).toMatchObject({ ok: false });
+    expect(await preflightBlockerDecision({ ...item, assignee: 'su-b' }, decision, await context(),
+      { effect: { setBlocker: request } })).toMatchObject({ ok: false });
+    const foreign = { ...await context(), workspaceId: 'workspace-b' };
+    expect(await preflightBlockerDecision(item, decision, foreign, { effect: { setBlocker: request } }))
+      .toMatchObject({ ok: false });
+  });
+
+  it('does not use an earlier owner turn for a reasserted or malformed blocker', async () => {
+    for (const change of [{ updatedAt: '2026-11-16T02:00:00Z' }, { updatedAt: 'invalid' },
+      { createdAt: 'invalid' }]) {
+      expect(await preflightBlockerDecision({ ...item, payload: { externalBlockers: [{ ...blocker, ...change }] } },
+        decision, await context(), { effect: { setBlocker: request } })).toMatchObject({ ok: false });
+    }
+  });
+
+  it('cannot infer a clear across ambiguous active identities', async () => {
+    const other = { ...blocker, kind: 'hold' as const, capability: 'restriction-hold' as const };
+    expect(await preflightBlockerDecision({ ...item, payload: { externalBlockers: [blocker, other] } },
+      decision, await context(), { effect: { setBlocker: { ...request, kind: undefined } } }))
+      .toMatchObject({ ok: false });
+    expect(mocks.ownerTurn).not.toHaveBeenCalled();
+    expect(mocks.lift).not.toHaveBeenCalled();
+    expect(await preflightBlockerDecision({ ...item, payload: { externalBlockers: [blocker, other] } },
+      decision, await context(), { effect: { setBlocker: request } })).toMatchObject({ ok: false });
+  });
+
+  it('uses the existing lift policy for an exact hold and cannot clear an independent hold', async () => {
+    const hold = { ...blocker, kind: 'hold' as const, capability: 'restriction-hold' as const,
+      hold: { placedBy: 'agent' } };
+    const held = { ...item, payload: { externalBlockers: [hold] } };
+    const clear = { ...request, kind: 'hold', ownerTurnRef: undefined };
+    expect(await preflightBlockerDecision(held, decision, await context(), { effect: { setBlocker: clear } }))
+      .toMatchObject({ ok: true });
+    expect(mocks.lift).toHaveBeenCalledWith(hold.hold, { ownerTurnRef: undefined, ctx: host });
+    mocks.lift.mockResolvedValue({ ok: false });
+    expect(await preflightBlockerDecision(held, decision, await context(), { effect: { setBlocker: clear } }))
+      .toMatchObject({ ok: false });
+    expect(await preflightBlockerDecision(held, decision, await context(), { effect: { setBlocker: request } }))
+      .toMatchObject({ ok: false });
   });
 });
 

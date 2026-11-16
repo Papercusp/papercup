@@ -21,7 +21,9 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { z } from 'zod';
+import { canonicalJson } from '@papercusp/hash-chain';
 import { getOrgPg } from '@papercusp/db-org';
 import { closeSync, constants, openSync } from 'node:fs';
 import { open, readFile, readdir, rm } from 'node:fs/promises';
@@ -37,6 +39,7 @@ import {
 } from '@papercusp/test-config/execution-details';
 import {
   captureConfigurationSnapshot,
+  readConfigurationSnapshot,
   type ConfigurationSnapshot,
 } from '@papercusp/test-config/configuration-snapshot';
 import { isSensitiveValueKey, redactSensitiveText, redactSensitiveValue, SELF_IDENTIFYING_SECRET_PATTERN } from './sensitive-text';
@@ -270,14 +273,20 @@ function snapshotQueryFailure(error: unknown, phase: SnapshotQueryFailure['phase
 async function boundedSnapshotQuery<T>(
   query: PromiseLike<unknown>,
   onFailure?: (failure: SnapshotQueryFailure) => void,
+  onLateResult?: (result: T) => Promise<void>,
 ): Promise<T | null> {
   const deadlineError = new Error('testing_run_snapshot_query_timeout');
+  const resultPromise = Promise.resolve(query);
+  let deadlineElapsed = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const result = await Promise.race([
-      Promise.resolve(query),
+      resultPromise,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(deadlineError), SNAPSHOT_PERSIST_TIMEOUT_MS);
+        timer = setTimeout(() => {
+          deadlineElapsed = true;
+          reject(deadlineError);
+        }, SNAPSHOT_PERSIST_TIMEOUT_MS);
       }),
     ]);
     return result as T;
@@ -290,6 +299,12 @@ async function boundedSnapshotQuery<T>(
     return null;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+    // The response deadline does not cancel postgres-js. Preserve a successful
+    // late read for the caller's guarded reconciliation instead of discarding it.
+    // Failure leaves the durable pending receipt available to the next read.
+    if (deadlineElapsed && onLateResult) {
+      void resultPromise.then(result => onLateResult(result as T)).catch(() => undefined);
+    }
   }
 }
 
@@ -536,7 +551,7 @@ export async function persistRunSnapshotWithRetry(
   }
 }
 
-async function prunePersistedRunSnapshots(sqlOverride?: SqlLike): Promise<void> {
+export async function prunePersistedRunSnapshots(sqlOverride?: SqlLike): Promise<void> {
   if (!snapshotPersistenceEnabled(sqlOverride)) return;
   const sql = await snapshotSql(sqlOverride);
   if (!sql) return;
@@ -544,6 +559,7 @@ async function prunePersistedRunSnapshots(sqlOverride?: SqlLike): Promise<void> 
     DELETE FROM harness_shared.testing_run_snapshots
      WHERE finished_at IS NOT NULL
        AND finished_at < now() - interval '1 hour'
+       AND documentation_input IS NULL
   `);
 }
 
@@ -1115,6 +1131,7 @@ async function readPersistedTestRunLedgerRows(
   runId: string,
   sql: SqlLike,
   onFailure?: (failure: SnapshotQueryFailure) => void,
+  onLateRows?: (rows: PersistedTestRunRow[]) => Promise<void>,
 ): Promise<PersistedTestRunRow[] | null> {
   let query: PromiseLike<unknown>;
   try {
@@ -1129,7 +1146,7 @@ async function readPersistedTestRunLedgerRows(
     onFailure?.(snapshotQueryFailure(error, 'construction'));
     return null;
   }
-  return boundedSnapshotQuery<PersistedTestRunRow[]>(query, onFailure);
+  return boundedSnapshotQuery<PersistedTestRunRow[]>(query, onFailure, onLateRows);
 }
 
 function deriveDetachedRunLedgerRecovery(
@@ -1359,6 +1376,8 @@ async function persistReconciledSnapshot(
          AND status = ${original.status}
          AND exit_code IS NOT DISTINCT FROM ${original.exitCode}
          AND finished_at IS NOT DISTINCT FROM ${original.finishedAt === null ? null : new Date(original.finishedAt).toISOString()}::timestamptz
+         AND output = ${original.output}
+         AND truncated = ${original.truncated}
        RETURNING run_id
     `;
   } catch {
@@ -1943,6 +1962,7 @@ interface PreparedRun {
 function prepareRun(
   req: SpawnRequest,
   snapshots?: Pick<PreparedRun, 'cwd' | 'worktreeBefore' | 'detachedReportArtifacts'>,
+  inheritedEnvironment: NodeJS.ProcessEnv = process.env,
 ): PreparedRun {
   if (!snapshots) evictOldRuns();
   const runId = randomUUID();
@@ -1991,7 +2011,7 @@ function prepareRun(
     ? preparedDetachedReportArtifacts.map((artifact) => ({ ...artifact, ...detachedOutputPaths }))
     : preparedDetachedReportArtifacts;
   const childEnv: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...inheritedEnvironment,
     ...req.env,
     PAPERCUSP_TEST_RUN_GROUP: runId,
     // P-004 (deterministic-coverage-census): arm coverage attribution, so an admin-UI
@@ -2065,7 +2085,7 @@ function prepareRun(
   };
 }
 
-async function prepareRunAsync(req: SpawnRequest): Promise<PreparedRun> {
+async function prepareRunAsync(req: SpawnRequest, inheritedEnvironment?: NodeJS.ProcessEnv): Promise<PreparedRun> {
   evictOldRuns();
   // Resolve provenance before spawning, but await the sidecar-backed Git reads
   // so a slow checkout cannot freeze the operator host's request loop.
@@ -2075,7 +2095,158 @@ async function prepareRunAsync(req: SpawnRequest): Promise<PreparedRun> {
     ...artifact,
     worktreeBefore: artifact.root === cwd ? worktreeBefore : await captureWorktreeSnapshotAsync(artifact.root),
   })));
-  return prepareRun(req, { cwd, worktreeBefore, detachedReportArtifacts });
+  return prepareRun(req, { cwd, worktreeBefore, detachedReportArtifacts }, inheritedEnvironment);
+}
+
+/** Immutable launch input for the documentation admission transaction. Source
+ * and configuration observations retain their existing, bounded meanings. */
+export interface DocumentationRunInput {
+  readonly runId: string;
+  readonly taskId: string | null;
+  readonly startedAt: number;
+  readonly kind: RunSnapshot['kind'];
+  readonly label: string;
+  readonly filePath: string | null;
+  readonly command: readonly string[];
+  readonly requestedFiles: readonly string[];
+  readonly cwd: string;
+  readonly source: Readonly<WorktreeGitSnapshot>;
+  readonly configuration: {
+    readonly schemaVersion: 1;
+    readonly flagEnv: Readonly<Record<string, string>>;
+    readonly envSha256: Readonly<Record<string, string>>;
+    readonly fingerprint: string;
+  };
+}
+
+const documentationRunInputSchema = z.object({
+  runId: z.string().min(1), taskId: z.string().nullable(),
+  startedAt: z.number().int().nonnegative().max(8_640_000_000_000_000),
+  kind: z.enum(['vitest', 'playwright', 'cargo', 'node', 'shell', 'admin-suite']),
+  label: z.string(), filePath: z.string().nullable(),
+  command: z.array(z.string()).min(1), requestedFiles: z.array(z.string()), cwd: z.string().min(1),
+  source: z.object({ commit: z.string().nullable(), porcelain: z.string().nullable(),
+    provenanceError: z.string().optional() }).strict(),
+  configuration: z.object({ schemaVersion: z.literal(1),
+    flagEnv: z.record(z.string(), z.string()), envSha256: z.record(z.string(), z.string()),
+    fingerprint: z.string(),
+  }).strict().refine(value => readConfigurationSnapshot(value) !== null),
+}).strict();
+
+export type DocumentationRunInputRead =
+  | { status: 'found'; input: DocumentationRunInput; inputSha256: string }
+  | { status: 'absent' | 'invalid' | 'unavailable' };
+
+/** Resolve only this exact persisted run. A valid input is supporting storage
+ * evidence, not capture admission, currentness, nonce ownership or acceptance.
+ * Keep unavailable distinct from absent and never use the in-memory run map as
+ * a fallback: it cannot establish that the input transaction committed. */
+export async function readDocumentationRunInput(sql: SqlLike, runId: string): Promise<DocumentationRunInputRead> {
+  if (!runId) return { status: 'invalid' };
+  let rows: unknown;
+  try {
+    rows = await sql`SELECT run_id, kind, label, file_path, command, task_id, started_at, documentation_input
+      FROM harness_shared.testing_run_snapshots WHERE run_id = ${runId}`;
+  } catch {
+    return { status: 'unavailable' };
+  }
+  if (!Array.isArray(rows)) return { status: 'unavailable' };
+  if (rows.length === 0) return { status: 'absent' };
+  if (rows.length !== 1 || !rows[0] || typeof rows[0] !== 'object') return { status: 'invalid' };
+  const row = rows[0] as Record<string, unknown>;
+  const parsed = z.object({ schemaVersion: z.literal(1), input: documentationRunInputSchema,
+    inputSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  }).strict().safeParse(row.documentation_input);
+  if (!parsed.success) return { status: 'invalid' };
+  const { input, inputSha256 } = parsed.data;
+  const startedAt = row.started_at instanceof Date ? row.started_at.getTime()
+    : typeof row.started_at === 'string' ? Date.parse(row.started_at) : NaN;
+  if (input.runId !== runId || row.run_id !== runId || input.kind !== row.kind
+    || input.label !== row.label || input.filePath !== row.file_path || input.taskId !== row.task_id
+    || input.startedAt !== startedAt || !Array.isArray(row.command)
+    || row.command.some(value => typeof value !== 'string')
+    || canonicalJson(input.command) !== canonicalJson(row.command)
+    || createHash('sha256').update(canonicalJson(input)).digest('hex') !== inputSha256)
+    return { status: 'invalid' };
+  return { status: 'found', input, inputSha256 };
+}
+
+/** Insert through the admission transaction's client, without an upsert or a
+ * fail-soft timeout. The caller must commit that transaction before launching.
+ * This primitive stores input only; it cannot validate a capture or admit one. */
+export async function insertDocumentationRunInput(sql: SqlLike, input: DocumentationRunInput): Promise<void> {
+  const frozenInput = JSON.parse(canonicalJson(input)) as DocumentationRunInput;
+  const inputSha256 = createHash('sha256').update(canonicalJson(frozenInput)).digest('hex');
+  await sql`
+    INSERT INTO harness_shared.testing_run_snapshots
+      (run_id, kind, label, file_path, command, status, exit_code, started_at,
+       finished_at, output, truncated, task_id, documentation_input)
+    VALUES (${frozenInput.runId}, ${frozenInput.kind}, ${frozenInput.label}, ${frozenInput.filePath},
+      ${JSON.stringify(frozenInput.command)}::jsonb, 'running', NULL,
+      ${new Date(frozenInput.startedAt).toISOString()}, NULL, '', FALSE, ${frozenInput.taskId},
+      ${JSON.stringify({ schemaVersion: 1, input: frozenInput, inputSha256 })}::jsonb)
+  `;
+}
+
+/**
+ * Preparation seam for P-017's documentation-only launch path. The trusted
+ * admission callback must return only AFTER committing capture admission and
+ * this exact input in one transaction. This seam does not supply that
+ * transaction, a durable nonce claim, or independent acceptance authority.
+ * Ordinary startRun/startRunDurable retain their historical launch ordering.
+ */
+export async function prepareDocumentationProofRun(req: SpawnRequest) {
+  // Copy before the first await, including the inherited environment: neither
+  // caller mutations nor later host-env changes may reinterpret admitted input.
+  const request = structuredClone(req);
+  const inheritedEnvironment = { ...process.env };
+  const prepared = await prepareRunAsync(request, inheritedEnvironment);
+  const { snapshot, configurationSnapshot } = prepared;
+  const input: DocumentationRunInput = Object.freeze({
+    runId: snapshot.runId, taskId: snapshot.taskId ?? null, startedAt: snapshot.startedAt,
+    kind: snapshot.kind, command: Object.freeze([...snapshot.command]),
+    label: snapshot.label, filePath: snapshot.filePath ?? null,
+    requestedFiles: Object.freeze([...(snapshot.requestedFiles ?? [])]), cwd: prepared.cwd,
+    source: Object.freeze({ ...prepared.worktreeBefore }),
+    configuration: Object.freeze({
+      ...configurationSnapshot,
+      flagEnv: Object.freeze({ ...configurationSnapshot.flagEnv }),
+      envSha256: Object.freeze({ ...configurationSnapshot.envSha256 }),
+    }),
+  });
+  const inputSha256 = createHash('sha256').update(canonicalJson(input)).digest('hex');
+  let state: 'prepared' | 'admitting' | 'started' | 'discarded' = 'prepared';
+  const discard = () => {
+    if (state === 'started' || state === 'discarded') return;
+    state = 'discarded';
+    prepared.enrolment.releaseEnvironmentTransport();
+    finishSyncEnrolment(prepared.enrolment, {
+      state: 'exited', exitCode: null, exitReason: 'documentation run discarded before spawn',
+    }, { scopeCgroupPath: prepared.scopeCgroupPath });
+  };
+  return Object.freeze({
+    input, inputSha256, discard,
+    async start(
+      commitAdmission: (input: DocumentationRunInput, inputSha256: string) => Promise<void>,
+      signal?: AbortSignal,
+    ): Promise<RunSnapshot> {
+      if (state !== 'prepared') throw new Error('documentation run preparation already consumed');
+      state = 'admitting';
+      try {
+        signal?.throwIfAborted();
+        await commitAdmission(input, inputSha256);
+        signal?.throwIfAborted();
+        if (state !== 'admitting') throw new Error('documentation run discarded during admission');
+        state = 'started';
+        // Admission owns initial persistence. Lifecycle writes remain on the
+        // existing run-store path; immutable DB updates are a separate P-017 obligation.
+        return launchPreparedRun(prepared, { persistInitialSnapshot: false });
+      } catch (error) {
+        discard();
+        throw error;
+      }
+    },
+  });
 }
 
 async function retainDetachedReportEvidence(
@@ -2704,6 +2875,7 @@ async function withholdUnverifiedVitestPass(
   snapshot: RunSnapshot,
   sqlOverride?: SqlLike,
   observedTask?: PersistedDetachedTaskRow | null,
+  reconcileLateRead = true,
 ): Promise<RunSnapshot> {
   const withheldPass = isWithheldUnverifiedVitestPass(snapshot);
   if (snapshot.kind !== 'vitest' || (snapshot.status !== 'pass' && !withheldPass)) return snapshot;
@@ -2717,76 +2889,102 @@ async function withholdUnverifiedVitestPass(
   let ledgerReadFailure: SnapshotQueryFailure | undefined;
   let task: PersistedDetachedTaskRow | null = null;
   let provisionalVerdict: ProvisionalTestVerdict | null = null;
-  if (requestedFiles && sql) {
-    const rows = await readPersistedTestRunLedgerRows(snapshot.runId, sql, failure => { ledgerReadFailure = failure; });
-    const recovery = rows ? deriveDetachedRunLedgerRecovery(snapshot.runId, rows) : null;
-    ledgerRowCount = rows?.length ?? null;
-    ledgerStatus = recovery?.status ?? null;
-    reason = rows === null ? 'ledger-read-unavailable'
-      : rows.length === 0 ? 'ledger-empty'
-      : !recovery ? 'ledger-verdict-unavailable'
-      : recovery.status !== 'pass' ? 'ledger-not-passed'
-      : 'exact-file-coverage-unverified';
-    if (recovery?.status === 'pass') {
-      const lookup: DetachedTaskLedgerLookup = observedTask === undefined
-        ? await readPersistedDetachedTask(snapshot.runId, sql)
-        : observedTask ? { kind: 'found', task: observedTask } : { kind: 'absent' };
-      task = lookup.kind === 'found' ? lookup.task : null;
-      const rootBoundFiles = rootBoundRequestedFilesFromValue(task?.detached_report_artifacts);
-      const coverageRequestedFiles = requestedFilesForCoverage(rootBoundFiles, requestedFiles);
-      // hasExactPassedFileCoverage already returns false for null; the explicit
-      // guard narrows the type for provisionalVerdictFromLedger below.
-      if (coverageRequestedFiles && hasExactPassedFileCoverage(coverageRequestedFiles, recovery.files, task?.cwd, rootBoundFiles)) {
-        provisionalVerdict = provisionalVerdictFromLedger(
-          coverageRequestedFiles, recovery, task?.cwd, rootBoundFiles,
-        );
-        // Reporter rows measure assertions. They cannot erase a timeout or a
-        // failed outer finalization, including when late rows fill a coverage gap.
-        // Preserve an existing reporter PASS with unknown process exit. A
-        // withheld/error snapshot and child output cannot establish that verdict.
-        const reportOnlyPass = task?.state === 'ended_unobserved' && task.exit_code === null
-          && snapshot.status === 'pass' && snapshot.exitCode === null;
-        if (lookup.kind === 'unavailable' || lookup.kind === 'ambiguous') {
-          reason = 'task-store-unavailable';
-        } else if (!reportOnlyPass
-          && !taskAllowsDetachedLedgerRecovery(task, Boolean(snapshot.taskId) || lookup.kind === 'found', 'pass')) {
-          reason = 'task-verdict-not-passed';
-        } else {
-          if (!withheldPass) return snapshot;
-          const restored: RunSnapshot = {
-            ...snapshot,
-            status: 'pass',
-            exitCode: reportOnlyPass ? null : recovery.exitCode,
-            finishedAt: recovery.finishedAt,
-            output: snapshot.output.replace(
-              UNVERIFIED_VITEST_PASS_NOTE,
-              '\n[detached-recovery] recovered pass from exact requested-file ledger rows.\n',
-            ).replace(VITEST_COVERAGE_DIAGNOSTIC_RE, ''),
-          };
-          return persistReconciledSnapshot(snapshot, restored, sql);
+  let acknowledgePendingReceipt: ((pending: RunSnapshot | null) => void) | undefined;
+  try {
+    if (requestedFiles && sql) {
+      const pendingReceipt = new Promise<RunSnapshot | null>(resolve => { acknowledgePendingReceipt = resolve; });
+      const rows = await readPersistedTestRunLedgerRows(
+        snapshot.runId, sql, failure => { ledgerReadFailure = failure; }, reconcileLateRead ? async () => {
+          // Wait for the unknown receipt to commit before attempting its CAS.
+          // A late success triggers ONE fresh verification, including fresh task
+          // state. Its old rows cannot override newer ledger evidence. Disable
+          // further continuations so another slow read never creates a retry loop.
+          const pending = await pendingReceipt;
+          if (!pending) return;
+          const reconciled = await withholdUnverifiedVitestPass(pending, sql, undefined, false);
+          const local = _runs.get(snapshot.runId);
+          if (local && local.snapshot.status === pending.status
+            && local.snapshot.exitCode === pending.exitCode && local.snapshot.finishedAt === pending.finishedAt
+            && local.snapshot.output === pending.output) {
+            Object.assign(local.snapshot, reconciled);
+          }
+        } : undefined,
+      );
+      const recovery = rows ? deriveDetachedRunLedgerRecovery(snapshot.runId, rows) : null;
+      ledgerRowCount = rows?.length ?? null;
+      ledgerStatus = recovery?.status ?? null;
+      reason = rows === null ? 'ledger-read-unavailable'
+        : rows.length === 0 ? 'ledger-empty'
+        : !recovery ? 'ledger-verdict-unavailable'
+        : recovery.status !== 'pass' ? 'ledger-not-passed'
+        : 'exact-file-coverage-unverified';
+      if (recovery?.status === 'pass') {
+        const lookup: DetachedTaskLedgerLookup = observedTask === undefined
+          ? await readPersistedDetachedTask(snapshot.runId, sql)
+          : observedTask ? { kind: 'found', task: observedTask } : { kind: 'absent' };
+        task = lookup.kind === 'found' ? lookup.task : null;
+        const rootBoundFiles = rootBoundRequestedFilesFromValue(task?.detached_report_artifacts);
+        const coverageRequestedFiles = requestedFilesForCoverage(rootBoundFiles, requestedFiles);
+        // hasExactPassedFileCoverage already returns false for null; the explicit
+        // guard narrows the type for provisionalVerdictFromLedger below.
+        if (coverageRequestedFiles && hasExactPassedFileCoverage(coverageRequestedFiles, recovery.files, task?.cwd, rootBoundFiles)) {
+          provisionalVerdict = provisionalVerdictFromLedger(
+            coverageRequestedFiles, recovery, task?.cwd, rootBoundFiles,
+          );
+          // Reporter rows measure assertions. They cannot erase a timeout or a
+          // failed outer finalization, including when late rows fill a coverage gap.
+          // Preserve an existing reporter PASS with unknown process exit. A
+          // withheld/error snapshot and child output cannot establish that verdict.
+          const reportOnlyPass = task?.state === 'ended_unobserved' && task.exit_code === null
+            && snapshot.status === 'pass' && snapshot.exitCode === null;
+          if (lookup.kind === 'unavailable' || lookup.kind === 'ambiguous') {
+            reason = 'task-store-unavailable';
+          } else if (!reportOnlyPass
+            && !taskAllowsDetachedLedgerRecovery(task, Boolean(snapshot.taskId) || lookup.kind === 'found', 'pass')) {
+            reason = 'task-verdict-not-passed';
+          } else {
+            if (!withheldPass) return snapshot;
+            const restored: RunSnapshot = {
+              ...snapshot,
+              status: 'pass',
+              exitCode: reportOnlyPass ? null : recovery.exitCode,
+              finishedAt: recovery.finishedAt,
+              output: snapshot.output.replace(
+                UNVERIFIED_VITEST_PASS_NOTE,
+                '\n[detached-recovery] recovered pass from exact requested-file ledger rows.\n',
+              ).replace(VITEST_COVERAGE_DIAGNOSTIC_RE, ''),
+            };
+            return persistReconciledSnapshot(snapshot, restored, sql);
+          }
         }
       }
     }
-  }
 
-  // Keep the compatibility marker used for late-ledger recovery, but record
-  // the prerequisite measured by this read. A query failure is unavailable;
-  // it is never labelled a timeout without evidence from that query.
-  const unverified: RunSnapshot = {
-    ...snapshot, status: reason === 'ledger-read-unavailable' ? 'unknown' : 'error',
-    ...(task ? { exitCode: task.exit_code } : {}),
-    ...(provisionalVerdict ? { provisionalVerdict } : {}),
-    output: snapshot.output.replace(VITEST_COVERAGE_DIAGNOSTIC_RE, ''),
-  };
-  if (!withheldPass) appendSnapshotOutput(unverified, UNVERIFIED_VITEST_PASS_NOTE);
-  appendSnapshotOutput(unverified, '\n[coverage-gate:verification] ' + JSON.stringify({
-    reason, requestedFileCount: requestedFiles?.length ?? null, ledgerRowCount, ledgerStatus,
-    ...(task ? { taskState: task.state, taskExitCode: task.exit_code } : {}),
-    ...(ledgerReadFailure ? { ledgerReadFailure } : {}),
-  }) + '\n');
-  if (withheldPass && unverified.output === snapshot.output) return snapshot;
-  if (sql) await persistReconciledSnapshot(snapshot, unverified, sql);
-  return unverified;
+    // Keep the compatibility marker used for late-ledger recovery, but record
+    // the prerequisite measured by this read. A query failure is unavailable;
+    // it is never labelled a timeout without evidence from that query.
+    const unverified: RunSnapshot = {
+      ...snapshot, status: reason === 'ledger-read-unavailable' ? 'unknown' : 'error',
+      ...(task ? { exitCode: task.exit_code } : {}),
+      ...(provisionalVerdict ? { provisionalVerdict } : {}),
+      output: snapshot.output.replace(VITEST_COVERAGE_DIAGNOSTIC_RE, ''),
+    };
+    if (!withheldPass) appendSnapshotOutput(unverified, UNVERIFIED_VITEST_PASS_NOTE);
+    appendSnapshotOutput(unverified, '\n[coverage-gate:verification] ' + JSON.stringify({
+      reason, requestedFileCount: requestedFiles?.length ?? null, ledgerRowCount, ledgerStatus,
+      ...(task ? { taskState: task.state, taskExitCode: task.exit_code } : {}),
+      ...(ledgerReadFailure ? { ledgerReadFailure } : {}),
+    }) + '\n');
+    if (withheldPass && unverified.output === snapshot.output) {
+      acknowledgePendingReceipt?.(snapshot);
+      return snapshot;
+    }
+    const persisted = sql ? await persistReconciledSnapshot(snapshot, unverified, sql) : null;
+    acknowledgePendingReceipt?.(persisted === unverified ? unverified : null);
+    return unverified;
+  } finally {
+    acknowledgePendingReceipt?.(null);
+  }
 }
 
 /**
