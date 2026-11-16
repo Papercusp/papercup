@@ -2099,8 +2099,11 @@ RESTART_CONTROL_URL="$(resolve_staging_restart_control_url)" || exit 1
 
 # The ptool result may be lost when staging itself receives the request.
 log "requesting coordinated restart of $UNIT via dev:restart (git_sync_drain_sec=${GIT_SYNC_DRAIN_SEC}, max_drain_sec=${RESTART_MAX_DRAIN_SEC})"
-restart_result_file="$(mktemp)"
-restart_diagnostics_file="$(mktemp)"
+restart_log_root="${PAPERCUSP_HOME:-$HOME/.papercusp}/checkpoint-logs"
+mkdir -p "$restart_log_root"
+restart_result_file="$(mktemp "$restart_log_root/staging-restart-result.XXXXXX.log")"
+restart_diagnostics_file="$(mktemp "$restart_log_root/staging-restart-diagnostics.XXXXXX.log")"
+log "restart evidence files: receipt=$restart_result_file diagnostics=$restart_diagnostics_file (retained until exact-source readiness succeeds)"
 restart_tool_timeout_sec=350
 restart_tool_started_at="$(date +%s)"
 restart_tool_status=0
@@ -2159,7 +2162,6 @@ fi
 [ "$restart_tool_status" -ne 5 ] || restart_tool_status=0
 restart_result="$(cat "$restart_result_file" 2>/dev/null || true)"
 restart_diagnostics="$(cat "$restart_diagnostics_file" 2>/dev/null || true)"
-rm -f "$restart_result_file" "$restart_diagnostics_file"
 
 # Close the race where ptool exits as the new listener becomes ready.
 if [ "$restart_verified" -ne 1 ]; then
@@ -2174,7 +2176,7 @@ fi
 # above), so inspect the result rather than treating process status as the verdict. A verified coalesce is a
 # success: another recent restart already cycled the same service and the
 # cooldown prevents a redundant outage.
-restart_result_is_resource_draining_refusal() {
+restart_result_is_refusal() {
   printf '%s' "${1:-}" | node -e '
     let text = "";
     process.stdin.setEncoding("utf8");
@@ -2204,10 +2206,14 @@ restart_result_is_resource_draining_refusal() {
       if (end < 0) return process.exit(1);
       try {
         const result = JSON.parse(candidate.slice(start, end + 1));
-        process.exit(result?.ok === false && result?.reason === "resource_draining" ? 0 : 1);
+        const reason = process.argv[1];
+        const refused = result?.ok === false && (reason
+          ? result?.reason === reason
+          : result?.restarted === false && result?.restartScheduled !== true);
+        process.exit(refused ? 0 : 1);
       } catch { process.exit(1); }
     });
-  '
+  ' "${2:-}"
 }
 restart_failure_detail="$restart_result $restart_diagnostics"
 if [ "${#restart_failure_detail}" -gt 3000 ]; then
@@ -2218,7 +2224,7 @@ if [ "$restart_verified" -eq 1 ]; then
 elif [ "$restart_tool_status" -ne 0 ] && restart_result_is_pre_dispatch_refusal "$restart_result $restart_diagnostics"; then
   log "FATAL: coordinated dev:restart was refused before dispatch: ${restart_result:0:250} ${restart_diagnostics:0:250}"
   exit 1
-elif restart_result_is_resource_draining_refusal "$restart_result $restart_diagnostics"; then
+elif restart_result_is_refusal "$restart_result $restart_diagnostics" resource_draining; then
   age="$(current_commit_age_sec "$served_sha")"
   if [ "$age" -lt "$MAX_STALE_SEC" ] 2>/dev/null; then
     log "deferring restart — dev:restart delivered a resource_draining refusal; no restart was scheduled and :3170 serves a ${age}s-old build (< ${MAX_STALE_SEC}s ceiling). The next scheduled sync tick will retry through the canonical restart path. Refusal: ${restart_failure_detail:0:300}"
@@ -2240,6 +2246,12 @@ elif [ "$restart_tool_status" -ne 0 ] && printf '%s' "$restart_result $restart_d
     exit 0
   fi
   log "FATAL: coordinated dev:restart resource drain was refused; no restart scheduled (served build ${age}s old ≥ ${MAX_STALE_SEC}s ceiling): $restart_failure_detail"
+  exit 1
+elif restart_result_is_refusal "$restart_result $restart_diagnostics"; then
+  # A delivered refusal cannot produce a new listener. In particular, ptool
+  # prints MCP error receipts to stderr and exits 1; that is not a lost receipt.
+  # Preserve the complete files above and fail without a futile readiness wait.
+  log "FATAL: coordinated dev:restart refused; no restart scheduled: $restart_failure_detail"
   exit 1
 elif [ "$restart_tool_status" -ne 0 ]; then
   log "coordinated dev:restart returned no terminal receipt (exit $restart_tool_status); waiting for exact target health before deciding; diagnostics: $restart_failure_detail"
@@ -2283,6 +2295,7 @@ while [ "$readiness_elapsed_sec" -lt "$READINESS_TIMEOUT_SEC" ]; do
   if health_sha_matches_target "$last_health_sha" "$target" &&
      { [ "$restart_pending" -eq 0 ] || staging_restart_is_observed "$main_pid" "$observed_main_pid" "$last_health_sha" "$target"; }; then
     log "✅ :3170 healthy on exact staging source ${last_health_sha}"
+    rm -f "${restart_result_file:-}" "${restart_diagnostics_file:-}"
     staging_sync_mark_serving "$target"
     exit 0
   fi

@@ -609,6 +609,7 @@ export function resolveMcpProxyPort(env = process.env) {
 export const CURRENT_BUILD_DEFAULT_TOOLS = Object.freeze([
   'tools:find',
   'tools:invoke',
+  'coord:send',
   'release:repair-queue',
   'release:test-downgrade',
   'consult:get_feedback',
@@ -617,7 +618,9 @@ export const CURRENT_BUILD_DEFAULT_TOOLS = Object.freeze([
   'consult:close',
   'consult:routing-health',
   'locks:release',
+  'plans:audit',
   'plans:start',
+  'plans:set-content',
   'plans:set-status',
   'work_items:claim',
   'work_items:release',

@@ -2849,6 +2849,82 @@ describe('sync-staging-checkout.sh coordinated restart result', () => {
     expect(stale.stdout).not.toContain('no terminal receipt');
   });
 
+  it.each([2999, 3000, 3001])('fails a delivered lock-probe refusal at %i total diagnostic characters without waiting for health', totalChars => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const tail = script.slice(script.indexOf('# ptool exits successfully for a business-level refusal'));
+    const receipt = {
+      ok: false, target: 'staging', reason: 'staging_sync_collision_probe_failed',
+      restarted: false, drained: false,
+      staging_sync_collision: { kind: 'probe-failed', lockHeld: null, probeError: { signal: 'SIGTERM' } },
+    };
+    const prefix = '{"event":"connection-trace"}\n';
+    const suffix = '\n✗ tool returned an error:\n' + JSON.stringify(receipt);
+    const diagnostics = prefix + 't'.repeat(totalChars - prefix.length - suffix.length - 1) + suffix;
+    // The actual display boundary includes the separator between stdout/stderr.
+    expect((' ' + diagnostics).length).toBe(totalChars);
+    const result = runFn(
+      ['restart_result_is_accepted', 'restart_result_is_pending', 'restart_result_is_pre_dispatch_refusal'],
+      ['log() { printf "%s\\n" "$*"; }',
+        'staging_health_source_sha() { echo UNEXPECTED_HEALTH_PROBE; }', tail].join('\n'),
+      { env: { restart_verified: '0', restart_tool_status: '1', restart_result: '',
+        restart_diagnostics: diagnostics,
+      } },
+    );
+    expect(result.status, result.stderr).toBe(1);
+    expect(result.stdout).toContain('no restart scheduled');
+    expect(result.stdout).toContain('staging_sync_collision_probe_failed');
+    expect(result.stdout).not.toContain('UNEXPECTED_HEALTH_PROBE');
+    expect(result.stdout).not.toContain('no terminal receipt');
+  });
+
+  it.each([
+    { ok: false, restarted: false, restartScheduled: true },
+    { ok: false, reason: 'transport-failed' },
+    { ok: true, restarted: true },
+  ])('keeps scheduled or unmeasured outcomes out of the unscheduled-refusal path: %j', receipt => {
+    const result = runFn(['restart_result_is_refusal'], 'restart_result_is_refusal "$RESULT"', {
+      env: { RESULT: JSON.stringify(receipt) },
+    });
+    expect(result.status, result.stderr).toBe(1);
+  });
+
+  it('retains complete restart evidence outside the disposable candidate and temporary directory', () => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const root = mkdtempSync(join(tmpdir(), 'staging-restart-evidence-'));
+    const home = join(root, 'home');
+    const candidate = join(root, 'candidate');
+    const temporary = join(root, 'temporary');
+    mkdirSync(candidate); mkdirSync(temporary);
+    const setup = script.slice(script.indexOf('restart_log_root='), script.indexOf('restart_tool_timeout_sec='));
+    const start = script.indexOf('(\n  cd "$INTEGRATION_ROOT"', script.indexOf('restart_result_file='));
+    const end = script.indexOf('\nrestart_tool_pid=$!', start);
+    const diagnostics = 'trace\n'.repeat(1200) + '✗ tool returned an error:\n'
+      + JSON.stringify({ ok: false, restarted: false, reason: 'staging_sync_collision_probe_failed' }) + '\n';
+    const cli = join(candidate, 'ptool');
+    writeFileSync(cli, '#!/bin/sh\nprintf "%s" "$TEST_DIAGNOSTICS" >&2\nexit 1\n', { mode: 0o700 });
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -eu', 'log() { :; }', setup, script.slice(start, end),
+        'wait $! || :', 'printf "%s\\n%s\\n" "$restart_result_file" "$restart_diagnostics_file"',
+      ].join('\n')], { encoding: 'utf8', env: { ...process.env,
+        PAPERCUSP_HOME: home, TMPDIR: temporary, INTEGRATION_ROOT: candidate, PTOOL_BIN: cli,
+        PTOOL_CLIENT_SID: 'fixture-client', RESTART_CONTROL_URL: 'http://127.0.0.1:3170',
+        GIT_SYNC_DRAIN_SEC: '45', RESTART_MAX_DRAIN_SEC: '300', current: '12345678', target: 'abcdef12',
+        TEST_DIAGNOSTICS: diagnostics,
+      } });
+      expect(result.status, result.stderr).toBe(0);
+      const [receiptPath, diagnosticsPath] = result.stdout.trim().split('\n');
+      rmSync(candidate, { recursive: true }); rmSync(temporary, { recursive: true });
+      expect(dirname(receiptPath)).toBe(join(home, 'checkpoint-logs'));
+      expect(readFileSync(receiptPath, 'utf8')).toBe('');
+      expect(readFileSync(diagnosticsPath, 'utf8')).toBe(diagnostics);
+      const recovered = runFn(['restart_result_is_refusal'], 'restart_result_is_refusal "$RESULT"', {
+        env: { RESULT: readFileSync(diagnosticsPath, 'utf8') },
+      });
+      expect(recovered.status, recovered.stderr).toBe(0);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('passes a clamped max_drain_sec to dev:restart so long shared holders can drain', () => {
     const script = readFileSync(SCRIPT_PATH, 'utf8');
     expect(script).toContain('"max_drain_sec":${RESTART_MAX_DRAIN_SEC}');
