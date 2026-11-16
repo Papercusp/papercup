@@ -1,7 +1,7 @@
 /** Installed OMP native-tool controls, with deterministic local inference. */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, isAbsolute, join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { createOmpNativeHomes } from '../test/omp-native-home';
 import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
@@ -16,6 +16,7 @@ declare module 'vitest' {
 }
 
 const canary = 'mcp__managed_surface_canary';
+const ompControlVersion = '18.0.3';
 const homes = createOmpNativeHomes();
 afterAll(() => homes.dispose());
 
@@ -26,7 +27,27 @@ type NativeCensusDiagnostic = {
 function captureSurface(noTools: boolean | readonly string[], diagnostics: NativeCensusDiagnostic[]) {
   const omp = wellKnownBackendBin('omp') ?? resolveOnPath('omp');
   if (!omp) throw new Error('Installed OMP is required for native-tool removal evidence');
+  const version = execFileSync(omp, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim();
+  const measuredVersion = nativeToolInventory({ client: 'omp', clientVersion: version, nativeNames: [] }).observedVersion;
+  if (measuredVersion !== ompControlVersion) {
+    const nativeFiles = homes.nativeFiles();
+    const diagnostic = { stage: 'version-preflight', selection: noTools, binary: omp,
+      version, expectedVersion: ompControlVersion,
+      nativeFilesBefore: nativeFiles, nativeFilesAfter: nativeFiles };
+    diagnostics.push(diagnostic);
+    console.info('OMP_NATIVE_CENSUS_COMMAND ' + JSON.stringify(diagnostic));
+    throw new Error(`OMP version preflight refused unvalidated client: expected ${ompControlVersion}, got ${version}`);
+  }
+  // Keep syscall evidence outside the disposable profile. Killing the tracer
+  // must also kill its child when spawnSync's existing deadline expires.
+  const traceDirectory = process.env.PAPERCUSP_OMP_NATIVE_TRACE_DIR;
+  const tracer = traceDirectory ? resolveOnPath('strace') : undefined;
+  if (traceDirectory && (!isAbsolute(traceDirectory) || !tracer)) {
+    throw new Error('OMP startup tracing requires an absolute artifact directory and installed strace');
+  }
+  if (traceDirectory) mkdirSync(traceDirectory, { recursive: true, mode: 0o700 });
   const home = homes.allocate();
+  const tracePath = traceDirectory ? join(traceDirectory, `${basename(home)}.strace`) : null;
   const resultPath = join(home, 'census.json');
   const phasesPath = join(home, 'phases.ndjson');
   const nativeFilesBefore = homes.nativeFiles();
@@ -77,10 +98,14 @@ export default function(pi) {
 `, { mode: 0o600 });
   try {
     const startedAt = Date.now();
-    const result = spawnSync(omp, ['--print', '--mode', 'json', '--no-session', '--no-title',
+    const args = ['--print', '--mode', 'json', '--no-session', '--no-title',
       '--no-extensions', '--no-skills', '--no-rules', '--extension', extensionPath,
       '--model', 'surface-fixture/proof', '--thinking', 'off', '--auto-approve',
-      ...(Array.isArray(noTools) ? noTools : noTools ? ['--no-tools'] : []), 'Run the local tool-surface census.'], {
+      ...(Array.isArray(noTools) ? noTools : noTools ? ['--no-tools'] : []), 'Run the local tool-surface census.'];
+    const traceArgs = tracePath ? ['--kill-on-exit', '-f', '-ttt', '-T', '-s', '160',
+      '-e', 'trace=process,%file,read,pread64,write,writev,mmap,munmap,fsync,fdatasync',
+      '-o', tracePath, '--', omp, ...args] : args;
+    const result = spawnSync(tracePath ? tracer! : omp, traceArgs, {
       cwd: home, encoding: 'utf8', timeout: 25_000, maxBuffer: 2 * 1024 * 1024,
       env: { PATH: process.env.PATH, LANG: process.env.LANG ?? 'C.UTF-8', HOME: home,
         XDG_CONFIG_HOME: join(home, '.config'), XDG_DATA_HOME: join(home, '.local', 'share'),
@@ -88,7 +113,8 @@ export default function(pi) {
         PAPERCUSP_NATIVE_TOOL_CENSUS_FILE: resultPath, PAPERCUSP_NATIVE_TOOL_PHASE_FILE: phasesPath },
     });
     // Retain startup and command evidence even when the first census fails.
-    const diagnostic = { selection: noTools, startedAt, elapsedMs: Date.now() - startedAt,
+    const diagnostic = { selection: noTools, binary: omp, version, tracePath,
+      startedAt, elapsedMs: Date.now() - startedAt,
       status: result.status, signal: result.signal, error: result.error?.message ?? null,
       phases: existsSync(phasesPath) ? readFileSync(phasesPath, 'utf8') : null,
       nativeFilesBefore, nativeFilesAfter: homes.nativeFiles(),
@@ -101,7 +127,7 @@ export default function(pi) {
       names: string[]; calls: number; turns: number;
       descriptions: { name: string; description: string }[];
     };
-    return { version: execFileSync(omp, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim(), ...census };
+    return { version, ...census };
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -109,7 +135,7 @@ export default function(pi) {
 
 describe('OMP managed replacement installed-client census', () => {
   const admitted: CapabilityPolicyRequest = {
-    client: 'omp', surface: 'launch', clientVersions: { omp: '18.0.3' },
+    client: 'omp', surface: 'launch', clientVersions: { omp: ompControlVersion },
     ompNativeTools: ['read', 'bash', 'edit', 'write', 'grep', 'glob', 'task', 'todo', 'web_search'],
     readiness: [{ family: 'shell-ssh-interpreters', cutoverReady: true, openGapIds: [] }],
     cutoverStaging: { 'shell-ssh-interpreters': 'full' },
