@@ -13,6 +13,7 @@
  * dispatch) retains its view.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
 import type { OrgTestDb } from '../../../../test/_org-test-db';
 import { lookupByMcpName } from '@papercusp/tooldef';
@@ -169,6 +170,38 @@ describe('artifacts:* cross-workspace denial via ctx.tx + RLS (audit P-012)', ()
     expect(p.found).toBe(true);
     expect(p.content).toBe('secret-A');
   });
+
+  for (const [name, mutation] of [
+    ['save', { content: 'replacement' }],
+    ['append', { suffix: '-replacement' }],
+    ['delete', {}],
+  ] as const) {
+    for (const namespace of ['sha256', 'claims']) {
+      for (const prefix of ['', '.papercusp/']) {
+        it(`preserves immutable ${namespace} through artifacts:${name} (${prefix || 'bare'})`, async () => {
+          const original = JSON.stringify({ name, namespace, prefix, frozen: 'original ☃' }) + '\n';
+          const digest = createHash('sha256').update(original).digest('hex');
+          const key = `immutable/${namespace}/${digest}.json`;
+          await db.adminSql`
+            INSERT INTO harness_shared.harness_text_artifacts
+              (harness_slug, rel_path, content, updated_at, workspace_id)
+            VALUES (${SLUG}, ${key}, ${original}, 1, ${WS_A})
+          `;
+          const result = await callInWorkspace(WS_A, tx => tool(`artifacts:${name}`).fn(
+            { slug: SLUG, rel_path: prefix + key, ...mutation }, ctxWith(tx, WS_A),
+          ));
+          const rows = await db.adminSql<{ content: string }[]>`
+            SELECT content FROM harness_shared.harness_text_artifacts
+             WHERE workspace_id = ${WS_A} AND harness_slug = ${SLUG} AND rel_path = ${key}
+          `;
+          expect(rows).toEqual([{ content: original }]);
+          expect(payloadOf(result as never)).toMatchObject({
+            ok: false, rel_path: key, error: 'text_artifact_immutable_namespace',
+          });
+        });
+      }
+    }
+  }
 
   // ── EI-280: pre-fix blank-stamp legacy rows ────────────────────────────────
   // Rows written before P-012 carry workspace_id='' — invisible to load and a
