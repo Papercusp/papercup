@@ -4,6 +4,8 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { bindLiveAgentSessionTasksToNativeSession } from '../../../task-manager/store';
 import { defineTool } from '@papercusp/agent-mcp';
+import { createPhaseTracker } from '@papercusp/tooldef';
+import { MCP_REQUEST_TRACE_HEADER, resolveMcpRequestTraceId, withMcpHttpHandlerPhaseTrace } from '../../../mcp-request-trace';
 import { requirePrincipal } from '../../../auth/require-principal';
 import {
   NATIVE_SESSION_ID_RE,
@@ -338,212 +340,233 @@ const sessionRespawned = defineTool({
   path: '/agent-mcp/console/bootstrap-su/session-respawned',
   auth: 'loopback',
   async handler(req) {
-    const denied = await gatePrincipal(req.headers);
-    if (denied) return denied;
-    let advSessionId: number | null = null;
-    let coordOwnerId: string | null = null;
-    let sessionId: string | null = null;
-    let turnProvenanceDir: string | undefined;
-    let managedSuccession: { phase?: unknown; request?: unknown; permit?: unknown } | undefined;
-    // WI-6554700010030031: present only on an in-place context-reset report — the
-    // launch id of the SAME child, kept as an accepted alias of the rotated id.
-    let childLaunchSessionId: string | null = null;
-    try {
-      const body = (await req.json()) as {
-        advSessionId?: unknown;
-        coordOwnerId?: unknown;
-        sessionId?: unknown;
-        childLaunchSessionId?: unknown;
-        turnProvenanceDir?: unknown;
-        managedSuccession?: typeof managedSuccession;
-      };
-      managedSuccession = body.managedSuccession;
-      if (body.turnProvenanceDir !== undefined) {
-        if (typeof body.turnProvenanceDir !== 'string' || !isAbsolute(body.turnProvenanceDir) || body.turnProvenanceDir.includes('\0'))
-          return jsonRes({ error: 'turnProvenanceDir must be an absolute runtime namespace' }, 400);
-        turnProvenanceDir = body.turnProvenanceDir;
-      }
-      if (typeof body.childLaunchSessionId === 'string'
-        && NATIVE_SESSION_ID_RE.test(body.childLaunchSessionId.trim())) {
-        childLaunchSessionId = body.childLaunchSessionId.trim();
-      }
-      if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
-        advSessionId = body.advSessionId;
-      }
-      if (typeof body.coordOwnerId === 'string' && body.coordOwnerId.trim().length > 0) {
-        coordOwnerId = body.coordOwnerId.trim().slice(0, 200);
-      }
-      if (typeof body.sessionId === 'string' && NATIVE_SESSION_ID_RE.test(body.sessionId.trim())) {
-        sessionId = body.sessionId.trim();
-      }
-    } catch {
-      /* fall through to the 400 */
-    }
-    if ((advSessionId == null || advSessionId <= 0) && !coordOwnerId) {
-      return jsonRes({ error: 'advSessionId or coordOwnerId required' }, 400);
-    }
-    if (!sessionId) {
-      return jsonRes({ error: 'sessionId (native session UUID) required' }, 400);
-    }
-    try {
-      if (managedSuccession !== undefined) {
-        const principal = await requirePrincipal(req.headers, { kind: ['system'], trust: ['trusted'] });
-        if (principal.slug !== 'system:superuser' || principal.authMethod !== 'bearer-token')
-          return jsonRes({ ok: false }, 403);
-        if (!advSessionId || !coordOwnerId || !managedSuccession ||
-            !['reserve', 'settle'].includes(String(managedSuccession.phase)))
-          return jsonRes({ ok: false, error: 'invalid managed succession' }, 400);
-        if (managedSuccession.phase === 'reserve') {
-          const request = managedSuccession.request as { ownerId?: unknown; advSessionId?: unknown;
-            sourceNativeSessionId?: unknown } | undefined;
-          if (request?.ownerId !== coordOwnerId || request?.advSessionId !== advSessionId ||
-              request?.sourceNativeSessionId !== sessionId) return jsonRes({ ok: false }, 400);
-          const { reserveBlindReviewManagedSuccession } = await import('../../../blind-review-continuation-custody');
-          const permit = await reserveBlindReviewManagedSuccession(activeWorkspaceId(), request);
-          return jsonRes({ ok: true, managedSuccessionPermit: permit });
+    const phases = createPhaseTracker({ historyCap: 32 });
+    const traceId = resolveMcpRequestTraceId({ requestInfo: { headers: {
+      [MCP_REQUEST_TRACE_HEADER]: req.headers.get(MCP_REQUEST_TRACE_HEADER) ?? undefined,
+    } } });
+    // Observe before the launcher's 2s deadline; keep tracing after a disconnect.
+    // Timing evidence neither acknowledges a binding nor shortens authority checks.
+    return withMcpHttpHandlerPhaseTrace(traceId, 'session_respawn', async () => {
+      const denied = await phases.track('principal', () => gatePrincipal(req.headers));
+      if (denied) return denied;
+      let advSessionId: number | null = null;
+      let coordOwnerId: string | null = null;
+      let sessionId: string | null = null;
+      let turnProvenanceDir: string | undefined;
+      let managedSuccession: { phase?: unknown; request?: unknown; permit?: unknown } | undefined;
+      // WI-6554700010030031: present only on an in-place context-reset report — the
+      // launch id of the SAME child, kept as an accepted alias of the rotated id.
+      let childLaunchSessionId: string | null = null;
+      try {
+        const body = (await phases.track('requestBody', () => req.json())) as {
+          advSessionId?: unknown;
+          coordOwnerId?: unknown;
+          sessionId?: unknown;
+          childLaunchSessionId?: unknown;
+          turnProvenanceDir?: unknown;
+          managedSuccession?: typeof managedSuccession;
+        };
+        managedSuccession = body.managedSuccession;
+        if (body.turnProvenanceDir !== undefined) {
+          if (typeof body.turnProvenanceDir !== 'string' || !isAbsolute(body.turnProvenanceDir) || body.turnProvenanceDir.includes('\0'))
+            return jsonRes({ error: 'turnProvenanceDir must be an absolute runtime namespace' }, 400);
+          turnProvenanceDir = body.turnProvenanceDir;
         }
+        if (typeof body.childLaunchSessionId === 'string'
+          && NATIVE_SESSION_ID_RE.test(body.childLaunchSessionId.trim())) {
+          childLaunchSessionId = body.childLaunchSessionId.trim();
+        }
+        if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
+          advSessionId = body.advSessionId;
+        }
+        if (typeof body.coordOwnerId === 'string' && body.coordOwnerId.trim().length > 0) {
+          coordOwnerId = body.coordOwnerId.trim().slice(0, 200);
+        }
+        if (typeof body.sessionId === 'string' && NATIVE_SESSION_ID_RE.test(body.sessionId.trim())) {
+          sessionId = body.sessionId.trim();
+        }
+      } catch {
+        /* fall through to the 400 */
       }
-      let reanchored = false;
-      let owner: string | null = null;
-      if (advSessionId != null && advSessionId > 0) {
-        ({ reanchored, owner } = await reanchorAdvSessionNativeId(advSessionId, sessionId, {
-          childLaunchSessionId, ...(turnProvenanceDir ? { turnProvenanceDir } : {}),
-          ...(managedSuccession ? { managedSuccessionPermit: managedSuccession.permit as
-            import('../../../blind-review-continuation-custody').BlindReviewManagedSuccessionPermit } : {}),
-        }));
+      if ((advSessionId == null || advSessionId <= 0) && !coordOwnerId) {
+        return jsonRes({ error: 'advSessionId or coordOwnerId required' }, 400);
       }
-      // Owner-keyed fallback is reserved for legacy reports that genuinely carry
-      // no adv id. A supplied id that touches no row is NOT permission to choose
-      // a different row by owner; that is the numeric-home identity split this
-      // route is responsible for preventing.
-      if (advSessionId == null && coordOwnerId) {
-        const fallback = turnProvenanceDir
-          ? await reanchorAdvSessionNativeIdByOwner(coordOwnerId, sessionId, { turnProvenanceDir })
-          : await reanchorAdvSessionNativeIdByOwner(coordOwnerId, sessionId);
-        reanchored = fallback.reanchored;
-        owner = fallback.owner ?? owner;
+      if (!sessionId) {
+        return jsonRes({ error: 'sessionId (native session UUID) required' }, 400);
       }
-      // The launcher treats HTTP success as authoritative confirmation before
-      // writing successor input. A 2xx with no resolved owner would acknowledge
-      // an unbound native id, leaving the old owner→native mapping in force.
-      // Fail closed and let the durable reporter retry if the row is not ready.
-      if (!owner) {
-        return jsonRes({ ok: false, reanchored, error: 'native session binding is not established' }, 503);
-      }
-      // The host confirms the native binding before sending a fresh Codex
-      // kickoff. An accepted worker also needs its launch-proven identity and
-      // model evidence sink ready at that boundary, before any provider call.
-      // Use the existing activation writer; a lifecycle receipt never widens
-      // grants or acknowledges delivery of a control update.
-      if (owner) {
-        const { readSuLaunchSpecByOwner } = await import('../../../adv-sessions');
-        const launch = await readSuLaunchSpecByOwner(owner) as {
-          acceptedOperation?: { kind?: string; modelPolicy?: unknown };
-        } | null;
-        if (launch?.acceptedOperation?.kind === 'blueprint-operation-worker') {
-          const workspaceId = activeWorkspaceId();
-          const {
-            preparePendingControlTransition, applyRelaunchedActivation,
-          } = await import('../../../agent-tools/coordination/control-anchor');
-          const pending = await preparePendingControlTransition(owner, workspaceId);
-          if (pending?.state.activation?.desired) {
-            await applyRelaunchedActivation(
-              owner, workspaceId, pending.generation, pending.state.activation.desired,
-            );
+      try {
+        if (managedSuccession !== undefined) {
+          const principal = await phases.track('managedPrincipal', () =>
+            requirePrincipal(req.headers, { kind: ['system'], trust: ['trusted'] }));
+          if (principal.slug !== 'system:superuser' || principal.authMethod !== 'bearer-token')
+            return jsonRes({ ok: false }, 403);
+          if (!advSessionId || !coordOwnerId || !managedSuccession ||
+              !['reserve', 'settle'].includes(String(managedSuccession.phase)))
+            return jsonRes({ ok: false, error: 'invalid managed succession' }, 400);
+          if (managedSuccession.phase === 'reserve') {
+            const request = managedSuccession.request as { ownerId?: unknown; advSessionId?: unknown;
+              sourceNativeSessionId?: unknown } | undefined;
+            if (request?.ownerId !== coordOwnerId || request?.advSessionId !== advSessionId ||
+                request?.sourceNativeSessionId !== sessionId) return jsonRes({ ok: false }, 400);
+            const permit = await phases.track('managedReservation', async () => {
+              const { reserveBlindReviewManagedSuccession } = await import('../../../blind-review-continuation-custody');
+              return reserveBlindReviewManagedSuccession(activeWorkspaceId(), request);
+            });
+            return jsonRes({ ok: true, managedSuccessionPermit: permit });
           }
-          const { readActiveOperationWorkerClaimBinding, readActiveOperationModelPolicy } =
-            await import('../../../blueprint/operation-worker-binding');
-          const binding = await readActiveOperationWorkerClaimBinding(workspaceId, owner);
-          if (binding.status !== 'bound') {
-            return jsonRes({ ok: false, reanchored, error: 'accepted operation identity is not ready' }, 503);
-          }
-          if (launch.acceptedOperation.modelPolicy != null) {
-            const [native] = await getOrgPg().sql<Array<{ agent: string }>>`
-              SELECT agent FROM harness_shared.adv_sessions
-               WHERE id = ${binding.receipt.sessionId} AND workspace_id = ${workspaceId}
-                 AND coord_owner_id = ${owner} AND session_id = ${sessionId}
-                 AND ended_at IS NULL AND ended_by IS NULL
-            `;
-            if (native?.agent !== 'claude' && native?.agent !== 'codex') {
-              return jsonRes({ ok: false, reanchored, error: 'accepted operation native session is not ready' }, 503);
+        }
+        let reanchored = false;
+        let owner: string | null = null;
+        if (advSessionId != null && advSessionId > 0) {
+          ({ reanchored, owner } = await phases.track('nativeReanchor', () => reanchorAdvSessionNativeId(advSessionId!, sessionId!, {
+            childLaunchSessionId, ...(turnProvenanceDir ? { turnProvenanceDir } : {}),
+            ...(managedSuccession ? { managedSuccessionPermit: managedSuccession.permit as
+              import('../../../blind-review-continuation-custody').BlindReviewManagedSuccessionPermit } : {}),
+          })));
+        }
+        // Owner-keyed fallback is reserved for legacy reports that genuinely carry
+        // no adv id. A supplied id that touches no row is NOT permission to choose
+        // a different row by owner; that is the numeric-home identity split this
+        // route is responsible for preventing.
+        if (advSessionId == null && coordOwnerId) {
+          const fallback = await phases.track('nativeReanchor', () => turnProvenanceDir
+            ? reanchorAdvSessionNativeIdByOwner(coordOwnerId!, sessionId!, { turnProvenanceDir })
+            : reanchorAdvSessionNativeIdByOwner(coordOwnerId!, sessionId!));
+          reanchored = fallback.reanchored;
+          owner = fallback.owner ?? owner;
+        }
+        // The launcher treats HTTP success as authoritative confirmation before
+        // writing successor input. A 2xx with no resolved owner would acknowledge
+        // an unbound native id, leaving the old owner→native mapping in force.
+        // Fail closed and let the durable reporter retry if the row is not ready.
+        if (!owner) {
+          return jsonRes({ ok: false, reanchored, error: 'native session binding is not established' }, 503);
+        }
+        // The host confirms the native binding before sending a fresh Codex
+        // kickoff. An accepted worker also needs its launch-proven identity and
+        // model evidence sink ready at that boundary, before any provider call.
+        // Use the existing activation writer; a lifecycle receipt never widens
+        // grants or acknowledges delivery of a control update.
+        if (owner) {
+          const launch = await phases.track('launchSpec', async () => {
+            const { readSuLaunchSpecByOwner } = await import('../../../adv-sessions');
+            return readSuLaunchSpecByOwner(owner!);
+          }) as {
+            acceptedOperation?: { kind?: string; modelPolicy?: unknown };
+          } | null;
+          if (launch?.acceptedOperation?.kind === 'blueprint-operation-worker') {
+            const workspaceId = activeWorkspaceId();
+            const {
+              preparePendingControlTransition, applyRelaunchedActivation,
+            } = await phases.track('activationModule', () => import('../../../agent-tools/coordination/control-anchor'));
+            const pending = await phases.track('activationPrepare', () => preparePendingControlTransition(owner!, workspaceId));
+            if (pending?.state.activation?.desired) {
+              const desired = pending.state.activation.desired;
+              await phases.track('activationApply', () => applyRelaunchedActivation(
+                owner!, workspaceId, pending.generation, desired,
+              ));
             }
-            const policy = await readActiveOperationModelPolicy(workspaceId, owner, native.agent);
-            if (policy.status !== 'bound' || policy.attestation?.nativeSessionId !== sessionId) {
-              return jsonRes({ ok: false, reanchored, error: 'accepted operation attestation is not ready' }, 503);
+            const { readActiveOperationWorkerClaimBinding, readActiveOperationModelPolicy } =
+              await phases.track('workerBindingModule', () => import('../../../blueprint/operation-worker-binding'));
+            const binding = await phases.track('workerBinding', () => readActiveOperationWorkerClaimBinding(workspaceId, owner!));
+            if (binding.status !== 'bound') {
+              return jsonRes({ ok: false, reanchored, error: 'accepted operation identity is not ready' }, 503);
+            }
+            if (launch.acceptedOperation.modelPolicy != null) {
+              const [native] = await phases.track('nativeSessionRead', () => getOrgPg().sql<Array<{ agent: string }>>`
+                SELECT agent FROM harness_shared.adv_sessions
+                 WHERE id = ${binding.receipt.sessionId} AND workspace_id = ${workspaceId}
+                   AND coord_owner_id = ${owner} AND session_id = ${sessionId}
+                   AND ended_at IS NULL AND ended_by IS NULL
+              `);
+              if (native?.agent !== 'claude' && native?.agent !== 'codex') {
+                return jsonRes({ ok: false, reanchored, error: 'accepted operation native session is not ready' }, 503);
+              }
+              const agent = native.agent;
+              const policy = await phases.track('modelPolicy', () => readActiveOperationModelPolicy(workspaceId, owner!, agent));
+              if (policy.status !== 'bound' || policy.attestation?.nativeSessionId !== sessionId) {
+                return jsonRes({ ok: false, reanchored, error: 'accepted operation attestation is not ready' }, 503);
+              }
             }
           }
         }
-      }
-      if (owner) {
-        await bindKnownAgentSessionTasks({
-          workspaceId: activeWorkspaceId(),
-          coordOwnerId: owner,
-          sessionId,
-          source: 'respawn',
-        });
-      }
-      // Frozen-gauge fix: the successor keeps the coord ownerId, so the
-      // in-process context-usage cache still holds the DEAD predecessor's
-      // near-limit estimate — a fresh successor rendering "89%" gets nudged
-      // into an immediate pointless re-cut. Clear it; the next watchdog pass
-      // measures the real successor transcript. Best-effort like the reanchor.
-      // WI-41555: gauge hygiene follows the EVENT (a respawn happened, and here
-      // is the owner it happened to), NEVER "did a DB row change". `owner` used
-      // to come back null on every no-op re-anchor, which is the ORDINARY case
-      // for the cold-loop recycle cohort — the spawn path stamps the new native
-      // id onto the row before this report lands, so both UPDATEs match zero
-      // rows. That silently skipped the two clears below and left the anchored
-      // gauge serving the DEAD predecessor's token count indefinitely: a fresh
-      // successor renders ~81%, obeys its own compaction discipline, re-cuts at
-      // once, and ITS successor inherits the same frozen number — an unbounded
-      // reset loop in which no session ever does any work. The re-anchors now
-      // report the row's owner regardless; this falls back to the owner the
-      // REPORT names so a missing or racing adv row cannot resurrect the bug.
-      // Clearing is idempotent and self-healing (the next read reseeds from the
-      // successor's real transcript), so an extra clear costs nothing.
-      const gaugeOwner = owner ?? coordOwnerId;
-      if (gaugeOwner) {
-        // EI-21567375926533125: scheduler:get_next reads the PG-canonical
-        // coord_presence estimate, not either in-process render cache below.
-        // A carry-respawn can preserve pid=NULL, so the store's pid-transition
-        // invalidation never fires; clear the predecessor estimate at this
-        // confirmed native-session replacement boundary. The detached
-        // session-compacted bridge may race this route, but it now writes only
-        // after proving it resolved this exact successor native id.
-        try {
-          const { clearContextEstimate } = await import('../../../agent-tools/coordination/presence');
-          await clearContextEstimate(gaugeOwner);
-        } catch {
-          /* gauge hygiene must never fail the respawn report */
+        if (owner) {
+          await phases.track('taskBinding', () => bindKnownAgentSessionTasks({
+            workspaceId: activeWorkspaceId(),
+            coordOwnerId: owner!,
+            sessionId,
+            source: 'respawn',
+          }));
         }
-        try {
-          const { clearContextUsage } = await import('../../../system-health/context-usage-cache');
-          clearContextUsage(gaugeOwner);
-        } catch {
-          /* gauge hygiene must never fail the respawn report */
+        // Frozen-gauge fix: the successor keeps the coord ownerId, so the
+        // in-process context-usage cache still holds the DEAD predecessor's
+        // near-limit estimate — a fresh successor rendering "89%" gets nudged
+        // into an immediate pointless re-cut. Clear it; the next watchdog pass
+        // measures the real successor transcript. Best-effort like the reanchor.
+        // WI-41555: gauge hygiene follows the EVENT (a respawn happened, and here
+        // is the owner it happened to), NEVER "did a DB row change". `owner` used
+        // to come back null on every no-op re-anchor, which is the ORDINARY case
+        // for the cold-loop recycle cohort — the spawn path stamps the new native
+        // id onto the row before this report lands, so both UPDATEs match zero
+        // rows. That silently skipped the two clears below and left the anchored
+        // gauge serving the DEAD predecessor's token count indefinitely: a fresh
+        // successor renders ~81%, obeys its own compaction discipline, re-cuts at
+        // once, and ITS successor inherits the same frozen number — an unbounded
+        // reset loop in which no session ever does any work. The re-anchors now
+        // report the row's owner regardless; this falls back to the owner the
+        // REPORT names so a missing or racing adv row cannot resurrect the bug.
+        // Clearing is idempotent and self-healing (the next read reseeds from the
+        // successor's real transcript), so an extra clear costs nothing.
+        const gaugeOwner = owner ?? coordOwnerId;
+        if (gaugeOwner) {
+          // EI-21567375926533125: scheduler:get_next reads the PG-canonical
+          // coord_presence estimate, not either in-process render cache below.
+          // A carry-respawn can preserve pid=NULL, so the store's pid-transition
+          // invalidation never fires; clear the predecessor estimate at this
+          // confirmed native-session replacement boundary. The detached
+          // session-compacted bridge may race this route, but it now writes only
+          // after proving it resolved this exact successor native id.
+          try {
+            await phases.track('contextEstimate', async () => {
+              const { clearContextEstimate } = await import('../../../agent-tools/coordination/presence');
+              await clearContextEstimate(gaugeOwner);
+            });
+          } catch {
+            /* gauge hygiene must never fail the respawn report */
+          }
+          try {
+            await phases.track('contextUsage', async () => {
+              const { clearContextUsage } = await import('../../../system-health/context-usage-cache');
+              clearContextUsage(gaugeOwner);
+            });
+          } catch {
+            /* gauge hygiene must never fail the respawn report */
+          }
+          // EI-12966: the watchdog-mirror cache above is only a fallback/limit
+          // source now — the LIVE render paths (P-013 result annotator, P-015
+          // PostToolUse hook fold) read the WI-4154 anchored incremental cache
+          // in compaction-usage.ts instead, which has its OWN per-owner cache
+          // keyed on the dead predecessor's transcript path. That anchor's fast
+          // path never re-resolves the session ref, so left uncleared it keeps
+          // serving the byte-identical PRE-respawn reading indefinitely (the
+          // "stale CRITICAL gauge on the first post-compaction tool call" bug —
+          // not just for up to one watchdog pass, but forever until this clears
+          // it). Clear it too so the very next read reseeds from the successor's
+          // real transcript.
+          try {
+            await phases.track('contextAnchor', async () => {
+              const { clearContextAnchor } = await import('../../../compaction-usage');
+              clearContextAnchor(gaugeOwner);
+            });
+          } catch {
+            /* gauge hygiene must never fail the respawn report */
+          }
         }
-        // EI-12966: the watchdog-mirror cache above is only a fallback/limit
-        // source now — the LIVE render paths (P-013 result annotator, P-015
-        // PostToolUse hook fold) read the WI-4154 anchored incremental cache
-        // in compaction-usage.ts instead, which has its OWN per-owner cache
-        // keyed on the dead predecessor's transcript path. That anchor's fast
-        // path never re-resolves the session ref, so left uncleared it keeps
-        // serving the byte-identical PRE-respawn reading indefinitely (the
-        // "stale CRITICAL gauge on the first post-compaction tool call" bug —
-        // not just for up to one watchdog pass, but forever until this clears
-        // it). Clear it too so the very next read reseeds from the successor's
-        // real transcript.
-        try {
-          const { clearContextAnchor } = await import('../../../compaction-usage');
-          clearContextAnchor(gaugeOwner);
-        } catch {
-          /* gauge hygiene must never fail the respawn report */
-        }
+        return jsonRes({ ok: true, reanchored });
+      } catch (err) {
+        return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);
       }
-      return jsonRes({ ok: true, reanchored });
-    } catch (err) {
-      return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);
-    }
+    }, 1_000, phases);
   },
 });
 

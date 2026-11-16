@@ -128,6 +128,96 @@ beforeEach(async () => {
   await admin`TRUNCATE harness_shared.adv_sessions`;
 });
 
+describe('respawn report phase attribution (real PG)', () => {
+  it('retains a late native binding and settlement trace after the caller aborts', async () => {
+    // Use the actual route, principal resolver and lifecycle SQL. The HTTP-only
+    // suite supplies the other contract cases; this guard needs a real row lock.
+    const { default: routes } = await import('./endpoint-route/routes/agent-mcp/bootstrap-su-resume');
+    const route = routes.find(r => r.method === 'POST' && r.path.endsWith('/session-respawned'))!;
+    const owner = `su-report-phase-${randomUUID()}`;
+    const id = await seedAdv({ coordOwnerId: owner, sessionId: DEAD_ID });
+    const report = (traceId: string, signal?: AbortSignal) => runWithWorkspace(WS, () => route.handler(new Request(
+      'http://127.0.0.1/api/agent-mcp/console/bootstrap-su/session-respawned', {
+        method: 'POST',
+        headers: { host: '127.0.0.1', 'content-type': 'application/json',
+          'x-papercusp-mcp-trace-id': traceId },
+        body: JSON.stringify({ advSessionId: id, coordOwnerId: owner, sessionId: FRESH_ID }),
+        signal,
+      },
+    )));
+    // Warm imports with an ordinary successful report before measuring the SQL
+    // wait. Otherwise module loading and lock waiting would be confounded.
+    const ordinary = await report(randomUUID());
+    expect(ordinary.status).toBe(200);
+    expect(await ordinary.json()).toMatchObject({ ok: true, reanchored: true });
+    await admin`UPDATE harness_shared.adv_sessions SET session_id = ${DEAD_ID} WHERE id = ${id}`;
+
+    const blocker = await admin.reserve();
+    const [{ pid: blockerPid }] = await blocker<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`;
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const traceId = randomUUID();
+    const caller = new AbortController();
+    const traces = () => info.mock.calls.flatMap(([message]) => {
+      if (typeof message !== 'string' || !message.startsWith('[mcp-request-trace] ')) return [];
+      const event = JSON.parse(message.slice('[mcp-request-trace] '.length));
+      return event.traceId === traceId ? [event] : [];
+    });
+    let response: Promise<Response> | undefined;
+    let settled = false;
+    try {
+      await blocker`BEGIN`;
+      await blocker`SELECT id FROM harness_shared.adv_sessions WHERE id = ${id} FOR UPDATE`;
+      response = report(traceId, caller.signal);
+      void response.then(() => { settled = true; }, () => { settled = true; });
+      // Prove the delay's mechanism, independently of the tracing code.
+      await expect.poll(async () => {
+        const rows = await admin<{ blocked: boolean }[]>`
+          SELECT EXISTS (
+            SELECT 1 FROM pg_stat_activity
+             WHERE datname = current_database() AND wait_event_type = 'Lock'
+               AND ${blockerPid} = ANY(pg_blocking_pids(pid))
+          ) AS blocked
+        `;
+        return rows[0].blocked;
+      }, { timeout: 5_000 }).toBe(true);
+      await expect.poll(() => traces().find(event => event.stage === 'http_handler_phase_pending'),
+        { timeout: 5_000 }).toMatchObject({
+        httpHandlerPhase: 'session_respawn',
+        httpHandlerPhases: { pending: expect.arrayContaining([expect.objectContaining({ phase: 'nativeReanchor' })]) },
+      });
+      caller.abort();
+      expect(settled).toBe(false);
+      const [beforeRelease] = await admin<{ session_id: string }[]>`
+        SELECT session_id FROM harness_shared.adv_sessions WHERE id = ${id}
+      `;
+      expect(beforeRelease.session_id).toBe(DEAD_ID);
+      await blocker`ROLLBACK`;
+      const finished = await response;
+      expect(finished.status).toBe(200);
+      expect(await finished.json()).toMatchObject({ ok: true, reanchored: true });
+      const [stored] = await admin<{ session_id: string; coord_owner_id: string; ended_at: null }[]>`
+        SELECT session_id, coord_owner_id, ended_at FROM harness_shared.adv_sessions WHERE id = ${id}
+      `;
+      expect(stored).toEqual({ session_id: FRESH_ID, coord_owner_id: owner, ended_at: null });
+      expect(traces().find(event => event.stage === 'http_handler_phase_settled')).toMatchObject({
+        httpHandlerPhase: 'session_respawn',
+        httpHandlerPhases: { pending: [], phases: expect.arrayContaining([
+          expect.objectContaining({ phase: 'nativeReanchor' }),
+          expect.objectContaining({ phase: 'taskBinding' }),
+        ]) },
+      });
+      // Phase metadata must remain bounded diagnostics, with no raw binding ids.
+      const serialized = JSON.stringify(traces());
+      for (const privateValue of [owner, DEAD_ID, FRESH_ID]) expect(serialized).not.toContain(privateValue);
+    } finally {
+      await blocker`ROLLBACK`;
+      blocker.release();
+      if (response) await response.catch(() => {});
+      info.mockRestore();
+    }
+  }, 30_000);
+});
+
 describe('retained original member source joins (real PG)', () => {
   async function historicalSourceFixture() {
     const owner = `su-historical-${randomUUID()}`;

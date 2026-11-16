@@ -126,20 +126,116 @@ afterEach(() => { vi.clearAllMocks(); });
 
 const FRESH_ID = ' 1d70c364-c3dd-4dc0-a014-2bbfdd4ccd3f '.trim();
 
-async function postRespawned(body: unknown): Promise<Response> {
+async function postRespawned(body: unknown, options: { traceId?: string; signal?: AbortSignal } = {}): Promise<Response> {
   const route = routes.find((r) => r.method === 'POST' && r.path.endsWith('/session-respawned'))!;
   const req = new Request(
     'http://localhost:3070/api/agent-mcp/console/bootstrap-su/session-respawned',
     {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json',
+        ...(options.traceId ? { 'x-papercusp-mcp-trace-id': options.traceId } : {}) },
       body: JSON.stringify(body),
+      ...(options.signal ? { signal: options.signal } : {}),
     },
   );
   return route.handler(req);
 }
 
 describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)', () => {
+  it('identifies a pending native reanchor before the caller deadline and records settlement after disconnect', async () => {
+    vi.useFakeTimers();
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const traceId = '1cb45906-a016-4b0d-8ae8-7f0dfcbe8eb4';
+    const caller = new AbortController();
+    let release!: (value: { reanchored: boolean; owner: string }) => void;
+    let enter!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    reanchorMock.mockImplementationOnce(() => {
+      enter();
+      return new Promise(resolve => { release = resolve; });
+    });
+    const response = postRespawned({ advSessionId: 42, sessionId: FRESH_ID,
+      turnProvenanceDir: '/private/host/provenance' }, { traceId, signal: caller.signal });
+    try {
+      let settled = false;
+      void response.then(() => { settled = true; });
+      await entered;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(settled).toBe(false);
+      expect(info).toHaveBeenCalledTimes(1);
+      const pending = JSON.parse(String(info.mock.calls[0][0]).replace('[mcp-request-trace] ', ''));
+      expect(pending).toMatchObject({ traceId, stage: 'http_handler_phase_pending',
+        httpHandlerPhase: 'session_respawn', elapsedMs: 1_000,
+        httpHandlerPhases: { pending: [{ phase: 'nativeReanchor', elapsedMs: 1_000 }] } });
+      caller.abort();
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(settled).toBe(false);
+      release({ reanchored: true, owner: 'su-private-owner' });
+      expect((await response).status).toBe(200);
+      expect(info).toHaveBeenCalledTimes(2);
+      const finished = JSON.parse(String(info.mock.calls[1][0]).replace('[mcp-request-trace] ', ''));
+      expect(finished).toMatchObject({ traceId, stage: 'http_handler_phase_settled', elapsedMs: 2_500,
+        httpHandlerPhases: { pending: [], phases: expect.arrayContaining([
+          expect.objectContaining({ phase: 'nativeReanchor', durationMs: 2_500 }),
+          expect.objectContaining({ phase: 'taskBinding' }),
+        ]) } });
+      const serialized = JSON.stringify(info.mock.calls);
+      for (const privateValue of [FRESH_ID, 'su-private-owner', '/private/host/provenance'])
+        expect(serialized).not.toContain(privateValue);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(info).toHaveBeenCalledTimes(2);
+    } finally {
+      release({ reanchored: true, owner: 'su-cleanup' });
+      await response;
+      info.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('distinguishes a slow task binding from a completed native reanchor', async () => {
+    vi.useFakeTimers();
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    let release!: (value: string[]) => void;
+    let enter!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    bindTasksMock.mockImplementationOnce(() => {
+      enter();
+      return new Promise(resolve => { release = resolve; });
+    });
+    const response = postRespawned({ advSessionId: 42, sessionId: FRESH_ID });
+    try {
+      await entered;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(info).toHaveBeenCalledTimes(1);
+      const event = JSON.parse(String(info.mock.calls[0][0]).replace('[mcp-request-trace] ', ''));
+      expect(event.httpHandlerPhases).toMatchObject({
+        pending: [{ phase: 'taskBinding', elapsedMs: 1_000 }],
+        phases: expect.arrayContaining([expect.objectContaining({ phase: 'nativeReanchor' })]),
+      });
+      release(['task-bound']);
+      expect((await response).status).toBe(200);
+      expect(info).toHaveBeenCalledTimes(2);
+    } finally {
+      release([]);
+      await response;
+      info.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears the diagnostic timer on a fast refusal without logging request data', async () => {
+    vi.useFakeTimers();
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      expect((await postRespawned({ sessionId: 'invalid' })).status).toBe(400);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(info).not.toHaveBeenCalled();
+    } finally {
+      info.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('reserves before creation without running reanchor or accepting caller-mismatched host evidence', async () => {
     const request = { ownerId: 'su-source', advSessionId: 42, sourceNativeSessionId: FRESH_ID };
     const permit = { bindingId: 7, reservationId: 8, attemptKey: 'attempt', receiptId: 'receipt' };

@@ -37,7 +37,8 @@ export type McpHttpHandlerPhase =
   | 'host_module_load'
   | 'operator_catalogue_load'
   | 'request_pipeline'
-  | 'mcp_adapter';
+  | 'mcp_adapter'
+  | 'session_respawn';
 
 export type McpPreDispatchPhaseName =
   | 'operatorToolsLoad'
@@ -84,6 +85,8 @@ export interface McpRequestTraceEvent {
   phase?: 'pre_dispatch' | 'inner_dispatch';
   /** Bounded phase name for the HTTP adapter before MCP SDK request dispatch. */
   httpHandlerPhase?: McpHttpHandlerPhase;
+  /** Bounded server subphases; a pending phase is a timing clue, not causal proof. */
+  httpHandlerPhases?: HandlerPhasesMetadata | null;
   outcome?: 'success' | 'tool_error' | 'rejected';
   /** HTTP status when the proxy has finished flushing the response; not client receipt. */
   httpStatus?: number;
@@ -313,6 +316,7 @@ export async function withMcpHttpHandlerPhaseTrace<T>(
   phase: McpHttpHandlerPhase,
   work: () => Promise<T>,
   pendingAfterMs = 5_000,
+  phases?: PhaseTracker,
 ): Promise<T> {
   const startedAt = Date.now();
   let pending = false;
@@ -324,6 +328,7 @@ export async function withMcpHttpHandlerPhaseTrace<T>(
       stage: 'http_handler_phase_pending',
       httpHandlerPhase: phase,
       elapsedMs: Math.max(0, Date.now() - startedAt),
+      ...(phases ? { httpHandlerPhases: phases.toMetadata() } : {}),
     });
   }, pendingAfterMs);
   timer.unref?.();
@@ -343,6 +348,7 @@ export async function withMcpHttpHandlerPhaseTrace<T>(
         httpHandlerPhase: phase,
         elapsedMs: Math.max(0, Date.now() - startedAt),
         outcome,
+        ...(phases ? { httpHandlerPhases: phases.toMetadata() } : {}),
       });
     }
   }
