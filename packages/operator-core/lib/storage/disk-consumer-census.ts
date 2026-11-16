@@ -388,8 +388,15 @@ const inspectCoveragePath = async (path: string): Promise<CoveragePath | null> =
 };
 
 /** Bound the uncertain shards without repeating a whole-device walk or promoting exit 1
- * to complete. Counting every hard link makes each fresh shard size an upper bound;
- * replacing the original du totals would double-count links shared with other shards. */
+ * to complete. Each vanished path is bounded by its NEAREST SURVIVING ANCESTOR: the first
+ * existing same-device directory strictly below the root, found on disk and independent
+ * of the consumer floor. That shard holds the vanished entry's former siblings, so a
+ * rename into place beside it, or a renamed ancestor directory, stays inside the bound.
+ * A move into an unrelated directory does not; the deepest RECORDED parent never
+ * guaranteed that either. Recorded parents sit at or above the floor (265 GB to 1.19 TB
+ * on '/'), so they could not be walked inside the budget (WI-6554700010048407).
+ * Counting every hard link makes each fresh shard size an upper bound; replacing the
+ * original du totals would double-count links shared with other shards. */
 export async function reconcileCensusFailures(root: string, du: DuRun, opts: {
   sudo?: string | null;
   timeoutMs?: number;
@@ -431,18 +438,18 @@ export async function reconcileCensusFailures(root: string, du: DuRun, opts: {
       if (resolve(path) !== path || !within(path, root)) return unknown(`failed path survives or is outside device: ${path} is not a normalized path under ${root}`);
       if (await inspect(path)) return unknown(`failed path survives or is outside device: ${path} still exists`);
       vanishedPaths++;
-      const parents = du.summary.consumers.filter(c => c.kind === 'dir' && c.consumer !== root && within(c.consumer, root)
-        && within(dirname(path), c.consumer)).sort((a, b) => b.consumer.length - a.consumer.length);
+      // A non-directory or another device at an ancestor (a replaced directory, a new
+      // mount) is skipped: its same-device parent still contains it, and du -x stays put.
       let parent: string | undefined;
-      for (const candidate of parents) {
-        const identity = await inspect(candidate.consumer);
-        if (identity?.directory) { parent = candidate.consumer; break; }
+      for (let candidate = dirname(path); candidate !== root && within(candidate, root); candidate = dirname(candidate)) {
+        const identity = await inspect(candidate);
+        if (identity?.directory && identity.dev === rootIdentity.dev) { parent = candidate; break; }
       }
-      if (!parent) return unknown('no bounded surviving recorded parent shard');
+      if (!parent) return unknown(`nearest surviving ancestor of ${path} is the device root ${root}; walking it would repeat the whole-device census`);
       selected.add(parent);
     }
     const paths = [...selected].filter(path => ![...selected].some(other => other !== path && within(path, other)));
-    if (paths.length > 8) return unknown('more than eight affected shards');
+    if (paths.length > 8) return unknown(`more than eight affected shards: ${paths.length} disjoint shards`);
     for (const path of paths) {
       const remaining = deadline - now();
       if (remaining <= 0) return unknown('reconciliation deadline');

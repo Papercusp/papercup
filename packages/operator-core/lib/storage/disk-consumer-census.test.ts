@@ -10,7 +10,7 @@ import { EventEmitter } from 'node:events';
 import { chmodSync, mkdtempSync, promises as fsp, rmSync, writeFileSync } from 'node:fs';
 import { request, type ClientRequest, type IncomingMessage, type RequestOptions } from 'node:http';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTextCollector } from '../child-output.js';
@@ -134,6 +134,109 @@ describe('bounded failed disk census coverage', () => {
       expect(result.uncertainBytesUpperBound).toBe(expected);
       expect(expected).toBeGreaterThan(du.summary.consumers.find(c => c.consumer === shard)!.bytes);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  // WI-6554700010048407: the shard is the nearest surviving ancestor on disk. The deepest
+  // RECORDED consumer was a 265 GB to 1.19 TB tree that never finished inside the budget.
+  describe('nearest surviving ancestor shard', () => {
+    type Entry = { dev: number; ino: number; directory: boolean };
+    const dir = (ino: number, dev = 1): Entry => ({ dev, ino, directory: true });
+    const giant = { consumer: '/disk/big', kind: 'dir' as const, depth: 1, bytes: 265e9 };
+    const failedAt = (missingPaths: string[]): DuRun => ({
+      summary: { rootBytes: 300e9, consumers: [giant], ownFiles: [], records: 2 },
+      diagnostics: { lines: missingPaths.length, missingPaths, other: 0, overflow: false },
+      deniedCount: 0, deniedSample: [], exitCode: 1, timedOut: false });
+    const disk = (entries: Record<string, Entry>) => async (path: string) => entries[path] ?? null;
+    const measuring = (sizes: Record<string, number> = {}) =>
+      vi.fn(async (shard: string, _opts?: Parameters<typeof runDuTree>[1]): Promise<DuRun> => ({
+        ...measured(), summary: { ...measured().summary, rootBytes: sizes[shard] ?? 10 } }));
+
+    it('bounds a vanished lock file by its small unrecorded directory, not the recorded giant', async () => {
+      const measureShard = measuring({ '/disk/big/locks': 4096 });
+      const result = await reconcileCensusFailures('/disk', failedAt(['/disk/big/locks/a.lock']), {
+        inspectPath: disk({ '/disk': dir(1), '/disk/big': dir(2), '/disk/big/locks': dir(3) }), measureShard });
+      expect(result).toMatchObject({ status: 'bounded', uncertainBytesUpperBound: 4096, vanishedPaths: 1,
+        shards: [{ path: '/disk/big/locks', upperBytes: 4096 }] });
+      expect(measureShard).toHaveBeenCalledTimes(1);
+      expect(measureShard).toHaveBeenCalledWith('/disk/big/locks', expect.objectContaining({ countLinks: true, maxDepth: 0 }));
+    });
+
+    it('walks up a vanished chain to the deepest surviving directory', async () => {
+      const result = await reconcileCensusFailures('/disk', failedAt(['/disk/big/runs/abc/node_modules/x/index.js']), {
+        inspectPath: disk({ '/disk': dir(1), '/disk/big': dir(2), '/disk/big/runs': dir(3) }), measureShard: measuring() });
+      expect(result).toMatchObject({ status: 'bounded', vanishedPaths: 1, shards: [{ path: '/disk/big/runs' }] });
+    });
+
+    it('walks up to a surviving directory under the filesystem root', async () => {
+      const du: DuRun = { ...failedAt(['/home/u/.cache/locks/a.lock']),
+        summary: { rootBytes: 300e9, consumers: [{ consumer: '/home', kind: 'dir', depth: 1, bytes: 200e9 }], ownFiles: [], records: 2 } };
+      const result = await reconcileCensusFailures('/', du, { measureShard: measuring(),
+        inspectPath: disk({ '/': dir(1), '/home': dir(2), '/home/u': dir(3), '/home/u/.cache': dir(4), '/home/u/.cache/locks': dir(5) }) });
+      expect(result).toMatchObject({ status: 'bounded', shards: [{ path: '/home/u/.cache/locks' }] });
+    });
+
+    // Each case stands alone: a second path selecting the parent would hide a wrong choice
+    // behind the nested-shard filter.
+    it.each<[string, string, Entry]>([
+      ['a file that replaced the directory', '/disk/a/file-now/x', { dev: 1, ino: 3, directory: false }],
+      ['a directory that is now another device', '/disk/a/mnt/y', dir(4, 9)],
+    ])('skips %s and bounds by its same-device parent', async (_kind, path, ancestor) => {
+      const measureShard = measuring();
+      const result = await reconcileCensusFailures('/disk', failedAt([path]), {
+        inspectPath: disk({ '/disk': dir(1), '/disk/a': dir(2), [dirname(path)]: ancestor }), measureShard });
+      expect(result).toMatchObject({ status: 'bounded', vanishedPaths: 1, shards: [{ path: '/disk/a' }] });
+      expect(measureShard).toHaveBeenCalledTimes(1);
+      expect(measureShard.mock.calls[0]![0]).toBe('/disk/a');
+    });
+
+    it.each([['/disk', '/disk/top/gone'], ['/disk', '/disk/gone'], ['/', '/top/gone']])(
+      'refuses when the only surviving ancestor below %s of %s is the device root', async (root, path) => {
+        const measureShard = measuring();
+        const result = await reconcileCensusFailures(root, { ...failedAt([path]),
+          summary: { rootBytes: 300e9, consumers: [], ownFiles: [], records: 1 } }, {
+          inspectPath: disk({ [root]: dir(1) }), measureShard });
+        expect(result).toMatchObject({ status: 'unbounded', uncertainBytesUpperBound: null, vanishedPaths: 1, shards: [] });
+        expect(result.reason).toBe(`nearest surviving ancestor of ${path} is the device root ${root}; walking it would repeat the whole-device census`);
+        expect(measureShard).not.toHaveBeenCalled();
+      });
+
+    it('keeps the fixed shared budget when the nearest surviving ancestor is the recorded giant', async () => {
+      const measureShard = measuring();
+      await reconcileCensusFailures('/disk', failedAt(['/disk/big/gone/deep/file']), {
+        inspectPath: disk({ '/disk': dir(1), '/disk/big': dir(2) }), measureShard, timeoutMs: 60 * 60 * 1000 });
+      expect(measureShard).toHaveBeenCalledTimes(1);
+      expect(measureShard.mock.calls[0]![0]).toBe('/disk/big');
+      expect(measureShard.mock.calls[0]![1]!.timeoutMs).toBeLessThanOrEqual(30_000);
+    });
+
+    it.each([[7, 'bounded'], [8, 'bounded'], [9, 'unbounded']] as const)(
+      'handles %i disjoint shards at the eight-shard limit as %s', async (count, status) => {
+        const entries: Record<string, Entry> = { '/disk': dir(1) };
+        const missing: string[] = [];
+        for (let n = 1; n <= count; n++) { entries[`/disk/s${n}`] = dir(10 + n); missing.push(`/disk/s${n}/gone.lock`); }
+        const measureShard = measuring();
+        const result = await reconcileCensusFailures('/disk', failedAt(missing), { inspectPath: disk(entries), measureShard });
+        expect(result.status).toBe(status);
+        expect(result.vanishedPaths).toBe(count);
+        if (status === 'bounded') {
+          // The decisive last shard is measured, not dropped at the limit.
+          expect(result.shards.map(s => s.path)).toEqual(missing.map((_, i) => `/disk/s${i + 1}`));
+          expect(result.uncertainBytesUpperBound).toBe(count * 10);
+        } else {
+          expect(result.reason).toBe('more than eight affected shards: 9 disjoint shards');
+          expect(measureShard).not.toHaveBeenCalled();
+        }
+      });
+
+    it('collapses nested ancestors to the outer shard in either input order', async () => {
+      const inspectPath = disk({ '/disk': dir(1), '/disk/a': dir(2), '/disk/a/b': dir(3) });
+      for (const order of [['/disk/a/b/x.lock', '/disk/a/gone/y'], ['/disk/a/gone/y', '/disk/a/b/x.lock']]) {
+        const measureShard = measuring();
+        const result = await reconcileCensusFailures('/disk', failedAt(order), { inspectPath, measureShard });
+        expect(result).toMatchObject({ status: 'bounded', vanishedPaths: 2, shards: [{ path: '/disk/a' }] });
+        expect(measureShard).toHaveBeenCalledTimes(1);
+      }
+    });
   });
 });
 
