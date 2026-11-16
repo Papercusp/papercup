@@ -31,6 +31,7 @@ export function assertCleanCohortCapturedInputs(input: {
   actual: { installSha256: string; executableSha256: string; nodeVersion: string; moduleHashes: Record<string, string> };
   amendment: { addedFiles: Record<string, string>; sourceReplacements: Record<string, { sha256: string }> };
   fixture: string; portableSha256: string; readHash: (path: string) => string;
+  additionalCapturedModuleHashes?: Record<string, string>;
 }): void;
 export function parseCleanCohortArgs(argv: string[]): {
   experimentId?: string; fixture?: string; readinessPath?: string; capturePath?: string;

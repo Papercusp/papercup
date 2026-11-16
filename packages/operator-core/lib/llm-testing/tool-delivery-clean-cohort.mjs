@@ -19,6 +19,7 @@ const fixtures = {
   [defaultExperiment]: 'packages/operator-core/lib/llm-testing/fixtures/tool-delivery-clean-runtime-candidate-20261023.json',
   'session-tool-delivery-clean-source-v2-20261023': 'packages/operator-core/lib/llm-testing/fixtures/tool-delivery-clean-source-v2-20261023.json',
   'session-tool-delivery-clean-source-v3-20261024': 'packages/operator-core/lib/llm-testing/fixtures/tool-delivery-clean-source-v3-20261024.json',
+  'session-tool-delivery-clean-source-v4-20261112': 'packages/operator-core/lib/llm-testing/fixtures/tool-delivery-clean-source-v4-20261112.json',
 };
 const planSlug = 'deterministic-tool-definition-delivery-2026-09-21';
 
@@ -144,7 +145,8 @@ export function assertCleanCohortCatalogDefinitions(actual, expected) {
 }
 
 /** Freeze the captured graph, while admitting only explicit measurement changes. */
-export function assertCleanCohortCapturedInputs({ captured, actual, amendment, fixture, portableSha256, readHash }) {
+export function assertCleanCohortCapturedInputs({ captured, actual, amendment, fixture, portableSha256, readHash,
+  additionalCapturedModuleHashes = {} }) {
   // Earlier immutable captures predate the graph witness and remain historical.
   if (!captured) return;
   for (const key of ['installSha256', 'executableSha256', 'nodeVersion'])
@@ -157,7 +159,8 @@ export function assertCleanCohortCapturedInputs({ captured, actual, amendment, f
   for (const [path, actualHash] of Object.entries(actual.moduleHashes)) {
     // The complete installed generation, including unloaded packages, is bound above.
     if (path.split('/').includes('node_modules')) continue;
-    const expected = path === fixture ? portableSha256 : measurement[path] ?? captured.moduleHashes[path];
+    const expected = path === fixture ? portableSha256
+      : measurement[path] ?? captured.moduleHashes[path] ?? additionalCapturedModuleHashes[path];
     assert.equal(actualHash, expected, `Unregistered loaded source: ${path}`);
   }
 }
@@ -349,6 +352,16 @@ export async function main(argv = process.argv.slice(2)) {
       amendment: separateController ? { addedFiles: {}, sourceReplacements: {} } : registration.measurementAmendment,
       fixture, portableSha256: sha(bytes),
       readHash: path => sha(readFileSync(guard.toolDeliveryModuleFile(root, pathToFileURL(resolve(root, path)).href))) });
+    if (separateController && frozen.capture?.controllerBoundary) {
+      // A measurement reader can import modules already frozen in the SUT graph.
+      // Every newly loaded controller byte still needs an immutable captured pin
+      // or an explicit measurement-only amendment; the SUT admits no amendment.
+      assertCleanCohortCapturedInputs({ captured: frozen.capture.controllerBoundary, actual: initial.controller,
+        amendment: registration.measurementAmendment, fixture, portableSha256: sha(bytes),
+        additionalCapturedModuleHashes: frozen.capture.cleanBoundary.moduleHashes,
+        readHash: path => sha(readFileSync(guard.toolDeliveryModuleFile(controllerRoot,
+          pathToFileURL(resolve(controllerRoot, path)).href))) });
+    }
     const { pid, processStartTicks, sut, monotonicNs, ...pin } = initial;
     const check = boundary => {
       if (separateController) {

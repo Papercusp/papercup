@@ -82,6 +82,7 @@ export const TOOL_DELIVERY_PREREGISTRATION_FIXTURES = [
   'tool-delivery-clean-runtime-candidate-20261023.json',
   'tool-delivery-clean-source-v2-20261023.json',
   'tool-delivery-clean-source-v3-20261024.json',
+  'tool-delivery-clean-source-v4-20261112.json',
 ] as const;
 
 /** Where the fixtures live: beside this module in a source run, else in the source checkout a bundled host runs from. */

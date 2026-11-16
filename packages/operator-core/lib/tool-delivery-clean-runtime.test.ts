@@ -15,6 +15,7 @@ import cleanRegistration from './llm-testing/fixtures/tool-delivery-clean-runtim
 import fidelityRegistration from './llm-testing/fixtures/tool-delivery-fidelity-candidate-20261023.json';
 import sourceV2Registration from './llm-testing/fixtures/tool-delivery-clean-source-v2-20261023.json';
 import sourceV3Registration from './llm-testing/fixtures/tool-delivery-clean-source-v3-20261024.json';
+import sourceV4Registration from './llm-testing/fixtures/tool-delivery-clean-source-v4-20261112.json';
 import { toolDeliveryPreregistration, TOOL_DELIVERY_PREREGISTRATION_FIXTURES } from './tool-delivery-acceptance';
 import { findBoxIdentityPaths, findOwnerNameLeaks } from '../../../scripts/lib/identity-leak-patterns.mjs';
 import { assertCleanCohortAuthority, assertCleanCohortCatalogDefinitions, assertCleanCohortCapturedInputs,
@@ -161,6 +162,26 @@ describe('prospective clean tool-delivery execution admission', () => {
       { ...actual[0], parameters: { ...actual[0]!.parameters, required: ['value'] } },
     ], expected)).toThrow('Model-facing catalog request differs');
   });
+  it('binds new controller imports to captured SUT bytes without permitting controller or dependency drift', () => {
+    const captured = { installSha256: 'install', executableSha256: 'node', nodeVersion: 'v25',
+      moduleHashes: { 'launcher.mjs': 'old-launcher' } };
+    const actual = { ...captured, moduleHashes: { 'launcher.mjs': 'new-launcher', 'reader.ts': 'reader',
+      'frozen-sut-module.ts': 'frozen-module', 'registration.json': 'portable' } };
+    const hashes = { ...actual.moduleHashes };
+    const input = { captured, actual, fixture: 'registration.json', portableSha256: 'portable',
+      amendment: { sourceReplacements: {}, addedFiles: { 'launcher.mjs': 'new-launcher', 'reader.ts': 'reader' } },
+      additionalCapturedModuleHashes: { 'frozen-sut-module.ts': 'frozen-module', 'launcher.mjs': 'old-launcher' },
+      readHash: (path: string) => hashes[path as keyof typeof hashes] };
+    expect(() => assertCleanCohortCapturedInputs(input)).not.toThrow();
+    expect(() => assertCleanCohortCapturedInputs({ ...input, additionalCapturedModuleHashes: {} }))
+      .toThrow('Unregistered loaded source');
+    expect(() => assertCleanCohortCapturedInputs({ ...input, actual: { ...actual,
+      moduleHashes: { ...actual.moduleHashes, 'frozen-sut-module.ts': 'changed' } } })).toThrow('Unregistered loaded source');
+    expect(() => assertCleanCohortCapturedInputs({ ...input, amendment: { sourceReplacements: {}, addedFiles: {} } }))
+      .toThrow('Captured module changed');
+    expect(() => assertCleanCohortCapturedInputs({ ...input, actual: { ...actual, installSha256: 'different-generation' } }))
+      .toThrow('Captured runtime input changed');
+  });
   it('selects only registered cohorts and keeps preparation separate from execution', () => {
     const args = ['retained', 'private'];
     expect(parseCleanCohortArgs(args).readinessPath).toBeUndefined();
@@ -170,6 +191,9 @@ describe('prospective clean tool-delivery execution admission', () => {
     const v3 = parseCleanCohortArgs([...args, '--registration', sourceV3Registration.experiment.id]);
     expect(v3.fixture).toMatch(/tool-delivery-clean-source-v3-20261024.json$/);
     expect(v3.readinessPath).toBeUndefined();
+    const v4 = parseCleanCohortArgs([...args, '--registration', sourceV4Registration.experiment.id]);
+    expect(v4.fixture).toMatch(/tool-delivery-clean-source-v4-20261112.json$/);
+    expect(v4.readinessPath).toBeUndefined();
     expect(parseCleanCohortArgs([...args, '--execute', 'approval.json', '--registration', sourceV2Registration.experiment.id])
       .readinessPath).toBe('approval.json');
     for (const options of [['--registration', '../../private.json'], ['--registration', 'toString'],
@@ -318,6 +342,36 @@ describe('prospective clean tool-delivery execution admission', () => {
     expect(findBoxIdentityPaths(JSON.stringify(sourceV3Registration))).toEqual([]);
     expect(findOwnerNameLeaks(JSON.stringify(sourceV3Registration))).toEqual([]);
     for (const arm of Object.values(sourceV3Registration.variants)) expect(arm.configDelta).not.toHaveProperty('systemPromptText');
+  });
+  it('registers a distinct digest-only v4 capture without selecting or changing the frozen population', () => {
+    expect(toolDeliveryPreregistration(sourceV4Registration.experiment.id)).toEqual(sourceV4Registration);
+    expect(sourceV4Registration.configuration).toEqual(sourceV3Registration.configuration);
+    expect(sourceV4Registration.experiment.scenarios).toEqual(sourceV3Registration.experiment.scenarios);
+    expect(sourceV4Registration.experiment.manifestContract.scenarioHashes)
+      .toEqual(sourceV3Registration.experiment.manifestContract.scenarioHashes);
+    expect(sourceV4Registration.experiment.manifestContract.systemSha256)
+      .toBe(sourceV3Registration.experiment.manifestContract.systemSha256);
+    expect(sourceV4Registration.sourcePins.head).toBe('3c9242cd05af46a7291e4a65e60c96befdb0ad10');
+    expect(sourceV4Registration.capture.privateCapture.originalSha256)
+      .toBe('88327622664a44c2753d66cfbd2745e9975c6e74fab4b56180f596bc87e15b86');
+    expect(sourceV4Registration.capture.realModelCalls).toBe(0);
+    expect(sourceV4Registration.status).toBe('PREREGISTERED_PENDING_INDEPENDENT_SELECTION_AND_CONTROLLER_QUALIFICATION');
+    expect(sourceV4Registration.sourceGraphQualification.status).toBe('PENDING_EXACT_REVIEW');
+    expect(sourceV4Registration.treatmentDelta.basisExperimentId).toBe(sourceV3Registration.experiment.id);
+    for (const arm of ['compact', 'full'] as const) {
+      expect(sourceV4Registration.variants[arm].id).not.toBe(sourceV3Registration.variants[arm].id);
+      expect(sourceV4Registration.variants[arm].configDelta).toEqual(sourceV3Registration.variants[arm].configDelta);
+      expect(sourceV4Registration.variants[arm].configDelta).not.toHaveProperty('systemPromptText');
+    }
+    expect(findBoxIdentityPaths(JSON.stringify(sourceV4Registration))).toEqual([]);
+    expect(findOwnerNameLeaks(JSON.stringify(sourceV4Registration))).toEqual([]);
+    expect(() => validateCleanCohortCaptureRequest({ baselineExperimentId: sourceV3Registration.experiment.id,
+      experimentId: sourceV4Registration.experiment.id, arms: sourceV4Registration.experiment.arms,
+      decisionRef: sourceV4Registration.executionPolicy.decisionRef,
+      privateCaptureFile: sourceV4Registration.custodyPaths.privateCaptureFile,
+      portableFile: 'tool-delivery-clean-source-v4-20261112.json',
+      receiptDirectory: sourceV4Registration.custodyPaths.receiptDirectory }, sourceV3Registration))
+      .toThrow('A registered capture cannot be replaced.');
   });
   function authorityFixture() {
     const registration = structuredClone(cleanRegistration);
