@@ -31128,7 +31128,7 @@
           "POST"
         ]
       },
-      "description": "Read suite verdict and coverage from the complete population; member details use bounded display pages. Follow next with the same suiteRef and harness to recover every member; persist the cursor on the existing run/checkpoint. complete is false while records remain. page:true reads only a member page without an aggregate verdict.",
+      "description": "Read suite verdict with durable progress in the existing suite plan runs. Each call processes one history page. Follow next with the same suiteRef/harness until scanComplete. Pending scans are unknown/NO-GO. Finished scans verify the collected population before returning verdict/coverage and byte-bounded member details; follow next.runId/cursor for remaining details. page:true reads a member page without an aggregate verdict.",
       "capabilities": [
         "coord:read"
       ],
@@ -37857,11 +37857,6 @@
         "when": "As the resolver behind state:read { cell:\"workspace.workScope\" }, or when you only need to READ whether the workspace is confined to an allow-list of harnesses.",
         "notWhen": "To set or clear the policy — that is workspace:work_scope { op:\"set\"|\"clear\" }.",
         "chaining": "state:read { cell:\"workspace.workScope\" } is the ordinary entry point; workspace:work_scope { op:\"get\" } returns the same policy with the full ledger ring."
-      }
-    }
-  ]
-}
-work_scope { op:\"get\" } returns the same policy with the full ledger ring."
       }
     }
   ]
