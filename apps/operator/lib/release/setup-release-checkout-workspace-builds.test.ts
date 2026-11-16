@@ -267,10 +267,15 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
       'the desktop post-install runtime-build block is missing',
     ).not.toBe('');
 
-    const installIndex = Math.max(
-      SIDECAR_SCRIPT.indexOf('node scripts/npm-install-safe.mjs install'),
-      SIDECAR_SCRIPT.indexOf('npm install --legacy-peer-deps'),
+    // Locate the scoped install COMMAND, not one literal spelling of it. The producer
+    // now runs its own helper by path with --repo-root (papercusp-desktop e7c4f8db),
+    // which stranded the old literal probe at -1. The helper is also named by the
+    // cache-runner definition and inside the post-install block, but only the scoped
+    // install passes `install` as its subcommand on the same line.
+    const installMatch = /npm-install-safe\.mjs"?(?:[ \t]+--repo-root[ \t]+\S+)?[ \t]+install\b/.exec(
+      SIDECAR_SCRIPT,
     );
+    const installIndex = installMatch ? installMatch.index : -1;
     const blockIndex = SIDECAR_SCRIPT.indexOf('# POST-INSTALL RUNTIME BUILDS');
     const resolutionGuardIndex = SIDECAR_SCRIPT.indexOf('echo "→ verifying workspace deps resolved"');
     expect(installIndex).toBeGreaterThan(-1);
@@ -299,6 +304,9 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
     mkdirSync(packageRoot, { recursive: true });
     mkdirSync(ompRoot, { recursive: true });
     mkdirSync(join(root, 'scripts'), { recursive: true });
+    // The scoped install runs the PRODUCER's helper as "$HERE/../../scripts/…"
+    // (papercusp-desktop e7c4f8db). Path resolution walks HERE, so it must exist.
+    mkdirSync(join(root, 'papercusp-desktop/bin'), { recursive: true });
     writeFileSync(
       join(root, 'scripts/npm-install-safe.mjs'),
       [
@@ -393,6 +401,9 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
         '#!/usr/bin/env bash',
         'set -euo pipefail',
         'REPO_ROOT="$TEST_RUNTIME_REPO_ROOT"',
+        // Producer and product are the same fixture tree here, so the producer's bin dir
+        // (the script's HERE) sits under the fixture root.
+        'HERE="$TEST_RUNTIME_REPO_ROOT/papercusp-desktop/bin"',
         // The block also carries two REAL-REPO environment probes that a fake REPO_ROOT cannot
         // satisfy and that are not this test's subject (the npm trace of the runtime builds):
         //   - the Playwright runtime preflight (EI-25537398622311917): sources the REAL
