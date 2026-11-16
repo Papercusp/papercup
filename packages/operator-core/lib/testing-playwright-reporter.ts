@@ -370,8 +370,13 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
       preparationError = error;
     }
     this.runtimeBefore = captureRuntimeEnvironment(this.runtimeReader, this.runtimePreparationFailed);
-    if (process.env.VERIFY_TAURI_PID && this.runtimePreparationFailed)
-      throw new Error(`Native runtime witness preparation failed: ${String(preparationError)}`);
+    if (process.env.VERIFY_TAURI_PID && this.runtimePreparationFailed) {
+      // A null snapshot commit carries its census reason (for example the
+      // archive path a nested build added); the native check cannot see it.
+      const provenance = this.worktreeBefore?.provenanceError;
+      throw new Error(`Native runtime witness preparation failed: ${String(preparationError)}`
+        + (provenance ? ` (${provenance})` : ''));
+    }
     if (process.env.VERIFY_TAURI_PID && this.runtimeBefore.status !== 'captured')
       throw new Error(`Native runtime witness unavailable before tests: ${this.runtimeBefore.status}`);
   }

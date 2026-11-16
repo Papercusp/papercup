@@ -584,8 +584,10 @@ const NATIVE_RUNTIME_FILES = [
 ];
 
 const VITEST_RESULT_CACHE = 'packages/operator-core/.vitest-tmp/vitest/da39a3ee5e6b4b0d3255bfef95601890afd80709/results.json';
-// Outputs of apps/operator-vite's maintained prebuild, including both ORT roots.
+// Outputs of apps/operator-vite's maintained prebuild, including both ORT roots,
+// plus the log its singleflight build tees beside the admitted dist/.
 const SPA_RUNTIME_FILES = [
+  'apps/operator-vite/.vite-build.log',
   'apps/operator/public/wake-runtime/ort.bundle.min.mjs',
   'apps/operator/public/vad-runtime/ort-wasm-simd-threaded.wasm',
   'apps/operator/public/vditor/dist/index.js',
@@ -3662,6 +3664,9 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       'apps/operator/public/ort-wasm-unexpected.ts',
       'apps/operator/public/silero_vad_unexpected.onnx',
       'apps/operator/public/excalidraw-extra/chunk.js',
+      // Only the singleflight log's exact path is admitted, never a sibling.
+      'apps/operator-vite/.vite-build.log.extra',
+      'apps/operator-vite/src/.vite-build.log',
     ]) {
       write(dest, unexpected, 'unexpected source');
       await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`added ${unexpected}`);

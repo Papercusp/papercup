@@ -12,6 +12,25 @@ import type { RecordedRuntimeEnvironment } from '@papercusp/test-config/executio
 
 type RuntimeReader = () => RecordedRuntimeEnvironment | null;
 
+/** Name the failed condition, in the original evaluation order: one shared
+ * message for all of them made every recurrence undiagnosable and cost a full
+ * verifier run per guess. */
+function sourceMismatch(root: string, commit: string | null, pid: number,
+  receipt: { schemaVersion?: unknown; sourceCommit?: unknown }): string | null {
+  const ref = process.env.VERIFY_TAURI_SOURCE_REF;
+  if (!Number.isSafeInteger(pid) || pid <= 0) return `VERIFY_TAURI_PID is not a positive integer: ${process.env.VERIFY_TAURI_PID}`;
+  if (!commit) return 'caller source commit is unavailable';
+  if (!/^[a-f0-9]{40,64}$/.test(commit)) return `caller source commit is not a hex object id: ${commit}`;
+  if (receipt.schemaVersion !== 'verifier-source-v1') return `receipt schemaVersion is ${String(receipt.schemaVersion)}`;
+  if (receipt.sourceCommit !== commit)
+    return `receipt sourceCommit ${String(receipt.sourceCommit)} differs from caller commit ${commit}`;
+  if (receipt.sourceCommit !== ref)
+    return `receipt sourceCommit ${String(receipt.sourceCommit)} differs from VERIFY_TAURI_SOURCE_REF ${ref}`;
+  const callerRoot = realpathSync(root);
+  const sourceRoot = realpathSync(process.env.OPERATOR_SOURCE_ROOT!);
+  return callerRoot === sourceRoot ? null : `caller root ${callerRoot} differs from OPERATOR_SOURCE_ROOT ${sourceRoot}`;
+}
+
 function nativeIdentity(root: string, commit: string | null) {
   // Database isolation authorizes fixture writes; it does not establish native
   // ownership. Shared read-only journeys use the same frozen source and kernel
@@ -21,12 +40,9 @@ function nativeIdentity(root: string, commit: string | null) {
     throw new Error('native runtime requires owned verifier source custody');
   const pid = Number(process.env.VERIFY_TAURI_PID);
   const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT!, 'utf8'));
-  if (!Number.isSafeInteger(pid) || pid <= 0 || !commit || !/^[a-f0-9]{40,64}$/.test(commit)
-    || receipt.schemaVersion !== 'verifier-source-v1' || receipt.sourceCommit !== commit
-    || receipt.sourceCommit !== process.env.VERIFY_TAURI_SOURCE_REF
-    || !process.env.OPERATOR_SOURCE_ROOT
-    || realpathSync(root) !== realpathSync(process.env.OPERATOR_SOURCE_ROOT)) throw new Error('native runtime source receipt mismatch');
-  return { pid, root: realpathSync(root), commit };
+  const mismatch = sourceMismatch(root, commit, pid, receipt);
+  if (mismatch) throw new Error(`native runtime source receipt mismatch: ${mismatch}`);
+  return { pid, root: realpathSync(root), commit: commit! };
 }
 
 /** Synchronous kernel observation; Playwright does not await its onBegin hook. */

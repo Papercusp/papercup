@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -11,12 +11,13 @@ const { sql, pg } = vi.hoisted(() => {
   const sql = vi.fn();
   return { sql, pg: vi.fn(() => sql) };
 });
-const source = vi.hoisted(() => ({ root: '/portal', after: vi.fn() }));
+const source = vi.hoisted(() => ({ root: '/portal', after: vi.fn(),
+  before: null as null | { commit: string | null; porcelain: string | null; provenanceError?: string } }));
 const sourceDirt = vi.hoisted(() => vi.fn(() => false));
 vi.mock('postgres', () => ({ default: pg }));
 vi.mock('@papercusp/operator-core/lib/testing-worktree', () => ({
   resolveReporterSourceRoot: () => source.root,
-  captureTestSourceSnapshot: () => ({ commit: 'a'.repeat(40), porcelain: '' }),
+  captureTestSourceSnapshot: () => source.before ?? { commit: 'a'.repeat(40), porcelain: '' },
   captureTestSourceSnapshotAsync: () => source.after() ?? Promise.resolve({ commit: 'a'.repeat(40), porcelain: '' }),
   computeWorktreeDirty: sourceDirt,
 }));
@@ -39,7 +40,7 @@ type RuntimeReader = NonNullable<ReturnType<typeof prepareNativeRuntimeReader>>;
  *  call-site exception testing/typed-mock.ts sanctions, not a stale fixture. */
 const violatesSyncReaderContract = (impl: () => Promise<unknown>) => impl as unknown as RuntimeReader;
 
-afterEach(() => { vi.unstubAllEnvs(); source.root = '/portal'; source.after.mockReset(); sourceDirt.mockReset().mockReturnValue(false); });
+afterEach(() => { vi.unstubAllEnvs(); source.root = '/portal'; source.before = null; source.after.mockReset(); sourceDirt.mockReset().mockReturnValue(false); });
 
 describe('portable Playwright ledger reporter', () => {
   describe('bounded ledger write recovery', () => {
@@ -328,6 +329,58 @@ describe('portable Playwright ledger reporter', () => {
     vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', '');
     vi.stubEnv('PAPERCUSP_VERIFY_TAURI_ISOLATED', '1');
     expect(() => new Reporter().onBegin()).toThrow('owned verifier source custody');
+  });
+
+  const sourceConditions: [string, { pid?: string; commit?: string | null; schemaVersion?: string; ref?: string;
+    otherRoot?: boolean }, string][] = [
+    ['pid is not positive', { pid: '0' }, 'VERIFY_TAURI_PID is not a positive integer: 0'],
+    ['caller commit is unavailable', { commit: null }, 'caller source commit is unavailable'],
+    ['caller commit is not hex', { commit: 'not-a-sha' }, 'caller source commit is not a hex object id: not-a-sha'],
+    ['receipt schema differs', { schemaVersion: 'verifier-source-v0' }, 'receipt schemaVersion is verifier-source-v0'],
+    ['caller commit differs from receipt', { commit: 'c'.repeat(40) },
+      `receipt sourceCommit ${'a'.repeat(40)} differs from caller commit ${'c'.repeat(40)}`],
+    ['selected ref differs from receipt', { ref: 'b'.repeat(40) },
+      `receipt sourceCommit ${'a'.repeat(40)} differs from VERIFY_TAURI_SOURCE_REF ${'b'.repeat(40)}`],
+    ['caller root differs', { otherRoot: true }, 'caller root <other> differs from OPERATOR_SOURCE_ROOT <dir>'],
+  ];
+  it.each(sourceConditions)('names the failed native source condition: %s', (_label, change, expected) => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-source-condition-'));
+    const other = mkdtempSync(join(tmpdir(), 'native-source-other-'));
+    const receipt = join(dir, 'receipt.json');
+    try {
+      writeFileSync(receipt, JSON.stringify({ schemaVersion: change.schemaVersion ?? 'verifier-source-v1',
+        sourceCommit: 'a'.repeat(40) }));
+      vi.stubEnv('VERIFY_TAURI_PID', change.pid ?? String(process.pid));
+      vi.stubEnv('VERIFY_TAURI_SOURCE_REF', change.ref ?? 'a'.repeat(40));
+      vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', receipt);
+      vi.stubEnv('OPERATOR_SOURCE_ROOT', dir);
+      const commit = change.commit === undefined ? 'a'.repeat(40) : change.commit;
+      const detail = expected.replace('<other>', realpathSync(other)).replace('<dir>', realpathSync(dir));
+      expect(() => prepareNativeRuntimeReader(change.otherRoot ? other : dir, commit))
+        .toThrow(`native runtime source receipt mismatch: ${detail}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it('carries the archive census reason when a native witness had no source commit', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-source-census-'));
+    const receipt = join(dir, 'receipt.json');
+    try {
+      writeFileSync(receipt, JSON.stringify({ schemaVersion: 'verifier-source-v1', sourceCommit: 'a'.repeat(40) }));
+      vi.stubEnv('VERIFY_TAURI_PID', String(process.pid));
+      vi.stubEnv('VERIFY_TAURI_SOURCE_REF', 'a'.repeat(40));
+      vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', receipt);
+      vi.stubEnv('OPERATOR_SOURCE_ROOT', dir);
+      source.root = dir;
+      // WI-6554700010048804 attempt 10: a nested build:operator wrote its log into
+      // the frozen archive after the preflight, so the reporter's census refused.
+      const census = 'verifier source: tampered verification source archive: added apps/operator-vite/.vite-build.log';
+      source.before = { commit: null, porcelain: null, provenanceError: census };
+      expect(() => new Reporter().onBegin()).toThrow(
+        `native runtime source receipt mismatch: caller source commit is unavailable (${census})`);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   it.each(['changed', 'unavailable', 'error'])('fails native verification when the runtime becomes %s', async outcome => {
