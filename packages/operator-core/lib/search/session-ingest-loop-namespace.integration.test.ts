@@ -8,6 +8,7 @@ const root = resolve(__dirname, '../../../..');
 const sources = [
   'packages/operator-core/lib/search/session-ingest.ts',
   'packages/operator-core/lib/harness/routines/loop-turn-start-stamp.ts',
+  'packages/operator-core/lib/agent-tools/activity/lifecycle-markers.ts',
 ];
 
 it('binds scoped enrollment through current-build ingest and both typed completion readers in a private runtime', () => {
@@ -19,15 +20,18 @@ it('binds scoped enrollment through current-build ingest and both typed completi
     import { mkdir, writeFile } from 'node:fs/promises';
     import { join } from 'node:path';
     import { createHash } from 'node:crypto';
+    import { spawnSync } from 'node:child_process';
     import { getOrgPg } from '@papercusp/db-org';
     import { activeWorkspaceId } from './packages/operator-core/lib/workspace-registry.ts';
     import { runWithWorkspace } from './packages/operator-core/lib/workspace-als.ts';
     import { recordAdvSession, recordSuLaunchSpec } from './packages/operator-core/lib/adv-sessions.ts';
     import { insertTurns, ingestFileNow } from './packages/operator-core/lib/search/session-ingest.ts';
+    import { reconcileIndexedLoopTurnStarts } from './packages/operator-core/lib/harness/routines/loop-turn-start-stamp.ts';
+    import { LOOP_TURN_START_MARKER, LOOP_TURN_START_SCAN_MARKER } from './packages/operator-core/lib/agent-tools/activity/lifecycle-markers.ts';
     import { getLoopStatus } from './packages/operator-core/lib/harness/routines/loop.ts';
     import { reconcileLoopRoutines } from './packages/operator-core/lib/harness/routines/reconcile-loop-routines.ts';
     import { tagTurnForInjection, readLedgerRows, appendLedgerRow, TURN_PROVENANCE_DIR } from './packages/operator-core/lib/turn-provenance/turn-provenance.ts';
-    const hashes = JSON.parse(process.env.LOOP_NAMESPACE_SOURCE_HASHES);
+    const hashes = JSON.parse(process.argv[1]);
     for (const [path, expected] of Object.entries(hashes))
       assert.equal(createHash('sha256').update(readFileSync(path)).digest('hex'), expected);
     const workspace = activeWorkspaceId();
@@ -80,9 +84,9 @@ it('binds scoped enrollment through current-build ingest and both typed completi
         ts: new Date().toISOString(), owner, harness_slug: null, cwd: '/untrusted/transcript/cwd',
         speaker: 'user', text: tagged.taggedText };
       const reply = { ...user, turn_idx: 8, ts: new Date().toISOString(), speaker: 'assistant', text: 'Private fixture completed.' };
-      return { owner, session, routine, user, reply, ws };
+      return { owner, session, routine, user, reply, ws, dir };
     }
-    async function refreshIndexed(c) {
+    async function indexedPath(c) {
       const dir = join(process.env.HOME, '.codex', 'sessions', '2026', '11', '06');
       await mkdir(dir, { recursive: true });
       const path = join(dir, 'rollout-' + c.session + '.jsonl');
@@ -91,7 +95,47 @@ it('binds scoped enrollment through current-build ingest and both typed completi
       await sql.unsafe('INSERT INTO harness_shared.session_ingest_state ' +
         '(source_kind,file_path,byte_offset,turn_count,session_id) VALUES ($1,$2,$3,$4,$5) ' +
         'ON CONFLICT (source_kind,file_path) DO NOTHING', ['codex', path, Buffer.byteLength(text), 9, c.session]);
-      return ingestFileNow(path, { owner: c.owner, sessionId: c.session });
+      return path;
+    }
+    async function refreshIndexed(c) {
+      return ingestFileNow(await indexedPath(c), { owner: c.owner, sessionId: c.session });
+    }
+    async function proofs(c) {
+      return sql.unsafe('SELECT id FROM harness_shared.agent_activity WHERE owner_id=$1 AND summary=$2',
+        [c.owner, LOOP_TURN_START_MARKER]);
+    }
+    async function scan(c) {
+      const rows = await sql.unsafe('SELECT detail FROM harness_shared.agent_activity ' +
+        'WHERE workspace_id=$1 AND owner_id=$2 AND session_id=$3 AND summary=$4 ORDER BY id DESC LIMIT 1',
+        [c.ws, c.owner, c.session, LOOP_TURN_START_SCAN_MARKER]);
+      return rows[0]?.detail;
+    }
+    async function seedScan(label, count, reverse = false) {
+      const c = await fixture(label);
+      await insertTurns(sql, [c.user, c.reply]);
+      await sql.unsafe('DELETE FROM harness_shared.agent_activity WHERE owner_id=$1', [c.owner]);
+      // Persist invalid candidates without passing through the current producer,
+      // exactly as an older index or missing enrollment can leave them.
+      const indices = Array.from({ length: count - 1 }, (_, i) => i + 9);
+      if (reverse) indices.reverse();
+      for (const idx of indices) await sql.unsafe('INSERT INTO harness_shared.session_turns ' +
+        '(workspace_id,source_kind,session_id,turn_idx,ts,owner,speaker,text,turn_origin,turn_origin_verdict,turn_origin_classifier_version) ' +
+        "VALUES ('default','codex',$1,$2,$3,$4,'user',$5,'loop-fire','agent-injected',1)",
+        [c.session, idx, c.user.ts, c.owner, '⟦turn-origin:loop-fire nonce:' + idx.toString(16).padStart(16, '0') + '⟧\nUnenrolled.']);
+      return c;
+    }
+    async function restartRefresh(c) {
+      const path = await indexedPath(c);
+      // Recreate the whole process, not just a SQL handle: the production
+      // consumer must recover the cursor solely from committed database state.
+      const run = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e',
+        "import { getOrgPg } from '@papercusp/db-org';" +
+        "import { ingestFileNow } from './packages/operator-core/lib/search/session-ingest.ts';" +
+        "const c=JSON.parse(process.argv[1]); const sql=getOrgPg().sql;" +
+        "try { await ingestFileNow(c.path,{owner:c.owner,sessionId:c.session}); } finally { await sql.end(); }",
+        JSON.stringify({ path, owner: c.owner, session: c.session })],
+        { encoding: 'utf8', timeout: 30000, env: process.env });
+      assert.equal(run.status, 0, run.error?.message ?? run.stderr);
     }
     try {
       for (const [label, ws] of [['valid-a', workspace], ['valid-b', workspace + '-b'],
@@ -128,16 +172,74 @@ it('binds scoped enrollment through current-build ingest and both typed completi
               assert.equal((await getLoopStatus(c.owner, { sql })).lastLoopTurnAt, c.reply.ts,
                 'no-new-bytes refresh repairs an already indexed authenticated turn');
               await Promise.all([refreshIndexed(c), refreshIndexed(c)]);
-              assert.equal((await sql.unsafe('SELECT id FROM harness_shared.agent_activity WHERE owner_id=$1', [c.owner])).length, 1);
+              assert.equal((await proofs(c)).length, 1);
             }
             completed.push({ label, routineId: c.routine, wakeCount: 3, turnIdx: 7, via: result.via });
           } else {
             assert.equal((await refreshIndexed(c)).inserted, 0);
-            assert.equal((await sql.unsafe('SELECT id FROM harness_shared.agent_activity WHERE owner_id=$1', [c.owner])).length, 0);
+            assert.equal((await proofs(c)).length, 0);
             rejected.push(label);
           }
         });
       }
+      const boundary = [];
+      for (const count of [63, 64, 65]) {
+        const c = await seedScan('boundary-' + count, count);
+        assert.equal((await refreshIndexed(c)).inserted, 0);
+        assert.deepEqual(await scan(c), { schemaVersion: 1, inspected: Math.min(count, 64),
+          hasMore: count > 64, resumeBefore: count > 64 ? { turnIdx: 9, workspaceId: 'default' } : null });
+        assert.equal((await proofs(c)).length, count > 64 ? 0 : 1);
+        if (count > 64) await restartRefresh(c);
+        assert.equal((await proofs(c)).length, 1);
+        assert.equal((await getLoopStatus(c.owner, { sql })).lastLoopTurnAt, c.reply.ts);
+        boundary.push(count);
+      }
+      // More than three pages, either insertion order, with new head candidates
+      // appearing between process restarts. Neither new heads nor rejected rows
+      // may prevent the old authentic turn from reaching the completion reader.
+      for (const reverse of [false, true]) {
+        const c = await seedScan('fair-' + reverse, 194, reverse);
+        for (let pass = 0; pass < 3; pass++) {
+          await restartRefresh(c);
+          assert.equal((await scan(c)).hasMore, true);
+          assert.equal((await proofs(c)).length, 0);
+          await sql.unsafe('INSERT INTO harness_shared.session_turns ' +
+            '(workspace_id,source_kind,session_id,turn_idx,ts,owner,speaker,text,turn_origin) ' +
+            "VALUES ('default','codex',$1,$2,$3,$4,'user','invalid envelope','loop-fire')",
+            [c.session, 1000 + pass, c.user.ts, c.owner]);
+        }
+        await restartRefresh(c);
+        assert.equal((await scan(c)).hasMore, false);
+        assert.equal((await proofs(c)).length, 1);
+        assert.equal((await getLoopStatus(c.owner, { sql })).lastLoopTurnAt, c.reply.ts);
+        // A concurrent pair consumes one durable position and cannot duplicate
+        // the same authenticated marker.
+        await Promise.all([refreshIndexed(c), refreshIndexed(c)]);
+        assert.equal((await proofs(c)).length, 1);
+      }
+      const late = await seedScan('late-enrollment', 65);
+      await sql.unsafe('UPDATE harness_shared.adv_sessions SET launch_spec=launch_spec-$1 WHERE coord_owner_id=$2',
+        ['turnProvenanceDir', late.owner]);
+      // The host canonical directory has no enrollment for this private owner.
+      await refreshIndexed(late);
+      await refreshIndexed(late);
+      assert.equal((await proofs(late)).length, 0);
+      assert.equal((await scan(late)).resumeBefore, null);
+      await sql.unsafe('UPDATE harness_shared.adv_sessions SET launch_spec=jsonb_set(launch_spec,\'{turnProvenanceDir}\',to_jsonb($1::text)) WHERE coord_owner_id=$2',
+        [late.dir, late.owner]);
+      await refreshIndexed(late);
+      await refreshIndexed(late);
+      assert.equal((await proofs(late)).length, 1, 'wrap retries late launch evidence');
+      const rollbackScan = await seedScan('rollback-scan', 65);
+      await assert.rejects(sql.begin(async tx => {
+        await reconcileIndexedLoopTurnStarts(tx, { owner: rollbackScan.owner, sourceKind: 'codex', sessionId: rollbackScan.session });
+        throw new Error('scan rollback');
+      }), /scan rollback/);
+      assert.equal(await scan(rollbackScan), undefined);
+      await refreshIndexed(rollbackScan);
+      assert.equal((await scan(rollbackScan)).resumeBefore.turnIdx, 9);
+      await refreshIndexed(rollbackScan);
+      assert.equal((await proofs(rollbackScan)).length, 1);
       const c = await fixture('rollback');
       await assert.rejects(sql.begin(async tx => {
         await insertTurns(tx, [c.user, c.reply]);
@@ -148,21 +250,23 @@ it('binds scoped enrollment through current-build ingest and both typed completi
       assert.equal((await sql.unsafe('SELECT id FROM harness_shared.agent_activity WHERE owner_id=$1', [c.owner])).length, 0);
       for (const [path, expected] of Object.entries(hashes))
         assert.equal(createHash('sha256').update(readFileSync(path)).digest('hex'), expected);
-      console.log('LOOP_NAMESPACE_RESULT ' + JSON.stringify({ completed, rejected, rollback: true, idempotent: true }));
+      console.log('LOOP_NAMESPACE_RESULT ' + JSON.stringify({ completed, rejected, rollback: true, idempotent: true,
+        boundary, restartFairness: true, lateEvidence: true, cursorRollback: true }));
     } finally { await sql.end(); }
   `;
   const result = spawnSync(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime', '--',
-    process.execPath, '--import', 'tsx', '--input-type=module', '-e', probe], {
+    process.execPath, '--import', 'tsx', '--input-type=module', '-e', probe, JSON.stringify(hashes)], {
     cwd: root, encoding: 'utf8', timeout: 180000, maxBuffer: 2 * 1024 * 1024,
-    env: { ...process.env, LOOP_NAMESPACE_SOURCE_HASHES: JSON.stringify(hashes) },
+    env: process.env,
   });
+  const childError = result.stderr.match(/(?:AssertionError|Error:|SyntaxError:)[\s\S]{0,2000}/)?.[0];
   const runtimeText = result.stdout.match(/^LOOP_NAMESPACE_RUNTIME (.+)$/m)?.[1];
-  expect(runtimeText, result.stdout.slice(-2000) + result.stderr.slice(-2000)).toBeTruthy();
+  expect(runtimeText, childError ?? result.error?.message ??
+    (result.stdout.slice(-2000) + result.stderr.slice(-2000))).toBeTruthy();
   const runtime = JSON.parse(runtimeText!);
   expect(existsSync(runtime.home)).toBe(false);
   // Cleanup can append more than 5KB after the assertion. Keep the originating
   // error first so a failed probe reports its cause rather than PG shutdown.
-  const childError = result.stderr.match(/(?:AssertionError|Error:)[\s\S]{0,2000}/)?.[0];
   expect(result.status, childError ?? result.error?.message ??
     (result.stdout.slice(-2000) + result.stderr.slice(-2000))).toBe(0);
   const evidenceText = result.stdout.match(/^LOOP_NAMESPACE_RESULT (.+)$/m)?.[1];
@@ -170,6 +274,7 @@ it('binds scoped enrollment through current-build ingest and both typed completi
   const evidence = JSON.parse(evidenceText!);
   expect(evidence.completed).toHaveLength(5);
   expect(evidence.rejected).toHaveLength(6);
-  expect(evidence).toMatchObject({ rollback: true, idempotent: true });
+  expect(evidence).toMatchObject({ rollback: true, idempotent: true, boundary: [63, 64, 65],
+    restartFairness: true, lateEvidence: true, cursorRollback: true });
   console.log('LOOP_NAMESPACE_VERIFIED ' + JSON.stringify({ ...evidence, hashes, cleanup: true }));
 }, 200000);
