@@ -13,9 +13,11 @@ import { IDOP_P001_BASELINE_REL, IDOP_P001_PROMPT_REL, inspectIdopP001Coverage,
   readIdopP001CurrentBuiltinPopulation,
   readIdopP001CurrentLibraryPopulation, readIdopP001AppliedStackPopulation,
   captureIdopP001HostPermissionPorts,
+  captureIdopP001KernelPermissionPorts,
+  replayIdopP001KernelPermissionSnapshot,
   inspectIdopP001AppliedStackArchive,
   IDOP_P001_ROLE_POLICY_SOURCES,
-  type IdopPermissionDifference, type IdopHostPermissionPorts } from './idop-p001-baseline';
+  type IdopPermissionDifference, type IdopHostPermissionPorts, type IdopInnerKernelPorts } from './idop-p001-baseline';
 
 type Baseline = {
   schemaVersion: number;
@@ -112,6 +114,16 @@ describe('IDOP D-043 immutable host authority read inputs', () => {
       .rejects.toThrow(/transaction/);
   });
 
+  it('retains original principal Set capabilities in host context keys', async () => {
+    const original = { ...ctx(), principal: { kind: 'service' as const, slug: 'app:original', trust: 'verified' as const,
+      authMethod: 'bearer-token' as const, workspaceId: 'snapshot-workspace', capabilities: new Set(['mail:send']) } };
+    const captured = await captureIdopP001HostPermissionPorts({ ...options(), contexts: [original] }, readers());
+    expect(await captured.ports.resolveConfinement({ ...original, principal: { ...original.principal,
+      capabilities: new Set(['mail:send']) } })).toMatchObject({ imposedBy: 'original-launcher' });
+    expect(() => captured.ports.resolveConfinement({ ...original, principal: { ...original.principal,
+      capabilities: new Set(['forged:*']) } })).toThrow(/not captured/);
+  });
+
   it.each(['unconfigured', 'store-error', 'stale-cache-fallback'])('rejects %s flag authority', async kind => {
     const source = readers();
     const attestation = await source.readFlagAttestation();
@@ -143,6 +155,488 @@ describe('IDOP D-043 immutable host authority read inputs', () => {
       return { ownerId: 'su-original', workspaceId: 'snapshot-workspace' };
     });
     await expect(captureIdopP001HostPermissionPorts(options(), mutating)).rejects.toThrow(/mutated/);
+  });
+});
+
+describe('IDOP D-043 immutable original kernel authority snapshot', () => {
+  const fixture = () => {
+    const request: KernelEnforcementRequest = { phase: 'enforce', boundary: 'dispatch',
+      toolName: 'mail:send', capabilities: ['mail:send'], args: { target: 'original' },
+      ctx: { workspaceId: 'kernel-workspace', uiClientId: 'original-owner', role: 'worker', isSuperuser: true,
+        runId: 'original-run', spawnId: 'original-spawn', log: vi.fn(), signal: new AbortController().signal,
+        progress: vi.fn(), emit: vi.fn(), principal: { kind: 'service', slug: 'app:original-app', trust: 'verified',
+          authMethod: 'bearer-token', workspaceId: 'kernel-workspace', capabilities: new Set(['mail:send']) } } };
+    const binding = { planSlug: 'original-plan', harnessSlug: 'papercusp' };
+    const policyInput = { workspaceId: 'kernel-workspace', harnessSlug: 'papercusp', role: 'worker', classRefs: [] };
+    const claim = { workspaceId: 'kernel-workspace', harnessSlug: 'papercusp', workItemId: 'WI-original',
+      ownerId: 'original-owner', advSessionId: 'original-session', acceptedOperation: { id: 'original-operation' } };
+    const options: Parameters<typeof captureIdopP001KernelPermissionPorts>[0] = {
+      workspaceId: 'kernel-workspace', requests: [{ request }], policyInputs: [policyInput], operationClaims: [claim],
+      toolNames: ['mail:send', 'absent:tool'], apps: [{ appId: 'original-app', tokenIds: ['original-token'] }],
+      convergence: [{ args: ['original-owner', 'kernel-workspace', 7,
+        { specificationRevision: 'original-spec', stateRevision: 'original-state' }],
+        result: false, evidenceRefs: ['original-convergence-receipt'] }],
+    };
+    const readers: Parameters<typeof captureIdopP001KernelPermissionPorts>[1] = {
+      inner: { runtime: { pid: 12345, processId: 'original-process' },
+        readState: vi.fn(async () => ({ revoked: true })),
+        resolveIdentity: vi.fn(() => ({ ownerId: 'original-owner', workspaceId: 'kernel-workspace' })),
+        readPolicy: vi.fn(async () => ({ policyRevision: 'original-policy', potSlug: 'papercusp',
+          bindings: [], ceilings: [{ denyCapabilities: ['secrets:*'] }], protectedAdditions: [],
+          tools: new Map([['mail:send', ['mail:send']]]) })),
+        readOperationEffectClaim: vi.fn(async () => true), resolveTool: vi.fn(() => undefined),
+        plan: { readBindings: vi.fn(async () => [binding]),
+          resolveGoal: vi.fn(async () => ({ goal: null, diagnostics: ['original-diagnostic'] })),
+          checkPlan: vi.fn(async () => ['original-not-ready']) } },
+      app: { loadRow: vi.fn(async () => null), loadAccessTokenRow: vi.fn(async () => null),
+        lookupTool: vi.fn(name => name === 'absent:tool' ? undefined : { name, capabilities: ['mail:send'] }),
+        loadSpendStatus: vi.fn(async () => ({ capCents: 100, spentCents: 25, windowSec: null })),
+        now: vi.fn(() => new Date('2026-11-16T11:00:00Z')) },
+      organization: { loadChain: vi.fn(async () => ({ status: 'none' as const })),
+        now: vi.fn(() => new Date('2026-11-16T10:59:00Z')) },
+    };
+    return { request, binding, policyInput, claim, options, readers };
+  };
+
+  it('captures original reads once and replays Map, Date, principal Set and explicit absent rows in both arms', async () => {
+    const f = fixture();
+    const captured = await captureIdopP001KernelPermissionPorts(f.options, f.readers);
+    expect(captured.sha256).toMatch(/^[a-f0-9]{64}$/);
+    for (let arm = 0; arm < 2; arm++) {
+      const { inner, app, organization } = captured.createPorts();
+      expect(await inner.readState(f.request)).toEqual({ revoked: true });
+      expect(inner.resolveIdentity(f.request.ctx).ownerId).toBe('original-owner');
+      expect(inner.runtime).toEqual({ pid: 12345, processId: 'original-process' });
+      expect((await inner.readPolicy(f.policyInput)).tools.get('mail:send')).toEqual(['mail:send']);
+      expect(await inner.readOperationEffectClaim(f.claim)).toBe(true);
+      expect(await inner.plan.readBindings('original-owner', 'kernel-workspace')).toEqual([f.binding]);
+      expect(await inner.plan.resolveGoal('original-owner', 'kernel-workspace')).toEqual({ goal: null, diagnostics: ['original-diagnostic'] });
+      expect(await inner.plan.checkPlan(f.binding, 'kernel-workspace')).toEqual(['original-not-ready']);
+      expect(inner.resolveTool('absent:tool')).toBeUndefined();
+      expect(app.lookupTool('absent:tool')).toBeUndefined();
+      expect(app.lookupTool('mail:send')!.capabilities).toEqual(['mail:send']);
+      expect(await app.loadRow('original-app')).toBeNull();
+      expect(await app.loadAccessTokenRow('original-token', 'original-app')).toBeNull();
+      expect(await app.loadSpendStatus('original-app', app.now())).toMatchObject({ spentCents: 25 });
+      expect(organization!.now().toISOString()).toBe('2026-11-16T10:59:00.000Z');
+      expect(await organization!.loadChain('kernel-workspace')).toEqual({ status: 'none' });
+      expect(await inner.converge(...f.options.convergence[0].args)).toBe(false);
+    }
+    expect(f.readers.inner.readState).toHaveBeenCalledOnce();
+    expect(f.readers.inner.readPolicy).toHaveBeenCalledOnce();
+    expect(f.readers.app.loadSpendStatus).toHaveBeenCalledWith('original-app', new Date('2026-11-16T11:00:00Z'));
+    expect(f.readers.organization!.loadChain).toHaveBeenCalledOnce();
+    expect(f.readers.inner.plan.checkPlan).toHaveBeenCalledOnce();
+  });
+
+  it('isolates evidence, source objects, returned data and each bounded state cursor', async () => {
+    const f = fixture();
+    f.options.requests[0].stateReadCount = 2;
+    vi.mocked(f.readers.inner.readState).mockResolvedValueOnce({ revoked: true }).mockResolvedValueOnce({ revoked: false });
+    const captured = await captureIdopP001KernelPermissionPorts(f.options, f.readers);
+    captured.snapshot.entries.length = 0;
+    captured.snapshot.runtime = null;
+    f.readers.inner.runtime.pid = 99999;
+    f.binding.planSlug = 'changed-after-capture';
+    const first = captured.createPorts(), second = captured.createPorts();
+    expect(await first.inner.readState(f.request)).toEqual({ revoked: true });
+    expect(await first.inner.readState(f.request)).toEqual({ revoked: false });
+    await expect(first.inner.readState(f.request)).rejects.toThrow(/exhausted/);
+    expect(await second.inner.readState(f.request)).toEqual({ revoked: true });
+    first.app.now().setFullYear(2000);
+    const policy = await first.inner.readPolicy(f.policyInput);
+    (policy.tools as Map<string, string[]>).get('mail:send')!.push('forged:*');
+    expect(second.app.now().getUTCFullYear()).toBe(2026);
+    expect((await second.inner.readPolicy(f.policyInput)).tools.get('mail:send')).toEqual(['mail:send']);
+    expect(second.inner.runtime.pid).toBe(12345);
+    expect(await second.inner.plan.readBindings('original-owner', 'kernel-workspace'))
+      .toEqual([{ planSlug: 'original-plan', harnessSlug: 'papercusp' }]);
+  });
+
+  it('preserves undefined, signed zero and literal tag-looking arrays without JSON collisions', async () => {
+    const f = fixture();
+    const state = { revoked: false, extra: { omitted: undefined, zero: -0, literal: ['date', 'not-a-date'] } };
+    vi.mocked(f.readers.inner.readState).mockResolvedValue(state);
+    const replay = (await captureIdopP001KernelPermissionPorts(f.options, f.readers)).createPorts();
+    const result = await replay.inner.readState(f.request) as typeof state;
+    expect(Object.hasOwn(result.extra, 'omitted')).toBe(true);
+    expect(result.extra.omitted).toBeUndefined();
+    expect(Object.is(result.extra.zero, -0)).toBe(true);
+    expect(result.extra.literal).toEqual(['date', 'not-a-date']);
+  });
+
+  it('rehydrates persisted authority without original readers and isolates both replay arms', async () => {
+    const f = fixture();
+    f.options.requests[0].stateReadCount = 2;
+    vi.mocked(f.readers.inner.readState).mockResolvedValueOnce({ revoked: true }).mockResolvedValueOnce({ revoked: false });
+    const captured = await captureIdopP001KernelPermissionPorts(f.options, f.readers);
+    const directory = mkdtempSync(join(tmpdir(), 'idop-kernel-snapshot-'));
+    try {
+      const path = join(directory, 'original.json');
+      writeFileSync(path, JSON.stringify(captured.snapshot), { mode: 0o600 });
+      const persisted = JSON.parse(readFileSync(path, 'utf8'));
+      const replay = replayIdopP001KernelPermissionSnapshot(persisted, captured.sha256);
+      persisted.entries.length = 0;
+      replay.snapshot.entries.length = 0;
+      captured.snapshot.entries.length = 0;
+      const first = replay.createPorts(), second = replay.createPorts();
+      expect(await first.inner.readState(f.request)).toEqual({ revoked: true });
+      expect(await first.inner.readState(f.request)).toEqual({ revoked: false });
+      await expect(first.inner.readState(f.request)).rejects.toThrow(/exhausted/);
+      expect(await second.inner.readState(f.request)).toEqual({ revoked: true });
+      expect((await second.inner.readPolicy(f.policyInput)).tools.get('mail:send')).toEqual(['mail:send']);
+      expect(second.app.now()).toEqual(new Date('2026-11-16T11:00:00Z'));
+      expect(await second.inner.converge(...f.options.convergence[0].args)).toBe(false);
+      expect(f.readers.inner.readState).toHaveBeenCalledTimes(2);
+      expect(f.readers.inner.readPolicy).toHaveBeenCalledOnce();
+      expect(f.readers.app.now).toHaveBeenCalledOnce();
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it('refuses altered bytes against the independently retained capture digest', async () => {
+    const f = fixture();
+    const captured = await captureIdopP001KernelPermissionPorts(f.options, f.readers);
+    captured.snapshot.workspaceId = 'forged';
+    expect(() => replayIdopP001KernelPermissionSnapshot(captured.snapshot, captured.sha256)).toThrow(/hash mismatch/);
+    expect(() => replayIdopP001KernelPermissionSnapshot({}, '')).toThrow(/hash mismatch/);
+  });
+
+  it.each(['version', 'extra-field', 'runtime', 'tag-arity', 'duplicate-entry', 'unknown-port',
+    'state-omission', 'state-count', 'extra-state', 'missing-clock', 'missing-evidence', 'convergence-result',
+    'organization-installation'])('rejects malformed persisted %s even with a matching digest', async kind => {
+    const f = fixture();
+    const snapshot = (await captureIdopP001KernelPermissionPorts(f.options, f.readers)).snapshot;
+    const row = (port: string) => snapshot.entries.find(entry => JSON.parse(entry.key)[0] === port)!;
+    if (kind === 'version') Object.assign(snapshot, { schemaVersion: 2 });
+    if (kind === 'extra-field') Object.assign(snapshot, { writer: 'unexpected' });
+    if (kind === 'runtime') snapshot.runtime = null;
+    if (kind === 'tag-arity') row('operation').value = ['undefined', 'ignored'];
+    if (kind === 'duplicate-entry') snapshot.entries.push(snapshot.entries[0]);
+    if (kind === 'unknown-port') row('policy').key = JSON.stringify(['writer', ['undefined']]);
+    if (kind === 'state-omission') snapshot.entries = snapshot.entries.filter(entry => entry !== row('state'));
+    if (kind === 'state-count') snapshot.stateCounts[0][1] = 2;
+    if (kind === 'extra-state') snapshot.stateCounts[0][1] = 0;
+    if (kind === 'missing-clock') snapshot.entries = snapshot.entries.filter(entry => entry !== row('app.now'));
+    if (kind === 'missing-evidence') {
+      f.options.convergence[0].evidenceRefs = [];
+      const noEvidence = ['array', [['object', [['args', JSON.parse(row('convergence').key)[1]],
+        ['evidenceRefs', ['array', []]], ['result', false]]]]];
+      snapshot.convergence = noEvidence as typeof snapshot.convergence;
+    }
+    if (kind === 'convergence-result') row('convergence').value = true;
+    if (kind === 'organization-installation') snapshot.organizationInstalled = false;
+    // Independent canonical JSON writer, not the replay implementation's hasher.
+    const canonical = (value: unknown): string => Array.isArray(value) ? `[${value.map(canonical).join(',')}]` :
+      value !== null && typeof value === 'object' ? `{${Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+        .map(([key, entry]) => `${JSON.stringify(key)}:${canonical(entry)}`).join(',')}}` : JSON.stringify(value);
+    expect(() => replayIdopP001KernelPermissionSnapshot(snapshot, sha256(canonical(snapshot))))
+      .toThrow(/IDOP.*(malformed|not captured)/);
+  });
+
+  it('refuses uncaptured privileges, principals, original runs, arguments and phases', async () => {
+    const f = fixture();
+    const { inner } = (await captureIdopP001KernelPermissionPorts(f.options, f.readers)).createPorts();
+    for (const change of [{ isSuperuser: false }, { role: 'judge' }, { uiClientId: 'other-owner' }, { runId: 'other-run' },
+      { principal: { ...f.request.ctx.principal!, capabilities: new Set(['forged:*']) } }]) {
+      const ctx = { ...f.request.ctx, ...change } as UnifiedToolContext;
+      expect(() => inner.resolveIdentity(ctx)).toThrow(/not captured/);
+      await expect(inner.readState({ ...f.request, ctx })).rejects.toThrow(/not captured/);
+    }
+    await expect(inner.readState({ ...f.request, args: { target: 'forged' } })).rejects.toThrow(/not captured/);
+    await expect(inner.readState({ ...f.request, phase: 'preflight' })).rejects.toThrow(/not captured/);
+    expect(await inner.readState(f.request)).toEqual({ revoked: true });
+  });
+
+  it('refuses uncaptured app, clock, organization, policy, catalog, operation and plan authority or a writer', async () => {
+    const f = fixture();
+    const { inner, app, organization } = (await captureIdopP001KernelPermissionPorts(f.options, f.readers)).createPorts();
+    await expect(app.loadRow('forged')).rejects.toThrow(/not captured/);
+    await expect(app.loadAccessTokenRow('forged', 'original-app')).rejects.toThrow(/not captured/);
+    await expect(app.loadSpendStatus('original-app', new Date(0))).rejects.toThrow(/not captured/);
+    expect(() => app.lookupTool('forged')).toThrow(/not captured/);
+    expect(() => inner.resolveTool('forged')).toThrow(/not captured/);
+    await expect(organization!.loadChain('foreign')).rejects.toThrow(/not captured/);
+    await expect(inner.readPolicy({ ...f.policyInput, role: 'judge' })).rejects.toThrow(/not captured/);
+    await expect(inner.readOperationEffectClaim({ ...f.claim, ownerId: 'forged' })).rejects.toThrow(/not captured/);
+    await expect(inner.plan.readBindings('forged', 'kernel-workspace')).rejects.toThrow(/not captured/);
+    await expect(inner.plan.resolveGoal('original-owner', 'foreign')).rejects.toThrow(/not captured/);
+    await expect(inner.plan.checkPlan({ ...f.binding, planSlug: 'forged' }, 'kernel-workspace')).rejects.toThrow(/not captured/);
+    const args = [...f.options.convergence[0].args] as typeof f.options.convergence[0]['args'];
+    args[0] = 'forged';
+    await expect(inner.converge(...args)).rejects.toThrow(/not captured/);
+    await expect(inner.converge(...f.options.convergence[0].args, {} as never)).rejects.toThrow(/writer/);
+  });
+
+  it('keeps absent organization installation distinct from an installed empty chain', async () => {
+    const f = fixture();
+    const absent = await captureIdopP001KernelPermissionPorts(f.options, { ...f.readers, organization: null });
+    expect(absent.snapshot.organizationInstalled).toBe(false);
+    expect(absent.createPorts().organization).toBeNull();
+    expect(f.readers.organization!.loadChain).not.toHaveBeenCalled();
+    const installed = await captureIdopP001KernelPermissionPorts(f.options, f.readers);
+    expect(installed.sha256).not.toBe(absent.sha256);
+  });
+
+  it.each([0, 1])('wires the captured ports into canonical outer and inner source readers (arm %i)', async arm => {
+    const revision = arm === 0 ? baseline.base.commit : 'working-tree';
+    const policy = loadIdopP001RolePermissionReader({ root, revision, testingFullAccess: 'off' });
+    const generic = await loadIdopP001DispatchPermissionReader({ root, revision });
+    for (const principal of ['application', 'session'] as const) {
+      const f = fixture();
+      if (principal === 'session') delete f.request.ctx.principal;
+      const captured = await captureIdopP001KernelPermissionPorts(f.options, f.readers);
+      const replay = captured.createPorts();
+      const inner = await policy.createInnerKernelReader(replay.inner);
+      const structural = policy.createStructuralKernelReader({ resolveIdentity: replay.inner.resolveIdentity,
+        sameKernelRevision: generic.sameKernelRevision });
+      const outer = policy.createOuterKernelReader({ app: replay.app, organization: replay.organization,
+        resolveControlAnchor: inner.evaluate, structural: request => structural(request, request.ctx.kernelState) });
+      expect(await outer(f.request)).toMatchObject({ decision: 'deny',
+        code: principal === 'application' ? 'app_scope:key_unknown' : 'revoked' });
+      expect(f.readers.inner.readState).toHaveBeenCalledOnce();
+      expect(f.readers.app.loadRow).toHaveBeenCalledOnce();
+      expect(f.readers.organization!.loadChain).toHaveBeenCalledOnce();
+    }
+  }, 60_000);
+
+  it('copies canonical tool names and refuses executable registry metadata', async () => {
+    const f = fixture();
+    const handler = vi.fn();
+    vi.mocked(f.readers.inner.resolveTool).mockReturnValue({ pluginName: 'comparison', description: 'Original tool metadata',
+      inputSchema: { type: 'object' }, capabilities: ['mail:send'], expose: { mcp: { name: 'mail:send' } }, fn: handler });
+    const { inner } = (await captureIdopP001KernelPermissionPorts(f.options, f.readers)).createPorts();
+    expect(inner.resolveTool('mail:send')!.expose.mcp!.name).toBe('mail:send');
+    expect(() => inner.resolveTool('mail:send')!.fn).toThrow(/metadata was not captured/);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it.each(['foreign-request', 'foreign-policy', 'foreign-claim', 'missing-tool', 'duplicate-request',
+    'unbounded-state', 'missing-convergence-evidence', 'foreign-convergence'])('rejects %s capture', async kind => {
+    const f = fixture();
+    if (kind === 'foreign-request') f.request.ctx.workspaceId = 'foreign';
+    if (kind === 'foreign-policy') f.policyInput.workspaceId = 'foreign';
+    if (kind === 'foreign-claim') f.claim.workspaceId = 'foreign';
+    if (kind === 'missing-tool') f.options.toolNames = [];
+    if (kind === 'duplicate-request') f.options.requests = [f.options.requests[0], f.options.requests[0]];
+    if (kind === 'unbounded-state') f.options.requests[0].stateReadCount = Infinity;
+    if (kind === 'missing-convergence-evidence') f.options.convergence[0].evidenceRefs = [];
+    if (kind === 'foreign-convergence') f.options.convergence[0].args[1] = 'foreign';
+    await expect(captureIdopP001KernelPermissionPorts(f.options, f.readers)).rejects.toThrow(/IDOP/);
+  });
+
+  it('refuses lossy values, accessors, executable data and reader mutation; propagates original read failures', async () => {
+    for (const value of [() => true, new (class {})(), new Date(NaN),
+      Object.defineProperty({}, 'hidden', { get() { throw new Error('getter ran'); } }),
+      Object.assign(new Map(), { extra: 'not captured' }), Array(1)]) {
+      const f = fixture();
+      // Deliberately unsupported runtime values exercise data-only rejection.
+      vi.mocked(f.readers.inner.readState).mockResolvedValue(value);
+      await expect(captureIdopP001KernelPermissionPorts(f.options, f.readers)).rejects.toThrow(/IDOP authority/);
+    }
+    const f = fixture();
+    vi.mocked(f.readers.inner.readState).mockImplementation(async () => { f.request.toolName = 'forged'; return null; });
+    await expect(captureIdopP001KernelPermissionPorts(f.options, f.readers)).rejects.toThrow(/mutated/);
+    const failure = fixture();
+    vi.mocked(failure.readers.inner.readPolicy).mockRejectedValue(new Error('original policy unreadable'));
+    await expect(captureIdopP001KernelPermissionPorts(failure.options, failure.readers)).rejects.toThrow('original policy unreadable');
+  });
+});
+
+describe('IDOP D-043 canonical inner control and identity authority', () => {
+  let policies: ReturnType<typeof loadIdopP001RolePermissionReader>[];
+  const request = (over: Partial<KernelEnforcementRequest> = {}): KernelEnforcementRequest => ({
+    phase: 'enforce', boundary: 'dispatch', toolName: 'mail:send', capabilities: ['mail:send'], args: {},
+    ctx: { workspaceId: 'comparison-workspace', role: 'worker', isSuperuser: true, uiClientId: 'original-owner',
+      log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+      runId: 'original-run', spawnId: 'original-spawn' }, ...over,
+  });
+  const ports = (state: Awaited<ReturnType<IdopInnerKernelPorts['readState']>> = null): IdopInnerKernelPorts => ({
+    readState: vi.fn(async () => state),
+    resolveIdentity: vi.fn(() => ({ ownerId: 'original-owner', workspaceId: 'comparison-workspace' })),
+    readPolicy: vi.fn(async () => { throw new Error('policy not captured'); }),
+    readOperationEffectClaim: vi.fn(async () => false), resolveTool: vi.fn(() => undefined),
+    runtime: { pid: 12345, processId: 'original-process' },
+    converge: vi.fn(async () => false),
+    plan: { readBindings: vi.fn(async () => []), resolveGoal: vi.fn(async () => ({ goal: null, diagnostics: [] })),
+      checkPlan: vi.fn(async () => []) },
+  });
+  beforeAll(() => {
+    policies = [baseline.base.commit, 'working-tree'].map(revision =>
+      loadIdopP001RolePermissionReader({ root, revision, testingFullAccess: 'off' }));
+  });
+
+  it.each([0, 1])('preserves original host state and refuses unavailable or revoked authority before SU (arm %i)', async arm => {
+    const input = ports({ revoked: true });
+    const inner = await policies[arm].createInnerKernelReader(input);
+    const req = request();
+    expect(await inner.evaluate(req)).toMatchObject({ decision: 'deny', code: 'revoked' });
+    expect(vi.mocked(input.readState).mock.calls.at(-1)![0]).toBe(req);
+    vi.mocked(input.readState).mockRejectedValue(Object.assign(new Error('private SQL must not leak'), { code: '08006' }));
+    const refused = await inner.evaluate(req);
+    expect(refused).toMatchObject({ decision: 'deny', code: 'policy-unavailable',
+      serverAudit: { authorityUnavailableSources: ['authority-reader-initialization-failed'],
+        authorityReadFailures: [{ pgCode: '08006', servingPid: 12345, servingProcessId: 'original-process' }] } });
+    expect(JSON.stringify(refused)).not.toContain('private SQL');
+    expect(input.readPolicy).not.toHaveBeenCalled();
+    expect(input.converge).not.toHaveBeenCalled();
+  }, 60_000);
+
+  it.each([0, 1])('keeps the missing-launch-record recovery door and its no-grants verdict (arm %i)', async arm => {
+    const input = ports({ identityLaunchRecord: null, identityLaunchRecordMissing: true,
+      activation: { applied: { specificationRevision: 'a'.repeat(64), stateRevision: 'original-state' } } });
+    const inner = await policies[arm].createInnerKernelReader(input);
+    expect(await inner.evaluate(request())).toMatchObject({ decision: 'deny', code: 'capability_unsatisfied',
+      obligations: { capabilityUnsatisfied: { cause: 'no-launch-record' } } });
+    expect(await inner.evaluate(request({ toolName: 'coord:orient' })))
+      .toMatchObject({ decision: 'allow', applied: false, code: 'identity-recovery' });
+    expect(input.readPolicy).not.toHaveBeenCalled();
+  }, 60_000);
+
+  const governed = () => {
+    const classRef = 'comparison.mail@1.0.0';
+    const pin = { kind: 'capability-provider' as const, ref: classRef, providerPackage: 'mail-provider',
+      providerVersion: '1.0.0', registryRevision: 'original-registry', conformanceRunId: 'original-run',
+      verbBindings: { send: 'mail:send' } };
+    const artifact = compileAgentSpecification({ source: { id: 'comparison-grant', workItem: { kind: 'feature' },
+      spine: { edges: { DONE: { to: 'done' } } }, grants: { requires: [classRef] } },
+      prompt: { role: 'worker', text: 'Original authority.' }, inputClosure: [pin] });
+    const applied = { specificationRevision: artifact.specificationRevision, stateRevision: 'original-state' };
+    const state = { activation: { applied }, operationOwnerId: 'original-owner',
+      identityLaunchRecordVersion: { sessionId: 'original-session', rowVersion: 'original-xmin' },
+      identityLaunchRecord: { workspaceId: 'comparison-workspace', harnessSlug: 'papercusp',
+        ...applied, specificationArtifact: artifact } };
+    const policy: Awaited<ReturnType<IdopInnerKernelPorts['readPolicy']>> = {
+      policyRevision: 'original-policy', potSlug: 'papercusp', ceilings: [{ allowCapabilities: ['mail:send'] }],
+      protectedAdditions: [], tools: new Map([['mail:send', ['mail:send']]]),
+      bindings: [{ ...pin, classRef, potSlug: 'papercusp', status: 'active', conformanceStatus: 'passed',
+        behavioralStatus: 'not-required', behavioralRunRef: null, boundBy: 'original-admin',
+        boundAt: '2026-11-16', updatedAt: '2026-11-16' }],
+    };
+    return { state, policy };
+  };
+
+  it('refuses uncaptured launch-model reads at the adapter boundary despite canonical error conversion', async () => {
+    const artifact = compileAgentSpecification({ source: { id: 'comparison-model', workItem: { kind: 'feature' },
+      spine: { edges: { DONE: { to: 'done' } } }, roles: [{ id: 'worker', backend: 'codex', model: 'gpt-6-sol' }] },
+      prompt: { role: 'worker', text: 'Original launch model.' } });
+    const generic = await loadIdopP001DispatchPermissionReader({ root, revision: 'working-tree', includeIdentityReplay: true });
+    expect(() => generic.replayAgentSpecification!(artifact)).toThrow(/uncaptured filesystem/);
+    const plain = governed().state.identityLaunchRecord.specificationArtifact;
+    expect(generic.replayAgentSpecification!(plain).specificationRevision).toBe(plain.specificationRevision);
+  }, 60_000);
+
+  it.each([0, 1])('replays pinned artifacts and rechecks current policy on each boundary, including SU (arm %i)', async arm => {
+    const f = governed();
+    const generic = await loadIdopP001DispatchPermissionReader({ root,
+      revision: arm === 0 ? baseline.base.commit : 'working-tree', includeIdentityReplay: true });
+    expect(generic.replayAgentSpecification!(f.state.identityLaunchRecord.specificationArtifact).specificationRevision)
+      .toBe(f.state.identityLaunchRecord.specificationRevision);
+    expect(() => generic.replayAgentSpecification!({ ...f.state.identityLaunchRecord.specificationArtifact,
+      specificationRevision: 'f'.repeat(64) })).toThrow(/mismatch/);
+    const input = ports(f.state);
+    vi.mocked(input.readPolicy).mockResolvedValue(f.policy);
+    const inner = await policies[arm].createInnerKernelReader(input);
+    expect(inner.genericSources.some(s => s.path.endsWith('/blueprint/composition-compiler.ts'))).toBe(true);
+    for (const phase of ['preflight', 'enforce'] as const) {
+      expect(await inner.evaluate(request({ phase }))).toMatchObject({ decision: 'allow',
+        policyRevision: 'original-policy', serverAudit: { identityLaunchRecord: {
+          advSessionId: 'original-session', xmin: 'original-xmin' } } });
+      f.policy.ceilings = [{ denyCapabilities: ['mail:send'] }];
+      expect(await inner.evaluate(request({ phase }))).toMatchObject({ decision: 'deny',
+        obligations: { capabilityUnsatisfied: { cause: 'outside-ceiling' } } });
+      f.policy.ceilings = [{ allowCapabilities: ['mail:send'] }];
+    }
+    expect(input.readPolicy).toHaveBeenCalledTimes(4);
+    expect(input.readPolicy).toHaveBeenLastCalledWith({ workspaceId: 'comparison-workspace',
+      harnessSlug: 'papercusp', role: 'worker', classRefs: ['comparison.mail@1.0.0'] });
+  }, 60_000);
+
+  it.each([0, 1])('checks original accepted-operation claims and never trusts forged request arguments (arm %i)', async arm => {
+    const f = governed();
+    const acceptedOperation = { kind: 'blueprint-operation-worker', workItemId: 'WI-original', operationId: 'send',
+      specificationRevision: 'b'.repeat(64), requiredTools: ['mail:send'],
+      pin: { kind: 'blueprint-operation', harnessSlug: 'papercusp', operationId: 'send',
+        specificationRevision: 'b'.repeat(64), operationVersion: '1.0.0', input: {} } };
+    const input = ports({ ...f.state, identityLaunchRecord: { ...f.state.identityLaunchRecord, acceptedOperation } });
+    vi.mocked(input.readPolicy).mockResolvedValue(f.policy);
+    const inner = await policies[arm].createInnerKernelReader(input);
+    const req = request({ args: { ownerId: 'forged', workItemId: 'WI-forged', acceptedOperation: null } });
+    expect(await inner.evaluate(req)).toMatchObject({ decision: 'deny', code: 'operation-claim-stale' });
+    expect(input.readOperationEffectClaim).toHaveBeenLastCalledWith({ workspaceId: 'comparison-workspace',
+      harnessSlug: 'papercusp', workItemId: 'WI-original', ownerId: 'original-owner',
+      advSessionId: 'original-session', acceptedOperation });
+    vi.mocked(input.readOperationEffectClaim).mockResolvedValue(true);
+    expect(await inner.evaluate(req)).toMatchObject({ decision: 'allow' });
+    vi.mocked(input.readOperationEffectClaim).mockRejectedValue(new Error('claim unavailable'));
+    expect(await inner.evaluate(req)).toMatchObject({ decision: 'deny', code: 'operation-claim-unavailable' });
+  }, 60_000);
+
+  it('retains the real old/current plan-guard difference and original owner bindings', async () => {
+    const input = ports();
+    input.plan.readBindings = vi.fn(async () => [{ planSlug: 'original-plan', harnessSlug: 'papercusp' }]);
+    input.plan.checkPlan = vi.fn(async () => ['original-not-started']);
+    const req = request({ toolName: 'capability:edit', args: { path: '/original/file' } });
+    const old = await policies[0].createInnerKernelReader(input);
+    expect(old.hasPlanGuard).toBe(false);
+    expect(await old.evaluate(req)).toMatchObject({ decision: 'allow' });
+    expect(input.plan.readBindings).not.toHaveBeenCalled();
+    const current = await policies[1].createInnerKernelReader(input);
+    expect(current.hasPlanGuard).toBe(true);
+    expect(await current.evaluate({ ...req, phase: 'preflight' })).toMatchObject({ decision: 'allow' });
+    expect(input.plan.readBindings).not.toHaveBeenCalled();
+    expect(await current.evaluate(req)).toMatchObject({ decision: 'deny', code: 'plan_execution_not_ready',
+      obligations: { planExecution: { blockers: ['original-not-started'] } } });
+    expect(input.plan.readBindings).toHaveBeenLastCalledWith('original-owner', 'comparison-workspace');
+    vi.mocked(input.plan.checkPlan).mockResolvedValue([]);
+    expect(await current.evaluate(req)).toMatchObject({ decision: 'allow' });
+  }, 60_000);
+
+  it.each([0, 1])('re-reads original state only after captured convergence succeeded (arm %i)', async arm => {
+    const f = governed();
+    const stale = { identityLaunchRecord: null, operationOwnerId: 'original-owner',
+      operationWorkspaceId: 'comparison-workspace', controlGeneration: 7,
+      activation: { applied: { specificationRevision: 'a'.repeat(64), stateRevision: 'stale-state' },
+        desired: f.state.activation.applied } };
+    const failed = ports(stale);
+    const closed = await policies[arm].createInnerKernelReader(failed);
+    expect(await closed.evaluate(request())).toMatchObject({ decision: 'deny',
+      obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } } });
+    expect(failed.readState).toHaveBeenCalledOnce();
+    expect(failed.converge).toHaveBeenCalledWith('original-owner', 'comparison-workspace', 7, f.state.activation.applied);
+
+    const success = ports(stale);
+    vi.mocked(success.readState).mockResolvedValueOnce(stale).mockResolvedValueOnce(f.state);
+    vi.mocked(success.readPolicy).mockResolvedValue(f.policy);
+    vi.mocked(success.converge).mockResolvedValue(true);
+    const healed = await policies[arm].createInnerKernelReader(success);
+    expect(await healed.evaluate(request())).toMatchObject({ decision: 'allow', policyRevision: 'original-policy' });
+    expect(success.readState).toHaveBeenCalledTimes(2);
+    expect(success.converge).toHaveBeenCalledOnce();
+  }, 60_000);
+
+  it('keeps the full original plan census when goal selection is degraded and refuses forged binding goals', async () => {
+    const input = ports();
+    input.plan.readBindings = vi.fn(async () => [
+      { planSlug: 'selected-plan', harnessSlug: 'papercusp', source: 'work-item' as const, sourceRef: 'WI-selected' },
+      { planSlug: 'other-plan', harnessSlug: 'papercusp', source: 'work-item' as const, sourceRef: 'WI-other' },
+    ]);
+    input.plan.resolveGoal = vi.fn(async () => ({ goal: null, diagnostics: ['unavailable'] }));
+    input.plan.checkPlan = vi.fn(async binding => binding.planSlug === 'other-plan' ? ['other-not-started'] : []);
+    const inner = await policies[1].createInnerKernelReader(input);
+    const req = request({ toolName: 'capability:edit', args: { goal: 'WI-selected', planSlug: 'selected-plan' } });
+    expect(await inner.evaluate(req)).toMatchObject({ decision: 'deny', obligations: {
+      planExecution: { planSlug: 'other-plan', blockers: ['other-not-started'] } } });
+    expect(input.plan.checkPlan).toHaveBeenCalledTimes(2);
+    expect(input.plan.resolveGoal).toHaveBeenCalledWith('original-owner', 'comparison-workspace',
+      expect.any(Function), expect.any(AbortSignal));
+    vi.mocked(input.plan.readBindings).mockRejectedValue(new Error('binding authority unavailable'));
+    expect(await inner.evaluate(req)).toMatchObject({ decision: 'deny', obligations: {
+      planExecution: { blockers: ['plan_authority_unavailable'] } } });
+  }, 60_000);
+
+  it('requires explicit authority ports, even when a fixture has no identity or plan', async () => {
+    await expect(policies[1].createInnerKernelReader({ ...ports(), readPolicy: undefined! }))
+      .rejects.toThrow(/explicit authority readers/);
   });
 });
 

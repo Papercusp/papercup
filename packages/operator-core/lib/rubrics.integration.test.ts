@@ -5842,6 +5842,50 @@ describe('template_data persistence boundary — the set-template-data door', ()
     })).toMatchObject({ eligible: true, reason: 'eligible' });
   });
 
+  it.each([239, 240, 241, 4096])('preserves complete %i-character lineage failures through routing and amendment receipts', async (length) => {
+    const seeded = await seedBarContract(`approver-screen-lossless-${length}`);
+    const tail = ' phase=setup; acquisitionTicket=decisive-tail-ticket';
+    const detail = 'x'.repeat(length - tail.length) + tail;
+    const failure = Object.assign(new Error(detail), { code: 'DB_CALL_DEADLINE' });
+    const identity = await import('./acceptance-author-identity');
+    const closure = vi.spyOn(identity, 'acceptanceLineageClosure').mockRejectedValue(failure);
+    const { filterAmendmentReviewRoute } = await import('./consult/acceptance-bar-amendment-review');
+    const { trackAmendRun, getAmendReceipt } = await import('./agent-tools/rubrics/amend-receipts');
+    const candidates = ['su-screen-lossless-first', `su-screen-${'x'.repeat(190)}-last`];
+    try {
+      // A fresh screen models a later retry batch; each batch still shares its
+      // failed population read across candidates in either order.
+      for (const [batch, owners] of [candidates, [...candidates].reverse()].entries()) {
+        const screen = await rubrics.resolveAcceptanceBarApproverScreen({ rubricId: seeded.rubricSlug });
+        for (const ownerId of owners) {
+          const sources = [{ ownerId, score: 0.9 }];
+          const refusal = await filterAmendmentReviewRoute(
+            { qualified: sources, snapshot: { candidates: sources } } as never,
+            screen.check,
+          ).catch(error => error);
+          expect(refusal).toBeInstanceOf(Error);
+          expect(refusal.cause).toBe(failure);
+          expect(refusal.message).toContain(`candidate=${ownerId};`);
+          expect(refusal.message.endsWith(detail)).toBe(true);
+
+          const key = `lossless-lineage-${length}-${batch}-${owners.indexOf(ownerId)}`;
+          await expect(trackAmendRun(key, seeded.rubricSlug, async () => {
+            throw refusal;
+          })).rejects.toBe(refusal);
+          // The real receipt writer persists the message, not Error.cause.
+          // Its reader must recover the decisive evidence after the old cut.
+          const receipt = await getAmendReceipt(seeded.rubricSlug, key);
+          expect(receipt).toMatchObject({ state: 'failed', error: refusal.message });
+          expect(receipt!.error!.endsWith(detail)).toBe(true);
+          expect(receipt!.error).toContain(tail);
+        }
+        expect(closure).toHaveBeenCalledTimes(batch + 1);
+      }
+    } finally {
+      closure.mockRestore();
+    }
+  });
+
   it('METHOD review screens related sources and freshly reserved answerers with the same canonical lineage rule', async () => {
     const seeded = await seedBarContract('method-review-native-independence');
     const target = { rubricId: seeded.rubricSlug, applierId: 'amendment-actor' };

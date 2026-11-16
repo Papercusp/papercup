@@ -551,7 +551,7 @@ export async function replaySpecTestAdequacyForHistoricalAudit(input: {
         },
       }))
     : evidence;
-  const sourceBarTestRequirements = await resolveSourceBarTestRequirements(clause.sourceBar);
+  const sourceBarTestRequirements = await resolveSourceBarTestRequirements(clause.sourceBar, undefined, undefined, clause.planItemId);
   // P-004 (D-010): replay on the deliverable verdict the live grade uses. The current verdict
   // stands in for the audit-time one; lowering it after activation is refused (P-005, D-008).
   const codeDeliverables = args.harness
@@ -1276,6 +1276,8 @@ export default defineTool({
       const sourceBarTestRequirements = await resolveSourceBarTestRequirements(
         clause.sourceBar,
         sourceBarRubricCache,
+        undefined,
+        clause.planItemId,
       );
       const clauseEvidence = allEvidence.filter((row) =>
         row.planSlug === clause.planSlug &&

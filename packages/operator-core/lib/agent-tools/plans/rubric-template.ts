@@ -227,6 +227,14 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
         .describe(
           'Must-pass Vitest or maintained Portal Playwright files. Prefer repo-relative paths; unambiguous workspace-relative paths work. Validated on proposal, run on grading.',
         ),
+      filesByPlanItem: z.record(
+        z.string().regex(/^P-\d{3,}$/),
+        z.array(z.string().trim().min(1)).min(1).max(50),
+      ).refine(value => Object.keys(value).length > 0 && Object.keys(value).length <= 50, {
+        message: 'test ownership must name between 1 and 50 plan items',
+      }).optional().describe(
+        'Reviewed ownership for a criterion implemented in separate plan items. Each item proves its selected files; the union must equal files. Aggregate grading still requires every file. Ownership changes require a BAR amendment.',
+      ),
       testName: z
         .string()
         .trim()
@@ -260,6 +268,14 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
     })
     .strict()
     .superRefine((check, ctx) => {
+      if (check.filesByPlanItem) {
+        const files = new Set(check.files.map(file => file.trim()));
+        const owned = new Set(Object.values(check.filesByPlanItem).flat());
+        if ([...owned].some(file => !files.has(file)) || [...files].some(file => !owned.has(file))) {
+          ctx.addIssue({ code: 'custom', path: ['filesByPlanItem'],
+            message: 'plan-item ownership must cover every check.files entry and no other file' });
+        }
+      }
       if (check.testName !== undefined && check.files.length !== 1) {
         ctx.addIssue({
           code: 'custom',

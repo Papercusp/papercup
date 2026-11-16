@@ -1891,6 +1891,8 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput,
 
     const workItems = await tx<{
       feature_id: string;
+      plan_slug: string | null;
+      plan_line_id: string | null;
       source_plan_slug: string | null;
       source_plan_item_ids: string[] | null;
       stamped_plan_slug: string | null;
@@ -1898,7 +1900,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput,
       run_instance_plan_slug: string | null;
       run_template_slug: string | null;
     }[]>`
-      SELECT feature_id, source_plan_slug, source_plan_item_ids,
+      SELECT feature_id, plan_slug, plan_line_id, source_plan_slug, source_plan_item_ids,
              payload -> 'plan_item' ->> 'plan_slug' AS stamped_plan_slug,
              payload -> 'plan_item' ->> 'item_id' AS stamped_item_id,
              payload -> 'plan_run' ->> 'instancePlanSlug' AS run_instance_plan_slug,
@@ -3618,6 +3620,8 @@ export async function carryForwardCurrentSpecEvidence(
   const candidates = await withWorkspace(input.workspaceId, async (tx) => {
     const [target] = await tx<{
       feature_id: string;
+      plan_slug: string | null;
+      plan_line_id: string | null;
       source_plan_slug: string | null;
       source_plan_item_ids: string[] | null;
       stamped_plan_slug: string | null;
@@ -3625,7 +3629,7 @@ export async function carryForwardCurrentSpecEvidence(
       run_instance_plan_slug: string | null;
       run_template_slug: string | null;
     }[]>`
-      SELECT feature_id, source_plan_slug, source_plan_item_ids,
+      SELECT feature_id, plan_slug, plan_line_id, source_plan_slug, source_plan_item_ids,
              payload -> 'plan_item' ->> 'plan_slug' AS stamped_plan_slug,
              payload -> 'plan_item' ->> 'item_id' AS stamped_item_id,
              payload -> 'plan_run' ->> 'instancePlanSlug' AS run_instance_plan_slug,
@@ -3677,12 +3681,15 @@ export async function carryForwardCurrentSpecEvidence(
          AND b.plan_slug = ${input.planSlug}
          AND b.retracted_at IS NULL
          AND (
-           (wi.source_plan_slug = ${input.planSlug}
-             AND ${planItemId} = ANY(COALESCE(wi.source_plan_item_ids, ARRAY[]::text[])))
-           OR (
-             wi.payload -> 'plan_item' ->> 'plan_slug' = ${input.planSlug}
-             AND wi.payload -> 'plan_item' ->> 'item_id' = ${planItemId}
-           )
+           (wi.plan_slug = ${input.planSlug} AND wi.plan_line_id = ${planItemId})
+           OR (wi.plan_slug IS NULL AND wi.plan_line_id IS NULL AND (
+             (wi.source_plan_slug = ${input.planSlug}
+               AND ${planItemId} = ANY(COALESCE(wi.source_plan_item_ids, ARRAY[]::text[])))
+             OR (
+               wi.payload -> 'plan_item' ->> 'plan_slug' = ${input.planSlug}
+               AND wi.payload -> 'plan_item' ->> 'item_id' = ${planItemId}
+             )
+           ))
          )
        ORDER BY wi.updated_ts DESC NULLS LAST, wi.feature_id DESC, b.created_at, b.id`;
   });

@@ -248,6 +248,8 @@ beforeAll(async () => {
       item_kind text NOT NULL DEFAULT 'bug',
       payload jsonb NOT NULL DEFAULT '{}'::jsonb,
       updated_ts bigint NOT NULL DEFAULT ((extract(epoch FROM now()) * 1000)::bigint),
+      plan_slug text,
+      plan_line_id text,
       source_plan_slug text,
       source_plan_item_ids text[],
       admission text, admitted_at timestamptz, admitted_by text,
@@ -572,6 +574,35 @@ describe('canonical binding consumer custody', () => {
 });
 
 describe('promotion carry-forward of current spec evidence', () => {
+  it('accepts a freshly adopted issue without legacy stamps and preserves its identity', async () => {
+    await db.sql`UPDATE harness_shared.work_items SET
+      plan_slug = 'reconnect-plan', plan_line_id = 'P-003',
+      source_plan_slug = NULL, source_plan_item_ids = NULL, payload = '{}'::jsonb
+      WHERE feature_id = 'WI-101'`;
+    await expect(evidenceStore.carryForwardCurrentSpecEvidence({
+      workspaceId: WORKSPACE, harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+      planItemId: 'P-003', workItemId: 'WI-101', actorId: 'su-promoter',
+    })).resolves.toEqual({ sourceWorkItemId: null, copiedBindingIds: [] });
+    const [row] = await db.sql`SELECT feature_id, item_kind, plan_slug, plan_line_id,
+      source_plan_slug, source_plan_item_ids, payload FROM harness_shared.work_items
+      WHERE feature_id = 'WI-101'`;
+    expect(row).toEqual({ feature_id: 'WI-101', item_kind: 'bug',
+      plan_slug: 'reconnect-plan', plan_line_id: 'P-003',
+      source_plan_slug: null, source_plan_item_ids: null, payload: {} });
+  });
+
+  it.each([
+    ['different-plan', 'P-003'], ['reconnect-plan', 'P-999'],
+    ['reconnect-plan', null], [null, 'P-003'],
+  ])('rejects canonical association %s#%s despite matching legacy provenance', async (plan, item) => {
+    await db.sql`UPDATE harness_shared.work_items SET plan_slug = ${plan}, plan_line_id = ${item}
+      WHERE feature_id = 'WI-101'`;
+    await expect(evidenceStore.carryForwardCurrentSpecEvidence({
+      workspaceId: WORKSPACE, harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+      planItemId: 'P-003', workItemId: 'WI-101', actorId: 'su-promoter',
+    })).rejects.toThrow('spec_evidence_continuity_target_plan_item_mismatch:WI-101:reconnect-plan#P-003');
+  });
+
   it.each([false, true])('preserves independent verification citations across a provenance-only clause revision (withdrawn=%s)', async (withdrawn) => {
     await specs.setSpecClause(clause({ mutationRequired: false, acceptanceRef: 'D-001' }));
     const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
@@ -648,7 +679,13 @@ describe('promotion carry-forward of current spec evidence', () => {
     expect(count.count).toBe(expectedCount);
   });
 
-  it.each([false, true])('copies exact proof from a dropped predecessor and remaps its verification citation (scheduled execution=%s)', async (scheduled) => {
+  it.each(['legacy', 'scheduled', 'canonical'])('copies exact proof from a dropped predecessor and remaps its verification citation (%s)', async (representation) => {
+    const scheduled = representation === 'scheduled';
+    const canonical = representation === 'canonical';
+    if (canonical) await db.sql`UPDATE harness_shared.work_items SET
+      plan_slug = 'reconnect-plan', plan_line_id = 'P-003',
+      source_plan_slug = NULL, source_plan_item_ids = NULL
+      WHERE feature_id = 'WI-101'`;
     const observedAt = '2026-10-20T01:02:03.000Z';
     await specs.setSpecClause(clause({ mutationRequired: false }));
     const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
@@ -685,12 +722,15 @@ describe('promotion carry-forward of current spec evidence', () => {
     await db.sql`UPDATE harness_shared.work_items SET status = 'dropped', updated_ts = 1000
       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND feature_id = 'WI-101'`;
     await db.sql`INSERT INTO harness_shared.work_items
-      (workspace_id, harness_slug, feature_id, status, payload, source_plan_slug, source_plan_item_ids)
+      (workspace_id, harness_slug, feature_id, status, payload, source_plan_slug, source_plan_item_ids,
+       plan_slug, plan_line_id)
       VALUES (${WORKSPACE}, ${HARNESS}, 'WI-103', 'open',
-        ${JSON.stringify({ plan_item: { plan_slug: 'reconnect-plan', item_id: 'P-003' },
+        ${JSON.stringify(canonical ? {} : { plan_item: { plan_slug: 'reconnect-plan', item_id: 'P-003' },
           ...(scheduled ? { plan_run: { instancePlanSlug: 'reconnect-plan', templateSlug: 'reconnect-template' } } : {}),
         })}::text::jsonb,
-        ${scheduled ? 'reconnect-template' : 'reconnect-plan'}, ARRAY['P-003']::text[])`;
+        ${canonical ? null : scheduled ? 'reconnect-template' : 'reconnect-plan'},
+        ${canonical ? null : ['P-003']}::text[],
+        ${canonical ? 'reconnect-plan' : null}, ${canonical ? 'P-003' : null})`;
     await evidenceStore.ensureWorkItemSpecRevisionEdges({
       workspaceId: WORKSPACE, harnessSlug: HARNESS, planSlug: 'reconnect-plan',
       planItemIds: ['P-003'], workItemId: 'WI-103', actorId: 'su-promoter',
@@ -857,13 +897,21 @@ describe('test execution carries mappings into the real evidence ledger', () => 
     const { readWorkItemResume } = await import('../work_items/resume');
     const { shapeWorkItemsGet } = await import('../work_items/get-shape');
     const next = 'Review the saved reconnect evidence, then continue the plan.';
+    const continuationItem = { id: 'WI-101', harness: HARNESS, assignee: 'successor', state: 'open',
+      kind: 'bug', title: 'Reconnect evidence', summary: 'Current reconnect subject',
+      payload: { plan_item: { plan_slug: 'reconnect-plan', item_id: 'P-003' } } };
     await setWorkItemCheckpoint({ workspaceId: WORKSPACE, harness: HARNESS, workItemId: 'WI-101' },
-      renderCarryNote({ did: 'Historical investigation '.repeat(500), next }));
-    const resume = await readWorkItemResume({ id: 'WI-101', harness: HARNESS, assignee: 'successor', state: 'open',
-      payload: { plan_item: { plan_slug: 'reconnect-plan', item_id: 'P-003' } } }, {
+      renderCarryNote({ did: 'Historical investigation '.repeat(500), next }), { workItem: continuationItem });
+    // Archived text is actionable only with matching subject identity and a
+    // measured current dependency verdict, just as on the canonical resume path.
+    const resumeDeps = {
       checkpoint: ref => getWorkItemCheckpointWithMeta({ ...ref, workspaceId: WORKSPACE }),
-      freshness: async () => undefined, evidence: evidenceStore.listSpecEvidence,
-    });
+      freshness: async () => ({ verdict: 'fresh', declared: 0, changed: [], unresolvable: [] }),
+      evidence: evidenceStore.listSpecEvidence,
+    } satisfies NonNullable<Parameters<typeof readWorkItemResume>[1]>;
+    const resume = await readWorkItemResume(continuationItem, resumeDeps);
+    expect((await readWorkItemResume(continuationItem, { ...resumeDeps, freshness: async () => undefined }))
+      .nextAction).toMatchObject({ status: 'unknown', text: null });
     const packet = shapeWorkItemsGet({ ok: true, __resumeOnly: true,
       results: [{ ok: true, id: 'WI-101', resume }], counts: { ok: 1, failed: 0 } }, 'trimmed') as any;
     expect(packet.results[0].resume.nextAction.text).toBe(next);

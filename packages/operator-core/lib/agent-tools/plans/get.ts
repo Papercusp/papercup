@@ -1126,6 +1126,8 @@ export default defineTool({
                               {
                                 feature_id: string;
                                 status: string;
+                                plan_slug: string | null;
+                                plan_line_id: string | null;
                                 source_plan_slug: string | null;
                                 source_plan_item_ids: string[] | null;
                                 stamped_plan_slug: string | null;
@@ -1136,13 +1138,16 @@ export default defineTool({
                               }[]
                             >`
                 SELECT feature_id, status, source_plan_slug, source_plan_item_ids,
+                       plan_slug, plan_line_id,
                        payload -> 'plan_item' ->> 'plan_slug' AS stamped_plan_slug,
                        payload -> 'plan_item' ->> 'item_id'   AS stamped_item_id,
                        harness_slug, updated_ts, taken_by
-                  FROM harness_shared.harness_features_consolidated
+                  FROM harness_shared.work_items
                  WHERE workspace_id = ${planWorkspaceId}
-                   AND (source_plan_slug = ${slug}
-                        OR payload -> 'plan_item' ->> 'plan_slug' = ${slug})
+                   AND ((plan_slug = ${slug} AND plan_line_id IS NOT NULL)
+                     OR (plan_slug IS NULL AND plan_line_id IS NULL
+                       AND (source_plan_slug = ${slug}
+                         OR payload -> 'plan_item' ->> 'plan_slug' = ${slug})))
               `,
                           );
                         } finally {

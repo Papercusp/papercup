@@ -191,6 +191,9 @@ function checkBindingDowngraded(before: LiveRequirementCheck | undefined, after:
     return prior !== '' && prior !== 'none' && (next === '' || next === 'none');
   }
   if (before.kind !== 'tests') return false;
+  // Ownership changes can remove an item's prerequisites even when the union
+  // of files is unchanged. Only the reviewed immutable BAR may grant that scope.
+  if (stableJson(before.filesByPlanItem) !== stableJson(after.filesByPlanItem)) return true;
   // Independent predicates are part of the proof contract, not a file relocation.
   if (before.all !== undefined && stableJson(before.all) !== stableJson(after.all)) return true;
   return strictSubset(stringSet(before.files), stringSet(after.files))

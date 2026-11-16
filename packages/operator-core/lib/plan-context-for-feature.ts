@@ -30,6 +30,8 @@ export interface PlanContextResult {
 }
 
 interface FeatureProvenanceRow {
+  plan_slug: string | null;
+  plan_line_id: string | null;
   source_plan_slug: string | null;
   source_plan_item_ids: string[] | null;
   /** The live item-level link — see plan-item-provenance (EI-19435123521651527). */
@@ -49,12 +51,13 @@ async function queryProvenance(
     const rows = await sql<FeatureProvenanceRow[]>`
       SELECT source_plan_slug,
              source_plan_item_ids,
+             plan_slug, plan_line_id,
              payload -> 'plan_item' ->> 'plan_slug' AS stamped_plan_slug,
              payload -> 'plan_item' ->> 'item_id'   AS stamped_item_id,
              payload -> 'plan_run' ->> 'instancePlanSlug' AS run_instance_plan_slug,
              payload -> 'plan_run' ->> 'templateSlug' AS run_template_slug,
              title
-        FROM harness_shared.harness_features_consolidated
+        FROM harness_shared.work_items
        WHERE workspace_id = ${activeWorkspaceId()}
          AND harness_slug = ${harnessSlug}
          AND feature_id   = ${featureId}

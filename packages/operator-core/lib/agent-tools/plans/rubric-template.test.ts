@@ -43,6 +43,19 @@ const minimalData = {
 };
 
 describe('rubric template schema', () => {
+  it('keeps the complete aggregate test set while assigning proof to separate plan items', () => {
+    const check = { kind: 'tests', files: ['report.test.ts', 'constructor.test.ts'],
+      filesByPlanItem: { 'P-011': ['report.test.ts'], 'P-016': ['constructor.test.ts'] } };
+    expect(rubricCriterionCheckSchema.parse(check)).toEqual(check);
+    for (const filesByPlanItem of [
+      {}, { 'P-011': [] }, { 'P-011': ['report.test.ts'] },
+      { 'P-011': ['report.test.ts'], 'P-016': ['other.test.ts'] },
+      { 'WI-123': check.files },
+    ]) {
+      expect(rubricCriterionCheckSchema.safeParse({ ...check, filesByPlanItem }).success).toBe(false);
+    }
+  });
+
   it('admits six complete repeated probe groups and mixed 32-consumer declarations within 24 operations', () => {
     const probe = (n: number) => ({ kind: 'sql', sql: `SELECT ${n} AS n`, schemaRevision: 'live', expect: { path: '$.rows[0].n', op: 'eq', value: n } });
     const criterion = (key: string, check: unknown) => ({ ...minimalCriterion, key, check });

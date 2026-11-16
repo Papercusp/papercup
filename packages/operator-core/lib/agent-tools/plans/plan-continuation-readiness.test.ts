@@ -209,6 +209,60 @@ describe('continuation readiness reuse (WI-6554700010049220)', () => {
     expect(state.calls).toBe(2);
   });
 
+  it('bounds a fresh start proof even with a warm verdict and still requires it on retry', async () => {
+    const { state, deps } = harness();
+    expect(await checkContinuationReadiness(binding, WS, undefined, deps)).toEqual([]);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const preflight = async () => { await gate; return ['plan_not_started']; };
+    expect(await checkContinuationReadiness(binding, WS, undefined, {
+      ...deps, preflight, deadlineAtMs: performance.now() + 20,
+    })).toEqual([PLAN_READINESS_PENDING]);
+    release();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(await checkContinuationReadiness(binding, WS, undefined, { ...deps, preflight }))
+      .toEqual(['plan_not_started']);
+    expect(state.calls).toBe(1);
+  });
+
+  it('bounds final freshness without sharing a late owner-specific refusal', async () => {
+    const { state, deps } = harness();
+    expect(await checkContinuationReadiness(binding, WS, undefined, deps)).toEqual([]);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    expect(await checkContinuationReadiness(binding, WS, undefined, {
+      ...deps, deadlineAtMs: performance.now() + 20,
+      recheck: async () => { await gate; return ['canonical_plan_binding_stale']; },
+    })).toEqual([PLAN_READINESS_PENDING]);
+    release();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    // A different current owner shares the plan cache, never that owner's revocation.
+    expect(await checkContinuationReadiness(binding, WS, undefined, {
+      ...deps, recheck: async () => [],
+    })).toEqual([]);
+    expect(state.calls).toBe(1);
+    expect(await checkContinuationReadiness(binding, WS, undefined, {
+      ...deps, recheck: async () => ['canonical_plan_binding_stale'],
+    })).toEqual(['canonical_plan_binding_stale']);
+  });
+
+  it('does not turn a late failed fresh-authority read into a cached grant', async () => {
+    const { state, deps } = harness();
+    expect(await checkContinuationReadiness(binding, WS, undefined, deps)).toEqual([]);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const failure = new Error('fresh start proof unavailable');
+    const preflight = async () => { await gate; throw failure; };
+    expect(await checkContinuationReadiness(binding, WS, undefined, {
+      ...deps, preflight, deadlineAtMs: performance.now() + 20,
+    })).toEqual([PLAN_READINESS_PENDING]);
+    release();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await expect(checkContinuationReadiness(binding, WS, undefined, { ...deps, preflight }))
+      .rejects.toBe(failure);
+    expect(state.calls).toBe(1);
+  });
+
   it('hands off a native-deadline refusal only to the exact current fence', async () => {
     const { state, deps } = harness(['spec_quality_not_current']);
     let release!: () => void;

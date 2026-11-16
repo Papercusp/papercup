@@ -60,6 +60,20 @@ describe('classifyRequirementBarEdit', () => {
   it('treats a tests-check file move as verification-only', () => {
     expect(classifyRequirementBarEdit(base, { ...base, check: { kind: 'tests', files: [NEW_TEST] } })).toBe('verification-only');
   });
+  it('requires amendment for item ownership and keeps an unreviewed reassignment pinned', () => {
+    const before = { ...base, check: { kind: 'tests', files: [OLD_TEST, NEW_TEST],
+      filesByPlanItem: { 'P-011': [OLD_TEST], 'P-016': [NEW_TEST] } } };
+    const after = { ...before, check: { ...before.check,
+      filesByPlanItem: { 'P-011': [NEW_TEST], 'P-016': [OLD_TEST] } } };
+    expect(classifyRequirementBarEdit(base, before)).toBe('meaning');
+    expect(classifyRequirementBarEdit(before, after)).toBe('meaning');
+    for (const check of [after.check, { kind: 'tests', files: before.check.files }]) {
+      const overlay = overlayLiveRequirementVerification([{ ...before, barKey: 'R-1' }],
+        [{ barKey: 'R-1', criterion: { check } }]);
+      expect(overlay.criteria[0]?.check).toEqual(before.check);
+      expect(overlay.kept).toEqual([{ barKey: 'R-1', reason: 'check-binding-downgraded' }]);
+    }
+  });
   it('keeps explicit file/case selectors in verification and overlays them without changing meaning', () => {
     const check = { kind: 'tests', files: [NEW_TEST], cases: [{ file: NEW_TEST, testName: 'specific new case' }] };
     expect(classifyRequirementBarEdit(base, { ...base, check })).toBe('verification-only');

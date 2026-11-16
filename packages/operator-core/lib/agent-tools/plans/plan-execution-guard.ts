@@ -566,20 +566,18 @@ export async function checkExecutionPlan(binding: ExecutionPlanBinding, workspac
     const current = await readCanonicalExecutionIdentity(getOrgPg().sql, workspaceId, binding, binding.canonical.lineId,binding.canonical.ownerId);
     return current !== null && JSON.stringify(current) === JSON.stringify(binding.canonical);
   };
-  if (!await canonicalCurrent()) return ['canonical_plan_binding_stale'];
   const [{ readPlanExecutionStart }, { checkContinuationReadiness, readReadinessFence }] = await Promise.all([
     import('./plan-execution-authority'), import('./plan-continuation-readiness')]);
-  const proof = await measurePlanStage('start_proof', observe, () => readPlanExecutionStart(binding, workspaceId));
-  if (proof.length) return proof;
   // The start proof, binding identity and revision fence stay fresh on every call. Only
   // a positive verdict for the exact fenced revision is reused (WI-6554700010049220).
-  const blockers = await measurePlanStage('readiness', observe, () => checkContinuationReadiness(binding, workspaceId, observe, {
+  return measurePlanStage('readiness', observe, () => checkContinuationReadiness(binding, workspaceId, observe, {
+    preflight: async () => !await canonicalCurrent() ? ['canonical_plan_binding_stale']
+      : measurePlanStage('start_proof', observe, () => readPlanExecutionStart(binding, workspaceId)),
     readFence: (b, ws) => measurePlanStage('readiness_fence', observe, () => readReadinessFence(b, ws)),
     evaluate: (b, ws, o) => checkPlanExecutionReadiness(b, ws, o, 'continuation'),
+    recheck: async () => await canonicalCurrent() ? [] : ['canonical_plan_binding_stale'],
     deadlineAtMs: readinessDeadlineAtMs,
   }));
-  if (blockers.length) return blockers;
-  return await canonicalCurrent() ? [] : ['canonical_plan_binding_stale'];
 }
 
 /** Current policy is required both when issuing authority and on every use. */

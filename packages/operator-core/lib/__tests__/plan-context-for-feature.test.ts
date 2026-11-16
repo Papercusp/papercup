@@ -67,6 +67,23 @@ describe('ROLES_RECEIVING_CONTEXT', () => {
 });
 
 describe('getPlanContextForFeature', () => {
+  it('loads the adopted node context instead of conflicting legacy provenance', async () => {
+    mockPg([{
+      plan_slug: 'adopted-plan', plan_line_id: 'P-002',
+      source_plan_slug: 'old-plan', source_plan_item_ids: ['P-001'], title: 'Adopted issue',
+    }]);
+    mockSource({ parsed: {
+      frontmatter: { title: 'Adopted plan' },
+      items: [{ id: 'P-002', text: 'The canonical adopted work.' }], decisions: [],
+    } });
+    const { getPlanContextForFeature } = await import(MODULE_PATH);
+    const result = await getPlanContextForFeature('myharness', 'EI-adopted');
+    expect(result?.planSlug).toBe('adopted-plan');
+    expect(result?.section).toContain('The canonical adopted work.');
+    const { readPlanBySlug } = await import(SOURCE_MODULE);
+    expect(readPlanBySlug).toHaveBeenCalledWith('adopted-plan');
+  });
+
   it('returns null when feature has no source_plan_slug', async () => {
     mockPg([{ source_plan_slug: null, source_plan_item_ids: null, title: 'Feature A' }]);
     mockSource(null);

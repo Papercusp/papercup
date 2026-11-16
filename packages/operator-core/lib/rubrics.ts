@@ -6778,17 +6778,20 @@ export async function resolveAcceptanceBarApproverScreen(input: {
           } catch (cause) {
             // Keep the cached read fail-closed, with context for THIS candidate
             // rather than the first candidate to await the shared promise.
+            // Amendment receipts persist this message rather than Error.cause.
+            // Preserve whole identities and the originating diagnostic so pool
+            // evidence after a display boundary remains recoverable there.
             const detail = cause instanceof Error ? cause.message : String(cause);
             const code = cause && typeof cause === 'object' && 'code' in cause
               ? String(cause.code) : 'unknown';
             throw new Error(
               `acceptance_bar_approver_check_lineage_read_failed: ` +
-              `rubric=${clipRefusalText(rubric.rubricId, 180)}; ` +
-              `subjectPlan=${clipRefusalText(subjectPlan, 180)}; ` +
-              `candidate=${clipRefusalText(candidate, 180)}; ` +
-              `populationIdentity=${clipRefusalText(identity, 180)}; ` +
+              `rubric=${rubric.rubricId}; ` +
+              `subjectPlan=${subjectPlan}; ` +
+              `candidate=${candidate}; ` +
+              `populationIdentity=${identity}; ` +
               `via=${roles.get(identity)}; query=acceptanceLineageClosure; ` +
-              `code=${clipRefusalText(code, 40)}; ${clipRefusalText(detail, 240)}`,
+              `code=${code}; ${detail}`,
               { cause },
             );
           }

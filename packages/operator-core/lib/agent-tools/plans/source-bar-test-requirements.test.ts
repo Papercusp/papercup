@@ -37,6 +37,40 @@ function sourceRubric(overrides: Record<string, unknown> = {}) {
 describe('source BAR test requirement resolution', () => {
   beforeEach(() => vi.resetAllMocks());
 
+  it('requires each phase to prove its reviewed files and retains its exact named selectors', async () => {
+    const check = { kind: 'tests', files: ['report.test.ts', 'constructor.test.ts'],
+      filesByPlanItem: { 'P-011': ['report.test.ts'], 'P-016': ['constructor.test.ts'] },
+      cases: [{ file: 'report.test.ts', testName: 'report > complete sample' },
+        { file: 'constructor.test.ts', testName: 'constructor > complete source vector' }] };
+    rubricReads.getRubric.mockResolvedValue(sourceRubric({
+      criteria: [{ ...sourceRubric().criteria[0], check }],
+    }));
+    const cache = new Map();
+    for (const [owner, file, testName] of [
+      ['P-011', 'report.test.ts', 'report > complete sample'],
+      ['P-016', 'constructor.test.ts', 'constructor > complete source vector'],
+    ]) {
+      await expect(resolveSourceBarTestRequirements(pin, cache, undefined, owner)).resolves.toEqual({
+        status: 'required', files: [file], cases: [{ file, testName }],
+      });
+    }
+    for (const owner of [undefined, 'P-999']) {
+      await expect(resolveSourceBarTestRequirements(pin, cache, undefined, owner)).resolves.toMatchObject({
+        status: 'unavailable', reason: expect.stringContaining('no reviewed test ownership'),
+      });
+    }
+  });
+
+  it('refuses ownership that silently drops a constructor test from the aggregate', async () => {
+    rubricReads.getRubric.mockResolvedValue(sourceRubric({ criteria: [{ ...sourceRubric().criteria[0],
+      check: { kind: 'tests', files: ['report.test.ts', 'constructor.test.ts'],
+        filesByPlanItem: { 'P-011': ['report.test.ts'] } },
+    }] }));
+    await expect(resolveSourceBarTestRequirements(pin, undefined, undefined, 'P-011')).resolves.toMatchObject({
+      status: 'unavailable',
+    });
+  });
+
   it('reads and normalizes check.files from the exact pinned rubric revision and BAR identity', async () => {
     rubricReads.getRubric.mockResolvedValue(sourceRubric());
 

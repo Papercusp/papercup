@@ -20,6 +20,32 @@ const STAMPED_ROW = {
 };
 
 describe('planItemProvenanceFromRow precedence', () => {
+  it('resolves an adopted issue from its canonical association without legacy stamps', () => {
+    expect(planItemProvenanceFromRow({
+      plan_slug: 'adopted-plan', plan_line_id: 'P-001',
+      source_plan_slug: null, source_plan_item_ids: null,
+      stamped_plan_slug: null, stamped_item_id: null,
+    })).toEqual({ planSlug: 'adopted-plan', itemIds: ['P-001'], source: 'column' });
+  });
+
+  it('keeps the canonical node authoritative over conflicting legacy and run stamps', () => {
+    expect(planItemProvenanceFromRow({
+      ...STAMPED_ROW, source_plan_item_ids: ['P-009'],
+      plan_slug: 'adopted-plan', plan_line_id: 'P-002',
+      run_instance_plan_slug: STAMPED_ROW.stamped_plan_slug,
+      run_template_slug: STAMPED_ROW.source_plan_slug,
+    })).toEqual({ planSlug: 'adopted-plan', itemIds: ['P-002'], source: 'column' });
+  });
+
+  it.each([
+    { plan_slug: 'adopted-plan', plan_line_id: null },
+    { plan_slug: null, plan_line_id: 'P-001' },
+    { plan_slug: '', plan_line_id: 'P-001' },
+  ])('refuses an incomplete canonical association despite a valid legacy stamp (%j)', (canonical) => {
+    expect(planItemProvenanceFromRow({ ...STAMPED_ROW, ...canonical }))
+      .toEqual({ planSlug: null, itemIds: [], source: 'none' });
+  });
+
   it('prefers the legacy column when it is populated', () => {
     expect(
       planItemProvenanceFromRow({ ...STAMPED_ROW, source_plan_item_ids: ['P-007', 'P-008'] }),

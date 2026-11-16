@@ -22,7 +22,7 @@ import { isCliEntry } from '../util/cli-entry';
 import { moduleRepoRoot } from '../module-repo-root';
 import { parse as parseYaml } from 'yaml';
 import { build, transformSync } from 'esbuild';
-import { runInNewContext } from 'node:vm';
+import { compileFunction, runInNewContext } from 'node:vm';
 import ts from 'typescript';
 import type { preflightDispatchStack } from '@papercusp/tooldef';
 import type { CapabilityEnvelopeVerdict, DispatchProjectedDeps } from '@papercusp/tooldef';
@@ -41,6 +41,65 @@ import type { FlagAttestation } from '@papercusp/flags/server';
 import type { EnforceAppKeyScopeDeps } from '../connected-apps/enforce';
 import type { EnforceInheritedPolicyDeps } from '../governance-policy/enforce';
 import type { KernelEnforcementPort } from '@papercusp/tooldef';
+import type { checkIdentityGrantKernel } from '../capability-envelope/identity-grants-port';
+import type { PlanExecutionGuardDeps } from '../agent-tools/plans/plan-execution-guard';
+import type { resolveMcpName } from '@papercusp/agent-mcp';
+
+type IdopControlState = Awaited<ReturnType<typeof import('../projected-tool-deps').readControlAnchorKernelState>>;
+export type IdopInnerKernelPorts = {
+  readState: (request: KernelEnforcementRequest) => Promise<IdopControlState>;
+  resolveIdentity: AuditModeMutationGuardDeps['resolveIdentity'];
+  readPolicy: NonNullable<Parameters<typeof checkIdentityGrantKernel>[3]>;
+  readOperationEffectClaim: NonNullable<Parameters<typeof checkIdentityGrantKernel>[4]>;
+  resolveTool: typeof resolveMcpName;
+  runtime: { pid: number; processId: string | null };
+  /** Replay a captured convergence outcome/state sequence; never install the live writer. */
+  converge: typeof import('../agent-tools/coordination/control-anchor').convergeActivationToLaunchRecord;
+  plan: Required<Pick<PlanExecutionGuardDeps, 'readBindings' | 'resolveGoal' | 'checkPlan'>>;
+};
+type IdopAppPermissionPorts = Required<Pick<EnforceAppKeyScopeDeps,
+  'loadRow' | 'loadAccessTokenRow' | 'lookupTool' | 'loadSpendStatus' | 'now'>>;
+type IdopOrganizationPermissionPorts = Required<EnforceInheritedPolicyDeps>;
+
+/** Select unchanged canonical declarations and their local dependencies. Keep
+ * original declaration order so const initializers retain their dependencies. */
+function idopSourceDeclarations(path: string, source: string, names: string[],
+  bindings: Record<string, unknown>, closure: boolean) {
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  const declarations = new Map<string, string[]>();
+  for (const statement of file.statements) {
+    if ((ts.isFunctionDeclaration(statement) && statement.body || ts.isClassDeclaration(statement)) && statement.name) {
+      const name = statement.name.text;
+      declarations.set(name, [...declarations.get(name) ?? [], statement.getText(file)]);
+    } else if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name) && declaration.initializer) {
+          const name = declaration.name.text;
+          declarations.set(name, [...declarations.get(name) ?? [], `const ${declaration.getText(file)};`]);
+        }
+      }
+    }
+  }
+  const selected = [...names];
+  if (closure) for (let index = 0; index < selected.length; index++) {
+    const snippets = declarations.get(selected[index]);
+    if (!snippets) continue;
+    const js = transformSync(snippets.join('\n'), { loader: 'ts', format: 'cjs' }).code;
+    const tree = ts.createSourceFile(path, js, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    const visit = (node: ts.Node) => {
+      if (ts.isIdentifier(node) && declarations.has(node.text) && !Object.hasOwn(bindings, node.text) &&
+          !selected.includes(node.text) &&
+          !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) &&
+          !(ts.isPropertyAssignment(node.parent) && node.parent.name === node)) selected.push(node.text);
+      ts.forEachChild(node, visit);
+    };
+    visit(tree);
+  }
+  for (const name of selected) if (declarations.get(name)?.length !== 1) {
+    throw new Error(`IDOP missing canonical host declaration: ${path}#${name}`);
+  }
+  return { file, declarations, selected: [...declarations.keys()].filter(name => selected.includes(name)) };
+}
 
 export const IDOP_P001_BASELINE_REL = 'docs/evidence/idop-p001-baseline-2026-10-22.json';
 export const IDOP_P001_PROMPT_REL = 'apps/operator/prompts/papercusp-su.codex.md';
@@ -261,13 +320,14 @@ export async function captureIdopP001HostPermissionPorts(options: {
     // The dispatcher installs a non-enumerable, deliberately throwing tx
     // accessor for tools without a transaction contract. Never consult it.
     const services = new Set(['log', 'signal', 'progress', 'emit', 'phases', 'activateTools', 'dispatchTool', 'tx']);
-    const data: Record<string, ComparisonJson> = {};
+    const data: Record<string, unknown> = {};
+    if (Object.getOwnPropertySymbols(ctx).length) throw new Error('IDOP host snapshot context has uncaptured symbols');
     for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(ctx))) {
       if (services.has(key)) continue;
       if (!('value' in descriptor)) throw new Error('IDOP host snapshot context has an unreadable accessor');
       if (descriptor.value !== undefined) data[key] = descriptor.value;
     }
-    return comparisonJson(data);
+    return comparisonJson(idopAuthorityData(data));
   };
   const keys = options.contexts.map(contextKey);
   const flagKey = (key: string, distinctId: string) => JSON.stringify([key, distinctId]);
@@ -342,6 +402,372 @@ export async function captureIdopP001HostPermissionPorts(options: {
   return { snapshot: JSON.parse(bytes) as typeof snapshot, sha256: sha256(bytes), ports };
 }
 
+/** Lossless data-only authority codec. Tagged containers cannot collide with
+ * user JSON, and preserve Map/Set/Date/undefined rather than silently erasing
+ * a policy catalog, principal capabilities or an explicitly absent row. */
+function idopAuthorityData(value: unknown, ancestors = new Set<object>()): ComparisonJson {
+  if (value === undefined) return ['undefined'];
+  if (Object.is(value, -0)) return ['negative-zero'];
+  if (value === null || ['string', 'boolean'].includes(typeof value) ||
+      typeof value === 'number' && Number.isFinite(value)) return value as ComparisonJson;
+  if (typeof value !== 'object' || !value || ancestors.has(value)) throw new Error('IDOP authority requires acyclic data-only inputs');
+  const next = new Set(ancestors).add(value);
+  const encode = (entry: unknown) => idopAuthorityData(entry, next);
+  if (value instanceof Date || value instanceof Map || value instanceof Set) {
+    const prototype = value instanceof Date ? Date.prototype : value instanceof Map ? Map.prototype : Set.prototype;
+    if (Object.getPrototypeOf(value) !== prototype || Reflect.ownKeys(value).length) {
+      throw new Error('IDOP authority container has an unsupported prototype or extra properties');
+    }
+    if (value instanceof Date && Number.isFinite(value.getTime())) return ['date', value.toISOString()];
+    if (value instanceof Map) return ['map', [...value].map(([key, entry]) => [encode(key), encode(entry)])];
+    if (value instanceof Set) return ['set', [...value].map(encode)];
+    throw new Error('IDOP authority has an invalid Date');
+  }
+  if (Array.isArray(value)) {
+    if (Object.getOwnPropertyNames(value).length !== value.length + 1 || Object.getOwnPropertySymbols(value).length) {
+      throw new Error('IDOP authority array has holes or extra properties');
+    }
+    return ['array', Array.from({ length: value.length }, (_, index) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (!descriptor || !('value' in descriptor)) throw new Error('IDOP authority has an unreadable accessor');
+      return encode(descriptor.value);
+    })];
+  }
+  if (![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.getOwnPropertySymbols(value).length) {
+    throw new Error('IDOP authority has an unsupported prototype or symbol');
+  }
+  return ['object', Object.entries(Object.getOwnPropertyDescriptors(value)).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+    .map(([key, descriptor]) => {
+      if (!('value' in descriptor)) throw new Error('IDOP authority has an unreadable accessor');
+      return [key, encode(descriptor.value)];
+    })];
+}
+
+function idopAuthorityValue(data: ComparisonJson): unknown {
+  if (!Array.isArray(data)) return data;
+  const [kind, body] = data;
+  const entries = body as ComparisonJson[];
+  switch (kind) {
+    case 'undefined': return undefined;
+    case 'negative-zero': return -0;
+    case 'date': return new Date(body as string);
+    case 'array': return entries.map(idopAuthorityValue);
+    case 'set': return new Set(entries.map(idopAuthorityValue));
+    case 'map': return new Map(entries.map(entry => {
+      const [key, value] = entry as ComparisonJson[];
+      return [idopAuthorityValue(key), idopAuthorityValue(value)];
+    }));
+    case 'object': return Object.fromEntries(entries.map(entry => {
+      const [key, value] = entry as [string, ComparisonJson];
+      return [key, idopAuthorityValue(value)];
+    }));
+    default: throw new Error('IDOP invalid authority data tag');
+  }
+}
+
+function idopKernelContextData(ctx: UnifiedToolContext, workspaceId: string) {
+  if (ctx.workspaceId !== workspaceId) throw new Error('IDOP kernel snapshot has a foreign workspace');
+  if (Object.getOwnPropertySymbols(ctx).length) throw new Error('IDOP kernel snapshot context has uncaptured symbols');
+  const excluded = new Set(['log', 'signal', 'progress', 'emit', 'phases', 'activateTools', 'dispatchTool', 'tx']);
+  const data: Record<string, unknown> = {};
+  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(ctx))) {
+    if (key === 'tx' && 'value' in descriptor && descriptor.value !== undefined) throw new Error('IDOP kernel snapshot carries a transaction');
+    if (excluded.has(key)) continue;
+    if (!('value' in descriptor)) throw new Error('IDOP kernel snapshot has a context accessor');
+    data[key] = descriptor.value;
+  }
+  return data;
+}
+
+function idopKernelRequestData(request: KernelEnforcementRequest, workspaceId: string) {
+  if (Object.getOwnPropertySymbols(request).length) throw new Error('IDOP kernel snapshot request has uncaptured symbols');
+  const data: Record<string, unknown> = {};
+  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(request))) {
+    if (key === 'registerPartialAudit') continue; // telemetry, never authority
+    if (!('value' in descriptor)) throw new Error('IDOP kernel snapshot has a request accessor');
+    data[key] = key === 'ctx' ? idopKernelContextData(request.ctx, workspaceId) : descriptor.value;
+  }
+  return data;
+}
+
+const idopKernelLookupKey = (port: string, args: unknown) => comparisonJson([port, idopAuthorityData(args)]);
+type IdopP001KernelSnapshot = {
+  schemaVersion: 1;
+  scope: 'captured-original-kernel-permission-read-inputs';
+  workspaceId: string;
+  runtime: ComparisonJson;
+  organizationInstalled: boolean;
+  stateCounts: [string, number][];
+  convergence: ComparisonJson;
+  entries: { key: string; value: ComparisonJson }[];
+};
+
+/** Snapshot the ORIGINAL read ports used by the existing inner/outer adapters.
+ * The caller independently supplies the lookup domain; uncaptured reads refuse.
+ * This is a read-input snapshot, not a containing-runtime or population proof.
+ * Convergence accepts only already-recorded outcomes with evidence refs: this
+ * helper has no writer port. State re-reads capture the requested original
+ * sequence, and each replay arm gets its own bounded cursor. */
+export async function captureIdopP001KernelPermissionPorts(options: {
+  workspaceId: string;
+  requests: readonly { request: KernelEnforcementRequest; stateReadCount?: number }[];
+  policyInputs: readonly Parameters<IdopInnerKernelPorts['readPolicy']>[0][];
+  operationClaims: readonly Parameters<IdopInnerKernelPorts['readOperationEffectClaim']>[0][];
+  toolNames: readonly string[];
+  apps: readonly { appId: string; tokenIds: readonly string[] }[];
+  convergence: readonly { args: [string, string, number, Parameters<IdopInnerKernelPorts['converge']>[3]];
+    result: boolean; evidenceRefs: readonly string[] }[];
+}, readers: {
+  inner: Omit<IdopInnerKernelPorts, 'converge'>;
+  app: IdopAppPermissionPorts;
+  organization: IdopOrganizationPermissionPorts | null;
+}) {
+  const workspaceId = options.workspaceId;
+  if (!workspaceId?.trim() || workspaceId !== workspaceId.trim() || !options.requests.length ||
+      !Number.isSafeInteger(readers.inner?.runtime?.pid) || readers.inner.runtime.pid <= 0 ||
+      !(readers.inner.runtime.processId === null || typeof readers.inner.runtime.processId === 'string') ||
+      ![readers.inner.readState, readers.inner.resolveIdentity, readers.inner.readPolicy,
+        readers.inner.readOperationEffectClaim, readers.inner.resolveTool, readers.inner.plan?.readBindings,
+        readers.inner.plan?.resolveGoal, readers.inner.plan?.checkPlan, readers.app?.loadRow,
+        readers.app?.loadAccessTokenRow, readers.app?.loadSpendStatus, readers.app?.lookupTool, readers.app?.now,
+        ...(readers.organization === null ? [] : [readers.organization?.loadChain, readers.organization?.now])]
+        .every(port => typeof port === 'function')) throw new Error('IDOP kernel snapshot requires explicit original authority ports');
+  const originalRuntime = idopAuthorityData(readers.inner.runtime);
+  const contextData = (ctx: UnifiedToolContext) => idopKernelContextData(ctx, workspaceId);
+  const requestData = (request: KernelEnforcementRequest) => idopKernelRequestData(request, workspaceId);
+  const keyFor = idopKernelLookupKey;
+  const saved = new Map<string, ComparisonJson>();
+  const capture = async (port: string, args: unknown, read: () => unknown) => {
+    const key = keyFor(port, args);
+    if (!saved.has(key)) {
+      const value = await read();
+      if (keyFor(port, args) !== key) throw new Error('IDOP kernel authority reader mutated its original input');
+      saved.set(key, idopAuthorityData(value));
+    }
+    return idopAuthorityValue(saved.get(key)!);
+  };
+  const stateCounts = new Map<string, number>();
+  for (const input of options.requests) {
+    const count = input.stateReadCount ?? 1;
+    const key = keyFor('state', requestData(input.request));
+    if (!Number.isSafeInteger(count) || count < 1 || count > 100 || stateCounts.has(key)) {
+      throw new Error('IDOP kernel snapshot has duplicate requests or invalid state sequence length');
+    }
+    stateCounts.set(key, count);
+    const contextBefore = keyFor('context', contextData(input.request.ctx));
+    const identity = await capture('identity', contextData(input.request.ctx), () => readers.inner.resolveIdentity(input.request.ctx)) as
+      ReturnType<IdopInnerKernelPorts['resolveIdentity']>;
+    if (!identity.ownerId?.trim() || identity.workspaceId !== workspaceId) throw new Error('IDOP kernel snapshot identity is missing or foreign');
+    for (let index = 0; index < count; index++) {
+      await capture('state', [requestData(input.request), index], () => readers.inner.readState(input.request));
+    }
+    const subject = [identity.ownerId, workspaceId];
+    const bindings = await capture('plan.bindings', subject, () => readers.inner.plan.readBindings(identity.ownerId, workspaceId)) as
+      Awaited<ReturnType<IdopInnerKernelPorts['plan']['readBindings']>>;
+    await capture('plan.goal', subject, () => readers.inner.plan.resolveGoal(identity.ownerId, workspaceId));
+    for (const binding of bindings) await capture('plan.check', [binding, workspaceId], () => readers.inner.plan.checkPlan(binding, workspaceId));
+    if (contextBefore !== keyFor('context', contextData(input.request.ctx)) || key !== keyFor('state', requestData(input.request))) {
+      throw new Error('IDOP kernel reader mutated original request or context');
+    }
+  }
+  for (const input of options.policyInputs) {
+    if (input.workspaceId !== workspaceId) throw new Error('IDOP kernel policy has a foreign workspace');
+    await capture('policy', input, () => readers.inner.readPolicy(input));
+  }
+  for (const claim of options.operationClaims) {
+    if (claim.workspaceId !== workspaceId) throw new Error('IDOP kernel claim has a foreign workspace');
+    await capture('operation', claim, () => readers.inner.readOperationEffectClaim(claim));
+  }
+  if (new Set(options.toolNames).size !== options.toolNames.length ||
+      options.toolNames.some(name => !name.trim()) || options.requests.some(input => !options.toolNames.includes(input.request.toolName))) {
+    throw new Error('IDOP kernel tool catalog omitted a request or has duplicate/blank names');
+  }
+  for (const name of options.toolNames) {
+    // Identity grant evaluation consumes only the resolved canonical MCP name.
+    // No handler, schema callback or other executable registry value is copied.
+    await capture('tool.canonical', name, () => {
+      const tool = readers.inner.resolveTool(name);
+      return tool === undefined ? undefined : { expose: { mcp: tool.expose.mcp && { name: tool.expose.mcp.name } } };
+    });
+    await capture('tool.app', name, () => readers.app.lookupTool(name));
+  }
+  const appNow = await capture('app.now', [], () => readers.app.now()) as Date;
+  if (!(appNow instanceof Date)) throw new Error('IDOP kernel app clock is not a Date');
+  for (const app of options.apps) {
+    if (!app.appId.trim() || new Set(app.tokenIds).size !== app.tokenIds.length || app.tokenIds.some(token => !token.trim())) {
+      throw new Error('IDOP kernel app inputs are malformed');
+    }
+    await capture('app.row', app.appId, () => readers.app.loadRow(app.appId));
+    await capture('app.spend', [app.appId, appNow], () => readers.app.loadSpendStatus(app.appId, new Date(appNow)));
+    for (const token of app.tokenIds) await capture('app.token', [token, app.appId], () => readers.app.loadAccessTokenRow(token, app.appId));
+  }
+  if (readers.organization !== null) {
+    const organization = readers.organization;
+    const now = await capture('organization.now', [], () => organization.now());
+    if (!(now instanceof Date)) throw new Error('IDOP kernel organization clock is not a Date');
+    await capture('organization.chain', workspaceId, () => organization.loadChain(workspaceId));
+  }
+  const convergenceKeys = new Set<string>();
+  for (const outcome of options.convergence) {
+    const [ownerId, scope, generation, revision] = outcome.args;
+    const key = keyFor('convergence', outcome.args);
+    if (!ownerId.trim() || scope !== workspaceId || !Number.isSafeInteger(generation) || generation < 0 ||
+        !revision?.specificationRevision || !revision.stateRevision || typeof outcome.result !== 'boolean' ||
+        !outcome.evidenceRefs.length || outcome.evidenceRefs.some(ref => !ref.trim()) || convergenceKeys.has(key)) {
+      throw new Error('IDOP kernel convergence requires unique captured outcomes and evidence');
+    }
+    convergenceKeys.add(key);
+    await capture('convergence', outcome.args, () => outcome.result);
+  }
+  if (comparisonJson(originalRuntime) !== comparisonJson(idopAuthorityData(readers.inner.runtime))) {
+    throw new Error('IDOP kernel reader mutated original runtime');
+  }
+  const snapshot: IdopP001KernelSnapshot = { schemaVersion: 1, scope: 'captured-original-kernel-permission-read-inputs', workspaceId,
+    runtime: originalRuntime, organizationInstalled: readers.organization !== null,
+    stateCounts: [...stateCounts], convergence: idopAuthorityData(options.convergence),
+    entries: [...saved].map(([key, value]) => ({ key, value })) };
+  const bytes = comparisonJson(snapshot as unknown as ComparisonJson);
+  return replayIdopP001KernelPermissionSnapshot(snapshot, sha256(bytes));
+}
+
+/** Rehydrate only the supplied, hash-bound read inputs. No live reader, writer,
+ * clock or registry is consulted. The expected digest must come from the saved
+ * capture receipt; recomputing it from an untrusted file proves no provenance. */
+export function replayIdopP001KernelPermissionSnapshot(raw: unknown, expectedSha256: string) {
+  // Reject accessors/executable values before canonical JSON can read them.
+  idopAuthorityData(raw);
+  const bytes = comparisonJson(raw as ComparisonJson);
+  if (!/^[a-f0-9]{64}$/.test(expectedSha256) || sha256(bytes) !== expectedSha256) {
+    throw new Error('IDOP kernel snapshot hash mismatch');
+  }
+  const snapshot = JSON.parse(bytes) as IdopP001KernelSnapshot;
+  const fail = (): never => { throw new Error('IDOP malformed kernel permission snapshot'); };
+  if (!snapshot || snapshot.schemaVersion !== 1 || snapshot.scope !== 'captured-original-kernel-permission-read-inputs' ||
+      Object.keys(snapshot).sort().join(',') !== 'convergence,entries,organizationInstalled,runtime,schemaVersion,scope,stateCounts,workspaceId' ||
+      typeof snapshot.workspaceId !== 'string' || !snapshot.workspaceId.trim() || snapshot.workspaceId !== snapshot.workspaceId.trim() ||
+      typeof snapshot.organizationInstalled !== 'boolean' || !Array.isArray(snapshot.entries) ||
+      !Array.isArray(snapshot.stateCounts) || !snapshot.stateCounts.length) fail();
+  const workspaceId = snapshot.workspaceId;
+  const decode = (data: ComparisonJson) => {
+    try {
+      const value = idopAuthorityValue(data);
+      if (comparisonJson(idopAuthorityData(value)) !== comparisonJson(data)) fail();
+      return value;
+    } catch { return fail(); }
+  };
+  const runtime = decode(snapshot.runtime) as IdopInnerKernelPorts['runtime'];
+  if (!runtime || !Number.isSafeInteger(runtime.pid) || runtime.pid <= 0 ||
+      !(runtime.processId === null || typeof runtime.processId === 'string')) fail();
+  const keyFor = idopKernelLookupKey;
+  const allowed = new Set(['identity', 'state', 'policy', 'operation', 'tool.canonical', 'tool.app',
+    'plan.bindings', 'plan.goal', 'plan.check', 'app.now', 'app.row', 'app.spend', 'app.token',
+    'organization.now', 'organization.chain', 'convergence']);
+  const saved = new Map<string, ComparisonJson>();
+  const decodedKeys = new Map<string, { port: string; args: unknown }>();
+  for (const entry of snapshot.entries) {
+    if (!entry || Object.keys(entry).sort().join(',') !== 'key,value' || typeof entry.key !== 'string' || saved.has(entry.key)) fail();
+    let key: ComparisonJson;
+    try { key = JSON.parse(entry.key); } catch { return fail(); }
+    if (!Array.isArray(key) || key.length !== 2 || typeof key[0] !== 'string' || !allowed.has(key[0])) return fail();
+    const port = key[0] as string, args = decode(key[1]);
+    if (keyFor(port, args) !== entry.key) fail();
+    decode(entry.value);
+    saved.set(entry.key, entry.value);
+    decodedKeys.set(entry.key, { port, args });
+  }
+  const get = <T,>(port: string, args: unknown): T => {
+    const key = keyFor(port, args);
+    if (!saved.has(key)) throw new Error(`IDOP kernel authority lookup was not captured: ${port}`);
+    return idopAuthorityValue(saved.get(key)!) as T;
+  };
+  const stateCounts = new Map<string, number>();
+  const stateKeys = new Set<string>();
+  for (const row of snapshot.stateCounts) {
+    if (!Array.isArray(row) || row.length !== 2 || typeof row[0] !== 'string' ||
+        !Number.isSafeInteger(row[1]) || row[1] < 1 || row[1] > 100 || stateCounts.has(row[0])) fail();
+    let key: ComparisonJson;
+    try { key = JSON.parse(row[0]); } catch { return fail(); }
+    if (!Array.isArray(key) || key.length !== 2 || key[0] !== 'state') return fail();
+    const request = decode(key[1]) as KernelEnforcementRequest;
+    if (!request?.ctx || keyFor('state', idopKernelRequestData(request, workspaceId)) !== row[0]) fail();
+    const identity = get<ReturnType<IdopInnerKernelPorts['resolveIdentity']>>('identity', idopKernelContextData(request.ctx, workspaceId));
+    if (!identity?.ownerId?.trim() || identity.workspaceId !== workspaceId) fail();
+    get('tool.canonical', request.toolName);
+    get('tool.app', request.toolName);
+    const subject = [identity.ownerId, workspaceId];
+    const bindings = get<Awaited<ReturnType<IdopInnerKernelPorts['plan']['readBindings']>>>('plan.bindings', subject);
+    if (!Array.isArray(bindings)) fail();
+    get('plan.goal', subject);
+    for (const binding of bindings) get('plan.check', [binding, workspaceId]);
+    stateCounts.set(row[0], row[1]);
+    for (let index = 0; index < row[1]; index++) {
+      get('state', [request, index]);
+      stateKeys.add(keyFor('state', [request, index]));
+    }
+  }
+  if (!(get('app.now', []) instanceof Date)) fail();
+  if (snapshot.organizationInstalled) {
+    if (!(get('organization.now', []) instanceof Date)) fail();
+    get('organization.chain', workspaceId);
+  }
+  const convergence = decode(snapshot.convergence) as Parameters<typeof captureIdopP001KernelPermissionPorts>[0]['convergence'];
+  if (!Array.isArray(convergence)) fail();
+  const convergenceKeys = new Set<string>();
+  for (const outcome of convergence) {
+    if (!outcome || !Array.isArray(outcome.args) || outcome.args.length !== 4 ||
+        typeof outcome.args[0] !== 'string' || !outcome.args[0].trim() || outcome.args[1] !== workspaceId ||
+        !Number.isSafeInteger(outcome.args[2]) || outcome.args[2] < 0 || !outcome.args[3]?.specificationRevision ||
+        !outcome.args[3].stateRevision || typeof outcome.result !== 'boolean' || !Array.isArray(outcome.evidenceRefs) ||
+        !outcome.evidenceRefs.length || outcome.evidenceRefs.some((ref: unknown) => typeof ref !== 'string' || !ref.trim())) fail();
+    const key = keyFor('convergence', outcome.args);
+    if (convergenceKeys.has(key) || get('convergence', outcome.args) !== outcome.result) fail();
+    convergenceKeys.add(key);
+  }
+  for (const [key, { port }] of decodedKeys) {
+    if (port === 'state' && !stateKeys.has(key) || port === 'convergence' && !convergenceKeys.has(key) ||
+        port.startsWith('organization.') && !snapshot.organizationInstalled) fail();
+  }
+  const contextData = (ctx: UnifiedToolContext) => idopKernelContextData(ctx, workspaceId);
+  const requestData = (request: KernelEnforcementRequest) => idopKernelRequestData(request, workspaceId);
+  return { snapshot: JSON.parse(bytes) as IdopP001KernelSnapshot, sha256: expectedSha256, createPorts: () => {
+    const cursors = new Map<string, number>();
+    const inner: IdopInnerKernelPorts = {
+      runtime: idopAuthorityValue(snapshot.runtime) as IdopInnerKernelPorts['runtime'],
+      resolveIdentity: ctx => get('identity', contextData(ctx)),
+      readState: async request => {
+        const data = requestData(request);
+        const key = keyFor('state', data);
+        const index = cursors.get(key) ?? 0;
+        if (index >= (stateCounts.get(key) ?? 0)) throw new Error('IDOP kernel state sequence was not captured or is exhausted');
+        cursors.set(key, index + 1);
+        return get('state', [data, index]);
+      },
+      readPolicy: async input => get('policy', input), readOperationEffectClaim: async claim => get('operation', claim),
+      resolveTool: name => {
+        const tool = get<ReturnType<IdopInnerKernelPorts['resolveTool']>>('tool.canonical', name);
+        return tool && new Proxy(tool, { get: (target, property) => {
+          if (property !== 'expose') throw new Error(`IDOP kernel tool metadata was not captured: ${String(property)}`);
+          return target.expose;
+        } });
+      },
+      converge: async (owner, scope, generation, revision, sql) => {
+        if (sql !== undefined) throw new Error('IDOP kernel replay cannot accept a convergence writer');
+        return get('convergence', [owner, scope, generation, revision]);
+      },
+      plan: { readBindings: async (owner, scope) => get('plan.bindings', [owner, scope]),
+        resolveGoal: async (owner, scope) => get('plan.goal', [owner, scope]),
+        checkPlan: async (binding, scope) => get('plan.check', [binding, scope]) },
+    };
+    const app: IdopAppPermissionPorts = { now: () => get('app.now', []),
+      lookupTool: name => get('tool.app', name), loadRow: async id => get('app.row', id),
+      loadAccessTokenRow: async (token, id) => get('app.token', [token, id]),
+      loadSpendStatus: async (id, now) => get('app.spend', [id, now]) };
+    const organization: IdopOrganizationPermissionPorts | null = snapshot.organizationInstalled ?
+      { now: () => get('organization.now', []), loadChain: async scope => get('organization.chain', scope) } : null;
+    return { inner, app, organization };
+  } };
+}
+
 /** Execute the real role-policy module with its own source dependencies. In
  * particular, the old policy must not import today's role registry or testing
  * bypass. This is one comparison adapter, not the complete dispatch/vault proof.
@@ -377,24 +803,11 @@ export function loadIdopP001RolePermissionReader(options: {
   // regex-delimited approximation. Importing projected-tool-deps wholesale
   // would initialize the comparison host's live writers and registries.
   const sourceDeclarations = <T,>(path: string, names: string[], bindings: Record<string, unknown>,
-    optional: string[] = []): T => {
+    optional: string[] = [], closure = false): T => {
     const source = sourceAt(path);
-    const file = ts.createSourceFile(path, source.text, ts.ScriptTarget.Latest, true);
-    const declarations = new Map<string, string[]>();
-    for (const statement of file.statements) {
-      if (ts.isFunctionDeclaration(statement) && statement.name && statement.body) {
-        const name = statement.name.text;
-        declarations.set(name, [...declarations.get(name) ?? [], statement.getText(file)]);
-      } else if (ts.isVariableStatement(statement)) {
-        for (const declaration of statement.declarationList.declarations) {
-          if (ts.isIdentifier(declaration.name) && declaration.initializer) {
-            const name = declaration.name.text;
-            declarations.set(name, [...declarations.get(name) ?? [], `const ${declaration.getText(file)};`]);
-          }
-        }
-      }
-    }
-    const selected = [...names, ...optional.filter(name => declarations.has(name))];
+    const available = idopSourceDeclarations(path, source.text, [], {}, false).declarations;
+    const { declarations, selected } = idopSourceDeclarations(path, source.text,
+      [...names, ...optional.filter(name => available.has(name))], bindings, closure);
     const text = selected.map(name => {
       const matches = declarations.get(name);
       if (matches?.length !== 1) throw new Error(`IDOP missing canonical host declaration: ${path}#${name}`);
@@ -403,7 +816,7 @@ export function loadIdopP001RolePermissionReader(options: {
     }).join('\n');
     const module = { exports: {} as T };
     const code = transformSync(`${text}\nmodule.exports = { ${selected.join(', ')} };`, {
-      loader: 'ts', format: 'cjs', target: 'node22', sourcefile: path,
+      loader: 'ts', format: 'cjs', target: 'node22', sourcefile: path, supported: { 'dynamic-import': false },
     }).code;
     runInNewContext(code, { ...bindings, module, exports: {}, Date, URL, console }, { filename: path, timeout: 2_000 });
     return module.exports;
@@ -489,6 +902,91 @@ export function loadIdopP001RolePermissionReader(options: {
     get externalDependencies() { return [...externalDependencies.values()]; },
     get disabledHostPorts() { return [...disabledHostPorts]; },
     get hostFunctions() { return [...hostFunctions.values()]; },
+    /** Use the gate's unchanged pure receipt declarations without initializing
+     * agent-mcp/bootstrap or its live tool/schema registrations. */
+    createAppliedReceiptReader: () => ({
+      ...sourceDeclarations<Pick<typeof import('../capability-envelope/identity-grants-port'),
+        'selectAppliedReceipt' | 'appliedOrCurrentIdentityArtifact' | 'resolveIdentityArtifact'>>(
+        'packages/operator-core/lib/capability-envelope/identity-grants-port.ts',
+        ['selectAppliedReceipt', 'appliedOrCurrentIdentityArtifact', 'resolveIdentityArtifact'],
+        { replayAgentSpecification }, [], true),
+      ...sourceDeclarations<Pick<typeof import('./wearer-authority'), 'identityWearerRole'>>(
+        'packages/operator-core/lib/agent-identities/wearer-authority.ts', ['identityWearerRole'], {}, [], true),
+    }),
+    /** Canonical inner resolver, including the selected revision's identity,
+     * convergence and (when present) plan guard. Only original host inputs are
+     * supplied; neither an allow callback nor the live host graph is accepted.
+     * This adapter is not a population capture or an acceptance certificate. */
+    createInnerKernelReader: async (ports: IdopInnerKernelPorts) => {
+      if (![ports.readState, ports.resolveIdentity, ports.readPolicy, ports.readOperationEffectClaim, ports.resolveTool,
+        ports.converge, ports.plan?.readBindings, ports.plan?.resolveGoal, ports.plan?.checkPlan]
+        .every(port => typeof port === 'function') || !Number.isSafeInteger(ports.runtime?.pid) || ports.runtime.pid <= 0 ||
+        !(ports.runtime.processId === null || typeof ports.runtime.processId === 'string')) {
+        throw new Error('IDOP inner kernel requires explicit authority readers and original runtime');
+      }
+      const generic = await loadIdopP001DispatchPermissionReader({ ...options, includeIdentityReplay: true });
+      const select = <T,>(path: string, names: string[], bindings: Record<string, unknown>) =>
+        sourceDeclarations<T>(path, names, bindings, [], true);
+      const door = load('packages/operator-core/lib/capability-envelope/recovery-door.ts');
+      const refusal = load('packages/operator-core/lib/capability-envelope/identity-refusal-contract.ts');
+      const reach = load('packages/operator-core/lib/agent-identities/grant-provider-kinds.ts');
+      const envelope = select<Record<string, unknown>>('packages/operator-core/lib/capability-envelope/blueprint-envelopes.ts',
+        ['identityGrantToolFailure', 'resolveIdentityGrantEnvelope'], { ...policy, ...refusal, ...reach });
+      const identity = select<{ checkIdentityGrantKernel: typeof checkIdentityGrantKernel }>(
+        'packages/operator-core/lib/capability-envelope/identity-grants-port.ts', ['checkIdentityGrantKernel'], {
+          ...door, ...refusal, ...reach, ...envelope,
+          ...load('packages/operator-core/lib/capability-envelope/lazy-launch-record.ts'),
+          // These names are the canonical default parameters, not an alternate
+          // evaluator. No default policy/claim DB read can enter the sandbox.
+          readIdentityGrantPolicy: ports.readPolicy, readCurrentOperationEffectClaim: ports.readOperationEffectClaim,
+          replayAgentSpecification: generic.replayAgentSpecification,
+          resolveMcpName: ports.resolveTool,
+          pinModuleState: (_key: string, initialize: () => unknown) => initialize(),
+          isHookReleasedOperationContinuationCall: (...args: unknown[]) => {
+            const door = load('packages/operator-core/lib/released-operation-continuation-door.ts');
+            return (door.isHookReleasedOperationContinuationCall as (...args: unknown[]) => unknown)(...args);
+          },
+        });
+      const path = 'packages/operator-core/lib/projected-tool-deps.ts';
+      // Inspect the resolver's own dependency graph. The old arm has no plan
+      // guard; never graft one into it just because today's module imports it.
+      const file = ts.createSourceFile(path, sourceAt(path).text, ts.ScriptTarget.Latest, true);
+      const resolver = file.statements.filter(ts.isVariableStatement).flatMap(s => [...s.declarationList.declarations])
+        .find(d => ts.isIdentifier(d.name) && d.name.text === 'controlAnchorKernelResolver');
+      if (!resolver) throw new Error('IDOP missing canonical control resolver');
+      const hasPlanGuard = /\bcheckPlanExecutionGuard\b/.test(resolver.getText(file));
+      let plan: Record<string, unknown> = {};
+      if (hasPlanGuard) {
+        const timeout = select<Record<string, unknown>>('packages/operator-core/lib/bounded-timeout.ts',
+          ['withBoundedTimeout'], { AbortController, setTimeout, clearTimeout,
+            observeFallback: () => {}, activeWorkspaceId: () => null });
+        disabledHostPorts.add('bounded-timeout.observeFallback');
+        const constants = sourceDeclarations<Record<string, unknown>>(
+          'packages/operator-core/lib/agent-tools/plans/plan-continuation-readiness.ts',
+          ['PLAN_READINESS_PENDING', 'READINESS_PENDING_RETRY_AFTER_MS'], {});
+        plan = select<Record<string, unknown>>('packages/operator-core/lib/agent-tools/plans/plan-execution-guard.ts',
+          ['isPlanImplementationCall', 'checkPlanExecutionGuard'], {
+            ...timeout, ...constants, parseShell: external('shell-quote').parse,
+            readExecutionPlanBindings: ports.plan.readBindings, readExecutionPlanGoal: ports.plan.resolveGoal,
+            checkExecutionPlan: ports.plan.checkPlan, performance,
+          });
+      }
+      const inner = select<{ controlAnchorKernelResolver: KernelEnforcementPort }>(path,
+        ['controlAnchorKernelResolver'], {
+          ...plan, performance, process: { pid: ports.runtime.pid },
+          resolveAgentIdentity: ports.resolveIdentity, sameKernelRevision: generic.sameKernelRevision,
+          readControlAnchorKernelState: ports.readState,
+          pinModuleState: (_key: string, initialize: () => unknown) => initialize(),
+          getServingHostIdentity: () => ({ processId: ports.runtime.processId }),
+          require: (name: string) => {
+            if (name === './capability-envelope/identity-grants-port') return identity;
+            if (name === './agent-tools/coordination/control-anchor') return { convergeActivationToLaunchRecord: ports.converge };
+            throw new Error(`IDOP inner comparison unpinned import: ${name}`);
+          }, ...door,
+        }).controlAnchorKernelResolver;
+      return { hasPlanGuard, genericSources: generic.sources, externalDependencies: generic.externalDependencies,
+        evaluate: inner };
+    },
     /** Preserve this revision's outer kernel ordering and policy implementations.
      * Every authority read is explicit. No default DB, shared host cache, alert
      * writer, tool handler or installed live resolver is initialized here.
@@ -496,9 +994,8 @@ export function loadIdopP001RolePermissionReader(options: {
      * resolver, or explicitly attest its absence with null; this is not proof
      * of that inner resolver, current population or host installation state. */
     createOuterKernelReader: (ports: {
-      app: Required<Pick<EnforceAppKeyScopeDeps,
-        'loadRow' | 'loadAccessTokenRow' | 'lookupTool' | 'loadSpendStatus' | 'now'>>;
-      organization: Required<EnforceInheritedPolicyDeps> | null;
+      app: IdopAppPermissionPorts;
+      organization: IdopOrganizationPermissionPorts | null;
       resolveControlAnchor: KernelEnforcementPort | null;
       structural: KernelEnforcementPort;
     }): KernelEnforcementPort => {
@@ -648,7 +1145,9 @@ export function loadIdopP001RolePermissionReader(options: {
  * this adapter establishes the dispatcher source, not full D-043 acceptance.
  * Unknown imports and mismatched installed dependencies fail closed.
  */
-export async function loadIdopP001DispatchPermissionReader(options: { root: string; revision: string }) {
+export async function loadIdopP001DispatchPermissionReader(options: {
+  root: string; revision: string; includeIdentityReplay?: boolean;
+}) {
   const current = options.revision === 'working-tree';
   if (!current && !/^[a-f0-9]{40}$/.test(options.revision)) {
     throw new Error('IDOP dispatch comparison requires an exact source revision');
@@ -660,22 +1159,28 @@ export async function loadIdopP001DispatchPermissionReader(options: { root: stri
     ['tooldef', 'rules', 'module-singleton', 'result-encoding', 'chat-protocol']
       .map(name => [`@papercusp/${name}`, `libs/generic/${name}`]),
   );
+  if (options.includeIdentityReplay) {
+    packages['@papercusp/orchestrator'] = 'libs/papercusp/packages/orchestrator';
+    packages['@papercusp/harness'] = 'libs/papercusp/packages/harness';
+  }
   const locations = new Map<string, { repo: string; revision: string; prefix: string }>();
   const sources = new Map<string, { path: string; revision: string; sha256: string }>();
   const sourceTexts = new Map<string, string>();
   const read = (path: string): string => {
     const cached = sourceTexts.get(path);
     if (cached !== undefined) return cached;
-    const directory = Object.values(packages).find(prefix => path.startsWith(prefix + '/'));
+    const directory = Object.values(packages).find(prefix => path.startsWith(prefix + '/')) ??
+      (options.includeIdentityReplay && path.startsWith('packages/operator-core/lib/') ? 'packages/operator-core' : undefined);
     if (!directory) throw new Error(`IDOP dispatch comparison unpinned source: ${path}`);
     let location = locations.get(directory);
     if (!location) {
-      const tree = current ? [] : git(options.root, ['ls-tree', options.revision, directory]).trim().split(/\s+/);
+      const pin = directory.startsWith('libs/papercusp/') ? 'libs/papercusp' : directory;
+      const tree = current ? [] : git(options.root, ['ls-tree', options.revision, pin]).trim().split(/\s+/);
       const nested = tree[0] === '160000';
       if (!current && !/^[a-f0-9]{40}$/.test(tree[2] ?? '')) throw new Error(`IDOP missing source pin: ${directory}`);
-      location = { repo: nested ? join(options.root, directory) : options.root,
+      location = { repo: nested ? join(options.root, pin) : options.root,
         revision: current ? 'working-tree' : nested ? tree[2] : options.revision,
-        prefix: nested ? directory + '/' : '' };
+        prefix: nested ? pin + '/' : '' };
       locations.set(directory, location);
     }
     const text = current ? readFileSync(join(options.root, path), 'utf8') :
@@ -693,12 +1198,18 @@ export async function loadIdopP001DispatchPermissionReader(options: { root: stri
   const require = createRequire(join(options.root, 'package.json'));
   const bundle = await build({
     stdin: { contents: "export { preflightDispatchStack } from '@papercusp/tooldef/dispatch-stack';\n" +
-      "export { sameKernelRevision } from '@papercusp/tooldef/kernel-enforcement';",
+      "export { sameKernelRevision } from '@papercusp/tooldef/kernel-enforcement';\n" +
+      (options.includeIdentityReplay ?
+        "export { replayAgentSpecification } from '@papercusp/orchestrator/blueprint/composition-compiler';" : ''),
       sourcefile: 'idop-preflight-entry.ts', resolveDir: options.root },
     bundle: true, write: false, platform: 'node', format: 'cjs', target: 'node22', logLevel: 'silent',
     plugins: [{ name: 'idop-pinned-source', setup(builder) {
       builder.onResolve({ filter: /.*/ }, args => {
-        if (/^(zod|zod-to-json-schema|mingo)(\/|$)/.test(args.path)) {
+        if (args.path.startsWith('node:')) {
+          allowedImports.add(args.path);
+          return { path: args.path, external: true };
+        }
+        if (/^(zod|zod-to-json-schema|mingo|yaml)(\/|$)/.test(args.path)) {
           const name = args.path.split('/')[0];
           const key = `node_modules/${name}`;
           const installed = JSON.parse(readFileSync(join(options.root, key, 'package.json'), 'utf8'));
@@ -716,32 +1227,84 @@ export async function loadIdopP001DispatchPermissionReader(options: { root: stri
         } else {
           const name = Object.keys(packages).find(name => args.path === name || args.path.startsWith(name + '/'));
           if (!name) throw new Error(`IDOP dispatch comparison unpinned import: ${args.path}`);
-          path = `${packages[name]}/src/${args.path === name ? 'index' : args.path.slice(name.length + 1)}`;
+          path = `${packages[name]}/${name === '@papercusp/harness' ? '' : 'src/'}${args.path === name ? 'index' : args.path.slice(name.length + 1)}`;
         }
         const candidates = /\.[cm]?[jt]s$/.test(path) ? [path.replace(/\.js$/, '.ts')] : [`${path}.ts`, `${path}/index.ts`];
         for (const candidate of candidates) {
-          try { read(candidate); return { path: candidate, namespace: 'idop-source' }; }
+          try {
+            read(candidate);
+            // The saved-artifact replay export promises no file/registry
+            // reads. Drop UNUSED orchestrator imports (the loader computes
+            // mutable harness roots at module initialization), while keeping
+            // every declaration actually used by replay and its source hash.
+            return { path: candidate, namespace: 'idop-source',
+              ...(options.includeIdentityReplay && candidate.startsWith('libs/papercusp/packages/orchestrator/')
+                ? { sideEffects: false } : {}) };
+          }
           catch (error) {
             if (candidate === candidates.at(-1)) throw error;
           }
         }
         throw new Error(`IDOP unreadable dispatch import: ${args.path}`);
       });
-      builder.onLoad({ filter: /.*/, namespace: 'idop-source' }, args => ({ contents: read(args.path), loader: 'ts' }));
+      builder.onLoad({ filter: /.*/, namespace: 'idop-source' }, args => {
+        let contents = read(args.path);
+        const entry = args.path.endsWith('/blueprint/composition-compiler.ts') ? ['replayAgentSpecification'] :
+          args.path.endsWith('/blueprint/loader.ts') ? ['layerContentHash', 'blueprintHash'] : null;
+        if (options.includeIdentityReplay && entry) {
+          const { file, declarations, selected } = idopSourceDeclarations(args.path, contents, entry, {}, true);
+          contents = file.statements.filter(ts.isImportDeclaration).map(s => s.getText(file)).join('\n') + '\n' +
+            selected.map(name => declarations.get(name)![0].replace(/^export\s+/, '')).join('\n') +
+            `\nexport { ${entry.join(', ')} };`;
+          // Function declarations may already export themselves. A single
+          // trailing export also handles selected const declarations.
+        }
+        return { contents, loader: 'ts' };
+      });
     } }],
   });
   const module = { exports: {} as Record<string, unknown> };
   const noTimer = () => { throw new Error('IDOP preflight attempted to own a timer'); };
-  runInNewContext(bundle.outputFiles[0].text, {
+  // A canonical leaf may catch a failed read and use a fallback, or a schema
+  // may replace it with a generic validation error. Refuse at OUR boundary
+  // even then: neither outcome proves replay of captured authority.
+  const uncapturedReads = new Set<string>();
+  const assertCaptured = () => {
+    if (uncapturedReads.size) {
+      const methods = [...uncapturedReads].sort().join(', ');
+      uncapturedReads.clear();
+      throw new Error(`IDOP replay attempted an uncaptured filesystem read: ${methods}`);
+    }
+  };
+  const captured = <T,>(read: () => T): T => {
+    try { return read(); } finally { assertCaptured(); }
+  };
+  const sandbox = {
     module, exports: module.exports,
     require: (name: string) => {
       if (!allowedImports.has(name)) throw new Error(`IDOP dispatch comparison unpinned runtime import: ${name}`);
+      if (name === 'node:fs' || name === 'node:fs/promises') return new Proxy({}, { get: (_target, key) => () => {
+        uncapturedReads.add(`${name}.${String(key)}`);
+        throw new Error(`IDOP replay attempted an uncaptured filesystem read: ${String(key)}`);
+      } });
       return require(name);
     },
-    AbortController, AbortSignal, TextEncoder, TextDecoder, URL, structuredClone,
-    process: { env: Object.freeze({}) }, setTimeout: noTimer, setInterval: noTimer,
+    AbortController, AbortSignal, TextEncoder, TextDecoder, URL, structuredClone, Buffer,
+    process: { env: Object.freeze({}) }, ...(options.includeIdentityReplay ? { globalThis: {} } : {}),
+    setTimeout: noTimer, setInterval: noTimer,
     clearTimeout: noTimer, clearInterval: noTimer,
-  }, { filename: 'idop-pinned-preflight.cjs', timeout: 10_000 });
+  };
+  if (options.includeIdentityReplay) {
+    // The pinned compiler rejects non-plain JSON objects by prototype. Its
+    // lock-verified external Zod returns host-realm objects, so a different VM
+    // realm falsely refuses authentic artifacts. Execute with the SAME realm
+    // and explicit lexical host bindings; keep require/FS/timers/process and
+    // the singleton global isolated. Do not JSON-roundtrip away invalid input.
+    captured(() => compileFunction(bundle.outputFiles[0].text, Object.keys(sandbox), {
+      filename: 'idop-pinned-replay.cjs',
+    })(...Object.values(sandbox)));
+  } else captured(() => runInNewContext(bundle.outputFiles[0].text, sandbox,
+    { filename: 'idop-pinned-preflight.cjs', timeout: 10_000 }));
   if (typeof module.exports.preflightDispatchStack !== 'function') throw new Error('IDOP missing canonical dispatch preflight');
   if (typeof module.exports.sameKernelRevision !== 'function') throw new Error('IDOP missing canonical kernel revision reader');
   const preflight = module.exports.preflightDispatchStack as typeof preflightDispatchStack;
@@ -750,8 +1313,14 @@ export async function loadIdopP001DispatchPermissionReader(options: { root: stri
     sources: [...sources.values()].sort((a, b) => a.path.localeCompare(b.path)),
     externalDependencies: [...external.values()].sort((a, b) => a.name.localeCompare(b.name)),
     sameKernelRevision: (...args: Parameters<typeof sameKernelRevision>) => compareRevisions(...args),
-    evaluate: async (...args: Parameters<typeof preflightDispatchStack>) =>
-      JSON.parse(JSON.stringify(await preflight(...args))) as Awaited<ReturnType<typeof preflightDispatchStack>>,
+    replayAgentSpecification: typeof module.exports.replayAgentSpecification === 'function' ?
+      (...args: Parameters<typeof replayAgentSpecification>) => captured(() =>
+        (module.exports.replayAgentSpecification as typeof replayAgentSpecification)(...args)) : undefined,
+    evaluate: async (...args: Parameters<typeof preflightDispatchStack>) => {
+      try {
+        return JSON.parse(JSON.stringify(await preflight(...args))) as Awaited<ReturnType<typeof preflightDispatchStack>>;
+      } finally { assertCaptured(); }
+    },
   };
 }
 
@@ -947,9 +1516,10 @@ export async function readIdopP001AppliedStackPopulation(
   dependencies?: AppliedStackDependencies,
 ) {
   if (!workspaceId.trim() || workspaceId !== workspaceId.trim()) throw new Error('IDOP applied stacks require a workspace');
-  const [{ appliedOrCurrentIdentityArtifact, selectAppliedReceipt, resolveIdentityArtifact }, { identityWearerRole }] = await Promise.all([
-    import('../capability-envelope/identity-grants-port'), import('./wearer-authority'),
-  ]);
+  const receiptSource = loadIdopP001RolePermissionReader({ root,
+    revision: 'working-tree', testingFullAccess: 'off' });
+  const { appliedOrCurrentIdentityArtifact, selectAppliedReceipt, resolveIdentityArtifact, identityWearerRole } =
+    receiptSource.createAppliedReceiptReader();
   const enumerate = async (deps: AppliedStackDependencies) => {
     const snapshot = async () => {
       const rows = await deps.anchors();
@@ -996,6 +1566,7 @@ export async function readIdopP001AppliedStackPopulation(
       throw new Error('IDOP applied anchors changed during enumeration');
     }
     return { scope: 'workspace-persisted-applied-anchors' as const, workspaceId,
+      receiptSources: receiptSource.sources, receiptFunctions: receiptSource.hostFunctions,
       includesInactiveAnchors: true as const, livenessMeasured: false as const, stacks, refused };
   };
   if (dependencies) return enumerate(dependencies);

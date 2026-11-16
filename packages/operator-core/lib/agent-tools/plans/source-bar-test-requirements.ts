@@ -62,11 +62,17 @@ function normalizedFiles(files: readonly string[]): string[] {
   return [...new Set(files.map((file) => file.trim()).filter(Boolean))].sort();
 }
 
-function testRequirements(check: TestCheck): Pick<Extract<SourceBarTestRequirements, { status: 'required' }>, 'files' | 'cases'> {
+function testRequirements(check: TestCheck, planItemId?: string): Pick<Extract<SourceBarTestRequirements, { status: 'required' }>, 'files' | 'cases'> {
   const parsed = rubricCriterionCheckSchema.parse(check) as TestCheck;
-  const cases = parsed.cases ?? (parsed.testName ? [{ file: parsed.files[0]!, testName: parsed.testName }] : undefined);
+  const selected = parsed.filesByPlanItem
+    ? (planItemId ? parsed.filesByPlanItem[planItemId] : undefined)
+    : parsed.files;
+  if (!selected) throw new Error('source BAR has no reviewed test ownership for plan item ' + (planItemId ?? '(missing)'));
+  const files = normalizedFiles(selected);
+  const allCases = parsed.cases ?? (parsed.testName ? [{ file: parsed.files[0]!, testName: parsed.testName }] : undefined);
+  const cases = allCases?.filter(selector => files.includes(selector.file.trim()));
   return {
-    files: normalizedFiles(parsed.files),
+    files,
     ...(cases ? { cases: [...cases].sort((a, b) => a.file.localeCompare(b.file) || a.testName.localeCompare(b.testName)) } : {}),
   };
 }
@@ -84,6 +90,7 @@ async function liveTestFiles(
   pin: SpecClauseBarPin,
   cache: SourceBarRubricCache,
   live: SourceBarLiveRead,
+  planItemId?: string,
 ): Promise<({ subjectPlan: string } & ReturnType<typeof testRequirements>) | null> {
   const subjectPlan = rubric.subjectPlan;
   if (rubric.kind !== 'acceptance' || !subjectPlan) return null;
@@ -111,7 +118,7 @@ async function liveTestFiles(
     const liveRubric = await overlaid;
     const criterion = liveRubric?.criteria.find((candidate) => candidate.barKey === pin.barKey);
     if (criterion?.check?.kind !== 'tests') return null;
-    const requirements = testRequirements(criterion.check);
+    const requirements = testRequirements(criterion.check, planItemId);
     return requirements.files.length > 0 ? { ...requirements, subjectPlan } : null;
   } catch {
     return null;
@@ -127,6 +134,7 @@ export async function resolveSourceBarTestRequirements(
   pin: SpecClauseBarPin | null | undefined,
   cache: SourceBarRubricCache = new Map(),
   live: SourceBarLiveRead = defaultSourceBarLiveRead,
+  planItemId?: string,
 ): Promise<SourceBarTestRequirements> {
   if (!pin) return { status: 'not-required' };
 
@@ -178,9 +186,9 @@ export async function resolveSourceBarTestRequirements(
 
   let pinnedRequirements: ReturnType<typeof testRequirements>;
   try {
-    pinnedRequirements = testRequirements(criterion.check);
-  } catch {
-    return { status: 'unavailable', reason: `pinned BAR ${pin.barKey} declares an invalid tests check` };
+    pinnedRequirements = testRequirements(criterion.check, planItemId);
+  } catch (error) {
+    return { status: 'unavailable', reason: `pinned BAR ${pin.barKey} declares an invalid tests check: ${error instanceof Error ? error.message : String(error)}` };
   }
   const { files } = pinnedRequirements;
   if (files.length === 0) {
@@ -189,7 +197,7 @@ export async function resolveSourceBarTestRequirements(
       reason: `pinned BAR ${pin.barKey} declares a tests check without registered files`,
     };
   }
-  const liveFiles = await liveTestFiles(canonicalRubric, pin, cache, live);
+  const liveFiles = await liveTestFiles(canonicalRubric, pin, cache, live, planItemId);
   if (!liveFiles || JSON.stringify({ files: liveFiles.files, cases: liveFiles.cases }) === JSON.stringify(pinnedRequirements)) {
     return { status: 'required', ...pinnedRequirements };
   }

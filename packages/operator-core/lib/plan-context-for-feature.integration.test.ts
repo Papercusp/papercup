@@ -62,6 +62,9 @@ beforeAll(async () => {
   await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
   // P-010 unification: work_items is the base table + hfc/ei compat views.
   await rootSql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  await rootSql.unsafe(`ALTER TABLE harness_shared.work_items
+    ADD COLUMN IF NOT EXISTS plan_slug text,
+    ADD COLUMN IF NOT EXISTS plan_line_id text`);
   h.sql = rootSql;
 }, 90_000);
 
@@ -82,6 +85,17 @@ async function insertFeature(featureId: string, plan: string | null, opts: { ws?
 }
 
 describe('getPlanContextForFeature (PG provenance)', () => {
+  it('reads the adopted issue association without legacy promotion stamps', async () => {
+    await insertFeature('adopted-issue', null);
+    await rootSql`UPDATE harness_shared.work_items SET plan_slug = 'plan-x', plan_line_id = 'I-002'
+      WHERE feature_id = 'adopted-issue'`;
+    h.readPlanBySlug.mockResolvedValue(parsed('plan-x'));
+    const result = await getPlanContextForFeature(HARNESS, 'adopted-issue');
+    expect(result?.planSlug).toBe('plan-x');
+    expect(result?.section).toContain('the source item body');
+    expect(h.readPlanBySlug).toHaveBeenCalledWith('plan-x');
+  });
+
   it('returns null when the feature has no source_plan_slug (not promoted from a plan)', async () => {
     await insertFeature('feat-1', null);
     expect(await getPlanContextForFeature(HARNESS, 'feat-1')).toBeNull();

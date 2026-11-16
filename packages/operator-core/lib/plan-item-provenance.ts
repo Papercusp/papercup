@@ -26,7 +26,8 @@
  * (and why it was graduated from the dark-flag set as "verified live with zero blast
  * radius").
  *
- * PRECEDENCE: a coherent execution tuple selects the run instance's stamp;
+ * PRECEDENCE: the canonical plan-line association selects its exact node;
+ * otherwise a coherent execution tuple selects the run instance's stamp;
  * otherwise the legacy column first, then the stamp. Run source columns group
  * executions under their stable template and do not name their implementing plan.
  *
@@ -41,6 +42,8 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 
 interface ProvenanceRow {
+  plan_slug: string | null;
+  plan_line_id: string | null;
   source_plan_slug: string | null;
   source_plan_item_ids: string[] | null;
   stamped_plan_slug: string | null;
@@ -75,13 +78,13 @@ export async function resolvePlanItemProvenance(
 ): Promise<PlanItemProvenance> {
   const { sql } = getOrgPg();
   const rows = await sql<ProvenanceRow[]>`
-    SELECT source_plan_slug,
+    SELECT plan_slug, plan_line_id, source_plan_slug,
            source_plan_item_ids,
            payload -> 'plan_item' ->> 'plan_slug' AS stamped_plan_slug,
            payload -> 'plan_item' ->> 'item_id'   AS stamped_item_id,
            payload -> 'plan_run' ->> 'instancePlanSlug' AS run_instance_plan_slug,
            payload -> 'plan_run' ->> 'templateSlug' AS run_template_slug
-      FROM harness_shared.harness_features_consolidated
+      FROM harness_shared.work_items
      WHERE workspace_id = ${activeWorkspaceId()}
        AND harness_slug = ${harnessSlug}
        AND feature_id   = ${workItemId}
@@ -96,6 +99,8 @@ export async function resolvePlanItemProvenance(
  */
 export function planItemProvenanceFromRow(
   row: {
+    plan_slug?: string | null;
+    plan_line_id?: string | null;
     source_plan_slug?: string | null;
     source_plan_item_ids?: string[] | null;
     stamped_plan_slug?: string | null;
@@ -105,6 +110,15 @@ export function planItemProvenanceFromRow(
   } | null,
 ): PlanItemProvenance {
   if (!row) return NO_PLAN_ITEM_PROVENANCE;
+
+  // Adoption binds the existing issue through these columns without writing
+  // legacy promotion stamps. An incomplete association must not fall back to
+  // an unrelated legacy stamp and authorize evidence for the wrong plan item.
+  if (row.plan_slug != null || row.plan_line_id != null) {
+    return row.plan_slug && row.plan_line_id
+      ? { planSlug: row.plan_slug, itemIds: [row.plan_line_id], source: 'column' }
+      : NO_PLAN_ITEM_PROVENANCE;
+  }
 
   const columnIds = (row.source_plan_item_ids ?? []).filter((id) => typeof id === 'string' && id.length > 0);
   // A run's stable source column deliberately differs from its exact execution

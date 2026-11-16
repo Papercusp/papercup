@@ -7,10 +7,15 @@ import { readIdopP001AppliedStackPopulation } from './idop-p001-baseline';
 let db: OrgTestDb;
 // Replace the connection only. The production anchor query, launch-row query,
 // receipt narrowing and artifact replay all run against migrated PostgreSQL.
-vi.mock('@papercusp/db-org', async importOriginal => ({
-  ...await importOriginal<typeof import('@papercusp/db-org')>(),
+// Do not lazily import the real connection/schema barrel inside this mock.
+// Its cold evaluation is unrelated to the SQL/receipt behavior under test and
+// must never make a timed-out case fall back to the live connection factory.
+vi.mock('@papercusp/db-org', () => ({
   getOrgPg: () => ({ sql: db.adminSql }),
 }));
+// Pure receipt selection must not install the real host just to read records.
+// Together with the minimal DB mock this detects that entire import class.
+vi.mock('@papercusp/agent-mcp', () => { throw new Error('P001 population reader initialized live MCP/bootstrap'); });
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 const artifact = (id: string) => compileAgentSpecification({
@@ -41,7 +46,12 @@ async function launch(workspace: string, owner: string, record: unknown, ended =
 }
 
 describe('IDOP D-043 persisted applied population (real PostgreSQL)', () => {
-  beforeAll(async () => { db = await createOrgTestDb(); }, 180_000);
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    // Resolve and verify the adapter's default route BEFORE a case can run.
+    const { getOrgPg } = await import('@papercusp/db-org');
+    expect(getOrgPg().sql).toBe(db.adminSql);
+  }, 180_000);
   afterAll(async () => { await db?.cleanup(); });
 
   it('keeps applied history in the latest registration, including ended wearers, within the requested workspace', async () => {
@@ -67,6 +77,11 @@ describe('IDOP D-043 persisted applied population (real PostgreSQL)', () => {
 
     const result = await readIdopP001AppliedStackPopulation(workspace);
     expect(result).toMatchObject({ includesInactiveAnchors: true, livenessMeasured: false });
+    expect(result.receiptFunctions.map(row => row.name)).toEqual(expect.arrayContaining([
+      'selectAppliedReceipt', 'appliedIdentityArtifact', 'appliedOrCurrentIdentityArtifact',
+      'resolveIdentityArtifact', 'identityWearerRole', 'SU_WEARER_ROLE',
+    ]));
+    expect(result.receiptSources.every(row => /^[a-f0-9]{64}$/.test(row.sha256))).toBe(true);
     expect(result.stacks).toHaveLength(1);
     expect(result.stacks[0]).toMatchObject({ ownerId: owner, applied: pair, role: 'judge',
       explicitStack: ['domain:population-applied'], artifact: applied });

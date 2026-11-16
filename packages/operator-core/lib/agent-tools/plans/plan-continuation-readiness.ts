@@ -8,7 +8,7 @@
  * while the native pre-tool hook wall is 1.5s, so every plan-bound codex write was
  * refused fail-closed even though the plan was started and executable.
  *
- * What stays FRESH on every call (the caller still performs these reads):
+ * What stays FRESH on every call (inside the same bounded admission):
  *   - the owner's binding census and the canonical binding identity;
  *   - the execution start proof (`readPlanExecutionStart`), which is the revocation fence
  *     for a voided or stale start;
@@ -99,8 +99,12 @@ export type ReadinessEvaluator = (binding: ExecutionPlanBinding, workspaceId: st
   observe?: PlanExecutionTimingObserver) => Promise<string[]>;
 
 export interface ContinuationReadinessDeps {
+  /** Per-call authority checks before any cached continuation verdict; never cached. */
+  preflight?: ReadinessEvaluator;
   readFence: (binding: ExecutionPlanBinding, workspaceId: string) => Promise<ReadinessFence | null>;
   evaluate: ReadinessEvaluator;
+  /** Final per-call authority check after a positive continuation verdict; never cached. */
+  recheck?: ReadinessEvaluator;
   /** Admission budget override (tests); defaults to `READINESS_EVALUATION_BUDGET_MS`. */
   budgetMs?: number;
   /** Native hook deadline on this process's monotonic clock; never extends the standard budget. */
@@ -139,10 +143,10 @@ function note(observe: PlanExecutionTimingObserver | undefined, stage: string): 
  */
 export async function checkContinuationReadiness(binding: ExecutionPlanBinding, workspaceId: string,
   observe: PlanExecutionTimingObserver | undefined, deps: ContinuationReadinessDeps): Promise<string[]> {
-  // Include the fresh fence read in the caller's remaining budget. A native
-  // hook has a 1.5s wall, unlike the standard MCP admission deadline.
+  // Fresh start proof, fence, evaluation and final authority checks share the
+  // caller's remaining budget. None of the per-call checks is cached.
   const refusalHandoff: { key?: string } = {};
-  const build = (async (): Promise<string[]> => {
+  const readContinuation = async (): Promise<string[]> => {
     const fence = await deps.readFence(binding, workspaceId);
     if (!fence) return deps.evaluate(binding, workspaceId, observe);
     const key = { harness: fence.harnessSlug, plan: binding.planSlug, contentHash: fence.contentHash,
@@ -189,6 +193,16 @@ export async function checkContinuationReadiness(binding: ExecutionPlanBinding, 
     // Only overlapping readers share a refusal. No negative cache entry survives the
     // build, so a later caller can immediately observe a repaired plan.
     return [...await (evaluation ?? deps.evaluate(binding, workspaceId, observe))];
+  };
+  const build = (async (): Promise<string[]> => {
+    const preflight = await deps.preflight?.(binding, workspaceId, observe);
+    if (preflight?.length) return preflight;
+    const blockers = await readContinuation();
+    if (blockers.length) return blockers;
+    // Only the plan-wide continuation verdict has a fence-qualified handoff.
+    // A late caller-specific recheck must never poison another owner's retry.
+    refusalHandoff.key = undefined;
+    return deps.recheck ? deps.recheck(binding, workspaceId, observe) : [];
   })();
   const budgetMs = Math.max(1, Math.min(deps.budgetMs ?? READINESS_EVALUATION_BUDGET_MS,
     deps.deadlineAtMs === undefined ? Infinity : deps.deadlineAtMs - performance.now()));

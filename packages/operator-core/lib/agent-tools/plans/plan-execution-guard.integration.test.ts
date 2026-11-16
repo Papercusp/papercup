@@ -756,6 +756,30 @@ describe('real write-boundary bypass regression', () => {
       policy.readLifecycle.mockReset();
     }
   });
+  it('bounds the fresh start-proof read before readiness and rereads its real refusal', async () => {
+    await db.sql`UPDATE harness_shared.harness_plans SET status='ready', execution_start_revision_seq=NULL`;
+    const authority = await import('./plan-execution-authority');
+    const original = authority.readPlanExecutionStart;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const proof = vi.spyOn(authority, 'readPlanExecutionStart').mockImplementationOnce(async (...args) => {
+      await gate;
+      return original(...args);
+    });
+    const attempt = checkExecutionPlan(binding, WS, undefined, performance.now() + 20);
+    try {
+      expect(await attempt).toEqual(['plan_readiness_pending']);
+      expect(proof).toHaveBeenCalledTimes(1);
+      release();
+      expect(await checkExecutionPlan(binding, WS)).toEqual(['plan_not_started']);
+      expect(proof).toHaveBeenCalledTimes(2);
+    } finally {
+      release();
+      await attempt.catch(() => {});
+      proof.mockRestore();
+    }
+  });
+
   it('does not treat ready status as completion of the standard start process', async () => {
     await db.sql`UPDATE harness_shared.harness_plans SET content=${'---\ntitle: Draft\nstatus: ready\n---\n# Draft\n'}, status='ready'`;
     expect(await checkExecutionPlan(binding, WS)).toEqual(['plan_not_started']);
