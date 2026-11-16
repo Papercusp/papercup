@@ -4,107 +4,78 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: "Social platform integrations — per-wave acceptance runbook"
-description: "What the connect→arm→inbound→draft→approve→reply→ledger loop is, which parts an agent can accept unattended, which parts are owner-walled at each wave, and the exact recipe for driving the two social surfaces in a real Tauri shell."
+title: "Social platform integrations — installed-provider acceptance runbook"
+description: "Accept installed social provider packages using current descriptors, host sync progress, isolated Tauri fixtures and authorized live-delivery evidence."
 type: Insight
 discovered: 2026-08-23
 tags: ["social", "external-triggers", "acceptance", "e2e", "tauri", "runbook"]
 status: active
 documents:
-  - "packages/operator-core/lib/external-triggers/social/platform-registry.ts"
-  - "packages/operator-core/lib/external-triggers/social/cursor-freshness.ts"
+  - "packages/operator-core/lib/integrations/provider-registry.ts"
+  - "packages/operator-core/lib/capability-verbs/social-provider.fixture.ts"
   - "packages/operator-core/lib/external-triggers/admin.ts"
+  - "packages/operator-core/lib/external-triggers/source-store.ts"
+  - "packages/operator-core/lib/external-triggers/provider-storm-policy.ts"
+  - "packages/operator-core/lib/providers/connector-runtime.ts"
+  - "packages/plugin-sdk/src/provider.ts"
   - "apps/operator/app/admin/triggers/TriggersClient.tsx"
   - "apps/operator/app/admin/plans/PlanTriggersPanel.tsx"
   - "scripts/verify-tauri-headless.sh"
 plans:
   - "social-platform-integrations-2026-08-23"
+  - "language-neutral-code-documentation-integration-2026-11-12"
+promotedFrom:
+  - kind: work-item
+    ref: WI-6554700010049569
 ---
 
-The social platform integrations (plan `social-platform-integrations-2026-08-23`)
-ship as **three waves**, and acceptance is **per wave, not big-bang**. This page is
-the runbook: what the full loop is, which parts an agent can accept on its own,
-which parts only the owner can unblock, and the exact repeatable recipe for
-driving the UI half in the real desktop shell.
+The original social-platform plan, `social-platform-integrations-2026-08-23`, used three delivery waves. Those waves are historical planning groups. Current platform identity, capabilities, authentication, read support, verification and vendor blockers come from installed provider package descriptors; there is no app-side `social/platform-registry.ts` or wave field in the admin projection.
+
+This runbook was reconciled against current source on 2026-11-15 for WI-6554700010049569. The dated P-011 census and its original report remain historical evidence; this correction does not rewrite their findings or prove a new live delivery.
 
 ## The loop being accepted
 
-1. **Connect an account** — a `trigger_sources` row for the platform, with a credential.
-2. **Arm a binding** — attach a plan to an event pattern (`ext:<platform>:…`). New bindings always install **off**; arming is a deliberate owner act.
-3. **A live inbound event** arrives and launches the plan.
-4. **An agent drafts a reply.**
-5. **The owner approves** it.
-6. **The reply lands on the platform.**
-7. **The delivery ledger shows the full trace.**
+1. **Connect an account.** The owned source is a `harness_shared.data_sources` row, with the provider id as `kind`, an authenticated owner and the configured credential reference.
+2. **Attach a binding.** A binding in `harness_shared.trigger_bindings` targets a plan and matches its actual inbound event pattern. New bindings install **off** (`armed = FALSE`); explicit authorization is required before arming.
+3. **Receive an inbound event** through a provider that declares readable sync or ingress support, and observe binding dispatch and its run.
+4. **Draft a reply** if the package declares `social.reply`; do not assume every platform supports it.
+5. **Obtain approval** for the outward-facing action through the existing approval path.
+6. **Deliver the approved reply** using the configured provider package.
+7. **Verify the ledger and remote result.** Retain the source, binding, run, approval and delivery references, plus the remote reply id or URL.
 
-## The honest split — read this before claiming acceptance
+Fixture acceptance can exercise the local path without sending to a vendor. A successful fixture or a package contract attestation is not evidence that a live reply landed. Live acceptance requires authorized credentials, any applicable vendor access and an observed remote result. An agent with that authorization can perform the check; an unresolved credential, review or paid-tier decision must stay explicit.
 
-Steps 1–5 and 7 are exercisable with fixtures and a simulated inbound event.
-**Step 6 — "the reply lands on the platform" — is owner-walled at every wave**,
-and no amount of agent work clears it. It needs credentials (Wave A) or a
-multi-week external review (Waves B and C). An agent that reports P-028 or any
-wave as fully accepted without a live reply landing is reporting something it did
-not verify.
+## Current package facts, not a wave table
 
-What an agent CAN accept, per wave, unattended:
+The runtime uses `readyProviderRegistry()` / `ProviderRegistry` in `packages/operator-core/lib/integrations/provider-registry.ts`. `socialAdminFacts` in `packages/operator-core/lib/external-triggers/admin.ts` projects only installed descriptors containing the `social-post` datatype. Unloading a provider removes its facts; a same-id replacement changes them without adding an application registry row.
 
-- the platform's adapter passing the shared conformance kit,
-- the registry facts (wave, auth mode, transport, rate budget, `blockedOn`) rendering in the product,
-- the binding composer prefilling storm caps from that platform's rate budget,
-- the four cursor-freshness states rendering correctly,
-- a simulated inbound → binding → run → ledger trace.
+For each installed descriptor, inspect:
 
-## Per-wave acceptance
+- `capabilities` and `verification.capabilities`: writes are verified separately from the package contract. A package with no write capabilities does not acquire them from a historical platform list.
+- `verification.verifiedAt`, `verification.sources` and `verification.blockedOn`: retain the current evidence and any declared owner-side blocker. An absent blocker does not prove account credentials or successful delivery.
+- `oauth`, `setup`, `sync`, `ingress` and `push`: the admin projection derives auth and transport from these fields. `sync: false` means write-only, with `readTransport: null` and cursor state `not-readable`.
+- `rateBudget`: `providerStormPolicyFor(descriptor, 'read')` derives the displayed budget. A throttle hold is a separate condition, not a cap of zero.
 
-Wave, platforms, and the wall are **derived from the platform registry**
-(`packages/operator-core/lib/external-triggers/social/platform-registry.ts`) —
-if a row below disagrees with that file, the file is right.
+Bundled acceptance inputs live in `libs/papercusp/plugins/*/papercusp.json`. `bundledSocialProviderDescriptors()` in `packages/operator-core/lib/capability-verbs/social-provider.fixture.ts` loads their social-post descriptors for tests. That bundled fixture inventory is not a read of the live installed registry. `external-triggers/social/platform-packs.test.ts` checks packs against package verification, derived storm policies, consent requirements and events the real adapters can produce.
 
-| Wave | Platforms | What blocks the LIVE half |
-|---|---|---|
-| **A** | Bluesky, Mastodon, Reddit | **Owner credentials only** — a Bluesky app password, a Mastodon instance account, a Reddit app registration. No external review. This is the cheapest wave to take live. |
-| **B** | YouTube, Facebook Pages, Instagram, Threads | YouTube: owner approves the **Google incremental consent** screen once (scopes are additive on the existing Workspace connection). Facebook Pages / Instagram / Threads: **Meta app review** — identity, legal and business verification, multi-week lead time. |
-| **C** | LinkedIn, TikTok, X (Twitter) | LinkedIn: **partner review** for organization/page access. TikTok: **TikTok audit** — unaudited apps cannot direct-publish, so v1 targets the draft/inbox path. X: **paid-tier purchase authorization**, a recurring cost outside agent authority under any mode (D-002). |
-
-Wave A is the only wave whose wall is purely a credential. Waves B and C need
-someone with legal/business standing to file with the vendor, so their code halves
-are built and verified against fixtures and stay that way until the owner clears
-the review.
+Do not keep the old per-wave vendor-wall table as current authority. In the current bundled LinkedIn descriptor, `sync: false` and the declared writes are `social.post` and `social.delete`; there is no `social.reply` or universal organization-access blocker. Check the installed edition before making the equivalent assertion about a connected account.
 
 ## Driving the UI half in the real shell
 
-UI here is **never** "unverifiable headless". The operator only renders correctly
-inside Tauri, so never point a browser at `:3055`/`:3070`.
+Use a Tauri instance owned by this verification run. A bridge discovered with `probe` can belong to the live desktop; discovery alone is not permission to drive it. Before a current-build functional run, select its route with `dev:pipeline_position` and inspect `currentBuildTestRoute` and the serving runtime. Ordinary implementation acceptance uses the current build; final shipment evidence belongs to the shipped artifact.
 
-Boot your **own** isolated instance rather than driving a shell someone else
-launched — a bridge you find with `probe` may be the owner's live desktop.
+`scripts/verify-tauri-headless.sh` creates an owned display, dev URL and sidecar. Its default database and workspace are shared with the live system. Set `VERIFY_TAURI_ISOLATED_DB=1` for fixture writes: this gives a disposable migrated database and isolated profile, initially showing first-run onboarding rather than existing rows. Complete that setup before testing the seeded journey.
 
 ```sh
-# 1. tauri-agent-tools is NOT on PATH on this box.
-export PATH="$HOME/.local/node25/bin:$PATH"
-
-# 2. The verifier REFUSES to launch without PAPERCUSP_SID (an unattributed
-#    bridge could be confused with the owner's desktop). A server-side
-#    capability:bash does NOT inherit it — pass it explicitly.
+# Use the existing session identity; the verifier refuses an unattributed bridge.
 export PAPERCUSP_SID="<your su session id>"
-
-# 3. Own Xvfb display + own devUrl port, sharing the live DB.
-scripts/verify-tauri-headless.sh --boot-only
-#    -> prints: source /tmp/verify-tauri-headless.<id>/env.sh
+VERIFY_TAURI_ISOLATED_DB=1 scripts/verify-tauri-headless.sh --boot-only
+# Follow the printed source /tmp/verify-tauri-headless.<id>/env.sh handoff.
 ```
 
-Then drive it, and **tear it down when done**:
+Use the returned `VERIFY_TAURI_PID`, `VERIFY_TAURI_DEV_URL` and `VERIFY_TAURI_POLL`; resolve `tauri-agent-tools` from the installed toolchain rather than assuming a fixed Node-version path. If launching through a managed task, require task confinement and a finite memory limit on the outer task before starting the verifier. Do not create a nested `systemd-run --scope` fallback.
 
-```sh
-source /tmp/verify-tauri-headless.<id>/env.sh
-tauri-agent-tools check --pid "$VERIFY_TAURI_PID" --selector body --text 'Social (4)'
-bash /tmp/verify-tauri-headless.<id>/stop.sh
-```
-
-Pass `VERIFY_TAURI_ISOLATED_DB=1` if you intend to click **write** paths — that
-boots a throwaway migrated Postgres so every write is discarded at teardown. It
-boots into first-run onboarding with an empty DB, so it is the wrong choice when
-you need to see existing rows.
+After navigation, wait for the seeded subject with an exit-coded check. Pair the positive assertion with an intentionally wrong expected value that must fail. A negative assertion needs a present-subject guard: an empty page can otherwise appear to pass. `eval` is exploratory; inspect a screenshot to confirm it painted. The screenshot command needs a selector or supported window selector. Always run the printed `stop.sh` when finished.
 
 ### Routes and params
 
@@ -113,70 +84,44 @@ you need to see existing rows.
 | Social sources pane | `/admin/triggers?view=sources&sources=social` |
 | Plan binding composer | `/admin/plans?plan=<plan-slug>&ptab=triggers` → **Attach event** |
 
-Two params bite:
+The plan-detail key is `ptab`; the shell owns `tab`. The plan selection key is `plan`. Use the actual container (`.tr-tabs`, `.tr-card`, `.pc-plan-dialog`) for assertions rather than treating a small header wrapper as the full pane.
 
-- The plan-detail tab key is **`ptab`**, not `tab` — on `/adv` the shell owns `tab`, and sharing the key clobbered it.
-- The plan is selected by **`plan=<slug>`**, and the plans rail is **click-driven with no anchor hrefs**.
+## Fixtures and host sync progress
 
-### Assertions must be falsifiable
+Source availability depends on the selected database and installed providers. Do not assume there are no social sources in production, and do not infer a missing sync implementation from an empty pane. The provider connector runtime persists host sync progress after provider pages commit.
 
-`eval` is for exploration — it exits 0 whether or not your hope was true, so no
-transcript of it proves anything. Carry assertions with **`check`** (exit-coded),
-and pair them with a **negative control** that must fail. A `screenshot` is
-accepted evidence but is *not* falsifiable on its own: it writes a plausible file
-even for a window that never painted, so open the image and confirm it painted.
-
-Note `screenshot` requires `--selector` (or `--title`/`--window-id`); `--pid`
-alone is an error.
-
-A trap worth naming: querying `closest()` up from an `h1` lands on a small header
-wrapper whose text is just the page title, which reads exactly like "the page
-rendered its disabled shape". Query the real container (`.tr-tabs`, `.tr-card`,
-`.pc-plan-dialog`) instead. An absence claim needs a positive control.
-
-## Fixtures
-
-No production code persists a social cursor yet, and there are normally **no
-social `trigger_sources` rows at all**, so both panes are legitimately empty
-until you seed. Create fixtures through the real
-`createOwnedExternalTriggerSource` (not a raw INSERT), stamp them with a
-recognisable `created_by`, and delete them by that stamp afterwards:
+Create owned fixtures through `createOwnedExternalTriggerSource` in `packages/operator-core/lib/external-triggers/source-store.ts`, using a real fixture owner in the disposable database. Stamp `createdBy` and `config.seededBy` for cleanup. This helper persists into `harness_shared.data_sources`, not the retired `trigger_sources` table. Avoid arming a real network driver for a display-only fixture.
 
 ```ts
 await createOwnedExternalTriggerSource(sql, {
   workspaceId: 'papercusp-workspace',
-  kind: 'reddit',                       // the source's `kind` IS the platform id
-  ownerUserId: '<owner uuid>',
+  kind: 'reddit',
+  ownerUserId: '<fixture owner uuid>',
   status: 'connected',
-  cursor: { newestFullname: 't3_1p028ab' },
-  config: { seededBy: 'p028-e2e-fixture' },
-  createdBy: 'p028-e2e-fixture',
+  cursor: { provider: 'opaque:position' },
+  config: { seededBy: 'social-acceptance-fixture' },
+  createdBy: 'social-acceptance-fixture',
 });
 ```
 
-Seeding one source per cursor shape is what makes the four freshness states
-visible in one pane:
+The provider cursor is opaque. Freshness comes from the host envelope's `providerSync.lastSyncedAt`, interpreted by the SDK's `providerCursorFreshness`, not from a vendor cursor's shape or whether that vendor emits timestamps.
 
-| Seed cursor | State rendered |
-|---|---|
-| `{ seq, lastEventAt }` | `synced · 3m ago` |
-| `{ newestFullname }` | `advancing · … · no timestamp on this platform` |
-| `{}` | `never synced — no cursor persisted yet` |
-| `{ bogusUnknownField }` | `unreadable cursor — matches no known social cursor shape` |
+Use this state matrix with installed readable Reddit and write-only LinkedIn fixture descriptors. The timestamp is a fixed test input: use the test clock `2026-08-23T12:00:00.000Z` for the three-minute age assertion, or choose a new timestamp relative to the UI run's clock.
 
-The third and fourth rows are the ones worth keeping in any future run: a healthy
-Reddit source carries no timestamp **by design**, and collapsing that into "never
-synced" is a false alarm the pane exists to avoid.
+| Provider fixture | Stored cursor JSON | Expected state |
+|---|---|---|
+| `reddit` | `{"provider":"opaque:position","providerSync":{"lastSyncedAt":"2026-08-23T11:57:00.000Z"}}` | `synced` |
+| `reddit` | `{"provider":"opaque:position"}` | `position-only` |
+| `reddit` | `{}` | `never-synced` |
+| `reddit` | `{"newestFullname":"t3_example"}` | `unrecognized` |
+| `linkedin` | `{}` | `not-readable` |
 
-## What is verified today
+The pane renders `position-only` as “advancing … host sync time not recorded”, `never-synced` as “no provider page committed yet”, and `unrecognized` as “sync freshness unknown”. A legacy `{ newestFullname }` object supplies no host envelope and must not be declared fresh. A committed empty terminal page can still be `synced` with `provider: null`; retain valid loss-risk evidence and expose future host timestamps as clock skew.
 
-Driven in a real Tauri shell (isolated display, live DB, fixtures seeded and
-removed):
+## Acceptance evidence and limits
 
-- The `sources=all|social` filter isolates social sources from non-social ones (`All (7)` / `Social (4)`).
-- All four cursor-freshness states render distinctly and correctly.
-- Three different rate-budget bases render — `conservative-default`, `rate-budget`, `quota-bucket`.
-- A wave-B platform renders its `blockedOn` wall in the product itself.
-- The binding composer prefills storm caps from the selected platform's budget and re-derives them when the source changes (Bluesky `12/300s` → Reddit `30/300s`), along with the `ext:<platform>:` pattern prefix.
+Verify the source filter with a known seeded cohort and derive its expected counts from that cohort. `Social (4)` and `All (7)` were historical fixture counts, not fixed product requirements. Check the four readable states and the write-only case, current package blockers and write-verification status, the derived budget and any active hold. The binding composer derives defaults for a new binding from the selected source; an existing explicit storm policy remains the user's choice.
 
-Not verified, and not verifiable by an agent: **step 6 at any wave.**
+The original 2026-08-23 page recorded a Tauri fixture run, including source filtering, freshness states, budget bases and source-switch defaults. Those observations describe that historical edition. The 2026-11-15 correction is supported by source review and maintained conformance controls; it does not certify a new GUI run, vendor approval, live reply or deployed release.
+
+For a fresh acceptance run, retain the containing build identity, isolated-instance provenance, seeded fixture scope, positive and negative assertion results, cleanup receipt and ledger references. Add the remote result only when an authorized live delivery actually occurred. Keep any remaining access or shipment condition open instead of promoting fixture success to end-to-end acceptance.
