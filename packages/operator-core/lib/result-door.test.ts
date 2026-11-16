@@ -1353,6 +1353,52 @@ describe('applyResultDoor', () => {
     expect(JSON.parse(spill.content[0].text)).toEqual(produced);
   });
 
+  it('EI-25327506190247241: keeps a small nested code:run summary inline with its raw-summary cursor', () => {
+    const produced = {
+      ok: true,
+      summary: { answer: 'small usable summary' },
+      summaryNotice: {
+        truncated: true,
+        originalChars: 4_000,
+        returnedChars: 20,
+        arraysTruncated: 1,
+        arrayOriginalLengths: { events: 12 },
+        rawSummaryCursor: {
+          status: 'available',
+          tool: 'capability:read',
+          args: {
+            uri: 'papercusp://scratch/ws-1/code:run/raw-summary.json',
+            byte_offset: 0,
+            byte_limit: 3_072,
+          },
+          bodyOffsetInPayload: 0,
+          byteCount: 4_000,
+          sha256: 'a'.repeat(64),
+          expiresAt: '2026-11-16T03:00:00.000Z',
+          note: 'Read this owner-scoped scratch reference with capability:read and follow next_cursor.',
+        },
+      },
+    };
+    const sourceText = JSON.stringify(produced);
+    expect(sourceText.length).toBeLessThan(4_000);
+    const result = { content: [{ type: 'text' as const, text: sourceText }] };
+
+    const doored = applyResultDoor(result, {
+      toolName: 'tools:invoke',
+      nestedTargetToolName: 'code:run',
+      workspaceId: 'ws-1',
+      runId: RUN_ID,
+    });
+
+    expect((doored.content[0] as { text: string }).text).toBe(sourceText);
+    const inline = JSON.parse((doored.content[0] as { text: string }).text);
+    expect(inline.summary.answer).toBe('small usable summary');
+    expect(inline.summaryNotice.truncated).toBe(true);
+    expect(inline.summaryNotice.rawSummaryCursor.args).toEqual(
+      produced.summaryNotice.rawSummaryCursor.args,
+    );
+  });
+
   it('EI-251528: evaluator rating-map payload-tier omissions remain explicitly incomplete at the result door', () => {
     const criteria = Array.from({ length: 9 }, (_, index) => `criterion-${index + 1}`);
     const ratings = Object.fromEntries(criteria.map((criterion, index) => [criterion, {

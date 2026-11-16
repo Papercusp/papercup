@@ -2088,6 +2088,71 @@ describe('cross-process scratch quota coordination', () => {
 });
 
 describe('deferred scratch quota recovery', () => {
+  it.each(['stable', 'local write', 'remote revision'] as const)(
+    'discovers quota candidates outside the data lease and revalidates the listing (%s)', async (change) => {
+      const workspaceId = 'ws-Q';
+      const retained = makeSparseRun(workspaceId, UUID(1), 2 * 1024 ** 3, 10_000);
+      const writerRun = makeRunDir(workspaceId, 'quota', UUID(2), 0);
+      _setScratchUsageForTests(workspaceId, WORKSPACE_QUOTA_BYTES - 1024 * 1024);
+      const root = scratchRootForWorkspace(workspaceId);
+      const readdirMock = vi.mocked(readdirAsync);
+      const originalRead = readdirMock.getMockImplementation()!;
+      const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+      let release!: () => void;
+      let reached!: () => void;
+      const gate = new Promise<void>((resolveGate) => { release = resolveGate; });
+      const listing = new Promise<void>((resolveReached) => { reached = resolveReached; });
+      let paused = false;
+      readdirMock.mockImplementation((async (path: unknown, options: unknown) => {
+        const entries = await read(path, options);
+        if (String(path) === root && !paused) {
+          paused = true;
+          reached();
+          await gate;
+        }
+        return entries as never;
+      }) as typeof readdirAsync);
+      const recoveryPath = join(writerRun, 'recovery.bin');
+      const recovery = writeWithScratchQuota({ workspaceId, filePath: recoveryPath, bytes: 2 * 1024 * 1024 },
+        () => writeFile(recoveryPath, Buffer.alloc(2 * 1024 * 1024)));
+      let lateRun: string | undefined;
+      try {
+        await listing;
+        const mutex = 'papercusp-scratch-data-' + createHash('sha256').update(resolve(root)).digest('hex').slice(0, 40);
+        // The old recovery holds this lease throughout discovery; admission times out
+        // even though no candidate has been selected or removed yet.
+        await expect(withFsMutex(mutex, async () => true, { mode: 'read', timeoutMs: 500 })).resolves.toBe(true);
+        if (change !== 'stable') {
+          // This tool directory was absent from the already-read root listing. A
+          // changed generation/revision must force complete source reconciliation.
+          lateRun = makeRunDir(workspaceId, 'late-tool', UUID(3), 16);
+          if (change === 'local write') {
+            const path = join(lateRun, 'late.bin');
+            await writeWithScratchQuota({ workspaceId, filePath: path, bytes: 8, mutexTimeoutMs: 500 },
+              () => writeFile(path, Buffer.alloc(8)));
+          } else {
+            const ledgerPath = join(resolveScratchQuotaStateRoot(), createHash('sha256').update(resolve(root)).digest('hex') + '.json');
+            const ledger = JSON.parse(readFileSync(ledgerPath, 'utf8'));
+            writeFileSync(ledgerPath, JSON.stringify({ ...ledger, bytes: ledger.bytes + 16, updatedAt: ledger.updatedAt + 1 }));
+          }
+        }
+        release();
+        await recovery;
+        expect(readFileSync(recoveryPath)).toHaveLength(2 * 1024 * 1024);
+        if (lateRun) {
+          expect(readFileSync(join(lateRun, 'data.bin'))).toHaveLength(16);
+          // A stale candidate list must never replace the new run's accounting.
+          const expected = statSync(join(retained, 'data.bin')).size + statSync(recoveryPath).size
+            + statSync(join(root, WORKSPACE_SCRATCH_MARKER)).size + 16 + (change === 'local write' ? 8 : 0);
+          expect(scratchUsageBytes(workspaceId)).toBe(expected);
+        }
+      } finally {
+        release();
+        await Promise.allSettled([recovery]);
+        readdirMock.mockImplementation(originalRead);
+      }
+    });
+
   it('the background usage refresh restores quota headroom before a writer needs recovery', async () => {
     const oldest = makeSparseRun('ws-Q', UUID(1), 512 * 1024 ** 2, 10_000);
     const newest = makeSparseRun('ws-Q', UUID(2), 4 * 1024 ** 3 + 410 * 1024 ** 2);

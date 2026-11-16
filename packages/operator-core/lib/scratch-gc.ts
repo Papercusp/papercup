@@ -1697,6 +1697,7 @@ async function evictWorkspaceQuotaLocked(
   diagnostics?: ScratchQuotaRecoveryDiagnostics,
   now: () => number = Date.now,
   trustedAggregate?: SharedScratchQuotaState,
+  discoveredRuns?: Array<{ dir: string; mtimeMs: number }>,
 ): Promise<{
   used: number; evictions: number; bytes: number;
 }> {
@@ -1713,7 +1714,7 @@ async function evictWorkspaceQuotaLocked(
   const observedWriterBytes = new Map(writers.map((write) => [write.filePath, 0]));
   let useCachedRunSizes = reconcileReservations && entry.runBytesValid && !entry.refreshDeferred;
   let entryBytesAtStart = entry.bytes;
-  let runs: Array<{ dir: string; mtimeMs: number }> | null = null;
+  let runs: Array<{ dir: string; mtimeMs: number }> | null = discoveredRuns ?? null;
   let cacheChanged = false;
   let newlyDiscoveredRunBytes = 0;
   const useTrustedAggregate = Boolean(
@@ -1724,12 +1725,14 @@ async function evictWorkspaceQuotaLocked(
   const runBytesByPath = new Map<string, number>();
   let used: number;
   if (useCachedRunSizes) {
-    const runListingStartedAt = performance.now();
     const runListingErrorCount = scratchQuotaReadErrorCount(diagnostics);
-    runs = await runDirsOf(wsRoot, diagnostics);
-    if (diagnostics) {
-      diagnostics.runListingMs += Math.max(0, performance.now() - runListingStartedAt);
-      diagnostics.runsListed += runs.length;
+    if (!runs) {
+      const runListingStartedAt = performance.now();
+      runs = await runDirsOf(wsRoot, diagnostics);
+      if (diagnostics) {
+        diagnostics.runListingMs += Math.max(0, performance.now() - runListingStartedAt);
+        diagnostics.runsListed += runs.length;
+      }
     }
     if (scratchQuotaReadErrorCount(diagnostics) > runListingErrorCount) {
       // A partial run listing cannot reconcile the cached index: absent paths may be
@@ -3084,10 +3087,42 @@ export async function writeWithScratchQuota(
         activeRecoveryDiagnostics = diagnostics;
         let refreshRequired = false;
         try {
-          // The tree walk/deletion is protected by the exclusive data lease. Keep the quota
-          // ledger mutex out of that long filesystem phase so result-door reservations can
-          // still publish their short metadata updates while recovery is running.
+          // FIFO discovery stats every run directory. Doing it under the exclusive data
+          // lease made quota-fitting writers inherit a 17k-stat / 100s listing. Like the
+          // existing optimistic usage refresh, discover outside the lease and validate both
+          // local writes and the shared revision before using absence to reconcile an index.
+          const sharedAtListingStart = await readSharedScratchQuotaState(opts.workspaceId);
+          const listingGeneration = entry.writeGeneration;
+          const listingErrors = scratchQuotaReadErrorCount(diagnostics);
+          let discoveredRuns: Array<{ dir: string; mtimeMs: number }> | undefined;
+          // A stale/unsettled aggregate must first take the existing usage-refresh path;
+          // listing its candidates adds work before the measurement that can validate it.
+          if (entry.runBytesValid || (sharedAtListingStart
+            && sharedAtListingStart.measuredAt > 0
+            && Date.now() - sharedAtListingStart.measuredAt < USAGE_REFRESH_MS
+            && entry.aggregateRecoveryGeneration !== listingGeneration
+            && !entry.refreshDeferred
+            && ![...entry.writes.values()].some((write) => write.reserved))) {
+            const listingStartedAt = performance.now();
+            discoveredRuns = await runDirsOf(scratchRootForWorkspace(opts.workspaceId), diagnostics);
+            diagnostics.runListingMs += Math.max(0, performance.now() - listingStartedAt);
+            diagnostics.runsListed += discoveredRuns.length;
+          }
+          // Candidate sizing and deletion still require the exclusive lease. Keep the
+          // quota ledger mutex out of that filesystem phase so metadata updates stay short.
           await withScratchWorkspaceDataMutex(opts.workspaceId, 'quota-recovery', async () => {
+            const sharedAtLease = await withScratchWorkspaceMutex(opts.workspaceId, 'quota-recovery-discovery-validate',
+              () => readSharedScratchQuotaState(opts.workspaceId));
+            if (discoveredRuns && (entry.writeGeneration !== listingGeneration
+              || (sharedAtLease?.updatedAt ?? null) !== (sharedAtListingStart?.updatedAt ?? null)
+              || scratchQuotaReadErrorCount(diagnostics) > listingErrors)) {
+              // The listing is a stale/partial view, not evidence that an omitted run was
+              // deleted. Reconcile from the complete source outside the lease; never publish
+              // that view over a newer reservation or keep retrying discovery under writers.
+              invalidateRunSizeIndex(entry);
+              refreshRequired = true;
+              return;
+            }
             const targetBytes = Math.max(
               0,
               WORKSPACE_QUOTA_BYTES - SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES -
@@ -3133,6 +3168,7 @@ export async function writeWithScratchQuota(
               diagnostics,
               Date.now,
               trustedAggregate,
+              discoveredRuns,
             );
           }, opts.onTiming ? (info) => {
             recoveryDataMutexWaitOwner = scratchWriteMutexWaitOwner(info.owner);

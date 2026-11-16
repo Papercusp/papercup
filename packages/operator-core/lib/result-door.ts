@@ -3829,9 +3829,69 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
             note.includes('ALREADY TRUNCATED') &&
             items.some((item) => isTextItem(item) && item.text.includes(note)),
         );
+      // code:run already returns an explicitly bounded summary and, when
+      // available, an exact cursor for its unshaped summary. If that complete
+      // response fits this door, a second generic spill would hide the useful
+      // summary while adding no stronger recovery path.
+      const codeRunSummaryHasRecoveryCursor = (() => {
+        if (
+          upstreamProjection?.truncated ||
+          opts.toolName !== 'tools:invoke' ||
+          opts.nestedTargetToolName !== 'code:run' ||
+          innerTruncationMarkers.length !== 1 ||
+          innerTruncationMarkers[0] !== 'summaryNotice.truncated'
+        ) {
+          return false;
+        }
+        const textItems = items.filter(isTextItem);
+        if (textItems.length !== 1) return false;
+        try {
+          const payload = JSON.parse(textItems[0].text) as {
+            summaryNotice?: {
+              truncated?: unknown;
+              rawSummaryCursor?: {
+                status?: unknown;
+                tool?: unknown;
+                args?: { uri?: unknown; byte_offset?: unknown; byte_limit?: unknown };
+                byteCount?: unknown;
+                sha256?: unknown;
+                expiresAt?: unknown;
+                note?: unknown;
+              };
+            };
+          };
+          const notice = payload.summaryNotice;
+          const cursor = notice?.rawSummaryCursor;
+          const args = cursor?.args;
+          return Boolean(
+            notice?.truncated === true &&
+              cursor &&
+              args &&
+              (cursor.status === 'available' || cursor.status === 'volatile-fallback') &&
+              cursor.tool === 'capability:read' &&
+              typeof args.uri === 'string' &&
+              args.uri.startsWith('papercusp://scratch') &&
+              args.byte_offset === 0 &&
+              typeof args.byte_limit === 'number' &&
+              Number.isSafeInteger(args.byte_limit) &&
+              args.byte_limit > 0 &&
+              typeof cursor.byteCount === 'number' &&
+              Number.isSafeInteger(cursor.byteCount) &&
+              cursor.byteCount > 0 &&
+              typeof cursor.sha256 === 'string' &&
+              /^[a-f0-9]{64}$/i.test(cursor.sha256) &&
+              typeof cursor.expiresAt === 'string' &&
+              cursor.expiresAt.length > 0 &&
+              typeof cursor.note === 'string' &&
+              cursor.note.trim().length > 0,
+          );
+        } catch {
+          return false;
+        }
+      })();
       if ((!upstreamProjection?.truncated || inlineUpstreamProjectionWarning) &&
         (innerTruncationMarkers.length === 0 || threadMarkersRecoverable ||
-          artifactsLoadMarkersRecoverable || scratchReferenceRead)) {
+          artifactsLoadMarkersRecoverable || scratchReferenceRead || codeRunSummaryHasRecoveryCursor)) {
         return reconcileWorkItemsGetReceiptResult(result, opts);
       }
       return spillResultAsReferenceEnvelope({
