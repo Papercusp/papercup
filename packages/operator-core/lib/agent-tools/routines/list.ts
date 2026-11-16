@@ -740,6 +740,15 @@ async function reconcileGitSyncActivityOwner(
 
   const owner = typeof marker.owner === 'string' ? marker.owner : null;
   const ownerPid = typeof marker.owner_pid === 'number' ? marker.owner_pid : null;
+  if (typeof marker.active !== 'boolean') {
+    return {
+      status: 'unverified',
+      owner_pid: ownerPid,
+      lock_state: 'not-checked',
+      matching_owner_lock: null,
+      reason: 'The activity marker has no boolean active flag; execution is unmeasured and restart remains unsafe.',
+    };
+  }
   const validOwnerIdentity =
     owner !== null &&
     ownerPid !== null &&
@@ -880,6 +889,7 @@ export function deriveGitSyncFreshness(
   const activityRaw = metadata?.git_sync_activity;
   const activity =
     activityRaw && typeof activityRaw === 'object' ? (activityRaw as Record<string, unknown>) : null;
+  const activityMeasured = typeof activity?.active === 'boolean';
   const inFlightActive = activity?.active === true && ownerReconciliation?.status !== 'stale';
   const inFlightStartedAtMs = inFlightActive ? epochMs(activity?.started_at) : null;
   const inFlightAgeMs = inFlightStartedAtMs === null ? null : Math.max(0, nowMs - inFlightStartedAtMs);
@@ -934,7 +944,7 @@ export function deriveGitSyncFreshness(
   // destructive question directly rather than leaving every reader to infer it.
   const inactiveMarkerLeaseUnverified = activity?.active !== true && ownerReconciliation?.status === 'unverified';
   const executionStatus: 'idle' | 'in-flight' | 'stuck' | 'unknown' =
-    activity === null
+    !activityMeasured
       ? 'unknown'
       : inactiveMarkerLeaseUnverified
         ? 'unknown'
@@ -989,7 +999,9 @@ export function deriveGitSyncFreshness(
       : executionStatus === 'unknown'
         ? ownerReconciliation?.status === 'unverified'
           ? `${ownerReconciliation.reason} Treat the execution state as unknown and keep the restart verdict unsafe (safe_to_restart is false).`
-          : 'This row carries no git_sync_activity marker, so whether a fire is in flight is UNMEASURED — reported unsafe by default, because a wrong "safe" destroys in-flight work irrecoverably while a wrong "unsafe" only declines a restart.'
+          : activity !== null
+            ? 'The git_sync_activity marker has no boolean active flag, so whether a fire is in flight is UNMEASURED — reported unsafe by default.'
+            : 'This row carries no git_sync_activity marker, so whether a fire is in flight is UNMEASURED — reported unsafe by default, because a wrong "safe" destroys in-flight work irrecoverably while a wrong "unsafe" only declines a restart.'
         : `${ownerReconciliation?.reason ?? 'An active git-sync marker has not been proven stale.'} Treat it as in-flight and do not restart (safe_to_restart is false).`;
 
   return {

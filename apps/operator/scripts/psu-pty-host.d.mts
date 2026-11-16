@@ -2175,7 +2175,7 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
      * 'superseded' when a PRODUCTION respawn replaced the payload of an
      * already-pending re-poll (EI-19480099650947832 — nothing is dropped).
      */
-    schedule(msg: any): "queued" | "closed" | "superseded" | "duplicate";
+    schedule(msg: any): "superseded" | "closed" | "duplicate" | "queued";
     /**
      * Close all detached re-arm work when this PTY host is ending. Every
      * accepted message receives one terminal settlement so its delivery dedup
@@ -6536,4 +6536,7 @@ import { Worker } from 'node:worker_threads';
 declare function readProvenanceRowsForSid(sid: any): Promise<any[]>;
 declare function appendProvenanceRow(row: any): Promise<boolean>;
 import { stageAgentIdentityTty } from '../../../libs/papercusp-shared/src/agent/loopback-identity-tty.mjs';
+import { KICKOFF_PROOF_PATH_ENV } from '../../../packages/operator-core/lib/agent-kickoff/prompt-transport.mjs';
+import { KICKOFF_PROOF_TOKEN_ENV } from '../../../packages/operator-core/lib/agent-kickoff/prompt-transport.mjs';
+import { publishKickoffProofReceipt } from '../../../packages/operator-core/lib/agent-kickoff/prompt-transport.mjs';
 export { KICKOFF_PROOF_PATH_ENV, KICKOFF_PROOF_TOKEN_ENV, publishKickoffProofReceipt };
