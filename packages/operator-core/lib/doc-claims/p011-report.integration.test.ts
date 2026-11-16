@@ -134,6 +134,69 @@ function omitRow(body: string, heading: string, predicate: (row: string[]) => bo
   return body.replace('| ' + row.join(' | ') + ' |\n', '');
 }
 
+// Keep each causal baseline as its own execution identity. A baseline assertion
+// inside a falsifier test cannot supply a second case-role observation. These
+// remain mechanical report checks, not independent semantic acceptance.
+const reportControls = [
+  ...classes.map((cls, row) => ({
+    family: 'contradictory-class-count', id: cls,
+    altered: replaceCell(artifact.body_md, countHeading, row, 1,
+      String(Number(table(artifact.body_md, countHeading)[row]![1]) + 1)),
+    reason: `class-count-mismatch:${cls}`,
+  })),
+  ...artifact.sample.map((sample, index) => ({
+    family: 'contradictory-sampled-judgment', id: sample.id,
+    altered: replaceCell(artifact.body_md, sampleHeading, index, 3,
+      sample.outcome === 'contradicted' ? 'consistent' : 'contradicted'),
+    reason: `judgment-mismatch:${sample.id}`,
+  })),
+  ...classes.map(cls => ({
+    family: 'missing-class-or-limits', id: `class:${cls}`,
+    altered: omitRow(artifact.body_md, countHeading, row => row[0] === cls),
+    reason: `class-missing:${cls}`,
+  })),
+  ...classes.filter(cls => groups.get(cls)!.length > 0).map(cls => {
+    let altered = artifact.body_md;
+    for (const sample of artifact.sample.filter(row => row.cls === cls))
+      altered = omitRow(altered, sampleHeading, row => plainId(row[2]) === sample.id);
+    return { family: 'omitted-nonempty-class-sample', id: cls, altered, reason: `unsampled-class:${cls}` };
+  }),
+  ...Object.keys(artifact.strata).map(key => ({
+    family: 'missing-stratum-existence-field', id: key,
+    altered: omitRow(artifact.body_md, strataHeading, row => row[0] === key),
+    reason: `stratum-missing:${key}`,
+  })),
+  ...limitClauses.map(clause => ({
+    family: 'missing-class-or-limits', id: `limit:${clause}`,
+    altered: artifact.body_md.replace(clause, ''), reason: `limit-missing:${clause}`,
+  })),
+  ...[
+    [artifact.seed, 'sampling-seed-missing'],
+    ['SHA-256(seed + NUL + stable scoped id)', 'sampling-method-missing'],
+    [artifact.sampleHash, 'sample-identity-missing'],
+    ...[artifact.sourceVector.registry_snapshot, artifact.sourceVector.registry_captured_at,
+      artifact.sourceVector.file_manifest_sha256, artifact.sourceVector.entry_manifest_sha256]
+      .map(value => [value, `source-identity-missing:${value}`]),
+  ].map(([value, reason]) => ({
+    family: 'missing-sampling-identity', id: reason!,
+    altered: artifact.body_md.replace(value!, ''), reason: reason!,
+  })),
+  {
+    family: 'duplicate-sampled-identity', id: 'replace-second-with-first',
+    altered: replaceCell(artifact.body_md, sampleHeading, 1, 2,
+      table(artifact.body_md, sampleHeading)[0]![2]!),
+    reason: 'sample-population-mismatch',
+  },
+  {
+    family: 'extra-sampled-identity', id: 'append-first-row',
+    altered: (() => {
+      const row = '| ' + table(artifact.body_md, sampleHeading)[0]!.join(' | ') + ' |';
+      return artifact.body_md.replace(row, row + '\n' + row);
+    })(),
+    reason: 'sample-population-mismatch',
+  },
+];
+
 describe('P011 actual report mechanical integration and causal report controls', () => {
   it('pins the immutable original reference, public copy and complete measured candidate population', () => {
     expect(artifact.reportId).toBe('rpt_120bd45f-696a-485e-b576-aeb904308ad5');
@@ -163,65 +226,25 @@ describe('P011 actual report mechanical integration and causal report controls',
     expect(JSON.parse(serialized)).toEqual(artifact);
   });
 
-  it.each(classes)('rejects an altered class count: %s', cls => {
-    const row = classes.indexOf(cls);
-    const count = Number(table(artifact.body_md, countHeading)[row]![1]);
-    expect(violations(artifact.body_md)).toEqual([]);
-    expect(violations(replaceCell(artifact.body_md, countHeading, row, 1, String(count + 1))))
-      .toContain(`class-count-mismatch:${cls}`);
+  it('keeps every collected baseline and falsifier execution identity distinct', ({ task }) => {
+    const identities = task.suite!.tasks.filter(child => child.type === 'suite')
+      .flatMap(suite => suite.tasks.filter(child => child.type === 'test')
+        .map(child => suite.name + ' > ' + child.name));
+    expect(identities).toHaveLength(reportControls.length * 2);
+    expect(new Set(identities).size).toBe(identities.length);
   });
 
-  it.each(artifact.sample.map((sample, index) => ({ ...sample, index })))(
-    'rejects an inverted sampled judgment: $id', sample => {
+  // Vitest truncates interpolated long ids. The pinned ordinal preserves native
+  // case identity even when two sampled source ids share the displayed prefix.
+  describe.each(reportControls.map((control, index) => ({ ...control, ordinal: index + 1 })))(
+    '$family #$ordinal: $id', control => {
+    it('[plan:language-neutral-code-documentation-integration-2026-11-12][R-15][baseline] accepts the complete original report', () => {
       expect(violations(artifact.body_md)).toEqual([]);
-      const flipped = sample.outcome === 'contradicted' ? 'consistent' : 'contradicted';
-      expect(violations(replaceCell(artifact.body_md, sampleHeading, sample.index, 3, flipped)))
-        .toContain(`judgment-mismatch:${sample.id}`);
     });
 
-  it.each(classes)('rejects an omitted class count: %s', cls => {
-    expect(violations(artifact.body_md)).toEqual([]);
-    expect(violations(omitRow(artifact.body_md, countHeading, row => row[0] === cls)))
-      .toContain(`class-missing:${cls}`);
-  });
-
-  it.each(classes.filter(cls => groups.get(cls)!.length > 0))('rejects omission of every sample in eligible class: %s', cls => {
-    let altered = artifact.body_md;
-    for (const sample of artifact.sample.filter(row => row.cls === cls))
-      altered = omitRow(altered, sampleHeading, row => plainId(row[2]) === sample.id);
-    expect(violations(artifact.body_md)).toEqual([]);
-    expect(violations(altered)).toContain(`unsampled-class:${cls}`);
-  });
-
-  it.each(Object.keys(artifact.strata))('rejects a missing stratum field, including honest zeros: %s', key => {
-    expect(violations(artifact.body_md)).toEqual([]);
-    expect(violations(omitRow(artifact.body_md, strataHeading, row => row[0] === key)))
-      .toContain(`stratum-missing:${key}`);
-  });
-
-  it.each(limitClauses)('rejects an omitted report limitation: %s', clause => {
-    expect(violations(artifact.body_md)).toEqual([]);
-    expect(violations(artifact.body_md.replace(clause, ''))).toContain(`limit-missing:${clause}`);
-  });
-
-  it.each([
-    [artifact.seed, 'sampling-seed-missing'],
-    ['SHA-256(seed + NUL + stable scoped id)', 'sampling-method-missing'],
-    [artifact.sampleHash, 'sample-identity-missing'],
-    ...[artifact.sourceVector.registry_snapshot, artifact.sourceVector.registry_captured_at,
-      artifact.sourceVector.file_manifest_sha256, artifact.sourceVector.entry_manifest_sha256]
-      .map(value => [value, `source-identity-missing:${value}`]),
-  ])('rejects omitted source/sampling identity: %s', (value, reason) => {
-    expect(violations(artifact.body_md)).toEqual([]);
-    expect(violations(artifact.body_md.replace(value!, ''))).toContain(reason);
-  });
-
-  it('rejects a duplicate sampled identity and an additional sampled row', () => {
-    const rows = table(artifact.body_md, sampleHeading);
-    expect(violations(replaceCell(artifact.body_md, sampleHeading, 1, 2, rows[0]![2]!)))
-      .toContain('sample-population-mismatch');
-    const extra = '| ' + rows[0]!.join(' | ') + ' |';
-    expect(violations(artifact.body_md.replace(extra, extra + '\n' + extra)))
-      .toContain('sample-population-mismatch');
+    it('[plan:language-neutral-code-documentation-integration-2026-11-12][R-15][falsifier] rejects the named alteration', () => {
+      expect(control.altered).not.toBe(artifact.body_md);
+      expect(violations(control.altered)).toContain(control.reason);
+    });
   });
 });
