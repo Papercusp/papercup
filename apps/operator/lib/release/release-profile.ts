@@ -30,6 +30,7 @@ import { readFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+  classifyRatingForGate,
   evaluateReleaseProfile,
   type ComponentCheckResult,
   type ComponentRawVerdict,
@@ -61,21 +62,7 @@ import {
 
 // ─── rating → gate verdict classification ──────────────────────────────────────────
 
-/** Ratings this adapter treats as a full PASS for gating purposes. */
-const GATE_PASS_RATINGS = new Set(['pass', 'healthy', 'good', 'yes', 'green', 'exemplary', 'exceptional']);
-/** Ratings that mean "not yet assessable" — distinct from a real FAIL. */
-const GATE_UNKNOWN_RATINGS = new Set(['unknown']);
-// Everything else — fail/broken/bad/no/red/severe, AND partial/degraded/mixed/warn —
-// classifies FAIL: a release gate must not silently treat "partial"/"degraded" as good
-// enough to GO (an averaged score is fine for a trend; a gate needs a crisp cutoff).
-
-/** PURE: classify one rubric criterion rating into the gate's 3-way raw verdict. */
-export function classifyRatingForGate(rating: string): ComponentRawVerdict {
-  const key = rating.trim().toLowerCase();
-  if (GATE_PASS_RATINGS.has(key)) return 'pass';
-  if (GATE_UNKNOWN_RATINGS.has(key)) return 'unknown';
-  return 'fail';
-}
+export { classifyRatingForGate } from '@papercusp/release-profile';
 
 const VERDICT_SEVERITY: Record<ComponentRawVerdict, number> = { pass: 0, unknown: 1, fail: 2 };
 

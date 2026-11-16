@@ -9,4 +9,4 @@ export type {
   ReleaseProfileSpec,
   ReleaseProfileVerdict,
 } from './types';
-export { evaluateReleaseProfile, lineageMismatches, type EvaluateReleaseProfileOpts } from './evaluate';
+export { classifyRatingForGate, evaluateReleaseProfile, lineageMismatches, worstMemberVerdict, type EvaluateReleaseProfileOpts } from './evaluate';

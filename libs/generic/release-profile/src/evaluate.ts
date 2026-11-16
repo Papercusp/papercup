@@ -6,11 +6,26 @@
  */
 import type {
   ComponentEvaluation,
+  ComponentRawVerdict,
   ComponentSpec,
   LineageStamp,
   ReleaseProfileSpec,
   ReleaseProfileVerdict,
 } from './types';
+
+/** The existing release rule, shared by suite and release-profile readers. */
+export function classifyRatingForGate(rating: string): ComponentRawVerdict {
+  const key = rating.trim().toLowerCase();
+  if (['pass', 'healthy', 'good', 'yes', 'green', 'exemplary', 'exceptional'].includes(key)) return 'pass';
+  return key === 'unknown' ? 'unknown' : 'fail';
+}
+
+/** Worst-member aggregation shared by rubric suites. An empty population is unknown. */
+export function worstMemberVerdict(verdicts: readonly ComponentRawVerdict[]): ComponentRawVerdict {
+  if (verdicts.includes('fail')) return 'fail';
+  if (verdicts.length === 0 || verdicts.includes('unknown')) return 'unknown';
+  return 'pass';
+}
 
 /**
  * PURE: field-by-field lineage compare. A field present (non-null/undefined) on BOTH

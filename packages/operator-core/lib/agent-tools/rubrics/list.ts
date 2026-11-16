@@ -16,6 +16,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { listRubricsPage } from '../../rubrics';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
+import type { listSuiteRubricsPage } from '../../rubric-suites';
 
 export default defineTool({
   name: 'rubrics:list',
@@ -44,6 +45,8 @@ export default defineTool({
     .object({
       status: z.enum(['proposed', 'active', 'retired']).optional().describe('filter by lifecycle status; omit for all'),
       characteristic: z.string().optional().describe('filter to one umbrella domain (e.g. "hive-coordination")'),
+      suiteRef: z.string().min(1).optional().describe('Read only the canonical members of this rubric-suite plan; includes both rubric kinds unless kind is explicitly supplied.'),
+      suiteVersion: z.number().int().positive().optional().describe('For suite paging pass the prior snapshot version; changed membership refuses the continuation and requires resync from offset 0.'),
       kind: z
         .enum(['standard', 'acceptance', 'any'])
         .optional()
@@ -74,42 +77,39 @@ export default defineTool({
           path: ['kind'],
         });
       }
+      if (val.suiteVersion !== undefined && !val.suiteRef) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['suiteVersion'], message: 'suiteVersion requires suiteRef' });
     }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     return runWithWorkspaceIfConcrete(identity.workspaceId ?? undefined, async () => {
       const kind = args.kind ?? (args.subjectPlan ? 'acceptance' : undefined);
-      const page = await listRubricsPage({
+      const filter = {
         status: args.status,
         characteristic: args.characteristic,
         limit: args.limit,
         offset: args.offset,
         subjectPlan: args.subjectPlan,
+        ...(args.suiteVersion !== undefined ? { suiteVersion: args.suiteVersion } : {}),
         ...(kind ? { kind } : {}),
-      });
+      };
+      const page = args.suiteRef ? await (await import('../../rubric-suites')).listSuiteRubricsPage(args.suiteRef, filter) : await listRubricsPage(filter);
       const rubrics = page.rubrics;
+      const payload = {
+        ok: true, count: rubrics.length, hasMore: page.hasMore, nextOffset: page.nextOffset,
+        ...(args.suiteRef ? { suiteRef: args.suiteRef, ...Object.fromEntries(Object.entries(page).filter(([key]) => key !== 'rubrics')) } : {}),
+        rubrics: rubrics.map(r => ({ rubricId: r.rubricId, kind: r.kind,
+          ...(r.subjectPlan ? { subjectPlan: r.subjectPlan } : {}), characteristic: r.characteristic,
+          title: r.title, status: r.status, criteriaCount: r.criteria.length,
+          ratingScale: r.ratingScale, methodRef: r.methodRef, updatedAt: r.updatedAt })),
+      };
+      const suitePage = page as Awaited<ReturnType<typeof listSuiteRubricsPage>>;
+      const result = args.suiteRef ? (await import('../../rubric-suites')).boundSuiteListResult({ ...payload,
+        total: suitePage.total, snapshot: suitePage.snapshot, complete: suitePage.complete }, args.offset ?? 0) : payload;
       return {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify({
-              ok: true,
-              count: rubrics.length,
-              hasMore: page.hasMore,
-              nextOffset: page.nextOffset,
-              rubrics: rubrics.map((r) => ({
-                rubricId: r.rubricId,
-                kind: r.kind,
-                ...(r.subjectPlan ? { subjectPlan: r.subjectPlan } : {}),
-                characteristic: r.characteristic,
-                title: r.title,
-                status: r.status,
-                criteriaCount: r.criteria.length,
-                ratingScale: r.ratingScale,
-                methodRef: r.methodRef,
-                updatedAt: r.updatedAt,
-              })),
-            }),
+            text: JSON.stringify(result),
           },
         ],
       };
