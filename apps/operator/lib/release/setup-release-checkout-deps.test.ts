@@ -1771,6 +1771,18 @@ describe('setup-release-checkout.sh rebuild_stale_native_addons() — native-add
     rmSync(work, { recursive: true, force: true });
   });
 
+  // WI-6554700010049444: what a real ABI-mismatched better-sqlite3 writes to
+  // stderr. Node names the module on one line and the ABI on a later one, so
+  // the guard must keep the whole stderr, not one line or nothing.
+  const FAKE_LOADER_ERROR = [
+    "Error: The module 'better_sqlite3.node'",
+    'NODE_MODULE_VERSION 147. This version of Node.js requires',
+  ];
+  const LOADER_LINES = FAKE_LOADER_ERROR.join('\n');
+  // A failing probe also writes this to STDOUT; it is not the loader error.
+  const PROBE_STDOUT_NOISE = 'PROBE_STDOUT_NOISE';
+  const FAKE_NPM_ERROR = 'gyp ERR! build error';
+
   /**
    * Run rebuild_stale_native_addons() with fake node/npm stubs that let us
    * control whether the native load probe and npm rebuild succeed or fail.
@@ -1778,7 +1790,10 @@ describe('setup-release-checkout.sh rebuild_stale_native_addons() — native-add
    * `nodeLoads`: exit codes for the full native load probe (0=ok, 1=fail).
    *   The wrapper-only require path succeeds by default, modeling lazy binding
    *   failures. Arrays configure sequential probes; the last value is reused.
-   * `npmRebuildExit`: what `npm rebuild $addon` returns (0=ok, 1=fail).
+   *   A failing probe writes FAKE_LOADER_ERROR to stderr and PROBE_STDOUT_NOISE
+   *   to stdout.
+   * `npmRebuildExit`: what `npm rebuild $addon` returns (0=ok, 1=fail). A failing
+   *   rebuild writes FAKE_NPM_ERROR to stderr; `npmCalled` reports whether npm ran.
    */
   function runGuard(opts: {
     releaseRoot: string;
@@ -1787,7 +1802,9 @@ describe('setup-release-checkout.sh rebuild_stale_native_addons() — native-add
     nodeLoads?: number | number[];
     /** Exit code for `npm rebuild`. */
     npmRebuildExit?: number;
-  }): { status: number | null; stdout: string; stderr: string } {
+    /** Run as a --dependencies-only preparation (DEPENDENCIES_ONLY=1), which may never rebuild. */
+    dependenciesOnly?: boolean;
+  }): { status: number | null; stdout: string; stderr: string; npmCalled: boolean } {
     const binDir = join(work, 'fake-bin');
     mkdirSync(binDir, { recursive: true });
 
@@ -1806,7 +1823,12 @@ describe('setup-release-checkout.sh rebuild_stale_native_addons() — native-add
       '  count=0; [ -f "$count_file" ] && count="$(cat "$count_file")"',
       '  idx=$(( count < ${#exits[@]} ? count : ${#exits[@]} - 1 ))',
       '  echo $(( count + 1 )) > "$count_file"',
-      '  exit "${exits[$idx]}"',
+      '  code="${exits[$idx]}"',
+      '  if [ "$code" -ne 0 ]; then',
+      `    printf '%s\\n' ${FAKE_LOADER_ERROR.map((line) => JSON.stringify(line)).join(' ')} >&2`,
+      `    echo ${PROBE_STDOUT_NOISE}`,
+      '  fi',
+      '  exit "$code"',
       'fi',
       'if [[ "$*" == *"require("* ]]; then',
       '  exit 0',
@@ -1816,9 +1838,17 @@ describe('setup-release-checkout.sh rebuild_stale_native_addons() — native-add
     ].join('\n');
     writeFileSync(join(binDir, 'node'), nodeStub, { mode: 0o755 });
 
-    // npm stub: always returns the requested exit code.
+    // npm stub: records that it ran and returns the requested exit code; a
+    // failing rebuild writes a gyp-style error to stderr.
     const npmExit = opts.npmRebuildExit ?? 0;
-    const npmStub = `#!/usr/bin/env bash\nexit ${npmExit}\n`;
+    const npmMarker = join(work, 'npm-called');
+    const npmStub = [
+      '#!/usr/bin/env bash',
+      `touch ${JSON.stringify(npmMarker)}`,
+      `[ ${npmExit} -eq 0 ] || echo ${JSON.stringify(FAKE_NPM_ERROR)} >&2`,
+      `exit ${npmExit}`,
+      '',
+    ].join('\n');
     writeFileSync(join(binDir, 'npm'), npmStub, { mode: 0o755 });
 
     const addon = opts.addonName ?? 'better-sqlite3';
@@ -1837,10 +1867,11 @@ describe('setup-release-checkout.sh rebuild_stale_native_addons() — native-add
         SETUP_SCRIPT: SCRIPT_PATH,
         RELEASE_ROOT: opts.releaseRoot,
         PAPERCUSP_PREFLIGHT_ADDONS: addon,
+        DEPENDENCIES_ONLY: opts.dependenciesOnly ? '1' : '0',
       },
       encoding: 'utf8',
     });
-    return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+    return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '', npmCalled: existsSync(npmMarker) };
   }
 
   it('skips an addon whose node_modules dir is absent (not installed on this path)', () => {
@@ -1867,6 +1898,9 @@ describe('setup-release-checkout.sh rebuild_stale_native_addons() — native-add
     const r = runGuard({ releaseRoot: rel, nodeLoads: [1, 0], npmRebuildExit: 0 });
     expect(r.status).toBe(0);
     expect(r.stdout).toMatch(/WARN.*will not load/);
+    // WI-6554700010049444: the WARN line carries the loader's stderr, never its stdout.
+    expect(r.stdout).toContain(`rebuilding in the release checkout. Loader error (exit 1): ${LOADER_LINES}`);
+    expect(r.stdout).not.toContain(PROBE_STDOUT_NOISE);
     expect(r.stdout).toMatch(/rebuilt OK/);
     expect(r.stdout).not.toMatch(/STILL will not load/);
   });
@@ -1879,6 +1913,9 @@ describe('setup-release-checkout.sh rebuild_stale_native_addons() — native-add
     expect(r.status).not.toBe(0);
     expect(r.stdout).toMatch(/WARN.*will not load/);
     expect(r.stdout).toMatch(/STILL will not load/);
+    // The ERROR line reports the loader error AFTER the rebuild, not the first one.
+    expect(r.stdout).toContain(`will block this promotion. Loader error after rebuild (exit 1): ${LOADER_LINES}`);
+    expect(r.stdout).not.toContain(PROBE_STDOUT_NOISE);
   });
 
   it('logs ERROR and returns non-zero when npm rebuild itself fails', () => {
@@ -1888,6 +1925,23 @@ describe('setup-release-checkout.sh rebuild_stale_native_addons() — native-add
     expect(r.status).not.toBe(0);
     expect(r.stdout).toMatch(/WARN.*will not load/);
     expect(r.stdout).toMatch(/STILL will not load/);
+    // No re-probe ran: the ERROR names npm's failure, keeps the pre-rebuild loader
+    // error, and the next line carries npm's own output.
+    expect(r.stdout).toContain(
+      `npm rebuild exited 1, so the pre-rebuild loader error still stands; the deploy-gate addon preflight will block this promotion. Loader error (exit 1): ${LOADER_LINES}`);
+    expect(r.stdout).toContain(`npm rebuild 'better-sqlite3' output: ${FAKE_NPM_ERROR}`);
+  });
+
+  it('dependencies-only: the FATAL carries the loader error and never rebuilds (WI-6554700010049444)', () => {
+    const rel = join(work, 'release');
+    mkdirSync(join(rel, 'node_modules', 'better-sqlite3'), { recursive: true });
+    const r = runGuard({ releaseRoot: rel, nodeLoads: 1, dependenciesOnly: true });
+    expect(r.status).not.toBe(0);
+    expect(r.stdout).toContain(
+      `publish a native-complete generation before preparation. Loader error (exit 1): ${LOADER_LINES}`);
+    expect(r.stdout).not.toContain(PROBE_STDOUT_NOISE);
+    expect(r.stdout).not.toMatch(/WARN|rebuil/i);
+    expect(r.npmCalled).toBe(false);
   });
 
   it('respects PAPERCUSP_PREFLIGHT_ADDONS: skips when the named addon dir is absent', () => {
