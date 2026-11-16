@@ -27,7 +27,7 @@ export default defineTool({
       const scope = await ctxToPlanSourceOpts(harnessScopedCtx(args.harness, ctx));
       const result = args.op === 'get' ? await readSuiteDefinitionPage(args.suiteRef, { scope, limit: args.limit, cursor: args.cursor }) :
         await writeRubricSuite({ ...args, create: args.op === 'create' }, scope, ctx);
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+      return { data: result };
     });
   },
 });
@@ -46,7 +46,7 @@ export const suiteScorecardTool = defineTool({
       const scope = await ctxToPlanSourceOpts(harnessScopedCtx(args.harness, ctx));
       const opts = { scope, runId: args.runId, cursor: args.cursor, limit: args.limit, byteLimit: SUITE_RESULT_PAGE_BYTES - 128 };
       const result = args.page ? await readSuiteScorecardPage(args.suiteRef, opts) : await advanceRubricSuiteRun(args.suiteRef, opts);
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+      return { data: result };
     });
   },
 });
