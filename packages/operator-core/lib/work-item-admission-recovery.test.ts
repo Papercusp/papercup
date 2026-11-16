@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
+import { mockReturnOnceTyped } from './testing/typed-mock';
 
 const io = vi.hoisted(() => ({
   presence: vi.fn(), modes: vi.fn(), policy: vi.fn(), gate: vi.fn(), fleet: vi.fn(), state: vi.fn(),
@@ -121,12 +122,13 @@ describe('production recovery authorization (real policy composition, mocked sto
 describe('admission promoter lock attribution', () => {
   it('retains the default client target and run without publishing its credentials or claiming a backend', async () => {
     const timeout = Object.assign(new Error('write CONNECT_TIMEOUT private-db:6543'), { code: 'CONNECT_TIMEOUT' });
-    const client = {
-      options: { host: ['private-db'], port: [6543] },
-      reserve: vi.fn().mockRejectedValue(timeout),
-      end: vi.fn().mockResolvedValue(undefined),
-    };
-    vi.mocked(postgres).mockReturnValueOnce(client as never);
+    const client = postgres({
+      host: 'private-db', port: 6543, database: 'private-db',
+      username: 'private-user', password: 'private-password',
+    });
+    vi.spyOn(client, 'reserve').mockRejectedValue(timeout);
+    vi.spyOn(client, 'end').mockResolvedValue(undefined);
+    mockReturnOnceTyped(vi.mocked(postgres), client);
     const action = vi.fn(async () => 'screened');
     const failure = await withAdmissionPromoterLock({
       workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, runId: 'exact-promoter-run',
@@ -153,13 +155,18 @@ describe('admission promoter lock attribution', () => {
 
   it('joins an action failure to the same reserved backend that acquired the session lock', async () => {
     const backend = { pid: 321, address: '127.0.0.1', port: 6543, database: 'private-db' };
-    const reserved = Object.assign(vi.fn().mockResolvedValueOnce([{ locked: true, ...backend }])
-      .mockResolvedValueOnce([]), { release: vi.fn() });
-    const client = {
-      options: { host: ['private-db'], port: [6543] },
-      reserve: vi.fn().mockResolvedValue(reserved), end: vi.fn().mockResolvedValue(undefined),
-    };
-    vi.mocked(postgres).mockReturnValueOnce(client as never);
+    const client = postgres({
+      host: 'private-db', port: 6543, database: 'private-db',
+      username: 'private-user', password: 'private-password',
+    });
+    const reserved = Object.assign(
+      vi.fn().mockResolvedValueOnce([{ locked: true, ...backend }]).mockResolvedValueOnce([]),
+      client,
+      { release: vi.fn() },
+    );
+    vi.spyOn(client, 'reserve').mockResolvedValue(reserved);
+    vi.spyOn(client, 'end').mockResolvedValue(undefined);
+    mockReturnOnceTyped(vi.mocked(postgres), client);
     const actionError = new Error('screening failed');
     await expect(withAdmissionPromoterLock(scope, undefined, async () => { throw actionError; }))
       .rejects.toMatchObject({
