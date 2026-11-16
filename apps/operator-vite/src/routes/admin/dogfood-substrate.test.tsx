@@ -12,7 +12,8 @@
  */
 import type { JSX } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import type { BootstrapProgressSnapshot } from '@papercusp/operator-core/lib/sync/hyperbee/bootstrap-progress';
 
 vi.mock('@tanstack/react-router', () => ({
   createFileRoute: () => (opts: Record<string, unknown>) => ({ ...opts }),
@@ -70,7 +71,10 @@ import { Route } from './dogfood-substrate';
 
 const Comp = (Route as unknown as { component: () => JSX.Element }).component;
 
-interface Harness { workspaceId: string; harnessSlug: string; verdict: string; reasons?: string[] }
+interface Harness {
+  workspaceId: string; harnessSlug: string; verdict: string; reasons?: string[];
+  bootstrapProgress?: Pick<BootstrapProgressSnapshot, 'mergedOps' | 'targetFrontier' | 'joinState' | 'caughtUp'> | null;
+}
 let healthBody: { harnesses?: Harness[] } | null;
 let healthOk = true;
 let fetchThrows = false;
@@ -128,6 +132,38 @@ describe('/admin/dogfood-substrate route', () => {
     expect(screen.getAllByTestId('health-pill')).toHaveLength(2);
     // first harness drives the claim timeline by default
     expect(screen.getByTestId('claim-timeline').getAttribute('data-slug')).toBe('alpha');
+  });
+
+  it.each([
+    { joinState: 'joining', mergedOps: 10, targetFrontier: 10, caughtUp: false, text: 'Joining', state: 'syncing' },
+    { joinState: 'usable', mergedOps: 3, targetFrontier: 10, caughtUp: false, text: 'Syncing 3/10', state: 'syncing' },
+    { joinState: 'failed', mergedOps: 3, targetFrontier: 10, caughtUp: false, text: 'Sync stalled', state: 'failed' },
+    { joinState: 'complete', mergedOps: 10, targetFrontier: 10, caughtUp: true, text: 'Up to date', state: 'caught-up' },
+    { joinState: 'complete', mergedOps: 10, targetFrontier: 10, caughtUp: false, text: 'Syncing 10/10', state: 'syncing' },
+  ] as const)('renders authoritative $joinState progress (caughtUp=$caughtUp)', async ({ text, state, ...progress }) => {
+    healthBody = { harnesses: [{ ...ALPHA, bootstrapProgress: progress }, BETA] };
+    renderDogfood();
+    const alpha = within(await screen.findByTestId('dogfood-substrate-row-alpha'));
+    expect(alpha.getByTestId('bootstrap-progress-indicator').getAttribute('data-state')).toBe(state);
+    expect(alpha.getByTestId('bootstrap-progress-indicator').textContent).toContain(text);
+    expect(within(screen.getByTestId('dogfood-substrate-row-beta')).queryByTestId('bootstrap-progress-indicator')).toBeNull();
+    expect(within(screen.getByTestId('dogfood-substrate-row-beta')).getByLabelText('Join progress unavailable')).toBeTruthy();
+  });
+
+  it('replaces completed progress when the next owner response reports pending materialization', async () => {
+    vi.useFakeTimers();
+    try {
+      const progress = { joinState: 'complete' as const, mergedOps: 10, targetFrontier: 10, caughtUp: true };
+      healthBody = { harnesses: [{ ...ALPHA, bootstrapProgress: progress }] };
+      renderDogfood();
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(screen.getByTestId('bootstrap-progress-indicator').getAttribute('data-state')).toBe('caught-up');
+      healthBody = { harnesses: [{ ...ALPHA, bootstrapProgress: { ...progress, caughtUp: false } }] };
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(screen.getByTestId('bootstrap-progress-indicator').getAttribute('data-state')).toBe('syncing');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('filters out harnesses with a blank workspaceId or slug', async () => {

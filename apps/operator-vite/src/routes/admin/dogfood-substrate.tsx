@@ -7,6 +7,8 @@ import { BootHistoryTableClient } from '@/app/harness/insights/BootHistoryTableC
 import { SubstrateHealthPill } from '@/app/harness/insights/SubstrateHealthPill';
 import { ClaimAttemptTimelineClient } from '@/app/harness/insights/ClaimAttemptTimelineClient';
 import { Select } from '@/app/harness/Select';
+import { BootstrapProgressIndicator } from '@/app/harness/insights/BootstrapProgressIndicator';
+import type { BootstrapProgressSnapshot } from '@papercusp/operator-core/lib/sync/hyperbee/bootstrap-progress';
 import { useLexicon } from '@/lib/useLexicon';
 
 /**
@@ -41,6 +43,7 @@ interface HealthResponse {
     harnessSlug: string;
     verdict: 'disabled' | 'booting' | 'healthy' | 'degraded' | 'unhealthy';
     reasons?: string[];
+    bootstrapProgress?: Pick<BootstrapProgressSnapshot, 'mergedOps' | 'targetFrontier' | 'joinState' | 'caughtUp'> | null;
   }>;
 }
 
@@ -90,6 +93,20 @@ function DogfoodSubstratePage() {
       width: 2,
       toCopyText: (row) => row.harnessSlug,
       render: ({ row }) => <code>{row.harnessSlug}</code>,
+    },
+    {
+      key: 'progress',
+      header: 'Join progress',
+      width: 2,
+      toCopyText: (row) => row.bootstrapProgress?.joinState ?? 'unavailable',
+      render: ({ row }) => row.bootstrapProgress ? (
+        <BootstrapProgressIndicator
+          totalOps={row.bootstrapProgress.targetFrontier}
+          mergedOps={row.bootstrapProgress.mergedOps}
+          joinState={row.bootstrapProgress.joinState}
+          caughtUp={row.bootstrapProgress.caughtUp}
+        />
+      ) : <span aria-label="Join progress unavailable">—</span>,
     },
     {
       key: 'health',

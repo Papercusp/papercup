@@ -9,24 +9,26 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '@papercusp/tooldef';
+import type { BootstrapProgressSnapshot } from '../../../../sync/hyperbee/bootstrap-progress';
+import type { SubstrateHealthInputsBundle } from '../../../../sync/hyperbee/cluster-booted-handles-sync';
 
 const H = vi.hoisted(() => {
   const state: {
     booted: Array<{ workspaceId: string; harnessSlug: string }>;
-    progress: Array<{ workspaceId: string; harnessSlug: string }>;
+    progress: BootstrapProgressSnapshot[];
     drainByKey: Map<string, { undrainedCount: number; oldestUndrainedAgeMs: number | null }>;
     verdict: { verdict: string; reasons: string[] };
     summary: unknown;
     // EI-8816: cluster-role + cached-remote-snapshot seams for the blind-spot tests.
     isPrimary: boolean;
-    cachedRemote: { handles: Array<{ workspaceId: string; harnessSlug: string }>; receivedAt: number } | null;
+    cachedRemote: { handles: Array<{ workspaceId: string; harnessSlug: string }>; receivedAt: number; healthInputs?: SubstrateHealthInputsBundle } | null;
     // WI-5307: is THIS process a declared request-only secondary (dedicated-bg-host
     // topology) — independent of node:cluster.isPrimary.
     requestOnly: boolean;
     // EI-19327550671915579: the cross-SERVICE PG fallback leg — the one that actually
     // reaches a request-only host under the dedicated-bg-host topology, where
     // node:cluster IPC (cachedRemote above) can never apply at all.
-    pgFallback: { handles: Array<{ workspaceId: string; harnessSlug: string }>; receivedAt: number } | null;
+    pgFallback: { handles: Array<{ workspaceId: string; harnessSlug: string }>; receivedAt: number; healthInputs?: SubstrateHealthInputsBundle } | null;
   } = {
     booted: [],
     progress: [],
@@ -145,11 +147,46 @@ describe('GET /admin/dogfood-substrate-health handler', () => {
     H.state.verdict = { verdict: 'degraded', reasons: ['claims failing'] };
     const body = await (await route[0].handler(req(), ctx())).json();
     expect(body.harnesses).toEqual([
-      { workspaceId: 'ws1', harnessSlug: 'papercup', verdict: 'degraded', reasons: ['claims failing'] },
-      { workspaceId: 'ws1', harnessSlug: 'restart', verdict: 'degraded', reasons: ['claims failing'] },
+      { workspaceId: 'ws1', harnessSlug: 'papercup', verdict: 'degraded', reasons: ['claims failing'], bootstrapProgress: null },
+      { workspaceId: 'ws1', harnessSlug: 'restart', verdict: 'degraded', reasons: ['claims failing'], bootstrapProgress: null },
     ]);
     // claim stats loaded once per booted handle
     expect(H.loadClaimAttemptStats).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['local', 'cluster', 'pg'] as const)('serves populated join progress from the %s owner, scoped by workspace and slug', async (source) => {
+    const handles = [{ workspaceId: 'ws1', harnessSlug: 'shared' }, { workspaceId: 'ws2', harnessSlug: 'shared' }];
+    const progress: BootstrapProgressSnapshot = {
+      workspaceId: 'ws2', harnessSlug: 'shared', mergedOps: 3, highestSeen: 3,
+      lastChangeMs: 10, caughtUp: false, joinState: 'usable', targetFrontier: 10, headApplied: true,
+    };
+    const snapshot = { handles, receivedAt: Date.now(), healthInputs: {
+      replicationLiveness: [], ownLogForks: [], logStats: [], contentConnectivity: [], bootstrapProgress: [progress],
+    } };
+    if (source === 'local') {
+      H.state.booted = handles;
+      H.state.progress = [progress];
+    } else {
+      H.state.requestOnly = true;
+      if (source === 'cluster') H.state.cachedRemote = snapshot;
+      else H.state.pgFallback = snapshot;
+    }
+    const body = await (await route[0].handler(req(), ctx())).json();
+    expect(body.bootstrapProgressObserved).toBe(true);
+    expect(body.harnesses.map((row: { bootstrapProgress: unknown }) => row.bootstrapProgress)).toEqual([null, progress]);
+  });
+
+  it('never substitutes request-host progress for an older or stale owner snapshot', async () => {
+    H.state.requestOnly = true;
+    H.state.progress = [{ workspaceId: 'ws1', harnessSlug: 'shared', joinState: 'complete', caughtUp: true } as BootstrapProgressSnapshot];
+    H.state.cachedRemote = { handles: [{ workspaceId: 'ws1', harnessSlug: 'shared' }], receivedAt: Date.now() };
+    let body = await (await route[0].handler(req(), ctx())).json();
+    expect(body.bootstrapProgressObserved).toBe(false);
+    expect(body.harnesses[0].bootstrapProgress).toBeNull();
+    H.state.cachedRemote.receivedAt = Date.now() - 60_000;
+    body = await (await route[0].handler(req(), ctx())).json();
+    expect(body.bootstrapProgressObserved).toBe(false);
+    expect(body.harnesses).toEqual([]);
   });
 
   it('feeds substrate outbox drain stats into health assessment', async () => {

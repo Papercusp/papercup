@@ -7,6 +7,7 @@
  * `cluster.fork()`'s real IPC delivers a message to a worker process).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { _resetTrackerForTests, recordJoinProgress } from './bootstrap-progress';
 
 const H = vi.hoisted(() => {
   const state: {
@@ -51,6 +52,7 @@ import {
 } from './cluster-booted-handles-sync';
 
 beforeEach(() => {
+  _resetTrackerForTests();
   H.state.booted = [];
   H.state.handles.clear();
   H.state.peerCounts.clear();
@@ -82,6 +84,7 @@ describe('startBootedHandlesBroadcaster (PRIMARY side)', () => {
           // unobservable" and an empty one as "measured, nothing stalled".
           // Every member must be present or the receiver rejects the bundle.
           healthInputs: {
+            bootstrapProgress: [],
             replicationLiveness: [],
             ownLogForks: [],
             logStats: [],
@@ -129,6 +132,24 @@ describe('startBootedHandlesBroadcaster (PRIMARY side)', () => {
       },
     ]);
     h.stop();
+  });
+
+  it('publishes the owner join frontier alongside its booted handles', () => {
+    H.state.booted = [{ workspaceId: 'ws1', harnessSlug: 'joining' }];
+    const progress = recordJoinProgress('ws1', 'joining', {
+      nowMs: 10, headApplied: true, appliedFrontier: 3, targetFrontier: 10,
+    });
+    const sent: Array<{ healthInputs?: { bootstrapProgress?: unknown[] } }> = [];
+    const handle = startBootedHandlesBroadcaster({
+      ownsSubstrate: true,
+      broadcast: (message) => sent.push(message),
+    });
+    try {
+      expect(sent[0]?.healthInputs?.bootstrapProgress).toEqual([progress]);
+      expect(progress).toMatchObject({ joinState: 'usable', caughtUp: false });
+    } finally {
+      handle.stop();
+    }
   });
 
   it('swallows a broadcast throw (a worker mid-exit) rather than crashing the timer', () => {

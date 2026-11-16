@@ -41,6 +41,7 @@ import {
   type BootedHandleSummary,
 } from './boot-all';
 import { collectSubstrateLogStats, type HarnessLogStats } from './log-stats';
+import { listBootstrapProgress, type BootstrapProgressSnapshot } from './bootstrap-progress';
 import { getOwnLogForkState } from './own-log-fork-guard';
 import {
   getReplicationLiveness,
@@ -94,6 +95,8 @@ export interface HarnessContentConnectivity {
  * evidence the same set by construction, so the two cannot drift apart again.
  */
 export interface SubstrateHealthInputsBundle {
+  /** Absent on older publishers; never infer join completion from missing data. */
+  bootstrapProgress?: BootstrapProgressSnapshot[];
   replicationLiveness: HarnessReplicationLiveness[];
   /** Only FORKED harnesses. Present-and-empty = "measured, none forked". */
   ownLogForks: OwnLogForkSummary[];
@@ -156,6 +159,7 @@ export function collectSubstrateHealthInputs(): SubstrateHealthInputsBundle {
     });
   }
   return {
+    bootstrapProgress: listBootstrapProgress(),
     replicationLiveness: getReplicationLiveness(),
     ownLogForks,
     logStats: collectSubstrateLogStats(),
