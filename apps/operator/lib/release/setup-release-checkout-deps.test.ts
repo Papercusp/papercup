@@ -41,7 +41,7 @@ import {
   utimesSync,
   chmodSync,
 } from "node:fs";
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
@@ -294,6 +294,46 @@ function spawnFailureDetails(
     outputTail('stdout', result.stdout),
     outputTail('stderr', result.stderr),
   ].join('\n');
+}
+
+// Use the verifier suite's private shell-evidence pattern here too: the fixed
+// child deadline must leave the last executing operation, not only its output.
+// Keep evidence outside the disposable checkout and preserve inherited startup
+// behavior so tracing cannot silently remove an environmental cause.
+function readinessShell(phase: string, args: string[], env: NodeJS.ProcessEnv) {
+  const root = process.env.PAPERCUSP_TEST_ARTIFACT_DIR
+    || join(homedir(), '.papercusp', 'test-artifacts', 'setup-readiness');
+  mkdirSync(root, { recursive: true });
+  const directory = mkdtempSync(join(root, `${phase}-`));
+  const startedAt = Date.now();
+  writeFileSync(join(directory, 'command.json'), JSON.stringify({
+    args, startedAt, timeoutMs: 30_000,
+    inheritedControls: ['NODE_OPTIONS', 'NODE_PATH', 'BASH_ENV'].filter(key => env[key] !== undefined),
+  }), { mode: 0o600 });
+  const startup = join(directory, 'trace.bash');
+  writeFileSync(startup, [
+    'if [ -n "${SETUP_FIXTURE_BASH_ENV:-}" ]; then source "$SETUP_FIXTURE_BASH_ENV"; fi',
+    "PS4='+ ${EPOCHREALTIME} ${BASH_SOURCE:-<command>}:${LINENO}: '; set -x",
+  ].join('\n'), { mode: 0o600 });
+  const traceFd = openSync(join(directory, 'trace.log'), 'w', 0o600);
+  const result = (() => {
+    try {
+      return spawnSync('bash', args, {
+        encoding: 'utf8', timeout: 30_000,
+        env: { ...env, SETUP_FIXTURE_BASH_ENV: env.BASH_ENV || '', BASH_ENV: startup, BASH_XTRACEFD: '3' },
+        stdio: ['pipe', 'pipe', 'pipe', traceFd],
+      });
+    } finally { closeSync(traceFd); }
+  })();
+  const details = spawnFailureDetails(phase, Date.now() - startedAt, result);
+  writeFileSync(join(directory, 'stdout.log'), result.stdout ?? '', { mode: 0o600 });
+  writeFileSync(join(directory, 'stderr.log'), result.stderr ?? '', { mode: 0o600 });
+  writeFileSync(join(directory, 'result.txt'), details, { mode: 0o600 });
+  process.stderr.write('SETUP_READINESS_SHELL ' + JSON.stringify({
+    phase, directory, elapsedMs: Date.now() - startedAt, status: result.status,
+    signal: result.signal, errorCode: (result.error as NodeJS.ErrnoException | undefined)?.code ?? null,
+  }) + '\n');
+  return { ...result, details: `${details}\nevidence=${directory}` };
 }
 
 it('spawnFailureDetails reports timeout phase and bounded child output', () => {
@@ -3137,17 +3177,13 @@ exec "$REGRESSION_REAL_GIT" "$@"
 
     const generationRoot = join(dirname(releaseRoot), 'generations');
     const env = { ...sourceCloneEnv(), PREPARATION_NATIVE_PROBE: nativeProbe };
-    const publishStartedAt = Date.now();
-    const published = spawnSync('bash', ['-c',
+    const published = readinessShell('publish-readiness', ['-c',
       'set -euo pipefail; source "$1"; dependency_generation_ensure "$2" "$3"; ' +
         'dependency_generation_publish_input_selector "$3" "$(dependency_generation_input_fingerprint_ref "$2" HEAD)"; ' +
         'printf "FIXTURE_ID=%s\\n" "$DEPENDENCY_GENERATION_ID"',
       'fixture', DEPENDENCY_GENERATION_SCRIPT, integrationRoot, generationRoot,
-    ], { encoding: 'utf8', timeout: 30_000, env });
-    expect(
-      published.status,
-      spawnFailureDetails('publish preparation generation', Date.now() - publishStartedAt, published),
-    ).toBe(0);
+    ], env);
+    expect(published.status, published.details).toBe(0);
     const identity = /^FIXTURE_ID=(v1-[0-9a-f]{64})$/m.exec(published.stdout)?.[1];
     expect(identity).toBeDefined();
     // Publication exercises the fixture too. Count only probes performed by
@@ -3163,23 +3199,18 @@ exec "$REGRESSION_REAL_GIT" "$@"
       git(releaseRoot, 'fetch', '-q', 'origin');
       git(releaseRoot, 'checkout', '-q', '--detach', targetSha);
     }
-    const prepareStartedAt = Date.now();
     const prepareEnv = {
       ...env,
       ...(fault === 'native-missing' ? { PREPARATION_NATIVE_MISSING: '1' } : {}),
       ...(fault === 'native-probe-drift' ? { PREPARATION_NATIVE_PROBE_DRIFT: '1' } : {}),
     };
-    const result = spawnSync('bash', [SCRIPT_PATH, '--prepare-existing',
+    const result = readinessShell('prepare-readiness', [SCRIPT_PATH, '--prepare-existing',
       ...(dependenciesOnly ? ['--dependencies-only'] : []),
       '--integration', integrationRoot, '--release', releaseRoot, '--ref', targetSha,
       '--node-modules', 'force', '--node-modules-copy', 'copy',
       '--node-modules-generation-id', identity!, '--dependency-generation-root', generationRoot,
-    ], { encoding: 'utf8', timeout: 30_000, env: prepareEnv });
-    const prepareDetails = spawnFailureDetails(
-      `prepare existing checkout (dependenciesOnly=${dependenciesOnly}, fault=${fault})`,
-      Date.now() - prepareStartedAt,
-      result,
-    );
+    ], prepareEnv);
+    const prepareDetails = result.details;
     expect(result.error, prepareDetails).toBeUndefined();
 
     if (fault !== 'none') {
