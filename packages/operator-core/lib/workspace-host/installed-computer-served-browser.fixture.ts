@@ -3,11 +3,12 @@
  * roster entries exercise pagination; the owner's account is never paired. */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { openSync, closeSync } from 'node:fs';
 import { access, cp, copyFile, mkdir, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 import { chromium, type Browser } from 'playwright-core';
 import type { HostedHandler } from '../../../../apps/operator/bin/hosted-handler';
 
@@ -22,6 +23,29 @@ type Input = {
 };
 
 export const INSTALLED_FIXTURE_DESKTOP_NAME = 'served-0192-live';
+
+export function installedRuntimeNodeArgs(repo: string) {
+  return ['--experimental-transform-types', '--import',
+    join(repo, 'packages/operator-core/lib/workspace-host/installed-computer-runtime-loader.mjs')];
+}
+
+/** Exercise the actual failing SPA mixed-format boundary before expensive
+ * setup. The full hosted graph is exercised once by the actual runtime;
+ * importing it here duplicates thousands of unrelated route/tool modules.
+ * Source equality cannot detect a subsequent CommonJS transformation. */
+export async function assertInstalledRuntimeLoader(repo: string,
+  options: { nodeArgs?: string[]; env?: NodeJS.ProcessEnv } = {}) {
+  const { stdout } = await promisify(execFile)(process.execPath, [
+    ...(options.nodeArgs ?? installedRuntimeNodeArgs(repo)), '--input-type=module', '-e',
+    `const host = await import(${JSON.stringify(pathToFileURL(join(repo, 'apps/operator/bin/host-spa.ts')).href)});
+     if (typeof host.createSpaRoutes !== 'function') throw new Error('Missing native SPA exports');
+     const response = await host.createSpaRoutes().request('/');
+     if (![200, 503].includes(response.status)) throw new Error('Native SPA route did not execute');
+     console.log('INSTALLED_NATIVE_LOADER_OK');
+     process.exit(0);`,
+  ], { cwd: repo, env: options.env ?? process.env, timeout: 30_000, maxBuffer: 1024 * 1024 });
+  assert(stdout.includes('INSTALLED_NATIVE_LOADER_OK'), 'Installed native loader smoke did not complete');
+}
 
 /** Election is confined to the wrapper-owned, background-disabled process.
  * The production singleton policy remains unchanged in every normal host. */
@@ -150,6 +174,7 @@ export async function assertInstalledRuntimeSource(repo: string) {
     'packages/operator-core/lib/agent-tools/scorecards/emit.ts',
     'packages/operator-core/lib/workspace-host/machine-first-browser-runtime.fixture.ts',
     'packages/operator-core/lib/workspace-host/installed-computer-served-browser.fixture.ts',
+    'packages/operator-core/lib/workspace-host/installed-computer-runtime-loader.mjs',
     'packages/operator-core/lib/workspace-host/byoc-sealed-channel.ts',
     'packages/operator-core/lib/workspace-host/sodium-browser.cjs',
     'apps/operator/app/cloud-workspaces/installed-computer-connection.ts',

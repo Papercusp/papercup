@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { resolveTestRunsPgUrl } from '@papercusp/test-config/admin-test-runs-reporter';
-import { assertInstalledRuntimeSource, installedDesktopBinaries, installedPortalRelease, installedPortalSource } from './installed-computer-served-browser.fixture';
+import { assertInstalledRuntimeLoader, assertInstalledRuntimeSource, installedDesktopBinaries, installedPortalRelease, installedPortalSource, installedRuntimeNodeArgs } from './installed-computer-served-browser.fixture';
 
 describe('served Portal installed-computer consent', () => {
   it('uses the real Portal and local app to persist view-only consent and reuse browser/install identity', async () => {
@@ -18,6 +18,7 @@ describe('served Portal installed-computer consent', () => {
     // Refuse a mixed native import cohort before hashing the large Portal
     // artifact or provisioning its private database.
     await assertInstalledRuntimeSource(root);
+    await assertInstalledRuntimeLoader(root);
     await installedPortalSource(portal);
     const release = process.env.PAPERCUSP_TEST_PORTAL_RELEASE_ROOT;
     await installedPortalRelease(portal!, release);
@@ -33,7 +34,7 @@ describe('served Portal installed-computer consent', () => {
     const evidence = join(artifacts, 'runtime');
     const log = createWriteStream(join(artifacts, 'wrapper.log'), { mode: 0o600 });
     const child = spawn(process.execPath, ['scripts/with-test-pg.mjs', '--isolated-runtime=operator-api', '--',
-      process.execPath, '--import', 'tsx', 'packages/operator-core/lib/workspace-host/machine-first-browser-runtime.fixture.ts',
+      process.execPath, ...installedRuntimeNodeArgs(root), 'packages/operator-core/lib/workspace-host/machine-first-browser-runtime.fixture.ts',
       '--installed-browser', '--smoke', '--portal-source-root', portal!, '--evidence', evidence,
       '--portal-release-root', release!, '--portal-actor-id', actorId!,
       '--portal-ledger-workspace', workspaceId!, '--portal-ledger-harness', harness,

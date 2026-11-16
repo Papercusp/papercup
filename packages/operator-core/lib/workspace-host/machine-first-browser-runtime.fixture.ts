@@ -19,6 +19,7 @@ import { openSync, closeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { moduleRepoRoot } from '../module-repo-root';
 import { serve } from '@hono/node-server';
+import { installedRuntimeNodeArgs } from './installed-computer-served-browser.fixture';
 
 const repo = moduleRepoRoot(import.meta.url);
 const control = process.env.PAPERCUSP_WORKSPACE_ID ?? '';
@@ -71,7 +72,7 @@ async function freePort() {
 }
 function start(name: string, env: NodeJS.ProcessEnv, fixture?: { preload: string; args: string[] }) {
   const fd = openSync(`${evidence}-${name}.log`, 'w', 0o600);
-  const child = spawn(process.execPath, ['--import', 'tsx',
+  const child = spawn(process.execPath, [...installedRuntimeNodeArgs(repo),
     ...(fixture ? ['--import', join(repo, fixture.preload)] : []),
     'apps/operator/bin/serve.ts', ...(fixture?.args ?? [])],
     { cwd: repo, env: { ...env, PAPERCUSP_USE_EMBEDDED_PG: '0' },
