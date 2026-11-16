@@ -221,12 +221,22 @@ export async function collectActivationReadiness(readers: ActivationReadinessRea
     counts: { total: ACTIVATION_STAGE_IDS.length, returned: stages.length, omitted: 0 } };
 }
 
+/** Per-collection options; the request itself stays deadline-free. */
+export interface ActivationReadinessCollectOptions {
+  /** Absolute epoch-ms deadline of a bounded caller (plans:start refusal
+   *  diagnostics). The consult preview reserves time for its post-embedding
+   *  work and bounds the query embedding to the rest, so a slow provider
+   *  degrades in band instead of sinking the whole diagnostic. */
+  deadlineMs?: number;
+}
+
 export async function createPlanActivationReadinessRequest(params: Parameters<typeof createPlanActivationReadinessRequestInWorkspace>[0]) {
   const request = await runWithWorkspaceIfConcrete(params.workspaceId,
     () => createPlanActivationReadinessRequestInWorkspace(params));
   return {
     quality: () => runWithWorkspaceIfConcrete(params.workspaceId, request.quality),
-    collect: (signal?: AbortSignal) => runWithWorkspaceIfConcrete(params.workspaceId, () => request.collect(signal)),
+    collect: (signal?: AbortSignal, options?: ActivationReadinessCollectOptions) =>
+      runWithWorkspaceIfConcrete(params.workspaceId, () => request.collect(signal, options)),
     recordQuality: request.recordQuality,
     recordCritique: request.recordCritique,
     recordConsult: request.recordConsult,
@@ -284,6 +294,20 @@ async function createPlanActivationReadinessRequestInWorkspace(params: {
     status: ActivationStageStatus = 'blocked'): ActivationStageObservation => ({
     status: ok ? 'pass' : status, codes: codes.length ? [...new Set(codes)] : ['ready'], nextAction,
   });
+  // `deadlineMs` arrives per collect() call, never at construction: a canonical
+  // start may build this request early (to pin quality) and only learns its
+  // refusal-diagnostics deadline once it actually refuses.
+  const readConsult = async (signal?: AbortSignal, deadlineMs?: number) => {
+    signal?.throwIfAborted();
+    consult ??= matchingActivationConsult(params.consultReceipt, adviceBasis);
+    consult ??= await previewPlanStartConsult({ workspaceId: params.workspaceId, requesterId: params.requesterId,
+      planSlug: params.planSlug, planContent: current().row.content }, signal,
+    deadlineMs === undefined ? {} : { deadlineMs });
+    signal?.throwIfAborted();
+    return observation(consult.outcome !== 'unavailable', [consult.outcome],
+      consult.outcome === 'unavailable' ? 'Restore consult advice; keep its availability distinct from start authority.'
+        : 'Review the actual advice and give a truthful consulted/reason disposition at start.', 'unknown');
+  };
   const readers: ActivationReadinessReaders = {
     async readBasis(signal) {
       signal?.throwIfAborted();
@@ -428,16 +452,7 @@ async function createPlanActivationReadinessRequestInWorkspace(params: {
           [structural.promotion.missingActionableItemIds.length ? 'waiting-for-promotion' : 'promotion_coverage_ready'],
           'Canonical plans:start promotes and rechecks the exact current lane; this preview grants no authority.', 'waiting');
       },
-      async consult(signal) {
-        signal?.throwIfAborted();
-        consult ??= matchingActivationConsult(params.consultReceipt, adviceBasis);
-        consult ??= await previewPlanStartConsult({ workspaceId: params.workspaceId, requesterId: params.requesterId,
-          planSlug: params.planSlug, planContent: current().row.content }, signal);
-        signal?.throwIfAborted();
-        return observation(consult.outcome !== 'unavailable', [consult.outcome],
-          consult.outcome === 'unavailable' ? 'Restore consult advice; keep its availability distinct from start authority.'
-            : 'Review the actual advice and give a truthful consulted/reason disposition at start.', 'unknown');
-      },
+      consult: (signal) => readConsult(signal),
     },
   };
   // A canonical start may evaluate quality before it refuses. Pin the same
@@ -459,11 +474,15 @@ async function createPlanActivationReadinessRequestInWorkspace(params: {
       try { initialBasis ??= await readers.readBasis(); } catch { /* Diagnostic availability is never a new start gate. */ }
       return readQuality();
     },
-    async collect(signal: AbortSignal | undefined = params.signal): Promise<ActivationReadinessDiagnostic & {
+    async collect(signal: AbortSignal | undefined = params.signal,
+      options: ActivationReadinessCollectOptions = {}): Promise<ActivationReadinessDiagnostic & {
       consult: PlanActivationConsultPreview; declarations?: ActivationDeclarationReadiness;
     }> {
       let first = true;
-      const result = await collectActivationReadiness({ ...readers, readBasis: async readSignal => {
+      const { deadlineMs } = options;
+      const stages: ActivationReadinessReaders['stages'] = deadlineMs === undefined ? readers.stages
+        : { ...readers.stages, consult: (stageSignal) => readConsult(stageSignal, deadlineMs) };
+      const result = await collectActivationReadiness({ ...readers, stages, readBasis: async readSignal => {
         if (first) {
           first = false;
           if (initialBasis) return initialBasis;
@@ -495,12 +514,23 @@ export type PlanActivationConsultPreview = (
       message: string;
     }) & { productShaping?: ReturnType<typeof previewProductShaping> };
 
+/**
+ * EI-28809268869086841: time a deadline-bounded caller keeps back for the work
+ * AFTER the preview's query embedding: the router's lexical fallback, ranking,
+ * evidence and liveness legs, then the collector's final basis re-read. The
+ * embedding gets what remains before `deadlineMs - reserve`; past that the
+ * embedder fails closed with ETIMEDOUT and the router degrades IN BAND to its
+ * labelled lexical fallback (`embeddingFailure`, `degraded:'embed-unavailable'`)
+ * instead of the whole diagnostic missing its deadline.
+ */
+export const PLAN_ACTIVATION_PREVIEW_POST_EMBED_RESERVE_MS = 400;
+
 export async function previewPlanStartConsult(params: {
   workspaceId: string;
   requesterId: string;
   planSlug: string;
   planContent: string;
-}, signal?: AbortSignal): Promise<PlanActivationConsultPreview> {
+}, signal?: AbortSignal, options: ActivationReadinessCollectOptions = {}): Promise<PlanActivationConsultPreview> {
   try {
     signal?.throwIfAborted();
     const [
@@ -524,9 +554,17 @@ export async function previewPlanStartConsult(params: {
     // warmOnly lets a cold in-process engine degrade the router to its labelled
     // lexical fallback instead. Starting that engine blocked the event loop for
     // 4–11s in a measured run, firing every timer deadline late.
+    // warmOnly bounds only WHO may be asked. A warm out-of-process provider can
+    // still be slow: the measured miss was the host's shared embed sidecar
+    // (reached via PAPERCUSP_EMBED_SIDECAR_URL) taking 1847ms for one query
+    // under fleet load, which consumed the 2000ms refusal-diagnostics budget.
+    // A bounded caller's deadline therefore also bounds the inference itself.
+    const embeddingDeadlineMs = options.deadlineMs === undefined ? undefined
+      : options.deadlineMs - PLAN_ACTIVATION_PREVIEW_POST_EMBED_RESERVE_MS;
     let embeddingAcquisition: import('../search/embedder').QueryEmbedderAcquisition | undefined;
     const resolved = await buildQueryEmbedderResolved({
       warmOnly: true,
+      ...(embeddingDeadlineMs === undefined ? {} : { embeddingDeadlineMs }),
       onAcquisition: (outcome) => { embeddingAcquisition = outcome; },
     });
     signal?.throwIfAborted();
@@ -543,7 +581,11 @@ export async function previewPlanStartConsult(params: {
           } }, {
             recordTelemetry: receipt => recordExpertiseRoutingInvocation(receipt, getOrgPg().sql),
             getSql: () => getOrgPg().sql,
-            embed: resolved?.embed ?? null,
+            // The caller's signal reaches inference and every stage boundary, so
+            // a route abandoned at the diagnostic deadline stops instead of
+            // running on after the fallback has already been returned.
+            signal,
+            embed: resolved ? (text: string) => resolved.embed(text, signal) : null,
             embeddingProfile,
             embeddingMode: embeddingProfile && resolved ? resolved.mode : null,
             ...(embeddingAcquisition ? { embeddingAcquisition } : {}),

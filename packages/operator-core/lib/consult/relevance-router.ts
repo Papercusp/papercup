@@ -527,6 +527,11 @@ export interface ConsultRouteDeps {
   monotonicNow?: () => number;
   measure?: <T>(stage: ExpertiseRoutingStage, work: () => Promise<T>) => Promise<T>;
   getSql: () => Sql;
+  /** Caller cancellation (EI-28809268869086841). Checked as each measured stage
+   * starts, so a route whose bounded caller has already returned its fallback
+   * stops at the next stage boundary instead of running every remaining leg.
+   * Absent ⇒ unchanged behavior. */
+  signal?: AbortSignal;
   /** Optional test seam; production defaults to the shared acceptance lineage mapper. */
   getPartyKeys?: (workspaceId: string, ownerIds: string[]) => Promise<ReadonlyMap<string, string>>;
   /** null = no embedder available this host right now (honest degrade). */
@@ -1106,6 +1111,7 @@ export async function routeConsult(params: ConsultRouteParams, deps: ConsultRout
   };
   const elapsed = (at: number) => Math.max(0, Math.round((clock() - at) * 10) / 10);
   const measure: NonNullable<ConsultRouteDeps['measure']> = async (stage, work) => {
+    deps.signal?.throwIfAborted();
     const at = clock();
     try {
       const value = await work();

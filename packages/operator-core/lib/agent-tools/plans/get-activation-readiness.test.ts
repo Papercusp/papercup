@@ -31,7 +31,7 @@ vi.mock('../../consult/plan-start-consult', () => ({
 vi.mock('../../build-info', () => ({ getBuildInfo: () => ({ sha: 'abc1234', version: '0.0.0' }) }));
 
 import { ACTIVATION_STAGE_IDS, activationDeclarationReadiness, activationConformanceReadiness, collectActivationReadiness,
-  previewPlanStartConsult, unavailableActivationReadiness, matchingActivationConsult,
+  previewPlanStartConsult, unavailableActivationReadiness, matchingActivationConsult, PLAN_ACTIVATION_PREVIEW_POST_EMBED_RESERVE_MS,
   type ActivationReadinessBasis, type ActivationReadinessReaders, type ActivationStageObservation } from './get-activation-readiness';
 
 const params = {
@@ -152,6 +152,52 @@ describe('previewPlanStartConsult', () => {
     expect(M.routeConsult).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({
       embed: null, embeddingProfile: null, embeddingMode: null, embeddingAcquisition: coldSkip,
     }));
+  });
+
+  // EI-28809268869086841: a warm OUT-OF-PROCESS provider (the host's shared
+  // embed sidecar) answered one query in 1847ms under load, consuming the whole
+  // 2000ms plans:start refusal-diagnostics budget. warmOnly cannot bound that;
+  // the bounded caller's deadline must reach inference itself.
+  function routeThroughEmbed(embed: ReturnType<typeof vi.fn>) {
+    const base = M.buildQueryEmbedderResolved.getMockImplementation()!;
+    M.buildQueryEmbedderResolved.mockImplementation(async (...args: unknown[]) => ({ ...(await base(...args)), embed }));
+    M.routeConsult.mockImplementation(async (_routeParams, options) => {
+      await options.embed('plan query');
+      return { liveness: {} };
+    });
+    M.planStartConsult.mockImplementation(async (consultParams, deps) => {
+      await deps.route({ workspaceId: consultParams.workspaceId, requesterId: consultParams.requesterId, question: 'plan query' });
+      return { outcome: 'proceed', candidates: [] };
+    });
+  }
+
+  it('bounds inference by a bounded caller deadline minus the post-embedding reserve and threads its signal', async () => {
+    const embed = vi.fn(async () => [0.1, 0.2]);
+    routeThroughEmbed(embed);
+    const controller = new AbortController();
+    const deadlineMs = Date.now() + 2_000;
+
+    expect(await previewPlanStartConsult(params, controller.signal, { deadlineMs })).toMatchObject({ outcome: 'proceed' });
+
+    expect(M.buildQueryEmbedderResolved).toHaveBeenCalledWith(expect.objectContaining({
+      warmOnly: true, embeddingDeadlineMs: deadlineMs - PLAN_ACTIVATION_PREVIEW_POST_EMBED_RESERVE_MS,
+    }));
+    // Cancellation reaches inference and the router's stage boundaries, so an
+    // abandoned preview stops instead of running on after the fallback.
+    expect(embed).toHaveBeenCalledWith('plan query', controller.signal);
+    expect(M.routeConsult).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({ signal: controller.signal }));
+    expect(PLAN_ACTIVATION_PREVIEW_POST_EMBED_RESERVE_MS).toBeGreaterThan(0);
+    expect(PLAN_ACTIVATION_PREVIEW_POST_EMBED_RESERVE_MS).toBeLessThan(2_000);
+  });
+
+  it('leaves an unbounded caller on the provider default without inventing an embedding deadline', async () => {
+    const embed = vi.fn(async () => [0.1, 0.2]);
+    routeThroughEmbed(embed);
+
+    expect(await previewPlanStartConsult(params)).toMatchObject({ outcome: 'proceed' });
+
+    expect(M.buildQueryEmbedderResolved.mock.calls[0]?.[0]).not.toHaveProperty('embeddingDeadlineMs');
+    expect(embed).toHaveBeenCalledWith('plan query', undefined);
   });
 
   it('reports an unavailable advisory outcome when production wiring cannot initialize', async () => {

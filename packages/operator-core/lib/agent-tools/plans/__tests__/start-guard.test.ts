@@ -786,8 +786,14 @@ describe('plans:start bounded refusal diagnostics', () => {
     } as unknown as Awaited<ReturnType<typeof activationReadiness.createPlanActivationReadinessRequest>>);
     admissionMocks.preflight.mockResolvedValueOnce({ ready: false, status: 'refused',
       reason: 'promotion-lag', message: 'Actionable plan items lack a promoted row: P-002.' });
+    const refusedAt = Date.now();
     const pending = run({ slug: 'live-plan', consulted: true });
     await vi.waitFor(() => expect(collect).toHaveBeenCalledTimes(1));
+    // EI-28809268869086841: the same absolute deadline reaches collection, so
+    // the consult preview can bound its query embedding inside the budget.
+    const [, collectOptions] = collect.mock.calls[0] as unknown as [AbortSignal, { deadlineMs?: number }];
+    expect(collectOptions.deadlineMs).toBeGreaterThanOrEqual(refusedAt + PLANS_START_DIAGNOSTIC_TIMEOUT_MS);
+    expect(collectOptions.deadlineMs).toBeLessThanOrEqual(Date.now() + PLANS_START_DIAGNOSTIC_TIMEOUT_MS);
     await vi.advanceTimersByTimeAsync(PLANS_START_DIAGNOSTIC_TIMEOUT_MS);
     expect((await pending).data.results[0]).toMatchObject({ ok: false, error: 'admission_refused',
       promotion: { promoted: 0, skipped: 0, flagOff: false },

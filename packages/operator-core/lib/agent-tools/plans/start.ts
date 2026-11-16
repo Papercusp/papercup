@@ -1242,13 +1242,17 @@ export default defineTool({
         // Add information after the canonical outcome is known. Never replace
         // its primary refusal or its already committed partial-effect receipt.
         diagnosticDeadline ??= Date.now() + PLANS_START_DIAGNOSTIC_TIMEOUT_MS;
-        const remainingMs = diagnosticDeadline - Date.now();
+        const deadlineMs = diagnosticDeadline;
+        const remainingMs = deadlineMs - Date.now();
         const fallback = unavailableActivationReadiness(new Error('Plan-start refusal diagnostic deadline exceeded.'));
         if (remainingMs <= 0) return { ...result, activationReadiness: fallback };
         const diagnostic = await trackPhase(ctx.phases, 'plans:start:refusal-diagnostics', () => withBoundedTimeout(async signal => {
           const request = await diagnosticRequest(undefined, signal);
           signal.throwIfAborted();
-          return request.collect(signal);
+          // EI-28809268869086841: the shared deadline also bounds the consult
+          // preview's query embedding, so a slow embed provider degrades that
+          // one leg in band rather than timing out the whole diagnostic.
+          return request.collect(signal, { deadlineMs });
         }, { timeoutMs: remainingMs, signal: ctx.signal, fallback, label: 'plans:start refusal diagnostics' }));
         const activationReadiness = diagnostic.reason === 'error' ? unavailableActivationReadiness(diagnostic.error)
           : diagnostic.reason === 'aborted' ? unavailableActivationReadiness(new Error('Plan-start refusal diagnostics cancelled.'))
