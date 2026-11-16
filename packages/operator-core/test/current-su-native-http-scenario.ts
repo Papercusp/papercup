@@ -220,6 +220,20 @@ export async function prepareCurrentSuRecoveryAllocation(input: { workspace: str
     'expires_at::text, retracted_at::text FROM harness_shared.agent_facts WHERE workspace_id=$1 AND id=$2',
   [workspace, guard.id]))[0]!;
   const originalGuard = await snapshot();
+  const workspaceSelector = [{ scope: 'workspace' as const }];
+  const taskFoldOptions = { workspaceId: workspace, limitPerSelector: 8, audiences: [],
+    taskContext: { workItemRefs: [current.id] } };
+  // Establish selection independently of TTL. The currency fold intentionally
+  // lets the newer ordinary rows crowd out G; recovery uses the task fold's
+  // separate protected slots. Both observations still use the original 24h TTL.
+  const currencyFold = await facts.foldFactsWithCensus(workspaceSelector,
+    { workspaceId: workspace, limitPerSelector: 8, audiences: [] });
+  const taskFold = await facts.foldFactsWithCensus(workspaceSelector, taskFoldOptions);
+  const currencyReadContainsGuard = currencyFold.facts.some(row => row.id === guard.id);
+  const taskReadContainsGuard = taskFold.facts.some(row => row.id === guard.id);
+  assert.equal(currencyReadContainsGuard, false);
+  assert.equal(taskReadContainsGuard, true);
+  assert.equal(taskFold.facts.find(row => row.id === guard.id)?.body, 'Use exact scoped recovery.');
   const pgNow = async () => String((await sql.unsafe("SELECT to_char(date_trunc('milliseconds', " +
     "clock_timestamp()) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS epoch"))[0].epoch);
   const controlEpoch = await pgNow();
@@ -230,8 +244,7 @@ export async function prepareCurrentSuRecoveryAllocation(input: { workspace: str
     await sql.unsafe('UPDATE harness_shared.agent_facts SET expires_at=$2::timestamptz ' +
       'WHERE workspace_id=$1 AND id=$3', [workspace, expiresAt, guard.id]);
     beforeExpiry = await snapshot();
-    const before = await facts.foldFactsWithCensus([{ scope: 'workspace' }],
-      { workspaceId: workspace, limitPerSelector: 8, audiences: [] });
+    const before = await facts.foldFactsWithCensus(workspaceSelector, taskFoldOptions);
     assert.equal(before.facts.find(row => row.id === guard.id)?.body, 'Use exact scoped recovery.');
     buildObservedAt = await pgNow();
     assert.ok(Date.parse(buildObservedAt) < Date.parse(expiresAt), 'Build must precede the declared PG expiry');
@@ -239,8 +252,7 @@ export async function prepareCurrentSuRecoveryAllocation(input: { workspace: str
       '($1::timestamptz - clock_timestamp()))) + 0.01)', [expiresAt]);
     deliveredAt = await pgNow();
     assert.ok(Date.parse(deliveredAt) >= Date.parse(expiresAt));
-    const after = await facts.foldFactsWithCensus([{ scope: 'workspace' }],
-      { workspaceId: workspace, limitPerSelector: 8, audiences: [] });
+    const after = await facts.foldFactsWithCensus(workspaceSelector, taskFoldOptions);
     assert.equal(after.facts.some(row => row.id === guard.id), false);
     afterExpiry = await snapshot();
     assert.deepEqual(afterExpiry, beforeExpiry, 'Only PG time may change between build and delivery');
@@ -263,6 +275,9 @@ export async function prepareCurrentSuRecoveryAllocation(input: { workspace: str
       candidateManifestReceiver: 'not-exercised' },
     ttlControl: { source: 'PostgreSQL clock_timestamp and canonical live fact fold',
       controlEpoch, buildObservedAt, expiresAt, deliveredAt, beforeExpiry, afterExpiry,
+      taskContext: taskFoldOptions.taskContext,
+      selectionControls: { currencyReadContainsGuard, taskReadContainsGuard,
+        originalExpiresAt: originalGuard.expires_at },
       rowUnchangedAcrossExpiry: true, liveBeforeExpiry: true, absentAfterExpiry: true, originalInputRestored: true },
     notExercised: ['native-epoch', 'paired-baseline', 'candidate-delivery', 'candidate-manifest-receiver'] };
   const artifactProofBytes = JSON.stringify(artifactProof, null, 2) + '\n';

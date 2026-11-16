@@ -268,7 +268,9 @@ it('allocates numeric recovery inputs and retains their PostgreSQL-clock manifes
         factAudience: { nonmemberBodies: ['Continue the assigned task.', 'Resume the bound harness.'],
           memberBodies: ['Continue the assigned task.', 'Excluded nonmember audience.', 'Resume the bound harness.'],
           candidateManifestReceiver: 'not-exercised' },
-        ttlControl: { rowUnchangedAcrossExpiry: true, liveBeforeExpiry: true,
+        ttlControl: { taskContext: { workItemRefs: [receipt.allocation.currentRef] },
+          selectionControls: { currencyReadContainsGuard: false, taskReadContainsGuard: true },
+          rowUnchangedAcrossExpiry: true, liveBeforeExpiry: true,
           absentAfterExpiry: true, originalInputRestored: true } });
       let offset = 0;
       for (const page of proof.artifactTool.pages) {
