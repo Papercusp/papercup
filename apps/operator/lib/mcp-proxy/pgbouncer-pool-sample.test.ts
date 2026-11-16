@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 // Types come from pgbouncer-pool-sample.d.mts — without it this import is an implicit `any`
 // (TS7016) and every assertion below silently stops type-checking (see watchdog.test.ts for
@@ -316,5 +316,121 @@ describe('pgbouncer pool sampler — samplePgBouncerPools (EI-19384024494946006)
       census: null, omittedGroups: null, stderrOmittedChars: stderr.length - 4000 });
     expect(readFileSync(result.pgActivity!.stderrSource!.path, 'utf8')).toBe(stderr);
     expect(readFileSync(result.captureRef!, 'utf8')).toContain('"complete":false');
+  });
+
+  const retainedSources = (text: string): Array<{ path: string; bytes: number; complete: boolean }> =>
+    [...text.matchAll(/^RETAINED_SUMMARY_SOURCE: (.+)$/gm)].map((match) => JSON.parse(match[1]));
+  const legacyFrame = (marker: string, bytes: number) => {
+    const frame = `\n[pgbouncer-sample 2026-11-15T21:14:48.707Z] reason=${marker} pid=2434077\nPGBOUNCER:\nλ decisive final row\n\n`;
+    return 'x'.repeat(bytes - Buffer.byteLength(frame)) + frame;
+  };
+  const poolOnly: NonNullable<Parameters<typeof samplePgBouncerPools>[1]>['execFileImpl'] = (_cmd, args, _opts, cb) => {
+    writePsqlOutput(args, 'pool\n');
+    cb(null, '', '');
+  };
+
+  it.each([-1, 0, 1])('preserves legacy sources at the log rotation boundary N%+i', async (delta) => {
+    const opts = { execFileImpl: poolOnly, activityConnectionString: null, now: () => 1_000_000 };
+    const baseline = await samplePgBouncerPools('legacy-boundary', opts);
+    const lineBytes = statSync(baseline.captureRef!).size;
+    const old = legacyFrame('legacy-current', 4 * 1024 * 1024 - lineBytes + delta);
+    const previous = legacyFrame('legacy-previous', 256);
+    writeFileSync(SAMPLE_LOG_FILE, old);
+    writeFileSync(`${SAMPLE_LOG_FILE}.1`, previous);
+    _resetSampleDebounceForTests();
+    const result = await samplePgBouncerPools('legacy-boundary', opts);
+    expect(result.ok).toBe(true);
+    const refs = retainedSources(readFileSync(result.captureRef!, 'utf8'));
+    expect(refs).toHaveLength(delta > 0 ? 2 : 0);
+    if (delta > 0) {
+      expect(refs.map((ref) => readFileSync(ref.path, 'utf8'))).toEqual([previous, old]);
+      for (const ref of refs) expect(ref).toMatchObject({ complete: true, bytes: statSync(ref.path).size });
+      expect(existsSync(`${SAMPLE_LOG_FILE}.1`)).toBe(false);
+      expect(retainedSources(readFileSync(SAMPLE_LOG_FILE, 'utf8'))).toEqual(refs);
+    } else {
+      expect(readFileSync(`${SAMPLE_LOG_FILE}.1`, 'utf8')).toBe(previous);
+      expect(readFileSync(SAMPLE_LOG_FILE, 'utf8').startsWith(old)).toBe(true);
+      expect(statSync(SAMPLE_LOG_FILE).size).toBe(4 * 1024 * 1024 + delta);
+    }
+  });
+
+  it.each([false, true])('recovers mixed legacy and modern frames after repeated rotations and restarts (reverse=%s)', async (reverse) => {
+    const originals = new Map<string, string>();
+    const markers = Array.from({ length: 8 }, (_, i) => `legacy-batch-${i}`);
+    if (reverse) markers.reverse();
+    const previous = legacyFrame('first-previous', 256);
+    writeFileSync(`${SAMPLE_LOG_FILE}.1`, previous);
+    let priorSummary = '';
+    for (const marker of markers) {
+      // Reset process-local state just as a restarted watchdog would. Carry the
+      // last recovery chain into a mixed-format source, with the decisive legacy
+      // frame after the rotation boundary.
+      _resetSampleDebounceForTests();
+      const old = priorSummary + legacyFrame(marker, 4 * 1024 * 1024 + 1);
+      writeFileSync(SAMPLE_LOG_FILE, old);
+      const result = await samplePgBouncerPools(marker, { execFileImpl: poolOnly, activityConnectionString: null });
+      expect(result.ok).toBe(true);
+      const summary = readFileSync(result.captureRef!, 'utf8');
+      const refs = retainedSources(summary);
+      expect(refs).toHaveLength(priorSummary ? 1 : 2);
+      for (const ref of refs) originals.set(ref.path, ref.path.endsWith('retained-previous.log') ? previous : old);
+      priorSummary = summary;
+    }
+    // Consumer follows the references from the current view, rather than relying
+    // on a directory scan or assuming old frames have modern SOURCE fields.
+    const recovered = new Map<string, string>();
+    const follow = (text: string) => {
+      for (const ref of retainedSources(text)) {
+        if (recovered.has(ref.path)) continue;
+        const source = readFileSync(ref.path, 'utf8');
+        expect(Buffer.byteLength(source)).toBe(ref.bytes);
+        expect(ref.complete).toBe(true);
+        recovered.set(ref.path, source);
+        follow(source);
+      }
+    };
+    follow(readFileSync(SAMPLE_LOG_FILE, 'utf8'));
+    expect(recovered).toEqual(originals);
+    for (const marker of markers) expect([...recovered.values()].some((text) => text.includes(`reason=${marker} pid=2434077`))).toBe(true);
+    expect([...recovered.values()]).toContain(previous);
+  });
+
+  it.each(['retained-previous.log', 'retained-current.log'])('keeps original sources when preserving %s fails, then recovers on the next sample', async (blockedName) => {
+    const old = legacyFrame('unmoved-current', 4 * 1024 * 1024 + 1);
+    const previous = legacyFrame('unmoved-previous', 256);
+    writeFileSync(SAMPLE_LOG_FILE, old);
+    writeFileSync(`${SAMPLE_LOG_FILE}.1`, previous);
+    const result = await samplePgBouncerPools('preservation-failure', {
+      execFileImpl: (_cmd, args, _opts, cb) => {
+        // A destination collision reproduces a real filesystem rename failure.
+        mkdirSync(join(dirname(args[args.indexOf('--output') + 1]), blockedName));
+        writePsqlOutput(args, 'pool\n');
+        cb(null, '', '');
+      },
+      activityConnectionString: null,
+    });
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining('sample log retention failed:') });
+    if (blockedName === 'retained-previous.log') expect(readFileSync(`${SAMPLE_LOG_FILE}.1`, 'utf8')).toBe(previous);
+    else {
+      const preserved = retainedSources(readFileSync(result.captureRef!, 'utf8'));
+      expect(preserved).toHaveLength(1);
+      expect(readFileSync(preserved[0].path, 'utf8')).toBe(previous);
+    }
+    expect(readFileSync(SAMPLE_LOG_FILE, 'utf8').startsWith(old)).toBe(true);
+    expect(readFileSync(result.captureRef!, 'utf8')).toContain('reason=preservation-failure');
+    expect(readFileSync(result.captureRef!, 'utf8')).toContain('RETENTION_ERROR:');
+    _resetSampleDebounceForTests();
+    const retry = await samplePgBouncerPools('preservation-recovery', { execFileImpl: poolOnly, activityConnectionString: null });
+    expect(retry.ok).toBe(true);
+    const refs = retainedSources(readFileSync(retry.captureRef!, 'utf8'));
+    expect(refs).toHaveLength(blockedName === 'retained-previous.log' ? 2 : 1);
+    if (blockedName === 'retained-previous.log') expect(readFileSync(refs[0].path, 'utf8')).toBe(previous);
+    const recoveredCurrent = readFileSync(refs.at(-1)!.path, 'utf8');
+    expect(recoveredCurrent.startsWith(old)).toBe(true);
+    if (blockedName === 'retained-current.log') {
+      const preserved = retainedSources(recoveredCurrent);
+      expect(preserved).toHaveLength(1);
+      expect(readFileSync(preserved[0].path, 'utf8')).toBe(previous);
+    }
   });
 });
