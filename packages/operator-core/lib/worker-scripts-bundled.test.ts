@@ -315,22 +315,27 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
       'const parent=await import(process.argv[1]);',
       'const opts={root:process.argv[3],files:["packages/operator-core/lib/worker-scripts-bundled.test.ts"],privatePg:false,',
       'deadline:{startedAtMs:Date.now(),taskDeadlineAtMs:Date.now()+60000,childCutoffAtMs:Date.now()+50000,cleanupReserveMs:10000}};',
-      'const request=parent.buildDetachedTestRunRequest(opts);',
+      // WI-6554700010048806: 6f0a12c9284 made the builder async and moved its report allocation to
+      // node:fs/promises mkdtemp, so an mkdtempSync-only counter silently counted nothing. Count both
+      // APIs, and require the counter to observe the accepted build's own allocation before trusting 0.
+      'let allocations=0,starts=0,missing; const make=fs.mkdtempSync,makeAsync=fs.promises.mkdtemp;',
+      'fs.mkdtempSync=(...args)=>{allocations++;return make(...args)};',
+      'fs.promises.mkdtemp=(...args)=>{allocations++;return makeAsync(...args)}; modules.syncBuiltinESMExports();',
+      'const request=await parent.buildDetachedTestRunRequest(opts);',
+      'const allocationCounterWorks=allocations>0;allocations=0;',
       'for(const row of request.detachedReportArtifacts) fs.rmSync(dirname(row.reportPath),{recursive:true,force:true});',
-      'let allocations=0,starts=0,missing; const make=fs.mkdtempSync;',
       'const launchMethods=["spawn","spawnSync","exec","execSync","execFile","execFileSync","fork"];',
       'const originals=Object.fromEntries(launchMethods.map(name=>[name,cp[name]])); const nativeSpawn=cp.ChildProcess.prototype.spawn;',
       'for(const name of launchMethods)cp[name]=function(...args){starts++;return Reflect.apply(originals[name],this,args)};',
       'cp.ChildProcess.prototype.spawn=function(...args){starts++;return Reflect.apply(nativeSpawn,this,args)};modules.syncBuiltinESMExports();',
       'const control=cp.spawnSync(process.execPath,["-e","process.exit(0)"],{encoding:"utf8"});',
       'const counterWorks=control.status===0&&starts>0;starts=0;',
-      'fs.mkdtempSync=(...args)=>{allocations++;return make(...args)}; modules.syncBuiltinESMExports();',
       'fs.renameSync(process.argv[2],process.argv[2]+".held");',
-      'try{parent.buildDetachedTestRunRequest(opts)}catch(error){missing=error.code}',
-      'finally{fs.renameSync(process.argv[2]+".held",process.argv[2]);fs.mkdtempSync=make;',
+      'try{await parent.buildDetachedTestRunRequest(opts)}catch(error){missing=error.code}',
+      'finally{fs.renameSync(process.argv[2]+".held",process.argv[2]);fs.mkdtempSync=make;fs.promises.mkdtemp=makeAsync;',
       'for(const name of launchMethods)cp[name]=originals[name];cp.ChildProcess.prototype.spawn=nativeSpawn;modules.syncBuiltinESMExports()}',
       'console.log("AUTOMATIC_TESTING_CORE "+JSON.stringify({args:request.args.slice(0,2),sourceLoader:request.args.includes("tsx"),',
-      'retainedGuard:request.env.NODE_OPTIONS.startsWith("--import="),missing,allocations,starts,counterWorks}));process.exit(0);',
+      'retainedGuard:request.env.NODE_OPTIONS.startsWith("--import="),missing,allocations,starts,counterWorks,allocationCounterWorks}));process.exit(0);',
     ].join('\n');
     const result = spawnSync(process.execPath, ['--input-type=module', '-e', script,
       parent, join(output, 'testing-core.worker.mjs'), REPO_ROOT], { encoding: 'utf8', timeout: 90_000 });
@@ -342,6 +347,7 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     expect(JSON.parse(line!.slice('AUTOMATIC_TESTING_CORE '.length))).toMatchObject({
       args: ['--input-type=module', '-e'], sourceLoader: false, retainedGuard: true,
       missing: 'testing_core_missing_artifact', allocations: 0, starts: 0, counterWorks: true,
+      allocationCounterWorks: true,
     });
   }, BUILD_TEST_TIMEOUT_MS);
 
@@ -423,7 +429,7 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
       // request's deadline starts, so a slow control cannot eat the real child's budget.
       'try { const control=spawnSync(process.execPath,["--input-type=module","-e","await import("+JSON.stringify(process.argv[1])+");"],',
       '{env:process.env,encoding:"utf8",timeout:60000});',
-      'const now=Date.now(); request=parent.buildDetachedTestRunRequest({root:process.argv[2],',
+      'const now=Date.now(); request=await parent.buildDetachedTestRunRequest({root:process.argv[2],',
       'files:["unused-compiled-core-fixture.test.ts"],privatePg:false,',
       'deadline:{startedAtMs:now,taskDeadlineAtMs:now+60000,childCutoffAtMs:now+50000,cleanupReserveMs:10000}});',
       'const child=spawnSync(request.command,request.args,{cwd:request.cwd,env:{...process.env,...request.env},encoding:"utf8",timeout:40000});',
