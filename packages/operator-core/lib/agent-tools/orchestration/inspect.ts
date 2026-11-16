@@ -6,7 +6,8 @@ import type { CapabilityManifestV1, RecipeBindingSchemaV1 } from '../../recipe-c
 import { inspectScriptContract } from './contract-preflight';
 import type { RefusalContract } from '../../capability-envelope/identity-refusal-contract';
 import { inspectDurability } from './durability-inspection';
-import { getDurableOrchestrationStatus } from '../../dbos/durable-orchestration-workflow';
+import { durableOrchestrationStatusOwnedBy, getDurableOrchestrationStatus } from '../../dbos/durable-orchestration-workflow';
+import { redactStructuredSensitiveValue } from '../../sensitive-text';
 import {
   orchestrationPolicyFailure,
   orchestrationSourceArgsSchema,
@@ -61,15 +62,15 @@ export async function inspectOrchestration(
       });
     }
     const status = await (deps.durableStatus ?? getDurableOrchestrationStatus)(args.durableRun.workflowId);
-    return status
-      ? dataResult({ ok: true, durableRun: status })
+    return durableOrchestrationStatusOwnedBy(status, ctx)
+      ? dataResult({ ok: true, durableRun: redactStructuredSensitiveValue(status) })
       : dataResult({
           ok: false,
           phase: 'preflight',
           executed: false,
           error: {
             code: 'durable_run_not_found',
-            message: 'no DBOS durable orchestration run exists for this workflowId',
+            message: 'no DBOS durable orchestration run is available to this caller for this workflowId',
             path: 'durableRun.workflowId',
           },
         });

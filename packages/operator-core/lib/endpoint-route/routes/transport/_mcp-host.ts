@@ -113,7 +113,7 @@ import {
 } from '../../../mcp-request-trace';
 import type { ScratchWriteTimings } from '../../../scratch-gc';
 import { newScratchQuotaRecoveryDiagnostics } from '../../../scratch-gc';
-import { acquireSnapshot, DbCallDeadlineError, getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
+import { acquireSnapshot, DbCallDeadlineError, getOrgPg, pgDiagnosticIdentity, pgResultDiagnosticSnapshot, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
 import { observeFallback } from '../../../degradation/fallback-observations';
 import { samplePgBouncerPools } from './pgbouncer-pool-sample.mjs';
 import { applyResultDoorAsync, beginResultDoorAggregate, measureResultContextBytes } from '../../../result-door';
@@ -1462,6 +1462,43 @@ async function applyScopedSuperuserTransportClamp(
  *   - `failed` — URL claimed a spawn ctx but verification failed.
  *               Caller MUST reject (do NOT fall through to bearer).
  */
+/** Capture before the verifier's request context ends and unrelated traffic can
+ * evict its evidence. These are retained measurements, never SQL or row data. */
+function nativeSessionVerifierDatabaseSnapshot(requestId: string) {
+  try {
+    const { processInstanceId } = pgDiagnosticIdentity();
+    return {
+      coverage: 'retained-completed-results-only' as const,
+      matchingOmitted: 'unknown' as const,
+      pools: ['org-app', 'org-admin', 'native-session-verifier-fallback'].map(pool => {
+        const snapshot = pgResultDiagnosticSnapshot(pool);
+        const queries = new Map<string, (typeof snapshot.results)[number]>();
+        for (const query of [...snapshot.results, ...snapshot.failures]) {
+          if (query.correlation?.requestId !== requestId ||
+              query.source.processInstanceId !== processInstanceId) continue;
+          const key = JSON.stringify([query.source.poolInstanceId, query.connectionId, query.queryId]);
+          queries.set(key, query);
+        }
+        return {
+          pool, capacity: snapshot.capacity, poolDroppedResults: snapshot.dropped,
+          failureCapacity: snapshot.failureCapacity, poolDroppedFailures: snapshot.droppedFailures,
+          queries: [...queries.values()].map(query => ({
+            source: { ...query.source }, connectionId: query.connectionId, queryId: query.queryId,
+            backendPid: query.backendPid, physicalBackendPid: query.physicalBackendPid,
+            serverStatementAt: query.serverStatementAt, queryFamily: query.queryFamily,
+            elapsedMs: query.elapsedMs, preBuildMs: query.preBuildMs,
+            status: query.status, errorCode: query.errorCode, failurePhase: query.failurePhase,
+            recordedAt: query.recordedAt,
+          })),
+        };
+      }),
+    };
+  } catch {
+    // An unavailable diagnostic must not replace the verifier's original error.
+    return { coverage: 'unavailable' as const };
+  }
+}
+
 type NativeSessionAuthFailureMetadata = {
   carrier: NonNullable<RequestOriginMetadata['nativeSession']>['carrier'];
   valueFingerprint: string;
@@ -1473,6 +1510,7 @@ type NativeSessionAuthFailureMetadata = {
     durationMs: number;
     requestFingerprint?: string;
     phase?: NativeSessionVerificationPhase;
+    database?: ReturnType<typeof nativeSessionVerifierDatabaseSnapshot>;
     stageTimings?: {
       omittedStages: number;
       stages: Array<{
@@ -1518,6 +1556,7 @@ function describeNativeSessionVerifierFailure(
   durationMs: number,
   requestFingerprint?: string,
   timingSnapshot: ReturnType<typeof namedQueryStageTimings> = null,
+  databaseSnapshot?: ReturnType<typeof nativeSessionVerifierDatabaseSnapshot>,
 ): NonNullable<NativeSessionAuthFailureMetadata['verifierFailure']> {
   const failure = error as {
     name?: unknown;
@@ -1622,6 +1661,7 @@ function describeNativeSessionVerifierFailure(
     ...(requestFingerprint ? { requestFingerprint } : {}),
     ...(phase ? { phase } : {}),
     ...(stageTimings ? { stageTimings } : {}),
+    ...(databaseSnapshot ? { database: databaseSnapshot } : {}),
     ...(acquisition ? { acquisition } : {}),
   };
 }
@@ -1814,10 +1854,11 @@ async function tryBuildUnboundSpawnContext(
     if (suIdentity && nativeSessionId) {
       const verificationStartedAt = Date.now();
       let timingSnapshot: ReturnType<typeof namedQueryStageTimings> = null;
+      let databaseSnapshot: ReturnType<typeof nativeSessionVerifierDatabaseSnapshot> | undefined;
       try {
         const binding = await withNamedQueryDiagnosticContext(
           'mcp.nativeSessionVerifier',
-          async () => {
+          async (requestId) => {
             try {
               return await classifyOwnerNativeSession({
                 ownerId: suIdentity,
@@ -1825,6 +1866,7 @@ async function tryBuildUnboundSpawnContext(
                 workspaceId: headerWs || wsParam || undefined,
               });
             } catch (error) {
+              databaseSnapshot = nativeSessionVerifierDatabaseSnapshot(requestId);
               try {
                 timingSnapshot = namedQueryStageTimings();
               } catch {
@@ -1944,6 +1986,7 @@ async function tryBuildUnboundSpawnContext(
               Date.now() - verificationStartedAt,
               requestFingerprint,
               timingSnapshot,
+              databaseSnapshot,
             ),
           ),
         };
@@ -6391,18 +6434,24 @@ export function registerMcpHost(server: McpServer): void {
               resultDeliveryBackfill: { toolName: deliveryTool, state: 'started' },
             });
             // Exact request correlation only: dispatch success precedes the result door.
-            await backfillToolInvocationMetadataByMcpRequestTraceId({
+            // Telemetry can wait behind an unrelated flush or database acquisition.
+            // Keep the exact receipt write running without making successful report
+            // and scratch-page delivery depend on that best-effort persistence.
+            void backfillToolInvocationMetadataByMcpRequestTraceId({
               workspaceId: dispatchSpawnCtx.workspaceId,
               toolName: deliveryTool,
               mcpRequestTraceId: dispatchSpawnCtx.requestOrigin?.mcpRequestTraceId ?? null,
               metadataJson: deliveryMetadata,
-            });
-            trace('result_delivery_backfill', {
-              resultDeliveryBackfill: {
-                toolName: deliveryTool,
-                state: 'settled',
-                durationMs: Math.max(0, performance.now() - backfillStartedAt),
-              },
+            }).then(() => {
+              trace('result_delivery_backfill', {
+                resultDeliveryBackfill: {
+                  toolName: deliveryTool,
+                  state: 'settled',
+                  durationMs: Math.max(0, performance.now() - backfillStartedAt),
+                },
+              });
+            }).catch((err: unknown) => {
+              console.warn(`[mcp] result delivery backfill failed for ${deliveryTool}: ${err instanceof Error ? err.message : String(err)}`);
             });
           }
         }

@@ -111,7 +111,7 @@ const h = vi.hoisted(() => {
       ownerId: string; advSessionId: string | null; pid: number; ptyPid: number | null;
       sock: string; command: string; startedAt: number; nativeSessionId?: string | null;
     } | null,
-    nativeSessionVerifierFailure: null as { sessionId: string; error: Error } | null,
+    nativeSessionVerifierFailure: null as { sessionId: string; error: Error; recordDiagnostics?: () => void } | null,
     nativeSessionCalls: [] as Array<{ ownerId: string; sessionId: string }>,
     nativeSessionWorkspaceScopes: [] as Array<string | undefined>,
     nativeSessionDiagnosticContexts: [] as unknown[],
@@ -204,6 +204,8 @@ const h = vi.hoisted(() => {
      * from — an empty log for a replay is exactly the invisible-replay bug.
      */
     deliveryBackfills: [] as Array<{ toolName: string; mcpRequestTraceId?: string | null; metadataJson: Record<string, unknown> }>,
+    deliveryBackfillWait: null as Promise<void> | null,
+    deliveryBackfillCompletions: 0,
     invocations: [] as Array<{
       toolName: string;
       status: string;
@@ -397,6 +399,10 @@ vi.mock('../../projected-tool-deps', async (importOriginal) => {
     flushPendingTelemetry: h.flushPendingTelemetry,
     backfillToolInvocationMetadataByMcpRequestTraceId: async (input: (typeof h.deliveryBackfills)[number]) => {
       h.deliveryBackfills.push(input);
+      if (input.metadataJson.reportResultDelivery || input.metadataJson.scratchResultDelivery) {
+        await h.deliveryBackfillWait;
+        h.deliveryBackfillCompletions += 1;
+      }
     },
     PROJECTED_DEPS: {
       ...realDeps,
@@ -538,6 +544,7 @@ vi.mock('../../adv-sessions', async (importOriginal) => {
       if (verifierFailure?.sessionId === sessionId) {
         const { traceNamedQueryStage } = await import('../../agent-tools/db-diagnostic-correlation-wiring');
         return await traceNamedQueryStage('native-session-verifier-global-transaction', async () => {
+          verifierFailure.recordDiagnostics?.();
           throw verifierFailure.error;
         });
       }
@@ -1656,6 +1663,63 @@ describe('shared bootstrap export through the MCP host', () => {
 });
 
 describe('final report delivery through the MCP host', () => {
+  it.each([
+    { name: 'reports:get', nested: false },
+    { name: 'reports:get', nested: true },
+    { name: 'capability:read', nested: false },
+    { name: 'capability:read', nested: true },
+  ])('delivers $name with nested=$nested while its delivery backfill is pending', async ({ name, nested }) => {
+    const tool = lookupByMcpName(name);
+    if (!tool) throw new Error(`Expected the production ${name} registration`);
+    const original = tool.fn;
+    const body = 'Complete report body é';
+    const bodySha256 = createHash('sha256').update(body).digest('hex');
+    const scratchUri = 'papercusp://scratch/ws-test/capability-read/result.md';
+    const response = name === 'reports:get'
+      ? { ok: true, results: [{ ok: true, id: 'rpt-pending-delivery', report: {
+        body_md: body, body_sha256: bodySha256, body_bytes: Buffer.byteLength(body),
+        visibility: 'owner', published_at: '2026-10-24T00:00:00Z',
+      } }] }
+      : { ok: true, file_path: scratchUri, encoding: 'base64', data: 'YWJj',
+        byte_offset: 0, byte_length: 3, total_bytes: 3,
+        reference: { byteCount: 3, sha256: 'a'.repeat(64) } };
+    tool.fn = async () => ({ content: [{ type: 'text', text: JSON.stringify(response) }] });
+    let release!: () => void;
+    h.deliveryBackfillWait = new Promise<void>(resolve => { release = resolve; });
+    const trace = 'e57ef6b3-46ef-4cc5-8214-fec83b2c1499';
+    const args = name === 'reports:get' ? { id: 'rpt-pending-delivery' } : { file_path: scratchUri };
+    let returned = false;
+    const pending = callTool(nested ? 'tools:invoke' : name,
+      nested ? { name, args } : args,
+      superuserExtra('&workspace=ws-test&client=su-pending-delivery', { [MCP_REQUEST_TRACE_HEADER]: trace }),
+      { format: 'json' }).then(result => { returned = true; return result; });
+    try {
+      await vi.waitFor(() => expect(returned).toBe(true), { timeout: 1_000 });
+      const result = await pending;
+      expect(result.isError).not.toBe(true);
+      expect(result.content).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'text', text: JSON.stringify(response) }),
+      ]));
+      expect(h.deliveryBackfillCompletions).toBe(0);
+      const receipt = h.deliveryBackfills.find(row => row.toolName === name &&
+        (row.metadataJson.reportResultDelivery || row.metadataJson.scratchResultDelivery));
+      expect(receipt).toMatchObject({ toolName: name, mcpRequestTraceId: trace,
+        metadataJson: name === 'reports:get'
+          ? { reportResultDelivery: { inline: [{ id: 'rpt-pending-delivery', bodySha256,
+            bodyBytes: Buffer.byteLength(body), visibility: 'owner', publishedAt: '2026-10-24T00:00:00Z' }] } }
+          : { scratchResultDelivery: { uri: scratchUri, sha256: 'a'.repeat(64), totalBytes: 3, offset: 0, bytes: 3 } },
+      });
+      release();
+      await vi.waitFor(() => expect(h.deliveryBackfillCompletions).toBe(1));
+      expect(h.deliveryBackfills.filter(row => row === receipt)).toHaveLength(1);
+    } finally {
+      release();
+      await pending;
+      h.deliveryBackfillWait = null;
+      tool.fn = original;
+    }
+  });
+
   it.each(['direct', 'nested', 'projected', 'spill'])(
     'backfills only the caller-visible edition after the final door: %s', async route => {
       const tool = lookupByMcpName('reports:get');
@@ -3038,6 +3102,8 @@ beforeEach(() => {
   h.storedReplay = null;
   h.invocations.length = 0;
   h.deliveryBackfills.length = 0;
+  h.deliveryBackfillWait = null;
+  h.deliveryBackfillCompletions = 0;
   replayValidationSeen.length = 0;
   replayBusinessErrorSeen.length = 0;
   resetResultDoorAggregatesForTests();
@@ -7088,6 +7154,71 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
     } finally {
       waitingTicket.release();
       heldTicket.release();
+      resetAcquireRegistryForTest();
+    }
+  });
+
+  it.each([0, 31, 32, 33])('retains exact native verifier database evidence across %i unrelated results', async (unrelatedCount) => {
+    const { capturePgDiagnosticContext, createPgDiagnosticHooks, resetAcquireRegistryForTest } = await import('@papercusp/db-org');
+    resetAcquireRegistryForTest();
+    const hooks = createPgDiagnosticHooks('org-app');
+    const nativeThread = 'native-retained-database-session';
+    const traceId = '199b5c15-77e1-4c30-b8fa-97e86aba759f';
+    h.nativeSessionVerifierFailure = {
+      sessionId: nativeThread,
+      error: Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }),
+      recordDiagnostics: () => {
+        const context = capturePgDiagnosticContext();
+        const input = { connectionId: 3, backendPid: 900001, rowCount: 0, wireBytes: 0,
+          elapsedMs: 300, preBuildMs: 12, context };
+        hooks.onresult({ ...input, queryId: 1, status: 'ok', rowCount: 1,
+          query: "SELECT set_config('app.workspace_id', $1, true), pg_backend_pid() AS diagnostic_pg_pid, statement_timestamp()::text AS diagnostic_statement_at",
+          result: [{ diagnostic_pg_pid: 4231, diagnostic_statement_at: '2026-11-16 11:15:36.123456-05' }],
+        });
+        hooks.onresult({ ...input, queryId: 2, query: "SELECT set_config('statement_timeout', $1, true)", status: 'error', errorCode: '57014' });
+        for (let i = 0; i < unrelatedCount; i++) {
+          hooks.onresult({ ...input, queryId: 10 + i, query: 'SELECT never_retain_sql_or_rows', status: 'ok',
+            context: { state: 'linked', correlation: { ...context.correlation!, requestId: 'c1cf9d57-f193-4184-bd7c-b707550bb061' } },
+          });
+        }
+      },
+    };
+    const meta = { threadId: nativeThread };
+    try {
+      const res = await callTool('gatingtest:scoped', {}, {
+        ...(superuserExtra('&workspace=ws-test&client=su-owner', { [MCP_REQUEST_TRACE_HEADER]: traceId }) as Record<string, unknown>),
+        _meta: meta,
+      }, meta);
+      expect(res.isError).toBe(true);
+      expect(seen).toHaveLength(0);
+      const metadata = h.invocations[0]?.metadataJson as {
+        mcpAuthFailure: { nativeSession: { verifierFailure: { database: {
+          coverage: string; matchingOmitted: string;
+          pools: Array<{ pool: string; poolDroppedResults: number; queries: Array<Record<string, unknown>> }>;
+        } } } };
+      };
+      const database = metadata.mcpAuthFailure.nativeSession.verifierFailure.database;
+      expect(database).toMatchObject({ coverage: 'retained-completed-results-only', matchingOmitted: 'unknown' });
+      const app = database.pools.find(pool => pool.pool === 'org-app')!;
+      if (unrelatedCount > 0) expect(app.poolDroppedResults).toBeGreaterThan(0);
+      // The error has left the result ring, but its independent failure record
+      // still belongs to this exact request. A proxy PID is never called physical.
+      expect(app.queries.filter(query => query.status === 'error')).toEqual([expect.objectContaining({
+        queryId: 2, backendPid: 900001, physicalBackendPid: null, serverStatementAt: null,
+        status: 'error', errorCode: '57014', failurePhase: 'transaction-setup',
+      })]);
+      expect(app.queries.filter(query => query.status === 'ok')).toEqual(unrelatedCount === 0
+        ? [expect.objectContaining({ queryId: 1, physicalBackendPid: 4231,
+          serverStatementAt: '2026-11-16 11:15:36.123456-05' })]
+        : []);
+      const saved = JSON.stringify(database);
+      expect(saved).not.toContain('never_retain_sql_or_rows');
+      expect(saved).not.toContain(traceId);
+      expect(saved).not.toContain(nativeThread);
+      for (let i = 0; i < 40; i++) hooks.onresult({ connectionId: 3, queryId: 100 + i,
+        backendPid: null, query: 'SELECT 1', rowCount: 0, wireBytes: 0, status: 'error' });
+      expect(JSON.stringify(database)).toBe(saved);
+    } finally {
       resetAcquireRegistryForTest();
     }
   });

@@ -158,7 +158,7 @@ export default defineTool({
       ])
       .optional()
       .describe(
-        'Filter by whether you can park on the key WITHOUT already knowing the subject (EI-19299170840541307). `id` = usable only if you already hold the specific id; `scope` = usable if you know a durable scope you own (fleet/plan/workspace/account/owner); `global` = usable by anyone, narrow with payload_filter; `unknown` = not classifiable from the template (installed packs only). A fleet leader asking "what can I actually wait on?" wants ["global","scope"] — the id-scoped families are unusable to anyone who does not already know which subject will move next. Accepts one value or an array.',
+        'Filter by whether you can park on the key WITHOUT already knowing the subject (EI-19299170840541307). `id` = only with the specific id in hand; `scope` = with a durable scope you own (fleet/plan/workspace/account/owner); `global` = anyone, narrow with payload_filter; `unknown` = not classifiable from the template (installed packs only). A fleet leader asking "what can I wait on?" wants ["global","scope"]. Accepts one value or an array.',
       ),
     liveAwaiters: z
       .boolean()

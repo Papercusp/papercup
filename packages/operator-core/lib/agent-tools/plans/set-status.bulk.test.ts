@@ -133,6 +133,9 @@ vi.mock('./plan-drain-transition', () => ({
 }));
 vi.mock('../../plan-items/reconcile-linked-work-items', () => ({
   findAllLinkedWorkItems: blockerMocks.linked,
+  // Stub of the open-coverage filter: the boundary tests below pin guard ORDER, not filter semantics.
+  filterOpenLinkedCoverageWorkItems: (rows: LinkedWorkItem[]) =>
+    rows.filter((row) => !['done', 'dropped', 'closed', 'resolved', 'superseded'].includes(String(row.state))),
   selectCanonicalLinkedWorkItem: (rows: LinkedWorkItem[]) => ({ canonical: rows[0] ?? null, duplicates: [] }),
   reconcileLinkedWorkItemsForPlanItem: laneSync.terminal,
   resyncPlanItemLaneNow: laneSync.item,
@@ -184,6 +187,29 @@ describe('plans:set-status blocker resolution boundary', () => {
     const result = await body({ slug: 'plan-a', item: 'P-001', status: 'wip' });
     expect(result.results[0]).toMatchObject({ ok: false, error: 'blocker_decision_evidence', missing: ['measured remedy'] });
     expect(callerMocks.claimForWork).not.toHaveBeenCalled(); expect(lockM).not.toHaveBeenCalled();
+  });
+  it('skips a still-covered terminal flip BEFORE the blocker preflight (EI-28803999907760939)', async () => {
+    actor();
+    blockerMocks.linked.mockResolvedValue([
+      subject({ assignee: 'su-other' }),
+      subject({ id: 'WI-duplicate', viaPlanLineNode: false, state: 'dropped' }),
+    ]);
+    blockerMocks.preflight.mockResolvedValue({ ok: false, code: 'blocker_decision_evidence',
+      missing: ['measured remedy'], nextAction: 'Investigate and keep custody' });
+    const result = await body({ slug: 'plan-a', item: 'P-001', status: 'dropped', onlyIfNoOtherOpenCoverage: true,
+      note: 'duplicate task withdrawn' });
+    expect(result.results[0]).toMatchObject({ ok: true, skipped: 'coverage_guard' });
+    expect((result.results[0] as { coveredBy?: string[] }).coveredBy).toEqual(['WI-plan-node']);
+    expect(blockerMocks.preflight).not.toHaveBeenCalled(); expect(lockM).not.toHaveBeenCalled();
+  });
+  it('keeps preflight-first order when an explicit blocker decision is supplied', async () => {
+    actor(); blockerMocks.linked.mockResolvedValue([subject({ assignee: 'su-other' })]);
+    blockerMocks.preflight.mockResolvedValue({ ok: false, code: 'blocker_decision_evidence',
+      missing: ['measured remedy'], nextAction: 'Investigate and keep custody' });
+    const result = await body({ slug: 'plan-a', item: 'P-001', status: 'dropped',
+      onlyIfNoOtherOpenCoverage: true, blockerDecision: decision, note: 'duplicate task withdrawn' });
+    expect(result.results[0]).toMatchObject({ ok: false, error: 'blocker_decision_evidence' });
+    expect(blockerMocks.preflight).toHaveBeenCalledTimes(1);
   });
   it('replays the terminal canonical identity before live gates or any mutation', async () => {
     actor(); const node = subject({ state: 'done', assignee: 'successor' });

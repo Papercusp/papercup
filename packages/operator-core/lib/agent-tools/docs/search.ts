@@ -295,11 +295,10 @@ const argsSchema = z.preprocess(
       .string()
       .optional()
       .describe(
-        "Harness slug whose docs to search. Pass 'all' for Papercusp's own framework docs / your project docs (operator scope) — " +
-          "but only on an UNSCOPED (--all-workspaces) session; a workspace-scoped su session gets harness_forbidden for 'all'/'*' " +
-          "(EI-12898). To reach the SAME framework/agent-insights corpus from a workspace-scoped session, pass 'engineering' " +
-          'instead — a distinct literal the workspace clamp does not intercept (EI-18894866320087268). Omit only when the ' +
-          "session is already scoped to a harness — otherwise you'll get harness_required.",
+        "Harness slug whose docs to search. 'all' = Papercusp framework docs / your project docs, but only on an UNSCOPED " +
+          "(--all-workspaces) session; a workspace-scoped session gets harness_forbidden for 'all'/'*' (EI-12898) — pass " +
+          "'engineering' there for the same framework/agent-insights corpus (EI-18894866320087268). Omit only when the " +
+          'session is already harness-scoped, else harness_required.',
       ),
     semantic: z
       .boolean()

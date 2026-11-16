@@ -1067,6 +1067,46 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   if (agentId?.source === 'principal') agentId = null;
   let blockerSubject: Awaited<ReturnType<typeof findAllLinkedWorkItems>>[number] | undefined;
   let blockerMutation: BlockerDecisionMutation | undefined;
+
+  // `onlyIfNoOtherOpenCoverage`: while other open linked work still covers the plan item, a
+  // terminal flip is a NO-OP skip (ok:true), never a write.
+  const openCoverageGuardSkip = async () => {
+    try {
+      const coverageScope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
+      const linked = await findAllLinkedWorkItems(it.slug, it.itemId, coverageScope);
+      const stillCovered = filterOpenLinkedCoverageWorkItems(linked);
+      if (stillCovered.length === 0) return null;
+      return {
+        ok: true as const,
+        slug: it.slug,
+        itemId: it.itemId,
+        skipped: 'coverage_guard' as const,
+        coveredBy: stillCovered.map((wi) => wi.id),
+        reason:
+          `left open — ${stillCovered.length} other linked work-item(s) ` +
+          `(${stillCovered.map((wi) => wi.id).join(', ')}) still cover this plan item; ` +
+          `marking it ${it.status} would de-queue work that is not finished`,
+      };
+    } catch (e) {
+      console.warn(`[plans:set-status] coverage guard ${it.slug}#${it.itemId} failed:`, (e as Error)?.message ?? e);
+      return null;
+    }
+  };
+  const coverageGuardApplies = it.onlyIfNoOtherOpenCoverage === true &&
+    (it.status === 'dropped' || it.status === 'done');
+  // EI-28803999907760939: a skip writes nothing, so it must be decided BEFORE the
+  // blocker-decision preflight below, which demands measured self-resolution for any
+  // agent-driven terminal flip. Evaluated after it, work_items:complete withdrawing a
+  // noncanonical duplicate task was refused `blocker_decision_evidence` even though the
+  // plan item's still-open canonical node meant the drop would have been skipped anyway; the
+  // finish then reported non-convergence and invited a replay that would have dropped the
+  // canonical item and discarded its real acceptance work. An explicit `blockerDecision` is
+  // a deliberate mutation of the subject, so that path keeps the preflight-first order.
+  const coverageGuardFirst = coverageGuardApplies && it.blockerDecision === undefined;
+  if (coverageGuardFirst) {
+    const skip = await openCoverageGuardSkip();
+    if (skip) return skip;
+  }
   if (it.blockerDecision !== undefined && (!agentId || agentId.ownerId.startsWith('system:'))) {
     return { ok: false, slug: it.slug, itemId: it.itemId, error: 'blocker_decision_authority',
       hint: 'A blocker decision requires the authenticated agent custodian.' };
@@ -1302,27 +1342,10 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   // each time. Marking terminal and abandoning are the same hazard here: both de-queue
   // an item other live work still covers, so both take the guard. When the LAST sibling
   // goes terminal, coverage is empty and the flip proceeds — 1:1 behaviour is unchanged.
-  if (it.onlyIfNoOtherOpenCoverage && (it.status === 'dropped' || it.status === 'done')) {
-    try {
-      const coverageScope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
-      const linked = await findAllLinkedWorkItems(it.slug, it.itemId, coverageScope);
-      const stillCovered = filterOpenLinkedCoverageWorkItems(linked);
-      if (stillCovered.length > 0) {
-        return {
-          ok: true,
-          slug: it.slug,
-          itemId: it.itemId,
-          skipped: 'coverage_guard',
-          coveredBy: stillCovered.map((wi) => wi.id),
-          reason:
-            `left open — ${stillCovered.length} other linked work-item(s) ` +
-            `(${stillCovered.map((wi) => wi.id).join(', ')}) still cover this plan item; ` +
-            `marking it ${it.status} would de-queue work that is not finished`,
-        };
-      }
-    } catch (e) {
-      console.warn(`[plans:set-status] coverage guard ${it.slug}#${it.itemId} failed:`, (e as Error)?.message ?? e);
-    }
+  // (Evaluated above, before the blocker preflight, when no blockerDecision was supplied.)
+  if (coverageGuardApplies && !coverageGuardFirst) {
+    const skip = await openCoverageGuardSkip();
+    if (skip) return skip;
   }
 
   // WI-2156 (completion-integrity, terminal-flip holdership): a done/dropped flip by an

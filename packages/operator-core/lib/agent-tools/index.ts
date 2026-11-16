@@ -1088,6 +1088,7 @@ import './release/cut';
 // drift markers + per-characteristic criteria); agents grade STRUCTURED OBSERVATIONS
 // against an active rubric. Authorship D-001: any agent proposes, the Queen ratifies.
 import './rubrics/list';
+import './rubrics/suites';
 import './rubrics/get';
 import './rubrics/search';
 import './rubrics/propose';
@@ -1412,6 +1413,7 @@ import './plans/set-template-data';
 // plan-templates-and-rubric-v2-2026-06-20 P-006 — registers the built-in `rubric`
 // template type (side-effect import) so set-template-data can validate it on write.
 import './plans/rubric-template';
+import './plans/rubric-suite-template';
 // plan-structured-inputs-2026-08-01 P-003 — the plan-authored input schema: the second
 // schema SOURCE (JSON Schema, runtime-declared) beside the code registry above. Its
 // `required` array is what the start gate (P-005/P-006) enforces before a plan runs.

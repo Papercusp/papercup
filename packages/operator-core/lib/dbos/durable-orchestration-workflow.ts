@@ -351,13 +351,13 @@ export const DURABLE_ORCHESTRATION_EXECUTION_ADAPTER = Object.freeze({
   durability: 'restart' as const, cancellation: 'owner-managed' as const, progress: 'reported' as const,
 });
 
-export function bindDurableOrchestrationExecution(
-  request: { ctx: UnifiedToolContext; invoke(): Promise<ToolResult> },
-  deps: ClientDeps = {},
-): NonNullable<ToolExecutionDispatch<ToolResult>['adapter']> {
-  const { ctx, invoke } = request;
+/** The same persisted audience join protects adapter reattachment and public inspection. */
+export function durableOrchestrationStatusOwnedBy(
+  row: DurableOrchestrationStatus | null,
+  ctx: UnifiedToolContext,
+): row is DurableOrchestrationStatus {
   const ownerId = ctx.uiClientId ?? ctx.principal?.slug ?? ctx.spawnId ?? ctx.runId;
-  const owned = (row: DurableOrchestrationStatus | null): boolean => !!row && !!ownerId &&
+  return !!row && !!ownerId &&
     row.caller?.ownerId === ownerId && row.caller?.workspaceId === ctx.workspaceId &&
     row.caller.role === ctx.role &&
     // Session ownership is not principal identity. A fresh caller must retain
@@ -373,6 +373,15 @@ export function bindDurableOrchestrationExecution(
     (row.caller.harnessSlug ?? null) === resolveConcreteHarnessSlug(undefined, ctx) && !!row.runKey &&
     row.workflowId === durableOrchestrationWorkflowId(ctx.workspaceId!, row.runKey) &&
     ['ENQUEUED', 'DELAYED', 'PENDING', 'SUCCESS', 'ERROR', 'MAX_RECOVERY_ATTEMPTS_EXCEEDED', 'CANCELLED'].includes(row.status);
+}
+
+export function bindDurableOrchestrationExecution(
+  request: { ctx: UnifiedToolContext; invoke(): Promise<ToolResult> },
+  deps: ClientDeps = {},
+): NonNullable<ToolExecutionDispatch<ToolResult>['adapter']> {
+  const { ctx, invoke } = request;
+  const ownerId = ctx.uiClientId ?? ctx.principal?.slug ?? ctx.spawnId ?? ctx.runId;
+  const owned = (row: DurableOrchestrationStatus | null): boolean => durableOrchestrationStatusOwnedBy(row, ctx);
   const state = (row: DurableOrchestrationStatus | null): ToolExecutionAdmission['state'] =>
     row?.status === 'SUCCESS' ? row.outcome?.status === 'succeeded' ? 'succeeded'
       : row.outcome?.status === 'failed' ? 'failed' : 'running'
