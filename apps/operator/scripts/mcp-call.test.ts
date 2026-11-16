@@ -361,6 +361,27 @@ describe('mcp-call current-build routing parity with the MCP proxy', () => {
     expect([...CLI_CURRENT_BUILD_DEFAULT_TOOLS]).toEqual([...PROXY_CURRENT_BUILD_DEFAULT_TOOLS]);
   });
 
+  // Keep the authority contract independent of the lists: parity alone passes
+  // when the CLI and proxy both forget the same writer.
+  it.each([
+    { name: 'plans:audit', normalized: 'plans:audit', script: 'await tools.plans.audit({})' },
+    { name: 'plans:start', normalized: 'plans:start', script: 'await tools.plans.start({})' },
+    { name: 'plans:set-content', normalized: 'plans:set:content', script: 'await tools.plans.setContent({})' },
+    { name: 'plans:set-status', normalized: 'plans:set:status', script: 'await tools.plans.setStatus({})' },
+  ])('routes $name to the current build independently of the shared lists', ({ name, normalized, script }) => {
+    const forms = [
+      { name, arguments: {} },
+      { name: 'tools:invoke', arguments: { name, args: {} } },
+      { name: 'code:run', arguments: { script } },
+    ];
+    for (const call of forms) {
+      expect(currentBuildDefaultToolForCall(call)).toBe(normalized);
+      expect(currentBuildDefaultTool(call)).toBe(normalized);
+      expect(callNeedsCurrentBuild(call)).toBe(true);
+      expect(callNeedsCurrentBuild({ ...call, arguments: { ...call.arguments, build: 'main' } })).toBe(false);
+    }
+  });
+
   const calls: Array<{ name: string; arguments?: unknown }> = [
     ...PROXY_CURRENT_BUILD_DEFAULT_TOOLS.map((name) => ({ name, arguments: {} })),
     { name: 'mcp__papercusp-su__consult_get_feedback', arguments: {} },
@@ -439,6 +460,23 @@ describe('mcp-call current-build routing parity with the MCP proxy', () => {
       expect(run.stderr).not.toContain('WARNING');
     });
   });
+
+  it.each(['plans:audit', 'plans:set-content'])(
+    'sends %s to the proxy when the inherited port names the release operator',
+    async (name) => {
+      await withMcpCallFetchFixture(async (fixture) => {
+        await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'isolated-valid\n');
+        const run = await runMcpCallWithFetchFixture(fixture, ['--transport', 'http'], {
+          PAPERCUSP_HONO_PORT: '3070',
+        }, name, '{}');
+        const requests = await readMcpCallFetchLog(fixture.logPath);
+
+        expect(run.code, run.stderr).toBe(0);
+        expect(requests.map((request) => new URL(request.url).port)).toEqual(['9071']);
+        expect(run.stderr).not.toContain('WARNING');
+      });
+    },
+  );
 
   it('reaches the release operator only after both current-build endpoints refused, and says so', async () => {
     await withMcpCallFetchFixture(async (fixture) => {
