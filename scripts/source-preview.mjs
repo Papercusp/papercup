@@ -3317,7 +3317,10 @@ export async function runVerifierCommand({ repo, runtimeAssetDonor, ref, receipt
   // inside source.freeze. Repeating it here spends the absolute task deadline
   // before source admission and leaves that work outside the budget journal.
   const explicitGeneration = Boolean(env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT);
-  const donor = explicitGeneration ? sourceRepo : committedWorkRootDependencyDonor(sourceRepo);
+  // A selected committed reader need not contain the desktop install. The
+  // generation builder needs its verified integration origin for missing native
+  // inputs; the immutable generation still supplies the dependency snapshot.
+  const donor = committedWorkRootDependencyDonor(sourceRepo, { sourceObjects: explicitGeneration });
   // A frozen Git source may consume an immutable dependency generation while
   // ignored model bytes live in a separate cache. Only the selected source's
   // checksum-pinned helper can admit and copy those bytes.

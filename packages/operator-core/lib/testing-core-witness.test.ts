@@ -368,6 +368,31 @@ describe('testing core closure snapshot (WI-6554700010048604)', () => {
     expect(third.witness.sourceSha256).not.toBe(first.witness.sourceSha256);
   });
 
+  it('keeps compiler custody through live API hardlink churn and refuses retained API substitution', async () => {
+    const f = fixture(), parent = snapshotParent();
+    const liveApi = join(dirname(dirname(f.compilerPath)), 'lib/main.js');
+    const during = join(dirname(f.outfile), 'compiler-during.js');
+    const after = join(dirname(f.outfile), 'compiler-after.js');
+    try {
+      const receipt = await prepareTestingCoreFromSnapshot({ ...f, snapshotParent: parent,
+        phase: async (name: string, run: () => Promise<unknown>) => {
+          if (name === 'final') linkSync(liveApi, during);
+          return run();
+        } });
+      linkSync(liveApi, after);
+      expect(verifyTestingCoreReceipt(receipt, receipt.witness)).toEqual(receipt.witness);
+      const retainedApi = receipt.interval.toolchain.find((row: { path: string }) => row.path.endsWith('/lib/main.js'))!;
+      expect(retainedApi.path.startsWith(parent)).toBe(true);
+      const original = readFileSync(retainedApi.path);
+      writeFileSync(retainedApi.path, '');
+      writeFileSync(retainedApi.path, original);
+      expect(() => verifyTestingCoreReceipt(receipt, receipt.witness)).toThrow(/identity changed/);
+    } finally {
+      rmSync(during, { force: true });
+      rmSync(after, { force: true });
+    }
+  });
+
   it('refuses to reuse a published snapshot that no longer matches its closure', async () => {
     const f = fixture(), parent = snapshotParent();
     const first = await prepareTestingCoreFromSnapshot({ ...f, snapshotParent: parent });

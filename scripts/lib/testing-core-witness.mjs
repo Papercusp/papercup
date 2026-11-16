@@ -432,8 +432,14 @@ export function materializeTestingCoreSnapshot({ root, compilerPath, argv, snaps
   const staging = mkdtempSync(join(snapshotParent, SNAPSHOT_PREFIX + 'staging-'));
   const scratch = mkdtempSync(join(snapshotParent, SNAPSHOT_PREFIX + 'discovery-'));
   try {
+    const binary = realpathSync(compilerPath), compilerRoot = dirname(dirname(binary));
+    const compilerFiles = [
+      ['lib/main.js', pinFile(join(compilerRoot, 'lib/main.js'))],
+      ['package.json', pinFile(join(compilerRoot, 'package.json'))],
+      ['bin/' + basename(binary), pinFile(binary)],
+    ];
     const meta = join(scratch, 'discovery.meta.json');
-    const discovery = spawnSync(realpathSync(compilerPath), [...argv.filter(arg => !/^--(?:outfile|metafile)=/.test(arg)),
+    const discovery = spawnSync(binary, [...argv.filter(arg => !/^--(?:outfile|metafile)=/.test(arg)),
       `--outfile=${join(scratch, 'discovery.mjs')}`, `--metafile=${meta}`], { cwd: root, encoding: 'utf8', timeout: 120_000 });
     assert.equal(discovery.status, 0, `Testing core snapshot discovery failed: ${discovery.stderr || discovery.error}`);
     const inputs = Object.keys(JSON.parse(readFileSync(meta, 'utf8')).inputs);
@@ -494,6 +500,15 @@ export function materializeTestingCoreSnapshot({ root, compilerPath, argv, snaps
       symlinkSync(relative(dirname(copied), join(staged, local(target))), copied);
       linkCount++;
     }
+    // Parent compilation may create hardlinks to the live compiler API. Retain
+    // its qualified buffers in this same content-addressed generation so those
+    // later metadata changes cannot invalidate the producing interval.
+    verifyPins(compilerFiles.map(([, pinned]) => pinned));
+    for (const [path, pinned] of compilerFiles) {
+      const copied = join(staging, 'compiler', path);
+      mkdirSync(dirname(copied), { recursive: true });
+      writeFileSync(copied, pinned.contents, { flag: 'wx', mode: Number(BigInt(pinned.original.mode) & 0o777n) });
+    }
     const closureSha256 = testingCoreSnapshotManifestSha256(staging);
     const workdir = join(snapshotParent, SNAPSHOT_PREFIX + closureSha256);
     try {
@@ -513,7 +528,8 @@ export function materializeTestingCoreSnapshot({ root, compilerPath, argv, snaps
     const snapshotArgv = argv.map(arg => !arg.startsWith('-') ? rewrite(arg)
       : arg.startsWith('--alias:') && arg.includes('=')
         ? arg.slice(0, arg.indexOf('=') + 1) + rewrite(arg.slice(arg.indexOf('=') + 1)) : arg);
-    return { workdir, liveRoot: root, root: snapshot, argv: snapshotArgv, files: files.size, links: linkCount,
+    return { workdir, liveRoot: root, root: snapshot, compilerPath: join(workdir, 'compiler', 'bin', basename(binary)),
+      argv: snapshotArgv, files: files.size, links: linkCount,
       closureSha256 };
   } catch (error) {
     rmSync(staging, { recursive: true, force: true });
@@ -558,7 +574,7 @@ export async function prepareTestingCoreFromSnapshot({ root, compilerPath, argv,
   const snapshot = materializeTestingCoreSnapshot({ root, compilerPath, argv, snapshotParent });
   // A failed prepare leaves the snapshot to the age collector: a concurrent
   // prepare of the same closure may be compiling from it.
-  const receipt = await prepareTestingCore({ root: snapshot.root, compilerPath, argv: snapshot.argv, phase });
+  const receipt = await prepareTestingCore({ root: snapshot.root, compilerPath: snapshot.compilerPath, argv: snapshot.argv, phase });
   return { ...receipt, snapshot: { liveRoot: snapshot.liveRoot, workdir: snapshot.workdir,
     closureSha256: snapshot.closureSha256, files: snapshot.files, links: snapshot.links } };
 }

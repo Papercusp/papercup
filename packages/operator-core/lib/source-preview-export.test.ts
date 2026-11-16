@@ -2389,6 +2389,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     { selection: 'explicit', layout: 'superproject' },
     { selection: 'automatic', layout: 'submodule' },
     { selection: 'explicit', layout: 'submodule' },
+    { selection: 'explicit selected reader', layout: 'superproject' },
+    { selection: 'explicit selected reader', layout: 'submodule' },
   ] as const)('ensures $selection generation from frozen nested managed-client source before preflight, dependencies, and PG ($layout helper)',
     async ({ selection, layout }) => {
     const parent = process.platform === 'linux' ? mkdtempSync('/var/tmp/source-preview-generation-preflight-') : tmp;
@@ -2430,6 +2432,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         'done',
         'test -n "$integration" && test -n "$ref" && test -n "$source"',
         'test "$integration" != "$source"',
+        'test -f "$integration/papercusp-desktop/node_modules/.bin/tauri" || { echo "native desktop dependency donor is missing" >&2; exit 74; }',
         'test "$(git -C "$integration" rev-parse --verify "$ref^{commit}")" = "$ref"',
         'test "$(cat "$source/selected-source.txt")" = committed-candidate',
         'managed=apps/operator-vite/src/lib/nuqs-tanstack-router-adapter.tsx',
@@ -2453,15 +2456,28 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       git(fixture.repo, ['add', 'papercusp-desktop', 'selected-source.txt', managedClient, generationBuilder]);
       git(fixture.repo, ['commit', '-qm', 'generation admission fixture']);
       const ref = git(fixture.repo, ['rev-parse', 'HEAD']).trim();
+      let sourceRepo = fixture.repo;
+      if (selection === 'explicit selected reader') {
+        sourceRepo = join(parent, 'selected-reader-' + layout);
+        git(fixture.repo, ['clone', '--local', '--shared', '--recurse-submodules', fixture.repo, sourceRepo]);
+        const { OWNER_MARKER } = await import(new URL('../../../scripts/lint-as-committed.mjs', import.meta.url).href);
+        write(sourceRepo, OWNER_MARKER, JSON.stringify({ sha: ref, sourceRepoRoot: fixture.repo,
+          dependencyMode: 'independent-copy-v1',
+          dependencyScope: { mode: 'selected', workspaceDirs: ['apps/operator', 'packages/operator-core'] } }));
+        expect(existsSync(join(sourceRepo, 'papercusp-desktop/node_modules/.bin/tauri'))).toBe(false);
+      }
+      // Only the physical integration donor has the desktop install. The
+      // source reader must retain its selected scope without acquiring it.
+      write(fixture.repo, 'papercusp-desktop/node_modules/.bin/tauri', 'fixture desktop tooling');
       write(fixture.repo, managedClient, 'unrelated-live-adapter\n');
       // The selected gitlink's contract must survive a mutable helper rewrite.
       if (layout === 'submodule') write(fixture.repo, helper, '#!/bin/bash\nexit 0\n');
       const prepareChildEnv = vi.fn(async () => { throw new Error('PG must not start'); });
       const receiptPath = join(tmp, 'generation-preflight-' + selection + '-' + layout + '.json');
-      await expect(runVerifierCommand({ repo: fixture.repo,
+      await expect(runVerifierCommand({ repo: sourceRepo,
         ref, receiptPath, prepareChildEnv,
         inputs: ['selected-source.txt'],
-        env: { ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: selection === 'explicit' ? join(parent, 'store') : '',
+        env: { ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: selection !== 'automatic' ? join(parent, 'store') : '',
           GENERATION_ENSURE_MARKER: generationMarker, GENERATION_EVENT_LOG: generationEvents },
         command: [process.execPath, '-e', 'throw Error("provider must not start")'],
       })).rejects.toThrow('verifier dependency preflight failed: snapshot reached after generation preflight');
@@ -2478,6 +2494,25 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     } finally {
       if (parent !== tmp) rmSync(parent, { recursive: true, force: true });
     }
+  });
+
+  it('refuses unverified selected-reader provenance before ensuring an explicit generation', async () => {
+    const fixture = makeSuperproject(join(tmp, 'generation-unverified-reader'));
+    const ref = git(fixture.repo, ['rev-parse', 'HEAD']).trim();
+    const reader = join(tmp, 'generation-unverified-reader-copy');
+    git(fixture.repo, ['clone', '--local', '--shared', '--recurse-submodules', fixture.repo, reader]);
+    const { OWNER_MARKER } = await import(new URL('../../../scripts/lint-as-committed.mjs', import.meta.url).href);
+    write(reader, OWNER_MARKER, JSON.stringify({ sha: '0'.repeat(40), sourceRepoRoot: fixture.repo,
+      dependencyMode: 'independent-copy-v1',
+      dependencyScope: { mode: 'selected', workspaceDirs: ['apps/operator', 'packages/operator-core'] } }));
+    const receiptPath = join(tmp, 'generation-unverified-reader.json');
+    const prepareChildEnv = vi.fn();
+    await expect(runVerifierCommand({ repo: reader, ref, receiptPath, prepareChildEnv,
+      inputs: ['package.json'], env: { ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: join(tmp, 'store') },
+      command: [process.execPath, '-e', 'throw Error("provider must not start")'],
+    })).rejects.toThrow('retained source commit does not match the recorded artifact');
+    expect(existsSync(receiptPath)).toBe(false);
+    expect(prepareChildEnv).not.toHaveBeenCalled();
   });
 
   it.each(['expired', 'short', 'success', 'failed', 'cutoff', 'canceled', 'no-deadline'] as const)(
