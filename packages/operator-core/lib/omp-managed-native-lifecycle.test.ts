@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ompLifecycleProvider } from '../test/omp-managed-native-provider';
 
-function fixture(getActiveTools: () => string[]) {
+function fixture(getActiveTools: () => string[], expectedDispatcher = 'mcp__papercusp_tools_invoke') {
+  vi.stubEnv('OMP_PROOF_MCP_DISPATCHER', expectedDispatcher);
   const hooks = new Map<string, () => Promise<void>>();
   type ToolCall = { type: string; id: string; name: string; arguments: Record<string, unknown> };
   type Reply = { role: string; toolCallId: string; content: { type: string; text: string }[]; isError?: boolean };
@@ -23,6 +24,11 @@ function fixture(getActiveTools: () => string[]) {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 
 describe('installed OMP fixture MCP readiness', () => {
+  it('requires an explicitly configured expected MCP dispatcher', async () => {
+    const { ready } = fixture(() => ['mcp__papercusp_tools_invoke'], '');
+    await expect(ready()).rejects.toThrow('OMP proof did not declare its expected MCP dispatcher');
+  });
+
   it('records actual extension, registration and inference stages in the owned startup receipt', async () => {
     vi.stubEnv('OMP_PROOF_PHASE_FILE', '/owned/startup.ndjson');
     const { ready, provider, write } = fixture(() => ['mcp__papercusp_tools_invoke']);
@@ -58,7 +64,20 @@ describe('installed OMP fixture MCP readiness', () => {
     const { ready } = fixture(() => ['read']);
     const result = ready().catch(error => error);
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(await result).toMatchObject({ message: expect.stringContaining('registration did not become active: ["read"]') });
+    expect(await result).toMatchObject({
+      message: 'OMP managed MCP dispatcher did not become active: expected mcp__papercusp_tools_invoke; actual ["read"]',
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('rejects a similarly named dispatcher instead of accepting the wrong registration', async () => {
+    vi.useFakeTimers();
+    const { ready } = fixture(() => ['mcp__papercusp_tools_invoke_other']);
+    const result = ready().catch(error => error);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await result).toMatchObject({
+      message: 'OMP managed MCP dispatcher did not become active: expected mcp__papercusp_tools_invoke; actual ["mcp__papercusp_tools_invoke_other"]',
+    });
     expect(vi.getTimerCount()).toBe(0);
   });
 
