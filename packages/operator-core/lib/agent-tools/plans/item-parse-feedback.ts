@@ -82,7 +82,8 @@ const ITEM_GRAMMAR =
  * `## Phase` heading (where content is items by convention). A P-NNN citation
  * later in an ordinary prose bullet is not enough to classify that bullet as
  * an attempted item. The special ## Now / ##
- * Decisions sections are inspected for list-like lines carrying `P-NNN`, since
+ * Decisions sections are inspected for a leading `P-NNN` and an adjacent
+ * backtick token or a known unquoted status, since
  * the parser intentionally skips those sections and would otherwise silently
  * drop a misplaced item. Ordinary prose bullets there remain unflagged. Lines
  * inside fenced code blocks are ignored, and the machine-managed ## Promoted
@@ -153,10 +154,12 @@ export function detectUnparsedItemLines(
     const hasItemRefPrefix = isBullet
       ? /^\s*[-*+]\s+(?:[*_]{1,3})?P-\d{3,}\b/.test(masked)
       : /^\s*\d+\.\s+(?:[*_]{1,3})?P-\d{3,}\b/.test(masked);
-    // Now/Decisions are not item-bearing parser sections, so only a list-like
-    // line that names a plan item is suspicious there. In normal prose/Phase
-    // sections retain the original checkbox/P-NNN/Phase heuristics.
-    if (misplacedSection ? !hasItemRefPrefix : !(isCheckbox || hasItemRefPrefix || underPhase)) continue;
+    // Decision prose can start with an item citation ("1. P-006 is accepted...").
+    // In skipped sections an adjacent status token distinguishes an attempted
+    // item; quoted unknown statuses and known unquoted statuses still warn.
+    const statusPrefix = masked.match(/^\s*(?:[-*+]|\d+\.)\s+(?:[*_]{1,3})?P-\d{3,}(?:[*_]{1,3})?\s+(`|[a-z-]+\b)/)?.[1];
+    const hasItemStatusPrefix = statusPrefix === '`' || ITEM_STATUSES.some(status => status === statusPrefix);
+    if (misplacedSection ? !(hasItemRefPrefix && hasItemStatusPrefix) : !(isCheckbox || hasItemRefPrefix || underPhase)) continue;
 
     out.push({ line: i + 1, text: real.trim().slice(0, 160) });
   }

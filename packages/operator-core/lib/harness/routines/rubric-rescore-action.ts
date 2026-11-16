@@ -135,10 +135,14 @@ export interface RubricRescoreDeps {
   dispatchTool?: (name: string, args: Record<string, unknown>) => Promise<unknown>;
   record?: (results: ReadonlyArray<RubricCheckResult>, scope: Parameters<typeof recordRubricCheckResults>[1]) => Promise<number[]>;
   emit?: typeof emitAwaitedEvent;
+  /** The scheduled cycle publishes through the canonical scorecards:emit writer. */
+  publishScorecard?: typeof import('../../agent-tools/scorecards/emit').emitScorecard;
 }
 
 export interface RubricRescoreOutcome {
   rubricRef: string;
+  /** Needed to keep scheduled automation out of the independent acceptance-grade lane. */
+  rubricKind: string | null;
   executed: number;
   testRunIds: number[];
   crossings: RubricCriterionRegressedPayload[];
@@ -296,7 +300,65 @@ export async function rescoreRubric(
     });
   }
   return { rubricRef, executed: results.length, testRunIds, crossings,
+    rubricKind: rubric.kind ?? null,
     ...(probeError ? { probeError } : {}), ...(instrumentError ? { instrumentError } : {}) };
+}
+
+interface ScorecardPublication {
+  status: 'created' | 'unchanged' | 'refused' | 'failed' | 'skipped';
+  issueId?: string;
+  error?: string;
+}
+
+/** Publish only standard rubrics through scorecards:emit; acceptance grades stay with an
+ * independent grader. fromLedger consumes the result rows rescoreRubric just persisted and
+ * retains each failed or stale check as an evidence-backed unknown. */
+async function publishRescoreScorecard(
+  outcome: Pick<RubricRescoreOutcome, 'rubricRef' | 'rubricKind'>,
+  harnessSlug: string | undefined,
+  workspaceId: string,
+  deps: RubricRescoreDeps,
+): Promise<ScorecardPublication> {
+  if (outcome.rubricKind !== 'standard') {
+    return {
+      status: 'skipped',
+      error: outcome.rubricKind === 'acceptance'
+        ? 'scheduled rubric-rescore cannot issue acceptance grades; an independent grader must use scorecards:emit'
+        : 'current rubric kind is unknown; no system scorecard was filed',
+    };
+  }
+
+  try {
+    const { emitScorecard, scorecardEmitArgs } = await import('../../agent-tools/scorecards/emit');
+    const args = scorecardEmitArgs.parse({ rubricRef: outcome.rubricRef, fromLedger: true });
+    const emit = deps.publishScorecard ?? emitScorecard;
+    const result = await emit(args, {
+      // Stable synthetic identity: this scheduled writer does not impersonate a session owner.
+      createdBy: `system:${RUBRIC_RESCORE_ACTION}`,
+      ...(harnessSlug ? { ctxHarness: harnessSlug } : {}),
+      workspaceId,
+    });
+    const receipt = result as { ok?: boolean; created?: boolean; issueId?: string | null; error?: string; code?: string };
+    const issueId = typeof receipt.issueId === 'string' ? receipt.issueId : undefined;
+    if (receipt.ok !== true) {
+      return {
+        status: 'refused',
+        ...(issueId ? { issueId } : {}),
+        error: [receipt.code, receipt.error].filter((value): value is string => typeof value === 'string' && value.length > 0).join(': ')
+          || 'scorecards:emit refused the ledger-filled card',
+      };
+    }
+    if (receipt.created !== true) {
+      return {
+        status: 'unchanged',
+        ...(issueId ? { issueId } : {}),
+        error: 'scorecards:emit did not create a fresh card for this rescore cycle',
+      };
+    }
+    return { status: 'created', ...(issueId ? { issueId } : {}) };
+  } catch (error) {
+    return { status: 'failed', error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 /** The routine handler: payload `{ templateSlug, harnessSlug, input: { rubricRef } }`. */
@@ -307,12 +369,16 @@ export async function runRubricRescoreAction(ctx: SystemActionCtx, deps: RubricR
   const harnessSlug = typeof payload.harnessSlug === 'string' ? payload.harnessSlug : ctx.installSlug;
   const outcome = await rescoreRubric({ rubricRef, workspaceId: ctx.workspaceId, harnessSlug,
     schedule: { ...ctx.triggerConfig, action: { system: RUBRIC_RESCORE_ACTION, input: payload.input } } }, deps);
+  // rescoreRubric awaits the result-ledger write before returning; the scorecard is then
+  // filled from those exact latest rows, so its evidence cannot lead or re-run the measurement.
+  const scorecardPublication = await publishRescoreScorecard(outcome, harnessSlug, ctx.workspaceId, deps);
   const softErrors = [
     ...(outcome.instrumentError ? ['instrument batch: ' + outcome.instrumentError] : []),
     ...(outcome.probeError ? ['probe batch: ' + outcome.probeError] : []),
+    ...(scorecardPublication.error ? ['scorecard publication: ' + scorecardPublication.error] : []),
   ];
   return {
-    diagnostics: { rubricRescore: outcome },
+    diagnostics: { rubricRescore: { ...outcome, scorecardPublication } },
     ...(softErrors.length > 0 ? { softError: ('rubric-rescore: ' + softErrors.join('; ')).slice(0, 600) } : {}),
   };
 }

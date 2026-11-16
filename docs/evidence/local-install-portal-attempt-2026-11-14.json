@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Existing installation: physical-host consent and Portal sign-in boundary",
+  "framework": "operational",
+  "command": ["node", "--input-type=module"],
+  "exitCode": 0,
+  "startedAt": "2026-11-16T02:15:28.305Z",
+  "finishedAt": "2026-11-16T02:20:45.407Z",
+  "summary": "An actual fresh Chromium browser on this physical host opened the installed app's current staging Remote access screen and the configured public Portal. The local screen required relay consent, and the Portal rendered Sign in or sign up. The local relay was off with no installation identity, linked account, consent, desktop grant or connector. This receipt verifies the observed human prerequisites only. No connection, Noise channel, desktop roster, frame or input was established.",
+  "assertions": [
+    {
+      "id": "physical-local-entry-opened",
+      "passed": true,
+      "evidence": "Chromium navigated to http://127.0.0.1:3170/settings/remote-access#connect-computer; HTTP 200, title Papercusp Operator. After hydration the Papercusp relay card displayed its notice, I understand, and Agree."
+    },
+    {
+      "id": "physical-portal-sign-in-boundary",
+      "passed": true,
+      "evidence": "Chromium navigated to https://app.papercusp.com/; HTTP 200, title Papercusp Portal. A bounded locator wait observed Sign in or sign up, followed by Sign in and Create account. A fresh browser context had no authenticated Portal account."
+    },
+    {
+      "id": "physical-local-authority-not-granted",
+      "passed": true,
+      "evidence": "The real local GET /api/remote-access/portal-relay returned 200 with state off, installId null, consent.agreed false, linked null, desktop.grant null, connector null and health off. No consent, pairing or desktop-grant POST was made."
+    },
+    {
+      "id": "physical-required-human-action-recorded",
+      "passed": true,
+      "evidence": "Receiving account and organization remain unselected. Avi must choose the receiving Portal account/organization, sign in, and approve the local relay notice and receiving Portal request before desktop access can be approved. The attempt stopped at those measured prerequisites."
+    },
+    {
+      "id": "physical-no-healthy-stream-claim",
+      "passed": true,
+      "evidence": "connectionEstablished is false. Connector/channel authorization, Noise handshake, roster, desktop frames and input are explicitly not exercised. A passing receipt records the attempt and its boundary; it does not record a working desktop connection."
+    }
+  ],
+  "plan": "existing-local-install-portal-desktops-2026-11-14",
+  "planVersion": 30,
+  "planItem": "P-004",
+  "workItem": "WI-6554700010048985",
+  "spec": "LOCAL-CONNECT-MACHINE@2",
+  "actor": "su-a74676b6-9dc8-47dd-988a-2f3b91c11ac9",
+  "execution": {
+    "host": "this physical host",
+    "browser": "Playwright Chromium, headless, fresh nonpersistent context",
+    "commandDescription": "Two inline Node/Playwright browser observations and a read-only loopback status request; no account cookies, credential injection or connection mutation.",
+    "localOrigin": "http://127.0.0.1:3170",
+    "portalOrigin": "https://app.papercusp.com",
+    "currentBuildRoute": "operator-api",
+    "runtime": "staging-operator",
+    "runtimeSha": "d4b5ee03da7",
+    "runtimeVersion": "0.0.0",
+    "runtimeIdentityReadAt": "2026-11-16T02:20:09.404Z",
+    "runtimeContainment": "dev:pipeline_position measured the portal-relay route present on staging-operator. The physical attempt exercised the served build, not the current uncommitted source tree or a final release.",
+    "sourceHeadReadAfterAttempt": "9fdad2486ae41ab45bb6e40b411857f681c92211",
+    "sourceHeadReadAt": "2026-11-16T02:20:08.721Z",
+    "workspace": "papercusp-workspace",
+    "installId": null,
+    "account": null,
+    "organization": null
+  },
+  "observations": {
+    "localEntry": {
+      "requested": "http://127.0.0.1:3170/settings/remote-access#connect-computer",
+      "finalUrl": "http://127.0.0.1:3170/settings/remote-access?ws=papercusp-workspace&desktopHost=local#connect-computer",
+      "httpStatus": 200,
+      "title": "Papercusp Operator",
+      "visibleRelayText": [
+        "Papercusp relay",
+        "This computer connects to Papercusp so outside apps can reach this workspace. Sign in and approve a code; no SSH or router setup is needed for this method.",
+        "I understand",
+        "Agree"
+      ],
+      "localConsent": "required, not accepted",
+      "desktopGrantForm": "not displayed while the relay is off; current PortalRelayCard source renders it only when linked",
+      "browserSession": "No authenticated browser session is available for this workspace.",
+      "pageErrors": [],
+      "observedAuthRequest": { "path": "/api/hosted/auth/session", "httpStatus": 404 }
+    },
+    "portal": {
+      "requested": "https://app.papercusp.com",
+      "finalUrl": "https://app.papercusp.com/",
+      "httpStatus": 200,
+      "title": "Papercusp Portal",
+      "visibleText": ["Sign in or sign up", "Sign in", "Create account"],
+      "approval": "not attempted: receiving account and organization are not selected or signed in"
+    },
+    "localStatus": {
+      "httpStatus": 200,
+      "state": "off",
+      "installId": null,
+      "consent": { "agreed": false, "version": null, "at": null },
+      "linked": null,
+      "desktopGrant": null,
+      "connector": null,
+      "health": "off"
+    },
+    "connectorAuthorization": "not exercised: no linked installation",
+    "channelAuthorization": "not exercised: no desktop grant",
+    "noiseSeal": "not exercised: no channel",
+    "roster": "not exercised",
+    "frames": "not exercised",
+    "input": "not exercised"
+  },
+  "result": {
+    "disposition": "human-prerequisites-required",
+    "connectionEstablished": false,
+    "requiredHumanActions": [
+      "Choose the receiving Portal account and organization.",
+      "Sign in to that account at https://app.papercusp.com.",
+      "Review and accept the local relay notice, then approve the receiving Portal request.",
+      "Review the separate desktop view/control request before granting it."
+    ],
+    "scopeLimit": "This is the requested observed physical-host attempt receipt. It does not satisfy automated full served Portal acceptance or prove a healthy desktop connection."
+  },
+  "evidenceRefs": [
+    {
+      "path": "/tmp/portal-physical-host-browser-20261116.json",
+      "sha256": "243ccc15cebefb890bd0be8b6d52b57966c32feffe147c31539bab7c9e308d7d",
+      "note": "Initial browser observations; initial screenshots precede hydration."
+    },
+    {
+      "path": "/tmp/portal-physical-host-local-settled-20261116.json",
+      "sha256": "b6a43f924dd6747308fd81dc4c48cecb14d691d9b941affa126bdb1eb7bb7c86",
+      "note": "Raw local hydration/status receipt; only relevant redacted fields are published here."
+    },
+    {
+      "path": "/tmp/portal-physical-host-local-settled-20261116.png",
+      "sha256": "8f94389adc0ed72699bb97d5e20e5011bd7d69e6f2cc2bdff1c98a252e4f1d3a"
+    },
+    {
+      "path": "/tmp/portal-physical-host-portal-settled-20261116.json",
+      "sha256": "22f02edc8638e323320f0b5d909724e3c569b6d07711bf5986ac5305c6e57deb"
+    },
+    {
+      "path": "/tmp/portal-physical-host-portal-settled-20261116.png",
+      "sha256": "a93c9ee4a825f77fe692f0ea0e154caafbd50c372de1b8042b3412766667fdbc"
+    }
+  ]
+}

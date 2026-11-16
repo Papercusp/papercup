@@ -1527,7 +1527,7 @@ describe('identity hook ports through the real CLI (P-011)', () => {
         expect(reason).toContain('stage=wall-during-fetch');
         expect(reason).toMatch(/firstAttempt=wall-during-fetch\/\d+ms/);
         // The named read-only retry form is one the guard actually admits.
-        expect(reason).toContain("ptool <read-verb> --json - <<'JSON'");
+        expect(reason).toContain("ptool <verb> --json - <<'JSON'");
         expect(reason).toContain('work_items:get');
         const namedRetry = runInjection({ adapter, nativeEvent, event: { tool_name: 'exec_command', tool_input: { cmd: [
           "ptool work_items:get --json - <<'JSON'", '{"id":"EI-28788424262267205"}', 'JSON',
@@ -1542,7 +1542,7 @@ describe('identity hook ports through the real CLI (P-011)', () => {
         await vi.advanceTimersByTimeAsync(spec.timeoutMs * spec.unavailableAttempts);
         const patchReason = JSON.parse((await patch)!).hookSpecificOutput.permissionDecisionReason as string;
         expect(patchReason).toMatch(/firstAttempt=wall-during-fetch/);
-        expect(patchReason).not.toContain('ptool <read-verb>');
+        expect(patchReason).not.toContain('ptool <verb>');
 
         // An HTTP answer is the server speaking: never retried in search of a better one.
         const httpIds: string[] = [];

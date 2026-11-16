@@ -650,6 +650,53 @@ describe("buildServiceHealthDiagnostic", () => {
     expect(out.effective).toMatchObject({ down: 1, wedged: 0 });
   });
 
+  it("does not recommend a service restart when a loopback alias fails but the same endpoint succeeds", () => {
+    const aliasFailure = {
+      name: "operator",
+      up: false,
+      status: null,
+      latencyMs: 4,
+      note: "connection refused",
+      url: "http://localhost:3170/api/desktop/version",
+    };
+    const canonicalSuccess = {
+      name: "staging-api",
+      up: true,
+      status: 200,
+      latencyMs: 26,
+      url: "http://127.0.0.1:3170/api/desktop/version",
+    };
+    const out = buildServiceHealthDiagnostic([aliasFailure, canonicalSuccess], []);
+
+    expect(out.rootCause).toBeNull();
+    expect(out.nextVerb).toBeNull();
+    // Keep the endpoint-specific failure and aggregate probe counts visible.
+    expect(out.effective).toMatchObject({ up: 1, down: 1 });
+    expect(out.evidence.failures).toEqual([aliasFailure]);
+  });
+
+  it("keeps a failed loopback probe actionable when the healthy endpoint uses a different port", () => {
+    const aliasFailure = {
+      name: "operator",
+      up: false,
+      status: null,
+      latencyMs: 4,
+      note: "connection refused",
+      url: "http://localhost:3170/api/desktop/version",
+    };
+    const otherService = {
+      name: "operator-main",
+      up: true,
+      status: 200,
+      latencyMs: 26,
+      url: "http://127.0.0.1:3070/api/desktop/version",
+    };
+    const out = buildServiceHealthDiagnostic([aliasFailure, otherService], []);
+
+    expect(out.rootCause).toEqual({ component: "operator", reason: "connection refused" });
+    expect(out.nextVerb).toBe('dev:restart { target:"dev" }');
+  });
+
   it("counts an explicit unhealthy systemd verdict even when flapState is an operator-side zero-default", () => {
     const supervision = [
       {

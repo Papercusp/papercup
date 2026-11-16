@@ -59,6 +59,13 @@ export const READINESS_SETTLED_REFUSAL_TTL_MS = 60_000;
 const settledRefusals = pinModuleState('@papercusp/operator-core.plan-continuation-readiness.settled-refusals',
   () => new Map<string, { blockers: string[]; at: number }>());
 
+// Keep the complete verdict alongside the cache's running factory. The cache deliberately
+// returns null for a refusal, so its joined readers otherwise lose those blockers and each
+// repeat the expensive evaluation. This is only a handoff for that existing build, not a
+// second cache or single-flight layer: cache bypass still runs every caller's own factory.
+const evaluatingVerdicts = pinModuleState('@papercusp/operator-core.plan-continuation-readiness.evaluating-verdicts',
+  () => new Map<string, Promise<string[]>>());
+
 function rememberSettledRefusal(key: string, blockers: string[]): void {
   const now = Date.now();
   // Expired entries carry no meaning any more; dropping them keeps the map at the live set.
@@ -73,8 +80,11 @@ function takeSettledRefusal(key: string): string[] | null {
   return Date.now() - entry.at <= READINESS_SETTLED_REFUSAL_TTL_MS ? entry.blockers : null;
 }
 
-/** Test seam: clear background-settled refusals between cases. */
-export function resetSettledReadinessRefusalsForTests(): void { settledRefusals.clear(); }
+/** Test seam: clear background verdict state between cases. */
+export function resetSettledReadinessRefusalsForTests(): void {
+  settledRefusals.clear();
+  evaluatingVerdicts.clear();
+}
 
 /**
  * `inputs` fingerprints the plan-keyed policy rows the continuation bundle reads that do
@@ -137,10 +147,12 @@ export async function checkContinuationReadiness(binding: ExecutionPlanBinding, 
     note(observe, 'readiness_settled_refusal');
     return settled;
   }
-  // A holder object: the factory may run here, in a joined build, or (SWR) after return.
-  const local: { built: string[] | null; ranHere: boolean } = { built: null, ranHere: false };
+  // The factory starts synchronously inside cachedRead. Capture its full verdict before
+  // awaiting the cache result; a joined reader needs that promise even after the factory
+  // has settled and the cache discards its null result.
+  const local: { evaluation: Promise<string[]> | null } = { evaluation: null };
   const build = (async (): Promise<string[]> => {
-    const verdict = await cachedRead<{ executable: true } | null>({ workspaceId }, {
+    const cached = cachedRead<{ executable: true } | null>({ workspaceId }, {
       tool: CONTINUATION_READINESS_CACHE_TOOL,
       key,
       // Revision and plan-keyed policy rows are in the key. Conversation-keyed critique
@@ -149,18 +161,28 @@ export async function checkContinuationReadiness(binding: ExecutionPlanBinding, 
       softTtlMs: READINESS_SOFT_TTL_MS,
       hardTtlMs: READINESS_HARD_TTL_MS,
     }, async () => {
-      local.ranHere = true;
-      const blockers = await deps.evaluate(binding, workspaceId, observe);
-      local.built = blockers;
+      local.evaluation = deps.evaluate(binding, workspaceId, observe);
+      evaluatingVerdicts.set(refusalKey, local.evaluation);
+      const blockers = await local.evaluation;
       return blockers.length ? null : { executable: true as const };
     });
+    const evaluation = local.evaluation ?? evaluatingVerdicts.get(refusalKey);
+    const ownEvaluation = local.evaluation;
+    if (ownEvaluation) {
+      // SWR can return before its factory settles. Retain the handoff until both do,
+      // and never let an older build remove a newer factory's verdict under bypass.
+      void Promise.allSettled([ownEvaluation, cached]).then(() => {
+        if (evaluatingVerdicts.get(refusalKey) === ownEvaluation) evaluatingVerdicts.delete(refusalKey);
+      });
+    }
+    const verdict = await cached;
     if (verdict) {
-      if (!local.ranHere) note(observe, 'readiness_reused');
+      if (!ownEvaluation) note(observe, 'readiness_reused');
       return [];
     }
-    // A refusal is never stored in the cache. A caller that joined another caller's refused
-    // build re-evaluates itself, so its blockers are its own, current reading.
-    return local.built ?? deps.evaluate(binding, workspaceId, observe);
+    // Only overlapping readers share a refusal. No negative cache entry survives the
+    // build, so a later caller can immediately observe a repaired plan.
+    return [...await (evaluation ?? deps.evaluate(binding, workspaceId, observe))];
   })();
   const budgetMs = Math.max(1, deps.budgetMs ?? READINESS_EVALUATION_BUDGET_MS);
   let timer: ReturnType<typeof setTimeout> | undefined;

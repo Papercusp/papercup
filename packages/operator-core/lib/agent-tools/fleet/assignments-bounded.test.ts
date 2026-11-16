@@ -398,7 +398,11 @@ describe('fleet:assignments bounded handler reads', () => {
     expect(result.data).toMatchObject({
       degraded: true,
       degradedLegs: ['assignments'],
-      summary: { agents: 0 },
+      summary: {
+        agents: 0,
+        scheduler_claim_state_status: 'unknown',
+        scheduler_active_work_item_claims: null,
+      },
     });
     expect(result.data.readTimings).toContainEqual({
       phase: 'assignments',
@@ -409,6 +413,56 @@ describe('fleet:assignments bounded handler reads', () => {
     expect(warnings.join('\n')).toContain(
       `fleet:assignments:assignments exceeded ${FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS}ms`,
     );
+  });
+
+  it('does not certify zero claims after a rejected roster, and recovers on the next read', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mocks.listAssignments.mockRejectedValueOnce(new Error('roster unavailable'));
+
+    const unavailable = await fleetAssignmentsTool.handler({}, ctx) as {
+      data: { summary: Record<string, unknown> };
+    };
+    const unknownClaims = {
+      scheduler_claim_state_status: 'unknown',
+      scheduler_active_work_item_claims: null,
+    };
+    expect(unavailable.data.summary).toMatchObject(unknownClaims);
+    expect(shapeFleetAssignments(unavailable.data, 'trimmed')).toMatchObject({
+      summary: unknownClaims,
+    });
+
+    mocks.listAssignments.mockResolvedValue([livePresenceRow()]);
+    mocks.schedulerClaims.mockResolvedValue(new Map([
+      ['su-worker', {
+        blocked: false,
+        activeClaims: 1,
+        maxConcurrentClaims: 2,
+        heldIds: ['EI-counted'],
+        blockerParkedIds: ['EI-parked'],
+      }],
+    ]));
+    const recovered = await fleetAssignmentsTool.handler({}, ctx) as {
+      data: { summary: Record<string, unknown>; agents: Array<Record<string, unknown>> };
+    };
+    expect(recovered.data.summary).toMatchObject({
+      scheduler_claim_state_status: 'measured',
+      scheduler_active_work_item_claims: 1,
+    });
+    expect(recovered.data.agents[0].schedulerClaimState).toEqual({
+      activeClaims: 1,
+      heldIds: ['EI-counted'],
+      blockerParkedIds: ['EI-parked'],
+    });
+  });
+
+  it('certifies zero claims when the roster read succeeds with no members', async () => {
+    const result = await fleetAssignmentsTool.handler({}, ctx) as {
+      data: { summary: Record<string, unknown> };
+    };
+    expect(result.data.summary).toMatchObject({
+      scheduler_claim_state_status: 'measured',
+      scheduler_active_work_item_claims: 0,
+    });
   });
 
   it('snapshot detail keeps the full scoped roster and claims without running member diagnostics', async () => {

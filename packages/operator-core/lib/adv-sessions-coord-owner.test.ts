@@ -39,6 +39,17 @@ describe('adv-sessions coord_owner_id wiring (P-001/P-003)', () => {
     return sql;
   }
 
+  it('retains the exact incarnation timestamp alongside the display timestamp', async () => {
+    const mod = await import('./adv-sessions');
+    const exact = '2026-09-24 10:00:00.123456+00';
+    const row = mod.mapAdvSessionRow(dbRow({ started_at: exact, started_at_exact: exact }) as never);
+    expect(row.startedAt).toBe('2026-09-24T10:00:00.123Z');
+    expect(row.startedAtExact).toBe(exact);
+    // Queries without the exact projection cannot invent a CAS timestamp from
+    // a millisecond-normalized UI value.
+    expect(mod.mapAdvSessionRow(dbRow() as never).startedAtExact).toBeUndefined();
+  });
+
   it('releases a private native route only after the exact session terminal CAS wins', async () => {
     const sql = mockSql(async () => [{ id: 7 }]);
     const stop = vi.fn(async () => {});

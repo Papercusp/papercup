@@ -536,6 +536,10 @@ describe('system-derived plan-lane evidence', () => {
   ] });
   const context = () => ({ ...ctx, custodianId: ctx.ownerId, blockers: [gate] });
   const read = () => createBlockerEvidenceReader(context())(ref);
+  const reopenEffect = (status: 'todo' | 'wip') => ({ plan: 'recovery', itemId: 'P-002', status,
+    expectedStatus: 'blocked', note: null, noteKind: null, rationale: null, verification: null,
+    onlyIfNotTerminal: false, onlyIfNotBlocked: false, onlyIfNotCompleted: false,
+    onlyIfNoOtherOpenCoverage: false, onlyIfNoOtherInFlightCoverage: false, onlyIfBlockAttributedTo: null });
   const decision = () => ({ schemaVersion: 1 as const, idempotencyKey: 'derived-recovery',
     disposition: 'self_resolve' as const, symptom: 'Derived lane remained blocked after prerequisite completion',
     evidenceRefs: [ref], investigation: [{ action: 'Read canonical graph', outcome: 'Prerequisite settled', evidenceRefs: [ref] }],
@@ -585,6 +589,46 @@ describe('system-derived plan-lane evidence', () => {
     mocks.plan.mockResolvedValue(blocked);
 
     expect(await read()).toMatchObject({ status: 'unknown' });
+  });
+  it.each(['todo', 'wip'] as const)('measures an explicit CAS reopen to %s without circular status evidence', async status => {
+    const blocked = plan();
+    blocked.items[1].blockedBy = [];
+    mocks.plan.mockResolvedValue(blocked);
+    expect(await preflightBlockerDecision(subject(), decision(), { ...context(), sessionId: ctx.ownerId },
+      { effect: reopenEffect(status) })).toMatchObject({ ok: true });
+    // A plain reader must still retain the explicit block.
+    expect(await read()).toMatchObject({ status: 'unknown' });
+    expect(mocks.event).not.toHaveBeenCalled();
+  });
+  it('does not let a prospective reopen clear a real prerequisite or independent condition', async () => {
+    const pending = plan();
+    pending.items[0].storedStatus = 'wip';
+    mocks.plan.mockResolvedValue(pending);
+    const options = { effect: reopenEffect('wip') };
+    expect(await preflightBlockerDecision(subject(), decision(), { ...context(), sessionId: ctx.ownerId }, options))
+      .toMatchObject({ ok: false, missing: expect.arrayContaining([`unresolved canonical condition event:${ref.ref}`]) });
+
+    pending.items[0].storedStatus = 'done';
+    const external = { ...gate, ref: 'fixture:external', createdBy: 'su-other' };
+    const current = subject();
+    const item = { ...current, payload: { ...current.payload, externalBlockers: [gate, external] } };
+    mocks.item.mockResolvedValue(item);
+    mocks.event.mockResolvedValue({ authoritative: true, verdict: 'reachable', basis: 'announced' });
+    expect(await preflightBlockerDecision(item, decision(), { ...context(), sessionId: ctx.ownerId }, options))
+      .toMatchObject({ ok: false, missing: expect.arrayContaining(['unresolved canonical condition event:fixture:external']) });
+  });
+  it.each([
+    { plan: 'other', itemId: 'P-002', expectedStatus: 'blocked', status: 'wip' },
+    { plan: 'recovery', itemId: 'P-003', expectedStatus: 'blocked', status: 'wip' },
+    { plan: 'recovery', itemId: 'P-002', status: 'wip' },
+    { plan: 'recovery', itemId: 'P-002', expectedStatus: 'blocked', status: 'done' },
+  ])('refuses a mismatched prospective reopen effect: %j', async effect => {
+    const blocked = plan();
+    blocked.items[1].blockedBy = [];
+    mocks.plan.mockResolvedValue(blocked);
+    expect(await preflightBlockerDecision(subject(), decision(), { ...context(), sessionId: ctx.ownerId },
+      { effect: { ...reopenEffect('wip'), expectedStatus: null, ...effect } }))
+      .toMatchObject({ ok: false });
   });
   it('permits accountable parking of a dependency-free lane without resolving an external condition', async () => {
     const actionable = plan();

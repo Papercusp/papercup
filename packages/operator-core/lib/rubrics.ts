@@ -2070,41 +2070,107 @@ export function computeAcceptanceBarSetHash(
 const CRITERION_BAR_HASH = /^[a-f0-9]{64}$/;
 
 /**
- * The server-derived barHash of every criterion a scorecard rates, keyed by the
- * criterion key, as the rubric stood when the card was saved
+ * One proof row a grade was taken against (per-requirement-acceptance-grading-2026-11-14
+ * R-1): the spec-evidence binding, the exact clause revision it proves, and the input
+ * fingerprints it was bound with. Copied from the bounded BAR snapshot the save call
+ * gated on, never from grader input.
+ */
+export interface CriterionGradeProof {
+  id: number;
+  specId: string;
+  specRevision: number;
+  specFingerprint: string;
+  bindingFingerprint: string | null;
+  fingerprints: {
+    sourceFingerprint: string;
+    testFingerprint: string | null;
+    fixtureFingerprint: string | null;
+    rubricFingerprint: string | null;
+    environmentFingerprint: string | null;
+  };
+}
+
+/**
+ * The grading record of one rated criterion, as it stood when the card was saved.
+ * `gradeKey` changes when either the BAR meaning (`barHash`) or the verification
+ * method text (`methodHash`) changes; `barHash` alone omits the method. `proof` is the
+ * requirement's current proof at save time; an empty array is an explicit statement
+ * that the requirement owned no current execution, never an omission.
+ */
+export interface CriterionGrade {
+  barHash: string;
+  methodHash: string;
+  gradeKey: string;
+  proof: CriterionGradeProof[];
+}
+
+/** What the save call's BAR snapshot says about one criterion: its hash and current proof. */
+export interface CriterionProofBinding {
+  barHash: string | null;
+  proof: readonly CriterionGradeProof[];
+}
+
+/** SHA-256 over a criterion's normalized verification-method text. */
+export function criterionMethodHash(method: string | undefined): string {
+  return hashPlanContent(JSON.stringify(['method', normalizedBarText(method)]));
+}
+
+/** The per-requirement grade key: the BAR hash bound to the method hash. */
+export function criterionGradeKey(barHash: string, methodHash: string): string {
+  return hashPlanContent(JSON.stringify(['grade-key', barHash, methodHash]));
+}
+
+/**
+ * The grading record of every criterion a scorecard rates, keyed by criterion key, as
+ * the rubric and its proof stood when the card was saved
  * (per-requirement-acceptance-grading-2026-11-14 R-1). A reader can then tell an
- * amendment of ONE requirement apart from an amendment of another, instead of
- * treating every rating as stale whenever the rubric revision moves.
+ * amendment of ONE requirement, or a change of ONE requirement's proof, apart from a
+ * change to another, instead of treating every rating as stale whenever the rubric
+ * revision moves.
  *
  * Returns null, and the card keeps the whole-rubric currentness rule, when:
  * - the rubric is not an acceptance rubric;
- * - the rubric snapshot the ratings were validated against is not the identity
- *   being pinned on the card (`pinnedCriteriaHash` differs: an amendment landed
- *   between the two reads), because its barHashes would then describe a different
- *   rubric than the card's own revision; or
+ * - the rubric the ratings were validated against is not the identity being pinned on
+ *   the card (`pinnedCriteriaHash` differs: an amendment landed between the two reads);
+ * - no BAR snapshot was read for the save (`proofByCriterionKey` is null), so no proof
+ *   binding can be stated;
+ * - a rated criterion is absent from the snapshot, its snapshot proof was not complete,
+ *   or the snapshot's barHash for it differs from the rubric's (the snapshot describes
+ *   another revision); or
  * - any rated criterion lacks a valid barHash, or a criterion key repeats.
  * All-or-nothing on purpose: a partial map would let a reader judge some ratings
  * per requirement and silently judge the rest by a rule nobody chose.
  */
-export function ratedCriterionHashes(
+export function ratedCriterionGrades(
   rubric: Pick<Rubric, 'kind' | 'criteria' | 'criteriaHash'>,
   pinnedCriteriaHash: string | null | undefined,
   ratings: Readonly<Record<string, unknown>>,
-): Record<string, string> | null {
+  proofByCriterionKey: ReadonlyMap<string, CriterionProofBinding> | null,
+): Record<string, CriterionGrade> | null {
   if (rubric.kind !== 'acceptance') return null;
   if (!pinnedCriteriaHash || rubric.criteriaHash !== pinnedCriteriaHash) return null;
+  if (!proofByCriterionKey) return null;
   const ratedKeys = Object.keys(ratings).sort();
   if (ratedKeys.length === 0) return null;
-  const hashByKey = new Map<string, string>();
+  const criterionByKey = new Map<string, RubricCriterion>();
   for (const criterion of rubric.criteria) {
-    if (hashByKey.has(criterion.key)) return null;
-    hashByKey.set(criterion.key, criterion.barHash?.trim() ?? '');
+    if (criterionByKey.has(criterion.key)) return null;
+    criterionByKey.set(criterion.key, criterion);
   }
-  const out: Record<string, string> = {};
+  const out: Record<string, CriterionGrade> = {};
   for (const key of ratedKeys) {
-    const hash = hashByKey.get(key);
-    if (!hash || !CRITERION_BAR_HASH.test(hash)) return null;
-    out[key] = hash;
+    const criterion = criterionByKey.get(key);
+    const barHash = criterion?.barHash?.trim() ?? '';
+    if (!criterion || !CRITERION_BAR_HASH.test(barHash)) return null;
+    const binding = proofByCriterionKey.get(key);
+    if (!binding || binding.barHash !== barHash) return null;
+    const methodHash = criterionMethodHash(criterion.method);
+    out[key] = {
+      barHash,
+      methodHash,
+      gradeKey: criterionGradeKey(barHash, methodHash),
+      proof: binding.proof.map((row) => ({ ...row, fingerprints: { ...row.fingerprints } })),
+    };
   }
   return out;
 }
@@ -6675,16 +6741,24 @@ export async function resolveAcceptanceBarApproverScreen(input: {
   if (applierId) attribute(applierId, 'caller');
 
   const subjectPlan = rubric.subjectPlan;
-  // One closure per population identity, computed on first use and shared by
-  // every candidate: `closure(identity).has(candidate)` is exactly
-  // areAcceptanceLineageRelated(candidate, identity) (pinned by the real-PG
-  // parity test in acceptance-author-identity.integration.test.ts).
+  // Lineage is symmetric: closure(candidate).has(identity) gives the same
+  // ancestor/descendant verdict as closure(identity).has(candidate), including
+  // sibling independence. Read once per candidate, then check the COMPLETE role
+  // population in memory. Reading once per role instead acquires a transaction
+  // and materializes the entire graph again for every implementer; per-query
+  // deadlines cannot bound that serial screen (EI-28754662753933650).
   const closures = new Map<string, Promise<Set<string>>>();
+  let failedClosure: Promise<Set<string>> | undefined;
   const closureOf = (identity: string) => {
+    // A failed screen stays failed for every routed candidate. Do not retry the
+    // same unavailable graph once per menu entry or silently shrink its roles.
+    if (failedClosure) return failedClosure;
     let closure = closures.get(identity);
     if (!closure) {
       closure = acceptanceLineageClosure(identity, { workspaceId: subjectScope.workspaceId });
       closures.set(identity, closure);
+      const pending = closure;
+      void pending.catch(() => { failedClosure = pending; });
     }
     return closure;
   };
@@ -6700,7 +6774,7 @@ export async function resolveAcceptanceBarApproverScreen(input: {
         { workspaceId: subjectScope.workspaceId },
         async (candidate, identity) => {
           try {
-            return (await closureOf(identity)).has(candidate);
+            return (await closureOf(candidate)).has(identity);
           } catch (cause) {
             // Keep the cached read fail-closed, with context for THIS candidate
             // rather than the first candidate to await the shared promise.

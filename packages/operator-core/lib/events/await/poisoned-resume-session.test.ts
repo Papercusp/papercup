@@ -14,6 +14,7 @@ const context = (transcriptPath: string): ResumeTurnContext => ({
   ownerId: 'su-poisoned',
   sessionId: 'native-77',
   startedAt: '2026-09-24T10:00:00.123Z',
+  startedAtExact: '2026-09-24 10:00:00.123456+00',
   workspaceId: 'papercusp-workspace',
   agent: 'claude',
   transcriptPath,
@@ -36,6 +37,40 @@ const failure = (tool = 'mcp__papercusp-su__plans_audit') => JSON.stringify({
 afterEach(() => vi.restoreAllMocks());
 
 describe('quarantineRepeatedClaudeToolReferenceFailures', () => {
+  it.each([
+    ['startedAt', '2026-09-24 10:02:00.000001+00'],
+    ['sessionId', 'native-successor'],
+    ['coordOwnerId', 'su-successor'],
+    ['workspaceId', 'successor-workspace'],
+  ])('does not end a successor whose %s changes while the poison marker is saved', async (field, value) => {
+    const root = mkdtempSync(join(tmpdir(), 'poisoned-resume-race-'));
+    try {
+      const transcriptPath = join(root, 'session.jsonl');
+      writeFileSync(transcriptPath, [failure(), failure(), failure()].join('\n'));
+      const current: Record<string, string> = {
+        coordOwnerId: 'su-poisoned', sessionId: 'native-77',
+        startedAt: '2026-09-24 10:00:00.123456+00', workspaceId: 'papercusp-workspace',
+      };
+      let ended = false;
+      const result = await quarantineRepeatedClaudeToolReferenceFailures(context(transcriptPath), failure(), {
+        // Resume/re-anchor wins after the original transcript was analyzed.
+        markBrief: async () => { current[field] = value; return true; },
+        markEnded: async (_id, _code, _by, options) => {
+          const expected = options?.expectedBinding;
+          // Model the existing terminal CAS: an omitted binding is unguarded.
+          if (expected && Object.entries(expected).some(([key, original]) => current[key] !== original)) return false;
+          ended = true;
+          return true;
+        },
+        now: () => new Date('2026-09-24T10:05:00.000Z'),
+      });
+      expect(result).toMatchObject({ poisoned: true, ended: false });
+      expect(ended).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('marks the exact adv-session incarnation ended after three trailing failures', async () => {
     const root = mkdtempSync(join(tmpdir(), 'poisoned-resume-'));
     try {
@@ -57,11 +92,15 @@ describe('quarantineRepeatedClaudeToolReferenceFailures', () => {
       expect(result).toMatchObject({ poisoned: true, turns: 3, ended: true });
       expect(deps.markBrief).toHaveBeenCalledWith('su-poisoned', 'papercusp-workspace', expect.objectContaining({
         advSessionId: 77,
-        startedAt: '2026-09-24T10:00:00.123Z',
+        startedAt: '2026-09-24 10:00:00.123456+00',
         by: 'resume-turn-detector',
       }));
       expect(deps.markEnded).toHaveBeenCalledWith(77, null, 'reconciler', {
         observedAt: new Date('2026-09-24T10:05:00.000Z'),
+        expectedBinding: {
+          coordOwnerId: 'su-poisoned', sessionId: 'native-77',
+          workspaceId: 'papercusp-workspace', startedAt: '2026-09-24 10:00:00.123456+00',
+        },
       });
       expect(writes[0]?.[0]).toBe('su-poisoned'); // durable wake gate precedes the end write
     } finally {
@@ -115,6 +154,15 @@ describe('quarantineRepeatedClaudeToolReferenceFailures', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('leaves a session retryable when its exact incarnation timestamp was not captured', async () => {
+    const deps: PoisonedResumeDeps = { markBrief: vi.fn(), markEnded: vi.fn() };
+    await expect(quarantineRepeatedClaudeToolReferenceFailures(
+      { ...context('/not-read'), startedAtExact: null }, failure(), deps,
+    )).resolves.toMatchObject({ poisoned: false, reason: expect.stringContaining('unavailable') });
+    expect(deps.markBrief).not.toHaveBeenCalled();
+    expect(deps.markEnded).not.toHaveBeenCalled();
+  });
 });
 
 describe('quarantineRepeatedCodexContextOverflow (WI-6554700010008894)', () => {
@@ -129,6 +177,7 @@ describe('quarantineRepeatedCodexContextOverflow (WI-6554700010008894)', () => {
     ownerId: 'su-overflowed',
     sessionId: '01a10080-4435-7822-8b4f-d82fc7e81227',
     startedAt: '2026-10-12T11:26:21.000Z',
+    startedAtExact: '2026-10-12 11:26:21.000123+00',
     workspaceId: 'papercusp-workspace',
     agent: 'codex',
     transcriptPath,
@@ -153,12 +202,16 @@ describe('quarantineRepeatedCodexContextOverflow (WI-6554700010008894)', () => {
       expect(result).toMatchObject({ poisoned: true, turns: 2, ended: true });
       expect(deps.markBrief).toHaveBeenCalledWith('su-overflowed', 'papercusp-workspace', expect.objectContaining({
         advSessionId: 33944,
-        startedAt: '2026-10-12T11:26:21.000Z',
+        startedAt: '2026-10-12 11:26:21.000123+00',
         by: 'resume-turn-detector',
         reason: expect.stringContaining('exceeded the model context window of 828400 tokens'),
       }));
       expect(deps.markEnded).toHaveBeenCalledWith(33944, null, 'reconciler', {
         observedAt: new Date('2026-10-12T11:40:00.000Z'),
+        expectedBinding: {
+          coordOwnerId: 'su-overflowed', sessionId: '01a10080-4435-7822-8b4f-d82fc7e81227',
+          workspaceId: 'papercusp-workspace', startedAt: '2026-10-12 11:26:21.000123+00',
+        },
       });
       expect(deps.calls).toEqual(['brief', 'ended']); // durable wake gate precedes the end write
     } finally {

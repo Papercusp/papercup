@@ -179,8 +179,12 @@ function expectBehaviorClassInBothShapes(schema: string) {
   const itemsStart = schema.indexOf('; items?:array', specStart);
   expect(specStart).toBeGreaterThanOrEqual(0);
   expect(itemsStart).toBeGreaterThan(specStart);
-  expect(schema.slice(specStart, itemsStart)).toContain('behaviorClass:enum(');
-  expect(schema.slice(itemsStart)).toContain('behaviorClass:enum(');
+  for (const shape of [schema.slice(specStart, itemsStart), schema.slice(itemsStart)]) {
+    expect(shape).toContain('behaviorClass:enum(');
+    for (const required of ['specId', 'expectedRevision', 'planItemId', 'behavior', 'lifecycleStatus']) {
+      expect(shape).toMatch(new RegExp(`(?:[,{])${required}:`));
+    }
+  }
 }
 
 beforeEach(() => {
@@ -659,7 +663,7 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
 
   it('keeps the structured observation subject shape visible in improvements:capture discovery (EI-24759188330677893)', async () => {
     const { schemaByTool } = buildCorpus();
-    const subjectShape = 'subject?:object{kind?:enum(agent-run|session|work-item|plan|pot),ref:string';
+    const subjectShape = 'subject?:object{kind?:enum(agent-run|session|work-item|plan|pot|fleet),ref:string';
     expect(compactSchemaForResult(schemaByTool.get('improvements:capture'))).toContain(subjectShape);
 
     const result = await callHandler({ query: 'improvements:capture', limit: 1 });
@@ -1401,8 +1405,10 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     const schema = z.toJSONSchema(scorecardEmitArgs) as { properties?: Record<string, unknown> };
     const compact = compactSchemaForResult(schema);
 
-    expect(compact).toContain('rerunRecipe?:object{');
-    expect(compact).toMatch(/rerunRecipe\?:object\{current:object\{[^}]*supplied:boolean/);
+    // The quality recipe has no `current` selector. The merged union keeps it
+    // optional and publishes which recipe arm requires it in the one-of hint.
+    expect(compact).toContain('rerunRecipe?:object(one-of:');
+    expect(compact).toMatch(/rerunRecipe\?:object[^{}]*\{current\?:object\{[^}]*supplied:boolean/);
   });
 
 });
@@ -2131,10 +2137,10 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     const compact = compactSchemaForResult(schemaByTool.get('capability:read'));
 
     // The line/content/evidence branches explicitly forbid byte_limit, while
-    // the byte-window branch accepts it as an integer capped at 4096. Both
+    // the machine byte-window branch accepts it up to 4 MiB. Both
     // discovery surfaces must teach the callable branch's actual ceiling.
-    expect(entry?.argSchema).toContain('byte_limit?:integer(>0-4096)');
-    expect(compact).toContain('byte_limit?:integer(>0-4096)');
+    expect(entry?.argSchema).toContain('byte_limit?:integer(>0-4194304)');
+    expect(compact).toContain('byte_limit?:integer(>0-4194304)');
   });
 
   it('keeps the required progress_lease remedy visible in bounded events:await discovery', () => {

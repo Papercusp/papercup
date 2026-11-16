@@ -579,7 +579,7 @@ export function buildAgentLaunchCommand(opts: {
   plan?: string | null;
   harness?: string | null;
   account?: string | null;
-  /** Emit the retained fleet leader role on an in-place resume. */
+  /** Emit the retained fleet leader role on a resume or identity-preserving successor. */
   fleetRole?: 'leader';
   model?: string | null;
   modelSource?: CodexModelSource | null;
@@ -703,7 +703,6 @@ export function buildAgentLaunchCommand(opts: {
     }
     const resumeLabel = opts.resumeId?.trim() ? 'resumeId' : 'sessionId';
     parts.push(`--resume=${safe(resumeLabel, requestedResumeId)}`);
-    if (opts.fleetRole === 'leader') parts.push('--fleet-role=leader');
     if (opts.mode === 'fork') parts.push('--fork');
     // Pre-pinned coord identity on the launches that MINT one (see the option's
     // doc). Refuse it on a same-backend resume rather than dropping it: a caller
@@ -743,6 +742,7 @@ export function buildAgentLaunchCommand(opts: {
     if (opts.harness) parts.push(`--harness=${safe('harness', opts.harness)}`);
     if (opts.plan) parts.push(`--plan=${safe('plan', opts.plan)}`);
   }
+  if (opts.fleetRole === 'leader') parts.push('--fleet-role=leader');
   // --headless keeps the managed-pty host ON despite non-TTY stdio, so the session
   // stays injectable (wakes AND the resume kickoff both ride that pty). Without it a
   // windowless member parks forever after one turn.

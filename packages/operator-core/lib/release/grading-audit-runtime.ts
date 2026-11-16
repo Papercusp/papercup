@@ -235,6 +235,8 @@ export function gradingAuditRuntimeChildEnv(locator: GradingAuditRuntimeLocator)
     HARNESS_DATABASE_URL: app, PAPERCUSP_DATABASE_URL: admin,
     PAPERCUSP_INTEGRATION_ROOT: locator.sourceRoot,
     PAPERCUSP_HONO_PORT: port, PORT: port, PAPERCUSP_BIND_HOST: '127.0.0.1',
+    // Exact evaluators need the request surface without interactive/native boot legs.
+    PAPERCUSP_UTILITY_HOST: '1',
     PAPERCUSP_BACKGROUND_WORKERS: '0', PAPERCUSP_USE_EMBEDDED_PG: '0',
     PAPERCUSP_DBOS_ENABLE: '0', PAPERCUSP_DBOS_ROUTINES: '0', PAPERCUSP_DBOS_ORCHESTRATOR: '0',
     PAPERCUSP_PROVISION_ENV_OPERATORS: '0', PAPERCUSP_IPC_ENABLE: '0',

@@ -104,6 +104,60 @@ describe('continuation readiness reuse (WI-6554700010049220)', () => {
     expect(state.calls).toBe(1);
   });
 
+  it('shares a refused evaluation with joined callers without evaluating each caller again', async () => {
+    const { state, deps } = harness(['spec_quality_not_current']);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const slow: ContinuationReadinessDeps = { ...deps,
+      evaluate: async (...args) => { await gate; return deps.evaluate(...args); } };
+    const calls = Array.from({ length: 5 }, () => checkContinuationReadiness(binding, WS, undefined, slow));
+    release();
+    const outcomes = await Promise.all(calls);
+    expect(outcomes).toEqual(Array.from({ length: 5 }, () => ['spec_quality_not_current']));
+    expect(state.calls).toBe(1);
+    outcomes[0]!.push('caller-local');
+    expect(outcomes[1]).toEqual(['spec_quality_not_current']);
+
+    // Sharing the running verdict must not cache a refusal after it settles.
+    state.verdict = [];
+    expect(await checkContinuationReadiness(binding, WS, undefined, slow)).toEqual([]);
+    expect(state.calls).toBe(2);
+  });
+
+  it('preserves independent evaluations when the cache kill switch is off', async () => {
+    setFlagOverridesForTest({ 'papercusp-cache-layer': false });
+    await _refreshCacheLayerForTests();
+    const { state, deps } = harness(['spec_quality_not_current']);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const slow: ContinuationReadinessDeps = { ...deps,
+      evaluate: async (...args) => { await gate; return deps.evaluate(...args); } };
+    const calls = Array.from({ length: 5 }, () => checkContinuationReadiness(binding, WS, undefined, slow));
+    release();
+    expect(await Promise.all(calls)).toEqual(Array.from({ length: 5 }, () => ['spec_quality_not_current']));
+    expect(state.calls).toBe(5);
+  });
+
+  it('retries after a rejected shared evaluation without retaining the failed build', async () => {
+    const { deps } = harness();
+    let attempts = 0;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const failure = new Error('readiness evaluation failed');
+    const slow: ContinuationReadinessDeps = { ...deps, evaluate: async () => {
+      attempts++;
+      await gate;
+      if (attempts === 1) throw failure;
+      return [];
+    } };
+    const calls = Array.from({ length: 5 }, () => checkContinuationReadiness(binding, WS, undefined, slow));
+    release();
+    expect(await Promise.allSettled(calls)).toEqual(Array.from({ length: 5 }, () => ({ status: 'rejected', reason: failure })));
+    expect(attempts).toBe(1);
+    expect(await checkContinuationReadiness(binding, WS, undefined, slow)).toEqual([]);
+    expect(attempts).toBe(2);
+  });
+
   it('does not cache when the revision fence is unreadable', async () => {
     const { state, deps } = harness();
     state.fence = null;
@@ -137,7 +191,8 @@ describe('continuation readiness reuse (WI-6554700010049220)', () => {
     const gate = new Promise<void>(resolve => { release = resolve; });
     const slow: ContinuationReadinessDeps = { ...deps, budgetMs: 20,
       evaluate: async (...args) => { await gate; return deps.evaluate(...args); } };
-    expect(await checkContinuationReadiness(binding, WS, undefined, slow)).toEqual([PLAN_READINESS_PENDING]);
+    const calls = Array.from({ length: 5 }, () => checkContinuationReadiness(binding, WS, undefined, slow));
+    expect(await Promise.all(calls)).toEqual(Array.from({ length: 5 }, () => [PLAN_READINESS_PENDING]));
     release();
     await new Promise(resolve => setTimeout(resolve, 5));
     // The real blockers reach the retry without another evaluation (fail-closed either way).

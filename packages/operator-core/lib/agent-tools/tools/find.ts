@@ -342,9 +342,18 @@ function nestedObjectFieldHint(node: JsonSchemaNode, depth: number, includeNeste
   const branches = schemaNodes(node).filter((branch) => branch.properties && typeof branch.properties === 'object');
   if (discriminator && branches.length > 1) {
     const kind = discriminator[1] as JsonSchemaNode;
+    const requiredInAnyBranch = new Set(branches.flatMap((branch) =>
+      Array.isArray(branch.required) ? branch.required.filter((name): name is string => typeof name === 'string') : [],
+    ));
+    // Reserve every arm's required inputs, then fit the shortest optional
+    // names. Source-order metadata from the first arm must not starve later
+    // arms (for example a probe after tests/instrument metadata).
+    const inputs = entries.filter(([name]) => name !== 'kind').sort(([a], [b]) =>
+      Number(requiredInAnyBranch.has(b)) - Number(requiredInAnyBranch.has(a)) || a.length - b.length || a.localeCompare(b),
+    );
     const fields = [
       `kind${nested.required.has('kind') ? '' : '?'}:${schemaShape(kind, depth, false, false)}`,
-      ...entries.filter(([name]) => name !== 'kind').map(([name]) => `${name}${nested.required.has(name) ? '' : '?'}`),
+      ...inputs.map(([name]) => `${name}${nested.required.has(name) ? '' : '?'}`),
     ];
     let body = '';
     let omitted = 0;
@@ -534,11 +543,13 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
     if (isScorecardEmitArgs && name === 'rerunRecipe') return 115;
     // plans:set-specs has a wide clause shape; its required discriminator was
     // elided behind optional fields in both `spec` and `items` discovery.
-    if (name === 'behaviorClass') return 95;
+    if (name === 'behaviorClass') return 100;
     if (name === 'verification') return 90;
     // rerunRecipe.current.supplied is a required decision input. A wide
     // selection object must not push that shape behind the segment tail.
-    if (name === 'current' && nested.required.has(name)) return 85;
+    if (name === 'current' && (nested.required.has(name) || schemaNodes(node).some((branch) =>
+      Array.isArray(branch.required) && branch.required.includes(name),
+    ))) return 85;
     // work_items:get's bounded result row must expose its resumable checkpoint
     // and recent-comment window together. Let the larger item-identity object
     // render after those paths so it can degrade to its outer name when needed.
@@ -559,6 +570,8 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
       : null;
     return node.type === 'array' && item != null && item.required.size > 0;
   };
+  let compactRequiredConstraints = false;
+  let constraintsOmitted = false;
   const renderEntry = (
     name: string,
     raw: unknown,
@@ -578,12 +591,21 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
     // full would consume this entire bounded segment and evict the equally
     // load-bearing completion.verification.coverage path. Keep the object name
     // here; the constraint above retains every required causal field verbatim.
-    const shape = schemaShape(
+    const fullShape = schemaShape(
       child,
       depth,
       withDescription,
       includeChildFields,
     );
+    // On the recovery pass reserve required primitive keys before optional
+    // recursive evidence. Bounds and patterns stay in the exact schema; the
+    // omission marker below makes their recovery necessary and explicit.
+    const type = schemaType(child);
+    const shape = compactRequiredConstraints && nested.required.has(name) && contractPriority(name) === 0 &&
+      type && !type.split('|').some((arm) => arm === 'object' || arm === 'array')
+      ? type
+      : fullShape;
+    if (shape !== fullShape) constraintsOmitted = true;
     const description = withDescription ? nestedDescription(child, depth) : '';
     return `${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}${description}`;
   };
@@ -682,6 +704,8 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
   // nested paths (such as completion.verification.coverage) stable while
   // making a late required field such as progress_lease.remedy visible.
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    compactRequiredConstraints = attempt > 0;
+    constraintsOmitted = false;
     const rendered = renderOrderedProperties(propertiesForRender);
     const omittedRequired = propertiesForRender.filter(
       ([name]) => nested.required.has(name) && rendered.omitted.has(name),
@@ -698,7 +722,9 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
       attempt === 1 ||
       (rendered.oversized && omittedRequiredArrayItems.length === 0)
     ) {
-      return rendered.body;
+      return constraintsOmitted && !rendered.body.includes('…')
+        ? `${rendered.body.slice(0, -1)},…}`
+        : rendered.body;
     }
     const omittedRequiredNames = new Set([
       ...omittedRequired.map(([name]) => name),

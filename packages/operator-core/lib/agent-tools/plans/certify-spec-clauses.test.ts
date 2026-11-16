@@ -1021,6 +1021,59 @@ describe('plans:certify-spec-clauses', () => {
       expect(written?.supersedes).toBe('EI-stranded-pending');
     });
 
+    const arrangePagedHistory = async (size: number, evaluatorBuild: { sha: string; version: string }) => {
+      await arrangeStranded(evaluatorBuild);
+      const subjectRef = specTestAdequacySubjectRef(PLAN, 'SPEC-PASS', 1);
+      const [stranded] = await listScorecards({ rubricRef: 'spec-test-adequacy', subjectRef });
+      const rows = Array.from({ length: size }, (_, index) => ({
+        ...stranded,
+        ...(index === size - 1 ? {} : {
+          issueId: `EI-settled-${index}`,
+          gradingAudit: { state: 'passed', metaRubricRef: 'grading-integrity' },
+        }),
+        createdAt: new Date(Date.UTC(2026, 10, 15) - index * 1000).toISOString(),
+      }));
+      listScorecards.mockImplementation(async (filter: {
+        rubricRef?: string; subjectRef?: string; limit?: number; before?: { issueId: string };
+      }) => {
+        if (filter.rubricRef !== 'spec-test-adequacy' || filter.subjectRef !== subjectRef) return [];
+        const start = filter.before ? rows.findIndex((row) => row.issueId === filter.before!.issueId) + 1 : 0;
+        return rows.slice(start, start + (filter.limit ?? 100));
+      });
+    };
+
+    it.each([99, 100, 101, 305])(
+      'scans complete scorecard history before superseding its only stranded card (%i rows)',
+      async (size) => {
+        await arrangePagedHistory(size, RETIRED_BUILD);
+
+        const filed = await certify({ specIds: ['SPEC-PASS'] });
+
+        expect(filed).toMatchObject({
+          ok: true,
+          counts: { filed: 1, refused: 0 },
+          clauses: [{ strandedSuperseded: { issueId: 'EI-stranded-pending' } }],
+        });
+        const written = asStructuredObservation(
+          (captureImprovement.mock.calls[0]![0] as { payloadExtra: { observation: unknown } }).payloadExtra.observation,
+        );
+        expect(written?.supersedes).toBe('EI-stranded-pending');
+      },
+    );
+
+    it.each([99, 100, 101])(
+      'scans complete scorecard history before emit can bypass a live pending card (%i rows)',
+      async (size) => {
+        await arrangePagedHistory(size, LIVE_BUILD);
+
+        const filed = await certify({ specIds: ['SPEC-PASS'] });
+
+        expect(filed).toMatchObject({ ok: false, counts: { filed: 0, refused: 1 } });
+        expect(filed.clauses?.[0]?.card).toMatchObject({ status: 'refused', code: 'grading_audit_required' });
+        expect(captureImprovement).not.toHaveBeenCalled();
+      },
+    );
+
     // EI-28807501130212029: a REAL listScorecards row carries the recipe's cited binding ids
     // but no read-time auditTarget (only readScorecard computes it), so currentness must come
     // from the recipe-header read, never from the list row.

@@ -80,12 +80,13 @@ describe('SPA build evidence timestamps', () => {
         encoding: 'utf8', timeout: 10_000,
         env: { ...process.env, PATH: bin + ':' + process.env.PATH,
           SETUP_SCRIPT: SCRIPT_PATH, RELEASE_ROOT: missingRelease ? join(root, 'missing') : root,
-          TMPDIR: root },
+          TMPDIR: root, PAPERCUSP_HOME: root },
       });
     const endedAt = Date.now() / 1000;
-    const logs = readdirSync(root).filter(name => name.startsWith('setup-release-spa-build.'));
+    const logRoot = join(root, 'checkpoint-logs');
+    const logs = readdirSync(logRoot).filter(name => name.startsWith('setup-release-spa-build.'));
     return { root, result, startedAt, endedAt, logs,
-      evidence: logs.map(name => readFileSync(join(root, name), 'utf8')).join('\n') };
+      evidence: logs.map(name => readFileSync(join(logRoot, name), 'utf8')).join('\n') };
   }
 
   it('retains timed lifecycle output and the actual failing npm status, including an unterminated line', () => {
@@ -188,6 +189,8 @@ describe('WI-6554700010049444: dependencies-only refuses an unloadable generatio
     ['loadable', '0', 0],
     ['unloadable', '74', 1],
     ['not-dependencies-only', '74', 0],
+    ['rechecked', '0', 0],
+    ['selector-drift', '0', 0],
   ] as const)('%s generation', (mode, loadRc, expectedStatus) => {
     const fixture = mkdtempSync(join(tmpdir(), 'deps-only-native-'));
     try {
@@ -202,12 +205,23 @@ describe('WI-6554700010049444: dependencies-only refuses an unloadable generatio
       const result = spawnSync('bash', ['-c', [
         'set -euo pipefail',
         'source "$GENERATION_SCRIPT"',
+        'source <(sed -n "/^validate_dependencies_only_input_selection()/,/^}/p" "$SETUP_SCRIPT")',
         'source <(sed -n "/^validate_dependencies_only_input()/,/^}/p" "$SETUP_SCRIPT")',
         'log() { printf "%s\\n" "$*"; }',
         'dependency_generation_input_fingerprint_ref() { printf "%s\\n" "$TARGET_INPUT"; }',
         'dependency_generation_select_prevalidated() { printf "select=%s token=%s\\n" "$2" "$3"; }',
         'dependency_generation_native_addons_load_isolated() { printf "native-check=%s\\n" "$1"; return "$LOAD_RC"; }',
         'rc=0; validate_dependencies_only_input || rc=$?',
+        'if [ "$RECHECK_SELECTION" = "1" ]; then',
+        '  selection_rc=0; validate_dependencies_only_input_selection || selection_rc=$?',
+        '  validate_dependencies_only_input_selection || selection_rc=$?',
+        '  printf "selection_rc=%s\\n" "$selection_rc"',
+        'fi',
+        'if [ "$DRIFT_SELECTION" = "1" ]; then',
+        '  printf "input=changed\\n" > "$DEPENDENCY_GENERATION_ROOT/.inputs/$TARGET_INPUT"',
+        '  selection_rc=0; validate_dependencies_only_input_selection || selection_rc=$?',
+        '  printf "selection_rc=%s\\n" "$selection_rc"',
+        'fi',
         'printf "rc=%s\\n" "$rc"',
       ].join('\n')], { encoding: 'utf8', timeout: 10_000, env: { ...process.env,
         GENERATION_SCRIPT: DEPENDENCY_GENERATION_SCRIPT, SETUP_SCRIPT: SCRIPT_PATH,
@@ -216,6 +230,8 @@ describe('WI-6554700010049444: dependencies-only refuses an unloadable generatio
         TARGET_INPUT: input, PINNED_DEPENDENCY_GENERATION_ID: identity,
         DEPENDENCY_GENERATION_PATH: generationPath,
         DEPENDENCY_GENERATION_TREE: join(generationPath, 'tree'), LOAD_RC: loadRc,
+        RECHECK_SELECTION: mode === 'rechecked' ? '1' : '0',
+        DRIFT_SELECTION: mode === 'selector-drift' ? '1' : '0',
       } });
       expect(result.status, result.stdout + result.stderr).toBe(0);
       expect(result.stdout).toContain(`rc=${expectedStatus}`);
@@ -224,6 +240,12 @@ describe('WI-6554700010049444: dependencies-only refuses an unloadable generatio
         return;
       }
       // The selector was validated first, then the isolated load check ran
+      expect(result.stdout.match(/native-check=/g) ?? []).toHaveLength(1);
+      if (mode === 'rechecked') expect(result.stdout).toContain('selection_rc=0');
+      if (mode === 'selector-drift') {
+        expect(result.stdout).toContain('selection_rc=1');
+        expect(result.stdout).toContain('committed input/generation mismatch');
+      }
       // against the immutable generation tree (never on the release checkout).
       expect(result.stdout).toContain(`select=${identity} token=v3:${'c'.repeat(64)}`);
       expect(result.stdout).toContain(`native-check=${join(generationPath, 'tree')}`);
@@ -232,7 +254,7 @@ describe('WI-6554700010049444: dependencies-only refuses an unloadable generatio
         expect(result.stdout).toContain(
           `FATAL: dependencies-only generation ${identity} for target inputs ${input} has native addons that will not load`,
         );
-      } else {
+      } else if (mode !== 'selector-drift') {
         expect(result.stdout).not.toContain('FATAL');
       }
     } finally { rmSync(fixture, { recursive: true, force: true }); }
@@ -3102,7 +3124,7 @@ exec "$REGRESSION_REAL_GIT" "$@"
     }, null, 2));
     writeFileSync(join(integrationRoot, 'node_modules/better-sqlite3/index.js'),
       "if (process.env.PREPARATION_NATIVE_MISSING === '1') throw new Error('missing native binding'); " +
-      "module.exports = class { constructor() { require('node:fs').writeFileSync(process.env.PREPARATION_NATIVE_PROBE, 'checked'); " +
+      "module.exports = class { constructor() { require('node:fs').appendFileSync(process.env.PREPARATION_NATIVE_PROBE, 'checked\\n'); " +
       "if (process.env.PREPARATION_NATIVE_PROBE_DRIFT === '1') require('node:fs').writeFileSync(__dirname + '/probe-generated.node', process.hrtime.bigint().toString()); " +
       "} prepare() { return { get() { return { ok:1 }; } }; } close() {} };");
     git(integrationRoot, 'add', '-A');
@@ -3128,6 +3150,9 @@ exec "$REGRESSION_REAL_GIT" "$@"
     ).toBe(0);
     const identity = /^FIXTURE_ID=(v1-[0-9a-f]{64})$/m.exec(published.stdout)?.[1];
     expect(identity).toBeDefined();
+    // Publication exercises the fixture too. Count only probes performed by
+    // the checkout preparation whose repeated package execution we are guarding.
+    writeFileSync(nativeProbe, '');
     if (fault === 'input-mismatch') {
       writeFileSync(join(integrationRoot, 'package-lock.json'), JSON.stringify({
         lockfileVersion: 3, packages: { '': { name: 'different-inputs' } },
@@ -3169,7 +3194,11 @@ exec "$REGRESSION_REAL_GIT" "$@"
       return;
     }
     expect(result.status, prepareDetails).toBe(0);
-    expect(readFileSync(nativeProbe, 'utf8')).toBe('checked');
+    // One isolated pre-copy probe plus one check of the actual release copy;
+    // metadata rechecks must not execute the addon repeatedly.
+    expect(readFileSync(nativeProbe, 'utf8').trim().split('\n')).toEqual(
+      Array(dependenciesOnly ? 2 : 1).fill('checked'),
+    );
     expect(readFileSync(join(releaseRoot, 'node_modules/.papercusp-dependency-generation'), 'utf8'))
       .toContain(`identity=${identity}\n`);
     expect(git(releaseRoot, 'status', '--porcelain', '--untracked-files=all')).toBe('');

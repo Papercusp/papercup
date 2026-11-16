@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { _resetForTests, getOrgPg } from '@papercusp/db-org';
+import { FLAGS, FLAG_DEFAULTS, flagEnvVarName } from '@papercusp/flags';
 import { captureConfigurationSnapshot, proofContextImpact, readConfigurationSnapshot, readProofContextIdentity } from '@papercusp/test-config/configuration-snapshot';
 import { reconcileTimedOutTestRunReceipts, retainSharedPg,
   type TestRunReceipt } from '@papercusp/test-config/admin-test-runs-reporter';
@@ -36,6 +37,7 @@ import { _resetHarnessAdminUrlCacheForTests } from '../../embedded-pg-discovery'
 import { REPO_ROOT } from '../docs/_repo-paths';
 import runTool from './run';
 import runsTool from './runs';
+import { evaluateCriterionTestChecks, runCriterionCheckFiles, type CriterionCheckRunner } from '../../rubrics-criterion-checks';
 
 const execFileAsync = promisify(execFile);
 
@@ -135,6 +137,51 @@ function expectCapturedBy(rows: readonly LedgerRow[], nonce: string): void {
 }
 
 describe('configuration snapshot capture on recorded test runs (P-011)', () => {
+  it('P017 carries a criterion declaration into the real child and refuses a changed canonical snapshot', async () => {
+    const group = `criterion-config-${randomUUID()}`;
+    const nonce = randomUUID();
+    const flag = FLAGS.VIDEO_CHANNELS;
+    const required = !FLAG_DEFAULTS[flag];
+    const declaration = { flags: { [flag]: required }, env: {
+      [MARKER]: nonce, PAPERCUSP_TEST_RUNS_DB_URL: org!.adminDsn,
+    } };
+    let measured: Awaited<ReturnType<typeof runCriterionCheckFiles>> | undefined;
+    const runner: CriterionCheckRunner = async opts => measured ??= await runCriterionCheckFiles({
+      ...opts, actorId: process.env.PAPERCUSP_SID,
+    });
+    const evaluate = () => evaluateCriterionTestChecks({
+      criteria: [{ key: 'configured', productionConfiguration: declaration,
+        check: { kind: 'tests', files: [SUITE] } }], ratings: { configured: { rating: 'healthy' } },
+      root: REPO_ROOT, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp',
+      runId: group, timeoutMs: 120_000, runner,
+    });
+    const baseline = await evaluate();
+    expect(baseline, JSON.stringify(baseline)).toMatchObject({ ok: true });
+    expect(measured?.testRunIds).toHaveLength(1);
+    const [original] = await getOrgPg().sql<Array<{ id: string; configuration_snapshot: unknown }>>`
+      SELECT id::text AS id, configuration_snapshot FROM harness_shared.test_runs
+      WHERE id = ANY(${measured!.testRunIds!}::bigint[]) AND run_group_id = ${group}
+        AND workspace_id = 'papercusp-workspace' AND harness_slug = 'papercusp'
+    `;
+    expect(original).toBeDefined();
+    const snapshot = readConfigurationSnapshot(original!.configuration_snapshot);
+    expect(snapshot?.flagEnv).toMatchObject({ [MARKER]: nonce,
+      [flagEnvVarName(flag)]: required ? '1' : '0' });
+    const changed = captureConfigurationSnapshot({ ...declaration.env,
+      [flagEnvVarName(flag)]: required ? '0' : '1' });
+    try {
+      await getOrgPg().sql`UPDATE harness_shared.test_runs SET configuration_snapshot =
+        ${JSON.stringify(changed)}::text::jsonb WHERE id::text = ${original!.id}`;
+      const falsifier = await evaluate();
+      expect(falsifier).toMatchObject({ ok: false, error: 'check_run_failed' });
+      if (!falsifier.ok) expect(falsifier.detail).toContain('configuration differs');
+    } finally {
+      await getOrgPg().sql`UPDATE harness_shared.test_runs SET configuration_snapshot =
+        ${JSON.stringify(original!.configuration_snapshot)}::text::jsonb WHERE id::text = ${original!.id}`;
+    }
+    expect(await evaluate()).toMatchObject({ ok: true });
+  }, 180_000);
+
   it('P021: retains actual owned schema observations through native completion and the original PostgreSQL row', async () => {
     const suite = 'libs/test-config/src/pg-migrate.integration.test.ts';
     const group = `schema-custody-${randomUUID()}`;

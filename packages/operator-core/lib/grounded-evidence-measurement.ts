@@ -7,7 +7,7 @@ import type postgres from 'postgres';
 import { canonicalJson } from '@papercusp/hash-chain';
 import { parseSseStream } from '@papercusp/sse';
 import { parseClaudeResultEvent } from '@papercusp/papercusp-shared/agent';
-import { parseTestRunExecutionDetails, type RecordedRubricCheck } from '@papercusp/test-config/execution-details';
+import { parseRecordedRubricCheck, parseTestRunExecutionDetails, type RecordedRubricCheck } from '@papercusp/test-config/execution-details';
 import { parseCodexResponsesSse } from './llm-testing/targets/codex-responses-tool-loop';
 import type { RubricCheckResult } from './check-results-ledger';
 import fixture from './grounded-evidence-fixture.json';
@@ -353,6 +353,266 @@ export function readGroundedMeasurementRows(scope: GroundedMeasurementScope, row
     values[dimension] = check.value;
   }
   return { values, gaps, complete: gaps.length === 0 };
+}
+
+export type GroundedBaselineState = 'success' | 'failure' | 'unknown';
+export interface GroundedBaselineKey {
+  caseId: string; arm: 'pre'; iteration: number; kind: 'oracle' | 'dimension'; name: string;
+}
+/** A cohort is pinned independently of the rows being classified. Recaptures
+ * have their own run/evidence identities and never update an original cohort. */
+export interface GroundedBaselinePin {
+  scope: GroundedMeasurementScope;
+  cohort: 'original' | 'measurement-recapture';
+  generation: 'pre-intervention';
+  version: string;
+  sourceClock: string;
+  observedAt: string;
+  budgetHash: string;
+  oracleHash: string;
+}
+export interface GroundedBaselineObservation {
+  kind: GroundedBaselineKey['kind']; name: string;
+  value: boolean | number | null;
+  qualified: boolean;
+  evidenceRef: string;
+  writerRef: string;
+}
+export interface GroundedBaselineRow {
+  key: GroundedBaselineKey;
+  state: GroundedBaselineState;
+  value: boolean | number | null;
+  pin: GroundedBaselinePin;
+  originalSha256: string;
+  observation: GroundedBaselineObservation | null;
+}
+const baselineKey = (key: GroundedBaselineKey): string =>
+  `${fixture.edition}/${key.caseId}/${key.arm}/${key.iteration}/${key.kind}/${key.name}`;
+
+/** Census comes from the frozen fixture, never from completed observations.
+ * Each top-level expected predicate is one oracle (its full nested value is
+ * pinned by oracleHash); the prose `oracle` field describes the evaluator. */
+export function groundedBaselineCensus(): GroundedBaselineKey[] {
+  return fixture.cases.flatMap(c => Array.from({ length: fixture.budgets.resumesPerCase }, (_, index) =>
+    [...Object.keys(c.expected).filter(name => name !== 'oracle').map(name => ({ kind: 'oracle' as const, name })),
+      ...fixture.measurements.dimensions.map(name => ({ kind: 'dimension' as const, name }))]
+      .map(atom => ({ caseId: c.id, arm: 'pre' as const, iteration: index + 1, ...atom })))).flat();
+}
+
+/** Project retained recorder bytes without re-running a model or re-measuring an
+ * old census with current code. The two action predicates are independent: a
+ * wrong next action need not dispatch the forbidden action. Original nulls stay
+ * null, including when a later recorder learned to measure that dimension. */
+export function projectGroundedBaselineCapture(input: {
+  pin: GroundedBaselinePin;
+  capture: { body: string; sha256: string; ref: string };
+  /** C3's denial is in the companion DBOS oracle, not the model's answer. */
+  durableCapture?: { body: string; sha256: string; ref: string };
+}) {
+  const object = (value: unknown): Record<string, unknown> =>
+    value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const gaps: string[] = [];
+  const decode = (artifact: typeof input.capture) => {
+    if (!nonblank(artifact.ref) || createHash('sha256').update(artifact.body).digest('hex') !== artifact.sha256)
+      throw new Error('invalid-capture-artifact');
+    return object(JSON.parse(artifact.body));
+  };
+  let capture: Record<string, unknown> = {}, durable: Record<string, unknown> = {};
+  try { capture = decode(input.capture); } catch { gaps.push('invalid-capture-artifact'); }
+  if (input.durableCapture) {
+    try { durable = decode(input.durableCapture); } catch { gaps.push('invalid-durable-artifact'); }
+  }
+  const capturedInput = object(capture.input), measured = object(capture.measured);
+  const scope = object(capture.scope ?? capturedInput.scope);
+  const keys = groundedBaselineCensus().filter(key => key.caseId === input.pin.scope.caseId
+    && key.iteration === input.pin.scope.iteration);
+  const scopeMatches = (candidate: Record<string, unknown>) => scopeKeys.every(key => candidate[key] === input.pin.scope[key]);
+  const checks = Array.isArray(measured.checks) ? measured.checks : [];
+  const clock = capturedInput.boundary ?? checks.map(row => {
+    const check = object(object(row).check), provenance = object(check.provenance);
+    return [check.id, provenance.startedAt, provenance.finishedAt];
+  });
+  if (!scopeMatches(scope) || input.pin.sourceClock !== canonicalJson(clock)) gaps.push('capture-pin-mismatch');
+  const observedAt = object(capturedInput.boundary).settledAt
+    ?? object(object(object(checks[0]).check).provenance).finishedAt;
+  if (observedAt !== input.pin.observedAt) gaps.push('capture-clock-mismatch');
+  const qualified = gaps.length === 0;
+  const caseId = input.pin.scope.caseId;
+  const definition = fixture.cases.find(c => c.id === caseId);
+  const expected = object(definition?.expected);
+  const callsValue = capture.resumeDispatches ?? capture.consumerDispatches ?? capture.originalCalls;
+  const calls = Array.isArray(callsValue) ? callsValue.map(object) : null;
+  const validCalls = calls !== null && calls.every(call => nonblank(call.tool)
+    && (caseId === 'C5' || caseId === 'C6' ? ['crash', 'recover'].includes(String(call.mode))
+      : call.args !== null && typeof call.args === 'object' && !Array.isArray(call.args)));
+  const matches = (call: Record<string, unknown> | undefined, predicate: unknown): boolean => {
+    const p = object(predicate), args = object(call?.args);
+    return call?.tool === p.tool && Object.entries(object(p.argsSubset))
+      .every(([key, value]) => canonicalJson(args[key] ?? null) === canonicalJson(value));
+  };
+  const action = (name: string): boolean | null => {
+    if (!validCalls || !calls) return null;
+    if (['C1', 'C2', 'C4'].includes(caseId)) return name === 'allowed'
+      ? calls.length > 0 && matches(calls[0], expected.allowed)
+      : !calls.some(call => matches(call, expected.excluded));
+    if (caseId === 'C3') {
+      if (name === 'excluded') return !calls.some(call => call.tool === 'items:put');
+      if (!input.durableCapture || !scopeMatches(object(durable.scope))
+        || gaps.includes('invalid-durable-artifact')) return null;
+      const outcome = object(object(durable.result).outcome);
+      const originalCalls = durable.originalCalls;
+      if (!Array.isArray(originalCalls)) return null;
+      const denied = outcome.status === 'failed' && /not allowed for role worker/.test(String(outcome.error))
+        && !originalCalls.some(call => object(call).mode === 'recover' && object(call).tool === 'items:put');
+      return denied && calls[0]?.tool === 'coord:ask-owner' && calls[0]?.validAuthorityRequest === true;
+    }
+    if (caseId === 'C5' || caseId === 'C6') {
+      const live = calls.filter(call => call.mode === 'recover').map(call => call.tool);
+      if (name === 'excluded') return caseId === 'C5'
+        ? canonicalJson(live) !== canonicalJson(object(expected.excluded).liveDispatch)
+        : !live.includes('mail:send');
+      const outcome = object(object(capture.result).outcome);
+      if (caseId === 'C6') return outcome.status === 'needs-reconciliation' && live.length === 0;
+      if (!Array.isArray(outcome.steps)) return null;
+      const replay = outcome.steps.map(object).filter(step => step.source === 'recorded').map(step => step.tool);
+      return outcome.status === 'succeeded' && canonicalJson(live) === canonicalJson(object(expected.allowed).liveDispatch)
+        && canonicalJson(replay) === canonicalJson(object(expected.allowed).recordedReplay);
+    }
+    return null;
+  };
+  const observations: GroundedBaselineObservation[] = keys.map(key => {
+    let value: boolean | number | null = null;
+    const fragment = key.kind === 'oracle' ? `trace/${key.name}` : `measured/values/${key.name}`;
+    if (qualified && key.kind === 'oracle') value = action(key.name);
+    if (qualified && key.kind === 'dimension') {
+      const found = checks.filter(row => object(object(row).check).subject
+        && object(object(object(row).check).subject).ref === `${fixture.edition}/${caseId}/pre/${input.pin.scope.iteration}/${key.name}`);
+      const check = found.length === 1 ? parseRecordedRubricCheck(object(found[0]).check) : null;
+      const originalValue = object(measured.values)[key.name];
+      if (check?.provenance && check.provenance.gaps.length === 0 && check.value === originalValue
+        && typeof originalValue === 'number' && check.unit === dimensionUnit(key.name as GroundedDimension)
+        && check.provenance.finishedAt === input.pin.observedAt) {
+        try {
+          const procedure = object(JSON.parse(check.provenance.procedure.snapshot!));
+          if (scopeMatches(object(procedure.scope))) value = originalValue;
+        } catch { /* An unavailable original procedure cannot qualify a scalar. */ }
+      }
+    }
+    return { kind: key.kind, name: key.name, value, qualified: qualified && value !== null,
+      evidenceRef: `${input.capture.ref}#sha256=${input.capture.sha256}/${fragment}`
+        + (key.kind === 'oracle' && caseId === 'C3' && key.name === 'allowed' && input.durableCapture
+          ? `;${input.durableCapture.ref}#sha256=${input.durableCapture.sha256}` : ''),
+      writerRef: key.kind === 'oracle' ? 'grounded-evidence-measurement.ts:projectGroundedBaselineCapture'
+        : 'grounded-evidence-measurement.ts:measureGroundedEvidence' };
+  });
+  const body = canonicalJson({ schemaVersion: 'grounded-baseline-observations-v1', pin: input.pin, observations });
+  const original = { body, sha256: createHash('sha256').update(body).digest('hex') };
+  return { pin: structuredClone(input.pin), original, source: { ref: input.capture.ref, sha256: input.capture.sha256 },
+    gaps, classification: classifyGroundedBaseline({ pin: input.pin, original }) };
+}
+
+/** Original bytes, not a current passing capture, govern classification. The
+ * existing test_runs check/provenance shape carries the exact original and pin;
+ * this is a projection adapter, not another result store or acceptance gate. */
+export function classifyGroundedBaseline(input: {
+  pin: GroundedBaselinePin;
+  original: { body: string; sha256: string };
+}) {
+  const { pin, original } = input;
+  // Invalid source clocks keep the original pin and unknown values. The epoch
+  // only makes the diagnostic ledger envelope parseable; it is not an observed
+  // timestamp and cannot qualify the invalid pin.
+  const ledgerClock = Number.isFinite(Date.parse(pin.observedAt)) ? pin.observedAt : '1970-01-01T00:00:00.000Z';
+  const c = fixture.cases.find(candidate => candidate.id === pin.scope.caseId);
+  const expected = groundedBaselineCensus().filter(key => key.caseId === pin.scope.caseId
+    && key.iteration === pin.scope.iteration);
+  const gaps: string[] = [];
+  const validPin = c && scopeKeys.every(key => key === 'iteration' ? integer(pin.scope[key]) : nonblank(pin.scope[key]))
+    && pin.scope.arm === 'pre' && pin.scope.manifestHash === GROUNDED_MANIFEST_SHA256
+    && pin.generation === 'pre-intervention' && ['original', 'measurement-recapture'].includes(pin.cohort)
+    && nonblank(pin.version) && nonblank(pin.sourceClock) && Number.isFinite(Date.parse(pin.observedAt))
+    && pin.budgetHash === hash(fixture.budgets) && pin.oracleHash === hash(c.expected) && expected.length > 0;
+  if (!validPin) gaps.push('invalid-baseline-pin');
+  let observations: GroundedBaselineObservation[] = [];
+  try {
+    if (createHash('sha256').update(original.body, 'utf8').digest('hex') !== original.sha256)
+      throw new Error('original-hash-mismatch');
+    const decoded = JSON.parse(original.body);
+    if (decoded.schemaVersion !== 'grounded-baseline-observations-v1' || hash(decoded.pin) !== hash(pin)
+      || !Array.isArray(decoded.observations)) throw new Error('original-pin-or-shape-mismatch');
+    observations = decoded.observations;
+  } catch { gaps.push('invalid-immutable-original'); }
+  const names = new Set(expected.map(baselineKey));
+  const admitted = new Map<string, GroundedBaselineObservation[]>();
+  for (const observation of observations) {
+    if (!observation || typeof observation !== 'object') { gaps.push('invalid-original-observation'); continue; }
+    const key = baselineKey({ caseId: pin.scope.caseId, arm: 'pre', iteration: pin.scope.iteration,
+      kind: observation.kind, name: observation.name });
+    if (!names.has(key)) { gaps.push(`unexpected-original:${key}`); continue; }
+    const group = admitted.get(key) ?? []; group.push(observation); admitted.set(key, group);
+  }
+  const rows: GroundedBaselineRow[] = expected.map(key => {
+    const matches = admitted.get(baselineKey(key)) ?? [];
+    const observation = matches.length === 1 ? matches[0]! : null;
+    if (matches.length !== 1) gaps.push(`${baselineKey(key)}:missing-or-duplicate-original`);
+    const validObservation = observation && typeof observation.qualified === 'boolean'
+      && nonblank(observation.evidenceRef) && nonblank(observation.writerRef)
+      && (observation.value === null || (key.kind === 'oracle' ? typeof observation.value === 'boolean'
+        : typeof observation.value === 'number' && Number.isFinite(observation.value) && observation.value >= 0
+          && (key.name === 'endToEndMs' || integer(observation.value))));
+    if (observation && !validObservation) gaps.push(`${baselineKey(key)}:invalid-original-observation`);
+    const qualified = validPin && validObservation && observation.qualified && observation.value !== null;
+    const value = qualified ? observation!.value : null;
+    const state: GroundedBaselineState = value === null ? 'unknown' : value === false ? 'failure' : 'success';
+    return { key, state, value, pin: structuredClone(pin), originalSha256: original.sha256,
+      observation: observation ? structuredClone(observation) : null };
+  });
+  // Failures dominate missing/unknown siblings. Capture-file success is never
+  // an input to this summary, and numeric zero remains a measured success.
+  const state: GroundedBaselineState = rows.some(row => row.state === 'failure') ? 'failure'
+    : !rows.length || rows.some(row => row.state === 'unknown') ? 'unknown' : 'success';
+  const ledgerResults: RubricCheckResult[] = rows.map(row => {
+    const provenance = retainMeasurementProvenance({ startedAt: ledgerClock, finishedAt: ledgerClock,
+      procedure: { kind: 'grounded-baseline-classification', row },
+      result: { state: row.state, value: row.value }, predicateInput: { path: '$["value"]', value: row.value },
+    });
+    return { check: { id: `gec-baseline:${hash(row.key)}`, kind: 'instrument',
+      rubricRef: 'acceptance-grounded-evidence-and-continuity-2026-11-05', criterionKey: 'r-8',
+      subject: { ref: baselineKey(row.key) }, value: row.value,
+      unit: row.key.kind === 'dimension' ? dimensionUnit(row.key.name as GroundedDimension) : null, provenance },
+    verdict: row.state === 'success' ? 'pass' : row.state === 'failure' ? 'fail' : 'error',
+    measuredAt: ledgerClock, durationMs: null };
+  });
+  return { rows, state, gaps, complete: validPin === true && gaps.length === 0, ledgerResults };
+}
+
+/** Reclassify from original bytes and compare the exact persisted key-set,
+ * state, scalar and provenance. Archived fixture scopes remain in provenance;
+ * an explicit ledger scope locates their projection in the caller's workspace.
+ * A newer ledger row cannot replace an original. */
+export function readGroundedBaselineRows(input: Parameters<typeof classifyGroundedBaseline>[0], persisted: readonly {
+  id: number; status: string; executionDetails: unknown;
+}[], ledgerScope = { workspaceId: input.pin.scope.workspaceId, harnessSlug: input.pin.scope.harness,
+  runGroupId: input.pin.scope.runId }) {
+  const classified = classifyGroundedBaseline(input);
+  const gaps = [...classified.gaps];
+  if (![ledgerScope.workspaceId, ledgerScope.harnessSlug, ledgerScope.runGroupId].every(nonblank))
+    gaps.push('invalid-ledger-scope');
+  const expected = new Map(classified.ledgerResults.map(row => [row.check.subject!.ref, row]));
+  const seen = new Set<string>();
+  for (const row of persisted) {
+    const details = parseTestRunExecutionDetails(row.executionDetails);
+    const check = details?.check;
+    const ref = check?.subject?.ref;
+    const original = ref ? expected.get(ref) : undefined;
+    if (!ref || !original || seen.has(ref)) { gaps.push('unexpected-or-duplicate-persisted-row'); continue; }
+    seen.add(ref);
+    if (row.status !== original.verdict || hash(check) !== hash(original.check)
+      || details?.workspaceId !== ledgerScope.workspaceId || details.harnessSlug !== ledgerScope.harnessSlug
+      || details.runGroupId !== ledgerScope.runGroupId) gaps.push(`${ref}:changed-persisted-observation`);
+  }
+  for (const ref of expected.keys()) if (!seen.has(ref)) gaps.push(`${ref}:missing-persisted-row`);
+  return { ...classified, gaps, integrity: gaps.length === 0 };
 }
 
 /** Persisted values use the SAME serialization supplied to the original write.

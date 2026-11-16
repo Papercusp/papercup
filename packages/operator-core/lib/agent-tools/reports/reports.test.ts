@@ -22,6 +22,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createHash } from 'node:crypto';
+import { createPhaseTracker } from '@papercusp/tooldef';
 import { ReportBodyTooLargeError, ReportRequestConflictError, REPORT_BODY_MAX_BYTES } from '../../report-library';
 import { goalOwnerReportFixture } from '../../../test/fixtures/goal-owner-report';
 import { serializeGoalOwnerReportSnapshot } from '@papercusp/chat-protocol';
@@ -460,6 +461,36 @@ describe('reports:publish — side effects are reported, never fatal', () => {
 // ── R-7: the visibility gate is wired on EVERY read path ─────────────────────
 describe('visibility matrix (R-7) — every read passes a viewer', () => {
   const expectedViewer = { isOwner: false, ownerId: 'su-author', potSlug: 'papercusp' };
+
+  it('distinguishes pending flag lookup from a pending report read without logging body text', async () => {
+    let clock = 0;
+    const phases = createPhaseTracker({ now: () => clock });
+    let finishFlag!: (enabled: boolean) => void;
+    let finishRead!: (report: ReturnType<typeof record>) => void;
+    getFlagM.mockReturnValueOnce(new Promise<boolean>((resolve) => { finishFlag = resolve; }));
+    getReportM.mockReturnValueOnce(new Promise<ReturnType<typeof record>>((resolve) => { finishRead = resolve; }));
+
+    const pending = getTool.handler({ id: 'rpt_1' } as never, { ...CTX, phases } as never);
+    expect(phases.snapshot().activePhase).toBe('reports:get:flag');
+    expect(getReportM).not.toHaveBeenCalled();
+    clock = 5;
+    finishFlag(true);
+    await vi.waitFor(() => expect(phases.snapshot().activePhase).toBe('reports:get:read'));
+    clock = 25;
+    finishRead(record());
+    const result = body(await pending as Out);
+
+    expect(result.results[0]).toMatchObject({ ok: true, id: 'rpt_1' });
+    const metadata = phases.toMetadata()!;
+    expect(metadata.pending).toEqual([]);
+    expect(metadata.phases).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: 'reports:get:flag', durationMs: 5 }),
+      expect.objectContaining({ phase: 'reports:get:read', durationMs: 20 }),
+      expect.objectContaining({ phase: 'reports:get:serialize' }),
+      expect.objectContaining({ phase: 'reports:get:response' }),
+    ]));
+    expect(JSON.stringify(metadata)).not.toContain(record().bodyMd);
+  });
 
   it('SPEC-P-003-read-visibility-enforced: get / list / search all hand the store a viewer', async () => {
     await getTool.handler({ id: 'rpt_1' } as never, CTX as never);

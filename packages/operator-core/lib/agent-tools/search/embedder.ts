@@ -148,6 +148,10 @@ export interface QueryEmbedderAcquireOpts {
   skipAcquisitionWhenCold?: boolean;
 }
 
+export type QueryEmbedderAcquireStage =
+  | 'preference' | 'credentials' | 'localAvailability'
+  | 'localBuilder' | 'gemmaBuilder' | 'harrierBuilder';
+
 export interface QueryEmbedderAcquisition {
   status: 'acquired' | 'timed-out' | 'disabled' | 'unavailable' | 'failed' | 'cold-skipped';
   durationMs: number;
@@ -155,6 +159,10 @@ export interface QueryEmbedderAcquisition {
   cause?: string;
   mode?: ResolvedQueryEmbedder['mode'];
   profileId?: string;
+  /** Dependency still pending when this receipt was captured. */
+  activeStage?: QueryEmbedderAcquireStage;
+  /** Snapshot includes elapsed time in a pending stage; late completion cannot alter it. */
+  stageDurationsMs?: Partial<Record<QueryEmbedderAcquireStage, number>>;
 }
 
 /** Diagnostic codes must never copy provider messages (which can contain secrets). */
@@ -302,9 +310,29 @@ export async function buildQueryEmbedderResolved(
 ): Promise<ResolvedQueryEmbedder | null> {
   const { observeFallback = recordFallback } = deps;
   const startedAt = performance.now();
+  const stageDurationsMs: Partial<Record<QueryEmbedderAcquireStage, number>> = {};
+  let activeStage: { name: QueryEmbedderAcquireStage; startedAt: number } | undefined;
+  const traceAcquire = async <T>(name: QueryEmbedderAcquireStage, run: () => Promise<T>): Promise<T> => {
+    const stage = { name, startedAt: performance.now() };
+    activeStage = stage;
+    try {
+      return await run();
+    } finally {
+      stageDurationsMs[name] = (stageDurationsMs[name] ?? 0) + performance.now() - stage.startedAt;
+      if (activeStage === stage) activeStage = undefined;
+    }
+  };
   const report = (outcome: Omit<QueryEmbedderAcquisition, 'durationMs' | 'budgetMs'>) => {
-    opts?.onAcquisition?.({ ...outcome, durationMs: performance.now() - startedAt,
-      budgetMs: (opts?.acquireBudgetMs ?? 0) > 0 ? opts!.acquireBudgetMs! : null });
+    const now = performance.now();
+    const durations = { ...stageDurationsMs };
+    if (activeStage) {
+      durations[activeStage.name] = (durations[activeStage.name] ?? 0) + now - activeStage.startedAt;
+    }
+    opts?.onAcquisition?.({ ...outcome, durationMs: now - startedAt,
+      budgetMs: (opts?.acquireBudgetMs ?? 0) > 0 ? opts!.acquireBudgetMs! : null,
+      ...(Object.keys(durations).length > 0 ? { stageDurationsMs: durations } : {}),
+      ...(activeStage ? { activeStage: activeStage.name } : {}),
+    });
   };
   try {
     const sidecarOptions = opts?.embeddingDeadlineMs === undefined ? {} : {
@@ -315,22 +343,22 @@ export async function buildQueryEmbedderResolved(
       // P-015 harrier default flip: the QUERY side must keep ranking in the
       // gemma space where the vector(768) prose vectors live, not dims-guard
       // off — see proseSurfacePreference (memory/configure.ts).
-      readPreference: async () => proseSurfacePreference(await readEmbedderPreference()),
-      resolveKey: resolveOpenAiKey,
-      localInstalled: localAvailable,
+      readPreference: () => traceAcquire('preference', async () => proseSurfacePreference(await readEmbedderPreference())),
+      resolveKey: () => traceAcquire('credentials', resolveOpenAiKey),
+      localInstalled: () => traceAcquire('localAvailability', localAvailable),
       isOpenAiRecentlyExhausted: isOpenAiEmbedInCooldown,
       buildOpenAi: buildAdmissionGovernedOpenAiEmbedder,
       // Sidecar-first local legs (P-004): shared warm model when the host
       // runs the embed sidecar, bit-identical in-process fallback otherwise.
-      buildLocal: () => buildSidecarAwareEmbedder('local', 'query', undefined, sidecarOptions),
+      buildLocal: () => traceAcquire('localBuilder', () => buildSidecarAwareEmbedder('local', 'query', undefined, sidecarOptions)),
       // This is the QUERY embedder, so EmbeddingGemma gets the query prompt
       // (its dual-encoder is trained so query-prompt vectors match the
       // document-prompt vectors written on the storage side).
-      buildGemma: () => buildSidecarAwareEmbedder('gemma', 'query', undefined, sidecarOptions),
+      buildGemma: () => traceAcquire('gemmaBuilder', () => buildSidecarAwareEmbedder('gemma', 'query', undefined, sidecarOptions)),
       // harrier-oss (P-014, selectable only): queries carry the instruct
       // prefix; documents embed raw. Native 1024 — a vector(768) surface
       // must check `dims` before ranking against it.
-      buildHarrier: () => buildSidecarAwareEmbedder('harrier', 'query', undefined, sidecarOptions),
+      buildHarrier: () => traceAcquire('harrierBuilder', () => buildSidecarAwareEmbedder('harrier', 'query', undefined, sidecarOptions)),
     });
     if (opts?.skipAcquisitionWhenCold && isOpenAiEmbedInCooldown() && !isLocalEmbedAcquisitionCheap()) {
       // Never surfaces as an unhandled rejection; it exists purely to warm the

@@ -727,8 +727,8 @@ function captureCustodyProcessInventory(root, path, entry, capture, progress, bi
       const bytes = Buffer.concat([prefix, header, ...chunks]);
       decodeCustodyInventoryPage(bytes);
       artifact = capture(null, 'native-inventory-page', 'C', { byteLength: bytes.length, read(budget, aggregateBudget) {
-        budget.bytes += bytes.length + 1; budget.bytesByFamily.C += bytes.length + 1;
-        aggregateBudget.bytes += bytes.length + 1; aggregateBudget.bytesByFamily.C += bytes.length + 1;
+        budget.bytes += bytes.length; budget.bytesByFamily.C += bytes.length;
+        aggregateBudget.bytes += bytes.length; aggregateBudget.bytesByFamily.C += bytes.length;
         return bytes;
       } });
       // Publish durable bytes before the cursor. A crash can leave an orphan,

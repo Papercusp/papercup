@@ -14,6 +14,7 @@
  * Server-only.
  */
 import { z } from 'zod';
+import { trackPhase } from '@papercusp/tooldef';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { getReport, reportExists, listReportLineage, type ReportCitationReadScope } from '../../report-library';
@@ -101,7 +102,7 @@ export default defineTool({
       message: '`id` and `report_id` may only be combined when they name the same report',
     }),
   async handler(args, ctx) {
-    const disabled = await reportsLibraryDisabled();
+    const disabled = await trackPhase(ctx.phases, 'reports:get:flag', reportsLibraryDisabled);
     if (disabled) return { data: disabled };
     const sql = getOrgPg().sql;
     const workspaceId = resolveWorkspaceId(ctx);
@@ -117,7 +118,7 @@ export default defineTool({
       } else if (singleId === undefined || args.ids !== undefined || args.lineage === true) {
         citationError = 'invalid_evidence_scope';
       } else {
-        const evidence = await readScorecardEvidence(args.scorecardIssueId);
+        const evidence = await trackPhase(ctx.phases, 'reports:get:citation', () => readScorecardEvidence(args.scorecardIssueId!));
         if (
           evidence.kind !== 'found' ||
           !hasExactReportCitation(evidence.scorecard.criteria, singleId)
@@ -134,20 +135,20 @@ export default defineTool({
     const env = await runBulk(
       ids,
       async (id) => {
-        const unreadable = async () => await reportExists(sql, workspaceId, id)
+        const unreadable = async () => await trackPhase(ctx.phases, 'reports:get:exists', () => reportExists(sql, workspaceId, id))
           ? { ok: false as const, id, error: 'access_denied', exists: true as const,
               message: 'This report exists, but you do not have access to it.' }
           : { ok: false as const, id, error: 'not_found' };
         if (citationError) return citationError === 'not_found' ? unreadable() : { ok: false as const, id, error: citationError };
         const exactScope = citationScope?.reportId === id ? citationScope : undefined;
-        const report = await getReport(sql, workspaceId, id, viewer, exactScope);
+        const report = await trackPhase(ctx.phases, 'reports:get:read', () => getReport(sql, workspaceId, id, viewer, exactScope));
         if (!report) return unreadable();
 
         const lineage = args.lineage
-          ? (await listReportLineage(sql, workspaceId, report.lineageId, viewer)).map(toReportSummary)
+          ? (await trackPhase(ctx.phases, 'reports:get:lineage', () => listReportLineage(sql, workspaceId, report.lineageId, viewer))).map(toReportSummary)
           : undefined;
 
-        const full = toReportFull(report);
+        const full = await trackPhase(ctx.phases, 'reports:get:serialize', () => toReportFull(report));
         // Native semantic receipt: only the exact full, visible edition returned by this handler.
         // No body text is copied into telemetry, and not_found never produces a successful receipt.
         reportReadbacks.push({ id: report.reportId, bodySha256: full.body_sha256,
@@ -161,7 +162,9 @@ export default defineTool({
       },
       { keyOf: (id) => ({ id }) },
     );
-    ctx.metadata?.({ reportReadbacks });
-    return bulkContent(env);
+    return trackPhase(ctx.phases, 'reports:get:response', () => {
+      ctx.metadata?.({ reportReadbacks });
+      return bulkContent(env);
+    });
   },
 });

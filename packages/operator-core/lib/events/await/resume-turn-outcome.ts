@@ -57,6 +57,8 @@ export interface ResumeTurnContext {
   ownerId: string | null;
   sessionId: string | null;
   startedAt: string | null;
+  /** Full PostgreSQL precision retained for the exact incarnation's terminal CAS. */
+  startedAtExact?: string | null;
   workspaceId: string | null;
   agent: string | null;
   transcriptPath: string | null;

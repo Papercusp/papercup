@@ -32,7 +32,7 @@ export async function quarantineRepeatedClaudeToolReferenceFailures(
   if (
     !context || context.agent !== 'claude' || !Number.isSafeInteger(context.advSessionId) ||
     context.advSessionId <= 0 || !context.ownerId || !context.workspaceId || !context.sessionId ||
-    !context.startedAt || !context.transcriptPath
+    !context.startedAt || !context.startedAtExact || !context.transcriptPath
   ) return { poisoned: false, turns: 0, reason: 'resume identity or transcript unavailable' };
 
   const analysis = (deps.analyze ?? analyzeClaudeResumeTranscriptFile)(context.transcriptPath);
@@ -69,7 +69,7 @@ export async function quarantineRepeatedCodexContextOverflow(
   if (
     !context || context.agent !== 'codex' || !Number.isSafeInteger(context.advSessionId) ||
     context.advSessionId <= 0 || !context.ownerId || !context.workspaceId || !context.sessionId ||
-    !context.startedAt || !context.transcriptPath
+    !context.startedAt || !context.startedAtExact || !context.transcriptPath
   ) return { poisoned: false, turns: 0, reason: 'resume identity or Codex rollout unavailable' };
 
   const analysis = (deps.analyzeCodex ?? analyzeCodexRolloutFile)(context.transcriptPath);
@@ -93,6 +93,7 @@ type PoisonableContext = ResumeTurnContext & {
   workspaceId: string;
   sessionId: string;
   startedAt: string;
+  startedAtExact: string;
 };
 
 /** Write the durable brief marker (blocks queued wakes), then end the adv-session (releases leases). */
@@ -107,7 +108,8 @@ async function poisonIncarnation(
   const marker: SessionBriefPoisonMarker = {
     advSessionId: context.advSessionId,
     sessionId: context.sessionId,
-    startedAt: context.startedAt,
+    // Keep the same exact identity in both the durable wake cutoff and terminal CAS.
+    startedAt: context.startedAtExact,
     at: now.toISOString(),
     by: 'resume-turn-detector',
     reason,
@@ -123,6 +125,17 @@ async function poisonIncarnation(
   }
 
   const markEnded = deps.markEnded ?? markAdvSessionEnded;
-  const ended = await markEnded(context.advSessionId, null, 'reconciler', { observedAt: now });
+  // The row can be resumed/re-anchored while the durable marker is awaiting its
+  // write. observedAt alone permits a successor that started before `now`; fence
+  // the exact analyzed incarnation using the store's existing terminal CAS.
+  const ended = await markEnded(context.advSessionId, null, 'reconciler', {
+    observedAt: now,
+    expectedBinding: {
+      coordOwnerId: context.ownerId,
+      sessionId: context.sessionId,
+      workspaceId: context.workspaceId,
+      startedAt: context.startedAtExact,
+    },
+  });
   return { poisoned: true, turns, ended };
 }

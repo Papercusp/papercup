@@ -3468,7 +3468,7 @@ export async function foldFactsWithCensus(
           FROM eligible
       )
       SELECT * FROM ranked
-       WHERE fold_rank <= CASE WHEN fold_class = 0 THEN ${limit} ELSE ${FACTS_RETAINED_FOLD_LIMIT} END
+       WHERE fold_rank <= CASE WHEN fold_class = 0 THEN ${limit}::bigint ELSE ${FACTS_RETAINED_FOLD_LIMIT}::bigint END
        ORDER BY fold_class DESC, ${order}`;
     out.push(...rows.map(rowToFact));
     // No rows ⇒ no window row to read ⇒ the population is genuinely 0, which is

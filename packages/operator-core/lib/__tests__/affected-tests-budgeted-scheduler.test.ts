@@ -46,6 +46,7 @@ import {
   retainReporterEvaluatorArtifacts,
   retainNativeProofPacket,
   retainNativeProofPacketAsync,
+  readNativeProofInventoryPage,
   verifyNativeProofPacket,
   runBudgetedTaskShards,
   runBudgetedTasks,
@@ -117,14 +118,17 @@ describe('private native proof custody (P002)', () => {
     includeObjectBytes = true) {
     expect(fs.existsSync(f.producer)).toBe(false);
     const child = spawnSync(process.execPath, ['--input-type=module', '-e',
-      'import { verifyNativeProofPacket } from ' + JSON.stringify(resolve(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs')) + ';' +
+      'import { verifyNativeProofPacket, readNativeProofInventoryPage } from ' + JSON.stringify(resolve(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs')) + ';' +
       'import { readFileSync, statSync } from "node:fs"; import { join } from "node:path";' +
       'const [directory,locator,contract,includeObjectBytes]=JSON.parse(process.argv[1]);' +
       'try { const r=verifyNativeProofPacket(directory,locator,contract);' +
       'const entries=r.manifest.groups.flatMap(g=>[...g.families.flatMap(f=>f.entries),...g.auxiliary.filter(a=>a.artifact)]);' +
-      'process.stdout.write(JSON.stringify({refused:false,pid:process.pid,status:r.status,manifest:r.manifest,' +
-      'objects:includeObjectBytes?entries.map(e=>({original:e.original??e.path,pin:e.artifact,mode:statSync(join(directory,"objects",e.artifact.ref)).mode&511,' +
-      'bytes:readFileSync(join(directory,"objects",e.artifact.ref)).toString("base64")})):[]})); }' +
+      'const objects=includeObjectBytes?entries.flatMap(e=>e.paged?' +
+      'readNativeProofInventoryPage(directory,e.artifact).records.map(record=>({original:record.original,' +
+      'pin:{sha256:record.sha256,byteLength:record.bytes.length},mode:statSync(join(directory,"objects",e.artifact.ref)).mode&511,' +
+      'bytes:record.bytes.toString("base64")})):[{original:e.original??e.path,pin:e.artifact,' +
+      'mode:statSync(join(directory,"objects",e.artifact.ref)).mode&511,bytes:readFileSync(join(directory,"objects",e.artifact.ref)).toString("base64")}]):[];' +
+      'process.stdout.write(JSON.stringify({refused:false,pid:process.pid,status:r.status,manifest:r.manifest,objects})); }' +
       'catch(error) { process.stdout.write(JSON.stringify({refused:true,error:String(error),pid:process.pid})); }',
       JSON.stringify([f.directory, locator, contract, includeObjectBytes])], { encoding: 'utf8', timeout: 15_000 });
     const childResult = { error: child.error ? String(child.error) : undefined, stderr: child.stderr, status: child.status };
@@ -383,6 +387,21 @@ describe('private native proof custody (P002)', () => {
       delete manifest.archiveObjectAccounting;
       delete manifest.segments;
       delete manifest.archiveLimits;
+      // Historical packets stored each native record separately. Rebuild that
+      // representation from every retained record instead of relabelling v4 pages.
+      for (const group of manifest.groups) for (const family of group.families) {
+        if (family.family !== 'C') continue;
+        family.entries = family.entries.flatMap(entry => entry.paged
+          ? readNativeProofInventoryPage(f.directory, entry.artifact).records.map(record => ({
+            original: record.original,
+            artifact: createNativeArtifactPersister(join(f.directory, 'objects')).persist(record.bytes, 'bytes'),
+          })) : [entry]);
+        delete family.inventory;
+        manifest.bytesReadByFamily!.C = family.entries.reduce((sum, entry) => sum + entry.artifact.byteLength, 0);
+        manifest.objectsReadByFamily!.C = family.entries.length;
+      }
+      manifest.bytesRead = Object.values(manifest.bytesReadByFamily!).reduce((sum, count) => sum + count, 0);
+      manifest.objectsRead = Object.values(manifest.objectsReadByFamily!).reduce((sum, count) => sum + count, 0);
       for (const group of manifest.groups) for (const entry of [
         ...group.families.flatMap(family => family.entries), ...group.auxiliary,
       ]) if (entry.artifact) delete entry.artifact.segment;
@@ -658,9 +677,9 @@ describe('private native proof custody (P002)', () => {
     expect(first.status).toBe('complete');
     expect(again.locator).toEqual(first.locator);
     expect(first.manifest.groups.map(group => group.references.length)).toEqual([9, 9, 9]);
-    const original = first.manifest.groups.map(group => group.families.map(family => family.entries.map(entry => ({
-      bytes: readFileSync(entry.original).toString('base64'), artifact: entry.artifact,
-    }))));
+    const original = first.manifest.groups.flatMap(group => group.families.flatMap(family => family.entries.flatMap(entry =>
+      (entry.paged ? readNativeProofInventoryPage(f.directory, entry.artifact).records.map(record => record.original) : [entry.original])
+        .map(path => ({ original: path, bytes: readFileSync(path).toString('base64') })))));
     rmSync(f.producer, { recursive: true });
     const child = spawnSync(process.execPath, ['--input-type=module', '-e',
       'import { verifyNativeProofPacket } from ' + JSON.stringify(resolve(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs')) + ';' +
@@ -670,8 +689,9 @@ describe('private native proof custody (P002)', () => {
     expect({ error: child.error, stderr: child.stderr, status: child.status }).toEqual({ error: undefined, stderr: '', status: 0 });
     expect(JSON.parse(child.stdout)).toMatchObject({ status: 'complete', groups: 3, verdicts: {
       execution: { state: 'failed' }, cleanup: { complete: false }, nativeProof: 'unqualified', acceptance: 'unmeasured' } });
-    for (const groups of original) for (const entries of groups) for (const entry of entries)
-      expect(readFileSync(join(f.directory, 'objects', entry.artifact.ref)).toString('base64')).toBe(entry.bytes);
+    const recovered = consumeRetained(f, first.locator);
+    for (const entry of original)
+      expect(recovered.objects.find((object: { original: string }) => object.original === entry.original)?.bytes).toBe(entry.bytes);
   });
 
   it('retains explicit partial custody at the auxiliary-family budget without charging metadata twice', () => {

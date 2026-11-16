@@ -259,7 +259,8 @@ const itemSpec = z.object({
   summary: hardText(8000).optional().describe('body / summary text'),
   // WI-4492: `body` is an ACCEPTED ALIAS for `summary` (the SAME field). work_items:update
   // names it `body`, so a caller who learned that name used to have it silently dropped here.
-  body: hardText(8000).optional().describe('summary alias (work_items:update uses body). Different values for both rejected.'),
+  body: hardText(8000).optional().describe('summary alias (work_items:update uses body). Different values for both rejected.')
+    .meta({ 'x-papercusp-aliases': ['summary'] }),
   harness: z.string().max(80).optional().describe('Required for feature/chunk; bug/change scope. Defaults to batch harness.'),
   pot: potArg,
   severity: z.enum(['critical', 'major', 'minor', 'nit']).optional().describe('issue-family (bug/change) only'),
@@ -387,7 +388,8 @@ export default defineTool({
       kind: z.string().min(1).max(80).optional().describe('feature/bug/change/task or workspace generic-kind from meta:define-datatype. chunk deprecated; historical rows readable.'),
       title: hardText(LIMITS.SHORT_TITLE).optional(),
       summary: hardText(8000).optional().describe('body / summary text'),
-      body: hardText(8000).optional().describe('summary alias (work_items:update uses body). Different values for both rejected.'),
+      body: hardText(8000).optional().describe('summary alias (work_items:update uses body). Different values for both rejected.')
+        .meta({ 'x-papercusp-aliases': ['summary'] }),
       harness: z.string().max(80).optional().describe('Required for feature; bug/change scope. Default for items omitting harness.'),
       pot: potArg,
       severity: z.enum(['critical', 'major', 'minor', 'nit']).optional().describe('issue-family (bug/change) only'),

@@ -448,7 +448,7 @@ describe('EI-28763886046924909: bounded retained facts with lossless recovery', 
     await db.sql`
       INSERT INTO harness_shared.agent_facts (workspace_id, scope, scope_ref, key, body, kind, created_by, expires_at)
       SELECT ${workspaceId}, 'workspace', NULL, seed.key, seed.key, seed.kind, 'su-int', now() + interval '1 hour'
-        FROM jsonb_to_recordset(${JSON.stringify([...seeds].reverse())}::jsonb) AS seed(key text, kind text)`;
+        FROM jsonb_to_recordset(${db.sql.json([...seeds].reverse())}::jsonb) AS seed(key text, kind text)`;
     const folded = await foldFactsWithCensus([selector], {
       workspaceId, limitPerSelector: N, taskContext: {},
     }, db.sql);

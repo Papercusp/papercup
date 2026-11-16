@@ -17,6 +17,9 @@ import {
   detectDiskHeadroom,
   detectDiskGrowthWarnings,
   assessNativeDiskHeadroomAlarm,
+  assessDiskHeadroomAlarmExercise,
+  diskHeadroomAlarmRuntimeIdentity,
+  type DiskHeadroomObservation,
   formatDiskHeadroomToast,
   DISK_HEADROOM_FLOORS,
   categoryCeilingBytes,
@@ -45,6 +48,89 @@ import { homedir } from 'node:os';
 import { formatUnenforcedClassGrowthToast } from './unenforced-class-growth';
 
 const GIB = 1024 ** 3;
+
+function syntheticHeadroomDevices(): CensusDeviceView[] {
+  const at = Date.now();
+  return ['/', '/mnt/data', '/mnt/cold-a', '/mnt/cold-b'].map(device => ({
+    device, complete: true, stale: false, sizeBytes: 2e12, availBytes: 200e9,
+    baselineSizeBytes: 2e12, baselineAvailBytes: 300e9,
+    sampledAt: new Date(at).toISOString(), baselineAt: new Date(at - 86400_000).toISOString(),
+    consumers: [{ consumer: `${device}/synthetic-grower`, kind: 'dir', depth: 1, bytes: 200e9,
+      baselineBytes: 100e9, growth24hBytes: 100e9 }],
+  }));
+}
+
+describe('labelled serving alarm delivery exercise', () => {
+  async function fixture() {
+    let saved: DiskHeadroomObservation | undefined;
+    let toast: { level: string; message: string; description: string } | undefined;
+    const readDiskCensus = vi.fn(async () => { throw new Error('must not read native census'); });
+    const emitToast = vi.fn(async (t: { level: string; message: string; description: string }, o?: DiskHeadroomObservation) => { saved = o; toast = t; });
+    const devices = syntheticHeadroomDevices();
+    const result = await runDiskHeadroomAlarmOnce({ exercise: { devices }, readDiskCensus, emitToast });
+    const runtime = { ...saved!.runtime, buildSha: 'exercise-build' };
+    const notification = { id: 'persisted-exercise-toast', ...toast! };
+    return { devices, result, readDiskCensus, emitToast, notification,
+      observation: { ...saved!, runtime, notification: { ...notification } }, scope: { runtime: { ...runtime }, now: Date.now() + 1000 } };
+  }
+  it('uses the real detectors and labels a single delivery without reading or changing physical census', async () => {
+    const s = await fixture();
+    expect(s.result.diskHeadroom.map(d => d.device)).toEqual(['/', '/mnt/data', '/mnt/cold-a', '/mnt/cold-b']);
+    expect(s.result.diskGrowth).toHaveLength(4);
+    expect(s.readDiskCensus).not.toHaveBeenCalled();
+    expect(s.emitToast).toHaveBeenCalledTimes(1);
+    expect(s.result.unenforcedClassGrowth).toEqual([]);
+    expect(s.observation.exercise).toMatchObject({ kind: 'synthetic-delivery', id: expect.any(String) });
+    expect(s.notification.message).toContain('SYNTHETIC DELIVERY EXERCISE');
+    expect(s.notification.description).toContain('not physical-capacity or soak evidence');
+    expect(s.devices).toEqual(s.observation.devices);
+    expect(assessDiskHeadroomAlarmExercise(s.observation, s.notification, s.scope).verdict).toBe('pass');
+    expect((await fixture()).observation.exercise!.id).not.toBe(s.observation.exercise!.id);
+    expect(diskHeadroomAlarmRuntimeIdentity().startedAt).toBe(diskHeadroomAlarmRuntimeIdentity().startedAt);
+    expect(assessNativeDiskHeadroomAlarm(s.observation, s.devices, s.notification,
+      { host: s.scope.runtime.host, buildSha: 'exercise-build', now: s.scope.now, hourlyCoverage: true }).verdict).toBe('unknown');
+  });
+  it.each(['host', 'build', 'pid', 'boot', 'future', 'stale', 'invalid-time', 'notification', 'label', 'device', 'duplicate', 'baseline', 'missing-kind', 'missing-id'])(
+    'refuses incomplete or detached %s delivery evidence', async missing => {
+      const s = await fixture();
+      if (missing === 'host') s.observation.runtime.host = 'other';
+      if (missing === 'build') s.observation.runtime.buildSha = 'other';
+      if (missing === 'pid') s.observation.runtime.pid++;
+      if (missing === 'boot') s.observation.runtime.startedAt = '2000-01-01T00:00:00Z';
+      if (missing === 'future') s.scope.now = Date.parse(s.observation.observedAt) - 1;
+      if (missing === 'stale') s.scope.now += 91 * 60_000;
+      if (missing === 'invalid-time') s.scope.now = Number.NaN;
+      if (missing === 'notification') s.notification.id = 'unbound';
+      if (missing === 'label') s.notification.message = 'unlabelled';
+      if (missing === 'device') s.observation.devices = s.observation.devices.slice(1);
+      if (missing === 'duplicate') s.observation.devices = [s.devices[0]!, ...s.devices.slice(0, 3)];
+      if (missing === 'baseline') s.observation.devices[0]!.baselineAvailBytes = null;
+      if (missing === 'missing-kind') delete (s.observation as Partial<DiskHeadroomObservation>).exercise;
+      if (missing === 'missing-id') s.observation.exercise = { kind: 'synthetic-delivery', id: '' };
+      expect(assessDiskHeadroomAlarmExercise(s.observation, s.notification, s.scope).verdict).toBe('unknown');
+    });
+  it.each(['floor', 'forecast', 'grower', 'horizon', 'unknown'])(
+    'fails a tampered %s decision', async wrong => {
+      const s = await fixture();
+      if (wrong === 'floor') Object.assign(s.observation, { floors: { ...DISK_HEADROOM_FLOORS, rootBytes: 1 } });
+      if (wrong === 'forecast') s.observation.growth[0]!.daysToFull = 8;
+      if (wrong === 'grower') s.observation.growth[0]!.topGrowers[0]!.consumer = '/invented';
+      if (wrong === 'horizon') s.observation.horizonDays = 8;
+      if (wrong === 'unknown') s.observation.projectionUnknown.push('/');
+      expect(assessDiskHeadroomAlarmExercise(s.observation, s.notification, s.scope).verdict).toBe('fail');
+    });
+  it('keeps invalid inputs and failed delivery UNKNOWN without a success receipt', async () => {
+    const emitToast = vi.fn(async () => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const invalid = syntheticHeadroomDevices(); invalid[0]!.availBytes = Number.NaN;
+    expect((await runDiskHeadroomAlarmOnce({ exercise: { devices: invalid }, emitToast })).diskProjectionUnknown).not.toEqual([]);
+    expect(emitToast).not.toHaveBeenCalled();
+    const result = await runDiskHeadroomAlarmOnce({ exercise: { devices: syntheticHeadroomDevices() },
+      emitToast: async () => { throw new Error('delivery refused'); } });
+    expect(result.diskProjectionUnknown).not.toEqual([]);
+    warn.mockRestore();
+  });
+});
 
 describe('native headroom acceptance evidence', () => {
   function fixture() {

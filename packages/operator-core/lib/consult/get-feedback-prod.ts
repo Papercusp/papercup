@@ -4,8 +4,8 @@ import { hostname } from 'node:os';
 import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
 import { getBuildInfo } from '../build-info';
 import { recordExpertiseRoutingInvocation } from '../endpoint-route/telemetry';
-import { BAR_CRITIQUE_POLICY, CONSULT_DEFAULT_POLICY, RUBRIC_VETTING_POLICY, methodReviewTarget } from './selection-policies';
-import type { AcceptedFeedbackResult, GetFeedbackDeps, GetFeedbackRequest } from './get-feedback-core';
+import { BAR_CRITIQUE_POLICY, CONSULT_DEFAULT_POLICY, METHOD_REVIEW_POLICY, RUBRIC_VETTING_POLICY, methodReviewTarget } from './selection-policies';
+import type { AcceptedFeedbackResult, GetFeedbackDeps, GetFeedbackError, GetFeedbackRequest, GetFeedbackResult } from './get-feedback-core';
 import type { QueryEmbedderAcquisition } from '../agent-tools/search/embedder';
 
 export interface GetFeedbackProdOptions {
@@ -35,7 +35,7 @@ export interface AcceptFeedbackRequestProdOptions extends Pick<GetFeedbackProdOp
 
 /** Review targets may be new; explicit expertise source refs remain separate. */
 function isFirstPrinciplesTargetReview(policy: GetFeedbackRequest['policy']): boolean {
-    return policy === BAR_CRITIQUE_POLICY || policy === RUBRIC_VETTING_POLICY;
+    return policy === BAR_CRITIQUE_POLICY || policy === RUBRIC_VETTING_POLICY || policy === METHOD_REVIEW_POLICY;
 }
 
 export async function acceptFeedbackRequestProd(
@@ -54,7 +54,7 @@ export async function acceptFeedbackRequestProd(
     const planRefusal = await validateBarCritiquePlanOrigin(payload, sql);
     if (planRefusal) return planRefusal;
 
-    // Governed critiques can introduce a new plan or rubric. The target must
+    // Governed reviews can introduce a new plan, rubric or method artifact. The target must
     // not also become a requirement for prior reviewer expertise.
     // Keep caller-supplied subject_refs as source constraints, but disable the
     // router's generic question inference when a target review has none.
@@ -85,6 +85,11 @@ export async function acceptFeedbackRequestProd(
       // Registration must finish before the continuation starts: its responder
       // can post the first reply during dispatch, before this function returns.
       await options.onAccepted?.(accepted);
+      // A recovered worker may finish while onAccepted registers its waiter.
+      // Recurring reply events do not replay an earlier edge to a late waiter.
+      if (accepted.latency_contract === 'hard-blocked') {
+        await notifyTerminalFeedbackRequest(request.workspaceId, accepted.conversation_id);
+      }
       if (accepted.state === 'routing') {
         // The durable row, not this promise, owns recovery after process death.
         void continueFeedbackRequestProd(request.workspaceId, accepted.conversation_id).catch(() => {});
@@ -253,10 +258,42 @@ export async function continueFeedbackRequestProd(workspaceId: string, conversat
   const [{ getOrgPg }, { continueFeedbackRequestCore }] = await Promise.all([
     import('@papercusp/db-org'), import('./get-feedback-core'),
   ]);
-  return continueFeedbackRequestCore(workspaceId, conversationId, {
-    getSql: () => getOrgPg().sql,
-    execute: async (request, acceptedRequest) => getFeedbackProd(request,
-      { ownerId: request.requesterId, workspaceId } as AgentIdentity,
-      { acceptedRequest, harnessSlug: request.harnessSlug, allowDispatch: request.allowDispatch }),
+  try {
+    return await continueFeedbackRequestCore(workspaceId, conversationId, {
+      getSql: () => getOrgPg().sql,
+      execute: async (request, acceptedRequest) => getFeedbackProd(request,
+        { ownerId: request.requesterId, workspaceId } as AgentIdentity,
+        { acceptedRequest, harnessSlug: request.harnessSlug, allowDispatch: request.allowDispatch }),
+    });
+  } finally {
+    // Includes exhausted preparation failures. Wake from committed truth,
+    // never an in-flight return value or a guessed no-expert verdict.
+    await notifyTerminalFeedbackRequest(workspaceId, conversationId);
+  }
+}
+
+async function notifyTerminalFeedbackRequest(workspaceId: string, conversationId: string): Promise<void> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const rows = await getOrgPg().sql<{
+    state: string; result: GetFeedbackResult | GetFeedbackError | null;
+  }[]>`
+    SELECT state, routing #> '{request,result}' AS result
+      FROM harness_shared.consult_state
+     WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
+       AND latency_contract = 'hard-blocked'
+       AND state NOT IN ('routing', 'awaiting_responder', 'active')
+       AND routing #> '{request,result}' IS NOT NULL`;
+  const terminal = rows[0];
+  if (!terminal?.result) return;
+  const [{ emitAwaitedEvent }, { consultParkKey }] = await Promise.all([
+    import('../events/await/engine'), import('./get-feedback-core'),
+  ]);
+  await emitAwaitedEvent({
+    key: consultParkKey(conversationId),
+    workspaceId,
+    source: 'consult-request',
+    summary: `Consult ${conversationId}: routing finished (${terminal.state}); read the saved result before deciding what to do next.`,
+    payload: { kind: 'routing_complete', conversation_id: conversationId,
+      state: terminal.state, result: terminal.result },
   });
 }

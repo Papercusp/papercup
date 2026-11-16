@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -64,6 +64,28 @@ beforeEach(async () => {
   slug = `discovery-audit-fixture-${fixtureCase}`;
   draft = draftTemplate.replace('slug: discovery-audit-fixture', `slug: ${slug}`);
   await revision();
+});
+
+it('resolves discovery evidence on the held transaction backend', async () => {
+  expect(await recordCurrentDiscoveryAudit(input(), { context })).toMatchObject({ ok: true });
+  const observed: number[] = [];
+  const resolvers = await import('./agent-tools/plans/plan-declaration-resolvers');
+  const resolve = vi.spyOn(resolvers, 'resolveDiscoveryAuditContext').mockImplementation(async (_content, _previous, options) => {
+    const [backend] = await options.sql!<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+    observed.push(backend!.pid);
+    return context();
+  });
+  try {
+    await fx.admin.begin(async tx => {
+      const [backend] = await tx<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+      const result = await withCurrentDiscovery(input(), async executor => {
+        const [accepted] = await executor<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+        return accepted!.pid;
+      }, undefined, tx as never);
+      expect(result).toMatchObject({ ok: true, result: backend!.pid });
+      expect(observed).toEqual([backend!.pid, backend!.pid]);
+    });
+  } finally { resolve.mockRestore(); }
 });
 
 it('refuses a new implementation item before finalization, admits reconciled discovery, and preserves running work', async () => {

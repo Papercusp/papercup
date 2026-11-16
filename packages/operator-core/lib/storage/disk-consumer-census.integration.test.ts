@@ -30,7 +30,8 @@ import {
 } from './disk-consumer-census';
 import { devToMajorMinor, type CensusConsumer } from './usage';
 import { detectDiskGrowthWarnings, runDiskHeadroomAlarmOnce, emitStorageGrowthToast,
-  DISK_HEADROOM_OBSERVATION_ACTION, measureNativeDiskHeadroomAlarm, type DiskHeadroomObservation } from './storage-growth-alarm';
+  DISK_HEADROOM_OBSERVATION_ACTION, DISK_HEADROOM_EXERCISE_ACTION, diskHeadroomAlarmRuntimeIdentity,
+  measureNativeDiskHeadroomAlarm, type DiskHeadroomObservation } from './storage-growth-alarm';
 
 // Toast/audit persistence uses the real throwaway PG below. The host SSE sink
 // resolves its own live org pool, so keep that separate outbound boundary local.
@@ -267,7 +268,11 @@ describe('disk consumer census (real du, real PG)', () => {
     expect(classToasts).toHaveLength(1);
     expect(classToasts[0]!.description).toContain('cold-tier on /mnt/cold-a');
     expect(classToasts[0]!.description).toContain('cold-tier on /mnt/cold-b');
-    const scope = { workspaceId, host, buildSha: 'native-verifier-fixture' };
+    const runtime = { ...diskHeadroomAlarmRuntimeIdentity(), host, buildSha: 'native-verifier-fixture' };
+    await runDiskHeadroomAlarmOnce({ exercise: { devices: native.devices },
+      emitToast: (toast, observation) => emitStorageGrowthToast(toast, { ...observation!, runtime },
+        { db: drizzle(notificationSql) as never, workspaceId }) });
+    const scope = { workspaceId, host, buildSha: 'native-verifier-fixture', runtime };
     expect((await measureNativeDiskHeadroomAlarm(rootSql, scope)).verdict).toBe('pass');
     expect((await measureNativeDiskHeadroomAlarm(rootSql, { ...scope, buildSha: 'other' })).verdict).toBe('unknown');
     const snapshotEnd = new Date(Date.now() + 1_000).toISOString();
@@ -298,6 +303,59 @@ describe('disk consumer census (real du, real PG)', () => {
     await rootSql`UPDATE harness_shared.audit_log SET details=jsonb_set(details,'{horizonDays}','7') WHERE workspace_id=${workspaceId}`;
     await rootSql`DELETE FROM harness_shared.toast_log WHERE id::text IN
       (SELECT subject FROM harness_shared.audit_log WHERE workspace_id=${workspaceId})`;
+    expect((await measureNativeDiskHeadroomAlarm(rootSql, scope)).verdict).toBe('unknown');
+  });
+
+  it('proves labelled delivery on healthy native census without accepting synthetic capacity or missing real notifications', async () => {
+    const host = 'healthy-exercise-host', workspaceId = 'healthy-exercise-workspace', buildSha = 'exercise-fixture-build';
+    const runtime = { ...diskHeadroomAlarmRuntimeIdentity(), host, buildSha };
+    const scope = { host, workspaceId, buildSha, runtime };
+    const epoch = Date.now();
+    const paths = ['/', '/mnt/data', '/mnt/cold-a', '/mnt/cold-b'];
+    for (const path of paths) for (let h = 0; h <= 24; h++) {
+      const at = new Date(h === 24 ? epoch - 60_000 : epoch - 24 * HOUR + (h + 0.5) * HOUR);
+      await writeCensusRun(sql, { runId: randomUUID(), host,
+        device: device({ device: path, sizeBytes: 2e12, availBytes: 1.5e12, usedBytes: 500e9 }),
+        startedAt: at, finishedAt: at, attributedBytes: 500e9, complete: true, note: null,
+        producerBuildSha: buildSha, consumers: [dir(`${path}/grower`, 500e9)] });
+    }
+    expect((await measureNativeDiskHeadroomAlarm(rootSql, scope)).verdict).toBe('unknown');
+    const native = await readDiskConsumerCensus(sql, { host, orderBy: 'growth', limit: 20, expectedDevices: paths });
+    const synthetic = native.devices.map(d => ({ ...d, availBytes: 200e9, baselineAvailBytes: 300e9,
+      consumers: [{ consumer: `${d.device}/synthetic`, kind: 'dir' as const, depth: 1, bytes: 200e9,
+        baselineBytes: 100e9, growth24hBytes: 100e9 }] }));
+    const emit = (toast: Parameters<typeof emitStorageGrowthToast>[0], observation?: DiskHeadroomObservation) =>
+      emitStorageGrowthToast(toast, observation && { ...observation, runtime }, { db: drizzle(notificationSql) as never, workspaceId });
+    await runDiskHeadroomAlarmOnce({ exercise: { devices: synthetic }, emitToast: emit,
+      readDiskCensus: async () => { throw new Error('exercise must not read native census'); } });
+    const actions = await rootSql`SELECT action, details FROM harness_shared.audit_log WHERE workspace_id=${workspaceId}`;
+    expect(actions).toHaveLength(1);
+    expect(actions[0]!.action).toBe(DISK_HEADROOM_EXERCISE_ACTION);
+    expect(actions[0]!.details.exercise.kind).toBe('synthetic-delivery');
+    expect((await readDiskConsumerCensus(sql, { host, orderBy: 'growth', limit: 20, expectedDevices: paths })).devices).toEqual(native.devices);
+    expect((await measureNativeDiskHeadroomAlarm(rootSql, scope)).verdict).toBe('pass');
+    expect((await measureNativeDiskHeadroomAlarm(rootSql, { ...scope, runtime: { ...runtime, pid: runtime.pid + 1 } })).verdict).toBe('unknown');
+    // Missing authentic hourly history cannot be repaired by a synthetic exercise.
+    await rootSql`UPDATE harness_shared.disk_census_runs SET complete=false WHERE host=${host}
+      AND device='/' AND started_at BETWEEN ${new Date(epoch - 12 * HOUR)} AND ${new Date(epoch - 11 * HOUR)}`;
+    expect((await measureNativeDiskHeadroomAlarm(rootSql, scope)).verdict).toBe('unknown');
+    await rootSql`UPDATE harness_shared.disk_census_runs SET complete=true WHERE host=${host}`;
+    await rootSql`UPDATE harness_shared.audit_log SET details=jsonb_set(details,'{horizonDays}','8') WHERE workspace_id=${workspaceId}`;
+    expect((await measureNativeDiskHeadroomAlarm(rootSql, scope)).verdict).toBe('fail');
+    await rootSql`UPDATE harness_shared.audit_log SET details=jsonb_set(details,'{horizonDays}','7') WHERE workspace_id=${workspaceId}`;
+    // A real floor breach still requires a physical notification of its own.
+    const at = new Date();
+    await writeCensusRun(sql, { runId: randomUUID(), host, device: device({ device: '/', sizeBytes: 2e12,
+      availBytes: 200e9, usedBytes: 1.8e12 }), startedAt: at, finishedAt: at, attributedBytes: 1.8e12,
+      complete: true, note: null, producerBuildSha: buildSha, consumers: [dir('//grower', 1.8e12)] });
+    // A new exercise chooses the new native snapshot; it cannot satisfy the real breach.
+    await runDiskHeadroomAlarmOnce({ exercise: { devices: synthetic }, emitToast: emit });
+    expect((await measureNativeDiskHeadroomAlarm(rootSql, scope)).verdict).toBe('unknown');
+    const breached = await readDiskConsumerCensus(sql, { host, orderBy: 'growth', limit: 20, expectedDevices: paths });
+    await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => breached.devices, emitToast: emit });
+    expect((await measureNativeDiskHeadroomAlarm(rootSql, scope)).verdict).toBe('pass');
+    await rootSql`DELETE FROM harness_shared.toast_log WHERE id::text IN
+      (SELECT subject FROM harness_shared.audit_log WHERE workspace_id=${workspaceId} AND action=${DISK_HEADROOM_EXERCISE_ACTION})`;
     expect((await measureNativeDiskHeadroomAlarm(rootSql, scope)).verdict).toBe('unknown');
   });
 

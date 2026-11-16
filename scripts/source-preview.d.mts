@@ -4311,8 +4311,7 @@ declare function readBgIndependentOutputIdentity(path: string): {
     ctimeNs: string;
 };
 import { bindRuntimeSourcePopulation } from '../packages/operator-core/lib/memory/bench/runtime-source-capture.mjs';
-/** @type {typeof import('../packages/operator-core/lib/memory/bench/measurement-manifest.ts').bindNativeLoaderClosure} */
-declare const bindNativeLoaderClosure: typeof import("../packages/operator-core/lib/memory/bench/measurement-manifest.ts").bindNativeLoaderClosure;
+import { bindNativeLoaderClosure } from '../packages/operator-core/lib/memory/bench/measurement-manifest.ts';
 import { runTreeRestrictedHoldPreflight } from './lib/restricted-hold-preflight.mjs';
 declare function main(argv: any): Promise<number>;
 /** Read one physical file without reopening between validation and hashing.

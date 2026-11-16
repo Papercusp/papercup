@@ -51,6 +51,7 @@ import { papercuspPathForWorkspace } from '../../papercusp-root';
 import {
   createFleetIfAbsent,
   fleetSlugFromName,
+  getFleet,
   getFleetHeadcountTarget,
   getFleetScheme,
 } from '../../agent-fleets-store';
@@ -1036,6 +1037,7 @@ export default defineTool({
       .__leaderRecoveryOwnerId?.trim() || null;
     const originalRecoveryOwnerId = leaderRecoveryOwnerId ?? interruptionRecovery?.ownerId;
     let recoveredFleetRole: 'leader' | 'member' | undefined = leaderRecoveryOwnerId ? 'leader' : undefined;
+    let recheckRetainedLeader: (() => Promise<void>) | null = null;
     try {
       if (args.model) {
         modelResolution = resolveLaunchModelAlias(args.model, { effort: args.effort, agent: args.agent });
@@ -2220,6 +2222,30 @@ export default defineTool({
       }
     }
 
+    // A successor retains an identity, including its current leadership seat.
+    // The fleet's member recipe can have a different account or visibility;
+    // select the retained leader's own record only after checking the registry.
+    let retainedLeaderSuccessor = false;
+    if (isSuccessor && resumeOwnerId && fleetSlug) {
+      const retainedOwner = resumeOwnerId;
+      const retainedFleet = fleetSlug;
+      try {
+        retainedLeaderSuccessor = (await getFleet(workspaceId, retainedFleet))?.leaderOwnerId === retainedOwner;
+        if (retainedLeaderSuccessor) {
+          recoveredFleetRole = 'leader';
+          launchMode = await readCallerLaunchMode(workspaceId, retainedOwner);
+          const targetLoop = await getLoopStatus(retainedOwner);
+          if (targetLoop?.active) savedLaunchCarry = targetLoop.carry;
+          recheckRetainedLeader = async () => {
+            if ((await getFleet(workspaceId, retainedFleet))?.leaderOwnerId !== retainedOwner)
+              throw new Error('Cannot start successor: retained fleet leadership changed during preparation.');
+          };
+        }
+      } catch (error) {
+        return err(`Cannot read retained fleet leadership: ${error instanceof Error ? error.message : String(error)}. No process was opened.`);
+      }
+    }
+
     // D-008 (WI-40321): a fleet respawn must consume the same durable launch
     // profile as fleet:launch-on-plan and the headcount governor. Resume keeps
     // its transcript/backend identity, but omitted placement/routing flags still
@@ -2290,7 +2316,8 @@ export default defineTool({
             extraArgs: requestedProfileExtraArgs,
           },
           memberOwnerId: originalRecoveryOwnerId ?? resumeOwnerId ?? undefined,
-          ...((originalRecoveryOwnerId || crossBackendResume) ? { preferMemberRecord: true } : {}),
+          ...((originalRecoveryOwnerId || crossBackendResume || retainedLeaderSuccessor)
+            ? { preferMemberRecord: true } : {}),
           legacyFallbacks: {
             harness: slug ?? undefined,
             postLaunchFleet: sourceFleetSlug ?? undefined,
@@ -2332,6 +2359,7 @@ export default defineTool({
             }
           }
           savedLaunchCarry ??= savedLaunchSpec.effective.member.carry;
+          if (retainedLeaderSuccessor) args.carry ??= savedLaunchCarry;
           savedLaunchSpecMeta = {
             provenance: savedLaunchSpec.provenance,
             reusePath: savedLaunchSpec.reusePath,
@@ -2835,6 +2863,7 @@ export default defineTool({
               mode: 'fresh',
               agent: (isSuccessor ? resumeAgent : folded.agent) ?? null,
               ownerId: memberOwnerIds[i],
+              fleetRole: recoveredFleetRole === 'leader' ? 'leader' : undefined,
               plan: args.plan ?? null,
               // ALWAYS harness-scope a fresh launch, plan or not (caught by the P-016
               // live-verify): `--harness` is what makes psu bootstrap a papercusp-su
@@ -3015,6 +3044,7 @@ export default defineTool({
     if (successorPreparation.reconcile) {
       let failure: string | null;
       try {
+        await recheckRetainedLeader?.();
         failure = await successorPreparation.reconcile();
       } catch (e) {
         failure = `Cannot start successor: predecessor reconciliation failed (${(e as Error)?.message ?? e}). No process was opened.`;
@@ -3318,6 +3348,7 @@ export default defineTool({
             if (reconcileOriginalRouting) await reconcileOriginalRouting();
             await successorPreparation.beforeSpawn?.();
             await interruptionRecovery?.beforeNativeCreate?.();
+            await recheckRetainedLeader?.();
             if (startupReservation && startupReservation.expiresAtMs <= Date.now())
               throw new Error('Ended-source resume startup reservation expired before process start.');
             // In-place resumes skip bootstrap. Only an explicit admitted launch
@@ -3356,6 +3387,7 @@ export default defineTool({
                   if (reconcileOriginalRouting) await reconcileOriginalRouting();
                   await successorPreparation.beforeSpawn?.();
                   await interruptionRecovery?.beforeNativeCreate?.();
+                  await recheckRetainedLeader?.();
                   if (startupReservation && startupReservation.expiresAtMs <= Date.now())
                     throw new Error('Ended-source resume startup reservation expired before process start.');
                   await blindNative?.beforeNativeCreate(startupReservation?.claimKey ?? null, admissionContext.receiptId ?? '');

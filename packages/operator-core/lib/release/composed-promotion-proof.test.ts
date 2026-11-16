@@ -104,6 +104,23 @@ describe('planComposedProof', () => {
     expect(planComposedProof(base([], { proofContext: { before, after: changed } }))).toMatchObject({ mode: 'full-gate' });
   });
 
+  it('automatically carries already-green originals with captured equivalent inputs and no new results', () => {
+    const capture = () => createProofContextIdentity({ ...context().components,
+      testConfiguration: hash(captureConfigurationSnapshot({ PAPERCUSP_FLAG_CONTEXT_TEST: '1' }).fingerprint) })!;
+    const originals = { [SRC_TEST]: 'pass', [OTHER_TEST]: 'pass', [FAR_TEST]: 'pass' } as const;
+    const input = base([], { round1Tests: originals,
+      lintLegs: [{ ...tsLeg, passed: true }, eslintLeg, mdLeg],
+      proofContext: { before: capture(), after: capture() } });
+    const result = planComposedProof(input);
+    expect(result.mode).toBe('composed');
+    const plan = composed(result);
+    expect(plan.rerunTests).toEqual([]);
+    expect(plan.rerunLegs).toEqual([]);
+    expect(plan.carriedTests).toEqual(Object.keys(originals).sort());
+    expect(plan.carriedLegs).toEqual(['lint:docs', 'lint:eslint', 'lint:tsc']);
+    expect(composeVerdict(plan, originals, {})).toEqual({ failing: [], unmeasured: [] });
+  });
+
   it('R-16 f1: a type-only lint fix selects zero runtime tests', () => {
     const plan = composed(planComposedProof(base([{ path: SRC, before: BEFORE, after: TYPE_ONLY_AFTER }])));
     expect(plan.rerunTests).toEqual([]);
@@ -176,11 +193,11 @@ describe('planComposedProof', () => {
 });
 
 describe('composeVerdict', () => {
-  const plan = composed(planComposedProof(base([{ path: SRC, before: BEFORE, after: RUNTIME_AFTER }])));
+  const plan = () => composed(planComposedProof(base([{ path: SRC, before: BEFORE, after: RUNTIME_AFTER }])));
   const round1 = { [SRC_TEST]: 'pass', [OTHER_TEST]: 'pass', [FAR_TEST]: 'fail' } as const;
 
   it('carries round-1 failures outside the radius and adds re-run failures', () => {
-    const v = composeVerdict(plan, round1, {
+    const v = composeVerdict(plan(), round1, {
       [SRC_TEST]: 'fail', [OTHER_TEST]: 'pass', 'lint:tsc': 'pass', 'lint:eslint': 'pass',
     });
     expect(v.failing).toEqual([FAR_TEST, SRC_TEST]);
@@ -188,7 +205,7 @@ describe('composeVerdict', () => {
   });
 
   it('counts a re-run with no result as failing (fail closed)', () => {
-    const v = composeVerdict(plan, round1, { [SRC_TEST]: 'pass', 'lint:tsc': 'pass', 'lint:eslint': 'pass' });
+    const v = composeVerdict(plan(), round1, { [SRC_TEST]: 'pass', 'lint:tsc': 'pass', 'lint:eslint': 'pass' });
     expect(v.unmeasured).toEqual([OTHER_TEST]);
     expect(v.failing).toContain(OTHER_TEST);
   });

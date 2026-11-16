@@ -4425,7 +4425,7 @@ dependency_generation_prepare_exact_ref_root() {
 dependency_generation_ensure_verifier_ref() (
   local integration_root="$1" ref="$2" source_root="$3" generation_root="$4" retain_as="$5"
   local helper="${DEPENDENCY_GENERATION_VERIFIER_HELPER:-$(dirname "${BASH_SOURCE[0]}")/dependency-generation-verifier.mjs}"
-  local parent scratch native_source nm rel input key dependency_key indexed='' rc=0
+  local parent scratch native_source nm rel input key dependency_key desktop_donor='' indexed='' rc=0
   shift 5
   local workspace_args=() workspace
   source_root="$(cd "$source_root" && pwd -P)" || return 1
@@ -4457,6 +4457,11 @@ dependency_generation_ensure_verifier_ref() (
   trap 'dependency_generation_release_selector_lease; dependency_generation_cleanup_exact_scratch' EXIT
   if [ -f "$generation_root/.inputs/$key" ]; then
     dependency_generation_select_verifier_inputs "$source_root" "$generation_root" || return $?
+    # A native selector can carry the canonical selected scope even when the
+    # caller requested the ordinary full scope. Keep its dependency index in
+    # that measured scope instead of replacing the ordinary full selector.
+    input="$(dependency_generation_verification_input_fingerprint "$source_root")" || return $?
+    dependency_key="$(dependency_generation_verification_selector_key "$source_root")" || return $?
     indexed=1
   elif [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then
     # Never publish a different required install under the selected source's
@@ -4474,9 +4479,21 @@ dependency_generation_ensure_verifier_ref() (
       dependency_generation_ensure "$integration_root" "$generation_root" || return $?
     fi
     DEPENDENCY_GENERATION_TOKEN="$(dependency_generation_selector_token "$DEPENDENCY_GENERATION_PATH")" || return $?
+  elif [ -f "$generation_root/.inputs/$dependency_key" ]; then
+    dependency_generation_select_input_fingerprint "$dependency_key" "$generation_root" || return $?
   else
-    dependency_generation_main --integration "$integration_root" --generation-root "$generation_root" \
-      --ensure-ref "$ref" >/dev/null || return $?
+    # The ordinary live-match shortcut need not search historical installs.
+    # Native verification must prefer an equivalent immutable donor, including
+    # when the live locks already match, and must reject a corrupt donor token.
+    dependency_generation_stage_exact_ref_inputs \
+      "$integration_root" "$ref" "$input" "$generation_root" || return $?
+    # Selection retains only the donor identity/token, never these staged
+    # inputs. Remove them before a native rebuild replaces the scratch pointer.
+    dependency_generation_cleanup_exact_scratch
+    if [ -z "$DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT" ]; then
+      dependency_generation_main --integration "$integration_root" --generation-root "$generation_root" \
+        --ensure-ref "$ref" >/dev/null || return $?
+    fi
   fi
   dependency_generation_acquire_selector_lease "$generation_root" "$DEPENDENCY_GENERATION_ID" \
     "${BASHPID:-$$}" "$DEPENDENCY_GENERATION_TOKEN" || return $?
@@ -4504,6 +4521,31 @@ dependency_generation_ensure_verifier_ref() (
     if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = selected ]; then
       dependency_generation_publish_input_selector "$generation_root" "$dependency_key" || return $?
     fi
+    if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = full ] \
+      && [ -f "$source_root/papercusp-desktop/package.json" ] \
+      && [ ! -e "$DEPENDENCY_GENERATION_TREE/papercusp-desktop/node_modules/.bin/tauri" ]; then
+      # Preserve the selected immutable install. Only the missing desktop tree
+      # comes from the integration donor, under the existing native input and
+      # lock-tree checks. Publish that wider install in its selected namespace
+      # so neither this rebuild nor reuse replaces the ordinary full selector.
+      desktop_donor="$integration_root/papercusp-desktop/node_modules"
+      [ -e "$desktop_donor/.bin/tauri" ] || {
+        dependency_generation_log 'FATAL: native desktop dependency donor is missing'
+        return 74
+      }
+      dependency_generation_configure_native_workspaces "$source_root" || return $?
+      input="$(dependency_generation_verification_input_fingerprint "$source_root")" || return $?
+      [ "$(dependency_generation_verification_input_fingerprint "$integration_root")" = "$input" ] || {
+        dependency_generation_log 'FATAL: native desktop donor dependency inputs differ from the exact source'
+        return 74
+      }
+      dependency_key="$(dependency_generation_verification_selector_key "$source_root")" || return $?
+      workspace_args=()
+      for workspace in "${DEPENDENCY_GENERATION_WORKSPACE_DIRS[@]}"; do
+        workspace_args+=(--workspace-dir "$workspace")
+      done
+      dependency_generation_log 'ordinary generation lacks the desktop install; supplementing canonical native scope'
+    fi
     # Native rebuilds mutate independent copies, unlike the install-equivalent
     # hardlink path. Keep those copies beside their immutable donor so the
     # existing strict CoW materializer can avoid two cross-filesystem copies.
@@ -4527,6 +4569,11 @@ dependency_generation_ensure_verifier_ref() (
       DEPENDENCY_GENERATION_ALLOW_HARDLINK=0 DEPENDENCY_GENERATION_FORCE_COPY=1 \
         dependency_generation_materialize_tree "$nm" "$native_source/$rel" || return $?
     done < <(dependency_generation_enumerate_node_modules "$DEPENDENCY_GENERATION_TREE")
+    if [ -n "$desktop_donor" ]; then
+      DEPENDENCY_GENERATION_ALLOW_HARDLINK=0 DEPENDENCY_GENERATION_FORCE_COPY=1 \
+        dependency_generation_materialize_tree "$desktop_donor" "$native_source/papercusp-desktop/node_modules" || return $?
+      dependency_generation_audit_lock_tree "$native_source" "$source_root" || return $?
+    fi
     dependency_generation_release_selector_lease
     dependency_generation_log "rebuilding verifier workspace closure for exact ref $ref"
     "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" build-closure "$native_source" || return $?

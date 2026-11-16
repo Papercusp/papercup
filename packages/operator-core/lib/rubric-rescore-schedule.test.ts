@@ -116,6 +116,9 @@ function depsFor(
 ) {
   const emit = vi.fn(async () => undefined);
   const record = vi.fn(async () => [9001]);
+  const publishScorecard = vi.fn(async (..._args: unknown[]) => ({
+    ok: true, created: true, issueId: 'EI-RESCORE-UNIT',
+  }));
   const readLatest = vi.fn()
     .mockResolvedValueOnce(ledger(before))
     .mockResolvedValueOnce(ledger(after));
@@ -126,15 +129,16 @@ function depsFor(
     durationMs: 3,
   };
   const deps: RubricRescoreDeps = {
-    getRubric: async () => ({ rubricId: RUBRIC, workspaceId: 'ws-test', subjectHarnessSlug: 'papercusp', criteria }),
+    getRubric: async () => ({ rubricId: RUBRIC, kind: 'standard', workspaceId: 'ws-test', subjectHarnessSlug: 'papercusp', criteria }),
     readLatest: readLatest as never,
     runInstruments: vi.fn(async () => []) as never,
     evaluateProbes: vi.fn(async () => ({ ok: true, checkRuns: [] })) as never,
     dispatchTool: vi.fn(async () => ({})),
     record: record as never,
     emit: emit as never,
+    publishScorecard: publishScorecard as never,
   };
-  return { deps, emit, record, readLatest, ran };
+  return { deps, emit, record, readLatest, ran, publishScorecard };
 }
 
 beforeEach(() => {
@@ -367,6 +371,48 @@ describe('rubric re-score: crossing alert (R-8 falsifiers 1 and 2)', () => {
     await expect(
       runRubricRescoreAction({ workspaceId: 'ws-test', installSlug: 'papercusp', payloadTemplate: { input: {} } } as never),
     ).rejects.toThrow('rubric_rescore_rubric_ref_required');
+  });
+
+  it('publishes a standard rubric card from ledger rows after the rescore has persisted them', async () => {
+    const criterion = probeCriterion('cycle');
+    const { deps, record, publishScorecard } = depsFor([criterion], [], [row('cycle', 4, 9001)]);
+    deps.evaluateProbes = vi.fn(async () => ({ ok: true, checkRuns: {
+      cycle: { kind: 'probe', verdict: 'pass', observed: 4, measuredAt: '2026-11-15T00:00:00.000Z' },
+    } })) as never;
+
+    const result = await runRubricRescoreAction({
+      workspaceId: 'ws-test', installSlug: 'papercusp',
+      payloadTemplate: { harnessSlug: 'papercusp', input: { rubricRef: RUBRIC } },
+    } as never, deps);
+
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(publishScorecard).toHaveBeenCalledTimes(1);
+    expect(record.mock.invocationCallOrder[0]!).toBeLessThan(publishScorecard.mock.invocationCallOrder[0]!);
+    const [args, input] = publishScorecard.mock.calls[0] as unknown as [Record<string, unknown>, Record<string, unknown>];
+    expect(args).toMatchObject({ rubricRef: RUBRIC, fromLedger: true });
+    expect(args.acceptance).toBeUndefined();
+    expect(input).toMatchObject({ createdBy: 'system:rubric-rescore', ctxHarness: 'papercusp', workspaceId: 'ws-test' });
+    expect(result).toMatchObject({
+      diagnostics: { rubricRescore: { scorecardPublication: { status: 'created', issueId: 'EI-RESCORE-UNIT' } } },
+    });
+    expect(result.softError).toBeUndefined();
+  });
+
+  it('keeps acceptance grades on the independent-grader path', async () => {
+    const criterion = probeCriterion('acceptance-check');
+    const { deps, publishScorecard } = depsFor([criterion], [], []);
+    deps.getRubric = async () => ({ rubricId: RUBRIC, kind: 'acceptance', workspaceId: 'ws-test', criteria: [criterion] });
+
+    const result = await runRubricRescoreAction({
+      workspaceId: 'ws-test', installSlug: 'papercusp',
+      payloadTemplate: { harnessSlug: 'papercusp', input: { rubricRef: RUBRIC } },
+    } as never, deps);
+
+    expect(publishScorecard).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      diagnostics: { rubricRescore: { scorecardPublication: { status: 'skipped', error: expect.stringContaining('independent grader') } } },
+      softError: expect.stringContaining('independent grader'),
+    });
   });
 });
 

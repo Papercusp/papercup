@@ -34,6 +34,26 @@ afterAll(async () => {
   else process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_POOL_SAMPLE_LOG = originalLog;
 }, 30_000);
 
+async function capture() {
+  sampler._resetSampleDebounceForTests();
+  const execFileImpl: NonNullable<Parameters<Sampler['samplePgBouncerPools']>[1]>['execFileImpl'] = (cmd, args, options, cb) => {
+    if (args.includes('pgbouncer')) {
+      writeFileSync(args[args.indexOf('--output') + 1], 'isolated \u001b[31mpool fixture\n');
+      cb(null, '', '');
+      return;
+    }
+    const env = options.env as NodeJS.ProcessEnv;
+    // Shadow only the activity relation in this disposable database. The
+    // production query, psql argv, timeout and file transport are unchanged.
+    execFile(cmd, args, { ...options, encoding: 'utf8', env: {
+      ...env, PGOPTIONS: `${env.PGOPTIONS} -c search_path=sample_fixture,pg_catalog`,
+    } }, cb);
+  };
+  return sampler.samplePgBouncerPools('real-pg-census', {
+    execFileImpl, activityConnectionString: fixture!.url,
+  });
+}
+
 describe('sampler census SQL and real psql file transport', () => {
   it.each([0, 23, 24, 25])('captures the entire %i-group population independently of input order or process-local state', async (count) => {
     const db = sql!;
@@ -52,23 +72,9 @@ describe('sampler census SQL and real psql file transport', () => {
           (9002, current_database(), 'app-001', 'active', 'Client', 'ClientRead', 'parallel worker', 222222),
           (9003, 'another_database', 'excluded', 'active', NULL, NULL, 'client backend', NULL)`);
       }
-      sampler._resetSampleDebounceForTests();
-      const execFileImpl: NonNullable<Parameters<Sampler['samplePgBouncerPools']>[1]>['execFileImpl'] = (cmd, args, options, cb) => {
-        if (args.includes('pgbouncer')) {
-          writeFileSync(args[args.indexOf('--output') + 1], 'isolated pool fixture\n');
-          cb(null, '', '');
-          return;
-        }
-        const env = options.env as NodeJS.ProcessEnv;
-        // Shadow only the activity relation in this disposable database. The
-        // production query, psql argv, timeout and file transport are unchanged.
-        execFile(cmd, args, { ...options, encoding: 'utf8', env: {
-          ...env, PGOPTIONS: `${env.PGOPTIONS} -c search_path=sample_fixture,pg_catalog`,
-        } }, cb);
-      };
-      const result = await sampler.samplePgBouncerPools('real-pg-census', {
-        execFileImpl, activityConnectionString: fixture!.url,
-      });
+      const result = await capture();
+      expect(result.output).not.toContain('\u001b');
+      expect(readFileSync(result.outputSource!.path, 'utf8')).toContain('\u001b');
       expect(result.pgActivity?.error).toBeNull();
       expect(result.pgActivity).toMatchObject({ ok: true, shownGroups: count, omittedGroups: 0,
         census: { totalGroups: count, totalSessions: count ? 2 * count - 2 : 0,
@@ -89,5 +95,19 @@ describe('sampler census SQL and real psql file transport', () => {
     }
     expect(new Set(preserved).size).toBe(2);
     preserved.forEach((path) => expect(readFileSync(path, 'utf8')).toBe(expected));
+  });
+
+  it('preserves empty, null and literal placeholder identities in the complete source', async () => {
+    await sql!.unsafe(`TRUNCATE sample_fixture.pg_stat_activity;
+      INSERT INTO sample_fixture.pg_stat_activity VALUES
+        (1, current_database(), '', NULL, NULL, NULL, 'client backend', NULL),
+        (2, current_database(), '(unset)', NULL, NULL, NULL, 'client backend', NULL),
+        (3, current_database(), NULL, NULL, NULL, NULL, 'client backend', NULL)`);
+    const result = await capture();
+    expect(result.pgActivity).toMatchObject({ ok: true, census: { totalGroups: 3, totalSessions: 3 } });
+    const rows = readFileSync(result.pgActivity!.outputSource!.path, 'utf8')
+      .trimEnd().split('\n').slice(1).map((line) => JSON.parse(line));
+    expect(new Set(rows.map((row) => row.application_name))).toEqual(new Set(['', '(unset)', null]));
+    rows.forEach((row) => expect(row).toMatchObject({ state: null, wait_event_type: null, wait_event: null }));
   });
 });

@@ -114,6 +114,7 @@ const M = vi.hoisted(() => {
     previewPlanStartConsult: vi.fn(),
     readCurrentMissionContinuity: vi.fn(),
     checkExecutionPlan: vi.fn(async (): Promise<string[]> => []),
+    checkDraftItemStartGateLive: vi.fn(async (): Promise<unknown> => null),
     derivePlanLifecycleForRead: vi.fn(async () => null),
     getAcceptanceRubricForPlan: vi.fn(async (slug: string) => ({
       rubricId: `rubric-${slug}`,
@@ -193,6 +194,10 @@ vi.mock('./_ctx-opts', () => ({
   ctxToPlanSourceOpts: M.ctxToPlanSourceOpts,
   resolveCtxHarnessSlug: M.resolveCtxHarnessSlug,
   resolveEffectiveHarnessSlug: M.resolveEffectiveHarnessSlug,
+}));
+vi.mock('./draft-item-start-gate', async (orig) => ({
+  ...(await orig<typeof import('./draft-item-start-gate')>()),
+  checkDraftItemStartGateLive: M.checkDraftItemStartGateLive,
 }));
 vi.mock('../../plan-items/anchor-store', () => ({ readPlanItemAnchors: M.readPlanItemAnchors }));
 vi.mock('./plan-lifecycle-derivation', async (orig) => ({
@@ -297,6 +302,7 @@ beforeEach(async () => {
   M.previewPlanStartConsult.mockClear();
   M.readCurrentMissionContinuity.mockReset().mockResolvedValue({ availability: 'absent' });
   M.checkExecutionPlan.mockReset().mockResolvedValue([]);
+  M.checkDraftItemStartGateLive.mockReset().mockResolvedValue(null);
   M.previewPlanStartConsult.mockResolvedValue({
     outcome: 'proceed',
     verdict: 'all_responders_paused',
@@ -658,9 +664,93 @@ describe('plans:get — cache wiring', () => {
     expect(M.checkExecutionPlan).toHaveBeenCalledTimes(2);
   });
 
+  it('keeps execution readiness continuation-scoped and previews a new item start through the live gate', async () => {
+    M.checkExecutionPlan.mockResolvedValueOnce([]);
+    M.checkDraftItemStartGateLive.mockResolvedValueOnce({
+      ok: false,
+      slug: 'alpha',
+      itemId: 'P-001',
+      error: 'discovery_not_ready',
+      gateCode: 'discovery_evidence_unusable',
+      hint: 'Finalize current Discovery.',
+    });
+
+    const result = await run({
+      slug: 'alpha',
+      mode: 'sections',
+      executionReadiness: true,
+      planItemStartReadiness: { itemId: 'P-001' },
+    });
+
+    expect(result.results[0]).toMatchObject({
+      executionReadiness: { status: 'ready', ready: true, blockers: [] },
+      planItemStartReadiness: {
+        scope: 'new-plan-item-start',
+        itemId: 'P-001',
+        toStatus: 'wip',
+        status: 'blocked',
+        ready: false,
+        blockers: ['discovery_evidence_unusable'],
+        refusal: {
+          error: 'discovery_not_ready',
+          gateCode: 'discovery_evidence_unusable',
+          hint: 'Finalize current Discovery.',
+        },
+      },
+    });
+    expect(M.checkDraftItemStartGateLive).toHaveBeenCalledWith({
+      workspaceId: 'ws-get',
+      harnessSlug: 'papercup',
+      slug: 'alpha',
+      itemId: 'P-001',
+      toStatus: 'wip',
+    });
+  });
+
+  it('returns unknown rather than ready when the live item-start gate cannot be read', async () => {
+    M.checkDraftItemStartGateLive.mockRejectedValueOnce(new Error('Discovery source unavailable'));
+
+    const result = await run({
+      slug: 'alpha',
+      mode: 'sections',
+      planItemStartReadiness: { itemId: 'P-001' },
+    });
+
+    expect(result.results[0]).toMatchObject({
+      planItemStartReadiness: {
+        scope: 'new-plan-item-start',
+        itemId: 'P-001',
+        toStatus: 'wip',
+        status: 'unknown',
+        ready: null,
+        unavailableReason: 'plan_item_start_readiness_unavailable',
+      },
+    });
+  });
+
   it('accepts execution readiness only on current reads', () => {
     expect(tool.args.safeParse({ slug: 'alpha', executionReadiness: true }).success).toBe(true);
     expect(tool.args.safeParse({ slug: 'alpha', revision: 1, executionReadiness: true }).success).toBe(false);
+  });
+
+  it('requires a single current plan and a P-NNN item for item-start readiness', () => {
+    expect(tool.args.safeParse({
+      slug: 'alpha',
+      planItemStartReadiness: { itemId: 'P-001' },
+    }).success).toBe(true);
+    expect(tool.args.safeParse({
+      slugs: ['alpha'],
+      planItemStartReadiness: { itemId: 'P-001' },
+    }).success).toBe(false);
+    expect(tool.args.safeParse({
+      slug: 'alpha',
+      revision: 1,
+      planItemStartReadiness: { itemId: 'P-001' },
+    }).success).toBe(false);
+    expect(tool.args.safeParse({
+      slug: 'alpha',
+      planItemStartReadiness: { itemId: 'P-1' },
+    }).success).toBe(false);
   });
 
   it('reports unknown execution readiness when the authority lookup fails', async () => {

@@ -163,6 +163,42 @@ console.log(JSON.stringify({ sites: censusSources({ 'src/app.ts': 'void notifyOw
     expect(c.sites.find(s => s.expression === 'forwarding ( sendOwner )')?.roots).toContain('sendOwner');
   });
 
+  it('keeps nested invocations of a shared workspace wrapper separate from sibling notices', () => {
+    const c = censusSources({
+      'src/workspace.ts': 'export function scope(workspace, callback) { return callback(); }',
+      'src/operation.ts': `
+        import { scope } from './workspace';
+        export function status() { return scope('ws', () => database.query('SELECT 1')); }
+      `,
+      'src/app.ts': `
+        import { scope } from './workspace';
+        import { status } from './operation';
+        scope('ws', () => status());
+        scope('ws', notifyOwner);
+      `,
+    });
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.some(s => s.path === 'src/app.ts' && s.expression === "scope ( 'ws' , ( ) => status ( ) )")).toBe(false);
+    expect(c.sites.find(s => s.path === 'src/app.ts' && s.expression === "scope ( 'ws' , notifyOwner )")?.roots)
+      .toEqual(['notifyOwner']);
+    expect(c.sites.find(s => s.expression === 'callback ( )')?.roots).toContain('notifyOwner');
+  });
+
+  it('retains wrapper-owned notices while refining nested invocations of the same wrapper', () => {
+    const c = scan(`
+      function scope(callback) { notifyAttention(); return callback(); }
+      function readOnly() { return database.query('SELECT 1'); }
+      function status() { return scope(readOnly); }
+      scope(() => status());
+      scope(sendOwner);
+    `);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.find(s => s.expression === 'scope ( ( ) => status ( ) )')?.roots)
+      .toEqual(['notifyAttention']);
+    expect(c.sites.find(s => s.expression === 'scope ( sendOwner )')?.roots)
+      .toEqual(['notifyAttention', 'sendOwner']);
+  });
+
   it('retains unknown computed callback dispatch and recursive notification paths', () => {
     const c = scan(`
       function retry(callback) { return callback(); }
@@ -184,6 +220,157 @@ console.log(JSON.stringify({ sites: censusSources({ 'src/app.ts': 'void notifyOw
     expect(c.gaps).toEqual([]);
     expect(c.sites.find(s => s.expression === 'step0 ( sendOwner )')?.roots).toContain('sendOwner');
     expect(validateClassifications(c, classify(c))).toEqual([]);
+  });
+
+  it('discovers an omitted callback default and rejects missing delivery classifications', () => {
+    const c = scan('function retry(callback = sendOwner) { return callback(); } retry();');
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.map(s => [s.expression, s.roots])).toEqual([
+      ['retry ( )', ['sendOwner']],
+      ['callback ( )', ['sendOwner']],
+    ]);
+    expect(validateClassifications(c, [])).toEqual(c.sites.map(s => `unclassified: ${s.id}`));
+    expect(validateClassifications(c, classify(c))).toEqual([]);
+  });
+
+  it('retains nested defaults while substituting explicit callback overrides', () => {
+    const c = scan(`
+      function retry(callback = sendOwner) { return callback(); }
+      function outer() { notifyAttention(); return retry(); }
+      function readOnly() { return database.query('SELECT 1'); }
+      outer();
+      retry(readOnly);
+    `);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.find(s => s.expression === 'outer ( )')?.roots).toEqual(['notifyAttention', 'sendOwner']);
+    expect(c.sites.find(s => s.expression === 'retry ( )')?.roots).toEqual(['sendOwner']);
+    expect(c.sites.find(s => s.expression === 'callback ( )')?.roots).toEqual(['sendOwner']);
+    expect(c.sites.some(s => s.expression === 'retry ( readOnly )')).toBe(false);
+  });
+
+  it('discovers defaults through earlier parameters and callback-valued initializers', () => {
+    const c = scan(`
+      function retry(first = sendOwner, callback = first) { return callback(); }
+      function closure(callback = () => notifyOwner()) { return callback(); }
+      retry();
+      closure();
+    `);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.find(s => s.expression === 'retry ( )')?.roots).toEqual(['sendOwner']);
+    expect(c.sites.find(s => s.expression === 'closure ( )')?.roots).toEqual(['notifyOwner']);
+    expect(c.sites.find(s => s.expression === 'notifyOwner ( )')?.mode).toBe('detached-wrapper');
+  });
+
+  it.each(['undefined', 'missing', 'runtimeCallback'])(
+    'retains a notification default when the supplied callback is unresolved: %s', value => {
+      const c = scan(`
+        const missing = undefined;
+        function retry(callback = sendOwner) { return callback(); }
+        function readOnly() { return database.query('SELECT 1'); }
+        retry(${value});
+        retry(readOnly);
+      `);
+      expect(c.gaps).toEqual([]);
+      const caller = c.sites.find(s => s.expression === `retry ( ${value} )`);
+      expect(caller?.roots).toEqual(['sendOwner']);
+      expect(c.sites.some(s => s.expression === 'retry ( readOnly )')).toBe(false);
+      expect(validateClassifications(c, [])).toContain(`unclassified: ${caller?.id}`);
+    },
+  );
+
+  it('keeps wrapper-owned notices when an unresolved callback can select its default', () => {
+    const c = scan(`
+      function retry(callback = sendOwner) { notifyAttention(); return callback(); }
+      retry(undefined);
+    `);
+    expect(c.sites.find(s => s.expression === 'retry ( undefined )')?.roots)
+      .toEqual(['notifyAttention', 'sendOwner']);
+  });
+
+  it('resolves a shadowed undefined parameter to its known caller callback', () => {
+    const c = scan(`
+      function retry(callback = sendOwner) { return callback(); }
+      function caller(undefined) { return retry(undefined); }
+      function readOnly() { return database.query('SELECT 1'); }
+      caller(readOnly);
+      caller(sendOwner);
+    `);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.some(s => s.expression === 'caller ( readOnly )')).toBe(false);
+    expect(c.sites.find(s => s.expression === 'caller ( sendOwner )')?.roots).toEqual(['sendOwner']);
+  });
+
+  it.each(['false', 'true', '0', 'null', '-1', '1n'])(
+    'keeps callback custody separate when a wrapper also has the primitive default %s', value => {
+      const c = scan(`
+        function retry(callback, option = ${value}) { return callback(); }
+        function readOnly() { return database.query('SELECT 1'); }
+        retry(readOnly);
+        retry(sendOwner);
+      `);
+      expect(c.gaps).toEqual([]);
+      expect(c.sites.some(s => s.expression === 'retry ( readOnly )')).toBe(false);
+      expect(c.sites.find(s => s.expression === 'retry ( sendOwner )')?.roots).toEqual(['sendOwner']);
+      expect(c.sites.find(s => s.expression === 'callback ( )')?.roots).toEqual(['sendOwner']);
+    },
+  );
+
+  it('keeps computed dispatch conservative when its default is a primitive', () => {
+    const c = scan('function dispatch(key = false) { return bus[key](); } dispatch();');
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.find(s => s.expression === 'dispatch ( )')?.roots).toEqual(['<unresolved-computed-dispatch>']);
+  });
+
+  it.each([255, 256, 257, 1024].flatMap(count => [false, true].map(reverse => ({ count, reverse }))))(
+    'keeps callback custody after $count notification-free calls (reverse=$reverse)',
+    ({ count, reverse }) => {
+      const callers = ['run(readOnly);', 'run(sendOwner);'];
+      if (reverse) callers.reverse();
+      const c = scan(`
+        function readOnly() { return database.query('SELECT 1'); }
+        function run(callback) { ${'readOnly();'.repeat(count)} return callback(); }
+        ${callers.join('\n')}
+      `);
+      expect(c.gaps).toEqual([]);
+      expect(c.sites.map(s => [s.expression, s.roots])).toEqual([
+        ['run ( sendOwner )', ['sendOwner']],
+        ['callback ( )', ['sendOwner']],
+      ]);
+      expect(validateClassifications(c, [])).toHaveLength(2);
+    },
+  );
+
+  it.each([false, true])('retains defaults and unknown dispatch after many clean calls (reverse=%s)', reverse => {
+    const callers = ['run(readOnly);', 'run();'];
+    if (reverse) callers.reverse();
+    const c = scan(`
+      function readOnly() { return database.query('SELECT 1'); }
+      function retry(callback = sendOwner) { return callback(); }
+      function run(callback = () => retry()) {
+        ${'readOnly();'.repeat(1024)}
+        bus[runtimeKey]();
+        return callback();
+      }
+      ${callers.join('\n')}
+    `);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.find(s => s.expression === 'run ( )')?.roots).toEqual(['<unresolved-computed-dispatch>', 'sendOwner']);
+    expect(c.sites.find(s => s.expression === 'run ( readOnly )')?.roots).toEqual(['<unresolved-computed-dispatch>']);
+    expect(c.sites.find(s => s.expression === 'retry ( )')?.roots).toEqual(['sendOwner']);
+    expect(validateClassifications(c, [])).toEqual(c.sites.map(s => `unclassified: ${s.id}`));
+  });
+
+  it('keeps conservative notices when notification-bearing calls exhaust the refinement budget', () => {
+    const c = scan(`
+      function retry(callback = sendOwner) { return callback(); }
+      function run() { ${'notifyAttention();'.repeat(257)} return retry(); }
+      run();
+    `);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.find(s => s.expression === 'run ( )')?.roots).toEqual(['notifyAttention', 'sendOwner']);
+    expect(c.sites.find(s => s.expression === 'retry ( )')?.roots).toEqual(['sendOwner']);
+    expect(c.sites.filter(s => s.expression === 'notifyAttention ( )')).toHaveLength(257);
+    expect(validateClassifications(c, [])).toEqual(c.sites.map(s => `unclassified: ${s.id}`));
   });
 
   it('terminates on cyclic barrel exports', () => {

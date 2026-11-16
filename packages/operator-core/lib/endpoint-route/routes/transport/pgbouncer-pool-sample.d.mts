@@ -1,6 +1,12 @@
 export const SAMPLE_LOG_FILE: string;
 export const MIN_SAMPLE_INTERVAL_MS: number;
 
+export interface SampleOutputSource {
+  path: string;
+  bytes?: number | null;
+  complete: boolean;
+}
+
 export function buildShowPoolsArgs(opts?: { host?: string; port?: number; user?: string }): string[];
 
 export function buildPgActivityArgs(opts?: {
@@ -26,6 +32,9 @@ export function samplePgBouncerPools(
   ok: boolean;
   output?: string;
   error?: string | null;
+  outputSource?: SampleOutputSource;
+  outputOmittedBytes?: number | null;
+  captureRef?: string | null;
   skipped?: string;
   pgActivity?: {
     ok: boolean;
@@ -33,8 +42,15 @@ export function samplePgBouncerPools(
     completedAt?: string;
     durationMs?: number;
     output?: string;
+    outputSource?: SampleOutputSource;
+    outputOmittedBytes?: number | null;
     error?: string | null;
     stderr?: string;
+    stderrOmittedChars?: number;
+    stderrSource?: SampleOutputSource;
+    census?: { totalGroups: number; totalSessions: number; clientBackends: number; parallelWorkers: number } | null;
+    shownGroups?: number | null;
+    omittedGroups?: number | null;
     skipped?: string;
   };
 }>;

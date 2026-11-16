@@ -199,14 +199,15 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
     }
   });
 
-  it('drops queued wakes for the exact poisoned adv-session incarnation', async () => {
+  it.each(['2026-09-24T10:00:00.123Z', '2026-09-24 10:00:00.123456+00'])(
+    'drops queued wakes for the exact poisoned incarnation (stored timestamp %s)', async (storedStart) => {
     let spawned = false;
     const { deps, s } = await exitedClaudeResumeDeps();
     deps.getSessionLifecycle = async () => ({
         poisoned: {
           advSessionId: s.advSessionId,
           sessionId: 'native-A',
-          startedAt: '2026-09-24T10:00:00.123Z',
+          startedAt: storedStart,
           at: '2026-09-24T10:05:00.000Z',
           by: 'resume-turn-detector',
           reason: 'three consecutive unavailable tool references',
@@ -220,6 +221,7 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
         coordOwnerId: s.ownerId,
         sessionId: 'native-A',
         startedAt: '2026-09-24T10:00:00.123Z',
+        startedAtExact: '2026-09-24 10:00:00.123456+00',
         endedAt: null,
         pid: await deadPid(),
         cwd: s.cwd,
@@ -234,7 +236,11 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
     expect(spawned).toBe(false);
   });
 
-  it('does not let an old poison marker block a newer resumed incarnation', async () => {
+  it.each([
+    ['later resume', 'native-A', '2026-09-24T10:00:00.123Z', '2026-09-24T10:06:00.000Z', undefined],
+    ['one-microsecond resume', 'native-A', '2026-09-24 10:00:00.123456+00', '2026-09-24T10:00:00.123Z', '2026-09-24 10:00:00.123457+00'],
+    ['new native session', 'native-successor', '2026-09-24T10:00:00.123Z', '2026-09-24T10:00:00.123Z', undefined],
+  ])('does not let an old poison marker block a %s', async (_label, nativeId, storedStart, currentStart, exactStart) => {
     let spawned = false;
     const { deps, s } = await exitedClaudeResumeDeps({
       collectSessionFiles: async () => [],
@@ -244,7 +250,7 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
       poisoned: {
         advSessionId: s.advSessionId,
         sessionId: 'native-A',
-        startedAt: '2026-09-24T10:00:00.123Z',
+        startedAt: storedStart!,
         at: '2026-09-24T10:05:00.000Z',
         by: 'resume-turn-detector',
         reason: 'three consecutive unavailable tool references',
@@ -258,8 +264,9 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
       // Replaces the owner-election-wrapped getSession, so name the row's real owner
       // itself: the election parks a row it cannot attribute (WI-10008189).
       coordOwnerId: s.ownerId,
-      sessionId: 'native-A',
-      startedAt: '2026-09-24T10:06:00.000Z',
+      sessionId: nativeId!,
+      startedAt: currentStart!,
+      startedAtExact: exactStart,
       endedAt: null,
       pid: await deadPid(),
       cwd: s.cwd,
@@ -678,6 +685,8 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
         quarantineCodexOverflowSession: quarantine as never,
         onResumeTurnExit: (_d, _exit, context) => { observedContext = context; },
       });
+      let resumeClaimed = false;
+      deps.claimResume = async () => { resumeClaimed = true; return true; };
       deps.getSession = async () => ({
         id: s.advSessionId,
         workspaceId: 'row-ws',
@@ -685,7 +694,8 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
         agent: 'codex',
         coordOwnerId: s.ownerId,
         sessionId: nativeId,
-        startedAt: '2026-10-12T11:26:21.000Z',
+        startedAt: resumeClaimed ? '2026-10-12T11:30:00.123Z' : '2026-10-12T11:26:21.000Z',
+        startedAtExact: resumeClaimed ? '2026-10-12 11:30:00.123456+00' : '2026-10-12 11:26:21.000123+00',
         endedAt: null,
         pid: await deadPid(),
         cwd: s.cwd,
@@ -711,7 +721,8 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
       await vi.waitFor(() => expect(observedContext).toMatchObject({ poisoned: true, advSessionId: s.advSessionId }));
       expect(quarantine).toHaveBeenCalledTimes(2);
       expect(quarantine).toHaveBeenLastCalledWith(
-        expect.objectContaining({ agent: 'codex', transcriptPath: rolloutPath, sessionId: nativeId }),
+        expect.objectContaining({ agent: 'codex', transcriptPath: rolloutPath, sessionId: nativeId,
+          startedAt: '2026-10-12T11:30:00.123Z', startedAtExact: '2026-10-12 11:30:00.123456+00' }),
         compactFailure,
       );
       expect(observedContext).toMatchObject({

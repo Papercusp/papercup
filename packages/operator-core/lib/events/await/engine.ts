@@ -595,7 +595,9 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
       const env = await sendMessage(emitterIdentity(opts.source, ws), {
         to: notifyTo,
         summary: `[event] ${opts.key}${opts.summary ? ` — ${opts.summary}` : ''}`,
-        body: opts.payload != null ? JSON.stringify(opts.payload).slice(0, 2000) : undefined,
+        // Keep the canonical message intact. Inbox previews label any clipping
+        // and point to coord:read; cutting here makes that recovery lossy too.
+        body: opts.payload != null ? JSON.stringify(opts.payload) : undefined,
         category: 'event',
         extra: { auto: true, event_key: opts.key },
       });

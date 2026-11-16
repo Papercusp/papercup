@@ -36,6 +36,7 @@ import { BAR_CRITIQUE_POLICY, DEFAULT_MIN_RESPONDERS, DEFAULT_MAX_RESPONDERS, RU
 import { AGENT_LAUNCH_HANDLER_TIMEOUT_SEC } from '../../agent-kickoff/launch-budgets.mjs';
 import { reconcileInterestEventAwaits } from '../../interest-auto-arm';
 import { consultFeedbackAbortCompletionReceipt } from './abort-completion';
+import { HARD_BLOCKED_EXPIRY_MS } from '../../consult/get-feedback-core';
 
 const ok = (payload: Record<string, unknown>) => ({ data: payload });
 
@@ -201,9 +202,13 @@ export default defineTool({
         try {
           interestWatch = await reconcileInterestEventAwaits({
             ownerId: identity.ownerId,
-            eventKeys: [accepted.park_key],
+            eventKeys: ['routing', 'awaiting_responder', 'active'].includes(accepted.state)
+              ? [accepted.park_key] : [],
             boundTo: { kind: 'consult-request', ref: accepted.conversation_id },
             note: 'hard-blocked consult requester auto-arm for ' + accepted.conversation_id,
+            // A lost terminal emit or stopped preparation must also wake the
+            // requester. Timeout means UNKNOWN, never an answer or approval.
+            timeoutSec: HARD_BLOCKED_EXPIRY_MS / 1000,
           });
         } catch {
           /* consult routing remains authoritative; interest arming is fail-soft */

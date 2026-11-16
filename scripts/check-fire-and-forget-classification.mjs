@@ -151,6 +151,9 @@ export function censusSources(sources) {
       if (transparent(n) || ts.isAwaitExpression(n)) return ref(n.expression, scope);
       if (ts.isIdentifier(n)) return named(scope, n.text);
       if (ts.isStringLiteralLike(n)) return { literal: n.text };
+      if (ts.isNumericLiteral(n) || ts.isBigIntLiteral(n) || ts.isPrefixUnaryExpression(n)
+        || n.kind === ts.SyntaxKind.TrueKeyword || n.kind === ts.SyntaxKind.FalseKeyword
+        || n.kind === ts.SyntaxKind.NullKeyword) return { nonCallable: true };
       if (n.kind === ts.SyntaxKind.ThisKeyword) {
         let s = scope; while (s && !s.classSymbol) s = s.parent;
         return s?.classSymbol ? { id: s.classSymbol.id } : null;
@@ -214,6 +217,15 @@ export function censusSources(sources) {
         if (n.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword)) exports.set(n.modifiers.some(m => m.kind === ts.SyntaxKind.DefaultKeyword) ? 'default' : localName, { id: s.id });
         for (const p of n.parameters) if (p.initializer) visit(p.initializer, child);
         s.defaults = n.parameters.map(p => ({ present: !!p.initializer, ref: ref(p.initializer, child) }));
+        // Defaults participate in the discovery graph just like supplied callback
+        // arguments. Invocation refinement still substitutes an explicit caller's
+        // value, but discovery and conservative fallback must include omitted ones.
+        s.defaults.forEach((fallback, i) => {
+          if (fallback.ref && s.params[i]) {
+            s.params[i].edges.push(fallback.ref);
+            s.params[i].aliases.push(fallback.ref);
+          }
+        });
         visit(n.body, child);
         return;
       }
@@ -253,7 +265,7 @@ export function censusSources(sources) {
           try { declarations.push(JSON.parse(annotation[1])); }
           catch { gaps.push({ path, kind: 'invalid-classification-json', offset: n.getStart(sf) }); }
         }
-        const call = { path, line, owner: scope.owner, context: scope.label, callee, args, declarations, discarded: discarded(n), expression: tokens(n, sf) };
+        const call = { index: calls.length, path, line, owner: scope.owner, context: scope.label, callee, args, declarations, discarded: discarded(n), expression: tokens(n, sf) };
         calls.push(call);
         if (scope.owner) { scope.owner.edges.push(callee); scope.owner.calls.push(call); }
       }
@@ -272,6 +284,9 @@ export function censusSources(sources) {
   function targets(r, seen = new Set(), context = null, trail = []) {
     if (!r || seen.has(r)) return [];
     seen.add(r); trail.push(r);
+    // Primitive defaults are supported values, but never callback targets.
+    // Keep computed keys conservative rather than guessing a property name.
+    if (r.nonCallable) return [];
     if (r.literal !== undefined) return [{ literal: r.literal }];
     if (r.id) {
       if (context?.has(r.id)) {
@@ -349,9 +364,14 @@ export function censusSources(sources) {
   // Bind arguments at each invocation, including the lexical context of forwarded
   // closures. Unsupported signatures, recursion and exhausted work budgets retain
   // the original roots instead of silently certifying a path as notification-free.
-  const globalRoots = c => [...new Set(targets(c.callee).flatMap(t => [...t.roots ?? []]))];
+  const globalRoots = c => [...new Set(c.targets.flatMap(t => [...t.roots ?? []]))];
   function callRoots(c, context = new Map(), visiting = new Set(), budget = { remaining: 256 }) {
-    if (--budget.remaining < 0 || visiting.size >= 24 || /^(call|apply|bind)$/.test(c.callee?.member ?? '')) return globalRoots(c);
+    const conservativeRoots = globalRoots(c);
+    // Root-free calls cannot change this refinement. Do not spend the bounded
+    // context work on them: a long read-only prefix must not force a later
+    // callback to fall back to the union of unrelated callers' notice roots.
+    if (!conservativeRoots.length) return [];
+    if (--budget.remaining < 0 || visiting.size >= 24 || /^(call|apply|bind)$/.test(c.callee?.member ?? '')) return conservativeRoots;
     const roots = new Set();
     for (const t of targets(c.callee, new Set(), context)) {
       if (!t.id) { for (const r of t.roots ?? []) roots.add(r); continue; }
@@ -361,7 +381,11 @@ export function censusSources(sources) {
         if (!t.aliases.length) for (const r of t.roots) roots.add(r);
         continue;
       }
-      if (visiting.has(t.id) || t.hasRest || t.params.some(p => !p)) {
+      // Re-entering a shared wrapper from a different callsite can carry an
+      // entirely different callback. Only a repeated callsite/callee pair is
+      // a cycle; function identity alone imports unrelated callers' roots.
+      const invocation = `${c.index}:${t.id}`;
+      if (visiting.has(invocation) || t.hasRest || t.params.some(p => !p)) {
         for (const r of t.roots) roots.add(r);
         continue;
       }
@@ -370,14 +394,21 @@ export function censusSources(sources) {
       t.params.forEach((p, i) => {
         const value = c.args[i];
         const fallback = t.defaults[i];
-        if (value) bound.set(p.id, { ref: value, context });
+        if (value) {
+          bound.set(p.id, { ref: value, context });
+          // An unresolved argument can be undefined and select the default.
+          // Only a resolved callback can rule out a rooted default safely.
+          if (fallback?.present
+            && !targets(value, new Set(), context).some(t => t.calls || t.roots?.size)
+            && targets(fallback.ref, new Set(), bound).some(t => t.roots?.size)) unsupported = true;
+        }
         else if (fallback?.present) {
           if (!fallback.ref) unsupported = true;
           else bound.set(p.id, { ref: fallback.ref, context: bound });
         } else bound.set(p.id, { ref: null, context });
       });
       if (unsupported) { for (const r of t.roots) roots.add(r); continue; }
-      const nested = new Set(visiting); nested.add(t.id);
+      const nested = new Set(visiting); nested.add(invocation);
       for (const call of t.calls) for (const r of callRoots(call, bound, nested, budget)) roots.add(r);
     }
     return [...roots];

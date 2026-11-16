@@ -11,8 +11,7 @@ import { papercuspPath } from '@papercusp/host-platform/home';
  * per-process debounce.
  */
 import { execFile } from 'node:child_process';
-import { appendFileSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { dirname, join } from 'node:path';
 
@@ -26,25 +25,41 @@ export const SAMPLE_LOG_FILE =
 const SAMPLE_TIMEOUT_MS = Number(process.env.PAPERCUSP_PGBOUNCER_SAMPLE_TIMEOUT_MS) || 5_000;
 const ACTIVITY_TIMEOUT_MS = 1_500;
 const MAX_PSQL_BUFFER_BYTES = 32 * 1024;
+const MAX_PREVIEW_BYTES = 16 * 1024;
 const MAX_LOG_BYTES = 4 * 1024 * 1024;
 /** Never sample more than once per this window within a process. */
 export const MIN_SAMPLE_INTERVAL_MS = Number(process.env.PAPERCUSP_PGBOUNCER_SAMPLE_MIN_INTERVAL_MS) || 20_000;
 
-const PG_ACTIVITY_QUERY = `SELECT COALESCE(json_agg(row_to_json(samples)), '[]'::json)::text
-FROM (
+// NDJSON: one census followed by EVERY group, from the same materialized snapshot.
+// Only the displayed preview is bounded; psql writes the complete source to disk.
+const PG_ACTIVITY_QUERY = `WITH samples AS MATERIALIZED (
   SELECT
-    COALESCE(NULLIF(application_name, ''), '(unset)') AS application_name,
-    COALESCE(state, '(unknown)') AS state,
-    COALESCE(wait_event_type, '(none)') AS wait_event_type,
-    COALESCE(wait_event, '(none)') AS wait_event,
+    application_name,
+    state,
+    wait_event_type,
+    wait_event,
+    backend_type,
+    leader_pid,
     count(*)::int AS sessions
   FROM pg_stat_activity
   WHERE datname = current_database()
     AND pid <> pg_backend_pid()
-  GROUP BY application_name, state, wait_event_type, wait_event
-  ORDER BY sessions DESC, application_name, state
-  LIMIT 24
-) AS samples;`;
+  GROUP BY application_name, state, wait_event_type, wait_event, backend_type, leader_pid
+), records AS (
+  SELECT 0 AS ordinal, 0 AS sessions, '' AS application_name, '' AS state,
+    '' AS wait_event_type, '' AS wait_event, '' AS backend_type, NULL::int AS leader_pid,
+    json_build_object('kind', 'census', 'totalGroups', count(*),
+      'totalSessions', COALESCE(sum(sessions), 0),
+      'clientBackends', COALESCE(sum(sessions) FILTER (WHERE backend_type = 'client backend'), 0),
+      'parallelWorkers', COALESCE(sum(sessions) FILTER (WHERE backend_type = 'parallel worker'), 0))::text AS record
+  FROM samples
+  UNION ALL
+  SELECT 1, sessions, application_name, state, wait_event_type, wait_event, backend_type, leader_pid,
+    row_to_json(samples)::text
+  FROM samples
+)
+SELECT record FROM records
+ORDER BY ordinal, sessions DESC, application_name, state, wait_event_type, wait_event, backend_type, leader_pid NULLS FIRST;`;
 
 /** Pure: the exact PgBouncer admin-console argv. */
 export function buildShowPoolsArgs({ host = ADMIN_HOST, port = ADMIN_PORT, user = ADMIN_USER } = {}) {
@@ -111,7 +126,28 @@ function safeErrorText(error) {
   return clippedText(message.replace(/\bpostgres(?:ql)?:\/\/\S+/gi, '[redacted-connection]'), 800);
 }
 
-function runPsqlSample(args, env, timeoutMs, { execFileImpl, now }) {
+/** Bound the preview at a record boundary; the source file is never clipped. */
+function readOutputPreview(path) {
+  const bytes = statSync(path).size;
+  const fd = openSync(path, 'r');
+  let buffer;
+  try {
+    buffer = Buffer.alloc(Math.min(bytes, MAX_PREVIEW_BYTES));
+    let read = 0;
+    while (read < buffer.length) {
+      const n = readSync(fd, buffer, read, buffer.length - read, read);
+      if (n === 0) throw new Error('sample source changed while reading');
+      read += n;
+    }
+  } finally {
+    closeSync(fd);
+  }
+  if (bytes > buffer.length) buffer = buffer.subarray(0, buffer.lastIndexOf(10) + 1);
+  const output = buffer.toString('utf8').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ');
+  return { output, outputOmittedBytes: bytes - buffer.length, bytes };
+}
+
+function runPsqlSample(args, env, timeoutMs, { execFileImpl, now, outputPath }) {
   const startedAtMs = now();
   const startedAt = new Date(startedAtMs).toISOString();
   const startedMonotonicMs = performance.now();
@@ -121,20 +157,33 @@ function runPsqlSample(args, env, timeoutMs, { execFileImpl, now }) {
       if (settled) return;
       settled = true;
       const completedAtMs = now();
+      let preview = { output: '', outputOmittedBytes: null, bytes: null };
+      let failure = error;
+      try {
+        preview = readOutputPreview(outputPath);
+        // stderr is diagnostic output too: preserve its full received value.
+        writeFileSync(`${outputPath}.stderr`, stderr ?? '', { mode: 0o600 });
+      } catch (readError) {
+        failure ??= readError;
+      }
       resolve({
-        ok: !error,
+        ok: !failure,
         startedAt,
         completedAt: new Date(completedAtMs).toISOString(),
         durationMs: Math.max(0, Math.round(performance.now() - startedMonotonicMs)),
-        output: clippedText(stdout),
+        output: preview.output,
+        outputOmittedBytes: preview.outputOmittedBytes,
+        outputSource: { path: outputPath, bytes: preview.bytes, complete: !failure },
         stderr: clippedText(stderr, 4_000),
-        error: error ? safeErrorText(error) : null,
+        stderrOmittedChars: Math.max(0, String(stderr ?? '').length - 4_000),
+        stderrSource: { path: `${outputPath}.stderr`, complete: !failure },
+        error: failure ? safeErrorText(failure) : null,
       });
     };
     try {
       execFileImpl(
         'psql',
-        args,
+        ['--output', outputPath, ...args],
         {
           env: { ...process.env, ...env },
           timeout: timeoutMs,
@@ -147,6 +196,34 @@ function runPsqlSample(args, env, timeoutMs, { execFileImpl, now }) {
       finish(error, '', '');
     }
   });
+}
+
+function withActivityCensus(capture) {
+  if (!capture.ok) return { ...capture, census: null, shownGroups: null, omittedGroups: null };
+  try {
+    const lines = capture.output.trimEnd().split('\n');
+    const { kind, ...census } = JSON.parse(lines[0]);
+    if (kind !== 'census' || !['totalGroups', 'totalSessions', 'clientBackends', 'parallelWorkers']
+      .every((key) => Number.isSafeInteger(census[key]) && census[key] >= 0)) {
+      throw new Error('invalid activity census');
+    }
+    const shownGroups = lines.length - 1;
+    if (shownGroups > census.totalGroups || (capture.outputOmittedBytes === 0 && shownGroups !== census.totalGroups)) {
+      throw new Error('activity census does not match captured groups');
+    }
+    return { ...capture, census, shownGroups, omittedGroups: census.totalGroups - shownGroups };
+  } catch (error) {
+    return { ...capture, ok: false, error: safeErrorText(error), census: null, shownGroups: null, omittedGroups: null };
+  }
+}
+
+function formatCapture(capture) {
+  if (capture.skipped) return `SKIPPED: ${capture.skipped}`;
+  return `${capture.error ? `ERROR: ${capture.error}\n${capture.stderr}\n` : ''}` +
+    `SOURCE: ${JSON.stringify(capture.outputSource)} omittedPreviewBytes=${capture.outputOmittedBytes}\n` +
+    `STDERR_SOURCE: ${JSON.stringify(capture.stderrSource)} omittedPreviewChars=${capture.stderrOmittedChars}\n` +
+    (capture.census ? `CENSUS: ${JSON.stringify(capture.census)} shownGroups=${capture.shownGroups} omittedGroups=${capture.omittedGroups}\n` : '') +
+    `PREVIEW:\n${capture.output}`;
 }
 
 function appendBoundedLog(line) {
@@ -193,11 +270,24 @@ export async function samplePgBouncerPools(reason, {
     ? requestFingerprint.toLowerCase()
     : 'none';
 
+  let captureDirectory;
+  try {
+    const root = `${SAMPLE_LOG_FILE}.captures`;
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    captureDirectory = mkdtempSync(join(root, 'sample-'));
+    for (const name of ['pgbouncer.txt', 'activity.ndjson']) {
+      writeFileSync(join(captureDirectory, name), '', { flag: 'wx', mode: 0o600 });
+    }
+  } catch (error) {
+    // Do not run a lossy in-memory fallback when full-source retention fails.
+    return { ok: false, error: `sample source unavailable: ${safeErrorText(error)}` };
+  }
+
   const poolPromise = runPsqlSample(
     buildShowPoolsArgs(),
     { PGPASSWORD: ADMIN_PASSWORD, PGAPPNAME: 'papercusp-pgbouncer-diagnostic' },
     SAMPLE_TIMEOUT_MS,
-    { execFileImpl, now },
+    { execFileImpl, now, outputPath: join(captureDirectory, 'pgbouncer.txt') },
   );
   const activityArgs = buildPgActivityArgs({
     connectionString: activityConnectionString === undefined ? defaultActivityConnectionString() : activityConnectionString,
@@ -208,8 +298,8 @@ export async function samplePgBouncerPools(reason, {
       activityArgs.args,
       activityArgs.env,
       ACTIVITY_TIMEOUT_MS,
-      { execFileImpl, now },
-    );
+      { execFileImpl, now, outputPath: join(captureDirectory, 'activity.ndjson') },
+    ).then(withActivityCensus);
   const [pool, activity] = await Promise.all([poolPromise, activityPromise]);
 
   const line =
@@ -218,14 +308,22 @@ export async function samplePgBouncerPools(reason, {
     `pgActivityStartedAt=${activity.startedAt ?? 'unavailable'} ` +
     `pgActivityCompletedAt=${activity.completedAt ?? 'unavailable'} ` +
     `pgActivityDurationMs=${activity.durationMs ?? 'unavailable'}\n` +
-    `PGBOUNCER:\n${pool.error ? `ERROR: ${pool.error}\n${pool.stderr}` : pool.output}\n` +
-    `PG_STAT_ACTIVITY:\n${activity.skipped ? `SKIPPED: ${activity.skipped}` : activity.error ? `ERROR: ${activity.error}\n${activity.stderr}` : activity.output}\n\n`;
+    `PGBOUNCER:\n${formatCapture(pool)}\n` +
+    `PG_STAT_ACTIVITY:\n${formatCapture(activity)}\n\n`;
+  // Summary rotation never deletes the source or its correlation/timing record.
+  const captureRef = join(captureDirectory, 'summary.log');
+  let captureError = null;
+  try { writeFileSync(captureRef, line, { mode: 0o600 }); }
+  catch (error) { captureError = safeErrorText(error); }
   appendBoundedLog(line);
 
   return {
-    ok: pool.ok,
+    ok: pool.ok && !captureError,
     output: pool.output,
-    error: pool.error,
+    error: pool.error ?? captureError,
+    outputSource: pool.outputSource,
+    outputOmittedBytes: pool.outputOmittedBytes,
+    captureRef: captureError ? null : captureRef,
     pgActivity: activity,
   };
 }

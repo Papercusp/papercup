@@ -6,15 +6,17 @@ type ValidateBarCritiquePlanOrigin = typeof import('./get-feedback-core').valida
 type BuildQueryEmbedderResolved = typeof import('../agent-tools/search/embedder').buildQueryEmbedderResolved;
 
 const h = vi.hoisted(() => {
-  const sql = {};
+  const sql = vi.fn(async (..._args: unknown[]) => [] as unknown[]);
   const routingSettings = {
     allowlist: [{ rank: 1, agent: 'codex' as const, model: 'sol' }],
     recencyHalfLifeDays: 14,
   };
   return {
+    sql,
+    emitAwaitedEvent: vi.fn(async (_input: unknown) => ({})),
     routingSettings,
     getFeedbackCore: vi.fn(async (_request: unknown, _deps: unknown) => ({})),
-    acceptFeedbackRequestCore: vi.fn(async (_request: unknown, _deps: unknown) => ({
+    acceptFeedbackRequestCore: vi.fn<typeof import('./get-feedback-core').acceptFeedbackRequestCore>(async () => ({
       ok: true as const, verdict: 'accepted' as const, state: 'routing', pending: true,
       conversation_id: 'accepted-conv', thread_id: 'thr-accepted-conv', request_key: 'retry-key',
       latency_contract: 'proceed' as const, park_key: null, hint: 'pending',
@@ -46,9 +48,11 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: h.getOrgPg,
 }));
 vi.mock('./get-feedback-core', () => ({ getFeedbackCore: h.getFeedbackCore,
+  consultParkKey: (id: string) => `consult:reply:${id}`,
   acceptFeedbackRequestCore: h.acceptFeedbackRequestCore, validateBarCritiquePlanOrigin: h.validateBarCritiquePlanOrigin,
   continueFeedbackRequestCore: h.continueFeedbackRequestCore }));
 vi.mock('../rubrics', () => ({ resolveAcceptanceBarApproverScreen: h.resolveAcceptanceBarApproverScreen }));
+vi.mock('../events/await/engine', () => ({ emitAwaitedEvent: h.emitAwaitedEvent }));
 // expertiseSubject: acceptFeedbackRequestProd reads it since f36b33ffd5; the mock
 // lacked it, so the acceptance test failed at HEAD.
 vi.mock('./relevance-router', () => ({ routeConsult: h.routeConsult, expertiseSubject: h.expertiseSubject,
@@ -208,7 +212,53 @@ describe('getFeedbackProd expert-routing settings', () => {
     expect(filterDispatchableRoute.mock.calls.at(-1)![2]).toEqual({ workspaceId: saved.workspaceId });
   });
 
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); h.sql.mockReset().mockResolvedValue([]); });
+
+  it.each([
+    { state: 'no_qualified_responder', result: { verdict: 'relevance_unmeasured', reason: 'embed_unavailable' } },
+    { state: 'no_qualified_responder', result: { verdict: 'no_qualified_responder', reason: 'below_floor' } },
+    { state: 'no_launchable_responder', result: { verdict: 'no_launchable_responder', reason: 'no_available_responder' } },
+    { state: 'no_qualified_responder', result: { error: 'preparation_failed', retryable: true } },
+  ])('wakes the requester from the committed $result outcome', async terminal => {
+    h.sql.mockResolvedValueOnce([terminal]);
+    await continueFeedbackRequestProd('workspace-1', 'terminal-conv');
+    expect(h.emitAwaitedEvent).toHaveBeenCalledExactlyOnceWith({
+      key: 'consult:reply:terminal-conv', workspaceId: 'workspace-1', source: 'consult-request',
+      summary: expect.stringContaining(terminal.state),
+      payload: { kind: 'routing_complete', conversation_id: 'terminal-conv', ...terminal },
+    });
+    const [query, ...values] = h.sql.mock.calls[0]!;
+    expect((query as TemplateStringsArray).join(' ')).toContain("state NOT IN ('routing', 'awaiting_responder', 'active')");
+    expect(values).toEqual(['workspace-1', 'terminal-conv']);
+  });
+
+  it('rechecks a terminal fire that preceded waiter registration', async () => {
+    const order: string[] = ['earlier-terminal-fire'];
+    h.acceptFeedbackRequestCore.mockResolvedValueOnce({
+      ok: true, verdict: 'accepted', state: 'routing', pending: true,
+      conversation_id: 'accepted-conv', thread_id: 'thr-accepted-conv', request_key: 'retry-key',
+      latency_contract: 'hard-blocked', park_key: 'consult:reply:accepted-conv', hint: 'pending',
+    });
+    h.sql.mockImplementationOnce(async () => {
+      order.push('read-committed-terminal');
+      return [{ state: 'no_qualified_responder', result: { verdict: 'relevance_unmeasured' } }];
+    });
+    await acceptFeedbackRequestProd({ workspaceId: 'workspace-1', requesterId: 'requester', question: 'race' },
+      { ownerId: 'requester' } as never, { onAccepted: async () => { order.push('waiter-registered'); } });
+    expect(order).toEqual(['earlier-terminal-fire', 'waiter-registered', 'read-committed-terminal']);
+    expect(h.emitAwaitedEvent).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(h.continueFeedbackRequestCore).toHaveBeenCalled());
+  });
+
+  it('notifies terminal preparation after a throw and leaves pending requests waiting', async () => {
+    h.continueFeedbackRequestCore.mockRejectedValueOnce(new Error('preparation failed'));
+    h.sql.mockResolvedValueOnce([{ state: 'no_qualified_responder', result: { error: 'preparation_failed' } }]);
+    await expect(continueFeedbackRequestProd('workspace-1', 'failed-conv')).rejects.toThrow('preparation failed');
+    expect(h.emitAwaitedEvent).toHaveBeenCalledOnce();
+    h.emitAwaitedEvent.mockClear();
+    await continueFeedbackRequestProd('workspace-1', 'pending-conv');
+    expect(h.emitAwaitedEvent).not.toHaveBeenCalled();
+  });
 
   it('persists the server-selected accepting runtime before asynchronous routing', async () => {
     const original = process.env.PAPERCUSP_HONO_PORT;
@@ -286,6 +336,71 @@ describe('getFeedbackProd expert-routing settings', () => {
     expect(h.makeConsultReachDispatcher).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(h.continueFeedbackRequestCore).toHaveBeenCalledWith(
       'workspace-1', 'accepted-conv', expect.objectContaining({ execute: expect.any(Function) })));
+  });
+
+  it.each(['accepted', 'immediate'] as const)('does not infer prior expertise from a new method-review artifact (%s)', async (path) => {
+    const target = 'docs/evidence/new-corpus-report.json';
+    const request = { workspaceId: 'workspace-1', requesterId: 'requester',
+      question: `Independently review ${target}`, policy: 'method-review',
+      methodReviewRubricRef: 'acceptance-native' };
+    const expertise = h.expertiseSubject.getMockImplementation()!;
+    const expand = h.expandSubjectRefs.getMockImplementation()!;
+    h.expertiseSubject.mockImplementation(() => target);
+    h.expandSubjectRefs.mockImplementation(async refs => ({ refs: [], unresolvedDocuments: refs }));
+    try {
+      if (path === 'accepted') {
+        await acceptFeedbackRequestProd(request, { ownerId: 'requester' } as never,
+          { allowDispatch: false });
+        expect(h.acceptFeedbackRequestCore.mock.calls.at(-1)?.[0]).toMatchObject({
+          ...request, resolvedSubjectRefs: [], unresolvedSubjectRefs: [],
+        });
+      } else {
+        await getFeedbackProd(request, { ownerId: 'requester' } as never, { allowDispatch: false });
+        expect(h.getFeedbackCore.mock.calls.at(-1)?.[0]).toMatchObject({
+          ...request, resolvedSubjectRefs: [],
+        });
+        expect(h.resolveAcceptanceBarApproverScreen).toHaveBeenCalledWith({
+          rubricId: 'acceptance-native', applierId: 'requester',
+        });
+      }
+      expect(h.expertiseSubject).not.toHaveBeenCalled();
+      expect(h.expandSubjectRefs).not.toHaveBeenCalled();
+    } finally {
+      h.expertiseSubject.mockImplementation(expertise);
+      h.expandSubjectRefs.mockImplementation(expand);
+    }
+  });
+
+  it.each(['accepted', 'immediate'] as const)('retains explicit method-review expertise constraints (%s)', async (path) => {
+    const source = 'packages/operator-core/lib/harness/docs/doc-record.ts';
+    const request = { workspaceId: 'workspace-1', requesterId: 'requester',
+      question: 'Review a newly produced report', policy: 'method-review',
+      methodReviewRubricRef: 'acceptance-native' };
+    if (path === 'accepted') {
+      await h.expandSubjectRefs.withImplementation(async () => ({ refs: [source],
+        unresolvedDocuments: ['unresolved-guide.mdx'] }), async () => {
+        await acceptFeedbackRequestProd({ ...request, subjectRefs: [source] },
+          { ownerId: 'requester' } as never, { allowDispatch: false });
+        expect(h.expandSubjectRefs).toHaveBeenCalledWith([source]);
+        expect(h.acceptFeedbackRequestCore.mock.calls.at(-1)?.[0]).toMatchObject({
+          ...request, subjectRefs: [source], resolvedSubjectRefs: [source],
+          unresolvedSubjectRefs: ['unresolved-guide.mdx'],
+        });
+      });
+    } else {
+      for (const constraints of [
+        { subjectRefs: [source] },
+        { subjectRef: source },
+        { resolvedSubjectRefs: [source], unresolvedSubjectRefs: ['unresolved-guide.mdx'] },
+      ]) {
+        await getFeedbackProd({ ...request, ...constraints },
+          { ownerId: 'requester' } as never, { allowDispatch: false });
+        expect(h.getFeedbackCore.mock.calls.at(-1)?.[0]).toMatchObject({ ...request, ...constraints });
+        if (!('resolvedSubjectRefs' in constraints)) {
+          expect(h.getFeedbackCore.mock.calls.at(-1)?.[0]).not.toHaveProperty('resolvedSubjectRefs');
+        }
+      }
+    }
   });
 
   it.each(['bar-critique', 'rubric-vetting'] as const)('does not require prior transcript expertise for a new %s target', async (policy) => {

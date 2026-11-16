@@ -2997,9 +2997,14 @@ export function timeoutForTool(toolName, callArgs) {
   if (effectiveToolName === 'release:cut') {
     return PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS;
   }
+  // Queue snapshots and preview receipt reads share the tool's 295s server
+  // deadline. Keep both direct and deferred reads alive for its bounded result.
   if (
     effectiveToolName === 'release:repair-queue' &&
-    (effectiveArgs?.op === 'admit' || effectiveArgs?.op === 'converge' || effectiveArgs?.op === 'heal-generated')
+    (effectiveArgs?.op === 'get' ||
+      effectiveArgs?.op === 'admit' ||
+      effectiveArgs?.op === 'converge' ||
+      effectiveArgs?.op === 'heal-generated')
   ) {
     return PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS;
   }

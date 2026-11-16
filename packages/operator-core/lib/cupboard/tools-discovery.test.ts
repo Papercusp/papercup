@@ -20,11 +20,37 @@ import {
   buildToolsDiscovery,
   buildToolProvenance,
   resolveToolEntries,
+  schemaCallConstraintAnnotation,
   schemaToText,
   UNION_CONDITIONAL_HINT_MAX_CHARS,
   type ToolMetaIndex,
   unionConditionalHint,
 } from './tools-discovery';
+
+describe('validator-owned discovery constraints', () => {
+  const nestedUnion = {
+    anyOf: [
+      { properties: { kind: { const: 'a' }, input: { type: 'string' } }, required: ['kind', 'input'] },
+      { properties: { kind: { const: 'b' }, input: { not: {} } }, required: ['kind'] },
+    ],
+  };
+
+  it.each([false, true])('prefers explicit rules regardless of property order (explicit first: %s)', (explicitFirst) => {
+    const explicit = { type: 'string', 'x-papercusp-call-constraint': 'required for successful closes' };
+    const properties = explicitFirst
+      ? { proof: explicit, unrelated: nestedUnion }
+      : { unrelated: nestedUnion, proof: explicit };
+    expect(schemaCallConstraintAnnotation({ type: 'object', properties }, { compact: true }))
+      .toBe('constraint:proof (required for successful closes)');
+  });
+
+  it('retains inferred branch guidance when no validator rule exists', () => {
+    const result = schemaCallConstraintAnnotation({ type: 'object', properties: { input: nestedUnion } });
+    expect(result).toContain('constraint:input');
+    expect(result).toContain('when kind=a => input required');
+    expect(result).toContain('when kind!=a => input forbidden');
+  });
+});
 
 function makeInputs(over: Partial<PackCatalogInputs> = {}): PackCatalogInputs {
   return {

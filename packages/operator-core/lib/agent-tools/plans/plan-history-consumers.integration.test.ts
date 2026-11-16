@@ -38,6 +38,8 @@ import {
   captureGroundedContractChanges, observeGroundedDurableHost,
   observeGroundedModelFetch, observeGroundedStoreReads, observeGroundedStoreOperations, observeGroundedToolDispatch,
   type GroundedMeasurementScope, type GroundedSchemaSnapshot,
+  classifyGroundedBaseline, groundedBaselineCensus, readGroundedBaselineRows,
+  type GroundedBaselinePin, type GroundedBaselineObservation,
 } from '../../grounded-evidence-measurement';
 import { recordRubricCheckResults } from '../../check-results-ledger';
 import { materializeGroundedFixture } from '../../grounded-evidence-measurement';
@@ -2497,6 +2499,80 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
 
   it.each(['J2', 'J3'] as const)('GEC.%s composed observed transport regression',
     journey => runFrozenHistory(false, false, false, journey), 400_000);
+
+  it.each((['success', 'failure', 'unknown'] as const).flatMap(state =>
+    [false, true].map(archived => [state, archived] as const)))(
+    'persists immutable atomic baseline states and rejects substituted, missing, duplicate and foreign observations (%s, archived=%s)',
+    async (state, archived) => {
+    // Deliberate truth-table controls, never original model observations.
+    const fixture = materializeGroundedFixture('atomic-pg-control').manifest;
+    const digest = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
+    const c = fixture.cases.find(candidate => candidate.id === 'C3')!;
+    const pin: GroundedBaselinePin = {
+      scope: { workspaceId: fx.workspaceId, potId: 'gec-b-atomic-control', harness: HARNESS,
+        runId: `gec-atomic-control-${RUN}`, ownerId: 'su-gec-atomic-control', caseId: 'C3', arm: 'pre', iteration: 1,
+        manifestHash: GROUNDED_MANIFEST_SHA256, fixtureHash: 'isolated-control', sourceFingerprint: 'control-source',
+        testFingerprint: 'control-test', runtimeFingerprint: 'private-pg-control', configFingerprint: 'control-config' },
+      cohort: 'original', generation: 'pre-intervention', version: 'control-version', sourceClock: 'control-clock',
+      observedAt: '2026-11-12T00:00:00Z', budgetHash: digest(fixture.budgets), oracleHash: digest(c.expected),
+    };
+    const ids: number[] = [];
+    const read = async (keys: number[]) => (await admin`
+      SELECT id, status, execution_details FROM harness_shared.test_runs
+       WHERE workspace_id = ${fx.workspaceId} AND id = ANY(${keys}) ORDER BY id
+    ` as unknown as Array<{ id: number; status: string; execution_details: unknown }>).map(row => ({
+      id: Number(row.id), status: row.status, executionDetails: row.execution_details,
+    }));
+    try {
+        const originalPin = archived ? { ...pin, scope: { ...pin.scope, workspaceId: 'historical-fixture-workspace',
+          harness: 'historical-fixture-harness', runId: 'historical-original-run' } } : pin;
+        const ledgerScope = { workspaceId: fx.workspaceId, harnessSlug: HARNESS, runGroupId: pin.scope.runId };
+        const observations: GroundedBaselineObservation[] = groundedBaselineCensus()
+          .filter(key => key.caseId === 'C3' && key.iteration === 1)
+          .map(key => ({ kind: key.kind, name: key.name, value: key.kind === 'dimension' ? 0
+            : state === 'unknown' ? null : state === 'success', qualified: true,
+          evidenceRef: 'isolated-control:original', writerRef: 'integration:truth-table' }));
+        const body = canonicalJson({ schemaVersion: 'grounded-baseline-observations-v1', pin: originalPin, observations });
+        const input = { pin: originalPin, original: { body, sha256: createHash('sha256').update(body).digest('hex') } };
+        const classified = classifyGroundedBaseline(input);
+        expect(classified.state).toBe(state);
+        const written = await recordRubricCheckResults(classified.ledgerResults,
+          ledgerScope, admin);
+        ids.push(...written);
+        const rows = await read(written);
+        expect(rows).toHaveLength(classified.rows.length);
+        expect(readGroundedBaselineRows(input, rows, ledgerScope).integrity).toBe(true);
+        expect(readGroundedBaselineRows(input, rows).integrity).toBe(!archived);
+        const details = parseTestRunExecutionDetails(rows[0]!.executionDetails)!;
+        expect(JSON.parse(details.check!.provenance!.procedure.snapshot!).row.pin.scope).toEqual(originalPin.scope);
+        for (const key of ['workspaceId', 'harnessSlug', 'runGroupId'] as const) {
+          const changed = structuredClone(rows);
+          Object.assign(changed[0]!.executionDetails as object, { [key]: 'foreign' });
+          expect(readGroundedBaselineRows(input, changed, ledgerScope).integrity).toBe(false);
+        }
+        for (const other of ['success', 'failure', 'unknown'] as const) if (other !== state) {
+          const changed = parseTestRunExecutionDetails(rows[0]!.executionDetails)!;
+          changed.check!.value = other === 'unknown' ? null : other === 'success';
+          const status = other === 'success' ? 'pass' : other === 'failure' ? 'fail' : 'error';
+          await admin`UPDATE harness_shared.test_runs SET status = ${status},
+            execution_details = ${JSON.stringify(changed)}::jsonb WHERE id = ${rows[0]!.id}`;
+          expect(readGroundedBaselineRows(input, await read(written), ledgerScope).integrity).toBe(false);
+        }
+        for (const population of [[], rows.slice(1), [...rows, rows[0]!]])
+          expect(readGroundedBaselineRows(input, population, ledgerScope).integrity).toBe(false);
+        for (const key of ['sourceFingerprint', 'runtimeFingerprint', 'configFingerprint', 'testFingerprint',
+          'manifestHash', 'fixtureHash', 'runId'] as const) {
+          const changed = structuredClone(input); changed.pin.scope[key] = 'substituted';
+          expect(readGroundedBaselineRows(changed, rows, ledgerScope).integrity).toBe(false);
+        }
+        for (const key of ['version', 'budgetHash', 'oracleHash', 'sourceClock', 'observedAt', 'generation', 'cohort'] as const) {
+          const changed = structuredClone(input); Object.assign(changed.pin, { [key]: 'substituted' });
+          expect(readGroundedBaselineRows(changed, rows, ledgerScope).integrity).toBe(false);
+        }
+    } finally {
+      await admin`DELETE FROM harness_shared.test_runs WHERE workspace_id = ${fx.workspaceId} AND id = ANY(${ids})`;
+    }
+  });
 
   it('persists recorder controls to the existing ledger and rejects every missing dimension and foreign run', async () => {
     // These are isolated recorder controls, NOT paired product baselines or a

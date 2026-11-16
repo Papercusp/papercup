@@ -4,6 +4,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { cleanupOwnedTestDatabases } from '@papercusp/test-config/pg';
+import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
+import { FLAGS, FLAG_DEFAULTS, flagEnvVarName } from '@papercusp/flags';
+import type { ProductionConfiguration } from '../plans/declared-configuration';
 import { TEST_RUN_READER_CONTRACT_ENV, TEST_RUN_READER_REFUSAL_PATH_ENV,
   testRunExecutionDetailsReaderContract } from '@papercusp/test-config/execution-details';
 
@@ -78,6 +81,61 @@ async function makeTestRoot(router = false) {
   }
   return root;
 }
+
+it.each([
+  ['ordinary', false, false],
+  ['inherited barrier paths', true, false],
+  ['private PG reporter destination', true, true],
+] as const)('retains the final router environment before launch: %s', async (_label, markers, privatePg) => {
+  vi.stubEnv('PC_HEAVY_PREEMPT_READY_FILE', markers ? '/unused/outer-ready' : undefined);
+  vi.stubEnv('PC_HEAVY_PSI_FINALIZATION_FILE', markers ? '/unused/outer-finalization' : undefined);
+  vi.stubEnv('PAPERCUSP_TEST_RUNS_DB_URL', privatePg ? undefined : 'postgres://fixture@localhost:5432/ledger');
+  const root = await makeTestRoot(true);
+  if (privatePg) await writeFile(join(root, 'scripts/with-test-pg.mjs'), 'export {};\n');
+  const runRouterFn = vi.fn(async (_args: string[], _root: string, env: NodeJS.ProcessEnv) => {
+    expect(env).not.toHaveProperty('PC_HEAVY_PREEMPT_READY_FILE');
+    expect(env).not.toHaveProperty('PC_HEAVY_PSI_FINALIZATION_FILE');
+    if (privatePg) expect(env.PAPERCUSP_TEST_RUNS_DB_URL).toBeTruthy();
+    const retained = JSON.parse(await readFile(join(env.PAPERCUSP_TEST_ARTIFACT_DIR!, 'configuration.json'), 'utf8'));
+    expect(retained).toEqual(captureConfigurationSnapshot(env));
+    return { code: 1, signal: null, timedOut: false, aborted: false, output: '' };
+  });
+  await runTestFilesCore({ root, files: ['feature.test.ts'], privatePg,
+    allowDetachedRecovery: false, timeoutMs: 10_000 }, { runRouterFn, artifactBaseDir: root });
+  expect(runRouterFn).toHaveBeenCalledOnce();
+});
+
+it('applies the declared production configuration before retaining the final child snapshot', async () => {
+  const root = await makeTestRoot(true);
+  const flag = FLAGS.VIDEO_CHANNELS;
+  const required = !FLAG_DEFAULTS[flag];
+  vi.stubEnv(flagEnvVarName(flag), required ? '0' : '1');
+  vi.stubEnv('PAPERCUSP_SEARCH_MODE', 'inherited');
+  const runRouterFn = vi.fn(async (_args: string[], _root: string, env: NodeJS.ProcessEnv) => {
+    expect(env).toMatchObject({ [flagEnvVarName(flag)]: required ? '1' : '0', PAPERCUSP_SEARCH_MODE: 'hybrid' });
+    const retained = JSON.parse(await readFile(join(env.PAPERCUSP_TEST_ARTIFACT_DIR!, 'configuration.json'), 'utf8'));
+    expect(retained).toEqual(captureConfigurationSnapshot(env));
+    return { code: 1, signal: null, timedOut: false, aborted: false, output: '' };
+  });
+  await runTestFilesCore({ root, files: ['feature.test.ts'], productionConfiguration: {
+    flags: { [flag]: required }, env: { PAPERCUSP_SEARCH_MODE: 'hybrid' } },
+  allowDetachedRecovery: false, timeoutMs: 10_000 }, { runRouterFn, artifactBaseDir: root });
+  expect(runRouterFn).toHaveBeenCalledOnce();
+});
+
+it.each<ProductionConfiguration>([
+  { env: { PAPERCUSP_TEST_RUN_GROUP: 'forged-group' } },
+  { flags: { [FLAGS.VIDEO_CHANNELS]: true }, env: { [flagEnvVarName(FLAGS.VIDEO_CHANNELS)]: '0' } },
+  { env: { NODE_ENV: 'production' } },
+])('refuses a declared configuration contradicted by the final runner environment: %j', async productionConfiguration => {
+  const root = await makeTestRoot(true);
+  const runRouterFn = vi.fn();
+  const result = await runTestFilesCore({ root, files: ['feature.test.ts'], productionConfiguration,
+    timeoutMs: 10_000 }, { runRouterFn, artifactBaseDir: root });
+  expect(result).toMatchObject({ ok: false, error: 'route_error' });
+  expect(runRouterFn).not.toHaveBeenCalled();
+  expect(phases.detach).not.toHaveBeenCalled();
+});
 
 it('refuses private PG across multiple checkouts before launching a router', async () => {
   const checkouts = await Promise.all([makeTestRoot(true), makeTestRoot(true)]);

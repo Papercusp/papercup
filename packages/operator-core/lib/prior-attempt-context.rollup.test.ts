@@ -5,13 +5,16 @@ import type { GoalHistoryEntry, GoalHistoryRead } from '@papercusp/agent-mcp/goa
 import { createHash } from 'node:crypto';
 import type postgres from 'postgres';
 import { canonicalJson } from '@papercusp/hash-chain';
-import { parseRecordedRubricCheck } from '@papercusp/test-config/execution-details';
+import { parseRecordedRubricCheck, parseTestRunExecutionDetails,
+  type TestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import {
   captureGroundedContractChanges, compareGroundedPairedCost, GROUNDED_DIMENSIONS, GROUNDED_MANIFEST_SHA256,
   groundedPersistedBytes, materializeGroundedFixture, measureGroundedEvidence,
   observeGroundedDurableHost, observeGroundedStoreReads, observeGroundedModelFetch,
   observeGroundedStoreOperations, observeGroundedToolDispatch,
   type GroundedCensus, type GroundedMeasurementInput, type GroundedMeasurementScope,
+  classifyGroundedBaseline, groundedBaselineCensus, readGroundedBaselineRows, projectGroundedBaselineCapture,
+  type GroundedBaselinePin, type GroundedBaselineObservation,
 } from './grounded-evidence-measurement';
 
 const reads = vi.hoisted(() => ({ tree: vi.fn(), thread: vi.fn() }));
@@ -33,6 +36,208 @@ import {
   readPlanHistoryContext,
   resolvePriorAttemptRefs,
 } from './prior-attempt-context';
+
+describe('GEC immutable atomic baseline', () => {
+  const setup = materializeGroundedFixture('atomic-baseline');
+  const digest = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
+  function capture(caseId = 'C3', iteration = 1) {
+    const c = setup.manifest.cases.find(candidate => candidate.id === caseId)!;
+    const pin: GroundedBaselinePin = {
+      scope: { workspaceId: 'gec-b-unit', potId: 'gec-b-pot', harness: 'gec-b', runId: `original-${caseId}-${iteration}`,
+        ownerId: 'gec-unit-owner', caseId, arm: 'pre', iteration, manifestHash: GROUNDED_MANIFEST_SHA256,
+        fixtureHash: 'fixture-pin', sourceFingerprint: 'source-pin', testFingerprint: 'test-pin',
+        runtimeFingerprint: 'runtime-pin', configFingerprint: 'config-pin' },
+      cohort: 'original', generation: 'pre-intervention', version: 'original-version', sourceClock: 'original-monotonic-clock',
+      observedAt: '2026-11-12T00:00:00Z', budgetHash: digest(setup.manifest.budgets), oracleHash: digest(c.expected),
+    };
+    const observations: GroundedBaselineObservation[] = groundedBaselineCensus()
+      .filter(key => key.caseId === caseId && key.iteration === iteration)
+      .map(key => ({ kind: key.kind, name: key.name, value: key.kind === 'oracle' ? true : 0,
+        qualified: true, evidenceRef: 'immutable:original-capture', writerRef: 'recorder:original-boundary' }));
+    return { pin, observations };
+  }
+  function classify(c = capture()) {
+    const body = canonicalJson({ schemaVersion: 'grounded-baseline-observations-v1', ...c });
+    const original = { body, sha256: createHash('sha256').update(body).digest('hex') };
+    const input = { pin: c.pin, original };
+    return { input, result: classifyGroundedBaseline(input) };
+  }
+  function persisted(input: ReturnType<typeof classify>['input']) {
+    return classifyGroundedBaseline(input).ledgerResults.map((row, index) => ({ id: index + 1, status: row.verdict,
+      executionDetails: { schemaVersion: 1, check: row.check,
+        workspaceId: input.pin.scope.workspaceId, harnessSlug: input.pin.scope.harness,
+        runGroupId: input.pin.scope.runId, root: '/gec-unit', filePath: 'baseline-classification',
+        testNamePattern: null, passed: row.verdict === 'pass' ? 1 : 0, failed: row.verdict === 'fail' ? 1 : 0,
+        skipped: 0, collectionFailed: false, mutationPhase: null, commitSha: null,
+        worktreeDirty: true } satisfies TestRunExecutionDetails }));
+  }
+  function recorder(caseId = 'C1') {
+    const { pin } = capture(caseId);
+    const boundary = { scope: pin.scope, admittedAt: pin.observedAt, settledAt: pin.observedAt,
+      monotonicStartMs: 1, monotonicEndMs: 2, drained: true };
+    pin.sourceClock = canonicalJson(boundary);
+    const raw = { input: { scope: pin.scope, boundary },
+      resumeDispatches: [{ tool: 'plans:get', args: { slug: 'gec-b-plan', mode: 'sections' } }],
+      // This aggregate cannot decide the excluded predicate or fill a scalar.
+      actionOracle: { passed: false }, measured: { values: { storageBytes: null }, checks: [] } };
+    const project = () => {
+      const body = canonicalJson(raw);
+      return projectGroundedBaselineCapture({ pin, capture: { body,
+        sha256: createHash('sha256').update(body).digest('hex'), ref: 'immutable:recorder-original' } });
+    };
+    return { pin, raw, project };
+  }
+  it('projects the actual next dispatch and forbidden dispatch separately from the failed aggregate', () => {
+    const c = recorder();
+    const rows = () => c.project().classification.rows;
+    expect(rows().find(row => row.key.name === 'allowed')?.value).toBe(false);
+    expect(rows().find(row => row.key.name === 'excluded')?.value).toBe(true);
+    expect(rows().find(row => row.key.name === 'storageBytes')?.value).toBeNull();
+    c.raw.resumeDispatches.push({ tool: 'release:deploy', args: {} as typeof c.raw.resumeDispatches[0]['args'] });
+    expect(rows().find(row => row.key.name === 'excluded')?.value).toBe(false);
+    expect(c.project().classification.state).toBe('failure');
+  });
+  it('does not qualify absent dispatches or scalars from a later recorder or a changed source pin', () => {
+    const c = recorder(); c.raw.resumeDispatches = [];
+    // An empty retained trace disproves an allowed next dispatch while still
+    // proving no forbidden dispatch. An absent trace is different.
+    expect(c.project().classification.rows.find(row => row.key.name === 'allowed')?.value).toBe(false);
+    const body = canonicalJson({ ...c.raw, resumeDispatches: undefined });
+    const artifact = { body, sha256: createHash('sha256').update(body).digest('hex'), ref: 'immutable:original' };
+    const absent = projectGroundedBaselineCapture({ pin: c.pin, capture: artifact });
+    expect(absent.classification.rows.filter(row => row.key.kind === 'oracle').every(row => row.value === null)).toBe(true);
+    for (const key of ['sourceFingerprint', 'runtimeFingerprint', 'configFingerprint'] as const) {
+      const pin = structuredClone(c.pin); pin.scope[key] = 'newer';
+      const projected = projectGroundedBaselineCapture({ pin, capture: artifact });
+      expect(projected.gaps).toContain('capture-pin-mismatch');
+      expect(projected.classification.rows.every(row => row.value === null)).toBe(true);
+    }
+    const corrupt = projectGroundedBaselineCapture({ pin: c.pin, capture: { ...artifact, sha256: '0'.repeat(64) } });
+    expect(corrupt.gaps).toContain('invalid-capture-artifact');
+    expect(corrupt.classification.rows.every(row => row.value === null)).toBe(true);
+  });
+  it('preserves C3 authority outcomes without treating a recorded crash write as a revoked recovery dispatch', () => {
+    const c = recorder('C3');
+    const consumer = { ...c.raw, resumeDispatches: [{ tool: 'coord:ask-owner', args: {}, validAuthorityRequest: true }] };
+    const durable = { scope: c.pin.scope,
+      result: { outcome: { status: 'failed', error: 'items:put is not allowed for role worker' } },
+      originalCalls: [{ tool: 'items:put', mode: 'crash' }, { tool: 'items:get', mode: 'recover' }] };
+    const artifact = (value: unknown) => {
+      const body = canonicalJson(value);
+      return { body, sha256: createHash('sha256').update(body).digest('hex'), ref: 'immutable:C3-original' };
+    };
+    const allowed = () => projectGroundedBaselineCapture({ pin: c.pin, capture: artifact(consumer),
+      durableCapture: artifact(durable) }).classification.rows.find(row => row.key.name === 'allowed')?.value;
+    expect(allowed()).toBe(true);
+    consumer.resumeDispatches[0]!.validAuthorityRequest = false;
+    expect(allowed()).toBe(false);
+    consumer.resumeDispatches[0]!.validAuthorityRequest = true;
+    durable.originalCalls.push({ tool: 'items:put', mode: 'recover' });
+    expect(allowed()).toBe(false);
+  });
+  it('derives every case, iteration, oracle and dimension from the frozen fixture', () => {
+    const keys = groundedBaselineCensus();
+    expect(new Set(keys.map(key => canonicalJson(key))).size).toBe(keys.length);
+    expect([...new Set(keys.map(key => key.caseId))]).toEqual(setup.manifest.cases.map(c => c.id));
+    expect(setup.manifest.cases).toHaveLength(52);
+    for (const c of setup.manifest.cases) for (const iteration of [1, 2, 3]) {
+      const rows = keys.filter(key => key.caseId === c.id && key.iteration === iteration);
+      expect(rows.filter(row => row.kind === 'dimension').map(row => row.name)).toEqual([...GROUNDED_DIMENSIONS]);
+      expect(rows.filter(row => row.kind === 'oracle').map(row => row.name))
+        .toEqual(Object.keys(c.expected).filter(name => name !== 'oracle'));
+    }
+  });
+  it('retains C3 true/false/false and six failed C1/C2 action cohorts with original unknown storage', () => {
+    for (const caseId of ['C1', 'C2', 'C3']) for (const iteration of [1, 2, 3]) {
+      const c = capture(caseId, iteration);
+      c.observations.filter(row => row.kind === 'oracle').forEach(row => { row.value = caseId === 'C3' && iteration === 1; });
+      c.observations.find(row => row.name === 'storageBytes')!.value = null;
+      const { result } = classify(c);
+      expect(result.state).toBe(caseId === 'C3' && iteration === 1 ? 'unknown' : 'failure');
+      expect(result.rows.find(row => row.key.name === 'storageBytes')?.state).toBe('unknown');
+      expect(result.rows.find(row => row.key.name === 'allowed')?.value).toBe(caseId === 'C3' && iteration === 1);
+    }
+  });
+  it.each(['success', 'failure', 'unknown'] as const)('rejects every off-diagonal persisted substitution from %s', state => {
+    const c = capture(); c.observations[0]!.value = state === 'success' ? true : state === 'failure' ? false : null;
+    const { input } = classify(c);
+    const rows = persisted(input);
+    expect(readGroundedBaselineRows(input, rows).integrity).toBe(true);
+    for (const other of ['success', 'failure', 'unknown'] as const) if (other !== state) {
+      const changed = structuredClone(rows);
+      changed[0]!.status = other === 'success' ? 'pass' : other === 'failure' ? 'fail' : 'error';
+      changed[0]!.executionDetails.check.value = other === 'success' ? true : other === 'failure' ? false : null;
+      expect(readGroundedBaselineRows(input, changed).integrity).toBe(false);
+    }
+  });
+  it('rejects missing, duplicate, extra, unqualified and hash-corrupt originals without dropping expected keys', () => {
+    const original = classify();
+    for (const mutate of [
+      (c: ReturnType<typeof capture>) => { c.observations = []; },
+      (c: ReturnType<typeof capture>) => { c.observations.pop(); },
+      (c: ReturnType<typeof capture>) => { c.observations.push(c.observations[0]!); },
+      (c: ReturnType<typeof capture>) => { c.observations.push({ ...c.observations[0]!, name: 'extra' }); },
+    ]) {
+      const c = capture(); mutate(c); const { result } = classify(c);
+      expect(result.complete).toBe(false); expect(result.rows).toHaveLength(original.result.rows.length);
+    }
+    const c = capture(); c.observations[0]!.qualified = false;
+    expect(classify(c).result.rows[0]!.state).toBe('unknown');
+    expect(classifyGroundedBaseline({ ...original.input, original: { ...original.input.original, body: '{}' } }).state).toBe('unknown');
+  });
+  it.each(['sourceFingerprint', 'runtimeFingerprint', 'configFingerprint', 'testFingerprint', 'manifestHash', 'fixtureHash', 'runId'] as const)(
+    'rejects substitution of the pinned %s', key => {
+      const { input } = classify(); const changed = structuredClone(input); changed.pin.scope[key] = 'different';
+      expect(classifyGroundedBaseline(changed).complete).toBe(false);
+      expect(readGroundedBaselineRows(input, persisted(changed)).integrity).toBe(false);
+    });
+  it.each(['version', 'budgetHash', 'oracleHash', 'sourceClock', 'observedAt', 'generation', 'cohort'] as const)(
+    'rejects substitution of the pinned %s', key => {
+      const { input } = classify(); const changed = structuredClone(input);
+      Object.assign(changed.pin, { [key]: 'substituted' });
+      expect(classifyGroundedBaseline(changed).complete).toBe(false);
+    });
+  it('rejects an empty persisted population, missing rows, duplicates, extras and newer-run replacements', () => {
+    const { input, result } = classify(); const rows = persisted(input);
+    expect(result.state).toBe('success');
+    expect(rows.every(row => parseTestRunExecutionDetails(row.executionDetails) !== undefined)).toBe(true);
+    expect(result.ledgerResults.every(row => parseRecordedRubricCheck(row.check) !== null)).toBe(true);
+    for (const changed of [[], rows.slice(1), [...rows, rows[0]!],
+      [...rows, { ...rows[0]!, executionDetails: { ...rows[0]!.executionDetails,
+        check: { ...rows[0]!.executionDetails.check, subject: { ref: 'unlisted' } } } }]])
+      expect(readGroundedBaselineRows(input, changed).integrity).toBe(false);
+    const newer = structuredClone(rows); newer[0]!.executionDetails.runGroupId = 'newer-passing-run';
+    expect(readGroundedBaselineRows(input, newer).integrity).toBe(false);
+  });
+  it('checks an explicit ledger scope while preserving the original capture scope in provenance', () => {
+    const { input } = classify();
+    const ledgerScope = { workspaceId: 'current-workspace', harnessSlug: 'current-harness', runGroupId: 'projection-run' };
+    const rows = persisted(input);
+    for (const row of rows) Object.assign(row.executionDetails, ledgerScope);
+    expect(readGroundedBaselineRows(input, rows).integrity).toBe(false);
+    expect(readGroundedBaselineRows(input, rows, ledgerScope).integrity).toBe(true);
+    const originalScope = JSON.parse(rows[0]!.executionDetails.check.provenance!.procedure.snapshot!).row.pin.scope;
+    expect(originalScope).toEqual(input.pin.scope);
+    expect(originalScope.workspaceId).not.toBe(ledgerScope.workspaceId);
+    for (const key of ['workspaceId', 'harnessSlug', 'runGroupId'] as const) {
+      const changed = structuredClone(rows); changed[0]!.executionDetails[key] = 'foreign';
+      expect(readGroundedBaselineRows(input, changed, ledgerScope).integrity).toBe(false);
+      expect(readGroundedBaselineRows(input, rows, { ...ledgerScope, [key]: '' }).integrity).toBe(false);
+    }
+    const changed = structuredClone(input); changed.pin.scope.workspaceId = ledgerScope.workspaceId;
+    expect(readGroundedBaselineRows(changed, rows, ledgerScope).integrity).toBe(false);
+  });
+  it('retains invalid original clock input as unknown without throwing during provenance retention', () => {
+    const c = capture(); c.pin.observedAt = 'invalid-original-clock';
+    const { result } = classify(c);
+    expect(result.complete).toBe(false);
+    expect(result.gaps).toContain('invalid-baseline-pin');
+    expect(result.rows.every(row => row.state === 'unknown' && row.value === null)).toBe(true);
+    expect(result.ledgerResults.every(row => parseRecordedRubricCheck(row.check) !== null)).toBe(true);
+    expect(JSON.parse(result.ledgerResults[0]!.check.provenance!.procedure.snapshot).row.pin.observedAt)
+      .toBe('invalid-original-clock');
+  });
+});
 
 describe('GEC.N1-N8 persisted slice regression and cost', () => {
   const scope: GroundedMeasurementScope = {

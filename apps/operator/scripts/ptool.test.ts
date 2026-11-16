@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { RELEASE_CUT_HANDLER_DEADLINE_MS } from '../../../packages/operator-core/lib/release-cut-launch';
 import {
   callToolWithPressureRetry,
   callToolWithReplayRecovery,
@@ -1551,8 +1552,18 @@ describe('ptool call deadlines', () => {
       expect(timeoutForTool('tools:invoke', { name: 'release:repair-queue', args }))
         .toBe(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS);
     }
-    expect(timeoutForTool('release:repair-queue', { op: 'get' }))
-      .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it.each([
+    { op: 'get' },
+    { op: 'get', previewOperationId: 'arp-deadline-regression' },
+  ])('keeps repair-queue reads outside the server deadline on both routes: %j', args => {
+    for (const timeout of [
+      timeoutForTool('release:repair-queue', args),
+      timeoutForTool('tools:invoke', { name: 'release:repair-queue', args }),
+    ]) {
+      expect(timeout).toBeGreaterThan(295_000);
+    }
   });
 
   it('preserves the foreground budget for PR-delivery audits on direct and deferred routes', () => {
@@ -1567,9 +1578,8 @@ describe('ptool call deadlines', () => {
   });
 
   it('keeps release-cut calls alive beyond the declared handler budget on direct and deferred routes', () => {
-    const source = readFileSync(new URL('../../../packages/operator-core/lib/agent-tools/release/cut.ts', import.meta.url), 'utf8');
-    const timeoutSec = Number(source.match(/timeoutSec:\s*(\d+)/)?.[1]);
-    expect(timeoutSec).toBeGreaterThan(0);
+    expect(RELEASE_CUT_HANDLER_DEADLINE_MS).toBeGreaterThan(0);
+    const deadline = RELEASE_CUT_HANDLER_DEADLINE_MS + 5_000;
     for (const args of [
       { op: 'preflight', deferTag: true },
       { op: 'run', confirm: true },
@@ -1577,7 +1587,6 @@ describe('ptool call deadlines', () => {
       { op: 'status' },
       { op: 'reclaim', confirm: true },
     ]) {
-      const deadline = (timeoutSec + 5) * 1000;
       expect(timeoutForTool('release:cut', args)).toBeGreaterThan(deadline);
       expect(timeoutForTool('tools:invoke', { name: 'release:cut', args }))
         .toBeGreaterThan(deadline);

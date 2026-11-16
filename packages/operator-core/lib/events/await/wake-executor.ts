@@ -5246,7 +5246,8 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     const priorPoison = lifecycle?.poisoned;
     if (
       priorPoison && priorPoison.advSessionId === handle.advSessionId &&
-      (!fresh || priorPoison.startedAt === fresh.startedAt)
+      priorPoison.sessionId === sessionId &&
+      (!fresh || priorPoison.startedAt === fresh.startedAtExact || priorPoison.startedAt === fresh.startedAt)
     ) {
       return {
         kind: 'drop',
@@ -5332,6 +5333,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         ownerId: sessionOwner,
         sessionId,
         startedAt: fresh?.startedAt ?? null,
+        startedAtExact: fresh?.startedAtExact ?? null,
         workspaceId: fresh?.workspaceId ?? sessionDelivery.workspaceId,
         agent: 'claude',
         transcriptPath: claudeResumeTranscriptPath,
@@ -6172,11 +6174,22 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // returns. The child's 'close' can only fire on a later event-loop turn, so
       // this closure always sees it.
       let accounting: HeadlessResumeTurnAccounting | null = null;
+      // claimResume bumps started_at. Capture this child's post-claim identity;
+      // the pre-claim row belongs to its predecessor. Missing or changed identity
+      // cannot authorize quarantine of whichever incarnation now owns the row.
+      const afterClaim = fresh?.startedAtExact
+        ? await getSession(handle.advSessionId).catch(() => null)
+        : null;
+      const resumedIncarnation = afterClaim?.id === handle.advSessionId &&
+        afterClaim.coordOwnerId === (fresh?.coordOwnerId ?? d.subscriberId) &&
+        afterClaim.sessionId === fresh?.sessionId && afterClaim.endedAt === null
+        ? afterClaim : null;
       const resumeTurnContext: ResumeTurnContext = {
         advSessionId: handle.advSessionId,
         ownerId: fresh?.coordOwnerId ?? d.subscriberId,
         sessionId: fresh?.sessionId ?? handle.sessionId ?? null,
-        startedAt: fresh?.startedAt ?? null,
+        startedAt: resumedIncarnation?.startedAt ?? fresh?.startedAt ?? null,
+        startedAtExact: resumedIncarnation?.startedAtExact ?? null,
         workspaceId: fresh?.workspaceId ?? sessionDelivery.workspaceId,
         agent: resumeAgent,
         transcriptPath: resumeAgent === 'claude' ? claudeResumeTranscriptPath : null,

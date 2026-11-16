@@ -46,7 +46,9 @@ import {
   runTestFilesCore,
   type TestFilesCoreResult,
 } from './agent-tools/testing/run';
-import { findHarnessTestRunIds } from './testing-run-store';
+import { findHarnessTestRunIds, readHarnessTestRunEvidence } from './testing-run-store';
+import { judgeDeclaredConfiguration, parseProductionConfiguration, readConfigurationSnapshot,
+  type ProductionConfiguration } from './agent-tools/plans/declared-configuration';
 import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import { mergeCriterionTestRuns, partitionCriterionTestFiles, playwrightRecordedCases, resolveCriterionTestRoute,
   runPortalPlaywrightChecks, type PortalPlaywrightResult } from './rubrics-playwright-checks';
@@ -85,6 +87,7 @@ import { eventStatusReadAccessError } from './events/await/status-access';
 export interface CheckedCriterion {
   key: string;
   check?: RubricCriterionCheck;
+  productionConfiguration?: ProductionConfiguration;
   role?: string;
   mandatory?: boolean;
   passRatings?: string[];
@@ -819,6 +822,7 @@ export type CriterionCheckRunner = (opts: {
   root: string;
   /** Requested case identities, for suites with an explicit artifact-targeted mode. */
   criterionCases?: Array<{ file: string; testName: string }>;
+  productionConfiguration?: ProductionConfiguration;
   timeoutMs?: number;
   workspaceId?: string;
   /** Authenticated scorecard emitter, supplied by the handler rather than environment. */
@@ -836,6 +840,9 @@ export async function runCriterionCheckFiles(
   try { groups = partitionCriterionTestFiles(opts.files, opts.root); }
   catch (error) { return { ok: false, root: opts.root, runId: opts.runId ?? randomUUID(), error: 'route_error', hint: String(error) }; }
   if (groups.some(group => group.kind === 'portal-playwright')) {
+    if (opts.productionConfiguration) return { ok: false, root: opts.root,
+      runId: opts.runId ?? randomUUID(), error: 'route_error',
+      hint: 'declared production configuration requires a configuration-aware executor; the Playwright route does not yet carry it' };
     const runId = opts.runId ?? randomUUID();
     const deadline = Date.now() + (opts.timeoutMs ?? 120_000);
     const runs: CriterionCheckRunnerResult[] = [];
@@ -857,7 +864,7 @@ export async function runCriterionCheckFiles(
   const result = await (deps.runFiles ?? runTestFilesCore)({
     ...opts,
     // A replay must not lose the criterion's requested execution mode.
-    ...(opts.criterionCases?.length ? { allowDetachedRecovery: false } : {}),
+    ...(opts.criterionCases?.length || opts.productionConfiguration ? { allowDetachedRecovery: false } : {}),
     ...(privatePg ? { privatePg: true, allowDetachedRecovery: false } : {}),
   });
   if (
@@ -1673,6 +1680,8 @@ export async function evaluateCriterionTestChecks(input: {
   caseLoader?: CriterionCaseLoader;
   /** Immutable canonical rubric history; injected only by tests. Never use the current rubric as fallback. */
   caseBaselineLoader?: CriterionCaseBaselineLoader;
+  /** Exact scoped ledger read; tests may inject recorded rows, never a caller verdict. */
+  readRunEvidence?: typeof readHarnessTestRunEvidence;
   /** Typed probe conjuncts use the same read-only dispatcher as standalone probes. */
   dispatchTool?: CriterionProbeDispatcher;
   /** Shared with standalone probes only within this composing emit. */
@@ -1703,6 +1712,32 @@ export async function evaluateCriterionTestChecks(input: {
   const nowIso = input.nowIso ?? (() => new Date().toISOString());
   const deadline = input.timeoutMs !== undefined ? Date.now() + input.timeoutMs : null;
   const checkRuns: Record<string, CriterionCheckRun> = {};
+  const configuration: ProductionConfiguration = {};
+  let configurationCriterion: string | undefined;
+  for (const criterion of ratedTestsChecks) {
+    try {
+      const declared = parseProductionConfiguration(criterion.productionConfiguration);
+      if (!declared) continue;
+      configurationCriterion ??= criterion.key;
+      for (const map of ['flags', 'env'] as const) {
+        for (const [key, value] of Object.entries(declared[map] ?? {})) {
+          const merged = configuration[map] ??= {};
+          if (Object.hasOwn(merged, key) && merged[key] !== value) {
+            throw new Error(`conflicting productionConfiguration.${map}.${key} in one test batch`);
+          }
+          Object.assign(merged, { [key]: value });
+        }
+      }
+    } catch (cause) {
+      return { ok: false, error: 'check_run_failed', criterionKey: criterion.key,
+        detail: cause instanceof Error ? cause.message : String(cause) };
+    }
+  }
+  if (configurationCriterion && (!input.workspaceId?.trim() || input.workspaceId === '*'
+    || !input.harnessSlug?.trim() || input.harnessSlug === '*')) {
+    return { ok: false, error: 'check_run_failed', criterionKey: configurationCriterion,
+      detail: 'declared production configuration requires concrete workspace and harness scope for canonical snapshot verification' };
+  }
 
   // ── Pass 1: resolve every rated tests-check's paths BEFORE running anything ──
   // Path resolution is per-criterion and must keep its own refusal (D-006), so a stale
@@ -1773,6 +1808,7 @@ export async function evaluateCriterionTestChecks(input: {
   const run = await runner({
     files: uniqueFiles,
     root,
+    ...(configurationCriterion ? { productionConfiguration: configuration } : {}),
     criterionCases: planned.flatMap(check =>
       (check.cases ?? (check.testName ? [{ file: check.files[0]!, testName: check.testName }] : []))
         .map(selector => ({ file: resolve(root, selector.file), testName: selector.testName }))),
@@ -1833,6 +1869,30 @@ export async function evaluateCriterionTestChecks(input: {
   }
 
   const reportRoot = typeof run.root === 'string' ? run.root : root;
+  if (configurationCriterion) {
+    const refuse = (detail: string): CriterionCheckRefusal => ({ ok: false, error: 'check_run_failed',
+      criterionKey: configurationCriterion, detail });
+    const ids = run.testRunIds ?? [];
+    if (!ids.length || ids.some(id => !Number.isSafeInteger(id) || id <= 0) || new Set(ids).size !== ids.length)
+      return refuse('declared production configuration has no exact canonical test-run identities');
+    let rows: Awaited<ReturnType<typeof readHarnessTestRunEvidence>> = null;
+    try {
+      rows = await (input.readRunEvidence ?? readHarnessTestRunEvidence)({ workspaceId: input.workspaceId!,
+        harnessSlug: input.harnessSlug!, runGroupId: run.runId, testRunIds: ids });
+    } catch { /* Unreadable measurements cannot prove configuration. */ }
+    if (!rows || rows.length !== ids.length || new Set(rows.map(row => row.id)).size !== ids.length
+      || rows.some(row => !ids.includes(row.id) || row.workspace_id !== input.workspaceId
+        || row.harness_slug !== input.harnessSlug || row.run_group_id !== run.runId || !row.finished_at
+        || !Number.isFinite(new Date(row.finished_at).getTime())
+        || !uniqueFiles.some(file => sameTestFile(resolve(root, file), row.file_path)))
+      || uniqueFiles.some(file => !rows.some(row => sameTestFile(resolve(root, file), row.file_path)))) {
+      return refuse('declared production configuration lacks complete, finished, exact-scope canonical snapshot evidence');
+    }
+    for (const row of rows) {
+      const verdict = judgeDeclaredConfiguration(configuration, readConfigurationSnapshot(row.configuration_snapshot));
+      if (!verdict.ok) return refuse(`canonical test run ${row.id}: ${verdict.message}`);
+    }
+  }
   const byIdentity = indexReportedTestFiles(byFile, reportRoot);
   const countsFor = (file: string): ReportedTestFileCounts | undefined =>
     byFile[file] ?? byIdentity.get(reportedTestFileIdentity(file, reportRoot));

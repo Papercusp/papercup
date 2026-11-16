@@ -24,7 +24,8 @@ import '../../plan-items/reflect-rules';
 import '../plan-items/release';
 import { deriveIndexFromContent } from './derive-index';
 import { hashPlanContent } from './content-hash';
-import { writePlanLineNodes, readPlanLineNodes, repairSavedPlanLines } from './plan-line-graph';
+import { writePlanLineNodes, readPlanLineNodes, repairSavedPlanLines, type SavedPlanLinesPreview } from './plan-line-graph';
+import { mutateWorkItemDependenciesInTransaction, withWorkItemDependencyAdmissionTransaction } from '../../dbos/work-item-deps-store';
 import backfillDependencyEdgesTool from './backfill-dependency-edges';
 import { writePlanIndexRows } from './plan-index-rows';
 import { withPlanLock } from './with-plan-lock';
@@ -447,7 +448,15 @@ describe('same-row plan-line adoption', () => {
       { ...ctx(), uiClientId: 'agent-anchor-test', isSuperuser: true } as never));
     const closeResult = data(closeResponse).results[0];
     expect(closeResult.ok, JSON.stringify(closeResult)).toBe(true);
-    expect(closeResult.finish, JSON.stringify(closeResult)).toMatchObject({ complete: true, planItem: 'not-linked' });
+    // Finish reports the preserved canonical status even when coverage prevents
+    // this source-only duplicate from closing the shared plan line.
+    expect(closeResult.finish, JSON.stringify(closeResult)).toMatchObject({ complete: true, planItem: 'todo' });
+    const guarded = data(await planItemStatusTool.handler(planItemStatusTool.args.parse({
+      slug: SLUG, harness: HARNESS, item: 'P-001', status: 'dropped', onlyIfNoOtherOpenCoverage: true,
+      note: 'Verify that dropping one duplicate preserves the open canonical sibling.',
+    }), ctx())).results[0];
+    expect(guarded, JSON.stringify(guarded)).toMatchObject({ ok: true, skipped: 'coverage_guard',
+      coveredBy: expect.arrayContaining([siblingId]) });
 
     const [duplicate] = await fx.admin`SELECT feature_id AS id,status AS state,
         source_plan_slug AS "sourcePlanSlug",source_plan_item_ids AS "sourcePlanItemIds",payload
@@ -628,11 +637,26 @@ async function clearFixtureWorkItems() {
 describe('bounded saved-line graph reconciliation', () => {
   const scope = { workspaceId: WS, harnessSlug: HARNESS, slug: SLUG };
   const lineId = (n: number) => `P-${String(n).padStart(3, '0')}`;
-  async function prepare(extra = 'todo', blocker = 'P-001', terminalExisting = false) {
+  async function prepare(extra = 'todo', blocker = 'P-001', terminalExisting = false, options: {
+    prose?: string;
+    incoming?: { id: string; oldBlockers: string[]; addedBlocker: string };
+  } = {}) {
     const lines = Array.from({ length: 26 }, (_, i) => `- **${lineId(i + 1)}** \`${i < 22 ? (i === 2 && terminalExisting ? 'done' : 'todo') : extra}\` Saved item ${i + 1}${i >= 22 ? ` blocked-by: ${i === 22 ? blocker : lineId(i)}` : ''}`);
-    const original = body().replace('- **P-001** `todo` Existing item', lines.slice(0, 22).join('\n'));
-    const saved = body().replace('- **P-001** `todo` Existing item', lines.join('\n'));
-    await fx.admin.begin(async tx => writePlanLineNodes(tx as never, scope, await readPlanLineNodes(tx as never, scope), deriveIndexFromContent(original).items));
+    const incoming = options.incoming;
+    const originalLines = lines.map((line, i) => incoming?.id === lineId(i + 1) && incoming.oldBlockers.length
+      ? `${line} blocked-by: ${incoming.oldBlockers.join(', ')}` : line);
+    const savedLines = originalLines.map((line, i) => {
+      const savedLine = line.replaceAll('P-026', incoming?.addedBlocker ?? 'P-026');
+      return incoming?.id === lineId(i + 1)
+        ? `${savedLine}${incoming.oldBlockers.length ? ', ' : ' blocked-by: '}${incoming.addedBlocker}`
+        : savedLine;
+    });
+    const original = body().replace('- **P-001** `todo` Existing item', originalLines.slice(0, 22).join('\n'));
+    const saved = body().replace('- **P-001** `todo` Existing item', savedLines.join('\n')) + (options.prose ?? '');
+    await withWorkItemDependencyAdmissionTransaction(fx.admin, async tx => {
+      const mutations = await writePlanLineNodes(tx, scope, await readPlanLineNodes(tx, scope), deriveIndexFromContent(original).items);
+      await mutateWorkItemDependenciesInTransaction(tx, { workspaceId: DEFAULT_COORD_WORKSPACE, itemWorkspaceId: WS, mutations });
+    });
     await fx.admin`UPDATE harness_shared.work_items SET taken_by='retained-holder',
       payload=payload || '{"retainedClaim":{"proof":"unchanged"}}'::jsonb
       WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG} AND plan_line_id='P-002'`;
@@ -709,6 +733,85 @@ describe('bounded saved-line graph reconciliation', () => {
     expect(data(await editTool.handler({ slug: SLUG, harness: HARNESS, old_string: 'Check links.',
       new_string: 'Graph reconciliation retained all tasks.' } as never, ctx())).ok).toBe(true);
   });
+  it.each([
+    { label: 'Frontier P-017 to P-026', id: 'P-017', oldBlockers: ['P-014', 'P-016'], addedBlocker: 'P-026',
+      prose: '\n### D-031 — placement\n1. P-007 placement. Asked: a new partition or bounded existing storage.' },
+    { label: 'durable continuation P-006 to P-041', id: 'P-006', oldBlockers: ['P-005'], addedBlocker: 'P-041',
+      prose: '\n### D-027 — acceptance\n1. P-006 is accepted on two pieces of evidence...' },
+  ])('repairs $label with decision prose while preserving the existing subgraph', async ({ prose, label, ...incoming }) => {
+    const input = await prepare('todo', 'P-001', true, { incoming, prose });
+    const prior = await retained();
+    const existingEdges = [...await fx.admin`SELECT d.id::text AS id,
+      jsonb_build_object('row',to_jsonb(d),'xmin',d.xmin::text)::text AS record
+      FROM harness_shared.work_item_deps d WHERE d.workspace_id=${DEFAULT_COORD_WORKSPACE}
+        AND d.created_by=${`plan-dependency:${HARNESS}/${SLUG}`} ORDER BY d.id`];
+    expect(existingEdges).toHaveLength(incoming.oldBlockers.length);
+    const all = await census();
+    const savedLines = { slug: SLUG, expectedVersion: input.expectedVersion, expectedContentHash: input.expectedContentHash };
+    const callPublic = (dryRun: boolean, preview?: SavedPlanLinesPreview) => backfillDependencyEdgesTool.handler(
+      backfillDependencyEdgesTool.args.parse({ harness: HARNESS, dryRun, savedLines: { ...savedLines, preview } }), ctx());
+    const { preview, missingItems } = data(await callPublic(true)) as Awaited<ReturnType<typeof repairSavedPlanLines>>;
+    expect(missingItems).toHaveLength(4);
+    expect(missingItems.map(item => item.id)).toContain(incoming.addedBlocker);
+    expect(await census()).toEqual(all);
+    expect(data(await callPublic(false, preview)))
+      .toMatchObject({ nodesAdded: 4, edgesWritten: 5 });
+    expect(await retained()).toEqual(prior);
+    const preservedEdges = [...await fx.admin`SELECT d.id::text AS id,
+      jsonb_build_object('row',to_jsonb(d),'xmin',d.xmin::text)::text AS record
+      FROM harness_shared.work_item_deps d WHERE d.workspace_id=${DEFAULT_COORD_WORKSPACE}
+        AND d.id::text=ANY(${existingEdges.map(edge => edge.id)}::text[]) ORDER BY d.id`];
+    expect(preservedEdges).toEqual(existingEdges);
+    expect((await readPlanLineNodes(fx.admin, scope)).find(node => node.id === incoming.id)?.blockedBy)
+      .toEqual([...incoming.oldBlockers, incoming.addedBlocker]);
+    const settled = await census();
+    expect(data(await callPublic(false, preview)))
+      .toMatchObject({ alreadyReconciled: true, nodesAdded: 0, edgesWritten: 0 });
+    expect(await census()).toEqual(settled);
+  });
+  it.each(['add', 'remove'])('refuses an existing-to-existing blocker %s during additive repair', async kind => {
+    const input = await prepare('todo', 'P-001', true, {
+      incoming: { id: 'P-017', oldBlockers: ['P-014', 'P-016'], addedBlocker: 'P-026' },
+    });
+    const [parent] = await fx.admin`SELECT content FROM harness_shared.harness_plans
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
+    const content = parent.content.replace('blocked-by: P-014, P-016, P-026', kind === 'add'
+      ? 'blocked-by: P-014, P-016, P-001, P-026' : 'blocked-by: P-014, P-026');
+    input.expectedContentHash = hashPlanContent(content);
+    await fx.admin`UPDATE harness_shared.harness_plans SET content=${content},content_hash=${input.expectedContentHash},
+      items=${JSON.stringify(deriveIndexFromContent(content).items)}::text::jsonb
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
+    const prior = await census();
+    const graph = await readPlanLineNodes(fx.admin, scope);
+    await expect(repairSavedPlanLines(fx.admin, { ...input, dryRun: true })).rejects.toThrow('saved_plan_lines_not_additive');
+    expect(await census()).toEqual(prior);
+    expect(await readPlanLineNodes(fx.admin, scope)).toEqual(graph);
+  });
+  it('rolls back an existing-to-new cycle without changing represented rows or edges', async () => {
+    const input = await prepare('todo', 'P-017', true, {
+      incoming: { id: 'P-017', oldBlockers: ['P-014', 'P-016'], addedBlocker: 'P-026' },
+    });
+    const prior = await census();
+    const graph = await readPlanLineNodes(fx.admin, scope);
+    const { preview } = await repairSavedPlanLines(fx.admin, { ...input, dryRun: true });
+    await expect(repairSavedPlanLines(fx.admin, { ...input, dryRun: false, preview })).rejects.toThrow();
+    expect(await census()).toEqual(prior);
+    expect(await readPlanLineNodes(fx.admin, scope)).toEqual(graph);
+  });
+  it('rejects a stale incoming-edge preview after an existing dependency changes', async () => {
+    const input = await prepare('todo', 'P-001', true, {
+      incoming: { id: 'P-017', oldBlockers: ['P-014', 'P-016'], addedBlocker: 'P-026' },
+    });
+    const { preview } = await repairSavedPlanLines(fx.admin, { ...input, dryRun: true });
+    await fx.admin`UPDATE harness_shared.work_item_deps SET satisfaction='success'
+      WHERE workspace_id=${DEFAULT_COORD_WORKSPACE} AND created_by=${`plan-dependency:${HARNESS}/${SLUG}`}`;
+    const prior = await census();
+    const graph = await readPlanLineNodes(fx.admin, scope);
+    await expect(repairSavedPlanLines(fx.admin, { ...input, dryRun: false, preview })).rejects.toThrow('saved_plan_lines_preview_changed');
+    expect(await census()).toEqual(prior);
+    expect(await readPlanLineNodes(fx.admin, scope)).toEqual(graph);
+  });
+
   it.each(['claim', 'hold', 'state', 'completion', 'dependency', 'link'])('rejects a real apply after concurrent %s changes without adding rows', async kind => {
     const input = await prepare('todo', 'P-001', true);
     const { preview } = await repairSavedPlanLines(fx.admin, { ...input, dryRun: true });

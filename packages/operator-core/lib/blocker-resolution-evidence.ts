@@ -38,18 +38,52 @@ function boundaryProblem(missing: string[]): BlockerDecisionProblem {
     nextAction: 'Investigate the canonical blocker, attempt a safe remedy, and provide blockerDecision with measured self-resolution or an accountable deferral. Keep custody while refused.' };
 }
 
+const plainObject = (value: unknown): value is Record<string, unknown> => Boolean(value) &&
+  typeof value === 'object' &&
+  (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+
+type PlanLaneReopen = { planSlug: string; itemId: string; status: 'todo' | 'wip' };
+
+/** The existing plans:set-status host effect is bound into the decision receipt.
+ * Only its explicit blocked CAS can measure a prospective reopen. A plain state
+ * write, terminal close, or caller's evidence cannot supply this authority. */
+function explicitPlanLaneReopen(effect: unknown): PlanLaneReopen | undefined {
+  if (!plainObject(effect)) return;
+  const keys = ['plan', 'itemId', 'status', 'note', 'noteKind', 'rationale', 'expectedStatus', 'verification',
+    'onlyIfNotTerminal', 'onlyIfNotBlocked', 'onlyIfNotCompleted', 'onlyIfNoOtherOpenCoverage',
+    'onlyIfNoOtherInFlightCoverage', 'onlyIfBlockAttributedTo'];
+  if (Reflect.ownKeys(effect).length !== keys.length || keys.some(key => !Object.hasOwn(effect, key)) ||
+      typeof effect.plan !== 'string' || !effect.plan || typeof effect.itemId !== 'string' ||
+      !/^P-\d{3,}$/.test(effect.itemId) || effect.expectedStatus !== 'blocked' ||
+      (effect.status !== 'todo' && effect.status !== 'wip')) return;
+  return { planSlug: effect.plan, itemId: effect.itemId, status: effect.status };
+}
+
 /** Only the public handler's complete ordinary release effect qualifies. Keep
  * its reason intact for the audit and effect hash; explicit hold:false mutates
  * a hold too. The separate writer payload must independently be empty. */
 function plainPublicRelease(effect: unknown, payload?: { patch: unknown; unset: readonly string[] }): boolean {
-  const plain = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' &&
-    (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
-  if (!plain(effect) || !payload || !plain(payload.patch) || Reflect.ownKeys(payload.patch).length ||
+  if (!plainObject(effect) || !payload || !plainObject(payload.patch) || Reflect.ownKeys(payload.patch).length ||
       !Array.isArray(payload.unset) || payload.unset.length) return false;
   const keys = ['release', 'claimHold', 'claimHoldRelease', 'reason', 'force'];
   return Reflect.ownKeys(effect).length === keys.length && keys.every(key => Object.hasOwn(effect, key)) &&
     effect.release === true && effect.claimHold === null && effect.claimHoldRelease === null && effect.force === false &&
     (effect.reason === null || (typeof effect.reason === 'string' && effect.reason.length <= 500));
+}
+
+/** Exact relation-writer effect that can only ADD one blocking edge. The
+ * prospective canonical ref is supplied separately by the same host writer. */
+function blockerAddingLink(effect: unknown, refs: readonly string[] | undefined, itemId: string): boolean {
+  if (!plainObject(effect) || Reflect.ownKeys(effect).length !== 1 || !plainObject(effect.link) ||
+      !refs || refs.length !== 1) return false;
+  const link = effect.link;
+  const keys = ['id', 'harness', 'dst', 'rel', 'remove', 'satisfaction'];
+  if (Reflect.ownKeys(link).length !== keys.length || keys.some(key => !Object.hasOwn(link, key)) ||
+      typeof link.id !== 'string' || !link.id || link.rel !== 'blocks' || link.remove !== false ||
+      !plainObject(link.dst) || typeof link.dst.ref !== 'string') return false;
+  const sourceMatches = refs[0] === link.id || refs[0].endsWith(`#${link.id}`);
+  const dependentMatches = link.dst.ref === itemId || link.dst.ref.endsWith(`#${itemId}`);
+  return sourceMatches && dependentMatches;
 }
 
 /** Shared agent-boundary preflight. The lifecycle writer supplies its exact effect
@@ -142,19 +176,34 @@ export async function preflightBlockerDecision(
       obligationRefs.push(prior.current.decision.deferral.recheckRef);
     }
     const { ALL_TERMINAL_STATUSES } = await import('./work-item-blocking');
-    const plainReleaseScope = !options.requireResolution && !options.allowAbsorption &&
-      !options.additionalBlockers?.length && !options.additionalDependencyRefs?.length &&
-      !ALL_TERMINAL_STATUSES.has(item.state) && item.assignee === context.ownerId && context.workspaceId && item.harness &&
-      plainPublicRelease(options.effect, options.releasePayload)
-      ? { workspaceId: context.workspaceId, harnessSlug: item.harness, workItemId: item.id, custodianId: context.ownerId }
+    const custodyScope = !options.requireResolution && !options.allowAbsorption &&
+      !options.additionalBlockers?.length && !ALL_TERMINAL_STATUSES.has(item.state) &&
+      item.assignee === context.ownerId && context.workspaceId && item.harness
+      ? { workspaceId: context.workspaceId, harnessSlug: item.harness,
+          workItemId: item.id, custodianId: context.ownerId }
       : undefined;
+    const plainReleaseScope = custodyScope && !options.additionalDependencyRefs?.length &&
+      plainPublicRelease(options.effect, options.releasePayload)
+      ? custodyScope
+      : undefined;
+    // The exact host relation effect adds one blocker and cannot clear the
+    // park or any existing edge. Remove paths supply no prospective ref.
+    const blockerRetainingLinkScope = custodyScope &&
+      blockerAddingLink(options.effect, options.additionalDependencyRefs, item.id)
+      ? custodyScope : undefined;
+    const parkedPlanLaneScope = plainReleaseScope ?? blockerRetainingLinkScope;
+    const planLaneReopen = custodyScope && prepared.record.decision.disposition === 'self_resolve'
+      ? explicitPlanLaneReopen(options.effect) : undefined;
     const readEvidence = createBlockerEvidenceReader({ ...context, harnessSlug: item.harness,
       workItemId: item.id, custodianId: item.assignee, blockers,
       evidenceRefs: prepared.record.decision.evidenceRefs,
-      retainedReservationRelease: prepared.record.decision.disposition === 'defer' ? plainReleaseScope : undefined });
+      planLaneReopen,
+      retainedReservationRelease: prepared.record.decision.disposition === 'defer' ? plainReleaseScope : undefined,
+      retainedParkedPlanLaneDeferral: prepared.record.decision.disposition === 'defer' ? parkedPlanLaneScope : undefined });
     const checked = await validateBlockerDecisionEvidence(prepared.record.decision, {
       ownerId: context.ownerId, workItemId: item.id, obligationRefs, relatedConditionRefs,
-      allowAbsorption: options.allowAbsorption, unmeasuredRuntimeDeferral: plainReleaseScope, readEvidence,
+      allowAbsorption: options.allowAbsorption, unmeasuredRuntimeDeferral: plainReleaseScope,
+      unmeasuredParkedPlanLaneDeferral: parkedPlanLaneScope, readEvidence,
     });
     return checked.ok ? prepared : checked;
   } catch {
@@ -177,6 +226,12 @@ export interface BlockerEvidenceContext extends CellReadEnv {
   /** Host-only plain-release deferral: the writer preserves this custodian's
    * reservation and every blocker while releasing only the inactive assignment. */
   retainedReservationRelease?: UnmeasuredRuntimeScope;
+  /** Host-only deferral for a system plan-line transition park. The writer
+   * either adds a dependency or releases only assignment, retaining the park. */
+  retainedParkedPlanLaneDeferral?: UnmeasuredRuntimeScope;
+  /** Host-derived explicit plans:set-status CAS; all canonical custody, graph,
+   * owner-marker and independent-condition checks still apply. */
+  planLaneReopen?: PlanLaneReopen;
 }
 const absent = (detail: string): BlockerEvidenceMeasurement => ({ status: 'absent', detail });
 const unknown = (detail: string): BlockerEvidenceMeasurement => ({ status: 'unknown', detail });
@@ -614,6 +669,20 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
               release.custodianId === context.ownerId && hold.heldOpen?.by === context.ownerId &&
               !hold.parked && payload.claim_hold_by == null && payload.claim_hold_reason == null &&
               payload.claim_hold_at == null;
+            const retainedPark = context.retainedParkedPlanLaneDeferral;
+            const planItem = payload.plan_item && typeof payload.plan_item === 'object'
+              ? payload.plan_item as Record<string, unknown> : null;
+            const exactSystemPlanLinePark = isClaimHoldParked(current.payload) &&
+              hold.parked?.by === 'migration:plan-line-work-item-nodes' &&
+              planItem?.plan_slug === match[1] && planItem?.item_id === match[2] &&
+              planItem?.harness_slug === context.harnessSlug;
+            const retainsExactPark = retainedPark && retainedPark.workspaceId === context.workspaceId &&
+              retainedPark.harnessSlug === context.harnessSlug && retainedPark.workItemId === current.id &&
+              retainedPark.custodianId === context.ownerId;
+            if (exactSystemPlanLinePark && retainsExactPark) {
+              return { status: 'unmeasured-parked-plan-lane', ref: ref.ref, scope: retainedPark,
+                detail: 'system plan-line transition park is retained by the host-validated write' };
+            }
             if (hold.parked || ((isClaimHoldParked(current.payload) || hold.heldOpen) && !preservesOwnReservation)) {
               return unknown('independent park or lease must be resolved through its own authority');
             }
@@ -634,10 +703,13 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
             }
             const graph = resolveEffectiveStatusForItems(planItemsForRow(plan));
             const item = graph.items.find(item => item.id === match[2]);
-            // A stale generated gate can outlive the lane's last dependency.
-            // Only an actionable lane may establish that dependency-free case;
-            // a still-explicitly-blocked lane supplies no release predicate.
-            if (!item || (!item.blockedBy.length && item.storedStatus === 'blocked') || item.needsHuman ||
+            // A plain read cannot clear an explicit dependency-free block.
+            // The status writer's exact blocked CAS is instead a prospective
+            // reopen: measure its real prerequisites before the paired write,
+            // which still checks expectedStatus under the plan lock.
+            const reopening = context.planLaneReopen?.planSlug === match[1] &&
+              context.planLaneReopen.itemId === match[2] && item?.storedStatus === 'blocked';
+            if (!item || (!item.blockedBy.length && item.storedStatus === 'blocked' && !reopening) || item.needsHuman ||
                 !['blocked', 'todo', 'wip'].includes(item.storedStatus ?? '') ||
                 graph.missingRefs.length || graph.cycleMembers.length) {
               return unknown('complete unambiguous derived dependency condition required');

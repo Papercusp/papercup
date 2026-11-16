@@ -383,6 +383,41 @@ export function reconcileBootingHttpServices(
 
 type ServiceRootCause = { component: string; reason: string };
 
+type LoopbackEndpointIdentity = { host: string; route: string };
+
+const LOOPBACK_ENDPOINT_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+
+/**
+ * Identifies the same HTTP endpoint reached through a different loopback
+ * hostname. A failed alias stays in probe evidence, but cannot by itself
+ * establish that the service process is down when the same route answered.
+ */
+function loopbackEndpointIdentity(service: ProbeResult): LoopbackEndpointIdentity | null {
+  if (!service.url) return null;
+  let url: URL;
+  try {
+    url = new URL(service.url);
+  } catch {
+    return null;
+  }
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (!LOOPBACK_ENDPOINT_HOSTS.has(host)) return null;
+  return {
+    host,
+    route: url.protocol + "//:" + url.port + url.pathname + url.search,
+  };
+}
+
+function hasHealthyLoopbackAlias(failure: ProbeResult, services: readonly ProbeResult[]): boolean {
+  const failedEndpoint = loopbackEndpointIdentity(failure);
+  if (!failedEndpoint) return false;
+  return services.some((service) => {
+    if (!service.up || service.present === false) return false;
+    const endpoint = loopbackEndpointIdentity(service);
+    return endpoint !== null && endpoint.host !== failedEndpoint.host && endpoint.route === failedEndpoint.route;
+  });
+}
+
 function restartVerbForService(name: string): string {
   if (name.includes("bg-host")) return 'dev:restart { target:"bg-host" }';
   if (name === "operator") return 'dev:restart { target:"dev" }';
@@ -570,8 +605,9 @@ export function buildServiceHealthDiagnostic(
   // EI-19465075959589134: a wedge is the more actionable finding of the two, so
   // it leads the root cause even when an ordinary down probe sorted first — the
   // whole point is that a wedge never announces itself in the other signals.
-  const wedgedFailures = failures.filter((s) => s.wedged === true);
-  const first = wedgedFailures[0] ?? failures[0];
+  const actionableFailures = failures.filter((failure) => !hasHealthyLoopbackAlias(failure, services));
+  const wedgedFailures = actionableFailures.filter((s) => s.wedged === true);
+  const first = wedgedFailures[0] ?? actionableFailures[0];
   const supervisor = unhealthySupervision[0];
   const dhtWarning = dhtWarnings?.[0];
   const rootCauseIsDht = !first && !supervisor && dhtWarning !== undefined;
@@ -595,10 +631,10 @@ export function buildServiceHealthDiagnostic(
     },
     effective: {
       up: services.length - absent.length - failures.length,
-      // `down` stays the whole failure count (nothing is answering, whatever the
-      // cause); `wedged` is the SUBSET that is still listening. Reported side by
-      // side rather than partitioned, so an existing reader of `down` keeps its
-      // meaning and a new one can ask the sharper question.
+      // `down` keeps the complete failed-probe count. A failed loopback alias
+      // remains evidence even when another alias answers; it is excluded only
+      // from service-level root-cause/restart classification. `wedged` is the
+      // subset that is still listening, reported alongside the raw count.
       down: failures.length,
       wedged: wedgedFailures.length,
       absent: absent.length,

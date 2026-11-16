@@ -22,6 +22,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildTemplate } from '../new';
 import { summarizeItemParse, detectUnparsedItemLines } from '../item-parse-feedback';
+import { ITEM_STATUSES } from '../parser';
 
 const base = {
   slug: 'x-plan-2026-07-08',
@@ -225,6 +226,32 @@ describe('detectUnparsedItemLines — precision unit', () => {
       '- **P-317** `todo` this item was misplaced in Now',
       '1. P-318 `todo` this item was misplaced in Decisions',
     ]);
+  });
+
+  it.each(['Now', 'Decisions'])('keeps leading item citations in %s prose quiet without hiding status tokens', (section) => {
+    const prose = written([
+      `## ${section}`, '', '### D-027 — acceptance evidence',
+      '1. P-006 is accepted on two pieces of evidence...',
+      '1. P-007 placement. Asked: a new partition or bounded existing storage.',
+      '- **P-008** remains subject to the retained hold.',
+    ].join('\n'));
+    expect(detectUnparsedItemLines(prose, new Set())).toEqual([]);
+    const attempts = `${prose}\n- **P-009** \`todo\` misplaced task\n1. P-010 \`unrecognized\` invalid status`;
+    expect(detectUnparsedItemLines(attempts, new Set()).map(line => line.text)).toEqual([
+      '- **P-009** `todo` misplaced task',
+      '1. P-010 `unrecognized` invalid status',
+    ]);
+  });
+
+  it.each(['Now', 'Decisions'])('flags known unquoted statuses in %s without confusing citations with tasks', section => {
+    const attempts = ITEM_STATUSES.map((status, index) => `1. P-${901 + index} ${status} misplaced task`);
+    const prose = [`## ${section}`, '',
+      '1. P-006 is accepted on two pieces of evidence...',
+      '1. P-007 placement. Asked: a new partition or bounded existing storage.',
+      '- **P-008** remains subject to the retained hold.',
+    ];
+    expect(detectUnparsedItemLines(written([...prose, ...attempts].join('\n')), new Set()).map(line => line.text))
+      .toEqual(attempts);
   });
 
   it('keeps ordinary Now/Decisions prose and fenced P-NNN examples quiet', () => {

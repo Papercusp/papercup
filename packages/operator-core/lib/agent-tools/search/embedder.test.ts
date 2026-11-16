@@ -73,12 +73,70 @@ import { PROSE_VECTOR_DIMS } from '../../search/prose-vector-dims';
 import { readCredentials } from '../../credentials';
 import { loadVoicePrefs, DEFAULT_VOICE_PREFS } from '../../voice-prefs';
 import { mockResolvedTyped } from '../../testing/typed-mock';
-import { buildSidecarAwareEmbedder, isLocalEmbedAcquisitionCheap } from '../../memory/embed-sidecar-wiring';
+import { buildSidecarAwareEmbedder, isLocalEmbedAcquisitionCheap, hasLocalEmbedEngineOverride } from '../../memory/embed-sidecar-wiring';
 import { markOpenAiEmbedFailure, __resetOpenAiEmbedCooldownForTest } from '../../memory/configure';
 
 const savedKey = process.env.OPENAI_API_KEY;
 
 describe('request-local acquisition provenance', () => {
+  it.each(['preference', 'credentials', 'gemmaBuilder'] as const)(
+    'captures a pending %s dependency without late completion changing the receipt', async (stage) => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] });
+      const outcomes: QueryEmbedderAcquisition[] = [];
+      let finish!: () => void;
+      vi.mocked(hasLocalEmbedEngineOverride).mockReturnValue(true);
+      if (stage === 'preference') {
+        vi.mocked(loadVoicePrefs).mockImplementationOnce(() => new Promise(resolve => {
+          finish = () => resolve({ ...DEFAULT_VOICE_PREFS, memoryEmbedderMode: 'disabled' });
+        }));
+      } else if (stage === 'credentials') {
+        vi.mocked(loadVoicePrefs).mockResolvedValue({ ...DEFAULT_VOICE_PREFS, memoryEmbedderMode: 'openai' });
+        vi.mocked(readCredentials).mockImplementationOnce(() => new Promise(resolve => {
+          finish = () => resolve({});
+        }));
+      } else {
+        vi.mocked(loadVoicePrefs).mockResolvedValue({ ...DEFAULT_VOICE_PREFS, memoryEmbedderMode: 'gemma' });
+        vi.mocked(buildSidecarAwareEmbedder).mockImplementationOnce(() => new Promise(resolve => {
+          finish = () => resolve(async () => [0.25]);
+        }));
+      }
+      try {
+        const pending = buildQueryEmbedderResolved({ acquireBudgetMs: 10, onAcquisition: value => outcomes.push(value) }, {
+          observeFallback: vi.fn(),
+        });
+        await vi.advanceTimersByTimeAsync(10);
+        expect(await pending).toBeNull();
+        const receipt = structuredClone(outcomes[0]);
+        expect(receipt).toMatchObject({ status: 'timed-out', activeStage: stage, durationMs: 10 });
+        expect(receipt.stageDurationsMs?.[stage]).toBe(10);
+        await vi.advanceTimersByTimeAsync(30);
+        finish();
+        await vi.runAllTimersAsync();
+        expect(outcomes).toEqual([receipt]);
+      } finally {
+        vi.mocked(hasLocalEmbedEngineOverride).mockReturnValue(false);
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('reports completed production stages without a pending dependency on success', async () => {
+    vi.mocked(hasLocalEmbedEngineOverride).mockReturnValue(true);
+    vi.mocked(loadVoicePrefs).mockResolvedValue({ ...DEFAULT_VOICE_PREFS, memoryEmbedderMode: 'harrier' });
+    vi.mocked(buildSidecarAwareEmbedder).mockResolvedValue(async () => [0.25]);
+    const outcomes: QueryEmbedderAcquisition[] = [];
+    try {
+      await buildQueryEmbedderResolved({ onAcquisition: value => outcomes.push(value) }, { observeFallback: vi.fn() });
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0]).toMatchObject({ status: 'acquired', mode: 'gemma', stageDurationsMs: {
+        preference: expect.any(Number), localAvailability: expect.any(Number), gemmaBuilder: expect.any(Number),
+      } });
+      expect(outcomes[0]).not.toHaveProperty('activeStage');
+    } finally {
+      vi.mocked(hasLocalEmbedEngineOverride).mockReturnValue(false);
+    }
+  });
+
   it('distinguishes timed out rejected disabled and compatible provider acquisition', async () => {
     vi.useFakeTimers();
     const outcomes: QueryEmbedderAcquisition[] = [];

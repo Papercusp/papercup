@@ -191,7 +191,7 @@ export function schemaCallConstraintAnnotation(
 ): string {
   const annotations = new Map<string, { path: string; constraint: string }>();
   const ancestors = new Set<object>();
-  let inferredNestedUnion = false;
+  const inferredNestedUnions: Array<{ path: string; constraint: string }> = [];
   const addAnnotation = (path: string, constraint: string): void => {
     const displayPath = path || '$';
     annotations.set(`${displayPath}\u0000${constraint}`, { path: displayPath, constraint });
@@ -212,15 +212,14 @@ export function schemaCallConstraintAnnotation(
         // For otherwise-unannotated tools, one bounded nested-union hint repairs
         // the lossy flattened view without flooding large contracts such as
         // work_items:complete with branch prose.
-        if (path && !inferredNestedUnion && annotations.size === 0) {
+        if (path && inferredNestedUnions.length === 0 && annotations.size === 0) {
           const objectBranches = branches.filter(
             (branch): branch is Record<string, unknown> =>
               !!branch && typeof branch === 'object' && !Array.isArray(branch),
           );
           const conditional = unionConditionalHint(objectBranches);
           if (conditional) {
-            addAnnotation(path, conditional);
-            inferredNestedUnion = true;
+            inferredNestedUnions.push({ path, constraint: conditional });
           }
         }
         for (const branch of branches) walk(branch, path);
@@ -236,6 +235,12 @@ export function schemaCallConstraintAnnotation(
     ancestors.delete(value);
   };
   walk(inputSchema, '');
+  // A validator annotation may appear AFTER the first nested union. Decide
+  // whether inference is needed only after reading the complete schema; source
+  // property order must not crowd out an explicit contract in compact results.
+  if (annotations.size === 0) {
+    for (const { path, constraint } of inferredNestedUnions) addAnnotation(path, constraint);
+  }
   const firstPathByConstraint = new Map<string, string>();
   return [...annotations.values()]
     .map(({ path, constraint }) => {

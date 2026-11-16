@@ -93,6 +93,16 @@ function planIndexFingerprint(items: readonly PlanIndexItem[]): string {
   ]));
 }
 
+/** Compare the existing subgraph exactly while allowing edges involving new
+ * candidate lines. Unknown blocker IDs remain visible to the normal guards. */
+function representedItemsForAdditiveComparison(items: readonly PlanIndexItem[], before: readonly PlanIndexItem[]): PlanIndexItem[] {
+  const oldIds = new Set(before.map(item => item.id));
+  const addedIds = new Set(items.filter(item => !oldIds.has(item.id)).map(item => item.id));
+  return items.filter(item => oldIds.has(item.id)).map(item => ({
+    ...item, blockedBy: item.blockedBy.filter(id => !addedIds.has(id)),
+  }));
+}
+
 /**
  * A pre-1601 writer persisted the derived JSON index but did not create work-graph
  * line nodes. Use that index only as a verified witness for the canonical bytes:
@@ -197,7 +207,7 @@ export async function writePlanLineNodes(
   const { workspaceId, harnessSlug, slug } = scope;
   const prior = new Map(before.map((n) => [n.id, n]));
   if (options.addOnly) {
-    const represented = items.filter(item => prior.has(item.id));
+    const represented = representedItemsForAdditiveComparison(items, before);
     if (new Set(items.map(item => item.id)).size !== items.length ||
         planIndexFingerprint(represented) !== planIndexFingerprint(before) ||
         before.some((node, seq) => items[seq]?.id !== node.id) ||
@@ -228,7 +238,9 @@ export async function writePlanLineNodes(
       next.set(item.id, { ...item, featureId: adopted.featureId, kind: adopted.kind, planSlug: slug });
     } else if (old) {
       if (options.addOnly) {
-        next.set(item.id, old);
+        // Keep the row untouched; validated new blockers are written only by
+        // the canonical dependency writer below.
+        next.set(item.id, { ...old, blockedBy: item.blockedBy });
         continue;
       }
       const changeStatus = item.status !== old.status;
@@ -372,8 +384,10 @@ export async function repairSavedPlanLines(sql: Sql, input: PlanLineScope & {
     // The graph owns represented lifecycle state: legacy saved todo bytes may
     // predate a current blocked hold. Preserve that state rather than projecting
     // the stale index back over it; all other represented meaning must agree.
-    const represented = saved.filter(item => prior.has(item.id))
-      .map(item => ({ ...item, status: prior.get(item.id)!.status }));
+    const withCanonicalStatuses = saved.map(item => ({
+      ...item, status: prior.get(item.id)?.status ?? item.status,
+    }));
+    const represented = representedItemsForAdditiveComparison(withCanonicalStatuses, before);
     const missing = saved.filter(item => !prior.has(item.id));
     if (new Set(saved.map(item => item.id)).size !== saved.length ||
         rows.some((row, seq) => row.plan_seq !== seq) ||
@@ -397,7 +411,10 @@ export async function repairSavedPlanLines(sql: Sql, input: PlanLineScope & {
       throw new Error('saved_plan_lines_preview_changed');
     let edgesWritten = 0;
     if (!input.dryRun && missing.length) {
-      const desired = saved.map(item => prior.get(item.id) ?? item);
+      const desired = saved.map(item => {
+        const old = prior.get(item.id);
+        return old ? { ...old, blockedBy: item.blockedBy } : item;
+      });
       const mutations = await writePlanLineNodes(tx, input, before, desired, { addOnly: true });
       if (mutations.some(mutation => mutation.op !== 'add')) throw new Error('saved_plan_lines_not_additive');
       const result = await mutateWorkItemDependenciesInTransaction(tx, {

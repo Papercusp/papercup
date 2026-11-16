@@ -82,23 +82,11 @@ import { writeOperatorArtifactManifest } from '@papercusp/operator-core/lib/rele
 import { bindRuntimeSourcePopulation } from '../packages/operator-core/lib/memory/bench/runtime-source-capture.mjs';
 import { bindRuntimeProcessTree } from '../packages/operator-core/lib/memory/bench/runtime-file-opens.mjs';
 import { bindFrozenDependencyGeneration } from '@papercusp/operator-core/lib/dependency-generation-proof';
-
-// Keep the synchronous qualification API and the host's import graph free of
-// top-level await. esbuild owns the literal require in a host bundle; the
-// documented plain-Node CLI needs scoped TS resolution for extensionless imports.
-// tsx's API is loaded lazily through createRequire, never by a static import:
-// tsx's IPC client connects a socket when its module initializes, so a static
-// import put that connect into every host bundle's boot import and failed the
-// packaged boot-import check (BOOT_IMPORT_IO_FORBIDDEN, WI-6554700010049042).
-// esbuild does not follow createRequire, so the bundle never contains tsx.
-/** @type {typeof import('../packages/operator-core/lib/memory/bench/measurement-manifest.ts').bindNativeLoaderClosure} */
-const bindNativeLoaderClosure = (...args) => {
-  // @ts-ignore -- bundle-host defines this marker; plain Node takes the scoped loader.
-  const nativeLoader = typeof __PAPERCUSP_BUNDLED_SIDECAR__ !== 'undefined'
-    ? require('../packages/operator-core/lib/memory/bench/measurement-manifest.ts')
-    : createRequire(import.meta.url)('tsx/cjs/api').require('../packages/operator-core/lib/memory/bench/measurement-manifest.ts', import.meta.url);
-  return nativeLoader.bindNativeLoaderClosure(...args);
-};
+// Use the existing ESM graph for the synchronous native qualifier. A scoped
+// tsx CommonJS require transforms its TypeScript before the committed-source
+// fence, which correctly refuses those transformed bytes. Importing the
+// qualifier directly also keeps tsx's socket-opening API out of host bundles.
+import { bindNativeLoaderClosure } from '../packages/operator-core/lib/memory/bench/measurement-manifest.ts';
 
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 export const PREVIEW_REPO = 'Papercusp/papercusp-preview';

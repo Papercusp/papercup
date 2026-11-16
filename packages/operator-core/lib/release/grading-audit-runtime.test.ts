@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path';
 import { createServer } from 'node:net';
 import { runInNewContext } from 'node:vm';
 import * as databaseTargets from '@papercusp/db-org/connection';
+import { utilityHostEnabled } from '../background-workers';
 import type { TaskRow } from '../task-manager/types';
 import { readGradingAuditSourcePin, writeGradingAuditSourcePin } from './grading-audit-source-pin';
 import { requestOnlyIdentityGuardMarker } from '../harness/env-operator-launcher';
@@ -865,6 +866,18 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     expect(env).toMatchObject({ DATABASE_URL: admin, HARNESS_ADMIN_DATABASE_URL: admin,
       HARNESS_DATABASE_URL: app, PAPERCUSP_DATABASE_URL: admin,
       PAPERCUSP_INTEGRATION_ROOT: f.source.sourceRoot });
+  });
+
+  it.each([undefined, '0'])('selects the utility role independently of parent role %s', async parentRole => {
+    vi.stubEnv('PAPERCUSP_UTILITY_HOST', parentRole);
+    const f = fixture();
+    await ensureGradingAuditRuntime(f.input, f.deps);
+
+    const env = gradingAuditRuntimeChildEnv(f.rows[0].detail.gradingAuditRuntime as GradingAuditRuntimeLocator);
+
+    expect(utilityHostEnabled(env)).toBe(true);
+    expect(env.PAPERCUSP_BACKGROUND_WORKERS).toBe('0');
+    expect(process.env.PAPERCUSP_UTILITY_HOST).toBe(parentRole);
   });
 
   it('does not inherit a retired parent sidecar owner when launching an exact evaluator', async () => {

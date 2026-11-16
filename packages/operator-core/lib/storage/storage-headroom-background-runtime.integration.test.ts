@@ -17,7 +17,8 @@ const sources = [
   'packages/operator-core/lib/storage/storage-growth-alarm.ts',
   'packages/operator-core/lib/dbos/routine-tick-overlap-guard.ts',
 ];
-const selected = ['reports each consumer’s 24h growth', 'admits the oldest census pass'];
+const selected = ['reports each consumer’s 24h growth', 'admits the oldest census pass',
+  'verifies native alarm decisions', 'proves labelled delivery'];
 const options = isolatedTestFileWorkerOptions(process.env, 1);
 
 it('fires the saved-census alarm and sheds overlapping starts in the observed private background runtime', async context => {

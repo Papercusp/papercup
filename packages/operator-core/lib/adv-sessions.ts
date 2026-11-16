@@ -134,6 +134,8 @@ export interface AdvSessionRow {
    *  endedAt IS NULL`; once set the row drops out of the pending roster tier. */
   launchedAt: string | null;
   startedAt: string;
+  /** Exact PostgreSQL incarnation timestamp, selected by getAdvSession for terminal CAS guards. */
+  startedAtExact?: string;
   /**
    * When this session was last DOING something — set only by the queries that compute it
    * ({@link listResumableSessions}); every other query leaves it undefined.
@@ -311,6 +313,7 @@ export function mapAdvSessionRow(r: {
   launch_argv?: string[] | null;
   launched_at?: string | Date | null;
   started_at: string | Date;
+  started_at_exact?: string;
   /** Optional — only {@link listResumableSessions} computes it; every other SELECT omits it
    *  and it maps to undefined rather than being faked from `started_at`. */
   last_active_at?: string | Date | null;
@@ -351,6 +354,7 @@ export function mapAdvSessionRow(r: {
     launchedAt: toIsoTimestamp(r.launched_at ?? null),
     label: r.label,
     startedAt: toIsoTimestamp(r.started_at)!,
+    ...(r.started_at_exact === undefined ? {} : { startedAtExact: r.started_at_exact }),
     // Only present on queries that compute it; `undefined` (not startedAt) so a caller
     // can tell "this query did not measure activity" from "it measured, and it is old".
     ...(r.last_active_at === undefined ? {} : { lastActiveAt: toIsoTimestamp(r.last_active_at) }),
@@ -3014,6 +3018,7 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
           coord_owner_id: string | null;
           session_id: string | null;
           started_at: string | Date;
+          started_at_exact?: string;
           ended_at: string | Date | null;
           exit_code: number | null;
           port_id?: string | null;
@@ -3029,7 +3034,8 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
              -- sessions recover the harness scope persisted at launch time.
              to_jsonb(a)->'launch_spec'->>'harnessSlug' AS harness_slug,
              plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason,
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at,
+             started_at::text AS started_at_exact, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason,
              to_jsonb(a)->'launch_argv' AS launch_argv,
              to_jsonb(a)->>'port_id' AS port_id,
              to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,

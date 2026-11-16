@@ -42,12 +42,17 @@ function body(result: unknown): any {
   return JSON.parse(value.content[0].text);
 }
 
-async function policy(maxAgeMs: number) {
+async function policy(maxAgeMs: number, includeErrorProbe = false) {
+  const criterion = (key: string, sql: string) => ({
+    key, title: key, model: `Measure ${key}.`, method: `Run ${key}.`, driftMarkers: `A failed ${key} check.`,
+    check: { kind: 'probe', maxAgeMs, probe: { kind: 'sql', sql,
+      schemaRevision: continuityProbeRevision(SQL_PROBE_TOOL)!, expect: { path: '$.rows[0].value', op: 'eq', value: 1 } } },
+  });
   await proposeRubric({ rubricId: REF, title: 'Private cadence policy', characteristic: 'cadence',
-    status: 'active', by: 'su-fixture', criteria: [{ key: 'health', title: 'Health',
-      model: 'A current private database reading.', method: 'Read one private row.', driftMarkers: 'Expired evidence.',
-      check: { kind: 'probe', maxAgeMs, probe: { kind: 'sql', sql: 'SELECT 1 AS value',
-        schemaRevision: continuityProbeRevision(SQL_PROBE_TOOL)!, expect: { path: '$.rows[0].value', op: 'eq', value: 1 } } } }] });
+    status: 'active', by: 'su-fixture', criteria: [
+      criterion('health', 'SELECT 1 AS value'),
+      ...(includeErrorProbe ? [criterion('unavailable', 'SELECT 1 / 0 AS value')] : []),
+    ] });
 }
 
 it('grading schedule set arm and fire revalidate current persisted policy', async () => {
@@ -85,5 +90,45 @@ it('grading schedule set arm and fire revalidate current persisted policy', asyn
     expect(await h.sql`SELECT id FROM harness_shared.test_runs`).toEqual(before);
     expect((await h.sql`SELECT schedule FROM harness_shared.harness_plans WHERE workspace_id=${WS} AND plan_slug=${SLUG}`)[0]?.schedule)
       .toEqual(schedule);
+
+    // One complete system-action cycle: persist both the passing probe and a real SQL error,
+    // then publish a full ledger-filled card whose failed check stays explicitly unknown.
+    await policy(60_050, true);
+    const scheduledInput = (routine.payload_template as { input: Record<string, unknown> }).input;
+    const dispatchTool = async (name: string, args: Record<string, unknown>) => {
+      if (name !== SQL_PROBE_TOOL || typeof args.sql !== 'string') {
+        throw new Error(`Unexpected rubric probe dispatch: ${name}`);
+      }
+      return { data: { rows: await h.sql.unsafe(args.sql) } };
+    };
+    const fired = await runRubricRescoreAction({ workspaceId: WS,
+      triggerConfig: routine.trigger_config, payloadTemplate: { input: scheduledInput } } as never, { dispatchTool });
+    expect(fired.softError).toContain('1 of 2 probe criteria unjudged');
+    const scorecard = (fired.diagnostics as { rubricRescore: { scorecardPublication: { status: string; issueId?: string } } })
+      .rubricRescore.scorecardPublication;
+    expect(scorecard).toMatchObject({ status: 'created', issueId: expect.any(String) });
+
+    const cardRows = await h.sql`SELECT payload FROM harness_shared.work_items
+      WHERE workspace_id=${WS} AND feature_id=${scorecard.issueId}`;
+    expect(cardRows).toHaveLength(1);
+    const payload = cardRows[0]!.payload as Record<string, any>;
+    const observation = payload.observation as { ledgerFilled?: boolean; ratings: Record<string, Record<string, any>> };
+    expect(payload._ei?.created_by).toBe('system:rubric-rescore');
+    expect(observation.ledgerFilled).toBe(true);
+    expect(Object.keys(observation.ratings).sort()).toEqual(['health', 'unavailable']);
+    expect(observation.ratings.health).toMatchObject({ rating: 'healthy', ratedFrom: 'ledger' });
+    expect(observation.ratings.unavailable).toMatchObject({ rating: 'unknown', ratedFrom: 'ledger', evidenceKind: 'test-run' });
+    expect(observation.ratings.unavailable.evidenceRef)
+      .toBe(`test_runs:${observation.ratings.unavailable.ledgerResult.testRunId}`);
+
+    const checkRows = await h.sql`SELECT execution_details->'check'->>'criterionKey' AS criterion_key, status
+      FROM harness_shared.test_runs
+      WHERE workspace_id=${WS} AND framework='rubric-check'
+        AND execution_details->'check'->>'rubricRef'=${REF}`;
+    expect(checkRows).toHaveLength(2);
+    expect(checkRows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ criterion_key: 'health', status: 'pass' }),
+      expect.objectContaining({ criterion_key: 'unavailable', status: 'error' }),
+    ]));
   });
 });

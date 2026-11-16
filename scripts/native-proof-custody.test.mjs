@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,7 +11,7 @@ import { after, test } from 'node:test';
 // scheduler transitively imports TypeScript, so use the normal install guard.
 const subjectUrl = new URL('./lib/budgeted-task-scheduler.mjs', import.meta.url).href;
 const { retainNativeProofPacket, retainNativeProofPacketAsync, verifyNativeProofPacket, preflightNativeProofCustody,
-  createNativeArtifactPersister } = await import(subjectUrl);
+  createNativeArtifactPersister, readNativeProofInventoryPage } = await import(subjectUrl);
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const root = mkdtempSync(join(tmpdir(), 'native-custody-capsules-'));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -102,6 +102,185 @@ test('reads historical flat overflow as partial without promoting or rejecting i
   assert.equal(verifyNativeProofPacket(directory, { ...saved.locator, manifest: manifestPin, inventoryHash }, contract).status, 'partial');
 });
 
+
+function inventoryFixture(count, permutation = 'forward') {
+  const producer = join(root, 'inventory-' + count + '-' + permutation);
+  mkdirSync(producer);
+  const out = join(producer, 'out.json');
+  mkdirSync(out + '.modules'); mkdirSync(out + '.native-processes');
+  writeFileSync(out, JSON.stringify({ rows: [], diagnostics: [], nativeRun: { files: [] } }));
+  const names = Array.from({ length: count - 1 }, (_, index) => 'event-' + String(index).padStart(8, '0') + '.json');
+  names.push('zz-decisive-shell.json');
+  const order = permutation === 'reverse' ? [...names].reverse() :
+    permutation === 'interleaved' ? names.filter((_, i) => i % 2).concat(names.filter((_, i) => !(i % 2))) : names;
+  const contents = new Map(names.map((name, index) => [name, Buffer.from(JSON.stringify({
+    index, event: index === count - 1 ? 'shell-spawn-start' : 'ordinary', argv: ['exact', '☃', String(index)],
+  }))]));
+  for (const name of order) writeFileSync(join(out + '.native-processes', name), contents.get(name));
+  const expected = [{ id: 'inventory', attempt: 'primary', selected: ['fixture.test.ts'], runner: 'vitest', armed: true,
+    processSources: { preload: '0', workspace: null, root: null }, out, auxiliary: [] }];
+  return { producer, out, names, contents, contract: {
+    identity: { workspace: 'fixture', harness: 'papercusp', runId: 'inventory-' + count + '-' + permutation }, expected,
+  }, input: { identity: { workspace: 'fixture', harness: 'papercusp', runId: 'inventory-' + count + '-' + permutation },
+    expected, observations: [{ id: 'inventory', out }] } };
+}
+function consumeInventory(archive, result, fixture) {
+  const family = result.manifest.groups[0].families.find(row => row.family === 'C');
+  const seen = [], digest = createHash('sha256');
+  let cursor = null;
+  for (const entry of family.entries) {
+    const page = readNativeProofInventoryPage(archive, entry.artifact);
+    assert.equal(page.after, cursor);
+    assert.equal(page.total, fixture.names.length);
+    assert.ok(page.records.length <= result.manifest.limits.families.C.objects);
+    assert.ok(entry.artifact.byteLength + 1 <= result.manifest.limits.families.C.bytes);
+    for (const record of page.records) {
+      const name = record.original.slice((fixture.out + '.native-processes/').length);
+      assert.equal(record.original, join(fixture.out + '.native-processes', name));
+      assert.deepEqual(record.bytes, fixture.contents.get(name));
+      seen.push(name); digest.update(name); digest.update(record.bytes);
+    }
+    assert.equal(page.omittedCount, fixture.names.length - seen.length);
+    cursor = page.nextCursor;
+  }
+  assert.deepEqual(seen, fixture.names);
+  assert.equal(cursor, null);
+  assert.equal(family.inventory.total, fixture.names.length);
+  assert.equal(family.inventory.completed, fixture.names.length);
+  assert.equal(family.inventory.omittedCount, 0);
+  assert.equal(family.inventory.nextCursor, null);
+  assert.equal(JSON.parse(fixture.contents.get(seen.at(-1))).event, 'shell-spawn-start');
+  return digest.digest('hex');
+}
+
+test('retains identical inventory accounting and locator when completed pages resume', () => {
+  const fixture = inventoryFixture(2051, 'idempotent'), archive = join(root, 'packet-idempotent');
+  const first = retainNativeProofPacket(archive, fixture.input);
+  const resumed = retainNativeProofPacket(archive, fixture.input);
+  assert.equal(first.status, 'complete');
+  assert.deepEqual(resumed.locator, first.locator);
+  assert.deepEqual(resumed.manifest.bytesReadByFamily, first.manifest.bytesReadByFamily);
+  assert.deepEqual(resumed.manifest.segments, first.manifest.segments);
+  rmSync(fixture.producer, { recursive: true });
+  assert.equal(verifyNativeProofPacket(archive, resumed.locator, fixture.contract).status, 'complete');
+  consumeInventory(archive, resumed, fixture);
+});
+
+for (const count of [2047, 2048, 2049]) for (const permutation of ['forward', 'reverse', 'interleaved']) {
+  test('native inventory boundary ' + count + ' creation order ' + permutation, () => {
+    const fixture = inventoryFixture(count, permutation), archive = join(root, 'packet-' + count + '-' + permutation);
+    const result = retainNativeProofPacket(archive, fixture.input);
+    assert.equal(result.status, 'complete', JSON.stringify(result.manifest.gaps));
+    assert.equal(result.manifest.schemaVersion, 'native-proof-custody-v4');
+    assert.equal(result.manifest.limits.families.C.objects, 2048);
+    assert.equal(result.manifest.limits.objects, 16384);
+    rmSync(fixture.producer, { recursive: true });
+    assert.equal(verifyNativeProofPacket(archive, result.locator, fixture.contract).status, 'complete');
+    consumeInventory(archive, result, fixture);
+  });
+}
+
+test('recovers a missing report only from the same run and contract, preserving predecessor bytes', () => {
+  const fixture = inventoryFixture(2050, 'retained-report'), original = join(root, 'retained-report-original');
+  const report = join(fixture.producer, 'report.json'), reportBytes = Buffer.from('{"tests":235,"passed":235,"skipped":0}');
+  writeFileSync(report, reportBytes);
+  fixture.contract.expected[0].auxiliary.push({ role: 'report', state: 'produced', path: report });
+  const saved = retainNativeProofPacket(original, fixture.input);
+  assert.equal(saved.status, 'complete');
+  const oldPin = saved.manifest.groups[0].auxiliary[0].artifact;
+  const originalBytes = readFileSync(join(original, 'objects', oldPin.ref));
+  rmSync(report);
+  const retainedAuxiliary = { directory: original, locator: saved.locator };
+  assert.throws(() => retainNativeProofPacket(join(root, 'foreign-report-contract'), {
+    ...fixture.input, identity: { ...fixture.input.identity, runId: 'different' },
+    predecessor: saved.locator, retainedAuxiliary,
+  }), /custody identity or expected population mismatch/);
+  assert.throws(() => retainNativeProofPacket(join(root, 'unbound-report-predecessor'), {
+    ...fixture.input, retainedAuxiliary,
+  }), /custody predecessor recovery binding/);
+  const archive = join(root, 'retained-report-recovered');
+  const result = retainNativeProofPacket(archive, { ...fixture.input, predecessor: saved.locator, retainedAuxiliary });
+  assert.equal(result.status, 'complete', JSON.stringify(result.manifest.gaps));
+  assert.deepEqual(result.manifest.predecessor, saved.locator);
+  assert.equal(result.manifest.groups[0].auxiliary[0].artifact.sha256, oldPin.sha256);
+  assert.deepEqual(readFileSync(join(archive, 'objects', oldPin.ref)), reportBytes);
+  assert.deepEqual(readFileSync(join(original, 'objects', oldPin.ref)), originalBytes);
+  rmSync(fixture.producer, { recursive: true });
+  assert.equal(verifyNativeProofPacket(archive, result.locator, fixture.contract).status, 'complete');
+  consumeInventory(archive, result, fixture);
+});
+
+for (const count of [16383, 16384, 16385]) test('native records cross the former global boundary ' + count, () => {
+  const fixture = inventoryFixture(count), archive = join(root, 'global-packet-' + count);
+  const result = retainNativeProofPacket(archive, fixture.input);
+  assert.equal(result.status, 'complete', JSON.stringify(result.manifest.gaps));
+  assert.ok(result.manifest.objectsRead < result.manifest.limits.objects);
+  assert.equal(result.manifest.groups[0].families.find(row => row.family === 'C').entries.length, Math.ceil(count / 2048));
+  rmSync(fixture.producer, { recursive: true });
+  consumeInventory(archive, result, fixture);
+});
+
+test('durable inventory advances across four crashes and consumes late evidence from retained bytes in a fresh process', () => {
+  const fixture = inventoryFixture(2048 * 9 + 3, 'interleaved'), archive = join(root, 'restart-inventory');
+  const script = 'const {retainNativeProofPacket}=await import(process.argv[1]);' +
+    'const [archive,input]=JSON.parse(process.argv[2]);' +
+    'retainNativeProofPacket(archive,{...input,onProgress:p=>{' +
+    'if(p.phase==="inventory-page"&&!p.resumed){console.log(JSON.stringify(p));process.exit(86)}}});';
+  for (let restart = 0; restart < 4; restart++) {
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', script, subjectUrl,
+      JSON.stringify([archive, fixture.input])], { encoding: 'utf8', timeout: 60000,
+      env: { ...process.env, NODE_OPTIONS: '' } });
+    assert.equal(child.status, 86, child.stderr);
+    const progress = JSON.parse(child.stdout);
+    assert.equal(progress.completed, (restart + 1) * 2048);
+    assert.equal(progress.omittedCount, fixture.names.length - progress.completed);
+    assert.equal(progress.nextCursor, fixture.names[progress.completed - 1]);
+    const journals = readdirSync(archive).filter(name => name.endsWith('.inventory-progress.json'));
+    assert.equal(journals.length, 1);
+    const journal = JSON.parse(readFileSync(join(archive, journals[0])));
+    assert.equal(journal.pages.length, restart + 1);
+    assert.equal(readNativeProofInventoryPage(archive, journal.pages.at(-1)).nextCursor, progress.nextCursor);
+  }
+  const progress = [];
+  const result = retainNativeProofPacket(archive, { ...fixture.input, onProgress: record => progress.push(record) });
+  assert.equal(result.status, 'complete', JSON.stringify(result.manifest.gaps));
+  assert.equal(progress.filter(row => row.phase === 'inventory-page' && row.resumed).length, 4);
+  const digest = consumeInventory(archive, result, fixture);
+  rmSync(fixture.producer, { recursive: true });
+  const consumer = 'import{createHash}from"node:crypto";' +
+    'const {verifyNativeProofPacket,readNativeProofInventoryPage}=await import(process.argv[1]);' +
+    'const [archive,locator,contract]=JSON.parse(process.argv[2]);' +
+    'const result=verifyNativeProofPacket(archive,locator,contract);' +
+    'const family=result.manifest.groups[0].families.find(r=>r.family==="C");' +
+    'const digest=createHash("sha256");let count=0,last,cursor=null;' +
+    'for(const entry of family.entries){const p=readNativeProofInventoryPage(archive,entry.artifact);' +
+    'if(p.after!==cursor)throw Error("cursor");for(const r of p.records){count++;' +
+    'digest.update(r.original.slice((contract.expected[0].out+".native-processes/").length));digest.update(r.bytes);' +
+    'last=JSON.parse(r.bytes)}cursor=p.nextCursor}' +
+    'console.log(JSON.stringify({status:result.status,count,last,cursor,digest:digest.digest("hex")}));';
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', consumer, subjectUrl,
+    JSON.stringify([archive, result.locator, fixture.contract])], { encoding: 'utf8', timeout: 60000,
+    env: { ...process.env, NODE_OPTIONS: '' } });
+  assert.equal(child.status, 0, child.stderr);
+  const recovered = JSON.parse(child.stdout);
+  assert.equal(recovered.status, 'complete');
+  assert.equal(recovered.count, fixture.names.length);
+  assert.equal(recovered.cursor, null);
+  assert.equal(recovered.last.event, 'shell-spawn-start');
+  assert.equal(recovered.digest, digest);
+  for (const fault of ['missing-page', 'census', 'encoding']) {
+    const manifest = structuredClone(result.manifest), family = manifest.groups[0].families.find(row => row.family === 'C');
+    if (fault === 'missing-page') family.entries.pop();
+    if (fault === 'census') family.inventory.total--;
+    if (fault === 'encoding') manifest.schemaVersion = 'native-proof-custody-v3';
+    const manifestPin = createNativeArtifactPersister(join(archive, 'objects'))
+      .persist(Buffer.from(JSON.stringify(manifest)), 'native-proof.json');
+    const locator = { ...result.locator, manifest: manifestPin,
+      inventoryHash: hash({ groups: manifest.groups, gaps: manifest.gaps, segments: manifest.segments }) };
+    assert.throws(() => verifyNativeProofPacket(archive, locator, fixture.contract), /custody .*inventory/);
+  }
+});
+
 test('accounts 17100 archive references as nine unique objects while preserving occurrences and byte charges', () => {
   const occurrenceCount = 17100;
   const paths = Array.from({ length: 9 }, (_, index) => {
@@ -147,6 +326,7 @@ test('markerless v3 keeps occurrence-based object accounting', () => {
     observations: [{ id: 'markerless', out: null }] });
   const manifest = structuredClone(retained.manifest);
   assert.equal(manifest.objectsRead, 1);
+  manifest.schemaVersion = 'native-proof-custody-v3';
   delete manifest.archiveObjectAccounting;
   manifest.objectsRead = 2;
   manifest.objectsReadByFamily.auxiliary = 2;
@@ -284,4 +464,83 @@ for (const mode of ['fresh', 'retained']) test(`bounds interrupted ${mode}-packe
     release();
     await pending.catch(() => {});
   }
+});
+
+test('marks family B not-produced when failed setup reported no module results', () => {
+  const subject = join(root, 'precollection-no-module-results');
+  mkdirSync(subject, { recursive: true });
+  const subjectOut = join(subject, 'out.json');
+  mkdirSync(subjectOut + '.native-processes', { recursive: true });
+  writeFileSync(subjectOut, JSON.stringify({
+    nativeRun: {
+      terminalHook: 'onTestRunEnd',
+      reason: 'failed',
+      reportedModulePaths: [],
+      modulePopulationMatched: true,
+      files: [],
+      gaps: ['no-module-results'],
+    },
+  }));
+  const subjectGroup = {
+    id: 'group-no-module-results',
+    attempt: 'primary',
+    selected: ['setup.test.ts'],
+    runner: 'vitest',
+    armed: true,
+    processSources: { preload: null, workspace: null, root: null },
+    out: subjectOut,
+    auxiliary: [],
+  };
+  const identity = { workspace: 'fixture', harness: 'papercusp', runId: 'precollection-no-module-results' };
+  const packetDirectory = join(subject, 'packet');
+  const retained = retainNativeProofPacket(packetDirectory, {
+    identity,
+    expected: [subjectGroup],
+    observations: [{ id: subjectGroup.id, out: subjectOut, captureComplete: true }],
+  });
+  const group = retained.manifest.groups[0];
+  assert.equal(retained.status, 'complete');
+  assert.deepEqual(group.families.find(row => row.family === 'B'), {
+    family: 'B', state: 'not-produced', producer: subjectGroup.id, reason: 'no-module-results', entries: [],
+  });
+  assert.deepEqual(group.referenceArtifacts, []);
+  assert.deepEqual(group.referenceGaps, []);
+  assert.equal(retained.manifest.gaps.some(gap => gap.startsWith(subjectGroup.id + ':B:')), false);
+  assert.equal(verifyNativeProofPacket(packetDirectory, retained.locator, { identity, expected: [subjectGroup] }).status, 'complete');
+
+  const referencedSubject = join(root, 'precollection-with-reference');
+  mkdirSync(referencedSubject, { recursive: true });
+  const referencedOut = join(referencedSubject, 'out.json');
+  mkdirSync(referencedOut + '.native-processes', { recursive: true });
+  const referencedBytes = Buffer.from('module source referenced by A');
+  const referencedSha = createHash('sha256').update(referencedBytes).digest('hex');
+  writeFileSync(referencedOut, JSON.stringify({
+    rows: [{ moduleEvaluations: {
+      schemaVersion: 'vitest-evaluator-inputs-v1',
+      scope: 'vitest-inlined-evaluator-inputs',
+      basis: 'before-evaluator-call',
+      entries: [{ codeRef: join(referencedOut + '.modules', referencedSha + '.js'),
+        sha256: referencedSha, byteLength: referencedBytes.length }],
+      vmInputs: [],
+    } }],
+    nativeRun: {
+      terminalHook: 'onTestRunEnd',
+      reason: 'failed',
+      reportedModulePaths: [],
+      modulePopulationMatched: true,
+      files: [],
+      gaps: ['no-module-results'],
+    },
+  }));
+  const referencedGroup = { ...subjectGroup, id: 'group-no-module-results-with-reference', out: referencedOut };
+  const referencedIdentity = { ...identity, runId: 'precollection-with-reference' };
+  const referencedPacket = retainNativeProofPacket(join(referencedSubject, 'packet'), {
+    identity: referencedIdentity,
+    expected: [referencedGroup],
+    observations: [{ id: referencedGroup.id, out: referencedOut, captureComplete: true }],
+  });
+  const referencedFamily = referencedPacket.manifest.groups[0].families.find(row => row.family === 'B');
+  assert.equal(referencedFamily.state, 'unavailable');
+  assert.equal(referencedFamily.reason, 'ENOENT');
+  assert.ok(referencedPacket.manifest.gaps.includes(referencedGroup.id + ':B:ENOENT'));
 });

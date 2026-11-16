@@ -1565,7 +1565,10 @@ export default defineTool({
     );
     agents = agentPopulation.rows;
     const schedulerClaimStates = await trackPhase(ctx.phases, 'assignments:schedulerClaims', () => schedulerClaimStatePromise);
+    // A failed roster becomes an empty fallback, not a measured population.
+    // The empty claim map cannot certify zero claims without that prerequisite.
     const schedulerClaimStateComplete =
+      !degradedLegs.has('assignments') &&
       schedulerClaimStates !== null && agents.every((agent) => schedulerClaimStates.has(agent.agentId));
     agents = projectSchedulerClaimState(agents, schedulerClaimStates);
     // EI-18698865231464142: `orphaned`/`stalled` below read straight off `rows`,

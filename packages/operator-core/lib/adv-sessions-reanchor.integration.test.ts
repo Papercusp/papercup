@@ -27,6 +27,7 @@ import {
   adoptStartingTerminalLaunch,
   classifyOwnerNativeSession,
   claimAdvSessionResume,
+  getAdvSession,
   getAdvSessionInWorkspace,
   finalizeAdvSessionResume,
   latestAdvSessionByCoordOwner,
@@ -41,6 +42,8 @@ import {
   type AdvSessionExpectedBinding,
 } from './adv-sessions';
 import { activeWorkspaceId } from './workspace-registry';
+import { runWithWorkspace } from './workspace-als';
+import { quarantineRepeatedClaudeToolReferenceFailures } from './events/await/poisoned-resume-session';
 import { resolveSessionRef } from './compaction-usage';
 import { refreshControlAnchorAfterMutation, requestSessionIdentityActivation } from './agent-tools/coordination/control-anchor';
 import { acknowledgeActivation, normalizeSessionActivation, prepareActivation } from './session-activation';
@@ -1495,6 +1498,41 @@ describe('successor lifecycle compare-and-swap (EI-22446987530949437, real PG)',
     expect(row.ended_at).not.toBeNull();
     expect(row.ended_by).toBe('reconciler');
     expect(row.exit_code).toBeNull();
+  });
+
+  it.each([false, true])('WI-6554700010049967: quarantine uses the captured microsecond binding (resumed=%s)', async (resumed) => {
+    const { id, binding } = await predecessor();
+    const root = mkdtempSync(join(tmpdir(), 'quarantine-binding-pg-'));
+    try {
+      const transcriptPath = join(root, 'claude.jsonl');
+      const failure = JSON.stringify({ type: 'assistant', error: 'unknown', isApiErrorMessage: true,
+        apiErrorStatus: 400, message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text',
+          text: "API Error: 400 Tool reference 'mcp__papercusp-su__plans_audit' not found in available tools" }] } });
+      writeFileSync(transcriptPath, [failure, failure, failure].join('\n'));
+      const result = await runWithWorkspace(WS, async () => {
+        const captured = await getAdvSession(id);
+        expect(captured?.startedAtExact).toBe(binding.startedAt);
+        expect(captured?.startedAtExact).toContain('.123456');
+        return quarantineRepeatedClaudeToolReferenceFailures({
+          advSessionId: id, ownerId: OWNER, sessionId: DEAD_ID, workspaceId: WS, agent: 'claude',
+          startedAt: captured!.startedAt, startedAtExact: captured!.startedAtExact, transcriptPath,
+        }, failure, {
+          now: () => new Date('2026-09-05T18:05:00.000Z'),
+          markBrief: async () => {
+            // A reactivation within the same display millisecond must be fenced.
+            if (resumed) await admin`UPDATE harness_shared.adv_sessions
+              SET started_at = '2026-09-05 18:00:00.123457+00'::timestamptz WHERE id = ${id}`;
+            return true;
+          },
+        });
+      });
+      expect(result).toMatchObject({ poisoned: true, ended: !resumed });
+      const [row] = await admin`SELECT ended_at FROM harness_shared.adv_sessions WHERE id = ${id}`;
+      if (resumed) expect(row.ended_at).toBeNull();
+      else expect(row.ended_at).not.toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it.each(['owner', 'native', 'started'])('refuses when %s changes after the predecessor was observed', async (field) => {

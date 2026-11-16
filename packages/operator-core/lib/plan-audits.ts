@@ -2930,13 +2930,16 @@ const discoveryAdmissionState = pinModuleState('@papercusp/operator-core.plan-au
  * The plan writer uses this same advisory lock. Evidence is measured twice
  * before the caller may reserve an accepting effect on this transaction. */
 async function currentDiscoveryInTransaction(input: CurrentDiscoveryInput, executor: AuditSql, effects?: DiscoveryEffects) {
-  const { sql } = getOrgPg();
   const context: DiscoveryEffects['context'] = effects?.context ?? (async (content, previous, prior, historicalTargets) => {
     const { resolveDiscoveryAuditContext } = await import('./agent-tools/plans/plan-declaration-resolvers');
     const citation = await repoCitationContextForHarness(input.harnessSlug);
     const admitted = citation && !isCitationContextFailure(citation) ? citation : null;
     return resolveDiscoveryAuditContext(content, previous, { repoRoot: admitted?.repoRoot ?? null,
-      citationDeps: admitted?.deps, workspaceId: input.workspaceId, sql,
+      // Evidence reads share the subject transaction; acquiring from its base
+      // pool here can wait for the connection this admission already holds.
+      // AuditSql erases client helpers; the held PostgreSQL transaction retains them.
+      citationDeps: admitted?.deps, workspaceId: input.workspaceId,
+      sql: executor as unknown as Parameters<typeof resolveDiscoveryAuditContext>[2]['sql'],
       harnessSlug: input.harnessSlug, ownerId: input.createdBy, planSlug: input.planSlug, prior, historicalTargets });
   });
     const [lock] = await executor<Array<{ ok: boolean }>>`SELECT pg_try_advisory_xact_lock(

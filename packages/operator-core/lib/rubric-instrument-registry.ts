@@ -928,11 +928,12 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
         windowMs: 90 * 60_000, unit: 'count' as const, scope: 'harness' as const,
         resolve: async window => {
           if (!window.harnessSlug?.trim()) return { verdict: 'unknown' as const, detail: 'Canonical harness required.' };
-          const [{ getOrgPg }, { hostname }, { getBuildInfo }, { measureNativeDiskHeadroomAlarm }] = await Promise.all([
+          const [{ getOrgPg }, { hostname }, { getBuildInfo }, { measureNativeDiskHeadroomAlarm, diskHeadroomAlarmRuntimeIdentity }] = await Promise.all([
             import('@papercusp/db-org'), import('node:os'), import('./build-info'), import('./storage/storage-growth-alarm'),
           ]);
           return measureNativeDiskHeadroomAlarm(getOrgPg().sql, { workspaceId: window.workspaceId,
-            host: hostname(), buildSha: getBuildInfo().sha, windowStart: window.windowStart, windowEnd: window.windowEnd });
+            host: hostname(), buildSha: getBuildInfo().sha, runtime: diskHeadroomAlarmRuntimeIdentity(),
+            windowStart: window.windowStart, windowEnd: window.windowEnd });
         },
       } } : coldEvidence ? { rescore: {
         windowMs: 72 * 60 * 60_000,

@@ -89,6 +89,8 @@ import { parseTestRunExecutionDetails, TEST_RUN_READER_CONTRACT_ENV, TEST_RUN_RE
   testRunExecutionDetailsReaderContract, testRunExecutionDetailsReaderMismatch } from '@papercusp/test-config/execution-details';
 import { resolveTestRunsPgUrl } from '@papercusp/test-config/admin-test-runs-reporter';
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
+import { flagEnvVarName } from '@papercusp/flags';
+import { judgeDeclaredConfiguration, parseProductionConfiguration, type ProductionConfiguration } from '../plans/declared-configuration';
 import { cleanupOwnedTestDatabases, type OwnedTestDbCleanupResult } from '@papercusp/test-config/owned-test-db-cleanup';
 import { dropDatabaseOnDedicatedConnection } from '@papercusp/test-config/test-db-drop';
 import { redactSensitiveText } from '../../sensitive-text';
@@ -4055,6 +4057,8 @@ export interface RunTestFilesCoreOptions {
   root: string;
   /** Internal criterion context; selects execution modes, never supplies a verdict. */
   criterionCases?: Array<{ file: string; testName: string }>;
+  /** Internal rubric declaration; runner-owned identity and routing still take precedence. */
+  productionConfiguration?: ProductionConfiguration;
   timeoutMs?: number;
   /** Absolute cutoff shared by recursive groups; never refreshed after admission. */
   taskDeadlineAtMs?: number;
@@ -4117,6 +4121,12 @@ function shouldUsePrivatePg(opts: Pick<RunTestFilesCoreOptions, 'files' | 'root'
 }
 
 export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: TestFilesCoreDeps = {}): Promise<TestFilesCoreResult> {
+  try {
+    opts = { ...opts, productionConfiguration: parseProductionConfiguration(opts.productionConfiguration) ?? undefined };
+  } catch (cause) {
+    return { ok: false, runId: opts.runId ?? randomUUID(), root: resolve(opts.root), error: 'route_error',
+      hint: `invalid declared production configuration: ${cause instanceof Error ? cause.message : String(cause)}` };
+  }
   // An older serving parent can import this newer core for detached recovery.
   // Its missing reader envelope must not be replaced by the child's own newer
   // contract: that would measure assertions the actual parent cannot consume.
@@ -4407,6 +4417,9 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
 
     const childEnv: NodeJS.ProcessEnv = {
       ...process.env,
+      ...opts.productionConfiguration?.env,
+      ...Object.fromEntries(Object.entries(opts.productionConfiguration?.flags ?? {})
+        .map(([key, value]) => [flagEnvVarName(key), value ? '1' : '0'])),
       // Clear inherited context for ordinary runs. The reporter must still prove
       // each requested identity passed; this context grants no evidence authority.
       PAPERCUSP_CRITERION_TEST_CASES: JSON.stringify(opts.criterionCases ?? []),
@@ -4452,11 +4465,6 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
       }
       Object.assign(childEnv, privatePgSeedEnvironment(process.env));
     }
-    packet.write('configuration.json', captureConfigurationSnapshot(childEnv));
-    packet.stage('router-start', { deadline });
-    // Packet writes are queued off the host main thread (WI-6554700010048955); the
-    // source pins, configuration snapshot and phases must be on disk before the child starts.
-    await packet.flush();
     // `testing:run` can itself be invoked from the repository's pc-heavy
     // wrapper. That wrapper exports a one-shot readiness/finalization marker
     // for its direct child; forwarding those exact paths into this nested
@@ -4471,6 +4479,20 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
       // replaces product/test database discovery with its disposable cluster.
       childEnv.PAPERCUSP_TEST_RUNS_DB_URL = resolveTestRunsPgUrl(childEnv);
     }
+    // Capture the environment after EVERY normalization, including inherited barrier
+    // scrubbing and the private-PG reporter destination. This is the map passed below.
+    const configurationSnapshot = captureConfigurationSnapshot(childEnv);
+    packet.write('configuration.json', configurationSnapshot);
+    if (opts.productionConfiguration) {
+      const verdict = judgeDeclaredConfiguration(opts.productionConfiguration, configurationSnapshot);
+      if (!verdict.ok) {
+        await packet.flush();
+        return { ok: false, runId, root, error: 'route_error', hint: verdict.message };
+      }
+    }
+    packet.stage('router-start', { deadline });
+    // Source pins and the final configuration must be durable before the child starts.
+    await packet.flush();
     let directReportPaths: string[] | null = null;
     let outcome: RouterOutcome;
     if (Date.now() >= deadline.childCutoffAtMs) return { ok: false, runId, root, error: 'deadline_exhausted', timeoutMs,

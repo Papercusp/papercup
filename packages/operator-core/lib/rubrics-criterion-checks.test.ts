@@ -42,6 +42,9 @@ import { SQL_PROBE_TOOL, continuityProbeRevision } from './continuity-probes';
 import { RUBRIC_PROBE_MAX_PER_EMIT } from './agent-tools/limits';
 import './agent-tools/dev/pg_query';
 import { asStructuredObservation } from './harness/improvements/observation-types';
+import { FLAGS, FLAG_DEFAULTS, flagEnvVarName } from '@papercusp/flags';
+import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
+import type { HarnessTestRunEvidence } from './testing-run-store';
 import { probeCheckResults } from './check-results-ledger';
 // The ROUTER's own admission predicate, imported so WI-369566's restated pattern is
 // pinned to it. A test may import this plain-Node CLI freely; the validator may not
@@ -1045,6 +1048,100 @@ const passRun = (files: string[]) => {
     byFile,
   };
 };
+
+describe('criterion production configuration', () => {
+  const file = 'packages/x/real.test.ts';
+  const flag = FLAGS.VIDEO_CHANNELS;
+  const required = !FLAG_DEFAULTS[flag];
+  const declared = { flags: { [flag]: required }, env: { PAPERCUSP_SEARCH_MODE: 'hybrid' } };
+  const snapshot = captureConfigurationSnapshot({ [flagEnvVarName(flag)]: required ? '1' : '0',
+    PAPERCUSP_SEARCH_MODE: 'hybrid' });
+  const row = (changes: Partial<HarnessTestRunEvidence> = {}): HarnessTestRunEvidence => ({
+    id: 77, framework: 'vitest', file_path: file, status: 'pass', finished_at: '2026-11-16T00:00:00.000Z',
+    workspace_id: 'config-workspace', harness_slug: 'config-harness', run_group_id: 'run-1',
+    commit_sha: null, worktree_dirty: true, configuration_snapshot: snapshot, ...changes,
+  });
+  const evaluate = (overrides: Partial<Parameters<typeof evaluateCriterionTestChecks>[0]> = {}) =>
+    evaluateCriterionTestChecks({ criteria: [{ key: 'configured', productionConfiguration: declared,
+      check: { kind: 'tests', files: [file] } }], ratings: { configured: { rating: 'healthy' } }, root,
+    workspaceId: 'config-workspace', harnessSlug: 'config-harness',
+    runner: async ({ files }) => ({ ...passRun(files), testRunIds: [77] }),
+    readRunEvidence: async () => [row()], ...overrides });
+
+  it('forwards the declaration to the maintained runner and verifies the exact retained snapshot', async () => {
+    const runner = vi.fn<CriterionCheckRunner>(async ({ files }) => ({ ...passRun(files), testRunIds: [77] }));
+    const read = vi.fn<NonNullable<Parameters<typeof evaluateCriterionTestChecks>[0]['readRunEvidence']>>(
+      async () => [row()]);
+    expect((await evaluate({ runner, readRunEvidence: read })).ok).toBe(true);
+    expect(runner).toHaveBeenCalledWith(expect.objectContaining({ productionConfiguration: declared }));
+    expect(read).toHaveBeenCalledWith({ workspaceId: 'config-workspace', harnessSlug: 'config-harness',
+      runGroupId: 'run-1', testRunIds: [77] });
+    const runFiles = vi.fn(async ({ files }: { files: string[] }) => passRun(files));
+    await runCriterionCheckFiles(runner.mock.calls[0]![0], { runFiles });
+    expect(runFiles).toHaveBeenCalledWith(expect.objectContaining({ productionConfiguration: declared,
+      allowDetachedRecovery: false }));
+  });
+
+  it('merges compatible rated declarations and excludes an unrated conflicting criterion', async () => {
+    const runner = vi.fn<CriterionCheckRunner>(async ({ files }) => ({ ...passRun(files), testRunIds: [77] }));
+    const check = { kind: 'tests' as const, files: [file] };
+    const result = await evaluate({ runner, criteria: [
+      { key: 'configured', check, productionConfiguration: { flags: declared.flags } },
+      { key: 'second', check, productionConfiguration: { env: declared.env } },
+      { key: 'unrated', check, productionConfiguration: { flags: { [flag]: !required } } },
+    ], ratings: { configured: { rating: 'healthy' }, second: { rating: 'healthy' } } });
+    expect(result.ok).toBe(true);
+    expect(runner.mock.calls[0]![0].productionConfiguration).toEqual(declared);
+  });
+
+  it.each(['flags', 'env'] as const)('refuses contradictory %s declarations before launching any child', async map => {
+    const runner = vi.fn<CriterionCheckRunner>();
+    const result = await evaluate({ runner, criteria: [
+      { key: 'configured', check: { kind: 'tests', files: [file] }, productionConfiguration: declared },
+      { key: 'second', check: { kind: 'tests', files: [file] }, productionConfiguration:
+        map === 'flags' ? { flags: { [flag]: !required } } : { env: { PAPERCUSP_SEARCH_MODE: 'other' } } },
+    ], ratings: { configured: { rating: 'healthy' }, second: { rating: 'healthy' } } });
+    expect(result).toMatchObject({ ok: false, error: 'check_run_failed', criterionKey: 'second' });
+    expect(runner).not.toHaveBeenCalled();
+  });
+
+  it('refuses a configuration-sensitive run without concrete ledger scope before launch', async () => {
+    const runner = vi.fn<CriterionCheckRunner>();
+    expect(await evaluate({ runner, workspaceId: '*' })).toMatchObject({ ok: false, error: 'check_run_failed' });
+    expect(runner).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['absent snapshot', { configuration_snapshot: null }],
+    ['forged snapshot', { configuration_snapshot: { ...snapshot, fingerprint: 'forged' } }],
+    ['wrong environment', { configuration_snapshot: captureConfigurationSnapshot({
+      [flagEnvVarName(flag)]: required ? '1' : '0', PAPERCUSP_SEARCH_MODE: 'other' }) }],
+    ['wrong flag', { configuration_snapshot: captureConfigurationSnapshot({
+      [flagEnvVarName(flag)]: required ? '0' : '1', PAPERCUSP_SEARCH_MODE: 'hybrid' }) }],
+    ['wrong run identity', { id: 78 }],
+    ['wrong group', { run_group_id: 'unrelated' }],
+    ['wrong workspace', { workspace_id: 'unrelated' }],
+    ['wrong harness', { harness_slug: 'unrelated' }],
+    ['wrong file', { file_path: 'unrelated.test.ts' }],
+    ['unfinished row', { finished_at: null }],
+  ] as const)('refuses green aggregate counts with %s canonical evidence', async (_label, changes) => {
+    const result = await evaluate({ readRunEvidence: async () => [row(changes)] });
+    expect(result).toMatchObject({ ok: false, error: 'check_run_failed' });
+  });
+
+  it.each(['missing', 'duplicate', 'unreadable'] as const)('refuses %s canonical rows', async mode => {
+    const result = await evaluate({ readRunEvidence: async () => {
+      if (mode === 'unreadable') throw new Error('ledger unavailable');
+      return mode === 'missing' ? [] : [row(), row()];
+    } });
+    expect(result).toMatchObject({ ok: false, error: 'check_run_failed' });
+  });
+
+  it('refuses a green runner without retained run identities', async () => {
+    expect(await evaluate({ runner: async ({ files }) => passRun(files) })).toMatchObject({
+      ok: false, error: 'check_run_failed' });
+  });
+});
 const failRun = (files: string[]) => {
   // Only the FIRST file is red — which is also what makes this a meaningful batched
   // fixture: a criterion naming a later file must NOT inherit this failure.

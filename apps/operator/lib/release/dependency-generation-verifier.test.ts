@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, closeSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync,
-  readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+  readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -492,6 +492,49 @@ describe('bounded independent verifier copy', () => {
 });
 
 describe('D012 native generation closure', () => {
+  it('upgrades a donor missing the desktop install without replacing its ordinary selector', async () => {
+    const workspace = 'packages/omp-plugin';
+    const f = fixture(workspace, true);
+    const desktopModules = join(f.donor, 'papercusp-desktop/node_modules');
+    const savedDesktop = join(f.root, 'desktop-dependencies');
+    renameSync(desktopModules, savedDesktop);
+    let previous: string;
+    try { previous = f.publish(); }
+    finally { renameSync(savedDesktop, desktopModules); }
+    expect(existsSync(join(previous!, 'tree/papercusp-desktop/node_modules'))).toBe(false);
+    const ref = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.donor, encoding: 'utf8' }).trim();
+    const baseline = f.shell(f.generationScript, ['--integration', f.donor, '--generation-root', f.store,
+      '--ensure-ref', ref, '--retain-as', 'ordinary-without-desktop-test']);
+    expect(baseline.status, baseline.stderr).toBe(0);
+    const input = f.shell(f.generationScript, ['--integration', f.donor, '--fingerprint-ref', ref])
+      .stdout.match(/\binput=([a-f0-9]{64})/)![1]!;
+    const ordinarySelector = join(f.store, '.inputs', input);
+    const originalSelector = readFileSync(ordinarySelector, 'utf8');
+    const originalClosure = readFileSync(join(previous!, '.verifier-closure.json'), 'utf8');
+    write(f.donor, 'node_modules/pkg/index.js', 'mutable live dependency');
+    const archive = join(f.root, 'missing-desktop-source'), pin = join(f.root, 'missing-desktop.json');
+    const receipt = await prepareVerifierSource({ repo: f.donor, ref, dest: archive,
+      inputs: [workspace + '/src/cli.cjs'] });
+    writeFileSync(pin, JSON.stringify(receipt));
+    const args = ['--integration', f.donor, '--generation-root', f.store,
+      '--ensure-ref', ref, '--verifier-source', archive, '--retain-as', 'complete-native-test'];
+    const pins = { VERIFY_TAURI_SOURCE_RECEIPT: pin, VERIFY_TAURI_SOURCE_REF: ref };
+    const rebuilt = f.shell(f.generationScript, args, pins);
+    expect(rebuilt.status, rebuilt.stderr.slice(-12000)).toBe(0);
+    expect(rebuilt.stderr).toContain('ordinary generation lacks the desktop install');
+    const generation = f.publishedPath(rebuilt.stdout);
+    expect(existsSync(join(generation, 'tree/papercusp-desktop/node_modules/.bin/tauri'))).toBe(true);
+    expect(readFileSync(join(generation, 'tree/node_modules/pkg/index.js'), 'utf8')).toBe('published dependency');
+    expect(JSON.parse(readFileSync(join(generation, '.verifier-closure.json'), 'utf8')).complete).toBe(true);
+    const reused = f.shell(f.generationScript, args, pins);
+    expect(reused.status, reused.stderr.slice(-12000)).toBe(0);
+    expect(reused.stdout).toContain('reused=true');
+    expect(reused.stdout).toContain('path=' + generation);
+    expect(readFileSync(ordinarySelector, 'utf8')).toBe(originalSelector);
+    expect(readFileSync(join(previous!, '.verifier-closure.json'), 'utf8')).toBe(originalClosure);
+    expect(existsSync(join(archive, 'node_modules'))).toBe(false);
+  }, 120_000);
+
   it.each(['available', 'missing', 'incompatible', 'corrupt'])('prefers an immutable %s donor when native ref inputs match live inputs', async donorState => {
     const workspace = 'packages/omp-plugin';
     const f = fixture(workspace);

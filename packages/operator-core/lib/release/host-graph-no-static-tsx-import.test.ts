@@ -84,10 +84,4 @@ describe('host import graph never initializes tsx at import (WI-6554700010049042
     expect(importers).toEqual([]);
   });
 
-  it('source-preview.mjs loads tsx lazily on its plain-Node branch', () => {
-    const text = texts.get('scripts/source-preview.mjs') ?? '';
-    expect(text).not.toBe('');
-    expect(STATIC_TSX_IMPORT.test(text)).toBe(false);
-    expect(text).toContain("createRequire(import.meta.url)('tsx/cjs/api')");
-  });
 });

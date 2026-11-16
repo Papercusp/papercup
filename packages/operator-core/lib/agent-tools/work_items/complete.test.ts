@@ -2433,6 +2433,25 @@ describe('work_items:complete (keyed-array)', () => {
       expect(fireReactionInProcess).not.toHaveBeenCalled();
     });
 
+    it.each([true, false])('refuses a source-linked close with stale discovery before persistence (preview=%s)', async (validateOnly) => {
+      const linked = {
+        id: 'WI-source-discovery', kind: 'task', family: 'issue', state: 'open', harness: 'papercup',
+        sourcePlanSlug: 'source-plan', sourcePlanItemIds: ['P-001', 'P-002', 'P-003'],
+      };
+      getWorkItem.mockResolvedValue(linked);
+      draftItemStartGate.read.mockImplementation(async ({ itemId }: { itemId: string }) => itemId === 'P-003'
+        ? { ok: false, error: 'discovery_not_ready', hint: 'Refresh the discovery audit.' } : null);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...linked, state: 'done' }));
+      const result = await one({
+        id: linked.id, state: 'done', validateOnly, assumptions: 'none',
+        completion: { summary: 'finished the work item' },
+      });
+      expect(result).toMatchObject({ ok: false, stateError: expect.stringContaining('discovery_not_ready') });
+      expect(draftItemStartGate.read.mock.calls.map(([input]) => input.itemId)).toEqual(['P-001', 'P-002', 'P-003']);
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(fireReactionInProcess).not.toHaveBeenCalled();
+    });
+
     it('previews an actionable plan lane without persisting a completion', async () => {
       getWorkItem.mockResolvedValue(issue);
       const preview = await one({ id: 'WI-1', state: 'resolved', validateOnly: true,
