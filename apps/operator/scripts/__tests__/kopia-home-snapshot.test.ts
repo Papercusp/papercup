@@ -375,6 +375,44 @@ describe('kopia-home-snapshot bounded execution contract', () => {
       }
     });
 
+    it('signals validated leftovers while another privileged identity check is waiting', () => {
+      const f = fixture({ leaf: 'kopia-home-snapshot.service', graceSec: '0' });
+      try {
+        // These root-view links require the privileged validator. Their validation
+        // can finish only after the already-readable PID has received SIGTERM.
+        // Serial validation therefore loses both targets before it signals anyone.
+        for (const pid of ['6262', '6363']) rmSync(join(f.env.KOPIA_HOME_SNAPSHOT_PROC_ROOT, pid, 'exe'));
+        writeFileSync(
+          f.env.KOPIA_HOME_SNAPSHOT_SUDO,
+          [
+            '#!/usr/bin/env bash',
+            '[ "$1" = -n ] && shift',
+            '[ "$1" = -- ] && shift',
+            'if [ "$1" = readlink ]; then',
+            '  deadline=$((SECONDS + 5))',
+            '  until /bin/grep -q -- "-TERM 6161" "$KOPIA_TEST_KILL_LOG" 2>/dev/null; do',
+            '    [ "$SECONDS" -lt "$deadline" ] || exit 1',
+            '    /bin/sleep 0.02',
+            '  done',
+            '  printf \'%s\\n\' "$KOPIA_HOME_SNAPSHOT_BIN"',
+            '  exit 0',
+            'fi',
+            'printf \'%s\\n\' "$*" >>"$KOPIA_TEST_KILL_LOG"',
+            '',
+          ].join('\n'),
+        );
+        const run = spawnSync('bash', [REPO_SCRIPT, '--cleanup'], { encoding: 'utf8', env: f.env, timeout: 20_000 });
+        expect(run.status).toBe(0);
+        for (const pid of ['6161', '6262', '6363']) {
+          expect(f.killLogText()).toContain(`-TERM ${pid}`);
+          expect(f.killLogText()).toContain(`-KILL ${pid}`);
+        }
+        expect(f.killLogText()).not.toMatch(/-(TERM|KILL) 6464\b/);
+      } finally {
+        rmSync(f.root, { recursive: true, force: true });
+      }
+    });
+
     it('delivers SIGTERM and SIGKILL through a sudo that stalls for seconds (default bound)', () => {
       // The stub sleeps BEFORE acting, like the measured sudo that spent >=37 s before
       // it logged. With the old 1 s bound neither signal was ever delivered.
