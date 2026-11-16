@@ -4628,6 +4628,9 @@ export interface TaskTerminalFence {
   taskId: string;
   workspaceId: string;
   revision: number;
+  /** Original ledger tuple, private to the fence. Public payload may be redacted.
+   * Omitted by legacy emitters whose payload still contains the original value. */
+  exitReason?: string | null;
 }
 
 function currentTaskTerminal(
@@ -4645,7 +4648,7 @@ function currentTaskTerminal(
        AND COALESCE((detail ->> 'terminalEventRevision')::bigint, 0) = ${fence.revision}
        AND state = ${terminal?.state ?? null}
        AND exit_code IS NOT DISTINCT FROM ${terminal?.exitCode ?? null}::int
-       AND exit_reason IS NOT DISTINCT FROM ${terminal?.exitReason ?? null}::text
+       AND exit_reason IS NOT DISTINCT FROM ${fence.exitReason !== undefined ? fence.exitReason : terminal?.exitReason ?? null}::text
      FOR SHARE
   `;
 }
