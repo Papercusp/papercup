@@ -58,6 +58,12 @@ async function stopHost(afterExit?: () => Promise<void>) {
 async function main() {
   const e = process.env;
   const completionControls = parsePrivateCompletionFixtureControls(process.argv.slice(2));
+  // Isolation deliberately drops scenario environment selectors. Select this
+  // verifier through argv, like the existing completion-fixture controls.
+  if (process.argv.includes('--saved-plan-lines')) {
+    e.STAGING_FIRST_HTTP_SCENARIO = 'saved-plan-lines';
+    console.log('SAVED_PLAN_LINES_HTTP_SELECTED');
+  }
   if (completionControls) {
     e.STAGING_FIRST_HTTP_SCENARIO = completionControls.transport === 'mcp-proxy' ? 'private-completion-mcp' : 'private-completion';
     e.STAGING_FIRST_HTTP_MAINTENANCE = completionControls.maintenance ? '1' : '0';
@@ -219,6 +225,10 @@ async function main() {
   }
   const bundleBytes = readFileSync(bundle);
   assert.ok(bundleBytes.includes(Buffer.from('staging-first-activation-guard.ts')), 'guard must be in the executed bundle');
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'saved-plan-lines') {
+    for (const marker of ['saved_plan_lines_preview_changed', 'relink_no_verified_replacement'])
+      assert.ok(bundleBytes.includes(Buffer.from(marker)), `accepted source missing from private bundle: ${marker}`);
+  }
   if (completionControls?.maintenance) {
     assert.ok(bundleBytes.includes(Buffer.from('maintenance does not exempt source or settlement')),
       'maintenance completion proof must be in the executed bundle');
@@ -637,6 +647,16 @@ async function main() {
     });
     await stopHost();
     console.log('PRIVATE_UNRELATED_WRITE_HTTP_RECEIPT ' + JSON.stringify({
+      ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
+    }));
+    return;
+  }
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'saved-plan-lines') {
+    const receipt = await (await import('./saved-plan-lines-http-scenario')).measureSavedPlanLinesScenario({
+      workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
+    });
+    await stopHost();
+    console.log('SAVED_PLAN_LINES_HTTP_RECEIPT ' + JSON.stringify({
       ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
     }));
     return;
