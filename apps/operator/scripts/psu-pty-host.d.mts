@@ -2201,7 +2201,7 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
      * 'superseded' when a PRODUCTION respawn replaced the payload of an
      * already-pending re-poll (EI-19480099650947832 — nothing is dropped).
      */
-    schedule(msg: any): "superseded" | "queued" | "closed" | "duplicate";
+    schedule(msg: any): "queued" | "closed" | "superseded" | "duplicate";
     /**
      * Close all detached re-arm work when this PTY host is ending. Every
      * accepted message receives one terminal settlement so its delivery dedup
@@ -2733,7 +2733,7 @@ export function controlSocketSelfHealAction({ metaMine, sockOnDisk, serverListen
     metaMine: any;
     sockOnDisk: any;
     serverListening: any;
-}): "rebind" | "healthy" | "reassert";
+}): "healthy" | "rebind" | "reassert";
 export function closeControlServerForRebind(server: any, afterClose: any): void;
 export function decodeControl(payload: any): {
     ownerId: any;
@@ -5109,7 +5109,7 @@ export function shouldReapDetachedPtyScopeResidue({ bridgeTty, headless, launche
  *  note \bconnected\b does NOT match inside "disconnected" (no word boundary
  *  after "dis"), but explicit negatives keep this robust to copy drift. Pure —
  *  exported for tests. */
-export function mcpServerRowStatus(line: any, name: any): "unknown" | "connected" | "not-connected" | null;
+export function mcpServerRowStatus(line: any, name: any): "unknown" | "not-connected" | "connected" | null;
 /** Is the /mcp dialog showing the single-server DETAIL view for `name`? Claude
  *  can open /mcp straight into it (header `Papercusp MCP Server`, then action
  *  rows such as `1. Authenticate  2. Reconnect  3. Disable`), so there is no
@@ -5364,7 +5364,7 @@ export function rearmWakeTurnOutcome(outcome: any, { submittedToCurrentChild }?:
  * A busy-gate deferral remains pending only when the re-arm controller still
  * owns that exact delivery; folded IDs that the re-arm does not own stay
  * retryable. */
-export function deliveryDedupSettlement(deliveryOutcome: any, rearmOwnsDelivery?: boolean): "cancelled" | "completed" | "pending" | "clear";
+export function deliveryDedupSettlement(deliveryOutcome: any, rearmOwnsDelivery?: boolean): "pending" | "completed" | "cancelled" | "clear";
 /** Persist the re-arm controller's retry window with a failed Codex-home attempt. */
 export function codexHomeEnsureFailureMetadata(failure: any, capMs: any): {
     retryable: boolean;
@@ -6029,6 +6029,8 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }: {
  * @param {(args:string[], options:{systemPromptAddendum:string, firstPrompt?:string, ownerId:string, agent?:string, personaFile?:string|null, codexHome?:string})=>any} [o.mintCarryRespawnArgs] mint argv for a carry respawn
  * @param {(args:string[], options:{agent?:string})=>({args:string[], nativeId:string}|null)} [o.mintParkResumeArgs]
  * @param {(args:string[], options:{nativeId:string|null})=>({args:string[], nativeId:string}|null)} [o.mintQuotaResumeArgs]
+ * @param {(childEnv: EnvironmentMap, childArgs: string[])=>void} [o.prepareChildEnv]
+ *   refresh on-disk client config from the exact env of EVERY child spawn (initial, carry, recycle, park resume)
  * @param {(args:string[])=>string[]} [o.prepareChildArgs]
  *   mint the argv that resumes a parked child (null = not resumable, never park)
  * @param {(options?: {routeMode?: 'auto'})=>Promise<any>} [o.ensureCodexHome] repair the per-session Codex home before a carry mint or quota recovery
@@ -6106,6 +6108,7 @@ export function hostThroughPty(o: {
         args: string[];
         nativeId: string;
     } | null)) | undefined;
+    prepareChildEnv?: ((childEnv: EnvironmentMap, childArgs: string[]) => void) | undefined;
     prepareChildArgs?: ((args: string[]) => string[]) | undefined;
     ensureCodexHome?: ((options?: {
         routeMode?: "auto";
