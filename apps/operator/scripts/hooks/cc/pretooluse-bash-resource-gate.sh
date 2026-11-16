@@ -1332,6 +1332,13 @@ def _scan_shell(text):
         while i < n and not text[i].isspace() and (
                 text[i] not in ';|&(){}' or (text[i] == '&' and word.endswith(('<', '>')))):
             c = text[i]
+            if c == '$' and i + 1 < n and text[i + 1] == "'":
+                ansi = re.match(r"\$'((?:[^'\\]|\\.)*)'", text[i:])
+                if ansi:
+                    started = True
+                    word += _scan_decode_ansi_c(ansi.group(1))
+                    i += len(ansi.group(0))
+                    continue
             if c == '\\':
                 if i + 1 < n and text[i + 1] == '\n':
                     i += 2
@@ -1469,7 +1476,7 @@ def _scan_env_split_words(args):
     return cmds[0] if cmds else []
 
 
-def _scan_unwrapped(inner):
+def _scan_unwrapped(inner, preserve_quotes=False):
     """Emit a structural wrapper's INNER command line as its own payload, then
     keep descending.
 
@@ -1482,10 +1489,11 @@ def _scan_unwrapped(inner):
     anchored guard can never see it."""
     if not inner:
         return []
-    return [' '.join(inner)] + _scan_segment_payloads(inner)
+    joined = shlex.join(inner) if preserve_quotes else ' '.join(inner)
+    return [joined] + _scan_segment_payloads(inner, preserve_quotes=preserve_quotes)
 
 
-def _scan_segment_payloads(words):
+def _scan_segment_payloads(words, preserve_quotes=False):
     """Shell payloads executed BY this command: a `-c` script, or the wrapped
     command of a structural wrapper. Recurses so `timeout 60 sudo bash -c X`
     yields X. This replaces the hand-maintained wrapper NAME-list."""
@@ -1506,33 +1514,33 @@ def _scan_segment_payloads(words):
     if exe == 'env':
         split = _scan_env_split_words(args)
         if split is not None:
-            return _scan_unwrapped(split)
+            return _scan_unwrapped(split, preserve_quotes=preserve_quotes)
         nxt = _scan_option_end(args, 0, {'-u', '--unset', '-C', '--chdir', '-S', '--split-string'})
         while nxt < len(args) and re.match(r'^[A-Za-z_]\w*=', args[nxt]):
             nxt += 1
-        return _scan_unwrapped(args[nxt:])
+        return _scan_unwrapped(args[nxt:], preserve_quotes=preserve_quotes)
     if exe == 'sudo':
         nxt = _scan_option_end(args, 0, {
             '-u', '--user', '-g', '--group', '-h', '--host', '-p', '--prompt',
             '-C', '--chdir', '-T', '--command-timeout', '-R', '--chroot', '-t', '--type'})
-        return _scan_unwrapped(args[nxt:])
+        return _scan_unwrapped(args[nxt:], preserve_quotes=preserve_quotes)
     if exe == 'timeout':
         nxt = _scan_option_end(args, 0, {'-s', '--signal', '-k', '--kill-after'})
-        return _scan_unwrapped(args[nxt + 1:])
+        return _scan_unwrapped(args[nxt + 1:], preserve_quotes=preserve_quotes)
     if exe == 'nice':
-        return _scan_unwrapped(args[_scan_option_end(args, 0, {'-n', '--adjustment'}):])
+        return _scan_unwrapped(args[_scan_option_end(args, 0, {'-n', '--adjustment'}):], preserve_quotes=preserve_quotes)
     if exe == 'ionice':
-        return _scan_unwrapped(args[_scan_option_end(args, 0, {'-c', '-n', '-p'}):])
+        return _scan_unwrapped(args[_scan_option_end(args, 0, {'-c', '-n', '-p'}):], preserve_quotes=preserve_quotes)
     if exe == 'time':
-        return _scan_unwrapped(args[_scan_option_end(args, 0, {'-o', '--output', '-f', '--format'}):])
+        return _scan_unwrapped(args[_scan_option_end(args, 0, {'-o', '--output', '-f', '--format'}):], preserve_quotes=preserve_quotes)
     if exe == 'xargs':
         nxt = _scan_option_end(args, 0, {
             '-a', '--arg-file', '-d', '--delimiter', '-E', '--eof', '-I', '--replace',
             '-L', '--max-lines', '-n', '--max-args', '-P', '--max-procs', '-s', '--max-chars'})
-        return _scan_unwrapped(args[nxt:])
+        return _scan_unwrapped(args[nxt:], preserve_quotes=preserve_quotes)
     if exe in ('command', 'exec', 'nohup', 'setsid', 'stdbuf', 'nocache', 'nocorrect', 'rtk', 'doas', 'coproc'):
         value_opts = {'-a'} if exe == 'exec' else ({'-i', '-o', '-e'} if exe == 'stdbuf' else set())
-        return _scan_unwrapped(args[_scan_option_end(args, 0, value_opts):])
+        return _scan_unwrapped(args[_scan_option_end(args, 0, value_opts):], preserve_quotes=preserve_quotes)
     return []
 
 
@@ -1700,11 +1708,11 @@ def _scan_variable_payloads(text):
     return [out] if out != text else []
 
 
-def _scan_executed_payloads(text):
+def _scan_executed_payloads(text, preserve_quotes=False):
     cmds, nested = _scan_shell(text)
     out = list(nested)
     for words in cmds:
-        out.extend(_scan_segment_payloads(words))
+        out.extend(_scan_segment_payloads(words, preserve_quotes=preserve_quotes))
     out.extend(_scan_piped_payloads(text))
     out.extend(_scan_here_string_payloads(text))
     out.extend(_scan_variable_payloads(text))
@@ -7094,34 +7102,51 @@ def _heavy_admission():
     # sessions (EI-7872) are still covered.
     if not (os.environ.get('PAPERCUSP_AGENT_SESSION') == '1' or _cmd_in_canonical_tree()):
         return
-    # Heavy = the batch test/build commands that spawn worker pools. Anchored at
-    # command position (start / after ;&|newline / a known wrapper / a path/) so
-    # a prose arg, a config filename, or a docs path never false-positives; the
-    # executable must be followed by whitespace or end so `vitest.config`,
-    # `vitest-guide`, `testing` etc. don't match. Bare `tsx` is intentionally
-    # NOT heavy (it runs light one-shot scripts far more often than builds).
-    # The wrapper arms are built from the SHARED sets defined above rather than
-    # from a second hand-maintained copy — that copy is exactly what had drifted
-    # (EI-19317242751258158: the peel knew `timeout`, this anchor did not).
-    # `{0,4}`/`{1,4}` mirror the peel's bounded loop so STACKED wrappers
-    # (`… && nice -n 10 timeout 60 npx vitest`) are recognized at command
-    # position too; `\b` keeps `nice` from matching inside `ionice`.
-    anchor = (
-        r'(?:'
-        # A real command position — start of string, just after a separator, or
-        # just inside a brace group — optionally behind a command-introducing
-        # reserved word (`; then`/`; do`), then optionally behind stacked benign
-        # wrappers. This is the arm that admits the bare-assignment prefix
-        # (`FOO=1 npx tsc`, `… && FOO=1 npx vitest`).
-        r'(?:^|[;&|\n]\s*|\{\s*)' + _CMD_INTRODUCER + r'(?:' + _BENIGN_WRAPPERS + r'){0,4}'
-        # A NAMED wrapper anywhere, as before this fix. Kept as its own arm so
-        # no coverage is lost relative to the previous anchor; the assignment
-        # prefix is deliberately absent here (see _ASSIGN_PREFIX above).
-        r'|(?:\b' + _NAMED_WRAPPERS + r'){1,4}'
-        # A path-invoked executable: ../../node_modules/.bin/vitest
-        r'|\S*/'
-        r')'
-    )
+    # EI-28908123964413147: classify actual executable positions, not substrings
+    # of dequoted arguments. Reuse the shared scanner for separators, shell
+    # payloads, substitutions and structural wrappers; keep argv quoting intact
+    # when a wrapper's inner command is scanned again.
+    _heavy_sources = [command]
+    _heavy_seen, _heavy_candidates = set(), []
+    while _heavy_sources:
+        source = _strip_comments_outside_quotes(
+            _scan_strip_nonexecuted_heredocs(_heavy_sources.pop()))
+        if source in _heavy_seen:
+            continue
+        _heavy_seen.add(source)
+        commands, _ = _scan_shell(source)
+        for words in commands:
+            start = _scan_command_start(words)
+            if start >= len(words):
+                continue
+            executable = os.path.basename(words[start])
+            args = words[start + 1:]
+            _heavy_candidates.append(shlex.join([executable] + args))
+            # Node runs a script argument; inline JS and its trailing argv are
+            # data for this shell classifier, not additional shell commands.
+            if executable in ('node', 'nodejs'):
+                script = 0
+                while script < len(args) and args[script].startswith('-'):
+                    option = args[script]
+                    if option == '--':
+                        script += 1
+                        break
+                    if re.match(r'^(?:--(?:eval|print)(?:=|$)|-[ep])', option):
+                        script = len(args)
+                        break
+                    if option.split('=')[0] in {
+                            '-r', '--require', '--import', '--loader', '--experimental-loader',
+                            '-C', '--conditions', '--env-file', '--env-file-if-exists',
+                            '--max-old-space-size', '--max-semi-space-size'} and '=' not in option:
+                        script += 1
+                    script += 1
+                if script < len(args):
+                    _heavy_candidates.append(shlex.join(
+                        [os.path.basename(args[script])] + args[script + 1:]))
+        _heavy_sources.extend(_scan_executed_payloads(source, preserve_quotes=True))
+    # Heavy = batch test/build executables that spawn worker pools. Bare tsx
+    # remains light; exact root entrypoints below already provide admission.
+    anchor = r'^'
     heavy_re = re.compile(
         anchor + r'(?:'
         r'(?:npx\s+|pnpm\s+|bunx\s+)?vitest(?=\s|$)'
@@ -7137,10 +7162,7 @@ def _heavy_admission():
         r')',
         re.IGNORECASE,
     )
-    # Use the same peeled command used for the pc-heavy bypass check so benign
-    # wrappers such as `timeout 90` cannot hide a raw heavy command from the
-    # admission gate while still allowing the blessed wrapper above through.
-    if not heavy_re.search(_pc_lead):
+    if not any(heavy_re.match(candidate) for candidate in _heavy_candidates):
         return
     # WI-10003344: raw TypeScript compiles can consume 11.2 GiB EACH while
     # load1 still looks healthy (reclaim stalls lower it). The load threshold
@@ -7148,7 +7170,7 @@ def _heavy_admission():
     # MemAvailable/PSI semaphore. Require the existing wrapper or root lint:tsc
     # entrypoint for compiler-shaped commands at every load level.
     raw_tsc_re = re.compile(anchor + r'(?:npx\s+)?tsc(?=\s|$)', re.IGNORECASE)
-    if raw_tsc_re.search(_pc_lead):
+    if any(raw_tsc_re.match(candidate) for candidate in _heavy_candidates):
         _pc_heavy_root = _canonical_tree_root() or os.path.realpath(
             os.environ.get('PAPERCUSP_CANONICAL_TREE')
             or os.path.join(os.path.expanduser('~/papercupai-workspace'), 'papercusp')

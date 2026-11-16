@@ -1893,8 +1893,35 @@ describe('heavy-command admission control (WI-3821)', () => {
     ['path-invoked tsc', 'node_modules/.bin/tsc -p packages/operator-core/tsconfig.json'],
     ['pinned native tsc', 'node_modules/@typescript/typescript-linux-x64/lib/tsc -p packages/operator-core/tsconfig.json'],
     ['compound', 'echo ready && npx tsc --noEmit'],
+    ['subshell', 'echo ready && (npx tsc --noEmit)'],
+    ['shell payload', "bash -c 'npx tsc --noEmit'"],
+    ['command substitution', 'echo "$(npx tsc --noEmit)"'],
+    ['quoted executable', "'tsc' --noEmit"],
+    ['ANSI-C executable', "$'tsc' --noEmit"],
+    ['Node compiler script', 'node node_modules/typescript/bin/tsc --noEmit'],
+    ['Node compiler with preload', 'node --require ./bootstrap.cjs node_modules/typescript/bin/tsc --noEmit'],
+    ['Node compiler with compact preload', 'node -rpath node_modules/typescript/bin/tsc --noEmit'],
+    ['Node compiler with a preload value resembling eval', 'node --require -eval-module node_modules/typescript/bin/tsc --noEmit'],
   ])('denies raw compiler %s even UNDER the load threshold (WI-10003344)', (_label, command) => {
     expectHeavyDeny(runGate(bashCmd(command), { ...AGENT, ...UNDER }));
+  });
+
+  it.each([
+    ['filed search', "rg -n 'typescript|tsgo|TSC_BIN|tscPath|bin/tsc' scripts/lint-tsc.mjs package.json"],
+    ['quoted compiler arguments', "grep -n 'bin/tsc --noEmit' package.json"],
+    ['named wrapper in prose', 'echo "npx tsc --noEmit"'],
+    ['compiler path as a filename', 'rg -n tsc scripts/vendor/tsc notes.txt'],
+    ['search inside a shell payload', 'bash -c "rg -n \'bin/tsc --noEmit\' package.json"'],
+    ['test runner path in prose', 'echo "node_modules/.bin/vitest run x.test.ts"'],
+    ['assignment value', 'NOTE="npx tsc" rg -n text package.json'],
+    ['wrapped assignment value', 'env NOTE="npx tsc" rg -n text package.json'],
+    ['wrapped search pattern', 'env rg -n "tsc|node_modules/.bin/vitest" package.json'],
+    ['inline Node code', 'node --eval \'console.log("bin/tsc --noEmit")\''],
+    ['inline Node code after compact preload', 'node -rpath --eval \'console.log("bin/tsc --noEmit")\''],
+  ])('keeps heavy-command argument text inert: %s (EI-28908123964413147)', (_label, command) => {
+    for (const load of [UNDER, OVER]) {
+      expectAllow(runGate(bashCmd(command), { ...AGENT, ...load }));
+    }
   });
 
   it('allows a raw compiler when it is explicitly wrapped by pc-heavy at low load', () => {
