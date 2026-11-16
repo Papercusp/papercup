@@ -61,8 +61,28 @@ import { configurePrePromptRegistry, clearPrePromptRegistry } from '@papercusp/r
 import { _resetBatchNudgeState } from '../../code-run-batch-nudge';
 
 const h = vi.hoisted(() => {
+  // The mandatory original-invocation observer (originalInvocationObserver in
+  // projected-tool-deps, wired as the dispatcher's invocationObserver) INSERTs
+  // the original record before admission and UPDATEs it once the tool settles.
+  // Both statements must RETURN the row id, or dispatch fails closed with
+  // execution_observation_unavailable before the tool ever runs. The id is a
+  // constant: parity cases compare two transports' literal results, so a
+  // per-call fake id would make otherwise identical results differ.
+  const originalInvocationRows = (args: unknown[]): unknown[] => {
+    const [sql, params] = args;
+    if (typeof sql !== 'string') return [];
+    if (sql.includes('INSERT INTO harness_shared.tool_invocations') && sql.includes('RETURNING id')) {
+      return [{ id: '1' }];
+    }
+    if (sql.includes('UPDATE harness_shared.tool_invocations')
+      && sql.includes("metadata_json->'originalInvocation'->>'callId'")
+      && Array.isArray(params)) {
+      return [{ id: String(params[1]) }];
+    }
+    return [];
+  };
   const fakeTx = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
-    unsafe: async (..._a: unknown[]) => [] as unknown[],
+    unsafe: async (...args: unknown[]) => originalInvocationRows(args),
   });
   const kernelAuthority = {
     rows: null as Array<Record<string, unknown>> | null,
@@ -91,9 +111,16 @@ const h = vi.hoisted(() => {
     }
     if (kernelAuthority.rows && query.includes('FROM harness_shared.session_briefs') &&
         query.includes('FROM harness_shared.adv_sessions s')) return kernelAuthority.rows;
+    // plan-execution-guard's authority census (readExecutionPlanBindings) is one
+    // FROM-less SELECT, so real PG always returns exactly one row. An empty
+    // result fails closed as plan_authority_unavailable. This row means: no
+    // session brief, no plan claims and no held work, so no plan binding.
+    if (query.includes('WITH brief AS MATERIALIZED') && query.includes('AS held')) {
+      return [{ rebind: null, bindings: [], held: [] }];
+    }
     return [] as unknown[];
   }, {
-    unsafe: async (..._a: unknown[]) => [] as unknown[],
+    unsafe: async (...args: unknown[]) => originalInvocationRows(args),
     begin: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn(fakeTx),
     reserve: async (): Promise<unknown> => Object.assign(fakeSql, { release: () => undefined }),
   });
@@ -6553,7 +6580,8 @@ describe('SU workspace project authorization through real MCP handlers', () => {
         headless: true,
       }, superuserExtra('&workspace=ws-test&client=su-default-compat'));
       expect(result.isError).toBe(true);
-      expect(textOf(result)).toContain('No harness for the plan');
+      // Carry the full result text: a kernel or gate refusal is otherwise cut to 40 chars.
+      expect(textOf(result), textOf(result)).toContain('No harness for the plan');
       expect(textOf(result)).not.toContain('harness_forbidden');
       expect(h.fleetSpawn).not.toHaveBeenCalled();
     });
