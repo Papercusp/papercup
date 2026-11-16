@@ -482,6 +482,14 @@ export function selectAbsentConditions(
     if (!s.open) continue;
     // WI-6228: a one-shot emitter's silence is by design, not evidence of recovery.
     if (s.one_shot === true) continue;
+    // EI-28853037150915197 / WI-6554700010050483: a family whose lifecycle a recomputing
+    // source owns (catalog `lifecycleOwnedBySource`, e.g. alarm:disk-space) is resolved
+    // only by that source's measured recovery, never by silence. The disk alarm's tick is
+    // shed-gated and cooldown-bounded, so its last_seen can age past absenceMs while /
+    // stays below the recovery target. Measured 2026-11-16 17:30-17:40Z: / at 98% (41 GB
+    // free) and staging-sync refusing on headroom, yet this guard announced
+    // "alarm:disk-space auto-resolved ... (signal absence, EI-15182)" every few minutes.
+    if (isLifecycleOwnedBySource(s.condition_key)) continue;
     const lastSeenMs = Date.parse(s.last_seen);
     if (!Number.isFinite(lastSeenMs)) continue;
     if (now - lastSeenMs > absenceMs) out.push(s.condition_key);

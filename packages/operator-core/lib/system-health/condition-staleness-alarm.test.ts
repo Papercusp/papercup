@@ -432,8 +432,10 @@ describe('selectAbsentConditions (pure — EI-15182 guard #3, family-agnostic)',
     // The dead/quiet-pot case guard #3 exists for must keep working: an emitter
     // that re-alarms every sweep and has gone quiet really has stopped observing.
     const now = Date.parse('2026-07-17T21:00:00.000Z');
+    // `release-trigger-freeze:` is an ordinary family. `git-sync-stall:` was the example here
+    // until WI-6554700010048637 marked it lifecycleOwnedBySource (see the next test).
     const reAlarming = mkState({
-      condition_key: 'git-sync-stall:dummy-pot-0707',
+      condition_key: 'release-trigger-freeze:dummy-pot-0707',
       last_seen: '2026-07-11T02:13:00.000Z',
       one_shot: false,
     });
@@ -442,8 +444,34 @@ describe('selectAbsentConditions (pure — EI-15182 guard #3, family-agnostic)',
       last_seen: '2026-07-11T02:13:00.000Z',
     }); // legacy emitter, never declared — unchanged behaviour
     expect(selectAbsentConditions([reAlarming, undeclared], now, 2 * 60 * 60_000)).toEqual([
-      'git-sync-stall:dummy-pot-0707',
+      'release-trigger-freeze:dummy-pot-0707',
       'single-primary:split-brain-primary',
+    ]);
+  });
+
+  it('EI-28853037150915197: a lifecycleOwnedBySource family (alarm:disk-space) is NEVER absent, even when not one-shot', () => {
+    // Only the disk alarm's own measured recovery (diskRecoveryReached) may close it.
+    // Without the catalog check this returns ['alarm:disk-space'] and fails.
+    const now = Date.parse('2026-11-16T17:38:00.000Z');
+    const diskSpace = mkState({
+      condition_key: 'alarm:disk-space',
+      last_seen: '2026-11-16T15:00:00.000Z', // > 120m stale
+      one_shot: false,
+    });
+    // git-sync-stall: is also catalog lifecycleOwnedBySource (WI-6554700010048637): the next
+    // watchdog sweep sends its recovery, so silence does not close it either.
+    const gitSyncStall = mkState({
+      condition_key: 'git-sync-stall:dummy-pot-0707',
+      last_seen: '2026-11-16T15:00:00.000Z',
+      one_shot: false,
+    });
+    const ordinary = mkState({
+      condition_key: 'release-trigger-freeze:dummy-pot-0707',
+      last_seen: '2026-11-16T15:00:00.000Z',
+      one_shot: false,
+    });
+    expect(selectAbsentConditions([diskSpace, gitSyncStall, ordinary], now, 2 * 60 * 60_000)).toEqual([
+      'release-trigger-freeze:dummy-pot-0707',
     ]);
   });
 
@@ -459,16 +487,16 @@ describe('selectAbsentConditions (pure — EI-15182 guard #3, family-agnostic)',
     const now = Date.parse('2026-07-17T21:00:00.000Z');
     const stale = '2026-07-11T00:10:00.000Z';
     const states = [
-      mkState({ condition_key: 'git-sync-stall:dummy-pot-0707', last_seen: stale, open_since: stale, first_seen: stale }),
-      mkState({ condition_key: 'git-sync-stall:quartermaster-hive', last_seen: stale, open_since: stale, first_seen: stale }),
+      mkState({ condition_key: 'release-trigger-freeze:dummy-pot-0707', last_seen: stale, open_since: stale, first_seen: stale }),
+      mkState({ condition_key: 'release-trigger-freeze:quartermaster-hive', last_seen: stale, open_since: stale, first_seen: stale }),
       mkState({ condition_key: 'embed-exhaustion:daily_cap', last_seen: stale, open_since: stale, first_seen: stale }),
       mkState({ condition_key: 'infra-liveness:pg-restarted', last_seen: stale, open_since: stale, first_seen: stale }),
     ];
     expect(selectAbsentConditions(states, now, 2 * 60 * 60_000).sort()).toEqual([
       'embed-exhaustion:daily_cap',
-      'git-sync-stall:dummy-pot-0707',
-      'git-sync-stall:quartermaster-hive',
       'infra-liveness:pg-restarted',
+      'release-trigger-freeze:dummy-pot-0707',
+      'release-trigger-freeze:quartermaster-hive',
     ]);
   });
 });
@@ -1064,7 +1092,7 @@ describe('runConditionStalenessTick — durable dedup + auto-resolve (mirrors li
     const now = Date.parse('2026-07-17T21:00:00.000Z');
     const staleTs = '2026-07-11T00:10:00.000Z'; // ~6.8d old — the real dummy-pot-0707 evidence
     const goneQuiet = mkState({
-      condition_key: 'git-sync-stall:dummy-pot-0707',
+      condition_key: 'release-trigger-freeze:dummy-pot-0707',
       first_seen: staleTs,
       open_since: staleTs,
       last_seen: staleTs,
@@ -1080,16 +1108,16 @@ describe('runConditionStalenessTick — durable dedup + auto-resolve (mirrors li
       now: () => now,
       staleMs: 45 * 60_000,
       absenceMs: 2 * 60 * 60_000,
-      readHealthByKey: async () => new Map<string, boolean>(), // git-sync-stall is not infra-liveness — never consulted
+      readHealthByKey: async () => new Map<string, boolean>(), // release-trigger-freeze is not infra-liveness — never consulted
       broadcastResolvedMany: async (input: { conditionKeys: string[]; summary: string }) => {
         broadcasts.push(input);
         return true;
       },
     };
     const r = await runConditionStalenessTick(deps);
-    expect(r.reconciled).toEqual(['git-sync-stall:dummy-pot-0707']);
+    expect(r.reconciled).toEqual(['release-trigger-freeze:dummy-pot-0707']);
     expect(broadcasts).toHaveLength(1);
-    expect(broadcasts[0]!.conditionKeys).toEqual(['git-sync-stall:dummy-pot-0707']);
+    expect(broadcasts[0]!.conditionKeys).toEqual(['release-trigger-freeze:dummy-pot-0707']);
     expect(r.signals).toEqual([]);
     expect(r.fired).toEqual([]);
   });
@@ -1277,10 +1305,12 @@ describe('toBridgeConditionStates (pure)', () => {
     const states = [
       mkState({ condition_key: 'green-stall:papercusp' }),
       mkState({ condition_key: 'infra-liveness:panel:bees' }), // not actionable
-      mkState({ condition_key: 'git-sync-stall:papercusp' }), // not actionable
+      mkState({ condition_key: 'embed-exhaustion:papercusp' }), // not actionable
+      mkState({ condition_key: 'git-sync-stall:papercusp' }), // opted in since WI-6554700010048637
     ];
     expect(toBridgeConditionStates(states, 'papercusp').map((s) => s.conditionKey)).toEqual([
       'green-stall:papercusp',
+      'git-sync-stall:papercusp',
     ]);
   });
 
