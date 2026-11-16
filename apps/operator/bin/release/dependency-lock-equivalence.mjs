@@ -68,7 +68,7 @@ export function createGitInputManifestReader(git = runGit) {
     const rows = [];
     for (const [rel, { type, object }] of entries) {
       if (type !== 'blob' || /(^|\/)(\.papercusp|\.papercusp-smoke-snapshots|node_modules)\//.test(rel)) continue;
-      if (!/(^|\/)(package-lock\.json|npm-shrinkwrap\.json)$/.test(rel)
+      if (!/(^|\/)(package-lock\.json|npm-shrinkwrap\.json|\.nvmrc)$/.test(rel)
         && !/(^|\/)patches\/[^/]+\.patch$/.test(rel)) continue;
       if (!digests.has(object)) digests.set(object, sha256(git(root, ['cat-file', 'blob', object])));
       rows.push(`${rel}\t${digests.get(object)}\n`);
@@ -209,7 +209,11 @@ export function compareDependencyInputs({ refManifest, liveManifest, readRef, re
       continue;
     }
     if (!isLockfile(rel)) {
-      reasons.push(`${rel}: patch differs between the ref and the live tree`);
+      // A different Node pin compiles native addons for a different ABI, so it
+      // is never lock-equivalent (EI-28861111300853043).
+      reasons.push(posix.basename(rel) === '.nvmrc'
+        ? `${rel}: Node pin differs between the ref and the live tree`
+        : `${rel}: patch differs between the ref and the live tree`);
       continue;
     }
     let refLock;

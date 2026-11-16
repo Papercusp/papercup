@@ -66,9 +66,11 @@ describe('immutable Git input manifest batching', () => {
       init(vendor);
       const lockBytes = '{"lockfileVersion":3,"packages":{}}\n';
       writeFileSync(join(root, 'package-lock.json'), lockBytes);
+      // .nvmrc Node pins key the generation too (EI-28861111300853043).
       for (const path of ['nested/npm-shrinkwrap.json', 'patches/tool.patch', 'nested/patches/tool.patch',
         'patches/nested/ignored.patch', '.papercusp/package-lock.json',
-        '.papercusp-smoke-snapshots/package-lock.json', 'node_modules/pkg/package-lock.json']) {
+        '.papercusp-smoke-snapshots/package-lock.json', 'node_modules/pkg/package-lock.json',
+        '.nvmrc', 'nested/.nvmrc', 'node_modules/pkg/.nvmrc']) {
         mkdirSync(dirname(join(root, path)), { recursive: true });
         writeFileSync(join(root, path), lockBytes);
         git(root, 'add', '-f', path);
@@ -92,8 +94,8 @@ describe('immutable Git input manifest batching', () => {
       const before = read(root, first);
       expect(read(root, second)).toBe(before);
       const digest = createHash('sha256').update(lockBytes).digest('hex');
-      expect(before).toBe(['nested/npm-shrinkwrap.json', 'nested/patches/tool.patch', 'package-lock.json',
-        'patches/tool.patch', 'vendor/package-lock.json'].map(path => `${path}\t${digest}\n`).join(''));
+      expect(before).toBe(['.nvmrc', 'nested/.nvmrc', 'nested/npm-shrinkwrap.json', 'nested/patches/tool.patch',
+        'package-lock.json', 'patches/tool.patch', 'vendor/package-lock.json'].map(path => `${path}\t${digest}\n`).join(''));
       const canonical = spawnSync('bash', ['-c', [
         'set -euo pipefail', 'source "$SCRIPT"',
         'dependency_generation_input_manifest_ref "$ROOT" "$REF" | LC_ALL=C sort',
@@ -185,6 +187,15 @@ describe('compareDependencyInputs', () => {
       'patches/a.patch: patch differs between the ref and the live tree',
       'sub/package-lock.json: dependency input exists only at the ref',
     ]);
+  });
+
+  it('refuses a differing Node pin: another ABI is never lock-equivalent (EI-28861111300853043)', () => {
+    const result = run(
+      { '.nvmrc': 'n24', 'package-lock.json': 'd1' },
+      { '.nvmrc': 'n26', 'package-lock.json': 'd1' },
+    );
+    expect(result.equivalent).toBe(false);
+    expect(result.reasons).toEqual(['.nvmrc: Node pin differs between the ref and the live tree']);
   });
 
   it('parses a differing lockfile and returns its drops', () => {

@@ -197,6 +197,10 @@ dependency_generation_is_ignored_input() {
 # generation itself is keyed from the much larger node_modules metadata walk;
 # this fingerprint is the cheap lookup key a later checkpoint can derive from
 # its exact candidate without consulting mutable node_modules at all.
+# .nvmrc files are inputs too (EI-28861111300853043): the pinned Node decides
+# which ABI every native addon is compiled for, and the publish/reuse guards
+# validate addons against that pin. Without it a pin change kept the old key,
+# so the gate kept selecting a generation built for the previous Node ABI.
 dependency_generation_input_manifest() {
   local root="$1" file rel digest
   (
@@ -216,7 +220,7 @@ dependency_generation_input_manifest() {
           -o -path './papercusp-desktop/src-tauri/sidecar' \
           -o -path './papercusp-desktop/src-tauri/env-sidecars' \
           -o -path './papercusp-desktop/src-tauri/resources' \) -prune \) -o \
-        \( -type f \( -name package-lock.json -o -name npm-shrinkwrap.json \
+        \( -type f \( -name package-lock.json -o -name npm-shrinkwrap.json -o -name .nvmrc \
           -o \( -name '*.patch' -a -path '*/patches/*' \) \) -print \) \
         | LC_ALL=C sort
     )
@@ -270,15 +274,15 @@ dependency_generation_verification_manifest() {
     awk -F '\t' \
       -v dirs="$(printf '%s\n' "${DEPENDENCY_GENERATION_WORKSPACE_DIRS[@]}")" '
       BEGIN { n = split(dirs, selected, "\n") }
-      $1 == "package-lock.json" || $1 == "npm-shrinkwrap.json" || index($1, "patches/") == 1 { print; next }
+      $1 == "package-lock.json" || $1 == "npm-shrinkwrap.json" || $1 == ".nvmrc" || index($1, "patches/") == 1 { print; next }
       { for (i = 1; i <= n; i++) if (index($1, selected[i] "/") == 1) { print; break } }
     '
   fi
 }
 
 # Derive the same cheap dependency-input key from an immutable Git commit without
-# materialising a checkout. Only lockfiles and patch-package patch files
-# participate in the key, so walk those blobs directly and recurse through the
+# materialising a checkout. Only lockfiles, .nvmrc Node pins and patch-package
+# patch files participate in the key, so walk those blobs directly and recurse through the
 # commit's recorded submodule gitlinks. Patches are load-bearing inputs because
 # the root package.json postinstall runs `patch-package`, so a patch change
 # alters the produced node_modules closure exactly as a lockfile change does;
@@ -296,7 +300,7 @@ dependency_generation_verification_manifest() {
 dependency_generation_ref_input_records() {
   local root="$1" ref="$2"
   git -C "$root" ls-tree -r -z "$ref" \
-    | LC_ALL=C grep -zE $'\t([^/]+/)*(package-lock\\.json|npm-shrinkwrap\\.json)$|\t([^/]+/)*patches/[^/]+\\.patch$'
+    | LC_ALL=C grep -zE $'\t([^/]+/)*(package-lock\\.json|npm-shrinkwrap\\.json|\\.nvmrc)$|\t([^/]+/)*patches/[^/]+\\.patch$'
 }
 
 dependency_generation_input_manifest_ref() {
@@ -375,6 +379,7 @@ dependency_generation_emit_input_manifest_ref() {
     [ "$type" = 'blob' ] || continue
     case "$rel" in
       package-lock.json|*/package-lock.json|npm-shrinkwrap.json|*/npm-shrinkwrap.json) ;;
+      .nvmrc|*/.nvmrc) ;;
       patches/*.patch|*/patches/*.patch) ;;
       *) continue ;;
     esac
@@ -4948,9 +4953,13 @@ dependency_generation_main() {
       # WI-6554700010049444 (Fix #4): a selector promises its consumers can
       # prepare. Reporting reused=true for a generation whose native addons do
       # not load only defers a deterministic failure to every queued
-      # preparation, so refuse here. Automatic supersede needs the Node ABI in
-      # the generation identity (EI-28861111300853043); until then a rebuild
-      # would collide with this same immutable identity.
+      # preparation, so refuse here. A Node pin change cannot reach this branch
+      # with the old selector: .nvmrc is part of the input key
+      # (EI-28861111300853043), so a new pin prewarms under a new key. What still
+      # lands here is a generation published under the CURRENT pin whose addons
+      # do not load. Rebuild the live tree's addons under the pinned Node; that
+      # rewrites their files, so the tree gets a new identity, and republishing
+      # replaces this selector.
       if ! dependency_generation_native_addons_load_isolated "$DEPENDENCY_GENERATION_PATH/tree"; then
         dependency_generation_log \
           "FATAL: existing selector for inputs $exact_input targets $DEPENDENCY_GENERATION_ID, whose native addons do not load under the pinned Node (.nvmrc); refusing reused=true. Republish a native-complete generation for these inputs under the pinned Node"

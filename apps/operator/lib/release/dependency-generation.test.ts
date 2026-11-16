@@ -820,6 +820,64 @@ describe('WI-10002299: patch-package patches are dependency inputs', () => {
   );
 });
 
+describe('EI-28861111300853043: .nvmrc Node pins are dependency inputs', () => {
+  // The pinned Node decides which ABI every native addon is compiled for, and the
+  // publish/reuse guards validate addons against that pin. While only lockfiles
+  // and patches keyed the fingerprint, a pin change kept the old selector, so the
+  // gate kept selecting a generation built for the previous ABI and refused every
+  // run (exit 74) instead of prewarming a new one.
+  it(
+    'moves the input fingerprint when ONLY an .nvmrc changes, and the live and exact-ref keys agree',
+    () => {
+      const integration = makeIntegration();
+      writeFileSync(join(integration, '.nvmrc'), '24\n');
+      mkdirSync(join(integration, 'apps/tool'), { recursive: true });
+      writeFileSync(join(integration, 'apps/tool/.nvmrc'), '24\n');
+      const before = commitAllFixture(integration, 'seed with Node pins');
+
+      writeFileSync(join(integration, '.nvmrc'), '26\n');
+      const afterRootPin = commitAllFixture(integration, 'change ONLY the root pin');
+
+      writeFileSync(join(integration, 'apps/tool/.nvmrc'), '26\n');
+      const afterNestedPin = commitAllFixture(integration, 'change ONLY a nested pin');
+
+      // Calibration control: an unrelated file must NOT move the key.
+      writeFileSync(join(integration, 'README.md'), 'unrelated\n');
+      const afterUnrelated = commitAllFixture(integration, 'change an unrelated file');
+
+      const fp = (ref: string): string => {
+        const result = fingerprintRef(integration, ref);
+        expect(result.status, result.stderr).toBe(0);
+        return publishedInputFingerprint(result.stdout);
+      };
+      expect(fp(afterRootPin)).not.toBe(fp(before));
+      expect(fp(afterNestedPin)).not.toBe(fp(afterRootPin));
+      expect(fp(afterUnrelated)).toBe(fp(afterNestedPin));
+
+      // The live walk must derive the same key as the exact-ref walk, and the
+      // scoped verification view keeps the root pin like the root lockfile.
+      const live = spawnSync('bash', ['-c', [
+        'set -euo pipefail',
+        'source "$SCRIPT"',
+        'dependency_generation_input_manifest "$INTEGRATION"',
+        'printf "LIVE_INPUT="; dependency_generation_input_fingerprint "$INTEGRATION"',
+        'printf "SCOPED_VIEW\\n"',
+        'DEPENDENCY_GENERATION_SCOPE_MODE=selected',
+        'DEPENDENCY_GENERATION_WORKSPACE_DIRS=(packages/none)',
+        'dependency_generation_input_manifest "$INTEGRATION" | dependency_generation_verification_manifest',
+      ].join('\n')], { encoding: 'utf8', env: { ...process.env, SCRIPT, INTEGRATION: integration } });
+      expect(live.status, live.stderr).toBe(0);
+      const [full, scoped = ''] = live.stdout.split('SCOPED_VIEW\n');
+      expect(full).toMatch(/^\.nvmrc\t[a-f0-9]{64}$/m);
+      expect(full).toMatch(/^apps\/tool\/\.nvmrc\t[a-f0-9]{64}$/m);
+      expect(full).toContain(`LIVE_INPUT=${fp(afterUnrelated)}`);
+      expect(scoped).toMatch(/^\.nvmrc\t[a-f0-9]{64}$/m);
+      expect(scoped).not.toContain('apps/tool/.nvmrc');
+    },
+    NATIVE_SHELL_TIMEOUT_MS,
+  );
+});
+
 describe('exact-ref dependency record filtering', () => {
   it('filters the immutable tree listing before the Bash manifest loop', () => {
     const integration = makeIntegration();

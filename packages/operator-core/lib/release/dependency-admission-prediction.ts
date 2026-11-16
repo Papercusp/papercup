@@ -37,8 +37,9 @@ export interface DependencyGenerationPrediction {
 }
 
 /**
- * Mirrors `dependency_generation_input_manifest_ref`'s path filter: lockfiles, plus patch-package
- * patches under any `patches/` directory (WI-10002299), outside `.papercusp` and `node_modules`.
+ * Mirrors `dependency_generation_input_manifest_ref`'s path filter: lockfiles, `.nvmrc` Node pins
+ * (EI-28861111300853043), plus patch-package patches under any `patches/` directory
+ * (WI-10002299), outside `.papercusp` and `node_modules`.
  */
 export function isDependencyInputPath(rel: string): boolean {
   const normalized = rel.replace(/^\.\//, '');
@@ -47,7 +48,7 @@ export function isDependencyInputPath(rel: string): boolean {
     return false;
   }
   const base = segments[segments.length - 1] ?? '';
-  if (base === 'package-lock.json' || base === 'npm-shrinkwrap.json') return true;
+  if (base === 'package-lock.json' || base === 'npm-shrinkwrap.json' || base === '.nvmrc') return true;
   return base.endsWith('.patch') && (normalized.startsWith('patches/') || normalized.includes('/patches/'));
 }
 

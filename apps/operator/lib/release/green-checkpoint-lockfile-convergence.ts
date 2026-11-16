@@ -4,7 +4,8 @@
  *
  * The exact-input dependency generation the gate materialises is keyed on DEPENDENCY-INPUT blobs
  * (`dependency-generation.sh` `dependency_generation_input_manifest_ref`: package-lock.json /
- * npm-shrinkwrap.json AND patch-package `patches/*.patch` files outside node_modules and
+ * npm-shrinkwrap.json, `.nvmrc` Node pins (EI-28861111300853043) AND patch-package
+ * `patches/*.patch` files outside node_modules and
  * .papercusp, recursing through gitlinks; patches joined the key in WI-10002299 because the root
  * postinstall runs patch-package). The walk below uses the SAME predicate (`isDependencyInputPath`,
  * shared with the admit-time prediction) — a lockfile-only walk judged a patch-drifted repairHead
