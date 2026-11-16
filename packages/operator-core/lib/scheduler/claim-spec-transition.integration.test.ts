@@ -32,6 +32,7 @@ const migration = (file: string) =>
 const { getNextForBee, getClaimSpec, getClaimSpecRecord, setClaimSpec, fleetSpecBeeKey } = await import('./claim-spec-store');
 const { appendFleetMembershipEvent } = await import('../fleet-membership-store');
 const { DEFAULT_CLAIM_SPEC, validateClaimSpec } = await import('./claim-spec');
+const { fleetScopeLeaderRemedy, fleetScopeRefusalContract } = await import('./fleet-scope-admission');
 
 const H = 'papercup';
 const WS = 'default';
@@ -101,6 +102,70 @@ afterAll(async () => {
 });
 
 describe('WI-4770 fleet membership transition guard', () => {
+
+  it.each(['cup', 'fleet'] as const)('refusal remedy repairs the effective %s row and changes the real scheduler consumer', async (source) => {
+    await membership(BEE, PARENT, 'member');
+    await seedFeature('WI-refused', 'exact refused row');
+    await seedFeature('WI-forbidden', 'must stay outside the lane');
+    const makeSpec = (id: string, allowed: string): ClaimSpec => ({
+      ...laneSpec(id, allowed),
+      view: { filter: { all: [
+        { field: 'kind', op: '=', value: 'feature' },
+        { field: 'id', op: 'in', value: [allowed] },
+      ] } },
+      limits: { maxConcurrentClaims: 1 },
+    });
+    // Validate fixtures explicitly and retain the writer's errors in failures;
+    // an opaque `.ok` assertion hid an unsupported filter field on first run.
+    const parent = makeSpec('fleet-parent', source === 'cup' ? 'WI-refused' : 'WI-parent');
+    expect(validateClaimSpec(parent)).toMatchObject({ ok: true, errors: [] });
+    const parentWrite = await setClaimSpec({ cupId: fleetSpecBeeKey(PARENT), workspaceId: WS, spec: parent, potSlug: H }, db.sql);
+    expect(parentWrite.errors).toEqual([]);
+    expect(parentWrite.ok).toBe(true);
+    if (source === 'cup') {
+      const memberWrite = await setClaimSpec({ cupId: BEE, workspaceId: WS,
+        spec: makeSpec('member-private', 'WI-member'), potSlug: H }, db.sql);
+      expect(memberWrite.errors).toEqual([]);
+      expect(memberWrite.ok).toBe(true);
+    }
+    // Reproduce the incident's separate fleet3/private44 heads without creating
+    // dozens of unrelated revisions in this disposable fixture.
+    for (const [id, revision] of [[fleetSpecBeeKey(PARENT), 3], ...(source === 'cup' ? [[BEE, 44]] : [])] as Array<[string, number]>) {
+      await db.sql`UPDATE harness_shared.cup_claim_specs SET revision=${revision},
+        spec=jsonb_set(spec, '{revision}', to_jsonb(${revision}::int)) WHERE bee_id=${id} AND workspace_id=${WS}`;
+    }
+    const read = () => getClaimSpecRecord({ cupId: BEE, workspaceId: WS }, db.sql);
+    const before = await read();
+    expect(before.source).toBe(source);
+    expect(before.revision).toBe(source === 'cup' ? 44 : 3);
+    expect(await getNextForBee({ cupId: BEE, workspaceId: WS, harness: H })).toBeNull();
+    const scope = { ownerId: BEE, fleetSlug: PARENT, fleetRole: 'member' as const, workspaceId: WS, record: before };
+    const refusal = { allowed: false as const, scoped: true as const, code: 'fleet_scope_violation' as const,
+      reason: 'exact row outside effective lane', scope, refusal: fleetScopeRefusalContract('fleet_scope_violation', scope) };
+    const remedy = fleetScopeLeaderRemedy(refusal, true, null, null, 'WI-refused', H);
+    const call = JSON.parse(/scheduler:set_claim_spec (\{[^\n]+?\})\./.exec(remedy)![1]) as {
+      cupId?: string; fleet?: string; appendIds?: string[]; spec?: ClaimSpec; harness: string;
+    };
+    expect(call).toMatchObject(source === 'cup' ? { cupId: BEE } : { fleet: PARENT });
+    const target = call.cupId ?? fleetSpecBeeKey(call.fleet!);
+    const repaired = await setClaimSpec({ cupId: target, workspaceId: WS, potSlug: call.harness,
+      ...(call.spec ? { spec: call.spec } : { appendIds: call.appendIds }) }, db.sql);
+    expect(repaired.errors).toEqual([]);
+    expect(repaired.ok).toBe(true);
+    const after = await read();
+    expect(after.source).toBe(source);
+    expect(after.revision).toBe(before.revision! + 1);
+    expect(after.spec.rank).toEqual(before.spec.rank);
+    expect(after.spec.limits).toEqual(before.spec.limits);
+    expect(after.spec.view.filter).toEqual({ all: [
+      { field: 'kind', op: '=', value: 'feature' },
+      { field: 'id', op: 'in', value: [source === 'cup' ? 'WI-member' : 'WI-parent', 'WI-refused'] },
+    ] });
+    expect((await getNextForBee({ cupId: BEE, workspaceId: WS, harness: H }))?.workItem.id).toBe('WI-refused');
+    expect(await db.sql`SELECT feature_id, taken_by FROM harness_shared.work_items WHERE feature_id='WI-forbidden'`)
+      .toEqual([{ feature_id: 'WI-forbidden', taken_by: null }]);
+    if (source === 'cup') expect((await getClaimSpecRecord({ cupId: fleetSpecBeeKey(PARENT), workspaceId: WS }, db.sql)).revision).toBe(3);
+  });
 
   it.each([false, true])('dedicated members FIRST pull stays in-lane, including helpers and restart (reverse=%s)', async (reverse) => {
     const { seedMemberLaunchClaimSpecs } = await import('./member-launch-spec');

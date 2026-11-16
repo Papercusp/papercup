@@ -2554,6 +2554,33 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(remedy).not.toContain('spec:');
     });
 
+    it('a member override receives a member-targeted full spec rather than an unsupported member append', () => {
+      const privateScope = {
+        ...scope,
+        record: { ...scope.record, source: 'cup' as const,
+          spec: { ...scope.record.spec, view: { filter: { field: 'id', op: 'in' as const, value: ['WI-incumbent'] } } } },
+      };
+      const remedy = fleetScopeLeaderRemedy({ ...violation, scope: privateScope }, true, null, null, 'WI-refused', 'papercusp');
+      const call = JSON.parse(/scheduler:set_claim_spec (\{[^\n]+?\})\./.exec(remedy)![1]);
+      expect(call).toMatchObject({ cupId: 'su-member', harness: 'papercusp', spec: { revision: 21,
+        view: { filter: { field: 'id', op: 'in', value: ['WI-incumbent', 'WI-refused'] } } } });
+      expect(call.appendIds).toBeUndefined();
+      expect(call.spec.rank).toEqual(privateScope.record.spec.rank);
+      expect(remedy).not.toContain('"fleet":');
+    });
+
+    it.each([null, [{ planSlug: 'finished-plan', status: 'shipped' as const }]])('full-spec remedies also target the effective member override (retired=%s)', (retired) => {
+      const privateScope = {
+        ...scope,
+        record: { ...scope.record, source: 'cup' as const,
+          spec: { ...scope.record.spec, view: { filter: { field: 'plan', op: '=' as const, value: 'finished-plan' } } } },
+      };
+      const remedy = fleetScopeLeaderRemedy({ ...violation, scope: privateScope }, true, null, retired, 'WI-refused');
+      expect(remedy).toMatch(/scheduler:set_claim_spec \{ ?"?cupId"?:\s*"?su-member"?/);
+      expect(remedy).not.toContain('scheduler:set_claim_spec { fleet:');
+      expect(remedy).toContain('p2p-release-verify-lane');
+    });
+
     it('the fleet leader auto-message includes the append-ids call for the refused id', async () => {
       const missing: Extract<FleetScopeAdmission, { allowed: false }> = {
         ...violation, code: 'fleet_scope_missing',

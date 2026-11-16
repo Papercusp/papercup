@@ -1472,13 +1472,22 @@ export function fleetScopeLeaderRemedy(
     );
   }
   const spec = admission.scope.record?.spec;
+  // Admission resolves member overrides before fleet inheritance. Repair the
+  // same authored row; changing the fleet cannot lift a member override.
+  const target = admission.scope.record.source === 'cup'
+    ? { cupId: admission.scope.ownerId }
+    : { fleet: fleetSlug };
+  const targetText = 'cupId' in target
+    ? `cupId: ${JSON.stringify(target.cupId)}`
+    : `fleet: ${JSON.stringify(target.fleet)}`;
+  const lane = 'cupId' in target ? "member's lane" : 'fleet lane';
   const specRef = spec?.specId ? formatSpecRef(spec.specId, spec.revision) : 'the fleet lane (no authored spec yet — default)';
   const planScoped = specHasPlanPredicate(spec);
   const retiredPlanNote = retiredPlans?.length
     ? `⚠ RETIRED PLAN PIN — this spec still filters on ${retiredPlans
         .map((plan) => `'${plan.planSlug}' (status: ${plan.status})`)
         .join(', ')}. A shipped/superseded plan is terminal, so keeping it as the member's lane can match ZERO rows ` +
-      `without the spec being malformed. Re-steer the fleet to a live plan (or another positive filter) with ` +
+      `without the spec being malformed. Re-steer the ${lane} to a live plan (or another positive filter) with ` +
       `scheduler:set_claim_spec; do not keep bumping this revision for individual rows. `
     : '';
   // EI-21884167889601047: this note used to LEAD the refusal, ahead of the safer
@@ -1532,7 +1541,7 @@ export function fleetScopeLeaderRemedy(
     (admission.code === 'fleet_scope_missing' ||
       (admission.scope.record.source === 'fleet' && spec && appendIdsToClaimSpec(spec, [subjectId])))
     ? `scheduler:set_claim_spec ${JSON.stringify({
-        fleet: fleetSlug, appendIds: [subjectId],
+        ...target, appendIds: [subjectId],
         ...((harness ?? admission.scope.record.harnessSlug)?.trim()
           ? { harness: (harness ?? admission.scope.record.harnessSlug)!.trim() } : {}),
       })}`
@@ -1541,16 +1550,30 @@ export function fleetScopeLeaderRemedy(
     subjectId && spec && !classNote
       ? JSON.stringify(fencePreservingWidenFilter(spec.view?.filter, subjectId))
       : null;
-  const laneAction = appendCall
+  // appendIds is a fleet-only write contract. A private override needs an
+  // executable full-spec revision, preserving its other fields and any ID fence.
+  const memberCandidate = 'cupId' in target && subjectId && spec && !classNote && !retiredPlans?.length
+    ? { ...spec, revision: spec.revision + 1, view: { ...spec.view,
+        filter: appendIdsToClaimSpec(spec, [subjectId])?.view.filter ?? fencePreservingWidenFilter(spec.view?.filter, subjectId) } }
+    : null;
+  const memberCall = memberCandidate
+    ? `scheduler:set_claim_spec ${JSON.stringify({ ...target, spec: memberCandidate,
+        ...((harness ?? admission.scope.record.harnessSlug)?.trim()
+          ? { harness: (harness ?? admission.scope.record.harnessSlug)!.trim() } : {}) })}`
+    : null;
+  const laneAction = memberCall
+    ? `WIDEN the member's lane in ONE call: ${memberCall}. This preserves the incumbent ranking, limits and non-ID fences. ` +
+      `If the current spec revision changes, read it again before applying the update; claim floors still apply`
+    : appendCall
     ? `APPEND the refused id in ONE call: ${appendCall}. This atomically preserves incumbent ids and fences and bumps one revision; claim floors still apply`
     : retiredPlans?.length
-    ? `RE-STEER the fleet lane in ONE call: ` +
-      `scheduler:set_claim_spec { fleet: "${fleetSlug}", spec: { … a revision bump of ${specRef} ` +
+    ? `RE-STEER the ${lane} in ONE call: ` +
+      `scheduler:set_claim_spec { ${targetText}, spec: { … a revision bump of ${specRef} ` +
       `whose view.filter points at a live plan (or another positive filter) and admits this work } }`
     : concreteWiden
-      ? `WIDEN the fleet lane in ONE call, KEEPING the fence you already have — ` +
+      ? `WIDEN the ${lane} in ONE call, KEEPING the fence you already have — ` +
         `\`any\` is a top-level COMBINATOR key, not a leaf op, so this admits the row without ` +
-        `abandoning the existing filter: scheduler:set_claim_spec { fleet: "${fleetSlug}", spec: ` +
+        `abandoning the existing filter: scheduler:set_claim_spec { ${targetText}, spec: ` +
         `{ … a revision bump of ${specRef} with view.filter = ${concreteWiden} } } ` +
         `(preview it first with scheduler:preview_spec_delta).` +
         (planScoped
@@ -1559,8 +1582,8 @@ export function fleetScopeLeaderRemedy(
             `creates a coverage edge, so closing the plan item later auto-resolves this row as residue ` +
             `even if its own work was never done.`
           : '')
-      : `WIDEN the fleet lane in ONE call: ` +
-        `scheduler:set_claim_spec { fleet: "${fleetSlug}", spec: { … a revision bump of ${specRef} ` +
+      : `WIDEN the ${lane} in ONE call: ` +
+        `scheduler:set_claim_spec { ${targetText}, spec: { … a revision bump of ${specRef} ` +
         `whose view.filter admits this work } }`;
   const routeElsewhereNote =
     liveRouteTarget === false
