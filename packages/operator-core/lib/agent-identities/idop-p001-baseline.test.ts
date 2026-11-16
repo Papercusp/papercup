@@ -6,12 +6,16 @@ import { tmpdir } from 'node:os';
 import { gzipSync } from 'node:zlib';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { ProjectedTool, UnifiedToolContext, KernelEnforcementRequest } from '@papercusp/tooldef';
+import type { LoadedPlugin, PluginDiscoveryInventory } from '@papercusp/plugin-loader';
+import type { ToolDefinition } from '@papercusp/plugin-sdk';
 import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { defaultCensusRoot, SU_RENDER_PARITY_BASELINE } from './identity-surface-census';
 import { IDOP_P001_BASELINE_REL, IDOP_P001_PROMPT_REL, inspectIdopP001Coverage,
   runIdopP001PermissionComparison, loadIdopP001RolePermissionReader, loadIdopP001DispatchPermissionReader,
+  readIdopP001ExpectedPermissionDifferences, IDOP_P001_DIFFERENCES_REL,
   readIdopP001CurrentBuiltinPopulation,
   readIdopP001CurrentLibraryPopulation, readIdopP001AppliedStackPopulation,
+  readIdopP001InstalledPluginToolPopulation,
   joinIdopP001ComparisonPopulation,
   captureIdopP001HostPermissionPorts,
   replayIdopP001HostPermissionSnapshot,
@@ -1180,6 +1184,93 @@ describe('IDOP D-043 current builtin source population', () => {
   });
 });
 
+describe('IDOP D-043 installed plugin tool source population', () => {
+  // Low-entropy, role-named stand-in for a plugin config secret (the in-tree NEVER_EMIT_MARKER
+  // convention): never a credential-shaped literal, which the git-sync secrets guard quarantines.
+  const NEVER_EMIT_MARKER = 'never-emit-me';
+  const fixture = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'idop-installed-plugin-'));
+    const tool = { name: 'read', description: 'Read fixture', inputSchema: { type: 'object' },
+      capabilities: ['tasks:read'], expose: { mcp: { name: 'fixture:read' } } } satisfies ToolDefinition;
+    const manifest = { name: '@fixture/plugin', version: '1.0.0', capabilities: [...tool.capabilities], tools: [tool] };
+    const path = join(dir, 'papercusp.json');
+    writeFileSync(path, JSON.stringify({ ...manifest, config: { secret: NEVER_EMIT_MARKER } }));
+    const loaded: LoadedPlugin = { path: dir, source: 'project', toolDefinitions: [tool],
+      plugin: { ...manifest, papercusp: '*', tools: { read: vi.fn() } } };
+    const discovery: PluginDiscoveryInventory = {
+      roots: [{ pluginsDir: dir, source: 'project' }], unavailable: [],
+      candidates: [{ path: dir, source: 'project', status: 'loaded', pluginName: manifest.name, manifest }],
+    };
+    const result = { loaded: [loaded], discovery, errors: [] as Array<{ error: string; path: string }> };
+    const discover = vi.fn(async () => result);
+    return { dir, path, manifest, loaded, discovery, result, discover,
+      options: { root: dir, harnessSlug: 'fixture-harness' },
+      close: () => rmSync(dir, { recursive: true, force: true }) };
+  };
+
+  it('binds selected declarations to exact manifest bytes and preserves failed and shadowed candidates without executing handlers', async () => {
+    const f = fixture();
+    try {
+      f.discovery.candidates.push({ path: '/shadowed', source: 'global', status: 'shadowed', pluginName: f.manifest.name },
+        { path: '/broken', source: 'harness', status: 'error', error: 'invalid manifest' });
+      f.discovery.unavailable.push({ path: '/unreadable', code: 'EACCES' });
+      f.result.errors.push({ path: '/broken', error: 'invalid manifest' });
+      const inventory = await readIdopP001InstalledPluginToolPopulation(f.options, { discover: f.discover });
+      expect(f.discover).toHaveBeenCalledExactlyOnceWith({ projectDir: join(f.dir, 'libs/papercusp'),
+        harnessSlugs: ['fixture-harness'], metadataOnly: true });
+      expect(f.loaded.plugin.tools?.read).not.toHaveBeenCalled();
+      expect(inventory).toMatchObject({ runtimeRegistrationMeasured: false, dynamicToolsMeasured: false,
+        plugins: [{ name: f.manifest.name, declarations: [f.manifest.tools[0]] }],
+        discovery: { unavailable: [{ path: '/unreadable', code: 'EACCES' }] }, errors: f.result.errors });
+      expect(inventory.sources).toEqual([{ path: f.path, sha256: sha256(readFileSync(f.path)) }]);
+      expect(JSON.stringify(inventory)).not.toContain(NEVER_EMIT_MARKER);
+      expect(inventory.sha256).toMatch(/^[a-f0-9]{64}$/);
+    } finally { f.close(); }
+  });
+
+  it.each(['omission', 'substitution', 'duplicate', 'changed-manifest'])('rejects %s rather than reporting a complete installed population', async defect => {
+    const f = fixture();
+    try {
+      if (defect === 'omission') f.result.loaded = [];
+      if (defect === 'substitution') f.loaded.toolDefinitions = [];
+      if (defect === 'duplicate') f.discovery.candidates.push({ ...f.discovery.candidates[0] });
+      if (defect === 'changed-manifest') writeFileSync(f.path, JSON.stringify({ ...f.manifest, tools: [] }));
+      await expect(readIdopP001InstalledPluginToolPopulation(f.options, { discover: f.discover })).rejects.toThrow(/IDOP installed plugin/);
+    } finally { f.close(); }
+  });
+
+  it('accepts a measured empty installation set while retaining discovery failures', async () => {
+    const f = fixture();
+    try {
+      f.result.loaded = [];
+      f.discovery.candidates = [];
+      f.discovery.unavailable.push({ path: '/missing-global-root', code: 'ENOENT' });
+      const inventory = await readIdopP001InstalledPluginToolPopulation(f.options, { discover: f.discover });
+      expect(inventory.plugins).toEqual([]);
+      expect(inventory.discovery.unavailable).toEqual(f.discovery.unavailable);
+      expect(inventory.dynamicToolsMeasured).toBe(false);
+    } finally { f.close(); }
+  });
+
+  it('uses the real metadata loader without importing an installed entry or exporting its configuration', async () => {
+    const f = fixture();
+    try {
+      const pluginDir = join(f.dir, 'libs/papercusp/plugins/fixture');
+      mkdirSync(pluginDir, { recursive: true });
+      writeFileSync(join(pluginDir, 'papercusp.json'), readFileSync(f.path));
+      writeFileSync(join(pluginDir, 'index.cjs'), "throw new Error('installed entry must not execute');");
+      const { loadPlugins } = await import('@papercusp/plugin-loader');
+      const inventory = await readIdopP001InstalledPluginToolPopulation(f.options, {
+        discover: options => loadPlugins({ ...options, harnessSlugs: [], globalPluginsDir: join(f.dir, 'empty-global') }),
+      });
+      expect(inventory.errors).toEqual([]);
+      expect(inventory.plugins).toHaveLength(1);
+      expect(inventory.plugins[0]).toMatchObject({ name: f.manifest.name, declarations: [f.manifest.tools[0]] });
+      expect(JSON.stringify(inventory)).not.toContain(NEVER_EMIT_MARKER);
+    } finally { f.close(); }
+  });
+});
+
 describe('IDOP D-043 selected runtime library population', () => {
   const fixture = () => {
     const dir = mkdtempSync(join(tmpdir(), 'idop-library-'));
@@ -1358,7 +1449,7 @@ describe('IDOP D-043 applied stack source population', () => {
       stacks: [{ ownerId, applied: revision, role: 'judge', explicitStack: ['domain:applied-agent'],
         artifact: applied, artifactSha256: sha256(JSON.stringify(applied)) }] });
     expect(result.stacks[0].layers).toContainEqual(expect.objectContaining({ ref: 'applied-agent' }));
-    expect(result.stacks[0].artifact.specificationRevision).not.toBe(desired.specificationRevision);
+    expect(result.stacks[0].artifact!.specificationRevision).not.toBe(desired.specificationRevision);
   });
 
   it('admits the execution resolver control-only transition and the recorded SU role default', async () => {
@@ -1383,6 +1474,37 @@ describe('IDOP D-043 applied stack source population', () => {
   it('propagates a failed launch-record read instead of manufacturing a receipt refusal', async () => {
     await expect(readIdopP001AppliedStackPopulation('fixture-workspace', { ...deps(),
       record: async () => { throw new Error('authority read failed'); } })).rejects.toThrow('authority read failed');
+  });
+
+  it('releases payloads only after resolving and fingerprinting the complete applied inputs', async () => {
+    const inputs = { anchors: async () => [anchor, { ownerId: 'refused-owner', applied: revision }],
+      record: async (owner: string) => owner === ownerId ? structuredClone(record) : null };
+    const full = await readIdopP001AppliedStackPopulation('fixture-workspace', inputs);
+    const compact = await readIdopP001AppliedStackPopulation('fixture-workspace', inputs, { payloads: 'digests-only' });
+    expect(full.payloads).toBe('retained');
+    expect(compact).toEqual({ ...full, payloads: 'digests-only',
+      stacks: full.stacks.map(({ launchRecord: _record, artifact: _artifact, ...member }) => member),
+      refused: full.refused.map(({ launchRecord: _record, ...member }) => member) });
+    expect(compact.stacks[0]).not.toHaveProperty('artifact');
+    expect(compact.stacks[0]).not.toHaveProperty('launchRecord');
+    expect(compact.refused[0]).not.toHaveProperty('launchRecord');
+    expect(compact.stacks[0]).toMatchObject({ explicitStack: ['domain:applied-agent'],
+      recordSha256: sha256(JSON.stringify(record)), artifactSha256: sha256(JSON.stringify(applied)) });
+    expect(compact.refused[0]).toMatchObject({ resolution: { kind: 'stale-artifact', reason: 'receipt-missing' },
+      recordSha256: sha256('null') });
+    const changed = await readIdopP001AppliedStackPopulation('fixture-workspace', { ...inputs,
+      record: async (owner: string) => owner === ownerId ? { ...record, unrelatedOriginalInput: 'changed' } : null,
+    }, { payloads: 'digests-only' });
+    expect(changed.stacks[0].recordSha256).not.toBe(compact.stacks[0].recordSha256);
+    expect(changed.stacks[0].artifactSha256).toBe(compact.stacks[0].artifactSha256);
+  });
+
+  it('propagates receipt-read failures and refuses malformed retention in digest-only mode', async () => {
+    await expect(readIdopP001AppliedStackPopulation('fixture-workspace', { ...deps(),
+      record: async () => { throw new Error('original input unavailable'); } }, { payloads: 'digests-only' }))
+      .rejects.toThrow('original input unavailable');
+    await expect(readIdopP001AppliedStackPopulation('fixture-workspace', deps(),
+      { payloads: 'invalid' as 'digests-only' })).rejects.toThrow(/payload retention/);
   });
 
   it.each(['37b21f82cba4d206174fa104', 'native-state-v1'])(
@@ -1467,6 +1589,16 @@ describe('IDOP D-043 applied stack source population', () => {
     expect(again.sha256).toBe(inventory.sha256);
     input.builtin.roles.push('later-role');
     expect(inventory.population).not.toContain('role:later-role');
+  });
+
+  it('produces the identical joined domain from retained and digest-only applied populations', async () => {
+    const input = await comparisonInputs();
+    const compact = await readIdopP001AppliedStackPopulation('fixture-workspace', {
+      anchors: async () => [anchor, { ownerId: 'refused-owner', applied: revision }],
+      record: async owner => owner === ownerId ? record : null,
+    }, { payloads: 'digests-only' });
+    expect(joinIdopP001ComparisonPopulation({ ...input, applied: compact }))
+      .toEqual(joinIdopP001ComparisonPopulation(input));
   });
 
   it.each(['duplicate-role', 'duplicate-owner', 'missing-source', 'omitted-library-refusal', 'wrong-source'])(
@@ -1561,6 +1693,68 @@ describe('IDOP D-043 streamed applied archive finalization', () => {
     await fixture(records, async path => {
       await expect(inspectIdopP001AppliedStackArchive(options(path))).rejects.toThrow(/population row/);
     });
+  });
+});
+
+describe('IDOP D-043 repository expected-difference manifest', () => {
+  const options = { root, baselineRevision: baseline.base.commit, scope: 'source-role-envelope' };
+  const fixture = (edit: (manifest: Record<string, unknown>) => void, check: (fixtureRoot: string) => void) => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'idop-differences-'));
+    try {
+      const manifest = JSON.parse(readFileSync(join(root, IDOP_P001_DIFFERENCES_REL), 'utf8'));
+      edit(manifest);
+      const path = join(fixtureRoot, IDOP_P001_DIFFERENCES_REL);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, JSON.stringify(manifest));
+      check(fixtureRoot);
+    } finally { rmSync(fixtureRoot, { recursive: true, force: true }); }
+  };
+
+  it('reads the preservation requirement independently of either evaluator and binds its exact bytes', () => {
+    const manifest = readIdopP001ExpectedPermissionDifferences(options);
+    expect(manifest).toMatchObject({ id: 'source-role-envelope', baselineRevision: baseline.base.commit,
+      differences: [], authorityRefs: ['identity-definitions-own-policy-2026-10-17#R-2',
+        'identity-definitions-own-policy-2026-10-17#D-043'] });
+    expect(manifest.sha256).toBe(sha256(readFileSync(join(root, IDOP_P001_DIFFERENCES_REL))));
+    expect(() => readIdopP001ExpectedPermissionDifferences({ ...options, baselineRevision: 'f'.repeat(40) }))
+      .toThrow(/substituted baseline/);
+    expect(() => readIdopP001ExpectedPermissionDifferences({ ...options, scope: 'runtime-dispatch' }))
+      .toThrow(/does not cover/);
+  });
+
+  it.each(['foreign-authority', 'unknown-field', 'duplicate-scope', 'duplicate-allowance'])(
+    'refuses %s instead of broadening the repository allowance', kind => {
+      fixture(manifest => {
+        const scope = { id: 'source-role-envelope', expectation: 'preserve',
+          authorityRefs: ['identity-definitions-own-policy-2026-10-17#R-2'], differences: [] as IdopPermissionDifference[] };
+        const difference: IdopPermissionDifference = { id: 'role:fixture', inputSha256: 'a'.repeat(64),
+          beforeSha256: 'b'.repeat(64), afterSha256: 'c'.repeat(64), authorityRefs: [...scope.authorityRefs] };
+        if (kind === 'foreign-authority') scope.authorityRefs = ['another-plan#R-2'];
+        if (kind === 'unknown-field') manifest.acceptAllDifferences = true;
+        if (kind === 'duplicate-allowance') scope.differences = [difference, difference];
+        manifest.scopes = kind === 'duplicate-scope' ? [scope, scope] : [scope];
+      }, fixtureRoot => expect(() => readIdopP001ExpectedPermissionDifferences({ ...options, root: fixtureRoot }))
+        .toThrow());
+    });
+
+  it('uses the repository allowance with both real source arms and retains omission and unauthorized-change detectors', async () => {
+    const manifest = readIdopP001ExpectedPermissionDifferences(options);
+    const old = loadIdopP001RolePermissionReader({ root, revision: manifest.baselineRevision, testingFullAccess: 'off' });
+    const current = loadIdopP001RolePermissionReader({ root, revision: 'working-tree', testingFullAccess: 'off' });
+    const cases = ['capability:read', 'secrets:read', 'capability:bash'].map(capability => ({
+      id: `role:judge:${capability}`, input: { toolName: 'comparison:probe', capabilities: [capability],
+        ctx: { role: 'judge', isSuperuser: false, isPowerUser: false } },
+    }));
+    type Request = Parameters<typeof old.evaluate>[0];
+    const run = { population: () => cases.map(row => row.id), enumerate: () => cases,
+      before: (input: unknown) => ({ ...old.evaluate(input as Request) }),
+      after: (input: unknown) => ({ ...current.evaluate(input as Request) }), manifest: manifest.differences };
+    expect(await runIdopP001PermissionComparison(run)).toMatchObject({ passed: true, differences: [] });
+    await expect(runIdopP001PermissionComparison({ ...run, enumerate: () => cases.slice(1) }))
+      .rejects.toThrow(/incompletely enumerated/);
+    expect(await runIdopP001PermissionComparison({ ...run,
+      after: (input: unknown) => ({ ...current.evaluate(input as Request), withinEnvelope: true }) }))
+      .toMatchObject({ passed: false, unexpected: expect.arrayContaining(['role:judge:secrets:read']) });
   });
 });
 
