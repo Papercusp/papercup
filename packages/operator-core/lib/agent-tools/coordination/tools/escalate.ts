@@ -251,6 +251,7 @@ export default defineTool({
   guidance: {
     when: 'A decision you should not make alone, a blocker that requires human input, or a risky operation that needs explicit confirmation.',
     notWhen: 'Routine status updates — use coord:send. File contention — locks:queue already names the holder.',
+    seeAlso: ['coord:escalations { status: "open" } (the open escalations, and whether yours was resolved)'],
   },
   capability: 'coord:write',
   requirePrincipal: false,

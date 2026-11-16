@@ -16,6 +16,7 @@ export default defineTool({
     notWhen: 'For judge evidence, do not use a broad SQL read: pass the known msg_id for one exact read. Other callers may use the bounded list and filters.',
     returns:
       'EI-15377: `conditionKey` is an exact match against the record subjectSignature (the dedup key a caller supplies as meta.subjectSignature when opening); `q` is a case-insensitive substring match over summary+body. For status=open the filter runs against the COMPLETE open set, so a miss proves absence. Otherwise it runs against a recency-bounded window and the result carries `filterWindowCaveat:true` — a miss there does NOT prove absence, only that no match fell inside the window scanned.',
+    seeAlso: ['coord:resolve { msg_id, choice } (record the answer to one of them)'],
   },
   capability: 'coord:read',
   requirePrincipal: false,

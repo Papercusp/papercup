@@ -158,6 +158,7 @@ export default defineTool({
     seeAlso: [
       'coord:send { related_msg_id } (a correction/follow-up that keeps the original visible)',
       'coord:thread (forensic view — shows a retracted original + its notice)',
+      'coord:supersede (correct your own message instead: the original audience receives the correction)',
     ],
   },
   capability: 'coord:write',

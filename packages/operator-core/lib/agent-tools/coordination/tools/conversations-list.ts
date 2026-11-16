@@ -23,6 +23,7 @@ export default defineTool({
       'conversations:get (full detail on one conversation)',
       'conversations:join (participate in one)',
       'conversations:post (start a new one)',
+      'coord:message-agent (start one scoped to a work-item, addressed to specific agents)',
     ],
   },
   capability: 'coord:read',

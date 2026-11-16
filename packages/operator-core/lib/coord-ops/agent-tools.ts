@@ -139,6 +139,7 @@ defineTool({
   guidance: {
     when: 'A consequential decision where the owner might already have an answer, but you want an automatic fallback to a vote and a curated escalation rather than blocking.',
     notWhen: 'You already know the owner has no opinion (go straight to coord:vote) or the choice is trivial (just decide).',
+    seeAlso: ['coord:vote (skip the owner rung when you already know the owner has no opinion)'],
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -195,6 +196,7 @@ defineTool({
     when: 'You need the owner\'s (human\'s) input on a decision. Default call (no timeout_s) opens the question and returns at once with a conversation_id — safe to call from anywhere, including code:run; check back later via conversations:get or events:await { event: \'conversation:answered:<conversation_id>\' }.',
     notWhen:
       'A peer question — use coord:send or coord:message-agent. A knowledge lookup — use search:semantic. A reversible judgment call you could default yourself — park it: work_items:set_blocker kind:\'product-decision\' with defaultIfUnanswered + decideBy. A blocking decision that MUST have a human answer — use coord:escalate (severity: blocker). Retract an old ask via supersedes_conversation_id or conversations:supersede, not coord:send. Calling from inside code:run with an explicit timeout_s > 0 — code:run\'s own ~55s foreground cap will fire first and script_timeout the call (the question is still opened by then; do not blindly re-ask — check conversations:get for what already landed).',
+    seeAlso: ['coord:deliberate (the same question with a fallback: a vote if the owner stays silent, a curated escalation if the vote splits)'],
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -210,6 +212,7 @@ defineTool({
 const threadPostOp = requireCoordOp('coord:thread-post');
 defineTool({
   name: 'coord:thread-post',
+  // @no-coord-tier vote-program plumbing: voter and advocate sessions that coord:vote spawns cast into the CONVERSATION_ID their brief supplies and the program's collect step consumes the posts; outside a vote there is no behaviour to enforce (open threads use conversations:post)
   description:
     'Post a message to a coordination thread by conversation_id (e.g. a spawned voter casting its structured ```vote``` block, or the advocate posting its ```advocate``` objection).',
   guidance: {

@@ -102,43 +102,25 @@ export const NO_COORD_TIER_RE = /@no-coord-tier\s+([^\n]+)/;
 export const MIN_TIER_EXEMPTION_REASON = 24;
 
 /**
- * BASELINE — coordination verbs that carry no resolvable tier today. SHRINK-ONLY.
+ * BASELINE — coordination verbs that carry no resolvable tier. SHRINK-ONLY, and
+ * EMPTY since 2026-11-16.
  *
- * Seeded 2026-08-03 from the live tree, so the ratchet property (a NEW untiered
- * verb fails) holds from day one even though the existing debt is real and
- * unpaid. Retiring or tiering a verb removes its entry; nothing is ever added.
+ * Seeded 2026-08-03 from the live tree with 20 entries (P-002's 26-row debt block
+ * minus the two `operator:*` surfaces and minus the two whose tier-3 pointers this
+ * scanner can see, see {@link extractSeeAlsoRegion}), so the ratchet property (a NEW
+ * untiered verb fails) held from day one while the existing debt stayed real.
  *
- * ⚠ This is NOT a list of verbs that are fine. It is P-002's 26-row debt block
- * minus the two `operator:*` surfaces and minus the two whose tier-3 pointers
- * this gate's scanner can now see (see {@link extractSeeAlsoRegion}). Every entry
- * is a behaviour whose only enforcement is prose — which D-016 says is not
- * enforcement at all.
+ * Paid in full when {@link UNTIERED_BASELINE_REVIEW_BY} expired (WI-6554700010048916;
+ * its completion record maps each former entry to its mechanism). Every former entry
+ * now resolves through one of the gate's three real routes, never an assertion: a
+ * DECLARED_COORD_TIERS entry naming a mechanism that already existed plus the test
+ * that fails without it, a seeAlso pointer on the tool whose result leads to the
+ * verb, or a reasoned `@no-coord-tier` in the defineTool literal.
+ *
+ * Shrink-only means it STAYS empty: a new untiered coordination verb now fails the
+ * gate outright instead of being grandfathered here.
  */
-export const UNTIERED_BASELINE: ReadonlySet<string> = new Set([
-  'coord:ack',
-  'coord:ask',
-  'coord:await-inbox',
-  'coord:conditions',
-  'coord:deliberate',
-  'coord:emit',
-  'coord:escalations',
-  'coord:goal',
-  'coord:handoffs',
-  'coord:message-agent',
-  'coord:read',
-  'coord:rebind-identity',
-  'coord:resolve',
-  'coord:retract',
-  'coord:supersede',
-  'coord:thread-post',
-  'coord:vote',
-  'coord:wake',
-  'coord:wake-mode',
-  'coord:watermark',
-  // 'coord:watermark-set' RETIRED (plan fleet-deltas-leader-primitives-2026-07-10,
-  // D-014) — the verb no longer exists, so its baseline entry is a legitimate
-  // SHRINK, not a suppression. Both cursors it wrote now settle server-side.
-]);
+export const UNTIERED_BASELINE: ReadonlySet<string> = new Set<string>();
 
 /**
  * When the grandfather period stops being free. Past this date a non-empty
@@ -413,7 +395,15 @@ export function resolveTieredSet(
  * would drop exactly those cross-group pointers (the census makes the same point
  * about deriving over the whole registry rather than the coord slice).
  */
-export async function scanCoordTierGate(repoRoot: string): Promise<TierGateResult> {
+export async function scanCoordTierGate(
+  repoRoot: string,
+  /**
+   * Override the grandfathered set. Tests only: the shipped baseline is empty, so a
+   * test proving that grandfathering still forgives an untiered verb must supply its
+   * own. Production callers omit it.
+   */
+  opts: { readonly baseline?: ReadonlySet<string> } = {},
+): Promise<TierGateResult> {
   const { readFile } = await import('node:fs/promises');
   const { buildBuiltinToolCatalog, buildBuiltinToolSourceFiles } = await import('../static-tool-catalog');
   const { selectCoordBehaviours } = await import('./enforcement-tier-census');
@@ -432,5 +422,6 @@ export async function scanCoordTierGate(repoRoot: string): Promise<TierGateResul
     rows,
     tiered: resolveTieredSet(pointers),
     catalogue: selectCoordBehaviours(buildBuiltinToolCatalog(repoRoot)),
+    ...(opts.baseline ? { baseline: opts.baseline } : {}),
   });
 }

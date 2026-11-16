@@ -203,15 +203,17 @@ describe('resolveTieredSet — explicit beats derived, same rule as the census',
 
 describe('the grandfather period is bounded', () => {
   it('expires, so "temporary" debt cannot become permanent', () => {
-    expect(untieredBaselineExpired('2099-01-01')).toBe(true);
-    expect(untieredBaselineExpired('2026-08-03')).toBe(false);
+    // An explicit baseline: the shipped one is empty, and an empty baseline never expires.
+    const debt = new Set(['coord:unpaid']);
+    expect(untieredBaselineExpired('2099-01-01', debt)).toBe(true);
+    expect(untieredBaselineExpired('2026-08-03', debt)).toBe(false);
   });
 
   it('an EMPTY baseline never expires — there is nothing left to grandfather', () => {
     expect(untieredBaselineExpired('2099-01-01', new Set())).toBe(false);
   });
 
-  it('the review date has not already passed (this test is the reminder)', () => {
+  it('the grandfather period is not overdue: a non-empty baseline past its review date fails here (this test is the reminder)', () => {
     expect(untieredBaselineExpired()).toBe(false);
     expect(UNTIERED_BASELINE_REVIEW_BY).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
@@ -284,15 +286,18 @@ describe('THE RATCHET HAS TEETH (synthetic tree, real scan seam)', () => {
     expect(r2.offenders[0]!.rule).toBe('exemption-unreasoned');
   }, 30_000);
 
-  it('does not fire on a verb that is already in the shipped baseline', async () => {
+  it('does not fire on a grandfathered verb, and fires on the same verb once it is not grandfathered', async () => {
+    // The shipped baseline is empty (paid 2026-11-16), so the forgiveness path is
+    // driven through the scan seam with an explicit baseline. The second assertion is
+    // the property that matters now: nothing is grandfathered by default.
     const root = await tempRoot();
-    const [grandfathered] = [...UNTIERED_BASELINE];
     await write(
       root,
       `${TOOLS}/fixture.ts`,
-      `defineTool({\n  name: '${grandfathered}',\n  capability: 'coord:write',\n});\n`,
+      `defineTool({\n  name: 'coord:grandfathered',\n  capability: 'coord:write',\n});\n`,
     );
-    expect((await scanCoordTierGate(root)).offenders).toEqual([]);
+    expect((await scanCoordTierGate(root, { baseline: new Set(['coord:grandfathered']) })).offenders).toEqual([]);
+    expect((await scanCoordTierGate(root)).offenders.map((o) => o.name)).toEqual(['coord:grandfathered']);
   }, 30_000);
 });
 
@@ -328,10 +333,10 @@ describe('THE GATE, against the real tree', () => {
     expect(r.staleBaseline, 'these no longer need grandfathering — delete them from UNTIERED_BASELINE').toEqual([]);
   }, 30_000);
 
-  it('the baseline contains ONLY coordination verbs that still exist', async () => {
-    const r = await scanCoordTierGate(ROOT);
-    expect(UNTIERED_BASELINE.size).toBeGreaterThan(0);
-    for (const name of UNTIERED_BASELINE) expect(name.startsWith('coord:')).toBe(true);
-    expect(r.scanned).toBeGreaterThanOrEqual(UNTIERED_BASELINE.size);
-  }, 30_000);
+  it('the baseline is EMPTY: the grandfathered debt was paid and the set is shrink-only', () => {
+    // WI-6554700010048916 tiered or exempted every former entry when the review date
+    // expired. Re-adding a verb here re-opens debt the gate exists to close: give it a
+    // real mechanism instead (see the failure message of the real-tree gate test).
+    expect([...UNTIERED_BASELINE]).toEqual([]);
+  });
 });

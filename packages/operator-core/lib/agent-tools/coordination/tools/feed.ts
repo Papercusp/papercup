@@ -50,6 +50,7 @@ export default defineTool({
       'You need the full fleet-wide coordination timeline — auditing what agents said to each other, tracing a broadcast/handoff/escalation chain, or backing an observer UI. The all-traffic counterpart to the per-owner coord:inbox.',
     notWhen:
       'For YOUR addressed messages use coord:inbox; for open human escalations use coord:escalations; for live "who is active" use coord:presence. coord:feed is the read-everything firehose, not a working inbox.',
+    seeAlso: ['coord:conditions (open alarm conditions as current state rather than alarm history)'],
     // EI-22057308172107761: these are deliberately coord:inbox-only VIEW-shaping
     // controls. Keep the redirect on the failure path instead of expanding this
     // tool's prompt-weight-capped description or accepting args the firehose

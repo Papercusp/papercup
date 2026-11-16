@@ -64,6 +64,7 @@ export default defineTool({
   guidance: {
     when: 'A coord:inbox / coord:feed entry rendered with `body_truncated:true` (or you were told "see coord msg <id>") and you need its exact full text — one cheap lookup by msg_id instead of a since_ts poll; a fresh coord:inbox call with payloadTier:"full" also restores raw entry content, but reads a window.',
     notWhen: 'For the whole conversation around a message (replies/acks/resolutions) — use coord:thread. For a fresh inbox sweep — use coord:inbox. Before SENDING a long finding — write it onto the work-item (work_items:checkpoint / a comment) and send only a 1-line pointer; do not rely on the recipient coord:read-ing it back.',
+    seeAlso: ['coord:ack { msg_id } (confirm receipt to its sender)'],
   },
   capability: 'coord:read',
   requirePrincipal: false,

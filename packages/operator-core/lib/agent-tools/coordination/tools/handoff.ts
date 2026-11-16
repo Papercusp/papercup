@@ -63,6 +63,7 @@ export default defineTool({
   guidance: {
     when: 'Wrapping up your piece of a plan and naming who picks up next — or accepting a handoff someone made to you.',
     notWhen: 'A routine status update — use coord:send. A blocking decision — use coord:escalate.',
+    seeAlso: ['coord:handoffs { status } (whether a handoff was accepted, is still open, or expired)'],
   },
   capability: 'coord:write',
   requirePrincipal: false,

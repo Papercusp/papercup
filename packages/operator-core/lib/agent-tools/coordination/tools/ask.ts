@@ -33,6 +33,7 @@ import { hardText, LIMITS } from '../../limits';
 
 export default defineTool({
   name: 'coord:ask',
+  // @no-coord-tier owner-UI only: agentRoles [] denies every agent role and the handler refuses any caller but the admin coord UI, so there is no agent behaviour to enforce
   description:
     'OWNER-UI ONLY. The owner\'s "Ask an agent" UI asks one named agent a question, opening a `question` conversation addressed to them. Agent sessions are denied; use `coord:send` or `coord:message-agent` for agent-to-agent questions.',
   guidance: {

@@ -31,7 +31,11 @@ export default defineTool({
     when: 'You know you are working alongside a peer (same file, same deliverable, one of you blocks the other) and want their goal + state surfaced to you without waiting for a derivation to infer it — or you can see TWO OTHER agents heading for the same work and want each to see the other.',
     notWhen: 'You just want to read who is around — that is coord:presence. Coupling is a standing declaration, not a one-off lookup, and it grants no access: it only changes whose state is worth showing.',
     chaining: 'coord:couple { b: <peer> } → coord:presence (the coupled peer now rides your peer state) → coord:decouple { b: <peer> } when the shared work ends.',
-    seeAlso: ['coord:decouple (end a coupling, or pre-empt a derived one)', 'coord:presence (who is around)'],
+    seeAlso: [
+      'coord:decouple (end a coupling, or pre-empt a derived one)',
+      'coord:presence (who is around)',
+      "coord:goal { ownerId } (the coupled peer's current goal as a resolvable ref)",
+    ],
   },
   capability: 'coord:write',
   requirePrincipal: false,

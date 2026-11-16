@@ -19,6 +19,7 @@ export default defineTool({
   guidance: {
     when: 'Turn start — the OMP coordination extension calls this to scope the inbox to new entries. To check if a PEER has seen a message you sent (READ-RECEIPT, EI-2042): coord:watermark { agent: <their ownerId from coord:presence>, sent_ts: <your message ts> } → seen:true means it was injected into their context.',
     notWhen: 'Routine reads — coord:inbox without a watermark returns the full inbox.',
+    seeAlso: ['coord:wake { to } (they have not seen it and are parked: start their turn)'],
   },
   capability: 'coord:read',
   requirePrincipal: false,

@@ -43,6 +43,7 @@ export default defineTool({
     chaining: 'coord:presence (find a parked target) → coord:wake { to } → check `queued`/`warning`, then verify pickup from a fresh checkpoint or activity timestamp. A queued wake is not proof that a turn executed.',
     returns:
       '{ ok, to, queued, woken:0, pickupConfirmed:false, pickup?, recipient_dead?, recipient_dormant_scheduled?, recipient_alive_not_wakeable?, warning? }. `queued` counts matched durable wake deliveries; it does NOT prove a turn executed. To verify pickup, events:await `pickup[0].event` with timeout_sec ≈ windowSec+60 (it fires only if NO turn started; a quiet timeout is pickup), or read a fresh checkpoint. A queue miss still reports WHICH kind: `recipient_dead` (genuinely `ended`, no scheduled fire) is a LOUD miss; `recipient_dormant_scheduled` means deferred; `recipient_alive_not_wakeable` means alive without a watcher.',
+    seeAlso: ['coord:watermark { agent, sent_ts } (whether they have read your message yet)'],
   },
   capability: 'coord:write',
   requirePrincipal: false,

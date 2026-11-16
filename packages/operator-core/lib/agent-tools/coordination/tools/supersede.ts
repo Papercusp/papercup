@@ -42,6 +42,7 @@ export default defineTool({
     notWhen:
       "Correcting SOMEONE ELSE's claim — reply to it instead (a reply is visibly attributed to you; only the original sender may supersede their own message). Also not for adding NEW information to an old thread: that is an ordinary coord:send.",
     chaining: 'plans:add-decision (for a RULING other lanes must follow, rather than an observation) · coord:catch-up (where a superseded original now surfaces its correction)',
+    seeAlso: ['coord:retract (withdraw the message outright instead of correcting it)'],
   },
   args: z.object({
     msg_id: z.string().min(1).describe('The msg_id of YOUR message that is being corrected.'),

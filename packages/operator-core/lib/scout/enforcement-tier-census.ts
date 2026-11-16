@@ -143,6 +143,50 @@ export const DECLARED_COORD_TIERS: ReadonlyMap<string, TierDeclaration> = new Ma
         'Folded into coord:orient as the `planEvents` delta (orient.ts: the mandated bootstrap collapses memory:search + coord:inbox + coord:plan-events + coord:declare-intent into one round-trip), so an agent receives the delta without remembering the call.',
     },
   ],
+  // ── Declared 2026-11-16 when UNTIERED_BASELINE expired (WI-6554700010048916). Each
+  // entry names a mechanism that already existed in code and the test that fails if
+  // that mechanism is removed. The rest of the old baseline was paid with derived
+  // seeAlso pointers or a reasoned @no-coord-tier; see coord-tier-gate.ts.
+  [
+    'coord:emit',
+    {
+      tier: 'auto-stamp',
+      evidence:
+        'coord-lifecycle/lifecycle-rules.ts registers reaction rules (registerReactionRule) that turn the lifecycle tool events work_items:claim, work_items:create and coord:declare-intent into coord:emit through normal audited dispatch, and work_items:complete carries its own emits: rule that fires coord:emit (agent-tools/work_items/complete.ts). The agent never hand-writes the lifecycle notice. Falsifier: coord-lifecycle/lifecycle-rules.test.ts asserts each rule fires coord:emit.',
+    },
+  ],
+  [
+    'coord:await-inbox',
+    {
+      tier: 'auto-stamp',
+      evidence:
+        'The BEHAVIOUR (stay wakeable by your inbox while idle) is armed by the harness, not the agent: armInboxWake (events/await/inbox-wake-arm.ts, turn-lifecycle-control-2026-06-08 D-001..D-005) runs on every SessionStart from bootstrap-su and bootstrap-su-resume, and again from loop:arm and capability:launch-agent, so every launched agent holds a standing coord:inbox-wake:<self> watch without calling anything. coord:await-inbox is now only an annotation on that row (it refreshes the idle note). Falsifier: bootstrap-su.test.ts asserts the arm call on bootstrap; inbox-wake-arm.test.ts pins the idempotent upsert.',
+    },
+  ],
+  [
+    'coord:rebind-identity',
+    {
+      tier: 'auto-stamp',
+      evidence:
+        'The generated SessionStart hook (interactive-claude-config.ts, compaction-continuity-hardening-2026-07-07 P-007) compares the live PAPERCUSP_SID with the sid recorded in the parked intent file and, on a mismatch, rebinds via POST /api/agent-mcp/rebind-identity before the agent takes a turn. The coord:rebind-identity tool is the fallback the hook prints only when the operator refuses or is unreachable, which is why the tool itself records almost no agent calls. Falsifier: interactive-claude-config.test.ts "P-007: SessionStart identity rebind" asserts exactly one rebind POST carrying { from, to }.',
+    },
+  ],
+  [
+    'coord:read',
+    {
+      tier: 'see-also',
+      evidence:
+        'Surfaced at result time as a ready-to-invoke call wherever a body is cut: coord:inbox attaches details_read { tool: "coord:read", args: { msg_id } } to every entry it truncates and appends a "[clipped; read full message: coord:read { msg_id }]" pointer to clipped text (coordination/tools/inbox.ts), and coord:send returns bodyReadRef { tool: "coord:read", msg_id } when the delivered body may be truncated (send.ts). DECLARED rather than derived because these are computed payload fields, which the seeAlso-literal scan cannot see (the coord:dispatch case). Falsifier: inbox-entry-size-bounds.test.ts asserts details_read; send.test.ts asserts bodyReadRef.',
+    },
+  ],
+  [
+    'coord:wake-mode',
+    {
+      tier: 'see-also',
+      evidence:
+        "coord:glance evaluates contextual tips (coordination/glance-tips.ts via evaluateTips) and, whenever the default wake mode is manual, returns the wake-mode-manual tip with a ready-to-invoke { tool: 'coord:wake-mode', args: { mode: 'auto' } } call and the staged-wake count, so the verb appears exactly when the setting matters. DECLARED rather than derived because the tip is a computed payload field the seeAlso-literal scan cannot see. Falsifier: glance-tips.test.ts asserts the manual-mode tip carries that invoke.",
+    },
+  ],
 ]);
 
 /**
