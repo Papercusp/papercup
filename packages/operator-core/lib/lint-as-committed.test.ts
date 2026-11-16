@@ -2422,6 +2422,61 @@ console.log('WRITER_RELEASED elapsedMs=' + (performance.now() - startedAt));`;
     }
   }, 40_000);
 
+  it.each(['valid', 'corrupt', 'missing'] as const)
+    ('seeds a %s pinned model for nested verifiers outside the selected workspace', state => {
+      const f = fixture('node build.cjs');
+      const app = 'apps/asset-app';
+      const model = 'public/porcupine/porcupine_params.pv';
+      const bytes = Buffer.from('pinned verifier model');
+      const checksum = createHash('sha256').update(bytes).digest('hex');
+      // Exercise the maintained offline copy/checksum helper with a small pin.
+      const setup = readFileSync(join(repoRoot, 'apps/operator/scripts/setup-porcupine-runtime.sh'), 'utf8')
+        .replace(/PORCUPINE_SHA256="[a-f0-9]+"/, 'PORCUPINE_SHA256="' + checksum + '"');
+      const manifest = JSON.parse(readFileSync(join(f.root, 'package.json'), 'utf8'));
+      let preparedRoot: string | undefined;
+      snapshot(f.root, {
+        'package.json': JSON.stringify({ ...manifest, workspaces: ['libs/runtime', app] }),
+        [app + '/package.json']: JSON.stringify({ name: '@fixture/asset-app',
+          scripts: { postinstall: 'bash scripts/setup-porcupine-runtime.sh' } }),
+        [app + '/.gitignore']: 'public/\n',
+        [app + '/scripts/setup-porcupine-runtime.sh']: setup,
+      }, f.head);
+      symlinkSync('../../' + app, join(f.root, 'node_modules/@fixture/asset-app'));
+      const donor = join(f.root, app, model);
+      if (state !== 'missing') {
+        mkdirSync(dirname(donor), { recursive: true });
+        writeFileSync(donor, state === 'valid' ? bytes : Buffer.from('broken verifier model'));
+      }
+      try {
+        const result = spawnSync(process.execPath,
+          [scriptPath, 'lint:probe', '--any', '--keep', '--workspace-dir=libs/runtime'], {
+            cwd: f.root, env: commandEnvironment(), encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL',
+          });
+        const output = result.stdout + result.stderr;
+        preparedRoot = output.match(/--keep: extracted tree left at (\S+)/)?.[1];
+        expect(output).not.toContain('preparing pinned runtime assets: @fixture/asset-app');
+        if (state === 'valid') {
+          expect(result.status, output).toBe(0);
+          expect(preparedRoot, output).toBeTruthy();
+          const copied = join(preparedRoot!, app, model);
+          expect(readFileSync(copied)).toEqual(bytes);
+          expect(statSync(copied).ino).not.toBe(statSync(donor).ino);
+          expect(existsSync(join(preparedRoot!, app, 'node_modules'))).toBe(false);
+          writeFileSync(donor, 'donor changed after preparation');
+          expect(readFileSync(copied)).toEqual(bytes);
+          expect(output).toContain('CLONE_PREREQUISITES_OK');
+        } else {
+          expect(result.status, output).not.toBe(0);
+          expect(output).toContain('committed runtime seed failed');
+          expect(output).toContain('required cached model is missing or has the wrong checksum');
+          expect(output).not.toContain('CLONE_PREREQUISITES_OK');
+        }
+      } finally {
+        if (preparedRoot) rmSync(preparedRoot, { recursive: true, force: true });
+        rmSync(f.root, { recursive: true, force: true });
+      }
+    }, 40_000);
+
   it.each(['selected-library', 'selected-app', 'full'] as const)
     ('respects asset lifecycle scope through the maintained CLI (%s)', scope => {
       const f = fixture('node build.cjs');
