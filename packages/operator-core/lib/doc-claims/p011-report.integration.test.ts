@@ -3,7 +3,9 @@
  * Reuses docs/evidence artifacts and the maintained doc-claims test family.
  * Recounts the retained complete candidate population without running measure.py.
  * Original selected-claim judgments are observations, not independent semantic
- * acceptance. These tests confer no BAR credit, coherent freeze or shipment proof.
+ * acceptance. This is P011's mechanical R-15 contribution; live credit also
+ * requires the declared actual configuration and separate independent recount
+ * and judgment evidence. It proves neither a coherent freeze nor shipment.
  */
 import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -81,9 +83,26 @@ const population = original?.inventory.entries ?? bytes.toString('utf8').trimEnd
   if (cells.length !== 3 || !['0', '1'].includes(cells[2]!)) throw new Error('invalid population row');
   return { cls: cells[0]!, id: cells[1]!, eligible: cells[2] === '1' };
 });
-const classes = [...new Set(population.map(row => row.cls))].sort();
+// Declare the measurement's source taxonomy independently of its output. A
+// missing category must remain a required report row, including an honest zero.
+// Registry documents/parts/notes/prompts and repository guides, delivered agent
+// instructions, history, native comments, envelopes and untracked text all count.
+const classes = [
+  'registry-code-note', 'registry-composed-parent', 'registry-composed-part',
+  'registry-fresh-document', 'registry-other-document', 'registry-prompt-override',
+  'registry-saved-prompt', 'repo-delivered-projection', 'repo-guide-document',
+  'repo-history-document', 'repo-native-source-envelope', 'repo-other-document',
+  'repo-prompt-source', 'repo-rust-doc-candidate', 'repo-typescript-doc-candidate',
+  'repo-unsupported-source-envelope', 'repo-untracked-text',
+];
+const stratumKeys = ['authored:rust', 'authored:typescript', 'composed:rust',
+  'composed:typescript', 'native:rust', 'native:typescript'];
 const representationCounts = new Map(classes.map(cls => [cls, 0]));
-for (const row of population) representationCounts.set(row.cls, representationCounts.get(row.cls)! + 1);
+for (const row of population) {
+  const count = representationCounts.get(row.cls);
+  if (count === undefined) throw new Error('Undeclared P011 source class: ' + row.cls);
+  representationCounts.set(row.cls, count + 1);
+}
 const outcomes = ['consistent', 'contradicted', 'historical', 'not-applicable', 'unresolved'];
 const groups = new Map(classes.map(cls => [cls, population.filter(row => row.cls === cls && row.eligible)
   .map(row => ({ ...row, rank: hash(artifact.seed + '\0' + row.id) }))
@@ -196,12 +215,14 @@ function violations(body: string): string[] {
     if (!rows[0]![4]?.trim()) reasons.push(`judgment-evidence-missing:${sample.id}`);
   }
   const strata = table(body, strataHeading);
-  for (const [key, count] of Object.entries(artifact.strata)) {
+  for (const key of stratumKeys) {
+    const count = artifact.strata[key];
+    if (!Number.isSafeInteger(count) || count! < 0) reasons.push(`stratum-source-missing:${key}`);
     const rows = strata.filter(row => row[0] === key);
     if (rows.length !== 1) reasons.push(`stratum-missing:${key}`);
     else if (Number(rows[0]![1]) !== count) reasons.push(`stratum-count-mismatch:${key}`);
   }
-  if (strata.some(row => !(row[0]! in artifact.strata))) reasons.push('extra-stratum');
+  if (strata.some(row => !stratumKeys.includes(row[0]!))) reasons.push('extra-stratum');
   const sampling = section(body, 'Deterministic sampling procedure');
   if (!sampling.includes(artifact.seed)) reasons.push('sampling-seed-missing');
   if (!sampling.includes('SHA-256(seed + NUL + stable scoped id)')
@@ -257,7 +278,7 @@ const reportControls = [
       altered = omitRow(altered, sampleHeading, row => plainId(row[2]) === sample.id);
     return { family: 'omitted-nonempty-class-sample', id: cls, altered, reason: `unsampled-class:${cls}` };
   }),
-  ...Object.keys(artifact.strata).map(key => ({
+  ...stratumKeys.map(key => ({
     family: 'missing-stratum-existence-field', id: key,
     altered: omitRow(artifact.body_md, strataHeading, row => row[0] === key),
     reason: `stratum-missing:${key}`,
@@ -278,13 +299,13 @@ const reportControls = [
     altered: artifact.body_md.replace(value!, ''), reason: reason!,
   })),
   {
-    family: 'duplicate-sampled-identity', id: 'replace-second-with-first',
+    family: 'reproducible-count-sample', id: 'duplicate-sampled-identity',
     altered: replaceCell(artifact.body_md, sampleHeading, 1, 2,
       table(artifact.body_md, sampleHeading)[0]![2]!),
     reason: 'sample-population-mismatch',
   },
   {
-    family: 'extra-sampled-identity', id: 'append-first-row',
+    family: 'reproducible-count-sample', id: 'extra-sampled-identity',
     altered: (() => {
       const row = '| ' + table(artifact.body_md, sampleHeading)[0]!.join(' | ') + ' |';
       return artifact.body_md.replace(row, row + '\n' + row);
@@ -293,8 +314,7 @@ const reportControls = [
   },
 ];
 
-describe(`P011 ${actual ? 'original materialization and live report' : 'public copy'} mechanical integration and causal report controls`, () => {
-  it('pins the immutable original reference, public copy and complete measured candidate population', () => {
+function expectReproduction() {
     expect(artifact.reportId).toBe('rpt_120bd45f-696a-485e-b576-aeb904308ad5');
     expect(artifact.bodySha256).toBe('5f3a484fe1b0f0cbaaa42fb73763129af69581b327eebf9aae87b56111ad1029');
     expect(publicArtifact.bodyRepresentation.kind).toBe('identity-redacted-public-copy');
@@ -307,10 +327,16 @@ describe(`P011 ${actual ? 'original materialization and live report' : 'public c
     expect(hash(compressed)).toBe(artifact.population.compressedSha256);
     expect(hash(bytes)).toBe(artifact.population.uncompressedSha256);
     expect(population).toHaveLength(artifact.population.count);
+    expect(Object.keys(artifact.strata).sort()).toEqual([...stratumKeys].sort());
     expect(new Set(population.map(row => row.id)).size).toBe(population.length);
     expect(selected).toEqual(artifact.sample.map(row => row.id));
     expect(artifact.sample).toHaveLength(50);
     expect(violations(artifact.body_md)).toEqual([]);
+}
+
+describe(`P011 ${actual ? 'original materialization and live report' : 'public copy'} mechanical integration and causal report controls`, () => {
+  it('pins the immutable original reference, public copy and complete measured candidate population', () => {
+    expectReproduction();
   });
 
   it('keeps the entire public evidence artifact clean under the sanctioned identity serializer', () => {
@@ -335,6 +361,7 @@ describe(`P011 ${actual ? 'original materialization and live report' : 'public c
   describe.each(reportControls.map((control, index) => ({ ...control, ordinal: index + 1 })))(
     '$family #$ordinal: $id', control => {
     it('[plan:language-neutral-code-documentation-integration-2026-11-12][R-15][baseline] accepts the complete original report', () => {
+      if (control.family === 'reproducible-count-sample') expectReproduction();
       expect(violations(artifact.body_md)).toEqual([]);
     });
 
