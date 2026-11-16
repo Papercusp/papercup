@@ -163,3 +163,80 @@ export function materializeDurableCapture(path: string) {
   retainDurableCapture(path, capture);
   return capture;
 }
+
+/** The parent owns this boundary; the child never certifies its own SIGKILL.
+ * Admission counts include unreturned attempts and SQL fragments. They are NOT
+ * completed operations, persisted bytes, or a substitute for the child census.
+ * Keep this edition separate so a new run cannot complete a historical tape. */
+export function captureDurableProcessBoundary<T extends {
+  pid: number; status: number | null; signal: NodeJS.Signals | null; error?: Error;
+}>(path: string, scope: GroundedMeasurementScope, run: () => T) {
+  const sourceRef = path + '.process.json';
+  const admittedAt = new Date().toISOString();
+  // Refuse an existing cohort before launching anything or touching its journal.
+  writeFileSync(sourceRef, JSON.stringify({ kind: 'durable-process-boundary', scope,
+    state: 'admitted', admittedAt }), { flag: 'wx', mode: 0o600 });
+  const monotonicStartMs = performance.now();
+  let child: T;
+  try { child = run(); }
+  catch (error) {
+    retainDurableCapture(sourceRef, { kind: 'durable-process-boundary', scope, state: 'launch-threw',
+      admittedAt, settledAt: new Date().toISOString(), complete: false,
+      error: error instanceof Error ? error.message : String(error) });
+    throw error;
+  }
+  const monotonicEndMs = performance.now(), settledAt = new Date().toISOString();
+  const gaps: string[] = [];
+  let original: ReturnType<typeof reconstructDurableCapture> | null = null;
+  try { original = reconstructDurableCapture(path); }
+  catch (error) { gaps.push('journal:' + (error instanceof Error ? error.message : String(error))); }
+  if (child.error) gaps.push('process:spawn-error');
+  if (!Number.isSafeInteger(child.pid) || child.pid <= 0) gaps.push('process:missing-pid');
+  if (original?.processId !== child.pid) gaps.push('process:foreign-capture');
+  if (!original?.retentionJournal.complete) gaps.push('journal:incomplete');
+  const termination = original && object(original.processTermination) ? original.processTermination : null;
+  const boundary = original && object(original.boundary) ? original.boundary : null;
+  const expectedKill = child.signal === 'SIGKILL' && child.status === null
+    && termination?.pid === child.pid && termination.signal === child.signal;
+  const normalExit = child.status === 0 && child.signal === null && boundary?.drained === true
+    && isDeepStrictEqual(boundary.scope, scope) && boundary.sourceRef === path;
+  if (!expectedKill && !normalExit) gaps.push('process:unqualified-terminal');
+  const populations: Record<string, { admittedIds: string[]; terminalIds: string[]; unreturnedIds: string[] }> = {};
+  for (const key of ['census', 'invocations', 'storage']) {
+    const census = original && object(original[key]) ? original[key] : null;
+    if (!census || !isDeepStrictEqual(census.scope, scope) || census.sourceRef !== path
+      || !Array.isArray(census.ids) || !Array.isArray(census.rows)) {
+      gaps.push(key + ':missing-or-foreign-source'); continue;
+    }
+    const ids = census.ids, rows = census.rows;
+    if (ids.some(id => typeof id !== 'string' || !id.trim()) || new Set(ids).size !== ids.length
+      || rows.some(row => !object(row) || typeof row.id !== 'string' || !ids.includes(row.id))
+      || new Set(rows.map(row => object(row) ? row.id : null)).size !== rows.length) {
+      gaps.push(key + ':invalid-population'); continue;
+    }
+    if (normalExit && (census.complete !== true || ids.length !== rows.length))
+      gaps.push(key + ':unsealed-normal-exit');
+    const diagnostics = object(census.diagnostics) ? census.diagnostics : null;
+    if (diagnostics?.captureFailed === true || diagnostics?.late === true || diagnostics?.hooksIntact === false)
+      gaps.push(key + ':recorder-loss');
+    const admittedIds = ids as string[], terminalIds = rows.map(row => (row as { id: string }).id);
+    populations[key] = { admittedIds: [...admittedIds], terminalIds,
+      unreturnedIds: admittedIds.filter(id => !terminalIds.includes(id)) };
+  }
+  const complete = gaps.length === 0;
+  const processCapture = { kind: 'durable-process-boundary', acceptance: 'unmeasured',
+    accountingScope: 'process-lifetime-and-admissions', scope: { ...scope }, sourceRef,
+    originalCaptureRef: path, journal: original?.retentionJournal ?? null,
+    admittedAt, settledAt, monotonicStartMs, monotonicEndMs,
+    process: { pid: child.pid, status: child.status, signal: child.signal, error: child.error?.message ?? null },
+    terminal: expectedKill ? 'intentional-sigkill' : normalExit ? 'drained-exit' : 'unqualified',
+    complete, gaps, populations,
+    values: { processWallMs: monotonicEndMs - monotonicStartMs,
+      recorderJournalBytes: original?.retentionJournal.bytes ?? null,
+      durableAdmissions: complete ? populations.census!.admittedIds.length : null,
+      dispatchAdmissions: complete ? populations.invocations!.admittedIds.length : null,
+      storageAdmissions: complete ? populations.storage!.admittedIds.length : null },
+  };
+  retainDurableCapture(sourceRef, processCapture);
+  return { child, processCapture };
+}

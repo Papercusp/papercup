@@ -461,6 +461,10 @@ export async function runServerScriptAdapter(
             // concrete slug onto the durable run's caller identity.
             ...(callerHarnessSlug ? { harnessSlug: callerHarnessSlug } : {}),
             role: ctx.role,
+            // Persist identity provenance, never a snapshot of capability grants.
+            ...(ctx.principal ? { principal: {
+              kind: ctx.principal.kind, slug: ctx.principal.slug, workspaceId: ctx.principal.workspaceId,
+            } } : {}),
           },
           timeoutSec,
           ...(args.workItemId ? { link: { workItemId: args.workItemId } } : {}),

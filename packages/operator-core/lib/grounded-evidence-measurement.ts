@@ -11,6 +11,8 @@ import { parseRecordedRubricCheck, parseTestRunExecutionDetails, type RecordedRu
 import { parseCodexResponsesSse } from './llm-testing/targets/codex-responses-tool-loop';
 import type { RubricCheckResult } from './check-results-ledger';
 import fixture from './grounded-evidence-fixture.json';
+import baselinePlan from './__fixtures__/grounded-evidence-plan53.json';
+import { hasMatchingDeclaredCaseTitle, type RecordedTestCase } from './testing-case-filter';
 import { retainMeasurementProvenance } from './measurement-provenance';
 
 export const GROUNDED_MANIFEST_SHA256 = '565555fb5e75131c3c9fc59664eb42e21d2142d19f34713d2265795aada09e6a';
@@ -107,7 +109,18 @@ export interface GroundedStorageOperation {
     serializedWrite?: { sourceRef: string; templateHash: string;
       values: readonly { argument: number; sha256: string; bytes: number }[] };
     serializedParameters?: { sourceRef: string; serializerSourceRef: string; parameterCount: number;
-      values: readonly { parameter: number; sha256: string | null; bytes: number }[] } };
+      values: readonly { parameter: number; sha256: string | null; bytes: number }[] };
+    insertOrNoop?: { censusRef: string; censusHash: string; keyHash: string;
+      prior: 'present' | 'absent'; contested: boolean } };
+}
+/** An independently retained initial key census, before the observed writer is
+ * admitted. Only an exclusive fixture with EVERY writer using the exact reviewed
+ * INSERT-or-unchanged-conflict statement can supply it. Keys contain hashes of
+ * original driver-serialized key values, in keyParameters order. This is not a
+ * claim that a general upsert, a shared database, or a crashed attempt is drained. */
+export interface GroundedInsertOrNoopCensus {
+  scope: GroundedMeasurementScope; sourceRef: string; complete: boolean; exclusive: boolean;
+  keyParameters: readonly number[]; initialKeys: readonly (readonly string[])[];
 }
 /** A bounded source review, not a SQL safety parser. Register before execution;
  * any byte, command or terminal-status change requires a fresh review. */
@@ -399,6 +412,105 @@ export function groundedBaselineCensus(): GroundedBaselineKey[] {
       .map(atom => ({ caseId: c.id, arm: 'pre' as const, iteration: index + 1, ...atom })))).flat();
 }
 
+const BASELINE_PLAN_SHA256 = 'c878ad6686ffa0a31a1d8b0878dcf9bdaa2d0b62ae98379f530189fbc971e7d2';
+const BASELINE_PLAN_REF = 'plan:grounded-evidence-and-continuity-2026-11-05@53';
+type BaselineCheck = { kind: string; files: string[]; cases: {
+  file: string; testName: string; plannedReason: string;
+}[] };
+type BaselineReuse = { ref: string; kind: string; provides: string; items: string[] };
+
+/** Derive the required population from the independently retained plan, never
+ * from a manifest or a result being checked. Whole rows are retained: comparing
+ * just ids would miss a changed oracle, budget, owner or qualification gap. */
+export function groundedBaselineManifestCensus() {
+  if (baselinePlan.ref !== BASELINE_PLAN_REF || baselinePlan.sha256 !== BASELINE_PLAN_SHA256
+    || createHash('sha256').update(baselinePlan.body, 'utf8').digest('hex') !== BASELINE_PLAN_SHA256)
+    throw new Error('GEC baseline plan pin mismatch');
+  const blocks = [...baselinePlan.body.matchAll(/```([^\n]*)\n([\s\S]*?)\n```/g)];
+  const frozen = JSON.parse(blocks.find(block => block[1] === 'json')![2]!) as typeof fixture;
+  if (hash(frozen) !== GROUNDED_MANIFEST_SHA256 || hash(fixture) !== hash(frozen))
+    throw new Error('GEC baseline fixture pin mismatch');
+  const reuse = JSON.parse(blocks.find(block => block[1] === 'reuse')![2]!) as { reused: BaselineReuse[] };
+  const rows = (header: string): string[][] => {
+    const start = baselinePlan.body.indexOf(header);
+    if (start < 0) throw new Error(`GEC baseline table missing: ${header}`);
+    const result: string[][] = [];
+    for (const line of baselinePlan.body.slice(start).split('\n').slice(2)) {
+      if (!line.startsWith('|')) break;
+      result.push(line.split('|').slice(1, -1).map(cell => cell.trim()));
+    }
+    return result;
+  };
+  const owners = new Map(rows('| bar | implementing plan items | evidence plane |')
+    .map(row => [row[0]!, row[1]!.split(',').map(item => item.trim())]));
+  const checks = blocks.filter(block => block[1] === 'requirement').map((block, index) => {
+    const requirementId = `R-${index + 1}`;
+    const definition = JSON.parse(block[2]!) as { verification: { check: BaselineCheck } };
+    const ownerItems = owners.get(requirementId);
+    if (!ownerItems?.length) throw new Error(`GEC baseline check has no owner: ${requirementId}`);
+    return { requirementId, ownerItems, check: definition.verification.check };
+  });
+  const selectors = checks.flatMap(row => row.check.cases.map(c => ({
+    ...c, requirementId: row.requirementId, ownerItems: row.ownerItems,
+  })));
+  const census = {
+    planRef: BASELINE_PLAN_REF, planSha256: BASELINE_PLAN_SHA256,
+    fixtureHash: GROUNDED_MANIFEST_SHA256, edition: frozen.edition,
+    cases: frozen.cases, dimensions: frozen.measurements.dimensions,
+    sourceFamilies: rows('| Source family | Existing identity/version and lifecycle | Qualification gap |')
+      .map(row => ({ family: row[0]!, identityAndLifecycle: row[1]!, qualificationGap: row[2]! })),
+    reused: reuse.reused, checks, paths: [...new Set(checks.flatMap(row => row.check.files))], selectors,
+    budgets: frozen.budgets, measurements: frozen.measurements, sliceApplicability: frozen.sliceApplicability,
+    atomicKeys: groundedBaselineCensus(),
+  };
+  const counts = [census.cases.length, census.dimensions.length, census.sourceFamilies.length,
+    census.reused.length, census.checks.length, census.paths.length, census.selectors.length];
+  if (canonicalJson(counts) !== canonicalJson([52, 21, 15, 27, 10, 10, 23])
+    || new Set(census.selectors.map(row => canonicalJson([row.file, row.testName]))).size !== 23)
+    throw new Error('GEC baseline pinned census count mismatch');
+  return census;
+}
+
+/** Regenerate-and-diff, including count and duplicate checks through exact row
+ * identity. This qualifies only the census, never a baseline or product result. */
+export function validateGroundedBaselineManifestCensus(candidate: unknown) {
+  const expected = groundedBaselineManifestCensus();
+  const gaps: string[] = [];
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate))
+    return { censusMatches: false, gaps: ['manifest:missing-census'] };
+  const record = candidate as Record<string, unknown>;
+  for (const key of Object.keys(expected) as (keyof typeof expected)[]) {
+    try {
+      if (!Object.hasOwn(record, key) || hash(record[key]) !== hash(expected[key])) gaps.push(`manifest:${key}:mismatch`);
+    } catch { gaps.push(`manifest:${key}:invalid`); }
+  }
+  for (const key of Object.keys(record)) if (!Object.hasOwn(expected, key)) gaps.push(`manifest:${key}:unexpected`);
+  return { censusMatches: gaps.length === 0, gaps };
+}
+
+/** Inputs are existing maintained-runner file/case ledger readbacks. A source
+ * declaration or a route alone is deliberately insufficient. Failed executions
+ * establish enrollment, not passing acceptance; skipped/todo cases establish
+ * neither. The original receipt remains addressable instead of a new inventory. */
+export interface GroundedBaselineEnrollmentRun {
+  source: 'maintained-runner'; evidenceRef: string;
+  file: string; executionDetails: unknown; cases: readonly RecordedTestCase[];
+}
+export function readGroundedBaselineEnrollment(runs: readonly GroundedBaselineEnrollmentRun[]) {
+  return groundedBaselineManifestCensus().selectors.map(selector => {
+    const receipts = runs.flatMap(run => {
+      const details = parseTestRunExecutionDetails(run.executionDetails);
+      if (run.source !== 'maintained-runner' || !run.evidenceRef.trim() || run.file !== selector.file
+        || details?.filePath !== selector.file || details.collectionFailed
+        || details.passed + details.failed === 0) return [];
+      const cases = run.cases.filter(row => row.status === 'pass' || row.status === 'fail');
+      if (!cases.length || !hasMatchingDeclaredCaseTitle(selector.testName, cases.map(row => row.caseKey))) return [];
+      return [run.evidenceRef];
+    });
+    return { ...selector, status: receipts.length ? 'enrolled' as const : 'planned' as const, evidenceRefs: receipts };
+  });
+}
+
 /** Project retained recorder bytes without re-running a model or re-measuring an
  * old census with current code. The two action predicates are independent: a
  * wrong next action need not dispatch the forbidden action. Original nulls stay
@@ -676,7 +788,11 @@ export function observeGroundedStoreOperations<T extends object>(input: {
      * missing or invalid count leaves bytes unknown. 'zero-only' never qualifies
      * positive counts (including unchanged upsert retries). Omit only when the reviewed
      * writer unconditionally persists every selected value on success. */
-    allOrNoneRows?: GroundedPersistedRows }[];
+    allOrNoneRows?: GroundedPersistedRows;
+    /** node-postgres only: source review proves that existing keys leave ALL
+     * selected values unchanged. Reuse a separately captured initial census;
+     * errors, overlapping keys and missing terminals poison that key's proof. */
+    insertOrNoop?: GroundedInsertOrNoopCensus }[];
 }) {
   const ids: string[] = [], rows: GroundedStorageOperation[] = [];
   let pending = 0, sealed = false, late = false, captureFailed = false, restored = false;
@@ -747,6 +863,11 @@ export function observeGroundedStoreOperations<T extends object>(input: {
     writeRegistrations.set(key, { sourceRef, templateHash, command, serializedArguments: [...serializedArguments], allOrNoneRows });
   }
   const parameterWrites = new Map<string, NonNullable<typeof input.serializedSqlParameters>[number]>();
+  type InsertClaim = { key: string; prior: 'present' | 'absent'; contested: boolean };
+  type InsertState = { census: GroundedInsertOrNoopCensus; censusHash: string;
+    present: Set<string>; uncertain: Set<string>; pending: Map<string, Set<string>>; claims: Map<string, InsertClaim> };
+  const insertStates = new Map<string, InsertState>();
+  const insertPools = new Set<string>();
   for (const registration of input.serializedSqlParameters ?? []) {
     const { pool, sourceRef, serializerSourceRef, queryHash, command, parameterCount, persistedParameters, allOrNoneRows } = registration;
     if (!(input.postgres?.some(p => p.pool === pool) || nodeDrivers.some(p => p.pool === pool))
@@ -759,8 +880,51 @@ export function observeGroundedStoreOperations<T extends object>(input: {
       throw new Error('GEC invalid original SQL parameter registration');
     const key = `${pool}:${queryHash}`;
     if (parameterWrites.has(key)) throw new Error('GEC duplicate original SQL parameter registration');
-    parameterWrites.set(key, { ...registration, persistedParameters: [...persistedParameters] });
+    const census = registration.insertOrNoop;
+    if (census) {
+      if (!nodeDrivers.some(driver => driver.pool === pool) || command !== 'INSERT'
+        || allOrNoneRows !== 'zero-only' || !sameScope(census.scope, input.scope)
+        || !nonblank(census.sourceRef) || census.complete !== true || census.exclusive !== true
+        || !census.keyParameters.length || new Set(census.keyParameters).size !== census.keyParameters.length
+        || census.keyParameters.some(index => !integer(index) || index >= parameterCount)
+        || census.initialKeys.some(row => row.length !== census.keyParameters.length
+          || row.some(value => !/^[a-f0-9]{64}$/.test(value)))
+        || new Set(census.initialKeys.map(row => canonicalJson(row))).size !== census.initialKeys.length
+        || insertPools.has(pool)) throw new Error('GEC invalid insert-or-noop initial census');
+      insertPools.add(pool);
+      const original = structuredClone(census);
+      insertStates.set(key, { census: original, censusHash: hash(original),
+        present: new Set(original.initialKeys.map(row => canonicalJson(row))),
+        uncertain: new Set(), pending: new Map(), claims: new Map() });
+    }
+    parameterWrites.set(key, { ...registration, persistedParameters: [...persistedParameters],
+      ...(census ? { insertOrNoop: structuredClone(census) } : {}) });
   }
+  const admitInsert = (state: InsertState, id: string,
+    values: Map<number, { sha256: string | null }>) => {
+    const hashes = state.census.keyParameters.map(index => values.get(index)?.sha256);
+    if (hashes.some(value => typeof value !== 'string')) return;
+    const key = canonicalJson(hashes), pendingKeys = state.pending.get(key) ?? new Set<string>();
+    const contested = state.uncertain.has(key) || pendingKeys.size > 0;
+    if (contested) {
+      state.uncertain.add(key);
+      for (const other of pendingKeys) state.claims.get(other)!.contested = true;
+    }
+    state.claims.set(id, { key, prior: state.present.has(key) ? 'present' : 'absent', contested });
+    pendingKeys.add(id); state.pending.set(key, pendingKeys);
+  };
+  const settleInsert = (state: InsertState, id: string, successful: boolean,
+    affectedRows: number | null, bytes: number | null): number | null => {
+    const claim = state.claims.get(id);
+    if (!claim) return null;
+    state.pending.get(claim.key)!.delete(id);
+    if (claim.contested || state.uncertain.has(claim.key) || !successful || bytes === null
+      || (affectedRows !== 0 && affectedRows !== 1) || (affectedRows === 0 && claim.prior === 'absent')) {
+      state.uncertain.add(claim.key); return null;
+    }
+    if (affectedRows === 1) state.present.add(claim.key);
+    return affectedRows === 0 || claim.prior === 'present' ? 0 : bytes;
+  };
   const bytesForOutcome = (bytes: number | null, allOrNoneRows: GroundedPersistedRows | undefined, affectedRows: number | null) =>
     bytes === null || allOrNoneRows === undefined ? bytes
       : affectedRows === 0 ? 0 : affectedRows === allOrNoneRows ? bytes : null;
@@ -806,6 +970,7 @@ export function observeGroundedStoreOperations<T extends object>(input: {
       let kind: GroundedStorageOperation['kind'] = reviewed?.kind ?? (registration ? 'write' : 'unknown');
       let persistedBytes: number | null = null;
       let serializedParameters: NonNullable<GroundedStorageOperation['sql']>['serializedParameters'];
+      const insertState = queryHash ? insertStates.get(`${driver.pool}:${queryHash}`) : undefined;
       if (registration) {
         if (reviewed) { captureFailed = true; kind = 'unknown'; }
         const values = registration.persistedParameters.flatMap(parameter => {
@@ -814,18 +979,23 @@ export function observeGroundedStoreOperations<T extends object>(input: {
         serializedParameters = { sourceRef: registration.sourceRef, serializerSourceRef: driver.serializerSourceRef,
           parameterCount: entry.parameterCount ?? 0, values };
         const bytes = values.reduce((sum, value) => sum + value.bytes, 0);
-        if (!reviewed && status === 'ok' && command === registration.command && entry.bound
+        const qualified = !reviewed && status === 'ok' && command === registration.command && entry.bound
           && entry.parameterCount === registration.parameterCount && entry.values.size === entry.parameterCount
           && registration.serializerSourceRef === driver.serializerSourceRef
-          && values.length === registration.persistedParameters.length && integer(bytes))
-          persistedBytes = bytesForOutcome(bytes, registration.allOrNoneRows, affectedRows);
+          && values.length === registration.persistedParameters.length && integer(bytes);
+        if (insertState) persistedBytes = settleInsert(insertState, entry.id, qualified, affectedRows, qualified ? bytes : null);
+        else if (qualified) persistedBytes = bytesForOutcome(bytes, registration.allOrNoneRows, affectedRows);
       }
+      const insertClaim = insertState?.claims.get(entry.id);
       rows.push({ id: entry.id, kind, persistedBytes, sql: { pool: driver.pool,
         queryId: Number(entry.id.split(':node:').at(-1)), queryHash: queryHash ?? '', command, status,
         ...(registration?.allOrNoneRows !== undefined
           ? { rowOutcome: { allOrNoneRows: registration.allOrNoneRows, affectedRows } } : {}),
         ...(reviewed ? { nonPersisting: { sourceRef: reviewed.sourceRef, kind: reviewed.kind } } : {}),
-        ...(serializedParameters ? { serializedParameters } : {}) } });
+        ...(serializedParameters ? { serializedParameters } : {}),
+        ...(insertState && insertClaim ? { insertOrNoop: { censusRef: insertState.census.sourceRef,
+          censusHash: insertState.censusHash, keyHash: hash(insertClaim.key), prior: insertClaim.prior,
+          contested: insertClaim.contested } } : {}) } });
       notifySql({ id: entry.id, pool: driver.pool, phase: 'terminal',
         query: typeof query.text === 'string' ? query.text : null, command, status });
       outstanding.delete(entry.id); pending--; notify();
@@ -897,6 +1067,11 @@ export function observeGroundedStoreOperations<T extends object>(input: {
           entry.admission.boundParameters = { serializerSourceRef: driver.serializerSourceRef,
             parameterCount: entry.parameterCount ?? 0,
             complete: entry.bound && values.length === entry.parameterCount, values };
+          const registrationKey = `${driver.pool}:${entry.queryHash}`;
+          const state = insertStates.get(registrationKey), registration = parameterWrites.get(registrationKey);
+          if (state && registration && entry.bound && entry.values.size === registration.parameterCount
+            && entry.parameterCount === registration.parameterCount
+            && registration.serializerSourceRef === driver.serializerSourceRef) admitInsert(state, entry.id, entry.values);
           notify();
         }
       };

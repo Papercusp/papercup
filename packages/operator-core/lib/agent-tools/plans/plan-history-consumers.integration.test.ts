@@ -506,6 +506,80 @@ describe('bounded plan history production consumers', () => {
   }, 60_000);
 });
 
+describe('GEC insert-or-noop original byte recorder', () => {
+  it('distinguishes real inserted values from unchanged conflict retries and uncertain writes', async () => {
+    const pg = (await import('pg')).default;
+    const client = new pg.Client({ connectionString: process.env.HARNESS_ADMIN_DATABASE_URL });
+    const digest = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
+    const table = 'harness_shared.gec_insert_noop_' + digest(RUN).slice(0, 16);
+    const statement = 'INSERT INTO ' + table + ' AS saved (id,payload,invocation) VALUES ($1,$2,$3)'
+      + ' ON CONFLICT(id) DO UPDATE SET invocation=saved.invocation'
+      + ' WHERE saved.invocation=EXCLUDED.invocation RETURNING invocation';
+    const testHash = digest(await readFile(new URL(import.meta.url)));
+    const scope: GroundedMeasurementScope = { workspaceId: fx.workspaceId, harness: HARNESS, potId: HARNESS,
+      runId: 'insert-noop-' + RUN, ownerId: 'su-gec-recorder-control', caseId: 'C5', arm: 'pre', iteration: 1,
+      manifestHash: GROUNDED_MANIFEST_SHA256, fixtureHash: digest(statement), sourceFingerprint: testHash,
+      testFingerprint: testHash, runtimeFingerprint: process.version, configFingerprint: digest(table) };
+    const serializerSourceRef = 'source:pg/lib/query.js@' + digest(await readFile(new URL(
+      '../../../../../node_modules/pg/lib/query.js', import.meta.url))) + '+utils.js@' + digest(await readFile(new URL(
+      '../../../../../node_modules/pg/lib/utils.js', import.meta.url))) + '#Bind.prepareValue';
+    const artifactRoot = process.env.PAPERCUSP_TEST_ARTIFACT_DIR;
+    const tapes: unknown[] = [];
+    await client.connect();
+    try {
+      await client.query('CREATE TABLE ' + table + " (id text PRIMARY KEY, payload text CHECK(payload <> 'reject'), invocation text)");
+      await client.query('INSERT INTO ' + table + " VALUES ('seed','original-seed','seed-invocation')");
+      const originalRows = (await client.query('SELECT id FROM ' + table + ' ORDER BY id')).rows;
+      const initial = { scope, sourceRef: 'original:private-pg-initial-keys', complete: true, exclusive: true,
+        keyParameters: [0], initialKeys: originalRows.map(row => [digest(String(row.id))]) };
+      const observe = () => observeGroundedStoreOperations({ scope, deps: {}, operations: [],
+        sourceRef: 'original:private-pg-insert-noop', attemptId: 'insert-noop-' + tapes.length,
+        nodePostgres: [{ pool: 'private-control', clientPrototype: pg.Client.prototype, queryPrototype: pg.Query.prototype,
+          serializerSourceRef }], serializedSqlParameters: [{ pool: 'private-control', sourceRef: 'source:test@' + testHash,
+          serializerSourceRef, queryHash: digest(statement), command: 'INSERT', parameterCount: 3, persistedParameters: [1],
+          allOrNoneRows: 'zero-only', insertOrNoop: initial }] });
+      let serializations = 0;
+      const payload = { toPostgres: () => 'original-λ.😺-' + ++serializations };
+      const tap = observe();
+      try {
+        const results = [];
+        for (const [key, invocation] of [['new', 'new-invocation'], ['new', 'new-invocation'],
+          ['seed', 'seed-invocation'], ['seed', 'other-invocation']])
+          results.push(await tap.run(() => client.query(statement, [key, payload, invocation])));
+        const census = tap.seal();
+        expect(serializations).toBe(4);
+        expect(results.map(result => result.rowCount)).toEqual([1, 1, 1, 0]);
+        expect(census.complete).toBe(true);
+        expect(census.rows.map(row => row.persistedBytes)).toEqual([Buffer.byteLength('original-λ.😺-1'), 0, 0, 0]);
+        const measured = measureGroundedEvidence({ scope, storage: census, boundary: { scope, sourceRef: census.sourceRef,
+          admittedAt: new Date().toISOString(), settledAt: new Date().toISOString(),
+          monotonicStartMs: 0, monotonicEndMs: 1, drained: true } });
+        expect(measured.values).toMatchObject({ storageOperations: 4, storageBytes: Buffer.byteLength('original-λ.😺-1') });
+        tapes.push({ initial: structuredClone(initial), originalRows, census,
+          results: results.map(result => ({ rowCount: result.rowCount, rows: result.rows })), serializations, measured });
+      } finally { tap.restore(); }
+      const unchanged = (await client.query('SELECT id,payload FROM ' + table + ' ORDER BY id')).rows;
+      expect(unchanged).toEqual([{ id: 'new', payload: 'original-λ.😺-1' }, { id: 'seed', payload: 'original-seed' }]);
+      // Keep an errored attempt uncertain even when this independent oracle can
+      // later prove that this particular error rolled back.
+      initial.initialKeys = unchanged.map(row => [digest(String(row.id))]);
+      const negative = observe();
+      try {
+        await expect(negative.run(() => client.query(statement, ['uncertain', 'reject', 'negative']))).rejects.toThrow();
+        await negative.run(() => client.query(statement, ['uncertain', 'valid', 'negative']));
+        const census = negative.seal();
+        expect(census.complete).toBe(true);
+        expect(census.rows.map(row => row.persistedBytes)).toEqual([null, null]);
+        tapes.push({ initial: structuredClone(initial), census });
+      } finally { negative.restore(); }
+      if (artifactRoot) await writeFile(join(artifactRoot, 'gec-insert-noop-byte-control.json'),
+        canonicalJson({ acceptance: 'unmeasured', statement, testHash, serializerSourceRef, tapes, unchanged }));
+    } finally {
+      try { await client.query('DROP TABLE IF EXISTS ' + table); } finally { await client.end(); }
+    }
+  }, 90_000);
+});
+
 describe('GEC.N1-N8 persisted slice regression and cost', () => {
   const runFrozenHistory = async (branchPreflight: boolean, journeyPreflight = false,
     journeyControl: false | 'J1' | 'J2' | 'J3' = false,

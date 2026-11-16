@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { expect } from 'vitest';
 import type postgres from 'postgres';
 import type { GroundedMeasurementInput, GroundedMeasurementScope } from '../lib/grounded-evidence-measurement';
-import { materializeDurableCapture } from './_durable-orchestration-capture';
+import { captureDurableProcessBoundary, materializeDurableCapture } from './_durable-orchestration-capture';
 
 export interface DurableCrashScenario {
   runKey: string;
@@ -32,7 +32,7 @@ export function createDurableCrashHarness(config: {
     expect(config.dsn(), 'private DBOS database must be prepared before launching the child').toBeTruthy();
     expect(scenario.runKey, 'durable run key is required').toBeTruthy();
     expect(scenario.script, 'durable script source is required').toBeTruthy();
-    const child = spawnSync(process.execPath, ['--import', 'tsx', childPath], {
+    const launch = () => spawnSync(process.execPath, ['--import', 'tsx', childPath], {
       cwd: config.packageRoot,
       env: { ...process.env, DURABLE_CRASH_DSN: config.dsn(), DURABLE_CRASH_RUN_KEY: scenario.runKey,
         DURABLE_CRASH_MODE: mode, DURABLE_CRASH_SCRIPT: scenario.script,
@@ -43,6 +43,8 @@ export function createDurableCrashHarness(config: {
           DURABLE_CRASH_GEC_TAPE: join(config.artifacts, `${scenario.runKey}-${mode}.json`) } : {}),
       }, timeout: mode === 'code' ? 240_000 : 150_000, encoding: 'utf8',
     });
+    const child = scenario.gecScope ? captureDurableProcessBoundary(
+      join(config.artifacts, `${scenario.runKey}-${mode}.json`), scenario.gecScope, launch).child : launch();
     const prefix = 'DURABLE_DBOS_STARTUP ';
     const startup = (child.stderr ?? '').split('\n').filter(line => line.startsWith(prefix))
       .map(line => JSON.parse(line.slice(prefix.length)));
@@ -94,7 +96,10 @@ export function createDurableCrashHarness(config: {
     const result = await crashThenRecover(scenario);
     const crash = JSON.parse(readFileSync(join(config.artifacts, `${scenario.runKey}-crash.json`), 'utf8')) as DurableChildCapture;
     const recovered = JSON.parse(readFileSync(join(config.artifacts, `${scenario.runKey}-recover.json`), 'utf8')) as DurableChildCapture;
+    const processes = (['crash', 'recover'] as const).map(mode => JSON.parse(readFileSync(
+      join(config.artifacts, `${scenario.runKey}-${mode}.json.process.json`), 'utf8')));
     return { caseId, scenario, result, crash, recovered,
+      processes,
       originalCalls: await calls(scenario.runKey), originalSteps: await stepNames(scenario.runKey) };
   }
   return { runChild, calls, stepNames, crashThenRecover, groundedStage };

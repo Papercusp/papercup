@@ -15,6 +15,8 @@ import {
   type GroundedCensus, type GroundedMeasurementInput, type GroundedMeasurementScope,
   classifyGroundedBaseline, groundedBaselineCensus, readGroundedBaselineRows, projectGroundedBaselineCapture,
   type GroundedBaselinePin, type GroundedBaselineObservation,
+  groundedBaselineManifestCensus, validateGroundedBaselineManifestCensus, readGroundedBaselineEnrollment,
+  type GroundedBaselineEnrollmentRun,
 } from './grounded-evidence-measurement';
 
 const reads = vi.hoisted(() => ({ tree: vi.fn(), thread: vi.fn() }));
@@ -36,6 +38,100 @@ import {
   readPlanHistoryContext,
   resolvePriorAttemptRefs,
 } from './prior-attempt-context';
+
+describe('GEC MANIFEST3 pinned census and enrollment', () => {
+  const census = groundedBaselineManifestCensus;
+  function run(): GroundedBaselineEnrollmentRun {
+    const selector = census().selectors[0]!;
+    return { source: 'maintained-runner', file: selector.file, evidenceRef: 'test-run:unit-manifest-control',
+      executionDetails: { schemaVersion: 1, workspaceId: 'gec-unit', harnessSlug: 'papercusp',
+        runGroupId: 'manifest-unit', root: '/gec-unit', filePath: selector.file,
+        testNamePattern: null, passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+        mutationPhase: null, commitSha: null, worktreeDirty: true } satisfies TestRunExecutionDetails,
+      cases: [{ caseKey: `maintained suite > ${selector.testName}`, occurrence: 1, status: 'pass', durationMs: 1 }] };
+  }
+  function enrolled(receipts: GroundedBaselineEnrollmentRun[]) {
+    return readGroundedBaselineEnrollment(receipts).filter(row => row.status === 'enrolled');
+  }
+  it('regenerates all seven required sets and preserves downstream ownership without claiming execution', () => {
+    const actual = census();
+    expect([actual.cases.length, actual.dimensions.length, actual.sourceFamilies.length, actual.reused.length,
+      actual.checks.length, actual.paths.length, actual.selectors.length]).toEqual([52, 21, 15, 27, 10, 10, 23]);
+    expect(actual.planSha256).toBe('c878ad6686ffa0a31a1d8b0878dcf9bdaa2d0b62ae98379f530189fbc971e7d2');
+    expect(actual.fixtureHash).toBe(GROUNDED_MANIFEST_SHA256);
+    expect(actual.atomicKeys).toEqual(groundedBaselineCensus());
+    expect(actual.selectors.find(row => row.requirementId === 'R-10')?.ownerItems).toEqual(['P-008']);
+    expect(actual.sourceFamilies.find(row => row.family === 'spec-proof')?.qualificationGap).toBe('unknown');
+    expect(validateGroundedBaselineManifestCensus(actual)).toEqual({ censusMatches: true, gaps: [] });
+    expect(readGroundedBaselineEnrollment([])).toHaveLength(23);
+    expect(enrolled([])).toEqual([]);
+  });
+  it.each(['cases', 'dimensions', 'sourceFamilies', 'reused', 'checks', 'paths', 'selectors', 'atomicKeys'] as const)
+    ('rejects omitted, extra and duplicate %s rows against the independent pinned population', key => {
+      for (const mutation of ['omit', 'extra', 'duplicate']) {
+        const candidate = census(), rows = candidate[key] as unknown[];
+        if (mutation === 'omit') rows.pop();
+        if (mutation === 'extra') rows.push({ id: 'never-listed', ref: 'never-listed' });
+        if (mutation === 'duplicate') rows[rows.length - 1] = structuredClone(rows[0]);
+        expect(validateGroundedBaselineManifestCensus(candidate).gaps).toContain(`manifest:${key}:mismatch`);
+      }
+    });
+  it('rejects changed oracles, thresholds, source gaps, reader placement and planned selector owners', () => {
+    const candidate = census();
+    Object.assign(candidate.cases[0]!.expected, { authority: 'changed-oracle' });
+    candidate.budgets.resumesPerCase = 4;
+    candidate.sourceFamilies[0]!.qualificationGap = 'measured';
+    candidate.reused[0]!.provides = 'new parallel authority';
+    candidate.selectors[0]!.ownerItems = ['P-001'];
+    expect(validateGroundedBaselineManifestCensus(candidate).gaps).toEqual(expect.arrayContaining([
+      'manifest:cases:mismatch', 'manifest:budgets:mismatch', 'manifest:sourceFamilies:mismatch',
+      'manifest:reused:mismatch', 'manifest:selectors:mismatch',
+    ]));
+    expect(validateGroundedBaselineManifestCensus({ ...census(), fixtureHash: 'newer-build',
+      inventory: 'agent-authored substitute' }).censusMatches).toBe(false);
+    expect(validateGroundedBaselineManifestCensus(null).censusMatches).toBe(false);
+    // A caller cannot poison the independent population for the next read.
+    expect(validateGroundedBaselineManifestCensus(census()).censusMatches).toBe(true);
+  });
+  it('requires a runner receipt of both the exact path and the complete case identity', () => {
+    const receipt = run();
+    expect(enrolled([receipt]).map(row => [row.file, row.testName])).toEqual([
+      [receipt.file, census().selectors[0]!.testName],
+    ]);
+    const wrongPath = structuredClone(receipt); wrongPath.file = 'empty.test.ts';
+    expect(enrolled([wrongPath])).toEqual([]);
+    const wrongLedgerPath = structuredClone(receipt);
+    (wrongLedgerPath.executionDetails as TestRunExecutionDetails).filePath = 'empty.test.ts';
+    expect(enrolled([wrongLedgerPath])).toEqual([]);
+    const missingName = structuredClone(receipt); missingName.cases = [];
+    expect(enrolled([missingName])).toEqual([]);
+    const substring = structuredClone(receipt);
+    substring.cases = [{ ...receipt.cases[0]!, caseKey: `prefix ${census().selectors[0]!.testName} suffix` }];
+    expect(enrolled([substring])).toEqual([]);
+  });
+  it('keeps skip, todo, collection failure, invalid receipts and manual inventories planned', () => {
+    for (const mode of ['skip', 'todo', 'collection', 'invalid', 'manual', 'no-reference', 'no-execution']) {
+      const receipt = run();
+      const details = receipt.executionDetails as TestRunExecutionDetails;
+      if (mode === 'skip' || mode === 'todo') receipt.cases = [{ ...receipt.cases[0]!, status: 'skip' }];
+      if (mode === 'collection') details.collectionFailed = true;
+      if (mode === 'invalid') receipt.executionDetails = {};
+      if (mode === 'manual') Object.assign(receipt, { source: 'source-inventory' });
+      if (mode === 'no-reference') receipt.evidenceRef = '';
+      if (mode === 'no-execution') { details.passed = 0; details.skipped = 1; }
+      expect(enrolled([receipt]), mode).toEqual([]);
+    }
+  });
+  it('retains a failed runner case as enrolled without representing it as passing acceptance', () => {
+    const receipt = run();
+    Object.assign(receipt.executionDetails as object, { passed: 0, failed: 1 });
+    receipt.cases = [{ ...receipt.cases[0]!, status: 'fail' }];
+    const actual = enrolled([receipt]);
+    expect(actual).toHaveLength(1);
+    expect(actual[0]!.evidenceRefs).toEqual([receipt.evidenceRef]);
+    expect(actual[0]).not.toHaveProperty('passing');
+  });
+});
 
 describe('GEC immutable atomic baseline', () => {
   const setup = materializeGroundedFixture('atomic-baseline');
@@ -882,6 +978,76 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
       expect(measureGroundedEvidence(input).values).toMatchObject({ storageOperations: 3, storageBytes: null });
     } finally { tap.restore(); }
     expect(Client.prototype.query).toBe(originalQuery); expect(Query.prototype.submit).toBe(originalSubmit);
+  });
+
+  it('qualifies insert-or-noop bytes from initial keys and preserves uncertain or overlapping writes', () => {
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+    const statement = 'INSERT INTO values_once VALUES ($1,$2) ON CONFLICT(id) DO UPDATE SET id=values_once.id';
+    const serializerSourceRef = 'source:original-mapper';
+    class Query {
+      _results: { command: string; rowCount: unknown } = { command: 'INSERT', rowCount: 1 };
+      _canceledDueToError = false;
+      constructor(readonly text: string, readonly values: unknown[]) {}
+      submit(connection: { bind(config: { values: unknown[]; valueMapper(value: unknown, index: number): unknown }): void }) {
+        connection.bind({ values: this.values, valueMapper: value => value === null ? null
+          : typeof value === 'object' ? JSON.stringify(value) : String(value) });
+      }
+      handleReadyForQuery() { return this._results; }
+      handleError(error: Error) { return error; }
+    }
+    class Client {
+      query(text: string, values: unknown[]) { const query = new Query(text, values);
+        query.submit({ bind: config => { config.values.forEach((value, index) => config.valueMapper(value, index)); } });
+        return query; }
+    }
+    const originalQuery = Client.prototype.query;
+    const initial = { scope: { ...scope }, sourceRef: 'original:initial-key-census', complete: true, exclusive: true,
+      keyParameters: [0], initialKeys: [[digest('seed')]] };
+    const observe = (insertOrNoop = initial) => observeGroundedStoreOperations({ scope, deps: {}, operations: [],
+      sourceRef: 'original:insert-or-noop', attemptId: 'insert-or-noop',
+      nodePostgres: [{ pool: 'dbos', clientPrototype: Client.prototype, queryPrototype: Query.prototype, serializerSourceRef }],
+      serializedSqlParameters: [{ pool: 'dbos', sourceRef: 'source:insert-or-unchanged-conflict', serializerSourceRef,
+        queryHash: digest(statement), command: 'INSERT', parameterCount: 2, persistedParameters: [1],
+        allOrNoneRows: 'zero-only', insertOrNoop }] });
+    for (const bad of [{ ...initial, complete: false }, { ...initial, exclusive: false },
+      { ...initial, scope: { ...scope, runId: 'foreign' } }, { ...initial, sourceRef: '' },
+      { ...initial, keyParameters: [2] }, { ...initial, initialKeys: [[digest('seed')], [digest('seed')]] },
+      { ...initial, initialKeys: [['not-a-hash']] }]) {
+      expect(() => observe(bad)).toThrow('invalid insert-or-noop');
+      expect(Client.prototype.query).toBe(originalQuery);
+    }
+    const tap = observe();
+    let serializations = 0;
+    const client = new Client(), body = { toJSON: () => ({ original: 'λ.😺-' + ++serializations }) };
+    const send = (key: string) => tap.run(() => client.query(statement, [key, body]));
+    try {
+      initial.initialKeys.length = 0; // Arming retained the original seed.
+      send('new').handleReadyForQuery(); send('new').handleReadyForQuery(); send('seed').handleReadyForQuery();
+      const zero = send('seed'); zero._results.rowCount = 0; zero.handleReadyForQuery();
+      send('uncertain').handleError(new Error('lost commit receipt')); send('uncertain').handleReadyForQuery();
+      const overlapA = send('overlap'), overlapB = send('overlap');
+      overlapB.handleReadyForQuery(); overlapA.handleReadyForQuery(); send('overlap').handleReadyForQuery();
+      const lost = send('lost'); send('lost').handleReadyForQuery();
+      expect(tap.snapshot()).toMatchObject({ complete: false, diagnostics: { pending: 1 } });
+      lost.handleReadyForQuery();
+      const contradiction = send('absent-zero'); contradiction._results.rowCount = 0; contradiction.handleReadyForQuery();
+      send('absent-zero').handleReadyForQuery();
+      for (const count of [null, -1, 0.5, 2, '1']) {
+        const unknown = send('bad-count-' + String(count)); unknown._results.rowCount = count; unknown.handleReadyForQuery();
+      }
+      const census = tap.seal();
+      expect(serializations).toBe(census.ids.length);
+      expect(census.complete).toBe(true);
+      expect(census.rows.slice(0, 4).map(row => row.persistedBytes))
+        .toEqual([Buffer.byteLength('{"original":"λ.😺-1"}'), 0, 0, 0]);
+      expect(census.rows.slice(4).every(row => row.persistedBytes === null)).toBe(true);
+      expect(census.rows[0].sql?.insertOrNoop).toMatchObject({ censusRef: 'original:initial-key-census', prior: 'absent' });
+      expect(census.rows[2].sql?.insertOrNoop).toMatchObject({ prior: 'present', contested: false });
+      expect(census.rows.filter(row => row.sql?.insertOrNoop?.contested).length).toBeGreaterThanOrEqual(5);
+      const input = captured(); input.storage = census;
+      expect(measureGroundedEvidence(input).values.storageBytes).toBeNull();
+    } finally { tap.restore(); }
+    expect(Client.prototype.query).toBe(originalQuery);
   });
 
   it('preserves original SQL outcomes when diagnostic retention fails and refuses complete capture', () => {

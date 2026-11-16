@@ -40,6 +40,8 @@ import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
 import { dbosStarted, withDbosIdleTxGrace } from './bootstrap';
 import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
+import { redactSensitiveValue, redactStructuredSensitiveValue } from '../sensitive-text';
+import { resolveConcreteHarnessSlug } from '../agent-tools/_harness-scope';
 
 export const DURABLE_ORCHESTRATION_WORKFLOW_NAME = 'durableOrchestration';
 export const DURABLE_ORCHESTRATION_MAX_TIMEOUT_SEC = 3_600;
@@ -49,6 +51,8 @@ export interface DurableOrchestrationCaller {
   workspaceId: string;
   harnessSlug?: string;
   role: string;
+  /** Original identity only. Capabilities are reauthorized, never persisted as grants. */
+  principal?: Pick<NonNullable<UnifiedToolContext['principal']>, 'kind' | 'slug' | 'workspaceId'>;
 }
 
 export interface DurableOrchestrationInput {
@@ -354,7 +358,19 @@ export function bindDurableOrchestrationExecution(
   const { ctx, invoke } = request;
   const ownerId = ctx.uiClientId ?? ctx.principal?.slug ?? ctx.spawnId ?? ctx.runId;
   const owned = (row: DurableOrchestrationStatus | null): boolean => !!row && !!ownerId &&
-    row.caller?.ownerId === ownerId && row.caller?.workspaceId === ctx.workspaceId && !!row.runKey &&
+    row.caller?.ownerId === ownerId && row.caller?.workspaceId === ctx.workspaceId &&
+    row.caller.role === ctx.role &&
+    // Session ownership is not principal identity. A fresh caller must retain
+    // the original principal join; missing historical identity cannot acquire
+    // a new principal merely by presenting the same owner/handle.
+    ((row.caller.principal === undefined && ctx.principal == null) ||
+      (row.caller.principal != null && ctx.principal != null &&
+        row.caller.principal.kind === ctx.principal.kind &&
+        row.caller.principal.slug === ctx.principal.slug &&
+        row.caller.principal.workspaceId === ctx.principal.workspaceId)) &&
+    // An owner may act in several harnesses. Reattachment retains the original
+    // harness boundary, including an explicitly workspace-level admission.
+    (row.caller.harnessSlug ?? null) === resolveConcreteHarnessSlug(undefined, ctx) && !!row.runKey &&
     row.workflowId === durableOrchestrationWorkflowId(ctx.workspaceId!, row.runKey) &&
     ['ENQUEUED', 'DELAYED', 'PENDING', 'SUCCESS', 'ERROR', 'MAX_RECOVERY_ATTEMPTS_EXCEEDED', 'CANCELLED'].includes(row.status);
   const state = (row: DurableOrchestrationStatus | null): ToolExecutionAdmission['state'] =>
@@ -392,10 +408,18 @@ export function bindDurableOrchestrationExecution(
           if (!owned(row)) break;
         }
       }
+      result = redactSensitiveValue(result) as ToolResult;
       if (owned(row) && (row!.outcome || row!.error)) result = {
-        content: [{ type: 'text', text: JSON.stringify(row!.outcome ?? { error: row!.error }) }],
+        // Preserve opaque references and ordinary prose by redacting the
+        // structured evidence before serialization, never its JSON text.
+        content: [{ type: 'text', text: JSON.stringify(
+          redactStructuredSensitiveValue(row!.outcome ?? { error: row!.error }),
+        ) }],
       };
       const admission = { handle, ownerId: owned(row) ? ownerId! : '', state: state(row) };
+      // DBOS retains the original evidence. Every adapter response, including a
+      // fresh lookup after detachment, crosses the canonical redaction boundary
+      // before dispatch adds its independently verified receipt.
       return { result, admission };
     },
     async verifyAdmission(admission) {

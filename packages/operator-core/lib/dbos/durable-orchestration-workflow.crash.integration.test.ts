@@ -146,6 +146,22 @@ describe('GEC frozen B durable consumer captures', () => {
     const originalSteps = await stepNames(scenario.runKey);
     const crash = JSON.parse(readFileSync(join(gecArtifacts, `${scenario.runKey}-crash.json`), 'utf8'));
     const recovered = JSON.parse(readFileSync(join(gecArtifacts, `${scenario.runKey}-recover.json`), 'utf8'));
+    for (const [mode, capture] of [['crash', crash], ['recover', recovered]] as const) {
+      const originalRef = join(gecArtifacts, `${scenario.runKey}-${mode}.json`);
+      const processCapture = JSON.parse(readFileSync(originalRef + '.process.json', 'utf8'));
+      expect(processCapture).toMatchObject({ complete: true, gaps: [], scope, originalCaptureRef: originalRef,
+        accountingScope: 'process-lifetime-and-admissions', acceptance: 'unmeasured',
+        terminal: mode === 'crash' ? 'intentional-sigkill' : 'drained-exit',
+        journal: capture.retentionJournal,
+        values: { durableAdmissions: capture.census.ids.length, dispatchAdmissions: capture.invocations.ids.length,
+          storageAdmissions: capture.storage.ids.length } });
+      expect(processCapture.values.processWallMs).toBeGreaterThan(0);
+      expect(processCapture.populations.invocations.unreturnedIds)
+        .toEqual(mode === 'crash' ? capture.invocations.diagnostics.pendingIds : []);
+      // Parent termination is not a child drain or a persisted-byte oracle.
+      expect(capture.boundary === null).toBe(mode === 'crash');
+      expect(capture.census.complete).toBe(mode === 'recover');
+    }
     for (const capture of [crash, recovered]) {
       expect(capture.retentionJournal).toMatchObject({ complete: true, error: null });
       expect(capture.retentionJournal.frames).toBe(capture.retention.completed + 1);
@@ -201,8 +217,8 @@ describe('GEC frozen B durable consumer captures', () => {
     ]);
     for (const row of notificationControls) expect(row).toMatchObject({ kind: 'control', persistedBytes: null,
       sql: { pool: 'child-dbos-all-clients', status: 'ok', nonPersisting: { kind: 'control',
-        sourceRef: 'source:@dbos-inc/dbos-sdk/dist/src/system_database.js@b8594818c046779927f646b94aa6a159ac1d97655a88bfdd451dbe494858bf55#notification-setup' } } });
-    const outputSourceRef = 'source:@dbos-inc/dbos-sdk/dist/src/system_database.js@b8594818c046779927f646b94aa6a159ac1d97655a88bfdd451dbe494858bf55#recordOperationResultInternal';
+        sourceRef: 'source:@dbos-inc/dbos-sdk/dist/src/system_database.js@de943d85e4414114a6bb01b079051b0e59940a4911cf9e54f05e41f24011b02b#notification-setup' } } });
+    const outputSourceRef = 'source:@dbos-inc/dbos-sdk/dist/src/system_database.js@de943d85e4414114a6bb01b079051b0e59940a4911cf9e54f05e41f24011b02b#recordOperationResultInternal';
     const registeredWrites = [...crash.storage.rows, ...recovered.storage.rows]
       .filter((row: { sql: { serializedParameters?: { sourceRef: string } } }) =>
         row.sql.serializedParameters?.sourceRef === outputSourceRef);
@@ -213,7 +229,7 @@ describe('GEC frozen B durable consumer captures', () => {
     for (const row of outputWrites) {
       expect(row.kind).toBe('write');
       expect(row.sql.rowOutcome.allOrNoneRows).toBe('zero-only');
-      expect(row.sql.serializedParameters.parameterCount).toBe(10);
+      expect(row.sql.serializedParameters.parameterCount).toBe(11);
       expect(row.sql.serializedParameters.values.map((value: { parameter: number }) => value.parameter)).toEqual([2, 3]);
       expect(row.persistedBytes).toBe(row.sql.status === 'ok' && row.sql.rowOutcome.affectedRows === 0 ? 0 : null);
     }

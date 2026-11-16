@@ -37,6 +37,13 @@ if (!dsn || !configuredRunKey || !script || !configuredMode || !['crash', 'recov
 const runKey = configuredRunKey, mode = configuredMode;
 
 const sql = postgres(dsn, { max: 2, onnotice: () => {} });
+let retainGecTermination: (() => void) | undefined;
+function terminateCrashFixture() {
+  // Synchronous final publication followed immediately by the actual signal.
+  // This records intent only; the parent must independently observe the death.
+  retainGecTermination?.();
+  process.kill(process.pid, 'SIGKILL');
+}
 
 // Keep startup failures separate from workflow/recovery failures. In particular,
 // pg's connection deadline includes hostname lookup, before any TCP handshake.
@@ -71,7 +78,7 @@ function probeTool(name: string, effect: 'read' | 'write', idempotent: boolean):
       if (mode === 'crash' && crashTarget === 'before:' + name) {
         // The invocation intent exists, but the independent effect oracle has
         // no effect. Recovery must still reconcile rather than assume absence.
-        process.kill(process.pid, 'SIGKILL');
+        terminateCrashFixture();
         await new Promise<never>(() => {});
       }
       await sql.unsafe(
@@ -80,7 +87,7 @@ function probeTool(name: string, effect: 'read' | 'write', idempotent: boolean):
       );
       if (mode === 'crash' && name === crashTarget) {
         // The side effect is committed; the process dies before DBOS records the step outcome.
-        process.kill(process.pid, 'SIGKILL');
+        terminateCrashFixture();
         await new Promise<never>(() => {});
       }
       const count = await sql.unsafe('SELECT count(*)::int AS n FROM test_durable.calls WHERE run_key = $1', [runKey]);
@@ -154,7 +161,7 @@ if (process.env.DURABLE_CRASH_GEC_SCOPE) {
   // Reviewed SDK setup subscribes three channels and sends one fixed self-test;
   // it does not persist application values. Pin the writer as well as every SQL
   // byte/command/status. A changed SDK must be reviewed before qualifying it.
-  const notificationSourceHash = 'b8594818c046779927f646b94aa6a159ac1d97655a88bfdd451dbe494858bf55';
+  const notificationSourceHash = 'de943d85e4414114a6bb01b079051b0e59940a4911cf9e54f05e41f24011b02b';
   const notificationSourceMatches = digest(readFileSync(new URL(
     '../../../node_modules/@dbos-inc/dbos-sdk/dist/src/system_database.js', import.meta.url))) === notificationSourceHash;
   const notificationControls = notificationSourceMatches ? [
@@ -164,15 +171,18 @@ if (process.env.DURABLE_CRASH_GEC_SCOPE) {
     { queryHash: '51d3f928cd16813b7a8f257cd05b53f2fe093baa8066900c62203e876c24e538', command: 'NOTIFY' as const },
   ].map(row => ({ ...row, kind: 'control' as const, status: 'ok' as const,
     sourceRef: `source:@dbos-inc/dbos-sdk/dist/src/system_database.js@${notificationSourceHash}#notification-setup` })) : [];
-  // This exact installed writer can report INSERT 1 for an unchanged upsert.
+  // This exact installed writer can report INSERT 1 for an invocation-owned
+  // unchanged upsert (checkpoint_invocation_id is the eleventh Bind input).
   // Only a proven zero-row outcome certifies zero output/error bytes; positive
   // counts stay unknown. The executor marker UPDATE has a separate zero/all
   // contract. Any SDK source or SQL change leaves both writes unregistered.
   const operationOutputStatement = `INSERT INTO dbos.operation_outputs
-         (workflow_uuid, function_id, output, error, function_name, child_workflow_id, started_at_epoch_ms, completed_at_epoch_ms, serialization, application_name)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         (workflow_uuid, function_id, output, error, function_name, child_workflow_id, started_at_epoch_ms, completed_at_epoch_ms, serialization, application_name, checkpoint_invocation_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          ON CONFLICT (workflow_uuid, function_id) DO UPDATE
-         SET completed_at_epoch_ms = operation_outputs.completed_at_epoch_ms
+         SET checkpoint_invocation_id = operation_outputs.checkpoint_invocation_id
+         WHERE EXCLUDED.checkpoint_invocation_id IS NOT NULL
+           AND operation_outputs.checkpoint_invocation_id = EXCLUDED.checkpoint_invocation_id
          RETURNING completed_at_epoch_ms;`;
   const executorStatement = `UPDATE "dbos".workflow_status
              SET executor_id = $1
@@ -189,12 +199,15 @@ if (process.env.DURABLE_CRASH_GEC_SCOPE) {
   });
   const retention = { scope: 'completed-prior-publications', completed: 0, failed: 0,
     snapshotMs: 0, serializationMs: 0, publicationMs: 0, publishedBytes: 0, maxTotalMs: 0 };
+  let processTermination: { pid: number; signal: 'SIGKILL' } | null = null;
   const retain = (settled: boolean) => {
     const started = performance.now();
     try {
       const capture = {
         kind: 'current-source-durable-capture', acceptance: 'unmeasured', mode, workflowRunKey: runKey,
+        processId: process.pid,
         phases: gecPhases,
+        processTermination,
         sqlObservations,
         // This publication cannot include its own final write duration. Keep the
         // accounting scope explicit; the next snapshot retains this one's cost.
@@ -234,7 +247,7 @@ if (process.env.DURABLE_CRASH_GEC_SCOPE) {
     nonPersistingSql: notificationControls,
     serializedSqlParameters: notificationSourceMatches ? [
       { pool: 'child-dbos-all-clients', sourceRef: operationOutputSourceRef, serializerSourceRef,
-        queryHash: digest(Buffer.from(operationOutputStatement)), command: 'INSERT', parameterCount: 10,
+        queryHash: digest(Buffer.from(operationOutputStatement)), command: 'INSERT', parameterCount: 11,
         persistedParameters: [2, 3], allOrNoneRows: 'zero-only' },
       { pool: 'child-dbos-all-clients', sourceRef: operationOutputSourceRef, serializerSourceRef,
         queryHash: digest(Buffer.from(executorStatement)), command: 'UPDATE', parameterCount: 2,
@@ -254,6 +267,7 @@ if (process.env.DURABLE_CRASH_GEC_SCOPE) {
     finally { retain(false); }
   }) as typeof DBOS.runStep;
   retain(false);
+  retainGecTermination = () => { processTermination = { pid: process.pid, signal: 'SIGKILL' }; retain(false); };
   retainGecPhase = () => retain(false);
   markGecPhase('capture-admitted');
   sealGecCapture = () => retain(true);

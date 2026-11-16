@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { composeDurableCaptureCensus, createDurableCaptureRecorder, materializeDurableCapture, reconstructDurableCapture,
+import { captureDurableProcessBoundary, composeDurableCaptureCensus, createDurableCaptureRecorder, materializeDurableCapture, reconstructDurableCapture,
   retainDurableCapture } from '../../test/_durable-orchestration-capture';
 import type { GroundedCensus, GroundedInvocation, GroundedMeasurementScope } from '../grounded-evidence-measurement';
 
@@ -21,6 +21,88 @@ function fixture() {
 afterEach(() => {
   vi.restoreAllMocks();
   for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true });
+});
+
+describe('parent-owned durable process boundary', () => {
+  const scope: GroundedMeasurementScope = { workspaceId: 'w', harness: 'h', potId: 'p', runId: 'r',
+    ownerId: 'capture-unit', caseId: 'J3', arm: 'pre', iteration: 1, manifestHash: 'manifest', fixtureHash: 'fixture',
+    sourceFingerprint: 'source', testFingerprint: 'test', runtimeFingerprint: 'runtime', configFingerprint: 'config' };
+  function child(path: string, fault: string) {
+    const source = `
+      import fs from 'node:fs';
+      const { createDurableCaptureRecorder } = await import(process.env.CAPTURE_MODULE);
+      const scope = JSON.parse(process.env.CAPTURE_SCOPE), fault = process.env.CAPTURE_FAULT;
+      const census = () => ({ scope, sourceRef: process.env.CAPTURE_PATH, complete: false,
+        ids: ['returned', 'pending'], rows: [{ id: 'returned', source: 'live' }] });
+      const capture = { processId: process.pid, boundary: null, census: census(), invocations: census(), storage: census(),
+        processTermination: { pid: process.pid, signal: 'SIGKILL' } };
+      if (fault === 'foreign') capture.storage.scope = { ...scope, ownerId: 'foreign' };
+      if (fault === 'unannounced') capture.processTermination = null;
+      if (fault === 'wrong-pid') capture.processTermination.pid++;
+      if (fault.includes('foreign-process')) capture.processId++;
+      if (fault === 'loss') capture.invocations.diagnostics = { captureFailed: true };
+      if (fault === 'orphan') capture.storage.rows.push({ id: 'orphan' });
+      if (fault.startsWith('exit')) {
+        capture.boundary = { scope, sourceRef: process.env.CAPTURE_PATH, drained: true };
+        for (const key of ['census', 'invocations', 'storage']) {
+          capture[key].complete = true;
+          if (fault !== 'exit-gap') capture[key].rows.push({ id: 'pending' });
+        }
+      }
+      createDurableCaptureRecorder(process.env.CAPTURE_PATH).retain(capture);
+      if (fault === 'partial') fs.appendFileSync(process.env.CAPTURE_PATH + '.journal', '{"partial":');
+      if (!fault.startsWith('exit')) process.kill(process.pid, 'SIGKILL');
+    `;
+    return spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', source], {
+      cwd: new URL('../..', import.meta.url), timeout: 20_000, encoding: 'utf8',
+      env: { ...process.env, CAPTURE_PATH: path, CAPTURE_FAULT: fault, CAPTURE_SCOPE: JSON.stringify(scope),
+        CAPTURE_MODULE: new URL('../../test/_durable-orchestration-capture.ts', import.meta.url).href },
+    });
+  }
+
+  it.each(['kill', 'exit'])('records independent %s costs without changing or sealing the child snapshot', fault => {
+    const { path, original } = fixture();
+    const { child: result, processCapture } = captureDurableProcessBoundary(path, scope, () => child(path, fault));
+    expect(result.error, result.stderr).toBeUndefined();
+    expect(processCapture).toMatchObject({ complete: true, gaps: [], acceptance: 'unmeasured',
+      terminal: fault === 'kill' ? 'intentional-sigkill' : 'drained-exit',
+      values: { durableAdmissions: 2, dispatchAdmissions: 2, storageAdmissions: 2 } });
+    expect(processCapture.values.processWallMs).toBeGreaterThan(0);
+    expect(processCapture.values.recorderJournalBytes).toBe(statSync(path + '.journal').size);
+    expect(processCapture.populations.storage!.unreturnedIds).toEqual(fault === 'kill' ? ['pending'] : []);
+    expect(readFileSync(path, 'utf8')).toBe(original);
+    const tape = readFileSync(path + '.journal');
+    expect(reconstructDurableCapture(path).census).toMatchObject({ complete: fault === 'exit' });
+    expect(readFileSync(path + '.journal')).toEqual(tape);
+    expect(JSON.parse(readFileSync(path + '.process.json', 'utf8'))).toEqual(processCapture);
+    expect(statSync(path + '.process.json').mode & 0o777).toBe(0o600);
+    const launch = vi.fn();
+    expect(() => captureDurableProcessBoundary(path, scope, launch)).toThrow();
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it.each(['foreign', 'unannounced', 'wrong-pid', 'loss', 'orphan', 'partial',
+    'foreign-process', 'exit-foreign-process', 'exit-gap'])
+  ('retains the actual death and fails qualification after %s', fault => {
+    const { path } = fixture();
+    const { child: result, processCapture } = captureDurableProcessBoundary(path, scope, () => child(path, fault));
+    expect(result.error, result.stderr).toBeUndefined();
+    expect(result.signal).toBe(fault.startsWith('exit') ? null : 'SIGKILL');
+    expect(processCapture.complete).toBe(false);
+    expect(processCapture.gaps.length).toBeGreaterThan(0);
+    expect(processCapture.values.durableAdmissions).toBeNull();
+    expect(processCapture.values.dispatchAdmissions).toBeNull();
+    expect(processCapture.values.storageAdmissions).toBeNull();
+    expect(processCapture.values.processWallMs).toBeGreaterThan(0);
+    if (!fault.startsWith('exit')) expect(reconstructDurableCapture(path).boundary).toBeNull();
+  });
+
+  it('retains a launch exception and preserves its identity', () => {
+    const { path } = fixture(), failure = new Error('original-launch-error');
+    expect(() => captureDurableProcessBoundary(path, scope, () => { throw failure; })).toThrow(failure);
+    expect(JSON.parse(readFileSync(path + '.process.json', 'utf8'))).toMatchObject({
+      state: 'launch-threw', complete: false, error: failure.message });
+  });
 });
 
 it('retains unregistered original Bind inputs before a terminal without qualifying pending or failed writes', async () => {

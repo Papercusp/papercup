@@ -334,13 +334,18 @@ describe('orchestrate:run server-script adapter', () => {
   it('admits a pinned durable script as one background DBOS run without invoking code:run', async () => {
     const script = { source: 'return "durable";' };
     const execution = { lifecycle: 'background' as const, durability: 'durable' as const };
-    const ctx = {
+    const ctx: UnifiedToolContext = {
+      log: () => {}, signal: new AbortController().signal, progress: () => {}, emit: () => {},
       workspaceId: 'ws-durable',
       harnessSlug: 'papercusp',
       role: 'su',
       uiClientId: 'su-durable',
       idempotencyKey: 'request-1',
-    } as UnifiedToolContext;
+      principal: {
+        kind: 'system', slug: 'original-principal', workspaceId: 'ws-durable',
+        authMethod: 'process-internal', trust: 'trusted', capabilities: new Set(['tasks:read']),
+      },
+    };
     const inspected = await inspectOrchestration({ script, execution }, ctx);
     const pin = ((inspected as ToolResult & { data?: unknown }).data as {
       normalized: { durability: { pin: { sourceSha256: string; bindingsSha256: string } } };
@@ -373,10 +378,15 @@ describe('orchestrate:run server-script adapter', () => {
         workspaceId: 'ws-durable',
         harnessSlug: 'papercusp',
         role: 'su',
+        principal: { kind: 'system', slug: 'original-principal', workspaceId: 'ws-durable' },
       },
       timeoutSec: 120,
       link: { workItemId: 'WI-1' },
     });
+    const recordedCaller = startDurable.mock.calls[0]![0].caller;
+    expect(recordedCaller.principal).not.toBe(ctx.principal);
+    ctx.principal!.slug = 'changed-after-admission';
+    expect(recordedCaller.principal.slug).toBe('original-principal');
     const body = envelope(result);
     expect(body).toMatchObject({
       state: 'complete',
