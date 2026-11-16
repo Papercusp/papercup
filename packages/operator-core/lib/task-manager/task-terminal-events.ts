@@ -8,6 +8,7 @@
  * existing reconciler; it never rolls a truthful terminal close back.
  */
 import type { TaskState } from './types';
+import { redactSensitiveText } from '../sensitive-text';
 
 export const TASK_TERMINAL_EVENT_PREFIX = 'task:terminal:';
 
@@ -43,7 +44,9 @@ export async function emitTaskTerminalEvent(
     taskId: event.taskId,
     state: event.state,
     exitCode: event.exitCode,
-    exitReason: event.exitReason,
+    // The ledger retains the original tuple for revision fencing and retries;
+    // only the bytes crossing into latches and deliveries are redacted.
+    exitReason: event.exitReason == null ? null : redactSensitiveText(event.exitReason),
     taskClass: event.taskClass,
     harness: event.harnessSlug,
     launchedBy: event.launchedBy,
@@ -58,7 +61,11 @@ export async function emitTaskTerminalEvent(
       source: 'task-manager',
       workspaceId: event.workspaceId,
       ...(event.revision == null ? {} : {
-        taskTerminal: { taskId: event.taskId, workspaceId: event.workspaceId, revision: event.revision },
+        taskTerminal: {
+          taskId: event.taskId, workspaceId: event.workspaceId, revision: event.revision,
+          // Private fencing evidence, never included in payload/latches/deliveries.
+          exitReason: event.exitReason,
+        },
       }),
     });
     return (result as { latchRecorded?: boolean } | null)?.latchRecorded !== false;
@@ -69,7 +76,7 @@ export async function emitTaskTerminalEvent(
     // cannot identify the module whose initialization failed.
     const diagnostic = error instanceof Error ? error.stack || message : message;
     (deps.warn ?? ((value: string) => console.warn(value)))(
-      `[task-manager] terminal event failed for ${event.taskId}: ${diagnostic}`,
+      `[task-manager] terminal event failed for ${event.taskId}: ${redactSensitiveText(diagnostic)}`,
     );
     return false;
   }
