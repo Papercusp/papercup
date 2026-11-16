@@ -37,7 +37,8 @@ vi.mock('node:http', () => ({ createServer: () => ({
 vi.mock('@hono/node-server', () => ({ getRequestListener: () => vi.fn() }));
 vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({ Client: vi.fn() }));
 vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({ StreamableHTTPClientTransport: vi.fn() }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: { end: vi.fn() } }), _resetForTests: vi.fn(),
 }));
 vi.mock('../../../apps/operator/bin/host-handler', () => ({ handler: vi.fn() }));

@@ -11,7 +11,10 @@ const discovery = vi.hoisted(() => ({
   sql: vi.fn(),
   listAll: vi.fn(),
 }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: discovery.sql }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: discovery.sql }),
+}));
 vi.mock('./work-items', () => ({
   listAllWorkItemsForFileExport: discovery.listAll,
   searchWorkItems: async (_query: string, options: { limit: number }) => ({
