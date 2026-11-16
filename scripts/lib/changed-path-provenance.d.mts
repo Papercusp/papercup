@@ -7,6 +7,8 @@
  * @property {number} [uncommitted] paths from `git diff HEAD` (working tree)
  * @property {number} [untracked] paths from `git ls-files --others --exclude-standard`
  * @property {number} [submoduleDirty] submodule roots reported dirty
+ * @property {number} [submoduleExpanded] paths inside changed submodules, recovered from their
+ *   gitlinks (the other legs name a submodule only by its gitlink path)
  */
 /**
  * @typedef {Object} DerivationSummary
@@ -111,6 +113,11 @@ export type ChangedPathLegs = {
      * submodule roots reported dirty
      */
     submoduleDirty?: number | undefined;
+    /**
+     * paths inside changed submodules, recovered from their
+     * gitlinks (the other legs name a submodule only by its gitlink path)
+     */
+    submoduleExpanded?: number | undefined;
 };
 export type DerivationSummary = {
     /**
