@@ -106,6 +106,9 @@ beforeAll(async () => {
   if (!['http:', 'https:'].includes(url.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
     || url.username || url.password || url.pathname !== '/' || url.search || url.hash)
     throw new Error('Actual P011 requires a local operator origin');
+  const client = process.env.PAPERCUSP_SID;
+  if (!client || url.protocol !== 'http:')
+    throw new Error('Actual P011 report read requires an attributed session and local HTTP operator');
   const health = async () => {
     const response = await fetch(url.origin + '/api/health', { redirect: 'error', signal: AbortSignal.timeout(15_000) });
     if (!response.ok) throw new Error(`Actual P011 runtime HTTP ${response.status}`);
@@ -117,11 +120,15 @@ beforeAll(async () => {
   };
   const before = await health();
   const { stdout } = await promisify(execFile)(process.execPath,
-    [resolve(root, 'apps/operator/scripts/ptool.mjs'), 'reports:get', '--url=' + url.origin, '--json', JSON.stringify({
+    // The maintained named-call helper avoids a full tools/list bootstrap on
+    // every probe phase. Keep the same bounded read and explicit runtime pin.
+    [resolve(root, 'scripts/mcp-call.mjs'), 'reports:get', JSON.stringify({
       id: artifact.reportId, projection: { pick: ['ok', 'results[].ok', 'results[].id',
         'results[].report.report_id', 'results[].report.workspace_id', 'results[].report.visibility',
         'results[].report.path', 'results[].report.body_sha256', 'results[].report.body_bytes'] },
-    })], { cwd: root, env: process.env, timeout: 45_000, maxBuffer: 2_000_000 });
+    }), '--client', client, '--workspace', 'papercusp-workspace', '--harness', 'papercusp',
+      '--port', url.port || '80'],
+    { cwd: root, env: process.env, timeout: 45_000, maxBuffer: 2_000_000 });
   const receipt = JSON.parse(stdout) as { ok: boolean; results: { ok: boolean; id: string; report: {
     report_id: string; workspace_id: string; visibility: string; path: string; body_sha256: string; body_bytes: number;
   } }[] };
