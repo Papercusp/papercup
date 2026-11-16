@@ -6,7 +6,7 @@
  * store path. The unit tests pin the emitted tuple; this integration test pins
  * the cross-module persistence boundary and first-terminal exactly-once rule.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -76,6 +76,7 @@ async function waitForEmission(eventKey: string, taskId = 'task-terminal-integra
 
 describe('task terminal awaited-event bridge (real PG)', () => {
   let db: OrgTestDb;
+  afterEach(() => { vi.unstubAllEnvs(); });
 
   beforeAll(async () => {
     db = await createOrgTestDb();
@@ -579,6 +580,69 @@ describe('task terminal awaited-event bridge (real PG)', () => {
       h.sql = shared;
       await single.end({ timeout: 5 });
     }
+  });
+
+  it('redacts the real terminal latch and queued delivery without rewriting the authoritative ledger', async () => {
+    const taskId = 'terminal-secret-redaction';
+    const eventKey = taskTerminalEventKey(taskId);
+    const secret = 'p003-sample-result-secret-917a6e42';
+    vi.stubEnv('P003_RESULT_SECRET', secret);
+    const exitReason = `runner ${secret} accessToken=sample-key-directed-value ${'x'.repeat(2001)}:decisive-tail`;
+    await insertTask(taskId);
+    await eventStore.registerAwait({ subscriberId: 'su-redaction-waiter', eventKey, policy: 'wake' });
+    await expect(taskStore.closeTask(taskId, { state: 'exited', exitCode: 7, exitReason })).resolves.toBe(true);
+    const { fire, delivery } = await waitForEmission(eventKey, taskId);
+    expect(await h.sql`SELECT exit_reason FROM harness_shared.task_ledger WHERE task_id = ${taskId}`)
+      .toEqual([{ exit_reason: exitReason }]);
+    for (const payload of [fire.last_payload, delivery.payload]) {
+      const bytes = JSON.stringify(payload);
+      expect(bytes).not.toContain(secret);
+      expect(bytes).not.toContain('sample-key-directed-value');
+      expect(bytes).toContain('[redacted]');
+      expect(bytes).toContain(`${'x'.repeat(2001)}:decisive-tail`);
+      expect(payload).toMatchObject({ taskId, state: 'exited', exitCode: 7, terminalEventRevision: 1 });
+    }
+    expect(fire.fire_count).toBe(1);
+    expect(await taskStore.closeTask(taskId, { state: 'killed', exitReason: 'late close' })).toBe(false);
+    expect(await h.sql`SELECT fire_count FROM harness_shared.event_key_fires
+      WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND event_key = ${eventKey}`)
+      .toEqual([{ fire_count: 1 }]);
+  });
+
+  it('refuses a changed private terminal tuple and recovers the same redacted pending outcome', async () => {
+    const taskId = 'terminal-redaction-private-fence';
+    const eventKey = taskTerminalEventKey(taskId);
+    const secret = 'p003-sample-result-secret-917a6e42';
+    vi.stubEnv('P003_RESULT_SECRET', secret);
+    const exitReason = `runner ${secret}`;
+    await insertTask(taskId);
+    await eventStore.registerAwait({ subscriberId: 'su-redaction-fence-waiter', eventKey, policy: 'wake' });
+    expect(await taskStore.closeTask(taskId, { state: 'exited', exitCode: 7, exitReason }, undefined, {
+      emitTerminal: event => emitTaskTerminalEvent(event, {
+        emit: options => eventEngine.emitAwaitedEvent({
+          ...options, taskTerminal: { ...options.taskTerminal!, exitReason: 'different original tuple' },
+        }),
+      }),
+    })).toBe(true);
+    expect(await h.sql`SELECT detail -> 'terminalEventPending' AS pending, exit_reason
+      FROM harness_shared.task_ledger WHERE task_id = ${taskId}`)
+      .toEqual([{ pending: true, exit_reason: exitReason }]);
+    expect(await h.sql`SELECT event_key FROM harness_shared.event_key_fires WHERE event_key = ${eventKey}`)
+      .toEqual([]);
+    expect(await h.sql`SELECT id FROM harness_shared.event_wake_deliveries WHERE event_key = ${eventKey}`)
+      .toEqual([]);
+    expect(await h.sql`SELECT fired_at FROM harness_shared.event_awaits WHERE event_key = ${eventKey}`)
+      .toEqual([{ fired_at: null }]);
+
+    await taskStore.recoverPendingTaskTerminalEvents(h.ws);
+    const { fire, delivery } = await waitForEmission(eventKey, taskId);
+    expect(fire.fire_count).toBe(1);
+    expect(fire.last_payload).toMatchObject({ taskId, exitReason: 'runner [redacted]', terminalEventRevision: 1 });
+    expect(delivery.payload).toEqual(fire.last_payload);
+    expect(JSON.stringify([fire, delivery])).not.toContain(secret);
+    expect(await h.sql`SELECT detail -> 'terminalEventPending' AS pending, exit_reason
+      FROM harness_shared.task_ledger WHERE task_id = ${taskId}`)
+      .toEqual([{ pending: false, exit_reason: exitReason }]);
   });
 
   it('fires and queues exactly one event after the first authoritative terminal update', async () => {
