@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { captureDurableProcessBoundary, composeDurableCaptureCensus, createDurableCaptureRecorder, materializeDurableCapture, reconstructDurableCapture,
   retainDurableCapture, reviewedDurableDbosSqlWrites, reviewedDurableDbosSql, reviewedDurableFixturePayloadSql } from '../../test/_durable-orchestration-capture';
-import type { GroundedCensus, GroundedInvocation, GroundedMeasurementScope } from '../grounded-evidence-measurement';
+import type { GroundedCensus, GroundedInvocation, GroundedMeasurementScope, GroundedSqlObservation } from '../grounded-evidence-measurement';
 
 const directories: string[] = [];
 function fixture() {
@@ -224,6 +224,67 @@ describe('source-reviewed DBOS nonpersisting SQL', () => {
     expect(changedDriver.complete).toBe(true);
     expect(changedDriver.rows.every(row => row.persistedBytes === null)).toBe(true);
   });
+});
+
+it('keeps unknown backend identities explicit and pins queued query identity before a failed terminal', async () => {
+  const { observeGroundedStoreOperations } = await import('../grounded-evidence-measurement');
+  class Query {
+    _results = { command: 'UPDATE', rowCount: 1 };
+    values: unknown[] = [];
+    constructor(readonly text: string) {}
+    submit(connection: { bind(config: { values: unknown[]; valueMapper(value: unknown, index: number): unknown }): void }) {
+      connection.bind({ values: this.values, valueMapper: value => value });
+    }
+    handleReadyForQuery() {}
+    handleError(error: Error) { return error; }
+  }
+  class Client {
+    processID: unknown = null;
+    _queryQueue: Query[] = [];
+    query(text: string) { const query = new Query(text); this._queryQueue.push(query); return query; }
+    submit() { const query = this._queryQueue.shift()!;
+      query.submit({ bind: config => { config.values.forEach((value, index) => config.valueMapper(value, index)); } });
+      return query;
+    }
+  }
+  const scope: GroundedMeasurementScope = { workspaceId: 'w', harness: 'h', potId: 'p', runId: 'r',
+    ownerId: 'backend-control', caseId: 'C5', arm: 'pre', iteration: 1, manifestHash: 'm', fixtureHash: 'f',
+    sourceFingerprint: 's', testFingerprint: 't', runtimeFingerprint: 'r', configFingerprint: 'c' };
+  const observations: GroundedSqlObservation[] = [];
+  const tap = observeGroundedStoreOperations({ scope, deps: {}, operations: [], sourceRef: 'test:backend-identity',
+    attemptId: 'backend-control', nodePostgres: [{ pool: 'dbos', clientPrototype: Client.prototype,
+      queryPrototype: Query.prototype, serializerSourceRef: 'original-driver' }],
+    onSqlObservation: observation => observations.push(observation) });
+  try {
+    const first = new Client(), second = new Client();
+    const failed = tap.run(() => first.query('UPDATE original_writer SET value = clock_timestamp()'));
+    const other = tap.run(() => second.query('UPDATE original_writer SET value = clock_timestamp()'));
+    first.processID = 321; second.processID = 654;
+    first.submit(); second.submit();
+    // A later mutation of the Client cannot rewrite the already submitted
+    // query's identity, including when a different Client terminates first.
+    first.processID = 999;
+    other.handleReadyForQuery();
+    const error = new Error('actual failed terminal');
+    expect(failed.handleError(error)).toBe(error);
+    for (const invalid of [undefined, null, 0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '321']) {
+      const client = new Client(); client.processID = invalid;
+      const query = tap.run(() => client.query('UPDATE original_writer SET value = clock_timestamp()'));
+      client.submit(); query.handleReadyForQuery();
+    }
+    const census = tap.seal();
+    expect(census.complete).toBe(true);
+    expect(census.rows.slice(0, 2).map(row => row.sql?.backendProcessId)).toEqual([654, 321]);
+    expect(census.rows.slice(2).every(row => row.sql?.backendProcessId === null)).toBe(true);
+    expect(census.rows.every(row => row.kind === 'unknown' && row.persistedBytes === null)).toBe(true);
+    const failedId = census.rows[1]!.id;
+    expect(observations.filter(row => row.id === failedId).map(row => [row.phase, row.backendProcessId]))
+      .toEqual([['admission', null], ['submit', 321], ['terminal', 321]]);
+    expect(observations.find(row => row.id === failedId && row.phase === 'terminal')?.status).toBe('error');
+    for (const row of census.rows.slice(2)) expect(observations.filter(observation => observation.id === row.id))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ phase: 'submit', backendProcessId: null }),
+        expect.objectContaining({ phase: 'terminal', backendProcessId: null })]));
+  } finally { tap.restore(); }
 });
 
 describe('parent-owned durable process boundary', () => {

@@ -174,6 +174,51 @@ describe('postgres.js reserved query queue after backend close', () => {
     }
   });
 
+  it('retains executing backend identities for queued queries across two actual pg Clients', async () => {
+    const { observeGroundedStoreOperations, GROUNDED_MANIFEST_SHA256 } = await import('./grounded-evidence-measurement');
+    const observations: import('./grounded-evidence-measurement').GroundedSqlObservation[] = [];
+    const scope = { workspaceId: 'gec-backend', potId: 'gec', harness: 'gec', runId: 'gec-backend',
+      ownerId: 'gec-backend', caseId: 'N7', arm: 'pre' as const, iteration: 1,
+      manifestHash: GROUNDED_MANIFEST_SHA256, fixtureHash: 'native-private-pg', sourceFingerprint: 'current-source',
+      testFingerprint: createHash('sha256').update(await readFile(new URL(import.meta.url))).digest('hex'),
+      runtimeFingerprint: process.version, configFingerprint: 'two-actual-pg-Clients' };
+    const clients = [new pg.Client({ connectionString: db.url }), new pg.Client({ connectionString: db.url })];
+    const tap = observeGroundedStoreOperations({ scope, deps: {}, operations: [],
+      sourceRef: 'test:queued-backend-identity', attemptId: 'queued-backend',
+      nodePostgres: [{ pool: 'actual-pg', clientPrototype: pg.Client.prototype, queryPrototype: pg.Query.prototype,
+        serializerSourceRef: 'source:installed-pg-original-mapper' }],
+      onSqlObservation: observation => observations.push(observation) });
+    try {
+      // Admission precedes BackendKeyData; submission happens after each
+      // actual handshake, and a second query is queued on each connection.
+      const pending = clients.flatMap((client, index) => [1, 2].map(sequence => tap.run(() => client.query(
+        `SELECT pg_backend_pid() AS backend, $1::text AS label`, [`${index}:${sequence}`]))));
+      await Promise.all(clients.map(client => client.connect()));
+      const returned = await Promise.all(pending);
+      const failed = await tap.run(() => clients[0]!.query('SELECT 1 / 0')).catch(error => error);
+      expect(failed.code).toBe('22012');
+      const census = tap.seal();
+      expect(census.complete).toBe(true); expect(census.rows).toHaveLength(5);
+      const pids = returned.map(result => result.rows[0].backend as number);
+      expect(pids[0]).toBe(pids[1]); expect(pids[2]).toBe(pids[3]); expect(pids[0]).not.toBe(pids[2]);
+      for (const [index, result] of returned.entries()) {
+        const label = result.rows[0].label;
+        // Admission order is independent of completion order and backend PID.
+        const id = census.ids[index]!;
+        expect(label).toBe(`${Math.floor(index / 2)}:${index % 2 + 1}`);
+        expect(observations.filter(row => row.id === id).map(row => [row.phase, row.backendProcessId]))
+          .toEqual([['admission', null], ['submit', pids[index]], ['terminal', pids[index]]]);
+        expect(census.rows.find(row => row.id === id)?.sql?.backendProcessId).toBe(pids[index]);
+      }
+      expect(census.rows.at(-1)?.sql).toMatchObject({ status: 'error', backendProcessId: pids[0] });
+      // Backend identity alone never upgrades an unreviewed SQL operation.
+      expect(census.rows.every(row => row.kind === 'unknown' && row.persistedBytes === null)).toBe(true);
+    } finally {
+      tap.restore();
+      await Promise.all(clients.map(client => client.end()));
+    }
+  });
+
   it('records node-postgres Pool and bootstrap Clients with original serialization and terminal-loss controls', async () => {
     const { observeGroundedStoreOperations, GROUNDED_MANIFEST_SHA256 } = await import('./grounded-evidence-measurement');
     const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');

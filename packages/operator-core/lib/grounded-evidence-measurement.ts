@@ -104,6 +104,8 @@ export interface GroundedStorageOperation {
   /** null for reads/session controls; exact UTF8 persisted value bytes for writes. */
   persistedBytes: number | null;
   sql?: { pool: string; queryId: number; queryHash: string; command: string | null; status: 'ok' | 'error';
+    /** Actual node-postgres backend at submit, never the host process or pool. */
+    backendProcessId?: number | null;
     rowOutcome?: { allOrNoneRows: GroundedPersistedRows; affectedRows: number | null };
     nonPersisting?: { sourceRef: string; kind: 'read' | 'control' };
     serializedWrite?: { sourceRef: string; templateHash: string;
@@ -134,6 +136,10 @@ export interface GroundedNonPersistingSql {
 export interface GroundedSqlObservation {
   id: string; pool: string; phase: 'admission' | 'submit' | 'terminal';
   monotonicMs: number; query: string | null;
+  /** node-postgres only. Admission may precede connection; submit/terminal use
+   * the executing Client's backend identity pinned at submit. Diagnostic only:
+   * this does not certify server values, transaction commit or persisted bytes. */
+  backendProcessId?: number | null;
   command?: string | null; status?: 'ok' | 'error';
 }
 export interface GroundedContractChange {
@@ -945,8 +951,14 @@ export function observeGroundedStoreOperations<T extends object>(input: {
     const originalReady = driver.query.handleReadyForQuery as (...args: unknown[]) => unknown;
     const originalError = driver.query.handleError as (...args: unknown[]) => unknown;
     type Query = Record<string, unknown>;
-    type Entry = { id: string; admission: typeof admissions[number]; query?: Query; queryHash?: string; parameterCount?: number;
+    type Entry = { id: string; admission: typeof admissions[number]; client: Query; backendProcessId: number | null;
+      query?: Query; queryHash?: string; parameterCount?: number;
       values: Map<number, { parameter: number; sha256: string | null; bytes: number }>; bound: boolean };
+    // pg.Client._handleBackendKeyData writes this after the actual connection
+    // handshake. A queued query can be admitted before that handshake finishes.
+    const backendProcessId = (client: Query): number | null =>
+      typeof client.processID === 'number' && Number.isSafeInteger(client.processID) && client.processID > 0
+        ? client.processID : null;
     const current = new AsyncLocalStorage<Entry>();
     const queries = new WeakMap<object, Entry>();
     const associate = (query: Query): Entry | undefined => {
@@ -994,6 +1006,7 @@ export function observeGroundedStoreOperations<T extends object>(input: {
       const insertClaim = insertState?.claims.get(entry.id);
       rows.push({ id: entry.id, kind, persistedBytes, sql: { pool: driver.pool,
         queryId: Number(entry.id.split(':node:').at(-1)), queryHash: queryHash ?? '', command, status,
+        backendProcessId: entry.backendProcessId,
         ...(registration?.allOrNoneRows !== undefined
           ? { rowOutcome: { allOrNoneRows: registration.allOrNoneRows, affectedRows } } : {}),
         ...(reviewed ? { nonPersisting: { sourceRef: reviewed.sourceRef, kind: reviewed.kind } } : {}),
@@ -1002,7 +1015,8 @@ export function observeGroundedStoreOperations<T extends object>(input: {
           censusHash: insertState.censusHash, keyHash: hash(insertClaim.key), prior: insertClaim.prior,
           contested: insertClaim.contested } } : {}) } });
       notifySql({ id: entry.id, pool: driver.pool, phase: 'terminal',
-        query: typeof query.text === 'string' ? query.text : null, command, status });
+        query: typeof query.text === 'string' ? query.text : null, command, status,
+        backendProcessId: entry.backendProcessId });
       outstanding.delete(entry.id); pending--; notify();
     };
     const query = function(this: Query, ...args: unknown[]) {
@@ -1011,13 +1025,14 @@ export function observeGroundedStoreOperations<T extends object>(input: {
       const id = `${input.attemptId}:store:${ids.length + 1}:node:${ids.length + 1}`;
       const admission: typeof admissions[number] = {
         id, origin: new Error().stack?.split('\n').slice(2, 10).join('\n') ?? null };
-      const entry: Entry = { id, admission, values: new Map(), bound: false };
+      const entry: Entry = { id, admission, client: this, backendProcessId: null, values: new Map(), bound: false };
       ids.push(id); outstanding.add(id); pending++;
       admissions.push(admission);
       const queryText = typeof args[0] === 'string' ? args[0]
         : args[0] && typeof args[0] === 'object' && typeof (args[0] as Query).text === 'string'
           ? (args[0] as { text: string }).text : null;
-      notifySql({ id, pool: driver.pool, phase: 'admission', query: queryText });
+      notifySql({ id, pool: driver.pool, phase: 'admission', query: queryText,
+        backendProcessId: backendProcessId(this) });
       notify();
       try {
         const result = current.run(entry, () => Reflect.apply(originalQuery, this, args));
@@ -1038,7 +1053,9 @@ export function observeGroundedStoreOperations<T extends object>(input: {
       if (typeof this.text === 'string') entry.queryHash = createHash('sha256').update(this.text).digest('hex');
       else captureFailed = true;
       entry.parameterCount = Array.isArray(this.values) ? this.values.length : 0;
-      notifySql({ id: entry.id, pool: driver.pool, phase: 'submit', query: typeof this.text === 'string' ? this.text : null });
+      entry.backendProcessId = backendProcessId(entry.client);
+      notifySql({ id: entry.id, pool: driver.pool, phase: 'submit', query: typeof this.text === 'string' ? this.text : null,
+        backendProcessId: entry.backendProcessId });
       const connection = args[0] as Record<string, unknown> | undefined;
       const originalBind = connection?.bind;
       if (!connection || typeof originalBind !== 'function') {
