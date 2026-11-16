@@ -240,6 +240,14 @@ describe('GEC frozen B durable consumer captures', () => {
     for (const command of ['BEGIN', 'COMMIT']) expect(recovered.storage.rows)
       .toContainEqual(expect.objectContaining({ kind: 'control', persistedBytes: null,
         sql: expect.objectContaining({ command, status: 'ok', nonPersisting: expect.objectContaining({ kind: 'control' }) }) }));
+    const sdkNoops = recovered.storage.rows.filter((row: { sql: { rowOutcome?: { allOrNoneRows: unknown };
+      insertOrNoop?: unknown; serializedParameters?: { sourceRef: string } } }) =>
+      row.sql.rowOutcome?.allOrNoneRows === 'zero-only' && !row.sql.insertOrNoop
+      && row.sql.serializedParameters?.sourceRef.startsWith('source:@dbos-inc/dbos-sdk/'));
+    expect(sdkNoops.length).toBeGreaterThan(0);
+    expect(sdkNoops.some((row: { persistedBytes: unknown }) => row.persistedBytes === 0)).toBe(true);
+    for (const row of sdkNoops) expect(row.persistedBytes)
+      .toBe(row.sql.status === 'ok' && row.sql.rowOutcome.affectedRows === 0 ? 0 : null);
     const notificationControls = recovered.storage.rows.filter((row: { sql: { command: string } }) =>
       ['LISTEN', 'NOTIFY'].includes(row.sql.command));
     expect(notificationControls).toHaveLength(4);

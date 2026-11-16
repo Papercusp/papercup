@@ -458,6 +458,38 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
     expect(measureGroundedEvidence(input).values.extractionCalls).toBeNull();
   });
 
+  it('counts registered typed-record authoring dispatches independently of provider requests', async () => {
+    const input = captured();
+    input.models!.ids = ['author-request'];
+    input.models!.rows = [{ id: 'author-request', purpose: 'authoring', purposeRef: 'caller:typed-record-author',
+      usageRef: 'provider:original-final-usage', inputTokens: 40, outputTokens: 5 }];
+    // A complete empty invocation census proves no record was authored even
+    // though the dedicated authoring caller spent provider tokens.
+    expect(measureGroundedEvidence(input).values).toMatchObject({ agentAuthoringCalls: 0,
+      agentAuthoringInputTokens: 40, agentAuthoringOutputTokens: 5 });
+    const calls: string[] = [];
+    const registrations = { 'plans:add-decision': { purpose: 'authoring' as const, purposeRef: 'registered:decision-writer' },
+      'work_items:checkpoint': { purpose: 'authoring' as const, purposeRef: 'registered:checkpoint-writer' } };
+    const create = (boundary: 'consumer' | 'control') => observeGroundedToolDispatch({ scope,
+      sourceRef: 'dispatch:typed-record-authoring', attemptId: boundary, boundary, originRef: 'transport:typed-record-author',
+      registrations, dispatch: async (tool: string) => { calls.push(tool); return tool; } });
+    const author = create('consumer');
+    expect(await author.dispatch('plans:add-decision', { title: 'actual decision' })).toBe('plans:add-decision');
+    expect(await author.dispatch('work_items:checkpoint', { checkpoint: 'actual handoff' })).toBe('work_items:checkpoint');
+    input.invocations = author.seal();
+    expect(calls).toEqual(['plans:add-decision', 'work_items:checkpoint']);
+    expect(measureGroundedEvidence(input).values).toMatchObject({ modelCalls: 1, agentAuthoringCalls: 2,
+      agentAuthoringInputTokens: 40, agentAuthoringOutputTokens: 5 });
+    const control = create('control'); await control.dispatch('plans:add-decision', {});
+    input.invocations = control.seal();
+    expect(measureGroundedEvidence(input).values.agentAuthoringCalls).toBe(0);
+    const unknown = create('consumer'); await unknown.dispatch('unregistered:writer', {});
+    input.invocations = unknown.seal();
+    expect(measureGroundedEvidence(input).values.agentAuthoringCalls).toBeNull();
+    input.invocations = { ...input.invocations, complete: false };
+    expect(measureGroundedEvidence(input).values.agentAuthoringCalls).toBeNull();
+  });
+
   const wire = (...events: unknown[]) => events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
   it.each([
     ['codex', wire({ type: 'response.completed', response: { output: [], usage: { input_tokens: 0, output_tokens: 0 } } }), 0, 0],

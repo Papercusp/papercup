@@ -3,7 +3,107 @@ import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import type { GroundedCensus, GroundedMeasurementScope } from '../lib/grounded-evidence-measurement';
+import type { GroundedCensus, GroundedMeasurementScope, GroundedNonPersistingSql, observeGroundedStoreOperations } from '../lib/grounded-evidence-measurement';
+
+const crashFixtureSourceHash = '23fa4c6dcd82d6f6ac946c58ff88eea5af278454afc69a8c16ddf879a4cff6a8';
+const fixtureSerializerSourceRef = 'source:postgres/src/connection.js@37fd9fb939eb686e75745dfaffaeea7ac6f697902cc8985e9894270ac7de0eeb'
+  + '+types.js@1883bd4536eab1c94b9e708d325b13708b0f18ec80020e3a825f34a72f603b81#Bind';
+
+/** The fixture stores its already-serialized effect payload in args TEXT.
+ * Read the driver's original Bind output; never invoke JSON.stringify again.
+ * Like the operation-output registration, this measures the serialized payload,
+ * not row/index/protocol overhead. Other writers still need their own proof. */
+export function reviewedDurableFixturePayloadSql(crashFixture: string | undefined, serializerSourceRef: string):
+  NonNullable<Parameters<typeof observeGroundedStoreOperations>[0]['serializedSqlParameters']> {
+  if (crashFixture !== crashFixtureSourceHash || serializerSourceRef !== fixtureSerializerSourceRef) return [];
+  return [{ pool: 'child-effect-log', serializerSourceRef, command: 'INSERT', parameterCount: 5,
+    sourceRef: `source:packages/operator-core/test/_durable-orchestration-crash-child.ts@${crashFixtureSourceHash}#probeTool:effect-payload`,
+    queryHash: '1671c0c4b9c208aafa1b9306e6155c5acfe775f85b8af8e65eb2a587dc62613c',
+    persistedParameters: [3], allOrNoneRows: 1 }];
+}
+
+/** The application-version claim writes only its original application_name
+ * parameter, guarded by a one-row outcome. Other SDK writers also persist
+ * defaults, timestamps or existing column values and qualify only zero-row
+ * no-ops. This applies to new observations, never retained tapes. */
+export function reviewedDurableDbosSqlWrites(systemDatabase: string | undefined, serializerSourceRef: string):
+  NonNullable<Parameters<typeof observeGroundedStoreOperations>[0]['serializedSqlParameters']> {
+  const sourceHash = 'de943d85e4414114a6bb01b079051b0e59940a4911cf9e54f05e41f24011b02b';
+  if (systemDatabase !== sourceHash || !serializerSourceRef.trim()) return [];
+  return [...([
+    ['8c66bbd7690cd0558564c7d7048db0203f799b093acd68cdb2894e628ab72135', 'UPDATE', 6, 'reenqueueWorkflowsForRecovery'],
+    ['ea031961f36e32d61e46ec51718fa74b240f03f06dda78921d7966de06278d13', 'INSERT', 3, 'createApplicationVersion:insert'],
+    ['c6fa0add461e01e4dcd38bfa70a23460e718726924ec6de54b837750727cb368', 'UPDATE', 4, 'transitionDelayedWorkflows'],
+    ['9bebb0656cf5753c1b7844d41fc9f16006eed055664860f3571b29a94ec7c163', 'UPDATE', 8, 'findAndMarkStartableWorkflows:claim'],
+    ['25d1b83fcceb22b1b26a8a5205a0cd65c5490d8ef1ffa7ccc3913c70656d29c8', 'UPDATE', 4, 'recordWorkflowOutput'],
+  ] as const).map(([queryHash, command, parameterCount, anchor]) => ({
+    pool: 'child-dbos-all-clients', queryHash, command, parameterCount,
+    sourceRef: `source:@dbos-inc/dbos-sdk/dist/src/system_database.js@${sourceHash}#${anchor}`,
+    serializerSourceRef, persistedParameters: [0], allOrNoneRows: 'zero-only' as const,
+  })), {
+    pool: 'child-dbos-all-clients', command: 'UPDATE', parameterCount: 2,
+    queryHash: '4f424e83ebb04df589947f784d7d5d9f2d92b469cef1987c7e9928d5c2b65e2a',
+    sourceRef: `source:@dbos-inc/dbos-sdk/dist/src/system_database.js@${sourceHash}#createApplicationVersion:claim`,
+    serializerSourceRef, persistedParameters: [0], allOrNoneRows: 1,
+  }];
+}
+
+/** Reviewed installed SDK statements, never a SELECT/command-prefix heuristic.
+ * Hashes below name exact emitted SQL (including the selected dbos schema and
+ * application filters). Source changes disable the affected group until review.
+ * Writes, errors, other schemas/filters and server-derived values stay unknown.
+ * This extends the existing physical-driver recorder for NEW captures only. */
+export function reviewedDurableDbosSql(sources: Partial<Record<'systemDatabase' | 'databaseUtils' | 'migrationRunner' | 'crashFixture', string>>): GroundedNonPersistingSql[] {
+  const rows: GroundedNonPersistingSql[] = [];
+  const add = (queryHash: string, sourceRef: string, kind: 'read' | 'control', command: GroundedNonPersistingSql['command']) =>
+    rows.push({ queryHash, sourceRef, kind, command, status: 'ok' });
+  const systemHash = 'de943d85e4414114a6bb01b079051b0e59940a4911cf9e54f05e41f24011b02b';
+  if (sources.systemDatabase === systemHash) {
+    const ref = `source:@dbos-inc/dbos-sdk/dist/src/system_database.js@${systemHash}`;
+    for (const [queryHash, anchor] of [
+      ['b8a33fb067a796c279a44fed8a33d0b535d0277dd5ea3a943cb11beb3e0a6826', 'isCockroachDB'],
+      ['dc5158f09c849f9585fdb8e347c852c0b843395e40690583731f1e97a9dee8fa', 'resolveRowOwner:application_versions'],
+      ['fe09ca5f845bb0630d7d00ca7da34fd4d7245a471fa0a4534428cdee7180227e', 'getLatestApplicationVersion'],
+      ['a327d50ba6b0cb0ee0d1adcf56b3bcb32235574701f8c9b99338c1fea413a7a3', 'listQueues'],
+      ['9f8d413d45c5e64b62aedc094b46679f7b535422578a46d3f30598734ece812a', 'listSchedules'],
+      ['4acd7265d7470ec477b689c3331ce819727651270f2a02567f5a0a92a435f6cd', 'latestApplicationVersionName'],
+      ['1bc8e597fa61841d672f4e673d39da6bb35e66252d454cecfe64a0d85b2c25f0', 'findAndMarkStartableWorkflows:select'],
+      ['0312bd3c912ba08b722c58997f23358e4584a5aa4ec7008b9415007567b4b12f', 'awaitWorkflowResult'],
+      ['d842f2503afae9ad2fd9dbaf6d6fa81726226ccd781ba977cfefae65ad27d906', 'listWorkflows:input'],
+      ['505422dcb72f8ea323b94adedf6970ded16be7aa4df0018eb772c2f4f3673301', 'listWorkflows:input-output'],
+      ['afda15dab24932686dbb8e8b7e80e9566a40e77e2f2cf30b75f39136f8a7066c', 'getWorkflowStatusValue'],
+      ['20ac0ef228483efa83ea286efb05f7b6fbd60addd2bd91d80fdeac8f6dd280ef', 'getOperationResultAndThrowIfCancelled'],
+      ['21bc008bf821baa94e7f788983b114017eeabc3f186aaf5e1e1788f2554776b0', 'getAllOperationResults'],
+    ]) add(queryHash!, `${ref}#${anchor}`, 'read', 'SELECT');
+    for (const [queryHash, command] of [
+      ['a8402858d4f1e1d27afee976520485ebb4b96a5387355b823f0d0b8079729032', 'BEGIN'],
+      ['79663c1d3b43ceaf9ee728e501c64b57ae2e4d6cb36ff5c65eddcda1de27342f', 'COMMIT'],
+      [createHash('sha256').update('ROLLBACK').digest('hex'), 'ROLLBACK'],
+    ] as const) add(queryHash, `${ref}#transaction-boundaries`, 'control', command);
+    for (const [queryHash, command] of [
+      ['2dfb06715dd1ca9db551ee03eed8cf4d1560b086c0adf99d3b543437df32f7d7', 'LISTEN'],
+      ['832fb87fb98cee7914c921ec44ede3fb437008fd3e8bf4985f5af80e2dfcf6ab', 'LISTEN'],
+      ['6cb0b99e8615da9b0be254f3b925ad08d748b0dd54ce15532ecc16262111a272', 'LISTEN'],
+      ['51d3f928cd16813b7a8f257cd05b53f2fe093baa8066900c62203e876c24e538', 'NOTIFY'],
+    ] as const) add(queryHash, `${ref}#notification-setup`, 'control', command);
+  }
+  const databaseHash = 'deff0db24fad793b10ad21314a8333c2b4398e4c26c25a6cedd8e24fbff54ca4';
+  if (sources.databaseUtils === databaseHash) add(
+    '46c5712c7858d59ef557084e295a65cabed886d65beead3a69eba9e3ae26a09f',
+    `source:@dbos-inc/dbos-sdk/dist/src/database_utils.js@${databaseHash}#ensurePGDatabase`, 'read', 'SELECT');
+  const migrationHash = 'e843709372e77cd6151bf35345ceca0d7307a87182a57c867bfead4fa7d830f5';
+  if (sources.migrationRunner === migrationHash) for (const queryHash of [
+    'f76fcac8cd6134140759d16e5852f1c68a8ae36eebf10cc71bd4081e79673a4e',
+    'c856a36005d6916e6c1474633c26563e90ec8a3ef0f95dc738c884593f3d1510',
+  ]) add(queryHash, `source:@dbos-inc/dbos-sdk/dist/src/sysdb_migrations/migration_runner.js@${migrationHash}#getCurrentSysDBVersion`, 'read', 'SELECT');
+  // The private fixture's count query is outside the SDK. Pin its actual writer
+  // separately; this does not qualify its INSERT or any retained earlier tape.
+  const fixtureHash = crashFixtureSourceHash;
+  if (sources.crashFixture === fixtureHash) add(
+    '1d6c78cf760bfe8165b02e3095b163663635c95035346f41ff78be7ca942dbe9',
+    `source:packages/operator-core/test/_durable-orchestration-crash-child.ts@${fixtureHash}#probeTool:effect-count`, 'read', 'SELECT');
+  return rows;
+}
 
 /** Compose independently admitted populations without completing an interrupted
  * producer or borrowing its recovery's scope/drain. Keep original censuses (and

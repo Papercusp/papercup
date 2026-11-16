@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { captureDurableProcessBoundary, composeDurableCaptureCensus, createDurableCaptureRecorder, materializeDurableCapture, reconstructDurableCapture,
-  retainDurableCapture } from '../../test/_durable-orchestration-capture';
+  retainDurableCapture, reviewedDurableDbosSqlWrites, reviewedDurableDbosSql, reviewedDurableFixturePayloadSql } from '../../test/_durable-orchestration-capture';
 import type { GroundedCensus, GroundedInvocation, GroundedMeasurementScope } from '../grounded-evidence-measurement';
 
 const directories: string[] = [];
@@ -21,6 +21,209 @@ function fixture() {
 afterEach(() => {
   vi.restoreAllMocks();
   for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true });
+});
+
+describe('source-reviewed DBOS nonpersisting SQL', () => {
+  const crashFixtureHash = '23fa4c6dcd82d6f6ac946c58ff88eea5af278454afc69a8c16ddf879a4cff6a8';
+  const sources = {
+    systemDatabase: 'de943d85e4414114a6bb01b079051b0e59940a4911cf9e54f05e41f24011b02b',
+    databaseUtils: 'deff0db24fad793b10ad21314a8333c2b4398e4c26c25a6cedd8e24fbff54ca4',
+    migrationRunner: 'e843709372e77cd6151bf35345ceca0d7307a87182a57c867bfead4fa7d830f5',
+  };
+  it('requires each actual installed writer pin and returns independent registration copies', () => {
+    for (const [name, file] of [['systemDatabase', 'system_database.js'], ['databaseUtils', 'database_utils.js'],
+      ['migrationRunner', 'sysdb_migrations/migration_runner.js']] as const) {
+      expect(createHash('sha256').update(readFileSync(new URL(
+        '../../../../node_modules/@dbos-inc/dbos-sdk/dist/src/' + file, import.meta.url))).digest('hex')).toBe(sources[name]);
+    }
+    const original = reviewedDurableDbosSql(sources);
+    expect(original).toHaveLength(23);
+    expect(new Set(original.map(row => row.queryHash)).size).toBe(original.length);
+    expect(original.every(row => row.status === 'ok' && ['read', 'control'].includes(row.kind))).toBe(true);
+    original[0]!.queryHash = 'changed';
+    expect(reviewedDurableDbosSql(sources)[0]!.queryHash).not.toBe('changed');
+    expect(reviewedDurableDbosSql({})).toEqual([]);
+    for (const key of Object.keys(sources) as Array<keyof typeof sources>) {
+      const changed = reviewedDurableDbosSql({ ...sources, [key]: 'unreviewed-source' });
+      expect(changed).toEqual(reviewedDurableDbosSql(sources).filter(row => !row.sourceRef.includes(sources[key])));
+    }
+  });
+
+  it('requires the exact fixture writer for effect-log count reads', () => {
+    expect(createHash('sha256').update(readFileSync(new URL(
+      '../../test/_durable-orchestration-crash-child.ts', import.meta.url))).digest('hex')).toBe(crashFixtureHash);
+    const statement = 'SELECT count(*)::int AS n FROM test_durable.calls WHERE run_key = $1';
+    expect(reviewedDurableDbosSql({ crashFixture: crashFixtureHash })).toEqual([{
+      queryHash: createHash('sha256').update(statement).digest('hex'), kind: 'read', command: 'SELECT', status: 'ok',
+      sourceRef: `source:packages/operator-core/test/_durable-orchestration-crash-child.ts@${crashFixtureHash}#probeTool:effect-count`,
+    }]);
+    expect(reviewedDurableDbosSql({ crashFixture: 'changed-source' })).toEqual([]);
+  });
+
+  it('measures the original fixture payload once and refuses unqualified write outcomes', async () => {
+    const { observeGroundedStoreOperations } = await import('../grounded-evidence-measurement');
+    const connectionHash = createHash('sha256').update(readFileSync(new URL(
+      '../../../../node_modules/postgres/src/connection.js', import.meta.url))).digest('hex');
+    const typesHash = createHash('sha256').update(readFileSync(new URL(
+      '../../../../node_modules/postgres/src/types.js', import.meta.url))).digest('hex');
+    const serializerSourceRef = `source:postgres/src/connection.js@${connectionHash}+types.js@${typesHash}#Bind`;
+    const statement = 'INSERT INTO test_durable.calls (run_key, tool, mode, args, idempotency_key) VALUES ($1, $2, $3, $4, $5)';
+    const registrations = reviewedDurableFixturePayloadSql(crashFixtureHash, serializerSourceRef);
+    expect(registrations).toHaveLength(1);
+    expect(registrations[0]!.queryHash).toBe(createHash('sha256').update(statement).digest('hex'));
+    expect(reviewedDurableFixturePayloadSql('changed-writer', serializerSourceRef)).toEqual([]);
+    expect(reviewedDurableFixturePayloadSql(crashFixtureHash, serializerSourceRef + '-changed-driver')).toEqual([]);
+    const scope: GroundedMeasurementScope = { workspaceId: 'w', harness: 'h', potId: 'p', runId: 'r',
+      ownerId: 'effect-payload', caseId: 'C5', arm: 'pre', iteration: 1, manifestHash: 'm', fixtureHash: 'f',
+      sourceFingerprint: 's', testFingerprint: 't', runtimeFingerprint: 'r', configFingerprint: 'c' };
+    let serializations = 0;
+    const args = { toJSON() { serializations++; return { original: 'λ.😺' }; } };
+    const payload = JSON.stringify(args);
+    const opaque = { toJSON() { throw new Error('second serialization'); } };
+    for (const control of ['original', 'zero', 'partial', 'missing-count', 'wrong-command', 'error',
+      'changed-sql', 'wrong-arity', 'not-serialized', 'simple', 'not-executed', 'pending'] as const) {
+      const client = { options: {} } as unknown as import('postgres').Sql;
+      const tap = observeGroundedStoreOperations({ scope, deps: {}, operations: [], sourceRef: 'fixture-payload',
+        attemptId: control, postgres: [{ pool: 'child-effect-log', client }], serializedSqlParameters: registrations });
+      try {
+        const query = { executed: control !== 'not-executed', options: { simple: control === 'simple' },
+          statement: { string: statement }, parameters: control === 'wrong-arity' ? [payload]
+            : ['run', 'probe:put', 'recover', control === 'not-serialized' ? opaque : payload, null] };
+        const context = tap.run(() => client.options.onquerycontext!(query));
+        const command = control === 'wrong-command' ? 'UPDATE' : 'INSERT';
+        if (control !== 'pending') client.options.onresult!({ context, queryId: 1,
+          query: statement + (control === 'changed-sql' ? ' ' : ''), command,
+          status: control === 'error' ? 'error' : 'ok', wireBytes: 999999,
+          result: { command, count: control === 'missing-count' ? null : control === 'zero' ? 0 : control === 'partial' ? 2 : 1 },
+        } as import('postgres').QueryResultDiagnostic);
+        const capture = tap.seal();
+        expect(serializations).toBe(1);
+        if (control === 'pending') { expect(capture.complete).toBe(false); expect(capture.rows).toEqual([]); }
+        else expect(capture.rows[0]!.persistedBytes, control)
+          .toBe(control === 'original' ? Buffer.byteLength(payload) : control === 'zero' ? 0 : null);
+        if (control === 'original') expect(capture.rows[0]!.sql?.serializedParameters?.values)
+          .toEqual([{ parameter: 3, sha256: createHash('sha256').update(payload).digest('hex'), bytes: Buffer.byteLength(payload) }]);
+      } finally { tap.restore(); }
+    }
+  });
+
+  it('qualifies exact successful reads and leaves changed SQL, errors and writes unknown', async () => {
+    const { observeGroundedStoreOperations } = await import('../grounded-evidence-measurement');
+    class Query {
+      _results = { command: 'SELECT', rowCount: 1 };
+      values: unknown[] = [];
+      constructor(readonly text: string) {}
+      submit(connection: { bind(config: { values: unknown[]; valueMapper(value: unknown, index: number): unknown }): void }) {
+        connection.bind({ values: this.values, valueMapper: value => value });
+      }
+      handleReadyForQuery() {}
+      handleError(error: Error) { return error; }
+    }
+    class Client { query(text: string) {
+      const query = new Query(text);
+      query.submit({ bind: config => { config.values.forEach((value, index) => config.valueMapper(value, index)); } });
+      return query;
+    } }
+    const scope = { workspaceId: 'w', harness: 'h', potId: 'p', runId: 'r', ownerId: 'sql-control', caseId: 'C5',
+      arm: 'pre' as const, iteration: 1, manifestHash: 'm', fixtureHash: 'f', sourceFingerprint: 's',
+      testFingerprint: 't', runtimeFingerprint: 'r', configFingerprint: 'c' };
+    const tap = observeGroundedStoreOperations({ scope, deps: {}, operations: [], sourceRef: 'test:reviewed-sql',
+      attemptId: 'reviewed', nodePostgres: [{ pool: 'dbos', clientPrototype: Client.prototype,
+        queryPrototype: Query.prototype, serializerSourceRef: 'unused-no-bind' }],
+      nonPersistingSql: reviewedDurableDbosSql({ ...sources, crashFixture: crashFixtureHash }) });
+    try {
+      const client = new Client(), statement = 'SELECT 1 FROM pg_database WHERE datname = $1';
+      const fixtureCount = 'SELECT count(*)::int AS n FROM test_durable.calls WHERE run_key = $1';
+      for (const [sql, fault] of [[statement, ''], [statement + ' ', ''], ['SELECT side_effect()', ''],
+        [statement, 'error'], ['UPDATE dbos.workflow_status SET status=$1', 'write'],
+        [fixtureCount, ''], [fixtureCount + ' ', ''], [fixtureCount, 'error'],
+        ['INSERT INTO test_durable.calls (args) VALUES ($1)', 'write']] as const) {
+        const query = tap.run(() => client.query(sql));
+        if (fault === 'error') query.handleError(new Error('original-query-error'));
+        else { if (fault === 'write') query._results.command = 'UPDATE'; query.handleReadyForQuery(); }
+      }
+      const capture = tap.seal();
+      expect(capture.complete).toBe(true);
+      expect(capture.rows.map(row => [row.kind, row.persistedBytes]))
+        .toEqual([['read', null], ['unknown', null], ['unknown', null], ['unknown', null], ['unknown', null],
+          ['read', null], ['unknown', null], ['unknown', null], ['unknown', null]]);
+    } finally { tap.restore(); }
+  });
+
+  it('qualifies original application-name claim bytes while keeping other positive SDK writes unknown', async () => {
+    const { observeGroundedStoreOperations } = await import('../grounded-evidence-measurement');
+    const serializerSourceRef = 'source:actual-driver-Bind';
+    const registrations = reviewedDurableDbosSqlWrites(sources.systemDatabase, serializerSourceRef);
+    expect(registrations).toHaveLength(6);
+    expect(new Set(registrations.map(row => row.queryHash)).size).toBe(6);
+    expect(registrations.filter(row => row.allOrNoneRows === 'zero-only')).toHaveLength(5);
+    expect(registrations.filter(row => row.allOrNoneRows === 1).map(row => row.sourceRef))
+      .toEqual([expect.stringContaining('#createApplicationVersion:claim')]);
+    expect(reviewedDurableDbosSqlWrites('changed-source', serializerSourceRef)).toEqual([]);
+    expect(reviewedDurableDbosSqlWrites(sources.systemDatabase, '')).toEqual([]);
+    class Query {
+      _results: { command: string; rowCount: number | null } = { command: 'UPDATE', rowCount: 0 };
+      constructor(readonly text: string, readonly values: unknown[]) {}
+      submit(connection: { bind(config: { values: unknown[]; valueMapper(value: unknown, index: number): unknown }): void }) {
+        connection.bind({ values: this.values, valueMapper: value => value });
+      }
+      handleReadyForQuery() {}
+      handleError(error: Error) { return error; }
+    }
+    class Client { query(text: string, values: unknown[]) {
+      const query = new Query(text, values);
+      query.submit({ bind: config => { config.values.forEach((value, index) => config.valueMapper(value, index)); } });
+      return query;
+    } }
+    const scope: GroundedMeasurementScope = { workspaceId: 'w', harness: 'h', potId: 'p', runId: 'r',
+      ownerId: 'sql-noop', caseId: 'C5', arm: 'pre', iteration: 1, manifestHash: 'm', fixtureHash: 'f',
+      sourceFingerprint: 's', testFingerprint: 't', runtimeFingerprint: 'r', configFingerprint: 'c' };
+    const statement = `UPDATE "dbos".application_versions
+         SET application_name = $1
+         WHERE version_name = $2 AND application_name IS NULL`;
+    const run = (registeredSerializer: string) => {
+      const tap = observeGroundedStoreOperations({ scope, deps: {}, operations: [], sourceRef: 'test:zero-only',
+        attemptId: registeredSerializer, nodePostgres: [{ pool: 'child-dbos-all-clients',
+          clientPrototype: Client.prototype, queryPrototype: Query.prototype, serializerSourceRef }],
+        serializedSqlParameters: reviewedDurableDbosSqlWrites(sources.systemDatabase, registeredSerializer) });
+      try {
+        const client = new Client();
+        for (const fault of ['zero', 'positive', 'partial', 'missing-count', 'error', 'changed-sql', 'wrong-arity', 'wrong-command']) {
+          const query = tap.run(() => client.query(statement + (fault === 'changed-sql' ? ' ' : ''),
+            fault === 'wrong-arity' ? ['é🧪'] : ['é🧪', 'version']));
+          if (fault === 'positive') query._results.rowCount = 1;
+          if (fault === 'partial') query._results.rowCount = 2;
+          if (fault === 'missing-count') query._results.rowCount = null;
+          if (fault === 'wrong-command') query._results.command = 'INSERT';
+          if (fault === 'error') query.handleError(new Error('actual-terminal-error'));
+          else query.handleReadyForQuery();
+        }
+        // This writer additionally persists server defaults. Even a successful
+        // one-row insert cannot inherit the claim's positive-byte contract.
+        const insert = tap.run(() => client.query(`INSERT INTO "dbos".application_versions (version_id, version_name, application_name)
+           VALUES ($1, $2, $3)
+           ON CONFLICT DO NOTHING`, ['id', 'version', 'é🧪']));
+        insert._results = { command: 'INSERT', rowCount: 1 };
+        insert.handleReadyForQuery();
+        return tap.seal();
+      } finally { tap.restore(); }
+    };
+    const capture = run(serializerSourceRef);
+    expect(capture.complete).toBe(true);
+    expect(capture.rows.map(row => row.persistedBytes)).toEqual([0, Buffer.byteLength('é🧪'), null, null, null, null, null, null, null]);
+    expect(capture.rows[0]).toMatchObject({ kind: 'write', sql: {
+      rowOutcome: { allOrNoneRows: 1, affectedRows: 0 },
+      serializedParameters: { parameterCount: 2, serializerSourceRef,
+        values: [{ parameter: 0, bytes: Buffer.byteLength('é🧪') }] } } });
+    expect(capture.rows[1]).toMatchObject({ kind: 'write', sql: {
+      rowOutcome: { allOrNoneRows: 1, affectedRows: 1 },
+      serializedParameters: { values: [{ parameter: 0, sha256: createHash('sha256').update('é🧪').digest('hex'),
+        bytes: Buffer.byteLength('é🧪') }] } } });
+    expect(capture.rows.at(-1)).toMatchObject({ kind: 'write', sql: { rowOutcome: { allOrNoneRows: 'zero-only', affectedRows: 1 } } });
+    const changedDriver = run('source:changed-driver');
+    expect(changedDriver.complete).toBe(true);
+    expect(changedDriver.rows.every(row => row.persistedBytes === null)).toBe(true);
+  });
 });
 
 describe('parent-owned durable process boundary', () => {

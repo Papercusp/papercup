@@ -14,7 +14,7 @@ import dns from 'node:dns';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { createDurableCaptureRecorder } from './_durable-orchestration-capture';
+import { createDurableCaptureRecorder, reviewedDurableDbosSqlWrites, reviewedDurableDbosSql, reviewedDurableFixturePayloadSql } from './_durable-orchestration-capture';
 import postgres from 'postgres';
 import pg from 'pg';
 import { DBOS } from '@dbos-inc/dbos-sdk';
@@ -172,19 +172,19 @@ if (process.env.DURABLE_CRASH_GEC_SCOPE) {
   const serializerSourceRef = 'source:pg/lib/query.js@'
     + digest(readFileSync(new URL('../../../node_modules/pg/lib/query.js', import.meta.url)))
     + '+utils.js@' + digest(readFileSync(new URL('../../../node_modules/pg/lib/utils.js', import.meta.url))) + '#Bind.prepareValue';
-  // Reviewed SDK setup subscribes three channels and sends one fixed self-test;
-  // it does not persist application values. Pin the writer as well as every SQL
-  // byte/command/status. A changed SDK must be reviewed before qualifying it.
+  // Pin reviewed SDK reads/transaction controls to the installed writer and
+  // exact SQL bytes. No new classification is applied to a retained old tape.
   const notificationSourceHash = 'de943d85e4414114a6bb01b079051b0e59940a4911cf9e54f05e41f24011b02b';
-  const notificationSourceMatches = digest(readFileSync(new URL(
-    '../../../node_modules/@dbos-inc/dbos-sdk/dist/src/system_database.js', import.meta.url))) === notificationSourceHash;
-  const notificationControls = notificationSourceMatches ? [
-    { queryHash: '2dfb06715dd1ca9db551ee03eed8cf4d1560b086c0adf99d3b543437df32f7d7', command: 'LISTEN' as const },
-    { queryHash: '832fb87fb98cee7914c921ec44ede3fb437008fd3e8bf4985f5af80e2dfcf6ab', command: 'LISTEN' as const },
-    { queryHash: '6cb0b99e8615da9b0be254f3b925ad08d748b0dd54ce15532ecc16262111a272', command: 'LISTEN' as const },
-    { queryHash: '51d3f928cd16813b7a8f257cd05b53f2fe093baa8066900c62203e876c24e538', command: 'NOTIFY' as const },
-  ].map(row => ({ ...row, kind: 'control' as const, status: 'ok' as const,
-    sourceRef: `source:@dbos-inc/dbos-sdk/dist/src/system_database.js@${notificationSourceHash}#notification-setup` })) : [];
+  const sdkSourceHashes = Object.fromEntries([
+    ['systemDatabase', 'system_database.js'], ['databaseUtils', 'database_utils.js'],
+    ['migrationRunner', 'sysdb_migrations/migration_runner.js'],
+  ].map(([name, file]) => [name, digest(readFileSync(new URL(
+    '../../../node_modules/@dbos-inc/dbos-sdk/dist/src/' + file, import.meta.url)))]));
+  const notificationSourceMatches = sdkSourceHashes.systemDatabase === notificationSourceHash;
+  const crashFixtureHash = digest(readFileSync(new URL(import.meta.url)));
+  const fixtureSerializerSourceRef = 'source:postgres/src/connection.js@'
+    + digest(readFileSync(new URL('../../../node_modules/postgres/src/connection.js', import.meta.url)))
+    + '+types.js@' + digest(readFileSync(new URL('../../../node_modules/postgres/src/types.js', import.meta.url))) + '#Bind';
   // This exact installed writer can report INSERT 1 for an invocation-owned
   // unchanged upsert (checkpoint_invocation_id is the eleventh Bind input).
   // The parent retains all keys before this exclusive child starts, so the
@@ -222,6 +222,7 @@ if (process.env.DURABLE_CRASH_GEC_SCOPE) {
         kind: 'current-source-durable-capture', acceptance: 'unmeasured', mode, workflowRunKey: runKey,
         processId: process.pid,
         initialKeyCensus,
+        sdkSourceHashes,
         phases: gecPhases,
         processTermination,
         sqlObservations,
@@ -260,15 +261,19 @@ if (process.env.DURABLE_CRASH_GEC_SCOPE) {
     attemptId: `${runKey}:${mode}`, postgres: [{ pool: 'child-effect-log', client: sql }],
     nodePostgres: [{ pool: 'child-dbos-all-clients', clientPrototype: pg.Client.prototype,
       queryPrototype: pg.Query.prototype, serializerSourceRef }],
-    nonPersistingSql: notificationControls,
-    serializedSqlParameters: notificationSourceMatches ? [
+    nonPersistingSql: reviewedDurableDbosSql({ ...sdkSourceHashes, crashFixture: crashFixtureHash }),
+    serializedSqlParameters: [
+      ...reviewedDurableFixturePayloadSql(crashFixtureHash, fixtureSerializerSourceRef),
+      ...(notificationSourceMatches ? [
+      ...reviewedDurableDbosSqlWrites(sdkSourceHashes.systemDatabase, serializerSourceRef),
       { pool: 'child-dbos-all-clients', sourceRef: operationOutputSourceRef, serializerSourceRef,
-        queryHash: digest(Buffer.from(operationOutputStatement)), command: 'INSERT', parameterCount: 11,
-        persistedParameters: [2, 3], allOrNoneRows: 'zero-only', insertOrNoop: initialKeyCensus },
+        queryHash: digest(Buffer.from(operationOutputStatement)), command: 'INSERT' as const, parameterCount: 11,
+        persistedParameters: [2, 3], allOrNoneRows: 'zero-only' as const, insertOrNoop: initialKeyCensus },
       { pool: 'child-dbos-all-clients', sourceRef: operationOutputSourceRef, serializerSourceRef,
-        queryHash: digest(Buffer.from(executorStatement)), command: 'UPDATE', parameterCount: 2,
+        queryHash: digest(Buffer.from(executorStatement)), command: 'UPDATE' as const, parameterCount: 2,
         persistedParameters: [0], allOrNoneRows: 1 },
-    ] : [],
+      ] : []),
+    ],
     onSqlObservation: row => sqlObservations.push(row), onObservation: () => retain(false) });
   runGecStoreWindow = fn => storeTap.run(fn);
   restoreGecStore = () => storeTap.restore();

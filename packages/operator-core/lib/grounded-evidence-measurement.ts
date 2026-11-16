@@ -92,7 +92,7 @@ export interface GroundedInvocation {
   /** Derived at the transport/call_origin boundary, never from answer prose. */
   boundary: 'consumer' | 'internal' | 'control' | 'unknown';
   originRef: string;
-  purpose: 'retrieval' | 'other' | 'unknown';
+  purpose: 'retrieval' | 'authoring' | 'other' | 'unknown';
   purposeRef: string;
 }
 // Some reviewed upserts report a positive affected count for an unchanged
@@ -252,7 +252,9 @@ export function measureGroundedEvidence(input: GroundedMeasurementInput) {
       ['authoring', 'agentAuthoringCalls', 'agentAuthoringInputTokens', 'agentAuthoringOutputTokens'],
     ] as const) {
       const selected = models.filter(m => m.purpose === purpose);
-      values[count] = selected.length;
+      // Authoring calls are typed-record dispatches. One provider request may
+      // author zero, one or several records; its usage still belongs here.
+      if (purpose !== 'authoring') values[count] = selected.length;
       values[inTokens] = tokens(selected, 'inputTokens');
       values[outTokens] = tokens(selected, 'outputTokens');
     }
@@ -274,9 +276,12 @@ export function measureGroundedEvidence(input: GroundedMeasurementInput) {
         values.repeatedCalls = normalized.length - new Set(normalized).size;
       } catch { gaps.add('invocations:invalid-canonical-args'); }
     }
-    if (invocations.some(i => !['retrieval', 'other'].includes(i.purpose) || !nonblank(i.purposeRef)
+    if (invocations.some(i => !['retrieval', 'authoring', 'other'].includes(i.purpose) || !nonblank(i.purposeRef)
       || !['consumer', 'internal', 'control'].includes(i.boundary))) gaps.add('invocations:unclassified-caller-purpose');
-    else values.retrievalCalls = invocations.filter(i => i.purpose === 'retrieval' && i.boundary !== 'control').length;
+    else {
+      values.retrievalCalls = invocations.filter(i => i.purpose === 'retrieval' && i.boundary !== 'control').length;
+      values.agentAuthoringCalls = invocations.filter(i => i.purpose === 'authoring' && i.boundary !== 'control').length;
+    }
   }
   const durable = census('durable', input.durable);
   if (durable) {
