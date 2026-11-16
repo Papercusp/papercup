@@ -5,12 +5,14 @@
  * Original selected-claim judgments are observations, not independent semantic
  * acceptance. These tests confer no BAR credit, coherent freeze or shipment proof.
  */
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import { gunzipSync } from 'node:zlib';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { canonicalJson } from '@papercusp/hash-chain';
 
 interface Sample { id: string; cls: string; outcome: string; finding: string; limits: string }
 interface Artifact {
@@ -26,12 +28,55 @@ interface Artifact {
   population: { path: string; compressedSha256: string; uncompressedSha256: string; count: number };
 }
 const root = resolve(import.meta.dirname, '../../../..');
-const artifact: Artifact = JSON.parse(readFileSync(resolve(root,
+const publicArtifact: Artifact = JSON.parse(readFileSync(resolve(root,
   'docs/evidence/p011-corpus-count-sample-2026-11-15.json'), 'utf8'));
 const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
-const compressed = readFileSync(resolve(root, artifact.population.path));
+const actual = process.env.PAPERCUSP_DOCUMENTATION_PROOF_MODE === 'actual';
+interface Entry { cls: string; id: string; eligible: boolean }
+interface Inventory {
+  seed: string; sample_hash: string; sample_ids: string[]; entries: Entry[]; files: unknown[];
+  source_vector: Artifact['sourceVector'];
+  six_candidate_strata: Record<string, { count: number }>;
+}
+/** Actual mode reads the original retained measurement, never the public copy.
+ * Missing or altered inputs throw before collection; there is no fixture fallback.
+ * These dated inputs are not a rescan, a coherent edition or semantic acceptance.
+ */
+function originalMeasurement() {
+  const directory = process.env.PAPERCUSP_P011_MATERIALIZATION_DIR;
+  if (!directory || !isAbsolute(directory)) throw new Error('Actual P011 requires an absolute materialization directory');
+  const inputs: Record<string, Buffer> = {};
+  for (const [name, source] of Object.entries(publicArtifact.sourceArtifacts)) {
+    const bytes = readFileSync(resolve(directory, name));
+    if (hash(bytes) !== source.sha256) throw new Error(`Actual P011 source identity mismatch: ${name}`);
+    inputs[name] = bytes;
+  }
+  const body = readFileSync(resolve(directory, 'report.md'), 'utf8');
+  if (hash(body) !== publicArtifact.bodySha256) throw new Error('Actual P011 original report identity mismatch');
+  const inventory = JSON.parse(inputs['inventory.json']!.toString('utf8')) as Inventory;
+  const sampled = JSON.parse(inputs['sample.json']!.toString('utf8')) as (Entry & Record<string, unknown>)[];
+  const review = JSON.parse(inputs['review.json']!.toString('utf8')) as {
+    judgments: { id: string; class: string; outcome: string; finding: string; limits: string }[];
+  };
+  const recount = JSON.parse(inputs['recount.json']!.toString('utf8')) as { sample_count: number; unique_entries: number };
+  if (hash(canonicalJson(inventory.entries)) !== inventory.source_vector.entry_manifest_sha256
+    || hash(canonicalJson(inventory.files)) !== inventory.source_vector.file_manifest_sha256
+    || hash(canonicalJson(sampled.map(({ body: _body, ...entry }) => entry))) !== inventory.sample_hash
+    || recount.sample_count !== sampled.length || recount.unique_entries !== inventory.entries.length
+    || JSON.stringify(sampled.map(row => row.id)) !== JSON.stringify(inventory.sample_ids))
+    throw new Error('Actual P011 measurement/recount identity mismatch');
+  return { inventory, artifact: {
+    ...publicArtifact, body_md: body, seed: inventory.seed, sampleHash: inventory.sample_hash,
+    sourceVector: inventory.source_vector,
+    strata: Object.fromEntries(Object.entries(inventory.six_candidate_strata).map(([key, value]) => [key, value.count])),
+    sample: review.judgments.map(row => ({ ...row, cls: row.class })),
+  } };
+}
+const original = actual ? originalMeasurement() : null;
+const artifact = original?.artifact ?? publicArtifact;
+const compressed = readFileSync(resolve(root, publicArtifact.population.path));
 const bytes = gunzipSync(compressed);
-const population = bytes.toString('utf8').trimEnd().split('\n').map(line => {
+const population = original?.inventory.entries ?? bytes.toString('utf8').trimEnd().split('\n').map(line => {
   const cells = line.split('\t');
   if (cells.length !== 3 || !['0', '1'].includes(cells[2]!)) throw new Error('invalid population row');
   return { cls: cells[0]!, id: cells[1]!, eligible: cells[2] === '1' };
@@ -50,6 +95,50 @@ for (let round = 0; selected.length < Math.min(50, population.filter(row => row.
     if (row && selected.length < 50) selected.push(row.id);
   }
 }
+
+beforeAll(async () => {
+  if (!actual) return;
+  const origin = process.env.OPERATOR_E2E_BASE_URL;
+  const expected = process.env.OPERATOR_REPORT_BUILD_SHA;
+  if (!origin || !expected || !/^[a-f0-9]{7,40}$/.test(expected))
+    throw new Error('Actual P011 requires explicit operator origin and build identity');
+  const url = new URL(origin);
+  if (!['http:', 'https:'].includes(url.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
+    || url.username || url.password || url.pathname !== '/' || url.search || url.hash)
+    throw new Error('Actual P011 requires a local operator origin');
+  const health = async () => {
+    const response = await fetch(url.origin + '/api/health', { redirect: 'error', signal: AbortSignal.timeout(15_000) });
+    if (!response.ok) throw new Error(`Actual P011 runtime HTTP ${response.status}`);
+    const value = await response.json() as { ok?: boolean; sha?: string; bundleStale?: boolean };
+    if (value.ok !== true || !value.sha || value.bundleStale
+      || !(expected.startsWith(value.sha) || value.sha.startsWith(expected)))
+      throw new Error('Actual P011 serving build differs from its declared runtime');
+    return value.sha;
+  };
+  const before = await health();
+  const { stdout } = await promisify(execFile)(process.execPath,
+    [resolve(root, 'apps/operator/scripts/ptool.mjs'), 'reports:get', '--url=' + url.origin, '--json', JSON.stringify({
+      id: artifact.reportId, projection: { pick: ['ok', 'results[].ok', 'results[].id',
+        'results[].report.report_id', 'results[].report.workspace_id', 'results[].report.visibility',
+        'results[].report.path', 'results[].report.body_sha256', 'results[].report.body_bytes'] },
+    })], { cwd: root, env: process.env, timeout: 45_000, maxBuffer: 2_000_000 });
+  const receipt = JSON.parse(stdout) as { ok: boolean; results: { ok: boolean; id: string; report: {
+    report_id: string; workspace_id: string; visibility: string; path: string; body_sha256: string; body_bytes: number;
+  } }[] };
+  expect(receipt.ok).toBe(true);
+  expect(receipt.results).toHaveLength(1);
+  expect(receipt.results[0]).toMatchObject({ ok: true, id: artifact.reportId, report: {
+    report_id: artifact.reportId, workspace_id: 'papercusp-workspace', visibility: 'workspace',
+    path: `/reports?sel=${artifact.reportId}`, body_sha256: hash(artifact.body_md),
+    body_bytes: Buffer.byteLength(artifact.body_md, 'utf8'),
+  } });
+  const after = await health();
+  expect(after).toBe(before);
+  console.log('P011_ACTUAL_REPORT_IDENTITY=' + JSON.stringify({ reportId: artifact.reportId,
+    bodySha256: hash(artifact.body_md), origin: url.origin, before, after,
+    sourceVector: artifact.sourceVector, sampleHash: artifact.sampleHash,
+    scope: 'dated original materialization; no coherent freeze, rescan or semantic self-certification' }));
+}, 75_000);
 
 function section(body: string, heading: string): string {
   return body.split(`## ${heading}\n`)[1]?.split('\n## ')[0] ?? '';
@@ -197,16 +286,16 @@ const reportControls = [
   },
 ];
 
-describe('P011 actual report mechanical integration and causal report controls', () => {
+describe(`P011 ${actual ? 'original materialization and live report' : 'public copy'} mechanical integration and causal report controls`, () => {
   it('pins the immutable original reference, public copy and complete measured candidate population', () => {
     expect(artifact.reportId).toBe('rpt_120bd45f-696a-485e-b576-aeb904308ad5');
     expect(artifact.bodySha256).toBe('5f3a484fe1b0f0cbaaa42fb73763129af69581b327eebf9aae87b56111ad1029');
-    expect(artifact.bodyRepresentation.kind).toBe('identity-redacted-public-copy');
+    expect(publicArtifact.bodyRepresentation.kind).toBe('identity-redacted-public-copy');
     expect(artifact.bodyRepresentation.originalReportPath).toBe(`/reports?sel=${artifact.reportId}`);
     expect(artifact.bodyRepresentation.originalSourcePath).toBe('.papercusp/scratch/p011-census-20261115/report.md');
     expect(artifact.bodyRepresentation.hashMeaning).toContain('bodySha256 identifies the immutable original report');
     expect(artifact.publicBodySha256).toBe('3947a507b15a008c1917c81e6a54a34d8da3a71c7459a4986e6264921841e922');
-    expect(hash(artifact.body_md)).toBe(artifact.publicBodySha256);
+    expect(hash(artifact.body_md)).toBe(actual ? artifact.bodySha256 : artifact.publicBodySha256);
     expect(artifact.publicBodySha256).not.toBe(artifact.bodySha256);
     expect(hash(compressed)).toBe(artifact.population.compressedSha256);
     expect(hash(bytes)).toBe(artifact.population.uncompressedSha256);
@@ -218,12 +307,12 @@ describe('P011 actual report mechanical integration and causal report controls',
   });
 
   it('keeps the entire public evidence artifact clean under the sanctioned identity serializer', () => {
-    expect(artifact.bodyRepresentation.serializer)
+    expect(publicArtifact.bodyRepresentation.serializer)
       .toBe('scripts/lib/identity-leak-patterns.mjs#serializeIdentitySafeJson');
     const serialized = execFileSync(process.execPath,
       [resolve(root, 'scripts/lib/identity-leak-patterns.mjs'), '--serialize-json'],
-      { input: JSON.stringify(artifact), encoding: 'utf8' });
-    expect(JSON.parse(serialized)).toEqual(artifact);
+      { input: JSON.stringify(publicArtifact), encoding: 'utf8' });
+    expect(JSON.parse(serialized)).toEqual(publicArtifact);
   });
 
   it('keeps every collected baseline and falsifier execution identity distinct', ({ task }) => {
