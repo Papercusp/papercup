@@ -166,70 +166,72 @@ describe('scorecards:get evidence-first projection', () => {
     expect(() => rubricCoverageCriterionCard({ ok: false, error: 'unavailable' })).toThrow();
   });
 
-  it.each([
+  for (const { name, assessmentWorkItem } of [
     { name: 'grading system full and compact readers preserve every criterion', assessmentWorkItem: undefined },
     { name: 'grading system full and compact readers preserve every criterion and selected scope reference',
       assessmentWorkItem: { id: 'WI-assessment-selection', harness: 'papercusp' } },
-  ])('$name', async ({ assessmentWorkItem }) => {
-    const comparisonTime = '2026-11-01T12:01:00.001Z';
-    const lastMeasurement = { testRunId: 1, value: 840, unit: 'ms', status: 'pass' as const,
-      finishedAt: '2026-11-01T12:00:00Z', comparisonTime, ageMs: 60_001, freshness: 'stale' as const };
-    const ledgerResult = { ...lastMeasurement, testRunId: 2, value: null, status: 'error' as const,
-      finishedAt: '2026-11-01T12:00:30Z', ageMs: 30_001, freshness: 'failed' as const };
-    const card = { ...scorecard, rerunRecipe: undefined,
-      criteria: scorecard.criteria.map(entry => ({ ...entry, evidence: entry.evidence.repeat(4),
-        rating: 'unknown', ledgerResult, lastMeasurement })) };
-    readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: card });
-    const projected = lookupByMcpName('scorecards:get')!;
-    type Call = { args: Record<string, unknown> };
-    type Page = { scorecard: { criteria: typeof card.criteria }; evidenceRead: {
-      complete: boolean; criteria?: Array<{ key: string; read: Call }>; next?: Call;
-    } };
-    for (const requestedFormat of ['json', undefined] as const) {
-      const read = async (args: Record<string, unknown>) => {
-        const dispatched = await dispatchProjectedTool(projected, 'scorecards:get', args,
-          makeDispatchContext({ requestedFormat }), {});
-        expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
-        return readJsonResult(dispatched.result!) as unknown as Page;
-      };
-      const indexed: Array<{ key: string; read: Call }> = [];
-      let args: Record<string, unknown> | undefined = { issueId: card.issueId, comparisonTime, indexOffset: 0,
-        ...(assessmentWorkItem ? { assessmentWorkItem } : {}) };
-      let pages = 0;
-      while (args) {
-        expect(++pages).toBeLessThan(30);
-        const page = await read(args);
-        indexed.push(...page.evidenceRead.criteria!);
-        args = page.evidenceRead.next?.args;
-        if (args) {
-          expect(args.comparisonTime).toBe(comparisonTime);
-          expect(args.assessmentWorkItem).toEqual(assessmentWorkItem);
+  ]) {
+    it(name, async () => {
+      const comparisonTime = '2026-11-01T12:01:00.001Z';
+      const lastMeasurement = { testRunId: 1, value: 840, unit: 'ms', status: 'pass' as const,
+        finishedAt: '2026-11-01T12:00:00Z', comparisonTime, ageMs: 60_001, freshness: 'stale' as const };
+      const ledgerResult = { ...lastMeasurement, testRunId: 2, value: null, status: 'error' as const,
+        finishedAt: '2026-11-01T12:00:30Z', ageMs: 30_001, freshness: 'failed' as const };
+      const card = { ...scorecard, rerunRecipe: undefined,
+        criteria: scorecard.criteria.map(entry => ({ ...entry, evidence: entry.evidence.repeat(4),
+          rating: 'unknown', ledgerResult, lastMeasurement })) };
+      readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: card });
+      const projected = lookupByMcpName('scorecards:get')!;
+      type Call = { args: Record<string, unknown> };
+      type Page = { scorecard: { criteria: typeof card.criteria }; evidenceRead: {
+        complete: boolean; criteria?: Array<{ key: string; read: Call }>; next?: Call;
+      } };
+      for (const requestedFormat of ['json', undefined] as const) {
+        const read = async (args: Record<string, unknown>) => {
+          const dispatched = await dispatchProjectedTool(projected, 'scorecards:get', args,
+            makeDispatchContext({ requestedFormat }), {});
+          expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+          return readJsonResult(dispatched.result!) as unknown as Page;
+        };
+        const indexed: Array<{ key: string; read: Call }> = [];
+        let args: Record<string, unknown> | undefined = { issueId: card.issueId, comparisonTime, indexOffset: 0,
+          ...(assessmentWorkItem ? { assessmentWorkItem } : {}) };
+        let pages = 0;
+        while (args) {
+          expect(++pages).toBeLessThan(30);
+          const page = await read(args);
+          indexed.push(...page.evidenceRead.criteria!);
+          args = page.evidenceRead.next?.args;
+          if (args) {
+            expect(args.comparisonTime).toBe(comparisonTime);
+            expect(args.assessmentWorkItem).toEqual(assessmentWorkItem);
+          }
         }
-      }
-      expect(indexed.map(entry => entry.key)).toEqual(card.criteria.map(entry => entry.key));
-      for (const entry of indexed) {
-        let next: Record<string, unknown> | undefined = entry.read.args;
-        let evidence = '';
-        let evidencePages = 0;
-        while (next) {
-          expect(++evidencePages).toBeLessThan(30);
-          expect(next.comparisonTime).toBe(comparisonTime);
-          expect(next.assessmentWorkItem).toEqual(assessmentWorkItem);
-          const page = await read(next);
-          expect(page.scorecard.criteria).toHaveLength(1);
-          expect(page.scorecard.criteria[0]).toMatchObject({ key: entry.key, ledgerResult, lastMeasurement });
-          evidence += page.scorecard.criteria[0]!.evidence;
-          next = page.evidenceRead.next?.args;
+        expect(indexed.map(entry => entry.key)).toEqual(card.criteria.map(entry => entry.key));
+        for (const entry of indexed) {
+          let next: Record<string, unknown> | undefined = entry.read.args;
+          let evidence = '';
+          let evidencePages = 0;
+          while (next) {
+            expect(++evidencePages).toBeLessThan(30);
+            expect(next.comparisonTime).toBe(comparisonTime);
+            expect(next.assessmentWorkItem).toEqual(assessmentWorkItem);
+            const page = await read(next);
+            expect(page.scorecard.criteria).toHaveLength(1);
+            expect(page.scorecard.criteria[0]).toMatchObject({ key: entry.key, ledgerResult, lastMeasurement });
+            evidence += page.scorecard.criteria[0]!.evidence;
+            next = page.evidenceRead.next?.args;
+          }
+          expect(evidence).toBe(card.criteria.find(criterion => criterion.key === entry.key)!.evidence);
         }
-        expect(evidence).toBe(card.criteria.find(criterion => criterion.key === entry.key)!.evidence);
+        const shortCard = { ...card, criteria: card.criteria.map(entry => ({ ...entry, evidence: 'Retained evidence.' })) };
+        readScorecardEvidenceM.mockResolvedValueOnce({ kind: 'found', scorecard: shortCard });
+        const full = await read({ issueId: card.issueId, comparisonTime,
+          ...(assessmentWorkItem ? { assessmentWorkItem } : {}) });
+        expect(full.scorecard.criteria).toEqual(shortCard.criteria);
       }
-      const shortCard = { ...card, criteria: card.criteria.map(entry => ({ ...entry, evidence: 'Retained evidence.' })) };
-      readScorecardEvidenceM.mockResolvedValueOnce({ kind: 'found', scorecard: shortCard });
-      const full = await read({ issueId: card.issueId, comparisonTime,
-        ...(assessmentWorkItem ? { assessmentWorkItem } : {}) });
-      expect(full.scorecard.criteria).toEqual(shortCard.criteria);
-    }
-  });
+    });
+  }
 
   it.each(['diagnostic', 'grading'] as const)('preserves %s identity on evidence and recipe reads', async (purpose) => {
     const identity = { purpose, barSetHash: 'b'.repeat(64),
