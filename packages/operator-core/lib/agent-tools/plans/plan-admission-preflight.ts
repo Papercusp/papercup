@@ -22,6 +22,7 @@ import { getPlanRow, planItemsForRow } from './source';
 import { analyzePlanDagParallelism, type PlanDagParallelismDiagnostics } from './plan-dag-parallelism';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { readExternalBlockers } from '../../external-blockers';
+import { planItemProvenanceFromRow } from '../../plan-item-provenance';
 
 const ISSUE_KINDS = new Set<string>(ISSUE_FAMILY_KINDS);
 
@@ -56,7 +57,10 @@ export function buildExactPlanClaimSpec(
 }
 
 type AdmissionWorkItem = Pick<WorkItem, 'id' | 'family' | 'sourcePlanItemIds' | 'payload'> &
-  Partial<Pick<WorkItem, 'assignee' | 'takenAt' | 'state' | 'parent' | 'sourcePlanSlug' | 'harness'>>;
+  Partial<Pick<WorkItem, 'assignee' | 'takenAt' | 'state' | 'parent' | 'sourcePlanSlug' | 'harness'>> & {
+    canonicalPlanSlug?: string | null;
+    canonicalPlanItemId?: string | null;
+  };
 type RootClass = 'dependency' | 'sticky' | 'cycle' | 'dangling' | 'needs-human' | 'non-actionable-status';
 export type ExactPlanAdmissionReason =
   | 'ready'
@@ -118,11 +122,57 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 function provenanceIds(item: AdmissionWorkItem): string[] {
-  if (item.sourcePlanItemIds?.length) return item.sourcePlanItemIds;
   const payload = record(item.payload);
   const stamp = record(payload.plan_item ?? payload.planItem);
-  const one = stamp.item_id ?? stamp.itemId ?? stamp.item;
-  return typeof one === 'string' && one ? [one] : [];
+  const run = record(payload.plan_run);
+  return planItemProvenanceFromRow({
+    plan_slug: item.canonicalPlanSlug,
+    plan_line_id: item.canonicalPlanItemId,
+    source_plan_slug: item.sourcePlanSlug,
+    source_plan_item_ids: item.sourcePlanItemIds,
+    stamped_plan_slug: typeof stamp.plan_slug === 'string' ? stamp.plan_slug : null,
+    stamped_item_id: typeof (stamp.item_id ?? stamp.itemId ?? stamp.item) === 'string'
+      ? String(stamp.item_id ?? stamp.itemId ?? stamp.item) : null,
+    run_instance_plan_slug: typeof run.instancePlanSlug === 'string' ? run.instancePlanSlug : null,
+    run_template_slug: typeof run.templateSlug === 'string' ? run.templateSlug : null,
+  }).itemIds;
+}
+
+/** Family projections omit canonical columns; join their real nodes at the admission boundary. */
+export async function readExactPlanAdmissionWorkItems(args: {
+  workspaceId: string;
+  harnessSlug: string;
+  planSlug: string;
+}): Promise<{ workItems: AdmissionWorkItem[]; sourceCapExhausted: boolean }> {
+  const legacy = await runWithWorkspaceIfConcrete(args.workspaceId, () => listWorkItems({
+    harness: args.harnessSlug, sourcePlanSlug: args.planSlug,
+    includeChildren: true, limit: WORK_ITEMS_MAX_LIMIT,
+  }));
+  const [{ getOrgPg }, { readPlanLineWorkItemRefs }] = await Promise.all([
+    import('@papercusp/db-org'), import('./plan-line-graph'),
+  ]);
+  const refs = await readPlanLineWorkItemRefs(getOrgPg().sql, {
+    workspaceId: args.workspaceId, harnessSlug: args.harnessSlug, slug: args.planSlug,
+    workItemIds: legacy.map(item => item.id), limit: WORK_ITEMS_MAX_LIMIT + 1,
+  });
+  const sourceCapExhausted = legacy.length >= WORK_ITEMS_MAX_LIMIT || refs.length > WORK_ITEMS_MAX_LIMIT;
+  const byId = new Map(legacy.map(item => [item.id, item]));
+  const missingIds = refs.filter(ref => ref.planSlug === args.planSlug && ref.planItemId && !byId.has(ref.workItemId))
+    .map(ref => ref.workItemId);
+  if (!sourceCapExhausted && missingIds.length) {
+    const canonical = await runWithWorkspaceIfConcrete(args.workspaceId, () => listWorkItems({
+      harness: args.harnessSlug, ids: missingIds, includeChildren: true, limit: WORK_ITEMS_MAX_LIMIT,
+    }));
+    for (const item of canonical) byId.set(item.id, item);
+  }
+  const associationById = new Map(refs.map(ref => [ref.workItemId, ref]));
+  const workItems = [...byId.values()].flatMap(item => {
+    const ref = associationById.get(item.id);
+    // A concurrent removal or rehome must not leave legacy coverage authorizing the old plan.
+    if (!ref || ((ref.planSlug != null || ref.planItemId != null) && ref.planSlug !== args.planSlug)) return [];
+    return [{ ...item, canonicalPlanSlug: ref.planSlug, canonicalPlanItemId: ref.planItemId }];
+  });
+  return { workItems, sourceCapExhausted };
 }
 
 function isExecutableContinuationRow(item: AdmissionWorkItem): boolean {
@@ -282,6 +332,8 @@ export function evaluateExactPlanAdmission(args: {
   const unknownTargets = [...(scope ?? [])].filter(id => !allPlanIds.has(id));
   const coverage = new Map<string, string[]>();
   const promotedRows = args.workItems.filter((item) => {
+    if ((item.canonicalPlanSlug != null || item.canonicalPlanItemId != null) &&
+        item.canonicalPlanSlug !== args.planSlug) return false;
     const ids = provenanceIds(item).filter((id) => planIds.has(id));
     return ids.length > 0;
   });
@@ -657,11 +709,8 @@ export async function readMigrationParkedCoverage(args: {
   planItems: PlanItem[];
   actor?: string;
 }): Promise<MigrationParkedCoverageRow[]> {
-  const workItems = await runWithWorkspaceIfConcrete(args.workspaceId, () => listWorkItems({
-    harness: args.harnessSlug, sourcePlanSlug: args.planSlug,
-    includeChildren: true, limit: WORK_ITEMS_MAX_LIMIT,
-  }));
-  if (workItems.length >= WORK_ITEMS_MAX_LIMIT) {
+  const { workItems, sourceCapExhausted } = await readExactPlanAdmissionWorkItems(args);
+  if (sourceCapExhausted) {
     throw new Error('The pre-promotion row census hit its source cap; migration-hold coverage is unknown.');
   }
   const structural = evaluateExactPlanAdmission({
@@ -903,13 +952,9 @@ export async function preflightExactPlanAdmission(args: {
   // readers below accept this explicit workspaceId. Bind the same scope for
   // the promoted-row census or a cross-workspace caller sees false promotion
   // lag even when this exact plan has a real promoted row.
-  let workItems = await runWithWorkspaceIfConcrete(args.workspaceId, () => listWorkItems({
-    harness: args.harnessSlug,
-    sourcePlanSlug: args.planSlug,
-    includeChildren: true,
-    limit: WORK_ITEMS_MAX_LIMIT,
-  }));
-  const sourceCapExhausted = workItems.length >= WORK_ITEMS_MAX_LIMIT;
+  const census = await readExactPlanAdmissionWorkItems(args);
+  let workItems: AdmissionWorkItem[] = census.workItems;
+  const sourceCapExhausted = census.sourceCapExhausted;
   let callerCensusUnavailable: string | null = null;
   if (!sourceCapExhausted && args.allowCallerHeld === true && args.requestedSeats == null && args.claimant) {
     try {

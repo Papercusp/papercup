@@ -202,6 +202,57 @@ describe('testing:run-status handler', () => {
     expect(snapshot.output).not.toContain('TRUNCATED');
   });
 
+  it('keeps terminal failure and verified witness evidence visible behind a long bootstrap command and log', async () => {
+    const trace = (phase: string, detail: Record<string, unknown> = {}) => JSON.stringify({
+      schemaVersion: 'testing-run-bootstrap-v1', phase, ...detail,
+    });
+    const snapshot: RunSnapshot = {
+      runId: 'run-bootstrap-failure', kind: 'vitest', label: 'bootstrap failure',
+      command: ['node', '--eval', 'bootstrap();'.repeat(2000)], status: 'fail', exitCode: 1,
+      startedAt: 123, finishedAt: 456, truncated: false,
+      output: [
+        trace('core-witness-verified', { coreMode: 'compiled', witnessSchemaVersion: 1 }),
+        'bootstrap preamble\n'.repeat(500),
+        trace('core-execution-complete', { elapsedMs: 60000, remainingChildMs: 0 }),
+        'Error: DISTINCTIVE_COLLECTION_DEADLINE_EXHAUSTED',
+      ].join('\n'),
+    };
+    getRunMock.mockResolvedValue(snapshot);
+
+    const compact = await call(snapshot.runId);
+    const bounded = compact.data.snapshot as Partial<RunSnapshot> & { commandOmitted?: boolean };
+    expect(bounded.output).toContain('DISTINCTIVE_COLLECTION_DEADLINE_EXHAUSTED');
+    expect(bounded.output).toContain('TRUNCATED');
+    expect(bounded.output!.length).toBeLessThanOrEqual(2048);
+    expect(bounded.command).toBeUndefined();
+    expect(bounded.commandOmitted).toBe(true);
+    expect(compact.data.diagnostics).toMatchObject({
+      lastBootstrapPhase: 'core-execution-complete',
+      coreWitness: { phase: 'core-witness-verified', coreMode: 'compiled', witnessSchemaVersion: 1 },
+      failure: { status: 'fail', exitCode: 1, message: expect.stringContaining('DISTINCTIVE_COLLECTION_DEADLINE_EXHAUSTED') },
+    });
+    expect(JSON.stringify(compact.data).length).toBeLessThan(4096);
+
+    const full = await tool.handler({ runId: snapshot.runId } as never,
+      { payloadTierOverride: 'full' } as never) as Output;
+    expect(full.data.snapshot).toEqual(snapshot);
+    expect(snapshot.command[2]).toHaveLength(24000);
+    expect(snapshot.output).not.toContain('TRUNCATED');
+  });
+
+  it('does not infer compiled witness verification from an unstructured or source-mode marker', async () => {
+    getRunMock.mockResolvedValue({
+      runId: 'run-unverified', kind: 'vitest', label: 'unverified', command: ['node'],
+      status: 'error', exitCode: 1, startedAt: 123, finishedAt: 456, truncated: false,
+      output: 'core-witness-verified\n' + JSON.stringify({
+        schemaVersion: 'testing-run-bootstrap-v1', phase: 'core-witness-verified', coreMode: 'source',
+      }),
+    } satisfies RunSnapshot);
+
+    const out = await call('run-unverified');
+    expect(out.data.diagnostics).not.toHaveProperty('coreWitness');
+  });
+
   it('returns retryable snapshot_unavailable when the durable store cannot be read', async () => {
     getRunMock.mockRejectedValue(new TestingRunSnapshotUnavailableError());
 
@@ -214,6 +265,20 @@ describe('testing:run-status handler', () => {
       retryable: true,
       message: expect.stringContaining('Retry testing:run-status'),
     });
+  });
+
+  it('retains safe read-stage diagnostics when every recovery path is unavailable', async () => {
+    const diagnostic = { stage: 'snapshot-query' as const,
+      queryFailure: { phase: 'deadline' as const, errorName: 'TestingRunSnapshotQueryTimeout', timeoutMs: 1000 } };
+    getRunMock.mockRejectedValue(new TestingRunSnapshotUnavailableError(diagnostic));
+    ledgerRecoveryMock.mockRejectedValue(new TestingRunSnapshotUnavailableError({ stage: 'report-task' }));
+    foregroundMock.mockRejectedValue(new TestingRunSnapshotUnavailableError({ stage: 'foreground-task' }));
+
+    const out = await call('run-unreadable');
+
+    expect(out.data).toMatchObject({ ok: false, error: 'snapshot_unavailable', retryable: true,
+      readFailures: [diagnostic, { stage: 'report-task' }, { stage: 'foreground-task' }] });
+    expect(out.data).not.toHaveProperty('ledgerRecovery');
   });
 
   it('recovers a terminal verdict from per-file ledger rows when the lifecycle snapshot is unavailable', async () => {

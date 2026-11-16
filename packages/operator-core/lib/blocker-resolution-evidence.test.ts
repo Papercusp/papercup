@@ -1417,4 +1417,32 @@ describe('subject-bound git-sync commit evidence', () => {
     expect(await read()).toMatchObject({ status: 'unknown' });
     expect(mocks.event).not.toHaveBeenCalled();
   });
+
+  it('requires the parent gitlink to contain the accepted nested edit', async () => {
+    const child = join(root, 'desktop');
+    mkdirSync(join(child, 'src'), { recursive: true });
+    git(child, 'init', '-q');
+    writeFileSync(join(child, 'src/main.rs'), 'baseline\n');
+    git(child, 'add', 'src/main.rs');
+    const commitChild = () => {
+      git(child, '-c', 'user.name=papercusp-git-sync', '-c', 'user.email=fixture@example.invalid',
+        'commit', '-qm', 'nested fixture');
+      return git(child, 'rev-parse', 'HEAD');
+    };
+    const oldChild = commitChild();
+    git(root, 'update-index', '--add', '--cacheinfo', `160000,${oldChild},desktop`);
+    commit('papercusp-git-sync');
+    writeFileSync(join(child, 'src/main.rs'), 'accepted edit\n');
+    git(child, 'add', 'src/main.rs');
+    const acceptedChild = commitChild();
+    current.payload = { ...current.payload, codeWorkingSet: { owner: ctx.ownerId, epoch: 1,
+      derivedAt: '2026-11-13T00:01:00.000Z', paths: ['desktop/src/main.rs'], symbols: [] } };
+    // The child commit alone is insufficient while the parent pins the old child.
+    expect(await read()).toMatchObject({ status: 'available', condition: 'pending' });
+    git(root, 'update-index', '--cacheinfo', `160000,${acceptedChild},desktop`);
+    commit('papercusp-git-sync');
+    expect(await read()).toMatchObject({ status: 'available', condition: 'satisfied' });
+    writeFileSync(join(child, 'src/main.rs'), 'uncommitted edit\n');
+    expect(await read()).toMatchObject({ status: 'available', condition: 'pending' });
+  });
 });

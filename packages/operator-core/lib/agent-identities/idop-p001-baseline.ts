@@ -24,6 +24,7 @@ import { parse as parseYaml } from 'yaml';
 import { build, transformSync } from 'esbuild';
 import { compileFunction, runInNewContext } from 'node:vm';
 import ts from 'typescript';
+import { z } from 'zod';
 import type { preflightDispatchStack } from '@papercusp/tooldef';
 import type { CapabilityEnvelopeVerdict, DispatchProjectedDeps } from '@papercusp/tooldef';
 import type { EnvelopeDecision, evaluateCapabilityEnvelope } from '../capability-envelope/policy';
@@ -34,6 +35,7 @@ import type { envelopeRoleOverrides, envelopeProtectedAdditions } from '../capab
 import { parseBlueprintSourceDocument, replayAgentSpecification, specificationPrompt } from '@papercusp/orchestrator/blueprint';
 import type { BlueprintSourceLocation } from '../blueprint/installed-blueprints';
 import type { RoleManifest } from '../role-registry';
+import type { LoadedPlugin, LoaderOptions, PluginDiscoveryInventory } from '@papercusp/plugin-loader';
 import type { listIdentitySources } from './source';
 import type { UnifiedToolContext, KernelContextState, KernelEnforcementRequest,
   KernelEnforcementResult, sameKernelRevision } from '@papercusp/tooldef';
@@ -1557,6 +1559,78 @@ export async function readIdopP001CurrentLibraryPopulation(
     identities, unreadable, roles, pages, sources };
 }
 
+/** Installed manifest declarations, independently checked against the loader's
+ * complete discovery outcomes. Metadata-only loading never imports an entry or
+ * runs dynamic discovery. This is source evidence, not a live registry census;
+ * dynamic tools and host registration remain separate comparison inputs. */
+export async function readIdopP001InstalledPluginToolPopulation(
+  options: { root: string; harnessSlug: string },
+  dependencies?: { discover: (options: LoaderOptions) => Promise<{
+    loaded: LoadedPlugin[]; discovery: PluginDiscoveryInventory;
+    errors: Array<{ error: string; path: string }>;
+  }> },
+) {
+  if (!options.harnessSlug.trim() || options.harnessSlug !== options.harnessSlug.trim() || !isAbsolute(options.root)) {
+    throw new Error('IDOP installed plugin population requires an absolute root and explicit harness');
+  }
+  const discover = dependencies?.discover ?? (await import('@papercusp/plugin-loader')).loadPlugins;
+  const result = await discover({ projectDir: join(options.root, 'libs/papercusp'),
+    harnessSlugs: [options.harnessSlug], metadataOnly: true });
+  const discovery = structuredClone(result.discovery);
+  if (!Array.isArray(discovery?.roots) || !Array.isArray(discovery.candidates) || !Array.isArray(discovery.unavailable)) {
+    throw new Error('IDOP installed plugin discovery inventory is unavailable');
+  }
+  const key = (row: { path: string; source: string }) => JSON.stringify([row.path, row.source]);
+  if (new Set(discovery.candidates.map(key)).size !== discovery.candidates.length) {
+    throw new Error('IDOP installed plugin discovery duplicated a candidate');
+  }
+  const selected = discovery.candidates.filter(row => row.status === 'loaded');
+  if (selected.length !== result.loaded.length || new Set(selected.map(row => row.pluginName)).size !== selected.length) {
+    throw new Error('IDOP installed plugin discovery omitted or duplicated a selected installation');
+  }
+  const same = (a: unknown, b: unknown) => comparisonJson(idopAuthorityData(a)) === comparisonJson(idopAuthorityData(b));
+  const sources: Array<{ path: string; sha256: string }> = [];
+  const plugins = result.loaded.map(plugin => {
+    const candidate = selected.find(row => key(row) === key(plugin));
+    if (!candidate || candidate.pluginName !== plugin.plugin.name || !candidate.manifest ||
+        candidate.manifest.name !== plugin.plugin.name || candidate.manifest.version !== plugin.plugin.version ||
+        !same(candidate.manifest.tools, plugin.toolDefinitions) ||
+        !same(candidate.manifest.capabilities, plugin.plugin.capabilities)) {
+      throw new Error('IDOP installed plugin discovery omitted or substituted selected declarations');
+    }
+    const path = join(plugin.path, 'papercusp.json');
+    const bytes = readFileSync(path);
+    const manifest = JSON.parse(bytes.toString('utf8')) as Record<string, unknown>;
+    if (manifest.name !== plugin.plugin.name || manifest.version !== plugin.plugin.version ||
+        !same(manifest.tools ?? [], plugin.toolDefinitions) ||
+        !same(manifest.capabilities ?? [], plugin.plugin.capabilities)) {
+      throw new Error('IDOP installed plugin manifest changed after discovery');
+    }
+    sources.push({ path, sha256: sha256(bytes) });
+    const declarations = structuredClone(plugin.toolDefinitions ?? []);
+    if (new Set(declarations.map(tool => tool.name)).size !== declarations.length || declarations.some(tool =>
+      typeof tool.name !== 'string' || !tool.name.trim() || tool.name !== tool.name.trim() ||
+      !Array.isArray(tool.capabilities) || tool.capabilities.some(cap => typeof cap !== 'string' || !cap.trim()))) {
+      throw new Error('IDOP installed plugin has malformed or duplicate tool declarations');
+    }
+    return { name: plugin.plugin.name, version: plugin.plugin.version, path: plugin.path, source: plugin.source,
+      manifestSha256: sha256(bytes), declarations };
+  });
+  const names = plugins.flatMap(plugin => plugin.declarations.map(tool =>
+    tool.expose?.mcp?.name ?? `${plugin.name.replace(/^@[^/]+\//, '')}.${tool.name}`));
+  if (new Set(names).size !== names.length || names.some(name => typeof name !== 'string' || !name.trim() || name !== name.trim())) {
+    throw new Error('IDOP installed plugin has conflicting or malformed MCP identities');
+  }
+  for (const source of sources) if (sha256(readFileSync(source.path)) !== source.sha256) {
+    throw new Error('IDOP installed plugin manifest changed during enumeration');
+  }
+  const inventory = { scope: 'installed-plugin-manifest-tool-source' as const, harnessSlug: options.harnessSlug,
+    runtimeRegistrationMeasured: false as const, dynamicToolsMeasured: false as const,
+    plugins: plugins.sort((a, b) => a.name.localeCompare(b.name)), discovery,
+    errors: structuredClone(result.errors), sources: sources.sort((a, b) => a.path.localeCompare(b.path)) };
+  return { ...inventory, sha256: sha256(comparisonJson(idopAuthorityData(inventory))) };
+}
+
 type AppliedStackRevision = { specificationRevision: string; stateRevision: string };
 type AppliedStackDependencies = {
   anchors: () => Promise<Array<{ ownerId: string; applied: unknown }>>;
@@ -1904,6 +1978,56 @@ export type IdopPermissionDifference = {
   afterSha256: string;
   authorityRefs: string[];
 };
+
+export const IDOP_P001_DIFFERENCES_REL = 'docs/evidence/idop-p001-expected-permission-differences.json';
+const idopPlanSlug = 'identity-definitions-own-policy-2026-10-17';
+const idopAuthorityRef = z.string().regex(/^identity-definitions-own-policy-2026-10-17#(?:R|D)-\d+$/);
+const idopDifferenceSchema = z.object({
+  id: z.string().min(1).refine(id => id === id.trim()),
+  inputSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  beforeSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  afterSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  authorityRefs: z.array(idopAuthorityRef).min(1),
+}).strict();
+const idopDifferenceManifestSchema = z.object({
+  schemaVersion: z.literal(1),
+  plan: z.literal(idopPlanSlug),
+  baselineRevision: z.string().regex(/^[a-f0-9]{40}$/),
+  scopes: z.array(z.object({
+    id: z.string().min(1).refine(id => id === id.trim()),
+    expectation: z.string().min(1).refine(text => text === text.trim()),
+    authorityRefs: z.array(idopAuthorityRef).min(1),
+    differences: z.array(idopDifferenceSchema),
+  }).strict()).min(1),
+}).strict();
+
+/** Read the requirement-authored allowance, never derive one from evaluator
+ * output. A manifest scope is a bounded comparison claim: selecting it does not
+ * certify other surfaces or runtime coverage. The caller independently loads
+ * the old arm, passes its exact revision, and records this file's byte digest.
+ * Case membership and exact expected input/output digests remain enforced by
+ * runIdopP001PermissionComparison, including stale/unused allowances. */
+export function readIdopP001ExpectedPermissionDifferences(options: {
+  root: string; baselineRevision: string; scope: string;
+}) {
+  const bytes = readFileSync(join(options.root, IDOP_P001_DIFFERENCES_REL));
+  const manifest = idopDifferenceManifestSchema.parse(JSON.parse(bytes.toString('utf8')));
+  if (manifest.baselineRevision !== options.baselineRevision ||
+      new Set(manifest.scopes.map(scope => scope.id)).size !== manifest.scopes.length) {
+    throw new Error('IDOP difference manifest has a substituted baseline or duplicate scope');
+  }
+  for (const scope of manifest.scopes) {
+    if (new Set(scope.differences.map(entry => entry.id)).size !== scope.differences.length ||
+        new Set(scope.authorityRefs).size !== scope.authorityRefs.length ||
+        scope.differences.some(entry => new Set(entry.authorityRefs).size !== entry.authorityRefs.length)) {
+      throw new Error('IDOP difference manifest has duplicate allowances or authority references');
+    }
+  }
+  const scope = manifest.scopes.find(scope => scope.id === options.scope);
+  if (!scope) throw new Error('IDOP difference manifest does not cover the requested comparison scope');
+  return { ...scope, baselineRevision: manifest.baselineRevision,
+    path: IDOP_P001_DIFFERENCES_REL, sha256: sha256(bytes) };
+}
 
 function comparisonJson(value: ComparisonJson): string {
   if (value === null || typeof value === 'string' || typeof value === 'boolean' ||

@@ -390,6 +390,117 @@ describe('native served reviewer correction evidence', () => {
     expect(f.cleanup).toHaveBeenCalledOnce();
     for (const close of f.closes) expect(close).toHaveBeenCalledOnce();
   });
+
+  it.each([2, 5])('retains the timed-out public grade %s and verified cleanup in immutable failure evidence', async grade => {
+    const f = fixture();
+    const open = f.deps.open;
+    let timedOut = false;
+    f.deps.open = async (...input) => {
+      const client = await open(...input);
+      return { close: client.close, async invoke(name, args) {
+        if (name === 'blender:grade-idea' && args.grade === grade &&
+          f.state.item.assignee === input[0]) {
+          // The server may commit before the client times out. A failed response
+          // must retain that uncertainty and the canonical snapshot preceding it.
+          await client.invoke(name, args);
+          timedOut = true;
+          throw new Error('MCP error -32001 Request timed out');
+        }
+        return client.invoke(name, args);
+      } };
+    };
+    const persist = vi.fn(async (_params: Parameters<RecordOperationalRunDeps['persist']>[0]) => ({ written: 1, ids: [907] }));
+    const result = await executeReviewerOwnedCorrection(f.ctx, { scenario: f.deps,
+      execution: { snapshot: () => ({ commit: 'e'.repeat(40), porcelain: '' }), sourceRoot: async () => '/repo',
+        verifyDefinition: async () => true, readRuntime: async () => 'f'.repeat(64), persist } });
+    expect(timedOut).toBe(true);
+    expect(result).toMatchObject({ status: 'fail', testRunIds: [907] });
+    const failure = [...f.artifacts.values()].map(content => JSON.parse(content))
+      .find(value => value.kind === 'reviewer-correction-failure-evidence');
+    expect(failure).toMatchObject({ phase: 'public:blender:grade-idea', publicMutationOutcome: 'unknown',
+      failedStep: { step: 'public:blender:grade-idea', grade, status: 'error' },
+      lastCompletedStep: { step: 'public:improvements:agent-review', mode: 'claim', status: 'ok' },
+      lastCompletedPublicCall: { step: 'public:improvements:agent-review', mode: 'claim', status: 'ok' },
+      fixture: { id: 'EI-123456789', ideaId: 'idea-fixture' }, cleanup: { status: 'verified' } });
+    expect(failure.steps.at(-1)).toMatchObject({ step: 'fixture:cleanup', status: 'ok' });
+    expect(failure.observations.length).toBeGreaterThanOrEqual(2);
+    expect(failure.failedStep.finishedAt).toBeTruthy();
+    expect(failure.failureReadback).toMatchObject({ status: 'available',
+      observation: { ledger: { human_grade: grade, graded_by: failure.failedStep.actor } } });
+    expect(f.cleanup).toHaveBeenCalledOnce();
+    for (const close of f.closes) expect(close).toHaveBeenCalledOnce();
+    const output = persist.mock.calls[0]![0].rows[0].outputTail;
+    expect(output).toContain('Request timed out');
+    expect(output).toContain('public:blender:grade-idea');
+    const saved = [...f.artifacts.entries()].find(([, content]) => JSON.parse(content).kind === failure.kind)!;
+    expect(output).toContain(`papercusp:immutable/sha256/${saved[0]}.json`);
+    expect(await f.deps.loadEvidence(saved[0])).toBe(saved[1]);
+  });
+
+  it('saves failed nonce cleanup without concealing the original public timeout', async () => {
+    const f = fixture();
+    f.deps.read = async () => { throw new Error('MCP error -32001 Request timed out'); };
+    f.cleanup.mockRejectedValue(new Error('nonce cleanup failed'));
+    await expect(measureReviewerOwnedCorrection(f.ctx, f.deps)).rejects.toThrow('Fixture cleanup also failed: nonce cleanup failed');
+    const failure = [...f.artifacts.values()].map(content => JSON.parse(content))
+      .find(value => value.kind === 'reviewer-correction-failure-evidence');
+    expect(failure).toMatchObject({ phase: 'canonical:read', failedStep: { step: 'canonical:read' },
+      cleanup: { status: 'failed', error: 'nonce cleanup failed' } });
+    expect(failure.error).toContain('Request timed out');
+    expect(failure.steps.at(-1)).toMatchObject({ step: 'fixture:cleanup', status: 'error' });
+    expect(f.cleanup).toHaveBeenCalledOnce();
+  });
+
+  it('records cleanup failure after successful public assertions without attempting deletion twice', async () => {
+    const f = fixture();
+    f.cleanup.mockRejectedValue(new Error('final cleanup failed'));
+    await expect(measureReviewerOwnedCorrection(f.ctx, f.deps)).rejects.toThrow('final cleanup failed');
+    const failure = [...f.artifacts.values()].map(content => JSON.parse(content))
+      .find(value => value.kind === 'reviewer-correction-failure-evidence');
+    expect(failure).toMatchObject({ phase: 'fixture:cleanup',
+      fixture: { id: 'EI-123456789', ideaId: 'idea-fixture' },
+      lastCompletedPublicCall: { step: 'public:blender:grade-idea', grade: 5, status: 'ok' },
+      cleanup: { status: 'failed', error: 'final cleanup failed' } });
+    expect(f.cleanup).toHaveBeenCalledOnce();
+  });
+
+  it('retains the original failure and nonce when the immutable store is unavailable', async () => {
+    const f = fixture();
+    f.deps.read = async () => { throw new Error('original read failed'); };
+    f.deps.saveEvidence = async () => { throw new Error('immutable store unavailable'); };
+    const persist = vi.fn(async (_params: Parameters<RecordOperationalRunDeps['persist']>[0]) => ({ written: 1, ids: [908] }));
+    const result = await executeReviewerOwnedCorrection(f.ctx, { scenario: f.deps,
+      execution: { snapshot: () => ({ commit: 'e'.repeat(40), porcelain: '' }), sourceRoot: async () => '/repo',
+        verifyDefinition: async () => true, readRuntime: async () => 'f'.repeat(64), persist } });
+    expect(result).toMatchObject({ status: 'fail', testRunIds: [908] });
+    const output = persist.mock.calls[0]![0].rows[0].outputTail;
+    expect(output).toContain('original read failed');
+    expect(output).toContain('Failure evidence persistence failed: immutable store unavailable');
+    expect(output).toContain('"nonce":');
+    expect(output).toContain('"cleanup":{"status":"verified"}');
+    expect(output).not.toContain('"evidenceRef":');
+    expect(f.cleanup).toHaveBeenCalledOnce();
+  });
+
+  it('bounds unavailable post-failure readback while preserving the original error and cleaning up', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      let reads = 0;
+      f.deps.read = async () => {
+        if (++reads === 1) throw new Error('original read failed');
+        return new Promise(() => {});
+      };
+      const rejected = expect(measureReviewerOwnedCorrection(f.ctx, f.deps)).rejects.toThrow('original read failed');
+      await vi.advanceTimersByTimeAsync(5_001);
+      await rejected;
+      const failure = [...f.artifacts.values()].map(content => JSON.parse(content))
+        .find(value => value.kind === 'reviewer-correction-failure-evidence');
+      expect(failure).toMatchObject({ phase: 'canonical:read',
+        failureReadback: { status: 'unavailable', reason: 'timeout' }, cleanup: { status: 'verified' } });
+      expect(f.cleanup).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
+  });
 });
 
 describe('native Git scratch placement execution', () => {

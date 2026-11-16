@@ -1049,6 +1049,32 @@ const passRun = (files: string[]) => {
   };
 };
 
+describe('aggregate checks with phase-specific file ownership', () => {
+  it.each([null, 'report', 'constructor-a', 'constructor-b', 'constructor-c'])(
+    'runs the complete union and refuses a failure in %s', async failing => {
+      const names = ['report', 'constructor-a', 'constructor-b', 'constructor-c'];
+      const files = names.map(name => `packages/x/${name}.test.ts`);
+      for (const file of files) writeFileSync(join(root, file), 'export {};\n');
+      const runner = vi.fn<CriterionCheckRunner>(async ({ files: selected }) => {
+        const result = passRun(selected);
+        if (failing !== null) {
+          const failedFile = files[names.indexOf(failing)]!;
+          result.byFile[failedFile] = { passed: 0, failed: 1, skipped: 0, collectionFailed: false };
+          return { ...result, ...totalsOf(result.byFile), ok: false };
+        }
+        return result;
+      });
+      const result = await evaluateCriterionTestChecks({
+        criteria: [{ key: 'R-15', check: { kind: 'tests', files,
+          filesByPlanItem: { 'P-011': [files[0]!], 'P-016': files.slice(1) } } }],
+        ratings: { 'R-15': { rating: 'healthy' } }, root, runner,
+      });
+      expect(runner).toHaveBeenCalledOnce();
+      expect(runner.mock.calls[0]![0].files).toEqual(files);
+      expect(result.ok).toBe(failing === null);
+    });
+});
+
 describe('criterion production configuration', () => {
   const file = 'packages/x/real.test.ts';
   const flag = FLAGS.VIDEO_CHANNELS;

@@ -24,6 +24,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import { isAbsolute, basename, dirname, relative, resolve } from 'node:path';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
@@ -652,8 +653,47 @@ export default defineTool({
       .describe(
         `Wall-clock timeout in ms. FOREGROUND: default ${DEFAULT_TIMEOUT_MS}, clamped to ${FOREGROUND_TIMEOUT_CEILING_MS}ms (below the ~55s MCP transport cap) so it returns a hint instead of an opaque request_timeout. BACKGROUND (run_in_background): default ${DEFAULT_BACKGROUND_TIMEOUT_MS}, max ${MAX_BACKGROUND_TIMEOUT_MS} — not bound by the transport cap, but still terminated at its own deadline.`,
       ),
-  }), vmCopyInspectSchema]),
+  }), vmCopyInspectSchema, z.object({
+    check: z.literal('host-envelope-inputs').describe(
+      'Capture this authenticated superuser session\'s permission read inputs in the serving host. No supplied context, other subject, shell, or policy refresh. This is input/provenance evidence, not a source-containment or permission verdict.',
+    ),
+  }).strict()]),
   async handler(args, ctx) {
+    if (args.check === 'host-envelope-inputs') {
+      if (ctx.isSuperuser !== true || !ctx.uiClientId?.trim() || !ctx.workspaceId?.trim()) {
+        return err('host-envelope-self-required', 'Host envelope capture requires an authenticated superuser session and workspace.');
+      }
+      try {
+        const { resolveAgentIdentity } = await import('../coordination/identity');
+        const identity = resolveAgentIdentity(ctx);
+        if (identity.ownerId !== ctx.uiClientId || identity.workspaceId !== ctx.workspaceId) {
+          return err('host-envelope-self-required', 'Host envelope capture identity must match the calling session and workspace.');
+        }
+        const [confinement, modes, overrides, flags, flagKeys, distinct, capture] = await Promise.all([
+          import('../../capability-envelope/session-confinement-port'), import('../../modes/store'),
+          import('../../capability-envelope-overrides'), import('@papercusp/flags/server'),
+          import('@papercusp/flags'), import('../../flag-distinct-id'), import('../../agent-identities/idop-p001-baseline'),
+        ]);
+        const ports = confinement.getSessionConfinementReadPorts();
+        const startedAt = new Date().toISOString();
+        const result = await capture.captureIdopP001HostPermissionPorts({
+          workspaceId: ctx.workspaceId, contexts: [ctx], flags: [
+            { key: flagKeys.FLAGS.CAPABILITY_ENVELOPE, distinctId: 'system' },
+            { key: flagKeys.FLAGS.CAPABILITY_ENVELOPE_OVERRIDES, distinctId: distinct.systemDistinctId() },
+          ],
+        }, { ...ports, audit: { resolveIdentity: resolveAgentIdentity, readModes: modes.getModes },
+          roleOverrides: overrides.envelopeRoleOverrides, protectedAdditions: overrides.envelopeProtectedAdditions,
+          readFlagAttestation: flags.getFlagAttestation });
+        return { content: [{ type: 'text' as const, text: JSON.stringify({
+          ok: true, scope: 'original-host-self-envelope-inputs', snapshot: result.snapshot, sha256: result.sha256,
+          provenance: { schemaVersion: 1, ownerId: identity.ownerId, workspaceId: identity.workspaceId,
+            hostname: hostname(), pid: process.pid, cwd: process.cwd(), nodeVersion: process.version,
+            startedAt, completedAt: new Date().toISOString(), uptimeSeconds: process.uptime() },
+        }) }] };
+      } catch {
+        return err('host-envelope-inputs-unavailable', 'Original host permission inputs could not be captured; no permission or source-containment verdict was produced.');
+      }
+    }
     if (args.check === 'vm-copy-authority') {
       try {
         const response = await inspectVmCopyAuthority(args.request, ctx);

@@ -151,10 +151,17 @@ export interface RunSnapshot {
   truncated: boolean;
 }
 
+export interface TestingRunReadDiagnostic {
+  stage: 'snapshot-client' | 'snapshot-query' | 'snapshot-row' | 'report-task'
+    | 'live-foreground-task' | 'live-foreground-row' | 'foreground-task'
+    | 'foreground-ledger' | 'foreground-kernel' | 'alias-client' | 'alias-query';
+  queryFailure?: SnapshotQueryFailure;
+}
+
 export class TestingRunSnapshotUnavailableError extends Error {
   readonly code = 'testing_run_snapshot_unavailable';
 
-  constructor() {
+  constructor(readonly diagnostic?: TestingRunReadDiagnostic) {
     super('The detached test-run snapshot store could not be read.');
     this.name = 'TestingRunSnapshotUnavailableError';
   }
@@ -603,7 +610,7 @@ async function readReportRecoveryTask(
      LIMIT 2
   `);
   // An unreadable or ambiguous task lookup is not evidence of an absent run.
-  if (rows === null || rows.length > 1) throw new TestingRunSnapshotUnavailableError();
+  if (rows === null || rows.length > 1) throw new TestingRunSnapshotUnavailableError({ stage: 'report-task' });
   return rows[0] ?? null;
 }
 
@@ -624,7 +631,7 @@ async function readLiveForegroundSnapshot(
        AND detail->>'runGroup' = ${runId} AND detail->>'foreground' = 'true'
      LIMIT 2
   `);
-  if (rows === null || rows.length > 1) throw new TestingRunSnapshotUnavailableError();
+  if (rows === null || rows.length > 1) throw new TestingRunSnapshotUnavailableError({ stage: 'live-foreground-task' });
   const row = rows[0];
   if (!row) return null;
   // Terminal task state permits an absence verdict, never a manufactured pass.
@@ -633,7 +640,7 @@ async function readLiveForegroundSnapshot(
   const startedAt = epochMs(row.started_at);
   const command = commandFromRow(row.argv);
   if (!['pending', 'running'].includes(row.state) || startedAt === null || !command || !row.task_id)
-    throw new TestingRunSnapshotUnavailableError();
+    throw new TestingRunSnapshotUnavailableError({ stage: 'live-foreground-row' });
   return { runId, taskId: row.task_id, kind: 'vitest', label: row.title, command,
     status: 'running', exitCode: null, startedAt, finishedAt: null, truncated: false,
     output: 'The exact managed foreground task is still in flight; no test verdict has been recorded.' };
@@ -715,13 +722,13 @@ export async function getForegroundRunVerdictAsync(
      LIMIT 2
   `);
   // Unreadable or ambiguous is not evidence of an absent or lost run.
-  if (tasks === null || tasks.length > 1) throw new TestingRunSnapshotUnavailableError();
+  if (tasks === null || tasks.length > 1) throw new TestingRunSnapshotUnavailableError({ stage: 'foreground-task' });
   const task = tasks[0];
   if (!task) return null;
   const counted = await boundedSnapshotQuery<Array<{ n: number | string }>>(sql`
     SELECT count(*)::int AS n FROM harness_shared.test_runs WHERE run_group_id = ${runId}
   `);
-  if (counted === null) throw new TestingRunSnapshotUnavailableError();
+  if (counted === null) throw new TestingRunSnapshotUnavailableError({ stage: 'foreground-ledger' });
   const ledgerRows = Number(counted[0]?.n ?? 0);
   let taskState = task.state;
   let live = FOREGROUND_LIVE_TASK_STATES.has(task.state);
@@ -730,7 +737,7 @@ export async function getForegroundRunVerdictAsync(
     try {
       kernel = await readKernelVerdict(task.task_id, task.workspace_id);
     } catch {
-      throw new TestingRunSnapshotUnavailableError();
+      throw new TestingRunSnapshotUnavailableError({ stage: 'foreground-kernel' });
     }
     if (kernel.status === 'unknown') return null;
     if (kernel.status === 'terminal') {
@@ -758,7 +765,7 @@ async function readPersistedRunSnapshot(
   readKernelVerdict: ForegroundKernelReader = unknownForegroundKernelVerdict,
 ): Promise<PersistedSnapshotRead | null> {
   const sql = await snapshotSql(sqlOverride);
-  if (!sql) throw new TestingRunSnapshotUnavailableError();
+  if (!sql) throw new TestingRunSnapshotUnavailableError({ stage: 'snapshot-client' });
   let query: PromiseLike<unknown>;
   try {
     query = sql`
@@ -781,11 +788,14 @@ async function readPersistedRunSnapshot(
          AND (snapshot.finished_at IS NULL OR snapshot.finished_at >= now() - interval '1 hour')
        LIMIT 1
     `;
-  } catch {
-    throw new TestingRunSnapshotUnavailableError();
+  } catch (error) {
+    throw new TestingRunSnapshotUnavailableError({
+      stage: 'snapshot-query', queryFailure: snapshotQueryFailure(error, 'construction'),
+    });
   }
-  const rows = await boundedSnapshotQuery<DurableRunSnapshotRow[]>(query);
-  if (rows === null) throw new TestingRunSnapshotUnavailableError();
+  let queryFailure: SnapshotQueryFailure | undefined;
+  const rows = await boundedSnapshotQuery<DurableRunSnapshotRow[]>(query, failure => { queryFailure = failure; });
+  if (rows === null) throw new TestingRunSnapshotUnavailableError({ stage: 'snapshot-query', queryFailure });
   const reportTaskRecovery = rows.length === 0 && recoveryScope !== undefined;
   const row = rows[0] ?? (recoveryScope ? await readReportRecoveryTask(runId, recoveryScope, sql) : null);
   if (!row) {
@@ -797,7 +807,7 @@ async function readPersistedRunSnapshot(
   if (!row.task_harness_slug && recoveryScope && row.task_workspace_id === recoveryScope.workspaceId
     && row.task_cwd === recoveryScope.root) row.task_harness_slug = recoveryScope.harnessSlug;
   const snapshot = snapshotFromRow(row);
-  if (!snapshot) throw new TestingRunSnapshotUnavailableError();
+  if (!snapshot) throw new TestingRunSnapshotUnavailableError({ stage: 'snapshot-row' });
   const task = row.task_state ? {
     state: row.task_state, exit_code: row.task_exit_code ?? null, cwd: row.task_cwd ?? null,
     requested_files: requestedFilesFromTaskDetail(row.task_detail),
@@ -1527,6 +1537,20 @@ function appendSnapshotOutput(snapshot: RunSnapshot, chunk: string): void {
   }
 }
 
+export class RunLaunchCutoffError extends Error {
+  readonly code = 'deadline_exhausted';
+  constructor(readonly cutoffAtMs: number) {
+    super('Original child cutoff exhausted before run enrolment');
+    this.name = 'RunLaunchCutoffError';
+  }
+}
+
+function assertRunLaunchCutoff(req: SpawnRequest): void {
+  if (req.launchCutoffAtMs === undefined) return;
+  if (!Number.isFinite(req.launchCutoffAtMs)) throw new RangeError('run launch cutoff must be finite');
+  if (Date.now() >= req.launchCutoffAtMs) throw new RunLaunchCutoffError(req.launchCutoffAtMs);
+}
+
 export interface SpawnRequest {
   kind: RunSnapshot['kind'];
   label: string;
@@ -1550,6 +1574,8 @@ export interface SpawnRequest {
    * leave the child and its running snapshot alive indefinitely.
    */
   runtimeMaxSec?: number | null;
+  /** Absolute admission cutoff; provenance reads must not renew the child budget. */
+  launchCutoffAtMs?: number;
   /**
    * The work-item this run verifies, when the caller knows it unambiguously
    * (expensive-verification-loops P-001). Stamped on the task-ledger row so a
@@ -1990,6 +2016,9 @@ function prepareRun(
     ...artifact,
     worktreeBefore: artifact.root === cwd ? worktreeBefore : captureWorktreeSnapshot(artifact.root),
   }));
+  // No output sink, task enrolment or child exists yet. Check again after the
+  // launcher and report-root provenance reads, including the synchronous route.
+  assertRunLaunchCutoff(req);
   // A detached recovery is deliberately independent of the operator process. Pipes
   // inherited by a systemd scope point back at that process, so a staging restart
   // closes the read end and can terminate the surviving router before Vitest flushes
@@ -2086,6 +2115,7 @@ function prepareRun(
 }
 
 async function prepareRunAsync(req: SpawnRequest, inheritedEnvironment?: NodeJS.ProcessEnv): Promise<PreparedRun> {
+  assertRunLaunchCutoff(req);
   evictOldRuns();
   // Resolve provenance before spawning, but await the sidecar-backed Git reads
   // so a slow checkout cannot freeze the operator host's request loop.
@@ -3053,7 +3083,7 @@ export async function getRunAsync(
 /** Resolve the foreground ID emitted by testing:run to its detached recovery handle. */
 async function readDetachedRunIdForOrigin(originRunId: string, sqlOverride?: SqlLike): Promise<string | null> {
   const sql = await snapshotSql(sqlOverride);
-  if (!sql) throw new TestingRunSnapshotUnavailableError();
+  if (!sql) throw new TestingRunSnapshotUnavailableError({ stage: 'alias-client' });
   let query: PromiseLike<unknown>;
   try {
     query = sql`
@@ -3065,11 +3095,14 @@ async function readDetachedRunIdForOrigin(originRunId: string, sqlOverride?: Sql
        ORDER BY started_at DESC
        LIMIT 1
     `;
-  } catch {
-    throw new TestingRunSnapshotUnavailableError();
+  } catch (error) {
+    throw new TestingRunSnapshotUnavailableError({
+      stage: 'alias-query', queryFailure: snapshotQueryFailure(error, 'construction'),
+    });
   }
-  const rows = await boundedSnapshotQuery<Array<{ detached_run_id: string | null }>>(query);
-  if (rows === null) throw new TestingRunSnapshotUnavailableError();
+  let queryFailure: SnapshotQueryFailure | undefined;
+  const rows = await boundedSnapshotQuery<Array<{ detached_run_id: string | null }>>(query, failure => { queryFailure = failure; });
+  if (rows === null) throw new TestingRunSnapshotUnavailableError({ stage: 'alias-query', queryFailure });
   const detachedRunId = rows[0]?.detached_run_id?.trim();
   return detachedRunId || null;
 }

@@ -459,6 +459,28 @@ const depEdges = async () => {
 const base = { workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, createdBy: 'su-test' };
 
 describe('promotePlanItems (P-006): plan → placeable work-items, against real PG', () => {
+  it('joins an existing canonical-only adopted issue into the admission census without legacy rewrites', async () => {
+    const adopted = await wi.createWorkItem({ kind: 'bug', title: 'Canonical adopted issue',
+      harness: HARNESS, workspaceId: WS, createdBy: 'su-test', payload: { marker: 'preserved' } });
+    await db.sql`UPDATE harness_shared.work_items SET plan_slug = ${PLAN}, plan_line_id = 'P-001'
+      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = ${adopted.id}`;
+    expect(await wi.listWorkItems({ harness: HARNESS, sourcePlanSlug: PLAN, includeChildren: true })).toEqual([]);
+    const { readExactPlanAdmissionWorkItems, evaluateExactPlanAdmission } = await import('./agent-tools/plans/plan-admission-preflight');
+    const census = await readExactPlanAdmissionWorkItems({ workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN });
+    expect(census).toMatchObject({ sourceCapExhausted: false, workItems: [
+      { id: adopted.id, canonicalPlanSlug: PLAN, canonicalPlanItemId: 'P-001', sourcePlanSlug: null, sourcePlanItemIds: null },
+    ] });
+    const verdict = evaluateExactPlanAdmission({ planSlug: PLAN, workItems: census.workItems, laneHealth: null,
+      planItems: [{ id: 'P-001', text: 'Canonical adopted issue', storedStatus: 'todo', importance: 'normal',
+        blockedBy: [], decisionRefs: [], phase: null, lineNumber: 1, rawLine: '- **P-001** `todo` Canonical adopted issue' }],
+    });
+    expect(verdict.promotion).toMatchObject({ rows: 1, missingActionableItemIds: [] });
+    const [persisted] = await db.sql`SELECT feature_id, source_plan_slug, source_plan_item_ids, payload
+      FROM harness_shared.work_items WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = ${adopted.id}`;
+    expect(persisted).toMatchObject({ feature_id: adopted.id, source_plan_slug: null,
+      source_plan_item_ids: null, payload: { marker: 'preserved' } });
+  });
+
   it('repairs the finish stamp on an exact single-item adopted feature without minting a duplicate', async () => {
     h.plans.set(PLAN, { items: [{ id: 'P-001', status: 'todo', text: 'Repair the legacy plan link' }] });
     await db.sql`INSERT INTO harness_shared.plan_items

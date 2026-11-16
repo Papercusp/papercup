@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { readFile, realpath, stat } from 'node:fs/promises';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { parsePlan } from '@papercusp/plan-parser';
 import type { CellReadEnv } from './cell-read';
@@ -479,14 +479,25 @@ Promise<BlockerEvidenceMeasurement> {
   if (!parentCommit || !/^[a-f0-9]{40}$/.test(parentCommit)) return unknown('current parent commit could not be measured');
 
   const checks = await Promise.all(paths.map(async filePath => {
+    const file = resolve(canonicalRoot, filePath);
+    const sourceRoot = await readGitText(dirname(file), ['rev-parse', '--show-toplevel'], context.signal);
+    if (!sourceRoot || await realpath(sourceRoot).catch(() => null) !== sourceRoot) {
+      return unknown(`canonical source repository could not be measured for ${filePath}`);
+    }
+    const repositoryPath = relative(canonicalRoot, sourceRoot);
+    if (isAbsolute(repositoryPath) || repositoryPath.split(sep).includes('..')) {
+      return unknown(`source repository is outside the harness for ${filePath}`);
+    }
+    const sourceFile = relative(sourceRoot, file);
     const [sourceCommit, expectedBlob] = await Promise.all([
-      readGitText(canonicalRoot, ['log', '-1', '--format=%H', 'HEAD', '--', filePath], context.signal),
-      readGitText(canonicalRoot, ['hash-object', '--', filePath], context.signal),
+      readGitText(sourceRoot, ['log', '-1', '--format=%H', 'HEAD', '--', sourceFile], context.signal),
+      readGitText(sourceRoot, ['hash-object', '--', sourceFile], context.signal),
     ]);
     if (!sourceCommit || !/^[a-f0-9]{40}$/.test(sourceCommit) || !expectedBlob || !/^[a-f0-9]{40}$/.test(expectedBlob)) {
       return unknown(`current committed and working blobs could not be measured for ${filePath}`);
     }
     const binding: GitFilePublicationBinding = { schemaVersion: 1, kind: 'git-file-publication', filePath,
+      ...(repositoryPath ? { repositoryPath } : {}),
       sourceCommit, expectedBlob, parentCommit,
       reason: 'Measure the current work-item code working-set blob in the local git-sync commit',
       reasonRef: context.workItemId };

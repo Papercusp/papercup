@@ -1915,6 +1915,49 @@ describe('durable detached snapshot lifecycle', () => {
     }
   });
 
+  it.each(['launcher', 'report-root'].flatMap(stage => [-1, 0, 1].map(offset => ({ stage, offset }))))(
+    'enforces the launch cutoff after $stage provenance ($offset ms)', async ({ stage, offset }) => {
+      let now = Date.now();
+      const cutoffAtMs = now + 1_000;
+      const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+      const sql = vi.fn(async () => []) as unknown as Sql;
+      worktreeSnapshotMocks.captureAsync.mockImplementation(async root => {
+        if (root === (stage === 'launcher' ? '/tmp' : '/cutoff-report-checkout')) now = cutoffAtMs + offset;
+        return { commit: 'cutoff-source', porcelain: '' };
+      });
+      try {
+        const pending = store.startRunDurable(req({ launchCutoffAtMs: cutoffAtMs,
+          ...(stage === 'report-root' ? { detachedReportArtifacts: [{ root: '/cutoff-report-checkout',
+            reportPath: '/tmp/cutoff-unwritten-report.json', requestedFiles: ['feature.test.ts'] }] } : {}),
+        }), sql);
+        if (offset < 0) {
+          const result = await pending;
+          expect(result.snapshot.status).toBe('running');
+          expect(taskManagerMocks.begin).toHaveBeenCalledOnce();
+          expect(spawnMock).toHaveBeenCalledOnce();
+          lastChild._emitClose(0);
+        } else {
+          await expect(pending).rejects.toMatchObject({ name: 'RunLaunchCutoffError',
+            code: 'deadline_exhausted', cutoffAtMs });
+          expect(taskManagerMocks.begin).not.toHaveBeenCalled();
+          expect(spawnMock).not.toHaveBeenCalled();
+          expect(sql).not.toHaveBeenCalled();
+        }
+      } finally { clock.mockRestore(); }
+    },
+  );
+
+  it('refuses an already exhausted launch cutoff before reading provenance', async () => {
+    const sql = vi.fn(async () => []) as unknown as Sql;
+    worktreeSnapshotMocks.captureAsync.mockResolvedValue({ commit: 'unused', porcelain: '' });
+    await expect(store.startRunDurable(req({ launchCutoffAtMs: Date.now() }), sql))
+      .rejects.toBeInstanceOf(store.RunLaunchCutoffError);
+    expect(worktreeSnapshotMocks.captureAsync).not.toHaveBeenCalled();
+    expect(taskManagerMocks.begin).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(sql).not.toHaveBeenCalled();
+  });
+
   it('spawns the detached child before waiting for the running snapshot persistence', async () => {
     const events: string[] = [];
     const sql = vi.fn(async () => {
@@ -2350,6 +2393,21 @@ describe('durable detached snapshot lifecycle', () => {
     await expect(store.getRunAsync('missing-snapshot', sql,
       { workspaceId: 'workspace-one', harnessSlug: 'harness-one', root: '/tmp' }))
       .rejects.toBeInstanceOf(store.TestingRunSnapshotUnavailableError);
+  });
+
+  it('identifies a failed snapshot read without exposing database error text', async () => {
+    const sql = vi.fn(async () => {
+      throw Object.assign(new Error('private database connection detail'), { code: '08006' });
+    }) as unknown as Sql;
+
+    let failure: unknown;
+    try { await store.getRunAsync('snapshot-read-diagnostic', sql); } catch (error) { failure = error; }
+
+    expect(failure).toBeInstanceOf(store.TestingRunSnapshotUnavailableError);
+    expect(failure).toMatchObject({ diagnostic: {
+      stage: 'snapshot-query', queryFailure: { phase: 'query', errorName: 'Error', errorCode: '08006' },
+    } });
+    expect(JSON.stringify(failure)).not.toContain('private database connection detail');
   });
 
   it('recovers a terminal detached verdict from test_runs when its snapshot read is unavailable', async () => {

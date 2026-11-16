@@ -79,7 +79,7 @@ import {
   statSync,
   type Dirent,
 } from 'node:fs';
-import { cp, mkdtemp, open, readdir, readFile, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, open, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -110,6 +110,7 @@ import {
   TESTING_RUN_MAX_PAYLOAD_BYTES,
   startRun,
   startRunDurable,
+  RunLaunchCutoffError,
   type DistilledTestRun,
   type HarnessTestRunEvidence,
   type HarnessTestRunIdQuery,
@@ -716,6 +717,24 @@ export function buildDetachedTestRunBootstrapScript(opts: {
   ].join('\n');
 }
 
+/** Recovery preparation spends the original child budget too, for every checkout route. */
+async function startDetachedTestRunBeforeCutoff(
+  buildRequest: () => Promise<SpawnRequest>,
+  deadline: TestRunDeadline,
+) {
+  if (Date.now() >= deadline.childCutoffAtMs) return undefined;
+  const request = await buildRequest();
+  if (Date.now() < deadline.childCutoffAtMs) {
+    try { return await startRunDurable(request); }
+    catch (error) { if (!(error instanceof RunLaunchCutoffError)) throw error; }
+  }
+  // The store's awaited provenance reads can also exhaust the cutoff. Its
+  // typed refusal precedes enrolment, so no child owns these prepared sinks.
+  await Promise.all((request.detachedReportArtifacts ?? []).map(artifact =>
+    rm(dirname(artifact.reportPath), { recursive: true, force: true })));
+  return undefined;
+}
+
 /**
  * Build the store-backed recovery command for a Papercusp checkout. The
  * foreground run's JSON report lives in a private temporary directory that is
@@ -826,6 +845,7 @@ export async function buildDetachedTestRunRequest(opts: {
       cwd: REPO_ROOT,
       detachedReportArtifacts: reportArtifacts,
       runtimeMaxSec: Math.max(1, Math.floor((opts.deadline.taskDeadlineAtMs - Date.now()) / 1_000)),
+      launchCutoffAtMs: opts.deadline.childCutoffAtMs,
       ...(opts.workItemId ? { workItemId: opts.workItemId } : {}),
       ...(opts.originRunId ? { originRunId: opts.originRunId } : {}),
       env: {
@@ -4260,7 +4280,9 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
           deadline,
           allowDetachedRecovery: false,
         }, deps);
-        packet.groupCleanups.push({ directory: result.artifacts?.directory ?? null, cleanup: result.cleanup });
+        // A refusal before packet allocation owns no resources. Do not turn
+        // its absent cleanup receipt into an unconfirmed-child warning.
+        if (result.artifacts) packet.groupCleanups.push({ directory: result.artifacts.directory, cleanup: result.cleanup });
         packet.stage('checkout-group-result', { root: group.root, artifacts: result.artifacts, cleanup: result.cleanup });
         if (result.error !== undefined) errors.push(result);
         else completed.push({ group, result });
@@ -4281,8 +4303,8 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
             ...summarizePartialCompletedGroups(completed),
           };
         }
-        const detachedStart = await startRunDurable(
-          await buildDetachedMixedTestRunRequest({
+        const detachedStart = await startDetachedTestRunBeforeCutoff(
+          () => buildDetachedMixedTestRunRequest({
             groups,
             originRunId: runId,
             ...(opts.testNamePattern !== undefined ? { testNamePattern: opts.testNamePattern } : {}),
@@ -4293,6 +4315,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
             timeoutMs: recoveryTimeoutMs,
             deadline,
           }),
+          deadline,
         );
         return {
           ...timeout,
@@ -4300,11 +4323,13 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
           root: resolve(opts.root),
           roots,
           timeoutMs,
-          detachedRunId: detachedStart.snapshot.runId,
-          detachedDurable: detachedStart.durable,
-          ...(detachedStart.originAliasDurable !== undefined
-            ? { originAliasDurable: detachedStart.originAliasDurable }
-            : {}),
+          ...(detachedStart ? {
+            detachedRunId: detachedStart.snapshot.runId,
+            detachedDurable: detachedStart.durable,
+            ...(detachedStart.originAliasDurable !== undefined
+              ? { originAliasDurable: detachedStart.originAliasDurable } : {}),
+          } : { hint: 'Original child cutoff exhausted; no detached recovery was started. ' +
+              detachedTestTimeoutHint(opts.files) }),
           routerOutput: errors.map((result) => result.routerOutput ?? result.hint ?? result.error).join('\n'),
           ...summarizePartialCompletedGroups(completed),
         };
@@ -4678,7 +4703,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
       // existing explicit recovery hint until that route can be represented as
       // one store run.
       const detachedEnabled = hasRouter && opts.allowDetachedRecovery !== false
-        && (!opts.deadline || Date.now() < deadline.childCutoffAtMs);
+        && Date.now() < deadline.childCutoffAtMs;
       const detachedHarnessSlug = await resolveDetachedHarnessSlug({
         root,
         detachedEnabled,
@@ -4687,8 +4712,8 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
       });
       const detachedStart =
         detachedEnabled
-          ? await startRunDurable(
-              await buildDetachedTestRunRequest({
+          ? await startDetachedTestRunBeforeCutoff(
+              () => buildDetachedTestRunRequest({
                 root,
                 files: pathResolution.files,
                 originRunId: runId,
@@ -4703,6 +4728,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
                 // artifact/cleanup route as explicitly caller-bound recovery.
                 deadline,
               }),
+              deadline,
             )
           : undefined;
       const detachedSnapshot = detachedStart?.snapshot;
@@ -4717,6 +4743,8 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
         hint:
           `hit the ${(timeoutMs / 1000).toFixed(0)}s budget. ` +
           detachedRecoveryHint({ runId: detachedRunId, durable: detachedDurable }) +
+          (!detachedStart && Date.now() >= deadline.childCutoffAtMs
+            ? 'Original child cutoff exhausted; no detached recovery was started. ' : '') +
           detachedTestTimeoutHint(opts.files),
         routerOutput: outcome.output.slice(-2000),
         ...(detachedRunId
@@ -5543,7 +5571,7 @@ export default defineTool({
         error: selected.reason ? 'managed_app_path_unresolved' : 'ambiguous_workspace_path' } };
       const groups = groupTestFilesByCheckout(selected.files, rootSelection.root);
       const handoffStartedAt = performance.now();
-      const start = await startRunDurable(await buildDetachedTestRunRequest({
+      const start = await startDetachedTestRunBeforeCutoff(() => buildDetachedTestRunRequest({
         root: rootSelection.root, files: selected.files, groups, deadline: deadline!, originRunId: runId,
         background: true, timeoutMs: requestedTimeoutMs ?? DEFAULT_TIMEOUT_MS,
         selectedCore,
@@ -5556,8 +5584,14 @@ export default defineTool({
         ...(args.reporterStageTrace ? { reporterStageTrace: true } : {}),
         ...(args.maxFailures !== undefined ? { maxFailures: args.maxFailures } : {}),
         allowSiblingCheckoutFallback,
-      }));
+      }), deadline!);
       setTestingRunPhaseDuration(phaseTimingsMs, 'handoffMs', handoffStartedAt);
+      if (!start) return launchResult({
+        ok: false, error: 'deadline_exhausted', deadline,
+        ...(prepared ? { evidenceBundle: await retractRefusedTestEvidence(
+          prepared, runId, evidenceScope!, 'deadline_exhausted',
+        ).catch(error => ({ status: 'retirement-incomplete', reason: 'deadline_exhausted', message: String(error) })) } : {}),
+      });
       return launchResult({
         ok: true, mode: 'background', status: 'pending', runId, root: rootSelection.root,
         rootSource: rootSelection.source, deadline,

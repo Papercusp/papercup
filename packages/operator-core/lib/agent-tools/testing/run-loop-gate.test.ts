@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -17,7 +17,16 @@ const phases = vi.hoisted(() => ({
   retract: vi.fn(),
   provenance: vi.fn(),
   detach: vi.fn(),
+  recoveryPrepared: vi.fn(),
 }));
+vi.mock('node:fs/promises', async (original) => {
+  const fs = await original<typeof import('node:fs/promises')>();
+  return { ...fs, mkdtemp: async (prefix: string) => {
+    const directory = await fs.mkdtemp(prefix);
+    phases.recoveryPrepared(directory);
+    return directory;
+  } };
+});
 vi.mock('../../testing-run-store', async (original) => ({
   ...(await original<typeof import('../../testing-run-store')>()), startRunDurable: phases.detach,
 }));
@@ -42,7 +51,8 @@ vi.mock('./evidence', async (original) => ({
 import { BashProvenanceRefusal } from '../capability/bash-task-provenance';
 import { REPO_ROOT } from '../docs/_repo-paths';
 import runTool, { buildDetachedTestRunBootstrapScript, buildDetachedTestRunRequest,
-  compiledTestingCoreNodeOptions, TestingCoreRefusal, testingRunAbortCompletionReceipt } from './run';
+  compiledTestingCoreNodeOptions, runTestFilesCore, TestingCoreRefusal, testingRunAbortCompletionReceipt } from './run';
+import { RunLaunchCutoffError } from '../../testing-run-store';
 import { testRunDeadline, type TestRunDeadline } from './run-artifacts';
 
 const roots: string[] = [];
@@ -337,6 +347,124 @@ it('reports an exhausted child budget without renewing it or changing the refuse
   expect(JSON.parse(result.stdout)).toEqual({ ok: false, error: 'deadline_exhausted', deadline });
   expect(result.events.every(event => event.remainingChildMs === 0)).toBe(true);
   expect(result.events.at(-1)).toMatchObject({ ok: false, error: 'deadline_exhausted' });
+});
+
+async function timeoutRecoveryFixture(count: number) {
+  const parent = await mkdtemp(join(tmpdir(), 'testing-run-recovery-cutoff-'));
+  roots.push(parent);
+  const checkouts = await Promise.all(Array.from({ length: count }, async (_, index) => {
+    const root = join(parent, String(index));
+    await mkdir(join(root, '.git'), { recursive: true });
+    await mkdir(join(root, 'scripts'));
+    await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: [] }));
+    await writeFile(join(root, 'scripts/test-files.mjs'), 'export {};\n');
+    await writeFile(join(root, 'feature.test.ts'), 'export {};\n');
+    return root;
+  }));
+  return { root: checkouts[0]!, files: checkouts.map(root => join(root, 'feature.test.ts')),
+    artifactBaseDir: join(parent, 'artifacts') };
+}
+
+const recoveryCutoffCases = [1, 2].flatMap(count => ['derived', 'caller'].flatMap(kind =>
+  [-1, 0, 1].map(offset => ({ count, kind, offset }))));
+
+it.each(recoveryCutoffCases)(
+  'admits $kind recovery only before the original cutoff ($offset ms, $count checkout(s))',
+  async ({ count, kind, offset }) => {
+    const fixture = await timeoutRecoveryFixture(count);
+    let now = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const deadline = testRunDeadline(120_000, { now });
+    phases.fence.mockResolvedValue(null);
+    phases.detach.mockResolvedValue({ snapshot: { runId: 'cutoff-recovery' }, durable: true });
+    const runRouterFn = vi.fn(async () => {
+      now = deadline.childCutoffAtMs + offset;
+      return { code: null, signal: 'SIGTERM' as const, timedOut: true, aborted: false,
+        output: 'controlled foreground timeout' };
+    });
+    const result = await runTestFilesCore({ root: fixture.root, files: fixture.files,
+      timeoutMs: 25_000, recoveryTimeoutMs: 120_000, harnessSlug: 'cutoff-harness',
+      ...(kind === 'caller' ? { deadline } : {}) }, { runRouterFn, artifactBaseDir: fixture.artifactBaseDir });
+
+    expect(result).toMatchObject({ ok: false, error: 'timeout', cleanup: { complete: true } });
+    if (result.error !== 'timeout') throw new Error('expected controlled foreground timeout');
+    expect(runRouterFn).toHaveBeenCalledTimes(offset < 0 ? count : 1);
+    const manifest = JSON.parse(await readFile(result.artifacts!.manifest, 'utf8'));
+    expect(manifest.deadline).toEqual(deadline);
+    if (offset < 0) {
+      expect(phases.detach).toHaveBeenCalledOnce();
+      expect(result).toMatchObject({ detachedRunId: 'cutoff-recovery', detachedDurable: true });
+      expect(phases.detach.mock.calls[0]![0]).toMatchObject({ launchCutoffAtMs: deadline.childCutoffAtMs, env: {
+        PAPERCUSP_TEST_TASK_DEADLINE_AT_MS: String(deadline.taskDeadlineAtMs),
+        PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS: String(deadline.childCutoffAtMs),
+        PAPERCUSP_TEST_CLEANUP_RESERVE_MS: String(deadline.cleanupReserveMs),
+      }, detachedReportArtifacts: fixture.files.map(file => expect.objectContaining({ requestedFiles: [file] })) });
+    } else {
+      expect(phases.detach).not.toHaveBeenCalled();
+      expect(result).not.toHaveProperty('detachedRunId');
+      expect(result.hint).toContain('Original child cutoff exhausted');
+      expect(phases.recoveryPrepared.mock.calls.flatMap(([directory]) =>
+        directory.includes('testing-run-replay-') ? [directory] : [])).toEqual([]);
+    }
+  },
+);
+
+it.each([1, 2].flatMap(count => ['preparation', 'store-admission'].map(stage => ({ count, stage }))))(
+  'rechecks the original cutoff after $stage for $count checkout(s)', async ({ count, stage }) => {
+  const fixture = await timeoutRecoveryFixture(count);
+  let now = Date.now();
+  vi.spyOn(Date, 'now').mockImplementation(() => now);
+  const deadline = testRunDeadline(120_000, { now });
+  phases.fence.mockResolvedValue(null);
+  phases.detach.mockResolvedValue({ snapshot: { runId: 'must-not-start' }, durable: true });
+  phases.recoveryPrepared.mockImplementation(directory => {
+    if (stage === 'preparation' && directory.includes('testing-run-replay-')) now = deadline.childCutoffAtMs;
+  });
+  if (stage === 'store-admission') phases.detach.mockImplementation(async () => {
+    now = deadline.childCutoffAtMs;
+    throw new RunLaunchCutoffError(deadline.childCutoffAtMs);
+  });
+  const runRouterFn = vi.fn(async () => {
+    now = deadline.childCutoffAtMs - 1;
+    return { code: null, signal: 'SIGTERM' as const, timedOut: true, aborted: false,
+      output: 'controlled foreground timeout before delayed recovery preparation' };
+  });
+  const result = await runTestFilesCore({ root: fixture.root, files: fixture.files,
+    timeoutMs: 25_000, recoveryTimeoutMs: 120_000, harnessSlug: 'cutoff-harness' },
+  { runRouterFn, artifactBaseDir: fixture.artifactBaseDir });
+
+  expect(result).toMatchObject({ ok: false, error: 'timeout', cleanup: { complete: true } });
+  if (result.error !== 'timeout') throw new Error('expected controlled foreground timeout');
+  expect(result).not.toHaveProperty('detachedRunId');
+  expect(result.hint).toContain('Original child cutoff exhausted');
+  expect(phases.detach).toHaveBeenCalledTimes(stage === 'store-admission' ? 1 : 0);
+  const prepared = phases.recoveryPrepared.mock.calls.flatMap(([directory]) =>
+    directory.includes('testing-run-replay-') ? [directory] : []);
+  expect(prepared).toHaveLength(count);
+  for (const directory of prepared) await expect(access(directory)).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(JSON.parse(await readFile(result.artifacts!.manifest, 'utf8')).deadline).toEqual(deadline);
+});
+
+it('retires background evidence when store admission exhausts its original cutoff', async () => {
+  let now = Date.now();
+  vi.spyOn(Date, 'now').mockImplementation(() => now);
+  phases.gate.mockResolvedValue(null);
+  phases.fence.mockResolvedValue(null);
+  phases.prepare.mockResolvedValue([{}]);
+  phases.retract.mockResolvedValue({ status: 'retired' });
+  phases.detach.mockImplementation(async request => {
+    now = request.launchCutoffAtMs;
+    throw new RunLaunchCutoffError(now);
+  });
+  const { result } = await invoke({ background: true, timeoutMs: 120_000 });
+  expect(result).toMatchObject({ ok: false, error: 'deadline_exhausted' });
+  expect(result).not.toHaveProperty('detachedRunId');
+  expect(phases.detach).toHaveBeenCalledOnce();
+  expect(phases.retract).toHaveBeenCalledOnce();
+  expect(phases.finish).not.toHaveBeenCalled();
+  for (const artifact of phases.detach.mock.calls[0]![0].detachedReportArtifacts) {
+    await expect(access(join(artifact.reportPath, '..'))).rejects.toMatchObject({ code: 'ENOENT' });
+  }
 });
 
 it('starts one caller-bound background core, retaining pending evidence and the full budget', async () => {

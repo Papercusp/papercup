@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   listWorkItems: vi.fn(),
   readClaimSpecLaneHealth: vi.fn(),
   readPlanLineNodes: vi.fn(),
+  readPlanLineWorkItemRefs: vi.fn(),
   sql: vi.fn(() => { throw new Error('unit SQL must be mocked at the reader seam'); }),
 }));
 
@@ -23,6 +24,7 @@ vi.mock('./source', () => ({
 
 vi.mock('./plan-line-graph', () => ({
   readPlanLineNodes: (...args: unknown[]) => mocks.readPlanLineNodes(...args),
+  readPlanLineWorkItemRefs: (...args: unknown[]) => mocks.readPlanLineWorkItemRefs(...args),
 }));
 
 vi.mock('../../work-items', async (importOriginal) => ({
@@ -133,7 +135,30 @@ const lane = (args: {
   };
 };
 
+beforeEach(() => {
+  mocks.readPlanLineWorkItemRefs.mockReset().mockImplementation(async (_tx, scope) =>
+    scope.workItemIds.map((workItemId: string) => ({ workItemId, planSlug: null, planItemId: null })));
+});
+
 describe('evaluateExactPlanAdmission', () => {
+  it('counts a canonically adopted issue without legacy promotion stamps', () => {
+    expect(evaluateExactPlanAdmission({ planSlug: 'plan-a', planItems: [item('P-001')],
+      workItems: [{ id: 'EI-adopted', family: 'issue', sourcePlanItemIds: null, payload: {},
+        canonicalPlanSlug: 'plan-a', canonicalPlanItemId: 'P-001' }],
+      laneHealth: lane({ issue: 1, featureReachable: false }),
+    })).toMatchObject({ ready: true, actionableRows: [{ planItemId: 'P-001', workItemId: 'EI-adopted' }] });
+  });
+
+  it.each([
+    ['different-plan', 'P-001'], ['plan-a', 'P-999'], ['plan-a', null], [null, 'P-001'],
+  ])('rejects contradictory canonical coverage %s#%s despite matching legacy stamps', (plan, line) => {
+    expect(evaluateExactPlanAdmission({ planSlug: 'plan-a', planItems: [item('P-001')],
+      workItems: [{ id: 'EI-adopted', family: 'issue', sourcePlanItemIds: ['P-001'],
+        payload: { plan_item: { plan_slug: 'plan-a', item_id: 'P-001' } },
+        canonicalPlanSlug: plan, canonicalPlanItemId: line }],
+      laneHealth: lane({ issue: 1, featureReachable: false }),
+    })).toMatchObject({ ready: false, reason: 'promotion-lag' });
+  });
   it('replays the migrated P536 rows as one canonical execution lane on resume', () => {
     // Physical topology read from WI-6554700010037375 and WI-6554700010026007
     // on 2026-11-07. Only plan readiness/lane availability are simulated: this
@@ -1041,6 +1066,32 @@ describe('preflightExactPlanAdmission IO wiring', () => {
       },
     ]);
     mocks.readClaimSpecLaneHealth.mockResolvedValue(lane({ issue: 1, featureReachable: false }));
+  });
+
+  it('joins canonical-only adopted coverage and preserves the existing caller-held admission rule', async () => {
+    const adopted = { id: 'EI-adopted', family: 'issue', state: 'open', assignee: 'su-test',
+      sourcePlanSlug: null, sourcePlanItemIds: null, payload: {} };
+    mocks.listWorkItems.mockImplementation(async filter => filter.ids ? [adopted] : []);
+    mocks.readPlanLineWorkItemRefs.mockResolvedValue([
+      { workItemId: adopted.id, planSlug: 'plan-a', planItemId: 'P-001' },
+    ]);
+    mocks.readClaimSpecLaneHealth.mockResolvedValue(lane({ issue: 0, featureReachable: false }));
+    expect(await preflightExactPlanAdmission({ workspaceId: 'ws-1', harnessSlug: 'papercusp',
+      planSlug: 'plan-a', actor: 'su-test', claimant: 'su-test', specId: 'canonical-adoption', allowCallerHeld: true,
+    })).toMatchObject({ ready: true, actionableRows: [{ planItemId: 'P-001', workItemId: adopted.id }] });
+    expect(mocks.listWorkItems).toHaveBeenCalledWith(expect.objectContaining({ ids: [adopted.id] }));
+    expect(adopted.payload).toEqual({});
+    expect(adopted.sourcePlanSlug).toBeNull();
+  });
+
+  it('does not let legacy census rows cover a plan after canonical rehoming', async () => {
+    mocks.readPlanLineWorkItemRefs.mockResolvedValue([
+      { workItemId: 'WI-1', planSlug: 'different-plan', planItemId: 'P-001' },
+    ]);
+    expect(await preflightExactPlanAdmission({ workspaceId: 'ws-1', harnessSlug: 'papercusp',
+      planSlug: 'plan-a', actor: 'su-test', specId: 'canonical-rehome',
+    })).toMatchObject({ ready: false, reason: 'promotion-lag' });
+    expect(mocks.readClaimSpecLaneHealth).not.toHaveBeenCalled();
   });
 
   it('reads independent exact-plan and caller-owned populations for an unstamped held child', async () => {

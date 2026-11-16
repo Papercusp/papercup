@@ -9,7 +9,7 @@
 
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { clipWithMarker, payloadTierRecoveryHint } from '../plans/shape-clip';
+import { clipMarker, payloadTierRecoveryHint } from '../plans/shape-clip';
 import {
   getForegroundRunVerdictAsync,
   getRunAsync,
@@ -18,15 +18,80 @@ import {
   type DetachedRunLedgerRecovery,
   type ForegroundRunVerdict,
   type RunSnapshot,
+  type TestingRunReadDiagnostic,
 } from '../../testing-run-store';
 import { readForegroundKernelVerdict } from '../../testing-run-store-foreground-kernel';
 
+type StatusSnapshot = Omit<RunSnapshot, 'command'> & {
+  command?: string[];
+  commandOmitted?: true;
+  commandRecovery?: string;
+};
+
+interface RunDiagnostics {
+  lastBootstrapPhase?: string;
+  coreWitness?: { phase: 'core-witness-verified'; coreMode: 'compiled'; witnessSchemaVersion?: number };
+  failure?: { status: RunSnapshot['status']; exitCode: number | null; message: string };
+}
+
+const recoverOutput = payloadTierRecoveryHint('testing:run-status');
+
+/** Log failures occur at the end; a prefix-only clip hides their cause. */
+function outputTail(output: string, cap: number): string {
+  if (output.length <= cap) return output;
+  const keep = cap - clipMarker(output.length, recoverOutput).length - 1;
+  return `${clipMarker(output.length - keep, recoverOutput)}\n${output.slice(-keep)}`;
+}
+
+function runDiagnostics(snapshot: RunSnapshot): RunDiagnostics {
+  const diagnostics: RunDiagnostics = {};
+  for (const line of snapshot.output.split('\n')) {
+    if (!line.startsWith('{')) continue;
+    let record: Record<string, unknown>;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (record?.schemaVersion !== 'testing-run-bootstrap-v1' || typeof record.phase !== 'string') continue;
+    diagnostics.lastBootstrapPhase = record.phase.slice(0, 120);
+    // This phase is written only after the compiled producer witness matches.
+    // Its presence says nothing about the eventual test or acceptance verdict.
+    if (record.phase === 'core-witness-verified' && record.coreMode === 'compiled') {
+      diagnostics.coreWitness = {
+        phase: 'core-witness-verified', coreMode: 'compiled',
+        ...(typeof record.witnessSchemaVersion === 'number'
+          ? { witnessSchemaVersion: record.witnessSchemaVersion } : {}),
+      };
+    }
+  }
+  if (snapshot.status === 'fail' || snapshot.status === 'error') {
+    diagnostics.failure = {
+      status: snapshot.status, exitCode: snapshot.exitCode,
+      message: outputTail(snapshot.output.trimEnd(), 512),
+    };
+  }
+  return diagnostics;
+}
+
+function boundedSnapshot(snapshot: RunSnapshot): StatusSnapshot {
+  const { command, ...rest } = snapshot;
+  const output = outputTail(snapshot.output, 2048);
+  return {
+    ...rest,
+    ...(JSON.stringify(command).length <= 512 ? { command }
+      : { commandOmitted: true as const, commandRecovery: recoverOutput }),
+    output,
+    truncated: snapshot.truncated || output !== snapshot.output,
+  };
+}
+
 export type TestingRunStatusResult =
-  | { ok: true; snapshot: RunSnapshot }
+  | { ok: true; snapshot: StatusSnapshot; diagnostics?: RunDiagnostics }
   | { ok: true; foreground: ForegroundRunVerdict }
   | { ok: true; ledgerRecovery: DetachedRunLedgerRecovery }
   | { ok: false; error: 'unknown_run'; runId: string; message: string }
-  | { ok: false; error: 'snapshot_unavailable'; runId: string; retryable: true; message: string };
+  | { ok: false; error: 'snapshot_unavailable'; runId: string; retryable: true; message: string; readFailures?: TestingRunReadDiagnostic[] };
 
 const argsSchema = z.object({
   runId: z
@@ -58,12 +123,17 @@ export default defineTool({
   async handler(args, ctx): Promise<{ data: TestingRunStatusResult }> {
     let snapshot: RunSnapshot | null;
     let snapshotUnavailable = false;
+    const readFailures: TestingRunReadDiagnostic[] = [];
+    const recordUnavailable = (error: unknown): void => {
+      if (!(error instanceof TestingRunSnapshotUnavailableError)) throw error;
+      snapshotUnavailable = true;
+      if (error.diagnostic && readFailures.length < 3) readFailures.push(error.diagnostic);
+    };
     try {
       snapshot = await getRunAsync(args.runId, undefined, undefined, undefined, readForegroundKernelVerdict);
     } catch (error) {
-      if (!(error instanceof TestingRunSnapshotUnavailableError)) throw error;
+      recordUnavailable(error);
       snapshot = null;
-      snapshotUnavailable = true;
     }
     if (snapshot) {
       if (snapshot.kind === 'vitest'
@@ -90,13 +160,20 @@ export default defineTool({
       }
       const fullOutputRequested =
         ctx.payloadTierOverride === 'full' && ctx.sourceMaterialization?.promotedToFull !== true;
-      return { data: { ok: true, snapshot: fullOutputRequested ? snapshot : {
-        ...snapshot,
-        output: clipWithMarker(snapshot.output, 2048, payloadTierRecoveryHint('testing:run-status')),
-      } } };
+      const diagnostics = runDiagnostics(snapshot);
+      return { data: {
+        ok: true,
+        ...(Object.keys(diagnostics).length ? { diagnostics } : {}),
+        snapshot: fullOutputRequested ? snapshot : boundedSnapshot(snapshot),
+      } };
     }
 
-    const ledgerRecovery = await getTestRunLedgerRecoveryAsync(args.runId);
+    let ledgerRecovery: DetachedRunLedgerRecovery | null = null;
+    try {
+      ledgerRecovery = await getTestRunLedgerRecoveryAsync(args.runId);
+    } catch (error) {
+      recordUnavailable(error);
+    }
     if (ledgerRecovery) return { data: { ok: true, ledgerRecovery } };
 
     // A foreground run (e.g. one released by a host-shutdown handoff) has no
@@ -105,8 +182,7 @@ export default defineTool({
       const foreground = await getForegroundRunVerdictAsync(args.runId, undefined, readForegroundKernelVerdict);
       if (foreground) return { data: { ok: true, foreground } };
     } catch (error) {
-      if (!(error instanceof TestingRunSnapshotUnavailableError)) throw error;
-      snapshotUnavailable = true;
+      recordUnavailable(error);
     }
 
     if (snapshotUnavailable) {
@@ -116,6 +192,7 @@ export default defineTool({
           error: 'snapshot_unavailable',
           runId: args.runId,
           retryable: true,
+          ...(readFailures.length ? { readFailures } : {}),
           message:
             'The detached lifecycle snapshot and a terminal per-file test_runs verdict were unavailable. Retry testing:run-status; this does not mean the run is absent or that the test passed.',
         },

@@ -25,6 +25,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { canonicalJson } from '@papercusp/hash-chain';
 import { getOrgPg } from '@papercusp/db-org';
 import { boundedOrgTxn } from '../../pg-bounded-txn';
+import { withBoundedTimeout } from '../../bounded-timeout';
 import {
   parseTestRunExecutionDetails,
   isRecordedCaseTitle,
@@ -1333,6 +1334,57 @@ async function reviewerCorrectionScenarioDeps(ctx: RecordContext): Promise<Revie
 }
 
 export async function measureReviewerOwnedCorrection(ctx: RecordContext, deps: ReviewerCorrectionScenarioDeps) {
+  // Keep failures on the same immutable evidence plane as successful journeys.
+  // A timed-out public write has an unknown outcome, even when cleanup succeeds.
+  const evidenceStore = deps;
+  type Step = { step: string; actor?: string; mode?: unknown; grade?: unknown;
+    startedAt: string; finishedAt?: string; status: 'running' | 'ok' | 'error'; error?: string };
+  const steps: Step[] = [];
+  const observations: CorrectionObservation[] = [];
+  let lastCompletedStep: Step | undefined;
+  let lastCompletedPublicCall: Step | undefined;
+  let failedStep: Step | undefined;
+  let cleanup: { status: 'not-created' | 'pending' | 'verified' | 'failed'; error?: string } = { status: 'not-created' };
+  async function track<T>(step: string, run: () => Promise<T>, details: Partial<Step> = {}): Promise<T> {
+    const entry: Step = { ...details, step, startedAt: new Date().toISOString(), status: 'running' };
+    steps.push(entry);
+    try {
+      const result = await run();
+      entry.status = 'ok'; lastCompletedStep = entry; failedStep = undefined;
+      if (step.startsWith('public:')) lastCompletedPublicCall = entry;
+      return result;
+    } catch (error) {
+      entry.status = 'error'; entry.error = String(error instanceof Error ? error.message : error);
+      failedStep = entry;
+      throw error;
+    } finally { entry.finishedAt = new Date().toISOString(); }
+  }
+  deps = { ...evidenceStore,
+    witness: () => track('runtime:witness', evidenceStore.witness),
+    open: async (actor, invalidBearer) => {
+      const client = await track('mcp:open', () => evidenceStore.open(actor, invalidBearer), { actor });
+      return { close: client.close, invoke: (name, args) => track(`public:${name}`,
+        () => client.invoke(name, args), { actor, mode: args.mode, grade: args.grade }) };
+    },
+    seed: (...args) => track('fixture:seed', () => evidenceStore.seed(...args)),
+    read: (...args) => track('canonical:read', async () => {
+      const observation = await evidenceStore.read(...args);
+      observations.push(structuredClone(observation));
+      return observation;
+    }),
+    invocations: actors => track('canonical:invocations', () => evidenceStore.invocations(actors)),
+    cleanup: async (...args) => {
+      try {
+        await track('fixture:cleanup', () => evidenceStore.cleanup(...args));
+        cleanup = { status: 'verified' };
+      } catch (error) {
+        cleanup = { status: 'failed', error: String(error instanceof Error ? error.message : error) };
+        throw error;
+      }
+    },
+    saveEvidence: content => track('evidence:save', () => evidenceStore.saveEvidence(content)),
+    loadEvidence: sha => track('evidence:load', () => evidenceStore.loadEvidence(sha)),
+  };
   const before = await deps.witness();
   assert.equal(before.host, 'port-3170'); assert.ok(before.processId && before.buildSha);
   assert.match(before.bundleSha256, /^[a-f0-9]{64}$/); assert.match(before.manifestSha256, /^[a-f0-9]{64}$/);
@@ -1344,6 +1396,11 @@ export async function measureReviewerOwnedCorrection(ctx: RecordContext, deps: R
   const clients: Awaited<ReturnType<ReviewerCorrectionScenarioDeps['open']>>[] = [];
   let fixture: Awaited<ReturnType<ReviewerCorrectionScenarioDeps['seed']>> | undefined;
   let scenarioError: unknown;
+  let failureStep: Step | undefined;
+  let completedBeforeFailure: Step | undefined;
+  let failureReadback: { status: 'not-attempted' }
+    | { status: 'available'; observation: CorrectionObservation }
+    | { status: 'unavailable'; reason: string; error?: string } = { status: 'not-attempted' };
   try {
     const invalid = await deps.open('su-' + randomUUID(), true); clients.push(invalid);
     await assert.rejects(() => invalid.invoke('coord:whoami', {}), /superuser_invalid_bearer/);
@@ -1359,6 +1416,7 @@ export async function measureReviewerOwnedCorrection(ctx: RecordContext, deps: R
     assert.equal(new Set(actors).size, 3, 'distinct server-qualified actors required');
     const [, , reviewer, grader] = clients;
     fixture = await deps.seed(nonce, actors[0]!, actors[1]!);
+    cleanup = { status: 'pending' };
     const { id, ideaId } = fixture;
     const initial = await deps.read(id, ideaId);
     assert.match(id, /^EI-[0-9]+$/);
@@ -1504,6 +1562,7 @@ export async function measureReviewerOwnedCorrection(ctx: RecordContext, deps: R
     assert.equal(await deps.loadEvidence(saved.sha256), evidence, 'complete evidence must persist before cleanup');
     const ownFixture = fixture; fixture = undefined;
     await deps.cleanup(nonce, ownFixture.id, ownFixture.ideaId);
+    cleanup = { status: 'verified' };
     assert.equal(await deps.loadEvidence(saved.sha256), evidence, 'complete evidence must remain retrievable after cleanup');
     const summary = JSON.stringify({ schemaVersion: 1, workspaceId: ctx.workspaceId,
       harness: resolveConcreteHarnessSlug(undefined, ctx), itemRef: id, ideaRef: ideaId,
@@ -1535,16 +1594,67 @@ export async function measureReviewerOwnedCorrection(ctx: RecordContext, deps: R
     ] };
   } catch (error) {
     scenarioError = error;
+    failureStep = failedStep;
+    completedBeforeFailure = lastCompletedStep;
+    if (fixture) {
+      // Invocation telemetry settles after dispatch. Preserve a positive effect
+      // witness before deleting the only canonical rows that can prove it.
+      // A missing/old snapshot still cannot prove that a timed-out write failed.
+      const owned = fixture;
+      const readback = await withBoundedTimeout<CorrectionObservation | null>(
+        () => evidenceStore.read(owned.id, owned.ideaId),
+        { fallback: null, timeoutMs: 5_000, label: 'reviewer-correction:failure-readback', warn: false });
+      failureReadback = readback.value
+        ? { status: 'available', observation: readback.value }
+        : { status: 'unavailable', reason: readback.reason ?? 'missing',
+            ...(readback.errorMessage ? { error: readback.errorMessage } : {}) };
+    }
     throw error;
   } finally {
-    try { if (fixture) await deps.cleanup(nonce, fixture.id, fixture.ideaId); }
+    try {
+      if (fixture) {
+        await deps.cleanup(nonce, fixture.id, fixture.ideaId);
+        cleanup = { status: 'verified' };
+      }
+    }
     catch (cleanupError) {
-      if (scenarioError !== undefined) throw new AggregateError([scenarioError, cleanupError],
+      cleanup = { status: 'failed', error: String(cleanupError instanceof Error ? cleanupError.message : cleanupError) };
+      if (scenarioError !== undefined) scenarioError = new AggregateError([scenarioError, cleanupError],
         String(scenarioError instanceof Error ? scenarioError.message : scenarioError) +
         '\nFixture cleanup also failed: ' + String(cleanupError instanceof Error ? cleanupError.message : cleanupError));
-      throw cleanupError;
+      else {
+        scenarioError = cleanupError; failureStep = failedStep; completedBeforeFailure = lastCompletedStep;
+      }
     }
     finally { await Promise.allSettled(clients.map(client => client.close())); }
+    if (scenarioError !== undefined) {
+      const message = String(scenarioError instanceof Error ? scenarioError.message : scenarioError);
+      const context = { nonce,
+        fixture: fixture ?? (observations[0] && {
+          id: observations[0].item.id, ideaId: observations[0].ledger.idea_id }),
+        phase: failureStep?.step ?? 'verification',
+        failedStep: failureStep ?? null, lastCompletedStep: completedBeforeFailure ?? null,
+        lastCompletedPublicCall: lastCompletedPublicCall ?? null, cleanup,
+        failureReadbackStatus: failureReadback.status };
+      const evidence = JSON.stringify({ schemaVersion: 1, kind: 'reviewer-correction-failure-evidence',
+        workspaceId: ctx.workspaceId, harness, runtime: before, ...context, error: message,
+        publicMutationOutcome: failureStep?.step.startsWith('public:') ? 'unknown' : 'not-inferred',
+        failureReadback, steps, observations });
+      let saved: Awaited<ReturnType<ReviewerCorrectionScenarioDeps['saveEvidence']>>;
+      try {
+        saved = await evidenceStore.saveEvidence(evidence);
+        assert.equal(saved.sha256, createHash('sha256').update(evidence).digest('hex'));
+        assert.equal(saved.relPath, `immutable/sha256/${saved.sha256}.json`);
+        assert.equal(await evidenceStore.loadEvidence(saved.sha256), evidence,
+          'failure evidence must remain retrievable after cleanup');
+      } catch (evidenceError) {
+        throw new AggregateError([scenarioError, evidenceError], message +
+          '\nreviewer_correction_failure=' + JSON.stringify(context) +
+          '\nFailure evidence persistence failed: ' + String(evidenceError instanceof Error ? evidenceError.message : evidenceError));
+      }
+      throw new Error(message + '\nreviewer_correction_failure=' + JSON.stringify({ ...context,
+        evidenceRef: `${harness}:${saved.relPath}`, sha256: saved.sha256 }), { cause: scenarioError });
+    }
   }
 }
 
