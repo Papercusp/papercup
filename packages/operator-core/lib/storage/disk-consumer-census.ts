@@ -403,9 +403,21 @@ export async function reconcileCensusFailures(root: string, du: DuRun, opts: {
     uncertainBytesUpperBound: null, vanishedPaths, shards, reason });
   const diagnostics = du.diagnostics;
   if (du.summary.rootBytes === null) return unknown('missing root record');
-  if (du.exitCode !== 1 || du.timedOut || du.error || du.deniedCount || !diagnostics
-    || diagnostics.overflow || diagnostics.other || !diagnostics.lines
-    || diagnostics.lines !== diagnostics.missingPaths.length) return unknown('unresolved or incomplete diagnostics');
+  // Each refusal names its exact condition and subject: a bare reason left every recorded
+  // 'parent shard did not converge' run undiagnosable (WI-6554700010048407).
+  const diagnosticGaps = [
+    du.exitCode !== 1 ? `du exit ${String(du.exitCode)}` : null,
+    du.timedOut ? 'walk timed out' : null,
+    du.error ? `walk error: ${du.error}` : null,
+    du.deniedCount ? `${du.deniedCount} permission denial(s)` : null,
+    !diagnostics ? 'no diagnostic classification' : null,
+    diagnostics?.overflow ? 'diagnostic overflow' : null,
+    diagnostics?.other ? `${diagnostics.other} unclassified diagnostic(s)` : null,
+    diagnostics && !diagnostics.lines ? 'no diagnostic lines' : null,
+    diagnostics && diagnostics.lines !== diagnostics.missingPaths.length
+      ? `${diagnostics.lines} diagnostic line(s) for ${diagnostics.missingPaths.length} missing path(s)` : null,
+  ].filter((gap): gap is string => gap !== null);
+  if (!diagnostics || diagnosticGaps.length) return unknown(`unresolved or incomplete diagnostics: ${diagnosticGaps.join(', ')}`);
   const now = opts.now ?? Date.now;
   const deadline = now() + Math.min(opts.timeoutMs ?? 30_000, 30_000);
   const inspect = opts.inspectPath ?? inspectCoveragePath;
@@ -416,7 +428,8 @@ export async function reconcileCensusFailures(root: string, du: DuRun, opts: {
     if (!rootIdentity?.directory) return unknown('device root is not a directory');
     for (const path of new Set(diagnostics.missingPaths)) {
       if (now() >= deadline) return unknown('reconciliation deadline');
-      if (resolve(path) !== path || !within(path, root) || await inspect(path)) return unknown('failed path survives or is outside device');
+      if (resolve(path) !== path || !within(path, root)) return unknown(`failed path survives or is outside device: ${path} is not a normalized path under ${root}`);
+      if (await inspect(path)) return unknown(`failed path survives or is outside device: ${path} still exists`);
       vanishedPaths++;
       const parents = du.summary.consumers.filter(c => c.kind === 'dir' && c.consumer !== root && within(c.consumer, root)
         && within(dirname(path), c.consumer)).sort((a, b) => b.consumer.length - a.consumer.length);
@@ -435,13 +448,24 @@ export async function reconcileCensusFailures(root: string, du: DuRun, opts: {
       if (remaining <= 0) return unknown('reconciliation deadline');
       const before = await inspect(path);
       if (!before?.directory || before.dev !== rootIdentity.dev) return unknown('parent shard disappeared or crossed a device');
+      const walkStarted = now();
       const measured = await (opts.measureShard ?? runDuTree)(path, { sudo: opts.sudo,
         timeoutMs: remaining, maxDepth: 0, floorBytes: Infinity, countLinks: true });
       const after = await inspect(path);
       const bytes = measured.summary.rootBytes;
-      if (now() > deadline || measured.exitCode !== 0 || measured.timedOut || measured.error || measured.deniedCount
-        || measured.diagnostics?.lines || bytes === null || !Number.isSafeInteger(bytes) || bytes < 0
-        || !after?.directory || before.dev !== after.dev || before.ino !== after.ino) return unknown('parent shard did not converge');
+      const nonConvergence = [
+        now() > deadline ? 'finished after the reconciliation deadline' : null,
+        measured.timedOut ? 'shard walk timed out' : null,
+        measured.error ? `shard walk error: ${measured.error}` : null,
+        measured.exitCode !== 0 ? `du exit ${String(measured.exitCode)}` : null,
+        measured.deniedCount ? `${measured.deniedCount} permission denial(s)` : null,
+        measured.diagnostics?.lines ? `${measured.diagnostics.lines} diagnostic line(s) during the shard walk` : null,
+        bytes === null || !Number.isSafeInteger(bytes) || bytes < 0 ? 'no valid shard total' : null,
+        !after?.directory || before.dev !== after.dev || before.ino !== after.ino ? 'shard directory replaced during the walk' : null,
+      ].filter((condition): condition is string => condition !== null);
+      if (bytes === null || nonConvergence.length) {
+        return unknown(`parent shard did not converge: ${nonConvergence.join(', ')} (shard ${path}, walked ${now() - walkStarted}ms of a ${remaining}ms budget)`);
+      }
       shards.push({ path, upperBytes: bytes });
     }
     for (const path of new Set(diagnostics.missingPaths)) {
@@ -453,8 +477,8 @@ export async function reconcileCensusFailures(root: string, du: DuRun, opts: {
     if (!Number.isSafeInteger(upper)) return unknown('shard allocation overflow');
     return { status: 'bounded', uncertainBytesUpperBound: upper, vanishedPaths, shards,
       reason: 'affected shard snapshots remeasured; original whole-device census remains incomplete' };
-  } catch {
-    return unknown('path inspection or shard measurement failed');
+  } catch (error) {
+    return unknown(`path inspection or shard measurement failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

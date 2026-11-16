@@ -89,6 +89,36 @@ describe('bounded failed disk census coverage', () => {
     expect(result).toMatchObject({ status: 'unbounded', uncertainBytesUpperBound: null });
   });
 
+  // WI-6554700010048407: a bare 'parent shard did not converge' made every recorded
+  // non-convergence undiagnosable; the reason must name the condition and the shard.
+  it.each<[string, Partial<DuRun>, string]>([
+    ['timed-out', { timedOut: true, exitCode: null }, 'shard walk timed out'],
+    ['churned', { exitCode: 1, diagnostics: { lines: 2, missingPaths: ['/disk/shard/a', '/disk/shard/b'], other: 0, overflow: false } },
+      '2 diagnostic line(s) during the shard walk'],
+    ['denied', { deniedCount: 3 }, '3 permission denial(s)'],
+  ])('names the %s condition and the shard when a parent shard does not converge', async (_kind, patch, condition) => {
+    const result = await reconcileCensusFailures('/disk', failed(), {
+      inspectPath, measureShard: async () => ({ ...measured(), ...patch }) });
+    expect(result).toMatchObject({ status: 'unbounded', uncertainBytesUpperBound: null, vanishedPaths: 1, shards: [] });
+    expect(result.reason).toMatch(/^parent shard did not converge: /);
+    expect(result.reason).toContain(condition);
+    expect(result.reason).toMatch(/\(shard \/disk\/shard, walked \d+ms of a \d+ms budget\)$/);
+  });
+
+  it('names the exact refusal subject instead of a bare reason', async () => {
+    const denied = failed(); denied.deniedCount = 2;
+    expect((await reconcileCensusFailures('/disk', denied, { inspectPath })).reason)
+      .toBe('unresolved or incomplete diagnostics: 2 permission denial(s)');
+    expect((await reconcileCensusFailures('/disk', failed(), { inspectPath: async () => directory })).reason)
+      .toBe('failed path survives or is outside device: /disk/shard/gone still exists');
+    expect((await reconcileCensusFailures('/disk', failed(), {
+      inspectPath: async path => {
+        if (path === '/disk/shard') throw new Error('EIO reading /disk/shard');
+        return path.endsWith('/gone') ? null : directory;
+      },
+    })).reason).toBe('path inspection or shard measurement failed: EIO reading /disk/shard');
+  });
+
   it('uses a real du snapshot that safely overcounts multiply linked allocations', async () => {
     const root = mkdtempSync(join(tmpdir(), 'disk-census-bounded-'));
     try {
