@@ -29,7 +29,7 @@ import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { REPO_ROOT } from '../../agent-tools/docs/_repo-paths';
 import { isTaskManagerEnabled } from '../../task-manager/enabled';
-import { createReconcileStageReporter, reconcileTick } from '../../task-manager/reconcile-tick';
+import { createReconcileStageReporter, reconcileTick, type ReconcileTickResult } from '../../task-manager/reconcile-tick';
 import { defaultForeignSignature } from '../../task-manager/scan';
 import { gcTerminalTasks, listLiveTasks, listTasks, markStranded, residueTaskId } from '../../task-manager/store';
 import { archiveReapTail } from '../../task-manager/reap-archive';
@@ -212,6 +212,77 @@ registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
         })),
     });
 
+    // WI-6554700010050197: the routine runs under `concurrency: skip`, so
+    // whatever this action awaits holds back the NEXT 30s kernel pass. The
+    // maintenance passes below routinely take 5-45 minutes under load, while the
+    // kernel pass above takes ~25-80s. Awaiting them here turned the lost-watcher
+    // close — and its exact `task:terminal:<id>` wake — into a once-per-long-tick
+    // event: a test child that exited at 10:52:54Z was not closed until the tick
+    // that started at 11:02:29Z, two seconds after its waiter timed out. Hand the
+    // maintenance to its own single-flight run and return as soon as the kernel
+    // pass has persisted its terminals.
+    progress.stage('task-reconcile-maintenance-dispatch');
+    dispatchTaskReconcileMaintenance(ctx, tick);
+    return subPassHealth.result();
+  } finally {
+    progress.stop();
+  }
+});
+
+/** The one maintenance run allowed in flight in this process. */
+let maintenanceInFlight: Promise<void> | null = null;
+
+/**
+ * Start the maintenance passes for this tick unless the previous tick's run is
+ * still going. Single-flight replaces the routine's re-entrancy guard for this
+ * slow half only: each pass keeps its own `isMaintDue` interval, and the next
+ * kernel tick never waits for it. A failure surfaces through `subPassHealth`,
+ * which the following tick returns, so it cannot vanish with the detached run.
+ *
+ * @returns whether a new run started (`false` while one is still in flight).
+ */
+export function dispatchTaskReconcileMaintenance(
+  ctx: SystemActionCtx,
+  tick: ReconcileTickResult,
+  runMaintenance: (ctx: SystemActionCtx, tick: ReconcileTickResult) => Promise<void> = runTaskReconcileMaintenance,
+): boolean {
+  if (maintenanceInFlight) return false;
+  const startedAtMs = Date.now();
+  // Start on a microtask so even synchronous work in a pass cannot delay the
+  // kernel tick's return, and a synchronous throw becomes a recorded rejection.
+  const run: Promise<void> = Promise.resolve()
+    .then(() => runMaintenance(ctx, tick))
+    .then(
+      () => subPassHealth.record('task-reconcile-maintenance', null),
+      (err: unknown) => {
+        console.warn('[task-reconcile] maintenance run failed', err);
+        subPassHealth.record('task-reconcile-maintenance', err);
+      },
+    )
+    .finally(() => {
+      if (maintenanceInFlight === run) maintenanceInFlight = null;
+      const elapsedMs = Date.now() - startedAtMs;
+      if (elapsedMs >= 60_000) {
+        console.info(`[task-reconcile] maintenance run finished after ${elapsedMs}ms; kernel ticks continued meanwhile`);
+      }
+    });
+  maintenanceInFlight = run;
+  return true;
+}
+
+/** Test seam: the detached maintenance run, or null when none is in flight. */
+export function taskReconcileMaintenanceInFlight(): Promise<void> | null {
+  return maintenanceInFlight;
+}
+
+/** Test seam: sub-passes whose last attempt failed, as the next tick will report them. */
+export function taskReconcileSubPassFailures(): ReturnType<typeof subPassHealth.failures> {
+  return subPassHealth.failures();
+}
+
+async function runTaskReconcileMaintenance(ctx: SystemActionCtx, tick: ReconcileTickResult): Promise<void> {
+  const progress = createReconcileStageReporter({ workspaceId: ctx.workspaceId, harnessSlug: ctx.installSlug });
+  try {
     progress.stage('task-reconcile-maintenance');
     const nowMs = Date.now();
 
@@ -341,12 +412,10 @@ registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
         subPassHealth.record('a11y-bus-sweep', err);
       }
     }
-
-    return subPassHealth.result();
   } finally {
     progress.stop();
   }
-});
+}
 
 /**
  * P-013 / D-017 — the LEADING indicator, sampled alongside the reconcile it cannot
