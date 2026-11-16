@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "Existing installation: physical-host entry and authority boundary",
+  "command": [
+    "node",
+    "--import",
+    "tsx",
+    "--input-type=module"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-16T07:28:28.395Z",
+  "finishedAt": "2026-11-16T07:28:37.509Z",
+  "summary": "Fresh Chromium observed the installed entry and Portal without signing in or approving access. This records prerequisites only; no desktop connection was established.",
+  "instrument": {
+    "path": "packages/operator-core/lib/workspace-host/installed-computer-attempt.fixture.ts",
+    "testPath": "packages/operator-core/lib/workspace-host/installed-computer-attempt.test.ts"
+  },
+  "execution": {
+    "host": "this physical host",
+    "browser": "fresh nonpersistent Chromium",
+    "localOrigin": "http://127.0.0.1:3170",
+    "portalOrigin": "https://app.papercusp.com",
+    "runtimeIdentity": {
+      "sha": "29f9059ac02",
+      "evidenceRef": "dev:pipeline_position operator-api for packages/operator-core/lib/endpoint-route/routes/portal-relay/index.ts, read immediately before this attempt; staging-operator containsChange=true by blob",
+      "observedAt": "2026-11-16T07:28:28.395Z"
+    },
+    "mutationPolicy": "Only GET, HEAD and OPTIONS browser requests are forwarded."
+  },
+  "assertions": [
+    {
+      "id": "physical-local-entry-opened",
+      "passed": true,
+      "evidence": "{\"requested\":\"http://127.0.0.1:3170/settings/remote-access#connect-computer\",\"httpStatus\":200,\"marker\":\"Papercusp relay\",\"markerVisible\":true}"
+    },
+    {
+      "id": "physical-portal-sign-in-boundary",
+      "passed": true,
+      "evidence": "{\"requested\":\"https://app.papercusp.com\",\"httpStatus\":200,\"marker\":\"Sign in or sign up\",\"markerVisible\":true}"
+    },
+    {
+      "id": "physical-authority-observed",
+      "passed": true,
+      "evidence": "{\"httpStatus\":200,\"parsed\":true,\"state\":\"off\",\"installationIdentityPresent\":false,\"consentAgreed\":false,\"linkedAccountPresent\":false,\"desktopGrantPresent\":false,\"connectorPresent\":false}"
+    },
+    {
+      "id": "physical-required-human-action-recorded",
+      "passed": true,
+      "evidence": "Choose the receiving Portal account and organization. Sign in to that account. Review the local relay consent and receiving Portal approval. Review the separate desktop view/control request."
+    },
+    {
+      "id": "physical-no-healthy-stream-claim",
+      "passed": true,
+      "evidence": "No sign-in, approval or desktop operation was performed. Connector authorization, Noise, roster, frames and input were not exercised."
+    }
+  ],
+  "observations": {
+    "local": {
+      "requested": "http://127.0.0.1:3170/settings/remote-access#connect-computer",
+      "httpStatus": 200,
+      "marker": "Papercusp relay",
+      "markerVisible": true
+    },
+    "portal": {
+      "requested": "https://app.papercusp.com",
+      "httpStatus": 200,
+      "marker": "Sign in or sign up",
+      "markerVisible": true
+    },
+    "localStatus": {
+      "httpStatus": 200,
+      "parsed": true,
+      "state": "off",
+      "installationIdentityPresent": false,
+      "consentAgreed": false,
+      "linkedAccountPresent": false,
+      "desktopGrantPresent": false,
+      "connectorPresent": false
+    },
+    "blockedMethods": [
+      "POST"
+    ],
+    "account": null,
+    "organization": null,
+    "desktopTransport": "not exercised"
+  },
+  "result": {
+    "disposition": "human-prerequisites-required",
+    "connectionEstablished": false,
+    "requiredHumanActions": [
+      "Choose the receiving Portal account and organization.",
+      "Sign in to that account.",
+      "Review the local relay consent and receiving Portal approval.",
+      "Review the separate desktop view/control request."
+    ],
+    "scopeLimit": "An entry observation cannot prove a healthy desktop connection or full served Portal acceptance."
+  }
+}
