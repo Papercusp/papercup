@@ -1122,6 +1122,41 @@ describe('plans:start terminal guard', () => {
     }
   });
 
+  it.each(['activation', 'startability'] as const)(
+    'retains the failed %s phase when identical connection errors occur before spec quality',
+    async phase => {
+      const connectionError = 'write CONNECTION_CLOSED 127.0.0.1:6432';
+      const startGate = await import('../plan-start-gate');
+      const startability = vi.spyOn(startGate, 'checkPlanStartable');
+      const setup = vi.spyOn(activationReadiness, 'createPlanActivationReadinessRequest').mockResolvedValue({
+        collect: async () => activationReadiness.unavailableActivationReadiness(new Error('diagnostic fixture')),
+      } as never);
+      if (phase === 'activation') activationMocks.gate.mockRejectedValueOnce(new Error(connectionError));
+      else startability.mockRejectedValueOnce(new Error(connectionError));
+      let ledger: Record<string, unknown> | null | undefined;
+      try {
+        const result = await run({ slug: 'connection-failure', consulted: true }, {
+          recordInvocation: async input => { ledger = input.metadataJson; },
+        });
+        expect(result.data.results[0]).toMatchObject({ ok: false, error: connectionError });
+        expect(ledger).toMatchObject({
+          planStartOutcomes: [expect.objectContaining({ ok: false, error: connectionError })],
+          handlerPhases: { phases: expect.arrayContaining([
+            expect.objectContaining({ phase: `plans:start:${phase}` }),
+          ]) },
+        });
+        const phases = (ledger?.handlerPhases as { phases: Array<{ phase: string }> }).phases;
+        expect(phases.some(entry => entry.phase === 'plans:start:startability')).toBe(phase === 'startability');
+        expect(phases.some(entry => entry.phase === 'plans:start:spec-quality')).toBe(false);
+        expect(promotePlanItemsMock).not.toHaveBeenCalled();
+        expect(proofMocks.record).not.toHaveBeenCalled();
+      } finally {
+        startability.mockRestore();
+        setup.mockRestore();
+      }
+    },
+  );
+
   it('retains thrown bulk failures beside a later successful outcome', async () => {
     const source = await import('../source');
     vi.mocked(source.readPlanBySlug).mockRejectedValueOnce(new Error('canonical plan read failed'));

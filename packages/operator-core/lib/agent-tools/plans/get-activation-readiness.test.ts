@@ -111,6 +111,9 @@ describe('previewPlanStartConsult', () => {
       productShaping: { advisory: true, status: 'missing', semanticCompleteness: 'not-measured' },
     });
     expect(M.buildQueryEmbedderResolved).toHaveBeenCalledTimes(1);
+    // EI-28809268869086841: the advisory preview must never start a cold local model.
+    expect(M.buildQueryEmbedderResolved).toHaveBeenCalledWith(
+      expect.objectContaining({ warmOnly: true, onAcquisition: expect.any(Function) }));
     expect(M.planStartConsult).toHaveBeenCalledWith(params, expect.any(Object));
     expect(M.routeConsult).toHaveBeenCalledWith(
       {
@@ -130,6 +133,25 @@ describe('previewPlanStartConsult', () => {
       'workspace-a',
       [{ ownerId: 'peer-dead', evidence: [{ session_id: 'session-dead', turn_idx: 4, ts: null, sim: 0.7 }] }],
     );
+  });
+
+  it('routes on the labelled lexical fallback when the warm-only embedder skips a cold local engine', async () => {
+    const coldSkip = { status: 'cold-skipped', cause: 'local-engine-cold', durationMs: 1, budgetMs: null };
+    M.buildQueryEmbedderResolved.mockImplementation(async (opts: { onAcquisition: (o: unknown) => void }) => {
+      opts.onAcquisition(coldSkip);
+      return null;
+    });
+    M.planStartConsult.mockImplementation(async (consultParams, deps) => {
+      await deps.route({ workspaceId: consultParams.workspaceId, requesterId: consultParams.requesterId, question: 'plan query' });
+      return { outcome: 'proceed', candidates: [] };
+    });
+
+    const result = await previewPlanStartConsult(params);
+
+    expect(result).toMatchObject({ outcome: 'proceed' });
+    expect(M.routeConsult).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({
+      embed: null, embeddingProfile: null, embeddingMode: null, embeddingAcquisition: coldSkip,
+    }));
   });
 
   it('reports an unavailable advisory outcome when production wiring cannot initialize', async () => {

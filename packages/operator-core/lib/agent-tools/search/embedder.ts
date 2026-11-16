@@ -40,7 +40,11 @@ import {
   type Embedder,
 } from '@papercusp/search';
 import { normalizeEmbeddingText, type EmbedderProfileSpec } from '@papercusp/memory';
-import { buildSidecarAwareEmbedder, isLocalEmbedAcquisitionCheap } from '../../memory/embed-sidecar-wiring';
+import {
+  buildSidecarAwareEmbedder,
+  canEmbedLocallyWithoutColdStart,
+  isLocalEmbedAcquisitionCheap,
+} from '../../memory/embed-sidecar-wiring';
 import { embedAdmission, headersToRecord, retryAfterMs } from '../../memory/embed-admission';
 import {
   resolveEmbedderWith,
@@ -146,6 +150,29 @@ export interface QueryEmbedderAcquireOpts {
    *  intentionally wait a long budget — e.g. transcript-search-warmup's 60s
    *  — must NOT set this). */
   skipAcquisitionWhenCold?: boolean;
+  /** EI-28809268869086841: for a latency-bounded ADVISORY caller, such as a
+   *  readiness preview, that must never be the thing that loads a model. When
+   *  true, return an embedder only if using it cannot make THIS process start,
+   *  or wait on, a cold local model. OpenAI resolves as usual. A local leg
+   *  resolves only when `canEmbedLocallyWithoutColdStart()` holds (a sidecar
+   *  serves inference out of process, or a test-fixture engine is installed).
+   *  Otherwise the cascade stops at its first local seam, before the
+   *  `localAvailable` import probe and before any build, and resolves null with
+   *  status 'cold-skipped'. NOTHING is started in the background. That differs
+   *  from `skipAcquisitionWhenCold`, whose background warm-up runs in this same
+   *  process: in-process construction and first inference blocked the event
+   *  loop for 4–11s in a measured run (EI-28961860650735669), and no timer can
+   *  bound a block on the main thread. Default false/undefined leaves behavior
+   *  unchanged. */
+  warmOnly?: boolean;
+}
+
+/** Marker rejection for a `warmOnly` acquisition that reached a cold local
+ *  seam. Never escapes `buildQueryEmbedderResolved`. */
+class ColdLocalEmbedSkipped extends Error {
+  constructor() {
+    super('local-engine-cold');
+  }
 }
 
 export type QueryEmbedderAcquireStage =
@@ -339,27 +366,44 @@ export async function buildQueryEmbedderResolved(
       timeoutMs: Number.isFinite(opts.embeddingDeadlineMs)
         ? Math.max(0, opts.embeddingDeadlineMs - Date.now()) : 0,
     };
-    const acquire = deps.acquire ? deps.acquire() : resolveEmbedderWith({
+    // warmOnly (EI-28809268869086841): decided once, before any local seam runs.
+    // Every cascade branch that would use a local engine reaches
+    // `localInstalled` before a builder, so the refusal lands ahead of the
+    // import probe and the model build. OpenAI branches never touch these seams.
+    const refuseColdLocal = opts?.warmOnly === true && !canEmbedLocallyWithoutColdStart();
+    const localSeam = <T>(run: () => Promise<T>): (() => Promise<T>) =>
+      refuseColdLocal ? () => Promise.reject(new ColdLocalEmbedSkipped()) : run;
+    const cascade = deps.acquire ? deps.acquire() : resolveEmbedderWith({
       // P-015 harrier default flip: the QUERY side must keep ranking in the
       // gemma space where the vector(768) prose vectors live, not dims-guard
       // off — see proseSurfacePreference (memory/configure.ts).
       readPreference: () => traceAcquire('preference', async () => proseSurfacePreference(await readEmbedderPreference())),
       resolveKey: () => traceAcquire('credentials', resolveOpenAiKey),
-      localInstalled: () => traceAcquire('localAvailability', localAvailable),
+      localInstalled: localSeam(() => traceAcquire('localAvailability', localAvailable)),
       isOpenAiRecentlyExhausted: isOpenAiEmbedInCooldown,
       buildOpenAi: buildAdmissionGovernedOpenAiEmbedder,
       // Sidecar-first local legs (P-004): shared warm model when the host
       // runs the embed sidecar, bit-identical in-process fallback otherwise.
-      buildLocal: () => traceAcquire('localBuilder', () => buildSidecarAwareEmbedder('local', 'query', undefined, sidecarOptions)),
+      buildLocal: localSeam(() => traceAcquire('localBuilder', () => buildSidecarAwareEmbedder('local', 'query', undefined, sidecarOptions))),
       // This is the QUERY embedder, so EmbeddingGemma gets the query prompt
       // (its dual-encoder is trained so query-prompt vectors match the
       // document-prompt vectors written on the storage side).
-      buildGemma: () => traceAcquire('gemmaBuilder', () => buildSidecarAwareEmbedder('gemma', 'query', undefined, sidecarOptions)),
+      buildGemma: localSeam(() => traceAcquire('gemmaBuilder', () => buildSidecarAwareEmbedder('gemma', 'query', undefined, sidecarOptions))),
       // harrier-oss (P-014, selectable only): queries carry the instruct
       // prefix; documents embed raw. Native 1024 — a vector(768) surface
       // must check `dims` before ranking against it.
-      buildHarrier: () => traceAcquire('harrierBuilder', () => buildSidecarAwareEmbedder('harrier', 'query', undefined, sidecarOptions)),
+      buildHarrier: localSeam(() => traceAcquire('harrierBuilder', () => buildSidecarAwareEmbedder('harrier', 'query', undefined, sidecarOptions))),
     });
+    // A refused cold local seam becomes a flagged null so it never reads as a
+    // provider failure, whatever the budget (a zero budget rethrows rejections).
+    let coldLocalSkipped = false;
+    const acquire: Promise<Awaited<typeof cascade> | null> = refuseColdLocal
+      ? cascade.catch((error: unknown) => {
+          if (!(error instanceof ColdLocalEmbedSkipped)) throw error;
+          coldLocalSkipped = true;
+          return null;
+        })
+      : cascade;
     if (opts?.skipAcquisitionWhenCold && isOpenAiEmbedInCooldown() && !isLocalEmbedAcquisitionCheap()) {
       // Never surfaces as an unhandled rejection; it exists purely to warm the
       // process-memoized pipeline for a LATER query (same contract as the
@@ -371,6 +415,11 @@ export async function buildQueryEmbedderResolved(
     }
     let failure: { status: 'timed-out' } | { status: 'failed'; error: unknown } | undefined;
     const resolved = await withAcquireBudget(acquire, opts?.acquireBudgetMs ?? 0, value => { failure = value; });
+    if (resolved === null && coldLocalSkipped) {
+      observeFallback('query-embedder-acquisition', { eligible: 1, applied: 0, reason: 'cold-acquisition-skipped' });
+      report({ status: 'cold-skipped', cause: 'local-engine-cold' });
+      return null;
+    }
     if (resolved === null) {
       const status = failure?.status ?? 'unavailable';
       const cause = failure?.status === 'failed' ? acquisitionErrorCode(failure.error)

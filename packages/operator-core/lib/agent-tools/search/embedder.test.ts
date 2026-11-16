@@ -52,6 +52,9 @@ vi.mock('../../memory/embed-sidecar-wiring', () => ({
   // above is unaffected — only the skipAcquisitionWhenCold suite below flips
   // this to false to exercise the cold-pipeline short-circuit.
   isLocalEmbedAcquisitionCheap: vi.fn().mockReturnValue(true),
+  // EI-28809268869086841: only the warmOnly suite below flips this to false;
+  // every other test never sets warmOnly, so the predicate is never consulted.
+  canEmbedLocallyWithoutColdStart: vi.fn().mockReturnValue(true),
   // memory/configure.ts localAvailable() consults this before probing the local
   // package; no test here installs an engine override, so mirror the real default.
   hasLocalEmbedEngineOverride: vi.fn().mockReturnValue(false),
@@ -73,7 +76,12 @@ import { PROSE_VECTOR_DIMS } from '../../search/prose-vector-dims';
 import { readCredentials } from '../../credentials';
 import { loadVoicePrefs, DEFAULT_VOICE_PREFS } from '../../voice-prefs';
 import { mockResolvedTyped } from '../../testing/typed-mock';
-import { buildSidecarAwareEmbedder, isLocalEmbedAcquisitionCheap, hasLocalEmbedEngineOverride } from '../../memory/embed-sidecar-wiring';
+import {
+  buildSidecarAwareEmbedder,
+  canEmbedLocallyWithoutColdStart,
+  isLocalEmbedAcquisitionCheap,
+  hasLocalEmbedEngineOverride,
+} from '../../memory/embed-sidecar-wiring';
 import { markOpenAiEmbedFailure, __resetOpenAiEmbedCooldownForTest } from '../../memory/configure';
 
 const savedKey = process.env.OPENAI_API_KEY;
@@ -777,5 +785,82 @@ describe('buildQueryEmbedder — skipAcquisitionWhenCold (WI-3923)', () => {
     );
     const embedder = await buildQueryEmbedder(); // no opts at all
     await expect(embedder!('x')).resolves.toEqual([0.3]);
+  });
+});
+
+describe('buildQueryEmbedderResolved — warmOnly (EI-28809268869086841)', () => {
+  // A latency-bounded advisory caller must never be what starts a cold local
+  // model: in-process construction plus first inference blocked the event loop
+  // for 4–11s (measured), so every timer deadline in the process fired late.
+  afterEach(() => {
+    vi.mocked(canEmbedLocallyWithoutColdStart).mockReturnValue(true);
+    vi.mocked(hasLocalEmbedEngineOverride).mockReturnValue(false);
+  });
+
+  it.each(['gemma', 'local', 'harrier'] as const)(
+    'cold local %s preference → cold-skipped before the import probe or any build', async (mode) => {
+      vi.mocked(canEmbedLocallyWithoutColdStart).mockReturnValue(false);
+      mockResolvedTyped(vi.mocked(loadVoicePrefs), { ...DEFAULT_VOICE_PREFS, memoryEmbedderMode: mode });
+      const outcomes: QueryEmbedderAcquisition[] = [];
+      const observeFallback = vi.fn();
+      const resolved = await buildQueryEmbedderResolved(
+        { warmOnly: true, onAcquisition: value => outcomes.push(value) }, { observeFallback });
+      expect(resolved).toBeNull();
+      expect(outcomes).toMatchObject([{ status: 'cold-skipped', cause: 'local-engine-cold' }]);
+      // The preference stage ran (positive control); the local probe never did.
+      expect(outcomes[0]!.stageDurationsMs).toHaveProperty('preference');
+      expect(outcomes[0]!.stageDurationsMs?.localAvailability).toBeUndefined();
+      expect(buildSidecarAwareEmbedder).not.toHaveBeenCalled();
+      expect(observeFallback).toHaveBeenCalledWith('query-embedder-acquisition',
+        { eligible: 1, applied: 0, reason: 'cold-acquisition-skipped' });
+    });
+
+  it('cold local + auto with no OpenAI key → cold-skipped, because local would have served it', async () => {
+    vi.mocked(canEmbedLocallyWithoutColdStart).mockReturnValue(false);
+    const outcomes: QueryEmbedderAcquisition[] = [];
+    const resolved = await buildQueryEmbedderResolved(
+      { warmOnly: true, onAcquisition: value => outcomes.push(value) }, { observeFallback: vi.fn() });
+    expect(resolved).toBeNull();
+    expect(outcomes).toMatchObject([{ status: 'cold-skipped', cause: 'local-engine-cold' }]);
+    expect(buildSidecarAwareEmbedder).not.toHaveBeenCalled();
+  });
+
+  it('cold local + auto with an OpenAI key → OpenAI still resolves; warmOnly gates only local seams', async () => {
+    vi.mocked(canEmbedLocallyWithoutColdStart).mockReturnValue(false);
+    vi.mocked(readCredentials).mockResolvedValue({ openai_api_key: 'sk-stored' });
+    mockResolvedTyped(vi.mocked(loadVoicePrefs), { ...DEFAULT_VOICE_PREFS, memoryEmbedderMode: 'auto' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ data: [{ embedding: [0.9] }] }) })),
+    );
+    const resolved = await buildQueryEmbedderResolved({ warmOnly: true }, { observeFallback: vi.fn() });
+    expect(resolved?.mode).toBe('openai');
+    await expect(resolved!.embed('x')).resolves.toEqual([0.9]);
+    expect(buildSidecarAwareEmbedder).not.toHaveBeenCalled();
+  });
+
+  it('a local engine that needs no cold start (sidecar-served) still resolves under warmOnly', async () => {
+    vi.mocked(canEmbedLocallyWithoutColdStart).mockReturnValue(true);
+    // Keeps localAvailable() off the real transformers import probe.
+    vi.mocked(hasLocalEmbedEngineOverride).mockReturnValue(true);
+    mockResolvedTyped(vi.mocked(loadVoicePrefs), { ...DEFAULT_VOICE_PREFS, memoryEmbedderMode: 'gemma' });
+    vi.mocked(buildSidecarAwareEmbedder).mockResolvedValue(async () => [0.25]);
+    const outcomes: QueryEmbedderAcquisition[] = [];
+    const resolved = await buildQueryEmbedderResolved(
+      { warmOnly: true, onAcquisition: value => outcomes.push(value) }, { observeFallback: vi.fn() });
+    expect(resolved?.mode).toBe('gemma');
+    expect(outcomes).toMatchObject([{ status: 'acquired', mode: 'gemma' }]);
+    expect(buildSidecarAwareEmbedder).toHaveBeenCalledTimes(1);
+  });
+
+  it('warmOnly omitted → a cold local engine is still built and the predicate is never consulted', async () => {
+    vi.mocked(canEmbedLocallyWithoutColdStart).mockReturnValue(false);
+    vi.mocked(hasLocalEmbedEngineOverride).mockReturnValue(true);
+    mockResolvedTyped(vi.mocked(loadVoicePrefs), { ...DEFAULT_VOICE_PREFS, memoryEmbedderMode: 'gemma' });
+    vi.mocked(buildSidecarAwareEmbedder).mockResolvedValue(async () => [0.25]);
+    const resolved = await buildQueryEmbedderResolved(undefined, { observeFallback: vi.fn() });
+    expect(resolved?.mode).toBe('gemma');
+    expect(buildSidecarAwareEmbedder).toHaveBeenCalledTimes(1);
+    expect(canEmbedLocallyWithoutColdStart).not.toHaveBeenCalled();
   });
 });

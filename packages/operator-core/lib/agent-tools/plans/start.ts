@@ -273,12 +273,14 @@ export default defineTool({
         // rows and draft→ready auto-approval cannot bypass the same audit gate
         // enforced by the content-write chokepoint.
         if (read) {
-          const conversationGate = await withWorkspace(startWorkspaceId, (tx) =>
-            evaluateConversationActivationGate(tx as never, {
-              workspaceId: startWorkspaceId,
-              harnessSlug,
-              planSlug: slug,
-            }),
+          const conversationGate = await trackPhase(ctx.phases, 'plans:start:activation', () =>
+            withWorkspace(startWorkspaceId, (tx) =>
+              evaluateConversationActivationGate(tx as never, {
+                workspaceId: startWorkspaceId,
+                harnessSlug,
+                planSlug: slug,
+              }),
+            ),
           );
           if (!conversationGate.satisfied) {
             ctxAny.metadata?.({ slug, harnessSlug, refused: conversationGate.code });
@@ -307,7 +309,8 @@ export default defineTool({
         // The 'start' door is named explicitly rather than left to the default: the
         // door is what the P-004 admission verdict is ABOUT, so a site that does not
         // say which door it is cannot be audited as wired.
-        const gate = await checkPlanStartable(slug, await ctxToPlanSourceOpts(sctx), null, 'start');
+        const gate = await trackPhase(ctx.phases, 'plans:start:startability', async () =>
+          checkPlanStartable(slug, await ctxToPlanSourceOpts(sctx), null, 'start'));
         if (!gate.ok) {
           ctxAny.metadata?.({ slug, harnessSlug, refused: gate.refusal.code });
           // The refusal already carries `slug`; only harnessSlug is additive here.

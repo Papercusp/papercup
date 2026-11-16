@@ -519,7 +519,16 @@ export async function previewPlanStartConsult(params: {
       import('../../consult/plan-start-consult'),
     ]);
     signal?.throwIfAborted();
-    const resolved = await buildQueryEmbedderResolved();
+    // EI-28809268869086841: this preview is advisory and runs inside bounded
+    // refusal diagnostics, so it must never be what loads a local model.
+    // warmOnly lets a cold in-process engine degrade the router to its labelled
+    // lexical fallback instead. Starting that engine blocked the event loop for
+    // 4–11s in a measured run, firing every timer deadline late.
+    let embeddingAcquisition: import('../search/embedder').QueryEmbedderAcquisition | undefined;
+    const resolved = await buildQueryEmbedderResolved({
+      warmOnly: true,
+      onAcquisition: (outcome) => { embeddingAcquisition = outcome; },
+    });
     signal?.throwIfAborted();
     const embeddingProfile = resolved
       ? resolveProseProfileSelection(resolved.mode, resolved.profile)
@@ -537,6 +546,7 @@ export async function previewPlanStartConsult(params: {
             embed: resolved?.embed ?? null,
             embeddingProfile,
             embeddingMode: embeddingProfile && resolved ? resolved.mode : null,
+            ...(embeddingAcquisition ? { embeddingAcquisition } : {}),
             getLiveness: async (ownerIds) => {
               signal?.throwIfAborted();
               const verdicts = await resolveSessionStates(

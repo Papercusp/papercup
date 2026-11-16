@@ -14,6 +14,8 @@ import {
   _resetSidecarSkewReportForTests,
   buildSidecarAwareEmbedder,
   buildSidecarAwareReranker,
+  canEmbedLocallyWithoutColdStart,
+  isLocalEmbedAcquisitionCheap,
   resolveProcessSidecarUrl,
 } from './embed-sidecar-wiring';
 import {
@@ -59,6 +61,35 @@ async function startStub(): Promise<{ url: string; hits: number[]; close: () => 
 const closers: Array<() => Promise<void>> = [];
 afterEach(async () => {
   while (closers.length) await closers.pop()!();
+});
+
+describe('canEmbedLocallyWithoutColdStart (EI-28809268869086841)', () => {
+  const deps = (over: Partial<Parameters<typeof canEmbedLocallyWithoutColdStart>[0]> = {}) => ({
+    hasOverride: () => false,
+    resolveUrl: () => null,
+    sidecarEnabled: () => false,
+    sidecarReady: () => false,
+    ...over,
+  });
+
+  it('refuses the in-process engine that isLocalEmbedAcquisitionCheap calls cheap', () => {
+    // No sidecar at all: acquisition is cheap only because the model load is
+    // deferred to the first embed(), which is the measured 4–11s loop block.
+    expect(isLocalEmbedAcquisitionCheap(deps())).toBe(true);
+    expect(canEmbedLocallyWithoutColdStart(deps())).toBe(false);
+  });
+
+  it('refuses a host-local sidecar that is still spawning', () => {
+    expect(canEmbedLocallyWithoutColdStart(deps({ sidecarEnabled: () => true }))).toBe(false);
+  });
+
+  it.each([
+    ['an explicit sidecar URL', { resolveUrl: () => 'http://127.0.0.1:3384' }],
+    ['a ready host-local sidecar', { sidecarEnabled: () => true, sidecarReady: () => true }],
+    ['a test-fixture engine override', { hasOverride: () => true }],
+  ])('allows %s', (_label, over) => {
+    expect(canEmbedLocallyWithoutColdStart(deps(over))).toBe(true);
+  });
 });
 
 describe('resolveProcessSidecarUrl', () => {

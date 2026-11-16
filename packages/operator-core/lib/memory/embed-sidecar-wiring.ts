@@ -204,6 +204,40 @@ export function isLocalEmbedAcquisitionCheap(
 }
 
 /**
+ * Can a LOCAL embed resolved right now answer a query without THIS process
+ * starting, or waiting on, a cold model? EI-28809268869086841: a
+ * latency-bounded ADVISORY caller (`buildQueryEmbedderResolved`'s `warmOnly`)
+ * asks this rather than `isLocalEmbedAcquisitionCheap`. That predicate calls
+ * the no-sidecar case cheap on purpose, because the in-process model load is
+ * deferred past ACQUISITION to the first `embed()` call. That first call (plus
+ * the `localAvailable` import probe before it) is what blocked the Node event
+ * loop for 4–11s in a measured run (EI-28961860650735669). While the loop is
+ * blocked, no timer can enforce a deadline.
+ *  - A test-fixture engine override constructs no model, so it is safe.
+ *  - An EXPLICIT sidecar URL runs inference in another process.
+ *  - A host-local sidecar that completed its ready handshake does the same.
+ *  - Anything else (the in-process engine, or a local sidecar still spawning)
+ *    returns false.
+ */
+export function canEmbedLocallyWithoutColdStart(
+  deps: {
+    hasOverride: () => boolean;
+    resolveUrl: () => string | null;
+    sidecarEnabled: () => boolean;
+    sidecarReady: () => boolean;
+  } = {
+    hasOverride: hasLocalEmbedEngineOverride,
+    resolveUrl: resolveEmbedSidecarUrl,
+    sidecarEnabled: embedSidecarEnabled,
+    sidecarReady: isEmbedSidecarReady,
+  },
+): boolean {
+  if (deps.hasOverride()) return true;
+  if (deps.resolveUrl()) return true;
+  return deps.sidecarEnabled() && deps.sidecarReady();
+}
+
+/**
  * Transition reporter injected into BOTH sidecar-backed builders below
  * (EI-20006179456846006).
  *
