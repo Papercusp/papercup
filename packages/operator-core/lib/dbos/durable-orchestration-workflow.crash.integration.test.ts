@@ -226,6 +226,20 @@ describe('GEC frozen B durable consumer captures', () => {
     expect(new Set(recovered.storage.rows.map((row: { sql: { pool: string } }) => row.sql.pool)))
       .toEqual(new Set(caseId === 'C6' ? ['child-dbos-all-clients'] : ['child-dbos-all-clients', 'child-effect-log']));
     expect(recovered.storage.diagnostics).toMatchObject({ pending: 0, late: false, captureFailed: false, hooksIntact: true });
+    expect(recovered.sdkSourceHashes).toMatchObject({
+      systemDatabase: 'de943d85e4414114a6bb01b079051b0e59940a4911cf9e54f05e41f24011b02b',
+      databaseUtils: 'deff0db24fad793b10ad21314a8333c2b4398e4c26c25a6cedd8e24fbff54ca4',
+      migrationRunner: 'e843709372e77cd6151bf35345ceca0d7307a87182a57c867bfead4fa7d830f5',
+    });
+    const reviewedReads = recovered.storage.rows.filter((row: { kind: string }) => row.kind === 'read');
+    expect(reviewedReads.length).toBeGreaterThan(0);
+    for (const queryHash of ['46c5712c7858d59ef557084e295a65cabed886d65beead3a69eba9e3ae26a09f',
+      '20ac0ef228483efa83ea286efb05f7b6fbd60addd2bd91d80fdeac8f6dd280ef'])
+      expect(reviewedReads).toContainEqual(expect.objectContaining({ persistedBytes: null,
+        sql: expect.objectContaining({ queryHash, status: 'ok', nonPersisting: expect.objectContaining({ kind: 'read' }) }) }));
+    for (const command of ['BEGIN', 'COMMIT']) expect(recovered.storage.rows)
+      .toContainEqual(expect.objectContaining({ kind: 'control', persistedBytes: null,
+        sql: expect.objectContaining({ command, status: 'ok', nonPersisting: expect.objectContaining({ kind: 'control' }) }) }));
     const notificationControls = recovered.storage.rows.filter((row: { sql: { command: string } }) =>
       ['LISTEN', 'NOTIFY'].includes(row.sql.command));
     expect(notificationControls).toHaveLength(4);
