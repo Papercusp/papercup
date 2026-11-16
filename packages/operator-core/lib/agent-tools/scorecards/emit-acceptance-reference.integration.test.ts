@@ -45,8 +45,21 @@ vi.mock('@papercusp/db-org', async (orig) => {
   };
 });
 
+// Publication's post-commit search indexing is a DETACHED side effect
+// (report-publication.ts: `void trackDetached(import('./search/report-index')...)`)
+// that resolves the REAL backfill embedder. That loads an ONNX model and, on a host
+// without a loadable CUDA provider, console.warns an embed-device demotion once per
+// process — which vitest-fail-on-console pins on whichever case is running when the
+// model load completes (observed: the author-adoption case, whose acceptance verdict
+// auto-publishes). Nothing here asserts search chunks: the Reports
+// PRODUCER (publishReport -> report_library) stays real; only its indexing is
+// stubbed, at the same seam reports.test.ts and report-capture.test.ts stub.
+vi.mock('../../search/report-index', () => ({
+  indexReport: vi.fn(async () => ({ chunks: 0, embedded: 0 })),
+}));
+
 const { emitScorecard } = await import('./emit');
-const { getRubricCriteriaHash } = await import('../../rubrics');
+const { getRubricCriteriaHash, formatRubricRevisionSnapshot } = await import('../../rubrics');
 const { createIssue, issuesScopeWorkspace } = await import('../../issues-engineer');
 const { OBSERVATION_TOPIC } = await import('../../harness/improvements/read-items');
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
@@ -101,6 +114,15 @@ const ACCEPT = { verdict: 'accept' as const, reasoning: 'The independent grading
  *  path. `owner` is the column `getRubric` projects as the rubric's createdBy —
  *  i.e. the implementer this test authorizes against. */
 async function insertAcceptanceRubric(db: OrgTestDb): Promise<void> {
+  const templateData = {
+    kind: 'acceptance',
+    subjectPlan: SUBJECT_PLAN,
+    characteristic: 'plan-acceptance',
+    criteria: CRITERIA,
+    ratingScale: ['pass', 'partial', 'fail', 'unknown'],
+    methodRef: 'acceptance-rubrics-on-every-plan-runbook',
+    description: 'Acceptance of the P-003 reference path.',
+  };
   await db.adminSql`
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
@@ -108,16 +130,23 @@ async function insertAcceptanceRubric(db: OrgTestDb): Promise<void> {
     VALUES (${activeWorkspaceId()}, 'papercusp', ${RUBRIC}, '', md5(${RUBRIC}), ${REVISION},
             'P-003 acceptance rubric', 'active', '2026-09-10', '2026-09-10', ${AUTHOR}, false,
             'rubric',
-            ${JSON.stringify({
-              kind: 'acceptance',
-              subjectPlan: SUBJECT_PLAN,
-              characteristic: 'plan-acceptance',
-              criteria: CRITERIA,
-              ratingScale: ['pass', 'partial', 'fail', 'unknown'],
-              methodRef: 'acceptance-rubrics-on-every-plan-runbook',
-              description: 'Acceptance of the P-003 reference path.',
-            })}::text::jsonb,
+            ${JSON.stringify(templateData)}::text::jsonb,
             null, 'local')`;
+  // listScorecards recomputes rubricResolved for a card that pins rubricRevision +
+  // criteriaHash through getRubric(ref, revision), which resolves ONLY from an
+  // immutable plan_revisions snapshot (a missing pin reads as unknown, never as
+  // today's rubric). Without one every seeded card reads rubricResolved:false and
+  // the independence rail refuses it. Record the snapshot the real rubric writer
+  // records (formatRubricRevisionSnapshot), pinned to this revision and live hash.
+  const criteriaHash = await getRubricCriteriaHash(RUBRIC);
+  if (!criteriaHash) throw new Error(`fixture could not resolve criteriaHash for '${RUBRIC}'`);
+  await db.adminSql`
+    INSERT INTO harness_shared.plan_revisions
+      (workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot,
+       author_kind, author_id, created_at)
+    VALUES (${activeWorkspaceId()}, 'papercusp', ${RUBRIC}, 1, md5(${RUBRIC}),
+            ${formatRubricRevisionSnapshot('', templateData, criteriaHash, REVISION)},
+            'agent', ${AUTHOR}, ${Date.now()})`;
 }
 
 /** File a real independent grading into the observation ledger. Returns its issue id —
@@ -196,6 +225,9 @@ describe('scorecards:emit — author acceptance by exact reference (P-003), real
     // Each case seeds its own rubric + cards. CASCADE because plan_items/plan_decisions
     // hold FKs into harness_plans and a bare TRUNCATE of a referenced table is refused.
     await db.adminSql`TRUNCATE harness_shared.harness_plans CASCADE`;
+    // plan_revisions holds no FK into harness_plans, so the CASCADE above leaves the
+    // previous case's snapshot behind and re-seeding seq 1 would hit its unique key.
+    await db.adminSql`DELETE FROM harness_shared.plan_revisions WHERE plan_slug = ${RUBRIC}`;
     // engineer_issues is an issue-family VIEW over harness_shared.work_items, not a
     // table: TRUNCATE is refused on it ("engineer_issues is not a table"). The view is
     // insertable (that is how the sibling scorecard suites file cards), so clear through
