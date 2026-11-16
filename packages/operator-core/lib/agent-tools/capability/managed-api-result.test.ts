@@ -1,20 +1,63 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { assertManagedRecoveryRefusal, assertManagedToolSuccess, finishManagedApiTeardown } from './__fixtures__/managed-api-result';
+import { managedCapabilityApiProofOptions } from './_managed-capability-api-proof';
+
+const { sourcePin, prepareBundle } = vi.hoisted(() => ({
+  sourcePin: vi.fn(),
+  prepareBundle: vi.fn(),
+}));
+
+vi.mock('../../../test/private-http-workspace-preflight', () => ({
+  privateMcpSourceSha: sourcePin,
+  preparePrivateOperatorApiBundle: prepareBundle,
+}));
+vi.mock('../../../test/isolated-integration-proof', () => ({
+  captureIsolatedWorker: vi.fn(),
+  isolatedTestFileWorkerOptions: vi.fn(),
+  isolatedWorkerReceipt: vi.fn(),
+}));
 
 describe('managed HTTP acceptance source identity', () => {
-  it('pins the bundle before preparation and checks serving identity before opening MCP clients', () => {
-    const proof = readFileSync(new URL('./_managed-capability-api-proof.ts', import.meta.url), 'utf8');
-    const fixture = readFileSync(new URL('./__fixtures__/managed-api-client.mts', import.meta.url), 'utf8');
-    const pin = proof.indexOf('const sourceSha = privateMcpSourceSha(root, buildEnv);');
-    const prepare = proof.indexOf('preparePrivateOperatorApiBundle(root, evidenceDir, {');
-    expect(pin).toBeGreaterThanOrEqual(0);
-    expect(prepare).toBeGreaterThan(pin);
-    expect(proof).toContain("const buildEnv: NodeJS.ProcessEnv = { ...process.env, VITEST: 'true' };");
-    expect(proof).toContain('sourceSha,\n        builder: { timeoutMs: 240_000, maxMs: 420_000, env: buildEnv }');
+  beforeEach(() => {
+    sourcePin.mockReset().mockReturnValue('a'.repeat(40));
+    prepareBundle.mockReset().mockResolvedValue({ sha256: 'bundle', receiptSha256: 'receipt' });
+  });
 
+  it('pins source before compiling with the same environment and preserves the caller environment', async () => {
+    const originalEnv = { ...process.env };
+    const proof = managedCapabilityApiProofOptions(
+      'packages/operator-core/lib/agent-tools/capability/managed-capability-api.integration.test.ts');
+    await proof.prepare!('/isolated/evidence');
+
+    expect(sourcePin).toHaveBeenCalledTimes(1);
+    expect(prepareBundle).toHaveBeenCalledTimes(1);
+    const [root, buildEnv] = sourcePin.mock.calls[0];
+    const [buildRoot, evidenceDir, options] = prepareBundle.mock.calls[0];
+    expect(sourcePin.mock.invocationCallOrder[0]).toBeLessThan(prepareBundle.mock.invocationCallOrder[0]);
+    expect(buildRoot).toBe(root);
+    expect(evidenceDir).toBe('/isolated/evidence');
+    expect(options.sourceSha).toBe('a'.repeat(40));
+    expect(options.builder.env).toBe(buildEnv);
+    expect(buildEnv).toMatchObject({ ...originalEnv, VITEST: 'true', PAPERCUSP_BUNDLE_SNAPSHOT_DIRTY: '1' });
+    expect(buildEnv).not.toBe(process.env);
+    expect(process.env).toEqual(originalEnv);
+  });
+
+  it('does not compile when source identity cannot be resolved', async () => {
+    const failure = new Error('source identity unavailable');
+    sourcePin.mockImplementation(() => { throw failure; });
+    const proof = managedCapabilityApiProofOptions(
+      'packages/operator-core/lib/agent-tools/capability/managed-capability-api.integration.test.ts');
+    await expect(proof.prepare!('/isolated/evidence')).rejects.toBe(failure);
+    expect(prepareBundle).not.toHaveBeenCalled();
+  });
+
+  it('checks serving identity before opening MCP clients', () => {
+    const fixture = readFileSync(new URL('./__fixtures__/managed-api-client.mts', import.meta.url), 'utf8');
     const receiptPin = fixture.indexOf('const preparedSourceSha = resolvePreparedPrivateApiSourceSha(');
-    const hostStart = fixture.indexOf('const host = spawn(');
+    // Inspect the allocation call in main, not the earlier helper definition.
+    const hostStart = fixture.indexOf('startManagedApiHost(bundle, process.env)');
     const healthProbe = fixture.indexOf('const health = await waitForPrivateOperator(');
     const healthCheck = fixture.indexOf('assertPrivateMcpSourceIdentity(preparedSourceSha, health.sha);');
     const firstClient = fixture.indexOf('await client(owner);', healthCheck);
