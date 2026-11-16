@@ -42,10 +42,14 @@ export async function addControlledReusePlanCandidate(
   call: (name: string, args: Record<string, unknown>) => Promise<Record<string, any>>,
   harness: string, planSlug: string, targetPath: string, candidate: string, attempt = 0,
 ) {
-  const plan = await call('plans:get', { harness, slug: planSlug, heading: 'Phase 1 — Fixture',
-    projection: { pick: ['version', 'contentHash'] } });
-  assert(Number.isSafeInteger(plan.version) && plan.version >= 0 && typeof plan.contentHash === 'string'
-    && plan.contentHash.length > 0, 'Controlled plan needs a current CAS identity: ' + JSON.stringify(plan));
+  // plans:get answers in its { ok, results: [...] } envelope (agent-tools/plans/get.ts); the CAS
+  // identity lives on the result row, never at the top level, so pick and read results[0] explicitly.
+  const planRead = await call('plans:get', { harness, slug: planSlug, heading: 'Phase 1 — Fixture',
+    projection: { pick: ['results[].ok', 'results[].version', 'results[].contentHash'] } });
+  const plan = planRead.results?.[0] ?? {};
+  assert(plan.ok !== false && Number.isSafeInteger(plan.version) && plan.version >= 0
+    && typeof plan.contentHash === 'string' && plan.contentHash.length > 0,
+    'Controlled plan needs a current CAS identity: ' + JSON.stringify(planRead));
   const snapshot = await call('work_items:get', { harness, id: candidate, adoptionSnapshot: true,
     projection: { pick: ['results[].ok', 'results[].adoptionSnapshot'] } });
   const fingerprint = snapshot.results?.[0]?.adoptionSnapshot?.fingerprint;

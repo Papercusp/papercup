@@ -3436,7 +3436,7 @@ export default defineTool({
       .enum(['full', 'monitor'])
       .optional()
       .describe(
-        "Default 'full'. Pass 'monitor' for a repeating leader/monitor loop tick: skips the claimable backlog, plan-events delta, fleet catch-up, recipes search, and memory recall ENTIRELY (no sub-call, not just capped output) — keeps fleet:assignments (the live/parked/stalled/orphaned counts a monitor loop watches), the inbox read, and coord:declare-intent (when `intent` is passed). The facts fold is NARROWED, not skipped: `dead-end:`/`wall:`/`guard-rail:` still fold every tick (marked `factsNarrowed`); afterCompaction:true forces the full fold. A resolvable FLEET LEADER also gets `leaderBrief` (fleet:leader-brief) folded in — the whole fleet's per-member sessionState/verdict/claims/unanswered/contextPressure in this same round-trip. Sharply cuts per-wake context/token cost for a long-running monitor loop (EI-8300).",
+        "Default 'full'. Pass 'monitor' for a repeating leader/monitor loop tick: skips the claimable backlog, plan-events delta, fleet catch-up, recipes search, and memory recall ENTIRELY (no sub-call, not just capped output) — keeps fleet:assignments (the live/parked/stalled/orphaned counts a monitor loop watches), the inbox read, and coord:declare-intent (when `intent` is passed). The facts fold is NARROWED, not skipped: `dead-end:`/`wall:`/`guard-rail:` still fold every tick (marked `factsNarrowed`); afterCompaction:true forces the full fold. A resolvable FLEET LEADER also gets `leaderBrief` (fleet:leader-brief) folded in — the whole fleet's per-member sessionState/verdict/claims/unanswered/contextPressure in this same round-trip (EI-8300).",
       ),
     intent: hardText(LIMITS.ANNOTATION)
       .optional()

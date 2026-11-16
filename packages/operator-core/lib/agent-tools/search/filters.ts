@@ -52,12 +52,11 @@ export const searchFilterArgs = {
     .enum(['owner-typed', 'owner-dialog', 'agent-injected', 'machine-surface', 'synthetic', 'unenrolled-origin', 'not-user-turn'])
     .optional()
     .describe(
-      "Restrict transcript hits to the PERSISTED turn-origin verdict — which is stricter than the verdict a hit DISPLAYS. " +
-      "For file-backed CLI sessions (claude/omp/codex), an uncorrelated typed prompt remains 'unenrolled-origin' because a clean " +
-      "CLI row proves neither owner nor machine authorship. A hook-authenticated prompt-origin stamp can correlate the exact row " +
-      "by source, session, prompt hash, and time (currently Claude hook stamps), upgrading it to persisted 'owner-typed'. " +
-      "This filter can therefore match exact authenticated rows but may be sparse; a zero is NOT evidence that the owner said " +
-      "nothing. For recall of residual candidates use owner_candidates:true, then read each hit before attributing it.",
+      "Restrict transcript hits to the PERSISTED turn-origin verdict, which is stricter than the one a hit DISPLAYS. On " +
+      "file-backed CLI sessions (claude/omp/codex) an uncorrelated typed prompt stays 'unenrolled-origin'; only a " +
+      "hook-authenticated prompt-origin stamp (currently Claude hooks) upgrades the exact row to persisted 'owner-typed'. " +
+      "So matches are exact but may be sparse: a zero is NOT evidence the owner said nothing. For recall of residual " +
+      "candidates use owner_candidates:true, then read each hit before attributing it.",
     ),
   owner_only: z
     .boolean()
@@ -72,18 +71,14 @@ export const searchFilterArgs = {
     .boolean()
     .optional()
     .describe(
-      "Widen to turns that COULD be owner speech: proven owner turns PLUS 'unenrolled-origin' — the bucket a typed owner directive " +
-      "lands in on file-backed sessions when no matching hook-authenticated prompt-origin stamp exists; exact matched rows are " +
-      "promoted to persisted 'owner-typed' and are already included by owner_only. Use it for RECALL when owner_only returns a " +
-      "sparse or residual-only result. " +
-      "⚠ CANDIDATES, NOT PROOF, and the gap is large: 'unenrolled-origin' means only 'no machine envelope was found', which is also " +
-      "true of machine text that never carried one. Measured 2026-08-24 over 13,917 real claude rows, at least 7,637 (55%) are " +
-      "machine-shaped — Kettle/Mug system prompts, '[await-event] … fired' wake injections, '/compact …' directives, harness retry " +
-      "text — sitting beside genuine owner turns. So a hit here is a CANDIDATE to read, never evidence on its own, and a NON-empty " +
-      "result is not confirmation any more than an empty one is denial. Read each hit's provenance and its text before attributing " +
-      "anything to the owner. What this filter does buy is real but bounded: it drops the ~112k rows PROVABLY machine (agent-injected, " +
-      "machine-surface) plus assistant turns, so the loop-fire replays that make an unfiltered search read an agent's own words back " +
-      "as the owner's are gone.",
+      "Widen to turns that COULD be owner speech: proven owner turns PLUS 'unenrolled-origin', where a typed owner directive " +
+      "lands on file-backed sessions with no matching hook-authenticated prompt-origin stamp (exact matched rows are promoted " +
+      "to persisted 'owner-typed' and already included by owner_only). Use it for RECALL when owner_only is sparse or " +
+      "residual-only. ⚠ CANDIDATES, NOT PROOF: 'unenrolled-origin' only means no machine envelope was found, and much of " +
+      "this bucket is machine-shaped text (system prompts, wake injections, /compact directives, retry text). A hit is a " +
+      "candidate to read, never evidence; a non-empty result is not confirmation and an empty one is not denial. Read each " +
+      "hit's provenance and text before attributing anything to the owner. It does drop rows PROVABLY machine " +
+      "(agent-injected, machine-surface) and assistant turns.",
     ),
   session: z
     .string()

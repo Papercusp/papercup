@@ -116,7 +116,8 @@ it('binds the prepared dated plan across midnight using the canonical plan write
   const fingerprint = `v1:${'a'.repeat(64)}`;
   const call = vi.fn(async (name: string, args: Record<string, any>) => {
     if (name === 'plans:new') return { ok: true, slug: ensureDatedSlug(args.slug, '2026-10-26') };
-    if (name === 'plans:get') return { version: 1, contentHash: 'saved-plan-hash' };
+    // The real plans:get envelope: the CAS identity is on results[0], not the top level.
+    if (name === 'plans:get') return { ok: true, results: [{ ok: true, version: 1, contentHash: 'saved-plan-hash' }] };
     if (name === 'work_items:get') return { results: [{ ok: true, adoptionSnapshot: { fingerprint } }] };
     return args.adoptExistingWorkItem
       ? { results: [{ ok: true, itemId: 'P-001' }] }
@@ -148,7 +149,7 @@ it('refuses a canonicalized or missing plan response before adding anchors', asy
 it('reads fresh plan and candidate identities for each treatment candidate', async () => {
   let version = 1;
   const call = vi.fn(async (name: string, args: Record<string, any>) => {
-    if (name === 'plans:get') return { version, contentHash: `hash-${version}` };
+    if (name === 'plans:get') return { ok: true, results: [{ ok: true, version, contentHash: `hash-${version}` }] };
     if (name === 'work_items:get') return { results: [{ ok: true,
       adoptionSnapshot: { fingerprint: `v1:${(args.id === 'WI-one' ? 'a' : 'b').repeat(64)}` } }] };
     expect(args.adoptExistingWorkItem.expectedPlanVersion).toBe(version);
@@ -167,7 +168,7 @@ it('reads fresh plan and candidate identities for each treatment candidate', asy
 
 it.each(['plan', 'candidate'])('refuses a missing %s preimage before adopting a candidate', async missing => {
   const call = vi.fn(async (name: string) => name === 'plans:get'
-    ? missing === 'plan' ? {} : { version: 1, contentHash: 'hash' }
+    ? missing === 'plan' ? { ok: true, results: [{ ok: true }] } : { ok: true, results: [{ ok: true, version: 1, contentHash: 'hash' }] }
     : { results: [{ ok: true }] });
   await expect(addControlledReusePlanCandidate(call, 'r-fixture', 'r-fixture-2026-10-25', 'a.ts', 'WI-owned'))
     .rejects.toThrow(missing === 'plan' ? 'current CAS identity' : 'coherent adoption snapshot');

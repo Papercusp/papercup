@@ -514,18 +514,13 @@ defineTool({
       .max(64)
       .optional()
       .describe(
-        "EI-12457: bind the wait to this exact candidate (full sha or a prefix) via a payload predicate on the " +
-          "emitted payload.sha — a verdict for any OTHER candidate (a stale/superseded run) will NOT wake you; " +
-          "you keep sleeping until the correct candidate resolves or the deadline. Strongly recommended whenever " +
-          "you know which commit you are judging (e.g. right after a git-sync:await/deploy). WI-5685: this is an " +
-          "EXACT match, not an ancestry check — a LATER candidate that still contains your commit (e.g. the hourly " +
-          "cron races ahead and judges a newer tip) will NOT wake you even though its green verdict already covers " +
-          "you. If a cron tick could plausibly land before your exact candidate does, omit candidateSha (wake on " +
-          "ANY verdict for this pipeline) and confirm inclusion afterwards with release:trace instead of binding here. " +
-          "EI-18676650746298156: if this EXACT candidate was already judged before you armed (recorded in " +
-          "harness_shared.pipeline_events), you get already_judged:true immediately instead of sleeping to the " +
-          "timeout — this is the same EXACT-match rule as above, so it can never be fooled by a later candidate " +
-          "that merely contains your commit.",
+        "EI-12457: bind the wait to this exact candidate (full sha or a prefix) via a predicate on payload.sha — " +
+          "a verdict for any OTHER candidate (stale/superseded run) will NOT wake you. Recommended when you know " +
+          "which commit is being judged (e.g. right after git-sync:await/deploy). WI-5685: EXACT match, not " +
+          "ancestry — a LATER candidate that still contains your commit will NOT wake you even though its green " +
+          "verdict covers you; if a cron tick could judge a newer tip first, omit candidateSha and confirm " +
+          "inclusion with release:trace. EI-18676650746298156: if this exact candidate was already judged before " +
+          "you armed, you get already_judged:true immediately.",
       ),
     runId: z
       .string()

@@ -76,13 +76,10 @@ export const argsSchema = z
       .max(120)
       .optional()
       .describe(
-        "EI-1543: explicit opt-in escape hatch for an UNREGISTERED harness (one with no row in " +
-          "harness_shared.harness_registry or harness_shared.projects in ANY workspace) — resolvePlanScope " +
-          "refuses to silently default the workspace (WI-148: a wrong-workspace default once corrupted a " +
-          "named harness's plans), so plans:new otherwise throws for such a harness even though " +
-          "work_items:create succeeds against it. Pass the target workspace id explicitly to write the " +
-          'plan there anyway (e.g. "default" for a throwaway/demo harness). Omit for the normal case — ' +
-          'the workspace is resolved from the harness registry.',
+        "EI-1543: explicit opt-in for an UNREGISTERED harness (no harness_registry/projects row in any " +
+          "workspace): plans:new otherwise refuses to default its workspace (WI-148), even though " +
+          'work_items:create succeeds. Pass the target workspace id (e.g. "default" for a throwaway harness). ' +
+          'Omit normally — the workspace resolves from the harness registry.',
       ),
     slug: z
       .string()
