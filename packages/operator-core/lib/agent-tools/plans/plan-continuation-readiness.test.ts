@@ -168,6 +168,78 @@ describe('continuation readiness reuse (WI-6554700010049220)', () => {
 
   // EI-28849154189042602: a cold rebuild past the admission budget used to run inside
   // kernel enforce until the ~55s dispatch deadline cancelled the write with no reason.
+  it('returns native pending while an ordinary MCP caller keeps awaiting the same build', async () => {
+    const { state, deps } = harness();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const slow: ContinuationReadinessDeps = { ...deps,
+      evaluate: async (...args) => { await gate; return deps.evaluate(...args); } };
+    let mcpSettled = false;
+    const mcp = checkContinuationReadiness(binding, WS, undefined, slow)
+      .then(result => { mcpSettled = true; return result; });
+    const native = () => checkPlanExecutionGuard({ ownerId: 'native-owner', workspaceId: WS,
+      toolName: 'apply_patch', args: {}, readinessDeadlineAtMs: performance.now() + 20 }, {
+      readBindings: async () => [binding],
+      checkPlan: (selected, workspace, observe, deadlineAtMs) =>
+        checkContinuationReadiness(selected, workspace, observe, { ...slow, deadlineAtMs }),
+    });
+    expect(await native()).toMatchObject({ blockers: [PLAN_READINESS_PENDING], retryable: true });
+    expect(mcpSettled).toBe(false);
+    release();
+    expect(await mcp).toEqual([]);
+    expect(await native()).toBeNull();
+    expect(state.calls).toBe(1);
+  });
+
+  it('includes a slow fresh fence in the native deadline and still fences the warmed retry', async () => {
+    const { state, deps } = harness();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const slow: ContinuationReadinessDeps = { ...deps, deadlineAtMs: performance.now() + 20,
+      readFence: async (...args) => { await gate; return deps.readFence(...args); } };
+    expect(await checkContinuationReadiness(binding, WS, undefined, slow)).toEqual([PLAN_READINESS_PENDING]);
+    expect(state.calls).toBe(0);
+    release();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(await checkContinuationReadiness(binding, WS, undefined, deps)).toEqual([]);
+    expect(state.calls).toBe(1);
+    state.fence = { ...state.fence!, inputs: 'changed-policy' };
+    state.verdict = ['spec_quality_not_current'];
+    expect(await checkContinuationReadiness(binding, WS, undefined, deps)).toEqual(['spec_quality_not_current']);
+    expect(state.calls).toBe(2);
+  });
+
+  it('hands off a native-deadline refusal only to the exact current fence', async () => {
+    const { state, deps } = harness(['spec_quality_not_current']);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const slow: ContinuationReadinessDeps = { ...deps, deadlineAtMs: performance.now() + 20,
+      evaluate: async (...args) => { await gate; return deps.evaluate(...args); } };
+    expect(await checkContinuationReadiness(binding, WS, undefined, slow)).toEqual([PLAN_READINESS_PENDING]);
+    release();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(await checkContinuationReadiness(binding, WS, undefined, deps)).toEqual(['spec_quality_not_current']);
+    expect(state.calls).toBe(1);
+    state.verdict = [];
+    expect(await checkContinuationReadiness(binding, WS, undefined, deps)).toEqual([]);
+    expect(state.calls).toBe(2);
+  });
+
+  it('bounds an unreadable native fence without caching its eventual verdict', async () => {
+    const { state, deps } = harness();
+    state.fence = null;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const slow: ContinuationReadinessDeps = { ...deps, deadlineAtMs: performance.now() + 20,
+      evaluate: async (...args) => { await gate; return deps.evaluate(...args); } };
+    expect(await checkContinuationReadiness(binding, WS, undefined, slow)).toEqual([PLAN_READINESS_PENDING]);
+    release();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    state.verdict = ['activation_audit_stale'];
+    expect(await checkContinuationReadiness(binding, WS, undefined, deps)).toEqual(['activation_audit_stale']);
+    expect(state.calls).toBe(2);
+  });
+
   it('refuses with the retryable pending verdict at the budget, then admits the retry from the warmed cache', async () => {
     const { state, deps } = harness();
     let release!: () => void;

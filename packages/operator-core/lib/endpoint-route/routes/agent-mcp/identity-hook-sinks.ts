@@ -49,6 +49,9 @@ import {
 /** Stop and compaction sinks get this long, inside the hook's own 2.5s wall. */
 const CONTEXT_SINK_BUDGET_MS = 2000;
 
+/** Leave transport room inside the native pre-tool port's fixed 1.5s wall. */
+const NATIVE_PLAN_READINESS_BUDGET_MS = 1000;
+
 /** The SessionStart sources whose context is fresh without question. */
 const ALWAYS_FRESH_SOURCES = new Set(['compact', 'clear']);
 
@@ -180,12 +183,13 @@ export async function toolGuardText(
   // These authoritative reads are independent. Serializing them adds their
   // latencies against the native hook's fixed wall. Keep plan refusal first,
   // without making it wait for a stalled identity read or caching either vote.
+  const readinessDeadlineAtMs = performance.now() + NATIVE_PLAN_READINESS_BUDGET_MS;
   let planRefused = false;
   const plan = (async () => {
     const startedAt = performance.now();
     try {
       const refusal = await checkPlanExecutionGuard({ ownerId: input.ownerId, workspaceId: input.workspaceId,
-        toolName: input.call.tool, args: input.call.input, observeTiming: observePlanTiming });
+        toolName: input.call.tool, args: input.call.input, observeTiming: observePlanTiming, readinessDeadlineAtMs });
       planRefused = Boolean(refusal);
       return refusal;
     } finally { recordTiming?.('plan', performance.now() - startedAt); }

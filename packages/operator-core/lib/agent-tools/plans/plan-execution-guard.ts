@@ -11,7 +11,7 @@ import type { ResolvedGoal } from '../../agent-goal-ref';
 import type { AcceptanceBarSnapshotSource } from '../../acceptance-bar-contract-snapshot';
 import type { Sql } from 'postgres';
 import { parseExecutionPlanRebind } from '../fleet_registry/execution-plan-rebind';
-import { PLAN_READINESS_PENDING, READINESS_EVALUATION_BUDGET_MS, READINESS_PENDING_RETRY_AFTER_MS } from './plan-continuation-readiness';
+import { PLAN_READINESS_PENDING, READINESS_PENDING_RETRY_AFTER_MS } from './plan-continuation-readiness';
 export { planExecutionMeaning } from './plan-execution-meaning';
 
 // The installed parser has no bundled declarations. Treat its tokens as unknown
@@ -55,6 +55,8 @@ export interface PlanExecutionRefusal {
 export interface PlanExecutionGuardInput {
   ownerId: string; workspaceId: string; toolName: string; args: unknown;
   observeTiming?: PlanExecutionTimingObserver;
+  /** Native port's monotonic deadline; ordinary MCP checks retain their standard budget. */
+  readinessDeadlineAtMs?: number;
 }
 export interface PlanExecutionTiming { stage: string; durationMs: number }
 export type PlanExecutionTimingObserver = (timing: PlanExecutionTiming) => void;
@@ -108,7 +110,8 @@ export interface PlanExecutionGuardDeps {
   readBindings: (ownerId: string, workspaceId: string) => Promise<ExecutionPlanBinding[]>;
   resolveGoal?: (ownerId: string, workspaceId: string, observe?: PlanExecutionTimingObserver,
     signal?: AbortSignal) => Promise<ExecutionPlanGoalResolution>;
-  checkPlan: (binding: ExecutionPlanBinding, workspaceId: string, observe?: PlanExecutionTimingObserver) => Promise<string[]>;
+  checkPlan: (binding: ExecutionPlanBinding, workspaceId: string, observe?: PlanExecutionTimingObserver,
+    readinessDeadlineAtMs?: number) => Promise<string[]>;
   /** Test seam for the bounded selector path; production uses the fixed 650ms budget. */
   goalResolutionBudgetMs?: number;
 }
@@ -556,7 +559,7 @@ async function readExecutionPlanGoal(ownerId: string, workspaceId: string,
 }
 
 export async function checkExecutionPlan(binding: ExecutionPlanBinding, workspaceId: string,
-  observe?: PlanExecutionTimingObserver): Promise<string[]> {
+  observe?: PlanExecutionTimingObserver, readinessDeadlineAtMs?: number): Promise<string[]> {
   if (binding.canonicalInvalid) return ['canonical_plan_binding_invalid'];
   const canonicalCurrent = async () => {
     if (!binding.canonical) return true;
@@ -573,6 +576,7 @@ export async function checkExecutionPlan(binding: ExecutionPlanBinding, workspac
   const blockers = await measurePlanStage('readiness', observe, () => checkContinuationReadiness(binding, workspaceId, observe, {
     readFence: (b, ws) => measurePlanStage('readiness_fence', observe, () => readReadinessFence(b, ws)),
     evaluate: (b, ws, o) => checkPlanExecutionReadiness(b, ws, o, 'continuation'),
+    deadlineAtMs: readinessDeadlineAtMs,
   }));
   if (blockers.length) return blockers;
   return await canonicalCurrent() ? [] : ['canonical_plan_binding_stale'];
@@ -744,12 +748,13 @@ export async function checkPlanExecutionGuard(input: PlanExecutionGuardInput,
       if (binding.canonicalInvalid) return {code:'plan_execution_not_ready',blockers:['canonical_plan_binding_invalid'],
         reason:'The selected work-item has an invalid canonical identity; historical lineage is not a fallback permit.'};
       const blockers = await measurePlanStage('binding', input.observeTiming,
-        () => deps.checkPlan(binding, input.workspaceId, input.observeTiming));
+        () => input.readinessDeadlineAtMs === undefined
+          ? deps.checkPlan(binding, input.workspaceId, input.observeTiming)
+          : deps.checkPlan(binding, input.workspaceId, input.observeTiming, input.readinessDeadlineAtMs));
       if (blockers.length === 1 && blockers[0] === PLAN_READINESS_PENDING) return {
         code: 'plan_execution_not_ready', planSlug: binding.planSlug, blockers, retryable: true,
         retryAfterMs: READINESS_PENDING_RETRY_AFTER_MS,
-        reason: `Plan '${binding.planSlug}' readiness is still being evaluated: a cold evaluation exceeded the `
-          + `${Math.round(READINESS_EVALUATION_BUDGET_MS / 1000)}s admission budget and continues in the background. `
+        reason: `Plan '${binding.planSlug}' readiness is still being evaluated and continues in the background. `
           + 'Nothing is known to be wrong with the plan and this call was not performed. Retry the same call in about '
           + `${Math.round(READINESS_PENDING_RETRY_AFTER_MS / 1000)}s; the finished evaluation then admits it (or reports the real blockers).` };
       if (blockers.length) return { code: 'plan_execution_not_ready', planSlug: binding.planSlug, blockers,

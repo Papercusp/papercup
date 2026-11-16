@@ -721,7 +721,8 @@ describe('real write-boundary bypass regression', () => {
       expect(await checkPlanExecutionReadiness(binding, WS)).toEqual(['spec_quality_failed']);
       policy.readQuality.mockResolvedValue({ satisfied: true, applicable: false, mode: 'enforced' });
       expect(await checkPlanExecutionGuard({ ownerId: OWNER, workspaceId: WS, toolName: 'apply_patch', args: {} }, {
-        readBindings: async () => [binding], checkPlan: checkPlanExecutionReadiness,
+        readBindings: async () => [binding],
+        checkPlan: (selected, workspace, observe) => checkPlanExecutionReadiness(selected, workspace, observe),
       })).toMatchObject({ blockers: ['plan_authority_unavailable'] });
     } finally {
       policy.realStartGate = false;

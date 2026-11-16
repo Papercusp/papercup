@@ -132,6 +132,15 @@ describe('toolGuardText (deny-only; unreadable fails open, unevaluable fails clo
     expect(await toolGuardText(input('rm -rf /'), async () => null)).toBe('');
   });
 
+  it('gives native plan readiness transport room inside the fixed hook wall', async () => {
+    const before = performance.now();
+    await toolGuardText(input('touch private-probe'), async () => null);
+    const after = performance.now();
+    const deadline = planExecutionGuard.mock.calls[0]![0].readinessDeadlineAtMs as number;
+    expect(deadline).toBeGreaterThanOrEqual(before + 1000);
+    expect(deadline).toBeLessThanOrEqual(after + 1000);
+  });
+
   it('fails CLOSED when a worn guard cannot see the whole input', async () => {
     // A tool no kernel rail reads, so the worn guard is the one that answers.
     const text = await toolGuardText(
@@ -487,7 +496,7 @@ describe('POST /agent-mcp/tool-guard', () => {
       expect(await post('/agent-mcp/tool-guard', { owner: 'builder', workspace: 'ws', tool, input: { cmd: 'touch x' } }))
         .toEqual({ ok: true, text: 'plan_execution_not_ready: Bound plan is draft' });
       expect(planExecutionGuard).toHaveBeenLastCalledWith({ ownerId: 'builder', workspaceId: 'ws', toolName: tool,
-        args: { cmd: 'touch x' }, observeTiming: expect.any(Function) });
+        args: { cmd: 'touch x' }, observeTiming: expect.any(Function), readinessDeadlineAtMs: expect.any(Number) });
     }
     expect(readAppliedWornRulesMock).not.toHaveBeenCalled();
   });

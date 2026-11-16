@@ -103,6 +103,8 @@ export interface ContinuationReadinessDeps {
   evaluate: ReadinessEvaluator;
   /** Admission budget override (tests); defaults to `READINESS_EVALUATION_BUDGET_MS`. */
   budgetMs?: number;
+  /** Native hook deadline on this process's monotonic clock; never extends the standard budget. */
+  deadlineAtMs?: number;
 }
 
 /** One indexed row read: the exact revision the cached verdict may be reused for. */
@@ -137,21 +139,25 @@ function note(observe: PlanExecutionTimingObserver | undefined, stage: string): 
  */
 export async function checkContinuationReadiness(binding: ExecutionPlanBinding, workspaceId: string,
   observe: PlanExecutionTimingObserver | undefined, deps: ContinuationReadinessDeps): Promise<string[]> {
-  const fence = await deps.readFence(binding, workspaceId);
-  if (!fence) return deps.evaluate(binding, workspaceId, observe);
-  const key = { harness: fence.harnessSlug, plan: binding.planSlug, contentHash: fence.contentHash,
-    startSeq: fence.startSeq, inputs: fence.inputs };
-  const refusalKey = `${workspaceId}|${stableKey(key)}`;
-  const settled = takeSettledRefusal(refusalKey);
-  if (settled) {
-    note(observe, 'readiness_settled_refusal');
-    return settled;
-  }
-  // The factory starts synchronously inside cachedRead. Capture its full verdict before
-  // awaiting the cache result; a joined reader needs that promise even after the factory
-  // has settled and the cache discards its null result.
-  const local: { evaluation: Promise<string[]> | null } = { evaluation: null };
+  // Include the fresh fence read in the caller's remaining budget. A native
+  // hook has a 1.5s wall, unlike the standard MCP admission deadline.
+  const refusalHandoff: { key?: string } = {};
   const build = (async (): Promise<string[]> => {
+    const fence = await deps.readFence(binding, workspaceId);
+    if (!fence) return deps.evaluate(binding, workspaceId, observe);
+    const key = { harness: fence.harnessSlug, plan: binding.planSlug, contentHash: fence.contentHash,
+      startSeq: fence.startSeq, inputs: fence.inputs };
+    const refusalKey = `${workspaceId}|${stableKey(key)}`;
+    refusalHandoff.key = refusalKey;
+    const settled = takeSettledRefusal(refusalKey);
+    if (settled) {
+      note(observe, 'readiness_settled_refusal');
+      return settled;
+    }
+    // The factory starts synchronously inside cachedRead. Capture its full verdict before
+    // awaiting the cache result; a joined reader needs that promise even after the factory
+    // has settled and the cache discards its null result.
+    const local: { evaluation: Promise<string[]> | null } = { evaluation: null };
     const cached = cachedRead<{ executable: true } | null>({ workspaceId }, {
       tool: CONTINUATION_READINESS_CACHE_TOOL,
       key,
@@ -184,7 +190,8 @@ export async function checkContinuationReadiness(binding: ExecutionPlanBinding, 
     // build, so a later caller can immediately observe a repaired plan.
     return [...await (evaluation ?? deps.evaluate(binding, workspaceId, observe))];
   })();
-  const budgetMs = Math.max(1, deps.budgetMs ?? READINESS_EVALUATION_BUDGET_MS);
+  const budgetMs = Math.max(1, Math.min(deps.budgetMs ?? READINESS_EVALUATION_BUDGET_MS,
+    deps.deadlineAtMs === undefined ? Infinity : deps.deadlineAtMs - performance.now()));
   let timer: ReturnType<typeof setTimeout> | undefined;
   const elapsed = new Promise<null>(resolve => {
     timer = setTimeout(() => resolve(null), budgetMs);
@@ -199,7 +206,10 @@ export async function checkContinuationReadiness(binding: ExecutionPlanBinding, 
   // Budget elapsed: refuse now (fail-closed) and let the build finish in the background.
   // A positive verdict lands in the cache for the retry; a refusal is held for one caller.
   note(observe, 'readiness_pending');
-  build.then(blockers => { if (blockers.length) rememberSettledRefusal(refusalKey, blockers); },
+  build.then(blockers => {
+    // An unreadable fence grants no reuse, including for a late refusal.
+    if (blockers.length && refusalHandoff.key) rememberSettledRefusal(refusalHandoff.key, blockers);
+  },
     () => { /* the next caller re-evaluates and reports its own failure */ });
   return [PLAN_READINESS_PENDING];
 }
