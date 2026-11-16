@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 998,
+  "count": 1000,
   "tools": [
     {
       "name": "ablation:report",
@@ -31086,6 +31086,73 @@
         "notWhen": "A single scorecard was wrong — that is a `revises` link (a correction), not a generation boundary. Editing criteria — rubrics:propose. Retiring the rubric itself — rubrics:propose with status.",
         "chaining": "rubrics:propose → rubrics:ratify (by a non-author) → rubrics:set-history-reset { rubricRef, at } → rubrics:trend to confirm preContractResetExcluded."
       }
+    },
+    {
+      "name": "rubrics:suite",
+      "http": {
+        "path": "/api/agent-tools/rubrics/suite",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Create, edit or read a rubric suite, an ordinary rubric-suite plan record. The member array replaces membership atomically; omitted metadata stays unchanged. A rubric can belong to several suites. Read members with rubrics:list {suiteRef}.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "merge-resolver",
+        "content-fixer"
+      ]
+    },
+    {
+      "name": "rubrics:suite-scorecard",
+      "http": {
+        "path": "/api/agent-tools/rubrics/suite-scorecard",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read every member verdict, coverage and worst-member suite verdict using complete outside-author-lineage scorecards. page:true returns a bounded member page with snapshot/omission counts and a portable continuation; save it on the existing run/checkpoint and follow next through exhaustion. A page never claims a combined suite verdict.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "merge-resolver",
+        "content-fixer",
+        "judge"
+      ]
     },
     {
       "name": "rubrics:trend",
