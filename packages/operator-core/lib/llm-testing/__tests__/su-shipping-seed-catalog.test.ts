@@ -21,7 +21,12 @@
  * simulate deferral. The ~836 undelivered tools are absent from both arms
  * either way.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
+// Register the real catalog during module collection, as production does.
+// A hook hides this cold import from Vitest's collection diagnostics and gives
+// transformation of the entire tool graph the fixture's 60-second deadline
+// (EI-28908884773013332), skipping every assertion before the catalog is ready.
+import '../../agent-tools/index';
 import { buildShippingSeedCatalog } from '../targets/su-compact-catalog';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore -- generated .mjs data module, no type declarations.
@@ -39,11 +44,6 @@ const artifactSeed = Object.keys(
 ).sort();
 
 describe('buildShippingSeedCatalog — the offered set is the SHIPPED set (D-019)', () => {
-  beforeAll(async () => {
-    // Side-effect import: registers the catalog the live-definition read walks.
-    await import('../../agent-tools/index');
-  });
-
   it('CALIBRATION: the artifact advertises a non-trivial seed, so the rest is not vacuous', () => {
     expect(artifactSeed.length).toBeGreaterThanOrEqual(MIN_PLAUSIBLE_SEED);
   });
