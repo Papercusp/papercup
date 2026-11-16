@@ -11,6 +11,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   raceDeadline,
   effectiveMcpDeadlineMs,
+  mcpTransportResponseDeadlineAtMs,
   formatMcpReadOnlyDeadlineMessage,
   dispatchLegacyWithDeadline,
   dispatchNestedWithMcpDeadline,
@@ -88,6 +89,41 @@ describe('effectiveMcpDeadlineMs (EI-17177)', () => {
   it('a base deadline <= 0 (P2-5 disabled) stays disabled regardless of timeoutSec', () => {
     expect(effectiveMcpDeadlineMs(600, 0)).toBe(0);
     expect(effectiveMcpDeadlineMs(600, -1)).toBe(-1);
+  });
+});
+
+describe('mcpTransportResponseDeadlineAtMs (WI-6554700010049348)', () => {
+  const AT = 1_000_000;
+
+  it('keeps the full 5s serialization reserve for the default and long deadlines', () => {
+    expect(mcpTransportResponseDeadlineAtMs(AT, 55_000)).toBe(AT - 5_000);
+    expect(mcpTransportResponseDeadlineAtMs(AT, 605_000)).toBe(AT - 5_000);
+  });
+
+  it.each([
+    // [deadlineMs, reserveMs]: the cap is a tenth of the deadline, so it binds below 50s.
+    [49_990, 4_999], [50_000, 5_000], [50_010, 5_000],
+  ])('caps the reserve at a tenth of a %ims deadline (%ims)', (deadlineMs, reserveMs) => {
+    expect(mcpTransportResponseDeadlineAtMs(AT, deadlineMs)).toBe(AT - reserveMs);
+  });
+
+  it('leaves a short configured deadline a positive budget instead of an already-expired one', () => {
+    // Before the cap, a 5s deadline minus the fixed 5s reserve left zero, and the
+    // execution contract refused every call as request_expired before the tool ran.
+    expect(mcpTransportResponseDeadlineAtMs(AT, 5_000)).toBe(AT - 500);
+    expect(mcpTransportResponseDeadlineAtMs(AT, 100)).toBe(AT - 10);
+    expect(mcpTransportResponseDeadlineAtMs(AT, 1)).toBe(AT);
+  });
+
+  it('always ends after the call started, for every positive deadline', () => {
+    for (const deadlineMs of [1, 9, 10, 100, 4_999, 5_000, 5_001, 49_999, 50_000, 55_000, 700_000]) {
+      expect(mcpTransportResponseDeadlineAtMs(AT, deadlineMs)!).toBeGreaterThan(AT - deadlineMs);
+    }
+  });
+
+  it('stays null when the P2-5 deadline is disabled', () => {
+    expect(mcpTransportResponseDeadlineAtMs(null, 0)).toBeNull();
+    expect(mcpTransportResponseDeadlineAtMs(null, 55_000)).toBeNull();
   });
 });
 

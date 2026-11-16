@@ -5254,7 +5254,7 @@ export function registerMcpHost(server: McpServer): void {
         baseCtx.signal.throwIfAborted();
         baseCtx.toolExecution = toolExecution;
         baseCtx.executionDeadlineAtMs = callStartedAt + (projected.timeoutSec ?? 60) * 1000;
-        baseCtx.transportResponseDeadlineAtMs = deadlineAt === null ? null : deadlineAt - MCP_DEADLINE_TOOL_BUFFER_MS;
+        baseCtx.transportResponseDeadlineAtMs = mcpTransportResponseDeadlineAtMs(deadlineAt, deadlineMs);
         // Replay lookup (P-046 / EI-68) — a call carrying an idempotencyKey whose
         // outcome is already stored is answered from the store WITHOUT re-running
         // the tool. Best-effort: a store outage degrades to normal execution,
@@ -6815,6 +6815,24 @@ export function effectiveMcpDeadlineMs(
   if (!(baseDeadlineMs > 0)) return baseDeadlineMs;
   if (!toolTimeoutSec || !(toolTimeoutSec > 0)) return baseDeadlineMs;
   return Math.max(baseDeadlineMs, toolTimeoutSec * 1000 + MCP_DEADLINE_TOOL_BUFFER_MS);
+}
+
+/**
+ * The absolute response deadline the execution contract budgets against: the
+ * P2-5 deadline minus a reserve for serializing the result. The reserve is the
+ * 5s MCP_DEADLINE_TOOL_BUFFER_MS, capped at a tenth of the deadline, which is
+ * about the share the default 55s deadline already keeps. Without the cap, a
+ * configured deadline of 5s or less left a zero or negative budget, so the
+ * contract refused every call as request_expired before the tool could run
+ * (WI-6554700010049348). Exported for unit tests.
+ */
+export function mcpTransportResponseDeadlineAtMs(
+  deadlineAtMs: number | null,
+  deadlineMs: number,
+): number | null {
+  if (deadlineAtMs === null) return null;
+  const reserveMs = Math.min(MCP_DEADLINE_TOOL_BUFFER_MS, Math.max(0, Math.floor(deadlineMs / 10)));
+  return deadlineAtMs - reserveMs;
 }
 
 interface McpRequestDeadlineContext {
