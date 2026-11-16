@@ -21,7 +21,7 @@ import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it, onTestFailed, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFailed, vi } from 'vitest';
 import { bindRuntimeExecEntry, bindRuntimeProcessTree, observeRuntimeExecEntry, observeRuntimeExecutableMemory, observeRuntimePageSize, observeRuntimeProcessIdentity, isRuntimeProcessAlive,
   observeRuntimeTracerIdentity, runtimeFileTraceArguments } from './memory/bench/runtime-file-opens.mjs';
 import {
@@ -1872,8 +1872,10 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(missingLoader.stderr).toContain('ERR_MODULE_NOT_FOUND');
   });
 
-  it.each(['explicit-cap', 'cleanup-cutoff', 'explicit-pass', 'default', 'command-cap', 'command-pass', 'command-preserve', 'census-cap', 'census-cancel'] as const)(
+  it.each(['explicit-cap', 'cleanup-cutoff', 'explicit-pass', 'default', 'command-cap', 'command-pass', 'command-preserve', 'census-cap', 'census-cap-before-ready', 'census-cancel'] as const)(
     'bounds dependency preparation and preserves the caller environment (%s)', async mode => {
+    const censusMode = mode.startsWith('census-');
+    const cappedCensus = mode === 'census-cap' || mode === 'census-cap-before-ready';
     const fixture = makeSuperproject(join(tmp, 'verifier-preparation-budget-' + mode));
     git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
     const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
@@ -1886,9 +1888,11 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     write(fixture.repo, script, assertEnv + "console.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
     write(fixture.repo, writer, assertEnv + [
       "const fs = require('node:fs');",
+      "const start = () => {",
       "fs.writeFileSync(process.env.VERIFIER_PREP_PID, String(process.pid));",
       "let completed = 0; const timer = setInterval(() => console.log('snapshot progress: completed=' + (++completed)), 100);",
       "setTimeout(() => { clearInterval(timer); console.log('copy-complete'); }, process.env.VERIFIER_SLOW_CENSUS ? 10000 : 1800);",
+      "}; if (process.env.VERIFIER_DELAY_PREP_PID) setTimeout(start, 10000); else start();",
     ].join('\n'));
     write(fixture.repo, helper, [
       '#!/bin/bash', 'set -eu',
@@ -1914,14 +1918,25 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         VERIFIER_PRESERVED_RUNTIME_PATH: preservedRuntimePath,
         VERIFIER_PRESERVED_RUNTIME_MARKER: preservedRuntimeMarker,
       } : {}),
-      ...(['census-cap', 'census-cancel'].includes(mode) ? { VERIFIER_SLOW_CENSUS: '1' } : {}) });
+      ...(censusMode ? { VERIFIER_SLOW_CENSUS: '1' } : {}),
+      ...(mode === 'census-cap-before-ready' ? { VERIFIER_DELAY_PREP_PID: '1' } : {}) });
     delete env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS;
     if (mode !== 'default') env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS = String(Date.now() + (mode === 'cleanup-cutoff' ? 121_000 : 300_000));
-    const maxMs = mode === 'explicit-cap' || mode === 'command-cap' ? 1000 : mode === 'census-cap' ? 5000 : 15_000;
+    const maxMs = mode === 'explicit-cap' || mode === 'command-cap' ? 1000 : cappedCensus ? 5000 : 15_000;
     const controller = new AbortController(), preparationPhases: string[] = [];
+    const preparationStartedAt = Date.now();
+    let censusStartedAt: number | undefined;
+    // These cases exercise the census deadline. Keep earlier preparation out
+    // of that clock; the explicit-cap case covers the whole-operation limit.
+    const now = () => censusMode
+      ? preparationStartedAt + (censusStartedAt === undefined ? 0 : Date.now() - censusStartedAt)
+      : Date.now();
     let cancelTimer: ReturnType<typeof setTimeout> | undefined;
     const receiptPath = join(tmp, mode + '-preparation.json');
     const commandRun = mode === 'command-cap' || mode === 'command-pass' || mode === 'command-preserve';
+    const inventoryPath = join(tmp, mode + '-preparation.resources.jsonl');
+    const resourceInventory = verifierResourceInventory({ path: inventoryPath, owner: 'preparation-' + mode,
+      deadlineEpochMs: Date.now() + 60_000, custody: { sourceCommit: receipt.sourceCommit } });
     const preservedCommand = [
       'const fs = require("node:fs");',
       'const path = require("node:path");',
@@ -1936,21 +1951,35 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         command: [process.execPath, '-e', mode === 'command-preserve' ? preservedCommand : "console.log('provider-ran')"],
         env, preparationMaxMs: maxMs })
       : prepareVerifierDependencies({ donor: fixture.repo, dest, receipt, env,
-        signal: controller.signal,
+        signal: controller.signal, now, resourceInventory,
         runPhase: async (phase, operation) => {
           preparationPhases.push(phase);
+          if (censusMode && phase === 'deps.census') censusStartedAt = Date.now();
           if (mode === 'census-cancel' && phase === 'deps.census')
             cancelTimer = setTimeout(() => controller.abort(), 1000);
           return operation();
         },
         ...(mode === 'default' ? {} : { maxMs }) });
-    if (['explicit-cap', 'cleanup-cutoff', 'command-cap', 'census-cap', 'census-cancel'].includes(mode)) {
+    if (['explicit-cap', 'cleanup-cutoff', 'command-cap', 'census-cancel'].includes(mode) || cappedCensus) {
       await expect(result).rejects.toThrow(mode === 'census-cancel' ? 'canceled' : 'absolute-ceiling');
       if (cancelTimer) clearTimeout(cancelTimer);
-      const pid = readFileSync(pidPath, 'utf8');
-      if (existsSync(`/proc/${pid}/stat`))
-        expect(readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1]![0]).toMatch(/[ZX]/);
-      if (mode === 'census-cap' || mode === 'census-cancel') {
+      // Spawn records exist before helper JavaScript can write its PID. A
+      // deadline may legitimately kill the helper before that first write.
+      const resources = readFileSync(commandRun ? receiptPath + '.resources.jsonl' : inventoryPath, 'utf8')
+        .trim().split('\n').map(line => JSON.parse(line))
+        .filter(row => row.event === 'resource' && row.detail.kind === 'process');
+      expect(resources.length).toBeGreaterThan(0);
+      for (const { detail } of resources) {
+        if (readProcessIdentity(detail.pid) !== detail.processIdentity) continue;
+        expect(readFileSync(`/proc/${detail.pid}/stat`, 'utf8').split(') ')[1]![0]).toMatch(/[ZX]/);
+      }
+      if (existsSync(pidPath)) {
+        const pid = readFileSync(pidPath, 'utf8');
+        if (existsSync(`/proc/${pid}/stat`))
+          expect(readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1]![0]).toMatch(/[ZX]/);
+      }
+      if (mode === 'census-cap-before-ready') expect(existsSync(pidPath)).toBe(false);
+      if (censusMode) {
         expect(preparationPhases.at(-1)).toBe('deps.census');
         expect(existsSync(join(dest, 'node_modules'))).toBe(true);
       } else if (!commandRun) expect(existsSync(join(dest, 'node_modules'))).toBe(false);
@@ -3476,13 +3505,31 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
   it.skipIf(process.platform !== 'linux')('rebuilds ignored Workbench resources in an independent Git snapshot without changing source', async () => {
     const fixtureRoot = join(tmp, 'verifier-workbench-git-fixture');
     const fixture = makeSuperproject(fixtureRoot);
+    // Build dependencies are staged separately from the recorded source census.
+    git(fixture.repo, ['rm', '-rf', '--', 'node_modules', 'apps/operator/node_modules']);
     const desktopSource = join(fixtureRoot, 'desktop-source');
     mkdirSync(desktopSource);
     for (const path of ['.gitignore', 'bin/package-native-workbench.mjs', 'native/gnome', 'native/linux']) {
       mkdirSync(dirname(join(desktopSource, path)), { recursive: true });
       cpSync(join(SOURCE_ROOT, 'papercusp-desktop', path), join(desktopSource, path), { recursive: true });
     }
+    // The maintained packer bundles shared chat source and its build-time
+    // dependencies. Retain that closure in both independent source trees.
+    const sharedSources = ['packages/operator-ui/src/papercup-chat/parse-work-refs.ts',
+      'packages/operator-ui/src/papercup-chat/chat-ref-popup-params.ts', 'libs/generic/chat-protocol/src'];
+    for (const root of [fixtureRoot, fixture.repo]) for (const path of sharedSources) {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      cpSync(join(SOURCE_ROOT, path), join(root, path), { recursive: true });
+    }
+    git(fixture.repo, ['add', '--', ...sharedSources]);
+    const require = createRequire(import.meta.url);
+    const buildDependencies = ['esbuild', `@esbuild/${process.platform}-${process.arch}`, 'marked'];
     const stage = (desktop: string) => {
+      for (const name of buildDependencies) {
+        const destination = join(dirname(desktop), 'node_modules', name);
+        mkdirSync(dirname(destination), { recursive: true });
+        cpSync(dirname(require.resolve(name + '/package.json')), destination, { recursive: true });
+      }
       const result = spawnSync(process.execPath, [join(desktop, 'bin/package-native-workbench.mjs'),
         '--stage-bundle', desktop], { encoding: 'utf8', env: childEnv(), timeout: 40_000 });
       expect(result.status, result.stderr || String(result.error)).toBe(0);
@@ -3503,6 +3550,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     const dest = join(tmp, 'verifier-workbench-git-export');
     const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD', dest, inputs, gitCheckout: true });
     expect(receipt.gitCheckout).toBeDefined();
+    expect(receipt.files.filter(file => file.path.split('/').includes('node_modules'))).toEqual([]);
     for (const path of inputs) expect(receipt.files.some(file => file.path === path)).toBe(true);
     const outputs = ['src-tauri/resources/workbench@papercusp.ai.shell-extension.zip',
       'src-tauri/resources/workbench-install.js'];
@@ -3612,10 +3660,10 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     const dest = join(tmp, 'verifier-pinned-output-export');
     const receipt = await prepareVerifierSource({ repo: fixture.repo, ref, dest, inputs: [input] });
     write(dest, '.papercusp-pinned-deps', 'immutable dependency receipt');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('added .papercusp-pinned-deps');
     write(dest, 'libs/generic/sse/dist/index.js', 'export const source = true;');
     write(dest, 'packages/omp-plugin/dist/native-extension.mjs', 'export const source = true;');
     for (const artifact of NATIVE_RUNTIME_FILES) write(dest, artifact, 'generated native build output');
-    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('added .papercusp-pinned-deps');
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
     writeFileSync(join(dest, input), 'changed recorded source');
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`changed ${input}`);
@@ -3848,9 +3896,20 @@ describe('BG inherited manifest and original source boundaries', () => {
     }
   });
 
-  function bgFixtureTrace(stage: string, enabled = Boolean(process.env.PAPERCUSP_BG_LOGICAL_TRACE)) {
+  let lastBgFixtureStage: { stage: string; at: number; label?: string } | undefined;
+  beforeEach(() => {
+    lastBgFixtureStage = undefined;
+    onTestFailed(({ task }) => {
+      const last = lastBgFixtureStage;
+      if (last) process.stderr.write(`BG_FIXTURE_FAILURE ${JSON.stringify({ test: task.name,
+        ...last, quietForMs: Date.now() - last.at })}\n`);
+    });
+  });
+
+  function bgFixtureTrace(stage: string, enabled = Boolean(process.env.PAPERCUSP_BG_LOGICAL_TRACE), label?: string) {
+    lastBgFixtureStage = { stage, at: Date.now(), ...(label ? { label } : {}) };
     if (enabled)
-      process.stderr.write(`BG_FIXTURE_STAGE ${JSON.stringify({ stage, at: Date.now() })}\n`);
+      process.stderr.write(`BG_FIXTURE_STAGE ${JSON.stringify(lastBgFixtureStage)}\n`);
   }
 
   function expectBgChild(child: SpawnSyncReturns<string>, phases = '') {
@@ -3929,12 +3988,12 @@ describe('BG inherited manifest and original source boundaries', () => {
     const retained = verifierPhaseRunner(path,
       { ...process.env, PAPERCUSP_CHECKPOINT_LOG_DIR: join(tmp, 'bg-phase-archive') }, path + '.child.json');
     return async function runPhase<T>(phase: string, operation: () => T | Promise<T>) {
-      bgFixtureTrace(phase + ':started', traceEnabled);
+      bgFixtureTrace(phase + ':started', traceEnabled, label);
       try {
         const result = await retained(phase, operation);
-        bgFixtureTrace(phase + ':completed', traceEnabled);
+        bgFixtureTrace(phase + ':completed', traceEnabled, label);
         return result;
-      } catch (error) { bgFixtureTrace(phase + ':failed', traceEnabled); throw error; }
+      } catch (error) { bgFixtureTrace(phase + ':failed', traceEnabled, label); throw error; }
     };
   }
 
@@ -3948,8 +4007,9 @@ describe('BG inherited manifest and original source boundaries', () => {
       await expect(runPhase('bg.compiler.import', () => 'compiler-result')).resolves.toBe('compiler-result');
       const stages = stderr.mock.calls.map(([chunk]) => String(chunk))
         .filter(line => line.startsWith('BG_FIXTURE_STAGE '))
-        .map(line => JSON.parse(line.slice('BG_FIXTURE_STAGE '.length)).stage);
-      expect(stages).toEqual(['bg.compiler.import:started', 'bg.compiler.import:completed']);
+        .map(line => JSON.parse(line.slice('BG_FIXTURE_STAGE '.length)));
+      expect(stages.map(row => row.stage)).toEqual(['bg.compiler.import:started', 'bg.compiler.import:completed']);
+      expect(stages.every(row => row.label === 'compiler-environment-trace' && Number.isSafeInteger(row.at))).toBe(true);
       const rows = readFileSync(join(tmp, 'compiler-environment-trace.phases.jsonl'), 'utf8')
         .trim().split('\n').map(line => JSON.parse(line));
       expect(rows.map(row => ({ phase: row.phase, event: row.event }))).toEqual([
@@ -5362,8 +5422,12 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
         if (kind === 'added') receipt.consumed.push({ path: 'added.ts', realpath: join(fixture.prepared.root, 'added.ts'), sha256: 'a'.repeat(64) });
         else if (kind === 'omitted') receipt.consumed.pop();
         else receipt.consumed[0]!.sha256 = 'a'.repeat(64);
+        // Membership changes fail against the independent compiler metafile
+        // before the seal check; unchanged membership still fences hash drift.
         expect(() => verifyBgVerifierOutputRecord(changed, fixture.record, fixture.args.invocation))
-          .toThrow('BG sealed complete compiler consumption changed');
+          .toThrow(kind === 'added' || kind === 'omitted'
+            ? 'BG compiler complete consumption membership mismatch'
+            : 'BG sealed complete compiler consumption changed');
       }
     });
   }
@@ -5559,7 +5623,8 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
     expect(child.status).toBe(37);
     expect(child.stderr).not.toContain('cache-fallback');
     expect(JSON.parse(child.stdout)).toEqual(['bg-compiler', '--context', join(root, 'original context.json'), '--',
-      'entry with spaces.ts', '--bundle', '--outfile=out with spaces.mjs']);
+      'entry with spaces.ts', '--bundle', '--outfile=out with spaces.mjs',
+      '--define:__PAPERCUSP_RETAINED_REPLAY_SOURCE_SHA256__=undefined']);
   });
 
   it('runs the selected shared shell through the actual guarded CLI and private pinned esbuild 0.25.0', async () => {
@@ -6178,7 +6243,10 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
   });
 
   async function compiledTransaction(configure?: Parameters<typeof transactionRecipe>[0]) {
-    const trace = (stage: string) => { if (process.env.PAPERCUSP_BG_LOGICAL_TRACE) process.stderr.write(`BG_LOGICAL_STAGE ${Date.now()} ${stage}\n`); };
+    const trace = (stage: string) => {
+      bgFixtureTrace('logical:' + stage);
+      if (process.env.PAPERCUSP_BG_LOGICAL_TRACE) process.stderr.write(`BG_LOGICAL_STAGE ${Date.now()} ${stage}\n`);
+    };
     trace('fixture-start');
     const fixture = await transactionRecipe(configure);
     trace('fixture-ready');
@@ -6257,8 +6325,10 @@ console.log('BG_NATIVE_CAPTURE\\t' + JSON.stringify({
 
   async function logicalTransaction(configure?: Parameters<typeof transactionRecipe>[0]) {
     const fixture = await compiledTransaction(configure);
+    bgFixtureTrace('logical:qualify-temporary');
     if (process.env.PAPERCUSP_BG_LOGICAL_TRACE) process.stderr.write(`BG_LOGICAL_STAGE ${Date.now()} qualify-temporary\n`);
     const output = qualifyBgVerifierBuildOutputSet(fixture);
+    bgFixtureTrace('logical:temporary-qualified');
     return { ...fixture, output };
   }
 
