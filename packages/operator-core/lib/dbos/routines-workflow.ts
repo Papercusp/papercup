@@ -25,6 +25,7 @@
  * routines unsupervised. Registered only when `bootstrap.ts` imports this module.
  */
 import { DBOS, DBOSClient, WorkflowQueue } from '@dbos-inc/dbos-sdk';
+import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { runSweepStepWithOverrunBudget, ROUTINES_SWEEP_STEP_OVERRUN_BUDGET_MS } from './routines-sweep-step-overrun';
 import { observeFallback } from '../degradation/fallback-observations';
@@ -731,11 +732,11 @@ export type RoutineFireEnqueueResult = {
   status: 'enqueued' | 'deduplicated' | 'unavailable';
   routineId: string;
   deduplicationId: string;
-  /** Exact admitted execution; a dedup conflict supplies no workflow handle. */
+  /** Exact new or existing execution; null means the SDK could not resolve the dedup handle. */
   workflowId: string | null;
   queueName: string;
   timeoutMs: number;
-  reason?: 'dbos-not-started';
+  reason?: 'dbos-not-started' | 'deduplication-handle-unavailable';
 };
 
 /**
@@ -748,6 +749,10 @@ export async function enqueueRoutineFire(routine: RoutineFireRow): Promise<Routi
   const deduplicationId = `routine:${routine.id}`;
   const queueName = queueForRoutine(routine.targetRole, routine.installSlug);
   const timeoutMs = routineFireTimeoutMs(routine.targetRole);
+  // Compare the SDK's returned handle with this attempt's id. Its singleton
+  // policy resolves the winning execution on the SAME primary, including the
+  // completion race, without a second enqueue or an application-side lookup.
+  const requestedWorkflowId = randomUUID();
   try {
     const workflowArgs = [
       routine.id,
@@ -764,17 +769,21 @@ export async function enqueueRoutineFire(routine: RoutineFireRow): Promise<Routi
     let workflowId: string;
     if (dbosStarted()) {
       const handle = await DBOS.startWorkflow(routineFireWorkflow, {
+        workflowID: requestedWorkflowId,
         queueName,
         timeoutMS: timeoutMs,
         enqueueOptions: { deduplicationID: deduplicationId },
+        duplicationPolicy: 'return-existing',
       })(...workflowArgs);
       workflowId = handle.workflowID;
     } else {
       const handle = await (await getRoutineFireDbosClient()).enqueue<typeof routineFireImpl>(
         {
+          workflowID: requestedWorkflowId,
           queueName,
           workflowName: ROUTINE_FIRE_WORKFLOW_NAME,
           deduplicationID: deduplicationId,
+          duplicationPolicy: 'return-existing',
           workflowTimeoutMS: timeoutMs,
           appVersion: routineFirePrimaryAppVersion(),
         },
@@ -784,7 +793,7 @@ export async function enqueueRoutineFire(routine: RoutineFireRow): Promise<Routi
     }
     return {
       ok: true,
-      status: 'enqueued',
+      status: workflowId === requestedWorkflowId ? 'enqueued' : 'deduplicated',
       routineId: routine.id,
       deduplicationId,
       workflowId,
@@ -799,6 +808,7 @@ export async function enqueueRoutineFire(routine: RoutineFireRow): Promise<Routi
       routineId: routine.id,
       deduplicationId,
       workflowId: null,
+      reason: 'deduplication-handle-unavailable',
       queueName,
       timeoutMs,
     };

@@ -22,7 +22,8 @@ const state = vi.hoisted(() => ({
     detail: 'owner is parked on a blocking await',
   } as const,
   dbosStarted: true,
-  startWorkflow: vi.fn((_workflow: unknown, _options: unknown) => async (..._args: unknown[]) => ({ workflowID: 'direct-routine-workflow' })),
+  startWorkflow: vi.fn((_workflow: unknown, options: { workflowID?: string }) => async (..._args: unknown[]) =>
+    ({ workflowID: options.workflowID ?? 'direct-routine-workflow' })),
   createDbosClient: vi.fn(),
   clientEnqueue: vi.fn(),
   scheduledTick: undefined as (() => Promise<void>) | undefined,
@@ -223,7 +224,8 @@ beforeEach(() => {
   state.dbosStarted = true;
   state.policyAllowed.mockResolvedValue(true);
   state.createDbosClient.mockResolvedValue({ enqueue: state.clientEnqueue });
-  state.clientEnqueue.mockResolvedValue({ workflowID: 'client-routine-workflow' });
+  state.clientEnqueue.mockImplementation(async (options: { workflowID?: string }) =>
+    ({ workflowID: options.workflowID ?? 'client-routine-workflow' }));
 });
 
 afterEach(() => {
@@ -1592,7 +1594,7 @@ describe('enqueueRoutineFire — on-demand durable dispatch', () => {
       status: 'enqueued',
       routineId: routine.id,
       deduplicationId: `routine:${routine.id}`,
-      workflowId: 'direct-routine-workflow',
+      workflowId: expect.any(String),
       queueName: ROUTINES_CRITICAL_QUEUE,
     });
     expect(state.startWorkflow).toHaveBeenCalledWith(
@@ -1600,8 +1602,21 @@ describe('enqueueRoutineFire — on-demand durable dispatch', () => {
       expect.objectContaining({
         queueName: ROUTINES_CRITICAL_QUEUE,
         enqueueOptions: { deduplicationID: `routine:${routine.id}` },
+        workflowID: result.workflowId,
+        duplicationPolicy: 'return-existing',
       }),
     );
+  });
+
+  it('returns the existing native workflow handle without starting a second execution', async () => {
+    state.startWorkflow.mockImplementationOnce(() => async () => ({ workflowID: 'existing-native-fire' }));
+    const result = await enqueueRoutineFire(routine);
+    expect(result).toMatchObject({ status: 'deduplicated', workflowId: 'existing-native-fire',
+      deduplicationId: `routine:${routine.id}`, queueName: ROUTINES_CRITICAL_QUEUE });
+    expect(state.startWorkflow).toHaveBeenCalledExactlyOnceWith(routineFireWorkflow,
+      expect.objectContaining({ duplicationPolicy: 'return-existing',
+        enqueueOptions: { deduplicationID: `routine:${routine.id}` } }));
+    expect(state.clientEnqueue).not.toHaveBeenCalled();
   });
 
   it('reports an active DBOS deduplication conflict as already queued', async () => {
@@ -1614,6 +1629,7 @@ describe('enqueueRoutineFire — on-demand durable dispatch', () => {
       status: 'deduplicated',
       deduplicationId: `routine:${routine.id}`,
       workflowId: null,
+      reason: 'deduplication-handle-unavailable',
     });
   });
 
@@ -1622,11 +1638,12 @@ describe('enqueueRoutineFire — on-demand durable dispatch', () => {
     vi.stubEnv('PAPERCUSP_HOSTED_PROVISIONING_DBOS_APP_VERSION', '');
     vi.stubEnv('DBOS__APPVERSION', '');
 
-    await expect(enqueueRoutineFire(routine)).resolves.toMatchObject({
+    const result = await enqueueRoutineFire(routine);
+    expect(result).toMatchObject({
       ok: true,
       status: 'enqueued',
       deduplicationId: `routine:${routine.id}`,
-      workflowId: 'client-routine-workflow',
+      workflowId: expect.any(String),
     });
     expect(state.createDbosClient).toHaveBeenCalledWith({
       systemDatabaseUrl: 'postgres://system-db?test-idle-grace',
@@ -1634,6 +1651,8 @@ describe('enqueueRoutineFire — on-demand durable dispatch', () => {
     });
     expect(state.clientEnqueue).toHaveBeenCalledWith(
       {
+        workflowID: result.workflowId,
+        duplicationPolicy: 'return-existing',
         queueName: ROUTINES_CRITICAL_QUEUE,
         workflowName: 'routineFire',
         deduplicationID: `routine:${routine.id}`,
@@ -1675,7 +1694,35 @@ describe('enqueueRoutineFire — on-demand durable dispatch', () => {
     );
   });
 
-  it('treats a DBOS client deduplication conflict as already queued', async () => {
+  it('returns the existing workflow from the pinned request-host primary', async () => {
+    state.dbosStarted = false;
+    state.clientEnqueue.mockResolvedValueOnce({ workflowID: 'existing-primary-fire' });
+    const result = await enqueueRoutineFire(routine);
+    expect(result).toMatchObject({ status: 'deduplicated', workflowId: 'existing-primary-fire' });
+    expect(state.clientEnqueue).toHaveBeenCalledOnce();
+    expect(state.clientEnqueue.mock.calls[0][0]).toMatchObject({
+      duplicationPolicy: 'return-existing', deduplicationID: `routine:${routine.id}`,
+      queueName: ROUTINES_CRITICAL_QUEUE,
+    });
+    expect(state.startWorkflow).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])('propagates primary lookup failures without a second enqueue (local runtime: %s)', async local => {
+    state.dbosStarted = local;
+    const failure = new Error('primary unavailable');
+    if (local) state.startWorkflow.mockImplementationOnce(() => async () => { throw failure; });
+    else state.clientEnqueue.mockRejectedValueOnce(failure);
+    await expect(enqueueRoutineFire(routine)).rejects.toBe(failure);
+    if (local) {
+      expect(state.startWorkflow).toHaveBeenCalledOnce();
+      expect(state.clientEnqueue).not.toHaveBeenCalled();
+    } else {
+      expect(state.clientEnqueue).toHaveBeenCalledOnce();
+      expect(state.startWorkflow).not.toHaveBeenCalled();
+    }
+  });
+
+  it('treats an unresolved DBOS client deduplication conflict as an explicit unknown handle', async () => {
     state.dbosStarted = false;
     state.clientEnqueue.mockRejectedValueOnce(
       Object.assign(new Error('duplicate workflow'), { dbosErrorCode: 28 }),
@@ -1686,6 +1733,7 @@ describe('enqueueRoutineFire — on-demand durable dispatch', () => {
       status: 'deduplicated',
       deduplicationId: `routine:${routine.id}`,
       workflowId: null,
+      reason: 'deduplication-handle-unavailable',
     });
     expect(state.startWorkflow).not.toHaveBeenCalled();
   });
