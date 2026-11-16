@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createServer } from "node:http";
 import { appendHostEvent, eventLogPathForOwner } from "../scripts/psu-pty-host.mjs";
+import { createHash } from "node:crypto";
 import {
   mkdtempSync,
   mkdirSync,
@@ -16406,6 +16407,98 @@ describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-
         token: "t",
       }),
     ).resolves.toBe(false);
+  });
+
+  describe("respawn-report receipts", () => {
+    function completedReceipt(url: string, overrides = {}) {
+      const query = new URL(url).searchParams;
+      return { ok: true, advSessionId: query.has('advSessionId') ? Number(query.get('advSessionId')) : null,
+        coordOwnerId: query.get('coordOwnerId'), sessionId: query.get('sessionId'), attemptId: query.get('attemptId'),
+        requestHash: query.get('requestHash'), pending: false, response: { status: 200, body: { ok: true } }, ...overrides };
+    }
+
+    it.each(['timeout', 'pending'])('observes the exact %s attempt without repeating its POST', async (outcome) => {
+      const appendEventImpl = vi.fn();
+      const fetchImpl = vi.fn(async (url: string, options: RequestInit) => {
+        if (options.method === 'POST') {
+          expect(options.signal).toBeInstanceOf(AbortSignal);
+          if (outcome === 'timeout') throw new DOMException('lost response', 'TimeoutError');
+          return new Response('{}', { status: 202 });
+        }
+        const receipt = completedReceipt(url);
+        const first = fetchImpl.mock.calls[0][1];
+        expect(receipt.requestHash).toBe(createHash('sha256').update(String(first.body)).digest('hex'));
+        expect(receipt.attemptId).toBe((first.headers as Record<string, string>)['x-papercusp-mcp-attempt-id']);
+        expect(options.headers).toEqual(first.headers);
+        return Response.json(receipt);
+      });
+      await expect(reportSessionRespawned(42, freshId, { coordOwnerId: 'su-receipt-owner',
+        fetchImpl, token: 'fixture-token', operatorUrl: 'http://op:1', appendEventImpl })).resolves.toBe(true);
+      expect(fetchImpl.mock.calls.map(([, options]) => options.method)).toEqual(['POST', 'GET']);
+      expect(appendEventImpl.mock.calls[0][2]).toMatchObject({ status: 200,
+        outcome: outcome === 'timeout' ? 'accepted-receipt' : 'accepted' });
+    });
+
+    it.each([
+      { requestHash: 'wrong' }, { sessionId: 'wrong' }, { coordOwnerId: 'another-owner' },
+      { advSessionId: 43 }, { attemptId: 'another-attempt' },
+      { pending: false, response: { status: 200, body: { ok: false } } },
+      { pending: false, response: { status: 503, body: { ok: false } } },
+    ])('refuses incomplete or mismatched success %j', async (overrides) => {
+      const fetchImpl = vi.fn(async (url: string, options: RequestInit) => {
+        if (options.method === 'POST') throw new DOMException('lost response', 'TimeoutError');
+        return Response.json(completedReceipt(url, overrides));
+      });
+      await expect(reportSessionRespawned(42, freshId, { coordOwnerId: 'su-receipt-owner', fetchImpl,
+        token: 'fixture-token', operatorUrl: 'http://op:1', appendEventImpl: vi.fn() })).resolves.toBe(false);
+      expect(fetchImpl.mock.calls.map(([, options]) => options.method)).toEqual(['POST', 'GET']);
+    });
+
+    it('waits for the pending receipt to complete before confirming the host', async () => {
+      vi.useFakeTimers();
+      try {
+        let reads = 0;
+        let settled = false;
+        const fetchImpl = vi.fn(async (url: string, options: RequestInit) => {
+          if (options.method === 'POST') throw new DOMException('lost response', 'TimeoutError');
+          return Response.json(completedReceipt(url, ++reads === 1 ? { pending: true, response: undefined } : {}));
+        });
+        const report = reportSessionRespawned(42, freshId, { coordOwnerId: 'su-receipt-owner', fetchImpl,
+          token: 'fixture-token', operatorUrl: 'http://op:1', appendEventImpl: vi.fn() });
+        void report.then(() => { settled = true; });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(reads).toBe(1);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(await report).toBe(true);
+        expect(fetchImpl.mock.calls.map(([, options]) => options.method)).toEqual(['POST', 'GET', 'GET']);
+      } finally { vi.useRealTimers(); }
+    });
+
+    it('bounds observation without turning a pending receipt into acceptance', async () => {
+      vi.useFakeTimers();
+      try {
+        const fetchImpl = vi.fn(async (url: string, options: RequestInit) => {
+          if (options.method === 'POST') throw new DOMException('lost response', 'TimeoutError');
+          return Response.json(completedReceipt(url, { pending: true, response: undefined }));
+        });
+        const report = reportSessionRespawned(42, freshId, { coordOwnerId: 'su-receipt-owner', fetchImpl,
+          token: 'fixture-token', operatorUrl: 'http://op:1', appendEventImpl: vi.fn() });
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(await report).toBe(false);
+        expect(fetchImpl.mock.calls.filter(([, options]) => options.method === 'POST')).toHaveLength(1);
+      } finally { vi.useRealTimers(); }
+    });
+
+    it('fails closed when an older server has no observation endpoint', async () => {
+      const fetchImpl = vi.fn(async (_url: string, options: RequestInit) => {
+        if (options.method === 'POST') throw new DOMException('lost response', 'TimeoutError');
+        return new Response('{}', { status: 404 });
+      });
+      await expect(reportSessionRespawned(null, freshId, { coordOwnerId: 'su-receipt-owner', fetchImpl,
+        token: 'fixture-token', operatorUrl: 'http://op:1', appendEventImpl: vi.fn() })).resolves.toBe(false);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe("respawn report diagnostics", () => {

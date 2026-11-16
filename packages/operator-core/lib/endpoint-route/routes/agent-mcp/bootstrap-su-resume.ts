@@ -1,5 +1,6 @@
 /** Existing managed resume routes, independent of launch/persona assembly. */
 import { isAbsolute } from 'node:path';
+import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { bindLiveAgentSessionTasksToNativeSession } from '../../../task-manager/store';
@@ -19,6 +20,96 @@ import {
   releaseAdvSessionResume,
 } from '../../../adv-sessions';
 import { CORS_HEADERS, gatePrincipal, jsonRes } from './bootstrap-su-shared';
+import { committedRouteResponse } from '../../route-stack';
+
+type RespawnReportReceipt = {
+  advSessionId: number | null;
+  coordOwnerId: string | null;
+  sessionId: string;
+  attemptId: string;
+  requestHash: string;
+  pending: boolean;
+  response?: { status: number; body: unknown };
+};
+
+function respawnReceiptKey(receipt: RespawnReportReceipt) {
+  const workspaceId = activeWorkspaceId();
+  return { workspaceId, ownerKey: `session-respawned:${workspaceId}:${receipt.advSessionId ?? 'owner'}:${receipt.coordOwnerId ?? ''}`,
+    idempotencyKey: receipt.attemptId, toolName: 'session:respawn-report' };
+}
+
+function respawnReceiptResponse(
+  stored: import('../transport/_mcp-result-replay').StoredMcpResult | null,
+  expected: RespawnReportReceipt,
+  observe: boolean,
+) {
+  if (!stored) return jsonRes({ ok: false, error: 'respawn-receipt-unavailable' }, 404);
+  const receipt = stored.structuredContent as RespawnReportReceipt | undefined;
+  if (!receipt || receipt.advSessionId !== expected.advSessionId || receipt.coordOwnerId !== expected.coordOwnerId ||
+      receipt.sessionId !== expected.sessionId || receipt.attemptId !== expected.attemptId ||
+      receipt.requestHash !== expected.requestHash)
+    return jsonRes({ ok: false, error: 'respawn-receipt-conflict' }, 409);
+  if (stored._meta?.state === 'pending') return jsonRes({ ok: true, ...receipt, pending: true }, observe ? 200 : 202);
+  if (stored._meta?.state !== 'complete' || !receipt.response || !Number.isInteger(receipt.response.status) ||
+      receipt.response.status < 200 || receipt.response.status > 599)
+    return jsonRes({ ok: false, error: 'respawn-receipt-incomplete' }, 503);
+  return observe ? jsonRes({ ok: true, ...receipt, pending: false })
+    : committedRouteResponse(jsonRes(receipt.response.body, receipt.response.status));
+}
+
+/** Use the existing pending-result ledger: a lost response is observed by exact
+ * attempt, never inferred from the ADV row or replayed as another mutation. */
+async function withRespawnReportReceipt(req: Request, execute: () => Promise<Response>): Promise<Response> {
+  if (req.headers.get('x-papercusp-respawn-receipt') !== '1') return execute();
+  const text = await req.clone().text();
+  let body: { advSessionId?: unknown; coordOwnerId?: unknown; sessionId?: unknown };
+  try {
+    body = JSON.parse(text);
+    if (!body || typeof body !== 'object') throw new Error('invalid body');
+  } catch { return jsonRes({ ok: false, error: 'invalid JSON body' }, 400); }
+  const advSessionId = body.advSessionId == null ? null : body.advSessionId;
+  const coordOwnerId = typeof body.coordOwnerId === 'string' ? body.coordOwnerId.trim() : null;
+  const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
+  const attemptId = req.headers.get('x-papercusp-mcp-attempt-id') ?? '';
+  if ((advSessionId !== null && (!Number.isSafeInteger(advSessionId) || Number(advSessionId) <= 0)) ||
+      (advSessionId === null && !coordOwnerId) || !NATIVE_SESSION_ID_RE.test(sessionId) ||
+      !NATIVE_SESSION_ID_RE.test(attemptId))
+    return jsonRes({ ok: false, error: 'valid respawn receipt identity required' }, 400);
+  const receipt: RespawnReportReceipt = { advSessionId: advSessionId as number | null, coordOwnerId,
+    sessionId, attemptId, requestHash: createHash('sha256').update(text).digest('hex'), pending: true };
+  const store = await import('../transport/_mcp-result-replay');
+  const key = respawnReceiptKey(receipt);
+  const claim = await store.claimPendingMcpResult({ ...key,
+    result: { content: [], structuredContent: receipt, _meta: { state: 'pending' } } });
+  if (!claim.claimed) return respawnReceiptResponse(claim.result, receipt, false);
+  let response: Response;
+  try { response = await execute(); }
+  catch { response = jsonRes({ ok: false, error: 'respawn-report-failed' }, 503); }
+  const completed: RespawnReportReceipt = { ...receipt, pending: false,
+    response: { status: response.status, body: await response.clone().json() } };
+  if (!await store.finalizePendingMcpResult({ ...key, result: { content: [], structuredContent: completed,
+    _meta: { state: 'complete' }, isError: !response.ok } }))
+    return jsonRes({ ok: false, error: 'respawn-receipt-uncommitted' }, 503);
+  return committedRouteResponse(response);
+}
+
+const sessionRespawnedStatus = defineTool({
+  method: 'GET', path: '/agent-mcp/console/bootstrap-su/session-respawned', auth: 'loopback',
+  async handler(req) {
+    const denied = await gatePrincipal(req.headers);
+    if (denied) return denied;
+    const query = new URL(req.url).searchParams;
+    const receipt: RespawnReportReceipt = { advSessionId: query.has('advSessionId') ? Number(query.get('advSessionId')) : null,
+      coordOwnerId: query.get('coordOwnerId'), sessionId: query.get('sessionId') ?? '',
+      attemptId: query.get('attemptId') ?? '', requestHash: query.get('requestHash') ?? '', pending: true };
+    if ((receipt.advSessionId !== null && (!Number.isSafeInteger(receipt.advSessionId) || receipt.advSessionId <= 0)) ||
+        (receipt.advSessionId === null && !receipt.coordOwnerId) || !NATIVE_SESSION_ID_RE.test(receipt.sessionId) ||
+        !NATIVE_SESSION_ID_RE.test(receipt.attemptId) || !/^[0-9a-f]{64}$/.test(receipt.requestHash))
+      return jsonRes({ ok: false, error: 'valid respawn receipt identity required' }, 400);
+    const { lookupStoredMcpResult } = await import('../transport/_mcp-result-replay');
+    return respawnReceiptResponse(await lookupStoredMcpResult(respawnReceiptKey(receipt).ownerKey, receipt.attemptId), receipt, true);
+  },
+});
 
 /**
  * POST /api/agent-mcp/console/bootstrap-su/session-resumed
@@ -349,6 +440,7 @@ const sessionRespawned = defineTool({
     return withMcpHttpHandlerPhaseTrace(traceId, 'session_respawn', async () => {
       const denied = await phases.track('principal', () => gatePrincipal(req.headers));
       if (denied) return denied;
+      return withRespawnReportReceipt(req, async () => {
       let advSessionId: number | null = null;
       let coordOwnerId: string | null = null;
       let sessionId: string | null = null;
@@ -567,6 +659,7 @@ const sessionRespawned = defineTool({
       } catch (err) {
         return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);
       }
+      });
     }, 1_000, phases);
   },
 });
@@ -583,6 +676,7 @@ const optionsForSessionRespawned = defineTool({
 
 export default [
   sessionRespawned,
+  sessionRespawnedStatus,
   optionsForSessionRespawned,
   sessionResumed,
   optionsForSessionResumed,

@@ -15,6 +15,23 @@
  * (EI-9784: pay bootstrap-su's heavy first import exactly once).
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+
+const receipts = vi.hoisted(() => ({ rows: new Map<string, unknown>() }));
+vi.mock('../transport/_mcp-result-replay', () => ({
+  claimPendingMcpResult: vi.fn(async (args) => {
+    const key = `${args.ownerKey}:${args.idempotencyKey}`;
+    const result = receipts.rows.get(key);
+    if (result) return { claimed: false, result };
+    receipts.rows.set(key, args.result);
+    return { claimed: true };
+  }),
+  finalizePendingMcpResult: vi.fn(async (args) => {
+    receipts.rows.set(`${args.ownerKey}:${args.idempotencyKey}`, args.result);
+    return true;
+  }),
+  lookupStoredMcpResult: vi.fn(async (ownerKey, attemptId) => receipts.rows.get(`${ownerKey}:${attemptId}`) ?? null),
+}));
 
 vi.setConfig({ testTimeout: 15_000 });
 
@@ -110,6 +127,7 @@ vi.mock('../../../task-manager/store', () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  receipts.rows.clear();
   reanchorMock.mockResolvedValue({ reanchored: true, owner: 'su-resp-owner' });
   reanchorByOwnerMock.mockResolvedValue({ reanchored: true, owner: 'su-interactive-owner' });
   bindTasksMock.mockResolvedValue(['task-bound']);
@@ -126,13 +144,15 @@ afterEach(() => { vi.clearAllMocks(); });
 
 const FRESH_ID = ' 1d70c364-c3dd-4dc0-a014-2bbfdd4ccd3f '.trim();
 
-async function postRespawned(body: unknown, options: { traceId?: string; signal?: AbortSignal } = {}): Promise<Response> {
+async function postRespawned(body: unknown, options: { traceId?: string; signal?: AbortSignal; receiptAttemptId?: string } = {}): Promise<Response> {
   const route = routes.find((r) => r.method === 'POST' && r.path.endsWith('/session-respawned'))!;
   const req = new Request(
     'http://localhost:3070/api/agent-mcp/console/bootstrap-su/session-respawned',
     {
       method: 'POST',
       headers: { 'content-type': 'application/json',
+        ...(options.receiptAttemptId ? { 'x-papercusp-respawn-receipt': '1',
+          'x-papercusp-mcp-attempt-id': options.receiptAttemptId } : {}),
         ...(options.traceId ? { 'x-papercusp-mcp-trace-id': options.traceId } : {}) },
       body: JSON.stringify(body),
       ...(options.signal ? { signal: options.signal } : {}),
@@ -140,6 +160,73 @@ async function postRespawned(body: unknown, options: { traceId?: string; signal?
   );
   return route.handler(req);
 }
+
+describe('respawn-report receipts — preserve the completed readiness verdict', () => {
+  const attemptId = 'd77489ed-40c4-449f-905b-266fa6f595d8';
+  const body = { advSessionId: 42, coordOwnerId: 'su-resp-owner', sessionId: FRESH_ID };
+  const identity = () => ({ ...body, attemptId,
+    requestHash: createHash('sha256').update(JSON.stringify(body)).digest('hex') });
+  const observe = (overrides: Record<string, string> = {}) => {
+    const query = new URLSearchParams({ ...Object.fromEntries(Object.entries(identity()).map(([key, value]) => [key, String(value)])),
+      ...overrides });
+    return routes.find(route => route.method === 'GET' && route.path.endsWith('/session-respawned'))!
+      .handler(new Request(`http://localhost:3070/api/agent-mcp/console/bootstrap-su/session-respawned?${query}`));
+  };
+
+  it('keeps an aborted POST pending through readiness, then exposes its exact terminal result without re-execution', async () => {
+    let release!: (value: unknown) => void;
+    let entered!: () => void;
+    const pending = new Promise<void>(resolve => { entered = resolve; });
+    readiness.launch.mockResolvedValue({ acceptedOperation: { kind: 'blueprint-operation-worker' } });
+    readiness.binding.mockImplementationOnce(() => { entered(); return new Promise(resolve => { release = resolve; }); });
+    const caller = new AbortController();
+    const report = postRespawned(body, { receiptAttemptId: attemptId, signal: caller.signal });
+    await pending;
+    caller.abort();
+    expect(await (await observe()).json()).toMatchObject({ ok: true, ...identity(), pending: true });
+    expect((await postRespawned(body, { receiptAttemptId: attemptId })).status).toBe(202);
+    expect(reanchorMock).toHaveBeenCalledTimes(1);
+    expect(bindTasksMock).not.toHaveBeenCalled();
+    release({ status: 'bound', receipt: { sessionId: 42 } });
+    expect((await report).status).toBe(200);
+    expect(await (await observe()).json()).toMatchObject({ ok: true, ...identity(), pending: false,
+      response: { status: 200, body: { ok: true, reanchored: true } } });
+    expect((await postRespawned(body, { receiptAttemptId: attemptId })).status).toBe(200);
+    expect(reanchorMock).toHaveBeenCalledTimes(1);
+    expect(bindTasksMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('records readiness refusal even when the native row is already anchored', async () => {
+    readiness.launch.mockResolvedValue({ acceptedOperation: { kind: 'blueprint-operation-worker' } });
+    readiness.binding.mockResolvedValue({ status: 'unbound' });
+    expect((await postRespawned(body, { receiptAttemptId: attemptId })).status).toBe(503);
+    expect(await (await observe()).json()).toMatchObject({ pending: false,
+      response: { status: 503, body: { ok: false, error: 'accepted operation identity is not ready' } } });
+    expect(bindTasksMock).not.toHaveBeenCalled();
+  });
+
+  it.each<Record<string, string>>([
+    { requestHash: 'f'.repeat(64) }, { sessionId: '2e81d475-d4ee-4ed1-b125-3cceee5dde4e' },
+    { coordOwnerId: 'su-different-owner' }, { attemptId: 'e77489ed-40c4-449f-905b-266fa6f595d8' },
+  ])('does not acknowledge another report identity %j', async (overrides) => {
+    await postRespawned(body, { receiptAttemptId: attemptId });
+    expect((await observe(overrides)).status).toBeGreaterThanOrEqual(400);
+    expect(reanchorMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects changed payload under a claimed attempt without repeating its mutation', async () => {
+    await postRespawned(body, { receiptAttemptId: attemptId });
+    expect((await postRespawned({ ...body, turnProvenanceDir: '/different/runtime' }, { receiptAttemptId: attemptId })).status).toBe(409);
+    expect(reanchorMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not acknowledge success when the terminal receipt could not be committed', async () => {
+    const store = await import('../transport/_mcp-result-replay');
+    vi.mocked(store.finalizePendingMcpResult).mockResolvedValueOnce(false);
+    expect((await postRespawned(body, { receiptAttemptId: attemptId })).status).toBe(503);
+    expect(await (await observe()).json()).toMatchObject({ pending: true });
+  });
+});
 
 describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)', () => {
   it('identifies a pending native reanchor before the caller deadline and records settlement after disconnect', async () => {

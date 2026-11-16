@@ -12322,7 +12322,9 @@ export async function reportSessionRespawned(
   if (!sessionId || (!advSessionId && !coordOwnerId)) return false;
   const startedAt = Date.now();
   const callerAttemptId = randomUUID();
+  let receipt;
   let signal;
+  let headers;
   const finish = (accepted, outcome, status = null, errorName = null, errorCode = null) => {
     // Keep the existing per-owner lifecycle ledger diagnostic-only. Neither
     // request/response bodies, URLs, credentials nor free-form errors belong in it.
@@ -12345,33 +12347,47 @@ export async function reportSessionRespawned(
     return accepted;
   };
   try {
+    const requestBody = JSON.stringify({
+      ...(advSessionId ? { advSessionId: Number(advSessionId) } : {}),
+      ...(coordOwnerId ? { coordOwnerId: String(coordOwnerId) } : {}),
+      ...(childLaunchSessionId ? { childLaunchSessionId: String(childLaunchSessionId) } : {}),
+      sessionId: String(sessionId),
+      turnProvenanceDir: launcherTurnProvenanceDir(env),
+      ...(managedSuccessionPermit ? { managedSuccession: { phase: 'settle', permit: managedSuccessionPermit } } : {}),
+    });
+    receipt = { advSessionId: advSessionId ? Number(advSessionId) : null,
+      coordOwnerId: coordOwnerId ? String(coordOwnerId) : null, sessionId: String(sessionId),
+      attemptId: callerAttemptId, requestHash: createHash('sha256').update(requestBody).digest('hex') };
     const tok = token ?? readToken();
     signal = AbortSignal.timeout(timeoutMs);
-    const response = await fetchImpl(
+    headers = {
+      "content-type": "application/json",
+      "x-papercusp-mcp-attempt-id": callerAttemptId,
+      "x-papercusp-respawn-receipt": "1",
+      ...(tok ? { authorization: `Bearer ${tok}` } : {}),
+    };
+    let response = await fetchImpl(
       operatorUrl + "/api/agent-mcp/console/bootstrap-su/session-respawned",
       {
         method: "POST",
         signal,
-        headers: {
-          "content-type": "application/json",
-          "x-papercusp-mcp-attempt-id": callerAttemptId,
-          ...(tok ? { authorization: `Bearer ${tok}` } : {}),
-        },
-        body: JSON.stringify({
-          ...(advSessionId ? { advSessionId: Number(advSessionId) } : {}),
-          ...(coordOwnerId ? { coordOwnerId: String(coordOwnerId) } : {}),
-          ...(childLaunchSessionId ? { childLaunchSessionId: String(childLaunchSessionId) } : {}),
-          sessionId: String(sessionId),
-          turnProvenanceDir: launcherTurnProvenanceDir(env),
-          ...(managedSuccessionPermit ? { managedSuccession: { phase: 'settle', permit: managedSuccessionPermit } } : {}),
-        }),
+        headers,
+        body: requestBody,
       },
     );
+    if (response?.status === 202) {
+      response = await observeRespawnReport({ operatorUrl, receipt, headers, fetchImpl, timeoutMs }).catch(() => null);
+      if (!response) return finish(false, "receipt-unconfirmed", 202);
+    }
     const accepted = response?.ok === true;
     const status = Number.isInteger(response?.status) && response.status >= 100 && response.status <= 599
       ? response.status : null;
     return finish(accepted, accepted ? "accepted" : "http-refused", status);
   } catch (error) {
+    if (headers && receipt && (error?.name === 'TimeoutError' || error?.name === 'AbortError')) {
+      const observed = await observeRespawnReport({ operatorUrl, receipt, headers, fetchImpl, timeoutMs }).catch(() => null);
+      if (observed) return finish(observed.ok, observed.ok ? "accepted-receipt" : "http-refused", observed.status);
+    }
     /* best-effort — never surface; callers must not announce an unconfirmed cut */
     const errorName = ["TimeoutError", "AbortError", "TypeError", "RangeError", "Error"].includes(error?.name)
       ? error.name : "Error";
@@ -12381,6 +12397,33 @@ export async function reportSessionRespawned(
     return finish(false, signal?.aborted || errorName === "TimeoutError" ? "timeout" : "transport-error",
       null, errorName, errorCode);
   }
+}
+
+/** Read only the terminal result of this report, retaining the original POST deadline. */
+async function observeRespawnReport({ operatorUrl, receipt, headers, fetchImpl, timeoutMs }) {
+  const url = new URL(operatorUrl + '/api/agent-mcp/console/bootstrap-su/session-respawned');
+  url.search = new URLSearchParams(Object.entries(receipt)
+    .filter(([, value]) => value !== null).map(([key, value]) => [key, String(value)])).toString();
+  const deadline = Date.now() + 60_000;
+  do {
+    let response, observed;
+    try {
+      response = await fetchImpl(url.href, { method: 'GET', headers,
+        signal: AbortSignal.timeout(Math.max(1, Math.min(timeoutMs, deadline - Date.now()))) });
+      if (response?.ok !== true) return null;
+      observed = await response.json();
+    } catch { return null; }
+    if (observed?.ok !== true || Object.entries(receipt).some(([key, value]) => observed[key] !== value)) return null;
+    if (observed.pending === false && Number.isInteger(observed.response?.status) &&
+        observed.response.status >= 200 && observed.response.status <= 599 && observed.response.body &&
+        typeof observed.response.body === 'object') {
+      if (observed.response.status < 300 && observed.response.body.ok !== true) return null;
+      return new Response(JSON.stringify(observed.response.body), { status: observed.response.status });
+    }
+    if (observed.pending !== true) return null;
+    await new Promise(resolve => setTimeout(resolve, Math.min(1_000, Math.max(0, deadline - Date.now()))));
+  } while (Date.now() < deadline);
+  return null;
 }
 
 /** Pre-child half of the existing authenticated lifecycle route. Uncertainty
