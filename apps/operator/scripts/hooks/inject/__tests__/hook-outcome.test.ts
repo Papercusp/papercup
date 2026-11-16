@@ -354,6 +354,51 @@ describe('spec-quality reads preserve the authority boundary (EI-282695001628319
     expect(await runCommand(command('full'), answer('server-refused'))).toBe('server-refused');
   });
 
+  it.each([
+    ['coord:send', { to: ['su-peer'], expects: 'none', summary: 'readiness evidence', body: [{ text: 'Exact receipt retained.' }] }],
+    ['coord:declare-intent', { intent: 'Restore the existing readiness lane.' }],
+    ['work_items:checkpoint', { id: 'WI-1', checkpoint: 'Exact continuation retained.' }],
+    ['work_items:comment', { id: 'WI-1', body: 'Readiness remains pending.' }],
+    ['work_items:release', { id: 'WI-1', reason: 'Checkpointed handback.' }],
+    ['work_items:link', { from: 'WI-1', to: 'WI-2', relation: 'blocks' }],
+    ['loop:checkpoint', { did: 'Readiness checked.', next: 'Resume the same held lane.' }],
+    ['session:request-compaction', { focus: 'Resume the same held readiness lane.' }],
+  ] as const)('keeps canonical %s available without an authority response, including inert retry keys', async (tool, args) => {
+    for (const wrapped of [false, true]) {
+      for (const retryKey of ['', ' --idempotency-key=readiness-retry-1']) {
+        const cmd = [
+          'ptool ' + (wrapped ? 'tools:invoke' : tool) +
+            ' --json - --url=http://127.0.0.1:3170' + retryKey + " <<'JSON'",
+          JSON.stringify(wrapped ? { name: tool, args } : args),
+          'JSON',
+        ].join('\n');
+        expect(await runCommand(cmd, unavailable), cmd).toBeNull();
+        expect(await runCommand(cmd, answer('server-refused')), cmd).toBe('server-refused');
+      }
+    }
+  });
+
+  it.each([
+    ['dev:pipeline_position', { path: 'packages/operator-core/lib/example.ts', testClass: 'operator-api' }],
+    ['locks:queue', { paths: ['packages/operator-core/lib/example.ts'] }],
+    ['loop:status', { harness: 'papercusp' }],
+  ] as const)('keeps the canonical %s readiness inspection available', async (tool, args) => {
+    const cmd = ['ptool ' + tool + " --json - <<'JSON'", JSON.stringify(args), 'JSON'].join('\n');
+    expect(await runCommand(cmd, unavailable)).toBeNull();
+    expect(await runCommand(cmd, answer('server-refused'))).toBe('server-refused');
+  });
+
+  it('does not turn coordination recovery into permission for implementation or shell execution', async () => {
+    const cmd = ['ptool coord:send --json - --idempotency-key=readiness-retry-1' + " <<'JSON'",
+      JSON.stringify({ to: ['su-peer'], expects: 'none', summary: 'receipt' }), 'JSON'].join('\n');
+    for (const unsafe of [cmd + '\ntouch output', cmd.replace(" <<'JSON'", " > output <<'JSON'"),
+      cmd.replace('coord:send', 'capability:write'),
+      cmd.replace('readiness-retry-1', '$(touch output)'),
+      cmd.replace(' --json -', ' --url=https://example.com --json -')]) {
+      expect(await runCommand(unsafe, unavailable), unsafe).toContain('execution-authority lookup failed');
+    }
+  });
+
   it('keeps writes, substitutions and redirections fail-closed', async () => {
     const valid = command('full');
     for (const cmd of [valid + '\ntouch output', valid.replace(" <<'JSON'", " > output <<'JSON'"),
