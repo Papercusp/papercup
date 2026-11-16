@@ -838,6 +838,27 @@ describe('routines:list', () => {
       });
     });
 
+    it.each([
+      ['missing active flag', {}],
+      ['null active flag', { active: null }],
+      ['numeric active flag', { active: 0 }],
+      ['string active flag', { active: 'false' }],
+      ['array marker', []],
+    ])('keeps a malformed activity marker unsafe: %s', (_label, marker) => {
+      const verdict = deriveGitSyncFreshness(
+        { ...staleClock, git_sync_activity: marker },
+        '0 */3 * * * *',
+        true,
+        NOW,
+      );
+
+      expect(verdict).toMatchObject({
+        execution: { status: 'unknown' },
+        safe_to_restart: false,
+      });
+      expect(String(verdict.safe_to_restart_reason)).toContain('UNMEASURED');
+    });
+
     it('a paused routine reports an inactive scheduler leg without claiming its execution leg is idle', () => {
       cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
       const verdict = deriveGitSyncFreshness(
@@ -1075,6 +1096,27 @@ describe('routines:list', () => {
         safe_to_restart: false,
       });
       expect(String(freshness.safe_to_restart_reason)).toContain('resource lock could not be read');
+    });
+
+    it.each([
+      ['missing', undefined],
+      ['null', null],
+      ['numeric', 0],
+      ['string', 'false'],
+    ])('does not certify idle from a malformed active flag: %s', async (_label, active) => {
+      const pid = 9_876_551;
+      resourceQueueMock.mockResolvedValue({ holders: [], draining: false, queue: [] });
+
+      const freshness = await readFreshness({
+        active,
+        owner: `system:git-sync:${pid}:malformed-fire`,
+        owner_pid: pid,
+      });
+
+      expect(freshness).toMatchObject({
+        execution: { status: 'unknown' },
+        safe_to_restart: false,
+      });
     });
 
     it('keeps a definitively dead marker unsafe while either matching or other exclusive lease remains', async () => {
