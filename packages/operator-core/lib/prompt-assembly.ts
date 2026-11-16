@@ -134,7 +134,10 @@ export function promptsDir(): string {
   // only the desktop-install playbook) and would win over sidecar/prompts,
   // so persona loads would throw at boot.
   const fromEnv = process.env.PAPERCUSP_PROMPTS_DIR;
-  if (fromEnv && existsSync(fromEnv)) return fromEnv;
+  // An explicit runtime root remains authoritative before its assets are
+  // installed. Falling back on absence can read host prompts or escape the
+  // packaged verifier's filesystem boundary instead of reporting unavailable.
+  if (fromEnv) return fromEnv;
   // Managed runtimes pin INTEGRATION_ROOT to their immutable serving generation,
   // while CANONICAL_TREE names the separately maintained prompt source. Reading
   // that generation's older prompt can re-seed the shared instance cache with

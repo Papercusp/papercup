@@ -35,9 +35,12 @@ export function critiqueCoversRubric(request: string, rubric: Rubric, revision: 
     return revision != null && pins.every(pin =>
       new RegExp(`^${revision}(?![\\w.@-])`).test(request.slice(pin.index! + pin[0].length)));
   }
-  // Both "rev3" and "revision 3" name the same immutable revision. Keep the
-  // trailing word boundary so rev30 and rev3x cannot qualify as revision 3.
-  return revision != null && new RegExp(`\\b(?:rev(?:ision)?)[\\s:=#]*${revision}\\b`, 'i').test(request);
+  // A prose revision must be attached to this rubric. An amendment request can
+  // mention a subject-plan revision or a proposed revision in its embedded delta;
+  // neither identifies the rubric that the reviewer actually read.
+  const versions = [...request.matchAll(new RegExp(`${mention}[\\s:=(,]*rev(?:ision)?[\\s:=#]*`, 'gi'))];
+  return revision != null && versions.length > 0 && versions.every(version =>
+    new RegExp(`^${revision}(?![\\w.@-])`).test(request.slice(version.index! + version[0].length)));
 }
 
 type RubricReviewWorkItem = {

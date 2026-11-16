@@ -13,6 +13,7 @@
 import dns from 'node:dns';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { createDurableCaptureRecorder } from './_durable-orchestration-capture';
 import postgres from 'postgres';
 import pg from 'pg';
@@ -155,6 +156,19 @@ if (process.env.DURABLE_CRASH_GEC_SCOPE) {
   const admittedAt = new Date().toISOString(), monotonicStartMs = performance.now();
   const sqlObservations: import('../lib/grounded-evidence-measurement').GroundedSqlObservation[] = [];
   const digest = (source: Buffer) => createHash('sha256').update(source).digest('hex');
+  const initialKeysPath = process.env.DURABLE_CRASH_GEC_INITIAL_KEYS;
+  if (!initialKeysPath) throw new Error('GEC durable capture requires a pre-child operation-output key census');
+  const initialKeysBytes = readFileSync(initialKeysPath);
+  const initialKeys = JSON.parse(initialKeysBytes.toString('utf8'));
+  if (initialKeys.kind !== 'operation-output-initial-census' || !isDeepStrictEqual(initialKeys.scope, scope)
+    || initialKeys.mode !== mode || initialKeys.runKey !== runKey
+    || !Number.isSafeInteger(initialKeys.producerPid) || initialKeys.producerPid <= 0 || initialKeys.producerPid === process.pid
+    || initialKeys.complete !== true || initialKeys.exclusive !== true
+    || !isDeepStrictEqual(initialKeys.keyParameters, [0, 1]))
+    throw new Error('GEC foreign or incomplete pre-child operation-output key census');
+  const initialKeyCensus = { scope, sourceRef: initialKeysPath + '@sha256:' + digest(initialKeysBytes),
+    complete: initialKeys.complete, exclusive: initialKeys.exclusive,
+    keyParameters: initialKeys.keyParameters, initialKeys: initialKeys.initialKeys };
   const serializerSourceRef = 'source:pg/lib/query.js@'
     + digest(readFileSync(new URL('../../../node_modules/pg/lib/query.js', import.meta.url)))
     + '+utils.js@' + digest(readFileSync(new URL('../../../node_modules/pg/lib/utils.js', import.meta.url))) + '#Bind.prepareValue';
@@ -173,9 +187,10 @@ if (process.env.DURABLE_CRASH_GEC_SCOPE) {
     sourceRef: `source:@dbos-inc/dbos-sdk/dist/src/system_database.js@${notificationSourceHash}#notification-setup` })) : [];
   // This exact installed writer can report INSERT 1 for an invocation-owned
   // unchanged upsert (checkpoint_invocation_id is the eleventh Bind input).
-  // Only a proven zero-row outcome certifies zero output/error bytes; positive
-  // counts stay unknown. The executor marker UPDATE has a separate zero/all
-  // contract. Any SDK source or SQL change leaves both writes unregistered.
+  // The parent retains all keys before this exclusive child starts, so the
+  // recorder can distinguish a new output from an unchanged conflict. Lost or
+  // overlapping outcomes remain unknown. The executor marker UPDATE has its
+  // separate zero/all contract. Changed SDK/SQL bytes leave writes unregistered.
   const operationOutputStatement = `INSERT INTO dbos.operation_outputs
          (workflow_uuid, function_id, output, error, function_name, child_workflow_id, started_at_epoch_ms, completed_at_epoch_ms, serialization, application_name, checkpoint_invocation_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
@@ -206,6 +221,7 @@ if (process.env.DURABLE_CRASH_GEC_SCOPE) {
       const capture = {
         kind: 'current-source-durable-capture', acceptance: 'unmeasured', mode, workflowRunKey: runKey,
         processId: process.pid,
+        initialKeyCensus,
         phases: gecPhases,
         processTermination,
         sqlObservations,
@@ -248,7 +264,7 @@ if (process.env.DURABLE_CRASH_GEC_SCOPE) {
     serializedSqlParameters: notificationSourceMatches ? [
       { pool: 'child-dbos-all-clients', sourceRef: operationOutputSourceRef, serializerSourceRef,
         queryHash: digest(Buffer.from(operationOutputStatement)), command: 'INSERT', parameterCount: 11,
-        persistedParameters: [2, 3], allOrNoneRows: 'zero-only' },
+        persistedParameters: [2, 3], allOrNoneRows: 'zero-only', insertOrNoop: initialKeyCensus },
       { pool: 'child-dbos-all-clients', sourceRef: operationOutputSourceRef, serializerSourceRef,
         queryHash: digest(Buffer.from(executorStatement)), command: 'UPDATE', parameterCount: 2,
         persistedParameters: [0], allOrNoneRows: 1 },

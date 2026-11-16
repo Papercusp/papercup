@@ -1,5 +1,6 @@
 /** Shared real-process DBOS fixture. No live tool handler or mail transport is installed. */
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { expect } from 'vitest';
@@ -28,6 +29,28 @@ export function createDurableCrashHarness(config: {
   packageRoot: string; dsn: () => string; sql: () => postgres.Sql; artifacts: string; workspaceId?: string;
 }) {
   const childPath = resolve(config.packageRoot, 'test/_durable-orchestration-crash-child.ts');
+  async function retainInitialKeys(mode: 'crash' | 'recover', scenario: DurableCrashScenario) {
+    if (!scenario.gecScope) return;
+    const admittedAt = new Date().toISOString();
+    const query = 'SELECT workflow_uuid, function_id, output, error FROM dbos.operation_outputs ORDER BY workflow_uuid, function_id';
+    // This fixture runs one child at a time against its private database. Read
+    // the ENTIRE key population before that child exists, not a post-run subset.
+    // First launch may precede DBOS schema creation; retain that measured absence.
+    const [relation] = await config.sql().unsafe("SELECT to_regclass('dbos.operation_outputs')::text AS relation");
+    if (!relation || (relation.relation !== null && typeof relation.relation !== 'string'))
+      throw new Error('GEC missing independent operation-output relation observation');
+    const rows = relation?.relation ? [...await config.sql().unsafe(query)] : [];
+    if (rows.some(row => typeof row.workflow_uuid !== 'string' || !Number.isSafeInteger(row.function_id)))
+      throw new Error('GEC invalid independently read operation-output keys');
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+    const sourceRef = join(config.artifacts, `${scenario.runKey}-${mode}.initial-keys.json`);
+    writeFileSync(sourceRef, JSON.stringify({ kind: 'operation-output-initial-census',
+      scope: scenario.gecScope, mode, runKey: scenario.runKey, producerPid: process.pid,
+      admittedAt, settledAt: new Date().toISOString(), relation: relation?.relation ?? null, query, rows,
+      complete: true, exclusive: true, keyParameters: [0, 1],
+      initialKeys: rows.map(row => [digest(row.workflow_uuid), digest(String(row.function_id))]),
+    }), { flag: 'wx', mode: 0o600 });
+  }
   function runChild(mode: 'crash' | 'recover' | 'code', scenario: DurableCrashScenario) {
     expect(config.dsn(), 'private DBOS database must be prepared before launching the child').toBeTruthy();
     expect(scenario.runKey, 'durable run key is required').toBeTruthy();
@@ -40,7 +63,8 @@ export function createDurableCrashHarness(config: {
         DURABLE_CRASH_INPUTS: JSON.stringify(scenario.inputs ?? {}), DURABLE_CRASH_TARGET: scenario.crashTarget,
         DURABLE_CRASH_REVOKE: mode === 'recover' ? (scenario.revoke ?? '') : '',
         ...(scenario.gecScope ? { DURABLE_CRASH_GEC_SCOPE: JSON.stringify(scenario.gecScope),
-          DURABLE_CRASH_GEC_TAPE: join(config.artifacts, `${scenario.runKey}-${mode}.json`) } : {}),
+          DURABLE_CRASH_GEC_TAPE: join(config.artifacts, `${scenario.runKey}-${mode}.json`),
+          DURABLE_CRASH_GEC_INITIAL_KEYS: join(config.artifacts, `${scenario.runKey}-${mode}.initial-keys.json`) } : {}),
       }, timeout: mode === 'code' ? 240_000 : 150_000, encoding: 'utf8',
     });
     const child = scenario.gecScope ? captureDurableProcessBoundary(
@@ -72,9 +96,11 @@ export function createDurableCrashHarness(config: {
     return rows.map(row => String(row.function_name));
   }
   async function crashThenRecover(scenario: DurableCrashScenario) {
+    await retainInitialKeys('crash', scenario);
     const crashed = runChild('crash', scenario);
     expect(crashed.signal, 'crash child stdout: ' + crashed.stdout + '\nstderr: ' + crashed.stderr).toBe('SIGKILL');
     const afterCrash = await calls(scenario.runKey);
+    await retainInitialKeys('recover', scenario);
     const recovered = runChild('recover', scenario);
     expect(recovered.status, 'recovery stdout: ' + recovered.stdout + '\nstderr: ' + recovered.stderr).toBe(0);
     const line = recovered.stdout.split('\n').find(candidate => candidate.startsWith('DURABLE_OUTCOME '));

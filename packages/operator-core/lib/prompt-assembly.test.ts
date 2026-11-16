@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { promptsDir } from './prompt-assembly.js';
+import { promptsDir, verifyRolePromptAssets } from './prompt-assembly.js';
 
 // Mock listAllProjectedTools so tests don't depend on what's registered
 // at module-load time.
@@ -769,6 +769,30 @@ describe('promptsDir — integration-tree prompt root', () => {
     process.env.PAPERCUSP_INTEGRATION_ROOT = root;
     process.env.PAPERCUSP_CANONICAL_TREE = mkIntegRoot();
     expect(promptsDir()).toBe(explicit);
+  });
+
+  it.each([false, true])('keeps a missing explicit prompt root authoritative (other configured roots: %s)', (otherRoots) => {
+    const root = mkIntegRoot();
+    const explicit = join(root, 'missing-packaged-prompts');
+    process.env.PAPERCUSP_PROMPTS_DIR = explicit;
+    if (otherRoots) {
+      process.env.PAPERCUSP_CANONICAL_TREE = root;
+      process.env.PAPERCUSP_INTEGRATION_ROOT = root;
+    }
+
+    expect(promptsDir()).toBe(explicit);
+    expect(existsSync(explicit)).toBe(false);
+    const audit = verifyRolePromptAssets({ harnessDir: join(root, 'harness') });
+    expect(audit.documents.length).toBeGreaterThan(0);
+    for (const document of audit.documents) {
+      expect(document).toMatchObject({
+        disposition: document.required ? 'unavailable' : 'optional-absent',
+        refusalVerified: document.required,
+        sha256: null,
+      });
+    }
+    expect(audit).toMatchObject({ installedUseVerified: false, candidateAccepted: false });
+    expect(existsSync(explicit)).toBe(false);
   });
 
   it('a non-existent integration root falls through to the cwd/anchor heuristics (never strands)', () => {

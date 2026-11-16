@@ -121,6 +121,7 @@ describe('GEC frozen B durable consumer captures', () => {
     ].map(([name, path]) => [String(name), digest(readFileSync(path))]));
     const testHashes = { parent: digest(readFileSync(new URL(import.meta.url))),
       child: digest(readFileSync(childPath)),
+      harness: digest(readFileSync(new URL('../../test/_durable-orchestration-crash-harness.ts', import.meta.url))),
       capture: digest(readFileSync(new URL('../../test/_durable-orchestration-capture.ts', import.meta.url))) };
     const scope: GroundedMeasurementScope = {
       workspaceId: 'ws-p019-crash', harness: materialized.mapping[materialized.manifest.namespace.harness],
@@ -146,8 +147,27 @@ describe('GEC frozen B durable consumer captures', () => {
     const originalSteps = await stepNames(scenario.runKey);
     const crash = JSON.parse(readFileSync(join(gecArtifacts, `${scenario.runKey}-crash.json`), 'utf8'));
     const recovered = JSON.parse(readFileSync(join(gecArtifacts, `${scenario.runKey}-recover.json`), 'utf8'));
+    const outputRowsAfter = [...await sql.unsafe<Array<{ workflow_uuid: string; function_id: number;
+      output: string | null; error: string | null }>>(
+      'SELECT workflow_uuid, function_id, output, error FROM dbos.operation_outputs ORDER BY workflow_uuid, function_id')];
+    const initialRecovery = JSON.parse(readFileSync(join(gecArtifacts, `${scenario.runKey}-recover.initial-keys.json`), 'utf8'));
+    const outputBytes = (rows: Array<{ output: string | null; error: string | null }>) => rows.reduce((sum, row) => sum
+      + (row.output === null ? 0 : Buffer.byteLength(row.output)) + (row.error === null ? 0 : Buffer.byteLength(row.error)), 0);
+    const persistedOutputBytes = outputBytes(outputRowsAfter)
+      - outputBytes(initialRecovery.rows);
+    // Retain the independent oracle before any qualification assertion can fail.
+    writeFileSync(join(gecArtifacts, `${scenario.runKey}-output-byte-oracle.json`), JSON.stringify({
+      scope, initialRecovery, outputRowsAfter, persistedOutputBytes, acceptance: 'unmeasured' }));
     for (const [mode, capture] of [['crash', crash], ['recover', recovered]] as const) {
       const originalRef = join(gecArtifacts, `${scenario.runKey}-${mode}.json`);
+      const initialRef = join(gecArtifacts, `${scenario.runKey}-${mode}.initial-keys.json`);
+      const initialBytes = readFileSync(initialRef), initial = JSON.parse(initialBytes.toString('utf8'));
+      expect(initial).toMatchObject({ kind: 'operation-output-initial-census', scope, mode, runKey: scenario.runKey,
+        producerPid: process.pid, complete: true, exclusive: true, keyParameters: [0, 1] });
+      expect(initial.initialKeys).toEqual(initial.rows.map((row: { workflow_uuid: string; function_id: number }) =>
+        [digest(row.workflow_uuid), digest(String(row.function_id))]));
+      expect(capture.initialKeyCensus).toEqual({ scope, sourceRef: initialRef + '@sha256:' + digest(initialBytes),
+        complete: true, exclusive: true, keyParameters: [0, 1], initialKeys: initial.initialKeys });
       const processCapture = JSON.parse(readFileSync(originalRef + '.process.json', 'utf8'));
       expect(processCapture).toMatchObject({ complete: true, gaps: [], scope, originalCaptureRef: originalRef,
         accountingScope: 'process-lifetime-and-admissions', acceptance: 'unmeasured',
@@ -231,8 +251,17 @@ describe('GEC frozen B durable consumer captures', () => {
       expect(row.sql.rowOutcome.allOrNoneRows).toBe('zero-only');
       expect(row.sql.serializedParameters.parameterCount).toBe(11);
       expect(row.sql.serializedParameters.values.map((value: { parameter: number }) => value.parameter)).toEqual([2, 3]);
-      expect(row.persistedBytes).toBe(row.sql.status === 'ok' && row.sql.rowOutcome.affectedRows === 0 ? 0 : null);
+      expect(row.sql.insertOrNoop).toMatchObject({ censusRef: expect.stringContaining('.initial-keys.json@sha256:'),
+        censusHash: expect.any(String), keyHash: expect.any(String), prior: expect.stringMatching(/^(present|absent)$/) });
     }
+    const recoveredOutputs = recovered.storage.rows.filter((row: { sql: { serializedParameters?: { sourceRef: string; parameterCount: number } } }) =>
+      row.sql.serializedParameters?.sourceRef === outputSourceRef && row.sql.serializedParameters.parameterCount === 11);
+    expect(recoveredOutputs.length).toBeGreaterThan(0);
+    expect(recoveredOutputs.every((row: { persistedBytes: unknown }) => Number.isSafeInteger(row.persistedBytes))).toBe(true);
+    // Independent physical-store delta, including unchanged positive upserts;
+    // neither the source registration nor the recorder computes this oracle.
+    expect(recoveredOutputs.reduce((sum: number, row: { persistedBytes: number }) => sum + row.persistedBytes, 0))
+      .toBe(persistedOutputBytes);
     for (const row of executorWrites) {
       expect(row.kind).toBe('write');
       expect(row.sql.rowOutcome.allOrNoneRows).toBe(1);
@@ -258,7 +287,7 @@ describe('GEC frozen B durable consumer captures', () => {
     const invocationMeasured = measureGroundedEvidence({ scope, boundary: recovered.boundary, invocations: recovered.invocations });
     expect(invocationMeasured.values).toMatchObject({ foregroundLookups: 0, retrievalCalls: caseId === 'C3' ? 1 : 0 });
     // These controls qualify recorder closure and the two exact write shapes
-    // only. Positive upserts, other writes and interrupted bytes stay unknown.
+    // only. Other writes and interrupted bytes stay unknown.
     const storageMeasured = measureGroundedEvidence({ scope, boundary: recovered.boundary, storage: recovered.storage });
     expect(storageMeasured.values.storageOperations).toBe(recovered.storage.ids.length);
     expect(storageMeasured.values.storageBytes).toBeNull();

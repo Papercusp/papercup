@@ -47,6 +47,19 @@ describe('critiqueCoversRubric revision identity', () => {
     expect(critiqueCoversRubric(`${request} criteriaHash: stale`, rubric, 11)).toBe(false);
     expect(critiqueCoversRubric(`${request} criteriaHash: ${rubric.criteriaHash}`, rubric, 12)).toBe(true);
   });
+
+  it.each([
+    `Review ${rubric.rubricId}; subject plan revision11`,
+    `Review amendment of ${rubric.rubricId}; prospective revision11`,
+    `Review ${rubric.rubricId} revision10; proposed replacement revision11`,
+  ])('refuses an unrelated or prospective revision: %s', opening => {
+    expect(critiqueCoversRubric(opening, rubric, 11)).toBe(false);
+  });
+
+  it('refuses conflicting and malformed adjacent revision declarations', () => {
+    expect(critiqueCoversRubric(`Vet ${rubric.rubricId} rev11 and ${rubric.rubricId} rev10`, rubric, 11)).toBe(false);
+    expect(critiqueCoversRubric(`Vet ${rubric.rubricId} rev11a; subject revision11`, rubric, 11)).toBe(false);
+  });
 });
 
 describe('readCurrentAcceptanceRubricCritique with pinned reviews', () => {
@@ -62,6 +75,14 @@ describe('readCurrentAcceptanceRubricCritique with pinned reviews', () => {
       criteriaHash: rubric.criteriaHash,
       critics: ['su-independent'],
     });
+  });
+
+  it('does not attest an answered amendment preview as the applied current revision', async () => {
+    const stale = { ...candidate, request: `Review amendment of ${rubric.rubricId}; prospective revision11` };
+    await expect(readCurrentAcceptanceRubricCritique(rubric, 11, {
+      candidates: async () => [stale],
+      consult: async () => ({ exists: true, critiquePosts: 1, critics: ['su-independent'] }),
+    })).resolves.toBeNull();
   });
 
   it.each([
