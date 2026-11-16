@@ -1,0 +1,50 @@
+{
+  "_note": "[self-imposed] judge su-ee416521 — VERIFIED, READY-TO-EMIT payload for scorecards:emit. Attempted 2026-11-16 ~12:55Z; failed ECONNREFUSED (connect-time refusal, pre-send). BEFORE re-sending: scorecards:get {issueId:'EI-28945618649209206'} must show gradingAudit.state=pending, auditTarget.current=true, dispatchReservation {key:'grading-audit:EI-28945618649209206', reservedAt:'2026-11-16T12:04:35.700Z'}, evidenceFingerprint 8876656159a2..., grading-integrity rev 14 / 795ad5a5.... If state is no longer pending, check whether this audit already landed — do NOT emit twice.",
+  "rubricRef": "grading-integrity",
+  "rubricRevision": 14,
+  "criteriaHash": "795ad5a5aa77061bf0aeb54bd7c412307036cf576777ac42932b8afa8d6b4da9",
+  "subject": { "kind": "scorecard", "ref": "EI-28945618649209206" },
+  "harness": "papercusp",
+  "terminal": true,
+  "gradingAuditReservation": { "key": "grading-audit:EI-28945618649209206", "reservedAt": "2026-11-16T12:04:35.700Z" },
+  "title": "Grading-integrity audit of EI-28945618649209206 (spec-quality rev 6, benchmark-coverage-frontierswe-v2-2026-10-10)",
+  "ratings": {
+    "base-rate-check": {
+      "rating": "pass",
+      "evidenceKind": "scorecard",
+      "evidenceRef": "scorecard:EI-28945618649209206",
+      "evidence": "Graded card EI-28945618649209206 (spec-quality rev 6, criteriaHash efc99b92..., fingerprint 8876656159a2...): persisted ratings histogram {pass:8}, so the downgrade set (fail/severe) is EMPTY and no satisfiability check is owed. UPGRADE LEG: no pass rests on absence alone. item-contract-coverage asserts 'All 24 plan item(s) are covered by active item clauses or explicit exemptions', a positive join that I reconciled independently: plans:get {slug:'benchmark-coverage-frontierswe-v2-2026-10-10', harness:'papercusp'} -> counts.items=26, lifecycle {done:13, dropped:2 (incl. P-005 per D-024), nonTerminal:11} => 24 non-dropped items; plans:get-specs {same slug/harness} -> 57 clause rows, 57 unique specIds, 0 duplicates, 26 distinct planItemIds (all 26 items incl. the 2 dropped), contentHash on all 57, 0 rows with revision != currentRevision, exempt ids exactly FSWE-P001-EXEMPT@1 and FSWE-P017-EXEMPT@1. implementation-independence (prohibition-shaped) states its inspected population (39 inspected + 18 excluded = 57 clauses, fields, detector classes, controls, pinned hash), and the evaluator replay reproduced it. explicit-non-behavioral-exemptions' '0 invalid' rests on that same positive exemption census."
+    },
+    "instrument-split": {
+      "rating": "pass",
+      "evidenceKind": "store",
+      "evidenceRef": "plans:get-specs:benchmark-coverage-frontierswe-v2-2026-10-10",
+      "evidence": "All 8 graded criteria measure properties of the plan's spec CLAUSES. Each evidence string cites the clause store plans:get-specs {slug:'benchmark-coverage-frontierswe-v2-2026-10-10', harness:'papercusp'} plus the deterministic evaluator plans:evaluate-spec-quality {slug, harness:'papercusp', classRef:'plan-class-feature-ship', expectedSpecSetHash:'258875ee28802141d211e281d2aafa25d374fe12acbf810eb6e29c0429f5b70a'}. That is the correct store and instrument for clause-quality claims; none cites activity telemetry, git history, or work-item prose. REPLICATION: I independently re-read plans:get-specs (57 rows, contentHash on all, 0 stale revisions, exempt set {FSWE-P001-EXEMPT@1, FSWE-P017-EXEMPT@1}) and plans:get (26 items, 2 dropped). These agree in direction with stable-revision-identity, spec-set-freshness, explicit-non-behavioral-exemptions and item-contract-coverage (24 non-dropped items, all covered)."
+    },
+    "terminal-re-rate": {
+      "rating": "pass",
+      "evidenceKind": "evaluator-replay",
+      "evidenceRef": "plans:evaluate-spec-quality:replay:34826167c069e9e9",
+      "evidence": "scorecards:list {provisional:true} for the exact subject ref spec-set:plan-class-feature-ship:258875ee...:814f8ee92f779f8f returned count 0 (comparisonTime 2026-11-16T12:07:23.958Z). No interim card exists, so no rating could have been copied forward. The card's evidence derives freshly from its snapshot: a historical replay plans:evaluate-spec-quality {..., replaySnapshot:{planContentHash:'34826167c069e9e94ea8429eb9cf34035f347fc644658b7c704641e01901f0f1', clausesAsOf:'2026-11-16T11:53:41.533Z'}, detail:'full'} produced all 8 ratings AND evidence strings byte-identical to the card. A live re-run without replaySnapshot resolved to the same planContentHash 34826167... / clausesAsOf 2026-11-16T11:53:41.533Z and specSetHash 258875ee..., so no spec change occurred after the rated snapshot. Re-read at 2026-11-16T12:54Z: auditTarget.current=true, superseded=false; rubricCurrentness, evaluatorBuildCurrentness (235c53feccb) and gradingAuditCurrentness all 'current'."
+    },
+    "platform-telemetry-excluded": {
+      "rating": "pass",
+      "evidenceKind": "scorecard",
+      "evidenceRef": "scorecard:EI-28945618649209206",
+      "evidence": "None of the card's 8 criteria (stable-revision-identity, item-contract-coverage, atomic-observable-behavior, falsifiability, implementation-independence, explicit-non-behavioral-exemptions, plan-class-specialization, spec-set-freshness) is an efficiency or activity rating. I read every one of the 8 evidence strings in full (UTF-16 lengths 1385/1187/1816/1167/2459/1544/1232/1235, each read to evidenceRead.complete). None queries tool_invocations, call_origin, session activity or any dispatch-wrapper telemetry; every read goes to plans:get-specs and plans:evaluate-spec-quality. The agent-behavior-predicate requirement therefore has no read to apply to, and no platform-emitted telemetry contaminates any rating."
+    },
+    "re-runnable-evidence": {
+      "rating": "pass",
+      "evidenceKind": "evaluator-rerun",
+      "evidenceRef": "plans:evaluate-spec-quality:benchmark-coverage-frontierswe-v2-2026-10-10:258875ee",
+      "evidence": "All-pass override: with no fail/severe ratings, I re-ran ALL 8 criteria's probes, not a sample. Each evidence string contains a verbatim probe: 'Re-run exactly: plans:evaluate-spec-quality { slug:\"benchmark-coverage-frontierswe-v2-2026-10-10\", harness:\"papercusp\", classRef:\"plan-class-feature-ship\", expectedSpecSetHash:\"258875ee28802141d211e281d2aafa25d374fe12acbf810eb6e29c0429f5b70a\" }; confirm the returned specSetHash equals ...; inspect ratings[key]', plus a 'Historical replay (same rated snapshot)' probe. I invoked both as written through the judge's bound runtime. Live: ok, specSetHash 258875ee..., verdict pass, wouldBlock [], same subject ref. Replay with detail:'full': all 8 ratings and evidence byte-identical. Both probes are re-runnable for all 8 criteria; none is N/A."
+    },
+    "degenerate-distribution": {
+      "rating": "pass",
+      "evidenceKind": "scorecard",
+      "evidenceRef": "scorecard:EI-28945618649209206",
+      "evidence": "Histogram computed directly from the persisted ratings map of EI-28945618649209206: {pass:8}, inapplicable 0, coverage.record expected 8 / present 8, no missing or extra keys. A uniform histogram triggers the override: is the uniformity earned or stamped? I executed the complete check. Every criterion's evidence was read in full. Each carries a criterion-specific finding between the shared recipe prefix and suffix (e.g. item-contract-coverage: 24 items covered; implementation-independence: 39 inspected / 18 excluded clause census). Each rating was independently reproduced by the deterministic evaluator (live re-run plus byte-identical replay), and the coverage/exemption counts were cross-checked against plans:get and plans:get-specs. The uniformity survives complete checks; this is not a rubber stamp."
+    }
+  },
+  "body": "Terminal grading-integrity audit (rev 14, criteriaHash 795ad5a5...) of scorecard EI-28945618649209206: spec-quality rev 6, subject spec-set:plan-class-feature-ship:258875ee...:814f8ee92f779f8f, graded by su-391d5afc. Lease grading-audit:EI-28945618649209206 / 2026-11-16T12:04:35.700Z, re-verified unchanged at 2026-11-16T12:54Z (state pending, auditTarget.current, all currentness checks current). Verdict: all 6 meta-criteria pass. The card's 8 passes are reproduced by the deterministic evaluator (live and byte-identical replay) and agree in direction with independent store reads.\n\nDISCLOSED FINDINGS (none flips a rating):\n1. Count reconciliation: the clauses cite 26 distinct planItemIds, but the card says '24 plan item(s)'. Resolved with plans:get: counts.items=26, lifecycle.dropped=2 (incl. P-005 per D-024), so 24 = non-dropped items. The card's evidence does not state that dropped items are excluded from the denominator. That is a clarity gap only; coverage direction holds.\n2. Suspected bug (instrument): during the replay, scorecardBinding.evidenceFingerprint was 149213dcdca3917c1ba2b0251b92bbdb7746459040febdc9651f34649969d3fa, while the card's stored fingerprint is 8876656159a2b9a6566b26c8be2b23bc50ce0cf5ddd185f16a1bc30fe1158be7, even though all 8 ratings and evidence strings are byte-identical. This suggests the two fingerprints hash different domains [inferred]; it does not affect re-runnability.\n3. Environment: the pinned evaluator route http://127.0.0.1:34711 refused connections (ECONNREFUSED) intermittently during the lease (~12:10Z and ~12:47Z), which delayed this emit. Separately, plans:items is denied to the judge role (role_not_allowed); I used plans:get instead.\n4. The ledger-fill evidenceAction on the card reports 'diagnose-identity / missing-required-identity' with windowStart/windowEnd null. A spec-set subject has no window, so this looks like a false diagnostic [inferred]."
+}
