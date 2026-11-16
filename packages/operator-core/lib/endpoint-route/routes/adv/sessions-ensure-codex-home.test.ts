@@ -74,8 +74,7 @@ vi.mock('../../../su-persona-render', async (original) => ({
   rebuildSuLaunchArtifact: mocks.rebuild,
   pinnedSuRecoveryPrompt: mocks.pinnedPrompt,
 }));
-vi.mock('../../../role-launch-spec', async (original) => ({
-  ...(await original<typeof import('../../../role-launch-spec')>()),
+vi.mock('../../../role-launch-spec', () => ({
   buildLaunchSpec: mocks.buildLaunchSpec,
   buildRoleLaunchSpec: mocks.buildRole,
 }));
@@ -219,13 +218,22 @@ describe('ensure-codex-home explicit preserved artifact policy', () => {
   let revision: string;
   const prompt = 'SAVED instructions\nUnicode λ, spaces  and\ttabs\n';
   beforeAll(async () => {
-    const { compileLaunchSpecificationArtifact } = await vi.importActual<typeof import('../../../role-launch-spec')>('../../../role-launch-spec');
-    const artifact = await compileLaunchSpecificationArtifact({
-      promptText: prompt, cwd: '/tmp', role: 'su', stack: [], state: { schemaVersion: 1 },
+    // Compile a genuine immutable artifact without running launch-time discovery.
+    const { compileAgentSpecification } = await import('@papercusp/orchestrator/blueprint');
+    const artifact = compileAgentSpecification({
+      source: {
+        id: 'codex-home-recovery-fixture', kind: 'harness', version: '1.0.0',
+        workItem: { kind: 'session', idPrefix: 'S' },
+        roles: [{ id: 'su', description: 'Saved launch role.' }],
+        spine: { decider: 'su', claimModel: 'self-claim-priority', default: { to: 'idle' } },
+      },
+      prompt: { role: 'su', text: prompt },
+      mutableState: { ref: 'launch-state-v1', revision: REVISION,
+        value: { schemaVersion: 1, stack: [] } },
     });
     revision = artifact.specificationRevision;
     artifactRecord = { ...savedRecord, stack: [], selectedIdentity: null,
-      specificationRevision: revision, specificationArtifact: artifact.specificationArtifact } as unknown as typeof savedRecord;
+      specificationRevision: revision, specificationArtifact: artifact } as unknown as typeof savedRecord;
   });
   beforeEach(async () => {
     const real = await vi.importActual<typeof import('../../../su-persona-render')>('../../../su-persona-render');
@@ -257,9 +265,12 @@ describe('ensure-codex-home explicit preserved artifact policy', () => {
     });
     mocks.readRepair.mockImplementation(async () => stored);
     mocks.finishRepair.mockImplementation(async ({ result }) => { stored = result; return true; });
-    let release!: () => void;
+    let release: (() => void) | undefined;
+    let entered!: () => void;
+    const fundingEntered = new Promise<void>(resolve => { entered = resolve; });
     mocks.funding.mockImplementationOnce(() => new Promise(resolve => {
       release = () => resolve({ ok: true });
+      entered();
     }));
     const request = () => new Request('http://localhost:3170/api/adv/sessions/ensure-codex-home', {
       method: 'POST', body, headers: { 'x-papercusp-repair-attempt': attempt,
@@ -269,14 +280,17 @@ describe('ensure-codex-home explicit preserved artifact policy', () => {
       new URLSearchParams({ owner: OWNER, advSessionId: String(ADV_SESSION_ID),
         repairAttemptId: attempt, requestHash }));
     const first = ensureCodexHome(request());
-    await vi.waitFor(() => expect(mocks.funding).toHaveBeenCalledOnce());
     try {
+      await Promise.race([fundingEntered, first.then(async response => {
+        throw new Error(`Repair completed before the funding barrier: ${response.status} ${await response.text()}`);
+      })]);
+      expect(mocks.funding).toHaveBeenCalledOnce();
       expect(ensureCodexHomeStatus).toBeTypeOf('function');
       const pending = await ensureCodexHomeStatus(observation());
       expect(await pending.json()).toMatchObject({ ok: true, pending: true, repairAttemptId: attempt, requestHash });
       expect((await ensureCodexHome(request())).status).toBe(202);
       expect(mocks.funding).toHaveBeenCalledOnce();
-    } finally { release(); }
+    } finally { release?.(); }
     const result = await first;
     expect(result.status).toBe(200);
     const completed = await ensureCodexHomeStatus(observation());
