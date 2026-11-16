@@ -72,6 +72,25 @@ describe('diagnostic read-only gate', () => {
     expect(diagnosticMocks.lifecycle).toHaveBeenCalledTimes(2);
     expect(diagnosticMocks.admission.mock.calls[0][0]).not.toHaveProperty('readOnly');
   });
+
+  it.each([false, true])('pre-start requires a complete contract without measuring proof (preview: %s)', async (readOnly) => {
+    diagnosticMocks.lifecycle.mockResolvedValue({ satisfied: true, codes: [] });
+    const onRead = vi.fn();
+    expect(await checkPlanStartable('p', {}, null, 'start', { readOnly, proofMode: undefined, onRead }))
+      .toMatchObject({ ok: true });
+    expect(diagnosticMocks.lifecycle).toHaveBeenCalledWith('p', 'pre-start', {
+      harnessSlug: 'h', requireCompleteContractBeforeProof: true, proofMode: 'metadata', onRead,
+    });
+    expect(diagnosticMocks.admission).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['bar_snapshot_source_unavailable', 'bar_snapshot_method_missing'])('contract failure still blocks admission: %s', async (code) => {
+    diagnosticMocks.lifecycle.mockResolvedValue({ satisfied: false, codes: [code],
+      blockingBars: [{ barKey: 'R-1', codes: [code] }] });
+    expect(await checkPlanStartable('p')).toMatchObject({ ok: false,
+      refusal: { code: 'acceptance_bar_contract_not_ready', missing: [code], issues: [`R-1: ${code}`] } });
+    expect(diagnosticMocks.admission).not.toHaveBeenCalled();
+  });
 });
 
 describe('mergePlanInputs — per-invocation overrides (D-008 Q2)', () => {

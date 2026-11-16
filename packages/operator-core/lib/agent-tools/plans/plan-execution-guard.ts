@@ -10,7 +10,6 @@ import { withBoundedTimeout } from '../../bounded-timeout';
 import type { ResolvedGoal } from '../../agent-goal-ref';
 import type { AcceptanceBarSnapshotSource } from '../../acceptance-bar-contract-snapshot';
 import type { Sql } from 'postgres';
-import { readPlanLineNodes } from './plan-line-graph';
 import { readExecutionPlanRebind } from '../fleet_registry/execution-plan-rebind';
 import { PLAN_READINESS_PENDING, READINESS_EVALUATION_BUDGET_MS, READINESS_PENDING_RETRY_AFTER_MS } from './plan-continuation-readiness';
 export { planExecutionMeaning } from './plan-execution-meaning';
@@ -146,7 +145,7 @@ function hasActiveShellExpansion(command: string): boolean {
 
 /** A deliberately small read-only shell subset; arbitrary interpreters require activation. */
 export function isPlanResearchCommand(command: unknown): boolean {
-  if (isPlanPtoolReadCommand(command)) return true;
+  if (isPlanCanonicalReadCommand(command)) return true;
   // Native exec batches independent reads with newlines. Check each complete
   // line instead of letting shell-quote merge a later command into file args.
   // Unfinished quotes, continuations and any mutating line still fail closed.
@@ -220,10 +219,13 @@ const readinessControlPtoolTools = new Set([
 ]);
 
 /**
- * Recognize only a single ptool JSON call with a quoted heredoc. Its body is
- * inert data; the exact target verb is checked against a narrow allowlist below.
+ * Recognize one maintained CLI JSON call with a quoted heredoc. The grading
+ * brief also prescribes the exact Node helper for a pinned evaluator whose MCP
+ * connection has closed. Neither form may depend on that failed endpoint for
+ * execution authority before an already-allowed read/control call can recover it.
+ * The body is inert data; both forms use the same narrow target allowlists.
  */
-function ptoolJsonHeredocCall(command: unknown): { name: string; args: Record<string, unknown> } | null {
+function canonicalJsonHeredocCall(command: unknown): { name: string; args: Record<string, unknown> } | null {
   if (typeof command !== 'string' || command.length > 32_768 || command.includes('\0')) return null;
   const normalized = command.replace(/\r\n/g, '\n');
   if (normalized.includes('\r')) return null;
@@ -260,13 +262,17 @@ function ptoolJsonHeredocCall(command: unknown): { name: string; args: Record<st
     if (tokens.some(token => typeof token !== 'string')) return null;
     words = tokens as string[];
   } catch { return null; }
-  if (words[0] !== 'ptool') return null;
+  const nodeHelper = words[0] === 'node' && words[1] === 'scripts/mcp-call.mjs';
+  if (!nodeHelper && words[0] !== 'ptool') return null;
+  const valueFlags = nodeHelper
+    ? new Set(['--json', '--workspace', '--harness', '--port', '--idempotency-key'])
+    : new Set(['--json', '--workspace', '--harness', '--url', '--idempotency-key']);
   let verb: string | null = null;
   const flags = new Set<string>();
-  // ptool's value flags are global: they may precede or follow the verb.
+  // Both maintained CLIs accept value flags before or after the verb.
   // A transport idempotency key identifies a replay; it never authorizes the
   // target verb, which is still classified below and checked by its handler.
-  for (let index = 1; index < words.length; index++) {
+  for (let index = nodeHelper ? 2 : 1; index < words.length; index++) {
     const token = words[index]!;
     if (!token.startsWith('--')) {
       if (verb !== null || !/^[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*$/.test(token)) return null;
@@ -275,12 +281,16 @@ function ptoolJsonHeredocCall(command: unknown): { name: string; args: Record<st
     }
     const equals = token.indexOf('=');
     const flag = equals < 0 ? token : token.slice(0, equals);
-    if (!['--json', '--workspace', '--harness', '--url', '--idempotency-key'].includes(flag) || flags.has(flag)) return null;
+    if (!valueFlags.has(flag) || flags.has(flag)) return null;
     const value = equals < 0 ? words[++index] : token.slice(equals + 1);
     if (value === undefined) return null;
     flags.add(flag);
     if (flag === '--json') {
       if (value !== '-') return null;
+    } else if (flag === '--port') {
+      // Match the helper's existing TCP-port contract without accepting an
+      // alternate host, identity override, Node option or shell expansion.
+      if (!/^[1-9][0-9]{0,4}$/.test(value) || Number(value) > 65535) return null;
     } else if (flag === '--idempotency-key') {
       if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(value)) return null;
     } else if (flag === '--url') {
@@ -307,14 +317,14 @@ function ptoolJsonHeredocCall(command: unknown): { name: string; args: Record<st
   }
 }
 
-function isPlanPtoolReadCommand(command: unknown): boolean {
-  const call = ptoolJsonHeredocCall(command);
+function isPlanCanonicalReadCommand(command: unknown): boolean {
+  const call = canonicalJsonHeredocCall(command);
   return call !== null && (readOnlyPtoolTools.has(call.name) ||
     (call.name === 'scorecards:evaluate' && call.args.eligibilityOnly === true));
 }
 
-function isPlanPtoolControlCommand(command: unknown): boolean {
-  const call = ptoolJsonHeredocCall(command);
+function isPlanCanonicalControlCommand(command: unknown): boolean {
+  const call = canonicalJsonHeredocCall(command);
   const reconcile = call?.args.reconcile;
   // plans:audit is a canonical plan-control operation; its handler owns audit
   // evidence validation and any activation transition. It does not grant code
@@ -347,8 +357,8 @@ export function isPlanImplementationCall(toolName: string, args: unknown): boole
   const input = args && typeof args === 'object' ? args as Record<string, unknown> : {};
   const command = input.command ?? input.cmd;
   return !isPlanResearchCommand(command) &&
-    !isPlanPtoolReadCommand(command) &&
-    !isPlanPtoolControlCommand(command);
+    !isPlanCanonicalReadCommand(command) &&
+    !isPlanCanonicalControlCommand(command);
 }
 
 /** Read durable authority, never coord_presence or caller-supplied plan/force/purpose. */
@@ -419,31 +429,38 @@ export async function readExecutionPlanBindings(ownerId: string, workspaceId: st
   return bindings;
 }
 
-/** Exact index/graph back-mapping, not a provenance stamp or a readiness label. */
+/** Exact index/graph back-mapping from one snapshot, without loading dependency edges. */
 async function readCanonicalExecutionIdentity(sql: Sql, workspaceId: string, binding: ExecutionPlanBinding,
   lineId: string | null, ownerId: string): Promise<ExecutionPlanBinding['canonical'] | null> {
   if (!binding.planSlug?.trim() || !lineId?.trim() || !binding.harnessSlug || !binding.sourceRef) return null;
-  const plans = await sql<Array<{ version: number; content_hash: string }>>`
-    SELECT version,content_hash FROM harness_shared.harness_plans WHERE workspace_id=${workspaceId}
-      AND harness_slug=${binding.harnessSlug} AND plan_slug=${binding.planSlug}`;
-  if (plans.length !== 1) return null;
-  const index = await sql`SELECT item_id,xmin::text AS version FROM harness_shared.plan_items WHERE workspace_id=${workspaceId}
-    AND harness_slug=${binding.harnessSlug} AND plan_slug=${binding.planSlug} AND item_id=${lineId}`;
-  if (index.length !== 1) return null;
-  const nodes = await readPlanLineNodes(sql, { workspaceId,harnessSlug:binding.harnessSlug,slug:binding.planSlug });
-  const mapped = nodes.filter(node => node.id === lineId);
-  if (mapped.length !== 1 || mapped[0].featureId !== binding.sourceRef ||
-      nodes.filter(node => node.featureId === binding.sourceRef).length !== 1) return null;
   const [{claimHoldExclusionSql},{admissionHoldExclusionSql}] = await Promise.all([
     import('../../work-items'),import('../../work-items-admission')]);
-  const rows = await sql<Array<{ version: string; held: boolean }>>`
-    SELECT xmin::text AS version,
-      NOT ((${claimHoldExclusionSql(sql,'payload')}) AND (${admissionHoldExclusionSql(sql,'payload')})) AS held
-      FROM harness_shared.work_items WHERE workspace_id=${workspaceId} AND harness_slug=${binding.harnessSlug}
-        AND feature_id=${binding.sourceRef} AND taken_by=${ownerId} AND plan_slug=${binding.planSlug} AND plan_line_id=${lineId}`;
+  // The join cardinality retains the exact-one plan/index checks. The scoped
+  // counts retain both directions of the canonical line/work-item mapping,
+  // including duplicates owned or held by someone else. Read all version
+  // witnesses in the same statement so no torn intermediate identity is issued.
+  const rows = await sql<Array<{ node_version: string; line_version: string;
+    plan_version: number; content_hash: string; held: boolean }>>`
+    SELECT wi.xmin::text AS node_version, i.xmin::text AS line_version,
+      p.version AS plan_version, p.content_hash,
+      NOT ((${claimHoldExclusionSql(sql,'wi.payload')}) AND (${admissionHoldExclusionSql(sql,'wi.payload')})) AS held
+      FROM harness_shared.harness_plans p
+      JOIN harness_shared.plan_items i ON i.workspace_id=p.workspace_id
+        AND i.harness_slug=p.harness_slug AND i.plan_slug=p.plan_slug AND i.item_id=${lineId}
+      JOIN harness_shared.work_items wi ON wi.workspace_id=p.workspace_id
+        AND wi.harness_slug=p.harness_slug AND wi.plan_slug=p.plan_slug
+        AND wi.plan_line_id=${lineId} AND wi.feature_id=${binding.sourceRef} AND wi.taken_by=${ownerId}
+      WHERE p.workspace_id=${workspaceId} AND p.harness_slug=${binding.harnessSlug} AND p.plan_slug=${binding.planSlug}
+        AND (SELECT count(*) FROM harness_shared.work_items other
+          WHERE other.workspace_id=p.workspace_id AND other.harness_slug=p.harness_slug
+            AND other.plan_slug=p.plan_slug AND other.plan_line_id=${lineId})=1
+        AND (SELECT count(*) FROM harness_shared.work_items other
+          WHERE other.workspace_id=p.workspace_id AND other.harness_slug=p.harness_slug
+            AND other.plan_slug=p.plan_slug AND other.plan_line_id IS NOT NULL
+            AND other.feature_id=${binding.sourceRef})=1`;
   if (rows.length !== 1 || rows[0].held) return null;
-  return { itemId: binding.sourceRef,lineId,ownerId,nodeVersion:rows[0].version,lineVersion:index[0].version,
-    planVersion:Number(plans[0].version),planHash:plans[0].content_hash };
+  return { itemId: binding.sourceRef,lineId,ownerId,nodeVersion:rows[0].node_version,lineVersion:rows[0].line_version,
+    planVersion:Number(rows[0].plan_version),planHash:rows[0].content_hash };
 }
 
 /** Names the held items a refused write may really be for, and how to attribute it. */

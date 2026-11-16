@@ -568,6 +568,72 @@ describe('reviewer read and decline are independent of plan activation (EI-27697
   });
 });
 
+describe('documented pinned MCP helper recovery (EI-28910250918419088)', () => {
+  const command = (header: string, args: unknown = { issueId: 'EI-audit', rerunRecipeOffset: 1153 }) =>
+    [header + " <<'JSON'", JSON.stringify(args), 'JSON'].join('\n');
+
+  it.each([
+    'node scripts/mcp-call.mjs --port 33629 scorecards:get --json -',
+    'node scripts/mcp-call.mjs scorecards:get --port=33629 --json=-',
+    'node scripts/mcp-call.mjs --port 1 scorecards:get --json -',
+    'node scripts/mcp-call.mjs --port 65535 scorecards:get --json -',
+    'node scripts/mcp-call.mjs scorecards:get --json - --harness=papercusp',
+  ])('recovers an exact evidence page without querying unavailable plan authority: %s', async header => {
+    const readBindings = vi.fn(async () => { throw Error('pinned authority endpoint unreachable'); });
+    const checkPlan = vi.fn();
+    expect(await checkPlanExecutionGuard(call('exec_command', { cmd: command(header) }), {
+      readBindings, checkPlan,
+    })).toBeNull();
+    expect(readBindings).not.toHaveBeenCalled();
+    expect(checkPlan).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('keeps canonical repair available while a bound plan is unstarted (wrapped=%s)', async wrapped => {
+    const args = { targetIds: ['EI-audit'], harness: 'papercusp' };
+    const cmd = command('node scripts/mcp-call.mjs --port 33629 '
+      + (wrapped ? 'tools:invoke' : 'scorecards:repair') + ' --json -',
+    wrapped ? { name: 'scorecards:repair', args } : args);
+    const readBindings = vi.fn(async () => [binding]);
+    const checkPlan = vi.fn(async () => ['plan_not_started']);
+    expect(await checkPlanExecutionGuard(call('exec_command', { cmd }), { readBindings, checkPlan })).toBeNull();
+    expect(readBindings).not.toHaveBeenCalled();
+    expect(checkPlan).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'node --eval scripts/mcp-call.mjs scorecards:get --json -',
+    'node scripts/other.mjs scorecards:get --json -',
+    'node ./scripts/mcp-call.mjs scorecards:get --json -',
+    'node scripts/mcp-call.mjs --port 0 scorecards:get --json -',
+    'node scripts/mcp-call.mjs --port -1 scorecards:get --json -',
+    'node scripts/mcp-call.mjs --port 65536 scorecards:get --json -',
+    'node scripts/mcp-call.mjs --port 1e2 scorecards:get --json -',
+    'node scripts/mcp-call.mjs --port 33629 --port 33630 scorecards:get --json -',
+    'node scripts/mcp-call.mjs --client=someone-else scorecards:get --json -',
+    'node scripts/mcp-call.mjs --url=http://outside.example scorecards:get --json -',
+    'node scripts/mcp-call.mjs scorecards:get --json-file /tmp/args.json',
+    'node scripts/mcp-call.mjs scorecards:get --json - > /tmp/output',
+    'node scripts/mcp-call.mjs scorecards:get --json - 2>/tmp/output',
+    'node scripts/mcp-call.mjs scorecards:get --json -; touch output',
+  ])('keeps noncanonical helper invocations behind execution authority: %s', async header => {
+    const cmd = command(header);
+    expect(isPlanImplementationCall('exec_command', { cmd })).toBe(true);
+    expect(await checkPlanExecutionGuard(call('exec_command', { cmd }), {
+      readBindings: async () => [binding], checkPlan: async () => ['plan_not_started'],
+    })).toMatchObject({ code: 'plan_execution_not_ready', planSlug: binding.planSlug });
+  });
+
+  it.each([false, true])('continues to guard implementation writes through the helper (wrapped=%s)', async wrapped => {
+    const args = { file_path: 'source.ts', content: 'changed' };
+    const cmd = command('node scripts/mcp-call.mjs --port 33629 '
+      + (wrapped ? 'tools:invoke' : 'capability:write') + ' --json -',
+    wrapped ? { name: 'capability:write', args } : args);
+    expect(await checkPlanExecutionGuard(call('exec_command', { cmd }), {
+      readBindings: async () => [binding], checkPlan: async () => ['plan_not_started'],
+    })).toMatchObject({ code: 'plan_execution_not_ready', planSlug: binding.planSlug });
+  });
+});
+
 describe('canonical PTool start recovery (WI-6554700010046260)', () => {
   const command = (header: string, payload: unknown = { slug: 'review-plan', harness: 'papercusp' }) =>
     [header + " <<'JSON'", JSON.stringify(payload), 'JSON'].join('\n');

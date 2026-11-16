@@ -188,6 +188,9 @@ export async function checkPlanStartable(
         harnessSlug: row.harnessSlug,
         requireCompleteContractBeforeProof: door === 'start',
         ...lifecycleOptions,
+        // Pre-start validates the contract; grading/shipping measure proof.
+        // Keep this after caller options so an unset proofMode cannot restore those reads.
+        proofMode: 'metadata',
       }),
     );
   };

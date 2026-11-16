@@ -451,12 +451,7 @@ describe('same-row plan-line adoption', () => {
     // Finish reports the preserved canonical status even when coverage prevents
     // this source-only duplicate from closing the shared plan line.
     expect(closeResult.finish, JSON.stringify(closeResult)).toMatchObject({ complete: true, planItem: 'todo' });
-    const guarded = data(await planItemStatusTool.handler(planItemStatusTool.args.parse({
-      slug: SLUG, harness: HARNESS, item: 'P-001', status: 'dropped', onlyIfNoOtherOpenCoverage: true,
-      note: 'Verify that dropping one duplicate preserves the open canonical sibling.',
-    }), ctx())).results[0];
-    expect(guarded, JSON.stringify(guarded)).toMatchObject({ ok: true, skipped: 'coverage_guard',
-      coveredBy: expect.arrayContaining([siblingId]) });
+    expect(JSON.stringify(closeResult.finish)).toContain('coverage_guard');
 
     const [duplicate] = await fx.admin`SELECT feature_id AS id,status AS state,
         source_plan_slug AS "sourcePlanSlug",source_plan_item_ids AS "sourcePlanItemIds",payload

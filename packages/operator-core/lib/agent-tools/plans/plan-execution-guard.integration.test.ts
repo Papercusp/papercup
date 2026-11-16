@@ -167,15 +167,21 @@ describe('canonical adopted repair binding', () => {
     })).toBeNull();
     expect(checked).toEqual(['repair-plan']);
   });
-  it.each(['partial','missing-plan','missing-line','duplicate-line','duplicate-node','held'])('refuses incomplete stale or unstarted canonical bindings: %s', async kind => {
+  it.each(['partial','missing-plan','missing-line','missing-node','duplicate-plan','duplicate-line',
+    'duplicate-node','duplicate-feature','held','admission-held'])('refuses incomplete stale or unstarted canonical bindings: %s', async kind => {
     await seed();
     if(kind==='partial')await db.sql`UPDATE harness_shared.work_items SET plan_line_id=NULL`;
     if(kind==='missing-plan')await db.sql`DELETE FROM harness_shared.harness_plans WHERE plan_slug='repair-plan'`;
     if(kind==='missing-line')await db.sql`DELETE FROM harness_shared.plan_items`;
+    if(kind==='missing-node')await db.sql`UPDATE harness_shared.work_items SET plan_line_id='P-002'`;
+    if(kind==='duplicate-plan')await db.sql`INSERT INTO harness_shared.harness_plans SELECT * FROM harness_shared.harness_plans WHERE plan_slug='repair-plan'`;
     if(kind==='duplicate-line')await db.sql`INSERT INTO harness_shared.plan_items SELECT * FROM harness_shared.plan_items`;
     if(kind==='duplicate-node')await db.sql`INSERT INTO harness_shared.work_items (workspace_id,harness_slug,feature_id,item_kind,status,plan_slug,plan_line_id)
       VALUES (${WS},'project','EI-other','bug','open','repair-plan','P-001')`;
+    if(kind==='duplicate-feature')await db.sql`INSERT INTO harness_shared.work_items (workspace_id,harness_slug,feature_id,item_kind,status,plan_slug,plan_line_id)
+      VALUES (${WS},'project','EI-original','bug','open','repair-plan','P-002')`;
     if(kind==='held')await db.sql`UPDATE harness_shared.work_items SET payload='{"_claimHold":true}'::jsonb`;
+    if(kind==='admission-held')await db.sql`UPDATE harness_shared.work_items SET payload='{"admissionHold":true}'::jsonb`;
     const bindings=await readExecutionPlanBindings(OWNER,WS);
     expect(bindings.some(b=>b.canonicalInvalid)).toBe(true);
     // Invalid identity is retained even if goal narrowing would choose another lane.
@@ -190,6 +196,31 @@ describe('canonical adopted repair binding', () => {
     expect(await checkExecutionPlan(binding,WS)).toEqual(['plan_not_started']);
     await db.sql`UPDATE harness_shared.harness_plans SET version=version+1 WHERE plan_slug='repair-plan'`;
     expect(await checkExecutionPlan(binding,WS)).toEqual(['canonical_plan_binding_stale']);
+  });
+  it.each(['plan-hash','line-version','node-version','owner','claim-hold','admission-hold'])(
+    'rechecks the canonical witness after %s changes', async kind => {
+      await seed();
+      const [binding] = await readExecutionPlanBindings(OWNER,WS);
+      if(kind==='plan-hash')await db.sql`UPDATE harness_shared.harness_plans SET content_hash='changed' WHERE plan_slug='repair-plan'`;
+      if(kind==='line-version')await db.sql`UPDATE harness_shared.plan_items SET item_id=item_id`;
+      if(kind==='node-version')await db.sql`UPDATE harness_shared.work_items SET title='changed'`;
+      if(kind==='owner')await db.sql`UPDATE harness_shared.work_items SET taken_by='su-peer'`;
+      if(kind==='claim-hold')await db.sql`UPDATE harness_shared.work_items SET payload='{"_claimHold":true}'::jsonb`;
+      if(kind==='admission-hold')await db.sql`UPDATE harness_shared.work_items SET payload='{"admissionHold":true}'::jsonb`;
+      expect(await checkExecutionPlan(binding,WS)).toEqual(['canonical_plan_binding_stale']);
+    });
+  it('reads canonical identity without hydrating dependency edges', async () => {
+    await seed();
+    // Native authority has a bounded response deadline. An unrelated graph
+    // projection must not be a prerequisite for the exact identity witness.
+    await db.sql`ALTER TABLE harness_shared.work_item_deps RENAME TO unrelated_deps`;
+    try {
+      const [binding] = await readExecutionPlanBindings(OWNER,WS);
+      expect(binding).toMatchObject({canonical:{itemId:'EI-original',lineId:'P-001',planHash:'repair-hash'}});
+      expect(await checkExecutionPlan(binding,WS)).toEqual(['plan_not_started']);
+    } finally {
+      await db.sql`ALTER TABLE harness_shared.unrelated_deps RENAME TO work_item_deps`;
+    }
   });
   it('retains historical fallback only when both canonical fields are absent',async()=>{
     await seed();
