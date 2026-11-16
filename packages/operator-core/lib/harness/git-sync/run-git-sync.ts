@@ -5906,8 +5906,8 @@ async function publishPrivateIndexCommit(
   const treeRes = await privateGit(['write-tree'], repoPath);
   const tree = treeRes.stdout.trim();
   if (treeRes.code !== 0 || !tree) return { status: 'error', error: `${p.label} failed: ${gitFailureDetail(treeRes)}` };
-  // Ratchet against the exact parent this commit is CAS-published onto (EI-28599921543233667).
-  const validateTree = workspaceLockTreeValidator(p.base ? { inheritFrom: p.base } : {});
+  // Validate this exact publication tree, including any drift inherited from its parent.
+  const validateTree = workspaceLockTreeValidator();
   try { await validateTree(privateGit, repoPath, tree); }
   catch (error) { return { status: 'error', error: `${p.label} not published: ${error instanceof Error ? error.message : error}` }; }
   // Even an unchanged private tree must prove the inherited base coherent.
@@ -9172,8 +9172,8 @@ async function commitOneRepoWithScratch(
       );
     }
     let committedAny = false;
-    // Inherited HEAD drift must not refuse (or defer) a commit that adds none (EI-28599921543233667).
-    const validateDependencyTree = workspaceLockTreeValidator({ inheritFrom: 'HEAD' });
+    // Dependency deferral may publish only if its retained tree is itself coherent.
+    const validateDependencyTree = workspaceLockTreeValidator();
     // EI-24712906810240170: the post-stage guard for every commit below. A late lock is
     // reported like a pre-stage one (skippedPaths), deduped by path.
     // WI-10006705: an attributed group passes the runner bound to its PRIVATE index, so the
@@ -9869,8 +9869,8 @@ async function pushSelectedHead(
     if (tree.code !== 0 || !/^[a-f0-9]{40,64}$/.test(tree.stdout.trim())) {
       throw new Error(`cannot resolve publication tree: ${tree.stderr || tree.stdout}`);
     }
-    // HEAD is the pushed commit itself; ratchet against its first parent instead.
-    await workspaceLockTreeValidator({ inheritFrom: `${expectedCommit}^1` })(runGit, repoPath, tree.stdout.trim());
+    // Validate the exact transported commit; inherited drift cannot authorize egress.
+    await workspaceLockTreeValidator()(runGit, repoPath, tree.stdout.trim());
     return await runNetworkGitWithGitHubHttpsFallback(
       runGit, ['push', remote, `${expectedCommit}:refs/heads/${branch}`], repoPath, log,
     );

@@ -105,42 +105,13 @@ export function workspaceLockTreeInspector(options: { includeObjectInventory?: b
 // exact reader that authorized them, without retaining a completed sync run.
 const validatorInspectors = new WeakMap<RunGit, ReturnType<typeof workspaceLockTreeInspector>>();
 
-type WorkspaceLockInspect = ReturnType<typeof workspaceLockTreeInspector>;
-
-/** Identity of one lock/manifest disagreement; equal keys mean byte-identical drift. */
-export function workspaceLockMismatchKey(mismatch: {
-  lockfile?: unknown; manifest?: unknown; workspace?: unknown; field?: unknown; differences?: unknown;
-}): string {
-  return JSON.stringify([mismatch.lockfile ?? null, mismatch.manifest ?? null, mismatch.workspace ?? null,
-    mismatch.field ?? null, mismatch.differences ?? null]);
-}
-
-/** The baseline's mismatch keys, or null when no strictly readable baseline exists. */
-async function inheritedMismatchKeys(
-  runGit: RunGit, repoPath: string, ref: string, inspect: WorkspaceLockInspect,
-): Promise<Set<string> | null> {
-  const base = await runGit(['rev-parse', '--verify', '--quiet', `${ref}^{tree}`], repoPath);
-  if (base.code !== 0 || !base.stdout.trim()) return null;
-  try {
-    const inspection = await inspect(runGit, repoPath, base.stdout.trim());
-    if (inspection.errors.length) return null;
-    return new Set(inspection.mismatches.map(workspaceLockMismatchKey));
-  } catch {
-    return null;
-  }
-}
-
 /**
  * An immutable census: a child checkout supplies objects, never its current manifest.
- *
- * `inheritFrom` turns publication checks into a RATCHET (EI-28599921543233667). A
- * mismatch the named commit's tree already carries, byte-identically, is inherited
- * drift, not this candidate's regression. Without it one drifted parent refused every
- * later commit, including the gitlink bumps that cure the drift, and froze the
- * superproject. A new or changed disagreement still refuses, and an unreadable or
- * missing baseline falls back to the strict verdict.
+ * Every published tree must be coherent at its own recursive pins, including when
+ * its parent already carries the same drift. A curing gitlink or lock still passes
+ * because validation observes the complete selected candidate, not its baseline.
  */
-export function workspaceLockTreeValidator(options: { inheritFrom?: string } = {}) {
+export function workspaceLockTreeValidator() {
   return async (runGit: RunGit, repoPath: string, tree: string): Promise<void> => {
     const metadata = await runGit(['ls-tree', '-z', tree, '--', 'package-lock.json', 'npm-shrinkwrap.json', 'package.json', '.gitmodules'], repoPath);
     if (metadata.code !== 0) throw new Error(`dependency tree read failed (ls-tree): ${metadata.stderr}`);
@@ -157,17 +128,6 @@ export function workspaceLockTreeValidator(options: { inheritFrom?: string } = {
       validatorInspectors.set(runGit, inspect);
     }
     const candidate = await inspect(runGit, repoPath, peeled.stdout.trim());
-    if (options.inheritFrom && candidate.mismatches.length && !candidate.errors.length) {
-      const inherited = await inheritedMismatchKeys(runGit, repoPath, options.inheritFrom, inspect);
-      if (inherited) {
-        assertWorkspaceLockInspection({
-          ...candidate,
-          mismatches: candidate.mismatches.filter((m: Parameters<typeof workspaceLockMismatchKey>[0]) =>
-            !inherited.has(workspaceLockMismatchKey(m))),
-        });
-        return;
-      }
-    }
     assertWorkspaceLockInspection(candidate);
   };
 }

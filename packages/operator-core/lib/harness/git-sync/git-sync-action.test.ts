@@ -4404,6 +4404,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     vi.useFakeTimers();
     vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS', '25');
     vi.stubEnv('PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS', '100');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     resetScheduledRegistry();
     let heartbeat!: () => void;
     let heartbeatStopped = false;
@@ -4438,13 +4439,15 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     );
     try {
       await started;
-      // Outlive both action deadlines and the 15s DB-cleanup budget: neither
-      // timeout is a child-exit receipt, and leases must still be renewed.
+      // Outlive both action deadlines and the 15s cleanup budget. The child is
+      // still not proven exited, so the lock row must remain; but renewal MUST
+      // stop now so TTL is a real final bound rather than extending forever.
       await vi.advanceTimersByTimeAsync(20_100);
       expect(childSignal.aborted).toBe(true);
-      expect(returned).toBe(false);
+      expect(returned).toBe(true);
       expect(releasedResources()).toEqual([]);
-      expect(heartbeatStopped).toBe(false);
+      expect(heartbeatStopped).toBe(true);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('lock cleanup exceeded 15000ms'));
       // EI-25430105870893148: the deadline aborts the child but is not an
       // exit receipt. An inactive marker makes routines:list report idle and
       // safe_to_restart while this same child still holds repository leases.
@@ -4470,9 +4473,10 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       heartbeat();
       await Promise.resolve();
       await Promise.resolve();
-      expect(tryHeartbeatResourceMock.mock.calls.length).toBeGreaterThan(renewals);
+      expect(tryHeartbeatResourceMock.mock.calls.length).toBe(renewals);
       finishChild();
       expect(await running).toBeInstanceOf(GitSyncActionTimeoutError);
+      await vi.advanceTimersByTimeAsync(0);
       expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
       expect(heartbeatStopped).toBe(true);
       expect(gitSyncActivityPatches().at(-1)).toMatchObject({ active: false, phase: 'error' });
@@ -4485,6 +4489,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       resetScheduledRegistry();
       vi.useRealTimers();
       vi.unstubAllEnvs();
+      warn.mockRestore();
     }
   });
 

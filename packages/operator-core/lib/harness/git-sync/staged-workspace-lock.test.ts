@@ -247,46 +247,50 @@ describe('commit-boundary workspace dependency coherence (real git)', () => {
     expect(git(repo, 'diff', '--cached', '--name-only')).toBe('independent.txt');
   });
 
-  describe('inheritFrom ratchet against a drifted parent (EI-28599921543233667)', () => {
+  describe('strict coherence against a drifted parent (R1)', () => {
     // The parent publishes lock 2.0.0 while its pin still selects manifest 1.0.0.
     const commitDriftedParent = () => {
       git(repo, 'add', 'package-lock.json');
       git(repo, 'commit', '-m', 'incoherent historical parent');
     };
-    const ratchet = () => workspaceLockTreeValidator({ inheritFrom: 'HEAD' });
 
-    it('publishes a source-only candidate that merely inherits the parent drift', async () => {
+    it('refuses a source-only candidate that inherits the parent drift', async () => {
       commitDriftedParent();
       writeFileSync(join(repo, 'independent.txt'), 'source\n');
       git(repo, 'add', 'independent.txt');
       const tree = git(repo, 'write-tree');
       await expect(workspaceLockTreeValidator()(runGit, repo, tree)).rejects.toThrow('NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT');
-      await expect(ratchet()(runGit, repo, tree)).resolves.toBeUndefined();
+      expect(git(repo, 'write-tree')).toBe(tree);
+      expect(git(repo, 'diff', '--cached', '--name-only')).toBe('independent.txt');
     });
 
-    it('lets the curing gitlink through the guard instead of deferring it forever', async () => {
+    it('lets a coherent curing gitlink through without deferring unrelated source', async () => {
       commitDriftedParent();
       writeFileSync(join(repo, 'independent.txt'), 'source\n');
       git(repo, 'add', 'libs/app', 'independent.txt');
-      expect(await guardStagedWorkspaceLock(runGit, repo, ratchet())).toEqual({ ok: true, held: [] });
+      expect(await guardStagedWorkspaceLock(runGit, repo)).toEqual({ ok: true, held: [] });
       expect(git(repo, 'diff', '--cached', '--name-only').split('\n').sort()).toEqual(['independent.txt', 'libs/app']);
     });
 
-    it('still refuses drift the candidate changes, and defers it onto the inherited base', async () => {
+    it('refuses deferral when restoring dependency paths leaves the inherited base incoherent', async () => {
       commitDriftedParent();
       writeFileSync(join(repo, 'package-lock.json'), lock('3.0.0'));
       writeFileSync(join(repo, 'independent.txt'), 'source\n');
       git(repo, 'add', 'package-lock.json', 'independent.txt');
-      await expect(ratchet()(runGit, repo, git(repo, 'write-tree'))).rejects.toThrow('NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT');
-      expect(await guardStagedWorkspaceLock(runGit, repo, ratchet())).toMatchObject({ ok: true, held: ['package-lock.json'] });
+      await expect(workspaceLockTreeValidator()(runGit, repo, git(repo, 'write-tree'))).rejects.toThrow('NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT');
+      expect(await guardStagedWorkspaceLock(runGit, repo)).toMatchObject({ ok: false,
+        error: expect.stringContaining('dependency deferral did not restore a coherent tree') });
       expect(git(repo, 'diff', '--cached', '--name-only')).toBe('independent.txt');
     });
 
-    it('falls back to the strict verdict when the baseline cannot be resolved', async () => {
+    it('accepts a lock-only repair at the original pin despite newer child checkout bytes', async () => {
       commitDriftedParent();
-      const tree = git(repo, 'write-tree');
-      await expect(workspaceLockTreeValidator({ inheritFrom: 'refs/heads/no-such-baseline' })(runGit, repo, tree))
-        .rejects.toThrow('NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT');
+      writeFileSync(join(repo, 'package-lock.json'), lock('1.0.0'));
+      writeFileSync(join(repo, 'independent.txt'), 'source\n');
+      git(repo, 'add', 'package-lock.json', 'independent.txt');
+      await expect(workspaceLockTreeValidator()(runGit, repo, git(repo, 'write-tree'))).resolves.toBeUndefined();
+      expect(await guardStagedWorkspaceLock(runGit, repo)).toEqual({ ok: true, held: [] });
+      expect(git(repo, 'diff', '--cached', '--name-only').split('\n').sort()).toEqual(['independent.txt', 'package-lock.json']);
     });
   });
 

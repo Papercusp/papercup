@@ -391,6 +391,39 @@ describe('immutable remote metadata publication', () => {
     else expect(f.git('--git-dir', f.remote, 'for-each-ref', '--format=%(refname)', 'refs/heads')).toBe('');
   });
 
+  it.each([false, true])('refuses source-only descendants that inherit incoherent metadata (seeded=%s)', async (seeded) => {
+    const f = remoteFixture(seeded);
+    const remoteBefore = seeded ? f.git('--git-dir', f.remote, 'rev-parse', 'refs/heads/main') : null;
+    changeLock(f);
+    writeFileSync(join(f.repo, 'a.txt'), 'committed source over inherited drift\n');
+    f.git('add', 'a.txt');
+    f.git('commit', '-m', 'source-only descendant');
+    const selected = f.git('rev-parse', 'HEAD');
+    const beforePush = vi.fn(async () => {});
+    const result = await runGitSync('test', { ...f.opts, beforePush });
+    expect(result.status).toBe('error');
+    if (result.status === 'error') expect(result.errors.map(e => e.message).join('\n')).toContain('WORKSPACE_LOCK_DRIFT');
+    expect(beforePush).not.toHaveBeenCalled();
+    expect(f.git('rev-parse', 'HEAD')).toBe(selected);
+    if (seeded) expect(f.git('--git-dir', f.remote, 'rev-parse', 'refs/heads/main')).toBe(remoteBefore);
+    else expect(f.git('--git-dir', f.remote, 'for-each-ref', '--format=%(refname)', 'refs/heads')).toBe('');
+  });
+
+  it('refuses a new source-only publication over inherited drift and preserves pending work', async () => {
+    const f = remoteFixture(true);
+    const remoteBefore = f.git('--git-dir', f.remote, 'rev-parse', 'refs/heads/main');
+    const invalid = changeLock(f);
+    writeFileSync(join(f.repo, 'a.txt'), 'pending source over inherited drift\n');
+    const beforePush = vi.fn(async () => {});
+    const result = await runGitSync('test', { ...f.opts, beforePush });
+    expect(result.status).toBe('error');
+    if (result.status === 'error') expect(result.errors.map(e => e.message).join('\n')).toContain('WORKSPACE_LOCK_DRIFT');
+    expect(beforePush).not.toHaveBeenCalled();
+    expect(f.git('rev-parse', 'HEAD')).toBe(invalid);
+    expect(readFileSync(join(f.repo, 'a.txt'), 'utf8')).toBe('pending source over inherited drift\n');
+    expect(f.git('--git-dir', f.remote, 'rev-parse', 'refs/heads/main')).toBe(remoteBefore);
+  });
+
   it('transports only the validated OID when HEAD moves at the final authority boundary', async () => {
     const f = remoteFixture(false);
     const expected = f.git('rev-parse', 'HEAD');

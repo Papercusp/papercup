@@ -4187,11 +4187,24 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   const cleanupLocks = (): Promise<GitSyncActionCleanupResult> => {
     if (lockCleanup) return lockCleanup;
     lockCleanup = (async () => {
-      // Keep renewing leases throughout SIGTERM/SIGKILL and exit verification.
-      // The cleanup budget below bounds DB cleanup only; it cannot certify exit.
-      while (activeGitExecutions.size > 0) await Promise.allSettled([...activeGitExecutions]);
       return new Promise<GitSyncActionCleanupResult>((resolve) => {
         let finished = false;
+        let heartbeatStop: Promise<boolean> | null = null;
+        const stopHeartbeatOnce = (): Promise<boolean> => {
+          if (heartbeatStop) return heartbeatStop;
+          heartbeatStop = stopLockHeartbeat().then(
+            () => true,
+            (error) => {
+              console.warn(
+                `[git-sync] ${slug}: lock heartbeat stop failed during cleanup: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              );
+              return false;
+            },
+          );
+          return heartbeatStop;
+        };
         const finish = (result: GitSyncActionCleanupResult): void => {
           if (finished) return;
           finished = true;
@@ -4203,21 +4216,19 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
             `[git-sync] ${slug}: lock cleanup exceeded ${GIT_SYNC_ACTION_CLEANUP_TIMEOUT_MS}ms; ` +
               'the resource TTL remains the final backstop',
           );
-          finish('timed-out');
+          // The tracked Git command can outlive the action timeout. Stop renewal NOW so
+          // TTL is a real bound instead of being extended forever while we wait for exit.
+          // The continuation below still releases and emits the exact wake if the child
+          // eventually settles before TTL.
+          void stopHeartbeatOnce().finally(() => finish('timed-out'));
         }, GIT_SYNC_ACTION_CLEANUP_TIMEOUT_MS);
         timer.unref?.();
         void (async () => {
-          let complete = true;
-          try {
-            await stopLockHeartbeat();
-          } catch (error) {
-            complete = false;
-            console.warn(
-              `[git-sync] ${slug}: lock heartbeat stop failed during cleanup: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            );
-          }
+          // Keep renewal only until the bounded cleanup deadline above. Waiting for the
+          // real child exit remains necessary before deleting the lock row: releasing it
+          // while Git is still writing would let a successor race the same checkout.
+          while (activeGitExecutions.size > 0) await Promise.allSettled([...activeGitExecutions]);
+          let complete = await stopHeartbeatOnce();
           if (errorAwaitingGitExit) {
             // EI-25430105870893148: an action error is not a child-exit
             // receipt. Publish terminal activity only after the
