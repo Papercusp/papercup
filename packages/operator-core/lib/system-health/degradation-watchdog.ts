@@ -352,7 +352,7 @@ registerDegradationMechanism({
 });
 registerDegradationMechanism({
   mechanism: 'rerank-worker',
-  description: 'Cross-encoder requests completed on the worker rather than retrying inference on the calling thread.',
+  description: 'Cross-encoder requests completed on the worker rather than failing (no calling-thread retry since WI-6554700010050758).',
 });
 registerDegradationMechanism({
   mechanism: 'embed-sidecar-respawn',
