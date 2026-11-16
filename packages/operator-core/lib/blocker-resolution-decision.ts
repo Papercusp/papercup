@@ -339,6 +339,9 @@ export async function validateBlockerDecisionEvidence(
     /** Host-only scope for a system plan-line park when the exact writer can
      * only retain blockers (plain release) or add a dependency edge. */
     unmeasuredParkedPlanLaneDeferral?: UnmeasuredRuntimeScope;
+    /** The current recorded `defer` this decision supersedes; its recheckRef is
+     * already one of obligationRefs. Host-read from the stored record, never the request. */
+    priorDeferral?: Extract<BlockerDecisionInput, { disposition: 'defer' }>['deferral'];
     readEvidence: (ref: BlockerEvidenceRef) => Promise<BlockerEvidenceMeasurement>;
   },
 ): Promise<{ ok: true } | BlockerDecisionProblem> {
@@ -424,6 +427,22 @@ export async function validateBlockerDecisionEvidence(
     return missing.length ? refuse(missing) : { ok: true };
   }
   const value = (ref: BlockerEvidenceRef) => measured.get(evidenceKey(ref)) as Extract<BlockerEvidenceMeasurement, { status: 'available' }>;
+  /** EI-28983003176099299: an `active-peer` deferral's recheck stops binding a
+   * self-resolution once its premise lapses, re-measured on the deferral's own reason
+   * facts: none is still a pending dependency held by a live custodian (released, or the
+   * custodian's presence went stale). The dependency's own item keeps its unresolved
+   * work. Any unmeasured fact keeps the obligation (fails closed). */
+  const lapsedPeerCustody = async (ref: BlockerEvidenceRef): Promise<boolean> => {
+    const prior = context.priorDeferral;
+    if (prior?.reason !== 'active-peer' || evidenceKey(ref) !== evidenceKey(prior.recheckRef)) return false;
+    const facts = await Promise.all(prior.reasonEvidenceRefs.map(async (fact): Promise<BlockerEvidenceMeasurement> => {
+      const known = measured.get(evidenceKey(fact));
+      if (known) return known;
+      try { return await context.readEvidence(fact); } catch { return { status: 'unknown', detail: 'canonical reader failed' }; }
+    }));
+    return facts.every((fact) => fact.status === 'available') &&
+      !facts.some((fact) => fact.status === 'available' && fact.condition === 'pending' && Boolean(fact.liveOwnerId));
+  };
   const availableObligations = context.obligationRefs.filter(ref => !retainedParkedPlanLane.has(evidenceKey(ref)));
   const conditionIdentities = new Set(availableObligations.map(ref => value(ref).conditionIdentity).filter(Boolean));
   const relevant = (ref: BlockerEvidenceRef) => {
@@ -442,8 +461,16 @@ export async function validateBlockerDecisionEvidence(
         (Boolean(value(ref).conditionIdentity) && relatedIdentities.has(value(ref).conditionIdentity))))) {
       missing.push('measured verification bound to this work item or its canonical blocker condition');
     }
+    const boundVerification = input.verification.evidenceRefs.some((ref) =>
+      value(ref).condition === 'satisfied' && value(ref).subjectWorkItemId === context.workItemId);
     for (const ref of context.obligationRefs) {
-      if (value(ref).condition !== 'satisfied') missing.push(`unresolved canonical condition ${ref.kind}:${ref.ref}`);
+      if (value(ref).condition === 'satisfied') continue;
+      if (await lapsedPeerCustody(ref)) {
+        if (boundVerification && input.evidenceRefs.some((cited) => evidenceKey(cited) === evidenceKey(ref))) continue;
+        missing.push(`lapsed active-peer recheck ${ref.kind}:${ref.ref}: supersede it by citing it in evidenceRefs with satisfied verification bound to ${context.workItemId}`);
+        continue;
+      }
+      missing.push(`unresolved canonical condition ${ref.kind}:${ref.ref}`);
     }
   } else if (input.disposition === 'absorb') {
     if (!context.allowAbsorption) missing.push('absorption requires the canonical plan drop and graph transaction');

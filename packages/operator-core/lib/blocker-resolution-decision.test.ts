@@ -223,6 +223,45 @@ describe('canonical blocker decision evidence', () => {
     });
     expect(result).toMatchObject({ ok: false, missing: [expect.stringContaining('unresolved canonical condition')] });
   });
+  it('supersedes a lapsed active-peer recheck only with a citation and verification bound to this item (EI-28983003176099299)', async () => {
+    const recheck = { kind: 'work-item' as const, ref: 'EI-2' };
+    const proof = { kind: 'test' as const, ref: 'testing:runs:group-1:7' };
+    const priorDeferral: Extract<BlockerDecisionInput, { disposition: 'defer' }>['deferral'] = {
+      reason: 'active-peer', responsibleParty: 'su-b', nextAction: 'su-b lands EI-2',
+      reasonEvidenceRefs: [recheck], recheckRef: recheck,
+    };
+    const input = resolve() as Extract<BlockerDecisionInput, { disposition: 'self_resolve' }>;
+    input.verification.evidenceRefs = [proof];
+    input.evidenceRefs = [ref, recheck];
+    const scoped = (custody: Record<string, unknown>, opts: { bound?: string; deferral?: typeof priorDeferral } = {}) => ({
+      ...context(async (r): Promise<BlockerEvidenceMeasurement> => r.ref === recheck.ref
+        ? { ...pending, ...custody } as BlockerEvidenceMeasurement
+        : r.ref === proof.ref ? { status: 'available', condition: 'satisfied', subjectWorkItemId: opts.bound ?? 'WI-1' }
+          : { status: 'available', condition: 'satisfied' }),
+      obligationRefs: [recheck], priorDeferral: opts.deferral ?? priorDeferral,
+    });
+    const lapsed = { liveOwnerId: undefined };
+    // The named custodian, or a new live custodian, still holds the dependency: it binds.
+    expect(await validateBlockerDecisionEvidence(input, scoped({}))).toMatchObject({
+      ok: false, missing: [expect.stringContaining('unresolved canonical condition work-item:EI-2')] });
+    expect((await validateBlockerDecisionEvidence(input, scoped({ liveOwnerId: 'su-c', responsibleParty: 'su-c' }))).ok).toBe(false);
+    // Custody lapsed (custodian presence went stale, or the item was released): superseded.
+    expect(await validateBlockerDecisionEvidence(input, scoped(lapsed))).toEqual({ ok: true });
+    expect(await validateBlockerDecisionEvidence(input, scoped({ ...lapsed, responsibleParty: undefined }))).toEqual({ ok: true });
+    // ...but never silently, never on unbound proof, and never for a non-custody deferral.
+    expect(await validateBlockerDecisionEvidence({ ...input, evidenceRefs: [ref] }, scoped(lapsed))).toMatchObject({
+      ok: false, missing: [expect.stringContaining('lapsed active-peer recheck work-item:EI-2')] });
+    expect((await validateBlockerDecisionEvidence(input, scoped(lapsed, { bound: 'WI-9' }))).ok).toBe(false);
+    expect((await validateBlockerDecisionEvidence(input, scoped(lapsed, {
+      deferral: { ...priorDeferral, reason: 'external-dependency' } }))).ok).toBe(false);
+    expect((await validateBlockerDecisionEvidence(input, { ...scoped(lapsed), priorDeferral: undefined })).ok).toBe(false);
+    // An unmeasurable custody fact keeps the obligation (fails closed).
+    const unreadable = { ...scoped(lapsed), priorDeferral: { ...priorDeferral,
+      reasonEvidenceRefs: [{ kind: 'work-item' as const, ref: 'EI-404' }] } };
+    const readEvidence = unreadable.readEvidence;
+    expect((await validateBlockerDecisionEvidence(input, { ...unreadable,
+      readEvidence: async (r) => r.ref === 'EI-404' ? { status: 'unknown', detail: 'reader down' } : readEvidence(r) })).ok).toBe(false);
+  });
   it('does not use verification-only related conditions to justify a deferral', async () => {
     const result = await validateBlockerDecisionEvidence(defer(), {
       ...context(async () => pending), obligationRefs: [], relatedConditionRefs: [ref],

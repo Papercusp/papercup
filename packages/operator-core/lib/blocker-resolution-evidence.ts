@@ -221,9 +221,9 @@ export async function preflightBlockerDecision(
       else obligationRefs.push({ kind: 'event', ref: blocker.ref });
     }
     const prior = readBlockerResolution(item.payload);
-    if (prior.status === 'recorded' && prior.current.decision.disposition === 'defer') {
-      obligationRefs.push(prior.current.decision.deferral.recheckRef);
-    }
+    const priorDeferral = prior.status === 'recorded' && prior.current.decision.disposition === 'defer'
+      ? prior.current.decision.deferral : undefined;
+    if (priorDeferral) obligationRefs.push(priorDeferral.recheckRef);
     const { ALL_TERMINAL_STATUSES } = await import('./work-item-blocking');
     const custodyScope = !options.requireResolution && !options.allowAbsorption &&
       !additionalConditions.length && !ALL_TERMINAL_STATUSES.has(item.state) &&
@@ -252,7 +252,7 @@ export async function preflightBlockerDecision(
       retainedReservationRelease: prepared.record.decision.disposition === 'defer' ? plainReleaseScope : undefined,
       retainedParkedPlanLaneDeferral: prepared.record.decision.disposition === 'defer' ? parkedPlanLaneScope : undefined });
     const checked = await validateBlockerDecisionEvidence(prepared.record.decision, {
-      ownerId: context.ownerId, workItemId: item.id, obligationRefs, relatedConditionRefs,
+      ownerId: context.ownerId, workItemId: item.id, obligationRefs, relatedConditionRefs, priorDeferral,
       allowAbsorption: options.allowAbsorption, unmeasuredRuntimeDeferral: plainReleaseScope,
       unmeasuredParkedPlanLaneDeferral: parkedPlanLaneScope, readEvidence,
     });
