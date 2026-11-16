@@ -9,7 +9,8 @@ import { CanonicalVectorStore, configureMemory, EMBEDDER_DIM_SPECS,
   MEMORY_VECTOR_STORAGE_PROFILES, relinkEntities } from '@papercusp/memory';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 // eslint-disable-next-line import/no-relative-packages -- inject only client construction, retaining the installed SDK
-import { getMemoryClient } from '../../../../libs/generic/memory/src/mem0-client';
+import { getMemoryClient, type MemoryClient } from '../../../../libs/generic/memory/src/mem0-client';
+import { mockResolvedTyped } from '../testing/typed-mock';
 
 vi.mock('../../../../libs/generic/memory/src/mem0-client', async original => ({
   ...await original<typeof import('../../../../libs/generic/memory/src/mem0-client')>(),
@@ -28,7 +29,10 @@ const junkVector = Array.from({ length: profile.targetDims }, (_, i) => i === 1 
 describe('entity relink (real PG, canonical store and installed mem0 SDK)', () => {
   let db: FreshPgDb;
   let store: CanonicalVectorStore;
-  let sdk: { embedder: { embed: (text: string) => Promise<number[]> }; getEntityStore: () => Promise<CanonicalVectorStore> };
+  let sdk: MemoryClient & {
+    embedder: { embed: (text: string) => Promise<number[]> };
+    getEntityStore: () => Promise<CanonicalVectorStore>;
+  };
 
   async function seed(id: string, payload: Record<string, unknown>) {
     await db.sql.unsafe('INSERT INTO harness_shared.memory_canonical (id,payload) VALUES ($1,$2::text::jsonb)',
@@ -101,10 +105,22 @@ describe('entity relink (real PG, canonical store and installed mem0 SDK)', () =
       resolveEmbedder: async () => ({ mode: 'disabled' }), buildEmbedderForMode: async () => async () => vector,
       schema: 'harness_shared' });
     const { Memory } = await import('mem0ai/oss');
-    sdk = Object.assign(Object.create(Memory.prototype), {
+    // Only the real entity linker may run. Public client calls must fail rather
+    // than reaching unconfigured SDK dependencies or providers.
+    const unexpectedClientCall = async (): Promise<never> => {
+      throw new Error('Unexpected public memory client call during entity relink');
+    };
+    sdk = {
+      add: vi.fn<MemoryClient['add']>(unexpectedClientCall),
+      delete: vi.fn<MemoryClient['delete']>(unexpectedClientCall),
+      get: vi.fn<MemoryClient['get']>(unexpectedClientCall),
+      getAll: vi.fn<MemoryClient['getAll']>(unexpectedClientCall),
+      search: vi.fn<MemoryClient['search']>(unexpectedClientCall),
+      update: vi.fn<MemoryClient['update']>(unexpectedClientCall),
       embedder: { embed: async () => vector }, getEntityStore: async () => store,
-    });
-    vi.mocked(getMemoryClient).mockResolvedValue(sdk as never);
+    };
+    Object.setPrototypeOf(sdk, Memory.prototype);
+    mockResolvedTyped(vi.mocked(getMemoryClient), sdk);
     await seed(M1, { data: '"Harrier"', user_id: 'relink-test' });
     await seed(JUNK, { data: 'just before end of', user_id: 'relink-test', entityType: 'COMPOUND', linkedMemoryIds: [M1] });
     expect(await payload(JUNK)).toMatchObject({ entityType: 'COMPOUND', linkedMemoryIds: [M1] });
