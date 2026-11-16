@@ -15,11 +15,17 @@ import type postgres from 'postgres';
 import { teardownTestPg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  resolveSessionStates: vi.fn(async () => new Map()),
+}));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
+vi.mock('../../agent-tools/coordination/liveness-oracle', () => ({
+  resolveSessionStates: h.resolveSessionStates,
+}));
 
 const { createIssue, claimIssue } = await import('../../issues-engineer');
 const { claimWorkItem, getWorkItem, mergeWorkItemPayload, releaseWorkItem } = await import('../../work-items');
@@ -173,6 +179,49 @@ describe('reviewer-owned correction through real PostgreSQL and claim admission'
       human_grade: null, human_feedback: null, graded_by: null, graded_at: null }]);
     const base = await readAgentReviewCorrectionBase({ id: seed.id, harness: seed.harness, workspaceId: seed.workspace });
     expect(base).toMatchObject({ available: true, correctionRevision: result.receipt.afterRevision, round: 3 });
+  });
+
+  it.each(['live', 'ended', 'unknown'].flatMap(filerState =>
+    [ADOPTER, null].map(holder => ({ filerState, holder })),
+  ))('corrects with original filer $filerState and custody $holder without a liveness prerequisite', async ({ filerState, holder }) => {
+    // Control the canonical liveness seam, rather than inferring death from GONE's
+    // name. Correction must succeed without consulting it in any of these states.
+    h.resolveSessionStates.mockReset();
+    h.resolveSessionStates.mockResolvedValue(new Map([[GONE, {
+      sessionState: filerState === 'unknown' ? null : filerState,
+    }]]));
+    try {
+      const seed = await fixture(holder);
+      const input = await request(seed);
+      const before = await snapshot(seed);
+      const result = await correctAgentReview(input);
+      expect(result).toMatchObject({ corrected: true, replayed: false });
+      if (!result.corrected) return;
+
+      const persisted = await snapshot(seed);
+      expect(persisted.item).toMatchObject({
+        title: input.correction.changes.title,
+        summary: input.correction.changes.summary,
+        taken_by: null,
+        payload: { _ei: { created_by: GONE }, agentReview: {
+          submittedBy: GONE, status: 'pending', round: 3, materialAuthors: [ADOPTER],
+          correctionHistory: [{ actor: ADOPTER, classification: 'material',
+            beforeSource: { kind: before.item.item_kind, title: before.item.title, summary: before.item.summary },
+            priorVerdict: { human_grade: 2, human_feedback: 'Missing evidence' } }],
+          correctionReceipts: [result.receipt],
+        }, implementationReadiness: { status: 'unknown' } },
+      });
+      expect(persisted.ledger).toMatchObject([{
+        title: input.correction.changes.title, created_by: GONE,
+        human_grade: null, human_feedback: null, graded_by: null, graded_at: null,
+      }]);
+      const base = await readAgentReviewCorrectionBase({ id: seed.id, harness: seed.harness, workspaceId: seed.workspace });
+      expect(base).toMatchObject({ available: true, round: 3, correctionRevision: result.receipt.afterRevision,
+        item: { title: input.correction.changes.title, summary: input.correction.changes.summary } });
+      expect(h.resolveSessionStates).not.toHaveBeenCalled();
+    } finally {
+      h.resolveSessionStates.mockReset();
+    }
   });
 
   it('replays the entire historical receipt after a later round/custody change; changed requests conflict', async () => {
