@@ -29,7 +29,8 @@ const CALLER_SCRIPT = [
 ].join('\n');
 
 it('runs a caller against an operator bundled from the working tree on private ports, then tears it down', async context => {
-  const runId = await recordIsolatedIntegrationProof({ root,
+  const runId = await recordIsolatedIntegrationProof({ root, signal: context.signal,
+    minimumFileRunTimeoutMs: workerOptions.testTimeoutMs,
     filePath: 'packages/operator-core/lib/working-tree-operator-api.integration.test.ts',
     sourcePaths: ['scripts/operator-api-working-tree.mjs', 'scripts/with-test-pg.mjs',
       'scripts/lib/with-test-pg-env.mjs', 'scripts/lib/with-test-pg-cleanup.mjs',
@@ -52,7 +53,7 @@ it('runs a caller against an operator bundled from the working tree on private p
         '--', process.execPath, '--input-type=module', '-e', CALLER_SCRIPT,
       ], { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);
-      const result = await captureIsolatedWorker(child, evidenceDir, workerOptions);
+      const result = await captureIsolatedWorker(child, evidenceDir, { ...workerOptions, signal: context.signal });
       expect(result, result.output.slice(-12_000)).toMatchObject({ code: 0, signal: null,
         timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
 

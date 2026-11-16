@@ -176,11 +176,26 @@ describe('isolated proof enclosing file deadline', () => {
     }
   });
 
-  it('admits the composed worker budget exactly and refuses one millisecond less', () => {
-    const { testTimeoutMs } = isolatedWorkerOptions(480_000, {});
+  it.each([480_000, 600_000])('admits the composed %ims worker budget exactly and refuses one millisecond less', executeMs => {
+    const { testTimeoutMs } = isolatedWorkerOptions(executeMs, {});
     expect(() => assertIsolatedFileRunBudget(testTimeoutMs,
       { PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(testTimeoutMs) })).not.toThrow();
     expect(() => assertIsolatedFileRunBudget(testTimeoutMs,
+      { PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(testTimeoutMs + 1) })).not.toThrow();
+    expect(() => assertIsolatedFileRunBudget(testTimeoutMs,
       { PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(testTimeoutMs - 1) })).toThrow('enclosing router has');
+  });
+
+  it('refuses an undersized working-tree API parent before allocating a private runtime', async () => {
+    const worker = isolatedWorkerOptions(600_000, {});
+    const execute = vi.fn();
+    vi.stubEnv('PAPERCUSP_TEST_FILE_TIMEOUT_MS', String(worker.testTimeoutMs - 1));
+    try {
+      await expect(recordIsolatedIntegrationProof({ root: '/must-not-allocate-working-tree-api-proof',
+        filePath: 'working-tree-operator-api.integration.test.ts', sourcePaths: [],
+        minimumFileRunTimeoutMs: worker.testTimeoutMs, execute,
+      })).rejects.toThrow(`Isolated proof requires PAPERCUSP_TEST_FILE_TIMEOUT_MS >= ${worker.testTimeoutMs}`);
+      expect(execute).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
   });
 });
