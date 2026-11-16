@@ -2217,6 +2217,14 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // P-008: notification aliases and wrappers cross workspace boundaries.
     workspace: "@papercusp/operator-core",
     script: "lint:fire-and-forget-classification",
+    // dbos-durability-right-sizing-2026-10-21#D-018: the guard judges census membership
+    // only for the change under review (drift in untouched files is reported, not failed).
+    // forwardBase hands it this runner's authoritative base, and the guard derives the
+    // window itself, diffing every submodule inside its own repository. Deliberately NOT
+    // forwardChangedPaths: a superproject diff names a submodule change only by its
+    // gitlink path, which no census file carries, so every submodule source change would
+    // go unjudged (EI-28973270750407333).
+    forwardBase: true,
     appliesTo: (f) => /\.[cm]?[jt]sx?$/.test(f) ||
       /(?:^|\/)(?:package|tsconfig[^/]*)\.json$/.test(f) ||
       f === "scripts/fire-and-forget-classification.json" || f === ".gitmodules",
