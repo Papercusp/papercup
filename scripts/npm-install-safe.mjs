@@ -68,11 +68,12 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { constants as osConstants, tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
@@ -2706,20 +2707,82 @@ export function normalizeNpmArgs(argv) {
  * Build the environment for npm children without changing the parent process.
  * The offline override is deliberately opt-in: ordinary installs retain an
  * explicit caller setting (including `ONNXRUNTIME_NODE_INSTALL=skip`).
+ * `nodeDir` (from createPinnedNodeDir) goes first on PATH so dependency lifecycle
+ * scripts run the pinned node; without it the caller's PATH passes through unchanged.
  */
 export function npmChildEnv({
   env = process.env,
   offlineSafe = false,
+  nodeDir,
 } = {}) {
   const hasExplicitInstallSetting =
     Object.prototype.hasOwnProperty.call(env, "ONNXRUNTIME_NODE_INSTALL") &&
     env.ONNXRUNTIME_NODE_INSTALL !== undefined;
   return {
     ...env,
+    ...(nodeDir ? { PATH: pinnedNodePath(env.PATH, nodeDir) } : {}),
     ...(offlineSafe && !hasExplicitInstallSetting
       ? { ONNXRUNTIME_NODE_INSTALL: "skip" }
       : {}),
   };
+}
+
+/** Native addons (better-sqlite3) are compiled by dependency lifecycle scripts that
+ * resolve `node` through PATH — npm's node-gyp-bin wrapper runs `node node-gyp.js`
+ * and prebuild-install is `#!/usr/bin/env node` — NOT through the node running npm.
+ * A caller whose PATH reaches another Node major first (brew's Cellar/node/26.7.0 via
+ * opt/node, an nvm 22 shell, an npx `node` package) therefore configures the shared
+ * tree against that major's headers: config.gypi node_module_version 147 under a
+ * Node 25 pin (WI-6554700010049471), and once such a build links, an ABI-147
+ * better_sqlite3.node that no Node 25 consumer can load (WI-6554700010049444).
+ * `nodeDir` holds ONLY a `node` link to the pinned runtime (createPinnedNodeDir).
+ * Prepending dirname(process.execPath) instead would also put that install's npm,
+ * npx and corepack ahead of the caller's: it changes which npm runs, and it shadows
+ * the npm shim every install:safe fixture puts on PATH. */
+export function pinnedNodePath(callerPath, nodeDir) {
+  const rest = (callerPath ?? "")
+    .split(delimiter)
+    .filter((entry) => entry !== "" && entry !== nodeDir);
+  return [nodeDir, ...rest].join(delimiter);
+}
+
+/** A private per-run directory whose only entry is `node` → execPath, for
+ * pinnedNodePath. A symlink, not a script, so a noexec tmp mount cannot break it.
+ * Returns `{ dir, cleanup }`. When the link cannot be made (for example Windows
+ * without symlink rights) it returns `{ dir: undefined, error, cleanup }` and leaves
+ * nothing behind; the caller then installs with the caller's PATH and must say so. */
+export function createPinnedNodeDir({ execPath = process.execPath, tmpRoot = tmpdir() } = {}) {
+  let dir;
+  try {
+    dir = mkdtempSync(join(tmpRoot, "npm-install-safe-node-"));
+    symlinkSync(execPath, join(dir, process.platform === "win32" ? "node.exe" : "node"));
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  } catch (error) {
+    if (dir !== undefined) rmSync(dir, { recursive: true, force: true });
+    return { dir: undefined, error, cleanup: () => {} };
+  }
+}
+
+/** The repo pins one Node major in .nvmrc (ABI 141 for 25). A native rebuild under any
+ * other major produces addons the pinned runtime cannot load, so refuse before npm
+ * runs instead of discovering it at load time. A missing or non-numeric .nvmrc (an
+ * alias such as `lts/*`) names no major, so it is not enforced. */
+export function assertInstallNodeMatchesPin({ repoRoot, version = process.versions.node, execPath = process.execPath }) {
+  const nvmrc = join(repoRoot, ".nvmrc");
+  if (!existsSync(nvmrc)) return { enforced: false, reason: "no-nvmrc" };
+  const pin = readFileSync(nvmrc, "utf8").trim().replace(/^v/, "");
+  const pinnedMajor = pin.split(".")[0];
+  if (!/^\d+$/.test(pinnedMajor)) return { enforced: false, reason: "non-numeric-pin", pin };
+  const runningMajor = String(version).replace(/^v/, "").split(".")[0];
+  if (runningMajor !== pinnedMajor) {
+    throw new Error(
+      `install:safe refused: it is running under Node ${version} (${execPath}) but ${nvmrc} pins Node ${pinnedMajor}. ` +
+        `Dependency lifecycle scripts would compile native addons (better-sqlite3) for the wrong ABI and break every ` +
+        `Node ${pinnedMajor} consumer of this tree (WI-6554700010049471). Re-run with the pinned node, e.g. ` +
+        `\`<node ${pinnedMajor}> scripts/npm-install-safe.mjs ...\`, or put Node ${pinnedMajor} first on PATH.`,
+    );
+  }
+  return { enforced: true, pinnedMajor, runningMajor };
 }
 
 /** A separately locked project can still match an enclosing npm workspace.
@@ -3126,11 +3189,28 @@ export async function main(argv = process.argv.slice(2)) {
   const { repoRoot } = parsed;
   const npmArgs = isolateNestedProjectInstallArgs(repoRoot, developmentInstallArgs(repoRoot, parsed.npmArgs));
   assertPatchPostimageGitSource({ repoRoot, npmArgs });
+  assertInstallNodeMatchesPin({ repoRoot });
+  const pinnedNode = createPinnedNodeDir();
+  if (pinnedNode.error) {
+    console.error(
+      `NPM_INSTALL_SAFE_NODE_PIN_UNAVAILABLE: ${pinnedNode.error.message}; dependency lifecycle ` +
+        "scripts will resolve `node` through the caller's PATH (WI-6554700010049471).",
+    );
+  }
+  try {
+    return await installWithPinnedNode({ parsed, repoRoot, npmArgs, nodeDir: pinnedNode.dir });
+  } finally {
+    pinnedNode.cleanup();
+  }
+}
+
+async function installWithPinnedNode({ parsed, repoRoot, npmArgs, nodeDir }) {
   const lockName = repoLockName(repoRoot);
   const npmEnv = {
     ...npmChildEnv({
       env: process.env,
       offlineSafe: parsed.offlineSafe === true,
+      nodeDir,
     }),
     PAPERCUSP_INSTALL_SAFE_ACTIVE: "1",
     PAPERCUSP_INSTALL_ATTRIBUTION_ID: randomUUID(),

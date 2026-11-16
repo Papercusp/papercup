@@ -1429,11 +1429,13 @@ export function prepareWorkspaceExports(workRoot, workspacePaths, options = {}) 
     // scope. Their assets need package-local dependencies we did not select.
     const assetLifecycle = prepareAssets && (!assetRoots.size || assetRoots.has(resolve(packageRoot))) &&
       /\bsetup-[a-z0-9-]+-runtime\b/.test(manifest.scripts?.postinstall ?? '');
-    if (!needsBuild && !assetLifecycle) continue;
-    if (assetLifecycle && sourceRoot) {
+    // A selected core test can prepare a nested verifier of the complete app.
+    // Seed its ignored model even when the app's dependency scope and
+    // postinstall lifecycle are not selected. The pinned helper checks the copy.
+    if (prepareAssets && sourceRoot) {
       const setup = join(packageRoot, 'scripts/setup-porcupine-runtime.sh');
       const cachedModel = join(sourceRoot, relative(workRoot, packageRoot), 'public/porcupine/porcupine_params.pv');
-      if (existsSync(setup) && existsSync(cachedModel)) {
+      if (existsSync(setup)) {
         const seed = spawnSync('bash', [setup, '--source', cachedModel], {
           cwd: packageRoot, stdio: 'inherit', env: process.env,
         });
@@ -1442,6 +1444,7 @@ export function prepareWorkspaceExports(workRoot, workspacePaths, options = {}) 
         }
       }
     }
+    if (!needsBuild && !assetLifecycle) continue;
     if (needsBuild && !manifest.scripts?.build) {
       throw new Error(`${manifest.name}: missing runtime export(s) ${missing().join(', ')} and no committed build script`);
     }

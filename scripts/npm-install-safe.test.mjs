@@ -39,6 +39,9 @@ import {
   restoreScopedFlagOnlyLockfileRewrite,
   workspaceSelectorsForNpmArgs,
   npmChildEnv,
+  pinnedNodePath,
+  createPinnedNodeDir,
+  assertInstallNodeMatchesPin,
   normalizeNpmArgs,
   parseCliArgs,
   readChildRssBytes,
@@ -2863,16 +2866,113 @@ test("npmChildEnv overrides onnxruntime postinstall only in offline-safe mode", 
     ...callerEnv,
     ONNXRUNTIME_NODE_INSTALL: "skip",
   });
+  assert.deepEqual(npmChildEnv({ env: callerEnv, offlineSafe: true, nodeDir: "/tmp/pin" }), {
+    ...callerEnv,
+    PATH: "/tmp/pin:/bin",
+    ONNXRUNTIME_NODE_INSTALL: "skip",
+  });
   assert.equal(callerEnv.ONNXRUNTIME_NODE_INSTALL, undefined);
+  assert.equal(callerEnv.PATH, "/bin");
 });
 
 test("npmChildEnv preserves an explicit caller install choice in offline-safe mode", () => {
   const callerEnv = { ONNXRUNTIME_NODE_INSTALL: "cuda12" };
 
-  assert.deepEqual(
-    npmChildEnv({ env: callerEnv, offlineSafe: true }),
-    callerEnv,
+  assert.deepEqual(npmChildEnv({ env: callerEnv, offlineSafe: true }), callerEnv);
+  assert.deepEqual(npmChildEnv({ env: callerEnv, offlineSafe: true, nodeDir: "/tmp/pin" }), {
+    ...callerEnv,
+    PATH: "/tmp/pin",
+  });
+});
+
+test("pinnedNodePath puts the pin directory first and drops its later duplicate (WI-6554700010049471)", () => {
+  assert.equal(
+    pinnedNodePath("/home/linuxbrew/.linuxbrew/opt/node/bin:/usr/bin:/tmp/pin", "/tmp/pin"),
+    "/tmp/pin:/home/linuxbrew/.linuxbrew/opt/node/bin:/usr/bin",
   );
+  assert.equal(pinnedNodePath(undefined, "/tmp/pin"), "/tmp/pin");
+  assert.equal(pinnedNodePath("::/usr/bin:", "/tmp/pin"), "/tmp/pin:/usr/bin");
+});
+
+test("createPinnedNodeDir links only node to the running runtime and leaves nothing behind (WI-6554700010049471)", async () => {
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const pin = createPinnedNodeDir();
+  assert.equal(pin.error, undefined);
+  assert.deepEqual(fs.readdirSync(pin.dir), ["node"]);
+  assert.equal(fs.readlinkSync(path.join(pin.dir, "node")), process.execPath);
+  pin.cleanup();
+  assert.equal(fs.existsSync(pin.dir), false);
+
+  const missingRoot = path.join(tmpdir(), `wi471-missing-${process.pid}-${Date.now()}`);
+  const failed = createPinnedNodeDir({ tmpRoot: missingRoot });
+  assert.equal(failed.dir, undefined);
+  assert.equal(failed.error?.code, "ENOENT");
+  assert.equal(fs.existsSync(missingRoot), false);
+  failed.cleanup();
+});
+
+test("a pinned child env runs the pinned node for lifecycle scripts but keeps the caller's npm first (WI-6554700010049471)", async () => {
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const dir = fs.mkdtempSync(path.join(tmpdir(), "wi471-node26-shim-"));
+  const pin = createPinnedNodeDir();
+  try {
+    assert.equal(pin.error, undefined);
+    // The caller PATH reaches a Node 26 `node` first and also carries its own npm, the
+    // way every install:safe fixture injects a fake npm.
+    for (const [name, body] of [["node", "echo 26.7.0"], ["npm", "echo caller-npm"]]) {
+      fs.writeFileSync(path.join(dir, name), `#!/bin/sh\n${body}\n`);
+      fs.chmodSync(path.join(dir, name), 0o755);
+    }
+    const callerEnv = { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH ?? ""}` };
+    const script = "node -p process.versions.node; npm";
+    // Positive control: with the caller PATH as-is, the lifecycle script hits the Node 26 shim.
+    const unpinned = spawnSync("/bin/sh", ["-c", script], { env: callerEnv, encoding: "utf8" });
+    assert.deepEqual(unpinned.stdout.trim().split("\n"), ["26.7.0", "caller-npm"]);
+    const pinned = spawnSync("/bin/sh", ["-c", script], {
+      env: npmChildEnv({ env: callerEnv, nodeDir: pin.dir }),
+      encoding: "utf8",
+    });
+    assert.equal(pinned.status, 0, pinned.stderr);
+    // node is the running runtime; npm is still the caller's, not the one beside process.execPath.
+    assert.deepEqual(pinned.stdout.trim().split("\n"), [process.versions.node, "caller-npm"]);
+  } finally {
+    pin.cleanup();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("assertInstallNodeMatchesPin refuses every major except the .nvmrc pin (N-1 / N / N+1)", async () => {
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const repoRoot = fs.mkdtempSync(path.join(tmpdir(), "wi471-pin-"));
+  try {
+    fs.writeFileSync(path.join(repoRoot, ".nvmrc"), "25\n");
+    assert.throws(() => assertInstallNodeMatchesPin({ repoRoot, version: "24.15.0", execPath: "/x/node" }), /pins Node 25/);
+    assert.deepEqual(assertInstallNodeMatchesPin({ repoRoot, version: "25.9.0", execPath: "/x/node" }), {
+      enforced: true,
+      pinnedMajor: "25",
+      runningMajor: "25",
+    });
+    assert.throws(
+      () => assertInstallNodeMatchesPin({ repoRoot, version: "26.7.0", execPath: "/home/linuxbrew/.linuxbrew/opt/node/bin/node" }),
+      (error) => /Node 26\.7\.0/.test(error.message) && /opt\/node\/bin\/node/.test(error.message) && /WI-6554700010049471/.test(error.message),
+    );
+    fs.writeFileSync(path.join(repoRoot, ".nvmrc"), "v25.9.0\n");
+    assert.equal(assertInstallNodeMatchesPin({ repoRoot, version: "v25.1.0" }).enforced, true);
+    assert.throws(() => assertInstallNodeMatchesPin({ repoRoot, version: "26.12.0" }), /pins Node 25/);
+    fs.writeFileSync(path.join(repoRoot, ".nvmrc"), "lts/*\n");
+    assert.deepEqual(assertInstallNodeMatchesPin({ repoRoot, version: "26.7.0" }), {
+      enforced: false,
+      reason: "non-numeric-pin",
+      pin: "lts/*",
+    });
+    fs.rmSync(path.join(repoRoot, ".nvmrc"));
+    assert.deepEqual(assertInstallNodeMatchesPin({ repoRoot, version: "26.7.0" }), { enforced: false, reason: "no-nvmrc" });
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
 });
 
 test("repoLockName maps nested npm workspaces to their enclosing install root", () => {
