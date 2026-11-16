@@ -12,7 +12,9 @@
  *  - Retries back off (fanoutRetryDelayMs) with NO attempt cap (R-9). At the
  *    FANOUT_MAX_ATTEMPTS-th unsuccessful attempt exactly one persistent-failure
  *    work-item is filed, keyed fanout-persistent:<subscriber>:outbox:<id>, and
- *    retries continue (R-27). The finding_ref column makes the filing one-shot.
+ *    retries continue (R-27). A permanent artifact reservation makes capture
+ *    replay idempotent; finding_ref confirms it, and an independent sweep recovers
+ *    owed findings even after notification delivery stops retrying.
  *  - The route follows the subscription's remaining reasons (P-002, D-029):
  *    explicit / blocker / contextual follows go back to the INBOX (R-26: the
  *    follower's first input of its next session flushes them); a follow held
@@ -33,6 +35,7 @@
  */
 
 import type { Sql } from 'postgres';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolvedSubscriberTarget, type ObjectRef, type ResolvedSubscriber } from '@papercusp/coordination/capabilities';
 import { coordScopeWorkspace } from '../../agent-tools/coordination/log';
@@ -80,6 +83,7 @@ export interface FanoutLedgerOpts {
 
 /** Files the R-27 persistent-failure work-item and returns its id. */
 export type FanoutFindingFiler = (input: {
+  artifactId: string;
   watchdogKey: string;
   subscriberId: string;
   outboxId: string;
@@ -217,11 +221,13 @@ async function markFailed(sql: Sql, key: LedgerKey, reason: string): Promise<voi
        AND subscriber_id = ${key.subscriberId} AND state = 'pending'`;
 }
 
-let defaultFilerImpl: FanoutFindingFiler | null = null;
+const filerState = pinModuleState('@papercusp/fanout-deliveries.filer', () => ({
+  impl: null as FanoutFindingFiler | null,
+}));
 
 /** Production R-27 filer: the shared dedupe-keyed improvement capture. */
 const defaultFiler: FanoutFindingFiler = async (input) => {
-  if (defaultFilerImpl) return defaultFilerImpl(input);
+  if (filerState.impl) return filerState.impl(input);
   const { captureImprovement } = await import('../../harness/improvements/capture-core');
   const r = await captureImprovement({
     title: `Fan-out notification to ${input.subscriberId} has failed ${input.attempts} times (outbox row ${input.outboxId})`,
@@ -234,6 +240,7 @@ const defaultFiler: FanoutFindingFiler = async (input) => {
       `Last error: ${input.lastError ?? 'unknown'}`,
       `Inspect: SELECT * FROM harness_shared.substrate_fanout_deliveries WHERE outbox_id = ${input.outboxId} AND subscriber_id = '${input.subscriberId}'.`,
     ].join('\n'),
+    artifactId: input.artifactId,
     watchdogKey: input.watchdogKey,
     scope: 'harness:papercusp',
     sourceRole: 'system',
@@ -247,56 +254,116 @@ const defaultFiler: FanoutFindingFiler = async (input) => {
 
 /** Test seam: replace the production filer (null restores it). */
 export function configureFanoutFindingFiler(filer: FanoutFindingFiler | null): void {
-  defaultFilerImpl = filer;
+  filerState.impl = filer;
 }
 
-/**
- * File the R-27 finding once a delivery reaches FANOUT_MAX_ATTEMPTS unsuccessful
- * attempts. One-shot by construction: the finding is filed only while the row's
- * finding_ref is NULL, and the ref is written back conditionally, so it is never
- * filed twice for the same (outbox row, subscriber) whatever state it later takes.
- */
+/** A permanent artifact reservation survives crashes and terminal capture replay.
+ * The lease bounds work; finding_ref records only exact artifact confirmation. */
 async function maybeFilePersistentFinding(
   sql: Sql,
   key: LedgerKey,
   row: { attempts: number; finding_ref: string | null; last_error: string | null; object: ObjectRef },
   filer: FanoutFindingFiler | undefined,
+  now = Date.now(),
 ): Promise<string | null> {
   if (row.finding_ref || row.attempts < FANOUT_MAX_ATTEMPTS) return row.finding_ref;
   const watchdogKey = persistentFindingKey(key.subscriberId, key.outboxId);
-  // Claim the filing first so two concurrent sweeps cannot both file.
-  const claimed = await sql<{ outbox_id: string }[]>`
+  const { newCollisionResistantIssueTail } = await import('../../issues-engineer');
+  const proposedId = 'EI-' + newCollisionResistantIssueTail();
+  const claimed = await sql<{
+    finding_artifact_id: string; attempts: number; last_error: string | null;
+    object_kind: string; object_ref: string;
+  }[]>`
     UPDATE harness_shared.substrate_fanout_deliveries
-       SET finding_ref = ${`filing:${watchdogKey}`}, updated_at = now()
+       SET finding_artifact_id = COALESCE(finding_artifact_id, ${proposedId}),
+           finding_retry_at = ${now + FANOUT_CLAIM_LEASE_MS}::bigint, updated_at = now()
      WHERE workspace_id = ${key.ws} AND outbox_id = ${key.outboxId}::bigint
        AND subscriber_id = ${key.subscriberId} AND finding_ref IS NULL
-    RETURNING outbox_id`;
-  if (claimed.length === 0) return null;
-  let ref: string | null = null;
+       AND attempts >= ${FANOUT_MAX_ATTEMPTS}
+       AND (finding_retry_at IS NULL OR finding_retry_at <= ${now}::bigint)
+     RETURNING finding_artifact_id, attempts, last_error, object_kind, object_ref`;
+  const reserved = claimed[0];
+  if (!reserved) return null;
   try {
-    ref = await (filer ?? defaultFiler)({
+    const ref = await (filer ?? defaultFiler)({
+      artifactId: reserved.finding_artifact_id,
       watchdogKey,
       subscriberId: key.subscriberId,
       outboxId: key.outboxId,
-      attempts: row.attempts,
-      lastError: row.last_error,
-      object: row.object,
+      attempts: reserved.attempts,
+      lastError: reserved.last_error,
+      object: { kind: reserved.object_kind, ref: reserved.object_ref },
     });
-  } catch (e) {
-    // Release the claim so the next unsuccessful attempt files it.
-    await sql`
-      UPDATE harness_shared.substrate_fanout_deliveries SET finding_ref = NULL
+    if (ref !== reserved.finding_artifact_id)
+      throw new Error(`Reserved finding ${reserved.finding_artifact_id} was not confirmed (returned ${ref ?? 'null'})`);
+    const confirmed = await sql<{ finding_ref: string }[]>`
+      UPDATE harness_shared.substrate_fanout_deliveries
+         SET finding_ref = ${ref}, finding_retry_at = NULL, updated_at = now()
        WHERE workspace_id = ${key.ws} AND outbox_id = ${key.outboxId}::bigint
-         AND subscriber_id = ${key.subscriberId} AND finding_ref = ${`filing:${watchdogKey}`}`;
-    console.error(`[fanout-deliveries] R-27 finding for ${watchdogKey} could not be filed (retried next attempt): ${errorText(e)}`);
+         AND subscriber_id = ${key.subscriberId} AND finding_ref IS NULL
+         AND finding_artifact_id = ${reserved.finding_artifact_id}
+       RETURNING finding_ref`;
+    return confirmed[0]?.finding_ref ?? null;
+  } catch (e) {
+    // Capture may already have committed. Keep its identity for exact replay.
+    await sql`
+      UPDATE harness_shared.substrate_fanout_deliveries
+         SET finding_retry_at = ${now + FANOUT_RETRY_BASE_MS}::bigint, updated_at = now()
+       WHERE workspace_id = ${key.ws} AND outbox_id = ${key.outboxId}::bigint
+         AND subscriber_id = ${key.subscriberId} AND finding_ref IS NULL
+         AND finding_artifact_id = ${reserved.finding_artifact_id}`;
+    console.error(`[fanout-deliveries] R-27 finding for ${watchdogKey} remains owed: ${errorText(e)}`);
     return null;
   }
-  const finalRef = ref ?? watchdogKey;
-  await sql`
-    UPDATE harness_shared.substrate_fanout_deliveries SET finding_ref = ${finalRef}, updated_at = now()
-     WHERE workspace_id = ${key.ws} AND outbox_id = ${key.outboxId}::bigint
-       AND subscriber_id = ${key.subscriberId} AND finding_ref = ${`filing:${watchdogKey}`}`;
-  return finalRef;
+}
+
+export interface FanoutFindingRetryResult {
+  selected: number;
+  filed: number;
+  /** More due rows remain intact for the next existing drain pass. */
+  moreDue: boolean;
+}
+
+/** Recover owed R-27 findings in every notification state. Oldest due rows go
+ * first; failures move behind untouched rows durably across passes/restarts.
+ * Each actual capture is conditionally leased by maybeFilePersistentFinding. */
+export async function retryOwedFanoutFindings(
+  opts: FanoutLedgerOpts & { batch?: number; fileFinding?: FanoutFindingFiler; signal?: AbortSignal } = {},
+): Promise<FanoutFindingRetryResult> {
+  const sql = sqlOf(opts);
+  const ws = wsOf(opts);
+  const now = opts.now ?? Date.now();
+  const batch = Math.max(1, opts.batch ?? FANOUT_RETRY_BATCH);
+  const due = await sql<{
+    outbox_id: string; subscriber_id: string; attempts: number; finding_ref: string | null;
+    last_error: string | null; object_kind: string; object_ref: string;
+  }[]>`
+    SELECT outbox_id::text AS outbox_id, subscriber_id, attempts, finding_ref, last_error, object_kind, object_ref
+      FROM harness_shared.substrate_fanout_deliveries
+     WHERE workspace_id = ${ws} AND attempts >= ${FANOUT_MAX_ATTEMPTS} AND finding_ref IS NULL
+       AND (finding_retry_at IS NULL OR finding_retry_at <= ${now}::bigint)
+     ORDER BY COALESCE(finding_retry_at, 0), outbox_id, subscriber_id
+     LIMIT ${batch}`;
+  let filed = 0;
+  for (const row of due) {
+    if (opts.signal?.aborted) break;
+    try {
+      const ref = await maybeFilePersistentFinding(sql, {
+        ws, outboxId: row.outbox_id, subscriberId: row.subscriber_id,
+      }, { ...row, object: { kind: row.object_kind, ref: row.object_ref } }, opts.fileFinding, now);
+      if (ref) filed += 1;
+    } catch (e) {
+      // A ledger error leaves the due row or lease intact for a later pass.
+      console.error(`[fanout-deliveries] finding recovery for ${row.outbox_id} → ${row.subscriber_id} failed: ${errorText(e)}`);
+    }
+  }
+  const remaining = await sql<{ more_due: boolean }[]>`
+    SELECT EXISTS (
+      SELECT 1 FROM harness_shared.substrate_fanout_deliveries
+       WHERE workspace_id = ${ws} AND attempts >= ${FANOUT_MAX_ATTEMPTS} AND finding_ref IS NULL
+         AND (finding_retry_at IS NULL OR finding_retry_at <= ${now}::bigint)
+    ) AS more_due`;
+  return { selected: due.length, filed, moreDue: remaining[0].more_due };
 }
 
 async function liveReasons(
@@ -349,7 +416,8 @@ export async function recordFanoutFailure(
        SET attempts = d.attempts + 1,
            route = EXCLUDED.route,
            next_retry_at = CASE WHEN EXCLUDED.route = 'item-read' THEN ${now + FANOUT_RETRY_MAX_DELAY_MS}::bigint
-                                ELSE ${now}::bigint + LEAST(${FANOUT_RETRY_BASE_MS}::bigint * power(2, d.attempts)::bigint,
+                                ELSE ${now}::bigint + LEAST(${FANOUT_RETRY_BASE_MS}::bigint * power(2, LEAST(d.attempts,
+                                         ${Math.ceil(Math.log2(FANOUT_RETRY_MAX_DELAY_MS / FANOUT_RETRY_BASE_MS))}))::bigint,
                                                             ${FANOUT_RETRY_MAX_DELAY_MS}::bigint) END,
            last_error = EXCLUDED.last_error,
            updated_at = now()
@@ -363,6 +431,7 @@ export async function recordFanoutFailure(
       { ws, outboxId, subscriberId: sub.subscriber_id },
       { attempts, finding_ref: row.finding_ref, last_error: lastError, object },
       opts.fileFinding,
+      now,
     );
   }
   return { attempts, route };
@@ -503,6 +572,7 @@ export async function retryPendingFanoutDeliveries(
             key,
             { attempts: Number(up[0].attempts), finding_ref: up[0].finding_ref, last_error: lastError, object },
             opts.fileFinding,
+      now,
           );
           if (ref && !up[0].finding_ref) result.findingsFiled += 1;
         }

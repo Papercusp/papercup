@@ -47,7 +47,7 @@ import {
   type EpochEncryptCapability,
 } from './outbox-drain';
 import { fanoutOutboxRow } from './fanout-projection';
-import { retryPendingFanoutDeliveries } from './fanout-deliveries';
+import { retryOwedFanoutFindings, retryPendingFanoutDeliveries } from './fanout-deliveries';
 import { hubListen, listenHubEnabled } from '../../pg-listen-hub';
 import { buildHiveRekeyBootDeps } from './hive-epoch-boot-deps';
 import type { HiveRekeyBootDeps } from './hive-epoch-boot-deps';
@@ -219,8 +219,13 @@ export async function wireOutboxForHarness(
   const start = deps.startOutboxDrain ?? realStartOutboxDrain;
   const startOpts: StartDrainOptions = {
     fanout: fanoutOutboxRow,
-    // P-003 (1639): re-deliver only the per-subscriber ledger rows still due.
-    retryFanoutDeliveries: (signal) => retryPendingFanoutDeliveries({ signal }),
+    // P-003: the two ledgers progress independently on the existing drain cadence.
+    // An ended/recovered notification can still owe its R-27 finding. Starting
+    // both before awaiting also keeps a notification-sweep failure from hiding it.
+    retryFanoutDeliveries: (signal) => Promise.all([
+      retryPendingFanoutDeliveries({ signal }),
+      retryOwedFanoutFindings({ signal }),
+    ]),
     resolveEpochEncrypt: rekeyState.current,
     onSessionClosed: deps.onSessionClosed,
     // P-008 (shared-hive-cross-machine-scale-10k): this is the PRODUCTION seam,
