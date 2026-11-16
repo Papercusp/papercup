@@ -82,6 +82,8 @@
 # it does not remove any outputs already present in the existing checkout.
 #
 # Env overrides: PAPERCUSP_INTEGRATION_ROOT, PAPERCUSP_RELEASE_ROOT.
+# Failed or interrupted SPA builds retain their complete timestamped output in
+# ${PAPERCUSP_HOME:-$HOME/.papercusp}/checkpoint-logs, outside temporary build trees.
 
 # EI-26824212147685395: allocation and dependency waits can outlive edits to
 # this shared checkout. Parse the whole body before executing it, as in the
@@ -309,7 +311,16 @@ preflight_source_clone() {
 # Shared by ordinary deployment preparation and the finite SPA-only phase.
 build_release_spa() {
   log "building operator-vite SPA dist at the deployed sha (this can take a minute)"
-  local spa_log="${TMPDIR:-/tmp}/setup-release-spa-build.$$.log" spa_line spa_status
+  local spa_log_root="${PAPERCUSP_HOME:-$HOME/.papercusp}/checkpoint-logs"
+  local spa_log spa_line spa_status
+  # Reuse the caller's durable checkpoint-log location. A temporary-directory
+  # cleanup must not invalidate the evidence pointer after a cancelled build.
+  # mktemp also preserves separate failures from repeated builds in one shell.
+  if ! mkdir -p -- "$spa_log_root"; then
+    echo "[setup-release] cannot create SPA evidence directory $spa_log_root" >&2
+    return 1
+  fi
+  spa_log="$(mktemp "$spa_log_root/setup-release-spa-build.XXXXXXXX.log")" || return 1
   # A caller deadline can terminate this shell before the failure branch runs.
   # Publish the external log path first so cancellation retains readable proof.
   log "SPA build output: $spa_log"
@@ -1604,7 +1615,7 @@ select_dependencies_only_generation() {
   log "selected committed dependency inputs $input as $identity"
 }
 
-validate_dependencies_only_input() {
+validate_dependencies_only_input_selection() {
   [ "${DEPENDENCIES_ONLY:-0}" = "1" ] || return 0
   local input selector
   input="$(dependency_generation_input_fingerprint_ref "$RELEASE_ROOT" "$TARGET_SHA")" || return 1
@@ -1619,11 +1630,18 @@ validate_dependencies_only_input() {
   fi
   dependency_generation_select_prevalidated "$DEPENDENCY_GENERATION_ROOT" \
     "$PINNED_DEPENDENCY_GENERATION_ID" "$(dependency_generation_read_field "$selector" token)" || return $?
+}
+
+validate_dependencies_only_input() {
+  [ "${DEPENDENCIES_ONLY:-0}" = "1" ] || return 0
+  validate_dependencies_only_input_selection || return $?
   # WI-6554700010049444: dependencies-only cannot rebuild an addon, so an
   # unloadable one is fatal. Check the immutable generation tree now, before the
   # materialization this function gates, rather than after copying it (the old
   # order spent ~20 minutes per queued wrapper on a deterministic failure).
   if ! dependency_generation_native_addons_load_isolated "$DEPENDENCY_GENERATION_TREE"; then
+    local input
+    input="$(dependency_generation_input_fingerprint_ref "$RELEASE_ROOT" "$TARGET_SHA")" || return 1
     log "FATAL: dependencies-only generation $PINNED_DEPENDENCY_GENERATION_ID for target inputs $input has native addons that will not load under this Node; publish a native-complete generation for these inputs before preparation"
     return 1
   fi
@@ -1665,7 +1683,10 @@ validate_dependencies_only_materialization() (
       return 1
     fi
   done < "$work/published"
-  validate_dependencies_only_input
+  # The pre-copy check already exercised an isolated copy of this publication,
+  # and the release copy was checked above. Revalidate selection without running
+  # package code again after the byte census.
+  validate_dependencies_only_input_selection
 )
 
 if need_node_modules || [ "$DEPENDENCIES_ONLY" = "1" ]; then
@@ -2146,7 +2167,7 @@ rebuild_stale_native_addons
 # ignored execution inputs. Keep all dependency/native checks above this boundary;
 # a deploy's generated runtime files are deliberately prepared only below it.
 if [ "$DEPENDENCIES_ONLY" = "1" ]; then
-  validate_dependencies_only_input
+  validate_dependencies_only_input_selection
   validate_dependencies_only_materialization
   log "SETUP_RELEASE_DEPENDENCIES_ONLY ref=$REF sha=$TARGET_SHA status=ready"
   exit 0
