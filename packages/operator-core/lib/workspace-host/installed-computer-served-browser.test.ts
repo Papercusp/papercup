@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createServer, type RequestListener, type Server } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { assertInstalledRuntimeLoader, assertInstalledRuntimeSource, installedDesktopBinaries, installedHostFixtureScope, installedPortalSource, installedRuntimeNodeArgs, validateInstalledPortalRelease, waitForPortalDocument } from './installed-computer-served-browser.fixture';
@@ -80,6 +80,31 @@ describe('served Portal prerequisite and document readiness', () => {
       expect(rows.find(row => row.boundary === 'node-esm-load-return' && row.file === file))
         .toMatchObject({ inputSha256: sha, returnedSha256: sha });
     }
+  });
+
+  it('erases type-only imports in the actual identity verifier after the source guard', async () => {
+    const repo = fileURLToPath(new URL('../../../..', import.meta.url));
+    const args = await currentNativeLoader(repo);
+    const file = join(repo, 'packages/operator-core/lib/identity/two-channel-verifier.ts');
+    const entry = join(nativeRoot!, 'identity.ts');
+    const audit = join(nativeRoot!, 'identity-source-audit.jsonl');
+    await writeFile(entry, [
+      `import { verifyChannel1 } from ${JSON.stringify(pathToFileURL(file).href)};`,
+      'const result = await verifyChannel1({ token: "fixture", claimedGithubUserId: 7,',
+      'fetchFn: async () => new Response(JSON.stringify({ id: 7 }), { status: 200 }) });',
+      'if (result.kind !== "ok") throw new Error("Identity verifier failed");',
+      'console.log("IDENTITY_IMPORT_OK");',
+    ].join('\n'));
+    const result = spawnSync(process.execPath, [...args, entry], {
+      cwd: nativeRoot!, encoding: 'utf8', timeout: 15_000,
+      env: { ...process.env, NODE_OPTIONS: '', PAPERCUSP_COMMITTED_SOURCE_AUDIT: audit },
+    });
+    expect(result.status, result.stderr || String(result.error)).toBe(0);
+    expect(result.stdout).toContain('IDENTITY_IMPORT_OK');
+    const rows = (await readFile(audit, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    const sha = createHash('sha256').update(await readFile(file)).digest('hex');
+    expect(rows.find(row => row.boundary === 'node-esm-load-return' && row.file === file))
+      .toMatchObject({ kind: 'committed', inputSha256: sha, returnedSha256: sha });
   });
 
   it('executes the actual SPA mixed-format boundary with the source guard before the native loader', async () => {
