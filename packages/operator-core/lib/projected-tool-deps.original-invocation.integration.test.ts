@@ -1,0 +1,197 @@
+import { randomUUID } from 'node:crypto';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+import type postgres from 'postgres';
+import {
+  defineTool, dispatchProjectedTool, lookupByMcpName, _resetCatalogForTests,
+  type DispatchProjectedDeps,
+} from '@papercusp/tooldef';
+import { createOrgTestDb, type OrgTestDb } from '../test/_org-test-db';
+
+// Only the connection is substituted: statements, transactions, constraints and
+// commit visibility run against the maintained, migrated private Postgres fixture.
+const connection = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+vi.mock('@papercusp/db-org', async original => ({
+  ...(await original<object>()), getOrgPg: () => ({ sql: connection.sql }),
+}));
+vi.mock('@papercusp/flags/server', async original => ({
+  ...(await original<object>()), getFlag: vi.fn(async () => false),
+}));
+vi.mock('@papercusp/testing-shell/llm', async original => ({
+  ...(await original<object>()), getOverride: vi.fn(() => undefined),
+}));
+vi.mock('./decision-ledger/emit', async original => ({
+  ...(await original<object>()), recordDecisionLedger: vi.fn(),
+}));
+vi.mock('./agent-tools/coordination/dispatch-heartbeat', () => ({ maybeBeatPresenceOnDispatch: vi.fn() }));
+
+import { PROJECTED_DEPS, flushPendingTelemetry } from './projected-tool-deps';
+
+type Observer = NonNullable<DispatchProjectedDeps['invocationObserver']>;
+type Begin = Parameters<Observer['begin']>[0];
+type Settle = Parameters<Observer['settle']>[0];
+let db: OrgTestDb;
+const observer = PROJECTED_DEPS.invocationObserver!;
+const workspaceId = 'p003-original-invocation-pg';
+const ownerId = 'su-original-invocation-pg';
+
+beforeAll(async () => {
+  db = await createOrgTestDb();
+  connection.sql = db.adminSql;
+  await db.adminSql.unsafe(`CREATE TABLE harness_shared.original_invocation_probe_effects (
+    call_id text PRIMARY KEY, value integer NOT NULL
+  )`);
+}, 180_000);
+afterEach(() => _resetCatalogForTests());
+afterAll(async () => { await flushPendingTelemetry(); await db?.cleanup(); });
+
+function request(): Begin {
+  return {
+    toolName: 'example:p003_original', pluginName: 'agent-mcp', callId: randomUUID(),
+    ctx: {
+      workspaceId, harnessSlug: 'papercusp', role: 'worker', uiClientId: ownerId,
+      isSuperuser: true, runId: 'run-original', spawnId: 'spawn-original',
+      transport: 'mcp', signal: new AbortController().signal,
+      log: () => {}, progress: () => {}, emit: () => {},
+      principal: {
+        slug: 'principal-original', kind: 'system', workspaceId, authMethod: 'process-internal',
+        trust: 'trusted', capabilities: new Set(['example:write']), roles: new Set(['worker']),
+      },
+    },
+    selection: { ok: true, mode: 'auto', lifecycle: 'request-bound', responseWindowMs: 100,
+      executionDeadlineMs: 1000, autoYieldAfterMs: null },
+  };
+}
+
+async function read(ref: string) {
+  const rows = await db.adminSql<{ id: string; status: string; metadata_json: Record<string, any> }[]>`
+    SELECT id::text, status, metadata_json FROM harness_shared.tool_invocations
+    WHERE workspace_id=${workspaceId} AND id=${ref.substring('tool-invocation:'.length)}::bigint`;
+  expect(rows).toHaveLength(1);
+  return rows[0];
+}
+const settle = (req: Begin, ref: string, changes: Partial<Settle> = {}) => observer.settle({
+  ...req, invocationRef: ref, result: { content: [] }, receipt: null, error: null, refusal: null, ...changes,
+});
+
+describe('original invocation ledger (real Postgres)', () => {
+  it('commits the original audience and budgets before returning a recoverable reference', async () => {
+    const req = request();
+    const ref = await observer.begin(req);
+    const row = await read(ref); // different committed transaction
+    expect(row.status).toBe('pending');
+    expect(row.metadata_json).toMatchObject({
+      originalInvocation: { callId: req.callId, ownerId, workspaceId, harnessSlug: 'papercusp',
+        audience: { ownerId, principal: { slug: 'principal-original', capabilities: ['example:write'] } },
+        selection: { responseWindowMs: 100, executionDeadlineMs: 1000 } },
+      executionObservation: { state: 'unknown' }, responseObservation: { state: 'pending', delivery: 'unknown' },
+    });
+  });
+
+  it.each(['request-expired', 'response-lost', 'unknown'] as const)(
+    'persists %s separately from the existing runtime handle and original budgets', async response => {
+      const req = request(); const ref = await observer.begin(req);
+      const before = (await read(ref)).metadata_json.originalInvocation;
+      const abort = new AbortController();
+      if (response === 'request-expired') abort.abort();
+      await settle({ ...req, ctx: { ...req.ctx, signal: abort.signal } }, ref, {
+        receipt: {
+          schemaVersion: 'tool-execution-receipt-v2', invocationRef: ref, mode: 'auto',
+          responseWindowMs: 100, executionDeadlineMs: 1000,
+          lifecycle: 'independent', durability: 'restart', handle: 'runtime-original', ownerId,
+          adapterId: 'dbos:durable-orchestration', authority: { bindingRef: ref, fingerprint: 'original' },
+          terminal: response !== 'unknown', observation: {
+            response: response === 'unknown' ? 'returned' : response,
+            outcome: response === 'unknown' ? 'unknown' : 'succeeded',
+            observedAtMs: Date.now(), evidenceRef: ref,
+          },
+        },
+      });
+      const after = await read(ref);
+      expect(after.metadata_json.originalInvocation).toEqual(before);
+      expect(after.metadata_json.executionObservation).toMatchObject({ handle: 'runtime-original', ownerId,
+        state: response === 'unknown' ? 'unknown' : 'succeeded' });
+      expect(after.metadata_json.responseObservation).toMatchObject({
+        state: response === 'unknown' ? 'returned' : response, delivery: 'unknown',
+      });
+    });
+
+  it.each(['callId', 'ownerId'] as const)('rejects a missing persisted %s join, then recovers the same row', async key => {
+    const req = request(); const ref = await observer.begin(req);
+    const original = (await read(ref)).metadata_json.originalInvocation;
+    await db.adminSql`UPDATE harness_shared.tool_invocations
+      SET metadata_json=jsonb_set(metadata_json, '{originalInvocation}', (metadata_json->'originalInvocation') - ${key})
+      WHERE id=${ref.substring('tool-invocation:'.length)}::bigint`;
+    await expect(settle(req, ref)).rejects.toThrow('settlement join is unavailable');
+    expect((await read(ref)).status).toBe('pending');
+    await db.adminSql`UPDATE harness_shared.tool_invocations
+      SET metadata_json=jsonb_set(metadata_json, '{originalInvocation}', ${db.adminSql.json(original)})
+      WHERE id=${ref.substring('tool-invocation:'.length)}::bigint`;
+    await settle(req, ref);
+    expect((await read(ref)).metadata_json.executionObservation.state).toBe('succeeded');
+    const rows = await db.adminSql`SELECT id FROM harness_shared.tool_invocations
+      WHERE metadata_json->'originalInvocation'->>'callId'=${req.callId}`;
+    expect(rows).toHaveLength(1);
+  });
+
+  it('preserves original authority against advisory enrichment and refuses duplicate settlement', async () => {
+    const req = request(); const ref = await observer.begin(req);
+    await settle(req, ref);
+    const before = await read(ref);
+    await PROJECTED_DEPS.recordInvocation!({ ...req, invocationRef: ref, windowKey: 'run:original', durationMs: 12,
+      status: 'ok', metadataJson: { originalInvocation: { ownerId: 'foreign' },
+        executionObservation: { state: 'cancelled' }, responseObservation: { delivery: 'acknowledged' } },
+    });
+    await flushPendingTelemetry();
+    expect((await read(ref)).metadata_json).toMatchObject(before.metadata_json);
+    await expect(settle(req, ref)).rejects.toThrow('settlement join is unavailable');
+    expect((await read(ref)).metadata_json).toMatchObject(before.metadata_json);
+  });
+
+  it.each([false, true])('dispatches a real SQL effect once and records a thrown outcome as unknown (throws=%s)', async throws => {
+    const key = randomUUID();
+    const definition = defineTool({
+      name: `example:p003_persisted_effect_${throws ? 'throw' : 'success'}`, description: 'Private invocation observer integration fixture',
+      capability: 'tasks:read', requirePrincipal: false, agentRoles: ['operator'], args: z.object({}),
+      handler: async () => {
+        await db.adminSql`INSERT INTO harness_shared.original_invocation_probe_effects VALUES (${key}, 1)`;
+        if (throws) throw new Error('synthetic-private-secret');
+        return { content: [{ type: 'text' as const, text: 'effect completed' }] };
+      },
+    });
+    const tool = lookupByMcpName(definition.name)!;
+    let observationError: unknown;
+    const observed: Observer = {
+      begin: async req => {
+        try { return await observer.begin(req); }
+        catch (error) { observationError = error; throw error; }
+      },
+      settle: async req => {
+        try { await observer.settle(req); }
+        catch (error) { observationError = error; throw error; }
+      },
+    };
+    const authenticated = request().ctx;
+    const result = await dispatchProjectedTool(tool, definition.name, {}, {
+      ...authenticated,
+      principal: { ...authenticated.principal!, capabilities: new Set(['tasks:read']) },
+      workspaceId, harnessSlug: 'papercusp', role: 'operator', uiClientId: ownerId,
+      runId: 'run-original', spawnId: 'spawn-original', signal: new AbortController().signal,
+      log: () => {}, progress: () => {}, emit: () => {},
+    }, { invocationObserver: observed, aroundInvoke: async ({ invoke }) => {
+      // A host may request its continuation twice; dispatch owns memoization.
+      const [first, second] = await Promise.all([invoke(), invoke()]);
+      expect(first).toBe(second); return first;
+    } });
+    expect(observationError).toBeUndefined();
+    expect(result.ok, JSON.stringify(result)).toBe(!throws);
+    const effects = await db.adminSql`SELECT * FROM harness_shared.original_invocation_probe_effects WHERE call_id=${key}`;
+    expect(effects).toHaveLength(1);
+    const rows = await db.adminSql`SELECT metadata_json FROM harness_shared.tool_invocations
+      WHERE workspace_id=${workspaceId} AND tool_name=${definition.name}`;
+    expect(rows).toHaveLength(1);
+    const row = rows[0];
+    expect(row.metadata_json.executionObservation.state).toBe(throws ? 'unknown' : 'succeeded');
+    expect(JSON.stringify(row.metadata_json)).not.toContain('synthetic-private-secret');
+  });
+});
