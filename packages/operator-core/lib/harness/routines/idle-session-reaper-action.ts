@@ -145,7 +145,7 @@ registerSystemAction('idle-session-reaper', async (ctx: SystemActionCtx) => {
           : '') +
         `; named-resource lease backstop: scanned ${lr.resourceLocks.scanned} → ` +
         `${lr.resourceLocks.dryRun ? 'WOULD release' : 'released'} ${lr.resourceLocks.reaped} dead-owner lock(s), ` +
-        `kept ${lr.resourceLocks.keptLive} live, ${lr.resourceLocks.keptFresh} fresh` +
+        `kept ${lr.resourceLocks.keptLive} live, ${lr.resourceLocks.keptFresh} fresh, ${lr.resourceLocks.keptProcessScoped} process-scoped` +
         (lr.resourceLocks.failedOwners
           ? `, ${lr.resourceLocks.failedOwners} owner cleanup(s) failed`
           : ''),
