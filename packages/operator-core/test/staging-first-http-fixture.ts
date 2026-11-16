@@ -64,6 +64,10 @@ async function main() {
     e.STAGING_FIRST_HTTP_SCENARIO = 'saved-plan-lines';
     console.log('SAVED_PLAN_LINES_HTTP_SELECTED');
   }
+  if (process.argv.includes('--rubric-coverage')) {
+    e.STAGING_FIRST_HTTP_SCENARIO = 'rubric-coverage';
+    console.log('RUBRIC_COVERAGE_HTTP_SELECTED');
+  }
   if (completionControls) {
     e.STAGING_FIRST_HTTP_SCENARIO = completionControls.transport === 'mcp-proxy' ? 'private-completion-mcp' : 'private-completion';
     e.STAGING_FIRST_HTTP_MAINTENANCE = completionControls.maintenance ? '1' : '0';
@@ -139,6 +143,12 @@ async function main() {
       throw new Error('Private native pool cleanup exception control');
     return;
   }
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-recovery-allocation') {
+    const receipt = await (await import('./current-su-native-http-scenario'))
+      .prepareCurrentSuRecoveryAllocation({ workspace, evidenceDir });
+    console.log('CURRENT_SU_RECOVERY_ALLOCATION_RECEIPT ' + JSON.stringify(receipt));
+    return;
+  }
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-setup') {
     // Exercise the real writer before paying for an API build/container/native
     // launch. A fresh isolated HOME has no installed hook scripts by default.
@@ -205,6 +215,9 @@ async function main() {
   const requiresPrepared = isCommittedReader || isCommittedReaderObservation || isBlueprintRoute || isCurrentSuNative
     || isPrivateMcpPreflightOnly || isCodexManagedTools || isOmpManagedTools
     || isSecurityCensus || ['testing-background', 'private-completion-mcp', 'rubric-coverage'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '');
+  assert.ok(requiresPrepared || !process.argv.some(value =>
+    value.startsWith('--prepared-api-sha=') || value.startsWith('--prepared-receipt-sha=')),
+  'Prepared API arguments require an explicit scenario that consumes the pinned API');
   const prepared = requiresPrepared
     ? resolvePreparedPrivateApiBundle(process.argv.slice(2), evidenceDir) : undefined;
   assert.ok(!requiresPrepared || prepared,

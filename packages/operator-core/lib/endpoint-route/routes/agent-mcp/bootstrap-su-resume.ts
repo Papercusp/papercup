@@ -419,7 +419,7 @@ const sessionRespawned = defineTool({
         let owner: string | null = null;
         if (advSessionId != null && advSessionId > 0) {
           ({ reanchored, owner } = await phases.track('nativeReanchor', () => reanchorAdvSessionNativeId(advSessionId!, sessionId!, {
-            childLaunchSessionId, ...(turnProvenanceDir ? { turnProvenanceDir } : {}),
+            childLaunchSessionId, phases, ...(turnProvenanceDir ? { turnProvenanceDir } : {}),
             ...(managedSuccession ? { managedSuccessionPermit: managedSuccession.permit as
               import('../../../blind-review-continuation-custody').BlindReviewManagedSuccessionPermit } : {}),
           })));
@@ -429,9 +429,10 @@ const sessionRespawned = defineTool({
         // a different row by owner; that is the numeric-home identity split this
         // route is responsible for preventing.
         if (advSessionId == null && coordOwnerId) {
-          const fallback = await phases.track('nativeReanchor', () => turnProvenanceDir
-            ? reanchorAdvSessionNativeIdByOwner(coordOwnerId!, sessionId!, { turnProvenanceDir })
-            : reanchorAdvSessionNativeIdByOwner(coordOwnerId!, sessionId!));
+          const fallback = await phases.track('nativeReanchor', () =>
+            reanchorAdvSessionNativeIdByOwner(coordOwnerId!, sessionId!, {
+              phases, ...(turnProvenanceDir ? { turnProvenanceDir } : {}),
+            }));
           reanchored = fallback.reanchored;
           owner = fallback.owner ?? owner;
         }

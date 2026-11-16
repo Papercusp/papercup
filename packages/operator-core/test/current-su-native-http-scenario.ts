@@ -33,6 +33,131 @@ import { createCurrentSuNativeProtocol, guardedCurrentSuNativeHandler, inspectFr
 
 const CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST = 'current-su-native-egress-run-id';
 
+/** Real allocation/store prerequisite, independent of the native model protocol.
+ * The receipt deliberately cannot certify an emitted epoch or artifact-tool paging. */
+export async function prepareCurrentSuRecoveryAllocation(input: { workspace: string; evidenceDir: string }) {
+  const { workspace, evidenceDir } = input;
+  assert.match(workspace, /^test-runtime-/);
+  assert.equal(process.env.PAPERCUSP_WORKSPACE_ID, workspace);
+  assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '0');
+  assert.equal(process.env.PAPERCUSP_DBOS_ENABLE, '0');
+  const [{ createWorkItem, getWorkItem }, facts, artifacts] = await Promise.all([
+    import('../lib/work-items'), import('../lib/agent-facts/store'), import('../lib/text-artifacts'),
+  ]);
+  const { sql } = getOrgPg();
+  const owner = 'fixture-owner', harness = workspace;
+  const current = await createWorkItem({ kind: 'task', title: 'Recovery fixture current assignment',
+    harness, workspaceId: workspace, createdBy: owner, assignee: owner });
+  const peer = await createWorkItem({ kind: 'task', title: 'Recovery fixture excluded peer assignment',
+    harness, workspaceId: workspace, createdBy: owner, assignee: 'fixture-peer' });
+  assert.notEqual(current.id, peer.id);
+  for (const item of [current, peer]) {
+    assert.match(item.id, /^WI-\d+$/);
+    assert.equal(facts.validateFactScopeRefShape('work_item', item.id), null);
+    const read = await getWorkItem(item.id, harness, { workspaceId: workspace });
+    assert.equal(read?.id, item.id);
+    assert.equal(read?.harness, harness);
+    assert.equal(read?.assignee, item.assignee);
+  }
+  const rejectedRefs = ['WI-fixture-current', 'EI-fixture-peer'];
+  for (const scopeRef of rejectedRefs) {
+    assert.ok(facts.validateFactScopeRefShape('work_item', scopeRef));
+    await assert.rejects(facts.assertFact({ scope: 'work_item', scopeRef, key: 'rejected-fixture',
+      body: 'Must never enter the input population.', createdBy: owner, workspaceId: workspace, ttlSec: 60 }));
+  }
+  // One concrete database instant is frozen before materialization. Historical
+  // dates and a JavaScript-only fake clock cannot satisfy this receipt.
+  const clock = await sql.unsafe("SELECT to_char(date_trunc('milliseconds', clock_timestamp()) AT TIME ZONE 'UTC', " +
+    "'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS epoch");
+  const epoch = String(clock[0].epoch);
+  type Seed = Omit<Parameters<typeof facts.assertFact>[0], 'createdBy'> & { minute?: number };
+  const rawSeeds: Seed[] = [
+    { scope: 'workspace', key: 'guard-rail:fixture', body: 'Use exact scoped recovery.' },
+    { scope: 'owner', scopeRef: owner, key: 'guard-rail:fixture', body: 'Keep owner qualification.' },
+    { scope: 'harness', scopeRef: harness, key: 'fixture-harness-rule', body: 'Resume the bound harness.' },
+    { scope: 'work_item', scopeRef: current.id, key: 'fixture-task-rule', body: 'Continue the assigned task.' },
+    { scope: 'harness', scopeRef: harness + '-peer', key: 'fixture-harness-rule', body: 'Excluded peer harness.' },
+    { scope: 'work_item', scopeRef: peer.id, key: 'fixture-task-rule', body: 'Excluded peer task.' },
+    { scope: 'harness', scopeRef: harness, key: 'fixture-nonmember',
+      body: 'Excluded nonmember audience.', audienceScope: 'fleet:fixture-peers' },
+    { scope: 'workspace', key: 'guard-rail:fixture', body: 'Excluded foreign workspace.',
+      workspaceId: workspace + '-foreign' },
+    ...Array.from({ length: 20 }, (_, i) => ({ scope: 'workspace' as const,
+      key: 'fixture-unrelated-' + String(i + 1).padStart(2, '0'),
+      body: 'Unrelated row ' + String(i + 1).padStart(2, '0') + '.', minute: i + 1 })),
+  ];
+  const seeds = rawSeeds.map(row => ({ ...row, createdBy: owner, confidence: 'verified' as const, ttlSec: 86400,
+    sourceRef: 'fixture:independent-literal-input', workspaceId: row.workspaceId ?? workspace }));
+  const rowGenerations = [];
+  for (const { minute = 0, ...seed } of seeds) {
+    const written = await facts.assertFact(seed);
+    assert.ok(written.id, 'The canonical assertion must return its actual version identity');
+    // Fixture-only timestamp materialization, as in the maintained fact-store
+    // integration suite. Both arms must consume these rows without renewing TTL.
+    await sql.unsafe("UPDATE harness_shared.agent_facts SET updated_at=$2::timestamptz - interval '2 hours' " +
+      "+ $3::integer * interval '1 minute', expires_at=$2::timestamptz + interval '24 hours' " +
+      "WHERE workspace_id=$1 AND id=$4", [seed.workspaceId!, epoch, minute, written.id!]);
+    const read = (await facts.listFacts({ scope: seed.scope, scopeRef: seed.scopeRef },
+      { workspaceId: seed.workspaceId!, limit: 50 })).find(row => row.key === seed.key);
+    assert.ok(read, 'Materialized input must survive the actual canonical PostgreSQL fold');
+    assert.equal(read.body, seed.body);
+    assert.equal(read.id, written.id);
+    assert.equal(new Date(read.updatedAt).toISOString(),
+      new Date(Date.parse(epoch) - 2 * 3600000 + minute * 60000).toISOString());
+    assert.equal(new Date(read.expiresAt).toISOString(),
+      new Date(Date.parse(epoch) + 24 * 3600000).toISOString());
+    rowGenerations.push({ workspaceId: seed.workspaceId, scope: read.scope, scopeRef: read.scopeRef,
+      key: read.key, body: read.body, id: read.id, cellVersion: read.cellVersion ?? null,
+      sourceRef: read.sourceRef, sourceProvenance: read.sourceProvenance, confidence: read.confidence,
+      audienceScope: read.audienceScope, updatedAt: read.updatedAt, expiresAt: read.expiresAt });
+  }
+  const selected = await facts.foldFactsWithCensus([
+    { scope: 'harness', scopeRef: harness }, { scope: 'work_item', scopeRef: current.id },
+  ], { workspaceId: workspace, limitPerSelector: 8, audiences: [],
+    taskContext: { workItemRefs: [current.id] } });
+  assert.deepEqual(selected.facts.map(row => row.body).sort(),
+    ['Continue the assigned task.', 'Resume the bound harness.']);
+  assert.equal((await facts.listFacts({ scope: 'workspace' }, { workspaceId: workspace, limit: 50 }))
+    .some(row => row.body === 'Excluded foreign workspace.'), false);
+  const initiallyAbsent = await artifacts.loadTextArtifact(harness, 'fact-recovery-fixture/result.txt') === null;
+  assert.equal(initiallyAbsent, true);
+  const manifest = { schemaVersion: 1, purpose: 'recovery-allocation-prerequisite', workspace, harness, owner,
+    aliases: { CURRENT_REF: current.id, PEER_REF: peer.id, 'fixture-ws': workspace,
+      'fixture-harness': harness, 'fixture-owner': owner },
+    clock: { source: 'PostgreSQL clock_timestamp, millisecond precision', epoch },
+    control: 'control-1', source: 'source-1', rowGenerations,
+    expected: { selectedBodies: ['Resume the bound harness.', 'Continue the assigned task.'],
+      initiallyAbsentResult: 'fact-recovery-fixture/result.txt', rejectedRefs },
+    notExercised: ['native-epoch', 'artifact-tool-paging', 'paired-baseline', 'candidate-delivery'] };
+  const manifestBytes = JSON.stringify(manifest, null, 2) + '\n';
+  const saved = await artifacts.saveImmutableTextArtifact(harness, manifestBytes);
+  assert.equal(await artifacts.loadImmutableTextArtifact(harness, saved.sha256), manifestBytes);
+  assert.deepEqual(await artifacts.saveImmutableTextArtifact(harness, manifestBytes), saved);
+  assert.equal(await artifacts.loadImmutableTextArtifact(harness + '-wrong', saved.sha256), null);
+  await assert.rejects(artifacts.saveTextArtifact(harness, saved.relPath, 'replacement'),
+    /text_artifact_immutable_namespace/);
+  await sql.unsafe('UPDATE harness_shared.harness_text_artifacts SET content=$4 ' +
+    'WHERE workspace_id=$1 AND harness_slug=$2 AND rel_path=$3',
+  [workspace, harness, saved.relPath, 'corrupt fixture control']);
+  try { await assert.rejects(artifacts.loadImmutableTextArtifact(harness, saved.sha256), /immutable_corrupt/); }
+  finally {
+    await sql.unsafe('UPDATE harness_shared.harness_text_artifacts SET content=$4 ' +
+      'WHERE workspace_id=$1 AND harness_slug=$2 AND rel_path=$3', [workspace, harness, saved.relPath, manifestBytes]);
+  }
+  assert.equal(await artifacts.loadImmutableTextArtifact(harness, saved.sha256), manifestBytes);
+  writeFileSync(join(evidenceDir, 'recovery-fact-manifest.json'), manifestBytes);
+  const receipt = { workspace, harness, nativeLaunches: 0,
+    allocation: { allocator: 'work-items.ts#createWorkItem', currentRef: current.id, peerRef: peer.id,
+      canonicalReadback: true, invalidAlphaRefsRejected: true },
+    clock: { source: manifest.clock.source, epoch, sharedByAllRows: true },
+    selectedBodies: selected.facts.map(row => row.body).sort(),
+    manifest: { ...saved, chars: manifestBytes.length, bytes: Buffer.byteLength(manifestBytes),
+      roundTrip: true, wrongHarnessRejected: true, ordinaryOverwriteRejected: true, corruptReadRejected: true },
+    initiallyAbsent, notExercised: manifest.notExercised };
+  writeFileSync(join(evidenceDir, 'recovery-fact-allocation.json'), JSON.stringify(receipt, null, 2) + '\n');
+  return receipt;
+}
+
 /** Seed only the disposable private pool before its operator boots. The
  * credential is deliberately invalid; inference still terminates at the local
  * refusal listener and authenticateProvider below can never forward it. */

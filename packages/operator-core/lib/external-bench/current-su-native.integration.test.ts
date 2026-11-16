@@ -1,6 +1,7 @@
 /** Real current-su launcher, private current-build operator and task container.
  * Local refusal/scripted protocol listeners have no provider forwarding code. */
 import { fork, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { mkdir, rm, symlink } from 'node:fs/promises';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -8,7 +9,8 @@ import { expect, it, type TestContext, vi } from 'vitest';
 import { defaultEvidenceRoot, runHarness } from '@papercusp/verification-harness';
 import type {} from '../../test/current-su-native-http-scenario';
 import type {} from '../../test/staging-first-http-fixture';
-import { captureIsolatedWorker, currentSuNativeRetainedArtifacts, isolatedWorkerFailureDetail, isolatedWorkerOptions,
+import { captureIsolatedWorker, currentSuNativeRetainedArtifacts, CURRENT_SU_RECOVERY_ALLOCATION_ARTIFACTS,
+  isolatedWorkerFailureDetail, isolatedWorkerOptions,
   preflightCurrentSuNativeEgress, recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
 import { preparePrivateOperatorApiBundle, privateMcpSourceSha, privateNativeDockerHost } from '../../test/private-http-workspace-preflight';
 import { CC_HOOK_FILES } from '../desktop-install/papercusp-files';
@@ -210,6 +212,48 @@ it('checks native egress startup without private API compilation or model reques
     vi.unstubAllEnvs();
   }
 }, 120_000);
+
+it('allocates numeric recovery inputs and retains their PostgreSQL-clock manifest before native launch', async context => {
+  const allocationOptions = isolatedWorkerOptions(180_000);
+  const runId = await recordIsolatedIntegrationProof({ root,
+    filePath: 'packages/operator-core/lib/external-bench/current-su-native.integration.test.ts',
+    sourcePaths: ['packages/operator-core/test/current-su-native-http-scenario.ts',
+      'packages/operator-core/test/staging-first-http-fixture.ts',
+      'packages/operator-core/lib/agent-facts/store.ts', 'packages/operator-core/lib/work-items.ts',
+      'packages/operator-core/lib/text-artifacts.ts'],
+    retainedArtifacts: CURRENT_SU_RECOVERY_ALLOCATION_ARTIFACTS,
+    execute: async (observe, evidenceDir) => {
+      const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
+        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts')],
+      { cwd: root, detached: true, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+        env: { ...process.env, FORCE_COLOR: '0', STAGING_FIRST_HTTP_SCENARIO: 'current-su-native-recovery-allocation',
+          STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir } });
+      observe(child);
+      const result = await captureIsolatedWorker(child, evidenceDir, allocationOptions);
+      expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ code: 0, signal: null,
+        timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
+      const receipt = JSON.parse(readFileSync(join(evidenceDir, 'recovery-fact-allocation.json'), 'utf8'));
+      const manifest = readFileSync(join(evidenceDir, 'recovery-fact-manifest.json'), 'utf8');
+      expect(result.output).toContain('CURRENT_SU_RECOVERY_ALLOCATION_RECEIPT ');
+      expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/), nativeLaunches: 0,
+        allocation: { currentRef: expect.stringMatching(/^WI-\d+$/), peerRef: expect.stringMatching(/^WI-\d+$/),
+          canonicalReadback: true, invalidAlphaRefsRejected: true },
+        clock: { source: expect.stringContaining('PostgreSQL'), sharedByAllRows: true },
+        selectedBodies: ['Continue the assigned task.', 'Resume the bound harness.'], initiallyAbsent: true,
+        manifest: { roundTrip: true, wrongHarnessRejected: true, ordinaryOverwriteRejected: true,
+          corruptReadRejected: true } });
+      expect(receipt.allocation.currentRef).not.toBe(receipt.allocation.peerRef);
+      expect(createHash('sha256').update(manifest).digest('hex')).toBe(receipt.manifest.sha256);
+      const frozen = JSON.parse(manifest);
+      expect(frozen.aliases.CURRENT_REF).toBe(receipt.allocation.currentRef);
+      expect(frozen.rowGenerations.find((row: { scope: string }) => row.scope === 'work_item').scopeRef)
+        .toBe(receipt.allocation.currentRef);
+      expect(frozen.notExercised).toContain('native-epoch');
+    },
+  });
+  Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+  console.info('CURRENT_SU_RECOVERY_ALLOCATION_PROOF_RUN ' + runId);
+}, options.testTimeoutMs);
 
 it('verifies the digest-pinned private MCP generation before any native launch', async context => {
   await privateMcpPreflightOnlyScenario(context);

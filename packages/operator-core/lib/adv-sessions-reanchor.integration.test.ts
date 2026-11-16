@@ -129,22 +129,23 @@ beforeEach(async () => {
 });
 
 describe('respawn report phase attribution (real PG)', () => {
-  it('retains a late native binding and settlement trace after the caller aborts', async () => {
+  it.each(['numeric', 'owner'] as const)('retains a late %s native binding and settlement trace after the caller aborts', async binding => {
     // Use the actual route, principal resolver and lifecycle SQL. The HTTP-only
     // suite supplies the other contract cases; this guard needs a real row lock.
     const { default: routes } = await import('./endpoint-route/routes/agent-mcp/bootstrap-su-resume');
     const route = routes.find(r => r.method === 'POST' && r.path.endsWith('/session-respawned'))!;
     const owner = `su-report-phase-${randomUUID()}`;
     const id = await seedAdv({ coordOwnerId: owner, sessionId: DEAD_ID });
-    const report = (traceId: string, signal?: AbortSignal) => runWithWorkspace(WS, () => route.handler(new Request(
+    const report = async (traceId: string, signal?: AbortSignal): Promise<Response> => runWithWorkspace(WS, () => route.handler(new Request(
       'http://127.0.0.1/api/agent-mcp/console/bootstrap-su/session-respawned', {
         method: 'POST',
         headers: { host: '127.0.0.1', 'content-type': 'application/json',
           'x-papercusp-mcp-trace-id': traceId },
-        body: JSON.stringify({ advSessionId: id, coordOwnerId: owner, sessionId: FRESH_ID }),
+        body: JSON.stringify({ ...(binding === 'numeric' ? { advSessionId: id } : {}), coordOwnerId: owner, sessionId: FRESH_ID }),
         signal,
       },
-    )));
+    ), { principal: null, input: undefined, params: {}, log: () => {},
+      signal: signal ?? new AbortController().signal }));
     // Warm imports with an ordinary successful report before measuring the SQL
     // wait. Otherwise module loading and lock waiting would be confounded.
     const ordinary = await report(randomUUID());
@@ -183,7 +184,10 @@ describe('respawn report phase attribution (real PG)', () => {
       await expect.poll(() => traces().find(event => event.stage === 'http_handler_phase_pending'),
         { timeout: 5_000 }).toMatchObject({
         httpHandlerPhase: 'session_respawn',
-        httpHandlerPhases: { pending: expect.arrayContaining([expect.objectContaining({ phase: 'nativeReanchor' })]) },
+        httpHandlerPhases: { pending: expect.arrayContaining([
+          expect.objectContaining({ phase: 'nativeReanchor' }),
+          expect.objectContaining({ phase: 'nativeReanchor:bindingUpdate' }),
+        ]) },
       });
       caller.abort();
       expect(settled).toBe(false);
@@ -203,6 +207,12 @@ describe('respawn report phase attribution (real PG)', () => {
         httpHandlerPhase: 'session_respawn',
         httpHandlerPhases: { pending: [], phases: expect.arrayContaining([
           expect.objectContaining({ phase: 'nativeReanchor' }),
+          expect.objectContaining({ phase: 'nativeReanchor:transactionAcquire' }),
+          expect.objectContaining({ phase: 'nativeReanchor:custodyImport' }),
+          expect.objectContaining({ phase: 'nativeReanchor:bindingUpdate' }),
+          expect.objectContaining({ phase: 'nativeReanchor:transactionCommit' }),
+          expect.objectContaining({ phase: 'nativeReanchor:identitySpan' }),
+          expect.objectContaining({ phase: 'nativeReanchor:receiptRow' }),
           expect.objectContaining({ phase: 'taskBinding' }),
         ]) },
       });

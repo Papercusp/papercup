@@ -256,7 +256,7 @@ describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)'
     const permit = { bindingId: 7, reservationId: 8, attemptKey: 'attempt', receiptId: 'receipt' };
     expect((await postRespawned({ advSessionId: 42, coordOwnerId: 'su-source', sessionId: FRESH_ID,
       managedSuccession: { phase: 'settle', permit } })).status).toBe(200);
-    expect(reanchorMock).toHaveBeenCalledWith(42, FRESH_ID, { childLaunchSessionId: null, managedSuccessionPermit: permit });
+    expect(reanchorMock).toHaveBeenCalledWith(42, FRESH_ID, expect.objectContaining({ childLaunchSessionId: null, managedSuccessionPermit: permit }));
   });
 
   it('does not turn failed reservation storage into a successful callback', async () => {
@@ -270,7 +270,7 @@ describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)'
     const turnProvenanceDir = '/runtime/host/turn-provenance';
     const response = await postRespawned({ advSessionId: 42, sessionId: FRESH_ID, turnProvenanceDir });
     expect(response.status).toBe(200);
-    expect(reanchorMock).toHaveBeenCalledWith(42, FRESH_ID, { childLaunchSessionId: null, turnProvenanceDir });
+    expect(reanchorMock).toHaveBeenCalledWith(42, FRESH_ID, expect.objectContaining({ childLaunchSessionId: null, turnProvenanceDir }));
   });
 
   it.each(['relative/ledger', '', 42])('rejects an invalid host provenance namespace: %j', async turnProvenanceDir => {
@@ -314,7 +314,9 @@ describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)'
     const res = await postRespawned({ advSessionId: 42, sessionId: FRESH_ID });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, reanchored: true });
-    expect(reanchorMock).toHaveBeenCalledWith(42, FRESH_ID, { childLaunchSessionId: null });
+    expect(reanchorMock).toHaveBeenCalledWith(42, FRESH_ID, {
+      childLaunchSessionId: null, phases: expect.objectContaining({ track: expect.any(Function) }),
+    });
   });
 
   it('clears the PG estimate plus BOTH process-local caches for the respawned owner', async () => {
@@ -399,7 +401,7 @@ describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)'
   it('trims surrounding whitespace on the sessionId before anchoring', async () => {
     const res = await postRespawned({ advSessionId: 7, sessionId: `  ${FRESH_ID}  ` });
     expect(res.status).toBe(200);
-    expect(reanchorMock).toHaveBeenCalledWith(7, FRESH_ID, { childLaunchSessionId: null });
+    expect(reanchorMock).toHaveBeenCalledWith(7, FRESH_ID, expect.objectContaining({ childLaunchSessionId: null }));
   });
 });
 
@@ -409,7 +411,9 @@ describe('owner-keyed fallback — the interactive/`psu --resume` cohort (no adv
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, reanchored: true });
     expect(reanchorMock).not.toHaveBeenCalled();
-    expect(reanchorByOwnerMock).toHaveBeenCalledWith('su-interactive-owner', FRESH_ID);
+    expect(reanchorByOwnerMock).toHaveBeenCalledWith('su-interactive-owner', FRESH_ID, {
+      phases: expect.objectContaining({ track: expect.any(Function) }),
+    });
     expect(clearContextEstimateMock).toHaveBeenCalledWith('su-interactive-owner');
     expect(clearContextUsageMock).toHaveBeenCalledWith('su-interactive-owner');
     expect(clearContextAnchorMock).toHaveBeenCalledWith('su-interactive-owner');
@@ -428,7 +432,7 @@ describe('owner-keyed fallback — the interactive/`psu --resume` cohort (no adv
       reanchored: false,
       error: 'native session binding is not established',
     });
-    expect(reanchorMock).toHaveBeenCalledWith(42, FRESH_ID, { childLaunchSessionId: null });
+    expect(reanchorMock).toHaveBeenCalledWith(42, FRESH_ID, expect.objectContaining({ childLaunchSessionId: null }));
     expect(reanchorByOwnerMock).not.toHaveBeenCalled();
     expect(clearContextEstimateMock).not.toHaveBeenCalled();
     expect(clearContextUsageMock).not.toHaveBeenCalled();

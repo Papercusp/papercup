@@ -16,6 +16,7 @@ import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { createDedicatedOrgPg, DbCallDeadlineError, getOrgPg, withWorkspace } from '@papercusp/db-org';
 import type { Sql, TransactionSql } from 'postgres';
+import { trackPhase, type PhaseTracker } from '@papercusp/tooldef';
 import { boundedOrgTxn, OrgTxnTimeoutError } from './pg-bounded-txn';
 import { activeWorkspaceId } from './workspace-registry';
 import type { SuAgent } from './su-agents';
@@ -1864,6 +1865,7 @@ export async function reanchorAdvSessionNativeId(
   id: number,
   sessionId: string,
   opts: { childLaunchSessionId?: string | null; turnProvenanceDir?: string;
+    phases?: PhaseTracker;
     managedSuccessionPermit?: import('./blind-review-continuation-custody').BlindReviewManagedSuccessionPermit } = {},
 ): Promise<{ reanchored: boolean; owner: string | null }> {
   if (!sessionId) return { reanchored: false, owner: null };
@@ -1888,62 +1890,74 @@ export async function reanchorAdvSessionNativeId(
     // EI-21417550055038906: clear the COMPLETE terminal tuple (ended_by/
     // ended_signal too, matching claimAdvSessionResume) — leaving them behind
     // creates a half-live row whose residue later reads as terminal evidence.
-    const result = await sql.begin(async (tx) => {
-      const [scope] = await tx<Array<{ workspace_id: string }>>`SELECT workspace_id FROM harness_shared.adv_sessions
-        WHERE id = ${id} AND retired_at IS NULL`;
-      if (!scope) return { reanchored: false, owner: null, workspaceId: null };
-      const { withBlindReviewManagedReanchor } = await import('./blind-review-continuation-custody');
-      return withBlindReviewManagedReanchor(tx as unknown as Parameters<typeof withBlindReviewManagedReanchor>[0], {
-        workspaceId: scope.workspace_id, advSessionId: id, nativeSessionId: sessionId,
-        permit: opts.managedSuccessionPermit,
-      }, async () => {
-      await bindInitialMemberNativeId(tx, id, sessionId);
-      const rows = await tx<{ id: number; owner: string | null; workspace_id: string }[]>`
-        UPDATE harness_shared.adv_sessions
-           SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL, ended_by = NULL,
-               ended_signal = NULL, started_at = now(), shutdown_accepted_at = NULL,
-               resume_claim_key = NULL, resume_claimed_at = NULL,
-               child_launch_session_id = ${childLaunchAlias}
-         WHERE id = ${id} AND retired_at IS NULL
-           AND session_id IS DISTINCT FROM ${sessionId}
-        RETURNING id, coord_owner_id AS owner, workspace_id
-      `;
-      // The owner rides back so the respawn route can clear the frozen context
-      // gauge (the successor keeps the coord ownerId, so the in-process usage
-      // cache would otherwise serve the DEAD predecessor's near-limit estimate
-      // for up to a watchdog cadence — the "89% on a fresh successor" bug).
-      if (rows.length > 0) {
-        // Carry-respawn uses this seam rather than keyed resume finalization.
-        // Keep its native binding and the genuine already-applied receipt atomic.
-        await recordSuLaunchSpecInTransaction(tx, id, null, undefined, opts.turnProvenanceDir);
-        return { reanchored: true, owner: rows[0].owner, workspaceId: rows[0].workspace_id };
+    const transactionStarted = Date.now();
+    let transactionWorkEnded: number | undefined;
+    const result = await trackPhase(opts.phases, 'nativeReanchor:transaction', () => sql.begin(async (tx) => {
+      // Includes connection acquisition and BEGIN; it is not a SQL execution time.
+      opts.phases?.addCompleted('nativeReanchor:transactionAcquire', transactionStarted, Date.now() - transactionStarted);
+      try {
+        const [scope] = await trackPhase(opts.phases, 'nativeReanchor:scopeRead', async () =>
+          tx<Array<{ workspace_id: string }>>`SELECT workspace_id FROM harness_shared.adv_sessions
+          WHERE id = ${id} AND retired_at IS NULL`);
+        if (!scope) return { reanchored: false, owner: null, workspaceId: null };
+        const { withBlindReviewManagedReanchor } = await trackPhase(opts.phases, 'nativeReanchor:custodyImport', () =>
+          import('./blind-review-continuation-custody'));
+        return await trackPhase(opts.phases, 'nativeReanchor:custody', () => withBlindReviewManagedReanchor(tx as unknown as Parameters<typeof withBlindReviewManagedReanchor>[0], {
+          workspaceId: scope.workspace_id, advSessionId: id, nativeSessionId: sessionId,
+          permit: opts.managedSuccessionPermit,
+        }, async () => {
+          await trackPhase(opts.phases, 'nativeReanchor:initialMemberBinding', () => bindInitialMemberNativeId(tx, id, sessionId));
+          const rows = await trackPhase(opts.phases, 'nativeReanchor:bindingUpdate', async () => tx<{ id: number; owner: string | null; workspace_id: string }[]>`
+            UPDATE harness_shared.adv_sessions
+               SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL, ended_by = NULL,
+                   ended_signal = NULL, started_at = now(), shutdown_accepted_at = NULL,
+                   resume_claim_key = NULL, resume_claimed_at = NULL,
+                   child_launch_session_id = ${childLaunchAlias}
+             WHERE id = ${id} AND retired_at IS NULL
+               AND session_id IS DISTINCT FROM ${sessionId}
+            RETURNING id, coord_owner_id AS owner, workspace_id
+          `);
+          // The owner rides back so the respawn route can clear the frozen context
+          // gauge (the successor keeps the coord ownerId, so the in-process usage
+          // cache would otherwise serve the DEAD predecessor's near-limit estimate
+          // for up to a watchdog cadence — the "89% on a fresh successor" bug).
+          if (rows.length > 0) {
+            // Carry-respawn uses this seam rather than keyed resume finalization.
+            // Keep its native binding and the genuine already-applied receipt atomic.
+            await recordSuLaunchSpecInTransaction(tx, id, null, undefined, opts.turnProvenanceDir, undefined, opts.phases);
+            return { reanchored: true, owner: rows[0].owner, workspaceId: rows[0].workspace_id };
+          }
+          // WI-41555: a NO-OP re-anchor is NOT "no owner". The UPDATE above is guarded
+          // by `session_id IS DISTINCT FROM`, so a row that ALREADY names this native
+          // id matches ZERO rows — exactly what happens when the spawn path stamped the
+          // new id onto the row before this report arrived (the cold-loop recycle
+          // cohort), and on any retried or duplicated report. Returning owner:null
+          // there made the caller skip the very context-cache clears the comment above
+          // promises, and the anchored gauge then served the DEAD predecessor's
+          // reading FOREVER — not merely "for up to a watchdog cadence", because
+          // advanceAnchor's fast path never re-resolves whether its cached path is
+          // still the live transcript for this owner.
+          // `reanchored` answers "did I change the row"; `owner` answers "whose row is
+          // it". They are independent facts, and respawn hygiene keys off the second.
+          const existing = await trackPhase(opts.phases, 'nativeReanchor:existingBindingRead', async () => tx<{ owner: string | null; workspace_id: string; retired_at: Date | string | null }[]>`
+            SELECT coord_owner_id AS owner, workspace_id, retired_at
+              FROM harness_shared.adv_sessions
+             WHERE id = ${id}
+          `);
+          if (!existing[0] || existing[0].retired_at != null) {
+            return { reanchored: false, owner: null, workspaceId: null };
+          }
+          // A repeated native-id report must also heal an omitted receipt.
+          await recordSuLaunchSpecInTransaction(tx, id, null, undefined, opts.turnProvenanceDir, undefined, opts.phases);
+          return { reanchored: false, owner: existing[0].owner, workspaceId: existing[0].workspace_id };
+        }));
+      } finally {
+        transactionWorkEnded = Date.now();
       }
-      // WI-41555: a NO-OP re-anchor is NOT "no owner". The UPDATE above is guarded
-      // by `session_id IS DISTINCT FROM`, so a row that ALREADY names this native
-      // id matches ZERO rows — exactly what happens when the spawn path stamped the
-      // new id onto the row before this report arrived (the cold-loop recycle
-      // cohort), and on any retried or duplicated report. Returning owner:null
-      // there made the caller skip the very context-cache clears the comment above
-      // promises, and the anchored gauge then served the DEAD predecessor's
-      // reading FOREVER — not merely "for up to a watchdog cadence", because
-      // advanceAnchor's fast path never re-resolves whether its cached path is
-      // still the live transcript for this owner.
-      // `reanchored` answers "did I change the row"; `owner` answers "whose row is
-      // it". They are independent facts, and respawn hygiene keys off the second.
-      const existing = await tx<{ owner: string | null; workspace_id: string; retired_at: Date | string | null }[]>`
-        SELECT coord_owner_id AS owner, workspace_id, retired_at
-          FROM harness_shared.adv_sessions
-         WHERE id = ${id}
-      `;
-      if (!existing[0] || existing[0].retired_at != null) {
-        return { reanchored: false, owner: null, workspaceId: null };
-      }
-      // A repeated native-id report must also heal an omitted receipt.
-      await recordSuLaunchSpecInTransaction(tx, id, null, undefined, opts.turnProvenanceDir);
-      return { reanchored: false, owner: existing[0].owner, workspaceId: existing[0].workspace_id };
-      });
-    });
-    await recordReanchorSpan(result.workspaceId, result.owner, sessionId);
+    }));
+    if (transactionWorkEnded !== undefined)
+      opts.phases?.addCompleted('nativeReanchor:transactionCommit', transactionWorkEnded, Date.now() - transactionWorkEnded);
+    await trackPhase(opts.phases, 'nativeReanchor:identitySpan', () => recordReanchorSpan(result.workspaceId, result.owner, sessionId));
     return { reanchored: result.reanchored, owner: result.owner };
   } catch (e) {
     warnUnlessMissingTable(e, 'reanchorAdvSessionNativeId');
@@ -1984,7 +1998,7 @@ async function bindInitialMemberNativeId(tx: Sql | TransactionSql, id: number, s
 export async function reanchorAdvSessionNativeIdByOwner(
   coordOwnerId: string,
   sessionId: string,
-  opts: { turnProvenanceDir?: string } = {},
+  opts: { turnProvenanceDir?: string; phases?: PhaseTracker } = {},
 ): Promise<{ reanchored: boolean; owner: string | null }> {
   if (!coordOwnerId || !sessionId) return { reanchored: false, owner: null };
   if (opts.turnProvenanceDir !== undefined && !isAbsolute(opts.turnProvenanceDir))
@@ -1998,54 +2012,64 @@ export async function reanchorAdvSessionNativeIdByOwner(
     // non-retired row. A fleet-kill fence is terminal for re-anchor.
     // Two active rows (or two terminal rows) are ambiguous and must not let one
     // session's native id overwrite another session's home key.
-    const result = await sql.begin(async (tx) => {
-      const target = await tx<{ id: number; workspace_id: string }[]>`
-        WITH owner_rows AS (
-          SELECT id,
-                 workspace_id,
-                 ended_at,
-                 ended_by,
-                 count(*) FILTER (WHERE ended_at IS NULL AND ended_by IS NULL) OVER () AS active_count,
-                 count(*) OVER () AS total_count
-            FROM harness_shared.adv_sessions
-           WHERE coord_owner_id = ${coordOwnerId}
-             AND retired_at IS NULL
-        ), target AS (
-          SELECT id, workspace_id
-            FROM owner_rows
-           WHERE (active_count = 1 AND ended_at IS NULL AND ended_by IS NULL)
-              OR (active_count = 0 AND total_count = 1)
-        )
-        SELECT id, workspace_id FROM target LIMIT 1
-      `;
-      const targetId = target[0]?.id;
-      if (targetId == null) return { reanchored: false, owner: null, workspaceId: null };
-      const targetWorkspaceId = target[0]?.workspace_id ?? null;
-      const { withBlindReviewManagedReanchor } = await import('./blind-review-continuation-custody');
-      return withBlindReviewManagedReanchor(tx as unknown as Parameters<typeof withBlindReviewManagedReanchor>[0], {
-        workspaceId: target[0]!.workspace_id, advSessionId: targetId, nativeSessionId: sessionId,
-      }, async () => {
-      await bindInitialMemberNativeId(tx, targetId, sessionId);
-      const rows = await tx<{ id: number }[]>`
-        UPDATE harness_shared.adv_sessions
-           SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL,
-               ended_by = NULL, ended_signal = NULL, started_at = now(),
-               shutdown_accepted_at = NULL, resume_claim_key = NULL,
-               resume_claimed_at = NULL
-         WHERE id = ${targetId} AND retired_at IS NULL
-           AND session_id IS DISTINCT FROM ${sessionId}
-        RETURNING id
-      `;
-      // WI-41555 (see the sibling above for the full reasoning): a row that ALREADY
-      // names this native id updates zero rows, and the caller's respawn hygiene —
-      // the context-usage + anchor cache clears — must still run for that owner.
-      // Confirm the owner really does have a row, then report it with
-      // reanchored:false so "did I change it" stays honest.
-      await recordSuLaunchSpecInTransaction(tx, targetId, null, undefined, opts.turnProvenanceDir);
-      return { reanchored: rows.length > 0, owner: coordOwnerId, workspaceId: targetWorkspaceId };
-      });
-    });
-    await recordReanchorSpan(result.workspaceId, result.owner, sessionId);
+    const transactionStarted = Date.now();
+    let transactionWorkEnded: number | undefined;
+    const result = await trackPhase(opts.phases, 'nativeReanchor:transaction', () => sql.begin(async (tx) => {
+      opts.phases?.addCompleted('nativeReanchor:transactionAcquire', transactionStarted, Date.now() - transactionStarted);
+      try {
+        const target = await trackPhase(opts.phases, 'nativeReanchor:scopeRead', async () => tx<{ id: number; workspace_id: string }[]>`
+          WITH owner_rows AS (
+            SELECT id,
+                   workspace_id,
+                   ended_at,
+                   ended_by,
+                   count(*) FILTER (WHERE ended_at IS NULL AND ended_by IS NULL) OVER () AS active_count,
+                   count(*) OVER () AS total_count
+              FROM harness_shared.adv_sessions
+             WHERE coord_owner_id = ${coordOwnerId}
+               AND retired_at IS NULL
+          ), target AS (
+            SELECT id, workspace_id
+              FROM owner_rows
+             WHERE (active_count = 1 AND ended_at IS NULL AND ended_by IS NULL)
+                OR (active_count = 0 AND total_count = 1)
+          )
+          SELECT id, workspace_id FROM target LIMIT 1
+        `);
+        const targetId = target[0]?.id;
+        if (targetId == null) return { reanchored: false, owner: null, workspaceId: null };
+        const targetWorkspaceId = target[0]?.workspace_id ?? null;
+        const { withBlindReviewManagedReanchor } = await trackPhase(opts.phases, 'nativeReanchor:custodyImport', () =>
+          import('./blind-review-continuation-custody'));
+        return await trackPhase(opts.phases, 'nativeReanchor:custody', () => withBlindReviewManagedReanchor(tx as unknown as Parameters<typeof withBlindReviewManagedReanchor>[0], {
+          workspaceId: target[0]!.workspace_id, advSessionId: targetId, nativeSessionId: sessionId,
+        }, async () => {
+          await trackPhase(opts.phases, 'nativeReanchor:initialMemberBinding', () => bindInitialMemberNativeId(tx, targetId, sessionId));
+          const rows = await trackPhase(opts.phases, 'nativeReanchor:bindingUpdate', async () => tx<{ id: number }[]>`
+            UPDATE harness_shared.adv_sessions
+               SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL,
+                   ended_by = NULL, ended_signal = NULL, started_at = now(),
+                   shutdown_accepted_at = NULL, resume_claim_key = NULL,
+                   resume_claimed_at = NULL
+             WHERE id = ${targetId} AND retired_at IS NULL
+               AND session_id IS DISTINCT FROM ${sessionId}
+            RETURNING id
+          `);
+          // WI-41555 (see the sibling above for the full reasoning): a row that ALREADY
+          // names this native id updates zero rows, and the caller's respawn hygiene —
+          // the context-usage + anchor cache clears — must still run for that owner.
+          // Confirm the owner really does have a row, then report it with
+          // reanchored:false so "did I change it" stays honest.
+          await recordSuLaunchSpecInTransaction(tx, targetId, null, undefined, opts.turnProvenanceDir, undefined, opts.phases);
+          return { reanchored: rows.length > 0, owner: coordOwnerId, workspaceId: targetWorkspaceId };
+        }));
+      } finally {
+        transactionWorkEnded = Date.now();
+      }
+    }));
+    if (transactionWorkEnded !== undefined)
+      opts.phases?.addCompleted('nativeReanchor:transactionCommit', transactionWorkEnded, Date.now() - transactionWorkEnded);
+    await trackPhase(opts.phases, 'nativeReanchor:identitySpan', () => recordReanchorSpan(result.workspaceId, result.owner, sessionId));
     return { reanchored: result.reanchored, owner: result.owner };
   } catch (e) {
     warnUnlessMissingTable(e, 'reanchorAdvSessionNativeIdByOwner');
@@ -2326,13 +2350,14 @@ async function recordSuLaunchSpecInTransaction(
   launchSpec?: unknown,
   runtimeProvenanceDir?: string,
   onPhase?: (phase: string) => void,
+  phases?: PhaseTracker,
 ): Promise<boolean> {
   // Prefer the exact row id; fall back to the owner's NEWEST row for the
   // interactive cohort. Lock across read/merge/write so concurrent refreshes
   // cannot discard each other's immutable receipts.
   const exactId = advSessionId != null && advSessionId > 0 ? advSessionId : null;
   onPhase?.('recordSuLaunchSpec:row-read');
-  const rows = await tx<{
+  const rows = await trackPhase(phases, 'nativeReanchor:receiptRow', async () => tx<{
     id: number;
     workspace_id: string;
     coord_owner_id: string | null;
@@ -2352,13 +2377,13 @@ async function recordSuLaunchSpecInTransaction(
      ORDER BY a.started_at DESC, a.id DESC
      LIMIT 1
      FOR UPDATE OF a
-  `;
+  `);
   const row = rows[0];
   if (!row) return false;
   // Non-persona sessions still use this lifecycle seam. Resuming them must
   // not create a launch record, an activation, or an authority receipt.
   if (launchSpec === undefined && !row.launch_spec) return true;
-  const { retainSuLaunchIdentityHistory } = await import('./su-persona-render');
+  const { retainSuLaunchIdentityHistory } = await trackPhase(phases, 'nativeReanchor:receiptImport', () => import('./su-persona-render'));
   const appliedPair = row.applied !== null && typeof row.applied === 'object' && !Array.isArray(row.applied)
     ? row.applied as Record<string, unknown>
     : null;
@@ -2373,7 +2398,7 @@ async function recordSuLaunchSpecInTransaction(
   // its whole history or synthesize a receipt from the next render.
   onPhase?.('recordSuLaunchSpec:applied-receipt-read');
   const matchingReceipts = appliedSpecificationRevision && appliedStateRevision
-    ? await tx<{ receipt: unknown }[]>`
+    ? await trackPhase(phases, 'nativeReanchor:appliedReceiptRead', async () => tx<{ receipt: unknown }[]>`
         SELECT candidate.receipt
           FROM harness_shared.adv_sessions prior
           CROSS JOIN LATERAL (
@@ -2403,7 +2428,7 @@ async function recordSuLaunchSpecInTransaction(
            AND prior.id <> ${row.id}
          ORDER BY prior.started_at DESC, prior.id DESC, candidate.source_order
          LIMIT 1
-      `
+      `)
     : [];
   const currentRecord =
     row.launch_spec !== null &&
@@ -2462,15 +2487,16 @@ async function recordSuLaunchSpecInTransaction(
     if (typeof currentRecord?.turnProvenanceDir === 'string' && isAbsolute(currentRecord.turnProvenanceDir))
       (next as Record<string, unknown>).turnProvenanceDir = currentRecord.turnProvenanceDir;
   }
-  const retained = retainSuLaunchIdentityHistory(previous, next ?? row.launch_spec, row.applied);
+  const retained = await trackPhase(phases, 'nativeReanchor:receiptRetention', () =>
+    retainSuLaunchIdentityHistory(previous, next ?? row.launch_spec, row.applied));
   if (launchSpec === undefined && JSON.stringify(retained) === JSON.stringify(row.launch_spec)) return true;
   const payload = JSON.stringify(retained);
   onPhase?.('recordSuLaunchSpec:row-update');
-  const updated = await tx<{ id: number }[]>`
+  const updated = await trackPhase(phases, 'nativeReanchor:receiptUpdate', async () => tx<{ id: number }[]>`
     UPDATE harness_shared.adv_sessions SET launch_spec = ${payload}::text::jsonb
      WHERE id = ${row.id}
     RETURNING id
-  `;
+  `);
   return updated.length > 0;
 }
 

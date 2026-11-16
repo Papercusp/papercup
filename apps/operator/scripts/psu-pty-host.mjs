@@ -11890,6 +11890,8 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }, deps = {}) {
  * @param {(args:string[], options:{systemPromptAddendum:string, firstPrompt?:string, ownerId:string, agent?:string, personaFile?:string|null, codexHome?:string})=>any} [o.mintCarryRespawnArgs] mint argv for a carry respawn
  * @param {(args:string[], options:{agent?:string})=>({args:string[], nativeId:string}|null)} [o.mintParkResumeArgs]
  * @param {(args:string[], options:{nativeId:string|null})=>({args:string[], nativeId:string}|null)} [o.mintQuotaResumeArgs]
+ * @param {(childEnv: EnvironmentMap, childArgs: string[])=>void} [o.prepareChildEnv]
+ *   refresh on-disk client config from the exact env of EVERY child spawn (initial, carry, recycle, park resume)
  * @param {(args:string[])=>string[]} [o.prepareChildArgs]
  *   mint the argv that resumes a parked child (null = not resumable, never park)
  * @param {(options?: {routeMode?: 'auto'})=>Promise<any>} [o.ensureCodexHome] repair the per-session Codex home before a carry mint or quota recovery
@@ -11934,6 +11936,7 @@ export function hostThroughPty(o) {
     // Quota changes credentials, not the native conversation.
     mintQuotaResumeArgs = null,
     prepareChildArgs = (a) => a,
+    prepareChildEnv = () => {},
     // The launcher owns the authenticated operator repair route. Invoke it at
     // the carry boundary so an archived Codex home cannot make every successor
     // attempt fail before minting its AGENTS.md prompt.
@@ -12227,6 +12230,19 @@ export function hostThroughPty(o) {
       command, args: withManagedCodexStartupConfig({ command, args: spawnArgs, env }), env, cwd,
     });
     prepareCodexSqliteHome({ env: target.env, cwd, args: target.args });
+    // WI-6554700010050184: on-disk client config that was materialized from an
+    // earlier child's environment (Claude's literal native-session MCP header)
+    // must follow THIS child's identity. A carry/recycle rotates the native id;
+    // without this the successor presents its predecessor's id and every MCP
+    // call is fenced superuser_foreign_native_session. Fail-soft: the spawn is
+    // never blocked, but a failure leaves a durable diagnostic.
+    try {
+      prepareChildEnv(target.env, target.args);
+    } catch (error) {
+      appendHostEvent(ownerId, 'child-env-prepare-failed', {
+        errorName: typeof error?.name === 'string' ? error.name.slice(0, 80) : 'Error',
+      });
+    }
     const ptyOptions = {
       name: ptyName,
       ...childScreenDims(),
