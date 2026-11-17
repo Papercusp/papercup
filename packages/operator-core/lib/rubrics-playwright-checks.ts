@@ -93,6 +93,8 @@ export function playwrightRecordedCases(details: TestRunExecutionDetails): Recor
 }
 
 export type PortalPlaywrightResult = TestFilesCoreResult & {
+  /** Complete process logs, including failures before reporter ingestion. */
+  outputLogPaths?: string[];
   testRunIds?: number[];
   casesByFile?: Record<string, RecordedTestCase[] | null>;
   testRunIdsByFile?: Record<string, number[]>;
@@ -173,6 +175,8 @@ export function judgePortalPlaywrightRows(input: {
 
 export async function runPortalPlaywrightChecks(opts: {
   root: string; files: string[]; runId: string; workspaceId?: string; harnessSlug?: string; actorId?: string; timeoutMs?: number;
+  /** Existing caller-owned directory that survives private-runtime cleanup. */
+  artifactDirectory?: string;
 }, deps: {
   process?: typeof runTestProcess;
   readRows?: typeof readHarnessTestRunEvidence;
@@ -207,19 +211,21 @@ export async function runPortalPlaywrightChecks(opts: {
     PAPERCUSP_WORKSPACE_ID: opts.workspaceId, PAPERCUSP_TEST_ATTRIBUTION: '1',
     PAPERCUSP_TEST_RUNS_DB_URL: resolveTestRunsPgUrl(process.env) };
   Object.assign(env, parkedAuditScorecardEnvironment(env, { files, actorId: opts.actorId, workspaceId: opts.workspaceId }));
+  if (opts.artifactDirectory) Object.assign(env, { PAPERCUSP_TEST_ARTIFACT_DIR: opts.artifactDirectory });
   // Playwright CLI treats file filters as regexes. Anchor and escape literal paths, never widen to neighbours.
   const filters = files.map(file => `(?:^|/)${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
   const outcome = await (deps.process ?? runTestProcess)('npm', ['run', 'test:e2e:browser', '--'],
     ['--retries=0', '--workers=1', '--forbid-only', ...filters], root, root, env, Math.max(1, deadline - Date.now()), undefined, files.length);
+  const diagnostics = outcome.outputLogPaths?.length ? { outputLogPaths: [...outcome.outputLogPaths] } : {};
   if (outcome.timedOut || outcome.aborted || outcome.spawnError || outcome.signal || outcome.code !== 0 || outcome.terminationUnconfirmed)
     return { ...refuse(outcome.timedOut ? 'timeout' : outcome.aborted ? 'aborted' : 'route_error',
       `Playwright process did not finish successfully: code=${outcome.code} signal=${outcome.signal}; ${outcome.spawnError ?? ''}`),
-      routerOutput: outcome.output.slice(-2000), ...(outcome.taskId ? { taskId: outcome.taskId } : {}),
+      ...diagnostics, routerOutput: outcome.output.slice(-2000), ...(outcome.taskId ? { taskId: outcome.taskId } : {}),
       ...(outcome.terminationUnconfirmed ? { terminationUnconfirmed: true } : {}) };
-  if (!sourceUnchanged()) return refuse('route_error', 'Playwright spec/config source changed during execution');
+  if (!sourceUnchanged()) return { ...refuse('route_error', 'Playwright spec/config source changed during execution'), ...diagnostics };
   const rows = await (deps.readRows ?? readHarnessTestRunEvidence)({ workspaceId: opts.workspaceId,
     harnessSlug: opts.harnessSlug, runGroupId: runId, filePaths: files });
-  if (!sourceUnchanged()) return refuse('route_error', 'Playwright spec/config source changed while reading reporter evidence');
-  return judgePortalPlaywrightRows({ route: { root, files }, runId, workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug,
-    rows });
+  if (!sourceUnchanged()) return { ...refuse('route_error', 'Playwright spec/config source changed while reading reporter evidence'), ...diagnostics };
+  return { ...judgePortalPlaywrightRows({ route: { root, files }, runId, workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug,
+    rows }), ...diagnostics };
 }

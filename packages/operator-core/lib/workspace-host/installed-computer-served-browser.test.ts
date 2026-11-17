@@ -10,6 +10,7 @@ import { gzipSync } from 'node:zlib';
 import { chromium } from 'playwright-core';
 import { serve } from '@hono/node-server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { crossOriginIsolationHeaders } from '../../../../libs/generic/desktop-ipc/src/csp-policy';
 import { assertInstalledPortalSession, assertInstalledRuntimeLoader, assertInstalledRuntimeSource, installedDesktopBinaries, installedHostFixtureScope, installedHostedIdentityProvider, installedPortalProxy, installedPortalSource, installedRuntimeNodeArgs, validateInstalledPortalRelease, waitForInstalledPortalSetup, waitForPortalDocument } from './installed-computer-served-browser.fixture';
 
 vi.mock('node:child_process', async importOriginal => {
@@ -55,6 +56,37 @@ async function currentNativeLoader(repo: string) {
 
 describe('served Portal prerequisite and document readiness', () => {
   const expectedSession = { userId: 'private-user', organizationId: 'private-org', workspaceId: 'private-workspace' };
+
+  it.each([false, true])('measures the local isolation policy severing the cross-origin approval opener: %s', async isolated => {
+    const local = createServer((_, response) => {
+      response.writeHead(200, { 'content-type': 'text/html', ...(isolated ? crossOriginIsolationHeaders() : {}) });
+      response.end('<html><body><button onclick="window.opener?.postMessage(\'approval\', \'*\')">Approve</button></body></html>');
+    });
+    await new Promise<void>(resolve => local.listen(0, '127.0.0.1', resolve));
+    const localOrigin = `http://127.0.0.1:${(local.address() as { port: number }).port}`;
+    const origin = await start((_, response) => {
+      response.setHeader('content-type', 'text/html');
+      response.end(`<html><body><button onclick="window.open('${localOrigin}')">Open</button><script>window.received = false; addEventListener('message', () => { window.received = true; });</script></body></html>`);
+    });
+    const browser = await chromium.launch({ channel: 'chrome', headless: true });
+    try {
+      const context = await browser.newContext();
+      const page = await context.newPage();
+      await page.goto(origin);
+      const opened = page.waitForEvent('popup');
+      await page.getByRole('button', { name: 'Open', exact: true }).click();
+      const popup = await opened;
+      await popup.waitForLoadState('domcontentloaded');
+      expect(await popup.evaluate(() => window.opener === null)).toBe(isolated);
+      expect(await popup.evaluate(() => window.crossOriginIsolated)).toBe(isolated);
+      await popup.getByRole('button', { name: 'Approve', exact: true }).click();
+      if (!isolated) await page.waitForFunction(() => (window as unknown as { received: boolean }).received);
+      expect(await page.evaluate(() => (window as unknown as { received: boolean }).received)).toBe(!isolated);
+    } finally {
+      await browser.close(); local.closeAllConnections();
+      await new Promise<void>(resolve => local.close(() => resolve()));
+    }
+  });
 
   it('creates an upstream fixture session valid at the current time', async () => {
     const now = Date.now();

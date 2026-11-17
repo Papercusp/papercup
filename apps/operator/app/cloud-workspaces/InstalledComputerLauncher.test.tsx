@@ -47,6 +47,26 @@ describe('installed computer launcher', () => {
     window.dispatchEvent(new MessageEvent('message', { data: { type: 'papercusp.local-desktop-approved' }, origin: 'http://127.0.0.1:3070', source: window }));
     expect(mocks.read).not.toHaveBeenCalled(); expect(mocks.save).not.toHaveBeenCalled();
   });
+  it('accepts an approval from the exact opened local window', async () => {
+    vi.spyOn(window, 'open').mockReturnValue(window);
+    await openSetup();
+    fireEvent.click(screen.getByRole('button', { name: 'Open Papercusp' }));
+    const receipt = { type: 'papercusp.local-desktop-approved', requestId: 'from-local-app' };
+    window.dispatchEvent(new MessageEvent('message', { data: receipt, origin: 'http://127.0.0.1:3070', source: window }));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Approval saved'));
+    expect(mocks.read).toHaveBeenCalledWith(receipt, expect.any(Object), await mocks.principal());
+    expect(mocks.save).toHaveBeenCalledTimes(1);
+  });
+  it('verifies the copied public receipt when the isolated app cannot notify its opener', async () => {
+    await openSetup();
+    const receipt = { type: 'papercusp.local-desktop-approved', requestId: 'copied-from-isolated-app' };
+    fireEvent.change(screen.getByLabelText('Local approval receipt'), { target: { value: btoa(JSON.stringify(receipt)) } });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify approval' }));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Approval saved'));
+    expect(mocks.read).toHaveBeenCalledWith(receipt, expect.any(Object), await mocks.principal());
+    expect(mocks.save).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('status').textContent).toContain('verify its encrypted desktop connection');
+  });
   it('rechecks the current portal identity before accepting a copied receipt', async () => {
     await openSetup(); mocks.principal.mockResolvedValue({ userId: 'other', organizationId: 'org', workspaceId: 'workspace' });
     fireEvent.change(screen.getByLabelText('Local approval receipt'), { target: { value: btoa('{}') } });

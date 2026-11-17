@@ -522,7 +522,8 @@ export async function runInstalledComputerServedBrowser(input: Input) {
           files: ['e2e/portal-existing-local-connection.spec.ts'],
           runId: `installed-portal-${basename(privateRoot)}-${Date.now()}`,
           actorId: argument('--portal-actor-id'), workspaceId: argument('--portal-ledger-workspace'),
-          harnessSlug: argument('--portal-ledger-harness'), timeoutMs: 7 * 60_000 });
+          harnessSlug: argument('--portal-ledger-harness'), timeoutMs: 7 * 60_000,
+          artifactDirectory: dirname(evidence) });
       } finally {
         if (previousFixture === undefined) delete process.env.PORTAL_LOCAL_CONNECTION_FIXTURE;
         else process.env.PORTAL_LOCAL_CONNECTION_FIXTURE = previousFixture;

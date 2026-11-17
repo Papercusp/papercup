@@ -136,6 +136,19 @@ describe('governed Playwright invocation', () => {
     expect(result.error).toBeDefined();
     expect(injected.readRows).not.toHaveBeenCalled();
   });
+  it.each([0, 1])('retains full process log references for exit %i outside private-runtime cleanup', async code => {
+    const artifactDirectory = join(workspace, 'retained');
+    const outputLogPaths = [join(artifactDirectory, 'stdout.log'), join(artifactDirectory, 'stderr.log')];
+    const injected = deps({ ...success, code, output: 'original failure\n' + 'later noise'.repeat(300), outputLogPaths });
+    const result = await runPortalPlaywrightChecks({ ...options, artifactDirectory }, injected);
+    expect(result.outputLogPaths).toEqual(outputLogPaths);
+    expect(injected.process.mock.calls[0]![5]).toMatchObject({ PAPERCUSP_TEST_ARTIFACT_DIR: artifactDirectory });
+    if (code) {
+      expect(result).toMatchObject({ ok: false, error: 'route_error' });
+      expect(result.routerOutput).not.toContain('original failure');
+      expect(injected.readRows).not.toHaveBeenCalled();
+    } else expect(result).toMatchObject({ ok: true, testRunIds: [41] });
+  });
   it('does not spawn without authenticated concrete scope or across a held fence', async () => {
     const injected = deps();
     expect((await runPortalPlaywrightChecks({ ...options, actorId: undefined }, injected)).error).toBe('route_error');
