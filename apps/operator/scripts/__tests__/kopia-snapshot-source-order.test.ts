@@ -133,25 +133,44 @@ function runSweepInvocations(requiredDir: string, procRoot?: string, expectedSta
     .filter((inv) => inv.length > 0);
 }
 
+// Reporter messages are clipped from the end. Preserve the complete evidence
+// outside the fixture (afterEach removes it), and lead with the last shell phase.
+function sweepFailure(failure: Error, env: NodeJS.ProcessEnv, stdout: string, stderr: string) {
+  const logPath = join(env.KOPIA_SNAPSHOT_LOG_DIR!, 'snapshot-all.log');
+  const phaseLog = existsSync(logPath) ? readFileSync(logPath, 'utf8') : '';
+  let artifactDir: string | undefined;
+  let artifactNote: string;
+  try {
+    const root = env.PAPERCUSP_TEST_ARTIFACT_DIR || tmpdir();
+    mkdirSync(root, { recursive: true });
+    artifactDir = mkdtempSync(join(root, 'kopia-order-failure-'));
+    writeFileSync(join(artifactDir, 'stdout.log'), stdout);
+    writeFileSync(join(artifactDir, 'stderr.log'), stderr);
+    writeFileSync(join(artifactDir, 'snapshot-all.log'), phaseLog);
+    artifactNote = `Full shell evidence: ${artifactDir}`;
+  } catch (error) {
+    artifactNote = `Unable to retain shell evidence: ${String(error)}`;
+  }
+  return Object.assign(new Error(
+    `${failure.message}\nLast shell phase:\n${(phaseLog || stderr || stdout).slice(-1200)}\n${artifactNote}`,
+  ), { artifactDir });
+}
+
+function runShell(args: string[], env: NodeJS.ProcessEnv, timeout = 60_000) {
+  const result = spawnSync('/usr/bin/env', ['bash', ...args], { env, timeout, encoding: 'utf8' });
+  if (result.error) throw sweepFailure(result.error, env, result.stdout || '', result.stderr || '');
+  return result;
+}
+
 /** Run the sweep and return each kopia invocation's FULL argv, flags included, in order. */
 function runSweepRawInvocations(requiredDir: string, procRoot?: string, expectedStatus = 0): string[][] {
   rmSync(join(dir, 'create-argv'), { force: true });
-  let actualStatus: number | null = 0;
-  try {
-    execFileSync('/usr/bin/env', ['bash', '-x', SCRIPT], {
-      env: sweepEnvironment(requiredDir, procRoot),
-      timeout: 60_000,
-    });
-  } catch (error) {
-    const failure = error as Error & { status?: number | null; stderr?: Buffer; stdout?: Buffer };
-    actualStatus = failure.status ?? null;
-    if (actualStatus !== expectedStatus) {
-      const logPath = join(dir, 'log', 'snapshot-all.log');
-      const phaseLog = existsSync(logPath) ? readFileSync(logPath, 'utf8').slice(-8000) : '';
-      throw new Error(`${failure.message}\nShell phase trace:\n${String(failure.stderr ?? '').slice(-2000)}\n${phaseLog}\n${String(failure.stdout ?? '').slice(-1000)}`);
-    }
+  const env = sweepEnvironment(requiredDir, procRoot);
+  const result = runShell(['-x', SCRIPT], env);
+  if (result.status !== expectedStatus) {
+    throw sweepFailure(new Error(`Sweep exited ${result.status} (signal ${result.signal})`), env, result.stdout, result.stderr);
   }
-  expect(actualStatus).toBe(expectedStatus);
+  expect(result.status).toBe(expectedStatus);
   const invocations: string[][] = [[]];
   for (const line of readFileSync(join(dir, 'create-argv'), 'utf8').split('\n')) {
     if (line === INVOCATION_END) invocations.push([]);
@@ -177,13 +196,33 @@ beforeEach(() => {
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
+describe('sweep subprocess evidence', () => {
+  it('retains complete logs and exposes the last phase when a child times out', () => {
+    const env: NodeJS.ProcessEnv = { ...sweepEnvironment(join(dir, 'dumps')), PAPERCUSP_TEST_ARTIFACT_DIR: join(dir, 'artifacts') };
+    mkdirSync(env.KOPIA_SNAPSHOT_LOG_DIR!, { recursive: true });
+    const probe = join(dir, 'timeout-probe');
+    writeFileSync(probe, `printf '%5000s\n' startup >"$KOPIA_SNAPSHOT_LOG_DIR/snapshot-all.log"
+printf 'LATEST_PHASE_CANARY\n' >>"$KOPIA_SNAPSHOT_LOG_DIR/snapshot-all.log"
+printf '%5000s\n' stderr-start >&2
+printf 'LATEST_STDERR_CANARY\n' >&2
+while :; do :; done
+`);
+    let failure: (Error & { artifactDir?: string }) | undefined;
+    try { runShell([probe], env, 2000); } catch (error) { failure = error as typeof failure; }
+    expect(failure?.message.slice(0, 2048)).toContain('ETIMEDOUT');
+    expect(failure?.message.slice(0, 2048)).toContain('LATEST_PHASE_CANARY');
+    if (!failure?.artifactDir) throw new Error('Timed-out child did not retain its evidence');
+    const phaseLog = readFileSync(join(failure.artifactDir, 'snapshot-all.log'), 'utf8');
+    expect(phaseLog).toContain('startup');
+    expect(phaseLog).toContain('LATEST_PHASE_CANARY');
+    expect(phaseLog.length).toBeGreaterThan(5000);
+    expect(readFileSync(join(failure.artifactDir, 'stderr.log'), 'utf8')).toContain('LATEST_STDERR_CANARY');
+  });
+});
+
 describe('kopia-snapshot-all.sh producer failure status', () => {
   function runWithFailure(extraEnv: NodeJS.ProcessEnv) {
-    return spawnSync('/usr/bin/env', ['bash', SCRIPT], {
-      env: { ...sweepEnvironment(join(dir, 'dumps')), ...extraEnv },
-      timeout: 60_000,
-      encoding: 'utf8',
-    });
+    return runShell([SCRIPT], { ...sweepEnvironment(join(dir, 'dumps')), ...extraEnv });
   }
 
   it('returns a required snapshot failure while still attempting the tail', () => {
@@ -384,7 +423,10 @@ exit 0
   }
 
   function cleanup(env: NodeJS.ProcessEnv): string {
-    execFileSync('/usr/bin/env', ['bash', SCRIPT, '--cleanup'], { env, timeout: 30_000 });
+    const result = runShell([SCRIPT, '--cleanup'], env, 30_000);
+    if (result.status !== 0) {
+      throw sweepFailure(new Error(`Cleanup exited ${result.status} (signal ${result.signal})`), env, result.stdout, result.stderr);
+    }
     return readFileSync(join(dir, 'log', 'snapshot-all.log'), 'utf8');
   }
 
@@ -421,7 +463,7 @@ exit 0
     rmSync(join(env.KOPIA_SNAPSHOT_PROC_ROOT!, String(PID), 'exe'));
     writeFileSync(join(dir, 'sudo'), '#!/usr/bin/env bash\nexit 1\n');
 
-    const result = spawnSync('bash', [SCRIPT, '--cleanup'], { env, encoding: 'utf8', timeout: 10_000 });
+    const result = runShell([SCRIPT, '--cleanup'], env, 10_000);
 
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(1);
@@ -435,9 +477,7 @@ exit 0
     const { env, killLog, output } = fakeRunningKopia();
     writeFileSync(join(dir, 'kill'), `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >>"${killLog}"\nexit 1\n`);
 
-    const result = spawnSync('bash', [SCRIPT, '--cleanup'], {
-      env: { ...env, KOPIA_SNAPSHOT_FLUSH_GRACE_SEC: '0' }, encoding: 'utf8', timeout: 10_000,
-    });
+    const result = runShell([SCRIPT, '--cleanup'], { ...env, KOPIA_SNAPSHOT_FLUSH_GRACE_SEC: '0' }, 10_000);
 
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(1);
