@@ -520,16 +520,44 @@ if [ -f "$ODDSMITH_DISCOVERY" ] && [ -f "$STATUS" ]; then
 fi
 
 # ── 2. SNAPSHOT RECENCY — secondary; it is what gets the dumps OFF this box ──
+# A failed listing can still print valid rows. Check its status before interpreting
+# any of them, and keep stderr separate so diagnostic timestamps cannot become data.
+snapshot_listing() {
+  local errors listing detail rc
+  errors=$(mktemp "$LOG_DIR/snapshot-list-error.XXXXXX") \
+    || fail "unable to prepare Kopia snapshot listing diagnostics"
+  if listing=$(kopia_as_root "$SUDO_BIN" "$KOPIA_BIN" snapshot list "$@" 2>"$errors"); then
+    rm -f -- "$errors"
+    printf '%s\n' "$listing"
+  else
+    rc=$?
+    detail=$(tr '\r\n\t' '   ' < "$errors" | cut -c 1-512)
+    rm -f -- "$errors"
+    fail "Kopia snapshot listing failed (exit $rc) for $*: ${detail:-no error output}"
+  fi
+}
+
 # `-n 1`, NOT `--max-results-per-source` — that flag does not exist in this kopia
 # build, so the old command errored out on EVERY run, LATEST was always empty, and
 # the healthcheck reported "no snapshots found at all" and exited 1 every 15 min
 # since the day it was written. A check that always fails is a check everyone
 # learns to ignore — which is why nobody believed it when the backup ACTUALLY died
 # (EI-10733). Verified against `kopia snapshot list --help` on this host.
-LATEST=$(kopia_as_root "$SUDO_BIN" "$KOPIA_BIN" snapshot list --all -n 1 2>/dev/null \
+LATEST_LISTING=$(snapshot_listing --all -n 1) || exit 1
+LATEST=$(printf '%s\n' "$LATEST_LISTING" \
   | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}' \
   | sort -r | head -1)
 [ -z "$LATEST" ] && fail "no kopia snapshots found at all"
+# Retain the row that produced the aggregate age, including its source and id.
+# A timestamp alone cannot explain a later change in the selected snapshot.
+latest_evidence=$(printf '%s\n' "$LATEST_LISTING" | awk -v stamp="$LATEST" '
+  /^[^[:space:]]/ { source = $0 }
+  /^[[:space:]]/ && index($0, stamp) {
+    sub(/^[[:space:]]+/, "")
+    print "source=" source " snapshot=" $0
+    exit
+  }' | tr '\r\n\t' '   ' | cut -c 1-1024)
+echo "[$(date -Iseconds)] SNAPSHOT RECENCY: $latest_evidence" >> "$LOG"
 snap_age=$(( now - $(date -d "$LATEST" +%s) ))
 [ "$snap_age" -gt "$MAX_SNAP_AGE_S" ] \
   && fail "last kopia snapshot $(dur "$snap_age") ago ($LATEST) — dumps are not leaving this machine"
@@ -579,7 +607,7 @@ snap_age=$(( now - $(date -d "$LATEST" +%s) ))
 # rows carry `incomplete`. Registered-but-never-completed is reported
 # SEPARATELY from never-registered because they have different repairs — the
 # first is a sweep that cannot finish, the second is a discovery hole.
-COV_LISTING=$(kopia_as_root "$SUDO_BIN" "$KOPIA_BIN" snapshot list --all 2>/dev/null || true)
+COV_LISTING=$(snapshot_listing --all) || exit 1
 cov_state=$(printf '%s\n' "$COV_LISTING" | awk -v want=":$DUMP" '
     /^[^[:space:]]/ {
       inblock = (length($0) >= length(want) &&
@@ -633,7 +661,7 @@ dump_snap_age=$(( now - $(date -d "$dump_last" +%s) ))
 # that property this check would be permanently green off the hot sweep — i.e. exactly
 # the blindness it exists to remove.
 HOME_SNAP_SRC="${HOME_SNAP_SRC:-$HOME}"
-home_listing=$(kopia_as_root "$SUDO_BIN" "$KOPIA_BIN" snapshot list "$HOME_SNAP_SRC" -n 1 2>/dev/null)
+home_listing=$(snapshot_listing "$HOME_SNAP_SRC" -n 1) || exit 1
 home_exact_listing=$(printf '%s\n' "$home_listing" | exact_source_block "$HOME_SNAP_SRC")
 # Require the EXACT source header before trusting any timestamp in that listing.
 # `kopia snapshot list <path>` resolves to the nearest ANCESTOR source and then browses
@@ -678,7 +706,7 @@ for requested in "${PROTECTED_VM_REQUESTS[@]}"; do
     continue
   fi
   protected_src=$(readlink -f "$requested")
-  protected_listing=$(kopia_as_root "$SUDO_BIN" "$KOPIA_BIN" snapshot list "$protected_src" -n 1 2>/dev/null)
+  protected_listing=$(snapshot_listing "$protected_src" -n 1) || exit 1
   protected_exact_listing=$(printf '%s\n' "$protected_listing" | exact_source_block "$protected_src")
   if [ -n "$protected_exact_listing" ] \
      && ! printf '%s\n' "$protected_exact_listing" | grep -q '<ERROR>'; then
