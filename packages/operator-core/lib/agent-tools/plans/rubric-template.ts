@@ -1281,7 +1281,6 @@ export const rubricTemplateDataSchema = z
           }
         }
         for (const field of [
-          'intent',
           'barKey',
           'barHash',
           'role',
