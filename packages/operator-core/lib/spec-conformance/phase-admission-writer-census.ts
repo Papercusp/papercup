@@ -20,6 +20,8 @@ const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 const relationText = /\b(?:plan_item_claims|work_items|engineer_issues|harness_features(?:_consolidated)?|harness_plans|feature_claims)\b/i;
 const mutationText = /\b(?:insert\s+into|update|delete\s+from|merge\s+into|create\s+(?:or\s+replace\s+)?(?:function|trigger))\b/i;
 const sqlMethod = /(?:^|\.)(?:unsafe|query|execute|exec)$/;
+const sqlInvocationText = /\b(?:query|execute|executemany|executescript|unsafe)\s*\(/i;
+const sqlReadText = /^\s*(?:select|with|call|do|execute)\b/i;
 
 export interface PhaseWriterSource { path: string; content: string }
 export interface PhaseWriterSite {
@@ -76,7 +78,7 @@ function canonicalPath(path: string): boolean {
 /** The grammar walks nested WITH mutations and function bodies too. */
 function sqlFacts(sql: string) {
   const relations = new Set<string>(), columns = new Set<string>();
-  const unresolved: string[] = [], functions: string[] = [];
+  const unresolved: string[] = [], functions: string[] = [], callees = new Set<string>();
   const visit = (value: unknown): void => {
     if (Array.isArray(value)) { value.forEach(visit); return; }
     if (!value || typeof value !== 'object') return;
@@ -102,20 +104,25 @@ function sqlFacts(sql: string) {
         }
       }
     }
+    if (node.type === 'call') {
+      const fn = node.function as { schema?: string; name?: string } | undefined;
+      if (fn?.name) callees.add([fn.schema, fn.name].filter(Boolean).join('.'));
+      unresolved.push('sql-function-call-requires-reachability-review');
+    }
     if (node.type === 'create function' && typeof node.code === 'string') {
       // PL/pgSQL is not the SQL grammar. Keep its whole body for review and
       // reachable-trigger analysis instead of treating an opaque body as clean.
-      if (mutationText.test(node.code)) {
-        functions.push(node.code);
-        unresolved.push('sql-function-body-requires-reachability-review');
-      }
+      // A body that only calls a helper can write just as surely as one with
+      // literal UPDATE text. Even an empty body stays bound to its source.
+      functions.push(node.code);
+      unresolved.push('sql-function-body-requires-reachability-review');
     }
     Object.values(node).forEach(visit);
   };
   try { visit(parse(sql)); }
   catch { unresolved.push('sql-parse-unresolved'); }
   return { relations: [...relations].sort(compare), columns: [...columns].sort(compare),
-    unresolved: [...new Set(unresolved)], functions };
+    unresolved: [...new Set(unresolved)], functions, callees: [...callees].sort(compare) };
 }
 
 /** No file/statement/identity limit: callers supply complete sources or explicit
@@ -168,11 +175,12 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
       };
       const inspectSql = (node: ts.Node, sql: string, edges: string[]) => {
         const facts = sqlFacts(sql);
-        if (!facts.relations.length && !facts.functions.length && !mutationText.test(sql)) return;
+        if (!edges.length && !facts.relations.length && !facts.functions.length && !facts.callees.length
+          && !facts.unresolved.length && !mutationText.test(sql)) return;
         add(source, operation(node), node.getText(unit.ast), unit.span(node).line,
           facts.functions.length ? 'sql-function' : 'sql', {
             relations: facts.relations, columns: facts.columns,
-            dynamicEdges: edges, unresolved: facts.unresolved,
+            dynamicEdges: edges, unresolved: facts.unresolved, callees: facts.callees,
           });
       };
       const literal = (node: ts.Node): { sql: string; edges: string[] } | null => {
@@ -218,7 +226,7 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
               && parent.arguments[0] === node;
           if (!alreadyInspected) {
             const text = literal(node);
-            if (text && mutationText.test(text.sql)) inspectSql(node, text.sql, text.edges);
+            if (text && (mutationText.test(text.sql) || sqlReadText.test(text.sql))) inspectSql(node, text.sql, text.edges);
           }
         }
         ts.forEachChild(node, visit);
@@ -226,10 +234,12 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
       visit(unit.ast);
     } else if (/\.sql$/.test(source.path)) {
       const facts = sqlFacts(source.content);
-      if (facts.relations.length || mutationText.test(source.content)) {
+      if (facts.relations.length || facts.functions.length || facts.callees.length
+        || facts.unresolved.length || mutationText.test(source.content)) {
         add(source, '<sql-module>', source.content, 1, facts.functions.length ? 'sql-function' : 'sql', facts);
       }
-    } else if (relationText.test(source.content) && mutationText.test(source.content)) {
+    } else if (relationText.test(source.content) || mutationText.test(source.content)
+      || sqlInvocationText.test(source.content)) {
       add(source, '<unparsed-source>', source.content, 1, 'unresolved', {
         unresolved: ['source-language-requires-review'],
       });
@@ -360,6 +370,93 @@ export function reconcilePhaseWriterCensus(inventory: PhaseWriterInventory,
 
 export function assertPhaseWriterCensus(inventory: PhaseWriterInventory, reviews: readonly PhaseWriterReview[]) {
   const report = reconcilePhaseWriterCensus(inventory, reviews);
-  if (!report.ready) throw new Error(`phase_writer_census_incomplete:${JSON.stringify(report)}`);
+  // Keep the complete report recoverable without serializing the population
+  // into one enormous error string. The first reason is a labelled preview.
+  if (!report.ready) throw Object.assign(new Error(`phase_writer_census_incomplete:${report.problems[0]?.reasons[0]}; first-reason-preview; complete report on error.report`), { report });
   return report;
+}
+
+const streamKinds = ['header', 'source', 'site', 'gap', 'excluded', 'scanned', 'unscanned', 'review', 'coverage'] as const;
+type StreamKind = typeof streamKinds[number];
+type StreamCounts = Record<StreamKind, number>;
+type StreamInventory = PhaseWriterInventory & {
+  excluded?: Array<{ path: string; reason: string }>;
+  enumeration?: { scanned: string[]; unscanned: string[] };
+};
+interface CensusRecord { seq: number; kind: StreamKind; value: unknown }
+interface CensusFooter {
+  seq: number; kind: 'complete'; sha256: string; counts: StreamCounts; ready: boolean;
+}
+const streamCounts = (): StreamCounts => Object.fromEntries(streamKinds.map(kind => [kind, 0])) as StreamCounts;
+
+/** Await each complete record, including sink backpressure. No aggregate JSON
+ * string or record limit: large censuses retain the complete population and
+ * coverage. A failed sink leaves an incomplete artifact; regenerate from source.
+ */
+export async function writePhaseWriterCensus(inventory: StreamInventory,
+  reviews: readonly PhaseWriterReview[], write: (line: string) => void | Promise<void>) {
+  const report = reconcilePhaseWriterCensus(inventory, reviews);
+  const hash = createHash('sha256'), counts = streamCounts();
+  let seq = 0;
+  const emit = async (kind: StreamKind, value: unknown) => {
+    const line = JSON.stringify({ seq, kind, value }) + '\n';
+    await write(line);
+    hash.update(line); counts[kind]++; seq++;
+  };
+  await emit('header', { schemaVersion: 'phase-writer-census-stream-v1', scope: inventory.scope,
+    basis: 'source-inventory-not-acceptance-proof' });
+  for (const value of inventory.sources) await emit('source', value);
+  for (const value of inventory.sites) await emit('site', value);
+  for (const value of inventory.gaps) await emit('gap', value);
+  for (const value of inventory.excluded ?? []) await emit('excluded', value);
+  for (const value of inventory.enumeration?.scanned ?? []) await emit('scanned', value);
+  for (const value of inventory.enumeration?.unscanned ?? []) await emit('unscanned', value);
+  for (const value of reviews) await emit('review', value);
+  const checked = new Set(report.coverage.checked), notChecked = new Set(report.coverage.notChecked);
+  const residue = new Set(report.coverage.residue), problems = new Map(report.problems.map(row => [row.id, row.reasons]));
+  for (const id of report.coverage.population) await emit('coverage', { id,
+    partition: checked.has(id) ? 'checked' : notChecked.has(id) ? 'notChecked' : 'notApplicable',
+    residue: residue.has(id), reasons: problems.get(id) ?? [] });
+  const footer: CensusFooter = { seq, kind: 'complete', sha256: hash.digest('hex'), counts, ready: report.ready };
+  await write(JSON.stringify(footer) + '\n');
+  return footer;
+}
+
+/** Consume every line through the completion footer before trusting any record.
+ * onRecord receives provisional rows so consumers can spool instead of buffering
+ * the artifact. Missing/corrupt/reordered records require regenerating the export;
+ * no prefix is a successful census and no record is silently skipped.
+ */
+export async function readPhaseWriterCensus(lines: Iterable<string> | AsyncIterable<string>,
+  onRecord: (record: CensusRecord) => void | Promise<void> = () => {}) {
+  const hash = createHash('sha256'), counts = streamCounts();
+  let seq = 0, footer: CensusFooter | undefined;
+  for await (const raw of lines) {
+    if (footer) throw new Error('phase_writer_stream_after_footer');
+    let row: CensusRecord | CensusFooter;
+    try { row = JSON.parse(raw); } catch { throw new Error('phase_writer_stream_invalid_record'); }
+    if (!row || row.seq !== seq) throw new Error('phase_writer_stream_sequence');
+    if (row.kind === 'complete') {
+      if (counts.header !== 1 || row.sha256 !== hash.digest('hex')
+        || typeof row.ready !== 'boolean' || !row.counts
+        || Object.keys(row.counts).length !== streamKinds.length
+        || streamKinds.some(kind => row.counts[kind] !== counts[kind])) {
+        throw new Error('phase_writer_stream_integrity');
+      }
+      footer = row;
+      continue;
+    }
+    if (!streamKinds.includes(row.kind) || (seq === 0) !== (row.kind === 'header')) {
+      throw new Error('phase_writer_stream_kind');
+    }
+    if (row.kind === 'header'
+      && (row.value as { schemaVersion?: string } | null)?.schemaVersion !== 'phase-writer-census-stream-v1') {
+      throw new Error('phase_writer_stream_version');
+    }
+    hash.update(raw.endsWith('\n') ? raw : raw + '\n');
+    counts[row.kind]++; seq++;
+    await onRecord(row);
+  }
+  if (!footer) throw new Error('phase_writer_stream_incomplete:regenerate-from-source');
+  return footer;
 }
