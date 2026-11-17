@@ -11,6 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { chromium, request as playwrightRequest, type Browser, type Page } from 'playwright-core';
 import type { HostedHandler } from '../../../../apps/operator/bin/hosted-handler';
+import { createFakeHostedIdentityProvider, FAKE_HOSTED_IDENTITY_SESSION } from '../auth/hosted/fake-provider';
 
 type Input = {
   repo: string; privateRoot: string; evidence: string; control: string; config: NodeJS.ProcessEnv;
@@ -23,6 +24,28 @@ type Input = {
 };
 
 export const INSTALLED_FIXTURE_DESKTOP_NAME = 'served-0192-live';
+const INSTALLED_FIXTURE_SESSION_ID = 'inst-private-served-browser';
+const INSTALLED_FIXTURE_PROVIDER_ID = 'private-installed-browser';
+
+/** Use the maintained provider contract with a current, private upstream session. */
+export function installedHostedIdentityProvider(nowMs = Date.now()) {
+  return createFakeHostedIdentityProvider({ providerId: INSTALLED_FIXTURE_PROVIDER_ID, nowMs,
+    session: { ...FAKE_HOSTED_IDENTITY_SESSION, externalSessionId: INSTALLED_FIXTURE_SESSION_ID,
+      issuedAtMs: nowMs - 60_000, authenticatedAtMs: nowMs - 30_000, expiresAtMs: nowMs + 30 * 60_000 } });
+}
+
+/** Keep only safe auth codes, never cookie values, response bodies or identity data. */
+export async function assertInstalledPortalSession(response: { status(): number; json(): Promise<unknown> },
+  expected: { userId: string; organizationId: string; workspaceId: string }) {
+  const body = await response.json().catch(() => null) as {
+    ok?: boolean; error?: { code?: unknown }; session?: Record<string, unknown> } | null;
+  const code = typeof body?.error?.code === 'string' && /^[a-z_]{1,80}$/.test(body.error.code)
+    ? body.error.code : 'unknown';
+  assert(response.status() === 200 && body?.ok === true,
+    `Installed Portal auth preflight failed: HTTP ${response.status()} code=${code}`);
+  assert(body.session && Object.entries(expected).every(([key, value]) => body.session![key] === value),
+    'Installed Portal auth preflight returned a different private session');
+}
 
 export function installedRuntimeNodeArgs(repo: string) {
   return ['--experimental-transform-types', '--import',
@@ -190,6 +213,8 @@ export async function assertInstalledRuntimeSource(repo: string) {
     // Keep the provider and consumer in the same committed-source preflight:
     // a committed consumer can otherwise load an older provider from HEAD.
     'apps/operator/bin/hosted-handler.ts',
+    'packages/operator-core/lib/endpoint-route/hosted-runtime.ts',
+    'packages/operator-core/lib/auth/hosted/fake-provider.ts',
     'packages/operator-core/lib/rubrics.ts',
     'packages/operator-core/lib/agent-tools/scorecards/emit.ts',
     'packages/operator-core/lib/workspace-host/machine-first-browser-runtime.fixture.ts',
@@ -291,9 +316,21 @@ export async function runInstalledComputerServedBrowser(input: Input) {
   const { PostgresHostedCliStore } = await import('../endpoint-route/routes/hosted-cli/store');
   const cli = new PostgresHostedCliStore(withHostedServiceContext, fn => withWorkspace(control, fn), control);
   await stage('installed-linked-identity');
-  const installId = 'inst-private-served-browser';
+  const installId = INSTALLED_FIXTURE_SESSION_ID;
   const linked = await cli.upsertLinkedWorkspace({ organizationId: orgId, installId,
     displayName: 'Private installed computer', userId, at: new Date() });
+  const session = await hosted.plane.components.sessionStore.create({ userId, organizationId: orgId,
+    workspaceId: linked.customerWorkspaceId, permissionVersion: 1, upstreamProvider: INSTALLED_FIXTURE_PROVIDER_ID,
+    upstreamSessionId: installId, expiresAt: new Date(Date.now() + 30 * 60_000) });
+  const { HOSTED_SESSION_COOKIE } = await import('../auth/hosted-session');
+  const expectedSession = { userId, organizationId: orgId, workspaceId: linked.customerWorkspaceId };
+  await stage('installed-authenticated-session-preflight');
+  const authProbe = await playwrightRequest.newContext({ ignoreHTTPSErrors: true,
+    extraHTTPHeaders: { cookie: `${HOSTED_SESSION_COOKIE}=${hosted.plane.components.sessionCookieCodec.encode(session.id)}` } });
+  try {
+    await assertInstalledPortalSession(await authProbe.get(`${origin}/api/hosted/auth/session`,
+      { timeout: 10_000 }), expectedSession);
+  } finally { await authProbe.dispose(); }
   const gateway = hosted.plane.components.connectorGateway!;
   const enrollment = await gateway.enroll({ controlPlaneWorkspaceId: control, organizationId: orgId,
     customerWorkspaceId: linked.customerWorkspaceId, hostId: linked.hostId,
@@ -353,10 +390,6 @@ export async function runInstalledComputerServedBrowser(input: Input) {
   }
   const liveRosterIndex = [...desktopIds].sort().indexOf(hostReceipt.desktopSessionId);
   assert.equal(liveRosterIndex, 192, 'Live media acceptance must require roster continuation');
-  const session = await hosted.plane.components.sessionStore.create({ userId, organizationId: orgId,
-    workspaceId: linked.customerWorkspaceId, permissionVersion: 1, upstreamProvider: 'private-installed-browser',
-    upstreamSessionId: installId, expiresAt: new Date(Date.now() + 30 * 60_000) });
-  const { HOSTED_SESSION_COOKIE } = await import('../auth/hosted-session');
   const project = join(privateRoot, 'installed-portal-next');
   await mkdir(project, { recursive: true });
   // Reuse the Portal's maintained web-host isolation pattern. Never link its
@@ -424,6 +457,8 @@ export async function runInstalledComputerServedBrowser(input: Input) {
       browser = await chromium.launch({ channel: 'chrome', headless: true });
       const preflight = await browser.newContext({ storageState: storageStatePath, ignoreHTTPSErrors: true });
       try {
+        await assertInstalledPortalSession(await preflight.request.get(`${origin}/api/hosted/auth/session`,
+          { timeout: 10_000 }), expectedSession);
         const url = new URL('/', origin);
         url.search = new URLSearchParams({ app: 'desktops', desktopHost: linked.hostId,
           ws: linked.customerWorkspaceId, accountsPane: 'false', chatPane: 'false' }).toString();

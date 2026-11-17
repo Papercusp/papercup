@@ -19,7 +19,7 @@ import { openSync, closeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { moduleRepoRoot } from '../module-repo-root';
 import { serve } from '@hono/node-server';
-import { installedRuntimeNodeArgs } from './installed-computer-served-browser.fixture';
+import { installedHostedIdentityProvider, installedRuntimeNodeArgs } from './installed-computer-served-browser.fixture';
 
 const repo = moduleRepoRoot(import.meta.url);
 const control = process.env.PAPERCUSP_WORKSPACE_ID ?? '';
@@ -137,7 +137,8 @@ try {
   await stage('hosted-handler-import');
   const { createHostedHandlerFromEnvironment } = await import('../../../../apps/operator/bin/hosted-handler');
   await stage('hosted-handler-compose');
-  hosted = await createHostedHandlerFromEnvironment(config);
+  hosted = await createHostedHandlerFromEnvironment(config, process.argv.includes('--installed-browser')
+    ? { identityProvider: installedHostedIdentityProvider() } : {});
   const { publicManualHostedUpgradeHeaders } = await import('../llm-testing/public-manual-hosted-fixture');
   server = serve({ fetch: request => portalFetch && !new URL(request.url).pathname.startsWith('/api/hosted/')
     ? portalFetch(request) : hosted!.handler(request), port, hostname: '127.0.0.1', createServer: httpsServer,

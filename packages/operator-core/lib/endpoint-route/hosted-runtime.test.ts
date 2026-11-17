@@ -3,6 +3,7 @@ import { formatWithOptions } from 'node:util';
 import type { Sql } from 'postgres';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
 import { createHostedSecretRefResolver } from '../auth/hosted/secret-ref';
+import { installedHostedIdentityProvider } from '../workspace-host/installed-computer-served-browser.fixture';
 import {
   HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS,
   createHostedRuntime,
@@ -35,6 +36,35 @@ function serviceRunner(currentUser = 'hosted_service', bootOrder?: string[]): Ho
 }
 
 describe('hosted runtime composition', () => {
+  it.each([false, true])('checks the real session route with private provider composition=%s', async injected => {
+    const provider = installedHostedIdentityProvider();
+    const plane = await createHostedRuntime(configuration, {
+      resolveSecret: async () => 'private-composition-secret-with-at-least-32-bytes',
+      runService: serviceRunner(),
+      ...(injected ? { identityProvider: provider } : {}),
+    });
+    const now = new Date();
+    const session = { id: `hs_${'A'.repeat(43)}`, userId: 'private-user', organizationId: 'private-org',
+      workspaceId: 'private-workspace', permissionVersion: 1, upstreamProvider: provider.providerId,
+      upstreamSessionId: 'inst-private-served-browser', expiresAt: new Date(now.getTime() + 60_000),
+      createdAt: now, updatedAt: now, rotatedAt: null, lastSeenAt: null, revokedAt: null, revocationReason: null };
+    vi.spyOn(plane.components.sessionStore, 'resolve').mockResolvedValue(session);
+    const route = plane.mounted.find(route => route.method === 'GET' && route.path === '/hosted/auth/session')!;
+    const invoke = (cookie?: string) => route.handler(new Request(`${configuration.publicOrigin}/api/hosted/auth/session`,
+      { headers: cookie ? { cookie } : {} }), {} as never);
+    const missing = await invoke();
+    expect(missing.status).toBe(401);
+    expect(await missing.json()).toMatchObject({ error: { code: 'session_required' } });
+    const cookie = plane.components.sessionCookieCodec.serialize(session.id, session.expiresAt, now);
+    const response = await invoke(cookie);
+    expect(response.status).toBe(injected ? 200 : 401);
+    expect(await response.json()).toMatchObject(injected
+      ? { ok: true, session: { userId: session.userId, workspaceId: session.workspaceId } }
+      : { ok: false, error: { code: 'session_invalid' } });
+    expect(provider.calls.validateSession).toHaveLength(injected ? 1 : 0);
+    vi.restoreAllMocks();
+  });
+
   it('probes the service role, then dereferences every runtime secret ref at boot, and pins the mounted surface', async () => {
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const bootOrder: string[] = [];

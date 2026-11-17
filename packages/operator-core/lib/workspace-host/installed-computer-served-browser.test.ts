@@ -10,7 +10,7 @@ import { gzipSync } from 'node:zlib';
 import { chromium } from 'playwright-core';
 import { serve } from '@hono/node-server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { assertInstalledRuntimeLoader, assertInstalledRuntimeSource, installedDesktopBinaries, installedHostFixtureScope, installedPortalProxy, installedPortalSource, installedRuntimeNodeArgs, validateInstalledPortalRelease, waitForInstalledPortalSetup, waitForPortalDocument } from './installed-computer-served-browser.fixture';
+import { assertInstalledPortalSession, assertInstalledRuntimeLoader, assertInstalledRuntimeSource, installedDesktopBinaries, installedHostFixtureScope, installedHostedIdentityProvider, installedPortalProxy, installedPortalSource, installedRuntimeNodeArgs, validateInstalledPortalRelease, waitForInstalledPortalSetup, waitForPortalDocument } from './installed-computer-served-browser.fixture';
 
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>();
@@ -54,6 +54,37 @@ async function currentNativeLoader(repo: string) {
 }
 
 describe('served Portal prerequisite and document readiness', () => {
+  const expectedSession = { userId: 'private-user', organizationId: 'private-org', workspaceId: 'private-workspace' };
+
+  it('creates an upstream fixture session valid at the current time', async () => {
+    const now = Date.now();
+    const provider = installedHostedIdentityProvider(now);
+    expect(provider.providerId).toBe('private-installed-browser');
+    const result = await provider.validateSession({ externalSessionId: 'inst-private-served-browser' });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.issuedAtMs).toBeLessThan(now);
+      expect(result.value.expiresAtMs).toBeGreaterThan(now);
+    }
+  });
+
+  it.each(['session_invalid', 'session_required', 'membership_not_active'])(
+    'fails early with only the safe auth code %s', async code => {
+      const error = await assertInstalledPortalSession({ status: () => 401,
+        json: async () => ({ ok: false, error: { code, safeMessage: 'sensitive fixture detail' }, cookie: 'secret' }) },
+      expectedSession).catch(String);
+      expect(error).toContain(`HTTP 401 code=${code}`);
+      expect(error).not.toMatch(/sensitive|secret/);
+    });
+
+  it('accepts only the expected authenticated private session', async () => {
+    const response = (session: Record<string, string>) => ({ status: () => 200,
+      json: async () => ({ ok: true, session }) });
+    await expect(assertInstalledPortalSession(response(expectedSession), expectedSession)).resolves.toBeUndefined();
+    await expect(assertInstalledPortalSession(response({ ...expectedSession, workspaceId: 'other' }), expectedSession))
+      .rejects.toThrow('different private session');
+  });
+
   it('waits for the actual browser launcher after document readiness', async () => {
     const origin = await start((_, response) => {
       response.setHeader('content-type', 'text/html');

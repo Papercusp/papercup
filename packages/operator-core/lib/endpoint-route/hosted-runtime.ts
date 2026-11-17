@@ -19,6 +19,7 @@ import { PostgresHostedSelfSignupAdmission } from '../auth/hosted/self-signup';
 import { backfillHostedTrialEntitlementAuthority, parseHostedTrialEntitlementPolicy,
   type HostedTrialEntitlementPolicy } from '../auth/hosted-entitlement-store';
 import { createWorkOSHostedIdentityProvider } from '../auth/hosted/workos-provider';
+import type { HostedIdentityProvider } from '../auth/hosted/provider';
 import {
   HostedRuntimeMembershipAuthority,
   HostedServiceIdentityDirectory,
@@ -270,6 +271,8 @@ async function preflightHostedSecretRefs(
 }
 
 export interface HostedRuntimeDependencies {
+  /** Server-owned composition seam, also used by isolated browser fixtures. */
+  readonly identityProvider?: HostedIdentityProvider;
   readonly resolveSecret?: HostedRuntimeSecretResolver;
   readonly runService?: HostedServiceContextRunner;
   readonly runTenant?: HostedTenantContextRunner;
@@ -435,7 +438,7 @@ export async function createHostedRuntime(
       delegationOrganization(principal.activeOrganizationId),
     );
 
-  const provider = createWorkOSHostedIdentityProvider({
+  const provider = dependencies.identityProvider ?? createWorkOSHostedIdentityProvider({
     configuration: {
       clientId: configuration.workosClientId,
       apiKeyRef: configuration.workosApiKeyRef,
