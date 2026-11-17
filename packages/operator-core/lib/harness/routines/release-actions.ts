@@ -82,7 +82,7 @@ import { summarizeStreakCause, type StreakCauseDigest, type StreakTick } from '.
 // this module never got that treatment because the tag was believed to live in apps/operator. It
 // does not — it lives in operator-core (checkpoint-log-tags.ts, moved down by
 // EI-19395755190419540), i.e. in THIS package, so the funnel is a plain relative import.
-import { GREEN_CHECKPOINT_RESULT_MARKER, isFixtureLogLine, orchestratorStdoutTag } from '../../release/checkpoint-log-tags';
+import { GREEN_CHECKPOINT_RESULT_MARKER, dependencyGenerationInfraCode, isFixtureLogLine, orchestratorStdoutTag } from '../../release/checkpoint-log-tags';
 import { classifyGateAbort, isRecordedInconclusiveStatus } from '../../release/gate-abort-status';
 import { greenCheckpointDbPoolEnv } from '../../release/checkpoint-db-pool';
 import { admitCheckpointMemory } from '../../release/checkpoint-memory-admission';
@@ -528,7 +528,7 @@ async function reconcileLoadedScheduledCheckpointTerminal(
 
   const emitted = resolveCheckpointResultFromLogs(logText, logText, terminal.runId);
   const emittedReason = typeof emitted?.reason === 'string' && emitted.reason.trim() ? emitted.reason.trim() : null;
-  const reason = emittedReason ?? checkpointFallbackStatus(false, terminal.exitCode ?? undefined, null, terminal);
+  const reason = emittedReason ?? checkpointFallbackStatus(false, terminal.exitCode ?? undefined, null, terminal, logText);
   const green = typeof emitted?.green === 'boolean' ? emitted.green : null;
   const emittedCandidate =
     typeof emitted?.candidate === 'string' && emitted.candidate.trim() ? emitted.candidate.trim() : null;
@@ -3453,7 +3453,10 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   const loadedTerminal = r.terminalPath
     ? await loadScheduledCheckpointTerminal(r.terminalPath, (file) => readFile(file, 'utf8'))
     : null;
-  let status: string = checkpointFallbackStatus(r.timedOut, r.code, r.signal, loadedTerminal?.terminal);
+  let status: string = checkpointFallbackStatus(
+    r.timedOut, r.code, r.signal, loadedTerminal?.terminal,
+    [r.stdout, r.stderr, loadedTerminal?.logText].filter(Boolean).join('\n'),
+  );
   let candidate: string | undefined;
   let summary: string | undefined;
   let failingTests: string[] | undefined;
@@ -4261,7 +4264,8 @@ export function checkpointFallbackStatus(
   exitCode?: number,
   signal?: NodeJS.Signals | null,
   terminal?: Pick<ScheduledCheckpointTerminalRecord, 'killed' | 'memoryEvents'> | null,
-): 'deadline-exceeded' | 'cancelled' | 'infra-inconclusive' | 'error' {
+  output = '',
+): 'deadline-exceeded' | 'cancelled' | 'infra-inconclusive' | 'disk-headroom' | 'error' {
   if (timedOut) return 'deadline-exceeded';
   if (terminal?.killed && checkpointTerminalHasOomKill(terminal)) return 'infra-inconclusive';
   // EI-21103236147949832: stopping a systemd transient scope makes the systemd-run
@@ -4277,6 +4281,12 @@ export function checkpointFallbackStatus(
     return terminal && checkpointTerminalHasOomKill(terminal) ? 'infra-inconclusive' : 'cancelled';
   }
   if (terminal?.killed) return 'cancelled';
+  // Preparation can refuse before the CLI binds its candidate or emits a result.
+  // Reuse its typed dependency evidence in both scheduled-terminal readers. An
+  // unqualified wrapper exit 76/77 alone does not identify the failing command.
+  const dependencyFailure = dependencyGenerationInfraCode(null, output);
+  if (dependencyFailure === 'DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT') return 'disk-headroom';
+  if (dependencyFailure === 'DEPENDENCY_GENERATION_LOCK_TIMEOUT') return 'infra-inconclusive';
   return 'error';
 }
 

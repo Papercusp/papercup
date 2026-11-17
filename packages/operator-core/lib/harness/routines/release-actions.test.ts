@@ -543,6 +543,19 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
     expect(checkpointFallbackStatus(false, 1, null)).toBe('error');
   });
 
+  it.each([
+    ['DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT', 'disk-headroom'],
+    ['DEPENDENCY_GENERATION_LOCK_TIMEOUT', 'infra-inconclusive'],
+  ])('classifies scheduled dependency preparation evidence %s before a CLI result exists', (marker, reason) => {
+    // A wrapping command may remap the exit; the dependency writer's marker is
+    // the evidence. An unrelated exit 76/77 must remain an unexplained error.
+    expect(checkpointFallbackStatus(false, 1, null, null, `[dependency-generation] ${marker}`)).toBe(reason);
+    expect(checkpointFallbackStatus(false, 77, null, null, 'unrelated command failed')).toBe('error');
+    expect(checkpointFallbackStatus(false, 76, null, null, '')).toBe('error');
+    expect(checkpointFallbackStatus(true, 77, null, null, marker)).toBe('deadline-exceeded');
+    expect(checkpointFallbackStatus(false, 143, null, null, marker)).toBe('cancelled');
+  });
+
   it('EI-22642378999251872: exit 137 uses cgroup kill counters instead of guessing OOM from the code', () => {
     const oom = {
       killed: false,
@@ -2762,6 +2775,41 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
       }
     });
 
+    it.each([
+      [77, 'DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT', 'disk-headroom'],
+      [76, 'DEPENDENCY_GENERATION_LOCK_TIMEOUT', 'infra-inconclusive'],
+    ])('recovers only the exact unbound scheduled reservation after dependency exit %i', async (exitCode, marker, reason) => {
+      const dir = mkdtempSync(join(tmpdir(), 'papercusp-scheduled-dependency-refusal-'));
+      const paths = checkpointRunLogPaths(dir, 'preflight-run', new Date('2026-09-07T15:04:00.000Z'));
+      try {
+        writeFileSync(paths.logPath, `[dependency-generation] ${marker}\n`);
+        writeFileSync(paths.terminalPath, JSON.stringify({
+          schemaVersion: 1, runId: paths.runId, logPath: paths.logPath,
+          exitCode, killed: false, memoryEvents: null,
+          finishedAt: '2026-09-07T15:05:00Z', workspaceId: 'ws-42', installSlug: 'my-harness',
+          qualificationAttemptId: 'attempt-preflight', gateFireId: 'fire-preflight',
+        }));
+        recordStoredQualificationVerdict.mockResolvedValueOnce({
+          status: 'conflict', transaction: { attemptId: 'attempt-preflight' },
+        });
+        recordStoredQualificationScheduledTerminalRecovery.mockResolvedValueOnce({ status: 'updated' });
+
+        expect(await reconcileScheduledCheckpointTerminals(ctx, { dir })).toEqual([
+          expect.objectContaining({ status: 'settled', reason: `orphaned-reservation-after-${reason}`, markerRetained: false }),
+        ]);
+        expect(recordStoredQualificationVerdict).toHaveBeenCalledWith(ctx, expect.objectContaining({
+          attemptId: 'attempt-preflight', reason, green: null, runId: 'preflight-run',
+        }));
+        expect(recordStoredQualificationScheduledTerminalRecovery).toHaveBeenCalledWith(ctx, expect.objectContaining({
+          attemptId: 'attempt-preflight', runnerId: 'fire-preflight', runId: 'preflight-run', reason,
+          evidenceRefs: expect.arrayContaining(['checkpoint-terminal:preflight-run', 'gate-fire:fire-preflight']),
+        }));
+        expect(existsSync(`${paths.terminalPath}.reconciled`)).toBe(true);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     it('never lets an unscoped or copied terminal marker settle the current attempt', async () => {
       const dir = mkdtempSync(join(tmpdir(), 'papercusp-scheduled-checkpoint-wrong-target-'));
       const paths = checkpointRunLogPaths(dir, 'other-run', new Date('2026-09-07T15:04:00.000Z'));
@@ -2803,7 +2851,7 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
       const paths = checkpointRunLogPaths(dir, 'red-replay', new Date('2026-09-24T07:20:00.000Z'));
       const candidate = 'abc123def456789';
       try {
-        writeFileSync(paths.logPath, `__GREEN_CHECKPOINT_RESULT__ ${JSON.stringify({
+        writeFileSync(paths.logPath, `DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT\n__GREEN_CHECKPOINT_RESULT__ ${JSON.stringify({
           reason: 'not-green', green: false, candidate, runId: paths.runId,
         })}\n`);
         writeFileSync(paths.terminalPath, JSON.stringify({
