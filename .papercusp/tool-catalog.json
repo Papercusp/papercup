@@ -24640,9 +24640,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Starting a plan: plans:new { slug, title, content }. Shape brief/scenarios before requirements/tasks; plans:audit phase:shaping returns ownerWalkthrough for approval. Finalize incorporated Discovery findings before implementation review. Requirements need R-N plus requirement JSON (METHOD/check/layers) and Design \"### Bar-to-work map for this plan\". Fill reuse/libraries declarations (scaffolded; or notApplicable).",
+        "when": "Starting a plan: plans:new { slug, title, content }. Shape scenarios before requirements/tasks; plans:audit phase:shaping returns ownerWalkthrough for approval. Incorporate Discovery before implementation review. Requirements need R-N JSON (METHOD/check/layers) and Design \"### Bar-to-work map for this plan\". Fill ## Existing infrastructure reused and ## Third-party libraries (scaffolded; or notApplicable).",
         "notWhen": "Existing plan: plans:set-content / set-now / add-decision / add-item.",
-        "chaining": "Brief → scoped discovery → incorporate findings and reuse + libraries → R-N JSON + map + items → plans:audit phase:discovery → implementation review → activation/spec quality → plans:start. Code-intelligence suggestions are leads, not completed investigation; pass chosen code links as anchors."
+        "chaining": "Brief → scoped discovery → incorporate findings and reuse + libraries → R-N JSON + bar-to-work map + items → plans:audit phase:discovery → implementation review → activation/spec quality → plans:start. Code-intelligence suggestions are leads, not completed investigation; pass chosen code links as anchors."
       }
     },
     {
