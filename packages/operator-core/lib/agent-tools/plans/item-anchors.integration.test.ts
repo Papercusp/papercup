@@ -728,6 +728,37 @@ describe('bounded saved-line graph reconciliation', () => {
     expect(data(await editTool.handler({ slug: SLUG, harness: HARNESS, old_string: 'Check links.',
       new_string: 'Graph reconciliation retained all tasks.' } as never, ctx())).ok).toBe(true);
   });
+  it('repairs whitespace-only represented edits while preserving canonical row bytes', async () => {
+    const input = await prepare('todo', 'P-001', true);
+    const before = await readPlanLineNodes(fx.admin, scope);
+    const cosmetic = before.map(item => item.id === 'P-002'
+      ? { ...item, text: item.text.replace('Saved item', 'Saved   item') } : item);
+    await withWorkItemDependencyAdmissionTransaction(fx.admin, async tx => {
+      const mutations = await writePlanLineNodes(tx, scope, before, cosmetic);
+      expect(mutations).toEqual([]);
+    });
+    expect((await readPlanLineNodes(fx.admin, scope)).find(item => item.id === 'P-002')?.text)
+      .toBe(before.find(item => item.id === 'P-002')?.text);
+    const [parent] = await fx.admin`SELECT content FROM harness_shared.harness_plans
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
+    const content = parent.content.replace('Saved item 2\n', 'Saved   item 2\n');
+    input.expectedContentHash = hashPlanContent(content);
+    await fx.admin`UPDATE harness_shared.harness_plans SET content=${content},content_hash=${input.expectedContentHash},
+      items=${JSON.stringify(deriveIndexFromContent(content).items)}::text::jsonb
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
+    const prior = await retained();
+    const all = await census();
+    const savedLines = { slug: SLUG, expectedVersion: input.expectedVersion, expectedContentHash: input.expectedContentHash };
+    const callPublic = (dryRun: boolean, preview?: SavedPlanLinesPreview) => backfillDependencyEdgesTool.handler(
+      backfillDependencyEdgesTool.args.parse({ harness: HARNESS, dryRun, savedLines: { ...savedLines, preview } }), ctx());
+    const { preview } = data(await callPublic(true)) as Awaited<ReturnType<typeof repairSavedPlanLines>>;
+    expect(await census()).toEqual(all);
+    expect(data(await callPublic(false, preview))).toMatchObject({ nodesAdded: 4, edgesWritten: 4 });
+    expect(await retained()).toEqual(prior);
+    expect(data(await callPublic(false, preview)))
+      .toMatchObject({ alreadyReconciled: true, nodesAdded: 0, edgesWritten: 0 });
+    expect(await retained()).toEqual(prior);
+  });
   it.each([
     { label: 'Frontier P-017 to P-026', id: 'P-017', oldBlockers: ['P-014', 'P-016'], addedBlocker: 'P-026',
       prose: '\n### D-031 — placement\n1. P-007 placement. Asked: a new partition or bounded existing storage.' },

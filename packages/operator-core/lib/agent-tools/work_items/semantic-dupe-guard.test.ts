@@ -74,6 +74,60 @@ describe('failure diagnostics', () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it.each([100, 2400])('separates query time from %dms already spent embedding', async (embeddingMs) => {
+    vi.useFakeTimers();
+    try {
+      const observed = vi.fn();
+      const deps = okDeps([]);
+      const resolved = await deps.resolveEmbedder();
+      if (!('embed' in resolved)) throw new Error('expected enabled fixture');
+      deps.resolveEmbedder = async () => ({ ...resolved, embed: () => new Promise((resolve) => {
+        setTimeout(() => resolve(new Array(PROSE_VECTOR_DIMS).fill(0.1)), embeddingMs);
+      }) });
+      deps.queryCandidates = () => new Promise(() => {});
+      const pending = findSemanticDupes({ title: 't' }, deps, observed);
+      await vi.advanceTimersByTimeAsync(2500);
+      expect(await pending).toBeNull();
+      expect(observed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        reason: 'budget-expired', phase: 'query-candidates', elapsedMs: 2500,
+        phaseElapsedMs: 2500 - embeddingMs,
+      }));
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('retains resolver time when a resolved prerequisite reports its failure in the same phase', async () => {
+    vi.useFakeTimers();
+    try {
+      const observed = vi.fn();
+      const deps = okDeps([]);
+      deps.resolveEmbedder = () => new Promise((resolve) => {
+        setTimeout(() => resolve({ mode: 'disabled', reason: 'provider not configured' }), 100);
+      });
+      const pending = findSemanticDupes({ title: 't' }, deps, observed);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await pending).toBeNull();
+      expect(observed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        reason: 'embedder-unavailable', phase: 'resolve-embedder', elapsedMs: 100, phaseElapsedMs: 100,
+      }));
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('times coverage separately while retaining a successful verdict when coverage expires', async () => {
+    vi.useFakeTimers();
+    try {
+      const observed = vi.fn();
+      const deps = okDeps([]);
+      deps.queryCandidates = () => new Promise((resolve) => { setTimeout(() => resolve([]), 80); });
+      deps.loadCoverage = () => new Promise(() => {});
+      const pending = findSemanticDupes({ title: 't' }, deps, observed);
+      await vi.advanceTimersByTimeAsync(2500);
+      expect(await pending).toEqual({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } });
+      expect(observed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        outcome: 'ok', reason: 'complete', phase: 'coverage-snapshot', elapsedMs: 2500, phaseElapsedMs: 2420,
+      }));
+    } finally { vi.useRealTimers(); }
+  });
+
   it('keeps a successful verdict even when its diagnostic consumer throws', async () => {
     expect(await findSemanticDupes({ title: 't' }, okDeps([]), () => { throw new Error('observer failed'); }))
       .toEqual({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } });

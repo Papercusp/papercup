@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CODEX_MCP_STARTUP_TIMEOUT_SEC } from './mcp-proxy/budgets.mjs';
+import { resumeEnvFor } from '../scripts/psu-launcher.mjs';
 import {
   CODEX_STARTUP_UPDATE_CHECK_OVERRIDE,
   CODEX_STARTUP_UPDATE_DIALOG_ESCAPE_KEY,
@@ -157,6 +158,20 @@ describe('managed Codex startup update dialog', () => {
     }
     expect(withManagedCodexStartupConfig({ command: 'codex', args: ['--', '-c', `${key}=1`], env }))
       .toContain(`${key}=${CODEX_MCP_STARTUP_TIMEOUT_SEC}`);
+  });
+
+  it.each([
+    ['oddsmith-analyst', 'papercusp'],
+    ['su', 'papercusp-su'],
+    ['planner', 'papercusp-su'],
+  ])('uses the canonical resume role marker for role=%s', (role, server) => {
+    writeFileSync(join(codexHome, 'config.toml'),
+      `[mcp_servers.${server}]\nurl = "http://127.0.0.1:3170/mcp"\n`);
+    const env = { ...resumeEnvFor({ agent: 'codex', role }), CODEX_HOME: codexHome };
+    const args = ['resume', 'native-id'];
+    expect(withManagedCodexStartupConfig({ command: 'codex', args, env }))
+      .toEqual(['-c', CODEX_STARTUP_UPDATE_CHECK_OVERRIDE,
+        '-c', `mcp_servers.${server}.startup_timeout_sec=${CODEX_MCP_STARTUP_TIMEOUT_SEC}`, ...args]);
   });
 
   it.each(['', 'worker'])('never invents an MCP transport in an incomplete home for role=%s', role => {

@@ -54,6 +54,61 @@ function write(root: string, path: string, body: string) {
   writeFileSync(join(root, path), body);
 }
 
+// --require runs before inherited --import loaders. Record that boundary so a
+// stalled preload cannot masquerade as time spent in the fixture's entry code.
+function fixtureBootstrapSource(directory: string) {
+  return `const fs = require('node:fs'), path = require('node:path');
+const directory = ${JSON.stringify(directory)};
+const identity = () => {
+  try {
+    const stat = fs.readFileSync('/proc/self/stat', 'utf8');
+    const fields = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\\s+/);
+    return { startTicks: fields[19], processGroup: Number(fields[2]) };
+  } catch { return null; }
+};
+const record = (phase, code) => {
+  try { fs.writeFileSync(path.join(directory, 'bootstrap-' + process.pid + '.' + phase + '.json'),
+    JSON.stringify({ phase, pid: process.pid, ppid: process.ppid, atMs: Date.now(),
+      uptimeMs: process.uptime() * 1000, identity: identity(), resources: process.resourceUsage(), code }));
+  } catch { /* Diagnostics must not change the child's outcome. */ }
+};
+record('entry');
+process.on('exit', code => record('exit', code));
+`;
+}
+
+function fixtureTimeoutProcesses(directory: string, processGroup: number) {
+  const processes: Array<Record<string, unknown>> = [];
+  if (process.platform !== 'linux') return { status: 'unavailable', reason: 'requires-linux-procfs', processes };
+  try {
+    const names = readdirSync(directory).filter(name => /^bootstrap-\d+\.entry\.json$/.test(name));
+    for (const name of names.slice(-32)) {
+      const entry = JSON.parse(readFileSync(join(directory, name), 'utf8'));
+      if (!Number.isSafeInteger(entry.pid) || entry.pid <= 0) continue;
+      if (existsSync(join(directory, `bootstrap-${entry.pid}.exit.json`))) continue;
+      try {
+        const root = `/proc/${entry.pid}`;
+        const stat = readFileSync(join(root, 'stat'), 'utf8');
+        const fields = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/);
+        if (fields[19] !== entry.identity?.startTicks || Number(fields[2]) !== processGroup) continue;
+        const read = (path: string) => { try { return readFileSync(path, 'utf8').trim(); } catch { return null; } };
+        const ioText = read(join(root, 'io'));
+        const io = ioText === null ? null : Object.fromEntries(ioText.split('\n').map(line => {
+          const [key, value] = line.split(/:\s*/); return [key, Number(value)];
+        }));
+        const threadNames = readdirSync(join(root, 'task'));
+        const threads = threadNames.slice(0, 16).map(tid => ({ tid: Number(tid),
+          waitChannel: read(join(root, 'task', tid, 'wchan')),
+          schedulingNanoseconds: read(join(root, 'task', tid, 'schedstat')) }));
+        processes.push({ pid: entry.pid, entry, atMs: Date.now(), state: fields[0],
+          cpuTicks: { user: Number(fields[11]), system: Number(fields[12]) },
+          majorFaults: Number(fields[9]), io, threads, omittedThreads: Math.max(0, threadNames.length - 16) });
+      } catch { processes.push({ pid: entry.pid, status: 'unavailable', reason: 'process-exited-or-procfs-unreadable' }); }
+    }
+    return { status: 'available', entryCount: names.length, omittedEntries: Math.max(0, names.length - 32), processes };
+  } catch { return { status: 'unavailable', reason: 'bootstrap-records-unreadable', processes }; }
+}
+
 // Keep the original streams and the last executing shell operation even when
 // a deadline expires before the caller can inspect an exit status. Reuse the
 // runner's artifact directory so fixture cleanup cannot erase failed evidence.
@@ -71,6 +126,9 @@ function fixtureShell(file: string, args: string[], env: NodeJS.ProcessEnv, evid
   }
   diagnosticEnv.npm_config_timing = 'true';
   diagnosticEnv.npm_config_logs_dir = npmLogsDirectory;
+  const bootstrap = join(directory, 'bootstrap.cjs');
+  writeFileSync(bootstrap, fixtureBootstrapSource(directory));
+  diagnosticEnv.NODE_OPTIONS = `${diagnosticEnv.NODE_OPTIONS ?? ''} --require=${JSON.stringify(bootstrap)}`.trim();
   const startedAt = Date.now();
   const startup = join(directory, 'trace.bash');
   writeFileSync(startup, "PS4='+ ${EPOCHREALTIME} ${BASH_SOURCE:-<command>}:${LINENO}: '; set -x\n");
@@ -86,6 +144,7 @@ function fixtureShell(file: string, args: string[], env: NodeJS.ProcessEnv, evid
     directory, file, args, effectiveTimeoutMs }) + '\n');
   let result;
   let timeoutCleanup: 'group' | 'child' | 'gone' | null = null;
+  let timeoutProcesses: ReturnType<typeof fixtureTimeoutProcesses> | null = null;
   try {
     result = launched ? spawnSync('bash', [file, ...args], {
       env: { ...diagnosticEnv, BASH_ENV: startup, BASH_XTRACEFD: '3' }, encoding: 'utf8', timeout: effectiveTimeoutMs,
@@ -97,11 +156,12 @@ function fixtureShell(file: string, args: string[], env: NodeJS.ProcessEnv, evid
       // The synchronous timeout kills Bash alone. Its owned process group must
       // be gone before afterEach can remove source still needed by descendants.
       const pid = result.pid;
-      timeoutCleanup = killSpawnedProcessTree({ pid, kill: signal => process.kill(pid, signal) }, 'SIGKILL');
+      try { timeoutProcesses = fixtureTimeoutProcesses(directory, pid); }
+      finally { timeoutCleanup = killSpawnedProcessTree({ pid, kill: signal => process.kill(pid, signal) }, 'SIGKILL'); }
     }
   } finally { closeSync(traceFd); }
   const evidence = { directory, npmLogsDirectory, effectiveTimeoutMs, launched,
-    elapsedMs: Date.now() - startedAt, status: result.status, signal: result.signal, timeoutCleanup,
+    elapsedMs: Date.now() - startedAt, status: result.status, signal: result.signal, timeoutCleanup, timeoutProcesses,
     error: result.error ? { ...result.error, message: result.error.message, stack: result.error.stack } : null };
   writeFileSync(join(directory, 'stdout.log'), result.stdout ?? '');
   writeFileSync(join(directory, 'stderr.log'), result.stderr ?? '');
@@ -178,6 +238,29 @@ describe('native fixture subprocess evidence', () => {
     expect(readFileSync(join(refused.evidence.directory, 'trace.log'), 'utf8')).toBe('');
     expect(JSON.parse(readFileSync(join(refused.evidence.directory, 'command.json'), 'utf8')))
       .toMatchObject({ launched: false, effectiveTimeoutMs: 0, timeoutMs: 5000 });
+  });
+
+  it.skipIf(process.platform !== 'linux')('retains bootstrap CPU and IO evidence when an inherited import stalls before entry', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-bootstrap-evidence-')); roots.push(root);
+    const blockedImport = join(root, 'blocked.mjs'), reached = join(root, 'entry-reached');
+    writeFileSync(blockedImport, 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10000);\n');
+    const result = fixtureShell('-c', ['node -e \'require("node:fs").writeFileSync(process.argv[1], "entered")\' "$1"; :',
+      '_', reached], { ...process.env,
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${JSON.stringify(blockedImport)}` }, root, 1000);
+    expect(result.error?.code).toBe('ETIMEDOUT');
+    expect(result.evidence.timeoutCleanup).toBe('group');
+    expect(existsSync(reached)).toBe(false);
+    const snapshot = result.evidence.timeoutProcesses!;
+    expect(snapshot.status).toBe('available');
+    const child = snapshot.processes.find(row => row.entry) as Record<string, any>;
+    expect(child).toBeDefined();
+    expect(child.entry).toMatchObject({ phase: 'entry', resources: { userCPUTime: expect.any(Number),
+      systemCPUTime: expect.any(Number), fsRead: expect.any(Number), fsWrite: expect.any(Number) } });
+    expect(child.cpuTicks).toEqual({ user: expect.any(Number), system: expect.any(Number) });
+    expect(child.io).toMatchObject({ rchar: expect.any(Number), wchar: expect.any(Number) });
+    expect(child.threads.length).toBeGreaterThan(0);
+    expect(child.atMs).toBeGreaterThan(child.entry.atMs);
+    expect(JSON.parse(readFileSync(join(result.evidence.directory, 'result.json'), 'utf8'))).toEqual(result.evidence);
   });
 
   it('retains npm timing and debug logs after a failed lifecycle fixture is removed', () => {

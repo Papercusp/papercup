@@ -162,6 +162,9 @@ export interface DupeGuardDiagnostic {
   reason: string;
   phase: string;
   elapsedMs: number;
+  /** Time in the reported phase, excluding prior phases. Query time still includes
+   * connection acquisition and transaction setup; it is not a SQL-only measurement. */
+  phaseElapsedMs?: number;
   detail?: string;
   error?: { name: string; message: string; code?: string };
 }
@@ -346,14 +349,23 @@ export async function findSemanticDupes(
 ): Promise<SemanticDupeResult | null> {
   const startedAt = Date.now();
   let phase = 'preflight';
+  let phaseStartedAt = startedAt;
   let reason = 'no-verdict';
   let detail: string | undefined;
   let error: unknown;
+  const mark = (nextPhase: string, nextReason?: string, nextDetail?: string) => {
+    if (phase !== nextPhase) phaseStartedAt = Date.now();
+    phase = nextPhase;
+    if (nextReason) reason = nextReason;
+    detail = nextDetail;
+  };
   const finish = (result: SemanticDupeResult | null): SemanticDupeResult | null => {
     try {
+      const finishedAt = Date.now();
       onDiagnostic?.({
         outcome: result === null ? 'unavailable' : 'ok', reason, phase,
-        elapsedMs: Math.max(0, Date.now() - startedAt),
+        elapsedMs: Math.max(0, finishedAt - startedAt),
+        phaseElapsedMs: Math.max(0, finishedAt - phaseStartedAt),
         ...(detail === undefined ? {} : { detail }),
         ...(error === undefined ? {} : { error: {
           name: error instanceof Error ? error.name : 'Error',
@@ -370,8 +382,7 @@ export async function findSemanticDupes(
   if (process.env.VITEST && !deps) { reason = 'test-environment'; return finish(null); }
   let result: SemanticDupeResult | null;
   try {
-    result = await withBudget(SEMANTIC_DUPE_GUARD_BUDGET_MS, classify(deps ?? realDeps, input,
-      (nextPhase, nextReason, nextDetail) => { phase = nextPhase; if (nextReason) reason = nextReason; detail = nextDetail; }),
+    result = await withBudget(SEMANTIC_DUPE_GUARD_BUDGET_MS, classify(deps ?? realDeps, input, mark),
     (failure, cause) => { reason = failure; error = cause; });
   } catch (cause) {
     reason = 'error'; error = cause;
@@ -388,7 +399,7 @@ export async function findSemanticDupes(
   try {
     const remainingMs = SEMANTIC_DUPE_GUARD_BUDGET_MS - (Date.now() - startedAt);
     if (remainingMs <= 0) return finish(result);
-    phase = 'coverage-snapshot';
+    mark('coverage-snapshot');
     const snapshot = await withDbCallDeadline(
       loadDupeGuardCoverage(deps?.loadCoverage),
       { ms: remainingMs, label: 'semantic-dupe-guard:coverage-snapshot' },

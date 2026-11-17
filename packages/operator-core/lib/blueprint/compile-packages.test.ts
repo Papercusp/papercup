@@ -191,7 +191,6 @@ describe('P-006 operator package adapter', () => {
   it('pins exact pot capability providers and makes rebinding change the specification revision', async () => {
     const loaded = resolveBlueprint({
       id: 'capability-fixture',
-      slots: [{ slot: 'domain' }],
       grants: {
         requires: ['crm.email@1.0.0'],
         optional: ['calendar.read@1.0.0'],
@@ -249,7 +248,7 @@ describe('P-006 operator package adapter', () => {
   // ceiling and an empty ceiling set never do (the per-call kernel still denies).
   it('refuses a required grant above the pot/role ceiling and nothing else', async () => {
     const loaded = resolveBlueprint({
-      id: 'ceiling-fixture', slots: [{ slot: 'domain' }],
+      id: 'ceiling-fixture',
       grants: { requires: ['crm.email@1.0.0'], optional: ['calendar.read@1.0.0'] },
       workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } },
     });
@@ -343,7 +342,8 @@ describe('P-006 operator package adapter', () => {
   it('refuses schema-valid bundle kinds that have no installed consumer instead of only naming them', async () => {
     for (const kind of ['plan', 'goal', 'datatype'] as const) {
       const source = { id: `unsupported-${kind}`, slots: [{ slot: 'domain' }],
-        bundles: [{ kind, ref: `selected-${kind}` }] };
+        contributions: [{ id: 'resource', purpose: 'resource', source: 'fixed', refresh: 'source-change',
+          inputKind: 'package', ref: `${kind}:selected-${kind}` }] };
       await expect(compileBlueprintWithPackages(source, {
         workspaceId: 'workspace-a', harnessSlug: 'harness-a',
       })).rejects.toThrow(`no installed content resolver for package kind ${kind}`);

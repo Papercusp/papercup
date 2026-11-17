@@ -84,6 +84,7 @@ import { createTerminalOutput } from './psu-terminal-output.mjs';
 import { createPendingCarryFence } from './psu-carry-fence.mjs';
 import { observeClaudeDialogWrites } from './hooks/cc/dialog-answer-provenance.mjs';
 import { CODEX_MCP_STARTUP_TIMEOUT_SEC } from '../lib/mcp-proxy/budgets.mjs';
+import { isSuTierRole } from '../../../packages/operator-core/lib/su-tier-roles.mjs';
 
 /**
  * Serialize atomic discovery-file writes without blocking the PTY host's event
@@ -8323,7 +8324,8 @@ export function withManagedCodexStartupConfig({ command, args, env = process.env
   const list = Array.isArray(args) ? [...args] : [];
   if (!managedCodexStartupUpdateDialogEnabled(env)) return list;
   if (!/(^|[\\/])codex(?:\.exe|\.cmd)?$/.test(String(command ?? ''))) return list;
-  const server = String(env.PAPERCUSP_ROLE ?? '').trim() ? 'papercusp' : 'papercusp-su';
+  const role = String(env.PAPERCUSP_AGENT_ROLE ?? env.PAPERCUSP_ROLE ?? '').trim();
+  const server = role && role !== 'su' && !isSuTierRole(role) ? 'papercusp' : 'papercusp-su';
   const startupKey = `mcp_servers.${server}.startup_timeout_sec`;
   const defaults = new Map([
     ['check_for_update_on_startup', CODEX_STARTUP_UPDATE_CHECK_OVERRIDE],

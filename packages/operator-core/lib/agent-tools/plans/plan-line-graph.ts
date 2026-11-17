@@ -116,11 +116,16 @@ function planIndexFingerprint(items: readonly PlanIndexItem[]): string {
 /** Compare the existing subgraph exactly while allowing edges involving new
  * candidate lines. Unknown blocker IDs remain visible to the normal guards. */
 function representedItemsForAdditiveComparison(items: readonly PlanIndexItem[], before: readonly PlanIndexItem[]): PlanIndexItem[] {
-  const oldIds = new Set(before.map(item => item.id));
-  const addedIds = new Set(items.filter(item => !oldIds.has(item.id)).map(item => item.id));
-  return items.filter(item => oldIds.has(item.id)).map(item => ({
-    ...item, blockedBy: item.blockedBy.filter(id => !addedIds.has(id)),
-  }));
+  const prior = new Map(before.map(item => [item.id, item]));
+  const addedIds = new Set(items.filter(item => !prior.has(item.id)).map(item => item.id));
+  return items.filter(item => prior.has(item.id)).map(item => {
+    const oldText = prior.get(item.id)?.text ?? item.text;
+    // The ordinary writer retains canonical bytes for whitespace-only edits.
+    // Compare those same bytes here without rewriting a represented row.
+    const sameText = item.text.replace(/\s+/g, ' ').trim() === oldText.replace(/\s+/g, ' ').trim();
+    return { ...item, text: sameText ? oldText : item.text,
+      blockedBy: item.blockedBy.filter(id => !addedIds.has(id)) };
+  });
 }
 
 /**

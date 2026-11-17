@@ -434,7 +434,7 @@ describe('R2 per-requirement grade selection', () => {
           readPlanItems: async () => source.planItems, readClauses: async () => source.clauses,
           readWorkContracts: async () => source.workContracts, readEvidence: async () => source.evidence,
           readLineage: async () => source.lineage, readVettingScorecards: async () => source.vettingScorecards,
-          readParties: async () => source.partyByIdentity, readGraderSelectionVia: async () => source.graderSelectionVia,
+          readParties: async () => new Map(source.partyByIdentity), readGraderSelectionVia: async () => new Map(source.graderSelectionVia),
         });
         expect(result.bars[0]!.grading).toMatchObject({ state: rating === 'healthy' ? 'pass' : 'not-pass', scorecardId: 'SC-0001' });
         expect(spy).toHaveBeenCalledTimes(Math.ceil(count / 50));
@@ -460,7 +460,7 @@ describe('R2 per-requirement grade selection', () => {
           readPlanItems: async () => source.planItems, readClauses: async () => source.clauses,
           readWorkContracts: async () => source.workContracts, readEvidence: async () => source.evidence,
           readLineage: async () => source.lineage, readVettingScorecards: async () => source.vettingScorecards,
-          readParties: async () => source.partyByIdentity, readGraderSelectionVia: async () => source.graderSelectionVia,
+          readParties: async () => new Map(source.partyByIdentity), readGraderSelectionVia: async () => new Map(source.graderSelectionVia),
         });
         expect(result.completeness.problems).toEqual(expect.arrayContaining([
           expect.objectContaining({ code: 'bar_snapshot_source_unavailable', source: 'grading' }),
