@@ -233,6 +233,35 @@ describe('phase binding writer census', () => {
     }
   });
 
+  it('retains wrapped and destructured callback parameter invocations as unresolved frontiers', () => {
+    const variants = [
+      { parameters: 'callback, statement', call: '(callback)(statement)' },
+      { parameters: 'callback, statement', call: '(callback as Function)(statement)' },
+      { parameters: 'callback, statement', call: 'callback!(statement)' },
+      { parameters: 'callback, statement', call: '(callback satisfies Function)(statement)' },
+      { parameters: 'callbacks, statement', call: 'callbacks.advance(statement)' },
+      { parameters: 'callbacks, statement', call: '(callbacks).advance?.(statement)', target: '(callbacks).advance' },
+      { parameters: 'callbacks, statement', call: 'callbacks.nested.advance(statement)' },
+      { parameters: '{ advance: callback }, statement', call: 'callback(statement)' },
+      { parameters: '{ nested: { advance: callback } }, statement', call: '(callback)(statement)' },
+      { parameters: '[callback], statement', call: 'callback(statement)' },
+      { parameters: '...callbacks', call: 'callbacks[0](statement)' },
+      { parameters: 'callback, statement', call: '(0, callback)(statement)' },
+      { parameters: 'statement', call: 'getCallbacks().advance(statement)' },
+    ];
+    for (const { parameters, call, target } of variants) {
+      const inventory = inventoryPhaseWriters([source(`async function dispatch(${parameters}) { await ${call}; }`)]);
+      const indirect = inventory.sites.filter(site => site.unresolved.includes('indirect-call-target-requires-review'));
+      expect(indirect.map(site => site.statement), call).toEqual([call]);
+      expect(indirect[0]!.dynamicEdges).toEqual([target ?? call.slice(0, call.lastIndexOf('('))]);
+      expect(() => assertPhaseWriterCensus(inventory, [])).toThrow('unclassified-writer');
+      const inspected = inventory.sites.map(site => review(site));
+      expect(assertPhaseWriterCensus(inventory, inspected).ready).toBe(true);
+      expect(() => assertPhaseWriterCensus(inventory, inspected.map(row => ({ ...row, resolvedEdges: [] }))))
+        .toThrow('unresolved-edge');
+    }
+  });
+
   it('invalidates an unchanged helper review when its resolved target changes', () => {
     const sources = [
       source('export async function exampleWrite(tx) { await tx`UPDATE work_items SET status=\'open\'`; }', 'packages/writer.ts'),
@@ -469,6 +498,55 @@ describe('phase binding writer census', () => {
           excluded: [...restored.excluded].reverse() }).differences).toEqual(stale.differences);
       } finally { rmSync(root, { recursive: true, force: true }); }
     }
+  });
+
+  it('keeps unchanged parser gaps out of the resolved freshness differences', () => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-writer-parser-freshness-'));
+    try {
+      mkdirSync(join(root, 'packages'));
+      const path = 'packages/broken.ts';
+      writeFileSync(join(root, path), 'export function broken( {');
+      const snapshot = inventoryPhaseWriterTree(root);
+      expect(snapshot.gaps).toEqual([{ id: `source:${path}`, reason: 'typescript-parse-unresolved' }]);
+      const current = verifyPhaseWriterTreeSnapshot(snapshot);
+      expect(current.ready).toBe(false);
+      expect(current.differences).toEqual([]);
+      expect(current.coverage.notChecked).toEqual([`gap:source:${path}`]);
+      expect(current.coverage.residue).toEqual([`gap:source:${path}`]);
+
+      // A changed file may still fail parsing. A different byte hash alone
+      // cannot establish that the previous gap has been resolved.
+      writeFileSync(join(root, path), 'export function stillBroken( {');
+      const changed = verifyPhaseWriterTreeSnapshot(snapshot);
+      expect(changed.differences).toEqual([expect.objectContaining({ id: `source:${path}`, reason: 'changed' })]);
+      expect(changed.coverage.residue).toEqual([`gap:source:${path}`, `source:${path}`]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('reports parser gap removal only after parsing repaired source or observing deletion', () => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-writer-parser-repair-'));
+    try {
+      mkdirSync(join(root, 'packages'));
+      const path = 'packages/broken.ts';
+      writeFileSync(join(root, path), 'export function broken( {');
+      const snapshot = inventoryPhaseWriterTree(root);
+      writeFileSync(join(root, path), 'export const repaired = true;');
+      const repaired = verifyPhaseWriterTreeSnapshot(snapshot);
+      expect(repaired.ready).toBe(false);
+      expect(repaired.differences).toEqual([
+        { id: `gap:source:${path}`, reason: 'removed', expected: 'typescript-parse-unresolved', actual: null },
+        expect.objectContaining({ id: `source:${path}`, reason: 'changed' }),
+      ]);
+      // Recovery requires a fresh analysis snapshot; the old source hash
+      // remains stale even though its parse failure is now resolved.
+      expect(verifyPhaseWriterTreeSnapshot(inventoryPhaseWriterTree(root)).ready).toBe(true);
+      rmSync(join(root, path));
+      const removed = verifyPhaseWriterTreeSnapshot(snapshot);
+      expect(removed.differences).toEqual([
+        { id: `gap:source:${path}`, reason: 'removed', expected: 'typescript-parse-unresolved', actual: null },
+        expect.objectContaining({ id: `source:${path}`, reason: 'removed' }),
+      ]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('refuses added removed excluded and unreadable sources without dropping their identities', () => {

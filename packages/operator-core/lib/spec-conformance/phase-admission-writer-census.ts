@@ -202,7 +202,7 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
   const byPath = new Map(input.map(source => [source.path, source]));
   const sourceHashes = new Map(input.map(source => [source.path, digest(source.content)]));
   const occurrences = new Map<string, number>();
-  const calls: Array<{ path: string; operation: string; callee: string; statement: string;
+  const calls: Array<{ path: string; operation: string; callee: string; spelling: string; statement: string;
     line: number; column: number; importedName?: string; importedCall: boolean; argumentNames: string[] }> = [];
   const aliases: Array<{ name: string; target: string }> = [];
   const add = (source: PhaseWriterSource, operation: string, statement: string, line: number,
@@ -273,12 +273,28 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
         if (named && ts.isNamespaceImport(named)) importedLocals.add(named.name.text);
         else if (named) for (const part of named.elements) if (!part.isTypeOnly) importedLocals.add(part.name.text);
       }
-      const targetName = (node: ts.Node | undefined): string | undefined => {
-        if (!node) return;
+      const unwrapTarget = (node: ts.Expression): ts.Expression => {
         if (ts.isParenthesizedExpression(node) || ts.isAsExpression(node)
-          || ts.isNonNullExpression(node) || ts.isTypeAssertionExpression(node)) return targetName(node.expression);
+          || ts.isNonNullExpression(node) || ts.isTypeAssertionExpression(node)
+          || ts.isSatisfiesExpression(node)) return unwrapTarget(node.expression);
+        return node;
+      };
+      const targetName = (node: ts.Expression | undefined): string | undefined => {
+        if (!node) return;
+        node = unwrapTarget(node);
         if (ts.isIdentifier(node)) return node.text;
         if (ts.isPropertyAccessExpression(node)) return node.name.text;
+      };
+      const bindingIncludes = (name: ts.BindingName, target: string): boolean =>
+        ts.isIdentifier(name) ? name.text === target
+          : name.elements.some(element => ts.isBindingElement(element) && bindingIncludes(element.name, target));
+      const targetRoot = (node: ts.Expression): { root: ts.Expression; computed: boolean } => {
+        node = unwrapTarget(node);
+        if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
+          const receiver = targetRoot(node.expression);
+          return { root: receiver.root, computed: receiver.computed || ts.isElementAccessExpression(node) };
+        }
+        return { root: node, computed: false };
       };
       const visit = (node: ts.Node): void => {
         if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
@@ -296,24 +312,30 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
           if (text) inspectSql(node, text.sql, text.edges);
         } else if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
           const callee = node.expression.getText(unit.ast);
+          const target = unwrapTarget(node.expression);
+          const { root, computed } = targetRoot(target);
           const args = node.arguments ?? [];
-          const bindingSite = ts.isPropertyAccessExpression(node.expression)
-            && ts.isIdentifier(node.expression.expression) ? node.expression.name : node.expression;
-          const rootName = ts.isPropertyAccessExpression(node.expression)
-            ? node.expression.expression.getText(unit.ast) : callee;
-          calls.push({ path: source.path, operation: operation(node), callee,
+          const bindingSite = ts.isPropertyAccessExpression(target)
+            && ts.isIdentifier(target.expression) ? target.name : target;
+          const rootName = ts.isIdentifier(root) ? root.text : root.getText(unit.ast);
+          calls.push({ path: source.path, operation: operation(node), callee, spelling: targetName(target) ?? callee,
             statement: node.getText(unit.ast), line: unit.span(bindingSite).line, column: unit.span(bindingSite).column,
             importedCall: importedLocals.has(rootName),
             argumentNames: args.map(targetName).filter((name): name is string => name !== undefined),
             ...(bindings.get(node)?.imported ? { importedName: bindings.get(node)!.imported } : {}) });
           let parameterCall = false;
-          if (ts.isIdentifier(node.expression)) {
+          if (ts.isIdentifier(root)) {
             for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
               if (ts.isFunctionLike(parent) && parent.parameters.some(parameter =>
-                ts.isIdentifier(parameter.name) && parameter.name.text === callee)) parameterCall = true;
+                bindingIncludes(parameter.name, root.text))) parameterCall = true;
             }
           }
-          if (parameterCall || ts.isElementAccessExpression(node.expression) || ts.isCallExpression(node.expression)) {
+          // Syntax wrappers do not establish a target. Destructured callbacks,
+          // methods on a parameter, returned receivers and other computed
+          // callees retain the exact expression for source-bound review.
+          const indirectTarget = !ts.isIdentifier(root)
+            && root.kind !== ts.SyntaxKind.ThisKeyword && root.kind !== ts.SyntaxKind.SuperKeyword;
+          if (parameterCall || computed || indirectTarget) {
             add(source, operation(node), node.getText(unit.ast), unit.span(node).line,
               'unresolved', { dynamicEdges: [callee], unresolved: ['indirect-call-target-requires-review'] });
           }
@@ -386,7 +408,7 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
       writers.add(alias.name); changed = true;
     }
     for (const call of calls) {
-      const name = call.importedName ?? call.callee.split('.').at(-1)!;
+      const name = call.importedName ?? call.spelling;
       const key = JSON.stringify([call.path, call.operation, call.statement, call.line]);
       const target = targets.get(JSON.stringify([call.path, call.line, call.column]));
       if ((!writers.has(name) && !call.argumentNames.some(argument => writers.has(argument))
@@ -463,7 +485,8 @@ export function inventoryPhaseWriterTree(root: string) {
 }
 
 /** Re-enumerate and hash the complete tree, without repeating the SQL/call
- * analysis. A verified export is an old source snapshot until this comparison
+ * graph analysis. Recheck prior parser gaps before reporting them as removed.
+ * A verified export is an old source snapshot until this comparison
  * succeeds. Added/deleted sources and changed exclusions are just as material
  * as changed reviewed statements. Gaps never become evidence of no change.
  * This measures filesystem bytes at observedAt, not executed-module identity.
@@ -471,6 +494,18 @@ export function inventoryPhaseWriterTree(root: string) {
 export function verifyPhaseWriterTreeSnapshot(expected: PhaseWriterTreeManifest) {
   if (expected.scope.kind !== 'repository') throw new Error('phase_writer_repository-snapshot-required');
   const { input, gaps, ...manifest } = readPhaseWriterTree(expected.scope.root);
+  // The filesystem reader observes read/enumeration failures, not syntax.
+  // Absence from its gaps cannot establish that an earlier analysis succeeded.
+  // Reuse the inventory's maintained parser for each previously failed source;
+  // a missing/unreadable source is already represented by the tree comparison.
+  const currentSources = new Map(input.map(source => [`source:${source.path}`, source]));
+  for (const gap of expected.gaps) {
+    if (gap.reason !== 'typescript-parse-unresolved') continue;
+    const source = currentSources.get(gap.id);
+    if (!source) continue;
+    try { censusSites(source.path, source.content); }
+    catch { gaps.push({ ...gap }); }
+  }
   const actual: PhaseWriterTreeManifest = { ...manifest, gaps,
     sources: input.map(source => ({ path: source.path, sha256: digest(source.content) })) };
   const index = (value: PhaseWriterTreeManifest) => {
