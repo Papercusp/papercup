@@ -403,8 +403,8 @@ async function read(args: Record<string, unknown>, owner = "owner-a", workspace 
     content: Array<{ text: string }>;
   };
   return JSON.parse(result.content[0].text) as {
-    entries: Array<{ msg_id: string; body?: string }>;
-    summary: { total: number; returned: number };
+    entries: Array<{ msg_id: string; body?: string; expects?: string; related_msg_id?: string }>;
+    summary: { total: number; returned: number; truncated: number; newest_ts: string | null };
   };
 }
 
@@ -424,6 +424,74 @@ describe("coord:inbox — share only equivalent full derives (P-011)", () => {
     expect(directed.entries.map(({ msg_id }) => msg_id)).toEqual(["newer-reply"]);
     expect(senderDirected.summary.total).toBe(2);
     expect(directed.summary.total).toBe(2);
+  });
+
+  it.each([2, 3, 4].flatMap((population) =>
+    ["original", "reversed", "rotated"].map((permutation) => ({ population, permutation })),
+  ))("keeps an expects:none related reply at the limit3 boundary: $population rows, $permutation", async ({ population, permutation }) => {
+    const asks = Array.from({ length: population - 1 }, (_, index) => ({
+      msg_id: `older-ask-${index}`, kind: "message", from: "peer-a", to: ["owner-a"],
+      ts: `2026-11-15T20:35:0${index}Z`, summary: "older action request", expects: "action",
+    }));
+    const reply = {
+      msg_id: "checkpoint-reply", kind: "message", from: "peer-a", to: ["owner-a"],
+      ts: "2026-11-17T05:32:24.045Z", summary: "checkpoint saved; compaction queued",
+      expects: "none", related_msg_id: "request-for-checkpoint",
+    };
+    const rows = [...asks, reply];
+    const permuted = permutation === "reversed" ? [...rows].reverse()
+      : permutation === "rotated" ? [...rows.slice(1), rows[0]!] : rows;
+    M.readInbox.mockResolvedValue(permuted);
+
+    for (const filters of [{ from: "peer-a" }, { directed: true }, { from: "peer-a", directed: true }]) {
+      const result = await read({ ...filters, limit: 3, max_body_chars: 0 });
+      expect(result.entries[0]).toMatchObject({
+        msg_id: reply.msg_id, expects: "none", related_msg_id: reply.related_msg_id,
+      });
+      expect(result.summary).toMatchObject({
+        total: population, returned: Math.min(population, 3),
+        truncated: Math.max(0, population - 3), newest_ts: reply.ts,
+      });
+    }
+    // Selective views share the full graph; their limits never cache a cut graph.
+    expect(M.readInbox).toHaveBeenCalledTimes(1);
+    expect(M.readInbox.mock.calls[0]?.[2]).toBeUndefined();
+  });
+
+  it("recovers omitted sender messages over widening windows and cache restarts", async () => {
+    const asks = Array.from({ length: 16 }, (_, index) => ({
+      msg_id: `retained-ask-${index}`, kind: "message", from: "peer-a", to: ["owner-a"],
+      ts: `2026-11-15T20:35:${String(index).padStart(2, "0")}Z`,
+      summary: "older action request", expects: "action",
+    }));
+    const reply = {
+      msg_id: "newest-checkpoint-reply", kind: "message", from: "peer-a", to: ["owner-a"],
+      ts: "2026-11-17T05:32:24.045Z", summary: "checkpoint saved",
+      expects: "none", related_msg_id: "request-for-checkpoint",
+    };
+    const rows = [...asks, reply];
+    const expectedIds = new Set(rows.map((row) => row.msg_id));
+
+    for (const permutation of [rows, [...rows].reverse(), [...rows.slice(8), ...rows.slice(0, 8)]]) {
+      resetOperatorCacheForTests();
+      M.readInbox.mockResolvedValue(permutation);
+      const recovered = new Set<string>();
+      let omitted = rows.length;
+      for (const limit of [3, 6, 9, 12, 15, 18]) {
+        const result = await read({ from: "peer-a", directed: true, limit, max_body_chars: 0 });
+        expect(result.entries[0]?.msg_id).toBe(reply.msg_id);
+        expect(result.summary).toMatchObject({
+          total: rows.length, returned: Math.min(limit, rows.length),
+          truncated: Math.max(0, rows.length - limit),
+        });
+        expect(result.summary.truncated).toBeLessThan(omitted);
+        omitted = result.summary.truncated;
+        for (const entry of result.entries) recovered.add(entry.msg_id);
+      }
+      expect(omitted).toBe(0);
+      expect(recovered).toEqual(expectedIds);
+    }
+    expect(M.readInbox).toHaveBeenCalledTimes(3);
   });
 
   it("uses a verified bare session alias for directed and unanswered filters", async () => {
