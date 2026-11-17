@@ -120,10 +120,11 @@ describe('inProcessCall — registration + gate routing', () => {
     expect(passedCtx.principal).toEqual({ id: 'p1' }); // gates still run against the caller
   });
 
-  it('forwards a per-call abort signal without replacing the parent signal', async () => {
+  it.each([false, true])('forwards a per-call abort signal without replacing the parent signal (crossWorkspace=%s)', async (crossWorkspace) => {
     const parent = new AbortController();
     const child = new AbortController();
     const parentCtx = { who: 'caller', signal: parent.signal } as unknown as UnifiedToolContext;
+    mocks.lookupByMcpName.mockReturnValue({ ...FAKE_TOOL, crossWorkspace });
     mocks.dispatchProjectedTool.mockResolvedValue({ ok: true, result: { structuredContent: { ok: true } } });
 
     await inProcessCall(parentCtx)('slow:read', {}, child.signal);
@@ -135,6 +136,37 @@ describe('inProcessCall — registration + gate routing', () => {
     child.abort(new Error('leg timed out'));
     expect(passedCtx.signal.aborted).toBe(true);
     expect(parent.signal.aborted).toBe(false);
+  });
+
+  it.each([false, true])('keeps parent cancellation connected when a per-call signal is supplied (crossWorkspace=%s)', async (crossWorkspace) => {
+    const parent = new AbortController();
+    const child = new AbortController();
+    const reason = new Error('outer call cancelled');
+    mocks.lookupByMcpName.mockReturnValue({ ...FAKE_TOOL, crossWorkspace });
+    mocks.dispatchProjectedTool.mockResolvedValue({ ok: true, result: { structuredContent: { ok: true } } });
+
+    await inProcessCall({ ...ctx, signal: parent.signal })('slow:read', {}, child.signal);
+
+    const passedCtx = mocks.dispatchProjectedTool.mock.calls[0]![3] as UnifiedToolContext;
+    parent.abort(reason);
+    expect(passedCtx.signal.aborted).toBe(true);
+    expect(passedCtx.signal.reason).toBe(reason);
+    expect(child.signal.aborted).toBe(false);
+  });
+
+  it.each([false, true])('cancels the sub-call when only its per-call signal exists (crossWorkspace=%s)', async (crossWorkspace) => {
+    const child = new AbortController();
+    const reason = new Error('probe deadline');
+    mocks.lookupByMcpName.mockReturnValue({ ...FAKE_TOOL, crossWorkspace });
+    mocks.dispatchProjectedTool.mockResolvedValue({ ok: true, result: { structuredContent: { ok: true } } });
+
+    await inProcessCall(ctx)('slow:read', {}, child.signal);
+
+    const passedCtx = mocks.dispatchProjectedTool.mock.calls[0]![3] as UnifiedToolContext;
+    expect(passedCtx.signal).toBe(child.signal);
+    child.abort(reason);
+    expect(passedCtx.signal.aborted).toBe(true);
+    expect(passedCtx.signal.reason).toBe(reason);
   });
 
   it('binds crossWorkspace sub-calls to the admin tx + synthesized principal', async () => {

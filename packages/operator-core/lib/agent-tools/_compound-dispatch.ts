@@ -190,7 +190,7 @@ export function inProcessCall(
       const { sql: adminTx } = getOrgPg();
       const workspaceId = innerCtx.workspaceId ?? innerCtx.principal?.workspaceId ?? '';
       dispatchCtx = {
-        ...innerCtx,
+        ...dispatchCtx,
         tx: adminTx,
         principal: await synthesizeDispatchPrincipal(adminTx, {
           workspaceId,
