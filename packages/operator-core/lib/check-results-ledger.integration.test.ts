@@ -21,6 +21,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as nativeAdoption from './code-intelligence/native-adoption';
+import { measureLegMeasurementHealth, type LegMeasurementHealthDeps } from './code-intelligence/leg-measurement-health';
 import * as instruments from './rubric-instrument-registry';
 import { rescoreRubric, type RubricRescoreDeps } from './harness/routines/rubric-rescore-action';
 import { fillRatingsFromLedger } from './scorecard-ledger-fill';
@@ -31,6 +32,7 @@ import {
   RUBRIC_CHECK_FRAMEWORK,
   probeCheckResults,
   readLatestRubricCheckResults,
+  readLatestInstrumentCheckAttempt,
   recordRubricCheckResults,
   rubricCheckLedgerPath,
   runInstrumentChecks,
@@ -59,6 +61,67 @@ beforeAll(async () => {
 afterAll(async () => {
   await db?.cleanup();
 });
+
+let healthReportSequence = 0;
+function healthRoundtrip(rubricRef: string) {
+  const at = Date.parse('2026-11-17T12:00:00Z');
+  const key = nativeAdoption.LEG_OUTCOMES_INSTRUMENT_KEY;
+  const deps: LegMeasurementHealthDeps = { sql: db.adminSql, now: () => at,
+    readPlan: async () => ({ workspaceId: WS, harnessSlug: 'papercusp', planSlug: nativeAdoption.LEG_OUTCOMES_SUBJECT_PLAN,
+      schedule: { intervalSec: 86400, action: { system: 'rubric-rescore', input: { rubricRef } } }, scheduleActive: true }),
+    readRubric: async ref => ({ workspaceId: WS, rubricId: ref, kind: 'standard', status: 'active',
+      criteria: [{ key: 'outcomes', model: 'Descriptive outcome quality.', check: { kind: 'instrument', instrumentKey: key } }] }),
+  };
+  const write = async (patch: Record<string, unknown> = {}, includeRef = true) => {
+    const id = `ci-leg-outcomes-${at.toString(36)}-${(++healthReportSequence).toString(36)}`;
+    const results = await runInstrumentChecks({ rubricRef, workspaceId: WS, now: () => at,
+      criteria: [{ key: 'outcomes', check: { kind: 'instrument', instrumentKey: key } }],
+      resolvePlatform: async window => {
+        const details = { window, buildSha: 'b'.repeat(40),
+          fingerprint: `native-adoption.ts@${'a'.repeat(40)}+design@${nativeAdoption.PUSH_LEG_DESIGN_TABLE_SHA256}`,
+          legs: Object.keys(nativeAdoption.LEG_OUTCOME_TABLE), divergence: [], readError: null,
+          outcomes: nativeAdoption.computeLegOutcomes({ ...window, triggers: [], actions: [] }), ...patch };
+        await db.adminSql`INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
+          VALUES (${id}, ${at}, ${nativeAdoption.LEG_OUTCOMES_ACTOR}, ${nativeAdoption.LEG_OUTCOMES_ACTION},
+            ${key}, ${db.adminSql.json(JSON.parse(JSON.stringify(details)))}, ${WS})`;
+        return { verdict: 'unknown', detail: 'Historical sample quality is still unknown. '.repeat(50), value: 0,
+          ...(includeRef ? { reportRef: `audit-log:${id}` } : {}) };
+      } });
+    await recordRubricCheckResults(results, SCOPE, sql());
+    return { id, results };
+  };
+  return { deps, write };
+}
+
+it('follows the latest complete report beyond older history while sample quality remains unknown (R1 H8)', async () => {
+  const rubricRef = 'standing-health-roundtrip';
+  const { deps, write } = healthRoundtrip(rubricRef);
+  const healthy = await write();
+  expect(healthy.results[0]!.verdict).toBe('error');
+  expect(await measureLegMeasurementHealth(WS, deps)).toMatchObject({ verdict: 'pass', reportRef: `audit-log:${healthy.id}` });
+  // History is not a preview page: the decisive newer failure follows 65 older attempts.
+  await recordRubricCheckResults(Array.from({ length: 65 }, () => healthy.results[0]!), SCOPE, sql());
+  const failed = await write({ readError: 'latest source population failed' });
+  expect(await measureLegMeasurementHealth(WS, deps)).toMatchObject({ verdict: 'unknown', reportRef: `audit-log:${failed.id}` });
+  expect((await readLatestInstrumentCheckAttempt({ workspaceId: WS, rubricRef, criterionKey: 'outcomes' }, sql()))?.status).toBe('error');
+  expect(await readLatestInstrumentCheckAttempt({ workspaceId: OTHER_WS, rubricRef, criterionKey: 'outcomes' }, sql())).toBeNull();
+  expect(await readLatestInstrumentCheckAttempt({ workspaceId: WS, rubricRef: `${rubricRef}-other`, criterionKey: 'outcomes' }, sql())).toBeNull();
+});
+
+it.each(['missing-ref', 'missing-report', 'malformed-latest', 'cancelled-latest', 'wrong-window'])(
+  'does not substitute a prior report when the latest attempt is %s (R1 H8)', async mode => {
+    const rubricRef = `standing-health-${mode}`;
+    const { deps, write } = healthRoundtrip(rubricRef);
+    await write();
+    const latest = await write({}, mode !== 'missing-ref');
+    const attempt = await readLatestInstrumentCheckAttempt({ workspaceId: WS, rubricRef, criterionKey: 'outcomes' }, sql());
+    if (mode === 'missing-report') await db.adminSql`DELETE FROM harness_shared.audit_log WHERE workspace_id=${WS} AND id=${latest.id}`;
+    if (mode === 'malformed-latest') await db.adminSql`UPDATE harness_shared.test_runs SET execution_details='{}'::jsonb WHERE id=${attempt!.testRunId}`;
+    if (mode === 'cancelled-latest') await db.adminSql`UPDATE harness_shared.test_runs SET status='cancelled' WHERE id=${attempt!.testRunId}`;
+    if (mode === 'wrong-window') await db.adminSql`UPDATE harness_shared.audit_log
+      SET details=jsonb_set(details, '{window,windowStart}', '"2026-11-01T00:00:00Z"'::jsonb) WHERE workspace_id=${WS} AND id=${latest.id}`;
+    expect((await measureLegMeasurementHealth(WS, deps)).verdict).toBe('unknown');
+  });
 
 it('retains subject-specific platform measurements through the real ledger without exposing them as workspace totals', async () => {
   const key = 'code-intel:native-adoption-good-use';

@@ -5,6 +5,7 @@ import { TOOL_DELIVERY_INSTRUMENTS } from './tool-delivery-acceptance';
 import { MANAGED_INVENTORY_EVIDENCE_INSTRUMENT, managedCapabilityInventoryRescore } from './managed-capability-inventory-evidence';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import { engineeringEvidenceReleaseInstrument } from './code-intelligence/engineering-evidence-release-instrument';
+import { LEG_MEASUREMENT_HEALTH_INSTRUMENT_KEY, codeIntelLegMeasurementHealthRescore } from './code-intelligence/leg-measurement-health';
 import { CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY, codeIntelUnknownRateRescore } from './code-intelligence/code-intel-unknown-rate-probe';
 import { FINAL_CONTEXT_SAMPLE_INSTRUMENT, finalContextSampleRescore } from './memory/final-context-measurement';
 import { CODE_INTEL_LIVENESS_INSTRUMENT_KEY, codeIntelLivenessRescore } from './code-intelligence/push-leg-liveness';
@@ -302,6 +303,8 @@ export interface PlatformInstrument {
       /** Cited source records retained individually by measurement provenance,
        * rather than packed into the bounded human-readable detail string. */
       evidenceRefs?: string[];
+      /** Immutable complete source report; retained as a scalar by the ledger. */
+      reportRef?: string | null;
     }>;
   };
 }
@@ -843,6 +846,7 @@ export function platformComputedInstrumentKeys(): string[] {
     CODE_INTEL_LIVENESS_INSTRUMENT_KEY,
     // code-intel-delivery-and-outcomes-2026-10-26 P-013 (R-10): per-leg outcome chains.
     LEG_OUTCOMES_INSTRUMENT_KEY,
+    LEG_MEASUREMENT_HEALTH_INSTRUMENT_KEY,
     // code-intel-delivery-and-outcomes-2026-10-26 P-012 (R-12): coupling shadow-window verdict.
     COUPLING_SHADOW_WINDOW_INSTRUMENT_KEY,
     // code-intel-delivery-and-outcomes-2026-10-26 P-016 (R-11): straggler dispositions.
@@ -887,6 +891,7 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
         : key === FINAL_CONTEXT_SAMPLE_INSTRUMENT ? { rescore: finalContextSampleRescore() }
         : key === CODE_INTEL_LIVENESS_INSTRUMENT_KEY ? { rescore: codeIntelLivenessRescore() }
         : key === LEG_OUTCOMES_INSTRUMENT_KEY ? { rescore: codeIntelLegOutcomesRescore() }
+        : key === LEG_MEASUREMENT_HEALTH_INSTRUMENT_KEY ? { rescore: codeIntelLegMeasurementHealthRescore() }
         : key === COUPLING_SHADOW_WINDOW_INSTRUMENT_KEY ? { rescore: codeIntelCouplingShadowRescore() }
         : key === STRAGGLER_DISPOSITIONS_INSTRUMENT_KEY ? { rescore: codeIntelStragglerDispositionsRescore() }
         : isPlanPortfolioInstrumentKey(key) ? { rescore: planPortfolioRescore(key) }

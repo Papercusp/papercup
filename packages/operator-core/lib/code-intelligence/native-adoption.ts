@@ -1301,15 +1301,16 @@ export function codeIntelLegOutcomesRescore() {
       const verdict = divergence.length || scheduleBroken ? 'fail' as const
         : readError || !fingerprint ? 'unknown' as const : rating.verdict;
       const legs = Object.keys(LEG_OUTCOME_TABLE);
+      const reportId = `ci-leg-outcomes-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       await sql`INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
-        VALUES (${`ci-leg-outcomes-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`}, ${now}, ${LEG_OUTCOMES_ACTOR},
+        VALUES (${reportId}, ${now}, ${LEG_OUTCOMES_ACTOR},
           ${LEG_OUTCOMES_ACTION}, ${LEG_OUTCOMES_INSTRUMENT_KEY},
           ${sql.json(JSON.parse(JSON.stringify({ verdict, fingerprint, buildSha, legs, schedule, divergence, readError, rating, outcomes, window })))},
           ${window.workspaceId})`;
       const detail = `fingerprint ${fingerprint ?? 'unknown'}; legs ${legs.join(',')}; schedule ${schedule.status}; `
         + (divergence.length ? `Design-table divergence: ${divergence.join(' ')} ` : '')
         + (readError ? `read error: ${readError}; ` : '') + rating.reason;
-      return { verdict, detail, value: rating.measured.length };
+      return { verdict, detail, value: rating.measured.length, reportRef: `audit-log:${reportId}` };
     },
   };
 }

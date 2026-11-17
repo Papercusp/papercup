@@ -1,9 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   LEG_OUTCOME_TABLE, LEG_OUTCOMES_ACTION, LEG_OUTCOMES_INSTRUMENT_KEY, LEG_OUTCOMES_SUBJECT_PLAN,
   PUSH_LEG_DESIGN_TABLE_SHA256, computeLegOutcomes, rateLegOutcomes,
 } from './native-adoption';
-import { rateLegMeasurementHealth, type LegMeasurementHealthInput } from './leg-measurement-health';
+import { measureLegMeasurementHealth, rateLegMeasurementHealth, type LegMeasurementHealthDeps, type LegMeasurementHealthInput } from './leg-measurement-health';
 
 const now = Date.parse('2026-11-17T10:00:00Z');
 const window = { workspaceId: 'health-test', windowStart: '2026-11-16T08:00:00Z', windowEnd: '2026-11-17T08:00:00Z' };
@@ -81,5 +81,32 @@ describe('R1 measurement health is separate from outcome quality', () => {
     input.report!.id = 'newer-failed-report';
     input.report!.details = { readError: 'failed to read latest population' };
     expect(rateLegMeasurementHealth(input)).toMatchObject({ verdict: 'unknown', reportRef: 'audit-log:newer-failed-report' });
+  });
+});
+
+describe('R1 exact schedule binding', () => {
+  const plan = () => ({ workspaceId: window.workspaceId, harnessSlug: 'papercusp', planSlug: LEG_OUTCOMES_SUBJECT_PLAN,
+    schedule: { kind: 'interval', intervalSec: 86400, action: { system: 'rubric-rescore', input: { rubricRef: 'standing-leg-outcomes' } } },
+    scheduleActive: true, expiresAt: null as string | null });
+  const deps = (): LegMeasurementHealthDeps => ({ sql: vi.fn() as unknown as LegMeasurementHealthDeps['sql'],
+    readPlan: async () => plan(), readRubric: async () => null, now: () => now });
+  it.each(['wrong-action', 'missing-ref', 'expired', 'foreign-workspace', 'foreign-plan'])(
+    'refuses an unusable recurrence before reading any report: %s', async mode => {
+      const input = deps(), value = plan();
+      if (mode === 'wrong-action') value.schedule.action.system = 'other';
+      if (mode === 'missing-ref') value.schedule.action.input.rubricRef = '';
+      if (mode === 'expired') value.expiresAt = new Date(now - 1).toISOString();
+      if (mode === 'foreign-workspace') value.workspaceId = 'other';
+      if (mode === 'foreign-plan') value.planSlug = 'other';
+      input.readPlan = async () => value;
+      expect((await measureLegMeasurementHealth(window.workspaceId, input)).verdict).not.toBe('pass');
+      expect(input.sql).not.toHaveBeenCalled();
+    });
+  it('reads only the exact schedule reference and preserves lookup failures as unknown', async () => {
+    const input = deps();
+    input.readRubric = vi.fn(async () => { throw new Error('source unavailable'); });
+    expect(await measureLegMeasurementHealth(window.workspaceId, input)).toMatchObject({ verdict: 'unknown', detail: expect.stringContaining('source unavailable') });
+    expect(input.readRubric).toHaveBeenCalledExactlyOnceWith('standing-leg-outcomes', window.workspaceId);
+    expect(input.sql).not.toHaveBeenCalled();
   });
 });

@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 import * as nativeAdoption from './code-intelligence/native-adoption';
+import { LEG_MEASUREMENT_HEALTH_INSTRUMENT_KEY } from './code-intelligence/leg-measurement-health';
 import { REUSE_MEASUREMENT_INSTRUMENT_KEYS } from './code-intelligence/reuse-measurement';
 import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics';
 import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
@@ -285,6 +286,7 @@ describe('the registry seed set', () => {
       CODE_INTEL_UNKNOWN_RATE_INSTRUMENT_KEY,
       CODE_INTEL_LIVENESS_INSTRUMENT_KEY,
       nativeAdoption.LEG_OUTCOMES_INSTRUMENT_KEY,
+      LEG_MEASUREMENT_HEALTH_INSTRUMENT_KEY,
       COUPLING_SHADOW_WINDOW_INSTRUMENT_KEY,
       STRAGGLER_DISPOSITIONS_INSTRUMENT_KEY,
       ...Object.values(CLEANUP_OUTCOME_INSTRUMENT_KEYS),
@@ -346,6 +348,10 @@ describe('the registry seed set', () => {
             // P-003 (R-1): one 7-day liveness window per run, alarmed-signal count.
             expect(instrument.rescore?.windowMs).toBe(7 * 24 * 60 * 60_000);
             expect(instrument.rescore?.unit).toBe('count');
+            expect(instrument.rescore?.scope).toBe('workspace');
+            expect(await instrument.rescore!.resolve({ ...window, workspaceId: ' ' })).toEqual({ verdict: 'unknown', detail: 'Exact workspace required.' });
+          } else if (key === LEG_MEASUREMENT_HEALTH_INSTRUMENT_KEY) {
+            expect(instrument.rescore?.windowMs).toBe(86_400_000);
             expect(instrument.rescore?.scope).toBe('workspace');
             expect(await instrument.rescore!.resolve({ ...window, workspaceId: ' ' })).toEqual({ verdict: 'unknown', detail: 'Exact workspace required.' });
           } else if (key === nativeAdoption.LEG_OUTCOMES_INSTRUMENT_KEY) {

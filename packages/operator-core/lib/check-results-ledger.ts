@@ -513,6 +513,25 @@ export interface LatestRubricCheckResult {
   lastMeasurement?: LatestRubricCheckResult;
 }
 
+/** Exact latest instrument attempt, including an unreadable or interrupted row.
+ * LIMIT 1 selects the maximum ledger generation for this check, never a history
+ * preview. Full history remains in test_runs; no older success substitutes here.
+ */
+export async function readLatestInstrumentCheckAttempt(
+  input: { rubricRef: string; criterionKey: string; workspaceId: string },
+  sql: SqlLike = getOrgPg().sql,
+): Promise<{ testRunId: number; status: string; check: RecordedRubricCheck | null } | null> {
+  const filePath = rubricCheckLedgerPath(input.rubricRef, instrumentCheckId(input.criterionKey));
+  const [row] = await sql`
+    SELECT id, status, execution_details FROM harness_shared.test_runs
+     WHERE framework = ${RUBRIC_CHECK_FRAMEWORK}
+       AND workspace_id = ${input.workspaceId} AND file_path = ${filePath}
+     ORDER BY id DESC LIMIT 1
+  ` as Array<{ id: number | string; status: string; execution_details: unknown }>;
+  return row ? { testRunId: Number(row.id), status: row.status,
+    check: parseTestRunExecutionDetails(row.execution_details)?.check ?? null } : null;
+}
+
 /**
  * The latest ledger row for every check of a rubric in one workspace, keyed by check id. Rows
  * whose details no longer parse are skipped rather than guessed at.
