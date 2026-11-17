@@ -302,6 +302,20 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
   }
 }
 
+async function captureDispatcherApprovalPreflight(evidenceDir: string) {
+  const features = { code_mode: true, code_mode_host: true, shell_tool: false };
+  await assertIsolatedPreflightRejection(
+    () => captureSurface(features, true, 'gpt-6.1-sol', undefined, false, false),
+    'MCP tool call requires approval, but approval policy is never',
+    join(evidenceDir, 'dispatcher-approval-negative.json'));
+  // Exercise the production-sized catalog before paying for the private build.
+  const approved = await captureSurface(features, true, 'gpt-6.1-sol', undefined, false, true, 2000);
+  const result = { blockedWithoutPreauthorization: true, approved };
+  await writeFile(join(evidenceDir, 'dispatcher-approval-preflight.json'),
+    JSON.stringify(result) + '\n', { mode: 0o600 });
+  return result;
+}
+
 if (isWorker) {
 describe('Codex managed replacement installed-client census', () => {
   it('uses admitted production config to remove native shell while preserving callable MCP', async ({ task }) => {
@@ -419,6 +433,22 @@ describe('Codex managed replacement installed-client census', () => {
   }, 30_000);
 });
 } else {
+  it('checks the installed catalog and dispatcher approval without building a private API', async ({ task }) => {
+    const evidenceDir = mkdtempSync(join(tmpdir(), 'codex-dispatcher-preflight-'));
+    let passed = false;
+    try {
+      const preflight = await captureDispatcherApprovalPreflight(evidenceDir);
+      const negative = JSON.parse(await readFile(join(evidenceDir, 'dispatcher-approval-negative.json'), 'utf8'));
+      task.meta.nativeToolSurface = { preflight, negative };
+      passed = true;
+    } catch (error) {
+      console.error('CODEX_DISPATCHER_PREFLIGHT_FAILURE_EVIDENCE', evidenceDir);
+      throw error;
+    } finally {
+      if (passed) rmSync(evidenceDir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   // The private integration worker can spend several minutes in a nested
   // source/dependency verification phase that reports progress server-side;
   // this parent only observes the final worker output. The verifier owns its
@@ -436,21 +466,7 @@ describe('Codex managed replacement installed-client census', () => {
         'phases/prepare/dispatcher-approval-preflight.json',
         'phases/execute/native-tool-surface.json', 'phases/execute/operator-mcp-receipt.json'],
       prepare: async evidenceDir => {
-        // Audit the approval failure before allocating/building the full runtime.
-        // The prior read-only canary could not detect the production dispatcher's
-        // destructive/open-world approval class. Both controls use installed Codex.
-        const features = { code_mode: true, code_mode_host: true, shell_tool: false };
-        await assertIsolatedPreflightRejection(
-          () => captureSurface(features, true, 'gpt-6.1-sol', undefined, false, false),
-          'MCP tool call requires approval, but approval policy is never',
-          join(evidenceDir, 'dispatcher-approval-negative.json'));
-        // Exercise a production-sized catalog through installed Codex before
-        // paying for the private API build/PG runtime. The former ALL_TOOLS dump
-        // exceeded native exec's output budget and hid successful bash replies.
-        const approved = await captureSurface(features, true, 'gpt-6.1-sol', undefined, false, true, 2000);
-        await writeFile(join(evidenceDir, 'dispatcher-approval-preflight.json'), JSON.stringify({
-          blockedWithoutPreauthorization: true, approved,
-        }) + '\n', { mode: 0o600 });
+        await captureDispatcherApprovalPreflight(evidenceDir);
         const censusPath = join(evidenceDir, 'restricted-hold-census.json');
         await writeFile(censusPath, '[]\n', { mode: 0o600 });
         prepared = await preparePrivateOperatorApiBundle(root, evidenceDir, {
