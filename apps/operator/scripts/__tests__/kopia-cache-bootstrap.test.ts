@@ -94,6 +94,28 @@ describe('shared host backup legal-hold lease', () => {
   });
 });
 
+describe('shared Kopia process identity', () => {
+  it.each(['process', 'cmdline'] as const)('quietly rejects a vanished %s', (missing) => {
+    const root = mkdtempSync(join(tmpdir(), 'kopia-vanished-process-'));
+    const procRoot = join(root, 'proc');
+    const pidDir = join(procRoot, '4242');
+    try {
+      mkdirSync(pidDir, { recursive: true });
+      writeFileSync(join(pidDir, 'cmdline'), Buffer.from('/fixture/kopia\0snapshot\0create\0'));
+      rmSync(missing === 'process' ? pidDir : join(pidDir, 'cmdline'), { recursive: true });
+      const result = spawnSync('bash', ['-c',
+        'source "$1"; PROC_ROOT="$2"; KOPIA_BIN=/fixture/kopia; SUDO_BIN=/must-not-run-sudo; kopia_exact_snapshot_pid 4242',
+        'kopia-vanished-process-test', HELPER, procRoot,
+      ], { encoding: 'utf8' });
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toBe('');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('shared Kopia cache bootstrap', () => {
   it('passes the selected CLI log directory through sudo and creates it first', () => {
     const root = mkdtempSync(join(tmpdir(), 'kopia-cli-log-dir-'));
