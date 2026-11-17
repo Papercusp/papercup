@@ -106,4 +106,23 @@ describe('advertisedArgsSchema', () => {
     const once = advertisedArgsSchema('work_items:set_state', BULK_ARGS);
     expect(advertisedArgsSchema('work_items:set_state', once)).toBe(once);
   });
+
+  it('extends a canonical batch without replacing its limits or changing operation references', () => {
+    h.isWritePositional.mockReturnValue(true);
+    const operation = { ...FLAT_ARGS, examples: [{ $ref: '#/$defs/operation' }] };
+    const batch = { type: 'object', $defs: { operation, item: {
+      type: 'object', properties: { args: { $ref: '#/$defs/operation' } }, required: ['args'],
+    } }, anyOf: [{ type: 'object', properties: {
+      _batch: { const: 1 }, items: { type: 'array', minItems: 1, maxItems: 2, items: { $ref: '#/$defs/item' } },
+    }, required: ['items'] }] };
+    const snapshot = JSON.stringify(batch);
+    const out = advertisedArgsSchema('plans:set-status', batch);
+    const defs = out.$defs as any;
+    expect(defs.operation).toBe(operation);
+    expect(defs.item.properties.args.$ref).toBe('#/$defs/positionalOperation');
+    expect(defs.positionalOperation.anyOf[1].properties.row).toBeDefined();
+    expect((out.anyOf as any[])[0].properties.items.maxItems).toBe(2);
+    expect(JSON.stringify(batch)).toBe(snapshot);
+    expect(advertisedArgsSchema('plans:set-status', out)).toBe(out);
+  });
 });
