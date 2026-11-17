@@ -50,6 +50,7 @@
  */
 
 import type { CursorState } from './agent-tools/coordination/read-cursors';
+import type { ContinuityProbe } from './continuity-probes';
 import type { ScoredItem } from './harness/improvements/digest';
 import type { Sql } from 'postgres';
 import { agentToolInvocationPredicate } from './agent-tools/sessions/automatic-tool-names';
@@ -198,9 +199,10 @@ export interface OrientationOpenCheck {
   id: string;
   /** What the row asserts. Excerpted for the line; the pointer carries the rest. */
   claim: string;
-  /** The probe that SETTLES the row. Absent ⇒ the row is unfalsifiable as stored,
-   *  which the line states outright rather than implying a probe exists. */
+  /** Legacy human-readable recheck. A typed probe may exist without this text. */
   recheck?: string;
+  /** Preserve the complete stored probe; its presence does not verify the claim. */
+  probe?: ContinuityProbe;
   /** Where to read/settle the row — the loop carry-note or a specific work-item. */
   pointer: string;
   /** `blocker` rows are open external blockers (`work_items:set_blocker`), not
@@ -1286,7 +1288,8 @@ export function fingerprintOrientation(
           ? committed.openChecks
           : ''
         : state.openChecks
-            .map((c) => `${c.kind}:${c.id}:${c.contested ? 1 : 0}`)
+            .map((c) => `${c.kind}:${c.id}:${c.contested ? 1 : 0}:${createHash('sha256')
+              .update(JSON.stringify([c.recheck ?? null, c.probe ?? null])).digest('hex')}`)
             .sort()
             .join(','),
     unanswered: state.unansweredDirected,
@@ -2425,7 +2428,9 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
             // The probe is the POINT of the row — an unprobed claim is reported as
             // unfalsifiable rather than silently rendered as if a probe existed.
             const probe = row.recheck?.replace(/\s+/g, ' ').trim();
-            const settle = probe
+            const settle = row.probe
+              ? `stored ${row.probe.kind} probe — re-read the complete probe via ${row.pointer}`
+              : probe
               ? `run recheck: ${probe.length > 90 ? `${probe.slice(0, 89)}…` : probe}`
               : row.kind === 'blocker'
                 ? 'no next verb recorded — re-read the blocker before waiting on it'
@@ -4190,6 +4195,7 @@ export function defaultOrientationDeps(): OrientationDeps {
                 id: carryNote.carryRowKey(row),
                 claim,
                 ...(recheck ? { recheck } : {}),
+                ...(row.probe ? { probe: row.probe } : {}),
                 pointer: 'loop:status',
                 kind: 'check',
                 ...(contested ? { contested: true } : {}),
