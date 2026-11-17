@@ -352,6 +352,35 @@ export function staleSuppressionsIn(repoRoot: string, modules: readonly string[]
   return sources === null ? null : staleDeclarationSuppressions(modules, sources);
 }
 
+/**
+ * TypeScript orders inferred literal unions by encounter order, which can vary
+ * with selected roots and incremental history. Compare those unordered members
+ * consistently without hiding any other declaration change or rewriting emit.
+ */
+function declarationComparisonText(text: string): string {
+  const source = ts.createSourceFile('declaration.d.mts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const edits: { start: number; end: number; text: string }[] = [];
+  function visit(node: ts.Node): void {
+    if (ts.isUnionTypeNode(node) && node.types.every(ts.isLiteralTypeNode) &&
+      node.types.every((type, index) => index === 0 || /^\s*\|\s*$/.test(
+        text.slice(node.types[index - 1].end, type.getStart(source)),
+      ))) {
+      const sorted = node.types.map((type) => type.getText(source)).sort();
+      node.types.forEach((type, index) => {
+        if (type.getText(source) !== sorted[index]) {
+          edits.push({ start: type.getStart(source), end: type.end, text: sorted[index] });
+        }
+      });
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  for (const edit of edits.sort((a, b) => b.start - a.start)) {
+    text = text.slice(0, edit.start) + edit.text + text.slice(edit.end);
+  }
+  return text;
+}
+
 export function check(
   repoRoot = REPO_ROOT,
   config = CONFIG,
@@ -381,7 +410,10 @@ export function check(
         continue;
       }
       const fresh = readFileSync(join(out, rel), 'utf8');
-      if (readFileSync(committedPath, 'utf8') !== fresh) stale.push(rel);
+      const committed = readFileSync(committedPath, 'utf8');
+      if (committed !== fresh && declarationComparisonText(committed) !== declarationComparisonText(fresh)) {
+        stale.push(rel);
+      }
     }
 
     if (missing.length || stale.length) {

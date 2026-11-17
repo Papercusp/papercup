@@ -177,6 +177,81 @@ describe('gen:declarations transactional publish', () => {
     });
   });
 
+  it('checks full-root literal inference against selected cold and warm compiler output', () => {
+    withFixture(({ root, declaration }) => {
+      writeFileSync(join(root, 'input.mjs'),
+        'export function answer(n) { if (n === 1) return "pending"; if (n === 2) return "completed"; if (n === 3) return "cancelled"; return "clear"; }\n');
+      writeFileSync(join(root, 'seed.mjs'),
+        'export function seed(n) { if (n === 1) return "clear"; if (n === 2) return "cancelled"; if (n === 3) return "completed"; return "pending"; }\n');
+      writeFileSync(join(root, 'tsconfig.declarations.json'), JSON.stringify({
+        compilerOptions: {
+          allowJs: true, declaration: true, emitDeclarationOnly: true,
+          rootDir: '.', outDir: '.', types: [], skipLibCheck: true,
+          module: 'esnext', moduleResolution: 'bundler', target: 'es2022',
+        },
+        files: ['seed.mjs', 'input.mjs'],
+      }));
+      execFileSync('git', ['init', '--quiet'], { cwd: root, stdio: 'ignore' });
+      execFileSync('git', ['add', '--', 'input.mjs', 'seed.mjs'], { cwd: root, stdio: 'ignore' });
+      generate(root, 'tsconfig.declarations.json');
+      const published = readFileSync(declaration, 'utf8');
+      expect(published).toContain('"clear" | "cancelled" | "completed" | "pending"');
+      expect(() => check(root, 'tsconfig.declarations.json', ['input.mjs'])).not.toThrow();
+      expect(() => check(root, 'tsconfig.declarations.json', ['input.mjs'])).not.toThrow();
+      expect(readFileSync(declaration, 'utf8')).toBe(published);
+    });
+  }, 60_000);
+
+  it('accepts compiler literal-union permutations without changing the published declaration', () => {
+    withFixture(({ root, declaration }) => {
+      execFileSync('git', ['init', '--quiet'], { cwd: root, stdio: 'ignore' });
+      execFileSync('git', ['add', '--', 'input.mjs'], { cwd: root, stdio: 'ignore' });
+      const emit = (members: string, edge: string): Compile => (_root, _config, out) => {
+        writeFileSync(join(out, 'input.d.mts'),
+          `#!/usr/bin/env node\n/** Keep provenance. */\nexport declare const answer: ${members};\nexport type Edge = ${edge};\n`);
+      };
+      generate(root, 'tsconfig.declarations.json', emit(
+        '"pending" | "completed" | "cancelled" | "clear"', '-1 | 0 | null | "a|b"',
+      ));
+      const published = readFileSync(declaration, 'utf8');
+      for (const [members, edge] of [
+        ['"cancelled" | "pending" | "completed" | "clear"', 'null | "a|b" | 0 | -1'],
+        ['"clear" | "cancelled" | "completed" | "pending"', '"a|b" | -1 | null | 0'],
+      ]) {
+        expect(() => check(root, 'tsconfig.declarations.json', undefined, emit(members, edge))).not.toThrow();
+      }
+      expect(readFileSync(declaration, 'utf8')).toBe(published);
+    });
+  });
+
+  it.each([
+    'export declare const answer: "cancelled" | "pending" | "completed" | "clear" | "late";\n',
+    'export declare const answer: "cancelled" | "pending" | "completed";\n',
+    '/** Changed documentation. */\nexport declare const answer: "cancelled" | "pending" | "completed" | "clear";\n',
+  ])('still rejects real declaration drift alongside reordered literal unions: %s', (changed) => {
+    withFixture(({ root, declaration }) => {
+      const emit = (text: string): Compile => (_root, _config, out) => {
+        writeFileSync(join(out, 'input.d.mts'), text);
+      };
+      generate(root, 'tsconfig.declarations.json', emit(
+        'export declare const answer: "pending" | "completed" | "cancelled" | "clear";\n',
+      ));
+      const published = readFileSync(declaration, 'utf8');
+      const exit = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('stale declaration exit'); });
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(() => check(root, 'tsconfig.declarations.json', undefined, emit(changed)))
+          .toThrow('stale declaration exit');
+        expect(exit).toHaveBeenCalledWith(1);
+        expect(error).toHaveBeenCalledWith(expect.stringContaining('stale declaration(s)'));
+        expect(readFileSync(declaration, 'utf8')).toBe(published);
+      } finally {
+        exit.mockRestore();
+        error.mockRestore();
+      }
+    });
+  });
+
   it('refuses an unenrolled selection before compiling or changing an existing declaration', () => {
     withFixture(({ root, declaration }) => {
       const original = '// existing declaration\n';
