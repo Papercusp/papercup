@@ -48,7 +48,13 @@ describe('source-reviewed DBOS server-value fixture', () => {
     const fixture = reviewedDurableServerValues(input)!;
     const serializerSourceRef = 'test:original-driver';
     const original = reviewedDurableDbosSqlWrites(input.systemDatabase, serializerSourceRef);
-    expect(original).toHaveLength(6);
+    // Include the executor marker which the real child used to append after
+    // composition: it shares query ownership with the server-value fixture.
+    expect(original).toHaveLength(7);
+    expect(original).toContainEqual(expect.objectContaining({
+      queryHash: '4f01eb87844c709f81c32a23f49c07f9bfe0bdadb9799f15064d758807bc4435',
+      sourceRef: `source:@dbos-inc/dbos-sdk/dist/src/system_database.js@${input.systemDatabase}#recordOperationResultInternal`,
+    }));
     const parameters = reviewedDurableDbosSqlWrites(input.systemDatabase, serializerSourceRef, fixture.serverSqlWrites);
     expect(parameters).toEqual([]);
     expect(reviewedDurableDbosSqlWrites(input.systemDatabase, serializerSourceRef,
@@ -81,7 +87,7 @@ afterEach(() => {
 });
 
 describe('source-reviewed DBOS nonpersisting SQL', () => {
-  const crashFixtureHash = 'bcec7d96ffeceb548821f80c4caf8b5320f2572ec6a678932b75e4d494bd3afa';
+  const crashFixtureHash = '66ade3b1450e5573957875cb21131f24038de472faa8623a57aeb172cb30004e';
   const sources = {
     systemDatabase: 'de943d85e4414114a6bb01b079051b0e59940a4911cf9e54f05e41f24011b02b',
     databaseUtils: 'deff0db24fad793b10ad21314a8333c2b4398e4c26c25a6cedd8e24fbff54ca4',
@@ -211,11 +217,11 @@ describe('source-reviewed DBOS nonpersisting SQL', () => {
     const { observeGroundedStoreOperations } = await import('../grounded-evidence-measurement');
     const serializerSourceRef = 'source:actual-driver-Bind';
     const registrations = reviewedDurableDbosSqlWrites(sources.systemDatabase, serializerSourceRef);
-    expect(registrations).toHaveLength(6);
-    expect(new Set(registrations.map(row => row.queryHash)).size).toBe(6);
+    expect(registrations).toHaveLength(7);
+    expect(new Set(registrations.map(row => row.queryHash)).size).toBe(7);
     expect(registrations.filter(row => row.allOrNoneRows === 'zero-only')).toHaveLength(5);
     expect(registrations.filter(row => row.allOrNoneRows === 1).map(row => row.sourceRef))
-      .toEqual([expect.stringContaining('#createApplicationVersion:claim')]);
+      .toEqual([expect.stringContaining('#createApplicationVersion:claim'), expect.stringContaining('#recordOperationResultInternal')]);
     expect(reviewedDurableDbosSqlWrites('changed-source', serializerSourceRef)).toEqual([]);
     expect(reviewedDurableDbosSqlWrites(sources.systemDatabase, '')).toEqual([]);
     class Query {

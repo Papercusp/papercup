@@ -222,9 +222,6 @@ if (process.env.DURABLE_CRASH_GEC_SCOPE) {
          WHERE EXCLUDED.checkpoint_invocation_id IS NOT NULL
            AND operation_outputs.checkpoint_invocation_id = EXCLUDED.checkpoint_invocation_id
          RETURNING completed_at_epoch_ms;`;
-  const executorStatement = `UPDATE "dbos".workflow_status
-             SET executor_id = $1
-           WHERE workflow_uuid = $2 AND executor_id IS DISTINCT FROM $1`;
   const operationOutputSourceRef = `source:@dbos-inc/dbos-sdk/dist/src/system_database.js@${notificationSourceHash}#recordOperationResultInternal`;
   let storeTap: ReturnType<typeof observeGroundedStoreOperations>;
   const invocationTap = observeGroundedToolDispatch({ scope, sourceRef: path, attemptId: `${runKey}:${mode}`,
@@ -294,9 +291,6 @@ if (process.env.DURABLE_CRASH_GEC_SCOPE) {
       { pool: 'child-dbos-all-clients', sourceRef: operationOutputSourceRef, serializerSourceRef,
         queryHash: digest(Buffer.from(operationOutputStatement)), command: 'INSERT' as const, parameterCount: 11,
         persistedParameters: [2, 3], allOrNoneRows: 'zero-only' as const, insertOrNoop: initialKeyCensus },
-      { pool: 'child-dbos-all-clients', sourceRef: operationOutputSourceRef, serializerSourceRef,
-        queryHash: digest(Buffer.from(executorStatement)), command: 'UPDATE' as const, parameterCount: 2,
-        persistedParameters: [0], allOrNoneRows: 1 },
       ] : []),
     ],
     onSqlObservation: row => sqlObservations.push(row), onObservation: () => retain(false) });

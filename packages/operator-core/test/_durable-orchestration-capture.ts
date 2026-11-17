@@ -5,7 +5,7 @@ import { basename, dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { GroundedCensus, GroundedMeasurementScope, GroundedNonPersistingSql, observeGroundedStoreOperations } from '../lib/grounded-evidence-measurement';
 
-const crashFixtureSourceHash = 'bcec7d96ffeceb548821f80c4caf8b5320f2572ec6a678932b75e4d494bd3afa';
+const crashFixtureSourceHash = '66ade3b1450e5573957875cb21131f24038de472faa8623a57aeb172cb30004e';
 const fixtureSerializerSourceRef = 'source:postgres/src/connection.js@37fd9fb939eb686e75745dfaffaeea7ac6f697902cc8985e9894270ac7de0eeb'
   + '+types.js@1883bd4536eab1c94b9e708d325b13708b0f18ec80020e3a825f34a72f603b81#Bind';
 
@@ -102,6 +102,11 @@ export function reviewedDurableDbosSqlWrites(systemDatabase: string | undefined,
     pool: 'child-dbos-all-clients', command: 'UPDATE', parameterCount: 2,
     queryHash: '4f424e83ebb04df589947f784d7d5d9f2d92b469cef1987c7e9928d5c2b65e2a',
     sourceRef: `source:@dbos-inc/dbos-sdk/dist/src/system_database.js@${sourceHash}#createApplicationVersion:claim`,
+    serializerSourceRef, persistedParameters: [0], allOrNoneRows: 1,
+  }, {
+    pool: 'child-dbos-all-clients', command: 'UPDATE', parameterCount: 2,
+    queryHash: '4f01eb87844c709f81c32a23f49c07f9bfe0bdadb9799f15064d758807bc4435',
+    sourceRef: `source:@dbos-inc/dbos-sdk/dist/src/system_database.js@${sourceHash}#recordOperationResultInternal`,
     serializerSourceRef, persistedParameters: [0], allOrNoneRows: 1,
   }];
   // A query has exactly one byte oracle. Prefer the reviewed server receipt
