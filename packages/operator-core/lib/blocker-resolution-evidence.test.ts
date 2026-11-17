@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { blockerBoundaryContext, createBlockerEvidenceReader, preflightBlockerDecision } from './blocker-resolution-evidence';
@@ -1213,6 +1213,52 @@ describe('authenticated authority blocker clearance', () => {
     expect(mocks.ownerTurn).toHaveBeenCalledWith({ kind: 'owner', turnRef: ownerTurnRef }, '', host);
   });
 
+  // Exercise the production reader and lifecycle preflight together: a historical
+  // self locator must not demand terminal completion before this clear can run.
+  const selfRecheck = { kind: 'work-item' as const, ref: 'harness-a#WI-1' };
+  const selfDeferred = (recheck = selfRecheck) => {
+    const prior = prepareBlockerDecision(item.payload, {
+      schemaVersion: 1, idempotencyKey: 'human-defer', disposition: 'defer',
+      symptom: 'Provider requires operator action',
+      investigation: [{ action: 'Read provider condition', outcome: 'Operator required', evidenceRefs: [ref] }],
+      attempts: [], evidenceRefs: [ref, recheck],
+      deferral: { reason: 'human-action', responsibleParty: 'external-operator',
+        nextAction: 'Read the operator response on this item', reasonEvidenceRefs: [ref], recheckRef: recheck },
+    }, { ownerId: 'su-a', sessionId: 'su-a', workItemId: item.id, custodianId: 'su-a' });
+    if (!prior.ok) throw new Error('fixture human deferral refused');
+    return { ...item, payload: { ...item.payload, ...prior.patch } };
+  };
+  const selfResolution = (recheck = selfRecheck) => ({ ...decision, priorRevision: 1,
+    evidenceRefs: [ref, recheck] });
+
+  it('clears its own historical human recheck after exact authenticated authority clearance', async () => {
+    const subject = selfDeferred();
+    mocks.item.mockResolvedValue(subject);
+    expect(await preflightBlockerDecision(subject, selfResolution(), await context(),
+      { effect: { setBlocker: request } })).toMatchObject({ ok: true });
+    expect(mocks.item).toHaveBeenCalledWith('WI-1', 'harness-a');
+    expect(mocks.ownerTurn).toHaveBeenCalledWith({ kind: 'owner', turnRef: ownerTurnRef }, '', host);
+  });
+
+  it.each(['harness-b#WI-1', 'harness-a#WI-2'])('preserves another item recheck %s', async recheckRef => {
+    const recheck = { ...selfRecheck, ref: recheckRef };
+    const subject = selfDeferred(recheck);
+    const [harness, id] = recheckRef.split('#');
+    mocks.item.mockResolvedValue({ ...subject, id, harness });
+    expect(await preflightBlockerDecision(subject, selfResolution(recheck), await context(),
+      { effect: { setBlocker: request } })).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
+  });
+
+  it('retains the self recheck without a verified owner release or its exact evidence citation', async () => {
+    const subject = selfDeferred();
+    mocks.item.mockResolvedValue(subject);
+    expect(await preflightBlockerDecision(subject, { ...selfResolution(), evidenceRefs: [ref] }, await context(),
+      { effect: { setBlocker: request } })).toMatchObject({ ok: false });
+    mocks.ownerTurn.mockResolvedValue({ ok: false, error: 'provenance_owner_turn_unverified' });
+    expect(await preflightBlockerDecision(subject, selfResolution(), await context(),
+      { effect: { setBlocker: request } })).toMatchObject({ ok: false });
+  });
+
   it.each([{}, { ref: undefined, kind: undefined }, { kind: undefined }])('supports the public clear identity inference %j', async change => {
     expect(await preflightBlockerDecision(item, decision, await context(), { effect: { setBlocker: { ...request, ...change } } }))
       .toMatchObject({ ok: true });
@@ -1499,6 +1545,15 @@ describe('subject-bound git-sync commit evidence', () => {
       owner: 'su-other', epoch: 1, derivedAt: '2026-11-13T00:01:00.000Z', paths, symbols: [],
     } };
     expect(await read()).toMatchObject({ status: 'unknown' });
+    expect(mocks.event).not.toHaveBeenCalled();
+  });
+
+  it('preserves the unavailable file path and publication diagnostic without clearing the condition', async () => {
+    rmSync(join(root, paths[1]));
+    symlinkSync('a.ts', join(root, paths[1]));
+
+    expect(await read()).toEqual({ status: 'unknown',
+      detail: 'exact local git-sync file predicate is unavailable for src/b.ts: unknown (publication path is outside its canonical repository)' });
     expect(mocks.event).not.toHaveBeenCalled();
   });
 

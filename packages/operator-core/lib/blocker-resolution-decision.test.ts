@@ -303,6 +303,65 @@ describe('canonical blocker decision evidence', () => {
     expect((await validateBlockerDecisionEvidence(input, { ...unreadable,
       readEvidence: async (r) => r.ref === 'EI-404' ? { status: 'unknown', detail: 'reader down' } : readEvidence(r) })).ok).toBe(false);
   });
+  it('retires a human deferral self-recheck only after its exact authority condition is cleared', async () => {
+    const authority = { kind: 'authority' as const, ref: 'provider:claude-capacity' };
+    const self = { kind: 'work-item' as const, ref: 'papercusp#WI-1' };
+    const priorDeferral: Extract<BlockerDecisionInput, { disposition: 'defer' }>['deferral'] = {
+      reason: 'human-action', responsibleParty: 'external-operator', nextAction: 'Read the operator answer here',
+      reasonEvidenceRefs: [authority], recheckRef: self,
+    };
+    const input = resolve() as Extract<BlockerDecisionInput, { disposition: 'self_resolve' }>;
+    input.evidenceRefs = [authority, self];
+    input.verification.evidenceRefs = [authority];
+    const scoped = {
+      ...context(async (r): Promise<BlockerEvidenceMeasurement> => r.kind === 'authority'
+        ? { status: 'available', condition: 'satisfied', subjectWorkItemId: 'WI-1',
+          conditionIdentity: JSON.stringify(['authority-clear', 'workspace-a', 'papercusp', 'WI-1', 'human', authority.ref, 'updated', 'owner-turn']) }
+        : { status: 'available', condition: 'pending', reachable: true, canonicalWorkItemId: 'WI-1',
+          conditionIdentity: JSON.stringify(['work-item', 'workspace-a', 'papercusp', 'WI-1']) }),
+      obligationRefs: [authority, self], priorDeferral,
+    };
+    expect(await validateBlockerDecisionEvidence(input, scoped)).toEqual({ ok: true });
+
+    for (const conditionIdentity of [undefined, 'invalid', '{}',
+      JSON.stringify(['work-item', 'workspace-b', 'papercusp', 'WI-1']),
+      JSON.stringify(['work-item', 'workspace-a', 'other-harness', 'WI-1'])]) {
+      expect((await validateBlockerDecisionEvidence(input, { ...scoped,
+        readEvidence: async r => r.kind === 'work-item'
+          ? { ...await scoped.readEvidence(r), conditionIdentity } : scoped.readEvidence(r),
+      })).ok).toBe(false);
+    }
+    for (const conditionIdentity of [undefined, 'invalid', '{}',
+      JSON.stringify(['authority-clear', 'workspace-b', 'papercusp', 'WI-1']),
+      JSON.stringify(['authority-clear', 'workspace-a', 'other-harness', 'WI-1'])]) {
+      expect((await validateBlockerDecisionEvidence(input, { ...scoped,
+        readEvidence: async r => r.kind === 'authority'
+          ? { ...await scoped.readEvidence(r), conditionIdentity } : scoped.readEvidence(r),
+      })).ok).toBe(false);
+    }
+
+    for (const readEvidence of [
+      async (r: typeof authority | typeof self): Promise<BlockerEvidenceMeasurement> => r.kind === 'authority'
+        ? { status: 'available', condition: 'pending', subjectWorkItemId: 'WI-1' } : scoped.readEvidence(r),
+      async (r: typeof authority | typeof self): Promise<BlockerEvidenceMeasurement> => r.kind === 'authority'
+        ? { status: 'unknown', detail: 'owner provenance unavailable' } : scoped.readEvidence(r),
+      async (r: typeof authority | typeof self): Promise<BlockerEvidenceMeasurement> => r.kind === 'authority'
+        ? { status: 'available', condition: 'satisfied', subjectWorkItemId: 'WI-other' } : scoped.readEvidence(r),
+      async (r: typeof authority | typeof self): Promise<BlockerEvidenceMeasurement> => r.kind === 'work-item'
+        ? { status: 'available', condition: 'pending', reachable: true, canonicalWorkItemId: 'WI-other' }
+        : scoped.readEvidence(r),
+    ]) {
+      expect((await validateBlockerDecisionEvidence(input, { ...scoped, readEvidence })).ok).toBe(false);
+    }
+    expect((await validateBlockerDecisionEvidence({ ...input, evidenceRefs: [authority] }, scoped)).ok).toBe(false);
+    expect((await validateBlockerDecisionEvidence(input, { ...scoped, priorDeferral: undefined })).ok).toBe(false);
+    expect((await validateBlockerDecisionEvidence(input, { ...scoped,
+      priorDeferral: { ...priorDeferral, reason: 'external-dependency' } })).ok).toBe(false);
+    const other = { kind: 'work-item' as const, ref: 'WI-2' };
+    expect(await validateBlockerDecisionEvidence(input, { ...scoped, obligationRefs: [...scoped.obligationRefs, other],
+      readEvidence: async r => r.ref === other.ref ? pending : scoped.readEvidence(r),
+    })).toMatchObject({ ok: false, missing: [expect.stringContaining('unresolved canonical condition work-item:WI-2')] });
+  });
   it('does not use verification-only related conditions to justify a deferral', async () => {
     const result = await validateBlockerDecisionEvidence(defer(), {
       ...context(async () => pending), obligationRefs: [], relatedConditionRefs: [ref],

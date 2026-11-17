@@ -493,10 +493,35 @@ export async function validateBlockerDecisionEvidence(
     const boundVerification = input.verification.evidenceRefs.some((ref) =>
       (value(ref).condition === 'satisfied' && value(ref).subjectWorkItemId === context.workItemId) ||
       value(ref).boundPassingRunFor === context.workItemId);
+    // A human deferral may point back to its own item as the place to inspect
+    // the operator's answer. That historical locator cannot require the item
+    // to finish before its exact, independently authorized blocker can clear.
+    const clearedHumanSelfRecheck = (ref: BlockerEvidenceRef): boolean => {
+      const prior = context.priorDeferral;
+      return prior?.reason === 'human-action' && ref.kind === 'work-item' &&
+        evidenceKey(ref) === evidenceKey(prior.recheckRef) &&
+        value(ref).canonicalWorkItemId === context.workItemId &&
+        input.evidenceRefs.some(cited => evidenceKey(cited) === evidenceKey(ref)) &&
+        prior.reasonEvidenceRefs.length > 0 && prior.reasonEvidenceRefs.every(reason => {
+          if (reason.kind !== 'authority' || !obligations.has(evidenceKey(reason)) ||
+              value(reason).condition !== 'satisfied' || value(reason).subjectWorkItemId !== context.workItemId ||
+              !input.verification.evidenceRefs.some(proof => evidenceKey(proof) === evidenceKey(reason))) return false;
+          // Canonical feature ids can repeat in other harnesses. Compare the
+          // reader's full tenant/item identity to the authenticated clear's
+          // subject, never just the id or the caller's spelling of the ref.
+          let identity: unknown;
+          try { identity = JSON.parse(value(reason).conditionIdentity ?? 'null'); } catch { return false; }
+          return Array.isArray(identity) && identity.length === 8 && identity[0] === 'authority-clear' &&
+            identity.slice(1, 4).every(part => typeof part === 'string' && part.length > 0) &&
+            identity[3] === context.workItemId &&
+            value(ref).conditionIdentity === JSON.stringify(['work-item', ...identity.slice(1, 4)]);
+        });
+    };
     const unresolved: string[] = [];
     let superseded = 0;
     for (const ref of context.obligationRefs) {
       if (value(ref).condition === 'satisfied') continue;
+      if (clearedHumanSelfRecheck(ref)) continue;
       if (await lapsedPeerCustody(ref)) {
         if (boundVerification && input.evidenceRefs.some((cited) => evidenceKey(cited) === evidenceKey(ref))) {
           superseded += 1;
