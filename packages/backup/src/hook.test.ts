@@ -327,6 +327,59 @@ describe('cross-process dump transaction isolation', () => {
 });
 
 describe('runPreSnapshotHook admin-URL → spawn args', () => {
+  it('queues an explicit pre-destructive dump through the due-now guard despite a live host marker', async () => {
+    h.hostCoverageInProgress = true;
+    const beforeGuardWait = vi.fn(async () => {});
+    const onGuardReady = vi.fn(async () => {});
+
+    await expect(runPreSnapshotHook({ ...ctx, triggerReason: 'pre_destructive' }, {
+      beforeGuardWait, onGuardReady,
+    })).resolves.toMatchObject({ ok: true });
+
+    const call = pgDumpCall()!;
+    expect(call.cmd).toBe(h.guardBin);
+    expect(call.args).toContain('--mode');
+    expect(call.args).toContain('wait');
+    expect(call.args).not.toContain('--deadline-at-arrival');
+    expect(beforeGuardWait).toHaveBeenCalledOnce();
+    expect(onGuardReady).toHaveBeenCalledOnce();
+    expect(h.ackWrites).toContain('PROCEED\n');
+  });
+
+  it('returns a retryable admission outcome when the guard times out before READY', async () => {
+    h.holdGuardOpen = true;
+    const pending = runPreSnapshotHook({ ...ctx, triggerReason: 'pre_destructive' });
+    await vi.waitFor(() => expect(h.pendingGuard).not.toBeNull());
+    h.pendingGuard!.emit('close', 75);
+
+    await expect(pending).resolves.toMatchObject({ ok: false, deferred: 'backup-guard-busy' });
+    expect(h.ackWrites).toEqual([]);
+    expect(h.renameCalls).toEqual([]);
+  });
+
+  it('does not turn a dump failure after PROCEED into an admission retry', async () => {
+    h.closeCodes.pg_dump = 75;
+    const result = await runPreSnapshotHook({ ...ctx, triggerReason: 'pre_destructive' });
+    expect(result.ok).toBe(false);
+    expect(result.deferred).toBeUndefined();
+    expect(h.ackWrites).toContain('PROCEED\n');
+    expect(h.renameCalls).toEqual([]);
+  });
+
+  it('keeps deferring to the host when no independent shared guard can serialize the safety dump', async () => {
+    const previous = process.env.KOPIA_BACKUP_GUARD_ACTIVE;
+    process.env.KOPIA_BACKUP_GUARD_ACTIVE = '1';
+    h.hostCoverageInProgress = true;
+    try {
+      await expect(runPreSnapshotHook({ ...ctx, triggerReason: 'pre_destructive' }))
+        .resolves.toMatchObject({ ok: false, deferred: 'host-backup-in-progress' });
+      expect(pgDumpCall()).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.KOPIA_BACKUP_GUARD_ACTIVE;
+      else process.env.KOPIA_BACKUP_GUARD_ACTIVE = previous;
+    }
+  });
+
   it('returns degraded without starting a duplicate dump while the host writer is active', async () => {
     // A prior completion receipt cannot outrank a live writer marker.
     h.hostCoverageCovered = true;

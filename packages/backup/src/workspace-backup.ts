@@ -26,7 +26,7 @@ import {
   type BackupIntervalHandle,
 } from './config';
 import { deriveRepoPassword } from './password';
-import { runPreSnapshotHook, type PreSnapshotHookResult } from './hook';
+import { runPreSnapshotHook, resolveKopiaBackupGuard, type PreSnapshotHookResult } from './hook';
 import { readHostDumpInProgress } from './host-dump-coverage';
 import { decryptDestConfig, syncArgsFor, type DestinationType } from './destinations';
 import {
@@ -682,7 +682,8 @@ export class WorkspaceBackup {
       let dumpOutcome = await runDumpHook(dumpStepName);
       let admissionRetries = 0;
       while (reason === 'pre_destructive' && dumpOutcome?.ok === false
-        && dumpOutcome.deferred === 'host-backup-in-progress') {
+        && (dumpOutcome.deferred === 'host-backup-in-progress'
+          || dumpOutcome.deferred === 'backup-guard-busy')) {
         // A live host dump is an admission wait, not a failed restore point.
         // Keep this exact intent running (and heartbeating) until the hook can
         // prove coverage or perform its own dump. Never hold the migration
@@ -1061,10 +1062,12 @@ export class WorkspaceBackup {
         && row.error_text === `pre-destructive backup requires a successful database dump: ${payload.error}`;
       const eventId = Number(hook?.id);
       if (!hook || !knownDeferral || !Number.isSafeInteger(eventId) || eventId <= 0 || hook.capture_started !== false) return null;
-      // Re-check live admission before modifying the failed receipt. The hook
-      // checks again after the CAS, so a new writer racing this read still defers.
+      // With a shared guard, the hook owns admission through its due-now
+      // queue and READY/ACK handshake. Reopening a proven no-work refusal
+      // must not strand it outside that queue behind every future host run.
+      // Without that guard, retain the conservative in-place host wait.
       const active = await readHostDumpInProgress();
-      if (active) return {
+      if (active && resolveKopiaBackupGuard() === null) return {
         deferred: 'host-backup-in-progress',
         error: `snapshot ${snapshotId} admission remains deferred: host backup is in progress (phase ${active.phase}, pid ${active.pid})`,
       };

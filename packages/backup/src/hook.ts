@@ -358,7 +358,7 @@ export interface PreSnapshotHookResult {
   bytes?: number;
   error?: string;
   /** Admission refused before pg_dump or Kopia began; never a failed dump. */
-  deferred?: 'host-backup-in-progress';
+  deferred?: 'host-backup-in-progress' | 'backup-guard-busy';
   /**
    * Set when the dump was deliberately and provably UNNECESSARY rather than
    * attempted — today, only when the host backup already dumped this exact
@@ -610,7 +610,13 @@ async function runPreSnapshotHookNow(
     await log('hook done (skipped: host-covered)');
     return { ok: true, skipped: coverage.reason };
   }
-  if (coverage.inProgress) {
+  // Explicit safety work must enter the existing due-now priority queue.
+  // Otherwise a queued next host run can keep it outside that queue forever.
+  // The guard still serializes writers, and READY reacquires the migration
+  // rendezvous and rechecks coverage before allowing pg_dump to start.
+  const guardedSafetyAdmission = ctx.triggerReason === 'pre_destructive'
+    && resolveKopiaBackupGuard() !== null;
+  if (coverage.inProgress && !guardedSafetyAdmission) {
     await log(`pg SKIP: ${coverage.reason}`);
     await log('hook done (degraded: host-backup-in-progress)');
     return { ok: false, error: coverage.reason, deferred: 'host-backup-in-progress' };
@@ -787,6 +793,8 @@ async function dumpPg(opts: {
     let guardReadinessWatchdog: NodeJS.Timeout | undefined;
     let guardReadyTask: Promise<void> | undefined;
     let guardSkipReason: string | undefined;
+    let guardDumpAuthorized = !guard;
+    let guardAdmissionTimedOut = false;
     const guardReadyAbort = new AbortController();
     // Progress = bytes pg_dump has written. Measured before gzip, whose
     // buffering would hide steady progress behind long silent stretches.
@@ -851,7 +859,16 @@ async function dumpPg(opts: {
       }
       const outputOk = ok && outputFinished && !outputError;
       let result: PreSnapshotHookResult;
-      if (outputOk && guardSkipReason) {
+      if (!outputOk && guard && !guardDumpAuthorized && dumpedBytes === 0 && !outputError
+        && (dumpCode === 75 || guardAdmissionTimedOut)) {
+        // The maintained wait-mode guard exits 75 when flock admission times
+        // out. Before PROCEED, no dump has run: preserve this as queueing, not
+        // a failed restore point. Never retry an error after authorizing work.
+        const error = summarizeDumpFailure(stderr);
+        await unlink(tmp).catch(() => {});
+        await opts.log(`pg ${opts.host}:${opts.port} SKIP (backup guard admission: ${error})`);
+        result = { ok: false, error, deferred: 'backup-guard-busy' };
+      } else if (outputOk && guardSkipReason) {
         await unlink(tmp).catch(() => {});
         await opts.log(`pg ${opts.host}:${opts.port} SKIP (${guardSkipReason})`);
         result = { ok: true, skipped: guardSkipReason };
@@ -947,6 +964,7 @@ async function dumpPg(opts: {
         void finalize(false);
       } else {
         guardReadinessWatchdog = setTimeout(() => {
+          guardAdmissionTimedOut = !guardDumpAuthorized;
           guardReadyAbort.abort();
           stderr += `backup guard lock readiness timed out after ${GUARD_READINESS_TIMEOUT_MS}ms\n`;
           killDumpTree();
@@ -970,6 +988,7 @@ async function dumpPg(opts: {
               sendAck(GUARD_ACK_SKIP);
               return;
             }
+            guardDumpAuthorized = true;
             sendAck(GUARD_ACK_PROCEED);
             armDumpWatchdog();
           })();

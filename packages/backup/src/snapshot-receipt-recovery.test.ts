@@ -42,6 +42,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
   configureBackupStepRunner(null);
   vi.restoreAllMocks();
   await rm(root, { recursive: true, force: true });
@@ -107,7 +108,8 @@ describe('snapshot receipt recovery', () => {
     expect(f.queries.find(q => q.text.includes('SET kopia_snapshot_id'))?.values).toContain(78850);
   });
 
-  it('keeps host-backup admission pending across retries and replay, releasing the rendezvous between attempts', async () => {
+  it.each(['host-backup-in-progress', 'backup-guard-busy'] as const)
+  ('keeps %s admission pending across retries and replay, releasing the rendezvous between attempts', async deferred => {
     const f = producerFixture();
     const release = vi.fn(async () => {});
     const acquire = vi.fn(async () => ({ release }));
@@ -119,11 +121,12 @@ describe('snapshot receipt recovery', () => {
       if (!name.startsWith('backup-pre-snapshot-hook')) return fn();
       hookSteps.push(name);
       return (hookSteps.length <= 3
-        ? { ok: false, error: 'host backup is in progress (phase host-backup, pid 4242)', deferred: 'host-backup-in-progress' }
+        ? { ok: false, error: 'backup admission busy', deferred }
         : { ok: true }) as T;
     } });
     vi.useFakeTimers();
     const pending = f.backup.snapshot('pre_destructive', undefined, { resumeSnapshotId: 78850 });
+    void pending.catch(() => {}); // Attach before advancing a rejected old implementation.
     await vi.waitFor(() => expect(hookSteps).toHaveLength(1));
     expect(release).toHaveBeenCalledOnce();
     expect(f.kopia.mock.calls.some(([args]) => (args as string[]).includes('create'))).toBe(false);
@@ -303,7 +306,8 @@ describe('snapshot receipt recovery', () => {
     expect(f.steps).not.toContain('backup-pre-snapshot-hook');
   });
 
-  it.each([false, true])('waits through host teardown before reopening the same protected receipt (typed=%s)', async typed => {
+  it.each([false, true])('waits through host teardown without a shared guard before reopening the receipt (typed=%s)', async typed => {
+    vi.stubEnv('KOPIA_BACKUP_GUARD_ACTIVE', '1');
     const f = producerFixture('failed');
     const error = 'host backup is in progress (phase guard-queued, pid 4242)';
     f.row.hook_payload = { ok: false, error, ...(typed ? { deferred: 'host-backup-in-progress' } : {}) };
@@ -330,6 +334,28 @@ describe('snapshot receipt recovery', () => {
     expect(release).toHaveBeenCalledTimes(3);
     expect(f.queries.some(q => q.text.includes('INSERT INTO harness_shared.backup_snapshots'))).toBe(false);
     expect(f.steps).toContain('backup-pre-snapshot-hook:resume:78850:123');
+  });
+
+  it.each([false, true])('admits a proven recovery to the shared guard instead of starving behind host markers (typed=%s)', async typed => {
+    vi.stubEnv('KOPIA_BACKUP_GUARD_ACTIVE', '0');
+    vi.stubEnv('KOPIA_BACKUP_GUARD_BIN', '/test/kopia-backup-guard.sh');
+    const f = producerFixture('failed');
+    const error = 'host backup is in progress (phase guard-queued, pid 4242)';
+    f.row.hook_payload = { ok: false, error, ...(typed ? { deferred: 'host-backup-in-progress' } : {}) };
+    f.row.error_text = `pre-destructive backup requires a successful database dump: ${error}`;
+    f.row.finished_at = new Date().toISOString();
+    f.row.db_dump_ok = false;
+    admission.active = true;
+    const release = vi.fn(async () => {});
+    configureWithSql(f.sql, async () => ({ release }));
+
+    await expect(f.backup.snapshot('pre_destructive', undefined, { resumeSnapshotId: 78850 }))
+      .resolves.toMatchObject({ snapshotId: 78850, dbDumpOk: true });
+
+    expect(admission.active).toBe(true);
+    expect(f.steps).toContain('backup-pre-snapshot-hook:resume:78850:123');
+    expect(f.queries.some(q => q.text.includes('INSERT INTO harness_shared.backup_snapshots'))).toBe(false);
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it.each(['actual-dump-failure', 'missing-hook', 'error-mismatch', 'capture-started', 'artifact', 'bad-finish', 'cas-race'] as const)
