@@ -110,13 +110,21 @@ describe('IDOP D-043 immutable host authority read inputs', () => {
     old.snapshot.flags[0].attestation.resolvedValue = false;
     const overrides = old.ports.roleOverrides();
     (overrides.worker.denyCapabilities as string[]).push('new:*');
-    for (const { ports } of [old, candidate]) {
+    for (const { ports, contexts } of [old, candidate]) {
+      expect(contexts).toHaveLength(1);
+      expect(contexts[0]).toMatchObject({ workspaceId: 'snapshot-workspace',
+        uiClientId: 'su-original', role: 'worker', isSuperuser: true });
+      expect(contexts[0]!.log).toBeUndefined();
+      expect(ports.audit.resolveIdentity(contexts[0]!).ownerId).toBe('su-original');
       expect(ports.audit.resolveIdentity(ctx()).ownerId).toBe('su-original');
       expect(await ports.audit.readModes('snapshot-workspace', 'su-original')).toEqual([{ mode: 'audit' }]);
       expect(await ports.resolveConfinement(ctx())).toMatchObject({ denyTools: ['secrets:*'] });
       expect(ports.roleOverrides().worker.denyCapabilities).toEqual(['secrets:*']);
       expect(await ports.getFlag('papercusp-capability-envelope', 'system')).toBe(true);
     }
+    old.contexts[0]!.isSuperuser = false;
+    expect(() => old.ports.audit.resolveIdentity(old.contexts[0]!)).toThrow(/context was not captured/);
+    expect(candidate.ports.audit.resolveIdentity(candidate.contexts[0]!).ownerId).toBe('su-original');
     expect(source.audit.readModes).toHaveBeenCalledOnce();
     const changed = JSON.parse(bytes);
     changed.flags[0].attestation.resolvedValue = false;

@@ -419,6 +419,7 @@ export function replayIdopP001HostPermissionSnapshot(raw: unknown, expectedSha25
       !Array.isArray(snapshot.protectedAdditions) || snapshot.protectedAdditions.some(value => !text(value))) fail();
   const workspaceId = snapshot.workspaceId;
   const byContext = new Map<string, IdopP001HostSnapshot['contexts'][number]>();
+  const contexts: UnifiedToolContext[] = [];
   const subjects = new Set<string>();
   for (const row of snapshot.contexts) {
     if (!row || Object.keys(row).sort().join(',') !== 'confinement,identity,key' || typeof row.key !== 'string' ||
@@ -427,6 +428,7 @@ export function replayIdopP001HostPermissionSnapshot(raw: unknown, expectedSha25
       const data = JSON.parse(row.key) as ComparisonJson;
       const context = idopAuthorityValue(data) as UnifiedToolContext;
       if (idopHostContextKey(context, workspaceId) !== row.key) fail();
+      contexts.push(context);
     } catch { fail(); }
     byContext.set(row.key, row);
     subjects.add(JSON.stringify([workspaceId, row.identity.ownerId]));
@@ -467,7 +469,9 @@ export function replayIdopP001HostPermissionSnapshot(raw: unknown, expectedSha25
       return attestation.resolvedValue;
     },
   };
-  return { snapshot: JSON.parse(bytes) as IdopP001HostSnapshot, sha256: expectedSha256, ports };
+  // Return the validated data-only callers so each source arm can consume the
+  // original context without reimplementing the lossless authority codec.
+  return { snapshot: JSON.parse(bytes) as IdopP001HostSnapshot, sha256: expectedSha256, contexts, ports };
 }
 
 /** Lossless data-only authority codec. Tagged containers cannot collide with
