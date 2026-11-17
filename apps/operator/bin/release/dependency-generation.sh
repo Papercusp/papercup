@@ -116,14 +116,51 @@ dependency_generation_now_ms() {
   esac
 }
 
+# Read cumulative kernel counters for the caller, not the command-substitution
+# shell collecting them. CPU child ticks include waited-for children; I/O fields
+# retain /proc's process-accounting semantics. Compare snapshots only for the
+# same resource_pid. Unsupported/unreadable counters stay explicitly unknown.
+# These diagnostic reads never participate in dependency identity or admission.
+dependency_generation_resource_counters() {
+  local pid="$1" record key value cpu='unknown' io='unknown' counters=''
+  local -a fields=()
+  case "$pid" in ''|*[!0-9]*) printf 'resource_cpu=unknown resource_io=unknown'; return 0 ;; esac
+  if [ -r "/proc/$pid/stat" ] && IFS= read -r record < "/proc/$pid/stat"; then
+    # comm may contain spaces and parentheses; the final ') ' ends that field.
+    record="${record##*) }"
+    IFS=' ' read -r -a fields <<< "$record"
+    if [ "${#fields[@]}" -ge 15 ]; then
+      case "${fields[11]}:${fields[12]}:${fields[13]}:${fields[14]}" in
+        *[!0-9:]*|'') ;;
+        *) cpu='measured'
+          counters=" cpu_user_ticks=${fields[11]} cpu_system_ticks=${fields[12]} child_user_ticks=${fields[13]} child_system_ticks=${fields[14]}" ;;
+      esac
+    fi
+  fi
+  if [ -r "/proc/$pid/io" ]; then
+    while IFS=' ' read -r key value; do
+      case "$value" in ''|*[!0-9]*) continue ;; esac
+      case "$key" in
+        rchar:) counters="$counters read_chars=$value"; io='measured' ;;
+        wchar:) counters="$counters write_chars=$value" ;;
+        read_bytes:) counters="$counters read_bytes=$value" ;;
+        write_bytes:) counters="$counters write_bytes=$value" ;;
+      esac
+    done < "/proc/$pid/io" 2>/dev/null || true
+  fi
+  printf 'resource_pid=%s resource_cpu=%s resource_io=%s%s' "$pid" "$cpu" "$io" "$counters"
+}
+
 dependency_generation_emit_phase() {
-  local phase="$1" started_ms="$2" outcome="$3" now_ms duration_ms
+  local phase="$1" started_ms="$2" outcome="$3" now_ms duration_ms resource_counters resource_pid="${BASHPID:-$$}"
   shift 3
   now_ms="$(dependency_generation_now_ms)"
   duration_ms=$((now_ms - started_ms))
   [ "$duration_ms" -ge 0 ] || duration_ms=0
+  resource_counters="$(dependency_generation_resource_counters "$resource_pid")" \
+    || resource_counters='resource_cpu=unknown resource_io=unknown'
   dependency_generation_log \
-    "PHASE schema=1 phase=$phase outcome=$outcome duration_ms=$duration_ms${*:+ $*}"
+    "PHASE schema=1 phase=$phase outcome=$outcome duration_ms=$duration_ms $resource_counters${*:+ $*}"
 }
 
 dependency_generation_emit_summary() {
@@ -4495,7 +4532,19 @@ dependency_generation_ensure_verifier_ref() (
     # Native verification must prefer an equivalent immutable donor, including
     # when the live locks already match, and must reject a corrupt donor token.
     dependency_generation_stage_exact_ref_inputs \
-      "$integration_root" "$ref" "$input" "$generation_root" || return $?
+      "$integration_root" "$ref" "$input" "$generation_root" || {
+      rc=$?
+      # stage_exact_ref_inputs returns its equivalence verdict separately.
+      # Propagating only its exit code leaves native callers with census
+      # progress and no explanation, even in their retained phase evidence.
+      dependency_generation_log \
+        "FATAL: native dependency preparation refused for ref $ref (exit $rc, scope $DEPENDENCY_GENERATION_SCOPE_MODE)"
+      local reason
+      while IFS= read -r reason; do
+        [ -z "$reason" ] || dependency_generation_log "  ${reason#NOT_EQUIVALENT$'\t'}"
+      done <<< "$DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT"
+      return "$rc"
+    }
     # Selection retains only the donor identity/token, never these staged
     # inputs. Remove them before a native rebuild replaces the scratch pointer.
     dependency_generation_cleanup_exact_scratch
