@@ -44,6 +44,7 @@ import { MCP_REQUEST_TRACE_HEADER } from '../../mcp-request-trace';
 import { _resetScratchUsageForTests, _setScratchUsageForTests, WORKSPACE_QUOTA_BYTES, type ScratchWriteTimings } from '../../scratch-gc';
 import { parseScratchReference } from '../../scratch-reference';
 import type { McpCallResult } from '../routes/transport/mcp-diagnostic-warnings';
+import { isPlanImplementationCall } from '../../agent-tools/plans/plan-execution-guard';
 
 const h = vi.hoisted(() => {
   const unsafeCalls: Array<{ sql: string; params: unknown[] }> = [];
@@ -1584,7 +1585,18 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     // positional tool args ("tool-specific arguments must be supplied in the JSON payload via
     // --json, --json-file, or --json -"), so an example ending in a bare `<args>` would reproduce
     // the very unactionable-instruction defect this item is about, one level down.
-    expect(textOf(res)).toContain("--json '<the same args>'");
+    // Exercise the emitted command shape against the native guard, using an
+    // activation repair target and the original JSON placeholder's inert input.
+    const replayTemplate = /Replay via ptool's transport flag instead: `([^`]+)`/.exec(textOf(res))?.[1];
+    expect(replayTemplate).toBeDefined();
+    const repairReplay = replayTemplate!
+      .replace('deadlinetest:slow', 'plans:audit')
+      .replace('<the same args>', JSON.stringify({ slug: 'review-plan', phase: 'activation', dryRun: true }));
+    expect(isPlanImplementationCall('exec_command', { cmd: repairReplay })).toBe(false);
+    expect(isPlanImplementationCall('exec_command', {
+      cmd: repairReplay.replace('plans:audit', 'capability:bash'),
+    })).toBe(true);
+    expect(textOf(res)).toContain("--json - <<'JSON'");
     expect(textOf(res)).not.toMatch(/--idempotency-key \S+ \S+ <args>/);
   });
 
