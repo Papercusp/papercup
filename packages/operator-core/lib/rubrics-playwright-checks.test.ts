@@ -29,6 +29,9 @@ const packageJson = { name: '@papercusp-portal/app', workspaces: ['packages/*'],
   scripts: { 'test:e2e:browser': 'playwright test --config=playwright.config.ts' } };
 writeFileSync(join(root, 'package.json'), JSON.stringify(packageJson));
 writeFileSync(join(root, 'playwright.config.ts'), config);
+// Sibling admission needs a runnable checkout, as in the actual Portal root.
+// A package/workspace boundary alone cannot own an external test path.
+for (const checkout of [root, ambient]) writeFileSync(join(checkout, 'vitest.config.js'), 'export default {};\n');
 writeFileSync(absolute, `import { test } from '${pw}'; test('billing', () => {});`);
 writeFileSync(join(ambient, 'unit.test.ts'), 'export {};');
 afterAll(() => rmSync(workspace, { recursive: true, force: true }));
