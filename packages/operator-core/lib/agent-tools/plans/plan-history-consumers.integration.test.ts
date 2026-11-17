@@ -1247,6 +1247,9 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
       ...fallbackWriteShapes,
       ['6bb1972dbd518dd64f34f69acd1a325917b0118c078fd92e390d64e73ba251bc', 12, '../../goals/plan-closure-observations.ts'],
       ['7bf62a411b55921ec42b81623184880e2fdf71b7e9900ba1254cc2e15844c0c7', 12, '../../goals/plan-closure-observations.ts'],
+      // Activation readiness records its expertise-routing receipt through
+      // the maintained writer's seven original Bind parameters.
+      ['32d3da4984ade8e67f58578da335ca2167180942a72741cdb573fbb306ee4004', 7, '../../endpoint-route/telemetry.ts'],
     ] as const).map(async ([queryHash, parameterCount, path]) => {
       const registration = { queryHash, parameterCount, command: 'INSERT' as const, serializerSourceRef,
         sourceRef: `source:${fileURLToPath(new URL(path, import.meta.url))}@${digest(await readFile(new URL(path, import.meta.url)))}`,
@@ -1360,6 +1363,22 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
       ['977d4868e67c4df203782536dff9ab7d3093616539c36796b807a0a3369757b3', 'control', 'SELECT', 'ok', '../../plan-audits.ts'],
       ['30208684e394b6f982e6827ecb1ce884b9a7010c3b0d0709bc83c821e2cc8412', 'read', 'SELECT', 'ok', '../../plan-audits.ts'],
       ['4c27452ecbac890e2c1454b4adbff03ae97fefbe7d48d571aa69eb85f1385590', 'read', 'SELECT', 'ok', '../../plan-audits.ts'],
+      // Native9814fa43 activation-readiness census, reviewed at each
+      // retained admission's writer. These exact SELECT bodies include the
+      // full CTEs; the session set_config is a control, not a data read.
+      ['a217507bb71ea225783f216b23eefe743e99b9e1a60924eaa0bba8d73e2cd1f2', 'read', 'SELECT', 'ok', './get-activation-readiness.ts'],
+      ['ed2d2c6ef17ed33580a8a82fcd4658a19dcd1c8d8c013ec15cf5dff7ba2789a2', 'read', 'SELECT', 'ok', './spec-clauses-store.ts'],
+      ['ce9d9e5792c2c89ad578134dc60ba3c1749d1f64ce3d5c7294267fea9b240b32', 'read', 'SELECT', 'ok', './plan-activation-gate.ts'],
+      ['5e6a0b5c3f0e32deb3d382b7abaadc93ef3c385d428aa16aa62a24cdc38c92db', 'read', 'SELECT', 'ok', './plan-activation-gate.ts'],
+      ['2f80f3c443241d0af4e5d1f57f46d9166fcb2b68c1c6932b5bac9a942b74aa28', 'read', 'SELECT', 'ok', '../../hive-policy-store.ts'],
+      ['6b83422d3f796bca189ce6192f9b2d700f1e6d26321d8b1c0d38146813524451', 'read', 'SELECT', 'ok', '../../scheduler/get-next.ts'],
+      ['7e398826370fcbf059c95fe1b972c9b1db8c5d8c00f6a8dc00a9e4f30394378b', 'read', 'SELECT', 'ok', '../../scheduler/fleet-scope-admission.ts'],
+      ['8884b32a07bb9277c0d172850c5fdf2d23d32d3f62d9b3896ad0ee1cea26c2d7', 'read', 'SELECT', 'ok', '../../issues-engineer.ts'],
+      ['298796c7550a777a3ab336b2bec3b23bef7ab5aa3648f8d1717b99dc1aaafb9e', 'read', 'SELECT', 'ok', '../../operator-state-pg.ts'],
+      ['65f79bdb306b0fc8338ef4ac5843a8a1288e5c929023dbf9a0afaa666ecf295c', 'read', 'SELECT', 'ok', '../../personal-vault/transcript-exclusion.ts'],
+      ['fc7e02420faf5ec2246d9abab128c984e3715a19f59aa1ee1171eab346b8ed16', 'read', 'SELECT', 'ok', '../../search/lexical/rank.ts'],
+      ['7a7b0337215c2fa82835309ad332095101103d8787b1ba3c7a256675bed5a62d', 'read', 'SELECT', 'ok', '../../consult/relevance-router.ts'],
+      ['06a83de3a36b21a8331e46d4c3ed0ed548655a23cc3f56a3800ee9edea0f2e03', 'control', 'SELECT', 'ok', '../../endpoint-route/telemetry.ts'],
     ] as const).map(async ([queryHash, kind, command, status, path]) => ({ queryHash, kind, command, status,
       sourceRef: `source:${fileURLToPath(new URL(path, import.meta.url))}@${digest(await readFile(new URL(path, import.meta.url)))}` })));
     if (!readerPreflight) {
@@ -2277,7 +2296,15 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
                 const output: unknown[] = [];
                 for (const [index, call] of branchCalls.entries()) {
                   await recordPhase(`Q2-${iteration}-branch-${index + 1}-start`);
-                  output.push(await fixtureRead(call.tool, call.args));
+                  if (call.tool === 'plans:get' && (call.args as { activationReadiness?: boolean }).activationReadiness) {
+                    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+                    try {
+                      output.push(await fixtureRead(call.tool, call.args));
+                      expect(warn.mock.calls).toEqual([[`[plan-activation-gate] Plan '${p}' is already active with no activation audit, so it is grandfathered instead of being retroactively blocked. Record plans:audit { phase:'activation' } on its next material plan edit.`]]);
+                    } finally { warn.mockRestore(); }
+                  } else {
+                    output.push(await fixtureRead(call.tool, call.args));
+                  }
                   // Drain the existing buffered writer while admission is
                   // open, retaining its original driver serialization.
                   const flushed = await flushFallbackObservations({ sql: admin });
@@ -2349,6 +2376,12 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
               expect(originalShapeCoverage.missing).toEqual([]);
               const unknown = branchStorage.rows.filter(row => row.kind === 'unknown');
               expect(unknown).toEqual([]);
+              const routingWrites = branchStorage.rows.filter(row => row.sql?.queryHash ===
+                '32d3da4984ade8e67f58578da335ca2167180942a72741cdb573fbb306ee4004');
+              expect(routingWrites).toHaveLength(1);
+              expect(routingWrites[0]?.kind).toBe('write');
+              expect(routingWrites[0]?.sql?.serializedParameters?.values).toHaveLength(7);
+              expect(routingWrites[0]?.persistedBytes).toBeGreaterThan(0);
               expect(branchMeasured.values.storageBytes).toBeGreaterThan(0);
               expect(branchMeasured.values.modelCalls).toBeNull();
               await recordPhase(`Q2-${iteration}-branches-verified`);
