@@ -1731,40 +1731,59 @@ export default defineTool({
           continue;
         }
 
-        const items = cachedResult.items;
-        if (!Array.isArray(items)) {
-          result.planItemStartReadiness = {
-            ...previewScope,
-            status: 'unknown',
-            ready: null,
-            unavailableReason: 'plan_items_unavailable',
-            message: 'The current plan item list was unavailable for an item-start preview.',
-          };
-          continue;
-        }
-        const itemExists = items.some((item) => item && typeof item === 'object' && !Array.isArray(item) &&
-          (item as Record<string, unknown>).id === itemId);
-        if (!itemExists) {
-          result.planItemStartReadiness = {
-            ...previewScope,
-            status: 'unknown',
-            ready: null,
-            unavailableReason: 'plan_item_not_found',
-            message: 'Plan item ' + itemId + ' was not found in this plan.',
-          };
-          continue;
-        }
-
         const planResult = result as typeof result & { slug: string; harness: string };
         try {
           const { checkDraftItemStartGateLive } = await import('./draft-item-start-gate');
           const startScope = await resolvePlanScope({ ...opts, harnessSlug: planResult.harness });
+          // Response shaping can omit items (meta/heading/decision reads) or
+          // select a different item. Read the current source independently of
+          // both that shape and the response cache, then share its content with
+          // the existing live gate rather than reading the plan twice.
+          const currentPlan = await readPlanBySlug(planResult.slug, {
+            ...opts,
+            workspaceId: startScope.workspaceId,
+            harnessSlug: startScope.harnessSlug,
+          });
+          if (!currentPlan) {
+            result.planItemStartReadiness = {
+              ...previewScope,
+              status: 'unknown',
+              ready: null,
+              unavailableReason: 'plan_unavailable',
+              message: 'The current plan could not be read for an item-start preview.',
+            };
+            continue;
+          }
+          const items = currentPlan.parsed.items;
+          if (!Array.isArray(items)) {
+            result.planItemStartReadiness = {
+              ...previewScope,
+              status: 'unknown',
+              ready: null,
+              unavailableReason: 'plan_items_unavailable',
+              message: 'The current plan item list was unavailable for an item-start preview.',
+            };
+            continue;
+          }
+          const itemExists = items.some((item) => item && typeof item === 'object' && !Array.isArray(item) &&
+            item.id === itemId);
+          if (!itemExists) {
+            result.planItemStartReadiness = {
+              ...previewScope,
+              status: 'unknown',
+              ready: null,
+              unavailableReason: 'plan_item_not_found',
+              message: 'Plan item ' + itemId + ' was not found in this plan.',
+            };
+            continue;
+          }
           const refusal = await checkDraftItemStartGateLive({
             workspaceId: startScope.workspaceId,
             harnessSlug: startScope.harnessSlug,
             slug: planResult.slug,
             itemId,
             toStatus: 'wip',
+            planContent: currentPlan.row.content,
           });
           result.planItemStartReadiness = refusal
             ? {

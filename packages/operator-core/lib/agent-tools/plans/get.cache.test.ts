@@ -724,6 +724,75 @@ describe('plans:get — cache wiring', () => {
       slug: 'alpha',
       itemId: 'P-001',
       toStatus: 'wip',
+      planContent: expect.stringContaining('slug: alpha'),
+    });
+  });
+
+  describe('item-start previews outside response shaping', () => {
+    it.each(['meta', 'sections', 'full'] as const)('evaluates ready items in %s mode without caching the verdict', async (mode) => {
+      const result = await run({ slug: 'alpha', mode, planItemStartReadiness: { itemId: 'P-001' } });
+
+      expect(result.results[0].planItemStartReadiness).toMatchObject({
+        status: 'ready', ready: true, blockers: [], itemId: 'P-001',
+      });
+      expect(M.checkDraftItemStartGateLive).toHaveBeenCalledTimes(1);
+      if (mode === 'meta') expect(result.results[0]).not.toHaveProperty('items');
+      expect((await run({ slug: 'alpha', mode })).results[0]).not.toHaveProperty('planItemStartReadiness');
+      expect(M.checkDraftItemStartGateLive).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['meta', 'sections', 'full'] as const)('preserves live gate refusals in %s mode', async (mode) => {
+      M.checkDraftItemStartGateLive.mockResolvedValueOnce({
+        ok: false, slug: 'alpha', itemId: 'P-001', error: 'discovery_not_ready',
+        gateCode: 'discovery_evidence_unusable', hint: 'Finalize current Discovery.',
+      });
+
+      const result = await run({ slug: 'alpha', mode, planItemStartReadiness: { itemId: 'P-001' } });
+
+      expect(result.results[0].planItemStartReadiness).toMatchObject({
+        status: 'blocked', ready: false, blockers: ['discovery_evidence_unusable'],
+        refusal: { error: 'discovery_not_ready', gateCode: 'discovery_evidence_unusable' },
+      });
+      expect(M.checkDraftItemStartGateLive).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      { heading: 'Now' },
+      { decisions: ['D-009'] },
+      { items: ['P-009'] },
+    ])('finds the requested current item independently of response selectors %#', async (selectors) => {
+      const result = await run({
+        slug: 'alpha', mode: 'sections', ...selectors, planItemStartReadiness: { itemId: 'P-001' },
+      });
+
+      expect(result.results[0].planItemStartReadiness).toMatchObject({ status: 'ready', ready: true });
+      expect(M.checkDraftItemStartGateLive).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['missing-plan', 'plan_unavailable'],
+      ['missing-item', 'plan_item_not_found'],
+      ['source-error', 'plan_item_start_readiness_unavailable'],
+    ] as const)('fails closed after a cached meta read when the current source is %s', async (failure, reason) => {
+      await run({ slug: 'alpha', mode: 'meta' });
+      const readPlan = M.readPlanBySlug.getMockImplementation()!;
+      M.readPlanBySlug.mockImplementation(async (slug) => {
+        if (failure === 'source-error') throw new Error('current source unavailable');
+        if (failure === 'missing-plan') return null;
+        const fixture = await readPlan(slug);
+        return fixture && { ...fixture, parsed: { ...fixture.parsed, items: [] } };
+      });
+      try {
+        const result = await run({ slug: 'alpha', mode: 'meta', planItemStartReadiness: { itemId: 'P-001' } });
+
+        expect(result.results[0].planItemStartReadiness).toMatchObject({
+          status: 'unknown', ready: null, unavailableReason: reason,
+        });
+        expect(M.checkDraftItemStartGateLive).not.toHaveBeenCalled();
+        expect(result.results[0]).not.toHaveProperty('items');
+      } finally {
+        M.readPlanBySlug.mockReset().mockImplementation(readPlan);
+      }
     });
   });
 
