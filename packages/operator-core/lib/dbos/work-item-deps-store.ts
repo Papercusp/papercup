@@ -775,21 +775,21 @@ function normalizeDependencyRefRewrites(
  * in the store, locks the affected rows, applies the same endpoint/graph/lifecycle
  * admission checks, and returns the before/after rows needed for reversal.
  */
-export async function repointWorkItemDependencyRefsInTransaction(
+interface WorkItemDependencyRefRewriteInput {
+  workspaceId: string;
+  itemWorkspaceId?: string;
+  rewrites: readonly { from: string; to: string }[];
+}
+
+async function prepareWorkItemDependencyRefRewrites(
   tx: Sql,
-  input: {
-    workspaceId: string;
-    itemWorkspaceId?: string;
-    rewrites: readonly { from: string; to: string }[];
-  },
-  opts: {
-    /** Injectable post-validation barrier for deterministic transaction-race coverage. */
-    beforeWrite?: () => Promise<void>;
-  } = {},
-): Promise<WorkItemDependencyRefRewriteReceipt[]> {
+  input: WorkItemDependencyRefRewriteInput,
+  lockRows: boolean,
+): Promise<{ rows: RepointDependencyRow[]; rewriteByRef: Map<string, string> }> {
   const startedAt = performance.now();
   const rewriteByRef = normalizeDependencyRefRewrites(input.rewrites);
-  if (rewriteByRef.size === 0) return [];
+  if (rewriteByRef.size === 0) return { rows: [], rewriteByRef };
+  const rowLock = lockRows ? tx`FOR UPDATE` : tx``;
   const rows = await tx<RepointDependencyRow[]>`
     SELECT id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by
       FROM harness_shared.work_item_deps
@@ -798,8 +798,8 @@ export async function repointWorkItemDependencyRefsInTransaction(
        AND (blocked_ref = ANY(${[...rewriteByRef.keys()]}::text[])
          OR blocker_ref = ANY(${[...rewriteByRef.keys()]}::text[]))
      ORDER BY id
-     FOR UPDATE`;
-  if (rows.length === 0) return [];
+     ${rowLock}`;
+  if (rows.length === 0) return { rows, rewriteByRef };
 
   const current = await loadStoredDependencyEdges(tx, input.workspaceId);
   const candidateByKey = new Map(current.map((edge) => [storedEdgeKey(edge), edge]));
@@ -837,7 +837,7 @@ export async function repointWorkItemDependencyRefsInTransaction(
   }
 
   const itemWorkspaceId = input.itemWorkspaceId ?? input.workspaceId;
-  await lockDependencyMutationEndpoints(tx, itemWorkspaceId, lockMutations);
+  if (lockRows) await lockDependencyMutationEndpoints(tx, itemWorkspaceId, lockMutations);
   const candidate = sortedStoredEdges(candidateByKey.values());
   const { nodes, lifecycleRows, outOfScopeIdentityKeys } = await loadDependencyNodes(tx, itemWorkspaceId, [
     ...current,
@@ -874,6 +874,29 @@ export async function repointWorkItemDependencyRefsInTransaction(
       policyCodes: findings.map((finding) => finding.policy.code),
     });
   }
+
+  return { rows, rewriteByRef };
+}
+
+/** Read-only preflight using the writer's exact graph and lifecycle admission checks. */
+export async function validateWorkItemDependencyRefRewrites(
+  sql: Sql,
+  input: WorkItemDependencyRefRewriteInput,
+): Promise<void> {
+  await prepareWorkItemDependencyRefRewrites(sql, input, false);
+}
+
+/** Revalidate under row locks before atomically rewriting dependency identities. */
+export async function repointWorkItemDependencyRefsInTransaction(
+  tx: Sql,
+  input: WorkItemDependencyRefRewriteInput,
+  opts: {
+    /** Injectable post-validation barrier for deterministic transaction-race coverage. */
+    beforeWrite?: () => Promise<void>;
+  } = {},
+): Promise<WorkItemDependencyRefRewriteReceipt[]> {
+  const { rows, rewriteByRef } = await prepareWorkItemDependencyRefRewrites(tx, input, true);
+  if (rows.length === 0) return [];
 
   await opts.beforeWrite?.();
 
