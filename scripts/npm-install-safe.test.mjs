@@ -71,6 +71,7 @@ import {
   withFsMutexRead,
 } from "./lib/fs-mutex.mjs";
 import { TEST_FILE_EXIT_NOT_MEASURED } from "./lib/test-file-exit-codes.mjs";
+import { auditLockfile } from "../apps/operator/bin/release/dependency-lock-tree-audit.mjs";
 import { expandWorkspaces } from "./assert-workspace-links.mjs";
 import { FOREIGN_HIVE_SUBMODULES } from "./lib/foreign-hive-submodules.mjs";
 
@@ -82,6 +83,119 @@ const NPM_FIXTURE_CONFIG_RESET = Object.fromEntries(
     ["NPM_CONFIG_" + name.toUpperCase(), undefined],
   ]),
 );
+
+for (const topology of ["root-conflict", "app-dev-conflict", "nested-runtime-conflict"]) {
+test(`P010 real npm collision preserves physical runtime obligations (${topology})`, { timeout: 90_000 }, async t => {
+  const root = mkdtempSync(join(tmpdir(), "install-safe-p010-collision-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const put = (path, value) => {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), typeof value === "string" ? value : JSON.stringify(value));
+  };
+  const npmCli = realpathSync(join(dirname(process.execPath), "npm"));
+  const arborist = metadataRepairArboristIdentity(npmCli);
+  const config = ["--offline", "--ignore-scripts", "--no-audit", "--no-fund",
+    "--cache=" + join(root, "cache"), "--userconfig=" + join(root, "user.npmrc"),
+    "--globalconfig=" + join(root, "global.npmrc")];
+  put("user.npmrc", ""); put("global.npmrc", "");
+  const env = { PATH: dirname(process.execPath), HOME: root, LANG: "C.UTF-8", TZ: "UTC" };
+  const npm = (args, cwd = root) => {
+    const result = spawnSync(process.execPath, ["--input-type=commonjs", "--eval", METADATA_REPAIR_NPM_BOOTSTRAP,
+      npmCli, JSON.stringify(arborist), ...args, ...config], { cwd, env, encoding: "utf8", timeout: 30_000 });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    return result;
+  };
+  const sqlite = "module.exports = class { prepare() { return { get() { return { ok: 1 }; } }; } close() {} };";
+  for (const [dir, name, version] of [["runtime1", "better-sqlite3", "1.0.0"],
+    ["runtime2", "better-sqlite3", "2.0.0"], ["runtime3", "better-sqlite3", "3.0.0"],
+    ["tool", "dev-tool", "1.0.0"], ["tool2", "dev-tool", "2.0.0"]]) {
+    put(`archives/${dir}/package.json`, { name, version, main: "index.cjs" });
+    put(`archives/${dir}/index.cjs`, sqlite);
+    npm(["pack", "--pack-destination=" + join(root, "archives")], join(root, "archives", dir));
+  }
+  const appDevConflict = topology !== "root-conflict";
+  const nestedRuntime = topology === "nested-runtime-conflict";
+  put("package.json", { name: "collision-root", version: "1.0.0", private: true,
+    workspaces: ["apps/app", "libs/kit"],
+    dependencies: { "better-sqlite3": "file:archives/better-sqlite3-2.0.0.tgz",
+      "dev-tool": `file:archives/dev-tool-${appDevConflict ? "1" : "2"}.0.0.tgz` } });
+  // The recorded app selects its local kit as a dev dependency, has a
+  // conflicting dev-tool version, and shadows the root version the kit uses.
+  put("apps/app/package.json", { name: "collision-app", version: "1.0.0",
+    ...(nestedRuntime ? { dependencies: { "better-sqlite3": "file:../../archives/better-sqlite3-3.0.0.tgz" } } : {}),
+    ...(appDevConflict ? { devDependencies: { kit: "file:kit",
+      "dev-tool": "file:../../archives/dev-tool-2.0.0.tgz" } } : { dependencies: { kit: "file:kit" } }) });
+  put("libs/kit/package.json", { name: "kit", version: "1.0.0",
+    ...(appDevConflict ? { devDependencies: { "dev-tool": "file:../../archives/dev-tool-1.0.0.tgz" } } : {}) });
+  put("apps/app/kit/package.json", { name: "kit", version: "1.0.0",
+    dependencies: { "better-sqlite3": "file:../../../archives/better-sqlite3-1.0.0.tgz" },
+    devDependencies: { "dev-tool": "file:../../../archives/dev-tool-1.0.0.tgz" } });
+  npm(["install", "--package-lock-only", "--include=dev"]);
+  const lockBytes = readFileSync(join(root, "package-lock.json"));
+  npm(["ci", "--include=dev"]);
+  assert.deepEqual(readFileSync(join(root, "package-lock.json")), lockBytes);
+  const lock = JSON.parse(lockBytes);
+  const npmRequire = createRequire(npmCli);
+  const Arborist = npmRequire("@npmcli/arborist");
+  const Diff = npmRequire("@npmcli/arborist/lib/diff.js");
+  const virtual = await new Arborist({ path: root, offline: true, ignoreScripts: true }).loadVirtual();
+  const diffs = [Diff.calculate({ actual: new Arborist.Node({ path: root }), ideal: virtual })];
+  const diffPaths = new Set();
+  for (const item of diffs) {
+    if (item.ideal) diffPaths.add(item.ideal.location);
+    for (const node of item.unchanged) diffPaths.add(node.location);
+    diffs.push(...item.children);
+  }
+  const physical = [];
+  const scan = (dir) => {
+    for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isSymbolicLink()) physical.push({ path, target: realpathSync(join(root, path)).replace(root + "/", "") });
+      else if (entry.isDirectory()) scan(path);
+      else if (entry.name === "package.json") physical.push({ path, manifest: JSON.parse(readFileSync(join(root, path))) });
+    }
+  };
+  scan("node_modules"); scan("apps"); scan("libs");
+  t.diagnostic(JSON.stringify({ topology, npmCli, arborist, node: process.version, abi: process.versions.modules,
+    lockSha256: createHash("sha256").update(lockBytes).digest("hex"), lock, physical, diffPaths: [...diffPaths] }));
+  assert.equal(realpathSync(join(root, "apps/app/node_modules/kit")), join(root, "apps/app/kit"));
+  assert.equal(JSON.parse(readFileSync(join(root, "node_modules/better-sqlite3/package.json"))).version, "2.0.0");
+  const required = nestedRuntime ? "apps/app/kit/node_modules/better-sqlite3" : "apps/app/node_modules/better-sqlite3";
+  if (nestedRuntime) {
+    assert.equal(diffPaths.has(required), false, "the real read-only npm Diff omits this required nested runtime");
+    assert.equal(lock.packages[required].dev, true, "dev metadata must not override the kit's production edge");
+    assert.equal(virtual.inventory.get("apps/app/kit").edgesOut.get("better-sqlite3").to.location, required);
+    // ci also omits this required package. Its successful exit is not proof
+    // of runtime completeness: the independent production-edge walk refuses.
+    const omitted = auditLockfile({ lock, lockDir: "", treeRoot: root });
+    assert.ok(omitted.defects.some(d => d.kind === "missing" && d.path === required));
+    assert.equal(omitted.virtualDevMetadata.paths.includes(required), false);
+    mkdirSync(dirname(join(root, required)), { recursive: true });
+    cpSync(join(root, "archives/runtime1"), join(root, required), { recursive: true });
+    t.diagnostic(JSON.stringify({ restoredPhysicalObligation: required,
+      manifest: JSON.parse(readFileSync(join(root, required, "package.json"))) }));
+  }
+  const healthy = auditLockfile({ lock, lockDir: "", treeRoot: root });
+  assert.deepEqual(healthy.defects, [], "the physically complete runtime tree must pass: " + JSON.stringify(healthy));
+  assert.equal(healthy.virtualDevMetadata.error, null);
+  assert.deepEqual(healthy.virtualDevMetadata.paths, appDevConflict ? ["apps/app/kit/node_modules/dev-tool"] : []);
+  assert.deepEqual(readFileSync(join(root, "package-lock.json")), lockBytes, "read-only projection preserves the complete pinned graph");
+  // No virtual/read-only Diff omission can excuse a required physical runtime.
+  const runtimeManifest = readFileSync(join(root, required, "package.json"));
+  renameSync(join(root, required), join(root, "required-runtime.saved"));
+  assert.ok(auditLockfile({ lock, lockDir: "", treeRoot: root }).defects.some(d =>
+    d.kind === "missing" && d.path === required));
+  renameSync(join(root, "required-runtime.saved"), join(root, required));
+  put(required + "/package.json", { ...JSON.parse(runtimeManifest), version: "9.9.9" });
+  assert.ok(auditLockfile({ lock, lockDir: "", treeRoot: root }).defects.some(d =>
+    d.kind === "version-mismatch" && d.path === required));
+  writeFileSync(join(root, required, "package.json"), runtimeManifest);
+  put(required + "/index.cjs", "require('./missing-native-binding.node');");
+  assert.ok(auditLockfile({ lock, lockDir: "", treeRoot: root }).defects.some(d =>
+    d.kind === "native-runtime-unusable" && d.path === required));
+});
+}
 
 function repairGraphFixture(t) {
   const root = mkdtempSync(join(tmpdir(), "metadata-graph-test-"));
