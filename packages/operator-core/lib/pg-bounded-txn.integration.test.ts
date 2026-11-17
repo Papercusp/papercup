@@ -14,12 +14,55 @@ describe('boundedOrgTxn (real PostgreSQL cancellation)', () => {
   let db: OrgTestDb;
 
   beforeAll(async () => {
-    db = await createOrgTestDb();
+    // Commit wait coverage reserves a holder, a target and its independent observer.
+    db = await createOrgTestDb({ adminPoolMax: 4 });
   }, 120_000);
 
   afterAll(async () => {
     await db?.cleanup();
   });
+
+  it('captures the actual blocker during deferred COMMIT and rolls back the callback write', async () => {
+    // A deferred constraint trigger runs during COMMIT, after every callback
+    // statement has succeeded. The observer must target that same backend.
+    await db.adminSql.unsafe(`
+      CREATE TABLE public.commit_wait_observer_fixture (id integer PRIMARY KEY);
+      CREATE FUNCTION public.commit_wait_observer_fixture() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN PERFORM pg_advisory_xact_lock(729304936); RETURN NEW; END $$;
+      CREATE CONSTRAINT TRIGGER commit_wait_observer_fixture
+        AFTER INSERT ON public.commit_wait_observer_fixture DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW EXECUTE FUNCTION public.commit_wait_observer_fixture();
+    `);
+    const holder = await db.adminSql.reserve();
+    let callbackCount = 0;
+    let targetPid = 0;
+    try {
+      const [blocking] = await holder`SELECT pg_backend_pid()::int AS pid, pg_advisory_lock(729304936)`;
+      const error = await boundedOrgTxn(async tx => {
+        callbackCount += 1;
+        const [target] = await tx`SELECT pg_backend_pid()::int AS pid`;
+        targetPid = target.pid;
+        await tx`INSERT INTO public.commit_wait_observer_fixture VALUES (1)`;
+      }, {
+        client: db.adminSql as BoundedOrgTxnOptions['client'], captureWaitSnapshot: true,
+        statementTimeoutMs: 2_000, lockTimeoutMs: 1_000, acquireRetries: 0,
+        phase: 'fixture:insert',
+      }).catch(error => error);
+      expect(error).toBeInstanceOf(OrgTxnTimeoutError);
+      expect(error.pgCode).toBe('55P03');
+      expect(error.messageWithoutBlockerHint).toContain('[phase: fixture:insert:transaction-settlement]');
+      expect(error.waitSnapshot).toMatchObject({
+        status: 'sampled', targetPid, waitEventType: 'Lock', waitEvent: 'advisory', blockingPids: [blocking.pid],
+      });
+      expect(callbackCount).toBe(1);
+      expect(await db.adminSql`SELECT id FROM public.commit_wait_observer_fixture`).toEqual([]);
+    } finally {
+      await holder`SELECT pg_advisory_unlock(729304936)`;
+      holder.release();
+      await db.adminSql.unsafe(`DROP TABLE public.commit_wait_observer_fixture;
+        DROP FUNCTION public.commit_wait_observer_fixture()`);
+    }
+  }, 20_000);
 
   it('bounds a dispatched transaction with savepoints, preserving identity and outer timeout settings', async () => {
     await db.adminSql.begin(async rawTx => {

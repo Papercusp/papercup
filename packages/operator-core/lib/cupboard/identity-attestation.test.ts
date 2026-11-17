@@ -2,11 +2,14 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { builtinBlueprintPath, layerContentHash } from '@papercusp/orchestrator/blueprint';
-import { parse as parseYaml } from 'yaml';
+import { builtinBlueprintPath, layerContentHash, snapshotPackageDirectory } from '@papercusp/orchestrator/blueprint';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { getIdentitySource } from '../agent-identities/source';
+import { commitBlueprintRelease, readBlueprintLifecycle, snapshotBlueprintReleaseSource,
+  snapshotInstalledBlueprintPackage } from './blueprint-release';
 import {
   OFFICIAL_BLUEPRINT_PUBLISHER,
+  prepareOfficialIdentityMetadataTransition,
   stampIdentityAttestation,
   stampMirrorIdentityAttestations,
 } from './identity-attestation';
@@ -105,5 +108,84 @@ describe('stampIdentityAttestation (identities-v1 D-124)', () => {
 
   it('refuses an empty publisher', () => {
     expect(() => stampIdentityAttestation('id: zz\nslots:\n  - slot: domain\n', ' ')).toThrow(/signedBy is required/);
+  });
+
+  const portable = { id: 'papercusp-engineer', version: '0.1.2', extends: 'identity-root',
+    description: 'Engineering profession', slots: [{ slot: 'domain' }] };
+  const legacy = (changes: Record<string, unknown> = {}, publisher = OFFICIAL_BLUEPRINT_PUBLISHER) => {
+    const raw = { ...portable, extends: 'base', visibility: 'public', ...changes };
+    return stringifyYaml({ ...raw, attestation: { contentHash: layerContentHash(raw), signedBy: publisher } });
+  };
+
+  it('converts only official legacy metadata, preserving comments and re-attesting the strict portable document', () => {
+    const original = '# preserve this installed comment\n' + legacy();
+    const result = prepareOfficialIdentityMetadataTransition(original, stringifyYaml(portable));
+    const raw = parseYaml(result.text);
+    expect(raw).toEqual({ ...portable,
+      attestation: { contentHash: layerContentHash(portable), signedBy: OFFICIAL_BLUEPRINT_PUBLISHER } });
+    expect(result.text).toContain('# preserve this installed comment');
+    expect(result.stamped).toBe(true);
+    expect(original).toContain('visibility: public');
+  });
+
+  it('converts an installed official package through retained releases and restores strict installed source loading', async () => {
+    const id = 'papercusp-engineer';
+    const installedDir = join(root, 'blueprints');
+    const originalDir = join(root, 'legacy-source');
+    const currentText = await readFile(builtinBlueprintPath(id), 'utf8');
+    const raw = { ...parseYaml(currentText), extends: 'base', visibility: 'public' };
+    const oldText = stringifyYaml({ ...raw,
+      attestation: { contentHash: layerContentHash(raw), signedBy: OFFICIAL_BLUEPRINT_PUBLISHER } });
+    await cp(join(builtinBlueprintPath(id), '..'), originalDir, { recursive: true });
+    await writeFile(join(originalDir, 'blueprint.yaml'), oldText);
+    const pin = snapshotPackageDirectory({ dir: originalDir, packageKind: 'blueprint', ref: id,
+      revision: raw.version, value: parseYaml(oldText) });
+    const oldRelease = await commitBlueprintRelease({ installedDir, sourceDir: originalDir, id,
+      version: raw.version, source: 'official legacy fixture', pins: [pin] });
+    expect((await getIdentitySource(id)).ok).toBe(false);
+    const before = snapshotInstalledBlueprintPackage(installedDir, id);
+    const candidate = join(root, 'candidate');
+    await cp(oldRelease.installedTo, candidate, { recursive: true });
+    const transformed = prepareOfficialIdentityMetadataTransition(oldText, currentText);
+    await writeFile(join(candidate, 'blueprint.yaml'), transformed.text);
+    const prepared = await snapshotBlueprintReleaseSource({ blueprintFile: join(candidate, 'blueprint.yaml'),
+      resolveExtends: ref => builtinBlueprintPath(ref) });
+    const applied = await commitBlueprintRelease({ installedDir, sourceDir: candidate, id,
+      version: prepared.version, source: 'local official metadata transition', pins: prepared.archive.pins,
+      expectedInstalledPackageHash: before.contentHash });
+    expect(applied.operation).toBe('update');
+    const selected = await getIdentitySource(id);
+    expect(selected.ok, JSON.stringify(selected)).toBe(true);
+    expect('sourcePath' in selected ? selected.sourcePath : null)
+      .toBe(join(installedDir, id, 'blueprint.yaml'));
+    expect(await readFile(join(oldRelease.historyDir, 'content/blueprint.yaml'), 'utf8')).toBe(oldText);
+    expect((await readBlueprintLifecycle(installedDir, id)).releases).toHaveLength(2);
+    const after = snapshotInstalledBlueprintPackage(installedDir, id);
+    expect(after.files.filter(file => file.path !== 'blueprint.yaml'))
+      .toEqual(before.files.filter(file => file.path !== 'blueprint.yaml'));
+  });
+
+  it.each([
+    { description: 'custom profession' }, { version: '99.0.0' }, { id: 'other' },
+    { grants: { requires: ['admin:*'] } }, { visibility: 'private' }, { extends: 'custom-parent' },
+  ])('refuses semantic or unsupported legacy changes: %j', changes => {
+    expect(() => prepareOfficialIdentityMetadataTransition(legacy(changes), stringifyYaml(portable)))
+      .toThrow(/semantics differ|unsupported legacy/);
+  });
+
+  it('refuses missing, stale and non-official attestations', () => {
+    for (const text of [stringifyYaml({ ...portable, extends: 'base', visibility: 'public' }),
+      legacy().replace('Engineering profession', 'changed after attesting'), legacy({}, 'someone-else')]) {
+      expect(() => prepareOfficialIdentityMetadataTransition(text, stringifyYaml(portable)))
+        .toThrow(/invalid prior official attestation/);
+    }
+  });
+
+  it('refuses mode transitions and malformed or non-identity inputs', () => {
+    for (const builtin of [stringifyYaml({ id: 'workspace' }),
+      stringifyYaml({ ...portable, mode: { policyRef: 'auto' } }), 'slots: [']) {
+      expect(() => prepareOfficialIdentityMetadataTransition(legacy(), builtin)).toThrow();
+    }
+    expect(() => prepareOfficialIdentityMetadataTransition('null', stringifyYaml(portable))).toThrow();
   });
 });

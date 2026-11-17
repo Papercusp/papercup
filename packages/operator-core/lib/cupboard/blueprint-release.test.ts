@@ -12,6 +12,7 @@ import {
   readBlueprintLifecycle,
   blueprintReleaseRevenueDependencies,
   readBlueprintReleaseRevenueDependencies,
+  snapshotInstalledBlueprintPackage,
   rollbackBlueprintRelease,
   uninstallBlueprintRelease,
   type BlueprintLifecycleJournal,
@@ -32,10 +33,13 @@ afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
 });
 
-async function source(version: string, prompt: string, maxCostUsd: number) {
+// Retained legacy archives still exercise historical burn-knob diffs. Newly
+// published identities use the closed portable document without workspace knobs.
+async function source(version: string, prompt: string, maxCostUsd: number, portable = false) {
   const dir = join(root, `source-${version}`);
   const yaml =
-    ['id: identity', `version: ${version}`, 'slots: [{ slot: domain }]', `knobs: { maxCostUsd: ${maxCostUsd} }`].join(
+    ['id: identity', `version: ${version}`, 'slots: [{ slot: domain }]',
+      ...(portable ? [] : [`knobs: { maxCostUsd: ${maxCostUsd} }`])].join(
       '\n',
     ) + '\n';
   await fs.mkdir(join(dir, 'prompts'), { recursive: true });
@@ -49,12 +53,64 @@ async function source(version: string, prompt: string, maxCostUsd: number) {
       { path: 'blueprint.yaml', bytes: yaml },
       { path: 'prompts/persona.md', bytes: prompt },
     ],
-    value: { id: 'identity', version, slots: [{ slot: 'domain' }], knobs: { maxCostUsd } },
+    value: { id: 'identity', version, slots: [{ slot: 'domain' }], ...(portable ? {} : { knobs: { maxCostUsd } }) },
   });
   return { dir, pin };
 }
 
 describe('immutable blueprint release lifecycle', () => {
+  it.each(['prompts/persona.md', 'blueprint.yaml', 'new-file.txt'])
+    ('refuses a stale installed-package preview after %s changes, preserving active bytes and history', async path => {
+      const first = await source('1.0.0', 'original prompt', 1);
+      const installed = await commitBlueprintRelease({ installedDir, sourceDir: first.dir, id: 'identity',
+        version: '1.0.0', source: 'repo', pins: [first.pin] });
+      const expectedInstalledPackageHash = snapshotInstalledBlueprintPackage(installedDir, 'identity').contentHash;
+      await fs.writeFile(join(installed.installedTo, path), 'concurrent edit');
+      const next = await source('2.0.0', 'replacement prompt', 1);
+      await expect(commitBlueprintRelease({ installedDir, sourceDir: next.dir, id: 'identity',
+        version: '2.0.0', source: 'repo', pins: [next.pin], expectedInstalledPackageHash }))
+        .rejects.toThrow(/installed package changed since preview/);
+      expect(await fs.readFile(join(installed.installedTo, path), 'utf8')).toBe('concurrent edit');
+      expect((await readBlueprintLifecycle(installedDir, 'identity')).releases).toHaveLength(1);
+      expect(await fs.readFile(join(installed.historyDir, 'content/prompts/persona.md'), 'utf8')).toBe('original prompt');
+    });
+
+  it('updates an unchanged preview through the existing lifecycle and retains original package bytes', async () => {
+    const first = await source('1.0.0', 'original prompt', 1);
+    const installed = await commitBlueprintRelease({ installedDir, sourceDir: first.dir, id: 'identity',
+      version: '1.0.0', source: 'repo', pins: [first.pin] });
+    const expectedInstalledPackageHash = snapshotInstalledBlueprintPackage(installedDir, 'identity').contentHash;
+    const next = await source('2.0.0', 'replacement prompt', 1);
+    const result = await commitBlueprintRelease({ installedDir, sourceDir: next.dir, id: 'identity',
+      version: '2.0.0', source: 'local metadata transition', pins: [next.pin], expectedInstalledPackageHash });
+    expect(result.operation).toBe('update');
+    expect(await fs.readFile(join(result.installedTo, 'prompts/persona.md'), 'utf8')).toBe('replacement prompt');
+    expect(await fs.readFile(join(installed.historyDir, 'content/prompts/persona.md'), 'utf8')).toBe('original prompt');
+    expect((await readBlueprintLifecycle(installedDir, 'identity')).releases).toHaveLength(2);
+  });
+
+  it('checks the preview again after journal preparation and compensates rather than overwriting a concurrent edit', async () => {
+    const first = await source('1.0.0', 'original prompt', 1);
+    const installed = await commitBlueprintRelease({ installedDir, sourceDir: first.dir, id: 'identity',
+      version: '1.0.0', source: 'repo', pins: [first.pin] });
+    const expectedInstalledPackageHash = snapshotInstalledBlueprintPackage(installedDir, 'identity').contentHash;
+    const next = await source('2.0.0', 'replacement prompt', 1);
+    let compensated = false;
+    let applied = false;
+    await expect(commitBlueprintRelease({ installedDir, sourceDir: next.dir, id: 'identity',
+      version: '2.0.0', source: 'repo', pins: [next.pin], expectedInstalledPackageHash,
+      journal: { recover: async () => [], prepare: async () => {
+        await fs.writeFile(join(installed.installedTo, 'prompts/persona.md'), 'journal-time edit');
+        return { compensate: async () => { compensated = true; }, apply: async () => {
+          applied = true; return { pots: [], residue: [] };
+        } };
+      } } })).rejects.toThrow(/installed package changed since preview/);
+    expect(compensated).toBe(true);
+    expect(applied).toBe(false);
+    expect(await fs.readFile(join(installed.installedTo, 'prompts/persona.md'), 'utf8')).toBe('journal-time edit');
+    expect((await readBlueprintLifecycle(installedDir, 'identity')).active?.version).toBe('1.0.0');
+  });
+
   const reference = ({ packageKind, ref, revision, contentHash }:
     Pick<ReturnType<typeof pinPackageInput>, 'packageKind' | 'ref' | 'revision' | 'contentHash'>) =>
     ({ packageKind, ref, revision, contentHash });
@@ -324,7 +380,7 @@ describe('immutable blueprint release lifecycle', () => {
   });
 
   it('builds a signed publish-release manifest over the complete closure bytes', async () => {
-    const v1 = await source('1.0.0', 'persona\n', 1);
+    const v1 = await source('1.0.0', 'persona\n', 1, true);
     const prepared = await prepareBlueprintPublicRelease({
       blueprintFile: join(v1.dir, 'blueprint.yaml'),
       listingRef: 'identity',

@@ -15,6 +15,7 @@ import {
   findExclusiveSlotConflicts,
   isSlotId,
   resolveBlueprintSource,
+  snapshotPackageDirectory,
   validateAgentInputClosure,
   type BlueprintSourceDocument,
   type ResolveExtendsPath,
@@ -129,6 +130,9 @@ export interface CommitBlueprintReleaseInput {
     contentHash?: string | null;
     manifest?: CupboardReleaseManifest | null;
   };
+  /** Optional compare-and-swap over EVERY active package file, captured by
+   * snapshotInstalledBlueprintPackage. Metadata migrations must supply this. */
+  expectedInstalledPackageHash?: string;
   modeApproval?: { listingId: string; policyRef: string; approvedArtifactContentHash: string };
   nowMs?: number;
   journal?: BlueprintLifecycleJournal;
@@ -834,11 +838,32 @@ async function materializeActive(installedDir: string, id: string, sourceDir: st
   }
 }
 
+/** File-only pin: independent of legacy source parsing and release metadata,
+ * so a prompt edit or an added file invalidates a reviewed migration preview. */
+export function snapshotInstalledBlueprintPackage(installedDir: string, id: string): ResolvedPackageInput {
+  assertSafeId(id);
+  return snapshotPackageDirectory({ dir: activeDir(installedDir, id), packageKind: 'blueprint',
+    ref: id, revision: 'installed-bytes-v1' });
+}
+
 export async function commitBlueprintRelease(
   input: CommitBlueprintReleaseInput,
 ): Promise<CommitBlueprintReleaseResult> {
   assertSafeId(input.id);
   return withLifecycleLock(input.installedDir, input.id, async () => {
+    const assertInstalledPackage = () => {
+      if (input.expectedInstalledPackageHash === undefined) return;
+      let actual: string;
+      try {
+        actual = snapshotInstalledBlueprintPackage(input.installedDir, input.id).contentHash;
+      } catch (error) {
+        throw new BlueprintLifecycleError(`blueprint ${input.id} installed package changed since preview: ${String(error)}`, 409);
+      }
+      if (actual !== input.expectedInstalledPackageHash) {
+        throw new BlueprintLifecycleError(`blueprint ${input.id} installed package changed since preview`, 409);
+      }
+    };
+    assertInstalledPackage();
     let archive: BlueprintReleaseArchive;
     try {
       archive = buildBlueprintReleaseArchive(input.pins, input.id, input.classContracts ?? []);
@@ -904,6 +929,7 @@ export async function commitBlueprintRelease(
           : ('install' as const);
     // D-034 order: journaled bindings first, this switch (activation last), then apply.
     const journal = await journaledSwitch(input.journal, index.activeContentHash, archive.root.contentHash, async () => {
+      assertInstalledPackage();
       if (!existing) {
         const stage = `${historyDir}.${process.pid}.${randomUUID()}.tmp`;
         await fs.mkdir(stage, { recursive: true });
@@ -927,6 +953,14 @@ export async function commitBlueprintRelease(
       // Re-materialize even a content no-op: the immutable archive is the source
       // of truth, so an untracked/stale file in the active compatibility directory
       // is repaired rather than silently surviving a reinstall.
+      try {
+        assertInstalledPackage();
+      } catch (error) {
+        // A refused switch must not leave an unindexed candidate directory
+        // that would make the next attempt fail with ENOTEMPTY.
+        if (!existing) await fs.rm(historyDir, { recursive: true, force: true });
+        throw error;
+      }
       await materializeActive(input.installedDir, input.id, join(historyDir, 'content'));
       if (operation !== 'no-op' || approvalChanged) {
         index.activeContentHash = archive.root.contentHash;

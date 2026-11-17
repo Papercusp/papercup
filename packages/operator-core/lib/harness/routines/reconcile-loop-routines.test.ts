@@ -11,6 +11,8 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Sql } from 'postgres';
+import type { PsuPtyHost } from '../../events/await/psu-pty-discovery';
+import { recoverExpectedLoopExecution } from './loop-execution-recovery';
 import { parseUsageReset, MODEL_CAPACITY_RETRY_AFTER_MS } from '@papercusp/papercusp-shared/agent';
 import {
   reconcileLoopRoutines as reconcileLoopRoutinesImpl,
@@ -3807,6 +3809,56 @@ describe("reconcileLoopRoutines — a warm 'suppressed-redundant' wake settles o
       expect(recordFire).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'error');
     },
   );
+
+  it.each(['inbox', 'coalesced', 'suppressed-redundant'].flatMap(channel =>
+    ['post-fire', 'pre-fire', 'foreign-host'].map(proof => ({ channel, proof })),
+  ))('resets only a verified successor streak during $channel deferral ($proof)', async ({ channel, proof }) => {
+    const nowMs = T0 + 130_000;
+    const updates: unknown[][] = [];
+    const row = warmSuppressedRow({ last_wake_channel: channel });
+    const tx = vi.fn(async (strings: TemplateStringsArray) => {
+      if (!/^\s*SELECT/.test(strings.join(' ? '))) throw new Error('dry-run probe must not mutate the routine');
+      return [{ active: true, parked: true, target_owner_id: row.target_owner_id,
+        fired_ms: String(T0), fired_at: pgString(T0), metadata: {},
+        install_slug: row.install_slug, workspace_id: row.routine_workspace_id, name: row.name }];
+    }) as unknown as Sql;
+    const sql = Object.assign(fakeSql([row], updates), {
+      begin: async <T>(fn: (transaction: Sql) => Promise<T>) => fn(tx),
+    });
+    const host: PsuPtyHost = {
+      ownerId: row.target_owner_id, advSessionId: null, pid: 1, ptyPid: 2,
+      sock: '/fixture', command: 'codex', startedAt: T0 - 60_000,
+      execution: { ownerId: proof === 'foreign-host' ? 'another-owner' : row.target_owner_id,
+        hostPid: 1, childPid: 2, childGeneration: 1, receivedAtMs: T0 + 20_000,
+        phase: 'running', turnStartedAt: proof === 'pre-fire' ? T0 - 20_000 : T0 + 20_000,
+        lastProgressAt: nowMs, pendingTools: 0, observedAt: nowMs },
+    };
+    const resetFireErrors = vi.fn(async () => 1);
+    const arm = vi.fn(async () => ({ awaitId: 1, eventKey: 'fixture', handleNote: 'fixture', minSleepSec: 60 }));
+    const recordFire = vi.fn(async () => {});
+    const result = await reconcile({
+      sql, nowMs, recordFire, readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+      recoverExpectedExecution: input => recoverExpectedLoopExecution(input, {
+        now: () => nowMs, findHost: async () => host,
+        inference: async () => ({ active: 1, observedAt: nowMs, processInstanceId: 'fixture',
+          activeRequests: [], activeRequestsComplete: true }),
+        resetFireErrors, arm,
+      }),
+    });
+
+    if (proof === 'post-fire') {
+      expect(resetFireErrors).toHaveBeenCalledExactlyOnceWith('papercusp', row.name, {
+        workspaceId: row.routine_workspace_id, expectedLastFiredAt: pgString(T0),
+      });
+    } else {
+      expect(resetFireErrors).not.toHaveBeenCalled();
+    }
+    expect(result.rearmed).toBe(0);
+    expect(updates).toEqual([]);
+    expect(arm).not.toHaveBeenCalled();
+    expect(recordFire).not.toHaveBeenCalled();
+  });
 
   it('bounds the live-inference deferral at the stuck-park dwell', async () => {
     const recoverExpectedExecution = vi.fn(async () => ({

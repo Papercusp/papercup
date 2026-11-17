@@ -867,8 +867,14 @@ describe('IDOP D-043 canonical pinned dispatch adapter', () => {
       path: 'libs/generic/tooldef/src/dispatch-stack.ts', revision: 'c3376b4e6f887e664f626471aa63461a89bdd5c4',
     }));
     for (const source of readers[1].sources) expect(source.sha256).toBe(sha256(readFileSync(join(root, source.path))));
-    expect(readers[0].externalDependencies).toEqual(readers[1].externalDependencies);
+    expect(readers[0].externalDependencies)
+      .toEqual(readers[1].externalDependencies.filter(entry => entry.name !== '@toon-format/toon'));
     expect(readers[0].externalDependencies.map(entry => entry.name)).toEqual(['mingo', 'zod', 'zod-to-json-schema']);
+    const currentLock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'));
+    expect(readers[1].externalDependencies.filter(entry => entry.name === '@toon-format/toon')).toEqual([
+      { name: '@toon-format/toon', version: '2.3.1',
+        lockSha256: sha256(JSON.stringify(currentLock.packages['node_modules/@toon-format/toon'])) },
+    ]);
   });
 
   const structuralRequest = (): KernelEnforcementRequest => ({ phase: 'preflight', boundary: 'dispatch',

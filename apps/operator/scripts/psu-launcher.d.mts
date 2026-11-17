@@ -1785,77 +1785,7 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId,
     ownerId?: string | null;
     launchedBy?: string | null;
 }): {
-    PAPERCUSP_ACCOUNT_ID?: string | undefined;
-    PAPERCUSP_ACCOUNT_ROUTING_MODE?: string | undefined;
-    PAPERCUSP_LAUNCHED_BY: string;
-    PAPERCUSP_TOOLS?: string | undefined;
-    PAPERCUSP_TOOLS_COMPACT?: string | undefined;
-    ENABLE_TOOL_SEARCH?: string | undefined;
-    PAPERCUSP_CONTEXT_TIER: string;
-    CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN?: undefined;
-    DISABLE_AUTO_COMPACT: string;
-    DISABLE_COMPACT: string;
-    PAPERCUSP_AGENT_SESSION: string;
-    PAPERCUSP_ADV_SESSION_ID?: string | undefined;
-    PAPERCUSP_HARNESS_SLUG?: any;
-    PAPERCUSP_WORKSPACE?: any;
-    PAPERCUSP_SID: any;
-    PAPERCUSP_AGENT_ROLE?: any;
-    PAPERCUSP_AGENT: any;
-} | {
-    PAPERCUSP_ACCOUNT_ID?: string | undefined;
-    PAPERCUSP_ACCOUNT_ROUTING_MODE?: string | undefined;
-    PAPERCUSP_LAUNCHED_BY: string;
-    PAPERCUSP_TOOLS?: string | undefined;
-    PAPERCUSP_TOOLS_COMPACT?: string | undefined;
-    ENABLE_TOOL_SEARCH?: string | undefined;
-    PAPERCUSP_CONTEXT_TIER: string;
-    CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: string;
-    DISABLE_AUTO_COMPACT: string;
-    DISABLE_COMPACT: string;
-    PAPERCUSP_AGENT_SESSION: string;
-    PAPERCUSP_ADV_SESSION_ID?: string | undefined;
-    PAPERCUSP_HARNESS_SLUG?: any;
-    PAPERCUSP_WORKSPACE?: any;
-    PAPERCUSP_SID: any;
-    PAPERCUSP_AGENT_ROLE?: any;
-    PAPERCUSP_AGENT: any;
-} | {
-    PAPERCUSP_ACCOUNT_ID?: string | undefined;
-    PAPERCUSP_ACCOUNT_ROUTING_MODE?: string | undefined;
-    PAPERCUSP_LAUNCHED_BY: string;
-    PAPERCUSP_TOOLS?: string | undefined;
-    PAPERCUSP_TOOLS_COMPACT?: string | undefined;
-    ENABLE_TOOL_SEARCH?: string | undefined;
-    PAPERCUSP_CONTEXT_TIER: string;
-    CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN?: undefined;
-    DISABLE_AUTO_COMPACT?: undefined;
-    DISABLE_COMPACT?: undefined;
-    PAPERCUSP_AGENT_SESSION: string;
-    PAPERCUSP_ADV_SESSION_ID?: string | undefined;
-    PAPERCUSP_HARNESS_SLUG?: any;
-    PAPERCUSP_WORKSPACE?: any;
-    PAPERCUSP_SID: any;
-    PAPERCUSP_AGENT_ROLE?: any;
-    PAPERCUSP_AGENT: any;
-} | {
-    PAPERCUSP_ACCOUNT_ID?: string | undefined;
-    PAPERCUSP_ACCOUNT_ROUTING_MODE?: string | undefined;
-    PAPERCUSP_LAUNCHED_BY: string;
-    PAPERCUSP_TOOLS?: string | undefined;
-    PAPERCUSP_TOOLS_COMPACT?: string | undefined;
-    ENABLE_TOOL_SEARCH?: string | undefined;
-    PAPERCUSP_CONTEXT_TIER: string;
-    CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: string;
-    DISABLE_AUTO_COMPACT?: undefined;
-    DISABLE_COMPACT?: undefined;
-    PAPERCUSP_AGENT_SESSION: string;
-    PAPERCUSP_ADV_SESSION_ID?: string | undefined;
-    PAPERCUSP_HARNESS_SLUG?: any;
-    PAPERCUSP_WORKSPACE?: any;
-    PAPERCUSP_SID: any;
-    PAPERCUSP_AGENT_ROLE?: any;
-    PAPERCUSP_AGENT: any;
+    [x: string]: string | undefined;
 };
 /** Restore the per-session OMP store a tracked launch created. Fresh OMP
  * launches pin BOTH variables because PI_CODING_AGENT_DIR overrides

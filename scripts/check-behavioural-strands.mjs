@@ -134,6 +134,9 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE_RE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
 const PACKAGE_JSON_RE = /(?:^|\/)package\.json$/;
 const TEST_RE = /\.(?:test|spec)\.(?:ts|tsx|mts|cts|mjs|cjs|js|jsx)$/;
+// `_retired` is excluded by the native test configuration. Keep these paths in
+// the graph for discovery, but disclose them separately from runnable fixtures.
+const isRetiredTestPath = (file) => file.split('/').includes('_retired');
 /** Type declarations (.d.ts / .d.mts / .d.cts) have no call sites, so no seam to count. */
 const DECLARATION_RE = /\.d\.[cm]?ts$/;
 /** Module specifiers whose imports are pure builders, never call-count seams (see the import walk). */
@@ -2426,6 +2429,7 @@ function formatFindings({
   wider,
   narrow,
   injectionBand = [],
+  notApplicable = [],
   members,
   valueProperties,
   scriptProperties = [],
@@ -2512,6 +2516,16 @@ function formatFindings({
     );
   }
   lines.push('');
+  if (notApplicable.length > 0) {
+    lines.push(`Retired test candidates not applicable to execution: ${notApplicable.length}`);
+    for (const entry of notApplicable.slice(0, clipped ? CLIP : notApplicable.length)) {
+      lines.push(`  ${entry.file} (${entry.reason})`);
+    }
+    if (clipped && notApplicable.length > CLIP) {
+      lines.push(`  … and ${notApplicable.length - CLIP} more (--all to list them, --json for the full set)`);
+    }
+    lines.push('');
+  }
   const runList = [...new Set([...tests, ...injectionBand.map((entry) => entry.file)])];
   if (tests.length === 0) {
     const noTests = hasScriptTriggers
@@ -2787,7 +2801,8 @@ function main() {
           .filter((f) => TEST_RE.test(f))
           .filter((f) => hasPackageScriptAssertion(readFile(f), scriptProperties, f))
       : [];
-  const wider = [...new Set([...reachableTests, ...scriptTests])].sort();
+  const widerCandidates = [...new Set([...reachableTests, ...scriptTests])].sort();
+  const wider = widerCandidates.filter((file) => !isRetiredTestPath(file));
   // Candidate tests come from the reachability walk, then each injection is joined only to its
   // changed module's direct importers.
   const injections = triggers.flatMap((t) =>
@@ -2817,12 +2832,17 @@ function main() {
     }
     return targets.has(sourceFile);
   };
-  const injectionBand = partialInjectionFixtures({
+  const injectionCandidates = partialInjectionFixtures({
     tests: [...reachable].filter((f) => TEST_RE.test(f)).sort(),
     readFile,
     injections,
     directlyImportsSource,
   });
+  const injectionBand = injectionCandidates.filter((entry) => !isRetiredTestPath(entry.file));
+  const notApplicable = [...new Set([...widerCandidates, ...injectionCandidates.map((entry) => entry.file)])]
+    .filter(isRetiredTestPath)
+    .sort()
+    .map((file) => ({ file, reason: 'retired-test-path' }));
   const injectionFiles = injectionBand.map((entry) => entry.file);
 
   const narrow = wider.filter(
@@ -2874,6 +2894,7 @@ function main() {
           narrow,
           wider,
           injectionBand,
+          notApplicable,
           usedWide,
           ran,
           runResult,
@@ -2890,6 +2911,7 @@ function main() {
         wider,
         narrow,
         injectionBand,
+        notApplicable,
         members,
         valueProperties,
         scriptProperties,

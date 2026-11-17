@@ -291,7 +291,7 @@ export function sampleCandidateWaitOnce(
 }
 
 /**
- * Observe top-level statements issued through an opted-in bounded transaction.
+ * Observe top-level statements and settlement of an opted-in transaction.
  * SQL fragments created with `unsafe` remain untouched; only executable tag
  * calls get the one-shot timer and wait sample.
  */
@@ -306,11 +306,11 @@ function observeBoundedWaits(
     signal?: AbortSignal;
     onSnapshot: (snapshot: BoundedOrgTxnWaitSnapshot) => void;
   },
-): OrgSql {
+): { tx: OrgSql; observe: <T>(query: PromiseLike<T>) => Promise<T> } {
   const sampleWindowMs = Math.min(input.statementTimeoutMs, input.lockTimeoutMs);
   const sampleAfterMs = Math.max(1, Math.floor(sampleWindowMs * 0.8));
 
-  const observe = async (query: unknown): Promise<unknown> => {
+  const observe = async <T>(query: PromiseLike<T>): Promise<T> => {
     const queryStartedAtMs = Date.now();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let sampleAbort: AbortController | undefined;
@@ -338,7 +338,7 @@ function observeBoundedWaits(
 
     timer = setTimeout(startSample, sampleAfterMs);
     try {
-      return await (query as PromiseLike<unknown>);
+      return await query;
     } catch (error) {
       const code = (error as { code?: string } | null)?.code;
       if (!input.signal?.aborted && (code === '57014' || code === '55P03')) {
@@ -362,8 +362,8 @@ function observeBoundedWaits(
   };
 
   const invoke = (...args: unknown[]) =>
-    observe(Reflect.apply(tx as unknown as (...input: unknown[]) => unknown, tx, args));
-  return Object.assign(invoke, tx) as unknown as OrgSql;
+    observe(Reflect.apply(tx as unknown as (...input: unknown[]) => PromiseLike<unknown>, tx, args));
+  return { tx: Object.assign(invoke, tx) as unknown as OrgSql, observe };
 }
 
 /**
@@ -582,7 +582,7 @@ export interface BoundedOrgTxnOptions {
   phase?: string | (() => string);
   /** Start the transaction READ ONLY before applying its local timeouts. */
   readOnly?: boolean;
-  /** Capture one target wait-event sample per timed-out statement. */
+  /** Capture one target wait-event sample per timed-out statement or transaction settlement. */
   captureWaitSnapshot?: boolean;
   /** Inject the sql client (tests / a non-default backend). Default getOrgPg().sql. */
   client?: OrgSql;
@@ -636,6 +636,9 @@ export async function boundedOrgTxn<T>(fn: (tx: OrgSql) => Promise<T>, opts: Bou
   const acquireMs = opts.acquireTimeoutMs ?? DEFAULT_TX_ACQUIRE_DEADLINE_MS;
   let result: unknown;
   let waitSnapshot: BoundedOrgTxnWaitSnapshot | undefined;
+  let callbackFinished = false;
+  let settleWait: { resolve: () => void; reject: (error: unknown) => void } | undefined;
+  let settlementObserved: Promise<void> | undefined;
   try {
     // P-022 / D-020: bound the phase before the caller's handler starts. A
     // postgres-js pool can queue forever before BEGIN when its client pool is
@@ -704,7 +707,7 @@ export async function boundedOrgTxn<T>(fn: (tx: OrgSql) => Promise<T>, opts: Bou
                   // retry boundary at the same point: any later error may follow a
                   // partial write and must never replay fn.
                   disarm();
-                  const workTx = waitTarget
+                  const waitObserver = waitTarget
                     ? observeBoundedWaits(cancellation.tx, {
                         client: sql,
                         targetPid: waitTarget.pid,
@@ -714,16 +717,26 @@ export async function boundedOrgTxn<T>(fn: (tx: OrgSql) => Promise<T>, opts: Bou
                         signal: opts.signal,
                         onSnapshot: (snapshot) => { waitSnapshot = snapshot; },
                       })
-                    : cancellation.tx;
+                    : undefined;
                   const work = Promise.resolve().then(() => {
                     cancellation.assertNotAborted();
                     markStarted();
-                    return fn(workTx);
+                    return fn(waitObserver?.tx ?? cancellation.tx);
                   });
                   // If cancellation wins the race, the transaction callback returns early while
                   // the late `fn` promise is still observed and its rejection is suppressed.
                   work.catch(() => undefined);
-                  return await Promise.race(cancellation.abort ? [work, cancellation.abort] : [work]);
+                  const value = await Promise.race(cancellation.abort ? [work, cancellation.abort] : [work]);
+                  callbackFinished = true;
+                  if (waitObserver) {
+                    // postgres-js sends COMMIT only AFTER this callback returns.
+                    // Keep the same target-PID observer alive until begin itself
+                    // settles; a successful last UPDATE is not a committed receipt.
+                    const settlement = new Promise<void>((resolve, reject) => { settleWait = { resolve, reject }; });
+                    settlementObserved = waitObserver.observe(settlement);
+                    void settlementObserved.catch(() => undefined);
+                  }
+                  return value;
                 } finally {
                   cancellation.cleanup();
                 }
@@ -739,14 +752,23 @@ export async function boundedOrgTxn<T>(fn: (tx: OrgSql) => Promise<T>, opts: Bou
         { ms: acquireMs, get label() { return acquireLabel; }, pool: acquirePool, signal: opts.signal },
       );
     }, { retries: opts.acquireRetries });
+    settleWait?.resolve();
+    await settlementObserved;
   } catch (err) {
+    settleWait?.reject(err);
+    // Join the bounded observation before packaging the original error. Its
+    // rejection is expected and must neither replace the PG cause nor replay fn.
+    await settlementObserved?.catch(() => undefined);
     const code = (err as { code?: string } | null)?.code;
     if (typeof code === 'string' && CONTENTION_CODES.has(code)) {
       // Best-effort attribution (EI-19404770733829453) — the failing txn's own
       // connection already aborted, so this runs on a fresh one and must never be
       // allowed to throw or hang in place of the real error.
       const blockerHint = await describeContentionAtFailure(sql, acquirePool).catch(() => undefined);
-      const phase = typeof opts.phase === 'function' ? opts.phase() : opts.phase;
+      const callerPhase = typeof opts.phase === 'function' ? opts.phase() : opts.phase;
+      const phase = callbackFinished
+        ? `${callerPhase ?? 'boundedOrgTxn'}:transaction-settlement`
+        : callerPhase;
       const timeout = new OrgTxnTimeoutError(code, err, blockerHint, 'pg', opts.readOnly ? 'read' : 'write', phase);
       if (waitSnapshot) timeout.waitSnapshot = waitSnapshot;
       throw timeout;

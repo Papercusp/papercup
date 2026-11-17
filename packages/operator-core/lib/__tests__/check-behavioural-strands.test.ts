@@ -1122,6 +1122,8 @@ describe('injected-member trigger: a new call to an optional Deps member strands
           "import { unrelated } from './index';\nconst deps = { now: () => 1, escalateGiveUp: () => Promise.resolve() };\nvoid unrelated;\nvoid deps;\n",
         );
         writeFileSync(resolve(dir, 'packages/p/lib/stranded.test.ts'), `import { tick } from './watchdog';\n${PARTIAL_FIXTURE}`);
+        mkdirSync(resolve(dir, 'packages/p/_retired'), { recursive: true });
+        writeFileSync(resolve(dir, 'packages/p/_retired/stranded.test.ts'), `import { tick } from '../lib/watchdog';\n${PARTIAL_FIXTURE}`);
         const git = (...args: string[]) =>
           spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: dir, encoding: 'utf8' });
         git('init', '-q');
@@ -1141,12 +1143,14 @@ describe('injected-member trigger: a new call to an optional Deps member strands
         const report = JSON.parse(first.stdout) as {
           triggers: Array<{ file: string; injections: Array<{ member: string }> }>;
           injectionBand: Array<{ file: string }>;
+          notApplicable: Array<{ file: string; reason: string }>;
           tests: string[];
         };
         expect(report.triggers.map((t) => t.file)).toEqual(['packages/p/lib/watchdog.ts']);
         expect(report.triggers[0].injections.map((i) => i.member)).toEqual(['reconcileStrandedLatch']);
         // The stranded fixture is in the SAME workspace — the cross-workspace band excludes it by design.
         expect(report.injectionBand.map((b) => b.file)).toEqual(['packages/p/lib/stranded.test.ts']);
+        expect(report.notApplicable).toEqual([{ file: 'packages/p/_retired/stranded.test.ts', reason: 'retired-test-path' }]);
         // An injection-only trigger has no count-assertion band: nothing else is named as noise.
         expect(report.tests).toEqual([]);
 
@@ -1201,6 +1205,78 @@ describe('shadowed const in a seam guard (WI-10005809)', () => {
   it('records the guarded seam call when two same-named consts are visible', () => {
     expect(() => seamControlFlowRecords(GUARD_AFTER, 'guard.ts')).not.toThrow();
   });
+});
+
+describe('retired strand candidates (EI-29026543027151004)', () => {
+  it.each([0, 1, 24, 25, 26])('discloses %i retired count fixtures without executing them', (retiredCount) => {
+    const dir = mkdtempSync(join(tmpdir(), 'behavioural-strands-retired-'));
+    const active = 'packages/consumer/lib/_retired-like.test.ts';
+    const retired = Array.from({ length: retiredCount }, (_, i) => i % 2
+      ? `packages/consumer/_retired/old-${i}.test.ts`
+      : `_retired/consumer/old-${i}.test.ts`);
+    const capture = join(dir, 'npm-args.json');
+    try {
+      mkdirSync(join(dir, 'scripts'), { recursive: true });
+      cpSync(DETECTOR_CLI, join(dir, 'scripts/check-behavioural-strands.mjs'));
+      cpSync(join(REPO_ROOT, 'scripts/lib'), join(dir, 'scripts/lib'), { recursive: true });
+      symlinkSync(join(REPO_ROOT, 'node_modules'), join(dir, 'node_modules'));
+      for (const name of ['source', 'consumer']) {
+        mkdirSync(join(dir, `packages/${name}/lib`), { recursive: true });
+        writeFileSync(join(dir, `packages/${name}/package.json`), JSON.stringify({ name: `@tmp/${name}` }));
+      }
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'retired-strand-fixture', private: true }));
+      writeFileSync(join(dir, '.gitignore'), 'node_modules\nnpm-args.json\n');
+      writeFileSync(join(dir, 'packages/source/lib/engine.ts'), SHARED_LIB_BEFORE);
+      writeFileSync(join(dir, active), "import { lexicalWithCascade } from '../../source/lib/engine';\nexpect(probe).toHaveBeenCalledTimes(1);\n");
+      for (const file of retired) {
+        mkdirSync(dirname(join(dir, file)), { recursive: true });
+        const source = file.startsWith('_retired/') ? '../../packages/source/lib/engine' : '../../source/lib/engine';
+        writeFileSync(join(dir, file), `import { lexicalWithCascade } from '${source}';\nexpect(probe).toHaveBeenCalledTimes(1);\n`);
+      }
+      const git = (...args: string[]) => spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: dir, encoding: 'utf8' });
+      expect(git('init', '-q').status).toBe(0);
+      expect(git('add', '-A').status).toBe(0);
+      expect(git('commit', '-q', '-m', 'fixture base').status).toBe(0);
+      writeFileSync(join(dir, 'packages/source/lib/engine.ts'), SHARED_LIB_AFTER);
+      mkdirSync(join(dir, 'bin'));
+      const npm = join(dir, 'bin/npm');
+      writeFileSync(npm, `#!${process.execPath}\nrequire('node:fs').writeFileSync(process.env.STRAND_CAPTURE, JSON.stringify(process.argv.slice(2)));\n`);
+      chmodSync(npm, 0o755);
+      const proc = spawnSync(process.execPath, [join(dir, 'scripts/check-behavioural-strands.mjs'), '--base', 'HEAD', '--json', '--run'], {
+        cwd: dir,
+        env: { ...process.env, STRAND_CAPTURE: capture, PATH: [join(dir, 'bin'), process.env.PATH].filter(Boolean).join(delimiter) },
+        encoding: 'utf8',
+        timeout: 90_000,
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      expect(proc.error).toBeUndefined();
+      expect(proc.status, proc.stderr).toBe(0);
+      const report = JSON.parse(proc.stdout) as {
+        tests: string[];
+        wider: string[];
+        notApplicable: Array<{ file: string; reason: string }>;
+        ran: boolean;
+      };
+      expect(report.tests).toEqual([active]);
+      expect(report.wider).toEqual([active]);
+      expect(report.notApplicable).toEqual(retired.sort().map((file) => ({ file, reason: 'retired-test-path' })));
+      expect(report.ran).toBe(true);
+      expect(JSON.parse(readFileSync(capture, 'utf8'))).toEqual(['run', 'test:file', '--', active]);
+      if (retiredCount === 26) {
+        const text = (extra: string[]) => spawnSync(process.execPath, [join(dir, 'scripts/check-behavioural-strands.mjs'), '--base', 'HEAD', ...extra], {
+          cwd: dir, encoding: 'utf8', timeout: 90_000, maxBuffer: 64 * 1024 * 1024,
+        });
+        const preview = text([]);
+        expect(preview.status, preview.stderr).toBe(0);
+        expect(preview.stdout).toContain('… and 1 more (--all to list them, --json for the full set)');
+        const complete = text(['--all']);
+        expect(complete.status, complete.stderr).toBe(0);
+        for (const file of retired) expect(complete.stdout).toContain(`${file} (retired-test-path)`);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 180_000);
 });
 
 describe('runCli: an internal error is NOT CHECKED, never "strands named" (WI-10005809)', () => {

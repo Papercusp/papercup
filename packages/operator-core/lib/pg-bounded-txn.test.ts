@@ -893,6 +893,65 @@ describe('boundedOrgTxn', () => {
       .resolves.toEqual({ status: 'unavailable', targetPid: 42, reason: 'deadline', phase: 'settle' });
   });
 
+  it.each(['55P03', '57014'])('observes transaction settlement timeout %s after the callback succeeds without replaying it', async (code) => {
+    vi.useFakeTimers();
+    try {
+      let beginCount = 0;
+      const failure = pgError(code);
+      const client = {
+        begin: async (cb: (tx: unknown) => Promise<unknown>) => {
+          beginCount += 1;
+          const transactionAttempt = beginCount;
+          const tx = Object.assign((strings: TemplateStringsArray) => Promise.resolve(
+            strings.join('?').includes('clock_timestamp')
+              ? [{ pid: 42, queryStartedAfter: new Date() }]
+              : strings.join('?').includes('FROM pg_stat_activity')
+                ? [{ waitEventType: 'Lock', waitEvent: 'advisory', blockingPids: [17] }]
+                : [],
+          ), { unsafe: async () => [] });
+          const value = await cb(tx);
+          if (transactionAttempt === 1) {
+            await new Promise<void>((_resolve, reject) => setTimeout(() => reject(failure), 100));
+          }
+          return value;
+        },
+      } as never;
+      const caller = vi.fn(async tx => { await tx`SELECT 1`; return 'callback-complete'; });
+      const pending = boundedOrgTxn(caller, {
+        client, captureWaitSnapshot: true, statementTimeoutMs: 100, lockTimeoutMs: 100,
+        acquireTimeoutMs: 1_000, phase: 'receipt:row-update',
+      }).catch(error => error);
+      await vi.advanceTimersByTimeAsync(101);
+      const error = await pending;
+      expect(error).toBeInstanceOf(OrgTxnTimeoutError);
+      expect(error.cause).toBe(failure);
+      expect(error.messageWithoutBlockerHint).toContain('[phase: receipt:row-update:transaction-settlement]');
+      expect(error.waitSnapshot).toMatchObject({
+        status: 'sampled', targetPid: 42, waitEventType: 'Lock', waitEvent: 'advisory', blockingPids: [17],
+      });
+      expect(caller).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears settlement observation after success without sampling a later transaction', async () => {
+    vi.useFakeTimers();
+    try {
+      const begin = vi.fn(async (cb: (tx: unknown) => Promise<unknown>) => cb(
+        (strings: TemplateStringsArray) => Promise.resolve(strings.join('?').includes('clock_timestamp')
+          ? [{ pid: 42, queryStartedAfter: new Date() }] : []),
+      ));
+      await expect(boundedOrgTxn(async () => 'committed', {
+        client: { begin } as never, captureWaitSnapshot: true, statementTimeoutMs: 100, lockTimeoutMs: 100,
+      })).resolves.toBe('committed');
+      await vi.advanceTimersByTimeAsync(200);
+      expect(begin).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('attaches one target wait sample to an opted-in bounded transaction timeout', async () => {
     vi.useFakeTimers();
     try {

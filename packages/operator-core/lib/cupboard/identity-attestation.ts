@@ -18,6 +18,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { layerContentHash, parseBlueprintSourceDocument } from '@papercusp/orchestrator/blueprint';
 import { parseDocument } from 'yaml';
 
@@ -58,6 +59,46 @@ export function stampIdentityAttestation(text: string, signedBy: string): Identi
   if (doc.has('attestation')) doc.delete('attestation');
   doc.set('attestation', doc.createNode({ contentHash, signedBy: publisher }));
   return { text: doc.toString(), stamped: true, contentHash };
+}
+
+/** Prepare the exact first-party metadata transition to the portable identity
+ * root. This never edits an installed package or relaxes the source schema.
+ * The caller previews and commits the resulting package through the release
+ * lifecycle, retaining the original release and guarding the active bytes. */
+export function prepareOfficialIdentityMetadataTransition(
+  installedText: string,
+  builtinText: string,
+): IdentityAttestationStamp {
+  const installed = parseDocument(installedText);
+  const builtin = parseDocument(builtinText);
+  if (installed.errors.length || builtin.errors.length) {
+    throw new Error('official identity metadata transition: invalid YAML');
+  }
+  const prior = installed.toJS() as Record<string, unknown> | null;
+  const current = builtin.toJS() as Record<string, unknown> | null;
+  if (!prior || !current || Array.isArray(prior) || Array.isArray(current) ||
+      parseBlueprintSourceDocument(current).kind !== 'identity' ||
+      current.extends !== 'identity-root' || 'mode' in current ||
+      prior.extends !== 'base' || prior.visibility !== 'public') {
+    throw new Error('official identity metadata transition: unsupported legacy metadata');
+  }
+  const attestation = prior.attestation as { contentHash?: unknown; signedBy?: unknown } | undefined;
+  if (attestation?.signedBy !== OFFICIAL_BLUEPRINT_PUBLISHER ||
+      attestation.contentHash !== layerContentHash(prior)) {
+    throw new Error('official identity metadata transition: invalid prior official attestation');
+  }
+  const normalized = { ...prior, extends: 'identity-root' };
+  delete (normalized as Record<string, unknown>).visibility;
+  delete (normalized as Record<string, unknown>).attestation;
+  const expected = { ...current };
+  delete expected.attestation;
+  if (!isDeepStrictEqual(normalized, expected)) {
+    throw new Error('official identity metadata transition: installed semantics differ from the builtin');
+  }
+  installed.delete('visibility');
+  installed.set('extends', 'identity-root');
+  installed.delete('attestation');
+  return stampIdentityAttestation(installed.toString(), OFFICIAL_BLUEPRINT_PUBLISHER);
 }
 
 /**
