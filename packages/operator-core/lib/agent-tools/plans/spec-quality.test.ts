@@ -1247,6 +1247,53 @@ describe('evaluatePlanSpecQuality', () => {
     expect(result.ratings['implementation-independence'].rating).toBe('fail');
   });
 
+  it.each([
+    'The complete source MongoDB dataset is refreshed by a cold physical copy to the stopped cloud target with cleanly stopped application writers and databases, a READY rollback snapshot of the overwritten persistent cloud data disk, and the source dbPath preserved and present at grading/readback.',
+    'The complete retained proof establishes full-dbPath byte/checksum equality at the stopped cold-copy boundary and complete post-start namespace reconciliation, allowing only evidenced config.system.sessions TTL-deletion and local.startup_log startup count deltas, with zero unresolved omissions, unreadable entries or mismatches.',
+    'The source dbPath remains present after the migration.',
+    'The target dbPath contains the complete copied dataset.',
+    'The configured dbPath remains readable after restart.',
+    'MongoDB storage.dbPath identifies the preserved data directory.',
+  ])('accepts the public MongoDB data-directory contract in item and BAR fields: %s', (text) => {
+    for (const sourceBar of [null, {
+      barKey: 'R-2', barHash: 'a'.repeat(64), barSetHash: 'b'.repeat(64),
+      rubricSlug: 'acceptance-quality-plan', rubricRevision: 1, evidencePlane: 'deployed' as const,
+    }]) {
+      for (const field of ['behavior', 'observation'] as const) {
+        const result = evaluatePlanSpecQuality({
+          planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+          classRef: 'plan-class-migration',
+          clauses: [clause({
+            sourceBar,
+            behavior: field === 'behavior' ? text : 'The migration preserves the complete dataset.',
+            falsifier: field === 'observation' ? { observation: text } : null,
+          })],
+        });
+        expect(result.ratings['implementation-independence'].rating, field).toBe('pass');
+      }
+    }
+  });
+
+  it.each([
+    'The function dbPath selects the source directory.',
+    'The private field dbPath contains the directory.',
+    'The variable dbPath holds the migration target.',
+    'dbPath resolves the directory before the copy.',
+    'The source dbPath remains present while dbPath resolves the directory.',
+    'The source dbPath remains present while runSyncBatchDeltaCheck compares the files.',
+  ])('still rejects private code beside the public MongoDB path: %s', (text) => {
+    for (const field of ['behavior', 'observation'] as const) {
+      const result = evaluatePlanSpecQuality({
+        planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+        classRef: 'plan-class-migration', clauses: [clause({
+          behavior: field === 'behavior' ? text : 'The migration preserves the complete dataset.',
+          falsifier: field === 'observation' ? { observation: text } : null,
+        })],
+      });
+      expect(result.ratings['implementation-independence'].rating, field).toBe('fail');
+    }
+  });
+
   it('pins detector revision 3 to representative coupled and independent verdicts', () => {
     const goldenCases = [
       { behavior: 'The retrieval report includes nDCG@5 for the frozen queries and ground truth.', expected: 'pass' },
