@@ -4,7 +4,7 @@
  */
 import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import ts from 'typescript';
 import { parse } from 'pgsql-ast-parser';
 import { censusSites } from '../../../../scripts/lib/source-path-census.mjs';
@@ -48,6 +48,10 @@ export interface PhaseWriterInventory {
   /** Enumeration/read/parse gaps remain identities in the coverage population. */
   gaps: Array<{ id: string; reason: string }>;
 }
+export type PhaseWriterTreeManifest = Pick<PhaseWriterInventory, 'scope' | 'sources' | 'gaps'> & {
+  excluded: Array<{ path: string; reason: string }>;
+  enumeration: { scanned: string[]; unscanned: string[] };
+};
 export type PhaseWriterDisposition =
   'advancing' | 'safe-retreat' | 'metadata-only' | 'isolated-fixture' | 'historical/unreachable';
 export interface PhaseWriterReview {
@@ -71,7 +75,7 @@ export interface PhaseWriterCoverage {
 }
 
 function canonicalPath(path: string): boolean {
-  return !!path && !path.includes('\\') && !path.startsWith('/')
+  return !!path && !path.includes('\0') && !path.includes('\\') && !path.startsWith('/')
     && path.split('/').every(part => !!part && part !== '.' && part !== '..');
 }
 
@@ -309,7 +313,7 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
  * new source files. Missing submodules, unreadable files and symlinks are gaps.
  * Named exclusions retain every path; no page/file cap selects the truth.
  */
-export function inventoryPhaseWriterTree(root: string) {
+function readPhaseWriterTree(root: string) {
   const enumeration = listFilesIncludingUntracked(root);
   const input: PhaseWriterSource[] = [];
   const gaps: PhaseWriterInventory['gaps'] = [];
@@ -346,8 +350,61 @@ export function inventoryPhaseWriterTree(root: string) {
       gaps.push({ id: `submodule:${path}`, reason: 'declared-submodule-not-enumerated' });
     }
   }
-  return { ...inventoryPhaseWriters(input, gaps), scope: { kind: 'repository' as const, root }, excluded,
+  return { input, gaps, scope: { kind: 'repository' as const, root: resolve(root) }, excluded,
     enumeration: { scanned: enumeration.scanned, unscanned: enumeration.unscanned } };
+}
+
+export function inventoryPhaseWriterTree(root: string) {
+  const { input, gaps, ...manifest } = readPhaseWriterTree(root);
+  return { ...inventoryPhaseWriters(input, gaps), ...manifest };
+}
+
+/** Re-enumerate and hash the complete tree, without repeating the SQL/call
+ * analysis. A verified export is an old source snapshot until this comparison
+ * succeeds. Added/deleted sources and changed exclusions are just as material
+ * as changed reviewed statements. Gaps never become evidence of no change.
+ * This measures filesystem bytes at observedAt, not executed-module identity.
+ */
+export function verifyPhaseWriterTreeSnapshot(expected: PhaseWriterTreeManifest) {
+  if (expected.scope.kind !== 'repository') throw new Error('phase_writer_repository-snapshot-required');
+  const { input, gaps, ...manifest } = readPhaseWriterTree(expected.scope.root);
+  const actual: PhaseWriterTreeManifest = { ...manifest, gaps,
+    sources: input.map(source => ({ path: source.path, sha256: digest(source.content) })) };
+  const index = (value: PhaseWriterTreeManifest) => {
+    const rows = new Map<string, string>();
+    const add = (id: string, content: string) => {
+      if (rows.has(id)) throw new Error(`phase_writer_duplicate-snapshot-identity:${id}`);
+      rows.set(id, content);
+    };
+    for (const source of value.sources) {
+      if (!canonicalPath(source.path) || !/^[a-f0-9]{64}$/.test(source.sha256)) {
+        throw new Error(`phase_writer_invalid-snapshot-source:${source.path}`);
+      }
+      add(`source:${source.path}`, source.sha256);
+    }
+    for (const gap of value.gaps) add(`gap:${gap.id}`, gap.reason);
+    for (const exclusion of value.excluded) add(`excluded:${exclusion.path}`, exclusion.reason);
+    for (const path of value.enumeration.scanned) add(`scanned:${path}`, path);
+    for (const path of value.enumeration.unscanned) add(`unscanned:${path}`, path);
+    return rows;
+  };
+  const before = index(expected), after = index(actual);
+  const coverage: PhaseWriterCoverage = { population: [...new Set([...before.keys(), ...after.keys()])].sort(compare),
+    checked: [], notChecked: [], notApplicable: [], residue: [] };
+  const differences: Array<{ id: string; reason: 'added' | 'removed' | 'changed';
+    expected: string | null; actual: string | null }> = [];
+  for (const id of coverage.population) {
+    const old = before.get(id), current = after.get(id);
+    const changed = old !== current;
+    if (changed) differences.push({ id, reason: old === undefined ? 'added' : current === undefined ? 'removed' : 'changed',
+      expected: old ?? null, actual: current ?? null });
+    if (changed || id.startsWith('gap:') || id.startsWith('unscanned:')) {
+      coverage.notChecked.push(id); coverage.residue.push(id);
+    } else if (id.startsWith('excluded:')) coverage.notApplicable.push(id);
+    else coverage.checked.push(id);
+  }
+  return { schemaVersion: 1 as const, scope: actual.scope, observedAt: new Date().toISOString(),
+    ready: coverage.residue.length === 0, coverage, differences };
 }
 
 const dispositions = new Set<PhaseWriterDisposition>([
