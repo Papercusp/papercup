@@ -3,6 +3,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { readConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
+import { parseMutationInvocationDescriptor, mutationDescriptorForRow } from '@papercusp/test-config/mutation-descriptor';
 import { verifyNativeProofPacket, type NativeCustodyLocator } from '../../../../../scripts/lib/budgeted-task-scheduler.mjs';
 import { completedDetachedReport, distillVitestRun, reconcileHarnessTestRunRows } from '../../testing-run-store';
 import { defaultTestRunArtifactBase } from './run-artifacts';
@@ -73,8 +74,23 @@ export async function recoverRetainedVitestLedger(input: {
       pin.path === row.filePath && /^[a-f0-9]{64}$/.test(pin.sha256 ?? '')))
     || typeof report.startTime !== 'number' || !Number.isFinite(report.startTime))
     throw new Error('retained_report_result_mismatch');
+  const mutationProbe = ledger.lookup?.source === 'mutation-probe';
+  const mutationPhase = mutationProbe && typeof ledger.mutationContext?.phase === 'string'
+    ? ledger.mutationContext.phase : null;
+  if (mutationProbe) {
+    const invocation = parseMutationInvocationDescriptor(ledger.mutationContext?.invocation);
+    for (const row of rows) {
+      const pin = source.inputs.find((entry: { path: string }) => entry.path === row.filePath);
+      const mutation = mutationDescriptorForRow(invocation ?? null, mutationPhase, pin.sha256);
+      if (!row.execution || !mutation) throw new Error('retained_report_mutation_context_incomplete');
+      row.execution.mutation = mutation;
+    }
+  } else if (ledger.mutationContext !== undefined) {
+    throw new Error('retained_report_mutation_context_mismatch');
+  }
   const recorded = await persist({ rows, root: source.root, runGroupId: input.runId,
-    workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, source: 'local',
+    workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, source: mutationProbe ? 'mutation-probe' : 'local',
+    mutationPhase,
     runStartedAt: new Date(report.startTime).toISOString(), commit: source.worktree?.commit ?? null,
     // No after-run worktree snapshot was retained. Preserve uncertainty, never
     // promote these bytes into clean-commit or loaded-import-closure evidence.

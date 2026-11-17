@@ -89,6 +89,8 @@ import { parseTestRunExecutionDetails, TEST_RUN_READER_CONTRACT_ENV, TEST_RUN_RE
   testRunExecutionDetailsReaderContract, testRunExecutionDetailsReaderMismatch } from '@papercusp/test-config/execution-details';
 import { resolveTestRunsPgUrl } from '@papercusp/test-config/admin-test-runs-reporter';
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
+import { readMutationInvocationDescriptor } from '@papercusp/test-config/mutation-descriptor';
+import { resolveTestRunSource } from '../../testing-run-source';
 import { flagEnvVarName } from '@papercusp/flags';
 import { judgeDeclaredConfiguration, parseProductionConfiguration, type ProductionConfiguration } from '../plans/declared-configuration';
 import { cleanupOwnedTestDatabases, type OwnedTestDbCleanupResult } from '@papercusp/test-config/owned-test-db-cleanup';
@@ -4152,6 +4154,11 @@ function shouldUsePrivatePg(opts: Pick<RunTestFilesCoreOptions, 'files' | 'root'
 }
 
 export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: TestFilesCoreDeps = {}): Promise<TestFilesCoreResult> {
+  const measuredEnvironment = { ...process.env, ...opts.productionConfiguration?.env };
+  const mutationContext = measuredEnvironment.PAPERCUSP_MUTATION_PROBE === '1' ? {
+    phase: measuredEnvironment.PAPERCUSP_MUTATION_PHASE?.trim() || null,
+    invocation: readMutationInvocationDescriptor(measuredEnvironment),
+  } : undefined;
   try {
     opts = { ...opts, productionConfiguration: parseProductionConfiguration(opts.productionConfiguration) ?? undefined };
   } catch (cause) {
@@ -4228,7 +4235,8 @@ export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: Test
     packet.write('ledger.json', { runGroup: runId, workspace: opts.workspaceId ?? null,
       harness: opts.harnessSlug ?? null, workItem: opts.workItemId ?? null,
       testNamePattern: opts.testNamePattern ?? null,
-      lookup: { tool: 'testing:runs', runGroup: runId, source: 'local', latestPerFile: false },
+      lookup: { tool: 'testing:runs', runGroup: runId, source: mutationContext ? 'mutation-probe' : 'local', latestPerFile: false },
+      ...(mutationContext ? { mutationContext } : {}),
       status: 'reference-only; presence and verdict require ledger readback' });
     try {
       // The detached store consumes its reporter sinks after ledger ingestion.
@@ -4631,7 +4639,13 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
         workspaceId: opts.workspaceId,
         rows,
         runGroupId: runId,
-        source: 'local',
+        source: resolveTestRunSource({ ...childEnv, PAPERCUSP_TEST_RUN_SOURCE: 'local' }),
+        mutationPhase: childEnv.PAPERCUSP_MUTATION_PROBE === '1'
+          ? childEnv.PAPERCUSP_MUTATION_PHASE?.trim() || null : null,
+        receiptEnvironment: {
+          PAPERCUSP_TEST_RUN_RECEIPT_FILE: childEnv.PAPERCUSP_TEST_RUN_RECEIPT_FILE,
+          PAPERCUSP_TEST_RUN_RECOVERY_FILE: childEnv.PAPERCUSP_TEST_RUN_RECOVERY_FILE,
+        },
         runStartedAt,
         commit: ledgerWorktreeAfter.commit,
         worktreeDirty: computeWorktreeDirty(ledgerWorktreeBefore, ledgerWorktreeAfter),

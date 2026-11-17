@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import { TestRunArtifactPacket, testRunDeadline } from './run-artifacts';
 import { recoverRetainedVitestLedger } from './retained-ledger';
@@ -13,7 +13,8 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-async function fixture(options: { childState?: 'closed' | 'pending'; passed?: number; runtimeLayer?: string } = {}) {
+async function fixture(options: { childState?: 'closed' | 'pending'; passed?: number; runtimeLayer?: string;
+  mutationPhase?: string } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'retained-vitest-ledger-')); roots.push(root);
   vi.stubEnv('VH_EVIDENCE_ROOT_BASE', join(root, 'retained'));
   const source = join(root, 'source'); mkdirSync(source);
@@ -24,7 +25,14 @@ async function fixture(options: { childState?: 'closed' | 'pending'; passed?: nu
   packet.bindNativeIdentity(input.workspaceId, input.harnessSlug);
   packet.captureSelectedSources(['subject.test.ts'], { commit: 'a'.repeat(40), porcelain: ' M subject.test.ts' });
   packet.write('ledger.json', { runGroup: runId, workspace: input.workspaceId, harness: input.harnessSlug,
-    workItem: input.workItemId, testNamePattern: null });
+    workItem: input.workItemId, testNamePattern: null, ...(options.mutationPhase ? {
+      lookup: { source: 'mutation-probe' }, mutationContext: { phase: options.mutationPhase, invocation: {
+        schemaVersion: 1, probeInvocationId: 'retained-mutation-regression', mode: 'copy-out',
+        subjectPath: 'subject.ts', mutateExpression: 's/cost/zero/', againstCommit: null,
+        subjectBeforeSha256: 'a'.repeat(64), subjectAfterSha256: 'b'.repeat(64),
+        mutantDiff: '-cost\n+zero', mutantDiffTruncated: false, testCommandSha256: 'c'.repeat(64),
+      } },
+    } : {}) });
   packet.write('router.json', { code: 0, childState: 'closed', signal: null, timedOut: false, aborted: false });
   packet.write('configuration.json', captureConfigurationSnapshot({ NODE_ENV: 'test' }));
   const report = { ...(options.runtimeLayer ? { papercuspRuntime: { schemaVersion: 1, root: source,
@@ -42,6 +50,23 @@ async function fixture(options: { childState?: 'closed' | 'pending'; passed?: nu
 }
 
 describe('retained Vitest ledger recovery', () => {
+  it('recovers sealed mutation context and the original test hash independently of current environment', async () => {
+    const { input, source } = await fixture({ mutationPhase: 'copy-baseline' });
+    writeFileSync(join(source, 'subject.test.ts'), 'changed after execution');
+    vi.stubEnv('PAPERCUSP_MUTATION_PHASE', 'mutant');
+    const persist = vi.fn().mockResolvedValue([{ id: 125 }]);
+    await recoverRetainedVitestLedger(input, persist);
+    expect(persist.mock.calls[0]![0]).toMatchObject({ source: 'mutation-probe', mutationPhase: 'copy-baseline',
+      rows: [{ execution: { mutation: { probeInvocationId: 'retained-mutation-regression', leg: 'copy-baseline',
+        testFileSha256: createHash('sha256').update('export {};').digest('hex') } } }] });
+  });
+
+  it('refuses malformed sealed mutation context before persisting any row', async () => {
+    const { input } = await fixture({ mutationPhase: 'INVALID_PHASE' });
+    const persist = vi.fn();
+    await expect(recoverRetainedVitestLedger(input, persist)).rejects.toThrow('mutation_context_incomplete');
+    expect(persist).not.toHaveBeenCalled();
+  });
   it('recovers the child-measured layer from sealed JSON independently of the current environment', async () => {
     const { input } = await fixture({ runtimeLayer: 'integration' });
     vi.stubEnv('PAPERCUSP_TEST_RUN_GROUP', 'another-run');
