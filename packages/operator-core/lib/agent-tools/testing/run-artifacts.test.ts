@@ -167,7 +167,7 @@ describe('maintained run deadlines and retained artifacts', () => {
     const locator = JSON.parse(readFileSync(join(packet.paths.nativeProof, 'pending-locator.json'), 'utf8'));
     expect(locator.identity.runId).toBe('expired-custody');
   });
-  it.each([false, true])('recovers interrupted router custody while preserving parent log loss=%s', async retireParentLog => {
+  async function interruptedRouter() {
     const { source, packet } = nativePacket();
     await packet.flush();
     const directory = join(packet.paths.directory, 'native-router-interrupted');
@@ -187,6 +187,11 @@ describe('maintained run deadlines and retained artifacts', () => {
     const pendingLocator = JSON.parse(pendingBytes.toString('utf8'));
     const retained = verifyNativeProofPacket(directory, pendingLocator, { identity, expected });
     const report = retained.manifest.groups[0].auxiliary.find(row => row.role === 'original-report')!.artifact!;
+    return { source, packet, directory, identity, expected, reportPath, reportBytes, pendingBytes, pendingLocator, report };
+  }
+  it.each([false, true])('recovers interrupted router custody while preserving parent log loss=%s', async retireParentLog => {
+    const { source, packet, directory, identity, expected, reportPath, reportBytes, pendingBytes, pendingLocator, report }
+      = await interruptedRouter();
     // Retire the router's producers without accidentally retiring the parent's
     // independent output log. Its deliberate loss must remain a custody gap.
     rmSync(reportPath);
@@ -211,6 +216,30 @@ describe('maintained run deadlines and retained artifacts', () => {
     expect(readFileSync(join(directory, 'objects', report.ref))).toEqual(reportBytes);
     expect(verifyNativeProofPacket(directory, pendingLocator, { identity, expected }).status).toBe('complete');
   });
+  it.each(['pending child', 'foreign pending locator', 'corrupt final locator', 'expired parent'] as const)(
+    'refuses interrupted router recovery with %s', async fault => {
+      const { packet, directory, pendingLocator, report, reportBytes } = await interruptedRouter();
+      packet.childState = fault === 'pending child' ? 'pending' : 'closed';
+      if (fault === 'foreign pending locator') writeFileSync(join(directory, 'pending-locator.json'),
+        JSON.stringify({ ...pendingLocator, identity: { ...pendingLocator.identity, runId: 'foreign' } }));
+      if (fault === 'corrupt final locator') writeFileSync(join(directory, 'locator.json'), '{invalid');
+      if (fault === 'expired parent') packet.deadline.taskDeadlineAtMs = Date.now() - 1;
+      const pendingBefore = readFileSync(join(directory, 'pending-locator.json'));
+      const result = { ok: false, error: 'timeout', passed: 6, failed: 0 };
+
+      await packet.finish({ result, cleanup: { complete: true } });
+
+      const errors = { 'pending child': /ENOENT/, 'foreign pending locator': /custody identity or expected population mismatch/,
+        'corrupt final locator': /SyntaxError/, 'expired parent': /native proof sync deadline/ };
+      expect(JSON.parse(readFileSync(packet.paths.manifest, 'utf8'))).toMatchObject({
+        result, cleanup: { complete: true }, nativeCustody: { byteCustody: 'unavailable',
+          nativeProof: 'unqualified', acceptance: 'unmeasured', error: expect.stringMatching(errors[fault]) },
+      });
+      expect(readFileSync(join(directory, 'pending-locator.json'))).toEqual(pendingBefore);
+      expect(readFileSync(join(directory, 'objects', report.ref))).toEqual(reportBytes);
+      if (fault === 'corrupt final locator') expect(readFileSync(join(directory, 'locator.json'), 'utf8')).toBe('{invalid');
+      else expect(() => readFileSync(join(directory, 'locator.json'))).toThrow(/ENOENT/);
+    });
   it('holds an explicit cleanup reserve behind one absolute child cutoff', () => {
     expect(testRunDeadline(45_000, { now: 1000, cleanupReserveMs: 10_000 })).toEqual({
       startedAtMs: 1000, taskDeadlineAtMs: 46_000, childCutoffAtMs: 36_000, cleanupReserveMs: 10_000,
