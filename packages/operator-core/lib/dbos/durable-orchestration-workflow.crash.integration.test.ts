@@ -158,6 +158,12 @@ describe('GEC frozen B durable consumer captures', () => {
     // Retain the independent oracle before any qualification assertion can fail.
     writeFileSync(join(gecArtifacts, `${scenario.runKey}-output-byte-oracle.json`), JSON.stringify({
       scope, initialRecovery, outputRowsAfter, persistedOutputBytes, acceptance: 'unmeasured' }));
+    const measured = measureGroundedEvidence({ scope, boundary: recovered.boundary, durable: recovered.census });
+    const storageMeasured = measureGroundedEvidence({ scope, boundary: recovered.boundary, storage: recovered.storage });
+    // Publish original dispatch/step oracles before any qualification assertion.
+    writeFileSync(join(gecArtifacts, `${scenario.runKey}-durable-oracle.json`), JSON.stringify({
+      acceptance: 'unmeasured', fixturePath, scope, sourceHashes, testHashes, frozen,
+      originalCalls, originalSteps, result, measured, storageMeasured }));
     for (const [mode, capture] of [['crash', crash], ['recover', recovered]] as const) {
       const originalRef = join(gecArtifacts, `${scenario.runKey}-${mode}.json`);
       const initialRef = join(gecArtifacts, `${scenario.runKey}-${mode}.initial-keys.json`);
@@ -324,23 +330,21 @@ describe('GEC frozen B durable consumer captures', () => {
     expect(recovered.invocations.ids.length).toBe(recovered.invocations.rows.length);
     const invocationMeasured = measureGroundedEvidence({ scope, boundary: recovered.boundary, invocations: recovered.invocations });
     expect(invocationMeasured.values).toMatchObject({ foregroundLookups: 0, retrievalCalls: caseId === 'C3' ? 1 : 0 });
-    // These controls qualify recorder closure and the two exact write shapes
-    // only. Other writes and interrupted bytes stay unknown.
-    const storageMeasured = measureGroundedEvidence({ scope, boundary: recovered.boundary, storage: recovered.storage });
+    // Recovery qualifies every selected writer; interruption remains incomplete.
     expect(storageMeasured.values.storageOperations).toBe(recovered.storage.ids.length);
-    expect(storageMeasured.values.storageBytes).toBeNull();
-    const measured = measureGroundedEvidence({ scope, boundary: recovered.boundary, durable: recovered.census });
+    const recoveredWrites = recovered.storage.rows.filter((row: { kind: string }) => row.kind === 'write');
+    expect(recoveredWrites.every((row: { persistedBytes: number }) =>
+      Number.isSafeInteger(row.persistedBytes) && row.persistedBytes >= 0)).toBe(true);
+    expect(storageMeasured.values.storageBytes).toBe(recoveredWrites
+      .reduce((sum: number, row: { persistedBytes: number }) => sum + row.persistedBytes, 0));
+    expect(measureGroundedEvidence({ scope, boundary: recovered.boundary, storage: crash.storage })
+      .values.storageBytes).toBeNull();
     const actualDispatches = originalCalls.map(row => [row.tool, row.mode]);
     const expectedDispatches = caseId === 'C3' ? [['items:put', 'crash'], ['items:get', 'recover']]
       : caseId === 'C5' ? [['items:get', 'crash'], ['items:put', 'recover']]
         : [['items:get', 'crash'], ['mail:send', 'crash']];
     const replayedTool = caseId === 'C3' ? 'items:put' : 'items:get';
     const dispatchesMatch = JSON.stringify(actualDispatches) === JSON.stringify(expectedDispatches);
-    // Preserve the independent DBOS/SQL originals even if schema admission,
-    // provider transport or a later model assertion fails.
-    writeFileSync(join(gecArtifacts, `${scenario.runKey}-durable-oracle.json`), JSON.stringify({
-      acceptance: 'unmeasured', fixturePath, scope, sourceHashes, testHashes, frozen,
-      originalCalls, originalSteps, result, measured }));
     let authorityRequest: { observed: boolean; gap: string | null; ref?: string } | null = caseId === 'C3'
       ? { observed: false, gap: 'No resumed consumer authority request was observed.' } : null;
     let consumerPassed: boolean | null = null;
