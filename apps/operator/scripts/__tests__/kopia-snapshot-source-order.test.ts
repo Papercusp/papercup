@@ -415,6 +415,37 @@ exit 0
 
     expect(readFileSync(output, 'utf8')).not.toContain('KOPIA_UNFLUSHED');
   });
+
+  it('retains both markers and fails when privileged identity validation is unavailable', () => {
+    const { env, killLog, output } = fakeRunningKopia();
+    rmSync(join(env.KOPIA_SNAPSHOT_PROC_ROOT!, String(PID), 'exe'));
+    writeFileSync(join(dir, 'sudo'), '#!/usr/bin/env bash\nexit 1\n');
+
+    const result = spawnSync('bash', [SCRIPT, '--cleanup'], { env, encoding: 'utf8', timeout: 10_000 });
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(readFileSync(join(dir, 'log', 'snapshot-all.kopia.pid'), 'utf8')).toBe(`${PID}\n`);
+    expect(readFileSync(join(dir, 'log', 'snapshot-all.kopia.pid.output'), 'utf8')).toBe(`${output}\n`);
+    expect(existsSync(killLog)).toBe(false);
+    expect(readFileSync(output, 'utf8')).not.toContain('KOPIA_UNFLUSHED');
+  });
+
+  it('retains both markers and fails when the exact process cannot be stopped', () => {
+    const { env, killLog, output } = fakeRunningKopia();
+    writeFileSync(join(dir, 'kill'), `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >>"${killLog}"\nexit 1\n`);
+
+    const result = spawnSync('bash', [SCRIPT, '--cleanup'], {
+      env: { ...env, KOPIA_SNAPSHOT_FLUSH_GRACE_SEC: '0' }, encoding: 'utf8', timeout: 10_000,
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(readFileSync(killLog, 'utf8')).toContain(`-KILL ${PID}`);
+    expect(existsSync(join(dir, 'log', 'snapshot-all.kopia.pid'))).toBe(true);
+    expect(existsSync(join(dir, 'log', 'snapshot-all.kopia.pid.output'))).toBe(true);
+    expect(readFileSync(output, 'utf8')).not.toContain('KOPIA_UNFLUSHED');
+  });
 });
 
 // EI-25211496463956189: a sweep stopped by a DB-dump waiter must resume with the

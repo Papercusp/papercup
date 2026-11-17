@@ -141,6 +141,8 @@ export function projectFact(
     scope: f.scope,
     ref: f.scopeRef,
     key: f.key,
+    ...(f.id !== undefined ? { id: f.id } : {}),
+    ...(f.sourceHive !== undefined ? { sourceHive: f.sourceHive } : {}),
     sourceRef: f.sourceRef,
     createdBy: f.createdBy,
     updatedAt: f.updatedAt,

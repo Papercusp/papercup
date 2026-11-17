@@ -249,4 +249,16 @@ describe('facts:list distinguishes the page from the census (WI-38910)', () => {
     await expect(listWorkspace({ cursor: 'opaque', versions: true })).rejects.toThrow('cannot be combined');
     expect(listFactsPageSpy).not.toHaveBeenCalled();
   });
+
+  it('preserves originating eligibility on the page, census, continuation and resync', async () => {
+    const eligibility = { audiences: ['fleet:ours'], keyPrefixes: ['guard-rail:'],
+      includeCodeNotes: false, dependsOnFiles: ['lib/kept.ts'] };
+    listFactsPageSpy.mockResolvedValue({ facts: page(4), nextCursor: 'bound-cursor' });
+    countLiveFactsSpy.mockResolvedValue(9);
+    const data = await listWorkspace({ eligibility, full: true });
+    expect(listFactsPageSpy).toHaveBeenCalledWith({ scope: 'workspace', scopeRef: null }, { limit: 4, eligibility });
+    expect(countLiveFactsSpy).toHaveBeenCalledWith({ scope: 'workspace', scopeRef: null }, eligibility);
+    expect(data.next).toEqual({ tool: 'facts:list', args: { scope: 'workspace', eligibility, full: true, cursor: 'bound-cursor' } });
+    await expect(listWorkspace({ eligibility, key: 'k' })).rejects.toThrow('cannot be combined');
+  });
 });

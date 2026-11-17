@@ -36,10 +36,10 @@
  * switch (PAPERCUSP_WI_FULLTEXT_DUPE=off) returns null — the caller proceeds
  * silently. Only OPEN (non-terminal) candidates are surfaced.
  */
-import { searchWorkItemDuplicateCandidates } from '../../work-items';
+import { searchWorkItemDuplicateCandidates, type WorkItemDuplicateCandidateSearch } from '../../work-items';
 import { DUP_THRESHOLD, titleSimilarity } from '../../harness/improvements/digest';
 import { ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
-import type { SemanticDupeCandidate } from './semantic-dupe-guard';
+import type { DupeGuardDiagnostic, SemanticDupeCandidate } from './semantic-dupe-guard';
 
 /** Cheap single tsquery — generous but bounded, mirrors the sibling guards' budgets. */
 const BUDGET_MS = 1500;
@@ -59,25 +59,30 @@ export interface FulltextLexicalDupeRow {
 /** Injectable seam (tests + any future non-issues space). */
 export interface FulltextLexicalDupeDeps {
   /** Null means complete candidate coverage could not be proven within its bound. */
-  searchWorkItems: (query: string) => Promise<FulltextLexicalDupeRow[] | null>;
+  searchWorkItems: (query: string) => Promise<FulltextLexicalDupeRow[] | WorkItemDuplicateCandidateSearch | null>;
 }
 
 const realDeps: FulltextLexicalDupeDeps = {
-  searchWorkItems: async (query) => {
-    const result = await searchWorkItemDuplicateCandidates(query);
-    return result.complete ? result.items : null;
-  },
+  searchWorkItems: searchWorkItemDuplicateCandidates,
 };
 
 /** Resolve-null on timeout, never reject — the budget IS the fail-open (mirrors
  *  semantic-dupe-guard / recent-lexical-dupe-guard's withBudget). */
-function withBudget<T>(ms: number, p: Promise<T | null>): Promise<T | null> {
+function withBudget<T>(
+  ms: number,
+  p: Promise<T | null>,
+  failed: (reason: 'budget-expired' | 'error', error?: unknown) => void,
+): Promise<T | null> {
   return new Promise((resolve) => {
-    const t = setTimeout(() => resolve(null), ms);
+    let settled = false;
+    const t = setTimeout(() => {
+      if (settled) return;
+      settled = true; failed('budget-expired'); resolve(null);
+    }, ms);
     (t as unknown as { unref?: () => void }).unref?.();
     p.then(
-      (v) => { clearTimeout(t); resolve(v); },
-      () => { clearTimeout(t); resolve(null); },
+      (v) => { if (settled) return; settled = true; clearTimeout(t); resolve(v); },
+      (error) => { if (settled) return; settled = true; clearTimeout(t); failed('error', error); resolve(null); },
     );
   });
 }
@@ -89,10 +94,15 @@ function searchableText(title: string, summary?: string): string {
 async function classify(
   d: FulltextLexicalDupeDeps,
   input: { title: string; summary?: string; excludeId?: string },
-): Promise<SemanticDupeCandidate[]> {
+  incomplete: (detail?: string) => void,
+): Promise<SemanticDupeCandidate[] | null> {
   const query = searchableText(input.title, input.summary);
-  const rows = await d.searchWorkItems(query);
-  if (rows === null) throw new Error('complete lexical duplicate candidate coverage unavailable');
+  const found = await d.searchWorkItems(query);
+  if (found === null || (!Array.isArray(found) && !found.complete)) {
+    incomplete(found?.reason);
+    return null;
+  }
+  const rows = Array.isArray(found) ? found : found.items;
   const scored = rows
     .filter((r) => r.id !== input.excludeId && !ALL_TERMINAL_STATUSES.has(r.state))
     .map((r) => ({
@@ -123,14 +133,37 @@ async function classify(
 export async function findFulltextLexicalDupes(
   input: { title: string; summary?: string; excludeId?: string },
   deps?: FulltextLexicalDupeDeps,
+  onDiagnostic?: (diagnostic: DupeGuardDiagnostic) => void,
 ): Promise<SemanticDupeCandidate[] | null> {
-  if (process.env.PAPERCUSP_WI_FULLTEXT_DUPE === 'off') return null;
+  const startedAt = Date.now();
+  let reason = 'complete';
+  let detail: string | undefined;
+  let error: unknown;
+  const finish = (result: SemanticDupeCandidate[] | null): SemanticDupeCandidate[] | null => {
+    try {
+      onDiagnostic?.({
+        outcome: result === null ? 'unavailable' : 'ok', reason, phase: 'candidate-search',
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+        ...(detail === undefined ? {} : { detail }),
+        ...(error === undefined ? {} : { error: {
+          name: error instanceof Error ? error.name : 'Error',
+          message: error instanceof Error ? error.message : String(error),
+          ...(typeof error === 'object' && error !== null && 'code' in error ? { code: String(error.code) } : {}),
+        } }),
+      });
+    } catch { /* Diagnostic consumers cannot change the filing verdict. */ }
+    return result;
+  };
+  if (process.env.PAPERCUSP_WI_FULLTEXT_DUPE === 'off') { reason = 'disabled'; return finish(null); }
   // Inert under vitest unless a test injects deps — mirrors the sibling guards so
   // unrelated tool tests never pay a real DB round-trip.
-  if (process.env.VITEST && !deps) return null;
+  if (process.env.VITEST && !deps) { reason = 'test-environment'; return finish(null); }
   try {
-    return await withBudget(BUDGET_MS, classify(deps ?? realDeps, input));
-  } catch {
-    return null;
+    return finish(await withBudget(BUDGET_MS, classify(deps ?? realDeps, input,
+      (coverageReason) => { reason = 'incomplete-coverage'; detail = coverageReason; }),
+    (failure, cause) => { reason = failure; error = cause; }));
+  } catch (cause) {
+    reason = 'error'; error = cause;
+    return finish(null);
   }
 }

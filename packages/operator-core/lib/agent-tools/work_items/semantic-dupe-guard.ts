@@ -156,6 +156,16 @@ export interface SemanticDupeResult {
   coverage?: SourceCoverageAssessment;
 }
 
+/** Measured evidence about a guard call; never a replacement for its verdict. */
+export interface DupeGuardDiagnostic {
+  outcome: 'ok' | 'unavailable';
+  reason: string;
+  phase: string;
+  elapsedMs: number;
+  detail?: string;
+  error?: { name: string; message: string; code?: string };
+}
+
 /** Injectable seams (tests + any future non-backfill space). */
 export interface SemanticDupeDeps {
   resolveEmbedder: () => Promise<
@@ -197,13 +207,23 @@ export function dupeThresholds(): { hard: number; soft: number } {
 }
 
 /** Resolve-null on timeout, never reject — the budget IS the fail-open. */
-function withBudget<T>(ms: number, p: Promise<T | null>): Promise<T | null> {
+function withBudget<T>(
+  ms: number,
+  p: Promise<T | null>,
+  failed?: (reason: 'budget-expired' | 'error', error?: unknown) => void,
+): Promise<T | null> {
   return new Promise((resolve) => {
-    const t = setTimeout(() => resolve(null), ms);
+    let settled = false;
+    const t = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      failed?.('budget-expired');
+      resolve(null);
+    }, ms);
     (t as unknown as { unref?: () => void }).unref?.();
     p.then(
-      (v) => { clearTimeout(t); resolve(v); },
-      () => { clearTimeout(t); resolve(null); },
+      (v) => { if (settled) return; settled = true; clearTimeout(t); resolve(v); },
+      (error) => { if (settled) return; settled = true; clearTimeout(t); failed?.('error', error); resolve(null); },
     );
   });
 }
@@ -261,17 +281,34 @@ const realDeps: SemanticDupeDeps = {
   queryCandidates: queryCandidatesReal,
 };
 
-async function classify(d: SemanticDupeDeps, input: { title: string; summary?: string; harness?: string }): Promise<SemanticDupeResult | null> {
+async function classify(
+  d: SemanticDupeDeps,
+  input: { title: string; summary?: string; harness?: string },
+  mark: (phase: string, reason?: string, detail?: string) => void,
+): Promise<SemanticDupeResult | null> {
+  mark('resolve-embedder');
   const resolved = await d.resolveEmbedder();
-  if (!resolved || resolved.mode === 'disabled' || !('embed' in resolved)) return null;
-  if (!fitsProseColumns(resolved.dims)) return null; // dims-ineligible for the prose columns (harrier@1024, local@384) — no verdict possible
+  if (!resolved || resolved.mode === 'disabled' || !('embed' in resolved)) {
+    mark('resolve-embedder', 'embedder-unavailable', resolved && 'reason' in resolved ? resolved.reason : undefined);
+    return null;
+  }
+  mark('validate-profile');
+  if (!fitsProseColumns(resolved.dims)) {
+    mark('validate-profile', 'incompatible-dimensions', String(resolved.dims));
+    return null;
+  }
   const selection = resolved.profile
     ? resolveProseProfileSelection(resolved.mode, resolved.profile)
     : null;
-  if (!selection) return null;
+  if (!selection) { mark('validate-profile', 'profile-unavailable'); return null; }
   // Mirror the stored shape exactly (TARGETS bodySql: title || '\n' || left(body, 2000)).
+  mark('embedding');
   const vec = await resolved.embed(`${input.title}\n${(input.summary ?? '').slice(0, 2000)}`);
-  if (!fitsProseColumns(vec.length)) return null;
+  if (!fitsProseColumns(vec.length)) {
+    mark('embedding', 'incompatible-dimensions', String(vec.length));
+    return null;
+  }
+  mark('query-candidates');
   const candidates = await d.queryCandidates(
     vec,
     resolved.mode,
@@ -305,19 +342,43 @@ async function classify(d: SemanticDupeDeps, input: { title: string; summary?: s
 export async function findSemanticDupes(
   input: { title: string; summary?: string; harness?: string },
   deps?: SemanticDupeDeps,
+  onDiagnostic?: (diagnostic: DupeGuardDiagnostic) => void,
 ): Promise<SemanticDupeResult | null> {
-  if (process.env.PAPERCUSP_WI_SEMANTIC_DUPE === 'off') return null;
+  const startedAt = Date.now();
+  let phase = 'preflight';
+  let reason = 'no-verdict';
+  let detail: string | undefined;
+  let error: unknown;
+  const finish = (result: SemanticDupeResult | null): SemanticDupeResult | null => {
+    try {
+      onDiagnostic?.({
+        outcome: result === null ? 'unavailable' : 'ok', reason, phase,
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+        ...(detail === undefined ? {} : { detail }),
+        ...(error === undefined ? {} : { error: {
+          name: error instanceof Error ? error.name : 'Error',
+          message: error instanceof Error ? error.message : String(error),
+          ...(typeof error === 'object' && error !== null && 'code' in error ? { code: String(error.code) } : {}),
+        } }),
+      });
+    } catch { /* Diagnostic consumers cannot change the filing verdict. */ }
+    return result;
+  };
+  if (process.env.PAPERCUSP_WI_SEMANTIC_DUPE === 'off') { reason = 'disabled'; return finish(null); }
   // Inert under vitest unless a test injects deps: the real resolver
   // lazy-loads an ONNX model, which unrelated tool tests must never pay.
-  if (process.env.VITEST && !deps) return null;
-  const startedAt = Date.now();
+  if (process.env.VITEST && !deps) { reason = 'test-environment'; return finish(null); }
   let result: SemanticDupeResult | null;
   try {
-    result = await withBudget(SEMANTIC_DUPE_GUARD_BUDGET_MS, classify(deps ?? realDeps, input));
-  } catch {
-    return null;
+    result = await withBudget(SEMANTIC_DUPE_GUARD_BUDGET_MS, classify(deps ?? realDeps, input,
+      (nextPhase, nextReason, nextDetail) => { phase = nextPhase; if (nextReason) reason = nextReason; detail = nextDetail; }),
+    (failure, cause) => { reason = failure; error = cause; });
+  } catch (cause) {
+    reason = 'error'; error = cause;
+    return finish(null);
   }
-  if (!result) return null;
+  if (!result) return finish(null);
+  reason = 'complete';
   // Coverage is diagnostic ABOUT the verdict, so it must never cost the caller its
   // verdict. It uses only the semantic prescreen's remaining wall-clock budget: a
   // bare org-PG read can otherwise wait through postgres.js's initial-connect retry
@@ -326,18 +387,19 @@ export async function findSemanticDupes(
   // as unavailable, never as healthy.
   try {
     const remainingMs = SEMANTIC_DUPE_GUARD_BUDGET_MS - (Date.now() - startedAt);
-    if (remainingMs <= 0) return result;
+    if (remainingMs <= 0) return finish(result);
+    phase = 'coverage-snapshot';
     const snapshot = await withDbCallDeadline(
       loadDupeGuardCoverage(deps?.loadCoverage),
       { ms: remainingMs, label: 'semantic-dupe-guard:coverage-snapshot' },
     );
-    if (snapshot === null) return result;
-    return {
+    if (snapshot === null) return finish(result);
+    return finish({
       ...result,
       coverage: assessSurfaceCoverage(DUPE_GUARD_COVERAGE_SOURCE, DUPE_GUARD_SURFACES, snapshot),
-    };
+    });
   } catch {
-    return result;
+    return finish(result);
   }
 }
 

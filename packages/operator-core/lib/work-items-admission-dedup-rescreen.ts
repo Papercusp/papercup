@@ -38,7 +38,7 @@ import type postgres from 'postgres';
 import type { DedupCandidateMethod, DedupCandidateStamp } from './agent-tools/work_items/dedup-candidates-stamp';
 import { findFulltextLexicalDupes } from './agent-tools/work_items/fulltext-lexical-dupe-guard';
 import { findRecentLexicalDupes } from './agent-tools/work_items/recent-lexical-dupe-guard';
-import { findSemanticDupes, type SemanticDupeCandidate } from './agent-tools/work_items/semantic-dupe-guard';
+import { findSemanticDupes, type DupeGuardDiagnostic, type SemanticDupeCandidate } from './agent-tools/work_items/semantic-dupe-guard';
 import type { OrgSql } from './work-items';
 import { mapWithConcurrency } from './gym/concurrency';
 import { failOpenExclusionSql, type AdmissionFailOpenExclusion } from './work-items-admission';
@@ -95,6 +95,7 @@ export interface DedupRescreenVerdict {
   semantic: 'ok' | 'unavailable';
   /** Self-excluded, de-duplicated, strongest method first. */
   candidates: DedupCandidateStamp[];
+  diagnostics?: Partial<Record<'lexical' | 'semantic' | 'screen', DupeGuardDiagnostic>>;
 }
 
 export type DedupRescreenScreen = (row: DedupRescreenRow) => Promise<DedupRescreenVerdict>;
@@ -126,6 +127,8 @@ export interface DedupRescreenSummary {
   legDownTrip: DedupRescreenLegDownTrip | null;
   /** Rows stamped with a `screened:false` attempt after the breaker tripped. */
   legDownSkipped: string[];
+  /** Every measured unavailable screen, retained on the run after row coverage changes. */
+  screenFailures?: Array<{ itemId: string; diagnostics: NonNullable<DedupRescreenVerdict['diagnostics']> }>;
 }
 
 interface PriorCoverage {
@@ -152,10 +155,11 @@ function methodFor(candidate: SemanticDupeCandidate, hardIds: ReadonlySet<string
  */
 export async function screenWorkItemForDuplicates(row: DedupRescreenRow): Promise<DedupRescreenVerdict> {
   const input = { title: row.title, summary: row.summary ?? undefined };
+  const diagnostics: NonNullable<DedupRescreenVerdict['diagnostics']> = {};
   const [semantic, recent, fulltext] = await Promise.all([
-    findSemanticDupes({ ...input, harness: row.harness }).catch(() => null),
+    findSemanticDupes({ ...input, harness: row.harness }, undefined, diagnostic => { diagnostics.semantic = diagnostic; }).catch(() => null),
     findRecentLexicalDupes({ ...input, harness: row.harness, excludeId: row.id }).catch(() => null),
-    findFulltextLexicalDupes({ ...input, excludeId: row.id }).catch(() => null),
+    findFulltextLexicalDupes({ ...input, excludeId: row.id }, undefined, diagnostic => { diagnostics.lexical = diagnostic; }).catch(() => null),
   ]);
   const hardIds = new Set((semantic?.hard ?? []).map((c) => c.id));
   const ordered: SemanticDupeCandidate[] = [
@@ -175,6 +179,7 @@ export async function screenWorkItemForDuplicates(row: DedupRescreenRow): Promis
     lexical: fulltext === null ? 'unavailable' : 'ok',
     semantic: semantic === null ? 'unavailable' : 'ok',
     candidates,
+    diagnostics,
   };
 }
 
@@ -263,20 +268,30 @@ export async function rescreenDegradedPendingRows(opts: {
     budgetExhausted: false,
     legDownTrip: null,
     legDownSkipped: [],
+    screenFailures: [],
   };
+  const diagnosticsById = new Map<string, NonNullable<DedupRescreenVerdict['diagnostics']>>();
   type RowOutcome = 'clean' | 'candidates' | 'degraded' | 'error' | 'write-error' | 'race' | 'leg-down';
   const rescreenOne = async (row: (typeof rows)[number], legDown: DedupRescreenLegDownTrip | null): Promise<RowOutcome> => {
     const prior = row.coverage && typeof row.coverage === 'object' ? row.coverage : null;
     const attempts = priorAttempts(prior) + 1;
     const legDownAttempts = priorLegDownAttempts(prior) + (legDown ? 1 : 0);
     let verdict: DedupRescreenVerdict | null = null;
+    let diagnostics: DedupRescreenVerdict['diagnostics'];
     if (!legDown) {
+      const screenStartedAt = now();
       try {
         verdict = await opts.screen({ id: row.feature_id, harness: row.harness_slug, title: row.title ?? '', summary: row.summary });
-      } catch {
+        diagnostics = verdict.diagnostics;
+      } catch (error) {
         verdict = null;
+        diagnostics = { screen: {
+          outcome: 'unavailable', reason: 'error', phase: 'screen', elapsedMs: Math.max(0, now() - screenStartedAt),
+          error: { name: error instanceof Error ? error.name : 'Error', message: error instanceof Error ? error.message : String(error) },
+        } };
       }
     }
+    if (diagnostics) diagnosticsById.set(row.feature_id, diagnostics);
     // A feature-family row filed under the goal gate legitimately skipped the lexical leg
     // (_create-core.ts P-004); keep that leg out of its verdict rather than newly requiring it.
     const lexicalRequired = prior?.lexical !== 'skipped';
@@ -316,6 +331,7 @@ export async function rescreenDegradedPendingRows(opts: {
           screened: !legDown,
           legDownAttempts,
           ...(legDown ? { legDown } : {}),
+          ...(diagnostics ? { diagnostics } : {}),
           prior: originalCoverage(prior),
         },
       },
@@ -371,6 +387,10 @@ export async function rescreenDegradedPendingRows(opts: {
   );
   for (const [i, outcome] of outcomes.entries()) {
     const id = rows[i]!.feature_id;
+    const diagnostics = diagnosticsById.get(id);
+    if (diagnostics && Object.values(diagnostics).some(diagnostic => diagnostic.outcome === 'unavailable')) {
+      summary.screenFailures!.push({ itemId: id, diagnostics });
+    }
     if (outcome === null) summary.budgetExhausted = true;
     else if (outcome === 'leg-down') summary.legDownSkipped.push(id);
     else if (outcome === 'race') summary.raceSkipped.push(id);

@@ -30,6 +30,48 @@ const depsWith = (rows: FulltextLexicalDupeRow[]): FulltextLexicalDupeDeps => ({
   searchWorkItems: async () => rows,
 });
 
+describe('failure diagnostics', () => {
+  it('retains the completeness failure reason and does not mistake it for a clean empty result', async () => {
+    const observed = vi.fn();
+    const deps: FulltextLexicalDupeDeps = {
+      searchWorkItems: async () => ({ complete: false, items: [], reason: 'candidate-limit-exceeded' }),
+    };
+    expect(await findFulltextLexicalDupes({ title: 't' }, deps, observed)).toBeNull();
+    expect(observed).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: 'unavailable', reason: 'incomplete-coverage', detail: 'candidate-limit-exceeded', phase: 'candidate-search',
+    }));
+    expect(await findFulltextLexicalDupes({ title: 't' }, depsWith([]), observed)).toEqual([]);
+    expect(observed).toHaveBeenLastCalledWith(expect.objectContaining({ outcome: 'ok', reason: 'complete' }));
+  });
+
+  it('distinguishes timeout from query errors and emits a timeout only once despite late rejection', async () => {
+    vi.useFakeTimers();
+    try {
+      const observed = vi.fn();
+      let reject!: (error: Error) => void;
+      const deps: FulltextLexicalDupeDeps = {
+        searchWorkItems: () => new Promise((_, rejectSearch) => { reject = rejectSearch; }),
+      };
+      const pending = findFulltextLexicalDupes({ title: 't' }, deps, observed);
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(await pending).toBeNull();
+      expect(observed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ reason: 'budget-expired', elapsedMs: 1500 }));
+      reject(new Error('late failure'));
+      await vi.advanceTimersByTimeAsync(1);
+      expect(observed).toHaveBeenCalledTimes(1);
+      const failed: FulltextLexicalDupeDeps = { searchWorkItems: async () => { throw new Error('search failed'); } };
+      expect(await findFulltextLexicalDupes({ title: 't' }, failed, observed)).toBeNull();
+      expect(observed).toHaveBeenLastCalledWith(expect.objectContaining({
+        reason: 'error', error: { name: 'Error', message: 'search failed' },
+      }));
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('keeps a successful verdict even when its diagnostic consumer throws', async () => {
+    expect(await findFulltextLexicalDupes({ title: 't' }, depsWith([]), () => { throw new Error('observer failed'); })).toEqual([]);
+  });
+});
+
 afterEach(() => {
   vi.unstubAllEnvs();
 });

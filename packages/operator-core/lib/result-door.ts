@@ -561,6 +561,49 @@ function hasOnlyRecoverableCoordThreadMarkers(
     markers.every((marker) => COORD_THREAD_RECOVERABLE_TRUNCATION_MARKERS.has(marker));
 }
 
+/** Session text chunks are intentionally partial and carry their own exact
+ * continuation. Keep a fitting page intact only when that continuation makes
+ * progress on the same turn; unrelated partial markers still take the normal
+ * incomplete-result route. */
+function hasOnlyRecoverableSessionReadMarkers(
+  result: DoorableResult,
+  markers: readonly string[],
+  toolName: string,
+  nestedTargetToolName?: string,
+): boolean {
+  const target = toolName === 'tools:invoke' ? nestedTargetToolName : toolName;
+  if (target !== 'sessions:read' || markers.length !== 1 || markers[0] !== 'text_truncated') return false;
+  let found = false;
+  for (const item of result.content) {
+    if (!isTextItem(item)) continue;
+    const body = parseStructuredMarkerBody(item.text, result._meta?.format);
+    if (!isJsonObject(body) || !Array.isArray(body.turns)) continue;
+    if (body.ok !== true || body.turn_count !== body.turns.length) return false;
+    for (const value of body.turns) {
+      if (!isJsonObject(value) || typeof value.text !== 'string' || typeof value.speaker !== 'string') return false;
+      if (value.text_truncated !== true) continue;
+      found = true;
+      const offset = value.text_offset ?? 0;
+      const total = value.text_full_chars;
+      const next = value.readMore;
+      if (typeof value.ref !== 'string' || !/^session_turn:[^:]+:[^:]+:\d+$/.test(value.ref) ||
+          typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0 ||
+          typeof total !== 'number' || !Number.isSafeInteger(total) || total < 0 ||
+          value.text.length === 0 || !isJsonObject(next) || next.tool !== 'sessions:read' ||
+          !isJsonObject(next.args)) return false;
+      const end = offset + value.text.length;
+      // An unrecovered index-capped turn can truthfully report only its known
+      // prefix length. Preserve its explicit unknown-source continuation too.
+      if (!Number.isSafeInteger(end) || end > total ||
+          (end === total && value.source_completeness !== 'unknown') ||
+          next.args.ref !== value.ref || next.args.text_offset !== end ||
+          typeof next.args.text_limit !== 'number' || !Number.isSafeInteger(next.args.text_limit) ||
+          next.args.text_limit < 1) return false;
+    }
+  }
+  return found;
+}
+
 function hasOnlyRecoverableArtifactsLoadMarkers(
   textItems: readonly string[],
   markers: readonly string[],
@@ -3811,6 +3854,12 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         opts.toolName,
         opts.nestedTargetToolName,
       );
+      const sessionMarkersRecoverable = hasOnlyRecoverableSessionReadMarkers(
+        result,
+        innerTruncationMarkers,
+        opts.toolName,
+        opts.nestedTargetToolName,
+      );
       const artifactsLoadMarkersRecoverable = hasOnlyRecoverableArtifactsLoadMarkers(
         items.filter(isTextItem).map((item) => item.text),
         innerTruncationMarkers,
@@ -3890,7 +3939,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         }
       })();
       if ((!upstreamProjection?.truncated || inlineUpstreamProjectionWarning) &&
-        (innerTruncationMarkers.length === 0 || threadMarkersRecoverable ||
+        (innerTruncationMarkers.length === 0 || threadMarkersRecoverable || sessionMarkersRecoverable ||
           artifactsLoadMarkersRecoverable || scratchReferenceRead || codeRunSummaryHasRecoveryCursor)) {
         return reconcileWorkItemsGetReceiptResult(result, opts);
       }

@@ -46,11 +46,12 @@ mark_unflushed_output() {
 }
 
 cleanup_kopia_pid() {
-  local pid="" rc=0
+  local pid="" rc=0 match_rc=0
   [ -s "$PID_FILE" ] || return 0
   pid="$(tr -d '[:space:]' <"$PID_FILE" 2>/dev/null || true)"
 
-  if kopia_pid_matches "$pid"; then
+  kopia_pid_matches "$pid" || match_rc=$?
+  if [ "$match_rc" -eq 0 ]; then
     kopia_stop_flushing "$pid" "$FLUSH_GRACE_SEC"
     rc=$?
     case "$rc" in
@@ -59,10 +60,16 @@ cleanup_kopia_pid() {
         echo "CLEANUP: killed exact Kopia PID $pid after ${FLUSH_GRACE_SEC}s SIGTERM grace" >>"$LOG_DIR/snapshot-all.log"
         mark_unflushed_output "$(cat -- "$OUTPUT_POINTER" 2>/dev/null || true)"
         ;;
-      *) echo "WARN: failed to kill exact Kopia PID $pid" >>"$LOG_DIR/snapshot-all.log" ;;
+      *)
+        echo "WARN: failed to kill exact Kopia PID $pid; retaining PID and output markers" >>"$LOG_DIR/snapshot-all.log"
+        return 1
+        ;;
     esac
-  else
+  elif [ "$match_rc" -eq 1 ]; then
     echo "INFO: stale/non-Kopia PID file $PID_FILE; refusing to kill PID ${pid:-<empty>}" >>"$LOG_DIR/snapshot-all.log"
+  else
+    echo "WARN: unable to validate Kopia PID $pid; retaining PID and output markers" >>"$LOG_DIR/snapshot-all.log"
+    return 1
   fi
   rm -f -- "$PID_FILE" "$OUTPUT_POINTER"
 }
@@ -71,7 +78,7 @@ cleanup_kopia_pid() {
 # cleanup cannot wait on a backup lock whose owner is being torn down.
 if [ "${1:-}" = "--cleanup" ]; then
   cleanup_kopia_pid
-  exit 0
+  exit "$?"
 fi
 
 # D-001: this script is safe both from systemd and when invoked directly. The

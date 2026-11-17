@@ -38,6 +38,48 @@ const okDeps = (candidates: SemanticDupeCandidate[], dims = PROSE_VECTOR_DIMS): 
   queryCandidates: async () => candidates,
 });
 
+describe('failure diagnostics', () => {
+  it('distinguishes query errors from unavailable embedder prerequisites while retaining null verdicts', async () => {
+    const observed = vi.fn();
+    const deps = okDeps([]);
+    deps.queryCandidates = async () => { throw Object.assign(new Error('query connection closed'), { code: 'CONNECTION_CLOSED' }); };
+    expect(await findSemanticDupes({ title: 't' }, deps, observed)).toBeNull();
+    expect(observed).toHaveBeenLastCalledWith(expect.objectContaining({
+      outcome: 'unavailable', reason: 'error', phase: 'query-candidates',
+      error: { name: 'Error', message: 'query connection closed', code: 'CONNECTION_CLOSED' },
+    }));
+    deps.resolveEmbedder = async () => ({ mode: 'disabled', reason: 'provider not configured' });
+    expect(await findSemanticDupes({ title: 't' }, deps, observed)).toBeNull();
+    expect(observed).toHaveBeenLastCalledWith(expect.objectContaining({
+      reason: 'embedder-unavailable', phase: 'resolve-embedder', detail: 'provider not configured',
+    }));
+  });
+
+  it('records the timed-out phase once and does not replace it when the pending operation rejects late', async () => {
+    vi.useFakeTimers();
+    try {
+      const observed = vi.fn();
+      let reject!: (error: Error) => void;
+      const deps = okDeps([]);
+      deps.queryCandidates = () => new Promise((_, rejectQuery) => { reject = rejectQuery; });
+      const pending = findSemanticDupes({ title: 't' }, deps, observed);
+      await vi.advanceTimersByTimeAsync(2500);
+      expect(await pending).toBeNull();
+      expect(observed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        reason: 'budget-expired', phase: 'query-candidates', elapsedMs: 2500,
+      }));
+      reject(new Error('late failure'));
+      await vi.advanceTimersByTimeAsync(1);
+      expect(observed).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('keeps a successful verdict even when its diagnostic consumer throws', async () => {
+    expect(await findSemanticDupes({ title: 't' }, okDeps([]), () => { throw new Error('observer failed'); }))
+      .toEqual({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } });
+  });
+});
+
 afterEach(() => {
   vi.unstubAllEnvs();
 });

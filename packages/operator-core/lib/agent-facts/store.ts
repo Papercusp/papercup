@@ -697,6 +697,8 @@ export interface AgentFact {
   scope: FactScope;
   scopeRef: string | null;
   key: string;
+  /** Logical identity partition; absent only when the source read did not select it. */
+  sourceHive?: string | null;
   body: string;
   sourceRef: string | null;
   /** P-007: fold-delivery audience restriction (v1 grammar `fleet:<slug>`);
@@ -3461,7 +3463,7 @@ export async function foldFactsWithCensus(
     if (sel.scope !== 'workspace' && !ref) continue; // an unset optional dimension folds nothing
     const rows = await sql<(AgentFactRow & { fold_total: string; fold_class: number })[]>`
       WITH eligible AS (
-      SELECT id, scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
+      SELECT id, scope, scope_ref, key, source_hive, body, source_ref, audience_scope, source_provenance,
              -- P-002: settled_by rides the FOLD specifically. An undecidable whose exit
              -- is stored but never surfaced cannot stop re-derivation — the reader would
              -- see "nobody could determine this" with no way to act on it, which is the
@@ -4215,6 +4217,7 @@ interface AgentFactRow {
   scope: FactScope;
   scope_ref: string | null;
   key: string;
+  source_hive?: string | null;
   body: string;
   source_ref: string | null;
   audience_scope: string | null;
@@ -4288,6 +4291,7 @@ function rowToFact(r: AgentFactRow): AgentFact {
     scope: r.scope,
     scopeRef: r.scope_ref,
     key: r.key,
+    ...(r.source_hive !== undefined ? { sourceHive: r.source_hive } : {}),
     body: r.body,
     sourceRef: r.source_ref,
     audienceScope: r.audience_scope ?? null,

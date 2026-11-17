@@ -19,6 +19,7 @@
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
 import { createFreshPgDb, applyMigrationsForTest, type FreshPgDb } from '../../test/_pg-helpers';
+import { createDedicatedOrgPg } from '@papercusp/db-org';
 import { evaluateDependencyStaleness, observationKey } from '../agent-tools/facts/dependency-staleness';
 
 // These tests exercise the store's SQL and eviction ranking against a throwaway
@@ -77,6 +78,23 @@ import { loadGuardRailProbes } from './guard-rail-probes';
 import { assumptionSelectorsFor, resolveAssumptions } from './assumptions';
 
 const WS = 'ws-facts-int';
+
+// Keep the real facts:list handler and SQL, while routing every recovery read
+// into this fixture. A successor replaces this driver, never the cursor/context.
+let recoverySql: FreshPgDb['sql'] | undefined;
+vi.mock('./store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./store')>();
+  return { ...actual,
+    listFactsPage: (sel: Parameters<typeof actual.listFactsPage>[0], opts: Parameters<typeof actual.listFactsPage>[1], sql?: FreshPgDb['sql']) =>
+      actual.listFactsPage(sel, { workspaceId: WS, ...opts }, sql ?? recoverySql ?? db.sql),
+    countLiveFacts: (sel: Parameters<typeof actual.countLiveFacts>[0], opts: Parameters<typeof actual.countLiveFacts>[1], sql?: FreshPgDb['sql']) =>
+      actual.countLiveFacts(sel, { workspaceId: WS, ...opts }, sql ?? recoverySql ?? db.sql),
+    listFactEvictionDisclosures: async () => [],
+  };
+});
+vi.mock('../agent-tools/facts/stale-source', () => ({ markStaleSourceFacts: async (facts: unknown[]) => facts }));
+vi.mock('../agent-tools/cell-reader-ctx', () => ({ cellReaderFromCtx: () => { throw new Error('fixture has no live cell reader'); } }));
+import factsListTool from '../agent-tools/facts/list';
 
 /**
  * P-002: the caps this suite exercises the MECHANISM against.
@@ -444,7 +462,7 @@ describe('context reliability R-8: task-ranked standing facts', () => {
     await assertFact({ ...base, key: 'noise', body: 'new unrelated snapshot' }, db.sql);
     const a = await foldFactsWithCensus(selectors, { ...opts, taskContext: { files: ['lib/a.ts'] } }, db.sql);
     expect(a.facts.map((fact) => fact.key)).toEqual(['task-a']);
-    expect(a.census).toEqual([{ scope: 'owner', scopeRef, shown: 1, total: 3, truncated: true }]);
+    expect(a.census).toMatchObject([{ scope: 'owner', scopeRef, shown: 1, total: 3, truncated: true }]);
     const b = await foldFacts(selectors, { ...opts, taskContext: { workItemRefs: ['WI-202'] } }, db.sql);
     expect(b.map((fact) => fact.key)).toEqual(['task-b']);
     // The explicit currency read retains its historical recency semantics.
@@ -547,6 +565,7 @@ describe('EI-28763886046924909: bounded retained facts with lossless recovery', 
     await assertFact({ ...selector, key: 'a-arrived', body: 'new earlier identity', workspaceId: WS, createdBy: 'su-int', ttlSec: 3600 }, db.sql);
     const second = await listFactsPage(selector, { workspaceId: WS, limit: 2, cursor: first.nextCursor! }, db.sql);
     expect(second.facts.map((fact) => fact.key)).toEqual(['same', 'same']);
+    expect(second.facts.map((fact) => fact.sourceHive)).toEqual([null, 'peer']);
     const third = await listFactsPage(selector, { workspaceId: WS, limit: 2, cursor: second.nextCursor! }, db.sql);
     expect(third.facts.map((fact) => fact.body)).toEqual(['corrected while traversing']);
     expect(third.nextCursor).toBeNull();
@@ -558,6 +577,100 @@ describe('EI-28763886046924909: bounded retained facts with lossless recovery', 
       .rejects.toThrow('different workspace/scope');
     await expect(listFactsPage(selector, { workspaceId: WS, limit: 2, cursor: 'malformed' }, db.sql))
       .rejects.toThrow('invalid cursor');
+  });
+});
+
+describe('P010 scoped recovery through the maintained facts:list consumer', () => {
+  const N = FACTS_RETAINED_FOLD_LIMIT;
+  const selector = { scope: 'owner' as const, scopeRef: 'su-p010-recovery' };
+  const eligibility = { audiences: ['fleet:ours'], keyPrefixes: ['keep:', 'guard-rail:', 'code-'],
+    includeCodeNotes: false, dependsOnFiles: ['lib/kept.ts'] };
+  const base = { ...selector, workspaceId: WS, createdBy: 'su-int', ttlSec: 3600 };
+  const anchors = [{ cell: 'file:lib/kept.ts', observedAt: '2026-11-16T00:00:00Z', digest: 'a'.repeat(64) }];
+  const ctx = { isSuperuser: true, uiClientId: 'su-p010-recovery' } as never;
+  async function read(args: Record<string, unknown>) {
+    const parsed = factsListTool.args.parse(args);
+    return (await factsListTool.handler(parsed, ctx) as { data: Record<string, unknown> }).data;
+  }
+  it.each([N - 1, N, N + 1, N * 3 + 1])('recovers %i identities per class after fresh driver/consumer restart, with decoys and resync', async (count) => {
+    const expected = ['keep:', 'guard-rail:', 'keep:convention:'].flatMap((prefix) =>
+      Array.from({ length: count }, (_, i) => `${prefix}${String(i).padStart(3, '0')}`));
+    // Different insertion order cannot affect recovery fairness.
+    const ordered = count % 2 ? [...expected].reverse() : [...expected.slice(count), ...expected.slice(0, count)];
+    for (const key of ordered) await assertFact({ ...base, key, body: key, dependsOn: anchors,
+      ...(key.startsWith('keep:convention:') ? { kind: 'convention' as const } : {}) }, db.sql);
+    for (const [key, overrides] of [
+      ['keep:decoy-audience', { audienceScope: 'fleet:other' }],
+      ['keep:decoy-scope', { scopeRef: 'su-other' }],
+      ['keep:decoy-workspace', { workspaceId: 'other' }],
+      ['outside:prefix', {}],
+      ['code-note:hidden', {}],
+      ['keep:decoy-anchor', { dependsOn: [{ ...anchors[0], cell: 'file:lib/other.ts' }] }],
+      ['keep:expired', {}], ['keep:retracted', {}],
+    ] as const) await assertFact({ ...base, key, body: key, dependsOn: anchors, ...overrides }, db.sql);
+    await db.sql`UPDATE harness_shared.agent_facts SET expires_at = now() - interval '1 minute'
+      WHERE workspace_id = ${WS} AND scope_ref = ${selector.scopeRef} AND key = 'keep:expired'`;
+    await retractFact({ ...selector, workspaceId: WS, key: 'keep:retracted' }, db.sql);
+    await assertFact({ ...base, key: expected[0]!, body: 'current version', dependsOn: anchors }, db.sql);
+    const folded = await foldFactsWithCensus([selector], { workspaceId: WS, ...eligibility,
+      limitPerSelector: N, taskContext: {} }, db.sql);
+    expect(folded.census[0]).toMatchObject({ total: expected.length, shown: Math.min(N, count) * 3,
+      truncated: count > N });
+    const recovery = folded.census[0]!.recovery?.args ?? { ...selector, eligibility };
+    let driver = createDedicatedOrgPg('p010-recovery-before', { url: db.url, sessionAffinity: true, max: 1 }).sql;
+    recoverySql = driver;
+    const first = await read({ ...recovery, full: true });
+    const saved = JSON.stringify(first.next);
+    const firstIds = (first.facts as Array<{ id: number }>).map((f) => f.id);
+    await driver.end();
+    driver = createDedicatedOrgPg('p010-recovery-successor', { url: db.url, sessionAffinity: true, max: 1 }).sql;
+    recoverySql = driver;
+    try {
+      // An earlier new identity is outside continuation, and explicitly recovered by resync.
+      await assertFact({ ...base, key: 'guard-rail:!earlier', body: 'earlier insertion', dependsOn: anchors }, db.sql);
+      const recovered = [...firstIds];
+      let next: { args: Record<string, unknown> } | undefined = JSON.parse(saved);
+      while (next) {
+        const data = await read(next.args);
+        expect(data.total).toBe(expected.length + 1);
+        recovered.push(...(data.facts as Array<{ id: number }>).map((f) => f.id));
+        next = data.next as typeof next;
+      }
+      const current = await foldFacts([selector], { workspaceId: WS, ...eligibility,
+        limitPerSelector: count + 1 }, db.sql);
+      // Full identity recovery stays independent of the fold's protected budgets.
+      const eligibleRows = await db.sql<{ id: number; key: string }[]>`
+        SELECT id, key FROM harness_shared.agent_facts WHERE workspace_id = ${WS}
+          AND scope_ref = ${selector.scopeRef} AND superseded_at IS NULL AND key = ANY(${expected})`;
+      expect(new Set(recovered)).toEqual(new Set(eligibleRows.map((r) => r.id)));
+      expect(recovered).toHaveLength(expected.length);
+      expect(current.every((f) => !f.key.includes('decoy'))).toBe(true);
+      const resynced: number[] = [];
+      let args: Record<string, unknown> = JSON.parse(JSON.stringify(recovery));
+      for (;;) {
+        const data = await read(args);
+        resynced.push(...(data.facts as Array<{ id: number }>).map((f) => f.id));
+        if (!data.next) break;
+        args = (data.next as { args: Record<string, unknown> }).args;
+      }
+      expect(resynced.length).toBe(expected.length + 1);
+      expect(new Set(resynced).size).toBe(resynced.length);
+      const continuation = JSON.parse(saved).args;
+      await expect(read({ ...continuation, eligibility: { ...eligibility, audiences: ['fleet:other'] } }))
+        .rejects.toThrow('restart without cursor');
+      for (const field of [4, 5]) {
+        const broken = JSON.parse(Buffer.from(continuation.cursor, 'base64url').toString());
+        broken[field] = 'corrupt';
+        await expect(read({ ...continuation, cursor: Buffer.from(JSON.stringify(broken)).toString('base64url') }))
+          .rejects.toThrow('restart without cursor');
+      }
+      // Continuation-only failures cannot change the selection verdict.
+      expect((await foldFacts([selector], { workspaceId: WS, ...eligibility, limitPerSelector: N }, db.sql))
+        .every((f) => !f.key.includes('decoy'))).toBe(true);
+    } finally {
+      recoverySql = undefined;
+      await driver.end();
+    }
   });
 });
 
